@@ -55,7 +55,3 @@ class Terminal():
         
     def activate(self):
         self.app.mainloop()
-
-
-
-

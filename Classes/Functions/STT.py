@@ -1,7 +1,7 @@
 import speech_recognition as sr
 
 class SpeechToText():
-    def listen_for_audio():
+    def listen_for_audio(self):
         # Initialize recognizer
         recognizer = sr.Recognizer()
 
@@ -17,7 +17,7 @@ class SpeechToText():
 
         return audio
 
-    def transcribe_audio(audio):
+    def transcribe_audio(self, audio):
         # Initialize recognizer
         recognizer = sr.Recognizer()
 
@@ -33,8 +33,8 @@ class SpeechToText():
 class Test():
     
     def STTTest():
-        audio_input = SpeechToText.listen_for_audio()
-        text_output = SpeechToText.transcribe_audio(audio_input)
+        audio_input = SpeechToText().listen_for_audio()
+        text_output = SpeechToText().transcribe_audio(audio_input)
         
         if text_output:
             print("You said:", text_output)

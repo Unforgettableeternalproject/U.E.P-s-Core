@@ -22,7 +22,8 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="Classes\STT.py" />
+    <Compile Include="Classes\Functions\STT.py" />
+    <Compile Include="Classes\Interfaces\Terminal.py" />
     <Compile Include="U.E.P_s_Core.py" />
   </ItemGroup>
   <ItemGroup>
@@ -42,6 +43,8 @@
   </ItemGroup>
   <ItemGroup>
     <Folder Include="Classes\" />
+    <Folder Include="Classes\Functions\" />
+    <Folder Include="Classes\Interfaces\" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in

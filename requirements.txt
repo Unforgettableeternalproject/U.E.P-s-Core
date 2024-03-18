@@ -1,5 +1,6 @@
 SpeechRecognition==3.10.1
 rwkv==0.8.25
+rwkvstic==2.1.2
 pyttsx3==2.90
 torch==2.2.1
 numpy==1.26.4

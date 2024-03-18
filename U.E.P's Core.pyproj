@@ -22,12 +22,15 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="Classes\Functions\RWKV_Main.py" />
     <Compile Include="Classes\Functions\STT.py" />
     <Compile Include="Classes\Interfaces\Terminal.py" />
     <Compile Include="U.E.P_s_Core.py" />
   </ItemGroup>
   <ItemGroup>
     <Content Include=".gitignore" />
+    <Content Include="Models\20B_tokenizer.json" />
+    <Content Include="Models\rwkv_v5.2_7B_role_play_16k.pth" />
     <Content Include="README.md" />
     <Content Include="requirements.txt" />
   </ItemGroup>
@@ -46,6 +49,7 @@
     <Folder Include="Classes\" />
     <Folder Include="Classes\Functions\" />
     <Folder Include="Classes\Interfaces\" />
+    <Folder Include="Models\" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in

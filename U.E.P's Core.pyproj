@@ -22,11 +22,16 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="Classes\STT.py" />
+    <Compile Include="Classes\Functions\RWKV_Main.py" />
+    <Compile Include="Classes\Functions\STT.py" />
+    <Compile Include="Classes\Interfaces\Terminal.py" />
     <Compile Include="U.E.P_s_Core.py" />
   </ItemGroup>
   <ItemGroup>
     <Content Include=".gitignore" />
+    <Content Include="Models\20B_tokenizer.json" />
+    <Content Include="Models\rwkv_v5.2_7B_role_play_16k.pth" />
+    <Content Include="README.md" />
     <Content Include="requirements.txt" />
   </ItemGroup>
   <ItemGroup>
@@ -42,6 +47,17 @@
   </ItemGroup>
   <ItemGroup>
     <Folder Include="Classes\" />
+    <Folder Include="Classes\Functions\" />
+    <Folder Include="Classes\Interfaces\" />
+    <Folder Include="Models\" />
+    <Folder Include="Concepts\" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\U.E.P_Terminal\U.E.P_Terminal.csproj">
+      <Name>U.E.P_Terminal</Name>
+      <Project>{22b46d4c-2a14-4b37-a1c0-ccd459d0d8b0}</Project>
+      <Private>True</Private>
+    </ProjectReference>
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in

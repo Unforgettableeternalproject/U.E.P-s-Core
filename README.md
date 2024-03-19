@@ -23,13 +23,13 @@
 -
   ඩ Currently None
   
-⚑ To-do list:
+⚑ To-do List:
 -
-  ✧ (Stage 0.5) Illustrate concept arts, make a back-end terminal window for future debugging
+  ✧ (Stage 0.5) Illustrate concept arts, make a back-end terminal window for future debugging -> (Working on it)
   
   ✧ (Stage 1) Make Speech Recognition, Semantic Analysis, Speaker Identification 
   
-  ✧ (Stage 1.5) Create a middle-end controller to communicate with a RWKV model
+  ✧ (Stage 1.5) Create a midway controller to communicate with a RWKV model
   
   ✧ (Stage 2) Create a role-play-oriented RWKV model, and embed a database to store memories
   
@@ -38,6 +38,14 @@
   ✧ (Stage 3) Add text to speech, and make the model response using their **OWN** voice (which requires a custom voice model)
   
   ✧ (Stage 3.5 ~ 6) Still a secret for now :)
+
+♠︎ To-Be-Fixed/Added:
+-
+  ✂ RWKV model not responding
+  
+  ✂ Integrate a winform application for the terminal
+
+  ✂ Establish a connection to PicoVoice's API (For the speaker identification)
   
 Preserved for future check: git 3 steps
 1. ```git add .```

@@ -363,7 +363,4 @@ MigrationBackup/
 FodyWeavers.xsd
 
 # Virtual environment
-venv_pc/
-
-# Models
-Models/
+env/

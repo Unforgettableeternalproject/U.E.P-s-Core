@@ -4,14 +4,15 @@
     <SchemaVersion>2.0</SchemaVersion>
     <ProjectGuid>53ea4604-1de6-4edf-9ada-07dee2cab361</ProjectGuid>
     <ProjectHome>.</ProjectHome>
-    <StartupFile>U.E.P_s_Core.py</StartupFile>
+    <StartupFile>
+    </StartupFile>
     <SearchPath>
     </SearchPath>
     <WorkingDirectory>.</WorkingDirectory>
     <OutputPath>.</OutputPath>
     <Name>U.E.P's Core</Name>
     <RootNamespace>U.E.P's Core</RootNamespace>
-    <InterpreterId>MSBuild|venv_pc|$(MSBuildProjectFullPath)</InterpreterId>
+    <InterpreterId>MSBuild|env|$(MSBuildProjectFullPath)</InterpreterId>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
     <DebugSymbols>true</DebugSymbols>
@@ -22,35 +23,19 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="Classes\Functions\RWKV_Main.py" />
-    <Compile Include="Classes\Functions\STT.py" />
-    <Compile Include="Classes\Interfaces\Terminal.py" />
-    <Compile Include="U.E.P_s_Core.py" />
-  </ItemGroup>
-  <ItemGroup>
     <Content Include=".gitignore" />
-    <Content Include="Models\20B_tokenizer.json" />
-    <Content Include="Models\rwkv_v5.2_7B_role_play_16k.pth" />
     <Content Include="README.md" />
-    <Content Include="requirements.txt" />
   </ItemGroup>
   <ItemGroup>
-    <Interpreter Include="venv_pc\">
-      <Id>venv_pc</Id>
+    <Interpreter Include="env\">
+      <Id>env</Id>
       <Version>3.10</Version>
-      <Description>venv_pc (Python 3.10 (64-bit))</Description>
+      <Description>env (Python 3.10 (64-bit))</Description>
       <InterpreterPath>Scripts\python.exe</InterpreterPath>
       <WindowsInterpreterPath>Scripts\pythonw.exe</WindowsInterpreterPath>
       <PathEnvironmentVariable>PYTHONPATH</PathEnvironmentVariable>
       <Architecture>X64</Architecture>
     </Interpreter>
-  </ItemGroup>
-  <ItemGroup>
-    <Folder Include="Classes\" />
-    <Folder Include="Classes\Functions\" />
-    <Folder Include="Classes\Interfaces\" />
-    <Folder Include="Models\" />
-    <Folder Include="Concepts\" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\U.E.P_Terminal\U.E.P_Terminal.csproj">

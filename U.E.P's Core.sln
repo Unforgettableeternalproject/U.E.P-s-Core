@@ -5,8 +5,6 @@ VisualStudioVersion = 17.9.34622.214
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{888888A0-9F3D-457C-B088-3A5042F75D52}") = "U.E.P's Core", "U.E.P's Core.pyproj", "{53EA4604-1DE6-4EDF-9ADA-07DEE2CAB361}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "U.E.P_Terminal", "..\U.E.P_Terminal\U.E.P_Terminal.csproj", "{22B46D4C-2A14-4B37-A1C0-CCD459D0D8B0}"
-EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -15,10 +13,6 @@ Global
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
 		{53EA4604-1DE6-4EDF-9ADA-07DEE2CAB361}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{53EA4604-1DE6-4EDF-9ADA-07DEE2CAB361}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{22B46D4C-2A14-4B37-A1C0-CCD459D0D8B0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{22B46D4C-2A14-4B37-A1C0-CCD459D0D8B0}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{22B46D4C-2A14-4B37-A1C0-CCD459D0D8B0}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{22B46D4C-2A14-4B37-A1C0-CCD459D0D8B0}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

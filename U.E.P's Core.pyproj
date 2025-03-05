@@ -4,8 +4,7 @@
     <SchemaVersion>2.0</SchemaVersion>
     <ProjectGuid>53ea4604-1de6-4edf-9ada-07dee2cab361</ProjectGuid>
     <ProjectHome>.</ProjectHome>
-    <StartupFile>
-    </StartupFile>
+    <StartupFile>entry.py</StartupFile>
     <SearchPath>
     </SearchPath>
     <WorkingDirectory>.</WorkingDirectory>
@@ -13,6 +12,7 @@
     <Name>U.E.P's Core</Name>
     <RootNamespace>U.E.P's Core</RootNamespace>
     <InterpreterId>MSBuild|env|$(MSBuildProjectFullPath)</InterpreterId>
+    <IsWindowsApplication>False</IsWindowsApplication>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
     <DebugSymbols>true</DebugSymbols>
@@ -38,14 +38,20 @@
     </Interpreter>
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\U.E.P_Terminal\U.E.P_Terminal.csproj">
-      <Name>U.E.P_Terminal</Name>
-      <Project>{22b46d4c-2a14-4b37-a1c0-ccd459d0d8b0}</Project>
-      <Private>True</Private>
-    </ProjectReference>
+    <Compile Include="entry.py" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="Entry.py" />
+    <Folder Include="modules\" />
+    <Folder Include="configs\" />
+    <Folder Include="arts\" />
+    <Folder Include="helpers\" />
+    <Folder Include="modules\llm-placeholders\" />
+    <Folder Include="modules\mem-placeholders\" />
+    <Folder Include="modules\sys-placeholders\" />
+    <Folder Include="modules\tts-placeholders\" />
+    <Folder Include="modules\nlp-placeholders\" />
+    <Folder Include="modules\stt-placeholders\" />
+    <Folder Include="utils\" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in

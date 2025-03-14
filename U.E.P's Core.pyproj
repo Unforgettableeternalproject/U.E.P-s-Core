@@ -24,6 +24,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Content Include=".gitignore" />
+    <Content Include="CHANGELOG.md" />
     <Content Include="README.md" />
   </ItemGroup>
   <ItemGroup>
@@ -39,18 +40,26 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="entry.py" />
+    <Compile Include="modules\llm_module\__init__.py" />
+    <Compile Include="modules\mem_module\__init__.py" />
+    <Compile Include="modules\nlp_module\__init__.py" />
+    <Compile Include="modules\stt_module\__init__.py" />
+    <Compile Include="modules\sys_module\__init__.py" />
+    <Compile Include="modules\tts_module\__init__.py" />
+    <Compile Include="modules\ui_module\__init__.py" />
   </ItemGroup>
   <ItemGroup>
     <Folder Include="modules\" />
     <Folder Include="configs\" />
     <Folder Include="arts\" />
     <Folder Include="helpers\" />
-    <Folder Include="modules\llm-placeholders\" />
-    <Folder Include="modules\mem-placeholders\" />
-    <Folder Include="modules\sys-placeholders\" />
-    <Folder Include="modules\tts-placeholders\" />
-    <Folder Include="modules\nlp-placeholders\" />
-    <Folder Include="modules\stt-placeholders\" />
+    <Folder Include="modules\llm_module\" />
+    <Folder Include="modules\mem_module\" />
+    <Folder Include="modules\ui_module\" />
+    <Folder Include="modules\sys_module\" />
+    <Folder Include="modules\tts_module\" />
+    <Folder Include="modules\nlp_module\" />
+    <Folder Include="modules\stt_module\" />
     <Folder Include="utils\" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />

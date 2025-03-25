@@ -23,9 +23,43 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
+    <Content Include=".env" />
     <Content Include=".gitignore" />
+    <Content Include="arts\U.E.P_concept.png" />
     <Content Include="CHANGELOG.md" />
+    <Content Include="configs\config.yaml" />
+    <Content Include="docs\U.E.P 大型模型專案 構想.pdf" />
+    <Content Include="docs\專案開發準則.md" />
+    <Content Include="modules\ani_module\config.yaml" />
+    <Content Include="modules\ani_module\example_input.json" />
+    <Content Include="modules\ani_module\example_output.json" />
+    <Content Include="modules\llm_module\config.yaml" />
+    <Content Include="modules\llm_module\example_input.json" />
+    <Content Include="modules\llm_module\example_output.json" />
+    <Content Include="modules\mem_module\config.yaml" />
+    <Content Include="modules\mem_module\example_input.json" />
+    <Content Include="modules\mem_module\example_output.json" />
+    <Content Include="modules\mov_module\config.yaml" />
+    <Content Include="modules\mov_module\example_input.json" />
+    <Content Include="modules\mov_module\example_output.json" />
+    <Content Include="modules\nlp_module\config.yaml" />
+    <Content Include="modules\nlp_module\example_input.json" />
+    <Content Include="modules\nlp_module\example_output.json" />
+    <Content Include="modules\stt_module\config.yaml" />
+    <Content Include="modules\stt_module\example_input.json" />
+    <Content Include="modules\stt_module\example_output.json" />
+    <Content Include="modules\sys_module\config.yaml" />
+    <Content Include="modules\sys_module\example_input.json" />
+    <Content Include="modules\sys_module\example_output.json" />
+    <Content Include="modules\tts_module\config.yaml" />
+    <Content Include="modules\tts_module\example_input.json" />
+    <Content Include="modules\tts_module\example_output.json" />
+    <Content Include="modules\ui_module\config.yaml" />
+    <Content Include="modules\ui_module\example_input.json" />
+    <Content Include="modules\ui_module\example_output.json" />
     <Content Include="README.md" />
+    <Content Include="requirements.txt" />
+    <Content Include="utils\placeholder" />
   </ItemGroup>
   <ItemGroup>
     <Interpreter Include="env\">
@@ -39,13 +73,50 @@
     </Interpreter>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="configs\config_loader.py" />
+    <Compile Include="core\controller.py" />
+    <Compile Include="core\registry.py" />
+    <Compile Include="core\router.py" />
+    <Compile Include="core\state_manager.py" />
+    <Compile Include="devtools\debugger.py" />
+    <Compile Include="devtools\logger.py" />
     <Compile Include="entry.py" />
+    <Compile Include="helpers\module_creater.py" />
+    <Compile Include="modules\ani_module\ani_module_module.py" />
+    <Compile Include="modules\ani_module\schemas.py" />
+    <Compile Include="modules\ani_module\tests\test_ani_module_module.py" />
+    <Compile Include="modules\ani_module\__init__.py" />
+    <Compile Include="modules\llm_module\llm_module_module.py" />
+    <Compile Include="modules\llm_module\schemas.py" />
+    <Compile Include="modules\llm_module\tests\test_llm_module_module.py" />
     <Compile Include="modules\llm_module\__init__.py" />
+    <Compile Include="modules\mem_module\mem_module_module.py" />
+    <Compile Include="modules\mem_module\schemas.py" />
+    <Compile Include="modules\mem_module\tests\test_mem_module_module.py" />
     <Compile Include="modules\mem_module\__init__.py" />
+    <Compile Include="modules\mov_module\mov_module_module.py" />
+    <Compile Include="modules\mov_module\schemas.py" />
+    <Compile Include="modules\mov_module\tests\test_mov_module_module.py" />
+    <Compile Include="modules\mov_module\__init__.py" />
+    <Compile Include="modules\nlp_module\nlp_module_module.py" />
+    <Compile Include="modules\nlp_module\schemas.py" />
+    <Compile Include="modules\nlp_module\tests\test_nlp_module_module.py" />
     <Compile Include="modules\nlp_module\__init__.py" />
+    <Compile Include="modules\stt_module\schemas.py" />
+    <Compile Include="modules\stt_module\stt_module_module.py" />
+    <Compile Include="modules\stt_module\tests\test_stt_module_module.py" />
     <Compile Include="modules\stt_module\__init__.py" />
+    <Compile Include="modules\sys_module\schemas.py" />
+    <Compile Include="modules\sys_module\sys_module_module.py" />
+    <Compile Include="modules\sys_module\tests\test_sys_module_module.py" />
     <Compile Include="modules\sys_module\__init__.py" />
+    <Compile Include="modules\tts_module\schemas.py" />
+    <Compile Include="modules\tts_module\tests\test_tts_module_module.py" />
+    <Compile Include="modules\tts_module\tts_module_module.py" />
     <Compile Include="modules\tts_module\__init__.py" />
+    <Compile Include="modules\ui_module\schemas.py" />
+    <Compile Include="modules\ui_module\tests\test_ui_module_module.py" />
+    <Compile Include="modules\ui_module\ui_module_module.py" />
     <Compile Include="modules\ui_module\__init__.py" />
   </ItemGroup>
   <ItemGroup>
@@ -53,13 +124,27 @@
     <Folder Include="configs\" />
     <Folder Include="arts\" />
     <Folder Include="helpers\" />
+    <Folder Include="core\" />
+    <Folder Include="devtools\" />
+    <Folder Include="docs\" />
+    <Folder Include="modules\ani_module\" />
+    <Folder Include="modules\ani_module\tests\" />
     <Folder Include="modules\llm_module\" />
+    <Folder Include="modules\llm_module\tests\" />
     <Folder Include="modules\mem_module\" />
-    <Folder Include="modules\ui_module\" />
-    <Folder Include="modules\sys_module\" />
-    <Folder Include="modules\tts_module\" />
+    <Folder Include="modules\mem_module\tests\" />
+    <Folder Include="modules\mov_module\" />
+    <Folder Include="modules\mov_module\tests\" />
     <Folder Include="modules\nlp_module\" />
+    <Folder Include="modules\nlp_module\tests\" />
     <Folder Include="modules\stt_module\" />
+    <Folder Include="modules\stt_module\tests\" />
+    <Folder Include="modules\sys_module\" />
+    <Folder Include="modules\sys_module\tests\" />
+    <Folder Include="modules\tts_module\" />
+    <Folder Include="modules\tts_module\tests\" />
+    <Folder Include="modules\ui_module\" />
+    <Folder Include="modules\ui_module\tests\" />
     <Folder Include="utils\" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />

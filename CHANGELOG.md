@@ -1,4 +1,14 @@
-### Added a githook for changelog management. 03/05 (HEAD -> main)
+### Added init files for the modules. 03/14 (HEAD -> main)
+>Fri, 14 Mar 2025 23:04:40 +0800
+
+>Author: Bernie (ptyc4076@gmail.com)
+
+>Commiter: Bernie (ptyc4076@gmail.com)
+
+
+
+
+### Added a githook for changelog management. 03/05 (origin/main)
 >Wed, 5 Mar 2025 20:34:26 +0800
 
 >Author: Bernie (ptyc4076@gmail.com)
@@ -8,7 +18,7 @@
 
 
 
-### Updated README.md and added an entry file. 03/05 (origin/main)
+### Updated README.md and added an entry file. 03/05
 >Wed, 5 Mar 2025 20:06:11 +0800
 
 >Author: Bernie (ptyc4076@gmail.com)

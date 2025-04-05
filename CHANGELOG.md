@@ -1,4 +1,14 @@
-### Added init files for the modules. 03/14 (HEAD -> main)
+### Revised the whole project structure. 03/25 (HEAD -> main)
+>Tue, 25 Mar 2025 23:17:27 +0800
+
+>Author: Bernie (ptyc4076@gmail.com)
+
+>Commiter: Bernie (ptyc4076@gmail.com)
+
+
+
+
+### Added init files for the modules. 03/14 (origin/main)
 >Fri, 14 Mar 2025 23:04:40 +0800
 
 >Author: Bernie (ptyc4076@gmail.com)
@@ -8,7 +18,7 @@
 
 
 
-### Added a githook for changelog management. 03/05 (origin/main)
+### Added a githook for changelog management. 03/05
 >Wed, 5 Mar 2025 20:34:26 +0800
 
 >Author: Bernie (ptyc4076@gmail.com)

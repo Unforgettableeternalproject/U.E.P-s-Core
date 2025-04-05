@@ -1,4 +1,14 @@
-### Revised the whole project structure. 03/25 (HEAD -> main)
+### Develop branch init. 04/05 (HEAD -> develop)
+>Sat, 5 Apr 2025 18:08:20 +0800
+
+>Author: Bernie (ptyc4076@gmail.com)
+
+>Commiter: Bernie (ptyc4076@gmail.com)
+
+
+
+
+### Revised the whole project structure. 03/25 (origin/main, main)
 >Tue, 25 Mar 2025 23:17:27 +0800
 
 >Author: Bernie (ptyc4076@gmail.com)
@@ -8,7 +18,7 @@
 
 
 
-### Added init files for the modules. 03/14 (origin/main)
+### Added init files for the modules. 03/14
 >Fri, 14 Mar 2025 23:04:40 +0800
 
 >Author: Bernie (ptyc4076@gmail.com)

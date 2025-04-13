@@ -378,5 +378,10 @@ modules/**/outputs/
 modules/**/cache/
 modules/**/temp/
 
-# 模型檔案
-models/
+# 模型輸出
+/models/*
+!/models/.gitkeep
+
+# 訓練資料
+train/**/dataset.csv
+train/**/results/

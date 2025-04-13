@@ -65,6 +65,7 @@
     <Content Include="modules\ui_module\example_output.json" />
     <Content Include="README.md" />
     <Content Include="requirements.txt" />
+    <Content Include="train\nlp\dataset.csv" />
     <Content Include="utils\placeholder" />
   </ItemGroup>
   <ItemGroup>
@@ -126,6 +127,7 @@
     <Compile Include="modules\ui_module\ui_module.py" />
     <Compile Include="modules\ui_module\__init__.py" />
     <Compile Include="modules\__init__.py" />
+    <Compile Include="train\nlp\train_dbert.py" />
   </ItemGroup>
   <ItemGroup>
     <Folder Include="models\command_chat_classifier\" />
@@ -155,6 +157,8 @@
     <Folder Include="modules\ui_module\" />
     <Folder Include="modules\ui_module\tests\" />
     <Folder Include="models\" />
+    <Folder Include="train\" />
+    <Folder Include="train\nlp\" />
     <Folder Include="utils\" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />

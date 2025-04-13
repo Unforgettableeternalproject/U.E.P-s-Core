@@ -46,3 +46,15 @@
 
 ---
 
+### Added the model train files for future finetuning. 04/13
+
+> Date: Sun, 13 Apr 2025 21:13:12 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/nlp_module_integration`
+
+> Commit: `6a6c8b973bd6b71e49b5f9572ece28cea82fa62d`
+
+---
+

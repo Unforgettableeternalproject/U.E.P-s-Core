@@ -161,3 +161,27 @@ I can't believe I haven't done it.
 
 ---
 
+### Feature #1 init. 04/05
+
+> Date: Sat, 05 Apr 2025 18:09:48 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `HEAD`
+
+> Commit: `7fd45fec4939f05f3ba09a7f3d29753df5129502`
+
+---
+
+### Cleared the previous changelog.md for better maintenance. 04/13
+
+> Date: Sun, 13 Apr 2025 17:58:28 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `HEAD`
+
+> Commit: `418db0331e8829a56c6d6ad71b226d873c4eced7`
+
+---
+

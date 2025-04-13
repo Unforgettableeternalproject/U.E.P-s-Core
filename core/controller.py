@@ -55,7 +55,7 @@ def on_stt_result(text):
 def stt_test_single():
     # 測試 STT 模組
     result = stt.handle()
-    print("STT Result:", result)
+    on_stt_result(result["text"])
 
 def stt_test():
     stt.start_realtime(on_result=on_stt_result)
@@ -70,8 +70,22 @@ def stt_test():
 def nlp_test():
     # 測試 NLP 模組
     test_cases = [
-        "Hello, it's me, your friend Bernie!"
+        "Hello, it's me, your friend Bernie!",
+        "Do a barrel roll.",
+        "Do you like among us?",
+        "gogogoog"
     ]
     for text in test_cases:
         result = nlp.handle({"text": text})
-        print(f"NLP Result for '{text}':", result)
+        print(f"🧠 NLP 輸出結果：", result)
+
+# 統合測試
+
+def integration_test_StN():
+    # 測試STT到NLP的整合
+    
+    result = stt.handle()
+    print("✨ 回傳語音內容：", result["text"])
+
+    nlp_result = nlp.handle({"text": result["text"]})
+    print("🧠 NLP 輸出結果：", nlp_result)

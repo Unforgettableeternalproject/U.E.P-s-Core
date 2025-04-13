@@ -34,3 +34,15 @@
 
 ---
 
+### Used pytest framework to improve the tests, and added a simple integration from STT to NLP. 04/13
+
+> Date: Sun, 13 Apr 2025 20:11:56 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/nlp_module_integration`
+
+> Commit: `5b930f107ef9e7016a3f75415d289780de677f1f`
+
+---
+

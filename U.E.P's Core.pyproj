@@ -107,7 +107,7 @@
     <Compile Include="modules\mov_module\__init__.py" />
     <Compile Include="modules\nlp_module\nlp_module.py" />
     <Compile Include="modules\nlp_module\schemas.py" />
-    <Compile Include="modules\nlp_module\tests\test_nlp_module_module.py" />
+    <Compile Include="modules\nlp_module\tests\test_nlp_module.py" />
     <Compile Include="modules\nlp_module\__init__.py" />
     <Compile Include="modules\stt_module\schemas.py" />
     <Compile Include="modules\stt_module\stt_module.py" />

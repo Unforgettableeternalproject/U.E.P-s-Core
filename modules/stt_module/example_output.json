@@ -1,3 +1,4 @@
-{{
-  "response": "output"
-}}
+{
+  "text": "這是語音辨識結果",
+  "error": null
+}

@@ -1,4 +1,4 @@
-# Init and load the registry modules
+ï»¿# Init and load the registry modules
 
 # core/registry.py
 
@@ -8,12 +8,12 @@ import os
 _loaded_modules = {}
 
 def get_module(name: str):
-    """®Ú¾Ú¼Ò²Õ¦WºÙ¸ü¤J¨Ã¦^¶Ç¨ä¹ê¨Ò¡]¼Ò²Õ»İ´£¨Ñ register()¡^"""
+    """æ ¹æ“šæ¨¡çµ„åç¨±è¼‰å…¥ä¸¦å›å‚³å…¶å¯¦ä¾‹ï¼ˆæ¨¡çµ„éœ€æä¾› register()ï¼‰"""
     if name in _loaded_modules:
         return _loaded_modules[name]
 
     try:
-        # °²³]¼Ò²Õ¸ê®Æ§¨¬° modules/stt_module¡A¶×¤J¬° modules.stt_module
+        # å‡è¨­æ¨¡çµ„è³‡æ–™å¤¾ç‚º modules/stt_moduleï¼ŒåŒ¯å…¥ç‚º modules.stt_module
         import_path = f"modules.{name}"
         module = importlib.import_module(import_path)
 
@@ -22,7 +22,7 @@ def get_module(name: str):
             _loaded_modules[name] = instance
             return instance
         else:
-            raise ImportError(f"Module {name} ¤¤¨S¦³ register() ¨ç¼Æ¡C")
+            raise ImportError(f"Module {name} ä¸­æ²’æœ‰ register() å‡½æ•¸ã€‚")
     except Exception as e:
-        print(f"[Registry] µLªk¸ü¤J¼Ò²Õ '{name}': {e}")
+        print(f"[Registry] ç„¡æ³•è¼‰å…¥æ¨¡çµ„ '{name}': {e}")
         return None

@@ -1,6 +1,8 @@
-from .stt_module import STTModule
+ï»¿from .stt_module import STTModule
+from configs.config_loader import load_module_config
 
 def register():
-    instance = STTModule(config={})  # ¤§«á¥i¥H¥Î config_loader ¶Ç¤J³]©w
+    config = load_module_config("stt_module")
+    instance = STTModule(config=config)  # ä¹‹å¾Œå¯ä»¥ç”¨ config_loader å‚³å…¥è¨­å®š
     instance.initialize()
     return instance

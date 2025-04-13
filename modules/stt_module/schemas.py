@@ -1,7 +1,9 @@
-from pydantic import BaseModel
+﻿from pydantic import BaseModel
+from typing import Optional
 
-class Input(BaseModel):
-    pass
+class STTInput(BaseModel):
+    trigger: str = "manual"  # or "realtime"
 
-class Output(BaseModel):
-    pass
+class STTOutput(BaseModel):
+    text: str
+    error: Optional[str] = None

@@ -106,7 +106,7 @@
     <Compile Include="modules\nlp_module\__init__.py" />
     <Compile Include="modules\stt_module\schemas.py" />
     <Compile Include="modules\stt_module\stt_module.py" />
-    <Compile Include="modules\stt_module\tests\test_stt_module_module.py" />
+    <Compile Include="modules\stt_module\tests\test_stt_module.py" />
     <Compile Include="modules\stt_module\__init__.py" />
     <Compile Include="modules\sys_module\schemas.py" />
     <Compile Include="modules\sys_module\sys_module.py" />
@@ -120,6 +120,7 @@
     <Compile Include="modules\ui_module\tests\test_ui_module_module.py" />
     <Compile Include="modules\ui_module\ui_module.py" />
     <Compile Include="modules\ui_module\__init__.py" />
+    <Compile Include="modules\__init__.py" />
   </ItemGroup>
   <ItemGroup>
     <Folder Include="modules\" />

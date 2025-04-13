@@ -1,4 +1,4 @@
-﻿from ..stt_module import STTModule
+﻿from modules.stt_module.stt_module import STTModule
 
 def test_handle():
     mod = STTModule()

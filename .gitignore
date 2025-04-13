@@ -377,3 +377,6 @@ env/
 modules/**/outputs/
 modules/**/cache/
 modules/**/temp/
+
+# 模型檔案
+models/

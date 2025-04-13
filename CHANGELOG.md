@@ -22,3 +22,15 @@
 
 ---
 
+### Migrated the nlp module here with the model as well. 04/13
+
+> Date: Sun, 13 Apr 2025 19:53:41 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/nlp_module_integration`
+
+> Commit: `61125b989c8de67e309d407586d2ce23a31b8774`
+
+---
+

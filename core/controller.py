@@ -46,6 +46,9 @@ def handle_user_input():
 
     return llm_result.get("text")
 
+
+# 測試 STT 模組
+
 def on_stt_result(text):
     print("✨ 回傳語音內容：", text)
 
@@ -54,12 +57,21 @@ def stt_test_single():
     result = stt.handle()
     print("STT Result:", result)
 
-
 def stt_test():
     stt.start_realtime(on_result=on_stt_result)
-
     try:
         while True:
             time.sleep(0.5)
     except KeyboardInterrupt:
         stt.stop_realtime()
+
+# 測試 NLP 模組
+
+def nlp_test():
+    # 測試 NLP 模組
+    test_cases = [
+        "Hello, it's me, your friend Bernie!"
+    ]
+    for text in test_cases:
+        result = nlp.handle({"text": text})
+        print(f"NLP Result for '{text}':", result)

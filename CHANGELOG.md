@@ -10,3 +10,15 @@
 
 ---
 
+### Unit test not working, will fix later + Added schemas for stt_module and some examples. 04/13
+
+> Date: Sun, 13 Apr 2025 19:21:19 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/stt_module_integration`
+
+> Commit: `27a046070901c2e7efb64cc363e05af1cf45da67`
+
+---
+

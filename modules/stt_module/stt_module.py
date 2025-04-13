@@ -1,9 +1,9 @@
-﻿# modules/stt_module/stt_module.py（繼續保留原有 handle() 方法）
-
+﻿# modules/stt_module/stt_module.py
 import threading
 import queue
 import speech_recognition as sr
 from core.module_base import BaseModule
+from .schemas import STTInput, STTOutput
 
 class STTModule(BaseModule):
     def __init__(self, config=None):
@@ -28,6 +28,7 @@ class STTModule(BaseModule):
         print("[STT] 已完成環境噪音校正")
 
     def handle(self, data: dict = {}) -> dict:
+        validated = STTInput(**data)
         """單次語音轉文字"""
         try:
             with self.mic as source:
@@ -35,11 +36,11 @@ class STTModule(BaseModule):
                 audio = self.recognizer.listen(source)
             print("[STT] Transcribing...")
             text = self.recognizer.recognize_google(audio)
-            return {"text": text}
+            return STTOutput(text=text, error=None).dict()
         except sr.UnknownValueError:
-            return {"text": "", "error": "unrecognized_audio"}
+            return STTOutput(text="", error="無法辨識語音").dict()
         except sr.RequestError as e:
-            return {"text": "", "error": str(e)}
+            return STTOutput(text="", error=f"API 錯誤: {e}").dict()
 
     def _realtime_loop(self):
         print("[STT] Real-time 模式啟動")
@@ -52,7 +53,7 @@ class STTModule(BaseModule):
                     else:
                         audio = self.recognizer.listen(source)
                 text = self.recognizer.recognize_google(audio)
-                print("[STT] ✅ Real-time result:", text)
+                # print("[STT] ✅ Real-time result:", text)
                 if self._callback:
                     self._callback(text)
             except sr.UnknownValueError:

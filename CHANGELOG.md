@@ -105,3 +105,15 @@
 
 ---
 
+### Conflict solved. 04/13
+
+> Date: Sun, 13 Apr 2025 18:04:50 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/stt_module_integration`
+
+> Commit: `305e3dc288da01d47e4423b5e94bcf3c6b2beb6a`
+
+---
+

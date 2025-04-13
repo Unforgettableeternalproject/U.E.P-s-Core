@@ -138,3 +138,16 @@ I can't believe I haven't done it.
 
 ---
 
+
+### Updated the post-commit hook to make the changelog.md more specific. 04/13
+
+> Date: Sun, 13 Apr 2025 13:58:54 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `develop`
+
+> Commit: `14532a3be305d9b119971ce6d4f0572c8e307fc2`
+
+---
+

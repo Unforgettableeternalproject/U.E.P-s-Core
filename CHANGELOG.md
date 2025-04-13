@@ -81,3 +81,27 @@
 
 ---
 
+### Cleared the previous changelog.md for better maintenance. 04/13
+
+> Date: Sun, 13 Apr 2025 17:58:28 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `HEAD`
+
+> Commit: `5a32a732cc84da68f49b38122999db93be68ab64`
+
+---
+
+### Branch rebased to the latest develop. 04/13
+
+> Date: Sun, 13 Apr 2025 18:03:55 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/stt_module_integration`
+
+> Commit: `86028120364f89cb3887e7ec0a3333b61f54fb7e`
+
+---
+

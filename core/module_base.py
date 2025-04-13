@@ -1,20 +1,20 @@
-# core/module_base.py
+ï»¿# core/module_base.py
 
 from abc import ABC, abstractmethod
 
 class BaseModule(ABC):
-    """©Ò¦³¼Ò²Õªº°ò¥»±µ¤f"""
+    """æ‰€æœ‰æ¨¡çµ„çš„åŸºæœ¬æ¥å£"""
 
     @abstractmethod
     def initialize(self):
-        """ªì©l¤Æ¼Ò²Õ¡A¦p¸ü¤J¼Ò«¬¡B°Ñ¼Æµ¥"""
+        """åˆå§‹åŒ–æ¨¡çµ„ï¼Œå¦‚è¼‰å…¥æ¨¡å‹ã€åƒæ•¸ç­‰"""
         pass
 
     @abstractmethod
     def handle(self, data: dict) -> dict:
-        """³B²z¸ê®Æ¨Ã¦^¶Ç²Î¤@®æ¦¡"""
+        """è™•ç†è³‡æ–™ä¸¦å›å‚³çµ±ä¸€æ ¼å¼"""
         pass
 
     def shutdown(self):
-        """ÄÀ©ñ¸ê·½¡A¥i¿ï¹ê§@"""
+        """é‡‹æ”¾è³‡æºï¼Œå¯é¸å¯¦ä½œ"""
         pass

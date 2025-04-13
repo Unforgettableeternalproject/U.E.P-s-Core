@@ -1,30 +1,30 @@
-import os
+ï»¿import os
 import yaml
 
-BASE_DIR = os.path.dirname(os.path.dirname(__file__))  # ±M®×®Ú¥Ø¿ı
+BASE_DIR = os.path.dirname(os.path.dirname(__file__))  # å°ˆæ¡ˆæ ¹ç›®éŒ„
 CONFIG_PATH = os.path.join(BASE_DIR, "configs", "config.yaml")
 
 def load_config(path=CONFIG_PATH):
-    """¸ü¤J¥ş°ì config.yaml ³]©w"""
+    """è¼‰å…¥å…¨åŸŸ config.yaml è¨­å®š"""
     try:
         with open(path, "r", encoding="utf-8") as f:
             return yaml.safe_load(f)
     except FileNotFoundError:
-        print(f"[!] §ä¤£¨ì¥ş°ì³]©wÀÉ¡G{path}")
+        print(f"[!] æ‰¾ä¸åˆ°å…¨åŸŸè¨­å®šæª”ï¼š{path}")
         return {}
     except yaml.YAMLError as e:
-        print(f"[!] YAML »yªk¿ù»~¡G{e}")
+        print(f"[!] YAML èªæ³•éŒ¯èª¤ï¼š{e}")
         return {}
 
 def load_module_config(module_name: str):
-    """¸ü¤J«ü©w¼Ò²Õªº config.yaml ³]©w"""
+    """è¼‰å…¥æŒ‡å®šæ¨¡çµ„çš„ config.yaml è¨­å®š"""
     module_config_path = os.path.join(BASE_DIR, "modules", module_name, "config.yaml")
     try:
         with open(module_config_path, "r", encoding="utf-8") as f:
             return yaml.safe_load(f)
     except FileNotFoundError:
-        print(f"[!] §ä¤£¨ì¼Ò²Õ³]©w¡G{module_config_path}¡A±N¨Ï¥ÎªÅ³]©w")
+        print(f"[!] æ‰¾ä¸åˆ°æ¨¡çµ„è¨­å®šï¼š{module_config_path}ï¼Œå°‡ä½¿ç”¨ç©ºè¨­å®š")
         return {}
     except yaml.YAMLError as e:
-        print(f"[!] YAML »yªk¿ù»~¡G{e}")
+        print(f"[!] YAML èªæ³•éŒ¯èª¤ï¼š{e}")
         return {}

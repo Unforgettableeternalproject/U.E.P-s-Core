@@ -1,6 +1,7 @@
-from core.registry import get_module
+ï»¿from core.registry import get_module
+import time
 
-stt = get_module("stt_module")     # ¦^¶Çªº¬O²Å¦X BaseModule ªº¹ê¨Ò
+stt = get_module("stt_module")     # å›å‚³çš„æ˜¯ç¬¦åˆ BaseModule çš„å¯¦ä¾‹
 nlp = get_module("nlp_module")
 llm = get_module("llm_module")
 mem = get_module("mem_module")
@@ -8,15 +9,15 @@ tts = get_module("tts_module")
 sysmod = get_module("sys_module")
 
 def handle_user_input():
-    # Step 1: ¨ú±o»y­µ¿é¤J¨ÃÂà¬°¤å¦r
+    # Step 1: å–å¾—èªéŸ³è¼¸å…¥ä¸¦è½‰ç‚ºæ–‡å­—
     audio_text = stt.handle({})["text"]
 
-    # Step 2: NLP ¼Ò²Õ§PÂ_ intent
+    # Step 2: NLP æ¨¡çµ„åˆ¤æ–· intent
     nlp_result = nlp.handle({"text": audio_text})
     intent = nlp_result.get("intent")
     detail = nlp_result.get("detail")
 
-    # Step 3: ¤À¬y³B²z¡]²á¤Ñ©Î«ü¥O¡^
+    # Step 3: åˆ†æµè™•ç†ï¼ˆèŠå¤©æˆ–æŒ‡ä»¤ï¼‰
     if intent == "chat":
         snapshot = mem.handle({"mode": "fetch", "text": audio_text})
         llm_result = llm.handle({
@@ -35,9 +36,9 @@ def handle_user_input():
         })
         sysmod.handle(llm_result.get("sys_action", {}))
     else:
-        llm_result = {"text": "§Ú¤£¤Ó©ú¥Õ§Aªº·N«ä..."}
+        llm_result = {"text": "æˆ‘ä¸å¤ªæ˜ç™½ä½ çš„æ„æ€..."}
 
-    # Step 4: ¿é¥Xµ¹ TTS ©M UI
+    # Step 4: è¼¸å‡ºçµ¦ TTS å’Œ UI
     tts.handle({
         "text": llm_result.get("text"),
         "emotion": llm_result.get("emotion", "neutral")
@@ -45,8 +46,20 @@ def handle_user_input():
 
     return llm_result.get("text")
 
+def on_stt_result(text):
+    print("âœ¨ å›å‚³èªéŸ³å…§å®¹ï¼š", text)
+
+def stt_test_single():
+    # æ¸¬è©¦ STT æ¨¡çµ„
+    result = stt.handle()
+    print("STT Result:", result)
+
 
 def stt_test():
-    # ´ú¸Õ STT ¼Ò²Õ
-    result = stt.handle({"audio": "test_audio.wav"})
-    print("STT Result:", result)
+    stt.start_realtime(on_result=on_stt_result)
+
+    try:
+        while True:
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        stt.stop_realtime()

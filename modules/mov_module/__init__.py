@@ -1,4 +1,4 @@
-from .mov_module_module import MovModule
+from .mov_module import MOVModule
 
 def register():
-    return MovModule(config={})
+    return MOVModule(config={})

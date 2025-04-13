@@ -1,4 +1,4 @@
-from .sys_module_module import SysModule
+from .sys_module import SYSModule
 
 def register():
-    return SysModule(config={})
+    return SYSModule(config={})

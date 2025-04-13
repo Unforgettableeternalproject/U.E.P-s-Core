@@ -13,6 +13,7 @@
     <RootNamespace>U.E.P's Core</RootNamespace>
     <InterpreterId>MSBuild|env|$(MSBuildProjectFullPath)</InterpreterId>
     <IsWindowsApplication>False</IsWindowsApplication>
+    <TestFramework>Pytest</TestFramework>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
     <DebugSymbols>true</DebugSymbols>
@@ -75,6 +76,7 @@
   <ItemGroup>
     <Compile Include="configs\config_loader.py" />
     <Compile Include="core\controller.py" />
+    <Compile Include="core\module_base.py" />
     <Compile Include="core\registry.py" />
     <Compile Include="core\router.py" />
     <Compile Include="core\state_manager.py" />
@@ -82,41 +84,41 @@
     <Compile Include="devtools\logger.py" />
     <Compile Include="entry.py" />
     <Compile Include="helpers\module_creater.py" />
-    <Compile Include="modules\ani_module\ani_module_module.py" />
+    <Compile Include="modules\ani_module\ani_module.py" />
     <Compile Include="modules\ani_module\schemas.py" />
     <Compile Include="modules\ani_module\tests\test_ani_module_module.py" />
     <Compile Include="modules\ani_module\__init__.py" />
-    <Compile Include="modules\llm_module\llm_module_module.py" />
+    <Compile Include="modules\llm_module\llm_module.py" />
     <Compile Include="modules\llm_module\schemas.py" />
     <Compile Include="modules\llm_module\tests\test_llm_module_module.py" />
     <Compile Include="modules\llm_module\__init__.py" />
-    <Compile Include="modules\mem_module\mem_module_module.py" />
+    <Compile Include="modules\mem_module\mem_module.py" />
     <Compile Include="modules\mem_module\schemas.py" />
     <Compile Include="modules\mem_module\tests\test_mem_module_module.py" />
     <Compile Include="modules\mem_module\__init__.py" />
-    <Compile Include="modules\mov_module\mov_module_module.py" />
+    <Compile Include="modules\mov_module\mov_module.py" />
     <Compile Include="modules\mov_module\schemas.py" />
     <Compile Include="modules\mov_module\tests\test_mov_module_module.py" />
     <Compile Include="modules\mov_module\__init__.py" />
-    <Compile Include="modules\nlp_module\nlp_module_module.py" />
+    <Compile Include="modules\nlp_module\nlp_module.py" />
     <Compile Include="modules\nlp_module\schemas.py" />
     <Compile Include="modules\nlp_module\tests\test_nlp_module_module.py" />
     <Compile Include="modules\nlp_module\__init__.py" />
     <Compile Include="modules\stt_module\schemas.py" />
-    <Compile Include="modules\stt_module\stt_module_module.py" />
+    <Compile Include="modules\stt_module\stt_module.py" />
     <Compile Include="modules\stt_module\tests\test_stt_module_module.py" />
     <Compile Include="modules\stt_module\__init__.py" />
     <Compile Include="modules\sys_module\schemas.py" />
-    <Compile Include="modules\sys_module\sys_module_module.py" />
+    <Compile Include="modules\sys_module\sys_module.py" />
     <Compile Include="modules\sys_module\tests\test_sys_module_module.py" />
     <Compile Include="modules\sys_module\__init__.py" />
     <Compile Include="modules\tts_module\schemas.py" />
     <Compile Include="modules\tts_module\tests\test_tts_module_module.py" />
-    <Compile Include="modules\tts_module\tts_module_module.py" />
+    <Compile Include="modules\tts_module\tts_module.py" />
     <Compile Include="modules\tts_module\__init__.py" />
     <Compile Include="modules\ui_module\schemas.py" />
     <Compile Include="modules\ui_module\tests\test_ui_module_module.py" />
-    <Compile Include="modules\ui_module\ui_module_module.py" />
+    <Compile Include="modules\ui_module\ui_module.py" />
     <Compile Include="modules\ui_module\__init__.py" />
   </ItemGroup>
   <ItemGroup>

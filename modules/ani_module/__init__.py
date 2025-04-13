@@ -1,4 +1,4 @@
-from .ani_module_module import AniModule
+from .ani_module import ANIModule
 
 def register():
-    return AniModule(config={})
+    return ANIModule(config={})

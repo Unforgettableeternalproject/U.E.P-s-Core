@@ -1,4 +1,4 @@
-from .ui_module_module import UiModule
+from .ui_module import UIModule
 
 def register():
-    return UiModule(config={})
+    return UIModule(config={})

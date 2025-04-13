@@ -1,4 +1,4 @@
-from .nlp_module_module import NlpModule
+from .nlp_module import NLPModule
 
 def register():
-    return NlpModule(config={})
+    return NLPModule(config={})

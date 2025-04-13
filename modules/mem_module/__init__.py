@@ -1,4 +1,4 @@
-from .mem_module_module import MemModule
+from .mem_module import MEMModule
 
 def register():
-    return MemModule(config={})
+    return MEMModule(config={})

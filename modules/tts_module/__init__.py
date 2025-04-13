@@ -1,4 +1,4 @@
-from .tts_module_module import TtsModule
+from .tts_module import TTSModule
 
 def register():
-    return TtsModule(config={})
+    return TTSModule(config={})

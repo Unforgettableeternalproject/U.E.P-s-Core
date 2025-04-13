@@ -128,3 +128,13 @@ I can't believe I haven't done it.
 
 
 
+## Added the registry file and controller file. And addd a BaseModule interface for future uses. 04/13
+
+> 2025-04-13 13:34:21
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Commit: `f34ea027ea6d841cd6add3aa1a296c3628091d0e`
+
+---
+

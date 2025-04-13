@@ -1,4 +1,4 @@
-from .llm_module_module import LlmModule
+from .llm_module import LLMModule
 
 def register():
-    return LlmModule(config={})
+    return LLMModule(config={})

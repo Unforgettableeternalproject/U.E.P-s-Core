@@ -1,4 +1,6 @@
-from .stt_module_module import SttModule
+from .stt_module import STTModule
 
 def register():
-    return SttModule(config={})
+    instance = STTModule(config={})  # 之後可以用 config_loader 傳入設定
+    instance.initialize()
+    return instance

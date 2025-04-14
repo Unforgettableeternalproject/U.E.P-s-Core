@@ -1,4 +1,4 @@
-import os
+ï»¿import os
 import pandas as pd
 from datasets import Dataset
 from transformers import (
@@ -46,10 +46,10 @@ class DBertTrainer:
         return model, tokenizer
 
     def train(self):
-        print("[Trainer] Åª¨ú¸ê®Æ¶°¤¤...")
+        print("[Trainer] è®€å–è³‡æ–™é›†ä¸­...")
         train_data, test_data = self.load_and_preprocess_data()
 
-        print("[Trainer] ¸ü¤J¼Ò«¬...")
+        print("[Trainer] è¼‰å…¥æ¨¡å‹...")
         model, tokenizer = self.load_model()
 
         train_data = self.tokenize_data(train_data, tokenizer)
@@ -77,14 +77,14 @@ class DBertTrainer:
             data_collator=DataCollatorWithPadding(tokenizer=tokenizer),
         )
 
-        print("[Trainer] ¶}©l°V½m...")
+        print("[Trainer] é–‹å§‹è¨“ç·´...")
         trainer.train()
 
-        print(f"[Trainer] Àx¦s¼Ò«¬¨ì¡G{self.final_model_path}")
+        print(f"[Trainer] å„²å­˜æ¨¡å‹åˆ°ï¼š{self.final_model_path}")
         model.save_pretrained(self.final_model_path)
         tokenizer.save_pretrained(self.final_model_path)
 
-# °õ¦æ°V½m
+# åŸ·è¡Œè¨“ç·´
 if __name__ == "__main__":
     trainer = DBertTrainer(dataset_path="train/nlp/dataset.csv")
     trainer.train()

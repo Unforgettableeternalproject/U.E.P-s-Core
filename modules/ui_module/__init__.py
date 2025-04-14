@@ -1,4 +1,4 @@
 from .ui_module import UIModule
 
 def register():
-    return UIModule(config={})
+    raise NotImplementedError("此模組尚未實作")

@@ -58,3 +58,15 @@
 
 ---
 
+### Added safe module import and an interactive menu for test (might migrate into devtools later). 04/14
+
+> Date: Mon, 14 Apr 2025 14:10:31 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/nlp_module_integration`
+
+> Commit: `8c63a5603e04f1bb0bed77c1f7e26c8e900d641e`
+
+---
+

@@ -1,4 +1,4 @@
 from .sys_module import SYSModule
 
 def register():
-    return SYSModule(config={})
+    raise NotImplementedError("此模組尚未實作")

@@ -23,6 +23,8 @@ def get_module(name: str):
             return instance
         else:
             raise ImportError(f"Module {name} 中沒有 register() 函數。")
+    except NotImplementedError as e:
+        raise NotImplementedError
     except Exception as e:
         print(f"[Registry] 無法載入模組 '{name}': {e}")
         return None

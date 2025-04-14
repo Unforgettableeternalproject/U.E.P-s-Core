@@ -1,1 +1,15 @@
 # Default config for general modules
+
+modules_enabled:
+  stt_module: true
+  nlp_module: true
+  llm_module: false
+  mem_module: false
+  tts_module: false
+  sys_module: false
+
+debug:
+  debug: false
+  debug_level: 1
+  log_file: "debug.log"
+  log_level: "INFO"

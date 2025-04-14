@@ -1,4 +1,4 @@
-from .mem_module import MEMModule
+﻿from .mem_module import MEMModule
 
 def register():
-    return MEMModule(config={})
+    raise NotImplementedError("此模組尚未實作")

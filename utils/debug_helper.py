@@ -5,10 +5,18 @@ from utils.logger import logger
 
 _config = load_config()
 _debug_conf = _config.get("debug", {})
-_debug_enabled = _debug_conf.get("debug", False)
+_debug_enabled = _debug_conf.get("enabled", False)
 _debug_level = _debug_conf.get("debug_level", 1)
+_logging_conf = _config.get("logging", {})
+_logging_enabled = _logging_conf.get("enabled", True)
+
+if not _logging_enabled: print("[Logging] Logging is disabled in the configuration.")
 
 def debug_log(level: int, msg: str, exclusive: bool = False):
+
+    if not _logging_enabled:
+        return
+
     if _debug_enabled:
         if exclusive:
             if level == _debug_level: logger.debug(msg)
@@ -16,6 +24,10 @@ def debug_log(level: int, msg: str, exclusive: bool = False):
             if level <= _debug_level: logger.debug(msg)
 
 def info_log(msg: str, level: str = "INFO"):
+
+    if not _logging_enabled:
+        return
+
     level = level.upper()
     if level == "INFO":
         logger.info(msg)
@@ -25,6 +37,10 @@ def info_log(msg: str, level: str = "INFO"):
         logger.info(f"[Unrecognized level '{level}'] {msg}")
 
 def error_log(msg: str, level: str = "ERROR"):
+
+    if not _logging_enabled:
+        return
+
     level = level.upper()
     if level == "ERROR":
         logger.error(msg)

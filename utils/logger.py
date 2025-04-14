@@ -5,8 +5,11 @@ import logging
 from datetime import datetime
 from configs.config_loader import load_config
 
-config = load_config()
-debug_conf = config.get("debug", {})
+_config = load_config()
+conf = _config.get("logging", {})
+
+if not conf.get("enabled", True):
+    exit(0)
 
 class LogLevelFilter(logging.Filter):
     def __init__(self, min_level, max_level):
@@ -33,9 +36,9 @@ class ColorFormatter(logging.Formatter):
         return f"{color}{message}{self.RESET}"
 
 
-LOG_LEVEL = debug_conf.get("log_level", "INFO").upper()
-LOG_DIR = debug_conf.get("log_dir", "logs")
-SPLIT_LOGS = debug_conf.get("enable_split_logs", True)
+LOG_LEVEL = conf.get("log_level", "DEBUG").upper()
+LOG_DIR = conf.get("log_dir", "logs")
+SPLIT_LOGS = conf.get("enable_split_logs", True)
 
 # 時間戳
 timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -50,7 +53,9 @@ if SPLIT_LOGS:
     os.makedirs(os.path.join(LOG_DIR, "error"), exist_ok=True)
 
 # 檔名格式
-def log_file(name): return os.path.join(LOG_DIR, name, f"{name}-{timestamp}.log")
+def log_file(name): 
+    if SPLIT_LOGS: return os.path.join(LOG_DIR, name, f"{name}-{timestamp}.log")
+    return os.path.join(LOG_DIR, f"{name}-{timestamp}.log")
 
 # 建立 logger
 logger = logging.getLogger("UEP")

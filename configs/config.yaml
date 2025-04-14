@@ -8,9 +8,12 @@ modules_enabled:
   tts_module: false
   sys_module: false
 
-debug:
-  debug: true
-  debug_level: 1
-  log_level: "DEBUG"     
+logging:
+  enabled: true
+  log_level: "DEBUG"
   log_dir: "logs"
   enable_split_logs: true
+
+debug:
+  enabled: true
+  debug_level: 1

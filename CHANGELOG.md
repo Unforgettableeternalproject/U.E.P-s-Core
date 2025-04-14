@@ -94,3 +94,15 @@
 
 ---
 
+### Even better logging + improved console interface. 04/14
+
+> Date: Mon, 14 Apr 2025 17:23:04 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `develop`
+
+> Commit: `11793b5dcfe6851dfba7cd04d6678ed1f9a67833`
+
+---
+

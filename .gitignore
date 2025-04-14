@@ -385,3 +385,6 @@ modules/**/temp/
 # 訓練資料
 train/**/dataset.csv
 train/**/results/
+
+# Logs
+logs/*

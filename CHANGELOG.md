@@ -70,3 +70,15 @@
 
 ---
 
+### Added basic logger sytem. 04/14
+
+> Date: Mon, 14 Apr 2025 15:07:17 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `develop`
+
+> Commit: `9d6fc78a52ea0d3f7ef1d6a971beb7f549c4bbac`
+
+---
+

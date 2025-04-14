@@ -1,12 +1,14 @@
 ﻿from logging import config
 from core.registry import get_module
 from configs.config_loader import load_config
+from utils.debug_helper import debug_log
 import time
 
 config = load_config()
 enabled = config.get("modules_enabled", {})
 
 def safe_get_module(name):
+    debug_log(1, f"[Controller] 嘗試載入模組 '{name}'")
     if not enabled.get(name, False):
         # print(f"[Controller] ❌ 模組 '{name}' 未啟用，請檢查配置") # Ignored
         return None

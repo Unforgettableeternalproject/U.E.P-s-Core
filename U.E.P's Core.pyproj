@@ -66,7 +66,6 @@
     <Content Include="README.md" />
     <Content Include="requirements.txt" />
     <Content Include="train\nlp\dataset.csv" />
-    <Content Include="utils\placeholder" />
   </ItemGroup>
   <ItemGroup>
     <Interpreter Include="env\">
@@ -87,9 +86,10 @@
     <Compile Include="core\router.py" />
     <Compile Include="core\state_manager.py" />
     <Compile Include="devtools\debugger.py" />
-    <Compile Include="devtools\logger.py" />
+    <Compile Include="utils\debug_helper.py" />
+    <Compile Include="utils\logger.py" />
     <Compile Include="entry.py" />
-    <Compile Include="helpers\module_creater.py" />
+    <Compile Include="utils\module_creater.py" />
     <Compile Include="modules\ani_module\ani_module.py" />
     <Compile Include="modules\ani_module\schemas.py" />
     <Compile Include="modules\ani_module\tests\test_ani_module_module.py" />
@@ -134,7 +134,6 @@
     <Folder Include="modules\" />
     <Folder Include="configs\" />
     <Folder Include="arts\" />
-    <Folder Include="helpers\" />
     <Folder Include="core\" />
     <Folder Include="devtools\" />
     <Folder Include="docs\" />
@@ -157,6 +156,7 @@
     <Folder Include="modules\ui_module\" />
     <Folder Include="modules\ui_module\tests\" />
     <Folder Include="models\" />
+    <Folder Include="logs\" />
     <Folder Include="train\" />
     <Folder Include="train\nlp\" />
     <Folder Include="utils\" />

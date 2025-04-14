@@ -9,7 +9,7 @@ modules_enabled:
   sys_module: false
 
 debug:
-  debug: false
+  debug: true
   debug_level: 1
-  log_file: "debug.log"
-  log_level: "INFO"
+  log_file: "./logs/debug.log"
+  log_level: "DEBUG"

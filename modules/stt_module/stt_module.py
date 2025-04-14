@@ -3,6 +3,7 @@ import threading
 import queue
 import speech_recognition as sr
 from core.module_base import BaseModule
+from utils.debug_helper import debug_log
 from .schemas import STTInput, STTOutput
 
 class STTModule(BaseModule):

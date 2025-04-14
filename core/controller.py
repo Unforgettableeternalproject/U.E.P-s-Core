@@ -1,14 +1,50 @@
-﻿from core.registry import get_module
+﻿from logging import config
+from core.registry import get_module
+from configs.config_loader import load_config
 import time
 
-stt = get_module("stt_module")     # 回傳的是符合 BaseModule 的實例
-nlp = get_module("nlp_module")
-llm = get_module("llm_module")
-mem = get_module("mem_module")
-tts = get_module("tts_module")
-sysmod = get_module("sys_module")
+config = load_config()
+enabled = config.get("modules_enabled", {})
 
-def handle_user_input():
+def safe_get_module(name):
+    if not enabled.get(name, False):
+        # print(f"[Controller] ❌ 模組 '{name}' 未啟用，請檢查配置") # Ignored
+        return None
+
+    try:
+        mod = get_module(name)
+        if mod is None:
+            raise ImportError(f"{name} register() 回傳為 None")
+        print(f"[Controller] ✅ 載入模組成功：{name}")
+        return mod
+    except NotImplementedError:
+        print(f"[Controller] ❌ 模組 '{name}' 尚未被實作")
+        return None
+    except Exception as e:
+        print(f"[Controller] ❌ 無法載入模組 '{name}': {e}")
+        return None
+
+modules = {
+    "stt": safe_get_module("stt_module"),
+    "nlp": safe_get_module("nlp_module"),
+    "llm": safe_get_module("llm_module"), 
+    "mem": safe_get_module("mem_module"),
+    "tts": safe_get_module("tts_module"),
+    "sysmod": safe_get_module("sys_module")
+}
+
+def handle_pipeline():
+    stt = modules["stt"]
+    nlp = modules["nlp"]
+    llm = modules["llm"]
+    mem = modules["mem"]
+    tts = modules["tts"]
+    sysmod = modules["sysmod"]
+
+    if any(mod is None for mod in modules.values()):
+        print("[Controller] ❌ 無法載入所有模組，請檢查模組註冊狀態")
+        return "模組載入失敗"
+
     # Step 1: 取得語音輸入並轉為文字
     audio_text = stt.handle({})["text"]
 
@@ -46,20 +82,76 @@ def handle_user_input():
 
     return llm_result.get("text")
 
+# 模組載入
+
+
+def load_module_test():
+    pass
+
+# 測試 STT 模組
+
 def on_stt_result(text):
     print("✨ 回傳語音內容：", text)
 
 def stt_test_single():
+    stt = modules["stt"]
+
+    if stt is None:
+        print("[Controller] ❌ 無法載入 STT 模組")
+        return
+
     # 測試 STT 模組
     result = stt.handle()
-    print("STT Result:", result)
+    on_stt_result(result["text"])
 
+def stt_test_realtime():
+    stt = modules["stt"]
 
-def stt_test():
+    if stt is None:
+        print("[Controller] ❌ 無法載入 STT 模組")
+        return
+
     stt.start_realtime(on_result=on_stt_result)
-
     try:
         while True:
             time.sleep(0.5)
     except KeyboardInterrupt:
         stt.stop_realtime()
+
+# 測試 NLP 模組
+
+def nlp_test(cases=""):
+    # 測試 NLP 模組
+    nlp = modules["nlp"]
+
+    if nlp is None:
+        print("[Controller] ❌ 無法載入 NLP 模組")
+        return
+
+    test_cases = [cases] if cases != "" else [
+        "Hello, it's me, your friend Bernie!",
+        "Do a barrel roll.",
+        "Do you like among us?",
+        "gogogoog"
+    ]
+    for text in test_cases:
+        result = nlp.handle({"text": text})
+        print(f"🧠 NLP 輸出結果：{result}\n")
+
+# 統合測試
+
+def integration_test_StN():
+    stt = modules["stt"]
+    nlp = modules["nlp"]
+
+    if stt is None or nlp is None:
+        print("[Controller] ❌ 無法載入 STT 或 NLP 模組")
+        return
+
+    # 測試STT到NLP的整合
+    
+    result = stt.handle()
+    print("✨ 回傳語音內容：", result["text"])
+
+    nlp_result = nlp.handle({"text": result["text"]})
+    print("🧠 NLP 輸出結果：", nlp_result)

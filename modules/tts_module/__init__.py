@@ -1,4 +1,4 @@
 from .tts_module import TTSModule
 
 def register():
-    return TTSModule(config={})
+    raise NotImplementedError("此模組尚未實作")

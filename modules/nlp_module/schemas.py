@@ -1,7 +1,12 @@
+﻿# modules/nlp_module/schemas.py
+
 from pydantic import BaseModel
+from typing import Literal
 
-class Input(BaseModel):
-    pass
+class NLPInput(BaseModel):
+    text: str
 
-class Output(BaseModel):
-    pass
+class NLPOutput(BaseModel):
+    text: str
+    intent: Literal["command", "chat", "ignore"]
+    label: Literal["command", "chat", "non-sense", "unknown"]

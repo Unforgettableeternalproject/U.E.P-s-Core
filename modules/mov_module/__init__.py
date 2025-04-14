@@ -1,4 +1,4 @@
 from .mov_module import MOVModule
 
 def register():
-    return MOVModule(config={})
+    raise NotImplementedError("此模組尚未實作")

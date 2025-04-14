@@ -1,3 +1,5 @@
-{{
-  "response": "output"
-}}
+{
+  "text": "Open notepad for me.",
+  "intent": "command",
+  "label": "command"
+}

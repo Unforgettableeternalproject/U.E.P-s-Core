@@ -22,3 +22,51 @@
 
 ---
 
+### Migrated the nlp module here with the model as well. 04/13
+
+> Date: Sun, 13 Apr 2025 19:53:41 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/nlp_module_integration`
+
+> Commit: `61125b989c8de67e309d407586d2ce23a31b8774`
+
+---
+
+### Used pytest framework to improve the tests, and added a simple integration from STT to NLP. 04/13
+
+> Date: Sun, 13 Apr 2025 20:11:56 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/nlp_module_integration`
+
+> Commit: `5b930f107ef9e7016a3f75415d289780de677f1f`
+
+---
+
+### Added the model train files for future finetuning. 04/13
+
+> Date: Sun, 13 Apr 2025 21:13:12 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/nlp_module_integration`
+
+> Commit: `6a6c8b973bd6b71e49b5f9572ece28cea82fa62d`
+
+---
+
+### Added safe module import and an interactive menu for test (might migrate into devtools later). 04/14
+
+> Date: Mon, 14 Apr 2025 14:10:31 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/nlp_module_integration`
+
+> Commit: `8c63a5603e04f1bb0bed77c1f7e26c8e900d641e`
+
+---
+

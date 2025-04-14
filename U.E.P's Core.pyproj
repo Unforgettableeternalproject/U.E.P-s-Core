@@ -130,6 +130,9 @@
     <Compile Include="train\nlp\train_dbert.py" />
   </ItemGroup>
   <ItemGroup>
+    <Folder Include="logs\debug\" />
+    <Folder Include="logs\error\" />
+    <Folder Include="logs\runtime\" />
     <Folder Include="models\command_chat_classifier\" />
     <Folder Include="modules\" />
     <Folder Include="configs\" />

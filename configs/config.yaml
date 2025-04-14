@@ -11,5 +11,6 @@ modules_enabled:
 debug:
   debug: true
   debug_level: 1
-  log_file: "./logs/debug.log"
-  log_level: "DEBUG"
+  log_level: "DEBUG"     
+  log_dir: "logs"
+  enable_split_logs: true

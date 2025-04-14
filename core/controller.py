@@ -1,29 +1,31 @@
 ﻿from logging import config
+from os import error
 from core.registry import get_module
 from configs.config_loader import load_config
-from utils.debug_helper import debug_log
+from utils.debug_helper import debug_log, info_log, error_log
 import time
 
 config = load_config()
 enabled = config.get("modules_enabled", {})
 
 def safe_get_module(name):
-    debug_log(1, f"[Controller] 嘗試載入模組 '{name}'")
     if not enabled.get(name, False):
         # print(f"[Controller] ❌ 模組 '{name}' 未啟用，請檢查配置") # Ignored
         return None
+
+    info_log(f"[Controller] 嘗試載入模組 '{name}'")
 
     try:
         mod = get_module(name)
         if mod is None:
             raise ImportError(f"{name} register() 回傳為 None")
-        print(f"[Controller] ✅ 載入模組成功：{name}")
+        info_log(f"[Controller] ✅ 載入模組成功：{name}")
         return mod
     except NotImplementedError:
-        print(f"[Controller] ❌ 模組 '{name}' 尚未被實作")
+        error_log(f"[Controller] ❌ 模組 '{name}' 尚未被實作")
         return None
     except Exception as e:
-        print(f"[Controller] ❌ 無法載入模組 '{name}': {e}")
+        error_log(f"[Controller] ❌ 無法載入模組 '{name}': {e}")
         return None
 
 modules = {
@@ -44,7 +46,7 @@ def handle_pipeline():
     sysmod = modules["sysmod"]
 
     if any(mod is None for mod in modules.values()):
-        print("[Controller] ❌ 無法載入所有模組，請檢查模組註冊狀態")
+        error_log("[Controller] ❌ 無法載入所有模組，請檢查模組註冊狀態")
         return "模組載入失敗"
 
     # Step 1: 取得語音輸入並轉為文字
@@ -86,7 +88,6 @@ def handle_pipeline():
 
 # 模組載入
 
-
 def load_module_test():
     pass
 
@@ -99,7 +100,7 @@ def stt_test_single():
     stt = modules["stt"]
 
     if stt is None:
-        print("[Controller] ❌ 無法載入 STT 模組")
+        error_log("[Controller] ❌ 無法載入 STT 模組")
         return
 
     # 測試 STT 模組
@@ -110,7 +111,7 @@ def stt_test_realtime():
     stt = modules["stt"]
 
     if stt is None:
-        print("[Controller] ❌ 無法載入 STT 模組")
+        error_log("[Controller] ❌ 無法載入 STT 模組")
         return
 
     stt.start_realtime(on_result=on_stt_result)
@@ -127,7 +128,7 @@ def nlp_test(cases=""):
     nlp = modules["nlp"]
 
     if nlp is None:
-        print("[Controller] ❌ 無法載入 NLP 模組")
+        error_log("[Controller] ❌ 無法載入 NLP 模組")
         return
 
     test_cases = [cases] if cases != "" else [
@@ -147,7 +148,7 @@ def integration_test_StN():
     nlp = modules["nlp"]
 
     if stt is None or nlp is None:
-        print("[Controller] ❌ 無法載入 STT 或 NLP 模組")
+        error_log("[Controller] ❌ 無法載入 STT 或 NLP 模組")
         return
 
     # 測試STT到NLP的整合

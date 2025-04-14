@@ -82,3 +82,15 @@
 
 ---
 
+### Improved logging system. 04/14
+
+> Date: Mon, 14 Apr 2025 16:20:45 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `develop`
+
+> Commit: `cecccbc36d24f91ac098b82f08183f11941662c7`
+
+---
+

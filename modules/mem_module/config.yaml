@@ -3,3 +3,4 @@
 embedding_model: all-MiniLM-L6-v2
 index_file: memory/faiss_index
 metadata_file: memory/metadata.json
+max_distance: 0.85

@@ -14,6 +14,7 @@
     <InterpreterId>MSBuild|env|$(MSBuildProjectFullPath)</InterpreterId>
     <IsWindowsApplication>False</IsWindowsApplication>
     <TestFramework>Pytest</TestFramework>
+    <SuppressPackageInstallationPrompt>True</SuppressPackageInstallationPrompt>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
     <DebugSymbols>true</DebugSymbols>
@@ -31,6 +32,8 @@
     <Content Include="configs\config.yaml" />
     <Content Include="docs\U.E.P 大型模型專案 構想.pdf" />
     <Content Include="docs\專案開發準則.md" />
+    <Content Include="memory\faiss_index" />
+    <Content Include="memory\metadata.json" />
     <Content Include="models\command_chat_classifier\config.json" />
     <Content Include="models\command_chat_classifier\pytorch_model.bin" />
     <Content Include="models\command_chat_classifier\special_tokens_map.json" />
@@ -64,6 +67,7 @@
     <Content Include="modules\ui_module\example_input.json" />
     <Content Include="modules\ui_module\example_output.json" />
     <Content Include="README.md" />
+    <Content Include="requirements.in" />
     <Content Include="requirements.txt" />
     <Content Include="train\nlp\dataset.csv" />
   </ItemGroup>
@@ -133,6 +137,7 @@
     <Folder Include="logs\debug\" />
     <Folder Include="logs\error\" />
     <Folder Include="logs\runtime\" />
+    <Folder Include="memory\" />
     <Folder Include="models\command_chat_classifier\" />
     <Folder Include="modules\" />
     <Folder Include="configs\" />

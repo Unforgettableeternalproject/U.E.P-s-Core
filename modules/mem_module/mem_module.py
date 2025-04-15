@@ -15,6 +15,7 @@ class MEMModule(BaseModule):
         self.embedding_model = self.config.get("embedding_model", "all-MiniLM-L6-v2")
         self.index_file = self.config.get("index_file", "memory/faiss_index")
         self.metadata_file = self.config.get("metadata_file", "memory/metadata.json")
+        self.max_distance = self.config.get("max_distance", 0.85)
         self.model = None
         self.index = None
         self.metadata: List[dict] = []
@@ -65,10 +66,14 @@ class MEMModule(BaseModule):
 
             if not results:
                 info_log("[MEM] 查詢結果為空", "WARNING")
-                return {"error": "查詢結果為空"}
+                return {
+                    "results": [],
+                    "message": "查無相關記憶",
+                    "status": "empty"
+                }
 
             debug_log(1, f"[MEM] 查詢結果: {results}")
-            return MEMOutput(results=results).dict()
+            return MEMOutput(**results).dict()
 
         elif payload.mode == "store":
             info_log("[MEM] 儲存模式啟用")
@@ -101,14 +106,14 @@ class MEMModule(BaseModule):
         self.metadata.append(metadata)
 
         debug_log_e(1, f"[MEM] 新增記憶: {text}")
-        debug_log_e(2, f"[MEM] 新增記憶的元資料: {metadata}")
+        debug_log_e(2, f"[MEM] 新增記憶的Metadata: {metadata}")
         debug_log_e(2, f"[MEM] 當前記憶數量: {len(self.metadata)}")
         debug_log_e(2, f"[MEM] 當前索引維度: {self.index.ntotal}")
 
         faiss.write_index(self.index, self.index_file)
         with open(self.metadata_file, "w") as f:
             json.dump(self.metadata, f)
-        debug_log(1, "[MEM] 記憶已儲存到索引和元資料檔案中")
+        debug_log(1, "[MEM] 記憶已儲存到索引和Metadata中")
 
     def _retrieve_memory(self, query, top_k=5):
         if self.index is None:
@@ -123,30 +128,48 @@ class MEMModule(BaseModule):
         debug_log(1, f"[MEM] 查詢文本: {query}")
         debug_log(2, f"[MEM] 查詢嵌入: {query_embedding}")
 
-        _, indices = self.index.search(np.array([query_embedding]), top_k)
+        distances, indices = self.index.search(np.array([query_embedding]), top_k)
+
+        results = []
+
+        for i, dist in zip(indices[0], distances[0]):
+            if i < len(self.metadata) and dist <= self.max_distance:
+                results.append(self.metadata[i])
+
 
         debug_log(3, f"[MEM] 檢索到的索引: {indices}")
 
-        return [self.metadata[i] for i in indices[0] if i < len(self.metadata)]
+        if not results:
+            return {
+                "results": [],
+                "message": "查無相關記憶（超出相似度閾值）",
+                "status": "empty"
+            }
+
+        return {
+            "results": results,
+            "status": "ok"
+        }
 
     def _faiss_index_exists(self):
         return os.path.exists(self.index_file)
 
     def _create_index(self):
+        os.makedirs(os.path.dirname(self.index_file), exist_ok=True)
         self.index = faiss.IndexFlatL2(self.dimension)
         self.metadata = []
         faiss.write_index(self.index, self.index_file)
         with open(self.metadata_file, "w") as f:
             json.dump(self.metadata, f)
 
-        debug_log(1, "[MEM] FAISS 索引和元資料檔案已創建")
+        debug_log(1, "[MEM] FAISS 索引和Metadata已創建")
 
     def _load_index(self):
         self.index = faiss.read_index(self.index_file)
         with open(self.metadata_file, "r") as f:
             self.metadata = json.load(f)
 
-        debug_log(1, "[MEM] FAISS 索引和元資料檔案已載入")
+        debug_log(1, "[MEM] FAISS 索引和Metadata已載入")
 
     def shutdown(self):
         info_log("[MEM] 模組關閉")

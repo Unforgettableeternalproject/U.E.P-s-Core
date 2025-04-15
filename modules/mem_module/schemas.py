@@ -9,3 +9,5 @@ class MEMInput(BaseModel):
 
 class MEMOutput(BaseModel):
     results: List[Dict[str, str]]
+    message: Optional[str] = None
+    status: Optional[str] = "ok"

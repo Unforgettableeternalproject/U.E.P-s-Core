@@ -1,3 +1,4 @@
+from logging import info
 import core.controller as controller
 from utils.debug_helper import debug_log, info_log, error_log
 from configs.config_loader import load_config
@@ -45,6 +46,7 @@ def debug_interactive():
                 while True:
                     text = input("\n> ")
                     if text.lower() == "exit":
+                        info_log("使用者中斷測試")
                         break
                     print()
                     controller.nlp_test(text)
@@ -63,8 +65,35 @@ def debug_interactive():
                     print("\n==========================\n")
                     continue
 
+                debug_log(1, "MEM 模組測試")
                 print("\n<MEM 模組測試>\n")
-                print("目前還未實作 MEM 模組的測試功能")
+                choice = input("請選擇欲測試之功能 (1: 記憶寫入, 2: 記憶查詢): \n\n> ")
+                if choice == "1":
+                    print("請輸入要寫入的記憶內容 (或輸入 'exit' 來結束):")
+                    while True:
+                        user_text = input("\n輸入使用者對話: \n> ")
+                        if user_text.lower() == "exit":
+                            info_log("使用者中斷測試")
+                            break
+
+                        response_text = input("\n輸入系統回應: \n> ")
+                        if response_text.lower() == "exit":
+                            info_log("使用者中斷測試")
+                            break
+
+                        print()
+                        controller.mem_store_test(user_text, response_text)
+                elif choice == "2":
+                    print("請輸入查詢的記憶內容 (或輸入 'exit' 來結束):")
+                    while True:
+                        text = input("\n> ")
+                        if text.lower() == "exit":
+                            info_log("使用者中斷測試")
+                            break
+                        print()
+                        controller.mem_fetch_test(text)
+                else:
+                    print("\033[31m無效的選擇，請再試一次。\033[0m")
             case "llm":
                 if not module_enabled.get("llm_module", False):
                     info_log("LLM 模組未啟用，請檢查配置。", "WARNING")

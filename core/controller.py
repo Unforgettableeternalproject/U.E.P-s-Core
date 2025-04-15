@@ -144,30 +144,30 @@ def nlp_test(cases=""):
 
 # 測試 MEM 模組
 
-def mem_fetch_test():
+def mem_fetch_test(text : str = ""):
     mem = modules["mem"]
     if mem is None:
         error_log("[Controller] ❌ 無法載入 MEM 模組")
         return
-    # 測試 MEM 模組
 
     result = mem.handle(
-        {"mode": "fetch", "text": "Hello, it's me, your friend Bernie!"})
-    print("🧠 MEM 輸出結果：", result)
+        {"mode": "fetch", "text": ("Test chat" if text == "" else text)})
+    print(f"🧠 MEM 輸出結果：\n\n使用者: {result['results'][0]['user']} \n回應: {result['results'][0]['response']}")
 
 
-def mem_store_test():
+def mem_store_test(user_text : str = "Test chat", response_text : str = "Test response"):
     mem = modules["mem"]
     if mem is None:
         error_log("[Controller] ❌ 無法載入 MEM 模組")
         return
-    # 測試 MEM 模組
+
     result = mem.handle(
-        {"mode": "store", "entry": {"text": "Hello, it's me, your friend Bernie!"}})
-    print("🧠 MEM 輸出結果：", result)
+        {"mode": "store", "entry": {"user": user_text, "response": response_text}})
+    print("🧠 MEM 回傳：", "儲存" + ("成功" if result["status"] == "stored" else "失敗"))
 
 # 統合測試
 
+# 測試STT到NLP的整合
 def integration_test_StN():
     stt = modules["stt"]
     nlp = modules["nlp"]
@@ -175,8 +175,6 @@ def integration_test_StN():
     if stt is None or nlp is None:
         error_log("[Controller] ❌ 無法載入 STT 或 NLP 模組")
         return
-
-    # 測試STT到NLP的整合
     
     result = stt.handle()
     print("✨ 回傳語音內容：", result["text"])

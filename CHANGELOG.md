@@ -118,3 +118,75 @@
 
 ---
 
+### Migrated most mem functions here and updated requirements.txt, still solving dependency conflicts. 04/15
+
+> Date: Tue, 15 Apr 2025 10:24:10 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_integration`
+
+> Commit: `28ce31b7c3aa6dd9c021fe6fb9534b09ac8355f9`
+
+---
+
+### Fixed a problem with the logger, added MEM unit tests, and improved MEM schema. 04/15
+
+> Date: Tue, 15 Apr 2025 12:38:18 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_integration`
+
+> Commit: `a46ccd213fa3259545592ae4852b0cda76a5ee35`
+
+---
+
+### Added more integration tests. 04/15
+
+> Date: Tue, 15 Apr 2025 15:42:38 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_integration`
+
+> Commit: `762c174545d8c5cc9ef998f0453f6571c2573c09`
+
+---
+
+### Moved the integration tests to another file/folder. 04/15
+
+> Date: Tue, 15 Apr 2025 16:00:26 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_integration`
+
+> Commit: `71e833e79208eacd12767c82ba42e3621b7e7979`
+
+---
+
+### Improved the clear functions of MEM. 04/16
+
+> Date: Wed, 16 Apr 2025 00:55:54 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_integration`
+
+> Commit: `59dff9ca89fc468c75f98146f471ff4b80fc8227`
+
+---
+
+### Fixed several output related issues. 04/16
+
+> Date: Wed, 16 Apr 2025 01:26:27 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_integration`
+
+> Commit: `ff5db4d9ac820a9cefdcc82f7748a47ff8e0faaa`
+
+---
+

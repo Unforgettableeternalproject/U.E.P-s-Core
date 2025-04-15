@@ -1,5 +1,4 @@
-﻿# modules/stt_module/tests/test_stt_module.py
-import pytest
+﻿import pytest
 from modules.stt_module.stt_module import STTModule
 
 @pytest.fixture

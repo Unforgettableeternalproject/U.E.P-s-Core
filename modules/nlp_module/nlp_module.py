@@ -26,6 +26,9 @@ class NLPModule(BaseModule):
         debug_log(3, f"[NLP] 標籤對應: {self.label_mapping}")
 
     def initialize(self):
+        debug_log(1, "[NLP] 初始化中...")
+        self.debug()
+
         info_log(f"[NLP] 載入模型中（來自 {self.model_dir}）...")
 
         # Debug 1: 檢查模型目錄是否存在
@@ -47,8 +50,11 @@ class NLPModule(BaseModule):
     def handle(self, data: dict = {}) -> dict:
         validated = NLPInput(**data)
         debug_log(1, f"[NLP] 接收到的資料: {validated}")
-        text = validated.text
+        if not validated.text:
+            error_log("[NLP] 輸入文本為空")
+            return {"text": "", "intent": "ignore", "label": "unknown"}
 
+        text = validated.text
         inputs = self.tokenizer(text, return_tensors="pt", truncation=True)
         outputs = self.model(**inputs)
         prediction = torch.argmax(outputs.logits, dim=1).item()

@@ -1,5 +1,4 @@
-﻿# modules/nlp_module/tests/test_nlp_module.py
-import pytest
+﻿import pytest
 from modules.nlp_module.nlp_module import NLPModule
 
 @pytest.fixture

@@ -1,3 +1,8 @@
-{{
-  "response": "output"
-}}
+{
+  "results": [
+    {
+      "user": "What is my schedule today?",
+      "response": "You have two meetings today at 3PM and 5PM."
+    }
+  ]
+}

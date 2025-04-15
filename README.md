@@ -21,17 +21,20 @@
   
 ❦ Contributors:
 -
-  ඩ Currently None
+  ඩ elise-love
+
+  ඩ yutao33003
   
 ⚑ To-do List:
 -
-  ✧ To be added.
+  ✧ MEMModule 整合與快照結構設計
+
+  ✧ LLMModule 整合與輸出格式標準化（含情緒、指令）
+
+  ✧ router.py 模組流導向規劃（intent → LLM/SYS）
+
+  ✧ state_manager 設計與狀態切換控制（chat/work/idle/error）
 
 ♠︎ To-Be-Fixed/Added:
 -
   ✂ To be added,
-  
-Preserved for future check: git 3 steps
-1. ```git add .```
-2. ```git git commit -m "commit message"```
-3. ```git push```

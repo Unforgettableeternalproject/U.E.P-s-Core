@@ -1,0 +1,24 @@
+# 核心語音相關
+speechrecognition
+pyaudio
+
+# NLP 模型與訓練
+transformers
+datasets
+sentence-transformers
+scikit-learn
+torch
+
+# 記憶向量管理
+faiss-cpu
+
+# Gemini / Google AI API
+google-cloud-aiplatform
+python-dotenv
+
+# 實用工具
+pyyaml
+tqdm
+
+# 開發與測試
+pytest

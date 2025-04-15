@@ -1,5 +1,3 @@
-# utils/logger.py
-
 import os
 import logging
 from datetime import datetime
@@ -33,7 +31,6 @@ class ColorFormatter(logging.Formatter):
         message = super().format(record)
         return f"{color}{message}{self.RESET}"
 
-
 LOG_LEVEL = conf.get("log_level", "DEBUG").upper()
 LOG_DIR = conf.get("log_dir", "logs")
 SPLIT_LOGS = conf.get("enable_split_logs", True)
@@ -63,43 +60,56 @@ formatter = logging.Formatter("[%(asctime)s] %(levelname)s - %(message)s")
 console_formatter = ColorFormatter(
     "\n[%(asctime)s] %(levelname)s - %(message)s\n", datefmt="%H:%M:%S")
 
-# 主輸出（console）
-stream_handler = logging.StreamHandler()
-stream_handler.setFormatter(console_formatter)
-logger.addHandler(stream_handler)
+# 檢查是否已經添加過 handler
+if not logger.handlers:
+    # 主輸出（console）
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(console_formatter)
+    logger.addHandler(stream_handler)
 
-# 拆分 log 檔案
-if SPLIT_LOGS:
-    debug_file = logging.FileHandler(log_file("debug"))
-    debug_file.setFormatter(formatter)
-    debug_file.setLevel(logging.DEBUG)
-    debug_file.addFilter(LogLevelFilter(logging.DEBUG, logging.DEBUG))
-    logger.addHandler(debug_file)
+    # 拆分 log 檔案
+    if SPLIT_LOGS:
+        debug_file = logging.FileHandler(log_file("debug"))
+        debug_file.setFormatter(formatter)
+        debug_file.setLevel(logging.DEBUG)
+        debug_file.addFilter(LogLevelFilter(logging.DEBUG, logging.DEBUG))
+        logger.addHandler(debug_file)
 
-    info_file = logging.FileHandler(log_file("runtime"))
-    info_file.setFormatter(formatter)
-    info_file.setLevel(logging.INFO)
-    info_file.addFilter(LogLevelFilter(logging.INFO, logging.WARNING))
-    logger.addHandler(info_file)
+        info_file = logging.FileHandler(log_file("runtime"))
+        info_file.setFormatter(formatter)
+        info_file.setLevel(logging.INFO)
+        info_file.addFilter(LogLevelFilter(logging.INFO, logging.WARNING))
+        logger.addHandler(info_file)
 
-    error_file = logging.FileHandler(log_file("error"))
-    error_file.setFormatter(formatter)
-    error_file.setLevel(logging.ERROR)
-    error_file.addFilter(LogLevelFilter(logging.ERROR, logging.CRITICAL))
-    logger.addHandler(error_file)
-else:
-    combined_file = logging.FileHandler(log_file("combined"))
-    combined_file.setFormatter(formatter)
-    logger.addHandler(combined_file)
+        error_file = logging.FileHandler(log_file("error"))
+        error_file.setFormatter(formatter)
+        error_file.setLevel(logging.ERROR)
+        error_file.addFilter(LogLevelFilter(logging.ERROR, logging.CRITICAL))
+        logger.addHandler(error_file)
+    else:
+        combined_file = logging.FileHandler(log_file("combined"))
+        combined_file.setFormatter(formatter)
+        logger.addHandler(combined_file)
 
-
-if not enabled: 
-    # Remove log files
+# 測試結束後刪除 0 Bytes 的檔案
+def cleanup_empty_log_files():
     for handler in logger.handlers:
         if isinstance(handler, logging.FileHandler):
             handler.close()
-            os.remove(handler.baseFilename)
+            try:
+                if os.path.getsize(handler.baseFilename) == 0:
+                    os.remove(handler.baseFilename)
+            except Exception as e:
+                print("\n無法移除記錄檔，可能是因為根本沒有產生。\n")
+
+if not enabled: 
+    # Remove log files
+    cleanup_empty_log_files()
 
     if stream_handler in logger.handlers:
         logger.removeHandler(stream_handler)
         stream_handler.close()
+else:
+    cleanup_empty_log_files()
+
+

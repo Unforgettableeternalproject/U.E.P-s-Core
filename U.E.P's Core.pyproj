@@ -14,6 +14,7 @@
     <InterpreterId>MSBuild|env|$(MSBuildProjectFullPath)</InterpreterId>
     <IsWindowsApplication>False</IsWindowsApplication>
     <TestFramework>Pytest</TestFramework>
+    <SuppressPackageInstallationPrompt>True</SuppressPackageInstallationPrompt>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
     <DebugSymbols>true</DebugSymbols>
@@ -31,6 +32,8 @@
     <Content Include="configs\config.yaml" />
     <Content Include="docs\U.E.P 大型模型專案 構想.pdf" />
     <Content Include="docs\專案開發準則.md" />
+    <Content Include="memory\faiss_index" />
+    <Content Include="memory\metadata.json" />
     <Content Include="models\command_chat_classifier\config.json" />
     <Content Include="models\command_chat_classifier\pytorch_model.bin" />
     <Content Include="models\command_chat_classifier\special_tokens_map.json" />
@@ -64,6 +67,7 @@
     <Content Include="modules\ui_module\example_input.json" />
     <Content Include="modules\ui_module\example_output.json" />
     <Content Include="README.md" />
+    <Content Include="requirements.in" />
     <Content Include="requirements.txt" />
     <Content Include="train\nlp\dataset.csv" />
   </ItemGroup>
@@ -86,6 +90,7 @@
     <Compile Include="core\router.py" />
     <Compile Include="core\state_manager.py" />
     <Compile Include="devtools\debugger.py" />
+    <Compile Include="module_tests\integration_tests.py" />
     <Compile Include="utils\debug_helper.py" />
     <Compile Include="utils\logger.py" />
     <Compile Include="entry.py" />
@@ -100,7 +105,7 @@
     <Compile Include="modules\llm_module\__init__.py" />
     <Compile Include="modules\mem_module\mem_module.py" />
     <Compile Include="modules\mem_module\schemas.py" />
-    <Compile Include="modules\mem_module\tests\test_mem_module_module.py" />
+    <Compile Include="module_tests\test_mem_module.py" />
     <Compile Include="modules\mem_module\__init__.py" />
     <Compile Include="modules\mov_module\mov_module.py" />
     <Compile Include="modules\mov_module\schemas.py" />
@@ -108,11 +113,11 @@
     <Compile Include="modules\mov_module\__init__.py" />
     <Compile Include="modules\nlp_module\nlp_module.py" />
     <Compile Include="modules\nlp_module\schemas.py" />
-    <Compile Include="modules\nlp_module\tests\test_nlp_module.py" />
+    <Compile Include="module_tests\test_nlp_module.py" />
     <Compile Include="modules\nlp_module\__init__.py" />
     <Compile Include="modules\stt_module\schemas.py" />
     <Compile Include="modules\stt_module\stt_module.py" />
-    <Compile Include="modules\stt_module\tests\test_stt_module.py" />
+    <Compile Include="module_tests\test_stt_module.py" />
     <Compile Include="modules\stt_module\__init__.py" />
     <Compile Include="modules\sys_module\schemas.py" />
     <Compile Include="modules\sys_module\sys_module.py" />
@@ -133,6 +138,7 @@
     <Folder Include="logs\debug\" />
     <Folder Include="logs\error\" />
     <Folder Include="logs\runtime\" />
+    <Folder Include="memory\" />
     <Folder Include="models\command_chat_classifier\" />
     <Folder Include="modules\" />
     <Folder Include="configs\" />
@@ -145,13 +151,10 @@
     <Folder Include="modules\llm_module\" />
     <Folder Include="modules\llm_module\tests\" />
     <Folder Include="modules\mem_module\" />
-    <Folder Include="modules\mem_module\tests\" />
     <Folder Include="modules\mov_module\" />
     <Folder Include="modules\mov_module\tests\" />
     <Folder Include="modules\nlp_module\" />
-    <Folder Include="modules\nlp_module\tests\" />
     <Folder Include="modules\stt_module\" />
-    <Folder Include="modules\stt_module\tests\" />
     <Folder Include="modules\sys_module\" />
     <Folder Include="modules\sys_module\tests\" />
     <Folder Include="modules\tts_module\" />
@@ -160,6 +163,7 @@
     <Folder Include="modules\ui_module\tests\" />
     <Folder Include="models\" />
     <Folder Include="logs\" />
+    <Folder Include="module_tests\" />
     <Folder Include="train\" />
     <Folder Include="train\nlp\" />
     <Folder Include="utils\" />

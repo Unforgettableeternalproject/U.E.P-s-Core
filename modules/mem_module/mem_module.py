@@ -56,42 +56,56 @@ class MEMModule(BaseModule):
         payload = MEMInput(**data)
         debug_log(1, f"[MEM] 接收到的資料: {payload}")
 
-        if payload.mode == "fetch":
-            info_log("[MEM] 查詢模式啟用")
+        match (payload.mode):
+            case "fetch":
+                info_log("[MEM] 查詢模式啟用")
 
-            if payload.text is None:
-                info_log("[MEM] 查詢文本為空，請提供有效的文本", "WARNING")
-                return {"error": "請提供查詢文本"}
-            results = self._retrieve_memory(payload.text, payload.top_k)
+                if payload.text is None:
+                    info_log("[MEM] 查詢文本為空，請提供有效的文本", "WARNING")
+                    return {"error": "請提供查詢文本"}
+                results = self._retrieve_memory(payload.text, payload.top_k)
 
-            if not results:
-                info_log("[MEM] 查詢結果為空", "WARNING")
-                return {
-                    "results": [],
-                    "message": "查無相關記憶",
-                    "status": "empty"
-                }
+                if not results:
+                    info_log("[MEM] 查詢結果為空", "WARNING")
+                    return {
+                        "results": [],
+                        "message": "查無相關記憶",
+                        "status": "empty"
+                    }
 
-            debug_log(1, f"[MEM] 查詢結果: {results}")
-            return MEMOutput(**results).dict()
-
-        elif payload.mode == "store":
-            info_log("[MEM] 儲存模式啟用")
-            if payload.entry is None:
-                info_log("[MEM] 儲存文本為空，請提供有效的文本", "WARNING")
-                return {"error": "請提供儲存文本"}
-
-            try:
-                entry = payload.entry
-                self._add_memory(entry["user"], entry)
-                info_log(f"[MEM] 儲存成功: {entry}")
-            except Exception as e:
-                error_log(f"[MEM] 儲存失敗: {e}")
-                return {"error": f"儲存失敗: {e}"}
-            return {"status": "stored"}
-
-        else:
-            return {"error": f"不支援的模式: {payload.mode}"}
+                debug_log(1, f"[MEM] 查詢結果: {results}")
+                return MEMOutput(**results).dict()
+            case "store":
+                info_log("[MEM] 儲存模式啟用")
+                if payload.entry is None:
+                    info_log("[MEM] 儲存文本為空，請提供有效的文本", "WARNING")
+                    return {"error": "請提供儲存文本"}
+                try:
+                    entry = payload.entry
+                    self._add_memory(entry["user"], entry)
+                    info_log(f"[MEM] 儲存成功: {entry}")
+                except Exception as e:
+                    error_log(f"[MEM] 儲存失敗: {e}")
+                    return {"error": f"儲存失敗: {e}"}
+                return {"status": "stored"}
+            case "clear_all":
+                info_log("[MEM] 清除所有記憶")
+                return self._clear_all()
+            case "clear_by_text":
+                info_log("[MEM] 根據文本清除記憶")
+                if payload.text is None:
+                    info_log("[MEM] 清除文本為空，請提供有效的文本", "WARNING")
+                    return {"error": "請提供清除文本"}
+                try:
+                    deleted_count = self._clear_by_text(payload.text, payload.top_k)
+                    info_log(f"[MEM] 清除成功: {deleted_count['deleted']} 條記憶")
+                except Exception as e:
+                    error_log(f"[MEM] 清除失敗: {e}")
+                    return {"error": f"清除失敗: {e}"}
+                return {"status": "partial_clear", "deleted": deleted_count}
+            case _:
+                info_log(f"[MEM] 不支援的模式: {payload.mode}", "WARNING")
+                return {"error": f"不支援的模式: {payload.mode}"}
 
     def _embed_text(self, text):
         embedding = self.model.encode(text)
@@ -129,6 +143,8 @@ class MEMModule(BaseModule):
         debug_log(2, f"[MEM] 查詢嵌入: {query_embedding}")
 
         distances, indices = self.index.search(np.array([query_embedding]), top_k)
+    
+        debug_log(3, f"[MEM] 查詢距離: {distances}")
 
         results = []
 
@@ -150,6 +166,33 @@ class MEMModule(BaseModule):
             "results": results,
             "status": "ok"
         }
+
+    def _clear_all(self):
+        self._create_index()  # 重建空的 index
+        return {"status": "cleared", "message": "記憶已完全清空"}
+
+    def _clear_by_text(self, text, top_k=5):
+        query_embedding = self._embed_text(text)
+        _, indices = self.index.search(np.array([query_embedding]), top_k)
+
+        # 刪除 metadata 中對應的資料
+        valid_indices = sorted(set(i for i in indices[0] if i < len(self.metadata)), reverse=True)
+        for i in valid_indices:
+            del self.metadata[i]
+
+        # 重新建立 index（簡單做法）
+        self._rebuild_index()
+
+        return {"status": "partial_clear", "deleted": len(valid_indices)}
+
+    def _rebuild_index(self):
+        self.index = faiss.IndexFlatL2(self.dimension)
+        embeddings = [self._embed_text(entry["user"]) for entry in self.metadata]
+        if embeddings:
+            self.index.add(np.array(embeddings))
+        faiss.write_index(self.index, self.index_file)
+        with open(self.metadata_file, "w") as f:
+            json.dump(self.metadata, f)
 
     def _faiss_index_exists(self):
         return os.path.exists(self.index_file)

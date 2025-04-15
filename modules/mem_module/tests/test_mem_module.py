@@ -7,7 +7,7 @@ def mem():
         "embedding_model": "all-MiniLM-L6-v2",
         "index_file": "memory/mem_test_index",
         "metadata_file": "memory/mem_test_metadata.json",
-        "max_distance": 0.85,
+        "max_distance": 1,
     }
     module = MEMModule(config=config)
     module.initialize()

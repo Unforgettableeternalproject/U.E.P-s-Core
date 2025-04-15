@@ -142,3 +142,15 @@
 
 ---
 
+### Added more integration tests. 04/15
+
+> Date: Tue, 15 Apr 2025 15:42:38 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_integration`
+
+> Commit: `762c174545d8c5cc9ef998f0453f6571c2573c09`
+
+---
+

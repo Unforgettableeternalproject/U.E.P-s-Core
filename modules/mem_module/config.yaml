@@ -1,6 +1,6 @@
 # Default config for mem_module_module
 
 embedding_model: all-MiniLM-L6-v2
-index_file: memory/faiss_index
-metadata_file: memory/metadata.json
-max_distance: 0.85
+index_file: memory/dev_faiss_index
+metadata_file: memory/dev_metadata.json
+max_distance: 1.2

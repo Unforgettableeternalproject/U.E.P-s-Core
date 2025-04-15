@@ -202,3 +202,15 @@
 
 ---
 
+### Migrated most llm functions here with some slight changes, the access function is not yet implemented. 04/16
+
+> Date: Wed, 16 Apr 2025 03:55:31 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_integration`
+
+> Commit: `9c3ff71b0d0d1a851afc9c4e9bda1e37f4b6c9aa`
+
+---
+

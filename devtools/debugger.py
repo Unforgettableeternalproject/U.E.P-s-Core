@@ -59,7 +59,7 @@ def debug_interactive():
             case "stt":
                 if not module_enabled.get("stt_module", False):
                     info_log("STT 模組未啟用，請檢查配置。", "WARNING")
-                    print("\n==========================\n")
+                    print("==========================\n")
                     continue
 
                 debug_log(1, "STT 模組測試")

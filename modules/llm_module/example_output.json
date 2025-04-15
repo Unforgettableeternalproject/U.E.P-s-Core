@@ -1,3 +1,8 @@
-{{
-  "response": "output"
-}}
+{
+  "text": "Yes! It's your birthday!",
+  "emotion": "neutral",
+  "sys_action": {
+    "action": "",
+    "target": ""
+  }
+}

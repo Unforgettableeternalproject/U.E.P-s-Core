@@ -26,6 +26,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Content Include=".env" />
+    <Content Include=".env.example" />
     <Content Include=".gitignore" />
     <Content Include="arts\U.E.P_concept.png" />
     <Content Include="CHANGELOG.md" />
@@ -90,6 +91,7 @@
     <Compile Include="core\router.py" />
     <Compile Include="core\state_manager.py" />
     <Compile Include="devtools\debugger.py" />
+    <Compile Include="modules\llm_module\gemini_client.py" />
     <Compile Include="module_tests\integration_tests.py" />
     <Compile Include="utils\debug_helper.py" />
     <Compile Include="utils\logger.py" />
@@ -101,7 +103,7 @@
     <Compile Include="modules\ani_module\__init__.py" />
     <Compile Include="modules\llm_module\llm_module.py" />
     <Compile Include="modules\llm_module\schemas.py" />
-    <Compile Include="modules\llm_module\tests\test_llm_module_module.py" />
+    <Compile Include="module_tests\test_llm_module.py" />
     <Compile Include="modules\llm_module\__init__.py" />
     <Compile Include="modules\mem_module\mem_module.py" />
     <Compile Include="modules\mem_module\schemas.py" />

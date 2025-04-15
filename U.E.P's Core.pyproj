@@ -100,7 +100,7 @@
     <Compile Include="modules\llm_module\__init__.py" />
     <Compile Include="modules\mem_module\mem_module.py" />
     <Compile Include="modules\mem_module\schemas.py" />
-    <Compile Include="modules\mem_module\tests\test_mem_module_module.py" />
+    <Compile Include="modules\mem_module\tests\test_mem_module.py" />
     <Compile Include="modules\mem_module\__init__.py" />
     <Compile Include="modules\mov_module\mov_module.py" />
     <Compile Include="modules\mov_module\schemas.py" />

@@ -123,7 +123,6 @@ def stt_test_realtime():
 # 測試 NLP 模組
 
 def nlp_test(cases=""):
-    # 測試 NLP 模組
     nlp = modules["nlp"]
 
     if nlp is None:
@@ -136,9 +135,36 @@ def nlp_test(cases=""):
         "Do you like among us?",
         "gogogoog"
     ]
+
+    debug_log(1, f"[NLP] 測試文本: {test_cases}")
+
     for text in test_cases:
         result = nlp.handle({"text": text})
         print(f"🧠 NLP 輸出結果：{result}\n")
+
+# 測試 MEM 模組
+
+def mem_fetch_test():
+    mem = modules["mem"]
+    if mem is None:
+        error_log("[Controller] ❌ 無法載入 MEM 模組")
+        return
+    # 測試 MEM 模組
+
+    result = mem.handle(
+        {"mode": "fetch", "text": "Hello, it's me, your friend Bernie!"})
+    print("🧠 MEM 輸出結果：", result)
+
+
+def mem_store_test():
+    mem = modules["mem"]
+    if mem is None:
+        error_log("[Controller] ❌ 無法載入 MEM 模組")
+        return
+    # 測試 MEM 模組
+    result = mem.handle(
+        {"mode": "store", "entry": {"text": "Hello, it's me, your friend Bernie!"}})
+    print("🧠 MEM 輸出結果：", result)
 
 # 統合測試
 

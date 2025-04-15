@@ -29,7 +29,8 @@ class STTModule(BaseModule):
 
 
     def initialize(self):
-        info_log("[STT] 初始化中...")
+        debug_log(1, "[STT] 初始化中...")
+        self.debug()
 
         try:
             self.mic = sr.Microphone(device_index=self.device_index)
@@ -51,6 +52,7 @@ class STTModule(BaseModule):
     def handle(self, data: dict = {}) -> dict:
         validated = STTInput(**data)
         debug_log(1, f"[STT] 接收到的資料: {validated}")
+
         """單次語音轉文字"""
         try:
             with self.mic as source:
@@ -58,7 +60,7 @@ class STTModule(BaseModule):
                 audio = self.recognizer.listen(source)
             print("[STT] Transcribing...")
             text = self.recognizer.recognize_google(audio)
-            info_log(f"[STT] 辨識結果: {text}")
+            debug_log(1, f"[STT] 辨識結果: {text}")
             return STTOutput(text=text, error=None).dict()
         except sr.UnknownValueError:
             error_log("[STT] 無法辨識語音")
@@ -78,7 +80,7 @@ class STTModule(BaseModule):
                     else:
                         audio = self.recognizer.listen(source)
                 text = self.recognizer.recognize_google(audio)
-                info_log(f"[STT] 辨識結果: {text}")
+                debug_log(1, f"[STT] 辨識結果: {text}")
                 if self._callback:
                     self._callback(text)
             except sr.UnknownValueError:

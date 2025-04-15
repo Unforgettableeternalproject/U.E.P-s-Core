@@ -118,3 +118,15 @@
 
 ---
 
+### Migrated most mem functions here and updated requirements.txt, still solving dependency conflicts. 04/15
+
+> Date: Tue, 15 Apr 2025 10:24:10 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_integration`
+
+> Commit: `28ce31b7c3aa6dd9c021fe6fb9534b09ac8355f9`
+
+---
+

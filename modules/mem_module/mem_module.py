@@ -73,7 +73,8 @@ class MEMModule(BaseModule):
                         "status": "empty"
                     }
 
-                debug_log(1, f"[MEM] 查詢結果: {results}")
+                debug_log_e(1, f"[MEM] 查詢結果: {results['results']}")
+                debug_log_e(2, f"[MEM] 完整查詢結果: {results}")
                 return MEMOutput(**results).dict()
             case "store":
                 info_log("[MEM] 儲存模式啟用")
@@ -101,7 +102,7 @@ class MEMModule(BaseModule):
                     top_k = min(payload.top_k or 5, len(self.metadata))
                     result = self._clear_by_text(payload.text, top_k)
 
-                    debug_log(1, f"[MEM] 清除結果: {result}")
+                    debug_log(2, f"[MEM] 清除結果: {result}")
                     return result
                 except Exception as e:
                     error_log(f"[MEM] 清除失敗，可能是查詢結果並不存在")

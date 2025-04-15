@@ -19,7 +19,7 @@ def integration_test_SN(modules : dict):
     print("✨ 回傳語音內容：", result["text"])
 
     nlp_result = nlp.handle({"text": result["text"]})
-    print(f"🧠 NLP 輸出結果：{nlp_result.text} 對應的是 {nlp_result.label}，程式決定進行 {nlp_result.intent}\n")
+    print(f"🧠 NLP 輸出結果：{nlp_result['text']} 對應的是 {nlp_result['label']}，程式決定進行 {nlp_result['intent']}\n")
 
 # 測試STT到MEM的整合
 def integration_test_SM(modules : dict):
@@ -61,7 +61,7 @@ def integration_test_NM(modules : dict):
 
     text = input("📝 手動輸入測試句：")
     nlp_result = nlp.handle({"text": text})
-    print(f"🧠 NLP 輸出結果：{nlp_result.text} 對應的是 {nlp_result.label}，程式決定進行 {nlp_result.intent}\n")
+    print(f"🧠 NLP 輸出結果：{nlp_result['text']} 對應的是 {nlp_result['label']}，程式決定進行 {nlp_result['intent']}\n")
 
     if nlp_result["intent"] == "chat":
         mem.handle({
@@ -107,7 +107,7 @@ def integration_test_SNM(modules : dict):
 
     # Step 2: NLP 判斷
     nlp_result = nlp.handle({"text": text})
-    print(f"🧠 NLP 輸出結果：{nlp_result.text} 對應的是 {nlp_result.label}，程式決定進行 {nlp_result.intent}\n")
+    print(f"🧠 NLP 輸出結果：{nlp_result['text']} 對應的是 {nlp_result['label']}，程式決定進行 {nlp_result['intent']}\n")
 
     # Step 3: 判斷是否為聊天，若是就進行MEM查詢
     if nlp_result["intent"] == "chat":
@@ -120,4 +120,4 @@ def integration_test_SNM(modules : dict):
         return
 
     print(
-        f"🧠 記憶查詢結果：\n\n使用者: {result['results'][0]['user']} \n回應: {result['results'][0]['response']}")
+        f"🧠 記憶查詢結果：\n\n使用者: {mem_result['results'][0]['user']} \n回應: {mem_result['results'][0]['response']}")

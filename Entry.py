@@ -9,7 +9,7 @@ config = load_config()
 debug_mode = config.get("debug", {}).get("enabled", False)
 
 def clear_empty_logs():
-    # 清除空的日誌檔案
+    # 清除空的日誌檔案，作為一個後手
     import os
     log_dir = config.get("logging", {}).get("log_dir", "logs")
     for root, dirs, files in os.walk(log_dir):

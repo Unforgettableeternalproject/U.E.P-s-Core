@@ -146,7 +146,7 @@ def nlp_test(cases=""):
 
     for text in test_cases:
         result = nlp.handle({"text": text})
-        print(f"🧠 NLP 輸出結果：{result.text} 對應的是 {result.label}，程式決定進行 {result.intent}\n")
+        print(f"\n🧠 NLP 輸出結果：{result['text']} 對應的是 {result['label']}，程式決定進行 {result['intent']}\n")
 
 # 測試 MEM 模組
 
@@ -160,10 +160,10 @@ def mem_fetch_test(text : str = ""):
         {"mode": "fetch", "text": ("Test chat" if text == "" else text)})
 
     if result["status"] == "empty":
-        print("🧠 MEM 回傳：查無相關記憶")
+        print("\n🧠 MEM 回傳：查無相關記憶")
         return
 
-    print(f"🧠 MEM 輸出結果：\n\n使用者: {result['results'][0]['user']} \n回應: {result['results'][0]['response']}")
+    print(f"\n🧠 MEM 輸出結果：\n\n使用者: {result['results'][0]['user']} \n回應: {result['results'][0]['response']}")
 
 
 def mem_store_test(user_text : str = "Test chat", response_text : str = "Test response"):
@@ -174,7 +174,7 @@ def mem_store_test(user_text : str = "Test chat", response_text : str = "Test re
 
     result = mem.handle(
         {"mode": "store", "entry": {"user": user_text, "response": response_text}})
-    print("🧠 MEM 回傳：", "儲存" + ("成功" if result["status"] == "stored" else "失敗"))
+    print("\n🧠 MEM 回傳：", "儲存" + ("成功" if result["status"] == "stored" else "失敗"))
 
 def mem_clear_test(text : str = "ALL", top_k : int = 1):
     mem = modules["mem"]
@@ -184,7 +184,7 @@ def mem_clear_test(text : str = "ALL", top_k : int = 1):
 
     result = mem.handle(
         {"mode": "clear_all" if text == "ALL" else "clear_by_text", "text": text, "top_k": top_k})
-    print("🧠 MEM 回傳：", "清除" +
+    print("\n🧠 MEM 回傳：", "清除" +
           ("成功" if result["status"] == "cleared" else "失敗"))
 
 # 整合測試

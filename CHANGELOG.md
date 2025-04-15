@@ -178,3 +178,15 @@
 
 ---
 
+### Fixed several output related issues. 04/16
+
+> Date: Wed, 16 Apr 2025 01:26:27 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_integration`
+
+> Commit: `ff5db4d9ac820a9cefdcc82f7748a47ff8e0faaa`
+
+---
+

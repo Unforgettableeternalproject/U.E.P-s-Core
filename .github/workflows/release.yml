@@ -1,0 +1,34 @@
+name: Tag on Release PR Merge
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - main
+
+jobs:
+  tag_release:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Extract tag from source branch and tag commit
+        run: |
+          SOURCE_BRANCH="${{ github.event.pull_request.head.ref }}"
+          echo "🔍 PR 來源分支：$SOURCE_BRANCH"
+
+          if [[ $SOURCE_BRANCH == release/* ]]; then
+            VERSION="${SOURCE_BRANCH#release/}"
+            TAG_NAME="v$VERSION"
+            echo "🏷️ 將要打的 tag：$TAG_NAME"
+
+            git config user.name "${{ github.actor }}"
+            git config user.email "${{ github.actor }}@users.noreply.github.com"
+            git tag "$TAG_NAME"
+            git push origin "$TAG_NAME"
+          else
+            echo "⚠️ PR 來源不是 release/* 分支，跳過 tagging"
+          fi

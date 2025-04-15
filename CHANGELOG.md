@@ -166,3 +166,15 @@
 
 ---
 
+### Improved the clear functions of MEM. 04/16
+
+> Date: Wed, 16 Apr 2025 00:55:54 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_integration`
+
+> Commit: `59dff9ca89fc468c75f98146f471ff4b80fc8227`
+
+---
+

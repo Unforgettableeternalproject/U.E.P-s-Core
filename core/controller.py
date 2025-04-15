@@ -146,7 +146,7 @@ def nlp_test(cases=""):
 
     for text in test_cases:
         result = nlp.handle({"text": text})
-        print(f"🧠 NLP 輸出結果：{result}\n")
+        print(f"🧠 NLP 輸出結果：{result.text} 對應的是 {result.label}，程式決定進行 {result.intent}\n")
 
 # 測試 MEM 模組
 
@@ -176,14 +176,14 @@ def mem_store_test(user_text : str = "Test chat", response_text : str = "Test re
         {"mode": "store", "entry": {"user": user_text, "response": response_text}})
     print("🧠 MEM 回傳：", "儲存" + ("成功" if result["status"] == "stored" else "失敗"))
 
-def mem_clear_test(text : str = "ALL", topk : int = 1):
+def mem_clear_test(text : str = "ALL", top_k : int = 1):
     mem = modules["mem"]
     if mem is None:
         error_log("[Controller] ❌ 無法載入 MEM 模組")
         return
 
     result = mem.handle(
-        {"mode": "clear_all" if text == "ALL" else "clear_by_text", "text": text, "topk": topk})
+        {"mode": "clear_all" if text == "ALL" else "clear_by_text", "text": text, "top_k": top_k})
     print("🧠 MEM 回傳：", "清除" +
           ("成功" if result["status"] == "cleared" else "失敗"))
 

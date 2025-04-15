@@ -96,18 +96,20 @@ def cleanup_empty_log_files():
     for handler in logger.handlers:
         if isinstance(handler, logging.FileHandler):
             handler.close()
-            if os.path.getsize(handler.baseFilename) == 0:
-                os.remove(handler.baseFilename)
+            try:
+                if os.path.getsize(handler.baseFilename) == 0:
+                    os.remove(handler.baseFilename)
+            except Exception as e:
+                print("\n無法移除記錄檔，可能是因為根本沒有產生。\n")
 
 if not enabled: 
     # Remove log files
-    for handler in logger.handlers:
-        if isinstance(handler, logging.FileHandler):
-            handler.close()
-            os.remove(handler.baseFilename)
+    cleanup_empty_log_files()
 
     if stream_handler in logger.handlers:
         logger.removeHandler(stream_handler)
         stream_handler.close()
+else:
+    cleanup_empty_log_files()
 
-cleanup_empty_log_files()
+

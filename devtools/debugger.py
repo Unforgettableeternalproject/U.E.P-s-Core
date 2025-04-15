@@ -96,7 +96,7 @@ def debug_interactive():
                     continue
 
                 debug_log(1, "MEM 模組測試")
-                print("\n<MEM 模組測試>\n")
+                print("<MEM 模組測試>\n")
                 choice = input("請選擇欲測試之功能 (1: 記憶寫入, 2: 記憶查詢, 3: 記憶刪除): \n\n> ")
                 if choice == "1":
                     print("請輸入要寫入的記憶內容 (或輸入 'exit' 來結束):")

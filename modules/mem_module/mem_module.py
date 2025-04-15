@@ -95,14 +95,17 @@ class MEMModule(BaseModule):
                 info_log("[MEM] 根據文本清除記憶")
                 if payload.text is None:
                     info_log("[MEM] 清除文本為空，請提供有效的文本", "WARNING")
-                    return {"error": "請提供清除文本"}
+                    return {"status": "failed", "error": "請提供清除文本"}
                 try:
-                    deleted_count = self._clear_by_text(payload.text, payload.top_k)
-                    info_log(f"[MEM] 清除成功: {deleted_count['deleted']} 條記憶")
+                    # 限制 top_k 不超過 metadata 的長度
+                    top_k = min(payload.top_k or 5, len(self.metadata))
+                    result = self._clear_by_text(payload.text, top_k)
+
+                    debug_log(1, f"[MEM] 清除結果: {result}")
+                    return result
                 except Exception as e:
-                    error_log(f"[MEM] 清除失敗: {e}")
-                    return {"error": f"清除失敗: {e}"}
-                return {"status": "partial_clear", "deleted": deleted_count}
+                    error_log(f"[MEM] 清除失敗，可能是查詢結果並不存在")
+                    return {"status": "failed", "error": f"清除失敗: {e}"}
             case _:
                 info_log(f"[MEM] 不支援的模式: {payload.mode}", "WARNING")
                 return {"error": f"不支援的模式: {payload.mode}"}
@@ -177,13 +180,18 @@ class MEMModule(BaseModule):
 
         # 刪除 metadata 中對應的資料
         valid_indices = sorted(set(i for i in indices[0] if i < len(self.metadata)), reverse=True)
+
+        if not valid_indices:
+            return {"status": "failed", "deleted": 0, "message": "未找到可刪除的記憶"}
+
         for i in valid_indices:
             del self.metadata[i]
 
-        # 重新建立 index（簡單做法）
         self._rebuild_index()
 
-        return {"status": "partial_clear", "deleted": len(valid_indices)}
+        info_log(f"[MEM] 成功清除 {len(valid_indices)} 條記憶")
+
+        return {"status": "cleared", "deleted": len(valid_indices), "message": f"成功刪除 {len(valid_indices)} 筆記憶"}
 
     def _rebuild_index(self):
         self.index = faiss.IndexFlatL2(self.dimension)

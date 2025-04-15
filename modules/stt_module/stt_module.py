@@ -7,6 +7,9 @@ from core.module_base import BaseModule
 from utils.debug_helper import debug_log, info_log, error_log
 from .schemas import STTInput, STTOutput
 
+def correct_stt(text):
+    return text.lower().replace("you ep", "uep").replace("youpee", "uep").replace("uvp", "uep")
+
 class STTModule(BaseModule):
     def __init__(self, config=None):
         self.config = config or {}
@@ -26,7 +29,6 @@ class STTModule(BaseModule):
 
         # Debug level = 2
         debug_log(2, f"[STT] 模組設定: {self.config}")
-
 
     def initialize(self):
         debug_log(1, "[STT] 初始化中...")
@@ -59,7 +61,7 @@ class STTModule(BaseModule):
                 print("[STT] Listening...")
                 audio = self.recognizer.listen(source)
             print("[STT] Transcribing...")
-            text = self.recognizer.recognize_google(audio)
+            text = correct_stt(self.recognizer.recognize_google(audio))
             debug_log(1, f"[STT] 辨識結果: {text}")
             return STTOutput(text=text, error=None).dict()
         except sr.UnknownValueError:
@@ -79,7 +81,7 @@ class STTModule(BaseModule):
                         audio = self.recognizer.listen(source, phrase_time_limit=self.phrase_time_limit)
                     else:
                         audio = self.recognizer.listen(source)
-                text = self.recognizer.recognize_google(audio)
+                text = correct_stt(self.recognizer.recognize_google(audio))
                 debug_log(1, f"[STT] 辨識結果: {text}")
                 if self._callback:
                     self._callback(text)

@@ -190,3 +190,15 @@
 
 ---
 
+### Added stt simple correction mechanism and a prompt builder file for future uses. 04/16
+
+> Date: Wed, 16 Apr 2025 02:14:25 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `develop`
+
+> Commit: `d227d0f70b6ac63e719abe6c415bc108a5eb57a1`
+
+---
+

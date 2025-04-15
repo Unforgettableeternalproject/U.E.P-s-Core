@@ -1,5 +1,3 @@
-from logging import info
-from urllib import response
 import core.controller as controller
 from utils.debug_helper import debug_log, info_log, error_log
 from configs.config_loader import load_config
@@ -7,8 +5,6 @@ from configs.config_loader import load_config
 config = load_config()
 
 module_enabled = config.get("modules_enabled", {})
-
-import re
 
 def handle_module_integration(user_input):
     if user_input == "pipeline":

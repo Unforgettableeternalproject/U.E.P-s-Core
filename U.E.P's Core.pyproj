@@ -90,6 +90,7 @@
     <Compile Include="core\router.py" />
     <Compile Include="core\state_manager.py" />
     <Compile Include="devtools\debugger.py" />
+    <Compile Include="module_tests\integration_tests.py" />
     <Compile Include="utils\debug_helper.py" />
     <Compile Include="utils\logger.py" />
     <Compile Include="entry.py" />
@@ -104,7 +105,7 @@
     <Compile Include="modules\llm_module\__init__.py" />
     <Compile Include="modules\mem_module\mem_module.py" />
     <Compile Include="modules\mem_module\schemas.py" />
-    <Compile Include="modules\mem_module\tests\test_mem_module.py" />
+    <Compile Include="module_tests\test_mem_module.py" />
     <Compile Include="modules\mem_module\__init__.py" />
     <Compile Include="modules\mov_module\mov_module.py" />
     <Compile Include="modules\mov_module\schemas.py" />
@@ -112,11 +113,11 @@
     <Compile Include="modules\mov_module\__init__.py" />
     <Compile Include="modules\nlp_module\nlp_module.py" />
     <Compile Include="modules\nlp_module\schemas.py" />
-    <Compile Include="modules\nlp_module\tests\test_nlp_module.py" />
+    <Compile Include="module_tests\test_nlp_module.py" />
     <Compile Include="modules\nlp_module\__init__.py" />
     <Compile Include="modules\stt_module\schemas.py" />
     <Compile Include="modules\stt_module\stt_module.py" />
-    <Compile Include="modules\stt_module\tests\test_stt_module.py" />
+    <Compile Include="module_tests\test_stt_module.py" />
     <Compile Include="modules\stt_module\__init__.py" />
     <Compile Include="modules\sys_module\schemas.py" />
     <Compile Include="modules\sys_module\sys_module.py" />
@@ -150,13 +151,10 @@
     <Folder Include="modules\llm_module\" />
     <Folder Include="modules\llm_module\tests\" />
     <Folder Include="modules\mem_module\" />
-    <Folder Include="modules\mem_module\tests\" />
     <Folder Include="modules\mov_module\" />
     <Folder Include="modules\mov_module\tests\" />
     <Folder Include="modules\nlp_module\" />
-    <Folder Include="modules\nlp_module\tests\" />
     <Folder Include="modules\stt_module\" />
-    <Folder Include="modules\stt_module\tests\" />
     <Folder Include="modules\sys_module\" />
     <Folder Include="modules\sys_module\tests\" />
     <Folder Include="modules\tts_module\" />
@@ -165,6 +163,7 @@
     <Folder Include="modules\ui_module\tests\" />
     <Folder Include="models\" />
     <Folder Include="logs\" />
+    <Folder Include="module_tests\" />
     <Folder Include="train\" />
     <Folder Include="train\nlp\" />
     <Folder Include="utils\" />

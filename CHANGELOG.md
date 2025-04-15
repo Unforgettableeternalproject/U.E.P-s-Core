@@ -154,3 +154,15 @@
 
 ---
 
+### Moved the integration tests to another file/folder. 04/15
+
+> Date: Tue, 15 Apr 2025 16:00:26 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_integration`
+
+> Commit: `71e833e79208eacd12767c82ba42e3621b7e7979`
+
+---
+

@@ -106,3 +106,15 @@
 
 ---
 
+### Removed a critical line that makes the program exit on start, and some unnecessary lines as well. 04/15
+
+> Date: Tue, 15 Apr 2025 08:28:07 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `develop`
+
+> Commit: `35a7dc139562fd0391c62ca1d58dfbc241b5fa4d`
+
+---
+

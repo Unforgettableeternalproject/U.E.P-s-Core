@@ -1,5 +1,4 @@
 ﻿from logging import config
-from os import error
 from core.registry import get_module
 from configs.config_loader import load_config
 from utils.debug_helper import debug_log, info_log, error_log

@@ -5,7 +5,7 @@ import torch
 import os
 from transformers import DistilBertForSequenceClassification, DistilBertTokenizer
 from core.module_base import BaseModule
-from utils.debug_helper import debug_log, info_log, error_log
+from utils.debug_helper import debug_log, debug_log_e, info_log, error_log
 from .schemas import NLPInput, NLPOutput
 
 class NLPModule(BaseModule):
@@ -60,8 +60,8 @@ class NLPModule(BaseModule):
             label=label
         ).dict()
 
-        debug_log(1, f"[NLP] 預測結果: {result['text']} 對應 {result['intent']}", True)
-        debug_log(2, f"[NLP] 完整預測結果: {result}", True)
+        debug_log_e(1, f"[NLP] 預測結果: {result['text']} 對應 {result['intent']}")
+        debug_log_e(2, f"[NLP] 完整預測結果: {result}")
         return result
 
     def shutdown(self):

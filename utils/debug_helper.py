@@ -23,6 +23,9 @@ def debug_log(level: int, msg: str, exclusive: bool = False):
         else:
             if level <= _debug_level: logger.debug(msg)
 
+def debug_log_e(level: int, msg: str):
+    debug_log(level, msg, True)
+
 def info_log(msg: str, level: str = "INFO"):
 
     if not _logging_enabled:

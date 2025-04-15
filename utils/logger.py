@@ -7,9 +7,7 @@ from configs.config_loader import load_config
 
 _config = load_config()
 conf = _config.get("logging", {})
-
-if not conf.get("enabled", True):
-    exit(0)
+enabled = conf.get("enabled", True)
 
 class LogLevelFilter(logging.Filter):
     def __init__(self, min_level, max_level):
@@ -93,3 +91,15 @@ else:
     combined_file = logging.FileHandler(log_file("combined"))
     combined_file.setFormatter(formatter)
     logger.addHandler(combined_file)
+
+
+if not enabled: 
+    # Remove log files
+    for handler in logger.handlers:
+        if isinstance(handler, logging.FileHandler):
+            handler.close()
+            os.remove(handler.baseFilename)
+
+    if stream_handler in logger.handlers:
+        logger.removeHandler(stream_handler)
+        stream_handler.close()

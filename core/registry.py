@@ -1,9 +1,5 @@
-﻿# Init and load the registry modules
-
-# core/registry.py
-
+﻿# core/registry.py
 import importlib
-import os
 
 _loaded_modules = {}
 

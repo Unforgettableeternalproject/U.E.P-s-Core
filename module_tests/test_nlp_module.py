@@ -9,12 +9,12 @@ def nlp():
     nlp.shutdown()
 
 def test_classify_command(nlp):
-    result = nlp.handle({"text": "Open the notepad for me."})
+    result = nlp.handle({"text": "Open the notepad for me"})
     assert result["intent"] == "command"
     assert result["label"] in ["command", "chat", "non-sense"]
 
 def test_classify_chat(nlp):
-    result = nlp.handle({"text": "How are you today ma'am?"})
+    result = nlp.handle({"text": "How are you today"})
     assert result["intent"] == "chat"
     assert result["label"] in ["command", "chat", "non-sense"]
 

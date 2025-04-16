@@ -121,3 +121,52 @@ def integration_test_SNM(modules : dict):
 
     print(
         f"🧠 記憶查詢結果：\n\n使用者: {mem_result['results'][0]['user']} \n回應: {mem_result['results'][0]['response']}")
+
+def handle_pipeline(modules : dict):
+    stt = modules["stt"]
+    nlp = modules["nlp"]
+    llm = modules["llm"]
+    mem = modules["mem"]
+    tts = modules["tts"]
+    sysmod = modules["sysmod"]
+
+    if any(mod is None for mod in modules.values()):
+        error_log("[Controller] ❌ 無法載入所有模組，請檢查模組註冊狀態")
+        return "模組載入失敗"
+
+    # Step 1: 取得語音輸入並轉為文字
+    audio_text = stt.handle({})["text"]
+
+    # Step 2: NLP 模組判斷 intent
+    nlp_result = nlp.handle({"text": audio_text})
+    intent = nlp_result.get("intent")
+    detail = nlp_result.get("detail")
+
+    # Step 3: 分流處理（聊天或指令）
+    if intent == "chat":
+        snapshot = mem.handle({"mode": "fetch", "text": audio_text})
+        llm_result = llm.handle({
+            "text": audio_text,
+            "intent": "chat",
+            "snapshot": snapshot
+        })
+        mem.handle({"mode": "store", "entry": llm_result["log"]})
+    elif intent == "command":
+        available_sys = sysmod.handle({"mode": "list_functions"})
+        llm_result = llm.handle({
+            "text": audio_text,
+            "intent": "command",
+            "available": available_sys,
+            "detail": detail
+        })
+        sysmod.handle(llm_result.get("sys_action", {}))
+    else:
+        llm_result = {"text": "我不太明白你的意思..."}
+
+    # Step 4: 輸出給 TTS 和 UI
+    tts.handle({
+        "text": llm_result.get("text"),
+        "emotion": llm_result.get("emotion", "neutral")
+    })
+
+    return llm_result.get("text")

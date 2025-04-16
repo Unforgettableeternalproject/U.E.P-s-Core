@@ -16,7 +16,7 @@ class GeminiWrapper:
 
         # 安全設定可用 config 控制，這裡先寫死為 OFF
         self.safety_settings = [
-            types.SafetySetting(category=item["category"], threshold=item["threshold"])
+            types.SafetySetting(category=str(item["category"]), threshold=str(item["threshold"]))
             for item in config.get("safety_settings", [
                 {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_LOW_AND_ABOVE"},
                 {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_LOW_AND_ABOVE"},
@@ -35,22 +35,31 @@ class GeminiWrapper:
             "type": "object",
             "properties": {
                 "text": {"type": "string"},
-                "emotion": {"type": "string"},
+                "mood": {"type": "string"},
                 "sys_action": {
-                    "type": ["object", "null"],
-                    "properties": {
-                        "action": {"type": "string"},
-                        "target": {"type": "string"}
-                    },
-                    "required": ["action", "target"]
+                    "anyOf": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "action": {"type": "string"},
+                                "target": {"type": "string"}
+                            },
+                            "required": ["action", "target"]
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
                 }
             },
-            "required": ["text", "emotion", "sys_action"]
+            "required": ["text", "mood", "sys_action"]
         }
+
+
 
     def query(self, prompt: str) -> str:
         contents = [
-            types.Content(role="user", parts=[prompt])
+            types.Content(role="user", parts=[types.Part(text=prompt)])
         ]
 
         config = types.GenerateContentConfig(
@@ -68,4 +77,12 @@ class GeminiWrapper:
             config=config
         )
 
-        return result.candidates[0].content.parts[0].text_or_struct
+        part = result.candidates[0].content.parts[0]
+
+        if hasattr(part, 'text') and part.text:
+            import json
+            return json.loads(part.text)
+        elif hasattr(part, 'struct') and part.struct:
+            return part.struct
+        else:
+            return {"text": "❌ Gemini 未產出有效回應"}

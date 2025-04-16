@@ -214,3 +214,15 @@
 
 ---
 
+### Altered gemini schema and added tests to LLM modules, as well improved the console. 04/16
+
+> Date: Wed, 16 Apr 2025 14:58:54 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_integration`
+
+> Commit: `a4ea1bea8876e7aa65866312c1875d98b7108651`
+
+---
+

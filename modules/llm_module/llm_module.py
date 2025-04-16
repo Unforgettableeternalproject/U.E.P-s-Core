@@ -58,9 +58,8 @@ class LLMModule(BaseModule):
                 emotion=response.get("emotion", "neutral"),
                 sys_action=response.get("sys_action")
             ).dict()
-
         except Exception as e:
-            error_log(f"[LLM] Gemini 回應錯誤: {str(e)}")
+            error_log(f"[LLM] Gemini 回應錯誤: {e}")
             return {
                 "text": "系統錯誤，無法產生回應。",
                 "status": "error"

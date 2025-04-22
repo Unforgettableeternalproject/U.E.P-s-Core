@@ -133,6 +133,26 @@ def mem_clear_test(text : str = "ALL", top_k : int = 1):
     print("\n🧠 MEM 回傳：", "清除" +
           ("成功" if result["status"] == "cleared" else "失敗"))
 
+
+def mem_list_all_test(page : int = 1):
+    mem = modules["mem"]
+    if mem is None:
+        error_log("[Controller] ❌ 無法載入 MEM 模組")
+        return
+
+    result = mem.handle({"mode": "list_all", "page": page})
+
+    if result["status"] == "empty":
+        print("\n🧠 MEM 回傳：查無相關記憶")
+        return
+
+    if result["status"] == "failed":
+        print("\n🧠 MEM 回傳：記憶查詢有誤 (也許是頁碼問題)")
+        return
+    
+    for i, record in enumerate(result["records"], start=1):
+        print(f"記錄 {i}: 使用者: {record['user']}，回應: {record['response']}")
+
 # 測試 LLM 模組
 
 def llm_test_chat(text):

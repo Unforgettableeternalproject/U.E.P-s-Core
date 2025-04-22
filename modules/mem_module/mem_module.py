@@ -89,6 +89,14 @@ class MEMModule(BaseModule):
                     error_log(f"[MEM] 儲存失敗: {e}")
                     return {"error": f"儲存失敗: {e}"}
                 return {"status": "stored"}
+            case "list_all":
+                info_log("[MEM] 列出所有記憶")
+                if not self.metadata:
+                    info_log("[MEM] 沒有任何記憶可供列出", "WARNING")
+                    return {"results": [], "status": "empty"}
+                page = payload.page or 1
+                page_size = self.config.get("page_size", 10)
+                return self._list_all(page, page_size)
             case "clear_all":
                 info_log("[MEM] 清除所有記憶")
                 return self._clear_all()
@@ -169,6 +177,31 @@ class MEMModule(BaseModule):
         return {
             "results": results,
             "status": "ok"
+        }
+
+    def _list_all(self, page: int = 1, page_size: int = 10) -> dict:
+        if not self.metadata:
+            info_log("[MEM] 列出所有記憶時發現沒有任何記憶", "WARNING")
+            return {"status": "empty", "message": "目前沒有任何記憶"}
+
+        total_records = len(self.metadata)
+        total_pages = (total_records + page_size - 1) // page_size  # 計算總頁數
+
+        if page < 1 or page > total_pages:
+            info_log(f"[MEM] 無效的頁碼: {page}，總頁數: {total_pages}", "WARNING")
+            return {"status": "failed", "message": f"頁碼無效，請輸入 1 到 {total_pages} 之間的頁碼"}
+
+        start_index = (page - 1) * page_size
+        end_index = min(start_index + page_size, total_records)
+
+        records = self.metadata[start_index:end_index]
+
+        return {
+            "status": "ok",
+            "page": page,
+            "total_pages": total_pages,
+            "records": records,
+            "message": f"顯示第 {page} 頁，共 {total_pages} 頁"
         }
 
     def _clear_all(self):

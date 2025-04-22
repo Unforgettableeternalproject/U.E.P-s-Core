@@ -74,11 +74,15 @@ def debug_interactive():
 
                 debug_log(1, "STT 模組測試")
                 print("<STT 模組測試>\n")
-                choice = input("請選擇測試模式 (1: 單次測試, 2: 連續測試): \n\n> ")
+                choice = input("請選擇測試模式 (1: 單次測試, 2: 連續測試, exit: 離開): \n\n> ")
                 if choice == "1":
                     controller.stt_test_single()
                 elif choice == "2":
                     controller.stt_test_realtime()
+                elif choice == "exit" or choice == "e":
+                    break
+                else:
+                    print("\033[31m無效的選擇，請再試一次。\033[0m")
             case "nlp":
                 if not mod_list['nlp']:
                     info_log("NLP 模組未啟用，請檢查配置。", "WARNING")
@@ -103,7 +107,7 @@ def debug_interactive():
 
                 debug_log(1, "MEM 模組測試")
                 print("<MEM 模組測試>\n")
-                choice = input("請選擇欲測試之功能 (1: 記憶寫入, 2: 記憶查詢, 3: 記憶刪除): \n\n> ")
+                choice = input("請選擇欲測試之功能 (1: 記憶寫入, 2: 記憶查詢, 3: 記憶刪除, 4: 列出所有記憶, exit: 離開): \n\n> ")
                 if choice == "1":
                     print("請輸入要寫入的記憶內容 (或輸入 'exit' 來結束):")
                     while True:
@@ -141,6 +145,24 @@ def debug_interactive():
                             info_log("使用者中斷測試")
                             break
                         controller.mem_clear_test(text, topk)
+                elif choice == "4":
+                    print("列出所有記憶 (選擇查詢頁面，或輸入 'exit' 來結束):")
+                    while True:
+                        page = input("\n頁面 (預設為 1):\n> ")
+                        if page == "":
+                            page = 1
+                        elif page.lower() == "exit" or page.lower() == "e":
+                            info_log("使用者中斷測試")
+                            break
+                        else:
+                            try:
+                                page = int(page)
+                            except ValueError:
+                                print("\033[31m請輸入有效的頁碼。\033[0m")
+                                continue
+                        controller.mem_list_all_test(page)
+                elif choice == "exit" or choice == "e":
+                    break
                 else:
                     print("\033[31m無效的選擇，請再試一次。\033[0m")
             case "llm":
@@ -151,7 +173,7 @@ def debug_interactive():
                 debug_log(1, "LLM 模組測試")
                 print("<LLM 模組測試>\n")
 
-                choice = input("請選擇測試模式 (1: 聊天測試, 2: 指令測試): \n\n> ")
+                choice = input("請選擇測試模式 (1: 聊天測試, 2: 指令測試, exit: 離開): \n\n> ")
                 if choice == "1":
                     print("🗣️ 請輸入一段對話文字 (必須用英文) (或輸入 'exit' 來結束):")
                     while True:
@@ -163,7 +185,10 @@ def debug_interactive():
                         controller.llm_test_chat(text)
                 elif choice == "2":
                     info_log("指令測試尚未實作", "WARNING")
-
+                elif choice == "exit" or choice == "e":
+                    break
+                else:
+                    print("\033[31m無效的選擇，請再試一次。\033[0m")
             case "tts":
                 if not mod_list['tts']:
                     info_log("TTS 模組未啟用，請檢查配置。", "WARNING")
@@ -183,12 +208,13 @@ def debug_interactive():
             case "ex":
                 debug_log(1, "額外功能測試")
                 print("<額外功能測試>\n")
-                choice = input("請選擇欲進行測試 (1: 重點整理測試 (LLM): \n\n> ")
+                choice = input("請選擇欲進行測試 (1: 重點整理測試 (LLM), exit: 離開): \n\n> ")
                 if choice == "1":
                     controller.test_summrize()
+                elif choice == "exit" or choice == "e":
+                    break
                 else:
                     print("\033[31m無效的選擇，請再試一次。\033[0m")
-
             case "exit" | "e":
                 debug_log(1, "離開測試介面")
                 print("\n離開測試介面")

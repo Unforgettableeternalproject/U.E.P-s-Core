@@ -12,7 +12,7 @@ def clear_empty_logs():
     # 清除空的日誌檔案，作為一個後手
     import os
     log_dir = config.get("logging", {}).get("log_dir", "logs")
-    for root, dirs, files in os.walk(log_dir):
+    for root, _, files in os.walk(log_dir):
         for file in files:
             file_path = os.path.join(root, file)
             if os.path.getsize(file_path) == 0:

@@ -250,3 +250,15 @@
 
 ---
 
+### Added a list all function for MEM. 04/22
+
+> Date: Tue, 22 Apr 2025 22:52:37 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `develop`
+
+> Commit: `2488ec4c893f23ed39ebb8122a647b74e00abd95`
+
+---
+

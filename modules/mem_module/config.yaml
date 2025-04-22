@@ -4,3 +4,4 @@ embedding_model: all-MiniLM-L6-v2
 index_file: memory/dev_faiss_index
 metadata_file: memory/dev_metadata.json
 max_distance: 1.2
+page_size: 5 # Number of results to return per page

@@ -12,10 +12,15 @@ def chunk_and_summarize_memories(memories: list[str], chunk_size: int = 3) -> st
     chunks = [memories[i:i+chunk_size] for i in range(0, len(memories), chunk_size)]
     summaries = []
 
+    debug_log_e(2, f"[LLM] 記憶切塊大小: {chunk_size}")
+    debug_log_e(3, f"[LLM] 記憶切塊: {chunks}")
+
     for group in chunks:
         text_block = "\n".join(group)
         summary = _summarizer(text_block, max_length=120, min_length=20, do_sample=False)[0]["summary_text"]
         summaries.append(summary)
+
+    debug_log(3, f"[LLM] 記憶摘要: {summaries}")
 
     return "\n".join(summaries)
 

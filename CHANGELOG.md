@@ -238,3 +238,15 @@
 
 ---
 
+### Fixed some fatal problems with JSON outputs. 04/22
+
+> Date: Tue, 22 Apr 2025 22:30:56 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_integration`
+
+> Commit: `bbcd88647b8c04ba4f397ef154c2e71f6d7d679f`
+
+---
+

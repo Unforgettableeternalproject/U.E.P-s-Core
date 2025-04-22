@@ -1,1 +1,14 @@
-# Default config for tts_module_module
+# Default config for tts_module
+
+model_name: "U.E.P_normal"
+model_path: "./models/tts"
+index_file: "./models/tts/U.E.P_normal.index"
+speaker_id: 0
+default_mood: "neutral"
+pitch_map:
+  happy: 9
+  excited: 10
+  sad: 5
+  angry: 8
+  calm: 6
+  neutral: 7

@@ -389,3 +389,6 @@ train/**/results/
 # Logs and Memories
 logs/*
 memory/*
+
+# fairseq
+fairseq/*

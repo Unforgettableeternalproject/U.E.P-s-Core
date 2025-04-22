@@ -356,3 +356,5 @@ yarl==1.6.3 ; sys_platform == "win32"
     # via
     #   -r requirements.in
     #   aiohttp
+
+# fairseq 是壞文明，你要另外裝

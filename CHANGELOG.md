@@ -262,3 +262,27 @@
 
 ---
 
+### (Hopefully) Migrated basically all things of tts here, not tested yet, probably many fatal issues, will try to solve later. 04/23
+
+> Date: Wed, 23 Apr 2025 00:45:42 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_integration`
+
+> Commit: `093810b555d99d3c0a6209c9a17955f2c903ba70`
+
+---
+
+### (Hopefully) Migrated basically all things of tts here, not tested yet, probably many fatal issues, will try to solve later. 04/23
+
+> Date: Wed, 23 Apr 2025 00:45:42 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_integration`
+
+> Commit: `6fe33dde2dc89382e8cd6066e475f80099b9021c`
+
+---
+

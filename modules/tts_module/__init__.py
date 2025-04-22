@@ -1,4 +1,8 @@
 from .tts_module import TTSModule
+from configs.config_loader import load_module_config
 
 def register():
-    raise NotImplementedError("此模組尚未實作")
+    config = load_module_config("tts_module")
+    instance = TTSModule(config=config)
+    instance.initialize()
+    return instance

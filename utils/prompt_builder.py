@@ -3,7 +3,7 @@ from transformers import pipeline
 from configs.config_loader import load_module_config
 from utils.debug_helper import debug_log, debug_log_e, info_log, error_log
 
-_summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
+_summarizer = pipeline("summarization", model="philschmid/bart-large-cnn-samsum")
 
 def chunk_and_summarize_memories(memories: list[str], chunk_size: int = 3) -> str: # 之後才會用到
     """

@@ -2,6 +2,21 @@
 speechrecognition
 pyaudio
 
+# 基本語音合成與處理
+edge_tts
+librosa
+pyworld
+torchcrepe
+praat-parselmouth
+numpy
+soundfile
+ffmpeg-python
+
+# 語音模型與推理
+# git+https://github.com/facebookresearch/fairseq.git@main Optional
+fsspec
+filelock
+
 # NLP 模型與訓練
 transformers
 datasets
@@ -22,3 +37,8 @@ tqdm
 
 # 開發與測試
 pytest
+
+# TTS 工具函式所需
+networkx; sys_platform == "win32"
+yarl; sys_platform == "win32"
+typing_extensions

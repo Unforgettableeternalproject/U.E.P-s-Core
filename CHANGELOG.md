@@ -226,3 +226,15 @@
 
 ---
 
+### Added integration tests and some extras, changed the summerizer model for better conversation comprehension. 04/22
+
+> Date: Tue, 22 Apr 2025 22:01:51 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_integration`
+
+> Commit: `bedad7494d45971a5aba9449883f029cfa0c82a7`
+
+---
+

@@ -2,12 +2,7 @@
 from core.registry import get_module
 from configs.config_loader import load_config
 from utils.debug_helper import debug_log, info_log, error_log
-from module_tests.integration_tests import (
-    integration_test_SN as itSN,
-    integration_test_SM as itSM,
-    integration_test_NM as itNM,
-    integration_test_SNM as itSNM,
-)
+from module_tests.integration_tests import *
 import time
 
 config = load_config()
@@ -36,8 +31,8 @@ def safe_get_module(name):
 modules = {
     "stt": safe_get_module("stt_module"),
     "nlp": safe_get_module("nlp_module"),
-    "llm": safe_get_module("llm_module"), 
     "mem": safe_get_module("mem_module"),
+    "llm": safe_get_module("llm_module"), 
     "tts": safe_get_module("tts_module"),
     "sysmod": safe_get_module("sys_module")
 }
@@ -166,8 +161,31 @@ def integration_test_SN():
 def integration_test_SM():
     itSM(modules)
 
+def integration_test_SL():
+    itSL(modules)
+
 def integration_test_NM():
     itNM(modules)
 
+def integration_test_NL():
+    itNL(modules)
+
+def integration_test_ML():
+    itML(modules)
+
 def integration_test_SNM():
     itSNM(modules)
+
+def integration_test_SNL():
+    itSNL(modules)
+
+def integration_test_NML():
+    itNML(modules)
+
+def integration_test_SNML():
+    itSNML(modules)
+
+# 額外測試
+
+def test_summrize():
+    test_chunk_and_summarize()

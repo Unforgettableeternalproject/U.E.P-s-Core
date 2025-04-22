@@ -61,6 +61,7 @@ def debug_interactive():
                           f"\n\n{colorful_text('llm - 大型語言模型模組;', mod_list['llm'])}" +
                           f"\n\n{colorful_text('tts - 文字轉語音模組;', mod_list['tts'])}" + 
                           f"\n\n{colorful_text('sys - 系統功能模組;', mod_list['sys'])}" +
+                          f"\n\n{colorful_text('ex - 額外功能測試;')}" +
                           "\n\n也可進行模組交叉測試 (使用+號來連接，例如stt+nlp)" +
                           "\n\n(用 exit 來離開): \n\n> ")
         print("\n==========================\n")
@@ -179,6 +180,15 @@ def debug_interactive():
 
                 print("<SYS 模組測試>\n")
                 print("目前還未實作 SYS 模組的測試功能")
+            case "ex":
+                debug_log(1, "額外功能測試")
+                print("<額外功能測試>\n")
+                choice = input("請選擇欲進行測試 (1: 重點整理測試 (LLM): \n\n> ")
+                if choice == "1":
+                    controller.test_summrize()
+                else:
+                    print("\033[31m無效的選擇，請再試一次。\033[0m")
+
             case "exit" | "e":
                 debug_log(1, "離開測試介面")
                 print("\n離開測試介面")

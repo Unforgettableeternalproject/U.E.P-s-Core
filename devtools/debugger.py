@@ -1,5 +1,3 @@
-from logging import info
-from urllib import response
 import core.controller as controller
 from utils.debug_helper import debug_log, info_log, error_log
 from configs.config_loader import load_config
@@ -8,7 +6,12 @@ config = load_config()
 
 module_enabled = config.get("modules_enabled", {})
 
-import re
+mod_list = {"stt": module_enabled.get("stt_module", False)
+            , "nlp": module_enabled.get("nlp_module", False)
+            , "mem": module_enabled.get("mem_module", False)
+            , "llm": module_enabled.get("llm_module", False)
+            , "tts": module_enabled.get("tts_module", False)
+            , "sys": module_enabled.get("sys_module", False)}
 
 def handle_module_integration(user_input):
     if user_input == "pipeline":
@@ -45,25 +48,28 @@ def handle_module_integration(user_input):
     except KeyError as e:
         print(f"\033[31m無效的模組名稱：{e.args[0]}，請確認拼字。\033[0m")
 
+def colorful_text(text : str, enabled : bool = True):
+    return '\033[32m' + text + '\033[0m' if enabled else '\033[31m' + text + '\033[0m'
 
 def debug_interactive():
     print("==========================\n\n歡迎來到U.E.P模組測試介面!\n\n==========================\n")
     while True:
-        user_input = input("請選擇想要測試的模組:\n\n"+
-                          "stt - 語音轉文字模組; " + 
-                          "\n\nnlp - 自然語言分析模組; " +
-                          "\n\nmem - 記憶存取模組; " +
-                          "\n\nllm - 大型語言模型模組; " +
-                          "\n\ntts - 文字轉語音模組; " +
-                          "\n\nsys - 系統功能模組; "
+        user_input = input("請選擇想要測試的模組 (紅色標示表示未啟用):\n\n"+
+                          f"{colorful_text('stt - 語音轉文字模組;', mod_list['stt'])}" + 
+                          f"\n\n{colorful_text('nlp - 自然語言分析模組;', mod_list['nlp'])}" +
+                          f"\n\n{colorful_text('mem - 記憶存取模組;', mod_list['mem'])}" +
+                          f"\n\n{colorful_text('llm - 大型語言模型模組;', mod_list['llm'])}" +
+                          f"\n\n{colorful_text('tts - 文字轉語音模組;', mod_list['tts'])}" + 
+                          f"\n\n{colorful_text('sys - 系統功能模組;', mod_list['sys'])}" +
+                          f"\n\n{colorful_text('ex - 額外功能測試;')}" +
                           "\n\n也可進行模組交叉測試 (使用+號來連接，例如stt+nlp)" +
                           "\n\n(用 exit 來離開): \n\n> ")
         print("\n==========================\n")
         match user_input.lower():
             case "stt":
-                if not module_enabled.get("stt_module", False):
+                if not mod_list['stt']:
                     info_log("STT 模組未啟用，請檢查配置。", "WARNING")
-                    print("\n==========================\n")
+                    print("==========================\n")
                     continue
 
                 debug_log(1, "STT 模組測試")
@@ -74,9 +80,9 @@ def debug_interactive():
                 elif choice == "2":
                     controller.stt_test_realtime()
             case "nlp":
-                if not module_enabled.get("nlp_module", False):
+                if not mod_list['nlp']:
                     info_log("NLP 模組未啟用，請檢查配置。", "WARNING")
-                    print("\n==========================\n")
+                    print("==========================\n")
                     continue
 
                 debug_log(1, "NLP 模組測試")
@@ -90,9 +96,9 @@ def debug_interactive():
                     print()
                     controller.nlp_test(text)
             case "mem":
-                if not module_enabled.get("mem_module", False):
+                if not mod_list['mem']:
                     info_log("MEM 模組未啟用，請檢查配置。", "WARNING")
-                    print("\n==========================\n")
+                    print("==========================\n")
                     continue
 
                 debug_log(1, "MEM 模組測試")
@@ -138,29 +144,51 @@ def debug_interactive():
                 else:
                     print("\033[31m無效的選擇，請再試一次。\033[0m")
             case "llm":
-                if not module_enabled.get("llm_module", False):
+                if not mod_list['llm']:
                     info_log("LLM 模組未啟用，請檢查配置。", "WARNING")
-                    print("\n==========================\n")
+                    print("==========================\n")
                     continue
+                debug_log(1, "LLM 模組測試")
+                print("<LLM 模組測試>\n")
 
-                print("\n<LLM 模組測試>\n")
-                print("目前還未實作 LLM 模組的測試功能")
+                choice = input("請選擇測試模式 (1: 聊天測試, 2: 指令測試): \n\n> ")
+                if choice == "1":
+                    print("🗣️ 請輸入一段對話文字 (必須用英文) (或輸入 'exit' 來結束):")
+                    while True:
+                        text = input("\n> ")
+                        if text.lower() == "exit" or text.lower() == "e":
+                            info_log("使用者中斷測試")
+                            break
+                        print()
+                        controller.llm_test_chat(text)
+                elif choice == "2":
+                    info_log("指令測試尚未實作", "WARNING")
+
             case "tts":
-                if not module_enabled.get("tts_module", False):
+                if not mod_list['tts']:
                     info_log("TTS 模組未啟用，請檢查配置。", "WARNING")
-                    print("\n==========================\n")
+                    print("==========================\n")
                     continue
 
-                print("\n<TTS 模組測試>\n")
+                print("<TTS 模組測試>\n")
                 print("目前還未實作 TTS 模組的測試功能")
             case "sys":
-                if not module_enabled.get("sys_module", False):
+                if not mod_list['sys']:
                     info_log("SYS 模組未啟用，請檢查配置。", "WARNING")
-                    print("\n==========================\n")
+                    print("==========================\n")
                     continue
 
-                print("\n<SYS 模組測試>\n")
+                print("<SYS 模組測試>\n")
                 print("目前還未實作 SYS 模組的測試功能")
+            case "ex":
+                debug_log(1, "額外功能測試")
+                print("<額外功能測試>\n")
+                choice = input("請選擇欲進行測試 (1: 重點整理測試 (LLM): \n\n> ")
+                if choice == "1":
+                    controller.test_summrize()
+                else:
+                    print("\033[31m無效的選擇，請再試一次。\033[0m")
+
             case "exit" | "e":
                 debug_log(1, "離開測試介面")
                 print("\n離開測試介面")

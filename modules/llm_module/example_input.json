@@ -1,3 +1,5 @@
-{{
-  "example": "data"
-}}
+{
+  "text": "Do you know what day is it?",
+  "intent": "chat",
+  "memory": "You have asked me about weather and holidays before."
+}

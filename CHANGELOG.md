@@ -190,3 +190,63 @@
 
 ---
 
+### Added stt simple correction mechanism and a prompt builder file for future uses. 04/16
+
+> Date: Wed, 16 Apr 2025 02:14:25 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `develop`
+
+> Commit: `d227d0f70b6ac63e719abe6c415bc108a5eb57a1`
+
+---
+
+### Migrated most llm functions here with some slight changes, the access function is not yet implemented. 04/16
+
+> Date: Wed, 16 Apr 2025 03:55:31 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_integration`
+
+> Commit: `9c3ff71b0d0d1a851afc9c4e9bda1e37f4b6c9aa`
+
+---
+
+### Altered gemini schema and added tests to LLM modules, as well improved the console. 04/16
+
+> Date: Wed, 16 Apr 2025 14:58:54 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_integration`
+
+> Commit: `a4ea1bea8876e7aa65866312c1875d98b7108651`
+
+---
+
+### Added integration tests and some extras, changed the summerizer model for better conversation comprehension. 04/22
+
+> Date: Tue, 22 Apr 2025 22:01:51 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_integration`
+
+> Commit: `bedad7494d45971a5aba9449883f029cfa0c82a7`
+
+---
+
+### Fixed some fatal problems with JSON outputs. 04/22
+
+> Date: Tue, 22 Apr 2025 22:30:56 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_integration`
+
+> Commit: `bbcd88647b8c04ba4f397ef154c2e71f6d7d679f`
+
+---
+

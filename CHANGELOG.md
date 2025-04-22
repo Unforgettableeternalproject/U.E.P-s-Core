@@ -286,3 +286,15 @@
 
 ---
 
+### Acutally imported fairseq, and at least it doesn't give loading errors now, tests left to be implemented. 04/23
+
+> Date: Wed, 23 Apr 2025 01:12:42 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_integration`
+
+> Commit: `d161465760d9246d7cd4248227afa2a609d6a50d`
+
+---
+

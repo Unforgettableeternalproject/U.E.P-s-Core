@@ -169,6 +169,7 @@
     <Compile Include="modules\__init__.py" />
     <Compile Include="train\nlp\train_dbert.py" />
     <Compile Include="utils\prompt_builder.py" />
+    <Compile Include="utils\tts_chunker.py" />
   </ItemGroup>
   <ItemGroup>
     <Folder Include="logs\debug\" />

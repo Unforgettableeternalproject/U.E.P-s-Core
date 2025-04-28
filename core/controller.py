@@ -3,7 +3,7 @@ from core.registry import get_module
 from configs.config_loader import load_config
 from utils.debug_helper import debug_log, info_log, error_log
 from module_tests.integration_tests import *
-import time
+import time, asyncio
 
 config = load_config()
 enabled = config.get("modules_enabled", {})
@@ -180,19 +180,44 @@ def tts_test(text, mood="neutral", save=False):
     if tts is None:
         error_log("[Controller] ❌ 無法載入 TTS 模組")
         return
-
     if not text:
         error_log("[Controller] ❌ TTS 測試文本為空")
         return
-
-    result = tts.handle({"text": text, "mood": mood, "save": save})
-
+    
+    # 获取或创建事件循环
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    
+    # 同步调用异步方法
+    if hasattr(tts, 'handle_async'):
+        # 如果 TTS 模块有异步 handle 方法
+        result = loop.run_until_complete(tts.handle_async({"text": text, "mood": mood, "save": save}))
+    else:
+        # 如果 TTS 模块仍然是同步方法
+        result = tts.handle({"text": text, "mood": mood, "save": save})
+    
     if result["status"] == "error":
         print("\n❌ TTS 錯誤：", result["message"])
+    elif result["status"] == "processing":
+        print("\n⏳ TTS 處理中，分為", result.get("chunk_count", "未知"), "個區塊...")
+        
+        # 如果是异步处理中，可以选择等待完成或直接返回
+        if result.get("is_chunked", False) and hasattr(tts, 'get_queue_status'):
+            print("等待处理完成...")
+            while True:
+                status = tts.get_queue_status()
+                if status["queue_length"] == 0 and not status["is_playing"]:
+                    print("处理完成！")
+                    break
+                time.sleep(0.5)
     else:
         if save:
             print("\n✅ TTS 成功，音檔已經儲存到", result["output_path"])
-        else: print("\n✅ TTS 成功，音檔已經被撥放\n")
+        else: 
+            print("\n✅ TTS 成功，音檔已經被撥放\n")
 
 # 整合測試
 

@@ -13,3 +13,9 @@ pitch_map:
   angry: 8
   calm: 6
   neutral: 7
+chunking:
+  max_chars: 150          # Maximum characters per chunk
+  min_chars: 50           # Minimum chars to keep a chunk separate
+  chunking_threshold: 200 # Text length to activate chunking
+  respect_punctuation: true
+  pause_between_chunks: 0.2

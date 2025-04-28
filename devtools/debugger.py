@@ -196,29 +196,57 @@ def debug_interactive():
                     continue
 
                 print("<TTS 模組測試>\n")
-                
-                while True:
-                    text = input("\n請輸入要轉換的文字 (或輸入 'exit' 來結束):\n\n> ")
-                    if text.lower() == "exit" or text.lower() == "e":
-                        info_log("使用者中斷測試")
-                        break
+                choice = input("請選擇測試模式 (1: 單行文字, 2: 多行文字, exit: 離開): \n\n> ")
+                if choice == "1":
+                    while True:
+                        text = input("\n請輸入要轉換的文字 (或輸入 'exit' 來結束):\n\n> ")
+                        if text.lower() == "exit" or text.lower() == "e":
+                            info_log("使用者中斷測試")
+                            break
+                        mood = input("\n請輸入情緒 (預設為 neutral):\n\n> ")
+                        if mood.lower() == "exit" or mood.lower() == "e":
+                            info_log("\n使用者中斷測試")
+                            break
+                        elif mood == "":
+                            mood = None
+                        else:
+                            mood = mood.strip()
+
+                        save = input("\n是否儲存音檔 (y/n)? (預設為 n):\n\n> ")
+                        if save.lower() == "exit" or save.lower() == "e":
+                            info_log("使用者中斷測試")
+                            break
+                        else:
+                            save = True if save.lower() == "y" else False
+
+                        controller.tts_test(text, mood, save)
+                elif choice == "2":
+                    print("請輸入多行文字 (每行結束後按 Enter，最後一行輸入 '0' 來結束):")
+                    lines = []
+                    while True:
+                        line = input("\n> ")
+                        if line.lower().strip() == "0":
+                            break
+                        lines.append(line)
                     mood = input("\n請輸入情緒 (預設為 neutral):\n\n> ")
                     if mood.lower() == "exit" or mood.lower() == "e":
-                        info_log("\n使用者中斷測試")
+                        info_log("使用者中斷測試")
                         break
                     elif mood == "":
                         mood = None
                     else:
                         mood = mood.strip()
-
                     save = input("\n是否儲存音檔 (y/n)? (預設為 n):\n\n> ")
                     if save.lower() == "exit" or save.lower() == "e":
                         info_log("使用者中斷測試")
                         break
                     else:
                         save = True if save.lower() == "y" else False
-
-                    controller.tts_test(text, mood, save)
+                    controller.tts_test("\n".join(lines), mood, save)
+                elif choice == "exit" or choice == "e":
+                    break
+                else:
+                    print("\033[31m無效的選擇，請再試一次。\033[0m")
             case "sys":
                 if not mod_list['sys']:
                     info_log("SYS 模組未啟用，請檢查配置。", "WARNING")

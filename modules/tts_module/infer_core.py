@@ -192,7 +192,7 @@ async def generate_edge_tts_audio(text: str, voice: str = "en-US-AvaNeural", rat
         error_log(f"[TTS] Error with edge-tts: {str(e)}")
         raise
 
-def run_tts(
+async def run_tts(
     tts_text: str,
     model_name: str,
     model_path: str,
@@ -221,7 +221,8 @@ def run_tts(
         protect: Protection value for voice conversion
         speaker_id: Speaker ID to use
         voice: Voice to use for initial TTS
-        
+        speed_rate: Speed rate for initial TTS
+        loop: Event loop for async operations (optional)
     Returns:
         Dictionary with status, output_path, and message
     """
@@ -235,10 +236,9 @@ def run_tts(
         # If we have an index_file from parameters, use it instead
         if index_file:
             model_index = index_file
-        
-        # Generate initial audio with edge-tts
-        edge_output_filename = asyncio.run(generate_edge_tts_audio(tts_text, voice, speed_rate))
-        
+
+        edge_output_filename = await generate_edge_tts_audio(tts_text, voice, speed_rate)   
+
         t1 = time.time()
         edge_time = t1 - t0
         

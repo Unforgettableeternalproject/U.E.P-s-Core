@@ -310,3 +310,15 @@
 
 ---
 
+### Experimental chunking implementation. 04/28
+
+> Date: Mon, 28 Apr 2025 20:19:13 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_integration`
+
+> Commit: `793889191987bce5e3f2f956d5d739308b75513c`
+
+---
+

@@ -2,7 +2,7 @@ import os
 import uuid
 from core.module_base import BaseModule
 from configs.config_loader import load_module_config
-from utils.debug_helper import info_log, error_log
+from utils.debug_helper import debug_log, debug_log_e, info_log, error_log
 from .schemas import TTSInput, TTSOutput
 from .infer_core import run_tts, get_config
 
@@ -14,6 +14,7 @@ class TTSModule(BaseModule):
         self.index_file = self.config.get("index_file")
         self.speaker_id = self.config.get("speaker_id", 0)
         self.default_mood = self.config.get("default_mood", "neutral")
+        self.speed_rate = self.config.get("speed_rate", -0.1)
         self.pitch_map = self.config.get("pitch_map", {
             "happy": 2,
             "excited": 3,
@@ -24,6 +25,19 @@ class TTSModule(BaseModule):
         })
         
         os.makedirs(os.path.join("temp", "tts"), exist_ok=True)
+        os.makedirs(os.path.join("outputs", "tts"), exist_ok=True)
+
+    def debug(self):
+        # Debug level = 1
+        debug_log(1, "[TTS] Debug 模式啟用")
+        # Debug level = 2
+        debug_log(2, f"[TTS] 模組名稱: {self.model_name}")
+        debug_log(2, f"[TTS] 模型路徑: {self.model_path}")
+        debug_log(2, f"[TTS] 索引檔案: {self.index_file}")
+        debug_log(2, f"[TTS] 語者 ID: {self.speaker_id}")
+        debug_log(2, f"[TTS] 預設情緒: {self.default_mood}")
+        # Debug level = 3
+        debug_log(3, f"[TTS] 模組設定: {self.config}")
         
     def initialize(self):
         """Initialize the TTS module and load configurations"""
@@ -67,8 +81,8 @@ class TTSModule(BaseModule):
         
         # Generate filename and output path
         filename = f"uep_{uuid.uuid4().hex[:8]}.wav"
-        out_dir = "outputs/tts" if save else "temp/tts"
-        out_path = os.path.join(out_dir, filename)
+        out_dir = "outputs/tts"
+        out_path = os.path.join(out_dir, filename) if save else None
         
         # Log the request
         info_log(f"[TTS] Processing text: '{text[:30]}{'...' if len(text) > 30 else ''}' with mood: {mood}")
@@ -83,8 +97,9 @@ class TTSModule(BaseModule):
                 f0_up_key=f0_up_key,
                 speaker_id=self.speaker_id,
                 output_path=out_path,
-                index_rate=0.5,  # Default index rate, could be configurable
+                index_rate=0,    # Default index rate, could be configurable
                 protect=0.33,    # Default protection, could be configurable
+                speed_rate=-self.speed_rate,    # Default speed rate, could be configurable
             )
             
             # Return the result
@@ -108,6 +123,7 @@ class TTSModule(BaseModule):
         Returns:
             Pitch value for the mood
         """
+        # 最初始的情緒實踐，之後會根據狀況更改
         return self.pitch_map.get(mood.lower(), 0)
     
     def shutdown(self):

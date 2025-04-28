@@ -65,7 +65,7 @@ def debug_interactive():
                           "\n\n也可進行模組交叉測試 (使用+號來連接，例如stt+nlp)" +
                           "\n\n(用 exit 來離開): \n\n> ")
         print("\n==========================\n")
-        match user_input.lower():
+        match user_input.lower().strip():
             case "stt":
                 if not mod_list['stt']:
                     info_log("STT 模組未啟用，請檢查配置。", "WARNING")
@@ -196,7 +196,29 @@ def debug_interactive():
                     continue
 
                 print("<TTS 模組測試>\n")
-                print("目前還未實作 TTS 模組的測試功能")
+                
+                while True:
+                    text = input("\n請輸入要轉換的文字 (或輸入 'exit' 來結束):\n\n> ")
+                    if text.lower() == "exit" or text.lower() == "e":
+                        info_log("使用者中斷測試")
+                        break
+                    mood = input("\n請輸入情緒 (預設為 neutral):\n\n> ")
+                    if mood.lower() == "exit" or mood.lower() == "e":
+                        info_log("\n使用者中斷測試")
+                        break
+                    elif mood == "":
+                        mood = None
+                    else:
+                        mood = mood.strip()
+
+                    save = input("\n是否儲存音檔 (y/n)? (預設為 n):\n\n> ")
+                    if save.lower() == "exit" or save.lower() == "e":
+                        info_log("使用者中斷測試")
+                        break
+                    else:
+                        save = True if save.lower() == "y" else False
+
+                    controller.tts_test(text, mood, save)
             case "sys":
                 if not mod_list['sys']:
                     info_log("SYS 模組未啟用，請檢查配置。", "WARNING")

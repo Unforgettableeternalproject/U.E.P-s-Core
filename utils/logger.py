@@ -7,6 +7,12 @@ _config = load_config()
 conf = _config.get("logging", {})
 enabled = conf.get("enabled", True)
 
+logging.getLogger("faiss").setLevel(logging.ERROR)
+logging.getLogger("fairseq").setLevel(logging.ERROR)
+logging.getLogger("torch").setLevel(logging.ERROR)
+logging.getLogger("transformers").setLevel(logging.ERROR)
+logging.getLogger("datasets").setLevel(logging.ERROR)
+
 class LogLevelFilter(logging.Filter):
     def __init__(self, min_level, max_level):
         self.min_level = min_level

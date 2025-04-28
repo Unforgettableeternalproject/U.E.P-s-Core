@@ -157,7 +157,7 @@ class VC(object):
         ) + 1
         f0_mel[f0_mel <= 1] = 1
         f0_mel[f0_mel > 255] = 255
-        f0_coarse = np.rint(f0_mel).astype(np.int)
+        f0_coarse = np.rint(f0_mel).astype(np.int64)
         return f0_coarse, f0bak  # 1-0
 
     def vc(
@@ -286,8 +286,6 @@ class VC(object):
     ):
         if (
             file_index != ""
-            # and file_big_npy != ""
-            # and os.path.exists(file_big_npy) == True
             and os.path.exists(file_index) == True
             and index_rate != 0
         ):
@@ -435,8 +433,14 @@ class VC(object):
         max_int16 = 32768
         if audio_max > 1:
             max_int16 /= audio_max
-        audio_opt = (audio_opt * max_int16).astype(np.int16)
+
+        # 重採樣成44100
+        orig_sr = tgt_sr        
+        new_audio_opt = librosa.resample(audio_opt, orig_sr=orig_sr, target_sr=44100)
+        tgt_sr = 44100
+
+        new_audio_opt = (new_audio_opt * max_int16).astype(np.int16)
         del pitch, pitchf, sid
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        return audio_opt
+        return new_audio_opt, tgt_sr

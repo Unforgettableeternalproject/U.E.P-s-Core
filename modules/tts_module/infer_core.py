@@ -5,10 +5,11 @@ import asyncio
 import librosa
 import time
 import numpy as np
-import tempfile  # 用於創建臨時文件
+import tempfile 
 from typing import Tuple, Optional, Dict, Any, Union
 from fairseq import checkpoint_utils
-import simpleaudio as sa  # 用於播放音檔
+from fairseq.data.dictionary import Dictionary
+import simpleaudio as sa
 from utils.debug_helper import info_log, error_log
 from .lib.infer_pack.models import (
     SynthesizerTrnMs256NSFsid,
@@ -19,11 +20,16 @@ from .lib.infer_pack.models import (
 from .rmvpe import RMVPE
 from .vc_infer_pipeline import VC
 from .config import Config
+import torch.serialization
+from utils.debug_helper import debug_log, debug_log_e
 
 # Singleton instances for models to avoid reloading
 _hubert_model = None
 _rmvpe_model = None
 _config = None
+
+def safe_load(path, device):
+    return torch.load(path, map_location=device, weights_only=False)
 
 def get_config() -> Config:
     """Get or initialize the config singleton"""
@@ -38,7 +44,12 @@ def get_hubert_model(device: str, is_half: bool):
     if _hubert_model is None:
         info_log("[TTS] Loading Hubert model...")
         try:
-            models, _, _ = checkpoint_utils.load_model_ensemble_and_task([".model/tts/hubert_base.pt"])
+            with torch.serialization.safe_globals([Dictionary]):
+                models, _, _ = checkpoint_utils.load_model_ensemble_and_task(
+                    ["./models/tts/hubert_base.pt"],
+                    arg_overrides=None,
+                    strict=False
+                )
             hubert_model = models[0].to(device)
             _hubert_model = hubert_model.half() if is_half else hubert_model.float()
             info_log("[TTS] Hubert model loaded successfully")
@@ -76,7 +87,8 @@ def load_model_data(model_name: str, model_path: str, index_file: Optional[str] 
     info_log(f"[TTS] Loading model: {model_name}")
     
     try:
-        model_dir = os.path.join(model_path, model_name)
+        #model_dir = os.path.join(model_path, model_name)
+        model_dir = model_path
         pth_files = [
             os.path.join(model_dir, f)
             for f in os.listdir(model_dir)
@@ -150,7 +162,7 @@ def load_model_data(model_name: str, model_path: str, index_file: Optional[str] 
         error_log(f"[TTS] Error loading model: {str(e)}")
         raise
 
-async def generate_edge_tts_audio(text: str, voice: str = "en-US-AvaNeural", output_filename: str = None) -> str:
+async def generate_edge_tts_audio(text: str, voice: str = "en-US-AvaNeural", rate: float = 0, output_filename: str = None) -> str:
     """
     Generate audio using edge-tts
     
@@ -168,9 +180,12 @@ async def generate_edge_tts_audio(text: str, voice: str = "en-US-AvaNeural", out
     # Ensure directory exists
     os.makedirs(os.path.dirname(output_filename), exist_ok=True)
     
+    # Turn rate into formatted string (+/-n%)
+    speed = f"+{int(rate * 10)}%" if rate > 1 else f"-{int((1 - rate) * 10)}%"
+
     info_log(f"[TTS] Generating pre-process audio with edge-tts...")
     try:
-        await edge_tts.Communicate(text, voice).save(output_filename)
+        await edge_tts.Communicate(text, voice, rate=speed).save(output_filename)
         info_log(f"[TTS] Edge-TTS audio saved to {output_filename}")
         return output_filename
     except Exception as e:
@@ -188,6 +203,7 @@ def run_tts(
     index_rate: float = 0.5,
     protect: float = 0.33,
     speaker_id: int = 0,
+    speed_rate: float = 0,
     voice: str = "en-US-AvaNeural",
 ) -> Dict[str, Any]:
     """
@@ -211,20 +227,6 @@ def run_tts(
     """
     config = get_config()
     
-    # 使用臨時文件來儲存音檔
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_audio_file:
-            temp_output_path = temp_audio_file.name
-    except Exception as e:
-        error_log(f"[TTS] Failed to create temporary file: {str(e)}")
-        return {
-            "status": "error",
-            "output_path": None,
-            "message": f"無法創建臨時文件: {str(e)}"
-        }
-    
-    info_log(f"[TTS] Temporary audio will be saved to {temp_output_path}")
-    
     try:
         # Load model data
         t0 = time.time()
@@ -235,7 +237,7 @@ def run_tts(
             model_index = index_file
         
         # Generate initial audio with edge-tts
-        edge_output_filename = asyncio.run(generate_edge_tts_audio(tts_text, voice))
+        edge_output_filename = asyncio.run(generate_edge_tts_audio(tts_text, voice, speed_rate))
         
         t1 = time.time()
         edge_time = t1 - t0
@@ -249,13 +251,13 @@ def run_tts(
         hubert_model = get_hubert_model(config.device, config.is_half)
         
         if f0_method == "rmvpe":
-            rmvpe_model = get_rmvpe_model("tts/rmvpe.pt", config.device, config.is_half)
+            rmvpe_model = get_rmvpe_model("./models/tts/rmvpe.pt", config.device, config.is_half)
             vc.model_rmvpe = rmvpe_model
         
         # Run voice conversion pipeline
         info_log("[TTS] Starting voice conversion...")
         times = [0, 0, 0]
-        audio_opt = vc.pipeline(
+        audio_opt, new_sr = vc.pipeline(
             hubert_model,
             net_g,
             speaker_id,
@@ -275,50 +277,35 @@ def run_tts(
             protect,
             None,
         )
-        
-        # Save the output audio to temporary file
-        import soundfile as sf
-        sf.write(temp_output_path, audio_opt, tgt_sr)
-        
-        info_log(f"[TTS] Voice conversion completed and saved to {temp_output_path}")
-        info_log(f"[TTS] Processing times - edge-tts: {edge_time:.2f}s, npy: {times[0]:.2f}s, f0: {times[1]:.2f}s, infer: {times[2]:.2f}s")
-        
-        # 播放音檔
-        info_log(f"[TTS] Playing audio: {temp_output_path}")
-        try:
-            wave_obj = sa.WaveObject.from_wave_file(temp_output_path)
-            play_obj = wave_obj.play()
-            play_obj.wait_done()  # 等待播放完成
-            info_log("[TTS] Audio playback completed")
-        except Exception as e:
-            error_log(f"[TTS] Error during audio playback: {str(e)}")
+       
+        if output_path:
+            # 儲存檔案
+            import soundfile as sf
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            sf.write(output_path, audio_opt, new_sr)
+            info_log(f"[TTS] Audio saved to {output_path}")
             return {
-                "status": "error",
-                "output_path": temp_output_path,
-                "message": f"音檔播放失敗: {str(e)}"
+                "status": "success",
+                "output_path": output_path,
+                "message": "TTS completed and file saved."
             }
-        
-        # Clean up the temporary edge-tts file if it's not the same as temp_output_path
-        if os.path.exists(edge_output_filename) and edge_output_filename != temp_output_path:
-            try:
-                os.remove(edge_output_filename)
-                info_log(f"[TTS] Removed temporary edge-tts file: {edge_output_filename}")
-            except Exception as e:
-                error_log(f"[TTS] Failed to remove edge-tts temp file: {str(e)}")
-        
-        # Delete the temporary audio file after playback
-        try:
-            os.remove(temp_output_path)
-            info_log(f"[TTS] Removed temporary audio file: {temp_output_path}")
-        except Exception as e:
-            error_log(f"[TTS] Failed to remove temporary audio file: {str(e)}")
-        
-        return {
-            "status": "success",
-            "output_path": temp_output_path,
-            "message": f"TTS completed in {sum(times) + edge_time:.2f}s"
-        }
-        
+        else:
+            # 純記憶體播放，結束後自動捨棄
+            debug_log(1, f"[TTS] Audio data type: {audio_opt.dtype}, shape: {audio_opt.shape}, sample rate: {new_sr}")
+            play_obj = sa.play_buffer(
+                audio_opt.tobytes(),
+                num_channels=1,
+                bytes_per_sample=2,
+                sample_rate=new_sr
+            )
+            play_obj.wait_done()
+            info_log("[TTS] In-memory audio playback completed")
+            return {
+                "status": "success",
+                "output_path": None,
+                "message": "TTS completed and played in-memory."
+            }
+
     except Exception as e:
         error_log(f"[TTS] Error during TTS: {str(e)}")
         # Ensure temporary files are cleaned up in case of error
@@ -326,12 +313,6 @@ def run_tts(
             try:
                 os.remove(edge_output_filename)
                 info_log(f"[TTS] Removed temporary edge-tts file due to error: {edge_output_filename}")
-            except:
-                pass
-        if 'temp_output_path' in locals() and os.path.exists(temp_output_path):
-            try:
-                os.remove(temp_output_path)
-                info_log(f"[TTS] Removed temporary audio file due to error: {temp_output_path}")
             except:
                 pass
         return {

@@ -5,6 +5,7 @@ model_path: "./models/tts"
 index_file: "./models/tts/U.E.P_normal.index"
 speaker_id: 0
 default_mood: "neutral"
+speed_rate: 0.2
 pitch_map:
   happy: 9
   excited: 10

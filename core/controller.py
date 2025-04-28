@@ -173,6 +173,27 @@ def llm_test_chat(text):
     print("🧭 心情標記（mood）：", result.get("mood", "neutral"))
     print("⚙️ 系統指令：", result.get("sys_action"))
 
+# 測試 TTS 模組
+
+def tts_test(text, mood="neutral", save=False):
+    tts = modules["tts"]
+    if tts is None:
+        error_log("[Controller] ❌ 無法載入 TTS 模組")
+        return
+
+    if not text:
+        error_log("[Controller] ❌ TTS 測試文本為空")
+        return
+
+    result = tts.handle({"text": text, "mood": mood, "save": save})
+
+    if result["status"] == "error":
+        print("\n❌ TTS 錯誤：", result["message"])
+    else:
+        if save:
+            print("\n✅ TTS 成功，音檔已經儲存到", result["output_path"])
+        else: print("\n✅ TTS 成功，音檔已經被撥放\n")
+
 # 整合測試
 
 def integration_test_SN():

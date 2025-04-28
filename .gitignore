@@ -377,6 +377,8 @@ env/
 modules/**/outputs/
 modules/**/cache/
 modules/**/temp/
+output/*
+temp/*
 
 # 模型輸出
 /models/*
@@ -390,5 +392,5 @@ train/**/results/
 logs/*
 memory/*
 
-# fairseq
-fairseq/*
+# Wheels
+wheel/*

@@ -290,6 +290,8 @@ shapely==2.0.6
     # via google-cloud-aiplatform
 six==1.16.0
     # via python-dateutil
+simpleaudio==1.0.4
+    # via soundfile
 soundfile==0.13.1
     # via
     #   -r requirements.in

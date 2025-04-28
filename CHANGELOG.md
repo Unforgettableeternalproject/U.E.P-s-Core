@@ -298,3 +298,15 @@
 
 ---
 
+### Revisited vc_infer_pipeline and resampled soundfiles to 44100 hz for better quality. 04/28
+
+> Date: Mon, 28 Apr 2025 18:02:28 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_integration`
+
+> Commit: `0700bec872d9f0f7c7ebefa6c40dab43aa1e854c`
+
+---
+

@@ -7,6 +7,9 @@ from utils.debug_helper import debug_log, debug_log_e, info_log, error_log
 from .schemas import TTSInput, TTSOutput
 from .infer_core import run_tts, get_config
 from utils.tts_chunker import TTSChunker
+import numpy as np
+import soundfile as sf
+import simpleaudio as sa
 
 class TTSModule(BaseModule):    
     def __init__(self, config=None):
@@ -74,157 +77,155 @@ class TTSModule(BaseModule):
             error_log(f"[TTS] Initialization failed: {str(e)}")
             return False
     
-    def handle(self, data: dict) -> dict:
-        """
-        Handle TTS request
-        
-        Args:
-            data: Dictionary containing request data
-        
-        Returns:
-            Dictionary with response data
-        """
-        # Parse input through Pydantic model for validation
+    async def handle(self, data: dict) -> dict:
         try:
-            input_data = TTSInput(**data)
+            inp = TTSInput(**data)
         except Exception as e:
-            error_log(f"[TTS] Input validation failed: {str(e)}")
-            return TTSOutput(status="error", message=f"Invalid input: {str(e)}").dict()
-        
-        # Extract parameters
-        text = input_data.text
-        
-        # Check if we need to use chunking
+            return TTSOutput(status="error", message=f"Invalid input: {e}").dict()
+
+        text, mood, save = inp.text, inp.mood or self.default_mood, inp.save
         if len(text) > self.chunking_threshold:
-            info_log(f"[TTS] Text length ({len(text)}) exceeds chunking threshold, using chunking")
-            return self.handle_chunked(input_data)
-        
-        # For shorter text, use the standard processing
-        return self.handle_single(input_data)
+            return await self.handle_streaming(text, mood, save)
+        else:
+            return await self.handle_single(text, mood, save)
     
-    def handle_single(self, input_data) -> dict:
-        """Process a single chunk of text"""
-        text = input_data.text
-        mood = input_data.mood or self.default_mood
-        save = input_data.save
-        
-        # Convert mood to pitch
-        f0_up_key = self.mood_to_pitch(mood)
-        
-        # Generate filename and output path
-        filename = f"uep_{uuid.uuid4().hex[:8]}.wav"
-        out_dir = "outputs/tts"
-        out_path = os.path.join(out_dir, filename) if save else None
-        
-        # Log the request
-        info_log(f"[TTS] Processing text: '{text[:30]}{'...' if len(text) > 30 else ''}' with mood: {mood}")
-        
+    async def handle_single(self, text, mood, save) -> dict:
+        f0 = self.pitch_map.get(mood.lower(), 0)
+        out_path = None
         try:
-            # Run TTS inference
-            result = run_tts(
-                tts_text=text,
-                model_name=self.model_name,
-                model_path=self.model_path,
-                index_file=self.index_file,
-                f0_up_key=f0_up_key,
-                speaker_id=self.speaker_id,
-                output_path=out_path,
-                index_rate=0,    # Default index rate, could be configurable
-                protect=0.33,    # Default protection, could be configurable
-                speed_rate=-self.speed_rate,    # Default speed rate, could be configurable
+            if save:
+                fname = f"uep_{uuid.uuid4().hex[:8]}.wav"
+                out_dir = "outputs/tts"
+                os.makedirs(out_dir, exist_ok=True)
+                out_path = os.path.join(out_dir, fname)
+        
+            info_log(f"[TTS] 處理單段文字，長度={len(text)}")
+            result = await asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda: asyncio.run(
+                    run_tts(
+                        tts_text=text,
+                        model_name=self.model_name,
+                        model_path=self.model_path,
+                        index_file=self.index_file,
+                        f0_up_key=f0,
+                        speaker_id=self.speaker_id,
+                        output_path=out_path,
+                        speed_rate=-self.speed_rate
+                    )
+                )
             )
-            
-            # Return the result
+
+            if result.get("status") != "success":
+                return TTSOutput(
+                    status="error",
+                    message=result.get("message", "Unknown error")
+                ).dict()
+
+            if not save:
+                 audio = result["audio_buffer"]  # float32 ndarray in [-1,1]
+                 sr    = result["sr"]
+                 play_obj = sa.play_buffer(
+                    audio.tobytes(),
+                    num_channels=1,
+                    bytes_per_sample=2,
+                    sample_rate=sr
+                 )
+                 play_obj.wait_done()
+
             return TTSOutput(
-                status=result["status"],
-                output_path=result["output_path"],
-                message=result["message"]
+                status="success",
+                output_path=out_path,
+                message="TTS completed and played."
             ).dict()
-            
         except Exception as e:
             error_log(f"[TTS] Synthesis error: {str(e)}")
             return TTSOutput(status="error", message=f"TTS failed: {str(e)}").dict()
 
-    async def handle_chunked(self, input_data) -> dict:
-        """Process text by splitting into chunks and processing sequentially"""
-        text = input_data.text
-        mood = input_data.mood or self.default_mood
-        save = input_data.save
-        
-        # Convert mood to pitch
-        f0_up_key = self.mood_to_pitch(mood)
-        
-        # Prepare arguments for TTS processor
-        tts_args = {
-            "mood": mood,
-            "save": save  # Only the final chunk will be saved if requested
-        }
-        
-        # Create a wrapper function to handle individual chunks
-        def process_chunk(text, mood, save):
-            return self._process_tts_chunk(text, mood, save)
-        
-        try:
-            # Create a new event loop if one doesn't exist
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                # No event loop exists in this thread
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
+    async def handle_streaming(self, text, mood, save) -> dict:
+        f0 = self.pitch_map.get(mood.lower(), 0)
+        chunks = self.chunker.split_text(text)
 
-            result = await self.chunker.process_text(text, process_chunk, tts_args)
-            
-            # Generate a filename for the whole text if saving was requested
-            output_path = None
-            if save:
-                filename = f"uep_{uuid.uuid4().hex[:8]}.wav"
-                out_dir = "outputs/tts"
-                output_path = os.path.join(out_dir, filename)
-                # Note: In a real implementation, you might want to save the final result
-                # by concatenating all the audio chunks
-            
-            return TTSOutput(
-                status="processing",
-                output_path=output_path,
-                message=f"Processing {result.get('chunk_count', 0)} chunks sequentially",
-                is_chunked=True,
-                chunk_count=result.get('chunk_count', 0)
-            ).dict()
-            
-        except Exception as e:
-            error_log(f"[TTS] Chunked processing error: {str(e)}")
-            return TTSOutput(status="error", message=f"Chunked TTS failed: {str(e)}").dict()
-    
-    async def _process_tts_chunk(self, text, mood, save):
-        """Process a single chunk for the chunking system"""
-        f0_up_key = self.mood_to_pitch(mood)
-    
-        # We don't save intermediate chunks
-        out_path = None
-    
-        try:
-            result = run_tts(
-                tts_text=text,
-                model_name=self.model_name,
-                model_path=self.model_path,
-                index_file=self.index_file,
-                f0_up_key=f0_up_key,
-                speaker_id=self.speaker_id,
-                output_path=out_path,
-                index_rate=0,
-                protect=0.33,
-                speed_rate=-self.speed_rate,
+        queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+        tmp_dir = "temp/tts"
+        generated_files = []
+
+        # 同步執行緒中生成 chunk WAV 檔
+        def gen_chunk(idx, chunk_text):
+            fname = f"chunk_{idx}_{uuid.uuid4().hex[:8]}.wav"
+            out_path = os.path.join(tmp_dir, fname) if save else None
+            # 同步地跑完 async run_tts，拿到 dict
+            result = asyncio.run(
+                run_tts(
+                    tts_text=chunk_text,
+                    model_name=self.model_name,
+                    model_path=self.model_path,
+                    index_file=self.index_file,
+                    f0_up_key=f0,
+                    speaker_id=self.speaker_id,
+                    output_path=out_path,
+                    speed_rate=-self.speed_rate
+                )
             )
             return result
-        
-        except Exception as e:
-            error_log(f"[TTS] Chunk processing error: {str(e)}")
-            return {
-                "status": "error",
-                "output_path": None,
-                "message": str(e)
-            }
+
+        async def producer():
+            for idx, chunk in enumerate(chunks, 1):
+                result = await loop.run_in_executor(None, gen_chunk, idx, chunk)
+                if result["status"] != "success":
+                    await queue.put({"error": result["message"]})
+                    return
+
+                if save:
+                    path = result["output_path"]
+                    generated_files.append(path)
+                    await queue.put(path)
+                else:
+                    await queue.put(result)
+            # 標記結束
+            await queue.put(None)
+
+        async def consumer():
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                if "error" in item:
+                    error_log(f"TTS 產生失敗：{item['error']}")
+                    break
+                #item = {"audio_buffer": array, "sr": 16000}
+                audio, sr = item["audio_buffer"], item["sr"]
+
+                play_obj = sa.play_buffer(audio.tobytes(), 1, 2, sr)
+                play_obj.wait_done()
+
+        # 並行執行
+        await asyncio.gather(producer(), consumer())
+
+        # 最後如果要存檔，把 temp/tts 下的所有 chunk 合併
+        output_path = None
+        if save and generated_files:
+            buffers, sr = [], None
+            for f in generated_files:
+                data, _sr = sf.read(f)
+                sr = sr or _sr
+                buffers.append(data)
+            merged = np.concatenate(buffers, axis=0)
+            out_dir = "outputs/tts"
+            os.makedirs(out_dir, exist_ok=True)
+            fname = f"uep_{uuid.uuid4().hex[:8]}.wav"
+            output_path = os.path.join(out_dir, fname)
+            sf.write(output_path, merged, sr)
+
+        return {
+            "status": "success",
+            "output_path": output_path,
+            "message": f"串流處理完成，共 {len(chunks)} 段",
+            "chunk_count": len(chunks),
+            "is_streaming": True
+        }
+
     
     def mood_to_pitch(self, mood: str) -> int:
         """

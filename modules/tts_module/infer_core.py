@@ -22,6 +22,7 @@ from .vc_infer_pipeline import VC
 from .config import Config
 import torch.serialization
 from utils.debug_helper import debug_log, debug_log_e
+import soundfile as sf
 
 # Singleton instances for models to avoid reloading
 _hubert_model = None
@@ -200,7 +201,7 @@ async def run_tts(
     output_path: Optional[str] = None,
     f0_up_key: int = 0,
     f0_method: str = "rmvpe",
-    index_rate: float = 0.5,
+    index_rate: float = 0,
     protect: float = 0.33,
     speaker_id: int = 0,
     speed_rate: float = 0,
@@ -280,8 +281,6 @@ async def run_tts(
        
         if output_path:
             # 儲存檔案
-            import soundfile as sf
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
             sf.write(output_path, audio_opt, new_sr)
             info_log(f"[TTS] Audio saved to {output_path}")
             return {
@@ -291,19 +290,11 @@ async def run_tts(
             }
         else:
             # 純記憶體播放，結束後自動捨棄
-            debug_log(1, f"[TTS] Audio data type: {audio_opt.dtype}, shape: {audio_opt.shape}, sample rate: {new_sr}")
-            play_obj = sa.play_buffer(
-                audio_opt.tobytes(),
-                num_channels=1,
-                bytes_per_sample=2,
-                sample_rate=new_sr
-            )
-            play_obj.wait_done()
-            info_log("[TTS] In-memory audio playback completed")
             return {
                 "status": "success",
-                "output_path": None,
-                "message": "TTS completed and played in-memory."
+                "audio_buffer": audio_opt,  # float32 array, [-1,1]
+                "sr": new_sr,
+                "message": "TTS completed, buffer ready."
             }
 
     except Exception as e:

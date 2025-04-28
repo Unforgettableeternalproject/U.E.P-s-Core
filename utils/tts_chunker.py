@@ -173,16 +173,13 @@ class TTSChunker:
             
                 debug_log(2, f"[TTSChunker] Processing chunk: '{chunk[:30]}...' ({len(self.queue)} remaining)")
             
-                # 不保存中间块
                 args["save"] = False
             
-                # 处理块 - 异步调用
                 result = await tts_processor(text=chunk, **args)
             
                 if result["status"] != "success":
                     error_log(f"[TTSChunker] Error processing chunk: {result['message']}")
             
-                # 块之间的小暂停
                 if self.queue and not self.stop_requested:
                     await asyncio.sleep(self.pause_between_chunks)
         

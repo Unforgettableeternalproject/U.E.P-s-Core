@@ -322,3 +322,15 @@
 
 ---
 
+### Finished pipeline streaming and chunking, integration test awaits. 04/28
+
+> Date: Mon, 28 Apr 2025 22:23:05 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_integration`
+
+> Commit: `2fa6bf1c2827e3e4737008541994b9847b123e0e`
+
+---
+

@@ -334,3 +334,27 @@
 
 ---
 
+### Not yet fully tested all integration tests, but I added them in anyways, unit tests as well. 04/30
+
+> Date: Wed, 30 Apr 2025 03:12:39 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_integration`
+
+> Commit: `f1a21e371821e1fe683190cb6565c54438c037b9`
+
+---
+
+### Not yet fully tested all integration tests, but I added them in anyways, unit tests as well. 04/30
+
+> Date: Wed, 30 Apr 2025 03:12:39 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_integration`
+
+> Commit: `a0b376dc2d03766797cb96a8c0192a8c9136befb`
+
+---
+

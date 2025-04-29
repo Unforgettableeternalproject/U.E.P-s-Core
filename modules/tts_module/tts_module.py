@@ -84,6 +84,10 @@ class TTSModule(BaseModule):
             return TTSOutput(status="error", message=f"Invalid input: {e}").dict()
 
         text, mood, save = inp.text, inp.mood or self.default_mood, inp.save
+
+        if not text:
+            return TTSOutput(status="error", message="Text is required").dict()
+
         if len(text) > self.chunking_threshold:
             return await self.handle_streaming(text, mood, save)
         else:
@@ -195,10 +199,11 @@ class TTSModule(BaseModule):
                     error_log(f"TTS 產生失敗：{item['error']}")
                     break
                 #item = {"audio_buffer": array, "sr": 16000}
-                audio, sr = item["audio_buffer"], item["sr"]
+                if not save: # This is a rather dangerous code, for the schema for save and not save is entirely different, may change later.
+                    audio, sr = item["audio_buffer"], item["sr"]
 
-                play_obj = sa.play_buffer(audio.tobytes(), 1, 2, sr)
-                play_obj.wait_done()
+                    play_obj = sa.play_buffer(audio.tobytes(), 1, 2, sr)
+                    play_obj.wait_done()
 
         # 並行執行
         await asyncio.gather(producer(), consumer())

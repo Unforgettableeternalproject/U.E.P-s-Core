@@ -3,7 +3,7 @@ from modules.nlp_module.nlp_module import NLPModule
 
 @pytest.fixture
 def nlp():
-    nlp = NLPModule(config={"model_dir": "./models/command_chat_classifier"})
+    nlp = NLPModule(config={"model_dir": "./models/nlp/command_chat_classifier"})
     nlp.initialize()
     yield nlp
     nlp.shutdown()

@@ -12,6 +12,9 @@ logging.getLogger("fairseq").setLevel(logging.ERROR)
 logging.getLogger("torch").setLevel(logging.ERROR)
 logging.getLogger("transformers").setLevel(logging.ERROR)
 logging.getLogger("datasets").setLevel(logging.ERROR)
+logging.getLogger("google_genai").setLevel(logging.ERROR)
+logging.getLogger("httpx").setLevel(logging.ERROR)
+
 
 class LogLevelFilter(logging.Filter):
     def __init__(self, min_level, max_level):
@@ -61,6 +64,7 @@ def log_file(name):
 # 建立 logger
 logger = logging.getLogger("UEP")
 logger.setLevel(getattr(logging, LOG_LEVEL))
+logger.propagate = False
 
 formatter = logging.Formatter("[%(asctime)s] %(levelname)s - %(message)s")
 console_formatter = ColorFormatter(

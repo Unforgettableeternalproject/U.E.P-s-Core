@@ -126,6 +126,7 @@
     <Compile Include="modules\tts_module\rmvpe.py" />
     <Compile Include="modules\tts_module\vc_infer_pipeline.py" />
     <Compile Include="module_tests\integration_tests.py" />
+    <Compile Include="module_tests\test_tts_module.py" />
     <Compile Include="utils\debug_helper.py" />
     <Compile Include="utils\logger.py" />
     <Compile Include="entry.py" />
@@ -159,7 +160,6 @@
     <Compile Include="modules\sys_module\tests\test_sys_module_module.py" />
     <Compile Include="modules\sys_module\__init__.py" />
     <Compile Include="modules\tts_module\schemas.py" />
-    <Compile Include="modules\tts_module\tests\test_tts_module_module.py" />
     <Compile Include="modules\tts_module\tts_module.py" />
     <Compile Include="modules\tts_module\__init__.py" />
     <Compile Include="modules\ui_module\schemas.py" />
@@ -205,7 +205,6 @@
     <Folder Include="modules\tts_module\lib\infer_pack\modules\F0Predictor\" />
     <Folder Include="modules\tts_module\lib\infer_pack\__pycache__\" />
     <Folder Include="modules\tts_module\temp\" />
-    <Folder Include="modules\tts_module\tests\" />
     <Folder Include="modules\ui_module\" />
     <Folder Include="modules\ui_module\tests\" />
     <Folder Include="models\" />

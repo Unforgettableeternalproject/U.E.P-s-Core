@@ -3,7 +3,8 @@ from core.registry import get_module
 from configs.config_loader import load_config
 from utils.debug_helper import debug_log, info_log, error_log
 from module_tests.integration_tests import *
-import time, asyncio
+import time
+import asyncio
 
 config = load_config()
 enabled = config.get("modules_enabled", {})
@@ -211,14 +212,23 @@ def integration_test_SM():
 def integration_test_SL():
     itSL(modules)
 
+def integration_test_ST():
+    itST(modules)
+
 def integration_test_NM():
     itNM(modules)
 
 def integration_test_NL():
     itNL(modules)
 
+def integration_test_NT():
+    itNT(modules)
+
 def integration_test_ML():
     itML(modules)
+
+def integration_test_LT():
+    itLT(modules)
 
 def integration_test_SNM():
     itSNM(modules)
@@ -231,6 +241,12 @@ def integration_test_NML():
 
 def integration_test_SNML():
     itSNML(modules)
+
+def integration_test_NMLT():
+    itNMLT(modules)
+
+def integration_test_SNMLT():
+    itSNMLT(modules)
 
 # 額外測試
 

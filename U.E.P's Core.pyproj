@@ -31,6 +31,7 @@
     <Content Include="arts\U.E.P_concept.png" />
     <Content Include="CHANGELOG.md" />
     <Content Include="configs\config.yaml" />
+    <Content Include="docs\SYS模組功能概覽.md" />
     <Content Include="docs\U.E.P 大型模型專案 構想.pdf" />
     <Content Include="docs\專案開發準則.md" />
     <Content Include="memory\dev_faiss_index" />

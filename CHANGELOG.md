@@ -370,3 +370,15 @@
 
 ---
 
+### Added basic router amd state manager for future uses, and added more docs as well. 05/07
+
+> Date: Wed, 07 May 2025 01:19:55 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `develop`
+
+> Commit: `9b583af486053f241d6ec87376da8587a512e741`
+
+---
+

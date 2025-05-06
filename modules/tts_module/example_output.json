@@ -1,3 +1,7 @@
-{{
-  "response": "output"
-}}
+{
+  "status": "success",
+  "output_path": "/path/to/output/file",
+  "message": "Text-to-speech conversion completed successfully.",
+  "is_chunked": false,
+  "chunk_count": 0
+}

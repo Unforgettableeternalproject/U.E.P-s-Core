@@ -1,3 +1,7 @@
-{{
-  "response": "output"
-}}
+{
+  "status": "success",
+  "data": {
+    "message": "Hello, World!"
+  },
+  "message": "Request processed successfully"
+}

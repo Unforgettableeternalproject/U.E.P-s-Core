@@ -1,3 +1,6 @@
-{{
-  "example": "data"
-}}
+{
+  "text": "Hello, this is a test.",
+  "mood": "happy",
+  "save": false,
+  "force_chunking": false
+}

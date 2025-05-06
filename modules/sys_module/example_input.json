@@ -1,3 +1,9 @@
-{{
-  "example": "data"
-}}
+{
+  "mode": "drop_and_read",
+  "params": {
+    "input": {
+      "type": "file",
+      "path": "/tmp/input.txt"
+    }
+  }
+}

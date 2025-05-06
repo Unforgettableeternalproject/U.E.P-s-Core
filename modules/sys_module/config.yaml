@@ -1,1 +1,31 @@
 # Default config for sys_module_module
+
+enabled: true
+modes:
+  # 一、檔案互動
+  - drop_and_read
+  - intelligent_archive
+  - summarize_tag
+
+  # 二、桌面／視窗控制
+  - push_window
+  - fold_window
+  - switch_workspace
+  - screenshot_and_annotate
+
+  # 三、剪貼簿／文字處理
+  - clipboard_tracker
+  - quick_phrases
+  - ocr_extract
+
+  # 四、自動化助手
+  - set_reminder
+  - generate_backup_script
+  - monitor_folder
+
+  # 五、外部整合
+  - news_summary
+  - get_weather
+  - get_world_time
+  - code_analysis
+  - media_control

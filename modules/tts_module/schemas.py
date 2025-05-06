@@ -14,6 +14,6 @@ class TTSOutput(BaseModel):
     is_chunked: bool = Field(False, description="Whether the text was processed as chunks")
     chunk_count: Optional[int] = Field(None, description="Number of chunks if chunking was used")
 
-class TTSQueueStatus(BaseModel):
+class TTSQueueStatus(BaseModel):  # Currently not used
     is_playing: bool = Field(..., description="Whether TTS is currently playing")
     queue_length: int = Field(..., description="Number of chunks in the queue")

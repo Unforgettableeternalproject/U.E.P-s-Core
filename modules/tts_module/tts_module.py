@@ -102,12 +102,12 @@ class TTSModule(BaseModule):
         except Exception as e:
             return TTSOutput(status="error", message=f"Invalid input: {e}").dict()
 
-        text, mood, save = inp.text, inp.mood or self.default_mood, inp.save
+        text, mood, save, fc = inp.text, inp.mood or self.default_mood, inp.save, inp.force_chunking
 
         if not text:
             return TTSOutput(status="error", message="Text is required").dict()
 
-        if len(text) > self.chunking_threshold:
+        if len(text) > self.chunking_threshold or fc:
             return await self.handle_streaming(text, mood, save)
         else:
             return await self.handle_single(text, mood, save)

@@ -382,3 +382,15 @@
 
 ---
 
+### Migrated most sys functions here and repurposed most of them, currently left unimplemented for most. Also implemented force chunking in tts. 05/07
+
+> Date: Wed, 07 May 2025 02:01:20 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_integration`
+
+> Commit: `4fd718e3b942fda7f7b304631885a7708c8e4b6a`
+
+---
+

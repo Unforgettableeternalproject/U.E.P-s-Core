@@ -51,6 +51,7 @@ exceptiongroup==1.2.2
     # via pytest
 faiss-cpu==1.9.0.post1
     # via -r requirements.in
+feedparser==6.0.10
 ffmpeg-python==0.2.0
     # via -r requirements.in
 filelock==3.16.1
@@ -197,6 +198,7 @@ packaging==24.1
     #   transformers
 pandas==2.2.3
     # via datasets
+pdfminer==20191125
 pillow==11.1.0
     # via sentence-transformers
 platformdirs==4.3.7

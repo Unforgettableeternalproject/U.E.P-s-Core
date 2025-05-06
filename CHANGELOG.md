@@ -358,3 +358,15 @@
 
 ---
 
+### Slight optimization to tts models and setup a warm-up procedure. 05/06
+
+> Date: Tue, 06 May 2025 23:34:49 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_integration`
+
+> Commit: `6e966e42e01457054cfdef70f9e946e2c72ee88e`
+
+---
+

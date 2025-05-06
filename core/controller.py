@@ -112,7 +112,6 @@ def mem_fetch_test(text : str = ""):
 
     print(f"\n🧠 MEM 輸出結果：\n\n使用者: {result['results'][0]['user']} \n回應: {result['results'][0]['response']}")
 
-
 def mem_store_test(user_text : str = "Test chat", response_text : str = "Test response"):
     mem = modules["mem"]
     if mem is None:

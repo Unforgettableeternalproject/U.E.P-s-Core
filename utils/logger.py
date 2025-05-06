@@ -15,7 +15,6 @@ logging.getLogger("datasets").setLevel(logging.ERROR)
 logging.getLogger("google_genai").setLevel(logging.ERROR)
 logging.getLogger("httpx").setLevel(logging.ERROR)
 
-
 class LogLevelFilter(logging.Filter):
     def __init__(self, min_level, max_level):
         self.min_level = min_level

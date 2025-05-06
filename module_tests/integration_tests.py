@@ -259,14 +259,13 @@ def itML(modules: dict):
 
     if mem_result["status"] == "empty":
         info_log("[ML] 查無相關記憶", "WARNING")
-        return
 
     memory_list = [f"{r['user']} → {r['response']}" for r in mem_result.get("results", [])]
     memory = chunk_and_summarize_memories(memory_list)
 
     if not memory:
         info_log("[ML] 記憶摘要為空", "WARNING")
-        return
+        memory = "This is a new beginning of your chat."
 
     debug_log(2, f"[ML] 查詢到的記憶：{memory}")
 
@@ -275,6 +274,18 @@ def itML(modules: dict):
         "intent": "chat",
         "memory": memory
     })
+
+    if llm_result["status"] == "error":
+        info_log("[ML] LLM 模組處理失敗", "WARNING")
+        return
+    elif llm_result["status"] == "skipped":
+        info_log("[ML] LLM 模組跳過處理", "WARNING")
+        return
+
+    # 回存到 MEM 模組
+    mem.handle({"mode": "store", "entry": {
+        "user": text, "response": llm_result["text"]}})
+
     print("🧠 LLM 回應：", llm_result["text"])
     print("🎭 心情：", llm_result.get("mood"))
 
@@ -421,14 +432,13 @@ def itNML(modules: dict):
 
     if mem_result["status"] == "empty":
         info_log("[NML] 查無相關記憶", "WARNING")
-        return
 
     memory_list = [f"{r['user']} → {r['response']}" for r in mem_result.get("results", [])]
     memory = chunk_and_summarize_memories(memory_list)
 
     if not memory:
         info_log("[NML] 記憶摘要為空", "WARNING")
-        return
+        memory = "This is a new beginning of your chat."
 
     debug_log(2, f"[NML] 查詢到的記憶：{memory}")
 
@@ -444,6 +454,9 @@ def itNML(modules: dict):
     elif llm_result["status"] == "skipped":
         info_log("[NML] LLM 模組跳過處理", "WARNING")
         return
+
+    # 回存到 MEM 模組
+    mem.handle({"mode": "store", "entry": {"user": text, "response": llm_result["text"]}})
 
     print("🧠 LLM 回應：", llm_result["text"])
     print("🎭 心情：", llm_result.get("mood"))
@@ -482,7 +495,6 @@ def itSNML(modules: dict):
 
     if mem_result["status"] == "empty":
         info_log("[SNML] 查無相關記憶", "WARNING")
-        return
 
     memory_list = [
         f"{r['user']} → {r['response']}" for r in mem_result.get("results", [])]
@@ -490,7 +502,8 @@ def itSNML(modules: dict):
 
     if not memory:
         info_log("[SNML] 記憶摘要為空", "WARNING")
-        return
+        memory = "This is a new beginning of your chat."
+        # 回存到 MEM 模組
 
     debug_log(2, f"[SNML] 查詢到的記憶：{memory}")
 
@@ -506,6 +519,10 @@ def itSNML(modules: dict):
     elif llm_result["status"] == "skipped":
         info_log("[SNML] LLM 模組跳過處理", "WARNING")
         return
+
+    # 回存到 MEM 模組
+    mem.handle({"mode": "store", "entry": {
+               "user": text, "response": llm_result["text"]}})
 
     print("🧠 LLM 回應：", llm_result["text"])
     print("🎭 心情：", llm_result.get("mood"))
@@ -539,7 +556,6 @@ def itNMLT(modules: dict):
 
     if mem_result["status"] == "empty":
         info_log("[NMLT] 查無相關記憶", "WARNING")
-        return
 
     memory_list = [
         f"{r['user']} → {r['response']}" for r in mem_result.get("results", [])]
@@ -547,7 +563,7 @@ def itNMLT(modules: dict):
 
     if not memory:
         info_log("[NMLT] 記憶摘要為空", "WARNING")
-        return
+        memory = "This is a new beginning of your chat."
 
     debug_log(2, f"[NMLT] 查詢到的記憶：{memory}")
 
@@ -563,6 +579,10 @@ def itNMLT(modules: dict):
     elif llm_result["status"] == "skipped":
         info_log("[NMLT] LLM 模組跳過處理", "WARNING")
         return
+
+    # 回存到 MEM 模組
+    mem.handle({"mode": "store", "entry": {
+        "user": text, "response": llm_result["text"]}})
 
     print("🧠 LLM 回應：", llm_result["text"])
 
@@ -616,7 +636,6 @@ def itSNMLT(modules: dict):
 
     if mem_result["status"] == "empty":
         info_log("[SNMLT] 查無相關記憶", "WARNING")
-        return
 
     memory_list = [
         f"{r['user']} → {r['response']}" for r in mem_result.get("results", [])]
@@ -624,7 +643,7 @@ def itSNMLT(modules: dict):
 
     if not memory:
         info_log("[SNMLT] 記憶摘要為空", "WARNING")
-        return
+        memory = "This is a new beginning of your chat."
 
     debug_log(2, f"[SNMLT] 查詢到的記憶：{memory}")
 
@@ -640,6 +659,10 @@ def itSNMLT(modules: dict):
     elif llm_result["status"] == "skipped":
         info_log("[SNMLT] LLM 模組跳過處理", "WARNING")
         return
+
+    # 回存到 MEM 模組
+    mem.handle({"mode": "store", "entry": {
+        "user": text, "response": llm_result["text"]}})
 
     print("🧠 LLM 回應：", llm_result["text"])
 

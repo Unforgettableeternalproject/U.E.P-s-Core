@@ -72,6 +72,25 @@ class TTSModule(BaseModule):
             info_log(f"[TTS] Using device: {core_config.device}, half precision: {core_config.is_half}")
             info_log(f"[TTS] Chunking enabled with max {self.max_chars} chars per chunk")
 
+            # Warm up the TTS model
+            info_log(f"[TTS] Warming up TTS model...")
+            try:
+                asyncio.run(
+                    run_tts(
+                        tts_text="This is for the warm-up.",
+                        model_name=self.model_name,
+                        model_path=self.model_path,
+                        index_file=self.index_file,
+                        f0_up_key=7,
+                        speaker_id=self.speaker_id,
+                        output_path=None,
+                        speed_rate=-self.speed_rate
+                    )
+                )
+            except Exception as e:
+                error_log(f"[TTS] Warm up failed: {str(e)}")
+                return False
+
             return True
         except Exception as e:
             error_log(f"[TTS] Initialization failed: {str(e)}")

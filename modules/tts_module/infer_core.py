@@ -1,6 +1,7 @@
 import os
 import edge_tts
 import torch
+import torch.backends.cudnn as cudnn
 import asyncio
 import librosa
 import time
@@ -23,6 +24,8 @@ from .config import Config
 import torch.serialization
 from utils.debug_helper import debug_log, debug_log_e
 import soundfile as sf
+
+cudnn.benchmark = True
 
 # Singleton instances for models to avoid reloading
 _hubert_model = None
@@ -258,26 +261,27 @@ async def run_tts(
         # Run voice conversion pipeline
         info_log("[TTS] Starting voice conversion...")
         times = [0, 0, 0]
-        audio_opt, new_sr = vc.pipeline(
-            hubert_model,
-            net_g,
-            speaker_id,
-            audio,
-            edge_output_filename,
-            times,
-            f0_up_key,
-            f0_method,
-            model_index,
-            index_rate,
-            if_f0,
-            3,  # Filter radius
-            tgt_sr,
-            0,  # resample_sr
-            0.25,  # rms_mix_rate
-            version,
-            protect,
-            None,
-        )
+        with torch.inference_mode():
+            audio_opt, new_sr = vc.pipeline(
+                hubert_model,
+                net_g,
+                speaker_id,
+                audio,
+                edge_output_filename,
+                times,
+                f0_up_key,
+                f0_method,
+                model_index,
+                index_rate,
+                if_f0,
+                3,  # Filter radius
+                tgt_sr,
+                0,  # resample_sr
+                0.25,  # rms_mix_rate
+                version,
+                protect,
+                None,
+            )
        
         if output_path:
             # 儲存檔案

@@ -35,6 +35,10 @@
 
   ✧ state_manager 設計與狀態切換控制（chat/work/idle/error）
 
+  ✧ 事件觸發與狀態切換（時間、使用者行為、系統行為）
+
+  ✧ Requirements.txt 重構
+
 ♠︎ To-Be-Fixed/Added:
 -
   ✂ To be added,

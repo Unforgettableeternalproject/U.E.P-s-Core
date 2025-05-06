@@ -4,6 +4,7 @@ from configs.config_loader import load_config
 from utils.debug_helper import debug_log, info_log, error_log
 from module_tests.integration_tests import *
 import time
+import asyncio
 
 config = load_config()
 enabled = config.get("modules_enabled", {})
@@ -111,7 +112,6 @@ def mem_fetch_test(text : str = ""):
 
     print(f"\n🧠 MEM 輸出結果：\n\n使用者: {result['results'][0]['user']} \n回應: {result['results'][0]['response']}")
 
-
 def mem_store_test(user_text : str = "Test chat", response_text : str = "Test response"):
     mem = modules["mem"]
     if mem is None:
@@ -173,6 +173,33 @@ def llm_test_chat(text):
     print("🧭 心情標記（mood）：", result.get("mood", "neutral"))
     print("⚙️ 系統指令：", result.get("sys_action"))
 
+# 測試 TTS 模組
+
+def tts_test(text, mood="neutral", save=False):
+    tts = modules["tts"]
+    if tts is None:
+        error_log("[Controller] ❌ 無法載入 TTS 模組")
+        return
+    if not text:
+        error_log("[Controller] ❌ TTS 測試文本為空")
+        return
+
+    result = asyncio.run(tts.handle({
+        "text": text,
+        "mood": mood,
+        "save": save
+    }))
+    
+    if result["status"] == "error":
+        print("\n❌ TTS 錯誤：", result["message"])
+    elif result["status"] == "processing":
+        print("\n⏳ TTS 處理中，分為", result.get("chunk_count", "未知"), "個區塊...")
+    else:
+        if save:
+            print("\n✅ TTS 成功，音檔已經儲存到", result["output_path"])
+        else: 
+            print("\n✅ TTS 成功，音檔已經被撥放\n")
+
 # 整合測試
 
 def integration_test_SN():
@@ -184,14 +211,23 @@ def integration_test_SM():
 def integration_test_SL():
     itSL(modules)
 
+def integration_test_ST():
+    itST(modules)
+
 def integration_test_NM():
     itNM(modules)
 
 def integration_test_NL():
     itNL(modules)
 
+def integration_test_NT():
+    itNT(modules)
+
 def integration_test_ML():
     itML(modules)
+
+def integration_test_LT():
+    itLT(modules)
 
 def integration_test_SNM():
     itSNM(modules)
@@ -204,6 +240,12 @@ def integration_test_NML():
 
 def integration_test_SNML():
     itSNML(modules)
+
+def integration_test_NMLT():
+    itNMLT(modules)
+
+def integration_test_SNMLT():
+    itSNMLT(modules)
 
 # 額外測試
 

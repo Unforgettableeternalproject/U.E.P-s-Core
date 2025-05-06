@@ -290,6 +290,8 @@ shapely==2.0.6
     # via google-cloud-aiplatform
 six==1.16.0
     # via python-dateutil
+simpleaudio==1.0.4
+    # via soundfile
 soundfile==0.13.1
     # via
     #   -r requirements.in
@@ -356,3 +358,5 @@ yarl==1.6.3 ; sys_platform == "win32"
     # via
     #   -r requirements.in
     #   aiohttp
+
+# fairseq 是壞文明，你要另外裝

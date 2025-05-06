@@ -11,7 +11,7 @@ from .schemas import NLPInput, NLPOutput
 class NLPModule(BaseModule):
     def __init__(self, config=None):
         self.config = config or {}
-        self.model_dir = self.config.get("model_dir", "./models/command_chat_classifier")
+        self.model_dir = self.config.get("model_dir", "./models/nlp/command_chat_classifier")
         self.model = None
         self.tokenizer = None
         self.label_mapping = {0: "command", 1: "chat", 2: "non-sense"}

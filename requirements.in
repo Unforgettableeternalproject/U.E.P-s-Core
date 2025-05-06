@@ -13,7 +13,7 @@ soundfile
 ffmpeg-python
 
 # 語音模型與推理
-# git+https://github.com/facebookresearch/fairseq.git@main Optional
+git+https://github.com/facebookresearch/fairseq.git@main
 fsspec
 filelock
 

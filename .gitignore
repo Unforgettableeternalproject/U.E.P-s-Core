@@ -377,6 +377,8 @@ env/
 modules/**/outputs/
 modules/**/cache/
 modules/**/temp/
+output/*
+temp/*
 
 # 模型輸出
 /models/*
@@ -389,3 +391,6 @@ train/**/results/
 # Logs and Memories
 logs/*
 memory/*
+
+# Wheels
+wheel/*

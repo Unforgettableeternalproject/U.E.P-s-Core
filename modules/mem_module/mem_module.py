@@ -25,11 +25,11 @@ class MEMModule(BaseModule):
         # Debug level = 1
         debug_log(1, "[MEM] Debug 模式啟用")
         # Debug level = 2
-        debug_log(2, f"[MEM] 模組設定: {self.config}")
+        debug_log(2, f"[MEM] 嵌入模型: {self.embedding_model}")
+        debug_log(2, f"[MEM] FAISS 索引檔案: {self.index_file}")
+        debug_log(2, f"[MEM] 元資料檔案: {self.metadata_file}")
         # Debug level = 3
-        debug_log(3, f"[MEM] 嵌入模型: {self.embedding_model}")
-        debug_log(3, f"[MEM] FAISS 索引檔案: {self.index_file}")
-        debug_log(3, f"[MEM] 元資料檔案: {self.metadata_file}")
+        debug_log(3, f"[MEM] 完整模組設定: {self.config}")
 
     def initialize(self):
         debug_log(1, "[MEM] 初始化中...")

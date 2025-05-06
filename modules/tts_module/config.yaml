@@ -1,1 +1,21 @@
-# Default config for tts_module_module
+# Default config for tts_module
+
+model_name: "U.E.P_normal"
+model_path: "./models/tts"
+index_file: "./models/tts/U.E.P_normal.index"
+speaker_id: 0
+default_mood: "neutral"
+speed_rate: 0.2
+pitch_map:
+  happy: 9
+  excited: 10
+  sad: 5
+  angry: 8
+  calm: 6
+  neutral: 7
+chunking:
+  max_chars: 150          # Maximum characters per chunk
+  min_chars: 50           # Minimum chars to keep a chunk separate
+  chunking_threshold: 200 # Text length to activate chunking
+  respect_punctuation: true
+  pause_between_chunks: 0.2

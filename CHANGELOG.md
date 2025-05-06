@@ -262,3 +262,111 @@
 
 ---
 
+### (Hopefully) Migrated basically all things of tts here, not tested yet, probably many fatal issues, will try to solve later. 04/23
+
+> Date: Wed, 23 Apr 2025 00:45:42 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_integration`
+
+> Commit: `093810b555d99d3c0a6209c9a17955f2c903ba70`
+
+---
+
+### (Hopefully) Migrated basically all things of tts here, not tested yet, probably many fatal issues, will try to solve later. 04/23
+
+> Date: Wed, 23 Apr 2025 00:45:42 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_integration`
+
+> Commit: `6fe33dde2dc89382e8cd6066e475f80099b9021c`
+
+---
+
+### Acutally imported fairseq, and at least it doesn't give loading errors now, tests left to be implemented. 04/23
+
+> Date: Wed, 23 Apr 2025 01:12:42 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_integration`
+
+> Commit: `d161465760d9246d7cd4248227afa2a609d6a50d`
+
+---
+
+### Revisited vc_infer_pipeline and resampled soundfiles to 44100 hz for better quality. 04/28
+
+> Date: Mon, 28 Apr 2025 18:02:28 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_integration`
+
+> Commit: `0700bec872d9f0f7c7ebefa6c40dab43aa1e854c`
+
+---
+
+### Experimental chunking implementation. 04/28
+
+> Date: Mon, 28 Apr 2025 20:19:13 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_integration`
+
+> Commit: `793889191987bce5e3f2f956d5d739308b75513c`
+
+---
+
+### Finished pipeline streaming and chunking, integration test awaits. 04/28
+
+> Date: Mon, 28 Apr 2025 22:23:05 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_integration`
+
+> Commit: `2fa6bf1c2827e3e4737008541994b9847b123e0e`
+
+---
+
+### Not yet fully tested all integration tests, but I added them in anyways, unit tests as well. 04/30
+
+> Date: Wed, 30 Apr 2025 03:12:39 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_integration`
+
+> Commit: `f1a21e371821e1fe683190cb6565c54438c037b9`
+
+---
+
+### Not yet fully tested all integration tests, but I added them in anyways, unit tests as well. 04/30
+
+> Date: Wed, 30 Apr 2025 03:12:39 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_integration`
+
+> Commit: `a0b376dc2d03766797cb96a8c0192a8c9136befb`
+
+---
+
+### Slight optimization to tts models and setup a warm-up procedure. 05/06
+
+> Date: Tue, 06 May 2025 23:34:49 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_integration`
+
+> Commit: `6e966e42e01457054cfdef70f9e946e2c72ee88e`
+
+---
+

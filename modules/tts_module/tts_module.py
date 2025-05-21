@@ -134,7 +134,8 @@ class TTSModule(BaseModule):
                         f0_up_key=f0,
                         speaker_id=self.speaker_id,
                         output_path=out_path,
-                        speed_rate=-self.speed_rate
+                        speed_rate=-self.speed_rate,
+                        # voice="zh-TW-HsiaoChenNeural" # For Chinese Voice Purpose, uncomment this line.
                     )
                 )
             )
@@ -188,7 +189,8 @@ class TTSModule(BaseModule):
                     f0_up_key=f0,
                     speaker_id=self.speaker_id,
                     output_path=out_path,
-                    speed_rate=-self.speed_rate
+                    speed_rate=-self.speed_rate,
+                    # voice="zh-TW-HsiaoYuNeural" # For Chinese Voice Purpose, uncomment this line.
                 )
             )
             return result
@@ -229,7 +231,7 @@ class TTSModule(BaseModule):
 
         # 最後如果要存檔，把 temp/tts 下的所有 chunk 合併
         output_path = None
-        if save and generated_files:
+        if save and generated_files: # 現在的存檔似乎會忽略最後一段??
             buffers, sr = [], None
             for f in generated_files:
                 data, _sr = sf.read(f)

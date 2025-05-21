@@ -5,7 +5,7 @@ modules_enabled:
   nlp_module: false
   mem_module: false
   llm_module: false
-  tts_module: false
+  tts_module: true
   sys_module: true
 
 logging:

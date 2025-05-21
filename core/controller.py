@@ -2,7 +2,10 @@
 from core.registry import get_module
 from configs.config_loader import load_config
 from utils.debug_helper import debug_log, info_log, error_log
+from utils.debug_file_dropper import open_demo_window
 from module_tests.integration_tests import *
+import tkinter as tk
+from tkinterdnd2 import TkinterDnD
 import time
 import asyncio
 
@@ -172,7 +175,7 @@ def llm_test_chat(text):
     print("🧠 Gemini 回應：", result.get("text", "[無回應]"))
     print("🧭 心情標記（mood）：", result.get("mood", "neutral"))
     print("⚙️ 系統指令：", result.get("sys_action"))
-
+    
 # 測試 TTS 模組
 
 def tts_test(text, mood="neutral", save=False):
@@ -199,6 +202,46 @@ def tts_test(text, mood="neutral", save=False):
             print("\n✅ TTS 成功，音檔已經儲存到", result["output_path"])
         else: 
             print("\n✅ TTS 成功，音檔已經被撥放\n")
+
+# 測試 SYS 模組
+
+def sys_list_functions():
+    sysmod = modules["sysmod"]
+
+    if sysmod is None:
+        error_log("[Controller] ❌ 無法載入 SYS 模組")
+        return
+
+    resp = sysmod.handle({"mode": "list_functions", "params": {}})
+
+    print("=== SYS 功能清單 ===")
+    import json
+    print(json.dumps(resp.get("data", {}), ensure_ascii=False, indent=2))
+
+
+def sys_test_functions(mode : int = 1, sub : int = 1): 
+    sysmod = modules["sysmod"]
+    if sysmod is None:
+        error_log("[Controller] ❌ 無法載入 SYS 模組")
+        return
+
+    match mode:
+        case 1: # 檔案互動功能
+            info_log("[Controller] 開啟檔案互動功能")
+            if sub == 1: # Drop and Read
+                file_path = open_demo_window()
+                resp = sysmod.handle({"mode": "drop_and_read", "params": {"file_path": file_path}})
+                print(resp.get("data", {}))
+            elif sub == 2: #
+                resp = sysmod.handle({"mode": "file_interaction", "params": {"action": "open"}})
+                print("=== SYS 檔案互動功能 ===")
+                print(resp.get("data", {}))
+            elif sub == 3:
+                resp = sysmod.handle({"mode": "file_interaction", "params": {"action": "save"}})
+                print("=== SYS 檔案互動功能 ===")
+                print(resp.get("data", {}))
+        case _:
+            pass
 
 # 整合測試
 

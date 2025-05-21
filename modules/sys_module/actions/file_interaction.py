@@ -2,8 +2,6 @@ from pathlib import Path
 from utils.debug_helper import info_log, error_log
 
 def drop_and_read(file_path: str) -> str:
-    raise NotImplementedError("drop_and_read 尚未實作")
-
     info_log(f"[file] 讀取檔案：{file_path}")
     ext = Path(file_path).suffix.lower()
     try:

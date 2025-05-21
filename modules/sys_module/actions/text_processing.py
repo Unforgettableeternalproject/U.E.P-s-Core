@@ -49,7 +49,7 @@ def _monitor_loop():
         time.sleep(1)
 
 # 啟動監控
-threading.Thread(target=_monitor_loop, daemon=True).start()
+# threading.Thread(target=_monitor_loop, daemon=True).start()
 
 def clipboard_tracker(parent=None):
     raise NotImplementedError("clipboard_tracker 尚未實作")

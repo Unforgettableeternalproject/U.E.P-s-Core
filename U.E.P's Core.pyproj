@@ -68,6 +68,7 @@
     <Content Include="modules\sys_module\config.yaml" />
     <Content Include="modules\sys_module\example_input.json" />
     <Content Include="modules\sys_module\example_output.json" />
+    <Content Include="modules\sys_module\functions.yaml" />
     <Content Include="modules\tts_module\config.yaml" />
     <Content Include="modules\tts_module\example_input.json" />
     <Content Include="modules\tts_module\example_output.json" />
@@ -133,6 +134,7 @@
     <Compile Include="modules\tts_module\vc_infer_pipeline.py" />
     <Compile Include="module_tests\integration_tests.py" />
     <Compile Include="module_tests\test_tts_module.py" />
+    <Compile Include="utils\debug_file_dropper.py" />
     <Compile Include="utils\debug_helper.py" />
     <Compile Include="utils\logger.py" />
     <Compile Include="entry.py" />

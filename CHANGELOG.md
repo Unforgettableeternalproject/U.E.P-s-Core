@@ -394,3 +394,15 @@
 
 ---
 
+### Added a function.yaml for better usage of the functions, and added some self check sysyem to prevent exceptions. 05/22
+
+> Date: Thu, 22 May 2025 00:28:58 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_integration`
+
+> Commit: `fe8c79b055901f263c812037ed58af60ee81b153`
+
+---
+

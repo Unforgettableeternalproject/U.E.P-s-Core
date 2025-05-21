@@ -1,0 +1,169 @@
+# Need revision
+
+drop_and_read:
+  description: "讀入 txt/md/pdf 並回傳文字"
+  params:
+    file_path:
+      type: str
+      required: true
+      description: "要讀取的檔案路徑 (.txt, .md, .pdf)"
+
+intelligent_archive:
+  description: "依日期／類型／關鍵字自動歸檔"
+  params:
+    file_path:
+      type: str
+      required: true
+      description: "來源檔案的完整路徑"
+    rule:
+      type: str
+      required: false
+      description: "歸檔規則（'date' / 'type' / 'keyword'）"
+
+summarize_tag:
+  description: "生成3條重點摘要並輸出 summary 檔案"
+  params:
+    file_path:
+      type: str
+      required: true
+      description: "要摘要的原始檔案路徑"
+
+push_window:
+  description: "將指定視窗『推一推』產生位移效果"
+  params:
+    window_id:
+      type: str
+      required: true
+      description: "視窗識別（標題、handle或ID）"
+
+fold_window:
+  description: "將指定視窗摺疊（最小化或隱藏）"
+  params:
+    window_id:
+      type: str
+      required: true
+      description: "視窗識別（標題、handle或ID）"
+
+switch_workspace:
+  description: "切換到指定工作區（虛擬桌面）"
+  params:
+    workspace_name:
+      type: str
+      required: true
+      description: "工作區名稱或索引"
+
+screenshot_and_annotate:
+  description: "擷取螢幕或指定區域並開啟標註工具"
+  params:
+    region:
+      type: dict
+      required: false
+      description: "擷取區域 {x, y, width, height}；留空表示全螢幕"
+
+clipboard_tracker:
+  description: "搜尋剪貼簿歷史並複製選定項目"
+  params:
+    pattern:
+      type: str
+      required: true
+      description: "搜尋關鍵字"
+
+quick_phrases:
+  description: "快速貼上預先定義的文字範本"
+  params:
+    template_name:
+      type: str
+      required: true
+      description: "範本名稱，例如 'email', 'signature' 等"
+
+ocr_extract:
+  description: "對拖入的圖片做 OCR 並回傳文字"
+  params:
+    image_path:
+      type: str
+      required: true
+      description: "圖片檔案路徑"
+
+set_reminder:
+  description: "設定待辦／提醒，到點自動觸發"
+  params:
+    time:
+      type: str
+      required: true
+      description: "觸發時間，ISO 格式字串"
+    message:
+      type: str
+      required: true
+      description: "提醒內容"
+
+generate_backup_script:
+  description: "產生每天／定期備份 Documents 的腳本"
+  params:
+    target_folder:
+      type: str
+      required: true
+      description: "要備份的來源資料夾"
+    dest_folder:
+      type: str
+      required: true
+      description: "備份目的地資料夾"
+    output_path:
+      type: str
+      required: false
+      description: "腳本檔案輸出路徑"
+
+monitor_folder:
+  description: "監控指定資料夾，有變更時觸發 callback"
+  params:
+    folder_path:
+      type: str
+      required: true
+      description: "要監控的資料夾路徑"
+    interval:
+      type: int
+      required: false
+      description: "輪詢間隔秒數，預設10"
+
+news_summary:
+  description: "擷取 RSS 新聞並生成重點摘要"
+  params:
+    rss_url:
+      type: str
+      required: true
+      description: "RSS feed 網址"
+    max_items:
+      type: int
+      required: false
+      description: "擷取條數，預設5"
+
+weather_time:
+  description: "回傳指定地區的天氣或當前時間"
+  params:
+    location:
+      type: str
+      required: true
+      description: "城市名稱或地點"
+    query_type:
+      type: str
+      required: false
+      description: "查詢類型：'weather' 或 'time'，預設 'weather'"
+
+code_analysis:
+  description: "對程式碼片段做 AST 分析，找出結構或瓶頸"
+  params:
+    code:
+      type: str
+      required: true
+      description: "要分析的程式碼字串"
+
+media_control:
+  description: "播放／暫停／切歌等多媒體控制"
+  params:
+    action:
+      type: str
+      required: true
+      description: "操作指令，例如 'play', 'pause', 'next'"
+    target:
+      type: str
+      required: false
+      description: "媒體目標，例如 'spotify', 'vlc' 等"

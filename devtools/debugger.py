@@ -255,7 +255,24 @@ def debug_interactive():
                     continue
 
                 print("<SYS 模組測試>\n")
-                print("目前還未實作 SYS 模組的測試功能")
+                choice = input(
+                    "請選擇欲測試之功能 (1: 檔案互動功能, help: 列出所有功能以及其參數, exit: 離開): \n\n> ")
+
+                match choice:
+                    case "1":
+                        sub = input("請選擇欲測試之子功能 (1: drop_and_read, 2: intelligent_archive, 3: summarize_tag, exit: 離開): \n\n> ")
+                        # Test if sub is not a number or "exit"
+                        if sub in ["1", "2", "3"]:
+                            controller.sys_test_functions(mode=1, sub=int(sub))
+                        elif sub.lower() == "exit" or sub.lower() == "e":
+                            break
+                        else:
+                                print("\033[31m無效的選擇，請再試一次。\033[0m")
+                    case "help" | "h":
+                        controller.sys_list_functions()
+                    case _:
+                        print("\033[31m無效的選擇，請再試一次。\033[0m")
+                        break
             case "ex":
                 debug_log(1, "額外功能測試")
                 print("<額外功能測試>\n")

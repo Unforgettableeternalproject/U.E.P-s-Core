@@ -2,7 +2,7 @@
 from core.registry import get_module
 from configs.config_loader import load_config
 from utils.debug_helper import debug_log, info_log, error_log
-from utils.debug_file_dropper import open_demo_window
+from utils.debug_file_dropper import open_demo_window, open_folder_dialog
 from module_tests.integration_tests import *
 import tkinter as tk
 from tkinterdnd2 import TkinterDnD
@@ -228,20 +228,43 @@ def sys_test_functions(mode : int = 1, sub : int = 1):
     match mode:
         case 1: # 檔案互動功能
             info_log("[Controller] 開啟檔案互動功能")
-            if sub == 1: # Drop and Read
-                file_path = open_demo_window()
-                resp = sysmod.handle({"mode": "drop_and_read", "params": {"file_path": file_path}})
-                print(resp.get("data", {}))
-            elif sub == 2: #
-                resp = sysmod.handle({"mode": "file_interaction", "params": {"action": "open"}})
-                print("=== SYS 檔案互動功能 ===")
-                print(resp.get("data", {}))
-            elif sub == 3:
-                resp = sysmod.handle({"mode": "file_interaction", "params": {"action": "save"}})
-                print("=== SYS 檔案互動功能 ===")
-                print(resp.get("data", {}))
+            match sub:
+                case 1: # Drop and Read
+                    file_path = open_demo_window()
+                    resp = sysmod.handle({"mode": "drop_and_read", "params": {"file_path": file_path}})
+                    print(resp.get("data", {}))
+                case 2: # Intelligent Archive
+                    file_path = open_demo_window()
+                    resp = sysmod.handle({"mode": "intelligent_archive", "params": {"file_path": file_path}})
+                    print("=== SYS 智能歸檔功能 ===")
+                    print(f"檔案已歸檔至: {resp.get('data', '未知位置')}")                
+                case 3: # Intelligent Archive with target directory
+                    file_path = open_demo_window()
+                    print("請選擇目標資料夾...")
+                    target_dir = open_folder_dialog()
+                    params = {"file_path": file_path}
+                    if target_dir:
+                        params["target_dir"] = target_dir
+                        print(f"已選擇目標資料夾: {target_dir}")
+                    else:
+                        print("未選擇目標資料夾，將使用系統自動選擇")
+                    resp = sysmod.handle({"mode": "intelligent_archive", "params": params})
+                    print("=== SYS 智能歸檔功能 (指定目錄) ===")
+                    print(f"檔案已歸檔至: {resp.get('data', '未知位置')}")
+                case 4: # Summarize Tag
+                    file_path = open_demo_window()
+                    resp = sysmod.handle({"mode": "summarize_tag", "params": {"file_path": file_path}})
+                    print("=== SYS 檔案摘要標記功能 ===")
+                    result = resp.get("data", {})
+                    if isinstance(result, dict):
+                        print(f"摘要檔案位置: {result.get('summary_file', '未生成')}")
+                        print(f"生成標籤: {', '.join(result.get('tags', ['無標籤']))}")
+                    else:
+                        print(f"結果: {result}")
+                case _:
+                    print("未知的子功能選項")
         case _:
-            pass
+            print("未知的功能選項")
 
 # 整合測試
 
@@ -294,3 +317,148 @@ def integration_test_SNMLT():
 
 def test_summrize():
     test_chunk_and_summarize()
+
+# 測試 SYS 模組
+
+def integration_test_Y():
+    """測試 SYS 模組的檔案操作功能"""
+    if modules["sysmod"] is None:
+        error_log("[Test] SYS 模組未啟用，無法進行測試")
+        return False
+    
+    info_log("[Test] 開始測試 SYS 模組")
+    
+    # 測試參數
+    import os
+    import tempfile
+    
+    # 建立測試檔案
+    with tempfile.NamedTemporaryFile(suffix=".txt", delete=False, mode='w', encoding='utf-8') as tmp:
+        tmp.write("這是一個測試檔案，用於測試 SYS 模組的檔案操作功能。\n")
+        tmp.write("系統模組應該能夠正確讀取這個檔案並進行處理。\n")
+        test_file_path = tmp.name
+    
+    info_log(f"[Test] 測試檔案已建立：{test_file_path}")
+    
+    try:
+        # 測試 drop_and_read 功能
+        info_log("[Test] 測試 drop_and_read 功能")
+        content = modules["sysmod"].handle({
+            "mode": "drop_and_read",
+            "params": {
+                "file_path": test_file_path
+            }
+        })
+        
+        if "content" in content and len(content["content"]) > 0:
+            info_log("[Test] drop_and_read 測試成功")
+        else:
+            error_log("[Test] drop_and_read 測試失敗")
+        
+        # 測試 summarize_tag 功能
+        info_log("[Test] 測試 summarize_tag 功能")
+        summary_result = modules["sysmod"].handle({
+            "mode": "summarize_tag",
+            "params": {
+                "file_path": test_file_path,
+                "tag_count": 2
+            }
+        })
+        
+        if "summary_file" in summary_result:
+            info_log(f"[Test] summarize_tag 測試成功，生成摘要檔案：{summary_result['summary_file']}")
+        else:
+            error_log("[Test] summarize_tag 測試失敗")
+        
+        # 測試 intelligent_archive 功能
+        info_log("[Test] 測試 intelligent_archive 功能")
+        archive_result = modules["sysmod"].handle({
+            "mode": "intelligent_archive",
+            "params": {
+                "file_path": test_file_path
+            }
+        })
+        
+        if "new_path" in archive_result:
+            info_log(f"[Test] intelligent_archive 測試成功，檔案已歸檔至：{archive_result['new_path']}")
+        else:
+            error_log("[Test] intelligent_archive 測試失敗")
+            
+        info_log("[Test] SYS 模組測試完成")
+        return True
+        
+    except Exception as e:
+        error_log(f"[Test] SYS 模組測試失敗：{e}")
+        return False
+    finally:
+        # 清理測試檔案
+        try:
+            if os.path.exists(test_file_path):
+                os.remove(test_file_path)
+            info_log("[Test] 測試檔案已清理")
+        except:
+            error_log("[Test] 無法清理測試檔案")
+
+def integration_test_TY():
+    """測試 TTS + SYS 模組整合：檔案朗讀功能"""
+    if modules["tts"] is None or modules["sysmod"] is None:
+        error_log("[Test] TTS 或 SYS 模組未啟用，無法進行整合測試")
+        return False
+    
+    info_log("[Test] 開始測試 TTS+SYS 模組整合")
+    
+    # 測試參數
+    import os
+    import tempfile
+    
+    # 建立測試檔案
+    with tempfile.NamedTemporaryFile(suffix=".txt", delete=False, mode='w', encoding='utf-8') as tmp:
+        tmp.write("這是一個整合測試檔案。\n")
+        tmp.write("系統模組讀取檔案後，語音合成模組應該能夠將內容轉換為語音。\n")
+        test_file_path = tmp.name
+    
+    info_log(f"[Test] 測試檔案已建立：{test_file_path}")
+    
+    try:
+        # 先使用 SYS 模組讀取檔案
+        file_content = modules["sysmod"].handle({
+            "mode": "drop_and_read",
+            "params": {
+                "file_path": test_file_path
+            }
+        })
+        
+        if "content" not in file_content or not file_content["content"]:
+            error_log("[Test] SYS 模組讀取檔案失敗")
+            return False
+            
+        info_log("[Test] SYS 模組成功讀取檔案")
+        
+        # 再使用 TTS 模組將內容轉換為語音
+        tts_result = modules["tts"].handle({
+            "text": file_content["content"],
+            "options": {
+                "speed": 1.0,
+                "volume": 1.0
+            }
+        })
+        
+        if "audio_path" in tts_result:
+            info_log(f"[Test] TTS 模組成功生成語音檔案：{tts_result['audio_path']}")
+            info_log("[Test] TTS+SYS 模組整合測試成功")
+            return True
+        else:
+            error_log("[Test] TTS 模組生成語音失敗")
+            return False
+            
+    except Exception as e:
+        error_log(f"[Test] TTS+SYS 模組整合測試失敗：{e}")
+        return False
+    finally:
+        # 清理測試檔案
+        try:
+            if os.path.exists(test_file_path):
+                os.remove(test_file_path)
+            info_log("[Test] 測試檔案已清理")
+        except:
+            error_log("[Test] 無法清理測試檔案")

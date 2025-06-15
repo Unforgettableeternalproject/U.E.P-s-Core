@@ -232,7 +232,6 @@ def debug_interactive():
                     mood = input("\n請輸入情緒 (預設為 neutral):\n\n> ")
                     if mood.lower() == "exit" or mood.lower() == "e":
                         info_log("使用者中斷測試")
-                        break
                     elif mood == "":
                         mood = None
                     else:
@@ -240,7 +239,6 @@ def debug_interactive():
                     save = input("\n是否儲存音檔 (y/n)? (預設為 n):\n\n> ")
                     if save.lower() == "exit" or save.lower() == "e":
                         info_log("使用者中斷測試")
-                        break
                     else:
                         save = True if save.lower() == "y" else False
                     controller.tts_test("\n".join(lines), mood, save)
@@ -252,27 +250,25 @@ def debug_interactive():
                 if not mod_list['sys']:
                     info_log("SYS 模組未啟用，請檢查配置。", "WARNING")
                     print("==========================\n")
-                    continue
-
+                    continue                
+                
                 print("<SYS 模組測試>\n")
-                choice = input(
-                    "請選擇欲測試之功能 (1: 檔案互動功能, help: 列出所有功能以及其參數, exit: 離開): \n\n> ")
-
+                choice = input("請選擇欲測試之功能 (1: 檔案互動功能, help: 列出所有功能以及其參數, exit: 離開): \n\n> ")
+                
                 match choice:
                     case "1":
-                        sub = input("請選擇欲測試之子功能 (1: drop_and_read, 2: intelligent_archive, 3: summarize_tag, exit: 離開): \n\n> ")
+                        sub = input("請選擇欲測試之子功能 (1: 讀取文字, 2: 智能歸檔, 3: 指定目錄歸檔, 4: 檔案摘要標記, exit: 離開): \n\n> ")
                         # Test if sub is not a number or "exit"
-                        if sub in ["1", "2", "3"]:
+                        if sub in ["1", "2", "3", "4"]:
                             controller.sys_test_functions(mode=1, sub=int(sub))
                         elif sub.lower() == "exit" or sub.lower() == "e":
                             break
                         else:
-                                print("\033[31m無效的選擇，請再試一次。\033[0m")
+                            print("\033[31m無效的選擇，請再試一次。\033[0m")
                     case "help" | "h":
                         controller.sys_list_functions()
                     case _:
                         print("\033[31m無效的選擇，請再試一次。\033[0m")
-                        break
             case "ex":
                 debug_log(1, "額外功能測試")
                 print("<額外功能測試>\n")

@@ -406,3 +406,15 @@
 
 ---
 
+### Documents updated, and added several new functions (some are not yet tested). 06/15
+
+> Date: Sun, 15 Jun 2025 14:34:38 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_integration`
+
+> Commit: `9bb13bd1640de75458cf1863598375c676d1e950`
+
+---
+

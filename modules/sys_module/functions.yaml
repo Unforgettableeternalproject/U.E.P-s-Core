@@ -9,24 +9,29 @@ drop_and_read:
       description: "要讀取的檔案路徑 (.txt, .md, .pdf)"
 
 intelligent_archive:
-  description: "依日期／類型／關鍵字自動歸檔"
+  description: "智能歸檔檔案至適當位置"
   params:
     file_path:
       type: str
       required: true
       description: "來源檔案的完整路徑"
-    rule:
+    target_dir:
       type: str
       required: false
-      description: "歸檔規則（'date' / 'type' / 'keyword'）"
+      description: "使用者指定的目標資料夾，若為空則自動判斷"
 
 summarize_tag:
-  description: "生成3條重點摘要並輸出 summary 檔案"
+  description: "為檔案生成摘要與標籤，輸出到summary檔案"
   params:
     file_path:
       type: str
       required: true
       description: "要摘要的原始檔案路徑"
+    tag_count:
+      type: int
+      required: false
+      default: 3
+      description: "要生成的標籤數量，預設為3個"
 
 push_window:
   description: "將指定視窗『推一推』產生位移效果"

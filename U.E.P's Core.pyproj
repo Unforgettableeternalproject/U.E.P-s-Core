@@ -28,12 +28,14 @@
     <Content Include=".env" />
     <Content Include=".env.example" />
     <Content Include=".gitignore" />
+    <Content Include="configs\archive_history.json" />
     <Content Include="arts\U.E.P_concept.png" />
     <Content Include="CHANGELOG.md" />
     <Content Include="configs\config.yaml" />
     <Content Include="docs\SYS模組功能概覽.md" />
-    <Content Include="docs\U.E.P 大型模型專案 構想.pdf" />
+    <Content Include="docs\專案藍圖.md" />
     <Content Include="docs\專案開發準則.md" />
+    <Content Include="docs\本學期的專案進度.md" />
     <Content Include="memory\dev_faiss_index" />
     <Content Include="memory\dev_metadata.json" />
     <Content Include="models\nlp\command_chat_classifier\config.json" />

@@ -1,0 +1,25 @@
+{
+  "archives": [
+    {
+      "original_path": "E:/Pictures/Concept Arts/DB_Frontend_Concept.png",
+      "target_dir": "E:\\Pictures",
+      "file_name": "DB_Frontend_Concept.png",
+      "file_ext": ".png",
+      "timestamp": "2025-06-15T03:01:18.863587"
+    },
+    {
+      "original_path": "C:/Users/Bernie/OneDrive/圖片/Core.png",
+      "target_dir": "E:\\Pictures",
+      "file_name": "Core.png",
+      "file_ext": ".png",
+      "timestamp": "2025-06-15T02:54:52.676609"
+    },
+    {
+      "original_path": "E:/Documents/Word/U.E.P 大型模型專案 構想.docx",
+      "target_dir": "C:\\Users\\Bernie\\Documents",
+      "file_name": "U.E.P 大型模型專案 構想.docx",
+      "file_ext": ".docx",
+      "timestamp": "2025-06-15T02:47:48.350279"
+    }
+  ]
+}

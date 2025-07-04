@@ -135,8 +135,8 @@ class TTSModule(BaseModule):
                         speaker_id=self.speaker_id,
                         output_path=out_path,
                         speed_rate=-self.speed_rate,
-                        # voice="zh-TW-HsiaoChenNeural" # For Chinese Voice Purpose, uncomment this line.
-                        voice="ja-JP-NanamiNeural" # For Japanese Voice Purpose, uncomment this line.
+                        voice="zh-TW-HsiaoChenNeural" # For Chinese Voice Purpose, uncomment this line.
+                        # voice="ja-JP-NanamiNeural" # For Japanese Voice Purpose, uncomment this line.
                     )
                 )
             )
@@ -191,7 +191,7 @@ class TTSModule(BaseModule):
                     output_path=out_path,
                     speed_rate=-self.speed_rate,
                     # voice="zh-TW-HsiaoYuNeural"
-                    voice="ja-JP-NanamiNeural"
+                    # voice="ja-JP-NanamiNeural"
                 )
             )
             return result, fname, out_path  # 返回更多資訊以便追蹤

@@ -8,6 +8,59 @@ drop_and_read:
       required: true
       description: "要讀取的檔案路徑 (.txt, .md, .pdf)"
 
+# 新增：Session Workflow 相關功能
+start_workflow:
+  description: "啟動多步驟工作流程（用於複雜指令處理）"
+  params:
+    workflow_type:
+      type: str
+      required: true
+      description: "工作流程類型，例如 file_processing, task_automation 等"
+    command:
+      type: str
+      required: true
+      description: "觸發工作流程的原始指令"
+    initial_data:
+      type: dict
+      required: false
+      description: "初始化工作流程的資料"
+
+continue_workflow:
+  description: "繼續進行多步驟工作流程的下一個步驟"
+  params:
+    session_id:
+      type: str
+      required: true
+      description: "工作流程會話ID"
+    user_input:
+      type: str
+      required: false
+      description: "使用者針對當前步驟的輸入"
+
+cancel_workflow:
+  description: "取消進行中的工作流程"
+  params:
+    session_id:
+      type: str
+      required: true
+      description: "要取消的工作流程會話ID"
+    reason:
+      type: str
+      required: false
+      description: "取消原因"
+
+get_workflow_status:
+  description: "取得工作流程的當前狀態"
+  params:
+    session_id:
+      type: str
+      required: true
+      description: "工作流程會話ID"
+
+list_active_workflows:
+  description: "列出所有進行中的工作流程"
+  params: {}
+
 intelligent_archive:
   description: "智能歸檔檔案至適當位置"
   params:
@@ -172,3 +225,52 @@ media_control:
       type: str
       required: false
       description: "媒體目標，例如 'spotify', 'vlc' 等"
+
+# 測試工作流程功能
+test_workflow_echo:
+  description: "簡單回顯工作流程 - 用於測試單步驟工作流程"
+  category: "測試功能"
+  params:
+    message:
+      type: str
+      required: false
+      description: "要回顯的訊息"
+
+test_workflow_countdown:
+  description: "倒數工作流程 - 用於測試多步驟工作流程"
+  category: "測試功能"
+  params:
+    count:
+      type: int
+      required: false
+      description: "倒數的起始數字"
+
+test_workflow_data_collector:
+  description: "資料收集工作流程 - 用於測試複雜多步驟工作流程"
+  category: "測試功能"
+  params:
+    name:
+      type: str
+      required: false
+      description: "使用者姓名"
+    age:
+      type: int
+      required: false
+      description: "使用者年齡"
+    interests:
+      type: str
+      required: false
+      description: "使用者興趣，以逗號分隔"
+    feedback:
+      type: str
+      required: false
+      description: "使用者反饋"
+
+test_workflow_random_fail:
+  description: "隨機失敗工作流程 - 用於測試錯誤處理機制"
+  category: "測試功能"
+  params:
+    fail_chance:
+      type: int
+      required: false
+      description: "失敗機率 (0-100)"

@@ -1,6 +1,27 @@
 {
   "archives": [
     {
+      "original_path": "C:/Users/Bernie/Documents/Thing Left.txt",
+      "target_dir": "E:\\Documents",
+      "file_name": "Thing Left.txt",
+      "file_ext": ".txt",
+      "timestamp": "2025-06-15T22:25:13.008590"
+    },
+    {
+      "original_path": "C:/Users/Bernie/Documents/Thing Left.txt",
+      "target_dir": "E:\\Documents",
+      "file_name": "Thing Left.txt",
+      "file_ext": ".txt",
+      "timestamp": "2025-06-15T22:23:52.835986"
+    },
+    {
+      "original_path": "E:/Documents/記事本/Thing Left.txt",
+      "target_dir": "C:\\Users\\Bernie\\Documents",
+      "file_name": "Thing Left.txt",
+      "file_ext": ".txt",
+      "timestamp": "2025-06-15T22:22:49.120412"
+    },
+    {
       "original_path": "E:/Pictures/Concept Arts/DB_Frontend_Concept.png",
       "target_dir": "E:\\Pictures",
       "file_name": "DB_Frontend_Concept.png",

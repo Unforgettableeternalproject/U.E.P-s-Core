@@ -253,7 +253,7 @@ def debug_interactive():
                     continue                
                 
                 print("<SYS 模組測試>\n")
-                choice = input("請選擇欲測試之功能 (1: 檔案互動功能, help: 列出所有功能以及其參數, exit: 離開): \n\n> ")
+                choice = input("請選擇欲測試之功能 (1: 檔案互動功能, 2: 測試工作流程, help: 列出所有功能以及其參數, exit: 離開): \n\n> ")
                 
                 match choice:
                     case "1":
@@ -265,8 +265,18 @@ def debug_interactive():
                             break
                         else:
                             print("\033[31m無效的選擇，請再試一次。\033[0m")
+                    case "2":
+                        sub = input("請選擇欲測試之工作流程 (1: 簡單回顯, 2: 倒數計時, 3: 資料收集, 4: 隨機失敗, exit: 離開): \n\n> ")
+                        if sub in ["1", "2", "3", "4"]:
+                            controller.sys_test_workflows(workflow_type=int(sub))
+                        elif sub.lower() == "exit" or sub.lower() == "e":
+                            break
+                        else:
+                            print("\033[31m無效的選擇，請再試一次。\033[0m")
                     case "help" | "h":
                         controller.sys_list_functions()
+                        print("\n=== 測試工作流程選項 ===")
+                        controller.sys_list_test_workflows()
                     case _:
                         print("\033[31m無效的選擇，請再試一次。\033[0m")
             case "ex":

@@ -208,40 +208,61 @@ def summarize_tag(file_path: str, tag_count: int = 3) -> dict:
     # 嘗試使用LLM模組生成摘要，如果模組未啟用則使用簡單摘要
     try:
         # 嘗試導入並使用LLM模組
-        try:
-            # 動態導入LLM模組
+        try:            # 動態導入LLM模組
             llm_module = None
             try:
-                from modules.llm_module.llm_module import LlmModule
-                from configs.config_loader import get_config
+                from modules.llm_module.llm_module import LLMModule
+                from configs.config_loader import load_module_config
                 
-                config = get_config().get("llm_module", {})
-                llm_module = LlmModule(config)
+                config = load_module_config("llm_module")
+                llm_module = LLMModule(config)
                 info_log(f"[file] 成功載入LLM模組")
-            except ImportError:
-                info_log(f"[file] LLM模組未啟用或無法導入，將使用簡單摘要")
+            except ImportError as e:
+                info_log(f"[file] LLM模組未啟用或無法導入，將使用簡單摘要: {e}")
                 
             if llm_module:
-                # 構建摘要請求
-                request_data = {
-                    "task": "summarize",
-                    "content": content[:5000],  # 限制長度避免過長
-                    "options": {
-                        "summary_length": "short",
-                        "generate_tags": True,
-                        "tag_count": tag_count
-                    }
-                }
+                # 構建摘要提示詞
+                prompt = f"""請為以下內容生成簡短摘要和{tag_count}個關鍵標籤。
+內容：
+{content[:5000]}  # 限制長度避免過長
+"""
                 
-                # 呼叫LLM模組
+                # 構建摘要請求 (需要符合LLMInput格式)
+                request_data = {
+                    "text": prompt,
+                    "intent": "chat",  # LLMInput需要，目前僅支援chat
+                }
+                  # 呼叫LLM模組
                 response = llm_module.handle(request_data)
                 
-                if response and "summary" in response:
-                    summary_content = response["summary"]
-                    tags = response.get("tags", [])
+                if response and "text" in response and response.get("status") == "ok":
+                    # 從LLM回應的text中提取摘要和標籤
+                    llm_response_text = response["text"]
+                    
+                    # 簡單處理：假設LLM回應的格式是先列出標籤，然後是摘要
+                    # 這裡可能需要進一步優化解析邏輯，取決於你實際得到的回應格式
+                    
+                    # 嘗試提取標籤部分
+                    if "標籤" in llm_response_text:
+                        try:
+                            # 提取標籤部分
+                            tags_part = llm_response_text.split("標籤")[1].split("\n")[0]
+                            tags = [tag.strip() for tag in tags_part.strip("：:, ").split(",")]
+                            # 過濾空字符串並限制數量
+                            tags = [tag for tag in tags if tag][:tag_count]
+                        except:
+                            # 如果提取失敗，使用檔案名為標籤
+                            tags = [file_path_obj.stem]
+                    else:
+                        # 沒有明確標籤，使用檔案名為標籤
+                        tags = [file_path_obj.stem]
+                    
+                    # 使用整個回應作為摘要內容
+                    summary_content = llm_response_text
+                    
                     info_log(f"[file] LLM模組成功生成摘要和{len(tags)}個標籤")
                 else:
-                    raise ValueError("LLM模組未返回有效摘要")
+                    raise ValueError(f"LLM模組未返回有效摘要: {response.get('status', 'unknown error')}")
         except Exception as e:
             info_log(f"[file] 使用LLM模組摘要失敗：{e}，將使用簡單摘要")
             # 若LLM模組失敗，使用簡單摘要法
@@ -295,3 +316,262 @@ def summarize_tag(file_path: str, tag_count: int = 3) -> dict:
         "summary_file": str(summary_file_path),
         "tags": tags
     }
+
+def summarize_tag_workflow(session_data: dict, llm_module=None) -> dict:
+    """
+    為檔案生成摘要與標籤的工作流程版本 - 支援多步驟操作與進度追蹤
+    
+    Args:
+        session_data: 工作流程會話數據，包含:
+            - step: 當前步驟
+            - file_path: 要摘要的檔案路徑
+            - tag_count: 要生成的標籤數量，默認為3個
+            - content: 檔案內容 (若已讀取)
+            - llm_response: LLM回應 (若已查詢)
+        llm_module: LLM模組實例 (可選)
+        
+    Returns:
+        更新後的會話數據，以及進度信息
+    """
+    from pathlib import Path
+    import os
+    import json
+    import datetime
+    from utils.debug_helper import info_log, error_log
+    
+    # 獲取當前步驟
+    step = session_data.get("step", 1)
+    requires_input = False
+    is_completed = False
+    message = ""
+    prompt = ""
+    
+    try:
+        # 步驟1: 檢查和讀取檔案
+        if step == 1:
+            file_path = session_data.get("file_path")
+            if not file_path:
+                return {
+                    "status": "error",
+                    "message": "未提供檔案路徑",
+                    "requires_input": True,
+                    "prompt": "請提供要摘要的檔案路徑:"
+                }
+                
+            file_path_obj = Path(file_path)
+            if not file_path_obj.exists():
+                return {
+                    "status": "error",
+                    "message": f"檔案 {file_path} 不存在",
+                    "requires_input": True,
+                    "prompt": "請提供有效的檔案路徑:"
+                }
+            
+            # 讀取檔案內容
+            try:
+                content = drop_and_read(file_path)
+                session_data["content"] = content
+                session_data["step"] = 2
+                message = f"成功讀取檔案: {file_path_obj.name}，準備生成摘要"
+                
+            except Exception as e:
+                return {
+                    "status": "error",
+                    "message": f"無法讀取檔案: {str(e)}",
+                    "requires_input": True,
+                    "prompt": "請提供另一個檔案路徑或輸入'取消':"
+                }
+                
+        # 步驟2: 使用LLM生成摘要
+        elif step == 2:
+            content = session_data.get("content", "")
+            file_path = session_data.get("file_path", "")
+            file_path_obj = Path(file_path)
+            tag_count = session_data.get("tag_count", 3)
+            
+            # 檢查是否有LLM模組可用
+            if not llm_module:
+                try:
+                    from modules.llm_module.llm_module import LLMModule
+                    from configs.config_loader import load_module_config
+                    
+                    config = load_module_config("llm_module")
+                    llm_module = LLMModule(config)
+                    info_log(f"[file] 成功載入LLM模組")
+                except Exception as e:
+                    info_log(f"[file] LLM模組無法載入: {e}")
+                    # 跳到步驟3使用簡單摘要
+                    session_data["step"] = 3
+                    message = "LLM模組無法使用，將使用簡單摘要方式"
+                    return {
+                        "status": "processing",
+                        "message": message,
+                        "requires_input": False,
+                        "session_data": session_data
+                    }
+            
+            # 構建摘要提示詞
+            prompt = f"""請為以下內容生成簡短摘要和{tag_count}個關鍵標籤。
+請以下列格式回覆：
+
+摘要：
+[摘要內容]
+
+標籤：
+[標籤1], [標籤2], [標籤3]
+
+內容：
+{content[:5000]}  # 限制長度避免過長
+"""
+            
+            # 使用LLM模組生成摘要
+            request_data = {
+                "text": prompt,
+                "intent": "chat", 
+                "is_internal": True  # 標記為內部呼叫，不包含系統指令
+            }
+            
+            try:
+                response = llm_module.handle(request_data)
+                if response and "text" in response and response.get("status") == "ok":
+                    session_data["llm_response"] = response["text"]
+                    session_data["step"] = 4  # 跳到生成摘要檔案
+                    message = "已使用AI分析完成摘要和標籤生成"
+                else:
+                    # LLM回應無效，使用簡單摘要
+                    session_data["step"] = 3
+                    message = "AI分析結果無效，將使用簡單摘要方式"
+            except Exception as e:
+                session_data["step"] = 3
+                message = f"AI分析過程中出錯: {str(e)}，將使用簡單摘要方式"
+        
+        # 步驟3: 生成簡單摘要 (當LLM不可用時)
+        elif step == 3:
+            content = session_data.get("content", "")
+            file_path = session_data.get("file_path", "")
+            file_path_obj = Path(file_path)
+            
+            # 簡單摘要：取前1000個字符
+            summary_preview = content[:1000] + ("..." if len(content) > 1000 else "")
+            
+            # 簡單標籤：使用檔案類型和大小
+            file_ext = file_path_obj.suffix.lower()[1:]  # 移除開頭的點
+            file_size_kb = os.path.getsize(file_path) / 1024
+            file_size_tag = f"{file_size_kb:.1f}KB" if file_size_kb < 1024 else f"{file_size_kb/1024:.1f}MB"
+            
+            tags = [file_ext, file_size_tag, file_path_obj.name.split(".")[0]]
+            summary_content = f"檔案預覽：\n\n{summary_preview}\n\n(自動生成的簡單摘要，內容為檔案前1000個字符)"
+            
+            session_data["summary_content"] = summary_content
+            session_data["tags"] = tags
+            session_data["step"] = 4
+            message = "已使用簡單方式生成摘要和標籤"
+        
+        # 步驟4: 從LLM回應中提取摘要和標籤，或使用步驟3的結果
+        elif step == 4:
+            file_path = session_data.get("file_path", "")
+            file_path_obj = Path(file_path)
+            
+            # 如果是從步驟2來的，需要提取摘要和標籤
+            if "llm_response" in session_data and "summary_content" not in session_data:
+                llm_response_text = session_data["llm_response"]
+                summary_content = llm_response_text
+                tags = []
+                
+                # 嘗試提取標籤部分
+                if "標籤" in llm_response_text:
+                    try:
+                        # 提取標籤部分
+                        tags_part = llm_response_text.split("標籤")[1].split("\n")[0]
+                        tags = [tag.strip() for tag in tags_part.strip("：:, ").split(",")]
+                        # 過濾空字符串
+                        tags = [tag for tag in tags if tag]
+                    except:
+                        # 如果提取失敗，使用檔案名為標籤
+                        tags = [file_path_obj.stem]
+                else:
+                    # 沒有明確標籤，使用檔案名為標籤
+                    tags = [file_path_obj.stem]
+                
+                session_data["summary_content"] = summary_content
+                session_data["tags"] = tags
+            
+            # 生成摘要檔案
+            summary_content = session_data.get("summary_content", "")
+            tags = session_data.get("tags", [])
+            
+            # 生成摘要檔案的內容
+            output_content = f"""# {file_path_obj.name} 摘要
+
+## 檔案資訊
+- 原始檔案：{file_path_obj.name}
+- 建立時間：{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+## 標籤
+{', '.join(f'`{tag}`' for tag in tags)}
+
+## 內容摘要
+{summary_content}
+"""
+            
+            # 建立摘要檔案
+            summary_file_path = file_path_obj.parent / f"{file_path_obj.stem}-summary.md"
+            try:
+                with open(summary_file_path, "w", encoding="utf-8") as f:
+                    f.write(output_content)
+                session_data["summary_file"] = str(summary_file_path)
+                session_data["step"] = 5
+                message = f"成功生成摘要檔案：{summary_file_path.name}"
+            except Exception as e:
+                return {
+                    "status": "error",
+                    "message": f"建立摘要檔案失敗：{e}",
+                    "requires_input": True,
+                    "prompt": "要重試嗎？(是/否)"
+                }
+                
+        # 步驟5: 完成
+        elif step == 5:
+            is_completed = True
+            message = "檔案摘要與標記工作已完成"
+            
+        # 檢查是否需要用戶確認
+        if requires_input:
+            return {
+                "status": "awaiting_input",
+                "message": message,
+                "prompt": prompt,
+                "requires_input": True,
+                "session_data": session_data
+            }
+            
+        # 檢查是否已完成
+        if is_completed:
+            result = {
+                "summary_file": session_data.get("summary_file", ""),
+                "tags": session_data.get("tags", [])
+            }
+            return {
+                "status": "completed",
+                "message": message,
+                "requires_input": False,
+                "session_data": session_data,
+                "result": result
+            }
+            
+        # 繼續下一步
+        return {
+            "status": "processing",
+            "message": message,
+            "requires_input": False,
+            "session_data": session_data
+        }
+            
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"摘要工作流程錯誤：{str(e)}",
+            "requires_input": True,
+            "prompt": "要重試嗎？(是/否)",
+            "session_data": session_data
+        }

@@ -266,8 +266,8 @@ def debug_interactive():
                         else:
                             print("\033[31m無效的選擇，請再試一次。\033[0m")
                     case "2":
-                        sub = input("請選擇欲測試之工作流程 (1: 簡單回顯, 2: 倒數計時, 3: 資料收集, 4: 隨機失敗, exit: 離開): \n\n> ")
-                        if sub in ["1", "2", "3", "4"]:
+                        sub = input("請選擇欲測試之工作流程 (1: 簡單回顯, 2: 倒數計時, 3: 資料收集, 4: 隨機失敗, 5: TTS工作流測試, exit: 離開): \n\n> ")
+                        if sub in ["1", "2", "3", "4", "5"]:
                             controller.sys_test_workflows(workflow_type=int(sub))
                         elif sub.lower() == "exit" or sub.lower() == "e":
                             break

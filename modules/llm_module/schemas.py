@@ -5,7 +5,7 @@ from typing import Literal, Optional
 
 class LLMInput(BaseModel):
     text: str
-    intent: Literal["chat", "command"]
+    intent: Literal["chat", "command", "direct"]
     memory: Optional[str] = None
 
 class LLMOutput(BaseModel): # 之後會把指令的部份給加進去

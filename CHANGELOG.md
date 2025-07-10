@@ -430,3 +430,15 @@
 
 ---
 
+### Changed the way workflow processes as a new architecture, still experimental. 07/10
+
+> Date: Thu, 10 Jul 2025 20:07:56 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_integration`
+
+> Commit: `83e66da850412653d6abc35540bb0246662819a3`
+
+---
+

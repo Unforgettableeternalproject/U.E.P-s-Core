@@ -109,14 +109,17 @@
     <Compile Include="core\module_base.py" />
     <Compile Include="core\registry.py" />
     <Compile Include="core\router.py" />
+    <Compile Include="core\session_manager.py" />
     <Compile Include="core\state_manager.py" />
     <Compile Include="devtools\debugger.py" />
     <Compile Include="modules\llm_module\gemini_client.py" />
     <Compile Include="modules\sys_module\actions\automation_helper.py" />
+    <Compile Include="modules\sys_module\actions\test_workflows.py" />
     <Compile Include="modules\sys_module\actions\text_processing.py" />
     <Compile Include="modules\sys_module\actions\file_interaction.py" />
     <Compile Include="modules\sys_module\actions\integrations.py" />
     <Compile Include="modules\sys_module\actions\window_control.py" />
+    <Compile Include="modules\sys_module\workflows.py" />
     <Compile Include="modules\tts_module\config.py" />
     <Compile Include="modules\tts_module\infer_core.py" />
     <Compile Include="modules\tts_module\lib\infer_pack\attentions.py" />

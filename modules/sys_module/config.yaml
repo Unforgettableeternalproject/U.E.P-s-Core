@@ -29,3 +29,11 @@ modes:
   - get_world_time
   - code_analysis
   - media_control
+  
+  # 六、測試工作流程 (測試用)
+  - test_workflow_echo
+  - test_workflow_countdown
+  - test_workflow_data_collector
+  - test_workflow_random_fail
+  - test_workflow_tts_test
+  - test_workflow_continue

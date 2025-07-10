@@ -274,3 +274,37 @@ test_workflow_random_fail:
       type: int
       required: false
       description: "失敗機率 (0-100)"
+
+test_workflow_tts_test:
+  description: "TTS測試工作流程 - 用於測試文字轉語音功能"
+  category: "測試功能"
+  params:
+    text:
+      type: str
+      required: false
+      description: "要轉換為語音的文字"
+    mood:
+      type: str
+      required: false
+      description: "語音情緒 (neutral, happy, sad, angry, excited, calm)"
+    save:
+      type: bool
+      required: false
+      description: "是否保存語音檔案"
+
+test_workflow_continue:
+  description: "繼續執行測試工作流程"
+  category: "測試功能"
+  params:
+    session_id:
+      type: str
+      required: true
+      description: "工作流程會話 ID"
+    user_input:
+      type: str
+      required: false
+      description: "使用者針對當前步驟的輸入"
+    session_data:
+      type: dict
+      required: false
+      description: "工作流程會話數據"

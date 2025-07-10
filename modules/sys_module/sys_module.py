@@ -15,7 +15,7 @@ from .actions.integrations import news_summary, get_weather, get_world_time, cod
 
 # Import session management
 from core.session_manager import SessionManager, WorkflowSession, SessionStatus
-from .workflows import WorkflowType, get_next_step, create_file_processing_workflow
+from .workflows import WorkflowType, get_next_step, create_file_processing_workflow, create_test_workflow_engine
 
 # Import test workflows
 from .actions.test_workflows import (
@@ -23,6 +23,7 @@ from .actions.test_workflows import (
     countdown_workflow,
     data_collector_workflow,
     random_fail_workflow,
+    tts_test_workflow,
     get_test_workflow
 )
 
@@ -389,6 +390,7 @@ class SYSModule(BaseModule):
                 "test_workflow_countdown": self._start_test_workflow,
                 "test_workflow_data_collector": self._start_test_workflow,
                 "test_workflow_random_fail": self._start_test_workflow,
+                "test_workflow_tts_test": self._start_test_workflow,
                 "test_workflow_continue": self._continue_test_workflow  # Generic continuation handler for test workflows
             }
             
@@ -434,6 +436,15 @@ class SYSModule(BaseModule):
                 elif mode == "get_workflow_status":
                     session_id = params.get("session_id")
                     result = workflow_handler(session_id)
+                elif mode.startswith("test_workflow_") and mode != "test_workflow_continue":
+                    # 提取工作流類型 (例如 "test_workflow_echo" -> "echo" 或 "test_workflow_tts_test" -> "tts_test")
+                    workflow_type = mode.replace("test_workflow_", "")
+                    result = workflow_handler(workflow_type, params)
+                elif mode == "test_workflow_continue":
+                    session_id = params.get("session_id")
+                    user_input = params.get("user_input", "")
+                    session_data = params.get("session_data", {})  # 從params獲取session_data
+                    result = workflow_handler(session_id, user_input, session_data)
                 else:  # list_active_workflows
                     result = workflow_handler()
                 
@@ -444,7 +455,8 @@ class SYSModule(BaseModule):
                     message=result.get("message", ""),
                     session_id=result.get("session_id"),
                     requires_input=result.get("requires_input", False),
-                    prompt=result.get("prompt")
+                    prompt=result.get("prompt"),
+                    session_data=result.get("session_data")  # 傳遞會話數據
                 )
                 return out.dict()
             
@@ -476,16 +488,113 @@ class SYSModule(BaseModule):
 
     def _start_test_workflow(self, workflow_type: str, params: dict = None):
         """
-        啟動測試工作流程
+        啟動測試工作流程 - 支援新舊架構
         
         Args:
-            workflow_type: 工作流程類型 (echo, countdown, data_collector, random_fail)
+            workflow_type: 工作流程類型 (echo, countdown, data_collector, random_fail, tts_test)
             params: 初始參數
             
         Returns:
             包含工作流程會話資訊的字典
         """
         debug_log(1, f"[SYS] 啟動測試工作流程: {workflow_type}")
+        
+        # 選擇使用新架構還是舊架構
+        use_new_architecture = params.get("use_new_architecture", True)  # 默認使用新架構
+        
+        if use_new_architecture:
+            return self._start_test_workflow_new_architecture(workflow_type, params)
+        else:
+            return self._start_test_workflow_legacy(workflow_type, params)
+            
+    def _start_test_workflow_new_architecture(self, workflow_type: str, params: dict = None):
+        """
+        使用新架構啟動測試工作流程
+        """
+        debug_log(1, f"[SYS] 使用新架構啟動測試工作流程: {workflow_type}")
+        
+        # 創建工作流程會話
+        session_id = f"test-{workflow_type}-{int(time.time())}"
+        session = WorkflowSession(session_id, workflow_type)
+        
+        # 獲取 LLM 模組實例
+        llm_module = None
+        try:
+            from modules.llm_module.llm_module import LLMModule
+            from configs.config_loader import load_module_config
+            
+            config = load_module_config("llm_module")
+            llm_module = LLMModule(config)
+            debug_log(2, f"[SYS] 已獲取LLM模組實例用於測試工作流程")
+        except Exception as e:
+            debug_log(2, f"[SYS] 無法獲取LLM模組，測試工作流程將在無LLM模式下運行: {e}")
+            
+        # 獲取 TTS 模組實例 (如果需要)
+        tts_module = None
+        if workflow_type == "tts_test":
+            try:
+                from modules.tts_module.tts_module import TTSModule
+                from configs.config_loader import load_module_config
+                
+                config = load_module_config("tts_module")
+                tts_module = TTSModule(config)
+                debug_log(2, f"[SYS] 已獲取TTS模組實例用於TTS測試工作流程")
+            except Exception as e:
+                debug_log(2, f"[SYS] 無法獲取TTS模組，TTS測試工作流程可能無法正常運行: {e}")
+        
+        try:
+            # 創建新架構的工作流程引擎
+            engine = create_test_workflow_engine(workflow_type, session, llm_module, tts_module)
+            
+            # 將引擎保存到會話管理器
+            self.session_manager.sessions[session_id] = {
+                'session': session,
+                'engine': engine,
+                'workflow_type': workflow_type,
+                'created_at': time.time()
+            }
+            
+            # 啟動工作流程
+            result = engine.start()
+            
+            # 獲取當前提示
+            prompt = engine.get_current_prompt()
+            current_step_type = engine.get_current_step_type()
+            
+            # 判斷是否需要用戶輸入
+            requires_input = (current_step_type == "interactive" or 
+                            result.data.get("requires_input", False))
+            
+            return {
+                "status": "awaiting_input" if requires_input else "processing",
+                "message": result.message or f"已使用新架構啟動 {workflow_type} 測試工作流程",
+                "session_id": session_id,
+                "requires_input": requires_input,
+                "prompt": prompt,
+                "data": {
+                    "workflow_type": workflow_type,
+                    "architecture": "new",
+                    "current_step": engine.current_step_id,
+                    "step_type": current_step_type
+                }
+            }
+            
+        except Exception as e:
+            error_log(f"[SYS] 使用新架構啟動測試工作流程時發生錯誤: {e}")
+            return {
+                "status": "error",
+                "message": f"使用新架構啟動測試工作流程時發生錯誤: {e}"
+            }
+            
+    def _start_test_workflow_legacy(self, workflow_type: str, params: dict = None):
+        """
+        使用舊架構啟動測試工作流程（保持向後兼容）
+        """
+    def _start_test_workflow_legacy(self, workflow_type: str, params: dict = None):
+        """
+        使用舊架構啟動測試工作流程（保持向後兼容）
+        """
+        debug_log(1, f"[SYS] 使用舊架構啟動測試工作流程: {workflow_type}")
         
         # 驗證工作流程類型
         workflow_func = get_test_workflow(workflow_type)
@@ -518,16 +627,114 @@ class SYSModule(BaseModule):
                 debug_log(2, f"[SYS] 已獲取LLM模組實例用於測試工作流程")
             except Exception as e:
                 debug_log(2, f"[SYS] 無法獲取LLM模組，測試工作流程將在無LLM模式下運行: {e}")
+                
+            # 獲取 TTS 模組實例 (如果需要)
+            tts_module = None
+            if workflow_type == "tts_test":
+                try:
+                    from modules.tts_module.tts_module import TTSModule
+                    from configs.config_loader import load_module_config
+                    
+                    config = load_module_config("tts_module")
+                    tts_module = TTSModule(config)
+                    debug_log(2, f"[SYS] 已獲取TTS模組實例用於TTS測試工作流程")
+                except Exception as e:
+                    debug_log(2, f"[SYS] 無法獲取TTS模組，TTS測試工作流程可能無法正常運行: {e}")
             
             # 執行工作流程
-            result = workflow_func(session_data, llm_module)
+            result = workflow_func(session_data, llm_module, tts_module)
             
+            # 處理結果狀態
+            status = result.get("status", "processing")
+            requires_input = result.get("requires_input", False)
+            
+            # 如果狀態是 awaiting_input，確保 requires_input 為 True
+            if status == "awaiting_input":
+                requires_input = True
+                
             # 返回結果
             return {
-                "status": result.get("status", "processing"),
+                "status": status,
+                "message": result.get("message", f"已使用舊架構啟動 {workflow_type} 測試工作流程"),
+                "session_id": session_id,
+                "requires_input": requires_input,
+                "prompt": result.get("prompt", ""),
+                "data": {
+                    "workflow_type": workflow_type,
+                    "architecture": "legacy",
+                    "step": session_data.get("step", 1)
+                },
+                "session_data": result.get("session_data", session_data)
+            }
+        except Exception as e:
+            error_log(f"[SYS] 使用舊架構啟動測試工作流程時發生錯誤: {e}")
+            return {
+                "status": "error",
+                "message": f"使用舊架構啟動測試工作流程時發生錯誤: {e}"
+            }
+        
+        # 驗證工作流程類型
+        workflow_func = get_test_workflow(workflow_type)
+        if not workflow_func:
+            error_log(f"[SYS] 未知的測試工作流程類型: {workflow_type}")
+            return {
+                "status": "error",
+                "message": f"未知的測試工作流程類型: {workflow_type}"
+            }
+        
+        # 創建會話
+        session_id = f"test-{workflow_type}-{int(time.time())}"
+        
+        # 初始化會話數據
+        session_data = {
+            "step": 1,
+            **(params or {})
+        }
+        
+        # 初次執行工作流程
+        try:
+            # 獲取 LLM 模組實例
+            llm_module = None
+            try:
+                from modules.llm_module.llm_module import LLMModule
+                from configs.config_loader import load_module_config
+                
+                config = load_module_config("llm_module")
+                llm_module = LLMModule(config)
+                debug_log(2, f"[SYS] 已獲取LLM模組實例用於測試工作流程")
+            except Exception as e:
+                debug_log(2, f"[SYS] 無法獲取LLM模組，測試工作流程將在無LLM模式下運行: {e}")
+                
+            # 獲取 TTS 模組實例 (如果需要)
+            tts_module = None
+            if workflow_type == "tts_test":
+                try:
+                    from modules.tts_module.tts_module import TTSModule
+                    from configs.config_loader import load_module_config
+                    
+                    config = load_module_config("tts_module")
+                    tts_module = TTSModule(config)
+                    debug_log(2, f"[SYS] 已獲取TTS模組實例用於TTS測試工作流程")
+                except Exception as e:
+                    debug_log(2, f"[SYS] 無法獲取TTS模組，TTS測試工作流程可能無法正常運行: {e}")
+            
+            # 執行工作流程
+            result = workflow_func(session_data, llm_module, tts_module)
+            
+            # 處理結果狀態
+            status = result.get("status", "processing")
+            requires_input = result.get("requires_input", False)
+            
+            # 如果狀態是 awaiting_input，確保 requires_input 為 True
+            if status == "awaiting_input":
+                requires_input = True
+                
+            # 返回結果
+            return {
+                "status": status,
                 "message": result.get("message", f"已啟動 {workflow_type} 測試工作流程"),
                 "session_id": session_id,
-                "requires_input": result.get("requires_input", False),
+                "requires_input": requires_input,
                 "prompt": result.get("prompt", ""),
                 "data": {
                     "workflow_type": workflow_type,
@@ -542,19 +749,101 @@ class SYSModule(BaseModule):
                 "message": f"啟動測試工作流程時發生錯誤: {e}"
             }
 
-    def _continue_test_workflow(self, session_id: str, user_input: str, session_data: dict):
+    def _continue_test_workflow(self, session_id: str, user_input: str, session_data: dict = None):
         """
-        繼續執行測試工作流程
+        繼續執行測試工作流程 - 支援新舊架構
         
         Args:
             session_id: 工作流程會話 ID
             user_input: 用戶輸入
-            session_data: 會話數據
+            session_data: 會話數據 (舊架構使用)
             
         Returns:
             更新後的工作流程狀態
         """
-        debug_log(1, f"[SYS] 繼續執行測試工作流程: {session_id}, 步驟: {session_data.get('step', '?')}")
+        debug_log(1, f"[SYS] 繼續執行測試工作流程: {session_id}")
+        
+        # 檢查是否是新架構的會話
+        if session_id in self.session_manager.sessions:
+            return self._continue_test_workflow_new_architecture(session_id, user_input)
+        else:
+            return self._continue_test_workflow_legacy(session_id, user_input, session_data)
+            
+    def _continue_test_workflow_new_architecture(self, session_id: str, user_input: str):
+        """
+        使用新架構繼續執行測試工作流程
+        """
+        debug_log(1, f"[SYS] 使用新架構繼續執行測試工作流程: {session_id}")
+        
+        # 獲取會話和引擎
+        session_info = self.session_manager.sessions.get(session_id)
+        if not session_info:
+            return {
+                "status": "error",
+                "message": f"找不到工作流程會話: {session_id}"
+            }
+            
+        engine = session_info.get('engine')
+        session = session_info.get('session')
+        
+        if not engine or not session:
+            return {
+                "status": "error",
+                "message": f"工作流程會話 {session_id} 狀態異常"
+            }
+            
+        try:
+            # 處理用戶輸入並前進到下一步
+            result = engine.process_step(user_input)
+            
+            # 更新會話狀態
+            if result.complete:
+                session.complete_session()
+                # 從會話管理器中移除
+                del self.session_manager.sessions[session_id]
+                
+            elif result.cancel:
+                session.cancel_session("用戶取消")
+                # 從會話管理器中移除
+                del self.session_manager.sessions[session_id]
+                
+            # 獲取當前狀態
+            prompt = engine.get_current_prompt() if not (result.complete or result.cancel) else ""
+            current_step_type = engine.get_current_step_type() if not (result.complete or result.cancel) else ""
+            
+            # 判斷是否需要用戶輸入
+            requires_input = (current_step_type == "interactive" and 
+                            not result.complete and not result.cancel)
+            
+            return {
+                "status": "completed" if result.complete else 
+                         "cancelled" if result.cancel else 
+                         "awaiting_input" if requires_input else "processing",
+                "message": result.message,
+                "session_id": session_id,
+                "requires_input": requires_input,
+                "prompt": prompt,
+                "data": {
+                    "workflow_type": session_info.get('workflow_type', 'unknown'),
+                    "architecture": "new",
+                    "current_step": engine.current_step_id,
+                    "step_type": current_step_type
+                },
+                "result": result.data if result.complete else None
+            }
+            
+        except Exception as e:
+            error_log(f"[SYS] 使用新架構繼續執行測試工作流程時發生錯誤: {e}")
+            return {
+                "status": "error",
+                "message": f"使用新架構繼續執行測試工作流程時發生錯誤: {e}"
+            }
+            
+    def _continue_test_workflow_legacy(self, session_id: str, user_input: str, session_data: dict):
+        """
+        使用舊架構繼續執行測試工作流程
+        """
+        debug_log(1, f"[SYS] 使用舊架構繼續執行測試工作流程: {session_id}, 步驟: {session_data.get('step', '?') if session_data else '?'}")
         
         # 從會話ID解析工作流程類型
         workflow_type = "unknown"
@@ -581,8 +870,8 @@ class SYSModule(BaseModule):
             # 根據當前步驟處理輸入
             step = session_data.get("step", 1)
             
-            # 特殊值處理
-            if user_input.lower() in ("取消", "退出", "exit", "quit", "cancel"):
+            # 特殊值處理 - 只有在需要用戶輸入的情況下才處理取消請求
+            if user_input and user_input.lower() in ("取消", "退出", "exit", "quit", "cancel"):
                 debug_log(1, f"[SYS] 用戶請求取消測試工作流程: {session_id}")
                 return {
                     "status": "cancelled",
@@ -618,32 +907,37 @@ class SYSModule(BaseModule):
                 elif step == 4 and "feedback" not in session_data:
                     session_data["feedback"] = user_input
             elif workflow_type == "random_fail":
-                if step == 1 and "fail_chance" not in session_data:
-                    try:
-                        fail_chance = int(user_input)
-                        if fail_chance < 0 or fail_chance > 100:
-                            raise ValueError("機率必須在0-100之間")
-                        session_data["fail_chance"] = fail_chance
-                    except ValueError:
-                        return {
-                            "status": "error",
-                            "message": f"無效的機率值: {user_input}，請提供0-100之間的數字",
-                            "session_id": session_id,
-                            "requires_input": True,
-                            "prompt": "請設定失敗機率 (0-100):"
-                        }
+                if step == 1:
+                    if "fail_chance" not in session_data:
+                        try:
+                            fail_chance = int(user_input)
+                            if fail_chance < 0 or fail_chance > 100:
+                                raise ValueError("機率必須在0-100之間")
+                            session_data["fail_chance"] = fail_chance
+                        except ValueError:
+                            return {
+                                "status": "error",
+                                "message": f"無效的機率值: {user_input}，請提供0-100之間的數字",
+                                "session_id": session_id,
+                                "requires_input": True,
+                                "prompt": "請設定失敗機率 (0-100):"
+                            }
+                    elif "max_retries_stage" in session_data and "max_retries" not in session_data:
+                        # 處理最大重試次數輸入
+                        session_data["max_retries_input"] = user_input
+                elif step == 2 and workflow_type == "random_fail":
+                    # 檢查上一次結果的狀態，判斷當前是在進行擲骰還是處理重試
+                    prev_result_status = session_data.get("prev_result_status", "")
+            elif workflow_type == "tts_test":
+                if step == 1 and "text" not in session_data:
+                    # 保存使用者輸入的文字
+                    session_data["text"] = user_input
                 elif step == 2:
-                    if user_input.lower() in ("是", "y", "yes", "繼續"):
-                        # 重置步驟，重新擲骰
-                        session_data["retry_count"] = session_data.get("retry_count", 0)  # 保留重試次數
-                    else:
-                        # 用戶不想重試，終止工作流程
-                        return {
-                            "status": "cancelled",
-                            "message": "用戶取消了重試",
-                            "session_id": session_id,
-                            "requires_input": False
-                        }
+                    # 保存使用者選擇的情緒
+                    session_data["user_input"] = user_input
+                elif step == 3:
+                    # 保存是否要保存的選項
+                    session_data["user_input"] = user_input
         
         # 獲取 LLM 模組實例
         llm_module = None
@@ -655,27 +949,48 @@ class SYSModule(BaseModule):
             llm_module = LLMModule(config)
         except Exception:
             pass
+            
+        # 獲取 TTS 模組實例 (如果需要)
+        tts_module = None
+        if workflow_type == "tts_test":
+            try:
+                from modules.tts_module.tts_module import TTSModule
+                from configs.config_loader import load_module_config
+                
+                config = load_module_config("tts_module")
+                tts_module = TTSModule(config)
+                debug_log(2, f"[SYS] 已獲取TTS模組實例用於TTS測試工作流程繼續執行")
+            except Exception as e:
+                debug_log(2, f"[SYS] 無法獲取TTS模組，TTS測試工作流程可能無法正常運行: {e}")
         
         # 執行工作流程
         try:
-            result = workflow_func(session_data, llm_module)
+            result = workflow_func(session_data, llm_module, tts_module)
             
             # 更新會話數據
             if "session_data" in result:
                 session_data = result["session_data"]
-            
-            # 如果工作流程完成或出錯，獲取結果
+                
+            # 記錄上一次的結果狀態，用於處理重試邏輯
             status = result.get("status", "processing")
+            session_data["prev_result_status"] = status
             result_data = {}
             if status == "completed" and "result" in result:
                 result_data = result["result"]
             
+            # 處理狀態
+            requires_input = result.get("requires_input", False)
+            
+            # 如果狀態是 awaiting_input，確保 requires_input 為 True
+            if status == "awaiting_input":
+                requires_input = True
+                
             # 返回結果
             return {
                 "status": status,
                 "message": result.get("message", ""),
                 "session_id": session_id,
-                "requires_input": result.get("requires_input", False),
+                "requires_input": requires_input,
                 "prompt": result.get("prompt", ""),
                 "data": {
                     "workflow_type": workflow_type,

@@ -34,18 +34,26 @@ class LLMModule(BaseModule):
         session_info = data.get("session_info", {})
         has_active_session = session_info.get("active_session", False)
         session_state = session_info.get("state", "none")
-          # Handle different intents
-        if payload.intent == "chat":
+        is_internal = data.get("is_internal", False)
+        
+        # Handle different intents
+        if payload.intent == "direct":
+            # Direct mode - bypass all prompting templates and system instructions
+            # 使用直接模式，完全跳過任何提示詞模板和系統指令
+            prompt = payload.text
+            debug_log(2, f"[LLM] 使用直接模式調用，不使用任何提示詞模板")
+        elif payload.intent == "chat":
             # Standard chat handling
             prompt = build_prompt(
                 user_input=payload.text,
                 memory=payload.memory or "",
-                intent=payload.intent
+                intent=payload.intent,
+                is_internal=is_internal
             )
         elif payload.intent == "command":
             # Command intent - analyze user's command and suggest actions
             # Check if we need to get system functions
-            is_internal = data.get("is_internal", False)
+            # is_internal 已經在前面定義
             get_sys_functions = data.get("get_sys_functions", False)
             
             # Get system functions if requested

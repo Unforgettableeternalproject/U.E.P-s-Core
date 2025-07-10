@@ -6,6 +6,7 @@ class SYSInput(BaseModel):
     params: Optional[Dict[str, Any]] = {}
     session_id: Optional[str] = None
     user_input: Optional[str] = None
+    session_data: Optional[Dict[str, Any]] = None  # 用於測試工作流程傳遞會話數據
 
 class SYSOutput(BaseModel):
     status: str
@@ -14,6 +15,7 @@ class SYSOutput(BaseModel):
     session_id: Optional[str] = None
     requires_input: bool = False
     prompt: Optional[str] = None
+    session_data: Optional[Dict[str, Any]] = None  # 用於測試工作流程返回會話數據
     
 class SessionInfo(BaseModel):
     """Session information for workflows"""

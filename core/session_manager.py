@@ -86,6 +86,10 @@ class WorkflowSession:
         self.status = SessionStatus.CANCELLED
         self.add_history("session_cancelled", f"Session cancelled: {reason}")
 
+    def set_data(self, key: str, value: Any) -> None:
+        """Set data in the session (alias for add_data for compatibility)"""
+        self.add_data(key, value)
+    
     def add_data(self, key: str, value: Any) -> None:
         """Add data to the session"""
         self.data[key] = value
@@ -148,6 +152,10 @@ class SessionManager:
         )
         self.sessions[session.session_id] = session
         return session
+    
+    def register_session(self, session: WorkflowSession) -> None:
+        """Register an existing session in the manager"""
+        self.sessions[session.session_id] = session
     
     def get_session(self, session_id: str) -> Optional[WorkflowSession]:
         """Get a session by ID, checking for expiration"""

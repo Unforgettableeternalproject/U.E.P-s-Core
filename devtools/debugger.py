@@ -257,9 +257,9 @@ def debug_interactive():
                 
                 match choice:
                     case "1":
-                        sub = input("請選擇欲測試之子功能 (1: 讀取文字, 2: 智能歸檔, 3: 指定目錄歸檔, 4: 檔案摘要標記, exit: 離開): \n\n> ")
+                        sub = input("請選擇欲測試之子功能 (1-4: 直接模式, 5-7: 工作流程模式, 8: 一般工作流程, exit: 離開):\n1: 讀取文字(直接), 2: 智能歸檔(直接), 3: 指定目錄歸檔(直接), 4: 檔案摘要標記(直接)\n5: 讀取文字(工作流程), 6: 智能歸檔(工作流程), 7: 摘要標籤(工作流程), 8: 一般工作流程\n\n> ")
                         # Test if sub is not a number or "exit"
-                        if sub in ["1", "2", "3", "4"]:
+                        if sub in ["1", "2", "3", "4", "5", "6", "7", "8"]:
                             controller.sys_test_functions(mode=1, sub=int(sub))
                         elif sub.lower() == "exit" or sub.lower() == "e":
                             break

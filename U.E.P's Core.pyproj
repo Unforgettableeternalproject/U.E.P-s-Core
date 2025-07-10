@@ -71,6 +71,10 @@
     <Content Include="modules\sys_module\example_input.json" />
     <Content Include="modules\sys_module\example_output.json" />
     <Content Include="modules\sys_module\functions.yaml" />
+    <Content Include="modules\sys_module\workflows\__pycache__\file_workflows.cpython-310.pyc" />
+    <Content Include="modules\sys_module\workflows\__pycache__\test_workflows.cpython-310-pytest-8.3.3.pyc" />
+    <Content Include="modules\sys_module\workflows\__pycache__\test_workflows.cpython-310.pyc" />
+    <Content Include="modules\sys_module\workflows\__pycache__\__init__.cpython-310.pyc" />
     <Content Include="modules\tts_module\config.yaml" />
     <Content Include="modules\tts_module\example_input.json" />
     <Content Include="modules\tts_module\example_output.json" />
@@ -114,12 +118,14 @@
     <Compile Include="devtools\debugger.py" />
     <Compile Include="modules\llm_module\gemini_client.py" />
     <Compile Include="modules\sys_module\actions\automation_helper.py" />
-    <Compile Include="modules\sys_module\actions\test_workflows.py" />
     <Compile Include="modules\sys_module\actions\text_processing.py" />
     <Compile Include="modules\sys_module\actions\file_interaction.py" />
     <Compile Include="modules\sys_module\actions\integrations.py" />
     <Compile Include="modules\sys_module\actions\window_control.py" />
     <Compile Include="modules\sys_module\workflows.py" />
+    <Compile Include="modules\sys_module\workflows\file_workflows.py" />
+    <Compile Include="modules\sys_module\workflows\test_workflows.py" />
+    <Compile Include="modules\sys_module\workflows\__init__.py" />
     <Compile Include="modules\tts_module\config.py" />
     <Compile Include="modules\tts_module\infer_core.py" />
     <Compile Include="modules\tts_module\lib\infer_pack\attentions.py" />
@@ -210,6 +216,8 @@
     <Folder Include="modules\stt_module\" />
     <Folder Include="modules\sys_module\" />
     <Folder Include="modules\sys_module\actions\" />
+    <Folder Include="modules\sys_module\workflows\" />
+    <Folder Include="modules\sys_module\workflows\__pycache__\" />
     <Folder Include="modules\tts_module\" />
     <Folder Include="modules\tts_module\lib\" />
     <Folder Include="modules\tts_module\lib\infer_pack\" />

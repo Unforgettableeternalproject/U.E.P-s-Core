@@ -33,7 +33,7 @@ def handle_module_integration(user_input):
         "sys": "Y"
     }
 
-    execution_order = ["stt", "nlp", "mem", "llm", "tts", "sys", "mov"]
+    execution_order = ["stt", "nlp", "mem", "llm", "tts", "sys"]
 
     try:
         # 排序以保證一致性
@@ -81,7 +81,7 @@ def debug_interactive():
                 elif choice == "2":
                     controller.stt_test_realtime()
                 elif choice == "exit" or choice == "e":
-                    break
+                    pass
                 else:
                     print("\033[31m無效的選擇，請再試一次。\033[0m")
             case "nlp":
@@ -163,7 +163,7 @@ def debug_interactive():
                                 continue
                         controller.mem_list_all_test(page)
                 elif choice == "exit" or choice == "e":
-                    break
+                    pass
                 else:
                     print("\033[31m無效的選擇，請再試一次。\033[0m")
             case "llm":
@@ -185,9 +185,16 @@ def debug_interactive():
                         print()
                         controller.llm_test_chat(text)
                 elif choice == "2":
-                    info_log("指令測試尚未實作", "WARNING")
+                    print("🔧 請輸入一段指令文字 (必須用英文) (或輸入 'exit' 來結束):")
+                    while True:
+                        text = input("\n> ")
+                        if text.lower() == "exit" or text.lower() == "e":
+                            info_log("使用者中斷測試")
+                            break
+                        print()
+                        controller.llm_test_command(text)
                 elif choice == "exit" or choice == "e":
-                    break
+                    pass
                 else:
                     print("\033[31m無效的選擇，請再試一次。\033[0m")
             case "tts":
@@ -243,7 +250,7 @@ def debug_interactive():
                         save = True if save.lower() == "y" else False
                     controller.tts_test("\n".join(lines), mood, save)
                 elif choice == "exit" or choice == "e":
-                    break
+                    pass
                 else:
                     print("\033[31m無效的選擇，請再試一次。\033[0m")
             case "sys":

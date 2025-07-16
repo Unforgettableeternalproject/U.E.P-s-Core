@@ -141,7 +141,7 @@ def create_intelligent_archive_workflow(session: WorkflowSession) -> WorkflowEng
     target_input_step = StepTemplate.create_input_step(
         session,
         "target_dir_input",
-        "請輸入目標資料夾路徑 (留空則自動選擇):",
+        "請輸入目標資料夾路徑:",
         validator=lambda path: (True, "") if not path.strip() or os.path.exists(path) else (False, f"目標資料夾不存在: {path}"),
         required_data=["file_selection"],
         optional=True

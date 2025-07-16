@@ -169,7 +169,26 @@ def llm_test_chat(text):
 
     print("🧠 Gemini 回應：", result.get("text", "[無回應]"))
     print("🧭 心情標記（mood）：", result.get("mood", "neutral"))
+    # print("⚙️ 系統指令：", result.get("sys_action")) 因為是聊天測試所以這個應該不需要
+
+def llm_test_command(text):
+    llm = modules.get("llm")
+    if llm is None:
+        error_log("[Controller] ❌ 無法載入 LLM 模組")
+        return
+
+    memory = "No relevant memory found."  
+
+    result = llm.handle({
+        "text": text,
+        "intent": "command",
+        "memory": memory
+    })
+
+    print("🧠 Gemini 指令分析：", result.get("text", "[無回應]"))
+    print("🧭 心情標記（mood）：", result.get("mood", "neutral"))
     print("⚙️ 系統指令：", result.get("sys_action"))
+    print("📋 指令類型：", result.get("sys_action", {}).get("action", "無") if isinstance(result.get("sys_action"), dict) else "無")
     
 # 測試 TTS 模組
 
@@ -485,6 +504,9 @@ def integration_test_ML():
 def integration_test_LT():
     itLT(modules)
 
+def integration_test_LY():
+    itLY(modules)
+
 def integration_test_SNM():
     itSNM(modules)
 
@@ -494,6 +516,9 @@ def integration_test_SNL():
 def integration_test_NML():
     itNML(modules)
 
+def integration_test_NLY():
+    itNLY(modules)
+
 def integration_test_SNML():
     itSNML(modules)
 
@@ -502,6 +527,12 @@ def integration_test_NMLT():
 
 def integration_test_SNMLT():
     itSNMLT(modules)
+
+def integration_test_SNMLTY():
+    itSNMLTY(modules)
+
+def pipeline_test():
+    itSNMLTY(modules)
 
 # 額外測試
 

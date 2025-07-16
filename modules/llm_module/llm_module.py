@@ -1,5 +1,5 @@
 from core.module_base import BaseModule
-from modules.llm_module.schemas import LLMInput, LLMOutput
+from modules.llm_module.schemas import LLMInput, LLMOutput, SystemAction
 from configs.config_loader import load_module_config
 from modules.llm_module.gemini_client import GeminiWrapper
 from utils.prompt_builder import build_prompt
@@ -26,22 +26,22 @@ class LLMModule(BaseModule):
         self.debug()
         info_log("[LLM] Gemini 模型初始化完成")
         
-    def handle(self, data: dict) -> dict:
+    def handle(self, data: dict) -> dict:        
         payload = LLMInput(**data)
         debug_log(1, f"[LLM] 使用者輸入：{payload.text}")
         
-        # Get session context if provided
+        # Get session context if provided (for workflow continuation)
         session_info = data.get("session_info", {})
         has_active_session = session_info.get("active_session", False)
         session_state = session_info.get("state", "none")
-        is_internal = data.get("is_internal", False)
+        is_internal = payload.is_internal
         
         # Handle different intents
         if payload.intent == "direct":
             # Direct mode - bypass all prompting templates and system instructions
-            # 使用直接模式，完全跳過任何提示詞模板和系統指令
             prompt = payload.text
             debug_log(2, f"[LLM] 使用直接模式調用，不使用任何提示詞模板")
+            
         elif payload.intent == "chat":
             # Standard chat handling
             prompt = build_prompt(
@@ -50,45 +50,37 @@ class LLMModule(BaseModule):
                 intent=payload.intent,
                 is_internal=is_internal
             )
+            
         elif payload.intent == "command":
             # Command intent - analyze user's command and suggest actions
-            # Check if we need to get system functions
-            # is_internal 已經在前面定義
-            get_sys_functions = data.get("get_sys_functions", False)
+            debug_log(1, f"[LLM] 處理指令意圖: {payload.text}")
             
-            # Get system functions if requested
+            # 自動獲取系統功能列表（command intent 時自動啟用）
             available_functions = ""
-            if get_sys_functions:
+            try:
                 from modules.sys_module.sys_module import SYSModule
-                try:
-                    sys_module = SYSModule()
-                    available_functions = sys_module._load_function_specs()
-                    # Format functions for prompt
-                    from utils.prompt_templates import format_sys_functions_for_prompt
-                    available_functions = format_sys_functions_for_prompt(available_functions)
-                except Exception as e:
-                    error_log(f"[LLM] 獲取系統功能失敗: {e}")
-                    available_functions = "系統功能暫時無法獲取"
+                sys_module = SYSModule()
+                functions_spec = sys_module._load_function_specs()
+                
+                # Format functions for prompt
+                from utils.prompt_templates import format_sys_functions_for_prompt
+                available_functions = format_sys_functions_for_prompt(functions_spec)
+                debug_log(2, f"[LLM] 已獲取系統功能規格，共 {len(functions_spec)} 個功能")
+            except Exception as e:
+                error_log(f"[LLM] 獲取系統功能失敗: {e}")
+                available_functions = ""
             
-            # Build appropriate prompt
-            from utils.prompt_templates import build_command_prompt
-            command_prompt = build_command_prompt(
-                command=payload.text,
+            # Build command prompt
+            prompt = build_prompt(
+                user_input=payload.text,
+                memory=payload.memory or "",
+                intent="command",
+                is_internal=is_internal,
                 available_functions=available_functions
             )
             
-            # Add system action instruction template if not internal
-            if not is_internal:
-                from utils.prompt_templates import SYSTEM_ACTION_TEMPLATE
-                command_prompt += "\n\n" + SYSTEM_ACTION_TEMPLATE
-            
-            prompt = build_prompt(
-                user_input=command_prompt,
-                memory=payload.memory or "",
-                intent="command",
-                is_internal=is_internal
-            )
-            debug_log(1, f"[LLM] 處理指令意圖: {payload.text}")
+            # Schema 已經定義了 sys_action 結構，不需要額外的模板
+                
         else:
             info_log(f"[LLM] 暫不支援 intent: {payload.intent}", "WARNING")
             return {
@@ -105,13 +97,29 @@ class LLMModule(BaseModule):
             )
             debug_log(2, f"[LLM] Gemini 模型回應：{response}", exclusive=True)
             
+            # Gemini 透過 schema 直接返回結構化回應
+            sys_action = None
+            response_text = response.get("text", "")
+            
+            # 只在 command intent 且非內部調用時處理系統動作
+            if payload.intent == "command" and not is_internal:
+                raw_sys_action = response.get("sys_action")
+                if raw_sys_action and isinstance(raw_sys_action, dict):
+                    try:
+                        sys_action = SystemAction(**raw_sys_action)
+                        debug_log(2, f"[LLM] 解析到系統動作: {sys_action}")
+                    except Exception as e:
+                        debug_log(1, f"[LLM] 系統動作解析失敗: {e}")
+                        sys_action = None
+            
             result = LLMOutput(
-                text=response.get("text", ""),
+                text=response_text,
                 emotion=response.get("emotion", "neutral"),
-                sys_action=response.get("sys_action")
+                mood=response.get("emotion", "neutral"),  # 向後兼容
+                sys_action=sys_action
             ).dict() | {"status": "ok"}
             
-            # Add session context for command workflows if applicable
+            # Add session context for workflow continuation if applicable
             if has_active_session and session_state == "awaiting":
                 result["session_context"] = {
                     "active": True,
@@ -126,6 +134,6 @@ class LLMModule(BaseModule):
                 "text": "系統錯誤，無法產生回應。",
                 "status": "error"
             }
-
+    
     def shutdown(self):
         info_log("[LLM] 模組關閉")

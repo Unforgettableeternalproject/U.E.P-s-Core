@@ -144,6 +144,7 @@
     <Compile Include="modules\tts_module\rmvpe.py" />
     <Compile Include="modules\tts_module\vc_infer_pipeline.py" />
     <Compile Include="module_tests\integration_tests.py" />
+    <Compile Include="module_tests\test_sys_module.py" />
     <Compile Include="module_tests\test_tts_module.py" />
     <Compile Include="utils\debug_file_dropper.py" />
     <Compile Include="utils\debug_helper.py" />
@@ -187,6 +188,7 @@
     <Compile Include="modules\__init__.py" />
     <Compile Include="train\nlp\train_dbert.py" />
     <Compile Include="utils\prompt_builder.py" />
+    <Compile Include="utils\prompt_templates.py" />
     <Compile Include="utils\tts_chunker.py" />
   </ItemGroup>
   <ItemGroup>

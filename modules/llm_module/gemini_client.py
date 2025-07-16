@@ -34,17 +34,44 @@ class GeminiWrapper:
         self.response_schema = {
             "type": "object",
             "properties": {
-                "text": {"type": "string"},
-                "mood": {"type": "string"},
+                "text": {
+                    "type": "string",
+                    "description": "LLM 生成的回應文字"
+                },
+                "emotion": {
+                    "type": "string", 
+                    "description": "情緒標記",
+                    "enum": ["neutral", "happy", "sad", "excited", "confused", "helpful", "concerned"]
+                },
                 "sys_action": {
                     "anyOf": [
                         {
                             "type": "object",
                             "properties": {
-                                "action": {"type": "string"},
-                                "target": {"type": "string"}
+                                "action": {
+                                    "type": "string",
+                                    "enum": ["start_workflow", "execute_function"],
+                                    "description": "系統動作類型"
+                                },
+                                "workflow_type": {
+                                    "type": "string",
+                                    "description": "工作流程類型 (當 action 為 start_workflow 時)"
+                                },
+                                "function_name": {
+                                    "type": "string", 
+                                    "description": "具體功能名稱 (當 action 為 execute_function 時)"
+                                },
+                                "params": {
+                                    "type": "object",
+                                    "description": "動作參數"
+                                },
+                                "reason": {
+                                    "type": "string",
+                                    "description": "選擇此動作的原因說明"
+                                }
                             },
-                            "required": ["action", "target"]
+                            "required": ["action", "reason"],
+                            "description": "系統動作指令 (僅在 command intent 且能找到合適功能時提供)"
                         },
                         {
                             "type": "null"
@@ -52,7 +79,7 @@ class GeminiWrapper:
                     ]
                 }
             },
-            "required": ["text", "mood", "sys_action"]
+            "required": ["text", "emotion", "sys_action"]
         }
 
 

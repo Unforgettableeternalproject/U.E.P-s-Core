@@ -5,9 +5,9 @@ from utils.debug_helper import debug_log, debug_log_e, info_log, error_log
 
 _summarizer = pipeline("summarization", model="philschmid/bart-large-cnn-samsum")
 
-def chunk_and_summarize_memories(memories: list[str], chunk_size: int = 3) -> str: # 之後才會用到
+def chunk_and_summarize_memories(memories: list[str], chunk_size: int = 3) -> str: # To be used later
     """
-    將多筆記憶切塊並摘要整合成 prompt 前段。
+    Chunk and summarize multiple memories into prompt prefix.
     """
     chunks = [memories[i:i+chunk_size] for i in range(0, len(memories), chunk_size)]
     summaries = []
@@ -26,17 +26,17 @@ def chunk_and_summarize_memories(memories: list[str], chunk_size: int = 3) -> st
 
 def build_prompt(user_input: str, memory: str = "", intent: str = "chat", **kwargs) -> str:
     """
-    構建 LLM 提示文本
+    Build LLM prompt text
     
     Args:
-        user_input: 使用者輸入文本
-        memory: 記憶摘要
-        intent: 意圖類型 (chat, command 等)
-        **kwargs: 額外參數，例如工作流程相關資訊
-            is_internal: 是否是系統內部呼叫 (True/False)
+        user_input: User input text
+        memory: Memory summary
+        intent: Intent type (chat, command, etc.)
+        **kwargs: Additional parameters, such as workflow-related information
+            is_internal: Whether this is a system internal call (True/False)
     
     Returns:
-        完整的提示文本
+        Complete prompt text
     """
     config = load_module_config("llm_module")
     instructions = config.get("system_instruction", {})
@@ -44,9 +44,9 @@ def build_prompt(user_input: str, memory: str = "", intent: str = "chat", **kwar
     
     prompt_parts = []
 
-    # 只有與用戶溝通時才加入系統指示詞，內部系統呼叫時不需要
+    # System instructions are only added for external calls (UEP personality role)
+    # Internal calls don't need system instructions, keeping purely functional
     if not is_internal:
-        # 基本指示詞
         if "main" in instructions:
             prompt_parts.append(instructions["main"])
         if intent in instructions:
@@ -54,51 +54,44 @@ def build_prompt(user_input: str, memory: str = "", intent: str = "chat", **kwar
 
     debug_log(3, f"[LLM] 指示詞組合階段一: {prompt_parts}")
 
-    # 加入記憶 (只有與用戶溝通時才需要)
+    # Add memory (only needed when communicating with users)
     if memory and not is_internal:
-        prompt_parts.append("這是你過去與使用者的對話摘要：\n" + memory)
+        prompt_parts.append("Here is a summary of your past conversations with the user:\n" + memory)
 
     debug_log(3, f"[LLM] 指示詞組合階段二: {prompt_parts}")
     
-    # 特定意圖處理
+    # Specific intent handling
     if intent == "command":
-        # 如果是指令意圖，使用專用的指令處理提示模板
+        # If it's a command intent, use the dedicated command processing prompt template
         from utils.prompt_templates import build_command_prompt
-        from modules.sys_module.sys_module import SYSModule
         
-        # 獲取可用功能列表
-        try:
-            # 簡單描述可用功能列表，而不是實際創建模組實例
+        # Function list is prioritized from kwargs, if not available use static description
+        available_functions = kwargs.get("available_functions", "")
+        if not available_functions:
+            # Use static function description as fallback (only file processing functions)
             available_functions = """
-以下是系統可執行的功能：
-1. 檔案操作
-   - 讀取檔案內容 (drop_and_read)
-   - 智能歸檔檔案 (intelligent_archive)
-   - 為檔案生成摘要與標籤 (summarize_tag)
+## Available System Functions
 
-2. 視窗控制
-   - 移動視窗位置 (push_window)
-   - 摺疊視窗 (fold_window)
-   - 切換工作區 (switch_workspace)
-   - 螢幕截圖與標註 (screenshot_and_annotate)
+# File Processing
+### drop_and_read
+Read dragged or specified file content
+Parameters:
+  - file_path (required): Path to the file to read
 
-3. 文字處理
-   - 剪貼簿追蹤與搜尋 (clipboard_tracker)
-   - 快速文字範本 (quick_phrases)
-   - 圖像OCR文字提取 (ocr_extract)
+### intelligent_archive  
+Smart file archiving to appropriate folders
+Parameters:
+  - file_path (required): Source file path to archive
+  - target_dir (optional): Target directory (auto-determined if not provided)
 
-4. 自動化輔助
-   - 設定提醒 (set_reminder)
-   - 生成備份腳本 (generate_backup_script)
-   - 資料夾監控 (monitor_folder)
-
-5. 整合功能
-   - 新聞摘要 (news_summary)
-   - 天氣查詢 (get_weather)
-   - 世界時間查詢 (get_world_time)
-   - 程式碼分析 (code_analysis)
-   - 媒體控制 (media_control)
+### summarize_tag
+Generate file summary and tags
+Parameters:
+  - file_path (required): File path
+  - tag_count (optional): Number of tags to generate (default: 3)
 """
+        
+        try:
             command_prompt = build_command_prompt(
                 command=user_input,
                 available_functions=available_functions
@@ -106,9 +99,9 @@ def build_prompt(user_input: str, memory: str = "", intent: str = "chat", **kwar
             prompt_parts.append(command_prompt)
         except Exception as e:
             error_log(f"[LLM] 構建指令提示時發生錯誤: {e}")
-            prompt_parts.append(f"使用者指令：{user_input}")
+            prompt_parts.append(f"User command: {user_input}")
     elif "workflow_step" in kwargs:
-        # 工作流程步驟處理
+        # Workflow step processing
         from utils.prompt_templates import build_workflow_step_prompt
         
         step_info = kwargs.get("workflow_step", {})
@@ -122,8 +115,8 @@ def build_prompt(user_input: str, memory: str = "", intent: str = "chat", **kwar
         )
         prompt_parts.append(workflow_prompt)
     else:
-        # 一般用戶輸入
-        prompt_parts.append(f"使用者：{user_input}")
+        # General user input
+        prompt_parts.append(f"User: {user_input}")
 
     debug_log(3, f"[LLM] 指示詞組合階段三: {prompt_parts}")
 

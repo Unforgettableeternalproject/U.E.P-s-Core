@@ -393,7 +393,8 @@ def create_random_fail_workflow(session: WorkflowSession) -> WorkflowEngine:
         "max_retries_input",
         "請設定最大重試次數 (預設5次，直接按Enter可使用預設值):",
         lambda x: (validate_retries(x), "請輸入大於零的整數或留空使用預設值"),
-        ["fail_chance_input"]
+        ["fail_chance_input"],
+        optional=True
     )
     
     # 步驟 3: 確認開始測試

@@ -478,3 +478,15 @@
 
 ---
 
+### Finshed the integration tests and the whole pipeline, stage one almost completed. 07/16
+
+> Date: Wed, 16 Jul 2025 22:11:35 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_integration`
+
+> Commit: `35ba8c14e0bf53f94e8bc6b11bce08cfab5ffa2b`
+
+---
+

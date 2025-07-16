@@ -382,3 +382,123 @@
 
 ---
 
+### Migrated most sys functions here and repurposed most of them, currently left unimplemented for most. Also implemented force chunking in tts. 05/07
+
+> Date: Wed, 07 May 2025 02:01:20 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_integration`
+
+> Commit: `4fd718e3b942fda7f7b304631885a7708c8e4b6a`
+
+---
+
+### Added a function.yaml for better usage of the functions, and added some self check sysyem to prevent exceptions. 05/22
+
+> Date: Thu, 22 May 2025 00:28:58 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_integration`
+
+> Commit: `fe8c79b055901f263c812037ed58af60ee81b153`
+
+---
+
+### Documents updated, and added several new functions (some are not yet tested). 06/15
+
+> Date: Sun, 15 Jun 2025 14:34:38 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_integration`
+
+> Commit: `9bb13bd1640de75458cf1863598375c676d1e950`
+
+---
+
+### Experimental workflow integration. But is currently unstable. 07/04
+
+> Date: Fri, 04 Jul 2025 18:08:09 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_integration`
+
+> Commit: `5421a759b1621881f061aae6a955f621b5dad798`
+
+---
+
+### Changed the way workflow processes as a new architecture, still experimental. 07/10
+
+> Date: Thu, 10 Jul 2025 20:07:56 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_integration`
+
+> Commit: `83e66da850412653d6abc35540bb0246662819a3`
+
+---
+
+### Added more step templates, and tried file_workflow firsthand, no problem seemed to be found. 07/11
+
+> Date: Fri, 11 Jul 2025 00:48:21 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_integration`
+
+> Commit: `b3f245740e2d704f0fdb488ac0690499d4bf0e49`
+
+---
+
+### All current functions are now  compatible with workflow system. 07/16
+
+> Date: Wed, 16 Jul 2025 15:48:36 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_integration`
+
+> Commit: `b8675101c489d4a7be7bea46c61aea76ac44935a`
+
+---
+
+### Fixed and enhanced most module schemas and added a unit test for SYS. 07/16
+
+> Date: Wed, 16 Jul 2025 19:15:01 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_integration`
+
+> Commit: `0d6014cc3984fd4661c854477957ff2ae5a8bd69`
+
+---
+
+### Finshed the integration tests and the whole pipeline, stage one almost completed. 07/16
+
+> Date: Wed, 16 Jul 2025 22:11:35 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_integration`
+
+> Commit: `35ba8c14e0bf53f94e8bc6b11bce08cfab5ffa2b`
+
+---
+
+### Removed unecessary files. 07/16
+
+> Date: Wed, 16 Jul 2025 22:14:30 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_integration`
+
+> Commit: `f0a3cb599e5c7e7055f30e51d1b08c2d13ea1acb`
+
+---
+

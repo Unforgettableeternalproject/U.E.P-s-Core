@@ -1,3 +1,20 @@
-{
-  "text": "Open notepad for me."
-}
+[
+  {
+    "description": "指令文字範例",
+    "input": {
+      "text": "請幫我整理桌面檔案"
+    }
+  },
+  {
+    "description": "聊天文字範例",
+    "input": {
+      "text": "你好，今天天氣如何？"
+    }
+  },
+  {
+    "description": "無意義文字範例",
+    "input": {
+      "text": "gogogoog"
+    }
+  }
+]

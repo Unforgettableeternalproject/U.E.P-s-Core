@@ -1,1 +1,45 @@
 # Default config for sys_module_module
+
+enabled: true
+modes:
+  # 一、工作流程管理 (核心功能)
+  - start_workflow
+  - continue_workflow
+  - cancel_workflow
+  - get_workflow_status
+  - list_active_workflows
+
+  # 二、檔案處理工作流程
+  - file_drop_and_read_workflow
+  - file_intelligent_archive_workflow
+  - file_summarize_tag_workflow
+
+  # 三、桌面／視窗控制
+  - push_window
+  - fold_window
+  - switch_workspace
+  - screenshot_and_annotate
+
+  # 四、剪貼簿／文字處理
+  - clipboard_tracker
+  - quick_phrases
+  - ocr_extract
+
+  # 五、自動化助手
+  - set_reminder
+  - generate_backup_script
+  - monitor_folder
+
+  # 六、外部整合
+  - news_summary
+  - get_weather
+  - get_world_time
+  - code_analysis
+  - media_control
+  
+  # 七、測試工作流程 (開發測試用)
+  - test_workflow_echo
+  - test_workflow_countdown
+  - test_workflow_data_collector
+  - test_workflow_random_fail
+  - test_workflow_tts_test

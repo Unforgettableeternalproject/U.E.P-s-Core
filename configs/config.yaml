@@ -6,7 +6,7 @@ modules_enabled:
   mem_module: true
   llm_module: true
   tts_module: true
-  sys_module: false
+  sys_module: true
 
 logging:
   enabled: true

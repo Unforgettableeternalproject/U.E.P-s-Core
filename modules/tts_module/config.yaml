@@ -1,11 +1,11 @@
 # Default config for tts_module
 
-model_name: "U.E.P_normal"
+model_name: "U.E.P_sweet"
 model_path: "./models/tts"
-index_file: "./models/tts/U.E.P_normal.index"
+index_file: "./models/tts/U.E.P_sweet.index"
 speaker_id: 0
 default_mood: "neutral"
-speed_rate: 0.2
+speed_rate: 0.4 # Potentially, speed can also be used on sentimental speaking
 pitch_map:
   happy: 9
   excited: 10

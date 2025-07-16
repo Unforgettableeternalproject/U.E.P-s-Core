@@ -1,5 +1,41 @@
-{
-  "mode": "fetch",
-  "text": "What is my schedule today?",
-  "top_k": 5
-}
+[
+  {
+    "description": "查詢記憶範例",
+    "input": {
+      "mode": "fetch",
+      "text": "如何學習程式設計",
+      "top_k": 5
+    }
+  },
+  {
+    "description": "儲存記憶範例",
+    "input": {
+      "mode": "store",
+      "entry": {
+        "user": "如何學習Python？",
+        "response": "建議從基礎語法開始，多練習實際專案。"
+      }
+    }
+  },
+  {
+    "description": "列出所有記憶範例",
+    "input": {
+      "mode": "list_all",
+      "page": 1
+    }
+  },
+  {
+    "description": "根據文字清除記憶範例",
+    "input": {
+      "mode": "clear_by_text",
+      "text": "Python",
+      "top_k": 3
+    }
+  },
+  {
+    "description": "清除所有記憶範例",
+    "input": {
+      "mode": "clear_all"
+    }
+  }
+]

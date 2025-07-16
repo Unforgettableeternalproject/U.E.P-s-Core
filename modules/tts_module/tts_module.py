@@ -102,12 +102,12 @@ class TTSModule(BaseModule):
         except Exception as e:
             return TTSOutput(status="error", message=f"Invalid input: {e}").dict()
 
-        text, mood, save = inp.text, inp.mood or self.default_mood, inp.save
+        text, mood, save, fc = inp.text, inp.mood or self.default_mood, inp.save, inp.force_chunking
 
         if not text:
             return TTSOutput(status="error", message="Text is required").dict()
 
-        if len(text) > self.chunking_threshold:
+        if len(text) > self.chunking_threshold or fc:
             return await self.handle_streaming(text, mood, save)
         else:
             return await self.handle_single(text, mood, save)
@@ -134,7 +134,9 @@ class TTSModule(BaseModule):
                         f0_up_key=f0,
                         speaker_id=self.speaker_id,
                         output_path=out_path,
-                        speed_rate=-self.speed_rate
+                        speed_rate=-self.speed_rate,
+                        # voice="zh-TW-HsiaoChenNeural" # For Chinese Voice Purpose, uncomment this line.
+                        # voice="ja-JP-NanamiNeural" # For Japanese Voice Purpose, uncomment this line.
                     )
                 )
             )
@@ -178,7 +180,6 @@ class TTSModule(BaseModule):
         def gen_chunk(idx, chunk_text):
             fname = f"chunk_{idx}_{uuid.uuid4().hex[:8]}.wav"
             out_path = os.path.join(tmp_dir, fname) if save else None
-            # 同步地跑完 async run_tts，拿到 dict
             result = asyncio.run(
                 run_tts(
                     tts_text=chunk_text,
@@ -188,28 +189,35 @@ class TTSModule(BaseModule):
                     f0_up_key=f0,
                     speaker_id=self.speaker_id,
                     output_path=out_path,
-                    speed_rate=-self.speed_rate
+                    speed_rate=-self.speed_rate,
+                    # voice="zh-TW-HsiaoYuNeural"
+                    # voice="ja-JP-NanamiNeural"
                 )
             )
-            return result
+            return result, fname, out_path  # 返回更多資訊以便追蹤
 
         async def producer():
+            info_log(f"[TTS] 開始處理 {len(chunks)} 個文本段落")
             for idx, chunk in enumerate(chunks, 1):
-                result = await loop.run_in_executor(None, gen_chunk, idx, chunk)
+                info_log(f"[TTS] 處理第 {idx}/{len(chunks)} 段")
+                result, fname, out_path = await loop.run_in_executor(None, gen_chunk, idx, chunk)
                 if result["status"] != "success":
                     await queue.put({"error": result["message"]})
                     return
-
+                
                 if save:
                     path = result["output_path"]
                     generated_files.append(path)
+                    info_log(f"[TTS] 已生成檔案 {path}")
                     await queue.put(path)
                 else:
                     await queue.put(result)
             # 標記結束
+            info_log(f"[TTS] 所有段落處理完成")
             await queue.put(None)
 
         async def consumer():
+            count = 0
             while True:
                 item = await queue.get()
                 if item is None:
@@ -217,30 +225,38 @@ class TTSModule(BaseModule):
                 if "error" in item:
                     error_log(f"TTS 產生失敗：{item['error']}")
                     break
-                #item = {"audio_buffer": array, "sr": 16000}
-                if not save: # This is a rather dangerous code, for the schema for save and not save is entirely different, may change later.
+                count += 1
+                if not save:
                     audio, sr = item["audio_buffer"], item["sr"]
-
                     play_obj = sa.play_buffer(audio.tobytes(), 1, 2, sr)
                     play_obj.wait_done()
+            info_log(f"[TTS] 已處理 {count} 個段落")
 
-        # 並行執行
-        await asyncio.gather(producer(), consumer())
+        # 等待兩個任務都完成
+        producer_task = asyncio.create_task(producer())
+        consumer_task = asyncio.create_task(consumer())
+        await producer_task
+        await consumer_task
 
-        # 最後如果要存檔，把 temp/tts 下的所有 chunk 合併
+        # 最後如果要存檔，確保所有檔案都已生成後再合併
         output_path = None
         if save and generated_files:
+            info_log(f"[TTS] 合併 {len(generated_files)} 個音訊檔案")
             buffers, sr = [], None
             for f in generated_files:
-                data, _sr = sf.read(f)
-                sr = sr or _sr
-                buffers.append(data)
-            merged = np.concatenate(buffers, axis=0)
-            out_dir = "outputs/tts"
-            os.makedirs(out_dir, exist_ok=True)
-            fname = f"uep_{uuid.uuid4().hex[:8]}.wav"
-            output_path = os.path.join(out_dir, fname)
-            sf.write(output_path, merged, sr)
+                if os.path.exists(f):  # 確認檔案存在
+                    data, _sr = sf.read(f)
+                    sr = sr or _sr
+                    buffers.append(data)
+            
+            if buffers:  # 確保有檔案可合併
+                merged = np.concatenate(buffers, axis=0)
+                out_dir = "outputs/tts"
+                os.makedirs(out_dir, exist_ok=True)
+                fname = f"uep_{uuid.uuid4().hex[:8]}.wav"
+                output_path = os.path.join(out_dir, fname)
+                sf.write(output_path, merged, sr)
+                info_log(f"[TTS] 已合併音訊到 {output_path}")
 
         return {
             "status": "success",

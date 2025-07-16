@@ -28,12 +28,14 @@
     <Content Include=".env" />
     <Content Include=".env.example" />
     <Content Include=".gitignore" />
+    <Content Include="configs\archive_history.json" />
     <Content Include="arts\U.E.P_concept.png" />
     <Content Include="CHANGELOG.md" />
     <Content Include="configs\config.yaml" />
     <Content Include="docs\SYS模組功能概覽.md" />
-    <Content Include="docs\U.E.P 大型模型專案 構想.pdf" />
+    <Content Include="docs\專案藍圖.md" />
     <Content Include="docs\專案開發準則.md" />
+    <Content Include="docs\本學期的專案進度.md" />
     <Content Include="memory\dev_faiss_index" />
     <Content Include="memory\dev_metadata.json" />
     <Content Include="models\nlp\command_chat_classifier\config.json" />
@@ -68,6 +70,11 @@
     <Content Include="modules\sys_module\config.yaml" />
     <Content Include="modules\sys_module\example_input.json" />
     <Content Include="modules\sys_module\example_output.json" />
+    <Content Include="modules\sys_module\functions.yaml" />
+    <Content Include="modules\sys_module\workflows\__pycache__\file_workflows.cpython-310.pyc" />
+    <Content Include="modules\sys_module\workflows\__pycache__\test_workflows.cpython-310-pytest-8.3.3.pyc" />
+    <Content Include="modules\sys_module\workflows\__pycache__\test_workflows.cpython-310.pyc" />
+    <Content Include="modules\sys_module\workflows\__pycache__\__init__.cpython-310.pyc" />
     <Content Include="modules\tts_module\config.yaml" />
     <Content Include="modules\tts_module\example_input.json" />
     <Content Include="modules\tts_module\example_output.json" />
@@ -106,9 +113,19 @@
     <Compile Include="core\module_base.py" />
     <Compile Include="core\registry.py" />
     <Compile Include="core\router.py" />
+    <Compile Include="core\session_manager.py" />
     <Compile Include="core\state_manager.py" />
     <Compile Include="devtools\debugger.py" />
     <Compile Include="modules\llm_module\gemini_client.py" />
+    <Compile Include="modules\sys_module\actions\automation_helper.py" />
+    <Compile Include="modules\sys_module\actions\text_processing.py" />
+    <Compile Include="modules\sys_module\actions\file_interaction.py" />
+    <Compile Include="modules\sys_module\actions\integrations.py" />
+    <Compile Include="modules\sys_module\actions\window_control.py" />
+    <Compile Include="modules\sys_module\workflows.py" />
+    <Compile Include="modules\sys_module\workflows\file_workflows.py" />
+    <Compile Include="modules\sys_module\workflows\test_workflows.py" />
+    <Compile Include="modules\sys_module\workflows\__init__.py" />
     <Compile Include="modules\tts_module\config.py" />
     <Compile Include="modules\tts_module\infer_core.py" />
     <Compile Include="modules\tts_module\lib\infer_pack\attentions.py" />
@@ -127,7 +144,9 @@
     <Compile Include="modules\tts_module\rmvpe.py" />
     <Compile Include="modules\tts_module\vc_infer_pipeline.py" />
     <Compile Include="module_tests\integration_tests.py" />
+    <Compile Include="module_tests\test_sys_module.py" />
     <Compile Include="module_tests\test_tts_module.py" />
+    <Compile Include="utils\debug_file_dropper.py" />
     <Compile Include="utils\debug_helper.py" />
     <Compile Include="utils\logger.py" />
     <Compile Include="entry.py" />
@@ -158,7 +177,6 @@
     <Compile Include="modules\stt_module\__init__.py" />
     <Compile Include="modules\sys_module\schemas.py" />
     <Compile Include="modules\sys_module\sys_module.py" />
-    <Compile Include="modules\sys_module\tests\test_sys_module_module.py" />
     <Compile Include="modules\sys_module\__init__.py" />
     <Compile Include="modules\tts_module\schemas.py" />
     <Compile Include="modules\tts_module\tts_module.py" />
@@ -170,6 +188,7 @@
     <Compile Include="modules\__init__.py" />
     <Compile Include="train\nlp\train_dbert.py" />
     <Compile Include="utils\prompt_builder.py" />
+    <Compile Include="utils\prompt_templates.py" />
     <Compile Include="utils\tts_chunker.py" />
   </ItemGroup>
   <ItemGroup>
@@ -198,7 +217,9 @@
     <Folder Include="modules\nlp_module\" />
     <Folder Include="modules\stt_module\" />
     <Folder Include="modules\sys_module\" />
-    <Folder Include="modules\sys_module\tests\" />
+    <Folder Include="modules\sys_module\actions\" />
+    <Folder Include="modules\sys_module\workflows\" />
+    <Folder Include="modules\sys_module\workflows\__pycache__\" />
     <Folder Include="modules\tts_module\" />
     <Folder Include="modules\tts_module\lib\" />
     <Folder Include="modules\tts_module\lib\infer_pack\" />

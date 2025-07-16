@@ -490,3 +490,15 @@
 
 ---
 
+### Removed unecessary files. 07/16
+
+> Date: Wed, 16 Jul 2025 22:14:30 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_integration`
+
+> Commit: `f0a3cb599e5c7e7055f30e51d1b08c2d13ea1acb`
+
+---
+

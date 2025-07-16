@@ -1,3 +1,10 @@
-{{
-  "response": "output"
-}}
+[
+  {
+    "description": "佔位符回應（ANI模組尚未實作）",
+    "output": {
+      "status": "not_implemented",
+      "message": "ANI模組尚未實作",
+      "data": null
+    }
+  }
+]

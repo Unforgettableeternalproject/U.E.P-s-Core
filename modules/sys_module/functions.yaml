@@ -1,21 +1,21 @@
-# Need revision
+# U.E.P System Module Functions
+# 
+# File Interaction Functions:
+# These functions are now available ONLY through workflows for better user experience:
+# - Use start_workflow with workflow_type="drop_and_read" instead of direct drop_and_read
+# - Use start_workflow with workflow_type="intelligent_archive" instead of direct intelligent_archive  
+# - Use start_workflow with workflow_type="summarize_tag" instead of direct summarize_tag
+#
+# Direct mode for file interaction has been deprecated in favor of guided workflows.
 
-drop_and_read:
-  description: "讀入 txt/md/pdf 並回傳文字"
-  params:
-    file_path:
-      type: str
-      required: true
-      description: "要讀取的檔案路徑 (.txt, .md, .pdf)"
-
-# 新增：Session Workflow 相關功能
+# Workflow Management Functions
 start_workflow:
   description: "啟動多步驟工作流程（用於複雜指令處理）"
   params:
     workflow_type:
       type: str
       required: true
-      description: "工作流程類型，例如 file_processing, task_automation 等"
+      description: "工作流程類型，例如 drop_and_read, intelligent_archive, summarize_tag, file_processing 等"
     command:
       type: str
       required: true
@@ -61,31 +61,24 @@ list_active_workflows:
   description: "列出所有進行中的工作流程"
   params: {}
 
-intelligent_archive:
-  description: "智能歸檔檔案至適當位置"
-  params:
-    file_path:
-      type: str
-      required: true
-      description: "來源檔案的完整路徑"
-    target_dir:
-      type: str
-      required: false
-      description: "使用者指定的目標資料夾，若為空則自動判斷"
+# File Interaction Functions (Workflow-Only)
+# Note: These functions are now only available through workflows, not as direct actions.
+# Use start_workflow with the appropriate workflow_type instead.
 
-summarize_tag:
-  description: "為檔案生成摘要與標籤，輸出到summary檔案"
-  params:
-    file_path:
-      type: str
-      required: true
-      description: "要摘要的原始檔案路徑"
-    tag_count:
-      type: int
-      required: false
-      default: 3
-      description: "要生成的標籤數量，預設為3個"
+# Example workflow usage:
+# start_workflow:
+#   workflow_type: "drop_and_read"
+#   command: "讀取檔案"
+#   
+# start_workflow:
+#   workflow_type: "intelligent_archive" 
+#   command: "歸檔檔案"
+#
+# start_workflow:
+#   workflow_type: "summarize_tag"
+#   command: "生成摘要"
 
+# Window Control Functions
 push_window:
   description: "將指定視窗『推一推』產生位移效果"
   params:

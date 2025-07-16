@@ -1,8 +1,32 @@
-{
-  "text": "Yes! It's your birthday!",
-  "emotion": "neutral",
-  "sys_action": {
-    "action": "",
-    "target": ""
+[
+  {
+    "description": "聊天回應範例",
+    "output": {
+      "text": "今天是個晴朗的好天氣！很適合出門散步呢。",
+      "mood": "happy",
+      "sys_action": null
+    }
+  },
+  {
+    "description": "指令回應範例",
+    "output": {
+      "text": "我來幫您整理桌面檔案。我會先掃描您的桌面，然後根據檔案類型進行分類整理。",
+      "mood": "helpful",
+      "sys_action": {
+        "action": "file_organization",
+        "parameters": {
+          "source_path": "desktop",
+          "organize_by": "file_type"
+        }
+      }
+    }
+  },
+  {
+    "description": "直接回應範例",
+    "output": {
+      "text": "這段程式碼定義了一個計算斐波那契數列的函數，使用遞迴方式實現。",
+      "mood": "neutral",
+      "sys_action": null
+    }
   }
-}
+]

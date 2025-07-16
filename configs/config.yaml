@@ -1,10 +1,10 @@
 # Default config for general modules
 
 modules_enabled:
-  stt_module: false
-  nlp_module: false
-  mem_module: false
-  llm_module: false
+  stt_module: true
+  nlp_module: true
+  mem_module: true
+  llm_module: true
   tts_module: true
   sys_module: true
 

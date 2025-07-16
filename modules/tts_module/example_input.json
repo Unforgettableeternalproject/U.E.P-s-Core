@@ -1,6 +1,36 @@
-{
-  "text": "Hello, this is a test.",
-  "mood": "happy",
-  "save": false,
-  "force_chunking": false
-}
+[
+  {
+    "description": "簡單語音合成範例",
+    "input": {
+      "text": "你好，歡迎使用語音合成功能",
+      "mood": "neutral",
+      "save": false
+    }
+  },
+  {
+    "description": "帶情緒的語音合成範例",
+    "input": {
+      "text": "今天是個美好的一天！",
+      "mood": "happy",
+      "save": true
+    }
+  },
+  {
+    "description": "儲存音檔範例",
+    "input": {
+      "text": "這段文字將會被儲存為音檔檔案。",
+      "mood": "neutral",
+      "save": true,
+      "force_chunking": false
+    }
+  },
+  {
+    "description": "長文字強制分割範例",
+    "input": {
+      "text": "這是一段很長的文字，會被自動分割成多個區塊進行處理，以確保語音合成的品質和效率。每個區塊會被獨立處理，然後合併成完整的音檔。",
+      "mood": "calm",
+      "save": true,
+      "force_chunking": true
+    }
+  }
+]

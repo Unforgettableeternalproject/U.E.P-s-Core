@@ -2,20 +2,20 @@ from pydantic import BaseModel
 from typing import Optional, Any, Dict, List
 
 class SYSInput(BaseModel):
-    mode: str
-    params: Optional[Dict[str, Any]] = {}
-    session_id: Optional[str] = None
-    user_input: Optional[str] = None
-    session_data: Optional[Dict[str, Any]] = None  # 用於測試工作流程傳遞會話數據
+    mode: str  # 操作模式：list_functions, start_workflow, continue_workflow, cancel_workflow等
+    params: Optional[Dict[str, Any]] = {}  # 模式專用參數
+    session_id: Optional[str] = None  # 工作流程會話ID
+    user_input: Optional[str] = None  # 使用者輸入內容
+    session_data: Optional[Dict[str, Any]] = None  # 會話數據（測試工作流程用）
 
 class SYSOutput(BaseModel):
-    status: str
-    data: Optional[Any] = None
-    message: Optional[str] = None
-    session_id: Optional[str] = None
-    requires_input: bool = False
-    prompt: Optional[str] = None
-    session_data: Optional[Dict[str, Any]] = None  # 用於測試工作流程返回會話數據
+    status: str  # 狀態：waiting, completed, cancelled, error等
+    data: Optional[Any] = None  # 回傳數據
+    message: Optional[str] = None  # 狀態訊息
+    session_id: Optional[str] = None  # 工作流程會話ID
+    requires_input: bool = False  # 是否需要使用者輸入
+    prompt: Optional[str] = None  # 使用者輸入提示
+    session_data: Optional[Dict[str, Any]] = None  # 會話數據（測試工作流程用）
     
 class SessionInfo(BaseModel):
     """Session information for workflows"""

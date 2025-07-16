@@ -41,11 +41,6 @@ modules = {
     "sysmod": safe_get_module("sys_module")
 }
 
-# 模組載入
-
-def load_module_test():
-    pass
-
 # 測試 STT 模組
 
 def on_stt_result(text):
@@ -312,51 +307,19 @@ def sys_test_functions(mode : int = 1, sub : int = 1):
         return
 
     match mode:
-        case 1: # 檔案互動功能
-            info_log("[Controller] 開啟檔案互動功能")
+        case 1: # 檔案互動功能 (僅工作流程模式)
+            info_log("[Controller] 開啟檔案互動功能 (工作流程模式)")
             match sub:
-                case 1: # Drop and Read (使用舊的直接模式)
-                    file_path = open_demo_window()
-                    resp = sysmod.handle({"mode": "drop_and_read", "params": {"file_path": file_path}})
-                    print(resp.get("data", {}))
-                case 2: # Intelligent Archive (使用舊的直接模式)
-                    file_path = open_demo_window()
-                    resp = sysmod.handle({"mode": "intelligent_archive", "params": {"file_path": file_path}})
-                    print("=== SYS 智能歸檔功能 ===")
-                    print(f"檔案已歸檔至: {resp.get('data', '未知位置')}")                
-                case 3: # Intelligent Archive with target directory (使用舊的直接模式)
-                    file_path = open_demo_window()
-                    print("請選擇目標資料夾...")
-                    target_dir = open_folder_dialog()
-                    params = {"file_path": file_path}
-                    if target_dir:
-                        params["target_dir"] = target_dir
-                        print(f"已選擇目標資料夾: {target_dir}")
-                    else:
-                        print("未選擇目標資料夾，將使用系統自動選擇")
-                    resp = sysmod.handle({"mode": "intelligent_archive", "params": params})
-                    print("=== SYS 智能歸檔功能 (指定目錄) ===")
-                    print(f"檔案已歸檔至: {resp.get('data', '未知位置')}")
-                case 4: # Summarize Tag (使用舊的直接模式)
-                    file_path = open_demo_window()
-                    resp = sysmod.handle({"mode": "summarize_tag", "params": {"file_path": file_path}})
-                    print("=== SYS 檔案摘要標記功能 ===")
-                    result = resp.get("data", {})
-                    if isinstance(result, dict):
-                        print(f"摘要檔案位置: {result.get('summary_file', '未生成')}")
-                        print(f"生成標籤: {', '.join(result.get('tags', ['無標籤']))}")
-                    else:
-                        print(f"結果: {result}")
-                case 5: # 測試檔案工作流程 - Drop and Read
+                case 1: # 測試檔案工作流程 - Drop and Read
                     print("=== 測試檔案讀取工作流程 ===")
                     test_file_workflow("drop_and_read")
-                case 6: # 測試檔案工作流程 - Intelligent Archive
+                case 2: # 測試檔案工作流程 - Intelligent Archive
                     print("=== 測試智慧歸檔工作流程 ===")
                     test_file_workflow("intelligent_archive")
-                case 7: # 測試檔案工作流程 - Summarize Tag
+                case 3: # 測試檔案工作流程 - Summarize Tag
                     print("=== 測試摘要標籤工作流程 ===")
                     test_file_workflow("summarize_tag")
-                case 8: # 測試一般多步驟工作流程
+                case 4: # 測試一般多步驟工作流程
                     command = input("請輸入指令（如：幫我整理文件）：")
                     if command:
                         test_command_workflow(command)

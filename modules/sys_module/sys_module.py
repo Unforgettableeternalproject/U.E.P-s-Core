@@ -7,7 +7,6 @@ from configs.config_loader import load_module_config
 from utils.debug_helper import info_log, error_log, debug_log
 from .schemas import SYSInput, SYSOutput, SessionInfo, SessionDetail
 
-from .actions.file_interaction import drop_and_read, intelligent_archive, summarize_tag
 from .actions.window_control   import push_window, fold_window, switch_workspace, screenshot_and_annotate
 from .actions.text_processing  import clipboard_tracker, quick_phrases, ocr_extract
 from .actions.automation_helper import set_reminder, generate_backup_script, monitor_folder
@@ -434,21 +433,30 @@ class SYSModule(BaseModule):
                 "list_active_workflows": self._list_active_workflows,
             }
             
-            # Standard action handlers
+            # Standard action handlers (excluding file interaction - use workflows instead)
             action_handlers = {
-                "drop_and_read": drop_and_read,
-                "intelligent_archive": intelligent_archive,
-                "summarize_tag": summarize_tag,
+                # File interaction actions are now workflow-only
+                # "drop_and_read": use start_workflow with workflow_type="drop_and_read"
+                # "intelligent_archive": use start_workflow with workflow_type="intelligent_archive" 
+                # "summarize_tag": use start_workflow with workflow_type="summarize_tag"
+                
+                # Window Control Actions
                 "push_window": push_window,
                 "fold_window": fold_window,
                 "switch_workspace": switch_workspace,
                 "screenshot_and_annotate": screenshot_and_annotate,
+                
+                # Text Processing Actions  
                 "clipboard_tracker": clipboard_tracker,
                 "quick_phrases": quick_phrases,
                 "ocr_extract": ocr_extract,
+                
+                # Automation Helper Actions
                 "set_reminder": set_reminder,
                 "generate_backup_script": generate_backup_script,
                 "monitor_folder": monitor_folder,
+                
+                # Integration Actions
                 "news_summary": news_summary,
                 "get_weather": get_weather,
                 "get_world_time": get_world_time,

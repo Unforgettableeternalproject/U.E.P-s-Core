@@ -1,7 +1,42 @@
-{
-  "status": "success",
-  "output_path": "/path/to/output/file",
-  "message": "Text-to-speech conversion completed successfully.",
-  "is_chunked": false,
-  "chunk_count": 0
-}
+[
+  {
+    "description": "成功合成並播放範例",
+    "output": {
+      "status": "success",
+      "output_path": null,
+      "message": "語音合成完成並已播放",
+      "is_chunked": false,
+      "chunk_count": null
+    }
+  },
+  {
+    "description": "成功合成並儲存範例",
+    "output": {
+      "status": "success",
+      "output_path": "outputs/tts/generated_audio_20250716_143022.mp3",
+      "message": "語音合成完成並已儲存",
+      "is_chunked": false,
+      "chunk_count": null
+    }
+  },
+  {
+    "description": "分塊處理中範例",
+    "output": {
+      "status": "processing",
+      "output_path": null,
+      "message": "正在處理分割的文字區塊",
+      "is_chunked": true,
+      "chunk_count": 3
+    }
+  },
+  {
+    "description": "錯誤範例",
+    "output": {
+      "status": "error",
+      "output_path": null,
+      "message": "語音合成失敗：文字內容為空",
+      "is_chunked": false,
+      "chunk_count": null
+    }
+  }
+]

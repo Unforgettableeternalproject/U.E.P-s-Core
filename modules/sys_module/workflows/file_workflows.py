@@ -83,7 +83,7 @@ def create_drop_and_read_workflow(session: WorkflowSession) -> WorkflowEngine:
             content = drop_and_read(file_path)
             
             return StepResult.complete_workflow(
-                f"檔案讀取完成！檔案: {Path(file_path).name}, 內容長度: {len(content)} 字符",
+                f"📄 檔案讀取工作流程完成！檔案: {Path(file_path).name}, 內容長度: {len(content)} 字符",
                 {
                     "file_path": file_path,
                     "content": content,
@@ -110,7 +110,11 @@ def create_drop_and_read_workflow(session: WorkflowSession) -> WorkflowEngine:
     workflow_def.set_entry_point("file_path_input")
     workflow_def.add_transition("file_path_input", "execute_read")
     
-    return WorkflowEngine(workflow_def, session)
+    # 創建引擎並啟用自動推進
+    engine = WorkflowEngine(workflow_def, session)
+    engine.auto_advance = True
+    
+    return engine
 
 
 def create_intelligent_archive_workflow(session: WorkflowSession) -> WorkflowEngine:
@@ -118,18 +122,18 @@ def create_intelligent_archive_workflow(session: WorkflowSession) -> WorkflowEng
     workflow_def = WorkflowDefinition(
         workflow_type="intelligent_archive",
         name="智慧歸檔工作流程",
-        description="等待使用者提供檔案路徑，可選目標資料夾，確認後執行歸檔"
+        description="選擇要歸檔的檔案，可選目標資料夾，確認後執行歸檔"
     )
     
     # 檢查初始數據，決定入口點
     initial_file_path = session.get_data("file_path_input", "")
     initial_target_dir = session.get_data("target_dir_input", "")
     
-    # 步驟1: 等待檔案路徑輸入
+    # 步驟1: 檔案路徑輸入（使用文字輸入配合檔案選擇視窗）
     file_input_step = StepTemplate.create_input_step(
         session,
-        "file_path_input",
-        "請輸入要歸檔的檔案路徑:",
+        "file_selection",
+        "請選擇要歸檔的檔案路徑:",
         validator=lambda path: (os.path.exists(path), f"檔案不存在: {path}") if path.strip() else (False, "請提供檔案路徑")
     )
     
@@ -138,12 +142,14 @@ def create_intelligent_archive_workflow(session: WorkflowSession) -> WorkflowEng
         session,
         "target_dir_input",
         "請輸入目標資料夾路徑 (留空則自動選擇):",
-        validator=lambda path: (True, "") if not path.strip() or os.path.exists(path) else (False, f"目標資料夾不存在: {path}")
+        validator=lambda path: (True, "") if not path.strip() or os.path.exists(path) else (False, f"目標資料夾不存在: {path}"),
+        required_data=["file_selection"],
+        optional=True
     )
     
     # 步驟3: 確認歸檔操作
     def get_archive_confirmation_message():
-        file_path = session.get_data("file_path_input", "")
+        file_path = session.get_data("file_selection", "")
         target_dir = session.get_data("target_dir_input", "").strip()
         
         if target_dir:
@@ -157,12 +163,12 @@ def create_intelligent_archive_workflow(session: WorkflowSession) -> WorkflowEng
         get_archive_confirmation_message,
         "確認歸檔",
         "取消歸檔",
-        ["file_path_input", "target_dir_input"]
+        ["file_selection", "target_dir_input"]
     )
     
     # 步驟4: 執行歸檔
     def execute_archive(session):
-        file_path = session.get_data("file_path_input", "")
+        file_path = session.get_data("file_selection", "")
         target_dir = session.get_data("target_dir_input", "").strip()
         
         try:
@@ -170,7 +176,7 @@ def create_intelligent_archive_workflow(session: WorkflowSession) -> WorkflowEng
             result_path = intelligent_archive(file_path, target_dir)
             
             return StepResult.complete_workflow(
-                f"檔案歸檔完成！原檔案: {Path(file_path).name}, 新位置: {result_path}",
+                f"📁 智慧歸檔工作流程完成！原檔案: {Path(file_path).name}, 新位置: {result_path}",
                 {
                     "original_path": file_path,
                     "archived_path": result_path,
@@ -186,7 +192,7 @@ def create_intelligent_archive_workflow(session: WorkflowSession) -> WorkflowEng
         session,
         "execute_archive",
         execute_archive,
-        ["file_path_input", "target_dir_input"],
+        ["file_selection", "target_dir_input"],
         "正在歸檔檔案..."
     )
     
@@ -198,9 +204,9 @@ def create_intelligent_archive_workflow(session: WorkflowSession) -> WorkflowEng
     
     # 根據初始數據決定入口點和轉換
     if initial_file_path and os.path.exists(initial_file_path):
-        # 已有檔案路徑，跳過檔案輸入步驟
+        # 已有檔案路徑，跳過檔案選擇步驟
         info_log(f"[Workflow] 使用初始檔案路徑: {initial_file_path}")
-        session.add_data("file_path_input", initial_file_path)
+        session.add_data("file_selection", initial_file_path)
         
         if initial_target_dir:
             # 已有目標資料夾，跳過目標輸入步驟
@@ -213,14 +219,18 @@ def create_intelligent_archive_workflow(session: WorkflowSession) -> WorkflowEng
             workflow_def.set_entry_point("target_dir_input")
             workflow_def.add_transition("target_dir_input", "archive_confirm")
     else:
-        # 沒有初始數據，從檔案輸入開始
-        workflow_def.set_entry_point("file_path_input")
-        workflow_def.add_transition("file_path_input", "target_dir_input")
+        # 沒有初始數據，從檔案選擇開始
+        workflow_def.set_entry_point("file_selection")
+        workflow_def.add_transition("file_selection", "target_dir_input")
         workflow_def.add_transition("target_dir_input", "archive_confirm")
     
     workflow_def.add_transition("archive_confirm", "execute_archive")
     
-    return WorkflowEngine(workflow_def, session)
+    # 創建引擎並啟用自動推進
+    engine = WorkflowEngine(workflow_def, session)
+    engine.auto_advance = True
+    
+    return engine
 
 
 def create_summarize_tag_workflow(session: WorkflowSession) -> WorkflowEngine:
@@ -244,7 +254,8 @@ def create_summarize_tag_workflow(session: WorkflowSession) -> WorkflowEngine:
         session,
         "tag_count_input",
         "請輸入要生成的標籤數量 (預設為3個，直接按Enter使用預設值):",
-        validator=lambda count: (True, "") if not count.strip() else (count.strip().isdigit() and int(count.strip()) > 0, "標籤數量必須是正整數")
+        validator=lambda count: (True, "") if not count.strip() else (count.strip().isdigit() and int(count.strip()) > 0, "標籤數量必須是正整數"),
+        optional=True
     )
     
     # 步驟3: 確認摘要操作
@@ -275,7 +286,7 @@ def create_summarize_tag_workflow(session: WorkflowSession) -> WorkflowEngine:
             result = summarize_tag(file_path, tag_count)
             
             return StepResult.complete_workflow(
-                f"摘要生成完成！檔案: {Path(file_path).name}, 摘要檔案: {result['summary_file']}, 標籤: {', '.join(result['tags'])}",
+                f"📝 摘要標籤工作流程完成！檔案: {Path(file_path).name}, 摘要檔案: {result['summary_file']}, 標籤: {', '.join(result['tags'])}",
                 {
                     "original_file": file_path,
                     "summary_file": result["summary_file"],
@@ -307,7 +318,11 @@ def create_summarize_tag_workflow(session: WorkflowSession) -> WorkflowEngine:
     workflow_def.add_transition("tag_count_input", "summary_confirm")
     workflow_def.add_transition("summary_confirm", "execute_summary")
     
-    return WorkflowEngine(workflow_def, session)
+    # 創建引擎並啟用自動推進
+    engine = WorkflowEngine(workflow_def, session)
+    engine.auto_advance = True
+    
+    return engine
 
 
 def create_file_workflow(workflow_type: str, session: WorkflowSession) -> WorkflowEngine:

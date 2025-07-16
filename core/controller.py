@@ -637,7 +637,14 @@ def test_file_workflow(workflow_type: str):
             # 檢查是否需要檔案選擇（更精確的判斷）
             # 只有當提示明確要求選擇檔案，且不是確認步驟時，才開啟檔案選擇視窗
             needs_file_selection = (
-                any(keyword in prompt.lower() for keyword in ["請輸入要讀取的檔案路徑", "請選擇檔案", "請輸入檔案路徑", "file path"]) and
+                any(keyword in prompt.lower() for keyword in [
+                    "請輸入要讀取的檔案路徑", 
+                    "請選擇要歸檔的檔案路徑",
+                    "請輸入要生成摘要的檔案路徑",
+                    "請選擇檔案", 
+                    "請輸入檔案路徑", 
+                    "file path"
+                ]) and
                 "確認" not in prompt.lower() and
                 "是否" not in prompt.lower() and
                 "y/n" not in prompt.lower()

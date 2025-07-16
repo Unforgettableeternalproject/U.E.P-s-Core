@@ -794,7 +794,8 @@ class StepTemplate:
     @staticmethod
     def create_input_step(session: WorkflowSession, step_id: str, prompt: str,
                          validator: Optional[Callable[[str], Tuple[bool, str]]] = None,
-                         required_data: Optional[List[str]] = None) -> WorkflowStep:
+                         required_data: Optional[List[str]] = None,
+                         optional: bool = False) -> WorkflowStep:
         """
         創建輸入步驟
         
@@ -804,6 +805,7 @@ class StepTemplate:
             prompt: 提示訊息
             validator: 驗證函數，返回 (是否有效, 錯誤訊息)
             required_data: 必要數據列表
+            optional: 是否為可選輸入，可選輸入允許空值並自動跳過
         """
         class InputStep(WorkflowStep):
             def __init__(self, session):
@@ -816,14 +818,26 @@ class StepTemplate:
                         self.add_requirement(req)
                         
             def get_prompt(self) -> str:
+                if optional:
+                    return f"{prompt} (留空跳過)"
                 return prompt
                 
             def execute(self, user_input: Any = None) -> StepResult:
                 if not user_input:
+                    if optional:
+                        return StepResult.success(
+                            "跳過輸入",
+                            {step_id: ""}
+                        )
                     return StepResult.failure("請輸入內容")
                 
                 input_str = str(user_input).strip()
                 if not input_str:
+                    if optional:
+                        return StepResult.success(
+                            "跳過輸入",
+                            {step_id: ""}
+                        )
                     return StepResult.failure("輸入內容不能為空")
                 
                 # 驗證輸入

@@ -1,6 +1,20 @@
 {
   "archives": [
     {
+      "original_path": "E:/Music/My Songs/.wav",
+      "target_dir": "C:\\Users\\Bernie\\Downloads",
+      "file_name": ".wav",
+      "file_ext": "",
+      "timestamp": "2025-07-16T15:29:19.917157"
+    },
+    {
+      "original_path": "E:/Servers/DST Server/version.txt",
+      "target_dir": "E:\\Documents",
+      "file_name": "version.txt",
+      "file_ext": ".txt",
+      "timestamp": "2025-07-16T15:20:27.894294"
+    },
+    {
       "original_path": "C:/Users/Bernie/Documents/Thing Left.txt",
       "target_dir": "E:\\Documents",
       "file_name": "Thing Left.txt",

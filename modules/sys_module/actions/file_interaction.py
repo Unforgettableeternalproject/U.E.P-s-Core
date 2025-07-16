@@ -221,10 +221,20 @@ def summarize_tag(file_path: str, tag_count: int = 3) -> dict:
                 info_log(f"[file] LLM模組未啟用或無法導入，將使用簡單摘要: {e}")
                 
             if llm_module:
-                # 構建摘要提示詞
-                prompt = f"""請為以下內容生成簡短摘要和{tag_count}個關鍵標籤。
-內容：
-{content[:5000]}  # 限制長度避免過長
+                # 構建清晰的摘要提示詞
+                prompt = f"""請為以下檔案內容生成摘要和標籤：
+
+檔案內容：
+{content[:5000]}{"..." if len(content) > 5000 else ""}
+
+請按照以下格式回應：
+標籤：標籤1, 標籤2, 標籤3{"" if tag_count == 3 else f", 標籤{tag_count}"}
+摘要：[在這裡寫摘要內容]
+
+要求：
+1. 生成 {tag_count} 個相關的關鍵標籤
+2. 提供簡潔但全面的摘要
+3. 標籤應該反映檔案的主要主題和內容特徵
 """
                 
                 # 構建摘要請求 (需要符合LLMInput格式)
@@ -233,37 +243,72 @@ def summarize_tag(file_path: str, tag_count: int = 3) -> dict:
                     "intent": "chat",  # LLMInput需要，目前僅支援chat
                     "is_internal": True  # 使用內部調用模式，避免加入系統指示詞
                 }
+                
                 # 呼叫LLM模組
                 response = llm_module.handle(request_data)
                 
                 if response and "text" in response and response.get("status") == "ok":
                     # 從LLM回應的text中提取摘要和標籤
                     llm_response_text = response["text"]
+                    info_log(f"[file] LLM 回應: {llm_response_text[:200]}...")
                     
-                    # 簡單處理：假設LLM回應的格式是先列出標籤，然後是摘要
-                    # 這裡可能需要進一步優化解析邏輯，取決於你實際得到的回應格式
-                    
-                    # 嘗試提取標籤部分
-                    if "標籤" in llm_response_text:
-                        try:
-                            # 提取標籤部分
-                            tags_part = llm_response_text.split("標籤")[1].split("\n")[0]
-                            tags = [tag.strip() for tag in tags_part.strip("：:, ").split(",")]
-                            # 過濾空字符串並限制數量
-                            tags = [tag for tag in tags if tag][:tag_count]
-                        except:
-                            # 如果提取失敗，使用檔案名為標籤
-                            tags = [file_path_obj.stem]
-                    else:
-                        # 沒有明確標籤，使用檔案名為標籤
+                    # 改進的標籤和摘要解析邏輯
+                    try:
+                        # 提取標籤部分
+                        if "標籤：" in llm_response_text or "標籤:" in llm_response_text:
+                            # 查找標籤行
+                            lines = llm_response_text.split('\n')
+                            tags_line = ""
+                            summary_lines = []
+                            found_tags = False
+                            found_summary = False
+                            
+                            for line in lines:
+                                line = line.strip()
+                                if not found_tags and ("標籤：" in line or "標籤:" in line):
+                                    tags_line = line.split("：")[1] if "：" in line else line.split(":")[1]
+                                    found_tags = True
+                                elif found_tags and ("摘要：" in line or "摘要:" in line):
+                                    summary_start = line.split("：")[1] if "：" in line else line.split(":")[1]
+                                    if summary_start.strip():
+                                        summary_lines.append(summary_start.strip())
+                                    found_summary = True
+                                elif found_summary:
+                                    if line:
+                                        summary_lines.append(line)
+                            
+                            # 解析標籤
+                            if tags_line:
+                                tags = [tag.strip() for tag in tags_line.split(',')]
+                                # 清理標籤，移除空字符串並限制數量
+                                tags = [tag for tag in tags if tag][:tag_count]
+                            else:
+                                tags = [file_path_obj.stem]  # fallback
+                            
+                            # 組合摘要
+                            if summary_lines:
+                                summary_content = '\n'.join(summary_lines).strip()
+                            else:
+                                summary_content = llm_response_text  # 使用整個回應作為摘要
+                        else:
+                            # 如果沒有找到格式化的回應，嘗試智能解析
+                            info_log("[file] LLM 回應格式不規範，嘗試智能解析")
+                            # 使用整個回應作為摘要
+                            summary_content = llm_response_text
+                            # 基於檔案生成簡單標籤
+                            tags = [file_path_obj.stem, file_path_obj.suffix.lower()[1:] if file_path_obj.suffix else "file"]
+                            if tag_count > 2:
+                                tags.append("document")
+                        
+                        info_log(f"[file] LLM模組成功生成摘要和{len(tags)}個標籤: {tags}")
+                        
+                    except Exception as parse_error:
+                        error_log(f"[file] 解析 LLM 回應失敗: {parse_error}")
+                        # fallback 到整個回應
+                        summary_content = llm_response_text
                         tags = [file_path_obj.stem]
-                    
-                    # 使用整個回應作為摘要內容
-                    summary_content = llm_response_text
-                    
-                    info_log(f"[file] LLM模組成功生成摘要和{len(tags)}個標籤")
                 else:
-                    raise ValueError(f"LLM模組未返回有效摘要: {response.get('status', 'unknown error')}")
+                    raise ValueError(f"LLM模組未返回有效摘要: {response.get('status', 'unknown error') if response else 'no response'}")
         except Exception as e:
             info_log(f"[file] 使用LLM模組摘要失敗：{e}，將使用簡單摘要")
             # 若LLM模組失敗，使用簡單摘要法

@@ -14,7 +14,7 @@ enabled = config.get("modules_enabled", {})
 
 def safe_get_module(name):
     if not enabled.get(name, False):
-        # print(f"[Controller] ❌ 模組 '{name}' 未啟用，請檢查配置") # Ignored
+        # print(f"[Controller] [X] 模組 '{name}' 未啟用，請檢查配置") # Ignored
         return None
 
     info_log(f"[Controller] 嘗試載入模組 '{name}'")
@@ -23,13 +23,13 @@ def safe_get_module(name):
         mod = get_module(name)
         if mod is None:
             raise ImportError(f"{name} register() 回傳為 None")
-        info_log(f"[Controller] ✅ 載入模組成功：{name}")
+        info_log(f"[Controller] [OK] 載入模組成功：{name}")
         return mod
     except NotImplementedError:
-        error_log(f"[Controller] ❌ 模組 '{name}' 尚未被實作")
+        error_log(f"[Controller] [X] 模組 '{name}' 尚未被實作")
         return None
     except Exception as e:
-        error_log(f"[Controller] ❌ 無法載入模組 '{name}': {e}")
+        error_log(f"[Controller] [X] 無法載入模組 '{name}': {e}")
         return None
 
 modules = {

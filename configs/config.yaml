@@ -13,6 +13,7 @@ logging:
   log_level: "DEBUG"
   log_dir: "logs"
   enable_split_logs: true
+  log_retention_months: 3  # 保留日誌的月數，超過這個時間的日誌將被自動清理
 
 debug:
   enabled: true

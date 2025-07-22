@@ -15,7 +15,7 @@ mod_list = {"stt": module_enabled.get("stt_module", False)
             , "sys": module_enabled.get("sys_module", False)}
 
 def handle_module_integration(user_input):
-    if user_input == "pipeline":
+    if user_input in ["pipeline", "all"]:
         if hasattr(controller, "pipeline_test"):
             controller.pipeline_test()
         else:
@@ -302,7 +302,7 @@ def debug_interactive():
                 break
             case _:
                 n_input = user_input.lower()
-                if "+" in n_input or n_input == "pipeline":
+                if "+" in n_input or n_input in ["pipeline", "all"]:
                     handle_module_integration(n_input)
                 else:
                     print("\033[31m無效的選擇，請再試一次。\033[0m")

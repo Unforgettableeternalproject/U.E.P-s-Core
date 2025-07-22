@@ -102,7 +102,7 @@ class TTSModule(BaseModule):
         except Exception as e:
             return TTSOutput(status="error", message=f"Invalid input: {e}").dict()
 
-        text, mood, save, fc = inp.text, inp.mood or self.default_mood, inp.save, inp.force_chunking
+        text, mood, save, fc = inp.text, inp.mood if inp.mood in self.pitch_map else self.default_mood, inp.save, inp.force_chunking
 
         if not text:
             return TTSOutput(status="error", message="Text is required").dict()

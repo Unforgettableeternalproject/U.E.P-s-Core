@@ -9,7 +9,11 @@ from .infer_core import run_tts, get_config
 from utils.tts_chunker import TTSChunker
 import numpy as np
 import soundfile as sf
-import simpleaudio as sa
+try:
+    import simpleaudio as sa
+except ImportError:
+    sa = None
+    error_log("[TTS] simpleaudio library not found. Audio playback will be disabled.")
 
 class TTSModule(BaseModule):    
     def __init__(self, config=None):
@@ -41,9 +45,6 @@ class TTSModule(BaseModule):
         
         # Thresholds for chunking
         self.chunking_threshold = chunking_config.get("chunking_threshold", 200)  # Characters
-        
-        os.makedirs(os.path.join("temp", "tts"), exist_ok=True)
-        os.makedirs(os.path.join("outputs", "tts"), exist_ok=True)
         
         os.makedirs(os.path.join("temp", "tts"), exist_ok=True)
         os.makedirs(os.path.join("outputs", "tts"), exist_ok=True)

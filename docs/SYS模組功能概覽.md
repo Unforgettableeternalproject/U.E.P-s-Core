@@ -4,7 +4,7 @@
 > 本文件旨在向團隊成員清晰說明 U.E.P 系統模組（SYS Module）的預計功能範疇與實作方向。請各位先了解以下前提條件，並結合實際開發進度進行討論。
 
 * **U.E.P 定位**：互動式個人助理，不僅能語音對話，也能操作系統與檔案。
-* **開發環境**：Python 為主，模組化架構已有 LLMModule、TTS、UIModule 等基礎。
+* **開發環境**：Python 為主，模組化架構已有 LLM、TTS、UIModule 等基礎。
 * **實作可行性**：功能依賴常見第三方模組（如 `pyautogui`、`watchdog`、`pyperclip`、`pytesseract`、`feedparser`、`schedule` 等），並可結合內部模組呼叫。
 
 ---

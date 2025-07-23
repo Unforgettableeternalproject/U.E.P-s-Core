@@ -56,7 +56,7 @@ SPLIT_LOGS = conf.get("enable_split_logs", True)
 # 確保日誌根目錄存在
 try:
     os.makedirs(LOG_DIR, exist_ok=True)
-    print(f"日誌目錄: {LOG_DIR} 已確保存在")
+    # print(f"日誌目錄: {LOG_DIR} 已確保存在")
 except Exception as e:
     print(f"創建日誌目錄錯誤: {str(e)}")
 
@@ -75,10 +75,10 @@ def log_file(name):
             try:
                 if not os.path.exists(log_type_path):
                     os.makedirs(log_type_path, exist_ok=True)
-                    print(f"創建日誌類型目錄: {log_type_path}")
+                    # print(f"創建日誌類型目錄: {log_type_path}")
             except Exception as e:
-                print(f"創建目錄失敗 {log_type_path}: {str(e)}")
-                print(f"堆疊追蹤:\n{traceback.format_exc()}")
+                # print(f"創建目錄失敗 {log_type_path}: {str(e)}")
+                # print(f"堆疊追蹤:\n{traceback.format_exc()}")
                 # 回退到主日誌目錄
                 return os.path.join(LOG_DIR, f"{name}-{timestamp}.log")
             
@@ -87,10 +87,10 @@ def log_file(name):
             try:
                 if not os.path.exists(month_path):
                     os.makedirs(month_path, exist_ok=True)
-                    print(f"創建月份子目錄: {month_path}")
+                    # print(f"創建月份子目錄: {month_path}")
             except Exception as e:
-                print(f"創建月份目錄失敗 {month_path}: {str(e)}")
-                print(f"堆疊追蹤:\n{traceback.format_exc()}")
+                # print(f"創建月份目錄失敗 {month_path}: {str(e)}")
+                # print(f"堆疊追蹤:\n{traceback.format_exc()}")
                 # 回退到主類型目錄
                 return os.path.join(log_type_path, f"{name}-{timestamp}.log")
                 
@@ -102,16 +102,16 @@ def log_file(name):
             try:
                 if not os.path.exists(month_path):
                     os.makedirs(month_path, exist_ok=True)
-                    print(f"創建月份目錄: {month_path}")
+                    # print(f"創建月份目錄: {month_path}")
             except Exception as e:
-                print(f"創建月份目錄失敗 {month_path}: {str(e)}")
+                # print(f"創建月份目錄失敗 {month_path}: {str(e)}")
                 # 回退到主日誌目錄
                 return os.path.join(LOG_DIR, f"{name}-{timestamp}.log")
                 
             return os.path.join(month_path, f"{name}-{timestamp}.log")
     except Exception as e:
-        print(f"生成日誌路徑出錯: {str(e)}")
-        print(f"堆疊追蹤:\n{traceback.format_exc()}")
+        # print(f"生成日誌路徑出錯: {str(e)}")
+        # print(f"堆疊追蹤:\n{traceback.format_exc()}")
         # 安全回退
         return os.path.join(LOG_DIR, f"fallback-{timestamp}.log")
 
@@ -142,7 +142,7 @@ for handler in list(logger.handlers):
 stream_handler = logging.StreamHandler()
 stream_handler.setFormatter(console_formatter)
 logger.addHandler(stream_handler)
-print("已添加控制台日誌處理程序")
+# print("已添加控制台日誌處理程序")
 
 # 提前創建所有必要的日誌目錄
 if SPLIT_LOGS:
@@ -156,18 +156,20 @@ if SPLIT_LOGS:
         try:
             if not os.path.exists(type_path):
                 os.makedirs(type_path, exist_ok=True)
-                print(f"創建日誌類型目錄: {type_path}")
+                # print(f"創建日誌類型目錄: {type_path}")
         except Exception as e:
-            print(f"無法創建日誌目錄 {type_path}: {str(e)}")
+            pass
+            # print(f"無法創建日誌目錄 {type_path}: {str(e)}")
             
         # 月份子目錄
         month_path = os.path.join(type_path, current_month)
         try:
             if not os.path.exists(month_path):
                 os.makedirs(month_path, exist_ok=True)
-                print(f"創建月份子目錄: {month_path}")
+                # print(f"創建月份子目錄: {month_path}")
         except Exception as e:
-            print(f"無法創建月份子目錄 {month_path}: {str(e)}")
+            pass
+            # print(f"無法創建月份子目錄 {month_path}: {str(e)}")
 
 # 添加文件處理程序
 try:
@@ -180,9 +182,9 @@ try:
             debug_file.setLevel(logging.DEBUG)
             debug_file.addFilter(LogLevelFilter(logging.DEBUG, logging.DEBUG))
             logger.addHandler(debug_file)
-            print(f"已添加 DEBUG 日誌處理程序: {debug_path}")
+            # print(f"已添加 DEBUG 日誌處理程序: {debug_path}")
         except Exception as e:
-            print(f"無法創建 debug 日誌檔案: {str(e)}")
+            # print(f"無法創建 debug 日誌檔案: {str(e)}")
             print(traceback.format_exc())
         
         # Runtime 日誌
@@ -193,7 +195,7 @@ try:
             info_file.setLevel(logging.INFO)
             info_file.addFilter(LogLevelFilter(logging.INFO, logging.WARNING))
             logger.addHandler(info_file)
-            print(f"已添加 RUNTIME 日誌處理程序: {runtime_path}")
+            # print(f"已添加 RUNTIME 日誌處理程序: {runtime_path}")
         except Exception as e:
             print(f"無法創建 runtime 日誌檔案: {str(e)}")
             print(traceback.format_exc())
@@ -206,7 +208,7 @@ try:
             error_file.setLevel(logging.ERROR)
             error_file.addFilter(LogLevelFilter(logging.ERROR, logging.CRITICAL))
             logger.addHandler(error_file)
-            print(f"已添加 ERROR 日誌處理程序: {error_path}")
+            # print(f"已添加 ERROR 日誌處理程序: {error_path}")
         except Exception as e:
             print(f"無法創建 error 日誌檔案: {str(e)}")
             print(traceback.format_exc())
@@ -217,7 +219,7 @@ try:
             combined_file = logging.FileHandler(combined_path, encoding='utf-8')
             combined_file.setFormatter(formatter)
             logger.addHandler(combined_file)
-            print(f"已添加合併日誌處理程序: {combined_path}")
+            # print(f"已添加合併日誌處理程序: {combined_path}")
         except Exception as e:
             print(f"無法創建 combined 日誌檔案: {str(e)}")
             print(traceback.format_exc())
@@ -248,7 +250,7 @@ def cleanup_empty_log_files():
                     file_path = os.path.join(root, file)
                     if os.path.exists(file_path) and os.path.getsize(file_path) == 0:
                         os.remove(file_path)
-                        print(f"已刪除空日誌文件: {file_path}")
+                        # print(f"已刪除空日誌文件: {file_path}")
                 except Exception as e:
                     print(f"刪除文件出錯 {file_path}: {str(e)}")
         
@@ -270,7 +272,7 @@ def cleanup_empty_log_files():
                 if (root != LOG_DIR and root not in protected_dirs):
                     try:
                         os.rmdir(root)
-                        print(f"已刪除空文件夾: {root}")
+                        # print(f"已刪除空文件夾: {root}")
                     except Exception as e:
                         print(f"刪除文件夾出錯 {root}: {str(e)}")
     except Exception as e:

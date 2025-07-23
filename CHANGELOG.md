@@ -514,3 +514,15 @@
 
 ---
 
+### Fixed several issues related to logging, and is ready for pre-release. 07/23
+
+> Date: Wed, 23 Jul 2025 20:44:16 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `develop`
+
+> Commit: `be78bb21ee95efa19d00ca892a757075580efe4f`
+
+---
+

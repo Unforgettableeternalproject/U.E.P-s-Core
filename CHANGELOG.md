@@ -538,3 +538,15 @@
 
 ---
 
+### Security changes. 07/23
+
+> Date: Wed, 23 Jul 2025 22:53:03 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `release/v0.1.0_stable`
+
+> Commit: `6d5fd4840fd575e1dda80fbce263fec837c20e92`
+
+---
+

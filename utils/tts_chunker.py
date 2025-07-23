@@ -171,6 +171,10 @@ class TTSChunker:
             while self.queue and not self.stop_requested:
                 chunk, args = self.queue.popleft()
             
+                if not isinstance(chunk, str):
+                    error_log(f"[TTSChunker] Invalid chunk type: {type(chunk)}. Skipping...")
+                    continue
+
                 debug_log(2, f"[TTSChunker] Processing chunk: '{chunk[:30]}...' ({len(self.queue)} remaining)")
             
                 args["save"] = False

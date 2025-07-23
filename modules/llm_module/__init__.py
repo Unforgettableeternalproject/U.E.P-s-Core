@@ -1,4 +1,8 @@
-from .llm_module_module import LlmModule
+from .llm_module import LLMModule
+from configs.config_loader import load_module_config
 
 def register():
-    return LlmModule(config={})
+    config = load_module_config("llm_module")
+    instance = LLMModule(config=config)
+    instance.initialize()
+    return instance

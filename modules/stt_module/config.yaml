@@ -1,1 +1,6 @@
-# Default config for stt_module_module
+﻿# Default config for stt_module_module
+
+device_index: 1            # 麥克風裝置索引
+phrase_time_limit: 5       # 單句錄音最大長度（秒）(-1 表示不限制))
+auto_adjust_noise: true    # 是否自動進行環境噪音調整
+debug_mode: false          # 除錯模式開關

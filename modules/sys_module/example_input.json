@@ -1,3 +1,49 @@
-{{
-  "example": "data"
-}}
+[
+  {
+    "description": "列出系統功能範例",
+    "input": {
+      "mode": "list_functions",
+      "params": {}
+    }
+  },
+  {
+    "description": "啟動檔案讀取工作流程範例",
+    "input": {
+      "mode": "start_workflow",
+      "params": {
+        "workflow_type": "drop_and_read",
+        "command": "請讀取檔案內容"
+      }
+    }
+  },
+  {
+    "description": "繼續工作流程範例",
+    "input": {
+      "mode": "continue_workflow",
+      "params": {
+        "session_id": "wf_12345678",
+        "user_input": "C:\\Users\\test\\document.txt"
+      }
+    }
+  },
+  {
+    "description": "取消工作流程範例",
+    "input": {
+      "mode": "cancel_workflow",
+      "params": {
+        "session_id": "wf_12345678",
+        "reason": "用戶取消"
+      }
+    }
+  },
+  {
+    "description": "啟動測試工作流程範例",
+    "input": {
+      "mode": "start_workflow",
+      "params": {
+        "workflow_type": "countdown",
+        "command": "開始倒數計時"
+      }
+    }
+  }
+]

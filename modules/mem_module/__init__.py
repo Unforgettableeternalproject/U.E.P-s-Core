@@ -1,4 +1,8 @@
-from .mem_module_module import MemModule
+﻿from .mem_module import MEMModule
+from configs.config_loader import load_module_config
 
 def register():
-    return MemModule(config={})
+    config = load_module_config("mem_module")
+    instance = MEMModule(config=config)
+    instance.initialize()
+    return instance

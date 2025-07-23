@@ -1,3 +1,35 @@
-{{
-  "example": "data"
-}}
+[
+  {
+    "description": "聊天模式範例",
+    "input": {
+      "text": "你好，今天天氣如何？",
+      "intent": "chat",
+      "memory": "使用者常常詢問天氣相關問題"
+    }
+  },
+  {
+    "description": "指令模式範例",
+    "input": {
+      "text": "請幫我整理桌面檔案",
+      "intent": "command",
+      "memory": "使用者之前使用過檔案整理功能"
+    }
+  },
+  {
+    "description": "直接模式範例",
+    "input": {
+      "text": "分析這段程式碼的功能",
+      "intent": "direct",
+      "memory": null
+    }
+  },
+  {
+    "description": "內部系統調用範例",
+    "input": {
+      "text": "為這個檔案生成摘要",
+      "intent": "command",
+      "memory": null,
+      "is_internal": true
+    }
+  }
+]

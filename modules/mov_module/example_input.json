@@ -1,3 +1,9 @@
-{{
-  "example": "data"
-}}
+[
+  {
+    "description": "佔位符範例（MOV模組尚未實作）",
+    "input": {
+      "action": "placeholder",
+      "params": {}
+    }
+  }
+]

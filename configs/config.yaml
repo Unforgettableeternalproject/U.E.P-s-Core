@@ -1,1 +1,19 @@
 # Default config for general modules
+
+modules_enabled:
+  stt_module: true
+  nlp_module: true
+  mem_module: true
+  llm_module: true
+  tts_module: true
+  sys_module: true
+
+logging:
+  enabled: true
+  log_level: "DEBUG"
+  log_dir: "logs"
+  enable_split_logs: true
+
+debug:
+  enabled: true
+  debug_level: 3

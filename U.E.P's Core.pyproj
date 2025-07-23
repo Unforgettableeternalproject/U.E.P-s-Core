@@ -13,6 +13,8 @@
     <RootNamespace>U.E.P's Core</RootNamespace>
     <InterpreterId>MSBuild|env|$(MSBuildProjectFullPath)</InterpreterId>
     <IsWindowsApplication>False</IsWindowsApplication>
+    <TestFramework>Pytest</TestFramework>
+    <SuppressPackageInstallationPrompt>True</SuppressPackageInstallationPrompt>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
     <DebugSymbols>true</DebugSymbols>
@@ -24,12 +26,33 @@
   </PropertyGroup>
   <ItemGroup>
     <Content Include=".env" />
+    <Content Include=".env.example" />
     <Content Include=".gitignore" />
+    <Content Include="configs\archive_history.json" />
     <Content Include="arts\U.E.P_concept.png" />
     <Content Include="CHANGELOG.md" />
     <Content Include="configs\config.yaml" />
-    <Content Include="docs\U.E.P 大型模型專案 構想.pdf" />
-    <Content Include="docs\專案開發準則.md" />
+    <Content Include="docs\Release_v0.1.0_準備清單.md" />
+    <Content Include="docs\SYS模組功能概覽.md" />
+    <Content Include="docs\安裝與使用指南.md" />
+    <Content Include="docs\專案結構說明.md" />
+    <Content Include="docs\專案藍圖.md" />
+    <Content Include="docs\本學期的專案進度.md" />
+    <Content Include="docs\模組開發指南.md" />
+    <Content Include="docs\第二階段進度.md" />
+    <Content Include="memory\dev_faiss_index" />
+    <Content Include="memory\dev_metadata.json" />
+    <Content Include="models\nlp\command_chat_classifier\config.json" />
+    <Content Include="models\nlp\command_chat_classifier\pytorch_model.bin" />
+    <Content Include="models\nlp\command_chat_classifier\special_tokens_map.json" />
+    <Content Include="models\nlp\command_chat_classifier\tokenizer_config.json" />
+    <Content Include="models\nlp\command_chat_classifier\vocab.txt" />
+    <Content Include="models\tts\hubert_base.pt" />
+    <Content Include="models\tts\rmvpe.pt" />
+    <Content Include="models\tts\RVC_weights\Could change to this\U.E.P_sweet.index" />
+    <Content Include="models\tts\RVC_weights\Could change to this\U.E.P_sweet.pth" />
+    <Content Include="models\tts\U.E.P_normal.index" />
+    <Content Include="models\tts\U.E.P_normal.pth" />
     <Content Include="modules\ani_module\config.yaml" />
     <Content Include="modules\ani_module\example_input.json" />
     <Content Include="modules\ani_module\example_output.json" />
@@ -51,15 +74,33 @@
     <Content Include="modules\sys_module\config.yaml" />
     <Content Include="modules\sys_module\example_input.json" />
     <Content Include="modules\sys_module\example_output.json" />
+    <Content Include="modules\sys_module\functions.yaml" />
+    <Content Include="modules\sys_module\workflows\__pycache__\file_workflows.cpython-310.pyc" />
+    <Content Include="modules\sys_module\workflows\__pycache__\test_workflows.cpython-310-pytest-8.3.3.pyc" />
+    <Content Include="modules\sys_module\workflows\__pycache__\test_workflows.cpython-310.pyc" />
+    <Content Include="modules\sys_module\workflows\__pycache__\__init__.cpython-310.pyc" />
     <Content Include="modules\tts_module\config.yaml" />
     <Content Include="modules\tts_module\example_input.json" />
     <Content Include="modules\tts_module\example_output.json" />
+    <Content Include="modules\tts_module\lib\infer_pack\__pycache__\attentions.cpython-310.pyc" />
+    <Content Include="modules\tts_module\lib\infer_pack\__pycache__\attentions.cpython-39.pyc" />
+    <Content Include="modules\tts_module\lib\infer_pack\__pycache__\commons.cpython-310.pyc" />
+    <Content Include="modules\tts_module\lib\infer_pack\__pycache__\commons.cpython-39.pyc" />
+    <Content Include="modules\tts_module\lib\infer_pack\__pycache__\models.cpython-310.pyc" />
+    <Content Include="modules\tts_module\lib\infer_pack\__pycache__\models.cpython-39.pyc" />
+    <Content Include="modules\tts_module\lib\infer_pack\__pycache__\modules.cpython-310.pyc" />
+    <Content Include="modules\tts_module\lib\infer_pack\__pycache__\modules.cpython-39.pyc" />
+    <Content Include="modules\tts_module\lib\infer_pack\__pycache__\transforms.cpython-310.pyc" />
+    <Content Include="modules\tts_module\lib\infer_pack\__pycache__\transforms.cpython-39.pyc" />
     <Content Include="modules\ui_module\config.yaml" />
     <Content Include="modules\ui_module\example_input.json" />
     <Content Include="modules\ui_module\example_output.json" />
     <Content Include="README.md" />
+    <Content Include="README.zh-tw.md" />
+    <Content Include="requirements.in" />
     <Content Include="requirements.txt" />
-    <Content Include="utils\placeholder" />
+    <Content Include="train\nlp\dataset.csv" />
+    <Content Include="wheel\fairseq-0.12.2-cp310-cp310-win_amd64.whl" />
   </ItemGroup>
   <ItemGroup>
     <Interpreter Include="env\">
@@ -75,55 +116,100 @@
   <ItemGroup>
     <Compile Include="configs\config_loader.py" />
     <Compile Include="core\controller.py" />
+    <Compile Include="core\module_base.py" />
     <Compile Include="core\registry.py" />
     <Compile Include="core\router.py" />
+    <Compile Include="core\session_manager.py" />
     <Compile Include="core\state_manager.py" />
     <Compile Include="devtools\debugger.py" />
-    <Compile Include="devtools\logger.py" />
+    <Compile Include="modules\llm_module\gemini_client.py" />
+    <Compile Include="modules\sys_module\actions\automation_helper.py" />
+    <Compile Include="modules\sys_module\actions\text_processing.py" />
+    <Compile Include="modules\sys_module\actions\file_interaction.py" />
+    <Compile Include="modules\sys_module\actions\integrations.py" />
+    <Compile Include="modules\sys_module\actions\window_control.py" />
+    <Compile Include="modules\sys_module\workflows.py" />
+    <Compile Include="modules\sys_module\workflows\file_workflows.py" />
+    <Compile Include="modules\sys_module\workflows\test_workflows.py" />
+    <Compile Include="modules\sys_module\workflows\__init__.py" />
+    <Compile Include="modules\tts_module\config.py" />
+    <Compile Include="modules\tts_module\infer_core.py" />
+    <Compile Include="modules\tts_module\lib\infer_pack\attentions.py" />
+    <Compile Include="modules\tts_module\lib\infer_pack\commons.py" />
+    <Compile Include="modules\tts_module\lib\infer_pack\models.py" />
+    <Compile Include="modules\tts_module\lib\infer_pack\models_dml.py" />
+    <Compile Include="modules\tts_module\lib\infer_pack\models_onnx.py" />
+    <Compile Include="modules\tts_module\lib\infer_pack\modules.py" />
+    <Compile Include="modules\tts_module\lib\infer_pack\modules\F0Predictor\DioF0Predictor.py" />
+    <Compile Include="modules\tts_module\lib\infer_pack\modules\F0Predictor\F0Predictor.py" />
+    <Compile Include="modules\tts_module\lib\infer_pack\modules\F0Predictor\HarvestF0Predictor.py" />
+    <Compile Include="modules\tts_module\lib\infer_pack\modules\F0Predictor\PMF0Predictor.py" />
+    <Compile Include="modules\tts_module\lib\infer_pack\modules\F0Predictor\__init__.py" />
+    <Compile Include="modules\tts_module\lib\infer_pack\onnx_inference.py" />
+    <Compile Include="modules\tts_module\lib\infer_pack\transforms.py" />
+    <Compile Include="modules\tts_module\rmvpe.py" />
+    <Compile Include="modules\tts_module\vc_infer_pipeline.py" />
+    <Compile Include="module_tests\integration_tests.py" />
+    <Compile Include="module_tests\test_sys_module.py" />
+    <Compile Include="module_tests\test_tts_module.py" />
+    <Compile Include="utils\debug_file_dropper.py" />
+    <Compile Include="utils\debug_helper.py" />
+    <Compile Include="utils\logger.py" />
     <Compile Include="entry.py" />
-    <Compile Include="helpers\module_creater.py" />
-    <Compile Include="modules\ani_module\ani_module_module.py" />
+    <Compile Include="utils\module_creater.py" />
+    <Compile Include="modules\ani_module\ani_module.py" />
     <Compile Include="modules\ani_module\schemas.py" />
     <Compile Include="modules\ani_module\tests\test_ani_module_module.py" />
     <Compile Include="modules\ani_module\__init__.py" />
-    <Compile Include="modules\llm_module\llm_module_module.py" />
+    <Compile Include="modules\llm_module\llm_module.py" />
     <Compile Include="modules\llm_module\schemas.py" />
-    <Compile Include="modules\llm_module\tests\test_llm_module_module.py" />
+    <Compile Include="module_tests\test_llm_module.py" />
     <Compile Include="modules\llm_module\__init__.py" />
-    <Compile Include="modules\mem_module\mem_module_module.py" />
+    <Compile Include="modules\mem_module\mem_module.py" />
     <Compile Include="modules\mem_module\schemas.py" />
-    <Compile Include="modules\mem_module\tests\test_mem_module_module.py" />
+    <Compile Include="module_tests\test_mem_module.py" />
     <Compile Include="modules\mem_module\__init__.py" />
-    <Compile Include="modules\mov_module\mov_module_module.py" />
+    <Compile Include="modules\mov_module\mov_module.py" />
     <Compile Include="modules\mov_module\schemas.py" />
     <Compile Include="modules\mov_module\tests\test_mov_module_module.py" />
     <Compile Include="modules\mov_module\__init__.py" />
-    <Compile Include="modules\nlp_module\nlp_module_module.py" />
+    <Compile Include="modules\nlp_module\nlp_module.py" />
     <Compile Include="modules\nlp_module\schemas.py" />
-    <Compile Include="modules\nlp_module\tests\test_nlp_module_module.py" />
+    <Compile Include="module_tests\test_nlp_module.py" />
     <Compile Include="modules\nlp_module\__init__.py" />
     <Compile Include="modules\stt_module\schemas.py" />
-    <Compile Include="modules\stt_module\stt_module_module.py" />
-    <Compile Include="modules\stt_module\tests\test_stt_module_module.py" />
+    <Compile Include="modules\stt_module\stt_module.py" />
+    <Compile Include="module_tests\test_stt_module.py" />
     <Compile Include="modules\stt_module\__init__.py" />
     <Compile Include="modules\sys_module\schemas.py" />
-    <Compile Include="modules\sys_module\sys_module_module.py" />
-    <Compile Include="modules\sys_module\tests\test_sys_module_module.py" />
+    <Compile Include="modules\sys_module\sys_module.py" />
     <Compile Include="modules\sys_module\__init__.py" />
     <Compile Include="modules\tts_module\schemas.py" />
-    <Compile Include="modules\tts_module\tests\test_tts_module_module.py" />
-    <Compile Include="modules\tts_module\tts_module_module.py" />
+    <Compile Include="modules\tts_module\tts_module.py" />
     <Compile Include="modules\tts_module\__init__.py" />
     <Compile Include="modules\ui_module\schemas.py" />
     <Compile Include="modules\ui_module\tests\test_ui_module_module.py" />
-    <Compile Include="modules\ui_module\ui_module_module.py" />
+    <Compile Include="modules\ui_module\ui_module.py" />
     <Compile Include="modules\ui_module\__init__.py" />
+    <Compile Include="modules\__init__.py" />
+    <Compile Include="train\nlp\train_dbert.py" />
+    <Compile Include="utils\prompt_builder.py" />
+    <Compile Include="utils\prompt_templates.py" />
+    <Compile Include="utils\tts_chunker.py" />
   </ItemGroup>
   <ItemGroup>
+    <Folder Include="logs\debug\" />
+    <Folder Include="logs\error\" />
+    <Folder Include="logs\runtime\" />
+    <Folder Include="memory\" />
+    <Folder Include="models\nlp\" />
+    <Folder Include="models\nlp\command_chat_classifier\" />
+    <Folder Include="models\tts\" />
+    <Folder Include="models\tts\RVC_weights\" />
+    <Folder Include="models\tts\RVC_weights\Could change to this\" />
     <Folder Include="modules\" />
     <Folder Include="configs\" />
     <Folder Include="arts\" />
-    <Folder Include="helpers\" />
     <Folder Include="core\" />
     <Folder Include="devtools\" />
     <Folder Include="docs\" />
@@ -132,20 +218,33 @@
     <Folder Include="modules\llm_module\" />
     <Folder Include="modules\llm_module\tests\" />
     <Folder Include="modules\mem_module\" />
-    <Folder Include="modules\mem_module\tests\" />
     <Folder Include="modules\mov_module\" />
     <Folder Include="modules\mov_module\tests\" />
     <Folder Include="modules\nlp_module\" />
-    <Folder Include="modules\nlp_module\tests\" />
     <Folder Include="modules\stt_module\" />
-    <Folder Include="modules\stt_module\tests\" />
     <Folder Include="modules\sys_module\" />
-    <Folder Include="modules\sys_module\tests\" />
+    <Folder Include="modules\sys_module\actions\" />
+    <Folder Include="modules\sys_module\workflows\" />
+    <Folder Include="modules\sys_module\workflows\__pycache__\" />
     <Folder Include="modules\tts_module\" />
-    <Folder Include="modules\tts_module\tests\" />
+    <Folder Include="modules\tts_module\lib\" />
+    <Folder Include="modules\tts_module\lib\infer_pack\" />
+    <Folder Include="modules\tts_module\lib\infer_pack\modules\" />
+    <Folder Include="modules\tts_module\lib\infer_pack\modules\F0Predictor\" />
+    <Folder Include="modules\tts_module\lib\infer_pack\__pycache__\" />
+    <Folder Include="modules\tts_module\temp\" />
     <Folder Include="modules\ui_module\" />
     <Folder Include="modules\ui_module\tests\" />
+    <Folder Include="models\" />
+    <Folder Include="logs\" />
+    <Folder Include="module_tests\" />
+    <Folder Include="train\" />
+    <Folder Include="train\nlp\" />
     <Folder Include="utils\" />
+    <Folder Include="wheel\" />
+  </ItemGroup>
+  <ItemGroup>
+    <InterpreterReference Include="Global|PythonCore|3.10" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in

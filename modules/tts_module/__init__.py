@@ -1,4 +1,8 @@
-from .tts_module_module import TtsModule
+from .tts_module import TTSModule
+from configs.config_loader import load_module_config
 
 def register():
-    return TtsModule(config={})
+    config = load_module_config("tts_module")
+    instance = TTSModule(config=config)
+    instance.initialize()
+    return instance

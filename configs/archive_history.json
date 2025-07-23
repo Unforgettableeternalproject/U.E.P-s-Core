@@ -1,0 +1,74 @@
+{
+  "archives": [
+    {
+      "original_path": "E:/Documents/記事本/進度表.txt",
+      "target_dir": "E:\\Documents",
+      "file_name": "進度表.txt",
+      "file_ext": ".txt",
+      "timestamp": "2025-07-16T22:05:18.340646"
+    },
+    {
+      "original_path": "E:/Documents/記事本/Things to say.txt",
+      "target_dir": "E:\\Documents",
+      "file_name": "Things to say.txt",
+      "file_ext": ".txt",
+      "timestamp": "2025-07-16T21:15:34.527668"
+    },
+    {
+      "original_path": "E:/Music/My Songs/.wav",
+      "target_dir": "C:\\Users\\Bernie\\Downloads",
+      "file_name": ".wav",
+      "file_ext": "",
+      "timestamp": "2025-07-16T15:29:19.917157"
+    },
+    {
+      "original_path": "E:/Servers/DST Server/version.txt",
+      "target_dir": "E:\\Documents",
+      "file_name": "version.txt",
+      "file_ext": ".txt",
+      "timestamp": "2025-07-16T15:20:27.894294"
+    },
+    {
+      "original_path": "C:/Users/Bernie/Documents/Thing Left.txt",
+      "target_dir": "E:\\Documents",
+      "file_name": "Thing Left.txt",
+      "file_ext": ".txt",
+      "timestamp": "2025-06-15T22:25:13.008590"
+    },
+    {
+      "original_path": "C:/Users/Bernie/Documents/Thing Left.txt",
+      "target_dir": "E:\\Documents",
+      "file_name": "Thing Left.txt",
+      "file_ext": ".txt",
+      "timestamp": "2025-06-15T22:23:52.835986"
+    },
+    {
+      "original_path": "E:/Documents/記事本/Thing Left.txt",
+      "target_dir": "C:\\Users\\Bernie\\Documents",
+      "file_name": "Thing Left.txt",
+      "file_ext": ".txt",
+      "timestamp": "2025-06-15T22:22:49.120412"
+    },
+    {
+      "original_path": "E:/Pictures/Concept Arts/DB_Frontend_Concept.png",
+      "target_dir": "E:\\Pictures",
+      "file_name": "DB_Frontend_Concept.png",
+      "file_ext": ".png",
+      "timestamp": "2025-06-15T03:01:18.863587"
+    },
+    {
+      "original_path": "C:/Users/Bernie/OneDrive/圖片/Core.png",
+      "target_dir": "E:\\Pictures",
+      "file_name": "Core.png",
+      "file_ext": ".png",
+      "timestamp": "2025-06-15T02:54:52.676609"
+    },
+    {
+      "original_path": "E:/Documents/Word/U.E.P 大型模型專案 構想.docx",
+      "target_dir": "C:\\Users\\Bernie\\Documents",
+      "file_name": "U.E.P 大型模型專案 構想.docx",
+      "file_ext": ".docx",
+      "timestamp": "2025-06-15T02:47:48.350279"
+    }
+  ]
+}

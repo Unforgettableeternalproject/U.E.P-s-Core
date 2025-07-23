@@ -1,3 +1,62 @@
-{{
-  "response": "output"
-}}
+[
+  {
+    "description": "列出功能成功範例",
+    "output": {
+      "status": "ok",
+      "data": {
+        "start_workflow": "啟動多步驟工作流程",
+        "continue_workflow": "繼續進行多步驟工作流程",
+        "cancel_workflow": "取消進行中的工作流程"
+      },
+      "message": "功能清單獲取成功"
+    }
+  },
+  {
+    "description": "工作流程啟動範例",
+    "output": {
+      "status": "waiting",
+      "session_id": "wf_12345678",
+      "requires_input": true,
+      "prompt": "請輸入要讀取的檔案路徑：",
+      "message": "工作流程已啟動，等待使用者輸入"
+    }
+  },
+  {
+    "description": "工作流程繼續範例",
+    "output": {
+      "status": "waiting",
+      "session_id": "wf_12345678",
+      "requires_input": true,
+      "prompt": "確認要讀取檔案 'document.txt' 嗎？(y/n)",
+      "message": "已接收檔案路徑，等待確認"
+    }
+  },
+  {
+    "description": "工作流程完成範例",
+    "output": {
+      "status": "completed",
+      "session_id": "wf_12345678",
+      "data": {
+        "file_path": "C:\\Users\\test\\document.txt",
+        "content": "檔案內容摘要...",
+        "file_size": 2048
+      },
+      "message": "檔案讀取工作流程完成"
+    }
+  },
+  {
+    "description": "工作流程取消範例",
+    "output": {
+      "status": "cancelled",
+      "session_id": "wf_12345678",
+      "message": "工作流程已取消：用戶取消"
+    }
+  },
+  {
+    "description": "錯誤範例",
+    "output": {
+      "status": "error",
+      "message": "不支援的操作模式：invalid_mode"
+    }
+  }
+]

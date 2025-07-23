@@ -1,3 +1,14 @@
-{{
-  "example": "data"
-}}
+[
+  {
+    "description": "單次語音辨識模式",
+    "input": {
+      "trigger": "manual"
+    }
+  },
+  {
+    "description": "即時語音辨識模式（需要使用start_realtime/stop_realtime方法）",
+    "input": {
+      "trigger": "realtime"
+    }
+  }
+]

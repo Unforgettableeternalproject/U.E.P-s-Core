@@ -1,3 +1,16 @@
-{{
-  "response": "output"
-}}
+[
+  {
+    "description": "成功辨識語音範例",
+    "output": {
+      "text": "你好，這是語音辨識的結果",
+      "error": null
+    }
+  },
+  {
+    "description": "辨識失敗範例",
+    "output": {
+      "text": "",
+      "error": "無法辨識語音"
+    }
+  }
+]

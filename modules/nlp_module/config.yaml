@@ -1,1 +1,3 @@
-# Default config for nlp_module_module
+﻿# Default config for nlp_module_module
+
+model_dir: ./models/nlp/command_chat_classifier

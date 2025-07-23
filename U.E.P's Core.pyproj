@@ -32,10 +32,14 @@
     <Content Include="arts\U.E.P_concept.png" />
     <Content Include="CHANGELOG.md" />
     <Content Include="configs\config.yaml" />
+    <Content Include="docs\Release_v0.1.0_準備清單.md" />
     <Content Include="docs\SYS模組功能概覽.md" />
+    <Content Include="docs\安裝與使用指南.md" />
+    <Content Include="docs\專案結構說明.md" />
     <Content Include="docs\專案藍圖.md" />
-    <Content Include="docs\專案開發準則.md" />
     <Content Include="docs\本學期的專案進度.md" />
+    <Content Include="docs\模組開發指南.md" />
+    <Content Include="docs\第二階段進度.md" />
     <Content Include="memory\dev_faiss_index" />
     <Content Include="memory\dev_metadata.json" />
     <Content Include="models\nlp\command_chat_classifier\config.json" />
@@ -92,9 +96,11 @@
     <Content Include="modules\ui_module\example_input.json" />
     <Content Include="modules\ui_module\example_output.json" />
     <Content Include="README.md" />
+    <Content Include="README.zh-tw.md" />
     <Content Include="requirements.in" />
     <Content Include="requirements.txt" />
     <Content Include="train\nlp\dataset.csv" />
+    <Content Include="wheel\fairseq-0.12.2-cp310-cp310-win_amd64.whl" />
   </ItemGroup>
   <ItemGroup>
     <Interpreter Include="env\">
@@ -235,6 +241,7 @@
     <Folder Include="train\" />
     <Folder Include="train\nlp\" />
     <Folder Include="utils\" />
+    <Folder Include="wheel\" />
   </ItemGroup>
   <ItemGroup>
     <InterpreterReference Include="Global|PythonCore|3.10" />

@@ -526,3 +526,15 @@
 
 ---
 
+### Added documentation for the project, and a version history as well, ready to merge to master. 07/23
+
+> Date: Wed, 23 Jul 2025 22:42:12 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `release/v0.1.0_stable`
+
+> Commit: `a103ecb6b06a8dc7e2720f58e3495b0fd9e70423`
+
+---
+

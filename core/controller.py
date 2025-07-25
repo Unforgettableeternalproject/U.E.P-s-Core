@@ -45,20 +45,72 @@ modules = {
 
 def on_stt_result(result):
     """STT 結果回調函數 - 支援 Phase 2 格式"""
+    # 首先檢查結果是否為 None 或非字典（處理錯誤情況）
+    if result is None:
+        print("❌ 語音識別失敗：沒有識別結果")
+        return
+        
     if isinstance(result, dict):
+        # 提取基本信息
         text = result.get("text", "")
-        confidence = result.get("confidence", 0)
+        stt_confidence = result.get("confidence", 0)  # 語音識別信心度
         speaker_info = result.get("speaker_info")
-        activation_reason = result.get("activation_reason", "unknown")
+        activation_reason = result.get("activation_reason", "未提供判斷原因")
+        should_activate = result.get("should_activate", False)  # 獲取是否應該啟動標誌
+        error = result.get("error")  # 檢查是否有錯誤訊息
         
-        print(f"✨ 回傳語音內容：{text}")
-        print(f"   信心度：{confidence:.2f}")
-        print(f"   啟動原因：{activation_reason}")
+        # 處理錯誤情況
+        if error:
+            print(f"❌ 語音識別錯誤：{error}")
+            return
+            
+        # 沒有識別出文字的情況
+        if not text:
+            print("🔇 未識別到有效語音內容")
+            return
         
+        # 拆分啟動原因中的信心度
+        activation_confidence = 0
+        # 安全檢查 activation_reason 是否為字符串類型
+        if activation_reason and isinstance(activation_reason, str) and "智能判斷分數:" in activation_reason:
+            try:
+                confidence_part = activation_reason.split("智能判斷分數:")[1].strip()
+                if confidence_part:
+                    activation_confidence = float(confidence_part)
+            except:
+                pass
+        
+        # 顯示語音辨識結果，總是顯示識別到的文字
+        print(f"\n📢 即時語音識別: 「{text}」")
+        
+        # 顯示結果，區分是否應該啟動
+        if should_activate:
+            print(f"✓ 智能啟動觸發！")
+            print(f"   識別信心度：{stt_confidence:.2f}")
+            print(f"   啟動原因：{activation_reason}")
+        else:
+            # 非啟動時只顯示簡略資訊，不干擾監聽流程
+            if activation_confidence > 0:
+                print(f"   (未觸發啟動，智能判斷分數: {activation_confidence:.2f})")
+            else:
+                print(f"   (未觸發啟動)")
+                
+        # 如果有說話人識別資訊，顯示說話人資訊
+        if speaker_info:
+        
+        # 顯示說話人信息
         if speaker_info:
             speaker_id = speaker_info.get("speaker_id", "Unknown")
-            similarity = speaker_info.get("similarity", 0)
-            print(f"   說話人：{speaker_id} (相似度: {similarity:.2f})")
+            confidence = speaker_info.get("confidence", 0)
+            is_new = "(新說話人)" if speaker_info.get("is_new_speaker", False) else ""
+            print(f"   🔊 說話人：{speaker_id} {is_new} (信心度: {confidence:.2f})")
+            
+        # 如果應該啟動，返回處理結果到下一步
+        if should_activate:
+            # 這裡可以觸發後續處理邏輯
+            info_log(f"[Controller] 觸發後續處理：{text}")
+            # TODO: 呼叫下一個處理模組
+            
     else:
         # 舊版相容性
         print(f"✨ 回傳語音內容：{result}")
@@ -105,7 +157,7 @@ def stt_test_smart_activation():
     on_stt_result(result)
     return result
 
-def stt_test_background_smart(duration=30):
+def stt_test_background_smart(duration=60):
     """智能背景監聽測試 - 背景持續監聽 + 智能啟動"""
     stt = modules["stt"]
 
@@ -121,10 +173,10 @@ def stt_test_background_smart(duration=30):
         on_stt_result(result)
     
     try:
-        # 啟動背景監聽，傳遞持續時間
+        # 啟動背景監聽，確保正確傳遞持續時間
         stt.start_always_on(callback=smart_background_callback, duration=duration)
         
-        # 等待指定時間 (現在由模組自己計時)
+        # 等待指定時間 (由模組自己計時)
         try:
             # 只需要等待終止信號
             while getattr(stt, '_always_on_running', False):

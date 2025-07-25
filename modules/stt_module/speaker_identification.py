@@ -42,12 +42,40 @@ class SpeakerIdentifier:
         
         # 初始化
         self._load_speaker_models()
+        
+        # 驗證模型兼容性
+        self._verify_model_compatibility()
+        
         info_log(f"[SpeakerID] 初始化完成，已載入 {len(self.speaker_models)} 個說話人模型")
         info_log(f"[SpeakerID] 模型存儲位置: {self.models_file}")
         
+    def _verify_model_compatibility(self):
+        """驗證現有模型與當前特徵提取方法的兼容性"""
+        if not self.speaker_models:
+            return
+            
+        # 創建一個測試音頻來提取特徵
+        test_audio = np.zeros(self.sample_rate, dtype=np.float32)
+        current_feature_dim = self.extract_voice_features(test_audio).shape[0]
+        
+        # 檢查任何現有模型的特徵維度
+        feature_dim_mismatch = False
+        for speaker_id, model in self.speaker_models.items():
+            if model.feature_vectors and len(model.feature_vectors) > 0:
+                stored_dim = len(model.feature_vectors[0])
+                if stored_dim != current_feature_dim:
+                    info_log(f"[SpeakerID] 特徵維度不匹配: 存儲={stored_dim}, 當前={current_feature_dim}")
+                    feature_dim_mismatch = True
+                    break
+        
+        # 如果發現維度不匹配，重置模型
+        if feature_dim_mismatch:
+            info_log("[SpeakerID] 檢測到特徵提取方法變更，重置說話人模型")
+            self.reset_speaker_models()
+        
     def extract_voice_features(self, audio_data: np.ndarray) -> np.ndarray:
         """
-        提取語音特徵 (MFCC)
+        提取語音特徵 (MFCC + delta + delta-delta)
         
         Args:
             audio_data: 音頻數據
@@ -69,12 +97,20 @@ class SpeakerIdentifier:
                 hop_length=self.hop_length
             )
             
-            # 計算統計特徵 (均值和標準差)
+            # 提取 delta 和 delta-delta 特徵
+            delta_mfccs = librosa.feature.delta(mfccs)
+            delta2_mfccs = librosa.feature.delta(mfccs, order=2)
+            
+            # 計算統計特徵
             mfcc_mean = np.mean(mfccs, axis=1)
             mfcc_std = np.std(mfccs, axis=1)
+            delta_mean = np.mean(delta_mfccs, axis=1)
+            delta_std = np.std(delta_mfccs, axis=1)
+            delta2_mean = np.mean(delta2_mfccs, axis=1)
+            delta2_std = np.std(delta2_mfccs, axis=1)
             
-            # 組合特徵
-            features = np.concatenate([mfcc_mean, mfcc_std])
+            # 組合所有特徵
+            features = np.concatenate([mfcc_mean, mfcc_std, delta_mean, delta_std, delta2_mean, delta2_std])
             
             debug_log(3, f"[SpeakerID] 提取特徵維度: {features.shape}")
             return features
@@ -86,9 +122,17 @@ class SpeakerIdentifier:
     def calculate_similarity(self, features1: np.ndarray, features2: np.ndarray) -> float:
         """計算兩個特徵向量的相似度"""
         try:
-            # 重塑為 2D 數組以適應 cosine_similarity
-            f1 = features1.reshape(1, -1)
-            f2 = features2.reshape(1, -1)
+            # 檢查維度是否匹配
+            if features1.shape[0] != features2.shape[0]:
+                # 如果維度不一致，我們只使用兩個向量共有的前N個特徵
+                min_dim = min(features1.shape[0], features2.shape[0])
+                f1 = features1[:min_dim].reshape(1, -1)
+                f2 = features2[:min_dim].reshape(1, -1)
+                debug_log(2, f"[SpeakerID] 特徵維度不一致，截取共同維度: {min_dim}")
+            else:
+                # 重塑為 2D 數組以適應 cosine_similarity
+                f1 = features1.reshape(1, -1)
+                f2 = features2.reshape(1, -1)
             
             similarity = cosine_similarity(f1, f2)[0][0]
             return float(similarity)
@@ -107,6 +151,18 @@ class SpeakerIdentifier:
         Returns:
             SpeakerInfo: 說話人信息
         """
+        # 檢查音頻能量 - 降低閾值以適應簡短語音指令
+        energy = np.sum(audio_data ** 2)
+        if energy < self.si_config.get("min_energy_threshold", 15):  # 從100降低到15
+            debug_log(2, "[SpeakerID] 音頻能量過低，視為非語音")
+            debug_log(3, f"[SpeakerID] 音頻能量: {energy}")
+            return SpeakerInfo(
+                speaker_id="unknown",
+                confidence=0.0,
+                is_new_speaker=False,
+                voice_features=None
+            )
+        
         # 提取特徵
         features = self.extract_voice_features(audio_data)
         if features.size == 0:
@@ -151,8 +207,8 @@ class SpeakerIdentifier:
             other_similarities = [sim for spk, sim in speaker_similarities.items() if spk != best_speaker_id]
             if other_similarities:
                 second_best = max(other_similarities)
-                # 如果最佳匹配與第二佳匹配相似度差異小於20%，表示不夠明顯
-                if (best_similarity - second_best) / best_similarity < 0.2:
+                # 如果最佳匹配與第二佳匹配相似度差異小於30%，表示不夠明顯
+                if (best_similarity - second_best) / best_similarity < 0.3:
                     is_distinct = False
                     debug_log(2, f"[SpeakerID] 最佳匹配不夠明顯: {best_similarity:.2f} vs {second_best:.2f}")
                 
@@ -210,11 +266,40 @@ class SpeakerIdentifier:
         return speaker_id
         
     def _update_speaker_model(self, speaker_id: str, features: np.ndarray):
-        """更新說話人模型"""
+        """更新說話人模型 - 使用聚類檢查"""
         if speaker_id not in self.speaker_models:
             return
             
         model = self.speaker_models[speaker_id]
+        
+        # 使用 K-Means 檢查新特徵是否屬於現有模型
+        if len(model.feature_vectors) >= self.min_samples:
+            try:
+                # 先將現有特徵向量轉為 numpy 數組
+                feature_array = np.array(model.feature_vectors)
+                
+                # 檢查維度是否一致
+                if feature_array.shape[1] != features.shape[0]:
+                    debug_log(2, f"[SpeakerID] 特徵維度不一致 - 現有: {feature_array.shape[1]}, 新: {features.shape[0]}")
+                    # 截取共同的維度
+                    min_dim = min(feature_array.shape[1], features.shape[0])
+                    feature_array = feature_array[:, :min_dim]
+                    new_feature = features[:min_dim].reshape(1, -1)
+                    debug_log(2, f"[SpeakerID] 截取共同維度: {min_dim}")
+                else:
+                    new_feature = features.reshape(1, -1)
+                
+                kmeans = KMeans(n_clusters=1).fit(feature_array)
+                distance = np.linalg.norm(new_feature - kmeans.cluster_centers_)
+                
+                # 如果距離過大，可能不屬於這個說話人
+                if distance > self.si_config.get("cluster_distance_threshold", 0.5):
+                    debug_log(2, f"[SpeakerID] 新特徵與模型 {speaker_id} 不匹配，忽略更新")
+                    return
+            except Exception as e:
+                error_log(f"[SpeakerID] 聚類檢查失敗: {str(e)}")
+                # 失敗時仍然繼續更新，避免丟失可能有用的數據
+        
         model.feature_vectors.append(features.tolist())
         model.sample_count += 1
         model.last_updated = time.time()
@@ -278,3 +363,22 @@ class SpeakerIdentifier:
                 "last_updated": model.last_updated
             }
         return stats
+        
+    def reset_speaker_models(self):
+        """重置說話人模型 - 當特徵提取方法更改時使用"""
+        try:
+            # 備份現有模型
+            if os.path.exists(self.models_file):
+                backup_file = f"{self.models_file}.bak.{int(time.time())}"
+                import shutil
+                shutil.copy(self.models_file, backup_file)
+                info_log(f"[SpeakerID] 已備份現有模型至: {backup_file}")
+            
+            # 清空模型
+            self.speaker_models = {}
+            self._save_speaker_models()
+            info_log("[SpeakerID] 已重置所有說話人模型")
+            return True
+        except Exception as e:
+            error_log(f"[SpeakerID] 重置模型失敗: {str(e)}")
+            return False

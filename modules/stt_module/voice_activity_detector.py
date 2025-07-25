@@ -19,12 +19,16 @@ class VoiceActivityDetector:
         self.config = config
         self.vad_config = config.get("always_on", {})
         
-        # VAD 參數
-        self.sensitivity = self.vad_config.get("vad_sensitivity", 0.6)
-        self.min_speech_duration = self.vad_config.get("min_speech_duration", 0.5)
-        self.max_silence_duration = self.vad_config.get("max_silence_duration", 2.0)
-        self.energy_threshold = self.vad_config.get("energy_threshold", 4000)
+        # VAD 參數 - 更適合處理所有語音，包括非常簡短的指令
+        self.sensitivity = self.vad_config.get("vad_sensitivity", 0.8)  # 進一步提高敏感度
+        self.min_speech_duration = self.vad_config.get("min_speech_duration", 0.05)  # 極低的最小語音持續時間閾值
+        self.max_silence_duration = self.vad_config.get("max_silence_duration", 2.0)  # 增加靜音時間以防止語句被分割
+        self.energy_threshold = self.vad_config.get("energy_threshold", 15)  # 非常低的能量閾值以捕獲任何可能的語音
         self.dynamic_threshold = self.vad_config.get("dynamic_threshold", True)
+        
+        # 處理極短語音的額外參數
+        self.process_all_audio = True  # 標記為處理所有音頻，不論長短
+        self.energy_boost_factor = 0.7  # 能量閾值降低係數，用於短語音
         
         # 狀態追蹤
         self.is_speaking = False
@@ -54,20 +58,44 @@ class VoiceActivityDetector:
         return np.sum(audio_data ** 2)
         
     def update_background_energy(self, energy: float):
-        """更新背景能量估計"""
+        """更新背景能量估計 - 增強版本，更適應性地調整閾值"""
+        # 首先過濾極端值，避免噪音峰值干擾適應性調整
+        if len(self.energy_history) > 5:
+            median_energy = np.median(self.energy_history)
+            # 如果當前能量是極端異常值（超過中位數的5倍），則不更新歷史
+            if energy > median_energy * 5:
+                debug_log(4, f"[VAD] 跳過極端能量值: {energy:.2f} > {median_energy * 5:.2f}")
+                return
+        
+        # 添加到歷史記錄
         self.energy_history.append(energy)
         if len(self.energy_history) > self.history_size:
             self.energy_history.pop(0)
             
         if self.dynamic_threshold and len(self.energy_history) > 10:
-            # 動態調整閾值
-            background_avg = np.mean(self.energy_history)
-            background_std = np.std(self.energy_history)
-            self.energy_threshold = background_avg + (background_std * 2)
+            # 計算最近10個和較長期的能量統計
+            recent_energies = self.energy_history[-10:]
+            
+            # 使用四分位數統計而非簡單均值，以更好處理非高斯分布能量
+            recent_median = np.median(recent_energies)
+            q75 = np.percentile(recent_energies, 75)
+            q25 = np.percentile(recent_energies, 25)
+            iqr = q75 - q25  # 四分位範圍
+            
+            # 更靈活的閾值計算 - 對極低能量環境更敏感
+            if recent_median < 10:  # 極安靜環境
+                self.energy_threshold = max(5, recent_median + iqr)
+                debug_log(4, f"[VAD] 安靜環境閾值調整: {self.energy_threshold:.2f}")
+            else:  # 正常或嘈雜環境
+                self.energy_threshold = recent_median + (iqr * 1.5)
+                debug_log(4, f"[VAD] 標準閾值調整: {self.energy_threshold:.2f}")
+            
+            # 確保閾值不會過高或過低
+            self.energy_threshold = min(max(self.energy_threshold, 5), 100)
             
     def detect_speech(self, audio_data: np.ndarray, sample_rate: int = 16000) -> dict:
         """
-        檢測語音活動
+        檢測語音活動 - 增強版，使用多重指標檢測語音
         
         Args:
             audio_data: 音頻數據
@@ -82,16 +110,29 @@ class VoiceActivityDetector:
         energy = self.calculate_energy(audio_data)
         self.update_background_energy(energy)
         
-        # 判斷是否有語音
-        has_speech = energy > self.energy_threshold
+        # 檢查短時零交叉率 (Zero Crossing Rate)，語音通常有較高的 ZCR
+        zcr = np.sum(np.abs(np.diff(np.signbit(audio_data)))) / len(audio_data)
+        zcr_speech_indicator = zcr > 0.05  # ZCR閾值
+        
+        # 增強版的語音檢測 - 能量或特徵指標超過閾值就視為語音
+        primary_speech_detected = energy > self.energy_threshold
+        secondary_speech_detected = zcr_speech_indicator and energy > (self.energy_threshold * 0.7)
+        
+        # 綜合判斷是否有語音
+        has_speech = primary_speech_detected or secondary_speech_detected
         
         result = {
             "has_speech": has_speech,
             "energy": energy,
+            "zcr": zcr,  # 添加零交叉率信息
             "threshold": self.energy_threshold,
             "timestamp": current_time,
             "speech_state_changed": False,
-            "event_type": None
+            "event_type": None,
+            "speech_indicators": {  # 添加詳細的語音指標
+                "energy_based": primary_speech_detected,
+                "zcr_based": secondary_speech_detected
+            }
         }
         
         # 語音狀態轉換檢測
@@ -191,8 +232,11 @@ class VoiceActivityDetector:
             self.audio_buffer.put(audio_chunk)
             
     def _stream_processor(self):
-        """串流處理線程"""
+        """串流處理線程 - 增強版本，高效處理 PyAudio 串流"""
         debug_log(2, "[VAD] 串流處理線程已啟動")
+        speech_buffer = []  # 用於保存當前語音片段
+        sample_rate = self.config.get("sample_rate", 16000)
+        accumulated_silence = 0  # 累積的靜音時間
         
         try:
             while self.is_streaming:
@@ -200,13 +244,113 @@ class VoiceActivityDetector:
                     # 從緩衝區獲取音頻塊，最多等待 0.1 秒
                     audio_chunk = self.audio_buffer.get(timeout=0.1)
                     
-                    # 處理音頻塊
+                    # 處理音頻塊，使用增強的檢測
                     result = self.detect_speech(audio_chunk)
                     
-                    # 處理結果
-                    if result["speech_state_changed"]:
-                        debug_log(3, f"[VAD] 語音狀態變更: {result['event_type']}")
+                    # 語音檢測邏輯增強 - 更靈敏地檢測任何可能的語音活動
+                    is_speech = False
+                    
+                    # 主要語音檢測
+                    if result["has_speech"]:
+                        is_speech = True
+                    # 次要檢測：即使不滿足主要條件，但有較強能量波動也視為潛在語音
+                    elif self.process_all_audio:
+                        # 檢查能量相對於背景噪音的波動
+                        bg_energy = np.mean(self.energy_history) if self.energy_history else self.energy_threshold
+                        energy_ratio = result["energy"] / (bg_energy + 0.00001)  # 防止除零
                         
+                        # 如果能量比背景高出顯著倍數，或零交叉率顯著，仍視為語音
+                        if energy_ratio > 1.5 or result["zcr"] > 0.1:
+                            is_speech = True
+                            debug_log(4, f"[VAD] 檢測到潛在語音: 能量比={energy_ratio:.2f}, ZCR={result['zcr']:.2f}")
+                    
+                    # 如果檢測到語音
+                    if is_speech:
+                        # 如果之前不是語音狀態，發送語音開始事件
+                        if not speech_buffer:
+                            if self.callback:
+                                start_event = {
+                                    "event_type": "speech_start",
+                                    "timestamp": result["timestamp"],
+                                    "detection_type": "enhanced" if not result["has_speech"] else "standard"
+                                }
+                                self.callback(start_event)
+                                debug_log(3, f"[VAD] 語音開始: {'增強檢測' if not result['has_speech'] else '標準檢測'}")
+                        
+                        # 保存到緩衝區
+                        speech_buffer.append(audio_chunk)
+                        accumulated_silence = 0  # 重置靜音計數器
+                        debug_log(4, f"[VAD] 添加語音塊: 長度={len(audio_chunk)}, 總緩衝區語音塊={len(speech_buffer)}")
+                        
+                    elif speech_buffer:  # 如果有語音在緩衝區但當前塊無語音
+                        # 計算當前塊的時間長度，累積靜音時間
+                        chunk_duration = len(audio_chunk) / sample_rate
+                        accumulated_silence += chunk_duration
+                        
+                        # 更寬鬆的靜音檢測邏輯
+                        # 如果緩衝區有內容，我們會更謹慎地判斷是否結束語音段
+                        current_speech_duration = sum(len(chunk) for chunk in speech_buffer) / sample_rate
+                        
+                        # 短語音時使用更短的靜音閾值，長語音時允許更長的停頓
+                        adjusted_silence_threshold = self.max_silence_duration
+                        if current_speech_duration < 1.0:  # 短語音
+                            adjusted_silence_threshold = self.max_silence_duration * 0.7
+                        elif current_speech_duration > 3.0:  # 長語音
+                            adjusted_silence_threshold = self.max_silence_duration * 1.3
+                        
+                        debug_log(4, f"[VAD] 靜音檢測: 累積={accumulated_silence:.2f}秒, 閾值={adjusted_silence_threshold:.2f}秒, 語音長度={current_speech_duration:.2f}秒")
+                        
+                        # 如果靜音時間超過調整後的閾值，結束當前語音段
+                        if accumulated_silence >= adjusted_silence_threshold:
+                            if speech_buffer and self.callback:
+                                speech_duration = sum(len(chunk) for chunk in speech_buffer) / sample_rate
+                                
+                                # 完全移除長度限制，處理所有語音段
+                                # 始終嘗試處理語音，無論長度如何
+                                avg_energy = np.mean([self.calculate_energy(chunk) for chunk in speech_buffer])
+                                
+                                # 計算語音段的零交叉率，作為語音複雜度的指標
+                                concatenated_audio = np.concatenate(speech_buffer)
+                                zcr = np.sum(np.abs(np.diff(np.signbit(concatenated_audio)))) / len(concatenated_audio)
+                                
+                                # 增加判斷語音段結束的清晰日誌
+                                debug_log(2, f"[VAD] 語音段結束判斷: 長度={speech_duration:.2f}秒, 能量={avg_energy:.2f}, ZCR={zcr:.4f}")
+                                
+                                if speech_duration >= self.min_speech_duration:
+                                    # 標準長度語音
+                                    speech_data = {
+                                        "event_type": "speech_end",
+                                        "timestamp": time.time(),
+                                        "speech_duration": speech_duration,
+                                        "audio_buffer": speech_buffer.copy(),
+                                        "avg_energy": float(avg_energy),
+                                        "zcr": float(zcr),
+                                        "is_complete": True  # 標記為完整語音段
+                                    }
+                                    self.callback(speech_data)
+                                    debug_log(1, f"[VAD] ✓ 完整語音段已發送: {speech_duration:.2f}秒")
+                                    
+                                elif speech_duration >= 0.05:  # 非常短的語音也處理，只要超過0.05秒
+                                    # 所有短語音都嘗試處理，不再根據能量過濾
+                                    speech_data = {
+                                        "event_type": "speech_end",
+                                        "timestamp": time.time(),
+                                        "speech_duration": speech_duration,
+                                        "audio_buffer": speech_buffer.copy(),
+                                        "avg_energy": float(avg_energy),
+                                        "zcr": float(zcr),
+                                        "is_short_command": True  # 標記為短語音命令
+                                    }
+                                    self.callback(speech_data)
+                                    debug_log(1, f"[VAD] ✓ 短語音命令已發送: {speech_duration:.2f}秒 (能量: {avg_energy:.2f})")
+                                else:
+                                    # 語音極短（<0.05秒），可能只是雜音
+                                    debug_log(3, f"[VAD] 語音片段極短，可能是雜音: {speech_duration:.2f}秒")
+                                    
+                            # 清空緩衝區，準備下一段語音
+                            speech_buffer = []
+                            accumulated_silence = 0
+                    
                 except queue.Empty:
                     # 超時是正常的，繼續等待
                     continue

@@ -9,10 +9,10 @@ debug_mode: false          # 除錯模式開關
 # 感應式啟動 (Always-on/VAD) 配置
 always_on:
   enabled: true            # 啟用感應式監聽
-  vad_sensitivity: 0.6     # VAD 敏感度 (0.0-1.0)
-  min_speech_duration: 0.5 # 最小語音持續時間 (秒)
-  max_silence_duration: 2.0 # 最大靜默時間 (秒)
-  energy_threshold: 4000   # 能量閾值
+  vad_sensitivity: 0.7     # VAD 敏感度 (0.0-1.0) - 提高靈敏度
+  min_speech_duration: 0.3 # 最小語音持續時間 (秒) - 降低以捕獲更短的語音
+  max_silence_duration: 2.5 # 最大靜默時間 (秒) - 增加以允許更多停頓
+  energy_threshold: 10     # 能量閾值 - 進一步降低以增加敏感度
   dynamic_threshold: true  # 動態調整閾值
 
 # 智能啟動配置
@@ -34,8 +34,38 @@ smart_activation:
     - "what is"
     - "how to"
     - "why is"
+    - "help"
+    - "assist"
+    - "sort"
+    - "file"
+    - "question"
+    - "ask"
+    - "hey"
+    - "hi"
+    - "hello"
+    - "yo"
+    - "yes"
+    - "no"
+    - "okay"
+    - "thanks"
+    - "thank you"
+    - "sorry"
+    - "stop"
+    - "pause"
+    - "resume"
+    - "wait"
+    - "next"
+    - "previous"
+    - "back"
+    - "forward"
+    - "again"
+    - "open"
+    - "close"
+    - "exit"
+    - "find"
+    - "search"
   conversation_mode: true  # 對話模式 (自然對話中啟動)
-  activation_confidence: 0.7 # 啟動信心閾值
+  activation_confidence: 0.22 # 啟動信心閾值 (進一步降低以支持短命令)
 
 # 聲音識別配置
 speaker_identification:

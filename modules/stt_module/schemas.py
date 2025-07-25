@@ -31,6 +31,7 @@ class STTOutput(BaseModel):
     processing_time: Optional[float] = None       # 處理時間
     alternatives: Optional[List[str]] = None      # 備選結果
     error: Optional[str] = None                   # 錯誤訊息
+    should_activate: bool = True                  # 是否應該啟動（智能判斷結果）
 
 class VoiceActivityEvent(BaseModel):
     """語音活動事件"""

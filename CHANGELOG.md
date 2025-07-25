@@ -550,3 +550,15 @@
 
 ---
 
+### Implemented some basic structure but most of them are not working yet. 07/25
+
+> Date: Fri, 25 Jul 2025 20:57:20 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/stt_module_rework`
+
+> Commit: `9271ddcdaaf4a1338b01eaa9ba4b1b93ee7a6826`
+
+---
+

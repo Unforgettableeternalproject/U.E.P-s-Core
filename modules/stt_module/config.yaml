@@ -1,6 +1,63 @@
-﻿# Default config for stt_module_module
+﻿# STT Module Configuration - Phase 2
 
+# 基本設備配置
 device_index: 1            # 麥克風裝置索引
-phrase_time_limit: 5       # 單句錄音最大長度（秒）(-1 表示不限制))
+phrase_time_limit: 5       # 單句錄音最大長度（秒）(-1 表示不限制)
 auto_adjust_noise: true    # 是否自動進行環境噪音調整
 debug_mode: false          # 除錯模式開關
+
+# 感應式啟動 (Always-on/VAD) 配置
+always_on:
+  enabled: true            # 啟用感應式監聽
+  vad_sensitivity: 0.6     # VAD 敏感度 (0.0-1.0)
+  min_speech_duration: 0.5 # 最小語音持續時間 (秒)
+  max_silence_duration: 2.0 # 最大靜默時間 (秒)
+  energy_threshold: 4000   # 能量閾值
+  dynamic_threshold: true  # 動態調整閾值
+
+# 智能啟動配置
+smart_activation:
+  enabled: true            # 啟用智能啟動
+  context_keywords:        # 上下文關鍵字 (主要以英文為主)
+    - "UEP"
+    - "hey UEP"
+    - "hello UEP"
+    - "help me"
+    - "please"
+    - "can you"
+    - "could you"
+    - "would you"
+    - "I need"
+    - "show me"
+    - "tell me"
+    - "explain"
+    - "what is"
+    - "how to"
+    - "why is"
+  conversation_mode: true  # 對話模式 (自然對話中啟動)
+  activation_confidence: 0.7 # 啟動信心閾值
+
+# 聲音識別配置
+speaker_identification:
+  enabled: true            # 啟用聲音識別
+  feature_extraction:
+    mfcc_features: 13      # MFCC 特徵數量
+    sample_rate: 16000     # 採樣率
+    frame_length: 2048     # 幀長度
+    hop_length: 512        # 跳躍長度
+  similarity_threshold: 0.8 # 相似度閾值
+  new_speaker_threshold: 0.6 # 新用戶識別閾值
+  min_samples_for_model: 5  # 建立模型所需最少樣本數
+
+# 語音處理配置
+audio_processing:
+  noise_reduction: true    # 降噪處理
+  voice_enhancement: true  # 語音增強
+  audio_buffer_size: 8192  # 音頻緩衝區大小
+  recording_timeout: 30    # 錄音超時 (秒)
+
+# 輸出配置
+output:
+  confidence_threshold: 0.7 # 識別信心閾值
+  return_alternatives: false # 是否返回備選結果
+  include_speaker_info: true # 包含說話人信息

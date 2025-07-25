@@ -75,11 +75,23 @@ def debug_interactive():
 
                 debug_log(1, "STT 模組測試")
                 print("<STT 模組測試>\n")
-                choice = input("請選擇測試模式 (1: 單次測試, 2: 連續測試, exit: 離開): \n\n> ")
+                
+                choice = input("請選擇測試模式 (1: 基本測試, 2: 智能啟動, 3: 背景監聽, exit: 離開): \n\n> ")
+                
                 if choice == "1":
+                    print("開始 STT 基本測試...")
                     controller.stt_test_single()
+                
                 elif choice == "2":
-                    controller.stt_test_realtime()
+                    print("開始智能啟動測試...")
+                    print("💡 說出 'UEP help me' 或 'what is...' 等觸發詞")
+                    controller.stt_test_smart_activation()
+                
+                elif choice == "3":
+                    print("開始背景監聽測試 (30秒)...")
+                    print("📢 說出觸發詞來測試智能啟動")
+                    controller.stt_test_background_smart(duration=30)
+                
                 elif choice == "exit" or choice == "e":
                     pass
                 else:

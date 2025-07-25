@@ -41,35 +41,145 @@ modules = {
     "sysmod": safe_get_module("sys_module")
 }
 
-# 測試 STT 模組
+# 測試 STT 模組 - Phase 2 版本
 
-def on_stt_result(text):
-    print("✨ 回傳語音內容：", text)
+def on_stt_result(result):
+    """STT 結果回調函數 - 支援 Phase 2 格式"""
+    if isinstance(result, dict):
+        text = result.get("text", "")
+        confidence = result.get("confidence", 0)
+        speaker_info = result.get("speaker_info")
+        activation_reason = result.get("activation_reason", "unknown")
+        
+        print(f"✨ 回傳語音內容：{text}")
+        print(f"   信心度：{confidence:.2f}")
+        print(f"   啟動原因：{activation_reason}")
+        
+        if speaker_info:
+            speaker_id = speaker_info.get("speaker_id", "Unknown")
+            similarity = speaker_info.get("similarity", 0)
+            print(f"   說話人：{speaker_id} (相似度: {similarity:.2f})")
+    else:
+        # 舊版相容性
+        print(f"✨ 回傳語音內容：{result}")
 
-def stt_test_single():
+def stt_test_single(mode="manual", enable_speaker_id=True, language="en-US"):
+    """單次 STT 測試 - Phase 2 版本"""
     stt = modules["stt"]
 
     if stt is None:
         error_log("[Controller] ❌ 無法載入 STT 模組")
         return
 
-    # 測試 STT 模組
-    result = stt.handle()
-    on_stt_result(result["text"])
+    print(f"🎤 STT 測試模式: {mode}")
+    
+    # Phase 2 API 調用
+    result = stt.handle({
+        "mode": mode,
+        "language": language,
+        "enable_speaker_id": enable_speaker_id,
+        "duration": 5
+    })
+    
+    on_stt_result(result)
+    return result
+
+def stt_test_smart_activation():
+    """智能啟動測試 - 手動錄音 + 智能判斷"""
+    stt = modules["stt"]
+
+    if stt is None:
+        error_log("[Controller] ❌ 無法載入 STT 模組")
+        return
+
+    print("🧠 智能啟動測試 - 錄音後智能判斷是否啟動")
+    print("   試試說: 'UEP', 'help me', 'what is...', 'can you...' 等")
+    
+    result = stt.handle({
+        "mode": "smart",
+        "language": "en-US",  # 改為英文識別
+        "enable_speaker_id": True,
+        "context": "controller_test"
+    })
+    
+    on_stt_result(result)
+    return result
+
+def stt_test_background_smart(duration=30):
+    """智能背景監聽測試 - 背景持續監聽 + 智能啟動"""
+    stt = modules["stt"]
+
+    if stt is None:
+        error_log("[Controller] ❌ 無法載入 STT 模組")
+        return
+
+    print(f"🔄 智能背景監聽測試 ({duration}秒)")
+    print("說 'UEP', 'help me', 'what is', 'can you' 等觸發詞，系統會智能判斷是否啟動")
+    
+    def smart_background_callback(result):
+        print(f"🤖 智能觸發:")
+        on_stt_result(result)
+    
+    try:
+        # 啟動背景監聽，傳遞持續時間
+        stt.start_always_on(callback=smart_background_callback, duration=duration)
+        
+        # 等待指定時間 (現在由模組自己計時)
+        try:
+            # 只需要等待終止信號
+            while getattr(stt, '_always_on_running', False):
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            print("\n⏹️ 用戶中斷")
+            
+    finally:
+        stt.stop_always_on()
 
 def stt_test_realtime():
+    """舊版 realtime 測試 (保持相容性)"""
     stt = modules["stt"]
 
     if stt is None:
         error_log("[Controller] ❌ 無法載入 STT 模組")
         return
 
-    stt.start_realtime(on_result=on_stt_result)
-    try:
-        while True:
-            time.sleep(0.5)
-    except KeyboardInterrupt:
-        stt.stop_realtime()
+    # 檢查是否有舊版 start_realtime 方法
+    if hasattr(stt, 'start_realtime'):
+        stt.start_realtime(on_result=on_stt_result)
+        try:
+            while True:
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            stt.stop_realtime()
+    else:
+        # 使用新版智能背景監聽代替
+        print("⚠️ 使用新版智能背景監聽代替 realtime")
+        stt_test_background_smart()
+
+def stt_get_stats():
+    """獲取 STT 統計信息"""
+    stt = modules["stt"]
+
+    if stt is None:
+        error_log("[Controller] ❌ 無法載入 STT 模組")
+        return
+
+    if hasattr(stt, 'get_speaker_stats'):
+        speaker_stats = stt.get_speaker_stats()
+        activation_stats = stt.get_activation_stats()
+        
+        print("📊 STT 統計信息:")
+        print("說話人統計:")
+        for speaker_id, count in speaker_stats.items():
+            print(f"  {speaker_id}: {count} 次")
+        
+        print("啟動統計:")
+        for reason, count in activation_stats.items():
+            print(f"  {reason}: {count} 次")
+            
+        return {"speaker_stats": speaker_stats, "activation_stats": activation_stats}
+    else:
+        print("⚠️ 當前版本不支援統計功能")
 
 # 測試 NLP 模組
 

@@ -61,32 +61,13 @@ class TTSChunker:
                 
                 # Then split this long sentence into subchunks
                 if self.respect_punctuation:
-                    # Try splitting at commas, semicolons, etc.
-                    subparts = re.split(r'(?<=[,;:，、；：]) ', sentence)
-                    
-                    sub_current = ""
-                    for part in subparts:
-                        if len(sub_current) + len(part) + 1 <= self.max_chars:
-                            sub_current += (" " + part if sub_current else part)
-                        else:
-                            if sub_current:
-                                chunks.append(sub_current)
-                            
-                            # If a single part is still too long, force split by character count
-                            if len(part) > self.max_chars:
-                                for i in range(0, len(part), self.max_chars):
-                                    subchunk = part[i:i + self.max_chars]
-                                    chunks.append(subchunk)
-                                sub_current = ""
-                            else:
-                                sub_current = part
-                    
-                    if sub_current:
-                        chunks.append(sub_current)
+                    # 首先嘗試在較好的語意邊界分割
+                    chunks_from_sentence = self._smart_split_long_text(sentence, self.max_chars)
+                    chunks.extend(chunks_from_sentence)
                 else:
-                    # Force split by character count
-                    for i in range(0, len(sentence), self.max_chars):
-                        chunks.append(sentence[i:i + self.max_chars])
+                    # Force split by character count with smart boundaries
+                    smart_chunks = self._smart_split_long_text(sentence, self.max_chars)
+                    chunks.extend(smart_chunks)
             
             # Normal case: try to add this sentence to the current chunk
             elif len(current_chunk) + len(sentence) + 1 <= self.max_chars:
@@ -195,6 +176,104 @@ class TTSChunker:
         finally:
             self.is_playing = False
     
+    def _smart_split_long_text(self, text: str, max_chars: int) -> List[str]:
+        """
+        智能分割長文本，盡量保持語意完整
+        
+        Args:
+            text: 要分割的長文本
+            max_chars: 每段最大字符數
+            
+        Returns:
+            分割後的文本段落列表
+        """
+        if len(text) <= max_chars:
+            return [text]
+        
+        chunks = []
+        remaining = text
+        
+        while len(remaining) > max_chars:
+            # 在max_chars範圍內尋找最佳切割點
+            chunk_end = max_chars
+            best_split = -1
+            
+            # 尋找最佳分割點（按優先級排序）
+            # 1. 句號、問號、感嘆號後的空格
+            for i in range(min(chunk_end, len(remaining)), max(chunk_end - 50, 0), -1):
+                if i > 0 and i < len(remaining) and remaining[i-1:i+1] in ['. ', '? ', '! ', '。 ', '？ ', '！ ']:
+                    best_split = i
+                    break
+            
+            # 2. 連詞和從句分界點（更自然的語意切分）
+            if best_split == -1:
+                # 尋找 ", and", ", but", ", or", ", that", ", which" 等結構
+                conjunction_patterns = [', and ', ', but ', ', or ', ', so ', ', yet ', ', that ', ', which ', ', who ', ', when ', ', where ', ', while ']
+                for i in range(min(chunk_end, len(remaining)), max(chunk_end - 80, 0), -1):
+                    for pattern in conjunction_patterns:
+                        if i >= len(pattern) and i <= len(remaining):
+                            if remaining[i-len(pattern):i].lower() == pattern:
+                                best_split = i - len(pattern) + 1  # 在逗號後分割，保持"and"在下一段
+                                break
+                    if best_split != -1:
+                        break
+            
+            # 3. 破折號、分號等標點
+            if best_split == -1:
+                for i in range(min(chunk_end, len(remaining)), max(chunk_end - 30, 0), -1):
+                    if i > 0 and i < len(remaining) and remaining[i-1:i+1] in ['— ', '- ', '; ', ': ', '； ', '： ']:
+                        best_split = i
+                        break
+            
+            # 4. 介詞短語的邊界
+            if best_split == -1:
+                preposition_patterns = [' of ', ' in ', ' on ', ' at ', ' by ', ' for ', ' with ', ' from ', ' to ', ' into ']
+                for i in range(min(chunk_end, len(remaining)), max(chunk_end - 40, 0), -1):
+                    for pattern in preposition_patterns:
+                        if i >= len(pattern) and i <= len(remaining):
+                            if remaining[i-len(pattern):i] == pattern:
+                                best_split = i - len(pattern)
+                                break
+                    if best_split != -1:
+                        break
+            
+            # 5. 任何空格
+            if best_split == -1:
+                for i in range(min(chunk_end, len(remaining)), max(chunk_end - 20, 0), -1):
+                    if i < len(remaining) and remaining[i] == ' ':
+                        best_split = i
+                        break
+            
+            # 6. 如果都找不到，就在80%位置強制切割（避免切斷單詞）
+            if best_split == -1:
+                best_split = int(max_chars * 0.8)
+                # 確保不在單詞中間切割
+                while best_split > 0 and best_split < len(remaining) and remaining[best_split] != ' ':
+                    best_split -= 1
+                if best_split <= 0:
+                    best_split = max_chars
+            
+            # 確保分割點在有效範圍內
+            best_split = max(1, min(best_split, len(remaining)))
+            
+            # 提取chunk並清理
+            chunk = remaining[:best_split].strip()
+            if chunk:  # 只添加非空段落
+                chunks.append(chunk)
+            
+            # 更新剩餘文本
+            remaining = remaining[best_split:].strip()
+            
+            # 防止無限循環
+            if len(remaining) == len(text):
+                break
+        
+        # 添加剩餘部分
+        if remaining.strip():
+            chunks.append(remaining.strip())
+        
+        return chunks
+
     def stop(self):
         """Stop processing and clear the queue"""
         self.stop_requested = True

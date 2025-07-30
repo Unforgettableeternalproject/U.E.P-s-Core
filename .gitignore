@@ -398,3 +398,6 @@ wheel/*
 # Voice Output
 outputs/data/*
 *.wav
+
+# Temp
+additional/*

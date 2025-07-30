@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 簡化版 TTS Dataset 生成器
-直接批量生成所有音檔
+直接批量生成所有音檔 (從 uep-377 開始)
 """
 
 import os
@@ -19,9 +19,9 @@ from configs.config_loader import load_config
 
 
 async def generate_all_audio():
-    """生成所有音檔"""
+    """生成所有音檔 (從 uep-377 開始)"""
     
-    print("🚀 開始 TTS Dataset 生成...")
+    print("🚀 開始 TTS Dataset 生成 (從 uep-377 開始)...")
     
     # 1. 載入 TTS 模組
     print("📦 載入 TTS 模組...")
@@ -39,7 +39,7 @@ async def generate_all_audio():
     print("✅ TTS 模組準備完成")
     
     # 3. 讀取 dataset
-    dataset_file = Path("train/tts/dataset.csv")
+    dataset_file = Path("train/tts/dataset-2.csv")
     if not dataset_file.exists():
         print(f"❌ 找不到 dataset 檔案: {dataset_file}")
         return
@@ -56,16 +56,38 @@ async def generate_all_audio():
                 for idx, row in enumerate(reader):
                     # Handle BOM characters in column names
                     prompt_key = None
-                    for key in row.keys():
-                        if 'Prompts' in key:
-                            prompt_key = key
-                            break
+                    root_key = None
+                    emotion_key = None
                     
+                    for key in row.keys():
+                        key_clean = key.strip()
+                        if 'Prompts' in key_clean:
+                            prompt_key = key
+                        elif 'root' in key_clean:
+                            root_key = key
+                        # 檢查最後一欄是否有情緒標註 (通常在第4或第5欄)
+                    
+                    # 取得各欄位資料
                     prompts = row.get(prompt_key, '').strip() if prompt_key else ''
+                    root_path = row.get(root_key, '').strip() if root_key else ''
+                    
+                    # 檢查所有欄位找情緒標註
+                    emotion = "neutral"  # 預設情緒
+                    row_values = list(row.values())
+                    if len(row_values) >= 5:
+                        # 檢查最後幾個欄位是否有情緒標註
+                        for val in row_values[-3:]:
+                            val_clean = val.strip().lower()
+                            if val_clean in ['happy', 'calm', 'neutral', 'sad', 'angry', 'excited']:
+                                emotion = val_clean
+                                break
+                    
                     if prompts:
                         dataset.append({
                             'index': idx,
-                            'text': prompts
+                            'text': prompts,
+                            'emotion': emotion,
+                            'root_path': root_path
                         })
             print(f"✅ 使用 {encoding} 編碼成功讀取檔案")
             break  # 成功讀取，跳出迴圈
@@ -85,17 +107,26 @@ async def generate_all_audio():
     output_dir = Path("outputs/data")
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # 5. 批量生成
-    success_count = 0
-    total = len(dataset)
+    # 5. 過濾出需要生成的項目 (從 377 開始)
+    start_index = 377
+    items_to_generate = [item for item in dataset if item['index'] >= start_index]
     
-    for idx, item in enumerate(dataset):
+    print(f"🎯 將從 uep-{start_index:03d} 開始生成，共 {len(items_to_generate)} 個檔案")
+    
+    # 6. 批量生成
+    success_count = 0
+    total = len(items_to_generate)
+    
+    for progress_idx, item in enumerate(items_to_generate):
+        idx = item['index']
         text = item['text']
+        emotion = item['emotion']
         filename = f"uep-{idx:03d}.wav"
         output_path = output_dir / filename
         
-        print(f"[{idx+1:3d}/{total}] 正在生成: {filename}")
+        print(f"[{progress_idx+1:3d}/{total}] 正在生成: {filename}")
         print(f"           文字: {text[:50]}{'...' if len(text) > 50 else ''}")
+        print(f"           情緒: {emotion}")
         
         # 檢查檔案是否已存在
         if output_path.exists():
@@ -104,10 +135,10 @@ async def generate_all_audio():
             continue
         
         try:
-            # 生成音檔
+            # 生成音檔 (使用情緒標註)
             tts_input = {
                 "text": text,
-                "mood": "neutral",
+                "mood": emotion,
                 "save": True,
                 "force_chunking": False
             }
@@ -130,13 +161,13 @@ async def generate_all_audio():
             print(f"           ❌ 發生錯誤: {str(e)}")
         
         # 簡單的進度顯示
-        if (idx + 1) % 10 == 0:
-            print(f"\n📊 進度: {idx+1}/{total} ({success_count} 成功)\n")
+        if (progress_idx + 1) % 10 == 0:
+            print(f"\n📊 進度: {progress_idx+1}/{total} ({success_count} 成功)\n")
     
     # 總結
     print("\n" + "="*60)
     print(f"🎉 生成完成!")
-    print(f"📊 總計: {total} 個檔案")
+    print(f"📊 總計: {total} 個檔案 (從 uep-{start_index:03d} 開始)")
     print(f"✅ 成功: {success_count} 個檔案")
     print(f"❌ 失敗: {total - success_count} 個檔案")
     print(f"📁 輸出目錄: {output_dir.absolute()}")

@@ -88,7 +88,7 @@ class STTModule(BaseModule):
         # 新的獨立模組
         self.vad_module = VoiceActivityDetection(self.sample_rate)
         self.speaker_module = SpeakerIdentification()
-        self.keyword_detector = SmartKeywordDetector()
+        self.keyword_detector = SmartKeywordDetector(config=self.config)
         
         # PyAudio 配置
         self.pyaudio_instance = None
@@ -209,7 +209,7 @@ class STTModule(BaseModule):
                     confidence=0.0, 
                     error="不支持的模式",
                     activation_reason="不支持的模式"
-                ).dict()
+                ).model_dump()
                 
             processing_time = time.time() - start_time
             result["processing_time"] = processing_time
@@ -222,7 +222,7 @@ class STTModule(BaseModule):
                 text="",
                 confidence=0.0,
                 error=f"處理失敗: {str(e)}"
-            ).dict()
+            ).model_dump()
 
     def _manual_recognition(self, input_data: STTInput) -> dict:
         """手動語音識別 - 使用 Transformers Whisper"""
@@ -239,7 +239,7 @@ class STTModule(BaseModule):
                     confidence=0.0, 
                     error="錄音失敗或音頻為空",
                     activation_reason="錄音失敗"
-                ).dict()
+                ).model_dump()
             
             info_log("[STT] 使用 Transformers Whisper 進行語音識別...")
             
@@ -280,7 +280,7 @@ class STTModule(BaseModule):
                 speaker_info=speaker_info,
                 activation_reason="manual",
                 error=None
-            ).dict()
+            ).model_dump()
             
         except Exception as e:
             error_log(f"[STT] 識別失敗: {str(e)}")
@@ -289,7 +289,7 @@ class STTModule(BaseModule):
                 confidence=0.0, 
                 error=f"識別失敗: {str(e)}",
                 activation_reason="識別失敗：未知錯誤"
-            ).dict()
+            ).model_dump()
 
     def _record_audio(self, duration: float) -> np.ndarray:
         """使用 PyAudio 錄製音頻"""
@@ -363,16 +363,6 @@ class STTModule(BaseModule):
         except Exception as e:
             debug_log(3, f"[STT] 計算信心度失敗: {str(e)}")
             return 0.8  # 默認信心度
-
-    def _identify_speaker_simple(self, audio_data: np.ndarray) -> SpeakerInfo:
-        """簡化的說話人識別（暫時返回未知說話人）"""
-        # TODO: 實現基於 pyannote 的說話人識別
-        return SpeakerInfo(
-            speaker_id="unknown",
-            confidence=0.0,
-            is_new_speaker=False,
-            voice_features=None
-        )
 
     def _smart_recognition_v2(self, input_data: STTInput) -> dict:
         """智能語音識別 v2 - 使用新的智能關鍵詞檢測"""
@@ -460,7 +450,7 @@ class STTModule(BaseModule):
                             speaker_info=speaker_info,
                             activation_reason=activation_reason,
                             error=None
-                        ).dict()
+                        ).model_dump()
                 else:
                     debug_log(3, f"[STT] 未觸發: 未達到觸發條件")
                 
@@ -474,7 +464,7 @@ class STTModule(BaseModule):
                 speaker_info=None,
                 activation_reason="監聽超時",
                 error="監聽期間未檢測到觸發條件"
-            ).dict()
+            ).model_dump()
             
         except Exception as e:
             error_log(f"[STT] 智能識別失敗: {str(e)}")
@@ -483,7 +473,7 @@ class STTModule(BaseModule):
                 confidence=0.0, 
                 error=f"智能識別失敗: {str(e)}",
                 activation_reason="智能識別失敗"
-            ).dict()
+            ).model_dump()
 
     def shutdown(self):
         """關閉模組"""

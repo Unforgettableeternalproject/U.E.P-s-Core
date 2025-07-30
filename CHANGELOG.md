@@ -598,3 +598,15 @@
 
 ---
 
+### Added unit tests and slightly alter the way some module handles. 07/31
+
+> Date: Thu, 31 Jul 2025 02:28:44 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/stt_module_rework`
+
+> Commit: `8ef15e3ee6876c95779d28df9c9b842285ac01e3`
+
+---
+

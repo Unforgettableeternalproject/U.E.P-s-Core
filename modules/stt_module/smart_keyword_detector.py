@@ -20,41 +20,50 @@ class KeywordMatch:
     position: Tuple[int, int]  # 在文本中的位置
 
 class SmartKeywordDetector:
-    """智能關鍵詞檢測器"""
+    """智能關鍵詞檢測器
     
-    def __init__(self):
-        # UEP 相關的各種變體
+    內建關鍵詞邏輯，不依賴外部配置文件
+    """
+    
+    def __init__(self, config: Optional[Dict] = None):
+        """初始化檢測器
+        
+        Args:
+            config: 可選配置字典，包含閾值等設置
+        """
+        # 從配置中獲取閾值，如果沒有則使用默認值
+        smart_config = config.get('smart_activation', {}) if config else {}
+        self.default_threshold = smart_config.get('activation_threshold', 0.6)
+        self.wake_confidence_threshold = smart_config.get('wake_confidence_threshold', 0.8)
+        
+        # UEP 相關的各種變體 (英文環境)
         self.uep_variants = [
             "uep", "u.e.p", "u e p", "yep", "yup", "yuep", "uap", "ueb", "uip",
-            "永恆計畫", "永恒计划", "eternal project", "unforgettable eternal project"
+            "eternal project", "unforgettable eternal project"
         ]
         
-        # 需要幫助的表達方式
+        # 需要幫助的表達方式 (英文)
         self.help_expressions = [
-            "help", "幫助", "幫忙", "協助", "求助", "需要幫助", "can you help",
-            "could you help", "i need help", "請幫忙", "可以幫我嗎",
-            "assist", "assistance", "support", "救命"
+            "help", "can you help", "could you help", "i need help", 
+            "assist", "assistance", "support"
         ]
         
-        # 問題/疑問的表達
+        # 問題/疑問的表達 (英文)
         self.question_patterns = [
             r"what.*is", r"how.*do", r"why.*", r"when.*", r"where.*",
-            r"can.*you", r"could.*you", r"would.*you", r"will.*you",
-            r"什麼是", r"怎麼", r"為什麼", r"什麼時候", r"在哪裡",
-            r"可以.*嗎", r"能不能", r"會不會"
+            r"can.*you", r"could.*you", r"would.*you", r"will.*you"
         ]
         
-        # 呼叫/招呼的表達
+        # 呼叫/招呼的表達 (英文)
         self.calling_expressions = [
-            "hey", "hello", "hi", "yo", "excuse me", "嘿", "哈囉", "你好",
-            "不好意思", "請問", "麻煩"
+            "hey", "hello", "hi", "yo", "excuse me"
         ]
         
-        # 任務相關的關鍵詞
+        # 任務相關的關鍵詞 (英文)
         self.task_keywords = [
-            "execute", "run", "start", "begin", "開始", "執行", "運行",
-            "play", "stop", "pause", "continue", "播放", "停止", "暫停", "繼續",
-            "search", "find", "look for", "搜尋", "查找", "尋找"
+            "execute", "run", "start", "begin", 
+            "play", "stop", "pause", "continue",
+            "search", "find", "look for"
         ]
     
     def normalize_text(self, text: str) -> str:
@@ -144,8 +153,8 @@ class SmartKeywordDetector:
                     position=(match.start(), match.end())
                 )
         
-        # 檢查問號
-        if '?' in text or '？' in text:
+        # 檢查問號 (英文)
+        if '?' in text:
             return KeywordMatch(
                 matched=True,
                 keyword="question_mark",
@@ -173,18 +182,21 @@ class SmartKeywordDetector:
         
         return KeywordMatch(False, "", 0.0, "", (0, 0))
     
-    def should_activate(self, text: str, threshold: float = 0.6) -> Tuple[bool, List[KeywordMatch]]:
+    def should_activate(self, text: str, threshold: Optional[float] = None) -> Tuple[bool, List[KeywordMatch]]:
         """判斷是否應該啟動
         
         Args:
             text: 輸入文本
-            threshold: 啟動閾值
+            threshold: 啟動閾值，如果不提供則使用默認值
             
         Returns:
             (should_activate, matches_found)
         """
         if not text or len(text.strip()) < 2:
             return False, []
+        
+        # 使用提供的閾值或默認值
+        activation_threshold = threshold if threshold is not None else self.default_threshold
         
         matches = []
         total_confidence = 0.0
@@ -217,31 +229,31 @@ class SmartKeywordDetector:
         should_activate = False
         
         # 直接啟動條件
-        if uep_match.matched and uep_match.confidence >= 0.8:
+        if uep_match.matched and uep_match.confidence >= self.wake_confidence_threshold:
             should_activate = True
-        elif help_match.matched and help_match.confidence >= 0.8:
+        elif help_match.matched and help_match.confidence >= self.wake_confidence_threshold:
             should_activate = True
-        elif total_confidence >= threshold * 1.5:  # 多個條件組合
+        elif total_confidence >= activation_threshold * 1.5:  # 多個條件組合
             should_activate = True
         
         # 增強啟動條件
-        if len(matches) >= 2 and total_confidence >= threshold:
+        if len(matches) >= 2 and total_confidence >= activation_threshold:
             should_activate = True
         
         return should_activate, matches
     
     def get_activation_reason(self, matches: List[KeywordMatch]) -> str:
-        """獲取啟動原因說明"""
+        """獲取啟動原因說明 (英文)"""
         if not matches:
-            return "無匹配"
+            return "No matches"
         
         reasons = []
         for match in matches:
             if match.match_type == "exact":
-                reasons.append(f"檢測到關鍵詞: {match.keyword}")
+                reasons.append(f"Keyword detected: {match.keyword}")
             elif match.match_type == "fuzzy":
-                reasons.append(f"模糊匹配: {match.keyword}")
+                reasons.append(f"Fuzzy match: {match.keyword}")
             elif match.match_type == "semantic":
-                reasons.append(f"語意檢測: {match.keyword}")
+                reasons.append(f"Semantic detection: {match.keyword}")
         
         return "; ".join(reasons)

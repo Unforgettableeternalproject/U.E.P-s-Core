@@ -25,26 +25,10 @@ always_on:
   energy_threshold: 10     # 能量閾值 - 進一步降低以增加敏感度
   dynamic_threshold: true  # 動態調整閾值
 
-# 智能啟動配置 (暫時禁用，待重構完成後重新啟用)
+# 智能啟動配置
 smart_activation:
-  enabled: false           # 暫時禁用智能啟動
-  context_keywords:        # 上下文關鍵字 (主要以英文為主)
-    - "UEP"
-    - "hey UEP"
-    - "hello UEP"
-    - "help me"
-    - "please"
-    - "can you"
-    - "could you"
-    - "would you"
-    - "I need"
-    - "tell me"
-    - "show me"
-    - "explain"
-    - "what is"
-    - "how to"
-    - "where is"
-    - "when is"
+  enabled: true            # 智能啟動功能
+  activation_threshold: 0.6 # 啟動閾值 (0.0-1.0)
   wake_confidence_threshold: 0.8    # 喚醒詞信心度閾值
   context_window_size: 10           # 上下文視窗大小（句數）
   

@@ -94,9 +94,6 @@ def on_stt_result(result):
                 print(f"   (未觸發啟動，智能判斷分數: {activation_confidence:.2f})")
             else:
                 print(f"   (未觸發啟動)")
-                
-        # 如果有說話人識別資訊，顯示說話人資訊
-        if speaker_info:
         
         # 顯示說話人信息
         if speaker_info:

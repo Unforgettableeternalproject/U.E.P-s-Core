@@ -574,3 +574,15 @@
 
 ---
 
+### Preparation for the STT module complete overhaul. 07/30
+
+> Date: Wed, 30 Jul 2025 19:23:16 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/stt_module_rework`
+
+> Commit: `05fb4edf6ee210cdc3c9ce3b25920d4b20639b2a`
+
+---
+

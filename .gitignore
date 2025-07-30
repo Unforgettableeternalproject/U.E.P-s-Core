@@ -394,3 +394,6 @@ memory/*
 
 # Wheels
 wheel/*
+
+# Temp
+*.wav

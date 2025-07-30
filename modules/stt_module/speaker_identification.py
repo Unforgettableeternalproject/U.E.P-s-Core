@@ -1,384 +1,511 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-modules/stt_module/speaker_identification.py
-說話人識別 (Speaker Identification) 實現
+說話人識別模組 - 使用 pyannote.audio
 """
 
-import numpy as np
-import librosa
-import pickle
 import os
-import uuid
 import time
+import pickle
+import tempfile
+import numpy as np
 from typing import Dict, List, Optional, Tuple
-from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.cluster import KMeans
-from utils.debug_helper import debug_log, info_log, error_log
-from .schemas import SpeakerInfo, SpeakerModel
+from dotenv import load_dotenv
 
-class SpeakerIdentifier:
-    """說話人識別器"""
+# 載入環境變數
+load_dotenv()
+
+try:
+    import torch
+    import torchaudio
+    from pyannote.audio import Pipeline as PyannoteTPipeline
+    from pyannote.core import Segment
+    from scipy.spatial.distance import cosine
+    PYANNOTE_AVAILABLE = True
+except ImportError:
+    PYANNOTE_AVAILABLE = False
+
+from utils.debug_helper import debug_log, info_log, error_log
+from .schemas import SpeakerInfo
+
+class SpeakerIdentification:
+    """說話人識別和管理類"""
     
-    def __init__(self, config: dict):
-        self.config = config
-        self.si_config = config.get("speaker_identification", {})
+    def __init__(self, model_name: str = "pyannote/speaker-diarization-3.1"):
+        self.model_name = model_name
+        self.pipeline = None
+        self.embedding_model = None
+        self.sample_rate = 16000
         
-        # 特徵提取參數
-        self.n_mfcc = self.si_config.get("mfcc_features", 13)
-        self.sample_rate = self.si_config.get("sample_rate", 16000)
-        self.frame_length = self.si_config.get("frame_length", 2048)
-        self.hop_length = self.si_config.get("hop_length", 512)
+        # 說話人資料庫
+        self.speaker_database = {}  # {speaker_id: {'embeddings': [], 'metadata': {}}}
+        self.speaker_counter = 0
+        self.similarity_threshold = 0.85  # 說話人相似度閾值
         
-        # 識別參數 - 更嚴格的閾值來更好區分不同說話人
-        self.similarity_threshold = self.si_config.get("similarity_threshold", 0.85)  # 提高門檻
-        self.new_speaker_threshold = self.si_config.get("new_speaker_threshold", 0.7)  # 提高門檻
-        self.min_samples = self.si_config.get("min_samples_for_model", 3)  # 減少需要的樣本數
+        # 儲存路徑
+        self.database_path = "memory/speaker_models.pkl"
         
-        # 說話人模型存儲
-        self.speaker_models: Dict[str, SpeakerModel] = {}
-        self.models_file = os.path.abspath("memory/speaker_models.pkl")
+        # 載入 HuggingFace Token
+        self.hf_token = os.getenv("HUGGING_FACE_TOKEN")
         
-        # 確保目錄存在
-        os.makedirs(os.path.dirname(self.models_file), exist_ok=True)
+        info_log("[Speaker] 說話人識別模組初始化")
         
-        # 初始化
-        self._load_speaker_models()
-        
-        # 驗證模型兼容性
-        self._verify_model_compatibility()
-        
-        info_log(f"[SpeakerID] 初始化完成，已載入 {len(self.speaker_models)} 個說話人模型")
-        info_log(f"[SpeakerID] 模型存儲位置: {self.models_file}")
-        
-    def _verify_model_compatibility(self):
-        """驗證現有模型與當前特徵提取方法的兼容性"""
-        if not self.speaker_models:
-            return
+    def initialize(self) -> bool:
+        """初始化說話人識別模型"""
+        if not PYANNOTE_AVAILABLE:
+            error_log("[Speaker] pyannote.audio 不可用，將使用 fallback 模式")
+            # 載入說話人資料庫（即使沒有 pyannote 也可以使用基本功能）
+            self._load_speaker_database()
+            return True
             
-        # 創建一個測試音頻來提取特徵
-        test_audio = np.zeros(self.sample_rate, dtype=np.float32)
-        current_feature_dim = self.extract_voice_features(test_audio).shape[0]
-        
-        # 檢查任何現有模型的特徵維度
-        feature_dim_mismatch = False
-        for speaker_id, model in self.speaker_models.items():
-            if model.feature_vectors and len(model.feature_vectors) > 0:
-                stored_dim = len(model.feature_vectors[0])
-                if stored_dim != current_feature_dim:
-                    info_log(f"[SpeakerID] 特徵維度不匹配: 存儲={stored_dim}, 當前={current_feature_dim}")
-                    feature_dim_mismatch = True
-                    break
-        
-        # 如果發現維度不匹配，重置模型
-        if feature_dim_mismatch:
-            info_log("[SpeakerID] 檢測到特徵提取方法變更，重置說話人模型")
-            self.reset_speaker_models()
-        
-    def extract_voice_features(self, audio_data: np.ndarray) -> np.ndarray:
-        """
-        提取語音特徵 (MFCC + delta + delta-delta)
-        
-        Args:
-            audio_data: 音頻數據
+        if not self.hf_token:
+            error_log("[Speaker] HuggingFace Token 未設定，將使用 fallback 模式")
+            # 載入說話人資料庫（即使沒有 token 也可以使用基本功能）
+            self._load_speaker_database()
+            return True
             
-        Returns:
-            np.ndarray: 特徵向量
-        """
         try:
-            # 確保音頻數據是浮點型
-            if audio_data.dtype != np.float32:
-                audio_data = audio_data.astype(np.float32)
+            info_log(f"[Speaker] 載入模型: {self.model_name}")
             
-            # 提取 MFCC 特徵
-            mfccs = librosa.feature.mfcc(
-                y=audio_data,
-                sr=self.sample_rate,
-                n_mfcc=self.n_mfcc,
-                n_fft=self.frame_length,
-                hop_length=self.hop_length
+            # 載入說話人分離 pipeline
+            self.pipeline = PyannoteTPipeline.from_pretrained(
+                self.model_name,
+                use_auth_token=self.hf_token
             )
             
-            # 提取 delta 和 delta-delta 特徵
-            delta_mfccs = librosa.feature.delta(mfccs)
-            delta2_mfccs = librosa.feature.delta(mfccs, order=2)
+            # 檢查 pipeline 是否成功載入
+            if self.pipeline is None:
+                error_log("[Speaker] Pipeline 載入失敗，將使用 fallback 模式")
+                self._load_speaker_database()
+                return True
             
-            # 計算統計特徵
-            mfcc_mean = np.mean(mfccs, axis=1)
-            mfcc_std = np.std(mfccs, axis=1)
-            delta_mean = np.mean(delta_mfccs, axis=1)
-            delta_std = np.std(delta_mfccs, axis=1)
-            delta2_mean = np.mean(delta2_mfccs, axis=1)
-            delta2_std = np.std(delta2_mfccs, axis=1)
+            # 設置設備
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            self.pipeline.to(torch.device(device))
+            
+            info_log(f"[Speaker] 模型載入成功 (設備: {device})")
+            
+            # 載入說話人資料庫
+            self._load_speaker_database()
+            
+            return True
+            
+        except Exception as e:
+            error_log(f"[Speaker] 模型載入失敗: {e}")
+            error_log("[Speaker] 將使用 fallback 說話人識別模式")
+            
+            # 清理失敗的 pipeline
+            self.pipeline = None
+            
+            # 載入說話人資料庫（即使模型失敗也可以使用基本功能）
+            self._load_speaker_database()
+            
+            return True  # 返回 True 因為 fallback 模式仍然可用
+    
+    def identify_speaker(self, audio_data: np.ndarray) -> SpeakerInfo:
+        """識別說話人"""
+        if not self.pipeline:
+            return self._fallback_speaker_identification(audio_data)
+            
+        try:
+            debug_log(2, "[Speaker] 開始說話人識別...")
+            
+            # 將音頻數據轉換為暫存檔案
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+                # 正規化音頻數據
+                audio_float = audio_data.astype(np.float32) / 32768.0
+                
+                # 轉換為 torch tensor
+                audio_tensor = torch.from_numpy(audio_float).unsqueeze(0)
+                
+                # 保存為暫存音頻檔案
+                torchaudio.save(temp_file.name, audio_tensor, self.sample_rate)
+                temp_path = temp_file.name
+            
+            # 執行說話人分離
+            diarization = self.pipeline(temp_path)
+            
+            # 清理暫存檔案
+            try:
+                os.unlink(temp_path)
+            except:
+                pass
+            
+            # 處理說話人分離結果
+            speakers = []
+            for segment, _, speaker in diarization.itertracks(yield_label=True):
+                speakers.append({
+                    'speaker': speaker,
+                    'start': segment.start,
+                    'end': segment.end,
+                    'duration': segment.end - segment.start
+                })
+            
+            if not speakers:
+                debug_log(2, "[Speaker] 未檢測到說話人")
+                return SpeakerInfo(
+                    speaker_id="no_speaker",
+                    confidence=0.0,
+                    is_new_speaker=False,
+                    voice_features=None
+                )
+            
+            # 找到持續時間最長的說話人
+            main_speaker = max(speakers, key=lambda x: x['duration'])
+            raw_speaker_id = main_speaker['speaker']
+            confidence = min(main_speaker['duration'] / (len(audio_data) / self.sample_rate), 1.0)
+            
+            # 映射到已知說話人或創建新說話人
+            speaker_id, is_new = self._map_speaker(raw_speaker_id, audio_data)
+            
+            debug_log(2, f"[Speaker] 識別到說話人: {speaker_id}, 信心度: {confidence:.2f}")
+            
+            return SpeakerInfo(
+                speaker_id=speaker_id,
+                confidence=confidence,
+                is_new_speaker=is_new,
+                voice_features={
+                    "duration": main_speaker['duration'], 
+                    "segments": len(speakers),
+                    "raw_id": raw_speaker_id
+                }
+            )
+            
+        except Exception as e:
+            error_log(f"[Speaker] 說話人識別失敗: {str(e)}")
+            return self._fallback_speaker_identification(audio_data)
+    
+    def _map_speaker(self, raw_speaker_id: str, audio_data: np.ndarray) -> Tuple[str, bool]:
+        """將原始說話人ID映射到持久化的說話人ID"""
+        try:
+            # 計算音頻特徵作為嵌入
+            embedding = self._compute_audio_embedding(audio_data)
+            
+            # 檢查是否為已知說話人
+            best_match_id = None
+            best_similarity = 0.0
+            
+            for known_id, data in self.speaker_database.items():
+                for known_embedding in data['embeddings']:
+                    similarity = 1 - cosine(embedding, known_embedding)
+                    if similarity > best_similarity:
+                        best_similarity = similarity
+                        best_match_id = known_id
+            
+            # 如果相似度超過閾值，返回已知說話人
+            if best_similarity > self.similarity_threshold:
+                # 添加新的嵌入樣本
+                self.speaker_database[best_match_id]['embeddings'].append(embedding)
+                self.speaker_database[best_match_id]['metadata']['last_seen'] = time.time()
+                self.speaker_database[best_match_id]['metadata']['sample_count'] += 1
+                self._save_speaker_database()
+                
+                debug_log(3, f"[Speaker] 匹配已知說話人: {best_match_id} (相似度: {best_similarity:.3f})")
+                return best_match_id, False
+            
+            # 創建新說話人
+            new_speaker_id = f"speaker_{self.speaker_counter:03d}"
+            self.speaker_counter += 1
+            
+            self.speaker_database[new_speaker_id] = {
+                'embeddings': [embedding],
+                'metadata': {
+                    'created_at': time.time(),
+                    'last_seen': time.time(),
+                    'sample_count': 1,
+                    'raw_ids': [raw_speaker_id]
+                }
+            }
+            
+            self._save_speaker_database()
+            
+            debug_log(3, f"[Speaker] 創建新說話人: {new_speaker_id}")
+            return new_speaker_id, True
+            
+        except Exception as e:
+            error_log(f"[Speaker] 說話人映射失敗: {str(e)}")
+            return f"error_{int(time.time())}", True
+    
+    def _compute_audio_embedding(self, audio_data: np.ndarray) -> np.ndarray:
+        """計算音頻特徵嵌入"""
+        try:
+            audio_float = audio_data.astype(np.float32) / 32768.0
+            
+            # 計算基本音頻特徵
+            mean_amplitude = np.mean(np.abs(audio_float))
+            rms_energy = np.sqrt(np.mean(audio_float**2))
+            zero_crossing_rate = np.mean(np.diff(np.sign(audio_float)) != 0)
+            
+            # 計算頻譜特徵
+            fft = np.fft.fft(audio_float)
+            magnitude = np.abs(fft)
+            spectral_centroid = np.sum(np.arange(len(magnitude)) * magnitude) / np.sum(magnitude)
+            
+            # 計算 MFCC 風格的特徵
+            # 簡化版本，實際應用中應該使用更複雜的特徵
+            n_segments = 10
+            segment_length = len(audio_float) // n_segments
+            segment_features = []
+            
+            for i in range(n_segments):
+                start = i * segment_length
+                end = min((i + 1) * segment_length, len(audio_float))
+                segment = audio_float[start:end]
+                
+                if len(segment) > 0:
+                    seg_energy = np.sqrt(np.mean(segment**2))
+                    seg_zcr = np.mean(np.diff(np.sign(segment)) != 0)
+                    segment_features.extend([seg_energy, seg_zcr])
             
             # 組合所有特徵
-            features = np.concatenate([mfcc_mean, mfcc_std, delta_mean, delta_std, delta2_mean, delta2_std])
+            embedding = np.array([
+                mean_amplitude, rms_energy, zero_crossing_rate, spectral_centroid
+            ] + segment_features)
             
-            debug_log(3, f"[SpeakerID] 提取特徵維度: {features.shape}")
-            return features
+            # 正規化
+            if np.linalg.norm(embedding) > 0:
+                embedding = embedding / np.linalg.norm(embedding)
+            
+            return embedding
             
         except Exception as e:
-            error_log(f"[SpeakerID] 特徵提取失敗: {str(e)}")
-            return np.array([])
-            
-    def calculate_similarity(self, features1: np.ndarray, features2: np.ndarray) -> float:
-        """計算兩個特徵向量的相似度"""
+            error_log(f"[Speaker] 計算嵌入失敗: {str(e)}")
+            return np.random.random(24)  # 回退到隨機特徵
+    
+    def _fallback_speaker_identification(self, audio_data: np.ndarray) -> SpeakerInfo:
+        """回退的說話人識別方法（當 pyannote 不可用時）"""
         try:
-            # 檢查維度是否匹配
-            if features1.shape[0] != features2.shape[0]:
-                # 如果維度不一致，我們只使用兩個向量共有的前N個特徵
-                min_dim = min(features1.shape[0], features2.shape[0])
-                f1 = features1[:min_dim].reshape(1, -1)
-                f2 = features2[:min_dim].reshape(1, -1)
-                debug_log(2, f"[SpeakerID] 特徵維度不一致，截取共同維度: {min_dim}")
-            else:
-                # 重塑為 2D 數組以適應 cosine_similarity
-                f1 = features1.reshape(1, -1)
-                f2 = features2.reshape(1, -1)
+            debug_log(2, "[Speaker] 使用回退說話人識別...")
             
-            similarity = cosine_similarity(f1, f2)[0][0]
-            return float(similarity)
+            # 計算基本特徵
+            embedding = self._compute_audio_embedding(audio_data)
             
-        except Exception as e:
-            error_log(f"[SpeakerID] 相似度計算失敗: {str(e)}")
-            return 0.0
+            # 檢查已知說話人
+            best_match_id = None
+            best_similarity = 0.0
             
-    def identify_speaker(self, audio_data: np.ndarray) -> SpeakerInfo:
-        """
-        識別說話人 - 改進版本，更好地區分不同說話人
-        
-        Args:
-            audio_data: 音頻數據
+            for known_id, data in self.speaker_database.items():
+                for known_embedding in data['embeddings']:
+                    similarity = 1 - cosine(embedding, known_embedding)
+                    if similarity > best_similarity:
+                        best_similarity = similarity
+                        best_match_id = known_id
             
-        Returns:
-            SpeakerInfo: 說話人信息
-        """
-        # 檢查音頻能量 - 降低閾值以適應簡短語音指令
-        energy = np.sum(audio_data ** 2)
-        if energy < self.si_config.get("min_energy_threshold", 15):  # 從100降低到15
-            debug_log(2, "[SpeakerID] 音頻能量過低，視為非語音")
-            debug_log(3, f"[SpeakerID] 音頻能量: {energy}")
-            return SpeakerInfo(
-                speaker_id="unknown",
-                confidence=0.0,
-                is_new_speaker=False,
-                voice_features=None
-            )
-        
-        # 提取特徵
-        features = self.extract_voice_features(audio_data)
-        if features.size == 0:
-            return SpeakerInfo(
-                speaker_id="unknown",
-                confidence=0.0,
-                is_new_speaker=False,
-                voice_features=None
-            )
-        
-        debug_log(3, f"[SpeakerID] 提取特徵維度: {features.shape}")
-        
-        # 紀錄每個說話人模型的平均相似度 (不只是最高值)
-        speaker_similarities = {}
-        
-        # 與已知說話人比較
-        for speaker_id, model in self.speaker_models.items():
-            if not model.feature_vectors or len(model.feature_vectors) < 2:
-                continue
-                
-            # 計算與所有已知特徵的相似度
-            similarities = []
-            for stored_features in model.feature_vectors:
-                sim = self.calculate_similarity(features, np.array(stored_features))
-                similarities.append(sim)
-                
-            # 使用平均相似度而不是最高值，更能代表整體匹配程度
-            avg_similarity = sum(similarities) / len(similarities)
-            speaker_similarities[speaker_id] = avg_similarity
-        
-        # 尋找最佳匹配    
-        if speaker_similarities:
-            best_match = max(speaker_similarities.items(), key=lambda x: x[1])
-            best_speaker_id, best_similarity = best_match
-        else:
-            best_speaker_id, best_similarity = None, 0.0
-        
-        # 計算與其他模型的相似度差異，確保此說話人明顯區別於其他人
-        is_distinct = True
-        if len(speaker_similarities) > 1 and best_similarity > 0:
-            # 排除最佳匹配後的第二高相似度
-            other_similarities = [sim for spk, sim in speaker_similarities.items() if spk != best_speaker_id]
-            if other_similarities:
-                second_best = max(other_similarities)
-                # 如果最佳匹配與第二佳匹配相似度差異小於30%，表示不夠明顯
-                if (best_similarity - second_best) / best_similarity < 0.3:
-                    is_distinct = False
-                    debug_log(2, f"[SpeakerID] 最佳匹配不夠明顯: {best_similarity:.2f} vs {second_best:.2f}")
-                
-        # 判斷是否為已知說話人
-        if best_similarity >= self.similarity_threshold and is_distinct:
-            # 已知說話人，更新模型
-            self._update_speaker_model(best_speaker_id, features)
+            if best_similarity > self.similarity_threshold:
+                return SpeakerInfo(
+                    speaker_id=best_match_id,
+                    confidence=best_similarity,
+                    is_new_speaker=False,
+                    voice_features={"method": "fallback", "similarity": best_similarity}
+                )
             
-            debug_log(2, f"[SpeakerID] 識別出已知說話人: {best_speaker_id} (信心度: {best_similarity:.2f})")
+            # 創建新說話人
+            new_speaker_id = f"speaker_{self.speaker_counter:03d}"
+            self.speaker_counter += 1
             
-            return SpeakerInfo(
-                speaker_id=best_speaker_id,
-                confidence=best_similarity,
-                is_new_speaker=False,
-                voice_features={"mfcc": features.tolist()}
-            )
+            self.speaker_database[new_speaker_id] = {
+                'embeddings': [embedding],
+                'metadata': {
+                    'created_at': time.time(),
+                    'last_seen': time.time(),
+                    'sample_count': 1,
+                    'method': 'fallback'
+                }
+            }
             
-        elif best_similarity < self.new_speaker_threshold or not is_distinct:
-            # 相似度太低或匹配不夠明顯，認為是新說話人
-            new_speaker_id = self._create_new_speaker(features)
+            self._save_speaker_database()
             
             return SpeakerInfo(
                 speaker_id=new_speaker_id,
-                confidence=1.0,  # 新說話人的信心度設為1.0
+                confidence=0.7,  # 中等信心度
                 is_new_speaker=True,
-                voice_features={"mfcc": features.tolist()}
+                voice_features={"method": "fallback"}
             )
             
-        else:
-            # 不確定，返回最佳匹配但標記為低信心度
+        except Exception as e:
+            error_log(f"[Speaker] 回退識別失敗: {str(e)}")
             return SpeakerInfo(
-                speaker_id=best_speaker_id or "uncertain",
-                confidence=best_similarity,
+                speaker_id="unknown",
+                confidence=0.0,
                 is_new_speaker=False,
-                voice_features={"mfcc": features.tolist()}
+                voice_features=None
             )
-            
-    def _create_new_speaker(self, features: np.ndarray) -> str:
-        """創建新說話人模型"""
-        speaker_id = f"speaker_{str(uuid.uuid4())[:8]}"
-        current_time = time.time()
-        
-        new_model = SpeakerModel(
-            speaker_id=speaker_id,
-            feature_vectors=[features.tolist()],
-            sample_count=1,
-            created_at=current_time,
-            last_updated=current_time
-        )
-        
-        self.speaker_models[speaker_id] = new_model
-        self._save_speaker_models()
-        
-        info_log(f"[SpeakerID] 創建新說話人: {speaker_id}")
-        return speaker_id
-        
-    def _update_speaker_model(self, speaker_id: str, features: np.ndarray):
-        """更新說話人模型 - 使用聚類檢查"""
-        if speaker_id not in self.speaker_models:
-            return
-            
-        model = self.speaker_models[speaker_id]
-        
-        # 使用 K-Means 檢查新特徵是否屬於現有模型
-        if len(model.feature_vectors) >= self.min_samples:
-            try:
-                # 先將現有特徵向量轉為 numpy 數組
-                feature_array = np.array(model.feature_vectors)
-                
-                # 檢查維度是否一致
-                if feature_array.shape[1] != features.shape[0]:
-                    debug_log(2, f"[SpeakerID] 特徵維度不一致 - 現有: {feature_array.shape[1]}, 新: {features.shape[0]}")
-                    # 截取共同的維度
-                    min_dim = min(feature_array.shape[1], features.shape[0])
-                    feature_array = feature_array[:, :min_dim]
-                    new_feature = features[:min_dim].reshape(1, -1)
-                    debug_log(2, f"[SpeakerID] 截取共同維度: {min_dim}")
-                else:
-                    new_feature = features.reshape(1, -1)
-                
-                kmeans = KMeans(n_clusters=1).fit(feature_array)
-                distance = np.linalg.norm(new_feature - kmeans.cluster_centers_)
-                
-                # 如果距離過大，可能不屬於這個說話人
-                if distance > self.si_config.get("cluster_distance_threshold", 0.5):
-                    debug_log(2, f"[SpeakerID] 新特徵與模型 {speaker_id} 不匹配，忽略更新")
-                    return
-            except Exception as e:
-                error_log(f"[SpeakerID] 聚類檢查失敗: {str(e)}")
-                # 失敗時仍然繼續更新，避免丟失可能有用的數據
-        
-        model.feature_vectors.append(features.tolist())
-        model.sample_count += 1
-        model.last_updated = time.time()
-        
-        # 限制特徵向量數量（保留最新的）
-        max_features = 20
-        if len(model.feature_vectors) > max_features:
-            model.feature_vectors = model.feature_vectors[-max_features:]
-            
-        self._save_speaker_models()
-        debug_log(2, f"[SpeakerID] 更新說話人模型: {speaker_id}, 樣本數: {model.sample_count}")
-        
-    def _load_speaker_models(self):
-        """載入說話人模型"""
+    
+    def _load_speaker_database(self):
+        """載入說話人資料庫"""
         try:
-            if os.path.exists(self.models_file):
-                with open(self.models_file, 'rb') as f:
-                    models_data = pickle.load(f)
-                    
-                # 轉換為 SpeakerModel 對象
-                for speaker_id, data in models_data.items():
-                    if isinstance(data, dict):
-                        self.speaker_models[speaker_id] = SpeakerModel(**data)
-                    else:
-                        self.speaker_models[speaker_id] = data
-                        
-                info_log(f"[SpeakerID] 載入 {len(self.speaker_models)} 個說話人模型")
+            if os.path.exists(self.database_path):
+                with open(self.database_path, 'rb') as f:
+                    data = pickle.load(f)
+                    self.speaker_database = data.get('database', {})
+                    self.speaker_counter = data.get('counter', 0)
+                info_log(f"[Speaker] 載入說話人資料庫: {len(self.speaker_database)} 位說話人")
             else:
-                info_log("[SpeakerID] 未發現現有模型，將創建新的模型庫")
-                
+                info_log("[Speaker] 創建新的說話人資料庫")
         except Exception as e:
-            error_log(f"[SpeakerID] 載入模型失敗: {str(e)}")
-            self.speaker_models = {}
-            
-    def _save_speaker_models(self):
-        """保存說話人模型"""
+            error_log(f"[Speaker] 載入資料庫失敗: {e}")
+            self.speaker_database = {}
+            self.speaker_counter = 0
+    
+    def _save_speaker_database(self):
+        """儲存說話人資料庫"""
         try:
-            # 確保目錄存在
-            os.makedirs(os.path.dirname(self.models_file), exist_ok=True)
-            
-            # 轉換為字典格式保存
-            models_data = {}
-            for speaker_id, model in self.speaker_models.items():
-                models_data[speaker_id] = model.dict()
-                
-            with open(self.models_file, 'wb') as f:
-                pickle.dump(models_data, f)
-                
-            debug_log(3, f"[SpeakerID] 保存 {len(self.speaker_models)} 個說話人模型")
-            
-        except Exception as e:
-            error_log(f"[SpeakerID] 保存模型失敗: {str(e)}")
-            
-    def get_speaker_stats(self) -> Dict[str, Dict]:
-        """獲取說話人統計信息"""
-        stats = {}
-        for speaker_id, model in self.speaker_models.items():
-            stats[speaker_id] = {
-                "sample_count": model.sample_count,
-                "created_at": model.created_at,
-                "last_updated": model.last_updated
+            os.makedirs(os.path.dirname(self.database_path), exist_ok=True)
+            data = {
+                'database': self.speaker_database,
+                'counter': self.speaker_counter
             }
-        return stats
-        
-    def reset_speaker_models(self):
-        """重置說話人模型 - 當特徵提取方法更改時使用"""
-        try:
-            # 備份現有模型
-            if os.path.exists(self.models_file):
-                backup_file = f"{self.models_file}.bak.{int(time.time())}"
-                import shutil
-                shutil.copy(self.models_file, backup_file)
-                info_log(f"[SpeakerID] 已備份現有模型至: {backup_file}")
-            
-            # 清空模型
-            self.speaker_models = {}
-            self._save_speaker_models()
-            info_log("[SpeakerID] 已重置所有說話人模型")
-            return True
+            with open(self.database_path, 'wb') as f:
+                pickle.dump(data, f)
+            debug_log(3, f"[Speaker] 儲存說話人資料庫: {len(self.speaker_database)} 位說話人")
         except Exception as e:
-            error_log(f"[SpeakerID] 重置模型失敗: {str(e)}")
+            error_log(f"[Speaker] 儲存資料庫失敗: {e}")
+    
+    def get_speaker_info(self, speaker_id: str) -> Optional[Dict]:
+        """取得說話人詳細資訊"""
+        return self.speaker_database.get(speaker_id)
+    
+    def list_speakers(self) -> Dict[str, Dict]:
+        """列出所有說話人ID和詳細資訊"""
+        result = {}
+        for speaker_id, data in self.speaker_database.items():
+            metadata = data.get('metadata', {})
+            result[speaker_id] = {
+                'embeddings': len(data.get('embeddings', [])),
+                'created_at': metadata.get('created_at'),
+                'last_seen': metadata.get('last_seen'),
+                'sample_count': metadata.get('sample_count', 0)
+            }
+        return result
+    
+    def rename_speaker(self, old_id: str, new_id: str) -> bool:
+        """重新命名說話人"""
+        try:
+            if old_id not in self.speaker_database:
+                error_log(f"[Speaker] 說話人 '{old_id}' 不存在")
+                return False
+            
+            if new_id in self.speaker_database:
+                error_log(f"[Speaker] 說話人 '{new_id}' 已存在")
+                return False
+            
+            # 移動數據
+            self.speaker_database[new_id] = self.speaker_database.pop(old_id)
+            self._save_speaker_database()
+            
+            info_log(f"[Speaker] 說話人 '{old_id}' 已重新命名為 '{new_id}'")
+            return True
+            
+        except Exception as e:
+            error_log(f"[Speaker] 重新命名失敗: {e}")
             return False
+    
+    def delete_speaker(self, speaker_id: str) -> bool:
+        """刪除指定說話人"""
+        try:
+            if speaker_id not in self.speaker_database:
+                error_log(f"[Speaker] 說話人 '{speaker_id}' 不存在")
+                return False
+            
+            del self.speaker_database[speaker_id]
+            self._save_speaker_database()
+            
+            info_log(f"[Speaker] 說話人 '{speaker_id}' 已刪除")
+            return True
+            
+        except Exception as e:
+            error_log(f"[Speaker] 刪除失敗: {e}")
+            return False
+    
+    def clear_all_speakers(self) -> bool:
+        """清空所有說話人數據"""
+        try:
+            self.speaker_database.clear()
+            self.speaker_counter = 0
+            self._save_speaker_database()
+            
+            info_log("[Speaker] 所有說話人數據已清空")
+            return True
+            
+        except Exception as e:
+            error_log(f"[Speaker] 清空失敗: {e}")
+            return False
+    
+    def backup_speakers(self, backup_path: str) -> bool:
+        """備份說話人數據到指定路徑"""
+        try:
+            import shutil
+            
+            if os.path.exists(self.database_path):
+                shutil.copy2(self.database_path, backup_path)
+                info_log(f"[Speaker] 說話人數據已備份至: {backup_path}")
+                return True
+            else:
+                error_log("[Speaker] 原始數據庫不存在，無法備份")
+                return False
+                
+        except Exception as e:
+            error_log(f"[Speaker] 備份失敗: {e}")
+            return False
+    
+    def restore_speakers(self, backup_path: str) -> bool:
+        """從備份恢復說話人數據"""
+        try:
+            import shutil
+            
+            if not os.path.exists(backup_path):
+                error_log(f"[Speaker] 備份檔案不存在: {backup_path}")
+                return False
+            
+            # 備份當前數據（如果存在）
+            if os.path.exists(self.database_path):
+                current_backup = f"{self.database_path}.pre_restore"
+                shutil.copy2(self.database_path, current_backup)
+                info_log(f"[Speaker] 當前數據已備份至: {current_backup}")
+            
+            # 恢復備份
+            shutil.copy2(backup_path, self.database_path)
+            
+            # 重新載入
+            self._load_speaker_database()
+            
+            info_log(f"[Speaker] 說話人數據已從備份恢復: {backup_path}")
+            return True
+            
+        except Exception as e:
+            error_log(f"[Speaker] 恢復失敗: {e}")
+            return False
+    
+    def get_database_info(self) -> Dict:
+        """獲取說話人資料庫統計信息"""
+        try:
+            total_speakers = len(self.speaker_database)
+            total_samples = sum(len(data.get('embeddings', [])) for data in self.speaker_database.values())
+            
+            # 計算資料庫檔案大小
+            file_size = 0
+            if os.path.exists(self.database_path):
+                file_size = os.path.getsize(self.database_path)
+            
+            return {
+                'total_speakers': total_speakers,
+                'total_samples': total_samples,
+                'file_size_bytes': file_size,
+                'file_size_mb': file_size / (1024 * 1024),
+                'database_path': self.database_path,
+                'similarity_threshold': self.similarity_threshold
+            }
+            
+        except Exception as e:
+            error_log(f"[Speaker] 獲取資料庫信息失敗: {e}")
+            return {}
+    
+    def update_similarity_threshold(self, threshold: float):
+        """更新相似度閾值"""
+        self.similarity_threshold = max(0.0, min(1.0, threshold))
+        info_log(f"[Speaker] 更新相似度閾值: {self.similarity_threshold}")
+    
+    def shutdown(self):
+        """關閉說話人識別模組"""
+        self._save_speaker_database()
+        info_log("[Speaker] 說話人識別模組已關閉")

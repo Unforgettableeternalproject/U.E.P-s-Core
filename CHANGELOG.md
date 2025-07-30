@@ -586,3 +586,15 @@
 
 ---
 
+### SpeechRecognition to Whisper + Pyannote structure done, and integrated to controller. 07/30
+
+> Date: Wed, 30 Jul 2025 20:57:31 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/stt_module_rework`
+
+> Commit: `af0c68a7ce49e9a3ab41cca71ab14353d4686fc4`
+
+---
+

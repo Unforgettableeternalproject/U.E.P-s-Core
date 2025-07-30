@@ -21,6 +21,7 @@ class STTInput(BaseModel):
     language: str = "en-US"                       # 語言設定 (預設英文)
     enable_speaker_id: bool = True                # 是否啟用說話人識別
     context: Optional[str] = None                 # 上下文信息
+    keywords: Optional[List[str]] = None          # 智能模式的關鍵詞列表
     
 class STTOutput(BaseModel):
     """STT 模組輸出"""

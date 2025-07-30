@@ -9,7 +9,13 @@ def stt():
     stt.shutdown()
 
 def test_stt_handle_returns_text(stt):
-    result = stt.handle()
+    # 使用新版 STT API - 手動模式
+    result = stt.handle({
+        "mode": "manual",
+        "language": "en-US",
+        "enable_speaker_id": False,
+        "duration": 3
+    })
     assert isinstance(result, dict)
     assert "text" in result
     assert isinstance(result["text"], str)

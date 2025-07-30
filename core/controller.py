@@ -133,77 +133,71 @@ def stt_test_single(mode="manual", enable_speaker_id=True, language="en-US"):
     on_stt_result(result)
     return result
 
-def stt_test_smart_activation():
-    """智能啟動測試 - 手動錄音 + 智能判斷"""
+def stt_test_smart_activation(duration=30):
+    """智能啟動測試 - 智能監聽模式（合併原背景監聽功能）"""
     stt = modules["stt"]
 
     if stt is None:
         error_log("[Controller] ❌ 無法載入 STT 模組")
         return
 
-    print("🧠 智能啟動測試 - 錄音後智能判斷是否啟動")
-    print("   試試說: 'UEP', 'help me', 'what is...', 'can you...' 等")
-    
-    result = stt.handle({
-        "mode": "smart",
-        "language": "en-US",  # 改為英文識別
-        "enable_speaker_id": True,
-        "context": "controller_test"
-    })
-    
-    on_stt_result(result)
-    return result
-
-def stt_test_background_smart(duration=60):
-    """智能背景監聽測試 - 背景持續監聽 + 智能啟動"""
-    stt = modules["stt"]
-
-    if stt is None:
-        error_log("[Controller] ❌ 無法載入 STT 模組")
-        return
-
-    print(f"🔄 智能背景監聽測試 ({duration}秒)")
-    print("說 'UEP', 'help me', 'what is', 'can you' 等觸發詞，系統會智能判斷是否啟動")
-    
-    def smart_background_callback(result):
-        print(f"🤖 智能觸發:")
-        on_stt_result(result)
+    print(f"🧠 智能監聽測試 ({duration}秒)")
+    print("   試試說: 'UEP', 'help me', 'what is...', 'can you...' 等觸發詞")
+    print("   系統會智能判斷是否啟動完整識別")
     
     try:
-        # 啟動背景監聽，確保正確傳遞持續時間
-        stt.start_always_on(callback=smart_background_callback, duration=duration)
+        result = stt.handle({
+            "mode": "smart",
+            "language": "en-US",
+            "enable_speaker_id": True,
+            "duration": duration,
+            "context": "controller_test"
+        })
         
-        # 等待指定時間 (由模組自己計時)
-        try:
-            # 只需要等待終止信號
-            while getattr(stt, '_always_on_running', False):
-                time.sleep(0.5)
-        except KeyboardInterrupt:
-            print("\n⏹️ 用戶中斷")
-            
-    finally:
-        stt.stop_always_on()
+        print(f"🤖 智能監聽結果:")
+        on_stt_result(result)
+        return result
+        
+    except KeyboardInterrupt:
+        print("\n⏹️ 用戶中斷")
+        return None
+    except Exception as e:
+        error_log(f"[Controller] 智能監聽失敗: {e}")
+        return None
 
 def stt_test_realtime():
-    """舊版 realtime 測試 (保持相容性)"""
+    """即時監聽測試 - 使用新版 smart 模式循環"""
     stt = modules["stt"]
 
     if stt is None:
         error_log("[Controller] ❌ 無法載入 STT 模組")
         return
 
-    # 檢查是否有舊版 start_realtime 方法
-    if hasattr(stt, 'start_realtime'):
-        stt.start_realtime(on_result=on_stt_result)
-        try:
-            while True:
-                time.sleep(0.5)
-        except KeyboardInterrupt:
-            stt.stop_realtime()
-    else:
-        # 使用新版智能背景監聽代替
-        print("⚠️ 使用新版智能背景監聽代替 realtime")
-        stt_test_background_smart()
+    print("🔄 即時監聽模式 (持續監聽，按 Ctrl+C 停止)")
+    print("說 'UEP', 'help me', 'what is', 'can you' 等觸發詞進行測試")
+    
+    try:
+        while True:
+            print("\n🎤 開始新一輪智能監聽...")
+            result = stt.handle({
+                "mode": "smart",
+                "language": "en-US", 
+                "enable_speaker_id": True,
+                "duration": 30  # 每輪 30 秒
+            })
+            
+            print("📢 即時監聽結果:")
+            on_stt_result(result)
+            
+            # 如果觸發了啟動，稍作停頓
+            if result.get("text") and result.get("activation_reason", "").startswith("智能觸發"):
+                print("⏸️ 啟動後暫停 3 秒...")
+                time.sleep(3)
+            
+    except KeyboardInterrupt:
+        print("\n⏹️ 即時監聽已停止")
+    except Exception as e:
+        error_log(f"[Controller] 即時監聽失敗: {e}")
 
 def stt_get_stats():
     """獲取 STT 統計信息"""
@@ -213,22 +207,210 @@ def stt_get_stats():
         error_log("[Controller] ❌ 無法載入 STT 模組")
         return
 
-    if hasattr(stt, 'get_speaker_stats'):
-        speaker_stats = stt.get_speaker_stats()
-        activation_stats = stt.get_activation_stats()
+    # 嘗試從說話人模組獲取統計信息
+    if hasattr(stt, 'speaker_module'):
+        speaker_info = stt.speaker_module.get_database_info()
+        speakers = stt.speaker_module.list_speakers()
         
         print("📊 STT 統計信息:")
         print("說話人統計:")
-        for speaker_id, count in speaker_stats.items():
-            print(f"  {speaker_id}: {count} 次")
+        if speakers:
+            for speaker_id, metadata in speakers.items():
+                sample_count = metadata.get('sample_count', 0)
+                print(f"  {speaker_id}: {sample_count} 個語音樣本")
+        else:
+            print("  無說話人數據")
         
-        print("啟動統計:")
-        for reason, count in activation_stats.items():
-            print(f"  {reason}: {count} 次")
-            
-        return {"speaker_stats": speaker_stats, "activation_stats": activation_stats}
+        print("\n資料庫統計:")
+        print(f"  總說話人數: {speaker_info.get('total_speakers', 0)}")
+        print(f"  總語音樣本: {speaker_info.get('total_samples', 0)}")
+        print(f"  檔案大小: {speaker_info.get('file_size_mb', 0):.2f} MB")
+        print(f"  相似度閾值: {speaker_info.get('similarity_threshold', 0):.2f}")
+        
+        return {
+            "speaker_stats": speakers,
+            "database_info": speaker_info
+        }
     else:
-        print("⚠️ 當前版本不支援統計功能")
+        print("⚠️ 當前版本不支援詳細統計功能")
+        return {"error": "統計功能不可用"}
+
+# STT 說話人管理功能
+
+def stt_speaker_list():
+    """列出所有已識別的說話人"""
+    stt = modules["stt"]
+
+    if stt is None:
+        error_log("[Controller] ❌ 無法載入 STT 模組")
+        return
+        
+    if hasattr(stt, 'speaker_module'):
+        speakers = stt.speaker_module.list_speakers()
+        if speakers:
+            print("👥 已識別說話人:")
+            for speaker_id, metadata in speakers.items():
+                # metadata['embeddings'] 已經是數量，不需要再用 len()
+                embeddings_count = metadata.get('embeddings', 0)
+                print(f"  {speaker_id}: {embeddings_count} 個語音樣本")
+        else:
+            print("📝 尚未識別任何說話人")
+        return speakers
+    else:
+        print("⚠️ 說話人識別模組不可用")
+
+def stt_speaker_rename(old_id: str, new_id: str):
+    """重新命名說話人"""
+    stt = modules["stt"]
+
+    if stt is None:
+        error_log("[Controller] ❌ 無法載入 STT 模組")
+        return
+        
+    if hasattr(stt, 'speaker_module'):
+        success = stt.speaker_module.rename_speaker(old_id, new_id)
+        if success:
+            print(f"✅ 說話人 '{old_id}' 已重新命名為 '{new_id}'")
+        else:
+            print(f"❌ 重新命名失敗：說話人 '{old_id}' 不存在")
+        return success
+    else:
+        print("⚠️ 說話人識別模組不可用")
+
+def stt_speaker_delete(speaker_id: str):
+    """刪除指定說話人"""
+    stt = modules["stt"]
+
+    if stt is None:
+        error_log("[Controller] ❌ 無法載入 STT 模組")
+        return
+        
+    if hasattr(stt, 'speaker_module'):
+        success = stt.speaker_module.delete_speaker(speaker_id)
+        if success:
+            print(f"✅ 說話人 '{speaker_id}' 已刪除")
+        else:
+            print(f"❌ 刪除失敗：說話人 '{speaker_id}' 不存在")
+        return success
+    else:
+        print("⚠️ 說話人識別模組不可用")
+
+def stt_speaker_clear_all():
+    """清空所有說話人數據"""
+    stt = modules["stt"]
+
+    if stt is None:
+        error_log("[Controller] ❌ 無法載入 STT 模組")
+        return
+        
+    if hasattr(stt, 'speaker_module'):
+        confirmation = input("⚠️ 確定要清空所有說話人數據嗎？(y/N): ")
+        if confirmation.lower() == 'y':
+            success = stt.speaker_module.clear_all_speakers()
+            if success:
+                print("✅ 所有說話人數據已清空")
+            else:
+                print("❌ 清空失敗")
+            return success
+        else:
+            print("❌ 操作已取消")
+            return False
+    else:
+        print("⚠️ 說話人識別模組不可用")
+
+def stt_speaker_backup():
+    """備份說話人數據"""
+    stt = modules["stt"]
+
+    if stt is None:
+        error_log("[Controller] ❌ 無法載入 STT 模組")
+        return
+        
+    if hasattr(stt, 'speaker_module'):
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = f"memory/speaker_models_backup_{timestamp}.pkl"
+        
+        success = stt.speaker_module.backup_speakers(backup_path)
+        if success:
+            print(f"✅ 說話人數據已備份至: {backup_path}")
+        else:
+            print("❌ 備份失敗")
+        return success
+    else:
+        print("⚠️ 說話人識別模組不可用")
+
+def stt_speaker_restore(backup_path: str = None):
+    """恢復說話人數據"""
+    stt = modules["stt"]
+
+    if stt is None:
+        error_log("[Controller] ❌ 無法載入 STT 模組")
+        return
+        
+    if hasattr(stt, 'speaker_module'):
+        if backup_path is None:
+            backup_path = input("請輸入備份檔案路徑: ")
+        
+        success = stt.speaker_module.restore_speakers(backup_path)
+        if success:
+            print(f"✅ 說話人數據已從備份恢復: {backup_path}")
+        else:
+            print("❌ 恢復失敗")
+        return success
+    else:
+        print("⚠️ 說話人識別模組不可用")
+
+def stt_speaker_info():
+    """顯示說話人資料庫詳細信息"""
+    stt = modules["stt"]
+
+    if stt is None:
+        error_log("[Controller] ❌ 無法載入 STT 模組")
+        return
+        
+    if hasattr(stt, 'speaker_module'):
+        info = stt.speaker_module.get_database_info()
+        if info:
+            print("📊 說話人資料庫信息:")
+            print(f"  總說話人數: {info.get('total_speakers', 0)}")
+            print(f"  總語音樣本: {info.get('total_samples', 0)}")
+            print(f"  檔案大小: {info.get('file_size_mb', 0):.2f} MB")
+            print(f"  相似度閾值: {info.get('similarity_threshold', 0):.2f}")
+            print(f"  儲存位置: {info.get('database_path', 'N/A')}")
+        else:
+            print("❌ 無法獲取資料庫信息")
+        return info
+    else:
+        print("⚠️ 說話人識別模組不可用")
+
+def stt_speaker_adjust_threshold(threshold: float = None):
+    """調整說話人相似度閾值"""
+    stt = modules["stt"]
+
+    if stt is None:
+        error_log("[Controller] ❌ 無法載入 STT 模組")
+        return
+        
+    if hasattr(stt, 'speaker_module'):
+        if threshold is None:
+            current = stt.speaker_module.similarity_threshold
+            print(f"當前相似度閾值: {current:.2f}")
+            try:
+                threshold = float(input("請輸入新的閾值 (0.0-1.0): "))
+            except ValueError:
+                print("❌ 無效的閾值")
+                return False
+        
+        if 0.0 <= threshold <= 1.0:
+            stt.speaker_module.update_similarity_threshold(threshold)
+            print(f"✅ 相似度閾值已更新為: {threshold:.2f}")
+            return True
+        else:
+            print("❌ 閾值必須在 0.0 到 1.0 之間")
+            return False
+    else:
+        print("⚠️ 說話人識別模組不可用")
 
 # 測試 NLP 模組
 

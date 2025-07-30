@@ -76,7 +76,12 @@ def debug_interactive():
                 debug_log(1, "STT 模組測試")
                 print("<STT 模組測試>\n")
                 
-                choice = input("請選擇測試模式 (1: 基本測試, 2: 智能啟動, 3: 背景監聽, exit: 離開): \n\n> ")
+                choice = input("請選擇測試模式:\n" +
+                             "1: 基本測試\n" + 
+                             "2: 背景監聽\n" +
+                             "3: 說話人管理\n" +
+                             "4: 統計信息\n" +
+                             "exit: 離開\n\n> ")
                 
                 if choice == "1":
                     print("開始 STT 基本測試...")
@@ -88,11 +93,56 @@ def debug_interactive():
                     controller.stt_test_smart_activation()
                 
                 elif choice == "3":
-                    print("開始背景監聽測試 (30秒)...")
-                    print("📢 說出觸發詞來測試智能啟動")
-                    controller.stt_test_background_smart(duration=30)
+                    # 說話人管理子菜單
+                    while True:
+                        speaker_choice = input("\n說話人管理:\n" +
+                                             "1: 列出所有說話人\n" +
+                                             "2: 重新命名說話人\n" +
+                                             "3: 刪除說話人\n" +
+                                             "4: 清空所有說話人\n" +
+                                             "5: 備份說話人數據\n" +
+                                             "6: 恢復說話人數據\n" +
+                                             "7: 資料庫詳細信息\n" +
+                                             "8: 調整相似度閾值\n" +
+                                             "back: 返回上級\n\n> ")
+                        
+                        if speaker_choice == "1":
+                            controller.stt_speaker_list()
+                        
+                        elif speaker_choice == "2":
+                            old_id = input("輸入要重新命名的說話人 ID: ")
+                            new_id = input("輸入新的說話人 ID: ")
+                            controller.stt_speaker_rename(old_id, new_id)
+                        
+                        elif speaker_choice == "3":
+                            speaker_id = input("輸入要刪除的說話人 ID: ")
+                            controller.stt_speaker_delete(speaker_id)
+                        
+                        elif speaker_choice == "4":
+                            controller.stt_speaker_clear_all()
+                        
+                        elif speaker_choice == "5":
+                            controller.stt_speaker_backup()
+                        
+                        elif speaker_choice == "6":
+                            controller.stt_speaker_restore()
+                        
+                        elif speaker_choice == "7":
+                            controller.stt_speaker_info()
+                        
+                        elif speaker_choice == "8":
+                            controller.stt_speaker_adjust_threshold()
+                        
+                        elif speaker_choice.lower() in ["exit", "e", "back", "b", "quit", "q"]:
+                            break
+                        else:
+                            print("\033[31m無效的選擇，請再試一次。\033[0m")
                 
-                elif choice == "exit" or choice == "e":
+                elif choice == "4":
+                    print("📊 獲取 STT 統計信息...")
+                    controller.stt_get_stats()
+                
+                elif choice in ["exit", "e", "back", "b", "quit", "q"]:
                     pass
                 else:
                     print("\033[31m無效的選擇，請再試一次。\033[0m")
@@ -107,7 +157,7 @@ def debug_interactive():
                 print("請輸入測試文本 (或輸入 'exit' 來結束):")
                 while True:
                     text = input("\n> ")
-                    if text.lower() == "exit" or text.lower() == "e":
+                    if text.lower() in ["exit", "e", "quit", "q", "back", "b"]:
                         info_log("使用者中斷測試")
                         break
                     print()
@@ -125,12 +175,12 @@ def debug_interactive():
                     print("請輸入要寫入的記憶內容 (或輸入 'exit' 來結束):")
                     while True:
                         user_text = input("\n輸入使用者對話: \n> ")
-                        if user_text.lower() == "exit" or user_text.lower() == "e":
+                        if user_text.lower() in ["exit", "e", "quit", "q", "back", "b"]:
                             info_log("使用者中斷測試")
                             break
 
                         response_text = input("\n輸入系統回應: \n> ")
-                        if response_text.lower() == "exit" or response_text.lower() == "e":
+                        if response_text.lower() in ["exit", "e", "quit", "q", "back", "b"]:
                             info_log("使用者中斷測試")
                             break
 
@@ -140,7 +190,7 @@ def debug_interactive():
                     print("請輸入查詢的記憶內容 (或輸入 'exit' 來結束):")
                     while True:
                         text = input("\n> ")
-                        if text.lower() == "exit" or text.lower() == "e":
+                        if text.lower() in ["exit", "e", "quit", "q", "back", "b"]:
                             info_log("使用者中斷測試")
                             break
                         print()
@@ -149,12 +199,12 @@ def debug_interactive():
                     print("請輸入要刪除的記憶內容 (或輸入 'exit' 來結束):")
                     while True:
                         text = input("記憶關鍵語句:\n> ")
-                        if text.lower() == "exit" or text.lower() == "e":
+                        if text.lower() in ["exit", "e", "quit", "q", "back", "b"]:
                             info_log("使用者中斷測試")
                             break
 
                         topk = input("要刪除的相似記憶數量 (預設為 1):\n> ")
-                        if topk.lower() == "exit" or topk.lower() == "e":
+                        if topk.lower() in ["exit", "e", "quit", "q", "back", "b"]:
                             info_log("使用者中斷測試")
                             break
                         controller.mem_clear_test(text, topk)
@@ -164,7 +214,7 @@ def debug_interactive():
                         page = input("\n頁面 (預設為 1):\n> ")
                         if page == "":
                             page = 1
-                        elif page.lower() == "exit" or page.lower() == "e":
+                        elif page.lower() in ["exit", "e", "quit", "q", "back", "b"]:
                             info_log("使用者中斷測試")
                             break
                         else:
@@ -174,7 +224,7 @@ def debug_interactive():
                                 print("\033[31m請輸入有效的頁碼。\033[0m")
                                 continue
                         controller.mem_list_all_test(page)
-                elif choice == "exit" or choice == "e":
+                elif choice in ["exit", "e", "quit", "q", "back", "b"]:
                     pass
                 else:
                     print("\033[31m無效的選擇，請再試一次。\033[0m")
@@ -191,7 +241,7 @@ def debug_interactive():
                     print("🗣️ 請輸入一段對話文字 (必須用英文) (或輸入 'exit' 來結束):")
                     while True:
                         text = input("\n> ")
-                        if text.lower() == "exit" or text.lower() == "e":
+                        if text.lower() in ["exit", "e", "quit", "q", "back", "b"]:
                             info_log("使用者中斷測試")
                             break
                         print()
@@ -200,12 +250,12 @@ def debug_interactive():
                     print("🔧 請輸入一段指令文字 (必須用英文) (或輸入 'exit' 來結束):")
                     while True:
                         text = input("\n> ")
-                        if text.lower() == "exit" or text.lower() == "e":
+                        if text.lower() in ["exit", "e", "quit", "q", "back", "b"]:
                             info_log("使用者中斷測試")
                             break
                         print()
                         controller.llm_test_command(text)
-                elif choice == "exit" or choice == "e":
+                elif choice in ["exit", "e", "quit", "q", "back", "b"]:
                     pass
                 else:
                     print("\033[31m無效的選擇，請再試一次。\033[0m")
@@ -220,11 +270,11 @@ def debug_interactive():
                 if choice == "1":
                     while True:
                         text = input("\n請輸入要轉換的文字 (或輸入 'exit' 來結束):\n\n> ")
-                        if text.lower() == "exit" or text.lower() == "e":
+                        if text.lower() in ["exit", "e", "quit", "q", "back", "b"]:
                             info_log("使用者中斷測試")
                             break
                         mood = input("\n請輸入情緒 (預設為 neutral):\n\n> ")
-                        if mood.lower() == "exit" or mood.lower() == "e":
+                        if mood.lower() in ["exit", "e", "quit", "q", "back", "b"]:
                             info_log("\n使用者中斷測試")
                             break
                         elif mood == "":
@@ -233,7 +283,7 @@ def debug_interactive():
                             mood = mood.strip()
 
                         save = input("\n是否儲存音檔 (y/n)? (預設為 n):\n\n> ")
-                        if save.lower() == "exit" or save.lower() == "e":
+                        if save.lower() in ["exit", "e", "quit", "q", "back", "b"]:
                             info_log("使用者中斷測試")
                             break
                         else:
@@ -249,19 +299,19 @@ def debug_interactive():
                             break
                         lines.append(line)
                     mood = input("\n請輸入情緒 (預設為 neutral):\n\n> ")
-                    if mood.lower() == "exit" or mood.lower() == "e":
+                    if mood.lower() in ["exit", "e", "quit", "q", "back", "b"]:
                         info_log("使用者中斷測試")
                     elif mood == "":
                         mood = None
                     else:
                         mood = mood.strip()
                     save = input("\n是否儲存音檔 (y/n)? (預設為 n):\n\n> ")
-                    if save.lower() == "exit" or save.lower() == "e":
+                    if save.lower() in ["exit", "e", "quit", "q", "back", "b"]:
                         info_log("使用者中斷測試")
                     else:
                         save = True if save.lower() == "y" else False
                     controller.tts_test("\n".join(lines), mood, save)
-                elif choice == "exit" or choice == "e":
+                elif choice in ["exit", "e", "quit", "q", "back", "b"]:
                     pass
                 else:
                     print("\033[31m無效的選擇，請再試一次。\033[0m")
@@ -276,11 +326,11 @@ def debug_interactive():
                 
                 match choice:
                     case "1":
-                        sub = input("請選擇欲測試之子功能 (1-4: 工作流程模式, exit: 離開):\n1: 檔案讀取工作流程, 2: 智慧歸檔工作流程, 3: 摘要標籤工作流程, 4: 一般多步驟工作流程\n\n> ")
+                        sub = input("請選擇欲測試之子功能 (1-3: 工作流程模式, exit: 離開):\n1: 檔案讀取工作流程, 2: 智慧歸檔工作流程, 3: 摘要標籤工作流程\n\n> ")
                         # Test if sub is not a number or "exit"
-                        if sub in ["1", "2", "3", "4"]:
+                        if sub in ["1", "2", "3"]:
                             controller.sys_test_functions(mode=1, sub=int(sub))
-                        elif sub.lower() == "exit" or sub.lower() == "e":
+                        elif sub.lower() in ["exit", "e", "quit", "q", "back", "b"]:
                             break
                         else:
                             print("\033[31m無效的選擇，請再試一次。\033[0m")
@@ -288,7 +338,7 @@ def debug_interactive():
                         sub = input("請選擇欲測試之工作流程 (1: 簡單回顯, 2: 倒數計時, 3: 資料收集, 4: 隨機失敗, 5: TTS工作流測試, exit: 離開): \n\n> ")
                         if sub in ["1", "2", "3", "4", "5"]:
                             controller.sys_test_workflows(workflow_type=int(sub))
-                        elif sub.lower() == "exit" or sub.lower() == "e":
+                        elif sub.lower() in ["exit", "e", "quit", "q", "back", "b"]:
                             break
                         else:
                             print("\033[31m無效的選擇，請再試一次。\033[0m")
@@ -296,6 +346,8 @@ def debug_interactive():
                         controller.sys_list_functions()
                         print("\n=== 測試工作流程選項 ===")
                         controller.sys_list_test_workflows()
+                    case "exit" | "e" | "quit" | "q":
+                        pass
                     case _:
                         print("\033[31m無效的選擇，請再試一次。\033[0m")
             case "ex":
@@ -304,11 +356,11 @@ def debug_interactive():
                 choice = input("請選擇欲進行測試 (1: 重點整理測試 (LLM), exit: 離開): \n\n> ")
                 if choice == "1":
                     controller.test_summrize()
-                elif choice == "exit" or choice == "e":
+                elif choice in ["exit", "e", "quit", "q", "back", "b"]:
                     break
                 else:
                     print("\033[31m無效的選擇，請再試一次。\033[0m")
-            case "exit" | "e":
+            case "exit" | "e" | "quit" | "q":
                 debug_log(1, "離開測試介面")
                 print("\n離開測試介面")
                 break

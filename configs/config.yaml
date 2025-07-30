@@ -2,7 +2,7 @@
 
 modules_enabled:
   stt_module: true
-  nlp_module: false
+  nlp_module: true
   mem_module: false
   llm_module: false
   tts_module: false
@@ -16,4 +16,4 @@ logging:
 
 debug:
   enabled: true
-  debug_level: 3
+  debug_level: 2

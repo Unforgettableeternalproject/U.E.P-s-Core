@@ -21,6 +21,11 @@ from utils.debug_helper import debug_log, info_log, error_log
 from configs.config_loader import load_module_config
 from .schemas import STTInput, STTOutput, ActivationMode, SpeakerInfo
 
+# 新的獨立模組
+from .vad import VoiceActivityDetection
+from .speaker_identification import SpeakerIdentification
+from .smart_keyword_detector import SmartKeywordDetector
+
 def correct_stt(text):
     """STT 結果修正 - 主要針對英文識別優化"""
     corrections = {
@@ -79,6 +84,11 @@ class STTModule(BaseModule):
         self.model = None
         self.processor = None
         self.pipe = None
+        
+        # 新的獨立模組
+        self.vad_module = VoiceActivityDetection(self.sample_rate)
+        self.speaker_module = SpeakerIdentification()
+        self.keyword_detector = SmartKeywordDetector()
         
         # PyAudio 配置
         self.pyaudio_instance = None
@@ -153,6 +163,17 @@ class STTModule(BaseModule):
             self.pyaudio_instance = pyaudio.PyAudio()
             info_log("[STT] PyAudio 初始化成功")
             
+            # 初始化新的獨立模組
+            info_log("[STT] 初始化 VAD 模組...")
+            if not self.vad_module.initialize():
+                error_log("[STT] VAD 模組初始化失敗，但不影響基本 STT 功能")
+            
+            info_log("[STT] 初始化說話人識別模組...")
+            if not self.speaker_module.initialize():
+                info_log("[STT] 說話人識別模組使用 fallback 模式，基本功能仍可使用")
+            else:
+                info_log("[STT] 說話人識別模組初始化成功")
+            
             # 列出可用的音頻設備
             debug_log(3, "[STT] 可用音頻設備：")
             for i in range(self.pyaudio_instance.get_device_count()):
@@ -178,12 +199,15 @@ class STTModule(BaseModule):
             if validated.mode == ActivationMode.MANUAL:
                 # 手動模式：立即錄音識別
                 result = self._manual_recognition(validated)
+            elif validated.mode == ActivationMode.SMART:
+                # 智能模式：使用新的智能關鍵詞檢測
+                result = self._smart_recognition_v2(validated)
             else:
-                # 智能模式暫時不支持
+                # 不支持的模式
                 return STTOutput(
                     text="", 
                     confidence=0.0, 
-                    error="智能模式暫未實現",
+                    error="不支持的模式",
                     activation_reason="不支持的模式"
                 ).dict()
                 
@@ -224,7 +248,7 @@ class STTModule(BaseModule):
             
             # 生成參數配置
             generate_kwargs = {
-                "max_new_tokens": 448,
+                "max_new_tokens": 128,  # 降低到安全範圍
                 "num_beams": 1,
                 "condition_on_prev_tokens": False,
                 "compression_ratio_threshold": 1.35,
@@ -232,6 +256,7 @@ class STTModule(BaseModule):
                 "logprob_threshold": -1.0,
                 "no_speech_threshold": 0.6,
                 "return_timestamps": True,
+                "language": "en",  # 明確指定英文以避免警告
             }
             
             # 使用 Transformers pipeline 進行語音識別
@@ -244,10 +269,10 @@ class STTModule(BaseModule):
             text = correct_stt(text)
             confidence = self._calculate_transformers_confidence(result)
             
-            # 說話人識別 (暫時跳過)
+            # 說話人識別
             speaker_info = None
             if input_data.enable_speaker_id:
-                speaker_info = self._identify_speaker_simple(audio_data)
+                speaker_info = self.speaker_module.identify_speaker(audio_data)
             
             return STTOutput(
                 text=text,
@@ -349,10 +374,127 @@ class STTModule(BaseModule):
             voice_features=None
         )
 
+    def _smart_recognition_v2(self, input_data: STTInput) -> dict:
+        """智能語音識別 v2 - 使用新的智能關鍵詞檢測"""
+        try:
+            info_log("[STT] 開始智能監聽模式 v2...")
+            
+            duration = input_data.duration or 30.0
+            start_time = time.time()
+            
+            info_log(f"[STT] 智能監聽時長: {duration} 秒")
+            
+            while time.time() - start_time < duration:
+                # 短暫錄音檢測
+                chunk_duration = 2.0
+                audio_data = self._record_audio(chunk_duration)
+                
+                if audio_data is None:
+                    continue
+                
+                # 使用 VAD 檢查是否有足夠的語音
+                if not self.vad_module.has_sufficient_speech(audio_data, min_duration=0.1):
+                    debug_log(3, "[STT] 音頻中語音內容不足，跳過")
+                    continue
+                
+                # 使用 Whisper 快速識別
+                info_log("[STT] 檢測語音內容...")
+                audio_float = audio_data.astype(np.float32) / 32768.0
+                
+                # 快速識別參數
+                quick_kwargs = {
+                    "max_new_tokens": 32,  # 快速檢測用更少的 tokens
+                    "num_beams": 1,
+                    "condition_on_prev_tokens": False,
+                    "temperature": 0.0,
+                    "return_timestamps": False,
+                    "language": "en",  # 明確指定英文
+                }
+                
+                result = self.pipe(audio_float, generate_kwargs=quick_kwargs)
+                text = result["text"].strip()
+                text = correct_stt(text)  # 應用 STT 修正
+                
+                debug_log(2, f"[STT] 檢測到文字: '{text}'")
+                
+                # 使用智能關鍵詞檢測器
+                should_activate, matches = self.keyword_detector.should_activate(text)
+                
+                if should_activate:
+                    activation_reason = self.keyword_detector.get_activation_reason(matches)
+                    info_log(f"[STT] 智能觸發: {activation_reason}")
+                    
+                    # 觸發完整的語音識別
+                    info_log("[STT] 觸發完整語音識別...")
+                    full_duration = 5.0
+                    full_audio = self._record_audio(full_duration)
+                    
+                    if full_audio is not None:
+                        # 完整識別
+                        full_audio_float = full_audio.astype(np.float32) / 32768.0
+                        full_kwargs = {
+                            "max_new_tokens": 128,  # 安全的範圍
+                            "num_beams": 1,
+                            "condition_on_prev_tokens": False,
+                            "compression_ratio_threshold": 1.35,
+                            "temperature": (0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
+                            "logprob_threshold": -1.0,
+                            "no_speech_threshold": 0.6,
+                            "return_timestamps": True,
+                            "language": "en",  # 明確指定英文
+                        }
+                        
+                        full_result = self.pipe(full_audio_float, generate_kwargs=full_kwargs)
+                        full_text = full_result["text"].strip()
+                        full_text = correct_stt(full_text)
+                        confidence = self._calculate_transformers_confidence(full_result)
+                        
+                        # 說話人識別
+                        speaker_info = None
+                        if input_data.enable_speaker_id:
+                            speaker_info = self.speaker_module.identify_speaker(full_audio)
+                        
+                        return STTOutput(
+                            text=full_text,
+                            confidence=confidence,
+                            speaker_info=speaker_info,
+                            activation_reason=activation_reason,
+                            error=None
+                        ).dict()
+                else:
+                    debug_log(3, f"[STT] 未觸發: 未達到觸發條件")
+                
+                # 短暫休息
+                time.sleep(0.1)
+            
+            # 監聽超時
+            return STTOutput(
+                text="",
+                confidence=0.0,
+                speaker_info=None,
+                activation_reason="監聽超時",
+                error="監聽期間未檢測到觸發條件"
+            ).dict()
+            
+        except Exception as e:
+            error_log(f"[STT] 智能識別失敗: {str(e)}")
+            return STTOutput(
+                text="", 
+                confidence=0.0, 
+                error=f"智能識別失敗: {str(e)}",
+                activation_reason="智能識別失敗"
+            ).dict()
+
     def shutdown(self):
         """關閉模組"""
         if self.pyaudio_instance:
             self.pyaudio_instance.terminate()
+        
+        # 關閉新的獨立模組
+        if hasattr(self, 'vad_module'):
+            self.vad_module.shutdown()
+        if hasattr(self, 'speaker_module'):
+            self.speaker_module.shutdown()
         
         # 清理 GPU 記憶體
         if self.model is not None:

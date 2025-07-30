@@ -76,21 +76,29 @@ class TTSModule(BaseModule):
             # Warm up the TTS model
             info_log(f"[TTS] Warming up TTS model...")
             try:
-                asyncio.run(
-                    run_tts(
-                        tts_text="This is for the warm-up.",
-                        model_name=self.model_name,
-                        model_path=self.model_path,
-                        index_file=self.index_file,
-                        f0_up_key=7,
-                        speaker_id=self.speaker_id,
-                        output_path=None,
-                        speed_rate=-self.speed_rate
+                # 檢查是否已有事件循環運行
+                try:
+                    loop = asyncio.get_running_loop()
+                    # 如果有運行中的事件循環，跳過 warm-up 或使用其他方法
+                    info_log(f"[TTS] Event loop already running, skipping warm-up")
+                except RuntimeError:
+                    # 沒有運行中的事件循環，可以安全使用 asyncio.run()
+                    asyncio.run(
+                        run_tts(
+                            tts_text="This is for the warm-up.",
+                            model_name=self.model_name,
+                            model_path=self.model_path,
+                            index_file=self.index_file,
+                            f0_up_key=7,
+                            speaker_id=self.speaker_id,
+                            output_path=None,
+                            speed_rate=-self.speed_rate
+                        )
                     )
-                )
             except Exception as e:
                 error_log(f"[TTS] Warm up failed: {str(e)}")
-                return False
+                # 不因為 warm-up 失敗而終止初始化
+                info_log(f"[TTS] Continuing initialization without warm-up")
 
             return True
         except Exception as e:

@@ -394,3 +394,7 @@ memory/*
 
 # Wheels
 wheel/*
+
+# Voice Output
+outputs/data/*
+*.wav

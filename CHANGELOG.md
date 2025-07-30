@@ -550,3 +550,15 @@
 
 ---
 
+### Added some TTS related training files. 07/30
+
+> Date: Wed, 30 Jul 2025 18:15:49 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `develop`
+
+> Commit: `509845b1fbfcea832ad04dcb207786b8a08616c8`
+
+---
+

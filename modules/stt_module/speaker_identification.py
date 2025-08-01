@@ -502,9 +502,11 @@ class SpeakerIdentification:
     
     def update_similarity_threshold(self, threshold: float):
         """更新相似度閾值"""
-        self.similarity_threshold = max(0.0, min(1.0, threshold))
+        clamped = max(0.0, min(1.0, threshold))
+        if clamped != threshold:
+            info_log(f"[Speaker] 輸入的相似度閾值 {threshold} 超出範圍，已自動調整為 {clamped}")
+        self.similarity_threshold = clamped
         info_log(f"[Speaker] 更新相似度閾值: {self.similarity_threshold}")
-    
     def shutdown(self):
         """關閉說話人識別模組"""
         self._save_speaker_database()

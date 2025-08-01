@@ -610,3 +610,15 @@
 
 ---
 
+### Removed unnecessary files. 08/01
+
+> Date: Fri, 01 Aug 2025 20:52:32 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/stt_module_rework`
+
+> Commit: `64e27ee1694bcd22cd810c125fbe7e11a8dff8aa`
+
+---
+

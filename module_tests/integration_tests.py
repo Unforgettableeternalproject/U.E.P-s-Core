@@ -146,7 +146,14 @@ def itSN(modules : dict):
         error_log("[Controller] ❌ 無法載入 STT 或 NLP 模組")
         return
     
-    result = stt.handle()
+    # 使用新版 STT API - 手動模式
+    result = stt.handle({
+        "mode": "manual",
+        "language": "en-US",
+        "enable_speaker_id": False,
+        "duration": 5
+    })
+    
     if not result.get("text"):
         info_log("[SN] 語音轉文字結果為空", "WARNING")
         return
@@ -168,7 +175,14 @@ def itSM(modules : dict):
         error_log("[Controller] ❌ 無法載入 STT 或 MEM 模組")
         return
 
-    result = stt.handle()
+    # 使用新版 STT API - 手動模式
+    result = stt.handle({
+        "mode": "manual",
+        "language": "en-US",
+        "enable_speaker_id": False,
+        "duration": 5
+    })
+    
     text = result.get("text", "")
     if not text:
         info_log("[SM] 語音轉文字結果為空", "WARNING")
@@ -199,7 +213,14 @@ def itSL(modules: dict):
         error_log("[Controller] ❌ 無法載入 STT 或 LLM 模組")
         return
 
-    result = stt.handle()
+    # 使用新版 STT API - 手動模式
+    result = stt.handle({
+        "mode": "manual",
+        "language": "en-US",
+        "enable_speaker_id": False,
+        "duration": 5
+    })
+    
     text = result.get("text", "")
     if not text:
         info_log("[SL] 語音轉文字結果為空", "WARNING")
@@ -232,7 +253,14 @@ def itST(modules: dict):
         error_log("[Controller] ❌ 無法載入 STT 或 TTS 模組")
         return
 
-    result = stt.handle()
+    # 使用新版 STT API - 手動模式
+    result = stt.handle({
+        "mode": "manual",
+        "language": "en-US",
+        "enable_speaker_id": False,
+        "duration": 5
+    })
+    
     text = result.get("text", "")
 
     if not text:
@@ -539,7 +567,19 @@ def itSNM(modules : dict):
         return
 
     # Step 1: STT 語音輸入
-    result = stt.handle()
+    # 使用新版 STT API - 手動模式
+
+    result = stt.handle({
+
+        "mode": "manual",
+
+        "language": "en-US",
+
+        "enable_speaker_id": False,
+
+        "duration": 5
+
+    })
     text = result.get("text", "")
     if not text:
         info_log("[SNM] 語音轉文字結果為空", "WARNING")
@@ -577,7 +617,25 @@ def itSNL(modules: dict):
         error_log("[Controller] ❌ 無法載入 STT / NLP / LLM 模組")
         return
 
-    result = stt.handle()
+    # 使用新版 STT API - 手動模式
+
+
+    result = stt.handle({
+
+
+        "mode": "manual",
+
+
+        "language": "en-US",
+
+
+        "enable_speaker_id": False,
+
+
+        "duration": 5
+
+
+    })
     text = result.get("text", "")
     if not text:
         info_log("[SNL] 語音轉文字結果為空", "WARNING")
@@ -761,7 +819,25 @@ def itSNML(modules: dict):
         error_log("[Controller] ❌ 無法載入 STT / NLP / MEM / LLM 模組")
         return
 
-    result = stt.handle()
+    # 使用新版 STT API - 手動模式
+
+
+    result = stt.handle({
+
+
+        "mode": "manual",
+
+
+        "language": "en-US",
+
+
+        "enable_speaker_id": False,
+
+
+        "duration": 5
+
+
+    })
     text = result.get("text", "")
     if not text:
         info_log("[SNML] 語音轉文字結果為空", "WARNING")
@@ -900,7 +976,25 @@ def itSNMLT(modules: dict):
         error_log("[Controller] ❌ 無法載入 STT / NLP / MEM / LLM / TTS 模組")
         return
 
-    result = stt.handle()
+    # 使用新版 STT API - 手動模式
+
+
+    result = stt.handle({
+
+
+        "mode": "manual",
+
+
+        "language": "en-US",
+
+
+        "enable_speaker_id": False,
+
+
+        "duration": 5
+
+
+    })
     text = result.get("text", "")
 
     if not text:
@@ -984,7 +1078,19 @@ def itSNMLTY(modules: dict):
     print("🎙️ 開始完整管線測試：STT → NLP → MEM/SYS → LLM → TTS → SYS")
 
     # Step 1: 取得語音輸入並轉為文字
-    result = stt.handle()
+    # 使用新版 STT API - 手動模式
+
+    result = stt.handle({
+
+        "mode": "manual",
+
+        "language": "en-US",
+
+        "enable_speaker_id": False,
+
+        "duration": 5
+
+    })
     audio_text = result.get("text", "")
     
     if not audio_text:

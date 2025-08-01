@@ -124,6 +124,9 @@
     <Compile Include="core\state_manager.py" />
     <Compile Include="devtools\debugger.py" />
     <Compile Include="modules\llm_module\gemini_client.py" />
+    <Compile Include="modules\stt_module\smart_activation.py" />
+    <Compile Include="modules\stt_module\speaker_identification.py" />
+    <Compile Include="modules\stt_module\voice_activity_detector.py" />
     <Compile Include="modules\sys_module\actions\automation_helper.py" />
     <Compile Include="modules\sys_module\actions\text_processing.py" />
     <Compile Include="modules\sys_module\actions\file_interaction.py" />
@@ -199,6 +202,7 @@
     <Compile Include="utils\tts_chunker.py" />
   </ItemGroup>
   <ItemGroup>
+    <Folder Include="examples\" />
     <Folder Include="logs\debug\" />
     <Folder Include="logs\error\" />
     <Folder Include="logs\runtime\" />

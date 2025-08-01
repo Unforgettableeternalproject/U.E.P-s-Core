@@ -550,3 +550,75 @@
 
 ---
 
+### Implemented some basic structure but most of them are not working yet. 07/25
+
+> Date: Fri, 25 Jul 2025 20:57:20 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/stt_module_rework`
+
+> Commit: `9271ddcdaaf4a1338b01eaa9ba4b1b93ee7a6826`
+
+---
+
+### Tried to fixed some stuff, will try again later. 07/226
+
+> Date: Sat, 26 Jul 2025 01:25:06 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/stt_module_rework`
+
+> Commit: `b62378aea062c2c2e1cd77abb1f262262c113ffe`
+
+---
+
+### Preparation for the STT module complete overhaul. 07/30
+
+> Date: Wed, 30 Jul 2025 19:23:16 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/stt_module_rework`
+
+> Commit: `05fb4edf6ee210cdc3c9ce3b25920d4b20639b2a`
+
+---
+
+### SpeechRecognition to Whisper + Pyannote structure done, and integrated to controller. 07/30
+
+> Date: Wed, 30 Jul 2025 20:57:31 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/stt_module_rework`
+
+> Commit: `af0c68a7ce49e9a3ab41cca71ab14353d4686fc4`
+
+---
+
+### Added unit tests and slightly alter the way some module handles. 07/31
+
+> Date: Thu, 31 Jul 2025 02:28:44 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/stt_module_rework`
+
+> Commit: `8ef15e3ee6876c95779d28df9c9b842285ac01e3`
+
+---
+
+### Removed unnecessary files. 08/01
+
+> Date: Fri, 01 Aug 2025 20:52:32 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/stt_module_rework`
+
+> Commit: `64e27ee1694bcd22cd810c125fbe7e11a8dff8aa`
+
+---
+

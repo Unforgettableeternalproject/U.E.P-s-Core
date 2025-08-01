@@ -3,10 +3,10 @@
 modules_enabled:
   stt_module: true
   nlp_module: true
-  mem_module: true
-  llm_module: true
-  tts_module: true
-  sys_module: true
+  mem_module: false
+  llm_module: false
+  tts_module: false
+  sys_module: false
 
 logging:
   enabled: true
@@ -16,4 +16,4 @@ logging:
 
 debug:
   enabled: true
-  debug_level: 3
+  debug_level: 2

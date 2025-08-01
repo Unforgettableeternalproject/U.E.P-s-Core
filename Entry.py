@@ -46,6 +46,22 @@ if __name__ == "__main__":
     print("\n=========================\n")
     print(f"U.E.P <v.0.1.0> - 開發中版本 - {datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}\n")
 
+    # 處理命令行參數
+    import argparse
+    parser = argparse.ArgumentParser(description='U.E.P 系統')
+    parser.add_argument('--reset-speaker-models', action='store_true', help='重置說話人模型')
+    args = parser.parse_args()
+    
+    # 處理特殊命令
+    if args.reset_speaker_models:
+        from modules.stt_module.speaker_identification import SpeakerIdentifier
+        speaker_id = SpeakerIdentifier(config.get("modules", {}).get("stt_module", {}))
+        if speaker_id.reset_speaker_models():
+            print("已重置說話人模型")
+        else:
+            print("重置說話人模型失敗")
+        sys.exit(0)
+
     if debug_mode:
         debug_log(1, "除錯模式啟用")
         debug_interactive()  # 啟動互動式命令行介面

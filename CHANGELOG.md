@@ -644,4 +644,27 @@
 
 > Commit: `b620d8c039f5a9df0b19acef16d42602bae381f0`
 
+---### Attempt the overhaul the way modules communicate and adding more structure to connect them better. 08/15
+
+> Date: Fri, 15 Aug 2025 19:41:51 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `develop`
+
+> Commit: `4220c12eed9a31dfa48c14c8b9bb7b853f2ac0af`
+
 ---
+
+### Attempt the overhaul the way modules communicate and adding more structure to connect them better. 08/15
+
+> Date: Fri, 15 Aug 2025 19:41:51 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `develop`
+
+> Commit: `3d7748947c679cf7a53944a58fb948470d39393d`
+
+---
+

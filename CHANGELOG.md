@@ -634,3 +634,15 @@
 
 ---
 
+### Solved conflicts based on speaker identification. 08/15
+
+> Date: Fri, 15 Aug 2025 15:30:23 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/stt_module_rework`
+
+> Commit: `b620d8c039f5a9df0b19acef16d42602bae381f0`
+
+---
+

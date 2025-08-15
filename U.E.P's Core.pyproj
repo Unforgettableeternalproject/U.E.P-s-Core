@@ -145,6 +145,7 @@
     <Content Include="requirements.in" />
     <Content Include="requirements.txt" />
     <Content Include="train\nlp\dataset.csv" />
+    <Content Include="train\tts\dataset.csv" />
     <Content Include="wheel\fairseq-0.12.2-cp310-cp310-win_amd64.whl" />
   </ItemGroup>
   <ItemGroup>
@@ -296,6 +297,7 @@
     <Folder Include="module_tests\" />
     <Folder Include="train\" />
     <Folder Include="train\nlp\" />
+    <Folder Include="train\tts\" />
     <Folder Include="utils\" />
     <Folder Include="wheel\" />
   </ItemGroup>

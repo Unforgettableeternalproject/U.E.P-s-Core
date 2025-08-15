@@ -622,3 +622,15 @@
 
 ---
 
+### Experimental algorithm changes. 08/15
+
+> Date: Fri, 15 Aug 2025 15:16:52 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/stt_module_rework`
+
+> Commit: `5be0a9f9122d4c16172905c00855aa753406949e`
+
+---
+

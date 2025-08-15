@@ -120,21 +120,7 @@ def _handle_workflow_interaction(sysmod, session_id, initial_resp):
                     print(f"  {key}: {value}")
         else:
             print(f"  結果: {data}")
-
-def test_chunk_and_summarize():
-    print("🧪 測試記憶摘要功能")
-    memories = []
-    while True:
-        line = input("➕ 請輸入一段記憶文字（Enter 結束）：")
-        if line == "exit":
-            return ;
-        if not line:
-            break
-        memories.append(line)
-
-    summary = chunk_and_summarize_memories(memories, chunk_size=3)
-    print("📄 摘要結果：\n", summary)
-
+            
 # 統合測試
 
 # 測試STT到NLP的整合

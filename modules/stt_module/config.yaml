@@ -40,6 +40,34 @@ speaker_identification:
   max_speakers: 4          # 最大說話人數量
   min_segment_duration: 1.0 # 最小語音段持續時間
 
+# Speaker Recognition Mode Selection
+# Options: "basic", "advanced", "both" (try advanced first, fallback to basic)
+speaker_recognition_mode: "both"
+
+# Advanced Speaker Recognition Settings
+speaker_model: "pyannote/speaker-diarization-3.1"
+embedding_model: "pyannote/embedding"
+
+# Speaker Recognition Thresholds
+speaker_similarity_threshold: 0.009
+speaker_high_confidence_threshold: 0.0001
+speaker_medium_confidence_threshold: 0.0005
+
+# Distance Calculation Weights
+distance_weights:
+  cosine: 0.3
+  euclidean: 0.3
+  magnitude: 0.2
+  correlation: 0.2
+
+# Feature Enhancement
+use_enhanced_features: true
+use_magnitude_difference: true
+use_subspace_projection: true
+
+# Advanced Speaker Database Settings
+speaker_database_path: "memory/advanced_speaker_db.pkl"
+
 # 語音活動檢測 (VAD) 配置
 voice_activity_detection:
   model: "silero"          # VAD 模型類型 (silero, pyannote)

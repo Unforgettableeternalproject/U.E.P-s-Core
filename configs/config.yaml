@@ -2,7 +2,7 @@
 
 modules_enabled:
   stt_module: true
-  nlp_module: true
+  nlp_module: false
   mem_module: false
   llm_module: false
   tts_module: false

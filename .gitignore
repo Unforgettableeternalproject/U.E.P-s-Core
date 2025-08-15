@@ -397,4 +397,5 @@ wheel/*
 
 # Temp
 *.wav
+*.mp3
 additional/*

@@ -1,4 +1,4 @@
-import core.controller as controller
+import devtools.debug_api as controller
 from utils.debug_helper import debug_log, info_log, error_log
 from configs.config_loader import load_config
 import asyncio

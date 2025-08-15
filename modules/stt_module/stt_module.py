@@ -21,7 +21,7 @@ from utils.debug_helper import debug_log, info_log, error_log
 from configs.config_loader import load_module_config
 from .schemas import STTInput, STTOutput, ActivationMode, SpeakerInfo
 
-# 新的獨立模組
+# 獨立模組
 from .vad import VoiceActivityDetection
 from .speaker_identification import SpeakerIdentification
 from .smart_keyword_detector import SmartKeywordDetector
@@ -85,9 +85,12 @@ class STTModule(BaseModule):
         self.processor = None
         self.pipe = None
         
+        # 說話人識別模式配置 (現在使用統一系統，但保留此變數以兼容現有配置)
+        self.speaker_recognition_mode = self.config.get("speaker_recognition_mode", "unified")
+        
         # 新的獨立模組
         self.vad_module = VoiceActivityDetection(self.sample_rate)
-        self.speaker_module = SpeakerIdentification()
+        self.speaker_module = SpeakerIdentification(config=self.config)  # 增強版語者識別系統
         self.keyword_detector = SmartKeywordDetector(config=self.config)
         
         # PyAudio 配置
@@ -114,6 +117,7 @@ class STTModule(BaseModule):
         debug_log(2, f"[STT] 使用本地模型: {self.use_local_model}")
         debug_log(2, f"[STT] 計算設備: {self.device}, 數據類型: {self.torch_dtype}")
         debug_log(2, f"[STT] PyAudio 配置: {self.pa_config}")
+        debug_log(2, f"[STT] 語者識別模式: 統一模式 (整合高相似度辨識功能)")
 
     def initialize(self):
         debug_log(1, "[STT] 初始化中...")
@@ -173,6 +177,8 @@ class STTModule(BaseModule):
                 info_log("[STT] 說話人識別模組使用 fallback 模式，基本功能仍可使用")
             else:
                 info_log("[STT] 說話人識別模組初始化成功")
+            
+            # 語者識別已經初始化完畢
             
             # 列出可用的音頻設備
             debug_log(3, "[STT] 可用音頻設備：")
@@ -269,10 +275,10 @@ class STTModule(BaseModule):
             text = correct_stt(text)
             confidence = self._calculate_transformers_confidence(result)
             
-            # 說話人識別
+            # 說話人識別 - 根據配置選擇模式
             speaker_info = None
             if input_data.enable_speaker_id:
-                speaker_info = self.speaker_module.identify_speaker(audio_data)
+                speaker_info = self._identify_speaker_with_mode(audio_data)
             
             return STTOutput(
                 text=text,
@@ -439,10 +445,11 @@ class STTModule(BaseModule):
                         full_text = correct_stt(full_text)
                         confidence = self._calculate_transformers_confidence(full_result)
                         
-                        # 說話人識別
+                        # 說話人識別 - 根據配置模式
                         speaker_info = None
                         if input_data.enable_speaker_id:
-                            speaker_info = self.speaker_module.identify_speaker(full_audio)
+                            speaker_info = self._identify_speaker_with_mode(full_audio)
+                            debug_log(2, f"[STT] 智能模式語者識別: {speaker_info.speaker_id} (信心度: {speaker_info.confidence:.6f})")
                         
                         return STTOutput(
                             text=full_text,
@@ -485,6 +492,23 @@ class STTModule(BaseModule):
             self.vad_module.shutdown()
         if hasattr(self, 'speaker_module'):
             self.speaker_module.shutdown()
+
+    def _identify_speaker_with_mode(self, audio_data: np.ndarray) -> SpeakerInfo:
+        """根據配置的模式進行說話人識別"""
+        try:
+            # 我們現在只有一種語者識別系統，無需再根據模式選擇
+            debug_log(2, f"[STT] 使用統一的語者識別系統")
+            return self.speaker_module.identify_speaker(audio_data)
+                
+        except Exception as e:
+            error_log(f"[STT] 說話人識別完全失敗: {e}")
+            # 返回默認結果
+            return SpeakerInfo(
+                speaker_id="unknown",
+                confidence=0.0,
+                is_new_speaker=False,
+                voice_features={"error": str(e)}
+            )
         
         # 清理 GPU 記憶體
         if self.model is not None:

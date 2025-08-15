@@ -622,15 +622,26 @@
 
 ---
 
-### Added some TTS related training files. 07/30
+### Experimental algorithm changes. 08/15
 
-> Date: Wed, 30 Jul 2025 18:15:49 +0800
+> Date: Fri, 15 Aug 2025 15:16:52 +0800
 
 > Author: Bernie <ptyc4076@gmail.com>
 
-> Branch: `develop`
+> Branch: `feature/stt_module_rework`
 
-> Commit: `509845b1fbfcea832ad04dcb207786b8a08616c8`
+> Commit: `5be0a9f9122d4c16172905c00855aa753406949e`
 
 ---
 
+### Solved conflicts based on speaker identification. 08/15
+
+> Date: Fri, 15 Aug 2025 15:30:23 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/stt_module_rework`
+
+> Commit: `b620d8c039f5a9df0b19acef16d42602bae381f0`
+
+---

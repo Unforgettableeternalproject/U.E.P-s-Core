@@ -4,6 +4,7 @@ from configs.config_loader import load_config
 from utils.debug_helper import debug_log, info_log, error_log
 from utils.debug_file_dropper import open_demo_window, open_folder_dialog
 from module_tests.integration_tests import *
+from module_tests.extra_tests import *
 import tkinter as tk
 from tkinterdnd2 import TkinterDnD
 import time
@@ -127,7 +128,7 @@ def stt_test_single(mode="manual", enable_speaker_id=True, language="en-US"):
         "mode": mode,
         "language": language,
         "enable_speaker_id": enable_speaker_id,
-        "duration": 5
+        "duration": 8
     })
     
     on_stt_result(result)
@@ -164,40 +165,6 @@ def stt_test_smart_activation(duration=30):
     except Exception as e:
         error_log(f"[Controller] 智能監聽失敗: {e}")
         return None
-
-def stt_test_realtime():
-    """即時監聽測試 - 使用新版 smart 模式循環"""
-    stt = modules["stt"]
-
-    if stt is None:
-        error_log("[Controller] ❌ 無法載入 STT 模組")
-        return
-
-    print("🔄 即時監聽模式 (持續監聽，按 Ctrl+C 停止)")
-    print("說 'UEP', 'help me', 'what is', 'can you' 等觸發詞進行測試")
-    
-    try:
-        while True:
-            print("\n🎤 開始新一輪智能監聽...")
-            result = stt.handle({
-                "mode": "smart",
-                "language": "en-US", 
-                "enable_speaker_id": True,
-                "duration": 30  # 每輪 30 秒
-            })
-            
-            print("📢 即時監聽結果:")
-            on_stt_result(result)
-            
-            # 如果觸發了啟動，稍作停頓
-            if result.get("text") and result.get("activation_reason", "").startswith("智能觸發"):
-                print("⏸️ 啟動後暫停 3 秒...")
-                time.sleep(3)
-            
-    except KeyboardInterrupt:
-        print("\n⏹️ 即時監聽已停止")
-    except Exception as e:
-        error_log(f"[Controller] 即時監聽失敗: {e}")
 
 def stt_get_stats():
     """獲取 STT 統計信息"""
@@ -392,6 +359,7 @@ def stt_speaker_adjust_threshold(threshold: float = None):
         error_log("[Controller] ❌ 無法載入 STT 模組")
         return
         
+    # 使用統一的說話人識別系統
     if hasattr(stt, 'speaker_module'):
         if threshold is None:
             current = stt.speaker_module.similarity_threshold
@@ -411,6 +379,7 @@ def stt_speaker_adjust_threshold(threshold: float = None):
             return False
     else:
         print("⚠️ 說話人識別模組不可用")
+        return False
 
 # 測試 NLP 模組
 
@@ -880,6 +849,9 @@ def pipeline_test():
 def test_summrize():
     test_chunk_and_summarize()
 
+def test_chat():
+    test_uep_chatting(modules)
+
 def sys_list_test_workflows():
     """列出所有可用的測試工作流程"""
     print("\n=== 可用的測試工作流程 ===")
@@ -1085,3 +1057,100 @@ def test_file_workflow(workflow_type: str):
                 print(f"\n📝 摘要: {data['summary']}")
             if "tags" in data:
                 print(f"🏷️ 標籤: {', '.join(data['tags'])}")
+
+# === 工作上下文管理功能 ===
+
+def setup_working_context():
+    """初始化工作上下文管理器"""
+    from core.working_context import working_context_manager, ContextType
+    
+    # 註冊決策處理器
+    try:
+        # 註冊語者識別決策處理器
+        if modules.get("stt"):
+            from modules.stt_module.speaker_context_handler import SpeakerContextHandler
+            speaker_handler = SpeakerContextHandler(modules["stt"])
+            working_context_manager.register_decision_handler(ContextType.SPEAKER_ACCUMULATION, speaker_handler)
+            info_log("[Controller] 語者識別決策處理器已註冊")
+    except Exception as e:
+        error_log(f"[Controller] 註冊決策處理器失敗: {e}")
+    
+    info_log("[Controller] 工作上下文管理器已初始化")
+
+def cleanup_session_contexts(min_samples: int = 15):
+    """
+    清理會話結束時未完成的上下文
+    
+    Args:
+        min_samples: 最小樣本數，低於此數值的語者上下文將被清理
+    """
+    from core.working_context import working_context_manager, ContextType
+    
+    info_log(f"[Controller] 開始清理會話上下文 (最小樣本數: {min_samples})")
+    
+    # 清理語者識別相關的未完成上下文
+    cleaned_count = working_context_manager.cleanup_incomplete_contexts(
+        context_type=ContextType.SPEAKER_ACCUMULATION,
+        min_threshold=min_samples
+    )
+    
+    if cleaned_count > 0:
+        info_log(f"[Controller] 清理了 {cleaned_count} 個樣本不足的語者上下文")
+    else:
+        info_log("[Controller] 沒有需要清理的語者上下文")
+    
+    # 注意：不在這裡調用 cleanup_expired_contexts，因為已完成的上下文可能還有用
+    
+    return cleaned_count
+
+def get_working_context_status():
+    """獲取工作上下文狀態"""
+    from core.working_context import working_context_manager
+    
+    contexts = working_context_manager.get_all_contexts_info()
+    
+    print("🔄 工作上下文狀態:")
+    if not contexts:
+        print("   無活躍的工作上下文")
+        return
+    
+    for ctx in contexts:
+        context_id = ctx['context_id']
+        context_type = ctx['type']
+        status = ctx['status']
+        sample_count = ctx['sample_count']
+        threshold = ctx['threshold']
+        is_ready = ctx['is_ready']
+        
+        print(f"   {context_id}:")
+        print(f"     類型: {context_type}")
+        print(f"     狀態: {status}")
+        print(f"     樣本: {sample_count}/{threshold}")
+        print(f"     就緒: {'是' if is_ready else '否'}")
+    
+    return contexts
+
+def test_speaker_context_workflow():
+    """測試語者上下文工作流程"""
+    print("🎤 語者上下文工作流程測試")
+    print("   這個測試會累積多個語音樣本，並觀察工作上下文的行為")
+    
+    # 初始化工作上下文
+    setup_working_context()
+    
+    # 執行多次 STT 測試以累積樣本
+    for i in range(5):
+        print(f"\n--- 第 {i+1} 次語音識別 ---")
+        result = stt_test_single(mode="manual", enable_speaker_id=True)
+        
+        # 顯示工作上下文狀態
+        get_working_context_status()
+        
+        if i < 4:  # 最後一次不需要暫停
+            print("   按 Enter 繼續下一次測試...")
+            input()
+    
+    print("\n✅ 語者上下文工作流程測試完成")
+
+# 在模組載入時自動初始化工作上下文
+setup_working_context()

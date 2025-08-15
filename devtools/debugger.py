@@ -353,9 +353,11 @@ def debug_interactive():
             case "ex":
                 debug_log(1, "額外功能測試")
                 print("<額外功能測試>\n")
-                choice = input("請選擇欲進行測試 (1: 重點整理測試 (LLM), exit: 離開): \n\n> ")
+                choice = input("請選擇欲進行測試 (1: 重點整理測試 (LLM), 2: 聊天測試 (STT+LLM+TTS), exit: 離開): \n\n> ")
                 if choice == "1":
-                    controller.test_summrize()
+                    controller.test_summarize()
+                elif choice == "2":
+                    controller.test_chat()
                 elif choice in ["exit", "e", "quit", "q", "back", "b"]:
                     break
                 else:

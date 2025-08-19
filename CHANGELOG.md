@@ -682,3 +682,15 @@
 
 ---
 
+### Made STT compatible to our current core structure. 08/19
+
+> Date: Tue, 19 Aug 2025 23:29:25 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/stt_module_rework`
+
+> Commit: `596b93dff6ea6dc30df1af4454305c95059f4dec`
+
+---
+

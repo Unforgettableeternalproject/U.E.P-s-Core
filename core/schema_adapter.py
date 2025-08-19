@@ -196,9 +196,12 @@ class STTSchemaAdapter(SchemaAdapter):
     
     def adapt_output(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """將 STT 模組輸出轉換為統一格式"""
+        has_text = data.get("text") and data.get("text").strip()
+        has_error = data.get("error") is not None
+        
         return {
-            "status": "success" if data.get("text") else "error",
-            "message": "STT 處理完成",
+            "status": "success" if has_text and not has_error else "error",
+            "message": "STT 處理完成" if has_text else "STT 未識別語音",
             "error": data.get("error"),
             "data": {
                 "text": data.get("text", ""),

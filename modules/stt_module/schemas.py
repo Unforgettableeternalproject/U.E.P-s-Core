@@ -1,6 +1,7 @@
-﻿from pydantic import BaseModel
+﻿from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from enum import Enum
+from core.schemas import STTModuleData
 
 class ActivationMode(Enum):
     """STT 啟動模式"""
@@ -15,7 +16,7 @@ class SpeakerInfo(BaseModel):
     voice_features: Optional[Dict[str, Any]] = None  # 語音特徵
     
 class STTInput(BaseModel):
-    """STT 模組輸入"""
+    """STT 模組輸入 (模組內部使用)"""
     mode: ActivationMode = ActivationMode.MANUAL  # 啟動模式
     duration: Optional[float] = None               # 錄音時長限制
     language: str = "en-US"                       # 語言設定 (預設英文)
@@ -24,7 +25,7 @@ class STTInput(BaseModel):
     keywords: Optional[List[str]] = None          # 智能模式的關鍵詞列表
     
 class STTOutput(BaseModel):
-    """STT 模組輸出"""
+    """STT 模組輸出 (模組內部使用)"""
     text: str                                     # 辨識出的文字內容
     confidence: float                             # 識別信心度
     speaker_info: Optional[SpeakerInfo] = None    # 說話人信息
@@ -33,6 +34,25 @@ class STTOutput(BaseModel):
     alternatives: Optional[List[str]] = None      # 備選結果
     error: Optional[str] = None                   # 錯誤訊息
     should_activate: bool = True                  # 是否應該啟動（智能判斷結果）
+    
+    def to_unified_format(self) -> STTModuleData:
+        """轉換為統一數據格式，用於模組間通訊"""
+        has_valid_text = self.text and len(self.text.strip()) > 0
+        
+        return STTModuleData(
+            text=self.text,
+            confidence=self.confidence,
+            speaker_info=self.speaker_info.model_dump() if self.speaker_info else None,
+            activation_reason=self.activation_reason,
+            status="success" if has_valid_text and not self.error else "error",
+            error=self.error,
+            source_module="stt",
+            metadata={
+                "processing_time": self.processing_time,
+                "alternatives": self.alternatives,
+                "should_activate": self.should_activate
+            }
+        )
 
 class VoiceActivityEvent(BaseModel):
     """語音活動事件"""

@@ -176,3 +176,7 @@ class Router:
         self._session_state = CommandSessionState.NONE
         self._session_step = 0
         self._session_workflow_type = None
+
+
+# 全局路由器實例
+router = Router()

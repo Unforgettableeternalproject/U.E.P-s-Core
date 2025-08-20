@@ -718,3 +718,15 @@
 
 ---
 
+### Added system initializer and system loop, as well as a production_runner to enable the user to run U.E.P in production. 08/21
+
+> Date: Thu, 21 Aug 2025 02:58:10 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `develop`
+
+> Commit: `e72655f34ea33e774ecb49897f2f8f005a7d78a9`
+
+---
+

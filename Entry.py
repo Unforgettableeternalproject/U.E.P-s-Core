@@ -1,7 +1,6 @@
 ﻿import sys
 from datetime import datetime
 from configs.config_loader import load_config
-from devtools.debugger import debug_interactive
 from utils.debug_helper import debug_log
 
 config = load_config()
@@ -50,7 +49,17 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='U.E.P 系統')
     parser.add_argument('--reset-speaker-models', action='store_true', help='重置說話人模型')
+    parser.add_argument('--debug', action='store_true', help='強制啟用除錯模式')
+    parser.add_argument('--production', action='store_true', help='強制啟用生產模式')
     args = parser.parse_args()
+    
+    # 命令行參數可以覆蓋配置文件設定
+    if args.debug:
+        debug_mode = True
+        print("🔧 通過命令行參數強制啟用除錯模式")
+    elif args.production:
+        debug_mode = False
+        print("🚀 通過命令行參數強制啟用生產模式")
     
     # 處理特殊命令
     if args.reset_speaker_models:
@@ -63,12 +72,24 @@ if __name__ == "__main__":
         sys.exit(0)
 
     if debug_mode:
-        debug_log(1, "除錯模式啟用")
+        debug_log(1, "🔧 除錯模式啟用，正在準備各項模組...")
+        from devtools.debugger import debug_interactive
         debug_interactive()  # 啟動互動式命令行介面
     else:
-        print("\n除錯模式未啟用，請檢查配置文件")
-        print("如果您想要進入除錯模式，請在配置文件中將 debug 設置為 True")
-        print("退出程式...")
+        print("🚀 正式模式啟用，啟動 UEP 生產環境...")
+        print("💡 這將使用 UnifiedController 運行已重構的模組")
+        print("🔄 如果您想要進入除錯模式，請在配置文件中將 debug.enabled 設置為 true")
+        print()
+        
+        # 啟動生產環境
+        try:
+            from core.production_runner import run_production_mode
+            run_production_mode()
+        except KeyboardInterrupt:
+            print("⌨️ 用戶中斷程序")
+        except Exception as e:
+            print(f"❌ 啟動生產環境時發生錯誤: {e}")
+            sys.exit(1)
 
     clear_empty_logs()
 

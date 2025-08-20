@@ -16,6 +16,16 @@ def load_config(path=CONFIG_PATH):
         print(f"[!] YAML 語法錯誤：{e}")
         return {}
 
+def save_config(config, path=CONFIG_PATH):
+    """儲存配置到 config.yaml"""
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.dump(config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        return True
+    except Exception as e:
+        print(f"[!] 儲存配置失敗：{e}")
+        return False
+
 def load_module_config(module_name: str):
     """載入指定模組的 config.yaml 設定"""
     module_config_path = os.path.join(BASE_DIR, "modules", module_name, "config.yaml")

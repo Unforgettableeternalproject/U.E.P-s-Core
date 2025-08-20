@@ -86,6 +86,8 @@ class UnifiedController:
         self.framework = core_framework
         self.config = load_config()
         self.enabled_modules = self.config.get("modules_enabled", {})
+        self.refactored_modules = self.config.get("modules_refactored", {})
+        self.debug_mode = self.config.get("debug", {}).get("enabled", False)
         
         # 模組實例儲存
         self.module_instances = {}
@@ -95,6 +97,11 @@ class UnifiedController:
         self.is_running = False
         
         info_log("[UnifiedController] 統一控制器初始化")
+        
+        # 在非除錯模式下，記錄只會載入已重構的模組
+        if not self.debug_mode:
+            refactored_count = sum(1 for status in self.refactored_modules.values() if status)
+            info_log(f"[UnifiedController] 正式模式：將只載入 {refactored_count} 個已重構模組")
     
     def initialize(self) -> bool:
         """初始化整個系統"""
@@ -182,6 +189,11 @@ class UnifiedController:
                     debug_log(1, f"[UnifiedController] 模組 {module_name} 未啟用，跳過")
                     continue
                 
+                # 在非除錯模式下，只載入已重構的模組
+                if not self.debug_mode and not self.refactored_modules.get(module_name, False):
+                    info_log(f"[UnifiedController] 正式模式：模組 {module_name} 尚未重構，跳過載入")
+                    continue
+                
                 try:
                     # 載入模組實例
                     module_instance = get_module(config["name"])
@@ -200,7 +212,8 @@ class UnifiedController:
                     
                     if success:
                         self.module_instances[module_id] = module_instance
-                        info_log(f"[UnifiedController] 成功註冊模組: {module_id}")
+                        status_indicator = "🔧" if self.debug_mode else "✅"
+                        info_log(f"[UnifiedController] {status_indicator} 成功註冊模組: {module_id}")
                     else:
                         error_log(f"[UnifiedController] 註冊模組失敗: {module_id}")
                         
@@ -208,7 +221,8 @@ class UnifiedController:
                     error_log(f"[UnifiedController] 載入模組異常 {module_id}: {e}")
                     continue
             
-            info_log(f"[UnifiedController] 已註冊 {len(self.module_instances)} 個模組")
+            mode_text = "除錯模式" if self.debug_mode else "正式模式"
+            info_log(f"[UnifiedController] {mode_text}：已註冊 {len(self.module_instances)} 個模組")
             return len(self.module_instances) > 0
             
         except Exception as e:
@@ -411,6 +425,36 @@ class UnifiedController:
                 return "healthy"
         except:
             return "unknown"
+    
+    def get_registered_modules(self) -> Dict[str, Any]:
+        """獲取已註冊的模組"""
+        return self.module_instances.copy()
+    
+    def get_module(self, module_name: str) -> Optional[Any]:
+        """獲取指定的模組實例"""
+        return self.module_instances.get(module_name)
+    
+    async def route_request(self, module_name: str, data: Any, context_id: Optional[str] = None) -> Optional[Any]:
+        """路由請求到指定模組"""
+        try:
+            module = self.get_module(module_name)
+            if not module:
+                error_log(f"[UnifiedController] 模組不存在: {module_name}")
+                return None
+            
+            # 如果模組有異步處理方法，使用異步調用
+            if hasattr(module, 'handle_async'):
+                return await module.handle_async(data)
+            elif hasattr(module, 'handle'):
+                # 同步調用
+                return module.handle(data)
+            else:
+                error_log(f"[UnifiedController] 模組 {module_name} 沒有處理方法")
+                return None
+                
+        except Exception as e:
+            error_log(f"[UnifiedController] 路由請求失敗: {e}")
+            return None
     
     def shutdown(self):
         """關閉系統"""

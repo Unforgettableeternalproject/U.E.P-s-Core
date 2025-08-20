@@ -184,11 +184,14 @@ class STTSchemaAdapter(SchemaAdapter):
     
     def adapt_input(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """將統一格式轉換為 STT 模組格式"""
+        # 默認使用持續監聽模式
+        mode = data.get("mode", "continuous")
+        
         adapted = {
-            "mode": data.get("mode", "manual"),
+            "mode": mode,
             "language": data.get("language", "en-US"),
             "enable_speaker_id": data.get("enable_speaker_id", True),
-            "duration": data.get("duration", 8),
+            "duration": data.get("duration", 30),  # 增加默認持續監聽時間
             "context": data.get("context", "general")
         }
         
@@ -196,9 +199,12 @@ class STTSchemaAdapter(SchemaAdapter):
     
     def adapt_output(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """將 STT 模組輸出轉換為統一格式"""
+        has_text = data.get("text") and data.get("text").strip()
+        has_error = data.get("error") is not None
+        
         return {
-            "status": "success" if data.get("text") else "error",
-            "message": "STT 處理完成",
+            "status": "success" if has_text and not has_error else "error",
+            "message": "STT 處理完成" if has_text else "STT 未識別語音",
             "error": data.get("error"),
             "data": {
                 "text": data.get("text", ""),

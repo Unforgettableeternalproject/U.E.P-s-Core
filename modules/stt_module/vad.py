@@ -26,9 +26,9 @@ class VoiceActivityDetection:
         self.vad_model = None
         
         # VAD 參數
-        self.energy_threshold = 0.001  # 降低能量閾值，更容易檢測到語音
-        self.silence_duration_threshold = 1.0  # 靜音持續時間閾值（秒）
-        self.speech_duration_threshold = 0.1   # 降低語音持續時間閾值（秒）
+        self.energy_threshold = 0.0005  # 進一步降低能量閾值，提高敏感度
+        self.silence_duration_threshold = 0.8  # 降低靜音持續時間閾值（秒）
+        self.speech_duration_threshold = 0.05  # 進一步降低語音持續時間閾值（秒）
         
         info_log("[VAD] 語音活動檢測模組初始化")
     
@@ -127,7 +127,7 @@ class VoiceActivityDetection:
         """判斷是否為語音"""
         return energy > self.energy_threshold
     
-    def has_sufficient_speech(self, audio_data: np.ndarray, min_duration: float = 0.5) -> bool:
+    def has_sufficient_speech(self, audio_data: np.ndarray, min_duration: float = 0.05) -> bool:
         """檢查音頻是否包含足夠的語音內容
         
         Args:

@@ -15,6 +15,12 @@ mod_list = {"stt": module_enabled.get("stt_module", False)
             , "sys": module_enabled.get("sys_module", False)}
 
 def handle_module_integration(user_input):
+
+    # 暫時停用，直到所有模組都採用新架構
+
+    info_log("[Debug] 模組整合測試已暫時停用")
+    return
+
     if user_input in ["pipeline", "all"]:
         if hasattr(controller, "pipeline_test"):
             controller.pipeline_test()
@@ -55,16 +61,23 @@ def colorful_text(text : str, enabled : bool = True):
 def debug_interactive():
     print("==========================\n\n歡迎來到U.E.P模組測試介面!\n\n==========================\n")
     while True:
-        user_input = input("請選擇想要測試的模組 (紅色標示表示未啟用):\n\n"+
-                          f"{colorful_text('stt - 語音轉文字模組;', mod_list['stt'])}" + 
-                          f"\n\n{colorful_text('nlp - 自然語言分析模組;', mod_list['nlp'])}" +
-                          f"\n\n{colorful_text('mem - 記憶存取模組;', mod_list['mem'])}" +
-                          f"\n\n{colorful_text('llm - 大型語言模型模組;', mod_list['llm'])}" +
-                          f"\n\n{colorful_text('tts - 文字轉語音模組;', mod_list['tts'])}" + 
-                          f"\n\n{colorful_text('sys - 系統功能模組;', mod_list['sys'])}" +
-                          f"\n\n{colorful_text('ex - 額外功能測試;')}" +
-                          "\n\n也可進行模組交叉測試 (使用+號來連接，例如stt+nlp)" +
-                          "\n\n(用 exit 來離開): \n\n> ")
+        # 組織模組選單（避免連續使用字符串拼接可能導致的格式問題）
+        menu_items = [
+            f"{colorful_text('stt - 語音轉文字模組;', mod_list['stt'])}",
+            f"{colorful_text('nlp - 自然語言分析模組;', mod_list['nlp'])}",
+            f"{colorful_text('mem - 記憶存取模組;', mod_list['mem'])}",
+            f"{colorful_text('llm - 大型語言模型模組;', mod_list['llm'])}",
+            f"{colorful_text('tts - 文字轉語音模組;', mod_list['tts'])}",
+            f"{colorful_text('sys - 系統功能模組;', mod_list['sys'])}",
+            f"{colorful_text('ex - 額外功能測試;')}"
+        ]
+        
+        menu_text = "請選擇想要測試的模組 (紅色標示表示未啟用):\n\n"
+        menu_text += "\n\n".join(menu_items)
+        menu_text += "\n\n也可進行模組交叉測試 (使用+號來連接，例如stt+nlp)"
+        menu_text += "\n\n(用 exit 來離開): \n\n> "
+        
+        user_input = input(menu_text)
         print("\n==========================\n")
         match user_input.lower().strip():
             case "stt":
@@ -78,7 +91,7 @@ def debug_interactive():
                 
                 choice = input("請選擇測試模式:\n" +
                              "1: 基本測試\n" + 
-                             "2: 背景監聽\n" +
+                             "2: 持續背景監聽\n" +
                              "3: 說話人管理\n" +
                              "4: 統計信息\n" +
                              "exit: 離開\n\n> ")
@@ -88,9 +101,8 @@ def debug_interactive():
                     controller.stt_test_single()
                 
                 elif choice == "2":
-                    print("開始智能啟動測試...")
-                    print("💡 說出 'UEP help me' 或 'what is...' 等觸發詞")
-                    controller.stt_test_smart_activation()
+                    print("開始持續背景監聽測試...")
+                    controller.stt_test_continuous_listening()
                 
                 elif choice == "3":
                     # 說話人管理子菜單

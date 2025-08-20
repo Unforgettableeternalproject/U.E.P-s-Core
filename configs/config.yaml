@@ -16,4 +16,4 @@ logging:
 
 debug:
   enabled: true
-  debug_level: 2
+  debug_level: 3

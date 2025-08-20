@@ -1,5 +1,5 @@
-# modules/stt_module/stt_module_transformers.py
-# STT Module Phase 2 - Transformers Whisper + pyannote 架構
+# modules/stt_module/stt_module.py
+# STT Module Phase 3 - 持續背景監聽 + 實時語音識別整合 + NLP模組連接
 
 import threading
 import queue
@@ -19,12 +19,13 @@ from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 from core.module_base import BaseModule
 from utils.debug_helper import debug_log, info_log, error_log
 from configs.config_loader import load_module_config
+from core.schemas import STTModuleData, create_stt_data
+from core.schema_adapter import STTSchemaAdapter
 from .schemas import STTInput, STTOutput, ActivationMode, SpeakerInfo
 
 # 獨立模組
 from .vad import VoiceActivityDetection
 from .speaker_identification import SpeakerIdentification
-from .smart_keyword_detector import SmartKeywordDetector
 
 def correct_stt(text):
     """STT 結果修正 - 主要針對英文識別優化"""
@@ -63,11 +64,17 @@ def correct_stt(text):
     return result
 
 class STTModule(BaseModule):
-    def __init__(self, config=None):
+    def __init__(self, config=None, working_context_manager=None, result_callback=None):
         self.config = config or load_module_config("stt_module")
         
+        # 工作上下文管理器
+        self.working_context_manager = working_context_manager
+        
+        # 結果回調函數，用於將識別結果發送給NLP模組
+        self.result_callback = result_callback
+        
         # 基本配置
-        self.device_index = self.config.get("device_index", 1)
+        self.device_index = self.config.get("device_index", None)  # 允許自動選擇麥克風
         self.phrase_time_limit = self.config.get("phrase_time_limit", 5)
         self.sample_rate = 16000  # Whisper 標準採樣率
         
@@ -88,10 +95,9 @@ class STTModule(BaseModule):
         # 說話人識別模式配置 (現在使用統一系統，但保留此變數以兼容現有配置)
         self.speaker_recognition_mode = self.config.get("speaker_recognition_mode", "unified")
         
-        # 新的獨立模組
+        # 獨立模組
         self.vad_module = VoiceActivityDetection(self.sample_rate)
         self.speaker_module = SpeakerIdentification(config=self.config)  # 增強版語者識別系統
-        self.keyword_detector = SmartKeywordDetector(config=self.config)
         
         # PyAudio 配置
         self.pyaudio_instance = None
@@ -117,7 +123,7 @@ class STTModule(BaseModule):
         debug_log(2, f"[STT] 使用本地模型: {self.use_local_model}")
         debug_log(2, f"[STT] 計算設備: {self.device}, 數據類型: {self.torch_dtype}")
         debug_log(2, f"[STT] PyAudio 配置: {self.pa_config}")
-        debug_log(2, f"[STT] 語者識別模式: 統一模式 (整合高相似度辨識功能)")
+        debug_log(2, f"[STT] 模式: 持續背景監聽，實時傳送結果給NLP模組")
 
     def initialize(self):
         debug_log(1, "[STT] 初始化中...")
@@ -197,7 +203,12 @@ class STTModule(BaseModule):
     def handle(self, data: dict = {}) -> dict:
         """處理 STT 請求"""
         try:
-            validated = STTInput(**data)
+            # 使用 schema adapter 轉換輸入數據
+            schema_adapter = STTSchemaAdapter()
+            adapted_input = schema_adapter.adapt_input(data)
+            
+            # 轉換為模組內部使用的格式
+            validated = STTInput(**adapted_input)
             debug_log(1, f"[STT] 處理請求: {validated.mode}")
             
             start_time = time.time()
@@ -205,22 +216,42 @@ class STTModule(BaseModule):
             if validated.mode == ActivationMode.MANUAL:
                 # 手動模式：立即錄音識別
                 result = self._manual_recognition(validated)
-            elif validated.mode == ActivationMode.SMART:
-                # 智能模式：使用新的智能關鍵詞檢測
-                result = self._smart_recognition_v2(validated)
+            elif validated.mode == ActivationMode.CONTINUOUS:
+                # 持續背景監聽模式：持續錄音並實時傳送結果給NLP
+                result = self._continuous_recognition(validated)
             else:
                 # 不支持的模式
-                return STTOutput(
+                raw_result = STTOutput(
                     text="", 
                     confidence=0.0, 
                     error="不支持的模式",
                     activation_reason="不支持的模式"
                 ).model_dump()
+                # 使用 schema adapter 轉換輸出數據
+                return schema_adapter.adapt_output(raw_result)
                 
             processing_time = time.time() - start_time
             result["processing_time"] = processing_time
             
-            return result
+            # 將結果轉換為 STTOutput 物件
+            stt_output = STTOutput(**result)
+            
+            # 檢查是否有識別出文本
+            if not stt_output.text or not stt_output.text.strip():
+                info_log("[STT] 🔇 未識別到有效語音內容")
+                # 更新錯誤信息
+                stt_output.error = "未識別到有效語音內容"
+                result["error"] = "未識別到有效語音內容"
+            else:
+                # 確保當有識別文本時，移除可能的錯誤信息
+                stt_output.error = None
+                result["error"] = None
+            
+            # 使用 STTOutput 的方法轉換為統一格式
+            unified_data = stt_output.to_unified_format()
+            
+            # 將統一格式轉換為 API 輸出格式
+            return schema_adapter.adapt_output(result)
             
         except Exception as e:
             error_log(f"[STT] 處理失敗: {str(e)}")
@@ -260,10 +291,14 @@ class STTModule(BaseModule):
                 "compression_ratio_threshold": 1.35,
                 "temperature": (0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
                 "logprob_threshold": -1.0,
-                "no_speech_threshold": 0.6,
+                "no_speech_threshold": 0.4,  # 降低閾值以提高敏感度
                 "return_timestamps": True,
-                "language": "en",  # 明確指定英文以避免警告
+                "language": "en",  # 使用標準代碼
             }
+            
+            # 檢查音頻數據是否有語音內容
+            if not self.vad_module.has_sufficient_speech(audio_data):
+                info_log("[STT] VAD 檢測：未檢測到足夠語音內容，但仍嘗試識別")
             
             # 使用 Transformers pipeline 進行語音識別
             result = self.pipe(
@@ -275,10 +310,24 @@ class STTModule(BaseModule):
             text = correct_stt(text)
             confidence = self._calculate_transformers_confidence(result)
             
+            # 檢查結果是否為空
+            if not text or text.isspace():
+                info_log("[STT] 🔇 未識別到有效語音內容")
+                return STTOutput(
+                    text="",
+                    confidence=0.0,
+                    speaker_info=None,
+                    activation_reason="manual",
+                    error="未識別到有效語音內容"
+                ).model_dump()
+            
             # 說話人識別 - 根據配置選擇模式
             speaker_info = None
             if input_data.enable_speaker_id:
                 speaker_info = self._identify_speaker_with_mode(audio_data)
+            
+            # 顯示識別結果
+            info_log(f"[STT] 識別結果: '{text}' (信心度: {confidence:.2f})")
             
             return STTOutput(
                 text=text,
@@ -301,14 +350,19 @@ class STTModule(BaseModule):
         """使用 PyAudio 錄製音頻"""
         try:
             # 創建音頻流
-            stream = self.pyaudio_instance.open(
-                format=self.pa_config["format"],
-                channels=self.pa_config["channels"],
-                rate=self.pa_config["rate"],
-                input=True,
-                input_device_index=self.device_index,
-                frames_per_buffer=self.pa_config["frames_per_buffer"]
-            )
+            stream_params = {
+                "format": self.pa_config["format"],
+                "channels": self.pa_config["channels"],
+                "rate": self.pa_config["rate"],
+                "input": True,
+                "frames_per_buffer": self.pa_config["frames_per_buffer"]
+            }
+            
+            # 只有當設備索引被明確指定時才添加
+            if self.device_index is not None:
+                stream_params["input_device_index"] = self.device_index
+                
+            stream = self.pyaudio_instance.open(**stream_params)
             
             frames = []
             frames_to_record = int(self.sample_rate * duration / self.pa_config["frames_per_buffer"])
@@ -324,6 +378,14 @@ class STTModule(BaseModule):
             # 轉換為 numpy 數組
             audio_data = b''.join(frames)
             audio_array = np.frombuffer(audio_data, dtype=np.int16)
+            
+            # 簡單的音頻前處理：歸一化並增強
+            if len(audio_array) > 0:
+                # 檢查音頻是否全為靜音
+                if np.max(np.abs(audio_array)) > 0:
+                    # 歸一化到最大振幅的 90%
+                    norm_factor = 0.9 * 32767 / np.max(np.abs(audio_array))
+                    audio_array = (audio_array * norm_factor).astype(np.int16)
             
             info_log(f"[STT] 錄音完成，長度: {len(audio_array) / self.sample_rate:.2f} 秒")
             return audio_array
@@ -370,118 +432,6 @@ class STTModule(BaseModule):
             debug_log(3, f"[STT] 計算信心度失敗: {str(e)}")
             return 0.8  # 默認信心度
 
-    def _smart_recognition_v2(self, input_data: STTInput) -> dict:
-        """智能語音識別 v2 - 使用新的智能關鍵詞檢測"""
-        try:
-            info_log("[STT] 開始智能監聽模式 v2...")
-            
-            duration = input_data.duration or 30.0
-            start_time = time.time()
-            
-            info_log(f"[STT] 智能監聽時長: {duration} 秒")
-            
-            while time.time() - start_time < duration:
-                # 短暫錄音檢測
-                chunk_duration = 2.0
-                audio_data = self._record_audio(chunk_duration)
-                
-                if audio_data is None:
-                    continue
-                
-                # 使用 VAD 檢查是否有足夠的語音
-                if not self.vad_module.has_sufficient_speech(audio_data, min_duration=0.1):
-                    debug_log(3, "[STT] 音頻中語音內容不足，跳過")
-                    continue
-                
-                # 使用 Whisper 快速識別
-                info_log("[STT] 檢測語音內容...")
-                audio_float = audio_data.astype(np.float32) / 32768.0
-                
-                # 快速識別參數
-                quick_kwargs = {
-                    "max_new_tokens": 32,  # 快速檢測用更少的 tokens
-                    "num_beams": 1,
-                    "condition_on_prev_tokens": False,
-                    "temperature": 0.0,
-                    "return_timestamps": False,
-                    "language": "en",  # 明確指定英文
-                }
-                
-                result = self.pipe(audio_float, generate_kwargs=quick_kwargs)
-                text = result["text"].strip()
-                text = correct_stt(text)  # 應用 STT 修正
-                
-                debug_log(2, f"[STT] 檢測到文字: '{text}'")
-                
-                # 使用智能關鍵詞檢測器
-                should_activate, matches = self.keyword_detector.should_activate(text)
-                
-                if should_activate:
-                    activation_reason = self.keyword_detector.get_activation_reason(matches)
-                    info_log(f"[STT] 智能觸發: {activation_reason}")
-                    
-                    # 觸發完整的語音識別
-                    info_log("[STT] 觸發完整語音識別...")
-                    full_duration = 5.0
-                    full_audio = self._record_audio(full_duration)
-                    
-                    if full_audio is not None:
-                        # 完整識別
-                        full_audio_float = full_audio.astype(np.float32) / 32768.0
-                        full_kwargs = {
-                            "max_new_tokens": 128,  # 安全的範圍
-                            "num_beams": 1,
-                            "condition_on_prev_tokens": False,
-                            "compression_ratio_threshold": 1.35,
-                            "temperature": (0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
-                            "logprob_threshold": -1.0,
-                            "no_speech_threshold": 0.6,
-                            "return_timestamps": True,
-                            "language": "en",  # 明確指定英文
-                        }
-                        
-                        full_result = self.pipe(full_audio_float, generate_kwargs=full_kwargs)
-                        full_text = full_result["text"].strip()
-                        full_text = correct_stt(full_text)
-                        confidence = self._calculate_transformers_confidence(full_result)
-                        
-                        # 說話人識別 - 根據配置模式
-                        speaker_info = None
-                        if input_data.enable_speaker_id:
-                            speaker_info = self._identify_speaker_with_mode(full_audio)
-                            debug_log(2, f"[STT] 智能模式語者識別: {speaker_info.speaker_id} (信心度: {speaker_info.confidence:.6f})")
-                        
-                        return STTOutput(
-                            text=full_text,
-                            confidence=confidence,
-                            speaker_info=speaker_info,
-                            activation_reason=activation_reason,
-                            error=None
-                        ).model_dump()
-                else:
-                    debug_log(3, f"[STT] 未觸發: 未達到觸發條件")
-                
-                # 短暫休息
-                time.sleep(0.1)
-            
-            # 監聽超時
-            return STTOutput(
-                text="",
-                confidence=0.0,
-                speaker_info=None,
-                activation_reason="監聽超時",
-                error="監聽期間未檢測到觸發條件"
-            ).model_dump()
-            
-        except Exception as e:
-            error_log(f"[STT] 智能識別失敗: {str(e)}")
-            return STTOutput(
-                text="", 
-                confidence=0.0, 
-                error=f"智能識別失敗: {str(e)}",
-                activation_reason="智能識別失敗"
-            ).model_dump()
-
     def shutdown(self):
         """關閉模組"""
         if self.pyaudio_instance:
@@ -493,6 +443,142 @@ class STTModule(BaseModule):
         if hasattr(self, 'speaker_module'):
             self.speaker_module.shutdown()
 
+    def _continuous_recognition(self, input_data: STTInput) -> dict:
+        """持續背景監聽 - 持續錄音並實時傳送結果給NLP模組"""
+        try:
+            info_log("[STT] 開始持續背景監聽模式...")
+            
+            # 設定監聽時長，如果未指定則使用默認值
+            duration = input_data.duration or 30.0
+            start_time = time.time()
+            
+            info_log(f"[STT] 持續監聽時長: {duration} 秒")
+            
+            # 創建語者上下文，用於累積語者資訊
+            context_id = None
+            if self.working_context_manager:
+                from core.working_context import ContextType
+                # 創建或獲取SPEAKER_ACCUMULATION上下文
+                context_id = self.working_context_manager.create_context(
+                    ContextType.SPEAKER_ACCUMULATION, 
+                    threshold=5,  # 樣本閾值
+                    timeout=300.0  # 5分鐘過期
+                )
+                debug_log(2, f"[STT] 已建立持續監聽的語音累積上下文: {context_id}")
+            
+            # 持續監聽直到達到指定時間
+            while time.time() - start_time < duration:
+                # 短暫錄音檢測
+                chunk_duration = 2.0
+                audio_data = self._record_audio(chunk_duration)
+                
+                if audio_data is None:
+                    continue
+                
+                # 使用VAD檢查是否有語音內容
+                if not self.vad_module.has_sufficient_speech(audio_data, min_duration=0.05):
+                    debug_log(3, "[STT] 音頻中語音內容不足，繼續監聽")
+                    continue
+                
+                # 將音頻數據添加到語者上下文
+                if context_id and self.working_context_manager:
+                    self.working_context_manager.add_data_to_context(
+                        context_id, 
+                        audio_data,
+                        metadata={"timestamp": time.time(), "type": "audio_sample"}
+                    )
+                
+                # 使用Whisper進行語音識別
+                info_log("[STT] 檢測到語音，進行識別...")
+                audio_float = audio_data.astype(np.float32) / 32768.0
+                
+                # 識別參數
+                recognition_kwargs = {
+                    "max_new_tokens": 128,
+                    "num_beams": 1,
+                    "condition_on_prev_tokens": False,
+                    "compression_ratio_threshold": 1.35,  # 與手動模式保持一致
+                    "temperature": 0.0,  # 在連續模式下使用固定溫度以提高速度
+                    "logprob_threshold": -1.0,  # 添加此參數避免 logprobs 錯誤
+                    "no_speech_threshold": 0.4,  # 較低的閾值
+                    "return_timestamps": True,
+                    "language": "en",  # 使用標準代碼
+                }
+                
+                result = self.pipe(audio_float, generate_kwargs=recognition_kwargs)
+                text = result["text"].strip()
+                text = correct_stt(text)  # 應用STT修正
+                
+                # 計算信心度
+                confidence = self._calculate_transformers_confidence(result)
+                
+                # 檢查是否有識別出文本
+                if not text or text.isspace():
+                    debug_log(2, "[STT] 未識別到有效語音內容，繼續監聽")
+                    continue
+                
+                info_log(f"[STT] 識別到語音內容: '{text}' (信心度: {confidence:.2f})")
+                
+                # 進行說話人識別
+                speaker_info = None
+                if input_data.enable_speaker_id:
+                    speaker_info = self._identify_speaker_with_mode(audio_data)
+                    debug_log(2, f"[STT] 識別語者: {speaker_info.speaker_id} (信心度: {speaker_info.confidence:.2f})")
+                
+                # 創建輸出物件
+                output = STTOutput(
+                    text=text,
+                    confidence=confidence,
+                    speaker_info=speaker_info,
+                    activation_reason="continuous_listening",
+                    error=None
+                )
+                
+                # 轉換為統一格式
+                unified_data = output.to_unified_format()
+                
+                # 如果有上下文ID，添加到metadata
+                if context_id:
+                    unified_data.metadata["context_id"] = context_id
+                
+                # 通過回調將結果發送給NLP模組
+                if self.result_callback:
+                    try:
+                        # 將結果發送給回調函數
+                        self.result_callback(unified_data)
+                        info_log(f"[STT] 將識別結果實時發送給NLP模組：'{text}' (語者: {speaker_info.speaker_id if speaker_info else 'unknown'})")
+                    except Exception as e:
+                        error_log(f"[STT] 發送識別結果失敗: {e}")
+                else:
+                    debug_log(2, "[STT] 未設定結果回調函數，識別結果將不會發送給NLP模組")
+                
+                # 短暫休息
+                time.sleep(0.1)
+            
+            # 監聽結束
+            if context_id and self.working_context_manager:
+                # 不要標記為完成，因為是持續監聽
+                # self.working_context_manager.mark_context_completed(context_id)
+                pass
+                
+            # 返回最後的監聽狀態
+            return STTOutput(
+                text="",
+                confidence=0.0,
+                speaker_info=None,
+                activation_reason="continuous_listening_completed",
+                error=None
+            ).model_dump()
+            
+        except Exception as e:
+            error_log(f"[STT] 持續監聽失敗: {str(e)}")
+            return STTOutput(
+                text="",
+                confidence=0.0,
+                error=f"持續監聽失敗: {str(e)}",
+                activation_reason="continuous_listening_failed"
+            ).model_dump()
+            
     def _identify_speaker_with_mode(self, audio_data: np.ndarray) -> SpeakerInfo:
         """根據配置的模式進行說話人識別"""
         try:
@@ -509,7 +595,8 @@ class STTModule(BaseModule):
                 is_new_speaker=False,
                 voice_features={"error": str(e)}
             )
-        
+
+    def shutdown(self):
         # 清理 GPU 記憶體
         if self.model is not None:
             del self.model

@@ -11,7 +11,7 @@ from enum import Enum
 class ExecutionMode(str, Enum):
     """執行模式"""
     SEQUENTIAL = "sequential"
-    PARALLEL = "parallel" 
+    PARALLEL = "parallel"
     CONDITIONAL = "conditional"
 
 

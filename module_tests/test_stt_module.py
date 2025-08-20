@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 STT 模組單元測試
@@ -69,9 +69,8 @@ def stt_module(stt_config):
         }
         stt.speaker_module.shutdown = MagicMock()  # 添加 shutdown 方法
         
-        stt.keyword_detector = MagicMock()
-        stt.keyword_detector.should_activate.return_value = (True, ["UEP"])
-        stt.keyword_detector.get_activation_reason.return_value = "Keyword detected: UEP"
+        # 模擬工作上下文管理器
+        stt.working_context_manager = MagicMock()
         
         yield stt
         
@@ -158,26 +157,28 @@ class TestSTTModuleHandleMethod:
             assert result["activation_reason"] == "manual"
             assert "speaker_info" in result
     
-    def test_handle_smart_mode(self, stt_module, mock_audio_data):
-        """測試智能模式"""
-        # 模擬快速檢測觸發
-        with patch.object(stt_module, '_record_audio', return_value=mock_audio_data):
-            # 第一次調用返回觸發詞
-            stt_module.pipe.side_effect = [
-                {"text": "UEP help me"},  # 快速檢測
-                {"text": "UEP help me with something", "chunks": []}  # 完整識別
-            ]
+    def test_handle_continuous_mode(self, stt_module, mock_audio_data):
+        """測試連續監聽模式"""
+        # 模擬連續監聽過程
+        with patch.object(stt_module, '_record_audio', return_value=mock_audio_data), \
+             patch.object(stt_module, '_continuous_recognition') as mock_continuous:
+            
+            mock_continuous.return_value = {
+                "text": "",
+                "confidence": 0.0,
+                "activation_reason": "continuous_listening_completed",
+                "error": None
+            }
             
             result = stt_module.handle({
-                "mode": "smart",
+                "mode": "continuous",
                 "enable_speaker_id": True,
-                "duration": 5
+                "duration": 2
             })
             
             assert isinstance(result, dict)
-            assert "UEP" in result["text"]
-            assert result["confidence"] > 0
-            assert "Keyword detected" in result["activation_reason"]
+            assert result["activation_reason"] == "continuous_listening_completed"
+            mock_continuous.assert_called_once()
     
     def test_handle_invalid_mode(self, stt_module):
         """測試無效模式"""
@@ -214,6 +215,38 @@ class TestSTTModulePrivateMethods:
             assert isinstance(result, dict)
             assert result["text"] == "test recognition"
             assert result["activation_reason"] == "manual"
+            
+    def test_continuous_recognition(self, stt_module, mock_audio_data):
+        """測試連續識別方法"""
+        # 模擬設置
+        stt_module.working_context_manager = MagicMock()
+        stt_module.working_context_manager.create_context.return_value = "test_context_id"
+        stt_module.working_context_manager.get_context_status.return_value = {"data_count": 1}
+        
+        # 模擬錄音回傳有效音頻，第三次錄音後結束監聽
+        with patch.object(stt_module, '_record_audio', return_value=mock_audio_data), \
+             patch('modules.stt_module.stt_module.time') as mock_time:
+            
+            # 模擬經過的時間，使循環能夠結束
+            mock_time.time.side_effect = [0, 1, 1.5, 5]
+            mock_time.sleep = lambda x: None
+            
+            # 模擬 Whisper 識別結果
+            stt_module.pipe.return_value = {
+                "text": "continuous test",
+                "chunks": [{"timestamp": [0.0, 2.0]}]
+            }
+            
+            input_data = STTInput(
+                mode=ActivationMode.CONTINUOUS,
+                enable_speaker_id=True,
+                duration=2
+            )
+            
+            result = stt_module._continuous_recognition(input_data)
+            
+            assert isinstance(result, dict)
+            assert "continuous_listening" in result["activation_reason"]
     
     def test_calculate_transformers_confidence(self, stt_module):
         """測試信心度計算"""
@@ -311,7 +344,7 @@ class TestSTTModuleIntegration:
     def test_activation_modes(self):
         """測試啟動模式"""
         assert ActivationMode.MANUAL.value == "manual"
-        assert ActivationMode.SMART.value == "smart"
+        assert ActivationMode.CONTINUOUS.value == "continuous"
     
     def test_module_shutdown(self, stt_module):
         """測試模組關閉"""

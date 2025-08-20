@@ -670,3 +670,51 @@
 
 ---
 
+### Temporary commit, trying something new later. 08/19
+
+> Date: Tue, 19 Aug 2025 19:25:34 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `develop`
+
+> Commit: `bb32ad49e327171e28e5989a46a3a0bdcca371fd`
+
+---
+
+### Made STT compatible to our current core structure. 08/19
+
+> Date: Tue, 19 Aug 2025 23:29:25 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/stt_module_rework`
+
+> Commit: `596b93dff6ea6dc30df1af4454305c95059f4dec`
+
+---
+
+### Final stt changes + added a helper for cleaning speakers. 08/21
+
+> Date: Thu, 21 Aug 2025 01:43:58 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/stt_module_rework`
+
+> Commit: `b407abe102d655a70644dd3c95bc9b638bee4934`
+
+---
+
+### Revamped the stt unit test as well to adapt to new structure. 08/21
+
+> Date: Thu, 21 Aug 2025 01:52:56 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/stt_module_rework`
+
+> Commit: `6366681bdc194034f7e598a978bb09340362a8fd`
+
+---
+

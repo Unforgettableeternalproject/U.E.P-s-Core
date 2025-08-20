@@ -1,3 +1,5 @@
+# 暫時停用 (從v0.2.6開始)
+
 from utils.debug_helper import debug_log, info_log, error_log
 from utils.prompt_builder import chunk_and_summarize_memories
 from utils.schema_converter import SchemaConverter

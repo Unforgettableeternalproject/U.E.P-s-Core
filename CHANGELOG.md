@@ -706,3 +706,15 @@
 
 ---
 
+### Revamped the stt unit test as well to adapt to new structure. 08/21
+
+> Date: Thu, 21 Aug 2025 01:52:56 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/stt_module_rework`
+
+> Commit: `6366681bdc194034f7e598a978bb09340362a8fd`
+
+---
+

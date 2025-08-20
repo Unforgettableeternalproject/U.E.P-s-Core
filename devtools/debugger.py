@@ -15,6 +15,12 @@ mod_list = {"stt": module_enabled.get("stt_module", False)
             , "sys": module_enabled.get("sys_module", False)}
 
 def handle_module_integration(user_input):
+
+    # 暫時停用，直到所有模組都採用新架構
+
+    info_log("[Debug] 模組整合測試已暫時停用")
+    return
+
     if user_input in ["pipeline", "all"]:
         if hasattr(controller, "pipeline_test"):
             controller.pipeline_test()

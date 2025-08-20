@@ -694,3 +694,15 @@
 
 ---
 
+### Final stt changes + added a helper for cleaning speakers. 08/21
+
+> Date: Thu, 21 Aug 2025 01:43:58 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/stt_module_rework`
+
+> Commit: `b407abe102d655a70644dd3c95bc9b638bee4934`
+
+---
+

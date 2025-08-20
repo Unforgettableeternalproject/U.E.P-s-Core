@@ -76,7 +76,7 @@ class SpeakerIdentification:
         self.confidence_max_cap = 0.98
         
         # 工作上下文暫存樣本管理
-        self.context_sample_threshold = 3  # 工作上下文中累積多少樣本後才考慮創建新說話人
+        self.context_sample_threshold = 5  # 工作上下文中累積多少樣本後才考慮創建新說話人
         
         # 語者資料庫最小樣本數閾值（低於此數值的語者將被隱蔽）
         self.min_samples_for_recognition = 15

@@ -6,7 +6,7 @@ from core.schemas import STTModuleData
 class ActivationMode(Enum):
     """STT 啟動模式"""
     MANUAL = "manual"           # 手動錄音 (按需錄音，不做智能判斷)
-    SMART = "smart"             # 智能背景監聽 (背景監聽 + 智能啟動)
+    CONTINUOUS = "continuous"   # 持續背景監聽 (持續背景監聽並實時傳送結果給NLP)
 
 class SpeakerInfo(BaseModel):
     """說話人信息"""
@@ -17,12 +17,11 @@ class SpeakerInfo(BaseModel):
     
 class STTInput(BaseModel):
     """STT 模組輸入 (模組內部使用)"""
-    mode: ActivationMode = ActivationMode.MANUAL  # 啟動模式
+    mode: ActivationMode = ActivationMode.CONTINUOUS  # 啟動模式，默認為持續監聽
     duration: Optional[float] = None               # 錄音時長限制
     language: str = "en-US"                       # 語言設定 (預設英文)
     enable_speaker_id: bool = True                # 是否啟用說話人識別
     context: Optional[str] = None                 # 上下文信息
-    keywords: Optional[List[str]] = None          # 智能模式的關鍵詞列表
     
 class STTOutput(BaseModel):
     """STT 模組輸出 (模組內部使用)"""

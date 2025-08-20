@@ -43,7 +43,7 @@ modules = {
 # 測試 STT 模組 - Phase 2 版本
 
 def on_stt_result(result):
-    """STT 結果回調函數 - 支援 Phase 2 格式"""
+    """STT 結果回調函數 - 簡化版本"""
     # 首先檢查結果是否為 None 或非字典（處理錯誤情況）
     if result is None:
         print("❌ 語音識別失敗：沒有識別結果")
@@ -52,11 +52,9 @@ def on_stt_result(result):
     if isinstance(result, dict):
         # 提取基本信息
         text = result.get("text", "")
-        stt_confidence = result.get("confidence", 0)  # 語音識別信心度
+        confidence = result.get("confidence", 0)
         speaker_info = result.get("speaker_info")
-        activation_reason = result.get("activation_reason", "未提供判斷原因")
-        should_activate = result.get("should_activate", False)  # 獲取是否應該啟動標誌
-        error = result.get("error")  # 檢查是否有錯誤訊息
+        error = result.get("error")
         
         # 處理錯誤情況
         if error:
@@ -68,100 +66,121 @@ def on_stt_result(result):
             print("🔇 未識別到有效語音內容")
             return
         
-        # 拆分啟動原因中的信心度
-        activation_confidence = 0
-        # 安全檢查 activation_reason 是否為字符串類型
-        if activation_reason and isinstance(activation_reason, str) and "智能判斷分數:" in activation_reason:
-            try:
-                confidence_part = activation_reason.split("智能判斷分數:")[1].strip()
-                if confidence_part:
-                    activation_confidence = float(confidence_part)
-            except:
-                pass
-        
-        # 顯示語音辨識結果，總是顯示識別到的文字
-        print(f"\n📢 即時語音識別: 「{text}」")
-        
-        # 顯示結果，區分是否應該啟動
-        if should_activate:
-            print(f"✓ 智能啟動觸發！")
-            print(f"   識別信心度：{stt_confidence:.2f}")
-            print(f"   啟動原因：{activation_reason}")
-        else:
-            # 非啟動時只顯示簡略資訊，不干擾監聽流程
-            if activation_confidence > 0:
-                print(f"   (未觸發啟動，智能判斷分數: {activation_confidence:.2f})")
-            else:
-                print(f"   (未觸發啟動)")
+        # 顯示語音辨識結果
+        print(f"\n📢 語音識別: 「{text}」 (信心度: {confidence:.2f})")
         
         # 顯示說話人信息
         if speaker_info:
-            speaker_id = speaker_info.get("speaker_id", "Unknown")
+            speaker_id = speaker_info.get("speaker_id", "未定")
             confidence = speaker_info.get("confidence", 0)
             is_new = "(新說話人)" if speaker_info.get("is_new_speaker", False) else ""
-            print(f"   🔊 說話人：{speaker_id} {is_new} (信心度: {confidence:.2f})")
-            
-        # 如果應該啟動，返回處理結果到下一步
-        if should_activate:
-            # 這裡可以觸發後續處理邏輯
-            info_log(f"[Controller] 觸發後續處理：{text}")
-            # TODO: 呼叫下一個處理模組
+            print(f"   � 說話人：{speaker_id} {is_new} (信心度: {confidence:.2f})")
+        else:
+            print("   👤 說話人：未定")
             
     else:
-        # 舊版相容性
-        print(f"✨ 回傳語音內容：{result}")
+        # 直接顯示結果
+        print(f"✨ 識別結果：{result}")
 
-def stt_test_single(mode="manual", enable_speaker_id=True, language="en-US"):
-    """單次 STT 測試 - Phase 2 版本"""
+def stt_test_single(enable_speaker_id=True, language="en-US"):
+    """單次 STT 測試 - 手動模式"""
     stt = modules["stt"]
 
     if stt is None:
         error_log("[Controller] ❌ 無法載入 STT 模組")
         return
 
-    print(f"🎤 STT 測試模式: {mode}")
+    print(f"🎤 STT 手動測試")
+    print("   請說話，系統將錄製並識別您的語音...")
     
-    # Phase 2 API 調用
+    # 使用手動模式進行錄音
     result = stt.handle({
-        "mode": mode,
+        "mode": "manual",
         "language": language,
         "enable_speaker_id": enable_speaker_id,
-        "duration": 8
+        "duration": 5
     })
     
     on_stt_result(result)
     return result
 
-def stt_test_smart_activation(duration=30):
-    """智能啟動測試 - 智能監聽模式（合併原背景監聽功能）"""
+def stt_test_continuous_listening(duration=30):
+    """持續背景監聽測試 - 直接在控制台輸出識別結果"""
     stt = modules["stt"]
 
     if stt is None:
         error_log("[Controller] ❌ 無法載入 STT 模組")
         return
 
-    print(f"🧠 智能監聽測試 ({duration}秒)")
-    print("   試試說: 'UEP', 'help me', 'what is...', 'can you...' 等觸發詞")
-    print("   系統會智能判斷是否啟動完整識別")
+    print(f"🎧 持續背景監聽測試 ({duration}秒)")
+    print("   系統將持續監聽並直接輸出識別結果")
+    print("   按 Ctrl+C 可隨時中斷監聽")
+    
+    # 創建一個回調函數來實時打印識別結果
+    def continuous_result_callback(result):
+        if result is None:
+            return
+            
+        text = result.text if hasattr(result, "text") else "未識別到文字"
+        
+        # 獲取說話人信息
+        speaker_info = None
+        speaker_text = "未定"
+        if hasattr(result, "speaker_info") and result.speaker_info:
+            speaker_info = result.speaker_info
+            if isinstance(speaker_info, dict):
+                speaker_id = speaker_info.get("speaker_id", "未定")
+                confidence = speaker_info.get("confidence", 0)
+                speaker_text = f"{speaker_id} (信心度: {confidence:.2f})"
+            else:
+                speaker_id = getattr(speaker_info, "speaker_id", "未定")
+                confidence = getattr(speaker_info, "confidence", 0)
+                speaker_text = f"{speaker_id} (信心度: {confidence:.2f})"
+                
+        # 打印識別結果
+        if text and text.strip():
+            print(f"\n🎤 語音識別: 「{text}」")
+            print(f"   👤 說話人: {speaker_text}")
     
     try:
+        # 臨時設置回調函數
+        original_callback = None
+        if hasattr(stt, "result_callback"):
+            original_callback = stt.result_callback
+            stt.result_callback = continuous_result_callback
+        
+        print("\n開始持續監聽，識別結果將直接顯示...\n")
+        
+        # 使用持續監聽模式
         result = stt.handle({
-            "mode": "smart",
+            "mode": "continuous",
             "language": "en-US",
             "enable_speaker_id": True,
             "duration": duration,
             "context": "controller_test"
         })
         
-        print(f"🤖 智能監聽結果:")
-        on_stt_result(result)
+        # 恢復原來的回調函數
+        if hasattr(stt, "result_callback") and original_callback is not None:
+            stt.result_callback = original_callback
+            
+        print("\n持續監聽完成")
         return result
         
     except KeyboardInterrupt:
-        print("\n⏹️ 用戶中斷")
+        # 恢復原來的回調函數
+        if hasattr(stt, "result_callback") and original_callback is not None:
+            stt.result_callback = original_callback
+            
+        print("\n⏹️ 用戶中斷監聽")
         return None
+        
     except Exception as e:
-        error_log(f"[Controller] 智能監聽失敗: {e}")
+        # 恢復原來的回調函數
+        if hasattr(stt, "result_callback") and original_callback is not None:
+            stt.result_callback = original_callback
+            
+        error_log(f"[Controller] 持續監聽失敗: {e}")
         return None
 
 def stt_get_stats():

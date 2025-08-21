@@ -1,24 +1,26 @@
 import devtools.debug_api as controller
-from utils.debug_helper import debug_log, info_log, error_log
+from utils.debug_helper import debug_log, debug_log_e, info_log, error_log
 from configs.config_loader import load_config
 import asyncio
 
 config = load_config()
 
 module_enabled = config.get("modules_enabled", {})
+module_refactored = config.get("modules_refactored", {})
 
-mod_list = {"stt": module_enabled.get("stt_module", False)
-            , "nlp": module_enabled.get("nlp_module", False)
-            , "mem": module_enabled.get("mem_module", False)
-            , "llm": module_enabled.get("llm_module", False)
-            , "tts": module_enabled.get("tts_module", False)
-            , "sys": module_enabled.get("sys_module", False)}
+mod_list = {"stt": (module_enabled.get("stt_module", False), module_refactored.get("stt_module", False)),
+            "nlp": (module_enabled.get("nlp_module", False), module_refactored.get("nlp_module", False)),
+            "mem": (module_enabled.get("mem_module", False), module_refactored.get("mem_module", False)),
+            "llm": (module_enabled.get("llm_module", False), module_refactored.get("llm_module", False)),
+            "tts": (module_enabled.get("tts_module", False), module_refactored.get("tts_module", False)),
+            "sys": (module_enabled.get("sys_module", False), module_refactored.get("sys_module", False))}
 
 def handle_module_integration(user_input):
 
     # 暫時停用，直到所有模組都採用新架構
 
-    info_log("[Debug] 模組整合測試已暫時停用")
+    debug_log_e(1, "模組整合測試已暫時停用")
+    debug_log_e(4, "所以說，為什麼整合測試會這麼難寫，我想說他基於系統功能，應該是相對最好寫的東西，但是誰知道呢?")
     return
 
     if user_input in ["pipeline", "all"]:
@@ -55,8 +57,8 @@ def handle_module_integration(user_input):
     except KeyError as e:
         print(f"\033[31m無效的模組名稱：{e.args[0]}，請確認拼字。\033[0m")
 
-def colorful_text(text : str, enabled : bool = True):
-    return '\033[32m' + text + '\033[0m' if enabled else '\033[31m' + text + '\033[0m'
+def colorful_text(text : str, enabled : tuple=(False, False)):
+    return '\033[32m' + text + '\033[0m' if enabled[1] else '\033[33m' + text + '\033[0m' if enabled[0] else '\033[31m' + text + '\033[0m'
 
 def debug_interactive():
     print("==========================\n\n歡迎來到U.E.P模組測試介面!\n\n==========================\n")
@@ -72,7 +74,7 @@ def debug_interactive():
             f"{colorful_text('ex - 額外功能測試;')}"
         ]
         
-        menu_text = "請選擇想要測試的模組 (紅色標示表示未啟用):\n\n"
+        menu_text = "請選擇想要測試的模組 (綠色: 已重構、黃色: 已啟用、紅色: 未啟用):\n\n"
         menu_text += "\n\n".join(menu_items)
         menu_text += "\n\n也可進行模組交叉測試 (使用+號來連接，例如stt+nlp)"
         menu_text += "\n\n(用 exit 來離開): \n\n> "

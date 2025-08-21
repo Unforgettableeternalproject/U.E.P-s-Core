@@ -486,6 +486,50 @@ def nlp_test(text: str = "", enable_identity: bool = True, enable_segmentation: 
         error_log(f"[NLP] 增強版測試失敗: {e}")
         return None
 
+def nlp_test_state_queue_integration(text: str = ""):
+    """測試NLP與狀態佇列的整合"""
+    nlp = modules["nlp"]
+    if nlp is None:
+        error_log("[Controller] ❌ 無法載入 NLP 模組")
+        return
+
+    from core.state_queue import get_state_queue_manager
+    state_queue = get_state_queue_manager()
+
+    test_text = text if text else "Hi UEP, how are you? Please save my work and then remind me about the meeting."
+    
+    print(f"\n🔄 測試NLP與狀態佇列整合")
+    print(f"📝 測試文本: '{test_text}'")
+    print("=" * 80)
+    
+    # 清空佇列開始測試
+    state_queue.clear_queue()
+    print(f"🧹 清空狀態佇列")
+    
+    # 顯示初始狀態
+    initial_status = state_queue.get_queue_status()
+    print(f"🏁 初始狀態: {initial_status['current_state']}")
+    print(f"📋 初始佇列長度: {initial_status['queue_length']}")
+    
+    # 執行NLP分析
+    result = nlp_test(test_text, enable_segmentation=True)
+    
+    # 顯示分析後的狀態佇列
+    print(f"\n📊 NLP分析後的狀態佇列:")
+    final_status = state_queue.get_queue_status()
+    print(f"🎯 當前狀態: {final_status['current_state']}")
+    print(f"📋 佇列長度: {final_status['queue_length']}")
+    
+    if final_status['queue_items']:
+        print(f"📝 佇列內容:")
+        for i, item in enumerate(final_status['queue_items'], 1):
+            print(f"  {i}. {item['state']} (優先級: {item['priority']})")
+            print(f"     觸發: {item['trigger_content']}")
+            print(f"     上下文: {item['context_content']}")
+            print()
+    
+    return result
+
 def nlp_test_multi_intent(text: str = ""):
     """測試多意圖上下文管理"""
     nlp = modules["nlp"]
@@ -500,7 +544,7 @@ def nlp_test_multi_intent(text: str = ""):
     print(f"📝 測試文本: '{test_text}'")
     print("=" * 70)
     
-    result = nlp_test_enhanced(test_text, enable_segmentation=True)
+    result = nlp_test(test_text, enable_segmentation=True)
     
     if result and hasattr(nlp, 'intent_analyzer'):
         analyzer = nlp.intent_analyzer

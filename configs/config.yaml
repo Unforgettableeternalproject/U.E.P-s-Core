@@ -3,10 +3,10 @@
 modules_enabled:
   stt_module: true
   nlp_module: true
-  mem_module: true
-  llm_module: true
-  tts_module: true
-  sys_module: true
+  mem_module: false
+  llm_module: false
+  tts_module: false
+  sys_module: false
 
 # 模組重構狀態追蹤 - 只有標記為已重構的模組會在正式環境中被 controller 載入
 modules_refactored:

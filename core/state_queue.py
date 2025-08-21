@@ -19,12 +19,14 @@ class SystemState(Enum):
     WORK = "work"          # 工作狀態
     MISCHIEF = "mischief"  # 惡作劇狀態 (未實現)
     SLEEP = "sleep"        # 睡眠狀態 (未實現)
+    ERROR = "error"        # 錯誤狀態
 
 @dataclass
 class StateQueueItem:
     """狀態佇列項目"""
     state: SystemState
     trigger_content: str              # 觸發此狀態的原始內容
+    context_content: str              # 狀態上下文內容 (該狀態需要處理的具體內容)
     trigger_user: Optional[str]       # 觸發用戶ID
     priority: int                     # 優先級 (數字越大優先級越高)
     metadata: Dict[str, Any]          # 額外元數據
@@ -37,6 +39,7 @@ class StateQueueItem:
         return {
             "state": self.state.value,
             "trigger_content": self.trigger_content,
+            "context_content": self.context_content,
             "trigger_user": self.trigger_user,
             "priority": self.priority,
             "metadata": self.metadata,
@@ -51,6 +54,7 @@ class StateQueueItem:
         return cls(
             state=SystemState(data["state"]),
             trigger_content=data["trigger_content"],
+            context_content=data.get("context_content", data["trigger_content"]),  # 向下相容
             trigger_user=data.get("trigger_user"),
             priority=data["priority"],
             metadata=data.get("metadata", {}),
@@ -68,6 +72,7 @@ class StateQueueManager:
         SystemState.CHAT: 50,      # 聊天次之
         SystemState.MISCHIEF: 30,  # 惡作劇
         SystemState.SLEEP: 10,     # 睡眠
+        SystemState.ERROR: 5,      # 錯誤狀態
         SystemState.IDLE: 0        # IDLE最低
     }
     
@@ -103,6 +108,7 @@ class StateQueueManager:
         debug_log(2, f"[StateQueue] 註冊完成處理器: {state.value}")
     
     def add_state(self, state: SystemState, trigger_content: str, 
+                  context_content: Optional[str] = None,
                   trigger_user: Optional[str] = None, 
                   metadata: Optional[Dict[str, Any]] = None) -> bool:
         """添加狀態到佇列"""
@@ -116,6 +122,7 @@ class StateQueueManager:
         queue_item = StateQueueItem(
             state=state,
             trigger_content=trigger_content,
+            context_content=context_content or trigger_content,  # 如果沒有指定上下文，使用觸發內容
             trigger_user=trigger_user,
             priority=priority,
             metadata=metadata or {},
@@ -133,7 +140,8 @@ class StateQueueManager:
         self.queue.insert(insert_index, queue_item)
         
         info_log(f"[StateQueue] 添加狀態 {state.value} 到佇列 (優先級: {priority}, 位置: {insert_index})")
-        debug_log(3, f"[StateQueue] 觸發內容: {trigger_content[:50]}...")
+        debug_log(4, f"[StateQueue] 觸發內容: {trigger_content}")
+        debug_log(4, f"[StateQueue] 上下文內容: {context_content or trigger_content}")
         
         # 保存佇列
         self._save_queue()
@@ -144,7 +152,9 @@ class StateQueueManager:
         """處理NLP意圖分析結果，添加相應狀態到佇列"""
         added_states = []
         
-        for segment in intent_segments:
+        debug_log(4, f"[StateQueue] 處理 {len(intent_segments)} 個意圖分段")
+        
+        for i, segment in enumerate(intent_segments):
             # 根據意圖類型決定系統狀態
             if hasattr(segment, 'intent'):
                 intent_value = segment.intent.value if hasattr(segment.intent, 'value') else str(segment.intent)
@@ -154,37 +164,47 @@ class StateQueueManager:
             state_mapping = {
                 'command': SystemState.WORK,
                 'compound': SystemState.WORK,  # 複合指令也是工作
-                'call': SystemState.CHAT,      # 呼叫通常是想聊天
-                'chat': SystemState.CHAT,
+                'chat': SystemState.CHAT,      # 只有真正的chat意圖才需要對話處理
                 'query': SystemState.WORK      # 查詢也算工作
+                # 注意：'call' 意圖不加入佇列，因為它只是呼叫而不需要狀態處理
             }
             
             target_state = state_mapping.get(intent_value.lower())
             
             if target_state:
-                # 獲取觸發內容
+                # 獲取觸發內容和上下文內容
                 if hasattr(segment, 'text'):
-                    trigger_content = segment.text
+                    context_content = segment.text
                 else:
-                    trigger_content = segment.get('text', '未知內容')
+                    context_content = segment.get('text', '未知內容')
                 
-                # 檢查是否已經有相同狀態在佇列中
-                if not self._has_pending_state(target_state):
-                    success = self.add_state(
-                        state=target_state,
-                        trigger_content=trigger_content,
-                        metadata={
-                            'intent_type': intent_value,
-                            'confidence': getattr(segment, 'confidence', 0.0),
-                            'entities': getattr(segment, 'entities', [])
-                        }
-                    )
-                    
-                    if success:
-                        added_states.append(target_state)
+                # 觸發內容包含分段信息以便追蹤
+                trigger_content = f"意圖分段 {i+1}: {context_content}"
+                
+                # 支援多個相同狀態 - 每個分段都獨立加入佇列
+                success = self.add_state(
+                    state=target_state,
+                    trigger_content=trigger_content,
+                    context_content=context_content,  # 這是該狀態實際要處理的內容
+                    metadata={
+                        'intent_type': intent_value,
+                        'confidence': getattr(segment, 'confidence', 0.0),
+                        'entities': getattr(segment, 'entities', []),
+                        'segment_index': i,
+                        'segment_id': getattr(segment, 'segment_id', f'seg_{i}')
+                    }
+                )
+                
+                if success:
+                    added_states.append(target_state)
+                    debug_log(4, f"[StateQueue] 分段 {i+1} -> {target_state.value}: '{context_content}'")
+            else:
+                if intent_value.lower() == 'call':
+                    debug_log(4, f"[StateQueue] 分段 {i+1} 是 call 意圖，不加入狀態佇列: '{segment.get('text', '未知內容') if hasattr(segment, 'get') else getattr(segment, 'text', '未知內容')}'")
                 else:
-                    debug_log(2, f"[StateQueue] 狀態 {target_state.value} 已在佇列中，跳過添加")
+                    debug_log(4, f"[StateQueue] 忽略未知意圖類型: {intent_value}")
         
+        debug_log(4, f"[StateQueue] 總共添加 {len(added_states)} 個狀態到佇列")
         return added_states
     
     def get_next_state(self) -> Optional[SystemState]:
@@ -207,20 +227,27 @@ class StateQueueManager:
         next_item.started_at = datetime.now()
         
         # 切換狀態
+        old_state = self.current_state
         self.current_state = next_item.state
         self.current_item = next_item
         
-        info_log(f"[StateQueue] 開始執行狀態: {next_item.state.value}")
-        debug_log(3, f"[StateQueue] 觸發內容: {next_item.trigger_content}")
+        info_log(f"[StateQueue] 狀態切換: {old_state.value} -> {next_item.state.value}")
+        debug_log(4, f"[StateQueue] 開始執行狀態: {next_item.state.value}")
+        debug_log(4, f"[StateQueue] 觸發內容: {next_item.trigger_content}")
+        debug_log(4, f"[StateQueue] 上下文內容: {next_item.context_content}")
+        debug_log(4, f"[StateQueue] 佇列剩餘: {len(self.queue)} 項目")
         
         # 調用狀態處理器
         if next_item.state in self.state_handlers:
             try:
+                debug_log(4, f"[StateQueue] 調用狀態處理器: {next_item.state.value}")
                 self.state_handlers[next_item.state](next_item)
             except Exception as e:
                 error_log(f"[StateQueue] 狀態處理器執行失敗: {e}")
                 self.complete_current_state(success=False)
                 return False
+        else:
+            debug_log(4, f"[StateQueue] 狀態 {next_item.state.value} 沒有註冊處理器")
         
         self._save_queue()
         return True
@@ -258,30 +285,41 @@ class StateQueueManager:
     def _transition_to_idle(self):
         """切換到IDLE狀態"""
         if self.current_state != SystemState.IDLE:
-            info_log("[StateQueue] 切換到 IDLE 狀態")
+            old_state = self.current_state
+            info_log(f"[StateQueue] 狀態切換: {old_state.value} -> IDLE")
+            debug_log(4, "[StateQueue] 切換到 IDLE 狀態 - 佇列已空")
             self.current_state = SystemState.IDLE
             self.current_item = None
             
             # 調用IDLE處理器
             if SystemState.IDLE in self.state_handlers:
                 try:
+                    debug_log(4, "[StateQueue] 調用 IDLE 狀態處理器")
                     self.state_handlers[SystemState.IDLE](None)
                 except Exception as e:
                     error_log(f"[StateQueue] IDLE處理器執行失敗: {e}")
     
-    def _has_pending_state(self, state: SystemState) -> bool:
-        """檢查佇列中是否已有指定狀態"""
-        return any(item.state == state for item in self.queue)
-    
     def get_queue_status(self) -> Dict[str, Any]:
         """獲取佇列狀態"""
-        return {
+        # 確保如果沒有正在執行的項目，狀態應該是IDLE
+        if self.current_item is None and self.current_state != SystemState.IDLE:
+            debug_log(4, f"[StateQueue] 修正狀態：沒有執行項目但狀態不是IDLE，從 {self.current_state.value} 修正為 IDLE")
+            self.current_state = SystemState.IDLE
+        
+        status = {
             "current_state": self.current_state.value,
             "current_item": self.current_item.to_dict() if self.current_item else None,
             "queue_length": len(self.queue),
             "pending_states": [item.state.value for item in self.queue],
             "queue_items": [item.to_dict() for item in self.queue]
         }
+        
+        debug_log(4, f"[StateQueue] 當前狀態: {self.current_state.value}")
+        debug_log(4, f"[StateQueue] 佇列長度: {len(self.queue)}")
+        if self.queue:
+            debug_log(4, f"[StateQueue] 待處理狀態: {[item.state.value for item in self.queue]}")
+        
+        return status
     
     def clear_queue(self):
         """清空佇列"""
@@ -318,6 +356,9 @@ class StateQueueManager:
                 # 載入當前項目
                 if data.get("current_item"):
                     self.current_item = StateQueueItem.from_dict(data["current_item"])
+                else:
+                    # 如果沒有當前執行項目，確保狀態是IDLE
+                    self.current_state = SystemState.IDLE
                 
                 # 載入佇列
                 self.queue = [StateQueueItem.from_dict(item) for item in data.get("queue", [])]

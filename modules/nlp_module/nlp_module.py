@@ -237,12 +237,16 @@ class NLPModule(BaseModule):
             debug_log(3, f"[NLP] 系統狀態處理：下一步模組={result['next_modules']}, "
                        f"等待輸入={result['awaiting_input']}, 上下文數={len(context_ids)}")
             
+            # 將意圖分段添加到狀態佇列
+            added_states = self._process_intent_to_state_queue(intent_result)
+            result["added_states"] = added_states
+            
             # 處理多意圖上下文的狀態轉換
             if intent_result.get("state_transition"):
                 state_transition = intent_result["state_transition"]
-                info_log(f"[NLP] 建議狀態轉換: {state_transition['target_state']} "
+                info_log(f"[NLP] 建議狀態轉換: {state_transition['to_state']} "
                         f"(上下文: {state_transition.get('context_id', 'N/A')})")
-                result["recommended_state"] = state_transition["target_state"]
+                result["recommended_state"] = state_transition["to_state"]
                 result["transition_context"] = state_transition.get("context_id")
             
         except Exception as e:
@@ -272,8 +276,6 @@ class NLPModule(BaseModule):
         except Exception as e:
             error_log(f"[NLP] 狀態佇列處理失敗: {e}")
             return []
-        
-        return result
     
     def _combine_results(self, input_data: NLPInput, identity_result: Dict[str, Any],
                         intent_result: Dict[str, Any], state_result: Dict[str, Any]) -> NLPOutput:

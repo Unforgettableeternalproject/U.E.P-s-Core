@@ -790,3 +790,15 @@
 
 ---
 
+### Refined state queue structure, and improved the debugger. 08/21
+
+> Date: Thu, 21 Aug 2025 23:51:26 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/nlp_module_rework`
+
+> Commit: `0eeff135e945fd605730cccfe7f0eaf39ce8fd55`
+
+---
+

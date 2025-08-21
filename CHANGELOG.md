@@ -802,3 +802,15 @@
 
 ---
 
+### Added in actual tests and interactions between STT and NLP. 08/22
+
+> Date: Fri, 22 Aug 2025 03:31:44 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/nlp_module_rework`
+
+> Commit: `99762507323aa5b8296ddeaaf97871256572e124`
+
+---
+

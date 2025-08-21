@@ -3,7 +3,8 @@ from core.registry import get_module
 from configs.config_loader import load_config
 from utils.debug_helper import debug_log, info_log, error_log
 from utils.debug_file_dropper import open_demo_window, open_folder_dialog
-from module_tests.integration_tests import *
+from module_tests.integration_tests import test_stt_nlp  # 新版整合測試 (精簡版)
+# from module_tests.integration_tests_v2 import *  # 保留舊版整合測試，暫時停用
 from module_tests.extra_tests import *
 import time
 import asyncio
@@ -42,8 +43,14 @@ modules = {
 
 # 測試 STT 模組 - Phase 2 版本
 
-def on_stt_result(result):
-    """STT 結果回調函數 - 簡化版本"""
+def on_stt_result(result, continuous_mode=False):
+    """
+    STT 結果回調函數 - 統一版本，可處理單次和持續辨識模式
+    
+    Args:
+        result: 語音識別結果，可以是字典或對象
+        continuous_mode: 是否為持續辨識模式 (影響輸出格式)
+    """
     # 首先檢查結果是否為 None 或非字典（處理錯誤情況）
     if result is None:
         print("❌ 語音識別失敗：沒有識別結果")
@@ -62,22 +69,29 @@ def on_stt_result(result):
             return
             
         # 沒有識別出文字的情況
-        if not text:
+        if not text or not text.strip():
             print("🔇 未識別到有效語音內容")
             return
         
-        # 顯示語音辨識結果
-        print(f"\n📢 語音識別: 「{text}」 (信心度: {confidence:.2f})")
+        # 顯示語音辨識結果 (根據模式調整格式)
+        if continuous_mode:
+            print(f"\n🎤 語音識別: 「{text}」")
+        else:
+            print(f"\n📢 語音識別: 「{text}」 (信心度: {confidence:.2f})")
         
         # 顯示說話人信息
         if speaker_info:
             speaker_id = speaker_info.get("speaker_id", "未定")
-            confidence = speaker_info.get("confidence", 0)
+            speaker_confidence = speaker_info.get("confidence", 0)
             is_new = "(新說話人)" if speaker_info.get("is_new_speaker", False) else ""
-            print(f"   � 說話人：{speaker_id} {is_new} (信心度: {confidence:.2f})")
-        else:
-            print("   👤 說話人：未定")
             
+            if continuous_mode:
+                print(f"👤 說話人: {speaker_id} {is_new} (信心度: {speaker_confidence:.2f})")
+            else:
+                print(f"👤 說話人：{speaker_id} {is_new} (信心度: {speaker_confidence:.2f})")
+        else:
+            print("👤 說話人：未定")
+
     else:
         # 直接顯示結果
         print(f"✨ 識別結果：{result}")
@@ -99,9 +113,10 @@ def stt_test_single(enable_speaker_id=True, language="en-US"):
         "language": language,
         "enable_speaker_id": enable_speaker_id,
         "duration": 5
-    })
+    })  
     
-    on_stt_result(result)
+    # 使用 on_stt_result 處理結果，指定為單次模式 (continuous_mode=False，這是預設值)
+    on_stt_result(result.get("data"))
     return result
 
 def stt_test_continuous_listening(duration=30):
@@ -116,31 +131,41 @@ def stt_test_continuous_listening(duration=30):
     print("   系統將持續監聽並直接輸出識別結果")
     print("   按 Ctrl+C 可隨時中斷監聽")
     
-    # 創建一個回調函數來實時打印識別結果
+    # 創建一個連接到主要處理函數的回調
     def continuous_result_callback(result):
         if result is None:
             return
             
-        text = result.text if hasattr(result, "text") else "未識別到文字"
-        
-        # 獲取說話人信息
-        speaker_info = None
-        speaker_text = "未定"
-        if hasattr(result, "speaker_info") and result.speaker_info:
-            speaker_info = result.speaker_info
-            if isinstance(speaker_info, dict):
-                speaker_id = speaker_info.get("speaker_id", "未定")
-                confidence = speaker_info.get("confidence", 0)
-                speaker_text = f"{speaker_id} (信心度: {confidence:.2f})"
-            else:
-                speaker_id = getattr(speaker_info, "speaker_id", "未定")
-                confidence = getattr(speaker_info, "confidence", 0)
-                speaker_text = f"{speaker_id} (信心度: {confidence:.2f})"
-                
-        # 打印識別結果
-        if text and text.strip():
-            print(f"\n🎤 語音識別: 「{text}」")
-            print(f"   👤 說話人: {speaker_text}")
+        # 將 result 轉換為標準字典格式，以便重用 on_stt_result 函數
+        if not isinstance(result, dict):
+            # 提取文字
+            text = result.text if hasattr(result, "text") else ""
+            
+            # 提取說話人信息
+            speaker_info = None
+            if hasattr(result, "speaker_info") and result.speaker_info:
+                if isinstance(result.speaker_info, dict):
+                    speaker_info = result.speaker_info
+                else:
+                    # 轉換為字典
+                    speaker_info = {
+                        "speaker_id": getattr(result.speaker_info, "speaker_id", "未定"),
+                        "confidence": getattr(result.speaker_info, "confidence", 0),
+                        "is_new_speaker": getattr(result.speaker_info, "is_new_speaker", False)
+                    }
+                    
+            # 創建標準格式
+            formatted_result = {
+                "text": text,
+                "confidence": getattr(result, "confidence", 0),
+                "speaker_info": speaker_info
+            }
+            
+            # 使用標準結果處理函數，並傳遞 continuous_mode=True
+            on_stt_result(formatted_result, continuous_mode=True)
+        else:
+            # 已經是字典格式
+            on_stt_result(result, continuous_mode=True)
     
     try:
         # 臨時設置回調函數
@@ -1057,64 +1082,28 @@ def sys_test_workflows(workflow_type: int = 1):
             print(data["enhanced_summary"])
             print("========== 摘要結束 ==========")
 
-# 整合測試
+# 整合測試 - 新版
 
 def integration_test_SN():
-    itSN(modules)
+    """STT + NLP 整合測試"""
+    # 直接傳入模組字典
+    test_stt_nlp(modules)
 
-def integration_test_SM():
-    itSM(modules)
+# 暫時停用其他整合測試，只保留 STT+NLP (因為其他模組尚未完成重構)
+# 其他整合測試將在相應模組重構完成後添加
 
-def integration_test_SL():
-    itSL(modules)
+# 注意：目前只有 STT 和 NLP 模組完成重構，其他整合測試將在模組重構後添加
+#
+# 以下是可用的整合測試：
+# - STT + NLP: integration_test_SN()
+#
+# 為保持程式碼整潔，其餘整合測試函數已移除
 
-def integration_test_ST():
-    itST(modules)
-
-def integration_test_NM():
-    itNM(modules)
-
-def integration_test_NL():
-    itNL(modules)
-
-def integration_test_NT():
-    itNT(modules)
-
-def integration_test_ML():
-    itML(modules)
-
-def integration_test_LT():
-    itLT(modules)
-
-def integration_test_LY():
-    itLY(modules)
-
-def integration_test_SNM():
-    itSNM(modules)
-
-def integration_test_SNL():
-    itSNL(modules)
-
-def integration_test_NML():
-    itNML(modules)
-
-def integration_test_NLY():
-    itNLY(modules)
-
-def integration_test_SNML():
-    itSNML(modules)
-
-def integration_test_NMLT():
-    itNMLT(modules)
-
-def integration_test_SNMLT():
-    itSNMLT(modules)
-
-def integration_test_SNMLTY():
-    itSNMLTY(modules)
-
-def pipeline_test():
-    itSNMLTY(modules)
+def integration_test_SN(production_mode=False):
+    """STT + NLP 整合測試"""
+    info_log(f"[Controller] 執行 STT+NLP 整合測試 (新版) ({'生產模式' if production_mode else '除錯模式'})")
+    # 目前生產模式參數未被使用，因為新版整合測試不區分生產和除錯模式
+    return test_stt_nlp(modules)
 
 # 額外測試
 

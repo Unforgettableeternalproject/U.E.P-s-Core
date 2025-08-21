@@ -324,8 +324,6 @@ class NLPModule(BaseModule):
     def _add_to_speaker_accumulation(self, input_data: NLPInput):
         """將語者資料添加到Working Context進行累積"""
         try:
-            context_id = f"speaker_accumulation_{input_data.speaker_id}"
-            
             # 準備樣本資料
             sample_data = {
                 "text": input_data.text,
@@ -333,18 +331,20 @@ class NLPModule(BaseModule):
                 "confidence": input_data.speaker_confidence
             }
             
+            # 準備元數據
+            metadata = {
+                "speaker_id": input_data.speaker_id,
+                "total_samples": 1
+            }
+            
             # 添加到Working Context
-            working_context_manager.add_data(
-                context_id=context_id,
+            working_context_manager.add_data_to_context(
                 context_type=ContextType.SPEAKER_ACCUMULATION,
-                data=sample_data,
-                metadata={
-                    "speaker_id": input_data.speaker_id,
-                    "total_samples": 1
-                }
+                data_item=sample_data,
+                metadata=metadata
             )
             
-            debug_log(3, f"[NLP] 語者樣本已添加到Working Context：{context_id}")
+            debug_log(3, f"[NLP] 語者樣本已添加到Working Context：{input_data.speaker_id}")
             
         except Exception as e:
             error_log(f"[NLP] 添加語者樣本失敗：{e}")

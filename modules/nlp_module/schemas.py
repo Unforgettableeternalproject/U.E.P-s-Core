@@ -122,28 +122,6 @@ class NLPOutput(BaseModel):
     working_context_updates: List[Dict[str, Any]] = Field(default_factory=list, description="Working Context更新記錄")
 
 
-class EntityType(str, Enum):
-    """實體類型"""
-    PERSON = "person"                # 人名
-    LOCATION = "location"            # 地點
-    ORGANIZATION = "organization"    # 組織
-    FILE_PATH = "file_path"         # 檔案路徑
-    APPLICATION = "application"      # 應用程式
-    TIME = "time"                   # 時間
-    NUMBER = "number"               # 數字
-    CUSTOM = "custom"               # 自定義
-
-
-class Entity(BaseModel):
-    """實體定義"""
-    text: str = Field(..., description="實體文本")
-    entity_type: EntityType = Field(..., description="實體類型")
-    confidence: float = Field(..., description="識別信心度")
-    start_pos: int = Field(..., description="起始位置")
-    end_pos: int = Field(..., description="結束位置")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="額外元數據")
-
-
 # === 決策處理 ===
 
 class IdentityDecision(BaseModel):

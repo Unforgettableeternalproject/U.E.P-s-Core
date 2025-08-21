@@ -15,7 +15,7 @@ from modules.nlp_module.bio_tagger import BIOTagger
 from modules.nlp_module.multi_intent_context import (
     get_multi_intent_context_manager, IntentContext, ContextType
 )
-from modules.nlp_module.schemas import IntentType, IntentSegment, Entity
+from modules.nlp_module.schemas import IntentType, IntentSegment
 from utils.debug_helper import debug_log, info_log, error_log
 
 class IntentAnalyzer:
@@ -96,9 +96,6 @@ class IntentAnalyzer:
             # 決定主要意圖
             result["primary_intent"] = self._determine_primary_intent(intent_segments)
             result["overall_confidence"] = self._calculate_overall_confidence(intent_segments)
-            
-            # 提取實體（簡化版本）
-            result["entities"] = self._extract_entities_from_segments(intent_segments)
             
             # 創建多意圖上下文
             contexts = self.context_manager.create_contexts_from_segments(
@@ -202,70 +199,6 @@ class IntentAnalyzer:
         
         confidences = [seg.confidence for seg in segments]
         return sum(confidences) / len(confidences)
-    
-    def _extract_entities_from_segments(self, segments: List[IntentSegment]) -> List[Entity]:
-        """從分段中提取實體（簡化版本）"""
-        entities = []
-        
-        for segment in segments:
-            # 簡單的關鍵詞匹配實體提取
-            text_lower = segment.text.lower()
-            
-            # 時間實體
-            time_keywords = {
-                'tomorrow': 'tomorrow',
-                'today': 'today', 
-                'tonight': 'tonight',
-                'morning': 'morning',
-                'afternoon': 'afternoon',
-                'evening': 'evening',
-                'now': 'now',
-                'later': 'later'
-            }
-            
-            for keyword, value in time_keywords.items():
-                if keyword in text_lower:
-                    start_pos = segment.text.lower().find(keyword)
-                    if start_pos >= 0:
-                        entities.append(Entity(
-                            text=keyword,
-                            entity_type="time",
-                            confidence=0.8,
-                            start_pos=segment.start_pos + start_pos,
-                            end_pos=segment.start_pos + start_pos + len(keyword),
-                            metadata={"value": value}
-                        ))
-            
-            # 動作實體
-            action_keywords = {
-                'save': 'save_action',
-                'open': 'open_action',
-                'create': 'create_action', 
-                'delete': 'delete_action',
-                'search': 'search_action',
-                'find': 'find_action',
-                'remind': 'remind_action',
-                'schedule': 'schedule_action',
-                'play': 'play_action',
-                'stop': 'stop_action',
-                'set': 'set_action',
-                'turn': 'turn_action'
-            }
-            
-            for keyword, value in action_keywords.items():
-                if keyword in text_lower:
-                    start_pos = segment.text.lower().find(keyword)
-                    if start_pos >= 0:
-                        entities.append(Entity(
-                            text=keyword,
-                            entity_type="custom",
-                            confidence=0.8,
-                            start_pos=segment.start_pos + start_pos,
-                            end_pos=segment.start_pos + start_pos + len(keyword),
-                            metadata={"value": value, "category": "action"}
-                        ))
-        
-        return entities
     
     def _generate_execution_plan(self, contexts: List[IntentContext]) -> List[Dict[str, Any]]:
         """生成執行計劃"""

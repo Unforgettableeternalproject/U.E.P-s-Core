@@ -10,12 +10,12 @@ modules_enabled:
 
 # 模組重構狀態追蹤 - 只有標記為已重構的模組會在正式環境中被 controller 載入
 modules_refactored:
-  stt_module: true   # STT 模組已完成重構
-  nlp_module: false  # NLP 模組尚未重構
-  mem_module: false  # MEM 模組尚未重構 
-  llm_module: false  # LLM 模組尚未重構
-  tts_module: false  # TTS 模組尚未重構
-  sys_module: false  # SYS 模組尚未重構
+  stt_module: true
+  nlp_module: false
+  mem_module: false
+  llm_module: false
+  tts_module: false
+  sys_module: false
 
 logging:
   enabled: true

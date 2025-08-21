@@ -730,3 +730,15 @@
 
 ---
 
+### Document modification. 08/21
+
+> Date: Thu, 21 Aug 2025 12:06:31 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `develop`
+
+> Commit: `5fd1d7fa2dadf22e62ed17ebfc8ef55caef3db1b`
+
+---
+

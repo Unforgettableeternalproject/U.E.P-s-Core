@@ -28,11 +28,11 @@
     <Content Include=".env" />
     <Content Include=".env.example" />
     <Content Include=".gitignore" />
+    <Content Include="arts\U.E.P.png" />
     <Content Include="configs\archive_history.json" />
     <Content Include="arts\U.E.P_concept.png" />
     <Content Include="CHANGELOG.md" />
     <Content Include="configs\config.yaml" />
-    <Content Include="docs\Release_v0.1.0_準備清單.md" />
     <Content Include="docs\SYS模組功能概覽.md" />
     <Content Include="docs\安裝與使用指南.md" />
     <Content Include="docs\專案結構說明.md" />
@@ -147,6 +147,7 @@
     <Content Include="train\nlp\dataset.csv" />
     <Content Include="train\tts\dataset.csv" />
     <Content Include="wheel\fairseq-0.12.2-cp310-cp310-win_amd64.whl" />
+    <Content Include="wheel\simpleaudio-1.0.4-cp310-cp310-win_amd64.whl" />
   </ItemGroup>
   <ItemGroup>
     <Interpreter Include="env\">
@@ -162,14 +163,24 @@
   <ItemGroup>
     <Compile Include="configs\config_loader.py" />
     <Compile Include="core\controller.py" />
+    <Compile Include="core\data_transformer.py" />
+    <Compile Include="core\framework.py" />
     <Compile Include="core\module_base.py" />
+    <Compile Include="core\production_runner.py" />
     <Compile Include="core\registry.py" />
     <Compile Include="core\router.py" />
+    <Compile Include="core\schemas.py" />
+    <Compile Include="core\schema_adapter.py" />
     <Compile Include="core\session_manager.py" />
     <Compile Include="core\state_manager.py" />
+    <Compile Include="core\strategies.py" />
+    <Compile Include="core\system_initializer.py" />
+    <Compile Include="core\system_loop.py" />
+    <Compile Include="core\working_context.py" />
     <Compile Include="devtools\debugger.py" />
     <Compile Include="modules\llm_module\gemini_client.py" />
     <Compile Include="modules\stt_module\smart_keyword_detector.py" />
+    <Compile Include="modules\stt_module\speaker_context_handler.py" />
     <Compile Include="modules\stt_module\speaker_identification.py" />
     <Compile Include="modules\stt_module\vad.py" />
     <Compile Include="modules\stt_module\vad_module.py" />
@@ -178,6 +189,7 @@
     <Compile Include="modules\sys_module\actions\file_interaction.py" />
     <Compile Include="modules\sys_module\actions\integrations.py" />
     <Compile Include="modules\sys_module\actions\window_control.py" />
+    <Compile Include="modules\sys_module\legacy_direct_actions.py" />
     <Compile Include="modules\sys_module\workflows.py" />
     <Compile Include="modules\sys_module\workflows\file_workflows.py" />
     <Compile Include="modules\sys_module\workflows\test_workflows.py" />
@@ -199,9 +211,11 @@
     <Compile Include="modules\tts_module\lib\infer_pack\transforms.py" />
     <Compile Include="modules\tts_module\rmvpe.py" />
     <Compile Include="modules\tts_module\vc_infer_pipeline.py" />
+    <Compile Include="module_tests\extra_tests.py" />
     <Compile Include="module_tests\integration_tests.py" />
     <Compile Include="module_tests\test_sys_module.py" />
     <Compile Include="module_tests\test_tts_module.py" />
+    <Compile Include="utils\clean_speaker_database.py" />
     <Compile Include="utils\debug_file_dropper.py" />
     <Compile Include="utils\debug_helper.py" />
     <Compile Include="utils\logger.py" />
@@ -243,8 +257,10 @@
     <Compile Include="modules\ui_module\__init__.py" />
     <Compile Include="modules\__init__.py" />
     <Compile Include="train\nlp\train_dbert.py" />
+    <Compile Include="utils\module_status.py" />
     <Compile Include="utils\prompt_builder.py" />
     <Compile Include="utils\prompt_templates.py" />
+    <Compile Include="utils\schema_converter.py" />
     <Compile Include="utils\tts_chunker.py" />
   </ItemGroup>
   <ItemGroup>

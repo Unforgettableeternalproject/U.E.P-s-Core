@@ -19,6 +19,7 @@ from core.module_base import BaseModule
 from core.schemas import NLPModuleData, create_nlp_data
 from core.schema_adapter import NLPSchemaAdapter
 from core.working_context import working_context_manager, ContextType
+from core.state_queue import get_state_queue_manager, SystemState
 from utils.debug_helper import debug_log, info_log, error_log
 
 from .schemas import (
@@ -41,6 +42,7 @@ class NLPModule(BaseModule):
         # 模組組件
         self.identity_manager: Optional[IdentityManager] = None
         self.intent_analyzer: Optional[IntentAnalyzer] = None
+        self.state_queue_manager = get_state_queue_manager()
         self.schema_adapter = NLPSchemaAdapter()
         
         # 模組狀態
@@ -226,8 +228,37 @@ class NLPModule(BaseModule):
             debug_log(3, f"[NLP] 系統狀態處理：下一步模組={result['next_modules']}, "
                        f"等待輸入={result['awaiting_input']}")
             
+            # 將意圖轉換為系統狀態並添加到佇列
+            added_states = self._process_intent_to_state_queue(intent_result)
+            result["added_states"] = [state.value for state in added_states] if added_states else []
+            
         except Exception as e:
             error_log(f"[NLP] 系統狀態處理失敗：{e}")
+        
+        return result
+    
+    def _process_intent_to_state_queue(self, intent_result: Dict[str, Any]) -> List:
+        """將意圖分析結果轉換為系統狀態並添加到佇列"""
+        try:
+            intent_segments = intent_result.get("intent_segments", [])
+            if not intent_segments:
+                debug_log(2, "[NLP] 沒有意圖片段需要處理")
+                return []
+            
+            # 使用狀態佇列管理器處理意圖
+            added_states = self.state_queue_manager.process_nlp_intents(intent_segments)
+            
+            if added_states:
+                info_log(f"[NLP] 添加系統狀態到佇列: {[state.value for state in added_states]}")
+                debug_log(3, f"[NLP] 目前佇列狀態: {self.state_queue_manager.get_queue_status()}")
+            else:
+                debug_log(2, "[NLP] 沒有新的系統狀態需要添加")
+            
+            return added_states
+                
+        except Exception as e:
+            error_log(f"[NLP] 狀態佇列處理失敗: {e}")
+            return []
         
         return result
     
@@ -255,6 +286,10 @@ class NLPModule(BaseModule):
         processing_notes = identity_result.get("processing_notes", [])
         processing_notes.append(f"意圖分析完成，信心度：{intent_result.get('overall_confidence', 0):.3f}")
         
+        # 獲取狀態佇列信息
+        queue_status = self.state_queue_manager.get_queue_status()
+        added_states = state_result.get("added_states", [])
+        
         return NLPOutput(
             original_text=input_data.text,
             identity=identity_result.get("identity"),
@@ -266,7 +301,9 @@ class NLPModule(BaseModule):
             next_modules=state_result.get("next_modules", []),
             processing_notes=processing_notes,
             awaiting_further_input=state_result.get("awaiting_input", False),
-            timeout_seconds=state_result.get("timeout_seconds")
+            timeout_seconds=state_result.get("timeout_seconds"),
+            queue_states_added=added_states,
+            current_system_state=queue_status.get("current_state")
         )
     
     def _add_to_speaker_accumulation(self, input_data: NLPInput):

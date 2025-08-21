@@ -1,6 +1,6 @@
 {
   "example_1_chat_output": {
-    "original_text": "你好嗎？今天天氣真好",
+    "original_text": "Hi there! How are you today? The weather is really nice",
     "identity": {
       "identity_id": "user_1692686400_speak001",
       "speaker_id": "speaker_001",
@@ -13,26 +13,26 @@
     "primary_intent": "chat",
     "intent_segments": [
       {
-        "text": "你好嗎？",
+        "text": "Hi there! How are you today?",
         "intent": "chat",
         "confidence": 0.92,
         "start_pos": 0,
-        "end_pos": 4,
+        "end_pos": 28,
         "entities": []
       },
       {
-        "text": "今天天氣真好",
+        "text": "The weather is really nice",
         "intent": "chat", 
         "confidence": 0.89,
-        "start_pos": 4,
-        "end_pos": 10,
+        "start_pos": 29,
+        "end_pos": 55,
         "entities": [
           {
-            "text": "今天",
-            "entity_type": "time",
+            "text": "weather",
+            "entity_type": "custom",
             "confidence": 0.95,
-            "start_pos": 4,
-            "end_pos": 6
+            "start_pos": 33,
+            "end_pos": 40
           }
         ]
       }

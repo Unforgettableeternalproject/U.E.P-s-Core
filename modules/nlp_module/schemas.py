@@ -113,6 +113,13 @@ class NLPOutput(BaseModel):
     # 等待狀態 (用於 call 類型)
     awaiting_further_input: bool = Field(False, description="等待進一步輸入")
     timeout_seconds: Optional[int] = Field(None, description="等待超時時間")
+    
+    # 狀態佇列管理
+    queue_states_added: Optional[List[str]] = Field(None, description="添加到狀態佇列的狀態")
+    current_system_state: Optional[str] = Field(None, description="當前系統狀態")
+    
+    # Working Context更新記錄
+    working_context_updates: List[Dict[str, Any]] = Field(default_factory=list, description="Working Context更新記錄")
 
 
 class EntityType(str, Enum):

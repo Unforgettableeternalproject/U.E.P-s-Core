@@ -754,3 +754,27 @@
 
 ---
 
+### Some NLP intent changes, and added new training files for BIO model training. 08/21
+
+> Date: Thu, 21 Aug 2025 17:21:02 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/nlp_module_rework`
+
+> Commit: `33ace4eda88ba59b851b0e7babce39a3bb6fce27`
+
+---
+
+### Some NLP intent changes, and added new training files for BIO model training. 08/21
+
+> Date: Thu, 21 Aug 2025 17:21:02 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/nlp_module_rework`
+
+> Commit: `54d0c69f95f898f1386512722c233ad1bcfc58fc`
+
+---
+

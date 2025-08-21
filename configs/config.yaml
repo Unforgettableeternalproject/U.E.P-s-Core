@@ -11,7 +11,7 @@ modules_enabled:
 # 模組重構狀態追蹤 - 只有標記為已重構的模組會在正式環境中被 controller 載入
 modules_refactored:
   stt_module: true
-  nlp_module: true
+  nlp_module: false
   mem_module: false
   llm_module: false
   tts_module: false
@@ -26,3 +26,23 @@ logging:
 debug:
   enabled: true
   debug_level: 3
+
+# NLP模組配置
+nlp_module:
+  # BIO標註模型配置
+  use_bio_tagging: true
+  bio_model_name: "distilbert-base-uncased"
+  bio_model_path: "./models/nlp/bio_tagger"
+  
+  # Legacy意圖模型配置 (作為後備)
+  intent_model_dir: "./models/nlp/command_chat_classifier"
+  entity_model_name: "ckiplab/bert-base-chinese-ner"
+  
+  # 分段配置
+  enable_segmentation: true
+  max_segments: 5
+  min_segment_length: 3
+  
+  # 狀態管理
+  enable_state_transitions: true
+  priority_scheduling: true

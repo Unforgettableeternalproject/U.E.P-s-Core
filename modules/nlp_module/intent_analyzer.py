@@ -24,11 +24,12 @@ from .schemas import (
     IntentType, IntentSegment, Entity, EntityType,
     SystemStateTransition
 )
+from .bio_tagger import BIOTagger, EnhancedIntentAnalyzer
 from utils.debug_helper import debug_log, info_log, error_log
 
 
 class IntentAnalyzer:
-    """意圖分析器 - 支援分段分析"""
+    """意圖分析器 - 支援分段分析 (Legacy版本)"""
     
     def __init__(self, config: Dict[str, Any]):
         self.config = config
@@ -42,6 +43,13 @@ class IntentAnalyzer:
         self.intent_tokenizer = None
         self.entity_pipeline = None
         
+        # BIO標註器 (新增)
+        self.bio_tagger = None
+        self.use_bio_tagging = config.get("use_bio_tagging", True)
+        
+        if self.use_bio_tagging:
+            self.bio_tagger = BIOTagger(config.get('bio_model_name', 'distilbert-base-uncased'))
+        
         # 標籤映射 - 擴展支援call類型
         self.intent_mapping = {
             0: IntentType.COMMAND,
@@ -52,17 +60,17 @@ class IntentAnalyzer:
         
         # 狀態轉換規則
         self.state_transition_rules = {
-            IntentType.CALL: {"target": "IDLE", "reason": "使用者呼叫UEP"},
-            IntentType.CHAT: {"target": "CHAT", "reason": "進入聊天模式"},
-            IntentType.COMMAND: {"target": "WORK", "reason": "執行系統指令"},
-            IntentType.COMPOUND: {"target": "WORK", "reason": "執行複合指令"}
+            IntentType.CALL: {"target": "IDLE", "reason": "User calling UEP"},
+            IntentType.CHAT: {"target": "CHAT", "reason": "Enter chat mode"},
+            IntentType.COMMAND: {"target": "WORK", "reason": "Execute system command"},
+            IntentType.COMPOUND: {"target": "WORK", "reason": "Execute compound command"}
         }
         
-        # 文本分段模式
+        # 文本分段模式 (針對英文優化)
         self.segmentation_patterns = [
-            r'[.!?。！？]+\s*',  # 句號分段
-            r'[,，]\s*(?=(?:請|可以|幫我|然後))',  # 連接詞分段
-            r'\s+(?=(?:接著|然後|還有|另外|最後))',  # 序列詞分段
+            r'[.!?]+\s+',  # 句號分段
+            r',\s*(?=(?:please|can you|help me|then|and then|after that))',  # 連接詞分段
+            r'\s+(?=(?:then|next|also|additionally|finally|after that|and then))',  # 序列詞分段
         ]
     
     def initialize(self):
@@ -70,7 +78,16 @@ class IntentAnalyzer:
         try:
             info_log("[IntentAnalyzer] 初始化意圖分析器...")
             
-            # 載入意圖分類模型
+            # 初始化BIO標註器
+            if self.use_bio_tagging and self.bio_tagger:
+                bio_model_path = self.config.get('bio_model_path')
+                if self.bio_tagger.load_model(bio_model_path):
+                    info_log("[IntentAnalyzer] BIO標註器載入成功")
+                else:
+                    info_log("[IntentAnalyzer] BIO標註器載入失敗，使用legacy方法", "WARNING")
+                    self.use_bio_tagging = False
+            
+            # 載入意圖分類模型 (作為後備)
             if os.path.exists(self.intent_model_dir):
                 self.intent_model = DistilBertForSequenceClassification.from_pretrained(
                     self.intent_model_dir
@@ -81,7 +98,9 @@ class IntentAnalyzer:
                 info_log(f"[IntentAnalyzer] 載入意圖模型：{self.intent_model_dir}")
             else:
                 error_log(f"[IntentAnalyzer] 意圖模型不存在：{self.intent_model_dir}")
-                return False
+                # 如果沒有BIO模型，這是必須的
+                if not self.use_bio_tagging:
+                    return False
             
             # 載入實體識別模型
             try:
@@ -229,10 +248,10 @@ class IntentAnalyzer:
             
             # 檢查是否為call類型的常見模式
             call_patterns = [
-                r'^(?:hi|hello|hey|你好|哈囉)\s*[!！]*$',
-                r'.*(?:can you|could you|請|可以幫我).*\?*$',
-                r'^(?:uep|UEP)\s*[!！]*$',
-                r'.*(?:在嗎|聽得到嗎).*\?*$'
+                r'^(?:hi|hello|hey|uep)\s*[!]*$',
+                r'.*(?:can you|could you|please help).*\?*$',
+                r'^(?:uep|UEP)\s*[!]*$',
+                r'.*(?:are you there|can you hear me).*\?*$'
             ]
             
             for pattern in call_patterns:

@@ -97,6 +97,8 @@ class NLPModuleData(UnifiedModuleData):
     # 系統控制
     state_transition: Optional[Dict[str, Any]] = Field(None, description="建議的狀態轉換")
     awaiting_input: Optional[bool] = Field(None, description="等待進一步輸入")
+    queue_states_added: Optional[List[str]] = Field(None, description="添加到狀態佇列的狀態")
+    current_system_state: Optional[str] = Field(None, description="當前系統狀態")
     
     # 處理指引
     next_modules: Optional[List[str]] = Field(None, description="建議的下一步模組")

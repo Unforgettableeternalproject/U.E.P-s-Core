@@ -43,7 +43,7 @@ def clear_empty_logs():
 
 if __name__ == "__main__":
     print("\n=========================\n")
-    print(f"U.E.P <v.0.1.0> - 開發中版本 - {datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}\n")
+    print(f"U.E.P <v.0.2.6> - 開發中版本 - {datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}\n")
 
     # 處理命令行參數
     import argparse

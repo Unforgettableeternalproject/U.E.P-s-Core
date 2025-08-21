@@ -21,6 +21,7 @@ from enum import Enum, auto
 from core.framework import core_framework, ExecutionMode
 from core.controller import unified_controller
 from core.state_manager import UEPState, StateManager, state_manager
+from core.state_queue import get_state_queue_manager
 from core.working_context import working_context_manager, ContextType
 from core.strategies import context_decision_engine
 from configs.config_loader import load_config
@@ -120,9 +121,24 @@ class SystemInitializer:
             self.phase = InitializationPhase.STATE_RESET
             info_log("🔄 重置系統狀態...")
             
+            # 清空狀態佇列
+            state_queue_manager = get_state_queue_manager()
+            initial_queue_length = len(state_queue_manager.queue)
+            if initial_queue_length > 0:
+                info_log(f"   發現 {initial_queue_length} 個待處理狀態項目")
+                state_queue_manager.clear_queue()
+                info_log(f"   ✅ 已清空狀態佇列")
+            else:
+                info_log("   狀態佇列已為空")
+            
             # 將系統狀態設為 IDLE
             state_manager.set_state(UEPState.IDLE)
             info_log(f"   狀態設置為: {state_manager.get_state().name}")
+            
+            # 確保狀態佇列的當前狀態也是 IDLE
+            if state_queue_manager.current_state.value != 'idle':
+                info_log(f"   修正狀態佇列狀態: {state_queue_manager.current_state.value} -> idle")
+                state_queue_manager._transition_to_idle()
             
             # 清除活動會話
             if hasattr(state_manager, '_active_session') and state_manager._active_session:
@@ -314,9 +330,17 @@ class SystemInitializer:
     
     def get_system_status(self) -> Dict[str, Any]:
         """獲取系統狀態"""
+        state_queue_manager = get_state_queue_manager()
+        queue_status = state_queue_manager.get_queue_status()
+        
         return {
             'phase': self.phase.name,
             'system_state': state_manager.get_state().name,
+            'state_queue': {
+                'current_state': queue_status['current_state'],
+                'queue_length': queue_status['queue_length'],
+                'pending_states': queue_status['pending_states']
+            },
             'initialized_modules': self.initialized_modules,
             'failed_modules': self.failed_modules,
             'startup_time': time.time() - self.startup_time if self.startup_time else None,
@@ -328,6 +352,12 @@ class SystemInitializer:
         info_log("🛑 開始關閉 UEP 系統...")
         
         try:
+            # 清空狀態佇列
+            state_queue_manager = get_state_queue_manager()
+            if len(state_queue_manager.queue) > 0:
+                info_log(f"   清空 {len(state_queue_manager.queue)} 個待處理狀態")
+                state_queue_manager.clear_queue()
+            
             # 關閉所有模組
             registered_modules = core_framework.get_available_modules()
             for module_name, module_instance in registered_modules.items():

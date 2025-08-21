@@ -387,6 +387,7 @@ temp/*
 # 訓練資料
 train/**/dataset.csv
 train/**/results/
+train/**/data
 
 # Logs and Memories
 logs/*

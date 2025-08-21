@@ -742,3 +742,75 @@
 
 ---
 
+### NLP first-hand refractor, issues yet to solve. 08/21
+
+> Date: Thu, 21 Aug 2025 15:52:44 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/nlp_module_rework`
+
+> Commit: `b3f4abe1e98a1620a3e41abb540fa433955bcba1`
+
+---
+
+### Some NLP intent changes, and added new training files for BIO model training. 08/21
+
+> Date: Thu, 21 Aug 2025 17:21:02 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/nlp_module_rework`
+
+> Commit: `33ace4eda88ba59b851b0e7babce39a3bb6fce27`
+
+---
+
+### Some NLP intent changes, and added new training files for BIO model training. 08/21
+
+> Date: Thu, 21 Aug 2025 17:21:02 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/nlp_module_rework`
+
+> Commit: `54d0c69f95f898f1386512722c233ad1bcfc58fc`
+
+---
+
+### Finished the implementation on bio tagger and intent analyzer, but with potential issues, and the model is not very accurate at this point, will fix later. Also added some debug functions for the newly refactored NLP module. 08/21
+
+> Date: Thu, 21 Aug 2025 19:25:08 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/nlp_module_rework`
+
+> Commit: `b121c85faedc5d755ee31dfcee606666f4eb68b2`
+
+---
+
+### Refined state queue structure, and improved the debugger. 08/21
+
+> Date: Thu, 21 Aug 2025 23:51:26 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/nlp_module_rework`
+
+> Commit: `0eeff135e945fd605730cccfe7f0eaf39ce8fd55`
+
+---
+
+### Added in actual tests and interactions between STT and NLP. 08/22
+
+> Date: Fri, 22 Aug 2025 03:31:44 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/nlp_module_rework`
+
+> Commit: `99762507323aa5b8296ddeaaf97871256572e124`
+
+---
+

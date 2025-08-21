@@ -3,7 +3,8 @@ from core.registry import get_module
 from configs.config_loader import load_config
 from utils.debug_helper import debug_log, info_log, error_log
 from utils.debug_file_dropper import open_demo_window, open_folder_dialog
-from module_tests.integration_tests import *
+from module_tests.integration_tests import test_stt_nlp  # 新版整合測試 (精簡版)
+# from module_tests.integration_tests_v2 import *  # 保留舊版整合測試，暫時停用
 from module_tests.extra_tests import *
 import time
 import asyncio
@@ -42,8 +43,14 @@ modules = {
 
 # 測試 STT 模組 - Phase 2 版本
 
-def on_stt_result(result):
-    """STT 結果回調函數 - 簡化版本"""
+def on_stt_result(result, continuous_mode=False):
+    """
+    STT 結果回調函數 - 統一版本，可處理單次和持續辨識模式
+    
+    Args:
+        result: 語音識別結果，可以是字典或對象
+        continuous_mode: 是否為持續辨識模式 (影響輸出格式)
+    """
     # 首先檢查結果是否為 None 或非字典（處理錯誤情況）
     if result is None:
         print("❌ 語音識別失敗：沒有識別結果")
@@ -62,22 +69,29 @@ def on_stt_result(result):
             return
             
         # 沒有識別出文字的情況
-        if not text:
+        if not text or not text.strip():
             print("🔇 未識別到有效語音內容")
             return
         
-        # 顯示語音辨識結果
-        print(f"\n📢 語音識別: 「{text}」 (信心度: {confidence:.2f})")
+        # 顯示語音辨識結果 (根據模式調整格式)
+        if continuous_mode:
+            print(f"\n🎤 語音識別: 「{text}」")
+        else:
+            print(f"\n📢 語音識別: 「{text}」 (信心度: {confidence:.2f})")
         
         # 顯示說話人信息
         if speaker_info:
             speaker_id = speaker_info.get("speaker_id", "未定")
-            confidence = speaker_info.get("confidence", 0)
+            speaker_confidence = speaker_info.get("confidence", 0)
             is_new = "(新說話人)" if speaker_info.get("is_new_speaker", False) else ""
-            print(f"   � 說話人：{speaker_id} {is_new} (信心度: {confidence:.2f})")
-        else:
-            print("   👤 說話人：未定")
             
+            if continuous_mode:
+                print(f"👤 說話人: {speaker_id} {is_new} (信心度: {speaker_confidence:.2f})")
+            else:
+                print(f"👤 說話人：{speaker_id} {is_new} (信心度: {speaker_confidence:.2f})")
+        else:
+            print("👤 說話人：未定")
+
     else:
         # 直接顯示結果
         print(f"✨ 識別結果：{result}")
@@ -99,9 +113,10 @@ def stt_test_single(enable_speaker_id=True, language="en-US"):
         "language": language,
         "enable_speaker_id": enable_speaker_id,
         "duration": 5
-    })
+    })  
     
-    on_stt_result(result)
+    # 使用 on_stt_result 處理結果，指定為單次模式 (continuous_mode=False，這是預設值)
+    on_stt_result(result.get("data"))
     return result
 
 def stt_test_continuous_listening(duration=30):
@@ -116,31 +131,41 @@ def stt_test_continuous_listening(duration=30):
     print("   系統將持續監聽並直接輸出識別結果")
     print("   按 Ctrl+C 可隨時中斷監聽")
     
-    # 創建一個回調函數來實時打印識別結果
+    # 創建一個連接到主要處理函數的回調
     def continuous_result_callback(result):
         if result is None:
             return
             
-        text = result.text if hasattr(result, "text") else "未識別到文字"
-        
-        # 獲取說話人信息
-        speaker_info = None
-        speaker_text = "未定"
-        if hasattr(result, "speaker_info") and result.speaker_info:
-            speaker_info = result.speaker_info
-            if isinstance(speaker_info, dict):
-                speaker_id = speaker_info.get("speaker_id", "未定")
-                confidence = speaker_info.get("confidence", 0)
-                speaker_text = f"{speaker_id} (信心度: {confidence:.2f})"
-            else:
-                speaker_id = getattr(speaker_info, "speaker_id", "未定")
-                confidence = getattr(speaker_info, "confidence", 0)
-                speaker_text = f"{speaker_id} (信心度: {confidence:.2f})"
-                
-        # 打印識別結果
-        if text and text.strip():
-            print(f"\n🎤 語音識別: 「{text}」")
-            print(f"   👤 說話人: {speaker_text}")
+        # 將 result 轉換為標準字典格式，以便重用 on_stt_result 函數
+        if not isinstance(result, dict):
+            # 提取文字
+            text = result.text if hasattr(result, "text") else ""
+            
+            # 提取說話人信息
+            speaker_info = None
+            if hasattr(result, "speaker_info") and result.speaker_info:
+                if isinstance(result.speaker_info, dict):
+                    speaker_info = result.speaker_info
+                else:
+                    # 轉換為字典
+                    speaker_info = {
+                        "speaker_id": getattr(result.speaker_info, "speaker_id", "未定"),
+                        "confidence": getattr(result.speaker_info, "confidence", 0),
+                        "is_new_speaker": getattr(result.speaker_info, "is_new_speaker", False)
+                    }
+                    
+            # 創建標準格式
+            formatted_result = {
+                "text": text,
+                "confidence": getattr(result, "confidence", 0),
+                "speaker_info": speaker_info
+            }
+            
+            # 使用標準結果處理函數，並傳遞 continuous_mode=True
+            on_stt_result(formatted_result, continuous_mode=True)
+        else:
+            # 已經是字典格式
+            on_stt_result(result, continuous_mode=True)
     
     try:
         # 臨時設置回調函數
@@ -400,25 +425,280 @@ def stt_speaker_adjust_threshold(threshold: float = None):
 
 # 測試 NLP 模組
 
-def nlp_test(cases=""):
+def nlp_test(text: str = "", enable_identity: bool = True, enable_segmentation: bool = True):
+    """測試增強版NLP模組 - 包含語者身份和意圖分析"""
     nlp = modules["nlp"]
 
     if nlp is None:
         error_log("[Controller] ❌ 無法載入 NLP 模組")
         return
 
-    test_cases = [cases] if cases != "" else [
-        "Hello, it's me, your friend Bernie!",
-        "Do a barrel roll.",
-        "Do you like among us?",
-        "gogogoog"
+    test_text = text if text else "Hello UEP, please save my work and then play some music"
+    
+    print(f"\n🧠 測試增強版NLP - 文本: '{test_text}'")
+    print("=" * 60)
+    
+    # 準備測試輸入
+    nlp_input = {
+        "text": test_text,
+        "speaker_id": "test_speaker_001",
+        "speaker_confidence": 0.85,
+        "speaker_status": "known",
+        "enable_identity_processing": enable_identity,
+        "enable_segmentation": enable_segmentation,
+        "current_system_state": "idle",
+        "conversation_history": []
+    }
+    
+    try:
+        result = nlp.handle(nlp_input)
+        
+        print(f"📝 原始文本: {result.get('original_text', 'N/A')}")
+        print(f"🎯 主要意圖: {result.get('primary_intent', 'N/A')}")
+        print(f"📊 整體信心度: {result.get('overall_confidence', 0):.3f}")
+        
+        # 語者身份信息
+        identity = result.get('identity')
+        if identity:
+            print(f"👤 語者身份: {identity.get('identity_id', 'N/A')}")
+            print(f"🔄 身份動作: {result.get('identity_action', 'N/A')}")
+        else:
+            print("👤 語者身份: 未識別")
+        
+        # 意圖分段
+        segments = result.get('intent_segments', [])
+        print(f"\n📋 意圖分段 ({len(segments)}個):")
+        for i, segment in enumerate(segments, 1):
+            if hasattr(segment, 'text'):
+                print(f"  {i}. '{segment.text}' -> {segment.intent} (信心度: {segment.confidence:.3f})")
+            else:
+                print(f"  {i}. '{segment.get('text', 'N/A')}' -> {segment.get('intent', 'N/A')}")
+        
+        # 上下文信息
+        context_ids = result.get('context_ids', [])
+        if context_ids:
+            print(f"\n🔗 創建的上下文: {len(context_ids)}個")
+            for ctx_id in context_ids:
+                print(f"  - {ctx_id}")
+        
+        # 執行計劃
+        execution_plan = result.get('execution_plan', [])
+        if execution_plan:
+            print(f"\n📋 執行計劃:")
+            for plan_item in execution_plan:
+                print(f"  步驟{plan_item.get('step', 'N/A')}: {plan_item.get('description', 'N/A')} (優先級: {plan_item.get('priority', 'N/A')})")
+        
+        # 狀態轉換
+        state_transition = result.get('state_transition')
+        if state_transition:
+            print(f"\n🔄 狀態轉換: {state_transition}")
+        
+        # 下一步模組
+        next_modules = result.get('next_modules', [])
+        if next_modules:
+            print(f"➡️ 下一步模組: {', '.join(next_modules)}")
+        
+        # 處理註記
+        processing_notes = result.get('processing_notes', [])
+        if processing_notes:
+            print(f"\n📝 處理註記:")
+            for note in processing_notes:
+                print(f"  - {note}")
+        
+        return result
+        
+    except Exception as e:
+        error_log(f"[NLP] 增強版測試失敗: {e}")
+        return None
+
+def nlp_test_state_queue_integration(text: str = ""):
+    """測試NLP與狀態佇列的整合"""
+    nlp = modules["nlp"]
+    if nlp is None:
+        error_log("[Controller] ❌ 無法載入 NLP 模組")
+        return
+
+    from core.state_queue import get_state_queue_manager
+    state_queue = get_state_queue_manager()
+
+    test_text = text if text else "Hi UEP, how are you? Please save my work and then remind me about the meeting."
+    
+    print(f"\n🔄 測試NLP與狀態佇列整合")
+    print(f"📝 測試文本: '{test_text}'")
+    print("=" * 80)
+    
+    # 清空佇列開始測試
+    state_queue.clear_queue()
+    print(f"🧹 清空狀態佇列")
+    
+    # 顯示初始狀態
+    initial_status = state_queue.get_queue_status()
+    print(f"🏁 初始狀態: {initial_status['current_state']}")
+    print(f"📋 初始佇列長度: {initial_status['queue_length']}")
+    
+    # 執行NLP分析
+    result = nlp_test(test_text, enable_segmentation=True)
+    
+    # 顯示分析後的狀態佇列
+    print(f"\n📊 NLP分析後的狀態佇列:")
+    final_status = state_queue.get_queue_status()
+    print(f"🎯 當前狀態: {final_status['current_state']}")
+    print(f"📋 佇列長度: {final_status['queue_length']}")
+    
+    if final_status['queue_items']:
+        print(f"📝 佇列內容:")
+        for i, item in enumerate(final_status['queue_items'], 1):
+            print(f"  {i}. {item['state']} (優先級: {item['priority']})")
+            print(f"     觸發: {item['trigger_content']}")
+            print(f"     上下文: {item['context_content']}")
+            print()
+    
+    return result
+
+def nlp_test_multi_intent(text: str = ""):
+    """測試多意圖上下文管理"""
+    nlp = modules["nlp"]
+
+    if nlp is None:
+        error_log("[Controller] ❌ 無法載入 NLP 模組")
+        return
+
+    test_text = text if text else "Hey system, please save my document and then remind me about the meeting tomorrow"
+    
+    print(f"\n🔄 測試多意圖上下文管理")
+    print(f"📝 測試文本: '{test_text}'")
+    print("=" * 70)
+    
+    result = nlp_test(test_text, enable_segmentation=True)
+    
+    if result and hasattr(nlp, 'intent_analyzer'):
+        analyzer = nlp.intent_analyzer
+        
+        # 獲取上下文摘要
+        context_summary = analyzer.get_context_summary()
+        print(f"\n📊 上下文管理摘要:")
+        print(f"  活躍上下文: {context_summary.get('active_contexts', 0)}")
+        print(f"  待執行上下文: {context_summary.get('pending_contexts', 0)}")
+        print(f"  已完成上下文: {context_summary.get('completed_contexts', 0)}")
+        
+        # 獲取下一個可執行的上下文
+        next_context = analyzer.get_next_context()
+        if next_context:
+            state, context = next_context
+            print(f"\n➡️ 下一個可執行上下文:")
+            print(f"  上下文ID: {context.context_id}")
+            print(f"  類型: {context.context_type.value}")
+            print(f"  任務描述: {context.task_description or context.conversation_topic}")
+            print(f"  優先級: {context.priority}")
+        else:
+            print(f"\n➡️ 無待執行的上下文")
+
+def nlp_test_identity_management(speaker_id: str = "test_user"):
+    """測試語者身份管理"""
+    nlp = modules["nlp"]
+
+    if nlp is None:
+        error_log("[Controller] ❌ 無法載入 NLP 模組")
+        return
+
+    print(f"\n👤 測試語者身份管理 - 語者ID: {speaker_id}")
+    print("=" * 50)
+    
+    # 多次交互測試身份累積和識別
+    test_interactions = [
+        "Hello, I'm testing the system",
+        "Can you help me organize my files?", 
+        "I want to schedule a meeting for tomorrow",
+        "Play my favorite music please"
     ]
+    
+    for i, text in enumerate(test_interactions, 1):
+        print(f"\n--- 交互 {i} ---")
+        
+        nlp_input = {
+            "text": text,
+            "speaker_id": speaker_id,
+            "speaker_confidence": 0.8 + (i * 0.05),  # 逐漸提高信心度
+            "speaker_status": "known" if i > 2 else "accumulating",
+            "enable_identity_processing": True,
+            "enable_segmentation": True
+        }
+        
+        result = nlp.handle(nlp_input)
+        
+        print(f"文本: '{text}'")
+        print(f"身份動作: {result.get('identity_action', 'N/A')}")
+        
+        identity = result.get('identity')
+        if identity:
+            print(f"身份ID: {identity.get('identity_id', 'N/A')}")
+            print(f"互動次數: {identity.get('interaction_stats', {}).get('total_interactions', 0)}")
 
-    debug_log(1, f"[NLP] 測試文本: {test_cases}")
+def nlp_analyze_context_queue():
+    """分析NLP模組的上下文佇列狀態"""
+    nlp = modules["nlp"]
 
-    for text in test_cases:
-        result = nlp.handle({"text": text})
-        print(f"\n🧠 NLP 輸出結果：{result['text']} 對應的是 {result['label']}，程式決定進行 {result['intent']}\n")
+    if nlp is None:
+        error_log("[Controller] ❌ 無法載入 NLP 模組")
+        return
+
+    if not hasattr(nlp, 'context_manager'):
+        print("❌ NLP模組沒有上下文管理器")
+        return
+
+    context_manager = nlp.context_manager
+    
+    print(f"\n📊 多意圖上下文佇列分析")
+    print("=" * 40)
+    
+    # 獲取佇列狀態
+    summary = context_manager.get_context_summary()
+    
+    print(f"總上下文數: {len(context_manager.contexts)}")
+    print(f"活躍上下文: {len(context_manager.active_contexts)}")
+    print(f"已完成上下文: {len(context_manager.completed_contexts)}")
+    print(f"佇列長度: {len(context_manager.state_queue)}")
+    
+    # 顯示活躍上下文詳情
+    if context_manager.active_contexts:
+        print(f"\n🔄 活躍上下文:")
+        for ctx_id in context_manager.active_contexts:
+            if ctx_id in context_manager.contexts:
+                ctx = context_manager.contexts[ctx_id]
+                print(f"  {ctx_id}: {ctx.context_type.value} - {ctx.task_description or ctx.conversation_topic}")
+    
+    # 顯示佇列中的條目
+    if context_manager.state_queue:
+        print(f"\n📋 佇列條目:")
+        for i, entry in enumerate(context_manager.state_queue[:5]):  # 只顯示前5個
+            ctx = entry.context
+            print(f"  {i+1}. {ctx.context_id}: {ctx.context_type.value} (優先級: {ctx.priority})")
+        
+        if len(context_manager.state_queue) > 5:
+            print(f"  ... 還有 {len(context_manager.state_queue) - 5} 個條目")
+
+def nlp_clear_contexts():
+    """清空NLP模組的上下文"""
+    nlp = modules["nlp"]
+
+    if nlp is None:
+        error_log("[Controller] ❌ 無法載入 NLP 模組")
+        return
+
+    if not hasattr(nlp, 'context_manager'):
+        print("❌ NLP模組沒有上下文管理器")
+        return
+
+    context_manager = nlp.context_manager
+    
+    # 清空上下文
+    context_manager.contexts.clear()
+    context_manager.active_contexts.clear()
+    context_manager.completed_contexts.clear()
+    context_manager.state_queue.clear()
+    context_manager.dependency_graph.clear()
+    
+    print("✅ 已清空所有NLP上下文")
 
 # 測試 MEM 模組
 
@@ -802,64 +1082,28 @@ def sys_test_workflows(workflow_type: int = 1):
             print(data["enhanced_summary"])
             print("========== 摘要結束 ==========")
 
-# 整合測試
+# 整合測試 - 新版
 
 def integration_test_SN():
-    itSN(modules)
+    """STT + NLP 整合測試"""
+    # 直接傳入模組字典
+    test_stt_nlp(modules)
 
-def integration_test_SM():
-    itSM(modules)
+# 暫時停用其他整合測試，只保留 STT+NLP (因為其他模組尚未完成重構)
+# 其他整合測試將在相應模組重構完成後添加
 
-def integration_test_SL():
-    itSL(modules)
+# 注意：目前只有 STT 和 NLP 模組完成重構，其他整合測試將在模組重構後添加
+#
+# 以下是可用的整合測試：
+# - STT + NLP: integration_test_SN()
+#
+# 為保持程式碼整潔，其餘整合測試函數已移除
 
-def integration_test_ST():
-    itST(modules)
-
-def integration_test_NM():
-    itNM(modules)
-
-def integration_test_NL():
-    itNL(modules)
-
-def integration_test_NT():
-    itNT(modules)
-
-def integration_test_ML():
-    itML(modules)
-
-def integration_test_LT():
-    itLT(modules)
-
-def integration_test_LY():
-    itLY(modules)
-
-def integration_test_SNM():
-    itSNM(modules)
-
-def integration_test_SNL():
-    itSNL(modules)
-
-def integration_test_NML():
-    itNML(modules)
-
-def integration_test_NLY():
-    itNLY(modules)
-
-def integration_test_SNML():
-    itSNML(modules)
-
-def integration_test_NMLT():
-    itNMLT(modules)
-
-def integration_test_SNMLT():
-    itSNMLT(modules)
-
-def integration_test_SNMLTY():
-    itSNMLTY(modules)
-
-def pipeline_test():
-    itSNMLTY(modules)
+def integration_test_SN(production_mode=False):
+    """STT + NLP 整合測試"""
+    info_log(f"[Controller] 執行 STT+NLP 整合測試 (新版) ({'生產模式' if production_mode else '除錯模式'})")
+    # 目前生產模式參數未被使用，因為新版整合測試不區分生產和除錯模式
+    return test_stt_nlp(modules)
 
 # 額外測試
 

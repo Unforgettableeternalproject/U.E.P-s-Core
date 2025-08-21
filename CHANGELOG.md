@@ -742,3 +742,15 @@
 
 ---
 
+### NLP first-hand refractor, issues yet to solve. 08/21
+
+> Date: Thu, 21 Aug 2025 15:52:44 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/nlp_module_rework`
+
+> Commit: `b3f4abe1e98a1620a3e41abb540fa433955bcba1`
+
+---
+

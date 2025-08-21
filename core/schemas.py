@@ -78,11 +78,29 @@ class STTModuleData(UnifiedModuleData):
 class NLPModuleData(UnifiedModuleData):
     """NLP 模組專用數據格式"""
     
-    # NLP 特定字段
+    # 語者身份相關
+    speaker_id: Optional[str] = Field(None, description="語者ID")
+    speaker_confidence: Optional[float] = Field(None, description="語者識別信心度")
+    identity_id: Optional[str] = Field(None, description="使用者身份ID")
+    identity_status: Optional[str] = Field(None, description="身份狀態")
+    
+    # 意圖分析相關
+    primary_intent: Optional[str] = Field(None, description="主要意圖")
+    intent_segments: Optional[List[Dict[str, Any]]] = Field(None, description="意圖片段")
     label: Optional[str] = Field(None, description="分類標籤")
     confidence: Optional[float] = Field(None, description="分類信心度")
+    
+    # 實體識別與語義分析
     entities: Optional[List[Dict[str, Any]]] = Field(None, description="實體識別結果")
     sentiment: Optional[str] = Field(None, description="情感分析結果")
+    
+    # 系統控制
+    state_transition: Optional[Dict[str, Any]] = Field(None, description="建議的狀態轉換")
+    awaiting_input: Optional[bool] = Field(None, description="等待進一步輸入")
+    
+    # 處理指引
+    next_modules: Optional[List[str]] = Field(None, description="建議的下一步模組")
+    processing_notes: Optional[List[str]] = Field(None, description="處理註記")
 
 
 class MEMModuleData(UnifiedModuleData):

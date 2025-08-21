@@ -1,438 +1,478 @@
-# modules/nlp_module/intent_analyzer.py
+#!/usr/bin/env python3
 """
-意圖分析器 - 支援分段標籤和複合指令分析
-
-這個模組負責：
-1. 將文本分段並分析各段意圖
-2. 支援新的 call 類型意圖
-3. 實體抽取和上下文分析
-4. 系統狀態轉換建議
+意圖分析器
+集成BIO標註器和多意圖上下文管理
 """
-
-import re
-import torch
+import sys
+from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
-from transformers import (
-    DistilBertForSequenceClassification, 
-    DistilBertTokenizer,
-    AutoTokenizer,
-    AutoModelForTokenClassification,
-    pipeline
-)
 
-from .schemas import (
-    IntentType, IntentSegment, Entity, EntityType,
-    SystemStateTransition
+# 添加項目根目錄到路徑
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+from modules.nlp_module.bio_tagger import BIOTagger
+from modules.nlp_module.multi_intent_context import (
+    get_multi_intent_context_manager, IntentContext, ContextType
 )
-from .bio_tagger import BIOTagger, EnhancedIntentAnalyzer
+from modules.nlp_module.schemas import IntentType, IntentSegment, Entity
 from utils.debug_helper import debug_log, info_log, error_log
 
-
 class IntentAnalyzer:
-    """意圖分析器 - 支援分段分析 (Legacy版本)"""
+    """意圖分析器 - 基於BIO標註和上下文管理"""
     
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         
-        # 意圖分類模型配置
-        self.intent_model_dir = config.get("intent_model_dir", "./models/nlp/command_chat_classifier")
-        self.entity_model_name = config.get("entity_model_name", "ckiplab/bert-base-chinese-ner")
+        # BIO標註器
+        self.bio_tagger = BIOTagger()
+        self.bio_model_path = config.get('bio_model_path', './models/nlp/bio_tagger')
         
-        # 模型和分詞器
-        self.intent_model = None
-        self.intent_tokenizer = None
-        self.entity_pipeline = None
+        # 多意圖上下文管理器
+        self.context_manager = get_multi_intent_context_manager()
         
-        # BIO標註器 (新增)
-        self.bio_tagger = None
-        self.use_bio_tagging = config.get("use_bio_tagging", True)
+        # 配置選項
+        self.enable_segmentation = config.get('enable_segmentation', True)
+        self.max_segments = config.get('max_segments', 5)
+        self.min_segment_length = config.get('min_segment_length', 3)
         
-        if self.use_bio_tagging:
-            self.bio_tagger = BIOTagger(config.get('bio_model_name', 'distilbert-base-uncased'))
-        
-        # 標籤映射 - 擴展支援call類型
-        self.intent_mapping = {
-            0: IntentType.COMMAND,
-            1: IntentType.CHAT, 
-            2: IntentType.NON_SENSE,
-            3: IntentType.CALL      # 新增call類型
+        # 意圖映射
+        self.bio_to_intent_map = {
+            'CALL': IntentType.CALL,
+            'CHAT': IntentType.CHAT,
+            'COMMAND': IntentType.COMMAND
         }
         
-        # 狀態轉換規則
-        self.state_transition_rules = {
-            IntentType.CALL: {"target": "IDLE", "reason": "User calling UEP"},
-            IntentType.CHAT: {"target": "CHAT", "reason": "Enter chat mode"},
-            IntentType.COMMAND: {"target": "WORK", "reason": "Execute system command"},
-            IntentType.COMPOUND: {"target": "WORK", "reason": "Execute compound command"}
-        }
-        
-        # 文本分段模式 (針對英文優化)
-        self.segmentation_patterns = [
-            r'[.!?]+\s+',  # 句號分段
-            r',\s*(?=(?:please|can you|help me|then|and then|after that))',  # 連接詞分段
-            r'\s+(?=(?:then|next|also|additionally|finally|after that|and then))',  # 序列詞分段
-        ]
+        info_log("[IntentAnalyzer] 意圖分析器初始化")
     
-    def initialize(self):
+    def initialize(self) -> bool:
         """初始化分析器"""
         try:
-            info_log("[IntentAnalyzer] 初始化意圖分析器...")
+            info_log("[IntentAnalyzer] 初始化中...")
             
-            # 初始化BIO標註器
-            if self.use_bio_tagging and self.bio_tagger:
-                bio_model_path = self.config.get('bio_model_path')
-                if self.bio_tagger.load_model(bio_model_path):
-                    info_log("[IntentAnalyzer] BIO標註器載入成功")
-                else:
-                    info_log("[IntentAnalyzer] BIO標註器載入失敗，使用legacy方法", "WARNING")
-                    self.use_bio_tagging = False
+            # 載入BIO標註器
+            if not self.bio_tagger.load_model(self.bio_model_path):
+                error_log(f"[IntentAnalyzer] BIO模型載入失敗: {self.bio_model_path}")
+                return False
             
-            # 載入意圖分類模型 (作為後備)
-            if os.path.exists(self.intent_model_dir):
-                self.intent_model = DistilBertForSequenceClassification.from_pretrained(
-                    self.intent_model_dir
-                )
-                self.intent_tokenizer = DistilBertTokenizer.from_pretrained(
-                    self.intent_model_dir
-                )
-                info_log(f"[IntentAnalyzer] 載入意圖模型：{self.intent_model_dir}")
-            else:
-                error_log(f"[IntentAnalyzer] 意圖模型不存在：{self.intent_model_dir}")
-                # 如果沒有BIO模型，這是必須的
-                if not self.use_bio_tagging:
-                    return False
-            
-            # 載入實體識別模型
-            try:
-                self.entity_pipeline = pipeline(
-                    "ner",
-                    model=self.entity_model_name,
-                    tokenizer=self.entity_model_name,
-                    aggregation_strategy="simple"
-                )
-                info_log(f"[IntentAnalyzer] 載入實體模型：{self.entity_model_name}")
-            except Exception as e:
-                info_log(f"[IntentAnalyzer] 實體模型載入失敗，將跳過實體識別：{e}", "WARNING")
-                self.entity_pipeline = None
-            
-            info_log("[IntentAnalyzer] 初始化完成")
+            info_log("[IntentAnalyzer] BIO標註器載入成功")
             return True
             
         except Exception as e:
-            error_log(f"[IntentAnalyzer] 初始化失敗：{e}")
+            error_log(f"[IntentAnalyzer] 初始化失敗: {e}")
             return False
     
-    def analyze_intent(self, text: str, enable_segmentation: bool = True, 
+    def analyze_intent(self, text: str, enable_segmentation: bool = True,
                       context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """分析文本意圖"""
-        
         result = {
             "primary_intent": IntentType.UNKNOWN,
             "intent_segments": [],
             "overall_confidence": 0.0,
             "entities": [],
-            "state_transition": None
+            "state_transition": None,
+            "context_ids": [],  # 新增：關聯的上下文ID
+            "execution_plan": []  # 新增：執行計劃
         }
         
         try:
-            if enable_segmentation:
-                # 分段分析
-                segments = self._segment_text(text)
-                debug_log(3, f"[IntentAnalyzer] 分段結果：{len(segments)} 個片段")
-                
-                intent_segments = []
-                confidences = []
-                
-                for segment_text, start_pos, end_pos in segments:
-                    if len(segment_text.strip()) > 0:
-                        intent, confidence = self._classify_single_text(segment_text)
-                        entities = self._extract_entities(segment_text, start_pos)
-                        
-                        segment = IntentSegment(
-                            text=segment_text,
-                            intent=intent,
-                            confidence=confidence,
-                            start_pos=start_pos,
-                            end_pos=end_pos,
-                            entities=entities
-                        )
-                        
-                        intent_segments.append(segment)
-                        confidences.append(confidence)
-                
-                result["intent_segments"] = intent_segments
-                
-                # 決定主要意圖
-                if intent_segments:
-                    result["primary_intent"] = self._determine_primary_intent(intent_segments)
-                    result["overall_confidence"] = sum(confidences) / len(confidences)
-                
-            else:
-                # 整體分析
-                intent, confidence = self._classify_single_text(text)
-                entities = self._extract_entities(text, 0)
-                
-                segment = IntentSegment(
-                    text=text,
-                    intent=intent,
-                    confidence=confidence,
-                    start_pos=0,
-                    end_pos=len(text),
-                    entities=entities
-                )
-                
-                result["intent_segments"] = [segment]
-                result["primary_intent"] = intent
-                result["overall_confidence"] = confidence
+            debug_log(2, f"[IntentAnalyzer] 分析文本: '{text[:50]}...'")
             
-            # 提取所有實體
-            result["entities"] = self._merge_entities(result["intent_segments"])
+            # 使用BIO標註器進行分段和意圖識別
+            bio_segments = self.bio_tagger.predict(text)
             
-            # 建議狀態轉換
-            result["state_transition"] = self._suggest_state_transition(
-                result["primary_intent"], 
-                result["overall_confidence"],
-                context
+            if not bio_segments:
+                debug_log(2, "[IntentAnalyzer] BIO標註器未返回分段結果")
+                return result
+            
+            # 轉換BIO結果為IntentSegment格式
+            intent_segments = self._convert_bio_to_intent_segments(bio_segments, text)
+            
+            # 後處理優化分段結果
+            intent_segments = self._post_process_segments(intent_segments, text)
+            
+            result["intent_segments"] = intent_segments
+            
+            # 決定主要意圖
+            result["primary_intent"] = self._determine_primary_intent(intent_segments)
+            result["overall_confidence"] = self._calculate_overall_confidence(intent_segments)
+            
+            # 提取實體（簡化版本）
+            result["entities"] = self._extract_entities_from_segments(intent_segments)
+            
+            # 創建多意圖上下文
+            contexts = self.context_manager.create_contexts_from_segments(
+                [self._segment_to_dict(seg) for seg in intent_segments], text
             )
             
-            debug_log(2, f"[IntentAnalyzer] 分析完成：主要意圖={result['primary_intent']}, "
-                       f"信心度={result['overall_confidence']:.3f}")
+            # 添加上下文到佇列
+            context_ids = self.context_manager.add_contexts_to_queue(contexts)
+            result["context_ids"] = context_ids
+            
+            # 生成執行計劃
+            result["execution_plan"] = self._generate_execution_plan(contexts)
+            
+            # 建議狀態轉換（基於下一個可執行的上下文）
+            next_context = self.context_manager.get_next_executable_context()
+            if next_context:
+                result["state_transition"] = {
+                    "from_state": "processing",
+                    "to_state": "waiting_for_execution",
+                    "reason": "有待執行的意圖上下文",
+                    "confidence": result["overall_confidence"],
+                    "context_id": next_context[1].context_id
+                }
+            
+            info_log(f"[IntentAnalyzer] 分析完成: 主要意圖={result['primary_intent']}, "
+                    f"分段數={len(intent_segments)}, 上下文數={len(contexts)}")
             
             return result
             
         except Exception as e:
-            error_log(f"[IntentAnalyzer] 意圖分析失敗：{e}")
+            error_log(f"[IntentAnalyzer] 意圖分析失敗: {e}")
             return result
     
-    def _segment_text(self, text: str) -> List[Tuple[str, int, int]]:
-        """將文本分段"""
-        segments = []
-        current_pos = 0
+    def _convert_bio_to_intent_segments(self, bio_segments: List[Dict[str, Any]], 
+                                      original_text: str) -> List[IntentSegment]:
+        """將BIO分段結果轉換為IntentSegment格式"""
+        intent_segments = []
         
-        # 嘗試各種分段模式
-        for pattern in self.segmentation_patterns:
-            matches = list(re.finditer(pattern, text))
-            if matches:
-                last_end = 0
-                for match in matches:
-                    # 添加分隔符前的文本
-                    if match.start() > last_end:
-                        segment_text = text[last_end:match.start()].strip()
-                        if segment_text:
-                            segments.append((segment_text, last_end, match.start()))
-                    last_end = match.end()
-                
-                # 添加最後一段
-                if last_end < len(text):
-                    segment_text = text[last_end:].strip()
-                    if segment_text:
-                        segments.append((segment_text, last_end, len(text)))
-                
-                # 如果找到有效分段，就使用這個模式
-                if len(segments) > 1:
-                    break
-                else:
-                    segments.clear()
+        for segment in bio_segments:
+            intent_type = self.bio_to_intent_map.get(
+                segment['intent'].upper(), 
+                IntentType.UNKNOWN
+            )
+            
+            # 創建IntentSegment
+            intent_segment = IntentSegment(
+                text=segment['text'],
+                intent=intent_type,
+                confidence=segment.get('confidence', 0.9),
+                start_pos=segment['start_pos'],
+                end_pos=segment['end_pos'],
+                entities=[]
+            )
+            
+            intent_segments.append(intent_segment)
         
-        # 如果沒有找到合適的分段，就作為整體處理
-        if not segments:
-            segments = [(text.strip(), 0, len(text))]
-        
-        return segments
+        return intent_segments
     
-    def _classify_single_text(self, text: str) -> Tuple[IntentType, float]:
-        """分類單個文本片段"""
-        try:
-            if not self.intent_model or not self.intent_tokenizer:
-                return IntentType.UNKNOWN, 0.0
-            
-            # 檢查是否為call類型的常見模式
-            call_patterns = [
-                r'^(?:hi|hello|hey|uep)\s*[!]*$',
-                r'.*(?:can you|could you|please help).*\?*$',
-                r'^(?:uep|UEP)\s*[!]*$',
-                r'.*(?:are you there|can you hear me).*\?*$'
-            ]
-            
-            for pattern in call_patterns:
-                if re.match(pattern, text.strip(), re.IGNORECASE):
-                    debug_log(3, f"[IntentAnalyzer] 檢測到call模式：{pattern}")
-                    return IntentType.CALL, 0.9
-            
-            # 使用模型分類
-            inputs = self.intent_tokenizer(text, return_tensors="pt", truncation=True)
-            with torch.no_grad():
-                outputs = self.intent_model(**inputs)
-                probabilities = torch.softmax(outputs.logits, dim=1)
-                prediction = torch.argmax(probabilities, dim=1).item()
-                confidence = probabilities[0][prediction].item()
-            
-            intent = self.intent_mapping.get(prediction, IntentType.UNKNOWN)
-            
-            debug_log(3, f"[IntentAnalyzer] 文本 '{text[:20]}...' => {intent}, 信心度: {confidence:.3f}")
-            
-            return intent, confidence
-            
-        except Exception as e:
-            error_log(f"[IntentAnalyzer] 文本分類失敗：{e}")
-            return IntentType.UNKNOWN, 0.0
-    
-    def _extract_entities(self, text: str, offset: int = 0) -> List[Dict[str, Any]]:
-        """抽取實體"""
-        entities = []
-        
-        try:
-            if self.entity_pipeline:
-                # 使用NER模型
-                ner_results = self.entity_pipeline(text)
-                
-                for result in ner_results:
-                    entity = {
-                        "text": result["word"],
-                        "entity_type": self._map_entity_type(result["entity_group"]),
-                        "confidence": result["score"],
-                        "start_pos": offset + result["start"],
-                        "end_pos": offset + result["end"]
-                    }
-                    entities.append(entity)
-            
-            # 添加規則式實體識別
-            rule_entities = self._extract_rule_based_entities(text, offset)
-            entities.extend(rule_entities)
-            
-        except Exception as e:
-            debug_log(3, f"[IntentAnalyzer] 實體抽取失敗：{e}")
-        
-        return entities
-    
-    def _extract_rule_based_entities(self, text: str, offset: int = 0) -> List[Dict[str, Any]]:
-        """基於規則的實體抽取"""
-        entities = []
-        
-        # 檔案路徑模式
-        file_patterns = [
-            r'[A-Za-z]:\\[^\\/:*?"<>|\r\n]*',  # Windows路徑
-            r'/[^/:*?"<>|\r\n]*',               # Unix路徑
-            r'[^/\\:*?"<>|\r\n]*\.[a-zA-Z0-9]+' # 檔案名稱
-        ]
-        
-        for pattern in file_patterns:
-            for match in re.finditer(pattern, text):
-                entities.append({
-                    "text": match.group(),
-                    "entity_type": "file_path",
-                    "confidence": 0.8,
-                    "start_pos": offset + match.start(),
-                    "end_pos": offset + match.end()
-                })
-        
-        return entities
-    
-    def _map_entity_type(self, ner_label: str) -> str:
-        """映射NER標籤到我們的實體類型"""
-        mapping = {
-            "PER": "person",
-            "LOC": "location", 
-            "ORG": "organization",
-            "MISC": "custom"
+    def _segment_to_dict(self, segment: IntentSegment) -> Dict[str, Any]:
+        """將IntentSegment轉換為字典格式"""
+        return {
+            'text': segment.text,
+            'intent': segment.intent.value if hasattr(segment.intent, 'value') else str(segment.intent),
+            'start': segment.start_pos,
+            'end': segment.end_pos,
+            'confidence': segment.confidence
         }
-        return mapping.get(ner_label, "custom")
     
     def _determine_primary_intent(self, segments: List[IntentSegment]) -> IntentType:
         """決定主要意圖"""
         if not segments:
             return IntentType.UNKNOWN
         
-        # 統計各種意圖
+        # 統計各意圖類型
         intent_counts = {}
-        weighted_scores = {}
+        intent_confidences = {}
         
         for segment in segments:
             intent = segment.intent
-            weight = segment.confidence * len(segment.text)
+            if intent not in intent_counts:
+                intent_counts[intent] = 0
+                intent_confidences[intent] = []
             
-            intent_counts[intent] = intent_counts.get(intent, 0) + 1
-            weighted_scores[intent] = weighted_scores.get(intent, 0) + weight
+            intent_counts[intent] += 1
+            intent_confidences[intent].append(segment.confidence)
         
-        # 優先級規則
-        priority = {
-            IntentType.COMMAND: 3,
-            IntentType.COMPOUND: 3,
-            IntentType.CALL: 2,
-            IntentType.CHAT: 1,
-            IntentType.NON_SENSE: 0,
-            IntentType.UNKNOWN: 0
-        }
-        
-        # 選擇最高優先級且得分最高的意圖
-        best_intent = IntentType.UNKNOWN
-        best_score = -1
-        
-        for intent, score in weighted_scores.items():
-            combined_score = score * priority.get(intent, 0)
-            if combined_score > best_score:
-                best_score = combined_score
-                best_intent = intent
-        
-        # 檢查是否為複合指令
-        if len([s for s in segments if s.intent == IntentType.COMMAND]) > 1:
+        # 如果有多種意圖，標記為複合意圖
+        if len(intent_counts) > 1:
             return IntentType.COMPOUND
         
-        return best_intent
+        # 如果只有一種意圖，返回該意圖
+        if len(intent_counts) == 1:
+            return list(intent_counts.keys())[0]
+        
+        return IntentType.UNKNOWN
     
-    def _merge_entities(self, segments: List[IntentSegment]) -> List[Dict[str, Any]]:
-        """合併所有片段的實體"""
-        all_entities = []
+    def _calculate_overall_confidence(self, segments: List[IntentSegment]) -> float:
+        """計算整體信心度"""
+        if not segments:
+            return 0.0
+        
+        confidences = [seg.confidence for seg in segments]
+        return sum(confidences) / len(confidences)
+    
+    def _extract_entities_from_segments(self, segments: List[IntentSegment]) -> List[Entity]:
+        """從分段中提取實體（簡化版本）"""
+        entities = []
+        
         for segment in segments:
-            all_entities.extend(segment.entities)
-        
-        # 去重和合併重疊實體
-        merged_entities = []
-        all_entities.sort(key=lambda x: x["start_pos"])
-        
-        for entity in all_entities:
-            # 檢查是否與已有實體重疊
-            overlapped = False
-            for merged in merged_entities:
-                if (entity["start_pos"] < merged["end_pos"] and 
-                    entity["end_pos"] > merged["start_pos"]):
-                    # 保留信心度更高的實體
-                    if entity["confidence"] > merged["confidence"]:
-                        merged_entities.remove(merged)
-                        merged_entities.append(entity)
-                    overlapped = True
-                    break
+            # 簡單的關鍵詞匹配實體提取
+            text_lower = segment.text.lower()
             
-            if not overlapped:
-                merged_entities.append(entity)
+            # 時間實體
+            time_keywords = {
+                'tomorrow': 'tomorrow',
+                'today': 'today', 
+                'tonight': 'tonight',
+                'morning': 'morning',
+                'afternoon': 'afternoon',
+                'evening': 'evening',
+                'now': 'now',
+                'later': 'later'
+            }
+            
+            for keyword, value in time_keywords.items():
+                if keyword in text_lower:
+                    start_pos = segment.text.lower().find(keyword)
+                    if start_pos >= 0:
+                        entities.append(Entity(
+                            text=keyword,
+                            entity_type="time",
+                            confidence=0.8,
+                            start_pos=segment.start_pos + start_pos,
+                            end_pos=segment.start_pos + start_pos + len(keyword),
+                            metadata={"value": value}
+                        ))
+            
+            # 動作實體
+            action_keywords = {
+                'save': 'save_action',
+                'open': 'open_action',
+                'create': 'create_action', 
+                'delete': 'delete_action',
+                'search': 'search_action',
+                'find': 'find_action',
+                'remind': 'remind_action',
+                'schedule': 'schedule_action',
+                'play': 'play_action',
+                'stop': 'stop_action',
+                'set': 'set_action',
+                'turn': 'turn_action'
+            }
+            
+            for keyword, value in action_keywords.items():
+                if keyword in text_lower:
+                    start_pos = segment.text.lower().find(keyword)
+                    if start_pos >= 0:
+                        entities.append(Entity(
+                            text=keyword,
+                            entity_type="custom",
+                            confidence=0.8,
+                            start_pos=segment.start_pos + start_pos,
+                            end_pos=segment.start_pos + start_pos + len(keyword),
+                            metadata={"value": value, "category": "action"}
+                        ))
         
-        return merged_entities
+        return entities
     
-    def _suggest_state_transition(self, primary_intent: IntentType, 
-                                confidence: float, context: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-        """建議系統狀態轉換"""
+    def _generate_execution_plan(self, contexts: List[IntentContext]) -> List[Dict[str, Any]]:
+        """生成執行計劃"""
+        plan = []
         
-        if confidence < 0.5:  # 信心度太低
-            return None
+        # 按優先級排序
+        sorted_contexts = sorted(contexts, key=lambda c: c.priority)
         
-        current_state = context.get("current_system_state", "IDLE") if context else "IDLE"
+        for i, context in enumerate(sorted_contexts):
+            plan_item = {
+                "step": i + 1,
+                "context_id": context.context_id,
+                "action_type": context.context_type.value,
+                "description": context.task_description or context.conversation_topic,
+                "priority": context.priority,
+                "dependencies": list(context.depends_on),
+                "estimated_execution_order": self._estimate_execution_order(context, sorted_contexts)
+            }
+            plan.append(plan_item)
         
-        if primary_intent in self.state_transition_rules:
-            rule = self.state_transition_rules[primary_intent]
-            target_state = rule["target"]
+        return plan
+    
+    def _estimate_execution_order(self, context: IntentContext, 
+                                all_contexts: List[IntentContext]) -> int:
+        """估計執行順序"""
+        order = 1
+        
+        # 計算有多少個上下文會在這個之前執行
+        for other_context in all_contexts:
+            if (other_context.priority < context.priority or 
+                context.context_id in other_context.blocks):
+                order += 1
+        
+        return order
+    
+    def _post_process_segments(self, segments: List[IntentSegment], 
+                              original_text: str) -> List[IntentSegment]:
+        """後處理分段結果以提高準確率"""
+        if not segments:
+            return segments
             
-            # 檢查是否需要狀態轉換
-            if current_state != target_state:
-                return {
-                    "from_state": current_state,
-                    "to_state": target_state,
-                    "reason": rule["reason"],
-                    "confidence": confidence
-                }
+        debug_log(2, f"[PostProcess] 原始分段數: {len(segments)}")
         
-        return None
+        # 連接詞列表
+        connective_words = {
+            'then', 'and', 'also', 'plus', 'after', 'before', 
+            'next', 'finally', 'additionally', 'furthermore'
+        }
+        
+        # 應用改進規則
+        improved_segments = segments.copy()
+        improved_segments = self._merge_connectives(improved_segments, connective_words)
+        improved_segments = self._merge_short_segments(improved_segments)
+        improved_segments = self._merge_context_related(improved_segments)
+        
+        debug_log(2, f"[PostProcess] 改進後分段數: {len(improved_segments)}")
+        
+        return improved_segments
+    
+    def _merge_connectives(self, segments: List[IntentSegment], 
+                          connective_words: set) -> List[IntentSegment]:
+        """合併連接詞到前一個分段"""
+        if len(segments) <= 1:
+            return segments
+            
+        result = []
+        
+        for current in segments:
+            # 檢查是否是連接詞
+            if (current.text.strip().lower() in connective_words and 
+                len(result) > 0 and 
+                result[-1].intent == IntentType.COMMAND):
+                
+                # 合併到前一個分段
+                last = result[-1]
+                merged_text = f"{last.text} {current.text}"
+                merged_segment = IntentSegment(
+                    text=merged_text,
+                    intent=last.intent,
+                    confidence=(last.confidence + current.confidence) / 2,
+                    start_pos=last.start_pos,
+                    end_pos=current.end_pos,
+                    entities=last.entities + current.entities
+                )
+                result[-1] = merged_segment
+                debug_log(3, f"[PostProcess] 合併連接詞: '{current.text}' -> '{merged_text}'")
+            else:
+                result.append(current)
+        
+        return result
+    
+    def _merge_short_segments(self, segments: List[IntentSegment]) -> List[IntentSegment]:
+        """合併過短的分段"""
+        min_segment_length = 3
+        if len(segments) <= 1:
+            return segments
+            
+        result = []
+        
+        for segment in segments:
+            if (len(segment.text.strip()) < min_segment_length and 
+                len(result) > 0 and 
+                result[-1].intent == segment.intent):
+                
+                # 合併到前一個分段
+                last = result[-1]
+                merged_text = f"{last.text} {segment.text}"
+                merged_segment = IntentSegment(
+                    text=merged_text,
+                    intent=last.intent,
+                    confidence=(last.confidence + segment.confidence) / 2,
+                    start_pos=last.start_pos,
+                    end_pos=segment.end_pos,
+                    entities=last.entities + segment.entities
+                )
+                result[-1] = merged_segment
+                debug_log(3, f"[PostProcess] 合併短分段: '{segment.text}' -> '{merged_text}'")
+            else:
+                result.append(segment)
+        
+        return result
+    
+    def _merge_context_related(self, segments: List[IntentSegment]) -> List[IntentSegment]:
+        """合併上下文相關的分段"""
+        if len(segments) <= 1:
+            return segments
+            
+        result = []
+        
+        for segment in segments:
+            should_merge = False
+            
+            if (len(result) > 0 and 
+                segment.intent == result[-1].intent and
+                segment.intent == IntentType.COMMAND):
+                
+                # 檢查是否是相關的命令片段
+                should_merge = True
+            
+            if should_merge:
+                last = result[-1]
+                merged_text = f"{last.text} {segment.text}"
+                merged_segment = IntentSegment(
+                    text=merged_text,
+                    intent=last.intent,
+                    confidence=(last.confidence + segment.confidence) / 2,
+                    start_pos=last.start_pos,
+                    end_pos=segment.end_pos,
+                    entities=last.entities + segment.entities
+                )
+                result[-1] = merged_segment
+                debug_log(3, f"[PostProcess] 合併相關分段: '{segment.text}' -> '{merged_text}'")
+            else:
+                result.append(segment)
+        
+        return result
+    
+    def get_context_summary(self) -> Dict[str, Any]:
+        """獲取上下文管理摘要"""
+        return self.context_manager.get_context_summary()
+    
+    def mark_context_completed(self, context_id: str, success: bool = True):
+        """標記上下文完成"""
+        self.context_manager.mark_context_completed(context_id, success)
+    
+    def get_next_context(self) -> Optional[Tuple[Any, IntentContext]]:
+        """獲取下一個可執行的上下文"""
+        return self.context_manager.get_next_executable_context()
 
+def test_intent_analyzer():
+    """測試意圖分析器"""
+    config = {
+        'bio_model_path': '../../models/nlp/bio_tagger',
+        'enable_segmentation': True,
+        'max_segments': 5
+    }
+    
+    analyzer = IntentAnalyzer(config)
+    
+    if not analyzer.initialize():
+        error_log("分析器初始化失敗")
+        return
+    
+    # 測試案例
+    test_cases = [
+        "Hello UEP, how's the weather today?",
+        "I had a great day. Can you help me organize my photos?",
+        "System wake up, the movie was interesting, please save my work",
+        "Set a reminder for tomorrow and play some music"
+    ]
+    
+    for text in test_cases:
+        info_log(f"\n測試: '{text}'")
+        result = analyzer.analyze_intent(text)
+        
+        info_log(f"主要意圖: {result['primary_intent']}")
+        info_log(f"信心度: {result['overall_confidence']:.3f}")
+        info_log(f"分段數: {len(result['intent_segments'])}")
+        info_log(f"上下文數: {len(result['context_ids'])}")
+        
+        for i, segment in enumerate(result['intent_segments'], 1):
+            info_log(f"  分段{i}: '{segment.text}' -> {segment.intent}")
+        
+        if result['execution_plan']:
+            info_log("執行計劃:")
+            for plan_item in result['execution_plan']:
+                info_log(f"  步驟{plan_item['step']}: {plan_item['description']}")
 
-# 導入所需模組
-import os
-from utils.debug_helper import debug_log, info_log, error_log
+if __name__ == "__main__":
+    test_intent_analyzer()

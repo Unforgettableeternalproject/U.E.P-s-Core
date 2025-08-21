@@ -20,16 +20,16 @@ from .schemas import (
     UserProfile, IdentityStatus, IdentityDecision, 
     NLPDecisionPackage
 )
-from core.working_context import ContextType, WorkingContext
+from core.working_context import ContextType as WorkingContextType, WorkingContext
 from utils.debug_helper import debug_log, info_log, error_log
 
 
 class IdentityDecisionHandler:
     """身份決策處理器 - 實現Working Context的決策處理協議"""
     
-    def can_handle(self, context_type: ContextType) -> bool:
+    def can_handle(self, context_type: WorkingContextType) -> bool:
         """檢查是否可以處理指定類型的上下文"""
-        return context_type == ContextType.SPEAKER_ACCUMULATION
+        return context_type == WorkingContextType.SPEAKER_ACCUMULATION
     
     def make_decision(self, context_data: Dict[str, Any]) -> Dict[str, Any]:
         """進行語者身份決策"""

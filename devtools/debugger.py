@@ -166,14 +166,54 @@ def debug_interactive():
 
                 debug_log(1, "NLP 模組測試")
                 print("<NLP 模組測試>\n")
-                print("請輸入測試文本 (或輸入 'exit' 來結束):")
+                
+                # NLP子選單
                 while True:
-                    text = input("\n> ")
-                    if text.lower() in ["exit", "e", "quit", "q", "back", "b"]:
-                        info_log("使用者中斷測試")
+                    nlp_choice = input("\n選擇測試功能:\n" +
+                                     "1: 增強版意圖分析 (包含語者身份)\n" +
+                                     "2: 多意圖上下文管理測試\n" +
+                                     "3: 語者身份管理測試\n" +
+                                     "4: 上下文佇列分析\n" +
+                                     "5: 清空所有上下文\n" +
+                                     "back: 返回上級\n\n> ")
+                    
+                    if nlp_choice == "1":
+
+                        enable_identity = input("啟用語者身份處理? (y/n, 默認y): ").lower() != 'n'
+                        enable_segmentation = input("啟用意圖分段? (y/n, 默認y): ").lower() != 'n'
+                        print("請輸入測試文本 (留空使用默認) (或輸入 'exit' 來結束):")
+
+                        while True:
+                            text = input("\n> ")
+                            if text.lower() in ["exit", "e", "quit", "q", "back", "b"]:
+                                break
+                            print()
+                            controller.nlp_test(text, enable_identity, enable_segmentation)
+                    
+                    elif nlp_choice == "2":
+                        print("輸入多意圖測試文本 (留空使用默認): ")
+                        
+                        while True:
+                            text = input("\n> ")
+                            if text.lower() in ["exit", "e", "quit", "q", "back", "b"]:
+                                break
+                            print()
+                            controller.nlp_test_multi_intent(text)
+                    
+                    elif nlp_choice == "3":
+                        speaker_id = input("輸入語者ID (留空使用默認): ") or "test_user"
+                        controller.nlp_test_identity_management(speaker_id)
+                    
+                    elif nlp_choice == "4":
+                        controller.nlp_analyze_context_queue()
+                    
+                    elif nlp_choice == "5":
+                        controller.nlp_clear_contexts()
+                    
+                    elif nlp_choice.lower() in ["exit", "e", "back", "b", "quit", "q"]:
                         break
-                    print()
-                    controller.nlp_test(text)
+                    else:
+                        print("\033[31m無效的選擇，請再試一次。\033[0m")
             case "mem":
                 if not mod_list['mem']:
                     info_log("MEM 模組未啟用，請檢查配置。", "WARNING")

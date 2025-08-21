@@ -28,6 +28,7 @@ from .schemas import (
 )
 from .identity_manager import IdentityManager
 from .intent_analyzer import IntentAnalyzer
+from .multi_intent_context import get_multi_intent_context_manager
 
 
 class NLPModule(BaseModule):
@@ -42,6 +43,7 @@ class NLPModule(BaseModule):
         # 模組組件
         self.identity_manager: Optional[IdentityManager] = None
         self.intent_analyzer: Optional[IntentAnalyzer] = None
+        self.context_manager = get_multi_intent_context_manager()
         self.state_queue_manager = get_state_queue_manager()
         self.schema_adapter = NLPSchemaAdapter()
         
@@ -70,7 +72,7 @@ class NLPModule(BaseModule):
             # 註冊身份決策處理器到Working Context
             decision_handler = self.identity_manager.get_decision_handler()
             working_context_manager.register_decision_handler(
-                "identity_management", 
+                ContextType.SPEAKER_ACCUMULATION, 
                 decision_handler
             )
             info_log("[NLP] 身份決策處理器已註冊到Working Context")
@@ -196,15 +198,22 @@ class NLPModule(BaseModule):
     
     def _process_system_state(self, intent_result: Dict[str, Any], 
                             input_data: NLPInput) -> Dict[str, Any]:
-        """處理系統狀態相關邏輯"""
+        """處理系統狀態相關邏輯 - 增強版支持多意圖上下文"""
         result = {
             "next_modules": [],
             "awaiting_input": False,
-            "timeout_seconds": None
+            "timeout_seconds": None,
+            "context_ids": [],
+            "execution_plan": []
         }
         
         try:
             primary_intent = intent_result["primary_intent"]
+            context_ids = intent_result.get("context_ids", [])
+            execution_plan = intent_result.get("execution_plan", [])
+            
+            result["context_ids"] = context_ids
+            result["execution_plan"] = execution_plan
             
             # 根據意圖決定下一步處理
             if primary_intent == IntentType.CALL:
@@ -226,11 +235,15 @@ class NLPModule(BaseModule):
                 result["next_modules"] = ["llm_module"]
             
             debug_log(3, f"[NLP] 系統狀態處理：下一步模組={result['next_modules']}, "
-                       f"等待輸入={result['awaiting_input']}")
+                       f"等待輸入={result['awaiting_input']}, 上下文數={len(context_ids)}")
             
-            # 將意圖轉換為系統狀態並添加到佇列
-            added_states = self._process_intent_to_state_queue(intent_result)
-            result["added_states"] = [state.value for state in added_states] if added_states else []
+            # 處理多意圖上下文的狀態轉換
+            if intent_result.get("state_transition"):
+                state_transition = intent_result["state_transition"]
+                info_log(f"[NLP] 建議狀態轉換: {state_transition['target_state']} "
+                        f"(上下文: {state_transition.get('context_id', 'N/A')})")
+                result["recommended_state"] = state_transition["target_state"]
+                result["transition_context"] = state_transition.get("context_id")
             
         except Exception as e:
             error_log(f"[NLP] 系統狀態處理失敗：{e}")

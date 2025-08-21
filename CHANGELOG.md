@@ -778,3 +778,15 @@
 
 ---
 
+### Finished the implementation on bio tagger and intent analyzer, but with potential issues, and the model is not very accurate at this point, will fix later. Also added some debug functions for the newly refactored NLP module. 08/21
+
+> Date: Thu, 21 Aug 2025 19:25:08 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/nlp_module_rework`
+
+> Commit: `b121c85faedc5d755ee31dfcee606666f4eb68b2`
+
+---
+

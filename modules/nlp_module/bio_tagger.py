@@ -67,15 +67,19 @@ class BIOTagger:
                 
         except Exception as e:
             error_log(f"[BIOTagger] 模型載入失敗: {e}")
-            return False
+            # 使用備用模式
+            info_log("[BIOTagger] 啟用備用模式")
+            self.tokenizer = None
+            self.model = None
+            return True
             
         return True
     
     def predict(self, text: str) -> List[Dict[str, Any]]:
         """預測文本的BIO標籤並返回分段結果"""
         if not self.model or not self.tokenizer:
-            error_log("[BIOTagger] 模型未載入")
-            return []
+            # 備用實現：簡單的規則分段
+            return self._fallback_segmentation(text)
         
         try:
             # 分詞
@@ -105,7 +109,42 @@ class BIOTagger:
             
         except Exception as e:
             error_log(f"[BIOTagger] 預測失敗: {e}")
-            return []
+            return self._fallback_segmentation(text)
+    
+    def _fallback_segmentation(self, text: str) -> List[Dict[str, Any]]:
+        """備用分段實現 - 基於簡單規則"""
+        segments = []
+        
+        # 簡單的關鍵詞檢測
+        text_lower = text.lower()
+        
+        # 檢測呼叫意圖
+        call_keywords = ['hey', 'hello', 'hi', 'uep', 'system', 'wake up']
+        chat_keywords = ['how are you', 'what do you think', 'tell me', 'story', 'chat']
+        command_keywords = ['save', 'open', 'create', 'delete', 'play', 'stop', 'set', 'remind']
+        
+        if any(keyword in text_lower for keyword in call_keywords):
+            intent = 'call'
+        elif any(keyword in text_lower for keyword in command_keywords):
+            intent = 'command'  
+        elif any(keyword in text_lower for keyword in chat_keywords):
+            intent = 'chat'
+        else:
+            intent = 'chat'  # 默認為聊天
+        
+        # 創建單一分段（簡化版本）
+        segment = {
+            'text': text,
+            'intent': intent,
+            'start_pos': 0,
+            'end_pos': len(text),
+            'confidence': 0.7  # 較低的信心度表示這是備用實現
+        }
+        
+        segments.append(segment)
+        info_log(f"[BIOTagger] 備用分段: '{text}' -> {intent}")
+        
+        return segments
     
     def _bio_to_segments(self, text: str, tokens: List[str], labels: List[str], 
                         offset_mapping: torch.Tensor) -> List[Dict[str, Any]]:

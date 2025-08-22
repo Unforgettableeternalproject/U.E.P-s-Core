@@ -22,7 +22,7 @@ enable_state_transitions: true     # 啟用狀態轉換
 priority_scheduling: true          # 優先級排程
 
 # Working Context 整合
-speaker_accumulation_threshold: 5  # 語者樣本累積閾值
+speaker_accumulation_threshold: 15  # 語者樣本累積閾值
 context_timeout: 300              # 上下文超時時間(秒)
 
 # 系統狀態轉換

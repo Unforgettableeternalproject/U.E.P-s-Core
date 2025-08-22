@@ -826,3 +826,15 @@
 
 ---
 
+### Some definitive changes on identity structure. 08/23
+
+> Date: Sat, 23 Aug 2025 02:11:17 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `develop`
+
+> Commit: `595cd15541b7c5a4749ca95ee65614ad199ce1bb`
+
+---
+

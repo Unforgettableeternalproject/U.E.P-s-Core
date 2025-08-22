@@ -72,7 +72,7 @@ class WorkingContext:
     """單個工作上下文實例"""
     
     def __init__(self, context_id: str, context_type: ContextType, 
-                 threshold: int = 5, timeout: float = 300.0):
+                 threshold: int = 15, timeout: float = 300.0):
         self.context_id = context_id
         self.context_type = context_type
         self.status = ContextStatus.ACTIVE
@@ -175,7 +175,7 @@ class WorkingContextManager:
         info_log(f"[WorkingContextManager] 註冊決策處理器: {context_type.value}")
     
     def create_context(self, context_type: ContextType, 
-                      threshold: int = 5, timeout: float = 300.0) -> str:
+                      threshold: int = 1, timeout: float = 300.0) -> str:
         """創建新的工作上下文"""
         context_id = f"{context_type.value}_{int(time.time())}_{uuid.uuid4().hex[:8]}"
         

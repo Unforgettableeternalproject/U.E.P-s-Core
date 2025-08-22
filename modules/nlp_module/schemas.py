@@ -23,9 +23,18 @@ class UserProfile(BaseModel):
     display_name: Optional[str] = Field(None, description="顯示名稱")
     status: IdentityStatus = Field(IdentityStatus.UNKNOWN, description="身份狀態")
     
+    # 身份令牌與憑證 (用於MEM模組存取記憶庫)
+    memory_token: Optional[str] = Field(None, description="記憶庫存取令牌")
+    
     # 偏好設定
     preferences: Dict[str, Any] = Field(default_factory=dict, description="使用者偏好")
     system_habits: Dict[str, Any] = Field(default_factory=dict, description="系統使用習慣")
+    
+    # 語音風格偏好 (用於TTS模組)
+    voice_preferences: Dict[str, Any] = Field(default_factory=dict, description="語音風格偏好")
+    
+    # LLM互動偏好 (用於LLM模組)
+    conversation_style: Dict[str, Any] = Field(default_factory=dict, description="對話風格偏好")
     
     # 統計資訊
     total_interactions: int = Field(0, description="總互動次數")

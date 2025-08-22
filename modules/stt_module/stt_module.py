@@ -464,7 +464,7 @@ class STTModule(BaseModule):
                 # 創建或獲取SPEAKER_ACCUMULATION上下文
                 context_id = self.working_context_manager.create_context(
                     ContextType.SPEAKER_ACCUMULATION, 
-                    threshold=5,  # 樣本閾值
+                    threshold=15,  # 樣本閾值
                     timeout=300.0  # 5分鐘過期
                 )
                 debug_log(2, f"[STT] 已建立持續監聽的語音累積上下文: {context_id}")

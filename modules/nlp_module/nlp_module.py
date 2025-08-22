@@ -67,7 +67,11 @@ class NLPModule(BaseModule):
             
             # 初始化身份管理器
             identity_storage_path = self.config.get("identity_storage_path", "memory/identities")
-            self.identity_manager = IdentityManager(identity_storage_path)
+            identity_config = self.config.get("identity_config", {
+                "sample_threshold": 15,
+                "confirmation_threshold": 0.8
+            })
+            self.identity_manager = IdentityManager(identity_storage_path, identity_config)
             
             # 註冊身份決策處理器到Working Context
             decision_handler = self.identity_manager.get_decision_handler()
@@ -75,6 +79,9 @@ class NLPModule(BaseModule):
                 ContextType.SPEAKER_ACCUMULATION, 
                 decision_handler
             )
+            
+            # 將身份管理器註冊到工作上下文
+            working_context_manager.set_context_data("identity_manager", self.identity_manager)
             info_log("[NLP] 身份決策處理器已註冊到Working Context")
             
             # 初始化意圖分析器
@@ -155,6 +162,8 @@ class NLPModule(BaseModule):
                 
             elif action == "loaded":
                 result["processing_notes"].append(f"載入身份：{identity.display_name}")
+                # 將使用者身份資訊添加到Working Context
+                self._add_identity_to_working_context(identity)
                 
             debug_log(3, f"[NLP] 語者身份處理：{action}, 身份={identity.identity_id if identity else 'None'}")
             
@@ -173,6 +182,13 @@ class NLPModule(BaseModule):
                 "conversation_history": input_data.conversation_history,
                 "identity": identity.dict() if identity else None
             }
+            
+            # 添加使用者偏好資訊 (如果有身份)
+            if identity:
+                context["user_preferences"] = {
+                    "system_habits": identity.system_habits,
+                    "conversation_style": identity.conversation_style
+                }
             
             # 執行意圖分析
             result = self.intent_analyzer.analyze_intent(
@@ -349,14 +365,41 @@ class NLPModule(BaseModule):
         except Exception as e:
             error_log(f"[NLP] 添加語者樣本失敗：{e}")
     
+    def _add_identity_to_working_context(self, identity: UserProfile):
+        """將使用者身份資訊添加到Working Context"""
+        try:
+            # 將完整身份資訊添加到全局工作上下文
+            identity_dict = identity.dict()
+            working_context_manager.set_context_data("current_identity", identity_dict)
+            
+            # 將身份令牌添加到全局工作上下文 (用於記憶庫存取)
+            if identity.memory_token:
+                working_context_manager.set_context_data("memory_token", identity.memory_token)
+            
+            # 將語音偏好添加到全局工作上下文 (用於TTS模組)
+            if identity.voice_preferences:
+                working_context_manager.set_context_data("voice_preferences", identity.voice_preferences)
+            
+            # 將對話風格添加到全局工作上下文 (用於LLM模組)
+            if identity.conversation_style:
+                working_context_manager.set_context_data("conversation_style", identity.conversation_style)
+            
+            info_log(f"[NLP] 身份 {identity.identity_id} 已添加到全局工作上下文")
+            
+        except Exception as e:
+            error_log(f"[NLP] 添加身份到工作上下文失敗：{e}")
+    
     def _update_interaction_history(self, identity: UserProfile, result: NLPOutput):
         """更新使用者互動歷史"""
         try:
+            # 準備互動數據
             interaction_data = {
+                "module": "nlp",  # 標記數據來源模組
                 "intent": result.primary_intent,
                 "text_length": len(result.original_text),
                 "confidence": result.overall_confidence,
-                "command_type": None
+                "command_type": None,
+                "timestamp": time.time()
             }
             
             # 提取指令類型
@@ -367,7 +410,16 @@ class NLPModule(BaseModule):
                 
                 if entities:
                     interaction_data["command_type"] = entities[0].get("entity_type")
+                    
+                    # 如果是系統指令，則標記為 SYS 模組互動
+                    if result.primary_intent == IntentType.COMMAND:
+                        interaction_data["module"] = "sys"
             
+            # 如果是聊天類型，則標記為 LLM 模組互動
+            elif result.primary_intent == IntentType.CHAT:
+                interaction_data["module"] = "llm"
+            
+            # 更新互動記錄
             self.identity_manager.update_identity_interaction(
                 identity.identity_id, 
                 interaction_data
@@ -398,15 +450,18 @@ class NLPModule(BaseModule):
             "speaker_identity_management", 
             "entity_extraction",
             "segmented_analysis",
-            "state_transition_suggestion"
+            "state_transition_suggestion",
+            "memory_token_management",
+            "user_preference_tracking",
+            "personalized_interaction"
         ]
     
     def get_module_info(self) -> Dict[str, Any]:
         """獲取模組資訊"""
         return {
             "module_id": "nlp_module",
-            "version": "2.0.0", 
+            "version": "2.1.0",  # 版本更新 
             "status": "active" if self.is_initialized else "inactive",
             "capabilities": self.get_capabilities(),
-            "description": "自然語言處理模組 - 支援語者身份管理與分段意圖分析"
+            "description": "自然語言處理模組 - 支援增強型身份管理、記憶令牌、使用者偏好與多模組集成"
         }

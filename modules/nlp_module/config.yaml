@@ -1,6 +1,9 @@
-﻿# NLP模組配置 - Phase 2 重構版本
+﻿# BIO標註模型配置
+use_bio_tagging: true
+bio_model_name: "distilbert-base-uncased"
+bio_model_path: "./models/nlp/bio_tagger"
 
-# 意圖分類模型
+# 意圖分類模型 (作為後備)
 intent_model_dir: ./models/nlp/command_chat_classifier
 
 # 實體識別模型 (支援中文NER)
@@ -11,8 +14,12 @@ identity_storage_path: memory/identities
 
 # 分析選項
 enable_segmentation: true          # 啟用分段分析
+max_segments: 5                    # 最大分段數
+min_segment_length: 3              # 最小分段長度
 enable_entity_extraction: true     # 啟用實體抽取
 enable_identity_processing: true   # 啟用身份處理
+enable_state_transitions: true     # 啟用狀態轉換
+priority_scheduling: true          # 優先級排程
 
 # Working Context 整合
 speaker_accumulation_threshold: 5  # 語者樣本累積閾值

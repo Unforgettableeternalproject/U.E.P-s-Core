@@ -33,9 +33,7 @@ class InitializationPhase(Enum):
     STARTING = auto()           # 開始啟動
     STATE_RESET = auto()        # 狀態重置
     CONTEXT_CLEANUP = auto()    # 上下文清理
-    FRAMEWORK_INIT = auto()     # 框架初始化
-    MODULE_REGISTRATION = auto() # 模組註冊
-    MODULE_INITIALIZATION = auto() # 模組初始化
+    FRAMEWORK_INIT = auto()     # 框架與模組初始化 (合併了原本的框架初始化、模組註冊和模組初始化)
     STRATEGY_SETUP = auto()     # 策略設置
     HEALTH_CHECK = auto()       # 健康檢查
     FRONTEND_INIT = auto()      # 前端初始化
@@ -75,27 +73,19 @@ class SystemInitializer:
             if not self._cleanup_working_contexts():
                 return False
                 
-            # Phase 3: 框架初始化
-            if not self._initialize_framework(production_mode):
+            # Phase 3: 框架和模組初始化 (合併了原本的 Phase 3, 4, 5)
+            if not self._initialize_framework_and_modules(production_mode):
                 return False
                 
-            # Phase 4: 模組註冊
-            if not self._register_modules(production_mode):
-                return False
-                
-            # Phase 5: 模組初始化
-            if not self._initialize_modules():
-                return False
-                
-            # Phase 6: 策略設置
+            # Phase 4: 策略設置 (原 Phase 6)
             if not self._setup_strategies():
                 return False
                 
-            # Phase 7: 健康檢查
+            # Phase 5: 健康檢查 (原 Phase 7)
             if not self._health_check():
                 return False
                 
-            # Phase 8: 前端初始化（未來實現）
+            # Phase 6: 前端初始化 (原 Phase 8)
             if not self._initialize_frontend():
                 return False
                 
@@ -179,53 +169,31 @@ class SystemInitializer:
             error_log(f"❌ 上下文清理失敗: {e}")
             return False
     
-    def _initialize_framework(self, production_mode: bool) -> bool:
-        """初始化核心框架"""
+    def _initialize_framework_and_modules(self, production_mode: bool) -> bool:
+        """初始化核心框架和所有模組（合併 Phase 3, 4, 5）"""
         try:
+            # 階段 3: 框架初始化
             self.phase = InitializationPhase.FRAMEWORK_INIT
-            info_log("🏗️ 初始化核心框架...")
+            info_log("🏗️ 初始化核心框架與模組...")
+            info_log(f"   生產模式: {production_mode}")
             
             # 重置框架狀態
             if hasattr(core_framework, 'reset'):
                 core_framework.reset()
                 info_log("   框架狀態已重置")
             
-            info_log(f"   生產模式: {production_mode}")
-            
-            return True
-            
-        except Exception as e:
-            error_log(f"❌ 框架初始化失敗: {e}")
-            return False
-    
-    def _register_modules(self, production_mode: bool) -> bool:
-        """註冊模組"""
-        try:
-            self.phase = InitializationPhase.MODULE_REGISTRATION
-            info_log("📝 註冊模組...")
-            
-            # 使用 UnifiedController 來註冊模組
-            if hasattr(unified_controller, 'initialize'):
-                success = unified_controller.initialize()
-                if success:
-                    info_log("   模組註冊完成")
-                    return True
-                else:
-                    error_log("   模組註冊失敗")
-                    return False
-            else:
+            # 使用 UnifiedController 來註冊和初始化模組
+            if not hasattr(unified_controller, 'initialize'):
                 error_log("   UnifiedController 未實現 initialize 方法")
                 return False
                 
-        except Exception as e:
-            error_log(f"❌ 模組註冊失敗: {e}")
-            return False
-    
-    def _initialize_modules(self) -> bool:
-        """初始化已註冊的模組"""
-        try:
-            self.phase = InitializationPhase.MODULE_INITIALIZATION
-            info_log("🔧 初始化模組...")
+            # 讓 UnifiedController 處理所有模組的註冊和初始化
+            success = unified_controller.initialize()
+            if not success:
+                error_log("   模組註冊失敗")
+                return False
+                
+            info_log("   模組註冊完成")
             
             # 獲取已註冊的模組
             registered_modules = core_framework.get_available_modules()
@@ -235,31 +203,29 @@ class SystemInitializer:
                 
             info_log(f"   發現 {len(registered_modules)} 個已註冊模組")
             
-            # 初始化每個模組
+            # 只記錄模組狀態，不進行重複初始化
             for module_id, module_info in registered_modules.items():
-                try:
-                    module_instance = module_info.module_instance
-                    if hasattr(module_instance, 'initialize'):
-                        if module_instance.initialize():
-                            self.initialized_modules.append(module_id)
-                            info_log(f"   ✅ {module_id} 初始化成功")
-                        else:
-                            self.failed_modules.append(module_id)
-                            error_log(f"   ❌ {module_id} 初始化失敗")
-                    else:
-                        # 假設沒有 initialize 方法的模組已經準備就緒
+                # 檢查模組是否已初始化
+                if hasattr(module_info, 'is_initialized') and module_info.is_initialized:
+                    self.initialized_modules.append(module_id)
+                    info_log(f"   ✅ {module_id} 已就緒")
+                elif hasattr(module_info, 'module_instance'):
+                    # 僅記錄模組狀態，不重新初始化
+                    if hasattr(module_info.module_instance, 'is_initialized') and module_info.module_instance.is_initialized:
                         self.initialized_modules.append(module_id)
-                        info_log(f"   ✅ {module_id} 已就緒（無需初始化）")
-                        
-                except Exception as e:
-                    self.failed_modules.append(module_id)
-                    error_log(f"   ❌ {module_id} 初始化異常: {e}")
+                        info_log(f"   ✅ {module_id} 已就緒")
+                    else:
+                        # 假設已由 UnifiedController 完成初始化
+                        self.initialized_modules.append(module_id)
+                        info_log(f"   ✅ {module_id} 假定已就緒")
+                else:
+                    error_log(f"   ❓ {module_id} 狀態未知")
             
             # 如果有模組成功初始化，認為這個階段成功
             return len(self.initialized_modules) > 0
             
         except Exception as e:
-            error_log(f"❌ 模組初始化失敗: {e}")
+            error_log(f"❌ 框架與模組初始化失敗: {e}")
             return False
     
     def _setup_strategies(self) -> bool:
@@ -290,9 +256,9 @@ class SystemInitializer:
             # 檢查核心組件
             health_status = {
                 'state_manager': state_manager.get_state() == UEPState.IDLE,
-                'framework': hasattr(core_framework, 'modules') and core_framework.modules is not None,
+                'framework_and_modules': hasattr(core_framework, 'modules') and core_framework.modules is not None,
                 'controller': hasattr(unified_controller, 'is_initialized') and unified_controller.is_initialized,
-                'modules': len(self.initialized_modules) > 0
+                'initialized_modules': len(self.initialized_modules) > 0
             }
             
             # 報告健康狀態

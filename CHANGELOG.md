@@ -814,3 +814,15 @@
 
 ---
 
+### Config and initialization changes, made them less confusing. 08/23
+
+> Date: Sat, 23 Aug 2025 01:22:17 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `develop`
+
+> Commit: `32c84bfd648a3ac49d1a84576bb970d2354acb0a`
+
+---
+

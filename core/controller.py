@@ -271,6 +271,12 @@ class UnifiedController:
         """初始化所有已註冊的模組"""
         for module_id, module_instance in self.module_instances.items():
             try:
+                # 檢查模組是否已經初始化
+                if hasattr(module_instance, 'is_initialized') and module_instance.is_initialized:
+                    info_log(f"[UnifiedController] 模組已初始化: {module_id}")
+                    continue
+                    
+                # 初始化尚未初始化的模組
                 if hasattr(module_instance, 'initialize'):
                     module_instance.initialize()
                     info_log(f"[UnifiedController] 模組初始化完成: {module_id}")

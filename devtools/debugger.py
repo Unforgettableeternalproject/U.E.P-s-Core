@@ -114,7 +114,7 @@ def handle_module_integration(user_input):
         print(f"\033[31m處理模組組合時發生錯誤：{e}\033[0m")
 
 def colorful_text(text : str, enabled : tuple=(False, False)):
-    return '\033[32m' + text + '\033[0m' if enabled[1] else '\033[33m' + text + '\033[0m' if enabled[0] else '\033[31m' + text + '\033[0m'
+    return '\033[32m' + text + '\033[0m' if enabled[1] else '\033[33m' + text + ' (待重構)\033[0m' if enabled[0] else '\033[31m' + text + '\033[0m'
 
 def debug_interactive():
     print("==========================\n\n歡迎來到U.E.P模組測試介面!\n\n==========================\n")

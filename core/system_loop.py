@@ -48,7 +48,11 @@ class SystemLoop:
         self.status = LoopStatus.STOPPED
         self.loop_thread: Optional[threading.Thread] = None
         self.should_stop = threading.Event()
-        self.loop_interval = self.config.get('system_loop_interval', 0.1)  # 100ms
+        
+        # 使用新的 system 設置區塊中的參數
+        system_config = self.config.get('system', {})
+        self.loop_interval = system_config.get('main_loop_interval', 0.1)  # 從系統設定獲取循環間隔
+        self.shutdown_timeout = system_config.get('shutdown_timeout', 5.0)  # 關閉超時時間
         
         # 事件處理器
         self.event_handlers: Dict[str, Callable] = {}
@@ -101,9 +105,9 @@ class SystemLoop:
         # 設置停止信號
         self.should_stop.set()
         
-        # 等待線程結束
+        # 等待線程結束，使用設定的超時時間
         if self.loop_thread and self.loop_thread.is_alive():
-            self.loop_thread.join(timeout=5.0)
+            self.loop_thread.join(timeout=self.shutdown_timeout)
             
         self.status = LoopStatus.STOPPED
         info_log("✅ 系統主循環已停止")

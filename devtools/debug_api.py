@@ -3,8 +3,7 @@ from core.registry import get_module
 from configs.config_loader import load_config
 from utils.debug_helper import debug_log, info_log, error_log
 from utils.debug_file_dropper import open_demo_window, open_folder_dialog
-from module_tests.integration_tests import test_stt_nlp  # 新版整合測試 (精簡版)
-# from module_tests.integration_tests_v2 import *  # 保留舊版整合測試，暫時停用
+from module_tests.integration_tests import test_stt_nlp
 from module_tests.extra_tests import *
 import time
 import asyncio

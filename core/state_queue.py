@@ -322,9 +322,15 @@ class StateQueueManager:
         return status
     
     def clear_queue(self):
-        """清空佇列"""
+        """清空佇列並重置狀態檔案"""
         info_log("[StateQueue] 清空狀態佇列")
         self.queue.clear()
+        
+        # 確保當前狀態也被重置為IDLE
+        self.current_state = SystemState.IDLE
+        self.current_item = None
+        
+        # 保存空狀態到檔案
         self._save_queue()
     
     def _save_queue(self):

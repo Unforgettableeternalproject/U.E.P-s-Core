@@ -194,6 +194,9 @@ class STTModule(BaseModule):
                     device_name = device_info['name']
                     debug_log(3, f"  設備 {i}: {device_name}")
             
+            # 設置初始化完成標誌
+            self.is_initialized = True
+            
             return True
             
         except Exception as e:

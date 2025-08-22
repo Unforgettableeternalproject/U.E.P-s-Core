@@ -4,10 +4,15 @@ from abc import ABC, abstractmethod
 
 class BaseModule(ABC):
     """所有模組的基本接口"""
+    
+    def __init__(self):
+        """初始化基本屬性"""
+        self.is_initialized = False
 
     @abstractmethod
     def initialize(self):
         """初始化模組，如載入模型、參數等"""
+        # 子類別需要在成功初始化後設置 self.is_initialized = True
         pass
 
     @abstractmethod
@@ -17,4 +22,5 @@ class BaseModule(ABC):
 
     def shutdown(self):
         """釋放資源，可選實作"""
+        self.is_initialized = False
         pass

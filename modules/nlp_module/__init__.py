@@ -20,10 +20,8 @@ def register():
         config = load_module_config("nlp_module")
         instance = NLPModule(config=config)
         
-        if instance.initialize():
-            return instance
-        else:
-            raise RuntimeError("NLP模組初始化失敗")
+        # 注意：不在這裡初始化模組，讓 UnifiedController 負責統一初始化
+        return instance
             
     except Exception as e:
         from utils.debug_helper import error_log

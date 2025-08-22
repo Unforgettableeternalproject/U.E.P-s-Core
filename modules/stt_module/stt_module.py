@@ -112,7 +112,8 @@ class STTModule(BaseModule):
         # 當前狀態
         self._current_mode = ActivationMode.MANUAL
         self._listening_active = False
-        
+
+        self.is_initialized = False
         info_log("[STT] Transformers Whisper + pyannote 架構模組初始化完成")
 
     def debug(self):

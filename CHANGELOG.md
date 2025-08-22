@@ -838,3 +838,15 @@
 
 ---
 
+### Various changes on working context to make it more concise. 08/23
+
+> Date: Sat, 23 Aug 2025 03:09:47 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `develop`
+
+> Commit: `dc05928c69482f8c77430cc87897f1a7b827de0e`
+
+---
+

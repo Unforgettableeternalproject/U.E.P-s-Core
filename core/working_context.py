@@ -2,12 +2,19 @@
 """
 工作上下文管理器 - 管理整個 UEP 程式生命周期中的大型工作階段
 
-這個系統不同於 SYS 模組中的工作流會話，它是一個更高層級的上下文管理系統：
-- 管理跨模組的工作上下文
-- 提供樣本累積和決策觸發機制
+這個系統是一個高層級的上下文管理系統，支援多種上下文類型：
+- 語者樣本累積和身份管理
+- 對話上下文和工作流會話管理
+- 跨模組數據共享和決策觸發機制
 - 支援可插拔的決策處理器
 - 與 state_manager 和 router 協同工作
 - 完全獨立於具體模組實現
+
+主要功能：
+1. 多類型上下文管理：支援語者累積、身份管理、工作流等多種上下文
+2. 全局數據共享：提供跨模組的數據存取機制
+3. 決策觸發：當上下文達到條件時自動觸發決策處理
+4. 便利方法：提供針對不同上下文類型的專用操作方法
 """
 
 import time
@@ -21,9 +28,12 @@ import threading
 class ContextType(Enum):
     """工作上下文類型"""
     SPEAKER_ACCUMULATION = "speaker_accumulation"  # 語者樣本累積
+    IDENTITY_MANAGEMENT = "identity_management"     # 身份管理
     CONVERSATION = "conversation"                   # 對話上下文
     TASK_EXECUTION = "task_execution"              # 任務執行
+    WORKFLOW_SESSION = "workflow_session"          # 工作流會話
     LEARNING = "learning"                          # 學習模式
+    CROSS_MODULE_DATA = "cross_module_data"        # 跨模組數據共享
 
 
 class ContextStatus(Enum):
@@ -49,23 +59,6 @@ class DecisionHandler(Protocol):
     def apply_decision(self, context_data: Dict[str, Any], decision: Dict[str, Any]) -> bool:
         """應用決策結果，返回是否成功"""
         ...
-
-
-class ContextType(Enum):
-    """工作上下文類型"""
-    SPEAKER_ACCUMULATION = "speaker_accumulation"  # 語者樣本累積
-    CONVERSATION = "conversation"                   # 對話上下文
-    TASK_EXECUTION = "task_execution"              # 任務執行
-    LEARNING = "learning"                          # 學習模式
-
-
-class ContextStatus(Enum):
-    """上下文狀態"""
-    ACTIVE = auto()      # 活躍中
-    PENDING = auto()     # 等待決策
-    SUSPENDED = auto()   # 暫停
-    COMPLETED = auto()   # 已完成
-    EXPIRED = auto()     # 已過期
 
 
 class WorkingContext:
@@ -133,6 +126,47 @@ class WorkingContext:
             "threshold": self.threshold,
             "data_count": len(self.data)
         }
+    
+    # === 特定上下文類型的便利方法 ===
+    
+    def is_speaker_accumulation(self) -> bool:
+        """檢查是否為語者樣本累積上下文"""
+        return self.context_type == ContextType.SPEAKER_ACCUMULATION
+    
+    def is_identity_management(self) -> bool:
+        """檢查是否為身份管理上下文"""
+        return self.context_type == ContextType.IDENTITY_MANAGEMENT
+    
+    def is_workflow_session(self) -> bool:
+        """檢查是否為工作流會話上下文"""
+        return self.context_type == ContextType.WORKFLOW_SESSION
+    
+    def get_speaker_id(self) -> Optional[str]:
+        """獲取語者ID（如果是語者相關上下文）"""
+        return self.metadata.get("speaker_id")
+    
+    def get_identity_id(self) -> Optional[str]:
+        """獲取身份ID（如果是身份相關上下文）"""
+        return self.metadata.get("identity_id")
+    
+    def get_session_id(self) -> Optional[str]:
+        """獲取會話ID（如果是會話相關上下文）"""
+        return self.metadata.get("session_id")
+    
+    def add_speaker_sample(self, sample_data: Dict[str, Any]):
+        """添加語者樣本（專用於語者累積上下文）"""
+        if self.is_speaker_accumulation():
+            self.add_data(sample_data)
+        else:
+            debug_log(1, f"[WorkingContext] 警告：嘗試向非語者累積上下文添加語者樣本")
+    
+    def get_sample_count(self) -> int:
+        """獲取樣本數量"""
+        return len(self.data)
+    
+    def get_latest_sample(self) -> Optional[Any]:
+        """獲取最新的樣本"""
+        return self.data[-1] if self.data else None
 
 
 class WorkingContextManager:
@@ -158,6 +192,9 @@ class WorkingContextManager:
         
         # 決策處理器註冊表
         self.decision_handlers: Dict[ContextType, DecisionHandler] = {}
+        
+        # 全局上下文數據 - 用於跨模組數據共享
+        self.global_context_data: Dict[str, Any] = {}
         
         # 通用回調機制
         self.inquiry_callback: Optional[Callable] = None
@@ -383,6 +420,150 @@ class WorkingContextManager:
     def get_all_contexts_info(self) -> List[Dict[str, Any]]:
         """獲取所有上下文資訊"""
         return [context.get_context_info() for context in self.contexts.values()]
+    
+    def set_context_data(self, key: str, data: Any) -> None:
+        """
+        設定全局上下文數據
+        
+        這個方法用於在不同模組之間共享數據，例如使用者身份、
+        偏好設定、記憶令牌等。這些數據與特定上下文類型無關，
+        是全局可訪問的。
+        
+        Args:
+            key: 數據鍵名
+            data: 要存儲的數據
+        """
+        self.global_context_data[key] = data
+        debug_log(3, f"[WorkingContextManager] 設定全局上下文數據: {key}")
+    
+    def get_context_data(self, key: str, default: Any = None) -> Any:
+        """
+        獲取全局上下文數據
+        
+        Args:
+            key: 數據鍵名
+            default: 如果鍵不存在時返回的默認值
+            
+        Returns:
+            存儲的數據或默認值
+        """
+        value = self.global_context_data.get(key, default)
+        debug_log(3, f"[WorkingContextManager] 獲取全局上下文數據: {key}")
+        return value
+    
+    def delete_context_data(self, key: str) -> bool:
+        """
+        刪除全局上下文數據
+        
+        Args:
+            key: 要刪除的數據鍵名
+            
+        Returns:
+            是否成功刪除
+        """
+        if key in self.global_context_data:
+            del self.global_context_data[key]
+            debug_log(3, f"[WorkingContextManager] 刪除全局上下文數據: {key}")
+            return True
+        return False
+    
+    def get_all_context_data_keys(self) -> List[str]:
+        """
+        獲取所有全局上下文數據的鍵名
+        
+        Returns:
+            鍵名列表
+        """
+        return list(self.global_context_data.keys())
+    
+    # === 身份管理相關的便利方法 ===
+    
+    def set_current_identity(self, identity_data: Dict[str, Any]):
+        """設置當前用戶身份"""
+        self.set_context_data("current_identity", identity_data)
+        info_log(f"[WorkingContextManager] 設置當前身份: {identity_data.get('identity_id', 'Unknown')}")
+    
+    def get_current_identity(self) -> Optional[Dict[str, Any]]:
+        """獲取當前用戶身份"""
+        return self.get_context_data("current_identity")
+    
+    def set_memory_token(self, token: str):
+        """設置記憶庫存取令牌"""
+        self.set_context_data("memory_token", token)
+    
+    def get_memory_token(self) -> Optional[str]:
+        """獲取記憶庫存取令牌"""
+        return self.get_context_data("memory_token")
+    
+    def set_voice_preferences(self, preferences: Dict[str, Any]):
+        """設置語音偏好"""
+        self.set_context_data("voice_preferences", preferences)
+    
+    def get_voice_preferences(self) -> Optional[Dict[str, Any]]:
+        """獲取語音偏好"""
+        return self.get_context_data("voice_preferences")
+    
+    def set_conversation_style(self, style: Dict[str, Any]):
+        """設置對話風格"""
+        self.set_context_data("conversation_style", style)
+    
+    def get_conversation_style(self) -> Optional[Dict[str, Any]]:
+        """獲取對話風格"""
+        return self.get_context_data("conversation_style")
+    
+    # === 上下文查找和管理便利方法 ===
+    
+    def find_context(self, context_type: ContextType, 
+                    metadata_filter: Optional[Dict[str, Any]] = None) -> Optional[WorkingContext]:
+        """
+        根據類型和元數據篩選條件查找上下文
+        
+        Args:
+            context_type: 上下文類型
+            metadata_filter: 元數據篩選條件
+            
+        Returns:
+            匹配的上下文實例或None
+        """
+        for context in self.contexts.values():
+            if context.context_type == context_type:
+                if metadata_filter:
+                    # 檢查所有篩選條件是否匹配
+                    matches = all(
+                        context.metadata.get(key) == value 
+                        for key, value in metadata_filter.items()
+                    )
+                    if matches:
+                        return context
+                else:
+                    return context
+        return None
+    
+    def get_contexts_by_type(self, context_type: ContextType) -> List[WorkingContext]:
+        """獲取指定類型的所有上下文"""
+        return [
+            context for context in self.contexts.values() 
+            if context.context_type == context_type
+        ]
+    
+    def get_context_summary(self) -> Dict[str, Any]:
+        """獲取上下文管理器的摘要信息"""
+        summary = {
+            "total_contexts": len(self.contexts),
+            "active_contexts": len([c for c in self.contexts.values() if c.status == ContextStatus.ACTIVE]),
+            "contexts_by_type": {},
+            "global_data_keys": list(self.global_context_data.keys()),
+            "decision_handlers": list(self.decision_handlers.keys())
+        }
+        
+        # 按類型統計上下文
+        for context in self.contexts.values():
+            ctx_type = context.context_type.value
+            if ctx_type not in summary["contexts_by_type"]:
+                summary["contexts_by_type"][ctx_type] = 0
+            summary["contexts_by_type"][ctx_type] += 1
+        
+        return summary
 
 
 # 全局工作上下文管理器實例

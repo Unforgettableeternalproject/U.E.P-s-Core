@@ -368,21 +368,20 @@ class NLPModule(BaseModule):
     def _add_identity_to_working_context(self, identity: UserProfile):
         """將使用者身份資訊添加到Working Context"""
         try:
-            # 將完整身份資訊添加到全局工作上下文
-            identity_dict = identity.dict()
-            working_context_manager.set_context_data("current_identity", identity_dict)
+            # 使用新的便利方法設置身份相關數據
+            working_context_manager.set_current_identity(identity.dict())
             
-            # 將身份令牌添加到全局工作上下文 (用於記憶庫存取)
+            # 設置記憶庫令牌 (用於MEM模組)
             if identity.memory_token:
-                working_context_manager.set_context_data("memory_token", identity.memory_token)
+                working_context_manager.set_memory_token(identity.memory_token)
             
-            # 將語音偏好添加到全局工作上下文 (用於TTS模組)
+            # 設置語音偏好 (用於TTS模組)
             if identity.voice_preferences:
-                working_context_manager.set_context_data("voice_preferences", identity.voice_preferences)
+                working_context_manager.set_voice_preferences(identity.voice_preferences)
             
-            # 將對話風格添加到全局工作上下文 (用於LLM模組)
+            # 設置對話風格 (用於LLM模組)
             if identity.conversation_style:
-                working_context_manager.set_context_data("conversation_style", identity.conversation_style)
+                working_context_manager.set_conversation_style(identity.conversation_style)
             
             info_log(f"[NLP] 身份 {identity.identity_id} 已添加到全局工作上下文")
             

@@ -18,7 +18,7 @@ def register():
     try:
         config = load_module_config("stt_module")
         instance = STTModule(config=config)
-        # 注意：不在這裡初始化模組，讓 UnifiedController 負責統一初始化
+        instance.initialize()
         return instance
             
     except Exception as e:

@@ -36,26 +36,31 @@ def safe_get_module(name):
 
 # 模組字典 - 延遲初始化
 modules = {}
+modules_load_times = {}  # 儲存模組載入的時間戳
 
 def _initialize_modules():
     """根據當前載入模式初始化模組字典"""
-    global modules
+    global modules, modules_load_times
     
     if PRELOAD_MODULES is True:
         # 舊版模式：預先載入所有模組
         info_log("[Controller] 初始化：預先載入所有模組")
-        modules = {
-            "stt": safe_get_module("stt_module"),
-            "nlp": safe_get_module("nlp_module"),
-            "mem": safe_get_module("mem_module"),
-            "llm": safe_get_module("llm_module"), 
-            "tts": safe_get_module("tts_module"),
-            "sysmod": safe_get_module("sys_module"),
-            # 前端模組
-            "ui": safe_get_module("ui_module"),
-            "ani": safe_get_module("ani_module"), 
-            "mov": safe_get_module("mov_module")
-        }
+        
+        # 模組列表
+        module_names = ["stt_module", "nlp_module", "mem_module", "llm_module", 
+                        "tts_module", "sys_module", "ui_module", "ani_module", "mov_module"]
+        
+        # 載入每個模組並記錄時間
+        modules = {}
+        for full_name in module_names:
+            short_name = full_name.split('_')[0]
+            module_instance = safe_get_module(full_name)
+            modules[short_name] = module_instance
+            
+            # 記錄載入時間
+            if module_instance is not None:
+                from datetime import datetime
+                modules_load_times[short_name] = datetime.now().strftime('%H:%M:%S')
     else:
         # GUI模式：延遲載入
         info_log("[Controller] 初始化：按需載入模式")
@@ -71,6 +76,8 @@ def _initialize_modules():
             "ani": None,
             "mov": None
         }
+        # 初始化載入時間字典，預設為空
+        modules_load_times = {}
 
 def set_loading_mode(preload=True):
     """設定模組載入模式
@@ -84,6 +91,16 @@ def set_loading_mode(preload=True):
     
     # 重新初始化模組字典
     _initialize_modules()
+
+def get_module_load_time(name):
+    """獲取模組載入時間
+    Args:
+        name (str): 模組名稱
+    
+    Returns:
+        str: 載入時間 (HH:MM:SS) 或 'N/A' 如未載入
+    """
+    return modules_load_times.get(name, 'N/A')
 
 def get_or_load_module(name):
     """獲取或載入模組 - 支援兩種模式
@@ -104,7 +121,15 @@ def get_or_load_module(name):
         return modules[name]
     else:
         if modules[name] is None:
+            # 載入模組
             modules[name] = safe_get_module(f"{name}_module")
+            
+            # 如果模組載入成功，記錄載入時間
+            if modules[name] is not None:
+                from datetime import datetime
+                modules_load_times[name] = datetime.now().strftime('%H:%M:%S')
+                debug_log(1, f"[Controller] 模組 '{name}' 載入時間: {modules_load_times[name]}")
+        
         return modules[name]
 
 # 測試 STT 模組 - Phase 2 版本

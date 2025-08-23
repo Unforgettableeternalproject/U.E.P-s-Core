@@ -370,7 +370,7 @@ class DebugMainWindow(QMainWindow):
                 module_status = module_manager.get_module_status(module_id)
                 
                 if module_status['status'] == 'disabled':
-                    # 模組被禁用，顯示禁用信息
+                    # 模組被禁用，顯示禁用信息，但仍然允許載入標籤頁
                     disabled_label = QLabel(f"⚠️ {info['name']} 模組已在設定檔中禁用")
                     disabled_label.setAlignment(Qt.AlignCenter)
                     disabled_label.setStyleSheet("color: orange; font-size: 14px; font-weight: bold;")
@@ -379,10 +379,16 @@ class DebugMainWindow(QMainWindow):
                     # 添加提示信息
                     hint_label = QLabel("請在 config.yaml 中啟用該模組以使用測試功能")
                     hint_label.setAlignment(Qt.AlignCenter)
-                    hint_label.setStyleSheet("color: gray; font-style: italic;")
+                    hint_label.setStyleSheet("color: white; font-style: italic;")
                     placeholder_layout.addWidget(hint_label)
                     
-                    tab_name = f"🚫 {info['name'].split(' ', 1)[1]}"  # 移除原來的 emoji，添加禁用標記
+                    # 添加載入按鈕，仍然允許用戶嘗試載入模組
+                    load_btn = QPushButton("嘗試手動載入模組")
+                    load_btn.setProperty("module_id", module_id)
+                    load_btn.clicked.connect(lambda checked, mid=module_id: self.load_module_manually(mid))
+                    placeholder_layout.addWidget(load_btn)
+                    
+                    tab_name = f"⚠️ {info['name'].split(' ', 1)[1]}"  # 保留原來的名稱，但使用警告標記
                 else:
                     # 模組啟用，顯示載入信息
                     loading_label = QLabel(f"載入中 {info['name']}...")
@@ -504,10 +510,102 @@ class DebugMainWindow(QMainWindow):
         if current_widget and current_widget.property("module_id"):
             module_id = current_widget.property("module_id")
             
-            # 檢查分頁是否被禁用
-            if not self.tab_widget.isTabEnabled(index):
-                debug_log(OPERATION_LEVEL, f"[DebugMainWindow] 跳過禁用的分頁: {module_id}")
-                return  # 直接返回，不執行後續邏輯
+            # 確保當前標籤頁已啟用
+            # 注意：被禁用的標籤頁仍然應該可以顯示"模組已禁用"信息，所以不再跳過禁用的分頁
+            debug_log(OPERATION_LEVEL, f"[DebugMainWindow] 載入標籤頁內容: {module_id} (index: {index})")
+            
+            # 檢查是否已經創建了該模組的實例
+            if module_id in self.module_classes:
+                info = self.module_classes[module_id]
+                
+                if info["instance"] is None:
+                    try:
+                        # 創建實際的標籤頁內容
+                        info_log(f"[DebugMainWindow] 延遲載入模組: {module_id}")
+                        tab_class = info["class"]
+                        new_tab = tab_class(self.ui_module)
+                        
+                        # 儲存實例
+                        info["instance"] = new_tab
+                        self.test_tabs[module_id] = new_tab
+                        
+                        # 替換佔位標籤頁
+                        tab_name = info["name"]
+                        debug_log(SYSTEM_LEVEL, f"[DebugMainWindow] 替換佔位標籤頁: {module_id} ({tab_name}) 於索引 {index}")
+                        
+                        # 獲取當前標籤頁的索引（可能已經更改）
+                        current_index = self.tab_widget.indexOf(current_widget)
+                        if current_index >= 0:  # 確保找到了標籤頁
+                            self.tab_widget.removeTab(current_index)
+                            self.tab_widget.insertTab(current_index, new_tab, tab_name)
+                            self.tab_widget.setCurrentIndex(current_index)
+                            
+                            # 刷新新載入的標籤頁
+                            if hasattr(new_tab, 'refresh_status'):
+                                new_tab.refresh_status()
+                        else:
+                            error_log(KEY_LEVEL, f"[DebugMainWindow] 無法找到佔位標籤頁 {module_id} 的索引")
+                    except Exception as e:
+                        error_log(KEY_LEVEL, f"[DebugMainWindow] 延遲載入 {module_id} 測試分頁失敗: {e}")
+                        return  # 載入失敗時直接返回，不執行後續邏輯
+                else:
+                    # 模組實例已經存在但可能未顯示，確保切換到正確的標籤頁
+                    instance = info["instance"]
+                    tab_index = self.tab_widget.indexOf(instance)
+                    
+                    if tab_index >= 0 and tab_index != index:
+                        debug_log(OPERATION_LEVEL, f"[DebugMainWindow] 切換到已存在的模組標籤頁: {module_id} (索引 {tab_index})")
+                        self.tab_widget.setCurrentIndex(tab_index)
+                        return  # 避免呼叫 on_tab_changed
+                        
+        # 執行標準的標籤頁切換邏輯
+        self.on_tab_changed(index)
+            
+    def load_module_manually(self, module_id):
+        """手動載入模組（即使在設定檔中被禁用）"""
+        debug_log(KEY_LEVEL, f"[DebugMainWindow] 嘗試手動載入模組: {module_id}")
+        
+        try:
+            # 獲取模組管理器實例
+            from .module_manager import ModuleManager
+            module_manager = ModuleManager()
+            
+            # 嘗試載入模組
+            result = module_manager.load_module(module_id)
+            
+            if result.get('success', False):
+                info_log(f"[DebugMainWindow] 成功手動載入模組: {module_id}")
+                
+                # 找到並重新載入相應的標籤頁
+                info = self.module_classes.get(module_id)
+                if info:
+                    # 創建實際的標籤頁內容
+                    tab_class = info["class"]
+                    new_tab = tab_class(self.ui_module)
+                    
+                    # 儲存實例
+                    self.module_classes[module_id]["instance"] = new_tab
+                    self.test_tabs[module_id] = new_tab
+                    
+                    # 找到相應的標籤頁索引
+                    for i in range(self.tab_widget.count()):
+                        widget = self.tab_widget.widget(i)
+                        if widget and widget.property("module_id") == module_id:
+                            # 替換標籤頁
+                            tab_name = info["name"]
+                            self.tab_widget.removeTab(i)
+                            self.tab_widget.insertTab(i, new_tab, tab_name)
+                            self.tab_widget.setCurrentIndex(i)
+                            break
+                
+                self.status_label.setText(f"模組 {module_id} 已手動載入")
+            else:
+                error_log(f"[DebugMainWindow] 手動載入模組 {module_id} 失敗: {result.get('error', '未知錯誤')}")
+                self.status_label.setText(f"模組 {module_id} 載入失敗")
+        
+        except Exception as e:
+            error_log(f"[DebugMainWindow] 手動載入模組 {module_id} 出錯: {e}")
+            self.status_label.setText(f"模組 {module_id} 載入出錯")
             
             # 確認這是佔位符而不是已加載的標籤頁
             if module_id in self.module_classes:
@@ -525,38 +623,37 @@ class DebugMainWindow(QMainWindow):
                         self.module_classes[module_id]["instance"] = new_tab
                         self.test_tabs[module_id] = new_tab
                         
-                        # 確保不會重複添加標籤頁
-                        tab_name = info["name"]
-                        debug_log(SYSTEM_LEVEL, f"[DebugMainWindow] 替換佔位標籤頁: {module_id} ({tab_name}) 於索引 {index}")
-                        
-                        # 獲取當前標籤頁的索引（可能已經更改）
-                        real_index = self.tab_widget.indexOf(current_widget)
-                        if real_index >= 0:  # 確保找到了標籤頁
-                            self.tab_widget.removeTab(real_index)
-                            self.tab_widget.insertTab(real_index, new_tab, tab_name)
-                            self.tab_widget.setCurrentIndex(real_index)
-                            
-                            # 刷新新載入的標籤頁
-                            if hasattr(new_tab, 'refresh_status'):
-                                new_tab.refresh_status()
-                        else:
+                        # 找到相應的標籤頁索引
+                        found_tab = False
+                        for i in range(self.tab_widget.count()):
+                            widget = self.tab_widget.widget(i)
+                            if widget and widget.property("module_id") == module_id:
+                                # 替換標籤頁
+                                tab_name = info["name"]
+                                debug_log(SYSTEM_LEVEL, f"[DebugMainWindow] 替換佔位標籤頁: {module_id} ({tab_name}) 於索引 {i}")
+                                self.tab_widget.removeTab(i)
+                                self.tab_widget.insertTab(i, new_tab, tab_name)
+                                self.tab_widget.setCurrentIndex(i)
+                                found_tab = True
+                                
+                                # 刷新新載入的標籤頁
+                                if hasattr(new_tab, 'refresh_status'):
+                                    new_tab.refresh_status()
+                                break
+                                
+                        if not found_tab:
                             error_log(KEY_LEVEL, f"[DebugMainWindow] 無法找到佔位標籤頁 {module_id} 的索引")
                     
                     except Exception as e:
                         error_log(KEY_LEVEL, f"[DebugMainWindow] 延遲載入 {module_id} 測試分頁失敗: {e}")
-                        return  # 載入失敗時直接返回，不執行後續邏輯
                 else:
                     # 模組實例已經存在但可能未顯示，確保切換到正確的標籤頁
                     instance = info["instance"]
-                    real_index = self.tab_widget.indexOf(instance)
+                    tab_index = self.tab_widget.indexOf(instance)
                     
-                    if real_index >= 0 and real_index != index:
-                        debug_log(OPERATION_LEVEL, f"[DebugMainWindow] 切換到已存在的模組標籤頁: {module_id} (索引 {real_index})")
-                        self.tab_widget.setCurrentIndex(real_index)
-                        return  # 避免呼叫 on_tab_changed
-                        
-        if index >= 0:  # 確保索引有效
-            self.on_tab_changed(index)
+                    if tab_index >= 0:
+                        debug_log(OPERATION_LEVEL, f"[DebugMainWindow] 切換到已存在的模組標籤頁: {module_id} (索引 {tab_index})")
+                        self.tab_widget.setCurrentIndex(tab_index)
     
     def on_tab_changed(self, index: int):
         """分頁切換事件"""

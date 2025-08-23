@@ -723,6 +723,7 @@ def debug_interactive():
                 try:
                     from modules.ui_module.debug import launch_debug_interface
                     print("圖形介面啟動中，請稍候...")
+                    controller.set_loading_mode(preload=False)
                     launch_debug_interface(ui_module=None, prefer_gui=True, blocking=True)
                 except KeyboardInterrupt:
                     print("\n⌨️ 圖形介面被用戶中斷")

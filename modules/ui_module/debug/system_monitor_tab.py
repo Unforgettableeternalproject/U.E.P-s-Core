@@ -634,6 +634,8 @@ class SystemMonitorTab(QWidget):
                             'status': status.get('status', 'unknown'),
                             'loaded': status.get('loaded', False),
                             'enabled': status.get('enabled', False),
+                            'load_time': status.get('load_time', 'N/A'),
+                            'memory_usage': status.get('memory_usage', 'N/A'),
                             'message': status.get('message', '無狀態信息')
                         }
                         debug_log(ELABORATIVE_LEVEL, f"[SystemMonitorTab] 模組 {module_id} 狀態: {module_status[module_id]}")
@@ -644,6 +646,8 @@ class SystemMonitorTab(QWidget):
                             'status': 'error',
                             'loaded': False,
                             'enabled': False,
+                            'load_time': 'N/A',
+                            'memory_usage': 'N/A',
                             'message': f'錯誤: {str(e)}'
                         }
                 
@@ -735,12 +739,14 @@ class SystemMonitorTab(QWidget):
                 
                 # 載入時間
                 load_time = status.get('load_time', 'N/A')
+                debug_log(KEY_LEVEL, f"[SystemMonitorTab] 模組 {module_id} 載入時間: {load_time}")
                 time_item = QTableWidgetItem(str(load_time))
                 time_item.setForeground(QColor(255, 255, 255))  # 白色文字
                 self.module_table.setItem(row, 2, time_item)
                 
-                # 記憶體使用（模擬）
+                # 記憶體使用
                 memory_usage = status.get('memory_usage', 'N/A')
+                debug_log(KEY_LEVEL, f"[SystemMonitorTab] 模組 {module_id} 記憶體使用: {memory_usage}")
                 memory_item = QTableWidgetItem(str(memory_usage))
                 memory_item.setForeground(QColor(255, 255, 255))  # 白色文字
                 self.module_table.setItem(row, 3, memory_item)

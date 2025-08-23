@@ -886,3 +886,15 @@
 
 ---
 
+### Some more improvements on debug ui, still more to go. 08/23
+
+> Date: Sat, 23 Aug 2025 21:36:41 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/front_end_integration`
+
+> Commit: `9d3cc4c1690bd54b8112ddf5214979483b548fa8`
+
+---
+

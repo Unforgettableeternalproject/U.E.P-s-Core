@@ -329,28 +329,50 @@ class ModuleManager:
                 from datetime import datetime
                 import psutil
                 import sys
+                import gc
                 
                 module_instance = debug_api.modules.get(module_key)
                 
-                # 獲取載入時間
-                module_load_time = getattr(module_instance, '_load_time', None)
-                if module_load_time:
-                    load_time = datetime.fromtimestamp(module_load_time).strftime('%H:%M:%S')
-                else:
+                # 獲取模組載入時間
+                try:
+                    # 嘗試從 debug_api 獲取實際的載入時間
+                    load_time = debug_api.get_module_load_time(module_key)
+                    debug_log(ELABORATIVE_LEVEL, f"[ModuleManager] 模組 {module_key} 載入時間: {load_time}")
+                except Exception as time_err:
+                    # 如果獲取失敗，使用當前時間
+                    error_log(f"[ModuleManager] 獲取模組載入時間失敗: {time_err}")
                     load_time = datetime.now().strftime('%H:%M:%S')
                 
                 # 估算記憶體使用量
                 if module_instance:
                     try:
-                        process = psutil.Process()
-                        mem_info = process.memory_info()
-                        # 使用粗略估計，基於模組大小
+                        # 先嘗試直接獲取模組大小
                         module_size = sys.getsizeof(module_instance) / (1024 * 1024)  # MB
-                        memory_usage = f"{module_size:.1f} MB"
-                    except:
-                        memory_usage = '估計中...'
+                        
+                        # 如果模組大小太小（可能是包裝器），嘗試獲取其屬性的大小
+                        if module_size < 0.1:  # 小於 0.1 MB，可能需要深度分析
+                            total_size = module_size
+                            # 遍歷模組的所有屬性，計算總大小
+                            for attr_name in dir(module_instance):
+                                try:
+                                    attr = getattr(module_instance, attr_name)
+                                    if not attr_name.startswith('__'):  # 跳過內建屬性
+                                        total_size += sys.getsizeof(attr) / (1024 * 1024)
+                                except:
+                                    pass
+                            module_size = total_size
+                        
+                        memory_usage = f"{module_size:.2f} MB"
+                        debug_log(KEY_LEVEL, f"[ModuleManager] 模組 {module_key} 記憶體使用: {memory_usage}")
+                    except Exception as mem_err:
+                        memory_usage = '計算中...'
+                        debug_log(KEY_LEVEL, f"[ModuleManager] 計算模組 {module_key} 記憶體失敗: {mem_err}")
             except Exception as e:
-                error_log(f"[ModuleManager] 獲取模組記憶體使用量失敗: {e}")
+                error_log(f"[ModuleManager] 獲取模組 {module_key} 狀態資訊失敗: {e}")
+                # 即使出錯，仍然至少顯示模組已載入
+                if is_loaded:
+                    load_time = "已載入"
+                    memory_usage = "已使用"
         
         # 組合完整的狀態信息
         status = {
@@ -360,12 +382,33 @@ class ModuleManager:
             'enabled_in_config': enabled,
             'refactored': refactored,
             'instance': module_instance,
-            'memory_usage': memory_usage,
-            'load_time': load_time,
+            'memory_usage': memory_usage if is_loaded else 'N/A',
+            'load_time': load_time if is_loaded else 'N/A',
             'message': '模組已載入且啟用' if (enabled and is_loaded) else 
                       '模組已啟用但未載入' if (enabled and not is_loaded) else 
                       '模組在設定檔中被禁用'
         }
+        
+        # 針對已載入的模組，確保始終顯示有用的信息
+        if is_loaded:
+            from datetime import datetime
+            if memory_usage == 'N/A':
+                # 嘗試直接估算模組記憶體用量
+                try:
+                    if module_key in debug_api.modules and debug_api.modules[module_key] is not None:
+                        import sys
+                        module_size = 0
+                        # 直接估算
+                        module_size = sys.getsizeof(debug_api.modules[module_key]) / (1024 * 1024)  # MB
+                        status['memory_usage'] = f"{module_size:.2f} MB"
+                    else:
+                        status['memory_usage'] = '已加載'
+                except:
+                    status['memory_usage'] = '已加載'
+            
+            if load_time == 'N/A':
+                # 使用當前時間作為估計的載入時間
+                status['load_time'] = datetime.now().strftime('%H:%M:%S')
         
         # 更新我們的內部狀態記錄
         self.module_status[module_key] = status.copy()
@@ -405,11 +448,19 @@ class ModuleManager:
             
             func = test_funcs[function_name]
             
-            # 執行測試函數
-            if params:
-                result = func(**params)
+            # 特殊處理某些測試函數
+            if module_key == "nlp" and function_name == "basic_test":
+                # NLP基本測試需要特殊處理參數
+                text = params.get("text", "")
+                enable_identity = params.get("enable_identity", True)
+                enable_segmentation = params.get("enable_segmentation", True)
+                result = func(text, enable_identity, enable_segmentation)
             else:
-                result = func()
+                # 執行一般測試函數
+                if params:
+                    result = func(**params)
+                else:
+                    result = func()
             
             debug_log(OPERATION_LEVEL, f"[ModuleManager] 執行測試 {module_key}.{function_name} 完成")
             

@@ -386,18 +386,77 @@ class STTTestTab(BaseTestTab):
     
     def run_single_test(self):
         """執行單次語音測試"""
+        self.add_result("🎤 啟動語音測試任務...", "INFO")
+        
+        from .background_worker import get_worker_manager
+        worker_manager = get_worker_manager()
+        
+        # 獲取參數
         params = {
             "enable_speaker_id": self.speaker_id_checkbox.isChecked(),
             "language": self.language_combo.currentText()
         }
-        self.run_test("single_test", params)
+        
+        # 創建一個任務以在背景執行
+        def run_stt_test_task():
+            try:
+                return self.module_manager.run_test_function(self.module_name, "single_test", params)
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+        
+        # 設置任務完成後的回調
+        def on_task_complete(task_id, result):
+            if result.get('success', False):
+                self.add_result(f"✅ 測試完成: {result.get('message', '成功')}", "SUCCESS")
+                if 'data' in result:
+                    self.add_result(f"結果數據: {json.dumps(result['data'], ensure_ascii=False, indent=2)}", "INFO")
+            else:
+                self.add_result(f"❌ 測試失敗: {result.get('error', '未知錯誤')}", "ERROR")
+        
+        # 啟動背景任務
+        task_id = "stt_single_test_" + str(id(self))
+        worker_manager.signals.finished.connect(on_task_complete)
+        worker_manager.start_task(task_id, run_stt_test_task)
+        
+        self.add_result("🔄 語音測試正在背景執行，請稍候...", "INFO")
     
     def run_continuous_test(self):
         """執行持續監聽測試"""
+        self.add_result("🎤 啟動持續監聽任務...", "INFO")
+        
+        from .background_worker import get_worker_manager
+        worker_manager = get_worker_manager()
+        
+        # 獲取參數
         params = {
             "duration": self.duration_spinbox.value()
         }
-        self.run_test("continuous_test", params)
+        
+        # 創建一個任務以在背景執行
+        def run_continuous_test_task():
+            try:
+                return self.module_manager.run_test_function(self.module_name, "continuous_test", params)
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+        
+        # 設置任務完成後的回調
+        def on_task_complete(task_id, result):
+            if task_id != "stt_continuous_test_" + str(id(self)):
+                return  # 不是我們的任務
+                
+            if result.get('success', False):
+                self.add_result(f"✅ 持續監聽完成: {result.get('message', '成功')}", "SUCCESS")
+                if 'data' in result:
+                    self.add_result(f"結果數據: {json.dumps(result['data'], ensure_ascii=False, indent=2)}", "INFO")
+            else:
+                self.add_result(f"❌ 持續監聽失敗: {result.get('error', '未知錯誤')}", "ERROR")
+        
+        # 啟動背景任務
+        task_id = "stt_continuous_test_" + str(id(self))
+        worker_manager.signals.finished.connect(on_task_complete)
+        worker_manager.start_task(task_id, run_continuous_test_task)
+        
+        self.add_result(f"🔄 持續監聽（{params['duration']}秒）正在背景執行，UI 將保持響應...", "INFO")
     
     def get_stats(self):
         """獲取統計信息"""
@@ -452,65 +511,60 @@ class NLPTestTab(BaseTestTab):
         self.text_input.setPlaceholderText("請輸入要處理的文本...")
         text_layout.addWidget(self.text_input)
         
+        # 選項區域
+        options_layout = QHBoxLayout()
+        
+        self.identity_checkbox = QCheckBox("啟用語者身份處理")
+        self.identity_checkbox.setChecked(True)
+        options_layout.addWidget(self.identity_checkbox)
+        
+        self.segmentation_checkbox = QCheckBox("啟用意圖分段")
+        self.segmentation_checkbox.setChecked(True)
+        options_layout.addWidget(self.segmentation_checkbox)
+        
+        text_layout.addLayout(options_layout)
         control_layout.addWidget(text_group)
         
-        # 基本分析功能
-        analysis_group = QGroupBox("文本分析")
-        analysis_layout = QVBoxLayout(analysis_group)
+        # 基本測試功能
+        test_group = QGroupBox("基本測試")
+        test_layout = QVBoxLayout(test_group)
         
-        # 第一排按鈕
-        buttons_row1 = QHBoxLayout()
+        # 基本測試按鈕
+        basic_test_btn = QPushButton("🧠 基本 NLP 測試")
+        basic_test_btn.clicked.connect(self.run_basic_test)
+        test_layout.addWidget(basic_test_btn)
         
-        tokenize_btn = QPushButton("🔤 分詞測試")
-        tokenize_btn.clicked.connect(self.run_tokenize_test)
-        buttons_row1.addWidget(tokenize_btn)
+        # 進階測試按鈕組
+        advanced_layout = QHBoxLayout()
         
-        sentiment_btn = QPushButton("😊 情感分析")
-        sentiment_btn.clicked.connect(self.run_sentiment_test)
-        buttons_row1.addWidget(sentiment_btn)
+        state_queue_btn = QPushButton("� 狀態佇列測試")
+        state_queue_btn.clicked.connect(self.run_state_queue_test)
+        advanced_layout.addWidget(state_queue_btn)
         
-        ner_btn = QPushButton("🏷️ 實體識別")
-        ner_btn.clicked.connect(self.run_ner_test)
-        buttons_row1.addWidget(ner_btn)
+        multi_intent_btn = QPushButton("� 多意圖測試")
+        multi_intent_btn.clicked.connect(self.run_multi_intent_test)
+        advanced_layout.addWidget(multi_intent_btn)
         
-        analysis_layout.addLayout(buttons_row1)
+        identity_btn = QPushButton("� 語者身份測試")
+        identity_btn.clicked.connect(self.run_identity_test)
+        advanced_layout.addWidget(identity_btn)
         
-        # 第二排按鈕
-        buttons_row2 = QHBoxLayout()
+        test_layout.addLayout(advanced_layout)
+        control_layout.addWidget(test_group)
         
-        similarity_btn = QPushButton("🔍 相似度測試")
-        similarity_btn.clicked.connect(self.run_similarity_test)
-        buttons_row2.addWidget(similarity_btn)
+        # 上下文管理
+        context_group = QGroupBox("上下文管理")
+        context_layout = QHBoxLayout(context_group)
         
-        keyword_btn = QPushButton("🗝️ 關鍵詞提取")
-        keyword_btn.clicked.connect(self.run_keyword_test)
-        buttons_row2.addWidget(keyword_btn)
+        analyze_context_btn = QPushButton("📊 分析上下文佇列")
+        analyze_context_btn.clicked.connect(self.analyze_context_queue)
+        context_layout.addWidget(analyze_context_btn)
         
-        summary_btn = QPushButton("📄 文本摘要")
-        summary_btn.clicked.connect(self.run_summary_test)
-        buttons_row2.addWidget(summary_btn)
+        clear_contexts_btn = QPushButton("�️ 清除所有上下文")
+        clear_contexts_btn.clicked.connect(self.clear_contexts)
+        context_layout.addWidget(clear_contexts_btn)
         
-        analysis_layout.addLayout(buttons_row2)
-        
-        control_layout.addWidget(analysis_group)
-        
-        # 模型管理
-        model_group = QGroupBox("模型管理")
-        model_layout = QHBoxLayout(model_group)
-        
-        model_info_btn = QPushButton("ℹ️ 模型資訊")
-        model_info_btn.clicked.connect(self.get_model_info)
-        model_layout.addWidget(model_info_btn)
-        
-        reload_model_btn = QPushButton("🔄 重載模型")
-        reload_model_btn.clicked.connect(self.reload_models)
-        model_layout.addWidget(reload_model_btn)
-        
-        stats_btn = QPushButton("📊 處理統計")
-        stats_btn.clicked.connect(self.get_processing_stats)
-        model_layout.addWidget(stats_btn)
-        
-        control_layout.addWidget(model_group)
+        control_layout.addWidget(context_group)
         
         main_layout.addWidget(control_group)
     
@@ -522,59 +576,130 @@ class NLPTestTab(BaseTestTab):
             return None
         return text
     
-    def run_tokenize_test(self):
-        """執行分詞測試"""
+    def run_basic_test(self):
+        """執行基本 NLP 測試"""
+        self.add_result("🧠 執行 NLP 基本測試...", "INFO")
+        
         text = self.get_input_text()
-        if text:
-            params = {"text": text}
-            self.run_test("tokenize", params)
+        if not text:
+            return
+            
+        from .background_worker import get_worker_manager
+        worker_manager = get_worker_manager()
+        
+        # 獲取參數
+        params = {
+            "text": text,
+            "enable_identity": self.identity_checkbox.isChecked(),
+            "enable_segmentation": self.segmentation_checkbox.isChecked()
+        }
+        
+        # 創建一個任務以在背景執行
+        def run_nlp_test_task():
+            try:
+                return self.module_manager.run_test_function(self.module_name, "basic_test", params)
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+        
+        # 設置任務完成後的回調
+        def on_task_complete(task_id, result):
+            if task_id != "nlp_basic_test_" + str(id(self)):
+                return  # 不是我們的任務
+                
+            if result.get('success', False):
+                self.add_result(f"✅ NLP 測試完成", "SUCCESS")
+                if 'data' in result:
+                    self.add_result(f"結果數據: {json.dumps(result['data'], ensure_ascii=False, indent=2)}", "INFO")
+            else:
+                self.add_result(f"❌ NLP 測試失敗: {result.get('error', '未知錯誤')}", "ERROR")
+        
+        # 啟動背景任務
+        task_id = "nlp_basic_test_" + str(id(self))
+        worker_manager.signals.finished.connect(on_task_complete)
+        worker_manager.start_task(task_id, run_nlp_test_task)
+        
+        self.add_result("🔄 NLP 分析正在背景執行，請稍候...", "INFO")
     
-    def run_sentiment_test(self):
-        """執行情感分析測試"""
+    def run_state_queue_test(self):
+        """執行狀態佇列整合測試"""
         text = self.get_input_text()
-        if text:
-            params = {"text": text}
-            self.run_test("sentiment_analysis", params)
+        if not text:
+            return
+            
+        self.add_result("🔄 執行狀態佇列整合測試...", "INFO")
+        
+        from .background_worker import get_worker_manager
+        worker_manager = get_worker_manager()
+        
+        # 獲取參數
+        params = {"text": text}
+        
+        # 創建一個任務以在背景執行
+        def run_state_queue_task():
+            try:
+                return self.module_manager.run_test_function(self.module_name, "state_queue_test", params)
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+        
+        task_id = "nlp_state_queue_test_" + str(id(self))
+        worker_manager.start_task(task_id, run_state_queue_task)
+        self.add_result("🔄 狀態佇列測試正在背景執行，請稍候...", "INFO")
     
-    def run_ner_test(self):
-        """執行實體識別測試"""
+    def run_multi_intent_test(self):
+        """執行多意圖測試"""
         text = self.get_input_text()
-        if text:
-            params = {"text": text}
-            self.run_test("named_entity_recognition", params)
+        if not text:
+            return
+            
+        self.add_result("🔀 執行多意圖測試...", "INFO")
+        
+        from .background_worker import get_worker_manager
+        worker_manager = get_worker_manager()
+        
+        # 獲取參數
+        params = {"text": text}
+        
+        # 創建一個任務以在背景執行
+        def run_multi_intent_task():
+            try:
+                return self.module_manager.run_test_function(self.module_name, "multi_intent_test", params)
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+        
+        task_id = "nlp_multi_intent_test_" + str(id(self))
+        worker_manager.start_task(task_id, run_multi_intent_task)
+        self.add_result("🔄 多意圖測試正在背景執行，請稍候...", "INFO")
     
-    def run_similarity_test(self):
-        """執行相似度測試"""
-        text = self.get_input_text()
-        if text:
-            params = {"text": text}
-            self.run_test("similarity_test", params)
+    def run_identity_test(self):
+        """執行語者身份測試"""
+        self.add_result("👤 執行語者身份測試...", "INFO")
+        
+        from .background_worker import get_worker_manager
+        worker_manager = get_worker_manager()
+        
+        # 獲取參數 - 使用固定的測試用戶ID
+        params = {"speaker_id": "test_user"}
+        
+        # 創建一個任務以在背景執行
+        def run_identity_test_task():
+            try:
+                return self.module_manager.run_test_function(self.module_name, "identity_test", params)
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+        
+        task_id = "nlp_identity_test_" + str(id(self))
+        worker_manager.start_task(task_id, run_identity_test_task)
+        self.add_result("🔄 身份測試正在背景執行，請稍候...", "INFO")
     
-    def run_keyword_test(self):
-        """執行關鍵詞提取測試"""
-        text = self.get_input_text()
-        if text:
-            params = {"text": text}
-            self.run_test("extract_keywords", params)
+    def analyze_context_queue(self):
+        """分析上下文佇列"""
+        self.add_result("📊 分析上下文佇列...", "INFO")
+        self.run_test("analyze_context")
     
-    def run_summary_test(self):
-        """執行文本摘要測試"""
-        text = self.get_input_text()
-        if text:
-            params = {"text": text}
-            self.run_test("text_summarization", params)
-    
-    def get_model_info(self):
-        """獲取模型資訊"""
-        self.run_test("get_model_info")
-    
-    def reload_models(self):
-        """重載模型"""
-        self.run_test("reload_models")
-    
-    def get_processing_stats(self):
-        """獲取處理統計"""
-        self.run_test("get_processing_stats")
+    def clear_contexts(self):
+        """清空所有上下文"""
+        self.add_result("🗑️ 清空所有上下文...", "INFO")
+        self.run_test("clear_contexts")
 
 
 # === 臨時佔位分頁類別（待重構模組使用） ===

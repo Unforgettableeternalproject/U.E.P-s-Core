@@ -50,6 +50,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='U.E.P 系統')
     parser.add_argument('--reset-speaker-models', action='store_true', help='重置說話人模型')
     parser.add_argument('--debug', action='store_true', help='強制啟用除錯模式')
+    parser.add_argument('--debug-gui', action='store_true', help='啟動圖形除錯介面')
     parser.add_argument('--production', action='store_true', help='強制啟用生產模式')
     args = parser.parse_args()
     
@@ -69,6 +70,17 @@ if __name__ == "__main__":
             print("已重置說話人模型")
         else:
             print("重置說話人模型失敗")
+        sys.exit(0)
+    
+    # 處理圖形除錯介面啟動
+    if args.debug_gui:
+        print("🖥️ 啟動圖形除錯介面...")
+        try:
+            from modules.ui_module.debug import launch_debug_interface
+            launch_debug_interface(ui_module=None, prefer_gui=True, blocking=True)
+        except Exception as e:
+            print(f"❌ 圖形除錯介面啟動失敗: {e}")
+            sys.exit(1)
         sys.exit(0)
 
     if debug_mode:

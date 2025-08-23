@@ -2,6 +2,7 @@ import devtools.debug_api as controller
 from utils.debug_helper import debug_log, debug_log_e, info_log, error_log
 from configs.config_loader import load_config
 import asyncio
+import time
 
 config = load_config()
 
@@ -13,7 +14,11 @@ mod_list = {"stt": (module_enabled.get("stt_module", False), module_refactored.g
             "mem": (module_enabled.get("mem_module", False), module_refactored.get("mem_module", False)),
             "llm": (module_enabled.get("llm_module", False), module_refactored.get("llm_module", False)),
             "tts": (module_enabled.get("tts_module", False), module_refactored.get("tts_module", False)),
-            "sys": (module_enabled.get("sys_module", False), module_refactored.get("sys_module", False))}
+            "sys": (module_enabled.get("sys_module", False), module_refactored.get("sys_module", False)),
+            # 前端模組
+            "ui": (module_enabled.get("ui_module", False), module_refactored.get("ui_module", False)),
+            "ani": (module_enabled.get("ani_module", False), module_refactored.get("ani_module", False)),
+            "mov": (module_enabled.get("mov_module", False), module_refactored.get("mov_module", False))}
 
 def handle_module_integration(user_input):
     """
@@ -127,13 +132,19 @@ def debug_interactive():
             f"{colorful_text('llm - 大型語言模型模組;', mod_list['llm'])}",
             f"{colorful_text('tts - 文字轉語音模組;', mod_list['tts'])}",
             f"{colorful_text('sys - 系統功能模組;', mod_list['sys'])}",
+            "---",
+            f"{colorful_text('ui - UI 前端模組;', mod_list['ui'])}",
+            f"{colorful_text('ani - 動畫前端模組;', mod_list['ani'])}",
+            f"{colorful_text('mov - 移動前端模組;', mod_list['mov'])}",
+            f"{colorful_text('frontend - 前端整合測試;', (True, True))}",
+            "---",
             f"{colorful_text('int - 整合測試套件;', (True, True))}",
-            f"{colorful_text('ex - 額外功能測試;')}"
+            f"{colorful_text('ex - 額外功能測試;', (True, True))}"
         ]
         
         menu_text = "請選擇想要測試的模組 (綠色: 已重構、黃色: 已啟用、紅色: 未啟用):\n\n"
         menu_text += "\n\n".join(menu_items)
-        menu_text += "\n\n(用 exit 來離開): \n\n> "
+        menu_text += "\n\n(用 exit 來離開，用 gui 切換到圖形介面): \n\n> "
         
         user_input = input(menu_text)
         print("\n==========================\n")
@@ -544,6 +555,152 @@ def debug_interactive():
                         break
                     else:
                         print("\033[31m無效的選擇，請再試一次。\033[0m")
+            case "ui":
+                if not mod_list['ui'][0]:
+                    info_log("UI 模組未啟用，請檢查配置。", "WARNING")
+                    print("==========================\n")
+                    continue
+
+                debug_log(1, "UI 前端模組測試")
+                print("<UI 前端模組測試>\n")
+                
+                choice = input("請選擇測試功能:\n" +
+                             "1: 模組狀態檢查\n" +
+                             "2: UI 交互測試\n" +
+                             "3: 視窗操作測試\n" +
+                             "exit: 離開\n\n> ")
+                
+                if choice == "1":
+                    controller.frontend_test_status()
+                elif choice == "2":
+                    controller.frontend_test_ui_interactions()
+                elif choice == "3":
+                    # 單項視窗測試
+                    print("視窗操作測試...")
+                    ui_module = controller.modules.get("ui")
+                    if ui_module:
+                        try:
+                            print("顯示視窗...")
+                            ui_module.handle_frontend_request({"command": "show_window"})
+                            time.sleep(2)
+                            print("設定視窗大小...")
+                            ui_module.handle_frontend_request({"command": "set_window_size", "width": 250, "height": 250})
+                            time.sleep(1)
+                            print("設定透明度...")
+                            ui_module.handle_frontend_request({"command": "set_opacity", "opacity": 0.8})
+                        except Exception as e:
+                            print(f"測試失敗: {e}")
+                    else:
+                        print("UI 模組未載入")
+                elif choice in ["exit", "e", "quit", "q", "back", "b"]:
+                    pass
+                else:
+                    print("\033[31m無效的選擇，請再試一次。\033[0m")
+            case "ani":
+                if not mod_list['ani'][0]:
+                    info_log("ANI 模組未啟用，請檢查配置。", "WARNING")
+                    print("==========================\n")
+                    continue
+
+                debug_log(1, "ANI 前端模組測試")
+                print("<ANI 前端模組測試>\n")
+                
+                choice = input("請選擇測試功能:\n" +
+                             "1: 模組狀態檢查\n" +
+                             "2: 動畫系統測試\n" +
+                             "3: 動畫播放測試\n" +
+                             "exit: 離開\n\n> ")
+                
+                if choice == "1":
+                    controller.frontend_test_status()
+                elif choice == "2":
+                    controller.frontend_test_animations()
+                elif choice == "3":
+                    # 單項動畫測試
+                    print("動畫播放測試...")
+                    ani_module = controller.modules.get("ani")
+                    if ani_module:
+                        try:
+                            print("播放站立動畫...")
+                            ani_module.handle_frontend_request({"command": "play_animation", "animation_type": "stand_idle", "loop": True})
+                            time.sleep(3)
+                            print("播放微笑動畫...")
+                            ani_module.handle_frontend_request({"command": "play_animation", "animation_type": "smile_idle", "loop": True})
+                            time.sleep(3)
+                            print("停止動畫...")
+                            ani_module.handle_frontend_request({"command": "stop_animation"})
+                        except Exception as e:
+                            print(f"測試失敗: {e}")
+                    else:
+                        print("ANI 模組未載入")
+                elif choice in ["exit", "e", "quit", "q", "back", "b"]:
+                    pass
+                else:
+                    print("\033[31m無效的選擇，請再試一次。\033[0m")
+            case "mov":
+                if not mod_list['mov'][0]:
+                    info_log("MOV 模組未啟用，請檢查配置。", "WARNING")
+                    print("==========================\n")
+                    continue
+
+                debug_log(1, "MOV 前端模組測試")
+                print("<MOV 前端模組測試>\n")
+                
+                choice = input("請選擇測試功能:\n" +
+                             "1: 模組狀態檢查\n" +
+                             "2: 移動系統測試\n" +
+                             "3: 行為控制測試\n" +
+                             "exit: 離開\n\n> ")
+                
+                if choice == "1":
+                    controller.frontend_test_status()
+                elif choice == "2":
+                    controller.frontend_test_movement()
+                elif choice == "3":
+                    # 單項行為測試
+                    print("行為控制測試...")
+                    mov_module = controller.modules.get("mov")
+                    if mov_module:
+                        try:
+                            print("設定位置...")
+                            mov_module.handle_frontend_request({"command": "set_position", "x": 200, "y": 200})
+                            time.sleep(1)
+                            print("設定行為為遊蕩...")
+                            mov_module.handle_frontend_request({"command": "set_behavior", "behavior": "wandering"})
+                            time.sleep(2)
+                            print("設定行為為待機...")
+                            mov_module.handle_frontend_request({"command": "set_behavior", "behavior": "idle"})
+                        except Exception as e:
+                            print(f"測試失敗: {e}")
+                    else:
+                        print("MOV 模組未載入")
+                elif choice in ["exit", "e", "quit", "q", "back", "b"]:
+                    pass
+                else:
+                    print("\033[31m無效的選擇，請再試一次。\033[0m")
+            case "frontend":
+                debug_log(1, "前端整合測試")
+                print("<前端整合測試>\n")
+                
+                choice = input("請選擇測試類型:\n" +
+                             "1: 完整前端整合測試\n" +
+                             "2: 前端模組狀態檢查\n" +
+                             "3: 前端模組通信測試\n" +
+                             "4: 列出前端功能\n" +
+                             "exit: 離開\n\n> ")
+                
+                if choice == "1":
+                    controller.frontend_test_integration()
+                elif choice == "2":
+                    controller.frontend_test_status()
+                elif choice == "3":
+                    controller.frontend_test_communication()
+                elif choice == "4":
+                    controller.frontend_list_functions()
+                elif choice in ["exit", "e", "quit", "q", "back", "b"]:
+                    pass
+                else:
+                    print("\033[31m無效的選擇，請再試一次。\033[0m")
             case "ex":
                 debug_log(1, "額外功能測試")
                 print("<額外功能測試>\n")
@@ -560,6 +717,21 @@ def debug_interactive():
                 debug_log(1, "離開測試介面")
                 print("\n離開測試介面")
                 break
+            case "gui":
+                debug_log(1, "切換到圖形除錯介面")
+                print("\n🖥️ 正在啟動圖形除錯介面...")
+                try:
+                    from modules.ui_module.debug import launch_debug_interface
+                    print("圖形介面啟動中，請稍候...")
+                    launch_debug_interface(ui_module=None, prefer_gui=True, blocking=True)
+                except KeyboardInterrupt:
+                    print("\n⌨️ 圖形介面被用戶中斷")
+                except ImportError as e:
+                    print(f"❌ 無法載入圖形介面模組: {e}")
+                    print("💡 提示：請確認 PyQt5 已正確安裝")
+                except Exception as e:
+                    print(f"❌ 圖形介面啟動失敗: {e}")
+                print("\n返回命令行介面...")
             case _:
                 n_input = user_input.lower()
                 if "+" in n_input or n_input in ["pipeline", "all"]:

@@ -245,7 +245,9 @@ class BaseFrontendModule(BaseModule):
         """更新本地狀態"""
         with self._lock:
             self.local_state[key] = value
-            self.state_changed.emit(key, {key: value})
+            # 使用信號包裝器發送狀態變更信號
+            if hasattr(self.signals, 'state_changed'):
+                self.signals.state_changed.emit(key, {key: value})
     
     def get_local_state(self, key: str = None) -> Any:
         """獲取本地狀態"""

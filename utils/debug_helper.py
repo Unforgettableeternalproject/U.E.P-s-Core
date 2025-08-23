@@ -12,7 +12,7 @@ _logging_enabled = _logging_conf.get("enabled", True)
 
 if not _logging_enabled: print("[Logging] Logging is disabled in the configuration.")
 
-def debug_log(level: int, msg: str, exclusive: bool = False):
+def debug_log(level: int=1, msg: str="", exclusive: bool = False):
 
     if not _logging_enabled:
         return
@@ -23,7 +23,7 @@ def debug_log(level: int, msg: str, exclusive: bool = False):
         else:
             if level <= _debug_level: logger.debug(msg)
 
-def debug_log_e(level: int, msg: str):
+def debug_log_e(level: int=1, msg: str=""):
     debug_log(level, msg, True)
 
 def info_log(msg: str, level: str = "INFO"):

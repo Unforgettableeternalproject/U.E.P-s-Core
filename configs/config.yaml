@@ -1,12 +1,15 @@
 # Default config for general modules
 
 modules_enabled:
-  stt_module: true
-  nlp_module: true
-  mem_module: true
+  stt_module: false
+  nlp_module: false
+  mem_module: false
   llm_module: false
-  tts_module: true
+  tts_module: false
   sys_module: false
+  ui_module: true
+  ani_module: true
+  mov_module: true
 
 # 模組重構狀態追蹤 - 只有標記為已重構的模組會在正式環境中被 controller 載入
 modules_refactored:
@@ -16,6 +19,9 @@ modules_refactored:
   llm_module: false
   tts_module: false
   sys_module: false
+  ui_module: false
+  ani_module: false
+  mov_module: false
 
 logging:
   enabled: true

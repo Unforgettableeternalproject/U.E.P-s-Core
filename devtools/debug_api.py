@@ -37,7 +37,11 @@ modules = {
     "mem": safe_get_module("mem_module"),
     "llm": safe_get_module("llm_module"), 
     "tts": safe_get_module("tts_module"),
-    "sysmod": safe_get_module("sys_module")
+    "sysmod": safe_get_module("sys_module"),
+    # 前端模組
+    "ui": safe_get_module("ui_module"),
+    "ani": safe_get_module("ani_module"), 
+    "mov": safe_get_module("mov_module")
 }
 
 # 測試 STT 模組 - Phase 2 版本
@@ -1414,3 +1418,396 @@ def test_speaker_context_workflow():
 
 # 在模組載入時自動初始化工作上下文
 setup_working_context()
+
+# === 前端模組測試函數 ===
+
+def frontend_test_status():
+    """檢查前端模組狀態"""
+    info_log("[Controller] 檢查前端模組狀態")
+    
+    frontend_modules = ["ui", "ani", "mov"]
+    status = {}
+    
+    for module_name in frontend_modules:
+        module = modules.get(module_name)
+        if module is None:
+            status[module_name] = {"loaded": False, "error": "模組未載入"}
+            continue
+        
+        try:
+            # 檢查模組基本屬性
+            module_info = {
+                "loaded": True,
+                "module_id": getattr(module, 'module_id', 'Unknown'),
+                "module_type": getattr(module, 'module_type', 'Unknown'),
+                "config_loaded": hasattr(module, 'config') and module.config is not None,
+                "initialized": hasattr(module, 'is_initialized') and module.is_initialized,
+                "signals_available": hasattr(module, 'signals')
+            }
+            
+            # UI 模組特定檢查
+            if module_name == "ui":
+                module_info.update({
+                    "window_created": hasattr(module, 'desktop_pet_window'),
+                    "image_loaded": hasattr(module, 'default_image'),
+                    "event_handlers": len(getattr(module, 'event_handlers', {}))
+                })
+            
+            # ANI 模組特定檢查
+            elif module_name == "ani":
+                module_info.update({
+                    "animations_loaded": len(getattr(module, 'animations', {})),
+                    "current_animation": getattr(module, 'current_animation', None) is not None,
+                    "timer_active": hasattr(module, 'animation_timer')
+                })
+            
+            # MOV 模組特定檢查
+            elif module_name == "mov":
+                module_info.update({
+                    "physics_enabled": hasattr(module, 'position') and hasattr(module, 'velocity'),
+                    "behavior_type": str(getattr(module, 'behavior_type', 'Unknown')),
+                    "timer_active": hasattr(module, 'update_timer')
+                })
+            
+            status[module_name] = module_info
+            
+        except Exception as e:
+            status[module_name] = {"loaded": True, "error": f"檢查時發生錯誤: {str(e)}"}
+    
+    # 輸出狀態報告
+    print("\n=== 前端模組狀態報告 ===")
+    for module_name, info in status.items():
+        print(f"\n🎨 {module_name.upper()} 模組:")
+        if not info.get("loaded", False):
+            print(f"   ❌ {info.get('error', '未知錯誤')}")
+            continue
+        
+        if "error" in info:
+            print(f"   ⚠️  {info['error']}")
+            continue
+        
+        print(f"   ✅ 已載入 - ID: {info.get('module_id', 'Unknown')}")
+        print(f"   📋 配置已載入: {'是' if info.get('config_loaded', False) else '否'}")
+        print(f"   🚀 已初始化: {'是' if info.get('initialized', False) else '否'}")
+        print(f"   📡 信號系統: {'可用' if info.get('signals_available', False) else '不可用'}")
+        
+        # 模組特定信息
+        if module_name == "ui":
+            print(f"   🖼️  視窗創建: {'是' if info.get('window_created', False) else '否'}")
+            print(f"   🎭 圖像載入: {'是' if info.get('image_loaded', False) else '否'}")
+            print(f"   🎯 事件處理器: {info.get('event_handlers', 0)} 個")
+        
+        elif module_name == "ani":
+            print(f"   🎬 動畫載入: {info.get('animations_loaded', 0)} 個")
+            print(f"   ▶️  當前動畫: {'播放中' if info.get('current_animation', False) else '無'}")
+            print(f"   ⏱️  計時器: {'活躍' if info.get('timer_active', False) else '停止'}")
+        
+        elif module_name == "mov":
+            print(f"   🎯 物理系統: {'啟用' if info.get('physics_enabled', False) else '停用'}")
+            print(f"   🤖 行為類型: {info.get('behavior_type', 'Unknown')}")
+            print(f"   ⏱️  計時器: {'活躍' if info.get('timer_active', False) else '停止'}")
+    
+    return status
+
+def frontend_test_communication():
+    """測試前端模組間通信"""
+    info_log("[Controller] 測試前端模組間通信")
+    
+    ui_module = modules.get("ui")
+    ani_module = modules.get("ani") 
+    mov_module = modules.get("mov")
+    
+    if not all([ui_module, ani_module, mov_module]):
+        missing = []
+        if not ui_module: missing.append("UI")
+        if not ani_module: missing.append("ANI")
+        if not mov_module: missing.append("MOV")
+        print(f"❌ 無法進行通信測試，缺少模組: {', '.join(missing)}")
+        return False
+    
+    print("\n=== 前端模組通信測試 ===")
+    
+    # 測試 1: UI -> ANI 動畫請求
+    print("\n🎬 測試 UI -> ANI 動畫請求")
+    try:
+        ani_response = ani_module.handle_frontend_request({
+            "command": "play_animation",
+            "animation_type": "stand_idle",
+            "loop": True
+        })
+        print(f"   ANI 回應: {ani_response}")
+    except Exception as e:
+        print(f"   ❌ 錯誤: {e}")
+    
+    # 測試 2: UI -> MOV 移動請求
+    print("\n🎯 測試 UI -> MOV 移動請求")
+    try:
+        mov_response = mov_module.handle_frontend_request({
+            "command": "set_position", 
+            "x": 100,
+            "y": 100
+        })
+        print(f"   MOV 回應: {mov_response}")
+    except Exception as e:
+        print(f"   ❌ 錯誤: {e}")
+    
+    # 測試 3: MOV -> ANI 行為改變
+    print("\n🤖 測試 MOV -> ANI 行為同步")
+    try:
+        ani_response = ani_module.handle_frontend_request({
+            "command": "set_behavior_animation",
+            "behavior": "walking"
+        })
+        print(f"   ANI 回應: {ani_response}")
+    except Exception as e:
+        print(f"   ❌ 錯誤: {e}")
+    
+    print("\n✅ 前端模組通信測試完成")
+    return True
+
+def frontend_test_animations():
+    """測試動畫系統"""
+    info_log("[Controller] 測試動畫系統")
+    
+    ani_module = modules.get("ani")
+    if not ani_module:
+        print("❌ ANI 模組未載入")
+        return False
+    
+    print("\n=== 動畫系統測試 ===")
+    
+    # 列出可用動畫
+    try:
+        animations_response = ani_module.handle_frontend_request({
+            "command": "list_animations"
+        })
+        print(f"📋 可用動畫: {animations_response}")
+    except Exception as e:
+        print(f"❌ 獲取動畫列表失敗: {e}")
+        return False
+    
+    # 測試播放不同動畫
+    test_animations = ["stand_idle", "smile_idle", "walk_ani(left", "talk_ani"]
+    
+    for anim_name in test_animations:
+        print(f"\n🎬 測試動畫: {anim_name}")
+        try:
+            play_response = ani_module.handle_frontend_request({
+                "command": "play_animation",
+                "animation_type": anim_name,
+                "loop": False
+            })
+            print(f"   播放結果: {play_response}")
+            
+            # 等待一小段時間
+            time.sleep(1)
+            
+            stop_response = ani_module.handle_frontend_request({
+                "command": "stop_animation"
+            })
+            print(f"   停止結果: {stop_response}")
+            
+        except Exception as e:
+            print(f"   ❌ 錯誤: {e}")
+    
+    print("\n✅ 動畫系統測試完成")
+    return True
+
+def frontend_test_movement():
+    """測試移動系統"""
+    info_log("[Controller] 測試移動系統")
+    
+    mov_module = modules.get("mov")
+    if not mov_module:
+        print("❌ MOV 模組未載入")
+        return False
+    
+    print("\n=== 移動系統測試 ===")
+    
+    # 測試位置設定
+    print("\n📍 測試位置設定")
+    test_positions = [(100, 100), (200, 150), (300, 200)]
+    
+    for x, y in test_positions:
+        try:
+            response = mov_module.handle_frontend_request({
+                "command": "set_position",
+                "x": x,
+                "y": y
+            })
+            print(f"   設定位置 ({x}, {y}): {response}")
+        except Exception as e:
+            print(f"   ❌ 設定位置失敗: {e}")
+    
+    # 測試速度設定
+    print("\n🏃 測試速度設定")
+    test_velocities = [(5, 0), (0, 5), (-3, 2)]
+    
+    for vx, vy in test_velocities:
+        try:
+            response = mov_module.handle_frontend_request({
+                "command": "set_velocity",
+                "vx": vx,
+                "vy": vy
+            })
+            print(f"   設定速度 ({vx}, {vy}): {response}")
+        except Exception as e:
+            print(f"   ❌ 設定速度失敗: {e}")
+    
+    # 測試行為模式
+    print("\n🤖 測試行為模式")
+    test_behaviors = ["idle", "walking", "following", "wandering"]
+    
+    for behavior in test_behaviors:
+        try:
+            response = mov_module.handle_frontend_request({
+                "command": "set_behavior",
+                "behavior": behavior
+            })
+            print(f"   設定行為 {behavior}: {response}")
+        except Exception as e:
+            print(f"   ❌ 設定行為失敗: {e}")
+    
+    print("\n✅ 移動系統測試完成")
+    return True
+
+def frontend_test_ui_interactions():
+    """測試 UI 交互"""
+    info_log("[Controller] 測試 UI 交互")
+    
+    ui_module = modules.get("ui")
+    if not ui_module:
+        print("❌ UI 模組未載入")
+        return False
+    
+    print("\n=== UI 交互測試 ===")
+    
+    # 測試視窗操作
+    print("\n🖼️  測試視窗操作")
+    window_tests = [
+        {"command": "show_window"},
+        {"command": "hide_window"},
+        {"command": "show_window"},
+        {"command": "set_window_size", "width": 300, "height": 300},
+        {"command": "set_always_on_top", "enabled": True}
+    ]
+    
+    for test in window_tests:
+        try:
+            response = ui_module.handle_frontend_request(test)
+            print(f"   {test['command']}: {response}")
+        except Exception as e:
+            print(f"   ❌ {test['command']} 失敗: {e}")
+    
+    # 測試圖像操作
+    print("\n🎭 測試圖像操作")
+    image_tests = [
+        {"command": "set_image", "image_path": "resources/assets/static/default.png"},
+        {"command": "set_opacity", "opacity": 0.8},
+        {"command": "set_opacity", "opacity": 1.0}
+    ]
+    
+    for test in image_tests:
+        try:
+            response = ui_module.handle_frontend_request(test)
+            print(f"   {test['command']}: {response}")
+        except Exception as e:
+            print(f"   ❌ {test['command']} 失敗: {e}")
+    
+    print("\n✅ UI 交互測試完成")
+    return True
+
+def frontend_test_integration():
+    """前端模組整合測試"""
+    info_log("[Controller] 執行前端模組整合測試")
+    
+    print("\n🎨 === 前端模組整合測試 ===")
+    
+    # 檢查所有前端模組是否可用
+    status = frontend_test_status()
+    
+    # 檢查是否有模組載入失敗
+    failed_modules = [name for name, info in status.items() if not info.get("loaded", False)]
+    if failed_modules:
+        print(f"\n❌ 無法進行整合測試，以下模組載入失敗: {', '.join(failed_modules)}")
+        return False
+    
+    # 執行各項測試
+    test_results = {}
+    
+    # 1. 模組通信測試
+    print(f"\n{'='*50}")
+    test_results["communication"] = frontend_test_communication()
+    
+    # 2. 動畫系統測試
+    print(f"\n{'='*50}")
+    test_results["animations"] = frontend_test_animations()
+    
+    # 3. 移動系統測試  
+    print(f"\n{'='*50}")
+    test_results["movement"] = frontend_test_movement()
+    
+    # 4. UI 交互測試
+    print(f"\n{'='*50}")
+    test_results["ui_interactions"] = frontend_test_ui_interactions()
+    
+    # 輸出測試摘要
+    print(f"\n{'='*50}")
+    print("🎨 前端模組整合測試摘要")
+    print(f"{'='*50}")
+    
+    for test_name, result in test_results.items():
+        status_icon = "✅" if result else "❌"
+        test_display = {
+            "communication": "模組間通信",
+            "animations": "動畫系統",
+            "movement": "移動系統", 
+            "ui_interactions": "UI 交互"
+        }
+        print(f"{status_icon} {test_display.get(test_name, test_name)}: {'通過' if result else '失敗'}")
+    
+    # 計算總體結果
+    total_tests = len(test_results)
+    passed_tests = sum(test_results.values())
+    
+    print(f"\n📊 總計: {passed_tests}/{total_tests} 個測試通過")
+    
+    if passed_tests == total_tests:
+        print("🎉 所有前端模組整合測試通過！")
+        return True
+    else:
+        print("⚠️ 部分測試失敗，請檢查上述錯誤信息")
+        return False
+
+def frontend_list_functions():
+    """列出前端模組可用功能"""
+    print("\n=== 前端模組可用功能 ===")
+    
+    print("\n🎨 前端測試函數:")
+    print("  frontend_test_status()         - 檢查前端模組狀態")
+    print("  frontend_test_communication()  - 測試模組間通信")
+    print("  frontend_test_animations()     - 測試動畫系統")
+    print("  frontend_test_movement()       - 測試移動系統")
+    print("  frontend_test_ui_interactions() - 測試 UI 交互")
+    print("  frontend_test_integration()    - 完整整合測試")
+    print("  frontend_list_functions()      - 列出可用功能")
+    
+    print("\n🎭 UI 模組命令:")
+    print("  show_window, hide_window       - 顯示/隱藏視窗")
+    print("  set_window_size               - 設定視窗大小")
+    print("  set_always_on_top            - 設定視窗置頂")
+    print("  set_image                     - 設定顯示圖像")
+    print("  set_opacity                   - 設定透明度")
+    
+    print("\n🎬 ANI 模組命令:")
+    print("  list_animations               - 列出可用動畫")
+    print("  play_animation                - 播放動畫")
+    print("  stop_animation                - 停止動畫") 
+    print("  set_behavior_animation        - 設定行為動畫")
+    
+    print("\n🎯 MOV 模組命令:")
+    print("  set_position                  - 設定位置")
+    print("  set_velocity                  - 設定速度")
+    print("  set_behavior                  - 設定行為模式")
+    print("  get_position                  - 獲取當前位置")
+    print("  get_velocity                  - 獲取當前速度")

@@ -1,12 +1,13 @@
 # modules/ui_module/ui_module.py
 """
-UI 模組 - 主要的前端使用者介面控制器
+UI 模組 - 前端使用者介面中樞控制器
 
-基於 desktop_pet.py 重構，負責：
-- 主視窗管理和渲染
-- 使用者輸入事件處理  
-- 與 ANI 和 MOV 模組協調
-- 系統狀態的視覺回饋
+負責協調三個前端介面：
+1. Main Desktop Pet - UEP 桌寵 Overlay 應用程式
+2. User Access Widget - 可拖拽擴展的使用者介面
+3. Debug Interface - 開發用除錯介面
+
+UI 模組作為中樞，協調 ANI 和 MOV 模組，並管理所有前端交互
 """
 
 import os
@@ -14,6 +15,7 @@ import sys
 import time
 import threading
 from typing import Dict, Any, Optional, List
+from enum import Enum
 
 # 將 TestOverlayApplication 路徑加入以重用 desktop_pet 資源
 test_overlay_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), '..', 'TestOverlayApplication')
@@ -21,16 +23,14 @@ if os.path.exists(test_overlay_path):
     sys.path.insert(0, test_overlay_path)
 
 try:
-    from PyQt5.QtWidgets import QApplication, QWidget
-    from PyQt5.QtCore import Qt, QTimer, QPoint, QEvent, pyqtSignal
-    from PyQt5.QtGui import QPainter, QPixmap, QCursor
+    from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout, QPushButton
+    from PyQt5.QtCore import Qt, QPoint, QTimer, pyqtSignal
+    from PyQt5.QtGui import QPixmap, QPainter, QColor, QFont
     PYQT5_AVAILABLE = True
 except ImportError:
     PYQT5_AVAILABLE = False
     # 定義替代類別以避免錯誤
-    class QWidget: pass
     class QApplication: pass
-    def pyqtSignal(*args): return None
 
 from core.frontend_base import BaseFrontendModule, FrontendModuleType, UIEventType
 from core.working_context import ContextType
@@ -38,36 +38,43 @@ from core.state_manager import UEPState
 from utils.debug_helper import debug_log, info_log, error_log
 
 
+class UIInterfaceType(Enum):
+    """UI 介面類型"""
+    MAIN_DESKTOP_PET = "main_desktop_pet"       # 主桌寵應用程式
+    USER_ACCESS_WIDGET = "user_access_widget"   # 使用者存取介面
+    DEBUG_INTERFACE = "debug_interface"         # 除錯介面
+
+
 class UIModule(BaseFrontendModule):
-    """UI 模組 - 桌寵主視窗控制器"""
+    """UI 模組 - 前端介面中樞控制器"""
     
     def __init__(self, config: dict = None):
         super().__init__(FrontendModuleType.UI)
         
         self.config = config or {}
+        self.is_initialized = False
         
-        # 視窗設置
-        self.SIZE = self.config.get('window_size', 250)
-        self.window = None
+        # Qt 應用程式實例
         self.app = None
         
-        # 圖像資源
-        self.static_image = None
-        self.current_image = None
+        # 三個前端介面實例
+        self.interfaces = {
+            UIInterfaceType.MAIN_DESKTOP_PET: None,
+            UIInterfaceType.USER_ACCESS_WIDGET: None,
+            UIInterfaceType.DEBUG_INTERFACE: None
+        }
         
-        # 視窗狀態
-        self.window_position = QPoint(100, 100)
-        self.is_dragging = False
-        self.drag_position = QPoint()
-        
-        # 螢幕資訊
-        self.screen_rect = None
+        # 活躍介面追蹤
+        self.active_interfaces = set()
         
         # 與其他前端模組的連接
         self.ani_module = None
         self.mov_module = None
         
-        info_log(f"[{self.module_id}] UI 模組初始化")
+        # 全局系統設定
+        self.system_settings = {}
+        
+        info_log(f"[{self.module_id}] UI 中樞模組初始化")
     
     def initialize_frontend(self) -> bool:
         """初始化前端 UI 組件"""
@@ -82,32 +89,141 @@ class UIModule(BaseFrontendModule):
             else:
                 self.app = QApplication.instance()
             
-            # 創建主視窗
-            self.window = DesktopPetWindow(self)
-            
-            # 載入圖像資源
-            if not self._load_images():
-                error_log(f"[{self.module_id}] 載入圖像資源失敗")
+            # 初始化三個介面
+            if not self._initialize_interfaces():
+                error_log(f"[{self.module_id}] 初始化介面失敗")
                 return False
-            
-            # 設置螢幕資訊
-            self.screen_rect = self.app.primaryScreen().availableGeometry()
             
             # 註冊事件處理器
             self._register_event_handlers()
             
-            # 連接信號使用信號包裝器
-            if hasattr(self.signals, 'animation_request'):
-                self.signals.animation_request.connect(self._handle_animation_request)
-            if hasattr(self.signals, 'movement_request'):
-                self.signals.movement_request.connect(self._handle_movement_request)
-            
+            # 連接信號
+            self._connect_signals()
+
+            self.is_initialized = True
             info_log(f"[{self.module_id}] UI 前端初始化成功")
             return True
             
         except Exception as e:
             error_log(f"[{self.module_id}] UI 前端初始化失敗: {e}")
             return False
+    
+    def _initialize_interfaces(self) -> bool:
+        """初始化所有介面"""
+        try:
+            # 動態導入介面類別
+            from .main.desktop_pet_app import DesktopPetApp
+            from .user.access_widget import UserAccessWidget
+            from .debug.debug_interface import DebugInterface
+            
+            # 創建介面實例
+            self.interfaces[UIInterfaceType.MAIN_DESKTOP_PET] = DesktopPetApp(self)
+            self.interfaces[UIInterfaceType.USER_ACCESS_WIDGET] = UserAccessWidget(self)
+            self.interfaces[UIInterfaceType.DEBUG_INTERFACE] = DebugInterface(self)
+            
+            info_log(f"[{self.module_id}] 所有介面初始化完成")
+            return True
+            
+        except ImportError as e:
+            error_log(f"[{self.module_id}] 導入介面類別失敗: {e}")
+            return False
+        except Exception as e:
+            error_log(f"[{self.module_id}] 初始化介面異常: {e}")
+            return False
+    
+    def _register_event_handlers(self):
+        """註冊事件處理器"""
+        # 註冊 ANI 模組事件
+        self.register_event_handler(UIEventType.ANIMATION_COMPLETE, self._on_animation_complete)
+        
+        # 註冊 MOV 模組事件  
+        self.register_event_handler(UIEventType.WINDOW_MOVE, self._on_window_move)
+        
+        # 註冊滑鼠事件
+        self.register_event_handler(UIEventType.MOUSE_CLICK, self._on_mouse_click)
+        self.register_event_handler(UIEventType.MOUSE_HOVER, self._on_mouse_hover)
+        self.register_event_handler(UIEventType.DRAG_START, self._on_drag_start)
+        self.register_event_handler(UIEventType.DRAG_END, self._on_drag_end)
+        
+        # 註冊檔案事件
+        self.register_event_handler(UIEventType.FILE_DROP, self._on_file_drop)
+    
+    def _connect_signals(self):
+        """連接信號"""
+    
+    # ========== 介面管理方法 ==========
+    
+    def show_interface(self, interface_type: UIInterfaceType) -> dict:
+        """顯示指定介面"""
+        try:
+            interface = self.interfaces.get(interface_type)
+            if not interface:
+                return {"error": f"介面 {interface_type.value} 不存在"}
+            
+            interface.show()
+            self.active_interfaces.add(interface_type)
+            
+            info_log(f"[{self.module_id}] 顯示介面: {interface_type.value}")
+            return {"success": True, "interface": interface_type.value}
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def hide_interface(self, interface_type: UIInterfaceType) -> dict:
+        """隱藏指定介面"""
+        try:
+            interface = self.interfaces.get(interface_type)
+            if not interface:
+                return {"error": f"介面 {interface_type.value} 不存在"}
+            
+            interface.hide()
+            self.active_interfaces.discard(interface_type)
+            
+            info_log(f"[{self.module_id}] 隱藏介面: {interface_type.value}")
+            return {"success": True, "interface": interface_type.value}
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def get_interface_status(self) -> dict:
+        """獲取所有介面狀態"""
+        status = {}
+        for interface_type, interface in self.interfaces.items():
+            if interface:
+                status[interface_type.value] = {
+                    "exists": True,
+                    "active": interface_type in self.active_interfaces,
+                    "visible": hasattr(interface, 'isVisible') and interface.isVisible()
+                }
+            else:
+                status[interface_type.value] = {
+                    "exists": False,
+                    "active": False,
+                    "visible": False
+                }
+        return status
+    
+    def broadcast_to_interfaces(self, message_type: str, data: dict):
+        """廣播訊息到所有活躍介面"""
+        for interface_type in self.active_interfaces:
+            interface = self.interfaces.get(interface_type)
+            if interface and hasattr(interface, 'receive_broadcast'):
+                try:
+                    interface.receive_broadcast(message_type, data)
+                except Exception as e:
+                    error_log(f"[{self.module_id}] 廣播到 {interface_type.value} 失敗: {e}")
+    
+    def update_system_settings(self, settings: dict):
+        """更新全局系統設定"""
+        self.system_settings.update(settings)
+        
+        # 廣播設定變更到所有介面
+        self.broadcast_to_interfaces("system_settings_changed", {
+            "settings": settings,
+            "timestamp": time.time()
+        })
+        
+        info_log(f"[{self.module_id}] 系統設定已更新: {list(settings.keys())}")
+    
+    # ========== 前端請求處理 ==========
     
     def _load_images(self) -> bool:
         """載入圖像資源"""
@@ -162,16 +278,44 @@ class UIModule(BaseFrontendModule):
         try:
             command = data.get('command')
             
-            if command == 'show_window':
-                return self._show_window(data)
-            elif command == 'hide_window':
-                return self._hide_window(data)
-            elif command == 'move_window':
-                return self._move_window(data)
-            elif command == 'update_image':
-                return self._update_image(data)
-            elif command == 'get_window_info':
-                return self._get_window_info()
+            # 介面管理命令
+            if command == 'show_interface':
+                interface_type = data.get('interface')
+                if interface_type:
+                    return self.show_interface(UIInterfaceType(interface_type))
+                return {"error": "需要指定 interface 參數"}
+            
+            elif command == 'hide_interface':
+                interface_type = data.get('interface')
+                if interface_type:
+                    return self.hide_interface(UIInterfaceType(interface_type))
+                return {"error": "需要指定 interface 參數"}
+            
+            elif command == 'get_interface_status':
+                return self.get_interface_status()
+            
+            elif command == 'update_system_settings':
+                settings = data.get('settings', {})
+                self.update_system_settings(settings)
+                return {"success": True, "updated_settings": list(settings.keys())}
+            
+            # 向後相容的舊命令 (主要針對 main desktop pet)
+            elif command in ['show_window', 'hide_window']:
+                interface_type = UIInterfaceType.MAIN_DESKTOP_PET
+                interface = self.interfaces.get(interface_type)
+                if interface and hasattr(interface, 'handle_request'):
+                    return interface.handle_request(data)
+                return {"error": "主桌寵介面不可用"}
+            
+            elif command in ['move_window', 'update_image', 'get_window_info', 
+                           'set_window_size', 'set_always_on_top', 'set_image', 'set_opacity']:
+                # 轉發到主桌寵介面
+                interface_type = UIInterfaceType.MAIN_DESKTOP_PET
+                interface = self.interfaces.get(interface_type)
+                if interface and hasattr(interface, 'handle_request'):
+                    return interface.handle_request(data)
+                return {"error": "主桌寵介面不可用"}
+            
             else:
                 return {"error": f"未知命令: {command}"}
                 
@@ -245,6 +389,88 @@ class UIModule(BaseFrontendModule):
         except Exception as e:
             return {"error": str(e)}
     
+    def _set_window_size(self, data: dict) -> dict:
+        """設定視窗大小"""
+        try:
+            width = data.get('width')
+            height = data.get('height')
+            
+            if not all([width, height]):
+                return {"error": "需要指定 width 和 height"}
+            
+            if self.window:
+                self.window.resize(width, height)
+                self.window_size = (width, height)
+                self.update_local_state('window_size', {'width': width, 'height': height})
+                return {"success": True, "size": {"width": width, "height": height}}
+            return {"error": "視窗未初始化"}
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def _set_always_on_top(self, data: dict) -> dict:
+        """設定視窗置頂"""
+        try:
+            enabled = data.get('enabled', True)
+            
+            if self.window:
+                if enabled:
+                    self.window.setWindowFlags(self.window.windowFlags() | Qt.WindowStaysOnTopHint)
+                else:
+                    self.window.setWindowFlags(self.window.windowFlags() & ~Qt.WindowStaysOnTopHint)
+                
+                self.window.show()  # 需要重新顯示以應用標誌
+                self.always_on_top = enabled
+                self.update_local_state('always_on_top', enabled)
+                return {"success": True, "always_on_top": enabled}
+            return {"error": "視窗未初始化"}
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def _set_image(self, data: dict) -> dict:
+        """設定顯示圖像"""
+        try:
+            image_path = data.get('image_path')
+            if not image_path:
+                return {"error": "需要指定 image_path"}
+            
+            if not os.path.exists(image_path):
+                return {"error": f"圖像檔案不存在: {image_path}"}
+            
+            if PYQT5_AVAILABLE:
+                self.current_image = QPixmap(image_path)
+                if self.current_image.isNull():
+                    return {"error": "無法載入圖像"}
+                
+                if self.window:
+                    self.window.update()
+                
+                self.update_local_state('current_image', image_path)
+                return {"success": True, "image": image_path}
+            else:
+                return {"error": "PyQt5 不可用"}
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def _set_opacity(self, data: dict) -> dict:
+        """設定視窗透明度"""
+        try:
+            opacity = data.get('opacity')
+            if opacity is None:
+                return {"error": "需要指定 opacity (0.0-1.0)"}
+            
+            opacity = float(opacity)
+            if not (0.0 <= opacity <= 1.0):
+                return {"error": "透明度必須在 0.0 到 1.0 之間"}
+            
+            if self.window:
+                self.window.setWindowOpacity(opacity)
+                self.window_opacity = opacity
+                self.update_local_state('window_opacity', opacity)
+                return {"success": True, "opacity": opacity}
+            return {"error": "視窗未初始化"}
+        except Exception as e:
+            return {"error": str(e)}
+    
     def connect_frontend_modules(self, ani_module, mov_module):
         """連接其他前端模組"""
         self.ani_module = ani_module
@@ -263,6 +489,15 @@ class UIModule(BaseFrontendModule):
                 self.signals.movement_request.connect(mov_module.handle_movement_request)
             if hasattr(mov_module.signals, 'position_changed'):
                 mov_module.signals.position_changed.connect(self._on_position_changed)
+            
+            # 使用新的回調機制連接MOV和ANI模組的動畫觸發
+            if hasattr(mov_module, 'add_animation_callback') and ani_module:
+                # 定義處理動畫請求的回調
+                def handle_animation_trigger(animation_type, params):
+                    ani_module.play_animation(animation_type, params)
+                
+                # 註冊回調到MOV模組
+                mov_module.add_animation_callback(handle_animation_trigger)
         
         info_log(f"[{self.module_id}] 前端模組連接完成")
     
@@ -367,83 +602,3 @@ class UIModule(BaseFrontendModule):
         
         super().shutdown()
         info_log(f"[{self.module_id}] UI 模組已關閉")
-
-
-class DesktopPetWindow(QWidget):
-    """桌寵視窗 - 簡化版的桌寵窗口"""
-    
-    def __init__(self, ui_module: UIModule):
-        super().__init__(None)  # 不設置父對象，避免類型轉換問題
-        self.ui_module = ui_module
-        self.setup_window()
-    
-    def setup_window(self):
-        """設置視窗"""
-        self.setFixedSize(self.ui_module.SIZE, self.ui_module.SIZE)
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setAcceptDrops(True)
-        self.setMouseTracking(True)
-        self.setAttribute(Qt.WA_Hover, True)
-    
-    def paintEvent(self, event):
-        """繪製事件"""
-        if self.ui_module.current_image and not self.ui_module.current_image.isNull():
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.Antialiasing)
-            
-            # 繪製圖像
-            painter.drawPixmap(0, 0, self.ui_module.current_image)
-    
-    def mousePressEvent(self, event):
-        """滑鼠按下事件"""
-        if event.button() == Qt.LeftButton:
-            self.ui_module.emit_event(UIEventType.MOUSE_CLICK, {
-                'button': 'left',
-                'position': {'x': event.x(), 'y': event.y()}
-            })
-            
-            self.ui_module.emit_event(UIEventType.DRAG_START, {
-                'start_position': {'x': event.globalX(), 'y': event.globalY()}
-            })
-    
-    def mouseMoveEvent(self, event):
-        """滑鼠移動事件"""
-        if self.ui_module.is_dragging and (event.buttons() & Qt.LeftButton):
-            # 發送到 MOV 模組處理 (改為直接調用移動請求方法)
-            self.ui_module.request_movement("drag_move", {
-                'position': {'x': event.globalX(), 'y': event.globalY()}
-            })
-    
-    def mouseReleaseEvent(self, event):
-        """滑鼠釋放事件"""
-        if event.button() == Qt.LeftButton:
-            self.ui_module.emit_event(UIEventType.DRAG_END, {
-                'end_position': {'x': event.globalX(), 'y': event.globalY()}
-            })
-    
-    def enterEvent(self, event):
-        """滑鼠進入事件"""
-        self.ui_module.emit_event(UIEventType.MOUSE_HOVER, {
-            'type': 'enter'
-        })
-    
-    def leaveEvent(self, event):
-        """滑鼠離開事件"""
-        self.ui_module.emit_event(UIEventType.MOUSE_HOVER, {
-            'type': 'leave'
-        })
-    
-    def dragEnterEvent(self, event):
-        """拖拽進入事件"""
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-    
-    def dropEvent(self, event):
-        """檔案拖放事件"""
-        urls = event.mimeData().urls()
-        files = [url.toLocalFile() for url in urls if url.toLocalFile()]
-        
-        self.ui_module.emit_event(UIEventType.FILE_DROP, {
-            'files': files
-        })

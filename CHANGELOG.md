@@ -862,3 +862,15 @@
 
 ---
 
+### Implemented a debug interface (finally), but functions yet to integrate. 08/23
+
+> Date: Sat, 23 Aug 2025 15:28:42 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/front_end_integration`
+
+> Commit: `e0a69041e145bbb33a16aa8c6e145b58d00a75df`
+
+---
+

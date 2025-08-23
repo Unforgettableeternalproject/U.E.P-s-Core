@@ -16,7 +16,7 @@ import time
 import math
 import random
 import threading
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple, Callable
 from enum import Enum, auto
 from dataclasses import dataclass
 
@@ -125,11 +125,15 @@ class MOVModule(BaseFrontendModule):
         super().__init__(FrontendModuleType.MOV)
         
         self.config = config or {}
+        self.is_initialized = False
         
         # 物理狀態
         self.position = Position(100, 100)
         self.velocity = Velocity(0, 0)
         self.target_velocity = Velocity(0, 0)
+        
+        # 替代PyQt信號的事件回調系統
+        self._animation_callbacks = []
         
         # 移動參數
         self.SIZE = self.config.get('window_size', 250)
@@ -171,6 +175,32 @@ class MOVModule(BaseFrontendModule):
         
         info_log(f"[{self.module_id}] MOV 模組初始化")
     
+    # ==== 信號替代方案 ====
+    
+    def add_animation_callback(self, callback: Callable[[str, dict], None]):
+        """註冊動畫回調函數，替代 animation_trigger 信號"""
+        if callback not in self._animation_callbacks:
+            self._animation_callbacks.append(callback)
+            debug_log(1, f"[{self.module_id}] 新增動畫回調函數: {callback.__qualname__}")
+    
+    def remove_animation_callback(self, callback: Callable[[str, dict], None]):
+        """移除動畫回調函數"""
+        if callback in self._animation_callbacks:
+            self._animation_callbacks.remove(callback)
+            debug_log(1, f"[{self.module_id}] 移除動畫回調函數: {callback.__qualname__}")
+    
+    def trigger_animation(self, animation_type: str, params: dict = None):
+        """觸發動畫，替代 animation_trigger.emit 調用"""
+        params = params or {}
+        debug_log(2, f"[{self.module_id}] 觸發動畫: {animation_type}")
+        
+        # 呼叫所有註冊的回調函數
+        for callback in self._animation_callbacks:
+            try:
+                callback(animation_type, params)
+            except Exception as e:
+                error_log(f"[{self.module_id}] 執行動畫回調時發生錯誤: {e}")
+    
     def initialize_frontend(self) -> bool:
         """初始化移動前端功能"""
         try:
@@ -196,7 +226,7 @@ class MOVModule(BaseFrontendModule):
             
             # 初始化位置
             self._initialize_position()
-            
+            self.is_initialized = True
             info_log(f"[{self.module_id}] MOV 前端初始化成功")
             return True
             
@@ -451,7 +481,7 @@ class MOVModule(BaseFrontendModule):
         
         # 觸發行走動畫
         animation_type = "walk_right" if self.facing_direction == 1 else "walk_left"
-        self.animation_trigger.emit(animation_type, {})
+        self.trigger_animation(animation_type, {})
     
     def _start_floating(self):
         """開始浮動"""
@@ -465,7 +495,7 @@ class MOVModule(BaseFrontendModule):
         self.target_velocity.y = speed * math.sin(angle)
         
         # 觸發浮動動畫
-        self.animation_trigger.emit("static", {})
+        self.trigger_animation("static", {})
     
     def _execute_current_behavior(self):
         """執行當前行為"""
@@ -595,7 +625,7 @@ class MOVModule(BaseFrontendModule):
         info_log(f"[{self.module_id}] 處理檔案拖放: {len(files)} 個檔案")
         
         # 觸發特殊動畫或行為
-        self.animation_trigger.emit("turn_head", {})
+        self.trigger_animation("turn_head", {})
         
         # 更新上下文
         self.update_context(ContextType.CROSS_MODULE_DATA, {

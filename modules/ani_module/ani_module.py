@@ -107,6 +107,7 @@ class ANIModule(BaseFrontendModule):
         super().__init__(FrontendModuleType.ANI)
         
         self.config = config or {}
+        self.is_initialized = False
         
         # 動畫資源
         self.animations = {}  # 動畫序列字典
@@ -144,6 +145,8 @@ class ANIModule(BaseFrontendModule):
             
             # 註冊事件處理器
             self._register_animation_handlers()
+
+            self.is_initialized = True
             
             info_log(f"[{self.module_id}] ANI 前端初始化成功")
             return True
@@ -292,6 +295,8 @@ class ANIModule(BaseFrontendModule):
                 return self._get_current_animation_info()
             elif command == 'list_animations':
                 return self._list_available_animations()
+            elif command == 'set_behavior_animation':
+                return self._set_behavior_animation(data)
             else:
                 return {"error": f"未知動畫命令: {command}"}
                 
@@ -384,6 +389,63 @@ class ANIModule(BaseFrontendModule):
             "animations": list(self.animations.keys()),
             "count": len(self.animations)
         }
+    
+    def _set_behavior_animation(self, data: dict) -> dict:
+        """根據行為設置相應的動畫"""
+        try:
+            behavior = data.get('behavior')
+            if not behavior:
+                return {"error": "未指定行為類型"}
+            
+            # 行為與動畫的映射
+            behavior_animation_mapping = {
+                "idle": "stand_idle",
+                "walking": "walk_ani(left",  # 可以根據方向選擇左或右
+                "following": "walk_ani(left",
+                "wandering": "walk_ani(left",
+                "talking": "talk_ani",
+                "happy": "smile_idle",
+                "excited": "laugh",
+                "curious": "curious_idle",
+                "angry": "angry_idle"
+            }
+            
+            # 獲取對應的動畫
+            animation_type = behavior_animation_mapping.get(behavior)
+            if not animation_type:
+                # 如果沒有映射，使用默認動畫
+                animation_type = "stand_idle"
+            
+            # 檢查動畫是否存在
+            if animation_type not in self.animations:
+                # 如果指定的動畫不存在，嘗試使用備選動畫
+                fallback_animations = ["stand_idle", "smile_idle"]
+                for fallback in fallback_animations:
+                    if fallback in self.animations:
+                        animation_type = fallback
+                        break
+                else:
+                    return {"error": f"無法找到適合行為 '{behavior}' 的動畫"}
+            
+            # 播放動畫
+            play_result = self._play_animation({
+                "animation_type": animation_type,
+                "loop": True  # 行為動畫通常需要循環
+            })
+            
+            if play_result.get("success"):
+                info_log(f"[{self.module_id}] 根據行為 '{behavior}' 設置動畫: {animation_type}")
+                return {
+                    "success": True,
+                    "behavior": behavior,
+                    "animation": animation_type
+                }
+            else:
+                return play_result
+                
+        except Exception as e:
+            error_log(f"[{self.module_id}] 設置行為動畫失敗: {e}")
+            return {"error": str(e)}
     
     def _update_animation(self):
         """更新動畫幀"""

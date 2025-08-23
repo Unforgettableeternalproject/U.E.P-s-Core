@@ -109,26 +109,42 @@ class UIModule(BaseFrontendModule):
             return False
     
     def _initialize_interfaces(self) -> bool:
-        """初始化所有介面"""
+        """初始化所有介面 - 只準備實例而不顯示"""
         try:
+            # 檢查運行環境
+            from configs.config_loader import load_config
+            config = load_config()
+            debug_mode = config.get("debug", {}).get("enabled", False)
+            
             # 動態導入介面類別
-            from .main.desktop_pet_app import DesktopPetApp
-            from .user.access_widget import UserAccessWidget
-            from .debug.debug_interface import DebugInterface
+            try:
+                from .main.desktop_pet_app import DesktopPetApp
+                self.interfaces[UIInterfaceType.MAIN_DESKTOP_PET] = DesktopPetApp(self)
+                info_log(f"[{self.module_id}] 主桌面寵物介面已準備")
+            except ImportError as e:
+                error_log(f"[{self.module_id}] 無法導入主桌面寵物介面: {e}")
             
-            # 創建介面實例
-            self.interfaces[UIInterfaceType.MAIN_DESKTOP_PET] = DesktopPetApp(self)
-            self.interfaces[UIInterfaceType.USER_ACCESS_WIDGET] = UserAccessWidget(self)
-            self.interfaces[UIInterfaceType.DEBUG_INTERFACE] = DebugInterface(self)
+            try:
+                from .user.access_widget import UserAccessWidget
+                self.interfaces[UIInterfaceType.USER_ACCESS_WIDGET] = UserAccessWidget(self)
+                info_log(f"[{self.module_id}] 使用者存取介面已準備")
+            except ImportError as e:
+                error_log(f"[{self.module_id}] 無法導入使用者存取介面: {e}")
             
-            info_log(f"[{self.module_id}] 所有介面初始化完成")
+            # 調試界面只在debug模式下加載以避免資源浪費
+            if debug_mode:
+                try:
+                    from .debug.debug_interface import DebugInterface
+                    self.interfaces[UIInterfaceType.DEBUG_INTERFACE] = DebugInterface(self)
+                    info_log(f"[{self.module_id}] 除錯介面已準備")
+                except ImportError as e:
+                    error_log(f"[{self.module_id}] 無法導入除錯介面: {e}")
+            
+            info_log(f"[{self.module_id}] 介面準備完成 - 等待系統初始化器顯示")
             return True
             
-        except ImportError as e:
-            error_log(f"[{self.module_id}] 導入介面類別失敗: {e}")
-            return False
         except Exception as e:
-            error_log(f"[{self.module_id}] 初始化介面異常: {e}")
+            error_log(f"[{self.module_id}] 準備介面異常: {e}")
             return False
     
     def _register_event_handlers(self):

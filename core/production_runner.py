@@ -23,13 +23,23 @@ def run_production_mode():
             error_log("❌ 系統初始化失敗")
             return False
             
-        # 2. 啟動主循環
+        # 2. 初始化PyQt應用
+        try:
+            from PyQt5.QtWidgets import QApplication
+            if not QApplication.instance():
+                # 建立Qt應用實例 (如需要)
+                app = QApplication([])
+                info_log("✅ PyQt應用程式實例已創建")
+        except ImportError:
+            error_log("⚠️ PyQt5未安裝，可能影響UI功能")
+            
+        # 3. 啟動主循環
         info_log("🔄 啟動系統主循環...")
         if not system_loop.start():
             error_log("❌ 系統主循環啟動失敗")
             return False
-        
-        # 3. 保持主線程運行，等待用戶中斷
+            
+        # 4. 保持主線程運行，等待用戶中斷
         info_log("🎯 UEP 系統正在運行，按 Ctrl+C 退出...")
         try:
             # 等待系統循環線程結束
@@ -61,9 +71,24 @@ def shutdown_production_mode():
         if hasattr(system_loop, 'stop'):
             system_loop.stop()
             
+        # 關閉統一控制器 (這會關閉所有模組，包含UI)
+        from core.unified_controller import unified_controller
+        if hasattr(unified_controller, 'shutdown'):
+            unified_controller.shutdown()
+            
         # 關閉系統初始化器
         if hasattr(system_initializer, 'shutdown'):
             system_initializer.shutdown()
+            
+        # 特別處理PyQt應用程式實例
+        try:
+            from PyQt5.QtWidgets import QApplication
+            app = QApplication.instance()
+            if app:
+                info_log("🖥️ 正在退出PyQt應用程式...")
+                app.quit()
+        except ImportError:
+            pass
             
         info_log("✅ 生產環境已安全關閉")
         

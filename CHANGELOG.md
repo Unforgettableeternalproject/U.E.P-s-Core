@@ -874,3 +874,15 @@
 
 ---
 
+### Focusing on debug UI, currently with many issues. 08/23
+
+> Date: Sat, 23 Aug 2025 20:50:48 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/front_end_integration`
+
+> Commit: `e63f0c1c7e72af404d2c2a72cf16e4bb5bf77380`
+
+---
+

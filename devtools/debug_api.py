@@ -11,6 +11,9 @@ import asyncio
 config = load_config()
 enabled = config.get("modules_enabled", {})
 
+# 載入模式控制：True=預先載入所有模組(舊版終端), False=按需載入(GUI模式)
+PRELOAD_MODULES = None  # 預設為 None，等待明確設定
+
 def safe_get_module(name):
     if not enabled.get(name, False):
         # print(f"[Controller] [X] 模組 '{name}' 未啟用，請檢查配置") # Ignored
@@ -31,18 +34,78 @@ def safe_get_module(name):
         error_log(f"[Controller] [X] 無法載入模組 '{name}': {e}")
         return None
 
-modules = {
-    "stt": safe_get_module("stt_module"),
-    "nlp": safe_get_module("nlp_module"),
-    "mem": safe_get_module("mem_module"),
-    "llm": safe_get_module("llm_module"), 
-    "tts": safe_get_module("tts_module"),
-    "sysmod": safe_get_module("sys_module"),
-    # 前端模組
-    "ui": safe_get_module("ui_module"),
-    "ani": safe_get_module("ani_module"), 
-    "mov": safe_get_module("mov_module")
-}
+# 模組字典 - 延遲初始化
+modules = {}
+
+def _initialize_modules():
+    """根據當前載入模式初始化模組字典"""
+    global modules
+    
+    if PRELOAD_MODULES is True:
+        # 舊版模式：預先載入所有模組
+        info_log("[Controller] 初始化：預先載入所有模組")
+        modules = {
+            "stt": safe_get_module("stt_module"),
+            "nlp": safe_get_module("nlp_module"),
+            "mem": safe_get_module("mem_module"),
+            "llm": safe_get_module("llm_module"), 
+            "tts": safe_get_module("tts_module"),
+            "sysmod": safe_get_module("sys_module"),
+            # 前端模組
+            "ui": safe_get_module("ui_module"),
+            "ani": safe_get_module("ani_module"), 
+            "mov": safe_get_module("mov_module")
+        }
+    else:
+        # GUI模式：延遲載入
+        info_log("[Controller] 初始化：按需載入模式")
+        modules = {
+            "stt": None,
+            "nlp": None,
+            "mem": None,
+            "llm": None,
+            "tts": None,
+            "sysmod": None,
+            # 前端模組
+            "ui": None,
+            "ani": None,
+            "mov": None
+        }
+
+def set_loading_mode(preload=True):
+    """設定模組載入模式
+    Args:
+        preload (bool): True=預先載入所有模組, False=按需載入
+    """
+    global PRELOAD_MODULES
+    PRELOAD_MODULES = preload
+    
+    info_log(f"[Controller] 設定載入模式：{'預先載入' if preload else '按需載入'}")
+    
+    # 重新初始化模組字典
+    _initialize_modules()
+
+def get_or_load_module(name):
+    """獲取或載入模組 - 支援兩種模式
+    在預先載入模式下直接返回已載入的模組
+    在按需載入模式下動態載入模組
+    """
+    # 如果尚未初始化，先使用預設的按需載入模式
+    if PRELOAD_MODULES is None:
+        info_log("[Controller] 警告：模組載入模式尚未設定，使用預設按需載入模式")
+        set_loading_mode(preload=False)
+    
+    # 檢查模組字典是否已初始化
+    if name not in modules:
+        info_log(f"[Controller] 警告：模組字典未正確初始化，重新初始化")
+        _initialize_modules()
+    
+    if PRELOAD_MODULES:
+        return modules[name]
+    else:
+        if modules[name] is None:
+            modules[name] = safe_get_module(f"{name}_module")
+        return modules[name]
 
 # 測試 STT 模組 - Phase 2 版本
 
@@ -101,7 +164,7 @@ def on_stt_result(result, continuous_mode=False):
 
 def stt_test_single(enable_speaker_id=True, language="en-US"):
     """單次 STT 測試 - 手動模式"""
-    stt = modules["stt"]
+    stt = get_or_load_module("stt")
 
     if stt is None:
         error_log("[Controller] ❌ 無法載入 STT 模組")
@@ -124,7 +187,7 @@ def stt_test_single(enable_speaker_id=True, language="en-US"):
 
 def stt_test_continuous_listening(duration=30):
     """持續背景監聽測試 - 直接在控制台輸出識別結果"""
-    stt = modules["stt"]
+    stt = get_or_load_module("stt")
 
     if stt is None:
         error_log("[Controller] ❌ 無法載入 STT 模組")
@@ -213,7 +276,7 @@ def stt_test_continuous_listening(duration=30):
 
 def stt_get_stats():
     """獲取 STT 統計信息"""
-    stt = modules["stt"]
+    stt = get_or_load_module("stt")
 
     if stt is None:
         error_log("[Controller] ❌ 無法載入 STT 模組")
@@ -251,7 +314,7 @@ def stt_get_stats():
 
 def stt_speaker_list():
     """列出所有已識別的說話人"""
-    stt = modules["stt"]
+    stt = get_or_load_module("stt")
 
     if stt is None:
         error_log("[Controller] ❌ 無法載入 STT 模組")
@@ -273,7 +336,7 @@ def stt_speaker_list():
 
 def stt_speaker_rename(old_id: str, new_id: str):
     """重新命名說話人"""
-    stt = modules["stt"]
+    stt = get_or_load_module("stt")
 
     if stt is None:
         error_log("[Controller] ❌ 無法載入 STT 模組")
@@ -291,7 +354,7 @@ def stt_speaker_rename(old_id: str, new_id: str):
 
 def stt_speaker_delete(speaker_id: str):
     """刪除指定說話人"""
-    stt = modules["stt"]
+    stt = get_or_load_module("stt")
 
     if stt is None:
         error_log("[Controller] ❌ 無法載入 STT 模組")
@@ -309,7 +372,7 @@ def stt_speaker_delete(speaker_id: str):
 
 def stt_speaker_clear_all():
     """清空所有說話人數據"""
-    stt = modules["stt"]
+    stt = get_or_load_module("stt")
 
     if stt is None:
         error_log("[Controller] ❌ 無法載入 STT 模組")
@@ -332,7 +395,7 @@ def stt_speaker_clear_all():
 
 def stt_speaker_backup():
     """備份說話人數據"""
-    stt = modules["stt"]
+    stt = get_or_load_module("stt")
 
     if stt is None:
         error_log("[Controller] ❌ 無法載入 STT 模組")
@@ -354,7 +417,7 @@ def stt_speaker_backup():
 
 def stt_speaker_restore(backup_path: str = None):
     """恢復說話人數據"""
-    stt = modules["stt"]
+    stt = get_or_load_module("stt")
 
     if stt is None:
         error_log("[Controller] ❌ 無法載入 STT 模組")
@@ -375,7 +438,7 @@ def stt_speaker_restore(backup_path: str = None):
 
 def stt_speaker_info():
     """顯示說話人資料庫詳細信息"""
-    stt = modules["stt"]
+    stt = get_or_load_module("stt")
 
     if stt is None:
         error_log("[Controller] ❌ 無法載入 STT 模組")
@@ -398,7 +461,7 @@ def stt_speaker_info():
 
 def stt_speaker_adjust_threshold(threshold: float = None):
     """調整說話人相似度閾值"""
-    stt = modules["stt"]
+    stt = get_or_load_module("stt")
 
     if stt is None:
         error_log("[Controller] ❌ 無法載入 STT 模組")
@@ -430,7 +493,7 @@ def stt_speaker_adjust_threshold(threshold: float = None):
 
 def nlp_test(text: str = "", enable_identity: bool = True, enable_segmentation: bool = True):
     """測試增強版NLP模組 - 包含語者身份和意圖分析"""
-    nlp = modules["nlp"]
+    nlp = get_or_load_module("nlp")
 
     if nlp is None:
         error_log("[Controller] ❌ 無法載入 NLP 模組")
@@ -516,7 +579,7 @@ def nlp_test(text: str = "", enable_identity: bool = True, enable_segmentation: 
 
 def nlp_test_state_queue_integration(text: str = ""):
     """測試NLP與狀態佇列的整合"""
-    nlp = modules["nlp"]
+    nlp = get_or_load_module("nlp")
     if nlp is None:
         error_log("[Controller] ❌ 無法載入 NLP 模組")
         return
@@ -560,7 +623,7 @@ def nlp_test_state_queue_integration(text: str = ""):
 
 def nlp_test_multi_intent(text: str = ""):
     """測試多意圖上下文管理"""
-    nlp = modules["nlp"]
+    nlp = get_or_load_module("nlp")
 
     if nlp is None:
         error_log("[Controller] ❌ 無法載入 NLP 模組")
@@ -598,7 +661,7 @@ def nlp_test_multi_intent(text: str = ""):
 
 def nlp_test_identity_management(speaker_id: str = "test_user"):
     """測試語者身份管理"""
-    nlp = modules["nlp"]
+    nlp = get_or_load_module("nlp")
 
     if nlp is None:
         error_log("[Controller] ❌ 無法載入 NLP 模組")
@@ -639,7 +702,7 @@ def nlp_test_identity_management(speaker_id: str = "test_user"):
 
 def nlp_analyze_context_queue():
     """分析NLP模組的上下文佇列狀態"""
-    nlp = modules["nlp"]
+    nlp = get_or_load_module("nlp")
 
     if nlp is None:
         error_log("[Controller] ❌ 無法載入 NLP 模組")
@@ -682,7 +745,7 @@ def nlp_analyze_context_queue():
 
 def nlp_clear_contexts():
     """清空NLP模組的上下文"""
-    nlp = modules["nlp"]
+    nlp = get_or_load_module("nlp")
 
     if nlp is None:
         error_log("[Controller] ❌ 無法載入 NLP 模組")
@@ -706,7 +769,7 @@ def nlp_clear_contexts():
 # 測試 MEM 模組
 
 def mem_fetch_test(text : str = ""):
-    mem = modules["mem"]
+    mem = get_or_load_module("mem")
     if mem is None:
         error_log("[Controller] ❌ 無法載入 MEM 模組")
         return
@@ -721,7 +784,7 @@ def mem_fetch_test(text : str = ""):
     print(f"\n🧠 MEM 輸出結果：\n\n使用者: {result['results'][0]['user']} \n回應: {result['results'][0]['response']}")
 
 def mem_store_test(user_text : str = "Test chat", response_text : str = "Test response"):
-    mem = modules["mem"]
+    mem = get_or_load_module("mem")
     if mem is None:
         error_log("[Controller] ❌ 無法載入 MEM 模組")
         return
@@ -731,7 +794,7 @@ def mem_store_test(user_text : str = "Test chat", response_text : str = "Test re
     print("\n🧠 MEM 回傳：", "儲存" + ("成功" if result["status"] == "stored" else "失敗"))
 
 def mem_clear_test(text : str = "ALL", top_k : int = 1):
-    mem = modules["mem"]
+    mem = get_or_load_module("mem")
     if mem is None:
         error_log("[Controller] ❌ 無法載入 MEM 模組")
         return
@@ -743,7 +806,7 @@ def mem_clear_test(text : str = "ALL", top_k : int = 1):
 
 
 def mem_list_all_test(page : int = 1):
-    mem = modules["mem"]
+    mem = get_or_load_module("mem")
     if mem is None:
         error_log("[Controller] ❌ 無法載入 MEM 模組")
         return
@@ -803,7 +866,7 @@ def llm_test_command(text):
 # 測試 TTS 模組
 
 def tts_test(text, mood="neutral", save=False):
-    tts = modules["tts"]
+    tts = get_or_load_module("tts")
     if tts is None:
         error_log("[Controller] ❌ 無法載入 TTS 模組")
         return
@@ -830,7 +893,7 @@ def tts_test(text, mood="neutral", save=False):
 # 測試 SYS 模組
 
 def sys_list_functions():
-    sysmod = modules["sysmod"]
+    sysmod = get_or_load_module("sysmod")
 
     if sysmod is None:
         error_log("[Controller] ❌ 無法載入 SYS 模組")
@@ -845,8 +908,8 @@ def sys_list_functions():
 # 測試多步驟工作流程
 def test_command_workflow(command_text: str = "幫我整理和摘要桌面上的文件"):
     """測試多步驟指令工作流程"""
-    sysmod = modules["sysmod"]
-    llm = modules["llm"]
+    sysmod = get_or_load_module("sysmod")
+    llm = get_or_load_module("llm")
 
     if sysmod is None or llm is None:
         error_log("[Controller] ❌ 無法載入 SYS 或 LLM 模組")
@@ -930,7 +993,7 @@ def test_command_workflow(command_text: str = "幫我整理和摘要桌面上的
     print("\n==== 工作流程測試結束 ====")
 
 def sys_test_functions(mode : int = 1, sub : int = 1): 
-    sysmod = modules["sysmod"]
+    sysmod = get_or_load_module("sysmod")
     if sysmod is None:
         error_log("[Controller] ❌ 無法載入 SYS 模組")
         return
@@ -970,7 +1033,7 @@ def sys_test_workflows(workflow_type: int = 1):
             4: random_fail - 隨機失敗
             5: tts_test - TTS文字轉語音測試
     """
-    sysmod = modules["sysmod"]
+    sysmod = get_or_load_module("sysmod")
     if sysmod is None:
         error_log("[Controller] ❌ 無法載入 SYS 模組")
         return
@@ -1163,7 +1226,7 @@ def test_file_workflow(workflow_type: str):
     Args:
         workflow_type: 工作流程類型 ('drop_and_read', 'intelligent_archive', 'summarize_tag')
     """
-    sysmod = modules["sysmod"]
+    sysmod = get_or_load_module("sysmod")
     if sysmod is None:
         error_log("[Controller] ❌ 無法載入 SYS 模組")
         return
@@ -1441,7 +1504,7 @@ def frontend_test_status():
                 "module_id": getattr(module, 'module_id', 'Unknown'),
                 "module_type": getattr(module, 'module_type', 'Unknown'),
                 "config_loaded": hasattr(module, 'config') and module.config is not None,
-                "initialized": hasattr(module, 'is_initialized') and module.is_initialized,
+                "initialized": hasattr(module, 'is_initialized') and module._initialized,
                 "signals_available": hasattr(module, 'signals')
             }
             
@@ -1587,7 +1650,7 @@ def frontend_test_animations():
         return False
     
     # 測試播放不同動畫
-    test_animations = ["stand_idle", "smile_idle", "walk_ani(left", "talk_ani"]
+    test_animations = ["stand_idle", "smile_idle", "walk_left", "talk_ani"]
     
     for anim_name in test_animations:
         print(f"\n🎬 測試動畫: {anim_name}")

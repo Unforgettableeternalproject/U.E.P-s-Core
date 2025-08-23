@@ -76,6 +76,13 @@ if __name__ == "__main__":
     if args.debug_gui:
         print("🖥️ 啟動圖形除錯介面...")
         try:
+            # 設定為按需載入模式（GUI模式）
+            import devtools.debug_api as debug_api
+            debug_api.set_loading_mode(preload=False)
+            print("✅ 已設定為按需載入模式")
+            
+            # 不預先載入任何模組，直接啟動除錯介面
+            # 讓使用者在除錯介面中手動決定載入哪些模組
             from modules.ui_module.debug import launch_debug_interface
             launch_debug_interface(ui_module=None, prefer_gui=True, blocking=True)
         except Exception as e:
@@ -85,6 +92,11 @@ if __name__ == "__main__":
 
     if debug_mode:
         debug_log(1, "🔧 除錯模式啟用，正在準備各項模組...")
+        # 設定為預先載入模式（舊版終端模式）
+        import devtools.debug_api as debug_api
+        debug_api.set_loading_mode(preload=True)
+        print("✅ 已設定為預先載入模式")
+        
         from devtools.debugger import debug_interactive
         debug_interactive()  # 啟動互動式命令行介面
     else:

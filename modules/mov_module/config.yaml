@@ -1,1 +1,61 @@
-# Default config for mov_module_module
+# MOV Module Configuration
+
+module_name: "mov_module"
+module_type: "frontend"
+priority: 3
+
+# 物理設定
+physics:
+  gravity: 0.8
+  damping: 0.978
+  ground_offset: 48
+  max_throw_speed: 1600
+  min_throw_speed: 600
+  throw_distance: 100
+
+# 移動設定
+movement:
+  ground_speed: 2.2
+  float_speed_min: 1.0
+  float_speed_max: 3.5
+  approach_factor: 0.12
+
+# 行為模式設定
+behavior:
+  mode_switch_min: 3.0  # 秒
+  mode_switch_max: 6.0  # 秒
+  hover_freeze: true
+  cursor_activity_threshold: 120.0  # px/s
+  cursor_activity_window: 0.25  # 秒
+  watch_radius: 420  # 像素
+
+# 互動設定
+interaction:
+  drag_enabled: true
+  throw_enabled: true
+  hover_response: true
+  file_drop_response: true
+
+# 模式設定
+modes:
+  ground:
+    enabled: true
+    probability: 0.5
+  floating:
+    enabled: true
+    probability: 0.25
+  idle:
+    enabled: true
+    probability: 0.25
+
+# 邊界設定
+boundaries:
+  screen_padding: 10
+  keep_on_screen: true
+  bounce_off_edges: false
+
+# 調試設定
+debug:
+  show_velocity_vector: false
+  log_mode_changes: false
+  track_cursor: false

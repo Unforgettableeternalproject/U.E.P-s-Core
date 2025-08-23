@@ -1,4 +1,4 @@
-# Default config for tts_module
+# TTS Module Configuration
 
 model_name: "U.E.P_sweet"
 model_path: "./models/tts"

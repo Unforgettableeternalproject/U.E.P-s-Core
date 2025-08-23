@@ -24,7 +24,7 @@ logging:
   enable_split_logs: true
 
 debug:
-  enabled: false
+  enabled: true
   debug_level: 3
 
 # 全局系統設置 - 用於控制系統級別行為

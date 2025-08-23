@@ -133,15 +133,6 @@ def debug_interactive():
         
         menu_text = "請選擇想要測試的模組 (綠色: 已重構、黃色: 已啟用、紅色: 未啟用):\n\n"
         menu_text += "\n\n".join(menu_items)
-        menu_text += "\n\n🔗 模組整合測試 (使用+號來連接，例如 stt+nlp):"
-        menu_text += "\n   • stt+nlp - STT與NLP整合測試"
-        menu_text += "\n   • nlp+mem - NLP與記憶模組整合測試"
-        menu_text += "\n   • nlp+llm - NLP與語言模型整合測試"
-        menu_text += "\n   • pipeline 或 all - 完整管道測試"
-        menu_text += "\n\n🎛️ 測試模式 (可選):"
-        menu_text += "\n   • 在模組名稱後加 debug (除錯模式，預設)"
-        menu_text += "\n   • 在模組名稱後加 production (生產模式)"
-        menu_text += "\n   例如: stt+nlp production"
         menu_text += "\n\n(用 exit 來離開): \n\n> "
         
         user_input = input(menu_text)

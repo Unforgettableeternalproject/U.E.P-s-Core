@@ -1,1 +1,71 @@
-# Default config for ani_module_module
+# ANI Module Configuration
+
+module_name: "ani_module"
+module_type: "frontend"
+priority: 2
+
+# 動畫設定
+animation:
+  frame_interval: 100  # 毫秒
+  default_frame_duration: 0.1
+  smooth_transitions: true
+  preload_animations: true
+
+# 動畫資源
+resources:
+  animations_path: "resources/animations"
+  cache_enabled: true
+  max_cache_size: 100  # MB
+
+# 動畫配置
+animations:
+  # 待機動畫
+  idle:
+    stand_idle:
+      frame_duration: 0.1
+      loop: true
+    smile_idle:
+      frame_duration: 0.1
+      loop: true
+    curious_idle:
+      frame_duration: 0.12
+      loop: true
+    angry_idle:
+      frame_duration: 0.08
+      loop: true
+  
+  # 說話動畫
+  talking:
+    talk_ani:
+      frame_duration: 0.05
+      loop: true
+    talk_ani2:
+      frame_duration: 0.06
+      loop: true
+  
+  # 行走動畫
+  walking:
+    walk_left:
+      frame_duration: 0.08
+      loop: true
+    walk_right:
+      frame_duration: 0.08
+      loop: true
+  
+  # 表情動畫
+  expressions:
+    laugh:
+      frame_duration: 0.1
+      loop: false
+    tease:
+      frame_duration: 0.12
+      loop: false
+    awkward:
+      frame_duration: 0.15
+      loop: false
+
+# 調試設定
+debug:
+  log_frame_changes: false
+  show_animation_info: false
+  performance_stats: false

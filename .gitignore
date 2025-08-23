@@ -400,3 +400,6 @@ wheel/*
 *.wav
 *.mp3
 additional/*
+
+# Resources
+resources/animations/*

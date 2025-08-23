@@ -850,3 +850,15 @@
 
 ---
 
+### First hand frontend integration, with several core structure changes. 08/23
+
+> Date: Sat, 23 Aug 2025 12:48:12 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/front_end_integration`
+
+> Commit: `38a9640e61aaeacd802b930b3d9b0ba8d0277513`
+
+---
+

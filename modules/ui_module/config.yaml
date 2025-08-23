@@ -1,1 +1,32 @@
-# Default config for ui_module_module
+# UI Module Configuration
+
+module_name: "ui_module"
+module_type: "frontend"
+priority: 1
+
+# 介面設定
+ui_settings:
+  window_size: 250
+  fps: 60
+  always_on_top: true
+  transparency: true
+  frameless: true
+
+# 互動設定
+interaction:
+  drag_enabled: true
+  hover_tracking: true
+  drop_enabled: true
+  mouse_capture: true
+
+# 視覺設定
+visual:
+  antialiasing: true
+  smooth_scaling: true
+  hardware_acceleration: true
+
+# 調試設定
+debug:
+  show_hitbox: false
+  log_events: false
+  performance_monitor: false

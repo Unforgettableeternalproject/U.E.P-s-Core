@@ -2,10 +2,11 @@
 """
 UI 模組 - 前端使用者介面中樞控制器
 
-負責協調三個前端介面：
+負責協調前端介面：
 1. Main Desktop Pet - UEP 桌寵 Overlay 應用程式
-2. User Access Widget - 可拖拽擴展的使用者介面
-3. Debug Interface - 開發用除錯介面
+2. User Access Widget - 可拖拽擴展的使用者介面（包含桌面球體功能）
+3. User Main Window - 使用者主設定視窗
+4. Debug Interface - 開發用除錯介面
 
 UI 模組作為中樞，協調 ANI 和 MOV 模組，並管理所有前端交互
 """
@@ -41,7 +42,8 @@ from utils.debug_helper import debug_log, info_log, error_log
 class UIInterfaceType(Enum):
     """UI 介面類型"""
     MAIN_DESKTOP_PET = "main_desktop_pet"       # 主桌寵應用程式
-    USER_ACCESS_WIDGET = "user_access_widget"   # 使用者存取介面
+    USER_ACCESS_WIDGET = "user_access_widget"   # 使用者存取介面（包含桌面球體功能）
+    USER_MAIN_WINDOW = "user_main_window"       # 使用者主設定視窗
     DEBUG_INTERFACE = "debug_interface"         # 除錯介面
 
 
@@ -61,6 +63,7 @@ class UIModule(BaseFrontendModule):
         self.interfaces = {
             UIInterfaceType.MAIN_DESKTOP_PET: None,
             UIInterfaceType.USER_ACCESS_WIDGET: None,
+            UIInterfaceType.USER_MAIN_WINDOW: None,
             UIInterfaceType.DEBUG_INTERFACE: None
         }
         
@@ -75,6 +78,20 @@ class UIModule(BaseFrontendModule):
         self.system_settings = {}
         
         info_log(f"[{self.module_id}] UI 中樞模組初始化")
+    
+    def _load_ui_config(self) -> dict:
+        """載入UI模組專用配置"""
+        import os
+        import yaml
+        
+        config_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                ui_config = yaml.safe_load(f)
+            return ui_config
+        except Exception as e:
+            error_log(f"[{self.module_id}] 載入UI配置失敗: {e}")
+            return {}
     
     def initialize_frontend(self) -> bool:
         """初始化前端 UI 組件"""
@@ -109,12 +126,17 @@ class UIModule(BaseFrontendModule):
             return False
     
     def _initialize_interfaces(self) -> bool:
-        """初始化所有介面 - 只準備實例而不顯示"""
+        """初始化所有介面"""
         try:
-            # 檢查運行環境
+            # 載入UI模組配置和全域配置
+            ui_config = self._load_ui_config()
             from configs.config_loader import load_config
-            config = load_config()
-            debug_mode = config.get("debug", {}).get("enabled", False)
+            global_config = load_config()
+            debug_mode = global_config.get("debug", {}).get("enabled", False)
+            
+            # 獲取界面顯示設置
+            interface_display = ui_config.get("interface_display", {})
+            auto_show = interface_display.get("debug_mode_auto_show", False) if debug_mode else interface_display.get("production_mode_auto_show", True)
             
             # 動態導入介面類別
             try:
@@ -127,9 +149,28 @@ class UIModule(BaseFrontendModule):
             try:
                 from .user.access_widget import UserAccessWidget
                 self.interfaces[UIInterfaceType.USER_ACCESS_WIDGET] = UserAccessWidget(self)
-                info_log(f"[{self.module_id}] 使用者存取介面已準備")
+                
+                # 根據配置決定是否自動顯示access_widget
+                show_access_widget = interface_display.get("show_user_access_widget", True) and auto_show
+                if show_access_widget:
+                    self.interfaces[UIInterfaceType.USER_ACCESS_WIDGET].show()
+                    self.active_interfaces.add(UIInterfaceType.USER_ACCESS_WIDGET)
+                    info_log(f"[{self.module_id}] 使用者存取介面已準備並顯示")
+                else:
+                    # 除錯模式：準備但不顯示，等待測試調用
+                    info_log(f"[{self.module_id}] 使用者存取介面已準備（除錯模式：等待測試調用）")
+                    
             except ImportError as e:
                 error_log(f"[{self.module_id}] 無法導入使用者存取介面: {e}")
+            
+            try:
+                from .user.user_main_window import UserMainWindow
+                self.interfaces[UIInterfaceType.USER_MAIN_WINDOW] = UserMainWindow()
+                # 設定視窗預設隱藏，由 access_widget 控制顯示
+                self.interfaces[UIInterfaceType.USER_MAIN_WINDOW].hide()
+                info_log(f"[{self.module_id}] 使用者主設定視窗已準備（預設隱藏）")
+            except ImportError as e:
+                error_log(f"[{self.module_id}] 無法導入使用者主設定視窗: {e}")
             
             # 調試界面只在debug模式下加載以避免資源浪費
             if debug_mode:
@@ -140,7 +181,11 @@ class UIModule(BaseFrontendModule):
                 except ImportError as e:
                     error_log(f"[{self.module_id}] 無法導入除錯介面: {e}")
             
-            info_log(f"[{self.module_id}] 介面準備完成 - 等待系統初始化器顯示")
+            # 根據實際顯示狀態輸出完成訊息
+            if auto_show and interface_display.get("show_user_access_widget", True):
+                info_log(f"[{self.module_id}] 介面準備完成 - access_widget已顯示，其他介面等待調用")
+            else:
+                info_log(f"[{self.module_id}] 介面準備完成 - 所有介面等待調用")
             return True
             
         except Exception as e:
@@ -331,6 +376,25 @@ class UIModule(BaseFrontendModule):
                 if interface and hasattr(interface, 'handle_request'):
                     return interface.handle_request(data)
                 return {"error": "主桌寵介面不可用"}
+            
+            # 桌面球體相關命令（現在由 access_widget 處理）
+            elif command in ['show_orb', 'hide_orb', 'expand_menu', 'collapse_menu', 
+                           'move_orb', 'get_orb_info']:
+                # 轉發到使用者存取介面（包含桌面球體功能）
+                interface_type = UIInterfaceType.USER_ACCESS_WIDGET
+                interface = self.interfaces.get(interface_type)
+                if interface and hasattr(interface, 'handle_request'):
+                    return interface.handle_request(data)
+                return {"error": "使用者存取介面不可用"}
+            
+            # 使用者設定視窗相關命令
+            elif command in ['show_settings', 'hide_settings', 'update_settings', 'get_settings']:
+                # 轉發到使用者主設定視窗
+                interface_type = UIInterfaceType.USER_MAIN_WINDOW
+                interface = self.interfaces.get(interface_type)
+                if interface and hasattr(interface, 'handle_request'):
+                    return interface.handle_request(data)
+                return {"error": "使用者設定視窗不可用"}
             
             else:
                 return {"error": f"未知命令: {command}"}

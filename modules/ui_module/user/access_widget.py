@@ -40,7 +40,13 @@ project_root = os.path.abspath(os.path.join(script_dir, '..', '..', '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from utils.debug_helper import debug_log, info_log, error_log
+# 嘗試導入設定視窗
+try:
+    from .user_main_window import UserMainWindow
+except ImportError:
+    UserMainWindow = None
+
+from utils.debug_helper import debug_log, info_log, error_log, KEY_LEVEL, OPERATION_LEVEL, SYSTEM_LEVEL
 
 
 class UserAccessWidget(QWidget):
@@ -66,6 +72,9 @@ class UserAccessWidget(QWidget):
         self.is_dragging = False
         self.drag_position = QPoint() if QPoint else None
         
+        # 設定視窗實例
+        self.settings_window = None
+        
         self.init_ui()
         info_log("[UserAccessWidget] 使用者存取小工具初始化完成")
     
@@ -86,9 +95,28 @@ class UserAccessWidget(QWidget):
         self.setup_layout()
         
         # 設置初始位置（螢幕右上角）
-        if hasattr(self, 'screen'):
-            screen = self.screen().geometry()
-            self.move(screen.width() - self.width() - 20, 50)
+        try:
+            from PyQt5.QtWidgets import QApplication
+            if QApplication.instance():
+                screen = QApplication.instance().primaryScreen()
+                if screen:
+                    screen_geometry = screen.geometry()
+                    x = screen_geometry.width() - self.width() - 20
+                    y = 50
+                    self.move(x, y)
+                    info_log(f"[UserAccessWidget] 設置位置: ({x}, {y})")
+                else:
+                    # 備援位置
+                    self.move(1200, 50)
+                    info_log("[UserAccessWidget] 使用備援位置: (1200, 50)")
+            else:
+                # 備援位置
+                self.move(1200, 50)
+                info_log("[UserAccessWidget] 無QApplication實例，使用備援位置: (1200, 50)")
+        except Exception as e:
+            # 備援位置
+            self.move(1200, 50)
+            error_log(f"[UserAccessWidget] 位置設置異常，使用備援位置: {e}")
         
         info_log("[UserAccessWidget] UI 初始化完成")
     
@@ -209,11 +237,16 @@ class UserAccessWidget(QWidget):
         if self.expanded_changed:
             self.expanded_changed.emit(self.is_expanded)
         
-        debug_log(f"[UserAccessWidget] 小工具{'展開' if self.is_expanded else '摺疊'}")
+        debug_log(OPERATION_LEVEL, f"[UserAccessWidget] 小工具{'展開' if self.is_expanded else '摺疊'}")
     
     def request_function(self, function_id: str):
         """請求執行功能"""
-        debug_log(f"[UserAccessWidget] 請求功能: {function_id}")
+        debug_log(OPERATION_LEVEL, f"[UserAccessWidget] 請求功能: {function_id}")
+        
+        # 特殊處理設定功能
+        if function_id == "settings":
+            self.open_settings_window()
+            return
         
         if self.function_requested:
             self.function_requested.emit(function_id)
@@ -252,6 +285,8 @@ class UserAccessWidget(QWidget):
         """更新模組狀態顯示"""
         # 在標題欄或其他地方顯示模組狀態
         if status == "active":
+            # 設置為綠色主題
+            debug_log(OPERATION_LEVEL, f"[UserAccessWidget] 模組 {module_id} 狀態: 活躍")
             self.title_label.setStyleSheet("""
                 QLabel {
                     background-color: #28a745;
@@ -261,6 +296,8 @@ class UserAccessWidget(QWidget):
                 }
             """)
         elif status == "error":
+            # 設置為紅色主題
+            debug_log(OPERATION_LEVEL, f"[UserAccessWidget] 模組 {module_id} 狀態: 錯誤")
             self.title_label.setStyleSheet("""
                 QLabel {
                     background-color: #dc3545;
@@ -270,6 +307,8 @@ class UserAccessWidget(QWidget):
                 }
             """)
         else:
+            # 設置為默認主題
+            debug_log(OPERATION_LEVEL, f"[UserAccessWidget] 模組 {module_id} 狀態: {status}")
             self.title_label.setStyleSheet("""
                 QLabel {
                     background-color: #2d3142;
@@ -278,6 +317,33 @@ class UserAccessWidget(QWidget):
                     padding: 2px;
                 }
             """)
+    
+    def open_settings_window(self):
+        """開啟設定視窗"""
+        try:
+            # 通過UI模組來管理設定視窗
+            if self.ui_module:
+                # 導入UI模組的介面類型
+                from modules.ui_module.ui_module import UIInterfaceType
+                result = self.ui_module.show_interface(UIInterfaceType.USER_MAIN_WINDOW)
+                if result.get("success"):
+                    info_log("[UserAccessWidget] 設定視窗已透過UI模組開啟")
+                else:
+                    error_log(f"[UserAccessWidget] 透過UI模組開啟設定視窗失敗: {result.get('error')}")
+            else:
+                # 備援方案：直接創建設定視窗
+                if not self.settings_window and UserMainWindow:
+                    self.settings_window = UserMainWindow()
+                
+                if self.settings_window:
+                    self.settings_window.show()
+                    self.settings_window.raise_()
+                    self.settings_window.activateWindow()
+                    info_log("[UserAccessWidget] 設定視窗已直接開啟")
+                else:
+                    error_log("[UserAccessWidget] 無法創建設定視窗")
+        except Exception as e:
+            error_log(f"[UserAccessWidget] 開啟設定視窗異常: {e}")
     
     def handle_request(self, data: dict) -> dict:
         """處理來自 UI 模組的請求"""
@@ -319,6 +385,10 @@ class UserAccessWidget(QWidget):
                     "visible": self.isVisible(),
                     "expanded": self.is_expanded
                 }
+            
+            elif command == 'open_settings':
+                self.open_settings_window()
+                return {"success": True, "message": "設定視窗已開啟"}
             
             else:
                 return {"error": f"未知命令: {command}"}

@@ -12,6 +12,17 @@ ui_settings:
   transparency: true
   frameless: true
 
+# 界面顯示控制
+interface_display:
+  # 用戶訪問界面（球體）
+  show_user_access_widget: true
+  # 主桌面寵物界面
+  show_main_desktop_pet: false
+  # 除錯模式下的自動顯示行為
+  debug_mode_auto_show: false  # false = 等待測試調用才顯示
+  # 正式模式下的自動顯示行為  
+  production_mode_auto_show: true
+
 # 互動設定
 interaction:
   drag_enabled: true

@@ -71,7 +71,6 @@ def _initialize_modules():
             "llm": None,
             "tts": None,
             "sysmod": None,
-            # 前端模組
             "ui": None,
             "ani": None,
             "mov": None
@@ -1769,6 +1768,15 @@ def frontend_test_ui_interactions():
         return False
     
     print("\n=== UI 交互測試 ===")
+    
+    # 首先確保在除錯模式下顯示訪問球體
+    try:
+        from modules.ui_module.ui_module import UIInterfaceType
+        print("\n🔮 顯示訪問球體...")
+        result = ui_module.show_interface(UIInterfaceType.USER_ACCESS_WIDGET)
+        print(f"   訪問球體顯示結果: {result}")
+    except Exception as e:
+        print(f"   ❌ 顯示訪問球體失敗: {e}")
     
     # 測試視窗操作
     print("\n🖼️  測試視窗操作")

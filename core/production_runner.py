@@ -23,13 +23,16 @@ def run_production_mode():
             error_log("❌ 系統初始化失敗")
             return False
             
-        # 2. 初始化PyQt應用
+        # 2. 檢查PyQt應用是否已由UI模組創建
         try:
             from PyQt5.QtWidgets import QApplication
-            if not QApplication.instance():
-                # 建立Qt應用實例 (如需要)
+            app = QApplication.instance()
+            if app:
+                info_log("✅ PyQt應用程式實例已存在（由UI模組創建）")
+            else:
+                # 如果UI模組沒有創建，建立一個基本實例
                 app = QApplication([])
-                info_log("✅ PyQt應用程式實例已創建")
+                info_log("✅ 創建基本PyQt應用程式實例")
         except ImportError:
             error_log("⚠️ PyQt5未安裝，可能影響UI功能")
             
@@ -72,7 +75,7 @@ def shutdown_production_mode():
             system_loop.stop()
             
         # 關閉統一控制器 (這會關閉所有模組，包含UI)
-        from core.unified_controller import unified_controller
+        from core.controller import unified_controller
         if hasattr(unified_controller, 'shutdown'):
             unified_controller.shutdown()
             

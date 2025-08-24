@@ -309,22 +309,39 @@ class SystemInitializer:
             
             # 只在生產模式下啟動主界面
             if not debug_mode:
-                info_log("   啟動桌面寵物界面...")
+                info_log("   檢查並啟動需要的界面...")
                 from modules.ui_module.ui_module import UIInterfaceType
-                result = ui_module.show_interface(UIInterfaceType.MAIN_DESKTOP_PET)
-                if 'error' in result:
-                    error_log(f"❌ 桌面寵物界面啟動失敗: {result['error']}")
-                else:
-                    info_log("✅ 桌面寵物界面已啟動")
-                    
-                # 在生產模式下可選擇性啟動用戶界面
+                
+                # 檢查界面狀態
+                interface_status = ui_module.get_interface_status()
+                
+                # 用戶訪問界面（球體）- 優先確保這個顯示
                 if config.get('ui', {}).get('show_user_access', True):
-                    info_log("   啟動用戶訪問界面...")
-                    result = ui_module.show_interface(UIInterfaceType.USER_ACCESS_WIDGET)
-                    if 'error' in result:
-                        error_log(f"❌ 用戶訪問界面啟動失敗: {result['error']}")
+                    access_widget_status = interface_status.get('user_access_widget', {})
+                    if not access_widget_status.get('visible', False) or not access_widget_status.get('active', False):
+                        info_log("   啟動用戶訪問界面...")
+                        result = ui_module.show_interface(UIInterfaceType.USER_ACCESS_WIDGET)
+                        if 'error' in result:
+                            error_log(f"❌ 用戶訪問界面啟動失敗: {result['error']}")
+                        else:
+                            info_log("✅ 用戶訪問界面已啟動")
                     else:
-                        info_log("✅ 用戶訪問界面已啟動")
+                        info_log("✅ 用戶訪問界面已經顯示")
+                
+                # 桌面寵物界面（主視窗）- 只在特定條件下啟動
+                if config.get('ui', {}).get('show_main_desktop_pet', False):  # 預設為False
+                    main_pet_status = interface_status.get('main_desktop_pet', {})
+                    if not main_pet_status.get('visible', False):
+                        info_log("   啟動桌面寵物界面...")
+                        result = ui_module.show_interface(UIInterfaceType.MAIN_DESKTOP_PET)
+                        if 'error' in result:
+                            error_log(f"❌ 桌面寵物界面啟動失敗: {result['error']}")
+                        else:
+                            info_log("✅ 桌面寵物界面已啟動")
+                    else:
+                        info_log("✅ 桌面寵物界面已經顯示")
+                else:
+                    info_log("   桌面寵物界面已停用（設定中可啟用）")
             else:
                 info_log("   調試模式下前端界面不自動啟動，請使用命令或調試界面控制")
                 

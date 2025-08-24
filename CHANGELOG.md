@@ -898,3 +898,15 @@
 
 ---
 
+### Tried to make a setting UI, it's sort of functioning?? 08/24
+
+> Date: Sun, 24 Aug 2025 21:30:07 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/front_end_integration`
+
+> Commit: `4eb20aae4e56b5e986ea303fa6da10dfca3e43cb`
+
+---
+

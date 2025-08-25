@@ -82,6 +82,20 @@ if project_root not in sys.path:
 
 from utils.debug_helper import debug_log, info_log, error_log
 
+# 導入 MOV 和 ANI 模組
+try:
+    from modules.mov_module.mov_module import MOVModule, MovementMode
+    from modules.ani_module.ani_module import ANIModule, AnimationType
+    MOV_ANI_AVAILABLE = True
+except ImportError as e:
+    error_log(f"[DesktopPetApp] 無法導入 MOV/ANI 模組: {e}")
+    MOV_ANI_AVAILABLE = False
+    # 創建模擬類別
+    class MOVModule: pass
+    class ANIModule: pass
+    class MovementMode: pass
+    class AnimationType: pass
+
 
 class DesktopPetApp(QWidget):
     """
@@ -107,8 +121,63 @@ class DesktopPetApp(QWidget):
         self.drag_position = QPoint() if QPoint else None
         self.default_size = (200, 200)
         
+        # MOV 和 ANI 模組整合
+        self.mov_module = None
+        self.ani_module = None
+        self.current_movement_mode = None
+        self.current_animation_type = None
+        
+        # 初始化模組
+        self.init_modules()
         self.init_ui()
+        
         info_log("[DesktopPetApp] 桌面寵物應用程式初始化完成")
+    
+    def init_modules(self):
+        """初始化 MOV 和 ANI 模組"""
+        try:
+            if MOV_ANI_AVAILABLE:
+                # 初始化 MOV 模組
+                self.mov_module = MOVModule()
+                info_log("[DesktopPetApp] MOV 模組初始化成功")
+                
+                # 初始化 ANI 模組
+                self.ani_module = ANIModule()
+                info_log("[DesktopPetApp] ANI 模組初始化成功")
+                
+                # 設置默認狀態
+                self.current_movement_mode = MovementMode.FLOAT if hasattr(MovementMode, 'FLOAT') else None
+                self.current_animation_type = AnimationType.STAND_IDLE if hasattr(AnimationType, 'STAND_IDLE') else None
+                
+                # 連接模組信號（如果有的話）
+                self.connect_module_signals()
+            else:
+                info_log("[DesktopPetApp] MOV/ANI 模組不可用，使用基本模式")
+        except Exception as e:
+            error_log(f"[DesktopPetApp] 模組初始化失敗: {e}")
+            self.mov_module = None
+            self.ani_module = None
+    
+    def connect_module_signals(self):
+        """連接模組信號"""
+        try:
+            # 連接 MOV 模組信號
+            if self.mov_module and hasattr(self.mov_module, 'position_updated'):
+                self.mov_module.position_updated.connect(self.on_movement_position_change)
+            
+            if self.mov_module and hasattr(self.mov_module, 'movement_mode_changed'):
+                self.mov_module.movement_mode_changed.connect(self.on_movement_mode_change)
+            
+            # 連接 ANI 模組信號
+            if self.ani_module and hasattr(self.ani_module, 'animation_changed'):
+                self.ani_module.animation_changed.connect(self.on_animation_change)
+            
+            if self.ani_module and hasattr(self.ani_module, 'frame_updated'):
+                self.ani_module.frame_updated.connect(self.on_animation_frame_update)
+                
+            debug_log(1, "[DesktopPetApp] 模組信號連接完成")
+        except Exception as e:
+            error_log(f"[DesktopPetApp] 模組信號連接失敗: {e}")
     
     def init_ui(self):
         """初始化 UI"""
@@ -298,6 +367,131 @@ class DesktopPetApp(QWidget):
         except Exception as e:
             error_log(f"[DesktopPetApp] 設置置頂狀態異常: {e}")
     
+    # === MOV/ANI 模組整合方法 ===
+    
+    def on_movement_position_change(self, x, y):
+        """處理來自 MOV 模組的位置變更"""
+        try:
+            self.set_position(x, y)
+            debug_log(1, f"[DesktopPetApp] MOV 模組更新位置: ({x}, {y})")
+        except Exception as e:
+            error_log(f"[DesktopPetApp] 處理位置變更失敗: {e}")
+    
+    def on_movement_mode_change(self, mode):
+        """處理來自 MOV 模組的移動模式變更"""
+        try:
+            self.current_movement_mode = mode
+            debug_log(1, f"[DesktopPetApp] 移動模式變更: {mode}")
+            
+            # 根據移動模式變更動畫
+            self.update_animation_for_movement(mode)
+        except Exception as e:
+            error_log(f"[DesktopPetApp] 處理移動模式變更失敗: {e}")
+    
+    def on_animation_change(self, animation_type):
+        """處理來自 ANI 模組的動畫變更"""
+        try:
+            self.current_animation_type = animation_type
+            debug_log(1, f"[DesktopPetApp] 動畫類型變更: {animation_type}")
+        except Exception as e:
+            error_log(f"[DesktopPetApp] 處理動畫變更失敗: {e}")
+    
+    def on_animation_frame_update(self, frame_data):
+        """處理來自 ANI 模組的動畫幀更新"""
+        try:
+            if frame_data and 'image_path' in frame_data:
+                self.set_image(frame_data['image_path'])
+            elif frame_data and 'pixmap' in frame_data:
+                self.current_image = frame_data['pixmap']
+                self.update()
+            debug_log(1, f"[DesktopPetApp] 動畫幀更新")
+        except Exception as e:
+            error_log(f"[DesktopPetApp] 處理動畫幀更新失敗: {e}")
+    
+    def update_animation_for_movement(self, movement_mode):
+        """根據移動模式更新動畫"""
+        try:
+            if not self.ani_module:
+                return
+            
+            # 根據移動模式選擇合適的動畫
+            animation_mapping = {
+                'float': AnimationType.STAND_IDLE,
+                'ground': AnimationType.WALK_LEFT,  # 暫時使用 WALK_LEFT，後續會改進
+                'idle': AnimationType.SMILE_IDLE,
+                'dragging': AnimationType.CURIOUS_IDLE,
+            }
+            
+            # 獲取移動模式字符串
+            mode_str = movement_mode.value if hasattr(movement_mode, 'value') else str(movement_mode)
+            
+            if mode_str in animation_mapping:
+                target_animation = animation_mapping[mode_str]
+                if hasattr(self.ani_module, 'set_animation'):
+                    self.ani_module.set_animation(target_animation)
+                    debug_log(1, f"[DesktopPetApp] 為移動模式 {mode_str} 設置動畫 {target_animation}")
+                    
+        except Exception as e:
+            error_log(f"[DesktopPetApp] 更新移動動畫失敗: {e}")
+    
+    # === 對外提供的控制方法 ===
+    
+    def set_movement_mode(self, mode):
+        """設置移動模式"""
+        try:
+            if self.mov_module and hasattr(self.mov_module, 'set_movement_mode'):
+                self.mov_module.set_movement_mode(mode)
+                debug_log(1, f"[DesktopPetApp] 設置移動模式: {mode}")
+                return True
+            else:
+                debug_log(1, f"[DesktopPetApp] MOV 模組不可用，無法設置移動模式")
+                return False
+        except Exception as e:
+            error_log(f"[DesktopPetApp] 設置移動模式失敗: {e}")
+            return False
+    
+    def set_animation_type(self, animation_type):
+        """設置動畫類型"""
+        try:
+            if self.ani_module and hasattr(self.ani_module, 'set_animation'):
+                self.ani_module.set_animation(animation_type)
+                debug_log(1, f"[DesktopPetApp] 設置動畫類型: {animation_type}")
+                return True
+            else:
+                debug_log(1, f"[DesktopPetApp] ANI 模組不可用，無法設置動畫類型")
+                return False
+        except Exception as e:
+            error_log(f"[DesktopPetApp] 設置動畫類型失敗: {e}")
+            return False
+    
+    def start_automatic_movement(self):
+        """啟動自動移動"""
+        try:
+            if self.mov_module and hasattr(self.mov_module, 'start_auto_movement'):
+                self.mov_module.start_auto_movement()
+                debug_log(1, f"[DesktopPetApp] 啟動自動移動")
+                return True
+            else:
+                debug_log(1, f"[DesktopPetApp] MOV 模組不可用，無法啟動自動移動")
+                return False
+        except Exception as e:
+            error_log(f"[DesktopPetApp] 啟動自動移動失敗: {e}")
+            return False
+    
+    def stop_automatic_movement(self):
+        """停止自動移動"""
+        try:
+            if self.mov_module and hasattr(self.mov_module, 'stop_auto_movement'):
+                self.mov_module.stop_auto_movement()
+                debug_log(1, f"[DesktopPetApp] 停止自動移動")
+                return True
+            else:
+                debug_log(1, f"[DesktopPetApp] MOV 模組不可用，無法停止自動移動")
+                return False
+        except Exception as e:
+            error_log(f"[DesktopPetApp] 停止自動移動失敗: {e}")
+            return False
+    
     def handle_request(self, data: dict) -> dict:
         """處理來自 UI 模組的請求"""
         try:
@@ -345,7 +539,40 @@ class DesktopPetApp(QWidget):
                     "position": {"x": self.x(), "y": self.y()},
                     "size": {"width": self.width(), "height": self.height()},
                     "visible": self.isVisible(),
-                    "opacity": self.windowOpacity() if hasattr(self, 'windowOpacity') else 1.0
+                    "opacity": self.windowOpacity() if hasattr(self, 'windowOpacity') else 1.0,
+                    "movement_mode": str(self.current_movement_mode) if self.current_movement_mode else None,
+                    "animation_type": str(self.current_animation_type) if self.current_animation_type else None
+                }
+            
+            # === MOV/ANI 控制命令 ===
+            elif command == 'set_movement_mode':
+                mode = data.get('mode')
+                if mode:
+                    success = self.set_movement_mode(mode)
+                    return {"success": success, "movement_mode": mode}
+                return {"error": "需要提供 mode 參數"}
+            
+            elif command == 'set_animation_type':
+                animation_type = data.get('animation_type')
+                if animation_type:
+                    success = self.set_animation_type(animation_type)
+                    return {"success": success, "animation_type": animation_type}
+                return {"error": "需要提供 animation_type 參數"}
+            
+            elif command == 'start_auto_movement':
+                success = self.start_automatic_movement()
+                return {"success": success, "message": "自動移動已啟動" if success else "啟動自動移動失敗"}
+            
+            elif command == 'stop_auto_movement':
+                success = self.stop_automatic_movement()
+                return {"success": success, "message": "自動移動已停止" if success else "停止自動移動失敗"}
+            
+            elif command == 'get_movement_status':
+                return {
+                    "movement_mode": str(self.current_movement_mode) if self.current_movement_mode else None,
+                    "animation_type": str(self.current_animation_type) if self.current_animation_type else None,
+                    "mov_module_available": self.mov_module is not None,
+                    "ani_module_available": self.ani_module is not None
                 }
             
             else:

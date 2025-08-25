@@ -2,9 +2,10 @@ from logging import config
 from core.registry import get_module
 from configs.config_loader import load_config
 from utils.debug_helper import debug_log, info_log, error_log
-from utils.debug_file_dropper import open_demo_window, open_folder_dialog
-from module_tests.integration_tests import test_stt_nlp
-from module_tests.extra_tests import *
+# 導入整合測試
+from .module_tests.integration_tests import test_stt_nlp
+# 暫時註解掉這個導入，等相關文件創建後再啟用
+# from .module_tests.extra_tests import test_chunk_and_summarize, test_uep_chatting
 import time
 import asyncio
 
@@ -131,1046 +132,250 @@ def get_or_load_module(name):
         
         return modules[name]
 
-# 測試 STT 模組 - Phase 2 版本
 
-def on_stt_result(result, continuous_mode=False):
-    """
-    STT 結果回調函數 - 統一版本，可處理單次和持續辨識模式
-    
-    Args:
-        result: 語音識別結果，可以是字典或對象
-        continuous_mode: 是否為持續辨識模式 (影響輸出格式)
-    """
-    # 首先檢查結果是否為 None 或非字典（處理錯誤情況）
-    if result is None:
-        print("❌ 語音識別失敗：沒有識別結果")
-        return
-        
-    if isinstance(result, dict):
-        # 提取基本信息
-        text = result.get("text", "")
-        confidence = result.get("confidence", 0)
-        speaker_info = result.get("speaker_info")
-        error = result.get("error")
-        
-        # 處理錯誤情況
-        if error:
-            print(f"❌ 語音識別錯誤：{error}")
-            return
-            
-        # 沒有識別出文字的情況
-        if not text or not text.strip():
-            print("🔇 未識別到有效語音內容")
-            return
-        
-        # 顯示語音辨識結果 (根據模式調整格式)
-        if continuous_mode:
-            print(f"\n🎤 語音識別: 「{text}」")
-        else:
-            print(f"\n📢 語音識別: 「{text}」 (信心度: {confidence:.2f})")
-        
-        # 顯示說話人信息
-        if speaker_info:
-            speaker_id = speaker_info.get("speaker_id", "未定")
-            speaker_confidence = speaker_info.get("confidence", 0)
-            is_new = "(新說話人)" if speaker_info.get("is_new_speaker", False) else ""
-            
-            if continuous_mode:
-                print(f"👤 說話人: {speaker_id} {is_new} (信心度: {speaker_confidence:.2f})")
-            else:
-                print(f"👤 說話人：{speaker_id} {is_new} (信心度: {speaker_confidence:.2f})")
-        else:
-            print("👤 說話人：未定")
-
-    else:
-        # 直接顯示結果
-        print(f"✨ 識別結果：{result}")
-
-def stt_test_single(enable_speaker_id=True, language="en-US"):
-    """單次 STT 測試 - 手動模式"""
-    stt = get_or_load_module("stt")
-
-    if stt is None:
-        error_log("[Controller] ❌ 無法載入 STT 模組")
-        return
-
-    print(f"🎤 STT 手動測試")
-    print("   請說話，系統將錄製並識別您的語音...")
-    
-    # 使用手動模式進行錄音
-    result = stt.handle({
-        "mode": "manual",
-        "language": language,
-        "enable_speaker_id": enable_speaker_id,
-        "duration": 5
-    })  
-    
-    # 使用 on_stt_result 處理結果，指定為單次模式 (continuous_mode=False，這是預設值)
-    on_stt_result(result.get("data"))
-    return result
-
-def stt_test_continuous_listening(duration=30):
-    """持續背景監聽測試 - 直接在控制台輸出識別結果"""
-    stt = get_or_load_module("stt")
-
-    if stt is None:
-        error_log("[Controller] ❌ 無法載入 STT 模組")
-        return
-
-    print(f"🎧 持續背景監聽測試 ({duration}秒)")
-    print("   系統將持續監聽並直接輸出識別結果")
-    print("   按 Ctrl+C 可隨時中斷監聽")
-    
-    # 創建一個連接到主要處理函數的回調
-    def continuous_result_callback(result):
-        if result is None:
-            return
-            
-        # 將 result 轉換為標準字典格式，以便重用 on_stt_result 函數
-        if not isinstance(result, dict):
-            # 提取文字
-            text = result.text if hasattr(result, "text") else ""
-            
-            # 提取說話人信息
-            speaker_info = None
-            if hasattr(result, "speaker_info") and result.speaker_info:
-                if isinstance(result.speaker_info, dict):
-                    speaker_info = result.speaker_info
-                else:
-                    # 轉換為字典
-                    speaker_info = {
-                        "speaker_id": getattr(result.speaker_info, "speaker_id", "未定"),
-                        "confidence": getattr(result.speaker_info, "confidence", 0),
-                        "is_new_speaker": getattr(result.speaker_info, "is_new_speaker", False)
-                    }
-                    
-            # 創建標準格式
-            formatted_result = {
-                "text": text,
-                "confidence": getattr(result, "confidence", 0),
-                "speaker_info": speaker_info
-            }
-            
-            # 使用標準結果處理函數，並傳遞 continuous_mode=True
-            on_stt_result(formatted_result, continuous_mode=True)
-        else:
-            # 已經是字典格式
-            on_stt_result(result, continuous_mode=True)
-    
-    try:
-        # 臨時設置回調函數
-        original_callback = None
-        if hasattr(stt, "result_callback"):
-            original_callback = stt.result_callback
-            stt.result_callback = continuous_result_callback
-        
-        print("\n開始持續監聽，識別結果將直接顯示...\n")
-        
-        # 使用持續監聽模式
-        result = stt.handle({
-            "mode": "continuous",
-            "language": "en-US",
-            "enable_speaker_id": True,
-            "duration": duration,
-            "context": "controller_test"
-        })
-        
-        # 恢復原來的回調函數
-        if hasattr(stt, "result_callback") and original_callback is not None:
-            stt.result_callback = original_callback
-            
-        print("\n持續監聽完成")
-        return result
-        
-    except KeyboardInterrupt:
-        # 恢復原來的回調函數
-        if hasattr(stt, "result_callback") and original_callback is not None:
-            stt.result_callback = original_callback
-            
-        print("\n⏹️ 用戶中斷監聽")
-        return None
-        
-    except Exception as e:
-        # 恢復原來的回調函數
-        if hasattr(stt, "result_callback") and original_callback is not None:
-            stt.result_callback = original_callback
-            
-        error_log(f"[Controller] 持續監聽失敗: {e}")
-        return None
-
-def stt_get_stats():
-    """獲取 STT 統計信息"""
-    stt = get_or_load_module("stt")
-
-    if stt is None:
-        error_log("[Controller] ❌ 無法載入 STT 模組")
-        return
-
-    # 嘗試從說話人模組獲取統計信息
-    if hasattr(stt, 'speaker_module'):
-        speaker_info = stt.speaker_module.get_database_info()
-        speakers = stt.speaker_module.list_speakers()
-        
-        print("📊 STT 統計信息:")
-        print("說話人統計:")
-        if speakers:
-            for speaker_id, metadata in speakers.items():
-                sample_count = metadata.get('sample_count', 0)
-                print(f"  {speaker_id}: {sample_count} 個語音樣本")
-        else:
-            print("  無說話人數據")
-        
-        print("\n資料庫統計:")
-        print(f"  總說話人數: {speaker_info.get('total_speakers', 0)}")
-        print(f"  總語音樣本: {speaker_info.get('total_samples', 0)}")
-        print(f"  檔案大小: {speaker_info.get('file_size_mb', 0):.2f} MB")
-        print(f"  相似度閾值: {speaker_info.get('similarity_threshold', 0):.2f}")
-        
-        return {
-            "speaker_stats": speakers,
-            "database_info": speaker_info
-        }
-    else:
-        print("⚠️ 當前版本不支援詳細統計功能")
-        return {"error": "統計功能不可用"}
-
-# STT 說話人管理功能
-
-def stt_speaker_list():
-    """列出所有已識別的說話人"""
-    stt = get_or_load_module("stt")
-
-    if stt is None:
-        error_log("[Controller] ❌ 無法載入 STT 模組")
-        return
-        
-    if hasattr(stt, 'speaker_module'):
-        speakers = stt.speaker_module.list_speakers()
-        if speakers:
-            print("👥 已識別說話人:")
-            for speaker_id, metadata in speakers.items():
-                # metadata['embeddings'] 已經是數量，不需要再用 len()
-                embeddings_count = metadata.get('embeddings', 0)
-                print(f"  {speaker_id}: {embeddings_count} 個語音樣本")
-        else:
-            print("📝 尚未識別任何說話人")
-        return speakers
-    else:
-        print("⚠️ 說話人識別模組不可用")
-
-def stt_speaker_rename(old_id: str, new_id: str):
-    """重新命名說話人"""
-    stt = get_or_load_module("stt")
-
-    if stt is None:
-        error_log("[Controller] ❌ 無法載入 STT 模組")
-        return
-        
-    if hasattr(stt, 'speaker_module'):
-        success = stt.speaker_module.rename_speaker(old_id, new_id)
-        if success:
-            print(f"✅ 說話人 '{old_id}' 已重新命名為 '{new_id}'")
-        else:
-            print(f"❌ 重新命名失敗：說話人 '{old_id}' 不存在")
-        return success
-    else:
-        print("⚠️ 說話人識別模組不可用")
-
-def stt_speaker_delete(speaker_id: str):
-    """刪除指定說話人"""
-    stt = get_or_load_module("stt")
-
-    if stt is None:
-        error_log("[Controller] ❌ 無法載入 STT 模組")
-        return
-        
-    if hasattr(stt, 'speaker_module'):
-        success = stt.speaker_module.delete_speaker(speaker_id)
-        if success:
-            print(f"✅ 說話人 '{speaker_id}' 已刪除")
-        else:
-            print(f"❌ 刪除失敗：說話人 '{speaker_id}' 不存在")
-        return success
-    else:
-        print("⚠️ 說話人識別模組不可用")
-
-def stt_speaker_clear_all():
-    """清空所有說話人數據"""
-    stt = get_or_load_module("stt")
-
-    if stt is None:
-        error_log("[Controller] ❌ 無法載入 STT 模組")
-        return
-        
-    if hasattr(stt, 'speaker_module'):
-        confirmation = input("⚠️ 確定要清空所有說話人數據嗎？(y/N): ")
-        if confirmation.lower() == 'y':
-            success = stt.speaker_module.clear_all_speakers()
-            if success:
-                print("✅ 所有說話人數據已清空")
-            else:
-                print("❌ 清空失敗")
-            return success
-        else:
-            print("❌ 操作已取消")
-            return False
-    else:
-        print("⚠️ 說話人識別模組不可用")
-
-def stt_speaker_backup():
-    """備份說話人數據"""
-    stt = get_or_load_module("stt")
-
-    if stt is None:
-        error_log("[Controller] ❌ 無法載入 STT 模組")
-        return
-        
-    if hasattr(stt, 'speaker_module'):
-        import datetime
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_path = f"memory/speaker_models_backup_{timestamp}.pkl"
-        
-        success = stt.speaker_module.backup_speakers(backup_path)
-        if success:
-            print(f"✅ 說話人數據已備份至: {backup_path}")
-        else:
-            print("❌ 備份失敗")
-        return success
-    else:
-        print("⚠️ 說話人識別模組不可用")
-
-def stt_speaker_restore(backup_path: str = None):
-    """恢復說話人數據"""
-    stt = get_or_load_module("stt")
-
-    if stt is None:
-        error_log("[Controller] ❌ 無法載入 STT 模組")
-        return
-        
-    if hasattr(stt, 'speaker_module'):
-        if backup_path is None:
-            backup_path = input("請輸入備份檔案路徑: ")
-        
-        success = stt.speaker_module.restore_speakers(backup_path)
-        if success:
-            print(f"✅ 說話人數據已從備份恢復: {backup_path}")
-        else:
-            print("❌ 恢復失敗")
-        return success
-    else:
-        print("⚠️ 說話人識別模組不可用")
-
-def stt_speaker_info():
-    """顯示說話人資料庫詳細信息"""
-    stt = get_or_load_module("stt")
-
-    if stt is None:
-        error_log("[Controller] ❌ 無法載入 STT 模組")
-        return
-        
-    if hasattr(stt, 'speaker_module'):
-        info = stt.speaker_module.get_database_info()
-        if info:
-            print("📊 說話人資料庫信息:")
-            print(f"  總說話人數: {info.get('total_speakers', 0)}")
-            print(f"  總語音樣本: {info.get('total_samples', 0)}")
-            print(f"  檔案大小: {info.get('file_size_mb', 0):.2f} MB")
-            print(f"  相似度閾值: {info.get('similarity_threshold', 0):.2f}")
-            print(f"  儲存位置: {info.get('database_path', 'N/A')}")
-        else:
-            print("❌ 無法獲取資料庫信息")
-        return info
-    else:
-        print("⚠️ 說話人識別模組不可用")
-
-def stt_speaker_adjust_threshold(threshold: float = None):
-    """調整說話人相似度閾值"""
-    stt = get_or_load_module("stt")
-
-    if stt is None:
-        error_log("[Controller] ❌ 無法載入 STT 模組")
-        return
-        
-    # 使用統一的說話人識別系統
-    if hasattr(stt, 'speaker_module'):
-        if threshold is None:
-            current = stt.speaker_module.similarity_threshold
-            print(f"當前相似度閾值: {current:.2f}")
-            try:
-                threshold = float(input("請輸入新的閾值 (0.0-1.0): "))
-            except ValueError:
-                print("❌ 無效的閾值")
-                return False
-        
-        if 0.0 <= threshold <= 1.0:
-            stt.speaker_module.update_similarity_threshold(threshold)
-            print(f"✅ 相似度閾值已更新為: {threshold:.2f}")
-            return True
-        else:
-            print("❌ 閾值必須在 0.0 到 1.0 之間")
-            return False
-    else:
-        print("⚠️ 說話人識別模組不可用")
-        return False
+# 測試 STT 模組
+from .module_tests.stt_tests import (
+    stt_test_single, stt_test_continuous_listening, stt_get_stats,
+    stt_speaker_list, stt_speaker_rename, stt_speaker_delete,
+    stt_speaker_clear_all, stt_speaker_backup, stt_speaker_restore,
+    stt_speaker_info, stt_speaker_adjust_threshold
+)
 
 # 測試 NLP 模組
+from .module_tests.nlp_tests import (
+    nlp_test, nlp_test_state_queue_integration, nlp_test_multi_intent,
+    nlp_test_identity_management, nlp_analyze_context_queue, nlp_clear_contexts
+)
 
-def nlp_test(text: str = "", enable_identity: bool = True, enable_segmentation: bool = True):
-    """測試增強版NLP模組 - 包含語者身份和意圖分析"""
-    nlp = get_or_load_module("nlp")
+# 測試 Frontend 模組
+from .module_tests.frontend_tests import (
+    show_desktop_pet, hide_desktop_pet, control_desktop_pet,
+    test_mov_ani_integration, test_behavior_modes, test_animation_state_machine,
+    frontend_test_full, frontend_get_status, frontend_test_animations,
+    frontend_test_user_interaction
+)
 
-    if nlp is None:
-        error_log("[Controller] ❌ 無法載入 NLP 模組")
-        return
+# 測試 MEM 模組（尚未重構）
+from .module_tests.mem_tests import (
+    mem_fetch_test, mem_store_test, mem_clear_test, mem_list_all_test
+)
 
-    test_text = text if text else "Hello UEP, please save my work and then play some music"
-    
-    print(f"\n🧠 測試增強版NLP - 文本: '{test_text}'")
-    print("=" * 60)
-    
-    # 準備測試輸入
-    nlp_input = {
-        "text": test_text,
-        "speaker_id": "test_speaker_001",
-        "speaker_confidence": 0.85,
-        "speaker_status": "known",
-        "enable_identity_processing": enable_identity,
-        "enable_segmentation": enable_segmentation,
-        "current_system_state": "idle",
-        "conversation_history": []
-    }
-    
-    try:
-        result = nlp.handle(nlp_input)
-        
-        print(f"📝 原始文本: {result.get('original_text', 'N/A')}")
-        print(f"🎯 主要意圖: {result.get('primary_intent', 'N/A')}")
-        print(f"📊 整體信心度: {result.get('overall_confidence', 0):.3f}")
-        
-        # 語者身份信息
-        identity = result.get('identity')
-        if identity:
-            print(f"👤 語者身份: {identity.get('identity_id', 'N/A')}")
-            print(f"🔄 身份動作: {result.get('identity_action', 'N/A')}")
-        else:
-            print("👤 語者身份: 未識別")
-        
-        # 意圖分段
-        segments = result.get('intent_segments', [])
-        print(f"\n📋 意圖分段 ({len(segments)}個):")
-        for i, segment in enumerate(segments, 1):
-            if hasattr(segment, 'text'):
-                print(f"  {i}. '{segment.text}' -> {segment.intent} (信心度: {segment.confidence:.3f})")
-            else:
-                print(f"  {i}. '{segment.get('text', 'N/A')}' -> {segment.get('intent', 'N/A')}")
-        
-        # 上下文信息
-        context_ids = result.get('context_ids', [])
-        if context_ids:
-            print(f"\n🔗 創建的上下文: {len(context_ids)}個")
-            for ctx_id in context_ids:
-                print(f"  - {ctx_id}")
-        
-        # 執行計劃
-        execution_plan = result.get('execution_plan', [])
-        if execution_plan:
-            print(f"\n📋 執行計劃:")
-            for plan_item in execution_plan:
-                print(f"  步驟{plan_item.get('step', 'N/A')}: {plan_item.get('description', 'N/A')} (優先級: {plan_item.get('priority', 'N/A')})")
-        
-        # 狀態轉換
-        state_transition = result.get('state_transition')
-        if state_transition:
-            print(f"\n🔄 狀態轉換: {state_transition}")
-        
-        # 下一步模組
-        next_modules = result.get('next_modules', [])
-        if next_modules:
-            print(f"➡️ 下一步模組: {', '.join(next_modules)}")
-        
-        # 處理註記
-        processing_notes = result.get('processing_notes', [])
-        if processing_notes:
-            print(f"\n📝 處理註記:")
-            for note in processing_notes:
-                print(f"  - {note}")
-        
-        return result
-        
-    except Exception as e:
-        error_log(f"[NLP] 增強版測試失敗: {e}")
-        return None
+# 測試 LLM 模組（尚未重構）
+from .module_tests.llm_tests import (
+    llm_test_chat, llm_test_command
+)
 
-def nlp_test_state_queue_integration(text: str = ""):
-    """測試NLP與狀態佇列的整合"""
-    nlp = get_or_load_module("nlp")
-    if nlp is None:
-        error_log("[Controller] ❌ 無法載入 NLP 模組")
-        return
+# 測試 TTS 模組（尚未重構）
+from .module_tests.tts_tests import (
+    tts_test
+)
 
-    from core.state_queue import get_state_queue_manager
-    state_queue = get_state_queue_manager()
+# 測試 SYS 模組（尚未重構）
+from .module_tests.sys_tests import (
+    sys_list_functions, test_command_workflow, sys_test_functions,
+    sys_test_workflows, sys_list_test_workflows, test_file_workflow
+)
 
-    test_text = text if text else "Hi UEP, how are you? Please save my work and then remind me about the meeting."
-    
-    print(f"\n🔄 測試NLP與狀態佇列整合")
-    print(f"📝 測試文本: '{test_text}'")
-    print("=" * 80)
-    
-    # 清空佇列開始測試
-    state_queue.clear_queue()
-    print(f"🧹 清空狀態佇列")
-    
-    # 顯示初始狀態
-    initial_status = state_queue.get_queue_status()
-    print(f"🏁 初始狀態: {initial_status['current_state']}")
-    print(f"📋 初始佇列長度: {initial_status['queue_length']}")
-    
-    # 執行NLP分析
-    result = nlp_test(test_text, enable_segmentation=True)
-    
-    # 顯示分析後的狀態佇列
-    print(f"\n📊 NLP分析後的狀態佇列:")
-    final_status = state_queue.get_queue_status()
-    print(f"🎯 當前狀態: {final_status['current_state']}")
-    print(f"📋 佇列長度: {final_status['queue_length']}")
-    
-    if final_status['queue_items']:
-        print(f"📝 佇列內容:")
-        for i, item in enumerate(final_status['queue_items'], 1):
-            print(f"  {i}. {item['state']} (優先級: {item['priority']})")
-            print(f"     觸發: {item['trigger_content']}")
-            print(f"     上下文: {item['context_content']}")
-            print()
-    
-    return result
+# 創建包裝函數，自動傳遞 modules 參數
 
-def nlp_test_multi_intent(text: str = ""):
-    """測試多意圖上下文管理"""
-    nlp = get_or_load_module("nlp")
+# STT 模組包裝函數
+def stt_test_single_wrapper(enable_speaker_id=True, language="en-US"):
+    return stt_test_single(modules, enable_speaker_id, language)
 
-    if nlp is None:
-        error_log("[Controller] ❌ 無法載入 NLP 模組")
-        return
+def stt_test_continuous_listening_wrapper(duration=30):
+    return stt_test_continuous_listening(modules, duration)
 
-    test_text = text if text else "Hey system, please save my document and then remind me about the meeting tomorrow"
-    
-    print(f"\n🔄 測試多意圖上下文管理")
-    print(f"📝 測試文本: '{test_text}'")
-    print("=" * 70)
-    
-    result = nlp_test(test_text, enable_segmentation=True)
-    
-    if result and hasattr(nlp, 'intent_analyzer'):
-        analyzer = nlp.intent_analyzer
-        
-        # 獲取上下文摘要
-        context_summary = analyzer.get_context_summary()
-        print(f"\n📊 上下文管理摘要:")
-        print(f"  活躍上下文: {context_summary.get('active_contexts', 0)}")
-        print(f"  待執行上下文: {context_summary.get('pending_contexts', 0)}")
-        print(f"  已完成上下文: {context_summary.get('completed_contexts', 0)}")
-        
-        # 獲取下一個可執行的上下文
-        next_context = analyzer.get_next_context()
-        if next_context:
-            state, context = next_context
-            print(f"\n➡️ 下一個可執行上下文:")
-            print(f"  上下文ID: {context.context_id}")
-            print(f"  類型: {context.context_type.value}")
-            print(f"  任務描述: {context.task_description or context.conversation_topic}")
-            print(f"  優先級: {context.priority}")
-        else:
-            print(f"\n➡️ 無待執行的上下文")
+def stt_get_stats_wrapper():
+    return stt_get_stats(modules)
 
-def nlp_test_identity_management(speaker_id: str = "test_user"):
-    """測試語者身份管理"""
-    nlp = get_or_load_module("nlp")
+def stt_speaker_list_wrapper():
+    return stt_speaker_list(modules)
 
-    if nlp is None:
-        error_log("[Controller] ❌ 無法載入 NLP 模組")
-        return
+def stt_speaker_rename_wrapper(old_id: str, new_id: str):
+    return stt_speaker_rename(modules, old_id, new_id)
 
-    print(f"\n👤 測試語者身份管理 - 語者ID: {speaker_id}")
-    print("=" * 50)
-    
-    # 多次交互測試身份累積和識別
-    test_interactions = [
-        "Hello, I'm testing the system",
-        "Can you help me organize my files?", 
-        "I want to schedule a meeting for tomorrow",
-        "Play my favorite music please"
-    ]
-    
-    for i, text in enumerate(test_interactions, 1):
-        print(f"\n--- 交互 {i} ---")
-        
-        nlp_input = {
-            "text": text,
-            "speaker_id": speaker_id,
-            "speaker_confidence": 0.8 + (i * 0.05),  # 逐漸提高信心度
-            "speaker_status": "known" if i > 2 else "accumulating",
-            "enable_identity_processing": True,
-            "enable_segmentation": True
-        }
-        
-        result = nlp.handle(nlp_input)
-        
-        print(f"文本: '{text}'")
-        print(f"身份動作: {result.get('identity_action', 'N/A')}")
-        
-        identity = result.get('identity')
-        if identity:
-            print(f"身份ID: {identity.get('identity_id', 'N/A')}")
-            print(f"互動次數: {identity.get('interaction_stats', {}).get('total_interactions', 0)}")
+def stt_speaker_delete_wrapper(speaker_id: str):
+    return stt_speaker_delete(modules, speaker_id)
 
-def nlp_analyze_context_queue():
-    """分析NLP模組的上下文佇列狀態"""
-    nlp = get_or_load_module("nlp")
+def stt_speaker_clear_all_wrapper():
+    return stt_speaker_clear_all(modules)
 
-    if nlp is None:
-        error_log("[Controller] ❌ 無法載入 NLP 模組")
-        return
+def stt_speaker_backup_wrapper():
+    return stt_speaker_backup(modules)
 
-    if not hasattr(nlp, 'context_manager'):
-        print("❌ NLP模組沒有上下文管理器")
-        return
+def stt_speaker_restore_wrapper(backup_path: str = None):
+    return stt_speaker_restore(modules, backup_path)
 
-    context_manager = nlp.context_manager
-    
-    print(f"\n📊 多意圖上下文佇列分析")
-    print("=" * 40)
-    
-    # 獲取佇列狀態
-    summary = context_manager.get_context_summary()
-    
-    print(f"總上下文數: {len(context_manager.contexts)}")
-    print(f"活躍上下文: {len(context_manager.active_contexts)}")
-    print(f"已完成上下文: {len(context_manager.completed_contexts)}")
-    print(f"佇列長度: {len(context_manager.state_queue)}")
-    
-    # 顯示活躍上下文詳情
-    if context_manager.active_contexts:
-        print(f"\n🔄 活躍上下文:")
-        for ctx_id in context_manager.active_contexts:
-            if ctx_id in context_manager.contexts:
-                ctx = context_manager.contexts[ctx_id]
-                print(f"  {ctx_id}: {ctx.context_type.value} - {ctx.task_description or ctx.conversation_topic}")
-    
-    # 顯示佇列中的條目
-    if context_manager.state_queue:
-        print(f"\n📋 佇列條目:")
-        for i, entry in enumerate(context_manager.state_queue[:5]):  # 只顯示前5個
-            ctx = entry.context
-            print(f"  {i+1}. {ctx.context_id}: {ctx.context_type.value} (優先級: {ctx.priority})")
-        
-        if len(context_manager.state_queue) > 5:
-            print(f"  ... 還有 {len(context_manager.state_queue) - 5} 個條目")
+def stt_speaker_info_wrapper():
+    return stt_speaker_info(modules)
 
-def nlp_clear_contexts():
-    """清空NLP模組的上下文"""
-    nlp = get_or_load_module("nlp")
+def stt_speaker_adjust_threshold_wrapper(threshold: float = None):
+    return stt_speaker_adjust_threshold(modules, threshold)
 
-    if nlp is None:
-        error_log("[Controller] ❌ 無法載入 NLP 模組")
-        return
+# NLP 模組包裝函數
+def nlp_test_wrapper(text: str = "", enable_identity: bool = True, enable_segmentation: bool = True):
+    return nlp_test(modules, text, enable_identity, enable_segmentation)
 
-    if not hasattr(nlp, 'context_manager'):
-        print("❌ NLP模組沒有上下文管理器")
-        return
+def nlp_test_state_queue_integration_wrapper(text: str = ""):
+    return nlp_test_state_queue_integration(modules, text)
 
-    context_manager = nlp.context_manager
-    
-    # 清空上下文
-    context_manager.contexts.clear()
-    context_manager.active_contexts.clear()
-    context_manager.completed_contexts.clear()
-    context_manager.state_queue.clear()
-    context_manager.dependency_graph.clear()
-    
-    print("✅ 已清空所有NLP上下文")
+def nlp_test_multi_intent_wrapper(text: str = ""):
+    return nlp_test_multi_intent(modules, text)
 
-# 測試 MEM 模組
+def nlp_test_identity_management_wrapper(speaker_id: str = "test_user"):
+    return nlp_test_identity_management(modules, speaker_id)
 
-def mem_fetch_test(text : str = ""):
-    mem = get_or_load_module("mem")
-    if mem is None:
-        error_log("[Controller] ❌ 無法載入 MEM 模組")
-        return
+def nlp_analyze_context_queue_wrapper():
+    return nlp_analyze_context_queue(modules)
 
-    result = mem.handle(
-        {"mode": "fetch", "text": ("Test chat" if text == "" else text)})
+def nlp_clear_contexts_wrapper():
+    return nlp_clear_contexts(modules)
 
-    if result["status"] == "empty":
-        print("\n🧠 MEM 回傳：查無相關記憶")
-        return
+# Frontend 模組包裝函數
+def show_desktop_pet_wrapper():
+    return show_desktop_pet(modules)
 
-    print(f"\n🧠 MEM 輸出結果：\n\n使用者: {result['results'][0]['user']} \n回應: {result['results'][0]['response']}")
+def hide_desktop_pet_wrapper():
+    return hide_desktop_pet(modules)
 
-def mem_store_test(user_text : str = "Test chat", response_text : str = "Test response"):
-    mem = get_or_load_module("mem")
-    if mem is None:
-        error_log("[Controller] ❌ 無法載入 MEM 模組")
-        return
+def control_desktop_pet_wrapper(action="wave", duration=3):
+    return control_desktop_pet(modules, action, duration)
 
-    result = mem.handle(
-        {"mode": "store", "entry": {"user": user_text, "response": response_text}})
-    print("\n🧠 MEM 回傳：", "儲存" + ("成功" if result["status"] == "stored" else "失敗"))
+def test_mov_ani_integration_wrapper():
+    return test_mov_ani_integration(modules)
 
-def mem_clear_test(text : str = "ALL", top_k : int = 1):
-    mem = get_or_load_module("mem")
-    if mem is None:
-        error_log("[Controller] ❌ 無法載入 MEM 模組")
-        return
+def test_behavior_modes_wrapper():
+    return test_behavior_modes(modules)
 
-    result = mem.handle(
-        {"mode": "clear_all" if text == "ALL" else "clear_by_text", "text": text, "top_k": top_k})
-    print("\n🧠 MEM 回傳：", "清除" +
-          ("成功" if result["status"] == "cleared" else "失敗"))
+def test_animation_state_machine_wrapper():
+    return test_animation_state_machine(modules)
 
+def frontend_test_full_wrapper():
+    return frontend_test_full(modules)
 
-def mem_list_all_test(page : int = 1):
-    mem = get_or_load_module("mem")
-    if mem is None:
-        error_log("[Controller] ❌ 無法載入 MEM 模組")
-        return
+def frontend_get_status_wrapper():
+    return frontend_get_status(modules)
 
-    result = mem.handle({"mode": "list_all", "page": page})
+def frontend_test_animations_wrapper():
+    return frontend_test_animations(modules)
 
-    if result["status"] == "empty":
-        print("\n🧠 MEM 回傳：查無相關記憶")
-        return
+def frontend_test_user_interaction_wrapper():
+    return frontend_test_user_interaction(modules)
 
-    if result["status"] == "failed":
-        print("\n🧠 MEM 回傳：記憶查詢有誤 (也許是頁碼問題)")
-        return
-    
-    for i, record in enumerate(result["records"], start=1):
-        print(f"記錄 {i}: 使用者: {record['user']}，回應: {record['response']}")
+# MEM 模組包裝函數（尚未重構）
+def mem_fetch_test_wrapper(text: str = ""):
+    return mem_fetch_test(modules, text)
 
-# 測試 LLM 模組
+def mem_store_test_wrapper(user_text: str = "Test chat", response_text: str = "Test response"):
+    return mem_store_test(modules, user_text, response_text)
 
-def llm_test_chat(text):
-    llm = modules.get("llm")
-    if llm is None:
-        error_log("[Controller] ❌ 無法載入 LLM 模組")
-        return
+def mem_clear_test_wrapper(text: str = "ALL", top_k: int = 1):
+    return mem_clear_test(modules, text, top_k)
 
-    memory = "No relevant memory found."  
+def mem_list_all_test_wrapper(page: int = 1):
+    return mem_list_all_test(modules, page)
 
-    result = llm.handle({
-        "text": text,
-        "intent": "chat",
-        "memory": memory
-    })
+# LLM 模組包裝函數（尚未重構）
+def llm_test_chat_wrapper(text: str):
+    return llm_test_chat(modules, text)
 
-    print("🧠 Gemini 回應：", result.get("text", "[無回應]"))
-    print("🧭 心情標記（mood）：", result.get("mood", "neutral"))
-    # print("⚙️ 系統指令：", result.get("sys_action")) 因為是聊天測試所以這個應該不需要
+def llm_test_command_wrapper(text: str):
+    return llm_test_command(modules, text)
 
-def llm_test_command(text):
-    llm = modules.get("llm")
-    if llm is None:
-        error_log("[Controller] ❌ 無法載入 LLM 模組")
-        return
+# TTS 模組包裝函數（尚未重構）
+def tts_test_wrapper(text: str, mood: str = "neutral", save: bool = False):
+    return tts_test(modules, text, mood, save)
 
-    memory = "No relevant memory found."  
+# SYS 模組包裝函數（尚未重構）
+def sys_list_functions_wrapper():
+    return sys_list_functions(modules)
 
-    result = llm.handle({
-        "text": text,
-        "intent": "command",
-        "memory": memory
-    })
+def test_command_workflow_wrapper(command_text: str = "幫我整理和摘要桌面上的文件"):
+    return test_command_workflow(modules, command_text)
 
-    print("🧠 Gemini 指令分析：", result.get("text", "[無回應]"))
-    print("🧭 心情標記（mood）：", result.get("mood", "neutral"))
-    print("⚙️ 系統指令：", result.get("sys_action"))
-    print("📋 指令類型：", result.get("sys_action", {}).get("action", "無") if isinstance(result.get("sys_action"), dict) else "無")
-    
-# 測試 TTS 模組
+def sys_test_functions_wrapper(mode: int = 1, sub: int = 1):
+    return sys_test_functions(modules, mode, sub)
 
-def tts_test(text, mood="neutral", save=False):
-    tts = get_or_load_module("tts")
-    if tts is None:
-        error_log("[Controller] ❌ 無法載入 TTS 模組")
-        return
-    if not text:
-        error_log("[Controller] ❌ TTS 測試文本為空")
-        return
+def sys_test_workflows_wrapper(workflow_type: int = 1):
+    return sys_test_workflows(modules, workflow_type)
 
-    result = asyncio.run(tts.handle({
-        "text": text,
-        "mood": mood,
-        "save": save
-    }))
-    
-    if result["status"] == "error":
-        print("\n❌ TTS 錯誤：", result["message"])
-    elif result["status"] == "processing":
-        print("\n⏳ TTS 處理中，分為", result.get("chunk_count", "未知"), "個區塊...")
-    else:
-        if save:
-            print("\n✅ TTS 成功，音檔已經儲存到", result["output_path"])
-        else: 
-            print("\n✅ TTS 成功，音檔已經被撥放\n")
+def sys_list_test_workflows_wrapper():
+    return sys_list_test_workflows(modules)
 
-# 測試 SYS 模組
+def test_file_workflow_wrapper(workflow_type: str):
+    return test_file_workflow(modules, workflow_type)
 
-def sys_list_functions():
-    sysmod = get_or_load_module("sysmod")
+# 為了向後兼容，保留原來的函數名稱
+stt_test_single = stt_test_single_wrapper
+stt_test_continuous_listening = stt_test_continuous_listening_wrapper
+stt_get_stats = stt_get_stats_wrapper
+stt_speaker_list = stt_speaker_list_wrapper
+stt_speaker_rename = stt_speaker_rename_wrapper
+stt_speaker_delete = stt_speaker_delete_wrapper
+stt_speaker_clear_all = stt_speaker_clear_all_wrapper
+stt_speaker_backup = stt_speaker_backup_wrapper
+stt_speaker_restore = stt_speaker_restore_wrapper
+stt_speaker_info = stt_speaker_info_wrapper
+stt_speaker_adjust_threshold = stt_speaker_adjust_threshold_wrapper
 
-    if sysmod is None:
-        error_log("[Controller] ❌ 無法載入 SYS 模組")
-        return
+nlp_test = nlp_test_wrapper
+nlp_test_state_queue_integration = nlp_test_state_queue_integration_wrapper
+nlp_test_multi_intent = nlp_test_multi_intent_wrapper
+nlp_test_identity_management = nlp_test_identity_management_wrapper
+nlp_analyze_context_queue = nlp_analyze_context_queue_wrapper
+nlp_clear_contexts = nlp_clear_contexts_wrapper
 
-    resp = sysmod.handle({"mode": "list_functions", "params": {}})
+# Frontend 函數別名（用於 debug_api 與 frontend_test_tab 整合）
+show_desktop_pet = show_desktop_pet_wrapper
+hide_desktop_pet = hide_desktop_pet_wrapper
+control_desktop_pet = control_desktop_pet_wrapper
+test_mov_ani_integration = test_mov_ani_integration_wrapper
+test_behavior_modes = test_behavior_modes_wrapper
+test_animation_state_machine = test_animation_state_machine_wrapper
+frontend_test_full = frontend_test_full_wrapper
+frontend_test_status = frontend_get_status_wrapper  # 別名匹配
+frontend_get_status = frontend_get_status_wrapper
+frontend_test_animations = frontend_test_animations_wrapper
+frontend_test_user_interaction = frontend_test_user_interaction_wrapper
 
-    print("=== SYS 功能清單 ===")
-    import json
-    print(json.dumps(resp.get("data", {}), ensure_ascii=False, indent=2))
+# MEM 函數別名（匹配實際的函數名稱）
+mem_fetch_test = mem_fetch_test_wrapper
+mem_store_test = mem_store_test_wrapper
+mem_clear_test = mem_clear_test_wrapper
+mem_list_all_test = mem_list_all_test_wrapper
+# 為了向後兼容，添加一些常用的別名
+mem_test_save = mem_store_test_wrapper
+mem_test_load = mem_fetch_test_wrapper
+mem_test_search = mem_fetch_test_wrapper
+mem_test_list = mem_list_all_test_wrapper
+mem_test_clear = mem_clear_test_wrapper
 
-# 測試多步驟工作流程
-def test_command_workflow(command_text: str = "幫我整理和摘要桌面上的文件"):
-    """測試多步驟指令工作流程"""
-    sysmod = get_or_load_module("sysmod")
-    llm = get_or_load_module("llm")
+# LLM 函數別名（匹配實際的函數名稱）
+llm_test_chat = llm_test_chat_wrapper
+llm_test_command = llm_test_command_wrapper
+# 為了向後兼容，添加一些常用的別名
+llm_test_generation = llm_test_chat_wrapper
+llm_test_completion = llm_test_chat_wrapper
+llm_test_qa = llm_test_chat_wrapper
+llm_test_conversation = llm_test_chat_wrapper
 
-    if sysmod is None or llm is None:
-        error_log("[Controller] ❌ 無法載入 SYS 或 LLM 模組")
-        return
+# TTS 函數別名（匹配實際的函數名稱）
+tts_test = tts_test_wrapper
+# 為了向後兼容，添加一些常用的別名
+tts_test_speak = tts_test_wrapper
 
-    info_log(f"[Controller] 測試指令工作流程：'{command_text}'")
-    
-    # 第一步：LLM 分析指令
-    llm_resp = llm.handle({
-        "text": command_text,
-        "intent": "command",
-        "memory": ""
-    })
-    
-    print("\n🧠 LLM 分析指令：", llm_resp.get("text", "[無回應]"))
-    
-    # 第二步：啟動工作流程（假設為檔案處理類型）
-    workflow_resp = sysmod.handle({
-        "mode": "start_workflow",
-        "params": {
-            "workflow_type": "file_processing",
-            "command": command_text
-        }
-    })
-    
-    session_id = workflow_resp.get("session_id")
-    if not session_id:
-        error_log("[Controller] ❌ 工作流程啟動失敗")
-        return
-        
-    print(f"\n🔄 工作流程已啟動，ID: {session_id}")
-    print(f"🔹 系統提示：{workflow_resp.get('prompt')}")
-    
-    # 模擬用戶交互
-    while workflow_resp.get("requires_input", False):
-        # 請求用戶輸入
-        user_input = input("\n✍️ 請輸入回應: ")
-        
-        if user_input.lower() in ("exit", "quit", "取消"):
-            # 取消工作流程
-            cancel_resp = sysmod.handle({
-                "mode": "cancel_workflow",
-                "params": {
-                    "session_id": session_id,
-                    "reason": "用戶取消"
-                }
-            })
-            print(f"\n❌ 工作流程已取消：{cancel_resp.get('message')}")
-            break
-            
-        # 繼續工作流程
-        workflow_resp = sysmod.handle({
-            "mode": "continue_workflow",
-            "params": {
-                "session_id": session_id,
-                "user_input": user_input
-            }
-        })
-        
-        print(f"\n🔄 工作流程步驟 {workflow_resp.get('data', {}).get('step', '?')} 完成")
-        print(f"🔹 系統訊息：{workflow_resp.get('message')}")
-        
-        if workflow_resp.get("requires_input", False):
-            print(f"🔹 下一步提示：{workflow_resp.get('prompt')}")
-        else:
-            # 工作流程完成或異常終止
-            status = workflow_resp.get("status")
-            if status == "completed":
-                print("\n✅ 工作流程成功完成！")
-                result_data = workflow_resp.get("data", {})
-                if result_data:
-                    print("\n📊 工作流程結果:")
-                    for key, value in result_data.items():
-                        if isinstance(value, str) and len(value) > 100:
-                            print(f"  {key}: {value[:100]}...")
-                        else:
-                            print(f"  {key}: {value}")
-            else:
-                print(f"\n⚠️ 工作流程異常結束，狀態: {status}")
-    
-    print("\n==== 工作流程測試結束 ====")
+# SYS 函數別名（匹配實際的函數名稱）
+sys_list_functions = sys_list_functions_wrapper
+test_command_workflow = test_command_workflow_wrapper
+sys_test_functions = sys_test_functions_wrapper
+sys_test_workflows = sys_test_workflows_wrapper
+sys_list_test_workflows = sys_list_test_workflows_wrapper
+test_file_workflow = test_file_workflow_wrapper
+# 為了向後兼容，添加一些常用的別名
+sys_test_resources = sys_list_functions_wrapper
+sys_test_performance = sys_test_functions_wrapper
+sys_test_cleanup = test_command_workflow_wrapper
 
-def sys_test_functions(mode : int = 1, sub : int = 1): 
-    sysmod = get_or_load_module("sysmod")
-    if sysmod is None:
-        error_log("[Controller] ❌ 無法載入 SYS 模組")
-        return
-
-    match mode:
-        case 1: # 檔案互動功能 (僅工作流程模式)
-            info_log("[Controller] 開啟檔案互動功能 (工作流程模式)")
-            match sub:
-                case 1: # 測試檔案工作流程 - Drop and Read
-                    print("=== 測試檔案讀取工作流程 ===")
-                    test_file_workflow("drop_and_read")
-                case 2: # 測試檔案工作流程 - Intelligent Archive
-                    print("=== 測試智慧歸檔工作流程 ===")
-                    test_file_workflow("intelligent_archive")
-                case 3: # 測試檔案工作流程 - Summarize Tag
-                    print("=== 測試摘要標籤工作流程 ===")
-                    test_file_workflow("summarize_tag")
-                case 4: # 測試一般多步驟工作流程
-                    command = input("請輸入指令（如：幫我整理文件）：")
-                    if command:
-                        test_command_workflow(command)
-                    else:
-                        print("未輸入指令，取消測試")
-                case _:
-                    print("未知的子功能選項")
-        case _:
-            print("未知的功能選項")
-
-def sys_test_workflows(workflow_type: int = 1):
-    """測試各種測試工作流程
-    
-    Args:
-        workflow_type: 工作流程類型
-            1: echo - 簡單回顯
-            2: countdown - 倒數計時
-            3: data_collector - 資料收集
-            4: random_fail - 隨機失敗
-            5: tts_test - TTS文字轉語音測試
-    """
-    sysmod = get_or_load_module("sysmod")
-    if sysmod is None:
-        error_log("[Controller] ❌ 無法載入 SYS 模組")
-        return
-        
-    workflow_map = {
-        1: "echo",
-        2: "countdown", 
-        3: "data_collector",
-        4: "random_fail",
-        5: "tts_test"
-    }
-    
-    workflow_display_name = {
-        1: "簡單回顯",
-        2: "倒數計時",
-        3: "資料收集",
-        4: "隨機失敗",
-        5: "TTS文字轉語音"
-    }
-    
-    if workflow_type not in workflow_map:
-        error_log(f"[Controller] ❌ 無效的工作流程類型: {workflow_type}")
-        return
-        
-    workflow_name = workflow_display_name[workflow_type]
-    workflow_type_name = workflow_map[workflow_type]
-    
-    print(f"\n=== 開始測試 {workflow_name} 工作流程 ===")
-    
-    # 啟動工作流程（使用統一的 start_workflow 模式）
-    resp = sysmod.handle({
-        "mode": "start_workflow", 
-        "params": {
-            "workflow_type": workflow_type_name,
-            "command": f"測試 {workflow_name} 工作流程"
-        }
-    })
-    
-    print("\n工作流程已啟動!")
-    print(f"回應狀態: {resp.get('status', '未知')}")
-    print(f"回應訊息: {resp.get('message', '無訊息')}")
-    
-    # 處理工作流程後續互動
-    session_id = resp.get("session_id")
-    if not session_id:
-        print("無法獲取會話 ID，工作流程可能無法繼續")
-        return
-    
-    # 進入互動循環
-    while resp.get("requires_input", False) or resp.get("status") == "waiting":
-        requires_input = resp.get("requires_input", False)
-        prompt = resp.get("prompt", "請輸入")
-        
-        if requires_input:
-            print(f"\n{prompt}")
-            user_input = input("> ")
-            
-            # 如果用戶輸入 exit 或 quit，取消工作流程
-            if user_input.lower() in ["exit", "quit", "取消"]:
-                cancel_resp = sysmod.handle({
-                    "mode": "cancel_workflow",
-                    "params": {
-                        "session_id": session_id,
-                        "reason": "用戶取消"
-                    }
-                })
-                print(f"\n❌ 工作流程已取消：{cancel_resp.get('message', '已取消')}")
-                break
-            
-            # 繼續工作流程（使用統一的 continue_workflow 模式）
-            resp = sysmod.handle({
-                "mode": "continue_workflow", 
-                "params": {
-                    "session_id": session_id,
-                    "user_input": user_input
-                }
-            })
-            
-            print(f"\n回應狀態: {resp.get('status', '未知')}")
-            print(f"回應訊息: {resp.get('message', '無訊息')}")
-            
-            # 如果狀態是 waiting，繼續自動推進
-            while resp.get("status") == "waiting" and not resp.get("requires_input", False):
-                import time
-                time.sleep(0.5)  # 短暫延遲
-                resp = sysmod.handle({
-                    "mode": "continue_workflow", 
-                    "params": {
-                        "session_id": session_id,
-                        "user_input": ""  # 自動推進不需要輸入
-                    }
-                })
-                print(f"回應狀態: {resp.get('status', '未知')}")
-                print(f"回應訊息: {resp.get('message', '無訊息')}")
-        else:
-            # 工作流程已完成或失敗
-            break
-    
-    print(f"\n=== {workflow_name} 工作流程結束 ===")
-    print(f"最終狀態: {resp.get('status', '未知')}")
-    print(f"最終訊息: {resp.get('message', '無訊息')}")
-    
-    # 顯示工作流程結果（如果有）
-    if "data" in resp:
-        print("\n工作流程結果:")
-        data = resp["data"]
-        print(data)
-        
-        # 特殊處理資料收集工作流程的結果
-        if workflow_type == 3 and data and "enhanced_summary" in data:
-            print("\n========== LLM 增強摘要 ==========")
-            print(data["enhanced_summary"])
-            print("========== 摘要結束 ==========")
 
 # 整合測試 - 新版
 
@@ -1195,219 +400,17 @@ def integration_test_SN(production_mode=False):
     # 目前生產模式參數未被使用，因為新版整合測試不區分生產和除錯模式
     return test_stt_nlp(modules)
 
-# 額外測試
+# 額外測試（暫時停用，等相關模組完成後再啟用）
 
 def test_summrize():
-    test_chunk_and_summarize()
+    """摘要測試 - 暫時停用"""
+    # test_chunk_and_summarize()
+    print("⚠️ 摘要測試功能暫時停用，等相關模組完成後再啟用")
 
 def test_chat():
-    test_uep_chatting(modules)
-
-def sys_list_test_workflows():
-    """列出所有可用的測試工作流程"""
-    print("\n=== 可用的測試工作流程 ===")
-    print("1. echo - 簡單回顯工作流程")
-    print("   - 單步驟工作流程")
-    print("   - 測試工作流程機制的基本功能")
-    print("   - 接受一個訊息並回顯它")
-    print()
-    print("2. countdown - 倒數計時工作流程")
-    print("   - 多步驟工作流程")
-    print("   - 測試工作流程中的狀態保持")
-    print("   - 從指定數字開始倒數計時直到零")
-    print()
-    print("3. data_collector - 資料收集工作流程")
-    print("   - 多步驟工作流程")
-    print("   - 測試工作流程中的用戶輸入處理")
-    print("   - 收集各種用戶資訊並在最後匯總")
-    print()
-    print("4. random_fail - 隨機失敗工作流程")
-    print("   - 多步驟工作流程")
-    print("   - 測試工作流程的錯誤處理")
-    print("   - 在隨機步驟可能失敗，以測試錯誤恢復機制")
-    print()
-    print("5. tts_test - TTS文字轉語音測試工作流程")
-    print("   - 多步驟工作流程")
-    print("   - 測試與TTS模組的整合")
-    print("   - 讓用戶輸入文字、情緒，並將其轉換成語音")
-    print()
-    print("=== 可用的文件工作流程 ===")
-    print("drop_and_read - 檔案讀取工作流程")
-    print("   - 多步驟工作流程")
-    print("   - 等待檔案路徑輸入，確認後讀取檔案內容")
-    print()
-    print("intelligent_archive - 智慧歸檔工作流程")
-    print("   - 多步驟工作流程")
-    print("   - 根據檔案類型和歷史記錄智慧歸檔檔案")
-    print()
-    print("summarize_tag - 摘要標籤工作流程")
-    print("   - 多步驟工作流程")
-    print("   - 使用LLM為檔案生成摘要和標籤")
-
-def test_file_workflow(workflow_type: str):
-    """測試檔案工作流程
-    
-    Args:
-        workflow_type: 工作流程類型 ('drop_and_read', 'intelligent_archive', 'summarize_tag')
-    """
-    sysmod = get_or_load_module("sysmod")
-    if sysmod is None:
-        error_log("[Controller] ❌ 無法載入 SYS 模組")
-        return
-        
-    workflow_display_names = {
-        "drop_and_read": "檔案讀取",
-        "intelligent_archive": "智慧歸檔", 
-        "summarize_tag": "摘要標籤"
-    }
-    
-    workflow_name = workflow_display_names.get(workflow_type, workflow_type)
-    
-    print(f"\n=== 開始測試 {workflow_name} 工作流程 ===")
-    
-    # 啟動工作流程
-    resp = sysmod.handle({
-        "mode": "start_workflow",
-        "params": {
-            "workflow_type": workflow_type,
-            "command": f"測試 {workflow_name} 工作流程"
-        }
-    })
-    
-    print("\n工作流程已啟動!")
-    print(f"回應狀態: {resp.get('status', '未知')}")
-    print(f"回應訊息: {resp.get('message', '無訊息')}")
-    
-    # 處理工作流程後續互動
-    session_id = resp.get("session_id")
-    if not session_id:
-        print("無法獲取會話 ID，工作流程可能無法繼續")
-        return
-    
-    # 進入互動循環
-    while resp.get("requires_input", False) or resp.get("status") == "waiting":
-        requires_input = resp.get("requires_input", False)
-        prompt = resp.get("prompt", "請輸入")
-        
-        if requires_input:
-            print(f"\n{prompt}")
-            
-            # 檢查是否需要檔案選擇（更精確的判斷）
-            # 只有當提示明確要求選擇檔案，且不是確認步驟時，才開啟檔案選擇視窗
-            needs_file_selection = (
-                any(keyword in prompt.lower() for keyword in [
-                    "請輸入要讀取的檔案路徑", 
-                    "請選擇要歸檔的檔案路徑",
-                    "請輸入要生成摘要的檔案路徑",
-                    "請選擇檔案", 
-                    "請輸入檔案路徑", 
-                    "file path"
-                ]) and
-                "確認" not in prompt.lower() and
-                "是否" not in prompt.lower() and
-                "y/n" not in prompt.lower()
-            )
-            
-            if needs_file_selection:
-                print("🔍 正在開啟檔案選擇視窗...")
-                try:
-                    file_path = open_demo_window()
-                    if file_path:
-                        print(f"✅ 已選擇檔案: {file_path}")
-                        user_input = file_path
-                    else:
-                        print("❌ 未選擇檔案，取消測試")
-                        break
-                except Exception as e:
-                    error_log(f"[Controller] 檔案選擇出現錯誤: {e}")
-                    print("❌ 檔案選擇失敗，取消測試")
-                    break
-            else:
-                # 一般文字輸入或確認步驟
-                user_input = input("> ")
-                
-                # 如果用戶輸入 exit 或 quit，取消工作流程
-                if user_input.lower() in ["exit", "quit", "取消"]:
-                    cancel_resp = sysmod.handle({
-                        "mode": "cancel_workflow",
-                        "params": {
-                            "session_id": session_id,
-                            "reason": "用戶取消"
-                        }
-                    })
-                    print(f"\n❌ 工作流程已取消：{cancel_resp.get('message', '已取消')}")
-                    break
-            
-            # 繼續工作流程
-            resp = sysmod.handle({
-                "mode": "continue_workflow",
-                "params": {
-                    "session_id": session_id,
-                    "user_input": user_input
-                }
-            })
-            
-            print(f"\n回應狀態: {resp.get('status', '未知')}")
-            print(f"回應訊息: {resp.get('message', '無訊息')}")
-            
-            # 如果狀態是 waiting，繼續自動推進
-            while resp.get("status") == "waiting" and not resp.get("requires_input", False):
-                import time
-                time.sleep(0.5)  # 短暫延遲
-                resp = sysmod.handle({
-                    "mode": "continue_workflow", 
-                    "params": {
-                        "session_id": session_id,
-                        "user_input": ""  # 自動推進不需要輸入
-                    }
-                })
-                print(f"自動推進 - 回應狀態: {resp.get('status', '未知')}")
-                print(f"自動推進 - 回應訊息: {resp.get('message', '無訊息')}")
-        else:
-            # 工作流程已完成或失敗
-            break
-    
-    print(f"\n=== {workflow_name} 工作流程結束 ===")
-    print(f"最終狀態: {resp.get('status', '未知')}")
-    print(f"最終訊息: {resp.get('message', '無訊息')}")
-    
-    # 顯示工作流程結果（如果有）
-    if "data" in resp:
-        print("\n🎯 工作流程結果:")
-        data = resp["data"]
-        
-        if isinstance(data, dict):
-            for key, value in data.items():
-                if isinstance(value, str) and len(value) > 200:
-                    print(f"  {key}: {value[:200]}...")
-                elif isinstance(value, list) and len(value) > 5:
-                    print(f"  {key}: {value[:5]}... (總共 {len(value)} 項)")
-                else:
-                    print(f"  {key}: {value}")
-        else:
-            print(f"  結果: {data}")
-            
-        # 特殊處理不同類型的檔案工作流程結果
-        if workflow_type == "drop_and_read" and isinstance(data, dict):
-            if "content" in data:
-                print(f"\n📄 檔案內容預覽:")
-                content = data["content"]
-                if len(content) > 500:
-                    print(f"{content[:500]}...")
-                else:
-                    print(content)
-                    
-        elif workflow_type == "intelligent_archive" and isinstance(data, dict):
-            if "archive_path" in data:
-                print(f"\n📁 檔案已歸檔至: {data['archive_path']}")
-            if "category" in data:
-                print(f"📂 分類: {data['category']}")
-                
-        elif workflow_type == "summarize_tag" and isinstance(data, dict):
-            if "summary" in data:
-                print(f"\n📝 摘要: {data['summary']}")
-            if "tags" in data:
-                print(f"🏷️ 標籤: {', '.join(data['tags'])}")
+    """聊天測試 - 暫時停用"""
+    # test_uep_chatting(modules)
+    print("⚠️ 聊天測試功能暫時停用，等相關模組完成後再啟用")
 
 # === 工作上下文管理功能 ===
 
@@ -1505,483 +508,3 @@ def test_speaker_context_workflow():
 
 # 在模組載入時自動初始化工作上下文
 setup_working_context()
-
-# === 前端模組測試函數 ===
-
-def frontend_test_status():
-    """檢查前端模組狀態"""
-    info_log("[Controller] 檢查前端模組狀態")
-    
-    frontend_modules = ["ui", "ani", "mov"]
-    status = {}
-    
-    for module_name in frontend_modules:
-        module = modules.get(module_name)
-        if module is None:
-            status[module_name] = {"loaded": False, "error": "模組未載入"}
-            continue
-        
-        try:
-            # 檢查模組基本屬性
-            module_info = {
-                "loaded": True,
-                "module_id": getattr(module, 'module_id', 'Unknown'),
-                "module_type": getattr(module, 'module_type', 'Unknown'),
-                "config_loaded": hasattr(module, 'config') and module.config is not None,
-                "initialized": hasattr(module, 'is_initialized') and module.is_initialized,
-                "signals_available": hasattr(module, 'signals')
-            }
-            
-            # UI 模組特定檢查
-            if module_name == "ui":
-                module_info.update({
-                    "window_created": hasattr(module, 'desktop_pet_window'),
-                    "image_loaded": hasattr(module, 'default_image'),
-                    "event_handlers": len(getattr(module, 'event_handlers', {}))
-                })
-            
-            # ANI 模組特定檢查
-            elif module_name == "ani":
-                module_info.update({
-                    "animations_loaded": len(getattr(module, 'animations', {})),
-                    "current_animation": getattr(module, 'current_animation', None) is not None,
-                    "timer_active": hasattr(module, 'animation_timer')
-                })
-            
-            # MOV 模組特定檢查
-            elif module_name == "mov":
-                module_info.update({
-                    "physics_enabled": hasattr(module, 'position') and hasattr(module, 'velocity'),
-                    "behavior_type": str(getattr(module, 'behavior_type', 'Unknown')),
-                    "timer_active": hasattr(module, 'update_timer')
-                })
-            
-            status[module_name] = module_info
-            
-        except Exception as e:
-            status[module_name] = {"loaded": True, "error": f"檢查時發生錯誤: {str(e)}"}
-    
-    # 輸出狀態報告
-    print("\n=== 前端模組狀態報告 ===")
-    for module_name, info in status.items():
-        print(f"\n🎨 {module_name.upper()} 模組:")
-        if not info.get("loaded", False):
-            print(f"   ❌ {info.get('error', '未知錯誤')}")
-            continue
-        
-        if "error" in info:
-            print(f"   ⚠️  {info['error']}")
-            continue
-        
-        print(f"   ✅ 已載入 - ID: {info.get('module_id', 'Unknown')}")
-        print(f"   📋 配置已載入: {'是' if info.get('config_loaded', False) else '否'}")
-        print(f"   🚀 已初始化: {'是' if info.get('initialized', False) else '否'}")
-        print(f"   📡 信號系統: {'可用' if info.get('signals_available', False) else '不可用'}")
-        
-        # 模組特定信息
-        if module_name == "ui":
-            print(f"   🖼️  視窗創建: {'是' if info.get('window_created', False) else '否'}")
-            print(f"   🎭 圖像載入: {'是' if info.get('image_loaded', False) else '否'}")
-            print(f"   🎯 事件處理器: {info.get('event_handlers', 0)} 個")
-        
-        elif module_name == "ani":
-            print(f"   🎬 動畫載入: {info.get('animations_loaded', 0)} 個")
-            print(f"   ▶️  當前動畫: {'播放中' if info.get('current_animation', False) else '無'}")
-            print(f"   ⏱️  計時器: {'活躍' if info.get('timer_active', False) else '停止'}")
-        
-        elif module_name == "mov":
-            print(f"   🎯 物理系統: {'啟用' if info.get('physics_enabled', False) else '停用'}")
-            print(f"   🤖 行為類型: {info.get('behavior_type', 'Unknown')}")
-            print(f"   ⏱️  計時器: {'活躍' if info.get('timer_active', False) else '停止'}")
-    
-    return status
-
-def frontend_test_communication():
-    """測試前端模組間通信"""
-    info_log("[Controller] 測試前端模組間通信")
-    
-    ui_module = modules.get("ui")
-    ani_module = modules.get("ani") 
-    mov_module = modules.get("mov")
-    
-    if not all([ui_module, ani_module, mov_module]):
-        missing = []
-        if not ui_module: missing.append("UI")
-        if not ani_module: missing.append("ANI")
-        if not mov_module: missing.append("MOV")
-        print(f"❌ 無法進行通信測試，缺少模組: {', '.join(missing)}")
-        return False
-    
-    print("\n=== 前端模組通信測試 ===")
-    
-    # 測試 1: UI -> ANI 動畫請求
-    print("\n🎬 測試 UI -> ANI 動畫請求")
-    try:
-        ani_response = ani_module.handle_frontend_request({
-            "command": "play_animation",
-            "animation_type": "stand_idle",
-            "loop": True
-        })
-        print(f"   ANI 回應: {ani_response}")
-    except Exception as e:
-        print(f"   ❌ 錯誤: {e}")
-    
-    # 測試 2: UI -> MOV 移動請求
-    print("\n🎯 測試 UI -> MOV 移動請求")
-    try:
-        mov_response = mov_module.handle_frontend_request({
-            "command": "set_position", 
-            "x": 100,
-            "y": 100
-        })
-        print(f"   MOV 回應: {mov_response}")
-    except Exception as e:
-        print(f"   ❌ 錯誤: {e}")
-    
-    # 測試 3: MOV -> ANI 行為改變
-    print("\n🤖 測試 MOV -> ANI 行為同步")
-    try:
-        ani_response = ani_module.handle_frontend_request({
-            "command": "set_behavior_animation",
-            "behavior": "walking"
-        })
-        print(f"   ANI 回應: {ani_response}")
-    except Exception as e:
-        print(f"   ❌ 錯誤: {e}")
-    
-    print("\n✅ 前端模組通信測試完成")
-    return True
-
-def frontend_test_animations():
-    """測試動畫系統"""
-    info_log("[Controller] 測試動畫系統")
-    
-    ani_module = modules.get("ani")
-    if not ani_module:
-        print("❌ ANI 模組未載入")
-        return False
-    
-    print("\n=== 動畫系統測試 ===")
-    
-    # 列出可用動畫
-    try:
-        animations_response = ani_module.handle_frontend_request({
-            "command": "list_animations"
-        })
-        print(f"📋 可用動畫: {animations_response}")
-    except Exception as e:
-        print(f"❌ 獲取動畫列表失敗: {e}")
-        return False
-    
-    # 測試播放不同動畫
-    test_animations = ["stand_idle", "smile_idle", "walk_left", "talk_ani"]
-    
-    for anim_name in test_animations:
-        print(f"\n🎬 測試動畫: {anim_name}")
-        try:
-            play_response = ani_module.handle_frontend_request({
-                "command": "play_animation",
-                "animation_type": anim_name,
-                "loop": False
-            })
-            print(f"   播放結果: {play_response}")
-            
-            # 等待一小段時間
-            time.sleep(1)
-            
-            stop_response = ani_module.handle_frontend_request({
-                "command": "stop_animation"
-            })
-            print(f"   停止結果: {stop_response}")
-            
-        except Exception as e:
-            print(f"   ❌ 錯誤: {e}")
-    
-    print("\n✅ 動畫系統測試完成")
-    return True
-
-def frontend_test_movement():
-    """測試移動系統"""
-    info_log("[Controller] 測試移動系統")
-    
-    mov_module = modules.get("mov")
-    if not mov_module:
-        print("❌ MOV 模組未載入")
-        return False
-    
-    print("\n=== 移動系統測試 ===")
-    
-    # 測試位置設定
-    print("\n📍 測試位置設定")
-    test_positions = [(100, 100), (200, 150), (300, 200)]
-    
-    for x, y in test_positions:
-        try:
-            response = mov_module.handle_frontend_request({
-                "command": "set_position",
-                "x": x,
-                "y": y
-            })
-            print(f"   設定位置 ({x}, {y}): {response}")
-        except Exception as e:
-            print(f"   ❌ 設定位置失敗: {e}")
-    
-    # 測試速度設定
-    print("\n🏃 測試速度設定")
-    test_velocities = [(5, 0), (0, 5), (-3, 2)]
-    
-    for vx, vy in test_velocities:
-        try:
-            response = mov_module.handle_frontend_request({
-                "command": "set_velocity",
-                "vx": vx,
-                "vy": vy
-            })
-            print(f"   設定速度 ({vx}, {vy}): {response}")
-        except Exception as e:
-            print(f"   ❌ 設定速度失敗: {e}")
-    
-    # 測試行為模式
-    print("\n🤖 測試行為模式")
-    test_behaviors = ["idle", "walking", "following", "wandering"]
-    
-    for behavior in test_behaviors:
-        try:
-            response = mov_module.handle_frontend_request({
-                "command": "set_behavior",
-                "behavior": behavior
-            })
-            print(f"   設定行為 {behavior}: {response}")
-        except Exception as e:
-            print(f"   ❌ 設定行為失敗: {e}")
-    
-    print("\n✅ 移動系統測試完成")
-    return True
-
-def frontend_test_ui_interactions():
-    """測試 UI 交互"""
-    info_log("[Controller] 測試 UI 交互")
-    
-    ui_module = modules.get("ui")
-    if not ui_module:
-        print("❌ UI 模組未載入")
-        return False
-    
-    print("\n=== UI 交互測試 ===")
-    
-    # 首先確保在除錯模式下顯示訪問球體
-    try:
-        from modules.ui_module.ui_module import UIInterfaceType
-        print("\n🔮 顯示訪問球體...")
-        result = ui_module.show_interface(UIInterfaceType.USER_ACCESS_WIDGET)
-        print(f"   訪問球體顯示結果: {result}")
-    except Exception as e:
-        print(f"   ❌ 顯示訪問球體失敗: {e}")
-    
-    # 測試視窗操作
-    print("\n🖼️  測試視窗操作")
-    window_tests = [
-        {"command": "show_window"},
-        {"command": "hide_window"},
-        {"command": "show_window"},
-        {"command": "set_window_size", "width": 300, "height": 300},
-        {"command": "set_always_on_top", "enabled": True}
-    ]
-    
-    for test in window_tests:
-        try:
-            response = ui_module.handle_frontend_request(test)
-            print(f"   {test['command']}: {response}")
-        except Exception as e:
-            print(f"   ❌ {test['command']} 失敗: {e}")
-    
-    # 測試圖像操作
-    print("\n🎭 測試圖像操作")
-    image_tests = [
-        {"command": "set_image", "image_path": "resources/assets/static/default.png"},
-        {"command": "set_opacity", "opacity": 0.8},
-        {"command": "set_opacity", "opacity": 1.0}
-    ]
-    
-    for test in image_tests:
-        try:
-            response = ui_module.handle_frontend_request(test)
-            print(f"   {test['command']}: {response}")
-        except Exception as e:
-            print(f"   ❌ {test['command']} 失敗: {e}")
-    
-    print("\n✅ UI 交互測試完成")
-    return True
-
-def frontend_test_access_widget():
-    """測試使用者存取工具 (access_widget)"""
-    info_log("[Controller] 測試使用者存取工具")
-    
-    ui_module = modules.get("ui")
-    if not ui_module:
-        print("❌ UI 模組未載入")
-        return False
-    
-    print("\n=== 使用者存取工具測試 ===")
-    
-    # 檢查access_widget是否存在
-    from modules.ui_module.ui_module import UIInterfaceType
-    access_widget = ui_module.interfaces.get(UIInterfaceType.USER_ACCESS_WIDGET)
-    if not access_widget:
-        print("❌ access_widget 未初始化")
-        return False
-    
-    print("✅ access_widget 已初始化")
-    
-    # 測試顯示access_widget
-    print("\n🔮 測試access_widget顯示")
-    try:
-        result = ui_module.show_interface(UIInterfaceType.USER_ACCESS_WIDGET)
-        print(f"   顯示結果: {result}")
-        
-        # 檢查狀態
-        import time
-        time.sleep(1)
-        interface_status = ui_module.get_interface_status()
-        access_status = interface_status.get('user_access_widget', {})
-        print(f"   顯示狀態: 顯示={access_status.get('visible', False)}, 活躍={access_status.get('active', False)}")
-        
-    except Exception as e:
-        print(f"   ❌ 顯示測試失敗: {e}")
-        return False
-    
-    # 測試access_widget功能
-    print("\n⚙️ 測試access_widget功能")
-    try:
-        # 測試展開功能
-        if hasattr(access_widget, 'toggle_expand'):
-            print("   測試展開功能...")
-            access_widget.toggle_expand()
-            time.sleep(1)
-            
-            is_expanded = getattr(access_widget, 'is_expanded', False)
-            print(f"   展開狀態: {is_expanded}")
-            
-            # 收回
-            if is_expanded:
-                access_widget.toggle_expand()
-                print("   已收回")
-        
-        # 測試設定視窗開啟
-        if hasattr(access_widget, 'open_settings_window'):
-            print("   測試開啟設定視窗...")
-            result = access_widget.open_settings_window()
-            print(f"   開啟結果: {result}")
-            
-            time.sleep(1)
-            interface_status = ui_module.get_interface_status()
-            main_window_status = interface_status.get('user_main_window', {})
-            print(f"   設定視窗狀態: 顯示={main_window_status.get('visible', False)}")
-            
-            # 關閉設定視窗
-            main_window = ui_module.interfaces.get(UIInterfaceType.USER_MAIN_WINDOW)
-            if main_window and main_window_status.get('visible', False):
-                main_window.hide()
-                print("   設定視窗已關閉")
-        
-    except Exception as e:
-        print(f"   ❌ 功能測試失敗: {e}")
-        return False
-    
-    print("\n✅ access_widget 測試完成")
-    return True
-
-def frontend_test_integration():
-    """前端模組整合測試"""
-    info_log("[Controller] 執行前端模組整合測試")
-    
-    print("\n🎨 === 前端模組整合測試 ===")
-    
-    # 檢查所有前端模組是否可用
-    status = frontend_test_status()
-    
-    # 檢查是否有模組載入失敗
-    failed_modules = [name for name, info in status.items() if not info.get("loaded", False)]
-    if failed_modules:
-        print(f"\n❌ 無法進行整合測試，以下模組載入失敗: {', '.join(failed_modules)}")
-        return False
-    
-    # 執行各項測試
-    test_results = {}
-    
-    # 1. 模組通信測試
-    print(f"\n{'='*50}")
-    test_results["communication"] = frontend_test_communication()
-    
-    # 2. 動畫系統測試
-    print(f"\n{'='*50}")
-    test_results["animations"] = frontend_test_animations()
-    
-    # 3. 移動系統測試  
-    print(f"\n{'='*50}")
-    test_results["movement"] = frontend_test_movement()
-    
-    # 4. UI 交互測試
-    print(f"\n{'='*50}")
-    test_results["ui_interactions"] = frontend_test_ui_interactions()
-    
-    # 輸出測試摘要
-    print(f"\n{'='*50}")
-    print("🎨 前端模組整合測試摘要")
-    print(f"{'='*50}")
-    
-    for test_name, result in test_results.items():
-        status_icon = "✅" if result else "❌"
-        test_display = {
-            "communication": "模組間通信",
-            "animations": "動畫系統",
-            "movement": "移動系統", 
-            "ui_interactions": "UI 交互"
-        }
-        print(f"{status_icon} {test_display.get(test_name, test_name)}: {'通過' if result else '失敗'}")
-    
-    # 計算總體結果
-    total_tests = len(test_results)
-    passed_tests = sum(test_results.values())
-    
-    print(f"\n📊 總計: {passed_tests}/{total_tests} 個測試通過")
-    
-    if passed_tests == total_tests:
-        print("🎉 所有前端模組整合測試通過！")
-        return True
-    else:
-        print("⚠️ 部分測試失敗，請檢查上述錯誤信息")
-        return False
-
-def frontend_list_functions():
-    """列出前端模組可用功能"""
-    print("\n=== 前端模組可用功能 ===")
-    
-    print("\n🎨 前端測試函數:")
-    print("  frontend_test_status()         - 檢查前端模組狀態")
-    print("  frontend_test_communication()  - 測試模組間通信")
-    print("  frontend_test_animations()     - 測試動畫系統")
-    print("  frontend_test_movement()       - 測試移動系統")
-    print("  frontend_test_ui_interactions() - 測試 UI 交互")
-    print("  frontend_test_integration()    - 完整整合測試")
-    print("  frontend_list_functions()      - 列出可用功能")
-    
-    print("\n🎭 UI 模組命令:")
-    print("  show_window, hide_window       - 顯示/隱藏視窗")
-    print("  set_window_size               - 設定視窗大小")
-    print("  set_always_on_top            - 設定視窗置頂")
-    print("  set_image                     - 設定顯示圖像")
-    print("  set_opacity                   - 設定透明度")
-    
-    print("\n🎬 ANI 模組命令:")
-    print("  list_animations               - 列出可用動畫")
-    print("  play_animation                - 播放動畫")
-    print("  stop_animation                - 停止動畫") 
-    print("  set_behavior_animation        - 設定行為動畫")
-    
-    print("\n🎯 MOV 模組命令:")
-    print("  set_position                  - 設定位置")
-    print("  set_velocity                  - 設定速度")
-    print("  set_behavior                  - 設定行為模式")
-    print("  get_position                  - 獲取當前位置")
-    print("  get_velocity                  - 獲取當前速度")

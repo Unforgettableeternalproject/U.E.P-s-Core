@@ -922,3 +922,15 @@
 
 ---
 
+### Revamped the whole debug_api implementation. 08/26
+
+> Date: Tue, 26 Aug 2025 04:04:05 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/front_end_integration`
+
+> Commit: `63d0be2f96433dbdc8195dd814909dcc2ca4c694`
+
+---
+

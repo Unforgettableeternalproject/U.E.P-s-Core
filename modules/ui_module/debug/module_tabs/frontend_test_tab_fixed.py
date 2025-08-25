@@ -147,19 +147,6 @@ class FrontendTestTab(BaseTestTab):
         refresh_status_btn.clicked.connect(self.refresh_status)
         status_layout.addWidget(refresh_status_btn)
         
-        # 模組管理按鈕
-        module_management_layout = QHBoxLayout()
-        
-        load_modules_btn = QPushButton("📥 載入前端模組")
-        load_modules_btn.clicked.connect(self.load_frontend_modules)
-        module_management_layout.addWidget(load_modules_btn)
-        
-        unload_modules_btn = QPushButton("📤 卸載前端模組")
-        unload_modules_btn.clicked.connect(self.unload_frontend_modules)
-        module_management_layout.addWidget(unload_modules_btn)
-        
-        status_layout.addLayout(module_management_layout)
-        
         main_layout.addWidget(status_group)
     
     def get_available_tests(self) -> Dict[str, str]:
@@ -466,71 +453,3 @@ class FrontendTestTab(BaseTestTab):
                 
         except Exception as e:
             self.add_result(f"隱藏 UEP 主程式時發生錯誤: {str(e)}", "ERROR")
-
-    # === 模組管理方法 ===
-    
-    def load_frontend_modules(self):
-        """載入前端模組 (UI, ANI, MOV)"""
-        self.add_result("📥 開始載入前端模組...", "INFO")
-        
-        modules_to_load = ["ui", "ani", "mov"]
-        loaded_count = 0
-        
-        for module_name in modules_to_load:
-            try:
-                self.add_result(f"  📦 正在載入 {module_name.upper()} 模組...", "INFO")
-                result = self.module_manager.load_module(module_name)
-                
-                if result.get('success', False):
-                    self.add_result(f"  ✅ {module_name.upper()} 模組載入成功", "SUCCESS")
-                    loaded_count += 1
-                else:
-                    error_msg = result.get('error', '未知錯誤')
-                    self.add_result(f"  ❌ {module_name.upper()} 模組載入失敗: {error_msg}", "ERROR")
-                    
-            except Exception as e:
-                self.add_result(f"  ❌ 載入 {module_name.upper()} 模組時發生錯誤: {str(e)}", "ERROR")
-        
-        # 總結載入結果
-        if loaded_count == len(modules_to_load):
-            self.add_result(f"🎉 所有前端模組載入完成 ({loaded_count}/{len(modules_to_load)})", "SUCCESS")
-        elif loaded_count > 0:
-            self.add_result(f"⚠️  部分前端模組載入完成 ({loaded_count}/{len(modules_to_load)})", "WARNING")
-        else:
-            self.add_result("❌ 前端模組載入失敗", "ERROR")
-        
-        # 重新整理狀態
-        self.refresh_status()
-    
-    def unload_frontend_modules(self):
-        """卸載前端模組 (UI, ANI, MOV)"""
-        self.add_result("📤 開始卸載前端模組...", "INFO")
-        
-        modules_to_unload = ["ui", "ani", "mov"]
-        unloaded_count = 0
-        
-        for module_name in modules_to_unload:
-            try:
-                self.add_result(f"  📦 正在卸載 {module_name.upper()} 模組...", "INFO")
-                result = self.module_manager.unload_module(module_name)
-                
-                if result.get('success', False):
-                    self.add_result(f"  ✅ {module_name.upper()} 模組卸載成功", "SUCCESS")
-                    unloaded_count += 1
-                else:
-                    error_msg = result.get('error', '未知錯誤')
-                    self.add_result(f"  ❌ {module_name.upper()} 模組卸載失敗: {error_msg}", "ERROR")
-                    
-            except Exception as e:
-                self.add_result(f"  ❌ 卸載 {module_name.upper()} 模組時發生錯誤: {str(e)}", "ERROR")
-        
-        # 總結卸載結果
-        if unloaded_count == len(modules_to_unload):
-            self.add_result(f"🎉 所有前端模組卸載完成 ({unloaded_count}/{len(modules_to_unload)})", "SUCCESS")
-        elif unloaded_count > 0:
-            self.add_result(f"⚠️  部分前端模組卸載完成 ({unloaded_count}/{len(modules_to_unload)})", "WARNING")
-        else:
-            self.add_result("❌ 前端模組卸載失敗", "ERROR")
-        
-        # 重新整理狀態
-        self.refresh_status()

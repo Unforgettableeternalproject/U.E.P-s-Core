@@ -1528,7 +1528,7 @@ def frontend_test_status():
                 "module_id": getattr(module, 'module_id', 'Unknown'),
                 "module_type": getattr(module, 'module_type', 'Unknown'),
                 "config_loaded": hasattr(module, 'config') and module.config is not None,
-                "initialized": hasattr(module, 'is_initialized') and module._initialized,
+                "initialized": hasattr(module, 'is_initialized') and module.is_initialized,
                 "signals_available": hasattr(module, 'signals')
             }
             
@@ -1811,6 +1811,84 @@ def frontend_test_ui_interactions():
             print(f"   ❌ {test['command']} 失敗: {e}")
     
     print("\n✅ UI 交互測試完成")
+    return True
+
+def frontend_test_access_widget():
+    """測試使用者存取工具 (access_widget)"""
+    info_log("[Controller] 測試使用者存取工具")
+    
+    ui_module = modules.get("ui")
+    if not ui_module:
+        print("❌ UI 模組未載入")
+        return False
+    
+    print("\n=== 使用者存取工具測試 ===")
+    
+    # 檢查access_widget是否存在
+    from modules.ui_module.ui_module import UIInterfaceType
+    access_widget = ui_module.interfaces.get(UIInterfaceType.USER_ACCESS_WIDGET)
+    if not access_widget:
+        print("❌ access_widget 未初始化")
+        return False
+    
+    print("✅ access_widget 已初始化")
+    
+    # 測試顯示access_widget
+    print("\n🔮 測試access_widget顯示")
+    try:
+        result = ui_module.show_interface(UIInterfaceType.USER_ACCESS_WIDGET)
+        print(f"   顯示結果: {result}")
+        
+        # 檢查狀態
+        import time
+        time.sleep(1)
+        interface_status = ui_module.get_interface_status()
+        access_status = interface_status.get('user_access_widget', {})
+        print(f"   顯示狀態: 顯示={access_status.get('visible', False)}, 活躍={access_status.get('active', False)}")
+        
+    except Exception as e:
+        print(f"   ❌ 顯示測試失敗: {e}")
+        return False
+    
+    # 測試access_widget功能
+    print("\n⚙️ 測試access_widget功能")
+    try:
+        # 測試展開功能
+        if hasattr(access_widget, 'toggle_expand'):
+            print("   測試展開功能...")
+            access_widget.toggle_expand()
+            time.sleep(1)
+            
+            is_expanded = getattr(access_widget, 'is_expanded', False)
+            print(f"   展開狀態: {is_expanded}")
+            
+            # 收回
+            if is_expanded:
+                access_widget.toggle_expand()
+                print("   已收回")
+        
+        # 測試設定視窗開啟
+        if hasattr(access_widget, 'open_settings_window'):
+            print("   測試開啟設定視窗...")
+            result = access_widget.open_settings_window()
+            print(f"   開啟結果: {result}")
+            
+            time.sleep(1)
+            interface_status = ui_module.get_interface_status()
+            main_window_status = interface_status.get('user_main_window', {})
+            print(f"   設定視窗狀態: 顯示={main_window_status.get('visible', False)}")
+            
+            # 關閉設定視窗
+            main_window = ui_module.interfaces.get(UIInterfaceType.USER_MAIN_WINDOW)
+            if main_window and main_window_status.get('visible', False):
+                main_window.hide()
+                print("   設定視窗已關閉")
+        
+    except Exception as e:
+        print(f"   ❌ 功能測試失敗: {e}")
+        return False
+    
+    print("\n✅ access_widget 測試完成")
     return True
 
 def frontend_test_integration():

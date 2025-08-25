@@ -46,9 +46,8 @@ class IntegrationTestTab(QWidget):
     
     test_requested = pyqtSignal(str, dict) if pyqtSignal else None
     
-    def __init__(self, ui_module=None):
+    def __init__(self):
         super().__init__()
-        self.ui_module = ui_module
         self.running_tests = []
         self.test_results = {}
         
@@ -464,16 +463,37 @@ class IntegrationTestTab(QWidget):
         self.add_test_result(f"管道階段_{stage}", "RUNNING", "正在執行...")
     
     def refresh_frontend_status(self):
-        """刷新前端狀態"""
+        """刷新前端狀態 - 獨立實現"""
         debug_log(1, "[IntegrationTestTab] 刷新前端狀態")
         
-        # 透過 UI 模組獲取前端狀態
-        if self.ui_module and hasattr(self.ui_module, 'get_frontend_status'):
-            try:
-                status = self.ui_module.get_frontend_status()
-                self.update_frontend_status_table(status)
-            except Exception as e:
-                error_log(f"[IntegrationTestTab] 獲取前端狀態失敗: {e}")
+        # 透過模組管理器或配置系統獲取狀態
+        try:
+            # 這裡可以實現直接讀取配置或狀態文件的邏輯
+            from .module_manager import ModuleManager
+            module_manager = ModuleManager()
+            
+            # 構建前端狀態信息
+            frontend_modules = ['ui', 'ani', 'mov']
+            status = {'modules': {}}
+            
+            for module_id in frontend_modules:
+                module_status = module_manager.get_module_status(module_id)
+                status['modules'][module_id] = {
+                    'state': module_status.get('status', 'unknown'),
+                    'interfaces': module_status.get('interfaces', {})
+                }
+            
+            self.update_frontend_status_table(status)
+            
+        except Exception as e:
+            error_log(f"[IntegrationTestTab] 獲取前端狀態失敗: {e}")
+            # 顯示錯誤狀態
+            status = {'modules': {
+                'ui': {'state': 'error', 'interfaces': {}},
+                'ani': {'state': 'error', 'interfaces': {}},
+                'mov': {'state': 'error', 'interfaces': {}}
+            }}
+            self.update_frontend_status_table(status)
     
     def update_frontend_status_table(self, status: dict):
         """更新前端狀態表格"""
@@ -503,10 +523,15 @@ class IntegrationTestTab(QWidget):
             self.frontend_status_table.setItem(row, 2, QTableWidgetItem(str(interface_count)))
     
     def is_module_available(self, module_name: str) -> bool:
-        """檢查模組是否可用"""
-        if self.ui_module and hasattr(self.ui_module, 'is_module_available'):
-            return self.ui_module.is_module_available(module_name)
-        return False
+        """檢查模組是否可用 - 獨立實現"""
+        try:
+            from .module_manager import ModuleManager
+            module_manager = ModuleManager()
+            module_status = module_manager.get_module_status(module_name)
+            return module_status.get('status') in ['enabled', 'loaded', 'active']
+        except Exception as e:
+            error_log(f"[IntegrationTestTab] 檢查模組 {module_name} 可用性失敗: {e}")
+            return False
     
     def add_test_result(self, test_name: str, status: str, details: str = ""):
         """新增測試結果"""
@@ -612,7 +637,7 @@ class IntegrationTestTab(QWidget):
             error_log(f"[IntegrationTestTab] 匯出失敗: {e}")
     
     def stop_all_tests(self):
-        """停止所有測試"""
+        """停止所有測試 - 獨立實現"""
         debug_log(1, "[IntegrationTestTab] 停止所有測試")
         
         # 更新所有進行中的測試狀態
@@ -623,9 +648,8 @@ class IntegrationTestTab(QWidget):
         
         self.refresh_test_results()
         
-        # 通知 UI 模組停止測試
-        if self.ui_module and hasattr(self.ui_module, 'stop_all_tests'):
-            self.ui_module.stop_all_tests()
+        # 整合測試分頁獨立處理停止邏輯
+        info_log("[IntegrationTestTab] 所有測試已停止")
     
     def handle_test_request(self, test_id: str, params: dict):
         """處理測試請求"""

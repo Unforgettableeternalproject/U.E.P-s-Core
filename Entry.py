@@ -84,7 +84,7 @@ if __name__ == "__main__":
             # 不預先載入任何模組，直接啟動除錯介面
             # 讓使用者在除錯介面中手動決定載入哪些模組
             from modules.ui_module.debug import launch_debug_interface
-            launch_debug_interface(ui_module=None, prefer_gui=True, blocking=True)
+            launch_debug_interface(prefer_gui=True, blocking=True)
         except Exception as e:
             print(f"❌ 圖形除錯介面啟動失敗: {e}")
             sys.exit(1)

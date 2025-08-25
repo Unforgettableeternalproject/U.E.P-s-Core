@@ -79,20 +79,6 @@ class UIModule(BaseFrontendModule):
         
         info_log(f"[{self.module_id}] UI 中樞模組初始化")
     
-    def _load_ui_config(self) -> dict:
-        """載入UI模組專用配置"""
-        import os
-        import yaml
-        
-        config_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
-        try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                ui_config = yaml.safe_load(f)
-            return ui_config
-        except Exception as e:
-            error_log(f"[{self.module_id}] 載入UI配置失敗: {e}")
-            return {}
-    
     def initialize_frontend(self) -> bool:
         """初始化前端 UI 組件"""
         try:
@@ -129,8 +115,8 @@ class UIModule(BaseFrontendModule):
         """初始化所有介面"""
         try:
             # 載入UI模組配置和全域配置
-            ui_config = self._load_ui_config()
             from configs.config_loader import load_config
+            ui_config = self.config
             global_config = load_config()
             debug_mode = global_config.get("debug", {}).get("enabled", False)
             
@@ -172,14 +158,8 @@ class UIModule(BaseFrontendModule):
             except ImportError as e:
                 error_log(f"[{self.module_id}] 無法導入使用者主設定視窗: {e}")
             
-            # 調試界面只在debug模式下加載以避免資源浪費
-            if debug_mode:
-                try:
-                    from .debug.debug_interface import DebugInterface
-                    self.interfaces[UIInterfaceType.DEBUG_INTERFACE] = DebugInterface(self)
-                    info_log(f"[{self.module_id}] 除錯介面已準備")
-                except ImportError as e:
-                    error_log(f"[{self.module_id}] 無法導入除錯介面: {e}")
+            # Debug介面改為獨立啟動，不在此處初始化
+            # 使用 launch_debug_interface() 方法來啟動
             
             # 根據實際顯示狀態輸出完成訊息
             if auto_show and interface_display.get("show_user_access_widget", True):
@@ -317,23 +297,6 @@ class UIModule(BaseFrontendModule):
             error_log(f"[{self.module_id}] 載入圖像資源異常: {e}")
             return False
     
-    def _register_event_handlers(self):
-        """註冊事件處理器"""
-        # 註冊 ANI 模組事件
-        self.register_event_handler(UIEventType.ANIMATION_COMPLETE, self._on_animation_complete)
-        
-        # 註冊 MOV 模組事件  
-        self.register_event_handler(UIEventType.WINDOW_MOVE, self._on_window_move)
-        
-        # 註冊滑鼠事件
-        self.register_event_handler(UIEventType.MOUSE_CLICK, self._on_mouse_click)
-        self.register_event_handler(UIEventType.MOUSE_HOVER, self._on_mouse_hover)
-        self.register_event_handler(UIEventType.DRAG_START, self._on_drag_start)
-        self.register_event_handler(UIEventType.DRAG_END, self._on_drag_end)
-        
-        # 註冊檔案事件
-        self.register_event_handler(UIEventType.FILE_DROP, self._on_file_drop)
-    
     def handle_frontend_request(self, data: dict) -> dict:
         """處理前端請求"""
         try:
@@ -402,8 +365,8 @@ class UIModule(BaseFrontendModule):
         except Exception as e:
             error_log(f"[{self.module_id}] 處理前端請求異常: {e}")
             return {"error": str(e)}
-    
-    def _show_window(self, data: dict) -> dict:
+
+    def connect_frontend_modules(self, ani_module, mov_module):
         """顯示視窗"""
         try:
             if self.window:
@@ -550,37 +513,7 @@ class UIModule(BaseFrontendModule):
             return {"error": "視窗未初始化"}
         except Exception as e:
             return {"error": str(e)}
-    
-    def connect_frontend_modules(self, ani_module, mov_module):
-        """連接其他前端模組"""
-        self.ani_module = ani_module
-        self.mov_module = mov_module
-        
-        if ani_module:
-            # 連接動畫模組
-            if hasattr(self.signals, 'animation_request'):
-                self.signals.animation_request.connect(ani_module.handle_animation_request)
-            if hasattr(ani_module.signals, 'animation_ready'):
-                ani_module.signals.animation_ready.connect(self._on_animation_ready)
-        
-        if mov_module:
-            # 連接行為模組
-            if hasattr(self.signals, 'movement_request'):
-                self.signals.movement_request.connect(mov_module.handle_movement_request)
-            if hasattr(mov_module.signals, 'position_changed'):
-                mov_module.signals.position_changed.connect(self._on_position_changed)
-            
-            # 使用新的回調機制連接MOV和ANI模組的動畫觸發
-            if hasattr(mov_module, 'add_animation_callback') and ani_module:
-                # 定義處理動畫請求的回調
-                def handle_animation_trigger(animation_type, params):
-                    ani_module.play_animation(animation_type, params)
-                
-                # 註冊回調到MOV模組
-                mov_module.add_animation_callback(handle_animation_trigger)
-        
-        info_log(f"[{self.module_id}] 前端模組連接完成")
-    
+
     # ========== 事件處理器 ==========
     
     def _on_animation_complete(self, event):
@@ -628,12 +561,36 @@ class UIModule(BaseFrontendModule):
     def request_animation(self, animation_type: str, data: dict):
         """請求動畫播放"""
         debug_log(1, f"[{self.module_id}] 動畫請求: {animation_type}")
-        # 這裡可以直接調用ANI模組或使用事件系統
+        try:
+            if self.ani_module and hasattr(self.ani_module, 'play_animation'):
+                # 直接調用 ANI 模組
+                self.ani_module.play_animation(animation_type, data)
+                debug_log(2, f"[{self.module_id}] 動畫請求已發送到 ANI 模組")
+            elif hasattr(self, 'signals') and hasattr(self.signals, 'animation_request'):
+                # 使用信號系統
+                self.signals.animation_request.emit(animation_type, data)
+                debug_log(2, f"[{self.module_id}] 動畫請求已通過信號發送")
+            else:
+                debug_log(2, f"[{self.module_id}] ANI 模組未連接，動畫請求已忽略")
+        except Exception as e:
+            error_log(f"[{self.module_id}] 動畫請求失敗: {e}")
         
     def request_movement(self, movement_type: str, data: dict):
         """請求移動操作"""
         debug_log(1, f"[{self.module_id}] 移動請求: {movement_type}")
-        # 這裡可以直接調用MOV模組或使用事件系統
+        try:
+            if self.mov_module and hasattr(self.mov_module, 'execute_movement'):
+                # 直接調用 MOV 模組
+                self.mov_module.execute_movement(movement_type, data)
+                debug_log(2, f"[{self.module_id}] 移動請求已發送到 MOV 模組")
+            elif hasattr(self, 'signals') and hasattr(self.signals, 'movement_request'):
+                # 使用信號系統
+                self.signals.movement_request.emit(movement_type, data)
+                debug_log(2, f"[{self.module_id}] 移動請求已通過信號發送")
+            else:
+                debug_log(2, f"[{self.module_id}] MOV 模組未連接，移動請求已忽略")
+        except Exception as e:
+            error_log(f"[{self.module_id}] 移動請求失敗: {e}")
     
     def _handle_animation_request(self, animation_type: str, params: dict):
         """處理動畫請求"""
@@ -673,9 +630,16 @@ class UIModule(BaseFrontendModule):
     
     def shutdown(self):
         """關閉 UI 模組"""
-        if self.window:
-            self.window.close()
-            self.window = None
+        # 關閉所有活動介面
+        for interface_type in list(self.active_interfaces):
+            interface = self.interfaces.get(interface_type)
+            if interface:
+                try:
+                    interface.close()
+                except Exception as e:
+                    error_log(f"[{self.module_id}] 關閉介面 {interface_type} 失敗: {e}")
+        
+        self.active_interfaces.clear()
         
         if self.app and self.app != QApplication.instance():
             self.app.quit()

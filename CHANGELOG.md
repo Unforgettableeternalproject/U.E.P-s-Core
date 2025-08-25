@@ -910,3 +910,15 @@
 
 ---
 
+### Altered more debug UI related code, and seperated the module tabs. 08/26
+
+> Date: Tue, 26 Aug 2025 02:46:26 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/front_end_integration`
+
+> Commit: `bbab076467fc814d38b073bd5dbe32a9edb16ae5`
+
+---
+

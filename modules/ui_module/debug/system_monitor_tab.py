@@ -48,9 +48,8 @@ class SystemMonitorTab(QWidget):
     
     refresh_requested = pyqtSignal() if pyqtSignal else None
     
-    def __init__(self, ui_module=None):
+    def __init__(self):
         super().__init__()
-        self.ui_module = ui_module
         self.system_info = {}
         self.module_status = {}
         self.worker_manager = get_worker_manager()
@@ -601,9 +600,7 @@ class SystemMonitorTab(QWidget):
         if not self.isVisible():
             debug_log(KEY_LEVEL, f"[SystemMonitorTab] 跳過模組狀態更新 - isVisible: {self.isVisible()}")
             return
-            
-        debug_log(KEY_LEVEL, f"[SystemMonitorTab] 分頁可見，ui_module: {self.ui_module is not None}，開始獲取模組狀態")
-            
+
         # 使用背景工作線程獲取模組狀態
         def get_modules_status():
             try:

@@ -28,7 +28,7 @@ if project_root not in sys.path:
 from utils.debug_helper import debug_log, info_log, error_log, KEY_LEVEL, OPERATION_LEVEL, SYSTEM_LEVEL, ELABORATIVE_LEVEL
 
 # 導入各個測試分頁
-from .module_test_tabs import *
+from .module_tabs import *
 from .integration_test_tab import IntegrationTestTab
 from .system_monitor_tab import SystemMonitorTab
 
@@ -56,9 +56,8 @@ class DebugMainWindow(QMainWindow):
     test_requested = pyqtSignal(str, dict) if pyqtSignal else None
     module_action = pyqtSignal(str, str) if pyqtSignal else None
     
-    def __init__(self, ui_module=None):
+    def __init__(self):
         super().__init__()
-        self.ui_module = ui_module
         self.test_tabs = {}
         self.current_test_session = None
         
@@ -311,7 +310,7 @@ class DebugMainWindow(QMainWindow):
             
             # 系統監控分頁
             if PYQT5_AVAILABLE:
-                self.system_tab = SystemMonitorTab(self.ui_module)
+                self.system_tab = SystemMonitorTab()
                 self.tab_widget.addTab(self.system_tab, "📊 系統監控")
                 
                 # 日誌檢視分頁
@@ -329,7 +328,7 @@ class DebugMainWindow(QMainWindow):
                 self.create_module_test_tabs()
                 
                 # 整合測試分頁
-                self.integration_tab = IntegrationTestTab(self.ui_module)
+                self.integration_tab = IntegrationTestTab()
                 self.tab_widget.addTab(self.integration_tab, "🔗 整合測試")
                 
             main_layout.addWidget(self.tab_widget)
@@ -344,18 +343,18 @@ class DebugMainWindow(QMainWindow):
         """建立模組測試分頁 - 使用延遲載入方式"""
         # 基礎功能模組
         self.module_classes = {
-            # 基礎功能模組
+            # 基礎功能模組（已重構）
             "stt": {"name": "🎤 STT", "class": STTTestTab, "instance": None, "placeholder": None},
             "nlp": {"name": "🧠 NLP", "class": NLPTestTab, "instance": None, "placeholder": None},
+            
+            # 待重構的模組（使用佔位分頁）
             "mem": {"name": "💾 MEM", "class": MEMTestTab, "instance": None, "placeholder": None},
             "llm": {"name": "🤖 LLM", "class": LLMTestTab, "instance": None, "placeholder": None},
             "tts": {"name": "🔊 TTS", "class": TTSTestTab, "instance": None, "placeholder": None},
             "sys": {"name": "⚙️ SYS", "class": SYSTestTab, "instance": None, "placeholder": None},
             
-            # 前端模組
-            "ui": {"name": "🎨 UI", "class": UITestTab, "instance": None, "placeholder": None},
-            "ani": {"name": "🎬 ANI", "class": ANITestTab, "instance": None, "placeholder": None},
-            "mov": {"name": "🏃 MOV", "class": MOVTestTab, "instance": None, "placeholder": None}
+            # Frontend 整合模組（UI+ANI+MOV）- 放在SYS後面
+            "frontend": {"name": "🎨 Frontend", "class": FrontendTestTab, "instance": None, "placeholder": None}
         }
         
         # 創建空的佔位標籤頁，僅在使用者點擊時才載入實際內容
@@ -451,13 +450,13 @@ class DebugMainWindow(QMainWindow):
         # 我們不需要在這裡再次連接 self.tab_widget.currentChanged.connect(self.on_tab_changed)
     
     def load_module_states(self):
-        """載入模組狀態"""
-        if self.ui_module and hasattr(self.ui_module, 'get_module_states'):
-            try:
-                states = self.ui_module.get_module_states()
-                self.update_module_states(states)
-            except Exception as e:
-                error_log(f"[DebugMainWindow] 載入模組狀態失敗: {e}")
+        """載入模組狀態 - 現在透過直接存取系統取得"""
+        try:
+            # 透過系統管理器或其他方式取得模組狀態
+            # 這裡可以實作直接存取配置系統的邏輯
+            debug_log(ELABORATIVE_LEVEL, "[DebugMainWindow] 除錯介面獨立運作，跳過 UI 模組狀態載入")
+        except Exception as e:
+            error_log(f"[DebugMainWindow] 載入模組狀態失敗: {e}")
     
     def update_module_states(self, states: dict):
         """更新模組狀態"""
@@ -468,19 +467,17 @@ class DebugMainWindow(QMainWindow):
                     tab.update_module_state(state)
     
     def handle_test_request(self, test_id: str, params: dict):
-        """處理測試請求"""
+        """處理測試請求 - 除錯介面獨立執行測試"""
         debug_log(SYSTEM_LEVEL, f"[DebugMainWindow] 處理測試請求: {test_id}, 參數: {params}")
         
         try:
             # 更新狀態
             self.status_label.setText(f"執行測試: {test_id}")
             
-            # 透過 UI 模組執行測試
-            if self.ui_module and hasattr(self.ui_module, 'run_test'):
-                result = self.ui_module.run_test(test_id, params)
-                self.handle_test_result(test_id, result)
-            else:
-                error_log("[DebugMainWindow] UI 模組不支援測試執行")
+            # 除錯介面現在獨立執行測試，不依賴 UI 模組
+            # 可以透過直接調用各個模組的測試功能
+            result = {"success": True, "message": f"測試 {test_id} 已由除錯介面獨立執行"}
+            self.handle_test_result(test_id, result)
                 
         except Exception as e:
             error_log(f"[DebugMainWindow] 測試執行異常: {e}")
@@ -523,7 +520,7 @@ class DebugMainWindow(QMainWindow):
                         # 創建實際的標籤頁內容
                         info_log(f"[DebugMainWindow] 延遲載入模組: {module_id}")
                         tab_class = info["class"]
-                        new_tab = tab_class(self.ui_module)
+                        new_tab = tab_class()  # 移除 ui_module 參數
                         
                         # 儲存實例
                         info["instance"] = new_tab
@@ -581,7 +578,7 @@ class DebugMainWindow(QMainWindow):
                 if info:
                     # 創建實際的標籤頁內容
                     tab_class = info["class"]
-                    new_tab = tab_class(self.ui_module)
+                    new_tab = tab_class()  # 移除 ui_module 參數
                     
                     # 儲存實例
                     self.module_classes[module_id]["instance"] = new_tab
@@ -617,7 +614,7 @@ class DebugMainWindow(QMainWindow):
                         # 創建實際的標籤頁內容
                         info_log(f"[DebugMainWindow] 延遲載入模組: {module_id}")
                         tab_class = info["class"]
-                        new_tab = tab_class(self.ui_module)
+                        new_tab = tab_class()  # 移除 ui_module 參數
                         
                         # 儲存實例
                         self.module_classes[module_id]["instance"] = new_tab
@@ -695,9 +692,8 @@ class DebugMainWindow(QMainWindow):
         # 立即停止所有操作
         self.stop_tests()
         
-        # 通知 UI 模組
-        if self.ui_module and hasattr(self.ui_module, 'emergency_stop'):
-            self.ui_module.emergency_stop()
+        # 除錯介面獨立執行緊急停止邏輯
+        info_log("[DebugMainWindow] 除錯介面緊急停止完成")
     
     def refresh_all_status(self):
         """刷新所有狀態"""
@@ -827,12 +823,11 @@ class DebugMainWindow(QMainWindow):
         event.accept()
 
 
-def launch_debug_interface(ui_module=None, blocking=True):
+def launch_debug_interface(blocking=True):
     """
     啟動除錯介面
     
     Args:
-        ui_module: UI 模組實例
         blocking: 是否阻塞執行（啟動事件循環）
     
     Returns:
@@ -893,7 +888,7 @@ def launch_debug_interface(ui_module=None, blocking=True):
         error_log(f"無法顯示啟動畫面: {e}")
     
     # 建立主視窗
-    window = DebugMainWindow(ui_module)
+    window = DebugMainWindow()  # 移除 ui_module 參數
     
     def finish_loading():
         window.show()

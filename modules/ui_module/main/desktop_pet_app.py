@@ -8,6 +8,7 @@ UEP 桌面寵物 Overlay 應用程式
 
 import os
 import sys
+import time
 from typing import Dict, Any, Optional
 
 try:
@@ -127,9 +128,18 @@ class DesktopPetApp(QWidget):
         # 增大尺寸約 20%：200 -> 240
         self.default_size = (240, 240)
         
+        # 添加定期檢查模組是否更新的計時器
+        if QTimer:
+            self.module_check_timer = QTimer(self)
+            self.module_check_timer.timeout.connect(self.check_module_references)
+            self.module_check_timer.start(5000)  # 每5秒檢查一次
+        
         # 渲染控制
         self.rendering_paused = False
         self.pause_reason = ""
+        self.pause_start_time = None  # 初始化暫停開始時間
+        self.rendering_timeout_timer = None  # 超時保護計時器
+        self.max_pause_duration = 3.0  # 最長暫停時間 (秒)
         
         # 狀態追蹤
         self.current_movement_mode = None
@@ -140,6 +150,12 @@ class DesktopPetApp(QWidget):
         if self.animation_timer:
             self.animation_timer.timeout.connect(self.update_animation_frame)
             self.animation_timer.start(16)  # 60 FPS for smooth animation
+            
+        # 設置超時保護計時器
+        if QTimer:
+            self.rendering_timeout_timer = QTimer(self)
+            self.rendering_timeout_timer.timeout.connect(self.check_rendering_timeout)
+            self.rendering_timeout_timer.setSingleShot(True)  # 設為單次觸發
         
         # 建立模組連接
         self.setup_module_connections()
@@ -222,34 +238,114 @@ class DesktopPetApp(QWidget):
     
     def pause_rendering(self, reason=""):
         """暫停渲染"""
+        # 檢查是否已經暫停，避免重複暫停
+        if self.rendering_paused:
+            debug_log(2, f"[DesktopPetApp] 已經暫停渲染，忽略暫停請求: {reason}")
+            return
+            
         self.rendering_paused = True
         self.pause_reason = reason
+        self.pause_start_time = time.time()  # 記錄暫停開始時間
         debug_log(2, f"[DesktopPetApp] 暫停渲染: {reason}")
+        
+        # 啟動超時保護計時器
+        if self.rendering_timeout_timer:
+            self.rendering_timeout_timer.start(int(self.max_pause_duration * 1000))
     
     def resume_rendering(self):
         """恢復渲染"""
+        if not self.rendering_paused:
+            debug_log(2, "[DesktopPetApp] 渲染未暫停，忽略恢復請求")
+            return
+            
         self.rendering_paused = False
+        pause_duration = time.time() - getattr(self, 'pause_start_time', time.time())
         self.pause_reason = ""
-        debug_log(2, "[DesktopPetApp] 恢復渲染")
+        debug_log(2, f"[DesktopPetApp] 恢復渲染，暫停持續了 {pause_duration:.2f} 秒")
+        
+        # 停止超時保護計時器
+        if self.rendering_timeout_timer and self.rendering_timeout_timer.isActive():
+            self.rendering_timeout_timer.stop()
+        
+        # 確保MOV模組也解除暫停
+        self.ensure_mov_module_resumed()
+    
+    def check_rendering_timeout(self):
+        """檢查渲染暫停是否超時"""
+        if self.rendering_paused:
+            pause_duration = time.time() - getattr(self, 'pause_start_time', time.time())
+            debug_log(2, f"[DesktopPetApp] 渲染暫停超時保護觸發! 已暫停 {pause_duration:.2f} 秒")
+            self.resume_rendering()
+    
+    def ensure_mov_module_resumed(self):
+        """確保MOV模組解除暫停"""
+        try:
+            if self.mov_module:
+                # 檢查MOV模組是否有暫停狀態
+                if hasattr(self.mov_module, 'movement_paused') and self.mov_module.movement_paused:
+                    debug_log(2, "[DesktopPetApp] 檢測到MOV模組仍在暫停狀態，嘗試恢復")
+                    # 嘗試呼叫恢復方法
+                    if hasattr(self.mov_module, 'resume_movement'):
+                        self.mov_module.resume_movement("DesktopPetApp自動恢復")
+                        debug_log(2, "[DesktopPetApp] 已強制恢復MOV模組")
+                
+                # 如果是處於轉換狀態，可能需要額外處理
+                if hasattr(self.mov_module, 'is_transitioning') and self.mov_module.is_transitioning:
+                    current_time = time.time()
+                    if hasattr(self.mov_module, 'transition_start_time') and \
+                       hasattr(self.mov_module, '_handle_state_transition'):
+                        # 如果轉換開始時間超過3秒，強制完成轉換
+                        if current_time - self.mov_module.transition_start_time > 3.0:
+                            debug_log(2, "[DesktopPetApp] 檢測到轉換狀態超時，強制處理")
+                            self.mov_module._handle_state_transition(current_time + 100)  # 傳入一個未來時間強制完成
+        except Exception as e:
+            error_log(f"[DesktopPetApp] 確保MOV模組恢復時出錯: {e}")
     
     def handle_mov_state_change(self, event_type, data):
         """處理MOV模組的狀態變更"""
+        debug_log(1, f"[DesktopPetApp] 收到MOV狀態變更: {event_type}, 數據: {data}")
+        
         if event_type == "transition_start":
-            self.pause_rendering(f"狀態轉換: {data.get('from')} -> {data.get('to')}")
+            # 記錄當前的轉換類型，以便恢復時可以檢查
+            self.current_transition = f"{data.get('from')} -> {data.get('to')}"
+            self.pause_rendering(f"狀態轉換: {self.current_transition}")
         elif event_type == "transition_complete":
-            self.resume_rendering()
+            current_state = data.get('current_state', '')
+            debug_log(1, f"[DesktopPetApp] 狀態轉換完成，當前狀態: {current_state}")
+            
+            # 檢查是否有暫停的轉換
+            if hasattr(self, 'current_transition'):
+                debug_log(1, f"[DesktopPetApp] 恢復之前的轉換暫停: {self.current_transition}")
+                self.resume_rendering()
+                delattr(self, 'current_transition')  # 刪除轉換標記
+            else:
+                debug_log(1, f"[DesktopPetApp] 沒有找到之前的轉換暫停標記")
     
     def on_movement_animation_request(self, animation_type: str, params: dict):
         """處理來自 MOV 模組的動畫請求"""
         try:
+            debug_log(1, f"[DesktopPetApp] 收到移動動畫請求: {animation_type}")
+            
             if self.ani_module:
+                debug_log(2, f"[DesktopPetApp] 向 ANI 模組發送動畫請求: {animation_type}")
                 result = self.ani_module.handle_frontend_request({
                     "command": "play_animation",
                     "animation_type": animation_type
                 })
-                debug_log(1, f"[DesktopPetApp] 處理移動動畫請求: {animation_type}")
+                debug_log(1, f"[DesktopPetApp] ANI 模組回應: {result}")
+                
+                if result and result.get("success"):
+                    debug_log(1, f"[DesktopPetApp] 成功處理移動動畫請求: {animation_type}")
+                    # 記錄最後成功的動畫類型
+                    self.current_animation_type = animation_type
+                else:
+                    error_log(f"[DesktopPetApp] ANI 模組動畫請求失敗: {animation_type}, 結果: {result}")
+            else:
+                error_log(f"[DesktopPetApp] ANI 模組不可用，無法播放動畫: {animation_type}")
         except Exception as e:
-            error_log(f"[DesktopPetApp] 處理移動動畫請求失敗: {e}")
+            error_log(f"[DesktopPetApp] 處理移動動畫請求失敗: {animation_type}, 錯誤: {e}")
+            import traceback
+            error_log(f"[DesktopPetApp] 錯誤堆疊: {traceback.format_exc()}")
     
     def init_ui(self):
         """初始化 UI"""
@@ -419,11 +515,11 @@ class DesktopPetApp(QWidget):
                 if QPixmap:
                     self.current_image = QPixmap(image_path)
                     self.update()  # 觸發重繪
-                    debug_log(1, f"[DesktopPetApp] 已設置圖片: {image_path}")
+                    debug_log(2, f"[DesktopPetApp] 已設置圖片: {image_path}")
                     return True
                 else:
                     # 模擬版本：僅記錄圖片路徑
-                    debug_log(1, f"[DesktopPetApp] 已設置圖片 (模擬): {image_path}")
+                    debug_log(2, f"[DesktopPetApp] 已設置圖片 (模擬): {image_path}")
                     return True
             else:
                 error_log(f"[DesktopPetApp] 圖片檔案不存在: {image_path}")
@@ -445,7 +541,7 @@ class DesktopPetApp(QWidget):
             
             self.setFixedSize(width_value, height_value)
             self.update()
-            debug_log(1, f"[DesktopPetApp] 已設置大小: {width_value}x{height_value}")
+            debug_log(3, f"[DesktopPetApp] 已設置大小: {width_value}x{height_value}")
         except (ValueError, TypeError) as e:
             error_log(f"[DesktopPetApp] 尺寸值無效: width={width}, height={height}, 錯誤: {e}")
             # 使用預設值
@@ -458,7 +554,7 @@ class DesktopPetApp(QWidget):
             x_value = int(x)
             y_value = int(y)
             self.move(x_value, y_value)
-            debug_log(1, f"[DesktopPetApp] 已設置位置: ({x_value}, {y_value})")
+            debug_log(3, f"[DesktopPetApp] 已設置位置: ({x_value}, {y_value})")
         except (ValueError, TypeError) as e:
             error_log(f"[DesktopPetApp] 位置值無效: x={x}, y={y}, 錯誤: {e}")
             # 保持當前位置
@@ -503,7 +599,7 @@ class DesktopPetApp(QWidget):
         """處理來自 MOV 模組的位置變更"""
         try:
             self.set_position(x, y)
-            debug_log(1, f"[DesktopPetApp] MOV 模組更新位置: ({x}, {y})")
+            debug_log(3, f"[DesktopPetApp] MOV 模組更新位置: ({x}, {y})")
         except Exception as e:
             error_log(f"[DesktopPetApp] 處理位置變更失敗: {e}")
     
@@ -565,6 +661,51 @@ class DesktopPetApp(QWidget):
             error_log(f"[DesktopPetApp] 更新移動動畫失敗: {e}")
     
     # === 對外提供的控制方法 ===
+    
+    def check_module_references(self):
+        """定期檢查模組引用是否已更新"""
+        try:
+            debug_log(1, "[DesktopPetApp] 檢查模組引用是否已更新")
+            
+            # 檢查渲染是否卡住
+            if self.rendering_paused and hasattr(self, 'pause_start_time'):
+                pause_duration = time.time() - self.pause_start_time
+                if pause_duration > self.max_pause_duration:
+                    debug_log(1, f"[DesktopPetApp] 檢測到渲染暫停超過 {self.max_pause_duration} 秒，強制恢復")
+                    self.resume_rendering()
+            
+            # 匯入 debug_api 以檢查當前的模組引用
+            try:
+                import devtools.debug_api as debug_api
+                if not hasattr(debug_api, 'modules'):
+                    return
+                
+                # 檢查 ANI 模組
+                current_ani = debug_api.modules.get('ani')
+                if current_ani is not None and current_ani is not self.ani_module:
+                    debug_log(1, "[DesktopPetApp] 偵測到 ANI 模組已被重新載入，更新引用")
+                    self.ani_module = current_ani
+                
+                # 檢查 MOV 模組
+                current_mov = debug_api.modules.get('mov')
+                if current_mov is not None and current_mov is not self.mov_module:
+                    debug_log(1, "[DesktopPetApp] 偵測到 MOV 模組已被重新載入，更新引用")
+                    self.mov_module = current_mov
+                    
+                    # 重新註冊回調
+                    if hasattr(self.mov_module, 'add_position_callback'):
+                        self.mov_module.add_position_callback(self.on_movement_position_change)
+                        debug_log(1, "[DesktopPetApp] 位置更新回調已重新註冊")
+                    
+                    if hasattr(self.mov_module, 'add_animation_callback'):
+                        self.mov_module.add_animation_callback(self.on_movement_animation_request)
+                        debug_log(1, "[DesktopPetApp] 動畫請求回調已重新註冊")
+                
+            except ImportError:
+                debug_log(1, "[DesktopPetApp] 無法匯入 debug_api")
+                
+        except Exception as e:
+            error_log(f"[DesktopPetApp] 檢查模組引用時出錯: {e}")
     
     def set_movement_mode(self, mode):
         """設置移動模式"""

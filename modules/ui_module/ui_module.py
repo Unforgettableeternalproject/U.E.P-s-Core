@@ -92,7 +92,7 @@ class UIModule(BaseFrontendModule):
                 self.app = QApplication(sys.argv)
             else:
                 self.app = QApplication.instance()
-            
+
             # 首先初始化 ANI 和 MOV 模組
             if not self._initialize_ani_mov_modules():
                 error_log(f"[{self.module_id}] 初始化 ANI/MOV 模組失敗")
@@ -120,36 +120,36 @@ class UIModule(BaseFrontendModule):
     def _initialize_ani_mov_modules(self) -> bool:
         """初始化 ANI 和 MOV 模組"""
         try:
-            # 初始化 ANI 模組
-            try:
-                from modules.ani_module.ani_module import ANIModule
-                self.ani_module = ANIModule(self.config.get('ani_config', {}))
+            from core.registry import get_module
+
+            # 取得或載入 ANI 模組
+            self.ani_module = get_module("ani_module")
+            if self.ani_module is None:
+                error_log(f"[{self.module_id}] 無法取得 ANI 模組")
+                return False
+            if not getattr(self.ani_module, "is_initialized", False):
                 if self.ani_module.initialize_frontend():
                     info_log(f"[{self.module_id}] ANI 模組初始化成功")
                 else:
                     error_log(f"[{self.module_id}] ANI 模組初始化失敗")
                     return False
-            except ImportError as e:
-                error_log(f"[{self.module_id}] 無法導入 ANI 模組: {e}")
+
+            # 取得或載入 MOV 模組
+            self.mov_module = get_module("mov_module")
+            if self.mov_module is None:
+                error_log(f"[{self.module_id}] 無法取得 MOV 模組")
                 return False
-            
-            # 初始化 MOV 模組
-            try:
-                from modules.mov_module.mov_module import MOVModule
-                self.mov_module = MOVModule(self.config.get('mov_config', {}))
+            if not getattr(self.mov_module, "is_initialized", False):
                 if self.mov_module.initialize_frontend():
                     info_log(f"[{self.module_id}] MOV 模組初始化成功")
                 else:
                     error_log(f"[{self.module_id}] MOV 模組初始化失敗")
                     return False
-            except ImportError as e:
-                error_log(f"[{self.module_id}] 無法導入 MOV 模組: {e}")
-                return False
-            
+
             self._modules_initialized = True
             info_log(f"[{self.module_id}] ANI 和 MOV 模組初始化完成")
             return True
-            
+
         except Exception as e:
             error_log(f"[{self.module_id}] ANI/MOV 模組初始化異常: {e}")
             return False
@@ -249,12 +249,18 @@ class UIModule(BaseFrontendModule):
             if not interface:
                 return {"error": f"介面 {interface_type.value} 不存在"}
             
+            # 檢查介面是否已經可見，避免重複操作
+            if hasattr(interface, 'isVisible') and interface.isVisible():
+                info_log(f"[{self.module_id}] 介面 {interface_type.value} 已經可見")
+                return {"success": True, "interface": interface_type.value, "already_visible": True}
+            
             interface.show()
             self.active_interfaces.add(interface_type)
             
             info_log(f"[{self.module_id}] 顯示介面: {interface_type.value}")
             return {"success": True, "interface": interface_type.value}
         except Exception as e:
+            error_log(f"[{self.module_id}] 顯示介面 {interface_type.value} 失敗: {e}")
             return {"error": str(e)}
     
     def hide_interface(self, interface_type: UIInterfaceType) -> dict:

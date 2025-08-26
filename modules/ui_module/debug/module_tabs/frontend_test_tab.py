@@ -28,8 +28,6 @@ class FrontendTestTab(BaseTestTab):
     
     def __init__(self):
         super().__init__("frontend")
-        self.MODULE_DISPLAY_NAME = "FRONTEND"
-        self.module_display_name = "Frontend (UI+ANI+MOV)"
     
     def create_control_section(self, main_layout):
         """建立前端控制區域"""
@@ -128,39 +126,39 @@ class FrontendTestTab(BaseTestTab):
         
         main_layout.addWidget(control_group)
     
-    def create_status_section(self, main_layout):
-        """建立狀態顯示區域"""
-        status_group = QGroupBox("📊 模組狀態")
-        status_layout = QVBoxLayout(status_group)
+    # def create_status_section(self, main_layout):
+    #     """建立狀態顯示區域"""
+    #     status_group = QGroupBox("📊 模組狀態")
+    #     status_layout = QVBoxLayout(status_group)
         
-        # 模組狀態顯示
-        self.ui_status_label = QLabel("UI 模組: 檢查中...")
-        self.ani_status_label = QLabel("ANI 模組: 檢查中...")
-        self.mov_status_label = QLabel("MOV 模組: 檢查中...")
+    #     # 模組狀態顯示
+    #     self.ui_status_label = QLabel("UI 模組: 檢查中...")
+    #     self.ani_status_label = QLabel("ANI 模組: 檢查中...")
+    #     self.mov_status_label = QLabel("MOV 模組: 檢查中...")
         
-        status_layout.addWidget(self.ui_status_label)
-        status_layout.addWidget(self.ani_status_label)
-        status_layout.addWidget(self.mov_status_label)
+    #     status_layout.addWidget(self.ui_status_label)
+    #     status_layout.addWidget(self.ani_status_label)
+    #     status_layout.addWidget(self.mov_status_label)
         
-        # 狀態重新整理按鈕
-        refresh_status_btn = QPushButton("🔄 重新整理狀態")
-        refresh_status_btn.clicked.connect(self.refresh_status)
-        status_layout.addWidget(refresh_status_btn)
+    #     # 狀態重新整理按鈕
+    #     refresh_status_btn = QPushButton("🔄 重新整理狀態")
+    #     refresh_status_btn.clicked.connect(self.refresh_status)
+    #     status_layout.addWidget(refresh_status_btn)
         
-        # 模組管理按鈕
-        module_management_layout = QHBoxLayout()
+    #     # 模組管理按鈕
+    #     module_management_layout = QHBoxLayout()
         
-        load_modules_btn = QPushButton("📥 載入前端模組")
-        load_modules_btn.clicked.connect(self.load_frontend_modules)
-        module_management_layout.addWidget(load_modules_btn)
+    #     load_modules_btn = QPushButton("📥 載入前端模組")
+    #     load_modules_btn.clicked.connect(self.load_frontend_modules)
+    #     module_management_layout.addWidget(load_modules_btn)
         
-        unload_modules_btn = QPushButton("📤 卸載前端模組")
-        unload_modules_btn.clicked.connect(self.unload_frontend_modules)
-        module_management_layout.addWidget(unload_modules_btn)
+    #     unload_modules_btn = QPushButton("📤 卸載前端模組")
+    #     unload_modules_btn.clicked.connect(self.unload_frontend_modules)
+    #     module_management_layout.addWidget(unload_modules_btn)
         
-        status_layout.addLayout(module_management_layout)
+    #     status_layout.addLayout(module_management_layout)
         
-        main_layout.addWidget(status_group)
+    #     main_layout.addWidget(status_group)
     
     def get_available_tests(self) -> Dict[str, str]:
         """取得可用的測試功能列表"""
@@ -174,38 +172,6 @@ class FrontendTestTab(BaseTestTab):
             "frontend_test_full": "完整前端測試",
             "frontend_integration_test": "前端整合測試"
         }
-    
-    def refresh_status(self):
-        """重新整理模組狀態"""
-        self.add_result("🔄 重新整理前端模組狀態...", "INFO")
-        
-        # 檢查各個模組狀態
-        ui_status = self.check_individual_module_status("ui")
-        ani_status = self.check_individual_module_status("ani")
-        mov_status = self.check_individual_module_status("mov")
-        
-        # 更新狀態標籤
-        self.ui_status_label.setText(f"UI 模組: {ui_status}")
-        self.ani_status_label.setText(f"ANI 模組: {ani_status}")
-        self.mov_status_label.setText(f"MOV 模組: {mov_status}")
-        
-        # 根據個別模組狀態決定 Frontend 整體狀態
-        all_loaded = ui_status == "已載入" and ani_status == "已載入" and mov_status == "已載入"
-        overall_status = "已載入" if all_loaded else "部分載入"
-        
-        self.add_result(f"📊 前端模組狀態更新完成 - 整體狀態: {overall_status}", "INFO")
-        
-        # 如果不是全部載入，提供詳細資訊
-        if not all_loaded:
-            missing_modules = []
-            if ui_status != "已載入":
-                missing_modules.append("UI")
-            if ani_status != "已載入": 
-                missing_modules.append("ANI")
-            if mov_status != "已載入":
-                missing_modules.append("MOV")
-            
-            self.add_result(f"⚠️  未載入模組: {', '.join(missing_modules)}", "WARNING")
     
     def check_individual_module_status(self, module_name: str) -> str:
         """檢查個別模組狀態"""
@@ -405,7 +371,6 @@ class FrontendTestTab(BaseTestTab):
         """載入模組"""
         self.add_result(f"🔄 載入 Frontend 模組群組...", "INFO")
         
-        # 分別載入 UI、ANI、MOV 模組
         modules_to_load = ["ui"]
         success_count = 0
         

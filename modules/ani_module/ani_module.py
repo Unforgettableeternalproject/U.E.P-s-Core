@@ -68,6 +68,7 @@ class AnimationType(Enum):
     
     # 轉場動畫
     F_TO_G = "f_to_g"                       # 浮空到落地
+    G_TO_F = "g_to_f"                       # 落地到浮空
     G_TO_L = "g_to_l"                       # 落地到休息
     L_TO_G = "l_to_g"                       # 休息到落地
     
@@ -276,7 +277,7 @@ class ANIModule(BaseFrontendModule):
 
     def _load_transition_animations(self):
         """載入轉場動畫"""
-        transition_animations = ["f_to_g", "g_to_l", "l_to_g"]
+        transition_animations = ["f_to_g", "g_to_f", "g_to_l", "l_to_g"]
         
         for anim_name in transition_animations:
             anim_path = os.path.join(self.animation_base_path, anim_name)

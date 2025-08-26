@@ -243,6 +243,20 @@ class ModuleManager:
                 "basic_test": debug_api.tts_test_wrapper,
             }
             
+            # Frontend 測試函數 - 使用包裝函數 (統合 UI、ANI、MOV)
+            self.test_functions["frontend"] = {
+                "show_desktop_pet": debug_api.show_desktop_pet_wrapper,
+                "hide_desktop_pet": debug_api.hide_desktop_pet_wrapper,
+                "control_desktop_pet": debug_api.control_desktop_pet_wrapper,
+                "test_mov_ani_integration": debug_api.test_mov_ani_integration_wrapper,
+                "test_behavior_modes": debug_api.test_behavior_modes_wrapper,
+                "test_animation_state_machine": debug_api.test_animation_state_machine_wrapper,
+                "frontend_test_full": debug_api.frontend_test_full_wrapper,
+                "frontend_get_status": debug_api.frontend_get_status_wrapper,
+                "frontend_test_animations": debug_api.frontend_test_animations_wrapper,
+                "frontend_test_user_interaction": debug_api.frontend_test_user_interaction_wrapper,
+            }
+            
             # SYS 測試函數 - 使用包裝函數
             self.test_functions["sysmod"] = {
                 "list_functions": debug_api.sys_list_functions_wrapper,
@@ -272,7 +286,8 @@ class ModuleManager:
             "sysmod": "sys_module",
             "ui": "ui_module",
             "ani": "ani_module",
-            "mov": "mov_module"
+            "mov": "mov_module",
+            "frontend": "ui_module"  # frontend 使用 ui_module 的配置
         }
         
         config_name = module_name_map.get(module_key, f"{module_key}_module")
@@ -410,11 +425,14 @@ class ModuleManager:
     def run_test_function(self, module_key: str, function_name: str, params: Dict[str, Any] = None):
         """執行測試函數"""
         try:
+            # 特殊處理 frontend 模組 - 檢查 UI 模組是否載入
+            check_module = "ui" if module_key == "frontend" else module_key
+            
             # 檢查模組是否已載入
-            if not self._is_module_loaded(module_key):
+            if not self._is_module_loaded(check_module):
                 return {
                     "success": False,
-                    "error": f"模組 {module_key} 未載入，無法執行測試"
+                    "error": f"模組 {check_module} 未載入，無法執行 {module_key} 測試"
                 }
             
             # 獲取測試函數

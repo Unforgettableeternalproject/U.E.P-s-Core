@@ -113,71 +113,143 @@ class DesktopPetApp(QWidget):
     clicked = pyqtSignal() if pyqtSignal else None
     state_changed = pyqtSignal(str) if pyqtSignal else None
     
-    def __init__(self, ui_module=None):
+    def __init__(self, ui_module=None, ani_module=None, mov_module=None):
         super().__init__()
         self.ui_module = ui_module
+        
+        # 直接接收初始化好的模組
+        self.ani_module = ani_module
+        self.mov_module = mov_module
+        
         self.current_image = None
         self.is_dragging = False
         self.drag_position = QPoint() if QPoint else None
-        self.default_size = (200, 200)
+        # 增大尺寸約 20%：200 -> 240
+        self.default_size = (240, 240)
         
-        # MOV 和 ANI 模組整合
-        self.mov_module = None
-        self.ani_module = None
+        # 渲染控制
+        self.rendering_paused = False
+        self.pause_reason = ""
+        
+        # 狀態追蹤
         self.current_movement_mode = None
         self.current_animation_type = None
         
-        # 初始化模組
-        self.init_modules()
+        # 動畫更新計時器
+        self.animation_timer = QTimer(self) if QTimer else None
+        if self.animation_timer:
+            self.animation_timer.timeout.connect(self.update_animation_frame)
+            self.animation_timer.start(16)  # 60 FPS for smooth animation
+        
+        # 建立模組連接
+        self.setup_module_connections()
+        
         self.init_ui()
         
         info_log("[DesktopPetApp] 桌面寵物應用程式初始化完成")
     
-    def init_modules(self):
-        """初始化 MOV 和 ANI 模組"""
+    def setup_module_connections(self):
+        """建立與ANI和MOV模組的連接"""
         try:
-            if MOV_ANI_AVAILABLE:
-                # 初始化 MOV 模組
-                self.mov_module = MOVModule()
-                info_log("[DesktopPetApp] MOV 模組初始化成功")
-                
-                # 初始化 ANI 模組
-                self.ani_module = ANIModule()
-                info_log("[DesktopPetApp] ANI 模組初始化成功")
-                
-                # 設置默認狀態
-                self.current_movement_mode = MovementMode.FLOAT if hasattr(MovementMode, 'FLOAT') else None
-                self.current_animation_type = AnimationType.STAND_IDLE if hasattr(AnimationType, 'STAND_IDLE') else None
-                
-                # 連接模組信號（如果有的話）
-                self.connect_module_signals()
+            # 設置ANI模組連接
+            if self.ani_module:
+                info_log("[DesktopPetApp] ANI 模組已連接")
+                # 立即啟動預設浮空閒置動畫
+                self.start_default_animation()
             else:
-                info_log("[DesktopPetApp] MOV/ANI 模組不可用，使用基本模式")
-        except Exception as e:
-            error_log(f"[DesktopPetApp] 模組初始化失敗: {e}")
-            self.mov_module = None
-            self.ani_module = None
-    
-    def connect_module_signals(self):
-        """連接模組信號"""
-        try:
-            # 連接 MOV 模組信號
-            if self.mov_module and hasattr(self.mov_module, 'position_updated'):
-                self.mov_module.position_updated.connect(self.on_movement_position_change)
+                info_log("[DesktopPetApp] ANI 模組未提供")
             
-            if self.mov_module and hasattr(self.mov_module, 'movement_mode_changed'):
-                self.mov_module.movement_mode_changed.connect(self.on_movement_mode_change)
-            
-            # 連接 ANI 模組信號
-            if self.ani_module and hasattr(self.ani_module, 'animation_changed'):
-                self.ani_module.animation_changed.connect(self.on_animation_change)
-            
-            if self.ani_module and hasattr(self.ani_module, 'frame_updated'):
-                self.ani_module.frame_updated.connect(self.on_animation_frame_update)
+            # 設置MOV模組連接
+            if self.mov_module:
+                info_log("[DesktopPetApp] MOV 模組已連接")
                 
-            debug_log(1, "[DesktopPetApp] 模組信號連接完成")
+                # 註冊位置更新回調
+                if hasattr(self.mov_module, 'add_position_callback'):
+                    self.mov_module.add_position_callback(self.on_movement_position_change)
+                    debug_log(1, "[DesktopPetApp] 位置更新回調已註冊")
+                
+                # 設置移動模組的動畫回調
+                if hasattr(self.mov_module, 'add_animation_callback'):
+                    self.mov_module.add_animation_callback(self.on_movement_animation_request)
+                    debug_log(1, "[DesktopPetApp] 動畫請求回調已註冊")
+            else:
+                info_log("[DesktopPetApp] MOV 模組未提供")
+                
         except Exception as e:
-            error_log(f"[DesktopPetApp] 模組信號連接失敗: {e}")
+            error_log(f"[DesktopPetApp] 模組連接設置失敗: {e}")
+    
+    def start_default_animation(self):
+        """啟動預設的浮空閒置動畫"""
+        try:
+            if self.ani_module:
+                result = self.ani_module.handle_frontend_request({
+                    "command": "play_animation",
+                    "animation_type": "smile_idle_f"
+                })
+                if result and result.get("success"):
+                    info_log("[DesktopPetApp] 預設浮空閒置動畫已啟動")
+                else:
+                    # 嘗試其他動畫
+                    backup_animations = ["curious_idle_f", "angry_idle_f", "stand_idle_g"]
+                    for anim in backup_animations:
+                        result = self.ani_module.handle_frontend_request({
+                            "command": "play_animation",
+                            "animation_type": anim
+                        })
+                        if result and result.get("success"):
+                            info_log(f"[DesktopPetApp] 備用動畫 {anim} 已啟動")
+                            break
+        except Exception as e:
+            error_log(f"[DesktopPetApp] 啟動預設動畫失敗: {e}")
+    
+    def update_animation_frame(self):
+        """更新動畫幀"""
+        try:
+            # 檢查是否暫停渲染
+            if self.rendering_paused:
+                debug_log(3, f"[DesktopPetApp] 渲染已暫停: {self.pause_reason}")
+                return
+                
+            if self.ani_module:
+                # 使用 ANI 模組的 get_current_frame 方法獲取當前幀
+                current_frame = self.ani_module.get_current_frame()
+                if current_frame:
+                    self.current_image = current_frame
+                    self.update()  # 重繪界面
+                    debug_log(3, "[DesktopPetApp] 成功更新動畫幀")
+        except Exception as e:
+            debug_log(2, f"[DesktopPetApp] 動畫幀更新異常: {e}")
+    
+    def pause_rendering(self, reason=""):
+        """暫停渲染"""
+        self.rendering_paused = True
+        self.pause_reason = reason
+        debug_log(2, f"[DesktopPetApp] 暫停渲染: {reason}")
+    
+    def resume_rendering(self):
+        """恢復渲染"""
+        self.rendering_paused = False
+        self.pause_reason = ""
+        debug_log(2, "[DesktopPetApp] 恢復渲染")
+    
+    def handle_mov_state_change(self, event_type, data):
+        """處理MOV模組的狀態變更"""
+        if event_type == "transition_start":
+            self.pause_rendering(f"狀態轉換: {data.get('from')} -> {data.get('to')}")
+        elif event_type == "transition_complete":
+            self.resume_rendering()
+    
+    def on_movement_animation_request(self, animation_type: str, params: dict):
+        """處理來自 MOV 模組的動畫請求"""
+        try:
+            if self.ani_module:
+                result = self.ani_module.handle_frontend_request({
+                    "command": "play_animation",
+                    "animation_type": animation_type
+                })
+                debug_log(1, f"[DesktopPetApp] 處理移動動畫請求: {animation_type}")
+        except Exception as e:
+            error_log(f"[DesktopPetApp] 處理移動動畫請求失敗: {e}")
     
     def init_ui(self):
         """初始化 UI"""
@@ -200,6 +272,9 @@ class DesktopPetApp(QWidget):
             else:
                 # 模擬版本
                 self.setFixedSize(*self.default_size)
+            
+            # 載入默認圖片
+            self.load_default_image()
                 
             info_log("[DesktopPetApp] UI 初始化完成")
         except Exception as e:
@@ -221,6 +296,36 @@ class DesktopPetApp(QWidget):
         except Exception as e:
             error_log(f"[DesktopPetApp] 置中螢幕異常: {e}")
             self.move(300, 300)
+    
+    def load_default_image(self):
+        """載入默認圖片"""
+        try:
+            # 尋找 default.png 檔案
+            default_image_paths = [
+                "resources/assets/static/default.png",
+                os.path.join(os.path.dirname(__file__), "../../../resources/assets/static/default.png"),
+                os.path.join(os.getcwd(), "resources/assets/static/default.png")
+            ]
+            
+            default_image_path = None
+            for path in default_image_paths:
+                if os.path.exists(path):
+                    default_image_path = path
+                    break
+            
+            if default_image_path:
+                if self.set_image(default_image_path):
+                    info_log(f"[DesktopPetApp] 已載入默認圖片: {default_image_path}")
+                    return True
+                else:
+                    error_log(f"[DesktopPetApp] 載入默認圖片失敗: {default_image_path}")
+            else:
+                error_log("[DesktopPetApp] 找不到 default.png 檔案")
+                
+            return False
+        except Exception as e:
+            error_log(f"[DesktopPetApp] 載入默認圖片異常: {e}")
+            return False
     
     def paintEvent(self, event):
         """繪製事件"""
@@ -254,6 +359,18 @@ class DesktopPetApp(QWidget):
                 if QPoint and hasattr(event, 'globalPos'):
                     self.drag_position = event.globalPos() - self.frameGeometry().topLeft()
                 
+                # 暫停渲染，避免拖拽時閃現
+                self.pause_rendering("滑鼠拖拽")
+                
+                # 通知MOV模組拖拽開始
+                if self.mov_module and hasattr(self.mov_module, 'handle_ui_event'):
+                    self.mov_module.handle_ui_event("DRAG_START", {
+                        "start_position": {
+                            "x": self.x(),
+                            "y": self.y()
+                        }
+                    })
+                
                 # 發射點擊信號
                 if self.clicked:
                     self.clicked.emit()
@@ -279,6 +396,19 @@ class DesktopPetApp(QWidget):
         try:
             if Qt and hasattr(event, 'button') and event.button() == Qt.LeftButton:
                 self.is_dragging = False
+                
+                # 通知MOV模組拖拽結束
+                if self.mov_module and hasattr(self.mov_module, 'handle_ui_event'):
+                    self.mov_module.handle_ui_event("DRAG_END", {
+                        "end_position": {
+                            "x": self.x(),
+                            "y": self.y()
+                        }
+                    })
+                
+                # 恢復渲染
+                self.resume_rendering()
+                
         except Exception as e:
             error_log(f"[DesktopPetApp] 鼠標釋放事件異常: {e}")
     

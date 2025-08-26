@@ -257,9 +257,9 @@ def hide_desktop_pet_wrapper():
     from .module_tests.frontend_tests import hide_desktop_pet as hide_desktop_pet_func
     return hide_desktop_pet_func(modules)
 
-def control_desktop_pet_wrapper(action="wave", duration=3):
+def control_desktop_pet_wrapper(action="wave", duration=3, x=None, y=None):
     from .module_tests.frontend_tests import control_desktop_pet as control_desktop_pet_func
-    return control_desktop_pet_func(modules, action, duration)
+    return control_desktop_pet_func(modules, action, duration, x, y)
 
 def test_mov_ani_integration_wrapper():
     from .module_tests.frontend_tests import test_mov_ani_integration as test_mov_ani_integration_func

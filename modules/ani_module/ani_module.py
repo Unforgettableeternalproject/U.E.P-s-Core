@@ -11,9 +11,9 @@ ANI 模組 - 動畫控制器
 """
 
 import os
-import sys
 import time
-import threading
+import math
+import random
 from typing import Dict, Any, Optional, List
 from enum import Enum, auto
 
@@ -27,6 +27,7 @@ except ImportError:
     class QTimer: pass
     class QPixmap: pass
     def pyqtSignal(*args): return None
+    class QObject: pass
 
 from core.frontend_base import BaseFrontendModule, FrontendModuleType, UIEventType
 from core.working_context import ContextType
@@ -36,18 +37,60 @@ from utils.debug_helper import debug_log, info_log, error_log
 
 class AnimationType(Enum):
     """動畫類型對應resources/animations目錄"""
-    # 基本狀態
-    STAND_IDLE = "stand_idle"           # 站立待機
-    SMILE_IDLE = "smile_idle"           # 微笑待機  
-    CURIOUS_IDLE = "curious_idle"       # 好奇待機
-    ANGRY_IDLE = "angry_idle"           # 生氣待機
+    # 浮空狀態動畫 (_f)
+    ANGRY_IDLE_F = "angry_idle_f"           # 生氣待機(浮空)
+    AWKWARD_F = "awkward_f"                 # 尷尬(浮空)
+    CLICK_F = "click_f"                     # 點擊(浮空)
+    CURIOUS_IDLE_F = "curious_idle_f"       # 好奇待機(浮空)
+    DANCE_F = "dance_f"                     # 舞蹈(浮空)
+    DATA_SEARCH_F = "data_search_f"         # 數據搜索(浮空)
+    LAUGH_F = "laugh_f"                     # 笑(浮空)
+    SMILE_IDLE_F = "smile_idle_f"           # 微笑待機(浮空)
+    STRUGGLE_F = "struggle_f"               # 掙扎(浮空)
+    TALK_ANI_F = "talk_ani_f"               # 說話動畫1(浮空)
+    TALK_ANI2_F = "talk_ani2_f"             # 說話動畫2(浮空)
+    TEASE_F = "tease_f"                     # 嘲弄1(浮空)
+    TEASE2_F = "tease2_f"                   # 嘲弄2(浮空)
     
-    # 說話動畫
-    TALK_ANI = "talk_ani"               # 說話動畫1
-    TALK_ANI2 = "talk_ani2"             # 說話動畫2
+    # 落地狀態動畫 (_g)
+    DANCE2_G = "dance2_g"                   # 舞蹈2(落地)
+    STAND_IDLE_G = "stand_idle_g"           # 站立待機(落地)
+    TURN_HEAD_G = "turn_head_g"             # 轉頭(落地)
+    TURN_LEFT_G = "turn_left_g"             # 轉左(落地)
+    TURN_RIGHT_G = "turn_right_g"           # 轉右(落地)
+    TURN_WALK_G = "turn_walk_g"             # 轉身走(落地)
+    WALK_LEFT_G = "walk_left_g"             # 向左走(落地)
+    WALK_RIGHT_G = "walk_right_g"           # 向右走(落地)
+    YAWN_G = "yawn_g"                       # 打哈欠(落地)
     
-    # 行走動畫
-    WALK_LEFT = "walk_ani(left"         # 向左走
+    # 休息狀態動畫 (_l)
+    SLEEP_L = "sleep_l"                     # 睡覺(休息)
+    
+    # 轉場動畫
+    F_TO_G = "f_to_g"                       # 浮空到落地
+    G_TO_L = "g_to_l"                       # 落地到休息
+    L_TO_G = "l_to_g"                       # 休息到落地
+    
+    # 舊版動畫 (向後兼容)
+    PUSH_UP = "push_up"
+    PUSH_DOWN = "push_down"
+    PUSH_LEFT = "push_left"
+    PUSH_RIGHT = "push_right"
+
+
+class BehaviorMode(Enum):
+    """行為模式"""
+    FLOAT = "float"     # 浮空模式 (_f 動畫)
+    GROUND = "ground"   # 落地模式 (_g 動畫)  
+    REST = "rest"       # 休息模式 (_l 動畫)
+
+
+class AnimationState(Enum):
+    """動畫狀態"""
+    IDLE = "idle"           # 待機
+    PLAYING = "playing"     # 播放中
+    TRANSITIONING = "transitioning"  # 轉場中
+    PAUSED = "paused"       # 暫停
     WALK_RIGHT = "walk_ani(right"       # 向右走
     
     # 轉身動畫
@@ -114,9 +157,12 @@ class ANIModule(BaseFrontendModule):
         self.current_animation = None
         self.animation_state = AnimationState.STOPPED
         
+        # 行為模式狀態
+        self.current_behavior_mode = BehaviorMode.FLOAT
+        
         # 動畫控制
         self.frame_timer = None
-        self.frame_interval = self.config.get('frame_interval', 100)  # 毫秒
+        self.frame_interval = self.config.get('frame_interval', 16)  # 60 FPS (1000ms / 60 = 16.67ms)
         
         # 動畫資源路徑
         self.animation_base_path = None
@@ -132,11 +178,8 @@ class ANIModule(BaseFrontendModule):
             
             # 初始化計時器
             if PYQT5_AVAILABLE:
-                # 設置計時器回調
-                self.signals.add_timer_callback("frame_update", self._update_animation)
-                
                 self.frame_timer = QTimer()
-                self.frame_timer.timeout.connect(lambda: self.signals.timer_timeout("frame_update"))
+                self.frame_timer.timeout.connect(self._update_animation)
             
             # 載入動畫資源
             if not self._load_animation_resources():
@@ -168,12 +211,14 @@ class ANIModule(BaseFrontendModule):
             
             info_log(f"[{self.module_id}] 載入動畫資源從: {self.animation_base_path}")
             
-            # 載入各種動畫
-            self._load_idle_animations()
-            self._load_talking_animations()
-            self._load_walking_animations()
-            self._load_expression_animations()
-            self._load_action_animations()
+            # 載入新版本動畫 (支援行為模式)
+            self._load_float_animations()      # 浮空動畫 (_f)
+            self._load_ground_animations()     # 落地動畫 (_g)
+            self._load_rest_animations()       # 休息動畫 (_l)
+            self._load_transition_animations() # 轉場動畫
+            
+            # 載入舊版動畫 (向後兼容)
+            self._load_legacy_animations()
             
             info_log(f"[{self.module_id}] 共載入 {len(self.animations)} 個動畫")
             return len(self.animations) > 0
@@ -182,6 +227,77 @@ class ANIModule(BaseFrontendModule):
             error_log(f"[{self.module_id}] 載入動畫資源失敗: {e}")
             return False
     
+    def _load_float_animations(self):
+        """載入浮空狀態動畫 (_f)"""
+        float_animations = [
+            "angry_idle_f", "awkward_f", "click_f", "curious_idle_f",
+            "dance_f", "data_search_f", "laugh_f", "smile_idle_f", 
+            "struggle_f", "talk_ani_f", "talk_ani2_f", "tease_f", "tease2_f"
+        ]
+        
+        for anim_name in float_animations:
+            anim_path = os.path.join(self.animation_base_path, anim_name)
+            if os.path.exists(anim_path):
+                frames = self._load_frames_from_directory(anim_path, frame_duration=0.1)
+                if frames:
+                    # 浮空動畫大多是循環的
+                    loop = anim_name in ["angry_idle_f", "curious_idle_f", "smile_idle_f", "dance_f"]
+                    self.animations[anim_name] = Animation(anim_name, frames, loop=loop)
+                    debug_log(2, f"[{self.module_id}] 載入 {anim_name} 動畫: {len(frames)} 幀")
+
+    def _load_ground_animations(self):
+        """載入落地狀態動畫 (_g)"""
+        ground_animations = [
+            "dance2_g", "stand_idle_g", "turn_head_g", "turn_left_g",
+            "turn_right_g", "turn_walk_g", "walk_left_g", "walk_right_g", "yawn_g"
+        ]
+        
+        for anim_name in ground_animations:
+            anim_path = os.path.join(self.animation_base_path, anim_name)
+            if os.path.exists(anim_path):
+                frames = self._load_frames_from_directory(anim_path, frame_duration=0.1)
+                if frames:
+                    # 落地動畫中站立待機和舞蹈可循環
+                    loop = anim_name in ["stand_idle_g", "dance2_g", "walk_left_g", "walk_right_g"]
+                    self.animations[anim_name] = Animation(anim_name, frames, loop=loop)
+                    debug_log(2, f"[{self.module_id}] 載入 {anim_name} 動畫: {len(frames)} 幀")
+
+    def _load_rest_animations(self):
+        """載入休息狀態動畫 (_l)"""
+        rest_animations = ["sleep_l"]
+        
+        for anim_name in rest_animations:
+            anim_path = os.path.join(self.animation_base_path, anim_name)
+            if os.path.exists(anim_path):
+                frames = self._load_frames_from_directory(anim_path, frame_duration=0.15)  # 休息動畫稍慢
+                if frames:
+                    self.animations[anim_name] = Animation(anim_name, frames, loop=True)  # 休息動畫循環
+                    debug_log(2, f"[{self.module_id}] 載入 {anim_name} 動畫: {len(frames)} 幀")
+
+    def _load_transition_animations(self):
+        """載入轉場動畫"""
+        transition_animations = ["f_to_g", "g_to_l", "l_to_g"]
+        
+        for anim_name in transition_animations:
+            anim_path = os.path.join(self.animation_base_path, anim_name)
+            if os.path.exists(anim_path):
+                frames = self._load_frames_from_directory(anim_path, frame_duration=0.08)  # 轉場動畫較快
+                if frames:
+                    self.animations[anim_name] = Animation(anim_name, frames, loop=False)  # 轉場動畫不循環
+                    debug_log(2, f"[{self.module_id}] 載入 {anim_name} 轉場動畫: {len(frames)} 幀")
+
+    def _load_legacy_animations(self):
+        """載入舊版動畫 (向後兼容)"""
+        legacy_animations = ["push_up", "push_down", "push_left", "push_right"]
+        
+        for anim_name in legacy_animations:
+            anim_path = os.path.join(self.animation_base_path, anim_name)
+            if os.path.exists(anim_path):
+                frames = self._load_frames_from_directory(anim_path, frame_duration=0.1)
+                if frames:
+                    self.animations[anim_name] = Animation(anim_name, frames, loop=False)
+                    debug_log(2, f"[{self.module_id}] 載入 {anim_name} 舊版動畫: {len(frames)} 幀")
+
     def _load_idle_animations(self):
         """載入待機動畫"""
         idle_types = ["stand_idle", "smile_idle", "curious_idle", "angry_idle"]
@@ -278,6 +394,92 @@ class ANIModule(BaseFrontendModule):
         self.register_event_handler(UIEventType.STATE_CHANGE, self._on_state_change)
         self.register_event_handler(UIEventType.MOUSE_HOVER, self._on_mouse_hover)
     
+    # ========== 行為模式控制方法 ==========
+    
+    def set_behavior_mode(self, mode: BehaviorMode) -> bool:
+        """設置行為模式"""
+        try:
+            if mode == self.current_behavior_mode:
+                return True
+                
+            # 執行轉場動畫
+            transition_anim = self._get_transition_animation(self.current_behavior_mode, mode)
+            if transition_anim:
+                self._play_transition_animation(transition_anim, mode)
+            else:
+                # 直接切換
+                self.current_behavior_mode = mode
+                self._set_default_animation_for_mode(mode)
+            
+            info_log(f"[{self.module_id}] 切換行為模式: {self.current_behavior_mode.value} -> {mode.value}")
+            return True
+            
+        except Exception as e:
+            error_log(f"[{self.module_id}] 設置行為模式失敗: {e}")
+            return False
+    
+    def _get_transition_animation(self, from_mode: BehaviorMode, to_mode: BehaviorMode) -> str:
+        """獲取轉場動畫名稱"""
+        transition_map = {
+            (BehaviorMode.FLOAT, BehaviorMode.GROUND): "f_to_g",
+            (BehaviorMode.GROUND, BehaviorMode.REST): "g_to_l",
+            (BehaviorMode.REST, BehaviorMode.GROUND): "l_to_g"
+        }
+        return transition_map.get((from_mode, to_mode))
+    
+    def _play_transition_animation(self, transition_anim: str, target_mode: BehaviorMode):
+        """播放轉場動畫"""
+        if transition_anim in self.animations:
+            # 播放轉場動畫
+            self._play_animation({"animation_type": transition_anim})
+            
+            # 設置轉場完成後的回調
+            def on_transition_complete():
+                self.current_behavior_mode = target_mode
+                self._set_default_animation_for_mode(target_mode)
+            
+            # 這裡可以使用 QTimer 來延遲執行
+            QTimer.singleShot(len(self.animations[transition_anim].frames) * 100, on_transition_complete)
+    
+    def _set_default_animation_for_mode(self, mode: BehaviorMode):
+        """為行為模式設置默認動畫"""
+        default_animations = {
+            BehaviorMode.FLOAT: "smile_idle_f",
+            BehaviorMode.GROUND: "stand_idle_g", 
+            BehaviorMode.REST: "sleep_l"
+        }
+        
+        default_anim = default_animations.get(mode)
+        if default_anim and default_anim in self.animations:
+            self._play_animation({"animation_type": default_anim})
+    
+    def get_animations_for_mode(self, mode: BehaviorMode) -> List[str]:
+        """獲取指定行為模式的所有動畫"""
+        mode_suffix = {
+            BehaviorMode.FLOAT: "_f",
+            BehaviorMode.GROUND: "_g",
+            BehaviorMode.REST: "_l"
+        }
+        
+        suffix = mode_suffix.get(mode, "")
+        return [name for name in self.animations.keys() if name.endswith(suffix)]
+    
+    def play_behavior_animation(self, mode: BehaviorMode, animation_name: str) -> bool:
+        """播放指定行為模式的動畫"""
+        if mode != self.current_behavior_mode:
+            error_log(f"[{self.module_id}] 行為模式不匹配: 當前{self.current_behavior_mode.value}, 要求{mode.value}")
+            return False
+        
+        available_animations = self.get_animations_for_mode(mode)
+        if animation_name not in available_animations:
+            error_log(f"[{self.module_id}] 動畫不適用於當前模式: {animation_name}")
+            return False
+        
+        result = self._play_animation({"animation_type": animation_name})
+        return result.get("success", False)
+    
+    # ==========
+    
     def handle_frontend_request(self, data: dict) -> dict:
         """處理前端動畫請求"""
         try:
@@ -342,12 +544,6 @@ class ANIModule(BaseFrontendModule):
             
             self.animation_state = AnimationState.STOPPED
             self.current_animation = None
-            
-            # 回到靜態動畫
-            if AnimationType.STATIC.value in self.animations:
-                static_frame = self.animations[AnimationType.STATIC.value].frames[0]
-                if hasattr(self.signals, 'animation_ready'):
-                    self.signals.animation_ready.emit(static_frame.pixmap)
             
             info_log(f"[{self.module_id}] 停止動畫")
             return {"success": True}
@@ -468,8 +664,9 @@ class ANIModule(BaseFrontendModule):
                     else:
                         # 動畫完成
                         self.animation_state = AnimationState.FINISHED
-                        self.frame_timer.stop()
-                        self.animation_finished.emit(self.current_animation.name)
+                        if self.frame_timer:
+                            self.frame_timer.stop()
+                        info_log(f"[{self.module_id}] 動畫完成: {self.current_animation.name}")
                         return
                 
                 # 發送新幀
@@ -478,12 +675,40 @@ class ANIModule(BaseFrontendModule):
         except Exception as e:
             error_log(f"[{self.module_id}] 更新動畫異常: {e}")
     
+    def get_current_frame(self) -> Optional[QPixmap]:
+        """獲取當前動畫幀的 QPixmap"""
+        try:
+            if self.current_animation and self.current_animation.frames:
+                current_frame_obj = self.current_animation.frames[self.current_animation.current_frame]
+                return current_frame_obj.pixmap
+            return None
+        except Exception as e:
+            debug_log(3, f"[{self.module_id}] 獲取當前動畫幀失敗: {e}")
+            return None
+    
+    def get_current_animation_status(self) -> dict:
+        """獲取當前動畫狀態資訊"""
+        try:
+            if self.current_animation:
+                return {
+                    "name": self.current_animation.name,
+                    "current_frame": self.current_animation.current_frame,
+                    "total_frames": len(self.current_animation.frames),
+                    "state": self.animation_state.name if hasattr(self.animation_state, 'name') else str(self.animation_state),
+                    "loop": self.current_animation.loop,
+                    "is_playing": self.frame_timer.isActive() if self.frame_timer else False
+                }
+            return {"name": None, "current_frame": 0, "total_frames": 0, "state": "STOPPED", "loop": False, "is_playing": False}
+        except Exception as e:
+            debug_log(3, f"[{self.module_id}] 獲取動畫狀態失敗: {e}")
+            return {"name": None, "current_frame": 0, "total_frames": 0, "state": "ERROR", "loop": False, "is_playing": False}
+    
     def _emit_current_frame(self):
         """發送當前動畫幀"""
         if self.current_animation and self.current_animation.frames:
             current_frame_obj = self.current_animation.frames[self.current_animation.current_frame]
-            if hasattr(self.signals, 'animation_ready'):
-                self.signals.animation_ready.emit(current_frame_obj.pixmap)
+            # 直接更新當前幀，由桌面寵物的計時器來獲取
+            debug_log(3, f"[{self.module_id}] 更新動畫幀: {self.current_animation.name} 第 {self.current_animation.current_frame} 幀")
     
     def handle_animation_request(self, animation_type: str, params: dict):
         """處理來自其他模組的動畫請求"""

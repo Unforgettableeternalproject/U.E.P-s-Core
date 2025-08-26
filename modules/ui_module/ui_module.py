@@ -70,9 +70,10 @@ class UIModule(BaseFrontendModule):
         # 活躍介面追蹤
         self.active_interfaces = set()
         
-        # 與其他前端模組的連接
+        # 與其他前端模組的連接 - 直接管理
         self.ani_module = None
         self.mov_module = None
+        self._modules_initialized = False
         
         # 全局系統設定
         self.system_settings = {}
@@ -92,7 +93,12 @@ class UIModule(BaseFrontendModule):
             else:
                 self.app = QApplication.instance()
             
-            # 初始化三個介面
+            # 首先初始化 ANI 和 MOV 模組
+            if not self._initialize_ani_mov_modules():
+                error_log(f"[{self.module_id}] 初始化 ANI/MOV 模組失敗")
+                return False
+            
+            # 初始化三個介面（會將 ANI/MOV 模組傳入桌面寵物）
             if not self._initialize_interfaces():
                 error_log(f"[{self.module_id}] 初始化介面失敗")
                 return False
@@ -111,6 +117,43 @@ class UIModule(BaseFrontendModule):
             error_log(f"[{self.module_id}] UI 前端初始化失敗: {e}")
             return False
     
+    def _initialize_ani_mov_modules(self) -> bool:
+        """初始化 ANI 和 MOV 模組"""
+        try:
+            # 初始化 ANI 模組
+            try:
+                from modules.ani_module.ani_module import ANIModule
+                self.ani_module = ANIModule(self.config.get('ani_config', {}))
+                if self.ani_module.initialize_frontend():
+                    info_log(f"[{self.module_id}] ANI 模組初始化成功")
+                else:
+                    error_log(f"[{self.module_id}] ANI 模組初始化失敗")
+                    return False
+            except ImportError as e:
+                error_log(f"[{self.module_id}] 無法導入 ANI 模組: {e}")
+                return False
+            
+            # 初始化 MOV 模組
+            try:
+                from modules.mov_module.mov_module import MOVModule
+                self.mov_module = MOVModule(self.config.get('mov_config', {}))
+                if self.mov_module.initialize_frontend():
+                    info_log(f"[{self.module_id}] MOV 模組初始化成功")
+                else:
+                    error_log(f"[{self.module_id}] MOV 模組初始化失敗")
+                    return False
+            except ImportError as e:
+                error_log(f"[{self.module_id}] 無法導入 MOV 模組: {e}")
+                return False
+            
+            self._modules_initialized = True
+            info_log(f"[{self.module_id}] ANI 和 MOV 模組初始化完成")
+            return True
+            
+        except Exception as e:
+            error_log(f"[{self.module_id}] ANI/MOV 模組初始化異常: {e}")
+            return False
+    
     def _initialize_interfaces(self) -> bool:
         """初始化所有介面"""
         try:
@@ -127,8 +170,13 @@ class UIModule(BaseFrontendModule):
             # 動態導入介面類別
             try:
                 from .main.desktop_pet_app import DesktopPetApp
-                self.interfaces[UIInterfaceType.MAIN_DESKTOP_PET] = DesktopPetApp(self)
-                info_log(f"[{self.module_id}] 主桌面寵物介面已準備")
+                # 直接將 ANI 和 MOV 模組傳入桌面寵物
+                self.interfaces[UIInterfaceType.MAIN_DESKTOP_PET] = DesktopPetApp(
+                    ui_module=self, 
+                    ani_module=self.ani_module, 
+                    mov_module=self.mov_module
+                )
+                info_log(f"[{self.module_id}] 主桌面寵物介面已準備（含 ANI/MOV 模組）")
             except ImportError as e:
                 error_log(f"[{self.module_id}] 無法導入主桌面寵物介面: {e}")
             
@@ -366,16 +414,12 @@ class UIModule(BaseFrontendModule):
             error_log(f"[{self.module_id}] 處理前端請求異常: {e}")
             return {"error": str(e)}
 
+    # === 已棄用：移除舊的連接方法，現在直接在初始化時整合模組 ===
+    # 保留方法以向後兼容，但會記錄警告
     def connect_frontend_modules(self, ani_module, mov_module):
-        """顯示視窗"""
-        try:
-            if self.window:
-                self.window.show()
-                self.update_local_state('window_visible', True)
-                return {"success": True}
-            return {"error": "視窗未初始化"}
-        except Exception as e:
-            return {"error": str(e)}
+        """已棄用：連接前端模組方法"""
+        info_log(f"[{self.module_id}] 警告：connect_frontend_modules 已棄用，模組現在在初始化時直接整合")
+        return {"success": True, "message": "模組已在初始化時整合，無需額外連接"}
     
     def _hide_window(self, data: dict) -> dict:
         """隱藏視窗"""

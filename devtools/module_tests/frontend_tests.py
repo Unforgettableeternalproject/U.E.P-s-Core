@@ -2,6 +2,7 @@
 """
 Frontend 模組測試函數
 已重構模組 - 完整功能測試
+修正為使用 handle_frontend_request() 方法
 """
 
 import asyncio
@@ -10,7 +11,7 @@ from utils.debug_helper import debug_log, info_log, error_log
 
 def show_desktop_pet(modules):
     """顯示桌面寵物"""
-    frontend = modules.get("frontend")
+    frontend = modules.get("ui")
     if frontend is None:
         print("❌ Frontend 模組未載入")
         return None
@@ -18,17 +19,18 @@ def show_desktop_pet(modules):
     print("🐾 顯示桌面寵物...")
     
     try:
-        result = frontend.handle({
-            "action": "show_pet",
-            "animation": "idle"
+        # 使用正確的前端模組命令格式
+        result = frontend.handle_frontend_request({
+            "command": "show_interface",
+            "interface": "main_desktop_pet"
         })
         
-        if result and result.get("status") == "success":
+        if result and result.get("success"):
             print("✅ 桌面寵物已顯示")
-            return result
+            return {"status": "success", "result": result}
         else:
-            print(f"❌ 顯示桌面寵物失敗: {result.get('message', '未知錯誤')}")
-            return result
+            print(f"❌ 顯示桌面寵物失敗: {result.get('error', '未知錯誤')}")
+            return {"status": "error", "result": result}
             
     except Exception as e:
         print(f"❌ 顯示桌面寵物時發生錯誤: {str(e)}")
@@ -36,7 +38,7 @@ def show_desktop_pet(modules):
 
 def hide_desktop_pet(modules):
     """隱藏桌面寵物"""
-    frontend = modules.get("frontend")
+    frontend = modules.get("ui")
     if frontend is None:
         print("❌ Frontend 模組未載入")
         return None
@@ -44,43 +46,67 @@ def hide_desktop_pet(modules):
     print("🙈 隱藏桌面寵物...")
     
     try:
-        result = frontend.handle({
-            "action": "hide_pet"
+        result = frontend.handle_frontend_request({
+            "command": "hide_interface",
+            "interface": "main_desktop_pet"
         })
         
-        if result and result.get("status") == "success":
+        if result and result.get("success"):
             print("✅ 桌面寵物已隱藏")
-            return result
+            return {"status": "success", "result": result}
         else:
-            print(f"❌ 隱藏桌面寵物失敗: {result.get('message', '未知錯誤')}")
-            return result
+            print(f"❌ 隱藏桌面寵物失敗: {result.get('error', '未知錯誤')}")
+            return {"status": "error", "result": result}
             
     except Exception as e:
         print(f"❌ 隱藏桌面寵物時發生錯誤: {str(e)}")
         return {"status": "error", "error": str(e)}
 
-def control_desktop_pet(modules, action="wave", duration=3):
+def control_desktop_pet(modules, action="wave", duration=3, x=None, y=None):
     """控制桌面寵物動作"""
-    frontend = modules.get("frontend")
+    frontend = modules.get("ui")
     if frontend is None:
         print("❌ Frontend 模組未載入")
         return None
 
-    print(f"🎭 控制桌面寵物執行動作: {action} (持續 {duration} 秒)")
+    print(f"🎭 控制桌面寵物執行動作: {action}")
     
     try:
-        result = frontend.handle({
-            "action": "control_pet",
-            "animation": action,
-            "duration": duration
+        # 先確保桌面寵物已顯示
+        show_result = frontend.handle_frontend_request({
+            "command": "show_interface",
+            "interface": "main_desktop_pet"
         })
         
-        if result and result.get("status") == "success":
-            print(f"✅ 桌面寵物正在執行 {action} 動作")
-            return result
+        # 處理不同的動作類型
+        if action == "move_window" and x is not None and y is not None:
+            # 移動窗口到指定位置
+            print(f"📍 移動桌面寵物到位置 ({x}, {y})")
+            
+            # 獲取桌面寵物實例並直接移動
+            desktop_pet = frontend.interfaces.get(frontend.UIInterfaceType.MAIN_DESKTOP_PET) if hasattr(frontend, 'interfaces') else None
+            
+            if desktop_pet:
+                desktop_pet.set_position(x, y)
+                print(f"✅ 桌面寵物已移動到 ({x}, {y})")
+                return {"status": "success", "action": action, "position": {"x": x, "y": y}}
+            else:
+                print("❌ 無法獲取桌面寵物實例")
+                return {"status": "error", "error": "無法獲取桌面寵物實例"}
+        
         else:
-            print(f"❌ 控制桌面寵物失敗: {result.get('message', '未知錯誤')}")
-            return result
+            # 其他動作：設置圖像或動畫
+            result = frontend.handle_frontend_request({
+                "command": "set_image",
+                "image_path": f"resources/animations/{action}"
+            })
+            
+            if result and not result.get("error"):
+                print(f"✅ 桌面寵物正在執行 {action} 動作")
+                return {"status": "success", "result": result}
+            else:
+                print(f"❌ 控制桌面寵物失敗: {result.get('error', '未知錯誤')}")
+                return {"status": "error", "result": result}
             
     except Exception as e:
         print(f"❌ 控制桌面寵物時發生錯誤: {str(e)}")
@@ -88,7 +114,7 @@ def control_desktop_pet(modules, action="wave", duration=3):
 
 def test_mov_ani_integration(modules):
     """測試 MOV-ANI 整合功能 - 第一步藍圖"""
-    frontend = modules.get("frontend")
+    frontend = modules.get("ui")
     if frontend is None:
         print("❌ Frontend 模組未載入")
         return None
@@ -97,34 +123,40 @@ def test_mov_ani_integration(modules):
     print("   這是藍圖第一步：UEP主程式能夠跟MOV、ANI進行連動")
     
     try:
-        # 測試基本連動
-        result = frontend.handle({
-            "action": "test_integration",
-            "components": ["mov", "ani"],
-            "test_type": "basic_connection"
+        # 先顯示桌面寵物
+        show_result = frontend.handle_frontend_request({
+            "command": "show_interface",
+            "interface": "main_desktop_pet"
         })
         
-        if result and result.get("status") == "success":
-            print("✅ MOV-ANI 基本連動測試通過")
-            print(f"   MOV 狀態: {result.get('mov_status', '未知')}")
-            print(f"   ANI 狀態: {result.get('ani_status', '未知')}")
+        if show_result and show_result.get("success"):
+            print("✅ UEP 主程式已顯示")
             
-            # 測試簡單動作同步
-            sync_result = frontend.handle({
-                "action": "test_sync",
-                "animation": "idle",
-                "movement": "float"
-            })
-            
-            if sync_result and sync_result.get("status") == "success":
-                print("✅ 動作同步測試通過")
-                return {"status": "success", "integration": result, "sync": sync_result}
+            # 透過UI模組檢查ANI和MOV模組狀態（避免重複載入）
+            ui_module = modules.get("ui")
+            if ui_module:
+                # 檢查UI模組是否已經初始化了ANI和MOV模組
+                ani_available = hasattr(ui_module, 'ani_module') and ui_module.ani_module is not None
+                mov_available = hasattr(ui_module, 'mov_module') and ui_module.mov_module is not None
+                
+                ani_status = "可用" if ani_available else "不可用"
+                mov_status = "可用" if mov_available else "不可用"
+                
+                print(f"   ANI 模組狀態: {ani_status} (透過UI模組)")
+                print(f"   MOV 模組狀態: {mov_status} (透過UI模組)")
+                
+                if ani_available and mov_available:
+                    print("✅ MOV-ANI 基本連動測試通過")
+                    return {"status": "success", "mov_status": mov_status, "ani_status": ani_status}
+                else:
+                    print("⚠️ 部分模組不可用")
+                    return {"status": "partial", "mov_status": mov_status, "ani_status": ani_status}
             else:
-                print("⚠️ 動作同步測試失敗")
-                return {"status": "partial", "integration": result, "sync": sync_result}
+                print("❌ UI模組不可用")
+                return {"status": "error", "message": "UI模組不可用"}
         else:
-            print(f"❌ MOV-ANI 連動測試失敗: {result.get('message', '未知錯誤')}")
-            return result
+            print(f"❌ UEP 主程式顯示失敗: {show_result.get('error', '未知錯誤')}")
+            return {"status": "error", "result": show_result}
             
     except Exception as e:
         print(f"❌ MOV-ANI 整合測試時發生錯誤: {str(e)}")
@@ -132,7 +164,7 @@ def test_mov_ani_integration(modules):
 
 def test_behavior_modes(modules):
     """測試行為模式 - 第二步藍圖"""
-    frontend = modules.get("frontend")
+    frontend = modules.get("ui")
     if frontend is None:
         print("❌ Frontend 模組未載入")
         return None
@@ -140,30 +172,46 @@ def test_behavior_modes(modules):
     print("🎭 測試行為模式功能...")
     print("   這是藍圖第二步：不同行為模式的實現")
     
-    behavior_modes = ["idle", "active", "listening", "thinking", "speaking"]
+    # 先確保桌面寵物已顯示
+    show_result = frontend.handle_frontend_request({
+        "command": "show_interface",
+        "interface": "main_desktop_pet"
+    })
+    
+    # 測試不同的界面狀態
+    interface_types = ["main_desktop_pet", "user_access_widget", "user_main_window"]
     results = {}
     
     try:
-        for mode in behavior_modes:
-            print(f"\n   測試行為模式: {mode}")
+        for interface_type in interface_types:
+            print(f"\n   測試界面: {interface_type}")
             
-            result = frontend.handle({
-                "action": "set_behavior_mode",
-                "mode": mode,
-                "duration": 2
+            # 嘗試顯示界面
+            result = frontend.handle_frontend_request({
+                "command": "show_interface",
+                "interface": interface_type
             })
             
-            if result and result.get("status") == "success":
-                print(f"   ✅ {mode} 模式測試通過")
-                results[mode] = "success"
+            if result and result.get("success"):
+                print(f"   ✅ {interface_type} 顯示成功")
+                results[interface_type] = "success"
+                
+                # 嘗試隱藏界面（除了主桌寵）
+                if interface_type != "main_desktop_pet":
+                    hide_result = frontend.handle_frontend_request({
+                        "command": "hide_interface",
+                        "interface": interface_type
+                    })
+                    if hide_result and hide_result.get("success"):
+                        print(f"   ✅ {interface_type} 隱藏成功")
             else:
-                print(f"   ❌ {mode} 模式測試失敗")
-                results[mode] = "failed"
+                print(f"   ❌ {interface_type} 顯示失敗")
+                results[interface_type] = "failed"
             
             time.sleep(1)  # 短暫延遲
         
         success_count = sum(1 for status in results.values() if status == "success")
-        total_count = len(behavior_modes)
+        total_count = len(interface_types)
         
         print(f"\n📊 行為模式測試總結: {success_count}/{total_count} 通過")
         
@@ -183,7 +231,8 @@ def test_behavior_modes(modules):
 
 def test_animation_state_machine(modules):
     """測試動畫狀態機 - 第三步藍圖"""
-    frontend = modules.get("frontend")
+    frontend = modules.get("ui")
+    
     if frontend is None:
         print("❌ Frontend 模組未載入")
         return None
@@ -191,74 +240,37 @@ def test_animation_state_machine(modules):
     print("🔄 測試動畫狀態機...")
     print("   這是藍圖第三步：動畫狀態機的實現")
     
-    # 定義狀態轉換測試序列
-    state_transitions = [
-        ("idle", "listening"),
-        ("listening", "thinking"),
-        ("thinking", "speaking"),
-        ("speaking", "idle"),
-        ("idle", "active"),
-        ("active", "idle")
-    ]
-    
-    results = []
-    
     try:
-        for from_state, to_state in state_transitions:
-            print(f"\n   測試狀態轉換: {from_state} -> {to_state}")
+        # 確保桌面寵物已顯示
+        show_result = frontend.handle_frontend_request({
+            "command": "show_interface",
+            "interface": "main_desktop_pet"
+        })
+        
+        # 透過UI模組取得ANI模組實例
+        ani_module = None
+        if hasattr(frontend, 'ani_module'):
+            ani_module = frontend.ani_module
+        
+        # 如果有 ANI 模組，測試動畫功能
+        if ani_module:
+            print("✅ ANI 模組可用，測試動畫狀態轉換...")
             
-            # 設置初始狀態
-            init_result = frontend.handle({
-                "action": "set_animation_state",
-                "state": from_state
+            # 測試播放一個動畫
+            ani_result = ani_module.handle_frontend_request({
+                "command": "play_animation",
+                "animation_type": "smile_idle_f"
             })
             
-            if init_result and init_result.get("status") == "success":
-                # 執行狀態轉換
-                transition_result = frontend.handle({
-                    "action": "transition_to_state",
-                    "target_state": to_state,
-                    "transition_type": "smooth"
-                })
-                
-                if transition_result and transition_result.get("status") == "success":
-                    print(f"   ✅ 狀態轉換成功")
-                    results.append({
-                        "from": from_state,
-                        "to": to_state,
-                        "status": "success"
-                    })
-                else:
-                    print(f"   ❌ 狀態轉換失敗")
-                    results.append({
-                        "from": from_state,
-                        "to": to_state,
-                        "status": "failed"
-                    })
+            if ani_result and ani_result.get("success"):
+                print("✅ 動畫播放測試成功")
+                return {"status": "success", "animation_test": ani_result}
             else:
-                print(f"   ❌ 初始狀態設置失敗")
-                results.append({
-                    "from": from_state,
-                    "to": to_state,
-                    "status": "init_failed"
-                })
-            
-            time.sleep(1)  # 短暫延遲
-        
-        success_count = sum(1 for r in results if r["status"] == "success")
-        total_count = len(state_transitions)
-        
-        print(f"\n📊 狀態機測試總結: {success_count}/{total_count} 轉換成功")
-        
-        if success_count == total_count:
-            print("✅ 動畫狀態機測試完全通過")
-            return {"status": "success", "transitions": results}
-        elif success_count > total_count // 2:
-            print("⚠️ 動畫狀態機部分功能正常")
-            return {"status": "partial", "transitions": results}
+                print("⚠️ 動畫播放測試失敗，但 ANI 模組可用")
+                return {"status": "partial", "animation_test": ani_result}
         else:
-            print("❌ 動畫狀態機測試主要失敗")
-            return {"status": "failed", "transitions": results}
+            print("⚠️ ANI 模組不可用，跳過動畫測試")
+            return {"status": "partial", "message": "ANI 模組不可用"}
             
     except Exception as e:
         print(f"❌ 動畫狀態機測試時發生錯誤: {str(e)}")
@@ -266,7 +278,7 @@ def test_animation_state_machine(modules):
 
 def frontend_test_full(modules):
     """Frontend 完整測試 - 第四步藍圖"""
-    frontend = modules.get("frontend")
+    frontend = modules.get("ui")
     if frontend is None:
         print("❌ Frontend 模組未載入")
         return None
@@ -292,20 +304,18 @@ def frontend_test_full(modules):
         state_machine_result = test_animation_state_machine(modules)
         test_results["state_machine"] = state_machine_result
         
-        # 第四步：Core 整合測試
-        print("\n🏗️ 執行 Core 整合測試...")
-        core_result = frontend.handle({
-            "action": "test_core_integration",
-            "test_components": ["stt", "nlp", "llm", "tts"],
-            "integration_type": "full"
+        # 第四步：介面狀態檢查
+        print("\n🏗️ 執行介面狀態檢查...")
+        status_result = frontend.handle_frontend_request({
+            "command": "get_interface_status"
         })
         
-        if core_result and core_result.get("status") == "success":
-            print("✅ Core 整合測試通過")
-            test_results["core_integration"] = core_result
+        if status_result and not status_result.get("error"):
+            print("✅ 介面狀態檢查通過")
+            test_results["interface_status"] = {"status": "success", "result": status_result}
         else:
-            print("❌ Core 整合測試失敗")
-            test_results["core_integration"] = core_result
+            print("❌ 介面狀態檢查失敗")
+            test_results["interface_status"] = {"status": "error", "result": status_result}
         
         # 計算總體成功率
         success_count = 0
@@ -340,29 +350,32 @@ def frontend_test_full(modules):
 
 def frontend_get_status(modules):
     """獲取 Frontend 模組狀態"""
-    frontend = modules.get("frontend")
+    frontend = modules.get("ui")
     if frontend is None:
         print("❌ Frontend 模組未載入")
         return None
 
     try:
-        result = frontend.handle({
-            "action": "get_status"
+        result = frontend.handle_frontend_request({
+            "command": "get_interface_status"
         })
         
-        if result and result.get("status") == "success":
-            data = result.get("data", {})
+        if result and not result.get("error"):
             print("📊 Frontend 模組狀態:")
-            print(f"   模組狀態: {data.get('module_status', '未知')}")
-            print(f"   桌面寵物: {data.get('pet_status', '未知')}")
-            print(f"   當前動畫: {data.get('current_animation', '未知')}")
-            print(f"   行為模式: {data.get('behavior_mode', '未知')}")
-            print(f"   MOV 狀態: {data.get('mov_status', '未知')}")
-            print(f"   ANI 狀態: {data.get('ani_status', '未知')}")
-            return result
+            
+            # 顯示各介面狀態
+            for interface_name, status in result.items():
+                exists = status.get("exists", False)
+                active = status.get("active", False)
+                visible = status.get("visible", False)
+                
+                status_icon = "✅" if visible else "⚠️" if exists else "❌"
+                print(f"   {status_icon} {interface_name}: 存在={exists}, 活躍={active}, 可見={visible}")
+            
+            return {"status": "success", "result": result}
         else:
             print("❌ 無法獲取 Frontend 狀態")
-            return result
+            return {"status": "error", "result": result}
             
     except Exception as e:
         print(f"❌ 獲取 Frontend 狀態時發生錯誤: {str(e)}")
@@ -370,12 +383,21 @@ def frontend_get_status(modules):
 
 def frontend_test_animations(modules):
     """測試各種動畫效果"""
-    frontend = modules.get("frontend")
+    frontend = modules.get("ui")
     if frontend is None:
-        print("❌ Frontend 模組未載入")
+        print("❌ UI 模組未載入")
+        return None
+        
+    # 透過UI模組取得ANI模組實例
+    ani_module = None
+    if hasattr(frontend, 'ani_module'):
+        ani_module = frontend.ani_module
+    
+    if ani_module is None:
+        print("❌ ANI 模組未在UI模組中初始化")
         return None
 
-    animations = ["idle", "wave", "dance", "jump", "sleep", "excited", "confused"]
+    animations = ["smile_idle_f", "angry_idle_f", "curious_idle_f", "dance_f", "laugh_f"]
     
     print("🎨 測試動畫效果...")
     
@@ -385,13 +407,12 @@ def frontend_test_animations(modules):
         for animation in animations:
             print(f"\n   測試動畫: {animation}")
             
-            result = frontend.handle({
-                "action": "play_animation",
-                "animation": animation,
-                "duration": 2
+            result = ani_module.handle_frontend_request({
+                "command": "play_animation",
+                "animation_type": animation
             })
             
-            if result and result.get("status") == "success":
+            if result and result.get("success"):
                 print(f"   ✅ {animation} 動畫播放成功")
                 results[animation] = "success"
             else:
@@ -417,45 +438,44 @@ def frontend_test_animations(modules):
 
 def frontend_test_user_interaction(modules):
     """測試用戶交互功能"""
-    frontend = modules.get("frontend")
+    frontend = modules.get("ui")
     if frontend is None:
         print("❌ Frontend 模組未載入")
         return None
 
     print("👆 測試用戶交互功能...")
     
-    interaction_tests = [
-        {"type": "click", "action": "pet_click"},
-        {"type": "drag", "action": "pet_drag"},
-        {"type": "hover", "action": "pet_hover"},
-        {"type": "double_click", "action": "pet_double_click"},
-        {"type": "right_click", "action": "pet_context_menu"}
-    ]
-    
-    results = {}
-    
     try:
-        for test in interaction_tests:
-            interaction_type = test["type"]
-            action = test["action"]
+        # 確保桌面寵物已顯示
+        show_result = frontend.handle_frontend_request({
+            "command": "show_interface",
+            "interface": "main_desktop_pet"
+        })
+        
+        # 測試視窗操作
+        operations = [
+            {"command": "get_window_info", "name": "視窗資訊"},
+            {"command": "set_always_on_top", "enabled": True, "name": "設定置頂"},
+            {"command": "set_opacity", "opacity": 0.8, "name": "設定透明度"}
+        ]
+        
+        results = {}
+        
+        for operation in operations:
+            op_name = operation.pop("name")
+            print(f"\n   測試操作: {op_name}")
             
-            print(f"\n   測試交互: {interaction_type}")
+            result = frontend.handle_frontend_request(operation)
             
-            result = frontend.handle({
-                "action": "test_interaction",
-                "interaction_type": interaction_type,
-                "test_action": action
-            })
-            
-            if result and result.get("status") == "success":
-                print(f"   ✅ {interaction_type} 交互測試成功")
-                results[interaction_type] = "success"
+            if result and not result.get("error"):
+                print(f"   ✅ {op_name} 測試成功")
+                results[op_name] = "success"
             else:
-                print(f"   ❌ {interaction_type} 交互測試失敗")
-                results[interaction_type] = "failed"
+                print(f"   ❌ {op_name} 測試失敗")
+                results[op_name] = "failed"
         
         success_count = sum(1 for status in results.values() if status == "success")
-        total_count = len(interaction_tests)
+        total_count = len(operations)
         
         print(f"\n📊 交互測試總結: {success_count}/{total_count} 成功")
         

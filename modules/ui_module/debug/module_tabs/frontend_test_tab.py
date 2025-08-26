@@ -254,7 +254,8 @@ class FrontendTestTab(BaseTestTab):
             
             def run_ani_test_task():
                 try:
-                    return self.module_manager.run_test_function("ani", "play_animation", {})
+                    # 使用 frontend 測試函數而不是直接調用 ani 模組
+                    return self.module_manager.run_test_function("frontend", "frontend_test_animations", {})
                 except Exception as e:
                     return {"success": False, "error": str(e)}
             
@@ -281,13 +282,13 @@ class FrontendTestTab(BaseTestTab):
         
         # 獲取移動參數
         params = {
-            "x": 400,  # 目標 X 座標
-            "y": 300,  # 目標 Y 座標
-            "speed": 5  # 移動速度
+            "action": "wave",  # 使用 control_desktop_pet 的動作參數
+            "duration": 3  # 持續時間
         }
         
         try:
-            result = self.module_manager.run_test_function("mov", "execute_movement", params)
+            # 使用 frontend 測試函數
+            result = self.module_manager.run_test_function("frontend", "control_desktop_pet", params)
             
             if result.get('success', False):
                 self.add_result("✅ 移動執行成功", "SUCCESS")
@@ -297,19 +298,31 @@ class FrontendTestTab(BaseTestTab):
             self.add_result(f"執行移動時發生錯誤: {str(e)}", "ERROR")
     
     def move_to_center(self):
-        """移動到中央"""
-        self.add_result("📍 移動到螢幕中央...", "INFO")
+        """移動到螢幕中央"""
+        self.add_result("📍 移動UEP到螢幕中央...", "INFO")
         try:
-            result = self.module_manager.run_test_function("ui", "control_desktop_pet", {
-                "command": "move_window",
-                "x": 400,
-                "y": 300
+            # 獲取螢幕尺寸並計算中央位置
+            from PyQt5.QtWidgets import QDesktopWidget
+            desktop = QDesktopWidget()
+            screen_geometry = desktop.screenGeometry()
+            
+            # 計算中央位置 (假設UEP大小為240x240)
+            uep_size = 240
+            center_x = (screen_geometry.width() - uep_size) // 2
+            center_y = (screen_geometry.height() - uep_size) // 2
+            
+            # 直接通過UI模組來移動桌面寵物
+            result = self.module_manager.run_test_function("frontend", "control_desktop_pet", {
+                "action": "move_window",
+                "x": center_x,
+                "y": center_y
             })
             
             if result.get('success', False):
-                self.add_result("✅ 移動到中央成功", "SUCCESS")
+                self.add_result(f"✅ UEP已移動到中央位置 ({center_x}, {center_y})", "SUCCESS")
             else:
                 self.add_result(f"❌ 移動到中央失敗: {result.get('error', '未知錯誤')}", "ERROR")
+                
         except Exception as e:
             self.add_result(f"移動到中央時發生錯誤: {str(e)}", "ERROR")
     
@@ -364,14 +377,14 @@ class FrontendTestTab(BaseTestTab):
         try:
             # 先播放動畫
             self.add_result("  ├─ 步驟 1: 啟動動畫", "INFO")
-            ani_result = self.module_manager.run_test_function("ani", "play_animation", {})
+            ani_result = self.module_manager.run_test_function("frontend", "frontend_test_animations", {})
             
             if ani_result.get('success', False):
                 self.add_result("  ├─ 動畫啟動成功", "SUCCESS")
                 
                 # 然後執行移動
                 self.add_result("  ├─ 步驟 2: 執行移動", "INFO")
-                mov_result = self.module_manager.run_test_function("mov", "execute_movement", {"x": 500, "y": 400})
+                mov_result = self.module_manager.run_test_function("frontend", "test_mov_ani_integration", {})
                 
                 if mov_result.get('success', False):
                     self.add_result("  └─ 組合測試完成", "SUCCESS")
@@ -393,7 +406,7 @@ class FrontendTestTab(BaseTestTab):
         self.add_result(f"🔄 載入 Frontend 模組群組...", "INFO")
         
         # 分別載入 UI、ANI、MOV 模組
-        modules_to_load = ["ui", "ani", "mov"]
+        modules_to_load = ["ui"]
         success_count = 0
         
         for module_name in modules_to_load:
@@ -440,8 +453,8 @@ class FrontendTestTab(BaseTestTab):
         try:
             self.add_result("🎈 顯示 UEP 主程式...", "INFO")
             
-            # 嘗試通過 UI 模組啟動 UEP 主程式
-            result = self.module_manager.run_test_function("ui", "show_desktop_pet", {})
+            # 使用 debug_api 中的包裝函數
+            result = self.module_manager.run_test_function("frontend", "show_desktop_pet", {})
             
             if result.get('success', False):
                 self.add_result("✅ UEP 主程式顯示成功", "SUCCESS")
@@ -456,8 +469,8 @@ class FrontendTestTab(BaseTestTab):
         try:
             self.add_result("👻 隱藏 UEP 主程式...", "INFO")
             
-            # 嘗試通過 UI 模組隱藏 UEP 主程式
-            result = self.module_manager.run_test_function("ui", "hide_desktop_pet", {})
+            # 使用 debug_api 中的包裝函數
+            result = self.module_manager.run_test_function("frontend", "hide_desktop_pet", {})
             
             if result.get('success', False):
                 self.add_result("✅ UEP 主程式隱藏成功", "SUCCESS")

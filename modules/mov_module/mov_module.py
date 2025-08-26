@@ -53,6 +53,14 @@ class BehaviorType(Enum):
     WANDER = "wander"           # 漫遊
     FOLLOW_CURSOR = "follow"    # 跟隨游標
     WATCH_CURSOR = "watch"      # 觀察游標
+
+
+class BehaviorState(Enum):
+    """新的行為狀態架構 45-35-15-5"""
+    NORMAL_MOVE = "normal_move"     # 45% - 正常移動到目標點
+    IDLE = "idle"                   # 35% - 靜止不動
+    SPECIAL_MOVE = "special_move"   # 15% - 特殊移動(變速)
+    TRANSITION = "transition"       # 5%  - 轉場(浮空<->落地)
     INTERACT = "interact"       # 互動
     SLEEP = "sleep"            # 休眠
 
@@ -134,6 +142,7 @@ class MOVModule(BaseFrontendModule):
         
         # 替代PyQt信號的事件回調系統
         self._animation_callbacks = []
+        self._position_callbacks = []
         
         # 移動參數
         self.SIZE = self.config.get('window_size', 250)
@@ -173,6 +182,37 @@ class MOVModule(BaseFrontendModule):
             'interaction': self.config.get('interaction_enabled', True)
         }
         
+        # 狀態轉換機制
+        self.state_transition_chance = 0.05  # 每次tick有5%機率轉換狀態
+        self.state_stay_chance = 0.95  # 95%機率保持當前狀態
+        self.transition_duration = 2.0  # 轉場持續時間（秒）
+        self.transition_start_time = None
+        self.transition_from_state = None
+        self.transition_to_state = None
+        self.is_transitioning = False
+        
+        # 新的45-35-15-5行為架構
+        self.current_behavior_state = BehaviorState.NORMAL_MOVE  # 當前行為狀態
+        self.behavior_probabilities = {
+            BehaviorState.NORMAL_MOVE: 0.45,   # 45%
+            BehaviorState.IDLE: 0.35,          # 35%
+            BehaviorState.SPECIAL_MOVE: 0.15,  # 15%
+            BehaviorState.TRANSITION: 0.05     # 5%
+        }
+        
+        # 靜止狀態相關
+        self.idle_start_time = None
+        self.idle_tick_chance = 0.07  # 靜止時每個tick有7%機率結束靜止
+        
+        # 移動目標管理
+        self.movement_target = None  # 當前移動目標位置
+        self.target_reached = True  # 是否已到達目標
+        self.target_reach_threshold = 10  # 到達目標的距離閾值
+        
+        # 移動暫停控制
+        self.movement_paused = False  # 移動邏輯是否暫停
+        self.pause_reason = ""  # 暫停原因
+        
         info_log(f"[{self.module_id}] MOV 模組初始化")
     
     # ==== 信號替代方案 ====
@@ -189,6 +229,18 @@ class MOVModule(BaseFrontendModule):
             self._animation_callbacks.remove(callback)
             debug_log(1, f"[{self.module_id}] 移除動畫回調函數: {callback.__qualname__}")
     
+    def add_position_callback(self, callback: Callable[[int, int], None]):
+        """註冊位置更新回調函數，替代 position_changed 信號"""
+        if callback not in self._position_callbacks:
+            self._position_callbacks.append(callback)
+            debug_log(1, f"[{self.module_id}] 新增位置回調函數: {callback.__qualname__}")
+    
+    def remove_position_callback(self, callback: Callable[[int, int], None]):
+        """移除位置更新回調函數"""
+        if callback in self._position_callbacks:
+            self._position_callbacks.remove(callback)
+            debug_log(1, f"[{self.module_id}] 移除位置回調函數: {callback.__qualname__}")
+    
     def trigger_animation(self, animation_type: str, params: dict = None):
         """觸發動畫，替代 animation_trigger.emit 調用"""
         params = params or {}
@@ -199,7 +251,24 @@ class MOVModule(BaseFrontendModule):
             try:
                 callback(animation_type, params)
             except Exception as e:
-                error_log(f"[{self.module_id}] 執行動畫回調時發生錯誤: {e}")
+                error_log(f"[{self.module_id}] 動畫回調執行失敗: {e}")
+    
+    def trigger_position_update(self, x: int, y: int):
+        """觸發位置更新，替代 position_changed.emit 調用"""
+        debug_log(3, f"[{self.module_id}] 觸發位置更新: ({x}, {y})")
+        
+        # 如果正在被拖拽或移動暫停，直接更新內部位置
+        if self.is_being_dragged or self.movement_paused:
+            self.position.x = x
+            self.position.y = y
+            debug_log(3, f"[{self.module_id}] 直接更新位置 (暫停狀態)")
+        
+        # 呼叫所有註冊的回調函數
+        for callback in self._position_callbacks:
+            try:
+                callback(x, y)
+            except Exception as e:
+                error_log(f"[{self.module_id}] 位置回調執行失敗: {e}")
     
     def initialize_frontend(self) -> bool:
         """初始化移動前端功能"""
@@ -215,7 +284,7 @@ class MOVModule(BaseFrontendModule):
                 
                 self.movement_timer = QTimer()
                 self.movement_timer.timeout.connect(lambda: self.signals.timer_timeout("movement"))
-                self.movement_timer.start(16)  # ~60 FPS
+                self.movement_timer.start(16)  # ~60 FPS for smooth movement
                 
                 self.behavior_timer = QTimer()
                 self.behavior_timer.timeout.connect(lambda: self.signals.timer_timeout("behavior"))
@@ -364,6 +433,11 @@ class MOVModule(BaseFrontendModule):
     def _update_movement(self):
         """更新移動邏輯 (高頻率調用)"""
         try:
+            # 檢查移動是否暫停
+            if self.movement_paused:
+                debug_log(3, f"[{self.module_id}] 移動已暫停: {self.pause_reason}")
+                return
+                
             if self.is_being_dragged:
                 return  # 被拖拽時不更新自主移動
             
@@ -386,25 +460,368 @@ class MOVModule(BaseFrontendModule):
     def _update_behavior(self):
         """更新行為邏輯 (低頻率調用)"""
         try:
+            # 檢查移動是否暫停
+            if self.movement_paused:
+                debug_log(3, f"[{self.module_id}] 行為更新已暫停: {self.pause_reason}")
+                return
+                
             current_time = time.time()
             
-            # 檢查是否需要切換行為
-            if current_time - self.last_behavior_switch > self.behavior_switch_interval:
-                self._switch_behavior()
-                self.last_behavior_switch = current_time
-                self.behavior_switch_interval = random.uniform(3.0, 6.0)
+            # 檢查是否到達移動目標
+            self._check_target_reached()
             
-            # 執行當前行為
-            self._execute_current_behavior()
+            # 如果正在轉換狀態，處理轉換邏輯
+            if self.is_transitioning:
+                self._handle_state_transition(current_time)
+                return
+            
+            # 新的行為狀態處理
+            self._handle_behavior_state(current_time)
             
         except Exception as e:
             error_log(f"[{self.module_id}] 行為更新異常: {e}")
     
+    def _handle_behavior_state(self, current_time):
+        """處理新的行為狀態邏輯"""
+        if self.current_behavior_state == BehaviorState.NORMAL_MOVE:
+            self._handle_normal_move()
+        elif self.current_behavior_state == BehaviorState.IDLE:
+            self._handle_idle_state(current_time)
+        elif self.current_behavior_state == BehaviorState.SPECIAL_MOVE:
+            self._handle_special_move()
+        elif self.current_behavior_state == BehaviorState.TRANSITION:
+            self._handle_transition_behavior()
+    
+    def _handle_normal_move(self):
+        """處理正常移動行為 (45%)"""
+        if self.target_reached:
+            # 到達目標，決定下一個行為狀態
+            self._choose_next_behavior_state()
+    
+    def _handle_idle_state(self, current_time):
+        """處理靜止狀態 (35%)"""
+        if self.idle_start_time is None:
+            self.idle_start_time = current_time
+            # 停止所有移動
+            self.velocity = Velocity(0, 0)
+            self.target_velocity = Velocity(0, 0)
+            debug_log(1, f"[{self.module_id}] 開始靜止狀態")
+        
+        # 每個tick有機率結束靜止
+        if random.random() < self.idle_tick_chance:
+            self.idle_start_time = None
+            self._choose_next_behavior_state()
+            debug_log(1, f"[{self.module_id}] 結束靜止狀態")
+    
+    def _handle_special_move(self):
+        """處理特殊移動行為 (15%) - 變速移動"""
+        if self.target_reached:
+            # 到達目標，決定下一個行為狀態
+            self._choose_next_behavior_state()
+    
+    def _handle_transition_behavior(self):
+        """處理轉場行為 (5%) - 浮空<->落地轉換"""
+        # 直接開始狀態轉換
+        if not self.is_transitioning:
+            self._start_state_transition()
+    
+    def _choose_next_behavior_state(self):
+        """根據機率選擇下一個行為狀態"""
+        rand = random.random()
+        cumulative = 0
+        
+        for state, probability in self.behavior_probabilities.items():
+            cumulative += probability
+            if rand <= cumulative:
+                old_state = self.current_behavior_state
+                self.current_behavior_state = state
+                debug_log(1, f"[{self.module_id}] 行為狀態轉換: {old_state.value} -> {state.value}")
+                
+                # 根據新狀態開始相應行為
+                self._start_behavior_state(state)
+                break
+    
+    def _start_behavior_state(self, state):
+        """開始新的行為狀態"""
+        if state == BehaviorState.NORMAL_MOVE:
+            self._start_normal_movement()
+        elif state == BehaviorState.IDLE:
+            # 靜止狀態在_handle_idle_state中處理
+            pass
+        elif state == BehaviorState.SPECIAL_MOVE:
+            self._start_special_movement()
+        elif state == BehaviorState.TRANSITION:
+            # 轉場在_handle_transition_behavior中處理
+            pass
+    
+    def _start_normal_movement(self):
+        """開始正常移動"""
+        if self.movement_mode == MovementMode.GROUND:
+            self._start_walking()
+        elif self.movement_mode == MovementMode.FLOAT:
+            self._start_floating()
+    
+    def _start_special_movement(self):
+        """開始特殊移動 - 速度變化"""
+        speed_multiplier = random.choice([0.5, 1.5, 2.0])  # 慢、快、超快
+        
+        if self.movement_mode == MovementMode.GROUND:
+            self._start_walking_with_speed(speed_multiplier)
+        elif self.movement_mode == MovementMode.FLOAT:
+            self._start_floating_with_speed(speed_multiplier)
+        
+        debug_log(1, f"[{self.module_id}] 開始特殊移動，速度倍率: {speed_multiplier}")
+    
+    def _start_walking_with_speed(self, speed_multiplier):
+        """開始變速走路"""
+        ground_y = self.screen_height - self.SIZE + self.GROUND_OFFSET
+        self.position.y = ground_y
+        self.target_velocity.y = 0
+        self.target_velocity.x = self.GROUND_SPEED * speed_multiplier * random.choice([-1, 1])
+        self.facing_direction = 1 if self.target_velocity.x >= 0 else -1
+        
+        # 設置隨機的走路目標點
+        if self.facing_direction == 1:
+            target_x = random.uniform(self.position.x + 100, min(self.screen_width - 50, self.position.x + 400))
+        else:
+            target_x = random.uniform(max(50, self.position.x - 400), self.position.x - 100)
+        self._set_movement_target(target_x, ground_y)
+        
+        # 觸發行走動畫
+        animation_type = "walk_right" if self.facing_direction == 1 else "walk_left"
+        self.trigger_animation(animation_type, {})
+    
+    def _start_floating_with_speed(self, speed_multiplier):
+        """開始變速浮動"""
+        # 隨機浮動方向
+        angle = random.uniform(-math.pi, math.pi)
+        while abs(math.cos(angle)) <= 0.1:  # 避免垂直移動
+            angle = random.uniform(-math.pi, math.pi)
+        
+        base_speed = random.uniform(self.FLOAT_MIN_SPEED, self.FLOAT_MAX_SPEED)
+        speed = base_speed * speed_multiplier
+        self.target_velocity.x = speed * math.cos(angle)
+        self.target_velocity.y = speed * math.sin(angle)
+        
+        # 設置隨機的浮動目標點
+        target_x = random.uniform(50, self.screen_width - 50)
+        target_y = random.uniform(50, 400)
+        self._set_movement_target(target_x, target_y)
+        
+        # 觸發浮動動畫
+        self.trigger_animation("static", {})
+    
+    def _check_target_reached(self):
+        """檢查是否到達移動目標"""
+        if self.movement_target is None:
+            self.target_reached = True
+            return
+        
+        # 計算到目標的距離
+        distance = math.hypot(
+            self.position.x - self.movement_target.x,
+            self.position.y - self.movement_target.y
+        )
+        
+        # 檢查是否在閾值範圍內
+        if distance <= self.target_reach_threshold:
+            if not self.target_reached:  # 剛到達目標
+                self.target_reached = True
+                debug_log(1, f"[{self.module_id}] 到達移動目標")
+        else:
+            self.target_reached = False
+    
+    def _set_movement_target(self, x, y):
+        """設置新的移動目標"""
+        self.movement_target = Position(x, y)
+        self.target_reached = False
+        debug_log(1, f"[{self.module_id}] 設置新移動目標: ({x}, {y})")
+    
+    def pause_movement(self, reason="未指定"):
+        """暫停移動邏輯"""
+        self.movement_paused = True
+        self.pause_reason = reason
+        # 停止所有速度
+        self.velocity = Velocity(0, 0)
+        self.target_velocity = Velocity(0, 0)
+        debug_log(1, f"[{self.module_id}] 移動已暫停: {reason}")
+    
+    def resume_movement(self):
+        """恢復移動邏輯"""
+        was_paused = self.movement_paused
+        self.movement_paused = False
+        self.pause_reason = ""
+        
+        if was_paused:
+            # 根據當前狀態恢復適當的移動
+            if self.movement_mode == MovementMode.GROUND:
+                self._start_walking()
+            elif self.movement_mode == MovementMode.FLOAT:
+                self._start_floating()
+            debug_log(1, f"[{self.module_id}] 移動已恢復")
+    
+    def _notify_ui_state_change(self, event_type, data):
+        """通知UI狀態變更"""
+        try:
+            # 通過位置回調系統通知UI（使用特殊標記）
+            for callback in self._position_callbacks:
+                try:
+                    # 如果回調有處理狀態變更的能力，調用它
+                    if hasattr(callback, '__self__') and hasattr(callback.__self__, 'handle_mov_state_change'):
+                        callback.__self__.handle_mov_state_change(event_type, data)
+                except Exception as e:
+                    debug_log(3, f"[{self.module_id}] 狀態變更通知失敗: {e}")
+        except Exception as e:
+            debug_log(3, f"[{self.module_id}] UI狀態變更通知異常: {e}")
+    
+    def _start_state_transition(self):
+        """開始狀態轉換 - 只在TRANSITION行為狀態時調用"""
+        if self.is_being_dragged or self.movement_mode == MovementMode.DRAGGING:
+            return  # 拖拽時不進行狀態轉換
+        
+        # 決定轉換目標狀態
+        current_state = self.movement_mode
+        available_states = []
+        
+        if current_state == MovementMode.FLOAT:
+            available_states = [MovementMode.GROUND]
+        elif current_state == MovementMode.GROUND:
+            available_states = [MovementMode.FLOAT]
+        
+        if not available_states:
+            # 如果無法轉換，改為正常移動
+            self.current_behavior_state = BehaviorState.NORMAL_MOVE
+            self._start_normal_movement()
+            return
+        
+        target_state = random.choice(available_states)
+        
+        # 暫停移動邏輯
+        self.pause_movement(f"狀態轉換: {current_state.value} -> {target_state.value}")
+        
+        # 開始轉換
+        self.is_transitioning = True
+        self.transition_from_state = current_state
+        self.transition_to_state = target_state
+        self.transition_start_time = time.time()
+        
+        # 通知UI暫停渲染（如果有回調）
+        self._notify_ui_state_change("transition_start", {
+            "from": current_state.value,
+            "to": target_state.value
+        })
+        
+        debug_log(1, f"[{self.module_id}] 開始狀態轉換: {current_state.value} -> {target_state.value}")
+    
+    def _handle_state_transition(self, current_time):
+        """處理狀態轉換過程"""
+        if not self.is_transitioning:
+            return
+        
+        elapsed = current_time - self.transition_start_time
+        progress = min(elapsed / self.transition_duration, 1.0)
+        
+        # 根據轉換類型執行不同的轉換邏輯
+        if self.transition_from_state == MovementMode.FLOAT and self.transition_to_state == MovementMode.GROUND:
+            self._transition_float_to_ground(progress)
+        elif self.transition_from_state == MovementMode.GROUND and self.transition_to_state == MovementMode.FLOAT:
+            self._transition_ground_to_float(progress)
+        
+        # 轉換完成
+        if progress >= 1.0:
+            self.movement_mode = self.transition_to_state
+            self.is_transitioning = False
+            self.transition_from_state = None
+            self.transition_to_state = None
+            self.transition_start_time = None
+            
+            # 通知UI恢復渲染
+            self._notify_ui_state_change("transition_complete", {
+                "current_state": self.movement_mode.value
+            })
+            
+            # 恢復移動邏輯
+            self.resume_movement()
+            
+            # 轉換完成後，選擇新的行為狀態（排除轉場）
+            self._choose_post_transition_behavior()
+            
+            debug_log(1, f"[{self.module_id}] 狀態轉換完成: {self.movement_mode.value}")
+    
+    def _choose_post_transition_behavior(self):
+        """轉換完成後選擇新的行為狀態（排除轉場）"""
+        # 重新計算機率，排除轉場
+        adjusted_probabilities = {
+            BehaviorState.NORMAL_MOVE: 0.45 / 0.95,   # 約47.4%
+            BehaviorState.IDLE: 0.35 / 0.95,          # 約36.8%
+            BehaviorState.SPECIAL_MOVE: 0.15 / 0.95,  # 約15.8%
+        }
+        
+        rand = random.random()
+        cumulative = 0
+        
+        for state, probability in adjusted_probabilities.items():
+            cumulative += probability
+            if rand <= cumulative:
+                self.current_behavior_state = state
+                debug_log(1, f"[{self.module_id}] 轉換後選擇行為狀態: {state.value}")
+                self._start_behavior_state(state)
+                break
+    
+    def _transition_float_to_ground(self, progress):
+        """浮空到落地的轉換（慢慢降落）"""
+        ground_y = self.screen_height - self.SIZE + self.GROUND_OFFSET
+        
+        if not hasattr(self, '_transition_start_y'):
+            self._transition_start_y = self.position.y
+        
+        start_y = self._transition_start_y
+        
+        # 使用緩動函數讓降落更自然
+        eased_progress = 1 - (1 - progress) ** 2  # 二次緩出
+        target_y = start_y + (ground_y - start_y) * eased_progress
+        
+        # 設置目標位置
+        self.position.y = target_y
+        
+        # 減緩水平移動
+        self.target_velocity.x *= (1 - progress * 0.3)
+        
+        # 轉換完成後清理臨時變數
+        if progress >= 1.0:
+            delattr(self, '_transition_start_y')
+    
+    def _transition_ground_to_float(self, progress):
+        """落地到浮空的轉換（輕輕上升）"""
+        ground_y = self.screen_height - self.SIZE + self.GROUND_OFFSET
+        float_y = random.uniform(100, 300)  # 隨機浮空高度
+        
+        if not hasattr(self, '_transition_target_y'):
+            self._transition_target_y = float_y
+        
+        # 使用緩動函數讓上升更自然
+        eased_progress = progress * progress  # 二次緩入
+        target_y = ground_y + (self._transition_target_y - ground_y) * eased_progress
+        
+        # 設置目標位置
+        self.position.y = target_y
+        
+        # 轉換完成後清理臨時變數
+        if progress >= 1.0:
+            delattr(self, '_transition_target_y')
+    
     def _apply_physics(self):
         """應用物理效果"""
+        # 如果正在狀態轉換中，不應用常規物理效果
+        if self.is_transitioning:
+            return
+        
+        # 恢復到60FPS的平滑係數
+        smoothing_factor = 0.12
+        
         # 漸進到目標速度
-        self.velocity.x += (self.target_velocity.x - self.velocity.x) * 0.12
-        self.velocity.y += (self.target_velocity.y - self.velocity.y) * 0.12
+        self.velocity.x += (self.target_velocity.x - self.velocity.x) * smoothing_factor
+        self.velocity.y += (self.target_velocity.y - self.velocity.y) * smoothing_factor
         
         # 檢查是否在地面
         ground_y = self.screen_height - self.SIZE + self.GROUND_OFFSET
@@ -479,6 +896,13 @@ class MOVModule(BaseFrontendModule):
         self.target_velocity.x = self.GROUND_SPEED * random.choice([-1, 1])
         self.facing_direction = 1 if self.target_velocity.x >= 0 else -1
         
+        # 設置隨機的走路目標點
+        if self.facing_direction == 1:
+            target_x = random.uniform(self.position.x + 100, min(self.screen_width - 50, self.position.x + 400))
+        else:
+            target_x = random.uniform(max(50, self.position.x - 400), self.position.x - 100)
+        self._set_movement_target(target_x, ground_y)
+        
         # 觸發行走動畫
         animation_type = "walk_right" if self.facing_direction == 1 else "walk_left"
         self.trigger_animation(animation_type, {})
@@ -493,6 +917,11 @@ class MOVModule(BaseFrontendModule):
         speed = random.uniform(self.FLOAT_MIN_SPEED, self.FLOAT_MAX_SPEED)
         self.target_velocity.x = speed * math.cos(angle)
         self.target_velocity.y = speed * math.sin(angle)
+        
+        # 設置隨機的浮動目標點
+        target_x = random.uniform(50, self.screen_width - 50)
+        target_y = random.uniform(50, 400)
+        self._set_movement_target(target_x, target_y)
         
         # 觸發浮動動畫
         self.trigger_animation("static", {})
@@ -566,10 +995,17 @@ class MOVModule(BaseFrontendModule):
     
     def _emit_position_change(self):
         """發送位置變更信號"""
-        if hasattr(self.signals, 'position_changed'):
+        x = int(self.position.x)
+        y = int(self.position.y)
+        
+        # 使用回調系統替代PyQt信號
+        self.trigger_position_update(x, y)
+        
+        # 保留原有的信號系統（如果可用）
+        if hasattr(self, 'signals') and hasattr(self.signals, 'position_changed'):
             self.signals.position_changed.emit({
-                "x": int(self.position.x),
-                "y": int(self.position.y)
+                "x": x,
+                "y": y
             })
     
     # ========== 事件處理器 ==========
@@ -577,6 +1013,11 @@ class MOVModule(BaseFrontendModule):
     def _on_drag_start(self, event):
         """拖拽開始事件處理"""
         self.is_being_dragged = True
+        
+        # 暫停移動邏輯
+        self.pause_movement("拖拽中")
+        
+        # 設置拖拽模式
         self.movement_mode = MovementMode.DRAGGING
         self.drag_history.clear()
         
@@ -586,7 +1027,7 @@ class MOVModule(BaseFrontendModule):
             start_pos.get('y', self.position.y)
         )
         
-        debug_log(1, f"[{self.module_id}] 開始拖拽")
+        debug_log(1, f"[{self.module_id}] 開始拖拽，暫停移動邏輯")
     
     def _on_drag_end(self, event):
         """拖拽結束事件處理"""
@@ -599,13 +1040,41 @@ class MOVModule(BaseFrontendModule):
             ground_y = self.screen_height - self.SIZE + self.GROUND_OFFSET
             if self.position.y >= ground_y - 50:  # 接近地面
                 self.movement_mode = MovementMode.GROUND
-                self._start_walking()
             else:
                 self.movement_mode = MovementMode.FLOAT
-                self._start_floating()
         
-        debug_log(1, f"[{self.module_id}] 結束拖拽，切換到: {self.movement_mode.value}")
+        # 恢復移動邏輯
+        self.resume_movement()
+        
+        debug_log(1, f"[{self.module_id}] 結束拖拽，恢復移動邏輯，當前狀態: {self.movement_mode.value}")
 
+    def _start_behavior_state(self, state: BehaviorState):
+        """開始新的行為狀態"""
+        if state == BehaviorState.NORMAL_MOVE:
+            # 開始正常移動
+            if self.movement_mode == MovementMode.GROUND:
+                self._start_walking()
+            elif self.movement_mode == MovementMode.FLOAT:
+                self._start_floating()
+        elif state == BehaviorState.IDLE:
+            # 開始閒置狀態
+            self.target_velocity = Velocity(0, 0)
+            self.idle_start_time = time.time()
+            self.idle_duration = random.uniform(2.0, 5.0)  # 2-5秒的閒置時間
+        elif state == BehaviorState.SPECIAL_MOVE:
+            # 開始特殊移動
+            speed_multiplier = random.choice([0.5, 1.5, 2.0])
+            self.special_speed_multiplier = speed_multiplier
+            debug_log(1, f"[{self.module_id}] 特殊移動速度倍數: {speed_multiplier}x")
+            
+            if self.movement_mode == MovementMode.GROUND:
+                self._start_walking()
+            elif self.movement_mode == MovementMode.FLOAT:
+                self._start_floating()
+        elif state == BehaviorState.TRANSITION:
+            # 轉場狀態不需要特殊初始化
+            pass
+    
     def _on_mouse_hover(self, event):
         """滑鼠懸停事件處理"""
         hover_type = event.data.get('type')

@@ -946,3 +946,15 @@
 
 ---
 
+### Currently exists some problem regarding UI module repeat initialization during debug UI activation, and some other problem with UEP's movement. 08/26
+
+> Date: Tue, 26 Aug 2025 18:22:03 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/front_end_integration`
+
+> Commit: `40f9ad7b39692f1b6e9fc630206fdac45e4e812f`
+
+---
+

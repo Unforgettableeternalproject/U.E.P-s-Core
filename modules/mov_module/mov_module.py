@@ -464,24 +464,24 @@ class MOVModule(BaseFrontendModule):
     def _update_behavior(self):
         """更新行為邏輯 (低頻率調用)"""
         try:
+            current_time = time.time()
+
+            # 狀態轉換應在暫停期間繼續進行
+            if self.is_transitioning:
+                self._handle_state_transition(current_time)
+                return
+
             # 檢查移動是否暫停
             if self.movement_paused:
                 debug_log(3, f"[{self.module_id}] 行為更新已暫停: {self.pause_reason}")
                 return
-                
-            current_time = time.time()
-            
+
             # 檢查是否到達移動目標
             self._check_target_reached()
-            
-            # 如果正在轉換狀態，處理轉換邏輯
-            if self.is_transitioning:
-                self._handle_state_transition(current_time)
-                return
-            
+
             # 新的行為狀態處理
             self._handle_behavior_state(current_time)
-            
+
         except Exception as e:
             error_log(f"[{self.module_id}] 行為更新異常: {e}")
     
@@ -737,13 +737,16 @@ class MOVModule(BaseFrontendModule):
         
         elapsed = current_time - self.transition_start_time
         progress = min(elapsed / self.transition_duration, 1.0)
-        
+
         # 根據轉換類型執行不同的轉換邏輯
         if self.transition_from_state == MovementMode.FLOAT and self.transition_to_state == MovementMode.GROUND:
             self._transition_float_to_ground(progress)
         elif self.transition_from_state == MovementMode.GROUND and self.transition_to_state == MovementMode.FLOAT:
             self._transition_ground_to_float(progress)
-        
+
+        # 轉換過程中持續更新位置
+        self._emit_position_change()
+
         # 轉換完成
         if progress >= 1.0:
             self.movement_mode = self.transition_to_state

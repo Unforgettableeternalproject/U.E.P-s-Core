@@ -970,3 +970,27 @@
 
 ---
 
+### This version works, so I am resetting to here. 08/27
+
+> Date: Wed, 27 Aug 2025 00:13:00 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `codex/fix-ui-module-double-initialization-issue`
+
+> Commit: `fac4a8c3181f8eaaa3dbffd4810783296d8a7a75`
+
+---
+
+### This version works, so I am resetting to here. 08/27
+
+> Date: Wed, 27 Aug 2025 00:13:00 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/front_end_integration`
+
+> Commit: `2d9881191a809656e79a7c5b35043a3350dde1e6`
+
+---
+

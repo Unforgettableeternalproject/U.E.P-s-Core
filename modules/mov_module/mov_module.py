@@ -128,10 +128,12 @@ class PhysicsEngine:
 
 class MOVModule(BaseFrontendModule):
     """MOV 模組 - 行為和移動控制器"""
-    
+
+    DRAG_PAUSE_REASON = "拖拽中"
+
     def __init__(self, config: dict = None):
         super().__init__(FrontendModuleType.MOV)
-        
+
         self.config = config or {}
         self.is_initialized = False
         
@@ -211,7 +213,9 @@ class MOVModule(BaseFrontendModule):
         
         # 移動暫停控制
         self.movement_paused = False  # 移動邏輯是否暫停
-        self.pause_reason = ""  # 暫停原因
+        self.pause_reason = ""  # 暫停原因（合併顯示）
+        self.pause_reasons = set()  # 所有暫停原因
+        self._transition_pause_reason = None  # 狀態轉換暫停識別
         
         info_log(f"[{self.module_id}] MOV 模組初始化")
     
@@ -639,19 +643,31 @@ class MOVModule(BaseFrontendModule):
     
     def pause_movement(self, reason="未指定"):
         """暫停移動邏輯"""
+        self.pause_reasons.add(reason)
         self.movement_paused = True
-        self.pause_reason = reason
+        self.pause_reason = ", ".join(self.pause_reasons)
         # 停止所有速度
         self.velocity = Velocity(0, 0)
         self.target_velocity = Velocity(0, 0)
         debug_log(1, f"[{self.module_id}] 移動已暫停: {reason}")
-    
-    def resume_movement(self):
+
+    def resume_movement(self, reason=None):
         """恢復移動邏輯"""
+        if reason:
+            self.pause_reasons.discard(reason)
+        else:
+            self.pause_reasons.clear()
+
+        if self.pause_reasons:
+            self.movement_paused = True
+            self.pause_reason = ", ".join(self.pause_reasons)
+            debug_log(1, f"[{self.module_id}] 移動暫停未解除，剩餘原因: {self.pause_reason}")
+            return
+
         was_paused = self.movement_paused
         self.movement_paused = False
         self.pause_reason = ""
-        
+
         if was_paused:
             # 根據當前狀態恢復適當的移動
             if self.movement_mode == MovementMode.GROUND:
@@ -696,8 +712,9 @@ class MOVModule(BaseFrontendModule):
         
         target_state = random.choice(available_states)
         
-        # 暫停移動邏輯
-        self.pause_movement(f"狀態轉換: {current_state.value} -> {target_state.value}")
+        # 暫停移動邏輯並記錄暫停原因
+        self._transition_pause_reason = f"狀態轉換: {current_state.value} -> {target_state.value}"
+        self.pause_movement(self._transition_pause_reason)
         
         # 開始轉換
         self.is_transitioning = True
@@ -739,13 +756,14 @@ class MOVModule(BaseFrontendModule):
             self._notify_ui_state_change("transition_complete", {
                 "current_state": self.movement_mode.value
             })
-            
+
             # 恢復移動邏輯
-            self.resume_movement()
-            
+            self.resume_movement(self._transition_pause_reason)
+            self._transition_pause_reason = None
+
             # 轉換完成後，選擇新的行為狀態（排除轉場）
             self._choose_post_transition_behavior()
-            
+
             debug_log(1, f"[{self.module_id}] 狀態轉換完成: {self.movement_mode.value}")
     
     def _choose_post_transition_behavior(self):
@@ -1015,7 +1033,7 @@ class MOVModule(BaseFrontendModule):
         self.is_being_dragged = True
         
         # 暫停移動邏輯
-        self.pause_movement("拖拽中")
+        self.pause_movement(self.DRAG_PAUSE_REASON)
         
         # 設置拖拽模式
         self.movement_mode = MovementMode.DRAGGING
@@ -1044,7 +1062,7 @@ class MOVModule(BaseFrontendModule):
                 self.movement_mode = MovementMode.FLOAT
         
         # 恢復移動邏輯
-        self.resume_movement()
+        self.resume_movement(self.DRAG_PAUSE_REASON)
         
         debug_log(1, f"[{self.module_id}] 結束拖拽，恢復移動邏輯，當前狀態: {self.movement_mode.value}")
 

@@ -86,11 +86,13 @@ def set_loading_mode(preload=True):
     """
     global PRELOAD_MODULES
     PRELOAD_MODULES = preload
-    
+
     info_log(f"[Controller] 設定載入模式：{'預先載入' if preload else '按需載入'}")
-    
-    # 重新初始化模組字典
-    _initialize_modules()
+    # 只有在模組字典尚未初始化時才進行初始化
+    if not modules:
+        _initialize_modules()
+    else:
+        info_log("[Controller] 模組字典已存在，保留現有模組")
 
 def get_module_load_time(name):
     """獲取模組載入時間

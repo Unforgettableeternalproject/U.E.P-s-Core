@@ -397,7 +397,7 @@ def frontend_test_animations(modules):
         print("❌ ANI 模組未在UI模組中初始化")
         return None
 
-    animations = ["smile_idle_f", "angry_idle_f", "curious_idle_f", "dance_f", "laugh_f"]
+    animations = ["angry_idle_f"]
     
     print("🎨 測試動畫效果...")
     

@@ -249,12 +249,18 @@ class UIModule(BaseFrontendModule):
             if not interface:
                 return {"error": f"介面 {interface_type.value} 不存在"}
             
+            # 檢查介面是否已經可見，避免重複操作
+            if hasattr(interface, 'isVisible') and interface.isVisible():
+                info_log(f"[{self.module_id}] 介面 {interface_type.value} 已經可見")
+                return {"success": True, "interface": interface_type.value, "already_visible": True}
+            
             interface.show()
             self.active_interfaces.add(interface_type)
             
             info_log(f"[{self.module_id}] 顯示介面: {interface_type.value}")
             return {"success": True, "interface": interface_type.value}
         except Exception as e:
+            error_log(f"[{self.module_id}] 顯示介面 {interface_type.value} 失敗: {e}")
             return {"error": str(e)}
     
     def hide_interface(self, interface_type: UIInterfaceType) -> dict:

@@ -75,7 +75,7 @@ class BaseTestTab(QWidget):
     
     def __init__(self, module_name: str):
         super().__init__()
-        self.module_name = module_name
+        self.module_name = "ui" if module_name == "frontend" else module_name
         self.module_manager = ModuleManager()
         
         # 設定大寫的模組顯示名稱屬性（向後相容）

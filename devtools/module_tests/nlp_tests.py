@@ -118,7 +118,7 @@ def nlp_test_state_queue_integration(modules, text: str = ""):
     print(f"📋 初始佇列長度: {initial_status['queue_length']}")
     
     # 執行NLP分析
-    result = nlp_test(test_text, enable_segmentation=True)
+    result = nlp_test(modules, test_text, enable_segmentation=True)
     
     # 顯示分析後的狀態佇列
     print(f"\n📊 NLP分析後的狀態佇列:")
@@ -148,9 +148,9 @@ def nlp_test_multi_intent(modules, text: str = ""):
     print(f"\n🔄 測試多意圖上下文管理")
     print(f"📝 測試文本: '{test_text}'")
     print("=" * 70)
-    
-    result = nlp_test(test_text, enable_segmentation=True)
-    
+
+    result = nlp_test(modules, test_text, enable_segmentation=True)
+
     if result and hasattr(nlp, 'intent_analyzer'):
         analyzer = nlp.intent_analyzer
         

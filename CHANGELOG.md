@@ -934,3 +934,15 @@
 
 ---
 
+### Fixed some bugs regarding test wrappers. 08/26
+
+> Date: Tue, 26 Aug 2025 12:46:36 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/front_end_integration`
+
+> Commit: `abe45732f1d5d3528e62dfe9813b517e9b4845a8`
+
+---
+

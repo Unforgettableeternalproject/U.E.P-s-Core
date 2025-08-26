@@ -180,130 +180,175 @@ from .module_tests.sys_tests import (
 
 # STT 模組包裝函數
 def stt_test_single_wrapper(enable_speaker_id=True, language="en-US"):
-    return stt_test_single(modules, enable_speaker_id, language)
+    from .module_tests.stt_tests import stt_test_single as stt_test_single_func
+    return stt_test_single_func(modules, enable_speaker_id, language)
 
 def stt_test_continuous_listening_wrapper(duration=30):
-    return stt_test_continuous_listening(modules, duration)
+    from .module_tests.stt_tests import stt_test_continuous_listening as stt_test_continuous_listening_func
+    return stt_test_continuous_listening_func(modules, duration)
 
 def stt_get_stats_wrapper():
-    return stt_get_stats(modules)
+    from .module_tests.stt_tests import stt_get_stats as stt_get_stats_func
+    return stt_get_stats_func(modules)
 
 def stt_speaker_list_wrapper():
-    return stt_speaker_list(modules)
+    from .module_tests.stt_tests import stt_speaker_list as stt_speaker_list_func
+    return stt_speaker_list_func(modules)
 
 def stt_speaker_rename_wrapper(old_id: str, new_id: str):
-    return stt_speaker_rename(modules, old_id, new_id)
+    from .module_tests.stt_tests import stt_speaker_rename as stt_speaker_rename_func
+    return stt_speaker_rename_func(modules, old_id, new_id)
 
 def stt_speaker_delete_wrapper(speaker_id: str):
-    return stt_speaker_delete(modules, speaker_id)
+    from .module_tests.stt_tests import stt_speaker_delete as stt_speaker_delete_func
+    return stt_speaker_delete_func(modules, speaker_id)
 
 def stt_speaker_clear_all_wrapper():
-    return stt_speaker_clear_all(modules)
+    from .module_tests.stt_tests import stt_speaker_clear_all as stt_speaker_clear_all_func
+    return stt_speaker_clear_all_func(modules)
 
 def stt_speaker_backup_wrapper():
-    return stt_speaker_backup(modules)
+    from .module_tests.stt_tests import stt_speaker_backup as stt_speaker_backup_func
+    return stt_speaker_backup_func(modules)
 
 def stt_speaker_restore_wrapper(backup_path: str = None):
-    return stt_speaker_restore(modules, backup_path)
+    from .module_tests.stt_tests import stt_speaker_restore as stt_speaker_restore_func
+    return stt_speaker_restore_func(modules, backup_path)
 
 def stt_speaker_info_wrapper():
-    return stt_speaker_info(modules)
+    from .module_tests.stt_tests import stt_speaker_info as stt_speaker_info_func
+    return stt_speaker_info_func(modules)
 
 def stt_speaker_adjust_threshold_wrapper(threshold: float = None):
-    return stt_speaker_adjust_threshold(modules, threshold)
+    from .module_tests.stt_tests import stt_speaker_adjust_threshold as stt_speaker_adjust_threshold_func
+    return stt_speaker_adjust_threshold_func(modules, threshold)
 
 # NLP 模組包裝函數
 def nlp_test_wrapper(text: str = "", enable_identity: bool = True, enable_segmentation: bool = True):
-    return nlp_test(modules, text, enable_identity, enable_segmentation)
+    from .module_tests.nlp_tests import nlp_test as nlp_test_func
+    return nlp_test_func(modules, text, enable_identity, enable_segmentation)
 
 def nlp_test_state_queue_integration_wrapper(text: str = ""):
-    return nlp_test_state_queue_integration(modules, text)
+    from .module_tests.nlp_tests import nlp_test_state_queue_integration as nlp_test_state_queue_integration_func
+    return nlp_test_state_queue_integration_func(modules, text)
 
 def nlp_test_multi_intent_wrapper(text: str = ""):
-    return nlp_test_multi_intent(modules, text)
+    from .module_tests.nlp_tests import nlp_test_multi_intent as nlp_test_multi_intent_func
+    return nlp_test_multi_intent_func(modules, text)
 
 def nlp_test_identity_management_wrapper(speaker_id: str = "test_user"):
-    return nlp_test_identity_management(modules, speaker_id)
+    from .module_tests.nlp_tests import nlp_test_identity_management as nlp_test_identity_management_func
+    return nlp_test_identity_management_func(modules, speaker_id)
 
 def nlp_analyze_context_queue_wrapper():
-    return nlp_analyze_context_queue(modules)
+    from .module_tests.nlp_tests import nlp_analyze_context_queue as nlp_analyze_context_queue_func
+    return nlp_analyze_context_queue_func(modules)
 
 def nlp_clear_contexts_wrapper():
-    return nlp_clear_contexts(modules)
+    from .module_tests.nlp_tests import nlp_clear_contexts as nlp_clear_contexts_func
+    return nlp_clear_contexts_func(modules)
 
 # Frontend 模組包裝函數
 def show_desktop_pet_wrapper():
-    return show_desktop_pet(modules)
+    from .module_tests.frontend_tests import show_desktop_pet as show_desktop_pet_func
+    return show_desktop_pet_func(modules)
 
 def hide_desktop_pet_wrapper():
-    return hide_desktop_pet(modules)
+    from .module_tests.frontend_tests import hide_desktop_pet as hide_desktop_pet_func
+    return hide_desktop_pet_func(modules)
 
 def control_desktop_pet_wrapper(action="wave", duration=3):
-    return control_desktop_pet(modules, action, duration)
+    from .module_tests.frontend_tests import control_desktop_pet as control_desktop_pet_func
+    return control_desktop_pet_func(modules, action, duration)
 
 def test_mov_ani_integration_wrapper():
-    return test_mov_ani_integration(modules)
+    from .module_tests.frontend_tests import test_mov_ani_integration as test_mov_ani_integration_func
+    return test_mov_ani_integration_func(modules)
 
 def test_behavior_modes_wrapper():
-    return test_behavior_modes(modules)
+    from .module_tests.frontend_tests import test_behavior_modes as test_behavior_modes_func
+    return test_behavior_modes_func(modules)
 
 def test_animation_state_machine_wrapper():
-    return test_animation_state_machine(modules)
+    from .module_tests.frontend_tests import test_animation_state_machine as test_animation_state_machine_func
+    return test_animation_state_machine_func(modules)
 
 def frontend_test_full_wrapper():
-    return frontend_test_full(modules)
+    from .module_tests.frontend_tests import frontend_test_full as frontend_test_full_func
+    return frontend_test_full_func(modules)
 
 def frontend_get_status_wrapper():
-    return frontend_get_status(modules)
+    from .module_tests.frontend_tests import frontend_get_status as frontend_get_status_func
+    return frontend_get_status_func(modules)
 
 def frontend_test_animations_wrapper():
-    return frontend_test_animations(modules)
+    from .module_tests.frontend_tests import frontend_test_animations as frontend_test_animations_func
+    return frontend_test_animations_func(modules)
 
 def frontend_test_user_interaction_wrapper():
-    return frontend_test_user_interaction(modules)
+    from .module_tests.frontend_tests import frontend_test_user_interaction as frontend_test_user_interaction_func
+    return frontend_test_user_interaction_func(modules)
 
 # MEM 模組包裝函數（尚未重構）
 def mem_fetch_test_wrapper(text: str = ""):
-    return mem_fetch_test(modules, text)
+    from .module_tests.mem_tests import mem_fetch_test as mem_fetch_test_func
+    return mem_fetch_test_func(modules, text)
 
 def mem_store_test_wrapper(user_text: str = "Test chat", response_text: str = "Test response"):
-    return mem_store_test(modules, user_text, response_text)
+    from .module_tests.mem_tests import mem_store_test as mem_store_test_func
+    return mem_store_test_func(modules, user_text, response_text)
 
 def mem_clear_test_wrapper(text: str = "ALL", top_k: int = 1):
-    return mem_clear_test(modules, text, top_k)
+    from .module_tests.mem_tests import mem_clear_test as mem_clear_test_func
+    return mem_clear_test_func(modules, text, top_k)
 
 def mem_list_all_test_wrapper(page: int = 1):
-    return mem_list_all_test(modules, page)
+    from .module_tests.mem_tests import mem_list_all_test as mem_list_all_test_func
+    return mem_list_all_test_func(modules, page)
 
 # LLM 模組包裝函數（尚未重構）
 def llm_test_chat_wrapper(text: str):
-    return llm_test_chat(modules, text)
+    from .module_tests.llm_tests import llm_test_chat as llm_test_chat_func
+    return llm_test_chat_func(modules, text)
 
 def llm_test_command_wrapper(text: str):
-    return llm_test_command(modules, text)
+    from .module_tests.llm_tests import llm_test_command as llm_test_command_func
+    return llm_test_command_func(modules, text)
 
 # TTS 模組包裝函數（尚未重構）
 def tts_test_wrapper(text: str, mood: str = "neutral", save: bool = False):
-    return tts_test(modules, text, mood, save)
+    from .module_tests.tts_tests import tts_test as tts_test_func
+    return tts_test_func(modules, text, mood, save)
 
 # SYS 模組包裝函數（尚未重構）
 def sys_list_functions_wrapper():
-    return sys_list_functions(modules)
+    from .module_tests.sys_tests import sys_list_functions as sys_list_functions_func
+    return sys_list_functions_func(modules)
 
 def test_command_workflow_wrapper(command_text: str = "幫我整理和摘要桌面上的文件"):
-    return test_command_workflow(modules, command_text)
+    from .module_tests.sys_tests import test_command_workflow as test_command_workflow_func
+    return test_command_workflow_func(modules, command_text)
 
 def sys_test_functions_wrapper(mode: int = 1, sub: int = 1):
-    return sys_test_functions(modules, mode, sub)
+    from .module_tests.sys_tests import sys_test_functions as sys_test_functions_func
+    return sys_test_functions_func(modules, mode, sub)
 
 def sys_test_workflows_wrapper(workflow_type: int = 1):
-    return sys_test_workflows(modules, workflow_type)
+    from .module_tests.sys_tests import sys_test_workflows as sys_test_workflows_func
+    return sys_test_workflows_func(modules, workflow_type)
 
 def sys_list_test_workflows_wrapper():
-    return sys_list_test_workflows(modules)
+    from .module_tests.sys_tests import sys_list_test_workflows as sys_list_test_workflows_func
+    return sys_list_test_workflows_func(modules)
 
 def test_file_workflow_wrapper(workflow_type: str):
-    return test_file_workflow(modules, workflow_type)
+    from .module_tests.sys_tests import test_file_workflow as test_file_workflow_func
+    return test_file_workflow_func(modules, workflow_type)
+
+# 整合測試包裝函數
+def test_stt_nlp_wrapper():
+    from .module_tests.integration_tests import test_stt_nlp as test_stt_nlp_func
+    return test_stt_nlp_func(modules)
 
 # 為了向後兼容，保留原來的函數名稱
 stt_test_single = stt_test_single_wrapper
@@ -359,6 +404,10 @@ llm_test_completion = llm_test_chat_wrapper
 llm_test_qa = llm_test_chat_wrapper
 llm_test_conversation = llm_test_chat_wrapper
 
+# LLM 函數別名（匹配實際的函數名稱）
+llm_test_chat = llm_test_chat_wrapper
+llm_test_command = llm_test_command_wrapper
+
 # TTS 函數別名（匹配實際的函數名稱）
 tts_test = tts_test_wrapper
 # 為了向後兼容，添加一些常用的別名
@@ -375,6 +424,9 @@ test_file_workflow = test_file_workflow_wrapper
 sys_test_resources = sys_list_functions_wrapper
 sys_test_performance = sys_test_functions_wrapper
 sys_test_cleanup = test_command_workflow_wrapper
+
+# 整合測試別名
+integration_test_SN = test_stt_nlp_wrapper
 
 
 # 整合測試 - 新版

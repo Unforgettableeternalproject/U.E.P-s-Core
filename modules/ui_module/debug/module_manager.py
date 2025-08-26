@@ -199,82 +199,61 @@ class ModuleManager:
                 'success': False,
                 'error': str(e)
             }
-            
-            # 更新模組狀態
-            for module_key, module_instance in self.modules.items():
-                if module_instance is not None:
-                    self.module_status[module_key] = {
-                        "enabled": True,
-                        "loaded": True,
-                        "instance": module_instance,
-                        "error": None
-                    }
-                    info_log(f"[ModuleManager] 模組 {module_key} 載入成功")
-                else:
-                    self.module_status[module_key] = {
-                        "enabled": self._is_module_enabled(module_key),
-                        "loaded": False,
-                        "instance": None,
-                        "error": "模組未啟用或載入失敗"
-                    }
-                    
-        except Exception as e:
-            error_log(KEY_LEVEL, f"[ModuleManager] 初始化模組失敗: {e}")
     
     def _init_test_functions(self):
         """初始化測試函數映射"""
         try:
             import devtools.debug_api as debug_api
             
-            # STT 測試函數
+            # STT 測試函數 - 使用包裝函數，這些不需要 modules 參數
             self.test_functions["stt"] = {
-                "single_test": debug_api.stt_test_single,
-                "continuous_test": debug_api.stt_test_continuous_listening,
-                "get_stats": debug_api.stt_get_stats,
-                "speaker_list": debug_api.stt_speaker_list,
-                "speaker_info": debug_api.stt_speaker_info,
+                "single_test": debug_api.stt_test_single_wrapper,
+                "continuous_test": debug_api.stt_test_continuous_listening_wrapper,
+                "get_stats": debug_api.stt_get_stats_wrapper,
+                "speaker_list": debug_api.stt_speaker_list_wrapper,
+                "speaker_info": debug_api.stt_speaker_info_wrapper,
             }
             
-            # NLP 測試函數
+            # NLP 測試函數 - 使用包裝函數
             self.test_functions["nlp"] = {
-                "basic_test": debug_api.nlp_test,
-                "state_queue_test": debug_api.nlp_test_state_queue_integration,
-                "multi_intent_test": debug_api.nlp_test_multi_intent,
-                "identity_test": debug_api.nlp_test_identity_management,
-                "analyze_context": debug_api.nlp_analyze_context_queue,
-                "clear_contexts": debug_api.nlp_clear_contexts,
+                "basic_test": debug_api.nlp_test_wrapper,
+                "state_queue_test": debug_api.nlp_test_state_queue_integration_wrapper,
+                "multi_intent_test": debug_api.nlp_test_multi_intent_wrapper,
+                "identity_test": debug_api.nlp_test_identity_management_wrapper,
+                "analyze_context": debug_api.nlp_analyze_context_queue_wrapper,
+                "clear_contexts": debug_api.nlp_clear_contexts_wrapper,
             }
             
-            # MEM 測試函數
+            # MEM 測試函數 - 使用包裝函數
             self.test_functions["mem"] = {
-                "fetch_test": debug_api.mem_fetch_test,
-                "store_test": debug_api.mem_store_test,
-                "clear_test": debug_api.mem_clear_test,
-                "list_all_test": debug_api.mem_list_all_test,
+                "fetch_test": debug_api.mem_fetch_test_wrapper,
+                "store_test": debug_api.mem_store_test_wrapper,
+                "clear_test": debug_api.mem_clear_test_wrapper,
+                "list_all_test": debug_api.mem_list_all_test_wrapper,
             }
             
-            # LLM 測試函數
+            # LLM 測試函數 - 使用包裝函數
             self.test_functions["llm"] = {
-                "chat_test": debug_api.llm_test_chat,
-                "command_test": debug_api.llm_test_command,
+                "chat_test": debug_api.llm_test_chat_wrapper,
+                "command_test": debug_api.llm_test_command_wrapper,
             }
             
-            # TTS 測試函數
+            # TTS 測試函數 - 使用包裝函數
             self.test_functions["tts"] = {
-                "basic_test": debug_api.tts_test,
+                "basic_test": debug_api.tts_test_wrapper,
             }
             
-            # SYS 測試函數
+            # SYS 測試函數 - 使用包裝函數
             self.test_functions["sysmod"] = {
-                "list_functions": debug_api.sys_list_functions,
-                "test_functions": debug_api.sys_test_functions,
-                "test_workflows": debug_api.sys_test_workflows,
-                "command_workflow": debug_api.test_command_workflow,
+                "list_functions": debug_api.sys_list_functions_wrapper,
+                "test_functions": debug_api.sys_test_functions_wrapper,
+                "test_workflows": debug_api.sys_test_workflows_wrapper,
+                "command_workflow": debug_api.test_command_workflow_wrapper,
             }
             
-            # 整合測試
+            # 整合測試 - 使用包裝函數
             self.test_functions["integration"] = {
-                "stt_nlp_test": debug_api.integration_test_SN,
+                "stt_nlp_test": debug_api.test_stt_nlp_wrapper,
             }
             
             debug_log(SYSTEM_LEVEL, f"[ModuleManager] 測試函數初始化完成，共 {len(self.test_functions)} 個模組")
@@ -448,19 +427,11 @@ class ModuleManager:
             
             func = test_funcs[function_name]
             
-            # 特殊處理某些測試函數
-            if module_key == "nlp" and function_name == "basic_test":
-                # NLP基本測試需要特殊處理參數
-                text = params.get("text", "")
-                enable_identity = params.get("enable_identity", True)
-                enable_segmentation = params.get("enable_segmentation", True)
-                result = func(text, enable_identity, enable_segmentation)
+            # 執行包裝函數 - 包裝函數已經自動處理 modules 參數的傳遞
+            if params:
+                result = func(**params)
             else:
-                # 執行一般測試函數
-                if params:
-                    result = func(**params)
-                else:
-                    result = func()
+                result = func()
             
             debug_log(OPERATION_LEVEL, f"[ModuleManager] 執行測試 {module_key}.{function_name} 完成")
             

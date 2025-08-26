@@ -10,6 +10,7 @@ import os
 import sys
 import time
 from typing import Dict, Any, Optional
+from core.frontend_base import UIEventType
 
 try:
     from PyQt5.QtWidgets import QWidget, QLabel, QApplication
@@ -82,20 +83,16 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from utils.debug_helper import debug_log, info_log, error_log
+from modules.ani_module.ani_module import ANIModule, AnimationType
 
-# 導入 MOV 和 ANI 模組
 try:
-    from modules.mov_module.mov_module import MOVModule, MovementMode
-    from modules.ani_module.ani_module import ANIModule, AnimationType
-    MOV_ANI_AVAILABLE = True
-except ImportError as e:
-    error_log(f"[DesktopPetApp] 無法導入 MOV/ANI 模組: {e}")
-    MOV_ANI_AVAILABLE = False
-    # 創建模擬類別
-    class MOVModule: pass
-    class ANIModule: pass
-    class MovementMode: pass
-    class AnimationType: pass
+    from core.frontend_base import UIEventType
+except Exception:
+    class UIEventType:
+        DRAG_START = "DRAG_START"
+        DRAG_END = "DRAG_END"
+        MOUSE_HOVER = "MOUSE_HOVER"
+        FILE_DROP = "FILE_DROP"
 
 
 class DesktopPetApp(QWidget):
@@ -190,6 +187,12 @@ class DesktopPetApp(QWidget):
                     debug_log(1, "[DesktopPetApp] 動畫請求回調已註冊")
             else:
                 info_log("[DesktopPetApp] MOV 模組未提供")
+
+            if hasattr(self, "mov_module") and hasattr(self, "ani_module"):
+                try:
+                    self.mov_module.set_ani_reference(self.ani_module)
+                except Exception:
+                    pass
                 
         except Exception as e:
             error_log(f"[DesktopPetApp] 模組連接設置失敗: {e}")
@@ -304,23 +307,20 @@ class DesktopPetApp(QWidget):
     def handle_mov_state_change(self, event_type, data):
         """處理MOV模組的狀態變更"""
         debug_log(1, f"[DesktopPetApp] 收到MOV狀態變更: {event_type}, 數據: {data}")
-        
+
         if event_type == "transition_start":
-            # 記錄當前的轉換類型，以便恢復時可以檢查
+            # 不要 pause_rendering，否則轉場幀出不來
             self.current_transition = f"{data.get('from')} -> {data.get('to')}"
-            self.pause_rendering(f"狀態轉換: {self.current_transition}")
+            debug_log(1, f"[DesktopPetApp] 狀態轉換中（保持渲染），{self.current_transition}")
         elif event_type == "transition_complete":
             current_state = data.get('current_state', '')
             debug_log(1, f"[DesktopPetApp] 狀態轉換完成，當前狀態: {current_state}")
-            
-            # 檢查是否有暫停的轉換
-            if hasattr(self, 'current_transition'):
-                debug_log(1, f"[DesktopPetApp] 恢復之前的轉換暫停: {self.current_transition}")
+            if getattr(self, 'rendering_paused', False):
                 self.resume_rendering()
-                delattr(self, 'current_transition')  # 刪除轉換標記
-            else:
-                debug_log(1, f"[DesktopPetApp] 沒有找到之前的轉換暫停標記")
-    
+            if hasattr(self, 'current_transition'):
+                delattr(self, 'current_transition')
+
+        
     def on_movement_animation_request(self, animation_type: str, params: dict):
         """處理來自 MOV 模組的動畫請求"""
         try:
@@ -460,12 +460,15 @@ class DesktopPetApp(QWidget):
                 
                 # 通知MOV模組拖拽開始
                 if self.mov_module and hasattr(self.mov_module, 'handle_ui_event'):
-                    self.mov_module.handle_ui_event("DRAG_START", {
-                        "start_position": {
-                            "x": self.x(),
-                            "y": self.y()
+                    self.mov_module.handle_ui_event(
+                        UIEventType.DRAG_START,
+                        {
+                            "start_position": {
+                                "x": event.globalX(),
+                                "y": event.globalY(),
+                            }
                         }
-                    })
+                    )
                 
                 # 發射點擊信號
                 if self.clicked:
@@ -480,13 +483,18 @@ class DesktopPetApp(QWidget):
                 if QPoint and hasattr(event, 'globalPos'):
                     new_pos = event.globalPos() - self.drag_position
                     self.move(new_pos.x(), new_pos.y())
-                    
-                    # 發射位置變更信號
                     if self.position_changed:
                         self.position_changed.emit(new_pos.x(), new_pos.y())
+
+                    # ➕ 新增：回報拖曳座標給 MOV（用滑鼠全域座標）
+                    if self.mov_module and hasattr(self.mov_module, 'handle_movement_request'):
+                        self.mov_module.handle_movement_request(
+                            "drag_move",
+                            {"position": {"x": event.globalX(), "y": event.globalY()}}
+                        )
         except Exception as e:
             error_log(f"[DesktopPetApp] 鼠標移動事件異常: {e}")
-    
+        
     def mouseReleaseEvent(self, event):
         """鼠標釋放事件"""
         try:
@@ -495,11 +503,8 @@ class DesktopPetApp(QWidget):
                 
                 # 通知MOV模組拖拽結束
                 if self.mov_module and hasattr(self.mov_module, 'handle_ui_event'):
-                    self.mov_module.handle_ui_event("DRAG_END", {
-                        "end_position": {
-                            "x": self.x(),
-                            "y": self.y()
-                        }
+                    self.mov_module.handle_ui_event(UIEventType.DRAG_END, {
+                        "global_pos": (event.globalX(), event.globalY())
                     })
                 
                 # 恢復渲染
@@ -635,28 +640,21 @@ class DesktopPetApp(QWidget):
             error_log(f"[DesktopPetApp] 處理動畫幀更新失敗: {e}")
     
     def update_animation_for_movement(self, movement_mode):
-        """根據移動模式更新動畫"""
         try:
             if not self.ani_module:
                 return
-            
-            # 根據移動模式選擇合適的動畫
-            animation_mapping = {
-                'float': AnimationType.STAND_IDLE,
-                'ground': AnimationType.WALK_LEFT,  # 暫時使用 WALK_LEFT，後續會改進
-                'idle': AnimationType.SMILE_IDLE,
-                'dragging': AnimationType.CURIOUS_IDLE,
-            }
-            
-            # 獲取移動模式字符串
             mode_str = movement_mode.value if hasattr(movement_mode, 'value') else str(movement_mode)
-            
-            if mode_str in animation_mapping:
-                target_animation = animation_mapping[mode_str]
+
+            # 只對「浮空」和「拖曳」提供預設 idle，其他一律交給 MOV 透過 on_movement_animation_request 來主導
+            if mode_str == 'float':
                 if hasattr(self.ani_module, 'set_animation'):
-                    self.ani_module.set_animation(target_animation)
-                    debug_log(1, f"[DesktopPetApp] 為移動模式 {mode_str} 設置動畫 {target_animation}")
-                    
+                    self.ani_module.set_animation(AnimationType.SMILE_IDLE)
+                    debug_log(1, "[DesktopPetApp] 浮空模式預設 idle 動畫")
+            elif mode_str == 'dragging':
+                if hasattr(self.ani_module, 'set_animation'):
+                    self.ani_module.set_animation(AnimationType.CURIOUS_IDLE)
+                    debug_log(1, "[DesktopPetApp] 拖曳模式預設 curious 動畫")
+            # ground / idle 交由 MOV 觸發：walk_left/right_g、stand_idle_g、f_to_g/g_to_f 等
         except Exception as e:
             error_log(f"[DesktopPetApp] 更新移動動畫失敗: {e}")
     

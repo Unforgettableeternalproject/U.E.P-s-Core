@@ -167,6 +167,11 @@ class ANIModule(BaseFrontendModule):
         
         # 動畫資源路徑
         self.animation_base_path = None
+
+        self.pending_animation = None          # 單槽「待播動畫」(name, params)
+        self.last_animation_request = None     # 上次請求的動畫名
+        self.last_request_time = 0.0           # 上次請求時間
+        self.request_cooldown = self.config.get('animation_request_cooldown', 0.25)  # 同名/同類請求節流秒數
         
         info_log(f"[{self.module_id}] ANI 模組初始化")
     
@@ -215,11 +220,11 @@ class ANIModule(BaseFrontendModule):
             # 載入新版本動畫 (支援行為模式)
             self._load_float_animations()      # 浮空動畫 (_f)
             self._load_ground_animations()     # 落地動畫 (_g)
-            self._load_rest_animations()       # 休息動畫 (_l)
+            #self._load_rest_animations()       # 休息動畫 (_l)
             self._load_transition_animations() # 轉場動畫
             
             # 載入舊版動畫 (向後兼容)
-            self._load_legacy_animations()
+            #self._load_legacy_animations()
             
             info_log(f"[{self.module_id}] 共載入 {len(self.animations)} 個動畫")
             return len(self.animations) > 0
@@ -508,34 +513,48 @@ class ANIModule(BaseFrontendModule):
             return {"error": str(e)}
     
     def _play_animation(self, data: dict) -> dict:
-        """播放動畫"""
+        """播放動畫（共用同名 loop、轉場可中斷 loop）"""
         try:
             animation_type = data.get('animation_type')
             if not animation_type:
                 return {"error": "未指定動畫類型"}
-            
             if animation_type not in self.animations:
                 return {"error": f"動畫不存在: {animation_type}"}
-            
-            self.current_animation = self.animations[animation_type]
+
+            new_anim = self.animations[animation_type]
+
+            # 1) 同名且為 loop、且已在播 → 不重播、直接視為成功（coalesce）
+            if (self.current_animation
+                and self.animation_state == AnimationState.PLAYING
+                and self.current_animation.name == new_anim.name
+                and getattr(self.current_animation, "loop", False)):
+                return {"success": True, "animation": animation_type, "noop": True}
+
+            # 2) 若目前在播的是 loop、而新動畫是非 loop（轉場），允許中斷
+            if (self.current_animation
+                and getattr(self.current_animation, "loop", False)
+                and not getattr(new_anim, "loop", False)):
+                if self.frame_timer and self.frame_timer.isActive():
+                    self.frame_timer.stop()
+
+            # 正式切換
+            self.current_animation = new_anim
             self.current_animation.current_frame = 0
             self.current_animation.last_frame_time = time.time()
-            
             self.animation_state = AnimationState.PLAYING
-            
-            # 啟動計時器
-            if not self.frame_timer.isActive():
+
+            # 啟動計時器並立即送出第一幀
+            if self.frame_timer and not self.frame_timer.isActive():
                 self.frame_timer.start(self.frame_interval)
-            
-            # 立即發送第一幀
             self._emit_current_frame()
-            
+
             info_log(f"[{self.module_id}] 開始播放動畫: {animation_type}")
             return {"success": True, "animation": animation_type}
-            
+
         except Exception as e:
             error_log(f"[{self.module_id}] 播放動畫異常: {e}")
-            return {"error": str(e)}
+        return {"error": str(e)}
+
     
     def _stop_animation(self) -> dict:
         """停止動畫"""
@@ -668,6 +687,12 @@ class ANIModule(BaseFrontendModule):
                         if self.frame_timer:
                             self.frame_timer.stop()
                         info_log(f"[{self.module_id}] 動畫完成: {self.current_animation.name}")
+
+                        # ✅ 若有待播動畫，立刻接上
+                        if getattr(self, "pending_animation", None):
+                            name, params = self.pending_animation
+                            self.pending_animation = None
+                            self._play_animation({"animation_type": name, **params})
                         return
                 
                 # 發送新幀

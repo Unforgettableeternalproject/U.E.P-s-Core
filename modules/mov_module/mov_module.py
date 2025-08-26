@@ -220,12 +220,18 @@ class MOVModule(BaseFrontendModule):
         self._transition_pause_reason = None  # 狀態轉換暫停識別
         
         # 動畫控制
+        self.ani_module = None          # 由 DesktopPetApp 注入，讓 MOV 能查詢動畫狀態
+        self.animation_callbacks = self._animation_callbacks
+        self.position_callbacks  = self._position_callbacks
         self.last_animation_request = None  # 保存最後請求的動畫類型
         self.last_animation_direction = "right"   # right/left
         self.waiting_for_animation = False  # 是否等待動畫完成
         self.animation_wait_start_time = None  # 動畫等待開始時間
         self.animation_wait_timeout = 3.0  # 動畫等待超時時間
-        
+        self.movement_locked_until: float = 0.0          # 動畫期間上鎖（例如 turn / g<->f 轉場）
+        self._pending_after_animation: Optional[dict] = None  # 轉場/轉頭動畫完成後要接續的動作
+        self._stall_detection_cooldown_until: float = 0.0     # 停滯檢查冷卻（拖拽放開/轉場後）
+                
         # 移動停止保護
         self.last_movement_time = time.time()
         self.max_idle_time = 5.0  # 最長靜止時間，超過後強制移動
@@ -237,6 +243,10 @@ class MOVModule(BaseFrontendModule):
     
     def add_animation_callback(self, callback: Callable[[str, dict], None]):
         """註冊動畫回調函數，替代 animation_trigger 信號"""
+        if not hasattr(self, "_animation_callbacks"):  # 放在 add_animation_callback 一開始
+            self._animation_callbacks = []
+            self.animation_callbacks = self._animation_callbacks
+            
         if callback not in self._animation_callbacks:
             self._animation_callbacks.append(callback)
             debug_log(1, f"[{self.module_id}] 新增動畫回調函數: {callback.__qualname__}")
@@ -249,6 +259,10 @@ class MOVModule(BaseFrontendModule):
     
     def add_position_callback(self, callback: Callable[[int, int], None]):
         """註冊位置更新回調函數，替代 position_changed 信號"""
+        if not hasattr(self, "_position_callbacks"):  # 放在 add_position_callback 一開始
+            self._position_callbacks = []
+            self.position_callbacks = self._position_callbacks
+
         if callback not in self._position_callbacks:
             self._position_callbacks.append(callback)
             debug_log(1, f"[{self.module_id}] 新增位置回調函數: {callback.__qualname__}")
@@ -259,27 +273,41 @@ class MOVModule(BaseFrontendModule):
             self._position_callbacks.remove(callback)
             debug_log(1, f"[{self.module_id}] 移除位置回調函數: {callback.__qualname__}")
     
-    def trigger_animation(self, animation_type: str, params: dict = None):
-        """觸發動畫，替代 animation_trigger.emit 調用"""
-        params = params or {}
-        debug_log(1, f"[{self.module_id}] 觸發動畫: {animation_type}")
-        
-        # 保存最後的動畫請求
+    def trigger_animation(self, animation_type: str, params: dict):
+        now = time.time()
+
+        # 同名動畫節流：0.4s 內重複就略過
+        if getattr(self, "last_animation_request", None) == animation_type \
+        and now < getattr(self, "_ani_req_cooldown_until", 0.0):
+            return
+
+        # 若 ANI 正在播同一支動畫且仍在播放中，就不用再送
+        try:
+            st = None
+            if hasattr(self, "ani_module") and self.ani_module and \
+            hasattr(self.ani_module, "get_current_animation_status"):
+                st = self.ani_module.get_current_animation_status()
+            if st and st.get("name") == animation_type and st.get("is_playing"):
+                self._ani_req_cooldown_until = now + 0.4
+                self.last_animation_request = animation_type
+                return
+        except Exception:
+            pass
+
+        # 若正在等待上一支「必須等完」的動畫，新的請求先排隊
+        if getattr(self, "waiting_for_animation", False):
+            self._queued_animation = (animation_type, params)
+            return
+
+        # 真正送出
         self.last_animation_request = animation_type
-        
-        # 更新方向記錄
-        if "right" in animation_type:
-            self.last_animation_direction = "right"
-        elif "left" in animation_type:
-            self.last_animation_direction = "left"
-        
-        # 呼叫所有註冊的回調函數
-        for callback in self._animation_callbacks:
+        self._ani_req_cooldown_until = now + 0.4
+        for cb in self.animation_callbacks:
             try:
-                callback(animation_type, params)
-            except Exception as e:
-                error_log(f"[{self.module_id}] 動畫回調執行失敗: {e}")
-    
+                cb(animation_type, params)
+            except Exception:
+                pass
+
     def trigger_position_update(self, x: int, y: int):
         """觸發位置更新，替代 position_changed.emit 調用"""
         debug_log(3, f"[{self.module_id}] 觸發位置更新: ({x}, {y})")
@@ -489,36 +517,43 @@ class MOVModule(BaseFrontendModule):
         return {"success": True}
     
     def _update_movement(self):
-        """更新移動邏輯 (高頻率調用)"""
         try:
-            # 檢查移動是否暫停
-            if self.movement_paused:
-                debug_log(3, f"[{self.module_id}] 移動已暫停: {self.pause_reason}")
-                return
-                
+            now = time.time()
+
+            # 1) 拖拽中：不做物理更新
             if self.is_being_dragged:
-                return  # 被拖拽時不更新自主移動
-            
-            # 檢查移動是否停滯
-            if self._check_movement_stalled():
                 return
-                
-            # 物理更新
+
+            # 2) 動畫上鎖（轉場/轉頭）期間：不做物理更新，但持續發位置（避免畫面卡幀）
+            if now < getattr(self, "movement_locked_until", 0.0):
+                return
+
+            # 3) 模組被暫停的話就跳過
+            if self.movement_paused:
+                return
+
+            # 4) 停滯檢查（有冷卻就先略過）
+            if now >= getattr(self, "_stall_detection_cooldown_until", 0.0):
+                if self._check_movement_stalled():
+                    return
+
+            # 5) 物理與邊界
+            prev_x, prev_y = self.position.x, self.position.y
             self._apply_physics()
-            
-            # 邊界檢查
             self._check_boundaries()
-            
-            # 更新位置
+
+            # 6) 位置更新
             self.position.x += self.velocity.x
             self.position.y += self.velocity.y
-            
-            # 發送位置變更
+
+            # 7) 只要真的有位移就刷新 last_movement_time
+            if abs(self.position.x - prev_x) + abs(self.position.y - prev_y) > 0.05:
+                self.last_movement_time = now
+
             self._emit_position_change()
-            
         except Exception as e:
             error_log(f"[{self.module_id}] 移動更新異常: {e}")
-            
+
     def _check_movement_stalled(self):
         """檢查移動是否停滯太久"""
         current_time = time.time()
@@ -612,35 +647,42 @@ class MOVModule(BaseFrontendModule):
             self._choose_next_behavior_state()
     
     def _handle_idle_state(self, current_time):
-        """處理靜止狀態 (35%)"""
+        # 動畫/拖拽期間不要變動邏輯
+        if self.is_being_dragged or current_time < getattr(self, "movement_locked_until", 0.0):
+            return
+
         if self.idle_start_time is None:
             self.idle_start_time = current_time
-            # 停止所有移動
+            # 歸零速度
             self.velocity = Velocity(0, 0)
             self.target_velocity = Velocity(0, 0)
-            
-            # 根據當前移動模式選擇閒置動畫
+
+            # 根據模式播放對的閒置動畫
             idle_animation = "stand_idle_g" if self.movement_mode == MovementMode.GROUND else "smile_idle_f"
             self.trigger_animation(idle_animation, {})
             debug_log(1, f"[{self.module_id}] 開始靜止狀態，播放 {idle_animation} 動畫")
-        
-        # 確保靜止至少持續1-2秒
+            # 閒置時也更新最後動作時間，避免被停滯誤判
+            self.last_movement_time = current_time
+            return
+
         elapsed = current_time - self.idle_start_time
+
+        # 最短停留
         if elapsed < self.idle_min_duration:
-            return  # 還沒到最小持續時間，繼續靜止
-        
-        # 超過最大靜止時間，強制結束
+            return
+
+        # 超過上限強制結束
         if elapsed > self.idle_max_duration:
             self.idle_start_time = None
             self._choose_next_behavior_state()
-            debug_log(1, f"[{self.module_id}] 靜止時間超過上限 {self.idle_max_duration}秒，強制結束")
+            debug_log(2, f"[{self.module_id}] 靜止時間超過上限 {self.idle_max_duration}秒，強制結束")
             return
-            
-        # 每個tick有機率結束靜止
+
+        # tick 機率提早結束
         if random.random() < self.idle_tick_chance:
             self.idle_start_time = None
             self._choose_next_behavior_state()
-            debug_log(1, f"[{self.module_id}] 隨機結束靜止狀態，持續了 {elapsed:.1f} 秒")
+            debug_log(2, f"[{self.module_id}] 隨機結束靜止狀態，持續了 {elapsed:.1f} 秒")
     
     def _handle_special_move(self):
         """處理特殊移動行為 (15%) - 變速移動"""
@@ -682,6 +724,11 @@ class MOVModule(BaseFrontendModule):
             if rand <= cumulative:
                 old_state = self.current_behavior_state
                 self.current_behavior_state = state
+                if state == BehaviorState.IDLE:
+                    if self.movement_mode == MovementMode.GROUND:
+                        self.trigger_animation("stand_idle_g", {})   # 落地閒置
+                    else:
+                        self.trigger_animation("smile_idle_f", {})
                 debug_log(1, f"[{self.module_id}] 行為狀態轉換: {old_state.value} -> {state.value} (模式: {self.movement_mode.value})")
                 
                 # 根據新狀態開始相應行為
@@ -792,6 +839,8 @@ class MOVModule(BaseFrontendModule):
         self.movement_target = Position(x, y)
         self.target_reached = False
         debug_log(1, f"[{self.module_id}] 設置新移動目標: ({x}, {y})")
+        move_direction = 1 if self.movement_target.x >= self.position.x else -1
+        self.trigger_animation("walk_right_g" if move_direction > 0 else "walk_left_g", {})
     
     def pause_movement(self, reason="未指定"):
         """暫停移動邏輯"""
@@ -867,12 +916,15 @@ class MOVModule(BaseFrontendModule):
         # 暫停移動邏輯並記錄暫停原因
         self._transition_pause_reason = f"狀態轉換: {current_state.value} -> {target_state.value}"
         self.pause_movement(self._transition_pause_reason)
-        
+
         # 開始轉換
         self.is_transitioning = True
         self.transition_from_state = current_state
         self.transition_to_state = target_state
         self.transition_start_time = time.time()
+        self.animation_wait_timeout = 1.2  # 轉場動畫等候上限秒數（簡單超時保護）
+        self.animation_wait_start_time = None
+        self.waiting_for_animation = False
         
         # 通知UI暫停渲染（如果有回調）
         self._notify_ui_state_change("transition_start", {
@@ -883,48 +935,55 @@ class MOVModule(BaseFrontendModule):
         debug_log(1, f"[{self.module_id}] 開始狀態轉換: {current_state.value} -> {target_state.value}")
     
     def _handle_state_transition(self, current_time):
-        """處理狀態轉換過程"""
         if not self.is_transitioning:
             return
-        
+
         elapsed = current_time - self.transition_start_time
         progress = min(elapsed / self.transition_duration, 1.0)
-        
-        # 根據轉換類型執行不同的轉換邏輯
+
+        # 第一次進來：播一次轉場動畫 + 進入等待（loop=False）
+        if not hasattr(self, '_transition_animation_played'):
+            if self.transition_from_state == MovementMode.FLOAT and self.transition_to_state == MovementMode.GROUND:
+                self.trigger_animation("f_to_g", {"loop": False})
+                debug_log(1, f"[{self.module_id}] 播放浮空到地面轉場動畫 f_to_g")
+            elif self.transition_from_state == MovementMode.GROUND and self.transition_to_state == MovementMode.FLOAT:
+                self.trigger_animation("g_to_f", {"loop": False})
+                debug_log(1, f"[{self.module_id}] 播放地面到浮空轉場動畫 g_to_f")
+
+            setattr(self, '_transition_animation_played', True)
+            self.waiting_for_animation = True
+            self.animation_wait_start_time = current_time
+
+        # 轉換中的位置插值（保留你原本的兩個分支）
         if self.transition_from_state == MovementMode.FLOAT and self.transition_to_state == MovementMode.GROUND:
             self._transition_float_to_ground(progress)
-            
-            # 播放浮空到地面的動畫 (只在開始時播放一次)
-            if not hasattr(self, '_transition_animation_played'):
-                self.trigger_animation("f_to_g", {})
-                setattr(self, '_transition_animation_played', True)
-                debug_log(1, f"[{self.module_id}] 播放浮空到地面轉場動畫 f_to_g")
-                
         elif self.transition_from_state == MovementMode.GROUND and self.transition_to_state == MovementMode.FLOAT:
             self._transition_ground_to_float(progress)
-            
-            # 播放地面到浮空的動畫 (只在開始時播放一次)
-            if not hasattr(self, '_transition_animation_played'):
-                self.trigger_animation("g_to_f", {})
-                setattr(self, '_transition_animation_played', True)
-                debug_log(1, f"[{self.module_id}] 播放地面到浮空轉場動畫 g_to_f")
-        
-        # 轉換過程中持續更新位置
+
         self._emit_position_change()
-        
-        # 轉換完成
-        if progress >= 1.0:
-            # 清除轉場動畫標記
+
+        # 是否等滿動畫或超時
+        ani_wait_done = False
+        if self.animation_wait_start_time is None:
+            ani_wait_done = True
+        else:
+            ani_wait_done = (current_time - self.animation_wait_start_time) >= self.animation_wait_timeout
+
+        # 完成條件：進度到 + 動畫等待結束或超時
+        if progress >= 1.0 and (not self.waiting_for_animation or ani_wait_done):
+            # 清旗標
             if hasattr(self, '_transition_animation_played'):
                 delattr(self, '_transition_animation_played')
-                
+            self.waiting_for_animation = False
+
+            # 真正切換模式
             self.movement_mode = self.transition_to_state
             self.is_transitioning = False
             self.transition_from_state = None
             self.transition_to_state = None
             self.transition_start_time = None
-            
-            # 通知UI恢復渲染
+
+            # 通知 UI 完成
             self._notify_ui_state_change("transition_complete", {
                 "current_state": self.movement_mode.value
             })
@@ -933,7 +992,7 @@ class MOVModule(BaseFrontendModule):
             self.resume_movement(self._transition_pause_reason)
             self._transition_pause_reason = None
 
-            # 轉換完成後，選擇新的行為狀態（排除轉場）
+            # 選後續行為（保留你的原邏輯）
             self._choose_post_transition_behavior()
 
             debug_log(1, f"[{self.module_id}] 狀態轉換完成: {self.movement_mode.value}")
@@ -1119,76 +1178,72 @@ class MOVModule(BaseFrontendModule):
                 self._start_floating()
     
     def _start_walking(self):
-        """開始地面行走"""
         ground_y = self.screen_height - self.SIZE + self.GROUND_OFFSET
         self.position.y = ground_y
         self.target_velocity.y = 0
-        
-        # 70% 機率保持當前面向方向 (如果已設置)
-        if hasattr(self, 'facing_direction') and self.facing_direction != 0 and random.random() < 0.7:
-            move_direction = self.facing_direction
-        else:
-            move_direction = random.choice([-1, 1])
-        
-        self.target_velocity.x = self.GROUND_SPEED * move_direction
-        self.facing_direction = move_direction  # 更新面向方向
-        
-        # 設置隨機的走路目標點
-        if move_direction > 0:  # 向右移動
+
+        # 70% 機率保持當前面向
+        move_direction = self.facing_direction if getattr(self, "facing_direction", 0) != 0 and random.random() < 0.7 else random.choice([-1, 1])
+        self.facing_direction = move_direction
+
+        # 選一個合理的目標 X
+        if move_direction > 0:
             target_x = random.uniform(self.position.x + 100, min(self.screen_width - 50, self.position.x + 400))
-            
-            # 檢查是否需要轉向動畫
-            if self.last_animation_direction == "left":
-                # 需要從左向轉到右向
-                animation_type = "turn_right_g"
-                self._wait_for_turn_animation(animation_type, "walk_right_g")
-                debug_log(1, f"[{self.module_id}] 播放向右轉向動畫: {animation_type}")
-            else:
-                # 直接使用右向行走動畫
-                animation_type = "walk_right_g"
-        else:  # 向左移動
+            need_turn = (getattr(self, "last_animation_direction", "right") == "left")
+            follow_anim = "walk_right_g"
+            turn_anim = "turn_right_g"
+        else:
             target_x = random.uniform(max(50, self.position.x - 400), self.position.x - 100)
-            
-            # 檢查是否需要轉向動畫
-            if self.last_animation_direction == "right":
-                # 需要從右向轉到左向
-                animation_type = "turn_left_g"
-                self._wait_for_turn_animation(animation_type, "walk_left_g")
-                debug_log(1, f"[{self.module_id}] 播放向左轉向動畫: {animation_type}")
-            else:
-                # 直接使用左向行走動畫
-                animation_type = "walk_left_g"
-                
+            need_turn = (getattr(self, "last_animation_direction", "right") == "right")
+            follow_anim = "walk_left_g"
+            turn_anim = "turn_left_g"
+
+        # 先只設定目標點；真正上速度留到 follow 動畫時
         self._set_movement_target(target_x, ground_y)
-        
-        # 觸發行走動畫
-        debug_log(1, f"[{self.module_id}] 移動方向: {'右' if move_direction > 0 else '左'}, 動畫: {animation_type}")
-        self.trigger_animation(animation_type, {})
+
+        if need_turn:
+            debug_log(1, f"[{self.module_id}] 播放轉向動畫: {turn_anim}")
+            self._wait_for_turn_animation(turn_anim, follow_anim, est_duration=0.8)
+        else:
+            # 直接走
+            self.last_animation_direction = "right" if move_direction > 0 else "left"
+            self.trigger_animation(follow_anim, {})
+            self.target_velocity.x = self.GROUND_SPEED * move_direction
+            self.last_movement_time = time.time()
     
-    def _wait_for_turn_animation(self, turn_animation, follow_animation):
-        """等待轉頭動畫完成後播放行走動畫"""
-        self.waiting_for_animation = True
-        self.animation_wait_start_time = time.time()
-        self.next_animation = follow_animation
-        
-        # 設置計時器在1.5秒後播放後續動畫
+    def _wait_for_turn_animation(self, turn_animation: str, follow_animation: str, est_duration: float = 0.8):
+        # 播轉頭，並上鎖
+        self.trigger_animation(turn_animation, {"loop": False})
+        now = time.time()
+        self.movement_locked_until = now + est_duration
+        self._pending_after_animation = {
+            "type": "follow_move",
+            "follow_animation": follow_animation,
+            # 走路方向由 follow 名稱推回
+            "dir": 1 if "right" in follow_animation else -1
+        }
+
+        def _finish():
+            # 已被外力打斷（例如又被拖拽）
+            if self.is_being_dragged:
+                return
+            # 解鎖 & 播後續
+            self.movement_locked_until = 0.0
+            self.last_animation_direction = "right" if "right" in follow_animation else "left"
+            self.trigger_animation(follow_animation, {})
+            # 真正上速度
+            move_dir = self._pending_after_animation.get("dir", 0) if self._pending_after_animation else 0
+            self.target_velocity.x = self.GROUND_SPEED * move_dir
+            self.last_movement_time = time.time()
+            self._pending_after_animation = None
+
         try:
-            import threading
-            def play_follow_animation():
-                if self.waiting_for_animation:
-                    debug_log(1, f"[{self.module_id}] 轉頭動畫完成，播放行走動畫: {self.next_animation}")
-                    self.trigger_animation(self.next_animation, {})
-                    self.waiting_for_animation = False
-            
-            timer = threading.Timer(1.5, play_follow_animation)
-            timer.daemon = True
-            timer.start()
+            t = threading.Timer(est_duration, _finish)
+            t.daemon = True
+            t.start()
         except Exception as e:
-            debug_log(1, f"[{self.module_id}] 無法設置轉頭動畫計時器: {e}")
-            self.waiting_for_animation = False
-        
-        # 更新最後移動時間
-        self.last_movement_time = time.time()
+            debug_log(1, f"[{self.module_id}] 轉頭動畫計時器失敗: {e}")
+            _finish()
     
     def _start_floating(self):
         """開始浮動模式"""
@@ -1248,48 +1303,6 @@ class MOVModule(BaseFrontendModule):
         
         # 選擇適當的動畫
         self.trigger_animation("smile_idle_f", {})
-    
-    def _play_turn_head_animation_before_movement(self, next_state: BehaviorState):
-        """在地面移動前播放轉頭動畫"""
-        if self.movement_mode == MovementMode.GROUND:
-            self.trigger_animation("turn_head_g", {})
-            debug_log(1, f"[{self.module_id}] 播放轉頭動畫，準備進入 {next_state.value}")
-            
-            # 設置延遲來啟動實際移動
-            try:
-                import threading
-                def start_movement_after_turn():
-                    if next_state == BehaviorState.NORMAL_MOVE:
-                        if self.movement_mode == MovementMode.GROUND:
-                            self._start_walking()
-                        elif self.movement_mode == MovementMode.FLOAT:
-                            self._start_floating()
-                    elif next_state == BehaviorState.SPECIAL_MOVE:
-                        speed_multiplier = random.choice([0.5, 1.5, 2.0])
-                        debug_log(1, f"[{self.module_id}] 特殊移動速度倍數: {speed_multiplier}x")
-                        if self.movement_mode == MovementMode.GROUND:
-                            self._start_walking_with_speed(speed_multiplier)
-                        elif self.movement_mode == MovementMode.FLOAT:
-                            self._start_floating_with_speed(speed_multiplier)
-                
-                timer = threading.Timer(1.0, start_movement_after_turn)
-                timer.daemon = True
-                timer.start()
-            except Exception as e:
-                debug_log(1, f"[{self.module_id}] 無法設置轉頭後動畫計時器: {e}")
-                # 直接啟動移動作為備選
-                if next_state == BehaviorState.NORMAL_MOVE:
-                    if self.movement_mode == MovementMode.GROUND:
-                        self._start_walking()
-                    elif self.movement_mode == MovementMode.FLOAT:
-                        self._start_floating()
-        else:
-            # 非地面模式直接啟動移動
-            if next_state == BehaviorState.NORMAL_MOVE:
-                if self.movement_mode == MovementMode.GROUND:
-                    self._start_walking()
-                elif self.movement_mode == MovementMode.FLOAT:
-                    self._start_floating()
     
     def _execute_current_behavior(self):
         """執行當前行為"""
@@ -1378,6 +1391,12 @@ class MOVModule(BaseFrontendModule):
     def _on_drag_start(self, event):
         """拖拽開始事件處理"""
         self.is_being_dragged = True
+        self.velocity = Velocity(0, 0)
+        self.target_velocity = Velocity(0, 0)
+        self._clear_movement_target()
+
+        idle_animation = "stand_idle_g" if self.movement_mode == MovementMode.GROUND else "smile_idle_f"
+        self.trigger_animation(idle_animation, {})
         
         # 暫停移動邏輯
         self.pause_movement(self.DRAG_PAUSE_REASON)
@@ -1396,35 +1415,45 @@ class MOVModule(BaseFrontendModule):
     
     def _on_drag_end(self, event):
         """拖拽結束事件處理"""
-        # 檢查是否需要拋擲
+        # 1) 先處理丟擲（若有）
         self._handle_throw({})
-        
+
+        # 2) 明確落盤當前位置（避免 UI 畫面回彈）
+        end_pos = event.data.get("pos")
+        if end_pos:
+            self.position.x = float(end_pos["x"])
+            self.position.y = float(end_pos["y"])
+            self._emit_position_change()
+
+        # 3) 清掉運動量
+        self.velocity = Velocity(0, 0)
+        self.target_velocity = Velocity(0, 0)
+        self._clear_movement_target()
+
+        # 4) 根據 Y 切模式
+        ground_y = self.screen_height - self.SIZE + self.GROUND_OFFSET
+        self.movement_mode = MovementMode.GROUND if self.position.y >= ground_y - 50 else MovementMode.FLOAT
+
+        # 5) 解拖拽、解動畫鎖、加停滯冷卻
         self.is_being_dragged = False
-        if self.movement_mode == MovementMode.DRAGGING:
-            # 根據結束位置決定移動模式
-            ground_y = self.screen_height - self.SIZE + self.GROUND_OFFSET
-            if self.position.y >= ground_y - 50:  # 接近地面
-                self.movement_mode = MovementMode.GROUND
-            else:
-                self.movement_mode = MovementMode.FLOAT
-        
-        # 恢復移動邏輯
+        self.movement_locked_until = 0.0
+        now = time.time()
+        self.last_movement_time = now
+        self._stall_detection_cooldown_until = now + 1.5
+
+        # 6) 播對的 idle，讓動畫狀態與物理一致
+        idle_animation = "stand_idle_g" if self.movement_mode == MovementMode.GROUND else "smile_idle_f"
+        self.trigger_animation(idle_animation, {})
+
+        # 7) 恢復行為（由狀態機挑下一步）
         self.resume_movement(self.DRAG_PAUSE_REASON)
-        
-        debug_log(1, f"[{self.module_id}] 結束拖拽，恢復移動邏輯，當前狀態: {self.movement_mode.value}")
+        self._choose_next_behavior_state()
+
+        debug_log(3, f"[{self.module_id}] 結束拖拽 -> {self.movement_mode.value}；位置({self.position.x:.1f},{self.position.y:.1f})")
+
 
     def _start_behavior_state(self, state: BehaviorState):
-        """開始新的行為狀態"""
-        # 如果從閒置狀態轉換到移動狀態，並且在地面模式，先播放轉頭動畫
-        if (hasattr(self, 'current_behavior_state') and 
-            self.current_behavior_state == BehaviorState.IDLE and 
-            state in [BehaviorState.NORMAL_MOVE, BehaviorState.SPECIAL_MOVE] and 
-            self.movement_mode == MovementMode.GROUND):
-            
-            # 播放轉頭動畫
-            self._play_turn_head_animation_before_movement(state)
-            return
-        
+        """開始新的行為狀態"""        
         if state == BehaviorState.NORMAL_MOVE:
             # 開始正常移動
             if self.movement_mode == MovementMode.GROUND:
@@ -1496,9 +1525,17 @@ class MOVModule(BaseFrontendModule):
             pass
         elif new_state == UEPState.IDLE:
             # 閒置時恢復正常行為
-            if self.movement_mode == MovementMode.GROUND and not self.is_being_dragged:
-                self._start_walking()
-    
+            self.current_behavior_state = BehaviorState.IDLE
+            self.idle_start_time = None
+            self.velocity = Velocity(0, 0)
+            self.target_velocity = Velocity(0, 0)
+
+    # ========= 其他幫手函數 ==========
+
+    def set_ani_reference(self, ani):
+        """由 DesktopPetApp 注入 ANI 實例，供等待轉場完成用"""
+        self.ani_module = ani
+
     def shutdown(self):
         """關閉 MOV 模組"""
         if self.movement_timer:

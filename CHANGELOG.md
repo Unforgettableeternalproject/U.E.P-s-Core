@@ -994,3 +994,15 @@
 
 ---
 
+### Still on duty with the way MOV/ANI interacts, but it moves now, although there are some...interesting bugs. 08/27
+
+> Date: Wed, 27 Aug 2025 03:34:26 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/front_end_integration`
+
+> Commit: `d8fd3c3892caeafd41b6297edcd334317d7199cb`
+
+---
+

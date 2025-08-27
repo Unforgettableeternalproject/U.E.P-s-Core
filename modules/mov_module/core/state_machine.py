@@ -58,8 +58,19 @@ class MovementStateMachine:
 
     def pick_next(self, mode: MovementMode) -> BehaviorState:
         w = self.weights_float if mode == MovementMode.FLOAT else self.weights_ground
-        states, weights = zip(*w.items())
-        return random.choices(states, weights=weights, k=1)[0]
+        try:
+            states, weights = zip(*w.items())
+            selected_state = random.choices(states, weights=weights, k=1)[0]
+            
+            # 當選到轉換狀態時，特別記錄
+            if selected_state == BehaviorState.TRANSITION:
+                print(f"🔄 TRANSITION狀態被觸發！當前模式: {mode.value}, 權重: {dict(w)}")
+            
+            return selected_state
+        except Exception as e:
+            # 錯誤處理：如果權重有問題，回到預設狀態
+            print(f"權重選擇錯誤: {e}, 權重字典: {w}")
+            return BehaviorState.IDLE
 
     # —— Idle 管理 ——
     def begin_idle(self, now: float):

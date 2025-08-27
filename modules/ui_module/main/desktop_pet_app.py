@@ -121,14 +121,24 @@ class DesktopPetApp(QWidget):
         self.current_image = None
         self.is_dragging = False
         self.drag_position = QPoint() if QPoint else None
-        # 增大尺寸約 20%：200 -> 240
-        self.default_size = (240, 240)
+        # 基礎尺寸（zoom=1.0 時的視窗大小）
+        self.base_size = (240, 240)
+        self.default_size = self.base_size
+        # 記錄當前的縮放比例，避免頻繁調整
+        self.current_zoom = 1.0
+        # 標記是否需要調整視窗大小
+        self.pending_resize = None
         
         # 添加定期檢查模組是否更新的計時器
         if QTimer:
             self.module_check_timer = QTimer(self)
             self.module_check_timer.timeout.connect(self.check_module_references)
             self.module_check_timer.start(5000)  # 每5秒檢查一次
+            
+            # 添加視窗調整計時器
+            self.resize_timer = QTimer(self)
+            self.resize_timer.timeout.connect(self._apply_pending_resize)
+            self.resize_timer.setSingleShot(True)  # 單次觸發
         
         # 渲染控制
         self.rendering_paused = False
@@ -408,20 +418,83 @@ class DesktopPetApp(QWidget):
             painter = QPainter(self)
             painter.setRenderHint(QPainter.Antialiasing)
             
-            # 繪製圖片
+            # 繪製圖片 - 智能視窗大小調整
             if self.current_image:
+                # 從 ANI 模組獲取當前動畫的縮放信息
+                zoom_factor = 1.0
+                if self.ani_module:
+                    try:
+                        status = self.ani_module.get_current_animation_status()
+                        if status and status.get("is_playing"):
+                            zoom_factor = status.get("zoom", 1.0)
+                    except Exception as e:
+                        debug_log(3, f"[DesktopPetApp] 無法獲取縮放信息: {e}")
+                
+                # 計算基於縮放比例的視窗大小
+                target_width = int(self.base_size[0] * zoom_factor)
+                target_height = int(self.base_size[1] * zoom_factor)
+                
+                # 檢查是否需要調整視窗大小
+                current_width = self.width()
+                current_height = self.height()
+                
+                if (abs(target_width - current_width) > 5 or 
+                    abs(target_height - current_height) > 5 or 
+                    abs(zoom_factor - self.current_zoom) > 0.05):
+                    
+                    # 使用延遲調整避免遞歸繪製
+                    self.pending_resize = (target_width, target_height, zoom_factor)
+                    if not self.resize_timer.isActive():
+                        self.resize_timer.start(10)  # 10ms 延遲
+                    debug_log(3, f"[DesktopPetApp] 排程視窗調整: zoom={zoom_factor:.2f}, 尺寸={target_width}x{target_height}")
+                
+                # 將圖片縮放至視窗大小，保持寬高比
                 scaled_image = self.current_image.scaled(
                     self.size(), 
-                    Qt.KeepAspectRatio, 
+                    Qt.KeepAspectRatio,  # 保持寬高比
                     Qt.SmoothTransformation
                 )
                 
-                # 計算置中位置
+                # 居中繪製
                 x = (self.width() - scaled_image.width()) // 2
                 y = (self.height() - scaled_image.height()) // 2
                 painter.drawPixmap(x, y, scaled_image)
+                debug_log(3, f"[DesktopPetApp] 比例縮放: zoom={zoom_factor:.2f}, 圖片={scaled_image.width()}x{scaled_image.height()}, 視窗={self.width()}x{self.height()}")
         except Exception as e:
             error_log(f"[DesktopPetApp] 繪製事件異常: {e}")
+    
+    def _apply_pending_resize(self):
+        """延遲執行視窗大小調整，避免在 paintEvent 中直接調整造成遞歸"""
+        if not self.pending_resize:
+            return
+            
+        try:
+            target_width, target_height, zoom_factor = self.pending_resize
+            
+            # 計算當前視窗中心位置
+            current_center_x = self.x() + self.width() // 2
+            current_center_y = self.y() + self.height() // 2
+            
+            # 調整視窗大小
+            self.setFixedSize(target_width, target_height)
+            
+            # 計算新的左上角位置，使視窗中心保持不變
+            new_x = current_center_x - target_width // 2
+            new_y = current_center_y - target_height // 2
+            
+            # 確保視窗不會跑到螢幕外（簡單的邊界檢查）
+            new_x = max(0, min(new_x, 1920 - target_width))
+            new_y = max(0, min(new_y, 1080 - target_height))
+            
+            self.move(new_x, new_y)
+            self.current_zoom = zoom_factor
+            self.pending_resize = None
+            
+            debug_log(2, f"[DesktopPetApp] 延遲調整視窗: zoom={zoom_factor:.2f}, 尺寸={target_width}x{target_height}, 位置=({new_x},{new_y})")
+            
+        except Exception as e:
+            error_log(f"[DesktopPetApp] 延遲視窗調整失敗: {e}")
+            self.pending_resize = None
     
     def mousePressEvent(self, event):
         """鼠標按下事件"""
@@ -431,8 +504,8 @@ class DesktopPetApp(QWidget):
                 if QPoint and hasattr(event, 'globalPos'):
                     self.drag_position = event.globalPos() - self.frameGeometry().topLeft()
                 
-                # 暫停渲染，避免拖拽時閃現
-                self.pause_rendering("滑鼠拖拽")
+                # 拖曳時不暫停渲染，讓struggle動畫能正常播放
+                # self.pause_rendering("滑鼠拖拽")  # 註解掉這行
                 
                 # 通知MOV模組拖拽開始
                 if self.mov_module and hasattr(self.mov_module, 'handle_ui_event'):
@@ -462,13 +535,25 @@ class DesktopPetApp(QWidget):
                     if self.position_changed:
                         self.position_changed.emit(new_pos.x(), new_pos.y())
 
-                    # ➕ 新增：回報拖曳座標給 MOV（用滑鼠全域座標）
-                    if self.mov_module and hasattr(self.mov_module, 'handle_frontend_request'):
-                        self.mov_module.handle_frontend_request({
-                            "command": "set_position",
-                            "x": new_pos.x(),
-                            "y": new_pos.y()
-                        })
+                    # 使用DRAG_MOVE事件通知MOV模組（而不是直接設置位置）
+                    if self.mov_module:
+                        if hasattr(self.mov_module, 'handle_ui_event'):
+                            # 優先使用事件系統
+                            self.mov_module.handle_ui_event(
+                                UIEventType.DRAG_MOVE,
+                                {
+                                    "x": new_pos.x(),
+                                    "y": new_pos.y(),
+                                    "global_pos": (event.globalX(), event.globalY())
+                                }
+                            )
+                        elif hasattr(self.mov_module, 'handle_frontend_request'):
+                            # 備用：直接API調用（拖曳時應該被正確處理）
+                            self.mov_module.handle_frontend_request({
+                                "command": "set_position",
+                                "x": new_pos.x(),
+                                "y": new_pos.y()
+                            })
         except Exception as e:
             error_log(f"[DesktopPetApp] 鼠標移動事件異常: {e}")
         
@@ -484,8 +569,8 @@ class DesktopPetApp(QWidget):
                         "global_pos": (event.globalX(), event.globalY())
                     })
                 
-                # 恢復渲染
-                self.resume_rendering()
+                # 由於拖曳時不再暫停渲染，所以不需要恢復
+                # self.resume_rendering()  # 註解掉這行
                 
         except Exception as e:
             error_log(f"[DesktopPetApp] 鼠標釋放事件異常: {e}")

@@ -106,6 +106,7 @@ class MOVModule(BaseFrontendModule):
         
         # --- 拖曳追蹤 ---
         self._drag_start_position: Optional[Position] = None
+        self._drag_start_mode: Optional[MovementMode] = None  # 記錄拖曳前的模式
 
         # --- 轉場共享狀態（交給 TransitionBehavior 用） ---
         self.transition_start_time: Optional[float] = None
@@ -218,6 +219,7 @@ class MOVModule(BaseFrontendModule):
 
     def _register_handlers(self):
         self.register_event_handler(UIEventType.DRAG_START, self._on_drag_start)
+        self.register_event_handler(UIEventType.DRAG_MOVE, self._on_drag_move)
         self.register_event_handler(UIEventType.DRAG_END, self._on_drag_end)
 
     def add_animation_callback(self, cb: Callable[[str, dict], None]):
@@ -248,8 +250,9 @@ class MOVModule(BaseFrontendModule):
                 self._await_follow = None
             return
 
-        # 轉場/鎖移動期間，仍讓行為跑（交由 TransitionBehavior 控制）
-        if self.is_being_dragged or self.movement_paused:
+        # 鎖移動期間，仍讓行為跑（交由 TransitionBehavior 控制）
+        # 拖曳期間需要允許行為tick執行，以觸發struggle動畫
+        if self.movement_paused and not self.is_being_dragged:
             return
 
         # 檢查是否到達目標（提供給 MovementBehavior 判斷）
@@ -303,7 +306,12 @@ class MOVModule(BaseFrontendModule):
         self.target_reached = ctx.target_reached
 
         if next_state is not None and next_state != self.current_behavior_state:
+            debug_log(1, f"[{self.module_id}] 行為建議切換: {self.current_behavior_state.value} -> {next_state.value}")
             self._switch_behavior(next_state)
+        elif next_state is not None:
+            debug_log(3, f"[{self.module_id}] 行為保持: {self.current_behavior_state.value}")
+        else:
+            debug_log(3, f"[{self.module_id}] 行為無變化: {self.current_behavior_state.value}")
 
     def _tick_movement(self):
         now = time.time()
@@ -316,14 +324,16 @@ class MOVModule(BaseFrontendModule):
         prev_x, prev_y = self.position.x, self.position.y
         gy = self._ground_y()
 
-        # 模式別物理
+        # 模式別物理 - 拖曳時不處理物理
         if self.movement_mode == MovementMode.GROUND:
-            # 貼地
-            self.position.y = gy
+            # 貼地 - 但拖曳時不強制鎖定在地面
+            if not self.is_being_dragged:
+                self.position.y = gy
             self.velocity = self.physics.step_ground(self.velocity)
         elif self.movement_mode == MovementMode.FLOAT:
             self.velocity = self.physics.step_float(self.velocity)
         elif self.movement_mode == MovementMode.DRAGGING:
+            # 拖曳模式：不處理物理，位置由drag_move事件控制
             self.velocity = Velocity(0.0, 0.0)
             self.target_velocity = Velocity(0.0, 0.0)
         elif self.movement_mode == MovementMode.THROWN:
@@ -337,23 +347,26 @@ class MOVModule(BaseFrontendModule):
                     self.velocity.y = 0.0
                     self.movement_mode = MovementMode.GROUND
 
-        # 速度趨近 target_velocity
-        self.velocity.x += (self.target_velocity.x - self.velocity.x) * self._approach_k
-        self.velocity.y += (self.target_velocity.y - self.velocity.y) * self._approach_k
+        # 速度趨近 target_velocity（拖曳時不處理）
+        if not self.is_being_dragged:
+            self.velocity.x += (self.target_velocity.x - self.velocity.x) * self._approach_k
+            self.velocity.y += (self.target_velocity.y - self.velocity.y) * self._approach_k
 
-
-        # 位置整合 + 邊界處理
-        self.position.x += self.velocity.x
-        self.position.y += self.velocity.y
-        self._check_boundaries()
+        # 位置整合 + 邊界處理（拖曳時不處理）
+        if not self.is_being_dragged:
+            self.position.x += self.velocity.x
+            self.position.y += self.velocity.y
+            self._check_boundaries()
 
         moved = (abs(self.position.x - prev_x) + abs(self.position.y - prev_y)) > 0.05
         if moved:
             self.last_movement_time = now
         self._emit_position()
 
-        # 停滯保護（可視需要）
-        if now - self.last_movement_time > self.max_idle_time and self.current_behavior_state != BehaviorState.IDLE:
+        # 停滯保護（可視需要）- 但排除轉場狀態
+        if (now - self.last_movement_time > self.max_idle_time and 
+            self.current_behavior_state != BehaviorState.IDLE and 
+            self.current_behavior_state != BehaviorState.TRANSITION):
             debug_log(2, f"[{self.module_id}] 檢測到移動停滯，強制切換狀態")
             self._switch_behavior(BehaviorState.IDLE)
 
@@ -473,8 +486,8 @@ class MOVModule(BaseFrontendModule):
 
     def _set_target(self, x: float, y: float):
         margin = self.screen_padding
-        # 落地時 y 鎖在地面
-        if self.movement_mode == MovementMode.GROUND:
+        # 落地時 y 鎖在地面，但拖曳模式除外
+        if self.movement_mode == MovementMode.GROUND and not self.is_being_dragged:
             y = self._ground_y()
         max_x = self.v_right  - self.SIZE
         max_y = self.v_bottom - self.SIZE
@@ -521,22 +534,24 @@ class MOVModule(BaseFrontendModule):
                 self.velocity.x = -abs(self.velocity.x); self.target_velocity.x = -abs(self.target_velocity.x)
             self.facing_direction = -1
 
-        # 如果碰到邊界且正在移動，直接切換到 idle 狀態
         if boundary_hit and self.current_behavior_state == BehaviorState.NORMAL_MOVE:
             self.velocity = Velocity(0.0, 0.0)
             self.target_velocity = Velocity(0.0, 0.0)
             self.target_reached = True
-            # 播放轉向動畫然後切換到閒置
+
             if self.movement_mode == MovementMode.GROUND:
                 turn_anim = "turn_right_g" if self.facing_direction > 0 else "turn_left_g"
+                # 轉向是非 loop：等待完成 → 自動接 stand_idle_g（loop）
                 self._trigger_anim(turn_anim, {
                     "loop": False,
                     "await_finish": True,
-                    "max_wait": 1.0,
+                    # 不要硬寫 1.0，交給 _trigger_anim 動態算時長 + 裕度
                     "next_anim": "stand_idle_g",
                     "next_params": {"loop": True}
                 })
-            self._switch_behavior(BehaviorState.IDLE)
+            else:
+                # 浮空時沒有轉向動畫，直接播笑臉 idle
+                self._trigger_anim("smile_idle_f", {"loop": True})
 
         if self.movement_mode == MovementMode.FLOAT:
             top = self.v_top
@@ -631,56 +646,136 @@ class MOVModule(BaseFrontendModule):
 
     # ========= UI 事件 =========
 
+    def handle_ui_event(self, event_type: UIEventType, data: Dict[str, Any]):
+        """處理來自UI的事件"""
+        try:
+            if event_type == UIEventType.DRAG_START:
+                self._on_drag_start(data)
+            elif event_type == UIEventType.DRAG_MOVE:
+                self._on_drag_move(data)
+            elif event_type == UIEventType.DRAG_END:
+                self._on_drag_end(data)
+            else:
+                debug_log(2, f"[{self.module_id}] 未處理的UI事件: {event_type}")
+        except Exception as e:
+            error_log(f"[{self.module_id}] 處理UI事件失敗: {event_type}, 錯誤: {e}")
+
     def _on_drag_start(self, event):
+        # 記錄拖曳前的狀態
+        self._drag_start_position = self.position.copy()
+        self._drag_start_mode = self.movement_mode  # 記錄拖曳前的模式
+        
+        # 切換到拖曳狀態
         self.is_being_dragged = True
         self.movement_mode = MovementMode.DRAGGING
         self.velocity = Velocity(0.0, 0.0)
         self.target_velocity = Velocity(0.0, 0.0)
         
-        # 記錄拖曳開始位置
-        self._drag_start_position = self.position.copy()
-        
         self.pause_movement(self.DRAG_PAUSE_REASON)
-        self._trigger_anim("stand_idle_g", {})
-        debug_log(1, f"[{self.module_id}] 拖拽開始於 ({self.position.x:.1f}, {self.position.y:.1f})")
+        
+        # 播放掙扎動畫
+        self._trigger_anim("struggle", {"loop": True})
+        debug_log(1, f"[{self.module_id}] 拖拽開始於 ({self.position.x:.1f}, {self.position.y:.1f})，從{self._drag_start_mode.value}模式，播放掙扎動畫")
+
+    def _on_drag_move(self, event):
+        """處理拖曳移動事件，直接更新位置跟隨滑鼠"""
+        if not self.is_being_dragged:
+            return
+            
+        # 支持字典格式的事件數據（來自UI）
+        if isinstance(event, dict):
+            new_x = float(event.get('x', self.position.x))
+            new_y = float(event.get('y', self.position.y))
+            
+            # 只應用螢幕邊界限制，不限制高度範圍
+            max_x = self.v_right - self.SIZE
+            max_y = self.v_bottom - self.SIZE
+            
+            # 允許完全自由的拖曳，只要不超出螢幕範圍
+            self.position.x = max(self.v_left, min(max_x, new_x))
+            self.position.y = max(self.v_top, min(max_y, new_y))
+            
+            # 發射位置更新
+            self._emit_position()
+            
+            debug_log(3, f"[{self.module_id}] 拖拽移動: ({self.position.x:.1f}, {self.position.y:.1f})")
+            return
+            
+        # 支持原有的事件對象格式
+        if hasattr(event, 'x') and hasattr(event, 'y'):
+            new_x = float(event.x)
+            new_y = float(event.y)
+            
+            # 只應用螢幕邊界限制，不限制高度範圍
+            max_x = self.v_right - self.SIZE
+            max_y = self.v_bottom - self.SIZE
+            
+            # 允許完全自由的拖曳，只要不超出螢幕範圍
+            self.position.x = max(self.v_left, min(max_x, new_x))
+            self.position.y = max(self.v_top, min(max_y, new_y))
+            
+            # 發射位置更新
+            self._emit_position()
+            
+            debug_log(3, f"[{self.module_id}] 拖拽移動: ({self.position.x:.1f}, {self.position.y:.1f})")
+        elif hasattr(event, 'data') and isinstance(event.data, dict):
+            # 如果位置資訊在data字典中
+            data = event.data
+            if 'x' in data and 'y' in data:
+                new_x = float(data['x'])
+                new_y = float(data['y'])
+                
+                max_x = self.v_right - self.SIZE
+                max_y = self.v_bottom - self.SIZE
+                
+                # 允許完全自由的拖曳
+                self.position.x = max(self.v_left, min(max_x, new_x))
+                self.position.y = max(self.v_top, min(max_y, new_y))
+                
+                self._emit_position()
+                debug_log(3, f"[{self.module_id}] 拖拽移動: ({self.position.x:.1f}, {self.position.y:.1f})")
 
     def _on_drag_end(self, event):
         self.is_being_dragged = False
         
-        # 智能判斷模式切換
+        # 智能判斷模式切換 - 基於最終位置的高度
         gy = self._ground_y()
         current_height = gy - self.position.y
         
-        # 計算實際拖曳距離
+        # 計算實際拖曳距離（可選的debug信息）
         drag_distance = 0
-        if hasattr(self, '_drag_start_position') and self._drag_start_position:
+        if self._drag_start_position:
             drag_distance = math.hypot(
                 self.position.x - self._drag_start_position.x,
                 self.position.y - self._drag_start_position.y
             )
         
-        # 判斷模式切換條件
-        height_threshold = 80   # 降低高度閾值
-        distance_threshold = 100  # 降低拖曳距離閾值
+        # 判斷模式切換條件：主要基於高度
+        height_threshold = 100  # 高度閾值
         
-        debug_log(1, f"[{self.module_id}] 拖拽檢查: 高度={current_height:.1f}, 距離={drag_distance:.1f}, 閾值=高度{height_threshold}/距離{distance_threshold}")
+        debug_log(1, f"[{self.module_id}] 拖拽結束: 當前高度={current_height:.1f}, 距離={drag_distance:.1f}, 閾值={height_threshold}")
         
-        if current_height > height_threshold or drag_distance > distance_threshold:
-            # 切換到浮空模式
+        if current_height > height_threshold:
+            # 拖曳到較高位置 -> 浮空模式
             self.movement_mode = MovementMode.FLOAT
-            self._trigger_anim("smile_idle_f", {})
-            debug_log(1, f"[{self.module_id}] 切換到浮空模式 (高度:{current_height:.1f} > {height_threshold} 或距離:{drag_distance:.1f} > {distance_threshold})")
+            self._trigger_anim("smile_idle_f", {"loop": True})
+            debug_log(1, f"[{self.module_id}] 切換到浮空模式 (高度:{current_height:.1f} > {height_threshold})")
         else:
-            # 切換到落地模式
+            # 拖曳到較低位置 -> 落地模式
             self.movement_mode = MovementMode.GROUND
             # 確保在地面上
             self.position.y = gy
-            self._trigger_anim("stand_idle_g", {})
-            debug_log(1, f"[{self.module_id}] 切換到落地模式 (高度:{current_height:.1f} <= {height_threshold} 且距離:{drag_distance:.1f} <= {distance_threshold})")
+            self._trigger_anim("stand_idle_g", {"loop": True})
+            debug_log(1, f"[{self.module_id}] 切換到落地模式 (高度:{current_height:.1f} <= {height_threshold})")
         
+        # 恢復移動並切換到idle狀態
         self.resume_movement(self.DRAG_PAUSE_REASON)
         self._switch_behavior(BehaviorState.IDLE)
-        debug_log(1, f"[{self.module_id}] 拖拽結束 → {self.movement_mode.value} (高度:{current_height:.1f}, 距離:{drag_distance:.1f})")
+        
+        # 更新位置發射
+        self._emit_position()
+        
+        debug_log(1, f"[{self.module_id}] 拖拽結束 → {self.movement_mode.value} 模式")
 
     # ========= API =========
 
@@ -696,8 +791,21 @@ class MOVModule(BaseFrontendModule):
     def _api_set_position(self, data: Dict[str, Any]) -> Dict[str, Any]:
         x = float(data.get("x", self.position.x))
         y = float(data.get("y", self.position.y))
-        self.position.x = x
-        self.position.y = y
+        
+        # 如果正在拖曳，允許自由設置位置，不受地面鎖定限制
+        if self.is_being_dragged:
+            # 拖曳時允許完全自由的位置設置
+            self.position.x = x
+            self.position.y = y
+            debug_log(3, f"[{self.module_id}] 拖曳中位置更新: ({x:.1f}, {y:.1f})")
+        else:
+            # 非拖曳時按照正常邏輯設置位置
+            self.position.x = x
+            self.position.y = y
+            # 如果是地面模式，確保Y在地面上
+            if self.movement_mode == MovementMode.GROUND:
+                self.position.y = self._ground_y()
+        
         self._emit_position()
         return {"success": True}
 
@@ -825,11 +933,33 @@ class MOVModule(BaseFrontendModule):
         # 權重
         wg = sm.get("weights_ground")
         if isinstance(wg, dict):
-            # 允許只覆蓋提供的鍵
-            self.sm.weights_ground.update(wg)
+            # 轉換字符串鍵為 BehaviorState 枚舉
+            converted_wg = {}
+            for key, value in wg.items():
+                if isinstance(key, str):
+                    try:
+                        enum_key = BehaviorState[key]
+                        converted_wg[enum_key] = float(value)
+                    except (KeyError, ValueError) as e:
+                        error_log(f"[{self.module_id}] 無效的 ground 權重鍵: {key}, 錯誤: {e}")
+                else:
+                    converted_wg[key] = float(value)
+            self.sm.weights_ground.update(converted_wg)
+            
         wf = sm.get("weights_float")
         if isinstance(wf, dict):
-            self.sm.weights_float.update(wf)
+            # 轉換字符串鍵為 BehaviorState 枚舉
+            converted_wf = {}
+            for key, value in wf.items():
+                if isinstance(key, str):
+                    try:
+                        enum_key = BehaviorState[key]
+                        converted_wf[enum_key] = float(value)
+                    except (KeyError, ValueError) as e:
+                        error_log(f"[{self.module_id}] 無效的 float 權重鍵: {key}, 錯誤: {e}")
+                else:
+                    converted_wf[key] = float(value)
+            self.sm.weights_float.update(converted_wf)
 
         # 計時器
         timers = cfg.get("timers", {})

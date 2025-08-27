@@ -42,9 +42,9 @@ class MovementBehavior(BaseBehavior):
             if ctx.movement_mode == MovementMode.GROUND:
                 # 根據當前面向決定轉向動畫
                 if ctx.facing_direction > 0:
-                    turn_anim = "turn_right_g"
-                else:
                     turn_anim = "turn_left_g"
+                else:
+                    turn_anim = "turn_right_g"
                 
                 # 只播放轉向動畫，不自動接閒置動畫
                 ctx.trigger_anim(turn_anim, {

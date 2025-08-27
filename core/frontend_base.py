@@ -55,6 +55,7 @@ class UIEventType(Enum):
     MOUSE_CLICK = auto()
     MOUSE_HOVER = auto()
     DRAG_START = auto()
+    DRAG_MOVE = auto()  # 拖曳移動事件
     DRAG_END = auto()
     FILE_DROP = auto()
     KEYBOARD_INPUT = auto()

@@ -16,9 +16,15 @@ class TransitionBehavior(BaseBehavior):
         self._target_y = 0.0
 
     def on_enter(self, ctx: BehaviorContext) -> None:
+        print(f"🚀 TransitionBehavior.on_enter 被調用！當前模式: {ctx.movement_mode}")
+        
         target_mode = ctx.sm.decide_transition_target(ctx.movement_mode)
         if not target_mode:
+            print("⚠️ 轉換目標為空，退出轉換")
             return
+            
+        print(f"🎯 轉換目標模式: {ctx.movement_mode.value} -> {target_mode.value}")
+        
         ctx.transition_start_time = ctx.now
         # 不再鎖定移動，讓轉場行為自己控制位置
         # ctx.movement_locked_until = ctx.now + ctx.sm.transition_duration
@@ -38,6 +44,8 @@ class TransitionBehavior(BaseBehavior):
             right = ctx.v_right - ctx.SIZE - 50
             self._target_x = max(left, min(right, ctx.position.x + x_offset))
             
+            print(f"🚁 地面->浮空轉換: 目標位置 ({self._target_x:.1f}, {self._target_y:.1f})")
+            
             # 設定目標點用於動畫配合
             ctx.set_target(self._target_x, self._target_y)
             ctx.trigger_anim("g_to_f", {"loop": False})
@@ -46,6 +54,9 @@ class TransitionBehavior(BaseBehavior):
             gy = ctx.ground_y()
             self._target_y = gy
             self._target_x = ctx.position.x  # 保持 X 位置不變
+            
+            print(f"🛬 浮空->地面轉換: 目標位置 ({self._target_x:.1f}, {self._target_y:.1f})")
+            
             ctx.set_target(self._target_x, self._target_y)
             ctx.trigger_anim("f_to_g", {"loop": False})
 

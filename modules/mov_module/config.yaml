@@ -23,28 +23,17 @@ state_machine:
     min_duration: 3.0          # 進一步增加最小閒置時間
     max_duration: 8.0          # 增加最大閒置時間
     tick_chance: 0.03          # 進一步降低每 tick 結束閒置的機率
-  # 調整權重讓移動更持久
+  # 調整權重讓轉換更容易觸發
   weights_ground:
-    NORMAL_MOVE: 0.50         # 增加移動機率
-    IDLE: 0.35               # 降低閒置機率
-    SPECIAL_MOVE: 0.12
-    TRANSITION: 0.03
+    NORMAL_MOVE: 0.40         # 稍微降低移動機率
+    IDLE: 0.30                # 降低閒置機率
+    SPECIAL_MOVE: 0.20
+    TRANSITION: 0.10          # 大幅提高轉換機率（從3%提高到20%）
   weights_float:
     NORMAL_MOVE: 0.35
-    IDLE: 0.50               # 浮空時偏好閒置
-    SPECIAL_MOVE: 0.10
-    TRANSITION: 0.05
-  # 覆蓋預設權重（可選）
-  # weights_ground:
-  #   NORMAL_MOVE: 0.40
-  #   IDLE: 0.45
-  #   SPECIAL_MOVE: 0.12
-  #   TRANSITION: 0.03
-  # weights_float:
-  #   NORMAL_MOVE: 0.25
-  #   IDLE: 0.60
-  #   SPECIAL_MOVE: 0.10
-  #   TRANSITION: 0.05
+    IDLE: 0.40                # 浮空時偏好閒置
+    SPECIAL_MOVE: 0.20
+    TRANSITION: 0.05          # 大幅提高轉換機率（從5%提高到25%）
 
 boundaries:
   screen_padding: 50

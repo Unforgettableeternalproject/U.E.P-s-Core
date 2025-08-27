@@ -1042,3 +1042,15 @@
 
 ---
 
+### Improved the animation handling furthermore, and reimplemented the dragging feature. 08/28
+
+> Date: Thu, 28 Aug 2025 04:05:21 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/front_end_integration`
+
+> Commit: `3f71576d7f5da6427b8d3a776d8ff3cb3b367145`
+
+---
+

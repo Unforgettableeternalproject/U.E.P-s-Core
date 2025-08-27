@@ -122,6 +122,10 @@ class AnimationManager:
             "is_playing": self.state == AnimPlayState.PLAYING,
             "loop": self._active_loop,
             "state": self.state.value,
+            # 新增：變換屬性
+            "zoom": self.current.zoom,
+            "offset_x": self.current.offset_x,
+            "offset_y": self.current.offset_y,
         }
 
     # 私有

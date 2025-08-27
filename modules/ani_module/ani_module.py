@@ -123,6 +123,7 @@ class ANIModule(BaseFrontendModule):
     def get_current_frame(self):
         """
         UI 每個 tick 會來拉目前幀的畫面；回傳 QPixmap 或 None。
+        新增縮放和偏移變換支援。
         """
         try:
             st = self.get_current_animation_status()  # 你現有的狀態查詢介面
@@ -136,41 +137,59 @@ class ANIModule(BaseFrontendModule):
                 debug_log(3, f"[ANI] get_current_frame: 幀索引為 None")
                 return None
 
-            # 如果你已有快取的 QPixmap，優先取用
-            pm = self._try_get_cached_pixmap(anim_name, idx)
+            # 從狀態中獲取變換屬性
+            zoom = st.get("zoom", 1.0)
+            offset_x = st.get("offset_x", 0)
+            offset_y = st.get("offset_y", 0)
+
+            # 檢查是否有變換的快取（只考慮偏移，不考慮縮放）
+            transform_key = (anim_name, idx, 1.0, offset_x, offset_y)
+            pm = self._try_get_transformed_cached_pixmap(transform_key)
             if pm is not None:
-                debug_log(3, f"[ANI] get_current_frame: 使用快取 {anim_name}[{idx}]")
+                debug_log(3, f"[ANI] get_current_frame: 使用變換快取 {anim_name}[{idx}]")
                 return pm
 
-            # 沒快取就組檔名並載入
-            frame_path = self._resolve_frame_path(anim_name, idx)
-            if not frame_path or not os.path.exists(frame_path):
-                debug_log(2, f"[ANI] get_current_frame: 檔案不存在 {frame_path}")
-                return None
-
-            if not PYQT5:
-                debug_log(3, f"[ANI] get_current_frame: PyQt5 不可用，無法載入 QPixmap")
-                return None
-
-            # 確保有 QApplication 實例
-            try:
-                from PyQt5.QtWidgets import QApplication
-                if not QApplication.instance():
-                    debug_log(3, f"[ANI] get_current_frame: 沒有 QApplication，無法載入 QPixmap")
+            # 先獲取原始圖片
+            original_pm = self._try_get_cached_pixmap(anim_name, idx)
+            if original_pm is None:
+                # 沒快取就組檔名並載入
+                frame_path = self._resolve_frame_path(anim_name, idx)
+                if not frame_path or not os.path.exists(frame_path):
+                    debug_log(2, f"[ANI] get_current_frame: 檔案不存在 {frame_path}")
                     return None
-            except ImportError:
-                debug_log(3, f"[ANI] get_current_frame: 無法導入 QApplication")
-                return None
 
-            pm = QPixmap(frame_path)
-            if pm.isNull():
-                debug_log(2, f"[ANI] get_current_frame: QPixmap 載入失敗 {frame_path}")
-                return None
-                
-            # 放到快取（可選；若你已有快取容器，改成用你現有的）
-            self._cache_pixmap(anim_name, idx, pm)
-            debug_log(3, f"[ANI] get_current_frame: 成功載入 {anim_name}[{idx}] from {frame_path}")
-            return pm
+                if not PYQT5:
+                    debug_log(3, f"[ANI] get_current_frame: PyQt5 不可用，無法載入 QPixmap")
+                    return None
+
+                # 確保有 QApplication 實例
+                try:
+                    from PyQt5.QtWidgets import QApplication
+                    if not QApplication.instance():
+                        debug_log(3, f"[ANI] get_current_frame: 沒有 QApplication，無法載入 QPixmap")
+                        return None
+                except ImportError:
+                    debug_log(3, f"[ANI] get_current_frame: 無法導入 QApplication")
+                    return None
+
+                original_pm = QPixmap(frame_path)
+                if original_pm.isNull():
+                    debug_log(2, f"[ANI] get_current_frame: QPixmap 載入失敗 {frame_path}")
+                    return None
+                    
+                # 放到原始圖片快取
+                self._cache_pixmap(anim_name, idx, original_pm)
+                debug_log(3, f"[ANI] get_current_frame: 成功載入 {anim_name}[{idx}] from {frame_path}")
+
+            # 應用變換（只處理偏移，縮放交給 UI 層處理）
+            transformed_pm = self._apply_transform(original_pm, 1.0, offset_x, offset_y)  # zoom 固定為 1.0
+            if transformed_pm:
+                # 放到變換快取
+                self._cache_transformed_pixmap(transform_key, transformed_pm)
+                debug_log(3, f"[ANI] get_current_frame: 應用變換 zoom={zoom} offset=({offset_x},{offset_y})")
+                return transformed_pm
+            else:
+                return original_pm
             
         except Exception as e:
             # 不要讓 UI 噴例外，穩穩地回 None 就好
@@ -182,7 +201,14 @@ class ANIModule(BaseFrontendModule):
         c = self.manager.clips.get(name)
         if not c: 
             return None
-        return {"frames": c.total_frames, "fps": c.fps, "loop": c.default_loop}
+        return {
+            "frames": c.total_frames, 
+            "fps": c.fps, 
+            "loop": c.default_loop,
+            "zoom": c.zoom,
+            "offset_x": c.offset_x,
+            "offset_y": c.offset_y
+        }
 
     def get_clip_duration(self, name: str) -> float:
         info = self.get_clip_info(name)
@@ -248,6 +274,12 @@ class ANIModule(BaseFrontendModule):
             fps = 1.0 / max(fd, 1e-6)
             loop = bool(meta.get("loop", True))
             total_frames = int(meta.get("total_frames", 0))
+            
+            # 新增：讀取縮放和偏移屬性
+            zoom = float(meta.get("zoom", 1.0))
+            offset_x = int(meta.get("offsetX", 0))
+            offset_y = int(meta.get("offsetY", 0))
+            
             if total_frames <= 0:
                 # 若真的沒提供 frame 數，可回退 30；建議 YAML 填好 total_frames
                 total_frames = 30
@@ -259,10 +291,13 @@ class ANIModule(BaseFrontendModule):
                     total_frames=total_frames,
                     fps=fps,
                     default_loop=loop,
+                    zoom=zoom,
+                    offset_x=offset_x,
+                    offset_y=offset_y,
                 ))
                 # 可把 prefix/filename_format/index_start 留給 UI 用（ANI 不需）
                 from utils.debug_helper import debug_log
-                debug_log(1, f"[ANI] ✓ 註冊動畫: {name} frames={total_frames} fps={fps:.2f} loop={loop}")
+                debug_log(1, f"[ANI] ✓ 註冊動畫: {name} frames={total_frames} fps={fps:.2f} loop={loop} zoom={zoom} offset=({offset_x},{offset_y})")
             except Exception as e:
                 from utils.debug_helper import error_log
                 error_log(f"[ANI] ✗ 註冊動畫失敗 {name}: {e}")
@@ -294,6 +329,9 @@ class ANIModule(BaseFrontendModule):
                 total_frames=src.total_frames,
                 fps=src.fps,
                 default_loop=src.default_loop,
+                zoom=src.zoom,
+                offset_x=src.offset_x,
+                offset_y=src.offset_y,
             ))
             debug_log(1, f"[ANI] ✓ 註冊 alias: {alias} -> {target}")
 
@@ -391,6 +429,74 @@ class ANIModule(BaseFrontendModule):
         except Exception as e:
             error_log(f"[ANI] 路徑解析失敗 {anim_name}[{idx}]: {e}")
             return ""
+    
+    def _try_get_transformed_cached_pixmap(self, transform_key):
+        """獲取變換後的快取圖片"""
+        cache = getattr(self, "_transformed_pixmap_cache", None)
+        if not cache:
+            return None
+        return cache.get(transform_key)
+    
+    def _cache_transformed_pixmap(self, transform_key, pm: QPixmap):
+        """快取變換後的圖片"""
+        if not hasattr(self, "_transformed_pixmap_cache"):
+            self._transformed_pixmap_cache = {}
+        self._transformed_pixmap_cache[transform_key] = pm
+    
+    def _apply_transform(self, original_pm: QPixmap, zoom: float, offset_x: int, offset_y: int) -> QPixmap:
+        """應用縮放和偏移變換"""
+        try:
+            if not PYQT5:
+                return original_pm
+                
+            # 如果沒有變換，直接返回原圖
+            if zoom == 1.0 and offset_x == 0 and offset_y == 0:
+                return original_pm
+                
+            from PyQt5.QtCore import Qt
+            from PyQt5.QtGui import QPainter
+            
+            # 計算變換後的尺寸
+            orig_width = original_pm.width()
+            orig_height = original_pm.height()
+            
+            if zoom != 1.0:
+                # 縮放變換
+                scaled_width = int(orig_width * zoom)
+                scaled_height = int(orig_height * zoom)
+                scaled_pm = original_pm.scaled(scaled_width, scaled_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            else:
+                scaled_pm = original_pm
+                scaled_width = orig_width
+                scaled_height = orig_height
+            
+            # 如果有偏移，需要創建新的畫布
+            if offset_x != 0 or offset_y != 0:
+                # 計算新畫布大小（確保能容納偏移後的圖片）
+                canvas_width = scaled_width + abs(offset_x)
+                canvas_height = scaled_height + abs(offset_y)
+                
+                # 創建新的透明畫布
+                result_pm = QPixmap(canvas_width, canvas_height)
+                result_pm.fill(Qt.transparent)
+                
+                # 計算繪製位置
+                draw_x = max(0, offset_x)
+                draw_y = max(0, offset_y)
+                
+                # 在新畫布上繪製偏移後的圖片
+                painter = QPainter(result_pm)
+                painter.setRenderHint(QPainter.Antialiasing)
+                painter.drawPixmap(draw_x, draw_y, scaled_pm)
+                painter.end()
+                
+                return result_pm
+            else:
+                return scaled_pm
+                
+        except Exception as e:
+            error_log(f"[ANI] 變換失敗: {e}")
+            return original_pm
     
     def shutdown(self):
         return super().shutdown()

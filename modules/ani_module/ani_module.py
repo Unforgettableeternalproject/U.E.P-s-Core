@@ -7,6 +7,7 @@ from core.frontend_base import BaseFrontendModule, FrontendModuleType  # type: i
 
 try:
     from PyQt5.QtCore import QTimer
+    from PyQt5.QtGui import QPixmap
     PYQT5 = True
 except Exception:
     PYQT5 = False
@@ -86,8 +87,13 @@ class ANIModule(BaseFrontendModule):
     # ===== 公開 API（給 MOV/UI） =====
     def play(self, name: str, loop: Optional[bool] = None) -> Dict:
         if not name:
+            debug_log(2, "[ANI] play: 動畫名稱為空")
             return {"error": "animation name required"}
-        return self.manager.play(name, loop=loop)
+        
+        debug_log(1, f"[ANI] 請求播放動畫: {name}, loop={loop}")
+        result = self.manager.play(name, loop=loop)
+        debug_log(2, f"[ANI] 播放結果: {result}")
+        return result
 
     def stop(self):
         self.manager.stop()
@@ -113,6 +119,78 @@ class ANIModule(BaseFrontendModule):
     def add_frame_callback(self, cb: Callable[[str, int], None]):
         if cb not in self._frame_callbacks:
             self._frame_callbacks.append(cb)
+
+    def get_current_frame(self):
+        """
+        UI 每個 tick 會來拉目前幀的畫面；回傳 QPixmap 或 None。
+        """
+        try:
+            st = self.get_current_animation_status()  # 你現有的狀態查詢介面
+            if not st or not st.get("name") or not st.get("is_playing"):
+                debug_log(3, f"[ANI] get_current_frame: 沒有活動動畫 - status: {st}")
+                return None
+                
+            anim_name = st["name"]
+            idx = st.get("frame")
+            if idx is None:
+                debug_log(3, f"[ANI] get_current_frame: 幀索引為 None")
+                return None
+
+            # 如果你已有快取的 QPixmap，優先取用
+            pm = self._try_get_cached_pixmap(anim_name, idx)
+            if pm is not None:
+                debug_log(3, f"[ANI] get_current_frame: 使用快取 {anim_name}[{idx}]")
+                return pm
+
+            # 沒快取就組檔名並載入
+            frame_path = self._resolve_frame_path(anim_name, idx)
+            if not frame_path or not os.path.exists(frame_path):
+                debug_log(2, f"[ANI] get_current_frame: 檔案不存在 {frame_path}")
+                return None
+
+            if not PYQT5:
+                debug_log(3, f"[ANI] get_current_frame: PyQt5 不可用，無法載入 QPixmap")
+                return None
+
+            # 確保有 QApplication 實例
+            try:
+                from PyQt5.QtWidgets import QApplication
+                if not QApplication.instance():
+                    debug_log(3, f"[ANI] get_current_frame: 沒有 QApplication，無法載入 QPixmap")
+                    return None
+            except ImportError:
+                debug_log(3, f"[ANI] get_current_frame: 無法導入 QApplication")
+                return None
+
+            pm = QPixmap(frame_path)
+            if pm.isNull():
+                debug_log(2, f"[ANI] get_current_frame: QPixmap 載入失敗 {frame_path}")
+                return None
+                
+            # 放到快取（可選；若你已有快取容器，改成用你現有的）
+            self._cache_pixmap(anim_name, idx, pm)
+            debug_log(3, f"[ANI] get_current_frame: 成功載入 {anim_name}[{idx}] from {frame_path}")
+            return pm
+            
+        except Exception as e:
+            # 不要讓 UI 噴例外，穩穩地回 None 就好
+            # 用你的 debug_helper
+            debug_log(2, f"[ANI] get_current_frame 失敗: {e}")
+            return None
+
+    def get_clip_info(self, name: str):
+        c = self.manager.clips.get(name)
+        if not c: 
+            return None
+        return {"frames": c.total_frames, "fps": c.fps, "loop": c.default_loop}
+
+    def get_clip_duration(self, name: str) -> float:
+        info = self.get_clip_info(name)
+        if not info: 
+            return 0.0
+        frames = max(1, int(info["frames"]))
+        fps = max(1e-6, float(info["fps"]))
+        return frames / fps
 
     # ===== 註冊回傳方法 =====
     def add_start_callback(self, cb: Callable[[str], None]):
@@ -158,8 +236,13 @@ class ANIModule(BaseFrontendModule):
         clips = res.get("clips", None)
         default_fd = float((cfg or {}).get("animation", {}).get("default_frame_duration", getattr(self, "_default_frame_duration", 0.1)))
 
+        debug_log(1, f"[ANI] 開始註冊動畫 clips，config.resources: {list(res.keys())}")
+        if clips:
+            debug_log(1, f"[ANI] 找到 {len(clips)} 個 clips: {list(clips.keys())}")
+
         def _register(name: str, meta: dict):
             if not isinstance(meta, dict):
+                debug_log(2, f"[ANI] 跳過無效 meta: {name} -> {meta}")
                 return
             fd = float(meta.get("frame_duration", default_fd))
             fps = 1.0 / max(fd, 1e-6)
@@ -168,6 +251,7 @@ class ANIModule(BaseFrontendModule):
             if total_frames <= 0:
                 # 若真的沒提供 frame 數，可回退 30；建議 YAML 填好 total_frames
                 total_frames = 30
+                debug_log(2, f"[ANI] {name} 使用預設幀數: {total_frames}")
             try:
                 from .core.animation_clip import AnimationClip
                 self.manager.register_clip(AnimationClip(
@@ -178,10 +262,10 @@ class ANIModule(BaseFrontendModule):
                 ))
                 # 可把 prefix/filename_format/index_start 留給 UI 用（ANI 不需）
                 from utils.debug_helper import debug_log
-                debug_log(2, f"[ANI] 註冊動畫: {name} frames={total_frames} fps={fps:.2f} loop={loop}")
+                debug_log(1, f"[ANI] ✓ 註冊動畫: {name} frames={total_frames} fps={fps:.2f} loop={loop}")
             except Exception as e:
                 from utils.debug_helper import error_log
-                error_log(f"[ANI] 註冊動畫失敗 {name}: {e}")
+                error_log(f"[ANI] ✗ 註冊動畫失敗 {name}: {e}")
 
         if isinstance(clips, dict):
             # 新版 clips 形式
@@ -198,9 +282,11 @@ class ANIModule(BaseFrontendModule):
 
         # 處理 aliases（可把 MOV 用名映到現有 clip）
         aliases = res.get("aliases", {})
+        debug_log(1, f"[ANI] 處理 {len(aliases)} 個 aliases: {list(aliases.keys())}")
         for alias, target in aliases.items():
             src = self.manager.clips.get(target)
             if not src:
+                debug_log(2, f"[ANI] alias 目標不存在: {alias} -> {target}")
                 continue
             from .core.animation_clip import AnimationClip
             self.manager.register_clip(AnimationClip(
@@ -209,6 +295,10 @@ class ANIModule(BaseFrontendModule):
                 fps=src.fps,
                 default_loop=src.default_loop,
             ))
+            debug_log(1, f"[ANI] ✓ 註冊 alias: {alias} -> {target}")
+
+        total_clips = len(self.manager.clips)
+        debug_log(1, f"[ANI] 動畫註冊完成，總計 {total_clips} 個 clips")
 
     def _count_frames_on_disk(self, base_path: str, clip_name: str) -> int:
         """嘗試兩種布局：
@@ -233,5 +323,74 @@ class ANIModule(BaseFrontendModule):
             error_log(f"[ANI] 掃描動畫幀失敗 {clip_name}: {e}")
             return 0
 
+    def _try_get_cached_pixmap(self, anim_name: str, idx: int):
+        cache = getattr(self, "_pixmap_cache", None)
+        if not cache:
+            return None
+        return cache.get((anim_name, idx))
+
+    def _cache_pixmap(self, anim_name: str, idx: int, pm: QPixmap):
+        if not hasattr(self, "_pixmap_cache"):
+            self._pixmap_cache = {}
+        self._pixmap_cache[(anim_name, idx)] = pm
+
+    def _resolve_frame_path(self, anim_name: str, idx: int) -> str:
+        """
+        根據實際檔案結構解析動畫幀路徑。
+        實際結構：resources/animations/{anim_name}/{prefix}{idx:02d}.png
+        支援 alias 動畫解析到原始檔案路徑
+        """
+        try:
+            # 取得基礎路徑
+            base_animations_path = self.config.get("resources", {}).get("animations_path", "resources/animations")
+            
+            # 如果是相對路徑，轉為絕對路徑
+            if not os.path.isabs(base_animations_path):
+                # 假設相對於專案根目錄
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                project_root = os.path.abspath(os.path.join(script_dir, '..', '..'))
+                base_animations_path = os.path.join(project_root, base_animations_path)
+            
+            # 查找對應的 clip 配置
+            clips_config = self.config.get("resources", {}).get("clips", {})
+            
+            # 檢查是否為 alias，如果是則解析到原始動畫
+            actual_anim_name = anim_name
+            if anim_name not in clips_config:
+                # 可能是 alias，查找別名映射
+                aliases = self.config.get("resources", {}).get("aliases", {})
+                if anim_name in aliases:
+                    target_name = aliases[anim_name]
+                    if target_name in clips_config:
+                        actual_anim_name = target_name
+                        debug_log(2, f"[ANI] alias 解析: {anim_name} -> {actual_anim_name}")
+                    else:
+                        debug_log(2, f"[ANI] alias 目標不存在: {anim_name} -> {target_name}")
+                        return ""
+                else:
+                    debug_log(2, f"[ANI] 動畫配置不存在: {anim_name}")
+                    return ""
+            
+            clip_info = clips_config.get(actual_anim_name, {})
+            
+            # 取得 prefix（保持完整的 prefix，因為實際檔名包含底線）
+            prefix = clip_info.get("prefix", f"{actual_anim_name}_")
+            # 注意：不要移除底線，因為實際檔案名是 diamond_girl_angry_idle_00.png
+            
+            # 組合路徑：{base_path}/{actual_anim_name}/{prefix}{idx:02d}.png
+            filename = f"{prefix}{idx:02d}.png"
+            full_path = os.path.join(base_animations_path, actual_anim_name, filename)
+            
+            # 增加更詳細的偵錯信息
+            debug_log(3, f"[ANI] 解析路徑: {anim_name}[{idx}] -> {actual_anim_name}")
+            debug_log(3, f"[ANI] - full_path: {full_path}")
+            debug_log(3, f"[ANI] - exists: {os.path.exists(full_path)}")
+            
+            return full_path
+            
+        except Exception as e:
+            error_log(f"[ANI] 路徑解析失敗 {anim_name}[{idx}]: {e}")
+            return ""
+    
     def shutdown(self):
         return super().shutdown()

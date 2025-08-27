@@ -59,10 +59,10 @@ resources:
 
     yawn_g:          { prefix: "diamond_girl_yawn_",                 total_frames: 45, frame_duration: 0.10, loop: false }
   aliases:
-    walk_left_g:  walk_left
-    walk_right_g: walk_right
-    turn_left_g:  turn_left
-    turn_right_g: turn_right
+    walk_left:  walk_left_g
+    walk_right: walk_right_g
+    turn_left:  turn_left_g
+    turn_right: turn_right_g
     # 之後會放更多
 
 # 調試設定

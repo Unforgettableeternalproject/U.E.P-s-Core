@@ -51,6 +51,9 @@ class BehaviorContext:
     # 轉場臨時（供 TransitionBehavior 使用）
     transition_start_time: Optional[float] = None
     movement_locked_until: float = 0.0
+    
+    # 狀態追蹤
+    previous_state: Optional[BehaviorState] = None
 
     def ground_y(self) -> float:
         # 用 v_bottom，避免原點偏移造成地面高度錯誤

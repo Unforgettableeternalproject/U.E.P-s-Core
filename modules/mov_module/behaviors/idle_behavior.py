@@ -14,8 +14,15 @@ class IdleBehavior(BaseBehavior):
         ctx.velocity.y = 0.0
         ctx.target_velocity.x = 0.0
         ctx.target_velocity.y = 0.0
-        # 播對應模式的 idle 動畫
-        ctx.trigger_anim("stand_idle_g" if ctx.movement_mode.value == "ground" else "smile_idle_f", {})
+        
+        # 只在不是從移動狀態切換過來時播放閒置動畫
+        # （從移動切換過來時，轉向動畫會自動接閒置動畫）
+        prev_state = getattr(ctx, 'previous_state', None)
+        if prev_state != BehaviorState.NORMAL_MOVE:
+            # 播對應模式的 idle 動畫
+            idle_anim = "stand_idle_g" if ctx.movement_mode.value == "ground" else "smile_idle_f"
+            ctx.trigger_anim(idle_anim, {"loop": True})
+        
         # 標記 idle 起點
         ctx.sm.begin_idle(ctx.now)
 

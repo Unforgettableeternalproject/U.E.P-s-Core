@@ -1018,3 +1018,15 @@
 
 ---
 
+### It kinda works now. but something is still off. 08/27
+
+> Date: Wed, 27 Aug 2025 22:01:17 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/experimental_mov_rework`
+
+> Commit: `6ed02fcf4e1d0555825ec306f958e0fdab1dd365`
+
+---
+

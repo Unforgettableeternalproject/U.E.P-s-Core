@@ -19,8 +19,28 @@ class MovementBehavior(BaseBehavior):
             self._enter_float(ctx)
 
     def on_tick(self, ctx: BehaviorContext):
-        # 行為本身只負責『到了沒』的判斷；到了就建議切回 Idle
+        # 行為本身只負責『到了沒』的判斷；到了就播放轉向動畫然後建議切回 Idle
         if ctx.target_reached:
+            # 到達目標時播放轉向動畫，然後切換到閒置
+            if ctx.movement_mode == MovementMode.GROUND:
+                # 根據當前面向決定轉向動畫
+                if ctx.facing_direction > 0:
+                    turn_anim = "turn_right_g"
+                else:
+                    turn_anim = "turn_left_g"
+                
+                # 播放轉向動畫，然後自動切換到閒置動畫
+                ctx.trigger_anim(turn_anim, {
+                    "loop": False,
+                    "await_finish": True,
+                    "max_wait": 1.0,
+                    "next_anim": "stand_idle_g",
+                    "next_params": {"loop": True}
+                })
+            else:
+                # 浮空模式直接切換到浮空閒置
+                ctx.trigger_anim("smile_idle_f", {"loop": True})
+            
             return BehaviorState.IDLE
         return None
 
@@ -39,13 +59,18 @@ class MovementBehavior(BaseBehavior):
         right = getattr(ctx, "v_right", ctx.screen_width) - ctx.SIZE - 50
 
         if desired_dir > 0:
-            target_x = random.uniform(max(left, ctx.position.x + 100),
-                                    min(right, ctx.position.x + 400))
+            # 增加移動距離，讓移動更明顯
+            min_dist = 200  # 最小距離
+            max_dist = 600  # 最大距離
+            target_x = random.uniform(max(left, ctx.position.x + min_dist),
+                                    min(right, ctx.position.x + max_dist))
             follow_anim = "walk_right_g"
             turn_anim = "turn_right_g"
         else:
-            target_x = random.uniform(max(left, ctx.position.x - 400),
-                                    min(right, ctx.position.x - 100))
+            min_dist = 200  # 最小距離  
+            max_dist = 600  # 最大距離
+            target_x = random.uniform(max(left, ctx.position.x - max_dist),
+                                    min(right, ctx.position.x - min_dist))
             follow_anim = "walk_left_g"
             turn_anim = "turn_left_g"
 

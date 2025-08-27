@@ -83,7 +83,6 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from utils.debug_helper import debug_log, info_log, error_log
-from modules.ani_module.ani_module import ANIModule, AnimationType
 
 try:
     from core.frontend_base import UIEventType
@@ -167,8 +166,12 @@ class DesktopPetApp(QWidget):
             # 設置ANI模組連接
             if self.ani_module:
                 info_log("[DesktopPetApp] ANI 模組已連接")
-                # 立即啟動預設浮空閒置動畫
-                self.start_default_animation()
+                if hasattr(self.ani_module, "add_frame_callback"):
+                    try:
+                        self.ani_module.add_frame_callback(self.on_animation_frame_update)
+                        debug_log(1, "[DesktopPetApp] 已註冊 ANI 幀回呼")
+                    except Exception as e:
+                        debug_log(2, f"[DesktopPetApp] 註冊 ANI 幀回呼失敗: {e}")
             else:
                 info_log("[DesktopPetApp] ANI 模組未提供")
             
@@ -188,54 +191,40 @@ class DesktopPetApp(QWidget):
             else:
                 info_log("[DesktopPetApp] MOV 模組未提供")
 
-            if hasattr(self, "mov_module") and hasattr(self, "ani_module"):
+            if self.mov_module and self.ani_module:
                 try:
-                    self.mov_module.set_ani_reference(self.ani_module)
-                except Exception:
-                    pass
+                    if hasattr(self.mov_module, "attach_ani"):
+                        self.mov_module.attach_ani(self.ani_module)
+                    else:
+                        self.mov_module.handle_frontend_request({
+                            "command": "inject_ani",
+                            "ani": self.ani_module
+                        })
+                    debug_log(1, "[DesktopPetApp] MOV 已注入 ANI")
+                except Exception as e:
+                    error_log(f"[DesktopPetApp] 注入 ANI 到 MOV 失敗: {e}")
                 
         except Exception as e:
             error_log(f"[DesktopPetApp] 模組連接設置失敗: {e}")
-    
-    def start_default_animation(self):
-        """啟動預設的浮空閒置動畫"""
-        try:
-            if self.ani_module:
-                result = self.ani_module.handle_frontend_request({
-                    "command": "play_animation",
-                    "animation_type": "smile_idle_f"
-                })
-                if result and result.get("success"):
-                    info_log("[DesktopPetApp] 預設浮空閒置動畫已啟動")
-                else:
-                    # 嘗試其他動畫
-                    backup_animations = ["curious_idle_f", "angry_idle_f", "stand_idle_g"]
-                    for anim in backup_animations:
-                        result = self.ani_module.handle_frontend_request({
-                            "command": "play_animation",
-                            "animation_type": anim
-                        })
-                        if result and result.get("success"):
-                            info_log(f"[DesktopPetApp] 備用動畫 {anim} 已啟動")
-                            break
-        except Exception as e:
-            error_log(f"[DesktopPetApp] 啟動預設動畫失敗: {e}")
-    
+
     def update_animation_frame(self):
         """更新動畫幀"""
         try:
-            # 檢查是否暫停渲染
             if self.rendering_paused:
                 debug_log(3, f"[DesktopPetApp] 渲染已暫停: {self.pause_reason}")
                 return
-                
-            if self.ani_module:
-                # 使用 ANI 模組的 get_current_frame 方法獲取當前幀
+
+            if not self.ani_module:
+                return
+
+            # 只有在 ANI 有這個方法時才調用，避免 AttributeError
+            if hasattr(self.ani_module, "get_current_frame"):
                 current_frame = self.ani_module.get_current_frame()
                 if current_frame:
                     self.current_image = current_frame
-                    self.update()  # 重繪界面
+                    self.update()
                     debug_log(3, "[DesktopPetApp] 成功更新動畫幀")
+            # 若沒有，靠回呼機制推動即可（這裡就不做事）
         except Exception as e:
             debug_log(2, f"[DesktopPetApp] 動畫幀更新異常: {e}")
     
@@ -322,30 +311,17 @@ class DesktopPetApp(QWidget):
 
         
     def on_movement_animation_request(self, animation_type: str, params: dict):
-        """處理來自 MOV 模組的動畫請求"""
+        """處理來自 MOV 模組的動畫請求，轉回去"""
         try:
-            debug_log(1, f"[DesktopPetApp] 收到移動動畫請求: {animation_type}")
-            
-            if self.ani_module:
-                debug_log(2, f"[DesktopPetApp] 向 ANI 模組發送動畫請求: {animation_type}")
-                result = self.ani_module.handle_frontend_request({
-                    "command": "play_animation",
-                    "animation_type": animation_type
-                })
-                debug_log(1, f"[DesktopPetApp] ANI 模組回應: {result}")
-                
-                if result and result.get("success"):
-                    debug_log(1, f"[DesktopPetApp] 成功處理移動動畫請求: {animation_type}")
-                    # 記錄最後成功的動畫類型
-                    self.current_animation_type = animation_type
-                else:
-                    error_log(f"[DesktopPetApp] ANI 模組動畫請求失敗: {animation_type}, 結果: {result}")
-            else:
-                error_log(f"[DesktopPetApp] ANI 模組不可用，無法播放動畫: {animation_type}")
+            if not self.mov_module:
+                return
+            self.mov_module.handle_frontend_request({
+                "command": "play_animation",
+                "name": animation_type,
+                "params": params or {}
+            })
         except Exception as e:
-            error_log(f"[DesktopPetApp] 處理移動動畫請求失敗: {animation_type}, 錯誤: {e}")
-            import traceback
-            error_log(f"[DesktopPetApp] 錯誤堆疊: {traceback.format_exc()}")
+            error_log(f"[DesktopPetApp] 轉交 MOV 動畫請求失敗: {animation_type}, 錯誤: {e}")
     
     def init_ui(self):
         """初始化 UI"""
@@ -487,11 +463,12 @@ class DesktopPetApp(QWidget):
                         self.position_changed.emit(new_pos.x(), new_pos.y())
 
                     # ➕ 新增：回報拖曳座標給 MOV（用滑鼠全域座標）
-                    if self.mov_module and hasattr(self.mov_module, 'handle_movement_request'):
-                        self.mov_module.handle_movement_request(
-                            "drag_move",
-                            {"position": {"x": event.globalX(), "y": event.globalY()}}
-                        )
+                    if self.mov_module and hasattr(self.mov_module, 'handle_frontend_request'):
+                        self.mov_module.handle_frontend_request({
+                            "command": "set_position",
+                            "x": new_pos.x(),
+                            "y": new_pos.y()
+                        })
         except Exception as e:
             error_log(f"[DesktopPetApp] 鼠標移動事件異常: {e}")
         
@@ -613,9 +590,6 @@ class DesktopPetApp(QWidget):
         try:
             self.current_movement_mode = mode
             debug_log(1, f"[DesktopPetApp] 移動模式變更: {mode}")
-            
-            # 根據移動模式變更動畫
-            self.update_animation_for_movement(mode)
         except Exception as e:
             error_log(f"[DesktopPetApp] 處理移動模式變更失敗: {e}")
     
@@ -628,35 +602,30 @@ class DesktopPetApp(QWidget):
             error_log(f"[DesktopPetApp] 處理動畫變更失敗: {e}")
     
     def on_animation_frame_update(self, frame_data):
-        """處理來自 ANI 模組的動畫幀更新"""
+        """
+        ANI 主動推送幀時會回來這裡。
+        允許 frame_data 有 'pixmap' 或 'image_path' 兩種格式。
+        """
         try:
-            if frame_data and 'image_path' in frame_data:
-                self.set_image(frame_data['image_path'])
-            elif frame_data and 'pixmap' in frame_data:
-                self.current_image = frame_data['pixmap']
-                self.update()
-            debug_log(1, f"[DesktopPetApp] 動畫幀更新")
-        except Exception as e:
-            error_log(f"[DesktopPetApp] 處理動畫幀更新失敗: {e}")
-    
-    def update_animation_for_movement(self, movement_mode):
-        try:
-            if not self.ani_module:
+            if self.rendering_paused:
                 return
-            mode_str = movement_mode.value if hasattr(movement_mode, 'value') else str(movement_mode)
 
-            # 只對「浮空」和「拖曳」提供預設 idle，其他一律交給 MOV 透過 on_movement_animation_request 來主導
-            if mode_str == 'float':
-                if hasattr(self.ani_module, 'set_animation'):
-                    self.ani_module.set_animation(AnimationType.SMILE_IDLE)
-                    debug_log(1, "[DesktopPetApp] 浮空模式預設 idle 動畫")
-            elif mode_str == 'dragging':
-                if hasattr(self.ani_module, 'set_animation'):
-                    self.ani_module.set_animation(AnimationType.CURIOUS_IDLE)
-                    debug_log(1, "[DesktopPetApp] 拖曳模式預設 curious 動畫")
-            # ground / idle 交由 MOV 觸發：walk_left/right_g、stand_idle_g、f_to_g/g_to_f 等
+            pm = None
+            if isinstance(frame_data, dict):
+                pm = frame_data.get("pixmap")
+                if pm is None:
+                    image_path = frame_data.get("image_path")
+                    if image_path:
+                        from PyQt5.QtGui import QPixmap
+                        pm = QPixmap(image_path)
+
+            if pm is not None:
+                self.current_image = pm
+                self.update()
+            else:
+                debug_log(2, "[DesktopPetApp] 收到 ANI 幀，但缺少 pixmap/image_path")
         except Exception as e:
-            error_log(f"[DesktopPetApp] 更新移動動畫失敗: {e}")
+            debug_log(2, f"[DesktopPetApp] 處理 ANI 幀回呼失敗: {e}")
     
     # === 對外提供的控制方法 ===
     

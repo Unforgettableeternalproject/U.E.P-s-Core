@@ -73,6 +73,7 @@ class MOVModule(BaseFrontendModule):
         # --- 模式/行為 ---
         self.movement_mode = MovementMode.GROUND
         self.current_behavior_state: BehaviorState = self.sm.choose_initial_state()
+        self.previous_behavior_state: Optional[BehaviorState] = None  # 追蹤前一個狀態
         self.current_behavior = BehaviorFactory.create(self.current_behavior_state)
         self.facing_direction = 1  # -1 左 / +1 右
 
@@ -89,7 +90,7 @@ class MOVModule(BaseFrontendModule):
 
         # --- 目標 ---
         self.movement_target: Optional[Position] = None
-        self.target_reach_threshold = float(self.config.get("target_reach_threshold", 10.0))
+        self.target_reach_threshold = float(self.config.get("target_reach_threshold", 30.0))  # 增加閾值，避免太快到達
         self.target_reached = True
 
         # --- 速度參數 ---
@@ -197,6 +198,14 @@ class MOVModule(BaseFrontendModule):
                 if ani is None:
                     return {"error": "ANI模組為必備元件"}
                 self.attach_ani(ani)
+            if cmd == "play_animation":
+                name = data.get("name") or data.get("animation_type")
+                params = data.get("params", {}) or {}
+                if not name:
+                    return {"error": "animation name required"}
+                # 走統一入口（內部會自動處理 await_finish / loop / 超時）
+                self._trigger_anim(name, params)
+                return {"success": True, "animation": name}
             return {"error": f"未知命令: {cmd}"}
         except Exception as e:
             error_log(f"[{self.module_id}] 請求處理錯誤: {e}")
@@ -271,6 +280,7 @@ class MOVModule(BaseFrontendModule):
             now=now,
             transition_start_time=self.transition_start_time,
             movement_locked_until=self.movement_locked_until,
+            previous_state=self.previous_behavior_state,
         )
 
         # on_tick 可能建議切換狀態
@@ -347,6 +357,7 @@ class MOVModule(BaseFrontendModule):
 
     def _enter_behavior(self, state: BehaviorState):
         """呼叫 on_enter 並更新 current_behavior_state"""
+        self.previous_behavior_state = self.current_behavior_state  # 記錄前一個狀態
         self.current_behavior_state = state
         self.current_behavior = BehaviorFactory.create(state)
 
@@ -379,6 +390,7 @@ class MOVModule(BaseFrontendModule):
             now=now,
             transition_start_time=self.transition_start_time,
             movement_locked_until=self.movement_locked_until,
+            previous_state=self.previous_behavior_state,
         )
 
         try:
@@ -431,6 +443,7 @@ class MOVModule(BaseFrontendModule):
                         now=time.time(),
                         transition_start_time=self.transition_start_time,
                         movement_locked_until=self.movement_locked_until,
+                        previous_state=self.previous_behavior_state,
                     )
                 )
         except Exception as e:
@@ -561,15 +574,18 @@ class MOVModule(BaseFrontendModule):
 
         # 需要等待：鎖移動（行為照跑或交由 TransitionBehavior），直到收到 finish 或超時
         if await_finish:
-            def _follow():
-                # 完成後若有指定 next_anim，就接著播
-                if next_anim:
-                    try:
-                        self._trigger_anim(next_anim, next_params or {})
-                    except Exception as e:
-                        error_log(f"[{self.module_id}] 後續動畫失敗: {e}")
-
-            self._await_animation(name, timeout=max_wait, follow=_follow)
+            # 先問 ANI 這個 clip 的實際時長；沒有的話再用預設
+            dur = 0.0
+            try:
+                if self.ani_module and hasattr(self.ani_module, "get_clip_duration"):
+                    dur = float(self.ani_module.get_clip_duration(name))
+            except Exception:
+                pass
+            # 加一點裕度（建議 20% 或固定 +0.3s）
+            margin = float(self.config.get("anim_timeout_margin", 0.3))
+            max_wait = max(dur + margin, float(params.get("max_wait", 0.0)) or self._default_anim_timeout)
+        else:
+            max_wait = float(params.get("max_wait", self._default_anim_timeout))
 
     # ========= UI 事件 =========
 

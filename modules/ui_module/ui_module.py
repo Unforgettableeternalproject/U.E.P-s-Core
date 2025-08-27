@@ -145,6 +145,21 @@ class UIModule(BaseFrontendModule):
                 else:
                     error_log(f"[{self.module_id}] MOV 模組初始化失敗")
                     return False
+                
+            # === 把 ANI 注入 MOV，讓 MOV 能直接觸發 ani.play(...) 與等待 finish ===
+            try:
+                if hasattr(self.mov_module, "attach_ani"):
+                    self.mov_module.attach_ani(self.ani_module)
+                else:
+                    # 走相容路徑
+                    self.mov_module.handle_frontend_request({
+                        "command": "inject_ani",
+                        "ani": self.ani_module
+                    })
+                info_log(f"[{self.module_id}] 已將 ANI 注入 MOV")
+            except Exception as e:
+                error_log(f"[{self.module_id}] 注入 ANI 到 MOV 失敗: {e}")
+                return False
 
             self._modules_initialized = True
             info_log(f"[{self.module_id}] ANI 和 MOV 模組初始化完成")
@@ -609,19 +624,23 @@ class UIModule(BaseFrontendModule):
     # ========== 信號處理器 ==========
     
     def request_animation(self, animation_type: str, data: dict):
-        """請求動畫播放"""
+        """請求動畫播放（統一委託 MOV）"""
         debug_log(1, f"[{self.module_id}] 動畫請求: {animation_type}")
         try:
-            if self.ani_module and hasattr(self.ani_module, 'play_animation'):
-                # 直接調用 ANI 模組
-                self.ani_module.play_animation(animation_type, data)
-                debug_log(2, f"[{self.module_id}] 動畫請求已發送到 ANI 模組")
-            elif hasattr(self, 'signals') and hasattr(self.signals, 'animation_request'):
-                # 使用信號系統
-                self.signals.animation_request.emit(animation_type, data)
-                debug_log(2, f"[{self.module_id}] 動畫請求已通過信號發送")
+            params = data or {}
+            if self.mov_module and hasattr(self.mov_module, "handle_frontend_request"):
+                self.mov_module.handle_frontend_request({
+                    "command": "play_animation",
+                    "name": animation_type,
+                    "params": params
+                })
+                debug_log(2, f"[{self.module_id}] 動畫請求已交給 MOV")
+            elif self.ani_module and hasattr(self.ani_module, "play"):
+                # 後備路徑：若還沒綁到 MOV，暫時直接叫 ANI
+                self.ani_module.play(animation_type, loop=params.get("loop"))
+                debug_log(2, f"[{self.module_id}] 臨時直接呼叫 ANI.play")
             else:
-                debug_log(2, f"[{self.module_id}] ANI 模組未連接，動畫請求已忽略")
+                debug_log(2, f"[{self.module_id}] 無可用的 MOV/ANI，動畫請求略過")
         except Exception as e:
             error_log(f"[{self.module_id}] 動畫請求失敗: {e}")
         

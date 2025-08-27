@@ -1006,3 +1006,39 @@
 
 ---
 
+### Resturctured MOV、ANI modules to make them more sophisticated and more easy to modify. 08/27
+
+> Date: Wed, 27 Aug 2025 19:59:23 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/experimental_mov_rework`
+
+> Commit: `eec985d157627e9a4806b4adc2b7bf1f13873663`
+
+---
+
+### It kinda works now. but something is still off. 08/27
+
+> Date: Wed, 27 Aug 2025 22:01:17 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/experimental_mov_rework`
+
+> Commit: `6ed02fcf4e1d0555825ec306f958e0fdab1dd365`
+
+---
+
+### Refined basically all frontend related logic, and it works pretty good now. 08/27
+
+> Date: Wed, 27 Aug 2025 23:38:32 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/experimental_mov_rework`
+
+> Commit: `98d60907baa1b8e3406d3a9c80e4cff18ee4ce06`
+
+---
+

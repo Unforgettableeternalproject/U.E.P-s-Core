@@ -6,63 +6,64 @@ priority: 2
 
 # 動畫設定
 animation:
-  frame_interval: 100  # 毫秒
-  default_frame_duration: 0.1
-  smooth_transitions: true
-  preload_animations: true
+  # ANI 計時器 tick（毫秒）；你也可以改回 100 取決於 UI 刷新方式
+  frame_interval: 16
+  default_frame_duration: 0.10
+  request_cooldown: 0.25
 
-# 動畫資源
 resources:
   animations_path: "resources/animations"
-  cache_enabled: true
-  max_cache_size: 100  # MB
+  # 全域命名規則（UI 可用來找檔案；ANIModule 只需要 total_frames/fps）
+  filename_format: "{prefix}{index:02d}.png"  # 例如 diamond_girl_walk_right_00.png
+  index_start: 0
+  clips:
+    angry_idle_f:    { prefix: "diamond_girl_angry_idle_",          total_frames: 38, frame_duration: 0.10, loop: true }
+    awkward_f:       { prefix: "diamond_girl_awkward_idle_",         total_frames: 39, frame_duration: 0.10, loop: true }
+    click_f:         { prefix: "diamond_girl_click_",                total_frames: 45, frame_duration: 0.08, loop: false }
+    curious_idle_f:  { prefix: "diamond_girl_curious_idle_",         total_frames: 38, frame_duration: 0.10, loop: true }
+    dance2_g:        { prefix: "diamond_girl_dance2_",               total_frames: 55, frame_duration: 0.08, loop: true }
+    dance_f:         { prefix: "diamond_girl_dance_",                total_frames: 55, frame_duration: 0.08, loop: true }
+    data_search_f:   { prefix: "diamond_girl_data_processing_",    total_frames: 39, frame_duration: 0.10, loop: true }
 
-# 動畫配置
-animations:
-  # 待機動畫
-  idle:
-    stand_idle:
-      frame_duration: 0.1
-      loop: true
-    smile_idle:
-      frame_duration: 0.1
-      loop: true
-    curious_idle:
-      frame_duration: 0.12
-      loop: true
-    angry_idle:
-      frame_duration: 0.08
-      loop: true
-  
-  # 說話動畫
-  talking:
-    talk_ani:
-      frame_duration: 0.05
-      loop: true
-    talk_ani2:
-      frame_duration: 0.06
-      loop: true
-  
-  # 行走動畫
-  walking:
-    walk_left:
-      frame_duration: 0.08
-      loop: true
-    walk_right:
-      frame_duration: 0.08
-      loop: true
-  
-  # 表情動畫
-  expressions:
-    laugh:
-      frame_duration: 0.1
-      loop: false
-    tease:
-      frame_duration: 0.12
-      loop: false
-    awkward:
-      frame_duration: 0.15
-      loop: false
+    f_to_g:          { prefix: "diamond_girl_floating_to_standing_", total_frames: 38, frame_duration: 0.06, loop: false }
+    g_to_f:          { prefix: "diamond_girl_standing_to_floating_", total_frames: 38, frame_duration: 0.06, loop: false }
+
+    g_to_l:          { prefix: "diamond_girl_lying_to_standing_",  total_frames: 35, frame_duration: 0.06, loop: false }
+    l_to_g:          { prefix: "diamond_girl_standing_to_lying_",             total_frames: 48, frame_duration: 0.06, loop: false }
+
+    laugh_f:         { prefix: "diamond_girl_laugh_",                total_frames: 75, frame_duration: 0.08, loop: false }
+    push_down:       { prefix: "diamond_girl_push_down_",            total_frames: 38, frame_duration: 0.08, loop: true }
+    push_left:       { prefix: "diamond_girl_push_left_",            total_frames: 57, frame_duration: 0.08, loop: true }
+    push_right:      { prefix: "diamond_girl_push_right_",           total_frames: 57, frame_duration: 0.08, loop: true }
+    push_up:         { prefix: "diamond_girl_push_up_",              total_frames: 74, frame_duration: 0.08, loop: true }
+
+    sleep_l:         { prefix: "diamond_girl_sleep_",                total_frames: 48, frame_duration: 0.12, loop: true }
+
+    smile_idle_f:    { prefix: "diamond_girl_smile_idle_",           total_frames: 38, frame_duration: 0.10, loop: true }
+    stand_idle_g:    { prefix: "diamond_girl_stand_idle_",           total_frames: 38, frame_duration: 0.10, loop: true }
+    struggle_f:      { prefix: "diamond_girl_struggle_",             total_frames: 61, frame_duration: 0.10, loop: false }
+
+    talk_ani2_f:     { prefix: "diamond_girl_talk2_",                total_frames: 38, frame_duration: 0.10, loop: true }
+    talk_ani_f:      { prefix: "diamond_girl_talk1_",                total_frames: 38, frame_duration: 0.10, loop: true }
+
+    tease2_f:        { prefix: "diamond_girl_tease2_",               total_frames: 55, frame_duration: 0.10, loop: false }
+    tease_f:         { prefix: "diamond_girl_tease_",                total_frames: 38, frame_duration: 0.10, loop: false }
+
+    turn_head_g:     { prefix: "diamond_girl_turn_head_", total_frames: 41, frame_duration: 0.08, loop: false }
+    turn_left_g:     { prefix: "diamond_girl_turn_left_",            total_frames: 29, frame_duration: 0.08, loop: false }
+    turn_right_g:    { prefix: "diamond_girl_turn_right_",           total_frames: 29, frame_duration: 0.08, loop: false }
+    turn_walk_g:     { prefix: "diamond_girl_turn_walking_", total_frames: 59, frame_duration: 0.08, loop: false }
+
+    walk_left_g:     { prefix: "diamond_girl_walk_left_",            total_frames: 33, frame_duration: 0.08, loop: true }
+    walk_right_g:    { prefix: "diamond_girl_walk_right_",           total_frames: 33, frame_duration: 0.08, loop: true }
+
+    yawn_g:          { prefix: "diamond_girl_yawn_",                 total_frames: 45, frame_duration: 0.10, loop: false }
+  aliases:
+    walk_left_g:  walk_left
+    walk_right_g: walk_right
+    turn_left_g:  turn_left
+    turn_right_g: turn_right
+    # 之後會放更多
 
 # 調試設定
 debug:

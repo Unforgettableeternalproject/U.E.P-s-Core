@@ -52,28 +52,28 @@ def debug_log(level: int=KEY_LEVEL, msg: str="", exclusive: bool = False):
 def debug_log_e(level: int=1, msg: str=""):
     debug_log(level, msg, True)
 
-def info_log(msg: str, level: str = "INFO"):
+def info_log(msg: str, type: str = "INFO"):
 
     if not _logging_enabled:
         return
 
-    level = level.upper()
-    if level == "INFO":
+    type = type.upper()
+    if type == "INFO":
         logger.info(msg)
-    elif level == "WARNING":
+    elif type == "WARNING":
         logger.warning(msg)
     else:
-        logger.info(f"[Unrecognized level '{level}'] {msg}")
+        logger.info(f"[Unrecognized type '{type}'] {msg}")
 
-def error_log(msg: str, level: str = "ERROR"):
+def error_log(msg: str, type: str = "ERROR"):
 
     if not _logging_enabled:
         return
 
-    level = level.upper()
-    if level == "ERROR":
+    type = type.upper()
+    if type == "ERROR":
         logger.error(msg)
-    elif level == "CRITICAL":
+    elif type == "CRITICAL":
         logger.critical(msg)
     else:
-        logger.error(f"[Unrecognized level '{level}'] {msg}")
+        logger.error(f"[Unrecognized type '{type}'] {msg}")

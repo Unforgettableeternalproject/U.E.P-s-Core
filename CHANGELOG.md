@@ -1006,3 +1006,15 @@
 
 ---
 
+### Resturctured MOV、ANI modules to make them more sophisticated and more easy to modify. 08/27
+
+> Date: Wed, 27 Aug 2025 19:59:23 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/experimental_mov_rework`
+
+> Commit: `eec985d157627e9a4806b4adc2b7bf1f13873663`
+
+---
+

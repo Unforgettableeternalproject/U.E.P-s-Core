@@ -103,6 +103,9 @@ class MOVModule(BaseFrontendModule):
         self.movement_paused = False
         self.pause_reasons: set[str] = set()
         self.pause_reason = ""
+        
+        # --- 拖曳追蹤 ---
+        self._drag_start_position: Optional[Position] = None
 
         # --- 轉場共享狀態（交給 TransitionBehavior 用） ---
         self.transition_start_time: Optional[float] = None
@@ -306,7 +309,8 @@ class MOVModule(BaseFrontendModule):
         now = time.time()
         if self.is_being_dragged or self.movement_paused:
             return
-        if now < self.movement_locked_until:
+        # 轉場期間仍然允許移動，但其他動畫等待期間不允許
+        if now < self.movement_locked_until and self.current_behavior_state != BehaviorState.TRANSITION:
             return
 
         prev_x, prev_y = self.position.x, self.position.y
@@ -495,9 +499,11 @@ class MOVModule(BaseFrontendModule):
     def _check_boundaries(self):
         left  = self.v_left
         right = self.v_right  - self.SIZE
+        boundary_hit = False
 
         if self.position.x <= left:
             self.position.x = left
+            boundary_hit = True
             if not getattr(self, "bounce_off_edges", False):
                 if self.movement_target and self.movement_target.x < left + 20:
                     self.movement_target.x = left + (self.screen_padding + 30)
@@ -507,12 +513,30 @@ class MOVModule(BaseFrontendModule):
 
         elif self.position.x >= right:
             self.position.x = right
+            boundary_hit = True
             if not getattr(self, "bounce_off_edges", False):
                 if self.movement_target and self.movement_target.x > right - 20:
                     self.movement_target.x = right - (self.screen_padding + 30)
             else:
                 self.velocity.x = -abs(self.velocity.x); self.target_velocity.x = -abs(self.target_velocity.x)
             self.facing_direction = -1
+
+        # 如果碰到邊界且正在移動，直接切換到 idle 狀態
+        if boundary_hit and self.current_behavior_state == BehaviorState.NORMAL_MOVE:
+            self.velocity = Velocity(0.0, 0.0)
+            self.target_velocity = Velocity(0.0, 0.0)
+            self.target_reached = True
+            # 播放轉向動畫然後切換到閒置
+            if self.movement_mode == MovementMode.GROUND:
+                turn_anim = "turn_right_g" if self.facing_direction > 0 else "turn_left_g"
+                self._trigger_anim(turn_anim, {
+                    "loop": False,
+                    "await_finish": True,
+                    "max_wait": 1.0,
+                    "next_anim": "stand_idle_g",
+                    "next_params": {"loop": True}
+                })
+            self._switch_behavior(BehaviorState.IDLE)
 
         if self.movement_mode == MovementMode.FLOAT:
             top = self.v_top
@@ -558,12 +582,30 @@ class MOVModule(BaseFrontendModule):
         max_wait = float(params.get("max_wait", self._default_anim_timeout))
         next_anim = params.get("next_anim")  # 可選：完成後要接的動畫名
         next_params = params.get("next_params", {})  # 其參數
+        force_restart = params.get("force_restart", False)  # 強制重新開始
+
+        # 保護機制：如果正在等待動畫完成，避免重複觸發相同動畫（除非強制重新開始）
+        if self._awaiting_anim and self._awaiting_anim == name and await_finish and not force_restart:
+            debug_log(2, f"[{self.module_id}] 跳過重複動畫觸發: {name}")
+            return
+
+        # 如果強制重新開始，先清除等待狀態
+        if force_restart and self._awaiting_anim:
+            debug_log(2, f"[{self.module_id}] 強制重新開始動畫: {name}")
+            self._awaiting_anim = None
+            self._await_deadline = 0.0
+            self.movement_locked_until = 0.0
+            self.resume_movement(self.WAIT_ANIM_REASON)
 
         # 先送到 ANI
         if self.ani_module and hasattr(self.ani_module, "play"):
             try:
+                # 如果需要強制重新開始，先停止當前動畫
+                if force_restart and hasattr(self.ani_module, "stop"):
+                    self.ani_module.stop()
+                
                 res = self.ani_module.play(name, loop=loop)
-                debug_log(2, f"[{self.module_id}] 觸發動畫: {name} res={res}")
+                debug_log(2, f"[{self.module_id}] 觸發動畫: {name} res={res} force_restart={force_restart}")
             except Exception as e:
                 error_log(f"[{self.module_id}] 向 ANI 播放動畫失敗: {e}")
         else:
@@ -594,19 +636,51 @@ class MOVModule(BaseFrontendModule):
         self.movement_mode = MovementMode.DRAGGING
         self.velocity = Velocity(0.0, 0.0)
         self.target_velocity = Velocity(0.0, 0.0)
+        
+        # 記錄拖曳開始位置
+        self._drag_start_position = self.position.copy()
+        
         self.pause_movement(self.DRAG_PAUSE_REASON)
         self._trigger_anim("stand_idle_g", {})
-        debug_log(1, f"[{self.module_id}] 拖拽開始")
+        debug_log(1, f"[{self.module_id}] 拖拽開始於 ({self.position.x:.1f}, {self.position.y:.1f})")
 
     def _on_drag_end(self, event):
         self.is_being_dragged = False
-        # 根據 y 回到 ground/float
-        self.movement_mode = MovementMode.GROUND if self.position.y >= self._ground_y() - 50 else MovementMode.FLOAT
+        
+        # 智能判斷模式切換
+        gy = self._ground_y()
+        current_height = gy - self.position.y
+        
+        # 計算實際拖曳距離
+        drag_distance = 0
+        if hasattr(self, '_drag_start_position') and self._drag_start_position:
+            drag_distance = math.hypot(
+                self.position.x - self._drag_start_position.x,
+                self.position.y - self._drag_start_position.y
+            )
+        
+        # 判斷模式切換條件
+        height_threshold = 80   # 降低高度閾值
+        distance_threshold = 100  # 降低拖曳距離閾值
+        
+        debug_log(1, f"[{self.module_id}] 拖拽檢查: 高度={current_height:.1f}, 距離={drag_distance:.1f}, 閾值=高度{height_threshold}/距離{distance_threshold}")
+        
+        if current_height > height_threshold or drag_distance > distance_threshold:
+            # 切換到浮空模式
+            self.movement_mode = MovementMode.FLOAT
+            self._trigger_anim("smile_idle_f", {})
+            debug_log(1, f"[{self.module_id}] 切換到浮空模式 (高度:{current_height:.1f} > {height_threshold} 或距離:{drag_distance:.1f} > {distance_threshold})")
+        else:
+            # 切換到落地模式
+            self.movement_mode = MovementMode.GROUND
+            # 確保在地面上
+            self.position.y = gy
+            self._trigger_anim("stand_idle_g", {})
+            debug_log(1, f"[{self.module_id}] 切換到落地模式 (高度:{current_height:.1f} <= {height_threshold} 且距離:{drag_distance:.1f} <= {distance_threshold})")
+        
         self.resume_movement(self.DRAG_PAUSE_REASON)
-        # 回到 idle，交給行為機決定下一步
-        self._trigger_anim("stand_idle_g" if self.movement_mode == MovementMode.GROUND else "smile_idle_f", {})
         self._switch_behavior(BehaviorState.IDLE)
-        debug_log(1, f"[{self.module_id}] 拖拽結束 → {self.movement_mode.value}")
+        debug_log(1, f"[{self.module_id}] 拖拽結束 → {self.movement_mode.value} (高度:{current_height:.1f}, 距離:{drag_distance:.1f})")
 
     # ========= API =========
 
@@ -723,6 +797,7 @@ class MOVModule(BaseFrontendModule):
         self.FLOAT_MIN_SPEED  = float(mov.get("float_speed_min",  self.FLOAT_MIN_SPEED))
         self.FLOAT_MAX_SPEED  = float(mov.get("float_speed_max",  self.FLOAT_MAX_SPEED))
         self._approach_k      = float(mov.get("approach_factor",  self._approach_k))
+        self.target_reach_threshold = float(mov.get("target_reach_threshold", self.target_reach_threshold))
 
         # boundaries
         bnd = cfg.get("boundaries", {})

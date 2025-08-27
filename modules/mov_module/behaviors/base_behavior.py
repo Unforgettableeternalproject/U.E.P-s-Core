@@ -63,6 +63,9 @@ class BehaviorContext:
 class BaseBehavior:
     state: BehaviorState
 
+    def __init__(self):
+        pass
+
     def on_enter(self, ctx: BehaviorContext) -> None:
         pass
 

@@ -18,6 +18,9 @@ class Position:
     def to_qpoint(self) -> "QPoint":
         return QPoint(int(self.x), int(self.y))
 
+    def copy(self) -> "Position":
+        return Position(self.x, self.y)
+
     def distance_to(self, other: "Position") -> float:
         return math.hypot(self.x - other.x, self.y - other.y)
 

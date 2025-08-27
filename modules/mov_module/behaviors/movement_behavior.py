@@ -11,7 +11,17 @@ from ..core.position import Position
 class MovementBehavior(BaseBehavior):
     state = BehaviorState.NORMAL_MOVE
 
+    def __init__(self):
+        super().__init__()
+        self._has_played_turn_anim = False  # 防止重複播放轉向動畫
+        self._movement_start_time = 0.0      # 記錄開始移動的時間
+        self._min_movement_duration = 1.5    # 最小移動持續時間（秒）
+
     def on_enter(self, ctx: BehaviorContext) -> None:
+        # 重置狀態
+        self._has_played_turn_anim = False
+        self._movement_start_time = ctx.now
+        
         # 進入時若沒有目標就設定一個
         if ctx.movement_mode == MovementMode.GROUND:
             self._enter_ground(ctx)
@@ -19,9 +29,16 @@ class MovementBehavior(BaseBehavior):
             self._enter_float(ctx)
 
     def on_tick(self, ctx: BehaviorContext):
-        # 行為本身只負責『到了沒』的判斷；到了就播放轉向動畫然後建議切回 Idle
-        if ctx.target_reached:
-            # 到達目標時播放轉向動畫，然後切換到閒置
+        # 確保至少移動了最小持續時間，並且真的到達目標
+        movement_duration = ctx.now - self._movement_start_time
+        can_switch = movement_duration >= self._min_movement_duration
+        
+        # 只有在滿足時間條件且到達目標時才切換
+        if ctx.target_reached and can_switch and not self._has_played_turn_anim:
+            self._has_played_turn_anim = True  # 標記已播放，防止重複
+            
+            # 播放轉向動畫，完成後不要立即切換到閒置動畫
+            # 讓 IdleBehavior 負責觸發閒置動畫
             if ctx.movement_mode == MovementMode.GROUND:
                 # 根據當前面向決定轉向動畫
                 if ctx.facing_direction > 0:
@@ -29,16 +46,14 @@ class MovementBehavior(BaseBehavior):
                 else:
                     turn_anim = "turn_left_g"
                 
-                # 播放轉向動畫，然後自動切換到閒置動畫
+                # 只播放轉向動畫，不自動接閒置動畫
                 ctx.trigger_anim(turn_anim, {
                     "loop": False,
                     "await_finish": True,
-                    "max_wait": 1.0,
-                    "next_anim": "stand_idle_g",
-                    "next_params": {"loop": True}
+                    "max_wait": 1.2
                 })
             else:
-                # 浮空模式直接切換到浮空閒置
+                # 浮空模式直接播放浮空閒置
                 ctx.trigger_anim("smile_idle_f", {"loop": True})
             
             return BehaviorState.IDLE

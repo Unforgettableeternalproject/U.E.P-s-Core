@@ -1030,3 +1030,15 @@
 
 ---
 
+### Refined basically all frontend related logic, and it works pretty good now. 08/27
+
+> Date: Wed, 27 Aug 2025 23:38:32 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/experimental_mov_rework`
+
+> Commit: `98d60907baa1b8e3406d3a9c80e4cff18ee4ce06`
+
+---
+

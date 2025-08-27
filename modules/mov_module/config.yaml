@@ -15,13 +15,25 @@ movement:
   float_speed_min: 1.0
   float_speed_max: 3.5
   approach_factor: 0.12       # → 速度趨近係數（原本硬編）
+  target_reach_threshold: 50  # 增加到達閾值，讓移動更持久
 
 state_machine:
   transition_duration: 2.0
   idle:
-    min_duration: 1.0
-    max_duration: 2.0
-    tick_chance: 0.07
+    min_duration: 3.0          # 進一步增加最小閒置時間
+    max_duration: 8.0          # 增加最大閒置時間
+    tick_chance: 0.03          # 進一步降低每 tick 結束閒置的機率
+  # 調整權重讓移動更持久
+  weights_ground:
+    NORMAL_MOVE: 0.50         # 增加移動機率
+    IDLE: 0.35               # 降低閒置機率
+    SPECIAL_MOVE: 0.12
+    TRANSITION: 0.03
+  weights_float:
+    NORMAL_MOVE: 0.35
+    IDLE: 0.50               # 浮空時偏好閒置
+    SPECIAL_MOVE: 0.10
+    TRANSITION: 0.05
   # 覆蓋預設權重（可選）
   # weights_ground:
   #   NORMAL_MOVE: 0.40

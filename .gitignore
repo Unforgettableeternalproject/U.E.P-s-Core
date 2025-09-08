@@ -406,3 +406,6 @@ resources/animations/*
 
 # Debug Window Inverse
 !debug/
+
+# Local Docs
+hidden_docs/*

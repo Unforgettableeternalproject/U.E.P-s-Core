@@ -1054,3 +1054,15 @@
 
 ---
 
+### Some changes, not that important. 09/08
+
+> Date: Mon, 08 Sep 2025 17:08:09 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/front_end_integration`
+
+> Commit: `e4bf3063501d16a55c5eece887d6085a72766701`
+
+---
+

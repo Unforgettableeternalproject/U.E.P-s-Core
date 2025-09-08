@@ -24,7 +24,7 @@ modules_refactored:
   mov_module: false
 
 logging:
-  enabled: true
+  enabled: false
   log_level: "DEBUG"
   log_dir: "logs"
   enable_split_logs: true

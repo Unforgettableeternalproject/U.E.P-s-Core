@@ -1078,3 +1078,15 @@
 
 ---
 
+### Restructured memory manager and did some other changes. 09/08
+
+> Date: Mon, 08 Sep 2025 19:12:23 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_rework`
+
+> Commit: `60e66336ad653b9d7e683cd6b1eeb8f9c98d04fa`
+
+---
+

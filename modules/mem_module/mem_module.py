@@ -4,6 +4,7 @@ import faiss
 import numpy as np
 import os
 import json
+from datetime import datetime
 from typing import List, Dict, Any, Optional
 from .schemas import (
     MEMInput, MEMOutput, MemoryEntry, ConversationSnapshot, 
@@ -149,15 +150,15 @@ class MEMModule(BaseModule):
     def _initialize_new_architecture(self) -> bool:
         """初始化新架構"""
         try:
-            info_log("[MEM] 初始化新架構記憶管理系統...")
+            info_log("[MEM] 初始化新重構記憶管理系統...")
             
             # 動態導入新架構組件（避免循環導入）
             from .memory_manager import MemoryManager
             
-            # 初始化記憶管理器
+            # 初始化重構的記憶管理器
             self.memory_manager = MemoryManager(self.config.get("mem_module", {}))
             if not self.memory_manager.initialize():
-                error_log("[MEM] 記憶管理器初始化失敗")
+                error_log("[MEM] 重構記憶管理器初始化失敗")
                 return False
             
             # 註冊Working Context處理器
@@ -190,11 +191,11 @@ class MEMModule(BaseModule):
                 self.metadata = []
             
             self.is_initialized = True
-            info_log("[MEM] 新架構初始化完成")
+            info_log("[MEM] 重構架構初始化完成")
             return True
             
         except Exception as e:
-            error_log(f"[MEM] 新架構初始化失敗: {e}")
+            error_log(f"[MEM] 重構架構初始化失敗: {e}")
             return False
     
     def _initialize_legacy_mode(self) -> bool:
@@ -300,7 +301,7 @@ class MEMModule(BaseModule):
                     metadata = {
                         "identity_token": data.identity_token or "anonymous",
                         "memory_type": data.memory_type or "general",
-                        "timestamp": data.timestamp or "",
+                        "timestamp": datetime.now().isoformat(),
                         "metadata": data.metadata or {}
                     }
                     self._add_memory(data.content, metadata)

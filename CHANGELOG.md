@@ -1066,3 +1066,15 @@
 
 ---
 
+### First hand changes for upcoming MEM rework, added some manager files for identity and memory management. 09/08
+
+> Date: Mon, 08 Sep 2025 18:13:54 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_rework`
+
+> Commit: `f65c673fc6073a0be923ce0afab163eed55fef46`
+
+---
+

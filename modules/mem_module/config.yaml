@@ -1,7 +1,91 @@
-# MEM Module Configuration
+# MEM Module Configuration - Phase 2 重構版本
+# 支援分層記憶架構、身份隔離、Working Context整合
 
-embedding_model: all-MiniLM-L6-v2
-index_file: memory/dev_faiss_index
-metadata_file: memory/dev_metadata.json
-max_distance: 1.2
-page_size: 5 # Number of results to return per page
+# 基本設定
+embedding_model: "all-MiniLM-L6-v2"
+vector_dimension: 384
+
+# 存儲設定
+storage:
+  base_path: "memory"
+  index_file: "memory/mem_faiss_index"
+  metadata_file: "memory/mem_metadata.json"
+  identity_mapping_file: "memory/identity_mapping.json"
+  backup_enabled: true
+  backup_interval: 3600  # 1小時（秒）
+  auto_cleanup: true
+  cleanup_interval: 86400  # 24小時（秒）
+
+# 短期記憶設定（對話快照）
+short_term:
+  max_active_snapshots: 3
+  snapshot_threshold: 10  # 消息數量閾值
+  auto_compression: true
+  compression_threshold: 2000  # 字符數閾值
+  max_context_length: 4000  # 最大上下文長度
+  retention_stages: 2  # 保留最近N個階段
+
+# 長期記憶設定
+long_term:
+  max_retention_days: 365
+  importance_threshold: 0.7
+  auto_cleanup: true
+  cleanup_interval: 86400  # 24小時（秒）
+  backup_frequency: 168  # 7天（小時）
+
+# 檢索設定
+retrieval:
+  similarity_threshold: 0.7
+  max_results: 10
+  max_distance: 1.2  # 向量距離閾值
+  enable_relevance_boost: true
+  context_window_size: 5
+  semantic_weight: 0.7  # 語義相似度權重
+  recency_weight: 0.2   # 時間近期性權重
+  importance_weight: 0.1 # 重要性權重
+
+# 身份隔離設定
+identity:
+  token_expiry: 2592000  # 30天（秒）
+  access_log_enabled: true
+  permission_caching: true
+  cache_size: 1000  # 令牌快取大小
+  default_permissions:
+    - "read"
+    - "write" 
+    - "delete"
+    - "query"
+    - "snapshot"
+
+# Working Context整合設定
+working_context:
+  enable_decision_handler: true
+  conversation_threshold: 10  # 對話消息閾值
+  learning_threshold: 5       # 學習樣本閾值
+  auto_snapshot_creation: true
+  snapshot_trigger_conditions:
+    - "message_count_exceeded"
+    - "topic_change_detected"
+    - "session_timeout"
+
+# API設定
+api:
+  enable_frontend_api: true
+  rate_limit: 100  # 每分鐘請求數
+  authentication_required: false
+  max_query_length: 1000
+  
+# 效能調優設定
+performance:
+  faiss_index_type: "IndexFlatIP"  # 內積索引
+  batch_size: 100
+  embedding_cache_size: 10000
+  parallel_processing: true
+  max_workers: 4
+
+# 偵錯與日誌設定
+debug:
+  enable_detailed_logging: true
+  log_search_queries: true
+  log_memory_operations: true
+  performance_monitoring: true

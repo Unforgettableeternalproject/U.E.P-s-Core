@@ -1,9 +1,9 @@
 # Default config for general modules
 
 modules_enabled:
-  stt_module: true
-  nlp_module: true
-  mem_module: false
+  stt_module: false
+  nlp_module: false
+  mem_module: true
   llm_module: false
   tts_module: false
   sys_module: false
@@ -24,7 +24,7 @@ modules_refactored:
   mov_module: false
 
 logging:
-  enabled: false
+  enabled: true
   log_level: "DEBUG"
   log_dir: "logs"
   enable_split_logs: true

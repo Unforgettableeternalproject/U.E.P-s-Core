@@ -75,10 +75,51 @@ class NLPSchemaAdapter(SchemaAdapter):
         }
 
 class MEMSchemaAdapter(SchemaAdapter):
-    """MEM 模組 Schema 適配器"""
+    """MEM 模組 Schema 適配器 - 支援新舊架構"""
     
     def adapt_input(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """將統一格式轉換為 MEM 模組格式"""
+        # 檢查是否為新架構格式
+        if self._is_new_architecture_input(data):
+            return self._adapt_new_architecture_input(data)
+        
+        # 舊版格式適配
+        return self._adapt_legacy_input(data)
+    
+    def _is_new_architecture_input(self, data: Dict[str, Any]) -> bool:
+        """檢查是否為新架構輸入格式"""
+        new_arch_indicators = [
+            "operation_type", "identity_token", "memory_type", 
+            "query_data", "llm_instructions", "conversation_text"
+        ]
+        return any(key in data for key in new_arch_indicators)
+    
+    def _adapt_new_architecture_input(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """適配新架構輸入格式"""
+        adapted = {
+            "operation_type": data.get("operation_type", "query"),
+            "identity_token": data.get("identity_token", "anonymous"),
+            "content": data.get("content", data.get("text", "")),
+            "memory_type": data.get("memory_type", "general"),
+            "metadata": data.get("metadata", {}),
+            "timestamp": data.get("timestamp"),
+            "max_results": data.get("max_results", 10),
+            "query_text": data.get("query_text", data.get("text", ""))
+        }
+        
+        # 如果有查詢資料，建立查詢結構
+        if data.get("query_data") or adapted["operation_type"] == "query":
+            adapted["query_data"] = {
+                "identity_token": adapted["identity_token"],
+                "query_text": adapted["query_text"],
+                "max_results": adapted["max_results"],
+                "similarity_threshold": data.get("similarity_threshold", 0.7)
+            }
+        
+        return adapted
+    
+    def _adapt_legacy_input(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """適配舊版輸入格式"""
         # 根據數據內容推斷操作模式
         if data.get("entry") or (data.get("user") and data.get("response")):
             # 存儲模式
@@ -102,6 +143,66 @@ class MEMSchemaAdapter(SchemaAdapter):
     
     def adapt_output(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """將 MEM 模組輸出轉換為統一格式"""
+        # 檢查是否為新架構輸出
+        if self._is_new_architecture_output(data):
+            return self._adapt_new_architecture_output(data)
+        
+        # 舊版格式適配
+        return self._adapt_legacy_output(data)
+    
+    def _is_new_architecture_output(self, data: Dict[str, Any]) -> bool:
+        """檢查是否為新架構輸出格式"""
+        new_arch_indicators = [
+            "search_results", "operation_results", "memory_context",
+            "active_snapshots", "memory_usage"
+        ]
+        return any(key in data for key in new_arch_indicators)
+    
+    def _adapt_new_architecture_output(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """適配新架構輸出格式"""
+        status = "success" if data.get("success", False) else "error"
+        
+        # 提取結果數據
+        results_data = {}
+        if data.get("search_results"):
+            results_data["search_results"] = [
+                {
+                    "memory_id": result.get("memory_entry", {}).get("memory_id"),
+                    "content": result.get("memory_entry", {}).get("content"),
+                    "similarity_score": result.get("similarity_score"),
+                    "memory_type": result.get("memory_entry", {}).get("memory_type")
+                }
+                for result in data["search_results"]
+            ]
+        
+        if data.get("operation_results"):
+            results_data["operation_results"] = [
+                {
+                    "operation_type": result.get("operation_type"),
+                    "success": result.get("success"),
+                    "message": result.get("message"),
+                    "affected_count": result.get("affected_count")
+                }
+                for result in data["operation_results"]
+            ]
+        
+        return {
+            "status": status,
+            "message": data.get("operation_type", "MEM處理完成"),
+            "error": data.get("errors", [None])[0] if data.get("errors") else None,
+            "data": {
+                **results_data,
+                "memory_context": data.get("memory_context"),
+                "total_memories": data.get("total_memories", 0),
+                "memory_usage": data.get("memory_usage", {}),
+                "active_snapshots_count": len(data.get("active_snapshots", []))
+            },
+            "module": "mem",
+            "architecture": "new"
+        }
+    
+    def _adapt_legacy_output(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """適配舊版輸出格式"""
         status = data.get("status", "unknown")
         if status in ["empty", "ok", "stored", "cleared"]:
             status = "success"
@@ -120,7 +221,8 @@ class MEMSchemaAdapter(SchemaAdapter):
                 "total_records": data.get("total_records"),
                 "deleted": data.get("deleted")
             },
-            "module": "mem"
+            "module": "mem",
+            "architecture": "legacy"
         }
 
 class LLMSchemaAdapter(SchemaAdapter):

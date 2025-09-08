@@ -4,57 +4,426 @@ import faiss
 import numpy as np
 import os
 import json
-from typing import List
-from .schemas import MEMInput, MEMOutput
+from typing import List, Dict, Any, Optional
+from .schemas import (
+    MEMInput, MEMOutput, MemoryEntry, ConversationSnapshot, 
+    LongTermMemoryEntry, MemoryQuery, MemorySearchResult,
+    LLMMemoryInstruction, MemoryOperationResult, MemoryType
+)
+from core.schemas import MEMModuleData, create_mem_data
+from core.schema_adapter import MEMSchemaAdapter
+from core.working_context import working_context_manager
+from configs.config_loader import load_module_config
+from utils.debug_helper import debug_log, debug_log_e, info_log, error_log
+from core.module_base import BaseModule
+import os
+import json
+from typing import List, Dict, Any, Optional
+from .schemas import (
+    MEMInput, MEMOutput, MemoryEntry, ConversationSnapshot, 
+    LongTermMemoryEntry, MemoryQuery, MemorySearchResult,
+    LLMMemoryInstruction, MemoryOperationResult, MemoryType
+)
+from core.schemas import MEMModuleData, create_mem_data
+from core.schema_adapter import MEMSchemaAdapter
+from core.working_context import working_context_manager
+from configs.config_loader import load_module_config
+from utils.debug_helper import debug_log, debug_log_e, info_log, error_log
+from .working_context_handler import register_memory_context_handler
+
+# 嘗試導入可選依賴
+try:
+    from sentence_transformers import SentenceTransformer
+    import faiss
+    import numpy as np
+    OPTIONAL_DEPS_AVAILABLE = True
+except ImportError as e:
+    debug_log(1, f"[MEM] 可選依賴未安裝: {e}")
+    SentenceTransformer = None
+    faiss = None
+    np = None
+    OPTIONAL_DEPS_AVAILABLE = False
+from sentence_transformers import SentenceTransformer
+import faiss
+import numpy as np
+import os
+import json
+from typing import List, Dict, Any, Optional
+from .schemas import (
+    MEMInput, MEMOutput, MemoryEntry, ConversationSnapshot, 
+    LongTermMemoryEntry, MemoryQuery, MemorySearchResult,
+    LLMMemoryInstruction, MemoryOperationResult, MemoryType
+)
+from core.schemas import MEMModuleData, create_mem_data
+from core.schema_adapter import MEMSchemaAdapter
 from configs.config_loader import load_module_config
 from utils.debug_helper import debug_log, debug_log_e, info_log, error_log
 
 class MEMModule(BaseModule):
+    """記憶管理模組 - Phase 2 重構版本
+    
+    新功能：
+    1. 身份隔離記憶系統 (Memory Token機制)
+    2. 短期/長期記憶分層管理
+    3. 對話快照系統
+    4. LLM記憶操作指令支援
+    5. 與NLP模組深度整合
+    6. Working Context決策處理
+    """
+    
     def __init__(self, config=None):
+        """初始化MEM模組"""
+        super().__init__()
+        
+        # 載入配置
         self.config = config or load_module_config("mem_module")
+        
+        # 基礎設定（向後兼容）
         self.embedding_model = self.config.get("embedding_model", "all-MiniLM-L6-v2")
         self.index_file = self.config.get("index_file", "memory/faiss_index")
         self.metadata_file = self.config.get("metadata_file", "memory/metadata.json")
         self.max_distance = self.config.get("max_distance", 0.85)
+        
+        # 新架構組件（延遲初始化）
+        self.memory_manager = None
+        self.storage_manager = None
+        self.nlp_integration = None
+        self.working_context_handler = None
+        self.schema_adapter = MEMSchemaAdapter()
+        
+        # 舊版相容性
         self.model = None
         self.index = None
         self.metadata: List[dict] = []
         self.dimension = 384
+        
+        # 模組狀態
+        self.is_initialized = False
+        self._legacy_mode = False  # 是否使用舊版模式
+        
+        info_log("[MEM] Phase 2 記憶管理模組初始化完成")
 
     def debug(self):
         # Debug level = 1
         debug_log(1, "[MEM] Debug 模式啟用")
+        debug_log(1, f"[MEM] 重構模式: {'新架構' if not self._legacy_mode else '舊版相容'}")
+        
         # Debug level = 2
         debug_log(2, f"[MEM] 嵌入模型: {self.embedding_model}")
         debug_log(2, f"[MEM] FAISS 索引檔案: {self.index_file}")
         debug_log(2, f"[MEM] 元資料檔案: {self.metadata_file}")
+        debug_log(2, f"[MEM] 記憶管理器狀態: {'已載入' if self.memory_manager else '未載入'}")
+        
         # Debug level = 3
         debug_log(3, f"[MEM] 完整模組設定: {self.config}")
 
     def initialize(self):
+        """初始化MEM模組"""
         debug_log(1, "[MEM] 初始化中...")
         self.debug()
 
-        info_log(f"[MEM] 載入嵌入模型中（來自 {self.embedding_model}）...")
-
-        self.model = SentenceTransformer(self.embedding_model)
         try:
-            if self._faiss_index_exists():
-                info_log("[MEM] 正在載入FAISS索引")
-                self._load_index()
+            # 檢查是否啟用新架構
+            use_new_architecture = self.config.get("mem_module", {}).get("enable_new_architecture", True)
+            
+            if use_new_architecture:
+                try:
+                    return self._initialize_new_architecture()
+                except Exception as e:
+                    error_log(f"[MEM] 新架構初始化失敗: {e}")
+                    info_log("[MEM] 回退到舊版架構模式")
+                    self._legacy_mode = True
+                    return self._initialize_legacy_mode()
             else:
-                info_log("[MEM] FAISS 索引不存在，正在創建索引")
-                self._create_index()
-
-            info_log(f"[MEM] 初始化完成，使用的嵌入模型: {self.embedding_model}")
+                info_log("[MEM] 使用舊版架構模式")
+                self._legacy_mode = True
+                return self._initialize_legacy_mode()
+                
         except Exception as e:
             error_log(f"[MEM] 初始化失敗: {e}")
-            raise e
+            # 回退到舊版模式
+            error_log("[MEM] 強制回退到舊版架構模式")
+            self._legacy_mode = True
+            return self._initialize_legacy_mode()
+    
+    def _initialize_new_architecture(self) -> bool:
+        """初始化新架構"""
+        try:
+            info_log("[MEM] 初始化新架構記憶管理系統...")
+            
+            # 動態導入新架構組件（避免循環導入）
+            from .memory_manager import MemoryManager
+            
+            # 初始化記憶管理器
+            self.memory_manager = MemoryManager(self.config.get("mem_module", {}))
+            if not self.memory_manager.initialize():
+                error_log("[MEM] 記憶管理器初始化失敗")
+                return False
+            
+            # 註冊Working Context處理器
+            self.working_context_handler = register_memory_context_handler(
+                working_context_manager, self.memory_manager
+            )
+            if not self.working_context_handler:
+                error_log("[MEM] Working Context處理器註冊失敗")
+                return False
+            
+            # 嘗試載入嵌入模型以保持向後相容性（可選）
+            try:
+                info_log("[MEM] 嘗試載入嵌入模型以保持向後相容...")
+                from sentence_transformers import SentenceTransformer
+                self.model = SentenceTransformer(self.embedding_model)
+                
+                if self._faiss_index_exists():
+                    info_log("[MEM] 載入現有FAISS索引")
+                    self._load_index()
+                else:
+                    info_log("[MEM] 創建新FAISS索引")
+                    self._create_index()
+                    
+                info_log("[MEM] 向後相容性設定完成")
+            except ImportError as e:
+                info_log(f"[MEM] 跳過向後相容性設定（缺少依賴）: {e}")
+                # 沒有舊版依賴，但新架構仍可正常工作
+                self.model = None
+                self.index = None
+                self.metadata = []
+            
+            self.is_initialized = True
+            info_log("[MEM] 新架構初始化完成")
+            return True
+            
+        except Exception as e:
+            error_log(f"[MEM] 新架構初始化失敗: {e}")
+            return False
+    
+    def _initialize_legacy_mode(self) -> bool:
+        """初始化舊版模式（向後相容）"""
+        try:
+            info_log(f"[MEM] 舊版模式初始化中...")
+            
+            # 嘗試載入嵌入模型（可選）
+            try:
+                info_log(f"[MEM] 嘗試載入嵌入模型: {self.embedding_model}")
+                self.model = SentenceTransformer(self.embedding_model)
+                info_log("[MEM] 嵌入模型載入成功")
+                
+                # 嘗試載入FAISS索引
+                if self._faiss_index_exists():
+                    info_log("[MEM] 正在載入FAISS索引")
+                    self._load_index()
+                else:
+                    info_log("[MEM] FAISS 索引不存在，正在創建索引")
+                    self._create_index()
+                    
+            except ImportError as e:
+                info_log(f"[MEM] 嵌入模型依賴缺失: {e}")
+                info_log("[MEM] 將在基本模式下運行（無向量搜索功能）")
+                self.model = None
+                self.index = None
+                self.metadata = []
+            except Exception as e:
+                info_log(f"[MEM] 嵌入模型載入失敗: {e}")
+                info_log("[MEM] 將在基本模式下運行")
+                self.model = None
+                self.index = None
+                self.metadata = []
+
+            self.is_initialized = True
+            info_log(f"[MEM] 舊版模式初始化完成")
+            return True
+            
+        except Exception as e:
+            error_log(f"[MEM] 舊版模式初始化失敗: {e}")
+            # 即使失敗也設為已初始化，以基本模式運行
+            self.is_initialized = True
+            self.model = None
+            self.index = None
+            self.metadata = []
+            info_log("[MEM] 以最基本模式運行")
+            return True
 
 
-    def handle(self, data: dict) -> dict:
-        payload = MEMInput(**data)
-        debug_log(1, f"[MEM] 接收到的資料: {payload}")
+    def register(self):
+        """註冊方法 - 返回模組實例"""
+        return self
+
+    def handle(self, data=None):
+        """處理輸入數據 - 支援新舊兩種模式"""
+        try:
+            if not self.is_initialized:
+                error_log("[MEM] 模組未初始化")
+                return self._create_error_response("模組未初始化")
+            
+            # 處理核心Schema格式
+            if isinstance(data, MEMModuleData):
+                return self._handle_core_schema(data)
+            
+            # 處理新架構Schema格式
+            if isinstance(data, MEMInput):
+                if not self._legacy_mode and self.memory_manager:
+                    return self._handle_new_schema(data)
+                else:
+                    # 新格式但舊模式，轉換處理
+                    return self._handle_legacy_from_new_schema(data)
+            
+            # 處理舊版格式（向後相容）
+            if hasattr(data, 'mode'):
+                return self._handle_legacy_schema(data)
+            
+            # 預設處理
+            debug_log(2, "[MEM] 使用預設記憶檢索處理")
+            query_text = str(data) if data else ""
+            return self._retrieve_memory(query_text)
+            
+        except Exception as e:
+            error_log(f"[MEM] 處理請求失敗: {e}")
+            return self._create_error_response(f"處理失敗: {str(e)}")
+    
+    def _handle_core_schema(self, data: MEMModuleData) -> Dict[str, Any]:
+        """處理核心Schema格式"""
+        try:
+            debug_log(2, f"[MEM] 處理核心Schema: {data.operation_type}")
+            
+            if data.operation_type == "query":
+                # 記憶查詢
+                results = self._retrieve_memory(data.query_text, data.max_results or 5)
+                return {
+                    "success": True,
+                    "operation_type": "query",
+                    "results": results,
+                    "total_results": len(results)
+                }
+            elif data.operation_type == "store":
+                # 存儲記憶
+                if data.content:
+                    metadata = {
+                        "identity_token": data.identity_token or "anonymous",
+                        "memory_type": data.memory_type or "general",
+                        "timestamp": data.timestamp or "",
+                        "metadata": data.metadata or {}
+                    }
+                    self._add_memory(data.content, metadata)
+                    return {"success": True, "operation_type": "store", "message": "記憶已存儲"}
+                else:
+                    return self._create_error_response("存儲內容不能為空")
+            else:
+                return self._create_error_response(f"不支援的操作類型: {data.operation_type}")
+                
+        except Exception as e:
+            error_log(f"[MEM] 核心Schema處理失敗: {e}")
+            return self._create_error_response(f"處理失敗: {str(e)}")
+    
+    def _handle_new_schema(self, data: MEMInput) -> MEMOutput:
+        """處理新架構Schema格式"""
+        try:
+            debug_log(2, f"[MEM] 使用新架構處理: {data.operation_type}")
+            
+            if data.operation_type == "query":
+                # 使用新記憶管理器查詢
+                if data.query_data:
+                    results = self.memory_manager.process_memory_query(data.query_data)
+                    memory_context = ""
+                    if self.nlp_integration:
+                        memory_context = self.nlp_integration.extract_memory_context_for_llm(results)
+                    
+                    return MEMOutput(
+                        success=True,
+                        operation_type="query",
+                        search_results=results,
+                        memory_context=memory_context,
+                        total_memories=len(results)
+                    )
+                else:
+                    return MEMOutput(
+                        success=False,
+                        operation_type="query",
+                        errors=["查詢資料不能為空"]
+                    )
+            
+            elif data.operation_type == "create_snapshot":
+                # 創建對話快照
+                if data.conversation_text and data.identity_token:
+                    snapshot = self.memory_manager.create_conversation_snapshot(
+                        identity_token=data.identity_token,
+                        conversation_text=data.conversation_text,
+                        topic=data.intent_info.get("primary_intent") if data.intent_info else None
+                    )
+                    
+                    return MEMOutput(
+                        success=bool(snapshot),
+                        operation_type="create_snapshot",
+                        active_snapshots=[snapshot] if snapshot else [],
+                        message="快照創建成功" if snapshot else "快照創建失敗"
+                    )
+                else:
+                    return MEMOutput(
+                        success=False,
+                        operation_type="create_snapshot",
+                        errors=["身份令牌和對話文本不能為空"]
+                    )
+            
+            elif data.operation_type == "process_llm_instruction":
+                # 處理LLM記憶指令
+                if data.llm_instructions:
+                    results = self.memory_manager.process_llm_instructions(data.llm_instructions)
+                    return MEMOutput(
+                        success=all(r.success for r in results),
+                        operation_type="process_llm_instruction",
+                        operation_results=results
+                    )
+                else:
+                    return MEMOutput(
+                        success=False,
+                        operation_type="process_llm_instruction",
+                        errors=["LLM指令不能為空"]
+                    )
+            
+            else:
+                return MEMOutput(
+                    success=False,
+                    operation_type=data.operation_type,
+                    errors=[f"不支援的操作類型: {data.operation_type}"]
+                )
+                
+        except Exception as e:
+            error_log(f"[MEM] 新架構處理失敗: {e}")
+            return MEMOutput(
+                success=False,
+                operation_type=data.operation_type,
+                errors=[f"處理失敗: {str(e)}"]
+            )
+    
+    def _handle_legacy_from_new_schema(self, data: MEMInput) -> Dict[str, Any]:
+        """從新Schema格式轉換到舊版處理"""
+        try:
+            if data.operation_type == "query" and data.query_data:
+                results = self._retrieve_memory(data.query_data.query_text, data.query_data.max_results)
+                return {
+                    "success": True,
+                    "operation_type": "query",
+                    "results": results
+                }
+            else:
+                return self._create_error_response("舊版模式下的新Schema轉換暫不支援此操作")
+                
+        except Exception as e:
+            return self._create_error_response(f"Schema轉換失敗: {str(e)}")
+    
+    def _create_error_response(self, message: str) -> Dict[str, Any]:
+        """創建錯誤回應"""
+        return {
+            "success": False,
+            "error": message,
+            "status": "failed"
+        }
+    
+    def _handle_legacy_schema(self, payload):
+        """處理舊版Schema格式（向後相容）"""
+        debug_log(1, f"[MEM] 接收到的舊版資料: {payload}")
+
+        if not hasattr(payload, 'mode'):
+            return self._create_error_response("舊版格式缺少mode字段")
 
         match (payload.mode):
             case "fetch":
@@ -75,7 +444,7 @@ class MEMModule(BaseModule):
 
                 debug_log_e(1, f"[MEM] 查詢結果: {results['results']}")
                 debug_log(2, f"[MEM] 完整查詢結果: {results}")
-                return MEMOutput(**results).dict()
+                return results  # 直接返回字典格式以保持相容性
             case "store":
                 info_log("[MEM] 儲存模式啟用")
                 if payload.entry is None:
@@ -118,6 +487,52 @@ class MEMModule(BaseModule):
             case _:
                 info_log(f"[MEM] 不支援的模式: {payload.mode}", "WARNING")
                 return {"error": f"不支援的模式: {payload.mode}"}
+    
+    # === 新架構支援方法 ===
+    
+    def process_nlp_output(self, nlp_output) -> Optional[MEMOutput]:
+        """處理來自NLP模組的輸出（新架構）"""
+        if self._legacy_mode or not self.nlp_integration:
+            debug_log(2, "[MEM] 新架構未啟用，跳過NLP輸出處理")
+            return None
+        
+        try:
+            mem_input = self.nlp_integration.process_nlp_output(nlp_output)
+            return self._handle_new_schema(mem_input)
+        except Exception as e:
+            error_log(f"[MEM] 處理NLP輸出失敗: {e}")
+            return None
+    
+    def get_memory_context_for_llm(self, identity_token: str, query_text: str) -> str:
+        """為LLM獲取記憶上下文"""
+        try:
+            if not self._legacy_mode and self.memory_manager:
+                from .schemas import MemoryQuery
+                query = MemoryQuery(
+                    identity_token=identity_token,
+                    query_text=query_text,
+                    max_results=5
+                )
+                results = self.memory_manager.process_memory_query(query)
+                if self.nlp_integration:
+                    return self.nlp_integration.extract_memory_context_for_llm(results)
+            
+            # 舊版模式回退
+            results = self._retrieve_memory(query_text, 5)
+            if results and 'results' in results:
+                context_parts = ["=== 相關記憶 ==="]
+                for i, item in enumerate(results['results'][:3], 1):
+                    context_parts.append(f"{i}. {item.get('user', '無內容')}")
+                context_parts.append("=== 記憶結束 ===")
+                return "\n".join(context_parts)
+            
+            return ""
+            
+        except Exception as e:
+            error_log(f"[MEM] 獲取LLM記憶上下文失敗: {e}")
+            return ""
+    
+    # === 舊版方法保持不變（向後相容） ===
 
     def _embed_text(self, text):
         embedding = self.model.encode(text)

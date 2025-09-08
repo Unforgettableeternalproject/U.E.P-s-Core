@@ -24,6 +24,8 @@ class Router:
         self._map = {
             "chat": ("llm", "text"),       # chat → LLM 模組，用 text 做輸入
             "command": ("sys", "detail"),  # command → SYS 模組，用 detail 做輸入
+            "memory_query": ("mem", "query"),  # memory_query → MEM 模組，記憶查詢
+            "memory_store": ("mem", "content"), # memory_store → MEM 模組，記憶存儲
             # 其他 intent 可繼續擴
         }
         
@@ -98,6 +100,53 @@ class Router:
         args = {arg_key: detail}
         
         # 對於 llm，加入 intent
+        if module_key == "llm":
+            args["intent"] = intent
+            # 檢查是否需要記憶檢索支援
+            if self._should_retrieve_memory(intent, detail):
+                args["enable_memory_retrieval"] = True
+                debug_log(2, f"[Router] 為LLM請求啟用記憶檢索")
+        
+        # 對於記憶模組，添加必要的上下文
+        if module_key == "mem":
+            args.update(self._prepare_memory_args(intent, detail, state))
+        
+        debug_log(1, f"[Router] {intent} → {module_key}: {args}")
+        return module_key, args
+    
+    def _should_retrieve_memory(self, intent: str, detail: Any) -> bool:
+        """判斷是否需要檢索記憶來輔助回答"""
+        # 聊天意圖通常需要記憶支援
+        if intent == "chat":
+            return True
+        
+        # 檢查內容中是否包含記憶相關關鍵詞
+        if isinstance(detail, str):
+            memory_keywords = ["記得", "之前", "上次", "昨天", "前面", "剛才", "想起"]
+            return any(keyword in detail for keyword in memory_keywords)
+        
+        return False
+    
+    def _prepare_memory_args(self, intent: str, detail: Any, state: UEPState) -> Dict[str, Any]:
+        """為記憶模組準備參數"""
+        base_args = {
+            "operation_type": "query" if intent == "memory_query" else "store",
+            "timestamp": None,  # 由MEM模組自動生成
+            "max_results": 5
+        }
+        
+        if intent == "memory_query":
+            base_args.update({
+                "query_text": str(detail),
+                "similarity_threshold": 0.7
+            })
+        elif intent == "memory_store":
+            base_args.update({
+                "content": str(detail),
+                "memory_type": "user_input"
+            })
+        
+        return base_args
         if module_key == "llm":
             args["intent"] = intent
             

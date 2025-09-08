@@ -1,0 +1,556 @@
+# modules/mem_module/storage/storage_manager.py
+"""
+統一存儲管理器 - 整合向量索引、元資料存儲和身份隔離
+
+功能：
+- 統一的存儲介面
+- 向量與元資料的同步管理
+- 身份隔離的一致性保證
+- 存儲的備份與恢復
+"""
+
+import os
+import time
+import threading
+from typing import List, Dict, Any, Optional, Tuple
+from sentence_transformers import SentenceTransformer
+import numpy as np
+
+from utils.debug_helper import debug_log, info_log, error_log
+from ..schemas import (
+    MemoryEntry, MemoryQuery, MemorySearchResult, MemoryOperationResult,
+    MemoryType, MemoryImportance
+)
+
+from .vector_index import VectorIndexManager
+from .metadata_storage import MetadataStorageManager
+from .identity_isolation import IdentityIsolationManager
+
+
+class MemoryStorageManager:
+    """統一記憶存儲管理器"""
+    
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        
+        # 子系統配置
+        vector_config = config.get("vector", {})
+        metadata_config = config.get("metadata", {})
+        identity_config = config.get("identity", {})
+        
+        # 初始化子系統
+        self.vector_manager = VectorIndexManager(vector_config)
+        self.metadata_manager = MetadataStorageManager(metadata_config)
+        self.identity_manager = IdentityIsolationManager(identity_config)
+        
+        # 嵌入模型
+        self.embedding_model_name = config.get("embedding_model", "all-MiniLM-L6-v2")
+        self.embedding_model: Optional[SentenceTransformer] = None
+        
+        # 同步管理
+        self._sync_lock = threading.RLock()
+        self._index_metadata_map: Dict[int, str] = {}  # vector_index -> memory_id
+        self._memory_vector_map: Dict[str, int] = {}   # memory_id -> vector_index
+        
+        # 性能配置
+        self.batch_size = config.get("batch_size", 32)
+        self.auto_save_interval = config.get("auto_save_interval", 300)  # 5分鐘
+        
+        # 狀態追蹤
+        self.is_initialized = False
+        self.last_sync_time = None
+        
+    def initialize(self) -> bool:
+        """初始化存儲管理器"""
+        try:
+            info_log("[StorageManager] 初始化統一存儲管理器...")
+            
+            # 初始化嵌入模型
+            info_log(f"[StorageManager] 載入嵌入模型: {self.embedding_model_name}")
+            self.embedding_model = SentenceTransformer(self.embedding_model_name)
+            
+            # 初始化子系統
+            if not self.identity_manager.initialize():
+                error_log("[StorageManager] 身份隔離管理器初始化失敗")
+                return False
+            
+            if not self.metadata_manager.initialize():
+                error_log("[StorageManager] 元資料管理器初始化失敗")
+                return False
+            
+            if not self.vector_manager.initialize():
+                error_log("[StorageManager] 向量索引管理器初始化失敗")
+                return False
+            
+            # 重建索引映射
+            if not self._rebuild_index_mapping():
+                info_log("WARNING", "[StorageManager] 重建索引映射失敗")
+            
+            self.is_initialized = True
+            self.last_sync_time = time.time()
+            
+            info_log("[StorageManager] 統一存儲管理器初始化完成")
+            return True
+            
+        except Exception as e:
+            error_log(f"[StorageManager] 初始化失敗: {e}")
+            return False
+    
+    def _rebuild_index_mapping(self) -> bool:
+        """重建向量索引與元資料的映射關係"""
+        try:
+            with self._sync_lock:
+                debug_log(2, "[StorageManager] 重建索引映射...")
+                
+                self._index_metadata_map = {}
+                self._memory_vector_map = {}
+                
+                # 獲取所有記憶條目
+                all_memories = self.metadata_manager.metadata_cache
+                
+                vector_index = 0
+                for memory_data in all_memories:
+                    memory_id = memory_data.get('memory_id')
+                    if memory_id and memory_data.get('embedding_vector'):
+                        self._index_metadata_map[vector_index] = memory_id
+                        self._memory_vector_map[memory_id] = vector_index
+                        vector_index += 1
+                
+                debug_log(3, f"[StorageManager] 索引映射重建完成，條目數: {len(self._memory_vector_map)}")
+                return True
+                
+        except Exception as e:
+            error_log(f"[StorageManager] 重建索引映射失敗: {e}")
+            return False
+    
+    def store_memory(self, memory_entry: MemoryEntry) -> MemoryOperationResult:
+        """存儲記憶條目"""
+        start_time = time.time()
+        
+        try:
+            with self._sync_lock:
+                # 驗證身份令牌
+                if not self.identity_manager.validate_memory_token(memory_entry.identity_token):
+                    return MemoryOperationResult(
+                        success=False,
+                        operation_type="store",
+                        message="無效的身份令牌",
+                        execution_time=time.time() - start_time
+                    )
+                
+                # 檢查操作權限
+                if not self.identity_manager.check_operation_permission(memory_entry.identity_token, "write"):
+                    return MemoryOperationResult(
+                        success=False,
+                        operation_type="store",
+                        message="沒有寫入權限",
+                        execution_time=time.time() - start_time
+                    )
+                
+                # 生成嵌入向量
+                if not memory_entry.embedding_vector:
+                    embedding_vector = self._generate_embedding(memory_entry.content)
+                    if embedding_vector is None:
+                        return MemoryOperationResult(
+                            success=False,
+                            operation_type="store",
+                            memory_id=memory_entry.memory_id,
+                            message="生成嵌入向量失敗",
+                            execution_time=time.time() - start_time
+                        )
+                    memory_entry.embedding_vector = embedding_vector.tolist()
+                
+                # 存儲到元資料管理器
+                if not self.metadata_manager.add_memory(memory_entry):
+                    return MemoryOperationResult(
+                        success=False,
+                        operation_type="store",
+                        memory_id=memory_entry.memory_id,
+                        message="元資料存儲失敗",
+                        execution_time=time.time() - start_time
+                    )
+                
+                # 添加到向量索引
+                vector_array = np.array([memory_entry.embedding_vector], dtype=np.float32)
+                if not self.vector_manager.add_vectors(vector_array, [memory_entry.memory_id]):
+                    # 如果向量存儲失敗，需要回滾元資料
+                    self.metadata_manager.delete_memory(memory_entry.memory_id)
+                    return MemoryOperationResult(
+                        success=False,
+                        operation_type="store",
+                        memory_id=memory_entry.memory_id,
+                        message="向量索引存儲失敗",
+                        execution_time=time.time() - start_time
+                    )
+                
+                # 更新映射關係
+                vector_index = self.vector_manager._vector_count - 1
+                self._index_metadata_map[vector_index] = memory_entry.memory_id
+                self._memory_vector_map[memory_entry.memory_id] = vector_index
+                
+                debug_log(3, f"[StorageManager] 記憶存儲成功: {memory_entry.memory_id}")
+                
+                return MemoryOperationResult(
+                    success=True,
+                    operation_type="store",
+                    memory_id=memory_entry.memory_id,
+                    message="記憶存儲成功",
+                    affected_count=1,
+                    execution_time=time.time() - start_time
+                )
+                
+        except Exception as e:
+            error_log(f"[StorageManager] 存儲記憶失敗: {e}")
+            return MemoryOperationResult(
+                success=False,
+                operation_type="store",
+                memory_id=getattr(memory_entry, 'memory_id', None),
+                message=f"存儲異常: {str(e)}",
+                execution_time=time.time() - start_time
+            )
+    
+    def search_memories(self, query: MemoryQuery) -> List[MemorySearchResult]:
+        """搜索記憶"""
+        try:
+            with self._sync_lock:
+                # 驗證身份令牌
+                if not self.identity_manager.validate_memory_token(query.identity_token):
+                    error_log(f"[StorageManager] 無效的身份令牌: {query.identity_token[:8]}...")
+                    return []
+                
+                # 檢查查詢權限
+                if not self.identity_manager.check_operation_permission(query.identity_token, "query"):
+                    error_log("[StorageManager] 沒有查詢權限")
+                    return []
+                
+                # 從元資料篩選候選記憶
+                metadata_filters = {
+                    'memory_types': [t.value for t in query.memory_types] if query.memory_types else None,
+                    'topic_filter': query.topic_filter,
+                    'importance_filter': [i.value for i in query.importance_filter] if query.importance_filter else None,
+                    'time_range': query.time_range,
+                    'include_archived': query.include_archived
+                }
+                
+                candidate_memories = self.metadata_manager.search_memories(
+                    query.identity_token, 
+                    metadata_filters
+                )
+                
+                if not candidate_memories:
+                    debug_log(3, "[StorageManager] 沒有找到候選記憶")
+                    return []
+                
+                # 語意向量搜索
+                semantic_results = self._perform_semantic_search(
+                    query.query_text, 
+                    candidate_memories, 
+                    query.similarity_threshold,
+                    query.max_results
+                )
+                
+                # 構建搜索結果
+                search_results = []
+                for memory_data, similarity_score in semantic_results:
+                    try:
+                        # 重構MemoryEntry物件
+                        memory_entry = self._reconstruct_memory_entry(memory_data)
+                        
+                        # 計算相關性評分
+                        relevance_score = self._calculate_relevance_score(
+                            memory_entry, query, similarity_score
+                        )
+                        
+                        # 生成檢索原因
+                        retrieval_reason = self._generate_retrieval_reason(
+                            memory_entry, query, similarity_score
+                        )
+                        
+                        search_result = MemorySearchResult(
+                            memory_entry=memory_entry,
+                            similarity_score=similarity_score,
+                            relevance_score=relevance_score,
+                            retrieval_reason=retrieval_reason,
+                            context_match=self._check_context_match(memory_entry, query)
+                        )
+                        
+                        search_results.append(search_result)
+                        
+                        # 更新存取記錄
+                        self.metadata_manager.update_memory(
+                            memory_entry.memory_id,
+                            {
+                                'accessed_at': time.time(),
+                                'access_count': memory_data.get('access_count', 0) + 1
+                            }
+                        )
+                        
+                    except Exception as e:
+                        info_log("WARNING", f"[StorageManager] 處理搜索結果失敗: {e}")
+                        continue
+                
+                debug_log(3, f"[StorageManager] 記憶搜索完成，結果數: {len(search_results)}")
+                return search_results
+                
+        except Exception as e:
+            error_log(f"[StorageManager] 記憶搜索失敗: {e}")
+            return []
+    
+    def _generate_embedding(self, text: str) -> Optional[np.ndarray]:
+        """生成文本嵌入向量"""
+        try:
+            if not self.embedding_model:
+                error_log("[StorageManager] 嵌入模型未初始化")
+                return None
+            
+            embedding = self.embedding_model.encode(text, convert_to_numpy=True)
+            return embedding.astype(np.float32)
+            
+        except Exception as e:
+            error_log(f"[StorageManager] 生成嵌入向量失敗: {e}")
+            return None
+    
+    def _perform_semantic_search(self, query_text: str, candidate_memories: List[Dict], 
+                                similarity_threshold: float, max_results: int) -> List[Tuple[Dict, float]]:
+        """執行語意搜索"""
+        try:
+            # 生成查詢向量
+            query_embedding = self._generate_embedding(query_text)
+            if query_embedding is None:
+                return []
+            
+            # 準備候選向量
+            candidate_vectors = []
+            valid_memories = []
+            
+            for memory_data in candidate_memories:
+                embedding_vector = memory_data.get('embedding_vector')
+                if embedding_vector:
+                    candidate_vectors.append(embedding_vector)
+                    valid_memories.append(memory_data)
+            
+            if not candidate_vectors:
+                return []
+            
+            # 計算相似度
+            candidate_array = np.array(candidate_vectors, dtype=np.float32)
+            query_array = query_embedding.reshape(1, -1)
+            
+            # 正規化向量
+            from sklearn.metrics.pairwise import cosine_similarity
+            similarities = cosine_similarity(query_array, candidate_array)[0]
+            
+            # 過濾和排序結果
+            results = []
+            for memory_data, similarity in zip(valid_memories, similarities):
+                if similarity >= similarity_threshold:
+                    results.append((memory_data, float(similarity)))
+            
+            # 按相似度排序
+            results.sort(key=lambda x: x[1], reverse=True)
+            
+            # 限制結果數量
+            return results[:max_results]
+            
+        except Exception as e:
+            error_log(f"[StorageManager] 語意搜索失敗: {e}")
+            return []
+    
+    def _reconstruct_memory_entry(self, memory_data: Dict[str, Any]) -> MemoryEntry:
+        """從字典重構MemoryEntry物件"""
+        try:
+            # 處理datetime字段
+            if 'created_at' in memory_data and isinstance(memory_data['created_at'], str):
+                from datetime import datetime
+                memory_data['created_at'] = datetime.fromisoformat(memory_data['created_at'].replace('Z', '+00:00'))
+            
+            return MemoryEntry(**memory_data)
+            
+        except Exception as e:
+            error_log(f"[StorageManager] 重構記憶條目失敗: {e}")
+            # 提供預設值
+            return MemoryEntry(
+                memory_id=memory_data.get('memory_id', 'unknown'),
+                identity_token=memory_data.get('identity_token', ''),
+                memory_type=MemoryType(memory_data.get('memory_type', 'snapshot')),
+                content=memory_data.get('content', '')
+            )
+    
+    def _calculate_relevance_score(self, memory_entry: MemoryEntry, query: MemoryQuery, 
+                                 similarity_score: float) -> float:
+        """計算相關性評分"""
+        try:
+            relevance = similarity_score
+            
+            # 重要性加權
+            importance_weights = {
+                MemoryImportance.CRITICAL: 1.2,
+                MemoryImportance.HIGH: 1.1,
+                MemoryImportance.MEDIUM: 1.0,
+                MemoryImportance.LOW: 0.9,
+                MemoryImportance.TEMPORARY: 0.8
+            }
+            
+            importance_weight = importance_weights.get(memory_entry.importance, 1.0)
+            relevance *= importance_weight
+            
+            # 時間衰減（最近的記憶更相關）
+            time_diff = (time.time() - memory_entry.created_at.timestamp()) / 86400  # 天數
+            time_decay = max(0.5, 1.0 - (time_diff * 0.01))  # 每天衰減1%
+            relevance *= time_decay
+            
+            # 存取頻率加權
+            access_boost = min(1.2, 1.0 + (memory_entry.access_count * 0.01))
+            relevance *= access_boost
+            
+            return min(1.0, relevance)
+            
+        except Exception as e:
+            info_log("WARNING", f"[StorageManager] 計算相關性評分失敗: {e}")
+            return similarity_score
+    
+    def _generate_retrieval_reason(self, memory_entry: MemoryEntry, query: MemoryQuery, 
+                                 similarity_score: float) -> str:
+        """生成檢索原因"""
+        reasons = []
+        
+        if similarity_score > 0.9:
+            reasons.append("高度語意相似")
+        elif similarity_score > 0.8:
+            reasons.append("語意相似")
+        else:
+            reasons.append("部分相似")
+        
+        if query.topic_filter and memory_entry.topic and query.topic_filter.lower() in memory_entry.topic.lower():
+            reasons.append("主題匹配")
+        
+        if memory_entry.importance in [MemoryImportance.CRITICAL, MemoryImportance.HIGH]:
+            reasons.append("高重要性")
+        
+        if memory_entry.access_count > 5:
+            reasons.append("常用記憶")
+        
+        return "、".join(reasons)
+    
+    def _check_context_match(self, memory_entry: MemoryEntry, query: MemoryQuery) -> bool:
+        """檢查上下文匹配"""
+        try:
+            if not query.current_intent:
+                return False
+            
+            return query.current_intent.lower() in " ".join(memory_entry.intent_tags).lower()
+            
+        except:
+            return False
+    
+    def delete_memory(self, memory_id: str, identity_token: str) -> MemoryOperationResult:
+        """刪除記憶條目"""
+        start_time = time.time()
+        
+        try:
+            with self._sync_lock:
+                # 驗證權限
+                if not self.identity_manager.validate_memory_token(identity_token):
+                    return MemoryOperationResult(
+                        success=False,
+                        operation_type="delete",
+                        message="無效的身份令牌",
+                        execution_time=time.time() - start_time
+                    )
+                
+                if not self.identity_manager.check_operation_permission(identity_token, "delete"):
+                    return MemoryOperationResult(
+                        success=False,
+                        operation_type="delete",
+                        message="沒有刪除權限",
+                        execution_time=time.time() - start_time
+                    )
+                
+                # 從元資料刪除
+                if not self.metadata_manager.delete_memory(memory_id):
+                    return MemoryOperationResult(
+                        success=False,
+                        operation_type="delete",
+                        memory_id=memory_id,
+                        message="元資料刪除失敗",
+                        execution_time=time.time() - start_time
+                    )
+                
+                # 清理映射關係
+                if memory_id in self._memory_vector_map:
+                    vector_index = self._memory_vector_map[memory_id]
+                    del self._memory_vector_map[memory_id]
+                    if vector_index in self._index_metadata_map:
+                        del self._index_metadata_map[vector_index]
+                
+                debug_log(3, f"[StorageManager] 記憶刪除成功: {memory_id}")
+                
+                return MemoryOperationResult(
+                    success=True,
+                    operation_type="delete",
+                    memory_id=memory_id,
+                    message="記憶刪除成功",
+                    affected_count=1,
+                    execution_time=time.time() - start_time
+                )
+                
+        except Exception as e:
+            error_log(f"[StorageManager] 刪除記憶失敗: {e}")
+            return MemoryOperationResult(
+                success=False,
+                operation_type="delete",
+                memory_id=memory_id,
+                message=f"刪除異常: {str(e)}",
+                execution_time=time.time() - start_time
+            )
+    
+    def rebuild_index(self) -> bool:
+        """重建向量索引"""
+        try:
+            info_log("[StorageManager] 開始重建向量索引...")
+            
+            # 重建向量索引
+            if not self.vector_manager.rebuild_index():
+                error_log("[StorageManager] 向量索引重建失敗")
+                return False
+            
+            # 重建映射關係
+            if not self._rebuild_index_mapping():
+                error_log("[StorageManager] 索引映射重建失敗")
+                return False
+            
+            # 儲存索引
+            if not self.vector_manager.save_index():
+                error_log("[StorageManager] 索引儲存失敗")
+                return False
+            
+            info_log("[StorageManager] 向量索引重建完成")
+            return True
+            
+        except Exception as e:
+            error_log(f"[StorageManager] 重建索引失敗: {e}")
+            return False
+    
+    def get_storage_stats(self) -> Dict[str, Any]:
+        """獲取存儲統計資訊"""
+        try:
+            vector_stats = self.vector_manager.get_stats()
+            identity_stats = self.identity_manager.get_stats()
+            metadata_stats = self.metadata_manager.get_memory_stats()
+            
+            return {
+                "vector_index": vector_stats,
+                "identity_isolation": identity_stats,
+                "metadata_storage": metadata_stats,
+                "index_mapping": {
+                    "total_mappings": len(self._memory_vector_map),
+                    "consistent": len(self._index_metadata_map) == len(self._memory_vector_map)
+                },
+                "embedding_model": self.embedding_model_name,
+                "is_initialized": self.is_initialized,
+                "last_sync_time": self.last_sync_time
+            }
+            
+        except Exception as e:
+            error_log(f"[StorageManager] 獲取統計失敗: {e}")
+            return {}

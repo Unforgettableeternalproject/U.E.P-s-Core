@@ -43,13 +43,14 @@ def clear_empty_logs():
 
 if __name__ == "__main__":
     print("\n=========================\n")
-    print(f"U.E.P <v.0.2.6> - 開發中版本 - {datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}\n")
+    print(f"U.E.P <v.0.3.1> - 開發中版本 - {datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}\n")
 
     # 處理命令行參數
     import argparse
     parser = argparse.ArgumentParser(description='U.E.P 系統')
     parser.add_argument('--reset-speaker-models', action='store_true', help='重置說話人模型')
     parser.add_argument('--debug', action='store_true', help='強制啟用除錯模式')
+    parser.add_argument('--debug-gui', action='store_true', help='啟動圖形除錯介面')
     parser.add_argument('--production', action='store_true', help='強制啟用生產模式')
     args = parser.parse_args()
     
@@ -70,9 +71,32 @@ if __name__ == "__main__":
         else:
             print("重置說話人模型失敗")
         sys.exit(0)
+    
+    # 處理圖形除錯介面啟動
+    if args.debug_gui:
+        print("🖥️ 啟動圖形除錯介面...")
+        try:
+            # 設定為按需載入模式（GUI模式）
+            import devtools.debug_api as debug_api
+            debug_api.set_loading_mode(preload=False)
+            print("✅ 已設定為按需載入模式")
+            
+            # 不預先載入任何模組，直接啟動除錯介面
+            # 讓使用者在除錯介面中手動決定載入哪些模組
+            from modules.ui_module.debug import launch_debug_interface
+            launch_debug_interface(prefer_gui=True, blocking=True)
+        except Exception as e:
+            print(f"❌ 圖形除錯介面啟動失敗: {e}")
+            sys.exit(1)
+        sys.exit(0)
 
     if debug_mode:
         debug_log(1, "🔧 除錯模式啟用，正在準備各項模組...")
+        # 設定為預先載入模式（舊版終端模式）
+        import devtools.debug_api as debug_api
+        debug_api.set_loading_mode(preload=True)
+        print("✅ 已設定為預先載入模式")
+        
         from devtools.debugger import debug_interactive
         debug_interactive()  # 啟動互動式命令行介面
     else:

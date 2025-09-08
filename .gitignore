@@ -400,3 +400,12 @@ wheel/*
 *.wav
 *.mp3
 additional/*
+
+# Resources
+resources/animations/*
+
+# Debug Window Inverse
+!debug/
+
+# Local Docs
+hidden_docs/*

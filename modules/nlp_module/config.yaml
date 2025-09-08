@@ -1,4 +1,6 @@
-﻿# BIO標註模型配置
+﻿# NLP Module Configuration
+
+# BIO標註模型配置
 use_bio_tagging: true
 bio_model_name: "distilbert-base-uncased"
 bio_model_path: "./models/nlp/bio_tagger"

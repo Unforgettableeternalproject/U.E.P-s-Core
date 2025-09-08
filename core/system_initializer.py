@@ -7,7 +7,7 @@
 2. 核心框架啟動
 3. 模組註冊和初始化
 4. 工作上下文清理
-5. 前端應用程式啟動（未來）
+5. 前端應用程式啟動
 6. 系統健康檢查
 
 啟動層級順序：
@@ -17,6 +17,11 @@ controller > framework > router > strategy > state > context > session
 import time
 from typing import Dict, Any, List, Optional
 from enum import Enum, auto
+
+# 載入配置
+from configs.config_loader import load_config
+config = load_config()
+debug_mode = config.get("debug", {}).get("enabled", False)
 
 from core.framework import core_framework, ExecutionMode
 from core.controller import unified_controller
@@ -281,13 +286,65 @@ class SystemInitializer:
             return False
     
     def _initialize_frontend(self) -> bool:
-        """初始化前端應用程式（未來實現）"""
+        """初始化前端應用程式"""
         try:
             self.phase = InitializationPhase.FRONTEND_INIT
             info_log("🖥️ 初始化前端應用程式...")
             
-            # 目前暫時跳過前端初始化
-            info_log("   前端初始化暫時跳過（未實現）")
+            # 從統一控制器獲取UI模組
+            ui_module = None
+            if hasattr(unified_controller, 'modules') and 'UI' in unified_controller.modules:
+                ui_module = unified_controller.modules['UI']
+                
+            if not ui_module:
+                info_log("⚠️ UI模組未找到，跳過前端初始化")
+                return True
+                
+            # 確認UI模組已經準備好
+            if not ui_module.is_initialized:
+                info_log("   UI模組初始化...")
+                if not ui_module.initialize_frontend():
+                    error_log("❌ UI模組初始化失敗")
+                    return False
+            
+            # 只在生產模式下啟動主界面
+            if not debug_mode:
+                info_log("   檢查並啟動需要的界面...")
+                from modules.ui_module.ui_module import UIInterfaceType
+                
+                # 檢查界面狀態
+                interface_status = ui_module.get_interface_status()
+                
+                # 用戶訪問界面（球體）- 優先確保這個顯示
+                if config.get('ui', {}).get('show_user_access', True):
+                    access_widget_status = interface_status.get('user_access_widget', {})
+                    if not access_widget_status.get('visible', False) or not access_widget_status.get('active', False):
+                        info_log("   啟動用戶訪問界面...")
+                        result = ui_module.show_interface(UIInterfaceType.USER_ACCESS_WIDGET)
+                        if 'error' in result:
+                            error_log(f"❌ 用戶訪問界面啟動失敗: {result['error']}")
+                        else:
+                            info_log("✅ 用戶訪問界面已啟動")
+                    else:
+                        info_log("✅ 用戶訪問界面已經顯示")
+                
+                # 桌面寵物界面（主視窗）- 只在特定條件下啟動
+                if config.get('ui', {}).get('show_main_desktop_pet', False):  # 預設為False
+                    main_pet_status = interface_status.get('main_desktop_pet', {})
+                    if not main_pet_status.get('visible', False):
+                        info_log("   啟動桌面寵物界面...")
+                        result = ui_module.show_interface(UIInterfaceType.MAIN_DESKTOP_PET)
+                        if 'error' in result:
+                            error_log(f"❌ 桌面寵物界面啟動失敗: {result['error']}")
+                        else:
+                            info_log("✅ 桌面寵物界面已啟動")
+                    else:
+                        info_log("✅ 桌面寵物界面已經顯示")
+                else:
+                    info_log("   桌面寵物界面已停用（設定中可啟用）")
+            else:
+                info_log("   調試模式下前端界面不自動啟動，請使用命令或調試界面控制")
+                
             return True
             
         except Exception as e:

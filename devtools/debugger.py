@@ -2,6 +2,7 @@ import devtools.debug_api as controller
 from utils.debug_helper import debug_log, debug_log_e, info_log, error_log
 from configs.config_loader import load_config
 import asyncio
+import time
 
 config = load_config()
 
@@ -13,7 +14,11 @@ mod_list = {"stt": (module_enabled.get("stt_module", False), module_refactored.g
             "mem": (module_enabled.get("mem_module", False), module_refactored.get("mem_module", False)),
             "llm": (module_enabled.get("llm_module", False), module_refactored.get("llm_module", False)),
             "tts": (module_enabled.get("tts_module", False), module_refactored.get("tts_module", False)),
-            "sys": (module_enabled.get("sys_module", False), module_refactored.get("sys_module", False))}
+            "sys": (module_enabled.get("sys_module", False), module_refactored.get("sys_module", False)),
+            # 前端模組
+            "ui": (module_enabled.get("ui_module", False), module_refactored.get("ui_module", False)),
+            "ani": (module_enabled.get("ani_module", False), module_refactored.get("ani_module", False)),
+            "mov": (module_enabled.get("mov_module", False), module_refactored.get("mov_module", False))}
 
 def handle_module_integration(user_input):
     """
@@ -127,22 +132,16 @@ def debug_interactive():
             f"{colorful_text('llm - 大型語言模型模組;', mod_list['llm'])}",
             f"{colorful_text('tts - 文字轉語音模組;', mod_list['tts'])}",
             f"{colorful_text('sys - 系統功能模組;', mod_list['sys'])}",
+            "---",
+            f"{colorful_text('frontend - 前端整合測試 (UI/ANI/MOV);', (True, True))}",
+            "---",
             f"{colorful_text('int - 整合測試套件;', (True, True))}",
-            f"{colorful_text('ex - 額外功能測試;')}"
+            f"{colorful_text('ex - 額外功能測試;', (True, True))}"
         ]
         
         menu_text = "請選擇想要測試的模組 (綠色: 已重構、黃色: 已啟用、紅色: 未啟用):\n\n"
         menu_text += "\n\n".join(menu_items)
-        menu_text += "\n\n🔗 模組整合測試 (使用+號來連接，例如 stt+nlp):"
-        menu_text += "\n   • stt+nlp - STT與NLP整合測試"
-        menu_text += "\n   • nlp+mem - NLP與記憶模組整合測試"
-        menu_text += "\n   • nlp+llm - NLP與語言模型整合測試"
-        menu_text += "\n   • pipeline 或 all - 完整管道測試"
-        menu_text += "\n\n🎛️ 測試模式 (可選):"
-        menu_text += "\n   • 在模組名稱後加 debug (除錯模式，預設)"
-        menu_text += "\n   • 在模組名稱後加 production (生產模式)"
-        menu_text += "\n   例如: stt+nlp production"
-        menu_text += "\n\n(用 exit 來離開): \n\n> "
+        menu_text += "\n\n(用 exit 來離開，用 gui 切換到圖形介面): \n\n> "
         
         user_input = input(menu_text)
         print("\n==========================\n")
@@ -553,6 +552,38 @@ def debug_interactive():
                         break
                     else:
                         print("\033[31m無效的選擇，請再試一次。\033[0m")
+            case "frontend":
+                debug_log(1, "前端整合測試")
+                print("<前端整合測試>\n")
+                
+                choice = input("請選擇測試類型:\n" +
+                             "1: 完整前端整合測試\n" +
+                             "2: 前端模組狀態檢查\n" +
+                             "3: 測試前端模組響應\n" +
+                             "4: 測試使用者存取工具 (access_widget)\n" +
+                             "5: 測試UEP主程式動畫播放 (ANI)\n" +
+                             "6: 測試UEP主程式移動 (MOV)\n" +
+                             "7: 列出前端功能\n" +
+                             "exit: 離開\n\n> ")
+                
+                if choice == "1":
+                    controller.frontend_test_integration()
+                elif choice == "2":
+                    controller.frontend_test_status()
+                elif choice == "3":
+                    controller.frontend_test_communication()
+                elif choice == "4":
+                    controller.frontend_test_access_widget()
+                elif choice == "5":
+                    controller.frontend_test_animations()
+                elif choice == "6":
+                    controller.frontend_test_movement()
+                elif choice == "7":
+                    controller.frontend_list_functions()
+                elif choice in ["exit", "e", "quit", "q", "back", "b"]:
+                    pass
+                else:
+                    print("\033[31m無效的選擇，請再試一次。\033[0m")
             case "ex":
                 debug_log(1, "額外功能測試")
                 print("<額外功能測試>\n")
@@ -569,6 +600,22 @@ def debug_interactive():
                 debug_log(1, "離開測試介面")
                 print("\n離開測試介面")
                 break
+            case "gui":
+                debug_log(1, "切換到圖形除錯介面")
+                print("\n🖥️ 正在啟動圖形除錯介面...")
+                try:
+                    from modules.ui_module.debug import launch_debug_interface
+                    print("圖形介面啟動中，請稍候...")
+                    controller.set_loading_mode(preload=False)
+                    launch_debug_interface(ui_module=None, prefer_gui=True, blocking=True)
+                except KeyboardInterrupt:
+                    print("\n⌨️ 圖形介面被用戶中斷")
+                except ImportError as e:
+                    print(f"❌ 無法載入圖形介面模組: {e}")
+                    print("💡 提示：請確認 PyQt5 已正確安裝")
+                except Exception as e:
+                    print(f"❌ 圖形介面啟動失敗: {e}")
+                print("\n返回命令行介面...")
             case _:
                 n_input = user_input.lower()
                 if "+" in n_input or n_input in ["pipeline", "all"]:

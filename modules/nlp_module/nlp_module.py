@@ -50,7 +50,7 @@ class NLPModule(BaseModule):
         # 模組狀態
         self.is_initialized = False
         
-        info_log("[NLP] NLP模組 Phase 2 初始化")
+        info_log("[NLP] NLP模組初始化")
     
     def debug(self):
         """除錯資訊輸出"""

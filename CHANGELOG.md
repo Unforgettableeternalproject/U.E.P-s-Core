@@ -850,3 +850,219 @@
 
 ---
 
+### First hand frontend integration, with several core structure changes. 08/23
+
+> Date: Sat, 23 Aug 2025 12:48:12 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/front_end_integration`
+
+> Commit: `38a9640e61aaeacd802b930b3d9b0ba8d0277513`
+
+---
+
+### Implemented a debug interface (finally), but functions yet to integrate. 08/23
+
+> Date: Sat, 23 Aug 2025 15:28:42 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/front_end_integration`
+
+> Commit: `e0a69041e145bbb33a16aa8c6e145b58d00a75df`
+
+---
+
+### Focusing on debug UI, currently with many issues. 08/23
+
+> Date: Sat, 23 Aug 2025 20:50:48 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/front_end_integration`
+
+> Commit: `e63f0c1c7e72af404d2c2a72cf16e4bb5bf77380`
+
+---
+
+### Some more improvements on debug ui, still more to go. 08/23
+
+> Date: Sat, 23 Aug 2025 21:36:41 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/front_end_integration`
+
+> Commit: `9d3cc4c1690bd54b8112ddf5214979483b548fa8`
+
+---
+
+### Tried to make a setting UI, it's sort of functioning?? 08/24
+
+> Date: Sun, 24 Aug 2025 21:30:07 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/front_end_integration`
+
+> Commit: `4eb20aae4e56b5e986ea303fa6da10dfca3e43cb`
+
+---
+
+### Altered more debug UI related code, and seperated the module tabs. 08/26
+
+> Date: Tue, 26 Aug 2025 02:46:26 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/front_end_integration`
+
+> Commit: `bbab076467fc814d38b073bd5dbe32a9edb16ae5`
+
+---
+
+### Revamped the whole debug_api implementation. 08/26
+
+> Date: Tue, 26 Aug 2025 04:04:05 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/front_end_integration`
+
+> Commit: `63d0be2f96433dbdc8195dd814909dcc2ca4c694`
+
+---
+
+### Fixed some bugs regarding test wrappers. 08/26
+
+> Date: Tue, 26 Aug 2025 12:46:36 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/front_end_integration`
+
+> Commit: `abe45732f1d5d3528e62dfe9813b517e9b4845a8`
+
+---
+
+### Currently exists some problem regarding UI module repeat initialization during debug UI activation, and some other problem with UEP's movement. 08/26
+
+> Date: Tue, 26 Aug 2025 18:22:03 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/front_end_integration`
+
+> Commit: `40f9ad7b39692f1b6e9fc630206fdac45e4e812f`
+
+---
+
+### Made something, broke soomething, this is a pain in the ass. 08/26
+
+> Date: Tue, 26 Aug 2025 23:28:27 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `codex/fix-ui-module-double-initialization-issue`
+
+> Commit: `fb40dfb4c78bfd995b6edc59c87be8b8f34828f4`
+
+---
+
+### This version works, so I am resetting to here. 08/27
+
+> Date: Wed, 27 Aug 2025 00:13:00 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `codex/fix-ui-module-double-initialization-issue`
+
+> Commit: `fac4a8c3181f8eaaa3dbffd4810783296d8a7a75`
+
+---
+
+### This version works, so I am resetting to here. 08/27
+
+> Date: Wed, 27 Aug 2025 00:13:00 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/front_end_integration`
+
+> Commit: `2d9881191a809656e79a7c5b35043a3350dde1e6`
+
+---
+
+### Still on duty with the way MOV/ANI interacts, but it moves now, although there are some...interesting bugs. 08/27
+
+> Date: Wed, 27 Aug 2025 03:34:26 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/front_end_integration`
+
+> Commit: `d8fd3c3892caeafd41b6297edcd334317d7199cb`
+
+---
+
+### Resturctured MOV、ANI modules to make them more sophisticated and more easy to modify. 08/27
+
+> Date: Wed, 27 Aug 2025 19:59:23 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/experimental_mov_rework`
+
+> Commit: `eec985d157627e9a4806b4adc2b7bf1f13873663`
+
+---
+
+### It kinda works now. but something is still off. 08/27
+
+> Date: Wed, 27 Aug 2025 22:01:17 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/experimental_mov_rework`
+
+> Commit: `6ed02fcf4e1d0555825ec306f958e0fdab1dd365`
+
+---
+
+### Refined basically all frontend related logic, and it works pretty good now. 08/27
+
+> Date: Wed, 27 Aug 2025 23:38:32 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/experimental_mov_rework`
+
+> Commit: `98d60907baa1b8e3406d3a9c80e4cff18ee4ce06`
+
+---
+
+### Improved the animation handling furthermore, and reimplemented the dragging feature. 08/28
+
+> Date: Thu, 28 Aug 2025 04:05:21 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/front_end_integration`
+
+> Commit: `3f71576d7f5da6427b8d3a776d8ff3cb3b367145`
+
+---
+
+### Some changes, not that important. 09/08
+
+> Date: Mon, 08 Sep 2025 17:08:09 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/front_end_integration`
+
+> Commit: `e4bf3063501d16a55c5eece887d6085a72766701`
+
+---
+

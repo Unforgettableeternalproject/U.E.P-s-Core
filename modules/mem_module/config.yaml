@@ -1,4 +1,4 @@
-# Default config for mem_module_module
+# MEM Module Configuration
 
 embedding_model: all-MiniLM-L6-v2
 index_file: memory/dev_faiss_index

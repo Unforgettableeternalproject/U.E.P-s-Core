@@ -1,4 +1,4 @@
-# Default config for sys_module_module
+# SYS Module Configuration
 
 enabled: true
 modes:

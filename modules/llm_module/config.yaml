@@ -1,3 +1,5 @@
+# LLM Module Configuration
+
 # Gemini API 設定
 model: gemini-2.0-flash-001
 temperature: 0.8

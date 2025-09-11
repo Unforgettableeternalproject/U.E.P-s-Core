@@ -1,13 +1,5 @@
-# PyTorch + CUDA（支援 RTX 50xx / RTX 40xx）
-torch==2.7.0+cu128 --index-url https://download.pytorch.org/whl/cu128
-torchvision==0.22.0+cu128 --index-url https://download.pytorch.org/whl/cu128
-torchaudio==2.7.0+cu128 --index-url https://download.pytorch.org/whl/cu128
-
-# 核心語音相關
 speechrecognition==3.14.0
 pyaudio==0.2.14
-
-# 基本語音合成與處理
 edge-tts==7.0.1
 librosa==0.11.0
 pyworld==0.3.5
@@ -16,32 +8,18 @@ praat-parselmouth==0.4.5
 numpy==2.0.0
 soundfile==0.13.1
 ffmpeg-python==0.2.0
-
-# 語音模型與推理
 fsspec==2023.6.0
 filelock==3.16.1
-
-# NLP 模型與訓練
 transformers==4.48.1
 datasets==2.14.5
 sentence-transformers==3.3.1
 scikit-learn==1.6.1
-
-# 記憶向量管理
 faiss-cpu==1.9.0.post1
-
-# Gemini / Google AI API
 google-cloud-aiplatform==1.71.1
 python-dotenv==1.0.1
-
-# 實用工具
 pyyaml==6.0.2
 tqdm==4.67.1
-
-# 開發與測試
 pytest==8.3.3
-
-# Windows 專用 TTS 條件
 networkx==3.2.1; sys_platform == "win32"
-yarl==1.6.3; sys_platform == "win32"
+#yarl==1.6.3; sys_platform == "win32"
 typing_extensions==4.12.2

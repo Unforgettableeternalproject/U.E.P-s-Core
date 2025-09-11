@@ -4,9 +4,9 @@ modules_enabled:
   stt_module: true
   nlp_module: true
   mem_module: true
-  llm_module: true
+  llm_module: false
   tts_module: true
-  sys_module: true
+  sys_module: false
 
 logging:
   enabled: true

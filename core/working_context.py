@@ -546,6 +546,23 @@ class WorkingContextManager:
             if context.context_type == context_type
         ]
     
+    def add_data(self, context_type: ContextType, data_item: Any, 
+                metadata: Optional[Dict] = None) -> Optional[str]:
+        """
+        便利方法：添加數據到指定類型的上下文
+        
+        這是 add_data_to_context 的別名，用於向下兼容。
+        
+        Args:
+            context_type: 上下文類型
+            data_item: 要添加的數據項
+            metadata: 可選的元數據
+            
+        Returns:
+            上下文ID或None
+        """
+        return self.add_data_to_context(context_type, data_item, metadata)
+    
     def get_context_summary(self) -> Dict[str, Any]:
         """獲取上下文管理器的摘要信息"""
         summary = {

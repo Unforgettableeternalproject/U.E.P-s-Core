@@ -274,7 +274,7 @@ class MemoryContextHandler(DecisionHandler):
 
 #### 測試狀態
 
-根據 `test_mem_refactored.py` 分析：
+根據 `devtools/module_tests/test_mem_refactored.py` 分析：
 - ✅ 測試架構完善，涵蓋所有核心功能
 - ❌ 因依賴問題無法執行
 - ✅ 測試包含身份令牌、快照、語義檢索、記憶分析
@@ -416,7 +416,7 @@ unit_tests/
 ### 整合測試狀態
 
 **現有整合測試：**
-- ✅ `test_mem_refactored.py` - 完整的 MEM 重構功能測試
+- ✅ `devtools/module_tests/test_mem_refactored.py` - 完整的 MEM 重構功能測試
 - ❌ 缺少 STT→MEM 端到端測試
 - ❌ 缺少 Working Context 整合測試
 

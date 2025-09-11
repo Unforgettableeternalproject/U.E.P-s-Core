@@ -158,3 +158,7 @@ class StateManager:
         else:
             self._state = UEPState.IDLE
             self._active_session = None
+
+
+# 全局狀態管理器實例
+state_manager = StateManager()

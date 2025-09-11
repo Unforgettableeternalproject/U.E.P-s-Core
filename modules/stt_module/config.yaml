@@ -1,6 +1,101 @@
-﻿# Default config for stt_module_module
+# STT Module Configuration
 
+# 基本設備配置
 device_index: 1            # 麥克風裝置索引
-phrase_time_limit: 5       # 單句錄音最大長度（秒）(-1 表示不限制))
+phrase_time_limit: 5       # 單句錄音最大長度（秒）(-1 表示不限制)
 auto_adjust_noise: true    # 是否自動進行環境噪音調整
 debug_mode: false          # 除錯模式開關
+
+# Whisper 模型配置
+whisper_model: "base"      # 預設模型名稱 (用於 openai-whisper)
+whisper_model_path: null   # 本地模型檔案路徑 (用於 openai-whisper)
+
+# Transformers Whisper 配置 (新架構)
+whisper_model_id: "openai/whisper-large-v3"  # Hugging Face 模型 ID
+whisper_local_path: "models/stt/whisper/whisper-large-v3"  # 本地模型目錄
+use_local_model: true      # 優先使用本地模型
+use_transformers: true     # 使用 Transformers 架構 (false 則使用 openai-whisper)
+
+# 感應式啟動 (Always-on/VAD) 配置
+always_on:
+  enabled: true            # 啟用感應式監聽
+  vad_sensitivity: 0.7     # VAD 敏感度 (0.0-1.0) - 提高靈敏度
+  min_speech_duration: 0.3 # 最小語音持續時間 (秒) - 降低以捕獲更短的語音
+  max_silence_duration: 2.5 # 最大靜默時間 (秒) - 增加以允許更多停頓
+  energy_threshold: 10     # 能量閾值 - 進一步降低以增加敏感度
+  dynamic_threshold: true  # 動態調整閾值
+
+# 智能啟動配置
+smart_activation:
+  enabled: true            # 智能啟動功能
+  activation_threshold: 0.6 # 啟動閾值 (0.0-1.0)
+  wake_confidence_threshold: 0.8    # 喚醒詞信心度閾值
+  context_window_size: 10           # 上下文視窗大小（句數）
+  
+# 說話人識別 (pyannote) 配置
+speaker_identification:
+  enabled: false           # 是否啟用說話人識別
+  model_path: null         # pyannote 模型路徑
+  # 範例: model_path: "models/stt/pyannote/speaker-diarization.bin"
+  max_speakers: 4          # 最大說話人數量
+  min_segment_duration: 1.0 # 最小語音段持續時間
+
+# Speaker Recognition Mode Selection
+# Options: "basic", "advanced", "both" (try advanced first, fallback to basic)
+speaker_recognition_mode: "both"
+
+# Advanced Speaker Recognition Settings
+speaker_model: "pyannote/speaker-diarization-3.1"
+embedding_model: "pyannote/embedding"
+
+# Speaker Recognition Thresholds
+speaker_similarity_threshold: 0.009
+speaker_high_confidence_threshold: 0.0001
+speaker_medium_confidence_threshold: 0.0005
+
+# Distance Calculation Weights
+distance_weights:
+  cosine: 0.3
+  euclidean: 0.3
+  magnitude: 0.2
+  correlation: 0.2
+
+# Feature Enhancement
+use_enhanced_features: true
+use_magnitude_difference: true
+use_subspace_projection: true
+
+# Advanced Speaker Database Settings
+speaker_database_path: "memory/advanced_speaker_db.pkl"
+
+# 語音活動檢測 (VAD) 配置
+voice_activity_detection:
+  model: "silero"          # VAD 模型類型 (silero, pyannote)
+  threshold: 0.5           # VAD 閾值
+  min_speech_duration: 0.3 # 最小語音持續時間
+  min_silence_duration: 0.3 # 最小靜默持續時間
+  window_size: 512         # 分析視窗大小
+
+# 後處理配置
+post_processing:
+  text_correction: true    # 啟用文本修正
+  remove_filler_words: true # 移除填充詞 (um, uh, etc.)
+  normalize_punctuation: true # 標準化標點符號
+  
+# 錯誤處理與重試配置
+error_handling:
+  max_retries: 3           # 最大重試次數
+  retry_delay: 1.0         # 重試延遲（秒）
+  fallback_to_default_model: true # 本地模型失敗時回退到預設模型
+
+# 性能配置
+performance:
+  batch_size: 1            # 批次大小
+  chunk_length: 30         # 音訊塊長度（秒）
+  use_fp16: true           # 使用 FP16 精度（如果支援）
+  
+# 除錯與日誌配置
+logging:
+  level: "INFO"            # 日誌級別 (DEBUG, INFO, WARNING, ERROR)
+  save_audio_samples: false # 是否保存音訊樣本用於除錯
+  audio_sample_dir: "logs/stt/audio_samples" # 音訊樣本保存目錄

@@ -1,36 +1,17 @@
 from core.module_base import BaseModule
-from sentence_transformers import SentenceTransformer
-import faiss
-import numpy as np
 import os
 import json
 from datetime import datetime
 from typing import List, Dict, Any, Optional
-from .schemas import (
-    MEMInput, MEMOutput, MemoryEntry, ConversationSnapshot, 
-    LongTermMemoryEntry, MemoryQuery, MemorySearchResult,
-    LLMMemoryInstruction, MemoryOperationResult, MemoryType
-)
-from core.schemas import MEMModuleData, create_mem_data
-from core.schema_adapter import MEMSchemaAdapter
-from core.working_context import working_context_manager
-from configs.config_loader import load_module_config
-from utils.debug_helper import debug_log, debug_log_e, info_log, error_log
-from core.module_base import BaseModule
-import os
-import json
-from typing import List, Dict, Any, Optional
-from .schemas import (
-    MEMInput, MEMOutput, MemoryEntry, ConversationSnapshot, 
-    LongTermMemoryEntry, MemoryQuery, MemorySearchResult,
-    LLMMemoryInstruction, MemoryOperationResult, MemoryType
-)
-from core.schemas import MEMModuleData, create_mem_data
-from core.schema_adapter import MEMSchemaAdapter
-from core.working_context import working_context_manager
-from configs.config_loader import load_module_config
-from utils.debug_helper import debug_log, debug_log_e, info_log, error_log
 from .working_context_handler import register_memory_context_handler
+from .schemas import (
+    MEMInput, MEMOutput
+)
+from core.schemas import MEMModuleData
+from core.schema_adapter import MEMSchemaAdapter
+from core.working_context import working_context_manager
+from configs.config_loader import load_module_config
+from utils.debug_helper import debug_log, debug_log_e, info_log, error_log
 
 # 嘗試導入可選依賴
 try:
@@ -44,21 +25,6 @@ except ImportError as e:
     faiss = None
     np = None
     OPTIONAL_DEPS_AVAILABLE = False
-from sentence_transformers import SentenceTransformer
-import faiss
-import numpy as np
-import os
-import json
-from typing import List, Dict, Any, Optional
-from .schemas import (
-    MEMInput, MEMOutput, MemoryEntry, ConversationSnapshot, 
-    LongTermMemoryEntry, MemoryQuery, MemorySearchResult,
-    LLMMemoryInstruction, MemoryOperationResult, MemoryType
-)
-from core.schemas import MEMModuleData, create_mem_data
-from core.schema_adapter import MEMSchemaAdapter
-from configs.config_loader import load_module_config
-from utils.debug_helper import debug_log, debug_log_e, info_log, error_log
 
 class MEMModule(BaseModule):
     """記憶管理模組 - Phase 2 重構版本

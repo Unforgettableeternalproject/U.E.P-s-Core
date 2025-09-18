@@ -1090,3 +1090,15 @@
 
 ---
 
+### Some manual changes on session handling. 09/18
+
+> Date: Thu, 18 Sep 2025 21:26:11 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `copilot/fix-038caf95-c915-45a3-a82d-d6a5db040b5a`
+
+> Commit: `5d51b5f3e0d1339bf0fd6e22c74d41fb9cac01ed`
+
+---
+

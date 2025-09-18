@@ -1,8 +1,8 @@
 # Default config for general modules
 
 modules_enabled:
-  stt_module: false
-  nlp_module: false
+  stt_module: true
+  nlp_module: true
   mem_module: true
   llm_module: false
   tts_module: false
@@ -15,7 +15,7 @@ modules_enabled:
 modules_refactored:
   stt_module: true
   nlp_module: true
-  mem_module: false
+  mem_module: true
   llm_module: false
   tts_module: false
   sys_module: false

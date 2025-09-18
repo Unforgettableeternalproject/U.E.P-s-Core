@@ -204,3 +204,7 @@ class SessionManager:
             del self.sessions[session_id]
             
         return len(to_remove)
+
+
+# 全域 session manager 實例
+session_manager = SessionManager()

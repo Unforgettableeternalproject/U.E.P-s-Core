@@ -8,10 +8,13 @@ MEM模組內部Schema定義
 """
 
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any, Literal, Union
+from typing import List, Optional, Dict, Any, Literal, Union, TYPE_CHECKING
 from enum import Enum
 from datetime import datetime
 from core.schemas import MEMModuleData as CoreMEMData
+
+if TYPE_CHECKING:
+    from modules.nlp_module.schemas import UserProfile
 
 
 # === 記憶類型與基礎結構 ===
@@ -35,15 +38,48 @@ class MemoryImportance(str, Enum):
 
 
 class IdentityToken(BaseModel):
-    """身份令牌資訊"""
+    """身份令牌資訊 - 與 NLP UserProfile 同步"""
     memory_token: str = Field(..., description="記憶存取令牌")
     identity_id: str = Field(..., description="對應的身份ID")
+    speaker_id: Optional[str] = Field(None, description="對應的語者ID")
+    display_name: Optional[str] = Field(None, description="顯示名稱")
+    
+    # 權限和狀態管理
     permissions: List[str] = Field(default_factory=lambda: ["read", "write"], description="權限列表")
+    is_active: bool = Field(True, description="是否活躍")
+    
+    # 時間戳
     created_at: datetime = Field(default_factory=datetime.now, description="創建時間")
     last_used: Optional[datetime] = Field(None, description="最後使用時間")
     expires_at: Optional[datetime] = Field(None, description="過期時間")
-    is_active: bool = Field(True, description="是否活躍")
+    
+    # 使用者偏好 (從 NLP UserProfile 同步)
+    preferences: Dict[str, Any] = Field(default_factory=dict, description="使用者偏好")
+    voice_preferences: Dict[str, Any] = Field(default_factory=dict, description="語音風格偏好")
+    conversation_style: Dict[str, Any] = Field(default_factory=dict, description="對話風格偏好")
+    
+    # 統計資訊
+    total_interactions: int = Field(0, description="總互動次數")
+    last_interaction: Optional[datetime] = Field(None, description="最後互動時間")
+    
+    # 額外元資料
     metadata: Dict[str, Any] = Field(default_factory=dict, description="額外元資料")
+    
+    @classmethod
+    def from_user_profile(cls, user_profile: "UserProfile") -> "IdentityToken":
+        """從 NLP UserProfile 創建 IdentityToken"""
+        return cls(
+            memory_token=user_profile.memory_token or "",
+            identity_id=user_profile.identity_id,
+            speaker_id=user_profile.speaker_id,
+            display_name=user_profile.display_name,
+            preferences=user_profile.preferences,
+            voice_preferences=user_profile.voice_preferences,
+            conversation_style=user_profile.conversation_style,
+            total_interactions=user_profile.total_interactions,
+            last_interaction=user_profile.last_interaction,
+            created_at=user_profile.created_at
+        )
 
 
 class MemoryEntry(BaseModel):

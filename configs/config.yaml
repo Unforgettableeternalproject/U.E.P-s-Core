@@ -31,7 +31,7 @@ logging:
 
 debug:
   enabled: true
-  debug_level: 2
+  debug_level: 1
 
 # 全局系統設置 - 用於控制系統級別行為
 system:

@@ -19,6 +19,7 @@ from base_test_tab import BaseTestTab
 # 導入已重構的模組分頁
 from stt_test_tab import STTTestTab
 from nlp_test_tab import NLPTestTab
+from mem_test_tab import MEMTestTab
 
 # 導入 Frontend 整合分頁（UI+ANI+MOV 的整合版本）
 from frontend_test_tab import FrontendTestTab
@@ -26,7 +27,6 @@ from frontend_test_tab import FrontendTestTab
 # 導入待重構的模組分頁（使用佔位模式）
 from placeholder_test_tab import (
     PlaceholderTestTab,
-    MEMTestTab,
     LLMTestTab,
     TTSTestTab,
     SYSTestTab

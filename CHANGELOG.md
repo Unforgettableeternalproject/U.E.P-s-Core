@@ -1102,3 +1102,15 @@
 
 ---
 
+### Added some manual test and UI tab, and some other changes. 09/20
+
+> Date: Sat, 20 Sep 2025 21:36:37 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_rework`
+
+> Commit: `ba512afce7130abe8f76252957890bfc4897217a`
+
+---
+

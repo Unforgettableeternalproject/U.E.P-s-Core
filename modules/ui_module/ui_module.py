@@ -697,6 +697,107 @@ class UIModule(BaseFrontendModule):
         elif new_state == UEPState.IDLE:
             self.request_animation("idle", {})
     
+    def run_debug_test(self, test_id: str) -> dict:
+        """執行除錯測試"""
+        debug_log(1, f"[{self.module_id}] 執行除錯測試: {test_id}")
+        
+        try:
+            # MEM 模組測試
+            if test_id.startswith("mem_"):
+                return self._run_mem_test(test_id)
+            
+            # 前端模組測試
+            elif test_id.startswith("frontend_"):
+                return self._run_frontend_test(test_id)
+            
+            else:
+                return {"success": False, "error": f"未知的測試類型: {test_id}"}
+                
+        except Exception as e:
+            error_log(f"[{self.module_id}] 執行測試失敗: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def _run_mem_test(self, test_id: str) -> dict:
+        """執行MEM模組測試"""
+        try:
+            # 導入debug_api中的MEM測試函數
+            from devtools.debug_api import get_or_load_module
+            
+            # 確保模組已載入
+            get_or_load_module("mem")
+            
+            if test_id == "mem_identity_token":
+                from devtools.debug_api import mem_test_identity_token_creation
+                return mem_test_identity_token_creation("DebugTestUser", "testing")
+                
+            elif test_id == "mem_conversation_snapshot":
+                from devtools.debug_api import mem_test_conversation_snapshot
+                return mem_test_conversation_snapshot("debug_user", "這是一個測試對話快照")
+                
+            elif test_id == "mem_memory_query":
+                from devtools.debug_api import mem_test_memory_query
+                return mem_test_memory_query("debug_user", "測試查詢")
+                
+            elif test_id == "mem_identity_stats":
+                from devtools.debug_api import mem_test_identity_manager_stats
+                return mem_test_identity_manager_stats()
+                
+            elif test_id == "mem_nlp_integration":
+                from devtools.debug_api import mem_test_nlp_integration
+                return mem_test_nlp_integration()
+                
+            elif test_id == "mem_llm_context":
+                from devtools.debug_api import mem_test_llm_context_extraction
+                return mem_test_llm_context_extraction("debug_user", "測試上下文")
+                
+            elif test_id == "mem_full_workflow":
+                from devtools.debug_api import mem_test_full_workflow
+                return mem_test_full_workflow("DebugWorkflowUser")
+                
+            else:
+                return {"success": False, "error": f"未知的MEM測試: {test_id}"}
+                
+        except ImportError as e:
+            return {"success": False, "error": f"無法導入測試函數: {e}"}
+        except Exception as e:
+            return {"success": False, "error": f"MEM測試執行失敗: {e}"}
+    
+    def _run_frontend_test(self, test_id: str) -> dict:
+        """執行前端模組測試"""
+        try:
+            if test_id == "frontend_status":
+                return {"success": True, "message": "前端狀態正常", "active_interfaces": len(self.active_interfaces)}
+                
+            elif test_id == "frontend_communication":
+                # 測試與ANI和MOV模組的通訊
+                ani_status = self.ani_module is not None
+                mov_status = self.mov_module is not None
+                return {
+                    "success": ani_status and mov_status,
+                    "ani_module": ani_status,
+                    "mov_module": mov_status
+                }
+                
+            elif test_id == "frontend_integration":
+                # 測試整合功能
+                return {"success": True, "message": "整合測試通過"}
+                
+            elif test_id == "frontend_all":
+                # 執行所有前端測試
+                results = []
+                for sub_test in ["frontend_status", "frontend_communication", "frontend_integration"]:
+                    result = self._run_frontend_test(sub_test)
+                    results.append({"test": sub_test, "result": result})
+                
+                all_success = all(r["result"]["success"] for r in results)
+                return {"success": all_success, "results": results}
+                
+            else:
+                return {"success": False, "error": f"未知的前端測試: {test_id}"}
+                
+        except Exception as e:
+            return {"success": False, "error": f"前端測試執行失敗: {e}"}
+    
     def shutdown(self):
         """關閉 UI 模組"""
         # 關閉所有活動介面

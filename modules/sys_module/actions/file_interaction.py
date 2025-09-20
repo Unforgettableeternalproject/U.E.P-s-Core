@@ -1,5 +1,5 @@
 from pathlib import Path
-from utils.debug_helper import info_log, error_log
+from utils.debug_helper import debug_log, debug_log_e, info_log, error_log
 
 def drop_and_read(file_path: str) -> str:
     """
@@ -362,3 +362,4 @@ def summarize_tag(file_path: str, tag_count: int = 3) -> dict:
         "summary_file": str(summary_file_path),
         "tags": tags
     }
+    

@@ -17,7 +17,7 @@ from datetime import datetime
 
 from utils.debug_helper import debug_log, info_log, error_log
 from core.working_context import working_context_manager
-from ..schemas import MemoryEntry, MemoryType
+from ..schemas import MemoryEntry, MemoryType, IdentityToken
 
 
 class IdentityManager:
@@ -28,13 +28,17 @@ class IdentityManager:
         
         # 預設令牌
         self.system_token = "system"
-        self.anonymous_token = "anonymous" 
+        self.anonymous_token = "anonymous"
+        
+        # Identity Token 快取
+        self.identity_tokens: Dict[str, IdentityToken] = {}
         
         # 統計
         self.stats = {
             "token_extractions": 0,
             "memory_access_granted": 0,
-            "memory_access_denied": 0
+            "memory_access_denied": 0,
+            "tokens_created": 0
         }
         
         self.is_initialized = False
@@ -129,5 +133,43 @@ class IdentityManager:
         return {
             **self.stats,
             "current_memory_token": self.get_current_memory_token(),
-            "has_identity": self.get_current_identity_info() is not None
+            "has_identity": self.get_current_identity_info() is not None,
+            "cached_tokens": len(self.identity_tokens)
         }
+    
+    def create_identity_token_from_nlp(self, user_profile_data: Dict[str, Any]) -> Optional[IdentityToken]:
+        """從 NLP UserProfile 數據創建 IdentityToken"""
+        try:
+            identity_token = IdentityToken(
+                memory_token=user_profile_data.get("memory_token", ""),
+                identity_id=user_profile_data.get("identity_id", ""),
+                speaker_id=user_profile_data.get("speaker_id"),
+                display_name=user_profile_data.get("display_name"),
+                preferences=user_profile_data.get("preferences", {}),
+                voice_preferences=user_profile_data.get("voice_preferences", {}),
+                conversation_style=user_profile_data.get("conversation_style", {}),
+                total_interactions=user_profile_data.get("total_interactions", 0),
+                last_interaction=user_profile_data.get("last_interaction"),
+                created_at=user_profile_data.get("created_at") or datetime.now()
+            )
+            
+            # 快取令牌
+            self.identity_tokens[identity_token.identity_id] = identity_token
+            self.stats["tokens_created"] += 1
+            
+            info_log(f"[IdentityManager] 創建身份令牌: {identity_token.identity_id}")
+            return identity_token
+            
+        except Exception as e:
+            error_log(f"[IdentityManager] 創建身份令牌失敗: {e}")
+            return None
+    
+    def get_identity_token(self, identity_id: str) -> Optional[IdentityToken]:
+        """獲取身份令牌"""
+        return self.identity_tokens.get(identity_id)
+    
+    def update_identity_token_usage(self, identity_id: str):
+        """更新身份令牌使用時間"""
+        if identity_id in self.identity_tokens:
+            self.identity_tokens[identity_id].last_used = datetime.now()
+            self.identity_tokens[identity_id].total_interactions += 1

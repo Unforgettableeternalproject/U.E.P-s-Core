@@ -51,8 +51,8 @@ def _initialize_modules():
         module_names = ["stt_module", "nlp_module", "mem_module", "llm_module", 
                         "tts_module", "sys_module", "ui_module", "ani_module", "mov_module"]
         
-        # 載入每個模組並記錄時間
-        modules = {}
+        # 清空並重新載入模組字典
+        modules.clear()
         for full_name in module_names:
             short_name = full_name.split('_')[0]
             module_instance = safe_get_module(full_name)
@@ -65,7 +65,8 @@ def _initialize_modules():
     else:
         # GUI模式：延遲載入
         info_log("[Controller] 初始化：按需載入模式")
-        modules = {
+        modules.clear()
+        modules.update({
             "stt": None,
             "nlp": None,
             "mem": None,
@@ -75,9 +76,9 @@ def _initialize_modules():
             "ui": None,
             "ani": None,
             "mov": None
-        }
+        })
         # 初始化載入時間字典，預設為空
-        modules_load_times = {}
+        modules_load_times.clear()
 
 def set_loading_mode(preload=True):
     """設定模組載入模式
@@ -157,9 +158,12 @@ from .module_tests.frontend_tests import (
     frontend_test_user_interaction
 )
 
-# 測試 MEM 模組（尚未重構）
+# 測試 MEM 模組（重構版本）
 from .module_tests.mem_tests import (
-    mem_fetch_test, mem_store_test, mem_clear_test, mem_list_all_test
+    mem_test_identity_token_creation, mem_test_conversation_snapshot,
+    mem_test_memory_query, mem_test_identity_manager_stats,
+    mem_test_nlp_integration, mem_test_llm_context_extraction,
+    mem_test_full_workflow
 )
 
 # 測試 LLM 模組（尚未重構）
@@ -291,22 +295,34 @@ def frontend_test_user_interaction_wrapper():
     from .module_tests.frontend_tests import frontend_test_user_interaction as frontend_test_user_interaction_func
     return frontend_test_user_interaction_func(modules)
 
-# MEM 模組包裝函數（尚未重構）
-def mem_fetch_test_wrapper(text: str = ""):
-    from .module_tests.mem_tests import mem_fetch_test as mem_fetch_test_func
-    return mem_fetch_test_func(modules, text)
+# MEM 模組包裝函數（重構版本）
+def mem_test_identity_token_creation_wrapper(user_name: str = "TestUser", personality: str = "friendly"):
+    from .module_tests.mem_tests import mem_test_identity_token_creation as mem_test_func
+    return mem_test_func(modules, user_name)
 
-def mem_store_test_wrapper(user_text: str = "Test chat", response_text: str = "Test response"):
-    from .module_tests.mem_tests import mem_store_test as mem_store_test_func
-    return mem_store_test_func(modules, user_text, response_text)
+def mem_test_conversation_snapshot_wrapper(identity_token: str = "test_user", conversation: str = "你好，今天天氣如何？"):
+    from .module_tests.mem_tests import mem_test_conversation_snapshot as mem_test_func
+    return mem_test_func(modules, identity_token, conversation)
 
-def mem_clear_test_wrapper(text: str = "ALL", top_k: int = 1):
-    from .module_tests.mem_tests import mem_clear_test as mem_clear_test_func
-    return mem_clear_test_func(modules, text, top_k)
+def mem_test_memory_query_wrapper(identity_token: str = "test_user", query_text: str = "天氣"):
+    from .module_tests.mem_tests import mem_test_memory_query as mem_test_func
+    return mem_test_func(modules, identity_token, query_text)
 
-def mem_list_all_test_wrapper(page: int = 1):
-    from .module_tests.mem_tests import mem_list_all_test as mem_list_all_test_func
-    return mem_list_all_test_func(modules, page)
+def mem_test_identity_manager_stats_wrapper():
+    from .module_tests.mem_tests import mem_test_identity_manager_stats as mem_test_func
+    return mem_test_func(modules)
+
+def mem_test_nlp_integration_wrapper(nlp_output_mock: dict = None):
+    from .module_tests.mem_tests import mem_test_nlp_integration as mem_test_func
+    return mem_test_func(modules, nlp_output_mock)
+
+def mem_test_llm_context_extraction_wrapper(identity_token: str = "test_user", query_text: str = "學習"):
+    from .module_tests.mem_tests import mem_test_llm_context_extraction as mem_test_func
+    return mem_test_func(modules, identity_token, query_text)
+
+def mem_test_full_workflow_wrapper(user_name: str = "WorkflowTestUser"):
+    from .module_tests.mem_tests import mem_test_full_workflow as mem_test_func
+    return mem_test_func(modules, user_name)
 
 # LLM 模組包裝函數（尚未重構）
 def llm_test_chat_wrapper(text: str):
@@ -385,17 +401,21 @@ frontend_get_status = frontend_get_status_wrapper
 frontend_test_animations = frontend_test_animations_wrapper
 frontend_test_user_interaction = frontend_test_user_interaction_wrapper
 
-# MEM 函數別名（匹配實際的函數名稱）
-mem_fetch_test = mem_fetch_test_wrapper
-mem_store_test = mem_store_test_wrapper
-mem_clear_test = mem_clear_test_wrapper
-mem_list_all_test = mem_list_all_test_wrapper
-# 為了向後兼容，添加一些常用的別名
-mem_test_save = mem_store_test_wrapper
-mem_test_load = mem_fetch_test_wrapper
-mem_test_search = mem_fetch_test_wrapper
-mem_test_list = mem_list_all_test_wrapper
-mem_test_clear = mem_clear_test_wrapper
+# MEM 函數別名（重構版本）
+mem_test_identity_token_creation = mem_test_identity_token_creation_wrapper
+mem_test_conversation_snapshot = mem_test_conversation_snapshot_wrapper
+mem_test_memory_query = mem_test_memory_query_wrapper
+mem_test_identity_manager_stats = mem_test_identity_manager_stats_wrapper
+mem_test_nlp_integration = mem_test_nlp_integration_wrapper
+mem_test_llm_context_extraction = mem_test_llm_context_extraction_wrapper
+mem_test_full_workflow = mem_test_full_workflow_wrapper
+
+# 為了向後兼容，保留一些常用的別名
+mem_test_identity = mem_test_identity_token_creation_wrapper
+mem_test_snapshot = mem_test_conversation_snapshot_wrapper
+mem_test_query = mem_test_memory_query_wrapper
+mem_test_stats = mem_test_identity_manager_stats_wrapper
+mem_test_workflow = mem_test_full_workflow_wrapper
 
 # LLM 函數別名（匹配實際的函數名稱）
 llm_test_chat = llm_test_chat_wrapper

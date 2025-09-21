@@ -168,40 +168,8 @@ class SemanticRetriever:
     def _semantic_search(self, query: MemoryQuery) -> List[MemorySearchResult]:
         """語義搜尋"""
         try:
-            # 使用存儲管理器的向量檢索
-            vector_results = self.storage_manager.vector_search(
-                query_text=query.query_text,
-                identity_token=query.identity_token,
-                k=query.max_results * 2,  # 多檢索一些以便後續過濾
-                similarity_threshold=query.similarity_threshold
-            )
-            
-            # 轉換為 MemorySearchResult
-            results = []
-            for memory_id, similarity_score in vector_results:
-                memory_entry = self.storage_manager.get_memory(memory_id, query.identity_token)
-                if memory_entry:
-                    # 記憶類型過濾
-                    if query.memory_types and memory_entry.memory_type not in query.memory_types:
-                        continue
-                    
-                    # 時間範圍過濾
-                    if query.time_range:
-                        memory_time = memory_entry.created_at.timestamp()
-                        if not (query.time_range[0] <= memory_time <= query.time_range[1]):
-                            continue
-                    
-                    result = MemorySearchResult(
-                        memory_entry=memory_entry,
-                        similarity_score=similarity_score,
-                        retrieval_method="semantic_search",
-                        context_relevance=0.0,
-                        metadata={"vector_similarity": similarity_score}
-                    )
-                    results.append(result)
-            
-            debug_log(4, f"[SemanticRetriever] 語義搜尋: {len(results)} 個結果")
-            return results
+            # 直接使用存儲管理器的記憶搜索方法
+            return self.storage_manager.search_memories(query)
             
         except Exception as e:
             error_log(f"[SemanticRetriever] 語義搜尋失敗: {e}")
@@ -210,31 +178,20 @@ class SemanticRetriever:
     def _context_aware_search(self, query: MemoryQuery) -> List[MemorySearchResult]:
         """上下文感知檢索"""
         try:
-            results = []
-            
-            # 如果有當前意圖，優先檢索相關記憶
+            # 如果有當前意圖，使用Intent過濾的查詢
             if query.current_intent:
-                intent_results = self.storage_manager.search_by_metadata(
-                    identity_token=query.identity_token,
-                    metadata_filters={"intent_tags": query.current_intent},
-                    max_results=query.max_results
+                # 創建一個帶意圖過濾的查詢副本
+                intent_query = MemoryQuery(
+                    memory_token=query.memory_token,
+                    query_text=query.query_text + f" {query.current_intent}",
+                    memory_types=query.memory_types,
+                    max_results=query.max_results,
+                    similarity_threshold=query.similarity_threshold,
+                    current_intent=query.current_intent
                 )
-                
-                for memory_entry in intent_results:
-                    # 計算上下文相關性
-                    context_score = self._calculate_context_relevance(memory_entry, query)
-                    
-                    result = MemorySearchResult(
-                        memory_entry=memory_entry,
-                        similarity_score=context_score,
-                        retrieval_method="context_aware",
-                        context_relevance=context_score,
-                        metadata={"intent_match": True}
-                    )
-                    results.append(result)
-            
-            debug_log(4, f"[SemanticRetriever] 上下文檢索: {len(results)} 個結果")
-            return results
+                return self.storage_manager.search_memories(intent_query)
+            else:
+                return self.storage_manager.search_memories(query)
             
         except Exception as e:
             error_log(f"[SemanticRetriever] 上下文檢索失敗: {e}")
@@ -243,33 +200,17 @@ class SemanticRetriever:
     def _temporal_proximity_search(self, query: MemoryQuery) -> List[MemorySearchResult]:
         """時間鄰近性檢索"""
         try:
-            results = []
-            current_time = datetime.now()
-            
-            # 檢索最近的記憶
-            recent_memories = self.storage_manager.get_recent_memories(
-                identity_token=query.identity_token,
+            # 使用時間範圍過濾
+            recent_time = datetime.now() - timedelta(hours=24)
+            time_query = MemoryQuery(
+                memory_token=query.memory_token,
+                query_text=query.query_text,
                 memory_types=query.memory_types,
-                hours=24,  # 最近24小時
-                max_results=query.max_results
+                max_results=query.max_results,
+                similarity_threshold=query.similarity_threshold,
+                time_range={"start": recent_time, "end": datetime.now()}
             )
-            
-            for memory_entry in recent_memories:
-                # 計算時間相關性分數
-                time_diff = (current_time - memory_entry.created_at).total_seconds()
-                temporal_score = math.exp(-time_diff / 3600)  # 指數衰減
-                
-                result = MemorySearchResult(
-                    memory_entry=memory_entry,
-                    similarity_score=temporal_score,
-                    retrieval_method="temporal_proximity",
-                    context_relevance=0.0,
-                    metadata={"temporal_score": temporal_score, "hours_ago": time_diff / 3600}
-                )
-                results.append(result)
-            
-            debug_log(4, f"[SemanticRetriever] 時間鄰近檢索: {len(results)} 個結果")
-            return results
+            return self.storage_manager.search_memories(time_query)
             
         except Exception as e:
             error_log(f"[SemanticRetriever] 時間鄰近檢索失敗: {e}")
@@ -278,36 +219,16 @@ class SemanticRetriever:
     def _importance_based_search(self, query: MemoryQuery) -> List[MemorySearchResult]:
         """重要性檢索"""
         try:
-            results = []
-            
-            # 檢索高重要性記憶
-            important_memories = self.storage_manager.search_by_importance(
-                identity_token=query.identity_token,
-                min_importance=MemoryImportance.HIGH,
+            # 創建重要性過濾查詢
+            importance_query = MemoryQuery(
+                memory_token=query.memory_token,
+                query_text=query.query_text,
                 memory_types=query.memory_types,
-                max_results=query.max_results
+                max_results=query.max_results,
+                similarity_threshold=query.similarity_threshold,
+                importance_filter=[MemoryImportance.HIGH, MemoryImportance.CRITICAL]
             )
-            
-            for memory_entry in important_memories:
-                # 重要性分數映射
-                importance_score = {
-                    MemoryImportance.LOW: 0.3,
-                    MemoryImportance.MEDIUM: 0.6,
-                    MemoryImportance.HIGH: 0.9,
-                    MemoryImportance.CRITICAL: 1.0
-                }.get(memory_entry.importance, 0.5)
-                
-                result = MemorySearchResult(
-                    memory_entry=memory_entry,
-                    similarity_score=importance_score,
-                    retrieval_method="importance_based",
-                    context_relevance=0.0,
-                    metadata={"importance_level": memory_entry.importance.value}
-                )
-                results.append(result)
-            
-            debug_log(4, f"[SemanticRetriever] 重要性檢索: {len(results)} 個結果")
-            return results
+            return self.storage_manager.search_memories(importance_query)
             
         except Exception as e:
             error_log(f"[SemanticRetriever] 重要性檢索失敗: {e}")
@@ -508,7 +429,7 @@ class SemanticRetriever:
     def _generate_cache_key(self, query: MemoryQuery) -> str:
         """生成緩存鍵"""
         key_parts = [
-            query.identity_token,
+            query.memory_token,
             query.query_text,
             str(sorted(query.memory_types) if query.memory_types else ""),
             str(query.max_results),

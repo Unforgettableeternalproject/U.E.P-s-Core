@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 class MemoryType(str, Enum):
     """記憶類型"""
     SNAPSHOT = "snapshot"              # 對話快照（短期記憶）
+    LONG_TERM = "long_term"           # 長期記憶（向後相容）
     PROFILE = "profile"                # 使用者檔案（長期記憶）
     PREFERENCE = "preference"          # 使用者偏好（長期記憶）
     INTERACTION_HISTORY = "interaction_history"  # 互動歷史（長期記憶）
@@ -38,7 +39,7 @@ class MemoryImportance(str, Enum):
 
 
 class IdentityToken(BaseModel):
-    """身份令牌資訊 - 與 NLP UserProfile 同步"""
+    """記憶令牌資訊 - 管理記憶系統中的身份權限與存取控制"""
     memory_token: str = Field(..., description="記憶存取令牌")
     identity_id: str = Field(..., description="對應的身份ID")
     speaker_id: Optional[str] = Field(None, description="對應的語者ID")
@@ -67,7 +68,7 @@ class IdentityToken(BaseModel):
     
     @classmethod
     def from_user_profile(cls, user_profile: "UserProfile") -> "IdentityToken":
-        """從 NLP UserProfile 創建 IdentityToken"""
+        """從 NLP UserProfile 創建記憶令牌"""
         return cls(
             memory_token=user_profile.memory_token or "",
             identity_id=user_profile.identity_id,
@@ -85,7 +86,7 @@ class IdentityToken(BaseModel):
 class MemoryEntry(BaseModel):
     """記憶條目基礎結構"""
     memory_id: str = Field(..., description="記憶條目唯一識別")
-    identity_token: str = Field(..., description="身份令牌（記憶隔離）")
+    memory_token: str = Field(..., description="記憶令牌（記憶隔離）")
     memory_type: MemoryType = Field(..., description="記憶類型")
     
     # 內容相關
@@ -106,6 +107,9 @@ class MemoryEntry(BaseModel):
     # 重要性與評分
     importance_score: float = Field(0.5, description="重要性評分 0-1")
     access_count: int = Field(0, description="存取次數")
+    
+    # 向量嵌入
+    embedding_vector: Optional[List[float]] = Field(None, description="內容嵌入向量")
     
     # 元資料
     metadata: Dict[str, Any] = Field(default_factory=dict, description="額外元資料")
@@ -152,13 +156,14 @@ class LongTermMemoryEntry(MemoryEntry):
 
 class MemoryQuery(BaseModel):
     """記憶查詢請求"""
-    identity_token: str = Field(..., description="查詢者身份令牌")
+    memory_token: str = Field(..., description="查詢者記憶令牌")
     query_text: str = Field(..., description="查詢文本")
     
     # 過濾條件
     memory_types: Optional[List[MemoryType]] = Field(None, description="記憶類型過濾")
     topic_filter: Optional[str] = Field(None, description="主題過濾")
     time_range: Optional[Dict[str, datetime]] = Field(None, description="時間範圍")
+    importance_filter: Optional[List[MemoryImportance]] = Field(None, description="重要性過濾")
     
     # 檢索參數
     max_results: int = Field(10, description="最大結果數")
@@ -198,7 +203,7 @@ class LLMMemoryInstruction(BaseModel):
         "update_topic"
     ] = Field(..., description="指令類型")
     
-    identity_token: str = Field(..., description="身份令牌")
+    memory_token: str = Field(..., description="記憶令牌")
     target_memory_id: Optional[str] = Field(None, description="目標記憶ID")
     content: Optional[str] = Field(None, description="記憶內容")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="操作元資料")
@@ -249,7 +254,7 @@ class MEMSchemaAdapter:
         # 處理查詢相關
         if memory_query:
             core_data.query_text = memory_query.query_text
-            core_data.identity_token = memory_query.identity_token
+            core_data.identity_token = memory_query.memory_token  # 對應到核心Schema的identity_token
             core_data.memory_types = [mt.value for mt in memory_query.memory_types] if memory_query.memory_types else None
             core_data.topic_filter = memory_query.topic_filter
             core_data.similarity_threshold = memory_query.similarity_threshold
@@ -283,7 +288,7 @@ class MEMSchemaAdapter:
         
         result = {
             "operation_type": core_data.mode,
-            "identity_token": core_data.identity_token,
+            "memory_token": core_data.identity_token,  # 核心Schema的identity_token對應到記憶令牌
             "text": core_data.text,
             "context": core_data.context
         }
@@ -291,7 +296,7 @@ class MEMSchemaAdapter:
         # 處理查詢
         if core_data.query_text:
             result["memory_query"] = MemoryQuery(
-                identity_token=core_data.identity_token or "",
+                memory_token=core_data.identity_token or "",  # 核心Schema的identity_token對應到記憶令牌
                 query_text=core_data.query_text,
                 memory_types=[MemoryType(mt) for mt in core_data.memory_types] if core_data.memory_types else None,
                 topic_filter=core_data.topic_filter,
@@ -320,26 +325,80 @@ class MEMSchemaAdapter:
 class MEMInput(BaseModel):
     """MEM模組內部輸入格式"""
     operation_type: Literal[
+        # 基本操作
         "query", "store", "update", "delete", 
-        "create_snapshot", "process_llm_instruction"
+        "create_snapshot", "process_llm_instruction",
+        
+        # 記憶令牌管理
+        "validate_token", "process_identity",
+        
+        # 記憶管理
+        "store_memory", "query_memory", 
+        
+        # NLP整合
+        "process_nlp_output", "update_context",
+        
+        # 分析與總結
+        "generate_summary", "extract_key_points",
+        
+        # 用戶特質管理
+        "integrate_user_characteristics",
+        
+        # LLM交互
+        "generate_llm_instruction", "process_llm_response",
+        
+        # 會話管理
+        "create_session", "get_session_info", "add_session_interaction",
+        "get_session_history", "update_session_context", "get_session_context",
+        "end_session", "archive_session", "search_archived_sessions",
+        "process_conversation_turn", "handle_topic_transition",
+        "convert_session_to_memory", "load_user_context",
+        "provide_contextual_guidance", "preserve_session_context",
+        "retrieve_session_context", "record_session_content",
+        "generate_session_summary", "get_snapshot_history"
     ] = Field(..., description="操作類型")
     
-    # 身份相關
-    identity_token: str = Field(..., description="使用者身份令牌")
+    # 記憶令牌相關
+    memory_token: Optional[str] = Field(None, description="記憶存取令牌")
     user_profile: Optional[Dict[str, Any]] = Field(None, description="使用者檔案（來自NLP）")
     
     # 查詢相關
     query_data: Optional[MemoryQuery] = Field(None, description="查詢資料")
+    query_text: Optional[str] = Field(None, description="查詢文本")
+    max_results: Optional[int] = Field(None, description="最大結果數量")
+    memory_types: Optional[List[str]] = Field(None, description="記憶類型過濾")
     
     # 存儲相關
-    memory_entry: Optional[MemoryEntry] = Field(None, description="要存儲的記憶條目")
+    memory_entry: Optional[Dict[str, Any]] = Field(None, description="要存儲的記憶條目")
     
     # LLM指令相關
     llm_instructions: Optional[List[LLMMemoryInstruction]] = Field(None, description="LLM記憶指令")
+    llm_response: Optional[Dict[str, Any]] = Field(None, description="LLM回應資料")
     
     # 上下文相關
     conversation_text: Optional[str] = Field(None, description="當前對話文本")
+    conversation_context: Optional[Dict[str, Any]] = Field(None, description="對話上下文")
     intent_info: Optional[Dict[str, Any]] = Field(None, description="意圖資訊（來自NLP）")
+    
+    # 會話管理相關
+    session_id: Optional[str] = Field(None, description="會話ID")
+    session_metadata: Optional[Dict[str, Any]] = Field(None, description="會話元數據")
+    session_context: Optional[Dict[str, Any]] = Field(None, description="會話上下文")
+    session_content: Optional[Dict[str, Any]] = Field(None, description="會話內容")
+    interaction_data: Optional[Dict[str, Any]] = Field(None, description="互動資料")
+    interaction_content: Optional[str] = Field(None, description="互動內容")
+    turn_number: Optional[int] = Field(None, description="對話輪次")
+    previous_context: Optional[Dict[str, Any]] = Field(None, description="之前的上下文")
+    current_topic: Optional[str] = Field(None, description="當前話題")
+    transition_phase: Optional[str] = Field(None, description="轉換階段")
+    memory_extraction_options: Optional[Dict[str, Any]] = Field(None, description="記憶提取選項")
+    context_scope: Optional[str] = Field(None, description="上下文範圍")
+    use_previous_context: Optional[bool] = Field(None, description="使用之前的上下文")
+    load_previous_context: Optional[bool] = Field(None, description="載入之前的上下文")
+    create_summary: Optional[bool] = Field(None, description="創建總結")
+    summary_options: Optional[Dict[str, Any]] = Field(None, description="總結選項")
+    archive_options: Optional[Dict[str, Any]] = Field(None, description="歸檔選項")
+    search_scope: Optional[str] = Field(None, description="搜尋範圍")
 
 
 class MEMOutput(BaseModel):
@@ -347,11 +406,15 @@ class MEMOutput(BaseModel):
     success: bool = Field(..., description="操作是否成功")
     operation_type: str = Field(..., description="執行的操作類型")
     
+    # 通用消息
+    message: Optional[str] = Field(None, description="操作結果消息")
+    
     # 查詢結果
     search_results: List[MemorySearchResult] = Field(default_factory=list, description="搜索結果")
     
     # 操作結果
     operation_results: List[MemoryOperationResult] = Field(default_factory=list, description="操作結果")
+    operation_result: Optional[Dict[str, Any]] = Field(None, description="單個操作結果")
     
     # LLM提示相關
     memory_context: Optional[str] = Field(None, description="記憶上下文（供LLM使用）")
@@ -361,9 +424,18 @@ class MEMOutput(BaseModel):
     active_snapshots: List[ConversationSnapshot] = Field(default_factory=list, description="活躍快照")
     snapshot_summary: Optional[str] = Field(None, description="快照摘要")
     
+    # 會話管理相關
+    session_id: Optional[str] = Field(None, description="會話ID")
+    session_context: Optional[Dict[str, Any]] = Field(None, description="會話上下文")
+    session_info: Optional[Dict[str, Any]] = Field(None, description="會話資訊")
+    interaction_count: Optional[int] = Field(None, description="互動數量")
+    
     # 統計與狀態
     total_memories: int = Field(0, description="總記憶數量")
     memory_usage: Dict[str, int] = Field(default_factory=dict, description="記憶使用統計")
+    
+    # 通用數據字段
+    data: Optional[Dict[str, Any]] = Field(None, description="操作相關數據")
     
     # 錯誤與警告
     errors: List[str] = Field(default_factory=list, description="錯誤訊息")

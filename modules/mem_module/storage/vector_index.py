@@ -93,16 +93,20 @@ class VectorIndexManager:
             debug_log(2, f"[VectorIndex] 創建新索引，維度: {self.vector_dimension}")
             
             if self.index_type == "IndexFlatIP":
-                # 內積索引 (適合歸一化向量)
-                self.index = faiss.IndexFlatIP(self.vector_dimension)
+                # 內積索引 (適合歸一化向量) 
+                # 使用 IndexIDMap 包裝以支援ID
+                base_index = faiss.IndexFlatIP(self.vector_dimension)
+                self.index = faiss.IndexIDMap(base_index)
             elif self.index_type == "IndexFlatL2":
                 # L2距離索引
-                self.index = faiss.IndexFlatL2(self.vector_dimension)
+                base_index = faiss.IndexFlatL2(self.vector_dimension)
+                self.index = faiss.IndexIDMap(base_index)
             elif self.index_type == "IndexIVFFlat":
                 # IVF索引 (適合大量向量)
                 nlist = min(100, max(1, int(self.vector_dimension / 4)))
                 quantizer = faiss.IndexFlatIP(self.vector_dimension)
-                self.index = faiss.IndexIVFFlat(quantizer, self.vector_dimension, nlist)
+                base_index = faiss.IndexIVFFlat(quantizer, self.vector_dimension, nlist)
+                self.index = faiss.IndexIDMap(base_index)
             else:
                 error_log(f"[VectorIndex] 不支援的索引類型: {self.index_type}")
                 return False

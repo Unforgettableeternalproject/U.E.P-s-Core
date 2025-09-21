@@ -224,12 +224,15 @@ class ModuleManager:
                 "clear_contexts": debug_api.nlp_clear_contexts_wrapper,
             }
             
-            # MEM 測試函數 - 使用包裝函數
+            # MEM 測試函數 - 使用包裝函數 (更新為新架構)
             self.test_functions["mem"] = {
-                "fetch_test": debug_api.mem_fetch_test_wrapper,
-                "store_test": debug_api.mem_store_test_wrapper,
-                "clear_test": debug_api.mem_clear_test_wrapper,
-                "list_all_test": debug_api.mem_list_all_test_wrapper,
+                "memory_access_control": debug_api.mem_test_memory_access_control_wrapper,
+                "conversation_snapshot": debug_api.mem_test_conversation_snapshot_wrapper,
+                "memory_query": debug_api.mem_test_memory_query_wrapper,
+                "identity_manager_stats": debug_api.mem_test_identity_manager_stats_wrapper,
+                "nlp_integration": debug_api.mem_test_nlp_integration_wrapper,
+                "llm_context_extraction": debug_api.mem_test_llm_context_extraction_wrapper,
+                "full_workflow": debug_api.mem_test_full_workflow_wrapper,
             }
             
             # LLM 測試函數 - 使用包裝函數

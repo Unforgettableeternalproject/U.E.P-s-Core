@@ -244,7 +244,7 @@ class DebugInterface(QWidget):
         mem_layout = QVBoxLayout(mem_group)
         
         mem_tests = [
-            ("測試身份Token創建", "mem_identity_token"),
+            ("測試記憶體存取控制", "mem_memory_access_control"),
             ("測試對話快照創建", "mem_conversation_snapshot"),
             ("測試記憶查詢", "mem_memory_query"),
             ("測試身份管理統計", "mem_identity_stats"),

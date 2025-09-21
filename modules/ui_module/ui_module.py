@@ -726,33 +726,33 @@ class UIModule(BaseFrontendModule):
             # 確保模組已載入
             get_or_load_module("mem")
             
-            if test_id == "mem_identity_token":
-                from devtools.debug_api import mem_test_identity_token_creation
-                return mem_test_identity_token_creation("DebugTestUser", "testing")
+            if test_id == "mem_memory_access_control":
+                from devtools.debug_api import mem_test_memory_access_control_wrapper
+                return mem_test_memory_access_control_wrapper("test_user_debug")
                 
             elif test_id == "mem_conversation_snapshot":
-                from devtools.debug_api import mem_test_conversation_snapshot
-                return mem_test_conversation_snapshot("debug_user", "這是一個測試對話快照")
+                from devtools.debug_api import mem_test_conversation_snapshot_wrapper
+                return mem_test_conversation_snapshot_wrapper("debug_user", "這是一個測試對話快照")
                 
             elif test_id == "mem_memory_query":
-                from devtools.debug_api import mem_test_memory_query
-                return mem_test_memory_query("debug_user", "測試查詢")
+                from devtools.debug_api import mem_test_memory_query_wrapper
+                return mem_test_memory_query_wrapper("debug_user", "測試查詢")
                 
             elif test_id == "mem_identity_stats":
-                from devtools.debug_api import mem_test_identity_manager_stats
-                return mem_test_identity_manager_stats()
+                from devtools.debug_api import mem_test_identity_manager_stats_wrapper
+                return mem_test_identity_manager_stats_wrapper()
                 
             elif test_id == "mem_nlp_integration":
-                from devtools.debug_api import mem_test_nlp_integration
-                return mem_test_nlp_integration()
+                from devtools.debug_api import mem_test_nlp_integration_wrapper
+                return mem_test_nlp_integration_wrapper()
                 
             elif test_id == "mem_llm_context":
-                from devtools.debug_api import mem_test_llm_context_extraction
-                return mem_test_llm_context_extraction("debug_user", "測試上下文")
+                from devtools.debug_api import mem_test_llm_context_extraction_wrapper
+                return mem_test_llm_context_extraction_wrapper("debug_user", "測試上下文")
                 
             elif test_id == "mem_full_workflow":
-                from devtools.debug_api import mem_test_full_workflow
-                return mem_test_full_workflow("DebugWorkflowUser")
+                from devtools.debug_api import mem_test_full_workflow_wrapper
+                return mem_test_full_workflow_wrapper("DebugWorkflowUser")
                 
             else:
                 return {"success": False, "error": f"未知的MEM測試: {test_id}"}

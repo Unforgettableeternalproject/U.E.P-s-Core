@@ -91,7 +91,7 @@ class MemoryContextHandler(DecisionHandler):
                 "reason": f"對話消息數量達到快照閾值 ({total_messages})",
                 "confidence": 0.9,
                 "snapshot_data": conversation_data,
-                "identity_token": metadata.get("identity_token"),
+                "memory_token": metadata.get("memory_token"),
                 "topic": metadata.get("current_topic", "未命名對話")
             }
         
@@ -103,7 +103,7 @@ class MemoryContextHandler(DecisionHandler):
                 "reason": f"活躍快照數量過多 ({active_snapshots})",
                 "confidence": 0.8,
                 "max_active": 2,
-                "identity_token": metadata.get("identity_token")
+                "memory_token": metadata.get("memory_token")
             }
         
         return {"action": "no_action", "reason": "對話上下文正常"}
@@ -113,13 +113,13 @@ class MemoryContextHandler(DecisionHandler):
         identity_data = context_data.get("data")
         metadata = context_data.get("metadata", {})
         
-        if identity_data and "identity_token" in metadata:
+        if identity_data and "memory_token" in metadata:
             return {
                 "action": "sync_identity_memory",
                 "reason": "身份資訊更新，需要同步記憶系統",
                 "confidence": 1.0,
                 "identity_data": identity_data,
-                "identity_token": metadata["identity_token"]
+                "memory_token": metadata["memory_token"]
             }
         
         return {"action": "no_action", "reason": "身份上下文無需處理"}
@@ -135,7 +135,7 @@ class MemoryContextHandler(DecisionHandler):
                 "reason": f"學習資料累積足夠 ({len(learning_data)} 項)",
                 "confidence": 0.8,
                 "learning_data": learning_data,
-                "identity_token": metadata.get("identity_token"),
+                "memory_token": metadata.get("memory_token"),
                 "learning_type": metadata.get("learning_type", "general")
             }
         
@@ -152,7 +152,7 @@ class MemoryContextHandler(DecisionHandler):
                 "reason": "接收到記憶查詢請求",
                 "confidence": 1.0,
                 "query_data": query_data,
-                "identity_token": metadata.get("identity_token")
+                "memory_token": metadata.get("memory_token")
             }
         
         return {"action": "no_action", "reason": "查詢資料不完整"}
@@ -164,7 +164,7 @@ class MemoryContextHandler(DecisionHandler):
             return False
         
         try:
-            identity_token = decision.get("identity_token")
+            memory_token = decision.get("memory_token")
             snapshot_data = decision.get("snapshot_data", [])
             topic = decision.get("topic", "未命名對話")
             
@@ -174,7 +174,7 @@ class MemoryContextHandler(DecisionHandler):
             ])
             
             snapshot = self.memory_manager.create_conversation_snapshot(
-                identity_token=identity_token,
+                memory_token=memory_token,
                 conversation_text=conversation_text,
                 topic=topic
             )
@@ -200,13 +200,13 @@ class MemoryContextHandler(DecisionHandler):
             return False
         
         try:
-            identity_token = decision.get("identity_token")
+            memory_token = decision.get("memory_token")
             max_active = decision.get("max_active", 2)
             
             # 這裡應該調用記憶管理器的歸檔方法
-            # result = self.memory_manager.archive_old_snapshots(identity_token, max_active)
+            # result = self.memory_manager.archive_old_snapshots(memory_token, max_active)
             
-            debug_log(2, f"[MemoryContextHandler] 歸檔舊快照: {identity_token}")
+            debug_log(2, f"[MemoryContextHandler] 歸檔舊快照: {memory_token}")
             return True
             
         except Exception as e:
@@ -220,12 +220,12 @@ class MemoryContextHandler(DecisionHandler):
         
         try:
             identity_data = decision.get("identity_data")
-            identity_token = decision.get("identity_token")
+            memory_token = decision.get("memory_token")
             
             # 這裡應該調用記憶管理器的身份同步方法
-            # result = self.memory_manager.sync_identity_data(identity_token, identity_data)
+            # result = self.memory_manager.sync_identity_data(memory_token, identity_data)
             
-            debug_log(2, f"[MemoryContextHandler] 同步身份記憶: {identity_token}")
+            debug_log(2, f"[MemoryContextHandler] 同步身份記憶: {memory_token}")
             return True
             
         except Exception as e:
@@ -239,11 +239,11 @@ class MemoryContextHandler(DecisionHandler):
         
         try:
             learning_data = decision.get("learning_data", [])
-            identity_token = decision.get("identity_token")
+            memory_token = decision.get("memory_token")
             learning_type = decision.get("learning_type", "general")
             
             # 這裡應該調用記憶管理器的學習記憶更新方法
-            # result = self.memory_manager.update_learning_memory(identity_token, learning_data, learning_type)
+            # result = self.memory_manager.update_learning_memory(memory_token, learning_data, learning_type)
             
             debug_log(2, f"[MemoryContextHandler] 更新學習記憶: {len(learning_data)} 項")
             return True
@@ -259,11 +259,11 @@ class MemoryContextHandler(DecisionHandler):
         
         try:
             query_data = decision.get("query_data", {})
-            identity_token = decision.get("identity_token")
+            memory_token = decision.get("memory_token")
             
             # 創建記憶查詢對象
             memory_query = MemoryQuery(
-                identity_token=identity_token,
+                memory_token=memory_token,
                 query_text=query_data.get("query_text", ""),
                 memory_types=query_data.get("memory_types"),
                 max_results=query_data.get("max_results", 10),

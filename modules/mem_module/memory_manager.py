@@ -131,21 +131,21 @@ class MemoryManager:
         self.current_context = context
         debug_log(3, f"[MemoryManagerV2] 設定記憶上下文: {context.current_session_id}")
     
-    def start_session(self, session_id: str, identity_token: str = None, 
+    def start_session(self, session_id: str, memory_token: str = None, 
                      initial_context: Dict[str, Any] = None) -> bool:
         """開始新會話"""
         try:
-            # 如果沒有提供身份令牌，從Working Context獲取
-            if not identity_token:
-                identity_token = self.identity_manager.get_current_memory_token()
+            # 如果沒有提供記憶令牌，從Working Context獲取
+            if not memory_token:
+                memory_token = self.identity_manager.get_current_memory_token()
             
             # 驗證記憶體存取權限
-            if not self.identity_manager.validate_memory_access(identity_token, "write"):
-                error_log(f"[MemoryManagerV2] 記憶體存取權限驗證失敗: {identity_token}")
+            if not self.identity_manager.validate_memory_access(memory_token, "write"):
+                error_log(f"[MemoryManagerV2] 記憶體存取權限驗證失敗: {memory_token}")
                 return False
             
             # 開始快照會話
-            if not self.snapshot_manager.start_session_snapshot(session_id, identity_token, initial_context):
+            if not self.snapshot_manager.start_session_snapshot(session_id, memory_token, initial_context):
                 error_log(f"[MemoryManagerV2] 快照會話開始失敗: {session_id}")
                 return False
             
@@ -161,14 +161,14 @@ class MemoryManager:
             self.set_context(context)
             
             self.stats["sessions_managed"] += 1
-            info_log(f"[MemoryManagerV2] 會話開始: {session_id} (記憶體令牌: {identity_token})")
+            info_log(f"[MemoryManagerV2] 會話開始: {session_id} (記憶體令牌: {memory_token})")
             return True
             
         except Exception as e:
             error_log(f"[MemoryManagerV2] 開始會話失敗: {e}")
             return False
     
-    def store_memory(self, content: str, identity_token: str = None,
+    def store_memory(self, content: str, memory_token: str = None,
                     memory_type: MemoryType = MemoryType.SNAPSHOT,
                     importance: MemoryImportance = None,
                     topic: str = None,
@@ -176,12 +176,12 @@ class MemoryManager:
                     metadata: Dict[str, Any] = None) -> MemoryOperationResult:
         """存儲新記憶 - 整合分析功能"""
         try:
-            # 如果沒有提供身份令牌，從Working Context獲取
-            if not identity_token:
-                identity_token = self.identity_manager.get_current_memory_token()
+            # 如果沒有提供記憶令牌，從Working Context獲取
+            if not memory_token:
+                memory_token = self.identity_manager.get_current_memory_token()
             
             # 驗證記憶體存取權限
-            if not self.identity_manager.validate_memory_access(identity_token, "write"):
+            if not self.identity_manager.validate_memory_access(memory_token, "write"):
                 return MemoryOperationResult(
                     success=False,
                     operation_type="store",
@@ -192,7 +192,7 @@ class MemoryManager:
             analysis_result = self.memory_analyzer.analyze_memory(
                 MemoryEntry(
                     memory_id="temp_for_analysis",
-                    identity_token=identity_token,
+                    memory_token=memory_token,
                     memory_type=memory_type,
                     content=content,
                     importance=importance or MemoryImportance.MEDIUM,
@@ -231,7 +231,7 @@ class MemoryManager:
             # 創建記憶條目
             memory_entry = MemoryEntry(
                 memory_id=self._generate_memory_id(),
-                identity_token=identity_token,
+                memory_token=memory_token,
                 memory_type=memory_type,
                 content=content,
                 importance=importance,
@@ -258,7 +258,7 @@ class MemoryManager:
                 # 添加到快照
                 if self.current_context and memory_entry.session_id:
                     message_data = {
-                        "speaker": identity_token,
+                        "speaker": memory_token,
                         "content": content,
                         "timestamp": datetime.now(),
                         "memory_id": memory_entry.memory_id,
@@ -281,25 +281,25 @@ class MemoryManager:
                 message=f"存儲異常: {str(e)}"
             )
     
-    def retrieve_memories(self, query_text: str, identity_token: str = None,
+    def retrieve_memories(self, query_text: str, memory_token: str = None,
                          memory_types: List[MemoryType] = None,
                          max_results: int = 10,
                          similarity_threshold: float = 0.6,
                          include_context: bool = True) -> List[MemorySearchResult]:
         """檢索相關記憶 - 使用語義檢索器"""
         try:
-            # 如果沒有提供身份令牌，從Working Context獲取
-            if not identity_token:
-                identity_token = self.identity_manager.get_current_memory_token()
+            # 如果沒有提供記憶令牌，從Working Context獲取
+            if not memory_token:
+                memory_token = self.identity_manager.get_current_memory_token()
             
             # 驗證記憶體存取權限
-            if not self.identity_manager.validate_memory_access(identity_token, "read"):
-                error_log(f"[MemoryManagerV2] 記憶體讀取權限不足: {identity_token}")
+            if not self.identity_manager.validate_memory_access(memory_token, "read"):
+                error_log(f"[MemoryManagerV2] 記憶體讀取權限不足: {memory_token}")
                 return []
             
             # 構建查詢
             query = MemoryQuery(
-                identity_token=identity_token,
+                memory_token=memory_token,
                 query_text=query_text,
                 memory_types=memory_types or [MemoryType.SNAPSHOT, MemoryType.EPISODE, MemoryType.SEMANTIC],
                 max_results=max_results,
@@ -321,16 +321,49 @@ class MemoryManager:
             error_log(f"[MemoryManagerV2] 檢索記憶失敗: {e}")
             return []
     
-    def create_manual_snapshot(self, session_id: str, identity_token: str = None,
+    def process_memory_query(self, query: MemoryQuery) -> List[MemorySearchResult]:
+        """處理記憶查詢請求 - 為MEMModule提供的統一介面"""
+        return self.retrieve_memories(
+            query_text=query.query_text,
+            memory_token=query.memory_token,
+            memory_types=query.memory_types,
+            max_results=query.max_results,
+            similarity_threshold=query.similarity_threshold
+        )
+    
+    def create_conversation_snapshot(self, memory_token: str, conversation_text: str, 
+                                   topic: str = "general") -> Optional[ConversationSnapshot]:
+        """創建對話快照"""
+        try:
+            # 驗證記憶體存取權限
+            if not self.identity_manager.validate_memory_access(memory_token, "write"):
+                error_log(f"[MemoryManagerV2] 記憶體存取權限驗證失敗: {memory_token}")
+                return None
+            
+            # 使用快照管理器創建快照
+            snapshot = self.snapshot_manager.create_snapshot(memory_token, conversation_text, topic)
+            
+            if snapshot:
+                info_log(f"[MemoryManagerV2] 對話快照創建成功: {snapshot.memory_id}")
+                return snapshot
+            else:
+                error_log("[MemoryManagerV2] 對話快照創建失敗")
+                return None
+                
+        except Exception as e:
+            error_log(f"[MemoryManagerV2] 創建對話快照時發生錯誤: {e}")
+            return None
+    
+    def create_manual_snapshot(self, session_id: str, memory_token: str = None,
                               snapshot_name: str = None) -> MemoryOperationResult:
         """創建手動快照"""
         try:
-            # 如果沒有提供身份令牌，從Working Context獲取
-            if not identity_token:
-                identity_token = self.identity_manager.get_current_memory_token()
+            # 如果沒有提供記憶令牌，從Working Context獲取
+            if not memory_token:
+                memory_token = self.identity_manager.get_current_memory_token()
             
             # 驗證記憶體存取權限
-            if not self.identity_manager.validate_memory_access(identity_token, "write"):
+            if not self.identity_manager.validate_memory_access(memory_token, "write"):
                 return MemoryOperationResult(
                     success=False,
                     operation_type="manual_snapshot",
@@ -353,7 +386,7 @@ class MemoryManager:
                 message=f"創建失敗: {str(e)}"
             )
     
-    def end_session(self, session_id: str, identity_token: str,
+    def end_session(self, session_id: str, memory_token: str,
                    create_final_snapshot: bool = True) -> MemoryOperationResult:
         """結束會話"""
         try:
@@ -375,57 +408,57 @@ class MemoryManager:
                 message=f"結束失敗: {str(e)}"
             )
     
-    def analyze_user_patterns(self, identity_token: str = None, 
+    def analyze_user_patterns(self, memory_token: str = None, 
                              days_back: int = 30) -> Dict[str, Any]:
         """分析使用者記憶模式"""
         try:
-            # 如果沒有提供身份令牌，從Working Context獲取
-            if not identity_token:
-                identity_token = self.identity_manager.get_current_memory_token()
+            # 如果沒有提供記憶令牌，從Working Context獲取
+            if not memory_token:
+                memory_token = self.identity_manager.get_current_memory_token()
             
             # 驗證記憶體存取權限
-            if not self.identity_manager.validate_memory_access(identity_token, "read"):
+            if not self.identity_manager.validate_memory_access(memory_token, "read"):
                 return {"error": "記憶體存取權限不足"}
             
             # 獲取使用者記憶
             cutoff_date = datetime.now() - timedelta(days=days_back)
             memories = self.storage_manager.get_memories_by_timerange(
-                identity_token=identity_token,
+                memory_token=memory_token,
                 start_time=cutoff_date,
                 end_time=datetime.now()
             )
             
             # 使用記憶分析器分析模式
-            pattern_analysis = self.memory_analyzer.analyze_memory_patterns(memories, identity_token)
+            pattern_analysis = self.memory_analyzer.analyze_memory_patterns(memories, memory_token)
             
-            debug_log(3, f"[MemoryManagerV2] 使用者模式分析完成: {identity_token}")
+            debug_log(3, f"[MemoryManagerV2] 使用者模式分析完成: {memory_token}")
             return pattern_analysis
             
         except Exception as e:
             error_log(f"[MemoryManagerV2] 使用者模式分析失敗: {e}")
             return {"error": str(e)}
     
-    def consolidate_memories(self, identity_token: str = None) -> MemoryOperationResult:
+    def consolidate_memories(self, memory_token: str = None) -> MemoryOperationResult:
         """整合記憶（簡化版本）"""
         try:
-            # 如果沒有提供身份令牌，從Working Context獲取
-            if not identity_token:
-                identity_token = self.identity_manager.get_current_memory_token()
+            # 如果沒有提供記憶令牌，從Working Context獲取
+            if not memory_token:
+                memory_token = self.identity_manager.get_current_memory_token()
             
             # 驗證記憶體存取權限
-            if not self.identity_manager.validate_memory_access(identity_token, "write"):
+            if not self.identity_manager.validate_memory_access(memory_token, "write"):
                 return MemoryOperationResult(
                     success=False,
                     operation_type="consolidate",
                     message="記憶體存取權限不足"
                 )
             
-            info_log(f"[MemoryManagerV2] 開始記憶整合: {identity_token}")
+            info_log(f"[MemoryManagerV2] 開始記憶整合: {memory_token}")
             
             # 獲取需要整合的記憶（例如，過去24小時的快照記憶）
             cutoff_time = datetime.now() - timedelta(hours=24)
             snapshot_memories = self.storage_manager.get_memories_by_type_and_time(
-                identity_token=identity_token,
+                memory_token=memory_token,
                 memory_type=MemoryType.SNAPSHOT,
                 start_time=cutoff_time,
                 end_time=datetime.now()
@@ -454,7 +487,7 @@ class MemoryManager:
                 # 創建語義記憶版本
                 semantic_memory = MemoryEntry(
                     memory_id=self._generate_memory_id(),
-                    identity_token=memory.identity_token,
+                    memory_token=memory.memory_token,
                     memory_type=MemoryType.SEMANTIC,
                     content=memory.content,
                     importance=memory.importance,

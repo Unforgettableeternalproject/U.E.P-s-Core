@@ -1114,3 +1114,15 @@
 
 ---
 
+### Removed identity token and replaced all with memory token, as initially planned. Tests are still ongoing. 09/22
+
+> Date: Mon, 22 Sep 2025 03:02:13 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_rework`
+
+> Commit: `199bd757b22c5970a3f9b1e7720c3f1fa73bd7fb`
+
+---
+

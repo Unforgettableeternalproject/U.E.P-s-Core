@@ -100,7 +100,7 @@ class SnapshotManager:
         debug_log(3, "[SnapshotManager] 設定自動清理計時器")
         # 這裡可以設定定期清理任務
     
-    def start_session_snapshot(self, session_id: str, identity_token: str,
+    def start_session_snapshot(self, session_id: str, memory_token: str,
                               initial_context: Dict[str, Any] = None) -> bool:
         """開始會話快照"""
         try:
@@ -123,13 +123,13 @@ class SnapshotManager:
             snapshot = ConversationSnapshot(
                 snapshot_id=f"snapshot_{session_id}_{int(time.time())}",
                 session_id=session_id,
-                identity_token=identity_token,
+                memory_token=memory_token,
                 start_time=datetime.now(),
                 end_time=None,
                 messages=[],
                 summary="",
                 key_topics=[],
-                participant_info={identity_token: {"message_count": 0}},
+                                participant_info={memory_token: {"role": "user", "name": "User"}},
                 context_data=initial_context or {},
                 metadata={"auto_generated": False}
             )
@@ -252,7 +252,7 @@ class SnapshotManager:
         
         return " | ".join(content_parts)
     
-    def create_snapshot(self, identity_token: str, content: str, topic: str = "general") -> Optional[ConversationSnapshot]:
+    def create_snapshot(self, memory_token: str, content: str, topic: str = "general") -> Optional[ConversationSnapshot]:
         """創建簡單快照 - 用於測試和直接創建"""
         try:
             import uuid
@@ -260,13 +260,16 @@ class SnapshotManager:
             memory_id = f"mem_{int(time.time())}_{str(uuid.uuid4())[:8]}"
             
             # 創建快照對象
+            # 確保 keywords 列表中沒有 None 值
+            keywords_list = [kw for kw in [topic, "conversation", "snapshot"] if kw is not None]
+            
             snapshot = ConversationSnapshot(
                 memory_id=memory_id,
-                identity_token=identity_token,
+                memory_token=memory_token,
                 memory_type=MemoryType.SNAPSHOT,
                 content=content,
                 summary=content[:200] + "..." if len(content) > 200 else content,
-                keywords=[topic, "conversation", "snapshot"],
+                keywords=keywords_list,
                 topic=topic,
                 stage_number=1,
                 message_count=1,
@@ -293,16 +296,16 @@ class SnapshotManager:
             error_log(f"[SnapshotManager] 創建快照失敗: {e}")
             return None
     
-    def get_active_snapshots(self, identity_token: str) -> List[ConversationSnapshot]:
-        """獲取指定身份令牌的活躍快照"""
+    def get_active_snapshots(self, memory_token: str) -> List[ConversationSnapshot]:
+        """獲取指定記憶令牌的活躍快照"""
         try:
             active_snapshots = []
             
             for memory_id, snapshot in self._active_snapshots.items():
-                if snapshot.identity_token == identity_token and snapshot.is_active:
+                if snapshot.memory_token == memory_token and snapshot.is_active:
                     active_snapshots.append(snapshot)
             
-            debug_log(3, f"[SnapshotManager] 找到 {len(active_snapshots)} 個活躍快照 (令牌: {identity_token})")
+            debug_log(3, f"[SnapshotManager] 找到 {len(active_snapshots)} 個活躍快照 (令牌: {memory_token})")
             return active_snapshots
             
         except Exception as e:

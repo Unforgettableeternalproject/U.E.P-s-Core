@@ -129,17 +129,17 @@ class MemoryStorageManager:
         
         try:
             with self._sync_lock:
-                # 驗證身份令牌
-                if not self.identity_manager.validate_memory_token(memory_entry.identity_token):
+                # 驗證記憶令牌
+                if not self.identity_manager.validate_memory_token(memory_entry.memory_token):
                     return MemoryOperationResult(
                         success=False,
                         operation_type="store",
-                        message="無效的身份令牌",
+                        message="無效的記憶令牌",
                         execution_time=time.time() - start_time
                     )
                 
                 # 檢查操作權限
-                if not self.identity_manager.check_operation_permission(memory_entry.identity_token, "write"):
+                if not self.identity_manager.check_operation_permission(memory_entry.memory_token, "write"):
                     return MemoryOperationResult(
                         success=False,
                         operation_type="store",
@@ -213,27 +213,33 @@ class MemoryStorageManager:
         """搜索記憶"""
         try:
             with self._sync_lock:
-                # 驗證身份令牌
-                if not self.identity_manager.validate_memory_token(query.identity_token):
-                    error_log(f"[StorageManager] 無效的身份令牌: {query.identity_token[:8]}...")
+                # 驗證記憶令牌
+                if not self.identity_manager.validate_memory_token(query.memory_token):
+                    error_log(f"[StorageManager] 無效的記憶令牌: {query.memory_token[:8]}...")
                     return []
                 
                 # 檢查查詢權限
-                if not self.identity_manager.check_operation_permission(query.identity_token, "query"):
+                if not self.identity_manager.check_operation_permission(query.memory_token, "query"):
                     error_log("[StorageManager] 沒有查詢權限")
                     return []
                 
                 # 從元資料篩選候選記憶
-                metadata_filters = {
-                    'memory_types': [t.value for t in query.memory_types] if query.memory_types else None,
-                    'topic_filter': query.topic_filter,
-                    'importance_filter': [i.value for i in query.importance_filter] if query.importance_filter else None,
-                    'time_range': query.time_range,
-                    'include_archived': query.include_archived
-                }
+                metadata_filters = {}
+                
+                # 只添加非 None 的過濾器
+                if query.memory_types:
+                    metadata_filters['memory_types'] = [t.value for t in query.memory_types]
+                if query.topic_filter:
+                    metadata_filters['topic_filter'] = query.topic_filter
+                if query.importance_filter:
+                    metadata_filters['importance_filter'] = [i.value for i in query.importance_filter]
+                if query.time_range:
+                    metadata_filters['time_range'] = query.time_range
+                if hasattr(query, 'include_archived') and query.include_archived is not None:
+                    metadata_filters['include_archived'] = query.include_archived
                 
                 candidate_memories = self.metadata_manager.search_memories(
-                    query.identity_token, 
+                    query.memory_token, 
                     metadata_filters
                 )
                 
@@ -364,16 +370,27 @@ class MemoryStorageManager:
                 from datetime import datetime
                 memory_data['created_at'] = datetime.fromisoformat(memory_data['created_at'].replace('Z', '+00:00'))
             
+            # 確保必要字段存在，提供預設值
+            if 'embedding_vector' not in memory_data:
+                memory_data['embedding_vector'] = None
+            if 'importance' not in memory_data:
+                memory_data['importance'] = MemoryImportance.MEDIUM
+            if 'access_count' not in memory_data:
+                memory_data['access_count'] = 0
+            
             return MemoryEntry(**memory_data)
             
         except Exception as e:
             error_log(f"[StorageManager] 重構記憶條目失敗: {e}")
-            # 提供預設值
+            # 提供完整的預設值
             return MemoryEntry(
                 memory_id=memory_data.get('memory_id', 'unknown'),
-                identity_token=memory_data.get('identity_token', ''),
+                memory_token=memory_data.get('memory_token', ''),
                 memory_type=MemoryType(memory_data.get('memory_type', 'snapshot')),
-                content=memory_data.get('content', '')
+                content=memory_data.get('content', ''),
+                importance=MemoryImportance.MEDIUM,
+                access_count=0,
+                embedding_vector=None
             )
     
     def _calculate_relevance_score(self, memory_entry: MemoryEntry, query: MemoryQuery, 
@@ -382,7 +399,7 @@ class MemoryStorageManager:
         try:
             relevance = similarity_score
             
-            # 重要性加權
+            # 重要性加權 - 安全地獲取 importance 屬性
             importance_weights = {
                 MemoryImportance.CRITICAL: 1.2,
                 MemoryImportance.HIGH: 1.1,
@@ -391,16 +408,21 @@ class MemoryStorageManager:
                 MemoryImportance.TEMPORARY: 0.8
             }
             
-            importance_weight = importance_weights.get(memory_entry.importance, 1.0)
+            # 安全地獲取 importance 屬性
+            importance = getattr(memory_entry, 'importance', MemoryImportance.MEDIUM)
+            importance_weight = importance_weights.get(importance, 1.0)
             relevance *= importance_weight
             
-            # 時間衰減（最近的記憶更相關）
-            time_diff = (time.time() - memory_entry.created_at.timestamp()) / 86400  # 天數
-            time_decay = max(0.5, 1.0 - (time_diff * 0.01))  # 每天衰減1%
-            relevance *= time_decay
+            # 時間衰減（最近的記憶更相關） - 安全地獲取 created_at
+            created_at = getattr(memory_entry, 'created_at', None)
+            if created_at:
+                time_diff = (time.time() - created_at.timestamp()) / 86400  # 天數
+                time_decay = max(0.5, 1.0 - (time_diff * 0.01))  # 每天衰減1%
+                relevance *= time_decay
             
-            # 存取頻率加權
-            access_boost = min(1.2, 1.0 + (memory_entry.access_count * 0.01))
+            # 存取頻率加權 - 安全地獲取 access_count
+            access_count = getattr(memory_entry, 'access_count', 0)
+            access_boost = min(1.2, 1.0 + (access_count * 0.01))
             relevance *= access_boost
             
             return min(1.0, relevance)
@@ -421,13 +443,19 @@ class MemoryStorageManager:
         else:
             reasons.append("部分相似")
         
-        if query.topic_filter and memory_entry.topic and query.topic_filter.lower() in memory_entry.topic.lower():
+        # 安全地獲取 topic 屬性
+        topic = getattr(memory_entry, 'topic', None)
+        if query.topic_filter and topic and query.topic_filter.lower() in topic.lower():
             reasons.append("主題匹配")
         
-        if memory_entry.importance in [MemoryImportance.CRITICAL, MemoryImportance.HIGH]:
+        # 安全地獲取 importance 屬性
+        importance = getattr(memory_entry, 'importance', MemoryImportance.MEDIUM)
+        if importance in [MemoryImportance.CRITICAL, MemoryImportance.HIGH]:
             reasons.append("高重要性")
         
-        if memory_entry.access_count > 5:
+        # 安全地獲取 access_count 屬性
+        access_count = getattr(memory_entry, 'access_count', 0)
+        if access_count > 5:
             reasons.append("常用記憶")
         
         return "、".join(reasons)
@@ -443,22 +471,22 @@ class MemoryStorageManager:
         except:
             return False
     
-    def delete_memory(self, memory_id: str, identity_token: str) -> MemoryOperationResult:
+    def delete_memory(self, memory_id: str, memory_token: str) -> MemoryOperationResult:
         """刪除記憶條目"""
         start_time = time.time()
         
         try:
             with self._sync_lock:
                 # 驗證權限
-                if not self.identity_manager.validate_memory_token(identity_token):
+                if not self.identity_manager.validate_memory_token(memory_token):
                     return MemoryOperationResult(
                         success=False,
                         operation_type="delete",
-                        message="無效的身份令牌",
+                        message="無效的記憶令牌",
                         execution_time=time.time() - start_time
                     )
                 
-                if not self.identity_manager.check_operation_permission(identity_token, "delete"):
+                if not self.identity_manager.check_operation_permission(memory_token, "delete"):
                     return MemoryOperationResult(
                         success=False,
                         operation_type="delete",

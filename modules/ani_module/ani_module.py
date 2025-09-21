@@ -297,7 +297,7 @@ class ANIModule(BaseFrontendModule):
                 ))
                 # 可把 prefix/filename_format/index_start 留給 UI 用（ANI 不需）
                 from utils.debug_helper import debug_log
-                debug_log(1, f"[ANI] ✓ 註冊動畫: {name} frames={total_frames} fps={fps:.2f} loop={loop} zoom={zoom} offset=({offset_x},{offset_y})")
+                debug_log(3, f"[ANI] ✓ 註冊動畫: {name} frames={total_frames} fps={fps:.2f} loop={loop} zoom={zoom} offset=({offset_x},{offset_y})")
             except Exception as e:
                 from utils.debug_helper import error_log
                 error_log(f"[ANI] ✗ 註冊動畫失敗 {name}: {e}")

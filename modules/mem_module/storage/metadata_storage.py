@@ -170,15 +170,15 @@ class MetadataStorageManager:
             
             for memory_data in self.metadata_cache:
                 memory_id = memory_data.get('memory_id')
-                identity_token = memory_data.get('identity_token')
+                memory_token = memory_data.get('memory_token')
                 
                 if memory_id:
                     self.cache_by_id[memory_id] = memory_data
                 
-                if identity_token:
-                    if identity_token not in self.cache_by_token:
-                        self.cache_by_token[identity_token] = []
-                    self.cache_by_token[identity_token].append(memory_data)
+                if memory_token:
+                    if memory_token not in self.cache_by_token:
+                        self.cache_by_token[memory_token] = []
+                    self.cache_by_token[memory_token].append(memory_data)
             
             debug_log(3, f"[MetadataStorage] 快取索引重建完成，ID索引: {len(self.cache_by_id)}, Token索引: {len(self.cache_by_token)}")
             
@@ -201,10 +201,10 @@ class MetadataStorageManager:
                 self.metadata_cache.append(memory_data)
                 self.cache_by_id[memory_entry.memory_id] = memory_data
                 
-                # 更新身份令牌索引
-                if memory_entry.identity_token not in self.cache_by_token:
-                    self.cache_by_token[memory_entry.identity_token] = []
-                self.cache_by_token[memory_entry.identity_token].append(memory_data)
+                # 更新記憶令牌索引
+                if memory_entry.memory_token not in self.cache_by_token:
+                    self.cache_by_token[memory_entry.memory_token] = []
+                self.cache_by_token[memory_entry.memory_token].append(memory_data)
                 
                 self._dirty = True
                 debug_log(3, f"[MetadataStorage] 添加記憶條目: {memory_entry.memory_id}")
@@ -228,13 +228,13 @@ class MetadataStorageManager:
             error_log(f"[MetadataStorage] 獲取記憶條目失敗: {e}")
             return None
     
-    def get_memories_by_token(self, identity_token: str) -> List[Dict[str, Any]]:
-        """根據身份令牌獲取記憶條目"""
+    def get_memories_by_token(self, memory_token: str) -> List[Dict[str, Any]]:
+        """根據記憶令牌獲取記憶條目"""
         try:
             with self._lock:
-                return self.cache_by_token.get(identity_token, []).copy()
+                return self.cache_by_token.get(memory_token, []).copy()
         except Exception as e:
-            error_log(f"[MetadataStorage] 獲取身份記憶失敗: {e}")
+            error_log(f"[MetadataStorage] 獲取記憶令牌記憶失敗: {e}")
             return []
     
     def update_memory(self, memory_id: str, updates: Dict[str, Any]) -> bool:
@@ -272,16 +272,16 @@ class MetadataStorageManager:
                     return False
                 
                 memory_data = self.cache_by_id[memory_id]
-                identity_token = memory_data.get('identity_token')
+                memory_token = memory_data.get('memory_token')
                 
                 # 從快取中移除
                 self.metadata_cache = [m for m in self.metadata_cache if m.get('memory_id') != memory_id]
                 del self.cache_by_id[memory_id]
                 
-                # 更新身份令牌索引
-                if identity_token and identity_token in self.cache_by_token:
-                    self.cache_by_token[identity_token] = [
-                        m for m in self.cache_by_token[identity_token] 
+                # 更新記憶令牌索引
+                if memory_token and memory_token in self.cache_by_token:
+                    self.cache_by_token[memory_token] = [
+                        m for m in self.cache_by_token[memory_token] 
                         if m.get('memory_id') != memory_id
                     ]
                 
@@ -298,12 +298,12 @@ class MetadataStorageManager:
             error_log(f"[MetadataStorage] 刪除記憶條目失敗: {e}")
             return False
     
-    def search_memories(self, identity_token: str, filters: Dict[str, Any] = None) -> List[Dict[str, Any]]:
+    def search_memories(self, memory_token: str, filters: Dict[str, Any] = None) -> List[Dict[str, Any]]:
         """搜索記憶條目"""
         try:
             with self._lock:
-                # 獲取該身份的所有記憶
-                memories = self.get_memories_by_token(identity_token)
+                # 獲取該記憶令牌的所有記憶
+                memories = self.get_memories_by_token(memory_token)
                 
                 if not filters:
                     return memories
@@ -318,8 +318,8 @@ class MetadataStorageManager:
                             continue
                     
                     # 主題過濾
-                    if 'topic_filter' in filters:
-                        topic = memory.get('topic', '')
+                    if 'topic_filter' in filters and filters['topic_filter']:
+                        topic = memory.get('topic', '') or ''  # 確保 topic 不是 None
                         if filters['topic_filter'].lower() not in topic.lower():
                             continue
                     
@@ -350,12 +350,12 @@ class MetadataStorageManager:
             error_log(f"[MetadataStorage] 搜索記憶失敗: {e}")
             return []
     
-    def get_memory_stats(self, identity_token: str = None) -> Dict[str, Any]:
+    def get_memory_stats(self, memory_token: str = None) -> Dict[str, Any]:
         """獲取記憶統計資訊"""
         try:
             with self._lock:
-                if identity_token:
-                    memories = self.get_memories_by_token(identity_token)
+                if memory_token:
+                    memories = self.get_memories_by_token(memory_token)
                 else:
                     memories = self.metadata_cache
                 
@@ -393,18 +393,18 @@ class MetadataStorageManager:
         """強制儲存元資料"""
         return self._save_metadata()
     
-    def clear_all_memories(self, identity_token: str = None) -> bool:
+    def clear_all_memories(self, memory_token: str = None) -> bool:
         """清空記憶（可指定身份）"""
         try:
             with self._lock:
-                if identity_token:
+                if memory_token:
                     # 只清空指定身份的記憶
                     self.metadata_cache = [
                         m for m in self.metadata_cache 
-                        if m.get('identity_token') != identity_token
+                        if m.get('memory_token') != memory_token
                     ]
-                    if identity_token in self.cache_by_token:
-                        del self.cache_by_token[identity_token]
+                    if memory_token in self.cache_by_token:
+                        del self.cache_by_token[memory_token]
                     
                     # 重建ID索引
                     self.cache_by_id = {
@@ -423,7 +423,7 @@ class MetadataStorageManager:
                 if self.auto_backup:
                     self._save_metadata()
                 
-                info_log(f"[MetadataStorage] 清空記憶完成，身份: {identity_token or '全部'}")
+                info_log(f"[MetadataStorage] 清空記憶完成，身份: {memory_token or '全部'}")
                 return True
                 
         except Exception as e:

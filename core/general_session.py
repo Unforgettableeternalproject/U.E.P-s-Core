@@ -30,6 +30,68 @@ from utils.debug_helper import debug_log, info_log, error_log
 from core.working_context import working_context_manager, ContextType
 
 
+class SessionRecordType(Enum):
+    """會話記錄類型"""
+    GS = "general_session"
+    CS = "chatting_session"
+    WS = "workflow_session"
+
+
+class SessionRecordStatus(Enum):
+    """會話記錄狀態"""
+    TRIGGERED = "triggered"
+    ACTIVE = "active"
+    COMPLETED = "completed"
+    ERROR = "error"
+
+
+@dataclass
+class SessionRecord:
+    """會話記錄"""
+    record_id: str
+    session_type: SessionRecordType
+    session_id: str
+    status: SessionRecordStatus
+    
+    # 觸發信息
+    trigger_content: str
+    context_content: str
+    trigger_user: Optional[str]
+    triggered_at: datetime
+    
+    # 狀態變更
+    status_history: List[Dict[str, Any]] = field(default_factory=list)
+    
+    # 會話數據
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    session_summary: Optional[Dict[str, Any]] = None
+    
+    def update_status(self, new_status: SessionRecordStatus, details: Optional[Dict[str, Any]] = None):
+        """更新狀態"""
+        self.status = new_status
+        self.status_history.append({
+            "status": new_status.value,
+            "timestamp": datetime.now().isoformat(),
+            "details": details or {}
+        })
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """轉換為字典"""
+        return {
+            "record_id": self.record_id,
+            "session_type": self.session_type.value,
+            "session_id": self.session_id,
+            "status": self.status.value,
+            "trigger_content": self.trigger_content,
+            "context_content": self.context_content,
+            "trigger_user": self.trigger_user,
+            "triggered_at": self.triggered_at.isoformat(),
+            "status_history": self.status_history,
+            "metadata": self.metadata,
+            "session_summary": self.session_summary
+        }
+
+
 class GSStatus(Enum):
     """General Session 狀態"""
     INACTIVE = auto()       # 未啟動
@@ -348,6 +410,10 @@ class GeneralSessionManager:
         self.session_history: List[GeneralSession] = []
         self.preserved_data: Optional[GSPreservedData] = None
         
+        # 會話記錄管理
+        self.session_records: List[SessionRecord] = []
+        self.max_records_size = 100
+        
         # 配置
         self.max_history_size = 10
         
@@ -364,6 +430,10 @@ class GeneralSessionManager:
         
         if new_session.start():
             self.current_session = new_session
+            
+            # 創建會話記錄
+            self._create_session_record(new_session, trigger_event)
+            
             return new_session
         else:
             return None
@@ -372,6 +442,9 @@ class GeneralSessionManager:
         """結束當前 General Session"""
         if not self.current_session:
             return False
+        
+        # 更新會話記錄
+        self._update_session_record(self.current_session.session_id, SessionRecordStatus.COMPLETED, final_output)
         
         # 結束會話並獲取保留資料
         self.preserved_data = self.current_session.finalize(final_output)
@@ -438,6 +511,7 @@ class GeneralSessionManager:
             "current_session": current_info,
             "preserved_data_summary": preserved_summary,
             "history_count": len(self.session_history),
+            "records_count": len(self.session_records),
             "manager_status": "active" if self.current_session else "idle"
         }
     
@@ -448,6 +522,87 @@ class GeneralSessionManager:
             self.session_history.append(self.current_session)
             self.current_session = None
             info_log("[GeneralSessionManager] 清理已完成的會話")
+    
+    def _create_session_record(self, session: GeneralSession, trigger_event: Dict[str, Any]):
+        """創建會話記錄"""
+        try:
+            # 提取觸發內容
+            trigger_content = trigger_event.get("data", {}).get("text", str(trigger_event))
+            context_content = trigger_event.get("type", "unknown")
+            trigger_user = trigger_event.get("user_id", "unknown")
+            
+            # 創建記錄
+            record = SessionRecord(
+                record_id=f"rec_{session.session_id}_{int(time.time())}",
+                session_type=SessionRecordType.GS,
+                session_id=session.session_id,
+                status=SessionRecordStatus.ACTIVE,
+                trigger_content=trigger_content,
+                context_content=context_content,
+                trigger_user=trigger_user,
+                triggered_at=session.context.created_at,
+                metadata={
+                    "gs_type": session.context.gs_type.value,
+                    "working_contexts": list(session.context.working_contexts.keys())
+                }
+            )
+            
+            # 添加初始狀態歷史
+            record.update_status(SessionRecordStatus.ACTIVE, {"action": "session_started"})
+            
+            # 保存記錄
+            self.session_records.append(record)
+            
+            # 限制記錄數量
+            if len(self.session_records) > self.max_records_size:
+                self.session_records.pop(0)
+            
+            debug_log(2, f"[GeneralSessionManager] 創建會話記錄: {record.record_id}")
+            
+        except Exception as e:
+            error_log(f"[GeneralSessionManager] 創建會話記錄失敗: {e}")
+    
+    def _update_session_record(self, session_id: str, status: SessionRecordStatus, 
+                              details: Optional[Dict[str, Any]] = None):
+        """更新會話記錄"""
+        try:
+            # 查找對應記錄
+            for record in self.session_records:
+                if record.session_id == session_id:
+                    record.update_status(status, details)
+                    
+                    # 如果是完成狀態，添加會話摘要
+                    if status == SessionRecordStatus.COMPLETED and details:
+                        record.session_summary = {
+                            "final_output": details,
+                            "completed_at": datetime.now().isoformat(),
+                            "total_duration": (datetime.now() - record.triggered_at).total_seconds()
+                        }
+                    
+                    debug_log(2, f"[GeneralSessionManager] 更新會話記錄: {record.record_id} -> {status.value}")
+                    break
+                    
+        except Exception as e:
+            error_log(f"[GeneralSessionManager] 更新會話記錄失敗: {e}")
+    
+    def get_session_records(self, session_type: Optional[SessionRecordType] = None, 
+                           status: Optional[SessionRecordStatus] = None) -> List[Dict[str, Any]]:
+        """獲取會話記錄"""
+        records = []
+        for record in self.session_records:
+            if session_type and record.session_type != session_type:
+                continue
+            if status and record.status != status:
+                continue
+            records.append(record.to_dict())
+        return records
+    
+    def get_session_record_by_id(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """根據會話ID獲取記錄"""
+        for record in self.session_records:
+            if record.session_id == session_id:
+                return record.to_dict()
+        return None
 
 
 # 全域 General Session 管理器實例

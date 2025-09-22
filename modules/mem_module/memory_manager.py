@@ -1,4 +1,4 @@
-# modules/mem_module/memory_manager_v2.py
+# modules/mem_module/memory_manager_.py
 """
 重構的記憶管理器 - MEM模組的主要協調介面
 
@@ -33,7 +33,7 @@ from .core.identity_manager import IdentityManager
 from .core.snapshot_manager import SnapshotManager
 from .retrieval.semantic_retriever import SemanticRetriever
 from .analysis.memory_analyzer import MemoryAnalyzer
-
+from .analysis.memory_summarizer import MemorySummarizer
 
 @dataclass
 class MemoryContext:
@@ -70,9 +70,7 @@ class MemoryManager:
         self.memory_analyzer = MemoryAnalyzer(analysis_config)
         
         # 初始化記憶總結器
-        summarization_config = config.get("summarization", {})
-        self.memory_summarizer = None  # 延遲初始化
-        self.summarization_config = summarization_config
+        self.memory_summarizer = MemorySummarizer(config.get("summarization", {}))
         
         # 記憶管理配置
         self.max_short_term_memories = config.get("max_short_term_memories", 50)
@@ -82,12 +80,18 @@ class MemoryManager:
         # 當前上下文
         self.current_context: Optional[MemoryContext] = None
         
+        # 會話管理
+        self.current_chat_sessions = set()  # 當前活躍的聊天會話 ID
+        self.allow_external_access = True   # 是否允許外部存取（非CS狀態下）
+        self.default_session_id = None      # 默認會話 ID
+        
         # 統計資訊
         self.stats = {
             "memories_stored": 0,
             "memories_retrieved": 0,
             "memories_consolidated": 0,
             "sessions_managed": 0,
+            "chat_sessions_active": 0,
             "last_consolidation": None
         }
         
@@ -96,63 +100,88 @@ class MemoryManager:
     def initialize(self) -> bool:
         """初始化記憶管理器"""
         try:
-            info_log("[MemoryManagerV2] 初始化重構記憶管理器...")
+            info_log("[MemoryManager] 初始化重構記憶管理器...")
             
             # 初始化存儲管理器
             if not self.storage_manager.initialize():
-                error_log("[MemoryManagerV2] 存儲管理器初始化失敗")
+                error_log("[MemoryManager] 存儲管理器初始化失敗")
                 return False
             
             # 初始化身份管理器
             if not self.identity_manager.initialize():
-                error_log("[MemoryManagerV2] 身份管理器初始化失敗")
+                error_log("[MemoryManager] 身份管理器初始化失敗")
                 return False
             
             # 初始化快照管理器
             if not self.snapshot_manager.initialize():
-                error_log("[MemoryManagerV2] 快照管理器初始化失敗")
+                error_log("[MemoryManager] 快照管理器初始化失敗")
                 return False
             
             # 初始化語義檢索器
             if not self.semantic_retriever.initialize():
-                error_log("[MemoryManagerV2] 語義檢索器初始化失敗")
+                error_log("[MemoryManager] 語義檢索器初始化失敗")
                 return False
             
-            # 初始化記憶總結器 (可選功能)
-            if self.summarization_config.get("enable_external_summarization", True):
-                try:
-                    from .analysis.memory_summarizer import MemorySummarizer
-                    self.memory_summarizer = MemorySummarizer(self.summarization_config)
-                    if self.memory_summarizer.initialize():
-                        info_log("[MemoryManagerV2] 記憶總結器初始化成功")
-                    else:
-                        info_log("WARNING", "[MemoryManagerV2] 記憶總結器初始化失敗，將使用基本總結")
-                        self.memory_summarizer = None
-                except Exception as e:
-                    info_log("WARNING", f"[MemoryManagerV2] 記憶總結器載入失敗: {e}")
-                    self.memory_summarizer = None
+            # 初始化記憶總結器
+            if not self.memory_summarizer.initialize():
+                error_log("[MemoryManager] 記憶總結器初始化失敗")
+                return False
+            info_log("[MemoryManager] 記憶總結器初始化成功")
             
             # 初始化記憶分析器
             if not self.memory_analyzer.initialize():
-                error_log("[MemoryManagerV2] 記憶分析器初始化失敗")
+                error_log("[MemoryManager] 記憶分析器初始化失敗")
                 return False
             
             self.is_initialized = True
-            info_log("[MemoryManagerV2] 重構記憶管理器初始化完成")
+            info_log("[MemoryManager] 重構記憶管理器初始化完成")
             return True
             
         except Exception as e:
-            error_log(f"[MemoryManagerV2] 初始化失敗: {e}")
+            error_log(f"[MemoryManager] 初始化失敗: {e}")
             return False
     
     def set_context(self, context: MemoryContext):
         """設定當前記憶上下文"""
         self.current_context = context
-        debug_log(3, f"[MemoryManagerV2] 設定記憶上下文: {context.current_session_id}")
+        debug_log(3, f"[MemoryManager] 設定記憶上下文: {context.current_session_id}")
     
-    def start_session(self, session_id: str, memory_token: str = None, 
+    def is_in_chat_session(self, session_id: str = None) -> bool:
+        """檢查是否處於指定的聊天會話中"""
+        if session_id:
+            return session_id in self.current_chat_sessions
+        return bool(self.current_chat_sessions) and (self.current_context is not None)
+    
+    def check_session_access(self, operation: str, session_id: str = None) -> bool:
+        """
+        檢查操作是否允許在當前會話狀態下進行
+        
+        Args:
+            operation: 操作類型，'read' 或 'write'
+            session_id: 會話ID，如果不提供則檢查任意會話
+            
+        Returns:
+            是否允許操作
+        """
+        # 如果提供了會話ID，檢查是否在該會話中
+        if session_id and session_id in self.current_chat_sessions:
+            return True
+            
+        # 如果沒有活躍的聊天會話，或允許外部存取，則允許操作
+        if not self.current_chat_sessions or self.allow_external_access:
+            return True
+            
+        # 默認情況下，如果有活躍的聊天會話但操作不在該會話中，則拒絕存取
+        debug_log(2, f"[MemoryManager] 拒絕非聊天會話的{operation}操作")
+        return False
+    
+    def join_chat_session(self, session_id: str, memory_token: str = None, 
                      initial_context: Dict[str, Any] = None) -> bool:
-        """開始新會話"""
+        """
+        加入聊天會話 (CS) - 當CHAT狀態啟動時被呼叫
+        
+        注意: 此方法不負責啟動整個CS，只負責MEM模組對CS的響應
+        """
         try:
             # 如果沒有提供記憶令牌，從Working Context獲取
             if not memory_token:
@@ -160,12 +189,12 @@ class MemoryManager:
             
             # 驗證記憶體存取權限
             if not self.identity_manager.validate_memory_access(memory_token, "write"):
-                error_log(f"[MemoryManagerV2] 記憶體存取權限驗證失敗: {memory_token}")
+                error_log(f"[MemoryManager] 記憶體存取權限驗證失敗: {memory_token}")
                 return False
             
             # 開始快照會話
             if not self.snapshot_manager.start_session_snapshot(session_id, memory_token, initial_context):
-                error_log(f"[MemoryManagerV2] 快照會話開始失敗: {session_id}")
+                error_log(f"[MemoryManager] 快照會話開始失敗: {session_id}")
                 return False
             
             # 設定記憶上下文
@@ -179,12 +208,21 @@ class MemoryManager:
             )
             self.set_context(context)
             
+            # 將此會話添加到當前活躍的聊天會話
+            self.current_chat_sessions.add(session_id)
             self.stats["sessions_managed"] += 1
-            info_log(f"[MemoryManagerV2] 會話開始: {session_id} (記憶體令牌: {memory_token})")
+            self.stats["chat_sessions_active"] = len(self.current_chat_sessions)
+            
+            # 如果這是第一個聊天會話，設定為默認會話
+            if len(self.current_chat_sessions) == 1:
+                self.default_session_id = session_id
+                debug_log(2, f"[MemoryManager] 設定默認聊天會話: {session_id}")
+            
+            info_log(f"[MemoryManager] 加入聊天會話: {session_id} (記憶體令牌: {memory_token})")
             return True
             
         except Exception as e:
-            error_log(f"[MemoryManagerV2] 開始會話失敗: {e}")
+            error_log(f"[MemoryManager] 加入聊天會話失敗: {e}")
             return False
     
     def store_memory(self, content: str, memory_token: str = None,
@@ -192,9 +230,24 @@ class MemoryManager:
                     importance: MemoryImportance = None,
                     topic: str = None,
                     intent_tags: List[str] = None,
-                    metadata: Dict[str, Any] = None) -> MemoryOperationResult:
+                    metadata: Dict[str, Any] = None,
+                    session_id: str = None) -> MemoryOperationResult:
         """存儲新記憶 - 整合分析功能"""
         try:
+            # 處理會話ID
+            if not session_id and self.current_context:
+                session_id = self.current_context.current_session_id
+                
+            # 如果有會話ID，檢查會話存取權限
+            if session_id:
+                access_check = self.check_session_access(session_id, memory_token)
+                if not access_check.success:
+                    return MemoryOperationResult(
+                        success=False,
+                        operation_type="store",
+                        message=f"會話存取權限不足: {access_check.message}"
+                    )
+                    
             # 如果沒有提供記憶令牌，從Working Context獲取
             if not memory_token:
                 memory_token = self.identity_manager.get_current_memory_token()
@@ -261,7 +314,9 @@ class MemoryManager:
             )
             
             # 自動設定上下文資訊
-            if self.current_context:
+            if session_id:
+                memory_entry.session_id = session_id
+            elif self.current_context:
                 memory_entry.session_id = self.current_context.current_session_id
                 
                 # 更新上下文
@@ -288,12 +343,12 @@ class MemoryManager:
                     )
                 
                 self.stats["memories_stored"] += 1
-                debug_log(3, f"[MemoryManagerV2] 記憶存儲成功: {memory_entry.memory_id}")
+                debug_log(3, f"[MemoryManager] 記憶存儲成功: {memory_entry.memory_id}")
             
             return result
             
         except Exception as e:
-            error_log(f"[MemoryManagerV2] 存儲記憶失敗: {e}")
+            error_log(f"[MemoryManager] 存儲記憶失敗: {e}")
             return MemoryOperationResult(
                 success=False,
                 operation_type="store",
@@ -304,16 +359,28 @@ class MemoryManager:
                          memory_types: List[MemoryType] = None,
                          max_results: int = 10,
                          similarity_threshold: float = 0.6,
-                         include_context: bool = True) -> List[MemorySearchResult]:
+                         include_context: bool = True,
+                         session_id: str = None) -> List[MemorySearchResult]:
         """檢索相關記憶 - 使用語義檢索器"""
         try:
+            # 處理會話ID
+            if not session_id and self.current_context:
+                session_id = self.current_context.current_session_id
+                
+            # 如果有會話ID，檢查會話存取權限
+            if session_id:
+                access_check = self.check_session_access(session_id, memory_token)
+                if not access_check.success:
+                    error_log(f"[MemoryManager] 會話存取權限不足: {session_id}")
+                    return []
+                    
             # 如果沒有提供記憶令牌，從Working Context獲取
             if not memory_token:
                 memory_token = self.identity_manager.get_current_memory_token()
             
             # 驗證記憶體存取權限
             if not self.identity_manager.validate_memory_access(memory_token, "read"):
-                error_log(f"[MemoryManagerV2] 記憶體讀取權限不足: {memory_token}")
+                error_log(f"[MemoryManager] 記憶體讀取權限不足: {memory_token}")
                 return []
             
             # 構建查詢
@@ -333,11 +400,11 @@ class MemoryManager:
             # 更新統計
             self.stats["memories_retrieved"] += len(results)
             
-            debug_log(3, f"[MemoryManagerV2] 檢索到 {len(results)} 條記憶")
+            debug_log(3, f"[MemoryManager] 檢索到 {len(results)} 條記憶")
             return results
             
         except Exception as e:
-            error_log(f"[MemoryManagerV2] 檢索記憶失敗: {e}")
+            error_log(f"[MemoryManager] 檢索記憶失敗: {e}")
             return []
     
     def process_memory_query(self, query: MemoryQuery) -> List[MemorySearchResult]:
@@ -347,36 +414,57 @@ class MemoryManager:
             memory_token=query.memory_token,
             memory_types=query.memory_types,
             max_results=query.max_results,
-            similarity_threshold=query.similarity_threshold
+            similarity_threshold=query.similarity_threshold,
+            session_id=query.session_id if hasattr(query, "session_id") else None
         )
     
     def create_conversation_snapshot(self, memory_token: str, conversation_text: str, 
-                                   topic: str = "general") -> Optional[ConversationSnapshot]:
+                                   topic: str = "general", session_id: str = None) -> Optional[ConversationSnapshot]:
         """創建對話快照"""
         try:
+            # 處理會話ID
+            if not session_id and self.current_context:
+                session_id = self.current_context.current_session_id
+                
+            # 如果有會話ID，檢查會話存取權限
+            if session_id:
+                access_check = self.check_session_access(session_id, memory_token)
+                if not access_check.success:
+                    error_log(f"[MemoryManager] 會話存取權限不足: {access_check.message}")
+                    return None
+                    
             # 驗證記憶體存取權限
             if not self.identity_manager.validate_memory_access(memory_token, "write"):
-                error_log(f"[MemoryManagerV2] 記憶體存取權限驗證失敗: {memory_token}")
+                error_log(f"[MemoryManager] 記憶體存取權限驗證失敗: {memory_token}")
                 return None
             
             # 使用快照管理器創建快照
             snapshot = self.snapshot_manager.create_snapshot(memory_token, conversation_text, topic)
             
             if snapshot:
-                info_log(f"[MemoryManagerV2] 對話快照創建成功: {snapshot.memory_id}")
+                info_log(f"[MemoryManager] 對話快照創建成功: {snapshot.memory_id}")
                 return snapshot
             else:
-                error_log("[MemoryManagerV2] 對話快照創建失敗")
+                error_log("[MemoryManager] 對話快照創建失敗")
                 return None
                 
         except Exception as e:
-            error_log(f"[MemoryManagerV2] 創建對話快照時發生錯誤: {e}")
+            error_log(f"[MemoryManager] 創建對話快照時發生錯誤: {e}")
             return None
     
     def create_manual_snapshot(self, session_id: str, memory_token: str = None,
                               snapshot_name: str = None) -> MemoryOperationResult:
         """創建手動快照"""
         try:
+            # 檢查會話存取權限
+            access_check = self.check_session_access(session_id, memory_token)
+            if not access_check.success:
+                return MemoryOperationResult(
+                    success=False,
+                    operation_type="manual_snapshot",
+                    message=f"會話存取權限不足: {access_check.message}"
+                )
+                
             # 如果沒有提供記憶令牌，從Working Context獲取
             if not memory_token:
                 memory_token = self.identity_manager.get_current_memory_token()
@@ -393,38 +481,69 @@ class MemoryManager:
             result = self.snapshot_manager.create_manual_snapshot(session_id, snapshot_name)
             
             if result.success:
-                info_log(f"[MemoryManagerV2] 手動快照創建成功: {session_id}")
+                info_log(f"[MemoryManager] 手動快照創建成功: {session_id}")
             
             return result
             
         except Exception as e:
-            error_log(f"[MemoryManagerV2] 創建手動快照失敗: {e}")
+            error_log(f"[MemoryManager] 創建手動快照失敗: {e}")
             return MemoryOperationResult(
                 success=False,
                 operation_type="manual_snapshot",
                 message=f"創建失敗: {str(e)}"
             )
     
-    def end_session(self, session_id: str, memory_token: str,
-                   create_final_snapshot: bool = True) -> MemoryOperationResult:
-        """結束會話"""
+    def leave_chat_session(self, session_id: str, memory_token: str = None,
+                    create_final_snapshot: bool = True) -> MemoryOperationResult:
+        """
+        離開聊天會話 (CS) - 當CHAT狀態結束時被呼叫
+        
+        注意: 此方法不負責結束整個CS，只負責MEM模組對CS結束的響應
+        """
         try:
-            # 使用快照管理器結束會話
+            # 檢查會話是否存在
+            if session_id not in self.current_chat_sessions:
+                debug_log(2, f"[MemoryManager] 嘗試離開不存在的聊天會話: {session_id}")
+                return MemoryOperationResult(
+                    success=False,
+                    operation_type="leave_chat_session",
+                    message=f"會話不存在或未加入: {session_id}"
+                )
+                
+            # 如果沒有提供記憶令牌，從Working Context獲取
+            if not memory_token:
+                memory_token = self.identity_manager.get_current_memory_token()
+                
+            # 使用快照管理器結束會話快照
             result = self.snapshot_manager.end_session_snapshot(session_id, create_final_snapshot)
+            
+            # 從活躍會話中移除
+            self.current_chat_sessions.remove(session_id)
+            self.stats["chat_sessions_active"] = len(self.current_chat_sessions)
             
             # 清理當前上下文
             if self.current_context and self.current_context.current_session_id == session_id:
                 self.current_context = None
+                debug_log(3, f"[MemoryManager] 清理記憶上下文: {session_id}")
             
-            info_log(f"[MemoryManagerV2] 會話結束: {session_id}")
+            # 如果這是默認會話，重置默認會話
+            if self.default_session_id == session_id:
+                if self.current_chat_sessions:
+                    self.default_session_id = next(iter(self.current_chat_sessions))
+                    debug_log(2, f"[MemoryManager] 更新默認聊天會話: {self.default_session_id}")
+                else:
+                    self.default_session_id = None
+                    debug_log(2, "[MemoryManager] 已無活躍聊天會話")
+            
+            info_log(f"[MemoryManager] 離開聊天會話: {session_id}")
             return result
             
         except Exception as e:
-            error_log(f"[MemoryManagerV2] 結束會話失敗: {e}")
+            error_log(f"[MemoryManager] 離開聊天會話失敗: {e}")
             return MemoryOperationResult(
                 success=False,
-                operation_type="end_session",
-                message=f"結束失敗: {str(e)}"
+                operation_type="leave_chat_session",
+                message=f"離開失敗: {str(e)}"
             )
     
     def analyze_user_patterns(self, memory_token: str = None, 
@@ -450,11 +569,11 @@ class MemoryManager:
             # 使用記憶分析器分析模式
             pattern_analysis = self.memory_analyzer.analyze_memory_patterns(memories, memory_token)
             
-            debug_log(3, f"[MemoryManagerV2] 使用者模式分析完成: {memory_token}")
+            debug_log(3, f"[MemoryManager] 使用者模式分析完成: {memory_token}")
             return pattern_analysis
             
         except Exception as e:
-            error_log(f"[MemoryManagerV2] 使用者模式分析失敗: {e}")
+            error_log(f"[MemoryManager] 使用者模式分析失敗: {e}")
             return {"error": str(e)}
     
     def consolidate_memories(self, memory_token: str = None) -> MemoryOperationResult:
@@ -472,7 +591,7 @@ class MemoryManager:
                     message="記憶體存取權限不足"
                 )
             
-            info_log(f"[MemoryManagerV2] 開始記憶整合: {memory_token}")
+            info_log(f"[MemoryManager] 開始記憶整合: {memory_token}")
             
             # 獲取需要整合的記憶（例如，過去24小時的快照記憶）
             cutoff_time = datetime.now() - timedelta(hours=24)
@@ -527,7 +646,7 @@ class MemoryManager:
             self.stats["memories_consolidated"] += consolidated_count
             self.stats["last_consolidation"] = datetime.now()
             
-            info_log(f"[MemoryManagerV2] 記憶整合完成: {consolidated_count} 條記憶")
+            info_log(f"[MemoryManager] 記憶整合完成: {consolidated_count} 條記憶")
             
             return MemoryOperationResult(
                 success=True,
@@ -537,7 +656,7 @@ class MemoryManager:
             )
             
         except Exception as e:
-            error_log(f"[MemoryManagerV2] 記憶整合失敗: {e}")
+            error_log(f"[MemoryManager] 記憶整合失敗: {e}")
             return MemoryOperationResult(
                 success=False,
                 operation_type="consolidate",
@@ -547,7 +666,7 @@ class MemoryManager:
     def summarize_memories_for_llm(self, search_results: List[MemorySearchResult],
                                  current_query: str = "") -> Dict[str, Any]:
         """
-        為 LLM 總結記憶內容 - 整合從 prompt_builder 遷移的功能
+        為 LLM 總結記憶內容
         
         Args:
             search_results: 記憶搜索結果
@@ -564,20 +683,14 @@ class MemoryManager:
                     "has_memories": False
                 }
             
-            # 如果有外部總結器，使用高級總結功能
-            if self.memory_summarizer:
-                debug_log(2, "[MemoryManagerV2] 使用外部總結器生成記憶上下文")
-                structured_context = self.memory_summarizer.create_llm_memory_context(
-                    search_results, current_query
-                )
-                summary = self.memory_summarizer.summarize_search_results(
-                    search_results, current_query
-                )
-            else:
-                # 使用基本總結邏輯
-                debug_log(2, "[MemoryManagerV2] 使用基本總結邏輯")
-                structured_context = self._create_basic_memory_context(search_results)
-                summary = self._create_basic_summary(search_results)
+            # 使用記憶總結器
+            debug_log(2, "[MemoryManager] 使用記憶總結器生成記憶上下文")
+            structured_context = self.memory_summarizer.create_llm_memory_context(
+                search_results, current_query
+            )
+            summary = self.memory_summarizer.summarize_search_results(
+                search_results, current_query
+            )
             
             return {
                 "summary": summary,
@@ -587,7 +700,7 @@ class MemoryManager:
             }
             
         except Exception as e:
-            error_log(f"[MemoryManagerV2] 記憶總結失敗: {e}")
+            error_log(f"[MemoryManager] 記憶總結失敗: {e}")
             return {
                 "summary": "",
                 "structured_context": {},
@@ -598,7 +711,7 @@ class MemoryManager:
     def chunk_and_summarize_memories(self, memories: List[str], 
                                    chunk_size: int = 3) -> str:
         """
-        記憶切塊總結 - 從 prompt_builder.py 遷移的功能
+        記憶切塊總結
         
         Args:
             memories: 記憶文本列表
@@ -608,85 +721,12 @@ class MemoryManager:
             總結後的文本
         """
         try:
-            if self.memory_summarizer:
-                return self.memory_summarizer.chunk_and_summarize_memories(memories, chunk_size)
-            else:
-                # 基本的切塊邏輯，不使用外部模型
-                debug_log(2, "[MemoryManagerV2] 使用基本切塊總結")
-                chunks = [memories[i:i+chunk_size] for i in range(0, len(memories), chunk_size)]
-                summaries = []
-                
-                for group in chunks:
-                    # 簡單的文本截取作為「總結」
-                    text_block = " ".join(group)
-                    if len(text_block) > 200:
-                        summary = text_block[:200] + "..."
-                    else:
-                        summary = text_block
-                    summaries.append(summary)
-                
-                return "\n".join(summaries)
-                
+            return self.memory_summarizer.chunk_and_summarize_memories(memories, chunk_size)
         except Exception as e:
-            error_log(f"[MemoryManagerV2] 切塊總結失敗: {e}")
+            error_log(f"[MemoryManager] 切塊總結失敗: {e}")
             return ""
     
-    def _create_basic_memory_context(self, search_results: List[MemorySearchResult]) -> Dict[str, Any]:
-        """創建基本記憶上下文（不依賴外部總結器）"""
-        try:
-            key_facts = []
-            conversations = []
-            reminders = []
-            
-            for result in search_results[:10]:  # 限制處理數量
-                memory = result.memory_entry
-                
-                if memory.importance in [MemoryImportance.HIGH, MemoryImportance.CRITICAL]:
-                    key_facts.append({
-                        "content": memory.content[:150],
-                        "importance": memory.importance.value
-                    })
-                
-                if memory.memory_type == MemoryType.SNAPSHOT:
-                    conversations.append({
-                        "content": memory.content[:100],
-                        "timestamp": memory.created_at.isoformat() if memory.created_at else None
-                    })
-                
-                if memory.importance == MemoryImportance.CRITICAL:
-                    reminders.append(memory.content[:80])
-            
-            return {
-                "key_facts": key_facts[:5],
-                "recent_conversations": conversations[-3:],
-                "important_reminders": reminders[:3],
-                "total_memories": len(search_results)
-            }
-            
-        except Exception as e:
-            error_log(f"[MemoryManagerV2] 基本上下文創建失敗: {e}")
-            return {}
-    
-    def _create_basic_summary(self, search_results: List[MemorySearchResult]) -> str:
-        """創建基本記憶總結（不依賴外部總結器）"""
-        try:
-            if not search_results:
-                return ""
-            
-            # 提取前幾條記憶的摘要
-            summaries = []
-            for result in search_results[:5]:
-                memory = result.memory_entry
-                summary_part = memory.content[:100]
-                if memory.topic:
-                    summary_part = f"[{memory.topic}] {summary_part}"
-                summaries.append(summary_part)
-            
-            return " | ".join(summaries)
-            
-        except Exception as e:
-            error_log(f"[MemoryManagerV2] 基本總結創建失敗: {e}")
-            return ""
+    # 移除了不再使用的 _create_basic_memory_context 和 _create_basic_summary 方法
     
     def generate_llm_instruction(self, relevant_memories: List[MemorySearchResult],
                                 context: str = "") -> LLMMemoryInstruction:
@@ -767,7 +807,7 @@ class MemoryManager:
             )
             
         except Exception as e:
-            error_log(f"[MemoryManagerV2] 生成LLM指示失敗: {e}")
+            error_log(f"[MemoryManager] 生成LLM指示失敗: {e}")
             return LLMMemoryInstruction(
                 context_summary="記憶處理錯誤",
                 key_facts=[],
@@ -808,21 +848,21 @@ class MemoryManager:
             return base_stats
             
         except Exception as e:
-            error_log(f"[MemoryManagerV2] 獲取統計失敗: {e}")
+            error_log(f"[MemoryManager] 獲取統計失敗: {e}")
             return self.stats
     
     def cleanup_resources(self):
         """清理資源"""
         try:
-            info_log("[MemoryManagerV2] 清理資源...")
+            info_log("[MemoryManager] 清理資源...")
             
             # 清理各子模組
-            self.identity_manager.cleanup_expired_identities()
+            # self.identity_manager.cleanup_expired_identities()
             self.snapshot_manager.cleanup_old_snapshots()
             self.semantic_retriever.clear_cache()
             self.memory_analyzer.clear_cache()
             
-            debug_log(3, "[MemoryManagerV2] 資源清理完成")
+            debug_log(3, "[MemoryManager] 資源清理完成")
             
         except Exception as e:
-            error_log(f"[MemoryManagerV2] 清理資源失敗: {e}")
+            error_log(f"[MemoryManager] 清理資源失敗: {e}")

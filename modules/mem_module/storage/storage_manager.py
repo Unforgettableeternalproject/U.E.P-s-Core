@@ -559,7 +559,7 @@ class MemoryStorageManager:
             error_log(f"[StorageManager] 重建索引失敗: {e}")
             return False
     
-    def get_storage_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> Dict[str, Any]:
         """獲取存儲統計資訊"""
         try:
             vector_stats = self.vector_manager.get_stats()

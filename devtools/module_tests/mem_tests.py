@@ -1,137 +1,131 @@
-# -*- coding: utf-8 -*-
 """
-MEM 模組測試函數 - 重構版本（工作流程集成測試）
-✅ 針對新架構的測試函數，基於完整工作流程
+MEM 模組測試 - 簡化版本，專注於核心記憶操作功能
+使用英文內容進行記憶存儲，以便與用戶的英文互動兼容
 """
 
-from utils.debug_helper import debug_log, info_log, error_log
-from modules.mem_module.schemas import MEMInput, MEMOutput, MemoryQuery
-from modules.nlp_module.schemas import UserProfile
 from datetime import datetime
-import json
+from modules.mem_module.mem_module import MEMInput, MEMOutput
+from utils.logger import error_log
 
-def mem_test_memory_access_control(modules, memory_token="test_memory_token"):
-    """測試記憶體存取控制功能 - 工作流程集成版本"""
+def mem_test_memory_creation(modules, memory_token="test_user", content="Today is a beautiful sunny day, perfect for outdoor activities"):
+    """測試記憶建立功能 - 英文內容"""
     mem = modules.get("mem")
     
     if mem is None:
-        error_log("[MEM Test] ❌ 無法載入 MEM 模組")
-        return {"success": False, "error": "模組未載入"}
+        error_log("[MEM Test] ❌ Unable to load MEM module")
+        return {"success": False, "error": "Module not loaded"}
 
     try:
-        print("🔒 測試記憶體存取控制功能（工作流程集成）...")
+        print("💾 Testing memory creation functionality...")
         
-        # 使用新的 MEMInput 格式進行測試
+        # 建立記憶輸入
+        memory_entry = {
+            "content": content,
+            "memory_type": "episodic",  # 情節記憶
+            "topic": "daily_experience", 
+            "importance": "medium",
+            "timestamp": datetime.now().isoformat()
+        }
+        
         mem_input = MEMInput(
-            operation_type="validate_token",
-            memory_token=memory_token
+            operation_type="store_memory",
+            memory_token=memory_token,
+            memory_entry=memory_entry
         )
         
         result = mem.handle(mem_input)
         
         if isinstance(result, MEMOutput) and result.success:
-            print(f"   ✅ 記憶令牌驗證成功: {result.message}")
+            print(f"   ✅ Memory creation successful: {result.message}")
             return {
                 "success": True,
-                "message": result.message,
+                "memory_content": content,
                 "memory_token": memory_token,
-                "operation_result": result.data
+                "stored_at": memory_entry["timestamp"]
             }
         else:
-            print(f"   ❌ 記憶令牌驗證失敗: {result.message if hasattr(result, 'message') else '未知錯誤'}")
+            print(f"   ❌ Memory creation failed: {result.message if hasattr(result, 'message') else 'Unknown error'}")
             return {"success": False, "error": str(result)}
             
     except Exception as e:
-        error_log(f"[MEM Test] 記憶體存取控制測試失敗: {e}")
+        error_log(f"[MEM Test] Memory creation test failed: {e}")
         return {"success": False, "error": str(e)}
 
-def mem_test_conversation_snapshot(modules, memory_token="test_user", conversation="你好，今天天氣如何？"):
-    """測試對話快照功能 - 工作流程集成版本"""
+def mem_test_snapshot_creation(modules, memory_token="test_user", conversation="Hello, how are you today? I'm looking forward to our conversation."):
+    """測試快照建立功能 - 英文對話內容"""
     mem = modules.get("mem")
     
     if mem is None:
-        error_log("[MEM Test] ❌ 無法載入 MEM 模組")
-        return {"success": False, "error": "模組未載入"}
+        error_log("[MEM Test] ❌ Unable to load MEM module")
+        return {"success": False, "error": "Module not loaded"}
 
     try:
-        print("📸 測試對話快照功能（工作流程集成）...")
+        print("📸 Testing snapshot creation functionality...")
         
-        # 創建對話快照
+        # 建立對話快照
+        snapshot_entry = {
+            "content": conversation,
+            "memory_type": "snapshot",
+            "topic": "conversation_record",
+            "importance": "high",
+            "timestamp": datetime.now().isoformat(),
+            "context": "Daily conversation session"
+        }
+        
         mem_input = MEMInput(
-            operation_type="create_snapshot",
+            operation_type="store_memory",
             memory_token=memory_token,
-            conversation_text=conversation,
-            intent_info={
-                "primary_intent": "casual_conversation",
-                "topic": "天氣詢問"
-            }
+            memory_entry=snapshot_entry
         )
         
         result = mem.handle(mem_input)
         
         if isinstance(result, MEMOutput) and result.success:
-            print(f"   ✅ 對話快照創建成功: {result.message}")
-            
-            # 嘗試查詢剛創建的快照
-            query_input = MEMInput(
-                operation_type="query_memory",
-                memory_token=memory_token,
-                query_text="天氣",
-                memory_types=["snapshot"]
-            )
-            
-            query_result = mem.handle(query_input)
-            
-            if isinstance(query_result, MEMOutput) and query_result.success:
-                results_count = len(query_result.search_results) if hasattr(query_result, 'search_results') else 0
-                print(f"   ✅ 快照查詢成功，找到 {results_count} 條記錄")
-                
-                return {
-                    "success": True,
-                    "snapshot_created": True,
-                    "query_results": results_count,
-                    "conversation": conversation
-                }
-            else:
-                print(f"   ⚠️ 快照創建成功但查詢失敗: {query_result.message if hasattr(query_result, 'message') else '未知錯誤'}")
-                return {
-                    "success": True,
-                    "snapshot_created": True,
-                    "query_results": 0,
-                    "conversation": conversation
-                }
+            print(f"   ✅ Snapshot creation successful: {result.message}")
+            return {
+                "success": True,
+                "snapshot_content": conversation,
+                "memory_token": memory_token,
+                "created_at": snapshot_entry["timestamp"]
+            }
         else:
-            print(f"   ❌ 對話快照創建失敗: {result.message if hasattr(result, 'message') else '未知錯誤'}")
+            print(f"   ❌ Snapshot creation failed: {result.message if hasattr(result, 'message') else 'Unknown error'}")
             return {"success": False, "error": str(result)}
             
     except Exception as e:
-        error_log(f"[MEM Test] 對話快照測試失敗: {e}")
+        error_log(f"[MEM Test] Snapshot creation test failed: {e}")
         return {"success": False, "error": str(e)}
 
-def mem_test_memory_query(modules, memory_token="test_user", query_text="天氣"):
-    """測試記憶查詢功能 - 工作流程集成版本"""
+def mem_test_memory_query(modules, memory_token="test_user", query_text="weather"):
+    """測試記憶查詢功能 - 英文查詢"""
     mem = modules.get("mem")
     
     if mem is None:
-        error_log("[MEM Test] ❌ 無法載入 MEM 模組")
-        return {"success": False, "error": "模組未載入"}
+        error_log("[MEM Test] ❌ Unable to load MEM module")
+        return {"success": False, "error": "Module not loaded"}
 
     try:
-        print("🔍 測試記憶查詢功能（工作流程集成）...")
+        print("🔍 Testing memory query functionality...")
         
-        # 先存儲一些測試記憶
+        # 先建立一些英文測試記憶
         test_memories = [
             {
-                "content": "今天天氣很好，適合外出",
+                "content": "Today's weather is sunny and perfect for outdoor activities",
                 "memory_type": "snapshot",
-                "topic": "天氣",
+                "topic": "weather",
                 "importance": "medium"
             },
             {
-                "content": "用戶喜歡在晴天進行戶外活動",
+                "content": "User prefers sunny days for hiking and walking",
                 "memory_type": "long_term",
-                "topic": "用戶偏好",
+                "topic": "user_preferences",
                 "importance": "high"
+            },
+            {
+                "content": "Yesterday it was raining, user stayed indoors reading",
+                "memory_type": "episodic",
+                "topic": "daily_activities",
+                "importance": "low"
             }
         ]
         
@@ -144,9 +138,9 @@ def mem_test_memory_query(modules, memory_token="test_user", query_text="天氣"
             
             store_result = mem.handle(store_input)
             if not (isinstance(store_result, MEMOutput) and store_result.success):
-                print(f"   ⚠️ 測試記憶存儲失敗: {memory['content'][:20]}...")
+                print(f"   ⚠️ Failed to store test memory: {memory['content'][:30]}...")
         
-        print(f"   ✅ 存儲了 {len(test_memories)} 條測試記憶")
+        print(f"   ✅ Stored {len(test_memories)} test memories")
         
         # 執行查詢
         query_input = MEMInput(
@@ -160,14 +154,14 @@ def mem_test_memory_query(modules, memory_token="test_user", query_text="天氣"
         
         if isinstance(result, MEMOutput) and result.success:
             results_count = len(result.search_results) if hasattr(result, 'search_results') else 0
-            print(f"   ✅ 記憶查詢成功，找到 {results_count} 條相關記錄")
+            print(f"   ✅ Memory query successful, found {results_count} relevant records")
             
             # 顯示查詢結果
             if hasattr(result, 'search_results') and result.search_results:
                 for i, search_result in enumerate(result.search_results[:3]):  # 顯示前3個結果
                     content = search_result.get('content', '')[:50] + ('...' if len(search_result.get('content', '')) > 50 else '')
                     confidence = search_result.get('confidence', 0)
-                    print(f"   結果 {i+1}: {content} (相似度: {confidence:.3f})")
+                    print(f"   Result {i+1}: {content} (similarity: {confidence:.3f})")
             
             return {
                 "success": True,
@@ -176,208 +170,144 @@ def mem_test_memory_query(modules, memory_token="test_user", query_text="天氣"
                 "search_results": result.search_results if hasattr(result, 'search_results') else []
             }
         else:
-            print(f"   ❌ 記憶查詢失敗: {result.message if hasattr(result, 'message') else '未知錯誤'}")
+            print(f"   ❌ Memory query failed: {result.message if hasattr(result, 'message') else 'Unknown error'}")
             return {"success": False, "error": str(result)}
             
     except Exception as e:
-        error_log(f"[MEM Test] 記憶查詢測試失敗: {e}")
+        error_log(f"[MEM Test] Memory query test failed: {e}")
         return {"success": False, "error": str(e)}
 
-def mem_test_identity_manager_stats(modules):
-    """測試身份管理器統計功能 - 工作流程集成版本"""
+def mem_test_database_listing(modules, memory_token="test_user"):
+    """測試資料庫內容條列功能 - 英文內容"""
     mem = modules.get("mem")
     
     if mem is None:
-        error_log("[MEM Test] ❌ 無法載入 MEM 模組")
-        return {"success": False, "error": "模組未載入"}
+        error_log("[MEM Test] ❌ Unable to load MEM module")
+        return {"success": False, "error": "Module not loaded"}
 
     try:
-        print("📊 測試身份管理器統計功能...")
+        print("📋 Testing database content listing functionality...")
         
-        # 檢查模組架構
-        if hasattr(mem, 'memory_manager') and mem.memory_manager:
-            if hasattr(mem.memory_manager, 'identity_manager'):
-                identity_manager = mem.memory_manager.identity_manager
-                
-                # 獲取統計資訊
-                stats = identity_manager.get_stats()
-                print(f"   ✅ 身份管理器統計: {stats}")
-                
-                # 獲取當前記憶令牌
-                current_token = identity_manager.get_current_memory_token()
-                print(f"   當前記憶令牌: {current_token}")
-                
-                return {
-                    "success": True,
-                    "stats": stats,
-                    "current_token": current_token
-                }
-            else:
-                print("   ⚠️ 找不到身份管理器")
-                return {"success": False, "error": "身份管理器未找到"}
-        else:
-            print("   ⚠️ 找不到記憶管理器")
-            return {"success": False, "error": "記憶管理器未找到"}
-            
-    except Exception as e:
-        error_log(f"[MEM Test] 身份管理器統計測試失敗: {e}")
-        return {"success": False, "error": str(e)}
-
-def mem_test_nlp_integration(modules):
-    """測試NLP整合功能 - 工作流程集成版本"""
-    mem = modules.get("mem")
-    
-    if mem is None:
-        error_log("[MEM Test] ❌ 無法載入 MEM 模組")
-        return {"success": False, "error": "模組未載入"}
-
-    try:
-        print("🤝 測試NLP整合功能（工作流程集成）...")
-        
-        memory_token = f"test_nlp_integration_{int(datetime.now().timestamp())}"
-        
-        # 模擬NLP輸出
-        nlp_output = {
-            "intent_analysis": {
-                "primary_intent": "learning_request",
-                "confidence": 0.9,
-                "entities": ["Python", "機器學習"],
-                "sentiment": "positive"
+        # 先確保有一些測試記憶
+        test_memories = [
+            {
+                "content": "User's favorite color is blue",
+                "memory_type": "long_term",
+                "topic": "user_preferences",
+                "importance": "medium"
             },
-            "conversation_context": {
-                "topic": "技術學習",
-                "context_shift": False,
-                "urgency": "normal"
+            {
+                "content": "Meeting scheduled for tomorrow at 2 PM",
+                "memory_type": "snapshot",
+                "topic": "schedule",
+                "importance": "high"
             }
-        }
+        ]
         
-        # 處理NLP輸出
-        mem_input = MEMInput(
-            operation_type="process_nlp_output",
+        # 存儲測試記憶
+        for memory in test_memories:
+            store_input = MEMInput(
+                operation_type="store_memory",
+                memory_token=memory_token,
+                memory_entry=memory
+            )
+            mem.handle(store_input)
+        
+        # 查詢所有記憶（透過空白查詢或最大結果數）
+        list_input = MEMInput(
+            operation_type="query_memory",
             memory_token=memory_token,
-            intent_info=nlp_output,
-            conversation_text="我想學習Python和機器學習"
+            query_text="",  # 空白查詢來取得所有記憶
+            max_results=100  # 取得更多結果
         )
         
-        result = mem.handle(mem_input)
+        result = mem.handle(list_input)
         
         if isinstance(result, MEMOutput) and result.success:
-            print(f"   ✅ NLP整合測試成功: {result.message}")
+            memories_count = len(result.search_results) if hasattr(result, 'search_results') else 0
+            print(f"   ✅ Database listing successful, found {memories_count} total memories")
+            
+            # 顯示資料庫內容摘要
+            if hasattr(result, 'search_results') and result.search_results:
+                memory_types = {}
+                topics = {}
+                
+                for memory in result.search_results[:10]:  # 顯示前10條記錄
+                    content = memory.get('content', '')[:40] + ('...' if len(memory.get('content', '')) > 40 else '')
+                    memory_type = memory.get('memory_type', 'unknown')
+                    topic = memory.get('topic', 'unknown')
+                    importance = memory.get('importance', 'unknown')
+                    
+                    print(f"   • {content} (type: {memory_type}, topic: {topic}, importance: {importance})")
+                    
+                    # 統計
+                    memory_types[memory_type] = memory_types.get(memory_type, 0) + 1
+                    topics[topic] = topics.get(topic, 0) + 1
+                
+                print(f"   📊 Memory types distribution: {dict(memory_types)}")
+                print(f"   📊 Topics distribution: {dict(topics)}")
+            
             return {
                 "success": True,
-                "nlp_output_processed": True,
-                "memory_token": memory_token,
-                "result_data": result.data
+                "total_memories": memories_count,
+                "sample_memories": result.search_results[:10] if hasattr(result, 'search_results') else []
             }
         else:
-            print(f"   ❌ NLP整合測試失敗: {result.message if hasattr(result, 'message') else '未知錯誤'}")
+            print(f"   ❌ Database listing failed: {result.message if hasattr(result, 'message') else 'Unknown error'}")
             return {"success": False, "error": str(result)}
             
     except Exception as e:
-        error_log(f"[MEM Test] NLP整合測試失敗: {e}")
-        return {"success": False, "error": str(e)}
-
-def mem_test_llm_context_extraction(modules, memory_token="test_llm"):
-    """測試LLM上下文提取功能 - 工作流程集成版本"""
-    mem = modules.get("mem")
-    
-    if mem is None:
-        error_log("[MEM Test] ❌ 無法載入 MEM 模組")
-        return {"success": False, "error": "模組未載入"}
-
-    try:
-        print("🧠 測試LLM上下文提取功能（工作流程集成）...")
-        
-        # 生成LLM記憶指令
-        mem_input = MEMInput(
-            operation_type="generate_llm_instruction",
-            memory_token=memory_token,
-            query_text="如何幫助用戶學習程式設計",
-            conversation_context="用戶正在尋求學習建議"
-        )
-        
-        result = mem.handle(mem_input)
-        
-        if isinstance(result, MEMOutput) and result.success:
-            print(f"   ✅ LLM上下文提取成功: {result.message}")
-            
-            # 檢查是否有LLM指令
-            if hasattr(result, 'llm_instruction') and result.llm_instruction:
-                print(f"   LLM指令已生成，類型: {type(result.llm_instruction)}")
-                return {
-                    "success": True,
-                    "llm_instruction_generated": True,
-                    "instruction_type": str(type(result.llm_instruction))
-                }
-            else:
-                print(f"   ⚠️ LLM指令生成成功但無指令內容")
-                return {
-                    "success": True,
-                    "llm_instruction_generated": False
-                }
-        else:
-            print(f"   ❌ LLM上下文提取失敗: {result.message if hasattr(result, 'message') else '未知錯誤'}")
-            return {"success": False, "error": str(result)}
-            
-    except Exception as e:
-        error_log(f"[MEM Test] LLM上下文提取測試失敗: {e}")
+        error_log(f"[MEM Test] Database listing test failed: {e}")
         return {"success": False, "error": str(e)}
 
 def mem_test_full_workflow(modules):
-    """測試完整工作流程 - 整合所有功能"""
+    """測試核心MEM功能 - 專注於基本記憶操作"""
     mem = modules.get("mem")
     
     if mem is None:
-        error_log("[MEM Test] ❌ 無法載入 MEM 模組")
-        return {"success": False, "error": "模組未載入"}
+        error_log("[MEM Test] ❌ Unable to load MEM module")
+        return {"success": False, "error": "Module not loaded"}
 
     try:
-        print("🚀 測試完整MEM工作流程...")
+        print("🚀 Testing core MEM functionality workflow...")
         
-        memory_token = f"test_full_workflow_{int(datetime.now().timestamp())}"
+        memory_token = f"test_core_workflow_{int(datetime.now().timestamp())}"
         
-        # 1. 身分驗證
-        print("   1. 身分驗證...")
-        identity_result = mem_test_memory_access_control(modules, memory_token)
-        if not identity_result.get("success"):
-            return {"success": False, "error": "身分驗證失敗"}
+        # 1. 記憶建立
+        print("   1. Memory creation...")
+        creation_result = mem_test_memory_creation(modules, memory_token)
+        if not creation_result.get("success"):
+            return {"success": False, "error": "Memory creation failed"}
         
-        # 2. NLP整合
-        print("   2. NLP整合...")
-        nlp_result = mem_test_nlp_integration(modules)
-        if not nlp_result.get("success"):
-            return {"success": False, "error": "NLP整合失敗"}
-        
-        # 3. 對話快照
-        print("   3. 對話快照...")
-        snapshot_result = mem_test_conversation_snapshot(modules, memory_token, "這是完整工作流程測試")
-        if not snapshot_result.get("success"):
-            return {"success": False, "error": "對話快照失敗"}
-        
-        # 4. 記憶查詢
-        print("   4. 記憶查詢...")
-        query_result = mem_test_memory_query(modules, memory_token, "測試")
+        # 2. 記憶查詢
+        print("   2. Memory query...")
+        query_result = mem_test_memory_query(modules, memory_token, "weather")
         if not query_result.get("success"):
-            return {"success": False, "error": "記憶查詢失敗"}
+            return {"success": False, "error": "Memory query failed"}
         
-        # 5. LLM上下文提取
-        print("   5. LLM上下文提取...")
-        llm_result = mem_test_llm_context_extraction(modules, memory_token)
-        if not llm_result.get("success"):
-            return {"success": False, "error": "LLM上下文提取失敗"}
+        # 3. 快照建立
+        print("   3. Snapshot creation...")
+        snapshot_result = mem_test_snapshot_creation(modules, memory_token, "Core functionality test session")
+        if not snapshot_result.get("success"):
+            return {"success": False, "error": "Snapshot creation failed"}
         
-        print("   🎉 完整工作流程測試成功！")
+        # 4. 資料庫內容條列
+        print("   4. Database content listing...")
+        listing_result = mem_test_database_listing(modules, memory_token)
+        if not listing_result.get("success"):
+            return {"success": False, "error": "Database listing failed"}
+        
+        print("   🎉 Core MEM functionality test completed successfully!")
         
         return {
             "success": True,
             "memory_token": memory_token,
-            "identity_test": identity_result,
-            "nlp_integration": nlp_result,
-            "snapshot_test": snapshot_result,
+            "creation_test": creation_result,
             "query_test": query_result,
-            "llm_context": llm_result
+            "snapshot_test": snapshot_result,
+            "listing_test": listing_result
         }
         
     except Exception as e:
-        error_log(f"[MEM Test] 完整工作流程測試失敗: {e}")
+        error_log(f"[MEM Test] Core functionality test failed: {e}")
         return {"success": False, "error": str(e)}

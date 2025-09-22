@@ -1150,3 +1150,15 @@
 
 ---
 
+### Tried to improve session controls once again. 09/23
+
+> Date: Tue, 23 Sep 2025 00:23:06 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_rework`
+
+> Commit: `20f5e7caf809169969dcd8740c7ba995299d02ed`
+
+---
+

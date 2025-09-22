@@ -147,10 +147,6 @@ class Router:
             })
         
         return base_args
-        if module_key == "llm":
-            args["intent"] = intent
-            
-        return module_key, args
         
     def handle_response(self, 
                     module_key: str, 
@@ -168,13 +164,28 @@ class Router:
         # 檢查是LLM回應中是否包含系統動作
         if module_key == "llm" and "sys_action" in response:
             sys_action = response.get("sys_action")
-            if state_manager and isinstance(sys_action, dict):
+            if isinstance(sys_action, dict):
                 # 用LLM識別的系統動作創建工作會話
-                state_manager.create_work_session(
+                from core.session_manager import session_manager
+                
+                # 確定工作流程類型
+                action = sys_action.get("action", "")
+                workflow_type = "single_command"
+                if action == "start_workflow":
+                    workflow_type = sys_action.get("params", {}).get("workflow_type", "file_processing")
+                
+                # 使用 session_manager 創建會話
+                session = session_manager.create_session(
+                    workflow_type=workflow_type,
                     command=response.get("text", ""),
-                    sys_action=sys_action
+                    initial_data={"sys_action": sys_action}
                 )
-                debug_log(1, f"[Router] 基於LLM回應創建了工作會話: {sys_action}")
+                
+                # 設置系統狀態為 WORK
+                if state_manager:
+                    state_manager.set_state(state_manager.__class__.WORK)
+                
+                debug_log(1, f"[Router] 基於LLM回應創建了工作會話: {session.session_id} (類型: {workflow_type})")
                 return
         
         # 只有 sys 模組的回應有可能包含工作流程資訊

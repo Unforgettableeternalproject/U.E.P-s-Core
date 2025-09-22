@@ -483,7 +483,7 @@ class ChattingSession:
         return {
             "session_id": self.session_id,
             "gs_session_id": self.gs_session_id,
-            "status": self.status.value,
+            "status": self.status,
             "created_at": self.created_at.isoformat(),
             "last_activity": self.last_activity.isoformat(),
             "turn_counter": self.turn_counter,

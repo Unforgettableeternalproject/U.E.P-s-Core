@@ -119,6 +119,10 @@ class MEMModule(BaseModule):
                 error_log("[MEM] 模組未初始化")
                 return self._create_error_response("模組未初始化")
             
+            # 處理舊 API 格式 (向後相容)
+            if isinstance(data, dict) and "mode" in data:
+                return self._handle_legacy_api(data)
+            
             # 處理核心Schema格式
             if isinstance(data, MEMModuleData):
                 return self._handle_core_schema(data)
@@ -138,6 +142,99 @@ class MEMModule(BaseModule):
         except Exception as e:
             error_log(f"[MEM] 處理請求失敗: {e}")
             return self._create_error_response(f"處理失敗: {str(e)}")
+    
+    def _handle_legacy_api(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """處理舊 API 格式 - 向後相容性支援"""
+        try:
+            mode = data.get("mode", "")
+            debug_log(2, f"[MEM] 處理舊API格式: {mode}")
+            
+            if mode == "store":
+                # 舊格式: {"mode": "store", "entry": {"user": "...", "response": "..."}}
+                entry = data.get("entry", {})
+                
+                # 轉換為新格式
+                if "user" in entry and "response" in entry:
+                    # 組合對話內容
+                    conversation_text = f"用戶: {entry['user']}\n系統: {entry['response']}"
+                    memory_token = data.get("memory_token", "legacy_user")
+                    
+                    # 使用新架構存儲
+                    mem_input = MEMInput(
+                        operation_type="create_snapshot",
+                        memory_token=memory_token,
+                        conversation_text=conversation_text,
+                        intent_info={"primary_intent": "legacy_conversation"}
+                    )
+                    
+                    result = self._handle_new_schema(mem_input)
+                    
+                    if isinstance(result, MEMOutput) and result.success:
+                        return {"status": "stored", "message": result.message}
+                    else:
+                        return {"status": "error", "message": "存儲失敗"}
+                
+                else:
+                    return {"status": "error", "message": "缺少必要的 user 或 response 字段"}
+            
+            elif mode == "fetch":
+                # 舊格式: {"mode": "fetch", "text": "...", "top_k": 5}
+                query_text = data.get("text", "")
+                top_k = data.get("top_k", 5)
+                memory_token = data.get("memory_token", "legacy_user")
+                
+                # 使用新架構查詢
+                mem_input = MEMInput(
+                    operation_type="query_memory",
+                    memory_token=memory_token,
+                    query_text=query_text,
+                    max_results=top_k
+                )
+                
+                result = self._handle_new_schema(mem_input)
+                
+                if isinstance(result, MEMOutput) and result.success:
+                    # 轉換回舊格式
+                    legacy_results = []
+                    if hasattr(result, 'search_results') and result.search_results:
+                        for search_result in result.search_results:
+                            # 嘗試從對話快照中提取 user/response 格式
+                            content = search_result.get('content', '')
+                            confidence = search_result.get('confidence', 0)
+                            
+                            # 簡單解析對話格式
+                            if '用戶:' in content and '系統:' in content:
+                                parts = content.split('系統:')
+                                if len(parts) >= 2:
+                                    user_part = parts[0].replace('用戶:', '').strip()
+                                    response_part = parts[1].strip()
+                                    legacy_results.append({
+                                        "user": user_part,
+                                        "response": response_part,
+                                        "confidence": confidence
+                                    })
+                            else:
+                                # 如果不是對話格式，作為通用響應
+                                legacy_results.append({
+                                    "user": query_text,
+                                    "response": content,
+                                    "confidence": confidence
+                                })
+                    
+                    if legacy_results:
+                        return {"results": legacy_results, "status": "success"}
+                    else:
+                        return {"results": [], "status": "empty"}
+                
+                else:
+                    return {"results": [], "status": "error"}
+            
+            else:
+                return {"status": "error", "message": f"不支援的模式: {mode}"}
+                
+        except Exception as e:
+            error_log(f"[MEM] 舊API處理失敗: {e}")
+            return {"status": "error", "message": f"處理失敗: {str(e)}"}
     
     def _handle_core_schema(self, data: MEMModuleData) -> Dict[str, Any]:
         """處理核心Schema格式"""
@@ -261,11 +358,26 @@ class MEMModule(BaseModule):
                     )
             
             elif data.operation_type == "process_identity":
-                # 處理身分資訊
-                if data.intent_info and "user_profile" in data.intent_info:
+                # 處理身分資訊 - 從 Working Context 獲取而非直接從 NLP
+                memory_token = None
+                user_profile = None
+                
+                # 首先嘗試從 Working Context 獲取當前身份
+                from core.working_context import working_context_manager
+                current_identity = working_context_manager.get_current_identity()
+                working_memory_token = working_context_manager.get_memory_token()
+                
+                if current_identity:
+                    memory_token = working_memory_token or current_identity.get("memory_token")
+                    user_profile = current_identity
+                    debug_log(3, f"[MEM] 從 Working Context 獲取身份: {current_identity.get('identity_id', 'Unknown')}")
+                elif data.intent_info and "user_profile" in data.intent_info:
+                    # 後備方案：從 NLP 輸出獲取（但這應該很少發生）
                     user_profile = data.intent_info["user_profile"]
                     memory_token = user_profile.get("memory_token", "unknown")
-                    
+                    debug_log(2, "[MEM] 後備：從 NLP 輸出獲取身份資訊")
+                
+                if memory_token and user_profile:
                     return MEMOutput(
                         success=True,
                         operation_type="process_identity",
@@ -276,7 +388,7 @@ class MEMModule(BaseModule):
                     return MEMOutput(
                         success=False,
                         operation_type="process_identity",
-                        errors=["用戶資料不能為空"]
+                        errors=["無法從 Working Context 或 NLP 輸出獲取身份資訊"]
                     )
             
             elif data.operation_type == "store_memory":
@@ -332,25 +444,45 @@ class MEMModule(BaseModule):
                     )
             
             elif data.operation_type == "process_nlp_output":
-                # 處理NLP輸出
+                # 處理NLP輸出 - 使用實際 NLP 輸出格式
                 if data.intent_info:
-                    # 模擬NLP輸出處理
-                    intent_analysis = data.intent_info.get("intent_analysis", {})
-                    primary_intent = intent_analysis.get("primary_intent", "unknown")
+                    # 處理實際 NLP 輸出格式
+                    primary_intent = data.intent_info.get("primary_intent", "unknown")
+                    overall_confidence = data.intent_info.get("overall_confidence", 0.0)
                     
-                    # 可以根據意圖創建相應的記憶
-                    if data.conversation_text and data.memory_token:
+                    # 從 Working Context 獲取記憶令牌
+                    from core.working_context import working_context_manager
+                    memory_token = working_context_manager.get_memory_token()
+                    
+                    # 如果 Working Context 中沒有，使用提供的記憶令牌
+                    if not memory_token:
+                        memory_token = data.memory_token
+                    
+                    # 根據意圖和信心度決定是否創建記憶
+                    create_memory = overall_confidence > 0.7  # 只有高信心度的意圖才創建記憶
+                    
+                    if create_memory and data.conversation_text and memory_token:
+                        # 將 primary_intent 轉換為字符串（如果是 Enum）
+                        topic = str(primary_intent) if hasattr(primary_intent, 'value') else str(primary_intent)
+                        
                         snapshot = self.memory_manager.create_conversation_snapshot(
-                            memory_token=data.memory_token,
+                            memory_token=memory_token,
                             conversation_text=data.conversation_text,
-                            topic=primary_intent
+                            topic=topic
                         )
+                        
+                        debug_log(3, f"[MEM] 基於 NLP 分析創建快照: intent={topic}, confidence={overall_confidence}")
                     
                     return MEMOutput(
                         success=True,
                         operation_type="process_nlp_output",
                         message="NLP輸出處理成功",
-                        data={"intent": primary_intent}
+                        data={
+                            "intent": str(primary_intent),
+                            "confidence": overall_confidence,
+                            "memory_token": memory_token,
+                            "memory_created": create_memory
+                        }
                     )
                 else:
                     return MEMOutput(
@@ -549,13 +681,23 @@ class MEMModule(BaseModule):
     
     def process_nlp_output(self, nlp_output) -> Optional[MEMOutput]:
         """處理來自NLP模組的輸出（新架構）"""
-        if not self.nlp_integration:
-            debug_log(2, "[MEM] NLP整合未啟用，跳過NLP輸出處理")
-            return None
+        debug_log(2, "[MEM] 處理 NLP 輸出")
         
         try:
-            mem_input = self.nlp_integration.process_nlp_output(nlp_output)
-            return self._handle_new_schema(mem_input)
+            # 直接處理 NLP 輸出，不依賴 nlp_integration
+            if isinstance(nlp_output, dict):
+                # 構造 MEMInput
+                mem_input = MEMInput(
+                    operation_type="process_nlp_output",
+                    intent_info=nlp_output,
+                    conversation_text=nlp_output.get("original_text", ""),
+                    memory_token=None  # 讓 _handle_new_schema 從 Working Context 獲取
+                )
+                return self._handle_new_schema(mem_input)
+            else:
+                error_log("[MEM] NLP 輸出格式無效")
+                return None
+                
         except Exception as e:
             error_log(f"[MEM] 處理NLP輸出失敗: {e}")
             return None

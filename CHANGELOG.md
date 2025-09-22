@@ -1126,3 +1126,15 @@
 
 ---
 
+### Cleared all remaining codes of identity tokens, and improved terminal to debug interface switching. 09/22
+
+> Date: Mon, 22 Sep 2025 15:59:22 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_rework`
+
+> Commit: `42bf0c946bdec431352f4360c69572f4fa97764d`
+
+---
+

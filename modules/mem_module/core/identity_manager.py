@@ -164,6 +164,11 @@ class IdentityManager:
                 debug_log(3, f"[IdentityManager] 測試令牌權限允許: {memory_token} ({operation})")
                 return True
             
+            # 對於 legacy 令牌，允許基本操作（向後相容）
+            if memory_token.startswith("legacy_"):
+                debug_log(3, f"[IdentityManager] Legacy令牌權限允許: {memory_token} ({operation})")
+                return True
+            
             # 系統令牌擁有所有權限
             if memory_token == self.system_token:
                 return True

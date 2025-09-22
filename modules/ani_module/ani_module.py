@@ -499,4 +499,36 @@ class ANIModule(BaseFrontendModule):
             return original_pm
     
     def shutdown(self):
+        """關閉動畫模組，停止所有計時器和清理資源"""
+        info_log(f"[{self.module_id}] 開始關閉動畫模組")
+        
+        # 停止動畫管理器
+        try:
+            if hasattr(self, 'manager') and self.manager:
+                self.manager.stop()
+                info_log(f"[{self.module_id}] 動畫管理器已停止")
+        except Exception as e:
+            error_log(f"[{self.module_id}] 停止動畫管理器失敗: {e}")
+        
+        # 停止計時器
+        try:
+            if hasattr(self, 'timer') and self.timer:
+                self.timer.stop()
+                self.timer.deleteLater() if hasattr(self.timer, 'deleteLater') else None
+                self.timer = None
+                info_log(f"[{self.module_id}] 計時器已停止並清理")
+        except Exception as e:
+            error_log(f"[{self.module_id}] 停止計時器失敗: {e}")
+        
+        # 清理信號回調
+        try:
+            if hasattr(self, 'signals') and self.signals:
+                if hasattr(self.signals, 'remove_timer_callback'):
+                    self.signals.remove_timer_callback("ani_update")
+                    info_log(f"[{self.module_id}] 信號回調已清理")
+                else:
+                    info_log(f"[{self.module_id}] 信號系統無remove_timer_callback方法")
+        except Exception as e:
+            error_log(f"[{self.module_id}] 清理信號回調失敗: {e}")
+        
         return super().shutdown()

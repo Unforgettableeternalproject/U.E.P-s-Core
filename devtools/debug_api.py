@@ -44,12 +44,13 @@ def _initialize_modules():
     global modules, modules_load_times
     
     if PRELOAD_MODULES is True:
-        # 舊版模式：預先載入所有模組
-        info_log("[Controller] 初始化：預先載入所有模組")
+        # 舊版模式：預先載入所有模組（但排除UI相關模組，避免終端測試時的問題）
+        info_log("[Controller] 初始化：預先載入模組（終端模式，排除UI）")
         
-        # 模組列表
+        # 模組列表（終端模式排除UI相關模組）
         module_names = ["stt_module", "nlp_module", "mem_module", "llm_module", 
-                        "tts_module", "sys_module", "ui_module", "ani_module", "mov_module"]
+                        "tts_module", "sys_module"]
+        # 不載入UI相關模組：ui_module, ani_module, mov_module
         
         # 清空並重新載入模組字典
         modules.clear()
@@ -62,6 +63,11 @@ def _initialize_modules():
             if module_instance is not None:
                 from datetime import datetime
                 modules_load_times[short_name] = datetime.now().strftime('%H:%M:%S')
+        
+        # 為UI相關模組設定為None（在終端模式下不載入）
+        modules["ui"] = None
+        modules["ani"] = None  
+        modules["mov"] = None
     else:
         # GUI模式：延遲載入
         info_log("[Controller] 初始化：按需載入模式")
@@ -80,20 +86,229 @@ def _initialize_modules():
         # 初始化載入時間字典，預設為空
         modules_load_times.clear()
 
-def set_loading_mode(preload=True):
+def set_loading_mode(preload=True, reinitialize=False):
     """設定模組載入模式
     Args:
         preload (bool): True=預先載入所有模組, False=按需載入
+        reinitialize (bool): True=強制重新初始化模組字典
     """
     global PRELOAD_MODULES
     PRELOAD_MODULES = preload
 
     info_log(f"[Controller] 設定載入模式：{'預先載入' if preload else '按需載入'}")
-    # 只有在模組字典尚未初始化時才進行初始化
-    if not modules:
+    
+    # 如果模組字典尚未初始化，或者要求重新初始化，則進行初始化
+    if not modules or reinitialize:
         _initialize_modules()
-    else:
-        info_log("[Controller] 模組字典已存在，保留現有模組")
+
+def complete_reset_all_modules():
+    """完全重置所有模組實例，回歸原始狀態"""
+    global modules, modules_load_times
+    
+    info_log("[Controller] 開始完全重置所有模組...")
+    
+    # 清理所有現有模組實例
+    all_module_names = ['stt', 'nlp', 'mem', 'llm', 'tts', 'sysmod', 'ui', 'ani', 'mov']
+    
+    for module_name in all_module_names:
+        if module_name in modules and modules[module_name] is not None:
+            try:
+                module_instance = modules[module_name]
+                
+                # 嘗試調用shutdown方法
+                if hasattr(module_instance, 'shutdown'):
+                    module_instance.shutdown()
+                    info_log(f"[Controller] 已關閉 {module_name} 模組")
+                # 如果沒有shutdown，嘗試stop方法
+                elif hasattr(module_instance, 'stop'):
+                    module_instance.stop()
+                    info_log(f"[Controller] 已停止 {module_name} 模組")
+                
+            except Exception as e:
+                error_log(f"[Controller] 關閉 {module_name} 模組時發生錯誤: {e}")
+    
+    # 嘗試清理QApplication實例（但保留調試介面使用的QApplication）
+    try:
+        from PyQt5.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is not None:
+            info_log("[Controller] 檢測到QApplication實例")
+            
+            # 檢查是否有調試介面正在運行
+            debug_window_active = False
+            for widget in app.topLevelWidgets():
+                widget_name = widget.__class__.__name__
+                if 'Debug' in widget_name or 'debug' in widget_name.lower():
+                    debug_window_active = True
+                    info_log(f"[Controller] 檢測到調試介面視窗: {widget_name}")
+                    break
+            
+            if debug_window_active:
+                info_log("[Controller] 調試介面正在運行，保留QApplication但關閉其他視窗")
+                # 只關閉非調試介面的視窗
+                for widget in list(app.topLevelWidgets()):
+                    widget_name = widget.__class__.__name__
+                    if ('Debug' not in widget_name and 
+                        'debug' not in widget_name.lower() and
+                        widget.isVisible()):
+                        try:
+                            info_log(f"[Controller] 關閉非調試視窗: {widget_name}")
+                            widget.close()
+                        except Exception as e:
+                            error_log(f"[Controller] 關閉視窗失敗: {e}")
+            else:
+                info_log("[Controller] 無調試介面運行，關閉所有視窗和QApplication")
+                # 關閉所有頂級視窗
+                for widget in app.topLevelWidgets():
+                    try:
+                        if widget.isVisible():
+                            info_log(f"[Controller] 關閉頂級視窗: {widget}")
+                            widget.close()
+                    except Exception as e:
+                        error_log(f"[Controller] 關閉頂級視窗失敗: {e}")
+                
+                # 處理所有待處理事件
+                app.processEvents()
+                
+                # 嘗試退出QApplication
+                try:
+                    app.quit()
+                    info_log("[Controller] QApplication已退出")
+                except Exception as e:
+                    error_log(f"[Controller] QApplication退出失敗: {e}")
+                
+    except ImportError:
+        # PyQt5未安裝或不可用
+        pass
+    except Exception as e:
+        error_log(f"[Controller] 清理QApplication時發生錯誤: {e}")
+    
+    # 完全清空模組字典和載入時間記錄
+    modules.clear()
+    modules_load_times.clear()
+    
+    # 清理core.registry的模組快取
+    try:
+        from core.registry import _loaded_modules
+        _loaded_modules.clear()
+        info_log("[Controller] core.registry模組快取已清理")
+    except ImportError:
+        info_log("[Controller] 無法導入core.registry，跳過快取清理")
+    except Exception as e:
+        error_log(f"[Controller] 清理core.registry快取時發生錯誤: {e}")
+    
+    # 強制垃圾回收
+    import gc
+    gc.collect()
+    
+    info_log("[Controller] 所有模組已完全重置，已清空模組字典和執行垃圾回收")
+
+def switch_to_terminal_mode():
+    """切換到終端模式 - 完全重置後預先載入非UI模組"""
+    # 完全重置所有模組
+    complete_reset_all_modules()
+    set_loading_mode(preload=True, reinitialize=True)
+
+def switch_to_gui_mode():
+    """切換到GUI模式 - 完全重置後按需載入所有模組"""
+    # 完全重置所有模組
+    complete_reset_all_modules()
+    set_loading_mode(preload=False, reinitialize=True)
+
+def cleanup_frontend_modules():
+    """清理前端模組實例，防止GUI關閉後繼續運行"""
+    frontend_modules = ['ui', 'ani', 'mov']
+    
+    info_log("[Controller] 開始清理前端模組...")
+    
+    # 首先嘗試清理UI模組的介面實例
+    if 'ui' in modules and modules['ui'] is not None:
+        try:
+            ui_module = modules['ui']
+            
+            # 直接訪問UI模組的interfaces字典並清理DesktopPetApp
+            if hasattr(ui_module, 'interfaces'):
+                for interface_type, interface in list(ui_module.interfaces.items()):
+                    if interface is not None:
+                        try:
+                            info_log(f"[Controller] 清理UI介面實例: {interface_type}")
+                            if hasattr(interface, 'close'):
+                                interface.close()
+                            elif hasattr(interface, 'shutdown'):
+                                interface.shutdown()
+                        except Exception as e:
+                            error_log(f"[Controller] 清理UI介面 {interface_type} 失敗: {e}")
+                
+                # 清空interfaces字典
+                ui_module.interfaces.clear()
+                if hasattr(ui_module, 'active_interfaces'):
+                    ui_module.active_interfaces.clear()
+                    
+            info_log("[Controller] UI模組介面實例清理完成")
+            
+        except Exception as e:
+            error_log(f"[Controller] 清理UI模組介面時發生錯誤: {e}")
+    
+    # 然後清理模組實例
+    for module_name in frontend_modules:
+        if module_name in modules and modules[module_name] is not None:
+            try:
+                module_instance = modules[module_name]
+                
+                # 嘗試調用shutdown方法
+                if hasattr(module_instance, 'shutdown'):
+                    module_instance.shutdown()
+                    info_log(f"[Controller] 已關閉 {module_name} 模組")
+                # 如果沒有shutdown，嘗試stop方法
+                elif hasattr(module_instance, 'stop'):
+                    module_instance.stop()
+                    info_log(f"[Controller] 已停止 {module_name} 模組")
+                else:
+                    info_log(f"[Controller] {module_name} 模組沒有關閉方法")
+                
+                # 清除模組引用
+                modules[module_name] = None
+                modules_load_times.pop(module_name, None)
+                
+            except Exception as e:
+                error_log(f"[Controller] 清理 {module_name} 模組時發生錯誤: {e}")
+    
+    # 嘗試清理所有QApplication實例
+    try:
+        from PyQt5.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is not None:
+            info_log("[Controller] 檢測到QApplication實例，正在關閉...")
+            
+            # 關閉所有頂級視窗
+            for widget in app.topLevelWidgets():
+                try:
+                    if widget.isVisible():
+                        info_log(f"[Controller] 關閉頂級視窗: {widget}")
+                        widget.close()
+                except Exception as e:
+                    error_log(f"[Controller] 關閉頂級視窗失敗: {e}")
+            
+            # 處理所有待處理事件
+            app.processEvents()
+            
+            # 嘗試退出QApplication
+            try:
+                app.quit()
+                info_log("[Controller] QApplication已退出")
+            except Exception as e:
+                error_log(f"[Controller] QApplication退出失敗: {e}")
+                
+    except ImportError:
+        # PyQt5未安裝或不可用
+        pass
+    except Exception as e:
+        error_log(f"[Controller] 清理QApplication時發生錯誤: {e}")
+    
+    # 強制垃圾回收
+    import gc
+    gc.collect()
+    info_log("[Controller] 前端模組清理完成，已執行垃圾回收")
 
 def get_module_load_time(name):
     """獲取模組載入時間

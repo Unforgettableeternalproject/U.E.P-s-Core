@@ -38,51 +38,6 @@ class MemoryImportance(str, Enum):
     TEMPORARY = "temporary"   # 臨時記憶（隨時可刪除）
 
 
-class IdentityToken(BaseModel):
-    """記憶令牌資訊 - 管理記憶系統中的身份權限與存取控制"""
-    memory_token: str = Field(..., description="記憶存取令牌")
-    identity_id: str = Field(..., description="對應的身份ID")
-    speaker_id: Optional[str] = Field(None, description="對應的語者ID")
-    display_name: Optional[str] = Field(None, description="顯示名稱")
-    
-    # 權限和狀態管理
-    permissions: List[str] = Field(default_factory=lambda: ["read", "write"], description="權限列表")
-    is_active: bool = Field(True, description="是否活躍")
-    
-    # 時間戳
-    created_at: datetime = Field(default_factory=datetime.now, description="創建時間")
-    last_used: Optional[datetime] = Field(None, description="最後使用時間")
-    expires_at: Optional[datetime] = Field(None, description="過期時間")
-    
-    # 使用者偏好 (從 NLP UserProfile 同步)
-    preferences: Dict[str, Any] = Field(default_factory=dict, description="使用者偏好")
-    voice_preferences: Dict[str, Any] = Field(default_factory=dict, description="語音風格偏好")
-    conversation_style: Dict[str, Any] = Field(default_factory=dict, description="對話風格偏好")
-    
-    # 統計資訊
-    total_interactions: int = Field(0, description="總互動次數")
-    last_interaction: Optional[datetime] = Field(None, description="最後互動時間")
-    
-    # 額外元資料
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="額外元資料")
-    
-    @classmethod
-    def from_user_profile(cls, user_profile: "UserProfile") -> "IdentityToken":
-        """從 NLP UserProfile 創建記憶令牌"""
-        return cls(
-            memory_token=user_profile.memory_token or "",
-            identity_id=user_profile.identity_id,
-            speaker_id=user_profile.speaker_id,
-            display_name=user_profile.display_name,
-            preferences=user_profile.preferences,
-            voice_preferences=user_profile.voice_preferences,
-            conversation_style=user_profile.conversation_style,
-            total_interactions=user_profile.total_interactions,
-            last_interaction=user_profile.last_interaction,
-            created_at=user_profile.created_at
-        )
-
-
 class MemoryEntry(BaseModel):
     """記憶條目基礎結構"""
     memory_id: str = Field(..., description="記憶條目唯一識別")
@@ -254,7 +209,7 @@ class MEMSchemaAdapter:
         # 處理查詢相關
         if memory_query:
             core_data.query_text = memory_query.query_text
-            core_data.identity_token = memory_query.memory_token  # 對應到核心Schema的identity_token
+            core_data.identity_token = memory_query.memory_token  # 核心Schema使用identity_token欄位存儲memory_token
             core_data.memory_types = [mt.value for mt in memory_query.memory_types] if memory_query.memory_types else None
             core_data.topic_filter = memory_query.topic_filter
             core_data.similarity_threshold = memory_query.similarity_threshold

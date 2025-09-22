@@ -1,12 +1,13 @@
 # tests/test_identity_flow_integration.py
 """
 測試 NLP→Identity→MEM 完整流程
-驗證身份創建到記憶體存取的整合是否正確
+驗證Working Context到記憶體存取的整合是否正確
 """
 
 import unittest
 from datetime import datetime
 from typing import Dict, Any
+from unittest.mock import patch, MagicMock
 
 # 模擬 NLP UserProfile 數據
 def create_mock_user_profile() -> Dict[str, Any]:
@@ -35,6 +36,16 @@ def create_mock_user_profile() -> Dict[str, Any]:
         "created_at": datetime.now()
     }
 
+# 模擬 Identity 數據
+def create_mock_identity():
+    """創建模擬的 Identity 對象"""
+    mock_identity = MagicMock()
+    mock_identity.identity_id = "user_1737845123_spk_test"
+    mock_identity.memory_token = "mem_user_1737845123_spk_test_abcd1234"
+    mock_identity.speaker_id = "spk_test_001"
+    mock_identity.display_name = "Test User"
+    return mock_identity
+
 
 class TestIdentityFlowIntegration(unittest.TestCase):
     """測試身份流程整合"""
@@ -42,152 +53,125 @@ class TestIdentityFlowIntegration(unittest.TestCase):
     def setUp(self):
         """測試前設置"""
         from modules.mem_module.core.identity_manager import IdentityManager
-        from modules.mem_module.schemas import IdentityToken
         
         self.identity_manager = IdentityManager({"test": True})
         self.identity_manager.initialize()
         
         self.mock_user_profile = create_mock_user_profile()
+        self.mock_identity = create_mock_identity()
     
-    def test_01_identity_token_creation_from_nlp(self):
-        """測試 1: 從 NLP UserProfile 創建 IdentityToken"""
-        print("\n[測試 1] 從 NLP UserProfile 創建 IdentityToken")
+    def test_01_memory_token_extraction_from_working_context(self):
+        """測試 1: 從 Working Context 提取記憶令牌"""
+        print("\n[測試 1] 從 Working Context 提取記憶令牌")
         
-        # 1. 創建身份令牌
-        identity_token = self.identity_manager.create_identity_token_from_nlp(
-            self.mock_user_profile
-        )
-        
-        # 2. 驗證創建成功
-        self.assertIsNotNone(identity_token)
-        self.assertEqual(identity_token.identity_id, self.mock_user_profile["identity_id"])
-        self.assertEqual(identity_token.memory_token, self.mock_user_profile["memory_token"])
-        self.assertEqual(identity_token.speaker_id, self.mock_user_profile["speaker_id"])
-        self.assertEqual(identity_token.display_name, self.mock_user_profile["display_name"])
-        
-        # 3. 驗證偏好設定正確轉移
-        self.assertEqual(identity_token.preferences, self.mock_user_profile["preferences"])
-        self.assertEqual(identity_token.voice_preferences, self.mock_user_profile["voice_preferences"])
-        self.assertEqual(identity_token.conversation_style, self.mock_user_profile["conversation_style"])
-        
-        print(f"   ✅ 身份令牌創建成功: {identity_token.identity_id}")
-        print(f"   ✅ 記憶令牌: {identity_token.memory_token}")
-        print(f"   ✅ 偏好設定轉移成功")
+        with patch('core.working_context.working_context_manager.get_current_identity') as mock_get_identity:
+            # 模擬 Working Context 返回 Identity
+            mock_get_identity.return_value = self.mock_identity
+            
+            # 提取記憶令牌
+            memory_token = self.identity_manager.get_current_memory_token()
+            
+            # 驗證提取成功
+            self.assertEqual(memory_token, self.mock_identity.memory_token)
+            
+            print(f"   ✅ 記憶令牌提取成功: {memory_token}")
+            print(f"   ✅ Working Context 整合正確")
     
-    def test_02_identity_token_caching(self):
-        """測試 2: 身份令牌快取機制"""
-        print("\n[測試 2] 身份令牌快取機制")
+    def test_02_memory_token_fallback_handling(self):
+        """測試 2: 記憶令牌回退處理"""
+        print("\n[測試 2] 記憶令牌回退處理")
         
-        # 1. 創建身份令牌
-        identity_token = self.identity_manager.create_identity_token_from_nlp(
-            self.mock_user_profile
-        )
-        
-        # 2. 檢查快取
-        cached_token = self.identity_manager.get_identity_token(
-            self.mock_user_profile["identity_id"]
-        )
-        
-        self.assertIsNotNone(cached_token)
-        self.assertEqual(cached_token.identity_id, identity_token.identity_id)
-        self.assertEqual(cached_token.memory_token, identity_token.memory_token)
-        
-        print(f"   ✅ 身份令牌快取成功")
-        print(f"   ✅ 快取查詢正確: {cached_token.identity_id}")
+        with patch('core.working_context.working_context_manager.get_current_identity') as mock_get_identity:
+            # 模擬 Working Context 返回 None（無身份）
+            mock_get_identity.return_value = None
+            
+            # 提取記憶令牌
+            memory_token = self.identity_manager.get_current_memory_token()
+            
+            # 驗證回退到匿名令牌
+            self.assertEqual(memory_token, "anonymous")
+            
+            print(f"   ✅ 回退處理正確: {memory_token}")
+            print(f"   ✅ 匿名存取機制運作正常")
     
     def test_03_memory_access_validation(self):
         """測試 3: 記憶體存取驗證"""
         print("\n[測試 3] 記憶體存取驗證")
         
-        # 1. 創建身份令牌
-        identity_token = self.identity_manager.create_identity_token_from_nlp(
-            self.mock_user_profile
-        )
-        
-        # 2. 驗證記憶體存取（模擬當前令牌）
-        # 這需要模擬 working_context_manager 返回正確的令牌
-        memory_token = identity_token.memory_token
-        
-        # 3. 驗證不同情況
-        # 系統令牌應該能存取所有記憶體
-        system_access = self.identity_manager.validate_memory_access(
-            memory_token, "read"
-        )
-        
-        print(f"   ✅ 記憶體存取驗證功能正常")
-        print(f"   ✅ 記憶令牌: {memory_token}")
+        with patch('core.working_context.working_context_manager.get_current_identity') as mock_get_identity:
+            # 模擬 Working Context 返回 Identity
+            mock_get_identity.return_value = self.mock_identity
+            
+            # 驗證記憶體存取（基於當前身份的記憶令牌）
+            memory_token = self.identity_manager.get_current_memory_token()
+            
+            # 驗證記憶體存取權限
+            has_access = self.identity_manager.validate_memory_access(memory_token, "read")
+            self.assertTrue(has_access)
+            
+            print(f"   ✅ 記憶體存取驗證功能正常")
+            print(f"   ✅ 記憶令牌: {memory_token}")
+            print(f"   ✅ 存取權限驗證成功")
     
-    def test_04_identity_token_structure_completeness(self):
-        """測試 4: 身份令牌結構完整性"""
-        print("\n[測試 4] 身份令牌結構完整性")
+    def test_04_system_and_anonymous_tokens(self):
+        """測試 4: 系統和匿名令牌"""
+        print("\n[測試 4] 系統和匿名令牌")
         
-        # 1. 創建身份令牌
-        identity_token = self.identity_manager.create_identity_token_from_nlp(
-            self.mock_user_profile
-        )
+        # 測試系統令牌
+        system_token = self.identity_manager.get_system_token()
+        self.assertEqual(system_token, "system")
         
-        # 2. 檢查所有必要屬性
-        required_attrs = [
-            "memory_token", "identity_id", "speaker_id", "display_name",
-            "preferences", "voice_preferences", "conversation_style",
-            "permissions", "is_active", "created_at", "total_interactions"
-        ]
+        # 測試匿名令牌
+        anonymous_token = self.identity_manager.get_anonymous_token()
+        self.assertEqual(anonymous_token, "anonymous")
         
-        for attr in required_attrs:
-            self.assertTrue(hasattr(identity_token, attr), f"缺少屬性: {attr}")
+        # 驗證系統令牌的存取權限
+        system_access = self.identity_manager.validate_memory_access(system_token, "read")
+        self.assertTrue(system_access)
         
-        # 3. 檢查預設值
-        self.assertIsInstance(identity_token.permissions, list)
-        self.assertTrue(identity_token.is_active)
-        self.assertIsInstance(identity_token.total_interactions, int)
-        
-        print(f"   ✅ 所有必要屬性存在")
-        print(f"   ✅ 預設值設定正確")
-        print(f"   ✅ 身份令牌結構完整")
+        print(f"   ✅ 系統令牌: {system_token}")
+        print(f"   ✅ 匿名令牌: {anonymous_token}")
+        print(f"   ✅ 系統令牌存取權限正確")
     
-    def test_05_usage_tracking(self):
-        """測試 5: 使用追蹤"""
-        print("\n[測試 5] 使用追蹤")
+    def test_05_memory_access_stats_tracking(self):
+        """測試 5: 記憶體存取統計追蹤"""
+        print("\n[測試 5] 記憶體存取統計追蹤")
         
-        # 1. 創建身份令牌
-        identity_token = self.identity_manager.create_identity_token_from_nlp(
-            self.mock_user_profile
-        )
-        
-        initial_interactions = identity_token.total_interactions
-        
-        # 2. 更新使用記錄
-        self.identity_manager.update_identity_token_usage(identity_token.identity_id)
-        
-        # 3. 檢查更新
-        updated_token = self.identity_manager.get_identity_token(identity_token.identity_id)
-        self.assertEqual(updated_token.total_interactions, initial_interactions + 1)
-        self.assertIsNotNone(updated_token.last_used)
-        
-        print(f"   ✅ 使用追蹤正常")
-        print(f"   ✅ 互動次數更新: {initial_interactions} → {updated_token.total_interactions}")
+        with patch('core.working_context.working_context_manager.get_current_identity') as mock_get_identity:
+            mock_get_identity.return_value = self.mock_identity
+            
+            # 獲取初始統計
+            initial_stats = self.identity_manager.get_stats()
+            
+            # 執行幾次令牌提取
+            for _ in range(3):
+                self.identity_manager.get_current_memory_token()
+            
+            # 驗證統計更新
+            updated_stats = self.identity_manager.get_stats()
+            self.assertGreater(updated_stats["token_extractions"], initial_stats["token_extractions"])
+            
+            print(f"   ✅ 統計追蹤正常")
+            print(f"   ✅ 令牌提取次數: {updated_stats['token_extractions']}")
     
     def test_06_integration_with_working_context(self):
         """測試 6: Working Context 整合"""
         print("\n[測試 6] Working Context 整合")
         
-        from core.working_context import working_context_manager
-        
-        # 1. 設定身份到 Working Context
-        working_context_manager.set_current_identity(self.mock_user_profile)
-        working_context_manager.set_memory_token(self.mock_user_profile["memory_token"])
-        
-        # 2. 從 Working Context 獲取
-        current_identity = self.identity_manager.get_current_identity_info()
-        current_token = self.identity_manager.get_current_memory_token()
-        
-        # 3. 驗證
-        if current_identity:
-            self.assertEqual(current_identity["identity_id"], self.mock_user_profile["identity_id"])
-        self.assertEqual(current_token, self.mock_user_profile["memory_token"])
-        
-        print(f"   ✅ Working Context 整合正常")
-        print(f"   ✅ 身份資訊同步成功")
+        with patch('core.working_context.working_context_manager.get_current_identity') as mock_get_identity:
+            with patch('core.working_context.working_context_manager.get_memory_token') as mock_get_token:
+                # 設定 Working Context 模擬
+                mock_get_identity.return_value = self.mock_identity
+                mock_get_token.return_value = self.mock_identity.memory_token
+                
+                # 從 IdentityManager 獲取記憶令牌
+                current_token = self.identity_manager.get_current_memory_token()
+                
+                # 驗證整合
+                self.assertEqual(current_token, self.mock_identity.memory_token)
+                
+                print(f"   ✅ Working Context 整合正常")
+                print(f"   ✅ 記憶令牌獲取成功: {current_token}")
 
 
 if __name__ == "__main__":

@@ -118,28 +118,66 @@ class UIModule(BaseFrontendModule):
             return False
     
     def _initialize_ani_mov_modules(self) -> bool:
-        """初始化 ANI 和 MOV 模組"""
+        """初始化 ANI 和 MOV 模組（支援debug_api模組管理）"""
         try:
             from core.registry import get_module
 
-            # 取得或載入 ANI 模組
-            self.ani_module = get_module("ani_module")
+            # 取得或載入 ANI 模組（支援debug_api模組管理）
+            try:
+                # 首先嘗試使用debug_api的模組管理（如果可用）
+                import devtools.debug_api as debug_api
+                self.ani_module = debug_api.get_or_load_module("ani")
+                info_log(f"[{self.module_id}] 通過debug_api載入ANI模組")
+            except (ImportError, AttributeError):
+                # 回退到原始方式
+                self.ani_module = get_module("ani_module")
+                info_log(f"[{self.module_id}] 通過registry載入ANI模組")
+                
             if self.ani_module is None:
                 error_log(f"[{self.module_id}] 無法取得 ANI 模組")
                 return False
-            if not getattr(self.ani_module, "is_initialized", False):
+            
+            # 檢查模組狀態 - 如果模組已經被shutdown，強制重新初始化
+            if (hasattr(self.ani_module, 'is_initialized') and 
+                not getattr(self.ani_module, "is_initialized", True)) or \
+               (hasattr(self.ani_module, 'is_active') and 
+                not getattr(self.ani_module, "is_active", True)):
+                info_log(f"[{self.module_id}] 檢測到ANI模組已被關閉，重新初始化")
+                if not self.ani_module.initialize_frontend():
+                    error_log(f"[{self.module_id}] ANI 模組重新初始化失敗")
+                    return False
+            elif not getattr(self.ani_module, "is_initialized", False):
                 if self.ani_module.initialize_frontend():
                     info_log(f"[{self.module_id}] ANI 模組初始化成功")
                 else:
                     error_log(f"[{self.module_id}] ANI 模組初始化失敗")
                     return False
 
-            # 取得或載入 MOV 模組
-            self.mov_module = get_module("mov_module")
+            # 取得或載入 MOV 模組（支援debug_api模組管理）
+            try:
+                # 首先嘗試使用debug_api的模組管理（如果可用）
+                import devtools.debug_api as debug_api
+                self.mov_module = debug_api.get_or_load_module("mov")
+                info_log(f"[{self.module_id}] 通過debug_api載入MOV模組")
+            except (ImportError, AttributeError):
+                # 回退到原始方式
+                self.mov_module = get_module("mov_module")
+                info_log(f"[{self.module_id}] 通過registry載入MOV模組")
+                
             if self.mov_module is None:
                 error_log(f"[{self.module_id}] 無法取得 MOV 模組")
                 return False
-            if not getattr(self.mov_module, "is_initialized", False):
+            
+            # 檢查模組狀態 - 如果模組已經被shutdown，強制重新初始化
+            if (hasattr(self.mov_module, 'is_initialized') and 
+                not getattr(self.mov_module, "is_initialized", True)) or \
+               (hasattr(self.mov_module, 'is_active') and 
+                not getattr(self.mov_module, "is_active", True)):
+                info_log(f"[{self.module_id}] 檢測到MOV模組已被關閉，重新初始化")
+                if not self.mov_module.initialize_frontend():
+                    error_log(f"[{self.module_id}] MOV 模組重新初始化失敗")
+                    return False
+            elif not getattr(self.mov_module, "is_initialized", False):
                 if self.mov_module.initialize_frontend():
                     info_log(f"[{self.module_id}] MOV 模組初始化成功")
                 else:
@@ -717,51 +755,6 @@ class UIModule(BaseFrontendModule):
             error_log(f"[{self.module_id}] 執行測試失敗: {e}")
             return {"success": False, "error": str(e)}
     
-    def _run_mem_test(self, test_id: str) -> dict:
-        """執行MEM模組測試"""
-        try:
-            # 導入debug_api中的MEM測試函數
-            from devtools.debug_api import get_or_load_module
-            
-            # 確保模組已載入
-            get_or_load_module("mem")
-            
-            if test_id == "mem_memory_access_control":
-                from devtools.debug_api import mem_test_memory_access_control_wrapper
-                return mem_test_memory_access_control_wrapper("test_user_debug")
-                
-            elif test_id == "mem_conversation_snapshot":
-                from devtools.debug_api import mem_test_conversation_snapshot_wrapper
-                return mem_test_conversation_snapshot_wrapper("debug_user", "這是一個測試對話快照")
-                
-            elif test_id == "mem_memory_query":
-                from devtools.debug_api import mem_test_memory_query_wrapper
-                return mem_test_memory_query_wrapper("debug_user", "測試查詢")
-                
-            elif test_id == "mem_identity_stats":
-                from devtools.debug_api import mem_test_identity_manager_stats_wrapper
-                return mem_test_identity_manager_stats_wrapper()
-                
-            elif test_id == "mem_nlp_integration":
-                from devtools.debug_api import mem_test_nlp_integration_wrapper
-                return mem_test_nlp_integration_wrapper()
-                
-            elif test_id == "mem_llm_context":
-                from devtools.debug_api import mem_test_llm_context_extraction_wrapper
-                return mem_test_llm_context_extraction_wrapper("debug_user", "測試上下文")
-                
-            elif test_id == "mem_full_workflow":
-                from devtools.debug_api import mem_test_full_workflow_wrapper
-                return mem_test_full_workflow_wrapper("DebugWorkflowUser")
-                
-            else:
-                return {"success": False, "error": f"未知的MEM測試: {test_id}"}
-                
-        except ImportError as e:
-            return {"success": False, "error": f"無法導入測試函數: {e}"}
-        except Exception as e:
-            return {"success": False, "error": f"MEM測試執行失敗: {e}"}
-    
     def _run_frontend_test(self, test_id: str) -> dict:
         """執行前端模組測試"""
         try:
@@ -800,19 +793,41 @@ class UIModule(BaseFrontendModule):
     
     def shutdown(self):
         """關閉 UI 模組"""
+        info_log(f"[{self.module_id}] 開始關閉 UI 模組")
+        
         # 關閉所有活動介面
         for interface_type in list(self.active_interfaces):
             interface = self.interfaces.get(interface_type)
             if interface:
                 try:
+                    info_log(f"[{self.module_id}] 關閉活動介面: {interface_type}")
                     interface.close()
                 except Exception as e:
-                    error_log(f"[{self.module_id}] 關閉介面 {interface_type} 失敗: {e}")
+                    error_log(f"[{self.module_id}] 關閉活動介面 {interface_type} 失敗: {e}")
         
+        # 關閉所有interfaces字典中的介面，確保沒有遺漏
+        for interface_type, interface in list(self.interfaces.items()):
+            if interface:
+                try:
+                    info_log(f"[{self.module_id}] 關閉介面實例: {interface_type}")
+                    if hasattr(interface, 'close'):
+                        interface.close()
+                    elif hasattr(interface, 'shutdown'):
+                        interface.shutdown()
+                except Exception as e:
+                    error_log(f"[{self.module_id}] 關閉介面實例 {interface_type} 失敗: {e}")
+        
+        # 清理所有介面引用
         self.active_interfaces.clear()
+        self.interfaces.clear()
         
+        # 關閉 QApplication
         if self.app and self.app != QApplication.instance():
-            self.app.quit()
+            try:
+                info_log(f"[{self.module_id}] 關閉 QApplication")
+                self.app.quit()
+            except Exception as e:
+                error_log(f"[{self.module_id}] 關閉 QApplication 失敗: {e}")
         
         super().shutdown()
-        info_log(f"[{self.module_id}] UI 模組已關閉")
+        info_log(f"[{self.module_id}] UI 模組已完全關閉")

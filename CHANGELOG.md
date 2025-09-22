@@ -1138,3 +1138,15 @@
 
 ---
 
+### Changed a major part about sessions and made the state now correlate with them. 09/22
+
+> Date: Mon, 22 Sep 2025 17:00:22 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_rework`
+
+> Commit: `83037c0559a3adf958c773c07eb0d4a535ab0c18`
+
+---
+

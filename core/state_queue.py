@@ -92,8 +92,15 @@ class StateQueueManager:
         self.state_handlers: Dict[SystemState, Callable] = {}
         self.completion_handlers: Dict[SystemState, Callable] = {}
         
+        # 會話管理 - 延遲導入避免循環依賴
+        self._chatting_session_manager = None
+        self._session_record_manager = None
+        
         # 載入持久化數據
         self._load_queue()
+        
+        # 註冊默認的狀態處理器
+        self._register_default_handlers()
         
         info_log("[StateQueue] 狀態佇列管理器初始化完成")
     
@@ -106,6 +113,182 @@ class StateQueueManager:
         """註冊狀態完成處理器"""
         self.completion_handlers[state] = handler
         debug_log(2, f"[StateQueue] 註冊完成處理器: {state.value}")
+    
+    def _register_default_handlers(self):
+        """註冊默認的狀態處理器"""
+        # 註冊 CHAT 狀態處理器
+        self.register_state_handler(SystemState.CHAT, self._handle_chat_state)
+        self.register_completion_handler(SystemState.CHAT, self._handle_chat_completion)
+        
+        # 註冊 WORK 狀態處理器
+        self.register_state_handler(SystemState.WORK, self._handle_work_state)
+        self.register_completion_handler(SystemState.WORK, self._handle_work_completion)
+    
+    def _get_chatting_session_manager(self):
+        """獲取 Chatting Session 管理器 (延遲導入)"""
+        if self._chatting_session_manager is None:
+            try:
+                from core.chatting_session import chatting_session_manager
+                self._chatting_session_manager = chatting_session_manager
+            except ImportError as e:
+                error_log(f"[StateQueue] 無法導入 Chatting Session 管理器: {e}")
+        return self._chatting_session_manager
+    
+    def _get_session_record_manager(self):
+        """獲取會話記錄管理器 (延遲導入)"""
+        if self._session_record_manager is None:
+            try:
+                from core.session_record import get_session_record_manager
+                self._session_record_manager = get_session_record_manager()
+            except ImportError as e:
+                debug_log(2, f"[StateQueue] 會話記錄管理器未可用: {e}")
+        return self._session_record_manager
+    
+    def _handle_chat_state(self, queue_item: StateQueueItem):
+        """處理 CHAT 狀態 - 自動觸發 Chatting Session"""
+        try:
+            chatting_manager = self._get_chatting_session_manager()
+            session_record_manager = self._get_session_record_manager()
+            
+            if chatting_manager:
+                # 提取身份信息
+                identity_context = {
+                    "user_id": queue_item.trigger_user or "default_user",
+                    "personality": queue_item.metadata.get("personality", "default"),
+                    "preferences": queue_item.metadata.get("preferences", {})
+                }
+                
+                # 創建 Chatting Session
+                cs = chatting_manager.create_session(
+                    gs_session_id=f"gs_{int(datetime.now().timestamp())}",
+                    identity_context=identity_context
+                )
+                
+                if cs:
+                    # 記錄會話觸發
+                    if session_record_manager:
+                        session_record_manager.record_session_trigger(
+                            session_type="CS",
+                            session_id=cs.session_id,
+                            trigger_content=queue_item.trigger_content,
+                            context_content=queue_item.context_content,
+                            metadata={
+                                "queue_item_id": f"{queue_item.state.value}_{queue_item.created_at.timestamp()}",
+                                "identity_context": identity_context,
+                                **queue_item.metadata
+                            }
+                        )
+                    
+                    # 處理初始輸入
+                    initial_input = {
+                        "type": "text",
+                        "content": queue_item.context_content,
+                        "metadata": queue_item.metadata
+                    }
+                    
+                    response = cs.process_input(initial_input)
+                    
+                    info_log(f"[StateQueue] CHAT 狀態觸發 CS: {cs.session_id}")
+                    debug_log(4, f"[StateQueue] CS 回應: {response.get('response', {}).get('content', '')[:50]}...")
+                    
+                    # 更新佇列項目元數據
+                    queue_item.metadata.update({
+                        "chatting_session_id": cs.session_id,
+                        "cs_response": response
+                    })
+                else:
+                    error_log("[StateQueue] 無法創建 Chatting Session")
+                    self.complete_current_state(success=False, result_data={"error": "無法創建 CS"})
+            else:
+                debug_log(2, "[StateQueue] Chatting Session 管理器不可用，跳過 CS 創建")
+                
+        except Exception as e:
+            error_log(f"[StateQueue] 處理 CHAT 狀態時發生錯誤: {e}")
+            self.complete_current_state(success=False, result_data={"error": str(e)})
+    
+    def _handle_chat_completion(self, queue_item: StateQueueItem, success: bool):
+        """處理 CHAT 狀態完成"""
+        try:
+            chatting_manager = self._get_chatting_session_manager()
+            session_record_manager = self._get_session_record_manager()
+            
+            cs_id = queue_item.metadata.get("chatting_session_id")
+            
+            if chatting_manager and cs_id:
+                cs = chatting_manager.get_session(cs_id)
+                if cs and cs.status.value in ["active", "paused"]:
+                    # 結束 Chatting Session
+                    session_summary = cs.end_session(save_memory=True)
+                    
+                    # 記錄會話完成
+                    if session_record_manager:
+                        session_record_manager.record_session_completion(
+                            session_id=cs_id,
+                            session_summary=session_summary,
+                            success=success
+                        )
+                    
+                    info_log(f"[StateQueue] CHAT 狀態完成，CS 已結束: {cs_id}")
+                    debug_log(4, f"[StateQueue] CS 總結: {session_summary}")
+                    
+                    # 從活動會話中移除
+                    chatting_manager.end_session(cs_id, save_memory=False)  # 已在 cs.end_session 中保存
+            
+        except Exception as e:
+            error_log(f"[StateQueue] 處理 CHAT 完成時發生錯誤: {e}")
+    
+    def _handle_work_state(self, queue_item: StateQueueItem):
+        """處理 WORK 狀態 - 觸發 Workflow Session"""
+        try:
+            session_record_manager = self._get_session_record_manager()
+            
+            # 記錄工作會話觸發
+            if session_record_manager:
+                session_record_manager.record_session_trigger(
+                    session_type="WS",
+                    session_id=f"ws_{int(datetime.now().timestamp())}",
+                    trigger_content=queue_item.trigger_content,
+                    context_content=queue_item.context_content,
+                    metadata={
+                        "queue_item_id": f"{queue_item.state.value}_{queue_item.created_at.timestamp()}",
+                        **queue_item.metadata
+                    }
+                )
+            
+            info_log(f"[StateQueue] WORK 狀態處理: {queue_item.context_content[:50]}...")
+            debug_log(4, f"[StateQueue] 工作意圖: {queue_item.metadata.get('intent_type', 'unknown')}")
+            
+            # 這裡可以添加實際的工作處理邏輯
+            # 目前標記為成功完成
+            self.complete_current_state(success=True, result_data={"work_processed": True})
+            
+        except Exception as e:
+            error_log(f"[StateQueue] 處理 WORK 狀態時發生錯誤: {e}")
+            self.complete_current_state(success=False, result_data={"error": str(e)})
+    
+    def _handle_work_completion(self, queue_item: StateQueueItem, success: bool):
+        """處理 WORK 狀態完成"""
+        try:
+            session_record_manager = self._get_session_record_manager()
+            
+            if session_record_manager:
+                # 記錄工作會話完成
+                ws_id = queue_item.metadata.get("workflow_session_id", f"ws_{queue_item.created_at.timestamp()}")
+                session_record_manager.record_session_completion(
+                    session_id=ws_id,
+                    session_summary={
+                        "work_type": queue_item.metadata.get("intent_type", "unknown"),
+                        "trigger_content": queue_item.trigger_content,
+                        "context_content": queue_item.context_content,
+                        "processing_result": queue_item.metadata.get("work_processed", False)
+                    },
+                    success=success
+                )
+            
+            debug_log(4, f"[StateQueue] WORK 狀態完成: {'成功' if success else '失敗'}")
+            
+        except Exception as e:
+            error_log(f"[StateQueue] 處理 WORK 完成時發生錯誤: {e}")
     
     def add_state(self, state: SystemState, trigger_content: str, 
                   context_content: Optional[str] = None,

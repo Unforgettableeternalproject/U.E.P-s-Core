@@ -69,6 +69,11 @@ class MemoryManager:
         analysis_config = config.get("analysis", {})
         self.memory_analyzer = MemoryAnalyzer(analysis_config)
         
+        # 初始化記憶總結器
+        summarization_config = config.get("summarization", {})
+        self.memory_summarizer = None  # 延遲初始化
+        self.summarization_config = summarization_config
+        
         # 記憶管理配置
         self.max_short_term_memories = config.get("max_short_term_memories", 50)
         self.consolidation_interval = config.get("consolidation_interval", 7200)  # 2小時
@@ -112,6 +117,20 @@ class MemoryManager:
             if not self.semantic_retriever.initialize():
                 error_log("[MemoryManagerV2] 語義檢索器初始化失敗")
                 return False
+            
+            # 初始化記憶總結器 (可選功能)
+            if self.summarization_config.get("enable_external_summarization", True):
+                try:
+                    from .analysis.memory_summarizer import MemorySummarizer
+                    self.memory_summarizer = MemorySummarizer(self.summarization_config)
+                    if self.memory_summarizer.initialize():
+                        info_log("[MemoryManagerV2] 記憶總結器初始化成功")
+                    else:
+                        info_log("WARNING", "[MemoryManagerV2] 記憶總結器初始化失敗，將使用基本總結")
+                        self.memory_summarizer = None
+                except Exception as e:
+                    info_log("WARNING", f"[MemoryManagerV2] 記憶總結器載入失敗: {e}")
+                    self.memory_summarizer = None
             
             # 初始化記憶分析器
             if not self.memory_analyzer.initialize():
@@ -524,6 +543,150 @@ class MemoryManager:
                 operation_type="consolidate",
                 message=f"整合失敗: {str(e)}"
             )
+    
+    def summarize_memories_for_llm(self, search_results: List[MemorySearchResult],
+                                 current_query: str = "") -> Dict[str, Any]:
+        """
+        為 LLM 總結記憶內容 - 整合從 prompt_builder 遷移的功能
+        
+        Args:
+            search_results: 記憶搜索結果
+            current_query: 當前查詢文本
+            
+        Returns:
+            結構化的記憶總結
+        """
+        try:
+            if not search_results:
+                return {
+                    "summary": "",
+                    "structured_context": {},
+                    "has_memories": False
+                }
+            
+            # 如果有外部總結器，使用高級總結功能
+            if self.memory_summarizer:
+                debug_log(2, "[MemoryManagerV2] 使用外部總結器生成記憶上下文")
+                structured_context = self.memory_summarizer.create_llm_memory_context(
+                    search_results, current_query
+                )
+                summary = self.memory_summarizer.summarize_search_results(
+                    search_results, current_query
+                )
+            else:
+                # 使用基本總結邏輯
+                debug_log(2, "[MemoryManagerV2] 使用基本總結邏輯")
+                structured_context = self._create_basic_memory_context(search_results)
+                summary = self._create_basic_summary(search_results)
+            
+            return {
+                "summary": summary,
+                "structured_context": structured_context,
+                "has_memories": True,
+                "memory_count": len(search_results)
+            }
+            
+        except Exception as e:
+            error_log(f"[MemoryManagerV2] 記憶總結失敗: {e}")
+            return {
+                "summary": "",
+                "structured_context": {},
+                "has_memories": False,
+                "error": str(e)
+            }
+    
+    def chunk_and_summarize_memories(self, memories: List[str], 
+                                   chunk_size: int = 3) -> str:
+        """
+        記憶切塊總結 - 從 prompt_builder.py 遷移的功能
+        
+        Args:
+            memories: 記憶文本列表
+            chunk_size: 切塊大小
+            
+        Returns:
+            總結後的文本
+        """
+        try:
+            if self.memory_summarizer:
+                return self.memory_summarizer.chunk_and_summarize_memories(memories, chunk_size)
+            else:
+                # 基本的切塊邏輯，不使用外部模型
+                debug_log(2, "[MemoryManagerV2] 使用基本切塊總結")
+                chunks = [memories[i:i+chunk_size] for i in range(0, len(memories), chunk_size)]
+                summaries = []
+                
+                for group in chunks:
+                    # 簡單的文本截取作為「總結」
+                    text_block = " ".join(group)
+                    if len(text_block) > 200:
+                        summary = text_block[:200] + "..."
+                    else:
+                        summary = text_block
+                    summaries.append(summary)
+                
+                return "\n".join(summaries)
+                
+        except Exception as e:
+            error_log(f"[MemoryManagerV2] 切塊總結失敗: {e}")
+            return ""
+    
+    def _create_basic_memory_context(self, search_results: List[MemorySearchResult]) -> Dict[str, Any]:
+        """創建基本記憶上下文（不依賴外部總結器）"""
+        try:
+            key_facts = []
+            conversations = []
+            reminders = []
+            
+            for result in search_results[:10]:  # 限制處理數量
+                memory = result.memory_entry
+                
+                if memory.importance in [MemoryImportance.HIGH, MemoryImportance.CRITICAL]:
+                    key_facts.append({
+                        "content": memory.content[:150],
+                        "importance": memory.importance.value
+                    })
+                
+                if memory.memory_type == MemoryType.SNAPSHOT:
+                    conversations.append({
+                        "content": memory.content[:100],
+                        "timestamp": memory.created_at.isoformat() if memory.created_at else None
+                    })
+                
+                if memory.importance == MemoryImportance.CRITICAL:
+                    reminders.append(memory.content[:80])
+            
+            return {
+                "key_facts": key_facts[:5],
+                "recent_conversations": conversations[-3:],
+                "important_reminders": reminders[:3],
+                "total_memories": len(search_results)
+            }
+            
+        except Exception as e:
+            error_log(f"[MemoryManagerV2] 基本上下文創建失敗: {e}")
+            return {}
+    
+    def _create_basic_summary(self, search_results: List[MemorySearchResult]) -> str:
+        """創建基本記憶總結（不依賴外部總結器）"""
+        try:
+            if not search_results:
+                return ""
+            
+            # 提取前幾條記憶的摘要
+            summaries = []
+            for result in search_results[:5]:
+                memory = result.memory_entry
+                summary_part = memory.content[:100]
+                if memory.topic:
+                    summary_part = f"[{memory.topic}] {summary_part}"
+                summaries.append(summary_part)
+            
+            return " | ".join(summaries)
+            
+        except Exception as e:
+            error_log(f"[MemoryManagerV2] 基本總結創建失敗: {e}")
+            return ""
     
     def generate_llm_instruction(self, relevant_memories: List[MemorySearchResult],
                                 context: str = "") -> LLMMemoryInstruction:

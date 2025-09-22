@@ -47,6 +47,7 @@ class NLPModule(BaseModule):
         self.state_queue_manager = get_state_queue_manager()
         self.schema_adapter = NLPSchemaAdapter()
         
+
         # 模組狀態
         self.is_initialized = False
         
@@ -174,13 +175,17 @@ class NLPModule(BaseModule):
         return result
     
     def _analyze_intent(self, input_data: NLPInput, identity: Optional[UserProfile]) -> Dict[str, Any]:
-        """分析文本意圖"""
+        """分析文本意圖 - 支援 CS 感知邏輯"""
         try:
+            # 檢查當前是否有活動的 Chatting Session
+            active_cs_context = self._check_active_chatting_sessions()
+            
             # 準備上下文
             context = {
                 "current_system_state": input_data.current_system_state,
                 "conversation_history": input_data.conversation_history,
-                "identity": identity.dict() if identity else None
+                "identity": identity.dict() if identity else None,
+                "active_chatting_sessions": active_cs_context
             }
             
             # 添加使用者偏好資訊 (如果有身份)
@@ -190,15 +195,24 @@ class NLPModule(BaseModule):
                     "conversation_style": identity.conversation_style
                 }
             
+            # CS 感知意圖調整
+            intent_bias = self._determine_intent_bias(active_cs_context, input_data.text)
+            
             # 執行意圖分析
             result = self.intent_analyzer.analyze_intent(
                 input_data.text,
                 enable_segmentation=input_data.enable_segmentation,
-                context=context
+                context=context,
+                intent_bias=intent_bias  # 添加意圖偏向
             )
             
+            # 應用 CS 感知邏輯調整結果
+            if active_cs_context and active_cs_context["has_active_sessions"]:
+                result = self._apply_cs_aware_adjustments(result, active_cs_context, input_data.text)
+            
             debug_log(3, f"[NLP] 意圖分析完成：{result['primary_intent']}, "
-                       f"片段數={len(result['intent_segments'])}")
+                       f"片段數={len(result['intent_segments'])}, "
+                       f"CS感知={'是' if active_cs_context['has_active_sessions'] else '否'}")
             
             return result
             
@@ -451,9 +465,126 @@ class NLPModule(BaseModule):
             "segmented_analysis",
             "state_transition_suggestion",
             "memory_token_management",
-            "user_preference_tracking",
-            "personalized_interaction"
+            "chatting_session_awareness",    # 新增：CS 感知能力
+            "context_aware_intent_bias"     # 新增：上下文感知意圖偏向
         ]
+    
+    def _check_active_chatting_sessions(self) -> Dict[str, Any]:
+        """檢查當前是否有活動的 Chatting Sessions"""
+        try:
+            # 延遲導入避免循環依賴
+            from core.chatting_session import chatting_session_manager
+            
+            active_sessions = chatting_session_manager.get_active_sessions()
+            
+            return {
+                "has_active_sessions": len(active_sessions) > 0,
+                "session_count": len(active_sessions),
+                "session_ids": [session.session_id for session in active_sessions],
+                "session_contexts": [
+                    {
+                        "session_id": session.session_id,
+                        "identity_id": session.identity_context.get("user_id") if session.identity_context else None,
+                        "turn_count": session.turn_counter,
+                        "memory_token": session.memory_token
+                    }
+                    for session in active_sessions
+                ]
+            }
+        except ImportError:
+            debug_log(2, "[NLP] Chatting Session 管理器不可用")
+            return {
+                "has_active_sessions": False,
+                "session_count": 0,
+                "session_ids": [],
+                "session_contexts": []
+            }
+        except Exception as e:
+            error_log(f"[NLP] 檢查活動 CS 時發生錯誤: {e}")
+            return {
+                "has_active_sessions": False,
+                "session_count": 0,
+                "session_ids": [],
+                "session_contexts": []
+            }
+    
+    def _determine_intent_bias(self, cs_context: Dict[str, Any], text: str) -> Dict[str, float]:
+        """根據 CS 上下文確定意圖偏向"""
+        intent_bias = {}
+        
+        if cs_context.get("has_active_sessions", False):
+            # 在有活動 CS 時，偏向聊天意圖
+            intent_bias["chat"] = 0.3  # 增加聊天意圖權重
+            
+            # 除非文本明顯是指令
+            command_indicators = [
+                "執行", "開始", "停止", "關閉", "設定", "配置", "安裝", 
+                "啟動", "終止", "運行", "編輯", "建立", "創建", "刪除"
+            ]
+            
+            if any(indicator in text for indicator in command_indicators):
+                # 明顯的指令關鍵字，減少聊天偏向
+                intent_bias["chat"] = -0.2
+                intent_bias["command"] = 0.4
+            else:
+                # 沒有明顯指令關鍵字，強化聊天偏向
+                intent_bias["chat"] = 0.5
+                intent_bias["command"] = -0.3
+            
+            debug_log(4, f"[NLP] CS感知意圖偏向: {intent_bias}")
+        
+        return intent_bias
+    
+    def _apply_cs_aware_adjustments(self, intent_result: Dict[str, Any], 
+                                   cs_context: Dict[str, Any], 
+                                   text: str) -> Dict[str, Any]:
+        """應用 CS 感知邏輯調整意圖分析結果"""
+        
+        # 複製結果以避免修改原始數據
+        adjusted_result = intent_result.copy()
+        
+        # 如果有活動的 CS 且當前意圖不是明確的指令
+        if cs_context.get("has_active_sessions", False):
+            
+            # 檢查是否為明確的系統指令
+            explicit_commands = [
+                "關閉對話", "結束聊天", "退出", "離開", "停止對話",
+                "切換模式", "執行指令", "系統設定"
+            ]
+            
+            is_explicit_command = any(cmd in text for cmd in explicit_commands)
+            
+            # 如果不是明確指令且當前意圖模糊
+            if not is_explicit_command and adjusted_result.get("overall_confidence", 0.0) < 0.7:
+                
+                # 將模糊意圖調整為 chat
+                original_intent = adjusted_result.get("primary_intent")
+                adjusted_result["primary_intent"] = "chat"
+                
+                # 調整意圖片段
+                for segment in adjusted_result.get("intent_segments", []):
+                    if hasattr(segment, "intent"):
+                        if segment.intent not in ["command"] or segment.confidence < 0.8:
+                            segment.intent = "chat"
+                            segment.confidence = min(segment.confidence + 0.2, 0.95)
+                    elif isinstance(segment, dict):
+                        if segment.get("intent") not in ["command"] or segment.get("confidence", 0) < 0.8:
+                            segment["intent"] = "chat"
+                            segment["confidence"] = min(segment.get("confidence", 0) + 0.2, 0.95)
+                
+                # 更新整體信心度
+                adjusted_result["overall_confidence"] = min(adjusted_result.get("overall_confidence", 0) + 0.3, 0.95)
+                
+                debug_log(4, f"[NLP] CS感知調整: {original_intent} -> chat (信心度: {adjusted_result['overall_confidence']:.2f})")
+            
+            # 添加 CS 上下文信息到結果
+            adjusted_result["cs_context"] = {
+                "active_sessions": cs_context.get("session_count", 0),
+                "cs_influenced": True,
+                "adjustment_applied": not is_explicit_command
+            }
+        
+        return adjusted_result
     
     def get_module_info(self) -> Dict[str, Any]:
         """獲取模組資訊"""

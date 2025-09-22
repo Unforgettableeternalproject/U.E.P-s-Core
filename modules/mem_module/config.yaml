@@ -75,6 +75,19 @@ api:
   authentication_required: false
   max_query_length: 1000
   
+# 記憶總結設定
+summarization:
+  summarization_model: "philschmid/bart-large-cnn-samsum"
+  chunk_size: 3
+  max_summary_length: 120
+  min_summary_length: 20
+  max_context_length: 4000
+  importance_weight: 0.3
+  recency_weight: 0.4
+  relevance_weight: 0.3
+  enable_external_summarization: true
+  fallback_to_extraction: true  # 總結失敗時使用摘取模式
+
 # 效能調優設定
 performance:
   faiss_index_type: "IndexFlatIP"  # 內積索引

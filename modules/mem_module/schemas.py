@@ -373,6 +373,7 @@ class MEMOutput(BaseModel):
     
     # LLM提示相關
     memory_context: Optional[str] = Field(None, description="記憶上下文（供LLM使用）")
+    memory_summary: Optional[Dict[str, Any]] = Field(None, description="結構化記憶總結")
     relevant_memories: List[MemoryEntry] = Field(default_factory=list, description="相關記憶條目")
     
     # 快照管理

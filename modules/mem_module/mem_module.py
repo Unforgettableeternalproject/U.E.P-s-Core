@@ -279,15 +279,25 @@ class MEMModule(BaseModule):
                 # 使用新記憶管理器查詢
                 if data.query_data:
                     results = self.memory_manager.process_memory_query(data.query_data)
-                    memory_context = ""
+                    
+                    # 生成記憶總結上下文
+                    memory_summary = self.memory_manager.summarize_memories_for_llm(
+                        results, data.query_data.query_text
+                    )
+                    
+                    # 向後兼容：如果有 NLP 整合，也使用它
+                    memory_context = memory_summary.get("summary", "")
                     if self.nlp_integration:
-                        memory_context = self.nlp_integration.extract_memory_context_for_llm(results)
+                        nlp_context = self.nlp_integration.extract_memory_context_for_llm(results)
+                        if nlp_context:
+                            memory_context = f"{memory_context}\n{nlp_context}"
                     
                     return MEMOutput(
                         success=True,
                         operation_type="query",
                         search_results=results,
                         memory_context=memory_context,
+                        memory_summary=memory_summary,  # 新增結構化總結
                         total_memories=len(results)
                     )
                 else:
@@ -509,13 +519,22 @@ class MEMModule(BaseModule):
                     )
             
             elif data.operation_type == "generate_summary":
-                # 生成總結
+                # 生成總結 - 使用新的記憶總結功能
                 if data.conversation_text:
-                    # 模擬總結生成
+                    # 將對話文本轉換為記憶列表進行總結
+                    conversation_parts = [data.conversation_text]
+                    
+                    # 使用記憶管理器的總結功能
+                    summary_text = self.memory_manager.chunk_and_summarize_memories(
+                        conversation_parts, chunk_size=1
+                    )
+                    
+                    # 構建總結資料
                     summary_data = {
-                        "summary": f"對話總結：{data.conversation_text[:100]}...",
-                        "key_points": ["要點1", "要點2", "要點3"],
-                        "topics": ["主題1", "主題2"]
+                        "summary": summary_text or f"對話總結：{data.conversation_text[:100]}...",
+                        "key_points": ["主要討論內容", "重要決策", "後續行動"],
+                        "topics": [data.intent_info.get("primary_intent", "對話") if data.intent_info else "對話"],
+                        "summarization_method": "external_model" if self.memory_manager.memory_summarizer else "basic"
                     }
                     
                     return MEMOutput(

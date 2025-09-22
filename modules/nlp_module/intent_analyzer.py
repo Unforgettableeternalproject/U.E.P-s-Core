@@ -63,8 +63,9 @@ class IntentAnalyzer:
             return False
     
     def analyze_intent(self, text: str, enable_segmentation: bool = True,
-                      context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """分析文本意圖"""
+                      context: Optional[Dict[str, Any]] = None,
+                      intent_bias: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
+        """分析文本意圖 - 支持意圖偏向"""
         result = {
             "primary_intent": IntentType.UNKNOWN,
             "intent_segments": [],
@@ -90,6 +91,11 @@ class IntentAnalyzer:
             
             # 後處理優化分段結果
             intent_segments = self._post_process_segments(intent_segments, text)
+            
+            # 應用意圖偏向 (如果提供)
+            if intent_bias:
+                intent_segments = self._apply_intent_bias(intent_segments, intent_bias, text)
+                debug_log(4, f"[IntentAnalyzer] 應用意圖偏向: {intent_bias}")
             
             result["intent_segments"] = intent_segments
             
@@ -355,6 +361,51 @@ class IntentAnalyzer:
                 result.append(segment)
         
         return result
+    
+    def _apply_intent_bias(self, intent_segments: List[IntentSegment], 
+                          intent_bias: Dict[str, float], 
+                          text: str) -> List[IntentSegment]:
+        """應用意圖偏向調整分段結果"""
+        adjusted_segments = []
+        
+        for segment in intent_segments:
+            # 複製分段以避免修改原始數據
+            adjusted_segment = IntentSegment(
+                text=segment.text,
+                intent=segment.intent,
+                confidence=segment.confidence,
+                start_pos=segment.start_pos,
+                end_pos=segment.end_pos,
+                entities=segment.entities.copy()
+            )
+            
+            # 獲取當前意圖的字符串表示
+            current_intent_str = adjusted_segment.intent.value if hasattr(adjusted_segment.intent, 'value') else str(adjusted_segment.intent)
+            
+            # 應用偏向調整
+            for biased_intent, bias_value in intent_bias.items():
+                if biased_intent == current_intent_str:
+                    # 正向偏向：增加信心度
+                    if bias_value > 0:
+                        adjusted_segment.confidence = min(adjusted_segment.confidence + bias_value, 0.99)
+                    # 負向偏向：降低信心度
+                    elif bias_value < 0:
+                        adjusted_segment.confidence = max(adjusted_segment.confidence + bias_value, 0.01)
+                
+                # 如果偏向很強且當前意圖信心度低，考慮改變意圖
+                elif bias_value > 0.4 and adjusted_segment.confidence < 0.6:
+                    try:
+                        from .schemas import IntentType
+                        biased_intent_enum = IntentType(biased_intent.upper())
+                        adjusted_segment.intent = biased_intent_enum
+                        adjusted_segment.confidence = min(adjusted_segment.confidence + bias_value, 0.95)
+                        debug_log(4, f"[IntentAnalyzer] 強偏向調整: {current_intent_str} -> {biased_intent}")
+                    except (ValueError, AttributeError):
+                        debug_log(2, f"[IntentAnalyzer] 無法轉換意圖類型: {biased_intent}")
+            
+            adjusted_segments.append(adjusted_segment)
+        
+        return adjusted_segments
     
     def get_context_summary(self) -> Dict[str, Any]:
         """獲取上下文管理摘要"""

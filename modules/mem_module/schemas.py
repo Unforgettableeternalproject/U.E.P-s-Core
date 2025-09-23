@@ -54,6 +54,9 @@ class MemoryEntry(BaseModel):
     category: Optional[str] = Field(None, description="分類")
     intent_tags: List[str] = Field(default_factory=list, description="意圖標籤")
     
+    # 會話相關
+    session_id: Optional[str] = Field(None, description="關聯會話ID")
+    
     # 時間與版本
     created_at: datetime = Field(default_factory=datetime.now, description="創建時間")
     updated_at: Optional[datetime] = Field(None, description="更新時間")
@@ -78,6 +81,11 @@ class ConversationSnapshot(MemoryEntry):
     stage_number: int = Field(..., description="對話階段編號")
     message_count: int = Field(0, description="本階段消息數量")
     participant_count: int = Field(1, description="參與者數量")
+    messages: List[Dict[str, Any]] = Field(default_factory=list, description="快照中的訊息")
+    participant_info: Dict[str, Dict[str, Any]] = Field(default_factory=dict, description="參與者資訊")
+    
+    # GSID過期管理
+    gsid: int = Field(..., description="General Session ID - 用於短期記憶過期管理")
     
     # 狀態與控制
     is_active: bool = Field(True, description="是否為活躍快照")
@@ -87,6 +95,10 @@ class ConversationSnapshot(MemoryEntry):
     # 壓縮與摘要
     compression_level: int = Field(0, description="壓縮等級 0=原始 1-3=不同程度摘要")
     original_length: Optional[int] = Field(None, description="原始內容長度")
+    
+    # 時間追蹤
+    start_time: Optional[datetime] = Field(None, description="快照開始時間")
+    key_topics: List[str] = Field(default_factory=list, description="關鍵主題")
 
 
 class LongTermMemoryEntry(MemoryEntry):

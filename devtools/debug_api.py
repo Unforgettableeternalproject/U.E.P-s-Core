@@ -373,12 +373,10 @@ from .module_tests.frontend_tests import (
     frontend_test_user_interaction
 )
 
-# 測試 MEM 模組（重構版本）
+# 測試 MEM 模組（重構版本 - 僅核心功能）
 from .module_tests.mem_tests import (
     mem_test_memory_access_control, mem_test_conversation_snapshot,
-    mem_test_memory_query, mem_test_identity_manager_stats,
-    mem_test_nlp_integration, mem_test_llm_context_extraction,
-    mem_test_full_workflow
+    mem_test_memory_query, mem_test_identity_manager_stats
 )
 
 # 測試 LLM 模組（尚未重構）
@@ -521,59 +519,32 @@ def mem_test_memory_access_control_wrapper(memory_token: str = "test_memory_toke
     
     return mem_test_func(test_modules, memory_token)
 
-def mem_test_conversation_snapshot_wrapper(identity_token: str = "test_user", conversation: str = "你好，今天天氣如何？"):
+def mem_test_conversation_snapshot_wrapper(identity="test_user", conversation="你好，今天天氣如何？"):
     from .module_tests.mem_tests import mem_test_conversation_snapshot as mem_test_func
     
     # 按需載入MEM模組
     mem_module = safe_get_module("mem_module")
     test_modules = {"mem": mem_module}
     
-    return mem_test_func(test_modules, identity_token, conversation)
+    return mem_test_func(test_modules, identity, conversation)
 
-def mem_test_memory_query_wrapper(identity_token: str = "test_user", query_text: str = "天氣"):
+def mem_test_memory_query_wrapper(identity="test_user", query_text="天氣"):
     from .module_tests.mem_tests import mem_test_memory_query as mem_test_func
     
     # 按需載入MEM模組
     mem_module = safe_get_module("mem_module")
     test_modules = {"mem": mem_module}
     
-    return mem_test_func(test_modules, identity_token, query_text)
+    return mem_test_func(test_modules, identity, query_text)
 
-def mem_test_identity_manager_stats_wrapper():
+def mem_test_identity_manager_stats_wrapper(identity="test_user"):
     from .module_tests.mem_tests import mem_test_identity_manager_stats as mem_test_func
     
     # 按需載入MEM模組
     mem_module = safe_get_module("mem_module")
     test_modules = {"mem": mem_module}
     
-    return mem_test_func(test_modules)
-
-def mem_test_nlp_integration_wrapper(nlp_output_mock: dict = None):
-    from .module_tests.mem_tests import mem_test_nlp_integration as mem_test_func
-    
-    # 按需載入MEM模組
-    mem_module = safe_get_module("mem_module")
-    test_modules = {"mem": mem_module}
-    
-    return mem_test_func(test_modules, nlp_output_mock)
-
-def mem_test_llm_context_extraction_wrapper(identity_token: str = "test_user", query_text: str = "學習"):
-    from .module_tests.mem_tests import mem_test_llm_context_extraction as mem_test_func
-    
-    # 按需載入MEM模組
-    mem_module = safe_get_module("mem_module")
-    test_modules = {"mem": mem_module}
-    
-    return mem_test_func(test_modules, identity_token, query_text)
-
-def mem_test_full_workflow_wrapper(user_name: str = "WorkflowTestUser"):
-    from .module_tests.mem_tests import mem_test_full_workflow as mem_test_func
-    
-    # 按需載入MEM模組
-    mem_module = safe_get_module("mem_module")
-    test_modules = {"mem": mem_module}
-    
-    return mem_test_func(test_modules, user_name)
+    return mem_test_func(test_modules, identity)
 
 # LLM 模組包裝函數（尚未重構）
 def llm_test_chat_wrapper(text: str):
@@ -652,21 +623,17 @@ frontend_get_status = frontend_get_status_wrapper
 frontend_test_animations = frontend_test_animations_wrapper
 frontend_test_user_interaction = frontend_test_user_interaction_wrapper
 
-# MEM 函數別名（重構版本）
+# MEM 函數別名（重構版本 - 僅核心功能）
 mem_test_memory_access_control = mem_test_memory_access_control_wrapper
 mem_test_conversation_snapshot = mem_test_conversation_snapshot_wrapper
 mem_test_memory_query = mem_test_memory_query_wrapper
 mem_test_identity_manager_stats = mem_test_identity_manager_stats_wrapper
-mem_test_nlp_integration = mem_test_nlp_integration_wrapper
-mem_test_llm_context_extraction = mem_test_llm_context_extraction_wrapper
-mem_test_full_workflow = mem_test_full_workflow_wrapper
 
 # 為了向後兼容，保留一些常用的別名
 mem_test_identity = mem_test_memory_access_control_wrapper  # 更新為新的存取控制測試
 mem_test_snapshot = mem_test_conversation_snapshot_wrapper
 mem_test_query = mem_test_memory_query_wrapper
 mem_test_stats = mem_test_identity_manager_stats_wrapper
-mem_test_workflow = mem_test_full_workflow_wrapper
 mem_test_access_control = mem_test_memory_access_control_wrapper
 
 # LLM 函數別名（匹配實際的函數名稱）

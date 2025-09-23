@@ -56,21 +56,21 @@ class MemoryManager:
         storage_config = config.get("storage", {})
         self.storage_manager = MemoryStorageManager(storage_config)
         
+        # 初始化記憶總結器（需要在SnapshotManager之前）
+        self.memory_summarizer = MemorySummarizer(config.get("summarization", {}))
+        
         # 初始化子模組
         identity_config = config.get("identity", {})
         self.identity_manager = IdentityManager(identity_config)
         
         snapshot_config = config.get("snapshot", {})
-        self.snapshot_manager = SnapshotManager(snapshot_config)
+        self.snapshot_manager = SnapshotManager(snapshot_config, self.memory_summarizer)
         
         retrieval_config = config.get("retrieval", {})
         self.semantic_retriever = SemanticRetriever(retrieval_config, self.storage_manager)
         
         analysis_config = config.get("analysis", {})
         self.memory_analyzer = MemoryAnalyzer(analysis_config)
-        
-        # 初始化記憶總結器
-        self.memory_summarizer = MemorySummarizer(config.get("summarization", {}))
         
         # 記憶管理配置
         self.max_short_term_memories = config.get("max_short_term_memories", 50)
@@ -152,7 +152,7 @@ class MemoryManager:
             return session_id in self.current_chat_sessions
         return bool(self.current_chat_sessions) and (self.current_context is not None)
     
-    def check_session_access(self, operation: str, session_id: str = None) -> bool:
+    def check_session_access(self, operation: str, session_id: str = None) -> MemoryOperationResult:
         """
         檢查操作是否允許在當前會話狀態下進行
         
@@ -161,19 +161,31 @@ class MemoryManager:
             session_id: 會話ID，如果不提供則檢查任意會話
             
         Returns:
-            是否允許操作
+            MemoryOperationResult: 操作結果
         """
         # 如果提供了會話ID，檢查是否在該會話中
         if session_id and session_id in self.current_chat_sessions:
-            return True
+            return MemoryOperationResult(
+                success=True,
+                operation_type="check_access",
+                message="會話存取允許"
+            )
             
         # 如果沒有活躍的聊天會話，或允許外部存取，則允許操作
         if not self.current_chat_sessions or self.allow_external_access:
-            return True
+            return MemoryOperationResult(
+                success=True,
+                operation_type="check_access",
+                message="外部存取允許"
+            )
             
         # 默認情況下，如果有活躍的聊天會話但操作不在該會話中，則拒絕存取
         debug_log(2, f"[MemoryManager] 拒絕非聊天會話的{operation}操作")
-        return False
+        return MemoryOperationResult(
+            success=False,
+            operation_type="check_access",
+            message=f"非聊天會話拒絕{operation}操作"
+        )
     
     def join_chat_session(self, session_id: str, memory_token: str = None, 
                      initial_context: Dict[str, Any] = None) -> bool:
@@ -196,6 +208,9 @@ class MemoryManager:
             if not self.snapshot_manager.start_session_snapshot(session_id, memory_token, initial_context):
                 error_log(f"[MemoryManager] 快照會話開始失敗: {session_id}")
                 return False
+            
+            # 會話初始化：進行快照查詢和記憶總結
+            self._initialize_session_memories(session_id, memory_token, initial_context)
             
             # 設定記憶上下文
             context = MemoryContext(
@@ -224,6 +239,293 @@ class MemoryManager:
         except Exception as e:
             error_log(f"[MemoryManager] 加入聊天會話失敗: {e}")
             return False
+    
+    def _initialize_session_memories(self, session_id: str, memory_token: str, initial_context: Dict[str, Any]):
+        """
+        會話初始化：進行快照查詢和記憶總結
+        
+        根據代辦文件：在第一次進入會話時，MEM以狀態的上下文為主去進行快照查詢以及記憶總結
+        接下來都是以獲得的NLP輸出為主
+        """
+        try:
+            debug_log(2, f"[MemoryManager] 初始化會話記憶: {session_id}")
+            
+            # 1. 整合Session Manager資訊（根據代辦.md要求4）
+            session_context = initial_context.get("session_context", {})
+            session_type = session_context.get("session_type", "unknown")
+            
+            debug_log(3, f"[MemoryManager] 會話類型: {session_type}, 上下文: {session_context}")
+            
+            # 2. 重要：根據代辦.md，第一次進入會話時以狀態的上下文為主
+            # 優先使用狀態上下文而非initial_context中的對話內容
+            state_context_content = ""
+            nlp_context_content = ""
+            
+            # 檢查是否有狀態上下文（從State Manager傳入）
+            if initial_context.get("started_by_state_change"):
+                # 這是狀態變化觸發的會話初始化，使用狀態上下文
+                state_context_content = initial_context.get("state_context_content", "") or \
+                                      initial_context.get("trigger_content", "") or \
+                                      initial_context.get("content", "")
+                
+                debug_log(2, f"[MemoryManager] 檢測到狀態觸發的會話，使用狀態上下文: {state_context_content[:100]}...")
+                conversation_content = state_context_content
+                context_source = "state_context"
+            else:
+                # 非狀態觸發，可能是直接調用或NLP輸出觸發
+                nlp_context_content = initial_context.get("conversation_text", "") or \
+                                    initial_context.get("query", "") or \
+                                    initial_context.get("content", "")
+                
+                debug_log(2, f"[MemoryManager] 非狀態觸發，使用NLP上下文: {nlp_context_content[:100]}...")
+                conversation_content = nlp_context_content
+                context_source = "nlp_context"
+            
+            # 3. 根據會話類型調整記憶初始化策略
+            if session_type == "chatting":
+                # Chatting Session - 重點在對話歷史和用戶特質
+                conversation_turns = session_context.get("conversation_turns", 0)
+                if conversation_turns > 0:
+                    debug_log(2, f"[MemoryManager] 檢測到現有對話輪數: {conversation_turns}")
+                    # 對於有歷史的對話，結合現有輪數和當前內容
+                    if conversation_content:
+                        conversation_content = f"繼續對話 (已有{conversation_turns}輪): {conversation_content}"
+                    else:
+                        conversation_content = f"繼續對話 (已有{conversation_turns}輪)"
+            elif session_type == "workflow":
+                # Workflow Session - 重點在任務相關記憶
+                workflow_type = session_context.get("workflow_type", "")
+                if workflow_type:
+                    if conversation_content:
+                        conversation_content = f"工作流任務 ({workflow_type}): {conversation_content}"
+                    else:
+                        conversation_content = f"工作流任務: {workflow_type}"
+            
+            # 如果沒有任何內容，使用默認描述
+            if not conversation_content:
+                conversation_content = f"新會話開始 - {session_type}"
+            
+            debug_log(3, f"[MemoryManager] 最終對話內容 (來源: {context_source}): {conversation_content[:150]}...")
+            
+            # 4. 使用新的快照查詢和決策機制
+            snapshot_decision = self.snapshot_manager.query_and_decide_snapshot_creation(
+                memory_token, conversation_content, initial_context
+            )
+            
+            debug_log(2, f"[MemoryManager] 快照決策: {snapshot_decision['flow_analysis']['flow_decision']}")
+            
+            # 5. 根據決策結果處理
+            if snapshot_decision['need_new_snapshot']:
+                # 創建新快照
+                suggested_session_id = snapshot_decision['suggested_session_id']
+                success = self.snapshot_manager.start_session_snapshot(
+                    suggested_session_id, memory_token, initial_context
+                )
+                
+                if success:
+                    debug_log(2, f"[MemoryManager] 創建新快照成功: {suggested_session_id}")
+                    self.current_context = MemoryContext(
+                        current_session_id=suggested_session_id,
+                        current_intent="new_conversation",
+                        user_profile={"memory_token": memory_token, "session_info": session_context, "context_source": context_source},
+                        recent_memories=[],
+                        active_topics=set(),
+                        conversation_depth=0
+                    )
+                else:
+                    error_log(f"[MemoryManager] 創建新快照失敗")
+            else:
+                # 使用現有快照
+                related_snapshots = snapshot_decision['related_snapshots']
+                if related_snapshots:
+                    # 選擇最相關的快照繼續對話
+                    primary_snapshot = related_snapshots[0]
+                    existing_session_id = primary_snapshot['session_id']
+                    
+                    debug_log(2, f"[MemoryManager] 繼續現有對話: {existing_session_id}")
+                    
+                    # 更新上下文以反映現有對話
+                    self.current_context = MemoryContext(
+                        current_session_id=existing_session_id,
+                        current_intent="continue_conversation",
+                        user_profile={"memory_token": memory_token, "session_info": session_context, "context_source": context_source},
+                        recent_memories=[s['snapshot_id'] for s in related_snapshots],
+                        active_topics=set(),
+                        conversation_depth=sum(s['message_count'] for s in related_snapshots)
+                    )
+            
+            # 6. 查詢長期記憶（保持原有邏輯）
+            long_term_memories = self._query_long_term_memories(memory_token, initial_context)
+            
+            # 7. 生成記憶總結（包含Session Manager資訊和上下文來源）
+            memory_summary = self._generate_memory_summary(
+                snapshot_decision['related_snapshots'], long_term_memories, initial_context, session_context, context_source
+            )
+            
+            # 8. 將總結添加到會話上下文中
+            if memory_summary:
+                # 存儲為會話記憶，方便後續查詢
+                summary_entry = self.store_memory(
+                    content=memory_summary,
+                    memory_token=memory_token,
+                    memory_type=MemoryType.LONG_TERM,
+                    importance=MemoryImportance.HIGH,
+                    topic="會話初始化總結",
+                    intent_tags=["session_initialization"],
+                    metadata={
+                        "session_id": session_id,
+                        "summary_type": "initial_context",
+                        "snapshot_count": len(snapshot_decision['related_snapshots']),
+                        "long_term_count": len(long_term_memories),
+                        "snapshot_decision": snapshot_decision['flow_analysis']['flow_decision']
+                    },
+                    session_id=session_id
+                )
+                
+                if summary_entry.success:
+                    debug_log(2, f"[MemoryManager] 會話記憶總結已存儲: {summary_entry.memory_id}")
+            
+            # 5. 更新統計
+            self.stats["sessions_managed"] += 1
+            
+            debug_log(2, f"[MemoryManager] 會話記憶初始化完成: 快照 {len(snapshot_decision['related_snapshots'])} 條, 長期記憶 {len(long_term_memories)} 條")
+            
+        except Exception as e:
+            error_log(f"[MemoryManager] 會話記憶初始化失敗: {e}")
+            # 回退到簡單的新快照創建
+            fallback_session_id = f"fallback_{session_id}_{int(time.time())}"
+            self.snapshot_manager.start_session_snapshot(fallback_session_id, memory_token, initial_context)
+    
+    def _query_relevant_snapshots(self, memory_token: str, context: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """查詢相關的歷史快照"""
+        try:
+            # 從上下文提取查詢關鍵詞
+            query_terms = []
+            
+            # 從狀態上下文提取
+            if context and context.get("started_by_state_change"):
+                query_terms.append("狀態變化")
+            
+            # 從會話類型提取
+            session_type = context.get("session_type", "") if context else ""
+            if session_type:
+                query_terms.append(session_type)
+            
+            # 如果沒有足夠的上下文資訊，使用通用查詢
+            if not query_terms:
+                query_terms = ["對話", "聊天"]
+            
+            query_text = " ".join(query_terms)
+            
+            # 查詢快照記憶
+            snapshots = self.retrieve_memories(
+                query_text=query_text,
+                memory_token=memory_token,
+                memory_types=[MemoryType.SNAPSHOT],
+                max_results=5,
+                similarity_threshold=0.5
+            )
+            
+            debug_log(3, f"[MemoryManager] 查詢到 {len(snapshots)} 個相關快照")
+            return [result.model_dump() if hasattr(result, 'model_dump') else result for result in snapshots]
+            
+        except Exception as e:
+            error_log(f"[MemoryManager] 快照查詢失敗: {e}")
+            return []
+    
+    def _query_long_term_memories(self, memory_token: str, context: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """查詢長期記憶"""
+        try:
+            # 長期記憶通常是語義記憶，包含用戶的重要資訊
+            query_text = "用戶資訊 個人資料 偏好設定"
+            
+            long_term = self.retrieve_memories(
+                query_text=query_text,
+                memory_token=memory_token,
+                memory_types=[MemoryType.LONG_TERM, MemoryType.PROFILE, MemoryType.PREFERENCE],
+                max_results=3,
+                similarity_threshold=0.6
+            )
+            
+            debug_log(3, f"[MemoryManager] 查詢到 {len(long_term)} 條長期記憶")
+            return [result.model_dump() if hasattr(result, 'model_dump') else result for result in long_term]
+            
+        except Exception as e:
+            error_log(f"[MemoryManager] 長期記憶查詢失敗: {e}")
+            return []
+    
+    def _generate_memory_summary(self, snapshots: List[Dict[str, Any]], 
+                               long_term: List[Dict[str, Any]], 
+                               context: Dict[str, Any],
+                               session_context: Dict[str, Any] = None,
+                               context_source: str = "unknown") -> str:
+        """生成記憶總結 - 整合Session Manager資訊和上下文來源"""
+        try:
+            summary_parts = []
+            
+            # 1. 添加上下文來源資訊（根據代辦.md設計）
+            if context_source == "state_context":
+                summary_parts.append("本次會話由系統狀態變化觸發，使用狀態上下文進行記憶初始化。")
+            elif context_source == "nlp_context":
+                summary_parts.append("本次會話由NLP輸出觸發，使用NLP上下文進行記憶初始化。")
+            
+            # 2. 添加會話上下文資訊（根據代辦.md要求）
+            if session_context:
+                session_type = session_context.get("session_type", "unknown")
+                if session_type == "chatting":
+                    turns = session_context.get("conversation_turns", 0)
+                    status = session_context.get("status", "unknown")
+                    if turns > 0:
+                        summary_parts.append(f"會話資訊：聊天會話已進行 {turns} 輪對話，狀態：{status}")
+                elif session_type == "workflow":
+                    workflow_type = session_context.get("workflow_type", "unknown")
+                    command = session_context.get("command", "")
+                    summary_parts.append(f"會話資訊：工作流會話 - 類型：{workflow_type}, 指令：{command}")
+                elif session_type != "unknown":
+                    summary_parts.append(f"會話資訊：{session_type} 類型會話")
+                
+                if summary_parts and session_context:
+                    summary_parts.append("")
+            
+            # 3. 添加長期記憶總結
+            if long_term:
+                summary_parts.append("長期記憶資訊：")
+                for memory in long_term[:2]:  # 限制數量
+                    memory_entry = memory.get("memory_entry", {})
+                    content = memory_entry.get("content", "")[:100] if isinstance(memory_entry, dict) else str(memory_entry)[:100]
+                    summary_parts.append(f"- {content}")
+                summary_parts.append("")
+            
+            # 4. 添加快照總結
+            if snapshots:
+                summary_parts.append("相關歷史對話：")
+                for snapshot in snapshots[:3]:  # 限制數量
+                    memory_entry = snapshot.get("memory_entry", {})
+                    content = memory_entry.get("content", "")[:150] if isinstance(memory_entry, dict) else str(memory_entry)[:150]
+                    if content:
+                        summary_parts.append(f"- {content}")
+                summary_parts.append("")
+            
+            # 5. 添加當前上下文資訊
+            if context and context.get("started_by_state_change"):
+                summary_parts.append("根據代辦.md設計：第一次進入會話時以狀態上下文為主進行快照查詢和記憶總結。")
+            
+            # 6. 根據Session Manager資訊調整總結策略
+            if session_context:
+                session_type = session_context.get("session_type")
+                if session_type == "workflow":
+                    summary_parts.append("注意：當前處於工作流會話中，請專注於任務相關的記憶和上下文。")
+                elif session_type == "chatting" and session_context.get("conversation_turns", 0) == 0:
+                    summary_parts.append("注意：新的聊天會話開始，可以建立新的對話記憶。")
+            
+            if not summary_parts:
+                return f"新對話開始（上下文來源：{context_source}），沒有相關歷史記憶。"
+            
+            return "\n".join(summary_parts).strip()
+            
+        except Exception as e:
+            error_log(f"[MemoryManager] 生成記憶總結失敗: {e}")
+            return f"記憶總結生成失敗（上下文來源：{context_source}）。"
     
     def store_memory(self, content: str, memory_token: str = None,
                     memory_type: MemoryType = MemoryType.SNAPSHOT,
@@ -387,7 +689,7 @@ class MemoryManager:
             query = MemoryQuery(
                 memory_token=memory_token,
                 query_text=query_text,
-                memory_types=memory_types or [MemoryType.SNAPSHOT, MemoryType.EPISODE, MemoryType.SEMANTIC],
+                memory_types=memory_types or [MemoryType.SNAPSHOT, MemoryType.LONG_TERM, MemoryType.PROFILE],
                 max_results=max_results,
                 similarity_threshold=similarity_threshold,
                 current_intent=self.current_context.current_intent if self.current_context else None,
@@ -418,8 +720,9 @@ class MemoryManager:
             session_id=query.session_id if hasattr(query, "session_id") else None
         )
     
-    def create_conversation_snapshot(self, memory_token: str, conversation_text: str, 
-                                   topic: str = "general", session_id: str = None) -> Optional[ConversationSnapshot]:
+    def create_conversation_snapshot(self, memory_token: str, conversation_text: str,
+                                   topic: str = "general", session_id: str = None, 
+                                   intent_info: Dict[str, Any] = None) -> Optional[ConversationSnapshot]:
         """創建對話快照"""
         try:
             # 處理會話ID
@@ -546,6 +849,258 @@ class MemoryManager:
                 message=f"離開失敗: {str(e)}"
             )
     
+    def process_conversation_input(self, session_id: str, input_text: str, 
+                                 memory_token: str = None, 
+                                 intent_info: Dict[str, Any] = None) -> MemoryOperationResult:
+        """
+        處理對話輸入 - 動態快照管理
+        
+        根據代辦文件：MEM會根據訊息去查詢/創建新的快照，
+        快照內容更新的部分是由LLM根據對話去處理的，但邏輯還是在MEM之中
+        """
+        try:
+            # 檢查會話是否存在
+            if session_id not in self.current_chat_sessions:
+                return MemoryOperationResult(
+                    success=False,
+                    operation_type="process_input",
+                    message=f"會話不存在或未加入: {session_id}"
+                )
+            
+            # 如果沒有提供記憶令牌，從Working Context獲取
+            if not memory_token:
+                memory_token = self.identity_manager.get_current_memory_token()
+            
+            # 分析輸入內容，決定快照操作
+            snapshot_action = self._analyze_snapshot_action(session_id, input_text, memory_token, intent_info)
+            
+            result = None
+            if snapshot_action["action"] == "create_new":
+                # 創建新快照
+                result = self._create_new_conversation_snapshot(
+                    session_id, input_text, memory_token, snapshot_action
+                )
+            elif snapshot_action["action"] == "update_current":
+                # 更新當前快照
+                result = self._update_current_snapshot(
+                    session_id, input_text, memory_token, snapshot_action
+                )
+            elif snapshot_action["action"] == "merge_snapshots":
+                # 合併快照
+                result = self._merge_conversation_snapshots(
+                    session_id, input_text, memory_token, snapshot_action
+                )
+            
+            # 更新記憶上下文
+            if result and result.success:
+                self._update_memory_context_after_input(session_id, input_text, intent_info)
+            
+            return result or MemoryOperationResult(
+                success=True,
+                operation_type="process_input",
+                message="輸入已處理，無需快照操作"
+            )
+            
+        except Exception as e:
+            error_log(f"[MemoryManager] 處理對話輸入失敗: {e}")
+            return MemoryOperationResult(
+                success=False,
+                operation_type="process_input",
+                message=f"處理失敗: {str(e)}"
+            )
+    
+    def _analyze_snapshot_action(self, session_id: str, input_text: str, 
+                               memory_token: str = None, intent_info: Dict[str, Any] = None) -> Dict[str, Any]:
+        """
+        分析應該對快照執行什麼操作
+        
+        返回:
+        {
+            "action": "create_new" | "update_current" | "merge_snapshots",
+            "reason": str,
+            "topics": List[str],
+            "importance": MemoryImportance
+        }
+        """
+        try:
+            # 獲取當前會話的快照
+            current_snapshot = self.snapshot_manager.get_session_snapshot(session_id)
+            
+            if not current_snapshot:
+                return {
+                    "action": "create_new",
+                    "reason": "會話沒有活躍快照",
+                    "topics": [],
+                    "importance": MemoryImportance.MEDIUM
+                }
+            
+            # 分析輸入內容
+            analysis = self.memory_analyzer.analyze_memory(
+                MemoryEntry(
+                    memory_id="temp_analysis",
+                    memory_token=memory_token or "temp",
+                    memory_type=MemoryType.SNAPSHOT,
+                    content=input_text,
+                    created_at=datetime.now(),
+                    metadata={"intent_info": intent_info or {}}
+                )
+            )
+            
+            # 決定操作類型
+            messages = self.snapshot_manager._session_messages.get(session_id, [])
+            message_count = len(messages)
+            time_since_start = (datetime.now() - current_snapshot.created_at).total_seconds() / 60  # 分鐘
+            
+            # 如果消息數量太多或時間太長，創建新快照
+            if message_count >= 20 or time_since_start >= 30:  # 20條消息或30分鐘
+                return {
+                    "action": "create_new",
+                    "reason": f"快照過大 (消息:{message_count}, 時間:{time_since_start:.1f}分鐘)",
+                    "topics": analysis.get("topics", {}).get("primary_topics", []),
+                    "importance": analysis.get("importance", {}).get("level", MemoryImportance.MEDIUM)
+                }
+            
+            # 檢查是否是話題轉換
+            current_topics = set(current_snapshot.key_topics or [])
+            new_topics = set(analysis.get("topics", {}).get("primary_topics", []))
+            
+            if current_topics and new_topics and not current_topics.intersection(new_topics):
+                # 話題完全不同，創建新快照
+                return {
+                    "action": "create_new",
+                    "reason": "話題轉換",
+                    "topics": list(new_topics),
+                    "importance": MemoryImportance.HIGH
+                }
+            
+            # 預設更新當前快照
+            return {
+                "action": "update_current",
+                "reason": "繼續當前對話",
+                "topics": list(new_topics),
+                "importance": analysis.get("importance", {}).get("level", MemoryImportance.MEDIUM)
+            }
+            
+        except Exception as e:
+            error_log(f"[MemoryManager] 分析快照操作失敗: {e}")
+            return {
+                "action": "update_current",
+                "reason": "分析失敗，使用預設操作",
+                "topics": [],
+                "importance": MemoryImportance.MEDIUM
+            }
+    
+    def _create_new_conversation_snapshot(self, session_id: str, input_text: str, 
+                                        memory_token: str, action_info: Dict[str, Any]) -> MemoryOperationResult:
+        """創建新的對話快照"""
+        try:
+            # 使用snapshot_manager創建手動快照
+            snapshot_result = self.snapshot_manager.create_manual_snapshot(
+                session_id, 
+                f"topic_change_{int(time.time())}"
+            )
+            
+            if snapshot_result.success:
+                debug_log(2, f"[MemoryManager] 創建新快照成功: {snapshot_result.data.get('snapshot_id')}")
+                
+                # 添加新輸入到新快照
+                message_data = {
+                    "speaker": memory_token,
+                    "content": input_text,
+                    "timestamp": datetime.now().isoformat(),
+                    "intent": action_info.get("topics", [])
+                }
+                
+                self.snapshot_manager.add_message_to_snapshot(
+                    session_id, message_data
+                )
+            
+            return snapshot_result
+            
+        except Exception as e:
+            error_log(f"[MemoryManager] 創建新快照失敗: {e}")
+            return MemoryOperationResult(
+                success=False,
+                operation_type="create_snapshot",
+                message=f"創建失敗: {str(e)}"
+            )
+    
+    def _update_current_snapshot(self, session_id: str, input_text: str, 
+                               memory_token: str, action_info: Dict[str, Any]) -> MemoryOperationResult:
+        """更新當前快照"""
+        try:
+            # 添加消息到當前快照
+            message_data = {
+                "speaker": memory_token,
+                "content": input_text,
+                "timestamp": datetime.now().isoformat(),
+                "intent": action_info.get("topics", [])
+            }
+            
+            success = self.snapshot_manager.add_message_to_snapshot(
+                session_id, message_data
+            )
+            
+            if success:
+                # 更新快照主題
+                new_topics = action_info.get("topics", [])
+                if new_topics:
+                    current_snapshot = self.snapshot_manager.get_session_snapshot(session_id)
+                    if current_snapshot and hasattr(current_snapshot, 'key_topics'):
+                        # 合併主題
+                        existing_topics = set(current_snapshot.key_topics or [])
+                        existing_topics.update(new_topics)
+                        current_snapshot.key_topics = list(existing_topics)
+                
+                return MemoryOperationResult(
+                    success=True,
+                    operation_type="update_snapshot",
+                    message="快照已更新"
+                )
+            else:
+                return MemoryOperationResult(
+                    success=False,
+                    operation_type="update_snapshot",
+                    message="快照更新失敗"
+                )
+                
+        except Exception as e:
+            error_log(f"[MemoryManager] 更新快照失敗: {e}")
+            return MemoryOperationResult(
+                success=False,
+                operation_type="update_snapshot",
+                message=f"更新失敗: {str(e)}"
+            )
+    
+    def _merge_conversation_snapshots(self, session_id: str, input_text: str, 
+                                    memory_token: str, action_info: Dict[str, Any]) -> MemoryOperationResult:
+        """合併對話快照"""
+        # 目前先使用更新當前快照的邏輯
+        # 未來可以實現更複雜的合併邏輯
+        return self._update_current_snapshot(session_id, input_text, memory_token, action_info)
+    
+    def _update_memory_context_after_input(self, session_id: str, input_text: str, 
+                                         intent_info: Dict[str, Any] = None):
+        """處理輸入後更新記憶上下文"""
+        try:
+            if not self.current_context:
+                return
+            
+            # 更新對話深度
+            self.current_context.conversation_depth += 1
+            
+            # 更新活躍主題
+            if intent_info and "topics" in intent_info:
+                self.current_context.active_topics.update(intent_info["topics"])
+            
+            # 添加到最近記憶
+            # 這裡可以實現更複雜的記憶管理邏輯
+            
+            debug_log(3, f"[MemoryManager] 記憶上下文已更新: 深度={self.current_context.conversation_depth}")
+            
+        except Exception as e:
+            error_log(f"[MemoryManager] 更新記憶上下文失敗: {e}")
+    
     def analyze_user_patterns(self, memory_token: str = None, 
                              days_back: int = 30) -> Dict[str, Any]:
         """分析使用者記憶模式"""
@@ -626,7 +1181,7 @@ class MemoryManager:
                 semantic_memory = MemoryEntry(
                     memory_id=self._generate_memory_id(),
                     memory_token=memory.memory_token,
-                    memory_type=MemoryType.SEMANTIC,
+                    memory_type=MemoryType.LONG_TERM,
                     content=memory.content,
                     importance=memory.importance,
                     topic=memory.topic,

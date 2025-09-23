@@ -20,6 +20,7 @@ from ..schemas import (
     MemoryEntry, MemoryType, MemoryImportance, 
     ConversationSnapshot, MemoryOperationResult
 )
+from .snapshot_key_manager import SnapshotKeyManager
 
 
 @dataclass
@@ -32,13 +33,22 @@ class SnapshotContext:
     message_count: int
     primary_topics: Set[str]
     interaction_depth: int
+    participant_info: Dict[str, Dict[str, Any]] = None
+    
+    def __post_init__(self):
+        if self.participant_info is None:
+            self.participant_info = {}
 
 
 class SnapshotManager:
     """快照管理器"""
     
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any], memory_summarizer: Optional[Any] = None):
         self.config = config
+        self.memory_summarizer = memory_summarizer
+        
+        # 初始化快照鍵值管理器
+        self.key_manager = SnapshotKeyManager(config.get("key_manager", {}), memory_summarizer)
         
         # 快照配置
         self.max_snapshot_size = config.get("max_snapshot_size", 1000)
@@ -46,7 +56,11 @@ class SnapshotManager:
         self.snapshot_retention_days = config.get("snapshot_retention_days", 30)
         self.compression_enabled = config.get("compression_enabled", True)
         
-        # 快照緩存
+        # GSID過期配置
+        self.max_general_sessions = config.get("max_general_sessions", 10)  # 保留最近10個GS
+        self.current_gsid = 0  # 當前General Session ID
+        
+        # 快照存儲
         self._active_snapshots: Dict[str, ConversationSnapshot] = {}
         self._snapshot_contexts: Dict[str, SnapshotContext] = {}
         
@@ -64,11 +78,67 @@ class SnapshotManager:
         }
         
         self.is_initialized = False
+        
+    def advance_general_session(self) -> int:
+        """前進到下一個General Session"""
+        self.current_gsid += 1
+        debug_log(2, f"[SnapshotManager] 前進到General Session: {self.current_gsid}")
+        
+        # 檢查並清理過期的快照
+        self._cleanup_expired_snapshots()
+        
+        return self.current_gsid
+    
+    def _cleanup_expired_snapshots(self):
+        """清理過期的快照（根據GSID過期規則）"""
+        try:
+            expired_snapshots = []
+            
+            # 檢查所有快照的GSID是否過期
+            for snapshot_id, snapshot in self._active_snapshots.items():
+                if hasattr(snapshot, 'gsid'):
+                    # 如果快照的GSID距離當前GSID太遠，標記為過期
+                    gsid_distance = self.current_gsid - snapshot.gsid
+                    if gsid_distance >= self.max_general_sessions:
+                        expired_snapshots.append(snapshot_id)
+                        debug_log(2, f"[SnapshotManager] 快照過期: {snapshot_id} (GSID: {snapshot.gsid}, 距離: {gsid_distance})")
+            
+            # 刪除過期的快照
+            for snapshot_id in expired_snapshots:
+                if snapshot_id in self._active_snapshots:
+                    # 從鍵值管理器中註銷
+                    self.key_manager.unregister_snapshot(snapshot_id)
+                    del self._active_snapshots[snapshot_id]
+                if snapshot_id in self._snapshot_contexts:
+                    del self._snapshot_contexts[snapshot_id]
+                if snapshot_id in self._session_messages:
+                    del self._session_messages[snapshot_id]
+                if snapshot_id in self._last_auto_snapshot:
+                    del self._last_auto_snapshot[snapshot_id]
+            
+            # 清理鍵值管理器中的過期映射
+            valid_snapshot_ids = set(self._active_snapshots.keys())
+            self.key_manager.cleanup_expired_keys(valid_snapshot_ids)
+            
+            if expired_snapshots:
+                debug_log(1, f"[SnapshotManager] 清理了 {len(expired_snapshots)} 個過期快照")
+                
+        except Exception as e:
+            error_log(f"[SnapshotManager] 清理過期快照失敗: {e}")
+    
+    def get_current_gsid(self) -> int:
+        """獲取當前General Session ID"""
+        return self.current_gsid
     
     def initialize(self) -> bool:
         """初始化快照管理器"""
         try:
             info_log("[SnapshotManager] 初始化快照管理器...")
+            
+            # 初始化鍵值管理器
+            if not self.key_manager.initialize():
+                error_log("[SnapshotManager] 鍵值管理器初始化失敗")
+                return False
             
             # 載入活躍快照
             self._load_active_snapshots()
@@ -100,6 +170,76 @@ class SnapshotManager:
         debug_log(3, "[SnapshotManager] 設定自動清理計時器")
         # 這裡可以設定定期清理任務
     
+    def query_and_decide_snapshot_creation(self, memory_token: str, content: str, 
+                                         context: Dict[str, Any] = None) -> Dict[str, Any]:
+        """
+        查詢相關快照並決定是否創建新快照
+        
+        這是新的主要入口點，實現你要求的流程：
+        1. 先查詢有沒有對應的快照與對話歷史
+        2. 如果沒有就新增快照來記錄接下來的對話
+        
+        Returns:
+            Dict包含：
+            - need_new_snapshot: 是否需要創建新快照
+            - related_snapshots: 相關快照列表
+            - suggested_session_id: 建議的會話ID
+            - flow_analysis: 流程分析結果
+        """
+        try:
+            debug_log(2, f"[SnapshotManager] 查詢快照並決定創建策略: {memory_token}")
+            
+            # 使用鍵值管理器分析對話流程
+            flow_analysis = self.key_manager.analyze_conversation_flow(memory_token, content)
+            
+            # 獲取相關快照的詳細信息
+            related_snapshot_details = []
+            for snapshot_id in flow_analysis["related_snapshots"]:
+                if snapshot_id in self._active_snapshots:
+                    snapshot = self._active_snapshots[snapshot_id]
+                    related_snapshot_details.append({
+                        "snapshot_id": snapshot_id,
+                        "memory_token": snapshot.memory_token,
+                        "session_id": getattr(snapshot, 'session_id', None),
+                        "summary": getattr(snapshot, 'summary', ''),
+                        "message_count": getattr(snapshot, 'message_count', 0),
+                        "last_updated": getattr(snapshot, 'updated_at', snapshot.created_at)
+                    })
+            
+            # 決定會話ID策略
+            suggested_session_id = None
+            if not flow_analysis["should_create_new"] and related_snapshot_details:
+                # 使用最近的相關快照的會話ID
+                latest_snapshot = max(related_snapshot_details, 
+                                    key=lambda x: x["last_updated"])
+                suggested_session_id = latest_snapshot["session_id"]
+            else:
+                # 生成新的會話ID
+                suggested_session_id = f"session_{memory_token}_{int(time.time())}"
+            
+            result = {
+                "need_new_snapshot": flow_analysis["should_create_new"],
+                "related_snapshots": related_snapshot_details,
+                "suggested_session_id": suggested_session_id,
+                "flow_analysis": flow_analysis,
+                "query_key": flow_analysis["query_key"]
+            }
+            
+            debug_log(2, f"[SnapshotManager] 決策結果: {'創建新快照' if result['need_new_snapshot'] else '使用現有快照'}")
+            debug_log(3, f"[SnapshotManager] 建議會話ID: {suggested_session_id}")
+            
+            return result
+            
+        except Exception as e:
+            error_log(f"[SnapshotManager] 查詢並決定快照創建失敗: {e}")
+            return {
+                "need_new_snapshot": True,
+                "related_snapshots": [],
+                "suggested_session_id": f"error_session_{int(time.time())}",
+                "flow_analysis": {"flow_decision": "錯誤回退，創建新快照"},
+                "query_key": "error"
+            }
+    
     def start_session_snapshot(self, session_id: str, memory_token: str,
                               initial_context: Dict[str, Any] = None) -> bool:
         """開始會話快照"""
@@ -121,23 +261,33 @@ class SnapshotManager:
             
             # 創建會話快照
             snapshot = ConversationSnapshot(
+                memory_id=f"snapshot_{session_id}_{int(time.time())}",
+                memory_token=memory_token,
+                content="",  # 初始為空，會在添加消息時填充
+                stage_number=1,  # 初始階段
                 snapshot_id=f"snapshot_{session_id}_{int(time.time())}",
                 session_id=session_id,
-                memory_token=memory_token,
                 start_time=datetime.now(),
                 end_time=None,
                 messages=[],
                 summary="",
                 key_topics=[],
-                                participant_info={memory_token: {"role": "user", "name": "User"}},
+                participant_info={memory_token: {"role": "user", "name": "User"}},
                 context_data=initial_context or {},
-                metadata={"auto_generated": False}
+                metadata={"auto_generated": False},
+                gsid=self.current_gsid  # 設置當前GSID
             )
             
             self._active_snapshots[session_id] = snapshot
             self._snapshot_contexts[session_id] = context
             self._session_messages[session_id] = []
             self._last_auto_snapshot[session_id] = time.time()
+            
+            # 註冊到鍵值管理器  
+            content_for_key = ""
+            if initial_context:
+                content_for_key = initial_context.get("content", "") or str(initial_context)
+            self.key_manager.register_snapshot(snapshot.memory_id, content_for_key)
             
             debug_log(3, f"[SnapshotManager] 開始會話快照: {session_id}")
             return True
@@ -154,23 +304,56 @@ class SnapshotManager:
                 return False
             
             snapshot = self._active_snapshots[session_id]
-            context = self._snapshot_contexts[session_id]
             
-            # 添加訊息
-            snapshot.messages.append(message_data)
-            self._session_messages[session_id].append(message_data)
+            # 確保上下文存在
+            if session_id not in self._snapshot_contexts:
+                debug_log(2, f"[SnapshotManager] 創建會話上下文: {session_id}")
+                self._snapshot_contexts[session_id] = SnapshotContext(
+                    session_id=session_id,
+                    start_time=snapshot.start_time or datetime.now(),
+                    end_time=None,
+                    participant_count=snapshot.participant_count or 1,
+                    message_count=snapshot.message_count or 0,
+                    primary_topics=set(snapshot.key_topics or []),
+                    interaction_depth=len(snapshot.messages) if snapshot.messages else 0,
+                    participant_info=dict(snapshot.participant_info) if snapshot.participant_info else {}
+                )
+                self._session_messages[session_id] = snapshot.messages.copy() if snapshot.messages else []
+            
+            context = self._snapshot_contexts[session_id]
             
             # 更新上下文
             context.message_count += 1
-            context.interaction_depth = len(snapshot.messages)
+            context.interaction_depth = len(snapshot.messages) if snapshot.messages else 0
             
-            # 更新參與者資訊
+            # 實際添加消息到快照
+            message_entry = {
+                "speaker": message_data.get("speaker", "unknown"),
+                "content": message_data.get("content", ""),
+                "timestamp": message_data.get("timestamp", datetime.now().isoformat()),
+                "intent": message_data.get("intent", []),
+                "message_id": f"msg_{int(time.time() * 1000000)}"  # 唯一消息ID
+            }
+            
+            # 確保snapshot.messages是列表
+            if not hasattr(snapshot, 'messages') or snapshot.messages is None:
+                snapshot.messages = []
+            
+            snapshot.messages.append(message_entry)
+            
+            # 更新快照內容摘要
+            updated_snapshot = self._update_snapshot_content(snapshot, message_entry)
+            # 更新活躍快照
+            self._active_snapshots[session_id] = updated_snapshot
+            snapshot = updated_snapshot
+            
+            # 更新參與者資訊 - 只更新context，不修改snapshot
             speaker = message_data.get("speaker", "unknown")
-            if speaker not in snapshot.participant_info:
-                snapshot.participant_info[speaker] = {"message_count": 0}
+            if speaker not in context.participant_info:
+                context.participant_info[speaker] = {"message_count": 0}
                 context.participant_count += 1
-            
-            snapshot.participant_info[speaker]["message_count"] += 1
+            else:
+                context.participant_info[speaker]["message_count"] += 1
             
             # 提取主題
             content = message_data.get("content", "")
@@ -187,19 +370,143 @@ class SnapshotManager:
             error_log(f"[SnapshotManager] 添加訊息失敗: {e}")
             return False
     
+    def _update_snapshot_content(self, snapshot: ConversationSnapshot, message_entry: Dict[str, Any]) -> ConversationSnapshot:
+        """更新快照內容摘要 - 簡單版本，不依賴LLM"""
+        try:
+            # 使用model_dump和model_validate來安全地更新Pydantic模型
+            snapshot_data = snapshot.model_dump()
+            
+            # 將消息添加到快照內容
+            speaker = message_entry.get("speaker", "unknown")
+            content = message_entry.get("content", "")
+            
+            # 格式化消息
+            formatted_message = f"{speaker}: {content}"
+            
+            # 如果是第一條消息，初始化內容
+            if not snapshot_data.get("content") or snapshot_data["content"] == "":
+                snapshot_data["content"] = formatted_message
+            else:
+                # 添加到現有內容
+                snapshot_data["content"] += f"\n{formatted_message}"
+            
+            # 限制內容長度 (簡單版本：保留最近的內容)
+            max_length = snapshot_data.get("max_context_length", 2000)
+            if len(snapshot_data["content"]) > max_length:
+                # 保留最後max_length個字符
+                snapshot_data["content"] = snapshot_data["content"][-max_length:]
+                snapshot_data["compression_level"] = 1  # 標記為已壓縮
+            
+            # 簡單的主題提取和更新
+            if "key_topics" in snapshot_data and snapshot_data["key_topics"] is not None:
+                new_topics = self._extract_topics_from_message(content)
+                existing_topics = set(snapshot_data["key_topics"])
+                existing_topics.update(new_topics)
+                snapshot_data["key_topics"] = list(existing_topics)
+            
+            # 生成簡單的總結 (基於關鍵字)
+            if len(snapshot_data["messages"]) > 1:
+                topics_str = ", ".join(snapshot_data["key_topics"][:3]) if snapshot_data["key_topics"] else "一般對話"
+                snapshot_data["summary"] = f"涉及{topics_str}的對話，共有{len(snapshot_data['messages'])}條消息"
+            
+            # 使用model_validate創建更新後的實例
+            return ConversationSnapshot.model_validate(snapshot_data)
+            
+        except Exception as e:
+            error_log(f"[SnapshotManager] 更新快照內容失敗: {e}")
+            return snapshot  # 返回原始snapshot
+    
     def _extract_topics_from_message(self, content: str) -> Set[str]:
-        """從訊息內容提取主題"""
-        # 簡單主題提取邏輯
+        """從訊息內容提取主題 - 使用summarizer生成主題標籤"""
+        try:
+            # 優先使用summarizer生成主題標籤
+            if self.memory_summarizer and self.memory_summarizer.is_initialized:
+                topics = self._extract_topics_with_summarizer(content)
+                if topics:
+                    return topics
+            
+            # 回退到關鍵字匹配
+            return self._extract_topics_with_keywords(content)
+            
+        except Exception as e:
+            error_log(f"[SnapshotManager] 主題提取失敗，使用關鍵字回退: {e}")
+            return self._extract_topics_with_keywords(content)
+    
+    def _extract_topics_with_summarizer(self, content: str) -> Set[str]:
+        """使用summarizer生成主題標籤"""
+        try:
+            if not content or len(content.strip()) < 10:
+                return set()
+            
+            # 使用summarizer生成簡短摘要，然後從摘要中提取關鍵主題
+            # 這裡我們使用總結功能來生成主題描述
+            summary = self.memory_summarizer.chunk_and_summarize_memories([content])
+            
+            if not summary:
+                return set()
+            
+            # 從摘要中提取主題詞
+            topics = set()
+            summary_lower = summary.lower()
+            
+            # 常見主題指示詞
+            topic_indicators = [
+                "about", "regarding", "concerning", "related to", "focused on",
+                "discussing", "talking about", "working on", "dealing with"
+            ]
+            
+            # 簡單的主題提取邏輯：查找主題指示詞後的詞彙
+            for indicator in topic_indicators:
+                if indicator in summary_lower:
+                    # 提取指示詞後的內容作為主題
+                    idx = summary_lower.find(indicator)
+                    remaining = summary[idx + len(indicator):].strip()
+                    # 提取前幾個詞作為主題
+                    words = remaining.split()[:3]  # 取前3個詞
+                    if words:
+                        topic = " ".join(words).strip(".,!?")
+                        if len(topic) > 2:  # 避免太短的主題
+                            topics.add(topic.lower())
+            
+            # 如果沒有找到主題指示詞，嘗試從摘要中提取名詞詞組
+            if not topics:
+                # 簡單的詞組提取：連續的大寫詞或特定模式
+                words = summary.split()
+                for i in range(len(words) - 1):
+                    if words[i][0].isupper() and len(words[i]) > 3:
+                        # 可能的專有名詞
+                        topics.add(words[i].lower())
+                    elif words[i].lower() in ["the", "a", "an"] and i + 1 < len(words):
+                        # "the X" 模式
+                        if len(words[i+1]) > 3:
+                            topics.add(words[i+1].lower())
+            
+            # 清理主題：移除常見的停用詞
+            stop_words = {"the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by"}
+            cleaned_topics = {topic for topic in topics if topic not in stop_words and len(topic) > 2}
+            
+            debug_log(4, f"[SnapshotManager] Summarizer提取主題: {cleaned_topics}")
+            return cleaned_topics
+            
+        except Exception as e:
+            error_log(f"[SnapshotManager] Summarizer主題提取失敗: {e}")
+            return set()
+    
+    def _extract_topics_with_keywords(self, content: str) -> Set[str]:
+        """使用關鍵字匹配提取主題 - 回退方法"""
+        # 英文關鍵字提取 - 對應中文版本但適配英文內容
         topics = set()
         
-        # 關鍵字提取
+        # 英文關鍵字提取 - 改為英文關鍵字以匹配系統語言
         keywords = [
-            "問題", "解決", "建議", "幫助", "學習", "工作", "技術", "程式",
-            "資料", "分析", "設計", "開發", "測試", "部署", "維護", "優化"
+            "problem", "solution", "suggestion", "help", "learning", "work", "technology", "programming",
+            "data", "analysis", "design", "development", "testing", "deployment", "maintenance", "optimization",
+            "question", "answer", "code", "debug", "error", "fix", "feature", "function"
         ]
         
+        content_lower = content.lower()
         for keyword in keywords:
-            if keyword in content:
+            if keyword in content_lower:
                 topics.add(keyword)
         
         return topics
@@ -270,7 +577,7 @@ class SnapshotManager:
                 content=content,
                 summary=content[:200] + "..." if len(content) > 200 else content,
                 keywords=keywords_list,
-                topic=topic,
+                gsid=self.current_gsid,
                 stage_number=1,
                 message_count=1,
                 participant_count=1,
@@ -285,6 +592,9 @@ class SnapshotManager:
             
             # 添加到緩存 - 使用memory_id作為key
             self._active_snapshots[memory_id] = snapshot
+            
+            # 註冊到鍵值管理器
+            self.key_manager.register_snapshot(memory_id, content)
             
             # 更新統計
             self.stats["snapshots_created"] += 1
@@ -329,20 +639,23 @@ class SnapshotManager:
             
             # 創建完整快照
             full_snapshot = ConversationSnapshot(
-                snapshot_id=snapshot_name or f"manual_{session_id}_{int(time.time())}",
-                session_id=session_id,
-                identity_token=snapshot.identity_token,
-                start_time=snapshot.start_time,
-                end_time=datetime.now(),
+                memory_id=snapshot_name or f"manual_{session_id}_{int(time.time())}",
+                memory_token=snapshot.memory_token,
+                content=self._create_session_summary(snapshot, context),
+                stage_number=snapshot.stage_number,
+                gsid=snapshot.gsid,
+                message_count=context.message_count,
+                participant_count=context.participant_count,
                 messages=snapshot.messages.copy() if include_full_context else snapshot.messages[-20:],
-                summary=self._create_session_summary(snapshot, context),
-                key_topics=list(context.primary_topics),
                 participant_info=snapshot.participant_info.copy(),
-                context_data=snapshot.context_data.copy(),
+                start_time=snapshot.start_time,
+                key_topics=list(context.primary_topics),
+                created_at=datetime.now(),
+                importance_score=snapshot.importance_score,
                 metadata={
                     "auto_generated": False,
                     "manual_creation": True,
-                    "message_count": context.message_count,
+                    "session_id": session_id,
                     "duration_minutes": (datetime.now() - snapshot.start_time).total_seconds() / 60
                 }
             )
@@ -469,8 +782,15 @@ class SnapshotManager:
     
     def get_stats(self) -> Dict[str, Any]:
         """獲取統計資訊"""
-        return {
+        base_stats = {
             **self.stats,
             "active_sessions": len(self._active_snapshots),
             "total_messages": sum(len(msgs) for msgs in self._session_messages.values())
         }
+        
+        # 添加鍵值管理器統計
+        if self.key_manager:
+            key_manager_stats = self.key_manager.get_stats()
+            base_stats["key_manager"] = key_manager_stats
+        
+        return base_stats

@@ -127,7 +127,7 @@ class NLPModule(BaseModule):
             debug_log(1, f"[NLP] 處理完成：主要意圖={final_result.primary_intent}, "
                        f"身份={final_result.identity.identity_id if final_result.identity else 'None'}")
             
-            return final_result.dict()
+            return final_result.model_dump()
             
         except Exception as e:
             error_log(f"[NLP] 處理失敗：{e}")

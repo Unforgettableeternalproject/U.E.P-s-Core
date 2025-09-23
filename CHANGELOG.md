@@ -1162,3 +1162,15 @@
 
 ---
 
+### Unified codes of the module tests, and MEM module is almost done. 09/23
+
+> Date: Tue, 23 Sep 2025 20:23:27 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_rework`
+
+> Commit: `b9721338521bc92ce70baab2803296f2af9e8480`
+
+---
+

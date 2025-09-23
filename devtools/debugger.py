@@ -285,60 +285,35 @@ def debug_interactive():
 
                 debug_log(1, "MEM 模組測試")
                 print("<MEM 模組測試>\n")
-                choice = input("請選擇欲測試之功能 (1: 記憶寫入, 2: 記憶查詢, 3: 記憶刪除, 4: 列出所有記憶, exit: 離開): \n\n> ")
+                choice = input("請選擇欲測試之功能 (1: 記憶查詢, 2: 對話快照查詢, 3: 記憶庫列表, 4: 記憶統計, exit: 離開): \n\n> ")
                 if choice == "1":
-                    print("請輸入要寫入的記憶內容 (或輸入 'exit' 來結束):")
+                    print("記憶查詢測試 (使用 Mock 身份) (或輸入 'exit' 來結束):")
                     while True:
-                        user_text = input("\n輸入使用者對話: \n> ")
-                        if user_text.lower() in ["exit", "e", "quit", "q", "back", "b"]:
-                            info_log("使用者中斷測試")
-                            break
-
-                        response_text = input("\n輸入系統回應: \n> ")
-                        if response_text.lower() in ["exit", "e", "quit", "q", "back", "b"]:
+                        query_text = input("\n查詢文字 (預設 天氣): \n> ") or "天氣"
+                        if query_text.lower() in ["exit", "e", "quit", "q", "back", "b"]:
                             info_log("使用者中斷測試")
                             break
 
                         print()
-                        controller.mem_store_test(user_text, response_text)
+                        controller.mem_test_memory_query("test_user", query_text)
                 elif choice == "2":
-                    print("請輸入查詢的記憶內容 (或輸入 'exit' 來結束):")
+                    print("對話快照查詢測試 (使用 Mock 身份) (或輸入 'exit' 來結束):")
                     while True:
-                        text = input("\n> ")
-                        if text.lower() in ["exit", "e", "quit", "q", "back", "b"]:
+                        conversation = input("\n對話內容 (預設 你好，今天天氣如何？): \n> ") or "你好，今天天氣如何？"
+                        if conversation.lower() in ["exit", "e", "quit", "q", "back", "b"]:
                             info_log("使用者中斷測試")
                             break
+                        
                         print()
-                        controller.mem_fetch_test(text)
+                        controller.mem_test_conversation_snapshot("test_user", conversation)
                 elif choice == "3":
-                    print("請輸入要刪除的記憶內容 (或輸入 'exit' 來結束):")
-                    while True:
-                        text = input("記憶關鍵語句:\n> ")
-                        if text.lower() in ["exit", "e", "quit", "q", "back", "b"]:
-                            info_log("使用者中斷測試")
-                            break
-
-                        topk = input("要刪除的相似記憶數量 (預設為 1):\n> ")
-                        if topk.lower() in ["exit", "e", "quit", "q", "back", "b"]:
-                            info_log("使用者中斷測試")
-                            break
-                        controller.mem_clear_test(text, topk)
+                    print("記憶庫列表測試 (使用預設記憶令牌):")
+                    print()
+                    controller.mem_test_memory_access_control("mem_token_debug_2024")
                 elif choice == "4":
-                    print("列出所有記憶 (選擇查詢頁面，或輸入 'exit' 來結束):")
-                    while True:
-                        page = input("\n頁面 (預設為 1):\n> ")
-                        if page == "":
-                            page = 1
-                        elif page.lower() in ["exit", "e", "quit", "q", "back", "b"]:
-                            info_log("使用者中斷測試")
-                            break
-                        else:
-                            try:
-                                page = int(page)
-                            except ValueError:
-                                print("\033[31m請輸入有效的頁碼。\033[0m")
-                                continue
-                        controller.mem_list_all_test(page)
+                    print("記憶統計測試 (使用 Mock 身份):")
+                    print()
+                    controller.mem_test_identity_manager_stats("test_user")
                 elif choice in ["exit", "e", "quit", "q", "back", "b"]:
                     pass
                 else:

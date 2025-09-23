@@ -1,8 +1,8 @@
 # Default config for general modules
 
 modules_enabled:
-  stt_module: true
-  nlp_module: true
+  stt_module: false
+  nlp_module: false
   mem_module: true
   llm_module: false
   tts_module: false
@@ -31,7 +31,7 @@ logging:
 
 debug:
   enabled: true
-  debug_level: 1
+  debug_level: 2
 
 # 全局系統設置 - 用於控制系統級別行為
 system:

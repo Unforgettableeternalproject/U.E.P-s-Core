@@ -148,6 +148,12 @@ class MemorySearchResult(BaseModel):
     similarity_score: float = Field(..., description="相似度評分")
     relevance_score: float = Field(..., description="相關性評分")
     retrieval_reason: str = Field(..., description="檢索原因")
+    
+    # SemanticRetriever 需要的額外屬性
+    retrieval_method: str = Field(default="semantic", description="檢索方法")
+    context_relevance: float = Field(default=0.0, description="上下文相關性")
+    context_match: Optional[bool] = Field(default=None, description="上下文匹配")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="附加元資料")
 
 
 class MemoryOperationResult(BaseModel):

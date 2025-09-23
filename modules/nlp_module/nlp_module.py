@@ -19,7 +19,8 @@ from core.module_base import BaseModule
 from core.schemas import NLPModuleData, create_nlp_data
 from core.schema_adapter import NLPSchemaAdapter
 from core.working_context import working_context_manager, ContextType
-from core.state_queue import get_state_queue_manager, SystemState
+from core.state_queue import get_state_queue_manager
+from core.state_manager import UEPState as SystemState
 from utils.debug_helper import debug_log, info_log, error_log
 
 from .schemas import (

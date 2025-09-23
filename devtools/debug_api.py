@@ -509,6 +509,54 @@ def frontend_test_user_interaction_wrapper():
     return frontend_test_user_interaction_func(modules)
 
 # MEM 模組包裝函數（重構版本 - 支持按需載入）
+def mem_test_store_memory_wrapper(identity="test_user", content="測試記憶內容", memory_type="long_term"):
+    """測試記憶存儲功能"""
+    from .module_tests.mem_tests import mem_test_store_memory as mem_test_func
+    
+    # 按需載入MEM模組
+    mem_module = safe_get_module("mem_module")
+    test_modules = {"mem": mem_module}
+    
+    return mem_test_func(test_modules, identity, content, memory_type)
+
+def mem_test_create_snapshot_wrapper(identity="test_user", conversation_text="用戶: 今天天氣如何？\n助手: 今天天氣很好，陽光明媚。"):
+    """測試創建快照功能"""
+    from .module_tests.mem_tests import mem_test_create_snapshot as mem_test_func
+    
+    # 按需載入MEM模組
+    mem_module = safe_get_module("mem_module")
+    test_modules = {"mem": mem_module}
+    
+    return mem_test_func(test_modules, identity, conversation_text)
+
+def mem_test_write_then_query_wrapper(identity="test_user"):
+    """測試寫入後查詢功能"""
+    from .module_tests.mem_tests import mem_test_write_then_query as mem_test_func
+    
+    # 按需載入MEM模組
+    mem_module = safe_get_module("mem_module")
+    test_modules = {"mem": mem_module}
+    
+    return mem_test_func(test_modules, identity)
+
+def mem_test_nlp_integration_wrapper(identity="test_user", text="測試自然語言整合"):
+    """測試MEM與NLP整合功能"""
+    # 確保從module_tests導入正確的函數
+    # 如果實際函數名稱不是mem_test_nlp_integration，請修改為正確的名稱
+    try:
+        from .module_tests.mem_tests import mem_test_nlp_integration as mem_test_func
+        
+        # 按需載入MEM和NLP模組
+        mem_module = safe_get_module("mem_module")
+        nlp_module = safe_get_module("nlp_module")
+        test_modules = {"mem": mem_module, "nlp": nlp_module}
+        
+        return mem_test_func(test_modules, identity, text)
+    except ImportError as e:
+        error_log(f"[Controller] MEM-NLP整合測試函數未實現: {e}")
+        print(f"❌ MEM-NLP整合測試函數尚未實現，請先在mem_tests.py中創建該函數")
+        return {"success": False, "error": f"整合測試函數未實現: {e}"}
+
 def mem_test_memory_access_control_wrapper(memory_token: str = "test_memory_token"):
     """測試記憶體存取控制功能"""
     from .module_tests.mem_tests import mem_test_memory_access_control as mem_test_func
@@ -623,7 +671,11 @@ frontend_get_status = frontend_get_status_wrapper
 frontend_test_animations = frontend_test_animations_wrapper
 frontend_test_user_interaction = frontend_test_user_interaction_wrapper
 
-# MEM 函數別名（重構版本 - 僅核心功能）
+# MEM 函數別名（重構版本 - 完整功能）
+mem_test_store_memory = mem_test_store_memory_wrapper
+mem_test_create_snapshot = mem_test_create_snapshot_wrapper
+mem_test_write_then_query = mem_test_write_then_query_wrapper
+mem_test_nlp_integration = mem_test_nlp_integration_wrapper
 mem_test_memory_access_control = mem_test_memory_access_control_wrapper
 mem_test_conversation_snapshot = mem_test_conversation_snapshot_wrapper
 mem_test_memory_query = mem_test_memory_query_wrapper
@@ -635,6 +687,9 @@ mem_test_snapshot = mem_test_conversation_snapshot_wrapper
 mem_test_query = mem_test_memory_query_wrapper
 mem_test_stats = mem_test_identity_manager_stats_wrapper
 mem_test_access_control = mem_test_memory_access_control_wrapper
+mem_test_write = mem_test_store_memory_wrapper  # 寫入記憶別名
+mem_test_memory = mem_test_store_memory_wrapper  # 儲存記憶別名
+mem_test_nlp = mem_test_nlp_integration_wrapper  # NLP整合測試別名
 
 # LLM 函數別名（匹配實際的函數名稱）
 llm_test_chat = llm_test_chat_wrapper

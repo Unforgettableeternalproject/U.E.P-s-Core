@@ -359,13 +359,21 @@ class SemanticRetriever:
     
     def _calculate_importance_score(self, memory_entry: MemoryEntry) -> float:
         """計算重要性分數"""
-        importance_mapping = {
-            MemoryImportance.LOW: 0.2,
-            MemoryImportance.MEDIUM: 0.5,
-            MemoryImportance.HIGH: 0.8,
-            MemoryImportance.CRITICAL: 1.0
-        }
-        return importance_mapping.get(memory_entry.importance, 0.5)
+        # 使用 importance_score 屬性而不是 importance 屬性
+        importance_score = getattr(memory_entry, 'importance_score', 0.5)
+        
+        # 如果還有舊的 importance 枚舉屬性，也嘗試使用它
+        if hasattr(memory_entry, 'importance'):
+            importance_mapping = {
+                MemoryImportance.LOW: 0.2,
+                MemoryImportance.MEDIUM: 0.5,
+                MemoryImportance.HIGH: 0.8,
+                MemoryImportance.CRITICAL: 1.0
+            }
+            return importance_mapping.get(memory_entry.importance, 0.5)
+        
+        # 否則直接使用 importance_score
+        return min(1.0, max(0.0, importance_score))
     
     def _diversity_rerank(self, results: List[MemorySearchResult]) -> List[MemorySearchResult]:
         """多樣性重排序"""

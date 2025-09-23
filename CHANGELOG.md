@@ -1174,3 +1174,27 @@
 
 ---
 
+### Fixed a certain issue with NLP module imports, and actually finished the tests of MEM module. 09/24
+
+> Date: Wed, 24 Sep 2025 00:55:04 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_rework`
+
+> Commit: `b1f50c2cb41ddbb4579fc9ca36ec242402f00720`
+
+---
+
+### Fixed a certain issue with NLP module imports, and actually finished the tests of MEM module. 09/24
+
+> Date: Wed, 24 Sep 2025 00:55:04 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_rework`
+
+> Commit: `93c520ed6148d517af7bc063963a0f69c87aef73`
+
+---
+

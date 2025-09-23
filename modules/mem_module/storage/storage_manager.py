@@ -220,6 +220,7 @@ class MemoryStorageManager:
                 
                 # 檢查查詢權限
                 if not self.identity_manager.check_operation_permission(query.memory_token, "query"):
+                    debug_log(2, f"[StorageManager] 記憶令牌: {query.memory_token}")
                     error_log("[StorageManager] 沒有查詢權限")
                     return []
                 
@@ -272,12 +273,18 @@ class MemoryStorageManager:
                             memory_entry, query, similarity_score
                         )
                         
+                        # 計算上下文相關性（給 SemanticRetriever 使用）
+                        context_relevance = self._calculate_context_relevance(memory_entry, query)
+                        
                         search_result = MemorySearchResult(
                             memory_entry=memory_entry,
                             similarity_score=similarity_score,
                             relevance_score=relevance_score,
                             retrieval_reason=retrieval_reason,
-                            context_match=self._check_context_match(memory_entry, query)
+                            retrieval_method="semantic",  # 設置檢索方法
+                            context_relevance=context_relevance,  # 設置上下文相關性
+                            context_match=self._check_context_match(memory_entry, query),
+                            metadata={}  # 初始化元資料字典
                         )
                         
                         search_results.append(search_result)
@@ -399,24 +406,18 @@ class MemoryStorageManager:
         try:
             relevance = similarity_score
             
-            # 重要性加權 - 安全地獲取 importance 屬性
-            importance_weights = {
-                MemoryImportance.CRITICAL: 1.2,
-                MemoryImportance.HIGH: 1.1,
-                MemoryImportance.MEDIUM: 1.0,
-                MemoryImportance.LOW: 0.9,
-                MemoryImportance.TEMPORARY: 0.8
-            }
-            
-            # 安全地獲取 importance 屬性
-            importance = getattr(memory_entry, 'importance', MemoryImportance.MEDIUM)
-            importance_weight = importance_weights.get(importance, 1.0)
+            # 重要性加權 - 使用 importance_score 屬性
+            importance_score = getattr(memory_entry, 'importance_score', 0.5)
+            # 將 0-1 的分數轉換為 0.8-1.2 的權重
+            importance_weight = 0.8 + (importance_score * 0.4)
             relevance *= importance_weight
             
             # 時間衰減（最近的記憶更相關） - 安全地獲取 created_at
             created_at = getattr(memory_entry, 'created_at', None)
             if created_at:
-                time_diff = (time.time() - created_at.timestamp()) / 86400  # 天數
+                # 安全地將 created_at 轉換為時間戳
+                created_timestamp = created_at.timestamp() if hasattr(created_at, 'timestamp') else created_at
+                time_diff = (time.time() - created_timestamp) / 86400  # 天數
                 time_decay = max(0.5, 1.0 - (time_diff * 0.01))  # 每天衰減1%
                 relevance *= time_decay
             
@@ -430,6 +431,52 @@ class MemoryStorageManager:
         except Exception as e:
             info_log("WARNING", f"[StorageManager] 計算相關性評分失敗: {e}")
             return similarity_score
+    
+    def _calculate_context_relevance(self, memory_entry: MemoryEntry, query: MemoryQuery) -> float:
+        """計算上下文相關性（為 SemanticRetriever 提供）"""
+        try:
+            context_score = 0.0
+            
+            # 檢查記憶類型匹配
+            if hasattr(query, 'memory_types') and query.memory_types:
+                if memory_entry.memory_type in query.memory_types:
+                    context_score += 0.3
+            
+            # 檢查主題匹配
+            if hasattr(query, 'topic_filter') and query.topic_filter:
+                memory_topic = getattr(memory_entry, 'topic', '')
+                if memory_topic and query.topic_filter.lower() in memory_topic.lower():
+                    context_score += 0.3
+            
+            # 檢查重要性匹配
+            if hasattr(query, 'importance_filter') and query.importance_filter:
+                # 使用 importance_score 而不是 importance 枚舉
+                importance_score = getattr(memory_entry, 'importance_score', 0.5)
+                # 如果有 importance_filter，嘗試轉換為分數範圍檢查
+                if importance_score >= 0.8:  # 對應 HIGH/CRITICAL
+                    context_score += 0.2
+            
+            # 檢查時間範圍匹配
+            if hasattr(query, 'time_range') and query.time_range:
+                created_at = getattr(memory_entry, 'created_at', None)
+                if created_at and 'start' in query.time_range and 'end' in query.time_range:
+                    # 確保所有時間都轉換為時間戳再比較
+                    created_timestamp = created_at.timestamp() if hasattr(created_at, 'timestamp') else created_at
+                    
+                    start_time = query.time_range['start']
+                    start_timestamp = start_time.timestamp() if hasattr(start_time, 'timestamp') else start_time
+                    
+                    end_time = query.time_range['end']
+                    end_timestamp = end_time.timestamp() if hasattr(end_time, 'timestamp') else end_time
+                    
+                    if start_timestamp <= created_timestamp <= end_timestamp:
+                        context_score += 0.2
+            
+            return min(1.0, context_score)
+            
+        except Exception as e:
+            debug_log(2, f"[StorageManager] 計算上下文相關性失敗: {e}")
+            return 0.0
     
     def _generate_retrieval_reason(self, memory_entry: MemoryEntry, query: MemoryQuery, 
                                  similarity_score: float) -> str:

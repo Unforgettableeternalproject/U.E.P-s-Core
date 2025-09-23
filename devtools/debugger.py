@@ -132,9 +132,6 @@ def debug_interactive():
             f"{colorful_text('llm - 大型語言模型模組;', mod_list['llm'])}",
             f"{colorful_text('tts - 文字轉語音模組;', mod_list['tts'])}",
             f"{colorful_text('sys - 系統功能模組;', mod_list['sys'])}",
-            "---",
-            f"{colorful_text('frontend - 前端整合測試 (UI/ANI/MOV);', (True, True))}",
-            "---",
             f"{colorful_text('int - 整合測試套件;', (True, True))}",
             f"{colorful_text('ex - 額外功能測試;', (True, True))}"
         ]
@@ -288,60 +285,35 @@ def debug_interactive():
 
                 debug_log(1, "MEM 模組測試")
                 print("<MEM 模組測試>\n")
-                choice = input("請選擇欲測試之功能 (1: 記憶寫入, 2: 記憶查詢, 3: 記憶刪除, 4: 列出所有記憶, exit: 離開): \n\n> ")
+                choice = input("請選擇欲測試之功能 (1: 記憶查詢, 2: 對話快照查詢, 3: 記憶庫列表, 4: 記憶統計, exit: 離開): \n\n> ")
                 if choice == "1":
-                    print("請輸入要寫入的記憶內容 (或輸入 'exit' 來結束):")
+                    print("記憶查詢測試 (使用 Mock 身份) (或輸入 'exit' 來結束):")
                     while True:
-                        user_text = input("\n輸入使用者對話: \n> ")
-                        if user_text.lower() in ["exit", "e", "quit", "q", "back", "b"]:
-                            info_log("使用者中斷測試")
-                            break
-
-                        response_text = input("\n輸入系統回應: \n> ")
-                        if response_text.lower() in ["exit", "e", "quit", "q", "back", "b"]:
+                        query_text = input("\n查詢文字 (預設 天氣): \n> ") or "天氣"
+                        if query_text.lower() in ["exit", "e", "quit", "q", "back", "b"]:
                             info_log("使用者中斷測試")
                             break
 
                         print()
-                        controller.mem_store_test(user_text, response_text)
+                        controller.mem_test_memory_query("test_user", query_text)
                 elif choice == "2":
-                    print("請輸入查詢的記憶內容 (或輸入 'exit' 來結束):")
+                    print("對話快照查詢測試 (使用 Mock 身份) (或輸入 'exit' 來結束):")
                     while True:
-                        text = input("\n> ")
-                        if text.lower() in ["exit", "e", "quit", "q", "back", "b"]:
+                        conversation = input("\n對話內容 (預設 你好，今天天氣如何？): \n> ") or "你好，今天天氣如何？"
+                        if conversation.lower() in ["exit", "e", "quit", "q", "back", "b"]:
                             info_log("使用者中斷測試")
                             break
+                        
                         print()
-                        controller.mem_fetch_test(text)
+                        controller.mem_test_conversation_snapshot("test_user", conversation)
                 elif choice == "3":
-                    print("請輸入要刪除的記憶內容 (或輸入 'exit' 來結束):")
-                    while True:
-                        text = input("記憶關鍵語句:\n> ")
-                        if text.lower() in ["exit", "e", "quit", "q", "back", "b"]:
-                            info_log("使用者中斷測試")
-                            break
-
-                        topk = input("要刪除的相似記憶數量 (預設為 1):\n> ")
-                        if topk.lower() in ["exit", "e", "quit", "q", "back", "b"]:
-                            info_log("使用者中斷測試")
-                            break
-                        controller.mem_clear_test(text, topk)
+                    print("記憶庫列表測試 (使用預設記憶令牌):")
+                    print()
+                    controller.mem_test_memory_access_control("mem_token_debug_2024")
                 elif choice == "4":
-                    print("列出所有記憶 (選擇查詢頁面，或輸入 'exit' 來結束):")
-                    while True:
-                        page = input("\n頁面 (預設為 1):\n> ")
-                        if page == "":
-                            page = 1
-                        elif page.lower() in ["exit", "e", "quit", "q", "back", "b"]:
-                            info_log("使用者中斷測試")
-                            break
-                        else:
-                            try:
-                                page = int(page)
-                            except ValueError:
-                                print("\033[31m請輸入有效的頁碼。\033[0m")
-                                continue
-                        controller.mem_list_all_test(page)
+                    print("記憶統計測試 (使用 Mock 身份):")
+                    print()
+                    controller.mem_test_identity_manager_stats("test_user")
                 elif choice in ["exit", "e", "quit", "q", "back", "b"]:
                     pass
                 else:
@@ -556,34 +528,12 @@ def debug_interactive():
                 debug_log(1, "前端整合測試")
                 print("<前端整合測試>\n")
                 
-                choice = input("請選擇測試類型:\n" +
-                             "1: 完整前端整合測試\n" +
-                             "2: 前端模組狀態檢查\n" +
-                             "3: 測試前端模組響應\n" +
-                             "4: 測試使用者存取工具 (access_widget)\n" +
-                             "5: 測試UEP主程式動畫播放 (ANI)\n" +
-                             "6: 測試UEP主程式移動 (MOV)\n" +
-                             "7: 列出前端功能\n" +
-                             "exit: 離開\n\n> ")
-                
-                if choice == "1":
-                    controller.frontend_test_integration()
-                elif choice == "2":
-                    controller.frontend_test_status()
-                elif choice == "3":
-                    controller.frontend_test_communication()
-                elif choice == "4":
-                    controller.frontend_test_access_widget()
-                elif choice == "5":
-                    controller.frontend_test_animations()
-                elif choice == "6":
-                    controller.frontend_test_movement()
-                elif choice == "7":
-                    controller.frontend_list_functions()
-                elif choice in ["exit", "e", "quit", "q", "back", "b"]:
-                    pass
-                else:
-                    print("\033[31m無效的選擇，請再試一次。\033[0m")
+                # 檢查是否在終端模式（預先載入模式），如果是則提示切換到GUI模式
+                import devtools.debug_api as debug_api
+                if hasattr(debug_api, 'PRELOAD_MODULES') and debug_api.PRELOAD_MODULES is True:
+                    print("⚠️  注意：您目前在終端測試模式中")
+                    print("🖥️  前端模組(UI/ANI/MOV)測試建議在圖形除錯介面中進行")
+                    print("💡 使用 'gui' 命令切換到圖形介面，或重新啟動程式時使用 'python Entry.py --debug-gui'\n")
             case "ex":
                 debug_log(1, "額外功能測試")
                 print("<額外功能測試>\n")
@@ -604,10 +554,14 @@ def debug_interactive():
                 debug_log(1, "切換到圖形除錯介面")
                 print("\n🖥️ 正在啟動圖形除錯介面...")
                 try:
+                    # 設定為按需載入模式（GUI模式）
+                    import devtools.debug_api as debug_api
+                    debug_api.switch_to_gui_mode()
+                    print("✅ 已切換為GUI模式（按需載入）")
+                    
                     from modules.ui_module.debug import launch_debug_interface
                     print("圖形介面啟動中，請稍候...")
-                    controller.set_loading_mode(preload=False)
-                    launch_debug_interface(ui_module=None, prefer_gui=True, blocking=True)
+                    launch_debug_interface(prefer_gui=True, blocking=True)
                 except KeyboardInterrupt:
                     print("\n⌨️ 圖形介面被用戶中斷")
                 except ImportError as e:
@@ -615,7 +569,21 @@ def debug_interactive():
                     print("💡 提示：請確認 PyQt5 已正確安裝")
                 except Exception as e:
                     print(f"❌ 圖形介面啟動失敗: {e}")
-                print("\n返回命令行介面...")
+                
+                # 返回終端時重新設定為預先載入模式並清理前端模組
+                print("\n🔄 返回命令行介面...")
+                print("🧹 正在清理前端模組實例...")
+                try:
+                    debug_api.switch_to_terminal_mode()
+                    print("✅ 前端模組已清理")
+                    print("✅ 已重新設定為終端模式（預先載入非UI模組）")
+                except Exception as e:
+                    print(f"⚠️  模式切換警告: {e}")
+                
+                # 提示用戶等待一下讓清理完成
+                print("⏳ 請稍候，確保所有前端進程已完全關閉...")
+                import time
+                time.sleep(1)  # 給清理過程一點時間
             case _:
                 n_input = user_input.lower()
                 if "+" in n_input or n_input in ["pipeline", "all"]:

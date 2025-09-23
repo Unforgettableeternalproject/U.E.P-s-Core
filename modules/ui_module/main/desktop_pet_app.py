@@ -905,9 +905,86 @@ class DesktopPetApp(QWidget):
             error_log(f"[DesktopPetApp] 處理請求異常: {e}")
             return {"error": str(e)}
     
-    def closeEvent(self, event):
-        """窗口關閉事件"""
-        info_log("[DesktopPetApp] 桌面寵物應用程式正在關閉")
+    def close(self):
+        """關閉桌面寵物應用程式，停止所有計時器和清理資源"""
+        info_log("[DesktopPetApp] 正在關閉桌面寵物應用程式")
+        
+        # 停止所有計時器
+        if hasattr(self, 'module_check_timer') and self.module_check_timer:
+            self.module_check_timer.stop()
+            info_log("[DesktopPetApp] 模組檢查計時器已停止")
+            
+        if hasattr(self, 'resize_timer') and self.resize_timer:
+            self.resize_timer.stop()
+            info_log("[DesktopPetApp] 視窗調整計時器已停止")
+            
+        if hasattr(self, 'animation_timer') and self.animation_timer:
+            self.animation_timer.stop()
+            info_log("[DesktopPetApp] 動畫計時器已停止")
+            
+        if hasattr(self, 'rendering_timeout_timer') and self.rendering_timeout_timer:
+            self.rendering_timeout_timer.stop()
+            info_log("[DesktopPetApp] 渲染超時計時器已停止")
+        
+        # 清理模組引用
+        self.ui_module = None
+        self.ani_module = None
+        self.mov_module = None
+        
+        # 發出狀態變更信號
         if self.state_changed:
             self.state_changed.emit("closed")
+        
+        # 斷開所有信號連接
+        try:
+            if hasattr(self, 'position_changed') and self.position_changed:
+                self.position_changed.disconnect()
+            if hasattr(self, 'clicked') and self.clicked:
+                self.clicked.disconnect()
+            if hasattr(self, 'state_changed') and self.state_changed:
+                self.state_changed.disconnect()
+        except Exception as e:
+            error_log(f"[DesktopPetApp] 斷開信號連接時發生錯誤: {e}")
+        
+        # 隱藏並關閉視窗
+        if hasattr(self, 'hide'):
+            self.hide()
+        
+        # 刪除所有計時器對象
+        try:
+            if hasattr(self, 'module_check_timer'):
+                self.module_check_timer.deleteLater()
+                self.module_check_timer = None
+            if hasattr(self, 'resize_timer'):
+                self.resize_timer.deleteLater()
+                self.resize_timer = None
+            if hasattr(self, 'animation_timer'):
+                self.animation_timer.deleteLater() 
+                self.animation_timer = None
+            if hasattr(self, 'rendering_timeout_timer') and self.rendering_timeout_timer:
+                self.rendering_timeout_timer.deleteLater()
+                self.rendering_timeout_timer = None
+        except Exception as e:
+            error_log(f"[DesktopPetApp] 刪除計時器時發生錯誤: {e}")
+            
+        # 調用父類的close方法
+        try:
+            if hasattr(super(), 'close'):
+                result = super().close()
+            else:
+                result = True
+        except Exception as e:
+            error_log(f"[DesktopPetApp] 調用父類close方法失敗: {e}")
+            result = True
+        
+        # 標記自己為已刪除狀態（用於調試）
+        self._is_closed = True
+        
+        info_log("[DesktopPetApp] 桌面寵物應用程式已完全關閉")
+        return result
+    
+    def closeEvent(self, event):
+        """窗口關閉事件"""
+        info_log("[DesktopPetApp] 收到窗口關閉事件")
+        self.close()
         event.accept()

@@ -12,19 +12,13 @@ from pathlib import Path
 from dataclasses import dataclass
 from utils.debug_helper import debug_log, info_log, error_log
 
-class SystemState(Enum):
-    """系統狀態定義"""
-    IDLE = "idle"          # 待機狀態
-    CHAT = "chat"          # 聊天狀態
-    WORK = "work"          # 工作狀態
-    MISCHIEF = "mischief"  # 惡作劇狀態 (未實現)
-    SLEEP = "sleep"        # 睡眠狀態 (未實現)
-    ERROR = "error"        # 錯誤狀態
+# 導入統一的狀態枚舉
+from core.state_manager import UEPState
 
 @dataclass
 class StateQueueItem:
     """狀態佇列項目"""
-    state: SystemState
+    state: UEPState
     trigger_content: str              # 觸發此狀態的原始內容
     context_content: str              # 狀態上下文內容 (該狀態需要處理的具體內容)
     trigger_user: Optional[str]       # 觸發用戶ID
@@ -52,7 +46,7 @@ class StateQueueItem:
     def from_dict(cls, data: Dict[str, Any]) -> 'StateQueueItem':
         """從字典創建實例"""
         return cls(
-            state=SystemState(data["state"]),
+            state=UEPState(data["state"]),
             trigger_content=data["trigger_content"],
             context_content=data.get("context_content", data["trigger_content"]),  # 向下相容
             trigger_user=data.get("trigger_user"),
@@ -68,12 +62,12 @@ class StateQueueManager:
     
     # 狀態優先級定義 (數字越大優先級越高)
     STATE_PRIORITIES = {
-        SystemState.WORK: 100,     # 工作任務最高優先級
-        SystemState.CHAT: 50,      # 聊天次之
-        SystemState.MISCHIEF: 30,  # 惡作劇
-        SystemState.SLEEP: 10,     # 睡眠
-        SystemState.ERROR: 5,      # 錯誤狀態
-        SystemState.IDLE: 0        # IDLE最低
+        UEPState.WORK: 100,     # 工作任務最高優先級
+        UEPState.CHAT: 50,      # 聊天次之
+        UEPState.MISCHIEF: 30,  # 惡作劇
+        UEPState.SLEEP: 10,     # 睡眠
+        UEPState.ERROR: 5,      # 錯誤狀態
+        UEPState.IDLE: 0        # IDLE最低
     }
     
     def __init__(self, storage_path: Optional[Path] = None):
@@ -85,35 +79,175 @@ class StateQueueManager:
         self.queue: List[StateQueueItem] = []
         
         # 當前執行狀態
-        self.current_state = SystemState.IDLE
+        self.current_state = UEPState.IDLE
         self.current_item: Optional[StateQueueItem] = None
         
         # 狀態處理回調
-        self.state_handlers: Dict[SystemState, Callable] = {}
-        self.completion_handlers: Dict[SystemState, Callable] = {}
+        self.state_handlers: Dict[UEPState, Callable] = {}
+        self.completion_handlers: Dict[UEPState, Callable] = {}
+        
+        # 會話管理 - 延遲導入避免循環依賴
+        self._chatting_session_manager = None
+        self._session_manager = None
         
         # 載入持久化數據
         self._load_queue()
         
+        # 註冊默認的狀態處理器
+        self._register_default_handlers()
+        
         info_log("[StateQueue] 狀態佇列管理器初始化完成")
     
-    def register_state_handler(self, state: SystemState, handler: Callable):
+    def register_state_handler(self, state: UEPState, handler: Callable):
         """註冊狀態處理器"""
         self.state_handlers[state] = handler
-        debug_log(2, f"[StateQueue] 註冊狀態處理器: {state.value}")
+        debug_log(2, f"[StateQueue] 註冊狀態處理器: {state.name}")
     
-    def register_completion_handler(self, state: SystemState, handler: Callable):
+    def register_completion_handler(self, state: UEPState, handler: Callable):
         """註冊狀態完成處理器"""
         self.completion_handlers[state] = handler
-        debug_log(2, f"[StateQueue] 註冊完成處理器: {state.value}")
+        debug_log(2, f"[StateQueue] 註冊完成處理器: {state.name}")
     
-    def add_state(self, state: SystemState, trigger_content: str, 
+    def _register_default_handlers(self):
+        """註冊默認的狀態處理器"""
+        # 註冊 CHAT 狀態處理器
+        self.register_state_handler(UEPState.CHAT, self._handle_chat_state)
+        self.register_completion_handler(UEPState.CHAT, self._handle_chat_completion)
+        
+        # 註冊 WORK 狀態處理器
+        self.register_state_handler(UEPState.WORK, self._handle_work_state)
+        self.register_completion_handler(UEPState.WORK, self._handle_work_completion)
+    
+    def _get_chatting_session_manager(self):
+        """獲取 Chatting Session 管理器 (延遲導入)"""
+        if self._chatting_session_manager is None:
+            try:
+                from core.chatting_session import chatting_session_manager
+                self._chatting_session_manager = chatting_session_manager
+            except ImportError as e:
+                error_log(f"[StateQueue] 無法導入 Chatting Session 管理器: {e}")
+        return self._chatting_session_manager
+    
+    def _get_session_manager(self):
+        """獲取 Session 管理器 (延遲導入)"""
+        if self._session_manager is None:
+            try:
+                from core.session_manager import session_manager
+                self._session_manager = session_manager
+            except ImportError as e:
+                error_log(f"[StateQueue] 無法導入 Session 管理器: {e}")
+        return self._session_manager
+    
+    def _handle_chat_state(self, queue_item: StateQueueItem):
+        """處理 CHAT 狀態 - 通知狀態管理器創建聊天會話"""
+        try:
+            from core.state_manager import state_manager
+            
+            # 準備上下文信息
+            context = {
+                "initial_input": {
+                    "type": "text",
+                    "content": queue_item.context_content,
+                    "metadata": queue_item.metadata
+                },
+                "trigger_content": queue_item.trigger_content,
+                "queue_item_id": f"{queue_item.state.value}_{queue_item.created_at.timestamp()}",
+                **queue_item.metadata
+            }
+            
+            # 通知狀態管理器創建聊天會話
+            state_manager.set_state(UEPState.CHAT, context)
+            
+            info_log(f"[StateQueue] CHAT 狀態處理完成: {queue_item.context_content[:50]}...")
+            debug_log(4, f"[StateQueue] 聊天意圖處理完成")
+            
+            # 標記為成功完成
+            self.complete_current_state(success=True, result_data={"chat_processed": True})
+            
+        except Exception as e:
+            error_log(f"[StateQueue] 處理 CHAT 狀態時發生錯誤: {e}")
+            self.complete_current_state(success=False, result_data={"error": str(e)})
+    
+    def _handle_chat_completion(self, queue_item: StateQueueItem, success: bool):
+        """處理 CHAT 狀態完成"""
+        try:
+            chatting_manager = self._get_chatting_session_manager()
+            
+            cs_id = queue_item.metadata.get("chatting_session_id")
+            
+            if chatting_manager and cs_id:
+                cs = chatting_manager.get_session(cs_id)
+                if cs and cs.status.value in ["active", "paused"]:
+                    # 結束 Chatting Session
+                    session_summary = cs.end_session(save_memory=True)
+                    
+                    info_log(f"[StateQueue] CHAT 狀態完成，CS 已結束: {cs_id}")
+                    debug_log(4, f"[StateQueue] CS 總結: {session_summary}")
+                    
+                    # 從活動會話中移除
+                    chatting_manager.end_session(cs_id, save_memory=False)  # 已在 cs.end_session 中保存
+            
+        except Exception as e:
+            error_log(f"[StateQueue] 處理 CHAT 完成時發生錯誤: {e}")
+    
+    def _handle_work_state(self, queue_item: StateQueueItem):
+        """處理 WORK 狀態 - 通知狀態管理器創建工作會話"""
+        try:
+            from core.state_manager import state_manager
+            
+            # 確定工作流程類型
+            intent_type = queue_item.metadata.get('intent_type', 'command')
+            workflow_type = self._map_intent_to_workflow_type(intent_type)
+            
+            # 準備上下文信息
+            context = {
+                "workflow_type": workflow_type,
+                "command": queue_item.context_content,
+                "intent_type": intent_type,
+                "trigger_content": queue_item.trigger_content,
+                "queue_item_id": f"{queue_item.state.value}_{queue_item.created_at.timestamp()}",
+                **queue_item.metadata
+            }
+            
+            # 通知狀態管理器創建工作會話
+            state_manager.set_state(UEPState.WORK, context)
+            
+            info_log(f"[StateQueue] WORK 狀態處理完成: {queue_item.context_content[:50]}...")
+            debug_log(4, f"[StateQueue] 工作意圖: {intent_type}, 工作流程類型: {workflow_type}")
+            
+            # 標記為成功完成
+            self.complete_current_state(success=True, result_data={"work_processed": True})
+            
+        except Exception as e:
+            error_log(f"[StateQueue] 處理 WORK 狀態時發生錯誤: {e}")
+            self.complete_current_state(success=False, result_data={"error": str(e)})
+    
+    def _map_intent_to_workflow_type(self, intent_type: str) -> str:
+        """將意圖類型映射為工作流程類型"""
+        mapping = {
+            'command': 'single_command',
+            'compound': 'multi_step_workflow',
+            'query': 'data_query',
+            'file_operation': 'file_processing',
+            'system_command': 'system_operation'
+        }
+        return mapping.get(intent_type.lower(), 'single_command')
+    
+    def _handle_work_completion(self, queue_item: StateQueueItem, success: bool):
+        """處理 WORK 狀態完成"""
+        try:
+            debug_log(4, f"[StateQueue] WORK 狀態完成: {'成功' if success else '失敗'}")
+            
+        except Exception as e:
+            error_log(f"[StateQueue] 處理 WORK 完成時發生錯誤: {e}")
+    
+    def add_state(self, state: UEPState, trigger_content: str, 
                   context_content: Optional[str] = None,
                   trigger_user: Optional[str] = None, 
                   metadata: Optional[Dict[str, Any]] = None) -> bool:
         """添加狀態到佇列"""
         
-        if state == SystemState.IDLE:
+        if state == UEPState.IDLE:
             debug_log(2, "[StateQueue] IDLE狀態不能手動添加到佇列")
             return False
         
@@ -148,7 +282,7 @@ class StateQueueManager:
         
         return True
     
-    def process_nlp_intents(self, intent_segments: List[Any]) -> List[SystemState]:
+    def process_nlp_intents(self, intent_segments: List[Any]) -> List[UEPState]:
         """處理NLP意圖分析結果，添加相應狀態到佇列"""
         added_states = []
         
@@ -162,10 +296,10 @@ class StateQueueManager:
                 intent_value = str(segment.get('intent', 'unknown'))
             
             state_mapping = {
-                'command': SystemState.WORK,
-                'compound': SystemState.WORK,  # 複合指令也是工作
-                'chat': SystemState.CHAT,      # 只有真正的chat意圖才需要對話處理
-                'query': SystemState.WORK      # 查詢也算工作
+                'command': UEPState.WORK,
+                'compound': UEPState.WORK,  # 複合指令也是工作
+                'chat': UEPState.CHAT,      # 只有真正的chat意圖才需要對話處理
+                'query': UEPState.WORK      # 查詢也算工作
                 # 注意：'call' 意圖不加入佇列，因為它只是呼叫而不需要狀態處理
             }
             
@@ -207,18 +341,18 @@ class StateQueueManager:
         debug_log(4, f"[StateQueue] 總共添加 {len(added_states)} 個狀態到佇列")
         return added_states
     
-    def get_next_state(self) -> Optional[SystemState]:
+    def get_next_state(self) -> Optional[UEPState]:
         """獲取下一個要執行的狀態"""
         if self.queue:
             next_item = self.queue[0]
             return next_item.state
-        return SystemState.IDLE
+        return UEPState.IDLE
     
     def start_next_state(self) -> bool:
         """開始執行下一個狀態"""
         if not self.queue:
             # 佇列為空，切換到IDLE
-            if self.current_state != SystemState.IDLE:
+            if self.current_state != UEPState.IDLE:
                 self._transition_to_idle()
             return False
         
@@ -284,27 +418,27 @@ class StateQueueManager:
     
     def _transition_to_idle(self):
         """切換到IDLE狀態"""
-        if self.current_state != SystemState.IDLE:
+        if self.current_state != UEPState.IDLE:
             old_state = self.current_state
             info_log(f"[StateQueue] 狀態切換: {old_state.value} -> IDLE")
             debug_log(4, "[StateQueue] 切換到 IDLE 狀態 - 佇列已空")
-            self.current_state = SystemState.IDLE
+            self.current_state = UEPState.IDLE
             self.current_item = None
             
             # 調用IDLE處理器
-            if SystemState.IDLE in self.state_handlers:
+            if UEPState.IDLE in self.state_handlers:
                 try:
                     debug_log(4, "[StateQueue] 調用 IDLE 狀態處理器")
-                    self.state_handlers[SystemState.IDLE](None)
+                    self.state_handlers[UEPState.IDLE](None)
                 except Exception as e:
                     error_log(f"[StateQueue] IDLE處理器執行失敗: {e}")
     
     def get_queue_status(self) -> Dict[str, Any]:
         """獲取佇列狀態"""
         # 確保如果沒有正在執行的項目，狀態應該是IDLE
-        if self.current_item is None and self.current_state != SystemState.IDLE:
+        if self.current_item is None and self.current_state != UEPState.IDLE:
             debug_log(4, f"[StateQueue] 修正狀態：沒有執行項目但狀態不是IDLE，從 {self.current_state.value} 修正為 IDLE")
-            self.current_state = SystemState.IDLE
+            self.current_state = UEPState.IDLE
         
         status = {
             "current_state": self.current_state.value,
@@ -327,7 +461,7 @@ class StateQueueManager:
         self.queue.clear()
         
         # 確保當前狀態也被重置為IDLE
-        self.current_state = SystemState.IDLE
+        self.current_state = UEPState.IDLE
         self.current_item = None
         
         # 保存空狀態到檔案
@@ -357,14 +491,14 @@ class StateQueueManager:
                     data = json.load(f)
                 
                 # 載入當前狀態
-                self.current_state = SystemState(data.get("current_state", "idle"))
+                self.current_state = UEPState(data.get("current_state", "idle"))
                 
                 # 載入當前項目
                 if data.get("current_item"):
                     self.current_item = StateQueueItem.from_dict(data["current_item"])
                 else:
                     # 如果沒有當前執行項目，確保狀態是IDLE
-                    self.current_state = SystemState.IDLE
+                    self.current_state = UEPState.IDLE
                 
                 # 載入佇列
                 self.queue = [StateQueueItem.from_dict(item) for item in data.get("queue", [])]
@@ -374,7 +508,7 @@ class StateQueueManager:
         except Exception as e:
             error_log(f"[StateQueue] 載入佇列失敗: {e}")
             # 使用預設值
-            self.current_state = SystemState.IDLE
+            self.current_state = UEPState.IDLE
             self.current_item = None
             self.queue = []
 

@@ -22,6 +22,7 @@ from core.strategies import (
 )
 from core.working_context import ContextType
 from core.state_manager import UEPState
+from core.general_session import general_session_manager, GSType
 from configs.config_loader import load_config
 from utils.debug_helper import debug_log, info_log, error_log
 
@@ -91,6 +92,9 @@ class UnifiedController:
         
         # 模組實例儲存
         self.module_instances = {}
+        
+        # General Session 管理器
+        self.gs_manager = general_session_manager
         
         # 初始化狀態
         self.is_initialized = False
@@ -290,6 +294,22 @@ class UnifiedController:
         old_state = event_data.get("old_state")
         new_state = event_data.get("new_state")
         debug_log(2, f"[UnifiedController] 狀態變更: {old_state.name} → {new_state.name}")
+        
+        # GS狀態追蹤
+        current_gs = self.gs_manager.get_current_session()
+        if current_gs:
+            # 記錄狀態轉換到GS
+            current_gs.context.processing_pipeline.append({
+                "event": "state_change",
+                "from_state": old_state.name if old_state else "NONE",
+                "to_state": new_state.name,
+                "timestamp": time.time()
+            })
+            
+            # 如果從IDLE轉為其他狀態，標記已進入處理階段
+            if old_state and old_state.name == "IDLE" and new_state.name != "IDLE":
+                current_gs.transition_to_processing()
+                debug_log(2, f"[UnifiedController] GS {current_gs.session_id} 進入處理階段")
     
     def _on_module_executed(self, event_data: Dict[str, Any]):
         """模組執行事件處理器"""
@@ -298,6 +318,16 @@ class UnifiedController:
         result = event_data.get("result", {})
         
         debug_log(3, f"[UnifiedController] 模組執行: {module_id} - {intent}")
+        
+        # GS模組執行追蹤
+        current_gs = self.gs_manager.get_current_session()
+        if current_gs:
+            current_gs.context.processing_pipeline.append({
+                "event": "module_execution",
+                "module_id": module_id,
+                "intent": intent,
+                "timestamp": time.time()
+            })
         
         # 更新狀態管理器
         self.framework.handle_state_event(intent, result)
@@ -325,16 +355,42 @@ class UnifiedController:
         if not self.is_initialized:
             return {"status": "error", "message": "系統未初始化"}
         
+        # 建立新的 General Session
+        gs_trigger_event = {
+            "intent": intent,
+            "input_data": data.copy(),
+            "timestamp": time.time()
+        }
+        
+        # 根據輸入類型確定GS類型
+        if intent == "voice_recognition" or data.get("input_type") == "voice":
+            gs_type = GSType.VOICE_INPUT
+        elif intent in ["chat", "text_input"] or data.get("input_type") == "text":
+            gs_type = GSType.TEXT_INPUT
+        else:
+            gs_type = GSType.SYSTEM_EVENT
+        
+        # 啟動新的GS
+        current_gs = self.gs_manager.start_session(gs_type, gs_trigger_event)
+        if not current_gs:
+            error_log("[UnifiedController] 無法建立 General Session")
+            return {"status": "error", "message": "無法建立會話"}
+        
         try:
             # 添加上下文資訊
             processing_context = {
                 "current_state": self.framework.get_current_state(),
                 "has_working_context": len(self.framework.working_context.contexts) > 0,
                 "has_active_session": len(self.framework.active_sessions) > 0,
-                "timestamp": time.time()
+                "timestamp": time.time(),
+                "gs_session_id": current_gs.session_id
             }
             
             data.update(processing_context)
+            
+            # 記錄GS輸入
+            input_text = data.get("text", data.get("message", str(data)))
+            current_gs.context.trigger_event["input_text"] = input_text
             
             # 執行處理管線
             result = self.framework.execute_pipeline(
@@ -343,10 +399,23 @@ class UnifiedController:
                 execution_mode=ExecutionMode.SEQUENTIAL
             )
             
+            # 記錄GS輸出
+            current_gs.add_output(result)
+            
+            # 結束GS
+            self.gs_manager.end_current_session(result)
+            
             return result
             
         except Exception as e:
             error_log(f"[UnifiedController] 處理輸入失敗: {e}")
+            
+            # GS失敗處理
+            if current_gs:
+                from core.general_session import GSStatus
+                current_gs.status = GSStatus.ERROR
+                self.gs_manager.end_current_session({"error": str(e)})
+            
             return {"status": "error", "message": str(e)}
     
     def process_voice_input(self, callback: Optional[callable] = None) -> Dict[str, Any]:
@@ -389,12 +458,17 @@ class UnifiedController:
             
             if should_activate and text:
                 # 自動處理語音輸入
-                nlp_result = self.process_input("voice_recognition", {"text": text})
+                nlp_result = self.process_input("voice_recognition", {"text": text, "input_type": "voice"})
                 
                 if nlp_result.get("intent"):
                     # 根據識別的意圖繼續處理
                     final_result = self.process_input(nlp_result["intent"], nlp_result)
                     debug_log(1, f"[UnifiedController] 語音處理完成: {final_result.get('status')}")
+                    
+                    # 記錄到當前GS
+                    current_gs = self.gs_manager.get_current_session()
+                    if current_gs:
+                        current_gs.add_output(final_result)
     
     def stop_voice_input(self) -> bool:
         """停止語音輸入"""
@@ -411,11 +485,15 @@ class UnifiedController:
         """獲取系統狀態"""
         framework_status = self.framework.get_framework_status()
         
+        # GS狀態
+        gs_status = self.gs_manager.get_system_status()
+        
         return {
             "initialized": self.is_initialized,
             "running": self.is_running,
             "framework_status": framework_status,
             "enabled_modules": list(self.module_instances.keys()),
+            "gs_status": gs_status,
             "system_health": self._check_system_health()
         }
     
@@ -432,13 +510,21 @@ class UnifiedController:
         except:
             return "unknown"
     
-    def get_registered_modules(self) -> Dict[str, Any]:
-        """獲取已註冊的模組"""
-        return self.module_instances.copy()
+    def get_current_gs(self) -> Optional[Any]:
+        """獲取當前General Session"""
+        return self.gs_manager.get_current_session()
     
-    def get_module(self, module_name: str) -> Optional[Any]:
-        """獲取指定的模組實例"""
-        return self.module_instances.get(module_name)
+    def get_gs_history(self) -> List[Dict[str, Any]]:
+        """獲取GS歷史記錄"""
+        return self.gs_manager.get_session_history()
+    
+    def register_sub_session(self, sub_session_id: str, session_type: str) -> bool:
+        """註冊子會話到當前GS"""
+        return self.gs_manager.register_sub_session(sub_session_id, session_type)
+    
+    def end_sub_session(self, sub_session_id: str) -> bool:
+        """結束子會話"""
+        return self.gs_manager.end_sub_session(sub_session_id)
     
     async def route_request(self, module_name: str, data: Any, context_id: Optional[str] = None) -> Optional[Any]:
         """路由請求到指定模組"""

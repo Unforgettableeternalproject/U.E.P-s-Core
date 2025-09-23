@@ -1,163 +1,222 @@
 ﻿# core/state_manager.py
 from enum import Enum, auto
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Callable
 import time
 import time
+
+from utils.debug_helper import debug_log
+from core.working_context import ContextType
 
 class UEPState(Enum):
-    IDLE      = auto()  # 閒置
-    CHAT      = auto()  # 聊天
-    WORK      = auto()  # 工作（執行指令，包含單步和多步驟工作流程）
-    MISCHIEF  = auto()  # 搗蛋（暫略）
-    SLEEP     = auto()  # 睡眠（暫略）
-    ERROR     = auto()  # 錯誤
-
-class SessionInfo:
-    """工作流程會話資訊"""
-    def __init__(self, session_id: str, workflow_type: str):
-        self.session_id = session_id
-        self.workflow_type = workflow_type
-        self.step = 1
-        self.started = True
-        self.awaiting_input = True
-        self.completed = False
-        self.error = False
-        
-    def advance_step(self):
-        """進入下一步驟"""
-        self.step += 1
-        
-    def complete(self):
-        """標記工作流程完成"""
-        self.completed = True
-        self.awaiting_input = False
-        
-    def fail(self):
-        """標記工作流程失敗"""
-        self.error = True
-        self.awaiting_input = False
+    IDLE      = "idle"  # 閒置
+    CHAT      = "chat"  # 聊天
+    WORK      = "work"  # 工作（執行指令，包含單步和多步驟工作流程）
+    MISCHIEF  = "mischief"  # 搗蛋（暫略）
+    SLEEP     = "sleep"  # 睡眠（暫略）
+    ERROR     = "error"  # 錯誤
 
 class StateManager:
     """
     管理 U.E.P 各種狀態。
     接受事件，並在需要時切換 state。
-    支援多步驟指令處理工作流程。
-    所有指令都被處理為工作流程，讓系統暫停原有STT->TTS管線，優先處理SYS中的工作邏輯。
+    負責根據狀態變化創建對應的會話。
     """
 
     def __init__(self):
         self._state = UEPState.IDLE
-        self._active_session: Optional[SessionInfo] = None
+        self._current_session_id: Optional[str] = None
+        self._state_change_callbacks: List[Callable[[UEPState, UEPState], None]] = []
         
     def get_state(self) -> UEPState:
         return self._state
 
-    def set_state(self, new_state: UEPState):
-        self._state = new_state
-        
-    def get_session(self) -> Optional[SessionInfo]:
-        """獲取當前會話資訊"""
-        return self._active_session
-        
-    def create_work_session(self, command: str, sys_action: Dict[str, Any] = None) -> SessionInfo:
+    def set_state(self, new_state: UEPState, context: Optional[Dict[str, Any]] = None):
         """
-        基於LLM識別的指令和系統動作，創建一個工作會話。
-        所有指令均通過會話管理，無論是單步還是多步驟工作流程，統一使用WORK狀態。
+        設置新狀態，並觸發狀態變化處理
         
         Args:
-            command: 原始指令文本
-            sys_action: LLM識別的系統動作，格式為 {action, params}
-            
-        Returns:
-            創建的會話資訊對象
+            new_state: 新狀態
+            context: 狀態變化上下文 (包含創建會話所需的資訊)
         """
-        from utils.debug_helper import debug_log
+        old_state = self._state
+        if old_state == new_state:
+            return  # 狀態沒有變化
+            
+        self._state = new_state
+        debug_log(2, f"[StateManager] 狀態變更: {old_state.name} -> {new_state.name}")
         
-        # 獲取系統動作和功能類型
-        action_type = "single_command"  # 默認是單步指令
-        session_id = f"cmd-{int(time.time())}"  # 簡單的時間戳ID
-        is_multi_step = False
+        # 觸發狀態變化回調
+        self._on_state_changed(old_state, new_state, context)
         
-        if sys_action and isinstance(sys_action, dict):
-            action = sys_action.get("action", "")
-            if action == "start_workflow":
-                action_type = sys_action.get("params", {}).get("workflow_type", "file_processing")
-                is_multi_step = True
-                # 如果是啟動工作流程，使用系統生成的session_id
-                if "session_id" in sys_action.get("params", {}):
-                    session_id = sys_action["params"]["session_id"]
+        # 通知所有回調
+        for callback in self._state_change_callbacks:
+            try:
+                callback(old_state, new_state)
+            except Exception as e:
+                debug_log(1, f"[StateManager] 狀態變化回調執行失敗: {e}")
+    
+    def add_state_change_callback(self, callback: Callable[[UEPState, UEPState], None]):
+        """添加狀態變化回調"""
+        self._state_change_callbacks.append(callback)
         
-        # 創建會話
-        session = SessionInfo(session_id, action_type)
-        self._active_session = session
-          # 統一使用WORK狀態，無論單步還是多步驟工作流程
-        self._state = UEPState.WORK
+    def get_current_session_id(self) -> Optional[str]:
+        """獲取當前會話ID"""
+        return self._current_session_id
         
-        from utils.debug_helper import debug_log
-        debug_log(1, f"[StateManager] 創建{'多步驟' if is_multi_step else '單步'} 工作會話: {session_id}, 類型: {action_type}")
+    def _on_state_changed(self, old_state: UEPState, new_state: UEPState, context: Optional[Dict[str, Any]] = None):
+        """
+        處理狀態變化，創建對應的會話
         
-        return session
+        Args:
+            old_state: 舊狀態
+            new_state: 新狀態
+            context: 狀態變化上下文
+        """
+        try:
+            # 根據新狀態創建對應的會話
+            if new_state == UEPState.CHAT:
+                self._create_chat_session(context)
+            elif new_state == UEPState.WORK:
+                self._create_work_session(context)
+            elif new_state == UEPState.IDLE:
+                self._cleanup_sessions()
+                
+        except Exception as e:
+            debug_log(1, f"[StateManager] 狀態變化處理失敗: {e}")
+    
+    def _create_chat_session(self, context: Optional[Dict[str, Any]] = None):
+        """創建聊天會話"""
+        try:
+            from core.chatting_session import chatting_session_manager
+            from core.working_context import working_context_manager
+            
+            # 從 Working Context 獲取身份信息
+            identity_context = working_context_manager.get_data(ContextType.IDENTITY_MANAGEMENT, "identity_context", {})
+            if not identity_context:
+                # 如果沒有身份信息，使用默認值
+                identity_context = {
+                    "user_id": "default_user",
+                    "personality": "default",
+                    "preferences": {}
+                }
+            
+            # 創建 Chatting Session
+            gs_session_id = f"gs_{int(time.time())}"
+            cs = chatting_session_manager.create_session(
+                gs_session_id=gs_session_id,
+                identity_context=identity_context
+            )
+            
+            if cs:
+                self._current_session_id = cs.session_id
+                debug_log(2, f"[StateManager] 創建聊天會話成功: {cs.session_id}")
+                
+                # 如果有初始輸入，處理它
+                if context and context.get("initial_input"):
+                    response = cs.process_input(context["initial_input"])
+                    debug_log(3, f"[StateManager] 處理初始輸入完成: {cs.session_id}")
+            else:
+                debug_log(1, "[StateManager] 創建聊天會話失敗")
+                
+        except Exception as e:
+            debug_log(1, f"[StateManager] 創建聊天會話時發生錯誤: {e}")
+    
+    def _create_work_session(self, context: Optional[Dict[str, Any]] = None):
+        """創建工作會話"""
+        try:
+            from core.session_manager import session_manager
+            
+            # 從上下文獲取工作流程信息
+            workflow_type = "single_command"
+            command = "unknown command"
+            
+            if context:
+                workflow_type = context.get("workflow_type", workflow_type)
+                command = context.get("command", command)
+            
+            # 創建 Workflow Session
+            ws = session_manager.create_session(
+                workflow_type=workflow_type,
+                command=command,
+                initial_data=context
+            )
+            
+            if ws:
+                self._current_session_id = ws.session_id
+                debug_log(2, f"[StateManager] 創建工作會話成功: {ws.session_id} (類型: {workflow_type})")
+            else:
+                debug_log(1, "[StateManager] 創建工作會話失敗")
+                
+        except Exception as e:
+            debug_log(1, f"[StateManager] 創建工作會話時發生錯誤: {e}")
+    
+    def _cleanup_sessions(self):
+        """清理會話 (當回到IDLE狀態時)"""
+        # 這裡可以添加會話清理邏輯
+        # 目前只是清除當前會話ID引用
+        self._current_session_id = None
+        debug_log(3, "[StateManager] 清理會話引用")
         
+    def sync_with_sessions(self):
+        """
+        與會話管理器同步狀態
+        
+        檢查活躍的會話並設置對應的系統狀態：
+        - 有活躍的工作會話 -> WORK
+        - 有活躍的聊天會話 -> CHAT  
+        - 沒有活躍會話 -> IDLE
+        """
+        try:
+            # 延遲導入避免循環依賴
+            from core.session_manager import session_manager
+            from core.chatting_session import chatting_session_manager
+            
+            # 檢查工作會話
+            active_work_sessions = session_manager.get_active_sessions() if session_manager else []
+            
+            # 檢查聊天會話
+            active_chat_sessions = chatting_session_manager.get_active_sessions() if chatting_session_manager else []
+            
+            if active_work_sessions:
+                # 有活躍的工作會話
+                if self._state != UEPState.WORK:
+                    debug_log(2, f"[StateManager] 同步狀態為 WORK (活躍會話數: {len(active_work_sessions)})")
+                    self._state = UEPState.WORK
+            elif active_chat_sessions:
+                # 有活躍的聊天會話
+                if self._state != UEPState.CHAT:
+                    debug_log(2, f"[StateManager] 同步狀態為 CHAT (活躍會話數: {len(active_chat_sessions)})")
+                    self._state = UEPState.CHAT
+            else:
+                # 沒有活躍會話
+                if self._state != UEPState.IDLE:
+                    debug_log(2, "[StateManager] 同步狀態為 IDLE")
+                    self._state = UEPState.IDLE
+                    
+        except ImportError as e:
+            debug_log(2, f"[StateManager] 無法同步會話狀態: {e}")
+        except Exception as e:
+            debug_log(2, f"[StateManager] 同步會話狀態時發生錯誤: {e}")
+
     def on_event(self, intent: str, result: dict):
         """
         根據意圖與執行結果決定是否切換狀態。
-        
+
         Args:
             intent: 意圖類型 (chat, command 等)
             result: 執行結果
         """
-        # 檢查是否有工作流程相關資訊
-        session_id = result.get("session_id")
-        requires_input = result.get("requires_input", False)
-        status = result.get("status", "")
-        workflow_type = result.get("data", {}).get("workflow_type") if isinstance(result.get("data"), dict) else None
-        
-        # 檢查是否包含系統動作（來自LLM的回應）
-        sys_action = result.get("sys_action")
-        
-        # 如果收到LLM識別的指令和系統動作，創建工作會話
-        if intent == "command" and sys_action:
-            self.create_work_session(result.get("text", ""), sys_action)
-            return
-        
-        # 如果有工作流程session_id，管理工作會話狀態
-        if session_id:
-            if not self._active_session or self._active_session.session_id != session_id:
-                # 新建工作流程
-                self._active_session = SessionInfo(session_id, workflow_type or "unknown")
-                self._state = UEPState.WORK
-            
-            if requires_input:
-                # 工作流程等待輸入
-                self._active_session.awaiting_input = True
-                self._state = UEPState.WORK
-            elif status in ("completed", "success"):
-                # 成功完成
-                if self._active_session:
-                    self._active_session.complete()
-                self._state = UEPState.IDLE
-            elif status in ("cancelled", "error"):
-                # 失敗或取消
-                if self._active_session:
-                    self._active_session.fail()
-                self._state = UEPState.ERROR
-                
-            return
-                
-        # 一般意圖狀態轉換
+        # 簡單的狀態轉換邏輯
         if intent == "chat":
             self._state = UEPState.CHAT
-            self._active_session = None
         elif intent == "command":
-            # 單一指令處理，也視為工作會話的一部分
+            # 指令處理，視為工作狀態
             if result.get("status") == "success":
                 self._state = UEPState.WORK
             else:
                 self._state = UEPState.ERROR
-            self._active_session = None
         else:
             self._state = UEPState.IDLE
-            self._active_session = None
 
 
 # 全局狀態管理器實例

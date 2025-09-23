@@ -1066,3 +1066,135 @@
 
 ---
 
+### First hand changes for upcoming MEM rework, added some manager files for identity and memory management. 09/08
+
+> Date: Mon, 08 Sep 2025 18:13:54 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_rework`
+
+> Commit: `f65c673fc6073a0be923ce0afab163eed55fef46`
+
+---
+
+### Restructured memory manager and did some other changes. 09/08
+
+> Date: Mon, 08 Sep 2025 19:12:23 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_rework`
+
+> Commit: `60e66336ad653b9d7e683cd6b1eeb8f9c98d04fa`
+
+---
+
+### Some manual changes on session handling. 09/18
+
+> Date: Thu, 18 Sep 2025 21:26:11 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `copilot/fix-038caf95-c915-45a3-a82d-d6a5db040b5a`
+
+> Commit: `5d51b5f3e0d1339bf0fd6e22c74d41fb9cac01ed`
+
+---
+
+### Added some manual test and UI tab, and some other changes. 09/20
+
+> Date: Sat, 20 Sep 2025 21:36:37 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_rework`
+
+> Commit: `ba512afce7130abe8f76252957890bfc4897217a`
+
+---
+
+### Removed identity token and replaced all with memory token, as initially planned. Tests are still ongoing. 09/22
+
+> Date: Mon, 22 Sep 2025 03:02:13 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_rework`
+
+> Commit: `199bd757b22c5970a3f9b1e7720c3f1fa73bd7fb`
+
+---
+
+### Cleared all remaining codes of identity tokens, and improved terminal to debug interface switching. 09/22
+
+> Date: Mon, 22 Sep 2025 15:59:22 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_rework`
+
+> Commit: `42bf0c946bdec431352f4360c69572f4fa97764d`
+
+---
+
+### Changed a major part about sessions and made the state now correlate with them. 09/22
+
+> Date: Mon, 22 Sep 2025 17:00:22 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_rework`
+
+> Commit: `83037c0559a3adf958c773c07eb0d4a535ab0c18`
+
+---
+
+### Tried to improve session controls once again. 09/23
+
+> Date: Tue, 23 Sep 2025 00:23:06 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_rework`
+
+> Commit: `20f5e7caf809169969dcd8740c7ba995299d02ed`
+
+---
+
+### Unified codes of the module tests, and MEM module is almost done. 09/23
+
+> Date: Tue, 23 Sep 2025 20:23:27 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_rework`
+
+> Commit: `b9721338521bc92ce70baab2803296f2af9e8480`
+
+---
+
+### Fixed a certain issue with NLP module imports, and actually finished the tests of MEM module. 09/24
+
+> Date: Wed, 24 Sep 2025 00:55:04 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_rework`
+
+> Commit: `b1f50c2cb41ddbb4579fc9ca36ec242402f00720`
+
+---
+
+### Fixed a certain issue with NLP module imports, and actually finished the tests of MEM module. 09/24
+
+> Date: Wed, 24 Sep 2025 00:55:04 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_rework`
+
+> Commit: `93c520ed6148d517af7bc063963a0f69c87aef73`
+
+---
+

@@ -503,11 +503,17 @@ class CoreFramework:
                                command: str,
                                initial_data: Dict[str, Any] = None) -> str:
         """創建工作流會話"""
-        session = WorkflowSession(workflow_type, command, initial_data)
-        self.active_sessions[session.session_id] = session
+        from core.session_manager import session_manager
         
-        # 更新狀態管理器
-        self.state_manager.create_work_session(command)
+        # 使用統一的 session_manager 創建會話
+        session = session_manager.create_session(
+            workflow_type=workflow_type,
+            command=command,
+            initial_data=initial_data
+        )
+        
+        # 設置系統狀態為 WORK
+        self.state_manager.set_state(UEPState.WORK)
         
         info_log(f"[CoreFramework] 創建工作流會話: {session.session_id}")
         return session.session_id

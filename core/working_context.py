@@ -34,6 +34,11 @@ class ContextType(Enum):
     WORKFLOW_SESSION = "workflow_session"          # 工作流會話
     LEARNING = "learning"                          # 學習模式
     CROSS_MODULE_DATA = "cross_module_data"        # 跨模組數據共享
+    # Session system specific context types
+    MEM_EXTERNAL_ACCESS = "mem_external_access"    # MEM 模組外部存取
+    LLM_CONTEXT = "llm_context"                    # LLM 上下文
+    SYS_WORKFLOW = "sys_workflow"                  # SYS 模組工作流
+    GENERAL_SESSION = "general_session"            # General Session 上下文
 
 
 class ContextStatus(Enum):
@@ -546,6 +551,23 @@ class WorkingContextManager:
             if context.context_type == context_type
         ]
     
+    def add_data(self, context_type: ContextType, data_item: Any, 
+                metadata: Optional[Dict] = None) -> Optional[str]:
+        """
+        便利方法：添加數據到指定類型的上下文
+        
+        這是 add_data_to_context 的別名，用於向下兼容。
+        
+        Args:
+            context_type: 上下文類型
+            data_item: 要添加的數據項
+            metadata: 可選的元數據
+            
+        Returns:
+            上下文ID或None
+        """
+        return self.add_data_to_context(context_type, data_item, metadata)
+    
     def get_context_summary(self) -> Dict[str, Any]:
         """獲取上下文管理器的摘要信息"""
         summary = {
@@ -564,6 +586,29 @@ class WorkingContextManager:
             summary["contexts_by_type"][ctx_type] += 1
         
         return summary
+    
+    def clear_all_data(self):
+        """清理所有上下文數據"""
+        self.contexts.clear()
+        self.global_context_data.clear()
+        info_log("[WorkingContextManager] 清理所有上下文數據")
+    
+    # === 兼容性方法 ===
+    def set_data(self, context_type: ContextType, key: str, data: Any):
+        """設定上下文數據 (兼容性方法)"""
+        context_key = f"{context_type.value}_{key}"
+        self.set_context_data(context_key, data)
+    
+    def get_data(self, context_type: ContextType, key: str, default: Any = None) -> Any:
+        """獲取上下文數據 (兼容性方法)"""
+        context_key = f"{context_type.value}_{key}"
+        return self.get_context_data(context_key, default)
+    
+    def clear_data(self, context_type: ContextType, key: str):
+        """清除特定上下文數據 (兼容性方法)"""
+        context_key = f"{context_type.value}_{key}"
+        if context_key in self.global_context_data:
+            del self.global_context_data[context_key]
 
 
 # 全局工作上下文管理器實例

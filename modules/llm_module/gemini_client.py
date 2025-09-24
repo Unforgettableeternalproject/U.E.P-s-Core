@@ -62,78 +62,70 @@ class GeminiWrapper:
                     "maximum": 1.0
                 },
                 "status_updates": {
-                    "anyOf": [
-                        {
-                            "type": "object",
-                            "properties": {
-                                "mood_delta": {
-                                    "type": "number",
-                                    "description": "情緒變化量 (-1.0 到 +1.0)",
-                                    "minimum": -1.0,
-                                    "maximum": 1.0
-                                },
-                                "pride_delta": {
-                                    "type": "number", 
-                                    "description": "自尊變化量 (-100 到 +100)",
-                                    "minimum": -100,
-                                    "maximum": 100
-                                },
-                                "helpfulness_delta": {
-                                    "type": "number",
-                                    "description": "助人意願變化量 (-1.0 到 +1.0)",
-                                    "minimum": -1.0,
-                                    "maximum": 1.0
-                                },
-                                "boredom_delta": {
-                                    "type": "number",
-                                    "description": "無聊程度變化量 (-1.0 到 +1.0)",
-                                    "minimum": -1.0,
-                                    "maximum": 1.0
-                                }
-                            },
-                            "description": "根據對話內容建議的系統狀態更新"
+                    "type": "object",
+                    "nullable": True,
+                    "properties": {
+                        "mood_delta": {
+                            "type": "number",
+                            "description": "情緒變化量 (-1.0 到 +1.0)",
+                            "minimum": -1.0,
+                            "maximum": 1.0
                         },
-                        {"type": "null"}
-                    ]
+                        "pride_delta": {
+                            "type": "number", 
+                            "description": "自尊變化量 (-1.0 到 +1.0)",
+                            "minimum": -1.0,
+                            "maximum": 1.0
+                        },
+                        "helpfulness_delta": {
+                            "type": "number",
+                            "description": "助人意願變化量 (-1.0 到 +1.0)",
+                            "minimum": -1.0,
+                            "maximum": 1.0
+                        },
+                        "boredom_delta": {
+                            "type": "number",
+                            "description": "無聊程度變化量 (-1.0 到 +1.0)",
+                            "minimum": -1.0,
+                            "maximum": 1.0
+                        }
+                    },
+                    "description": "根據對話內容建議的系統狀態更新"
                 },
                 "memory_observation": {
                     "type": "string",
                     "description": "對話觀察摘要，用於記憶處理"
                 },
                 "learning_signals": {
-                    "anyOf": [
-                        {
-                            "type": "object", 
-                            "properties": {
-                                "formality_signal": {
-                                    "type": "number",
-                                    "description": "正式程度信號 (-1.0=非正式, 0=中性, 1.0=正式)",
-                                    "minimum": -1.0,
-                                    "maximum": 1.0
-                                },
-                                "detail_signal": {
-                                    "type": "number",
-                                    "description": "詳細程度信號 (-1.0=簡潔, 0=適中, 1.0=詳細)",
-                                    "minimum": -1.0,
-                                    "maximum": 1.0
-                                },
-                                "technical_signal": {
-                                    "type": "number",
-                                    "description": "技術程度信號 (-1.0=通俗, 0=適中, 1.0=專業)",
-                                    "minimum": -1.0,
-                                    "maximum": 1.0
-                                },
-                                "interaction_signal": {
-                                    "type": "number",
-                                    "description": "互動偏好信號 (-1.0=獨立, 0=適中, 1.0=互動)",
-                                    "minimum": -1.0,
-                                    "maximum": 1.0
-                                }
-                            },
-                            "description": "用戶偏好學習信號，累積多次後形成用戶畫像"
+                    "type": "object",
+                    "nullable": True,
+                    "properties": {
+                        "formality_signal": {
+                            "type": "number",
+                            "description": "正式程度信號 (-1.0=非正式, 0=中性, 1.0=正式)",
+                            "minimum": -1.0,
+                            "maximum": 1.0
                         },
-                        {"type": "null"}
-                    ]
+                        "detail_signal": {
+                            "type": "number",
+                            "description": "詳細程度信號 (-1.0=簡潔, 0=適中, 1.0=詳細)",
+                            "minimum": -1.0,
+                            "maximum": 1.0
+                        },
+                        "technical_signal": {
+                            "type": "number",
+                            "description": "技術程度信號 (-1.0=通俗, 0=適中, 1.0=專業)",
+                            "minimum": -1.0,
+                            "maximum": 1.0
+                        },
+                        "interaction_signal": {
+                            "type": "number",
+                            "description": "互動偏好信號 (-1.0=獨立, 0=適中, 1.0=互動)",
+                            "minimum": -1.0,
+                            "maximum": 1.0
+                        }
+                    },
+                    "description": "用戶偏好學習信號，累積多次後形成用戶畫像"
                 }
             },
             "required": ["text", "confidence"]
@@ -155,76 +147,74 @@ class GeminiWrapper:
                     "maximum": 1.0
                 },
                 "sys_action": {
-                    "anyOf": [
-                        {
-                            "type": "object",
-                            "properties": {
-                                "action_type": {
-                                    "type": "string",
-                                    "enum": ["start_workflow", "execute_function", "request_confirmation", "provide_options"],
-                                    "description": "系統動作類型"
-                                },
-                                "target": {
-                                    "type": "string",
-                                    "description": "動作目標 (工作流名稱或功能名稱)"
-                                },
-                                "parameters": {
-                                    "type": "object",
-                                    "description": "動作參數"
-                                },
-                                "confidence": {
-                                    "type": "number",
-                                    "description": "動作建議的信心度",
-                                    "minimum": 0.0,
-                                    "maximum": 1.0
-                                },
-                                "requires_confirmation": {
-                                    "type": "boolean",
-                                    "description": "是否需要用戶確認"
-                                },
-                                "reason": {
-                                    "type": "string",
-                                    "description": "選擇此動作的詳細理由"
-                                }
-                            },
-                            "required": ["action_type", "target", "reason"],
-                            "description": "建議的系統動作"
+                    "type": "object",
+                    "nullable": True,
+                    "properties": {
+                        "action_type": {
+                            "type": "string",
+                            "enum": ["start_workflow", "execute_function", "request_confirmation", "provide_options"],
+                            "description": "系統動作類型"
                         },
-                        {"type": "null"}
-                    ]
+                        "target": {
+                            "type": "string",
+                            "description": "動作目標 (工作流名稱或功能名稱)"
+                        },
+                        "parameters": {
+                            "type": "object",
+                            "description": "動作參數"
+                        },
+                        "confidence": {
+                            "type": "number",
+                            "description": "動作建議的信心度",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        },
+                        "requires_confirmation": {
+                            "type": "boolean",
+                            "description": "是否需要用戶確認"
+                        },
+                        "reason": {
+                            "type": "string",
+                            "description": "選擇此動作的詳細理由"
+                        }
+                    },
+                    "required": ["action_type", "target", "reason"],
+                    "description": "建議的系統動作"
                 },
                 "status_updates": {
-                    "anyOf": [
-                        {
-                            "type": "object",
-                            "properties": {
-                                "helpfulness_delta": {
-                                    "type": "number",
-                                    "description": "完成任務後的助人意願變化",
-                                    "minimum": -1.0,
-                                    "maximum": 1.0
-                                },
-                                "pride_delta": {
-                                    "type": "number",
-                                    "description": "任務成功/失敗對自尊的影響",
-                                    "minimum": -100,
-                                    "maximum": 100  
-                                },
-                                "mood_delta": {
-                                    "type": "number",
-                                    "description": "工作完成狀況對情緒的影響",
-                                    "minimum": -1.0,
-                                    "maximum": 1.0
-                                },
-                                "reason": {
-                                    "type": "string",
-                                    "description": "狀態變化原因"
-                                }
-                            },
-                            "description": "基於任務執行狀況的狀態更新"
+                    "type": "object",
+                    "nullable": True,
+                    "properties": {
+                        "helpfulness_delta": {
+                            "type": "number",
+                            "description": "完成任務後的助人意願變化",
+                            "minimum": -1.0,
+                            "maximum": 1.0
                         },
-                        {"type": "null"}
-                    ]
+                        "pride_delta": {
+                            "type": "number",
+                            "description": "任務成功/失敗對自尊的影響",
+                            "minimum": -1.0,
+                            "maximum": 1.0  
+                        },
+                        "mood_delta": {
+                            "type": "number",
+                            "description": "工作完成狀況對情緒的影響",
+                            "minimum": -1.0,
+                            "maximum": 1.0
+                        },
+                        "boredom_delta": {
+                            "type": "number",
+                            "description": "任務複雜度對無聊程度的影響",
+                            "minimum": -1.0,
+                            "maximum": 1.0
+                        },
+                        "reason": {
+                            "type": "string",
+                            "description": "狀態變化原因"
+                        }
+                    },
+                    "description": "基於任務執行狀況的狀態更新"
                 }
             },
             "required": ["text", "confidence"]

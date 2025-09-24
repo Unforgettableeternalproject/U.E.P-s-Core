@@ -292,8 +292,18 @@ class PromptManager:
             
             history_parts = []
             for entry in recent_history:
-                role = entry.get("role", "unknown")
-                content = entry.get("content", "")
+                # 處理 ConversationEntry 對象或字典
+                if hasattr(entry, 'role') and hasattr(entry, 'content'):
+                    # 這是 ConversationEntry 對象
+                    role = entry.role
+                    content = entry.content
+                elif isinstance(entry, dict):
+                    # 這是字典格式
+                    role = entry.get("role", "unknown")
+                    content = entry.get("content", "")
+                else:
+                    # 未知格式，跳過
+                    continue
                 
                 if role == "user":
                     history_parts.append(f"User: {content}")

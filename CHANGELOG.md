@@ -1234,3 +1234,15 @@
 
 ---
 
+### Completed first-hand LLM restructure, and the first goal is reached. 09/25
+
+> Date: Thu, 25 Sep 2025 03:16:07 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `cab09dd887d8232cf67f00d3d2e6415dfb5ff6cc`
+
+---
+

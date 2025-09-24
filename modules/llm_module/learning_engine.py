@@ -45,8 +45,13 @@ class ConversationStyle:
     
     # 評分統計
     total_signals: int = 0              # 總信號數量
+    total_interactions: int = 0         # 總互動次數
     signal_confidence: float = 0.0      # 信號可信度 (0.0-1.0)
     last_updated: float = 0.0           # 最後更新時間
+    
+    # 互動統計
+    avg_input_length: float = 0.0       # 平均輸入長度
+    avg_response_preference: float = 0.0 # 平均回應長度偏好
     
     # 衰減係數 - 隨時間降低舊評分的權重
     decay_factor: float = 0.95          

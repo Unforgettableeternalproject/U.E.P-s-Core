@@ -4,7 +4,7 @@ StatusManager - 系統數值管理器
 
 管理 U.E.P 的內部系統數值，包括：
 - Mood: 情緒狀態 (-1 到 +1)
-- Pride: 自尊心 (0 到 100)  
+- Pride: 自尊心 (-1 到 +1)  
 - Helpfulness: 助人意願 (0 到 1)
 - Boredom: 無聊程度 (0 到 1)
 
@@ -24,7 +24,7 @@ from utils.debug_helper import debug_log, info_log, error_log
 class SystemStatus:
     """系統狀態數值"""
     mood: float = 0.0           # 情緒狀態：-1 (負面) 到 +1 (正面)
-    pride: float = 50.0         # 自尊心：0 (沒有自尊) 到 100 (非常自尊)
+    pride: float = 0.0          # 自尊心：-1 (自卑) 到 +1 (自信)
     helpfulness: float = 0.8    # 助人意願：0 (不願意) 到 1 (非常願意)
     boredom: float = 0.0        # 無聊程度：0 (不無聊) 到 1 (非常無聊)
     
@@ -46,7 +46,7 @@ class SystemStatus:
     def validate_ranges(self):
         """驗證數值範圍並修正"""
         self.mood = max(-1.0, min(1.0, self.mood))
-        self.pride = max(0.0, min(100.0, self.pride))
+        self.pride = max(-1.0, min(1.0, self.pride))
         self.helpfulness = max(0.0, min(1.0, self.helpfulness))
         self.boredom = max(0.0, min(1.0, self.boredom))
 
@@ -125,18 +125,18 @@ class StatusManager:
         
         # Pride 會影響 Mood 和 Helpfulness
         if delta > 0:  # 自尊提升時
-            mood_boost = min(0.1, delta * 0.01)  # 最多提升 0.1 mood
+            mood_boost = min(0.1, delta * 0.1)  # 調整係數適應新範圍
             self.status.mood += mood_boost
-        elif delta < 0 and self.status.pride < 30:  # 自尊降低且過低時
-            mood_penalty = max(-0.05, delta * 0.005)
-            helpfulness_penalty = max(-0.05, delta * 0.002)
+        elif delta < 0 and self.status.pride < -0.5:  # 自尊降低且過低時 (改為 -0.5)
+            mood_penalty = max(-0.05, delta * 0.5)
+            helpfulness_penalty = max(-0.05, delta * 0.2)
             self.status.mood += mood_penalty
             self.status.helpfulness += helpfulness_penalty
         
         self.status.validate_ranges()
         
-        debug_log(2, f"[StatusManager] 自尊更新: {old_pride:.1f} -> {self.status.pride:.1f} "
-                    f"(變化: {delta:+.1f}) 原因: {reason}")
+        debug_log(2, f"[StatusManager] 自尊更新: {old_pride:.2f} -> {self.status.pride:.2f} "
+                    f"(變化: {delta:+.2f}) 原因: {reason}")
         
         self._trigger_callbacks("pride", old_pride, self.status.pride, reason)
         self._auto_save()
@@ -162,7 +162,7 @@ class StatusManager:
         # Boredom 會輕微影響 Mood 和 Pride
         if delta > 0.5:  # 非常無聊時
             mood_penalty = -0.02
-            pride_penalty = -0.5
+            pride_penalty = -0.05  # 調整為適合 -1 到 +1 範圍
             self.status.mood += mood_penalty
             self.status.pride += pride_penalty
             self.status.validate_ranges()
@@ -180,7 +180,63 @@ class StatusManager:
             debug_log(3, f"[StatusManager] 無聊程度重置，原因: {reason}")
             self._trigger_callbacks("boredom", None, 0.0, reason)
             self._auto_save()
-    
+
+    def apply_session_penalties(self, session_type: str = "general") -> Dict[str, float]:
+        """
+        系統自動調整 - 每次創建 General Session 時的微調
+        這不是給 LLM 處理的，而是 system loop 每次創建 GS 時的自動微調
+        
+        Args:
+            session_type: 會話類型，影響 penalty 的計算方式
+            
+        Returns:
+            Dict[str, float]: 各項數值的變化量
+        """
+        penalties = {}
+        current_time = time.time()
+        
+        # 計算距離上次互動的時間（小時）
+        if self.status.last_interaction_time > 0:
+            hours_since_last = (current_time - self.status.last_interaction_time) / 3600
+        else:
+            hours_since_last = 0
+        
+        # 時間相關的 Boredom 增長
+        if hours_since_last > 0.5:  # 超過30分鐘沒有互動
+            boredom_increase = min(0.1, hours_since_last * 0.02)  # 每小時增加 0.02，最多 0.1
+            self.update_boredom(boredom_increase, f"時間流逝 ({hours_since_last:.1f}小時)")
+            penalties['boredom'] = boredom_increase
+        
+        # Boredom 對其他數值的影響
+        if self.status.boredom > 0.7:  # 非常無聊時
+            mood_penalty = -0.01
+            pride_penalty = -0.005
+            self.update_mood(mood_penalty, "長時間無互動導致情緒低落")
+            self.update_pride(pride_penalty, "缺乏成就感")
+            penalties['mood'] = mood_penalty
+            penalties['pride'] = pride_penalty
+        
+        # 數值自然回歸 - 極端數值會緩慢回歸中性
+        if abs(self.status.mood) > 0.8:  # 情緒過於極端
+            regression = -0.005 if self.status.mood > 0 else 0.005
+            self.update_mood(regression, "情緒自然回歸")
+            penalties['mood'] = penalties.get('mood', 0) + regression
+        
+        if abs(self.status.pride) > 0.8:  # 自尊過於極端
+            regression = -0.003 if self.status.pride > 0 else 0.003
+            self.update_pride(regression, "自尊自然回歸")
+            penalties['pride'] = penalties.get('pride', 0) + regression
+        
+        if self.status.helpfulness > 0.95:  # 助人意願過高時稍微降低
+            regression = -0.005
+            self.update_helpfulness(regression, "助人意願自然調整")
+            penalties['helpfulness'] = regression
+        
+        if penalties:
+            debug_log(2, f"[StatusManager] 會話 penalty 已應用: {penalties}")
+            
+        return penalties
+
     def record_interaction(self, successful: bool = True, task_type: str = "general"):
         """記錄互動"""
         self.status.total_interactions += 1
@@ -189,13 +245,13 @@ class StatusManager:
         if successful:
             self.status.successful_tasks += 1
             # 成功的互動提升各項數值
-            self.update_pride(1.0, f"成功完成 {task_type}")
+            self.update_pride(0.1, f"成功完成 {task_type}")  # 調整為適合 -1 到 +1 範圍
             self.update_helpfulness(0.01, f"成功幫助用戶 - {task_type}")
             self.update_mood(0.05, f"成功互動 - {task_type}")
         else:
             self.status.failed_tasks += 1
             # 失敗的互動降低數值
-            self.update_pride(-2.0, f"任務失敗 - {task_type}")
+            self.update_pride(-0.2, f"任務失敗 - {task_type}")  # 調整為適合 -1 到 +1 範圍
             self.update_mood(-0.02, f"任務失敗 - {task_type}")
         
         # 重置無聊程度
@@ -236,13 +292,13 @@ class StatusManager:
     
     def _get_pride_level(self) -> str:
         """獲取自尊心等級描述"""
-        if self.status.pride >= 80:
+        if self.status.pride >= 0.6:
             return "非常自信"
-        elif self.status.pride >= 60:
+        elif self.status.pride >= 0.2:
             return "自信"
-        elif self.status.pride >= 40:
+        elif self.status.pride >= -0.2:
             return "普通"
-        elif self.status.pride >= 20:
+        elif self.status.pride >= -0.6:
             return "缺乏自信"
         else:
             return "非常沒自信"
@@ -323,6 +379,15 @@ class StatusManager:
             if self.storage_path.exists():
                 with open(self.storage_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
+                
+                # 檢查並遷移舊的 Pride 範圍 (0-100 -> -1 到 +1)
+                if 'pride' in data and data['pride'] > 1.0:
+                    # 將 0-100 範圍轉換為 -1 到 +1 範圍
+                    # 50 -> 0, 0 -> -1, 100 -> +1
+                    old_pride = data['pride']
+                    data['pride'] = (old_pride - 50.0) / 50.0
+                    info_log(f"[StatusManager] Pride 範圍遷移: {old_pride} -> {data['pride']:.2f}")
+                
                 self.status = SystemStatus.from_dict(data)
                 self.status.validate_ranges()
                 info_log(f"[StatusManager] 狀態已從 {self.storage_path} 載入")
@@ -343,7 +408,7 @@ class StatusManager:
         modifiers = self.get_personality_modifiers()
         return (
             f"情緒: {modifiers['mood_level']} ({self.status.mood:+.2f}), "
-            f"自尊: {modifiers['pride_level']} ({self.status.pride:.1f}), "
+            f"自尊: {modifiers['pride_level']} ({self.status.pride:+.2f}), "
             f"助人意願: {modifiers['helpfulness_level']} ({self.status.helpfulness:.2f}), "
             f"無聊程度: {modifiers['boredom_level']} ({self.status.boredom:.2f})"
         )

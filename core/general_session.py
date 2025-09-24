@@ -29,6 +29,11 @@ from dataclasses import dataclass, field
 from utils.debug_helper import debug_log, info_log, error_log
 from core.working_context import working_context_manager, ContextType
 
+# 延遲導入避免循環依賴
+def _get_status_manager():
+    from core.status_manager import StatusManager
+    return StatusManager()
+
 
 class SessionRecordType(Enum):
     """會話記錄類型"""
@@ -424,6 +429,15 @@ class GeneralSessionManager:
         # 結束當前會話
         if self.current_session:
             self.end_current_session()
+        
+        # 應用系統狀態 penalty（每次創建 GS 時的自動微調）
+        try:
+            status_manager = _get_status_manager()
+            penalties = status_manager.apply_session_penalties(gs_type.value)
+            if penalties:
+                debug_log(2, f"[GeneralSessionManager] 會話啟動時應用 penalty: {penalties}")
+        except Exception as e:
+            error_log(f"[GeneralSessionManager] 應用 status penalty 失敗: {e}")
         
         # 創建新會話
         new_session = GeneralSession(gs_type, trigger_event, self.preserved_data)

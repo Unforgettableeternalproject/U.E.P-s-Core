@@ -20,7 +20,7 @@ from core.module_base import BaseModule
 from core.schemas import LLMModuleData, create_llm_data
 from core.schema_adapter import LLMSchemaAdapter
 from core.working_context import working_context_manager, ContextType
-from core.status_manager import status_manager
+from core.status_manager import StatusManager
 from core.state_manager import state_manager, UEPState
 
 from .schemas import (
@@ -52,6 +52,7 @@ class LLMModule(BaseModule):
         
         # 狀態管理
         self.state_manager = state_manager
+        self.status_manager = StatusManager()
         
         # 統計數據
         self.processing_stats = {
@@ -87,7 +88,7 @@ class LLMModule(BaseModule):
                 return False
             
             # 註冊 StatusManager 回調
-            status_manager.register_update_callback("llm_module", self._on_status_update)
+            self.status_manager.register_update_callback("llm_module", self._on_status_update)
             
             # 獲取當前系統狀態
             current_state = self.state_manager.get_current_state()
@@ -170,11 +171,11 @@ class LLMModule(BaseModule):
             
             # 2. 構建 CHAT 提示
             prompt = self.prompt_manager.build_chat_prompt(
-                llm_input.text,
-                llm_input.memory_context,
-                llm_input.system_context,
-                llm_input.identity_context,
-                status
+                user_input=llm_input.text,
+                identity_context=llm_input.identity_context,
+                memory_context=llm_input.memory_context,
+                conversation_history=getattr(llm_input, 'conversation_history', None),
+                is_internal=False
             )
             
             # 3. 獲取或創建系統快取
@@ -184,7 +185,7 @@ class LLMModule(BaseModule):
             response_data = self.model.query(
                 prompt, 
                 mode="chat",
-                cached_content_id=cached_content_ids.get("persona")
+                cached_content=cached_content_ids.get("persona")
             )
             response_text = response_data.get("text", "")
             
@@ -262,12 +263,10 @@ class LLMModule(BaseModule):
             
             # 2. 構建 WORK 提示  
             prompt = self.prompt_manager.build_work_prompt(
-                llm_input.text,
-                llm_input.memory_context,
-                llm_input.system_context,
-                llm_input.identity_context,
-                status,
-                llm_input.workflow_context
+                user_input=llm_input.text,
+                available_functions=None,  # TODO: 從 SYS 模組獲取
+                workflow_context=getattr(llm_input, 'workflow_context', None),
+                identity_context=llm_input.identity_context
             )
             
             # 3. 獲取或創建任務快取
@@ -277,7 +276,7 @@ class LLMModule(BaseModule):
             response_data = self.model.query(
                 prompt, 
                 mode="work",
-                cached_content_id=cached_content_ids.get("functions")
+                cached_content=cached_content_ids.get("functions")
             )
             response_text = response_data.get("text", "")
             
@@ -428,7 +427,7 @@ class LLMModule(BaseModule):
                 debug_log(2, f"[LLM] Cache 統計: {cache_stats}")
                 
             # 取消 StatusManager 回調
-            status_manager.unregister_update_callback("llm_module")
+            self.status_manager.unregister_update_callback("llm_module")
             
             info_log("[LLM] LLM 模組重構版關閉完成")
             
@@ -461,31 +460,59 @@ class LLMModule(BaseModule):
             error_log(f"[LLM] 獲取模組狀態失敗: {e}")
             return {"error": str(e)}
     
-    def _process_status_updates(self, status_updates: list) -> None:
+    def _process_status_updates(self, status_updates) -> None:
         """
         處理來自LLM回應的StatusManager更新
+        支援物件格式（來自 schema）和陣列格式（舊版相容）
         """
         try:
             if not status_updates:
                 return
+            
+            # 處理物件格式（來自 Gemini schema）
+            if isinstance(status_updates, dict):
+                # 使用 StatusManager 的專用 delta 更新方法
+                if "mood_delta" in status_updates and status_updates["mood_delta"] is not None:
+                    self.status_manager.update_mood(status_updates["mood_delta"], "LLM情緒分析")
+                    debug_log(2, f"[LLM] Mood 更新: += {status_updates['mood_delta']}")
                 
-            for update in status_updates:
-                status_type = update.get("status_type")
-                value = update.get("value") 
-                reason = update.get("reason", "LLM回應觸發")
+                if "pride_delta" in status_updates and status_updates["pride_delta"] is not None:
+                    self.status_manager.update_pride(status_updates["pride_delta"], "LLM情緒分析")  
+                    debug_log(2, f"[LLM] Pride 更新: += {status_updates['pride_delta']}")
                 
-                if status_type and value is not None:
-                    # 更新StatusManager
-                    success = self.status_manager.update_status(
-                        status_type=status_type,
-                        value=value,
-                        reason=reason
-                    )
+                if "helpfulness_delta" in status_updates and status_updates["helpfulness_delta"] is not None:
+                    self.status_manager.update_helpfulness(status_updates["helpfulness_delta"], "LLM情緒分析")
+                    debug_log(2, f"[LLM] Helpfulness 更新: += {status_updates['helpfulness_delta']}")
+                
+                if "boredom_delta" in status_updates and status_updates["boredom_delta"] is not None:
+                    self.status_manager.update_boredom(status_updates["boredom_delta"], "LLM情緒分析")
+                    debug_log(2, f"[LLM] Boredom 更新: += {status_updates['boredom_delta']}")
+                
+                # 統計更新次數
+                updates_count = sum(1 for key in ["mood_delta", "pride_delta", "helpfulness_delta", "boredom_delta"] 
+                                  if key in status_updates and status_updates[key] is not None)
+                if updates_count > 0:
+                    debug_log(1, f"[LLM] StatusManager 已應用 {updates_count} 個狀態更新")
+            
+            # 處理陣列格式（舊版相容）
+            elif isinstance(status_updates, list):
+                for update in status_updates:
+                    status_type = update.get("status_type")
+                    value = update.get("value") 
+                    reason = update.get("reason", "LLM回應觸發")
                     
-                    if success:
-                        debug_log(2, f"[LLM] StatusManager更新成功: {status_type}={value}, 原因: {reason}")
-                    else:
-                        debug_log(1, f"[LLM] StatusManager更新失敗: {status_type}={value}")
+                    if status_type and value is not None:
+                        # 使用絕對值更新狀態
+                        success = self.status_manager.update_status(
+                            status_type=status_type,
+                            value=value,
+                            reason=reason
+                        )
+                        
+                        if success:
+                            debug_log(2, f"[LLM] StatusManager更新成功: {status_type}={value}, 原因: {reason}")
+                        else:
+                            debug_log(1, f"[LLM] StatusManager更新失敗: {status_type}={value}")
                         
         except Exception as e:
             error_log(f"[LLM] 處理StatusManager更新時出錯: {e}")
@@ -494,8 +521,8 @@ class LLMModule(BaseModule):
         """獲取當前系統狀態"""
         try:
             return {
-                "status_values": status_manager.get_current_state(),
-                "personality_modifiers": status_manager.get_personality_modifiers(),
+                "status_values": self.status_manager.get_status_dict(),
+                "personality_modifiers": self.status_manager.get_personality_modifiers(),
                 "system_mode": self.state_manager.get_current_state().value
             }
         except Exception as e:

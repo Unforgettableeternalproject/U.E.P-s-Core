@@ -82,8 +82,53 @@ def clipboard_tracker(parent=None):
 def quick_phrases(parent=None):
     raise NotImplementedError("quick_phrases 尚未實作")
 
-def ocr_extract(image_path: str):
-    raise NotImplementedError("ocr_extract 尚未實作")
+
+def ocr_extract(image_path: str, target_num : int = 1):
+
+    """利用OCR辨識傳入檔案內容
+        根據傳入值1 or 2決定要回傳文字還是輸出檔案"""
+
+    import pytesseract
+    import cv2
+    from pathlib import Path
+
+    file_path_obj = Path(image_path)
+    image = cv2.imread(image_path)
+
+    if image is None:
+        error_log("[OCR] 圖片讀取失敗，請確認路徑與檔案格式！")
+        raise ValueError("圖片讀取失敗")
+
+    # 灰階 + 二值化，提升辨識效果
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
+
+    if target_num == 1:
+
+        try:
+            text = pytesseract.image_to_string(thresh, lang = "chi_tra+eng")
+            recognition_context = f"辨識結果：{text}"
+            info_log("[OCR] 回傳文字辨識成功")
+
+            return recognition_context
+        except Exception as e:
+            error_log(f"[OCR] OCR 辨識文字失敗：{e}")
+            raise
+    elif target_num == 2:
+        # 寫入檔案
+        try:
+            data = pytesseract.image_to_pdf_or_hocr(thresh, lang = "chi_tra+eng", extension = "pdf")
+            output_file_path = file_path_obj.parent / f"{file_path_obj.stem}_OCR.pdf"
+
+            with open(output_file_path, "wb") as f:
+                f.write(data)
+            
+            info_log(f"[OCR] OCR PDF 生成完成：{output_file_path}")
+            return str(output_file_path)
+
+        except Exception as e:
+            error_log(f"[OCR] OCR 生成 PDF 失敗：：{e}")
+            raise    
 
 # def clear_history():
 #     global _history, _monitoring

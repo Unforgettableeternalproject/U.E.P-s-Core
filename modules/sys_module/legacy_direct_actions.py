@@ -10,7 +10,7 @@ These functions bypass the workflow system and call actions directly.
 For new development, use the workflow-based approach instead.
 """
 
-from .actions.file_interaction import drop_and_read, intelligent_archive, summarize_tag
+from .actions.file_interaction import clean_trash_bin, drop_and_read, intelligent_archive, summarize_tag, translate
 from .actions.window_control import push_window, fold_window, switch_workspace, screenshot_and_annotate
 from .actions.text_processing import clipboard_tracker, quick_phrases, ocr_extract
 from .actions.automation_helper import set_reminder, generate_backup_script, monitor_folder
@@ -31,6 +31,8 @@ def get_legacy_action_handlers():
         "drop_and_read": drop_and_read,
         "intelligent_archive": intelligent_archive,
         "summarize_tag": summarize_tag,
+        "translate":translate,
+        "clean_trash_bin": clean_trash_bin,
         
         # Window Control Actions
         "push_window": push_window,

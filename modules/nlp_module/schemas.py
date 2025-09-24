@@ -23,7 +23,7 @@ class UserProfile(BaseModel):
     display_name: Optional[str] = Field(None, description="顯示名稱")
     status: IdentityStatus = Field(IdentityStatus.UNKNOWN, description="身份狀態")
     
-    # 身份令牌與憑證 (用於MEM模組存取記憶庫)
+    # 記憶令牌與憑證 (用於MEM模組存取記憶庫)
     memory_token: Optional[str] = Field(None, description="記憶庫存取令牌")
     
     # 偏好設定

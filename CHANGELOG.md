@@ -1198,3 +1198,15 @@
 
 ---
 
+### Begin the rework of llm module. 09/24
+
+> Date: Wed, 24 Sep 2025 20:06:03 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `39fb8d589bb333da3490dce2d7766e32487728dc`
+
+---
+

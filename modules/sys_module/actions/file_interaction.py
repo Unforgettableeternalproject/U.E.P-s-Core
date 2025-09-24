@@ -1,5 +1,7 @@
+import os
 from pathlib import Path
 from utils.debug_helper import info_log, error_log
+
 
 def drop_and_read(file_path: str) -> str:
     """
@@ -40,7 +42,6 @@ def intelligent_archive(file_path: str, target_dir: str = "") -> str:
     Returns:
         歸檔後的新檔案路徑
     """
-    import os
     import shutil
     import json
     import datetime
@@ -362,3 +363,218 @@ def summarize_tag(file_path: str, tag_count: int = 3) -> dict:
         "summary_file": str(summary_file_path),
         "tags": tags
     }
+
+def translate(file_path: str, dest_lang: str):
+    """將傳入檔案翻譯成目標語言並匯出"""
+
+    import re
+    import time
+    import filetype
+    import pdfplumber
+    import nltk
+    from googletrans import Translator
+    from docx import Document
+    from modules.sys_module.actions import laguage_map
+
+    try:
+        file_path_obj = Path(file_path)
+        dest_code = laguage_map.lang_map[dest_lang]
+        export_file(dest_code, file_path, file_path_obj.parent)
+    except Exception as e:
+        error_log(f"[file] 翻譯流程失敗：{e}")
+        raise
+
+    try:
+        nltk.data.find('tokenizers/punkt')
+    except LookupError:
+        nltk.download('punkt')
+    from nltk.tokenize import sent_tokenize
+
+    def chunk_text(text, chunk_size=3000):
+        sentences = sent_tokenize(text) # 分句    
+        chunks = []
+        current_chunk = ""
+    
+        for sentence in sentences:
+            sentence_len = len(sentence)
+        
+            # 長句子處理：如果句子長度超過 chunk_size，則進一步分割
+            if sentence_len > chunk_size:
+                if current_chunk:
+                    chunks.append(current_chunk.strip())
+                    current_chunk = ""
+                split_long_sentence(sentence, chunks)
+                continue
+        
+            # 一般情況：是否加入當前 chunk 會超出限制
+            if len(current_chunk) + sentence_len + 1 > chunk_size:
+                chunks.append(current_chunk.strip())
+                current_chunk = sentence + " "
+            else:
+                current_chunk += sentence + " "
+    
+        if current_chunk:
+            chunks.append(current_chunk.strip())
+        return chunks
+
+    def split_long_sentence(sentence, chunk, chunk_size = 3000):
+        parts = re.split(r'([，；,;])', sentence)
+        current = ""
+        for part in parts:
+            if len(current) + len(part) > chunk_size:
+                if current:
+                    chunk.append(current)
+                current = part
+            else:
+                current += part
+        if current:
+            chunk.append(current)
+
+    def translate_chunk(chunk, dest_lang, translator, max_retry=3, wait_secs = 2):
+        num = 0
+        while num < max_retry:
+            try:
+                translated = translator.translate(chunk, dest=dest_lang)
+                return translated.text
+
+            except Exception as e:
+                error_log(f"[file] 文章分句上產生錯誤translate_chunk error: {e}")
+                if num < max_retry - 1:
+                    error_log(f"[file] {wait_secs}後再嘗試")
+                    time.sleep(wait_secs)
+                else:
+                    error_log("[file] 已達最大重試次數。直接回傳整個區塊")
+                    return chunk
+
+            num += 1
+
+    def deter_file_type(path):
+        kind = filetype.guess(path)
+        if kind is None:
+            error_log("[file] 無法得知檔案類型")
+            return 
+        else:
+            file_type = kind.extension
+            info_log(f"[file] 檔案類型為{file_type}")
+            return file_type
+
+
+    def pdf_segmenter(path):
+        all_text_list = []
+        try:
+            with pdfplumber.open(path) as pdf:
+                for page in pdf.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        all_text_list.append(page_text)
+            return all_text_list
+        except Exception as e:
+            error_log(f"[file] PDF 段落切割失敗：{e}")
+            raise
+
+    def docx_segmenter(path):
+        try :
+            doc = Document(path)
+            all_text_list = []
+            for page in doc.paragraphs:
+                text = page.text.strip()
+                if text:
+                    all_text_list.append(text)
+            return all_text_list
+        except Exception as e:
+            error_log(f"[file] DOCX 段落切割失敗：{e}")
+            raise
+
+    def export_file(dest_code, origin_file_path, dest_file_path, ):
+        file_type = deter_file_type(origin_file_path)
+        doc = Document()
+        translator = Translator()
+        all_text_list = []
+
+        if file_type == "docx":
+            all_text_list = docx_segmenter(origin_file_path)
+        elif file_type == "pdf":
+            all_text_list =pdf_segmenter(origin_file_path)
+        else: # 假設是純文本文件
+            with open(origin_file_path, "r", encoding="utf-8") as f:
+                text = f.read()
+                all_text_list = [text]
+
+        for para in all_text_list:
+            chunks = chunk_text(para)
+            translate_paragraph = ""
+            for chunk in chunks:
+                translated_text = translate_chunk(chunk, dest_code, translator)
+                translate_paragraph += translated_text
+            doc.add_paragraph(translate_paragraph)
+
+        base_name = os.path.splitext(os.path.basename(origin_file_path))[0]
+        new_file_name = f"{base_name}_{dest_code}_traslate.docx"
+        full_dest_path = os.path.join(dest_file_path, new_file_name)
+        try:
+            doc.save(full_dest_path)
+            info_log(f"[file] 翻譯文件已輸出：{full_dest_path}")
+            try:
+                os.startfile(full_dest_path)  # Windows 專用
+            except Exception as e:
+                error_log(f"[file] 無法自動開啟文件：{e}")
+        except Exception as e:
+            error_log(f"[file] 翻譯文件輸出失敗：{e}")
+            raise
+
+def clean_trash_bin():
+    """使用管理員權限清除資源回收桶內部檔案"""
+
+    import platform
+    import subprocess
+    import shutil
+
+    system = platform.system()
+
+    try:
+        if system == "Windows":
+            result = subprocess.run(
+                ["powershell", "-Command", "Clear-RecycleBin -Force"],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                info_log("[file] 回收桶已清空")
+            else:
+                info_log("[file] 回收桶已清空，但返回非零狀態，忽略")
+
+        elif system == "Darwin":  # macOS
+            trash_path = os.path.expanduser("~/.Trash")
+            if os.path.exists(trash_path):
+                for file in os.listdir(trash_path):
+                    file_path = os.path.join(trash_path, file)
+                    if os.path.isfile(file_path) or os.path.islink(file_path):
+                        os.remove(file_path)
+                    elif os.path.isdir(file_path):
+                        shutil.rmtree(file_path)
+            info_log("[file] macOS 資源回收桶已清空")
+
+        elif system == "Linux":
+            trash_paths = [
+                os.path.expanduser("~/.local/share/Trash/files"),
+                os.path.expanduser("~/.local/share/Trash/info")
+            ]
+            for path in trash_paths:
+                if os.path.exists(path):
+                    for file in os.listdir(path):
+                        file_path = os.path.join(path, file)
+                        try:
+                            if os.path.isfile(file_path) or os.path.islink(file_path):
+                                os.remove(file_path)
+                            elif os.path.isdir(file_path):
+                                shutil.rmtree(file_path)
+                        except Exception as e:
+                            error_log(f"[file] 刪除 {file_path} 失敗: {e}")
+
+            info_log("[file] Linux 資源回收桶已清空")
+
+        else:
+            error_log(f"[file] 不支援的系統：{system}")
+
+    except Exception as e:
+        error_log(f"[file] 清理失敗：{e}")
+        raise

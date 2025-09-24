@@ -187,10 +187,7 @@ class Router:
 
         # 根據模組類型準備特定參數
         if module_key == "llm":
-            base_args.update({
-                "text": str(detail),
-                "enable_memory_retrieval": self._should_retrieve_memory(intent, detail)
-            })
+            base_args.update(self._prepare_llm_args(intent, detail, context))
         elif module_key == "mem":
             base_args.update(self._prepare_memory_args(intent, detail, context))
         elif module_key == "sys":
@@ -219,6 +216,43 @@ class Router:
             base_args["data"] = detail
 
         return base_args
+    
+    def _prepare_llm_args(self, intent: str, detail: Any, context: Dict[str, Any]) -> Dict[str, Any]:
+        """準備LLM模組參數 - 支援新的CHAT/WORK架構"""
+        from core.state_manager import state_manager
+        
+        # 獲取當前狀態來決定LLM模式
+        current_state = state_manager.get_current_state()
+        
+        # 根據系統狀態和intent決定LLM模式
+        if current_state.name in ["CHAT", "IDLE"]:
+            mode = "chat"
+        elif current_state.name in ["WORK", "WORKING"]:
+            mode = "work"
+        else:
+            # 根據intent推斷模式
+            if intent in ["chat", "memory_query"]:
+                mode = "chat"
+            elif intent in ["command", "sys_action"]:
+                mode = "work"
+            else:
+                mode = "chat"  # 預設為chat模式
+        
+        llm_args = {
+            "text": str(detail),
+            "mode": mode,
+            "intent": intent,
+            "enable_memory_retrieval": self._should_retrieve_memory(intent, detail),
+            "memory_context": context.get("memory_context", []),
+            "system_context": context.get("system_context", {}),
+            "identity_context": context.get("identity_context", {}),
+        }
+        
+        # 根據模式添加特定上下文
+        if mode == "work":
+            llm_args["workflow_context"] = context.get("workflow_context", {})
+        
+        return llm_args
 
     def _should_retrieve_memory(self, intent: str, detail: Any) -> bool:
         """判斷是否需要檢索記憶"""
@@ -292,12 +326,76 @@ class Router:
         return None
 
     def _handle_llm_response(self, response: Dict[str, Any], state_manager: Optional[StateManager], context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """處理LLM回應"""
+        """處理LLM回應 - 支援新的CHAT/WORK架構"""
+        
+        # 1. 檢查響應模式
+        response_mode = response.get("mode", "chat")
+        debug_log(2, f"[Router] 處理LLM回應 - 模式: {response_mode}")
+        
+        # 2. 處理StatusManager更新
+        if "status_updates" in response and response["status_updates"]:
+            debug_log(2, f"[Router] 檢測到StatusManager更新: {response['status_updates']}")
+        
+        # 3. 處理記憶操作 (CHAT模式)
+        if response_mode == "chat":
+            return self._handle_chat_response(response, state_manager, context)
+        
+        # 4. 處理系統動作 (WORK模式)
+        elif response_mode == "work":
+            return self._handle_work_response(response, state_manager, context)
+        
+        # 5. 向後兼容處理
+        else:
+            return self._handle_legacy_llm_response(response, state_manager, context)
+    
+    def _handle_chat_response(self, response: Dict[str, Any], state_manager: Optional[StateManager], context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """處理CHAT模式的LLM回應"""
+        
+        # 檢查是否需要記憶操作
+        if "memory_operations" in response and response["memory_operations"]:
+            memory_ops = response["memory_operations"]
+            debug_log(2, f"[Router] CHAT模式 - 記憶操作: {memory_ops}")
+            
+            return {
+                "action": "route_to_mem",
+                "module": "mem", 
+                "args": {
+                    "operations": memory_ops,
+                    "context": context
+                }
+            }
+        
+        # 檢查是否需要TTS輸出
+        return self._check_tts_output(response, context)
+    
+    def _handle_work_response(self, response: Dict[str, Any], state_manager: Optional[StateManager], context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """處理WORK模式的LLM回應"""
+        
         # 檢查是否包含系統動作
         if "sys_action" in response:
             sys_action = response.get("sys_action")
             if isinstance(sys_action, dict):
-                debug_log(1, f"[Router] LLM回應包含系統動作: {sys_action}")
+                debug_log(1, f"[Router] WORK模式 - 系統動作: {sys_action}")
+                return {
+                    "action": "route_to_sys",
+                    "module": "sys",
+                    "args": {
+                        "mode": "execute_sys_action",
+                        "sys_action": sys_action,
+                        "workflow_context": context.get("workflow_context", {})
+                    }
+                }
+        
+        # 檢查是否需要TTS輸出
+        return self._check_tts_output(response, context)
+    
+    def _handle_legacy_llm_response(self, response: Dict[str, Any], state_manager: Optional[StateManager], context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """向後兼容的LLM回應處理"""
+        # 檢查是否包含系統動作
+        if "sys_action" in response:
+            sys_action = response.get("sys_action")
+            if isinstance(sys_action, dict):
+                debug_log(1, f"[Router] Legacy - 系統動作: {sys_action}")
                 return {
                     "action": "route_to_sys",
                     "module": "sys",
@@ -308,6 +406,10 @@ class Router:
                 }
 
         # 檢查是否需要TTS輸出
+        return self._check_tts_output(response, context)
+    
+    def _check_tts_output(self, response: Dict[str, Any], context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """檢查是否需要TTS輸出"""
         if response.get("should_speak", False) or context.get("voice_output", False):
             return {
                 "action": "route_to_tts",

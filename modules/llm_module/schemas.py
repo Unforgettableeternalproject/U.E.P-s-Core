@@ -54,8 +54,16 @@ class ConversationEntry(BaseModel):
     metadata: Optional[Dict[str, Any]] = Field(default_factory=dict, description="元數據")
 
 
+class LearningSignals(BaseModel):
+    """學習信號 - 累積評分制"""
+    formality_signal: Optional[float] = Field(None, ge=-1.0, le=1.0, description="正式程度信號 (-1.0=非正式, 0=中性, 1.0=正式)")
+    detail_signal: Optional[float] = Field(None, ge=-1.0, le=1.0, description="詳細程度信號 (-1.0=簡潔, 0=適中, 1.0=詳細)")
+    technical_signal: Optional[float] = Field(None, ge=-1.0, le=1.0, description="技術程度信號 (-1.0=通俗, 0=適中, 1.0=專業)")
+    interaction_signal: Optional[float] = Field(None, ge=-1.0, le=1.0, description="互動偏好信號 (-1.0=獨立, 0=適中, 1.0=互動)")
+
+
 class LearningData(BaseModel):
-    """學習數據"""
+    """學習數據 - 保留向後兼容性"""
     interaction_type: str = Field(..., description="互動類型")
     user_preference: Dict[str, Any] = Field(default_factory=dict, description="使用者偏好")
     conversation_style: Dict[str, Any] = Field(default_factory=dict, description="對話風格")

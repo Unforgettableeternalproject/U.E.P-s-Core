@@ -36,16 +36,21 @@ class InteractionPattern:
 
 @dataclass  
 class ConversationStyle:
-    """對話風格分析"""
-    formality_preference: str = "neutral"  # formal, neutral, casual
-    verbosity_preference: str = "moderate"  # brief, moderate, detailed  
-    question_frequency: str = "medium"     # low, medium, high
-    technical_level: str = "mixed"         # beginner, intermediate, advanced, mixed
+    """對話風格分析 - 累積評分制"""
+    # 累積評分 (-1.0 到 1.0)
+    formality_score: float = 0.0        # 正式程度累積評分
+    detail_score: float = 0.0           # 詳細程度累積評分  
+    technical_score: float = 0.0        # 技術程度累積評分
+    interaction_score: float = 0.0      # 互動偏好累積評分
     
-    # 統計數據
-    total_interactions: int = 0
-    avg_input_length: float = 0.0
-    avg_response_preference: float = 0.0  # 偏好的回應長度
+    # 評分統計
+    total_signals: int = 0              # 總信號數量
+    signal_confidence: float = 0.0      # 信號可信度 (0.0-1.0)
+    last_updated: float = 0.0           # 最後更新時間
+    
+    # 衰減係數 - 隨時間降低舊評分的權重
+    decay_factor: float = 0.95          
+    min_signals_for_confidence: int = 10  # 最小信號數量才有可信度
     
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -136,6 +141,105 @@ class LearningEngine:
         except Exception as e:
             error_log(f"[LearningEngine] 記錄互動失敗: {e}")
     
+    def process_learning_signals(self, identity_id: str, signals: Dict[str, float]):
+        """處理學習信號，累積評分"""
+        if not self.learning_enabled:
+            return
+        
+        try:
+            # 獲取或創建對話風格記錄
+            if identity_id not in self.conversation_styles:
+                self.conversation_styles[identity_id] = ConversationStyle()
+            
+            style = self.conversation_styles[identity_id]
+            current_time = time.time()
+            
+            # 計算時間衰減因子
+            if style.last_updated > 0:
+                time_diff = current_time - style.last_updated
+                # 每天衰減 5%
+                decay = style.decay_factor ** (time_diff / 86400)
+                
+                # 對現有評分應用衰減
+                style.formality_score *= decay
+                style.detail_score *= decay
+                style.technical_score *= decay
+                style.interaction_score *= decay
+                style.total_signals = int(style.total_signals * decay)
+            
+            # 累積新信號
+            weight = 1.0  # 新信號的權重
+            
+            if "formality_signal" in signals:
+                style.formality_score = self._update_score(style.formality_score, signals["formality_signal"], weight)
+            
+            if "detail_signal" in signals:
+                style.detail_score = self._update_score(style.detail_score, signals["detail_signal"], weight)
+                
+            if "technical_signal" in signals:
+                style.technical_score = self._update_score(style.technical_score, signals["technical_signal"], weight)
+                
+            if "interaction_signal" in signals:
+                style.interaction_score = self._update_score(style.interaction_score, signals["interaction_signal"], weight)
+            
+            # 更新統計
+            style.total_signals += 1
+            style.last_updated = current_time
+            
+            # 計算可信度 - 基於信號數量和一致性
+            style.signal_confidence = min(1.0, style.total_signals / style.min_signals_for_confidence)
+            
+            debug_log(3, f"[LearningEngine] 處理學習信號: {identity_id}, 總信號: {style.total_signals}")
+            
+        except Exception as e:
+            error_log(f"[LearningEngine] 處理學習信號失敗: {e}")
+    
+    def _update_score(self, current_score: float, new_signal: float, weight: float) -> float:
+        """更新累積評分，使用加權平均"""
+        # 使用 Exponential Moving Average
+        alpha = 0.1  # 學習率
+        return current_score * (1 - alpha) + new_signal * alpha
+    
+    def get_user_preferences(self, identity_id: str) -> Dict[str, Any]:
+        """獲取用戶偏好摘要"""
+        if identity_id not in self.conversation_styles:
+            return {"confidence": 0.0, "preferences": "insufficient_data"}
+        
+        style = self.conversation_styles[identity_id]
+        
+        # 只有達到最小可信度才返回偏好
+        if style.signal_confidence < 0.3:
+            return {"confidence": style.signal_confidence, "preferences": "insufficient_data"}
+        
+        preferences = {}
+        
+        # 根據評分判斷偏好類型（只有明顯偏好才標註）
+        threshold = 0.3  # 偏好閾值
+        
+        if abs(style.formality_score) > threshold:
+            preferences["formality"] = "formal" if style.formality_score > 0 else "casual"
+        
+        if abs(style.detail_score) > threshold:
+            preferences["detail"] = "detailed" if style.detail_score > 0 else "brief"
+            
+        if abs(style.technical_score) > threshold:
+            preferences["technical"] = "technical" if style.technical_score > 0 else "simple"
+            
+        if abs(style.interaction_score) > threshold:
+            preferences["interaction"] = "interactive" if style.interaction_score > 0 else "independent"
+        
+        return {
+            "confidence": style.signal_confidence,
+            "preferences": preferences,
+            "scores": {
+                "formality": style.formality_score,
+                "detail": style.detail_score,
+                "technical": style.technical_score,
+                "interaction": style.interaction_score
+            },
+            "total_signals": style.total_signals
+        }
+
     def analyze_conversation_style(self, identity_id: str) -> ConversationStyle:
         """分析對話風格"""
         if identity_id in self.conversation_styles:

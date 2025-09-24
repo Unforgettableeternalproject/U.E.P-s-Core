@@ -1222,3 +1222,15 @@
 
 ---
 
+### Improved prompt manager, and made better context caching and such. 09/25
+
+> Date: Thu, 25 Sep 2025 01:41:36 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `19166900f0e1764bc73bb498514089e964ca1cb8`
+
+---
+

@@ -9,7 +9,7 @@ load_dotenv()
 
 class GeminiWrapper:
     def __init__(self, config: dict):
-        self.model_name = config.get("model", "gemini-2.0-flash-001")
+        self.model_name = config.get("model", "gemini-2.5-flash-lite")
         self.temperature = config.get("temperature", 0.8)
         self.top_p = config.get("top_p", 0.95)
         self.max_tokens = config.get("max_output_tokens", 8192)
@@ -31,6 +31,9 @@ class GeminiWrapper:
             location=os.getenv("GCP_LOCATION"),
         )
 
+        # Context Caching 支援
+        self.cache_enabled = config.get("cache_enabled", True)
+        
         # 根據處理模式動態生成回應 schema
         self.response_schemas = self._create_response_schemas()
     
@@ -51,11 +54,6 @@ class GeminiWrapper:
                 "text": {
                     "type": "string",
                     "description": "自然的對話回應文字"
-                },
-                "emotion": {
-                    "type": "string", 
-                    "description": "當前情緒標記",
-                    "enum": ["neutral", "happy", "sad", "excited", "confused", "helpful", "concerned", "playful", "thoughtful"]
                 },
                 "confidence": {
                     "type": "number",
@@ -91,10 +89,6 @@ class GeminiWrapper:
                                     "description": "無聊程度變化量 (-1.0 到 +1.0)",
                                     "minimum": -1.0,
                                     "maximum": 1.0
-                                },
-                                "reason": {
-                                    "type": "string",
-                                    "description": "狀態變化的原因說明"
                                 }
                             },
                             "description": "根據對話內容建議的系統狀態更新"
@@ -106,32 +100,43 @@ class GeminiWrapper:
                     "type": "string",
                     "description": "對話觀察摘要，用於記憶處理"
                 },
-                "learning_data": {
+                "learning_signals": {
                     "anyOf": [
                         {
                             "type": "object", 
                             "properties": {
-                                "user_preference": {
-                                    "type": "string",
-                                    "description": "發現的用戶偏好"
+                                "formality_signal": {
+                                    "type": "number",
+                                    "description": "正式程度信號 (-1.0=非正式, 0=中性, 1.0=正式)",
+                                    "minimum": -1.0,
+                                    "maximum": 1.0
                                 },
-                                "conversation_style": {
-                                    "type": "string",
-                                    "description": "用戶對話風格",
-                                    "enum": ["formal", "casual", "technical", "friendly", "brief", "detailed"]
+                                "detail_signal": {
+                                    "type": "number",
+                                    "description": "詳細程度信號 (-1.0=簡潔, 0=適中, 1.0=詳細)",
+                                    "minimum": -1.0,
+                                    "maximum": 1.0
                                 },
-                                "topic_interest": {
-                                    "type": "string",
-                                    "description": "用戶感興趣的話題"
+                                "technical_signal": {
+                                    "type": "number",
+                                    "description": "技術程度信號 (-1.0=通俗, 0=適中, 1.0=專業)",
+                                    "minimum": -1.0,
+                                    "maximum": 1.0
+                                },
+                                "interaction_signal": {
+                                    "type": "number",
+                                    "description": "互動偏好信號 (-1.0=獨立, 0=適中, 1.0=互動)",
+                                    "minimum": -1.0,
+                                    "maximum": 1.0
                                 }
                             },
-                            "description": "從對話中學習到的用戶資訊"
+                            "description": "用戶偏好學習信號，累積多次後形成用戶畫像"
                         },
                         {"type": "null"}
                     ]
                 }
             },
-            "required": ["text", "emotion", "confidence"]
+            "required": ["text", "confidence"]
         }
     
     def _create_work_schema(self) -> dict:
@@ -142,11 +147,6 @@ class GeminiWrapper:
                 "text": {
                     "type": "string",
                     "description": "任務導向的回應文字"
-                },
-                "emotion": {
-                    "type": "string",
-                    "description": "工作時的情緒狀態", 
-                    "enum": ["focused", "determined", "helpful", "confused", "concerned", "satisfied"]
                 },
                 "confidence": {
                     "type": "number",
@@ -227,7 +227,7 @@ class GeminiWrapper:
                     ]
                 }
             },
-            "required": ["text", "emotion", "confidence"]
+            "required": ["text", "confidence"]
         }
     
     def _create_direct_schema(self) -> dict:
@@ -264,14 +264,11 @@ class GeminiWrapper:
 
 
 
-    def query(self, prompt: str, mode: str = "chat") -> dict:
-        contents = [
-            types.Content(role="user", parts=[types.Part(text=prompt)])
-        ]
-
-        # 選擇對應模式的 schema
+    # [修改] 允許 str 或 list[str]
+    def query(self, prompt: str, mode: str = "chat", cached_content=None) -> dict:
+        contents = [types.Content(role="user", parts=[types.Part(text=prompt)])]
         schema = self.response_schemas.get(mode, self.response_schemas["chat"])
-        
+
         config = types.GenerateContentConfig(
             temperature=self.temperature,
             top_p=self.top_p,
@@ -281,6 +278,13 @@ class GeminiWrapper:
             safety_settings=self.safety_settings
         )
 
+        # [修改] 支援單一 id 或多個 id
+        if self.cache_enabled and cached_content:
+            if isinstance(cached_content, (list, tuple)):
+                config.cached_content = list(cached_content)
+            else:
+                config.cached_content = cached_content
+
         result = self.client.models.generate_content(
             model=self.model_name,
             contents=contents,
@@ -289,10 +293,19 @@ class GeminiWrapper:
 
         part = result.candidates[0].content.parts[0]
 
+        import json
+        payload = {}
         if hasattr(part, 'text') and part.text:
-            import json
-            return json.loads(part.text)
+            payload = json.loads(part.text)
         elif hasattr(part, 'struct') and part.struct:
-            return part.struct
+            payload = part.struct
         else:
-            return {"text": "❌ Gemini 未產出有效回應"}
+            payload = {"text": "❌ Gemini 未產出有效回應"}
+
+        # [建議] 把快取命中資訊帶回去，方便 Debug GUI 顯示
+        meta = getattr(result, "usage_metadata", None)
+        payload["_meta"] = {
+            "cached_input_tokens": getattr(meta, "cached_content_used_input_tokens", 0) if meta else 0,
+            "total_input_tokens": getattr(meta, "total_token_count", 0) if meta else 0,
+        }
+        return payload

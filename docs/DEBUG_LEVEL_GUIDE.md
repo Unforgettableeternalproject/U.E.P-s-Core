@@ -1,5 +1,5 @@
 # DEBUG_LEVEL_GUIDE.md
-# 除錯等級指南
+# 除錯等級指南 (使用的是utils/debug_helper.py)
 
 ## 除錯等級定義
 

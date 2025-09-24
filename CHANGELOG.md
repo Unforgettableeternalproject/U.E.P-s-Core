@@ -1210,3 +1210,15 @@
 
 ---
 
+### Removed all example files and made some changes to current files, added some files to compensate. 09/24
+
+> Date: Wed, 24 Sep 2025 23:07:49 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `a6f36daeab2731184d94b33b2dd7764dc19e5344`
+
+---
+

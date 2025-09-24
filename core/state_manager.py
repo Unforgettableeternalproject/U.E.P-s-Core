@@ -29,6 +29,10 @@ class StateManager:
         
     def get_state(self) -> UEPState:
         return self._state
+    
+    def get_current_state(self) -> UEPState:
+        """獲取當前狀態（與 get_state 相同，提供兼容性）"""
+        return self._state
 
     def set_state(self, new_state: UEPState, context: Optional[Dict[str, Any]] = None):
         """

@@ -1,4 +1,6 @@
 # core/session_coordinator.py
+# 這個檔案暫時沒有在系統中運作。
+
 """
 會話協調器 - 整合 General Session、Chatting Session、Workflow Session
 

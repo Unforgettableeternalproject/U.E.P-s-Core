@@ -1246,3 +1246,15 @@
 
 ---
 
+### Improved routing, and removed strategy because it's way too complex and we wouldn't need that. 09/26
+
+> Date: Fri, 26 Sep 2025 03:22:39 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `6bc678b04424c490b7e2c4ca4c6bd391fd9cbcb5`
+
+---
+

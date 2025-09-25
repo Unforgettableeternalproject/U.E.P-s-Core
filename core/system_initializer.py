@@ -28,7 +28,6 @@ from core.controller import unified_controller
 from core.state_manager import UEPState, StateManager, state_manager
 from core.state_queue import get_state_queue_manager
 from core.working_context import working_context_manager, ContextType
-from core.strategies import context_decision_engine
 from configs.config_loader import load_config
 from utils.debug_helper import debug_log, info_log, error_log
 
@@ -82,11 +81,7 @@ class SystemInitializer:
             if not self._initialize_framework_and_modules(production_mode):
                 return False
                 
-            # Phase 4: 策略設置 (原 Phase 6)
-            if not self._setup_strategies():
-                return False
-                
-            # Phase 5: 健康檢查 (原 Phase 7)
+            # Phase 4: 健康檢查 (原 Phase 7)
             if not self._health_check():
                 return False
                 
@@ -232,26 +227,6 @@ class SystemInitializer:
         except Exception as e:
             error_log(f"❌ 框架與模組初始化失敗: {e}")
             return False
-    
-    def _setup_strategies(self) -> bool:
-        """設置路由策略"""
-        try:
-            self.phase = InitializationPhase.STRATEGY_SETUP
-            info_log("⚙️ 設置路由策略...")
-            
-            # 重置決策引擎
-            if hasattr(context_decision_engine, 'reset'):
-                context_decision_engine.reset()
-                info_log("   決策引擎已重置")
-            
-            # 這裡可以設置其他策略相關的配置
-            info_log("   策略設置完成")
-            return True
-            
-        except Exception as e:
-            error_log(f"❌ 策略設置失敗: {e}")
-            return False
-    
     def _health_check(self) -> bool:
         """系統健康檢查"""
         try:

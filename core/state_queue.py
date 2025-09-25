@@ -139,7 +139,7 @@ class StateQueueManager:
         return self._session_manager
     
     def _handle_chat_state(self, queue_item: StateQueueItem):
-        """處理 CHAT 狀態 - 通知狀態管理器創建聊天會話"""
+        """處理 CHAT 狀態 - 通知狀態管理器創建聊天會話並等待完成通知"""
         try:
             from core.state_manager import state_manager
             
@@ -152,20 +152,33 @@ class StateQueueManager:
                 },
                 "trigger_content": queue_item.trigger_content,
                 "queue_item_id": f"{queue_item.state.value}_{queue_item.created_at.timestamp()}",
+                "state_queue_callback": self._on_chat_session_complete,  # 回調函數
                 **queue_item.metadata
             }
             
             # 通知狀態管理器創建聊天會話
             state_manager.set_state(UEPState.CHAT, context)
             
-            info_log(f"[StateQueue] CHAT 狀態處理完成: {queue_item.context_content[:50]}...")
-            debug_log(4, f"[StateQueue] 聊天意圖處理完成")
+            info_log(f"[StateQueue] CHAT 狀態啟動: {queue_item.context_content[:50]}...")
+            debug_log(4, f"[StateQueue] 等待聊天會話完成...")
             
-            # 標記為成功完成
-            self.complete_current_state(success=True, result_data={"chat_processed": True})
+            # 不立即完成狀態，等待會話完成回調
             
         except Exception as e:
             error_log(f"[StateQueue] 處理 CHAT 狀態時發生錯誤: {e}")
+            self.complete_current_state(success=False, result_data={"error": str(e)})
+    
+    def _on_chat_session_complete(self, session_id: str, success: bool, result_data: Dict[str, Any] = None):
+        """聊天會話完成回調"""
+        try:
+            info_log(f"[StateQueue] 聊天會話完成: {session_id} ({'成功' if success else '失敗'})")
+            debug_log(4, f"[StateQueue] 會話結果: {result_data}")
+            
+            # 現在才標記狀態完成
+            self.complete_current_state(success=success, result_data=result_data or {})
+            
+        except Exception as e:
+            error_log(f"[StateQueue] 處理聊天會話完成回調時發生錯誤: {e}")
             self.complete_current_state(success=False, result_data={"error": str(e)})
     
     def _handle_chat_completion(self, queue_item: StateQueueItem, success: bool):
@@ -191,7 +204,7 @@ class StateQueueManager:
             error_log(f"[StateQueue] 處理 CHAT 完成時發生錯誤: {e}")
     
     def _handle_work_state(self, queue_item: StateQueueItem):
-        """處理 WORK 狀態 - 通知狀態管理器創建工作會話"""
+        """處理 WORK 狀態 - 通知狀態管理器創建工作會話並等待完成通知"""
         try:
             from core.state_manager import state_manager
             
@@ -206,20 +219,34 @@ class StateQueueManager:
                 "intent_type": intent_type,
                 "trigger_content": queue_item.trigger_content,
                 "queue_item_id": f"{queue_item.state.value}_{queue_item.created_at.timestamp()}",
+                "state_queue_callback": self._on_work_session_complete,  # 回調函數
                 **queue_item.metadata
             }
             
             # 通知狀態管理器創建工作會話
             state_manager.set_state(UEPState.WORK, context)
             
-            info_log(f"[StateQueue] WORK 狀態處理完成: {queue_item.context_content[:50]}...")
+            info_log(f"[StateQueue] WORK 狀態啟動: {queue_item.context_content[:50]}...")
             debug_log(4, f"[StateQueue] 工作意圖: {intent_type}, 工作流程類型: {workflow_type}")
+            debug_log(4, f"[StateQueue] 等待工作會話完成...")
             
-            # 標記為成功完成
-            self.complete_current_state(success=True, result_data={"work_processed": True})
+            # 不立即完成狀態，等待會話完成回調
             
         except Exception as e:
             error_log(f"[StateQueue] 處理 WORK 狀態時發生錯誤: {e}")
+            self.complete_current_state(success=False, result_data={"error": str(e)})
+    
+    def _on_work_session_complete(self, session_id: str, success: bool, result_data: Dict[str, Any] = None):
+        """工作會話完成回調"""
+        try:
+            info_log(f"[StateQueue] 工作會話完成: {session_id} ({'成功' if success else '失敗'})")
+            debug_log(4, f"[StateQueue] 會話結果: {result_data}")
+            
+            # 現在才標記狀態完成
+            self.complete_current_state(success=success, result_data=result_data or {})
+            
+        except Exception as e:
+            error_log(f"[StateQueue] 處理工作會話完成回調時發生錯誤: {e}")
             self.complete_current_state(success=False, result_data={"error": str(e)})
     
     def _map_intent_to_workflow_type(self, intent_type: str) -> str:

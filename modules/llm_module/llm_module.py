@@ -103,7 +103,7 @@ class LLMModule(BaseModule):
             return False
         
     def handle(self, data: dict) -> dict:
-        """主要處理方法 - 重構版本，支援新的 CHAT/WORK 模式"""
+        """主要處理方法 - 重構版本，支援新的 CHAT/WORK 模式和新 Router 整合"""
         start_time = time.time()
         
         try:
@@ -111,18 +111,30 @@ class LLMModule(BaseModule):
             llm_input = LLMInput(**data)
             debug_log(1, f"[LLM] 處理輸入 - 模式: {llm_input.mode}, 用戶輸入: {llm_input.text[:100]}...")
             
+            # 檢查是否來自新 Router
+            if llm_input.source_layer:
+                debug_log(2, f"[LLM] 來自新Router - 來源層級: {llm_input.source_layer}")
+                if llm_input.processing_context:
+                    debug_log(3, f"[LLM] 處理層上下文: {llm_input.processing_context}")
+            
             # 1. 獲取當前系統狀態和會話信息
             current_state = self.state_manager.get_current_state()
             status = self._get_current_system_status()
             session_info = self._get_current_session_info()
-            identity_context = self._get_identity_context()
+            
+            # 2. 處理身份上下文 (優先使用來自Router的)
+            if llm_input.identity_context:
+                identity_context = llm_input.identity_context
+                debug_log(2, f"[LLM] 使用Router提供的Identity上下文: {identity_context}")
+            else:
+                identity_context = self._get_identity_context()
+                debug_log(2, f"[LLM] 使用本地Identity上下文: {identity_context}")
             
             debug_log(2, f"[LLM] 系統狀態: {current_state}")
             debug_log(2, f"[LLM] StatusManager: {status}")
             debug_log(2, f"[LLM] 會話信息: {session_info}")
-            debug_log(3, f"[LLM] Identity上下文: {identity_context}")
             
-            # 2. 補充系統上下文到llm_input
+            # 3. 補充系統上下文到llm_input (整合Router數據)
             llm_input = self._enrich_with_system_context(
                 llm_input, current_state, status, session_info, identity_context
             )
@@ -567,7 +579,7 @@ class LLMModule(BaseModule):
                                   status: Dict[str, Any],
                                   session_info: Dict[str, Any],
                                   identity_context: Dict[str, Any]) -> LLMInput:
-        """補充系統上下文到LLM輸入"""
+        """補充系統上下文到LLM輸入 - 支援新 Router 整合"""
         try:
             # 創建新的enriched input
             enriched_data = llm_input.dict()
@@ -582,10 +594,39 @@ class LLMModule(BaseModule):
                 "session_info": session_info
             })
             
-            # 補充身份上下文
+            # 補充身份上下文 (不覆蓋Router提供的)
             if not enriched_data.get("identity_context"):
                 enriched_data["identity_context"] = {}
-            enriched_data["identity_context"].update(identity_context)
+            # 只在沒有Router數據時補充本地身份上下文
+            if not llm_input.source_layer:
+                enriched_data["identity_context"].update(identity_context)
+            
+            # 處理新Router提供的協作上下文
+            if llm_input.collaboration_context:
+                debug_log(2, f"[LLM] 處理協作上下文: {list(llm_input.collaboration_context.keys())}")
+                
+                # 設置記憶檢索標誌
+                if "mem" in llm_input.collaboration_context:
+                    enriched_data["enable_memory_retrieval"] = True
+                    mem_config = llm_input.collaboration_context["mem"]
+                    if mem_config.get("retrieve_relevant"):
+                        enriched_data["memory_context"] = "協作模式：需要檢索相關記憶"
+                
+                # 設置系統動作標誌
+                if "sys" in llm_input.collaboration_context:
+                    enriched_data["enable_system_actions"] = True
+                    sys_config = llm_input.collaboration_context["sys"]
+                    if sys_config.get("allow_execution"):
+                        enriched_data["workflow_context"] = {"execution_allowed": True}
+            
+            # 處理Router的會話上下文
+            if llm_input.session_context:
+                enriched_data["session_id"] = llm_input.session_context.get("session_id")
+                enriched_data["system_context"]["router_session"] = llm_input.session_context
+            
+            # 處理NLP實體信息
+            if llm_input.entities:
+                enriched_data["system_context"]["nlp_entities"] = llm_input.entities
             
             return LLMInput(**enriched_data)
             

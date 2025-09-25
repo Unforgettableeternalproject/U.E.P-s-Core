@@ -1,6 +1,8 @@
 import pytest
 from modules.llm_module.llm_module import LLMModule
 
+# 重要: 這個測試目前被棄用，還沒有適應新版構造，請不要使用
+
 @pytest.fixture(scope="module")
 def llm():
     module = LLMModule()

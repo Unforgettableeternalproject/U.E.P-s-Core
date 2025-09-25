@@ -16,10 +16,6 @@ from typing import Dict, Any, Optional, List
 from enum import Enum
 
 from core.framework import CoreFramework, ExecutionMode, core_framework
-from core.strategies import (
-    smart_strategy, priority_strategy, conditional_strategy, 
-    context_decision_engine
-)
 from core.working_context import ContextType
 from core.state_manager import UEPState
 from core.general_session import general_session_manager, GSType
@@ -117,13 +113,7 @@ class UnifiedController:
                 error_log("[UnifiedController] 模組載入失敗")
                 return False
             
-            # 2. 註冊路由策略
-            self._register_route_strategies()
-            
-            # 3. 註冊決策引擎  
-            self._register_decision_engines()
-            
-            # 4. 設置事件處理器
+            # 2. 設置事件處理器
             self._setup_event_handlers()
             
             # 5. 註冊決策處理器 (整合 Working Context)
@@ -232,18 +222,6 @@ class UnifiedController:
         except Exception as e:
             error_log(f"[UnifiedController] 模組載入失敗: {e}")
             return False
-    
-    def _register_route_strategies(self):
-        """註冊路由策略"""
-        self.framework.register_route_strategy("smart", smart_strategy)
-        self.framework.register_route_strategy("priority", priority_strategy)
-        self.framework.register_route_strategy("conditional", conditional_strategy)
-        info_log("[UnifiedController] 路由策略註冊完成")
-    
-    def _register_decision_engines(self):
-        """註冊決策引擎"""
-        self.framework.decision_engines["context_aware"] = context_decision_engine
-        info_log("[UnifiedController] 決策引擎註冊完成")
     
     def _setup_event_handlers(self):
         """設置事件處理器"""

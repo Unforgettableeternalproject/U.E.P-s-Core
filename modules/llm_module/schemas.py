@@ -97,6 +97,16 @@ class LLMInput(BaseModel):
     is_internal: bool = Field(False, description="是否為內部系統調用")
     enable_learning: bool = Field(True, description="是否啟用學習功能")
     
+    # 新 Router 整合支援
+    source_layer: Optional[str] = Field(None, description="來源層級（input/processing/output）")
+    processing_context: Optional[Dict[str, Any]] = Field(None, description="處理層上下文")
+    collaboration_context: Optional[Dict[str, Any]] = Field(None, description="協作模組上下文")
+    entities: Optional[Dict[str, Any]] = Field(None, description="NLP 解析的實體")
+    confidence: Optional[float] = Field(None, description="輸入層信心度")
+    session_context: Optional[Dict[str, Any]] = Field(None, description="會話上下文")
+    enable_memory_retrieval: Optional[bool] = Field(None, description="是否啟用記憶檢索")
+    enable_system_actions: Optional[bool] = Field(None, description="是否啟用系統動作")
+    
     # 向後兼容 (舊版本支援)
     intent: Optional[str] = Field(None, description="舊版意圖（向後兼容）")
     memory: Optional[str] = Field(None, description="舊版記憶（向後兼容）")

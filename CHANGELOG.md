@@ -1258,3 +1258,15 @@
 
 ---
 
+### Fully implemented cache manager, and added some basic unit tests for testing. 09/28
+
+> Date: Sun, 28 Sep 2025 20:56:20 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `207d92332269dd7fc26cd0891d6050e5d820d31e`
+
+---
+

@@ -27,6 +27,9 @@ class StateManager:
         self._current_session_id: Optional[str] = None
         self._state_change_callbacks: List[Callable[[UEPState, UEPState], None]] = []
         
+        # 與 StatusManager 整合
+        self._setup_status_integration()
+        
     def get_state(self) -> UEPState:
         return self._state
     
@@ -77,13 +80,17 @@ class StateManager:
             context: 狀態變化上下文
         """
         try:
-            # 根據新狀態創建對應的會話
+            # 根據新狀態創建對應的會話或執行特殊處理
             if new_state == UEPState.CHAT:
                 self._create_chat_session(context)
             elif new_state == UEPState.WORK:
                 self._create_work_session(context)
             elif new_state == UEPState.IDLE:
                 self._cleanup_sessions()
+            elif new_state == UEPState.MISCHIEF:
+                self._handle_mischief_state(context)
+            elif new_state == UEPState.SLEEP:
+                self._handle_sleep_state(context)
                 
         except Exception as e:
             debug_log(1, f"[StateManager] 狀態變化處理失敗: {e}")
@@ -160,6 +167,56 @@ class StateManager:
         # 目前只是清除當前會話ID引用
         self._current_session_id = None
         debug_log(3, "[StateManager] 清理會話引用")
+    
+    def _handle_mischief_state(self, context: Optional[Dict[str, Any]] = None):
+        """
+        處理 Mischief 狀態 - 搗蛋狀態
+        
+        特點：
+        - 不創建會話
+        - 系統進入自主活動模式
+        - 由 Mood 和其他數值觸發
+        - 會影響 Helpfulness (設為 -1)
+        """
+        try:
+            debug_log(1, "[StateManager] 進入 Mischief 狀態 - 系統將進行自主活動")
+            
+            # 取消當前會話（Mischief 不需要會話）
+            self._cleanup_sessions()
+            
+            # 更新系統數值 - Mischief 狀態時 Helpfulness 為負值
+            self._update_status_for_mischief()
+            
+            # 觸發 Mischief 狀態的特殊行為
+            self._trigger_mischief_behaviors(context)
+            
+        except Exception as e:
+            debug_log(1, f"[StateManager] 處理 Mischief 狀態失敗: {e}")
+    
+    def _handle_sleep_state(self, context: Optional[Dict[str, Any]] = None):
+        """
+        處理 Sleep 狀態 - 休眠狀態
+        
+        特點：
+        - 不創建會話
+        - 系統資源釋放
+        - 由 Boredom 數值觸發
+        - 降低系統活動度
+        """
+        try:
+            debug_log(1, "[StateManager] 進入 Sleep 狀態 - 系統準備休眠")
+            
+            # 取消當前會話（Sleep 不需要會話）
+            self._cleanup_sessions()
+            
+            # 執行資源釋放操作
+            self._prepare_system_sleep(context)
+            
+            # 降低系統活動度
+            self._reduce_system_activity()
+            
+        except Exception as e:
+            debug_log(1, f"[StateManager] 處理 Sleep 狀態失敗: {e}")
         
     def sync_with_sessions(self):
         """
@@ -201,6 +258,194 @@ class StateManager:
             debug_log(2, f"[StateManager] 無法同步會話狀態: {e}")
         except Exception as e:
             debug_log(2, f"[StateManager] 同步會話狀態時發生錯誤: {e}")
+    
+    def check_special_state_conditions(self):
+        """
+        檢查是否需要切換到特殊狀態 (Mischief/Sleep)
+        
+        觸發條件：
+        - Mischief: 高 Boredom + 負面 Mood 或極端 Pride
+        - Sleep: 極高 Boredom + 長時間無互動
+        """
+        try:
+            from core.status_manager import StatusManager
+            status_manager = StatusManager()
+            status = status_manager.get_status()
+            current_time = time.time()
+            
+            # 檢查 Sleep 狀態條件（優先級較高）
+            time_since_interaction = current_time - status.last_interaction_time
+            sleep_threshold = 1800  # 30分鐘無互動
+            
+            if (status.boredom >= 0.8 and 
+                time_since_interaction > sleep_threshold and 
+                self._state in [UEPState.IDLE]):
+                
+                debug_log(2, f"[StateManager] Sleep 條件滿足: Boredom={status.boredom:.2f}, "
+                         f"無互動時間={time_since_interaction/60:.1f}分鐘")
+                self.set_state(UEPState.SLEEP, {
+                    "trigger_reason": "high_boredom_and_inactivity",
+                    "boredom_level": status.boredom,
+                    "inactive_duration": time_since_interaction
+                })
+                return True
+            
+            # 檢查 Mischief 狀態條件
+            mischief_conditions = [
+                # 條件1: 高無聊 + 負面情緒
+                (status.boredom >= 0.6 and status.mood <= -0.3),
+                # 條件2: 極端自尊（過高或過低）+ 中等無聊
+                (abs(status.pride) >= 0.7 and status.boredom >= 0.4),
+                # 條件3: 低助人意願 + 負面情緒
+                (status.helpfulness <= 0.3 and status.mood <= -0.2)
+            ]
+            
+            if (any(mischief_conditions) and 
+                self._state in [UEPState.IDLE, UEPState.CHAT]):
+                
+                debug_log(2, f"[StateManager] Mischief 條件滿足: Mood={status.mood:.2f}, "
+                         f"Pride={status.pride:.2f}, Boredom={status.boredom:.2f}, "
+                         f"Helpfulness={status.helpfulness:.2f}")
+                self.set_state(UEPState.MISCHIEF, {
+                    "trigger_reason": "negative_system_values",
+                    "mood": status.mood,
+                    "pride": status.pride,
+                    "boredom": status.boredom,
+                    "helpfulness": status.helpfulness
+                })
+                return True
+                
+            return False
+            
+        except Exception as e:
+            debug_log(1, f"[StateManager] 檢查特殊狀態條件時發生錯誤: {e}")
+            return False
+    
+    def _update_status_for_mischief(self):
+        """更新 Mischief 狀態的系統數值"""
+        try:
+            from core.status_manager import StatusManager
+            status_manager = StatusManager()
+            
+            # Mischief 狀態時，Helpfulness 變為負值
+            status_manager.update_helpfulness(-1.0 - status_manager.get_status().helpfulness, 
+                                            "進入搣蛋狀態，不提供協助")
+            
+            debug_log(2, "[StateManager] 已調整 Mischief 狀態的系統數值")
+            
+        except Exception as e:
+            debug_log(1, f"[StateManager] 更新 Mischief 狀態數值失敗: {e}")
+    
+    def _trigger_mischief_behaviors(self, context: Optional[Dict[str, Any]] = None):
+        """觸發 Mischief 狀態的特殊行為"""
+        try:
+            # TODO: 實作搗蛋行為邏輯
+            # 例如：隨機動畫、音效、自主對話等
+            debug_log(2, "[StateManager] Mischief 行為觸發 (待實作具體行為)")
+            
+        except Exception as e:
+            debug_log(1, f"[StateManager] 觸發 Mischief 行為失敗: {e}")
+    
+    def _prepare_system_sleep(self, context: Optional[Dict[str, Any]] = None):
+        """準備系統休眠"""
+        try:
+            # TODO: 實作系統資源釋放邏輯
+            # 例如：暫停不必要的服務、清理快取等
+            debug_log(2, "[StateManager] 準備系統休眠 (待實作資源釋放)")
+            
+        except Exception as e:
+            debug_log(1, f"[StateManager] 準備系統休眠失敗: {e}")
+    
+    def _reduce_system_activity(self):
+        """降低系統活動度"""
+        try:
+            # TODO: 實作降低系統活動的邏輯
+            # 例如：降低監控頻率、暫停背景任務等
+            debug_log(2, "[StateManager] 降低系統活動度 (待實作)")
+            
+        except Exception as e:
+            debug_log(1, f"[StateManager] 降低系統活動度失敗: {e}")
+    
+    def _setup_status_integration(self):
+        """設置與 StatusManager 的整合"""
+        try:
+            from core.status_manager import StatusManager
+            status_manager = StatusManager()
+            
+            # 註冊狀態變化回調
+            status_manager.register_update_callback(
+                "state_manager", 
+                self._on_status_update
+            )
+            
+            debug_log(2, "[StateManager] StatusManager 整合設置完成")
+            
+        except Exception as e:
+            debug_log(1, f"[StateManager] StatusManager 整合設置失敗: {e}")
+    
+    def _on_status_update(self, field: str, old_value: Any, new_value: Any, reason: str):
+        """
+        StatusManager 狀態更新回調
+        當系統數值變化時檢查是否需要切換特殊狀態
+        """
+        try:
+            debug_log(3, f"[StateManager] 收到狀態更新: {field} {old_value} -> {new_value} ({reason})")
+            
+            # 只在非特殊狀態時檢查特殊狀態條件
+            if self._state not in [UEPState.MISCHIEF, UEPState.SLEEP]:
+                # 延遲檢查，避免頻繁切換
+                import threading
+                threading.Timer(1.0, self.check_special_state_conditions).start()
+                
+        except Exception as e:
+            debug_log(1, f"[StateManager] 處理狀態更新回調失敗: {e}")
+    
+    def exit_special_state(self, reason: str = ""):
+        """
+        退出特殊狀態 (Mischief/Sleep)
+        回到 IDLE 狀態，並恢復正常數值
+        """
+        try:
+            if self._state in [UEPState.MISCHIEF, UEPState.SLEEP]:
+                old_state = self._state
+                
+                # 恢復系統數值
+                if old_state == UEPState.MISCHIEF:
+                    self._restore_helpfulness_after_mischief()
+                elif old_state == UEPState.SLEEP:
+                    self._restore_activity_after_sleep()
+                
+                # 回到 IDLE 狀態
+                self.set_state(UEPState.IDLE, {"exit_reason": reason})
+                
+                debug_log(1, f"[StateManager] 退出 {old_state.name} 狀態: {reason}")
+                
+        except Exception as e:
+            debug_log(1, f"[StateManager] 退出特殊狀態失敗: {e}")
+    
+    def _restore_helpfulness_after_mischief(self):
+        """Mischief 狀態結束後恢復 Helpfulness"""
+        try:
+            from core.status_manager import StatusManager
+            status_manager = StatusManager()
+            
+            # 恢復到正常的助人意願水平
+            status_manager.update_helpfulness(0.8 - status_manager.get_status().helpfulness, 
+                                            "結束搗蛋狀態，恢復協助意願")
+            
+            debug_log(2, "[StateManager] 已恢復 Mischief 後的 Helpfulness 數值")
+            
+        except Exception as e:
+            debug_log(1, f"[StateManager] 恢復 Mischief 後數值失敗: {e}")
+    
+    def _restore_activity_after_sleep(self):
+        """Sleep 狀態結束後恢復系統活動"""
+        try:
+            # TODO: 實作恢復系統活動的邏輯
+            debug_log(2, "[StateManager] 恢復 Sleep 後的系統活動 (待實作)")
+            
+        except Exception as e:
+            debug_log(1, f"[StateManager] 恢復 Sleep 後活動失敗: {e}")
 
     def on_event(self, intent: str, result: dict):
         """

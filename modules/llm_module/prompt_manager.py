@@ -17,7 +17,7 @@ from typing import Dict, Any, Optional, List, Callable
 from pathlib import Path
 from utils.debug_helper import debug_log, info_log, error_log
 from core.status_manager import status_manager
-from .module_interfaces import ModuleDataProvider
+from .module_interfaces import LegacyModuleDataProvider
 
 
 class PromptManager:
@@ -30,7 +30,7 @@ class PromptManager:
         self.system_instructions = config.get("system_instructions", {})
         
         # Module data provider for dynamic content
-        self.data_provider = ModuleDataProvider()
+        self.data_provider = LegacyModuleDataProvider()
         
         # Cache for built prompts
         self._template_cache = {}
@@ -40,7 +40,8 @@ class PromptManager:
     def build_chat_prompt(self, user_input: str, identity_context: Optional[Dict] = None,
                          memory_context: Optional[str] = None, 
                          conversation_history: Optional[List] = None,
-                         is_internal: bool = False) -> str:
+                         is_internal: bool = False,
+                         relevant_memories: Optional[List[Dict]] = None) -> str:
         """構建對話模式提示詞 - 整合靜態配置與動態模組資料"""
         
         prompt_parts = []
@@ -72,8 +73,8 @@ class PromptManager:
         if identity_info:
             prompt_parts.append(identity_info)
         
-        # 記憶上下文 - 從 MEM 模組獲取或使用傳入的內容
-        memory_section = self._build_memory_context(memory_context)
+        # 記憶上下文 - 從 MEM 模組獲取或使用傳入的內容，並整合檢索到的記憶
+        memory_section = self._build_memory_context(memory_context, relevant_memories)
         if memory_section:
             prompt_parts.append(memory_section)
         
@@ -213,22 +214,45 @@ class PromptManager:
         
         return f"mood={mood_en}, pride={pride_en}, helpfulness={helpfulness_en}, boredom={boredom_en}"
     
-    def _build_memory_context(self, memory_context: Optional[str] = None) -> Optional[str]:
-        """構建記憶上下文 - 優先使用傳入內容，否則從 MEM 模組獲取"""
+    def _build_memory_context(self, memory_context: Optional[str] = None, 
+                             relevant_memories: Optional[List[Dict]] = None) -> Optional[str]:
+        """構建記憶上下文區段 - 整合檢索到的記憶"""
+        context_parts = []
+        
+        # 原有的記憶上下文
         if memory_context:
-            return f"Relevant Memory:\n{memory_context}"
+            context_parts.append(f"Memory Context:\n{memory_context}")
         
-        # Try to get memory data from MEM module
-        try:
-            mem_data = self.data_provider.get_mem_data("context")
-            if mem_data and isinstance(mem_data, dict):
-                relevant_memories = mem_data.get("relevant_memories", "")
-                if relevant_memories:
-                    return f"Relevant Memory:\n{relevant_memories}"
-        except Exception as e:
-            debug_log(3, f"[PromptManager] 無法從 MEM 模組獲取記憶資料: {e}")
+        # 新的檢索記憶
+        if relevant_memories:
+            memory_text_parts = ["Retrieved Relevant Memories:"]
+            for i, memory in enumerate(relevant_memories, 1):
+                memory_type = memory.get("type", "general")
+                content = memory.get("content", "")
+                
+                if memory_type == "conversation":
+                    user_input = memory.get("user_input", "")
+                    assistant_response = memory.get("assistant_response", "")
+                    memory_text_parts.append(f"{i}. [Conversation] User: {user_input} | Assistant: {assistant_response}")
+                elif memory_type == "user_info":
+                    memory_text_parts.append(f"{i}. [User Info] {content}")
+                else:
+                    memory_text_parts.append(f"{i}. [{memory_type}] {content}")
+                    
+            context_parts.append("\n".join(memory_text_parts))
         
-        return None
+        # 如果都沒有，嘗試從 MEM 模組獲取 (向後兼容)
+        if not context_parts:
+            try:
+                mem_data = self.data_provider.get_mem_data("context")
+                if mem_data and isinstance(mem_data, dict):
+                    mem_memories = mem_data.get("relevant_memories", "")
+                    if mem_memories:
+                        context_parts.append(f"Relevant Memory:\n{mem_memories}")
+            except Exception as e:
+                debug_log(3, f"[PromptManager] 無法從 MEM 模組獲取記憶資料: {e}")
+        
+        return "\n\n".join(context_parts) if context_parts else None
     
     def _build_functions_context(self, available_functions: Optional[str] = None) -> Optional[str]:
         """構建系統功能上下文 - 優先使用傳入內容，否則從 SYS 模組獲取"""

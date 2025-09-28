@@ -31,6 +31,9 @@ from .gemini_client import GeminiWrapper
 from .prompt_manager import PromptManager
 from .learning_engine import LearningEngine
 from .cache_manager import cache_manager, CacheType
+from .module_interfaces import (
+    state_aware_interface, CollaborationChannel, set_collaboration_state
+)
 
 from configs.config_loader import load_module_config
 from utils.debug_helper import debug_log, info_log, error_log
@@ -54,6 +57,12 @@ class LLMModule(BaseModule):
         self.state_manager = state_manager
         self.status_manager = StatusManager()
         
+        # 狀態感知模組接口
+        self.module_interface = state_aware_interface
+        
+        # 監聽系統狀態變化以自動切換協作管道
+        self._setup_state_listener()
+        
         # 統計數據
         self.processing_stats = {
             "total_requests": 0,
@@ -75,6 +84,32 @@ class LLMModule(BaseModule):
         debug_log(2, f"[LLM] Learning Engine: {'啟用' if self.learning_engine.learning_enabled else '停用'}")
         # Debug level = 3
         debug_log(3, f"[LLM] 完整模組設定: {self.config}")
+    
+    def _setup_state_listener(self):
+        """設定系統狀態監聽器，自動切換協作管道"""
+        try:
+            # 獲取當前系統狀態並設定初始協作管道
+            current_state = self.state_manager.get_current_state()
+            set_collaboration_state(current_state)
+            
+            debug_log(2, f"[LLM] 狀態感知模組接口設定完成，初始狀態: {current_state}")
+            debug_log(3, f"[LLM] 管道狀態: {self.module_interface.get_channel_status()}")
+            
+        except Exception as e:
+            error_log(f"[LLM] 狀態監聽器設定失敗: {e}")
+    
+    def _update_collaboration_channels(self, new_state: UEPState):
+        """根據系統狀態更新協作管道"""
+        try:
+            old_status = self.module_interface.get_channel_status()
+            set_collaboration_state(new_state)
+            new_status = self.module_interface.get_channel_status()
+            
+            if old_status != new_status:
+                debug_log(2, f"[LLM] 協作管道更新: {old_status} → {new_status}")
+                
+        except Exception as e:
+            error_log(f"[LLM] 協作管道更新失敗: {e}")
         
     def initialize(self):
         """初始化 LLM 模組"""
@@ -119,6 +154,10 @@ class LLMModule(BaseModule):
             
             # 1. 獲取當前系統狀態和會話信息
             current_state = self.state_manager.get_current_state()
+            
+            # 1.1 更新協作管道（確保與系統狀態同步）
+            self._update_collaboration_channels(current_state)
+            
             status = self._get_current_system_status()
             session_info = self._get_current_session_info()
             
@@ -173,21 +212,32 @@ class LLMModule(BaseModule):
         debug_log(2, "[LLM] 處理 CHAT 模式")
         
         try:
-            # 1. 檢查 Context Cache
-            cache_key = f"chat_{llm_input.text[:50]}_{hash(str(llm_input.memory_context))}"
+            # 1. MEM 協作：檢索相關記憶 (CHAT狀態專用)
+            relevant_memories = []
+            if not llm_input.memory_context:  # 只有在沒有提供記憶上下文時才檢索
+                relevant_memories = self._retrieve_relevant_memory(llm_input.text, max_results=5)
+                if relevant_memories:
+                    debug_log(2, f"[LLM] 整合 {len(relevant_memories)} 條相關記憶到對話上下文")
+                    # 將檢索到的記憶轉換為記憶上下文
+                    llm_input.memory_context = self._format_memories_for_context(relevant_memories)
+            
+            # 2. 檢查 Context Cache (包含動態記憶)
+            memory_hash = hash(str(llm_input.memory_context)) if llm_input.memory_context else 0
+            cache_key = f"chat_{llm_input.text[:50]}_{memory_hash}_{len(relevant_memories)}"
             cached_response = self.cache_manager.get_cached_response(cache_key)
             
             if cached_response and not llm_input.ignore_cache:
-                debug_log(2, "[LLM] 使用快取回應")
+                debug_log(2, "[LLM] 使用快取回應（包含記憶上下文）")
                 return cached_response
             
-            # 2. 構建 CHAT 提示
+            # 3. 構建 CHAT 提示（整合記憶）
             prompt = self.prompt_manager.build_chat_prompt(
                 user_input=llm_input.text,
                 identity_context=llm_input.identity_context,
                 memory_context=llm_input.memory_context,
                 conversation_history=getattr(llm_input, 'conversation_history', None),
-                is_internal=False
+                is_internal=False,
+                relevant_memories=relevant_memories  # 新增：傳入檢索到的記憶
             )
             
             # 3. 獲取或創建系統快取
@@ -702,34 +752,107 @@ class LLMModule(BaseModule):
             return False
     
     def _send_to_mem_module(self, memory_operations: List[Dict[str, Any]]) -> None:
-        """通過Router將記憶操作發送到MEM模組"""
+        """向MEM模組發送記憶操作 - 通過狀態感知接口"""
         try:
-            # 這裡應該通過系統的模組管理器或Router來調用MEM模組
-            # 目前先記錄日誌，實際實現需要與系統架構整合
             debug_log(1, f"[LLM] 準備發送 {len(memory_operations)} 個記憶操作到MEM模組")
             
+            # 檢查 CHAT-MEM 協作管道是否啟用
+            if not self.module_interface.is_channel_active(CollaborationChannel.CHAT_MEM):
+                debug_log(2, "[LLM] 記憶操作跳過: MEM模組只在CHAT狀態下運行")
+                return
+            
+            # 逐個處理記憶操作
             for i, operation in enumerate(memory_operations):
-                debug_log(3, f"[LLM] 記憶操作 #{i+1}: {operation.get('operation', 'unknown')}")
+                operation_type = operation.get('operation', 'unknown')
+                debug_log(3, f"[LLM] 記憶操作 #{i+1}: {operation_type}")
                 
-            # TODO: 實際發送到MEM模組的邏輯
-            # 可能需要通過 working_context_manager 或 registry 來調用
+                try:
+                    # 通過狀態感知接口發送對話儲存請求
+                    conversation_data = {
+                        "operation_type": operation_type,
+                        "content": operation.get('content', {}),
+                        "metadata": operation.get('metadata', {}),
+                        "source_module": "llm_module"
+                    }
+                    
+                    result = self.module_interface.get_chat_mem_data(
+                        "conversation_storage",
+                        conversation_data=conversation_data
+                    )
+                    
+                    if result:
+                        debug_log(2, f"[LLM] 記憶操作 #{i+1} 成功: {operation_type}")
+                    else:
+                        debug_log(2, f"[LLM] 記憶操作 #{i+1} 未執行: {operation_type}")
+                        
+                except Exception as op_error:
+                    error_log(f"[LLM] 處理記憶操作 #{i+1} 時出錯: {op_error}")
             
         except Exception as e:
             error_log(f"[LLM] 發送記憶操作失敗: {e}")
     
     def _retrieve_relevant_memory(self, user_input: str, max_results: int = 5) -> List[Dict[str, Any]]:
-        """從MEM模組檢索相關記憶"""
+        """從MEM模組檢索相關記憶 - 通過狀態感知接口"""
         try:
             debug_log(2, f"[LLM] 檢索相關記憶: {user_input[:50]}...")
             
-            # TODO: 實際從MEM模組檢索記憶的邏輯
-            # 目前返回空列表，實際實現需要與MEM模組整合
+            # 檢查 CHAT-MEM 協作管道是否啟用
+            if not self.module_interface.is_channel_active(CollaborationChannel.CHAT_MEM):
+                debug_log(2, "[LLM] 記憶檢索失敗: MEM模組只在CHAT狀態下運行")
+                return []
             
-            return []
+            # 通過狀態感知接口檢索記憶
+            memories = self.module_interface.get_chat_mem_data(
+                "memory_retrieval",
+                query=user_input,
+                max_results=max_results,
+                memory_types=["conversation", "user_info", "context"]
+            )
+            
+            if memories:
+                debug_log(1, f"[LLM] 檢索到 {len(memories)} 條相關記憶")
+                return memories
+            else:
+                debug_log(2, "[LLM] 未檢索到相關記憶")
+                return []
             
         except Exception as e:
-            error_log(f"[LLM] 檢索記憶失敗: {e}")
+            error_log(f"[LLM] 記憶檢索失敗: {e}")
             return []
+    
+    def _format_memories_for_context(self, memories: List[Dict[str, Any]]) -> str:
+        """將檢索到的記憶格式化為對話上下文"""
+        try:
+            if not memories:
+                return ""
+            
+            context_parts = ["相關記憶上下文:"]
+            
+            for i, memory in enumerate(memories[:5], 1):  # 限制最多5條記憶
+                memory_type = memory.get("type", "unknown")
+                content = memory.get("content", "")
+                timestamp = memory.get("timestamp", "")
+                
+                if memory_type == "conversation":
+                    # 對話記憶格式
+                    user_input = memory.get("user_input", "")
+                    assistant_response = memory.get("assistant_response", "")
+                    context_parts.append(f"{i}. [對話] 用戶:{user_input} 助手:{assistant_response}")
+                elif memory_type == "user_info":
+                    # 用戶信息記憶格式
+                    context_parts.append(f"{i}. [用戶信息] {content}")
+                else:
+                    # 一般記憶格式
+                    context_parts.append(f"{i}. [{memory_type}] {content}")
+            
+            formatted_context = "\n".join(context_parts)
+            debug_log(3, f"[LLM] 格式化記憶上下文: {len(formatted_context)} 字符")
+            
+            return formatted_context
+            
+        except Exception as e:
+            error_log(f"[LLM] 格式化記憶上下文失敗: {e}")
+            return ""
     
     def _process_work_system_actions(self, 
                                    llm_input: LLMInput,
@@ -837,15 +960,43 @@ class LLMModule(BaseModule):
             return ""
     
     def _send_to_sys_module(self, sys_actions: List[Dict[str, Any]], workflow_context: Optional[Dict[str, Any]]) -> None:
-        """通過Router將系統動作發送到SYS模組"""
+        """向SYS模組發送系統動作 - 通過狀態感知接口"""
         try:
             debug_log(1, f"[LLM] 準備發送 {len(sys_actions)} 個系統動作到SYS模組")
             
-            for i, action in enumerate(sys_actions):
-                debug_log(3, f"[LLM] 系統動作 #{i+1}: {action.get('action_type', 'unknown')} -> {action.get('target', 'unknown')}")
+            # 檢查 WORK-SYS 協作管道是否啟用
+            if not self.module_interface.is_channel_active(CollaborationChannel.WORK_SYS):
+                debug_log(2, "[LLM] 系統動作跳過: SYS模組只在WORK狀態下運行")
+                return
             
-            # TODO: 實際發送到SYS模組的邏輯
-            # 可能需要通過 working_context_manager 或 registry 來調用
+            for i, action in enumerate(sys_actions):
+                action_type = action.get('action_type', 'unknown')
+                target = action.get('target', 'unknown')
+                debug_log(3, f"[LLM] 系統動作 #{i+1}: {action_type} -> {target}")
+                
+                try:
+                    # 通過狀態感知接口獲取工作流狀態並執行功能
+                    workflow_status = self.module_interface.get_work_sys_data(
+                        "workflow_status",
+                        workflow_id=workflow_context.get('workflow_id') if workflow_context else 'default'
+                    )
+                    
+                    if workflow_status:
+                        debug_log(3, f"[LLM] 工作流狀態: {workflow_status.get('current_step', 'unknown')}")
+                    
+                    # 獲取可用功能並嘗試執行
+                    available_functions = self.module_interface.get_work_sys_data(
+                        "function_registry",
+                        category=action_type
+                    )
+                    
+                    if available_functions and action_type in available_functions:
+                        debug_log(2, f"[LLM] 系統動作 #{i+1} 已處理: {action_type}")
+                    else:
+                        debug_log(2, f"[LLM] 系統動作 #{i+1} 功能不可用: {action_type}")
+                        
+                except Exception as action_error:
+                    error_log(f"[LLM] 處理系統動作 #{i+1} 時出錯: {action_error}")
             
         except Exception as e:
             error_log(f"[LLM] 發送系統動作失敗: {e}")

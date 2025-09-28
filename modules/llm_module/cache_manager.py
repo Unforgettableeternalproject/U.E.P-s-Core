@@ -15,8 +15,9 @@ from typing import Dict, Any, Optional, List, Callable, TYPE_CHECKING
 from dataclasses import dataclass, field
 from enum import Enum
 
-from google import genai
-from google.genai import types
+# Google genai imports - 與 gemini_client.py 保持一致
+# from google import genai  # 在需要時才導入
+# from google.genai import types
 from configs.config_loader import load_module_config
 from utils.debug_helper import debug_log, info_log, error_log
 
@@ -94,13 +95,31 @@ class CacheManager:
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self.config = config or load_module_config("llm_module").get("cache_manager", {})
         
-        # Gemini客戶端
-        self.client = genai.Client(
-            vertexai=True,
-            project=os.getenv("GCP_PROJECT_ID"),
-            location=os.getenv("GCP_LOCATION"),
-        )
+        # Gemini客戶端 - 與 gemini_client.py 使用相同配置
+        project_id = os.getenv("GCP_PROJECT_ID")
+        location = os.getenv("GCP_LOCATION")
+        
+        if not project_id:
+            error_log("[CacheManager] GCP_PROJECT_ID 環境變數未設定，快取功能將受限")
+            self.client = None
+        else:
+            try:
+                from google import genai
+                self.client = genai.Client(
+                    vertexai=True,
+                    project=project_id,
+                    location=location,
+                )
+                info_log(f"[CacheManager] Vertex AI 客戶端初始化成功 (專案: {project_id}, 區域: {location})")
+            except Exception as e:
+                error_log(f"[CacheManager] Vertex AI 客戶端初始化失敗: {e}")
+                self.client = None
+        
         self.model_name = self.config.get("model_name", "gemini-2.5-flash-lite")
+        
+        # 引用 PromptManager 來獲取真實內容
+        from .prompt_manager import PromptManager
+        self._prompt_manager = None  # 延遲初始化
         
         # Gemini顯性快取管理
         self.caches: Dict[str, CacheInfo] = {}
@@ -124,6 +143,13 @@ class CacheManager:
         self.min_cache_size = self.config.get("min_cache_size", 1024)
         
         debug_log(1, "[CacheManager] 初始化完成")
+    
+    def _get_prompt_manager(self):
+        """延遲初始化 PromptManager 以避免循環導入"""
+        if self._prompt_manager is None:
+            from .prompt_manager import PromptManager
+            self._prompt_manager = PromptManager()
+        return self._prompt_manager
     
     def get_or_create_cache(self, 
                            name: str,
@@ -210,23 +236,26 @@ class CacheManager:
             return None
     
     def _create_cached_content(self, content: str, display_name: str, ttl_seconds: int):
-        """創建Gemini顯性快取"""
+        """創建Gemini顯性快取 (使用 genai.Client)"""
         try:
+            from google.genai import types
+            
+            # 使用 genai.Client 創建快取
             cache = self.client.caches.create(
                 model=self.model_name,
                 config=types.CreateCachedContentConfig(
                     display_name=display_name,
-                    system_instruction=content,     # 主要塞在 system_instruction
-                    contents=[],                    # 保留欄位（未來要掛檔案/規格可以用）
+                    system_instruction=content,  # 主要快取內容
+                    contents=[],                 # 保留欄位（未來擴展用）
                     ttl=f"{ttl_seconds}s"
                 )
             )
             
-            debug_log(2, f"[CacheManager] Gemini快取建立: {cache.name}")
+            debug_log(2, f"[CacheManager] Gemini 快取建立: {cache.name} (TTL: {ttl_seconds}s)")
             return cache
             
         except Exception as e:
-            error_log(f"[CacheManager] Gemini快取建立失敗: {e}")
+            error_log(f"[CacheManager] Gemini 快取建立失敗: {e}")
             return None
     
     def update_ttl(self, name: str, ttl_seconds: int) -> bool:
@@ -237,7 +266,9 @@ class CacheManager:
                 
             cache_info = self.caches[name]
             
-            # 更新Gemini快取TTL
+            # 更新 Gemini 快取TTL
+            from google.genai import types
+            
             self.client.caches.update(
                 name=cache_info.cached_content_id,
                 config=types.UpdateCachedContentConfig(
@@ -263,7 +294,7 @@ class CacheManager:
                 
             cache_info = self.caches[name]
             
-            # 刪除Gemini快取
+            # 刪除 Gemini 快取
             if cache_info.cached_content_id:
                 self.client.caches.delete(name=cache_info.cached_content_id)
             
@@ -385,36 +416,98 @@ class CacheManager:
             return {}
     
     def _build_persona_content(self) -> str:
-        """構建persona內容"""
-        # TODO: 實際的persona內容構建
-        return """
-        你是U.E.P (Unified Experience Partner)，一個智能助理系統。
-        你的特點：友善、專業、樂於助人，具有學習和記憶能力。
-        你會根據系統狀態調整回應風格和行為模式。
-        """
+        """構建persona內容 - 從 PromptManager 獲取真實系統提示詞"""
+        try:
+            prompt_manager = self._get_prompt_manager()
+            
+            # 獲取基礎人格設定
+            base_personality = prompt_manager.system_instructions.get("base_personality", "")
+            
+            if not base_personality:
+                error_log("[CacheManager] 未找到 base_personality 系統提示詞")
+                return self._get_fallback_persona()
+            
+            # 替換系統數值占位符（如果有的話）
+            if "{system_values}" in base_personality:
+                base_personality = prompt_manager._replace_system_values_placeholder(base_personality)
+            
+            debug_log(2, f"[CacheManager] 成功獲取 persona 內容，長度: {len(base_personality)}")
+            return base_personality
+            
+        except Exception as e:
+            error_log(f"[CacheManager] 獲取 persona 內容失敗: {e}")
+            return self._get_fallback_persona()
     
     def _build_functions_content(self) -> str:
-        """構建functions內容（從functions.yaml展開）"""
-        # TODO: 實際從functions.yaml讀取和展開
-        return """
-        可用系統功能：
-        - 檔案操作：開啟、建立、刪除、複製檔案
-        - 系統指令：執行程式、搜尋檔案、查詢資訊
-        - 記憶管理：儲存、檢索對話記憶
-        - 狀態管理：更新系統情緒和行為參數
-        """
+        """構建functions內容 - 從配置文件獲取系統功能規格"""
+        try:
+            # TODO: 實際從 functions.yaml 或相關配置讀取
+            # 這裡應該讀取實際的系統功能定義
+            
+            fallback_content = """系統功能規格：
+- 記憶管理：儲存、檢索、整理對話記憶和使用者資訊
+- 狀態管理：更新情緒數值 (Mood/Pride/Helpfulness/Boredom)
+- 會話控制：建立、切換、結束不同類型的會話
+- 身份管理：處理多重身份和個人化設定
+- 系統監控：追蹤模組狀態和效能指標
+- 錯誤處理：捕捉和回報系統異常情況"""
+            
+            debug_log(2, f"[CacheManager] 使用預設 functions 內容，長度: {len(fallback_content)}")
+            return fallback_content
+            
+        except Exception as e:
+            error_log(f"[CacheManager] 獲取 functions 內容失敗: {e}")
+            return "系統功能規格載入失敗"
     
     def _build_style_policy_content(self) -> str:
-        """構建風格策略內容"""
-        # TODO: 實際的風格策略規則
-        return """
-        回應風格規則：
-        1. 使用Traditional Chinese (zh-TW)
-        2. 根據Mood值調整語氣：高=活潑，低=沉穩
-        3. 根據Pride值調整自信度：高=積極，低=謙遜  
-        4. 根據Boredom值決定主動性：高=主動建議，低=被動回應
-        JSON輸出格式規範和安全規則...
-        """
+        """構建風格策略內容 - 從 PromptManager 獲取樣式規則"""
+        try:
+            prompt_manager = self._get_prompt_manager()
+            
+            # 獲取對話模式和工作模式的指示
+            chat_mode = prompt_manager.system_instructions.get("chat_mode", "")
+            work_mode = prompt_manager.system_instructions.get("work_mode", "")
+            
+            style_parts = []
+            
+            if chat_mode:
+                style_parts.append(f"對話模式規則：\n{chat_mode}")
+            
+            if work_mode:
+                style_parts.append(f"工作模式規則：\n{work_mode}")
+            
+            # 添加狀態數值影響規則
+            style_parts.append("""
+狀態數值影響規則：
+1. Mood (-1到+1)：影響語氣活潑度和情緒表達
+2. Pride (0到+1)：影響回應的自信度和積極性
+3. Helpfulness (0到+1)：影響協助意願和主動性
+4. Boredom (0到+1)：影響回應的豐富度和創意性
+
+JSON 輸出格式：嚴格遵循指定的 schema
+安全規則：不提供有害、不當或危險的內容""")
+            
+            content = "\n\n".join(style_parts)
+            debug_log(2, f"[CacheManager] 成功獲取 style policy 內容，長度: {len(content)}")
+            return content
+            
+        except Exception as e:
+            error_log(f"[CacheManager] 獲取 style policy 內容失敗: {e}")
+            return self._get_fallback_style_policy()
+    
+    def _get_fallback_persona(self) -> str:
+        """備用的 persona 內容"""
+        return """你是 U.E.P (Unified Experience Partner)，一個智能助理系統。
+你的特點：友善、專業、樂於助人，具有學習和記憶能力。
+你會根據系統狀態調整回應風格和行為模式，提供個人化的協助。"""
+    
+    def _get_fallback_style_policy(self) -> str:
+        """備用的風格策略內容"""
+        return """基本回應規則：
+1. 使用 Traditional Chinese (zh-TW)
+2. 保持友善和專業的語調
+3. 提供清晰、有用的回應
+4. 遵循 JSON 格式要求"""
 
     # ========== 本地快取功能 (整合自ContextCache) ==========
     
@@ -573,6 +666,27 @@ class CacheManager:
             debug_log(2, f"[CacheManager] 清理本地快取: {expired_count}個過期條目")
         
         return expired_count
+    
+    def _get_prompt_manager(self):
+        """獲取 PromptManager 實例"""
+        try:
+            # 嘗試從註冊表獲取
+            from core.registry import get_module
+            llm_module = get_module('llm_module')
+            
+            if llm_module and hasattr(llm_module, 'prompt_manager'):
+                debug_log(3, "[CacheManager] 從註冊表獲取 PromptManager")
+                return llm_module.prompt_manager
+            else:
+                # 直接創建實例（備用方案）
+                from .prompt_manager import PromptManager
+                debug_log(2, "[CacheManager] 創建新的 PromptManager 實例")
+                return PromptManager()
+                
+        except Exception as e:
+            error_log(f"[CacheManager] 無法獲取 PromptManager: {e}")
+            # 返回 None，調用方需要處理此情況
+            return None
 
 
 # 全局快取管理器實例

@@ -4,7 +4,7 @@ modules_enabled:
   stt_module: false
   nlp_module: false
   mem_module: true
-  llm_module: false
+  llm_module: true
   tts_module: false
   sys_module: false
   ui_module: true

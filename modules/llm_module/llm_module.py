@@ -463,9 +463,9 @@ class LLMModule(BaseModule):
             debug_log(1, f"[LLM] 系統動作分析失敗: {e}")
             return None
     
-    def _on_status_update(self, status_type: str, old_value: float, new_value: float):
+    def _on_status_update(self, status_type: str, old_value: float, new_value: float, reason: str = ""):
         """StatusManager 狀態更新回調"""
-        debug_log(2, f"[LLM] 系統狀態更新 - {status_type}: {old_value} -> {new_value}")
+        debug_log(2, f"[LLM] 系統狀態更新 - {status_type}: {old_value} -> {new_value} ({reason})")
         
         # 根據狀態變化調整 LLM 行為
         if status_type == "mood" and new_value < 0.3:

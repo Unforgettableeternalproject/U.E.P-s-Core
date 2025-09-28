@@ -492,6 +492,10 @@ class WorkingContextManager:
         """獲取當前用戶身份"""
         return self.get_context_data("current_identity")
     
+    def set_identity(self, identity_data: Dict[str, Any]):
+        """設置當前用戶身份（別名方法，與測試代碼兼容）"""
+        self.set_current_identity(identity_data)
+    
     def set_memory_token(self, token: str):
         """設置記憶庫存取令牌"""
         self.set_context_data("memory_token", token)

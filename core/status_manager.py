@@ -49,6 +49,10 @@ class SystemStatus:
         self.pride = max(-1.0, min(1.0, self.pride))
         self.helpfulness = max(0.0, min(1.0, self.helpfulness))
         self.boredom = max(0.0, min(1.0, self.boredom))
+    
+    def get(self, key: str, default=None):
+        """獲取狀態屬性值（類似字典的 get 方法）"""
+        return getattr(self, key, default)
 
 
 class StatusManager:

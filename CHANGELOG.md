@@ -1270,3 +1270,15 @@
 
 ---
 
+### Added some tests related to LLM, and made a virtual internal environment for those session-dependent module to work. 09/29
+
+> Date: Mon, 29 Sep 2025 02:18:01 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `da81c44df919e29d2fcd6fc26f29c33e2b8ccc0a`
+
+---
+

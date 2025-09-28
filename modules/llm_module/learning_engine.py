@@ -13,6 +13,7 @@
 
 import json
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, asdict
@@ -556,3 +557,16 @@ class LearningEngine:
             self.interaction_history = [p for p in self.interaction_history 
                                       if self._get_identity_from_interaction(p) != identity_id]
             info_log(f"[LearningEngine] 清除用戶 {identity_id} 的學習數據")
+    
+    def get_learning_statistics(self) -> Dict[str, Any]:
+        """獲取學習引擎統計數據"""
+        return {
+            "total_interactions": len(self.interaction_history),
+            "users_count": len(self.conversation_styles),
+            "patterns_learned": len(self.usage_patterns),
+            "recent_interactions": len([p for p in self.interaction_history 
+                                      if (datetime.now() - p.timestamp).days < 7]),
+            "average_response_length": sum(p.response_length for p in self.interaction_history) / 
+                                     max(len(self.interaction_history), 1),
+            "learning_enabled": self.learning_enabled
+        }

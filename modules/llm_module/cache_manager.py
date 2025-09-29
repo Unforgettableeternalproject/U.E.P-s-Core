@@ -115,6 +115,7 @@ class CacheManager:
                 error_log(f"[CacheManager] Vertex AI 客戶端初始化失敗: {e}")
                 self.client = None
         
+        # 使用支援快取的模型（確認 gemini-2.5-flash-lite 支援快取功能）
         self.model_name = self.config.get("model_name", "gemini-2.5-flash-lite")
         
         # 引用 PromptManager 來獲取真實內容
@@ -130,26 +131,118 @@ class CacheManager:
         self.max_local_entries = self.config.get("max_local_entries", 100)
         self.local_ttl_seconds = self.config.get("local_ttl_seconds", 1800)  # 30分鐘
         
-        # TTL設定
+        # TTL設定（基於實際使用頻率，優化成本效益）
         self.default_ttl = {
-            CacheType.PERSONA: 24 * 3600,        # 24小時
-            CacheType.FUNCTIONS: 12 * 3600,       # 12小時  
-            CacheType.STYLE_POLICY: 24 * 3600,    # 24小時
-            CacheType.SESSION_ANCHOR: 30 * 60,    # 30分鐘
-            CacheType.TASK_SPEC: 15 * 60          # 15分鐘
+            CacheType.PERSONA: 30 * 60,           # 30分鐘（頻繁使用的基礎人格）
+            CacheType.FUNCTIONS: 30 * 60,         # 30分鐘（系統功能規格）  
+            CacheType.STYLE_POLICY: 30 * 60,      # 30分鐘（風格策略）
+            CacheType.SESSION_ANCHOR: 15 * 60,    # 15分鐘（會話錨點）
+            CacheType.TASK_SPEC: 10 * 60          # 10分鐘（任務規格）
         }
         
-        # 最小快取大小（tokens）
-        self.min_cache_size = self.config.get("min_cache_size", 1024)
+        # 最小快取大小（Vertex AI 要求最少 2048 tokens）
+        self.min_cache_size = self.config.get("min_cache_size", 2048)
+        
+        # 智能快取策略設定
+        self.smart_cache_threshold = self.config.get("smart_cache_threshold", 1000)  # tokens
+        self.usage_frequency_threshold = self.config.get("usage_frequency_threshold", 10)  # 次/小時
+        
+        # 測試模式控制（從全域配置讀取 debug 模式）
+        from configs.config_loader import load_config
+        global_config = load_config()
+        
+        # 優先順序：環境變數 > 模組配置 > 全域 debug 設定
+        self.test_mode = (
+            self.config.get("test_mode", False) or 
+            os.getenv("UEP_TEST_MODE", "false").lower() == "true" or
+            global_config.get("debug", {}).get("enabled", False)
+        )
+        
+        if self.test_mode:
+            info_log("[CacheManager] 測試/除錯模式：禁用顯性快取功能")
+            debug_level = global_config.get("debug", {}).get("debug_level", 1)
+            debug_log(2, f"[CacheManager] 除錯等級: {debug_level}")
+        
+        # 使用頻率追蹤
+        self.usage_tracker: Dict[str, Dict[str, Any]] = {}  # {content_hash: {count, last_hour, timestamps}}
         
         debug_log(1, "[CacheManager] 初始化完成")
     
-    def _get_prompt_manager(self):
-        """延遲初始化 PromptManager 以避免循環導入"""
-        if self._prompt_manager is None:
-            from .prompt_manager import PromptManager
-            self._prompt_manager = PromptManager()
-        return self._prompt_manager
+    def should_create_explicit_cache(self, content: str, content_hash: str) -> bool:
+        """
+        智能決策：是否應該創建顯性快取
+        
+        策略：
+        - < 1000 tokens：使用隱性快取（Gemini 2.5 自動處理）
+        - ≥ 1000 tokens 且高頻使用（≥10次/小時）：建顯性快取
+        - 測試/除錯模式：禁用顯性快取
+        """
+        if self.test_mode:
+            debug_log(3, "[CacheManager] 測試/除錯模式：跳過顯性快取")
+            return False
+        
+        # 估算 token 數量
+        estimated_tokens = max(1, len(content) // 4)
+        
+        # 小於閾值：使用隱性快取
+        if estimated_tokens < self.smart_cache_threshold:
+            debug_log(3, f"[CacheManager] 內容較小 ({estimated_tokens} tokens)，使用隱性快取")
+            return False
+        
+        # 檢查使用頻率
+        usage_freq = self._get_usage_frequency(content_hash)
+        if usage_freq < self.usage_frequency_threshold:
+            debug_log(3, f"[CacheManager] 使用頻率低 ({usage_freq}/小時)，使用隱性快取")
+            return False
+        
+        debug_log(2, f"[CacheManager] 高頻內容 ({usage_freq}/小時, {estimated_tokens} tokens)，建議顯性快取")
+        return True
+    
+    def _get_usage_frequency(self, content_hash: str) -> int:
+        """獲取內容的使用頻率（次/小時）"""
+        current_time = time.time()
+        current_hour = int(current_time // 3600)
+        
+        if content_hash not in self.usage_tracker:
+            self.usage_tracker[content_hash] = {
+                "count": 0,
+                "last_hour": current_hour,
+                "timestamps": []
+            }
+        
+        tracker = self.usage_tracker[content_hash]
+        
+        # 清理超過1小時的記錄
+        one_hour_ago = current_time - 3600
+        tracker["timestamps"] = [ts for ts in tracker["timestamps"] if ts > one_hour_ago]
+        
+        # 記錄當前使用
+        tracker["timestamps"].append(current_time)
+        tracker["count"] = len(tracker["timestamps"])
+        tracker["last_hour"] = current_hour
+        
+        return tracker["count"]
+    
+    def _get_config_source(self) -> str:
+        """獲取測試模式的配置來源"""
+        from configs.config_loader import load_config
+        global_config = load_config()
+        
+        sources = []
+        
+        if self.config.get("test_mode", False):
+            sources.append("模組配置")
+        
+        if os.getenv("UEP_TEST_MODE", "false").lower() == "true":
+            sources.append("環境變數")
+        
+        if global_config.get("debug", {}).get("enabled", False):
+            sources.append("全域除錯")
+        
+        if not sources:
+            sources.append("預設值")
+        
+        return " + ".join(sources)
     
     def get_or_create_cache(self, 
                            name: str,
@@ -197,19 +290,26 @@ class CacheManager:
                 error_log(f"[CacheManager] 快取內容生成失敗: {name}")
                 return None
             
-            # 3. 檢查最小大小
+            # 3. 生成內容雜湊值
+            content_hash = hashlib.md5(content.encode()).hexdigest()
+            
+            # 4. 智能決策：是否建立顯性快取
+            if not self.should_create_explicit_cache(content, content_hash):
+                debug_log(2, f"[CacheManager] 使用隱性快取: {name}")
+                return None  # 返回 None 表示使用隱性快取
+            
+            # 5. 檢查最小大小（雙重檢查）
             estimated_tokens = max(1, len(content) // 4)
             if estimated_tokens < self.min_cache_size:
-                debug_log(1, f"[CacheManager] 內容過小，不建立快取: {name} ({estimated_tokens} tokens)")
+                debug_log(1, f"[CacheManager] 內容未達 Vertex AI 最小要求: {name} ({estimated_tokens} tokens)")
                 return None
             
-            # 4. 創建顯性快取
+            # 6. 創建顯性快取
             ttl = ttl_seconds or self.default_ttl.get(cache_type, 3600)
             cached_content = self._create_cached_content(content, name, ttl)
             
             if cached_content:
-                # 5. 記錄快取信息
-                content_hash = hashlib.md5(content.encode()).hexdigest()
+                # 7. 記錄快取信息
                 cache_info = CacheInfo(
                     name=name,
                     cache_type=cache_type,
@@ -225,7 +325,7 @@ class CacheManager:
                 self.stats.active_caches += 1
                 self.stats.total_tokens_cached += estimated_tokens
                 
-                info_log(f"[CacheManager] 快取建立成功: {name}, TTL: {ttl}s, Tokens: ~{estimated_tokens}")
+                info_log(f"[CacheManager] 顯性快取建立成功: {name}, TTL: {ttl}s, Tokens: ~{estimated_tokens}")
                 return cached_content.name
             
             return None
@@ -233,6 +333,47 @@ class CacheManager:
         except Exception as e:
             error_log(f"[CacheManager] 快取操作失敗 {name}: {e}")
             self.stats.gemini_miss_count += 1
+            return None
+    
+    def get_cached_content_for_generation(self, cache_names: List[str]) -> Optional[str]:
+        """
+        獲取用於生成請求的快取內容ID
+        
+        重要：
+        - 返回 cached_content_id 時不能同時送 system_instructions 或 tools
+        - 返回 None 表示使用隱性快取或無快取，可以正常送 system_instructions
+        
+        Args:
+            cache_names: 快取名稱列表，按優先級排序
+            
+        Returns:
+            cached_content_id 或 None（None = 使用隱性快取）
+        """
+        try:
+            current_time = time.time()
+            
+            for cache_name in cache_names:
+                if cache_name in self.caches:
+                    cache_info = self.caches[cache_name]
+                    
+                    # 檢查是否過期
+                    if current_time - cache_info.created_at < cache_info.ttl_seconds:
+                        # 更新使用統計
+                        cache_info.usage_count += 1
+                        cache_info.last_used = current_time
+                        self.stats.gemini_hit_count += 1
+                        
+                        debug_log(2, f"[CacheManager] 使用顯性快取進行生成: {cache_name}")
+                        return cache_info.cached_content_id
+                    else:
+                        debug_log(2, f"[CacheManager] 顯性快取已過期: {cache_name}")
+            
+            # 沒有可用的顯性快取 - 使用隱性快取
+            debug_log(2, f"[CacheManager] 無顯性快取，使用隱性快取: {cache_names}")
+            return None
+            
+        except Exception as e:
+            error_log(f"[CacheManager] 獲取生成快取失敗: {e}")
             return None
     
     def _create_cached_content(self, content: str, display_name: str, ttl_seconds: int):
@@ -328,8 +469,17 @@ class CacheManager:
             overall_hit_rate = total_hits / (total_hits + total_misses) if (total_hits + total_misses) > 0 else 0.0
             
             return {
+                # 系統狀態
+                "system": {
+                    "test_mode": self.test_mode,
+                    "debug_mode": self.test_mode,  # 別名，更清楚表達除錯模式
+                    "smart_cache_threshold": self.smart_cache_threshold,
+                    "usage_frequency_threshold": self.usage_frequency_threshold,
+                    "model_name": self.model_name,
+                    "config_source": self._get_config_source()
+                },
                 # Gemini顯性快取統計
-                "gemini_caches": {
+                "explicit_cache": {
                     "total_caches": self.stats.total_caches,
                     "active_caches": self.stats.active_caches,
                     "hit_count": self.stats.gemini_hit_count,
@@ -348,12 +498,19 @@ class CacheManager:
                     "evictions": self.stats.local_evictions,
                     "ttl_seconds": self.local_ttl_seconds
                 },
+                # 使用頻率追蹤
+                "usage_tracking": {
+                    "tracked_content_count": len(self.usage_tracker),
+                    "high_frequency_content": sum(1 for tracker in self.usage_tracker.values() 
+                                                 if tracker["count"] >= self.usage_frequency_threshold)
+                },
                 # 總體統計
                 "overall": {
                     "total_hit_count": total_hits,
                     "total_miss_count": total_misses,
                     "overall_hit_rate": overall_hit_rate,
-                    "total_tokens_saved": self.stats.total_tokens_saved
+                    "total_tokens_saved": self.stats.total_tokens_saved,
+                    "implicit_cache_usage": "大部分內容使用 Gemini 隱性快取"
                 }
             }
     

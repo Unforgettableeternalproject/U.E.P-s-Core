@@ -1294,3 +1294,15 @@
 
 ---
 
+### Fixed some working context related issues, and made cache handling better. 09/30
+
+> Date: Tue, 30 Sep 2025 01:42:33 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `655c6a629fb2eecc57db107eec6b98b2ce003085`
+
+---
+

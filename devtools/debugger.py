@@ -119,7 +119,7 @@ def handle_module_integration(user_input):
         print(f"\033[31m處理模組組合時發生錯誤：{e}\033[0m")
 
 def colorful_text(text : str, enabled : tuple=(False, False)):
-    return '\033[32m' + text + '\033[0m' if enabled[1] else '\033[33m' + text + ' (待重構)\033[0m' if enabled[0] else '\033[31m' + text + '\033[0m'
+    return '\033[32m' + text + '\033[0m' if enabled[1] and enabled[0] else '\033[33m' + text + ' (待重構)\033[0m' if enabled[0] else '\033[31m' + text + '\033[0m'
 
 def debug_interactive():
     print("==========================\n\n歡迎來到U.E.P模組測試介面!\n\n==========================\n")
@@ -331,7 +331,7 @@ def debug_interactive():
                     llm_choice = input("\n選擇測試功能:\n" +
                                      "1: 聊天對話測試 (CHAT 模式)\n" +
                                      "2: 指令分析測試 (WORK 模式)\n" +
-                                     "3: 快取功能測試\n" +
+                                     "3: 快取功能測試 (暫時停用)\n" +
                                      "4: 學習引擎測試\n" +
                                      "back: 返回上級\n\n> ")
                     
@@ -356,6 +356,8 @@ def debug_interactive():
                             controller.llm_test_command(text)
                     
                     elif llm_choice == "3":
+                        print("⚠️ 快取功能測試暫時停用")
+                        pass
                         print("🗄️ 執行快取功能測試...")
                         controller.llm_test_cache_functionality()
                     

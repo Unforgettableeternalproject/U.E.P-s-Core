@@ -330,10 +330,14 @@ class LLMModule(BaseModule):
             # 1. WORK 模式通常不使用快取（因為任務導向）
             debug_log(3, "[LLM] WORK 模式 - 跳過快取檢查")
             
-            # 2. 構建 WORK 提示  
+            # 2. 從 SYS 模組獲取可用功能清單  
+            available_functions_list = self._get_available_sys_functions()
+            available_functions_str = self._format_functions_for_prompt(available_functions_list)
+            
+            # 3. 構建 WORK 提示  
             prompt = self.prompt_manager.build_work_prompt(
                 user_input=llm_input.text,
-                available_functions=None,  # TODO: 從 SYS 模組獲取
+                available_functions=available_functions_str,
                 workflow_context=getattr(llm_input, 'workflow_context', None),
                 identity_context=llm_input.identity_context
             )
@@ -640,14 +644,25 @@ class LLMModule(BaseModule):
     def _get_identity_context(self) -> Dict[str, Any]:
         """從Working Context獲取Identity信息"""
         try:
-            identity_data = working_context_manager.get_context_data(ContextType.IDENTITY)
+            # 使用正確的方法獲取當前身份
+            identity_data = working_context_manager.get_current_identity()
+            
+            if not identity_data:
+                debug_log(2, "[LLM] 沒有設置身份信息，使用預設值")
+                return {
+                    "identity": {
+                        "name": "default_user",
+                        "traits": {}
+                    },
+                    "preferences": {}
+                }
             
             return {
                 "identity": {
-                    "name": identity_data.get("current_identity"),
+                    "name": identity_data.get("user_identity", identity_data.get("identity_id", "default_user")),
                     "traits": identity_data.get("traits", {})
                 },
-                "preferences": identity_data.get("preferences", {})
+                "preferences": identity_data.get("conversation_preferences", {})
             }
         except Exception as e:
             error_log(f"[LLM] 獲取Identity上下文失敗: {e}")
@@ -894,30 +909,20 @@ class LLMModule(BaseModule):
                                    llm_input: LLMInput,
                                    response_data: Dict[str, Any], 
                                    response_text: str) -> List[Dict[str, Any]]:
-        """處理WORK模式的SYS模組操作"""
+        """處理WORK模式的SYS模組操作 - LLM作為決策機"""
         sys_actions = []
         
         try:
-            # 1. 從Gemini回應中提取系統動作
+            # 從Gemini回應中提取系統動作決策
             if "sys_action" in response_data:
                 sys_action = response_data["sys_action"]
                 if isinstance(sys_action, dict):
                     sys_actions.append(sys_action)
-                    debug_log(2, f"[LLM] 從回應提取系統動作: {sys_action.get('action_type', 'unknown')}")
+                    action_type = sys_action.get('action_type', 'unknown')
+                    target = sys_action.get('target', 'unknown')
+                    debug_log(1, f"[LLM] 決策: {action_type} -> {target}")
             
-            if "sys_actions" in response_data:
-                batch_actions = response_data["sys_actions"] 
-                if isinstance(batch_actions, list):
-                    sys_actions.extend(batch_actions)
-                    debug_log(2, f"[LLM] 從回應提取批量系統動作: {len(batch_actions)}個")
-            
-            # 2. 分析文本中的隱含系統動作
-            implicit_actions = self._analyze_implicit_system_actions(response_text, llm_input.workflow_context)
-            if implicit_actions:
-                sys_actions.extend(implicit_actions)
-                debug_log(2, f"[LLM] 分析出隱含系統動作: {len(implicit_actions)}個")
-            
-            # 3. 發送系統動作到SYS模組 (通過Router)
+            # 發送決策結果到SYS模組進行執行
             if sys_actions:
                 self._send_to_sys_module(sys_actions, llm_input.workflow_context)
             
@@ -927,73 +932,77 @@ class LLMModule(BaseModule):
             error_log(f"[LLM] 處理WORK系統動作失敗: {e}")
             return []
     
-    def _analyze_implicit_system_actions(self, response_text: str, workflow_context: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """分析文本中的隱含系統動作"""
-        implicit_actions = []
-        
+    def _get_available_sys_functions(self) -> Optional[List[Dict[str, Any]]]:
+        """從 SYS 模組獲取可用功能清單"""
         try:
-            # 文件操作關鍵字
-            file_keywords = {
-                "開啟檔案": {"action_type": "file_open", "category": "file"},
-                "建立檔案": {"action_type": "file_create", "category": "file"},
-                "刪除檔案": {"action_type": "file_delete", "category": "file"},
-                "複製檔案": {"action_type": "file_copy", "category": "file"},
-            }
+            debug_log(2, "[LLM] 嘗試從 SYS 模組獲取功能清單")
             
-            # 系統操作關鍵字
-            system_keywords = {
-                "啟動程式": {"action_type": "program_launch", "category": "system"},
-                "執行指令": {"action_type": "command_execute", "category": "system"},
-                "搜尋檔案": {"action_type": "file_search", "category": "search"},
-                "查詢資訊": {"action_type": "info_query", "category": "search"},
-            }
+            # 檢查 WORK-SYS 協作管道是否啟用
+            if not self.module_interface.is_channel_active(CollaborationChannel.WORK_SYS):
+                debug_log(2, "[LLM] SYS 協作管道未啟用，返回空功能清單")
+                return None
             
-            all_keywords = {**file_keywords, **system_keywords}
+            # 通過狀態感知接口獲取功能註冊表
+            function_registry = self.module_interface.get_work_sys_data(
+                "function_registry",
+                request_type="get_all_functions"
+            )
             
-            for keyword, action_info in all_keywords.items():
-                if keyword in response_text:
-                    action = {
-                        "action_type": action_info["action_type"],
-                        "category": action_info["category"],
-                        "target": self._extract_action_target(response_text, keyword),
-                        "parameters": {},
-                        "confidence": 0.6,  # 隱含動作信心度較低
-                        "source": "implicit_analysis",
-                        "requires_confirmation": True
-                    }
-                    implicit_actions.append(action)
-            
-            return implicit_actions
-            
+            if function_registry and isinstance(function_registry, list):
+                debug_log(1, f"[LLM] 成功獲取 {len(function_registry)} 個可用功能")
+                return function_registry
+            elif function_registry and isinstance(function_registry, dict):
+                # 處理字典格式的功能註冊表
+                functions = []
+                for category, funcs in function_registry.items():
+                    if isinstance(funcs, list):
+                        functions.extend(funcs)
+                debug_log(1, f"[LLM] 成功獲取 {len(functions)} 個可用功能（來自字典格式）")
+                return functions
+            else:
+                debug_log(2, "[LLM] SYS 模組功能註冊表為空或格式錯誤")
+                return None
+                
         except Exception as e:
-            error_log(f"[LLM] 分析隱含系統動作失敗: {e}")
-            return []
+            error_log(f"[LLM] 獲取 SYS 功能清單失敗: {e}")
+            return None
     
-    def _extract_action_target(self, text: str, keyword: str) -> str:
-        """提取動作目標"""
+    def _format_functions_for_prompt(self, functions_list: Optional[List[Dict[str, Any]]]) -> Optional[str]:
+        """將功能列表格式化為提示詞字符串"""
         try:
-            # 簡單的目標提取邏輯
-            keyword_index = text.find(keyword)
-            if keyword_index == -1:
-                return ""
+            if not functions_list:
+                debug_log(2, "[LLM] 沒有可用的系統功能")
+                return "目前沒有可用的系統功能。我只能提供一般的回應和建議，無法執行具體的系統操作。"
             
-            # 取關鍵字後面的部分文字作為目標
-            after_keyword = text[keyword_index + len(keyword):].strip()
-            words = after_keyword.split()
+            formatted_functions = []
+            for i, func in enumerate(functions_list, 1):
+                func_name = func.get("name", "unknown")
+                func_desc = func.get("description", "無描述")
+                func_category = func.get("category", "general")
+                
+                # 格式化單個功能
+                func_str = f"{i}. {func_name} ({func_category}): {func_desc}"
+                
+                # 添加參數信息（如果有）
+                parameters = func.get("parameters", {})
+                if parameters:
+                    param_strs = []
+                    for param_name, param_info in parameters.items():
+                        param_type = param_info.get("type", "unknown")
+                        param_desc = param_info.get("description", "")
+                        param_strs.append(f"   - {param_name} ({param_type}): {param_desc}")
+                    if param_strs:
+                        func_str += "\n" + "\n".join(param_strs)
+                
+                formatted_functions.append(func_str)
             
-            # 取前幾個詞作為目標
-            target_words = []
-            for word in words[:3]:  # 最多取3個詞
-                if word and not word in ["的", "了", "。", "，", "？", "！"]:
-                    target_words.append(word)
-                else:
-                    break
-            
-            return " ".join(target_words)
+            result = "\n".join(formatted_functions)
+            debug_log(2, f"[LLM] 格式化了 {len(functions_list)} 個系統功能")
+            return result
             
         except Exception as e:
-            error_log(f"[LLM] 提取動作目標失敗: {e}")
-            return ""
+            error_log(f"[LLM] 格式化功能列表失敗: {e}")
+            return "功能列表格式化失敗，無法提供系統功能信息。"
     
     def _send_to_sys_module(self, sys_actions: List[Dict[str, Any]], workflow_context: Optional[Dict[str, Any]]) -> None:
         """向SYS模組發送系統動作 - 通過狀態感知接口"""

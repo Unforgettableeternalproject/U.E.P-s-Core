@@ -250,7 +250,7 @@ class PromptManager:
                     if mem_memories:
                         context_parts.append(f"Relevant Memory:\n{mem_memories}")
             except Exception as e:
-                debug_log(3, f"[PromptManager] 無法從 MEM 模組獲取記憶資料: {e}")
+                debug_log(1, f"[PromptManager] 無法從 MEM 模組獲取記憶資料: {e}")
         
         return "\n\n".join(context_parts) if context_parts else None
     
@@ -269,7 +269,7 @@ class PromptManager:
                     return "Available System Functions:\n" + "\n".join(sys_data["available_functions"])
             return None
         except Exception as e:
-            debug_log(3, f"[PromptManager] 無法從 SYS 模組獲取功能資料: {e}")
+            debug_log(1, f"[PromptManager] 無法從 SYS 模組獲取功能資料: {e}")
         
         return None
     

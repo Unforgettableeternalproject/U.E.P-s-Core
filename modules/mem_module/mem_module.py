@@ -167,16 +167,17 @@ class MEMModule(BaseModule):
                 return
             
             # 2. 從Working Context獲取Identity相關資料
-            memory_token = working_context_manager.get_memory_token()
             identity_context = working_context_manager.get_current_identity()
             
-            if not memory_token:
-                # 如果Working Context中沒有，使用系統令牌
+            if identity_context and identity_context.get("memory_token"):
+                memory_token = identity_context["memory_token"]
+                debug_log(2, f"[MEM] 從身份上下文獲取記憶令牌: {memory_token}")
+            else:
+                # 如果身份中沒有記憶令牌，使用系統令牌
                 from .core.identity_manager import IdentityManager
                 identity_manager = IdentityManager({})
                 memory_token = identity_manager.get_system_token()
-                working_context_manager.set_memory_token(memory_token)
-                debug_log(2, f"[MEM] 設置系統記憶令牌到Working Context: {memory_token}")
+                debug_log(2, f"[MEM] 使用系統記憶令牌: {memory_token}")
             
             # 3. 從Session Manager獲取目前會話相關資料（根據代辦.md要求4）
             session_context = self._get_session_context_from_session_manager(current_session_id)
@@ -843,11 +844,11 @@ class MEMModule(BaseModule):
                 # 首先嘗試從 Working Context 獲取當前身份
                 from core.working_context import working_context_manager
                 current_identity = working_context_manager.get_current_identity()
-                working_memory_token = working_context_manager.get_memory_token()
                 
                 if current_identity:
-                    memory_token = working_memory_token or current_identity.get("memory_token")
+                    memory_token = current_identity.get("memory_token")
                     user_profile = current_identity
+                    debug_log(2, f"[MEM] 從身份獲取記憶令牌: {memory_token}")
                     debug_log(3, f"[MEM] 從 Working Context 獲取身份: {current_identity.get('identity_id', 'Unknown')}")
                 elif data.intent_info and "user_profile" in data.intent_info:
                     # 後備方案：從 NLP 輸出獲取（但這應該很少發生）
@@ -928,13 +929,17 @@ class MEMModule(BaseModule):
                     primary_intent = data.intent_info.get("primary_intent", "unknown")
                     overall_confidence = data.intent_info.get("overall_confidence", 0.0)
                     
-                    # 從 Working Context 獲取記憶令牌
+                    # 從 Working Context 的身份中獲取記憶令牌
                     from core.working_context import working_context_manager
-                    memory_token = working_context_manager.get_memory_token()
+                    current_identity = working_context_manager.get_current_identity()
+                    memory_token = current_identity.get("memory_token") if current_identity else None
                     
-                    # 如果 Working Context 中沒有，使用提供的記憶令牌
+                    # 如果身份中沒有，使用提供的記憶令牌作為後備
                     if not memory_token:
                         memory_token = data.memory_token
+                        debug_log(2, f"[MEM] 使用後備記憶令牌: {memory_token}")
+                    else:
+                        debug_log(2, f"[MEM] 使用身份記憶令牌: {memory_token}")
                     
                     # 根據意圖和信心度決定是否創建記憶
                     create_memory = overall_confidence > 0.7  # 只有高信心度的意圖才創建記憶

@@ -1,4 +1,5 @@
 from logging import config
+import asyncio
 from core.registry import get_module
 from configs.config_loader import load_config
 from utils.debug_helper import debug_log, info_log, error_log
@@ -6,8 +7,6 @@ from utils.debug_helper import debug_log, info_log, error_log
 from .module_tests.integration_tests import test_stt_nlp
 # 暫時註解掉這個導入，等相關文件創建後再啟用
 # from .module_tests.extra_tests import test_chunk_and_summarize, test_uep_chatting
-import time
-import asyncio
 
 config = load_config()
 enabled = config.get("modules_enabled", {})
@@ -609,8 +608,8 @@ def mem_test_identity_manager_stats_wrapper(identity="test_user"):
 # LLM 模組包裝函數（簡化版 - 純功能測試）
 def llm_test_chat_wrapper(text: str = "你好，請介紹一下你自己"):
     """LLM 聊天測試包裝函數"""
-    # 設置測試環境
-    env_result = setup_test_environment_for_module("llm")
+    # 設置測試環境 - 指定 CHAT 模式
+    env_result = setup_test_environment_for_module("llm", test_mode="chat")
     if not env_result["success"]:
         return env_result
     
@@ -624,8 +623,8 @@ def llm_test_chat_wrapper(text: str = "你好，請介紹一下你自己"):
 
 def llm_test_command_wrapper(text: str = "幫我整理桌面文件"):
     """LLM 指令測試包裝函數"""
-    # 設置測試環境
-    env_result = setup_test_environment_for_module("llm")
+    # 設置測試環境 - 指定 WORK 模式
+    env_result = setup_test_environment_for_module("llm", test_mode="work")
     if not env_result["success"]:
         return env_result
     
@@ -919,37 +918,90 @@ def test_speaker_context_workflow():
 
 # ===== 統一測試環境管理 =====
 
-def setup_test_environment_for_module(module_name: str):
+def setup_test_environment_for_module(module_name: str, test_mode: str = None):
     """
     為指定模組設置測試環境（身份、會話、狀態）
+    根據 U.E.P 三層會話架構，會自動創建 GS 容器以支援 CS/WS 測試
     Args:
         module_name (str): 模組名稱 (llm, mem, sys)
+        test_mode (str): 測試模式 ("chat", "work" 等)，會覆蓋預設狀態映射
     """
-    info_log(f"[Debug API] 為 {module_name} 模組設置測試環境...")
+    info_log(f"[Debug API] 為 {module_name} 模組設置測試環境 (模式: {test_mode or '預設'})...")
     
     try:
-        # 1. 設置測試身份
+        # 1. 設置測試身份（包含記憶令牌）
         from core.working_context import working_context_manager
         test_identity = {
             "identity_id": f"debug_test_{module_name}",
             "user_identity": f"debug_test_{module_name}",
             "personality_profile": "default",
             "conversation_preferences": {},
-            "memory_token": f"debug_token_{module_name}"
+            "memory_token": f"test_debug_token_{module_name}"
         }
-        working_context_manager.set_identity(test_identity)
-        info_log(f"[Debug API] 已設置 {module_name} 測試身份: {test_identity['user_identity']}")
         
-        # 2. 根據模組類型設置相應的系統狀態
+        # 設置身份（記憶令牌作為身份的一部分）
+        working_context_manager.set_identity(test_identity)
+        
+        info_log(f"[Debug API] 已設置 {module_name} 測試身份: {test_identity['user_identity']}")
+        info_log(f"[Debug API] 記憶令牌（包含在身份中）: {test_identity['memory_token']}")
+        debug_log(2, f"[Debug API] 測試身份詳情: {test_identity}")
+        
+        # 驗證設置結果
+        verify_identity = working_context_manager.get_current_identity()
+        debug_log(2, f"[Debug API] 驗證身份: {verify_identity}")
+        if verify_identity:
+            debug_log(2, f"[Debug API] 驗證記憶令牌: {verify_identity.get('memory_token')}")
+        
+        # 2. 確保有活躍的 GS 容器（CS/WS 的先決條件）
+        from core.sessions.session_manager import unified_session_manager
+        current_gs = unified_session_manager.get_current_general_session()
+        gs_session_id = None
+        
+        if not current_gs:
+            # 需要創建 GS 容器以支援 CS/WS 測試
+            info_log(f"[Debug API] 沒有活躍的 GS，為 {module_name} 測試創建 GS 容器")
+            import time
+            
+            trigger_event = {
+                "source": "debug_api",
+                "module": module_name,
+                "content": f"Debug API 測試環境設置 - {module_name} 模組",
+                "timestamp": time.time()
+            }
+            
+            # 創建 DEBUG 類型的 GS
+            gs_session_id = unified_session_manager.start_general_session("system_event", trigger_event)
+            if gs_session_id:
+                info_log(f"[Debug API] 已創建 GS 容器: {gs_session_id}")
+            else:
+                error_log(f"[Debug API] 創建 GS 容器失敗")
+                return {"success": False, "error": "創建 GS 容器失敗"}
+        else:
+            gs_session_id = current_gs.session_id
+            info_log(f"[Debug API] 使用現有 GS 容器: {gs_session_id}")
+        
+        # 3. 根據模組類型和測試模式設置相應的系統狀態
         from core.states.state_manager import state_manager, UEPState
         
-        state_mapping = {
-            "llm": UEPState.CHAT,  # LLM 預設使用 CHAT 狀態
-            "mem": UEPState.CHAT,  # MEM 也在 CHAT 狀態下測試
-            "sys": UEPState.WORK,  # SYS 在 WORK 狀態下測試
-        }
+        # 如果有指定測試模式，優先使用
+        if test_mode:
+            mode_mapping = {
+                "chat": UEPState.CHAT,
+                "work": UEPState.WORK,
+                "idle": UEPState.IDLE
+            }
+            target_state = mode_mapping.get(test_mode, UEPState.IDLE)
+            info_log(f"[Debug API] 使用指定測試模式: {test_mode} → {target_state.value}")
+        else:
+            # 否則使用預設模組狀態映射
+            state_mapping = {
+                "llm": UEPState.CHAT,  # LLM 預設使用 CHAT 狀態
+                "mem": UEPState.CHAT,  # MEM 也在 CHAT 狀態下測試
+                "sys": UEPState.WORK,  # SYS 在 WORK 狀態下測試
+            }
+            target_state = state_mapping.get(module_name, UEPState.IDLE)
+            info_log(f"[Debug API] 使用預設模組狀態: {module_name} → {target_state.value}")
         
-        target_state = state_mapping.get(module_name, UEPState.IDLE)
         original_state = state_manager.get_current_state()
         
         if original_state != target_state:
@@ -957,7 +1009,7 @@ def setup_test_environment_for_module(module_name: str):
             info_log(f"[Debug API] 已切換系統狀態: {original_state.value} → {target_state.value}")
             # 狀態切換後，對應的會話會自動創建
         
-        # 3. 驗證會話是否已自動創建（由狀態管理器觸發）
+        # 4. 驗證會話是否已自動創建（由狀態管理器觸發）
         import time
         time.sleep(0.1)  # 短暫等待狀態切換完成
         
@@ -965,7 +1017,8 @@ def setup_test_environment_for_module(module_name: str):
             "success": True,
             "identity": test_identity,
             "state": target_state,
-            "original_state": original_state
+            "original_state": original_state,
+            "gs_session_id": gs_session_id
         }
         
     except Exception as e:
@@ -976,23 +1029,121 @@ def cleanup_test_environment():
     """清理測試環境，恢復到初始狀態"""
     try:
         from core.states.state_manager import state_manager, UEPState
+        from core.sessions.session_manager import unified_session_manager
         
-        # 恢復到 IDLE 狀態（不論之前是什麼狀態）
+        # 1. 結束任何活躍的子會話 (CS/WS)
+        current_gs = unified_session_manager.get_current_general_session()
+        if current_gs:
+            info_log(f"[Debug API] 檢查是否需要清理子會話 (GS: {current_gs.session_id})")
+            
+            # 嘗試結束活躍的 CS (如果存在)
+            try:
+                # 這裡我們假設 session_manager 有方法來獲取當前 CS
+                # 如果沒有，這個調用會安全地失敗
+                current_cs = unified_session_manager.get_active_chatting_session_ids()
+                if current_cs:
+                    for cs in current_cs:
+                        info_log(f"[Debug API] 結束活躍的 CS: {cs}")
+                        unified_session_manager.end_chatting_session(cs) 
+            except (AttributeError, Exception) as e:
+                # 如果方法不存在或其他問題，忽略並繼續
+                debug_log(2, f"[Debug API] CS 清理略過: {e}")
+            
+            # 嘗試結束活躍的 WS (如果存在)
+            try:
+                current_ws = unified_session_manager.get_active_workflow_session_ids()
+                if current_ws:
+                    for ws in current_ws:
+                        info_log(f"[Debug API] 結束活躍的 WS: {ws}")
+                        unified_session_manager.end_workflow_session(ws)
+            except (AttributeError, Exception) as e:
+                debug_log(2, f"[Debug API] WS 清理略過: {e}")
+        
+        # 2. 恢復到 IDLE 狀態（這會觸發狀態相關的會話清理）
         current_state = state_manager.get_current_state()
         if current_state != UEPState.IDLE:
             state_manager.set_state(UEPState.IDLE)
             info_log(f"[Debug API] 已恢復系統狀態: {current_state.value} → IDLE")
             # 狀態切換時，對應的會話會自動結束
         
+        # 3. 結束 GS 容器（如果是 debug 創建的）
+        current_gs = unified_session_manager.get_current_general_session()
+        if current_gs:
+            # 檢查是否是 debug 創建的 GS
+            if (hasattr(current_gs, 'trigger_event') and 
+                current_gs.trigger_event.get('source') == 'debug_api'):
+                info_log(f"[Debug API] 結束 debug 創建的 GS: {current_gs.session_id}")
+                unified_session_manager.end_general_session()
+            else:
+                info_log(f"[Debug API] 保留非 debug 創建的 GS: {current_gs.session_id}")
+        
         # 注意：保留身份設置，不清理工作上下文中的身份資訊
         # 這樣可以讓後續測試繼續使用同一個測試身份
         
-        info_log("[Debug API] 測試環境清理完成 - 狀態已重置為 IDLE")
+        info_log("[Debug API] 測試環境清理完成 - 狀態已重置為 IDLE，會話已適當清理")
         return {"success": True}
         
     except Exception as e:
         error_log(f"[Debug API] 清理測試環境失敗: {e}")
         return {"success": False, "error": str(e)}
+
+# ===== LLM 模組測試包裝函數 =====
+
+def test_llm_with_mode(test_mode: str, text: str):
+    """
+    為 LLM 模組測試設置正確的狀態環境
+    Args:
+        test_mode (str): 測試模式 ("chat" 或 "work")
+        text (str): 測試文本
+    """
+    from .module_tests.llm_tests import llm_test_chat, llm_test_command
+    
+    print(f"\n🧪 開始 LLM {test_mode.upper()} 模式測試")
+    print("=" * 60)
+    
+    # 1. 設置測試環境（指定測試模式）
+    info_log(f"[Debug API] 為 LLM {test_mode} 模式設置環境...")
+    setup_result = setup_test_environment_for_module("llm", test_mode=test_mode)
+    
+    if not setup_result.get("success", False):
+        error_msg = f"測試環境設置失敗: {setup_result.get('error')}"
+        print(f"❌ {error_msg}")
+        return {"success": False, "error": error_msg}
+    
+    print(f"✅ 測試環境設置完成")
+    print(f"📄 測試狀態: {setup_result['state'].value}")
+    print(f"🆔 測試身份: {setup_result['identity']['user_identity']}")
+    
+    try:
+        # 2. 載入並執行相應測試
+        llm_module = get_or_load_module("llm")
+        modules = {"llm": llm_module}
+        
+        if test_mode == "chat":
+            result = llm_test_chat(modules, text)
+        elif test_mode == "work":
+            result = llm_test_command(modules, text)
+        else:
+            result = {"success": False, "error": f"不支援的測試模式: {test_mode}"}
+        
+        return result
+        
+    finally:
+        # 3. 清理測試環境
+        print(f"\n🧹 清理 LLM {test_mode} 測試環境...")
+        cleanup_result = cleanup_test_environment()
+        if cleanup_result.get("success", False):
+            print("✅ 測試環境清理完成")
+        else:
+            print(f"⚠️ 測試環境清理異常: {cleanup_result.get('error')}")
+
+def test_llm_chat(text: str = "你好，這是一個聊天測試"):
+    """測試 LLM CHAT 模式 - 使用 CHAT 狀態"""
+    return test_llm_with_mode("chat", text)
+
+def test_llm_work(text: str = "建立一個新的工作流程來整理文件"):
+    """測試 LLM WORK 模式 - 使用 WORK 狀態"""
+    return test_llm_with_mode("work", text)
 
 # 在模組載入時自動初始化工作上下文
 setup_working_context()

@@ -107,14 +107,22 @@ class StateManager:
             queue_callback = (context or {}).get("state_queue_callback")
             
             # 從 Working Context 獲取身份信息
-            identity_context = working_context_manager.get_data(ContextType.IDENTITY_MANAGEMENT, "identity_context", {})
-            if not identity_context:
+            current_identity = working_context_manager.get_current_identity()
+            if current_identity:
+                identity_context = {
+                    "user_id": current_identity.get("user_identity", current_identity.get("identity_id", "default_user")),
+                    "personality": current_identity.get("personality_profile", "default"),
+                    "preferences": current_identity.get("conversation_preferences", {})
+                }
+                debug_log(2, f"[StateManager] 使用Working Context身份: {identity_context}")
+            else:
                 # 如果沒有身份信息，使用默認值
                 identity_context = {
                     "user_id": "default_user",
                     "personality": "default",
                     "preferences": {}
                 }
+                debug_log(2, f"[StateManager] 使用默認身份: {identity_context}")
             
             # 獲取現有的 General Session - 如果不存在則為架構錯誤
             current_gs = session_manager.get_current_general_session()

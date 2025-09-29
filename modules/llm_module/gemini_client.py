@@ -152,7 +152,7 @@ class GeminiWrapper:
                     "properties": {
                         "action_type": {
                             "type": "string",
-                            "enum": ["start_workflow", "execute_function", "request_confirmation", "provide_options"],
+                            "enum": ["start_workflow", "execute_function", "provide_options"],
                             "description": "系統動作類型"
                         },
                         "target": {

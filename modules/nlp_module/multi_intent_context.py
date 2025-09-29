@@ -185,7 +185,7 @@ class MultiIntentContextManager:
         # 根據位置調整（前面的分段優先級略高）
         priority += position
         
-        # 根據緊急關鍵詞調整
+        # 根據優先級關鍵詞調整
         text = segment['text'].lower()
         if any(word in text for word in ['urgent', 'emergency', 'immediately', 'now']):
             priority -= 2

@@ -84,8 +84,8 @@ class LLMModule(BaseModule):
         debug_log(2, f"[LLM] 最大輸出字元數: {self.model.max_tokens}")
         debug_log(2, f"[LLM] 統一快取管理器: 啟用 (Gemini + 本地快取)")
         debug_log(2, f"[LLM] Learning Engine: {'啟用' if self.learning_engine.learning_enabled else '停用'}")
-        # Debug level = 3
-        debug_log(3, f"[LLM] 完整模組設定: {self.config}")
+        # Debug level = 4
+        debug_log(4, f"[LLM] 完整模組設定: {self.config}")
     
     def _setup_state_listener(self):
         """設定系統狀態監聽器，自動切換協作管道"""
@@ -287,6 +287,11 @@ class LLMModule(BaseModule):
                     }
                 )
             
+            # 5. 處理會話控制建議
+            session_control_result = self._process_session_control(
+                response_data, "CHAT", llm_input
+            )
+            
             # 6. 快取回應
             output = LLMOutput(
                 text=response_text,
@@ -302,7 +307,8 @@ class LLMModule(BaseModule):
                     "memory_context_size": len(llm_input.memory_context) if llm_input.memory_context else 0,
                     "identity_context_size": len(llm_input.identity_context) if llm_input.identity_context else 0,
                     "memory_operations_count": len(memory_operations),
-                    "memory_operations": memory_operations
+                    "memory_operations": memory_operations,
+                    "session_control": session_control_result
                 }
             )
             
@@ -383,6 +389,11 @@ class LLMModule(BaseModule):
                     }
                 )
             
+            # 6. 處理會話控制建議
+            session_control_result = self._process_session_control(
+                response_data, "WORK", llm_input
+            )
+            
             output = LLMOutput(
                 text=response_text,
                 processing_time=time.time() - start_time,
@@ -396,7 +407,8 @@ class LLMModule(BaseModule):
                     "workflow_context_size": len(llm_input.workflow_context) if llm_input.workflow_context else 0,
                     "sys_actions_count": len(sys_actions),
                     "sys_actions": sys_actions,
-                    "system_context_size": len(llm_input.system_context) if llm_input.system_context else 0
+                    "system_context_size": len(llm_input.system_context) if llm_input.system_context else 0,
+                    "session_control": session_control_result
                 }
             )
             
@@ -877,7 +889,7 @@ class LLMModule(BaseModule):
             if not memories:
                 return ""
             
-            context_parts = ["相關記憶上下文:"]
+            context_parts = ["Relevant Memory Context:"]
             
             for i, memory in enumerate(memories[:5], 1):  # 限制最多5條記憶
                 memory_type = memory.get("type", "unknown")
@@ -888,13 +900,13 @@ class LLMModule(BaseModule):
                     # 對話記憶格式
                     user_input = memory.get("user_input", "")
                     assistant_response = memory.get("assistant_response", "")
-                    context_parts.append(f"{i}. [對話] 用戶:{user_input} 助手:{assistant_response}")
+                    context_parts.append(f"{i}. [Conversation] User: {user_input} Assistant: {assistant_response}")
                 elif memory_type == "user_info":
                     # 用戶信息記憶格式
-                    context_parts.append(f"{i}. [用戶信息] {content}")
+                    context_parts.append(f"{i}. [User Info] {content}")
                 else:
                     # 一般記憶格式
-                    context_parts.append(f"{i}. [{memory_type}] {content}")
+                    context_parts.append(f"{i}. [{memory_type.title()}] {content}")
             
             formatted_context = "\n".join(context_parts)
             debug_log(3, f"[LLM] 格式化記憶上下文: {len(formatted_context)} 字符")
@@ -1003,6 +1015,75 @@ class LLMModule(BaseModule):
         except Exception as e:
             error_log(f"[LLM] 格式化功能列表失敗: {e}")
             return "功能列表格式化失敗，無法提供系統功能信息。"
+    
+    def _process_session_control(self, response_data: Dict[str, Any], mode: str, llm_input: "LLMInput") -> Optional[Dict[str, Any]]:
+        """處理會話控制建議 - LLM 決定會話是否應該結束"""
+        try:
+            session_control = response_data.get("session_control")
+            if not session_control:
+                return None
+            
+            should_end = session_control.get("should_end_session", False)
+            end_reason = session_control.get("end_reason", "unknown")
+            confidence = session_control.get("confidence", 0.5)
+            
+            if should_end and confidence >= 0.7:  # 只在高信心度時結束會話
+                debug_log(1, f"[LLM] 會話結束建議: {mode} 模式 - 原因: {end_reason} (信心度: {confidence:.2f})")
+                
+                # 通知 session manager 結束當前會話
+                self._request_session_end(mode, end_reason, confidence, llm_input)
+                
+                return {
+                    "session_ended": True,
+                    "reason": end_reason,
+                    "confidence": confidence
+                }
+            elif should_end:
+                debug_log(2, f"[LLM] 會話結束建議信心度不足: {confidence:.2f} < 0.7")
+                
+            return None
+            
+        except Exception as e:
+            error_log(f"[LLM] 處理會話控制失敗: {e}")
+            return None
+    
+    def _request_session_end(self, mode: str, reason: str, confidence: float, llm_input: "LLMInput") -> None:
+        """請求結束當前會話"""
+        try:
+            from core.sessions.session_manager import session_manager
+            
+            if mode == "CHAT":
+                # 結束當前的 Chatting Session
+                active_cs_ids = session_manager.get_active_chatting_session_ids()
+                if active_cs_ids:
+                    session_id = active_cs_ids[0]
+                    success = session_manager.end_chatting_session(
+                        session_id, 
+                        reason=f"LLM建議結束: {reason}",
+                        metadata={"llm_confidence": confidence}
+                    )
+                    if success:
+                        debug_log(1, f"[LLM] 成功結束 CS {session_id}")
+                    else:
+                        debug_log(2, f"[LLM] 結束 CS {session_id} 失敗")
+                        
+            elif mode == "WORK":
+                # 結束當前的 Workflow Session
+                active_ws_ids = session_manager.get_active_workflow_session_ids()
+                if active_ws_ids:
+                    session_id = active_ws_ids[0]
+                    success = session_manager.end_workflow_session(
+                        session_id,
+                        reason=f"LLM建議結束: {reason}",
+                        metadata={"llm_confidence": confidence}
+                    )
+                    if success:
+                        debug_log(1, f"[LLM] 成功結束 WS {session_id}")
+                    else:
+                        debug_log(2, f"[LLM] 結束 WS {session_id} 失敗")
+            
+        except Exception as e:
+            error_log(f"[LLM] 請求會話結束失敗: {e}")
     
     def _send_to_sys_module(self, sys_actions: List[Dict[str, Any]], workflow_context: Optional[Dict[str, Any]]) -> None:
         """向SYS模組發送系統動作 - 通過狀態感知接口"""

@@ -60,6 +60,7 @@ class NLPModule(BaseModule):
         debug_log(2, f"[NLP] 模組設定: {self.config}")
         debug_log(3, f"[NLP] 身份管理器狀態: {'已載入' if self.identity_manager else '未載入'}")
         debug_log(3, f"[NLP] 意圖分析器狀態: {'已載入' if self.intent_analyzer else '未載入'}")
+        debug_log(4, f"[NLP] 完整模組設定: {self.config}")
     
     def initialize(self) -> bool:
         """初始化模組"""
@@ -210,6 +211,10 @@ class NLPModule(BaseModule):
             # 應用 CS 感知邏輯調整結果
             if active_cs_context and active_cs_context["has_active_sessions"]:
                 result = self._apply_cs_aware_adjustments(result, active_cs_context, input_data.text)
+            
+            # 處理指令中斷（在 CHAT 狀態中）
+            if result.get("command_interruption"):
+                self._handle_command_interruption(result["command_interruption"], input_data.text, context)
             
             debug_log(3, f"[NLP] 意圖分析完成：{result['primary_intent']}, "
                        f"片段數={len(result['intent_segments'])}, "
@@ -588,6 +593,44 @@ class NLPModule(BaseModule):
             }
         
         return adjusted_result
+    
+    def _handle_command_interruption(self, interruption_info: Dict[str, Any], 
+                                  original_text: str, context: Dict[str, Any]) -> None:
+        """處理指令中斷 - 在 CHAT 狀態中檢測到明顯指令時插入 WORK 狀態"""
+        try:
+            if not interruption_info.get("needs_interruption", False):
+                return
+            
+            debug_log(1, f"[NLP] 處理指令中斷: {interruption_info.get('reason', 'unknown')}")
+            
+            # 準備中斷元數據
+            metadata = {
+                "nlp_detection": interruption_info,
+                "original_text": original_text,
+                "detection_confidence": interruption_info.get("confidence", 0.0),
+                "command_segments": interruption_info.get("command_segments", []),
+                "trigger_source": "nlp_module"
+            }
+            
+            # 從上下文獲取觸發用戶
+            trigger_user = None
+            if context.get("identity"):
+                trigger_user = context["identity"].get("identity_id")
+            
+            # 調用狀態佇列進行聊天中斷
+            success = self.state_queue_manager.interrupt_chat_for_work(
+                command_task=original_text,
+                trigger_user=trigger_user,
+                metadata=metadata
+            )
+            
+            if success:
+                info_log(f"[NLP] 成功插入工作中斷: 信心度={interruption_info.get('confidence', 0.0):.2f}")
+            else:
+                error_log("[NLP] 工作中斷插入失敗")
+                
+        except Exception as e:
+            error_log(f"[NLP] 處理指令中斷失敗: {e}")
     
     def get_module_info(self) -> Dict[str, Any]:
         """獲取模組資訊"""

@@ -382,7 +382,8 @@ from .module_tests.mem_tests import (
 # 測試 LLM 模組（簡化版 - 純功能測試）
 from .module_tests.llm_tests import (
     llm_test_chat, llm_test_command,
-    llm_test_cache_functionality, llm_test_learning_engine
+    llm_test_cache_functionality, llm_test_learning_engine,
+    llm_test_system_status_monitoring
 )
 
 # 測試 TTS 模組（尚未重構）
@@ -666,6 +667,18 @@ def llm_test_learning_engine_wrapper():
         # 清理測試環境
         cleanup_test_environment()
 
+def llm_test_system_status_monitoring_wrapper():
+    """LLM 系統狀態監控測試包裝器"""
+    try:
+        # 設置測試環境
+        env_result = setup_test_environment_for_module("llm")
+        from .module_tests.llm_tests import llm_test_system_status_monitoring as llm_test_status_func
+        result = llm_test_status_func(modules)
+        return result
+    finally:
+        # 清理測試環境
+        cleanup_test_environment()
+
 
 
 # TTS 模組包裝函數（尚未重構）
@@ -755,6 +768,7 @@ llm_test_chat = llm_test_chat_wrapper
 llm_test_command = llm_test_command_wrapper
 llm_test_cache_functionality = llm_test_cache_functionality_wrapper
 llm_test_learning_engine = llm_test_learning_engine_wrapper
+llm_test_system_status_monitoring = llm_test_system_status_monitoring_wrapper
 
 # 為了向後兼容，添加一些常用的別名
 llm_test_generation = llm_test_chat_wrapper
@@ -765,6 +779,8 @@ llm_test_work = llm_test_command_wrapper
 llm_test_instruction = llm_test_command_wrapper
 llm_test_cache = llm_test_cache_functionality_wrapper
 llm_test_learning = llm_test_learning_engine_wrapper
+llm_test_status = llm_test_system_status_monitoring_wrapper
+llm_test_status_monitor = llm_test_system_status_monitoring_wrapper
 
 # TTS 函數別名（匹配實際的函數名稱）
 tts_test = tts_test_wrapper

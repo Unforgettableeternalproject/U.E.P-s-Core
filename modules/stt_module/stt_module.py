@@ -121,10 +121,11 @@ class STTModule(BaseModule):
         debug_log(2, f"[STT] 基本設定: 設備={self.device_index}, 採樣率={self.sample_rate}")
         debug_log(2, f"[STT] 模型 ID: {self.whisper_model_id}")
         debug_log(2, f"[STT] 本地路徑: {self.whisper_local_path}")
-        debug_log(2, f"[STT] 使用本地模型: {self.use_local_model}")
-        debug_log(2, f"[STT] 計算設備: {self.device}, 數據類型: {self.torch_dtype}")
-        debug_log(2, f"[STT] PyAudio 配置: {self.pa_config}")
-        debug_log(2, f"[STT] 模式: 持續背景監聽，實時傳送結果給NLP模組")
+        debug_log(3, f"[STT] 使用本地模型: {self.use_local_model}")
+        debug_log(3, f"[STT] 計算設備: {self.device}, 數據類型: {self.torch_dtype}")
+        debug_log(3, f"[STT] PyAudio 配置: {self.pa_config}")
+        debug_log(3, f"[STT] 模式: 持續背景監聽，實時傳送結果給NLP模組")
+        debug_log(4, f"[STT] 完整模組設定: {self.config}")
 
     def initialize(self):
         debug_log(1, "[STT] 初始化中...")

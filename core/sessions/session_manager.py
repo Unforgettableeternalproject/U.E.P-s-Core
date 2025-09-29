@@ -595,6 +595,102 @@ class UnifiedSessionManager:
             error_log(f"[UnifiedSessionManager] 獲取系統狀態失敗: {e}")
             return {"error": str(e)}
 
+    # ==================== 會話超時檢查機制 ====================
+    
+    def check_session_timeouts(self) -> List[Dict[str, Any]]:
+        """檢查並處理會話超時 - 系統層面的超時處理"""
+        timeout_sessions = []
+        current_time = time.time()
+        
+        try:
+            # 檢查 Chatting Sessions 超時
+            active_cs = self.get_active_chatting_sessions()
+            for cs in active_cs:
+                if self._is_session_timeout(cs, current_time):
+                    reason = f"會話超時：超過 {self.config['max_session_age']} 秒無活動"
+                    if self.end_chatting_session(cs.session_id, reason=reason):
+                        timeout_sessions.append({
+                            "session_id": cs.session_id,
+                            "session_type": "chatting",
+                            "reason": reason,
+                            "last_activity": getattr(cs, 'last_activity', None)
+                        })
+                        debug_log(1, f"[SessionManager] 結束超時的聊天會話: {cs.session_id}")
+            
+            # 檢查 Workflow Sessions 超時
+            active_ws = self.get_active_workflow_sessions()
+            for ws in active_ws:
+                if self._is_session_timeout(ws, current_time):
+                    reason = f"工作流超時：超過 {self.config['max_session_age']} 秒無活動"
+                    if self.end_workflow_session(ws.session_id, reason=reason):
+                        timeout_sessions.append({
+                            "session_id": ws.session_id,
+                            "session_type": "workflow", 
+                            "reason": reason,
+                            "last_activity": getattr(ws, 'last_activity', None)
+                        })
+                        debug_log(1, f"[SessionManager] 結束超時的工作流會話: {ws.session_id}")
+            
+            # 檢查 General Session 超時
+            current_gs = self.get_current_general_session()
+            if current_gs and self._is_session_timeout(current_gs, current_time):
+                reason = f"通用會話超時：超過 {self.config['max_session_age']} 秒無活動"
+                if self.end_general_session({"reason": reason}):
+                    timeout_sessions.append({
+                        "session_id": current_gs.session_id,
+                        "session_type": "general",
+                        "reason": reason,
+                        "last_activity": getattr(current_gs, 'last_activity', None)
+                    })
+                    debug_log(1, f"[SessionManager] 結束超時的通用會話: {current_gs.session_id}")
+            
+            if timeout_sessions:
+                info_log(f"[SessionManager] 處理了 {len(timeout_sessions)} 個超時會話")
+            
+            return timeout_sessions
+            
+        except Exception as e:
+            error_log(f"[SessionManager] 檢查會話超時失敗: {e}")
+            return []
+    
+    def _is_session_timeout(self, session, current_time: float) -> bool:
+        """判斷會話是否超時"""
+        try:
+            # 獲取最後活動時間
+            last_activity = getattr(session, 'last_activity', None)
+            if not last_activity:
+                # 如果沒有最後活動時間，使用創建時間
+                last_activity = getattr(session, 'created_at', current_time)
+            
+            # 轉換為時間戳（如果是 datetime 對象）
+            if isinstance(last_activity, datetime):
+                last_activity = last_activity.timestamp()
+            
+            # 計算是否超時
+            inactive_duration = current_time - last_activity
+            return inactive_duration > self.config['max_session_age']
+            
+        except Exception as e:
+            error_log(f"[SessionManager] 判斷會話超時失敗: {e}")
+            return False
+    
+    def start_timeout_monitor(self, check_interval: int = 300) -> None:
+        """啟動超時監控（每5分鐘檢查一次）"""
+        import threading
+        
+        def timeout_checker():
+            while True:
+                try:
+                    self.check_session_timeouts()
+                    time.sleep(check_interval)
+                except Exception as e:
+                    error_log(f"[SessionManager] 超時監控執行失敗: {e}")
+                    time.sleep(check_interval)
+        
+        timeout_thread = threading.Thread(target=timeout_checker, daemon=True)
+        timeout_thread.start()
+        info_log(f"[SessionManager] 啟動會話超時監控，檢查間隔：{check_interval}秒")
+
     # ==================== 向後兼容方法 ====================
     
     def create_session(self, workflow_type: str = None, command: str = None, 

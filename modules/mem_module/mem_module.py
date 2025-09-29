@@ -67,8 +67,8 @@ class MEMModule(BaseModule):
         debug_log(2, f"[MEM] 元資料檔案: {self.metadata_file}")
         debug_log(2, f"[MEM] 記憶管理器狀態: {'已載入' if self.memory_manager else '未載入'}")
         
-        # Debug level = 3
-        debug_log(3, f"[MEM] 完整模組設定: {self.config}")
+        # Debug level = 4
+        debug_log(4, f"[MEM] 完整模組設定: {self.config}")
 
     def initialize(self):
         """初始化MEM模組"""

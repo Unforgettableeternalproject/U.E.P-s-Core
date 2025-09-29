@@ -1306,3 +1306,15 @@
 
 ---
 
+### Added state end trigger for several modules and managers. Also added one more test for llm. 09/30
+
+> Date: Tue, 30 Sep 2025 02:49:13 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `5ab106ffd2e5734e894d992f99080fb82b5b7163`
+
+---
+

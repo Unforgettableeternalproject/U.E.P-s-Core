@@ -256,6 +256,54 @@ class StateQueueManager:
         except Exception as e:
             error_log(f"[StateQueue] 處理 WORK 完成時發生錯誤: {e}")
     
+    def interrupt_chat_for_work(self, command_task: str, 
+                               trigger_user: Optional[str] = None,
+                               metadata: Optional[Dict[str, Any]] = None) -> bool:
+        """
+        聊天中斷：當在 CHAT 狀態中檢測到明顯指令時，插入 WORK 狀態
+        這會中斷當前的聊天並優先處理工作任務
+        """
+        try:
+            debug_log(1, f"[StateQueue] 聊天中斷轉工作：{command_task[:50]}...")
+            
+            # 創建高優先級的 WORK 狀態項目
+            interrupt_metadata = metadata or {}
+            interrupt_metadata.update({
+                "chat_interrupt": True,
+                "interrupt_timestamp": datetime.now().isoformat(),
+                "original_command": command_task
+            })
+            
+            queue_item = StateQueueItem(
+                state=UEPState.WORK,
+                trigger_content=command_task,
+                context_content=command_task,
+                trigger_user=trigger_user,
+                priority=200,  # 高於普通任務但不是最高緊急
+                metadata=interrupt_metadata,
+                created_at=datetime.now()
+            )
+            
+            # 插入到佇列前面（優先處理）
+            self.queue.insert(0, queue_item)
+            
+            info_log(f"[StateQueue] 聊天中斷已插入佇列 - 優先級: 200, 位置: 0")
+            debug_log(2, f"[StateQueue] 工作任務: {command_task}")
+            
+            # 標記當前 CHAT 狀態需要中斷（如果有的話）
+            if self.current_item and self.current_item.state == UEPState.CHAT:
+                debug_log(1, "[StateQueue] 標記當前 CHAT 會話進行工作中斷")
+                interrupt_metadata["interrupted_chat_session"] = True
+            
+            # 保存佇列
+            self._save_queue()
+            
+            return True
+            
+        except Exception as e:
+            error_log(f"[StateQueue] 聊天中斷處理失敗: {e}")
+            return False
+    
     def add_state(self, state: UEPState, trigger_content: str, 
                   context_content: Optional[str] = None,
                   trigger_user: Optional[str] = None, 

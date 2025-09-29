@@ -126,6 +126,28 @@ class GeminiWrapper:
                         }
                     },
                     "description": "用戶偏好學習信號，累積多次後形成用戶畫像"
+                },
+                "session_control": {
+                    "type": "object",
+                    "nullable": True,
+                    "properties": {
+                        "should_end_session": {
+                            "type": "boolean",
+                            "description": "是否應該結束當前對話會話"
+                        },
+                        "end_reason": {
+                            "type": "string",
+                            "enum": ["natural_conclusion", "user_goodbye", "task_completed", "no_further_input"],
+                            "description": "建議結束會話的原因"
+                        },
+                        "confidence": {
+                            "type": "number",
+                            "description": "結束會話建議的信心度",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        }
+                    },
+                    "description": "會話控制建議，由 LLM 判斷對話是否應該結束"
                 }
             },
             "required": ["text", "confidence"]
@@ -215,6 +237,28 @@ class GeminiWrapper:
                         }
                     },
                     "description": "基於任務執行狀況的狀態更新"
+                },
+                "session_control": {
+                    "type": "object",
+                    "nullable": True,
+                    "properties": {
+                        "should_end_session": {
+                            "type": "boolean",
+                            "description": "是否應該結束當前工作會話"
+                        },
+                        "end_reason": {
+                            "type": "string",
+                            "enum": ["task_completed", "workflow_finished", "user_satisfied", "cannot_proceed"],
+                            "description": "建議結束會話的原因"
+                        },
+                        "confidence": {
+                            "type": "number",
+                            "description": "結束會話建議的信心度",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        }
+                    },
+                    "description": "會話控制建議，由 LLM 判斷工作是否應該結束"
                 }
             },
             "required": ["text", "confidence"]

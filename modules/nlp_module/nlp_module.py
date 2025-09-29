@@ -15,12 +15,12 @@ import os
 import time
 from typing import Dict, Any, Optional, List
 
-from core.module_base import BaseModule
+from core.bases.module_base import BaseModule
 from core.schemas import NLPModuleData, create_nlp_data
 from core.schema_adapter import NLPSchemaAdapter
 from core.working_context import working_context_manager, ContextType
-from core.state_queue import get_state_queue_manager
-from core.state_manager import UEPState as SystemState
+from core.states.state_queue import get_state_queue_manager
+from core.states.state_manager import UEPState as SystemState
 from utils.debug_helper import debug_log, info_log, error_log
 
 from .schemas import (
@@ -474,14 +474,16 @@ class NLPModule(BaseModule):
         """檢查當前是否有活動的 Chatting Sessions"""
         try:
             # 延遲導入避免循環依賴
-            from core.chatting_session import chatting_session_manager
+            from core.sessions.session_manager import session_manager
             
-            active_sessions = chatting_session_manager.get_active_sessions()
+            # 使用統一介面獲取所有活躍會話
+            all_active_sessions = session_manager.get_all_active_sessions()
+            active_chatting_sessions = all_active_sessions.get('chatting', [])
             
             return {
-                "has_active_sessions": len(active_sessions) > 0,
-                "session_count": len(active_sessions),
-                "session_ids": [session.session_id for session in active_sessions],
+                "has_active_sessions": len(active_chatting_sessions) > 0,
+                "session_count": len(active_chatting_sessions),
+                "session_ids": [session.session_id for session in active_chatting_sessions],
                 "session_contexts": [
                     {
                         "session_id": session.session_id,
@@ -489,7 +491,7 @@ class NLPModule(BaseModule):
                         "turn_count": session.turn_counter,
                         "memory_token": session.memory_token
                     }
-                    for session in active_sessions
+                    for session in active_chatting_sessions
                 ]
             }
         except ImportError:

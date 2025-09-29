@@ -90,6 +90,7 @@ class LLMInput(BaseModel):
     workflow_context: Optional[Dict[str, Any]] = Field(None, description="工作流上下文")
     
     # 對話歷史和快取
+    ignore_cache: Optional[bool] = Field(False, description="是否忽略回應快取")
     conversation_history: Optional[List[ConversationEntry]] = Field(default_factory=list, description="對話歷史")
     cache_config: Optional[ContextCacheConfig] = Field(default_factory=ContextCacheConfig, description="快取配置")
     

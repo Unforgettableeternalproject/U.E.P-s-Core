@@ -2,7 +2,7 @@ import os
 import time
 
 import yaml
-from core.module_base import BaseModule
+from core.bases.module_base import BaseModule
 from configs.config_loader import load_module_config
 from utils.debug_helper import info_log, error_log, debug_log
 from .schemas import SYSInput, SYSOutput, SessionInfo, SessionDetail
@@ -13,7 +13,7 @@ from .actions.automation_helper import set_reminder, generate_backup_script, mon
 from .actions.integrations import news_summary, get_weather, get_world_time, code_analysis, media_control
 
 # Import session management
-from core.session_manager import SessionManager, WorkflowSession, SessionStatus
+from core.sessions.session_manager import session_manager, WorkflowSession, SessionStatus
 from .workflows import (
     WorkflowType, StepResult, WorkflowEngine, WorkflowDefinition
 )
@@ -35,7 +35,7 @@ class SYSModule(BaseModule):
         self.config = config or load_module_config("sys_module")
         self.enabled_modes = set(self.config.get("modes", []))
         self._function_specs = None
-        self.session_manager = SessionManager()
+        self.session_manager = session_manager
         # Custom session storage for engines
         self.workflow_engines = {}  # session_id -> engine mapping
 

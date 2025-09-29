@@ -941,7 +941,7 @@ def setup_test_environment_for_module(module_name: str):
         info_log(f"[Debug API] 已設置 {module_name} 測試身份: {test_identity['user_identity']}")
         
         # 2. 根據模組類型設置相應的系統狀態
-        from core.state_manager import state_manager, UEPState
+        from core.states.state_manager import state_manager, UEPState
         
         state_mapping = {
             "llm": UEPState.CHAT,  # LLM 預設使用 CHAT 狀態
@@ -955,21 +955,17 @@ def setup_test_environment_for_module(module_name: str):
         if original_state != target_state:
             state_manager.set_state(target_state)
             info_log(f"[Debug API] 已切換系統狀態: {original_state.value} → {target_state.value}")
+            # 狀態切換後，對應的會話會自動創建
         
-        # 3. 確保會話管理器就緒
-        from core.session_manager import session_manager
-        if not session_manager.has_active_session():
-            session_info = session_manager.start_session(
-                session_type="debug_test",
-                identity_id=test_identity["identity_id"]
-            )
-            info_log(f"[Debug API] 已啟動測試會話: {session_info.get('session_id', 'unknown')}")
+        # 3. 驗證會話是否已自動創建（由狀態管理器觸發）
+        import time
+        time.sleep(0.1)  # 短暫等待狀態切換完成
         
         return {
             "success": True,
             "identity": test_identity,
             "state": target_state,
-            "session_active": session_manager.has_active_session()
+            "original_state": original_state
         }
         
     except Exception as e:
@@ -979,21 +975,19 @@ def setup_test_environment_for_module(module_name: str):
 def cleanup_test_environment():
     """清理測試環境，恢復到初始狀態"""
     try:
-        from core.state_manager import state_manager, UEPState
-        from core.session_manager import session_manager
+        from core.states.state_manager import state_manager, UEPState
         
-        # 恢復到 IDLE 狀態
+        # 恢復到 IDLE 狀態（不論之前是什麼狀態）
         current_state = state_manager.get_current_state()
         if current_state != UEPState.IDLE:
             state_manager.set_state(UEPState.IDLE)
             info_log(f"[Debug API] 已恢復系統狀態: {current_state.value} → IDLE")
+            # 狀態切換時，對應的會話會自動結束
         
-        # 結束測試會話
-        if session_manager.has_active_session():
-            session_manager.end_session()
-            info_log("[Debug API] 已結束測試會話")
+        # 注意：保留身份設置，不清理工作上下文中的身份資訊
+        # 這樣可以讓後續測試繼續使用同一個測試身份
         
-        info_log("[Debug API] 測試環境清理完成")
+        info_log("[Debug API] 測試環境清理完成 - 狀態已重置為 IDLE")
         return {"success": True}
         
     except Exception as e:

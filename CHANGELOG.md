@@ -1282,3 +1282,15 @@
 
 ---
 
+### Some "Very Little" changes to make the code look better. 09/29
+
+> Date: Mon, 29 Sep 2025 21:55:38 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `83b16084a9ed2dc0d06298975ac6fea8b6b2148f`
+
+---
+

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from utils.debug_helper import debug_log, info_log, error_log
 
 # 導入統一的狀態枚舉
-from core.state_manager import UEPState
+from core.states.state_manager import UEPState
 
 @dataclass
 class StateQueueItem:
@@ -87,7 +87,6 @@ class StateQueueManager:
         self.completion_handlers: Dict[UEPState, Callable] = {}
         
         # 會話管理 - 延遲導入避免循環依賴
-        self._chatting_session_manager = None
         self._session_manager = None
         
         # 載入持久化數據
@@ -118,21 +117,11 @@ class StateQueueManager:
         self.register_state_handler(UEPState.WORK, self._handle_work_state)
         self.register_completion_handler(UEPState.WORK, self._handle_work_completion)
     
-    def _get_chatting_session_manager(self):
-        """獲取 Chatting Session 管理器 (延遲導入)"""
-        if self._chatting_session_manager is None:
-            try:
-                from core.chatting_session import chatting_session_manager
-                self._chatting_session_manager = chatting_session_manager
-            except ImportError as e:
-                error_log(f"[StateQueue] 無法導入 Chatting Session 管理器: {e}")
-        return self._chatting_session_manager
-    
     def _get_session_manager(self):
-        """獲取 Session 管理器 (延遲導入)"""
+        """獲取統一 Session 管理器 (延遲導入)"""
         if self._session_manager is None:
             try:
-                from core.session_manager import session_manager
+                from core.sessions.session_manager import session_manager
                 self._session_manager = session_manager
             except ImportError as e:
                 error_log(f"[StateQueue] 無法導入 Session 管理器: {e}")
@@ -141,7 +130,7 @@ class StateQueueManager:
     def _handle_chat_state(self, queue_item: StateQueueItem):
         """處理 CHAT 狀態 - 通知狀態管理器創建聊天會話並等待完成通知"""
         try:
-            from core.state_manager import state_manager
+            from core.states.state_manager import state_manager
             
             # 準備上下文信息
             context = {
@@ -184,21 +173,20 @@ class StateQueueManager:
     def _handle_chat_completion(self, queue_item: StateQueueItem, success: bool):
         """處理 CHAT 狀態完成"""
         try:
-            chatting_manager = self._get_chatting_session_manager()
+            session_manager = self._get_session_manager()
             
             cs_id = queue_item.metadata.get("chatting_session_id")
             
-            if chatting_manager and cs_id:
-                cs = chatting_manager.get_session(cs_id)
-                if cs and cs.status.value in ["active", "paused"]:
+            if session_manager and cs_id:
+                cs = session_manager.get_session(cs_id)
+                if cs and hasattr(cs, 'status') and cs.status.value in ["active", "paused"]:
                     # 結束 Chatting Session
-                    session_summary = cs.end_session(save_memory=True)
+                    session_summary = session_manager.end_chatting_session(cs_id, save_memory=True)
                     
                     info_log(f"[StateQueue] CHAT 狀態完成，CS 已結束: {cs_id}")
                     debug_log(4, f"[StateQueue] CS 總結: {session_summary}")
                     
-                    # 從活動會話中移除
-                    chatting_manager.end_session(cs_id, save_memory=False)  # 已在 cs.end_session 中保存
+                    # 注意：end_chatting_session 已經處理了會話清理
             
         except Exception as e:
             error_log(f"[StateQueue] 處理 CHAT 完成時發生錯誤: {e}")
@@ -206,7 +194,7 @@ class StateQueueManager:
     def _handle_work_state(self, queue_item: StateQueueItem):
         """處理 WORK 狀態 - 通知狀態管理器創建工作會話並等待完成通知"""
         try:
-            from core.state_manager import state_manager
+            from core.states.state_manager import state_manager
             
             # 確定工作流程類型
             intent_type = queue_item.metadata.get('intent_type', 'command')
@@ -253,10 +241,10 @@ class StateQueueManager:
         """將意圖類型映射為工作流程類型"""
         mapping = {
             'command': 'single_command',
-            'compound': 'multi_step_workflow',
-            'query': 'data_query',
+            'compound': 'workflow_automation',
+            'query': 'workflow_automation',
             'file_operation': 'file_processing',
-            'system_command': 'system_operation'
+            'system_command': 'single_command'
         }
         return mapping.get(intent_type.lower(), 'single_command')
     

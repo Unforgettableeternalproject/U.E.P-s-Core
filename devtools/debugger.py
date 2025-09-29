@@ -326,29 +326,47 @@ def debug_interactive():
                 debug_log(1, "LLM 模組測試")
                 print("<LLM 模組測試>\n")
 
-                choice = input("請選擇測試模式 (1: 聊天測試, 2: 指令測試, exit: 離開): \n\n> ")
-                if choice == "1":
-                    print("🗣️ 請輸入一段對話文字 (必須用英文) (或輸入 'exit' 來結束):")
-                    while True:
-                        text = input("\n> ")
-                        if text.lower() in ["exit", "e", "quit", "q", "back", "b"]:
-                            info_log("使用者中斷測試")
-                            break
-                        print()
-                        controller.llm_test_chat(text)
-                elif choice == "2":
-                    print("🔧 請輸入一段指令文字 (必須用英文) (或輸入 'exit' 來結束):")
-                    while True:
-                        text = input("\n> ")
-                        if text.lower() in ["exit", "e", "quit", "q", "back", "b"]:
-                            info_log("使用者中斷測試")
-                            break
-                        print()
-                        controller.llm_test_command(text)
-                elif choice in ["exit", "e", "quit", "q", "back", "b"]:
-                    pass
-                else:
-                    print("\033[31m無效的選擇，請再試一次。\033[0m")
+                # LLM 子選單
+                while True:
+                    llm_choice = input("\n選擇測試功能:\n" +
+                                     "1: 聊天對話測試 (CHAT 模式)\n" +
+                                     "2: 指令分析測試 (WORK 模式)\n" +
+                                     "3: 快取功能測試\n" +
+                                     "4: 學習引擎測試\n" +
+                                     "back: 返回上級\n\n> ")
+                    
+                    if llm_choice == "1":
+                        print("🗣️ 聊天對話測試 (或輸入 'exit' 來結束):")
+                        while True:
+                            text = input("\n> ")
+                            if text.lower() in ["exit", "e", "quit", "q", "back", "b"]:
+                                info_log("使用者中斷測試")
+                                break
+                            print()
+                            controller.llm_test_chat(text)
+                    
+                    elif llm_choice == "2":
+                        print("🔧 指令分析測試 (或輸入 'exit' 來結束):")
+                        while True:
+                            text = input("\n> ")
+                            if text.lower() in ["exit", "e", "quit", "q", "back", "b"]:
+                                info_log("使用者中斷測試")
+                                break
+                            print()
+                            controller.llm_test_command(text)
+                    
+                    elif llm_choice == "3":
+                        print("🗄️ 執行快取功能測試...")
+                        controller.llm_test_cache_functionality()
+                    
+                    elif llm_choice == "4":
+                        print("🧠 執行學習引擎測試...")
+                        controller.llm_test_learning_engine()
+                    
+                    elif llm_choice.lower() in ["exit", "e", "back", "b", "quit", "q"]:
+                        break
+                    else:
+                        print("\033[31m無效的選擇，請再試一次。\033[0m")
             case "tts":
                 if not mod_list['tts']:
                     info_log("TTS 模組未啟用，請檢查配置。", "WARNING")

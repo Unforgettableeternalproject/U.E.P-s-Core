@@ -13,7 +13,7 @@ sys.path.insert(0, str(project_root))
 
 from modules.nlp_module.enhanced_intent_analyzer import EnhancedIntentAnalyzer
 from modules.nlp_module.multi_intent_context import get_multi_intent_context_manager
-from core.state_manager import UEPState, StateManager
+from core.states.state_manager import UEPState, StateManager
 from utils.debug_helper import debug_log, info_log, error_log
 
 def test_nlp_integration():

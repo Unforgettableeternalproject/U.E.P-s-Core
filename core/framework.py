@@ -20,8 +20,8 @@ from abc import ABC, abstractmethod
 
 from utils.debug_helper import debug_log, info_log, error_log
 from core.working_context import WorkingContextManager, ContextType, ContextStatus
-from core.state_manager import UEPState, StateManager
-from core.session_manager import WorkflowSession, SessionStatus
+from core.states.state_manager import UEPState, StateManager
+from core.sessions.session_manager import WorkflowSession, SessionStatus
 
 
 class ModuleState(Enum):
@@ -503,7 +503,7 @@ class CoreFramework:
                                command: str,
                                initial_data: Dict[str, Any] = None) -> str:
         """創建工作流會話"""
-        from core.session_manager import session_manager
+        from core.sessions.session_manager import session_manager
         
         # 使用統一的 session_manager 創建會話
         session = session_manager.create_session(

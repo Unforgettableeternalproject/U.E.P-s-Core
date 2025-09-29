@@ -16,7 +16,7 @@ import torch
 import pyaudio
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 
-from core.module_base import BaseModule
+from core.bases.module_base import BaseModule
 from utils.debug_helper import debug_log, info_log, error_log
 from configs.config_loader import load_module_config
 from core.schemas import STTModuleData, create_stt_data

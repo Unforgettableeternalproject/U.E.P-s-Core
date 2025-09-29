@@ -31,7 +31,7 @@ from modules.llm_module.schemas import (
     LLMInput, LLMOutput, LLMMode, SystemState, 
     SystemAction, ConversationEntry, LearningData, StatusUpdate
 )
-from core.state_manager import UEPState, state_manager
+from core.states.state_manager import UEPState, state_manager
 from core.status_manager import StatusManager
 from core.working_context import working_context_manager, ContextType
 from utils.debug_helper import debug_log, info_log, error_log

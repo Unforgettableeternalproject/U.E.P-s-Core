@@ -21,7 +21,7 @@ import inspect
 import datetime
 from abc import ABC, abstractmethod
 
-from core.session_manager import WorkflowSession
+from core.sessions.session_manager import WorkflowSession
 from utils.debug_helper import info_log, error_log, debug_log
 
 # 前向引用，解決循環引用問題

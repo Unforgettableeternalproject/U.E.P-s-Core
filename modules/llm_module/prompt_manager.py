@@ -261,11 +261,13 @@ class PromptManager:
         
         # Try to get functions data from SYS module
         try:
-            sys_data = self.data_provider.get_sys_data("functions")
-            if sys_data and isinstance(sys_data, dict):
-                functions_list = sys_data.get("available_functions", [])
-                if functions_list:
-                    return f"Available System Functions:\n" + "\n".join(functions_list)
+            sys_data = self.data_provider.get_sys_data("function_registry")
+            if sys_data:
+                if isinstance(sys_data, (list, tuple, set)):
+                    return "Available System Functions:\n" + "\n".join(map(str, sys_data))
+                if isinstance(sys_data, dict) and sys_data.get("available_functions"):
+                    return "Available System Functions:\n" + "\n".join(sys_data["available_functions"])
+            return None
         except Exception as e:
             debug_log(3, f"[PromptManager] 無法從 SYS 模組獲取功能資料: {e}")
         

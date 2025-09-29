@@ -2,8 +2,7 @@
 from enum import Enum, auto
 from typing import Dict, Any, Optional, List, Callable
 import time
-import time
-
+from core.status_manager import status_manager
 from utils.debug_helper import debug_log
 from core.working_context import ContextType
 
@@ -26,7 +25,7 @@ class StateManager:
         self._state = UEPState.IDLE
         self._current_session_id: Optional[str] = None
         self._state_change_callbacks: List[Callable[[UEPState, UEPState], None]] = []
-        
+        self.status_manager = status_manager
         # 與 StatusManager 整合
         self._setup_status_integration()
         
@@ -92,14 +91,20 @@ class StateManager:
             elif new_state == UEPState.SLEEP:
                 self._handle_sleep_state(context)
                 
+        except RuntimeError as e:
+            # 對於架構錯誤，直接向上拋出，不進行處理
+            debug_log(1, f"[StateManager] 會話架構錯誤: {e}")
+            raise
         except Exception as e:
             debug_log(1, f"[StateManager] 狀態變化處理失敗: {e}")
     
     def _create_chat_session(self, context: Optional[Dict[str, Any]] = None):
-        """創建聊天會話"""
+        """創建聊天會話 - 使用現有的GS"""
         try:
-            from core.chatting_session import chatting_session_manager
+            from core.sessions.session_manager import session_manager
             from core.working_context import working_context_manager
+            
+            queue_callback = (context or {}).get("state_queue_callback")
             
             # 從 Working Context 獲取身份信息
             identity_context = working_context_manager.get_data(ContextType.IDENTITY_MANAGEMENT, "identity_context", {})
@@ -111,31 +116,52 @@ class StateManager:
                     "preferences": {}
                 }
             
-            # 創建 Chatting Session
-            gs_session_id = f"gs_{int(time.time())}"
-            cs = chatting_session_manager.create_session(
-                gs_session_id=gs_session_id,
+            # 獲取現有的 General Session - 如果不存在則為架構錯誤
+            current_gs = session_manager.get_current_general_session()
+            if not current_gs:
+                error_msg = "[StateManager] 嚴重錯誤：嘗試創建 CS 但沒有活躍的 GS！這違反了會話架構設計"
+                debug_log(1, error_msg)
+                raise RuntimeError("會話架構錯誤：CS 必須依附於現有的 GS，不能獨立創建")
+            
+            gs_id = current_gs.session_id
+            debug_log(2, f"[StateManager] 使用現有 GS: {gs_id}")
+            
+            # 創建 Chatting Session，依附於現有的GS
+            cs_id = session_manager.create_chatting_session(
+                gs_session_id=gs_id,
                 identity_context=identity_context
             )
             
-            if cs:
-                self._current_session_id = cs.session_id
-                debug_log(2, f"[StateManager] 創建聊天會話成功: {cs.session_id}")
+            if cs_id:
+                self._current_session_id = cs_id
+                debug_log(2, f"[StateManager] 創建聊天會話成功: {cs_id}")
                 
                 # 如果有初始輸入，處理它
                 if context and context.get("initial_input"):
-                    response = cs.process_input(context["initial_input"])
-                    debug_log(3, f"[StateManager] 處理初始輸入完成: {cs.session_id}")
+                    cs = session_manager.get_session(cs_id)
+                    if cs and hasattr(cs, 'process_input'):
+                        response = cs.process_input(context["initial_input"])
+                        debug_log(3, f"[StateManager] 處理初始輸入完成: {cs_id}")
+                        
+                if callable(queue_callback):
+                    success = bool(response and response.get("success", True))
+                    queue_callback(cs.session_id, success, response or {})
             else:
                 debug_log(1, "[StateManager] 創建聊天會話失敗")
                 
+        except RuntimeError as e:
+            # 對於架構錯誤，直接向上拋出
+            debug_log(1, f"[StateManager] 會話架構錯誤: {e}")
+            raise
         except Exception as e:
             debug_log(1, f"[StateManager] 創建聊天會話時發生錯誤: {e}")
     
     def _create_work_session(self, context: Optional[Dict[str, Any]] = None):
-        """創建工作會話"""
+        """創建工作會話 - 使用現有的GS"""
         try:
-            from core.session_manager import session_manager
+            from core.sessions.session_manager import session_manager
+            
+            queue_callback = (context or {}).get("state_queue_callback")
             
             # 從上下文獲取工作流程信息
             workflow_type = "single_command"
@@ -145,19 +171,39 @@ class StateManager:
                 workflow_type = context.get("workflow_type", workflow_type)
                 command = context.get("command", command)
             
-            # 創建 Workflow Session
-            ws = session_manager.create_session(
-                workflow_type=workflow_type,
-                command=command,
-                initial_data=context
+            # 獲取現有的 General Session - 如果不存在則為架構錯誤
+            current_gs = session_manager.get_current_general_session()
+            if not current_gs:
+                error_msg = "[StateManager] 嚴重錯誤：嘗試創建 WS 但沒有活躍的 GS！這違反了會話架構設計"
+                debug_log(1, error_msg)
+                raise RuntimeError("會話架構錯誤：WS 必須依附於現有的 GS，不能獨立創建")
+            
+            gs_id = current_gs.session_id
+            debug_log(2, f"[StateManager] 使用現有 GS: {gs_id}")
+            
+            # 創建 Workflow Session，依附於現有的GS
+            ws_id = session_manager.create_workflow_session(
+                gs_session_id=gs_id,
+                task_type=workflow_type,
+                task_definition={
+                    "command": command,
+                    "initial_data": context or {}
+                }
             )
             
-            if ws:
-                self._current_session_id = ws.session_id
-                debug_log(2, f"[StateManager] 創建工作會話成功: {ws.session_id} (類型: {workflow_type})")
+            if ws_id:
+                self._current_session_id = ws_id
+                debug_log(2, f"[StateManager] 創建工作會話成功: {ws_id} (類型: {workflow_type})")
+                
+                if callable(queue_callback):
+                    queue_callback(ws_id, True, {"accepted": True, "workflow_type": workflow_type, "command": command})
             else:
                 debug_log(1, "[StateManager] 創建工作會話失敗")
                 
+        except RuntimeError as e:
+            # 對於架構錯誤，直接向上拋出
+            debug_log(1, f"[StateManager] 會話架構錯誤: {e}")
+            raise
         except Exception as e:
             debug_log(1, f"[StateManager] 創建工作會話時發生錯誤: {e}")
     
@@ -229,14 +275,13 @@ class StateManager:
         """
         try:
             # 延遲導入避免循環依賴
-            from core.session_manager import session_manager
-            from core.chatting_session import chatting_session_manager
+            from core.sessions.session_manager import session_manager
             
-            # 檢查工作會話
-            active_work_sessions = session_manager.get_active_sessions() if session_manager else []
+            # 獲取所有活躍會話並分類
+            all_active_sessions = session_manager.get_all_active_sessions()
             
-            # 檢查聊天會話
-            active_chat_sessions = chatting_session_manager.get_active_sessions() if chatting_session_manager else []
+            active_work_sessions = all_active_sessions.get('workflow', [])
+            active_chat_sessions = all_active_sessions.get('chatting', [])
             
             if active_work_sessions:
                 # 有活躍的工作會話
@@ -268,8 +313,7 @@ class StateManager:
         - Sleep: 極高 Boredom + 長時間無互動
         """
         try:
-            from core.status_manager import StatusManager
-            status_manager = StatusManager()
+            status_manager = self.status_manager
             status = status_manager.get_status()
             current_time = time.time()
             
@@ -324,12 +368,10 @@ class StateManager:
     def _update_status_for_mischief(self):
         """更新 Mischief 狀態的系統數值"""
         try:
-            from core.status_manager import StatusManager
-            status_manager = StatusManager()
+            status_manager = self.status_manager
             
             # Mischief 狀態時，Helpfulness 變為負值
-            status_manager.update_helpfulness(-1.0 - status_manager.get_status().helpfulness, 
-                                            "進入搣蛋狀態，不提供協助")
+            status_manager.suppress_helpfulness("enter_mischief")
             
             debug_log(2, "[StateManager] 已調整 Mischief 狀態的系統數值")
             
@@ -369,8 +411,7 @@ class StateManager:
     def _setup_status_integration(self):
         """設置與 StatusManager 的整合"""
         try:
-            from core.status_manager import StatusManager
-            status_manager = StatusManager()
+            status_manager = self.status_manager
             
             # 註冊狀態變化回調
             status_manager.register_update_callback(
@@ -426,12 +467,15 @@ class StateManager:
     def _restore_helpfulness_after_mischief(self):
         """Mischief 狀態結束後恢復 Helpfulness"""
         try:
-            from core.status_manager import StatusManager
-            status_manager = StatusManager()
+            status_manager = self.status_manager
             
             # 恢復到正常的助人意願水平
-            status_manager.update_helpfulness(0.8 - status_manager.get_status().helpfulness, 
-                                            "結束搗蛋狀態，恢復協助意願")
+            status_manager.clear_helpfulness_override("leave_mischief")
+            # 如要同時恢復自然值到你偏好的水位（例如 0.8），可額外調整：
+            current = status_manager.get_status_dict()["helpfulness"]
+            delta = 0.8 - current
+            if abs(delta) > 1e-6:
+                status_manager.update_helpfulness(delta, "restore_after_mischief")
             
             debug_log(2, "[StateManager] 已恢復 Mischief 後的 Helpfulness 數值")
             

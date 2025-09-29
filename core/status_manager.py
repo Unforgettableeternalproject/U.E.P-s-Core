@@ -33,6 +33,7 @@ class SystemStatus:
     successful_tasks: int = 0
     failed_tasks: int = 0
     last_interaction_time: float = 0.0
+    last_update_reason: str = ""
     
     def to_dict(self) -> Dict[str, Any]:
         """轉換為字典格式"""
@@ -77,6 +78,9 @@ class StatusManager:
         self.storage_path = Path("memory/system_status.json")
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         
+        # 特殊狀態覆寫
+        self._helpfulness_override: float | None = None
+        
         # 更新回調
         self.update_callbacks: Dict[str, Callable] = {}
         
@@ -107,13 +111,24 @@ class StatusManager:
     
     def get_status_dict(self) -> Dict[str, Any]:
         """獲取當前系統狀態的字典格式"""
-        return self.status.to_dict()
+        d = {
+            "mood": self.status.mood,
+            "pride": self.status.pride,
+            "helpfulness": self.status.helpfulness,  # 自然值（0~1）
+            "boredom": self.status.boredom,
+            "last_update_reason": getattr(self.status, "last_update_reason", None),
+        }
+        # 新增有效值與當前覆蓋狀態
+        d["helpfulness_effective"] = self.get_effective_helpfulness()
+        d["helpfulness_overridden"] = (self._helpfulness_override is not None)
+        return d
     
     def update_mood(self, delta: float, reason: str = ""):
         """更新情緒狀態"""
         old_mood = self.status.mood
         self.status.mood += delta
         self.status.validate_ranges()
+        self.status.last_update_reason = reason
         
         debug_log(2, f"[StatusManager] 情緒更新: {old_mood:.2f} -> {self.status.mood:.2f} "
                     f"(變化: {delta:+.2f}) 原因: {reason}")
@@ -138,6 +153,7 @@ class StatusManager:
             self.status.helpfulness += helpfulness_penalty
         
         self.status.validate_ranges()
+        self.status.last_update_reason = reason
         
         debug_log(2, f"[StatusManager] 自尊更新: {old_pride:.2f} -> {self.status.pride:.2f} "
                     f"(變化: {delta:+.2f}) 原因: {reason}")
@@ -148,8 +164,9 @@ class StatusManager:
     def update_helpfulness(self, delta: float, reason: str = ""):
         """更新助人意願"""
         old_helpfulness = self.status.helpfulness
-        self.status.helpfulness += delta
+        self.status.helpfulness = max(0.0, min(1.0, self.status.helpfulness + float(delta)))
         self.status.validate_ranges()
+        self.status.last_update_reason = reason
         
         debug_log(2, f"[StatusManager] 助人意願更新: {old_helpfulness:.2f} -> {self.status.helpfulness:.2f} "
                     f"(變化: {delta:+.2f}) 原因: {reason}")
@@ -170,6 +187,8 @@ class StatusManager:
             self.status.mood += mood_penalty
             self.status.pride += pride_penalty
             self.status.validate_ranges()
+            
+        self.status.last_update_reason = reason
         
         debug_log(2, f"[StatusManager] 無聊程度更新: {old_boredom:.2f} -> {self.status.boredom:.2f} "
                     f"(變化: {delta:+.2f}) 原因: {reason}")
@@ -416,6 +435,22 @@ class StatusManager:
             f"助人意願: {modifiers['helpfulness_level']} ({self.status.helpfulness:.2f}), "
             f"無聊程度: {modifiers['boredom_level']} ({self.status.boredom:.2f})"
         )
+        
+    def get_effective_helpfulness(self) -> float:
+        """回傳『有效的』助人意願。若有覆蓋值（例如 Mischief），回傳覆蓋值；否則回自然值。"""
+        if self._helpfulness_override is not None:
+            return float(self._helpfulness_override)
+        return float(self.status.helpfulness)
+    
+    def suppress_helpfulness(self, reason: str = "system_override"):
+        """將助人意願以覆蓋值 -1 強制關閉（不影響自然值），適用於 Mischief 等態。"""
+        self._helpfulness_override = -1.0
+        self.status.last_update_reason = reason
+
+    def clear_helpfulness_override(self, reason: str = "system_restore"):
+        """解除覆蓋，恢復使用自然值（0~1）。"""
+        self._helpfulness_override = None
+        self.status.last_update_reason = reason
 
 
 # 全局實例

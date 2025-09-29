@@ -11,17 +11,18 @@ LLM 模組重構版本
 6. 內建 Prompt 管理，不再依賴外部 prompt_builder
 """
 
+import re
 import time
 import json
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 
-from core.module_base import BaseModule
+from core.bases.module_base import BaseModule
 from core.schemas import LLMModuleData, create_llm_data
 from core.schema_adapter import LLMSchemaAdapter
 from core.working_context import working_context_manager, ContextType
-from core.status_manager import StatusManager
-from core.state_manager import state_manager, UEPState
+from core.status_manager import status_manager
+from core.states.state_manager import state_manager, UEPState
 
 from .schemas import (
     LLMInput, LLMOutput, SystemAction, LLMMode, SystemState,
@@ -53,9 +54,10 @@ class LLMModule(BaseModule):
         # 統一快取管理器 (整合Gemini顯性快取 + 本地快取)
         self.cache_manager = cache_manager
         
-        # 狀態管理
+        # 狀態和會話管理
         self.state_manager = state_manager
-        self.status_manager = StatusManager()
+        self.status_manager = status_manager
+        self.session_info = {}
         
         # 狀態感知模組接口
         self.module_interface = state_aware_interface
@@ -159,7 +161,7 @@ class LLMModule(BaseModule):
             self._update_collaboration_channels(current_state)
             
             status = self._get_current_system_status()
-            session_info = self._get_current_session_info()
+            self.session_info = self._get_current_session_info()
             
             # 2. 處理身份上下文 (優先使用來自Router的)
             if llm_input.identity_context:
@@ -171,11 +173,11 @@ class LLMModule(BaseModule):
             
             debug_log(2, f"[LLM] 系統狀態: {current_state}")
             debug_log(2, f"[LLM] StatusManager: {status}")
-            debug_log(2, f"[LLM] 會話信息: {session_info}")
+            debug_log(2, f"[LLM] 會話信息: {self.session_info}")
             
             # 3. 補充系統上下文到llm_input (整合Router數據)
             llm_input = self._enrich_with_system_context(
-                llm_input, current_state, status, session_info, identity_context
+                llm_input, current_state, status, self.session_info, identity_context
             )
             
             # 根據模式切換處理邏輯
@@ -222,8 +224,11 @@ class LLMModule(BaseModule):
                     llm_input.memory_context = self._format_memories_for_context(relevant_memories)
             
             # 2. 檢查 Context Cache (包含動態記憶)
-            memory_hash = hash(str(llm_input.memory_context)) if llm_input.memory_context else 0
-            cache_key = f"chat_{llm_input.text[:50]}_{memory_hash}_{len(relevant_memories)}"
+            import hashlib
+            base = f"{llm_input.mode}|{self.session_info.get('session_id','')}"
+            text_sig = hashlib.sha256(llm_input.text.encode("utf-8")).hexdigest()[:16]
+            mem_sig  = hashlib.sha256((llm_input.memory_context or "").encode("utf-8")).hexdigest()[:16]
+            cache_key = f"chat:{base}:{text_sig}:{mem_sig}:{len(relevant_memories)}"
             cached_response = self.cache_manager.get_cached_response(cache_key)
             
             if cached_response and not llm_input.ignore_cache:
@@ -263,12 +268,14 @@ class LLMModule(BaseModule):
             # 5. 處理學習信號
             if self.learning_engine.learning_enabled:
                 # 處理新的累積評分學習信號
+                ctx = llm_input.identity_context or {}
                 if "learning_signals" in response_data and response_data["learning_signals"]:
-                    identity_id = getattr(llm_input.identity_context, 'identity_id', 'default') if llm_input.identity_context else 'default'
+                    
+                    identity_id = (ctx.get("identity") or {}).get("id") or ctx.get("identity_id") or "default"
                     self.learning_engine.process_learning_signals(identity_id, response_data["learning_signals"])
-                
+                    
                 # 保留舊的互動記錄（用於統計和分析）
-                identity_id = getattr(llm_input.identity_context, 'identity_id', 'default') if llm_input.identity_context else 'default'
+                identity_id = (ctx.get("identity") or {}).get("id") or ctx.get("identity_id") or "default"
                 self.learning_engine.record_interaction(
                     identity_id=identity_id,
                     interaction_type="CHAT",
@@ -354,12 +361,13 @@ class LLMModule(BaseModule):
             # 5. 處理學習信號
             if self.learning_engine.learning_enabled:
                 # 處理新的累積評分學習信號
+                ctx = llm_input.identity_context or {}
                 if "learning_signals" in response_data and response_data["learning_signals"]:
-                    identity_id = getattr(llm_input.identity_context, 'identity_id', 'default') if llm_input.identity_context else 'default'
+                    identity_id = (ctx.get("identity") or {}).get("id") or ctx.get("identity_id") or "default"
                     self.learning_engine.process_learning_signals(identity_id, response_data["learning_signals"])
                 
                 # 保留舊的互動記錄（用於統計和分析）
-                identity_id = getattr(llm_input.identity_context, 'identity_id', 'default') if llm_input.identity_context else 'default'
+                identity_id = (ctx.get("identity") or {}).get("id") or ctx.get("identity_id") or "default"
                 self.learning_engine.record_interaction(
                     identity_id=identity_id,
                     interaction_type="WORK",
@@ -370,9 +378,6 @@ class LLMModule(BaseModule):
                         "system_context_used": bool(llm_input.system_context)
                     }
                 )
-            
-            # 6. 分析額外的系統動作（兼容舊邏輯）
-            legacy_system_action = self._analyze_system_action(response_text, llm_input.workflow_context)
             
             output = LLMOutput(
                 text=response_text,
@@ -387,7 +392,6 @@ class LLMModule(BaseModule):
                     "workflow_context_size": len(llm_input.workflow_context) if llm_input.workflow_context else 0,
                     "sys_actions_count": len(sys_actions),
                     "sys_actions": sys_actions,
-                    "legacy_system_action": legacy_system_action,
                     "system_context_size": len(llm_input.system_context) if llm_input.system_context else 0
                 }
             )
@@ -434,34 +438,18 @@ class LLMModule(BaseModule):
             )
     
     def _analyze_system_action(self, response_text: str, workflow_context: Optional[Dict[str, Any]]) -> Optional["SystemAction"]:
-        """分析回應文本是否需要系統動作"""
-        try:
-            # 簡單的關鍵字分析（後續可以改為更複雜的 NLP 分析）
-            action_keywords = {
-                "開啟": "open",
-                "啟動": "launch", 
-                "執行": "execute",
-                "搜尋": "search",
-                "查找": "find",
-                "建立": "create",
-                "刪除": "delete"
-            }
-            
-            for keyword, action_type in action_keywords.items():
-                if keyword in response_text:
-                    return SystemAction(
-                        action_type=action_type,
-                        target="",  # 需要進一步分析
-                        parameters={},
-                        confidence=0.7,
-                        requires_confirmation=True
-                    )
-            
-            return None
-            
-        except Exception as e:
-            debug_log(1, f"[LLM] 系統動作分析失敗: {e}")
-            return None
+        """
+        [DEPRECATED] 分析回應文本是否需要系統動作
+        
+        注意：此方法已廢棄。根據 U.E.P 架構設計：
+        1. 意圖分析應該在 NLP 模組階段完成
+        2. LLM 在 WORK 模式下應該從 Gemini 結構化回應中獲取系統動作
+        3. 不應該重複分析文本來判斷系統功能需求
+        
+        此方法保留僅用於向後兼容，建議移除對此方法的調用。
+        """
+        debug_log(3, "[LLM] 警告：使用了已廢棄的 _analyze_system_action 方法")
+        return None
     
     def _on_status_update(self, status_type: str, old_value: float, new_value: float, reason: str = ""):
         """StatusManager 狀態更新回調"""
@@ -592,21 +580,62 @@ class LLMModule(BaseModule):
             return {"error": str(e)}
     
     def _get_current_session_info(self) -> Dict[str, Any]:
-        """獲取當前會話信息"""
+        """獲取當前會話信息 - 優先獲取 CS 或 WS（LLM 作為邏輯中樞的執行會話）"""
         try:
-            # 從工作上下文獲取會話信息
-            session_data = working_context_manager.get_context_data(ContextType.SESSION)
+            # 從統一會話管理器獲取會話信息
+            from core.sessions.session_manager import session_manager
             
+            # LLM 在 CHAT 狀態時應該獲取當前 CS
+            active_cs_ids = session_manager.get_active_chatting_session_ids()
+            if active_cs_ids:
+                # 在架構下，同一時間只會有一個 CS 執行中
+                current_cs_id = active_cs_ids[0]
+                current_cs = session_manager.get_chatting_session(current_cs_id)
+                
+                if current_cs:
+                    return {
+                        "session_id": current_cs_id,
+                        "session_type": "chatting",
+                        "start_time": getattr(current_cs, 'start_time', None),
+                        "interaction_count": getattr(current_cs, 'turn_count', 0),
+                        "last_activity": getattr(current_cs, 'last_activity', None),
+                        "active_session_type": "CS"
+                    }
+            
+            # LLM 在 WORK 狀態時應該獲取當前 WS
+            active_ws_ids = session_manager.get_active_workflow_session_ids()
+            if active_ws_ids:
+                # 在架構下，同一時間只會有一個 WS 執行中
+                current_ws_id = active_ws_ids[0]
+                current_ws = session_manager.get_workflow_session(current_ws_id)
+                
+                if current_ws:
+                    return {
+                        "session_id": current_ws_id,
+                        "session_type": "workflow",
+                        "start_time": getattr(current_ws, 'start_time', None),
+                        "interaction_count": getattr(current_ws, 'step_count', 0),
+                        "last_activity": getattr(current_ws, 'last_activity', None),
+                        "active_session_type": "WS"
+                    }
+            
+            # 如果沒有 CS 或 WS，可能系統處於 IDLE 狀態或其他狀態
             return {
-                "session_id": session_data.get("session_id", "default"),
-                "session_type": session_data.get("session_type", "chat"),
-                "start_time": session_data.get("start_time"),
-                "interaction_count": session_data.get("interaction_count", 0),
-                "last_activity": session_data.get("last_activity")
+                "session_id": "no_active_session", 
+                "session_type": "idle",
+                "start_time": None,
+                "interaction_count": 0,
+                "last_activity": None,
+                "active_session_type": "NONE"
             }
+            
         except Exception as e:
             error_log(f"[LLM] 獲取會話信息失敗: {e}")
-            return {"session_id": "default", "session_type": "chat"}
+            return {
+                "session_id": "error", 
+                "session_type": "error",
+                "active_session_type": "ERROR"
+            }
     
     def _get_identity_context(self) -> Dict[str, Any]:
         """從Working Context獲取Identity信息"""
@@ -614,10 +643,11 @@ class LLMModule(BaseModule):
             identity_data = working_context_manager.get_context_data(ContextType.IDENTITY)
             
             return {
-                "current_identity": identity_data.get("current_identity"),
-                "identity_traits": identity_data.get("traits", {}),
-                "identity_preferences": identity_data.get("preferences", {}),
-                "identity_history": identity_data.get("interaction_history", [])
+                "identity": {
+                    "name": identity_data.get("current_identity"),
+                    "traits": identity_data.get("traits", {})
+                },
+                "preferences": identity_data.get("preferences", {})
             }
         except Exception as e:
             error_log(f"[LLM] 獲取Identity上下文失敗: {e}")
@@ -711,7 +741,9 @@ class LLMModule(BaseModule):
                     "metadata": {
                         "interaction_type": "chat",
                         "memory_type": "conversation",
-                        "auto_generated": True
+                        "auto_generated": True,
+                        "ttl_seconds": 60 * 60 * 24 * 7,     # 一週
+                        "erasable": True
                     }
                 }
                 memory_operations.append(store_operation)
@@ -734,13 +766,17 @@ class LLMModule(BaseModule):
             if len(llm_input.text) < 10 or len(response_text) < 10:
                 return False
             
+            sensitive_patterns = [r"\b\d{10}\b", r"@.+\.", r"\b[A-Z]\d{9}\b"]  # 可擴充
+            if any(re.search(p, llm_input.text) for p in sensitive_patterns):
+                return False  # 含敏感資訊不自動存
+            
             # 檢查是否為重要對話
-            important_keywords = ["記住", "記錄", "重要", "提醒", "保存"]
+            important_keywords = ["remember", "record", "important", "remind", "save"]
             if any(keyword in llm_input.text for keyword in important_keywords):
                 return True
             
             # 檢查是否包含個人信息或偏好
-            personal_keywords = ["喜歡", "討厭", "偏好", "習慣", "姓名", "生日"]
+            personal_keywords = ["like", "hate", "prefer", "would have", "name", "birthday"]
             if any(keyword in llm_input.text for keyword in personal_keywords):
                 return True
             

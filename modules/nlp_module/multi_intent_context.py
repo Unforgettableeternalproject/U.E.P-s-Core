@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
-from core.state_manager import UEPState
+from core.states.state_manager import UEPState
 from utils.debug_helper import debug_log, info_log, error_log
 
 class ContextType(Enum):

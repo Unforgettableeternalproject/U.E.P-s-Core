@@ -17,8 +17,8 @@ from enum import Enum
 
 from core.framework import CoreFramework, ExecutionMode, core_framework
 from core.working_context import ContextType
-from core.state_manager import UEPState
-from core.general_session import general_session_manager, GSType
+from core.states.state_manager import UEPState
+from core.sessions.general_session import general_session_manager, GSType
 from configs.config_loader import load_config
 from utils.debug_helper import debug_log, info_log, error_log
 
@@ -390,7 +390,7 @@ class UnifiedController:
             
             # GS失敗處理
             if current_gs:
-                from core.general_session import GSStatus
+                from core.sessions.general_session import GSStatus
                 current_gs.status = GSStatus.ERROR
                 self.gs_manager.end_current_session({"error": str(e)})
             

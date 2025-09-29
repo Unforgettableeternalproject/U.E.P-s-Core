@@ -25,8 +25,8 @@ debug_mode = config.get("debug", {}).get("enabled", False)
 
 from core.framework import core_framework, ExecutionMode
 from core.controller import unified_controller
-from core.state_manager import UEPState, StateManager, state_manager
-from core.state_queue import get_state_queue_manager
+from core.states.state_manager import UEPState, StateManager, state_manager
+from core.states.state_queue import get_state_queue_manager
 from core.working_context import working_context_manager, ContextType
 from configs.config_loader import load_config
 from utils.debug_helper import debug_log, info_log, error_log

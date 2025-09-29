@@ -16,7 +16,7 @@ modules_refactored:
   stt_module: true
   nlp_module: true
   mem_module: true
-  llm_module: false
+  llm_module: true
   tts_module: false
   sys_module: false
   ui_module: false

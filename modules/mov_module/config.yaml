@@ -1,1 +1,54 @@
-# Default config for mov_module_module
+module_name: "mov_module"
+module_type: "frontend"
+priority: 3
+
+physics:
+  gravity: 0.8
+  damping: 0.978
+  ground_offset: 48          # → GROUND_OFFSET
+  # 可選：frictions（若之後 physics.py 想加）
+  # ground_friction: 0.95
+  # air_resistance: 0.99
+
+movement:
+  ground_speed: 2.2
+  float_speed_min: 1.0
+  float_speed_max: 3.5
+  approach_factor: 0.12       # → 速度趨近係數（原本硬編）
+  target_reach_threshold: 50  # 增加到達閾值，讓移動更持久
+
+state_machine:
+  transition_duration: 2.0
+  idle:
+    min_duration: 3.0          # 進一步增加最小閒置時間
+    max_duration: 8.0          # 增加最大閒置時間
+    tick_chance: 0.03          # 進一步降低每 tick 結束閒置的機率
+  # 調整權重讓轉換更容易觸發
+  weights_ground:
+    NORMAL_MOVE: 0.40         # 稍微降低移動機率
+    IDLE: 0.30                # 降低閒置機率
+    SPECIAL_MOVE: 0.20
+    TRANSITION: 0.10          # 大幅提高轉換機率（從3%提高到20%）
+  weights_float:
+    NORMAL_MOVE: 0.35
+    IDLE: 0.40                # 浮空時偏好閒置
+    SPECIAL_MOVE: 0.20
+    TRANSITION: 0.05          # 大幅提高轉換機率（從5%提高到25%）
+
+boundaries:
+  screen_padding: 50
+  keep_on_screen: true
+  bounce_off_edges: false
+
+timers:
+  behavior_interval_ms: 100
+  movement_interval_ms: 16
+
+interaction:
+  drag_enabled: true
+  throw_enabled: true
+
+debug:
+  show_velocity_vector: false
+  log_mode_changes: false
+  track_cursor: false

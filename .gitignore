@@ -387,6 +387,7 @@ temp/*
 # 訓練資料
 train/**/dataset.csv
 train/**/results/
+train/**/data
 
 # Logs and Memories
 logs/*
@@ -395,9 +396,18 @@ memory/*
 # Wheels
 wheel/*
 
-# Voice Output
-outputs/data/*
-*.wav
-
 # Temp
+*.wav
+*.mp3
 additional/*
+
+# Resources
+resources/animations/*
+
+# Debug Window Inverse
+!debug/
+
+# Local Docs
+hidden_docs/*
+additional_tests/*
+deprecated/*

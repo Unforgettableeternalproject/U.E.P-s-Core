@@ -146,16 +146,19 @@ class LLMModule(BaseModule):
         try:
             # 解析輸入為新架構
             llm_input = LLMInput(**data)
+            info_log(f"[LLM] 開始處理請求 - 模式: {llm_input.mode}, 用戶輸入: {llm_input.text[:50]}...")
             debug_log(1, f"[LLM] 處理輸入 - 模式: {llm_input.mode}, 用戶輸入: {llm_input.text[:100]}...")
             
             # 檢查是否來自新 Router
             if llm_input.source_layer:
+                info_log(f"[LLM] 來自新Router - 來源層級: {llm_input.source_layer}")
                 debug_log(2, f"[LLM] 來自新Router - 來源層級: {llm_input.source_layer}")
                 if llm_input.processing_context:
                     debug_log(3, f"[LLM] 處理層上下文: {llm_input.processing_context}")
             
             # 1. 獲取當前系統狀態和會話信息
             current_state = self.state_manager.get_current_state()
+            info_log(f"[LLM] 當前系統狀態: {current_state}")
             
             # 1.1 更新協作管道（確保與系統狀態同步）
             self._update_collaboration_channels(current_state)
@@ -266,6 +269,46 @@ class LLMModule(BaseModule):
             )
             response_text = response_data.get("text", "")
             
+            # === 詳細回應日誌 ===
+            info_log(f"[LLM] 🤖 Gemini回應: {response_text}")
+            debug_log(1, f"[LLM] 📊 回應信心度: {response_data.get('confidence', 'N/A')}")
+            
+            # 記憶觀察日誌
+            if response_data.get("memory_observation"):
+                debug_log(1, f"[LLM] 💭 記憶觀察: {response_data['memory_observation']}")
+            
+            # 狀態更新日誌
+            status_updates = response_data.get("status_updates")
+            if status_updates:
+                debug_log(1, f"[LLM] 📈 建議狀態更新:")
+                for key, value in status_updates.items():
+                    if value is not None:
+                        debug_log(1, f"[LLM]   {key}: {value:+.2f}" if isinstance(value, (int, float)) else f"[LLM]   {key}: {value}")
+            
+            # 學習信號日誌
+            learning_signals = response_data.get("learning_signals")
+            if learning_signals:
+                debug_log(1, f"[LLM] 🧠 學習信號:")
+                for signal_type, value in learning_signals.items():
+                    if value is not None:
+                        debug_log(1, f"[LLM]   {signal_type}: {value:+.2f}")
+            
+            # 會話控制日誌
+            session_control = response_data.get("session_control")
+            if session_control:
+                debug_log(1, f"[LLM] 🎮 會話控制建議:")
+                debug_log(1, f"[LLM]   應結束會話: {session_control.get('should_end_session', False)}")
+                if session_control.get('end_reason'):
+                    debug_log(1, f"[LLM]   結束原因: {session_control['end_reason']}")
+                if session_control.get('confidence'):
+                    debug_log(1, f"[LLM]   信心度: {session_control['confidence']:.2f}")
+            
+            # 快取資訊日誌
+            meta = response_data.get("_meta", {})
+            if meta.get("cached_input_tokens", 0) > 0:
+                debug_log(2, f"[LLM] 📚 快取命中: {meta['cached_input_tokens']} tokens")
+            debug_log(2, f"[LLM] 📝 總輸入tokens: {meta.get('total_input_tokens', 0)}")
+            
             # 處理 StatusManager 更新
             if "status_updates" in response_data and response_data["status_updates"]:
                 self._process_status_updates(response_data["status_updates"])
@@ -274,6 +317,21 @@ class LLMModule(BaseModule):
             memory_operations = self._process_chat_memory_operations(
                 llm_input, response_data, response_text
             )
+            
+            # === 記憶操作日誌 ===
+            if memory_operations:
+                info_log(f"[LLM] 🧠 記憶操作處理:")
+                for i, op in enumerate(memory_operations):
+                    op_type = op.get('operation', 'unknown')
+                    content = op.get('content', {})
+                    if op_type == 'store':
+                        user_text = content.get('user_input', '')[:50] + "..." if len(content.get('user_input', '')) > 50 else content.get('user_input', '')
+                        assistant_text = content.get('assistant_response', '')[:50] + "..." if len(content.get('assistant_response', '')) > 50 else content.get('assistant_response', '')
+                        info_log(f"[LLM]   #{i+1} 儲存對話: 用戶='{user_text}', 助手='{assistant_text}'")
+                    else:
+                        info_log(f"[LLM]   #{i+1} {op_type}: {str(content)[:100]}")
+            else:
+                debug_log(2, f"[LLM] 📝 無記憶操作需要處理")
             
             # 5. 處理學習信號
             if self.learning_engine.learning_enabled:

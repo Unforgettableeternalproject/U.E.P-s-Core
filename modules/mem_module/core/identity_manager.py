@@ -59,6 +59,8 @@ class IdentityManager:
             # 從Working Context的身份中提取記憶體令牌
             current_identity = working_context_manager.get_current_identity()
             
+            debug_log(2, f"[IdentityManager] 嘗試獲取記憶體令牌，當前身份: {current_identity}")
+            
             if current_identity:
                 # 檢查身份狀態是否為TEMPORARY
                 identity_status = current_identity.get("status")
@@ -69,8 +71,12 @@ class IdentityManager:
                 memory_token = current_identity.get("memory_token")
                 if memory_token:
                     self.stats["token_extractions"] += 1
-                    debug_log(3, f"[IdentityManager] 提取正式身份記憶令牌: {memory_token}")
+                    debug_log(2, f"[IdentityManager] 提取正式身份記憶令牌: {memory_token}")
                     return memory_token
+                else:
+                    debug_log(1, f"[IdentityManager] 身份中沒有memory_token字段: {current_identity}")
+            else:
+                debug_log(1, "[IdentityManager] Working Context中沒有當前身份信息")
             
             # 如果沒有記憶體令牌，返回匿名令牌
             debug_log(2, "[IdentityManager] 無身份或無記憶令牌，使用匿名令牌")

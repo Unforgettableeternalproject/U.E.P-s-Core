@@ -1,11 +1,46 @@
 ﻿import sys
+import os
+import argparse
 from datetime import datetime
 from configs.config_loader import load_config
 from utils.debug_helper import debug_log, info_log, error_log
 
 config = load_config()
 
+def test_logger_check():
+    """測試日誌檢查邏輯"""
+    from utils.logger import should_write_file_logs
+    import inspect
+    
+    print("=" * 60)
+    print("從Entry.py測試日誌檢查邏輯")
+    print("=" * 60)
+    
+    stack = inspect.stack()
+    print(f"\n當前調用堆疊有 {len(stack)} 個 frame:")
+    
+    for i, frame_info in enumerate(stack):
+        filename = frame_info.filename
+        print(f"  Frame {i}: {os.path.basename(filename)}")
+        print(f"    完整路徑: {filename}")
+        print(f"    包含entry.py? {'entry.py' in filename.lower()}")
+        
+    result = should_write_file_logs()
+    print(f"\n結果: should_write_file_logs() = {result}")
+    
+    if result:
+        print("✅ 系統會寫入文件日誌")
+    else:
+        print("❌ 系統不會寫入文件日誌")
+    
+    print("=" * 60)
+    return result
+
 debug_mode = config.get("debug", {}).get("enabled", False)
+
+# 確保從Entry.py啟動時啟用文件日誌
+from utils.logger import force_enable_file_logging
+force_enable_file_logging()
 
 def clear_empty_logs():
     # 清除空的日誌檔案，作為一個後手
@@ -61,10 +96,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='U.E.P 系統')
     parser.add_argument('--reset-speaker-models', action='store_true', help='重置說話人模型')
     parser.add_argument('--log-test', action='store_true', help='測試日誌功能')
+    parser.add_argument('--test-logger', action='store_true', help='測試日誌檢查邏輯')
     parser.add_argument('--debug', action='store_true', help='強制啟用除錯模式')
     parser.add_argument('--debug-gui', action='store_true', help='啟動圖形除錯介面')
     parser.add_argument('--production', action='store_true', help='強制啟用生產模式')
     args = parser.parse_args()
+    
+    if args.test_logger:
+        test_logger_check()
+        sys.exit(0)
     
     if args.log_test:
         log_test()

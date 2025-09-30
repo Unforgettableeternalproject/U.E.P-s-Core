@@ -36,9 +36,6 @@ from .multi_intent_context import get_multi_intent_context_manager
 class NLPModule(BaseModule):
     """重構後的NLP模組"""
     
-    # 類級別的鎖，確保整個NLP模組的Router調用是同步的
-    _router_lock = threading.Lock()
-    
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         """初始化NLP模組"""
         super().__init__()
@@ -142,8 +139,8 @@ class NLPModule(BaseModule):
             # 在調用Router之前，先執行狀態轉換
             self._execute_state_transition(final_result, state_result)
             
-            # 將處理結果和原文傳遞給 Router 進行下一步處理
-            self._send_to_router(validated_input, final_result)
+            # 不再直接調用Router，而是通知System Loop進行下一步處理
+            self._notify_system_loop_nlp_completed(validated_input, final_result)
             
             return final_result.model_dump()
             
@@ -171,6 +168,8 @@ class NLPModule(BaseModule):
                     result["identity"] = generic_identity
                     result["identity_action"] = "generic"
                     result["processing_notes"].append("創建通用身份")
+                    # 將通用身份設置到Working Context
+                    self._add_identity_to_working_context(generic_identity)
                 return result
             
             speaker_id = speaker_data.get('speaker_id')
@@ -195,6 +194,8 @@ class NLPModule(BaseModule):
                 result["identity"] = generic_identity
                 result["identity_action"] = "accumulating_with_generic"
                 result["processing_notes"].append("語者樣本累積中，使用通用身份")
+                # 將通用身份也設置到Working Context
+                self._add_identity_to_working_context(generic_identity)
                 
             elif action == "loaded":
                 result["processing_notes"].append(f"載入正式身份：{identity.display_name}")
@@ -215,6 +216,8 @@ class NLPModule(BaseModule):
                 generic_identity = self._create_generic_identity()
                 result["identity"] = generic_identity
                 result["identity_action"] = "error_fallback"
+                # 將通用身份設置到Working Context
+                self._add_identity_to_working_context(generic_identity)
         
         return result
     
@@ -676,120 +679,45 @@ class NLPModule(BaseModule):
         except Exception as e:
             error_log(f"[NLP] 處理指令中斷失敗: {e}")
     
-    def _send_to_router(self, input_data: NLPInput, nlp_result: NLPOutput):
-        """將NLP處理結果和原文傳遞給Router進行下一步處理"""
+    def _notify_system_loop_nlp_completed(self, input_data: NLPInput, nlp_result: NLPOutput):
+        """通知System Loop 輸入層（NLP）處理完成，觸發三層架構流程"""
         try:
-            # 直接導入Router
-            from core.router import router
+            info_log(f"[NLP] 輸入層處理完成，通知System Loop: 意圖={nlp_result.primary_intent}, 文本='{input_data.text[:50]}...'")
             
-            if not router:
-                debug_log(2, "[NLP] Router未就緒，跳過路由處理")
-                return
-            
-            # 準備路由數據
-            router_data = {
-                "text": input_data.text,
-                "original_input": input_data.model_dump(),
+            # 準備輸入層完成數據
+            input_layer_completion_data = {
+                "input_data": input_data.model_dump(),
                 "nlp_result": nlp_result.model_dump(),
-                "source": "nlp_direct",
-                "timestamp": input_data.timestamp
+                "timestamp": time.time(),
+                "source_module": "nlp",
+                "layer": "input",
+                "completion_type": "input_layer_finished"
             }
             
-            # 映射身份信息
-            if nlp_result.identity:
-                router_data["identity"] = {
-                    "identity_id": nlp_result.identity.identity_id,
-                    "display_name": nlp_result.identity.display_name,
-                    "speaker_id": input_data.speaker_id
-                }
-                debug_log(2, f"[NLP] 映射Speaker({input_data.speaker_id}) -> Identity({nlp_result.identity.identity_id})")
-            
-            info_log(f"[NLP] 將處理結果傳遞給Router: 意圖={nlp_result.primary_intent}, 文本='{input_data.text[:50]}...'")
-            
-            # 調用Router處理 - 使用正確的方法
-            routing_decision = router.route_user_input(text=input_data.text, source_module="nlp")
-            info_log(f"[NLP-Router] 路由決策: 目標模組={routing_decision.target_module}, 原因={routing_decision.reasoning}")
-            debug_log(2, f"[NLP-Router] 路由元數據: {routing_decision.routing_metadata}")
-            
-            # 實際調用目標模組的 handle() 方法
-            self._invoke_target_module(routing_decision, router_data, nlp_result)
+            # 通知System Loop輸入層處理完成
+            from core.system_loop import system_loop
+            if hasattr(system_loop, 'handle_nlp_completion'):
+                system_loop.handle_nlp_completion(input_layer_completion_data)
+            else:
+                debug_log(2, "[NLP] System Loop 不支持輸入層完成處理，跳過通知")
             
         except Exception as e:
-            error_log(f"[NLP] 路由處理失敗: {e}")
+            error_log(f"[NLP] 通知System Loop輸入層完成失敗: {e}")
 
-    def _invoke_target_module(self, routing_decision, router_data: Dict[str, Any], nlp_result: NLPOutput):
-        """實際調用目標模組的 handle() 方法 - 使用線程鎖確保同步"""
-        # 使用類級別鎖確保一次只有一個模組調用
-        with self._router_lock:
-            try:
-                from core.framework import core_framework
-                
-                target_module_name = routing_decision.target_module
-                if not target_module_name:
-                    debug_log(2, "[NLP-Router] 無目標模組，跳過調用")
-                    return
-                
-                # 獲取目標模組
-                target_module = core_framework.get_module(target_module_name)
-                if not target_module:
-                    error_log(f"[NLP-Router] 無法找到目標模組: {target_module_name}")
-                    return
-                
-                # 準備模組特定的輸入數據
-                module_input = self._prepare_module_input(target_module_name, router_data, nlp_result)
-                
-                info_log(f"[NLP-Router] 調用目標模組: {target_module_name}")
-                debug_log(2, f"[NLP-Router] 模組輸入: {list(module_input.keys())}")
-                
-                # 調用目標模組的 handle() 方法
-                result = target_module.handle(module_input)
-                
-                if result:
-                    info_log(f"[NLP-Router] 模組 {target_module_name} 處理完成")
-                    debug_log(3, f"[NLP-Router] 模組 {target_module_name} 返回: {type(result)}")
-                else:
-                    debug_log(2, f"[NLP-Router] 模組 {target_module_name} 無返回結果")
-                    
-            except Exception as e:
-                error_log(f"[NLP-Router] 調用模組失敗: {e}")
+    def _notify_controller_activity(self):
+        """通知 Controller 有 NLP 活動"""
+        try:
+            from core.framework import core_framework
+            controller = core_framework.get_manager('controller')
+            if controller and hasattr(controller, '_last_activity_time'):
+                controller._last_activity_time = time.time()
+                debug_log(3, "[NLP] 已通知 Controller 活動時間")
+        except Exception as e:
+            debug_log(3, f"[NLP] 通知 Controller 活動失敗: {e}")
 
-    def _prepare_module_input(self, module_name: str, router_data: Dict[str, Any], nlp_result: NLPOutput) -> Dict[str, Any]:
-        """為不同模組準備特定的輸入數據"""
-        base_input = {
-            "text": router_data["text"],
-            "source": "nlp_router",
-            "timestamp": router_data["timestamp"],
-            "nlp_result": router_data["nlp_result"],
-            "identity": router_data.get("identity"),
-            "intent": nlp_result.primary_intent,
-            "confidence": nlp_result.overall_confidence
-        }
-        
-        if module_name == "llm":
-            # LLM 特定輸入
-            return {
-                **base_input,
-                "conversation_type": nlp_result.primary_intent,
-                "user_input": router_data["text"],
-                "context": {
-                    "intent_segments": [seg.model_dump() for seg in nlp_result.intent_segments],
-                    "processing_notes": nlp_result.processing_notes
-                }
-            }
-        elif module_name == "mem":
-            # MEM 特定輸入
-            return {
-                **base_input,
-                "operation": "store_and_retrieve",
-                "memory_context": {
-                    "identity_id": nlp_result.identity.identity_id if nlp_result.identity else None,
-                    "conversation_type": nlp_result.primary_intent,
-                    "entities": [seg.entities for seg in nlp_result.intent_segments]
-                }
-            }
-        else:
-            # 通用輸入
-            return base_input
+    # === 以下是原有不當的路由邏輯，已移除 ===
+    # _invoke_target_module() 和 _prepare_module_input() 方法
+    # 這些邏輯應該由System Loop或Router負責，不屬於NLP模組的職責
 
     def _execute_state_transition(self, nlp_result: 'NLPOutput', state_result: Dict[str, Any]):
         """執行實際的狀態轉換，確保系統狀態從IDLE轉換到目標狀態"""

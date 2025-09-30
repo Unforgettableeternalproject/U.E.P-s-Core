@@ -157,6 +157,7 @@ class MEMModule(BaseModule):
             
             # 1. 從State Manager獲取目前系統狀態上下文
             current_session_id = state_manager.get_current_session_id()
+            debug_log(2, f"[MEM] 當前系統會話ID: {current_session_id}")
             if not current_session_id:
                 debug_log(2, "[MEM] 當前沒有活躍會話，跳過加入")
                 return
@@ -173,11 +174,9 @@ class MEMModule(BaseModule):
                 memory_token = identity_context["memory_token"]
                 debug_log(2, f"[MEM] 從身份上下文獲取記憶令牌: {memory_token}")
             else:
-                # 如果身份中沒有記憶令牌，使用系統令牌
-                from .core.identity_manager import IdentityManager
-                identity_manager = IdentityManager({})
-                memory_token = identity_manager.get_system_token()
-                debug_log(2, f"[MEM] 使用系統記憶令牌: {memory_token}")
+                # 通過身份管理器獲取當前記憶令牌（可能是anonymous）
+                memory_token = self.memory_manager.identity_manager.get_current_memory_token()
+                debug_log(2, f"[MEM] 從身份管理器獲取記憶令牌: {memory_token}")
             
             # 3. 從Session Manager獲取目前會話相關資料（根據代辦.md要求4）
             session_context = self._get_session_context_from_session_manager(current_session_id)
@@ -197,6 +196,12 @@ class MEMModule(BaseModule):
                 memory_token=memory_token,
                 initial_context=initial_context
             )
+            
+            # 檢查是否為臨時身份，如果是則直接返回成功，不做任何記憶體操作
+            if memory_token == self.memory_manager.identity_manager.anonymous_token:
+                debug_log(1, f"[MEM] 檢測到臨時身份，跳過記憶體處理，直接返回")
+                info_log(f"[MEM] 臨時身份狀態變化處理完成: chat (無記憶體操作)")
+                return
             
             if success:
                 info_log(f"[MEM] 成功加入聊天會話: {current_session_id}")

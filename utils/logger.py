@@ -23,17 +23,6 @@ def should_write_file_logs():
                 ('production_runner' in filename) or
                 ('entry.py' in filename.lower())):
                 return True
-            
-            # Debug 相關入口點
-            if (('debugger.py' in filename) or
-                ('debug_helper' in filename) or
-                ('devtools' in filename and 'test' not in filename)):
-                return True
-            
-            # 生產環境和系統核心
-            if (('core' in filename and ('framework' in filename or 'controller' in filename)) or
-                ('production' in filename)):
-                return True
                 
         # 如果沒有找到系統運行的證據，檢查是否在測試環境
         for frame_info in stack:
@@ -55,45 +44,57 @@ def force_enable_file_logging():
     if _file_handlers_added:
         return
         
-    if not SPLIT_LOGS:
-        return
-        
     try:
         print("🔍 強制啟用文件日誌記錄")
         cleanup_monthly_logs()
         
-        # Debug 日誌
-        try:
-            debug_path = log_file("debug")
-            debug_file = logging.FileHandler(debug_path, encoding='utf-8')
-            debug_file.setFormatter(formatter)
-            debug_file.setLevel(logging.DEBUG)
-            debug_file.addFilter(LogLevelFilter(logging.DEBUG, logging.DEBUG))
-            logger.addHandler(debug_file)
-        except Exception:
-            pass
-        
-        # Runtime 日誌
-        try:
-            runtime_path = log_file("runtime")
-            info_file = logging.FileHandler(runtime_path, encoding='utf-8')
-            info_file.setFormatter(formatter)
-            info_file.setLevel(logging.INFO)
-            info_file.addFilter(LogLevelFilter(logging.INFO, logging.WARNING))
-            logger.addHandler(info_file)
-        except Exception:
-            pass
-        
-        # Error 日誌
-        try:
-            error_path = log_file("error")
-            error_file = logging.FileHandler(error_path, encoding='utf-8')
-            error_file.setFormatter(formatter)
-            error_file.setLevel(logging.ERROR)
-            error_file.addFilter(LogLevelFilter(logging.ERROR, logging.CRITICAL))
-            logger.addHandler(error_file)
-        except Exception:
-            pass
+        if SPLIT_LOGS:
+            # 分離日誌模式：創建多個文件
+            
+            # Debug 日誌
+            try:
+                debug_path = log_file("debug")
+                debug_file = logging.FileHandler(debug_path, encoding='utf-8')
+                debug_file.setFormatter(formatter)  # 使用無顏色的 formatter
+                debug_file.setLevel(logging.DEBUG)
+                debug_file.addFilter(LogLevelFilter(logging.DEBUG, logging.DEBUG))
+                logger.addHandler(debug_file)
+            except Exception:
+                pass
+            
+            # Runtime 日誌
+            try:
+                runtime_path = log_file("runtime")
+                info_file = logging.FileHandler(runtime_path, encoding='utf-8')
+                info_file.setFormatter(formatter)  # 使用無顏色的 formatter
+                info_file.setLevel(logging.INFO)
+                info_file.addFilter(LogLevelFilter(logging.INFO, logging.WARNING))
+                logger.addHandler(info_file)
+            except Exception:
+                pass
+            
+            # Error 日誌
+            try:
+                error_path = log_file("error")
+                error_file = logging.FileHandler(error_path, encoding='utf-8')
+                error_file.setFormatter(formatter)  # 使用無顏色的 formatter
+                error_file.setLevel(logging.ERROR)
+                error_file.addFilter(LogLevelFilter(logging.ERROR, logging.CRITICAL))
+                logger.addHandler(error_file)
+            except Exception:
+                pass
+        else:
+            # 合併日誌模式：創建單一文件
+            try:
+                timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                full_log_path = os.path.join(LOG_DIR, f"full-{timestamp}.log")
+                full_file = logging.FileHandler(full_log_path, encoding='utf-8')
+                full_file.setFormatter(formatter)  # 使用無顏色的 formatter
+                full_file.setLevel(logging.DEBUG)  # 包含所有等級
+                logger.addHandler(full_file)
+                print(f"📄 合併日誌文件: {full_log_path}")
+            except Exception as e:
+                print(f"創建合併日誌文件失敗: {e}")
         
         _file_handlers_added = True
         print("✅ 文件日誌記錄已強制啟用")
@@ -130,18 +131,21 @@ class ColorFormatter(logging.Formatter):
     RESET = '\033[0m'
 
     def format(self, record):
-        log_color = self.COLORS.get(record.levelname, self.RESET)
-        record.levelname = f"{log_color}{record.levelname}{self.RESET}"
-        return super().format(record)
+        # 創建記錄的副本，避免修改原始記錄影響其他處理器
+        import copy
+        record_copy = copy.copy(record)
+        log_color = self.COLORS.get(record_copy.levelname, self.RESET)
+        record_copy.levelname = f"{log_color}{record_copy.levelname}{self.RESET}"
+        return super().format(record_copy)
 
 if not enabled:
     logging.disable(logging.CRITICAL)
     logger = logging.getLogger("UEP")
     logger.disabled = True
 else:
-    LOG_LEVEL = conf.get("level", "INFO").upper()
+    LOG_LEVEL = conf.get("log_level", conf.get("level", "INFO")).upper()
     LOG_DIR = conf.get("log_dir", "logs")
-    SPLIT_LOGS = conf.get("split_logs", True)
+    SPLIT_LOGS = conf.get("split_logs", conf.get("enable_split_logs", True))  # 支持兩種配置名稱
     MAX_FILES_PER_MONTH = conf.get("max_files_per_month", 15)
 
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -217,6 +221,8 @@ else:
     # 添加控制台處理程序
     stream_handler = logging.StreamHandler()
     stream_handler.setFormatter(console_formatter)
+    # 確保控制台也能顯示 DEBUG 訊息
+    stream_handler.setLevel(logging.DEBUG)
     logger.addHandler(stream_handler)
 
     # 文件日誌處理器變數
@@ -232,45 +238,57 @@ else:
         if not should_write_file_logs():
             return
             
-        if not SPLIT_LOGS:
-            return
-            
         try:
             print("🔍 檢測到系統運行，啟用文件日誌記錄")
             cleanup_monthly_logs()
             
-            # Debug 日誌
-            try:
-                debug_path = log_file("debug")
-                debug_file = logging.FileHandler(debug_path, encoding='utf-8')
-                debug_file.setFormatter(formatter)
-                debug_file.setLevel(logging.DEBUG)
-                debug_file.addFilter(LogLevelFilter(logging.DEBUG, logging.DEBUG))
-                logger.addHandler(debug_file)
-            except Exception:
-                pass
-            
-            # Runtime 日誌
-            try:
-                runtime_path = log_file("runtime")
-                info_file = logging.FileHandler(runtime_path, encoding='utf-8')
-                info_file.setFormatter(formatter)
-                info_file.setLevel(logging.INFO)
-                info_file.addFilter(LogLevelFilter(logging.INFO, logging.WARNING))
-                logger.addHandler(info_file)
-            except Exception:
-                pass
-            
-            # Error 日誌
-            try:
-                error_path = log_file("error")
-                error_file = logging.FileHandler(error_path, encoding='utf-8')
-                error_file.setFormatter(formatter)
-                error_file.setLevel(logging.ERROR)
-                error_file.addFilter(LogLevelFilter(logging.ERROR, logging.CRITICAL))
-                logger.addHandler(error_file)
-            except Exception:
-                pass
+            if SPLIT_LOGS:
+                # 分離日誌模式：創建多個文件
+                
+                # Debug 日誌
+                try:
+                    debug_path = log_file("debug")
+                    debug_file = logging.FileHandler(debug_path, encoding='utf-8')
+                    debug_file.setFormatter(formatter)  # 使用無顏色的 formatter
+                    debug_file.setLevel(logging.DEBUG)
+                    debug_file.addFilter(LogLevelFilter(logging.DEBUG, logging.DEBUG))
+                    logger.addHandler(debug_file)
+                except Exception:
+                    pass
+                
+                # Runtime 日誌
+                try:
+                    runtime_path = log_file("runtime")
+                    info_file = logging.FileHandler(runtime_path, encoding='utf-8')
+                    info_file.setFormatter(formatter)  # 使用無顏色的 formatter
+                    info_file.setLevel(logging.INFO)
+                    info_file.addFilter(LogLevelFilter(logging.INFO, logging.WARNING))
+                    logger.addHandler(info_file)
+                except Exception:
+                    pass
+                
+                # Error 日誌
+                try:
+                    error_path = log_file("error")
+                    error_file = logging.FileHandler(error_path, encoding='utf-8')
+                    error_file.setFormatter(formatter)  # 使用無顏色的 formatter
+                    error_file.setLevel(logging.ERROR)
+                    error_file.addFilter(LogLevelFilter(logging.ERROR, logging.CRITICAL))
+                    logger.addHandler(error_file)
+                except Exception:
+                    pass
+            else:
+                # 合併日誌模式：創建單一文件
+                try:
+                    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                    full_log_path = os.path.join(LOG_DIR, f"full-{timestamp}.log")
+                    full_file = logging.FileHandler(full_log_path, encoding='utf-8')
+                    full_file.setFormatter(formatter)  # 使用無顏色的 formatter
+                    full_file.setLevel(logging.DEBUG)  # 包含所有等級
+                    logger.addHandler(full_file)
+                    print(f"📄 合併日誌文件: {full_log_path}")
+                except Exception as e:
+                    print(f"創建合併日誌文件失敗: {e}")
             
             _file_handlers_added = True
             print("✅ 文件日誌記錄已啟用")

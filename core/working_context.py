@@ -550,7 +550,9 @@ class WorkingContextManager:
     
     def get_current_identity(self) -> Optional[Dict[str, Any]]:
         """獲取當前用戶身份"""
-        return self.get_context_data("current_identity")
+        identity_data = self.get_context_data("current_identity")
+        debug_log(3, f"[WorkingContext] 獲取當前身份: {identity_data}")
+        return identity_data
     
     def set_identity(self, identity_data: Dict[str, Any]):
         """設置當前用戶身份（別名方法，與測試代碼兼容）"""

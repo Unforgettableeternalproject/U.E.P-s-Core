@@ -195,14 +195,29 @@ class MemoryManager:
         注意: 此方法不負責啟動整個CS，只負責MEM模組對CS的響應
         """
         try:
+            debug_log(1, f"[MemoryManager] 嘗試加入聊天會話: {session_id}")
+            
             # 如果沒有提供記憶令牌，從Working Context獲取
             if not memory_token:
                 memory_token = self.identity_manager.get_current_memory_token()
+                debug_log(1, f"[MemoryManager] 從身份管理器獲取記憶令牌: {memory_token}")
+            else:
+                debug_log(1, f"[MemoryManager] 使用提供的記憶令牌: {memory_token}")
             
-            # 驗證記憶體存取權限
+            # 檢查是否為臨時身份（匿名令牌）
+            if memory_token == self.identity_manager.anonymous_token:
+                debug_log(1, f"[MemoryManager] 檢測到臨時身份，跳過記憶體操作，直接完成會話加入")
+                info_log(f"[MemoryManager] 臨時身份加入聊天會話: {session_id} (無記憶體操作)")
+                return True
+            
+            # 驗證記憶體存取權限（只對非臨時身份進行）
+            debug_log(1, f"[MemoryManager] 驗證記憶體存取權限，令牌: {memory_token}")
             if not self.identity_manager.validate_memory_access(memory_token, "write"):
                 error_log(f"[MemoryManager] 記憶體存取權限驗證失敗: {memory_token}")
+                debug_log(1, f"[MemoryManager] 當前身份狀態: {self.identity_manager.get_current_identity_info()}")
                 return False
+            
+            debug_log(1, f"[MemoryManager] 記憶體存取權限驗證通過: {memory_token}")
             
             # 開始快照會話
             if not self.snapshot_manager.start_session_snapshot(session_id, memory_token, initial_context):

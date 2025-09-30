@@ -1366,3 +1366,15 @@
 
 ---
 
+### Based on previous problems, fixed them, and the logger is perfectly fine now, system loop is good as well, time for TTS rework. 10/1
+
+> Date: Wed, 01 Oct 2025 00:05:21 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `develop`
+
+> Commit: `f4216fa242d1bca487952d34610d6ea1d11577f7`
+
+---
+

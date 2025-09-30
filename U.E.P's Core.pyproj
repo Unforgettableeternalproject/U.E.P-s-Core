@@ -189,6 +189,7 @@
     <Compile Include="core\controller.py" />
     <Compile Include="core\data_transformer.py" />
     <Compile Include="core\framework.py" />
+    <Compile Include="core\frontend_base.py" />
     <Compile Include="core\module_base.py" />
     <Compile Include="core\production_runner.py" />
     <Compile Include="core\registry.py" />
@@ -197,12 +198,14 @@
     <Compile Include="core\schema_adapter.py" />
     <Compile Include="core\session_manager.py" />
     <Compile Include="core\state_manager.py" />
+    <Compile Include="core\state_queue.py" />
     <Compile Include="core\strategies.py" />
     <Compile Include="core\system_initializer.py" />
     <Compile Include="core\system_loop.py" />
     <Compile Include="core\working_context.py" />
     <Compile Include="devtools\debugger.py" />
     <Compile Include="modules\llm_module\cache_manager.py" />
+    <Compile Include="modules\frontend_integration.py" />
     <Compile Include="modules\llm_module\gemini_client.py" />
     <Compile Include="modules\llm_module\learning_engine.py" />
     <Compile Include="modules\llm_module\module_interfaces.py" />
@@ -233,11 +236,12 @@
     <Compile Include="modules\stt_module\vad.py" />
     <Compile Include="modules\stt_module\vad_module.py" />
     <Compile Include="modules\sys_module\actions\automation_helper.py" />
+    <Compile Include="modules\sys_module\actions\language_map.py" />
     <Compile Include="modules\sys_module\actions\text_processing.py" />
     <Compile Include="modules\sys_module\actions\file_interaction.py" />
     <Compile Include="modules\sys_module\actions\integrations.py" />
+    <Compile Include="modules\sys_module\actions\time_zone.py" />
     <Compile Include="modules\sys_module\actions\window_control.py" />
-    <Compile Include="modules\sys_module\legacy_direct_actions.py" />
     <Compile Include="modules\sys_module\workflows.py" />
     <Compile Include="modules\sys_module\workflows\file_workflows.py" />
     <Compile Include="modules\sys_module\workflows\test_workflows.py" />

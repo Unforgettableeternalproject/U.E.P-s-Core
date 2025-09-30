@@ -1,31 +1,24 @@
 # core/system_loop.py
 """
-系統主循環 - 基於狀態和上下文的智能處理循環
+系統主循環 - UEP 系統的核心運行邏輯
 
-這個模組實現了 UEP 的核心運行邏輯：
-1. 監控系統狀態變化
-2. 根據當前狀態決定處理策略
-3. 處理輸入事件和模組間通訊
-4. 管理系統生命週期
+實現完整的系統處理循環：
+1. 等待使用者輸入（STT 持續監聽）
+2. 啟動 GS 並等待輸入層輸出（NLP）
+3. 根據 NLP 分析決定處理層路徑（CHAT/WORK）
+4. 處理層模組從 WC/會話管理器獲取資料並處理
+5. 結果轉送給輸出層（TTS）
+6. Framework 蒐集效能快照
 
-主要運行模式：
-- IDLE: 待機模式，監聽語音輸入
-- CHAT: 對話模式，處理自然對話
-- WORK: 工作模式，執行任務和工作流
+循環流程：
+STT → NLP → Router → (CS/WS) → MEM/LLM/SYS → Router → TTS → 效能監控
 """
 
 import time
-import asyncio
 import threading
 from typing import Dict, Any, Optional, Callable
 from enum import Enum
 
-from core.framework import core_framework, ExecutionMode
-from core.controller import unified_controller
-from core.states.state_manager import UEPState, state_manager
-from core.working_context import working_context_manager, ContextType
-from core.router import router
-from configs.config_loader import load_config
 from utils.debug_helper import debug_log, info_log, error_log
 
 
@@ -41,45 +34,51 @@ class LoopStatus(Enum):
 
 
 class SystemLoop:
-    """系統主循環"""
+    """系統主循環 - 實現完整的 UEP 處理流程"""
     
     def __init__(self):
+        """初始化系統循環"""
+        # 載入配置
+        from configs.config_loader import load_config
         self.config = load_config()
+        
+        # 循環狀態
         self.status = LoopStatus.STOPPED
         self.loop_thread: Optional[threading.Thread] = None
-        self.should_stop = threading.Event()
+        self.stop_event = threading.Event()
         
-        # 使用新的 system 設置區塊中的參數
-        system_config = self.config.get('system', {})
-        self.loop_interval = system_config.get('main_loop_interval', 0.1)  # 從系統設定獲取循環間隔
-        self.shutdown_timeout = system_config.get('shutdown_timeout', 5.0)  # 關閉超時時間
+        # 效能監控
+        self.loop_count = 0
+        self.start_time = 0
+        self.last_snapshot_time = 0
+        self.last_status_log_time = 0
+        self.snapshot_interval = 5.0  # 5秒間隔蒐集效能快照
+        self.status_log_interval = 10.0  # 10秒間隔輸出狀態日誌
         
-        # 事件處理器
-        self.event_handlers: Dict[str, Callable] = {}
-        self._setup_default_handlers()
-        
-    def _setup_default_handlers(self):
-        """設置默認事件處理器"""
-        self.event_handlers.update({
-            'speech_input': self._handle_speech_input,
-            'text_input': self._handle_text_input,
-            'system_command': self._handle_system_command,
-            'module_error': self._handle_module_error,
-            'context_trigger': self._handle_context_trigger
-        })
+        info_log("[SystemLoop] 系統循環已創建")
     
     def start(self) -> bool:
-        """啟動系統循環"""
-        if self.status != LoopStatus.STOPPED:
-            error_log("系統循環已在運行或正在啟動")
-            return False
-            
+        """啟動系統主循環"""
         try:
-            self.status = LoopStatus.STARTING
-            info_log("🔄 啟動系統主循環...")
+            if self.status != LoopStatus.STOPPED:
+                info_log(f"[SystemLoop] 循環已在運行中: {self.status.value}")
+                return True
             
-            # 重置停止信號
-            self.should_stop.clear()
+            info_log("🔄 啟動系統主循環...")
+            self.status = LoopStatus.STARTING
+            
+            # 驗證系統組件就緒
+            if not self._verify_system_ready():
+                error_log("❌ 系統組件未就緒，無法啟動循環")
+                self.status = LoopStatus.ERROR
+                return False
+            
+            # 重置狀態
+            self.stop_event.clear()
+            self.loop_count = 0
+            self.start_time = time.time()
+            self.last_snapshot_time = time.time()
+            self.last_status_log_time = time.time()
             
             # 啟動循環線程
             self.loop_thread = threading.Thread(target=self._main_loop, daemon=True)
@@ -87,249 +86,229 @@ class SystemLoop:
             
             self.status = LoopStatus.RUNNING
             info_log("✅ 系統主循環已啟動")
+            info_log("🎧 等待使用者語音輸入...")
+            
             return True
             
         except Exception as e:
-            self.status = LoopStatus.ERROR
             error_log(f"❌ 啟動系統循環失敗: {e}")
+            self.status = LoopStatus.ERROR
             return False
     
-    def stop(self):
-        """停止系統循環"""
-        if self.status not in [LoopStatus.RUNNING, LoopStatus.PAUSED]:
-            return
+    def stop(self) -> bool:
+        """停止系統主循環"""
+        try:
+            if self.status == LoopStatus.STOPPED:
+                info_log("[SystemLoop] 循環已停止")
+                return True
             
-        self.status = LoopStatus.STOPPING
-        info_log("🛑 停止系統主循環...")
-        
-        # 設置停止信號
-        self.should_stop.set()
-        
-        # 等待線程結束，使用設定的超時時間
-        if self.loop_thread and self.loop_thread.is_alive():
-            self.loop_thread.join(timeout=self.shutdown_timeout)
+            info_log("🛑 停止系統主循環...")
+            self.status = LoopStatus.STOPPING
             
-        self.status = LoopStatus.STOPPED
-        info_log("✅ 系統主循環已停止")
+            # 設置停止事件
+            self.stop_event.set()
+            
+            # 等待循環線程結束
+            if self.loop_thread and self.loop_thread.is_alive():
+                self.loop_thread.join(timeout=5.0)
+                if self.loop_thread.is_alive():
+                    error_log("⚠️ 循環線程未能正常結束")
+            
+            self.status = LoopStatus.STOPPED
+            runtime = time.time() - self.start_time
+            info_log(f"✅ 系統循環已停止，運行 {runtime:.1f}秒，處理 {self.loop_count} 次循環")
+            
+            return True
+            
+        except Exception as e:
+            error_log(f"❌ 停止系統循環失敗: {e}")
+            return False
     
-    def pause(self):
-        """暫停系統循環"""
-        if self.status == LoopStatus.RUNNING:
-            self.status = LoopStatus.PAUSING
-            info_log("⏸️ 暫停系統主循環")
-    
-    def resume(self):
-        """恢復系統循環"""
-        if self.status == LoopStatus.PAUSED:
-            self.status = LoopStatus.RUNNING
-            info_log("▶️ 恢復系統主循環")
+    def _verify_system_ready(self) -> bool:
+        """驗證系統組件就緒"""
+        try:
+            # 檢查 Framework
+            from core.framework import core_framework
+            if not core_framework.is_initialized:
+                error_log("   ❌ Framework 未初始化")
+                return False
+            
+            # 檢查 Controller
+            from core.controller import unified_controller
+            if hasattr(unified_controller, 'is_initialized') and not unified_controller.is_initialized:
+                error_log("   ❌ Controller 未初始化")
+                return False
+            
+            # 檢查 State Manager
+            from core.states.state_manager import state_manager, UEPState
+            current_state = state_manager.get_current_state()
+            if current_state != UEPState.IDLE:
+                error_log(f"   ❌ 系統狀態不正確: {current_state}")
+                return False
+            
+            # 檢查關鍵模組
+            required_modules = ['stt', 'nlp']
+            available_modules = list(core_framework.modules.keys())
+            missing_modules = [m for m in required_modules if m not in available_modules]
+            if missing_modules:
+                error_log(f"   ❌ 缺少關鍵模組: {missing_modules}")
+                return False
+            
+            info_log("   ✅ 系統組件驗證通過")
+            return True
+            
+        except Exception as e:
+            error_log(f"   ❌ 系統組件驗證失敗: {e}")
+            return False
     
     def _main_loop(self):
-        """主循環邏輯"""
-        info_log("🔄 進入系統主循環")
+        """主循環執行緒"""
+        info_log("🔄 主循環線程已啟動")
         
         try:
-            while not self.should_stop.is_set():
-                # 檢查暫停狀態
-                if self.status == LoopStatus.PAUSING:
-                    self.status = LoopStatus.PAUSED
-                    info_log("⏸️ 系統循環已暫停")
+            while not self.stop_event.is_set():
+                current_time = time.time()
                 
-                if self.status == LoopStatus.PAUSED:
-                    time.sleep(0.5)
-                    continue
+                # 檢查是否需要蒐集效能快照
+                if current_time - self.last_snapshot_time >= self.snapshot_interval:
+                    self._collect_performance_snapshot()
+                    self.last_snapshot_time = current_time
                 
-                # 執行一次循環迭代
-                self._loop_iteration()
+                # 檢查是否需要輸出狀態日誌
+                if current_time - self.last_status_log_time >= self.status_log_interval:
+                    self._log_system_status()
+                    self.last_status_log_time = current_time
                 
-                # 短暫休息
-                time.sleep(self.loop_interval)
+                # 檢查系統狀態變化
+                self._monitor_system_state()
+                
+                # 短暫休眠避免占用過多 CPU
+                time.sleep(0.1)
                 
         except Exception as e:
+            error_log(f"❌ 主循環執行錯誤: {e}")
             self.status = LoopStatus.ERROR
-            error_log(f"❌ 系統循環發生錯誤: {e}")
-        finally:
-            info_log("🔄 退出系統主循環")
+        
+        info_log("🔄 主循環線程已結束")
     
-    def _loop_iteration(self):
-        """單次循環迭代"""
+    def _monitor_system_state(self):
+        """監控系統狀態變化"""
         try:
-            current_state = state_manager.get_state()
+            from core.states.state_manager import state_manager, UEPState
+            from core.states.state_queue import get_state_queue_manager
             
-            # 根據當前狀態執行不同的處理邏輯
-            if current_state == UEPState.IDLE:
-                self._handle_idle_state()
-            elif current_state == UEPState.CHAT:
-                self._handle_chat_state()
-            elif current_state == UEPState.WORK:
-                self._handle_work_state()
-            elif current_state == UEPState.ERROR:
-                self._handle_error_state()
+            current_state = state_manager.get_current_state()
+            state_queue = get_state_queue_manager()
             
-            # 檢查工作上下文觸發
-            self._check_context_triggers()
-            
-            # 處理待處理的事件
-            self._process_pending_events()
+            # 檢查狀態佇列是否有新項目
+            if hasattr(state_queue, 'queue') and len(state_queue.queue) > 0:
+                debug_log(3, f"[SystemLoop] 檢測到狀態佇列活動: {len(state_queue.queue)} 項目")
+                
+                # 當有狀態變化時，增加循環計數
+                if current_state != UEPState.IDLE:
+                    self.loop_count += 1
+                    debug_log(2, f"[SystemLoop] 循環 #{self.loop_count}, 狀態: {current_state.value}")
             
         except Exception as e:
-            debug_log(3, f"循環迭代錯誤: {e}")
+            debug_log(1, f"[SystemLoop] 狀態監控錯誤: {e}")
     
-    def _handle_idle_state(self):
-        """處理閒置狀態"""
-        # 在閒置狀態下，主要是監聽語音輸入
-        # 這裡可以檢查是否有 STT 模組在監聽
-        
-        # 檢查是否有持續監聽的 STT 模組
-        stt_module = core_framework.get_module('stt_module')
-        if stt_module and hasattr(stt_module, 'is_listening'):
-            if not stt_module.is_listening():
-                # 如果沒有在監聽，啟動持續監聽
-                debug_log(3, "IDLE: 啟動 STT 持續監聽")
-                try:
-                    stt_module.handle({
-                        'mode': 'continuous',
-                        'duration': 30,  # 30秒監聽週期
-                        'enable_speaker_id': True
-                    })
-                except Exception as e:
-                    debug_log(2, f"STT 持續監聽啟動失敗: {e}")
-    
-    def _handle_chat_state(self):
-        """處理對話狀態"""
-        # 在對話狀態下，處理對話邏輯
-        debug_log(3, "CHAT: 處理對話狀態")
-        
-        # 這裡可以檢查是否有待處理的對話
-        # 例如檢查 NLP 模組是否有新的意圖識別結果
-        pass
-    
-    def _handle_work_state(self):
-        """處理工作狀態"""
-        # 在工作狀態下，執行任務和工作流
-        debug_log(3, "WORK: 處理工作狀態")
-        
-        # 檢查是否有活動的工作會話
-        if hasattr(state_manager, '_active_session') and state_manager._active_session:
-            session = state_manager._active_session
-            if session.awaiting_input:
-                # 工作流正在等待輸入，可能需要提示用戶
-                debug_log(3, f"工作流 {session.session_id} 等待輸入")
-            elif session.completed:
-                # 工作流已完成，切換回閒置狀態
-                state_manager.set_state(UEPState.IDLE)
-                info_log(f"工作流 {session.session_id} 已完成，返回閒置狀態")
-    
-    def _handle_error_state(self):
-        """處理錯誤狀態"""
-        # 在錯誤狀態下，嘗試恢復或記錄錯誤
-        debug_log(3, "ERROR: 處理錯誤狀態")
-        
-        # 可以嘗試自動恢復到閒置狀態
-        time.sleep(1.0)  # 等待一秒
-        state_manager.set_state(UEPState.IDLE)
-        info_log("從錯誤狀態恢復到閒置狀態")
-    
-    def _check_context_triggers(self):
-        """檢查工作上下文觸發條件"""
+    def _log_system_status(self):
+        """定期輸出系統運行狀態"""
         try:
-            # 獲取所有活動上下文
-            active_contexts = working_context_manager.get_all_contexts()
+            from core.framework import core_framework
+            from core.states.state_manager import state_manager
+            from core.states.state_queue import get_state_queue_manager
             
-            for context_id, context_info in active_contexts.items():
-                context_type = context_info.get('context_type')
-                data_count = context_info.get('data_count', 0)
-                threshold = context_info.get('threshold', 5)
-                
-                # 檢查是否達到觸發條件
-                if data_count >= threshold:
-                    debug_log(2, f"上下文 {context_id} 達到觸發條件")
-                    self._trigger_event('context_trigger', {
-                        'context_id': context_id,
-                        'context_type': context_type,
-                        'data_count': data_count
-                    })
-                    
+            # 運行時間統計
+            uptime = time.time() - self.start_time
+            uptime_str = f"{uptime:.1f}秒"
+            if uptime > 60:
+                uptime_str = f"{uptime/60:.1f}分鐘"
+            if uptime > 3600:
+                uptime_str = f"{uptime/3600:.1f}小時"
+            
+            # 基本狀態信息
+            current_state = state_manager.get_current_state()
+            state_queue = get_state_queue_manager()
+            queue_size = len(state_queue.queue) if hasattr(state_queue, 'queue') else 0
+            
+            # 模組狀態
+            active_modules = list(core_framework.modules.keys())
+            module_count = len(active_modules)
+            
+            # 效能指標
+            loops_per_min = (self.loop_count / uptime * 60) if uptime > 0 else 0
+            
+            # 輸出狀態報告
+            info_log("=" * 60)
+            info_log("📊 系統運行狀態報告")
+            info_log(f"⏰ 運行時間: {uptime_str}")
+            info_log(f"🔄 循環次數: {self.loop_count} ({loops_per_min:.1f}/分鐘)")
+            info_log(f"🎯 當前狀態: {current_state.value}")
+            info_log(f"📝 狀態佇列: {queue_size} 項目")
+            info_log(f"🔧 活躍模組: {module_count} 個 {active_modules}")
+            
+            # 詳細模組狀態（如果可用）
+            if hasattr(core_framework, 'get_detailed_module_status'):
+                module_details = core_framework.get_detailed_module_status()
+                for module_name, status in module_details.items():
+                    status_emoji = "✅" if status.get('healthy', True) else "⚠️"
+                    info_log(f"   {status_emoji} {module_name}: {status.get('status', 'unknown')}")
+            
+            info_log("=" * 60)
+            
         except Exception as e:
-            debug_log(3, f"檢查上下文觸發失敗: {e}")
+            debug_log(1, f"[SystemLoop] 狀態日誌輸出錯誤: {e}")
     
-    def _process_pending_events(self):
-        """處理待處理的事件"""
-        # 這裡可以實現事件隊列處理
-        # 目前暫時跳過
-        pass
-    
-    def _trigger_event(self, event_type: str, event_data: Dict[str, Any]):
-        """觸發事件"""
+    def _collect_performance_snapshot(self):
+        """蒐集系統效能快照"""
         try:
-            if event_type in self.event_handlers:
-                self.event_handlers[event_type](event_data)
-            else:
-                debug_log(3, f"未知事件類型: {event_type}")
+            from core.framework import core_framework
+            
+            # 調用 Framework 的效能快照功能
+            snapshot = core_framework.collect_system_performance_snapshot()
+            
+            if snapshot:
+                debug_log(2, f"[SystemLoop] 效能快照: {snapshot.active_modules} 活躍模組, "
+                          f"成功率: {snapshot.system_success_rate:.2%}")
                 
+                # 記錄關鍵指標
+                if snapshot.system_average_response_time > 2.0:  # 超過2秒警告
+                    debug_log(1, f"[SystemLoop] ⚠️ 系統響應時間較慢: {snapshot.system_average_response_time:.2f}秒")
+                
+                if snapshot.system_success_rate < 0.95:  # 成功率低於95%警告
+                    debug_log(1, f"[SystemLoop] ⚠️ 系統成功率較低: {snapshot.system_success_rate:.2%}")
+            
         except Exception as e:
-            error_log(f"處理事件 {event_type} 時發生錯誤: {e}")
-    
-    # ========== 事件處理器 ==========
-    
-    def _handle_speech_input(self, event_data: Dict[str, Any]):
-        """處理語音輸入事件"""
-        info_log(f"🎤 收到語音輸入: {event_data}")
-        
-        # 根據當前狀態決定如何處理語音輸入
-        current_state = state_manager.get_state()
-        
-        if current_state == UEPState.IDLE:
-            # 在閒置狀態下，語音輸入可能觸發對話或工作模式
-            text = event_data.get('text', '')
-            if text:
-                # 使用路由器決定下一步處理
-                route_result = router.route_request({
-                    'type': 'speech_input',
-                    'data': event_data,
-                    'context': {'current_state': current_state.name}
-                })
-                
-                if route_result:
-                    info_log(f"路由結果: {route_result}")
-    
-    def _handle_text_input(self, event_data: Dict[str, Any]):
-        """處理文本輸入事件"""
-        info_log(f"💬 收到文本輸入: {event_data}")
-    
-    def _handle_system_command(self, event_data: Dict[str, Any]):
-        """處理系統命令事件"""
-        info_log(f"⚙️ 收到系統命令: {event_data}")
-    
-    def _handle_module_error(self, event_data: Dict[str, Any]):
-        """處理模組錯誤事件"""
-        error_log(f"❌ 模組錯誤: {event_data}")
-    
-    def _handle_context_trigger(self, event_data: Dict[str, Any]):
-        """處理上下文觸發事件"""
-        info_log(f"🎯 上下文觸發: {event_data}")
-        
-        context_type = event_data.get('context_type')
-        context_id = event_data.get('context_id')
-        
-        if context_type == ContextType.SPEAKER_ACCUMULATION.value:
-            # 語者樣本累積觸發
-            info_log(f"語者樣本累積觸發: {context_id}")
-            # 這裡可以觸發創建新語者的邏輯
-    
-    def register_event_handler(self, event_type: str, handler: Callable):
-        """註冊事件處理器"""
-        self.event_handlers[event_type] = handler
-        debug_log(2, f"註冊事件處理器: {event_type}")
+            debug_log(1, f"[SystemLoop] 效能快照蒐集錯誤: {e}")
     
     def get_status(self) -> Dict[str, Any]:
         """獲取循環狀態"""
+        uptime = time.time() - self.start_time if self.start_time > 0 else 0
+        
         return {
-            'status': self.status.value,
-            'current_state': state_manager.get_state().name,
-            'is_running': self.status == LoopStatus.RUNNING,
-            'thread_alive': self.loop_thread.is_alive() if self.loop_thread else False
+            "status": self.status.value,
+            "loop_count": self.loop_count,
+            "uptime": uptime,
+            "is_running": self.status == LoopStatus.RUNNING,
+            "thread_alive": self.loop_thread.is_alive() if self.loop_thread else False
         }
+    
+    def pause(self) -> bool:
+        """暫停系統循環"""
+        if self.status == LoopStatus.RUNNING:
+            self.status = LoopStatus.PAUSED
+            info_log("⏸️ 系統循環已暫停")
+            return True
+        return False
+    
+    def resume(self) -> bool:
+        """恢復系統循環"""
+        if self.status == LoopStatus.PAUSED:
+            self.status = LoopStatus.RUNNING
+            info_log("▶️ 系統循環已恢復")
+            return True
+        return False
 
 
 # 全局系統循環實例

@@ -83,12 +83,6 @@ class WorkingContext:
         self.data: List[Any] = []  # 改名為更通用的 data
         self.metadata: Dict[str, Any] = {}
         self.threshold = threshold
-        self._type_defaults = {
-            ContextType.SPEAKER_ACCUMULATION: {"threshold": 15, "timeout": 600.0},
-            ContextType.IDENTITY_MANAGEMENT:  {"threshold": 1,  "timeout": 900.0},
-            ContextType.CONVERSATION:         {"threshold": 1,  "timeout": 300.0},
-            ContextType.WORKFLOW_SESSION:     {"threshold": 1,  "timeout": 900.0},
-        }
         
         # 決策相關
         self.pending_decision: Optional[Dict[str, Any]] = None
@@ -96,10 +90,11 @@ class WorkingContext:
         self.warmup()
         
     def warmup(self):
+        """初始化工作上下文"""
         with self._rwlock:
-            self.cleanup_expired_contexts()
-        self.start_cleanup_worker()
-        info_log("[WorkingContextManager] warmup 完成")
+            # WorkingContext 不需要清理其他上下文
+            pass
+        info_log(f"[WorkingContext] {self.context_id} warmup 完成")
         
     def add_data(self, data_item: Any, metadata: Optional[Dict] = None):
         """添加數據到上下文 - 更通用的方法名"""
@@ -213,8 +208,23 @@ class WorkingContextManager:
             return
             
         self._initialized = True
+        self._rwlock = threading.RLock()  # 添加缺失的讀寫鎖
         self.contexts: Dict[str, WorkingContext] = {}
         self.active_contexts_by_type: Dict[ContextType, str] = {}
+        
+        # 類型默認配置
+        self._type_defaults = {
+            ContextType.SPEAKER_ACCUMULATION: {"threshold": 15, "timeout": 600.0},
+            ContextType.IDENTITY_MANAGEMENT:  {"threshold": 1,  "timeout": 900.0},
+            ContextType.CONVERSATION:         {"threshold": 1,  "timeout": 300.0},
+            ContextType.WORKFLOW_SESSION:     {"threshold": 1,  "timeout": 900.0},
+            ContextType.LEARNING:             {"threshold": 1,  "timeout": 300.0},
+            ContextType.CROSS_MODULE_DATA:    {"threshold": 1,  "timeout": 300.0},
+            ContextType.MEM_EXTERNAL_ACCESS:  {"threshold": 1,  "timeout": 300.0},
+            ContextType.LLM_CONTEXT:          {"threshold": 1,  "timeout": 300.0},
+            ContextType.SYS_WORKFLOW:         {"threshold": 1,  "timeout": 300.0},
+            ContextType.GENERAL_SESSION:      {"threshold": 1,  "timeout": 300.0},
+        }
         
         # 決策處理器註冊表
         self.decision_handlers: Dict[ContextType, DecisionHandler] = {}
@@ -419,6 +429,8 @@ class WorkingContextManager:
         
         if expired_contexts:
             debug_log(3, f"[WorkingContextManager] 清理 {len(expired_contexts)} 個過期上下文")
+        
+        return len(expired_contexts)
     
     def cleanup_incomplete_contexts(self, context_type: ContextType, min_threshold: int = 15) -> int:
         """

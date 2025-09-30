@@ -1330,3 +1330,15 @@
 
 ---
 
+### Put MEM and LLM into system loop, also reworked a lot of core modules to adapt to the new system structure. 09/30
+
+> Date: Tue, 30 Sep 2025 19:46:02 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `c4a44838989de5c5d9b7e226680a6876af6c4eaa`
+
+---
+

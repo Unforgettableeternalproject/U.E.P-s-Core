@@ -225,6 +225,9 @@ class GeneralSession:
     def _initialize_working_contexts(self):
         """初始化 Working Context"""
         
+        # 調試信息
+        debug_log(3, f"[GeneralSession] 初始化前檢查 working_context_manager 類型: {type(working_context_manager)}")
+        
         # 設定 General Session 上下文資訊
         working_context_manager.set_data(
             ContextType.GENERAL_SESSION, 
@@ -377,6 +380,11 @@ class GeneralSession:
     
     def _cleanup_working_contexts(self):
         """清理 Working Context"""
+        # 調試信息
+        debug_log(3, f"[GeneralSession] 清理前檢查 working_context_manager 類型: {type(working_context_manager)}")
+        debug_log(3, f"[GeneralSession] 類名: {working_context_manager.__class__.__name__}")
+        debug_log(3, f"[GeneralSession] 有 cleanup_expired_contexts: {hasattr(working_context_manager, 'cleanup_expired_contexts')}")
+        
         # 清理過期的上下文
         working_context_manager.cleanup_expired_contexts()
     

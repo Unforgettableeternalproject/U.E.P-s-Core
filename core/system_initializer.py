@@ -3,64 +3,62 @@
 系統初始化器 - 管理 UEP 系統的啟動過程
 
 這個模組負責：
-1. 系統狀態初始化
-2. 核心框架啟動
-3. 模組註冊和初始化
-4. 工作上下文清理
-5. 前端應用程式啟動
+1. Controller 啟動 Framework 初始化
+2. 模組自動發現和註冊  
+3. Router 初始化（做第一次啟動準備）
+4. State Manager 和 Session Manager 初始化
+5. Working Context 清理和準備
 6. 系統健康檢查
 
 啟動層級順序：
-controller > framework > router > strategy > state > context > session
+Controller → Framework → Router → State/Session Managers → Working Context
 """
 
 import time
 from typing import Dict, Any, List, Optional
 from enum import Enum, auto
 
-# 載入配置
-from configs.config_loader import load_config
-config = load_config()
-debug_mode = config.get("debug", {}).get("enabled", False)
-
-from core.framework import core_framework, ExecutionMode
-from core.controller import unified_controller
-from core.states.state_manager import UEPState, StateManager, state_manager
-from core.states.state_queue import get_state_queue_manager
-from core.working_context import working_context_manager, ContextType
-from configs.config_loader import load_config
 from utils.debug_helper import debug_log, info_log, error_log
 
 
 class InitializationPhase(Enum):
     """初始化階段"""
     STARTING = auto()           # 開始啟動
-    STATE_RESET = auto()        # 狀態重置
-    CONTEXT_CLEANUP = auto()    # 上下文清理
-    FRAMEWORK_INIT = auto()     # 框架與模組初始化 (合併了原本的框架初始化、模組註冊和模組初始化)
-    STRATEGY_SETUP = auto()     # 策略設置
+    CONTROLLER_INIT = auto()    # Controller 初始化
+    FRAMEWORK_INIT = auto()     # Framework 和模組初始化
+    ROUTER_INIT = auto()        # Router 初始化
+    MANAGERS_INIT = auto()      # State/Session Managers 初始化
+    CONTEXT_SETUP = auto()      # Working Context 設置
     HEALTH_CHECK = auto()       # 健康檢查
-    FRONTEND_INIT = auto()      # 前端初始化
     READY = auto()              # 系統就緒
     FAILED = auto()             # 初始化失敗
 
 
 class SystemInitializer:
-    """系統初始化器"""
+    """系統初始化器 - 協調整個系統啟動過程"""
     
     def __init__(self):
-        self.config = load_config()
+        """初始化系統初始化器"""
         self.phase = InitializationPhase.STARTING
-        self.initialized_modules: List[str] = []
-        self.failed_modules: List[str] = []
-        self.startup_time = None
+        self.startup_time = 0
+        self.initialized_modules = []
+        self.failed_modules = []
         
+        # 載入配置
+        from configs.config_loader import load_config
+        self.config = load_config()
+        
+        info_log("[SystemInitializer] 系統初始化器已創建")
+    
     def initialize_system(self, production_mode: bool = False) -> bool:
         """
-        初始化整個系統
+        初始化整個 UEP 系統
+        
+        遵循新的系統架構：
+        Controller → Framework → Router → State/Session Managers → Working Context
         
         Args:
-            production_mode: 是否為生產模式（只載入重構完成的模組）
+            production_mode: 是否為生產模式
             
         Returns:
             bool: 初始化是否成功
@@ -69,35 +67,36 @@ class SystemInitializer:
         self.startup_time = time.time()
         
         try:
-            # Phase 1: 狀態重置
-            if not self._reset_system_state():
+            # Phase 1: Controller 初始化
+            if not self._initialize_controller():
                 return False
                 
-            # Phase 2: 上下文清理
-            if not self._cleanup_working_contexts():
+            # Phase 2: Framework 和模組初始化
+            if not self._initialize_framework():
                 return False
                 
-            # Phase 3: 框架和模組初始化 (合併了原本的 Phase 3, 4, 5)
-            if not self._initialize_framework_and_modules(production_mode):
+            # Phase 3: Router 初始化
+            if not self._initialize_router():
                 return False
                 
-            # Phase 4: 健康檢查 (原 Phase 7)
+            # Phase 4: State/Session Managers 初始化
+            if not self._initialize_managers():
+                return False
+                
+            # Phase 5: Working Context 設置
+            if not self._setup_working_context():
+                return False
+                
+            # Phase 6: 系統健康檢查
             if not self._health_check():
-                return False
-                
-            # Phase 6: 前端初始化 (原 Phase 8)
-            if not self._initialize_frontend():
                 return False
                 
             # 完成初始化
             self.phase = InitializationPhase.READY
             elapsed = time.time() - self.startup_time
             info_log(f"✅ UEP 系統初始化完成！耗時: {elapsed:.2f}秒")
-            info_log(f"📊 已初始化模組: {', '.join(self.initialized_modules)}")
+            info_log(f"📊 系統架構: Controller → Framework → Router → Managers → Context")
             
-            if self.failed_modules:
-                info_log(f"⚠️ 失敗模組: {', '.join(self.failed_modules)}")
-                
             return True
             
         except Exception as e:
@@ -105,277 +104,201 @@ class SystemInitializer:
             error_log(f"❌ 系統初始化失敗: {e}")
             return False
     
-    def _reset_system_state(self) -> bool:
-        """重置系統狀態"""
+    def _initialize_controller(self) -> bool:
+        """初始化 Controller"""
         try:
-            self.phase = InitializationPhase.STATE_RESET
-            info_log("🔄 重置系統狀態...")
+            self.phase = InitializationPhase.CONTROLLER_INIT
+            info_log("🎮 初始化 Controller...")
+            
+            # 導入並初始化 Controller
+            from core.controller import unified_controller
+            
+            # Controller 會自動初始化，這裡驗證其狀態
+            if hasattr(unified_controller, 'is_initialized') and unified_controller.is_initialized:
+                info_log("   ✅ Controller 已初始化")
+            else:
+                # 如果 Controller 需要明確初始化，調用其方法
+                if hasattr(unified_controller, 'initialize'):
+                    success = unified_controller.initialize()
+                    if not success:
+                        error_log("   ❌ Controller 初始化失敗")
+                        return False
+                info_log("   ✅ Controller 初始化完成")
+            
+            return True
+            
+        except Exception as e:
+            error_log(f"❌ Controller 初始化失敗: {e}")
+            return False
+    
+    def _initialize_framework(self) -> bool:
+        """初始化 Framework 和模組"""
+        try:
+            self.phase = InitializationPhase.FRAMEWORK_INIT
+            info_log("🏗️ 初始化 Framework 和模組...")
+            
+            # 導入並初始化 Framework
+            from core.framework import core_framework
+            
+            # Framework 初始化（包含模組自動發現和註冊）
+            success = core_framework.initialize()
+            if not success:
+                error_log("   ❌ Framework 初始化失敗")
+                return False
+            
+            info_log("   ✅ Framework 初始化完成")
+            
+            # 獲取已註冊的模組列表
+            registered_modules = list(core_framework.modules.keys())
+            info_log(f"   📦 已註冊模組: {registered_modules}")
+            self.initialized_modules = registered_modules
+            
+            # 啟用效能監控
+            core_framework.enable_performance_monitoring(True)
+            info_log("   📊 效能監控已啟用")
+            
+            return True
+            
+        except Exception as e:
+            error_log(f"❌ Framework 初始化失敗: {e}")
+            return False
+    
+    def _initialize_router(self) -> bool:
+        """初始化 Router"""
+        try:
+            self.phase = InitializationPhase.ROUTER_INIT
+            info_log("🔀 初始化 Router...")
+            
+            # 導入 Router
+            from core.router import router
+            
+            # Router 會自動初始化，這裡驗證其狀態
+            if hasattr(router, 'is_initialized'):
+                if not router.is_initialized:
+                    # 如果 Router 需要明確初始化
+                    if hasattr(router, 'initialize'):
+                        success = router.initialize()
+                        if not success:
+                            error_log("   ❌ Router 初始化失敗")
+                            return False
+                        
+                info_log("   ✅ Router 已就緒，等待用戶輸入")
+            else:
+                info_log("   ✅ Router 已載入")
+            
+            return True
+            
+        except Exception as e:
+            error_log(f"❌ Router 初始化失敗: {e}")
+            return False
+    
+    def _initialize_managers(self) -> bool:
+        """初始化 State Manager 和 Session Manager"""
+        try:
+            self.phase = InitializationPhase.MANAGERS_INIT
+            info_log("⚙️ 初始化 State 和 Session Managers...")
+            
+            # 初始化 State Manager
+            from core.states.state_manager import state_manager, UEPState
+            from core.states.state_queue import get_state_queue_manager
+            
+            # 重置系統狀態到 IDLE
+            state_manager.set_state(UEPState.IDLE)
+            info_log("   🔄 系統狀態設為 IDLE")
             
             # 清空狀態佇列
             state_queue_manager = get_state_queue_manager()
-            initial_queue_length = len(state_queue_manager.queue)
-            if initial_queue_length > 0:
-                info_log(f"   發現 {initial_queue_length} 個待處理狀態項目")
+            if hasattr(state_queue_manager, 'clear_queue'):
                 state_queue_manager.clear_queue()
-                info_log(f"   ✅ 已清空狀態佇列")
-            else:
-                info_log("   狀態佇列已為空")
+                info_log("   🧹 狀態佇列已清空")
             
-            # 將系統狀態設為 IDLE
-            state_manager.set_state(UEPState.IDLE)
-            info_log(f"   狀態設置為: {state_manager.get_state().name}")
+            # 初始化 Session Manager
+            from core.sessions.session_manager import unified_session_manager
             
-            # 確保狀態佇列的當前狀態也是 IDLE
-            if state_queue_manager.current_state.value != 'idle':
-                info_log(f"   修正狀態佇列狀態: {state_queue_manager.current_state.value} -> idle")
-                state_queue_manager._transition_to_idle()
+            # Session Manager 會自動初始化，驗證其狀態
+            if hasattr(unified_session_manager, 'cleanup_expired_sessions'):
+                unified_session_manager.cleanup_expired_sessions()
+                info_log("   🧹 已清理過期會話")
             
-            # 清除活動會話
-            if hasattr(state_manager, '_active_session') and state_manager._active_session:
-                state_manager._active_session = None
-                info_log("   清除活動會話")
-                
+            info_log("   ✅ State 和 Session Managers 已就緒")
+            
             return True
             
         except Exception as e:
-            error_log(f"❌ 狀態重置失敗: {e}")
+            error_log(f"❌ Managers 初始化失敗: {e}")
             return False
     
-    def _cleanup_working_contexts(self) -> bool:
-        """清理工作上下文"""
+    def _setup_working_context(self) -> bool:
+        """設置 Working Context"""
         try:
-            self.phase = InitializationPhase.CONTEXT_CLEANUP
-            info_log("🧹 清理工作上下文...")
+            self.phase = InitializationPhase.CONTEXT_SETUP
+            info_log("🔗 設置 Working Context...")
             
-            # 獲取所有活動上下文
-            active_contexts = working_context_manager.get_all_contexts_info()
-            if active_contexts:
-                info_log(f"   發現 {len(active_contexts)} 個活動上下文")
-                
-                # 清理過期上下文
-                cleaned_count = 0
-                for context_id, context_info in active_contexts.items():
-                    if context_info.get('status') in ['expired', 'completed']:
-                        working_context_manager.remove_context(context_id)
-                        cleaned_count += 1
-                        
-                info_log(f"   清理了 {cleaned_count} 個過期上下文")
-            else:
-                info_log("   沒有發現活動上下文")
-                
+            # 導入 Working Context Manager
+            from core.working_context import working_context_manager
+            
+            # 清理過期的上下文
+            if hasattr(working_context_manager, 'cleanup_expired_contexts'):
+                cleaned = working_context_manager.cleanup_expired_contexts()
+                if cleaned > 0:
+                    info_log(f"   🧹 清理了 {cleaned} 個過期上下文")
+            
+            # 確認決策處理器已註冊
+            if hasattr(working_context_manager, '_decision_handlers'):
+                handler_count = len(working_context_manager._decision_handlers)
+                info_log(f"   🎯 已註冊 {handler_count} 個決策處理器")
+            
+            info_log("   ✅ Working Context 已設置")
+            
             return True
             
         except Exception as e:
-            error_log(f"❌ 上下文清理失敗: {e}")
+            error_log(f"❌ Working Context 設置失敗: {e}")
             return False
     
-    def _initialize_framework_and_modules(self, production_mode: bool) -> bool:
-        """初始化核心框架和所有模組（合併 Phase 3, 4, 5）"""
-        try:
-            # 階段 3: 框架初始化
-            self.phase = InitializationPhase.FRAMEWORK_INIT
-            info_log("🏗️ 初始化核心框架與模組...")
-            info_log(f"   生產模式: {production_mode}")
-            
-            # 重置框架狀態
-            if hasattr(core_framework, 'reset'):
-                core_framework.reset()
-                info_log("   框架狀態已重置")
-            
-            # 使用 UnifiedController 來註冊和初始化模組
-            if not hasattr(unified_controller, 'initialize'):
-                error_log("   UnifiedController 未實現 initialize 方法")
-                return False
-                
-            # 讓 UnifiedController 處理所有模組的註冊和初始化
-            success = unified_controller.initialize()
-            if not success:
-                error_log("   模組註冊失敗")
-                return False
-                
-            info_log("   模組註冊完成")
-            
-            # 獲取已註冊的模組
-            registered_modules = core_framework.get_available_modules()
-            if not registered_modules:
-                error_log("   沒有已註冊的模組")
-                return False
-                
-            info_log(f"   發現 {len(registered_modules)} 個已註冊模組")
-            
-            # 只記錄模組狀態，不進行重複初始化
-            for module_id, module_info in registered_modules.items():
-                # 檢查模組是否已初始化
-                if hasattr(module_info, 'is_initialized') and module_info.is_initialized:
-                    self.initialized_modules.append(module_id)
-                    info_log(f"   ✅ {module_id} 已就緒")
-                elif hasattr(module_info, 'module_instance'):
-                    # 僅記錄模組狀態，不重新初始化
-                    if hasattr(module_info.module_instance, 'is_initialized') and module_info.module_instance.is_initialized:
-                        self.initialized_modules.append(module_id)
-                        info_log(f"   ✅ {module_id} 已就緒")
-                    else:
-                        # 假設已由 UnifiedController 完成初始化
-                        self.initialized_modules.append(module_id)
-                        info_log(f"   ✅ {module_id} 假定已就緒")
-                else:
-                    error_log(f"   ❓ {module_id} 狀態未知")
-            
-            # 如果有模組成功初始化，認為這個階段成功
-            return len(self.initialized_modules) > 0
-            
-        except Exception as e:
-            error_log(f"❌ 框架與模組初始化失敗: {e}")
-            return False
     def _health_check(self) -> bool:
         """系統健康檢查"""
         try:
             self.phase = InitializationPhase.HEALTH_CHECK
             info_log("🏥 執行系統健康檢查...")
             
-            # 檢查核心組件
-            health_status = {
-                'state_manager': state_manager.get_state() == UEPState.IDLE,
-                'framework_and_modules': hasattr(core_framework, 'modules') and core_framework.modules is not None,
-                'controller': hasattr(unified_controller, 'is_initialized') and unified_controller.is_initialized,
-                'initialized_modules': len(self.initialized_modules) > 0
-            }
+            # 檢查 Framework 狀態
+            from core.framework import core_framework
+            if not core_framework.is_initialized:
+                error_log("   ❌ Framework 未正確初始化")
+                return False
             
-            # 報告健康狀態
-            for component, status in health_status.items():
-                status_icon = "✅" if status else "❌"
-                info_log(f"   {status_icon} {component}: {'正常' if status else '異常'}")
+            # 檢查狀態管理器
+            from core.states.state_manager import state_manager, UEPState
+            current_state = state_manager.get_current_state()
+            if current_state != UEPState.IDLE:
+                error_log(f"   ❌ 系統狀態不正確: {current_state}")
+                return False
             
-            # 如果所有核心組件都正常，認為健康檢查通過
-            all_healthy = all(health_status.values())
+            # 檢查已註冊的模組數量
+            module_count = len(core_framework.modules)
+            if module_count == 0:
+                error_log("   ❌ 沒有已註冊的模組")
+                return False
             
-            if all_healthy:
-                info_log("   健康檢查通過")
-            else:
-                info_log("   健康檢查發現問題，但系統可以繼續運行")
-                
-            return True  # 即使有問題也繼續，因為可能是非關鍵組件
+            info_log(f"   ✅ 健康檢查通過: {module_count} 個模組已註冊")
+            info_log(f"   ✅ 系統狀態: {current_state.value}")
             
-        except Exception as e:
-            error_log(f"❌ 健康檢查失敗: {e}")
-            return False
-    
-    def _initialize_frontend(self) -> bool:
-        """初始化前端應用程式"""
-        try:
-            self.phase = InitializationPhase.FRONTEND_INIT
-            info_log("🖥️ 初始化前端應用程式...")
-            
-            # 從統一控制器獲取UI模組
-            ui_module = None
-            if hasattr(unified_controller, 'modules') and 'UI' in unified_controller.modules:
-                ui_module = unified_controller.modules['UI']
-                
-            if not ui_module:
-                info_log("⚠️ UI模組未找到，跳過前端初始化")
-                return True
-                
-            # 確認UI模組已經準備好
-            if not ui_module.is_initialized:
-                info_log("   UI模組初始化...")
-                if not ui_module.initialize_frontend():
-                    error_log("❌ UI模組初始化失敗")
-                    return False
-            
-            # 只在生產模式下啟動主界面
-            if not debug_mode:
-                info_log("   檢查並啟動需要的界面...")
-                from modules.ui_module.ui_module import UIInterfaceType
-                
-                # 檢查界面狀態
-                interface_status = ui_module.get_interface_status()
-                
-                # 用戶訪問界面（球體）- 優先確保這個顯示
-                if config.get('ui', {}).get('show_user_access', True):
-                    access_widget_status = interface_status.get('user_access_widget', {})
-                    if not access_widget_status.get('visible', False) or not access_widget_status.get('active', False):
-                        info_log("   啟動用戶訪問界面...")
-                        result = ui_module.show_interface(UIInterfaceType.USER_ACCESS_WIDGET)
-                        if 'error' in result:
-                            error_log(f"❌ 用戶訪問界面啟動失敗: {result['error']}")
-                        else:
-                            info_log("✅ 用戶訪問界面已啟動")
-                    else:
-                        info_log("✅ 用戶訪問界面已經顯示")
-                
-                # 桌面寵物界面（主視窗）- 只在特定條件下啟動
-                if config.get('ui', {}).get('show_main_desktop_pet', False):  # 預設為False
-                    main_pet_status = interface_status.get('main_desktop_pet', {})
-                    if not main_pet_status.get('visible', False):
-                        info_log("   啟動桌面寵物界面...")
-                        result = ui_module.show_interface(UIInterfaceType.MAIN_DESKTOP_PET)
-                        if 'error' in result:
-                            error_log(f"❌ 桌面寵物界面啟動失敗: {result['error']}")
-                        else:
-                            info_log("✅ 桌面寵物界面已啟動")
-                    else:
-                        info_log("✅ 桌面寵物界面已經顯示")
-                else:
-                    info_log("   桌面寵物界面已停用（設定中可啟用）")
-            else:
-                info_log("   調試模式下前端界面不自動啟動，請使用命令或調試界面控制")
-                
             return True
             
         except Exception as e:
-            error_log(f"❌ 前端初始化失敗: {e}")
+            error_log(f"❌ 系統健康檢查失敗: {e}")
             return False
     
-    def get_system_status(self) -> Dict[str, Any]:
-        """獲取系統狀態"""
-        state_queue_manager = get_state_queue_manager()
-        queue_status = state_queue_manager.get_queue_status()
-        
+    def get_initialization_status(self) -> Dict[str, Any]:
+        """獲取初始化狀態"""
         return {
-            'phase': self.phase.name,
-            'system_state': state_manager.get_state().name,
-            'state_queue': {
-                'current_state': queue_status['current_state'],
-                'queue_length': queue_status['queue_length'],
-                'pending_states': queue_status['pending_states']
-            },
-            'initialized_modules': self.initialized_modules,
-            'failed_modules': self.failed_modules,
-            'startup_time': time.time() - self.startup_time if self.startup_time else None,
-            'is_ready': self.phase == InitializationPhase.READY
+            "phase": self.phase,
+            "initialized_modules": self.initialized_modules,
+            "failed_modules": self.failed_modules,
+            "startup_time": self.startup_time,
+            "is_ready": self.phase == InitializationPhase.READY
         }
-    
-    def shutdown_system(self):
-        """關閉系統"""
-        info_log("🛑 開始關閉 UEP 系統...")
-        
-        try:
-            # 清空狀態佇列
-            state_queue_manager = get_state_queue_manager()
-            if len(state_queue_manager.queue) > 0:
-                info_log(f"   清空 {len(state_queue_manager.queue)} 個待處理狀態")
-                state_queue_manager.clear_queue()
-            
-            # 關閉所有模組
-            registered_modules = core_framework.get_available_modules()
-            for module_name, module_instance in registered_modules.items():
-                try:
-                    if hasattr(module_instance, 'shutdown'):
-                        module_instance.shutdown()
-                        info_log(f"   ✅ {module_name} 已關閉")
-                except Exception as e:
-                    error_log(f"   ❌ {module_name} 關閉失敗: {e}")
-            
-            # 清理上下文
-            working_context_manager.clear_all_contexts()
-            
-            # 設置狀態為錯誤（表示系統已關閉）
-            state_manager.set_state(UEPState.ERROR)
-            
-            info_log("✅ UEP 系統關閉完成")
-            
-        except Exception as e:
-            error_log(f"❌ 系統關閉過程中發生錯誤: {e}")
 
 
 # 全局系統初始化器實例

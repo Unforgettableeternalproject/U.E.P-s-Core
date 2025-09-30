@@ -1354,3 +1354,15 @@
 
 ---
 
+### Some changes regarding loggings. 09/30
+
+> Date: Tue, 30 Sep 2025 22:28:26 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `develop`
+
+> Commit: `03493cc7ec1a1bb6e5936e5561e3ef05bc795bf8`
+
+---
+

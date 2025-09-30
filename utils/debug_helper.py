@@ -24,7 +24,7 @@ _logging_enabled = _logging_conf.get("enabled", True)
 
 if not _logging_enabled: print("[Logging] Logging is disabled in the configuration.")
 
-def debug_log(level: int=KEY_LEVEL, msg: str="", exclusive: bool = False):
+def debug_log(level: int=1, msg: str="", exclusive: bool = False):
     """
     記錄除錯日誌，根據設定的等級決定是否輸出
     

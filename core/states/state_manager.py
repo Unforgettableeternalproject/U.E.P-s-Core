@@ -36,30 +36,49 @@ class StateManager:
         """獲取當前狀態（與 get_state 相同，提供兼容性）"""
         return self._state
 
-    def set_state(self, new_state: UEPState, context: Optional[Dict[str, Any]] = None):
+    def set_state(self, new_state: UEPState, context: Optional[Dict[str, Any]] = None) -> bool:
         """
         設置新狀態，並觸發狀態變化處理
         
         Args:
             new_state: 新狀態
             context: 狀態變化上下文 (包含創建會話所需的資訊)
+            
+        Returns:
+            bool: 狀態轉換是否成功
         """
         old_state = self._state
         if old_state == new_state:
-            return  # 狀態沒有變化
+            return True  # 狀態沒有變化，視為成功
             
-        self._state = new_state
-        debug_log(2, f"[StateManager] 狀態變更: {old_state.name} -> {new_state.name}")
-        
-        # 觸發狀態變化回調
-        self._on_state_changed(old_state, new_state, context)
-        
-        # 通知所有回調
-        for callback in self._state_change_callbacks:
-            try:
-                callback(old_state, new_state)
-            except Exception as e:
-                debug_log(1, f"[StateManager] 狀態變化回調執行失敗: {e}")
+        try:
+            self._state = new_state
+            debug_log(2, f"[StateManager] 狀態變更: {old_state.name} -> {new_state.name}")
+            
+            # 觸發狀態變化回調
+            self._on_state_changed(old_state, new_state, context)
+            
+            # 通知所有回調
+            for callback in self._state_change_callbacks:
+                try:
+                    callback(old_state, new_state)
+                except Exception as e:
+                    debug_log(1, f"[StateManager] 狀態變化回調執行失敗: {e}")
+            
+            return True  # 狀態轉換成功
+            
+        except RuntimeError as e:
+            # 架構錯誤，狀態轉換失敗
+            debug_log(1, f"[StateManager] 狀態轉換失敗，架構錯誤: {e}")
+            # 回滾狀態
+            self._state = old_state
+            return False
+            
+        except Exception as e:
+            # 其他錯誤，不影響狀態轉換的核心成功性
+            debug_log(1, f"[StateManager] 狀態轉換期間發生非關鍵錯誤: {e}")
+            # 狀態轉換本身是成功的，只是附加操作（如記憶體存取）失敗
+            return True
     
     def add_state_change_callback(self, callback: Callable[[UEPState, UEPState], None]):
         """添加狀態變化回調"""
@@ -96,7 +115,9 @@ class StateManager:
             debug_log(1, f"[StateManager] 會話架構錯誤: {e}")
             raise
         except Exception as e:
-            debug_log(1, f"[StateManager] 狀態變化處理失敗: {e}")
+            # 其他錯誤（如記憶體存取失敗）不應影響狀態轉換的核心成功性
+            debug_log(1, f"[StateManager] 狀態變化處理中的非關鍵錯誤: {e}")
+            # 記錄錯誤但不拋出，讓狀態轉換繼續進行
     
     def _create_chat_session(self, context: Optional[Dict[str, Any]] = None):
         """創建聊天會話 - 使用現有的GS"""

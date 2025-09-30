@@ -1,4 +1,5 @@
 from logging import config
+import asyncio
 from core.registry import get_module
 from configs.config_loader import load_config
 from utils.debug_helper import debug_log, info_log, error_log
@@ -6,8 +7,6 @@ from utils.debug_helper import debug_log, info_log, error_log
 from .module_tests.integration_tests import test_stt_nlp
 # 暫時註解掉這個導入，等相關文件創建後再啟用
 # from .module_tests.extra_tests import test_chunk_and_summarize, test_uep_chatting
-import time
-import asyncio
 
 config = load_config()
 enabled = config.get("modules_enabled", {})
@@ -44,15 +43,16 @@ def _initialize_modules():
     global modules, modules_load_times
     
     if PRELOAD_MODULES is True:
-        # 舊版模式：預先載入所有模組
-        info_log("[Controller] 初始化：預先載入所有模組")
+        # 舊版模式：預先載入所有模組（但排除UI相關模組，避免終端測試時的問題）
+        info_log("[Controller] 初始化：預先載入模組（終端模式，排除UI）")
         
-        # 模組列表
+        # 模組列表（終端模式排除UI相關模組）
         module_names = ["stt_module", "nlp_module", "mem_module", "llm_module", 
-                        "tts_module", "sys_module", "ui_module", "ani_module", "mov_module"]
+                        "tts_module", "sys_module"]
+        # 不載入UI相關模組：ui_module, ani_module, mov_module
         
-        # 載入每個模組並記錄時間
-        modules = {}
+        # 清空並重新載入模組字典
+        modules.clear()
         for full_name in module_names:
             short_name = full_name.split('_')[0]
             module_instance = safe_get_module(full_name)
@@ -62,10 +62,16 @@ def _initialize_modules():
             if module_instance is not None:
                 from datetime import datetime
                 modules_load_times[short_name] = datetime.now().strftime('%H:%M:%S')
+        
+        # 為UI相關模組設定為None（在終端模式下不載入）
+        modules["ui"] = None
+        modules["ani"] = None  
+        modules["mov"] = None
     else:
         # GUI模式：延遲載入
         info_log("[Controller] 初始化：按需載入模式")
-        modules = {
+        modules.clear()
+        modules.update({
             "stt": None,
             "nlp": None,
             "mem": None,
@@ -75,24 +81,233 @@ def _initialize_modules():
             "ui": None,
             "ani": None,
             "mov": None
-        }
+        })
         # 初始化載入時間字典，預設為空
-        modules_load_times = {}
+        modules_load_times.clear()
 
-def set_loading_mode(preload=True):
+def set_loading_mode(preload=True, reinitialize=False):
     """設定模組載入模式
     Args:
         preload (bool): True=預先載入所有模組, False=按需載入
+        reinitialize (bool): True=強制重新初始化模組字典
     """
     global PRELOAD_MODULES
     PRELOAD_MODULES = preload
 
     info_log(f"[Controller] 設定載入模式：{'預先載入' if preload else '按需載入'}")
-    # 只有在模組字典尚未初始化時才進行初始化
-    if not modules:
+    
+    # 如果模組字典尚未初始化，或者要求重新初始化，則進行初始化
+    if not modules or reinitialize:
         _initialize_modules()
-    else:
-        info_log("[Controller] 模組字典已存在，保留現有模組")
+
+def complete_reset_all_modules():
+    """完全重置所有模組實例，回歸原始狀態"""
+    global modules, modules_load_times
+    
+    info_log("[Controller] 開始完全重置所有模組...")
+    
+    # 清理所有現有模組實例
+    all_module_names = ['stt', 'nlp', 'mem', 'llm', 'tts', 'sysmod', 'ui', 'ani', 'mov']
+    
+    for module_name in all_module_names:
+        if module_name in modules and modules[module_name] is not None:
+            try:
+                module_instance = modules[module_name]
+                
+                # 嘗試調用shutdown方法
+                if hasattr(module_instance, 'shutdown'):
+                    module_instance.shutdown()
+                    info_log(f"[Controller] 已關閉 {module_name} 模組")
+                # 如果沒有shutdown，嘗試stop方法
+                elif hasattr(module_instance, 'stop'):
+                    module_instance.stop()
+                    info_log(f"[Controller] 已停止 {module_name} 模組")
+                
+            except Exception as e:
+                error_log(f"[Controller] 關閉 {module_name} 模組時發生錯誤: {e}")
+    
+    # 嘗試清理QApplication實例（但保留調試介面使用的QApplication）
+    try:
+        from PyQt5.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is not None:
+            info_log("[Controller] 檢測到QApplication實例")
+            
+            # 檢查是否有調試介面正在運行
+            debug_window_active = False
+            for widget in app.topLevelWidgets():
+                widget_name = widget.__class__.__name__
+                if 'Debug' in widget_name or 'debug' in widget_name.lower():
+                    debug_window_active = True
+                    info_log(f"[Controller] 檢測到調試介面視窗: {widget_name}")
+                    break
+            
+            if debug_window_active:
+                info_log("[Controller] 調試介面正在運行，保留QApplication但關閉其他視窗")
+                # 只關閉非調試介面的視窗
+                for widget in list(app.topLevelWidgets()):
+                    widget_name = widget.__class__.__name__
+                    if ('Debug' not in widget_name and 
+                        'debug' not in widget_name.lower() and
+                        widget.isVisible()):
+                        try:
+                            info_log(f"[Controller] 關閉非調試視窗: {widget_name}")
+                            widget.close()
+                        except Exception as e:
+                            error_log(f"[Controller] 關閉視窗失敗: {e}")
+            else:
+                info_log("[Controller] 無調試介面運行，關閉所有視窗和QApplication")
+                # 關閉所有頂級視窗
+                for widget in app.topLevelWidgets():
+                    try:
+                        if widget.isVisible():
+                            info_log(f"[Controller] 關閉頂級視窗: {widget}")
+                            widget.close()
+                    except Exception as e:
+                        error_log(f"[Controller] 關閉頂級視窗失敗: {e}")
+                
+                # 處理所有待處理事件
+                app.processEvents()
+                
+                # 嘗試退出QApplication
+                try:
+                    app.quit()
+                    info_log("[Controller] QApplication已退出")
+                except Exception as e:
+                    error_log(f"[Controller] QApplication退出失敗: {e}")
+                
+    except ImportError:
+        # PyQt5未安裝或不可用
+        pass
+    except Exception as e:
+        error_log(f"[Controller] 清理QApplication時發生錯誤: {e}")
+    
+    # 完全清空模組字典和載入時間記錄
+    modules.clear()
+    modules_load_times.clear()
+    
+    # 清理core.registry的模組快取
+    try:
+        from core.registry import _loaded_modules
+        _loaded_modules.clear()
+        info_log("[Controller] core.registry模組快取已清理")
+    except ImportError:
+        info_log("[Controller] 無法導入core.registry，跳過快取清理")
+    except Exception as e:
+        error_log(f"[Controller] 清理core.registry快取時發生錯誤: {e}")
+    
+    # 強制垃圾回收
+    import gc
+    gc.collect()
+    
+    info_log("[Controller] 所有模組已完全重置，已清空模組字典和執行垃圾回收")
+
+def switch_to_terminal_mode():
+    """切換到終端模式 - 完全重置後預先載入非UI模組"""
+    # 完全重置所有模組
+    complete_reset_all_modules()
+    set_loading_mode(preload=True, reinitialize=True)
+
+def switch_to_gui_mode():
+    """切換到GUI模式 - 完全重置後按需載入所有模組"""
+    # 完全重置所有模組
+    complete_reset_all_modules()
+    set_loading_mode(preload=False, reinitialize=True)
+
+def cleanup_frontend_modules():
+    """清理前端模組實例，防止GUI關閉後繼續運行"""
+    frontend_modules = ['ui', 'ani', 'mov']
+    
+    info_log("[Controller] 開始清理前端模組...")
+    
+    # 首先嘗試清理UI模組的介面實例
+    if 'ui' in modules and modules['ui'] is not None:
+        try:
+            ui_module = modules['ui']
+            
+            # 直接訪問UI模組的interfaces字典並清理DesktopPetApp
+            if hasattr(ui_module, 'interfaces'):
+                for interface_type, interface in list(ui_module.interfaces.items()):
+                    if interface is not None:
+                        try:
+                            info_log(f"[Controller] 清理UI介面實例: {interface_type}")
+                            if hasattr(interface, 'close'):
+                                interface.close()
+                            elif hasattr(interface, 'shutdown'):
+                                interface.shutdown()
+                        except Exception as e:
+                            error_log(f"[Controller] 清理UI介面 {interface_type} 失敗: {e}")
+                
+                # 清空interfaces字典
+                ui_module.interfaces.clear()
+                if hasattr(ui_module, 'active_interfaces'):
+                    ui_module.active_interfaces.clear()
+                    
+            info_log("[Controller] UI模組介面實例清理完成")
+            
+        except Exception as e:
+            error_log(f"[Controller] 清理UI模組介面時發生錯誤: {e}")
+    
+    # 然後清理模組實例
+    for module_name in frontend_modules:
+        if module_name in modules and modules[module_name] is not None:
+            try:
+                module_instance = modules[module_name]
+                
+                # 嘗試調用shutdown方法
+                if hasattr(module_instance, 'shutdown'):
+                    module_instance.shutdown()
+                    info_log(f"[Controller] 已關閉 {module_name} 模組")
+                # 如果沒有shutdown，嘗試stop方法
+                elif hasattr(module_instance, 'stop'):
+                    module_instance.stop()
+                    info_log(f"[Controller] 已停止 {module_name} 模組")
+                else:
+                    info_log(f"[Controller] {module_name} 模組沒有關閉方法")
+                
+                # 清除模組引用
+                modules[module_name] = None
+                modules_load_times.pop(module_name, None)
+                
+            except Exception as e:
+                error_log(f"[Controller] 清理 {module_name} 模組時發生錯誤: {e}")
+    
+    # 嘗試清理所有QApplication實例
+    try:
+        from PyQt5.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is not None:
+            info_log("[Controller] 檢測到QApplication實例，正在關閉...")
+            
+            # 關閉所有頂級視窗
+            for widget in app.topLevelWidgets():
+                try:
+                    if widget.isVisible():
+                        info_log(f"[Controller] 關閉頂級視窗: {widget}")
+                        widget.close()
+                except Exception as e:
+                    error_log(f"[Controller] 關閉頂級視窗失敗: {e}")
+            
+            # 處理所有待處理事件
+            app.processEvents()
+            
+            # 嘗試退出QApplication
+            try:
+                app.quit()
+                info_log("[Controller] QApplication已退出")
+            except Exception as e:
+                error_log(f"[Controller] QApplication退出失敗: {e}")
+                
+    except ImportError:
+        # PyQt5未安裝或不可用
+        pass
+    except Exception as e:
+        error_log(f"[Controller] 清理QApplication時發生錯誤: {e}")
+    
+    # 強制垃圾回收
+    import gc
+    gc.collect()
+    info_log("[Controller] 前端模組清理完成，已執行垃圾回收")
 
 def get_module_load_time(name):
     """獲取模組載入時間
@@ -157,14 +372,18 @@ from .module_tests.frontend_tests import (
     frontend_test_user_interaction
 )
 
-# 測試 MEM 模組（尚未重構）
+# 測試 MEM 模組（簡化版 - 純功能測試）
 from .module_tests.mem_tests import (
-    mem_fetch_test, mem_store_test, mem_clear_test, mem_list_all_test
+    mem_test_store_memory, mem_test_memory_query, 
+    mem_test_conversation_snapshot, mem_test_identity_stats,
+    mem_test_write_then_query
 )
 
-# 測試 LLM 模組（尚未重構）
+# 測試 LLM 模組（簡化版 - 純功能測試）
 from .module_tests.llm_tests import (
-    llm_test_chat, llm_test_command
+    llm_test_chat, llm_test_command,
+    llm_test_cache_functionality, llm_test_learning_engine,
+    llm_test_system_status_monitoring
 )
 
 # 測試 TTS 模組（尚未重構）
@@ -291,31 +510,175 @@ def frontend_test_user_interaction_wrapper():
     from .module_tests.frontend_tests import frontend_test_user_interaction as frontend_test_user_interaction_func
     return frontend_test_user_interaction_func(modules)
 
-# MEM 模組包裝函數（尚未重構）
-def mem_fetch_test_wrapper(text: str = ""):
-    from .module_tests.mem_tests import mem_fetch_test as mem_fetch_test_func
-    return mem_fetch_test_func(modules, text)
+# MEM 模組包裝函數（簡化版 - 純功能測試）
+def mem_test_store_memory_wrapper(identity="test_user", content="測試記憶內容", memory_type="long_term"):
+    """MEM 記憶存儲測試包裝函數"""
+    # 設置測試環境
+    env_result = setup_test_environment_for_module("mem")
+    if not env_result["success"]:
+        return env_result
+    
+    try:
+        from .module_tests.mem_tests import mem_test_store_memory as mem_test_func
+        result = mem_test_func(modules, identity, content, memory_type)
+        return result
+    finally:
+        # 清理測試環境
+        cleanup_test_environment()
 
-def mem_store_test_wrapper(user_text: str = "Test chat", response_text: str = "Test response"):
-    from .module_tests.mem_tests import mem_store_test as mem_store_test_func
-    return mem_store_test_func(modules, user_text, response_text)
+def mem_test_conversation_snapshot_wrapper(identity="test_user", conversation="你好，今天天氣如何？"):
+    """MEM 對話快照測試包裝函數"""
+    # 設置測試環境
+    env_result = setup_test_environment_for_module("mem")
+    if not env_result["success"]:
+        return env_result
+    
+    try:
+        from .module_tests.mem_tests import mem_test_conversation_snapshot as mem_test_func
+        result = mem_test_func(modules, identity, conversation)
+        return result
+    finally:
+        # 清理測試環境
+        cleanup_test_environment()
 
-def mem_clear_test_wrapper(text: str = "ALL", top_k: int = 1):
-    from .module_tests.mem_tests import mem_clear_test as mem_clear_test_func
-    return mem_clear_test_func(modules, text, top_k)
+def mem_test_write_then_query_wrapper(identity="test_user"):
+    """MEM 寫入後查詢測試包裝函數"""
+    # 設置測試環境
+    env_result = setup_test_environment_for_module("mem")
+    if not env_result["success"]:
+        return env_result
+    
+    try:
+        from .module_tests.mem_tests import mem_test_write_then_query as mem_test_func
+        result = mem_test_func(modules, identity)
+        return result
+    finally:
+        # 清理測試環境
+        cleanup_test_environment()
 
-def mem_list_all_test_wrapper(page: int = 1):
-    from .module_tests.mem_tests import mem_list_all_test as mem_list_all_test_func
-    return mem_list_all_test_func(modules, page)
+def mem_test_memory_query_wrapper(identity="test_user", query_text="天氣"):
+    """MEM 記憶查詢測試包裝函數"""
+    # 設置測試環境
+    env_result = setup_test_environment_for_module("mem")
+    if not env_result["success"]:
+        return env_result
+    
+    try:
+        from .module_tests.mem_tests import mem_test_memory_query as mem_test_func
+        result = mem_test_func(modules, identity, query_text)
+        return result
+    finally:
+        # 清理測試環境
+        cleanup_test_environment()
 
-# LLM 模組包裝函數（尚未重構）
-def llm_test_chat_wrapper(text: str):
-    from .module_tests.llm_tests import llm_test_chat as llm_test_chat_func
-    return llm_test_chat_func(modules, text)
+def mem_test_identity_stats_wrapper(identity="test_user"):
+    """MEM 身份統計測試包裝函數"""
+    # 設置測試環境
+    env_result = setup_test_environment_for_module("mem")
+    if not env_result["success"]:
+        return env_result
+    
+    try:
+        from .module_tests.mem_tests import mem_test_identity_stats as mem_test_func
+        result = mem_test_func(modules, identity)
+        return result
+    finally:
+        # 清理測試環境
+        cleanup_test_environment()
 
-def llm_test_command_wrapper(text: str):
-    from .module_tests.llm_tests import llm_test_command as llm_test_command_func
-    return llm_test_command_func(modules, text)
+
+
+def mem_test_memory_query_wrapper(identity="test_user", query_text="天氣"):
+    from .module_tests.mem_tests import mem_test_memory_query as mem_test_func
+    
+    # 按需載入MEM模組
+    mem_module = safe_get_module("mem_module")
+    test_modules = {"mem": mem_module}
+    
+    return mem_test_func(test_modules, identity, query_text)
+
+def mem_test_identity_manager_stats_wrapper(identity="test_user"):
+    from .module_tests.mem_tests import mem_test_identity_manager_stats as mem_test_func
+    
+    # 按需載入MEM模組
+    mem_module = safe_get_module("mem_module")
+    test_modules = {"mem": mem_module}
+    
+    return mem_test_func(test_modules, identity)
+
+# LLM 模組包裝函數（簡化版 - 純功能測試）
+def llm_test_chat_wrapper(text: str = "你好，請介紹一下你自己"):
+    """LLM 聊天測試包裝函數"""
+    # 設置測試環境 - 指定 CHAT 模式
+    env_result = setup_test_environment_for_module("llm", test_mode="chat")
+    if not env_result["success"]:
+        return env_result
+    
+    try:
+        from .module_tests.llm_tests import llm_test_chat as llm_test_chat_func
+        result = llm_test_chat_func(modules, text)
+        return result
+    finally:
+        # 清理測試環境
+        cleanup_test_environment()
+
+def llm_test_command_wrapper(text: str = "幫我整理桌面文件"):
+    """LLM 指令測試包裝函數"""
+    # 設置測試環境 - 指定 WORK 模式
+    env_result = setup_test_environment_for_module("llm", test_mode="work")
+    if not env_result["success"]:
+        return env_result
+    
+    try:
+        from .module_tests.llm_tests import llm_test_command as llm_test_command_func
+        result = llm_test_command_func(modules, text)
+        return result
+    finally:
+        # 清理測試環境
+        cleanup_test_environment()
+
+def llm_test_cache_functionality_wrapper():
+    """LLM 快取功能測試包裝函數"""
+    # 設置測試環境
+    env_result = setup_test_environment_for_module("llm")
+    if not env_result["success"]:
+        return env_result
+    
+    try:
+        from .module_tests.llm_tests import llm_test_cache_functionality as llm_test_cache_func
+        result = llm_test_cache_func(modules)
+        return result
+    finally:
+        # 清理測試環境
+        cleanup_test_environment()
+
+def llm_test_learning_engine_wrapper():
+    """LLM 學習引擎測試包裝函數"""
+    # 設置測試環境
+    env_result = setup_test_environment_for_module("llm")
+    if not env_result["success"]:
+        return env_result
+    
+    try:
+        from .module_tests.llm_tests import llm_test_learning_engine as llm_test_learning_func
+        result = llm_test_learning_func(modules)
+        return result
+    finally:
+        # 清理測試環境
+        cleanup_test_environment()
+
+def llm_test_system_status_monitoring_wrapper():
+    """LLM 系統狀態監控測試包裝器"""
+    try:
+        # 設置測試環境
+        env_result = setup_test_environment_for_module("llm")
+        from .module_tests.llm_tests import llm_test_system_status_monitoring as llm_test_status_func
+        result = llm_test_status_func(modules)
+        return result
+    finally:
+        # 清理測試環境
+        cleanup_test_environment()
+
 
 # TTS 模組包裝函數（尚未重構）
 def tts_test_wrapper(text: str, mood: str = "neutral", save: bool = False):
@@ -385,30 +748,38 @@ frontend_get_status = frontend_get_status_wrapper
 frontend_test_animations = frontend_test_animations_wrapper
 frontend_test_user_interaction = frontend_test_user_interaction_wrapper
 
-# MEM 函數別名（匹配實際的函數名稱）
-mem_fetch_test = mem_fetch_test_wrapper
-mem_store_test = mem_store_test_wrapper
-mem_clear_test = mem_clear_test_wrapper
-mem_list_all_test = mem_list_all_test_wrapper
-# 為了向後兼容，添加一些常用的別名
-mem_test_save = mem_store_test_wrapper
-mem_test_load = mem_fetch_test_wrapper
-mem_test_search = mem_fetch_test_wrapper
-mem_test_list = mem_list_all_test_wrapper
-mem_test_clear = mem_clear_test_wrapper
+# MEM 函數別名（簡化版 - 純功能測試）
+mem_test_store_memory = mem_test_store_memory_wrapper
+mem_test_write_then_query = mem_test_write_then_query_wrapper
+mem_test_conversation_snapshot = mem_test_conversation_snapshot_wrapper
+mem_test_memory_query = mem_test_memory_query_wrapper
+mem_test_identity_stats = mem_test_identity_stats_wrapper
 
-# LLM 函數別名（匹配實際的函數名稱）
+# 為了向後兼容，保留一些常用的別名
+mem_test_snapshot = mem_test_conversation_snapshot_wrapper
+mem_test_query = mem_test_memory_query_wrapper
+mem_test_stats = mem_test_identity_stats_wrapper
+mem_test_write = mem_test_store_memory_wrapper
+mem_test_memory = mem_test_store_memory_wrapper
+
+# LLM 函數別名（簡化版 - 純功能測試）
 llm_test_chat = llm_test_chat_wrapper
 llm_test_command = llm_test_command_wrapper
+llm_test_cache_functionality = llm_test_cache_functionality_wrapper
+llm_test_learning_engine = llm_test_learning_engine_wrapper
+llm_test_system_status_monitoring = llm_test_system_status_monitoring_wrapper
+
 # 為了向後兼容，添加一些常用的別名
 llm_test_generation = llm_test_chat_wrapper
 llm_test_completion = llm_test_chat_wrapper
 llm_test_qa = llm_test_chat_wrapper
 llm_test_conversation = llm_test_chat_wrapper
-
-# LLM 函數別名（匹配實際的函數名稱）
-llm_test_chat = llm_test_chat_wrapper
-llm_test_command = llm_test_command_wrapper
+llm_test_work = llm_test_command_wrapper
+llm_test_instruction = llm_test_command_wrapper
+llm_test_cache = llm_test_cache_functionality_wrapper
+llm_test_learning = llm_test_learning_engine_wrapper
+llm_test_status = llm_test_system_status_monitoring_wrapper
+llm_test_status_monitor = llm_test_system_status_monitoring_wrapper
 
 # TTS 函數別名（匹配實際的函數名稱）
 tts_test = tts_test_wrapper
@@ -559,6 +930,235 @@ def test_speaker_context_workflow():
             input()
     
     print("\n✅ 語者上下文工作流程測試完成")
+
+# ===== 統一測試環境管理 =====
+
+def setup_test_environment_for_module(module_name: str, test_mode: str = None):
+    """
+    為指定模組設置測試環境（身份、會話、狀態）
+    根據 U.E.P 三層會話架構，會自動創建 GS 容器以支援 CS/WS 測試
+    Args:
+        module_name (str): 模組名稱 (llm, mem, sys)
+        test_mode (str): 測試模式 ("chat", "work" 等)，會覆蓋預設狀態映射
+    """
+    info_log(f"[Debug API] 為 {module_name} 模組設置測試環境 (模式: {test_mode or '預設'})...")
+    
+    try:
+        # 1. 設置測試身份（包含記憶令牌）
+        from core.working_context import working_context_manager
+        test_identity = {
+            "identity_id": f"debug_test_{module_name}",
+            "user_identity": f"debug_test_{module_name}",
+            "personality_profile": "default",
+            "conversation_preferences": {},
+            "memory_token": f"test_debug_token_{module_name}"
+        }
+        
+        # 設置身份（記憶令牌作為身份的一部分）
+        working_context_manager.set_identity(test_identity)
+        
+        info_log(f"[Debug API] 已設置 {module_name} 測試身份: {test_identity['user_identity']}")
+        info_log(f"[Debug API] 記憶令牌（包含在身份中）: {test_identity['memory_token']}")
+        debug_log(2, f"[Debug API] 測試身份詳情: {test_identity}")
+        
+        # 驗證設置結果
+        verify_identity = working_context_manager.get_current_identity()
+        debug_log(2, f"[Debug API] 驗證身份: {verify_identity}")
+        if verify_identity:
+            debug_log(2, f"[Debug API] 驗證記憶令牌: {verify_identity.get('memory_token')}")
+        
+        # 2. 確保有活躍的 GS 容器（CS/WS 的先決條件）
+        from core.sessions.session_manager import unified_session_manager
+        current_gs = unified_session_manager.get_current_general_session()
+        gs_session_id = None
+        
+        if not current_gs:
+            # 需要創建 GS 容器以支援 CS/WS 測試
+            info_log(f"[Debug API] 沒有活躍的 GS，為 {module_name} 測試創建 GS 容器")
+            import time
+            
+            trigger_event = {
+                "source": "debug_api",
+                "module": module_name,
+                "content": f"Debug API 測試環境設置 - {module_name} 模組",
+                "timestamp": time.time()
+            }
+            
+            # 創建 DEBUG 類型的 GS
+            gs_session_id = unified_session_manager.start_general_session("system_event", trigger_event)
+            if gs_session_id:
+                info_log(f"[Debug API] 已創建 GS 容器: {gs_session_id}")
+            else:
+                error_log(f"[Debug API] 創建 GS 容器失敗")
+                return {"success": False, "error": "創建 GS 容器失敗"}
+        else:
+            gs_session_id = current_gs.session_id
+            info_log(f"[Debug API] 使用現有 GS 容器: {gs_session_id}")
+        
+        # 3. 根據模組類型和測試模式設置相應的系統狀態
+        from core.states.state_manager import state_manager, UEPState
+        
+        # 如果有指定測試模式，優先使用
+        if test_mode:
+            mode_mapping = {
+                "chat": UEPState.CHAT,
+                "work": UEPState.WORK,
+                "idle": UEPState.IDLE
+            }
+            target_state = mode_mapping.get(test_mode, UEPState.IDLE)
+            info_log(f"[Debug API] 使用指定測試模式: {test_mode} → {target_state.value}")
+        else:
+            # 否則使用預設模組狀態映射
+            state_mapping = {
+                "llm": UEPState.CHAT,  # LLM 預設使用 CHAT 狀態
+                "mem": UEPState.CHAT,  # MEM 也在 CHAT 狀態下測試
+                "sys": UEPState.WORK,  # SYS 在 WORK 狀態下測試
+            }
+            target_state = state_mapping.get(module_name, UEPState.IDLE)
+            info_log(f"[Debug API] 使用預設模組狀態: {module_name} → {target_state.value}")
+        
+        original_state = state_manager.get_current_state()
+        
+        if original_state != target_state:
+            state_manager.set_state(target_state)
+            info_log(f"[Debug API] 已切換系統狀態: {original_state.value} → {target_state.value}")
+            # 狀態切換後，對應的會話會自動創建
+        
+        # 4. 驗證會話是否已自動創建（由狀態管理器觸發）
+        import time
+        time.sleep(0.1)  # 短暫等待狀態切換完成
+        
+        return {
+            "success": True,
+            "identity": test_identity,
+            "state": target_state,
+            "original_state": original_state,
+            "gs_session_id": gs_session_id
+        }
+        
+    except Exception as e:
+        error_log(f"[Debug API] 設置 {module_name} 測試環境失敗: {e}")
+        return {"success": False, "error": str(e)}
+
+def cleanup_test_environment():
+    """清理測試環境，恢復到初始狀態"""
+    try:
+        from core.states.state_manager import state_manager, UEPState
+        from core.sessions.session_manager import unified_session_manager
+        
+        # 1. 結束任何活躍的子會話 (CS/WS)
+        current_gs = unified_session_manager.get_current_general_session()
+        if current_gs:
+            info_log(f"[Debug API] 檢查是否需要清理子會話 (GS: {current_gs.session_id})")
+            
+            # 嘗試結束活躍的 CS (如果存在)
+            try:
+                # 這裡我們假設 session_manager 有方法來獲取當前 CS
+                # 如果沒有，這個調用會安全地失敗
+                current_cs = unified_session_manager.get_active_chatting_session_ids()
+                if current_cs:
+                    for cs in current_cs:
+                        info_log(f"[Debug API] 結束活躍的 CS: {cs}")
+                        unified_session_manager.end_chatting_session(cs) 
+            except (AttributeError, Exception) as e:
+                # 如果方法不存在或其他問題，忽略並繼續
+                debug_log(2, f"[Debug API] CS 清理略過: {e}")
+            
+            # 嘗試結束活躍的 WS (如果存在)
+            try:
+                current_ws = unified_session_manager.get_active_workflow_session_ids()
+                if current_ws:
+                    for ws in current_ws:
+                        info_log(f"[Debug API] 結束活躍的 WS: {ws}")
+                        unified_session_manager.end_workflow_session(ws)
+            except (AttributeError, Exception) as e:
+                debug_log(2, f"[Debug API] WS 清理略過: {e}")
+        
+        # 2. 恢復到 IDLE 狀態（這會觸發狀態相關的會話清理）
+        current_state = state_manager.get_current_state()
+        if current_state != UEPState.IDLE:
+            state_manager.set_state(UEPState.IDLE)
+            info_log(f"[Debug API] 已恢復系統狀態: {current_state.value} → IDLE")
+            # 狀態切換時，對應的會話會自動結束
+        
+        # 3. 結束 GS 容器（如果是 debug 創建的）
+        current_gs = unified_session_manager.get_current_general_session()
+        if current_gs:
+            # 檢查是否是 debug 創建的 GS
+            if (hasattr(current_gs, 'trigger_event') and 
+                current_gs.trigger_event.get('source') == 'debug_api'):
+                info_log(f"[Debug API] 結束 debug 創建的 GS: {current_gs.session_id}")
+                unified_session_manager.end_general_session()
+            else:
+                info_log(f"[Debug API] 保留非 debug 創建的 GS: {current_gs.session_id}")
+        
+        # 注意：保留身份設置，不清理工作上下文中的身份資訊
+        # 這樣可以讓後續測試繼續使用同一個測試身份
+        
+        info_log("[Debug API] 測試環境清理完成 - 狀態已重置為 IDLE，會話已適當清理")
+        return {"success": True}
+        
+    except Exception as e:
+        error_log(f"[Debug API] 清理測試環境失敗: {e}")
+        return {"success": False, "error": str(e)}
+
+# ===== LLM 模組測試包裝函數 =====
+
+def test_llm_with_mode(test_mode: str, text: str):
+    """
+    為 LLM 模組測試設置正確的狀態環境
+    Args:
+        test_mode (str): 測試模式 ("chat" 或 "work")
+        text (str): 測試文本
+    """
+    from .module_tests.llm_tests import llm_test_chat, llm_test_command
+    
+    print(f"\n🧪 開始 LLM {test_mode.upper()} 模式測試")
+    print("=" * 60)
+    
+    # 1. 設置測試環境（指定測試模式）
+    info_log(f"[Debug API] 為 LLM {test_mode} 模式設置環境...")
+    setup_result = setup_test_environment_for_module("llm", test_mode=test_mode)
+    
+    if not setup_result.get("success", False):
+        error_msg = f"測試環境設置失敗: {setup_result.get('error')}"
+        print(f"❌ {error_msg}")
+        return {"success": False, "error": error_msg}
+    
+    print(f"✅ 測試環境設置完成")
+    print(f"📄 測試狀態: {setup_result['state'].value}")
+    print(f"🆔 測試身份: {setup_result['identity']['user_identity']}")
+    
+    try:
+        # 2. 載入並執行相應測試
+        llm_module = get_or_load_module("llm")
+        modules = {"llm": llm_module}
+        
+        if test_mode == "chat":
+            result = llm_test_chat(modules, text)
+        elif test_mode == "work":
+            result = llm_test_command(modules, text)
+        else:
+            result = {"success": False, "error": f"不支援的測試模式: {test_mode}"}
+        
+        return result
+        
+    finally:
+        # 3. 清理測試環境
+        print(f"\n🧹 清理 LLM {test_mode} 測試環境...")
+        cleanup_result = cleanup_test_environment()
+        if cleanup_result.get("success", False):
+            print("✅ 測試環境清理完成")
+        else:
+            print(f"⚠️ 測試環境清理異常: {cleanup_result.get('error')}")
+
+def test_llm_chat(text: str = "你好，這是一個聊天測試"):
+    """測試 LLM CHAT 模式 - 使用 CHAT 狀態"""
+    return test_llm_with_mode("chat", text)
+
+def test_llm_work(text: str = "建立一個新的工作流程來整理文件"):
+    """測試 LLM WORK 模式 - 使用 WORK 狀態"""
+    return test_llm_with_mode("work", text)
 
 # 在模組載入時自動初始化工作上下文
 setup_working_context()

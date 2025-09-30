@@ -68,6 +68,33 @@ class BackgroundWorker(QThread if PYQT5_AVAILABLE else object):
         
         debug_log(1, f"[BackgroundWorker] 初始化工作線程 {task_id}")
     
+    def _ensure_signals_valid(self):
+        """確保signals對象有效，如果無效則重新創建"""
+        if not PYQT5_AVAILABLE:
+            return False
+            
+        try:
+            # 嘗試檢查signals是否仍然有效
+            if self.signals is None:
+                self.signals = WorkerSignals()
+                debug_log(1, f"[BackgroundWorker] 重新創建signals對象")
+                return True
+            
+            # 檢查signals對象是否仍然可用
+            # 如果對象已被刪除，訪問其屬性會引發RuntimeError
+            _ = self.signals.started
+            return True
+        except (RuntimeError, AttributeError) as e:
+            # signals對象已被刪除或無效，重新創建
+            try:
+                self.signals = WorkerSignals()
+                debug_log(1, f"[BackgroundWorker] 重新創建無效的signals對象: {e}")
+                return True
+            except Exception as create_error:
+                error_log(f"[BackgroundWorker] 無法重新創建signals對象: {create_error}")
+                self.signals = None
+                return False
+    
     def run(self):
         """執行工作線程"""
         if not PYQT5_AVAILABLE:
@@ -76,9 +103,17 @@ class BackgroundWorker(QThread if PYQT5_AVAILABLE else object):
             
         debug_log(1, f"[BackgroundWorker] 啟動工作線程 {self.task_id}")
         
+        # 確保signals對象有效
+        if not self._ensure_signals_valid():
+            error_log("[BackgroundWorker] 無法確保signals對象有效，無法執行工作")
+            return
+        
         # 發送開始信號
-        if self.signals and self.signals.started:
-            self.signals.started.emit(self.task_id)
+        try:
+            if self.signals and self.signals.started:
+                self.signals.started.emit(self.task_id)
+        except Exception as e:
+            error_log(f"[BackgroundWorker] 發送開始信號失敗: {e}")
         
         result = None
         try:
@@ -118,6 +153,30 @@ class BackgroundWorkerManager:
         
         debug_log(1, "[BackgroundWorkerManager] 初始化工作線程管理器")
     
+    def _ensure_signals_valid(self):
+        """確保管理器的signals對象有效"""
+        if not PYQT5_AVAILABLE:
+            return False
+            
+        try:
+            if self.signals is None:
+                self.signals = WorkerSignals()
+                debug_log(1, "[BackgroundWorkerManager] 重新創建signals對象")
+                return True
+            
+            # 檢查signals對象是否仍然可用
+            _ = self.signals.started
+            return True
+        except (RuntimeError, AttributeError) as e:
+            try:
+                self.signals = WorkerSignals()
+                debug_log(1, f"[BackgroundWorkerManager] 重新創建無效的signals對象: {e}")
+                return True
+            except Exception as create_error:
+                error_log(f"[BackgroundWorkerManager] 無法重新創建signals對象: {create_error}")
+                self.signals = None
+                return False
+    
     def start_task(self, task_id: str, task_func: Callable, *args, **kwargs) -> bool:
         """
         啟動新的背景任務
@@ -145,17 +204,26 @@ class BackgroundWorkerManager:
             return False
         
         try:
+            # 確保管理器的signals對象有效
+            if not self._ensure_signals_valid():
+                error_log("[BackgroundWorkerManager] 無法確保signals對象有效")
+                return False
+            
             # 建立並啟動工作線程
             worker = BackgroundWorker(task_id, task_func, *args, **kwargs)
             
-            # 連接信號
+            # 連接信號 - 添加異常處理
             if worker.signals:
-                if worker.signals.started:
-                    worker.signals.started.connect(self._handle_task_started)
-                if worker.signals.finished:
-                    worker.signals.finished.connect(self._handle_task_finished)
-                if worker.signals.error:
-                    worker.signals.error.connect(self._handle_task_error)
+                try:
+                    if worker.signals.started:
+                        worker.signals.started.connect(self._handle_task_started)
+                    if worker.signals.finished:
+                        worker.signals.finished.connect(self._handle_task_finished)
+                    if worker.signals.error:
+                        worker.signals.error.connect(self._handle_task_error)
+                except Exception as e:
+                    error_log(f"[BackgroundWorkerManager] 連接工作線程信號失敗: {e}")
+                    # 繼續執行，因為信號連接失敗不應該阻止任務執行
                     
             # 儲存工作線程
             self.workers[task_id] = worker

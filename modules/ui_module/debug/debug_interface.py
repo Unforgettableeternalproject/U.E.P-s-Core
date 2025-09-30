@@ -221,23 +221,44 @@ class DebugInterface(QWidget):
         test_widget = QWidget()
         layout = QVBoxLayout(test_widget)
         
-        # 測試按鈕組
-        test_group = QGroupBox("前端模組測試")
-        test_layout = QVBoxLayout(test_group)
+        # 前端模組測試按鈕組
+        frontend_group = QGroupBox("前端模組測試")
+        frontend_layout = QVBoxLayout(frontend_group)
         
-        tests = [
+        frontend_tests = [
             ("測試前端模組狀態", "frontend_status"),
             ("測試模組間通訊", "frontend_communication"), 
             ("測試整合功能", "frontend_integration"),
             ("測試全部功能", "frontend_all")
         ]
         
-        for test_name, test_id in tests:
+        for test_name, test_id in frontend_tests:
             btn = QPushButton(test_name)
             btn.clicked.connect(lambda checked, tid=test_id: self.run_test(tid))
-            test_layout.addWidget(btn)
+            frontend_layout.addWidget(btn)
         
-        layout.addWidget(test_group)
+        layout.addWidget(frontend_group)
+        
+        # MEM模組測試按鈕組
+        mem_group = QGroupBox("MEM 記憶模組測試")
+        mem_layout = QVBoxLayout(mem_group)
+        
+        mem_tests = [
+            ("測試記憶體存取控制", "mem_memory_access_control"),
+            ("測試對話快照創建", "mem_conversation_snapshot"),
+            ("測試記憶查詢", "mem_memory_query"),
+            ("測試身份管理統計", "mem_identity_stats"),
+            ("測試NLP整合", "mem_nlp_integration"),
+            ("測試LLM上下文提取", "mem_llm_context"),
+            ("測試完整工作流程", "mem_full_workflow")
+        ]
+        
+        for test_name, test_id in mem_tests:
+            btn = QPushButton(test_name)
+            btn.clicked.connect(lambda checked, tid=test_id: self.run_test(tid))
+            mem_layout.addWidget(btn)
+        
+        layout.addWidget(mem_group)
         
         # 測試結果顯示
         self.test_result = QTextEdit()

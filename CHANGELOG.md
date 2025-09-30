@@ -1066,3 +1066,327 @@
 
 ---
 
+### First hand changes for upcoming MEM rework, added some manager files for identity and memory management. 09/08
+
+> Date: Mon, 08 Sep 2025 18:13:54 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_rework`
+
+> Commit: `f65c673fc6073a0be923ce0afab163eed55fef46`
+
+---
+
+### Restructured memory manager and did some other changes. 09/08
+
+> Date: Mon, 08 Sep 2025 19:12:23 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_rework`
+
+> Commit: `60e66336ad653b9d7e683cd6b1eeb8f9c98d04fa`
+
+---
+
+### Some manual changes on session handling. 09/18
+
+> Date: Thu, 18 Sep 2025 21:26:11 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `copilot/fix-038caf95-c915-45a3-a82d-d6a5db040b5a`
+
+> Commit: `5d51b5f3e0d1339bf0fd6e22c74d41fb9cac01ed`
+
+---
+
+### Added some manual test and UI tab, and some other changes. 09/20
+
+> Date: Sat, 20 Sep 2025 21:36:37 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_rework`
+
+> Commit: `ba512afce7130abe8f76252957890bfc4897217a`
+
+---
+
+### Removed identity token and replaced all with memory token, as initially planned. Tests are still ongoing. 09/22
+
+> Date: Mon, 22 Sep 2025 03:02:13 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_rework`
+
+> Commit: `199bd757b22c5970a3f9b1e7720c3f1fa73bd7fb`
+
+---
+
+### Cleared all remaining codes of identity tokens, and improved terminal to debug interface switching. 09/22
+
+> Date: Mon, 22 Sep 2025 15:59:22 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_rework`
+
+> Commit: `42bf0c946bdec431352f4360c69572f4fa97764d`
+
+---
+
+### Changed a major part about sessions and made the state now correlate with them. 09/22
+
+> Date: Mon, 22 Sep 2025 17:00:22 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_rework`
+
+> Commit: `83037c0559a3adf958c773c07eb0d4a535ab0c18`
+
+---
+
+### Tried to improve session controls once again. 09/23
+
+> Date: Tue, 23 Sep 2025 00:23:06 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_rework`
+
+> Commit: `20f5e7caf809169969dcd8740c7ba995299d02ed`
+
+---
+
+### Unified codes of the module tests, and MEM module is almost done. 09/23
+
+> Date: Tue, 23 Sep 2025 20:23:27 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_rework`
+
+> Commit: `b9721338521bc92ce70baab2803296f2af9e8480`
+
+---
+
+### Fixed a certain issue with NLP module imports, and actually finished the tests of MEM module. 09/24
+
+> Date: Wed, 24 Sep 2025 00:55:04 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_rework`
+
+> Commit: `b1f50c2cb41ddbb4579fc9ca36ec242402f00720`
+
+---
+
+### Fixed a certain issue with NLP module imports, and actually finished the tests of MEM module. 09/24
+
+> Date: Wed, 24 Sep 2025 00:55:04 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/mem_module_rework`
+
+> Commit: `93c520ed6148d517af7bc063963a0f69c87aef73`
+
+---
+
+### Begin the rework of llm module. 09/24
+
+> Date: Wed, 24 Sep 2025 20:06:03 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `39fb8d589bb333da3490dce2d7766e32487728dc`
+
+---
+
+### Removed all example files and made some changes to current files, added some files to compensate. 09/24
+
+> Date: Wed, 24 Sep 2025 23:07:49 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `a6f36daeab2731184d94b33b2dd7764dc19e5344`
+
+---
+
+### Improved prompt manager, and made better context caching and such. 09/25
+
+> Date: Thu, 25 Sep 2025 01:41:36 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `19166900f0e1764bc73bb498514089e964ca1cb8`
+
+---
+
+### Completed first-hand LLM restructure, and the first goal is reached. 09/25
+
+> Date: Thu, 25 Sep 2025 03:16:07 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `cab09dd887d8232cf67f00d3d2e6415dfb5ff6cc`
+
+---
+
+### Improved routing, and removed strategy because it's way too complex and we wouldn't need that. 09/26
+
+> Date: Fri, 26 Sep 2025 03:22:39 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `6bc678b04424c490b7e2c4ca4c6bd391fd9cbcb5`
+
+---
+
+### Fully implemented cache manager, and added some basic unit tests for testing. 09/28
+
+> Date: Sun, 28 Sep 2025 20:56:20 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `207d92332269dd7fc26cd0891d6050e5d820d31e`
+
+---
+
+### Added some tests related to LLM, and made a virtual internal environment for those session-dependent module to work. 09/29
+
+> Date: Mon, 29 Sep 2025 02:18:01 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `da81c44df919e29d2fcd6fc26f29c33e2b8ccc0a`
+
+---
+
+### Some "Very Little" changes to make the code look better. 09/29
+
+> Date: Mon, 29 Sep 2025 21:55:38 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `83b16084a9ed2dc0d06298975ac6fea8b6b2148f`
+
+---
+
+### Fixed some working context related issues, and made cache handling better. 09/30
+
+> Date: Tue, 30 Sep 2025 01:42:33 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `655c6a629fb2eecc57db107eec6b98b2ce003085`
+
+---
+
+### Added state end trigger for several modules and managers. Also added one more test for llm. 09/30
+
+> Date: Tue, 30 Sep 2025 02:49:13 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `5ab106ffd2e5734e894d992f99080fb82b5b7163`
+
+---
+
+### Added a new test tab for llm in debug gui. 09/30
+
+> Date: Tue, 30 Sep 2025 12:38:17 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `fc5e499f54dc927916fdc3c7f22c7508944f2faa`
+
+---
+
+### Put MEM and LLM into system loop, also reworked a lot of core modules to adapt to the new system structure. 09/30
+
+> Date: Tue, 30 Sep 2025 19:46:02 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `c4a44838989de5c5d9b7e226680a6876af6c4eaa`
+
+---
+
+### Big changes on how system loop works, and is now better, and work as intended (I think). 09/30
+
+> Date: Tue, 30 Sep 2025 22:27:46 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `develop`
+
+> Commit: `2d81c07d0a2ecee40ce6aa12a30984d54803e829`
+
+---
+
+### Some changes regarding loggings. 09/30
+
+> Date: Tue, 30 Sep 2025 22:28:26 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `develop`
+
+> Commit: `03493cc7ec1a1bb6e5936e5561e3ef05bc795bf8`
+
+---
+
+### Based on previous problems, fixed them, and the logger is perfectly fine now, system loop is good as well, time for TTS rework. 10/1
+
+> Date: Wed, 01 Oct 2025 00:05:21 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `develop`
+
+> Commit: `f4216fa242d1bca487952d34610d6ea1d11577f7`
+
+---
+
+### Small change to the tts chunker. 07/31
+
+> Date: Thu, 31 Jul 2025 03:24:15 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_rework`
+
+> Commit: `5cbe5d364e04f88e350ee6fe5b7fc44885ad5f74`
+
+---
+

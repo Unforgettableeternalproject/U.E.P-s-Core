@@ -1,7 +1,7 @@
 import asyncio
 import os
 import uuid
-from core.module_base import BaseModule
+from core.bases.module_base import BaseModule
 from configs.config_loader import load_module_config
 from utils.debug_helper import debug_log, debug_log_e, info_log, error_log
 from .schemas import TTSInput, TTSOutput

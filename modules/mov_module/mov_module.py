@@ -17,8 +17,8 @@ import random
 import time
 from typing import Callable, Optional, Dict, Any, List
 
-from core.frontend_base import BaseFrontendModule, FrontendModuleType, UIEventType
-from core.state_manager import UEPState
+from core.bases.frontend_base import BaseFrontendModule, FrontendModuleType, UIEventType
+from core.states.state_manager import UEPState
 
 try:
     from PyQt5.QtCore import QTimer
@@ -965,5 +965,51 @@ class MOVModule(BaseFrontendModule):
         timers = cfg.get("timers", {})
         self.config["behavior_interval_ms"] = int(timers.get("behavior_interval_ms", self.config.get("behavior_interval_ms", 100)))
         self.config["movement_interval_ms"] = int(timers.get("movement_interval_ms", self.config.get("movement_interval_ms", 16)))
+
+    def shutdown(self):
+        """關閉移動模組，停止所有計時器和清理資源"""
+        info_log(f"[{self.module_id}] 開始關閉移動模組")
+        
+        # 停止行為計時器
+        try:
+            if hasattr(self, 'behavior_timer') and self.behavior_timer:
+                self.behavior_timer.stop()
+                self.behavior_timer.deleteLater() if hasattr(self.behavior_timer, 'deleteLater') else None
+                self.behavior_timer = None
+                info_log(f"[{self.module_id}] 行為計時器已停止並清理")
+        except Exception as e:
+            error_log(f"[{self.module_id}] 停止行為計時器失敗: {e}")
+        
+        # 停止移動計時器
+        try:
+            if hasattr(self, 'movement_timer') and self.movement_timer:
+                self.movement_timer.stop()
+                self.movement_timer.deleteLater() if hasattr(self.movement_timer, 'deleteLater') else None
+                self.movement_timer = None
+                info_log(f"[{self.module_id}] 移動計時器已停止並清理")
+        except Exception as e:
+            error_log(f"[{self.module_id}] 停止移動計時器失敗: {e}")
+        
+        # 清理信號回調
+        try:
+            if hasattr(self, 'signals') and self.signals:
+                if hasattr(self.signals, 'remove_timer_callback'):
+                    self.signals.remove_timer_callback("mov_behavior")
+                    self.signals.remove_timer_callback("mov_movement")
+                    info_log(f"[{self.module_id}] 信號回調已清理")
+                else:
+                    info_log(f"[{self.module_id}] 信號系統無remove_timer_callback方法")
+        except Exception as e:
+            error_log(f"[{self.module_id}] 清理信號回調失敗: {e}")
+        
+        # 清理ANI模組引用
+        try:
+            if hasattr(self, 'ani_module'):
+                self.ani_module = None
+                info_log(f"[{self.module_id}] ANI模組引用已清理")
+        except Exception as e:
+            error_log(f"[{self.module_id}] 清理ANI模組引用失敗: {e}")
+        
+        return super().shutdown()
 
 

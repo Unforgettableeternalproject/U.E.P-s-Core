@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
-from core.state_manager import UEPState
+from core.states.state_manager import UEPState
 from utils.debug_helper import debug_log, info_log, error_log
 
 class ContextType(Enum):
@@ -185,7 +185,7 @@ class MultiIntentContextManager:
         # 根據位置調整（前面的分段優先級略高）
         priority += position
         
-        # 根據緊急關鍵詞調整
+        # 根據優先級關鍵詞調整
         text = segment['text'].lower()
         if any(word in text for word in ['urgent', 'emergency', 'immediately', 'now']):
             priority -= 2

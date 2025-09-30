@@ -44,65 +44,67 @@ def on_stt_result(result, continuous_mode=False):
         print(f"🎤 STT 結果: {str(result)}")
 
 def stt_test_single(modules, enable_speaker_id=True, language="en-US"):
-    """單次 STT 測試 - 手動模式"""
+    """測試單次 STT 功能 - 手動模式"""
     stt = modules.get("stt")
     if stt is None:
-        print("❌ STT 模組未載入")
+        error_log("[Controller] ❌ 無法載入 STT 模組")
         return None
 
-    print(f"🎤 STT 手動測試")
+    print(f"\n🎤 測試 STT 手動模式")
+    print("=" * 60)
     print("   請說話，系統將錄製並識別您的語音...")
-    
+
     # 使用手動模式進行錄音
     result = stt.handle({
         "mode": "manual",
         "language": language,
         "enable_speaker_id": enable_speaker_id,
         "duration": 5
-    })  
-    
+    })
+
     # 使用 on_stt_result 處理結果，指定為單次模式 (continuous_mode=False，這是預設值)
     on_stt_result(result.get("data"))
     return result
 
 def stt_test_continuous_listening(modules, duration=30):
-    """持續背景監聽測試 - 直接在控制台輸出識別結果"""
+    """測試持續背景監聽功能 - 直接在控制台輸出識別結果"""
     stt = modules.get("stt")
     if stt is None:
-        print("❌ STT 模組未載入")
+        error_log("[Controller] ❌ 無法載入 STT 模組")
         return None
 
-    print(f"🎧 持續背景監聽測試 ({duration}秒)")
+    print(f"\n🎧 測試持續背景監聽 ({duration}秒)")
+    print("=" * 60)
     print("   系統將持續監聽並直接輸出識別結果")
     print("   按 Ctrl+C 可隨時中斷監聽")
-    
+
     # 創建一個連接到主要處理函數的回調
     def continuous_result_callback(result):
         on_stt_result(result, continuous_mode=True)
-    
+
     try:
         result = stt.handle({
             "mode": "continuous",
             "duration": duration,
             "callback": continuous_result_callback
         })
-        
-        print(f"✅ 持續監聽測試完成，總計 {duration} 秒")
+
+        print(f"\n✅ 持續監聽測試完成，總計 {duration} 秒")
         return result
-        
+
     except KeyboardInterrupt:
         print("\n🛑 用戶中斷了持續監聽測試")
         return {"status": "interrupted", "message": "用戶中斷"}
-        
+
     except Exception as e:
-        print(f"❌ 持續監聽測試失敗: {str(e)}")
+        error_log(f"[STT Test] 持續監聽測試失敗: {e}")
         return {"status": "error", "error": str(e)}
 
 def stt_get_stats(modules):
-    """獲取 STT 統計信息"""
+    """測試 STT 統計信息獲取功能"""
     stt = modules.get("stt")
     if stt is None:
-        print("❌ STT 模組未載入")
+        error_log("[Controller] ❌ 無法載入 STT 模組")
         return None
 
     # 嘗試從說話人模組獲取統計信息
@@ -120,12 +122,12 @@ def stt_get_stats(modules):
 # STT 說話人管理功能
 
 def stt_speaker_list(modules):
-    """列出所有已識別的說話人"""
+    """測試說話人列表功能"""
     stt = modules.get("stt")
     if stt is None:
-        print("❌ STT 模組未載入")
+        error_log("[Controller] ❌ 無法載入 STT 模組")
         return None
-        
+
     if hasattr(stt, 'speaker_module'):
         speakers = stt.speaker_module.list_speakers()
         print(f"\n👥 已識別說話人列表 (共 {len(speakers)} 人):")
@@ -137,12 +139,12 @@ def stt_speaker_list(modules):
         return None
 
 def stt_speaker_rename(modules, old_id: str, new_id: str):
-    """重新命名說話人"""
+    """測試說話人重新命名功能"""
     stt = modules.get("stt")
     if stt is None:
-        print("❌ STT 模組未載入")
+        error_log("[Controller] ❌ 無法載入 STT 模組")
         return False
-        
+
     if hasattr(stt, 'speaker_module'):
         result = stt.speaker_module.rename_speaker(old_id, new_id)
         if result:
@@ -155,12 +157,12 @@ def stt_speaker_rename(modules, old_id: str, new_id: str):
         return False
 
 def stt_speaker_delete(modules, speaker_id: str):
-    """刪除指定說話人"""
+    """測試說話人刪除功能"""
     stt = modules.get("stt")
     if stt is None:
-        print("❌ STT 模組未載入")
+        error_log("[Controller] ❌ 無法載入 STT 模組")
         return False
-        
+
     if hasattr(stt, 'speaker_module'):
         result = stt.speaker_module.delete_speaker(speaker_id)
         if result:
@@ -173,12 +175,12 @@ def stt_speaker_delete(modules, speaker_id: str):
         return False
 
 def stt_speaker_clear_all(modules):
-    """清空所有說話人數據"""
+    """測試清空所有說話人數據功能"""
     stt = modules.get("stt")
     if stt is None:
-        print("❌ STT 模組未載入")
+        error_log("[Controller] ❌ 無法載入 STT 模組")
         return False
-        
+
     if hasattr(stt, 'speaker_module'):
         result = stt.speaker_module.clear_all_speakers()
         if result:
@@ -191,12 +193,12 @@ def stt_speaker_clear_all(modules):
         return False
 
 def stt_speaker_backup(modules):
-    """備份說話人數據"""
+    """測試說話人數據備份功能"""
     stt = modules.get("stt")
     if stt is None:
-        print("❌ STT 模組未載入")
+        error_log("[Controller] ❌ 無法載入 STT 模組")
         return None
-        
+
     if hasattr(stt, 'speaker_module'):
         backup_path = stt.speaker_module.backup_speakers()
         if backup_path:
@@ -209,12 +211,12 @@ def stt_speaker_backup(modules):
         return None
 
 def stt_speaker_restore(modules, backup_path: str = None):
-    """恢復說話人數據"""
+    """測試說話人數據恢復功能"""
     stt = modules.get("stt")
     if stt is None:
-        print("❌ STT 模組未載入")
+        error_log("[Controller] ❌ 無法載入 STT 模組")
         return False
-        
+
     if hasattr(stt, 'speaker_module'):
         result = stt.speaker_module.restore_speakers(backup_path)
         if result:
@@ -227,12 +229,12 @@ def stt_speaker_restore(modules, backup_path: str = None):
         return False
 
 def stt_speaker_info(modules):
-    """顯示說話人資料庫詳細信息"""
+    """測試說話人資料庫詳細信息功能"""
     stt = modules.get("stt")
     if stt is None:
-        print("❌ STT 模組未載入")
+        error_log("[Controller] ❌ 無法載入 STT 模組")
         return None
-        
+
     if hasattr(stt, 'speaker_module'):
         info = stt.speaker_module.get_database_info()
         print("\n🗄️  說話人資料庫詳細信息:")
@@ -246,12 +248,12 @@ def stt_speaker_info(modules):
         return None
 
 def stt_speaker_adjust_threshold(modules, threshold: float = None):
-    """調整說話人相似度閾值"""
+    """測試說話人相似度閾值調整功能"""
     stt = modules.get("stt")
     if stt is None:
-        print("❌ STT 模組未載入")
+        error_log("[Controller] ❌ 無法載入 STT 模組")
         return None
-        
+
     # 使用統一的說話人識別系統
     if hasattr(stt, 'speaker_module'):
         if threshold is None:

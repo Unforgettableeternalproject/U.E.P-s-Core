@@ -3,7 +3,7 @@ from typing import Callable, Dict, Optional, List
 import time
 import os, glob
 from utils.debug_helper import debug_log, info_log, error_log
-from core.frontend_base import BaseFrontendModule, FrontendModuleType  # type: ignore
+from core.bases.frontend_base import BaseFrontendModule, FrontendModuleType  # type: ignore
 
 try:
     from PyQt5.QtCore import QTimer
@@ -297,7 +297,7 @@ class ANIModule(BaseFrontendModule):
                 ))
                 # 可把 prefix/filename_format/index_start 留給 UI 用（ANI 不需）
                 from utils.debug_helper import debug_log
-                debug_log(1, f"[ANI] ✓ 註冊動畫: {name} frames={total_frames} fps={fps:.2f} loop={loop} zoom={zoom} offset=({offset_x},{offset_y})")
+                debug_log(3, f"[ANI] ✓ 註冊動畫: {name} frames={total_frames} fps={fps:.2f} loop={loop} zoom={zoom} offset=({offset_x},{offset_y})")
             except Exception as e:
                 from utils.debug_helper import error_log
                 error_log(f"[ANI] ✗ 註冊動畫失敗 {name}: {e}")
@@ -499,4 +499,36 @@ class ANIModule(BaseFrontendModule):
             return original_pm
     
     def shutdown(self):
+        """關閉動畫模組，停止所有計時器和清理資源"""
+        info_log(f"[{self.module_id}] 開始關閉動畫模組")
+        
+        # 停止動畫管理器
+        try:
+            if hasattr(self, 'manager') and self.manager:
+                self.manager.stop()
+                info_log(f"[{self.module_id}] 動畫管理器已停止")
+        except Exception as e:
+            error_log(f"[{self.module_id}] 停止動畫管理器失敗: {e}")
+        
+        # 停止計時器
+        try:
+            if hasattr(self, 'timer') and self.timer:
+                self.timer.stop()
+                self.timer.deleteLater() if hasattr(self.timer, 'deleteLater') else None
+                self.timer = None
+                info_log(f"[{self.module_id}] 計時器已停止並清理")
+        except Exception as e:
+            error_log(f"[{self.module_id}] 停止計時器失敗: {e}")
+        
+        # 清理信號回調
+        try:
+            if hasattr(self, 'signals') and self.signals:
+                if hasattr(self.signals, 'remove_timer_callback'):
+                    self.signals.remove_timer_callback("ani_update")
+                    info_log(f"[{self.module_id}] 信號回調已清理")
+                else:
+                    info_log(f"[{self.module_id}] 信號系統無remove_timer_callback方法")
+        except Exception as e:
+            error_log(f"[{self.module_id}] 清理信號回調失敗: {e}")
+        
         return super().shutdown()

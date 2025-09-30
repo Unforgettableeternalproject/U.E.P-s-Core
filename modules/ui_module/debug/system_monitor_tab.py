@@ -70,31 +70,48 @@ class SystemMonitorTab(QWidget):
         
     def setup_worker_signals(self):
         """設置背景工作線程的信號連接"""
-        if not PYQT5_AVAILABLE or not self.worker_manager or not hasattr(self.worker_manager, 'signals'):
-            debug_log(KEY_LEVEL, "[SystemMonitorTab] 工作線程管理器不可用或無信號屬性，跳過信號連接")
+        if not PYQT5_AVAILABLE or not self.worker_manager:
+            debug_log(KEY_LEVEL, "[SystemMonitorTab] 工作線程管理器不可用，跳過信號連接")
+            return
+        
+        # 確保工作線程管理器的signals有效
+        try:
+            if hasattr(self.worker_manager, '_ensure_signals_valid'):
+                if not self.worker_manager._ensure_signals_valid():
+                    debug_log(KEY_LEVEL, "[SystemMonitorTab] 無法確保工作線程管理器signals有效")
+                    return
+            elif not hasattr(self.worker_manager, 'signals') or self.worker_manager.signals is None:
+                debug_log(KEY_LEVEL, "[SystemMonitorTab] 工作線程管理器無信號屬性")
+                return
+        except Exception as e:
+            error_log(f"[SystemMonitorTab] 檢查工作線程管理器signals時發生錯誤: {e}")
             return
             
         # 處理背景工作結果
-        if self.worker_manager.signals.finished:
-            # 斷開舊連接防止重複
-            try:
-                self.worker_manager.signals.finished.disconnect(self._handle_worker_result)
-            except:
-                pass
-            # 重新連接
-            self.worker_manager.signals.finished.connect(self._handle_worker_result)
-            debug_log(KEY_LEVEL, "[SystemMonitorTab] 工作完成信號已連接")
-            
-        # 處理背景工作錯誤
-        if self.worker_manager.signals.error:
-            # 斷開舊連接防止重複
-            try:
-                self.worker_manager.signals.error.disconnect(self._handle_worker_error)
-            except:
-                pass
-            # 重新連接
-            self.worker_manager.signals.error.connect(self._handle_worker_error)
-            debug_log(KEY_LEVEL, "[SystemMonitorTab] 工作錯誤信號已連接")
+        try:
+            if self.worker_manager.signals.finished:
+                # 斷開舊連接防止重複
+                try:
+                    self.worker_manager.signals.finished.disconnect(self._handle_worker_result)
+                except:
+                    pass
+                # 重新連接
+                self.worker_manager.signals.finished.connect(self._handle_worker_result)
+                debug_log(KEY_LEVEL, "[SystemMonitorTab] 工作完成信號已連接")
+                
+            # 處理背景工作錯誤
+            if self.worker_manager.signals.error:
+                # 斷開舊連接防止重複
+                try:
+                    self.worker_manager.signals.error.disconnect(self._handle_worker_error)
+                except:
+                    pass
+                # 重新連接
+                self.worker_manager.signals.error.connect(self._handle_worker_error)
+                debug_log(KEY_LEVEL, "[SystemMonitorTab] 工作錯誤信號已連接")
+        except Exception as e:
+            error_log(f"[SystemMonitorTab] 設置工作線程信號時發生錯誤: {e}")
+            return
     
     def _handle_worker_result(self, task_id, result):
         """處理背景工作線程的結果"""
@@ -542,6 +559,17 @@ class SystemMonitorTab(QWidget):
         
         # 啟動背景工作
         try:
+            # 確保工作線程管理器可用
+            if not self.worker_manager:
+                debug_log(KEY_LEVEL, "[SystemMonitorTab] 工作線程管理器不可用，跳過資源監控")
+                return
+                
+            # 確保signals有效
+            if hasattr(self.worker_manager, '_ensure_signals_valid'):
+                if not self.worker_manager._ensure_signals_valid():
+                    debug_log(KEY_LEVEL, "[SystemMonitorTab] 工作線程管理器signals無效，跳過資源監控")
+                    return
+            
             # 如果已存在任務則先停止
             self.worker_manager.stop_task(self.resource_task_id)
             # 啟動新任務
@@ -658,6 +686,18 @@ class SystemMonitorTab(QWidget):
         # 啟動背景工作
         try:
             debug_log(KEY_LEVEL, f"[SystemMonitorTab] 啟動背景任務: {self.module_task_id}")
+            
+            # 確保工作線程管理器可用
+            if not self.worker_manager:
+                debug_log(KEY_LEVEL, "[SystemMonitorTab] 工作線程管理器不可用，跳過模組狀態檢查")
+                return
+                
+            # 確保signals有效
+            if hasattr(self.worker_manager, '_ensure_signals_valid'):
+                if not self.worker_manager._ensure_signals_valid():
+                    debug_log(KEY_LEVEL, "[SystemMonitorTab] 工作線程管理器signals無效，跳過模組狀態檢查")
+                    return
+            
             # 如果已存在任務則先停止
             self.worker_manager.stop_task(self.module_task_id)
             # 啟動新任務
@@ -793,6 +833,17 @@ class SystemMonitorTab(QWidget):
         
         # 啟動背景工作
         try:
+            # 確保工作線程管理器可用
+            if not self.worker_manager:
+                debug_log(KEY_LEVEL, "[SystemMonitorTab] 工作線程管理器不可用，跳過網路狀態檢查")
+                return
+                
+            # 確保signals有效
+            if hasattr(self.worker_manager, '_ensure_signals_valid'):
+                if not self.worker_manager._ensure_signals_valid():
+                    debug_log(KEY_LEVEL, "[SystemMonitorTab] 工作線程管理器signals無效，跳過網路狀態檢查")
+                    return
+            
             # 如果已存在任務則先停止
             self.worker_manager.stop_task(self.network_task_id)
             # 啟動新任務
@@ -1086,6 +1137,15 @@ class SystemMonitorTab(QWidget):
     def _safe_stop_task(self, task_id):
         """安全地停止背景任務，避免顯示錯誤"""
         try:
+            # 檢查工作線程管理器是否可用
+            if not self.worker_manager:
+                return
+                
+            # 確保signals有效（可選檢查，因為這是停止操作）
+            if hasattr(self.worker_manager, '_ensure_signals_valid'):
+                if not self.worker_manager._ensure_signals_valid():
+                    debug_log(KEY_LEVEL, f"[SystemMonitorTab] WorkerSignals無效，但仍嘗試停止任務: {task_id}")
+            
             # 檢查任務是否存在
             if task_id in getattr(self.worker_manager, 'workers', {}):
                 self.worker_manager.stop_task(task_id)

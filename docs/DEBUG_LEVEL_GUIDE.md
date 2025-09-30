@@ -1,5 +1,5 @@
 # DEBUG_LEVEL_GUIDE.md
-# 除錯等級指南
+# 除錯等級指南 (使用的是utils/debug_helper.py)
 
 ## 除錯等級定義
 
@@ -54,5 +54,17 @@ debug:
   enabled: true
   debug_level: 2  # 1-4 之間選擇適合的等級
 ```
+
+## 其他日誌系統
+
+debug_log和debug_log_e 函數會根據設置的等級過濾日誌輸出。請確保在不同模組中統一使用此系統，以保持日誌的一致性和可讀性。
+
+info_log的第一個欄位可以選填msg，分別為"INFO", "WARNING"等級，預設為"INFO"。
+
+error_log也跟info_log一樣，可以填寫"CRITICAL"等級，預設為"ERROR"。
+
+三種不同的日誌會輸出在不同的目錄當中，於log/資料夾裡以月分分類存放。
+
+---
 
 遵循這些指南有助於維持一個清晰、有用的日誌系統，既能在需要時提供詳細資訊，又不會被不必要的信息淹沒。

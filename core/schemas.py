@@ -106,14 +106,54 @@ class NLPModuleData(UnifiedModuleData):
 
 
 class MEMModuleData(UnifiedModuleData):
-    """MEM 模組專用數據格式"""
+    """MEM 模組專用數據格式 - 重構版本"""
     
-    # MEM 特定字段
-    mode: str = Field("fetch", description="操作模式: fetch/store/delete/list")
-    top_k: Optional[int] = Field(3, description="返回結果數量")
+    # === 基本操作字段 (向後兼容) ===
+    mode: str = Field("query", description="操作模式: query/store/update/delete/create_snapshot/process_llm_instruction")
+    top_k: Optional[int] = Field(10, description="返回結果數量")
     entry: Optional[Dict[str, Any]] = Field(None, description="記憶條目")
     page: Optional[int] = Field(1, description="頁數")
     results: Optional[List[Dict[str, Any]]] = Field(None, description="查詢結果")
+    
+    # === 身份與令牌系統 ===
+    identity_token: Optional[str] = Field(None, description="使用者身份令牌（記憶隔離）")
+    user_profile: Optional[Dict[str, Any]] = Field(None, description="使用者檔案（來自NLP）")
+    
+    # === 查詢相關 ===
+    query_text: Optional[str] = Field(None, description="查詢文本")
+    memory_types: Optional[List[str]] = Field(None, description="記憶類型過濾")
+    topic_filter: Optional[str] = Field(None, description="主題過濾")
+    time_range: Optional[Dict[str, Any]] = Field(None, description="時間範圍")
+    similarity_threshold: Optional[float] = Field(0.7, description="相似度閾值")
+    include_archived: Optional[bool] = Field(False, description="包含已歸檔記憶")
+    
+    # === 記憶操作 ===
+    memory_entry: Optional[Dict[str, Any]] = Field(None, description="要存儲的記憶條目")
+    llm_instructions: Optional[List[Dict[str, Any]]] = Field(None, description="LLM記憶指令")
+    
+    # === 上下文相關 ===
+    conversation_text: Optional[str] = Field(None, description="當前對話文本")
+    intent_info: Optional[Dict[str, Any]] = Field(None, description="意圖資訊（來自NLP）")
+    current_intent: Optional[str] = Field(None, description="當前意圖")
+    conversation_context: Optional[str] = Field(None, description="對話上下文")
+    
+    # === 操作結果 ===
+    search_results: Optional[List[Dict[str, Any]]] = Field(None, description="搜索結果")
+    operation_results: Optional[List[Dict[str, Any]]] = Field(None, description="操作結果")
+    memory_context: Optional[str] = Field(None, description="記憶上下文（供LLM使用）")
+    relevant_memories: Optional[List[Dict[str, Any]]] = Field(None, description="相關記憶條目")
+    
+    # === 快照管理 ===
+    active_snapshots: Optional[List[Dict[str, Any]]] = Field(None, description="活躍快照")
+    snapshot_summary: Optional[str] = Field(None, description="快照摘要")
+    
+    # === 統計與狀態 ===
+    total_memories: Optional[int] = Field(0, description="總記憶數量")
+    memory_usage: Optional[Dict[str, int]] = Field(None, description="記憶使用統計")
+    
+    # === 錯誤與警告 ===
+    errors: Optional[List[str]] = Field(None, description="錯誤訊息")
+    warnings: Optional[List[str]] = Field(None, description="警告訊息")
 
 
 class LLMModuleData(UnifiedModuleData):
@@ -126,6 +166,16 @@ class LLMModuleData(UnifiedModuleData):
     sys_action: Optional[str] = Field(None, description="系統動作")
     temperature: Optional[float] = Field(None, description="生成溫度")
     max_tokens: Optional[int] = Field(None, description="最大令牌數")
+    
+    # === 記憶檢索支援 ===
+    enable_memory_retrieval: Optional[bool] = Field(False, description="啟用記憶檢索")
+    memory_context: Optional[str] = Field(None, description="記憶上下文（從MEM模組獲取）")
+    identity_token: Optional[str] = Field(None, description="使用者身份令牌")
+    
+    # === LLM記憶指令輸出 ===
+    memory_instructions: Optional[List[Dict[str, Any]]] = Field(None, description="LLM生成的記憶指令")
+    should_store_memory: Optional[bool] = Field(False, description="是否應該存儲此次對話到記憶")
+    conversation_topic: Optional[str] = Field(None, description="對話主題（用於記憶分類）")
 
 
 class TTSModuleData(UnifiedModuleData):

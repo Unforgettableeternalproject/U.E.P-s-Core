@@ -99,7 +99,7 @@ def nlp_test_state_queue_integration(modules, text: str = ""):
         error_log("[Controller] ❌ 無法載入 NLP 模組")
         return
 
-    from core.state_queue import get_state_queue_manager
+    from core.states.state_queue import get_state_queue_manager
     state_queue = get_state_queue_manager()
 
     test_text = text if text else "Hi UEP, how are you? Please save my work and then remind me about the meeting."

@@ -3,8 +3,8 @@
 modules_enabled:
   stt_module: true
   nlp_module: true
-  mem_module: false
-  llm_module: false
+  mem_module: true
+  llm_module: true
   tts_module: false
   sys_module: false
   ui_module: true
@@ -15,8 +15,8 @@ modules_enabled:
 modules_refactored:
   stt_module: true
   nlp_module: true
-  mem_module: false
-  llm_module: false
+  mem_module: true
+  llm_module: true
   tts_module: false
   sys_module: false
   ui_module: false
@@ -24,14 +24,14 @@ modules_refactored:
   mov_module: false
 
 logging:
-  enabled: false
+  enabled: true
   log_level: "DEBUG"
   log_dir: "logs"
   enable_split_logs: true
 
 debug:
   enabled: true
-  debug_level: 2
+  debug_level: 3
 
 # 全局系統設置 - 用於控制系統級別行為
 system:

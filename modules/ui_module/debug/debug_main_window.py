@@ -818,6 +818,18 @@ class DebugMainWindow(QMainWindow):
             worker_manager.stop_all_tasks()
         except:
             pass
+        
+        # 清理前端模組實例（作為額外保險）
+        try:
+            import devtools.debug_api as debug_api
+            if hasattr(debug_api, 'cleanup_frontend_modules'):
+                debug_log(OPERATION_LEVEL, "[DebugMainWindow] 正在清理前端模組實例...")
+                debug_api.cleanup_frontend_modules()
+        except Exception as e:
+            debug_log(OPERATION_LEVEL, f"[DebugMainWindow] 前端模組清理警告: {e}")
+        except ImportError:
+            # 如果無法導入debug_api，忽略清理（可能在獨立模式下）
+            pass
             
         # 儲存設定等清理工作
         event.accept()

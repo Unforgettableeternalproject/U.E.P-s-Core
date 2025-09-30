@@ -15,7 +15,7 @@ import time
 import threading
 from typing import Dict, Any, Optional
 
-from core.frontend_base import FrontendAdapter, BaseFrontendModule
+from core.bases.frontend_base import FrontendAdapter, BaseFrontendModule
 from core.framework import CoreFramework
 from utils.debug_helper import debug_log, info_log, error_log
 
@@ -336,7 +336,7 @@ def test_frontend_integration():
         # 這裡需要一個核心框架實例
         from core.framework import CoreFramework
         from core.working_context import WorkingContextManager
-        from core.state_manager import StateManager
+        from core.states.state_manager import StateManager
         
         # 創建核心組件
         context_manager = WorkingContextManager()

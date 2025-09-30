@@ -11,7 +11,7 @@ from typing import Dict, Any, List, Optional, Tuple, Callable, Union
 import datetime
 from pathlib import Path
 
-from core.session_manager import WorkflowSession
+from core.sessions.session_manager import WorkflowSession
 from utils.debug_helper import info_log, error_log, debug_log
 
 # Import the workflow engine components

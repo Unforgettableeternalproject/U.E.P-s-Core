@@ -63,8 +63,9 @@ class IntentAnalyzer:
             return False
     
     def analyze_intent(self, text: str, enable_segmentation: bool = True,
-                      context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """分析文本意圖"""
+                      context: Optional[Dict[str, Any]] = None,
+                      intent_bias: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
+        """分析文本意圖 - 支持意圖偏向"""
         result = {
             "primary_intent": IntentType.UNKNOWN,
             "intent_segments": [],
@@ -78,24 +79,41 @@ class IntentAnalyzer:
         try:
             debug_log(2, f"[IntentAnalyzer] 分析文本: '{text[:50]}...'")
             
-            # 使用BIO標註器進行分段和意圖識別
-            bio_segments = self.bio_tagger.predict(text)
+            # 檢查是否為簡單句子，如果是則跳過分段
+            if self._is_simple_sentence(text):
+                debug_log(2, "[IntentAnalyzer] 檢測到簡單句子，跳過BIO分段")
+                # 創建單一意圖段落
+                intent_segments = [self._create_single_intent_segment(text)]
+            else:
+                # 使用BIO標註器進行分段和意圖識別
+                bio_segments = self.bio_tagger.predict(text)
+                
+                if not bio_segments:
+                    debug_log(2, "[IntentAnalyzer] BIO標註器未返回分段結果")
+                    return result
+                
+                # 轉換BIO結果為IntentSegment格式
+                intent_segments = self._convert_bio_to_intent_segments(bio_segments, text)
+                
+                # 後處理優化分段結果
+                intent_segments = self._post_process_segments(intent_segments, text)
             
-            if not bio_segments:
-                debug_log(2, "[IntentAnalyzer] BIO標註器未返回分段結果")
-                return result
-            
-            # 轉換BIO結果為IntentSegment格式
-            intent_segments = self._convert_bio_to_intent_segments(bio_segments, text)
-            
-            # 後處理優化分段結果
-            intent_segments = self._post_process_segments(intent_segments, text)
+            # 應用意圖偏向 (如果提供)
+            if intent_bias:
+                intent_segments = self._apply_intent_bias(intent_segments, intent_bias, text)
+                debug_log(4, f"[IntentAnalyzer] 應用意圖偏向: {intent_bias}")
             
             result["intent_segments"] = intent_segments
             
             # 決定主要意圖
             result["primary_intent"] = self._determine_primary_intent(intent_segments)
             result["overall_confidence"] = self._calculate_overall_confidence(intent_segments)
+            
+            # 檢測需要中斷的指令 (在 CHAT 狀態中)
+            interruption_detected = self._detect_command_interruption(text, intent_segments, context)
+            if interruption_detected:
+                result["command_interruption"] = interruption_detected
+                debug_log(1, f"[IntentAnalyzer] 檢測到指令: {interruption_detected['reason']}")
             
             # 創建多意圖上下文
             contexts = self.context_manager.create_contexts_from_segments(
@@ -356,6 +374,51 @@ class IntentAnalyzer:
         
         return result
     
+    def _apply_intent_bias(self, intent_segments: List[IntentSegment], 
+                          intent_bias: Dict[str, float], 
+                          text: str) -> List[IntentSegment]:
+        """應用意圖偏向調整分段結果"""
+        adjusted_segments = []
+        
+        for segment in intent_segments:
+            # 複製分段以避免修改原始數據
+            adjusted_segment = IntentSegment(
+                text=segment.text,
+                intent=segment.intent,
+                confidence=segment.confidence,
+                start_pos=segment.start_pos,
+                end_pos=segment.end_pos,
+                entities=segment.entities.copy()
+            )
+            
+            # 獲取當前意圖的字符串表示
+            current_intent_str = adjusted_segment.intent.value if hasattr(adjusted_segment.intent, 'value') else str(adjusted_segment.intent)
+            
+            # 應用偏向調整
+            for biased_intent, bias_value in intent_bias.items():
+                if biased_intent == current_intent_str:
+                    # 正向偏向：增加信心度
+                    if bias_value > 0:
+                        adjusted_segment.confidence = min(adjusted_segment.confidence + bias_value, 0.99)
+                    # 負向偏向：降低信心度
+                    elif bias_value < 0:
+                        adjusted_segment.confidence = max(adjusted_segment.confidence + bias_value, 0.01)
+                
+                # 如果偏向很強且當前意圖信心度低，考慮改變意圖
+                elif bias_value > 0.4 and adjusted_segment.confidence < 0.6:
+                    try:
+                        from .schemas import IntentType
+                        biased_intent_enum = IntentType(biased_intent.upper())
+                        adjusted_segment.intent = biased_intent_enum
+                        adjusted_segment.confidence = min(adjusted_segment.confidence + bias_value, 0.95)
+                        debug_log(4, f"[IntentAnalyzer] 強偏向調整: {current_intent_str} -> {biased_intent}")
+                    except (ValueError, AttributeError):
+                        debug_log(2, f"[IntentAnalyzer] 無法轉換意圖類型: {biased_intent}")
+            
+            adjusted_segments.append(adjusted_segment)
+        
+        return adjusted_segments
+    
     def get_context_summary(self) -> Dict[str, Any]:
         """獲取上下文管理摘要"""
         return self.context_manager.get_context_summary()
@@ -367,6 +430,104 @@ class IntentAnalyzer:
     def get_next_context(self) -> Optional[Tuple[Any, IntentContext]]:
         """獲取下一個可執行的上下文"""
         return self.context_manager.get_next_executable_context()
+    
+    def _detect_command_interruption(self, text: str, intent_segments: List[IntentSegment], 
+                                 context: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        """檢測明顯的指令 - 在 CHAT 狀態中檢測需要切換到 WORK 的指令"""
+        try:
+            # 只在 CHAT 狀態下檢測
+            current_context = context or {}
+            current_state = current_context.get("current_state", "unknown")
+            
+            if current_state != "CHAT":
+                return None
+            
+            # 檢查是否有明顯的 COMMAND 意圖
+            has_command_intent = any(seg.intent == IntentType.COMMAND for seg in intent_segments)
+            
+            if has_command_intent:
+                # 找出命令相關的片段
+                command_segments = [seg for seg in intent_segments if seg.intent == IntentType.COMMAND]
+                command_confidence = max(seg.confidence for seg in command_segments)
+                
+                # 如果命令意圖信心度夠高，建議中斷切換到 WORK
+                if command_confidence >= 0.6:  # 調整閾值，更寬鬆的判斷
+                    return {
+                        "needs_interruption": True,
+                        "priority": "high" if command_confidence >= 0.8 else "medium",
+                        "reason": "在聊天中檢測到明顯的指令意圖",
+                        "command_segments": [seg.text for seg in command_segments],
+                        "recommended_action": "work_interrupt",
+                        "confidence": command_confidence
+                    }
+            
+            return None
+            
+        except Exception as e:
+            error_log(f"[IntentAnalyzer] 指令檢測失敗: {e}")
+            return None
+
+    def _is_simple_sentence(self, text: str) -> bool:
+        """檢查是否為簡單句子"""
+        import re
+        
+        # 清理文本
+        clean_text = text.strip()
+        
+        # 檢查條件：
+        # 1. 長度適中 (5-100 字符)
+        # 2. 只包含一個句號、問號或驚嘆號（或沒有）
+        # 3. 沒有複雜的分隔符（如分號、冒號、破折號等）
+        # 4. 字詞數量適中（2-20個詞）
+        
+        if len(clean_text) < 5 or len(clean_text) > 100:
+            return False
+            
+        # 檢查句子結束符號數量
+        sentence_endings = re.findall(r'[.!?]', clean_text)
+        if len(sentence_endings) > 1:
+            return False
+            
+        # 檢查複雜分隔符
+        complex_separators = re.findall(r'[;:—\-]{2,}|,.*,', clean_text)
+        if complex_separators:
+            return False
+            
+        # 檢查字詞數量
+        words = re.findall(r'\b\w+\b', clean_text)
+        if len(words) < 2 or len(words) > 20:
+            return False
+            
+        debug_log(3, f"[IntentAnalyzer] 簡單句子檢測: '{clean_text}' -> 字數={len(words)}")
+        return True
+
+    def _create_single_intent_segment(self, text: str):
+        """為簡單句子創建單一意圖段落"""
+        from .schemas import IntentSegment, IntentType
+        
+        # 基於句子特徵判斷意圖類型
+        clean_text = text.lower().strip()
+        
+        # 問句檢測
+        if clean_text.endswith('?') or any(q in clean_text for q in ['what', 'how', 'why', 'when', 'where', 'who', 'can you', 'could you', 'would you']):
+            intent_type = IntentType.CHAT
+        # 命令檢測  
+        elif any(cmd in clean_text for cmd in ['please', 'help', 'show', 'tell me', 'do', 'get', 'find']):
+            intent_type = IntentType.COMMAND
+        # 默認為聊天
+        else:
+            intent_type = IntentType.CHAT
+            
+        debug_log(3, f"[IntentAnalyzer] 單一段落意圖: {intent_type}")
+        
+        return IntentSegment(
+            text=text.strip(),
+            intent=intent_type,
+            confidence=0.85,
+            start_pos=0,
+            end_pos=len(text.strip()),
+            metadata={"simple_sentence": True}
+        )
 
 def test_intent_analyzer():
     """測試意圖分析器"""

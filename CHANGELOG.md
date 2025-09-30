@@ -1378,3 +1378,15 @@
 
 ---
 
+### Small change to the tts chunker. 07/31
+
+> Date: Thu, 31 Jul 2025 03:24:15 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_rework`
+
+> Commit: `5cbe5d364e04f88e350ee6fe5b7fc44885ad5f74`
+
+---
+

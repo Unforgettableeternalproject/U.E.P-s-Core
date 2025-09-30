@@ -10,7 +10,7 @@ import os
 import sys
 import time
 from typing import Dict, Any, Optional
-from core.frontend_base import UIEventType
+from core.bases.frontend_base import UIEventType
 
 try:
     from PyQt5.QtWidgets import QWidget, QLabel, QApplication
@@ -85,7 +85,7 @@ if project_root not in sys.path:
 from utils.debug_helper import debug_log, info_log, error_log
 
 try:
-    from core.frontend_base import UIEventType
+    from core.bases.frontend_base import UIEventType
 except Exception:
     class UIEventType:
         DRAG_START = "DRAG_START"

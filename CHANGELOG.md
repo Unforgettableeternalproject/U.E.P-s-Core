@@ -1198,3 +1198,147 @@
 
 ---
 
+### Begin the rework of llm module. 09/24
+
+> Date: Wed, 24 Sep 2025 20:06:03 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `39fb8d589bb333da3490dce2d7766e32487728dc`
+
+---
+
+### Removed all example files and made some changes to current files, added some files to compensate. 09/24
+
+> Date: Wed, 24 Sep 2025 23:07:49 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `a6f36daeab2731184d94b33b2dd7764dc19e5344`
+
+---
+
+### Improved prompt manager, and made better context caching and such. 09/25
+
+> Date: Thu, 25 Sep 2025 01:41:36 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `19166900f0e1764bc73bb498514089e964ca1cb8`
+
+---
+
+### Completed first-hand LLM restructure, and the first goal is reached. 09/25
+
+> Date: Thu, 25 Sep 2025 03:16:07 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `cab09dd887d8232cf67f00d3d2e6415dfb5ff6cc`
+
+---
+
+### Improved routing, and removed strategy because it's way too complex and we wouldn't need that. 09/26
+
+> Date: Fri, 26 Sep 2025 03:22:39 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `6bc678b04424c490b7e2c4ca4c6bd391fd9cbcb5`
+
+---
+
+### Fully implemented cache manager, and added some basic unit tests for testing. 09/28
+
+> Date: Sun, 28 Sep 2025 20:56:20 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `207d92332269dd7fc26cd0891d6050e5d820d31e`
+
+---
+
+### Added some tests related to LLM, and made a virtual internal environment for those session-dependent module to work. 09/29
+
+> Date: Mon, 29 Sep 2025 02:18:01 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `da81c44df919e29d2fcd6fc26f29c33e2b8ccc0a`
+
+---
+
+### Some "Very Little" changes to make the code look better. 09/29
+
+> Date: Mon, 29 Sep 2025 21:55:38 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `83b16084a9ed2dc0d06298975ac6fea8b6b2148f`
+
+---
+
+### Fixed some working context related issues, and made cache handling better. 09/30
+
+> Date: Tue, 30 Sep 2025 01:42:33 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `655c6a629fb2eecc57db107eec6b98b2ce003085`
+
+---
+
+### Added state end trigger for several modules and managers. Also added one more test for llm. 09/30
+
+> Date: Tue, 30 Sep 2025 02:49:13 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `5ab106ffd2e5734e894d992f99080fb82b5b7163`
+
+---
+
+### Added a new test tab for llm in debug gui. 09/30
+
+> Date: Tue, 30 Sep 2025 12:38:17 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `fc5e499f54dc927916fdc3c7f22c7508944f2faa`
+
+---
+
+### Put MEM and LLM into system loop, also reworked a lot of core modules to adapt to the new system structure. 09/30
+
+> Date: Tue, 30 Sep 2025 19:46:02 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `c4a44838989de5c5d9b7e226680a6876af6c4eaa`
+
+---
+

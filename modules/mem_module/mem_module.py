@@ -1,4 +1,4 @@
-from core.module_base import BaseModule
+from core.bases.module_base import BaseModule
 from datetime import datetime
 import json
 from typing import List, Dict, Any, Optional
@@ -67,8 +67,8 @@ class MEMModule(BaseModule):
         debug_log(2, f"[MEM] 元資料檔案: {self.metadata_file}")
         debug_log(2, f"[MEM] 記憶管理器狀態: {'已載入' if self.memory_manager else '未載入'}")
         
-        # Debug level = 3
-        debug_log(3, f"[MEM] 完整模組設定: {self.config}")
+        # Debug level = 4
+        debug_log(4, f"[MEM] 完整模組設定: {self.config}")
 
     def initialize(self):
         """初始化MEM模組"""
@@ -123,7 +123,7 @@ class MEMModule(BaseModule):
     def _register_state_change_listener(self):
         """註冊狀態變化監聽器"""
         try:
-            from core.state_manager import state_manager
+            from core.states.state_manager import state_manager
             self.state_change_listener = self._handle_state_change
             state_manager.add_state_change_callback(self.state_change_listener)
             debug_log(2, "[MEM] 狀態變化監聽器註冊完成")
@@ -152,7 +152,7 @@ class MEMModule(BaseModule):
                 debug_log(2, "[MEM] 記憶管理器未初始化，跳過加入會話")
                 return
             
-            from core.state_manager import state_manager
+            from core.states.state_manager import state_manager
             from core.working_context import working_context_manager
             
             # 1. 從State Manager獲取目前系統狀態上下文
@@ -167,16 +167,17 @@ class MEMModule(BaseModule):
                 return
             
             # 2. 從Working Context獲取Identity相關資料
-            memory_token = working_context_manager.get_memory_token()
             identity_context = working_context_manager.get_current_identity()
             
-            if not memory_token:
-                # 如果Working Context中沒有，使用系統令牌
+            if identity_context and identity_context.get("memory_token"):
+                memory_token = identity_context["memory_token"]
+                debug_log(2, f"[MEM] 從身份上下文獲取記憶令牌: {memory_token}")
+            else:
+                # 如果身份中沒有記憶令牌，使用系統令牌
                 from .core.identity_manager import IdentityManager
                 identity_manager = IdentityManager({})
                 memory_token = identity_manager.get_system_token()
-                working_context_manager.set_memory_token(memory_token)
-                debug_log(2, f"[MEM] 設置系統記憶令牌到Working Context: {memory_token}")
+                debug_log(2, f"[MEM] 使用系統記憶令牌: {memory_token}")
             
             # 3. 從Session Manager獲取目前會話相關資料（根據代辦.md要求4）
             session_context = self._get_session_context_from_session_manager(current_session_id)
@@ -206,14 +207,17 @@ class MEMModule(BaseModule):
             error_log(f"[MEM] 加入聊天會話時發生錯誤: {e}")
     
     def _get_session_context_from_session_manager(self, session_id: str) -> Dict[str, Any]:
-        """從Session Manager獲取會話相關資料 - 實現代辦.md要求4"""
+        """從統一Session Manager獲取會話相關資料 - 實現代辦.md要求4"""
         try:
-            # 根據會話ID類型選擇對應的Session Manager
-            if session_id.startswith('cs_'):
-                # Chatting Session - 從ChattingSessionManager獲取
-                from core.chatting_session import chatting_session_manager
-                session = chatting_session_manager.get_session(session_id)
-                if session:
+            # 使用統一的 session_manager 獲取任何類型的會話
+            from core.sessions.session_manager import session_manager
+            session = session_manager.get_session(session_id)
+            
+            if session:
+                # 根據會話類型返回不同的信息
+                session_type_name = type(session).__name__
+                
+                if session_type_name == "ChattingSession":
                     return {
                         "session_type": "chatting",
                         "gs_session_id": session.gs_session_id,
@@ -222,17 +226,26 @@ class MEMModule(BaseModule):
                         "last_activity": session.last_activity.isoformat() if hasattr(session.last_activity, 'isoformat') else str(session.last_activity),
                         "status": session.status.value if hasattr(session.status, 'value') else str(session.status)
                     }
-            elif session_id.startswith('ws_'):
-                # Workflow Session - 從SessionManager獲取
-                from core.session_manager import session_manager
-                session = session_manager.get_session(session_id)
-                if session:
+                elif session_type_name == "WorkflowSession":
                     return {
                         "session_type": "workflow",
-                        "workflow_type": session.workflow_type,
-                        "command": session.command,
+                        "workflow_type": getattr(session, 'workflow_type', 'unknown'),
+                        "command": getattr(session, 'command', 'unknown'),
                         "status": session.status.value if hasattr(session.status, 'value') else str(session.status),
                         "created_at": session.created_at.isoformat() if hasattr(session.created_at, 'isoformat') else str(session.created_at)
+                    }
+                elif session_type_name == "GeneralSession":
+                    return {
+                        "session_type": "general",
+                        "gs_type": session.gs_type.value if hasattr(session.gs_type, 'value') else str(session.gs_type),
+                        "status": session.status.value if hasattr(session.status, 'value') else str(session.status),
+                        "created_at": session.created_at.isoformat() if hasattr(session.created_at, 'isoformat') else str(session.created_at)
+                    }
+                else:
+                    return {
+                        "session_type": "unknown",
+                        "class_name": session_type_name,
+                        "session_id": session_id
                     }
             
             # 如果找不到對應的會話，返回基本資訊
@@ -257,7 +270,7 @@ class MEMModule(BaseModule):
                 debug_log(2, "[MEM] 記憶管理器未初始化，跳過離開會話")
                 return
             
-            from core.state_manager import state_manager
+            from core.states.state_manager import state_manager
             
             # 獲取當前會話ID
             current_session_id = state_manager.get_current_session_id()
@@ -296,7 +309,7 @@ class MEMModule(BaseModule):
         """同步會話狀態 - 定期檢查系統會話狀態"""
         try:
             # 獲取當前系統會話ID
-            from core.state_manager import state_manager
+            from core.states.state_manager import state_manager
             current_system_session = state_manager.get_current_session_id()
             
             # 檢查會話ID是否改變
@@ -423,7 +436,7 @@ class MEMModule(BaseModule):
     def _is_in_chat_state(self) -> bool:
         """檢查當前是否處於CHAT狀態"""
         try:
-            from core.state_manager import state_manager
+            from core.states.state_manager import state_manager
             current_state = state_manager.get_state()
             return current_state.value == "chat"
         except Exception as e:
@@ -552,20 +565,31 @@ class MEMModule(BaseModule):
             
             # 4. 檢查各Session Manager的狀態（根據代辦.md要求）
             try:
-                # ChattingSessionManager檢查
-                from core.chatting_session import chatting_session_manager
-                cs_session = chatting_session_manager.get_session(self.current_system_session_id)
-                check_result["session_managers_status"]["chatting_session"] = {
-                    "exists": cs_session is not None,
-                    "status": cs_session.status.value if cs_session and hasattr(cs_session, 'status') else None
-                }
+                # 使用統一Session Manager檢查所有會話類型
+                from core.sessions.session_manager import session_manager
                 
-                # SessionManager檢查（工作流會話）
-                from core.session_manager import session_manager
-                ws_session = session_manager.get_session(self.current_system_session_id)
-                check_result["session_managers_status"]["workflow_session"] = {
-                    "exists": ws_session is not None,
-                    "status": ws_session.status.value if ws_session and hasattr(ws_session, 'status') else None
+                # 檢查當前會話
+                current_session = session_manager.get_session(self.current_system_session_id)
+                if current_session:
+                    session_type_name = type(current_session).__name__
+                    check_result["session_managers_status"]["current_session"] = {
+                        "session_type": session_type_name,
+                        "exists": True,
+                        "status": current_session.status.value if hasattr(current_session, 'status') else None
+                    }
+                else:
+                    check_result["session_managers_status"]["current_session"] = {
+                        "session_type": "unknown",
+                        "exists": False,
+                        "status": None
+                    }
+                
+                # 檢查所有活躍會話的狀態
+                all_active = session_manager.get_all_active_sessions()
+                check_result["session_managers_status"]["active_sessions"] = {
+                    "general": len(all_active.get('general', [])),
+                    "chatting": len(all_active.get('chatting', [])),
+                    "workflow": len(all_active.get('workflow', []))
                 }
                 
             except Exception as e:
@@ -820,11 +844,11 @@ class MEMModule(BaseModule):
                 # 首先嘗試從 Working Context 獲取當前身份
                 from core.working_context import working_context_manager
                 current_identity = working_context_manager.get_current_identity()
-                working_memory_token = working_context_manager.get_memory_token()
                 
                 if current_identity:
-                    memory_token = working_memory_token or current_identity.get("memory_token")
+                    memory_token = current_identity.get("memory_token")
                     user_profile = current_identity
+                    debug_log(2, f"[MEM] 從身份獲取記憶令牌: {memory_token}")
                     debug_log(3, f"[MEM] 從 Working Context 獲取身份: {current_identity.get('identity_id', 'Unknown')}")
                 elif data.intent_info and "user_profile" in data.intent_info:
                     # 後備方案：從 NLP 輸出獲取（但這應該很少發生）
@@ -905,13 +929,17 @@ class MEMModule(BaseModule):
                     primary_intent = data.intent_info.get("primary_intent", "unknown")
                     overall_confidence = data.intent_info.get("overall_confidence", 0.0)
                     
-                    # 從 Working Context 獲取記憶令牌
+                    # 從 Working Context 的身份中獲取記憶令牌
                     from core.working_context import working_context_manager
-                    memory_token = working_context_manager.get_memory_token()
+                    current_identity = working_context_manager.get_current_identity()
+                    memory_token = current_identity.get("memory_token") if current_identity else None
                     
-                    # 如果 Working Context 中沒有，使用提供的記憶令牌
+                    # 如果身份中沒有，使用提供的記憶令牌作為後備
                     if not memory_token:
                         memory_token = data.memory_token
+                        debug_log(2, f"[MEM] 使用後備記憶令牌: {memory_token}")
+                    else:
+                        debug_log(2, f"[MEM] 使用身份記憶令牌: {memory_token}")
                     
                     # 根據意圖和信心度決定是否創建記憶
                     create_memory = overall_confidence > 0.7  # 只有高信心度的意圖才創建記憶

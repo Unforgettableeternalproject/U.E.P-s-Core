@@ -29,6 +29,11 @@ from dataclasses import dataclass, field
 from utils.debug_helper import debug_log, info_log, error_log
 from core.working_context import working_context_manager, ContextType
 
+# 延遲導入避免循環依賴
+def _get_status_manager():
+    from core.status_manager import StatusManager
+    return StatusManager()
+
 
 class SessionRecordType(Enum):
     """會話記錄類型"""
@@ -220,6 +225,9 @@ class GeneralSession:
     def _initialize_working_contexts(self):
         """初始化 Working Context"""
         
+        # 調試信息
+        debug_log(3, f"[GeneralSession] 初始化前檢查 working_context_manager 類型: {type(working_context_manager)}")
+        
         # 設定 General Session 上下文資訊
         working_context_manager.set_data(
             ContextType.GENERAL_SESSION, 
@@ -372,6 +380,11 @@ class GeneralSession:
     
     def _cleanup_working_contexts(self):
         """清理 Working Context"""
+        # 調試信息
+        debug_log(3, f"[GeneralSession] 清理前檢查 working_context_manager 類型: {type(working_context_manager)}")
+        debug_log(3, f"[GeneralSession] 類名: {working_context_manager.__class__.__name__}")
+        debug_log(3, f"[GeneralSession] 有 cleanup_expired_contexts: {hasattr(working_context_manager, 'cleanup_expired_contexts')}")
+        
         # 清理過期的上下文
         working_context_manager.cleanup_expired_contexts()
     
@@ -424,6 +437,15 @@ class GeneralSessionManager:
         # 結束當前會話
         if self.current_session:
             self.end_current_session()
+        
+        # 應用系統狀態 penalty（每次創建 GS 時的自動微調）
+        try:
+            status_manager = _get_status_manager()
+            penalties = status_manager.apply_session_penalties(gs_type.value)
+            if penalties:
+                debug_log(2, f"[GeneralSessionManager] 會話啟動時應用 penalty: {penalties}")
+        except Exception as e:
+            error_log(f"[GeneralSessionManager] 應用 status penalty 失敗: {e}")
         
         # 創建新會話
         new_session = GeneralSession(gs_type, trigger_event, self.preserved_data)

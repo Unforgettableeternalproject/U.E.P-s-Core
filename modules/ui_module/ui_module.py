@@ -33,9 +33,9 @@ except ImportError:
     # 定義替代類別以避免錯誤
     class QApplication: pass
 
-from core.frontend_base import BaseFrontendModule, FrontendModuleType, UIEventType
+from core.bases.frontend_base import BaseFrontendModule, FrontendModuleType, UIEventType
 from core.working_context import ContextType
-from core.state_manager import UEPState
+from core.states.state_manager import UEPState
 from utils.debug_helper import debug_log, info_log, error_log
 
 

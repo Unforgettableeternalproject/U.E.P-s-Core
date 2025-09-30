@@ -3,7 +3,7 @@ from typing import Callable, Dict, Optional, List
 import time
 import os, glob
 from utils.debug_helper import debug_log, info_log, error_log
-from core.frontend_base import BaseFrontendModule, FrontendModuleType  # type: ignore
+from core.bases.frontend_base import BaseFrontendModule, FrontendModuleType  # type: ignore
 
 try:
     from PyQt5.QtCore import QTimer

@@ -136,7 +136,7 @@ class IdentityIsolationManager:
             from core.working_context import working_context_manager
             
             current_identity = working_context_manager.get_current_identity()
-            current_token = working_context_manager.get_memory_token()
+            current_token = current_identity.get("memory_token") if current_identity else None
             
             if current_token == memory_token and current_identity:
                 return current_identity.get('identity_id')

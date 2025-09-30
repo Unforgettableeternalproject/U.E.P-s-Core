@@ -226,19 +226,20 @@ class ModuleManager:
             
             # MEM 測試函數 - 使用包裝函數 (更新為新架構)
             self.test_functions["mem"] = {
-                "memory_access_control": debug_api.mem_test_memory_access_control_wrapper,
-                "conversation_snapshot": debug_api.mem_test_conversation_snapshot_wrapper,
+                "store_memory": debug_api.mem_test_store_memory_wrapper,
                 "memory_query": debug_api.mem_test_memory_query_wrapper,
+                "conversation_snapshot": debug_api.mem_test_conversation_snapshot_wrapper,
                 "identity_manager_stats": debug_api.mem_test_identity_manager_stats_wrapper,
-                "nlp_integration": debug_api.mem_test_nlp_integration_wrapper,
-                "llm_context_extraction": debug_api.mem_test_llm_context_extraction_wrapper,
-                "full_workflow": debug_api.mem_test_full_workflow_wrapper,
+                "write_then_query": debug_api.mem_test_write_then_query_wrapper,
             }
             
             # LLM 測試函數 - 使用包裝函數
             self.test_functions["llm"] = {
-                "chat_test": debug_api.llm_test_chat_wrapper,
-                "command_test": debug_api.llm_test_command_wrapper,
+                "chat": debug_api.llm_test_chat_wrapper,
+                "command": debug_api.llm_test_command_wrapper,
+                "cache_functionality": debug_api.llm_test_cache_functionality_wrapper,
+                "learning_engine": debug_api.llm_test_learning_engine_wrapper,
+                "system_status_monitoring": debug_api.llm_test_system_status_monitoring_wrapper,
             }
             
             # TTS 測試函數 - 使用包裝函數

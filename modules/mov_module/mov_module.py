@@ -17,8 +17,8 @@ import random
 import time
 from typing import Callable, Optional, Dict, Any, List
 
-from core.frontend_base import BaseFrontendModule, FrontendModuleType, UIEventType
-from core.state_manager import UEPState
+from core.bases.frontend_base import BaseFrontendModule, FrontendModuleType, UIEventType
+from core.states.state_manager import UEPState
 
 try:
     from PyQt5.QtCore import QTimer

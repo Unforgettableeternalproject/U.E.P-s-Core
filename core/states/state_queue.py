@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from utils.debug_helper import debug_log, info_log, error_log
 
 # 導入統一的狀態枚舉
-from core.state_manager import UEPState
+from core.states.state_manager import UEPState
 
 @dataclass
 class StateQueueItem:
@@ -87,7 +87,6 @@ class StateQueueManager:
         self.completion_handlers: Dict[UEPState, Callable] = {}
         
         # 會話管理 - 延遲導入避免循環依賴
-        self._chatting_session_manager = None
         self._session_manager = None
         
         # 載入持久化數據
@@ -118,30 +117,20 @@ class StateQueueManager:
         self.register_state_handler(UEPState.WORK, self._handle_work_state)
         self.register_completion_handler(UEPState.WORK, self._handle_work_completion)
     
-    def _get_chatting_session_manager(self):
-        """獲取 Chatting Session 管理器 (延遲導入)"""
-        if self._chatting_session_manager is None:
-            try:
-                from core.chatting_session import chatting_session_manager
-                self._chatting_session_manager = chatting_session_manager
-            except ImportError as e:
-                error_log(f"[StateQueue] 無法導入 Chatting Session 管理器: {e}")
-        return self._chatting_session_manager
-    
     def _get_session_manager(self):
-        """獲取 Session 管理器 (延遲導入)"""
+        """獲取統一 Session 管理器 (延遲導入)"""
         if self._session_manager is None:
             try:
-                from core.session_manager import session_manager
+                from core.sessions.session_manager import session_manager
                 self._session_manager = session_manager
             except ImportError as e:
                 error_log(f"[StateQueue] 無法導入 Session 管理器: {e}")
         return self._session_manager
     
     def _handle_chat_state(self, queue_item: StateQueueItem):
-        """處理 CHAT 狀態 - 通知狀態管理器創建聊天會話"""
+        """處理 CHAT 狀態 - 通知狀態管理器創建聊天會話並等待完成通知"""
         try:
-            from core.state_manager import state_manager
+            from core.states.state_manager import state_manager
             
             # 準備上下文信息
             context = {
@@ -152,48 +141,60 @@ class StateQueueManager:
                 },
                 "trigger_content": queue_item.trigger_content,
                 "queue_item_id": f"{queue_item.state.value}_{queue_item.created_at.timestamp()}",
+                "state_queue_callback": self._on_chat_session_complete,  # 回調函數
                 **queue_item.metadata
             }
             
             # 通知狀態管理器創建聊天會話
             state_manager.set_state(UEPState.CHAT, context)
             
-            info_log(f"[StateQueue] CHAT 狀態處理完成: {queue_item.context_content[:50]}...")
-            debug_log(4, f"[StateQueue] 聊天意圖處理完成")
+            info_log(f"[StateQueue] CHAT 狀態啟動: {queue_item.context_content[:50]}...")
+            debug_log(4, f"[StateQueue] 等待聊天會話完成...")
             
-            # 標記為成功完成
-            self.complete_current_state(success=True, result_data={"chat_processed": True})
+            # 不立即完成狀態，等待會話完成回調
             
         except Exception as e:
             error_log(f"[StateQueue] 處理 CHAT 狀態時發生錯誤: {e}")
             self.complete_current_state(success=False, result_data={"error": str(e)})
     
+    def _on_chat_session_complete(self, session_id: str, success: bool, result_data: Dict[str, Any] = None):
+        """聊天會話完成回調"""
+        try:
+            info_log(f"[StateQueue] 聊天會話完成: {session_id} ({'成功' if success else '失敗'})")
+            debug_log(4, f"[StateQueue] 會話結果: {result_data}")
+            
+            # 現在才標記狀態完成
+            self.complete_current_state(success=success, result_data=result_data or {})
+            
+        except Exception as e:
+            error_log(f"[StateQueue] 處理聊天會話完成回調時發生錯誤: {e}")
+            self.complete_current_state(success=False, result_data={"error": str(e)})
+    
     def _handle_chat_completion(self, queue_item: StateQueueItem, success: bool):
         """處理 CHAT 狀態完成"""
         try:
-            chatting_manager = self._get_chatting_session_manager()
+            session_manager = self._get_session_manager()
             
             cs_id = queue_item.metadata.get("chatting_session_id")
             
-            if chatting_manager and cs_id:
-                cs = chatting_manager.get_session(cs_id)
-                if cs and cs.status.value in ["active", "paused"]:
+            if session_manager and cs_id:
+                cs = session_manager.get_session(cs_id)
+                if cs and hasattr(cs, 'status') and cs.status.value in ["active", "paused"]:
                     # 結束 Chatting Session
-                    session_summary = cs.end_session(save_memory=True)
+                    session_summary = session_manager.end_chatting_session(cs_id, save_memory=True)
                     
                     info_log(f"[StateQueue] CHAT 狀態完成，CS 已結束: {cs_id}")
                     debug_log(4, f"[StateQueue] CS 總結: {session_summary}")
                     
-                    # 從活動會話中移除
-                    chatting_manager.end_session(cs_id, save_memory=False)  # 已在 cs.end_session 中保存
+                    # 注意：end_chatting_session 已經處理了會話清理
             
         except Exception as e:
             error_log(f"[StateQueue] 處理 CHAT 完成時發生錯誤: {e}")
     
     def _handle_work_state(self, queue_item: StateQueueItem):
-        """處理 WORK 狀態 - 通知狀態管理器創建工作會話"""
+        """處理 WORK 狀態 - 通知狀態管理器創建工作會話並等待完成通知"""
         try:
-            from core.state_manager import state_manager
+            from core.states.state_manager import state_manager
             
             # 確定工作流程類型
             intent_type = queue_item.metadata.get('intent_type', 'command')
@@ -206,30 +207,44 @@ class StateQueueManager:
                 "intent_type": intent_type,
                 "trigger_content": queue_item.trigger_content,
                 "queue_item_id": f"{queue_item.state.value}_{queue_item.created_at.timestamp()}",
+                "state_queue_callback": self._on_work_session_complete,  # 回調函數
                 **queue_item.metadata
             }
             
             # 通知狀態管理器創建工作會話
             state_manager.set_state(UEPState.WORK, context)
             
-            info_log(f"[StateQueue] WORK 狀態處理完成: {queue_item.context_content[:50]}...")
+            info_log(f"[StateQueue] WORK 狀態啟動: {queue_item.context_content[:50]}...")
             debug_log(4, f"[StateQueue] 工作意圖: {intent_type}, 工作流程類型: {workflow_type}")
+            debug_log(4, f"[StateQueue] 等待工作會話完成...")
             
-            # 標記為成功完成
-            self.complete_current_state(success=True, result_data={"work_processed": True})
+            # 不立即完成狀態，等待會話完成回調
             
         except Exception as e:
             error_log(f"[StateQueue] 處理 WORK 狀態時發生錯誤: {e}")
+            self.complete_current_state(success=False, result_data={"error": str(e)})
+    
+    def _on_work_session_complete(self, session_id: str, success: bool, result_data: Dict[str, Any] = None):
+        """工作會話完成回調"""
+        try:
+            info_log(f"[StateQueue] 工作會話完成: {session_id} ({'成功' if success else '失敗'})")
+            debug_log(4, f"[StateQueue] 會話結果: {result_data}")
+            
+            # 現在才標記狀態完成
+            self.complete_current_state(success=success, result_data=result_data or {})
+            
+        except Exception as e:
+            error_log(f"[StateQueue] 處理工作會話完成回調時發生錯誤: {e}")
             self.complete_current_state(success=False, result_data={"error": str(e)})
     
     def _map_intent_to_workflow_type(self, intent_type: str) -> str:
         """將意圖類型映射為工作流程類型"""
         mapping = {
             'command': 'single_command',
-            'compound': 'multi_step_workflow',
-            'query': 'data_query',
+            'compound': 'workflow_automation',
+            'query': 'workflow_automation',
             'file_operation': 'file_processing',
-            'system_command': 'system_operation'
+            'system_command': 'single_command'
         }
         return mapping.get(intent_type.lower(), 'single_command')
     
@@ -240,6 +255,54 @@ class StateQueueManager:
             
         except Exception as e:
             error_log(f"[StateQueue] 處理 WORK 完成時發生錯誤: {e}")
+    
+    def interrupt_chat_for_work(self, command_task: str, 
+                               trigger_user: Optional[str] = None,
+                               metadata: Optional[Dict[str, Any]] = None) -> bool:
+        """
+        聊天中斷：當在 CHAT 狀態中檢測到明顯指令時，插入 WORK 狀態
+        這會中斷當前的聊天並優先處理工作任務
+        """
+        try:
+            debug_log(1, f"[StateQueue] 聊天中斷轉工作：{command_task[:50]}...")
+            
+            # 創建高優先級的 WORK 狀態項目
+            interrupt_metadata = metadata or {}
+            interrupt_metadata.update({
+                "chat_interrupt": True,
+                "interrupt_timestamp": datetime.now().isoformat(),
+                "original_command": command_task
+            })
+            
+            queue_item = StateQueueItem(
+                state=UEPState.WORK,
+                trigger_content=command_task,
+                context_content=command_task,
+                trigger_user=trigger_user,
+                priority=200,  # 高於普通任務但不是最高緊急
+                metadata=interrupt_metadata,
+                created_at=datetime.now()
+            )
+            
+            # 插入到佇列前面（優先處理）
+            self.queue.insert(0, queue_item)
+            
+            info_log(f"[StateQueue] 聊天中斷已插入佇列 - 優先級: 200, 位置: 0")
+            debug_log(2, f"[StateQueue] 工作任務: {command_task}")
+            
+            # 標記當前 CHAT 狀態需要中斷（如果有的話）
+            if self.current_item and self.current_item.state == UEPState.CHAT:
+                debug_log(1, "[StateQueue] 標記當前 CHAT 會話進行工作中斷")
+                interrupt_metadata["interrupted_chat_session"] = True
+            
+            # 保存佇列
+            self._save_queue()
+            
+            return True
+            
+        except Exception as e:
+            error_log(f"[StateQueue] 聊天中斷處理失敗: {e}")
+            return False
     
     def add_state(self, state: UEPState, trigger_content: str, 
                   context_content: Optional[str] = None,

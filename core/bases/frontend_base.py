@@ -37,9 +37,9 @@ except ImportError:
     QMetaObject = None
     class FrontendMetaClass(type): pass
 
-from core.module_base import BaseModule
+from core.bases.module_base import BaseModule
 from core.working_context import WorkingContextManager, ContextType
-from core.state_manager import UEPState, StateManager
+from core.states.state_manager import UEPState, StateManager
 from utils.debug_helper import debug_log, info_log, error_log
 
 

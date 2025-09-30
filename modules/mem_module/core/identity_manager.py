@@ -54,14 +54,15 @@ class IdentityManager:
             return False
     
     def get_current_memory_token(self) -> str:
-        """從Working Context獲取當前記憶體令牌"""
+        """從Working Context的身份中獲取當前記憶體令牌"""
         try:
-            # 從Working Context提取記憶體令牌
-            memory_token = working_context_manager.get_memory_token()
+            # 從Working Context的身份中提取記憶體令牌
+            current_identity = working_context_manager.get_current_identity()
+            memory_token = current_identity.get("memory_token") if current_identity else None
             
             if memory_token:
                 self.stats["token_extractions"] += 1
-                debug_log(3, f"[IdentityManager] Extracted memory token: {memory_token}")
+                debug_log(3, f"[IdentityManager] Extracted memory token from identity: {memory_token}")
                 return memory_token
             
             # 如果沒有記憶體令牌，返回匿名令牌

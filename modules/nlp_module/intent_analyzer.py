@@ -103,6 +103,12 @@ class IntentAnalyzer:
             result["primary_intent"] = self._determine_primary_intent(intent_segments)
             result["overall_confidence"] = self._calculate_overall_confidence(intent_segments)
             
+            # 檢測需要中斷的指令 (在 CHAT 狀態中)
+            interruption_detected = self._detect_command_interruption(text, intent_segments, context)
+            if interruption_detected:
+                result["command_interruption"] = interruption_detected
+                debug_log(1, f"[IntentAnalyzer] 檢測到指令: {interruption_detected['reason']}")
+            
             # 創建多意圖上下文
             contexts = self.context_manager.create_contexts_from_segments(
                 [self._segment_to_dict(seg) for seg in intent_segments], text
@@ -418,6 +424,42 @@ class IntentAnalyzer:
     def get_next_context(self) -> Optional[Tuple[Any, IntentContext]]:
         """獲取下一個可執行的上下文"""
         return self.context_manager.get_next_executable_context()
+    
+    def _detect_command_interruption(self, text: str, intent_segments: List[IntentSegment], 
+                                 context: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        """檢測明顯的指令 - 在 CHAT 狀態中檢測需要切換到 WORK 的指令"""
+        try:
+            # 只在 CHAT 狀態下檢測
+            current_context = context or {}
+            current_state = current_context.get("current_state", "unknown")
+            
+            if current_state != "CHAT":
+                return None
+            
+            # 檢查是否有明顯的 COMMAND 意圖
+            has_command_intent = any(seg.intent == IntentType.COMMAND for seg in intent_segments)
+            
+            if has_command_intent:
+                # 找出命令相關的片段
+                command_segments = [seg for seg in intent_segments if seg.intent == IntentType.COMMAND]
+                command_confidence = max(seg.confidence for seg in command_segments)
+                
+                # 如果命令意圖信心度夠高，建議中斷切換到 WORK
+                if command_confidence >= 0.6:  # 調整閾值，更寬鬆的判斷
+                    return {
+                        "needs_interruption": True,
+                        "priority": "high" if command_confidence >= 0.8 else "medium",
+                        "reason": "在聊天中檢測到明顯的指令意圖",
+                        "command_segments": [seg.text for seg in command_segments],
+                        "recommended_action": "work_interrupt",
+                        "confidence": command_confidence
+                    }
+            
+            return None
+            
+        except Exception as e:
+            error_log(f"[IntentAnalyzer] 指令檢測失敗: {e}")
+            return None
 
 def test_intent_analyzer():
     """測試意圖分析器"""

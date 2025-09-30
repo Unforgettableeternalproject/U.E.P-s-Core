@@ -77,6 +77,7 @@ class WorkingContext:
         self.created_at = time.time()
         self.last_activity = time.time()
         self.timeout = timeout  # 上下文超時時間（秒）
+        self._rwlock = threading.RLock()
         
         # 累積數據相關
         self.data: List[Any] = []  # 改名為更通用的 data
@@ -86,6 +87,14 @@ class WorkingContext:
         # 決策相關
         self.pending_decision: Optional[Dict[str, Any]] = None
         self.decision_callback: Optional[Callable] = None
+        self.warmup()
+        
+    def warmup(self):
+        """初始化工作上下文"""
+        with self._rwlock:
+            # WorkingContext 不需要清理其他上下文
+            pass
+        info_log(f"[WorkingContext] {self.context_id} warmup 完成")
         
     def add_data(self, data_item: Any, metadata: Optional[Dict] = None):
         """添加數據到上下文 - 更通用的方法名"""
@@ -95,6 +104,11 @@ class WorkingContext:
         if metadata:
             self.metadata.update(metadata)
             
+        max_items = self.metadata.get("max_items", 10000)
+        if len(self.data) > max_items:
+            # 丟最舊的，或在這裡做摘要/壓縮
+            self.data = self.data[-max_items:]
+                    
         debug_log(3, f"[WorkingContext] 數據添加到上下文 {self.context_id} "
                     f"(數據量: {len(self.data)}/{self.threshold})")
     
@@ -124,6 +138,8 @@ class WorkingContext:
     def get_decision_package(self) -> Dict[str, Any]:
         """獲取決策所需的數據包"""
         return {
+            "trace_id": f"{self.context_id}:{len(self.data)}",
+            "timestamp": time.time(),
             "context_id": self.context_id,
             "context_type": self.context_type,
             "data": self.data.copy(),
@@ -192,8 +208,23 @@ class WorkingContextManager:
             return
             
         self._initialized = True
+        self._rwlock = threading.RLock()  # 添加缺失的讀寫鎖
         self.contexts: Dict[str, WorkingContext] = {}
         self.active_contexts_by_type: Dict[ContextType, str] = {}
+        
+        # 類型默認配置
+        self._type_defaults = {
+            ContextType.SPEAKER_ACCUMULATION: {"threshold": 15, "timeout": 600.0},
+            ContextType.IDENTITY_MANAGEMENT:  {"threshold": 1,  "timeout": 900.0},
+            ContextType.CONVERSATION:         {"threshold": 1,  "timeout": 300.0},
+            ContextType.WORKFLOW_SESSION:     {"threshold": 1,  "timeout": 900.0},
+            ContextType.LEARNING:             {"threshold": 1,  "timeout": 300.0},
+            ContextType.CROSS_MODULE_DATA:    {"threshold": 1,  "timeout": 300.0},
+            ContextType.MEM_EXTERNAL_ACCESS:  {"threshold": 1,  "timeout": 300.0},
+            ContextType.LLM_CONTEXT:          {"threshold": 1,  "timeout": 300.0},
+            ContextType.SYS_WORKFLOW:         {"threshold": 1,  "timeout": 300.0},
+            ContextType.GENERAL_SESSION:      {"threshold": 1,  "timeout": 300.0},
+        }
         
         # 決策處理器註冊表
         self.decision_handlers: Dict[ContextType, DecisionHandler] = {}
@@ -219,18 +250,19 @@ class WorkingContextManager:
     def create_context(self, context_type: ContextType, 
                       threshold: int = 1, timeout: float = 300.0) -> str:
         """創建新的工作上下文"""
-        context_id = f"{context_type.value}_{int(time.time())}_{uuid.uuid4().hex[:8]}"
-        
-        context = WorkingContext(context_id, context_type, threshold, timeout)
-        self.contexts[context_id] = context
-        
-        # 設定為該類型的活躍上下文
-        self.active_contexts_by_type[context_type] = context_id
-        
-        info_log(f"[WorkingContextManager] 創建新工作上下文: {context_id} "
-                f"(類型: {context_type.value}, 閾值: {threshold})")
-        
-        return context_id
+        with self._rwlock:
+            context_id = f"{context_type.value}_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+            
+            context = WorkingContext(context_id, context_type, threshold, timeout)
+            self.contexts[context_id] = context
+            
+            # 設定為該類型的活躍上下文
+            self.active_contexts_by_type[context_type] = context_id
+            
+            info_log(f"[WorkingContextManager] 創建新工作上下文: {context_id} "
+                    f"(類型: {context_type.value}, 閾值: {threshold})")
+            
+            return context_id
     
     def get_active_context(self, context_type: ContextType) -> Optional[WorkingContext]:
         """獲取指定類型的活躍上下文"""
@@ -244,20 +276,22 @@ class WorkingContextManager:
     def add_data_to_context(self, context_type: ContextType, data_item: Any, 
                            metadata: Optional[Dict] = None) -> Optional[str]:
         """添加數據到指定類型的上下文"""
-        context = self.get_active_context(context_type)
-        
-        if context is None:
-            # 自動創建新上下文
-            context_id = self.create_context(context_type)
-            context = self.contexts[context_id]
-        
-        context.add_data(data_item, metadata)
-        
-        # 檢查是否達到決策條件
-        if context.is_ready_for_decision():
-            return self._trigger_decision(context)
-        
-        return context.context_id
+        with self._rwlock:
+            context = self.get_active_context(context_type)
+            
+            if context is None:
+                # 自動創建新上下文
+                d = self._type_defaults.get(context_type, {"threshold": 1, "timeout": 300.0})
+                context_id = self.create_context(context_type, threshold=d["threshold"], timeout=d["timeout"])
+                context = self.contexts[context_id]
+            
+            context.add_data(data_item, metadata)
+            
+            # 檢查是否達到決策條件
+            if context.is_ready_for_decision():
+                return self._trigger_decision(context)
+            
+            return context.context_id
     
     def _trigger_decision(self, context: WorkingContext) -> Optional[str]:
         """觸發上下文決策 - 使用註冊的決策處理器"""
@@ -280,6 +314,18 @@ class WorkingContextManager:
                     
                     if success:
                         context.status = ContextStatus.COMPLETED
+                        # ⬇️ 釋放大 payload（保留必要 metadata/統計即可）
+                        context.data.clear()
+                        context.metadata["completed_at"] = time.time()
+                        if self.notification_callback:
+                            try:
+                                self.notification_callback({
+                                    "event": "context.completed",
+                                    "context_id": context.context_id,
+                                    "context_type": context.context_type.value
+                                })
+                            except Exception as e:
+                                error_log(f"[WorkingContextManager] 通知回調失敗: {e}")
                         info_log(f"[WorkingContextManager] 上下文決策完成: {context.context_id}")
                         return decision_result.get('result_id', context.context_id)
                     else:
@@ -299,6 +345,18 @@ class WorkingContextManager:
     
     def _request_inquiry(self, context: WorkingContext, decision_info: Dict[str, Any]) -> Optional[str]:
         """請求外部詢問（如 LLM 或用戶界面）"""
+        
+        if self.notification_callback:
+            try:
+                self.notification_callback({
+                    "event": "context.inquiry",
+                    "context_id": context.context_id,
+                    "context_type": context.context_type.value,
+                    "reason": decision_info.get("reason", "require_confirmation")
+                })
+            except Exception as e:
+                error_log(f"[WorkingContextManager] 通知回調失敗: {e}")
+                
         if self.inquiry_callback:
             inquiry_data = {
                 "context_id": context.context_id,
@@ -315,7 +373,7 @@ class WorkingContextManager:
             return self.inquiry_callback(inquiry_data)
         
         # 沒有詢問回調，預設完成
-        context.status = ContextStatus.COMPLETED
+        context.status = ContextStatus.SUSPENDED
         return context.context_id
     
     def handle_inquiry_response(self, context_id: str, response: Dict[str, Any]) -> bool:
@@ -371,6 +429,8 @@ class WorkingContextManager:
         
         if expired_contexts:
             debug_log(3, f"[WorkingContextManager] 清理 {len(expired_contexts)} 個過期上下文")
+        
+        return len(expired_contexts)
     
     def cleanup_incomplete_contexts(self, context_type: ContextType, min_threshold: int = 15) -> int:
         """
@@ -492,13 +552,29 @@ class WorkingContextManager:
         """獲取當前用戶身份"""
         return self.get_context_data("current_identity")
     
+    def set_identity(self, identity_data: Dict[str, Any]):
+        """設置當前用戶身份（別名方法，與測試代碼兼容）"""
+        self.set_current_identity(identity_data)
+    
     def set_memory_token(self, token: str):
-        """設置記憶庫存取令牌"""
-        self.set_context_data("memory_token", token)
+        """設置記憶庫存取令牌（通過更新當前身份）"""
+        current_identity = self.get_current_identity()
+        if current_identity:
+            current_identity["memory_token"] = token
+            self.set_current_identity(current_identity)
+        else:
+            # 如果沒有身份，創建一個基本身份
+            new_identity = {
+                "identity_id": "default",
+                "user_identity": "default_user",
+                "memory_token": token
+            }
+            self.set_current_identity(new_identity)
     
     def get_memory_token(self) -> Optional[str]:
-        """獲取記憶庫存取令牌"""
-        return self.get_context_data("memory_token")
+        """獲取記憶庫存取令牌（從當前身份中）"""
+        current_identity = self.get_current_identity()
+        return current_identity.get("memory_token") if current_identity else None
     
     def set_voice_preferences(self, preferences: Dict[str, Any]):
         """設置語音偏好"""
@@ -609,6 +685,25 @@ class WorkingContextManager:
         context_key = f"{context_type.value}_{key}"
         if context_key in self.global_context_data:
             del self.global_context_data[context_key]
+            
+    def start_cleanup_worker(self, interval_sec: float = 30.0):
+        if self._cleanup_thread and self._cleanup_thread.is_alive():
+            return
+        self._stop_cleanup = False
+        def _loop():
+            while not self._stop_cleanup:
+                try:
+                    with self._rwlock:
+                        self.cleanup_expired_contexts()
+                except Exception as e:
+                    error_log(f"[WorkingContextManager] 清理執行緒錯誤: {e}")
+                time.sleep(interval_sec)
+        self._cleanup_thread = threading.Thread(target=_loop, daemon=True)
+        self._cleanup_thread.start()
+        info_log("[WorkingContextManager] 清理執行緒已啟動")
+
+    def stop_cleanup_worker(self):
+        self._stop_cleanup = True
 
 
 # 全局工作上下文管理器實例

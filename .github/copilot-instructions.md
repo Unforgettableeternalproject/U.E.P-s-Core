@@ -16,11 +16,14 @@ Main priorities: correctness, modularity, stability, and respect for existing na
   source venv/bin/activate   # Linux/macOS
   .\venv\Scripts\activate    # Windows PowerShell
 ```
-* Our system only accepts English as user input, but user-facing strings in the code should be in Traditional Chinese (zh-TW).
+- **Every required package has been installed** in the virtual environment.
+
+* Our system only accepts English as user input, but user-facing strings in the code and comments should be in Traditional Chinese (zh-TW).
 * Keep code changes **minimal and targeted**. Suggest only the section that needs modification, not the entire file.
 * Use **Python 3.10**, type hints, and docstrings (Google style).
 * No hardcoding secrets, absolute paths, or adding stray `print()` calls.
 * Use our logging and debug system (`debug_level`, `log_level`) instead of raw prints.
+* If you just summarized chat history and is not sure where to continue, ask for clarification, more context is always better.
 
 ---
 

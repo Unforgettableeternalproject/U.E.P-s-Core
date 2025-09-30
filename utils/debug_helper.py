@@ -77,3 +77,7 @@ def error_log(msg: str, type: str = "ERROR"):
         logger.critical(msg)
     else:
         logger.error(f"[Unrecognized type '{type}'] {msg}")
+        
+def get_debug_level() -> int:
+    """獲取當前除錯等級"""
+    return _debug_level

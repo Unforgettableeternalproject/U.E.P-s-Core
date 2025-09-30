@@ -1,441 +1,188 @@
-﻿# core/router.py
-from typing import Tuple, Any, Dict, Optional, List
-from utils.debug_helper import info_log, debug_log
-from core.state_manager import UEPState, StateManager
-from core.strategies import smart_strategy, priority_strategy, conditional_strategy, context_decision_engine
-from core.framework import RouteStrategy, DecisionEngine, ModuleInfo
+"""
+簡化路由器 - 純文字處理版本
+根據新架構設計：NLP 負責狀態管理，Router 只處理純文字路由
+
+設計原則：
+1. Router 只接收純文字輸入/輸出
+2. NLP 直接管理狀態設置和上下文
+3. Router 根據當前狀態進行簡單的模組路由
+4. 專注於文字傳遞，不處理複雜意圖分析
+"""
+
+from typing import Dict, Any, Optional, List
+from dataclasses import dataclass
 from enum import Enum
+import time
+
+from core.states.state_manager import UEPState, state_manager
+from core.working_context import working_context_manager
+from utils.debug_helper import debug_log, info_log, error_log
 
 
-class RouterMode(Enum):
-    """路由器模式"""
-    DIRECT = "direct"      # 直接路由
-    STRATEGY = "strategy"  # 策略路由
-    CONDITIONAL = "conditional"  # 條件路由
+class TextSource(Enum):
+    """文字來源類型"""
+    USER_INPUT = "user_input"      # 來自使用者（NLP處理後）
+    SYSTEM_OUTPUT = "system_output"  # 來自處理層
+
+
+@dataclass
+class Input:
+    """簡化的文字輸入結構"""
+    text: str                    # 純文字內容
+    source: TextSource          # 來源類型
+    source_module: str          # 來源模組名稱
+    metadata: Dict[str, Any] = None  # 簡單元數據
+
+
+@dataclass
+class TextRoutingDecision:
+    """文字路由決策"""
+    target_module: str          # 目標模組
+    text_content: str          # 要傳遞的文字
+    routing_metadata: Dict[str, Any] = None  # 路由元數據
+    reasoning: str = ""        # 決策原因
 
 
 class Router:
-    """
-    統一路由器 - 根據系統狀態和輸入層->處理層->輸出層架構進行模組路由
-
-    新的架構：
-    輸入層 (STT/NLP) -> 處理層 (MEM/SYS/LLM) -> 輸出層 (TTS)
-
-    Router根據當前系統狀態決定應該存取哪些模組，不被會話所拘束。
-    """
-
-    def __init__(self, mode: RouterMode = RouterMode.STRATEGY):
-        self.mode = mode
-        self.current_strategy: RouteStrategy = smart_strategy
-        self.decision_engine: DecisionEngine = context_decision_engine
-
-        # 模組層次定義
-        self.layer_definitions = {
-            "input": ["stt", "nlp"],           # 輸入層
-            "processing": ["mem", "sys", "llm"], # 處理層
-            "output": ["tts"]                  # 輸出層
-        }
-
-        # 狀態特定的路由規則
-        self.state_routing_rules = {
-            UEPState.IDLE: {
-                "default_modules": ["llm"],
-                "supported_intents": ["chat", "command", "memory_query"],
-                "flow": ["processing"]  # 只有處理層
-            },
+    """簡化文字路由器"""
+    
+    def __init__(self):
+        """初始化簡化路由器"""
+        self.state_manager = state_manager
+        self.context_manager = working_context_manager
+        
+        # 狀態-模組映射（簡化版）
+        self.state_routing_map = {
             UEPState.CHAT: {
-                "default_modules": ["llm", "mem"],
-                "supported_intents": ["chat", "memory_query", "memory_store"],
-                "flow": ["processing"]  # 處理層，可能包含記憶
+                "primary": "llm",
+                "secondary": ["mem"],
             },
             UEPState.WORK: {
-                "default_modules": ["sys", "llm"],
-                "supported_intents": ["command", "chat"],
-                "flow": ["processing"]  # 處理層，系統操作優先
+                "primary": "sys", 
+                "secondary": ["llm"],
             },
-            UEPState.ERROR: {
-                "default_modules": ["sys"],
-                "supported_intents": ["command"],
-                "flow": ["processing"]  # 只有系統處理
+            UEPState.IDLE: {
+                "primary": None,
+                "secondary": [],
             }
         }
-
-    def set_strategy(self, strategy: RouteStrategy) -> None:
-        """設置路由策略"""
-        self.current_strategy = strategy
-        debug_log(1, f"[Router] 切換路由策略: {strategy.name}")
-
-    def route(self,
-              intent: str,
-              detail: Any,
-              state: UEPState,
-              context: Optional[Dict[str, Any]] = None,
-              available_modules: Optional[Dict[str, ModuleInfo]] = None
-             ) -> Tuple[str, Dict[str, Any]]:
+        
+        info_log("[SimpleRouter] 簡化文字路由器初始化完成")
+    
+    def route_text(self, text_input: Input) -> TextRoutingDecision:
         """
-        根據intent、當前狀態和上下文決定路由
-
+        路由純文字到適當的處理模組
+        
         Args:
-            intent: 意圖類型
-            detail: 使用者輸入內容
-            state: 當前系統狀態
-            context: 額外上下文資訊
-            available_modules: 可用模組資訊
-
+            text_input: 簡化的文字輸入
+            
         Returns:
-            (module_key, args) 或 (flow_type, module_sequence)
+            TextRoutingDecision: 路由決策
         """
-        if context is None:
-            context = {}
-
-        # 添加狀態資訊到上下文
-        context.update({
-            "current_state": state,
-            "intent": intent,
-            "detail": detail
-        })
-
-        debug_log(1, f"[Router] 路由請求 - 意圖:{intent}, 狀態:{state.value}")
-
-        # 根據路由模式選擇路由邏輯
-        if self.mode == RouterMode.DIRECT:
-            return self._direct_route(intent, detail, state, context)
-        elif self.mode == RouterMode.CONDITIONAL:
-            return self._conditional_route(intent, detail, state, context, available_modules)
-        else:  # STRATEGY mode
-            return self._strategy_route(intent, detail, state, context, available_modules)
-
-    def _direct_route(self, intent: str, detail: Any, state: UEPState, context: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
-        """直接路由 - 基於狀態規則的簡單映射"""
-        state_rules = self.state_routing_rules.get(state, self.state_routing_rules[UEPState.IDLE])
-
-        # 檢查intent是否被支援
-        if intent not in state_rules["supported_intents"]:
-            # fallback到預設intent
-            intent = "chat"
-            debug_log(2, f"[Router] Intent '{intent}' 不支援，fallback到 'chat'")
-
-        # 簡單的intent到模組映射
-        module_mapping = {
-            "chat": "llm",
-            "command": "sys",
-            "memory_query": "mem",
-            "memory_store": "mem",
-            "voice_recognition": "stt"
-        }
-
-        module_key = module_mapping.get(intent, "llm")
-        args = self._prepare_module_args(module_key, intent, detail, context)
-
-        debug_log(1, f"[Router] 直接路由: {intent} → {module_key}")
-        return module_key, args
-
-    def _strategy_route(self,
-                       intent: str,
-                       detail: Any,
-                       state: UEPState,
-                       context: Dict[str, Any],
-                       available_modules: Optional[Dict[str, ModuleInfo]]
-                       ) -> Tuple[str, Dict[str, Any]]:
-        """策略路由 - 使用路由策略計算最佳路徑"""
-        if not available_modules:
-            # 如果沒有提供可用模組資訊，回退到直接路由
-            return self._direct_route(intent, detail, state, context)
-
-        # 使用策略計算路由
-        module_sequence = self.current_strategy.calculate_route(intent, context, available_modules)
-
-        if not module_sequence:
-            # 策略沒有找到路由，回退到直接路由
-            return self._direct_route(intent, detail, state, context)
-
-        # 對於多模組序列，返回第一個模組（主要處理模組）
-        primary_module = module_sequence[0]
-        args = self._prepare_module_args(primary_module, intent, detail, context)
-
-        # 如果有後續模組，添加到上下文中供後續處理
-        if len(module_sequence) > 1:
-            args["module_sequence"] = module_sequence
-            args["next_modules"] = module_sequence[1:]
-
-        debug_log(1, f"[Router] 策略路由: {intent} → {primary_module} (序列: {' → '.join(module_sequence)})")
-        return primary_module, args
-
-    def _conditional_route(self,
-                          intent: str,
-                          detail: Any,
-                          state: UEPState,
-                          context: Dict[str, Any],
-                          available_modules: Optional[Dict[str, ModuleInfo]]
-                          ) -> Tuple[str, Dict[str, Any]]:
-        """條件路由 - 使用條件策略"""
-        # 使用條件策略
-        module_sequence = conditional_strategy.calculate_route(intent, context, available_modules or {})
-
-        if not module_sequence:
-            return self._direct_route(intent, detail, state, context)
-
-        primary_module = module_sequence[0]
-        args = self._prepare_module_args(primary_module, intent, detail, context)
-
-        debug_log(1, f"[Router] 條件路由: {intent} → {primary_module}")
-        return primary_module, args
-
-    def _prepare_module_args(self, module_key: str, intent: str, detail: Any, context: Dict[str, Any]) -> Dict[str, Any]:
-        """準備模組參數"""
-        base_args = {"intent": intent}
-
-        # 根據模組類型準備特定參數
-        if module_key == "llm":
-            base_args.update({
-                "text": str(detail),
-                "enable_memory_retrieval": self._should_retrieve_memory(intent, detail)
-            })
-        elif module_key == "mem":
-            base_args.update(self._prepare_memory_args(intent, detail, context))
-        elif module_key == "sys":
-            base_args.update({
-                "command": str(detail),
-                "mode": "execute_command"
-            })
-        elif module_key == "stt":
-            base_args.update({
-                "audio_data": detail,
-                "language": context.get("language", "zh-TW")
-            })
-        elif module_key == "nlp":
-            base_args.update({
-                "text": str(detail),
-                "analyze_intent": True,
-                "extract_entities": True
-            })
-        elif module_key == "tts":
-            base_args.update({
-                "text": str(detail),
-                "voice": context.get("voice", "default")
-            })
-        else:
-            # 通用參數
-            base_args["data"] = detail
-
-        return base_args
-
-    def _should_retrieve_memory(self, intent: str, detail: Any) -> bool:
-        """判斷是否需要檢索記憶"""
-        if intent == "chat":
-            return True
-
-        if isinstance(detail, str):
-            memory_keywords = ["記得", "之前", "上次", "昨天", "前面", "剛才", "想起"]
-            return any(keyword in detail for keyword in memory_keywords)
-
-        return False
-
-    def _prepare_memory_args(self, intent: str, detail: Any, context: Dict[str, Any]) -> Dict[str, Any]:
-        """準備記憶模組參數"""
-        base_args = {
-            "operation_type": "query" if intent == "memory_query" else "store",
-            "timestamp": None,
-            "max_results": 5
-        }
-
-        if intent == "memory_query":
-            base_args.update({
-                "query_text": str(detail),
-                "similarity_threshold": 0.7
-            })
-        elif intent == "memory_store":
-            base_args.update({
-                "content": str(detail),
-                "memory_type": "user_input"
-            })
-
-        return base_args
-
-    def handle_response(self,
-                       module_key: str,
-                       response: Dict[str, Any],
-                       state_manager: Optional[StateManager] = None,
-                       context: Optional[Dict[str, Any]] = None
-                       ) -> Optional[Dict[str, Any]]:
+        debug_log(2, f"[SimpleRouter] 處理文字路由 - 來源: {text_input.source.value}")
+        debug_log(3, f"[SimpleRouter] 文字內容: {text_input.text[:50]}...")
+        
+        # 1. 獲取當前系統狀態
+        current_state = self.state_manager.get_current_state()
+        debug_log(2, f"[SimpleRouter] 當前狀態: {current_state}")
+        
+        # 2. 根據狀態決定目標模組
+        target_module = self._decide_target_module(current_state, text_input)
+        
+        # 3. 創建路由決策
+        decision = TextRoutingDecision(
+            target_module=target_module,
+            text_content=text_input.text,
+            routing_metadata={
+                "source": text_input.source.value,
+                "source_module": text_input.source_module,
+                "current_state": current_state.value,
+                "timestamp": time.time()
+            },
+            reasoning=f"狀態:{current_state.value} -> 模組:{target_module}"
+        )
+        
+        debug_log(1, f"[SimpleRouter] 路由決策: {decision.reasoning}")
+        return decision
+    
+    def _decide_target_module(self, current_state: UEPState, text_input: Input) -> str:
         """
-        處理模組回應，決定下一步動作
-
+        根據當前狀態決定目標模組
+        
         Args:
-            module_key: 回應的模組
-            response: 模組回應
-            state_manager: 狀態管理器
-            context: 當前上下文
-
+            current_state: 當前系統狀態
+            text_input: 文字輸入
+            
         Returns:
-            下一步動作資訊，如果沒有則返回None
+            str: 目標模組名稱
         """
-        if context is None:
-            context = {}
-
-        debug_log(1, f"[Router] 處理 {module_key} 回應")
-
-        # 處理不同模組的回應
-        if module_key == "llm":
-            return self._handle_llm_response(response, state_manager, context)
-        elif module_key == "mem":
-            return self._handle_memory_response(response, state_manager, context)
-        elif module_key == "sys":
-            return self._handle_sys_response(response, state_manager, context)
-        elif module_key == "stt":
-            return self._handle_stt_response(response, state_manager, context)
-        elif module_key == "nlp":
-            return self._handle_nlp_response(response, state_manager, context)
-        elif module_key == "tts":
-            return self._handle_tts_response(response, state_manager, context)
-
-        return None
-
-    def _handle_llm_response(self, response: Dict[str, Any], state_manager: Optional[StateManager], context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """處理LLM回應"""
-        # 檢查是否包含系統動作
-        if "sys_action" in response:
-            sys_action = response.get("sys_action")
-            if isinstance(sys_action, dict):
-                debug_log(1, f"[Router] LLM回應包含系統動作: {sys_action}")
-                return {
-                    "action": "route_to_sys",
-                    "module": "sys",
-                    "args": {
-                        "mode": "execute_sys_action",
-                        "sys_action": sys_action
-                    }
-                }
-
-        # 檢查是否需要TTS輸出
-        if response.get("should_speak", False) or context.get("voice_output", False):
-            return {
-                "action": "route_to_tts",
-                "module": "tts",
-                "args": {
-                    "text": response.get("text", ""),
-                    "voice": context.get("voice", "default")
-                }
-            }
-
-        return None
-
-    def _handle_memory_response(self, response: Dict[str, Any], state_manager: Optional[StateManager], context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """處理記憶模組回應"""
-        operation_type = response.get("operation_type", "")
-        status = response.get("status", "success")
-
-        if status != "success":
-            debug_log(1, f"[Router] MEM操作失敗: {response.get('error', '未知錯誤')}")
-            return None
-
-        # 根據操作類型處理
-        if operation_type == "query":
-            memories = response.get("memories", [])
-            if memories:
-                # 記憶查詢成功，返回增強上下文的動作
-                return {
-                    "action": "enhance_context",
-                    "module": "llm",
-                    "args": {
-                        "memory_context": self._format_memory_context(memories),
-                        "original_intent": context.get("intent", "chat")
-                    }
-                }
-
-        elif operation_type == "store":
-            # 記憶儲存確認
-            debug_log(1, f"[Router] 記憶儲存成功: {response.get('stored_count', 0)} 條")
-            # 記憶儲存通常不需要後續動作
-            return None
-
-        return None
-
-    def _handle_sys_response(self, response: Dict[str, Any], state_manager: Optional[StateManager], context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """處理系統模組回應"""
-        # 系統操作通常是終點，不需要進一步路由
-        debug_log(1, f"[Router] 系統操作完成: {response.get('status', 'unknown')}")
-        return None
-
-    def _handle_stt_response(self, response: Dict[str, Any], state_manager: Optional[StateManager], context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """處理語音識別回應"""
-        if response.get("status") == "success":
-            recognized_text = response.get("text", "")
-            if recognized_text:
-                # 語音識別成功，路由到NLP處理
-                return {
-                    "action": "route_to_nlp",
-                    "module": "nlp",
-                    "args": {
-                        "text": recognized_text,
-                        "source": "stt"
-                    }
-                }
-
-        return None
-
-    def _handle_nlp_response(self, response: Dict[str, Any], state_manager: Optional[StateManager], context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """處理NLP回應"""
-        if response.get("status") == "success":
-            intent = response.get("intent", "chat")
-            entities = response.get("entities", {})
-
-            # NLP處理成功，根據intent路由到適當的處理模組
-            if intent in ["chat", "memory_query"]:
-                target_module = "llm"
-            elif intent == "command":
-                target_module = "sys"
-            else:
-                target_module = "llm"  # 預設
-
-            return {
-                "action": "route_to_processing",
-                "module": target_module,
-                "args": {
-                    "intent": intent,
-                    "detail": response.get("text", ""),
-                    "entities": entities,
-                    "nlp_processed": True
-                }
-            }
-
-        return None
-
-    def _handle_tts_response(self, response: Dict[str, Any], state_manager: Optional[StateManager], context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """處理TTS回應"""
-        # TTS通常是終點
-        debug_log(1, f"[Router] TTS輸出完成")
-        return None
-
-    def _format_memory_context(self, memories: List[Dict[str, Any]]) -> str:
-        """格式化記憶上下文"""
-        if not memories:
-            return ""
-
-        context_parts = ["基於您的歷史記憶，我回想起以下相關資訊："]
-
-        for i, memory in enumerate(memories, 1):
-            content = memory.get("content", "")
-            timestamp = memory.get("timestamp", "")
-            similarity = memory.get("similarity", 0.0)
-
-            # 格式化時間戳
-            if timestamp:
-                try:
-                    from datetime import datetime
-                    dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-                    time_str = dt.strftime("%Y年%m月%d日 %H:%M")
-                except:
-                    time_str = str(timestamp)
-            else:
-                time_str = "未知時間"
-
-            context_parts.append(f"{i}. ({time_str}) {content}")
-            if similarity > 0:
-                context_parts.append(f"   相關度: {similarity:.2f}")
-
-        return "\n".join(context_parts)
+        # 系統輸出優先路由到輸出層
+        if text_input.source == TextSource.SYSTEM_OUTPUT:
+            debug_log(3, "[SimpleRouter] 系統輸出，路由到 TTS")
+            return "tts"
+        
+        # 使用者輸入根據狀態決定處理模組
+        if current_state in self.state_routing_map:
+            primary_module = self.state_routing_map[current_state]["primary"]
+            
+            if primary_module:
+                debug_log(3, f"[SimpleRouter] 狀態 {current_state.value} -> 主要模組: {primary_module}")
+                return primary_module
+        
+        # 預設情況：使用者輸入給 LLM
+        debug_log(3, "[SimpleRouter] 使用者輸入，預設路由到 LLM")
+        return "llm"
+    
+    def route_user_input(self, text: str, source_module: str = "nlp") -> TextRoutingDecision:
+        """
+        路由使用者輸入文字的便利方法
+        
+        Args:
+            text: 使用者輸入文字
+            source_module: 來源模組名稱
+            
+        Returns:
+            TextRoutingDecision: 路由決策
+        """
+        text_input = Input(
+            text=text,
+            source=TextSource.USER_INPUT,
+            source_module=source_module
+        )
+        return self.route_text(text_input)
+    
+    def route_system_output(self, text: str, source_module: str) -> TextRoutingDecision:
+        """
+        路由系統輸出文字的便利方法
+        
+        Args:
+            text: 系統輸出文字
+            source_module: 來源模組名稱
+            
+        Returns:
+            TextRoutingDecision: 路由決策
+        """
+        text_input = Input(
+            text=text,
+            source=TextSource.SYSTEM_OUTPUT,
+            source_module=source_module
+        )
+        return self.route_text(text_input)
+    
+    def get_routing_info(self) -> Dict[str, Any]:
+        """獲取路由器狀態信息"""
+        current_state = self.state_manager.get_current_state()
+        
+        return {
+            "router_type": "Router",
+            "current_state": current_state.value,
+            "state_routing_map": {
+                state.value: config for state, config in self.state_routing_map.items()
+            },
+            "supported_sources": [source.value for source in TextSource],
+        }
 
 
-# 全局路由器實例
+# 創建全局實例（保持向後兼容的名稱）
 router = Router()
+simple_router = router  # 別名，支援兩種名稱

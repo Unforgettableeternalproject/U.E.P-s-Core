@@ -119,7 +119,7 @@ def handle_module_integration(user_input):
         print(f"\033[31m處理模組組合時發生錯誤：{e}\033[0m")
 
 def colorful_text(text : str, enabled : tuple=(False, False)):
-    return '\033[32m' + text + '\033[0m' if enabled[1] else '\033[33m' + text + ' (待重構)\033[0m' if enabled[0] else '\033[31m' + text + '\033[0m'
+    return '\033[32m' + text + '\033[0m' if enabled[1] and enabled[0] else '\033[33m' + text + ' (待重構)\033[0m' if enabled[0] else '\033[31m' + text + '\033[0m'
 
 def debug_interactive():
     print("==========================\n\n歡迎來到U.E.P模組測試介面!\n\n==========================\n")
@@ -326,29 +326,54 @@ def debug_interactive():
                 debug_log(1, "LLM 模組測試")
                 print("<LLM 模組測試>\n")
 
-                choice = input("請選擇測試模式 (1: 聊天測試, 2: 指令測試, exit: 離開): \n\n> ")
-                if choice == "1":
-                    print("🗣️ 請輸入一段對話文字 (必須用英文) (或輸入 'exit' 來結束):")
-                    while True:
-                        text = input("\n> ")
-                        if text.lower() in ["exit", "e", "quit", "q", "back", "b"]:
-                            info_log("使用者中斷測試")
-                            break
-                        print()
-                        controller.llm_test_chat(text)
-                elif choice == "2":
-                    print("🔧 請輸入一段指令文字 (必須用英文) (或輸入 'exit' 來結束):")
-                    while True:
-                        text = input("\n> ")
-                        if text.lower() in ["exit", "e", "quit", "q", "back", "b"]:
-                            info_log("使用者中斷測試")
-                            break
-                        print()
-                        controller.llm_test_command(text)
-                elif choice in ["exit", "e", "quit", "q", "back", "b"]:
-                    pass
-                else:
-                    print("\033[31m無效的選擇，請再試一次。\033[0m")
+                # LLM 子選單
+                while True:
+                    llm_choice = input("\n選擇測試功能:\n" +
+                                     "1: 聊天對話測試 (CHAT 模式)\n" +
+                                     "2: 指令分析測試 (WORK 模式)\n" +
+                                     "3: 快取功能測試 (暫時停用)\n" +
+                                     "4: 學習引擎測試\n" +
+                                     "5: 狀況變動測試\n" +
+                                     "back: 返回上級\n\n> ")
+                    
+                    if llm_choice == "1":
+                        print("🗣️ 聊天對話測試 (或輸入 'exit' 來結束):")
+                        while True:
+                            text = input("\n> ")
+                            if text.lower() in ["exit", "e", "quit", "q", "back", "b"]:
+                                info_log("使用者中斷測試")
+                                break
+                            print()
+                            controller.llm_test_chat(text)
+                    
+                    elif llm_choice == "2":
+                        print("🔧 指令分析測試 (或輸入 'exit' 來結束):")
+                        while True:
+                            text = input("\n> ")
+                            if text.lower() in ["exit", "e", "quit", "q", "back", "b"]:
+                                info_log("使用者中斷測試")
+                                break
+                            print()
+                            controller.llm_test_command(text)
+                    
+                    elif llm_choice == "3":
+                        print("⚠️ 快取功能測試暫時停用")
+                        pass
+                        print("🗄️ 執行快取功能測試...")
+                        controller.llm_test_cache_functionality()
+                    
+                    elif llm_choice == "4":
+                        print("🧠 執行學習引擎測試...")
+                        controller.llm_test_learning_engine()
+                        
+                    elif llm_choice == "5":
+                        print("🔄 執行狀況變動測試...")
+                        controller.llm_test_system_status_monitoring()
+                    
+                    elif llm_choice.lower() in ["exit", "e", "back", "b", "quit", "q"]:
+                        break
+                    else:
+                        print("\033[31m無效的選擇，請再試一次。\033[0m")
             case "tts":
                 if not mod_list['tts']:
                     info_log("TTS 模組未啟用，請檢查配置。", "WARNING")

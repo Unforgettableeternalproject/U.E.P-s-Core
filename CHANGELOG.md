@@ -1318,3 +1318,15 @@
 
 ---
 
+### Added a new test tab for llm in debug gui. 09/30
+
+> Date: Tue, 30 Sep 2025 12:38:17 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_module_rework`
+
+> Commit: `fc5e499f54dc927916fdc3c7f22c7508944f2faa`
+
+---
+

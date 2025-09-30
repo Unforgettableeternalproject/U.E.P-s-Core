@@ -333,6 +333,7 @@ def debug_interactive():
                                      "2: 指令分析測試 (WORK 模式)\n" +
                                      "3: 快取功能測試 (暫時停用)\n" +
                                      "4: 學習引擎測試\n" +
+                                     "5: 狀況變動測試\n" +
                                      "back: 返回上級\n\n> ")
                     
                     if llm_choice == "1":
@@ -364,6 +365,10 @@ def debug_interactive():
                     elif llm_choice == "4":
                         print("🧠 執行學習引擎測試...")
                         controller.llm_test_learning_engine()
+                        
+                    elif llm_choice == "5":
+                        print("🔄 執行狀況變動測試...")
+                        controller.llm_test_system_status_monitoring()
                     
                     elif llm_choice.lower() in ["exit", "e", "back", "b", "quit", "q"]:
                         break

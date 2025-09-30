@@ -81,10 +81,6 @@ class MEMTestTab(BaseTestTab):
         query_memory_btn.clicked.connect(self.run_query_memory)
         basic_layout.addWidget(query_memory_btn)
         
-        create_snapshot_btn = QPushButton("📸 建立快照")
-        create_snapshot_btn.clicked.connect(self.run_create_snapshot)
-        basic_layout.addWidget(create_snapshot_btn)
-        
         test_layout.addLayout(basic_layout)
         
         # 進階測試功能
@@ -108,10 +104,6 @@ class MEMTestTab(BaseTestTab):
         # 記憶庫管理
         mem_admin_group = QGroupBox("記憶庫管理")
         mem_admin_layout = QHBoxLayout(mem_admin_group)
-        
-        list_memories_btn = QPushButton("📋 列出記憶庫")
-        list_memories_btn.clicked.connect(self.run_memory_access_control)
-        mem_admin_layout.addWidget(list_memories_btn)
         
         clear_memories_btn = QPushButton("🗑️ 清除測試記憶")
         clear_memories_btn.clicked.connect(self.clear_test_memories)
@@ -178,22 +170,6 @@ class MEMTestTab(BaseTestTab):
         
         self.run_background_task("memory_query", params)
     
-    def run_create_snapshot(self):
-        """執行建立快照測試"""
-        self.add_result("📸 執行建立快照測試...", "INFO")
-        
-        content = self.get_content()
-        if not content:
-            return
-        
-        # 獲取參數
-        params = {
-            "identity": self.get_identity(),
-            "conversation_text": content
-        }
-        
-        self.run_background_task("create_snapshot", params)
-    
     def run_write_then_query(self):
         """執行寫入後查詢測試"""
         self.add_result("🔄 執行寫入後查詢測試...", "INFO")
@@ -220,17 +196,6 @@ class MEMTestTab(BaseTestTab):
         }
         
         self.run_background_task("conversation_snapshot", params)
-    
-    def run_memory_access_control(self):
-        """執行記憶庫列表測試"""
-        self.add_result("📋 執行記憶庫列表測試...", "INFO")
-        
-        # 獲取參數
-        params = {
-            "identity": self.get_identity()
-        }
-        
-        self.run_background_task("memory_access_control", params)
     
     def run_identity_manager_stats(self):
         """執行記憶統計測試"""

@@ -99,6 +99,9 @@ class STTModule(BaseModule):
         self.vad_module = VoiceActivityDetection(self.sample_rate)
         self.speaker_module = SpeakerIdentification(config=self.config)  # 增強版語者識別系統
         
+        # 監聽控制
+        self.should_stop_listening = False
+        
         # PyAudio 配置
         self.pyaudio_instance = None
         self.audio_stream = None
@@ -265,6 +268,16 @@ class STTModule(BaseModule):
                 confidence=0.0,
                 error=f"處理失敗: {str(e)}"
             ).model_dump()
+    
+    def stop_listening(self):
+        """停止持續監聽"""
+        self.should_stop_listening = True
+        debug_log(2, "[STT] 設置停止監聽標誌")
+    
+    def resume_listening(self):
+        """恢復監聽能力"""
+        self.should_stop_listening = False
+        debug_log(2, "[STT] 清除停止監聽標誌")
 
     def _manual_recognition(self, input_data: STTInput) -> dict:
         """手動語音識別 - 使用 Transformers Whisper"""
@@ -330,6 +343,9 @@ class STTModule(BaseModule):
             speaker_info = None
             if input_data.enable_speaker_id:
                 speaker_info = self._identify_speaker_with_mode(audio_data)
+                
+                # 將音頻樣本添加到 Speaker_Accumulation 上下文
+                self._add_audio_sample_to_accumulation(audio_data, speaker_info)
             
             # 顯示識別結果
             info_log(f"[STT] 識別結果: '{text}' (信心度: {confidence:.2f})")
@@ -471,8 +487,8 @@ class STTModule(BaseModule):
                 )
                 debug_log(2, f"[STT] 已建立持續監聽的語音累積上下文: {context_id}")
             
-            # 持續監聽直到達到指定時間
-            while time.time() - start_time < duration:
+            # 持續監聽直到達到指定時間或收到停止信號
+            while time.time() - start_time < duration and not self.should_stop_listening:
                 # 短暫錄音檢測
                 chunk_duration = 2.0
                 audio_data = self._record_audio(chunk_duration)
@@ -528,7 +544,10 @@ class STTModule(BaseModule):
                 speaker_info = None
                 if input_data.enable_speaker_id:
                     speaker_info = self._identify_speaker_with_mode(audio_data)
-                    debug_log(2, f"[STT] 識別語者: {speaker_info.speaker_id} (信心度: {speaker_info.confidence:.2f})")
+                    # 兼容物件和字典格式的speaker_info存取
+                    speaker_id = speaker_info.speaker_id if hasattr(speaker_info, 'speaker_id') else speaker_info.get('speaker_id', 'unknown')
+                    confidence = speaker_info.confidence if hasattr(speaker_info, 'confidence') else speaker_info.get('confidence', 0.0)
+                    debug_log(2, f"[STT] 識別語者: {speaker_id} (信心度: {confidence:.2f})")
                 
                 # 創建輸出物件
                 output = STTOutput(
@@ -551,7 +570,9 @@ class STTModule(BaseModule):
                     try:
                         # 將結果發送給回調函數
                         self.result_callback(unified_data)
-                        info_log(f"[STT] 將識別結果實時發送給NLP模組：'{text}' (語者: {speaker_info.speaker_id if speaker_info else 'unknown'})")
+                        # 從 unified_data 中獲取說話人資訊（已經是字典格式）
+                        speaker_id = unified_data.speaker_info.get('speaker_id', 'unknown') if unified_data.speaker_info else 'unknown'
+                        info_log(f"[STT] 將識別結果實時發送給NLP模組：'{text}' (語者: {speaker_id})")
                     except Exception as e:
                         error_log(f"[STT] 發送識別結果失敗: {e}")
                 else:
@@ -610,4 +631,73 @@ class STTModule(BaseModule):
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         
+        # 清理說話人識別模組
+        if hasattr(self, 'speaker_module'):
+            self.speaker_module.shutdown()
+        
         info_log("[STT] 模組已關閉")
+
+    def _add_audio_sample_to_accumulation(self, audio_data: np.ndarray, speaker_info: 'SpeakerInfo' = None):
+        """將音頻樣本添加到 Speaker_Accumulation 上下文中"""
+        try:
+            if not self.working_context_manager:
+                debug_log(3, "[STT] Working Context 管理器不可用，跳過樣本累積")
+                return
+            
+            from core.working_context import ContextType
+            import time
+            
+            # 查找或創建 SPEAKER_ACCUMULATION 上下文
+            contexts = self.working_context_manager.get_contexts_by_type("speaker_accumulation")
+            
+            context_id = None
+            if contexts:
+                # 使用最新的上下文
+                latest_context = max(contexts, key=lambda c: c.get('created_at', 0))
+                context_id = latest_context['id']
+                debug_log(3, f"[STT] 使用現有 Speaker_Accumulation 上下文: {context_id}")
+            else:
+                # 創建新的上下文
+                context_id = self.working_context_manager.create_context(
+                    ContextType.SPEAKER_ACCUMULATION,
+                    threshold=15,  # 樣本閾值
+                    timeout=300.0  # 5分鐘過期
+                )
+                debug_log(2, f"[STT] 創建新的 Speaker_Accumulation 上下文: {context_id}")
+            
+            if context_id:
+                # 添加音頻樣本到上下文
+                # 安全地獲取說話人資訊
+                if speaker_info:
+                    if hasattr(speaker_info, 'speaker_id'):
+                        # SpeakerInfo 物件格式
+                        speaker_id = speaker_info.speaker_id
+                        confidence = speaker_info.confidence
+                    else:
+                        # 字典格式
+                        speaker_id = speaker_info.get('speaker_id', 'unknown')
+                        confidence = speaker_info.get('confidence', 0.0)
+                else:
+                    speaker_id = "unknown"
+                    confidence = 0.0
+                
+                sample_metadata = {
+                    "timestamp": time.time(),
+                    "type": "audio_sample",
+                    "speaker_id": speaker_id,
+                    "confidence": confidence,
+                    "audio_length": len(audio_data)
+                }
+                
+                self.working_context_manager.add_data_to_context(
+                    context_id,
+                    audio_data,
+                    metadata=sample_metadata
+                )
+                
+                debug_log(3, f"[STT] 音頻樣本已添加到累積上下文: {context_id} "
+                         f"(說話人: {sample_metadata['speaker_id']}, "
+                         f"長度: {sample_metadata['audio_length']})")
+            
+        except Exception as e:
+            error_log(f"[STT] 添加音頻樣本到累積上下文失敗: {e}")

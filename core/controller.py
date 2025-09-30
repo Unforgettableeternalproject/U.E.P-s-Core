@@ -144,12 +144,182 @@ class UnifiedController:
             # 檢查會話狀態
             current_gs = self.session_manager.get_current_general_session()
             
+            # 檢查狀態佇列並監控 GS 結束條件
+            self._monitor_gs_lifecycle(current_state, current_gs)
+            
             # 記錄系統狀態（簡化版）
             debug_log(3, f"[Monitor] 系統狀態: {current_state.value}, "
                         f"當前GS: {current_gs.session_id if current_gs else 'None'}")
             
         except Exception as e:
             debug_log(2, f"[Monitor] 健康檢查失敗: {e}")
+    
+    def _monitor_gs_lifecycle(self, current_state, current_gs):
+        """監控 GS 生命週期，根據需要創建或結束 GS"""
+        try:
+            from core.states.state_queue import get_state_queue_manager
+            from core.states.state_manager import UEPState
+            
+            state_queue = get_state_queue_manager()
+            queue_status = state_queue.get_queue_status()
+            
+            # 檢查是否需要創建 GS
+            if not current_gs:
+                # 如果狀態佇列有項目或系統不在 IDLE 狀態，則需要創建 GS
+                if (queue_status.get('queue_length', 0) > 0 or 
+                    current_state != UEPState.IDLE):
+                    
+                    debug_log(2, f"[Controller] 檢測到需要創建 GS：狀態={current_state.value}, 佇列長度={queue_status.get('queue_length', 0)}")
+                    self._create_gs_for_processing()
+                    
+                # 系統啟動時預先創建 GS
+                elif not hasattr(self, '_initial_gs_created'):
+                    debug_log(2, "[Controller] 系統啟動，預先創建初始 GS")
+                    self._create_gs_for_processing()
+                    self._initial_gs_created = True
+                    
+                return
+                
+            # 如果有活躍 GS，僅做監控不做結束判斷
+            # GS 結束檢查移至 check_gs_end_conditions 方法，由 SystemLoop 在循環結束時調用
+            if current_gs:
+                debug_log(3, f"[Controller] GS {current_gs.session_id} 正在運行中")
+                
+        except Exception as e:
+            error_log(f"[Controller] GS 生命週期監控失敗: {e}")
+
+    def check_gs_end_conditions(self):
+        """檢查 GS 結束條件 - 僅在系統循環結束時調用"""
+        try:
+            from core.states.state_queue import get_state_queue_manager
+            from core.states.state_manager import UEPState
+            
+            current_state = self.state_manager.get_current_state()
+            current_gs = self.session_manager.get_current_general_session()
+            
+            if not current_gs:
+                return
+                
+            state_queue = get_state_queue_manager()
+            queue_status = state_queue.get_queue_status()
+            
+            # GS 結束條件：狀態佇列完全清空且當前狀態為 IDLE
+            if (current_state == UEPState.IDLE and 
+                queue_status.get('queue_length', 0) == 0 and
+                queue_status.get('current_state') == 'idle'):
+                
+                debug_log(2, f"[Controller] 檢測到 GS 結束條件：狀態佇列已清空，準備結束 GS {current_gs.session_id}")
+                self._end_current_gs_with_cleanup(current_gs.session_id)
+                
+        except Exception as e:
+            debug_log(2, f"[Controller] GS 結束條件檢查失敗: {e}")
+
+    def _create_gs_for_processing(self):
+        """創建 GS 以支持處理流程"""
+        try:
+            info_log("[Controller] 創建新的 GS 以支持系統處理")
+            
+            # 創建 General Session - 使用正確的方法名
+            gs_result = self.session_manager.start_general_session(
+                "system_event",
+                {
+                    "session_type": "general",
+                    "created_by": "controller_monitor",
+                    "context": {
+                        "purpose": "system_processing",
+                        "auto_created": True
+                    }
+                }
+            )
+            
+            if gs_result:
+                info_log(f"[Controller] 已自動創建 GS: {gs_result}")
+            else:
+                error_log("[Controller] GS 創建失敗")
+                
+        except Exception as e:
+            error_log(f"[Controller] 創建 GS 失敗: {e}")
+    
+    def _end_current_gs_with_cleanup(self, gs_id: str):
+        """結束當前 GS 並執行系統級清理"""
+        try:
+            info_log(f"[Controller] 系統級 GS 結束流程啟動: {gs_id}")
+            
+            # 1. 結束會話（由 Session Manager 處理）
+            result = self.session_manager.end_general_session({
+                "reason": "state_queue_empty",
+                "triggered_by": "controller_monitor"
+            })
+            
+            if result:
+                # 2. 系統級清理：確保 Working Context 完全重置
+                self._perform_system_cleanup_after_gs()
+                
+                info_log(f"[Controller] GS {gs_id} 已成功結束，系統清理完成")
+            else:
+                error_log(f"[Controller] GS {gs_id} 結束失敗")
+                
+        except Exception as e:
+            error_log(f"[Controller] 結束 GS {gs_id} 時發生錯誤: {e}")
+    
+    def _perform_system_cleanup_after_gs(self):
+        """GS 結束後的系統級清理"""
+        try:
+            from core.working_context import working_context_manager
+            
+            debug_log(3, "[Controller] 執行 GS 結束後的系統級清理...")
+            
+            # 1. 清理過期的 Working Context
+            if hasattr(working_context_manager, 'cleanup_expired_contexts'):
+                working_context_manager.cleanup_expired_contexts()
+                debug_log(3, "[Controller] Working Context 過期項目已清理")
+            
+            # 2. 重置 Speaker_Accumulation（確保新 GS 時清理）
+            self._reset_speaker_accumulation()
+            
+            # 3. 驗證系統狀態一致性
+            self._verify_system_state_consistency()
+            
+            debug_log(3, "[Controller] 系統級清理完成")
+            
+        except Exception as e:
+            error_log(f"[Controller] 系統級清理失敗: {e}")
+    
+    def _reset_speaker_accumulation(self):
+        """重置 Speaker_Accumulation 確保新 GS 時的清理"""
+        try:
+            from core.working_context import working_context_manager, ContextType
+            
+            # 檢查是否有 Speaker_Accumulation 需要清理
+            speaker_context = working_context_manager.get_data(
+                ContextType.CROSS_MODULE_DATA, "Speaker_Accumulation"
+            )
+            
+            if speaker_context:
+                debug_log(3, "[Controller] 清理 Speaker_Accumulation 數據")
+                # 可以選擇清除或保留給下個 GS
+                # 根據需求決定是否完全清除
+                info_log("[Controller] Speaker_Accumulation 已處理")
+                
+        except Exception as e:
+            debug_log(3, f"[Controller] Speaker_Accumulation 重置失敗: {e}")
+    
+    def _verify_system_state_consistency(self):
+        """驗證系統狀態一致性"""
+        try:
+            from core.states.state_manager import UEPState
+            
+            current_state = self.state_manager.get_current_state()
+            current_gs = self.session_manager.get_current_general_session()
+            
+            # GS 結束後，應該沒有活躍的 GS，系統狀態應該是 IDLE
+            if current_gs is None and current_state == UEPState.IDLE:
+                debug_log(3, "[Controller] 系統狀態一致性驗證通過")
+            else:
+                debug_log(2, f"[Controller] 系統狀態不一致：狀態={current_state.value}, GS存在={current_gs is not None}")
+                
+        except Exception as e:
+            error_log(f"[Controller] 系統狀態一致性驗證失敗: {e}")
     
     # ========== GS 生命週期管理 ==========
     

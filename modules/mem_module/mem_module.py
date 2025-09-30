@@ -405,9 +405,20 @@ class MEMModule(BaseModule):
                 debug_log(2, "[MEM] 非CHAT狀態，拒絕處理請求")
                 return self._create_error_response("MEM模組只在CHAT狀態下運行")
             
+            # 檢查身份狀態，優雅處理臨時身份
+            if self.identity_manager and self.identity_manager.is_temporary_identity():
+                identity_desc = self.identity_manager.get_identity_type_description()
+                info_log(f"[MEM] 檢測到{identity_desc}，跳過個人記憶存取，返回基本回應")
+                return self._create_temporary_identity_response()
+            
             # 檢查會話狀態和來源
             session_check = self._check_request_session_context(data)
             debug_log(3, f"[MEM] 會話檢查結果: {session_check}")
+            
+            # 記錄當前身份類型（用於調試）
+            if self.identity_manager:
+                identity_desc = self.identity_manager.get_identity_type_description()
+                debug_log(2, f"[MEM] 當前身份: {identity_desc}")
             
             # 處理舊 API 格式 (向後相容)
             if isinstance(data, dict) and "mode" in data:
@@ -1441,6 +1452,31 @@ class MEMModule(BaseModule):
 
         except Exception as e:
             return {'success': False, 'error': str(e), 'status': 'error'}
+
+    def _create_temporary_identity_response(self) -> dict:
+        """為臨時身份創建適當的回應，不存取個人記憶"""
+        try:
+            identity_desc = self.identity_manager.get_identity_type_description() if self.identity_manager else "未知身份"
+            
+            return {
+                'success': True,
+                'message': f'臨時身份模式：{identity_desc}',
+                'memory_context': '',  # 空的記憶上下文
+                'search_results': [],  # 無搜尋結果
+                'total_memories': 0,
+                'active_snapshots': [],
+                'temporal_context': {
+                    'identity_type': 'temporary',
+                    'access_level': 'basic',
+                    'personal_memory_access': False,
+                    'note': '臨時身份無法存取個人記憶庫'
+                },
+                'status': 'temporary_identity'
+            }
+            
+        except Exception as e:
+            error_log(f"[MEM] 創建臨時身份回應失敗: {e}")
+            return self._create_error_response("臨時身份處理錯誤")
 
     def shutdown(self):
         """模組關閉"""

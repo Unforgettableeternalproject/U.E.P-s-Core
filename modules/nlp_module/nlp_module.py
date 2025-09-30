@@ -13,7 +13,8 @@ NLP 模組 Phase 2 - 重構版本
 
 import os
 import time
-from typing import Dict, Any, Optional, List
+import threading
+from typing import Dict, Any, Optional, List, Union
 
 from core.bases.module_base import BaseModule
 from core.schemas import NLPModuleData, create_nlp_data
@@ -34,6 +35,9 @@ from .multi_intent_context import get_multi_intent_context_manager
 
 class NLPModule(BaseModule):
     """重構後的NLP模組"""
+    
+    # 類級別的鎖，確保整個NLP模組的Router調用是同步的
+    _router_lock = threading.Lock()
     
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         """初始化NLP模組"""
@@ -101,11 +105,17 @@ class NLPModule(BaseModule):
             error_log(f"[NLP] 初始化失敗：{e}")
             return False
     
-    def handle(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def handle(self, data: Union[Dict[str, Any], NLPInput]) -> Dict[str, Any]:
         """處理NLP請求"""
         try:
-            # 驗證輸入
-            validated_input = NLPInput(**data)
+            # 通知 Controller 有活動
+            self._notify_controller_activity()
+            
+            # 驗證輸入 - 支援字典或 NLPInput 物件
+            if isinstance(data, NLPInput):
+                validated_input = data
+            else:
+                validated_input = NLPInput(**data)
             debug_log(2, f"[NLP] 接收到請求：文本長度={len(validated_input.text)}, "
                        f"語者ID={validated_input.speaker_id}")
             
@@ -129,6 +139,12 @@ class NLPModule(BaseModule):
             debug_log(1, f"[NLP] 處理完成：主要意圖={final_result.primary_intent}, "
                        f"身份={final_result.identity.identity_id if final_result.identity else 'None'}")
             
+            # 在調用Router之前，先執行狀態轉換
+            self._execute_state_transition(final_result, state_result)
+            
+            # 將處理結果和原文傳遞給 Router 進行下一步處理
+            self._send_to_router(validated_input, final_result)
+            
             return final_result.model_dump()
             
         except Exception as e:
@@ -136,7 +152,7 @@ class NLPModule(BaseModule):
             return self._create_error_response(str(e))
     
     def _process_speaker_identity(self, input_data: NLPInput) -> Dict[str, Any]:
-        """處理語者身份識別"""
+        """處理語者身份識別 - 從Working Context獲取說話人資料"""
         result = {
             "identity": None,
             "identity_action": None,
@@ -144,28 +160,49 @@ class NLPModule(BaseModule):
         }
         
         try:
-            if not input_data.speaker_id or not input_data.enable_identity_processing:
-                result["processing_notes"].append("跳過身份處理")
+            # 從Working Context獲取說話人資料，而非直接從input_data
+            speaker_data = self._get_speaker_from_working_context()
+            
+            if not speaker_data or not input_data.enable_identity_processing:
+                result["processing_notes"].append("無說話人資料或跳過身份處理")
+                # 如果沒有說話人資料，創建通用身份
+                if input_data.enable_identity_processing:
+                    generic_identity = self._create_generic_identity()
+                    result["identity"] = generic_identity
+                    result["identity_action"] = "generic"
+                    result["processing_notes"].append("創建通用身份")
                 return result
+            
+            speaker_id = speaker_data.get('speaker_id')
+            speaker_status = speaker_data.get('status', 'unknown')
+            speaker_confidence = speaker_data.get('confidence', 0.0)
+            
+            debug_log(2, f"[NLP] 從Working Context獲取說話人: {speaker_id} (信心度: {speaker_confidence})")
             
             # 使用身份管理器處理語者識別
             identity, action = self.identity_manager.process_speaker_identification(
-                input_data.speaker_id,
-                input_data.speaker_status or "unknown",
-                input_data.speaker_confidence or 0.0
+                speaker_id,
+                speaker_status,
+                speaker_confidence
             )
             
             result["identity"] = identity
             result["identity_action"] = action
             
             if action == "accumulating":
-                # 語者樣本累積狀態，添加到Working Context
-                self._add_to_speaker_accumulation(input_data)
-                result["processing_notes"].append("語者樣本累積中")
+                # 語者樣本累積狀態，創建通用身份供當前使用
+                generic_identity = self._create_generic_identity()
+                result["identity"] = generic_identity
+                result["identity_action"] = "accumulating_with_generic"
+                result["processing_notes"].append("語者樣本累積中，使用通用身份")
                 
             elif action == "loaded":
-                result["processing_notes"].append(f"載入身份：{identity.display_name}")
+                result["processing_notes"].append(f"載入正式身份：{identity.display_name}")
                 # 將使用者身份資訊添加到Working Context
+                self._add_identity_to_working_context(identity)
+            elif action == "created":
+                result["processing_notes"].append(f"創建新身份：{identity.display_name}")
+                # 將新身份資訊添加到Working Context
                 self._add_identity_to_working_context(identity)
                 
             debug_log(3, f"[NLP] 語者身份處理：{action}, 身份={identity.identity_id if identity else 'None'}")
@@ -173,6 +210,11 @@ class NLPModule(BaseModule):
         except Exception as e:
             error_log(f"[NLP] 語者身份處理失敗：{e}")
             result["processing_notes"].append(f"身份處理錯誤：{str(e)}")
+            # 出錯時使用通用身份
+            if input_data.enable_identity_processing:
+                generic_identity = self._create_generic_identity()
+                result["identity"] = generic_identity
+                result["identity_action"] = "error_fallback"
         
         return result
     
@@ -343,6 +385,7 @@ class NLPModule(BaseModule):
         
         return NLPOutput(
             original_text=input_data.text,
+            timestamp=time.time(),
             identity=identity_result.get("identity"),
             identity_action=identity_result.get("identity_action"),
             primary_intent=intent_result.get("primary_intent", IntentType.UNKNOWN),
@@ -451,6 +494,7 @@ class NLPModule(BaseModule):
         """創建錯誤回應"""
         return NLPOutput(
             original_text="",
+            timestamp=time.time(),
             primary_intent=IntentType.UNKNOWN,
             intent_segments=[],
             overall_confidence=0.0,
@@ -632,6 +676,252 @@ class NLPModule(BaseModule):
         except Exception as e:
             error_log(f"[NLP] 處理指令中斷失敗: {e}")
     
+    def _send_to_router(self, input_data: NLPInput, nlp_result: NLPOutput):
+        """將NLP處理結果和原文傳遞給Router進行下一步處理"""
+        try:
+            # 直接導入Router
+            from core.router import router
+            
+            if not router:
+                debug_log(2, "[NLP] Router未就緒，跳過路由處理")
+                return
+            
+            # 準備路由數據
+            router_data = {
+                "text": input_data.text,
+                "original_input": input_data.model_dump(),
+                "nlp_result": nlp_result.model_dump(),
+                "source": "nlp_direct",
+                "timestamp": input_data.timestamp
+            }
+            
+            # 映射身份信息
+            if nlp_result.identity:
+                router_data["identity"] = {
+                    "identity_id": nlp_result.identity.identity_id,
+                    "display_name": nlp_result.identity.display_name,
+                    "speaker_id": input_data.speaker_id
+                }
+                debug_log(2, f"[NLP] 映射Speaker({input_data.speaker_id}) -> Identity({nlp_result.identity.identity_id})")
+            
+            info_log(f"[NLP] 將處理結果傳遞給Router: 意圖={nlp_result.primary_intent}, 文本='{input_data.text[:50]}...'")
+            
+            # 調用Router處理 - 使用正確的方法
+            routing_decision = router.route_user_input(text=input_data.text, source_module="nlp")
+            info_log(f"[NLP-Router] 路由決策: 目標模組={routing_decision.target_module}, 原因={routing_decision.reasoning}")
+            debug_log(2, f"[NLP-Router] 路由元數據: {routing_decision.routing_metadata}")
+            
+            # 實際調用目標模組的 handle() 方法
+            self._invoke_target_module(routing_decision, router_data, nlp_result)
+            
+        except Exception as e:
+            error_log(f"[NLP] 路由處理失敗: {e}")
+
+    def _invoke_target_module(self, routing_decision, router_data: Dict[str, Any], nlp_result: NLPOutput):
+        """實際調用目標模組的 handle() 方法 - 使用線程鎖確保同步"""
+        # 使用類級別鎖確保一次只有一個模組調用
+        with self._router_lock:
+            try:
+                from core.framework import core_framework
+                
+                target_module_name = routing_decision.target_module
+                if not target_module_name:
+                    debug_log(2, "[NLP-Router] 無目標模組，跳過調用")
+                    return
+                
+                # 獲取目標模組
+                target_module = core_framework.get_module(target_module_name)
+                if not target_module:
+                    error_log(f"[NLP-Router] 無法找到目標模組: {target_module_name}")
+                    return
+                
+                # 準備模組特定的輸入數據
+                module_input = self._prepare_module_input(target_module_name, router_data, nlp_result)
+                
+                info_log(f"[NLP-Router] 調用目標模組: {target_module_name}")
+                debug_log(2, f"[NLP-Router] 模組輸入: {list(module_input.keys())}")
+                
+                # 調用目標模組的 handle() 方法
+                result = target_module.handle(module_input)
+                
+                if result:
+                    info_log(f"[NLP-Router] 模組 {target_module_name} 處理完成")
+                    debug_log(3, f"[NLP-Router] 模組 {target_module_name} 返回: {type(result)}")
+                else:
+                    debug_log(2, f"[NLP-Router] 模組 {target_module_name} 無返回結果")
+                    
+            except Exception as e:
+                error_log(f"[NLP-Router] 調用模組失敗: {e}")
+
+    def _prepare_module_input(self, module_name: str, router_data: Dict[str, Any], nlp_result: NLPOutput) -> Dict[str, Any]:
+        """為不同模組準備特定的輸入數據"""
+        base_input = {
+            "text": router_data["text"],
+            "source": "nlp_router",
+            "timestamp": router_data["timestamp"],
+            "nlp_result": router_data["nlp_result"],
+            "identity": router_data.get("identity"),
+            "intent": nlp_result.primary_intent,
+            "confidence": nlp_result.overall_confidence
+        }
+        
+        if module_name == "llm":
+            # LLM 特定輸入
+            return {
+                **base_input,
+                "conversation_type": nlp_result.primary_intent,
+                "user_input": router_data["text"],
+                "context": {
+                    "intent_segments": [seg.model_dump() for seg in nlp_result.intent_segments],
+                    "processing_notes": nlp_result.processing_notes
+                }
+            }
+        elif module_name == "mem":
+            # MEM 特定輸入
+            return {
+                **base_input,
+                "operation": "store_and_retrieve",
+                "memory_context": {
+                    "identity_id": nlp_result.identity.identity_id if nlp_result.identity else None,
+                    "conversation_type": nlp_result.primary_intent,
+                    "entities": [seg.entities for seg in nlp_result.intent_segments]
+                }
+            }
+        else:
+            # 通用輸入
+            return base_input
+
+    def _execute_state_transition(self, nlp_result: 'NLPOutput', state_result: Dict[str, Any]):
+        """執行實際的狀態轉換，確保系統狀態從IDLE轉換到目標狀態"""
+        try:
+            # 導入狀態管理器
+            from core.states.state_manager import state_manager, UEPState
+            
+            # 獲取當前狀態
+            current_state = state_manager.get_current_state()
+            debug_log(2, f"[NLP] 當前系統狀態: {current_state}")
+            
+            # 根據主要意圖決定目標狀態
+            primary_intent = nlp_result.primary_intent
+            target_state = None
+            
+            if primary_intent == "chat":
+                target_state = UEPState.CHAT
+            elif primary_intent == "command":
+                target_state = UEPState.WORK
+            elif primary_intent == "call":
+                # CALL 類型：終止當前系統循環，跳過後續處理
+                info_log(f"[NLP] 檢測到 CALL 意圖，終止當前系統循環")
+                
+                # 創建特殊的 CALL 回應，指示系統循環應該終止
+                call_response = NLPOutput(
+                    original_text=nlp_result.original_text,
+                    timestamp=time.time(),
+                    primary_intent=IntentType.CALL,
+                    intent_segments=nlp_result.intent_segments,
+                    overall_confidence=nlp_result.overall_confidence,
+                    processing_notes=["CALL 意圖檢測，終止當前循環"]
+                )
+                
+                # 直接返回 CALL 回應，不進行路由
+                return call_response.dict()
+            elif primary_intent == "compound":
+                target_state = UEPState.WORK
+            
+            if target_state and current_state != target_state:
+                info_log(f"[NLP] 執行狀態轉換: {current_state} → {target_state}")
+                
+                # 設置工作上下文
+                context_data = {
+                    "text": nlp_result.original_text,
+                    "intent": primary_intent,
+                    "identity": nlp_result.identity.identity_id if nlp_result.identity else None,
+                    "segments": [segment.model_dump() for segment in nlp_result.intent_segments],
+                    "timestamp": nlp_result.timestamp
+                }
+                
+                # 執行狀態轉換
+                success = state_manager.set_state(target_state, context=context_data)
+                
+                if success:
+                    info_log(f"[NLP] 狀態轉換成功: {target_state}, 上下文已設置")
+                    debug_log(2, f"[NLP] 上下文資料: {context_data}")
+                else:
+                    error_log(f"[NLP] 狀態轉換失敗: {current_state} → {target_state}")
+                    # 注意：即使狀態轉換失敗，也要繼續處理流程，避免系統卡住
+            else:
+                debug_log(2, f"[NLP] 無需狀態轉換或目標狀態未定義: {primary_intent}")
+                
+        except Exception as e:
+            error_log(f"[NLP] 狀態轉換執行失敗: {e}")
+
+    def _get_speaker_from_working_context(self) -> Optional[Dict[str, Any]]:
+        """從Working Context獲取當前說話人資料"""
+        try:
+            from core.working_context import working_context_manager
+            
+            # 尋找最近的SPEAKER_ACCUMULATION上下文
+            contexts = working_context_manager.get_contexts_by_type("speaker_accumulation")
+            
+            if not contexts:
+                debug_log(3, "[NLP] Working Context中無說話人資料")
+                return None
+            
+            # 獲取最新的上下文
+            latest_context = max(contexts, key=lambda c: c.get('created_at', 0))
+            context_data = working_context_manager.get_context_data(latest_context['id'])
+            
+            speaker_data = context_data.get('current_speaker')
+            if speaker_data:
+                debug_log(2, f"[NLP] 從Working Context獲取說話人: {speaker_data.get('speaker_id')}")
+                return speaker_data
+            else:
+                debug_log(3, "[NLP] Working Context中無當前說話人資料")
+                return None
+                
+        except Exception as e:
+            error_log(f"[NLP] 從Working Context獲取說話人失敗: {e}")
+            return None
+
+    def _notify_controller_activity(self):
+        """通知 Controller 有 NLP 活動"""
+        try:
+            from core.framework import core_framework
+            controller = core_framework.get_manager('controller')
+            if controller and hasattr(controller, '_last_activity_time'):
+                controller._last_activity_time = time.time()
+                debug_log(3, "[NLP] 已通知 Controller 活動時間")
+        except Exception as e:
+            debug_log(3, f"[NLP] 通知 Controller 活動失敗: {e}")
+
+    def _create_generic_identity(self) -> 'UserProfile':
+        """創建通用身份，用於說話人累積期間或無身份識別時"""
+        try:
+            from .schemas import UserProfile, IdentityStatus
+            from datetime import datetime
+            import uuid
+            
+            generic_id = f"generic_{uuid.uuid4().hex[:8]}"
+            
+            generic_identity = UserProfile(
+                identity_id=generic_id,
+                display_name="通用用戶",
+                status=IdentityStatus.TEMPORARY,
+                created_at=datetime.now(),
+                last_interaction=datetime.now(),
+                preferences={},
+                conversation_history=[],
+                memory_access_level="basic",
+                context_preferences={}
+            )
+            
+            debug_log(2, f"[NLP] 創建通用身份: {generic_id}")
+            return generic_identity
+            
+        except Exception as e:
+            error_log(f"[NLP] 創建通用身份失敗: {e}")
+            return None
+
     def get_module_info(self) -> Dict[str, Any]:
         """獲取模組資訊"""
         return {

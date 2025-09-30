@@ -1342,3 +1342,15 @@
 
 ---
 
+### Big changes on how system loop works, and is now better, and work as intended (I think). 09/30
+
+> Date: Tue, 30 Sep 2025 22:27:46 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `develop`
+
+> Commit: `2d81c07d0a2ecee40ce6aa12a30984d54803e829`
+
+---
+

@@ -58,15 +58,22 @@ class IdentityManager:
         try:
             # 從Working Context的身份中提取記憶體令牌
             current_identity = working_context_manager.get_current_identity()
-            memory_token = current_identity.get("memory_token") if current_identity else None
             
-            if memory_token:
-                self.stats["token_extractions"] += 1
-                debug_log(3, f"[IdentityManager] Extracted memory token from identity: {memory_token}")
-                return memory_token
+            if current_identity:
+                # 檢查身份狀態是否為TEMPORARY
+                identity_status = current_identity.get("status")
+                if identity_status == "temporary":
+                    debug_log(2, f"[IdentityManager] 檢測到臨時身份: {current_identity.get('identity_id', 'Unknown')}, 使用匿名令牌")
+                    return self.anonymous_token
+                
+                memory_token = current_identity.get("memory_token")
+                if memory_token:
+                    self.stats["token_extractions"] += 1
+                    debug_log(3, f"[IdentityManager] 提取正式身份記憶令牌: {memory_token}")
+                    return memory_token
             
             # 如果沒有記憶體令牌，返回匿名令牌
-            debug_log(2, "[IdentityManager] No memory token found, using anonymous token")
+            debug_log(2, "[IdentityManager] 無身份或無記憶令牌，使用匿名令牌")
             return self.anonymous_token
             
         except Exception as e:
@@ -133,6 +140,45 @@ class IdentityManager:
     def is_system_token(self, token: str) -> bool:
         """檢查是否為系統令牌"""
         return token == self.system_token
+
+    def is_temporary_identity(self) -> bool:
+        """檢查當前身份是否為臨時身份"""
+        try:
+            current_identity = working_context_manager.get_current_identity()
+            if current_identity:
+                identity_status = current_identity.get("status")
+                is_temp = identity_status == "temporary"
+                if is_temp:
+                    identity_id = current_identity.get("identity_id", "Unknown")
+                    debug_log(2, f"[IdentityManager] 當前為臨時身份: {identity_id}, 跳過個人記憶存取")
+                return is_temp
+            return False
+        except Exception as e:
+            error_log(f"[IdentityManager] 檢查臨時身份失敗: {e}")
+            return False
+
+    def get_identity_type_description(self) -> str:
+        """獲取當前身份類型的描述"""
+        try:
+            current_identity = working_context_manager.get_current_identity()
+            if not current_identity:
+                return "無身份"
+            
+            status = current_identity.get("status", "unknown")
+            identity_id = current_identity.get("identity_id", "Unknown")
+            
+            if status == "temporary":
+                return f"臨時身份({identity_id})"
+            elif status == "confirmed":
+                return f"正式身份({identity_id})"
+            elif status == "accumulating":
+                return f"累積中身份({identity_id})"
+            else:
+                return f"{status}身份({identity_id})"
+                
+        except Exception as e:
+            error_log(f"[IdentityManager] 獲取身份描述失敗: {e}")
+            return "未知身份"
     
     def validate_memory_token(self, memory_token: str) -> bool:
         """驗證記憶令牌有效性"""

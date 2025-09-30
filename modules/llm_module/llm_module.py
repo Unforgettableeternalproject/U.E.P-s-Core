@@ -163,6 +163,16 @@ class LLMModule(BaseModule):
             status = self._get_current_system_status()
             self.session_info = self._get_current_session_info()
             
+            # 1.2 會話架構檢查 - LLM 不應該在沒有適當會話的情況下運作
+            if not self._validate_session_architecture(current_state):
+                error_log("[LLM] 會話架構違規 - 拒絕處理請求")
+                return {
+                    "status": "error",
+                    "message": "會話架構違規：LLM 需要適當的會話上下文",
+                    "error_type": "session_architecture_violation",
+                    "timestamp": time.time()
+                }
+            
             # 2. 處理身份上下文 (優先使用來自Router的)
             if llm_input.identity_context:
                 identity_context = llm_input.identity_context
@@ -654,7 +664,7 @@ class LLMModule(BaseModule):
             }
     
     def _get_identity_context(self) -> Dict[str, Any]:
-        """從Working Context獲取Identity信息"""
+        """從Working Context獲取Identity信息，對通用身份採用預設處理"""
         try:
             # 使用正確的方法獲取當前身份
             identity_data = working_context_manager.get_current_identity()
@@ -669,10 +679,25 @@ class LLMModule(BaseModule):
                     "preferences": {}
                 }
             
+            # 檢查是否為通用身份
+            identity_status = identity_data.get("status", "unknown")
+            if identity_status == "temporary":
+                debug_log(2, "[LLM] 檢測到通用身份，使用基本設置")
+                return {
+                    "identity": {
+                        "name": "用戶",
+                        "traits": {},
+                        "status": "temporary"
+                    },
+                    "preferences": {}  # 通用身份不使用特殊偏好
+                }
+            
+            # 正式身份使用完整資料
             return {
                 "identity": {
                     "name": identity_data.get("user_identity", identity_data.get("identity_id", "default_user")),
-                    "traits": identity_data.get("traits", {})
+                    "traits": identity_data.get("traits", {}),
+                    "status": identity_status
                 },
                 "preferences": identity_data.get("conversation_preferences", {})
             }
@@ -1228,12 +1253,39 @@ U.E.P 系統可用功能規格：
 記憶管理功能：
 - memory_store: 儲存記憶 (參數: content, memory_type, metadata)
 - memory_retrieve: 檢索記憶 (參數: query, max_results, similarity_threshold)
-- memory_update: 更新記憶 (參數: memory_id, new_content)
-
-狀態管理功能：
-- status_update: 更新系統狀態 (參數: status_type, value, reason)
-- mood_adjust: 調整心情值 (參數: adjustment, reason)
-- pride_adjust: 調整自豪值 (參數: adjustment, reason)
-
-所有功能調用都需要confidence值和requires_confirmation標記。
 """
+
+    def _validate_session_architecture(self, current_state) -> bool:
+        """驗證會話架構 - 確保 LLM 在適當的會話上下文中運作"""
+        try:
+            from core.sessions.session_manager import session_manager
+            from core.states.state_manager import UEPState
+            
+            # 檢查是否有活躍的 GS
+            current_gs = session_manager.get_current_general_session()
+            if not current_gs:
+                debug_log(1, "[LLM] 會話架構檢查：沒有活躍的 GS")
+                return False
+            
+            # 根據系統狀態檢查相應的會話類型
+            if current_state == UEPState.CHAT:
+                # CHAT 狀態需要 CS
+                active_cs_ids = session_manager.get_active_chatting_session_ids()
+                if not active_cs_ids:
+                    debug_log(1, "[LLM] 會話架構檢查：CHAT 狀態但沒有活躍的 CS")
+                    return False
+                    
+            elif current_state == UEPState.WORK:
+                # WORK 狀態需要 WS
+                active_ws_ids = session_manager.get_active_workflow_session_ids()
+                if not active_ws_ids:
+                    debug_log(1, "[LLM] 會話架構檢查：WORK 狀態但沒有活躍的 WS")
+                    return False
+            
+            debug_log(2, f"[LLM] 會話架構檢查通過：狀態={current_state}, GS={current_gs is not None}")
+            return True
+            
+        except Exception as e:
+            error_log(f"[LLM] 會話架構檢查失敗: {e}")
+            return False
+

@@ -14,6 +14,7 @@ class IdentityStatus(str, Enum):
     ACCUMULATING = "accumulating"    # 樣本累積中
     CONFIRMED = "confirmed"          # 已確認身份
     GUEST = "guest"                  # 訪客模式
+    TEMPORARY = "temporary"          # 臨時通用身份
 
 
 class UserProfile(BaseModel):
@@ -88,6 +89,9 @@ class NLPInput(BaseModel):
     speaker_confidence: Optional[float] = Field(None, description="語者識別信心度")
     speaker_status: Optional[str] = Field(None, description="語者狀態 (new/existing/unknown)")
     
+    # 時間戳記
+    timestamp: Optional[str] = Field(None, description="處理時間戳記")
+    
     # 上下文資訊
     conversation_history: Optional[List[str]] = Field(None, description="對話歷史")
     current_system_state: Optional[str] = Field(None, description="當前系統狀態")
@@ -102,6 +106,9 @@ class NLPOutput(BaseModel):
     """NLP模組輸出"""
     # 原始資料
     original_text: str = Field(..., description="原始輸入文字")
+    
+    # 時間戳記
+    timestamp: Optional[float] = Field(None, description="處理時間戳記")
     
     # 語者身份處理結果
     identity: Optional[UserProfile] = Field(None, description="使用者身份資訊")

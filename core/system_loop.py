@@ -84,6 +84,9 @@ class SystemLoop:
             self.loop_thread = threading.Thread(target=self._main_loop, daemon=True)
             self.loop_thread.start()
             
+            # 啟動STT持續監聽
+            self._start_stt_listening()
+            
             self.status = LoopStatus.RUNNING
             info_log("✅ 系統主循環已啟動")
             info_log("🎧 等待使用者語音輸入...")
@@ -161,6 +164,63 @@ class SystemLoop:
             error_log(f"   ❌ 系統組件驗證失敗: {e}")
             return False
     
+    def _start_stt_listening(self):
+        """啟動STT持續監聽"""
+        try:
+            from core.framework import core_framework
+            
+            # 獲取STT模組
+            stt_module = core_framework.get_module('stt')
+            if not stt_module:
+                error_log("❌ 無法獲取STT模組")
+                return False
+            
+            info_log("🎤 啟動STT持續監聽...")
+            
+            # 創建持續監聽的輸入
+            from modules.stt_module.schemas import STTInput, ActivationMode
+            stt_input = STTInput(
+                mode=ActivationMode.CONTINUOUS,
+                activation_reason="system_loop_continuous_listening"
+            )
+            
+            # 在背景線程中啟動監聽
+            def continuous_listening():
+                try:
+                    result = stt_module.handle(stt_input.dict())
+                    debug_log(2, f"[SystemLoop] STT持續監聽結果: {result}")
+                except Exception as e:
+                    error_log(f"[SystemLoop] STT持續監聽錯誤: {e}")
+            
+            listening_thread = threading.Thread(target=continuous_listening, daemon=True)
+            listening_thread.start()
+            
+            info_log("✅ STT持續監聽已啟動")
+            return True
+            
+        except Exception as e:
+            error_log(f"❌ 啟動STT監聽失敗: {e}")
+            return False
+    
+    def _restart_stt_listening(self):
+        """重新啟動STT監聽"""
+        try:
+            from core.framework import core_framework
+            
+            # 獲取STT模組並恢復監聽能力
+            stt_module = core_framework.get_module('stt')
+            if stt_module:
+                stt_module.resume_listening()
+                info_log("🔄 重新啟動STT監聽")
+                return self._start_stt_listening()
+            else:
+                error_log("❌ 無法獲取STT模組進行重啟")
+                return False
+                
+        except Exception as e:
+            error_log(f"❌ 重新啟動STT監聽失敗: {e}")
+            return False
+    
     def _main_loop(self):
         """主循環執行緒"""
         info_log("🔄 主循環線程已啟動")
@@ -204,13 +264,57 @@ class SystemLoop:
             if hasattr(state_queue, 'queue') and len(state_queue.queue) > 0:
                 debug_log(3, f"[SystemLoop] 檢測到狀態佇列活動: {len(state_queue.queue)} 項目")
                 
-                # 當有狀態變化時，增加循環計數
+                # 當有狀態變化時，增加循環計數，但添加節制機制
                 if current_state != UEPState.IDLE:
                     self.loop_count += 1
-                    debug_log(2, f"[SystemLoop] 循環 #{self.loop_count}, 狀態: {current_state.value}")
+                    
+                    # 每10次循環才輸出一次，減少日誌噪音
+                    if self.loop_count % 10 == 1:
+                        debug_log(2, f"[SystemLoop] 循環 #{self.loop_count}, 狀態: {current_state.value}")
+                        
+                    # 在非IDLE狀態添加等待機制，避免CPU過度使用
+                    if current_state in [UEPState.CHAT, UEPState.WORK]:
+                        # 檢查是否有活躍的模組處理
+                        active_modules = self._check_active_modules()
+                        if not active_modules:
+                            # 沒有活躍模組，增加等待時間
+                            time.sleep(0.5)
+                        else:
+                            # 有活躍模組，短暫等待
+                            time.sleep(0.2)
+            
+            # 檢查是否回到IDLE狀態，如果是則重新啟動STT監聽
+            elif current_state == UEPState.IDLE and hasattr(self, '_previous_state'):
+                if self._previous_state != UEPState.IDLE:
+                    debug_log(2, f"[SystemLoop] 系統回到IDLE狀態，重新啟動STT監聽")
+                    self._restart_stt_listening()
+                    
+                    # 系統循環結束，檢查 GS 結束條件
+                    self._check_cycle_end_conditions()
+            
+            # 記錄前一個狀態
+            self._previous_state = current_state
             
         except Exception as e:
             debug_log(1, f"[SystemLoop] 狀態監控錯誤: {e}")
+    
+    def _check_active_modules(self) -> bool:
+        """檢查是否有活躍的模組在處理"""
+        try:
+            from core.framework import core_framework
+            
+            # 簡單的啟發式方法：檢查模組是否有正在處理的任務
+            # 這裡可以根據需要添加更複雜的邏輯
+            if hasattr(core_framework, 'get_active_modules'):
+                active_modules = core_framework.get_active_modules()
+                return len(active_modules) > 0
+            else:
+                # 如果無法檢查，預設為有活躍模組
+                return True
+                
+        except Exception as e:
+            debug_log(1, f"[SystemLoop] 檢查活躍模組時發生錯誤: {e}")
+            return True  # 出錯時保守處理
     
     def _log_system_status(self):
         """定期輸出系統運行狀態"""
@@ -309,6 +413,19 @@ class SystemLoop:
             info_log("▶️ 系統循環已恢復")
             return True
         return False
+
+    def _check_cycle_end_conditions(self):
+        """系統循環結束時檢查 GS 結束條件"""
+        try:
+            from core.framework import core_framework
+            
+            # 獲取 Controller 並調用 GS 結束條件檢查
+            controller = core_framework.get_manager('controller')
+            if controller and hasattr(controller, 'check_gs_end_conditions'):
+                controller.check_gs_end_conditions()
+                
+        except Exception as e:
+            debug_log(2, f"[SystemLoop] 循環結束條件檢查失敗: {e}")
 
 
 # 全局系統循環實例

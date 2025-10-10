@@ -19,8 +19,7 @@ from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 from core.bases.module_base import BaseModule
 from utils.debug_helper import debug_log, info_log, error_log
 from configs.config_loader import load_module_config
-from core.schemas import STTModuleData, create_stt_data
-from core.schema_adapter import STTSchemaAdapter
+from core.schemas import STTModuleData
 from .schemas import STTInput, STTOutput, ActivationMode, SpeakerInfo
 
 # 獨立模組
@@ -211,12 +210,8 @@ class STTModule(BaseModule):
     def handle(self, data: dict = {}) -> dict:
         """處理 STT 請求"""
         try:
-            # 使用 schema adapter 轉換輸入數據
-            schema_adapter = STTSchemaAdapter()
-            adapted_input = schema_adapter.adapt_input(data)
-            
-            # 轉換為模組內部使用的格式
-            validated = STTInput(**adapted_input)
+            # 直接轉換為模組內部使用的格式
+            validated = STTInput(**data)
             debug_log(1, f"[STT] 處理請求: {validated.mode}")
             
             start_time = time.time()
@@ -229,14 +224,12 @@ class STTModule(BaseModule):
                 result = self._continuous_recognition(validated)
             else:
                 # 不支持的模式
-                raw_result = STTOutput(
+                return STTOutput(
                     text="", 
                     confidence=0.0, 
                     error="不支持的模式",
                     activation_reason="不支持的模式"
                 ).model_dump()
-                # 使用 schema adapter 轉換輸出數據
-                return schema_adapter.adapt_output(raw_result)
                 
             processing_time = time.time() - start_time
             result["processing_time"] = processing_time
@@ -247,19 +240,12 @@ class STTModule(BaseModule):
             # 檢查是否有識別出文本
             if not stt_output.text or not stt_output.text.strip():
                 info_log("[STT] 🔇 未識別到有效語音內容")
-                # 更新錯誤信息
                 stt_output.error = "未識別到有效語音內容"
-                result["error"] = "未識別到有效語音內容"
             else:
-                # 確保當有識別文本時，移除可能的錯誤信息
                 stt_output.error = None
-                result["error"] = None
             
-            # 使用 STTOutput 的方法轉換為統一格式
-            unified_data = stt_output.to_unified_format()
-            
-            # 將統一格式轉換為 API 輸出格式
-            return schema_adapter.adapt_output(result)
+            # 返回字典格式
+            return stt_output.model_dump()
             
         except Exception as e:
             error_log(f"[STT] 處理失敗: {str(e)}")

@@ -10,7 +10,7 @@ class BaseModule(ABC):
         self.is_initialized = False
 
     @abstractmethod
-    def initialize(self):
+    def initialize(self) -> bool:
         """初始化模組，如載入模型、參數等"""
         # 子類別需要在成功初始化後設置 self.is_initialized = True
         pass

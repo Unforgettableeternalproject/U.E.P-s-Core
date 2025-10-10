@@ -473,7 +473,7 @@ class UnifiedSessionManager:
     # ==================== SessionRecord 管理 ====================
     
     def _create_session_record(self, session_id: str, session_type: SessionType, 
-                              trigger_content: str, context_content: str) -> SessionRecord:
+                              trigger_content: str, context_content: str) -> Optional[SessionRecord]:
         """創建會話記錄"""
         if not self.config["enable_session_recording"]:
             return None
@@ -608,7 +608,7 @@ class UnifiedSessionManager:
             for cs in active_cs:
                 if self._is_session_timeout(cs, current_time):
                     reason = f"會話超時：超過 {self.config['max_session_age']} 秒無活動"
-                    if self.end_chatting_session(cs.session_id, reason=reason):
+                    if self.end_chatting_session(cs.session_id, save_memory=True):
                         timeout_sessions.append({
                             "session_id": cs.session_id,
                             "session_type": "chatting",
@@ -622,7 +622,7 @@ class UnifiedSessionManager:
             for ws in active_ws:
                 if self._is_session_timeout(ws, current_time):
                     reason = f"工作流超時：超過 {self.config['max_session_age']} 秒無活動"
-                    if self.end_workflow_session(ws.session_id, reason=reason):
+                    if self.end_workflow_session(ws.session_id):
                         timeout_sessions.append({
                             "session_id": ws.session_id,
                             "session_type": "workflow", 
@@ -693,8 +693,8 @@ class UnifiedSessionManager:
 
     # ==================== 向後兼容方法 ====================
     
-    def create_session(self, workflow_type: str = None, command: str = None, 
-                      initial_data: Dict[str, Any] = None, **kwargs) -> Optional[Any]:
+    def create_session(self, workflow_type: str = None, command: str = None,  # type: ignore
+                      initial_data: Dict[str, Any] = None, **kwargs) -> Optional[Any]: # type: ignore
         """
         向後兼容的會話創建方法
         根據參數自動判斷要創建的會話類型
@@ -802,47 +802,24 @@ session_manager = UnifiedSessionManager()
 # 向後兼容的別名
 unified_session_manager = session_manager
 
-# 導出必要的類和枚舉
-# 從各個會話模組導入並重新導出，供其他模組使用
-def _export_session_classes():
-    """導出所有會話相關的類和枚舉"""
-    try:
-        from .general_session import GeneralSession, GSType, GSStatus
-        from .chatting_session import ChattingSession  
-        from .workflow_session import WorkflowSession, WSTaskType, WSStatus
-        
-        # 創建導出字典
-        exports = {
-            'GeneralSession': GeneralSession,
-            'ChattingSession': ChattingSession,
-            'WorkflowSession': WorkflowSession,
-            'GSType': GSType,
-            'GSStatus': GSStatus,
-            'WSTaskType': WSTaskType, 
-            'WSStatus': WSStatus,
-            'SessionType': SessionType,
-            'SessionRecordStatus': SessionRecordStatus,
-            'SessionRecord': SessionRecord,
-            'UnifiedSessionManager': UnifiedSessionManager,
-            'SessionStatus': WSStatus  # 兼容別名
-        }
-        return exports
-    except ImportError as e:
-        error_log(f"導出會話類時失敗: {e}")
-        # 返回最基本的導出
-        return {
-            'SessionType': SessionType,
-            'SessionRecordStatus': SessionRecordStatus,
-            'SessionRecord': SessionRecord,
-            'UnifiedSessionManager': UnifiedSessionManager
-        }
-
-# 執行導出並設置模組級別的變數
-_exports = _export_session_classes()
-locals().update(_exports)
-
-# 如果 WSStatus 沒有成功導入，提供一個默認的 SessionStatus
-if 'SessionStatus' not in locals():
+# 導出必要的類和枚舉 - 明確導入以支持類型檢查器
+try:
+    from .general_session import GeneralSession, GSType, GSStatus
+    from .chatting_session import ChattingSession  
+    from .workflow_session import WorkflowSession, WSTaskType, WSStatus
+    
+    # 設定兼容別名
+    SessionStatus = WSStatus
+except ImportError as e:
+    error_log(f"導出會話類時失敗: {e}")
+    # 如果導入失敗，設定 None 值以避免未定義錯誤
+    GeneralSession = None  # type: ignore
+    ChattingSession = None  # type: ignore
+    WorkflowSession = None  # type: ignore
+    GSType = None  # type: ignore
+    GSStatus = None  # type: ignore
+    WSTaskType = None  # type: ignore
+    WSStatus = None  # type: ignore
     SessionStatus = SessionRecordStatus
 
 __all__ = [

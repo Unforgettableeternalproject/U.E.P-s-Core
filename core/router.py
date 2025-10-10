@@ -31,7 +31,7 @@ class Input:
     text: str                    # 純文字內容
     source: TextSource          # 來源類型
     source_module: str          # 來源模組名稱
-    metadata: Dict[str, Any] = None  # 簡單元數據
+    metadata: Dict[str, Any] = None  # type: ignore # 簡單元數據
 
 
 @dataclass
@@ -39,7 +39,7 @@ class TextRoutingDecision:
     """文字路由決策"""
     target_module: str          # 目標模組
     text_content: str          # 要傳遞的文字
-    routing_metadata: Dict[str, Any] = None  # 路由元數據
+    routing_metadata: Dict[str, Any] = None  # type: ignore # 路由元數據
     reasoning: str = ""        # 決策原因
 
 

@@ -1390,3 +1390,15 @@
 
 ---
 
+### Some critical system core changes. 10/10
+
+> Date: Fri, 10 Oct 2025 20:35:30 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_rework`
+
+> Commit: `c746bcdcf9265440fdfef47ccda15f33667b6cd0`
+
+---
+

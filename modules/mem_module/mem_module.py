@@ -7,7 +7,6 @@ from .schemas import (
     MEMInput, MEMOutput, MemoryType, MemoryImportance
 )
 from core.schemas import MEMModuleData
-from core.schema_adapter import MEMSchemaAdapter
 from core.working_context import working_context_manager
 from configs.config_loader import load_module_config
 from utils.debug_helper import debug_log, debug_log_e, info_log, error_log
@@ -42,7 +41,6 @@ class MEMModule(BaseModule):
         self.storage_manager = None
         self.nlp_integration = None
         self.working_context_handler = None
-        self.schema_adapter = MEMSchemaAdapter()
         
         # 狀態管理整合
         self.state_change_listener = None

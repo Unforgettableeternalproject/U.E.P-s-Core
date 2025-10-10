@@ -1,18 +1,22 @@
-# core/chatting_session.py
+# core/sessions/chatting_session.py
 """
-Chatting Session (CS) 實現
+Chatting Session (CS) 實現 - 重構版本
 
-CS 專門負責處理對話型交互，特點包括：
-1. 身份隔離：每個 CS 都有獨立的身份上下文
-2. 記憶管理：與 MEM 模組緊密整合，自動產生對話快照
-3. LLM 調用：透過 Working Context 調用 LLM 模組
-4. 對話持續性：支援多輪對話
+根據系統流程文檔，CS 的正確職責：
+1. 追蹤會話生命週期和狀態
+2. 記錄對話輪次信息
+3. 維護會話相關的元數據和配置
+4. 提供會話級別的上下文信息
 
-會話生命週期：
-1. 初始化 -> 設定身份上下文
-2. 對話處理 -> 接收輸入、調用 LLM、產生輸出
-3. 記憶更新 -> 自動將對話存入 MEM
-4. 結束 -> 清理上下文、返回 GS
+CS 不應該做的事（由模組和 Router 處理）：
+- ❌ 直接調用 LLM/MEM 模組
+- ❌ 管理模組間數據傳遞
+- ❌ 處理記憶載入和存儲
+- ❌ 協調模組工作流
+
+正確的流程應該是：
+Router → 啟動 CS → CS 提供會話上下文 → Router 調用 MEM/LLM → 
+LLM 從 Working Context 獲取數據 → Router 轉送結果 → TTS 輸出 → CS 記錄結果
 """
 
 from typing import Dict, Any, Optional, List
@@ -20,7 +24,6 @@ from datetime import datetime
 from enum import Enum
 import uuid
 
-from core.working_context import working_context_manager, ContextType
 from utils.debug_helper import debug_log, info_log, error_log
 
 
@@ -28,27 +31,34 @@ class CSStatus(Enum):
     """CS 狀態"""
     INITIALIZING = "initializing"
     ACTIVE = "active"
-    PROCESSING = "processing"
     PAUSED = "paused"
     COMPLETED = "completed"
     ERROR = "error"
 
 
 class ConversationTurn:
-    """單輪對話記錄"""
+    """單輪對話記錄 - 簡化版本，只記錄不處理"""
     
-    def __init__(self, turn_id: str, user_input: Dict[str, Any]):
+    def __init__(self, turn_id: str):
         self.turn_id = turn_id
-        self.user_input = user_input
-        self.llm_response: Optional[Dict[str, Any]] = None
         self.timestamp = datetime.now()
+        self.user_input: Optional[Dict[str, Any]] = None
+        self.system_response: Optional[Dict[str, Any]] = None
         self.processing_time: Optional[float] = None
-        self.context_used: Dict[str, Any] = {}
+        self.metadata: Dict[str, Any] = {}
         
-    def set_response(self, response: Dict[str, Any], processing_time: float = None):
-        """設定 LLM 回應"""
-        self.llm_response = response
+    def record_input(self, user_input: Dict[str, Any]):
+        """記錄使用者輸入"""
+        self.user_input = user_input
+        
+    def record_response(self, response: Dict[str, Any], processing_time: Optional[float] = None):
+        """記錄系統回應"""
+        self.system_response = response
         self.processing_time = processing_time
+        
+    def add_metadata(self, key: str, value: Any):
+        """添加元數據"""
+        self.metadata[key] = value
         
     def to_dict(self) -> Dict[str, Any]:
         """轉換為字典格式"""
@@ -56,14 +66,27 @@ class ConversationTurn:
             "turn_id": self.turn_id,
             "timestamp": self.timestamp.isoformat(),
             "user_input": self.user_input,
-            "llm_response": self.llm_response,
+            "system_response": self.system_response,
             "processing_time": self.processing_time,
-            "context_used": self.context_used
+            "metadata": self.metadata
         }
 
 
 class ChattingSession:
-    """對話會話"""
+    """
+    對話會話 - 重構版本
+    
+    職責：
+    - 會話生命週期管理
+    - 對話輪次記錄
+    - 會話元數據維護
+    - 提供會話上下文信息
+    
+    不負責：
+    - 模組調用（由 Router 處理）
+    - 數據處理（由各模組處理）
+    - 工作流協調（由 Router 和 Working Context 處理）
+    """
     
     def __init__(self, session_id: str, gs_session_id: str, 
                  identity_context: Optional[Dict[str, Any]] = None):
@@ -74,486 +97,379 @@ class ChattingSession:
         self.status = CSStatus.INITIALIZING
         self.created_at = datetime.now()
         self.last_activity = self.created_at
+        self.ended_at: Optional[datetime] = None
         
         # 對話記錄
         self.conversation_turns: List[ConversationTurn] = []
         self.turn_counter = 0
         
-        # 身份和記憶上下文
+        # 會話標識和元數據
         self.memory_token = self._generate_memory_token()
-        self.identity_snapshot: Optional[Dict[str, Any]] = None
+        self.session_metadata: Dict[str, Any] = {
+            "conversation_mode": "chatting",
+            "user_id": self.identity_context.get("user_id", "default_user"),
+            "personality": self.identity_context.get("personality", "default"),
+            "language": self.identity_context.get("language", "zh-TW")
+        }
         
         # 會話配置
         self.config = {
             "max_turns": 50,  # 最大對話輪數
-            "auto_save_interval": 5,  # 每 5 輪自動保存
-            "context_window": 10,  # 保留最近 10 輪對話作為上下文
-            "memory_threshold": 0.7  # 記憶重要性閾值
+            "context_window": 10,  # 上下文視窗大小（供模組參考）
+            "auto_summarize_interval": 20,  # 自動總結間隔（供模組參考）
         }
         
-        # 初始化會話
-        self._initialize_session()
+        # 會話統計
+        self.stats = {
+            "total_turns": 0,
+            "total_processing_time": 0.0,
+            "avg_processing_time": 0.0,
+            "errors": 0
+        }
+        
+        self._initialize()
         
     def _generate_memory_token(self) -> str:
         """生成記憶標識符"""
         return f"cs_{self.session_id}_{int(self.created_at.timestamp())}"
     
-    def _initialize_session(self):
+    def _initialize(self):
         """初始化會話"""
         try:
-            # 1. 設定身份上下文
-            self._setup_identity_context()
-            
-            # 2. 載入相關記憶
-            self._load_relevant_memories()
-            
-            # 3. 設定 Working Context
-            self._setup_working_context()
-            
             self.status = CSStatus.ACTIVE
             info_log(f"[ChattingSession] CS 初始化完成: {self.session_id}")
+            debug_log(2, f"  └─ GS: {self.gs_session_id}")
+            debug_log(2, f"  └─ 記憶標識: {self.memory_token}")
+            debug_log(2, f"  └─ 使用者ID: {self.session_metadata['user_id']}")
             
         except Exception as e:
             error_log(f"[ChattingSession] CS 初始化失敗: {e}")
             self.status = CSStatus.ERROR
     
-    def _setup_identity_context(self):
-        """設定身份上下文"""
-        # 從 identity_context 中獲取或創建身份信息
-        if not self.identity_context:
-            self.identity_context = {
-                "user_id": "default_user",
-                "personality": "default",
-                "conversation_mode": "casual"
-            }
-        
-        # 設定身份快照
-        self.identity_snapshot = {
-            "session_id": self.session_id,
-            "user_identity": self.identity_context.get("user_id", "default"),
-            "personality_profile": self.identity_context.get("personality", "default"),
-            "conversation_preferences": self.identity_context.get("preferences", {}),
-            "memory_token": self.memory_token
-        }
-        
-        debug_log(2, f"[ChattingSession] 身份上下文設定完成: {self.identity_snapshot}")
-    
-    def _load_relevant_memories(self):
-        """載入相關記憶"""
-        try:
-            # 透過 Working Context 請求 MEM 模組載入相關記憶
-            memory_request = {
-                "action": "load_conversation_context",
-                "user_id": self.identity_context.get("user_id"),
-                "session_token": self.memory_token,
-                "context_size": self.config["context_window"]
-            }
-            
-            working_context_manager.set_data(
-                ContextType.MEM_EXTERNAL_ACCESS,
-                "conversation_context_request",
-                memory_request
-            )
-            
-            debug_log(3, "[ChattingSession] 記憶載入請求已發送")
-            
-        except Exception as e:
-            error_log(f"[ChattingSession] 載入記憶時發生錯誤: {e}")
-    
-    def _setup_working_context(self):
-        """設定 Working Context"""
-        # 設定對話上下文資料
-        conversation_context = {
-            "session_id": self.session_id,
-            "identity_context": self.identity_snapshot,
-            "conversation_mode": "chatting",
-            "turn_count": self.turn_counter,
-            "memory_token": self.memory_token
-        }
-        
-        working_context_manager.set_data(
-            ContextType.LLM_CONTEXT,
-            "conversation_session",
-            conversation_context
-        )
-    
-    def process_input(self, user_input: Dict[str, Any]) -> Dict[str, Any]:
+    def start_turn(self) -> str:
         """
-        處理使用者輸入
+        開始新的對話輪次
         
-        Args:
-            user_input: 使用者輸入，格式：{
-                "type": "text|voice",
-                "content": "輸入內容",
-                "metadata": {...}
-            }
-            
         Returns:
-            處理結果：{
-                "success": bool,
-                "response": Dict[str, Any],
-                "turn_id": str
-            }
+            turn_id: 對話輪次ID
         """
         if self.status != CSStatus.ACTIVE:
-            return {
-                "success": False,
-                "error": f"CS 狀態不正確: {self.status}",
-                "turn_id": None
-            }
+            error_log(f"[ChattingSession] 無法開始新輪次，會話狀態: {self.status.value}")
+            return ""
         
         try:
-            self.status = CSStatus.PROCESSING
+            self.turn_counter += 1
+            turn_id = f"turn_{self.turn_counter}"
+            
+            # 創建新的對話輪次記錄
+            conversation_turn = ConversationTurn(turn_id)
+            self.conversation_turns.append(conversation_turn)
+            
             self.last_activity = datetime.now()
             
-            # 1. 創建對話輪次
-            turn_id = f"turn_{self.turn_counter + 1}"
-            conversation_turn = ConversationTurn(turn_id, user_input)
+            debug_log(2, f"[ChattingSession] 開始對話輪次: {turn_id}")
             
-            # 2. 準備 LLM 上下文
-            llm_context = self._prepare_llm_context(user_input, conversation_turn)
-            
-            # 3. 調用 LLM
-            start_time = datetime.now()
-            llm_response = self._call_llm(llm_context)
-            processing_time = (datetime.now() - start_time).total_seconds()
-            
-            # 4. 處理 LLM 回應
-            response_data = self._process_llm_response(llm_response)
-            conversation_turn.set_response(response_data, processing_time)
-            
-            # 5. 更新對話記錄
-            self.conversation_turns.append(conversation_turn)
-            self.turn_counter += 1
-            
-            # 6. 自動保存記憶 (如果需要)
-            if self.turn_counter % self.config["auto_save_interval"] == 0:
-                self._auto_save_memory()
-            
-            self.status = CSStatus.ACTIVE
-            
-            info_log(f"[ChattingSession] 對話輪次處理完成: {turn_id}")
-            
-            return {
-                "success": True,
-                "response": response_data,
-                "turn_id": turn_id,
-                "processing_time": processing_time
-            }
+            return turn_id
             
         except Exception as e:
-            error_log(f"[ChattingSession] 處理輸入時發生錯誤: {e}")
-            self.status = CSStatus.ERROR
-            return {
-                "success": False,
-                "error": str(e),
-                "turn_id": None
-            }
+            error_log(f"[ChattingSession] 開始輪次失敗: {e}")
+            return ""
     
-    def _prepare_llm_context(self, user_input: Dict[str, Any], 
-                           conversation_turn: ConversationTurn) -> Dict[str, Any]:
-        """準備 LLM 上下文"""
+    def record_input(self, turn_id: str, user_input: Dict[str, Any]):
+        """
+        記錄使用者輸入
         
-        # 獲取近期對話歷史
+        Args:
+            turn_id: 對話輪次ID
+            user_input: 使用者輸入數據
+        """
+        try:
+            turn = self._get_turn(turn_id)
+            if turn:
+                turn.record_input(user_input)
+                self.last_activity = datetime.now()
+                debug_log(3, f"[ChattingSession] 記錄輸入: {turn_id}")
+            else:
+                error_log(f"[ChattingSession] 找不到對話輪次: {turn_id}")
+                
+        except Exception as e:
+            error_log(f"[ChattingSession] 記錄輸入失敗: {e}")
+    
+    def record_response(self, turn_id: str, response: Dict[str, Any], 
+                       processing_time: Optional[float] = None):
+        """
+        記錄系統回應
+        
+        Args:
+            turn_id: 對話輪次ID
+            response: 系統回應數據
+            processing_time: 處理時間（秒）
+        """
+        try:
+            turn = self._get_turn(turn_id)
+            if turn:
+                turn.record_response(response, processing_time)
+                self.last_activity = datetime.now()
+                
+                # 更新統計
+                self.stats["total_turns"] += 1
+                if processing_time:
+                    self.stats["total_processing_time"] += processing_time
+                    self.stats["avg_processing_time"] = (
+                        self.stats["total_processing_time"] / self.stats["total_turns"]
+                    )
+                
+                debug_log(3, f"[ChattingSession] 記錄回應: {turn_id}")
+            else:
+                error_log(f"[ChattingSession] 找不到對話輪次: {turn_id}")
+                
+        except Exception as e:
+            error_log(f"[ChattingSession] 記錄回應失敗: {e}")
+    
+    def record_error(self, turn_id: str, error_info: Dict[str, Any]):
+        """
+        記錄錯誤
+        
+        Args:
+            turn_id: 對話輪次ID（可選）
+            error_info: 錯誤信息
+        """
+        try:
+            if turn_id:
+                turn = self._get_turn(turn_id)
+                if turn:
+                    turn.add_metadata("error", error_info)
+            
+            self.stats["errors"] += 1
+            error_log(f"[ChattingSession] 記錄錯誤: {error_info.get('message', 'Unknown error')}")
+            
+        except Exception as e:
+            error_log(f"[ChattingSession] 記錄錯誤失敗: {e}")
+    
+    def get_session_context(self) -> Dict[str, Any]:
+        """
+        獲取會話上下文信息（供模組使用）
+        
+        Returns:
+            會話上下文數據
+        """
         recent_turns = self.conversation_turns[-self.config["context_window"]:]
-        conversation_history = [turn.to_dict() for turn in recent_turns]
-        
-        # 獲取記憶上下文
-        memory_context = working_context_manager.get_data(
-            ContextType.MEM_EXTERNAL_ACCESS, 
-            "conversation_memories"
-        ) or {}
-        
-        # 構建完整上下文
-        llm_context = {
-            "session_info": {
-                "session_id": self.session_id,
-                "turn_id": conversation_turn.turn_id,
-                "identity": self.identity_snapshot
-            },
-            "current_input": user_input,
-            "conversation_history": conversation_history,
-            "memory_context": memory_context,
-            "system_instructions": self._get_system_instructions()
-        }
-        
-        # 記錄使用的上下文
-        conversation_turn.context_used = {
-            "history_turns": len(conversation_history),
-            "memory_entries": len(memory_context.get("relevant_memories", [])),
-            "context_size": len(str(llm_context))
-        }
-        
-        return llm_context
-    
-    def _get_system_instructions(self) -> Dict[str, Any]:
-        """獲取系統指令"""
-        personality = self.identity_context.get("personality", "default")
         
         return {
-            "role": "assistant",
-            "personality": personality,
-            "conversation_mode": "chatting",
-            "response_style": "natural",
-            "memory_integration": True,
-            "context_awareness": True
+            "session_id": self.session_id,
+            "gs_session_id": self.gs_session_id,
+            "memory_token": self.memory_token,
+            "identity_context": self.identity_context,
+            "session_metadata": self.session_metadata,
+            "turn_counter": self.turn_counter,
+            "recent_turns": [turn.to_dict() for turn in recent_turns],
+            "config": self.config.copy(),
+            "stats": self.stats.copy(),
+            "status": self.status.value,
+            "created_at": self.created_at.isoformat(),
+            "last_activity": self.last_activity.isoformat()
         }
     
-    def _call_llm(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        """調用 LLM 模組"""
-        try:
-            # 準備 LLM 請求
-            llm_request = {
-                "action": "generate_response",
-                "context": context,
-                "session_token": self.memory_token,
-                "response_format": "conversational"
-            }
+    def get_turn(self, turn_id: str) -> Optional[Dict[str, Any]]:
+        """
+        獲取特定對話輪次數據
+        
+        Args:
+            turn_id: 對話輪次ID
             
-            # 透過 Working Context 發送請求
-            working_context_manager.set_data(
-                ContextType.LLM_REQUEST,
-                "conversation_generation",
-                llm_request
-            )
-            
-            # 等待回應 (實際實現中應該有異步機制)
-            # 這裡模擬 LLM 回應
-            mock_response = {
-                "success": True,
-                "response": {
-                    "text": "這是一個模擬的 LLM 回應",
-                    "confidence": 0.95,
-                    "tokens_used": 150
-                },
-                "metadata": {
-                    "model": "gpt-4",
-                    "temperature": 0.7,
-                    "processing_time": 1.2
-                }
-            }
-            
-            debug_log(3, "[ChattingSession] LLM 回應已接收")
-            return mock_response
-            
-        except Exception as e:
-            error_log(f"[ChattingSession] LLM 調用失敗: {e}")
-            return {
-                "success": False,
-                "error": str(e)
-            }
+        Returns:
+            對話輪次數據（字典格式）
+        """
+        turn = self._get_turn(turn_id)
+        return turn.to_dict() if turn else None
     
-    def _process_llm_response(self, llm_response: Dict[str, Any]) -> Dict[str, Any]:
-        """處理 LLM 回應"""
-        if not llm_response.get("success", False):
-            return {
-                "type": "error",
-                "content": "抱歉，我現在無法回應。請稍後再試。",
-                "error": llm_response.get("error")
-            }
+    def get_recent_turns(self, count: Optional[int] = None) -> List[Dict[str, Any]]:
+        """
+        獲取最近的對話輪次
         
-        response_data = llm_response.get("response", {})
-        
-        return {
-            "type": "text",
-            "content": response_data.get("text", ""),
-            "confidence": response_data.get("confidence", 0.0),
-            "metadata": {
-                "tokens_used": response_data.get("tokens_used", 0),
-                "model_info": llm_response.get("metadata", {})
-            }
-        }
-    
-    def _auto_save_memory(self):
-        """自動保存記憶"""
-        try:
-            # 準備對話快照
-            conversation_snapshot = {
-                "session_id": self.session_id,
-                "memory_token": self.memory_token,
-                "identity_context": self.identity_snapshot,
-                "conversation_summary": self._generate_conversation_summary(),
-                "important_turns": self._extract_important_turns(),
-                "timestamp": datetime.now().isoformat()
-            }
+        Args:
+            count: 要獲取的輪次數量，None 則使用配置的 context_window
             
-            # 透過 Working Context 發送保存請求
-            memory_save_request = {
-                "action": "save_conversation_snapshot",
-                "snapshot": conversation_snapshot,
-                "importance_threshold": self.config["memory_threshold"]
-            }
-            
-            working_context_manager.set_data(
-                ContextType.MEM_EXTERNAL_ACCESS,
-                "conversation_snapshot",
-                memory_save_request
-            )
-            
-            debug_log(2, f"[ChattingSession] 自動保存記憶完成，輪次數: {self.turn_counter}")
-            
-        except Exception as e:
-            error_log(f"[ChattingSession] 自動保存記憶失敗: {e}")
+        Returns:
+            對話輪次列表
+        """
+        if count is None:
+            count = self.config["context_window"]
+        
+        recent_turns = self.conversation_turns[-count:]
+        return [turn.to_dict() for turn in recent_turns]
     
-    def _generate_conversation_summary(self) -> str:
-        """生成對話摘要"""
-        if not self.conversation_turns:
-            return "空對話"
+    def update_metadata(self, key: str, value: Any):
+        """
+        更新會話元數據
         
-        recent_turns = self.conversation_turns[-5:]  # 最近 5 輪
-        
-        summary_parts = []
-        for turn in recent_turns:
-            user_content = turn.user_input.get("content", "")
-            if turn.llm_response:
-                response_content = turn.llm_response.get("content", "")
-                summary_parts.append(f"用戶: {user_content[:50]}... | 回應: {response_content[:50]}...")
-        
-        return " | ".join(summary_parts)
+        Args:
+            key: 元數據鍵
+            value: 元數據值
+        """
+        self.session_metadata[key] = value
+        debug_log(3, f"[ChattingSession] 更新元數據: {key} = {value}")
     
-    def _extract_important_turns(self) -> List[Dict[str, Any]]:
-        """提取重要的對話輪次"""
-        important_turns = []
-        
-        for turn in self.conversation_turns:
-            # 簡單的重要性判斷邏輯
-            if turn.llm_response and turn.llm_response.get("confidence", 0) > self.config["memory_threshold"]:
-                important_turns.append(turn.to_dict())
-        
-        return important_turns[-10:]  # 保留最近 10 個重要輪次
-    
-    def pause_session(self):
+    def pause(self):
         """暫停會話"""
         if self.status == CSStatus.ACTIVE:
             self.status = CSStatus.PAUSED
             info_log(f"[ChattingSession] CS 已暫停: {self.session_id}")
     
-    def resume_session(self):
+    def resume(self):
         """恢復會話"""
         if self.status == CSStatus.PAUSED:
             self.status = CSStatus.ACTIVE
             self.last_activity = datetime.now()
             info_log(f"[ChattingSession] CS 已恢復: {self.session_id}")
     
-    def end_session(self, save_memory: bool = True) -> Dict[str, Any]:
+    def end(self, reason: str = "normal") -> Dict[str, Any]:
         """
         結束會話
         
         Args:
-            save_memory: 是否保存最終記憶
+            reason: 結束原因
             
         Returns:
-            會話總結
+            會話總結數據
         """
         try:
-            if save_memory:
-                self._auto_save_memory()
+            self.status = CSStatus.COMPLETED
+            self.ended_at = datetime.now()
             
-            # 生成會話總結
-            session_summary = {
+            duration = (self.ended_at - self.created_at).total_seconds()
+            
+            summary = {
                 "session_id": self.session_id,
                 "gs_session_id": self.gs_session_id,
-                "total_turns": self.turn_counter,
-                "duration": (datetime.now() - self.created_at).total_seconds(),
-                "conversation_summary": self._generate_conversation_summary(),
                 "memory_token": self.memory_token,
-                "final_status": "completed"
+                "duration": duration,
+                "total_turns": self.turn_counter,
+                "stats": self.stats.copy(),
+                "end_reason": reason,
+                "created_at": self.created_at.isoformat(),
+                "ended_at": self.ended_at.isoformat()
             }
             
-            self.status = CSStatus.COMPLETED
+            info_log(f"[ChattingSession] CS 已結束: {self.session_id}")
+            info_log(f"  └─ 持續時間: {duration:.1f}秒")
+            info_log(f"  └─ 對話輪次: {self.turn_counter}")
+            info_log(f"  └─ 平均處理時間: {self.stats['avg_processing_time']:.2f}秒")
             
-            # 清理 Working Context
-            working_context_manager.clear_data(ContextType.LLM_CONTEXT, "conversation_session")
-            
-            info_log(f"[ChattingSession] CS 結束: {self.session_id}, 總輪次: {self.turn_counter}")
-            
-            return session_summary
+            return summary
             
         except Exception as e:
-            error_log(f"[ChattingSession] 結束會話時發生錯誤: {e}")
-            self.status = CSStatus.ERROR
-            return {
-                "session_id": self.session_id,
-                "error": str(e),
-                "final_status": "error"
-            }
+            error_log(f"[ChattingSession] 結束會話失敗: {e}")
+            return {}
     
-    def get_session_info(self) -> Dict[str, Any]:
-        """獲取會話信息"""
+    def _get_turn(self, turn_id: str) -> Optional[ConversationTurn]:
+        """獲取對話輪次對象"""
+        for turn in self.conversation_turns:
+            if turn.turn_id == turn_id:
+                return turn
+        return None
+    
+    def get_summary(self) -> Dict[str, Any]:
+        """
+        獲取會話總結
+        
+        Returns:
+            會話總結數據
+        """
+        duration = (
+            (self.ended_at or datetime.now()) - self.created_at
+        ).total_seconds()
+        
         return {
             "session_id": self.session_id,
             "gs_session_id": self.gs_session_id,
-            "status": self.status,
+            "status": self.status.value,
+            "duration": duration,
+            "total_turns": self.turn_counter,
+            "stats": self.stats.copy(),
+            "identity_context": self.identity_context,
+            "session_metadata": self.session_metadata,
             "created_at": self.created_at.isoformat(),
             "last_activity": self.last_activity.isoformat(),
-            "turn_counter": self.turn_counter,
-            "memory_token": self.memory_token,
-            "identity_context": self.identity_snapshot,
-            "config": self.config
+            "ended_at": self.ended_at.isoformat() if self.ended_at else None
         }
 
 
 class ChattingSessionManager:
-    """CS 管理器"""
+    """
+    Chatting Session 管理器
+    
+    負責創建、追蹤和管理 CS 實例
+    """
     
     def __init__(self):
-        self.active_sessions: Dict[str, ChattingSession] = {}
-        self.session_history: List[Dict[str, Any]] = []
+        self.sessions: Dict[str, ChattingSession] = {}
+        self.active_session_id: Optional[str] = None
         
-        info_log("[ChattingSessionManager] CS 管理器初始化完成")
+        info_log("[ChattingSessionManager] CS 管理器已初始化")
     
     def create_session(self, gs_session_id: str, 
-                      identity_context: Optional[Dict[str, Any]] = None) -> Optional[ChattingSession]:
-        """創建新的 CS"""
-        try:
-            session_id = f"cs_{gs_session_id}_{len(self.active_sessions) + 1}"
+                      identity_context: Optional[Dict[str, Any]] = None) -> str:
+        """
+        創建新的 CS
+        
+        Args:
+            gs_session_id: 所屬的 GS ID
+            identity_context: 身份上下文
             
-            new_session = ChattingSession(session_id, gs_session_id, identity_context)
-            
-            if new_session.status == CSStatus.ACTIVE:
-                self.active_sessions[session_id] = new_session
-                info_log(f"[ChattingSessionManager] 創建 CS: {session_id}")
-                return new_session
-            else:
-                error_log(f"[ChattingSessionManager] CS 創建失敗: {session_id}")
-                return None
-                
-        except Exception as e:
-            error_log(f"[ChattingSessionManager] 創建 CS 時發生錯誤: {e}")
-            return None
+        Returns:
+            session_id: CS ID
+        """
+        session_id = f"cs_{uuid.uuid4().hex[:8]}"
+        
+        session = ChattingSession(session_id, gs_session_id, identity_context)
+        self.sessions[session_id] = session
+        self.active_session_id = session_id
+        
+        info_log(f"[ChattingSessionManager] 創建 CS: {session_id}")
+        
+        return session_id
     
     def get_session(self, session_id: str) -> Optional[ChattingSession]:
-        """獲取 CS"""
-        return self.active_sessions.get(session_id)
+        """獲取 CS 實例"""
+        return self.sessions.get(session_id)
     
-    def end_session(self, session_id: str, save_memory: bool = True) -> bool:
+    def get_active_session(self) -> Optional[ChattingSession]:
+        """獲取當前活躍的 CS"""
+        if self.active_session_id:
+            return self.sessions.get(self.active_session_id)
+        return None
+    
+    def end_session(self, session_id: str, reason: str = "normal") -> Dict[str, Any]:
         """結束 CS"""
-        session = self.active_sessions.get(session_id)
+        session = self.sessions.get(session_id)
         if session:
-            session_summary = session.end_session(save_memory)
-            self.session_history.append(session_summary)
-            del self.active_sessions[session_id]
-            return True
-        return False
-    
-    def get_active_sessions(self) -> List[ChattingSession]:
-        """獲取所有活躍 CS"""
-        return list(self.active_sessions.values())
-    
-    def cleanup_inactive_sessions(self, max_idle_minutes: int = 30):
-        """清理非活躍會話"""
-        current_time = datetime.now()
-        inactive_sessions = []
+            summary = session.end(reason)
+            
+            if self.active_session_id == session_id:
+                self.active_session_id = None
+            
+            return summary
         
-        for session_id, session in self.active_sessions.items():
-            idle_time = (current_time - session.last_activity).total_seconds() / 60
-            if idle_time > max_idle_minutes:
-                inactive_sessions.append(session_id)
+        return {}
+    
+    def cleanup_old_sessions(self, keep_recent: int = 10):
+        """清理舊的已完成會話"""
+        completed_sessions = [
+            (sid, s) for sid, s in self.sessions.items()
+            if s.status == CSStatus.COMPLETED
+        ]
         
-        for session_id in inactive_sessions:
-            self.end_session(session_id, save_memory=True)
-            info_log(f"[ChattingSessionManager] 清理非活躍 CS: {session_id}")
+        # 按結束時間排序
+        completed_sessions.sort(key=lambda x: x[1].ended_at or datetime.min)
+        
+        # 保留最近的會話，刪除其餘的
+        if len(completed_sessions) > keep_recent:
+            to_remove = completed_sessions[:-keep_recent]
+            for session_id, _ in to_remove:
+                del self.sessions[session_id]
+                debug_log(2, f"[ChattingSessionManager] 清理舊會話: {session_id}")
 
 
-# 全域 CS 管理器實例
+# 全局 CS 管理器實例
 chatting_session_manager = ChattingSessionManager()

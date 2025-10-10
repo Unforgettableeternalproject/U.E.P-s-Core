@@ -17,8 +17,7 @@ import threading
 from typing import Dict, Any, Optional, List, Union
 
 from core.bases.module_base import BaseModule
-from core.schemas import NLPModuleData, create_nlp_data
-from core.schema_adapter import NLPSchemaAdapter
+from core.schemas import NLPModuleData
 from core.working_context import working_context_manager, ContextType
 from core.states.state_queue import get_state_queue_manager
 from core.states.state_manager import UEPState as SystemState
@@ -47,7 +46,6 @@ class NLPModule(BaseModule):
         self.intent_analyzer: Optional[IntentAnalyzer] = None
         self.context_manager = get_multi_intent_context_manager()
         self.state_queue_manager = get_state_queue_manager()
-        self.schema_adapter = NLPSchemaAdapter()
         
 
         # 模組狀態

@@ -1,30 +1,21 @@
 """
-統一模組 Schema 定義
-用於重構後的模組間通信標準化
+極簡模組 Schema 定義
+用於模組間基礎通信 - 大部分數據由 Working Context 處理
+
+設計原則:
+- 只定義真正跨模組傳遞的基礎欄位
+- 大部分狀態由 Working Context, State Manager, Session Manager 處理
+- 模組內部使用各自的 Input/Output Schema
+- 這裡只是「模組間傳遞」的最小公約數
 """
 
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any, List, Union
+from typing import Optional, Dict, Any, List
 from enum import Enum
 
 
-class ExecutionMode(str, Enum):
-    """執行模式"""
-    SEQUENTIAL = "sequential"
-    PARALLEL = "parallel"
-    CONDITIONAL = "conditional"
-
-
-class Priority(int, Enum):
-    """優先級級別"""
-    LOW = 1
-    NORMAL = 5
-    HIGH = 8
-    CRITICAL = 10
-
-
 class ModuleCapability(str, Enum):
-    """模組能力定義"""
+    """模組能力定義 (用於框架註冊)"""
     SPEECH_RECOGNITION = "speech_recognition"
     INTENT_CLASSIFICATION = "intent_classification"
     MEMORY_RETRIEVAL = "memory_retrieval"
@@ -34,317 +25,116 @@ class ModuleCapability(str, Enum):
     SYSTEM_CONTROL = "system_control"
 
 
-class UnifiedModuleData(BaseModel):
-    """統一的模組數據格式 - 新 Schema 標準"""
+class BaseModuleData(BaseModel):
+    """
+    模組間傳遞的基礎數據格式
     
-    # === 核心數據 ===
+    注意: 這只是「模組間傳遞」的最小結構
+    - 說話人、情緒等由 Working Context 管理
+    - 會話狀態由 Session Manager 管理
+    - 系統狀態由 State Manager 管理
+    """
+    
+    # === 核心數據 (幾乎所有模組都需要) ===
     text: Optional[str] = Field(None, description="主要文本內容")
-    intent: Optional[str] = Field(None, description="處理意圖")
-    context: Optional[Dict[str, Any]] = Field(None, description="上下文信息")
     
-    # === 執行控制 ===
-    execution_mode: Optional[ExecutionMode] = Field(ExecutionMode.SEQUENTIAL, description="執行模式")
-    priority: Optional[Priority] = Field(Priority.NORMAL, description="優先級")
-    timeout: Optional[float] = Field(None, description="執行超時時間(秒)")
-    
-    # === 模組間傳遞的 metadata ===
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="模組間傳遞的元數據")
+    # === 來源追踪 ===
     source_module: Optional[str] = Field(None, description="來源模組")
-    target_modules: Optional[List[str]] = Field(None, description="目標模組列表")
     
-    # === 模組特定數據 (靈活擴展) ===
-    module_data: Dict[str, Any] = Field(default_factory=dict, description="模組特定數據")
+    # === 狀態與錯誤 ===
+    status: Optional[str] = Field(None, description="處理狀態: success/error/pending")
+    error: Optional[str] = Field(None, description="錯誤訊息")
     
-    # === 狀態信息 ===
-    status: Optional[str] = Field("pending", description="處理狀態")
-    error: Optional[str] = Field(None, description="錯誤信息")
+    # === 擴展欄位 (模組特定數據放這裡) ===
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="模組特定的額外數據")
     
     class Config:
-        extra = "allow"  # 允許額外字段以保持靈活性
+        extra = "allow"  # 允許模組自由擴展
 
 
-class STTModuleData(UnifiedModuleData):
-    """STT 模組專用數據格式"""
-    
-    # STT 特定字段
+class STTModuleData(BaseModuleData):
+    """
+    STT → NLP 傳遞格式
+    只包含 NLP 需要的基礎信息 (說話人已在 Working Context)
+    """
     confidence: Optional[float] = Field(None, description="識別信心度")
-    speaker_info: Optional[Dict[str, Any]] = Field(None, description="說話人信息")
+    speaker_info: Optional[Dict[str, Any]] = Field(None, description="說話人基礎信息")
     activation_reason: Optional[str] = Field(None, description="啟動原因")
-    should_activate: Optional[bool] = Field(None, description="是否應該啟動")
-    audio_data: Optional[bytes] = Field(None, description="音頻數據")
-    language: Optional[str] = Field("zh-TW", description="語言設定")
 
 
-class NLPModuleData(UnifiedModuleData):
-    """NLP 模組專用數據格式"""
-    
-    # 語者身份相關
-    speaker_id: Optional[str] = Field(None, description="語者ID")
-    speaker_confidence: Optional[float] = Field(None, description="語者識別信心度")
-    identity_id: Optional[str] = Field(None, description="使用者身份ID")
-    identity_status: Optional[str] = Field(None, description="身份狀態")
-    
-    # 意圖分析相關
-    primary_intent: Optional[str] = Field(None, description="主要意圖")
-    intent_segments: Optional[List[Dict[str, Any]]] = Field(None, description="意圖片段")
-    label: Optional[str] = Field(None, description="分類標籤")
+class NLPModuleData(BaseModuleData):
+    """
+    NLP → LLM/Router 傳遞格式
+    只包含意圖分析結果 (語者已在 Working Context)
+    """
+    intent: Optional[str] = Field(None, description="主要意圖")
     confidence: Optional[float] = Field(None, description="分類信心度")
-    
-    # 實體識別與語義分析
     entities: Optional[List[Dict[str, Any]]] = Field(None, description="實體識別結果")
-    sentiment: Optional[str] = Field(None, description="情感分析結果")
-    
-    # 系統控制
-    state_transition: Optional[Dict[str, Any]] = Field(None, description="建議的狀態轉換")
-    awaiting_input: Optional[bool] = Field(None, description="等待進一步輸入")
-    queue_states_added: Optional[List[str]] = Field(None, description="添加到狀態佇列的狀態")
-    current_system_state: Optional[str] = Field(None, description="當前系統狀態")
-    
-    # 處理指引
-    next_modules: Optional[List[str]] = Field(None, description="建議的下一步模組")
-    processing_notes: Optional[List[str]] = Field(None, description="處理註記")
 
 
-class MEMModuleData(UnifiedModuleData):
-    """MEM 模組專用數據格式 - 重構版本"""
-    
-    # === 基本操作字段 (向後兼容) ===
-    mode: str = Field("query", description="操作模式: query/store/update/delete/create_snapshot/process_llm_instruction")
-    top_k: Optional[int] = Field(10, description="返回結果數量")
-    entry: Optional[Dict[str, Any]] = Field(None, description="記憶條目")
-    page: Optional[int] = Field(1, description="頁數")
-    results: Optional[List[Dict[str, Any]]] = Field(None, description="查詢結果")
-    
-    # === 身份與令牌系統 ===
-    identity_token: Optional[str] = Field(None, description="使用者身份令牌（記憶隔離）")
-    user_profile: Optional[Dict[str, Any]] = Field(None, description="使用者檔案（來自NLP）")
-    
-    # === 查詢相關 ===
-    query_text: Optional[str] = Field(None, description="查詢文本")
-    memory_types: Optional[List[str]] = Field(None, description="記憶類型過濾")
-    topic_filter: Optional[str] = Field(None, description="主題過濾")
-    time_range: Optional[Dict[str, Any]] = Field(None, description="時間範圍")
-    similarity_threshold: Optional[float] = Field(0.7, description="相似度閾值")
-    include_archived: Optional[bool] = Field(False, description="包含已歸檔記憶")
-    
-    # === 記憶操作 ===
-    memory_entry: Optional[Dict[str, Any]] = Field(None, description="要存儲的記憶條目")
-    llm_instructions: Optional[List[Dict[str, Any]]] = Field(None, description="LLM記憶指令")
-    
-    # === 上下文相關 ===
-    conversation_text: Optional[str] = Field(None, description="當前對話文本")
-    intent_info: Optional[Dict[str, Any]] = Field(None, description="意圖資訊（來自NLP）")
-    current_intent: Optional[str] = Field(None, description="當前意圖")
-    conversation_context: Optional[str] = Field(None, description="對話上下文")
-    
-    # === 操作結果 ===
-    search_results: Optional[List[Dict[str, Any]]] = Field(None, description="搜索結果")
-    operation_results: Optional[List[Dict[str, Any]]] = Field(None, description="操作結果")
-    memory_context: Optional[str] = Field(None, description="記憶上下文（供LLM使用）")
-    relevant_memories: Optional[List[Dict[str, Any]]] = Field(None, description="相關記憶條目")
-    
-    # === 快照管理 ===
-    active_snapshots: Optional[List[Dict[str, Any]]] = Field(None, description="活躍快照")
-    snapshot_summary: Optional[str] = Field(None, description="快照摘要")
-    
-    # === 統計與狀態 ===
-    total_memories: Optional[int] = Field(0, description="總記憶數量")
-    memory_usage: Optional[Dict[str, int]] = Field(None, description="記憶使用統計")
-    
-    # === 錯誤與警告 ===
-    errors: Optional[List[str]] = Field(None, description="錯誤訊息")
-    warnings: Optional[List[str]] = Field(None, description="警告訊息")
+class MEMModuleData(BaseModuleData):
+    """
+    LLM ↔ MEM 傳遞格式
+    MEM 有自己完整的內部操作系統,這只是基礎交互格式
+    """
+    mode: Optional[str] = Field(None, description="操作模式: query/store/update")
+    memory_context: Optional[str] = Field(None, description="記憶上下文（給 LLM）")
+    relevant_memories: Optional[List[Dict[str, Any]]] = Field(None, description="相關記憶")
 
 
-class LLMModuleData(UnifiedModuleData):
-    """LLM 模組專用數據格式"""
-    
-    # LLM 特定字段
-    memory: Optional[str] = Field(None, description="相關記憶")
-    mood: Optional[str] = Field("neutral", description="情感狀態")
-    emotion: Optional[str] = Field("neutral", description="情緒")
-    sys_action: Optional[str] = Field(None, description="系統動作")
-    temperature: Optional[float] = Field(None, description="生成溫度")
-    max_tokens: Optional[int] = Field(None, description="最大令牌數")
-    
-    # === 記憶檢索支援 ===
-    enable_memory_retrieval: Optional[bool] = Field(False, description="啟用記憶檢索")
-    memory_context: Optional[str] = Field(None, description="記憶上下文（從MEM模組獲取）")
-    identity_token: Optional[str] = Field(None, description="使用者身份令牌")
-    
-    # === LLM記憶指令輸出 ===
-    memory_instructions: Optional[List[Dict[str, Any]]] = Field(None, description="LLM生成的記憶指令")
-    should_store_memory: Optional[bool] = Field(False, description="是否應該存儲此次對話到記憶")
-    conversation_topic: Optional[str] = Field(None, description="對話主題（用於記憶分類）")
+class LLMModuleData(BaseModuleData):
+    """
+    LLM → TTS/MEM 傳遞格式
+    情緒已在 Working Context,這只是回應文本 + 可能的記憶指令
+    """
+    emotion: Optional[str] = Field(None, description="回應情緒 (給 TTS)")
+    memory_instructions: Optional[List[Dict[str, Any]]] = Field(None, description="記憶操作指令 (給 MEM)")
 
 
-class TTSModuleData(UnifiedModuleData):
-    """TTS 模組專用數據格式"""
-    
-    # TTS 特定字段
-    mood: Optional[str] = Field("neutral", description="語音情感")
-    save: Optional[bool] = Field(False, description="是否保存音頻")
+class TTSModuleData(BaseModuleData):
+    """
+    LLM → TTS 傳遞格式
+    語音合成參數 (模型、語速等)
+    """
     voice_model: Optional[str] = Field(None, description="語音模型")
-    speed: Optional[float] = Field(1.0, description="語速")
-    pitch: Optional[float] = Field(1.0, description="音調")
+    speed: Optional[float] = Field(None, description="語速")
+    pitch: Optional[float] = Field(None, description="音調")
 
 
-class SYSModuleData(UnifiedModuleData):
-    """SYS 模組專用數據格式"""
-    
-    # SYS 特定字段
+class SYSModuleData(BaseModuleData):
+    """
+    NLP/Router → SYS 傳遞格式
+    系統指令執行
+    """
     action: Optional[str] = Field(None, description="系統動作")
     workflow_id: Optional[str] = Field(None, description="工作流ID")
     parameters: Optional[Dict[str, Any]] = Field(None, description="動作參數")
 
 
 class ModuleResponse(BaseModel):
-    """模組回應標準格式"""
-    
+    """模組回應標準格式 (通用)"""
     status: str = Field("success", description="處理狀態: success/error/pending")
-    data: Optional[UnifiedModuleData] = Field(None, description="回應數據")
+    data: Optional[Dict[str, Any]] = Field(None, description="回應數據")
     message: Optional[str] = Field(None, description="回應訊息")
     error: Optional[str] = Field(None, description="錯誤信息")
     execution_time: Optional[float] = Field(None, description="執行時間(秒)")
-    
-    # 向後兼容的字段
-    text: Optional[str] = Field(None, description="文本回應(向後兼容)")
-    result: Optional[Any] = Field(None, description="結果數據(向後兼容)")
 
 
 class ModuleCapabilities(BaseModel):
-    """模組能力聲明"""
-    
+    """模組能力聲明 (用於 Framework 註冊)"""
     module_id: str = Field(..., description="模組ID")
     capabilities: List[ModuleCapability] = Field(..., description="支援的能力")
-    input_formats: List[str] = Field(..., description="支援的輸入格式")
-    output_formats: List[str] = Field(..., description="支援的輸出格式")
     dependencies: List[str] = Field(default_factory=list, description="依賴的模組")
     version: str = Field("1.0.0", description="模組版本")
 
 
-# === 工廠函數 ===
-
-def create_stt_data(**kwargs) -> STTModuleData:
-    """創建 STT 模組數據"""
-    return STTModuleData(**kwargs)
-
-
-def create_nlp_data(**kwargs) -> NLPModuleData:
-    """創建 NLP 模組數據"""
-    return NLPModuleData(**kwargs)
-
-
-def create_mem_data(**kwargs) -> MEMModuleData:
-    """創建 MEM 模組數據"""
-    return MEMModuleData(**kwargs)
-
-
-def create_llm_data(**kwargs) -> LLMModuleData:
-    """創建 LLM 模組數據"""
-    return LLMModuleData(**kwargs)
-
-
-def create_tts_data(**kwargs) -> TTSModuleData:
-    """創建 TTS 模組數據"""
-    return TTSModuleData(**kwargs)
-
-
-def create_sys_data(**kwargs) -> SYSModuleData:
-    """創建 SYS 模組數據"""
-    return SYSModuleData(**kwargs)
-
-
-# === 向後兼容工具 ===
-
-class LegacyDataAdapter:
-    """舊格式數據適配器"""
-    
-    @staticmethod
-    def adapt_to_unified(legacy_data: Dict[str, Any], module_type: str) -> UnifiedModuleData:
-        """將舊格式數據轉換為統一格式"""
-        
-        if module_type == "nlp":
-            return NLPModuleData(
-                text=legacy_data.get("text"),
-                intent=legacy_data.get("intent"),
-                label=legacy_data.get("label"),
-                confidence=legacy_data.get("confidence"),
-                metadata=legacy_data
-            )
-        
-        elif module_type == "mem":
-            return MEMModuleData(
-                text=legacy_data.get("text"),
-                mode=legacy_data.get("mode", "fetch"),
-                top_k=legacy_data.get("top_k", 3),
-                entry=legacy_data.get("entry"),
-                metadata=legacy_data
-            )
-        
-        elif module_type == "llm":
-            return LLMModuleData(
-                text=legacy_data.get("text"),
-                intent=legacy_data.get("intent"),
-                memory=legacy_data.get("memory"),
-                mood=legacy_data.get("mood", "neutral"),
-                metadata=legacy_data
-            )
-        
-        elif module_type == "tts":
-            return TTSModuleData(
-                text=legacy_data.get("text"),
-                mood=legacy_data.get("mood", "neutral"),
-                save=legacy_data.get("save", False),
-                metadata=legacy_data
-            )
-        
-        else:
-            # 通用適配
-            return UnifiedModuleData(
-                text=legacy_data.get("text"),
-                intent=legacy_data.get("intent"),
-                metadata=legacy_data
-            )
-    
-    @staticmethod
-    def adapt_from_unified(unified_data: UnifiedModuleData, target_format: str) -> Dict[str, Any]:
-        """將統一格式數據轉換為目標格式"""
-        
-        base_dict = unified_data.model_dump(exclude_none=True)
-        
-        if target_format == "legacy":
-            # 返回平坦化的字典格式
-            result = {
-                "text": unified_data.text,
-                "intent": unified_data.intent,
-                "status": unified_data.status
-            }
-            
-            # 合併 module_data
-            if unified_data.module_data:
-                result.update(unified_data.module_data)
-            
-            return result
-        
-        return base_dict
-
-
-# === 示例用法 ===
-
-if __name__ == "__main__":
-    # 創建統一格式數據
-    nlp_data = create_nlp_data(
-        text="你好，我是用戶",
-        intent="chat",
-        label="chat",
-        confidence=0.95,
-        metadata={"source": "user_input"}
-    )
-    
-    print("NLP 數據:", nlp_data.model_dump_json(indent=2))
-    
-    # 舊格式適配示例
-    legacy_data = {"text": "測試", "intent": "chat", "old_field": "value"}
-    adapted_data = LegacyDataAdapter.adapt_to_unified(legacy_data, "nlp")
-    print("適配後的數據:", adapted_data.model_dump_json(indent=2))
+# ===== 使用說明 =====
+# 
+# 1. 模組內部使用各自的 Input/Output Schema (如 STTInput/STTOutput)
+# 2. 模組間傳遞時使用對應的 ModuleData (如 STTModuleData)
+# 3. 大部分狀態已由 Working Context, State Manager, Session Manager 管理
+# 4. 這裡的 Schema 只是「模組間傳遞」的最小公約數
+#
+# 示例:
+#   STT 內部: STTInput → process() → STTOutput
+#   STT → NLP: STTOutput.to_unified_format() → STTModuleData → NLP

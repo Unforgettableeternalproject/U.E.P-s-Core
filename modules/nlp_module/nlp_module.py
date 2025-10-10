@@ -163,11 +163,12 @@ class NLPModule(BaseModule):
                 # 如果沒有說話人資料，創建通用身份
                 if input_data.enable_identity_processing:
                     generic_identity = self._create_generic_identity()
-                    result["identity"] = generic_identity
-                    result["identity_action"] = "generic"
-                    result["processing_notes"].append("創建通用身份")
-                    # 將通用身份設置到Working Context
-                    self._add_identity_to_working_context(generic_identity)
+                    if generic_identity:
+                        result["identity"] = generic_identity
+                        result["identity_action"] = "generic"
+                        result["processing_notes"].append("創建通用身份")
+                        # 將通用身份設置到Working Context
+                        self._add_identity_to_working_context(generic_identity)
                 return result
             
             speaker_id = speaker_data.get('speaker_id')
@@ -177,8 +178,8 @@ class NLPModule(BaseModule):
             debug_log(2, f"[NLP] 從Working Context獲取說話人: {speaker_id} (信心度: {speaker_confidence})")
             
             # 使用身份管理器處理語者識別
-            identity, action = self.identity_manager.process_speaker_identification(
-                speaker_id,
+            identity, action = self.identity_manager.process_speaker_identification(  # type: ignore
+                speaker_id or "unknown",  # 確保 speaker_id 不為 None
                 speaker_status,
                 speaker_confidence
             )
@@ -189,20 +190,23 @@ class NLPModule(BaseModule):
             if action == "accumulating":
                 # 語者樣本累積狀態，創建通用身份供當前使用
                 generic_identity = self._create_generic_identity()
-                result["identity"] = generic_identity
-                result["identity_action"] = "accumulating_with_generic"
-                result["processing_notes"].append("語者樣本累積中，使用通用身份")
-                # 將通用身份也設置到Working Context
-                self._add_identity_to_working_context(generic_identity)
+                if generic_identity:
+                    result["identity"] = generic_identity
+                    result["identity_action"] = "accumulating_with_generic"
+                    result["processing_notes"].append("語者樣本累積中，使用通用身份")
+                    # 將通用身份也設置到Working Context
+                    self._add_identity_to_working_context(generic_identity)
                 
             elif action == "loaded":
-                result["processing_notes"].append(f"載入正式身份：{identity.display_name}")
-                # 將使用者身份資訊添加到Working Context
-                self._add_identity_to_working_context(identity)
+                if identity:
+                    result["processing_notes"].append(f"載入正式身份：{identity.display_name}")
+                    # 將使用者身份資訊添加到Working Context
+                    self._add_identity_to_working_context(identity)
             elif action == "created":
-                result["processing_notes"].append(f"創建新身份：{identity.display_name}")
-                # 將新身份資訊添加到Working Context
-                self._add_identity_to_working_context(identity)
+                if identity:
+                    result["processing_notes"].append(f"創建新身份：{identity.display_name}")
+                    # 將新身份資訊添加到Working Context
+                    self._add_identity_to_working_context(identity)
                 
             debug_log(3, f"[NLP] 語者身份處理：{action}, 身份={identity.identity_id if identity else 'None'}")
             
@@ -212,10 +216,11 @@ class NLPModule(BaseModule):
             # 出錯時使用通用身份
             if input_data.enable_identity_processing:
                 generic_identity = self._create_generic_identity()
-                result["identity"] = generic_identity
-                result["identity_action"] = "error_fallback"
-                # 將通用身份設置到Working Context
-                self._add_identity_to_working_context(generic_identity)
+                if generic_identity:
+                    result["identity"] = generic_identity
+                    result["identity_action"] = "error_fallback"
+                    # 將通用身份設置到Working Context
+                    self._add_identity_to_working_context(generic_identity)
         
         return result
     
@@ -244,7 +249,7 @@ class NLPModule(BaseModule):
             intent_bias = self._determine_intent_bias(active_cs_context, input_data.text)
             
             # 執行意圖分析
-            result = self.intent_analyzer.analyze_intent(
+            result = self.intent_analyzer.analyze_intent(  # type: ignore
                 input_data.text,
                 enable_segmentation=input_data.enable_segmentation,
                 context=context,
@@ -483,7 +488,7 @@ class NLPModule(BaseModule):
                 interaction_data["module"] = "llm"
             
             # 更新互動記錄
-            self.identity_manager.update_identity_interaction(
+            self.identity_manager.update_identity_interaction(  # type: ignore
                 identity.identity_id, 
                 interaction_data
             )
@@ -496,9 +501,16 @@ class NLPModule(BaseModule):
         return NLPOutput(
             original_text="",
             timestamp=time.time(),
+            identity=None,
+            identity_action=None,
             primary_intent=IntentType.UNKNOWN,
             intent_segments=[],
             overall_confidence=0.0,
+            state_transition=None,
+            awaiting_further_input=False,
+            timeout_seconds=None,
+            queue_states_added=None,
+            current_system_state=None,
             processing_notes=[f"處理錯誤：{error_message}"]
         ).dict()
     
@@ -703,15 +715,10 @@ class NLPModule(BaseModule):
             error_log(f"[NLP] 通知System Loop輸入層完成失敗: {e}")
 
     def _notify_controller_activity(self):
-        """通知 Controller 有 NLP 活動"""
-        try:
-            from core.framework import core_framework
-            controller = core_framework.get_manager('controller')
-            if controller and hasattr(controller, '_last_activity_time'):
-                controller._last_activity_time = time.time()
-                debug_log(3, "[NLP] 已通知 Controller 活動時間")
-        except Exception as e:
-            debug_log(3, f"[NLP] 通知 Controller 活動失敗: {e}")
+        """通知 Controller 有 NLP 活動 - 預留方法,目前無實作"""
+        # NOTE: Controller 活動通知機制可能已變更或移除
+        # 保留此方法以維持向後兼容性,實際實作待確認
+        pass
 
     # === 以下是原有不當的路由邏輯，已移除 ===
     # _invoke_target_module() 和 _prepare_module_input() 方法
@@ -743,9 +750,16 @@ class NLPModule(BaseModule):
                 call_response = NLPOutput(
                     original_text=nlp_result.original_text,
                     timestamp=time.time(),
+                    identity=nlp_result.identity,
+                    identity_action=nlp_result.identity_action,
                     primary_intent=IntentType.CALL,
                     intent_segments=nlp_result.intent_segments,
                     overall_confidence=nlp_result.overall_confidence,
+                    state_transition=None,
+                    awaiting_further_input=True,  # CALL 需要等待進一步指示
+                    timeout_seconds=30,  # 30秒超時
+                    queue_states_added=None,
+                    current_system_state=current_state.value if current_state else None,
                     processing_notes=["CALL 意圖檢測，終止當前循環"]
                 )
                 
@@ -784,18 +798,18 @@ class NLPModule(BaseModule):
     def _get_speaker_from_working_context(self) -> Optional[Dict[str, Any]]:
         """從Working Context獲取當前說話人資料"""
         try:
-            from core.working_context import working_context_manager
+            from core.working_context import working_context_manager, ContextType
             
             # 尋找最近的SPEAKER_ACCUMULATION上下文
-            contexts = working_context_manager.get_contexts_by_type("speaker_accumulation")
+            contexts = working_context_manager.get_contexts_by_type(ContextType.SPEAKER_ACCUMULATION)
             
             if not contexts:
                 debug_log(3, "[NLP] Working Context中無說話人資料")
                 return None
             
-            # 獲取最新的上下文
-            latest_context = max(contexts, key=lambda c: c.get('created_at', 0))
-            context_data = working_context_manager.get_context_data(latest_context['id'])
+            # 獲取最新的上下文 - contexts 是 WorkingContext 物件列表
+            latest_context = max(contexts, key=lambda c: c.created_at)
+            context_data = working_context_manager.get_context_data(latest_context.context_id)
             
             speaker_data = context_data.get('current_speaker')
             if speaker_data:
@@ -809,18 +823,7 @@ class NLPModule(BaseModule):
             error_log(f"[NLP] 從Working Context獲取說話人失敗: {e}")
             return None
 
-    def _notify_controller_activity(self):
-        """通知 Controller 有 NLP 活動"""
-        try:
-            from core.framework import core_framework
-            controller = core_framework.get_manager('controller')
-            if controller and hasattr(controller, '_last_activity_time'):
-                controller._last_activity_time = time.time()
-                debug_log(3, "[NLP] 已通知 Controller 活動時間")
-        except Exception as e:
-            debug_log(3, f"[NLP] 通知 Controller 活動失敗: {e}")
-
-    def _create_generic_identity(self) -> 'UserProfile':
+    def _create_generic_identity(self) -> Optional['UserProfile']:
         """創建通用身份，用於說話人累積期間或無身份識別時"""
         try:
             from .schemas import UserProfile, IdentityStatus
@@ -831,14 +834,17 @@ class NLPModule(BaseModule):
             
             generic_identity = UserProfile(
                 identity_id=generic_id,
+                speaker_id=None,  # 通用身份沒有對應的語者ID
                 display_name="通用用戶",
                 status=IdentityStatus.TEMPORARY,
+                memory_token=None,  # 通用身份沒有記憶令牌
                 created_at=datetime.now(),
                 last_interaction=datetime.now(),
+                total_interactions=0,  # 初始化互動次數
                 preferences={},
-                conversation_history=[],
-                memory_access_level="basic",
-                context_preferences={}
+                system_habits={},
+                voice_preferences={},
+                conversation_style={}
             )
             
             debug_log(2, f"[NLP] 創建通用身份: {generic_id}")

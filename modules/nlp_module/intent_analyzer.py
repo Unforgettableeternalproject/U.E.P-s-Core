@@ -526,7 +526,6 @@ class IntentAnalyzer:
             confidence=0.85,
             start_pos=0,
             end_pos=len(text.strip()),
-            metadata={"simple_sentence": True}
         )
 
 def test_intent_analyzer():

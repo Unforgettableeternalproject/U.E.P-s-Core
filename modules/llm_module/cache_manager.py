@@ -382,7 +382,7 @@ class CacheManager:
             from google.genai import types
             
             # 使用 genai.Client 創建快取
-            cache = self.client.caches.create(
+            cache = self.client.caches.create( # type: ignore
                 model=self.model_name,
                 config=types.CreateCachedContentConfig(
                     display_name=display_name,
@@ -410,8 +410,8 @@ class CacheManager:
             # 更新 Gemini 快取TTL
             from google.genai import types
             
-            self.client.caches.update(
-                name=cache_info.cached_content_id,
+            self.client.caches.update( # type: ignore
+                name=cache_info.cached_content_id, # type: ignore
                 config=types.UpdateCachedContentConfig(
                     ttl=f"{ttl_seconds}s"
                 )
@@ -437,7 +437,7 @@ class CacheManager:
             
             # 刪除 Gemini 快取
             if cache_info.cached_content_id:
-                self.client.caches.delete(name=cache_info.cached_content_id)
+                self.client.caches.delete(name=cache_info.cached_content_id) # type: ignore
             
             # 更新統計
             del self.caches[name]
@@ -578,7 +578,7 @@ class CacheManager:
             prompt_manager = self._get_prompt_manager()
             
             # 獲取基礎人格設定
-            base_personality = prompt_manager.system_instructions.get("base_personality", "")
+            base_personality = prompt_manager.system_instructions.get("base_personality", "") # type: ignore
             
             if not base_personality:
                 error_log("[CacheManager] 未找到 base_personality 系統提示詞")
@@ -586,7 +586,7 @@ class CacheManager:
             
             # 替換系統數值占位符（如果有的話）
             if "{system_values}" in base_personality:
-                base_personality = prompt_manager._replace_system_values_placeholder(base_personality)
+                base_personality = prompt_manager._replace_system_values_placeholder(base_personality) # type: ignore
             
             debug_log(2, f"[CacheManager] 成功獲取 persona 內容，長度: {len(base_personality)}")
             return base_personality
@@ -622,8 +622,8 @@ class CacheManager:
             prompt_manager = self._get_prompt_manager()
             
             # 獲取對話模式和工作模式的指示
-            chat_mode = prompt_manager.system_instructions.get("chat_mode", "")
-            work_mode = prompt_manager.system_instructions.get("work_mode", "")
+            chat_mode = prompt_manager.system_instructions.get("chat_mode", "") # type: ignore
+            work_mode = prompt_manager.system_instructions.get("work_mode", "") # type: ignore
             
             style_parts = []
             
@@ -838,7 +838,7 @@ JSON 輸出格式：嚴格遵循指定的 schema
                 # 直接創建實例（備用方案）
                 from .prompt_manager import PromptManager
                 debug_log(2, "[CacheManager] 創建新的 PromptManager 實例")
-                return PromptManager()
+                return PromptManager(self.config)
                 
         except Exception as e:
             error_log(f"[CacheManager] 無法獲取 PromptManager: {e}")

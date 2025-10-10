@@ -289,7 +289,7 @@ class CoreFramework:
                 {
                     "module_id": "nlp",
                     "module_name": "nlp_module",
-                    "module_type": ModuleType.PROCESSING, 
+                    "module_type": ModuleType.INPUT, 
                     "capabilities": ModuleCapabilities.NLP_CAPABILITIES,
                     "priority": 20
                 },
@@ -317,7 +317,7 @@ class CoreFramework:
                 {
                     "module_id": "sys",
                     "module_name": "sys_module", 
-                    "module_type": ModuleType.SYSTEM,
+                    "module_type": ModuleType.PROCESSING,
                     "capabilities": ModuleCapabilities.SYS_CAPABILITIES,
                     "priority": 30
                 }

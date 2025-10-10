@@ -184,6 +184,9 @@ def create_llm_data(text: str, mode: str = "chat", **kwargs) -> LLMModuleData:
         text=text,
         mode=mode,
         context=kwargs.get("context", {}),
+        execution_mode=kwargs.get("execution_mode", "sequential"),
+        priority=kwargs.get("priority", 5),
+        timeout=kwargs.get("timeout"),
         metadata=kwargs
     )
 

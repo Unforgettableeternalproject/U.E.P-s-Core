@@ -331,7 +331,7 @@ class MEMModule(BaseModule):
         except Exception as e:
             error_log(f"[MEM] 會話狀態同步失敗: {e}")
     
-    def _handle_session_change(self, old_session_id: str = None, new_session_id: str = None):
+    def _handle_session_change(self, old_session_id: Optional[str] = None, new_session_id: Optional[str] = None):
         """處理會話變化 - 根據MEM代辦.md優化會話管理邏輯"""
         try:
             # 根據代辦.md：MEM透過比對當前內部會話ID與系統中Chatting Session ID來確認是否還在同一個會話當中

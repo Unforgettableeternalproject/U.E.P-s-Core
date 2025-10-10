@@ -17,7 +17,7 @@ from typing import Dict, Any, Optional, List, Callable
 from pathlib import Path
 from utils.debug_helper import debug_log, info_log, error_log
 from core.status_manager import status_manager
-from .module_interfaces import LegacyModuleDataProvider
+from .module_interfaces import state_aware_interface
 
 
 class PromptManager:
@@ -28,9 +28,6 @@ class PromptManager:
         
         # Load static system instructions from config
         self.system_instructions = config.get("system_instructions", {})
-        
-        # Module data provider for dynamic content
-        self.data_provider = LegacyModuleDataProvider()
         
         # Cache for built prompts
         self._template_cache = {}
@@ -244,7 +241,7 @@ class PromptManager:
         # 如果都沒有，嘗試從 MEM 模組獲取 (向後兼容)
         if not context_parts:
             try:
-                mem_data = self.data_provider.get_mem_data("context")
+                mem_data = state_aware_interface.get_chat_mem_data("context")
                 if mem_data and isinstance(mem_data, dict):
                     mem_memories = mem_data.get("relevant_memories", "")
                     if mem_memories:
@@ -261,7 +258,7 @@ class PromptManager:
         
         # Try to get functions data from SYS module
         try:
-            sys_data = self.data_provider.get_sys_data("function_registry")
+            sys_data = state_aware_interface.get_work_sys_data("function_registry")
             if sys_data:
                 if isinstance(sys_data, (list, tuple, set)):
                     return "Available System Functions:\n" + "\n".join(map(str, sys_data))
@@ -400,21 +397,21 @@ class PromptManager:
     
     def register_mem_provider(self, data_type: str, provider_func: Callable):
         """註冊 MEM 模組資料提供者"""
-        self.data_provider.register_mem_provider(data_type, provider_func)
+        state_aware_interface.register_chat_mem_provider(data_type, provider_func)
         debug_log(2, f"[PromptManager] MEM 模組資料提供者已註冊: {data_type}")
     
     def register_sys_provider(self, data_type: str, provider_func: Callable):
         """註冊 SYS 模組資料提供者"""
-        self.data_provider.register_sys_provider(data_type, provider_func)
+        state_aware_interface.register_work_sys_provider(data_type, provider_func)
         debug_log(2, f"[PromptManager] SYS 模組資料提供者已註冊: {data_type}")
     
     def get_template_stats(self) -> Dict[str, Any]:
         """獲取模板使用統計"""
-        data_info = self.data_provider.get_available_data_types()
+        data_info = state_aware_interface.get_available_data_types()
         return {
             "cached_templates": len(self._template_cache),
             "available_instructions": list(self.system_instructions.keys()),
-            "mem_providers_count": len(data_info.get("mem_data_types", [])),
-            "sys_providers_count": len(data_info.get("sys_data_types", [])),
+            "mem_providers_count": len(data_info.get("chat_mem_providers", [])),
+            "sys_providers_count": len(data_info.get("work_sys_providers", [])),
             "total_providers": data_info.get("total_providers", 0)
         }

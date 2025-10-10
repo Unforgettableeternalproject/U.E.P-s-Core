@@ -281,7 +281,7 @@ class MemoryAnalyzer:
             for intent, patterns in self._pattern_cache.items():
                 matches = 0
                 for pattern in patterns:
-                    if pattern.search(content):
+                    if pattern.search(content): # type: ignore
                         matches += 1
                 
                 if matches > 0:
@@ -435,12 +435,7 @@ class MemoryAnalyzer:
         except Exception as e:
             error_log(f"[MemoryAnalyzer] 摘要生成失敗: {e}")
             return "Summary generation failed"
-            return keywords
-            
-        except Exception as e:
-            error_log(f"[MemoryAnalyzer] 關鍵字提取失敗: {e}")
-            return []
-    
+        
     def analyze_complexity(self, content: str) -> Dict[str, Any]:
         """分析內容複雜度"""
         try:
@@ -642,7 +637,7 @@ class MemoryAnalyzer:
             importance_counts = defaultdict(int)
             
             for memory in memories:
-                importance_counts[memory.importance.value] += 1
+                importance_counts[memory.importance.value] += 1 # type: ignore
             
             total = len(memories)
             importance_ratios = {k: v/total for k, v in importance_counts.items()}

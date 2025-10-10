@@ -1390,3 +1390,39 @@
 
 ---
 
+### Some critical system core changes. 10/10
+
+> Date: Fri, 10 Oct 2025 20:35:30 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_rework`
+
+> Commit: `c746bcdcf9265440fdfef47ccda15f33667b6cd0`
+
+---
+
+### Fixed more major issues related to STT、NLP、LLM，MEM will be dealt with after we've done basic TTS restructure. 10/11
+
+> Date: Sat, 11 Oct 2025 00:10:27 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_rework`
+
+> Commit: `f229aff3247930037b05fdb8d746e4633fbc3d8e`
+
+---
+
+### Fixed more major issues related to STT、NLP、LLM，MEM will be dealt with after we've done basic TTS restructure. 10/11
+
+> Date: Sat, 11 Oct 2025 00:10:27 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_rework`
+
+> Commit: `de4798fab59a1bc7d621f76fa9c441c84923493a`
+
+---
+

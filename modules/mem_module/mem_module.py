@@ -7,7 +7,6 @@ from .schemas import (
     MEMInput, MEMOutput, MemoryType, MemoryImportance
 )
 from core.schemas import MEMModuleData
-from core.schema_adapter import MEMSchemaAdapter
 from core.working_context import working_context_manager
 from configs.config_loader import load_module_config
 from utils.debug_helper import debug_log, debug_log_e, info_log, error_log
@@ -42,7 +41,6 @@ class MEMModule(BaseModule):
         self.storage_manager = None
         self.nlp_integration = None
         self.working_context_handler = None
-        self.schema_adapter = MEMSchemaAdapter()
         
         # 狀態管理整合
         self.state_change_listener = None
@@ -333,7 +331,7 @@ class MEMModule(BaseModule):
         except Exception as e:
             error_log(f"[MEM] 會話狀態同步失敗: {e}")
     
-    def _handle_session_change(self, old_session_id: str = None, new_session_id: str = None):
+    def _handle_session_change(self, old_session_id: Optional[str] = None, new_session_id: Optional[str] = None):
         """處理會話變化 - 根據MEM代辦.md優化會話管理邏輯"""
         try:
             # 根據代辦.md：MEM透過比對當前內部會話ID與系統中Chatting Session ID來確認是否還在同一個會話當中

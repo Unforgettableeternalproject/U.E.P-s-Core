@@ -18,8 +18,6 @@ from typing import Dict, Any, Optional, List
 from pathlib import Path
 
 from core.bases.module_base import BaseModule
-from core.schemas import LLMModuleData, create_llm_data
-from core.schema_adapter import LLMSchemaAdapter
 from core.working_context import working_context_manager, ContextType
 from core.status_manager import status_manager
 from core.states.state_manager import state_manager, UEPState
@@ -49,7 +47,6 @@ class LLMModule(BaseModule):
         self.model = GeminiWrapper(self.config)
         self.prompt_manager = PromptManager(self.config)
         self.learning_engine = LearningEngine(self.config.get("learning", {}))
-        self.schema_adapter = LLMSchemaAdapter()
         
         # 統一快取管理器 (整合Gemini顯性快取 + 本地快取)
         self.cache_manager = cache_manager
@@ -367,8 +364,16 @@ class LLMModule(BaseModule):
                 tokens_used=len(response_text.split()),
                 success=True,
                 error=None,
-                confidence=0.85,
-                mode=LLMMode.CHAT,
+                confidence=response_data.get("confidence", 0.85),
+                sys_action=None,
+                status_updates=StatusUpdate(**response_data["status_updates"]) if response_data.get("status_updates") else None,
+                learning_data=None,
+                conversation_entry=None,
+                session_state=None,
+                memory_observation=response_data.get("memory_observation"),
+                memory_summary=None,
+                emotion="neutral",
+                mood="neutral",
                 metadata={
                     "mode": "CHAT",
                     "cached": False,
@@ -392,6 +397,15 @@ class LLMModule(BaseModule):
                 success=False,
                 error=str(e),
                 confidence=0.0,
+                sys_action=None,
+                status_updates=None,
+                learning_data=None,
+                conversation_entry=None,
+                session_state=None,
+                memory_observation=None,
+                memory_summary=None,
+                emotion="neutral",
+                mood="neutral",
                 metadata={"mode": "CHAT", "error_type": "processing_error"}
             )
     
@@ -462,14 +476,27 @@ class LLMModule(BaseModule):
                 response_data, "WORK", llm_input
             )
             
+            # 提取 sys_action
+            sys_action_obj = None
+            if sys_actions and len(sys_actions) > 0:
+                sys_action_obj = SystemAction(**sys_actions[0])
+            
             output = LLMOutput(
                 text=response_text,
                 processing_time=time.time() - start_time,
                 tokens_used=len(response_text.split()),
                 success=True,
                 error=None,
-                confidence=0.90,  # WORK 模式通常更精確
-                mode=LLMMode.WORK,
+                confidence=response_data.get("confidence", 0.90),
+                sys_action=sys_action_obj,
+                status_updates=StatusUpdate(**response_data["status_updates"]) if response_data.get("status_updates") else None,
+                learning_data=None,
+                conversation_entry=None,
+                session_state=None,
+                memory_observation=None,
+                memory_summary=None,
+                emotion="neutral",
+                mood="neutral",
                 metadata={
                     "mode": "WORK",
                     "workflow_context_size": len(llm_input.workflow_context) if llm_input.workflow_context else 0,
@@ -491,6 +518,15 @@ class LLMModule(BaseModule):
                 success=False,
                 error=str(e),
                 confidence=0.0,
+                sys_action=None,
+                status_updates=None,
+                learning_data=None,
+                conversation_entry=None,
+                session_state=None,
+                memory_observation=None,
+                memory_summary=None,
+                emotion="neutral",
+                mood="neutral",
                 metadata={"mode": "WORK", "error_type": "processing_error"}
             )
     
@@ -504,11 +540,11 @@ class LLMModule(BaseModule):
         
         if legacy_intent == "chat":
             # 轉為 CHAT 模式
-            llm_input.mode = "CHAT"
+            llm_input.mode = LLMMode.CHAT
             return self._handle_chat_mode(llm_input, status)
         elif legacy_intent == "command":
             # 轉為 WORK 模式
-            llm_input.mode = "WORK"
+            llm_input.mode = LLMMode.WORK
             return self._handle_work_mode(llm_input, status)
         else:
             return LLMOutput(
@@ -518,6 +554,15 @@ class LLMModule(BaseModule):
                 success=False,
                 error=f"不支援的 intent: {legacy_intent}",
                 confidence=0.0,
+                sys_action=None,
+                status_updates=None,
+                learning_data=None,
+                conversation_entry=None,
+                session_state=None,
+                memory_observation=None,
+                memory_summary=None,
+                emotion="neutral",
+                mood="neutral",
                 metadata={"legacy_intent": legacy_intent}
             )
     
@@ -636,17 +681,23 @@ class LLMModule(BaseModule):
                     reason = update.get("reason", "LLM回應觸發")
                     
                     if status_type and value is not None:
-                        # 使用絕對值更新狀態
-                        success = self.status_manager.update_status(
-                            status_type=status_type,
-                            value=value,
-                            reason=reason
-                        )
-                        
-                        if success:
-                            debug_log(2, f"[LLM] StatusManager更新成功: {status_type}={value}, 原因: {reason}")
-                        else:
-                            debug_log(1, f"[LLM] StatusManager更新失敗: {status_type}={value}")
+                        # 使用對應的專用更新方法
+                        try:
+                            if status_type == "mood":
+                                self.status_manager.update_mood(value, reason)
+                            elif status_type == "pride":
+                                self.status_manager.update_pride(value, reason)
+                            elif status_type == "helpfulness":
+                                self.status_manager.update_helpfulness(value, reason)
+                            elif status_type == "boredom":
+                                self.status_manager.update_boredom(value, reason)
+                            else:
+                                debug_log(1, f"[LLM] 未知的狀態類型: {status_type}")
+                                continue
+                            
+                            debug_log(2, f"[LLM] StatusManager更新成功: {status_type}+={value}, 原因: {reason}")
+                        except Exception as e:
+                            debug_log(1, f"[LLM] StatusManager更新失敗: {status_type}={value}, 錯誤: {e}")
                         
         except Exception as e:
             error_log(f"[LLM] 處理StatusManager更新時出錯: {e}")
@@ -1142,8 +1193,6 @@ class LLMModule(BaseModule):
                     session_id = active_cs_ids[0]
                     success = session_manager.end_chatting_session(
                         session_id, 
-                        reason=f"LLM建議結束: {reason}",
-                        metadata={"llm_confidence": confidence}
                     )
                     if success:
                         debug_log(1, f"[LLM] 成功結束 CS {session_id}")
@@ -1157,8 +1206,6 @@ class LLMModule(BaseModule):
                     session_id = active_ws_ids[0]
                     success = session_manager.end_workflow_session(
                         session_id,
-                        reason=f"LLM建議結束: {reason}",
-                        metadata={"llm_confidence": confidence}
                     )
                     if success:
                         debug_log(1, f"[LLM] 成功結束 WS {session_id}")

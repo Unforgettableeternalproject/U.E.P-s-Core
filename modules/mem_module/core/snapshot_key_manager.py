@@ -59,7 +59,7 @@ class SnapshotKeyManager:
             error_log(f"[SnapshotKeyManager] 初始化失敗: {e}")
             return False
     
-    def generate_snapshot_key(self, content: str, context: Dict[str, Any] = None) -> str:
+    def generate_snapshot_key(self, content: str, context: Dict[str, Any] = None) -> str:  # type: ignore
         """使用summarizer生成快照鍵值"""
         try:
             self.stats["keys_generated"] += 1
@@ -113,7 +113,7 @@ class SnapshotKeyManager:
             error_log(f"[SnapshotKeyManager] 格式化鍵值失敗: {e}")
             return f"summary_conv_{int(time.time())}"
     
-    def _generate_simple_key(self, content: str, context: Dict[str, Any] = None) -> str:
+    def _generate_simple_key(self, content: str, context: Dict[str, Any] = None) -> str: # type: ignore
         """生成簡單鍵值 - 回退方法"""
         try:
             # 提取關鍵詞
@@ -206,7 +206,7 @@ class SnapshotKeyManager:
             error_log(f"[SnapshotKeyManager] 查找相似快照失敗: {e}")
             return []
     
-    def register_snapshot(self, snapshot_id: str, content: str, context: Dict[str, Any] = None):
+    def register_snapshot(self, snapshot_id: str, content: str, context: Dict[str, Any] = None): # type: ignore
         """註冊新的快照及其鍵值"""
         try:
             key = self.generate_snapshot_key(content, context)

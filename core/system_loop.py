@@ -195,7 +195,7 @@ class SystemLoop:
             from modules.stt_module.schemas import STTInput, ActivationMode
             stt_input = STTInput(
                 mode=ActivationMode.CONTINUOUS,
-                activation_reason="system_loop_continuous_listening"
+                context="system_loop_continuous_listening"
             )
             
             # 在背景線程中啟動監聽
@@ -383,11 +383,11 @@ class SystemLoop:
         try:
             from core.framework import core_framework
             
-            # 簡單的啟發式方法：檢查模組是否有正在處理的任務
-            # 這裡可以根據需要添加更複雜的邏輯
-            if hasattr(core_framework, 'get_active_modules'):
-                active_modules = core_framework.get_active_modules()
-                return len(active_modules) > 0
+            # 簡單的啟發式方法：檢查是否有模組正在處理
+            # 目前 framework 沒有 get_active_modules 方法，使用簡單邏輯
+            # 如果有已初始化的模組，就認為可能有活躍處理
+            if hasattr(core_framework, 'modules') and core_framework.modules:
+                return len(core_framework.modules) > 0
             else:
                 # 如果無法檢查，預設為有活躍模組
                 return True
@@ -434,12 +434,12 @@ class SystemLoop:
             info_log(f"📝 狀態佇列: {queue_size} 項目")
             info_log(f"🔧 活躍模組: {module_count} 個 {active_modules}")
             
-            # 詳細模組狀態（如果可用）
-            if hasattr(core_framework, 'get_detailed_module_status'):
-                module_details = core_framework.get_detailed_module_status()
-                for module_name, status in module_details.items():
-                    status_emoji = "✅" if status.get('healthy', True) else "⚠️"
-                    info_log(f"   {status_emoji} {module_name}: {status.get('status', 'unknown')}")
+            # 詳細模組狀態（framework 目前沒有此方法，略過）
+            # if hasattr(core_framework, 'get_detailed_module_status'):
+            #     module_details = core_framework.get_detailed_module_status()
+            #     for module_name, status in module_details.items():
+            #         status_emoji = "✅" if status.get('healthy', True) else "⚠️"
+            #         info_log(f"   {status_emoji} {module_name}: {status.get('status', 'unknown')}")
             
             # Working Context身份狀態檢查
             try:
@@ -513,12 +513,11 @@ class SystemLoop:
     def _check_cycle_end_conditions(self):
         """系統循環結束時檢查 GS 結束條件"""
         try:
-            from core.framework import core_framework
+            from core.controller import unified_controller
             
-            # 獲取 Controller 並調用 GS 結束條件檢查
-            controller = core_framework.get_manager('controller')
-            if controller and hasattr(controller, 'check_gs_end_conditions'):
-                controller.check_gs_end_conditions()
+            # 調用 GS 結束條件檢查
+            if hasattr(unified_controller, 'check_gs_end_conditions'):
+                unified_controller.check_gs_end_conditions()
                 
         except Exception as e:
             debug_log(2, f"[SystemLoop] 循環結束條件檢查失敗: {e}")

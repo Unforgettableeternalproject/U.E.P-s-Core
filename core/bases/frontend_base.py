@@ -18,24 +18,24 @@ from dataclasses import dataclass
 
 # 安全導入 PyQt5
 try:
-    from PyQt5.QtCore import QObject, QTimer, pyqtSignal, QMetaObject
-    from PyQt5.QtWidgets import QApplication
+    from PyQt5.QtCore import QObject, QTimer, pyqtSignal, QMetaObject  # type: ignore
+    from PyQt5.QtWidgets import QApplication  # type: ignore
     PYQT5_AVAILABLE = True
     
     # 自定義元類來解決衝突
-    class FrontendMetaClass(type(QObject), type):
+    class FrontendMetaClass(type(QObject), type):  # type: ignore
         """解決 BaseModule 和 QObject 元類衝突的混合元類"""
         pass
         
 except ImportError:
     PYQT5_AVAILABLE = False
     # 如果 PyQt5 不可用，提供替代實作
-    class QObject:
+    class QObject:  # type: ignore
         def __init__(self): pass
-    class QTimer: pass
-    def pyqtSignal(*args): return None
-    QMetaObject = None
-    class FrontendMetaClass(type): pass
+    class QTimer: pass  # type: ignore
+    def pyqtSignal(*args): return None  # type: ignore
+    QMetaObject = None  # type: ignore
+    class FrontendMetaClass(type): pass  # type: ignore
 
 from core.bases.module_base import BaseModule
 from core.working_context import WorkingContextManager, ContextType
@@ -76,7 +76,7 @@ class UIEvent:
 
 # Qt 信號類 (如果 PyQt5 可用)
 if PYQT5_AVAILABLE:
-    class FrontendSignals(QObject):
+    class FrontendSignals(QObject): # type: ignore
         """前端模組的 Qt 信號容器"""
         state_changed = pyqtSignal(str, dict)  # 狀態變更信號
         event_occurred = pyqtSignal(object)    # 事件發生信號
@@ -151,9 +151,9 @@ class BaseFrontendModule(BaseModule):
         self._lock = threading.RLock()
         
         # 設置信號連接 (只在 PyQt5 可用時)
-        if PYQT5_AVAILABLE and self.signals.state_changed:
-            self.signals.state_changed.connect(self._on_state_changed)
-            self.signals.event_occurred.connect(self._on_event_occurred)
+        if PYQT5_AVAILABLE and hasattr(self.signals, 'state_changed') and callable(getattr(self.signals.state_changed, 'connect', None)):
+            self.signals.state_changed.connect(self._on_state_changed)  # type: ignore
+            self.signals.event_occurred.connect(self._on_event_occurred)  # type: ignore
         
         debug_log(1, f"[{self.module_id}] 前端模組基類初始化完成")
     
@@ -166,9 +166,10 @@ class BaseFrontendModule(BaseModule):
         self.context_manager = context_manager
         self.state_manager = state_manager
         
-        # 訂閱狀態變更
-        if hasattr(self.state_manager, 'add_state_listener'):
-            self.state_manager.add_state_listener(self._on_system_state_changed)
+        # 訂閱狀態變更（如果狀態管理器支持）
+        # StateManager 可能沒有 add_state_listener 方法，這裡只是佔位
+        # if hasattr(self.state_manager, 'add_state_listener'):
+        #     self.state_manager.add_state_listener(self._on_system_state_changed)
         
         info_log(f"[{self.module_id}] 框架引用設置完成")
     
@@ -247,10 +248,10 @@ class BaseFrontendModule(BaseModule):
         with self._lock:
             self.local_state[key] = value
             # 使用信號包裝器發送狀態變更信號
-            if hasattr(self.signals, 'state_changed'):
-                self.signals.state_changed.emit(key, {key: value})
+            if PYQT5_AVAILABLE and hasattr(self.signals, 'state_changed') and callable(getattr(self.signals.state_changed, 'emit', None)):
+                self.signals.state_changed.emit(key, {key: value})  # type: ignore
     
-    def get_local_state(self, key: str = None) -> Any:
+    def get_local_state(self, key: Optional[str] = None) -> Any:
         """獲取本地狀態"""
         with self._lock:
             if key is None:
@@ -266,12 +267,15 @@ class BaseFrontendModule(BaseModule):
     def update_context(self, context_type: ContextType, data: Dict[str, Any]):
         """更新工作上下文"""
         if self.context_manager:
-            context_id = f"{self.module_id}_{context_type.value}_{int(time.time())}"
-            self.context_manager.create_context(
-                context_id=context_id,
+            # 修正：create_context 只接受 context_type, threshold, timeout 參數
+            # 不再有 context_id 和 initial_data 參數
+            context_id = self.context_manager.create_context(
                 context_type=context_type,
-                initial_data=data
+                threshold=1,
+                timeout=300.0
             )
+            # 創建後再設置數據
+            self.context_manager.set_data(context_type, f"{self.module_id}_data", data)
     
     def _on_state_changed(self, key: str, data: dict):
         """內部狀態變更處理"""
@@ -308,10 +312,10 @@ class BaseFrontendModule(BaseModule):
         self.is_initialized = False
         
         # 清理 Qt 連接 (只在 PyQt5 可用時)
-        if PYQT5_AVAILABLE and self.signals.state_changed:
+        if PYQT5_AVAILABLE and hasattr(self.signals, 'state_changed') and callable(getattr(self.signals.state_changed, 'disconnect', None)):
             try:
-                self.signals.state_changed.disconnect()
-                self.signals.event_occurred.disconnect()
+                self.signals.state_changed.disconnect()  # type: ignore
+                self.signals.event_occurred.disconnect()  # type: ignore
             except Exception as e:
                 debug_log(1, f"[{self.module_id}] 清理信號連接時發生錯誤: {e}")
         
@@ -362,8 +366,9 @@ class FrontendAdapter:
             if success:
                 self.frontend_modules[module.module_id] = module
                 
-                # 連接事件信號
-                module.event_occurred.connect(self._handle_frontend_event)
+                # 連接事件信號 (只在 PyQt5 可用時)
+                if PYQT5_AVAILABLE and hasattr(module.signals, 'event_occurred') and callable(getattr(module.signals.event_occurred, 'connect', None)):
+                    module.signals.event_occurred.connect(self._handle_frontend_event)  # type: ignore
                 
                 info_log(f"[FrontendAdapter] 註冊前端模組: {module.module_id}")
                 return True

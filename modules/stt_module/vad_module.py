@@ -43,7 +43,7 @@ class VADModule:
                 repo_or_dir='snakers4/silero-vad',
                 model='silero_vad',
                 force_reload=False
-            )
+            ) # type: ignore
             self.get_speech_timestamps = utils[0]
             print("[VAD] Silero VAD 模型載入成功")
         except Exception as e:

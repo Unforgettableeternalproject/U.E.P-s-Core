@@ -242,6 +242,7 @@
     <Compile Include="modules\sys_module\actions\integrations.py" />
     <Compile Include="modules\sys_module\actions\time_zone.py" />
     <Compile Include="modules\sys_module\actions\window_control.py" />
+    <Compile Include="modules\sys_module\legacy_direct_actions.py" />
     <Compile Include="modules\sys_module\workflows.py" />
     <Compile Include="modules\sys_module\workflows\file_workflows.py" />
     <Compile Include="modules\sys_module\workflows\test_workflows.py" />

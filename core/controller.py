@@ -433,7 +433,8 @@ class UnifiedController:
             if hasattr(self.core_framework, 'performance_monitoring_enabled'):
                 metrics["performance"] = {
                     "monitoring_enabled": self.core_framework.performance_monitoring_enabled,
-                    "snapshot_available": hasattr(self.core_framework, 'collect_system_performance_snapshot')
+                    "snapshot_available": hasattr(self.core_framework, 'collect_system_performance_snapshot'),
+                    "latest_snapshot": None  # 預先定義為 None,避免類型推斷問題
                 }
                 
                 # 嘗試獲取最新效能快照
@@ -483,7 +484,7 @@ class UnifiedController:
                 
                 # 獲取其他會話類型統計
                 if hasattr(self.session_manager, 'get_session_statistics'):
-                    session_stats = self.session_manager.get_session_statistics()
+                    session_stats = self.session_manager.get_session_statistics()  # type: ignore
                     metrics["sessions"].update(session_stats)
                     
             except Exception:

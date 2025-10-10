@@ -99,7 +99,7 @@ class BIOTagger:
             # 獲取token到字符的映射
             offset_mapping = inputs['offset_mapping'][0]
             tokens = self.tokenizer.convert_ids_to_tokens(inputs['input_ids'][0])
-            predicted_labels = [self.id2label[pred.item()] for pred in predictions[0]]
+            predicted_labels = [self.id2label[pred.item()] for pred in predictions[0]] # type: ignore
             
             # 將BIO標籤轉換為分段
             segments = self._bio_to_segments(text, tokens, predicted_labels, offset_mapping)
@@ -224,7 +224,7 @@ class BIOTagger:
             is_split_into_words=False,
             return_offsets_mapping=True,
             padding=True
-        )
+        ) # type: ignore
         
         # 對齊標籤
         aligned_labels = []

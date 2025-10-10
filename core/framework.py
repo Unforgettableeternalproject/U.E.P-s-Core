@@ -212,7 +212,7 @@ class ModuleRegistry(ABC):
 class CoreFramework:
     """UEP 核心框架 - 系統骨架和模組管理"""
     
-    def __init__(self, use_schema_adapter=True):
+    def __init__(self):
         """初始化核心框架"""
         # 載入配置
         from configs.config_loader import load_config
@@ -224,19 +224,7 @@ class CoreFramework:
         # 系統流程定義
         self.system_flows: Dict[str, SystemFlow] = {}
         
-        # Schema 適配器支持
-        self.use_schema_adapter = use_schema_adapter
-        if self.use_schema_adapter:
-            try:
-                from core.schema_adapter import schema_handler
-                self.schema_handler = schema_handler
-                info_log("[CoreFramework] Schema 適配器已啟用")
-            except ImportError:
-                info_log("[CoreFramework] Schema 適配器不可用，使用傳統數據處理")
-                self.use_schema_adapter = False
-                self.schema_handler = None
-        else:
-            self.schema_handler = None
+        # Schema 適配器已移除 - 模組使用自己的 Input/Output Schema
         
         # 框架狀態
         self.is_initialized = False
@@ -250,9 +238,9 @@ class CoreFramework:
         self.system_start_time = time.time()
         
         # 監控統計
-        self.monitoring_stats = {
+        self.monitoring_stats: Dict[str, int | float] = {
             "total_snapshots": 0,
-            "last_snapshot_time": 0,
+            "last_snapshot_time": 0.0,
             "monitoring_errors": 0
         }
         
@@ -301,7 +289,7 @@ class CoreFramework:
                 {
                     "module_id": "nlp",
                     "module_name": "nlp_module",
-                    "module_type": ModuleType.PROCESSING, 
+                    "module_type": ModuleType.INPUT, 
                     "capabilities": ModuleCapabilities.NLP_CAPABILITIES,
                     "priority": 20
                 },
@@ -329,7 +317,7 @@ class CoreFramework:
                 {
                     "module_id": "sys",
                     "module_name": "sys_module", 
-                    "module_type": ModuleType.SYSTEM,
+                    "module_type": ModuleType.PROCESSING,
                     "capabilities": ModuleCapabilities.SYS_CAPABILITIES,
                     "priority": 30
                 }
@@ -417,9 +405,9 @@ class CoreFramework:
             # 註冊到本地註冊表
             self.modules[module_info.module_id] = module_info
             
-            # 註冊到全局 registry（如果可用）
+            # 註冊到全局 registry(如果可用)
             try:
-                from core.registry import registry
+                from core.registry import registry  # type: ignore
                 if hasattr(registry, 'register_module'):
                     registry.register_module(
                         module_info.module_name,
@@ -427,7 +415,7 @@ class CoreFramework:
                         module_info.capabilities
                     )
             except ImportError:
-                debug_log(2, "[CoreFramework] Registry 不可用，僅本地註冊")
+                debug_log(2, "[CoreFramework] Registry 不可用,僅本地註冊")
             
             debug_log(2, f"[CoreFramework] 已註冊模組: {module_info.module_id}")
             return True
@@ -447,7 +435,7 @@ class CoreFramework:
             
             # 從全局 registry 註銷
             try:
-                from core.registry import registry
+                from core.registry import registry  # type: ignore
                 if hasattr(registry, 'unregister_module'):
                     registry.unregister_module(module_info.module_name)
             except ImportError:
@@ -553,8 +541,7 @@ class CoreFramework:
             "total_modules": len(self.modules),
             "available_modules": len([m for m in self.modules.values() if m.state == ModuleState.AVAILABLE]),
             "system_flows": list(self.system_flows.keys()),
-            "module_states": module_states,
-            "schema_adapter_enabled": self.use_schema_adapter
+            "module_states": module_states
         }
     
     def update_module_state(self, module_id: str, new_state: ModuleState):

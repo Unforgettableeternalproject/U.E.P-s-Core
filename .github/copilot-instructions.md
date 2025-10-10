@@ -24,6 +24,7 @@ Main priorities: correctness, modularity, stability, and respect for existing na
 * No hardcoding secrets, absolute paths, or adding stray `print()` calls.
 * Use our logging and debug system (`debug_level`, `log_level`) instead of raw prints.
 * If you just summarized chat history and is not sure where to continue, ask for clarification, more context is always better.
+* **DO NOT** generate explanation files if I didn't ask for them.
 
 ---
 

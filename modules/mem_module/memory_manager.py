@@ -146,13 +146,13 @@ class MemoryManager:
         self.current_context = context
         debug_log(3, f"[MemoryManager] 設定記憶上下文: {context.current_session_id}")
     
-    def is_in_chat_session(self, session_id: str = None) -> bool:
+    def is_in_chat_session(self, session_id: str = None) -> bool: # type: ignore
         """檢查是否處於指定的聊天會話中"""
         if session_id:
             return session_id in self.current_chat_sessions
         return bool(self.current_chat_sessions) and (self.current_context is not None)
     
-    def check_session_access(self, operation: str, session_id: str = None) -> MemoryOperationResult:
+    def check_session_access(self, operation: str, session_id: str = None) -> MemoryOperationResult: # type: ignore
         """
         檢查操作是否允許在當前會話狀態下進行
         

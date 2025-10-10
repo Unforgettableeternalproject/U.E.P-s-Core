@@ -1,10 +1,13 @@
 import feedparser
+from numpy import info
 import requests
 import datetime
 import subprocess
 import psutil
 import ast
+from pathlib import Path
 from utils.debug_helper import info_log, error_log
+import os
 
 def news_summary(rss_url: str, max_items: int = 5):
     raise NotImplementedError("news_summary 尚未實作")
@@ -37,15 +40,36 @@ def get_weather(location: str, api_key: str):
         error_log(f"[INT] 取得天氣失敗: {e}")
         return ""
 
-def get_world_time(tz: str):
-    raise NotImplementedError("get_world_time 尚未實作")
+def get_world_time(target_num :int = 1, tz: str = ""):
 
-    """回傳指定時區時間"""
+    """取得當前時間
+        輸入1：世界標準時間，
+        輸入2：他區標準時間，需搭配傳入時區：如：日本、台灣...(詳細時區表於time_zone.py)
+
+        """
+
+    from datetime import datetime
+    from modules.sys_module.actions import time_zone
+    from zoneinfo import ZoneInfo
+
     try:
-        now = datetime.datetime.now(datetime.timezone.utc).astimezone(datetime.timezone(datetime.timedelta(hours=int(tz))))
-        s = now.strftime("%Y-%m-%d %H:%M")
-        info_log(f"[INT] {tz} 時區時間：{s}")
-        return s
+        if target_num == 1:
+            now = datetime.now()
+            info_log(f"[INT] 當前時間（UTC）：{now}")
+            return f"[INT] 當前時間（UTC）：{now}"
+
+        elif target_num == 2:
+            if not tz:
+                error_log("[INT] 未輸入他區時區")
+                raise ValueError("target_num=2 時必須傳入 tz")
+            tz_key = time_zone.timezone_map[tz]
+            if not tz_key:
+                error_log("[INT] 輸入未知時區")
+                raise ValueError(f"未知時區: {tz}")
+            assign_time = datetime.now(ZoneInfo(tz_key))
+            info_log(f"[INT] {tz} 時區時間：{assign_time}")
+            return f"{tz_key} is {assign_time}"
+
     except Exception as e:
         error_log(f"[INT] 取得時間失敗: {e}")
         return ""
@@ -74,3 +98,4 @@ def media_control(command: str):
             info_log(f"[INT] 未知命令：{command}", "WARNING")
     except Exception as e:
         error_log(f"[INT] 媒體控制失敗: {e}")
+

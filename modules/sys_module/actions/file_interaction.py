@@ -1,5 +1,7 @@
+import os
 from pathlib import Path
 from utils.debug_helper import debug_log, debug_log_e, info_log, error_log
+
 
 def drop_and_read(file_path: str) -> str:
     """
@@ -40,7 +42,6 @@ def intelligent_archive(file_path: str, target_dir: str = "") -> str:
     Returns:
         歸檔後的新檔案路徑
     """
-    import os
     import shutil
     import json
     import datetime

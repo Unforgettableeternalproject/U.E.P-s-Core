@@ -1462,3 +1462,15 @@
 
 ---
 
+### Improved voice streaming, but is still working on improving the speed of TTS. (especially GPT generation). 10/11
+
+> Date: Sat, 11 Oct 2025 16:35:50 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_rework`
+
+> Commit: `fe703241f91806e45326f16fe941d2cd7f570813`
+
+---
+

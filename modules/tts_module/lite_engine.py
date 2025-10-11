@@ -41,6 +41,17 @@ from omegaconf import OmegaConf
 from huggingface_hub import hf_hub_download
 import safetensors
 
+# 導入系統日誌工具
+try:
+    from utils.debug_helper import debug_log, info_log, error_log
+    _HAS_SYSTEM_LOG = True
+except ImportError:
+    _HAS_SYSTEM_LOG = False
+    # Fallback: 使用 print
+    def debug_log(level, msg): print(msg)
+    def info_log(msg): print(msg)
+    def error_log(msg): print(f"ERROR: {msg}")
+
 # 使用絕對導入 (當作為腳本運行時)
 import sys
 if __name__ == "__main__":
@@ -108,14 +119,14 @@ class IndexTTSLite:
         # 初始化模型
         self._init_models()
         
-        print("✅ IndexTTS Lite Engine 初始化完成!")
+        info_log("✅ IndexTTS Lite Engine 初始化完成!")
     
     def _init_models(self):
         """初始化必要的模型組件"""
-        print("🚀 初始化模型...")
+        debug_log(2, "🚀 初始化模型...")
         
         # 1. GPT 模型
-        print("   [1/4] 加載 GPT 模型...")
+        debug_log(2, "   [1/4] 加載 GPT 模型...")
         gpt_path = os.path.join(self.model_dir, self.cfg.gpt_checkpoint)
         # 使用字典展開來傳遞所有 GPT 配置參數(包括嵌套的 condition_module 等)
         self.gpt = UnifiedVoice(**self.cfg.gpt).to(self.device)
@@ -128,19 +139,19 @@ class IndexTTSLite:
             self.gpt.eval()
         
         self.gpt.post_init_gpt2_config(use_deepspeed=False, kv_cache=True, half=self.use_fp16)
-        print(f"      ✓ GPT 加載完成: {gpt_path}")
+        debug_log(3, f"      ✓ GPT 加載完成: {gpt_path}")
         
         # 2. Semantic Codec (用於 GPT 輸出解碼)
-        print("   [2/4] 加載 Semantic Codec...")
+        debug_log(2, "   [2/4] 加載 Semantic Codec...")
         semantic_codec = build_semantic_codec(self.cfg.semantic_codec)
         semantic_code_ckpt = hf_hub_download("amphion/MaskGCT", filename="semantic_codec/model.safetensors")
         safetensors.torch.load_model(semantic_codec, semantic_code_ckpt)
         self.semantic_codec = semantic_codec.to(self.device)
         self.semantic_codec.eval()
-        print(f"      ✓ Semantic Codec 加載完成")
+        debug_log(3, f"      ✓ Semantic Codec 加載完成")
         
         # 3. S2Mel 模型
-        print("   [3/4] 加載 S2Mel 模型...")
+        debug_log(2, "   [3/4] 加載 S2Mel 模型...")
         s2mel_path = os.path.join(self.model_dir, self.cfg.s2mel_checkpoint)
         s2mel = MyModel(self.cfg.s2mel, use_gpt_latent=True)
         s2mel, _, _, _ = load_checkpoint2(s2mel, None, s2mel_path)
@@ -148,19 +159,19 @@ class IndexTTSLite:
         # 初始化 GPT-Fast cache (參考 infer_v2.py line 139)
         self.s2mel.models['cfm'].estimator.setup_caches(max_batch_size=1, max_seq_length=8192)
         self.s2mel.eval()
-        print(f"      ✓ S2Mel 加載完成: {s2mel_path}")
+        debug_log(3, f"      ✓ S2Mel 加載完成: {s2mel_path}")
         
         # 4. BigVGAN Vocoder
-        print("   [4/4] 加載 BigVGAN Vocoder...")
+        debug_log(2, "   [4/4] 加載 BigVGAN Vocoder...")
         bigvgan_name = self.cfg.vocoder.name
         self.bigvgan = bigvgan.BigVGAN.from_pretrained(bigvgan_name, use_cuda_kernel=self.use_cuda_kernel)
         self.bigvgan = self.bigvgan.to(self.device)
         self.bigvgan.remove_weight_norm()
         self.bigvgan.eval()
-        print(f"      ✓ BigVGAN 加載完成: {bigvgan_name}")
+        debug_log(3, f"      ✓ BigVGAN 加載完成: {bigvgan_name}")
         
         # 5. 情感和說話人矩陣 (用於 emo_vector 映射)
-        print("   [5/6] 加載情感和說話人矩陣...")
+        debug_log(2, "   [5/6] 加載情感和說話人矩陣...")
         emo_matrix = torch.load(os.path.join(self.model_dir, self.cfg.emo_matrix), map_location=self.device, weights_only=True)
         spk_matrix = torch.load(os.path.join(self.model_dir, self.cfg.spk_matrix), map_location=self.device, weights_only=True)
         
@@ -171,15 +182,15 @@ class IndexTTSLite:
         # Split 矩陣 (用於按情感類別索引)
         self.emo_matrix = torch.split(self.emo_matrix, self.emo_num)
         self.spk_matrix = torch.split(self.spk_matrix, self.emo_num)
-        print(f"      ✓ 矩陣加載完成: {self.cfg.emo_matrix}, {self.cfg.spk_matrix}")
+        debug_log(3, f"      ✓ 矩陣加載完成: {self.cfg.emo_matrix}, {self.cfg.spk_matrix}")
         
         # 6. 文本標準化器和 BPE Tokenizer (參考 infer_v2.py line 159-162)
-        print("   [6/6] 加載文本處理...")
+        debug_log(2, "   [6/6] 加載文本處理...")
         bpe_path = os.path.join(self.model_dir, self.cfg.dataset["bpe_model"])
         self.text_normalizer = TextNormalizer()
         self.text_normalizer.load()
         self.tokenizer = TextTokenizer(bpe_path, self.text_normalizer)
-        print(f"      ✓ 文本處理器和 BPE 模型加載完成: {bpe_path}")
+        debug_log(3, f"      ✓ 文本處理器和 BPE 模型加載完成: {bpe_path}")
     
     def load_character(self, character_path: Union[str, Path], verbose: bool = True):
         """
@@ -198,7 +209,7 @@ class IndexTTSLite:
             raise FileNotFoundError(f"角色文件不存在: {character_path}")
         
         if verbose:
-            print(f"\n📂 加載角色: {character_path.name}")
+            debug_log(2, f"📂 加載角色: {character_path.name}")
         
         try:
             # 加載特徵
@@ -220,7 +231,7 @@ class IndexTTSLite:
             # 檢查情感索引 (emo_indices)
             if 'emo_indices' not in features:
                 if verbose:
-                    print("   ⚠️  警告: 此角色文件沒有 emo_indices,將使用全零向量")
+                    debug_log(2, "   ⚠️  警告: 此角色文件沒有 emo_indices,將使用全零向量")
                 features['emo_indices'] = torch.zeros(8, dtype=torch.long).to(self.device)
             elif isinstance(features['emo_indices'], list):
                 # 如果是 list,轉換為 tensor
@@ -230,7 +241,7 @@ class IndexTTSLite:
             self.current_character = character_path.stem
             
             if verbose:
-                print(f"   ✓ 角色 '{self.current_character}' 加載成功!")
+                info_log(f"   ✓ 角色 '{self.current_character}' 加載成功!")
                 
                 # 加載 metadata (如果存在)
                 metadata_path = character_path.with_suffix('.pt_metadata.json')
@@ -238,15 +249,15 @@ class IndexTTSLite:
                     import json
                     with open(metadata_path, 'r', encoding='utf-8') as f:
                         metadata = json.load(f)
-                    print(f"   📋 提取時間: {metadata.get('extraction_time', 'N/A')}")
-                    print(f"   📋 音頻長度: {metadata.get('audio_duration', 'N/A')}")
+                    debug_log(3, f"   📋 提取時間: {metadata.get('extraction_time', 'N/A')}")
+                    debug_log(3, f"   📋 音頻長度: {metadata.get('audio_duration', 'N/A')}")
                     if 'emo_indices' in metadata:
-                        print(f"   📋 情感索引: {metadata['emo_indices']}")
+                        debug_log(3, f"   📋 情感索引: {metadata['emo_indices']}")
             
             return True
             
         except Exception as e:
-            print(f"❌ 加載角色失敗: {e}")
+            error_log(f"❌ 加載角色失敗: {e}")
             import traceback
             traceback.print_exc()
             return False
@@ -278,8 +289,8 @@ class IndexTTSLite:
         normalized = [v * scale_factor for v in emotion_vector]
         
         if verbose:
-            print(f"   📊 情感歸一化: {current_sum:.2f} → {sum(normalized):.2f}")
-            print(f"      原始聲音保留: {(1 - sum(normalized)) * 100:.0f}%")
+            debug_log(3, f"   📊 情感歸一化: {current_sum:.2f} → {sum(normalized):.2f}")
+            debug_log(3, f"      原始聲音保留: {(1 - sum(normalized)) * 100:.0f}%")
         
         return normalized
     
@@ -348,10 +359,10 @@ class IndexTTSLite:
             raise RuntimeError("請先使用 load_character() 加載角色!")
         
         if verbose:
-            print(f"\n🎙️  合成語音...")
-            print(f"   角色: {self.current_character}")
-            print(f"   文本: {text}")
-            print(f"   文本長度: {len(text)} 字符")
+            debug_log(2, f"🎙️  合成語音...")
+            debug_log(3, f"   角色: {self.current_character}")
+            debug_log(3, f"   文本: {text}")
+            debug_log(3, f"   文本長度: {len(text)} 字符")
         
         # 1. 情感向量處理
         if emotion_vector is None:
@@ -366,14 +377,14 @@ class IndexTTSLite:
         try:
             # 2. 文本處理 (參考 infer_v2.py line 487-523)
             if verbose:
-                print("   [1/4] 文本處理...")
+                debug_log(3, "   [1/4] 文本處理...")
             
             # 使用 BPE tokenizer 進行正確的 tokenization
             text_tokens_list = self.tokenizer.tokenize(text)
             # 簡化版:只取第一個 segment (完整版應該循環處理所有 segments)
             segments = self.tokenizer.split_segments(text_tokens_list, max_text_tokens_per_segment=200)
             if len(segments) > 1 and verbose:
-                print(f"      ⚠️  警告: 文本被分割為 {len(segments)} 段,只處理第一段")
+                debug_log(2, f"      ⚠️  警告: 文本被分割為 {len(segments)} 段,只處理第一段")
             
             # 轉換為 token IDs
             text_tokens = self.tokenizer.convert_tokens_to_ids(segments[0])
@@ -409,7 +420,7 @@ class IndexTTSLite:
             
             # 4. GPT 生成語義 tokens
             if verbose:
-                print("   [2/4] GPT 生成中...")
+                debug_log(3, "   [2/4] GPT 生成中...")
             
             with torch.no_grad():
                 # 使用 autocast 處理 FP16 (參考 infer_v2.py line 534)
@@ -484,7 +495,7 @@ class IndexTTSLite:
             
             # 5. S2Mel 生成 Mel 頻譜
             if verbose:
-                print("   [3/4] S2Mel 生成中...")
+                debug_log(3, "   [3/4] S2Mel 生成中...")
             
             with torch.no_grad():
                 # 使用 dtype=None 的 autocast (參考 infer_v2.py line 617)
@@ -526,7 +537,7 @@ class IndexTTSLite:
             
             # 6. BigVGAN 生成波形
             if verbose:
-                print("   [4/4] BigVGAN 生成中...")
+                debug_log(3, "   [4/4] BigVGAN 生成中...")
             
             with torch.no_grad():
                 # BigVGAN 需要 Float32 輸入 (參考 infer_v2.py line 641)
@@ -544,14 +555,14 @@ class IndexTTSLite:
             
             if verbose:
                 duration = audio_output.shape[-1] / 22050
-                print(f"   ✓ 合成完成!")
-                print(f"   📁 保存至: {output_path}")
-                print(f"   ⏱️  音頻時長: {duration:.2f}秒")
+                debug_log(2, f"   ✓ 合成完成!")
+                debug_log(3, f"   📁 保存至: {output_path}")
+                debug_log(3, f"   ⏱️  音頻時長: {duration:.2f}秒")
             
             return True
             
         except Exception as e:
-            print(f"❌ 合成失敗: {e}")
+            error_log(f"❌ 合成失敗: {e}")
             import traceback
             traceback.print_exc()
             return False

@@ -27,10 +27,31 @@ class TTSChunker:
         self.queue = deque()
         self.is_playing = False
         self.stop_requested = False
+    
+    def _restore_protected(self, text: str, protect_map: Dict[str, str]) -> str:
+        """
+        還原被保護的片段（URL、縮寫、數字）
+        
+        Args:
+            text: 包含placeholder的文本
+            protect_map: placeholder到原始內容的映射
+            
+        Returns:
+            還原後的文本
+        """
+        # 還原特殊符號
+        text = text.replace('∯', '.').replace('∮', ',')
+        
+        # 還原 URL / email 等 placeholder
+        for key, value in protect_map.items():
+            text = text.replace(key, value)
+        
+        return text.strip()
 
     def split_text(self, text: str) -> List[str]:
         """
         Split text into appropriate chunks for TTS processing
+        改進版：包含 URL/縮寫保護、引號配對、更智能的中英混合斷句
         
         Args:
             text: Input text to split
@@ -38,17 +59,48 @@ class TTSChunker:
         Returns:
             List of text chunks ready for processing
         """
-        # Clean the input text - remove excessive whitespace and line breaks
-        text = re.sub(r'\s+', ' ', text).strip()
+        # --- [PATCH A] 更聰明的預清理與斷句 ---
+        text = text.strip()
         
-        # If text is already short enough, return as is
+        # 暫存保護的片段
+        _protect_map = {}
+        protect_counter = [0]  # 使用列表來在閉包中修改
+        
+        def _make_placeholder(prefix):
+            key = f"<<{prefix}_{protect_counter[0]}>>"
+            protect_counter[0] += 1
+            return key
+        
+        # 1) 保護 URL 和 email
+        def _protect_url(match):
+            key = _make_placeholder("URL")
+            _protect_map[key] = match.group(0)
+            return key
+        text = re.sub(r'https?://\S+|www\.\S+|\S+@\S+', _protect_url, text)
+        
+        # 2) 保護常見英文縮寫（避免句點被當成句末）
+        # e.g., i.e., etc., Mr., Dr., Prof., vs.
+        abbr_pattern = r'\b(e\.g\.|i\.e\.|etc\.|vs\.|Mr\.|Mrs\.|Ms\.|Dr\.|Prof\.)'
+        text = re.sub(abbr_pattern, lambda m: m.group(0).replace('.', '∯'), text)
+        
+        # 3) 保護數字中的逗號和小數點（避免 1,234.56 被切割）
+        text = re.sub(r'(\d),(?=\d{3}\b)', r'\1∮', text)  # 千分位
+        text = re.sub(r'(\d)\.(?=\d)', r'\1∯', text)  # 小數點
+        
+        # 4) 清理多餘空白
+        text = re.sub(r'\s+', ' ', text)
+        
+        # If text is already short enough, restore and return
         if len(text) <= self.max_chars:
-            return [text]
-            
+            return [self._restore_protected(text, _protect_map)]
+        
         chunks = []
         
-        # Primary splitting pattern - sentence boundaries with punctuation
-        sentences = re.split(r'(?<=[.!?。？！…]) ', text)
+        # 5) 更穩健的中英混合斷句
+        # 支援中文無空格、引號/括號後斷句
+        # 在 .!?。？！… 後面，若是引號/括號/結尾，視為句邊界
+        sentence_pattern = r'(?<=[.!?。？！…])(?=[\s」』）》）\]\'\"]*(?:\s|$))'
+        sentences = re.split(sentence_pattern, text)
         
         current_chunk = ""
         for sentence in sentences:
@@ -79,6 +131,9 @@ class TTSChunker:
         # Add any remaining content
         if current_chunk:
             chunks.append(current_chunk)
+        
+        # 還原所有保護的片段
+        chunks = [self._restore_protected(chunk, _protect_map) for chunk in chunks]
         
         # Post-processing: merge very small chunks
         if self.min_chars > 0:
@@ -179,6 +234,7 @@ class TTSChunker:
     def _smart_split_long_text(self, text: str, max_chars: int) -> List[str]:
         """
         智能分割長文本，盡量保持語意完整
+        改進版：加入引號/括號配對、更好的切點優先級
         
         Args:
             text: 要分割的長文本
@@ -194,61 +250,107 @@ class TTSChunker:
         remaining = text
         
         while len(remaining) > max_chars:
-            # 在max_chars範圍內尋找最佳切割點
+            # --- [PATCH B] 更穩健的切點搜尋 ---
             chunk_end = max_chars
             best_split = -1
             
-            # 尋找最佳分割點（按優先級排序）
-            # 1. 句號、問號、感嘆號後的空格
-            for i in range(min(chunk_end, len(remaining)), max(chunk_end - 50, 0), -1):
-                if i > 0 and i < len(remaining) and remaining[i-1:i+1] in ['. ', '? ', '! ', '。 ', '？ ', '！ ']:
-                    best_split = i
-                    break
+            # 定義搜尋窗口（往前最多120個字符）
+            window_start = max(0, min(chunk_end, len(remaining)) - 120)
+            window_end = min(len(remaining), chunk_end)
+            window = remaining[window_start:window_end]
             
-            # 2. 連詞和從句分界點（更自然的語意切分）
+            def abs_pos(local_i):
+                """轉換局部索引到全局索引"""
+                return window_start + local_i
+            
+            # 0) 引號/括號配對檢查：避免切斷配對符號
+            # 區分不對稱括號和對稱引號
+            asymmetric_pairs = {
+                '（': '）', '(': ')', 
+                '【': '】', '「': '」', '『': '』', 
+                '[': ']', '《': '》'
+            }
+            symmetric_quotes = {'"', "'"}  # 對稱引號需要特殊處理
+            
+            stack = []
+            quote_state = {}  # 追蹤對稱引號的開閉狀態
+            
+            for i, ch in enumerate(window):
+                # 處理不對稱括號
+                if ch in asymmetric_pairs:
+                    stack.append(asymmetric_pairs[ch])
+                elif ch in asymmetric_pairs.values():
+                    if stack and stack[-1] == ch:
+                        stack.pop()
+                # 處理對稱引號（toggle 狀態）
+                elif ch in symmetric_quotes:
+                    if quote_state.get(ch, False):
+                        quote_state[ch] = False  # 關閉引號
+                        # 從 stack 中移除這個引號
+                        if ch in stack:
+                            stack.remove(ch)
+                    else:
+                        quote_state[ch] = True  # 開啟引號
+                        stack.append(ch)  # 標記有未閉合的引號
+            
+            # 如果有未閉合的引號/括號，往前找最後一個已閉合的句點
+            if stack:
+                for i in range(len(window)-1, -1, -1):
+                    if window[i] in '。？！….;；,':
+                        best_split = abs_pos(i+1)
+                        break
+            
+            # 1) 強句界：句末標點 + 空白/引號/括號/結尾
             if best_split == -1:
-                # 尋找 ", and", ", but", ", or", ", that", ", which" 等結構
-                conjunction_patterns = [', and ', ', but ', ', or ', ', so ', ', yet ', ', that ', ', which ', ', who ', ', when ', ', where ', ', while ']
-                for i in range(min(chunk_end, len(remaining)), max(chunk_end - 80, 0), -1):
+                for i in range(len(window)-1, -1, -1):
+                    if window[i] in '.!?。？！…':
+                        j = i + 1
+                        if j >= len(window) or window[j] in ' 」』）》）]\'\"':
+                            best_split = abs_pos(i+1)
+                            break
+            
+            # 2) 次級標點：分號、冒號、破折號、中文頓號
+            if best_split == -1:
+                for i in range(len(window)-1, -1, -1):
+                    if window[i] in ';；:：—、':
+                        best_split = abs_pos(i+1)
+                        break
+            
+            # 3) 逗號（避開數字千分位）
+            if best_split == -1:
+                for i in range(len(window)-1, -1, -1):
+                    if window[i] == ',':
+                        # 避免 1,234 類型
+                        if i-1 >= 0 and i+1 < len(window) and window[i-1].isdigit() and window[i+1].isdigit():
+                            continue
+                        best_split = abs_pos(i+1)
+                        break
+            
+            # 4) 連詞（, and, but, etc.）
+            if best_split == -1:
+                conjunction_patterns = [', and ', ', but ', ', or ', ', so ', ', yet ', 
+                                      ', that ', ', which ', ', who ', ', when ', ', where ', ', while ']
+                for i in range(len(window)-1, -1, -1):
                     for pattern in conjunction_patterns:
-                        if i >= len(pattern) and i <= len(remaining):
-                            if remaining[i-len(pattern):i].lower() == pattern:
-                                best_split = i - len(pattern) + 1  # 在逗號後分割，保持"and"在下一段
-                                break
+                        start = i - len(pattern) + 1
+                        if start >= 0 and window[start:i+1].lower() == pattern:
+                            best_split = abs_pos(i+1)
+                            break
                     if best_split != -1:
                         break
             
-            # 3. 破折號、分號等標點
+            # 5) 空白
             if best_split == -1:
-                for i in range(min(chunk_end, len(remaining)), max(chunk_end - 30, 0), -1):
-                    if i > 0 and i < len(remaining) and remaining[i-1:i+1] in ['— ', '- ', '; ', ': ', '； ', '： ']:
-                        best_split = i
+                for i in range(len(window)-1, -1, -1):
+                    if window[i] == ' ':
+                        best_split = abs_pos(i+1)
                         break
             
-            # 4. 介詞短語的邊界
+            # 6) 80% 強制切，避免切在連字符詞中
             if best_split == -1:
-                preposition_patterns = [' of ', ' in ', ' on ', ' at ', ' by ', ' for ', ' with ', ' from ', ' to ', ' into ']
-                for i in range(min(chunk_end, len(remaining)), max(chunk_end - 40, 0), -1):
-                    for pattern in preposition_patterns:
-                        if i >= len(pattern) and i <= len(remaining):
-                            if remaining[i-len(pattern):i] == pattern:
-                                best_split = i - len(pattern)
-                                break
-                    if best_split != -1:
-                        break
-            
-            # 5. 任何空格
-            if best_split == -1:
-                for i in range(min(chunk_end, len(remaining)), max(chunk_end - 20, 0), -1):
-                    if i < len(remaining) and remaining[i] == ' ':
-                        best_split = i
-                        break
-            
-            # 6. 如果都找不到，就在80%位置強制切割（避免切斷單詞）
-            if best_split == -1:
-                best_split = int(max_chars * 0.8)
-                # 確保不在單詞中間切割
-                while best_split > 0 and best_split < len(remaining) and remaining[best_split] != ' ':
+                best_split = int(window_start + max_chars * 0.8)
+                # 往回找到最近的非字母數字字符
+                while best_split > 0 and best_split < len(remaining) and remaining[best_split].isalnum():
                     best_split -= 1
                 if best_split <= 0:
                     best_split = max_chars

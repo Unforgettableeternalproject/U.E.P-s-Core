@@ -8,12 +8,18 @@ import os
 import uuid
 import enum
 from typing import Optional, Dict, Any, List
+
 from core.bases.module_base import BaseModule
+from core.working_context import working_context_manager
+from core.status_manager import status_manager
 from configs.config_loader import load_module_config
 from utils.debug_helper import debug_log, debug_log_e, info_log, error_log
+
 from .schemas import TTSInput, TTSOutput
 from .lite_engine import IndexTTSLite
 from .emotion_mapper import EmotionMapper
+from utils.tts_chunker import TTSChunker
+
 import numpy as np
 import soundfile as sf
 try:
@@ -68,9 +74,17 @@ class TTSModule(BaseModule):
         self.engine: Optional[IndexTTSLite] = None
         self.emotion_mapper = EmotionMapper(max_strength=self.emotion_max_strength)
         
-        # Working Context 和 Status Manager 引用 (將在 set_context_references 時設置)
-        self.working_context = None
-        self.status_manager = None
+        # 初始化 TTSChunker（用於長文本分段）
+        self.chunker = TTSChunker(
+            max_chars=self.chunking_threshold,
+            min_chars=50,
+            respect_punctuation=True,
+            pause_between_chunks=0.1  # 段落間短暫停頓
+        )
+        
+        # Working Context 和 Status Manager 引用 (使用全局單例)
+        self.working_context_manager = working_context_manager
+        self.status_manager = status_manager
         
         # 創建必要目錄
         os.makedirs(os.path.join("temp", "tts"), exist_ok=True)
@@ -85,23 +99,9 @@ class TTSModule(BaseModule):
         debug_log(2, f"[TTS] 設備: {self.device}, FP16: {self.use_fp16}")
         debug_log(2, f"[TTS] Chunking 閾值: {self.chunking_threshold}")
         debug_log(2, f"[TTS] 情感強度上限: {self.emotion_max_strength}")
+        debug_log(2, f"[TTS] Working Context Manager: {'已連接' if self.working_context_manager else '未連接'}")
+        debug_log(2, f"[TTS] Status Manager: {'已連接' if self.status_manager else '未連接'}")
         debug_log(3, f"[TTS] 完整配置: {self.config}")
-    
-    def set_context_references(self, working_context=None, status_manager=None):
-        """
-        設置 Working Context 和 Status Manager 的引用
-        
-        這個方法應該在模組初始化後被系統調用
-        
-        Args:
-            working_context: Working Context 實例
-            status_manager: Status Manager 實例
-        """
-        if working_context is not None:
-            self.working_context = working_context
-        if status_manager is not None:
-            self.status_manager = status_manager
-        debug_log(2, "[TTS] Context references set")
     
     def initialize(self):
         """初始化 TTS 模組，加載 IndexTTS 引擎和角色"""
@@ -163,23 +163,23 @@ class TTSModule(BaseModule):
             Optional[List[float]]: 8D 情感向量，如果沒有 Status Manager 則返回 None
         """
         if not self.status_manager:
-            debug_log(3, "[TTS] Status Manager 未設置，使用預設情感")
+            debug_log(3, "[TTS] Status Manager 未連接，使用預設情感")
             return self.default_emotion
         
         try:
             # 從 Status Manager 獲取數值
             status = self.status_manager.get_status()
-            mood = status.get("mood", 0.0)
-            pride = status.get("pride", 0.5)
-            helpfulness = status.get("helpfulness", 0.5)
-            boredom = status.get("boredom", 0.0)
+            mood = status.get("mood", 0.0)  # type: ignore
+            pride = status.get("pride", 0.5)  # type: ignore
+            helpfulness = status.get("helpfulness", 0.5)  # type: ignore
+            boredom = status.get("boredom", 0.0)  # type: ignore
             
             debug_log(3, f"[TTS] Status Manager 數值: mood={mood:.2f}, pride={pride:.2f}, " +
                          f"help={helpfulness:.2f}, boredom={boredom:.2f}")
             
             # 映射為情感向量
             emotion_vector = self.emotion_mapper.map_from_status_manager(
-                mood, pride, helpfulness, boredom
+                mood, pride, helpfulness, boredom  # type: ignore
             )
             
             debug_log(3, f"[TTS] 映射情感向量: {[f'{v:.3f}' for v in emotion_vector]}")
@@ -192,26 +192,27 @@ class TTSModule(BaseModule):
     
     def _get_user_preferences(self) -> Dict[str, Any]:
         """
-        從 Working Context 獲取使用者偏好
+        從 Working Context Manager 獲取使用者偏好
+        
+        注意：Working Context Manager 管理多個上下文，這裡我們可以：
+        1. 從全局共享數據獲取 TTS 偏好設置
+        2. 或者從特定類型的上下文獲取（如 CONVERSATION 上下文）
         
         Returns:
             Dict[str, Any]: 使用者偏好設定
         """
-        if not self.working_context:
-            debug_log(3, "[TTS] Working Context 未設置，使用預設偏好")
+        if not self.working_context_manager:
+            debug_log(3, "[TTS] Working Context Manager 未連接，使用預設偏好")
             return {}
         
         try:
-            # 獲取使用者偏好 (假設 Working Context 有這些屬性)
+            # 從 Working Context Manager 的全局共享數據獲取 TTS 偏好
+            # 這個區域可以存儲跨模組的用戶偏好設置
             preferences = {}
             
-            # 語速偏好 (如果有的話)
-            if hasattr(self.working_context, "tts_speed_preference"):
-                preferences["speed"] = self.working_context.tts_speed_preference
-            
-            # 音量偏好
-            if hasattr(self.working_context, "tts_volume_preference"):
-                preferences["volume"] = self.working_context.tts_volume_preference
+            # 嘗試獲取 TTS 相關偏好
+            # 注意：這裡需要確認 working_context_manager 的實際 API
+            # 暫時返回空字典，具體實現需要根據 Working Context 的設計來調整
             
             debug_log(3, f"[TTS] 使用者偏好: {preferences}")
             
@@ -305,7 +306,7 @@ class TTSModule(BaseModule):
                     output_path=None,
                     is_chunked=False,
                     chunk_count=0
-                ).dict()
+                ).model_dump()
             
             # 切換角色 (如果指定)
             if character and character != self.default_character:
@@ -352,7 +353,7 @@ class TTSModule(BaseModule):
                     output_path=None,
                     is_chunked=False,
                     chunk_count=0
-                ).dict()
+                ).model_dump()
             
             # 播放音頻 (如果不保存)
             if not save and sa:
@@ -378,7 +379,7 @@ class TTSModule(BaseModule):
                 output_path=final_path,
                 is_chunked=False,
                 chunk_count=1
-            ).dict()
+            ).model_dump()
             
         except Exception as e:
             self._playback_state = PlaybackState.ERROR
@@ -391,8 +392,8 @@ class TTSModule(BaseModule):
                 output_path=None,
                 is_chunked=False,
                 chunk_count=0
-            ).dict()
-    
+            ).model_dump()
+
     async def _handle_streaming(
         self,
         text: str,
@@ -413,6 +414,17 @@ class TTSModule(BaseModule):
             dict: TTSOutput 字典
         """
         try:
+            # 檢查引擎是否已初始化
+            if not self.engine:
+                error_log("[TTS] 引擎未初始化")
+                return TTSOutput(
+                    status="error",
+                    message="Engine not initialized",
+                    output_path=None,
+                    is_chunked=True,
+                    chunk_count=0
+                ).model_dump()
+            
             # 切換角色
             if character and character != self.default_character:
                 character_path = os.path.join(self.character_dir, f"{character}.pt")
@@ -423,21 +435,26 @@ class TTSModule(BaseModule):
             if emotion_vector is None:
                 emotion_vector = self._get_emotion_vector_from_status()
             
-            # 使用 BPE tokenizer 分段
+            # 使用 TTSChunker 進行智能分段
             info_log(f"[TTS] 開始 chunking: {len(text)} 字符")
             
-            # 簡單分段 (基於標點符號)
-            chunks = self._split_text_by_punctuation(text)
-            info_log(f"[TTS] 分成 {len(chunks)} 段")
+            # 使用 TTSChunker 的智能分段算法
+            chunks = self.chunker.split_text(text)
+            info_log(f"[TTS] TTSChunker 分成 {len(chunks)} 段")
             
-            queue = asyncio.Queue()
+            # 使用有限緩衝隊列,最多緩衝 2 個音頻段落
+            # 這樣可以保持 Producer 領先,減少播放時的停頓
+            queue = asyncio.Queue(maxsize=2)
             loop = asyncio.get_event_loop()
             tmp_dir = "temp/tts"
             generated_files = []
             
+            # 獲取引擎引用 (for type narrowing)
+            engine = self.engine  # Type narrowing: 此時已確認 engine 不是 None
+            
             # Producer: 生成音頻段落
             async def producer():
-                info_log(f"[TTS] Producer 開始處理 {len(chunks)} 個段落")
+                info_log(f"[TTS] Producer 開始處理 {len(chunks)} 個段落 (緩衝: 2 段)")
                 for idx, chunk in enumerate(chunks, 1):
                     try:
                         debug_log(3, f"[TTS] 處理段落 {idx}/{len(chunks)}: {chunk[:50]}...")
@@ -448,7 +465,7 @@ class TTSModule(BaseModule):
                         # 合成段落
                         await loop.run_in_executor(
                             None,
-                            self.engine.synthesize,
+                            engine.synthesize,
                             chunk,
                             out_path,
                             emotion_vector
@@ -456,8 +473,9 @@ class TTSModule(BaseModule):
                         
                         if os.path.exists(out_path):
                             generated_files.append(out_path)
+                            # 如果隊列已滿,這裡會等待 Consumer 取走一個音頻
                             await queue.put(("success", out_path))
-                            debug_log(3, f"[TTS] 段落 {idx} 完成")
+                            debug_log(3, f"[TTS] 段落 {idx} 完成並放入隊列")
                         else:
                             error_log(f"[TTS] 段落 {idx} 合成失敗")
                             await queue.put(("error", f"Chunk {idx} failed"))
@@ -534,7 +552,7 @@ class TTSModule(BaseModule):
                 output_path=output_path,
                 is_chunked=True,
                 chunk_count=len(chunks)
-            ).dict()
+            ).model_dump()
             
         except Exception as e:
             self._playback_state = PlaybackState.ERROR
@@ -547,35 +565,4 @@ class TTSModule(BaseModule):
                 output_path=None,
                 is_chunked=True,
                 chunk_count=0
-            ).dict()
-    
-    def _split_text_by_punctuation(self, text: str, max_length: int = 200) -> List[str]:
-        """
-        根據標點符號分割文本
-        
-        Args:
-            text: 要分割的文本
-            max_length: 每段最大字符數
-            
-        Returns:
-            List[str]: 文本段落列表
-        """
-        # 主要標點符號
-        major_punctuation = ["。", "！", "？", ".", "!", "?", "\n"]
-        
-        chunks = []
-        current_chunk = ""
-        
-        for char in text:
-            current_chunk += char
-            
-            if char in major_punctuation or len(current_chunk) >= max_length:
-                if current_chunk.strip():
-                    chunks.append(current_chunk.strip())
-                current_chunk = ""
-        
-        # 添加剩餘文本
-        if current_chunk.strip():
-            chunks.append(current_chunk.strip())
-        
-        return chunks if chunks else [text]
+            ).model_dump()

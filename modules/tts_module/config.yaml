@@ -19,3 +19,4 @@ chunking:
   chunking_threshold: 200 # Text length to activate chunking
   respect_punctuation: true
   pause_between_chunks: 0.2
+

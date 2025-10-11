@@ -1426,3 +1426,27 @@
 
 ---
 
+### From IndexTTS migrated some impressive tts technology to adapt to our structure, license is at licenses/ folder. 10/11
+
+> Date: Sat, 11 Oct 2025 13:12:06 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_rework`
+
+> Commit: `595443c2470de6495f5d127cf6e417c6132f0d38`
+
+---
+
+### From IndexTTS migrate several impress tts technology to adapt to our new TTS structure, license is at licenses/. 10/11
+
+> Date: Sat, 11 Oct 2025 13:30:30 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_rework`
+
+> Commit: `281b46846b29bb08eb516d564290ed56c1708442`
+
+---
+

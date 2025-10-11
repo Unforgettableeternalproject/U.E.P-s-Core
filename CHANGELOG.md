@@ -1450,3 +1450,15 @@
 
 ---
 
+### Renamed TTS utils to avoid conflict, and made basic TTS main program adapt to the new structure. 10/11
+
+> Date: Sat, 11 Oct 2025 15:05:00 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_rework`
+
+> Commit: `e2214c955da5a5f47cae31f0cc38d1efb7ef4975`
+
+---
+

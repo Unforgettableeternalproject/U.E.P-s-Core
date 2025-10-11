@@ -3,7 +3,7 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from modules.dac.nn.quantize import ResidualVectorQuantize
+from s2mel.dac.nn.quantize import ResidualVectorQuantize
 from torch import nn
 from .wavenet import WN
 from .style_encoder import StyleEncoder
@@ -16,7 +16,7 @@ from ..alias_free_torch import *
 from torch.nn.utils import weight_norm
 from torch import nn, sin, pow
 from einops.layers.torch import Rearrange
-from modules.dac.model.encodec import SConv1d
+from s2mel.dac.model.encodec import SConv1d
 
 
 def init_weights(m):

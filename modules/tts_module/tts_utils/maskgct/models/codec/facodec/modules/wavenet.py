@@ -10,7 +10,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from modules.dac.model.encodec import SConv1d
+from s2mel.dac.model.encodec import SConv1d
 
 from . import commons
 

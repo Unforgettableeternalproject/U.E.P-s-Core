@@ -49,15 +49,15 @@ if __name__ == "__main__":
 try:
     # 嘗試相對導入
     from .gpt.model_v2 import UnifiedVoice
-    from .utils.maskgct_utils import build_semantic_model, build_semantic_codec
-    from .utils.front import TextNormalizer, TextTokenizer
+    from .tts_utils.maskgct_utils import build_semantic_model, build_semantic_codec
+    from .tts_utils.front import TextNormalizer, TextTokenizer
     from .s2mel.modules.commons import load_checkpoint2, MyModel
     from .s2mel.modules.bigvgan import bigvgan
 except ImportError:
     # 回退到絕對導入
     from gpt.model_v2 import UnifiedVoice
-    from utils.maskgct_utils import build_semantic_model, build_semantic_codec
-    from utils.front import TextNormalizer, TextTokenizer
+    from tts_utils.maskgct_utils import build_semantic_model, build_semantic_codec
+    from tts_utils.front import TextNormalizer, TextTokenizer
     from s2mel.modules.commons import load_checkpoint2, MyModel
     from s2mel.modules.bigvgan import bigvgan
 
@@ -563,46 +563,3 @@ class IndexTTSLite:
     def is_character_loaded(self) -> bool:
         """檢查是否已加載角色"""
         return self.character_features is not None
-
-
-# 快速測試
-if __name__ == "__main__":
-    print("="*80)
-    print(" IndexTTS Lite Engine 測試 ".center(80))
-    print("="*80)
-    
-    # 初始化
-    engine = IndexTTSLite(
-        cfg_path="checkpoints/config.yaml",
-        model_dir="checkpoints",
-        use_fp16=True,
-        use_cuda_kernel=False
-    )
-    
-    # 加載角色
-    engine.load_character("characters/uep.pt")
-    
-    # 測試不同情感
-    emotions = {
-        "Neutral": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-        "Happy": [0.7, 0.0, 0.0, 0.0, 0.0, 0.0, 0.2, 0.0],
-        "Sad": [0.0, 0.0, 0.6, 0.0, 0.0, 0.2, 0.0, 0.1],
-    }
-    
-    test_text = "Hello! This is a test of the lite engine."
-    
-    for emotion_name, emotion_vec in emotions.items():
-        print(f"\n{'='*80}")
-        print(f" 測試情感: {emotion_name} ".center(80))
-        print(f"{'='*80}")
-        
-        output_path = f"outputs/lite_test_{emotion_name.lower()}.wav"
-        
-        engine.synthesize(
-            text=test_text,
-            output_path=output_path,
-            emotion_vector=emotion_vec,
-            max_emotion_strength=0.3
-        )
-    
-    print("\n✅ 所有測試完成!")

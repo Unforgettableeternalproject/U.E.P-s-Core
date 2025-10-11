@@ -15,8 +15,8 @@ from transformers.utils.model_parallel_utils import (assert_device_map,
 
 from .conformer_encoder import ConformerEncoder
 from .perceiver import PerceiverResampler
-from .utils.arch_util import AttentionBlock
-from .utils.typical_sampling import TypicalLogitsWarper
+from tts_utils.arch_util import AttentionBlock
+from tts_utils.typical_sampling import TypicalLogitsWarper
 
 
 def null_position_embeddings(range, dim):

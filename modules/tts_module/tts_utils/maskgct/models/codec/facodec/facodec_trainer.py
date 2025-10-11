@@ -28,7 +28,7 @@ from models.codec.facodec.facodec_dataset import FAcodecDataset, FAcodecCollator
 from models.codec.codec_sampler import build_samplers
 from models.codec.codec_trainer import CodecTrainer
 
-from modules.dac.nn.loss import (
+from s2mel.dac.nn.loss import (
     MultiScaleSTFTLoss,
     MelSpectrogramLoss,
     GANLoss,

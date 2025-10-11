@@ -17,14 +17,14 @@ from .conformer_encoder import ConformerEncoder
 from .perceiver import PerceiverResampler
 
 try:
-    from ..utils.arch_util import AttentionBlock
-    from ..utils.typical_sampling import TypicalLogitsWarper
+    from tts_utils.arch_util import AttentionBlock
+    from tts_utils.typical_sampling import TypicalLogitsWarper
 except ImportError:
     import sys
     import os
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-    from utils.arch_util import AttentionBlock
-    from utils.typical_sampling import TypicalLogitsWarper
+    from tts_utils.arch_util import AttentionBlock
+    from tts_utils.typical_sampling import TypicalLogitsWarper
 
 
 def null_position_embeddings(range, dim):

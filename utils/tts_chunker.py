@@ -141,15 +141,26 @@ class TTSChunker:
             current = ""
             
             for chunk in chunks:
-                if len(current) + len(chunk) <= self.max_chars:
+                # 嘗試合併到 current
+                if len(current) + len(chunk) + 1 <= self.max_chars:
                     current += (" " + chunk if current else chunk)
-                elif len(chunk) < self.min_chars and len(merged_chunks) > 0:
-                    # Merge with the previous chunk if this one is too small
-                    merged_chunks[-1] += " " + chunk
                 else:
+                    # current 已滿,需要保存
                     if current:
                         merged_chunks.append(current)
-                    current = chunk
+                    
+                    # 檢查新 chunk 是否太小
+                    if len(chunk) < self.min_chars and len(merged_chunks) > 0:
+                        # 嘗試合併到前一個已保存的 chunk
+                        if len(merged_chunks[-1]) + len(chunk) + 1 <= self.max_chars:
+                            merged_chunks[-1] += " " + chunk
+                            current = ""
+                        else:
+                            # 無法合併,作為新 current
+                            current = chunk
+                    else:
+                        # chunk 大小正常,作為新 current
+                        current = chunk
             
             if current:
                 merged_chunks.append(current)

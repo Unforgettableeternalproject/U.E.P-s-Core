@@ -9,6 +9,7 @@ default_character: "uep"  # 預設角色名稱 (會加載 uep.pt)
 # 設備配置
 device: "cuda"  # 可選: "cuda", "cpu"
 use_fp16: true  # 是否使用半精度 (FP16)，可節省顯存並加速
+use_bf16: false  # 實驗性: 使用 BF16 (需 Ampere+ GPU, 測試顯示 +4.6% 提速)
 
 # Chunking 配置 (文本分段)
 chunking:

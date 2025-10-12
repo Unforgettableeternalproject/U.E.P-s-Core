@@ -5,7 +5,7 @@ modules_enabled:
   nlp_module: true
   mem_module: true
   llm_module: true
-  tts_module: false
+  tts_module: true
   sys_module: false
   ui_module: true
   ani_module: true
@@ -17,7 +17,7 @@ modules_refactored:
   nlp_module: true
   mem_module: true
   llm_module: true
-  tts_module: false
+  tts_module: true
   sys_module: false
   ui_module: false
   ani_module: false

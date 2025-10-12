@@ -367,6 +367,14 @@ class TTSModule(BaseModule):
                     sample_rate=sr
                 )
                 self._current_playback_obj.wait_done()
+                
+                # 播放完畢後刪除臨時文件
+                try:
+                    if os.path.exists(output_path):
+                        os.remove(output_path)
+                        debug_log(2, f"[TTS] 已刪除臨時文件: {output_path}")
+                except Exception as e:
+                    debug_log(1, f"[TTS] 刪除臨時文件失敗: {e}")
             
             self._playback_state = PlaybackState.COMPLETED
             
@@ -413,6 +421,8 @@ class TTSModule(BaseModule):
         Returns:
             dict: TTSOutput 字典
         """
+        generated_files: List[str] = []  # 初始化臨時文件列表(用於錯誤清理)
+        
         try:
             # 檢查引擎是否已初始化
             if not self.engine:
@@ -510,6 +520,14 @@ class TTSModule(BaseModule):
                                     audio_int16.tobytes(), 1, 2, sr
                                 )
                                 play_obj.wait_done()
+                                
+                                # 播放完畢後刪除該段臨時文件
+                                try:
+                                    if os.path.exists(data):
+                                        os.remove(data)
+                                        debug_log(3, f"[TTS] 已刪除臨時chunk: {data}")
+                                except Exception as del_err:
+                                    debug_log(1, f"[TTS] 刪除臨時chunk失敗: {del_err}")
                             except Exception as e:
                                 error_log(f"[TTS] 播放失敗: {str(e)}")
                 
@@ -543,6 +561,15 @@ class TTSModule(BaseModule):
                     output_path = os.path.join("outputs", "tts", f"uep_{uuid.uuid4().hex[:8]}.wav")
                     sf.write(output_path, merged, sr)
                     info_log(f"[TTS] 已合併音頻到 {output_path}")
+                    
+                    # 合併完成後刪除原始臨時chunk文件
+                    for f in generated_files:
+                        try:
+                            if os.path.exists(f):
+                                os.remove(f)
+                                debug_log(3, f"[TTS] 已刪除合併前的chunk: {f}")
+                        except Exception as e:
+                            debug_log(1, f"[TTS] 刪除chunk失敗: {e}")
             
             self._playback_state = PlaybackState.COMPLETED
             
@@ -559,6 +586,18 @@ class TTSModule(BaseModule):
             error_log(f"[TTS] Streaming 錯誤: {str(e)}")
             import traceback
             debug_log(1, f"[TTS] 錯誤詳情:\n{traceback.format_exc()}")
+            
+            # 發生錯誤時清理已生成的臨時文件
+            if generated_files:
+                debug_log(2, f"[TTS] 清理 {len(generated_files)} 個臨時文件...")
+                for f in generated_files:
+                    try:
+                        if os.path.exists(f):
+                            os.remove(f)
+                            debug_log(3, f"[TTS] 已刪除: {f}")
+                    except Exception as cleanup_err:
+                        debug_log(1, f"[TTS] 清理失敗: {cleanup_err}")
+            
             return TTSOutput(
                 status="error",
                 message=f"Streaming failed: {str(e)}",

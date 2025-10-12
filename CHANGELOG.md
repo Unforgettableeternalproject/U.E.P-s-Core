@@ -1474,3 +1474,15 @@
 
 ---
 
+### Made it so the temp tts files will be cleared after being played, also added some manual tests and test tabs. 10/12
+
+> Date: Sun, 12 Oct 2025 17:40:47 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_rework`
+
+> Commit: `2de1e6b46723201a2feab0596c83a6ae5ecaee0c`
+
+---
+

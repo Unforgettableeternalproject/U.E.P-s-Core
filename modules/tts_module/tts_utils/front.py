@@ -91,11 +91,19 @@ class TextNormalizer:
         import platform
         if self.zh_normalizer is not None and self.en_normalizer is not None:
             return
+        
+        # 嘗試使用 wetext,如果失敗則使用備用方案
         if platform.system() != "Linux":  # Mac and Windows
-            from wetext import Normalizer
-
-            self.zh_normalizer = Normalizer(remove_erhua=False, lang="zh", operator="tn")
-            self.en_normalizer = Normalizer(lang="en", operator="tn")
+            try:
+                from wetext import Normalizer
+                self.zh_normalizer = Normalizer(remove_erhua=False, lang="zh", operator="tn")
+                self.en_normalizer = Normalizer(lang="en", operator="tn")
+                print("[TTS] 使用 wetext Normalizer")
+            except ImportError as e:
+                print(f"[TTS] wetext 導入失敗 ({e}),使用簡化標準化器")
+                # 使用簡化的備用標準化器
+                self.zh_normalizer = self._create_fallback_normalizer("zh")
+                self.en_normalizer = self._create_fallback_normalizer("en")
         else:
             from tn.chinese.normalizer import Normalizer as NormalizerZh
             from tn.english.normalizer import Normalizer as NormalizerEn
@@ -109,6 +117,25 @@ class TextNormalizer:
                 cache_dir=cache_dir, remove_interjections=False, remove_erhua=False, overwrite_cache=False
             )
             self.en_normalizer = NormalizerEn(overwrite_cache=False)
+    
+    def _create_fallback_normalizer(self, lang: str):
+        """創建簡化的備用標準化器(當 wetext 無法使用時)"""
+        class FallbackNormalizer:
+            def __init__(self, language):
+                self.lang = language
+            
+            def normalize(self, text: str) -> str:
+                """基本的文本標準化 - 不處理數字轉換"""
+                # 只做基本的標點符號替換
+                text = text.replace("：", ",")
+                text = text.replace("；", ",")
+                text = text.replace("，", ",")
+                text = text.replace("。", ".")
+                text = text.replace("！", "!")
+                text = text.replace("？", "?")
+                return text
+        
+        return FallbackNormalizer(lang)
 
     def normalize(self, text: str) -> str:
         if not self.zh_normalizer or not self.en_normalizer:

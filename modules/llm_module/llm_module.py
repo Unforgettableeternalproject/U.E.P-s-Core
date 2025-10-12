@@ -203,6 +203,10 @@ class LLMModule(BaseModule):
             result = output.dict()
             result["status"] = "ok" if output.success else "error"
             
+            # ✅ 事件驅動：發布處理層完成事件
+            if output.success and result.get("text"):
+                self._notify_processing_layer_completion(result)
+            
             return result
                 
         except Exception as e:
@@ -1360,6 +1364,44 @@ U.E.P 系統可用功能規格：
 - memory_retrieve: 檢索記憶 (參數: query, max_results, similarity_threshold)
 """
 
+    def _notify_processing_layer_completion(self, result: Dict[str, Any]):
+        """
+        ✅ 事件驅動版本：發布處理層完成事件
+        LLM 作為主要邏輯模組，處理完成後觸發輸出層
+        """
+        try:
+            response_text = result.get("text", "")
+            if not response_text:
+                debug_log(2, "[LLM] 無回應文字，跳過處理層完成通知")
+                return
+            
+            info_log(f"[LLM] 處理層完成，發布事件: 回應='{response_text[:50]}...'")
+            
+            # 準備處理層完成數據
+            processing_layer_completion_data = {
+                "response": response_text,
+                "source_module": "llm",
+                "llm_output": result,
+                "timestamp": time.time(),
+                "layer": "processing",
+                "completion_type": "processing_layer_finished",
+                "mode": result.get("mode", "unknown"),
+                "success": result.get("success", False)
+            }
+            
+            # ✅ 使用事件總線發布事件
+            from core.event_bus import event_bus, SystemEvent
+            event_bus.publish(
+                event_type=SystemEvent.PROCESSING_LAYER_COMPLETE,
+                data=processing_layer_completion_data,
+                source="llm"
+            )
+            
+            debug_log(2, "[LLM] 處理層完成事件已發布到事件總線")
+            
+        except Exception as e:
+            error_log(f"[LLM] 發布處理層完成事件失敗: {e}")
+    
     def _validate_session_architecture(self, current_state) -> bool:
         """驗證會話架構 - 確保 LLM 在適當的會話上下文中運作"""
         try:

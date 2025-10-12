@@ -690,9 +690,12 @@ class NLPModule(BaseModule):
             error_log(f"[NLP] 處理指令中斷失敗: {e}")
     
     def _notify_system_loop_nlp_completed(self, input_data: NLPInput, nlp_result: NLPOutput):
-        """通知System Loop 輸入層（NLP）處理完成，觸發三層架構流程"""
+        """
+        ✅ 事件驅動版本：發布輸入層完成事件
+        使用事件總線解耦，不再直接調用 System Loop
+        """
         try:
-            info_log(f"[NLP] 輸入層處理完成，通知System Loop: 意圖={nlp_result.primary_intent}, 文本='{input_data.text[:50]}...'")
+            info_log(f"[NLP] 輸入層處理完成，發布事件: 意圖={nlp_result.primary_intent}, 文本='{input_data.text[:50]}...'")
             
             # 準備輸入層完成數據
             input_layer_completion_data = {
@@ -704,15 +707,18 @@ class NLPModule(BaseModule):
                 "completion_type": "input_layer_finished"
             }
             
-            # 通知System Loop輸入層處理完成
-            from core.system_loop import system_loop
-            if hasattr(system_loop, 'handle_nlp_completion'):
-                system_loop.handle_nlp_completion(input_layer_completion_data)
-            else:
-                debug_log(2, "[NLP] System Loop 不支持輸入層完成處理，跳過通知")
+            # ✅ 使用事件總線發布事件
+            from core.event_bus import event_bus, SystemEvent
+            event_bus.publish(
+                event_type=SystemEvent.INPUT_LAYER_COMPLETE,
+                data=input_layer_completion_data,
+                source="nlp"
+            )
+            
+            debug_log(2, "[NLP] 輸入層完成事件已發布到事件總線")
             
         except Exception as e:
-            error_log(f"[NLP] 通知System Loop輸入層完成失敗: {e}")
+            error_log(f"[NLP] 發布輸入層完成事件失敗: {e}")
 
     def _notify_controller_activity(self):
         """通知 Controller 有 NLP 活動 - 預留方法,目前無實作"""

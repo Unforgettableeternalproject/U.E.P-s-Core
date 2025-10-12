@@ -7,6 +7,7 @@ Main priorities: correctness, modularity, stability, and respect for existing na
 
 ## Core Rules
 
+- **PLEASE DO NOT CREATE ANALYSIS OR EXPLANATION FILES** unless explicitly asked.
 - **Do not** arbitrarily rename classes, functions, or variables.  
   - Especially avoid suffixes like `V2`, `V3`, etc. unless explicitly instructed.  
 - **Always** gather enough context before analyzing or modifying code.  

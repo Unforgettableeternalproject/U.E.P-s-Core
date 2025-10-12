@@ -63,6 +63,55 @@ class SystemLoop:
         self.status_log_interval = 10.0  # 10秒間隔輸出狀態日誌
         
         info_log("[SystemLoop] 系統循環已創建")
+        
+        # ✅ 訂閱事件總線
+        self._setup_event_subscriptions()
+    
+    def _setup_event_subscriptions(self):
+        """設置事件訂閱"""
+        try:
+            from core.event_bus import event_bus, SystemEvent
+            
+            # 訂閱輸出層完成事件
+            event_bus.subscribe(
+                SystemEvent.OUTPUT_LAYER_COMPLETE,
+                self._on_output_layer_complete,
+                handler_name="SystemLoop.output_complete"
+            )
+            
+            info_log("[SystemLoop] ✅ 已訂閱事件總線")
+            
+        except Exception as e:
+            error_log(f"[SystemLoop] 事件訂閱失敗: {e}")
+    
+    def _start_event_bus(self):
+        """啟動事件總線處理線程"""
+        try:
+            from core.event_bus import event_bus
+            event_bus.start()
+            info_log("[SystemLoop] ✅ 事件總線已啟動")
+        except Exception as e:
+            error_log(f"[SystemLoop] 啟動事件總線失敗: {e}")
+    
+    def _stop_event_bus(self):
+        """停止事件總線處理線程"""
+        try:
+            from core.event_bus import event_bus
+            event_bus.stop()
+            info_log("[SystemLoop] ✅ 事件總線已停止")
+        except Exception as e:
+            error_log(f"[SystemLoop] 停止事件總線失敗: {e}")
+    
+    def _on_output_layer_complete(self, event):
+        """
+        輸出層完成事件處理器
+        當 TTS 發布 OUTPUT_LAYER_COMPLETE 事件時觸發
+        """
+        try:
+            debug_log(2, f"[SystemLoop] 收到輸出層完成事件: {event.event_id}")
+            self.handle_output_completion(event.data)
+        except Exception as e:
+            error_log(f"[SystemLoop] 處理輸出層完成事件失敗: {e}")
     
     def start(self) -> bool:
         """啟動系統主循環"""
@@ -73,6 +122,9 @@ class SystemLoop:
             
             info_log("🔄 啟動系統主循環...")
             self.status = LoopStatus.STARTING
+            
+            # ✅ 啟動事件總線
+            self._start_event_bus()
             
             # 驗證系統組件就緒
             if not self._verify_system_ready():
@@ -130,6 +182,9 @@ class SystemLoop:
                 self.loop_thread.join(timeout=5.0)
                 if self.loop_thread.is_alive():
                     error_log("⚠️ 循環線程未能正常結束")
+            
+            # ✅ 停止事件總線
+            self._stop_event_bus()
             
             self.status = LoopStatus.STOPPED
             runtime = time.time() - self.start_time

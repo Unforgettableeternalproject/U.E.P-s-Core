@@ -1486,3 +1486,15 @@
 
 ---
 
+### feat: Add event-driven architecture documentation and implement event publishing in modules
+
+> Date: Sun, 12 Oct 2025 22:12:30 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_rework`
+
+> Commit: `e04128664cc6d5a4b4146ac42a9ca97cbacd87d3`
+
+---
+

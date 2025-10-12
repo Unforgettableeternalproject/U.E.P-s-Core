@@ -82,6 +82,55 @@ class ModuleInvocationCoordinator:
         self._layer_transitions = []
         
         info_log("[ModuleCoordinator] 三層架構模組調用協調器初始化")
+        
+        # ✅ 訂閱事件總線
+        self._setup_event_subscriptions()
+    
+    def _setup_event_subscriptions(self):
+        """設置事件訂閱 - 事件驅動架構的核心"""
+        try:
+            from core.event_bus import event_bus, SystemEvent
+            
+            # 訂閱輸入層完成事件
+            event_bus.subscribe(
+                SystemEvent.INPUT_LAYER_COMPLETE,
+                self._on_input_layer_complete,
+                handler_name="ModuleCoordinator.input_complete"
+            )
+            
+            # 訂閱處理層完成事件
+            event_bus.subscribe(
+                SystemEvent.PROCESSING_LAYER_COMPLETE,
+                self._on_processing_layer_complete,
+                handler_name="ModuleCoordinator.processing_complete"
+            )
+            
+            info_log("[ModuleCoordinator] ✅ 已訂閱事件總線")
+            
+        except Exception as e:
+            error_log(f"[ModuleCoordinator] 事件訂閱失敗: {e}")
+    
+    def _on_input_layer_complete(self, event):
+        """
+        輸入層完成事件處理器
+        當 NLP 發布 INPUT_LAYER_COMPLETE 事件時觸發
+        """
+        try:
+            debug_log(2, f"[ModuleCoordinator] 收到輸入層完成事件: {event.event_id}")
+            self.handle_layer_completion(ProcessingLayer.INPUT, event.data)
+        except Exception as e:
+            error_log(f"[ModuleCoordinator] 處理輸入層完成事件失敗: {e}")
+    
+    def _on_processing_layer_complete(self, event):
+        """
+        處理層完成事件處理器
+        當 LLM 發布 PROCESSING_LAYER_COMPLETE 事件時觸發
+        """
+        try:
+            debug_log(2, f"[ModuleCoordinator] 收到處理層完成事件: {event.event_id}")
+            self.handle_layer_completion(ProcessingLayer.PROCESSING, event.data)
+        except Exception as e:
+            error_log(f"[ModuleCoordinator] 處理處理層完成事件失敗: {e}")
     
     def handle_layer_completion(self, layer: ProcessingLayer, completion_data: Dict[str, Any]) -> bool:
         """
@@ -155,6 +204,28 @@ class ModuleInvocationCoordinator:
         try:
             info_log("[ModuleCoordinator] 處理層 → 輸出層轉換")
             
+            # 從處理層結果中提取文字內容
+            response_text = self._extract_response_text(processing_data)
+            
+            if not response_text:
+                debug_log(2, "[ModuleCoordinator] 處理層無文字輸出，跳過輸出層")
+                return False
+            
+            info_log(f"[ModuleCoordinator] 處理層文字輸出: {response_text[:50]}...")
+            
+            # 通過 Router 獲取輸出層路由決策
+            from core.router import router
+            routing_decision = router.route_system_output(
+                text=response_text, 
+                source_module="processing_layer"
+            )
+            
+            if routing_decision.target_module != "tts":
+                debug_log(1, f"[ModuleCoordinator] Router 未指向 TTS: {routing_decision.target_module}")
+                return False
+            
+            info_log(f"[ModuleCoordinator] Router 決策: {routing_decision.reasoning}")
+            
             # 準備輸出層調用（通常是TTS）
             output_request = ModuleInvocationRequest(
                 target_module="tts",
@@ -171,6 +242,9 @@ class ModuleInvocationCoordinator:
             success = response.result == InvocationResult.SUCCESS
             if success:
                 info_log("[ModuleCoordinator] 輸出層完成，三層流程結束")
+                
+                # 通知 System Loop 輸出層完成
+                self._notify_output_completion(response.output_data)
             else:
                 error_log(f"[ModuleCoordinator] 輸出層調用失敗: {response.error_message}")
             
@@ -480,6 +554,48 @@ class ModuleInvocationCoordinator:
                 
         except Exception as e:
             debug_log(3, f"[ModuleCoordinator] 記錄 {module_name} 結果時發生錯誤: {e}")
+    
+    def _extract_response_text(self, processing_data: Dict[str, Any]) -> str:
+        """從處理層數據中提取文字回應"""
+        try:
+            # 優先順序：response > text > content
+            if "response" in processing_data:
+                return processing_data["response"]
+            elif "text" in processing_data:
+                return processing_data["text"]
+            elif "content" in processing_data:
+                return processing_data["content"]
+            else:
+                # 如果是嵌套結構，嘗試深度提取
+                if isinstance(processing_data, dict):
+                    for key in ["llm_output", "result", "data"]:
+                        if key in processing_data:
+                            nested_data = processing_data[key]
+                            if isinstance(nested_data, dict):
+                                if "text" in nested_data:
+                                    return nested_data["text"]
+                                elif "response" in nested_data:
+                                    return nested_data["response"]
+                
+                debug_log(2, f"[ModuleCoordinator] 無法從處理層數據中提取文字: {list(processing_data.keys())}")
+                return ""
+                
+        except Exception as e:
+            error_log(f"[ModuleCoordinator] 提取回應文字失敗: {e}")
+            return ""
+    
+    def _notify_output_completion(self, output_data: Optional[Dict[str, Any]]):
+        """通知輸出層完成（觸發循環結束邏輯）"""
+        try:
+            # 通知 System Loop
+            from core.system_loop import system_loop
+            if hasattr(system_loop, 'handle_output_completion'):
+                system_loop.handle_output_completion(output_data or {})
+            else:
+                debug_log(2, "[ModuleCoordinator] System Loop 不支持輸出完成通知")
+            
+        except Exception as e:
+            debug_log(1, f"[ModuleCoordinator] 通知輸出完成失敗: {e}")
     
     def get_active_invocations(self) -> Dict[str, Any]:
         """獲取當前活躍的調用狀態"""

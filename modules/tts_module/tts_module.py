@@ -5,6 +5,7 @@ TTS Module - 重構版本
 
 import asyncio
 import os
+import time
 import uuid
 import enum
 from typing import Optional, Dict, Any, List
@@ -222,6 +223,54 @@ class TTSModule(BaseModule):
             error_log(f"[TTS] 獲取使用者偏好失敗: {str(e)}")
             return {}
     
+    def _on_output_complete(self, result: Dict[str, Any]):
+        """
+        ✅ 事件驅動版本：TTS 輸出完成回調
+        作為輸出層，TTS 完成標誌著一次完整的處理循環結束
+        """
+        try:
+            info_log("[TTS] 輸出層完成，發布事件")
+            
+            # 檢查合成是否成功
+            if result.get("status") != "success":
+                debug_log(1, f"[TTS] 合成失敗，狀態: {result.get('status')}")
+                return
+            
+            # 更新 Status Manager (TTS 完成會影響系統狀態)
+            if self.status_manager:
+                # TTS 成功完成，略微降低 boredom (系統有輸出活動)
+                self.status_manager.update_boredom(-0.05, "TTS輸出完成")
+                debug_log(3, "[TTS] 已更新 Status Manager")
+            
+            # ✅ 使用事件總線發布輸出完成事件
+            try:
+                from core.event_bus import event_bus, SystemEvent
+                
+                output_completion_data = {
+                    "tts_result": result,
+                    "output_path": result.get("output_path"),
+                    "duration": result.get("duration"),
+                    "chunk_count": result.get("chunk_count"),
+                    "timestamp": time.time(),
+                    "source_module": "tts",
+                    "layer": "output",
+                    "completion_type": "output_layer_finished"
+                }
+                
+                event_bus.publish(
+                    event_type=SystemEvent.OUTPUT_LAYER_COMPLETE,
+                    data=output_completion_data,
+                    source="tts"
+                )
+                
+                debug_log(2, "[TTS] 輸出層完成事件已發布到事件總線")
+                
+            except Exception as event_err:
+                error_log(f"[TTS] 發布輸出完成事件失敗: {event_err}")
+            
+        except Exception as e:
+            error_log(f"[TTS] 輸出完成回調失敗: {e}")
+    
     def handle(self, data: dict) -> dict:
         """
         處理 TTS 請求 (同步介面)
@@ -269,13 +318,18 @@ class TTSModule(BaseModule):
             asyncio.set_event_loop(loop)
         
         if should_chunk:
-            return loop.run_until_complete(
+            result = loop.run_until_complete(
                 self._handle_streaming(text, inp.save, inp.character, inp.emotion_vector)
             )
         else:
-            return loop.run_until_complete(
+            result = loop.run_until_complete(
                 self._handle_single(text, inp.save, inp.character, inp.emotion_vector)
             )
+        
+        # TTS 作為輸出層完成後，通知系統進行循環結束檢查
+        self._on_output_complete(result)
+        
+        return result
     
     async def _handle_single(
         self, 

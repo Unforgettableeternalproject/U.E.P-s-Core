@@ -218,6 +218,10 @@ class CoreFramework:
         from configs.config_loader import load_config
         self.config = load_config()
         
+        # 框架狀態
+        self.is_initialized = False
+        self.initialization_time = None
+        
         # 模組註冊表
         self.modules: Dict[str, ModuleInfo] = {}
         

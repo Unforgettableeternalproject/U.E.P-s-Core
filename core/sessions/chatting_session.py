@@ -440,6 +440,13 @@ class ChattingSessionManager:
             return self.sessions.get(self.active_session_id)
         return None
     
+    def get_active_sessions(self) -> List[ChattingSession]:
+        """獲取所有活躍的 CS（狀態為 ACTIVE）"""
+        return [
+            session for session in self.sessions.values()
+            if session.status == CSStatus.ACTIVE
+        ]
+    
     def end_session(self, session_id: str, reason: str = "normal") -> Dict[str, Any]:
         """結束 CS"""
         session = self.sessions.get(session_id)

@@ -432,8 +432,8 @@ class GeneralSessionManager:
         
         info_log("[GeneralSessionManager] General Session 管理器初始化完成")
     
-    def start_session(self, gs_type: GSType, trigger_event: Dict[str, Any]) -> Optional[GeneralSession]:
-        """啟動新的 General Session"""
+    def start_session(self, gs_type: GSType, trigger_event: Dict[str, Any]) -> Optional[str]:
+        """啟動新的 General Session，返回 session_id"""
         # 結束當前會話
         if self.current_session:
             self.end_current_session()
@@ -456,7 +456,7 @@ class GeneralSessionManager:
             # 創建會話記錄
             self._create_session_record(new_session, trigger_event)
             
-            return new_session
+            return new_session.session_id  # 返回 session_id 字串
         else:
             return None
     

@@ -203,6 +203,10 @@ class LLMModule(BaseModule):
             result = output.dict()
             result["status"] = "ok" if output.success else "error"
             
+            # ✅ 事件驅動：發布處理層完成事件
+            if output.success and result.get("text"):
+                self._notify_processing_layer_completion(result)
+            
             return result
                 
         except Exception as e:
@@ -713,6 +717,38 @@ class LLMModule(BaseModule):
         except Exception as e:
             error_log(f"[LLM] 獲取系統狀態失敗: {e}")
             return {"error": str(e)}
+    
+    def _get_current_gs_id(self) -> str:
+        """
+        獲取當前 General Session ID
+        從 working_context 的全局數據中讀取 (由 SystemLoop 設置)
+        
+        Returns:
+            str: 當前 GS ID,如果無法獲取則返回 'unknown'
+        """
+        try:
+            from core.working_context import working_context_manager
+            gs_id = working_context_manager.global_context_data.get('current_gs_id', 'unknown')
+            return gs_id
+        except Exception as e:
+            error_log(f"[LLM] 獲取 GS ID 失敗: {e}")
+            return 'unknown'
+    
+    def _get_current_cycle_index(self) -> int:
+        """
+        獲取當前循環計數
+        從 working_context 的全局數據中讀取 (由 SystemLoop 設置)
+        
+        Returns:
+            int: 當前 cycle_index,如果無法獲取則返回 -1
+        """
+        try:
+            from core.working_context import working_context_manager
+            cycle_index = working_context_manager.global_context_data.get('current_cycle_index', -1)
+            return cycle_index
+        except Exception as e:
+            error_log(f"[LLM] 獲取 cycle_index 失敗: {e}")
+            return -1
     
     def _get_current_session_info(self) -> Dict[str, Any]:
         """獲取當前會話信息 - 優先獲取 CS 或 WS（LLM 作為邏輯中樞的執行會話）"""
@@ -1360,6 +1396,57 @@ U.E.P 系統可用功能規格：
 - memory_retrieve: 檢索記憶 (參數: query, max_results, similarity_threshold)
 """
 
+    def _notify_processing_layer_completion(self, result: Dict[str, Any]):
+        """
+        ✅ 事件驅動版本：發布處理層完成事件
+        LLM 作為主要邏輯模組，處理完成後觸發輸出層
+        
+        事件數據包含 session_id 和 cycle_index 用於 flow-based 去重
+        這些資訊應該從上游 INPUT_LAYER_COMPLETE 事件傳遞過來
+        """
+        try:
+            response_text = result.get("text", "")
+            if not response_text:
+                debug_log(2, "[LLM] 無回應文字，跳過處理層完成通知")
+                return
+            
+            info_log(f"[LLM] 處理層完成，發布事件: 回應='{response_text[:50]}...'")
+            
+            # 從 working_context 獲取 session_id 和 cycle_index
+            # (應該由 NLP 通過 INPUT_LAYER_COMPLETE 傳遞,或從全局上下文讀取)
+            session_id = self._get_current_gs_id()
+            cycle_index = self._get_current_cycle_index()
+            
+            # 準備處理層完成數據
+            processing_layer_completion_data = {
+                # Flow-based 去重所需欄位
+                "session_id": session_id,
+                "cycle_index": cycle_index,
+                "layer": "PROCESSING",
+                
+                # 原有數據
+                "response": response_text,
+                "source_module": "llm",
+                "llm_output": result,
+                "timestamp": time.time(),
+                "completion_type": "processing_layer_finished",
+                "mode": result.get("mode", "unknown"),
+                "success": result.get("success", False)
+            }
+            
+            # ✅ 使用事件總線發布事件
+            from core.event_bus import event_bus, SystemEvent
+            event_bus.publish(
+                event_type=SystemEvent.PROCESSING_LAYER_COMPLETE,
+                data=processing_layer_completion_data,
+                source="llm"
+            )
+            
+            debug_log(2, f"[LLM] 處理層完成事件已發布 (session={session_id}, cycle={cycle_index})")
+            
+        except Exception as e:
+            error_log(f"[LLM] 發布處理層完成事件失敗: {e}")
+    
     def _validate_session_architecture(self, current_state) -> bool:
         """驗證會話架構 - 確保 LLM 在適當的會話上下文中運作"""
         try:

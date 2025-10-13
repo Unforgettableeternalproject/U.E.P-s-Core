@@ -513,6 +513,13 @@ class WorkflowSessionManager:
             return self.sessions.get(self.active_session_id)
         return None
     
+    def get_active_sessions(self) -> List[WorkflowSession]:
+        """獲取所有活躍的 WS（狀態為 EXECUTING 或 READY）"""
+        return [
+            session for session in self.sessions.values()
+            if session.status in [WSStatus.EXECUTING, WSStatus.READY]
+        ]
+    
     def end_session(self, session_id: str, reason: str = "normal") -> Dict[str, Any]:
         """結束 WS"""
         session = self.sessions.get(session_id)

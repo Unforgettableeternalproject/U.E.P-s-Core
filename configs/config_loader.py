@@ -57,3 +57,21 @@ def load_module_config(module_name: str):
     except yaml.YAMLError as e:
         error_log(f"[ConfigLoader] YAML 語法錯誤：{e}")
         return {}
+
+def get_input_mode():
+    """
+    獲取系統輸入模式配置
+    
+    Returns:
+        str: "vad" (語音活動檢測) 或 "text" (文字輸入)
+    """
+    config = load_config()
+    return config.get("system", {}).get("input_mode", {}).get("mode", "vad")
+
+def is_text_input_mode():
+    """檢查是否為文字輸入模式"""
+    return get_input_mode() == "text"
+
+def is_vad_mode():
+    """檢查是否為 VAD 模式"""
+    return get_input_mode() == "vad"

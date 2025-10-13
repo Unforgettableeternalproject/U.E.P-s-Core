@@ -2,6 +2,30 @@
 模組調用協調器 - 負責系統層的模組間調用邏輯
 實現完整的三層架構：輸入層 → 處理層 → 輸出層
 根據 docs/完整系統流程文檔.md 中定義的分層架構
+
+=== Flow-Based 去重機制 ===
+為防止事件重複處理,採用 flow-based 去重策略:
+
+1. Flow ID = session_id + cycle_index
+   - session_id: GS (General Session) ID,不是模組層級的 CS/WS
+   - cycle_index: 系統循環計數器 (每次對話往返 +1)
+
+2. Dedupe Key = flow_id + layer
+   格式: "{session_id}:{cycle_index}:{layer}"
+   示例: "gs_20231013_001:7:PROCESSING"
+
+3. 生命週期管理:
+   - CYCLE_COMPLETED: 清理當前 cycle 的所有 layer 鍵
+   - SESSION_ENDED: 清理整個 session 的所有鍵
+   - 保護性清理: 超過 2000 個鍵時自動清理一半
+
+4. 會話層級說明:
+   - GS (General Session): 系統級會話,跨越整個對話生命週期
+   - CS (Chatting Session): 對話會話,MEM 模組使用
+   - WS (Workflow Session): 工作流會話,LLM 和 SYS 模組使用
+   - 本協調器使用 GS 作為去重的 session_id
+   
+註: LLM 是兩個邏輯系統 (對話/工作流) 的中樞
 """
 
 import time
@@ -81,7 +105,214 @@ class ModuleInvocationCoordinator:
         self._invocation_history = []
         self._layer_transitions = []
         
+        # 新的去重機制: flow_id + layer
+        # dedupe_key = f"{session_id}:{cycle_index}:{layer}"
+        self._layer_dedupe_keys = set()  # 層級去重集合
+        self._dedupe_lock = threading.Lock()
+        self._max_dedupe_keys = 2000  # 最多保留 2000 個去重鍵
+        
+        # 統計信息
+        self._dedupe_hit_count = 0
+        self._cleanup_count = 0
+        
         info_log("[ModuleCoordinator] 三層架構模組調用協調器初始化")
+        info_log("[ModuleCoordinator] 使用 flow-based 去重策略 (session_id:cycle_index:layer)")
+        
+        # ✅ 訂閱事件總線
+        self._setup_event_subscriptions()
+    
+    def _setup_event_subscriptions(self):
+        """設置事件訂閱 - 事件驅動架構的核心"""
+        try:
+            from core.event_bus import event_bus, SystemEvent
+            
+            info_log("[ModuleCoordinator] 開始訂閱事件總線...")
+            
+            # 訂閱輸入層完成事件
+            event_bus.subscribe(
+                SystemEvent.INPUT_LAYER_COMPLETE,
+                self._on_input_layer_complete,
+                handler_name="ModuleCoordinator.input_complete"
+            )
+            info_log(f"[ModuleCoordinator] ✓ 已訂閱 INPUT_LAYER_COMPLETE")
+            
+            # 訂閱處理層完成事件
+            event_bus.subscribe(
+                SystemEvent.PROCESSING_LAYER_COMPLETE,
+                self._on_processing_layer_complete,
+                handler_name="ModuleCoordinator.processing_complete"
+            )
+            info_log(f"[ModuleCoordinator] ✓ 已訂閱 PROCESSING_LAYER_COMPLETE")
+            
+            # 訂閱循環完成事件 (用於清理去重鍵)
+            event_bus.subscribe(
+                SystemEvent.CYCLE_COMPLETED,
+                self._on_cycle_completed,
+                handler_name="ModuleCoordinator.cycle_complete"
+            )
+            info_log(f"[ModuleCoordinator] ✓ 已訂閱 CYCLE_COMPLETED")
+            
+            # 訂閱會話結束事件 (用於清理去重鍵)
+            event_bus.subscribe(
+                SystemEvent.SESSION_ENDED,
+                self._on_session_ended,
+                handler_name="ModuleCoordinator.session_end"
+            )
+            info_log(f"[ModuleCoordinator] ✓ 已訂閱 SESSION_ENDED")
+            
+            info_log("[ModuleCoordinator] ✅ 事件訂閱完成 (4 個事件)")
+            
+        except Exception as e:
+            error_log(f"[ModuleCoordinator] ❌ 事件訂閱失敗: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _on_input_layer_complete(self, event):
+        """
+        輸入層完成事件處理器
+        當 NLP 發布 INPUT_LAYER_COMPLETE 事件時觸發
+        使用 flow-based 去重: session_id + cycle_index + layer
+        
+        注意: 這裡的 session_id 是 GS (General Session),
+              不是模組層級的 CS (MEM) 或 WS (LLM/SYS)
+        """
+        try:
+            # 提取 flow 識別資訊 (來自 General Session)
+            session_id = event.data.get('session_id', 'unknown')  # GS ID
+            cycle_index = event.data.get('cycle_index', -1)
+            
+            # 構建去重鍵: flow_id + layer
+            dedupe_key = f"{session_id}:{cycle_index}:INPUT"
+            
+            # 檢查是否已處理過此 flow 的此 layer
+            with self._dedupe_lock:
+                if dedupe_key in self._layer_dedupe_keys:
+                    self._dedupe_hit_count += 1
+                    debug_log(2, f"[ModuleCoordinator] ⚠️ 跳過重複處理 (dedupe_key={dedupe_key}, 命中次數={self._dedupe_hit_count})")
+                    return
+                
+                # 標記為已處理
+                self._layer_dedupe_keys.add(dedupe_key)
+                debug_log(3, f"[ModuleCoordinator] ✓ 已記錄去重鍵: {dedupe_key} (共 {len(self._layer_dedupe_keys)} 個)")
+                
+                # 保護性清理: 避免集合無限增長
+                if len(self._layer_dedupe_keys) > self._max_dedupe_keys:
+                    removed_count = len(self._layer_dedupe_keys) - (self._max_dedupe_keys // 2)
+                    keys_to_remove = list(self._layer_dedupe_keys)[:(self._max_dedupe_keys // 2)]
+                    for old_key in keys_to_remove:
+                        self._layer_dedupe_keys.discard(old_key)
+                    self._cleanup_count += removed_count
+                    debug_log(3, f"[ModuleCoordinator] 保護性清理: 移除 {removed_count} 個舊鍵")
+            
+            info_log(f"[ModuleCoordinator] 🎯 收到輸入層完成事件 (flow={session_id}:{cycle_index}, event_id={event.event_id})")
+            debug_log(2, f"[ModuleCoordinator] 事件數據: {list(event.data.keys())}")
+            self.handle_layer_completion(ProcessingLayer.INPUT, event.data)
+                    
+        except Exception as e:
+            error_log(f"[ModuleCoordinator] ❌ 處理輸入層完成事件失敗: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _on_processing_layer_complete(self, event):
+        """
+        處理層完成事件處理器
+        當 LLM 發布 PROCESSING_LAYER_COMPLETE 事件時觸發
+        使用 flow-based 去重: session_id + cycle_index + layer
+        
+        注意: 這裡的 session_id 是 GS (General Session),
+              不是模組層級的 CS (MEM) 或 WS (LLM/SYS)
+        """
+        try:
+            # 提取 flow 識別資訊 (來自 General Session)
+            session_id = event.data.get('session_id', 'unknown')  # GS ID
+            cycle_index = event.data.get('cycle_index', -1)
+            
+            # 構建去重鍵: flow_id + layer
+            dedupe_key = f"{session_id}:{cycle_index}:PROCESSING"
+            
+            # 檢查是否已處理過此 flow 的此 layer
+            with self._dedupe_lock:
+                if dedupe_key in self._layer_dedupe_keys:
+                    self._dedupe_hit_count += 1
+                    debug_log(2, f"[ModuleCoordinator] ⚠️ 跳過重複處理 (dedupe_key={dedupe_key}, 命中次數={self._dedupe_hit_count})")
+                    return
+                
+                # 標記為已處理
+                self._layer_dedupe_keys.add(dedupe_key)
+                debug_log(3, f"[ModuleCoordinator] ✓ 已記錄去重鍵: {dedupe_key} (共 {len(self._layer_dedupe_keys)} 個)")
+                
+                # 保護性清理
+                if len(self._layer_dedupe_keys) > self._max_dedupe_keys:
+                    removed_count = len(self._layer_dedupe_keys) - (self._max_dedupe_keys // 2)
+                    keys_to_remove = list(self._layer_dedupe_keys)[:(self._max_dedupe_keys // 2)]
+                    for old_key in keys_to_remove:
+                        self._layer_dedupe_keys.discard(old_key)
+                    self._cleanup_count += removed_count
+                    debug_log(3, f"[ModuleCoordinator] 保護性清理: 移除 {removed_count} 個舊鍵")
+            
+            info_log(f"[ModuleCoordinator] 🎯 收到處理層完成事件 (flow={session_id}:{cycle_index}, event_id={event.event_id})")
+            debug_log(2, f"[ModuleCoordinator] 事件數據: {list(event.data.keys())}")
+            self.handle_layer_completion(ProcessingLayer.PROCESSING, event.data)
+                    
+        except Exception as e:
+            error_log(f"[ModuleCoordinator] ❌ 處理處理層完成事件失敗: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _on_cycle_completed(self, event):
+        """
+        循環完成事件處理器
+        清理已完成 cycle 的去重鍵
+        
+        注意: 這裡的 session_id 是 GS (General Session)
+        """
+        try:
+            session_id = event.data.get('session_id', 'unknown')  # GS ID
+            cycle_index = event.data.get('cycle_index', -1)
+            flow_prefix = f"{session_id}:{cycle_index}:"
+            
+            with self._dedupe_lock:
+                # 找出並移除此 flow 的所有 layer 鍵
+                keys_to_remove = [k for k in self._layer_dedupe_keys if k.startswith(flow_prefix)]
+                for key in keys_to_remove:
+                    self._layer_dedupe_keys.discard(key)
+                
+                self._cleanup_count += len(keys_to_remove)
+                info_log(f"[ModuleCoordinator] 🧹 CYCLE_COMPLETED 清理: 移除 {len(keys_to_remove)} 個去重鍵 (flow={session_id}:{cycle_index})")
+                debug_log(3, f"[ModuleCoordinator] 剩餘去重鍵數量: {len(self._layer_dedupe_keys)}")
+                
+        except Exception as e:
+            error_log(f"[ModuleCoordinator] ❌ 處理循環完成事件失敗: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _on_session_ended(self, event):
+        """
+        會話結束事件處理器
+        清理整個 session 的去重鍵
+        
+        注意: 這裡的 session_id 是 GS (General Session)
+              當 GS 結束時,其下的所有 CS (MEM) 和 WS (LLM/SYS) 也都結束了
+        """
+        try:
+            session_id = event.data.get('session_id', 'unknown')  # GS ID
+            session_prefix = f"{session_id}:"
+            
+            with self._dedupe_lock:
+                # 找出並移除此 session 的所有鍵
+                keys_to_remove = [k for k in self._layer_dedupe_keys if k.startswith(session_prefix)]
+                for key in keys_to_remove:
+                    self._layer_dedupe_keys.discard(key)
+                
+                self._cleanup_count += len(keys_to_remove)
+                info_log(f"[ModuleCoordinator] 🧹 SESSION_ENDED 清理: 移除 {len(keys_to_remove)} 個去重鍵 (session={session_id})")
+                debug_log(3, f"[ModuleCoordinator] 剩餘去重鍵數量: {len(self._layer_dedupe_keys)}")
+                debug_log(3, f"[ModuleCoordinator] 統計 - 命中次數: {self._dedupe_hit_count}, 清理次數: {self._cleanup_count}")
+                
+        except Exception as e:
+            error_log(f"[ModuleCoordinator] ❌ 處理會話結束事件失敗: {e}")
+            import traceback
+            traceback.print_exc()
     
     def handle_layer_completion(self, layer: ProcessingLayer, completion_data: Dict[str, Any]) -> bool:
         """
@@ -155,6 +386,28 @@ class ModuleInvocationCoordinator:
         try:
             info_log("[ModuleCoordinator] 處理層 → 輸出層轉換")
             
+            # 從處理層結果中提取文字內容
+            response_text = self._extract_response_text(processing_data)
+            
+            if not response_text:
+                debug_log(2, "[ModuleCoordinator] 處理層無文字輸出，跳過輸出層")
+                return False
+            
+            info_log(f"[ModuleCoordinator] 處理層文字輸出: {response_text[:50]}...")
+            
+            # 通過 Router 獲取輸出層路由決策
+            from core.router import router
+            routing_decision = router.route_system_output(
+                text=response_text, 
+                source_module="processing_layer"
+            )
+            
+            if routing_decision.target_module != "tts":
+                debug_log(1, f"[ModuleCoordinator] Router 未指向 TTS: {routing_decision.target_module}")
+                return False
+            
+            info_log(f"[ModuleCoordinator] Router 決策: {routing_decision.reasoning}")
+            
             # 準備輸出層調用（通常是TTS）
             output_request = ModuleInvocationRequest(
                 target_module="tts",
@@ -171,6 +424,9 @@ class ModuleInvocationCoordinator:
             success = response.result == InvocationResult.SUCCESS
             if success:
                 info_log("[ModuleCoordinator] 輸出層完成，三層流程結束")
+                
+                # 通知 System Loop 輸出層完成
+                self._notify_output_completion(response.output_data)
             else:
                 error_log(f"[ModuleCoordinator] 輸出層調用失敗: {response.error_message}")
             
@@ -377,26 +633,40 @@ class ModuleInvocationCoordinator:
                 
                 execution_time = time.time() - start_time
                 
+                # ✅ 正確判斷成功: 檢查 result_data['success'] 字段
+                is_success = result_data and isinstance(result_data, dict) and result_data.get('success', False)
+                
                 if result_data:
-                    info_log(f"[ModuleCoordinator] {request.layer.value}層模組 {request.target_module} 處理完成 ({execution_time:.3f}s)")
+                    # 記錄模組返回結果
                     self._log_module_result(request.target_module, result_data)
+                    
+                    # 根據 success 字段決定結果狀態
+                    if is_success:
+                        info_log(f"[ModuleCoordinator] {request.layer.value}層模組 {request.target_module} 處理完成 ({execution_time:.3f}s)")
+                        invocation_result = InvocationResult.SUCCESS
+                    else:
+                        # success=False 視為失敗,不是成功
+                        error_msg = result_data.get('error', '未知錯誤')
+                        debug_log(2, f"[ModuleCoordinator] {request.layer.value}層模組 {request.target_module} 處理失敗: {error_msg}")
+                        invocation_result = InvocationResult.FAILED
                     
                     response = ModuleInvocationResponse(
                         target_module=request.target_module,
-                        result=InvocationResult.SUCCESS,
+                        result=invocation_result,
                         layer=request.layer,
                         output_data=result_data,
                         execution_time=execution_time
                     )
                     
-                    # 檢查是否需要觸發下一層處理
-                    self._check_layer_completion(request.layer, result_data)
+                    # 只有真正成功時才檢查層級完成
+                    if is_success:
+                        self._check_layer_completion(request.layer, result_data)
                     
                 else:
                     debug_log(2, f"[ModuleCoordinator] {request.layer.value}層模組 {request.target_module} 無返回結果")
                     response = ModuleInvocationResponse(
                         target_module=request.target_module,
-                        result=InvocationResult.SUCCESS,
+                        result=InvocationResult.FAILED,  # 無返回結果視為失敗
                         layer=request.layer,
                         output_data=None,
                         execution_time=execution_time
@@ -481,6 +751,48 @@ class ModuleInvocationCoordinator:
         except Exception as e:
             debug_log(3, f"[ModuleCoordinator] 記錄 {module_name} 結果時發生錯誤: {e}")
     
+    def _extract_response_text(self, processing_data: Dict[str, Any]) -> str:
+        """從處理層數據中提取文字回應"""
+        try:
+            # 優先順序：response > text > content
+            if "response" in processing_data:
+                return processing_data["response"]
+            elif "text" in processing_data:
+                return processing_data["text"]
+            elif "content" in processing_data:
+                return processing_data["content"]
+            else:
+                # 如果是嵌套結構，嘗試深度提取
+                if isinstance(processing_data, dict):
+                    for key in ["llm_output", "result", "data"]:
+                        if key in processing_data:
+                            nested_data = processing_data[key]
+                            if isinstance(nested_data, dict):
+                                if "text" in nested_data:
+                                    return nested_data["text"]
+                                elif "response" in nested_data:
+                                    return nested_data["response"]
+                
+                debug_log(2, f"[ModuleCoordinator] 無法從處理層數據中提取文字: {list(processing_data.keys())}")
+                return ""
+                
+        except Exception as e:
+            error_log(f"[ModuleCoordinator] 提取回應文字失敗: {e}")
+            return ""
+    
+    def _notify_output_completion(self, output_data: Optional[Dict[str, Any]]):
+        """通知輸出層完成（觸發循環結束邏輯）"""
+        try:
+            # 通知 System Loop
+            from core.system_loop import system_loop
+            if hasattr(system_loop, 'handle_output_completion'):
+                system_loop.handle_output_completion(output_data or {})
+            else:
+                debug_log(2, "[ModuleCoordinator] System Loop 不支持輸出完成通知")
+            
+        except Exception as e:
+            debug_log(1, f"[ModuleCoordinator] 通知輸出完成失敗: {e}")
+    
     def get_active_invocations(self) -> Dict[str, Any]:
         """獲取當前活躍的調用狀態"""
         return dict(self._active_invocations)
@@ -521,6 +833,44 @@ class ModuleInvocationCoordinator:
             "active_invocations": len(self._active_invocations),
             "module_stats": module_stats
         }
+    
+    def get_deduplication_stats(self) -> Dict[str, Any]:
+        """
+        獲取去重統計信息 (G. 監控與除錯)
+        
+        Returns:
+            包含去重命中次數、清理次數、活躍鍵數量等診斷信息
+        """
+        with self._dedupe_lock:
+            # 分析活躍的 dedupe keys
+            active_flows = set()
+            layers_count = {"INPUT": 0, "PROCESSING": 0, "OUTPUT": 0}
+            
+            for key in self._layer_dedupe_keys:
+                try:
+                    parts = key.split(":")
+                    if len(parts) >= 3:
+                        session_id = parts[0]
+                        cycle_index = parts[1]
+                        layer = parts[2]
+                        
+                        flow_id = f"{session_id}:{cycle_index}"
+                        active_flows.add(flow_id)
+                        
+                        if layer in layers_count:
+                            layers_count[layer] += 1
+                except:
+                    pass
+            
+            return {
+                "dedupe_hit_count": self._dedupe_hit_count,
+                "cleanup_count": self._cleanup_count,
+                "active_dedupe_keys": len(self._layer_dedupe_keys),
+                "max_dedupe_keys": self._max_dedupe_keys,
+                "active_flows": len(active_flows),
+                "layers_distribution": layers_count,
+                "memory_pressure": len(self._layer_dedupe_keys) / self._max_dedupe_keys if self._max_dedupe_keys > 0 else 0.0
+            }
 
 
 # 全局協調器實例

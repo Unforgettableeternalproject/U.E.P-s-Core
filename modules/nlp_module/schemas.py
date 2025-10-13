@@ -96,6 +96,9 @@ class NLPInput(BaseModel):
     conversation_history: Optional[List[str]] = Field(None, description="對話歷史")
     current_system_state: Optional[str] = Field(None, description="當前系統狀態")
     
+    # 元資料 (來自STT,用於特殊處理模式)
+    metadata: Optional[Dict[str, Any]] = Field(None, description="額外元資料 (如文字輸入模式標記)")
+    
     # 處理選項
     enable_segmentation: bool = Field(True, description="啟用分段分析")
     enable_entity_extraction: bool = Field(True, description="啟用實體抽取")

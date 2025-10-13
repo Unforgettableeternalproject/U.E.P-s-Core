@@ -383,6 +383,7 @@ temp/*
 # 模型輸出
 /models/*
 !/models/.gitkeep
+checkpoints/
 
 # 訓練資料
 train/**/dataset.csv
@@ -411,3 +412,5 @@ resources/animations/*
 hidden_docs/*
 additional_tests/*
 deprecated/*
+
+*.t7

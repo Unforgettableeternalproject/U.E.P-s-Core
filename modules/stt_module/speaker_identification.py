@@ -191,7 +191,7 @@ class SpeakerIdentification:
             
             return True  # 返回 True 因為 fallback 模式仍然可用
     
-    def identify_speaker(self, audio_data: np.ndarray) -> SpeakerInfo:
+    def identify_speaker(self, audio_data: np.ndarray) -> "SpeakerInfo":
         """識別說話人"""
         if not self.pipeline:
             return self._fallback_speaker_identification(audio_data)
@@ -268,7 +268,7 @@ class SpeakerIdentification:
             error_log(f"[Speaker] 說話人識別失敗: {str(e)}")
             return self._fallback_speaker_identification(audio_data)
     
-    def _direct_embedding_identification(self, audio_data: np.ndarray) -> SpeakerInfo:
+    def _direct_embedding_identification(self, audio_data: np.ndarray) -> "SpeakerInfo":
         """當 pyannote 說話人分離失敗時，直接使用嵌入模型進行說話人識別"""
         try:
             # 計算音頻嵌入
@@ -691,7 +691,7 @@ class SpeakerIdentification:
             # 最後的備用方案：返回隨機向量
             return np.random.normal(0, 1, 32)
     
-    def _fallback_speaker_identification(self, audio_data: np.ndarray) -> SpeakerInfo:
+    def _fallback_speaker_identification(self, audio_data: np.ndarray) -> "SpeakerInfo":
         """回退的說話人識別方法（當 pyannote 不可用時）"""
         try:
             debug_log(2, "[Speaker] 使用回退說話人識別...")

@@ -57,6 +57,10 @@ class UnifiedController:
         self.state_manager = state_manager
         self.core_framework = core_framework
         
+        # 使用全局單例模組協調器 (避免重複訂閱事件)
+        from core.module_coordinator import module_coordinator
+        self.module_coordinator = module_coordinator
+        
         # 系統統計
         self.startup_time = None
         self.total_gs_sessions = 0
@@ -147,12 +151,44 @@ class UnifiedController:
             # 檢查狀態佇列並監控 GS 結束條件
             self._monitor_gs_lifecycle(current_state, current_gs)
             
+            # ✅ 檢查會話超時 (CS/WS 超時處理)
+            self._check_session_timeouts()
+            
             # 記錄系統狀態（簡化版）
             debug_log(3, f"[Monitor] 系統狀態: {current_state.value}, "
                         f"當前GS: {current_gs.session_id if current_gs else 'None'}")
             
         except Exception as e:
             debug_log(2, f"[Monitor] 健康檢查失敗: {e}")
+    
+    def _check_session_timeouts(self):
+        """
+        檢查會話超時 (每秒調用一次)
+        
+        根據文檔要求:
+        - CS/WS 結束條件: 1) 外部中斷點被呼叫 2) 所屬循環結束
+        - 超時是外部中斷的一種形式
+        - 當用戶長時間無互動時,Controller 介入結束會話
+        """
+        try:
+            # 調用 SessionManager 的超時檢查
+            timeout_sessions = self.session_manager.check_session_timeout()
+            
+            # 如果有會話超時,記錄並處理
+            if timeout_sessions:
+                for timeout_info in timeout_sessions:
+                    session_id = timeout_info['session_id']
+                    session_type = timeout_info['session_type']
+                    reason = timeout_info['reason']
+                    
+                    info_log(f"[Controller] 會話超時處理: {session_type} {session_id} - {reason}")
+                    
+                    # 發布會話中斷事件 (如果需要通知其他組件)
+                    if session_type in ['chatting', 'workflow']:
+                        debug_log(2, f"[Controller] 會話 {session_id} 因超時被終止")
+                        
+        except Exception as e:
+            error_log(f"[Controller] 檢查會話超時失敗: {e}")
     
     def _monitor_gs_lifecycle(self, current_state, current_gs):
         """監控 GS 生命週期，根據需要創建或結束 GS"""

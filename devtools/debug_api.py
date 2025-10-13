@@ -386,9 +386,9 @@ from .module_tests.llm_tests import (
     llm_test_system_status_monitoring
 )
 
-# 測試 TTS 模組（尚未重構）
+# 測試 TTS 模組
 from .module_tests.tts_tests import (
-    tts_test
+    tts_emotion_variation_test, tts_interactive_synthesis, tts_streaming_test
 )
 
 # 測試 SYS 模組（尚未重構）
@@ -680,10 +680,129 @@ def llm_test_system_status_monitoring_wrapper():
         cleanup_test_environment()
 
 
-# TTS 模組包裝函數（尚未重構）
-def tts_test_wrapper(text: str, mood: str = "neutral", save: bool = False):
-    from .module_tests.tts_tests import tts_test as tts_test_func
-    return tts_test_func(modules, text, mood, save)
+# TTS 模組包裝函數 (✅ 已重構)
+def tts_interactive_synthesis_wrapper():
+    """TTS 即時合成測試 - 連續輸入文本和情緒"""
+    from .module_tests.tts_tests import tts_interactive_synthesis
+    return tts_interactive_synthesis(modules)
+
+def tts_emotion_variation_test_wrapper():
+    """情感變化測試 - 同一文本,不同情緒"""
+    from .module_tests.tts_tests import tts_emotion_variation_test
+    return tts_emotion_variation_test(modules)
+
+def tts_streaming_test_wrapper():
+    """串流測試 - 長文本分段合成"""
+    from .module_tests.tts_tests import tts_streaming_test
+    return tts_streaming_test(modules)
+
+# TTS GUI 測試包裝函數 (✅ 用於 Debug GUI)
+def tts_synthesis_wrapper(text: str, emotion_vector=None, save=False, output_path=None, force_chunking=False):
+    """
+    GUI 語音合成包裝函數
+    
+    Args:
+        text: 要合成的文本
+        emotion_vector: 情感向量 (8D list)
+        save: 是否儲存
+        output_path: 儲存路徑
+        force_chunking: 是否強制分段
+    
+    Returns:
+        dict: 測試結果
+    """
+    import time
+    import os
+    
+    tts_module = get_or_load_module("tts")
+    if not tts_module:
+        return {"success": False, "error": "TTS 模組未載入"}
+    
+    try:
+        start_time = time.time()
+        
+        # 構建請求數據
+        request_data = {
+            "text": text,
+            "save": save,
+            "force_chunking": force_chunking
+        }
+        
+        if emotion_vector:
+            request_data["emotion_vector"] = emotion_vector
+        
+        # 調用 TTS 模組
+        result = tts_module.handle(request_data)
+        processing_time = time.time() - start_time
+        
+        if result.get("status") == "success":
+            final_output_path = result.get("output_path")
+            
+            # 如果用戶指定了輸出路徑且選擇儲存,則移動文件
+            if output_path and save and final_output_path and os.path.exists(final_output_path):
+                import shutil
+                try:
+                    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                    shutil.move(final_output_path, output_path)
+                    final_output_path = output_path
+                    info_log(f"[TTS GUI] 文件已移動到: {output_path}")
+                except Exception as e:
+                    error_log(f"[TTS GUI] 移動文件失敗: {e}")
+            
+            return {
+                "success": True,
+                "duration": result.get("duration", 0.0),
+                "processing_time": processing_time,
+                "chunk_count": result.get("chunk_count", 1),
+                "output_path": final_output_path
+            }
+        else:
+            return {
+                "success": False,
+                "error": result.get("message", "未知錯誤"),
+                "processing_time": processing_time
+            }
+    
+    except Exception as e:
+        error_log(f"[TTS GUI] 合成失敗: {e}")
+        return {"success": False, "error": str(e)}
+
+def tts_stop_playback_wrapper():
+    """停止 TTS 播放"""
+    tts_module = get_or_load_module("tts")
+    if not tts_module:
+        return {"success": False, "error": "TTS 模組未載入"}
+    
+    try:
+        if hasattr(tts_module, 'stop_playback'):
+            tts_module.stop_playback()
+            return {"success": True}
+        elif hasattr(tts_module, '_current_playback_obj') and tts_module._current_playback_obj:
+            tts_module._current_playback_obj.stop()
+            return {"success": True}
+        else:
+            return {"success": True, "message": "當前沒有播放中的音頻"}
+    except Exception as e:
+        error_log(f"[TTS GUI] 停止播放失敗: {e}")
+        return {"success": False, "error": str(e)}
+
+def tts_clear_queue_wrapper():
+    """清除 TTS 播放隊列"""
+    tts_module = get_or_load_module("tts")
+    if not tts_module:
+        return {"success": False, "error": "TTS 模組未載入"}
+    
+    try:
+        if hasattr(tts_module, 'chunker'):
+            queue_size = len(tts_module.chunker.queue)
+            tts_module.chunker.stop()
+            info_log(f"[TTS GUI] 已清除 {queue_size} 個隊列項目")
+            return {"success": True, "cleared_items": queue_size}
+        else:
+            return {"success": True, "message": "沒有待清除的隊列"}
+    except Exception as e:
+        error_log(f"[TTS GUI] 清除隊列失敗: {e}")
+        return {"success": False, "error": str(e)}
 
 # SYS 模組包裝函數（尚未重構）
 def sys_list_functions_wrapper():
@@ -781,10 +900,14 @@ llm_test_learning = llm_test_learning_engine_wrapper
 llm_test_status = llm_test_system_status_monitoring_wrapper
 llm_test_status_monitor = llm_test_system_status_monitoring_wrapper
 
-# TTS 函數別名（匹配實際的函數名稱）
-tts_test = tts_test_wrapper
-# 為了向後兼容，添加一些常用的別名
-tts_test_speak = tts_test_wrapper
+# TTS 函數別名 (✅ 已重構)
+tts_interactive_synthesis = tts_interactive_synthesis_wrapper
+tts_emotion_variation_test = tts_emotion_variation_test_wrapper
+tts_streaming_test = tts_streaming_test_wrapper
+# 向後兼容別名
+tts_test = tts_interactive_synthesis_wrapper  # 預設使用互動式測試
+tts_test_emotion = tts_emotion_variation_test_wrapper
+tts_test_stream = tts_streaming_test_wrapper
 
 # SYS 函數別名（匹配實際的函數名稱）
 sys_list_functions = sys_list_functions_wrapper
@@ -908,6 +1031,28 @@ def get_working_context_status():
         print(f"     就緒: {'是' if is_ready else '否'}")
     
     return contexts
+
+def get_deduplication_status():
+    """
+    獲取去重統計信息 (G. 監控與除錯)
+    
+    顯示 ModuleCoordinator 的去重命中次數、清理次數、活躍鍵數量等診斷資訊
+    """
+    from core.module_coordinator import module_coordinator
+    
+    stats = module_coordinator.get_deduplication_stats()
+    
+    print("🔍 去重系統診斷:")
+    print(f"   去重命中次數: {stats['dedupe_hit_count']}")
+    print(f"   清理次數: {stats['cleanup_count']}")
+    print(f"   活躍去重鍵: {stats['active_dedupe_keys']} / {stats['max_dedupe_keys']}")
+    print(f"   活躍流程數: {stats['active_flows']}")
+    print(f"   記憶體壓力: {stats['memory_pressure']:.1%}")
+    print(f"   各層分布: INPUT={stats['layers_distribution']['INPUT']}, "
+          f"PROCESSING={stats['layers_distribution']['PROCESSING']}, "
+          f"OUTPUT={stats['layers_distribution']['OUTPUT']}")
+    
+    return stats
 
 def test_speaker_context_workflow():
     """測試語者上下文工作流程"""

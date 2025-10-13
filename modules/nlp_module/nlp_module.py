@@ -155,6 +155,22 @@ class NLPModule(BaseModule):
         }
         
         try:
+            # 檢查是否為文字輸入模式 (繞過說話人識別)
+            metadata = getattr(input_data, 'metadata', {})
+            is_text_input = metadata.get('input_mode') == 'text' or metadata.get('bypass_speaker_id', False)
+            
+            if is_text_input:
+                debug_log(2, "[NLP] 檢測到文字輸入模式，跳過說話人識別，使用預設身份")
+                # 使用預設身份 - 不查詢也不創建 Identity
+                default_identity = self._create_default_identity()
+                if default_identity:
+                    result["identity"] = default_identity
+                    result["identity_action"] = "text_input_default"
+                    result["processing_notes"].append("文字輸入模式：使用預設身份")
+                    # 將預設身份設置到Working Context
+                    self._add_identity_to_working_context(default_identity)
+                return result
+            
             # 從Working Context獲取說話人資料，而非直接從input_data
             speaker_data = self._get_speaker_from_working_context()
             
@@ -690,35 +706,84 @@ class NLPModule(BaseModule):
             error_log(f"[NLP] 處理指令中斷失敗: {e}")
     
     def _notify_system_loop_nlp_completed(self, input_data: NLPInput, nlp_result: NLPOutput):
-        """通知System Loop 輸入層（NLP）處理完成，觸發三層架構流程"""
+        """
+        ✅ 事件驅動版本：發布輸入層完成事件
+        使用事件總線解耦，不再直接調用 System Loop
+        
+        事件數據包含 session_id 和 cycle_index 用於 flow-based 去重
+        """
         try:
-            info_log(f"[NLP] 輸入層處理完成，通知System Loop: 意圖={nlp_result.primary_intent}, 文本='{input_data.text[:50]}...'")
+            info_log(f"[NLP] 輸入層處理完成，發布事件: 意圖={nlp_result.primary_intent}, 文本='{input_data.text[:50]}...'")
+            
+            # 獲取當前 GS session_id 和 cycle_index (用於去重)
+            session_id = self._get_current_gs_id()
+            cycle_index = self._get_current_cycle_index()
             
             # 準備輸入層完成數據
             input_layer_completion_data = {
+                # Flow-based 去重所需欄位
+                "session_id": session_id,
+                "cycle_index": cycle_index,
+                "layer": "INPUT",
+                
+                # 原有數據
                 "input_data": input_data.model_dump(),
                 "nlp_result": nlp_result.model_dump(),
                 "timestamp": time.time(),
                 "source_module": "nlp",
-                "layer": "input",
                 "completion_type": "input_layer_finished"
             }
             
-            # 通知System Loop輸入層處理完成
-            from core.system_loop import system_loop
-            if hasattr(system_loop, 'handle_nlp_completion'):
-                system_loop.handle_nlp_completion(input_layer_completion_data)
-            else:
-                debug_log(2, "[NLP] System Loop 不支持輸入層完成處理，跳過通知")
+            # ✅ 使用事件總線發布事件
+            from core.event_bus import event_bus, SystemEvent
+            event_bus.publish(
+                event_type=SystemEvent.INPUT_LAYER_COMPLETE,
+                data=input_layer_completion_data,
+                source="nlp"
+            )
+            
+            debug_log(2, f"[NLP] 輸入層完成事件已發布 (session={session_id}, cycle={cycle_index})")
             
         except Exception as e:
-            error_log(f"[NLP] 通知System Loop輸入層完成失敗: {e}")
+            error_log(f"[NLP] 發布輸入層完成事件失敗: {e}")
 
     def _notify_controller_activity(self):
         """通知 Controller 有 NLP 活動 - 預留方法,目前無實作"""
         # NOTE: Controller 活動通知機制可能已變更或移除
         # 保留此方法以維持向後兼容性,實際實作待確認
         pass
+    
+    def _get_current_gs_id(self) -> str:
+        """
+        獲取當前 General Session ID
+        從 working_context 的全局數據中讀取 (由 SystemLoop 設置)
+        
+        Returns:
+            str: 當前 GS ID,如果無法獲取則返回 'unknown'
+        """
+        try:
+            from core.working_context import working_context_manager
+            gs_id = working_context_manager.global_context_data.get('current_gs_id', 'unknown')
+            return gs_id
+        except Exception as e:
+            error_log(f"[NLP] 獲取 GS ID 失敗: {e}")
+            return 'unknown'
+    
+    def _get_current_cycle_index(self) -> int:
+        """
+        獲取當前循環計數
+        從 working_context 的全局數據中讀取 (由 SystemLoop 設置)
+        
+        Returns:
+            int: 當前 cycle_index,如果無法獲取則返回 -1
+        """
+        try:
+            from core.working_context import working_context_manager
+            cycle_index = working_context_manager.global_context_data.get('current_cycle_index', -1)
+            return cycle_index
+        except Exception as e:
+            error_log(f"[NLP] 獲取 cycle_index 失敗: {e}")
+            return -1
 
     # === 以下是原有不當的路由邏輯，已移除 ===
     # _invoke_target_module() 和 _prepare_module_input() 方法
@@ -823,6 +888,37 @@ class NLPModule(BaseModule):
             error_log(f"[NLP] 從Working Context獲取說話人失敗: {e}")
             return None
 
+    def _create_default_identity(self) -> Optional['UserProfile']:
+        """創建預設身份，用於文字輸入模式 (不進行身份識別和查詢)"""
+        try:
+            from .schemas import UserProfile, IdentityStatus
+            from datetime import datetime
+            
+            # 使用固定的預設身份ID,避免重複創建
+            default_id = "default_text_user"
+            
+            default_identity = UserProfile(
+                identity_id=default_id,
+                speaker_id=None,  # 文字輸入模式沒有語者ID
+                display_name="預設用戶",
+                status=IdentityStatus.TEMPORARY,
+                memory_token=None,  # 預設身份沒有記憶令牌
+                created_at=datetime.now(),
+                last_interaction=datetime.now(),
+                total_interactions=0,
+                preferences={},
+                system_habits={},
+                voice_preferences={},
+                conversation_style={}
+            )
+            
+            debug_log(2, f"[NLP] 使用預設身份: {default_id} (文字輸入模式)")
+            return default_identity
+            
+        except Exception as e:
+            error_log(f"[NLP] 創建預設身份失敗: {e}")
+            return None
+    
     def _create_generic_identity(self) -> Optional['UserProfile']:
         """創建通用身份，用於說話人累積期間或無身份識別時"""
         try:

@@ -39,17 +39,23 @@ class SystemLoop:
     def __init__(self):
         """初始化系統循環"""
         # 載入配置
-        from configs.config_loader import load_config
+        from configs.config_loader import load_config, get_input_mode
         self.config = load_config()
+        self.input_mode = get_input_mode()  # "vad" 或 "text"
         
         # 循環狀態
         self.status = LoopStatus.STOPPED
         self.loop_thread: Optional[threading.Thread] = None
         self.stop_event = threading.Event()
         
+        # 文字輸入模式專用
+        self.text_input_thread: Optional[threading.Thread] = None
+        self.text_input_prompt = self.config.get("system", {}).get("input_mode", {}).get("text_input_prompt", ">>> ")
+        
         # 效能監控
         self.loop_count = 0  # 基本循環計數（主循環迭代次數）
-        self.processing_cycles = 0  # 完整處理週期計數（輸入→輸出）
+        self.cycle_index = 0  # 完整處理週期計數（輸入→輸出）- 用於 flow-based 去重
+        self.processing_cycles = 0  # 向後兼容：等同於 cycle_index
         self.current_cycle_start_time = None
         self.cycle_tracking = {
             "input_received": False,
@@ -62,7 +68,116 @@ class SystemLoop:
         self.snapshot_interval = 5.0  # 5秒間隔蒐集效能快照
         self.status_log_interval = 10.0  # 10秒間隔輸出狀態日誌
         
-        info_log("[SystemLoop] 系統循環已創建")
+        info_log(f"[SystemLoop] 系統循環已創建 (輸入模式: {self.input_mode})")
+        
+        # ✅ 訂閱事件總線
+        self._setup_event_subscriptions()
+    
+    def _setup_event_subscriptions(self):
+        """設置事件訂閱"""
+        try:
+            from core.event_bus import event_bus, SystemEvent
+            
+            # 訂閱輸出層完成事件
+            event_bus.subscribe(
+                SystemEvent.OUTPUT_LAYER_COMPLETE,
+                self._on_output_layer_complete,
+                handler_name="SystemLoop.output_complete"
+            )
+            
+            info_log("[SystemLoop] ✅ 已訂閱事件總線")
+            
+        except Exception as e:
+            error_log(f"[SystemLoop] 事件訂閱失敗: {e}")
+    
+    def _start_event_bus(self):
+        """啟動事件總線處理線程"""
+        try:
+            from core.event_bus import event_bus
+            event_bus.start()
+            info_log("[SystemLoop] ✅ 事件總線已啟動")
+        except Exception as e:
+            error_log(f"[SystemLoop] 啟動事件總線失敗: {e}")
+    
+    def _stop_event_bus(self):
+        """停止事件總線處理線程"""
+        try:
+            from core.event_bus import event_bus
+            event_bus.stop()
+            info_log("[SystemLoop] ✅ 事件總線已停止")
+        except Exception as e:
+            error_log(f"[SystemLoop] 停止事件總線失敗: {e}")
+    
+    def _on_output_layer_complete(self, event):
+        """
+        輸出層完成事件處理器
+        當 TTS 發布 OUTPUT_LAYER_COMPLETE 事件時觸發
+        """
+        try:
+            debug_log(2, f"[SystemLoop] 收到輸出層完成事件: {event.event_id}")
+            self.handle_output_completion(event.data)
+        except Exception as e:
+            error_log(f"[SystemLoop] 處理輸出層完成事件失敗: {e}")
+    
+    def _get_current_gs_id(self) -> str:
+        """
+        獲取當前 General Session ID
+        
+        Returns:
+            str: 當前 GS ID,如果無法獲取則返回 'unknown'
+        """
+        try:
+            from core.sessions.session_manager import session_manager
+            
+            # 從 UnifiedSessionManager 獲取當前 GS
+            current_gs = session_manager.get_current_general_session()
+            if current_gs and hasattr(current_gs, 'session_id'):
+                return current_gs.session_id
+            
+            debug_log(3, "[SystemLoop] 無法獲取 GS ID,使用預設值 'unknown'")
+            return 'unknown'
+            
+        except Exception as e:
+            error_log(f"[SystemLoop] 獲取 GS ID 失敗: {e}")
+            return 'unknown'
+    
+    def _publish_cycle_completed(self):
+        """
+        發布 CYCLE_COMPLETED 事件
+        用於通知 ModuleCoordinator 清理去重鍵
+        """
+        try:
+            from core.event_bus import event_bus, SystemEvent
+            
+            session_id = self._get_current_gs_id()
+            event_data = {
+                'session_id': session_id,
+                'cycle_index': self.cycle_index,
+                'timestamp': time.time()
+            }
+            
+            event_bus.publish(SystemEvent.CYCLE_COMPLETED, event_data)
+            debug_log(2, f"[SystemLoop] 🔄 已發布 CYCLE_COMPLETED (session={session_id}, cycle={self.cycle_index})")
+            
+        except Exception as e:
+            error_log(f"[SystemLoop] 發布 CYCLE_COMPLETED 事件失敗: {e}")
+    
+    def _update_global_cycle_info(self):
+        """
+        更新 working_context 全局數據中的循環資訊
+        供所有模組訪問當前 cycle_index 和 session_id
+        """
+        try:
+            from core.working_context import working_context_manager
+            
+            session_id = self._get_current_gs_id()
+            working_context_manager.global_context_data['current_cycle_index'] = self.cycle_index
+            working_context_manager.global_context_data['current_gs_id'] = session_id
+            
+            debug_log(3, f"[SystemLoop] 已更新全局循環資訊: session={session_id}, cycle={self.cycle_index}")
+            
+        except Exception as e:
+            error_log(f"[SystemLoop] 更新全局循環資訊失敗: {e}")
     
     def start(self) -> bool:
         """啟動系統主循環"""
@@ -73,6 +188,9 @@ class SystemLoop:
             
             info_log("🔄 啟動系統主循環...")
             self.status = LoopStatus.STARTING
+            
+            # ✅ 啟動事件總線
+            self._start_event_bus()
             
             # 驗證系統組件就緒
             if not self._verify_system_ready():
@@ -98,13 +216,19 @@ class SystemLoop:
             self.loop_thread = threading.Thread(target=self._main_loop, daemon=True)
             self.loop_thread.start()
             
-            # 啟動STT持續監聽
-            self._start_stt_listening()
+            # 根據輸入模式啟動對應的輸入方式
+            if self.input_mode == "text":
+                info_log("📝 啟動文字輸入模式...")
+                self._start_text_input()
+                info_log("✅ 系統主循環已啟動")
+                info_log("⌨️  等待使用者文字輸入...")
+            else:  # vad 模式
+                # 啟動STT持續監聽
+                self._start_stt_listening()
+                info_log("✅ 系統主循環已啟動")
+                info_log("🎧 等待使用者語音輸入...")
             
             self.status = LoopStatus.RUNNING
-            info_log("✅ 系統主循環已啟動")
-            info_log("🎧 等待使用者語音輸入...")
-            
             return True
             
         except Exception as e:
@@ -130,6 +254,9 @@ class SystemLoop:
                 self.loop_thread.join(timeout=5.0)
                 if self.loop_thread.is_alive():
                     error_log("⚠️ 循環線程未能正常結束")
+            
+            # ✅ 停止事件總線
+            self._stop_event_bus()
             
             self.status = LoopStatus.STOPPED
             runtime = time.time() - self.start_time
@@ -176,6 +303,69 @@ class SystemLoop:
             
         except Exception as e:
             error_log(f"   ❌ 系統組件驗證失敗: {e}")
+            return False
+    
+    def _start_text_input(self):
+        """啟動文字輸入模式"""
+        try:
+            from core.framework import core_framework
+            
+            # 獲取STT模組
+            stt_module = core_framework.get_module('stt')
+            if not stt_module:
+                error_log("❌ 無法獲取STT模組")
+                return False
+            
+            info_log("⌨️  啟動文字輸入循環...")
+            
+            # 在背景線程中運行文字輸入循環
+            def text_input_loop():
+                try:
+                    while not self.stop_event.is_set():
+                        try:
+                            # 等待用戶輸入
+                            user_input = input(self.text_input_prompt)
+                            
+                            # 過濾空輸入
+                            if not user_input.strip():
+                                continue
+                            
+                            # 處理特殊命令
+                            if user_input.lower() in ['exit', 'quit', 'q']:
+                                info_log("📝 收到退出命令，停止系統...")
+                                self.stop()
+                                break
+                            
+                            # 將文字輸入傳遞給 STT 模組處理
+                            debug_log(2, f"[SystemLoop] 收到文字輸入: {user_input}")
+                            result = stt_module.handle_text_input(user_input)
+                            
+                            if result:
+                                debug_log(2, f"[SystemLoop] 文字輸入處理成功")
+                            else:
+                                error_log(f"[SystemLoop] 文字輸入處理失敗")
+                                
+                        except EOFError:
+                            # 處理 Ctrl+D (Unix) 或 Ctrl+Z (Windows)
+                            info_log("📝 收到 EOF，停止文字輸入...")
+                            break
+                        except KeyboardInterrupt:
+                            # 處理 Ctrl+C
+                            info_log("📝 收到中斷信號，停止系統...")
+                            self.stop()
+                            break
+                            
+                except Exception as e:
+                    error_log(f"[SystemLoop] 文字輸入循環錯誤: {e}")
+            
+            self.text_input_thread = threading.Thread(target=text_input_loop, daemon=True)
+            self.text_input_thread.start()
+            
+            info_log("✅ 文字輸入循環已啟動")
+            return True
+            
+        except Exception as e:
+            error_log(f"❌ 啟動文字輸入失敗: {e}")
             return False
     
     def _start_stt_listening(self):
@@ -323,7 +513,12 @@ class SystemLoop:
         if not self.cycle_tracking["input_received"] and queue_size > 0:
             self.cycle_tracking["input_received"] = True
             self.current_cycle_start_time = time.time()
-            debug_log(2, f"[SystemLoop] 處理循環開始：STT輸入層")
+            # 遞增 cycle_index,開始新循環
+            self.cycle_index += 1
+            self.processing_cycles = self.cycle_index  # 向後兼容
+            # 更新全局循環資訊供模組使用
+            self._update_global_cycle_info()
+            debug_log(2, f"[SystemLoop] 處理循環 #{self.cycle_index} 開始：STT輸入層")
         
         # 檢測處理層活動（狀態轉換到CHAT或WORK）
         elif self.cycle_tracking["input_received"] and not self.cycle_tracking["processing_started"]:
@@ -366,9 +561,11 @@ class SystemLoop:
         """完成一次處理循環"""
         if self.current_cycle_start_time:
             cycle_time = time.time() - self.current_cycle_start_time
-            self.processing_cycles += 1
             
-            debug_log(1, f"[SystemLoop] 處理循環 #{self.processing_cycles} 完成，耗時 {cycle_time:.2f}秒")
+            debug_log(1, f"[SystemLoop] 處理循環 #{self.cycle_index} 完成，耗時 {cycle_time:.2f}秒")
+            
+            # 發布 CYCLE_COMPLETED 事件用於清理去重鍵
+            self._publish_cycle_completed()
             
             # 重置週期追蹤
             self.cycle_tracking = {

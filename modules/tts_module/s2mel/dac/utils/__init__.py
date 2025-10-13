@@ -3,9 +3,9 @@ from pathlib import Path
 import argbind
 from audiotools import ml
 
-import indextts.s2mel.dac as dac
+from modules.tts_module.s2mel.dac import model
 
-DAC = dac.model.DAC
+DAC = model.DAC
 Accelerator = ml.Accelerator
 
 __MODEL_LATEST_TAGS__ = {

@@ -32,7 +32,7 @@ class ConvLayerNorm(nn.LayerNorm):
         x = einops.rearrange(x, 'b ... t -> b t ...')
         x = super().forward(x)
         x = einops.rearrange(x, 'b t ... -> b ... t')
-        return
+        return x
 
 
 CONV_NORMALIZATIONS = frozenset(['none', 'weight_norm', 'spectral_norm',

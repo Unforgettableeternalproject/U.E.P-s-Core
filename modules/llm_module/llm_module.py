@@ -18,8 +18,6 @@ from typing import Dict, Any, Optional, List
 from pathlib import Path
 
 from core.bases.module_base import BaseModule
-from core.schemas import LLMModuleData, create_llm_data
-from core.schema_adapter import LLMSchemaAdapter
 from core.working_context import working_context_manager, ContextType
 from core.status_manager import status_manager
 from core.states.state_manager import state_manager, UEPState
@@ -49,7 +47,6 @@ class LLMModule(BaseModule):
         self.model = GeminiWrapper(self.config)
         self.prompt_manager = PromptManager(self.config)
         self.learning_engine = LearningEngine(self.config.get("learning", {}))
-        self.schema_adapter = LLMSchemaAdapter()
         
         # 統一快取管理器 (整合Gemini顯性快取 + 本地快取)
         self.cache_manager = cache_manager
@@ -205,6 +202,10 @@ class LLMModule(BaseModule):
             # 轉換為字典格式返回（保持與舊系統的兼容）
             result = output.dict()
             result["status"] = "ok" if output.success else "error"
+            
+            # ✅ 事件驅動：發布處理層完成事件
+            if output.success and result.get("text"):
+                self._notify_processing_layer_completion(result)
             
             return result
                 
@@ -367,8 +368,16 @@ class LLMModule(BaseModule):
                 tokens_used=len(response_text.split()),
                 success=True,
                 error=None,
-                confidence=0.85,
-                mode=LLMMode.CHAT,
+                confidence=response_data.get("confidence", 0.85),
+                sys_action=None,
+                status_updates=StatusUpdate(**response_data["status_updates"]) if response_data.get("status_updates") else None,
+                learning_data=None,
+                conversation_entry=None,
+                session_state=None,
+                memory_observation=response_data.get("memory_observation"),
+                memory_summary=None,
+                emotion="neutral",
+                mood="neutral",
                 metadata={
                     "mode": "CHAT",
                     "cached": False,
@@ -392,6 +401,15 @@ class LLMModule(BaseModule):
                 success=False,
                 error=str(e),
                 confidence=0.0,
+                sys_action=None,
+                status_updates=None,
+                learning_data=None,
+                conversation_entry=None,
+                session_state=None,
+                memory_observation=None,
+                memory_summary=None,
+                emotion="neutral",
+                mood="neutral",
                 metadata={"mode": "CHAT", "error_type": "processing_error"}
             )
     
@@ -462,14 +480,27 @@ class LLMModule(BaseModule):
                 response_data, "WORK", llm_input
             )
             
+            # 提取 sys_action
+            sys_action_obj = None
+            if sys_actions and len(sys_actions) > 0:
+                sys_action_obj = SystemAction(**sys_actions[0])
+            
             output = LLMOutput(
                 text=response_text,
                 processing_time=time.time() - start_time,
                 tokens_used=len(response_text.split()),
                 success=True,
                 error=None,
-                confidence=0.90,  # WORK 模式通常更精確
-                mode=LLMMode.WORK,
+                confidence=response_data.get("confidence", 0.90),
+                sys_action=sys_action_obj,
+                status_updates=StatusUpdate(**response_data["status_updates"]) if response_data.get("status_updates") else None,
+                learning_data=None,
+                conversation_entry=None,
+                session_state=None,
+                memory_observation=None,
+                memory_summary=None,
+                emotion="neutral",
+                mood="neutral",
                 metadata={
                     "mode": "WORK",
                     "workflow_context_size": len(llm_input.workflow_context) if llm_input.workflow_context else 0,
@@ -491,6 +522,15 @@ class LLMModule(BaseModule):
                 success=False,
                 error=str(e),
                 confidence=0.0,
+                sys_action=None,
+                status_updates=None,
+                learning_data=None,
+                conversation_entry=None,
+                session_state=None,
+                memory_observation=None,
+                memory_summary=None,
+                emotion="neutral",
+                mood="neutral",
                 metadata={"mode": "WORK", "error_type": "processing_error"}
             )
     
@@ -504,11 +544,11 @@ class LLMModule(BaseModule):
         
         if legacy_intent == "chat":
             # 轉為 CHAT 模式
-            llm_input.mode = "CHAT"
+            llm_input.mode = LLMMode.CHAT
             return self._handle_chat_mode(llm_input, status)
         elif legacy_intent == "command":
             # 轉為 WORK 模式
-            llm_input.mode = "WORK"
+            llm_input.mode = LLMMode.WORK
             return self._handle_work_mode(llm_input, status)
         else:
             return LLMOutput(
@@ -518,6 +558,15 @@ class LLMModule(BaseModule):
                 success=False,
                 error=f"不支援的 intent: {legacy_intent}",
                 confidence=0.0,
+                sys_action=None,
+                status_updates=None,
+                learning_data=None,
+                conversation_entry=None,
+                session_state=None,
+                memory_observation=None,
+                memory_summary=None,
+                emotion="neutral",
+                mood="neutral",
                 metadata={"legacy_intent": legacy_intent}
             )
     
@@ -636,17 +685,23 @@ class LLMModule(BaseModule):
                     reason = update.get("reason", "LLM回應觸發")
                     
                     if status_type and value is not None:
-                        # 使用絕對值更新狀態
-                        success = self.status_manager.update_status(
-                            status_type=status_type,
-                            value=value,
-                            reason=reason
-                        )
-                        
-                        if success:
-                            debug_log(2, f"[LLM] StatusManager更新成功: {status_type}={value}, 原因: {reason}")
-                        else:
-                            debug_log(1, f"[LLM] StatusManager更新失敗: {status_type}={value}")
+                        # 使用對應的專用更新方法
+                        try:
+                            if status_type == "mood":
+                                self.status_manager.update_mood(value, reason)
+                            elif status_type == "pride":
+                                self.status_manager.update_pride(value, reason)
+                            elif status_type == "helpfulness":
+                                self.status_manager.update_helpfulness(value, reason)
+                            elif status_type == "boredom":
+                                self.status_manager.update_boredom(value, reason)
+                            else:
+                                debug_log(1, f"[LLM] 未知的狀態類型: {status_type}")
+                                continue
+                            
+                            debug_log(2, f"[LLM] StatusManager更新成功: {status_type}+={value}, 原因: {reason}")
+                        except Exception as e:
+                            debug_log(1, f"[LLM] StatusManager更新失敗: {status_type}={value}, 錯誤: {e}")
                         
         except Exception as e:
             error_log(f"[LLM] 處理StatusManager更新時出錯: {e}")
@@ -662,6 +717,38 @@ class LLMModule(BaseModule):
         except Exception as e:
             error_log(f"[LLM] 獲取系統狀態失敗: {e}")
             return {"error": str(e)}
+    
+    def _get_current_gs_id(self) -> str:
+        """
+        獲取當前 General Session ID
+        從 working_context 的全局數據中讀取 (由 SystemLoop 設置)
+        
+        Returns:
+            str: 當前 GS ID,如果無法獲取則返回 'unknown'
+        """
+        try:
+            from core.working_context import working_context_manager
+            gs_id = working_context_manager.global_context_data.get('current_gs_id', 'unknown')
+            return gs_id
+        except Exception as e:
+            error_log(f"[LLM] 獲取 GS ID 失敗: {e}")
+            return 'unknown'
+    
+    def _get_current_cycle_index(self) -> int:
+        """
+        獲取當前循環計數
+        從 working_context 的全局數據中讀取 (由 SystemLoop 設置)
+        
+        Returns:
+            int: 當前 cycle_index,如果無法獲取則返回 -1
+        """
+        try:
+            from core.working_context import working_context_manager
+            cycle_index = working_context_manager.global_context_data.get('current_cycle_index', -1)
+            return cycle_index
+        except Exception as e:
+            error_log(f"[LLM] 獲取 cycle_index 失敗: {e}")
+            return -1
     
     def _get_current_session_info(self) -> Dict[str, Any]:
         """獲取當前會話信息 - 優先獲取 CS 或 WS（LLM 作為邏輯中樞的執行會話）"""
@@ -1142,8 +1229,6 @@ class LLMModule(BaseModule):
                     session_id = active_cs_ids[0]
                     success = session_manager.end_chatting_session(
                         session_id, 
-                        reason=f"LLM建議結束: {reason}",
-                        metadata={"llm_confidence": confidence}
                     )
                     if success:
                         debug_log(1, f"[LLM] 成功結束 CS {session_id}")
@@ -1157,8 +1242,6 @@ class LLMModule(BaseModule):
                     session_id = active_ws_ids[0]
                     success = session_manager.end_workflow_session(
                         session_id,
-                        reason=f"LLM建議結束: {reason}",
-                        metadata={"llm_confidence": confidence}
                     )
                     if success:
                         debug_log(1, f"[LLM] 成功結束 WS {session_id}")
@@ -1313,6 +1396,57 @@ U.E.P 系統可用功能規格：
 - memory_retrieve: 檢索記憶 (參數: query, max_results, similarity_threshold)
 """
 
+    def _notify_processing_layer_completion(self, result: Dict[str, Any]):
+        """
+        ✅ 事件驅動版本：發布處理層完成事件
+        LLM 作為主要邏輯模組，處理完成後觸發輸出層
+        
+        事件數據包含 session_id 和 cycle_index 用於 flow-based 去重
+        這些資訊應該從上游 INPUT_LAYER_COMPLETE 事件傳遞過來
+        """
+        try:
+            response_text = result.get("text", "")
+            if not response_text:
+                debug_log(2, "[LLM] 無回應文字，跳過處理層完成通知")
+                return
+            
+            info_log(f"[LLM] 處理層完成，發布事件: 回應='{response_text[:50]}...'")
+            
+            # 從 working_context 獲取 session_id 和 cycle_index
+            # (應該由 NLP 通過 INPUT_LAYER_COMPLETE 傳遞,或從全局上下文讀取)
+            session_id = self._get_current_gs_id()
+            cycle_index = self._get_current_cycle_index()
+            
+            # 準備處理層完成數據
+            processing_layer_completion_data = {
+                # Flow-based 去重所需欄位
+                "session_id": session_id,
+                "cycle_index": cycle_index,
+                "layer": "PROCESSING",
+                
+                # 原有數據
+                "response": response_text,
+                "source_module": "llm",
+                "llm_output": result,
+                "timestamp": time.time(),
+                "completion_type": "processing_layer_finished",
+                "mode": result.get("mode", "unknown"),
+                "success": result.get("success", False)
+            }
+            
+            # ✅ 使用事件總線發布事件
+            from core.event_bus import event_bus, SystemEvent
+            event_bus.publish(
+                event_type=SystemEvent.PROCESSING_LAYER_COMPLETE,
+                data=processing_layer_completion_data,
+                source="llm"
+            )
+            
+            debug_log(2, f"[LLM] 處理層完成事件已發布 (session={session_id}, cycle={cycle_index})")
+            
+        except Exception as e:
+            error_log(f"[LLM] 發布處理層完成事件失敗: {e}")
+    
     def _validate_session_architecture(self, current_state) -> bool:
         """驗證會話架構 - 確保 LLM 在適當的會話上下文中運作"""
         try:

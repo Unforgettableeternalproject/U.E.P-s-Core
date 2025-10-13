@@ -1390,3 +1390,135 @@
 
 ---
 
+### Some critical system core changes. 10/10
+
+> Date: Fri, 10 Oct 2025 20:35:30 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_rework`
+
+> Commit: `c746bcdcf9265440fdfef47ccda15f33667b6cd0`
+
+---
+
+### Fixed more major issues related to STT、NLP、LLM，MEM will be dealt with after we've done basic TTS restructure. 10/11
+
+> Date: Sat, 11 Oct 2025 00:10:27 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_rework`
+
+> Commit: `f229aff3247930037b05fdb8d746e4633fbc3d8e`
+
+---
+
+### Fixed more major issues related to STT、NLP、LLM，MEM will be dealt with after we've done basic TTS restructure. 10/11
+
+> Date: Sat, 11 Oct 2025 00:10:27 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_rework`
+
+> Commit: `de4798fab59a1bc7d621f76fa9c441c84923493a`
+
+---
+
+### From IndexTTS migrated some impressive tts technology to adapt to our structure, license is at licenses/ folder. 10/11
+
+> Date: Sat, 11 Oct 2025 13:12:06 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_rework`
+
+> Commit: `595443c2470de6495f5d127cf6e417c6132f0d38`
+
+---
+
+### From IndexTTS migrate several impress tts technology to adapt to our new TTS structure, license is at licenses/. 10/11
+
+> Date: Sat, 11 Oct 2025 13:30:30 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_rework`
+
+> Commit: `281b46846b29bb08eb516d564290ed56c1708442`
+
+---
+
+### Renamed TTS utils to avoid conflict, and made basic TTS main program adapt to the new structure. 10/11
+
+> Date: Sat, 11 Oct 2025 15:05:00 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_rework`
+
+> Commit: `e2214c955da5a5f47cae31f0cc38d1efb7ef4975`
+
+---
+
+### Improved voice streaming, but is still working on improving the speed of TTS. (especially GPT generation). 10/11
+
+> Date: Sat, 11 Oct 2025 16:35:50 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_rework`
+
+> Commit: `fe703241f91806e45326f16fe941d2cd7f570813`
+
+---
+
+### Made it so the temp tts files will be cleared after being played, also added some manual tests and test tabs. 10/12
+
+> Date: Sun, 12 Oct 2025 17:40:47 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_rework`
+
+> Commit: `2de1e6b46723201a2feab0596c83a6ae5ecaee0c`
+
+---
+
+### feat: Add event-driven architecture documentation and implement event publishing in modules
+
+> Date: Sun, 12 Oct 2025 22:12:30 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_rework`
+
+> Commit: `e04128664cc6d5a4b4146ac42a9ca97cbacd87d3`
+
+---
+
+### feat: Implement text input mode in SystemLoop and related modules
+
+> Date: Mon, 13 Oct 2025 15:41:02 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_rework`
+
+> Commit: `261bbd2384d284fe34f0df3d8c95d1513a292533`
+
+---
+
+### Some minor file changes. 10/13
+
+> Date: Mon, 13 Oct 2025 16:32:54 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `develop`
+
+> Commit: `c33213149d1f4ad19df3e906f14a91f3bf4912e1`
+
+---
+

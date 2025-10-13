@@ -1,0 +1,6 @@
+{
+    "python.analysis.importFormat": "relative",
+    "python.analysis.inlayHints.callArgumentNames": "all",
+    "python.analysis.languageServerMode": "default",
+    "python.analysis.typeCheckingMode": "standard"
+}

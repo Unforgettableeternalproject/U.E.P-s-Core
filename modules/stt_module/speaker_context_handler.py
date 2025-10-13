@@ -124,7 +124,7 @@ class SpeakerContextHandler:
             # 處理自動決策
             if decision.get('decision_type') == 'auto_assign':
                 speaker_id = decision.get('speaker_id')
-                return self._assign_to_speaker(embeddings, speaker_id)
+                return self._assign_to_speaker(embeddings, speaker_id)  # type: ignore
             
             # 處理用戶回應
             user_response = decision.get('user_response', decision)

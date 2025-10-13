@@ -165,18 +165,15 @@ class StateManager:
                 self._current_session_id = cs_id
                 debug_log(2, f"[StateManager] 創建聊天會話成功: {cs_id}")
                 
-                # 如果有初始輸入，處理它
-                if context and context.get("initial_input"):
-                    cs = session_manager.get_session(cs_id)
-                    if cs and hasattr(cs, 'process_input'):
-                        response = cs.process_input(context["initial_input"])
-                        debug_log(3, f"[StateManager] 處理初始輸入完成: {cs_id}")
-                        
+                # 注意：處理輸入現在由 Router 負責，CS 只記錄
+                # 這裡只是創建會話，不處理輸入
+                
                 if callable(queue_callback):
-                    success = bool(response and response.get("success", True))
-                    queue_callback(cs.session_id, success, response or {})
+                    queue_callback(cs_id, True, {"session_created": True})
             else:
                 debug_log(1, "[StateManager] 創建聊天會話失敗")
+                if callable(queue_callback):
+                    queue_callback(None, False, {"error": "Failed to create chat session"})
                 
         except RuntimeError as e:
             # 對於架構錯誤，直接向上拋出

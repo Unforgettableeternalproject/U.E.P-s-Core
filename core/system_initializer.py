@@ -169,22 +169,10 @@ class SystemInitializer:
             self.phase = InitializationPhase.ROUTER_INIT
             info_log("🔀 初始化 Router...")
             
-            # 導入 Router
+            # 導入 Router - Router 是無狀態的,導入即可用
             from core.router import router
             
-            # Router 會自動初始化，這裡驗證其狀態
-            if hasattr(router, 'is_initialized'):
-                if not router.is_initialized:
-                    # 如果 Router 需要明確初始化
-                    if hasattr(router, 'initialize'):
-                        success = router.initialize()
-                        if not success:
-                            error_log("   ❌ Router 初始化失敗")
-                            return False
-                        
-                info_log("   ✅ Router 已就緒，等待用戶輸入")
-            else:
-                info_log("   ✅ Router 已載入")
+            info_log("   ✅ Router 已載入,等待文字路由請求")
             
             return True
             
@@ -244,8 +232,8 @@ class SystemInitializer:
                     info_log(f"   🧹 清理了 {cleaned} 個過期上下文")
             
             # 確認決策處理器已註冊
-            if hasattr(working_context_manager, '_decision_handlers'):
-                handler_count = len(working_context_manager._decision_handlers)
+            if hasattr(working_context_manager, 'decision_handlers'):
+                handler_count = len(working_context_manager.decision_handlers)
                 info_log(f"   🎯 已註冊 {handler_count} 個決策處理器")
             
             info_log("   ✅ Working Context 已設置")

@@ -1,6 +1,7 @@
 # modules/llm_module/gemini_client.py
 
 import os
+from typing import Any
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
@@ -16,7 +17,7 @@ class GeminiWrapper:
 
         # 安全設定可用 config 控制，這裡先寫死為 OFF
         self.safety_settings = [
-            types.SafetySetting(category=str(item["category"]), threshold=str(item["threshold"]))
+            types.SafetySetting(category=str(item["category"]), threshold=str(item["threshold"])) # type: ignore
             for item in config.get("safety_settings", [
                 {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_LOW_AND_ABOVE"},
                 {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_LOW_AND_ABOVE"},
@@ -315,24 +316,24 @@ class GeminiWrapper:
         # [修改] 支援單一 id 或多個 id
         if self.cache_enabled and cached_content:
             if isinstance(cached_content, (list, tuple)):
-                config.cached_content = list(cached_content)
+                config.cached_content = list(cached_content) # type: ignore
             else:
                 config.cached_content = cached_content
 
         result = self.client.models.generate_content(
             model=self.model_name,
-            contents=contents,
+            contents=contents, # type: ignore
             config=config
         )
 
-        part = result.candidates[0].content.parts[0]
+        part = result.candidates[0].content.parts[0] # type: ignore
 
         import json
-        payload = {}
+        payload: dict[str, Any] = {}
         if hasattr(part, 'text') and part.text:
             payload = json.loads(part.text)
-        elif hasattr(part, 'struct') and part.struct:
-            payload = part.struct
+        elif hasattr(part, 'struct') and part.struct:  # type: ignore
+            payload = part.struct  # type: ignore
         else:
             payload = {"text": "❌ Gemini 未產出有效回應"}
 

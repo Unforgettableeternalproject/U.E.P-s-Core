@@ -103,9 +103,9 @@ class ProductionRunner:
         try:
             info_log("🔄 啟動系統主循環...")
             
-            # 導入並創建系統循環
-            from core.system_loop import SystemLoop
-            self.system_loop = SystemLoop()
+            # 使用全局單例系統循環 (避免重複訂閱事件)
+            from core.system_loop import system_loop
+            self.system_loop = system_loop
             
             # 啟動循環
             success = self.system_loop.start()

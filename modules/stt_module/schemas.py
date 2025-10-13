@@ -33,10 +33,19 @@ class STTOutput(BaseModel):
     alternatives: Optional[List[str]] = None      # 備選結果
     error: Optional[str] = None                   # 錯誤訊息
     should_activate: bool = True                  # 是否應該啟動（智能判斷結果）
+    metadata: Dict[str, Any] = {}                 # 額外元資料 (如文字輸入模式標記)
     
     def to_unified_format(self) -> STTModuleData:
         """轉換為統一數據格式，用於模組間通訊"""
         has_valid_text = self.text and len(self.text.strip()) > 0
+        
+        # 合併 metadata,確保特殊標記被保留
+        combined_metadata = {
+            "processing_time": self.processing_time,
+            "alternatives": self.alternatives,
+            "should_activate": self.should_activate,
+            **self.metadata  # 包含文字輸入模式等特殊標記
+        }
         
         return STTModuleData(
             text=self.text,
@@ -46,11 +55,7 @@ class STTOutput(BaseModel):
             status="success" if has_valid_text and not self.error else "error",
             error=self.error,
             source_module="stt",
-            metadata={
-                "processing_time": self.processing_time,
-                "alternatives": self.alternatives,
-                "should_activate": self.should_activate
-            }
+            metadata=combined_metadata
         )
 
 class VoiceActivityEvent(BaseModel):

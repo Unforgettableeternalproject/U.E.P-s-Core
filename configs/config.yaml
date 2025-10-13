@@ -1,39 +1,34 @@
-# Default config for general modules
-
 modules_enabled:
   stt_module: true
   nlp_module: true
   mem_module: true
   llm_module: true
-  tts_module: false
+  tts_module: true
   sys_module: false
   ui_module: true
   ani_module: true
   mov_module: true
-
-# 模組重構狀態追蹤 - 只有標記為已重構的模組會在正式環境中被 controller 載入
 modules_refactored:
   stt_module: true
   nlp_module: true
   mem_module: true
   llm_module: true
-  tts_module: false
+  tts_module: true
   sys_module: false
   ui_module: false
   ani_module: false
   mov_module: false
-
 logging:
-  enabled: true
-  log_level: "DEBUG"
-  log_dir: "logs"
-  enable_split_logs: true
-
+  enabled: false
+  log_level: DEBUG
+  log_dir: logs
+  enable_split_logs: false
 debug:
   enabled: true
   debug_level: 3
-
-# 全局系統設置 - 用於控制系統級別行為
 system:
-  main_loop_interval: 0.1  # 主循環間隔（秒）
-  shutdown_timeout: 5.0    # 關閉超時時間（秒）
+  main_loop_interval: 0.1
+  shutdown_timeout: 5.0
+  input_mode:
+    mode: vad
+    text_input_prompt: '>>> '

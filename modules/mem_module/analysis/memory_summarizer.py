@@ -91,7 +91,7 @@ class MemorySummarizer:
                 return ""
             
             chunk_size = chunk_size or self.chunk_size
-            chunks = [memories[i:i+chunk_size] for i in range(0, len(memories), chunk_size)]
+            chunks = [memories[i:i+chunk_size] for i in range(0, len(memories), chunk_size)] # type: ignore
             summaries = []
             
             debug_log(2, f"[MemorySummarizer] 記憶切塊大小: {chunk_size}")
@@ -171,7 +171,7 @@ class MemorySummarizer:
                 memory_desc = f"[{memory.memory_type.value}] {memory.content}"
                 
                 # 添加重要性標註
-                if memory.importance in [MemoryImportance.HIGH, MemoryImportance.CRITICAL]:
+                if memory.importance in [MemoryImportance.HIGH, MemoryImportance.CRITICAL]: # type: ignore
                     memory_desc = f"❗ {memory_desc}"
                 
                 # 添加時間信息

@@ -61,18 +61,50 @@ class ConversationStyle:
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
+    @property
+    def formality_preference(self):
+        raise NotImplementedError
+
+    @formality_preference.setter
+    def formality_preference(self, value):
+        raise NotImplementedError
+
+    @property
+    def verbosity_preference(self):
+        raise NotImplementedError
+
+    @verbosity_preference.setter
+    def verbosity_preference(self, value):
+        raise NotImplementedError
+
+    @property
+    def question_frequency(self):
+        raise NotImplementedError
+
+    @question_frequency.setter
+    def question_frequency(self, value):
+        raise NotImplementedError
+
+    @property
+    def technical_level(self):
+        raise NotImplementedError
+
+    @technical_level.setter
+    def technical_level(self, value):
+        raise NotImplementedError
+
 
 @dataclass
 class SystemUsagePattern:
     """系統使用習慣"""
-    most_used_functions: List[str] = None
-    preferred_interaction_times: List[int] = None  # 小時
+    most_used_functions: List[str] = None # type: ignore
+    preferred_interaction_times: List[int] = None  # type: ignore # 小時
     session_duration_preference: str = "medium"    # short, medium, long
     help_seeking_frequency: str = "medium"         # low, medium, high
     
     # 功能使用統計
-    function_usage_count: Dict[str, int] = None
-    interaction_time_distribution: Dict[int, int] = None
+    function_usage_count: Dict[str, int] = None # type: ignore
+    interaction_time_distribution: Dict[int, int] = None # type: ignore
     
     def __post_init__(self):
         if self.most_used_functions is None:
@@ -565,7 +597,7 @@ class LearningEngine:
             "users_count": len(self.conversation_styles),
             "patterns_learned": len(self.usage_patterns),
             "recent_interactions": len([p for p in self.interaction_history 
-                                      if (datetime.now() - p.timestamp).days < 7]),
+                                      if (datetime.now() - p.timestamp).days < 7]), # type: ignore
             "average_response_length": sum(p.response_length for p in self.interaction_history) / 
                                      max(len(self.interaction_history), 1),
             "learning_enabled": self.learning_enabled

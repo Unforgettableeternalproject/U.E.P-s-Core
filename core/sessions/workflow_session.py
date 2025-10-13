@@ -1,28 +1,29 @@
-# core/workflow_session.py
+# core/sessions/workflow_session.py
 """
-Workflow Session (WS) 重構版本
+Workflow Session (WS) 實現 - 重構版本
 
-WS 專門負責處理任務型交互，特點包括：
-1. 任務隔離：每個 WS 都有獨立的任務上下文
-2. 系統整合：與 SYS 模組緊密整合，執行系統級任務
-3. 狀態追蹤：詳細記錄任務執行過程和結果
-4. 錯誤處理：完善的錯誤恢復和回滾機制
+根據系統流程文檔，WS 的正確職責：
+1. 追蹤工作流會話生命週期和狀態
+2. 記錄任務步驟執行信息
+3. 維護任務相關的元數據和配置
+4. 提供工作流級別的上下文信息
 
-會話生命週期：
-1. 初始化 -> 解析任務需求
-2. 任務執行 -> 調用相關系統模組
-3. 狀態更新 -> 追蹤執行進度
-4. 結果輸出 -> 格式化執行結果
-5. 結束 -> 清理資源、返回 GS
+WS 不應該做的事（由模組和 Router 處理）：
+- ❌ 直接調用 SYS/LLM 模組
+- ❌ 管理模組間數據傳遞
+- ❌ 執行具體的任務邏輯
+- ❌ 協調模組工作流
+
+正確的流程應該是：
+Router → 啟動 WS → WS 提供工作流上下文 → Router 調用 SYS/LLM → 
+模組從 Working Context 獲取數據並執行 → Router 轉送結果 → WS 記錄執行結果
 """
 
-from typing import Dict, Any, Optional, List, Callable
+from typing import Dict, Any, Optional, List
 from datetime import datetime
 from enum import Enum
 import uuid
-import traceback
 
-from core.working_context import working_context_manager, ContextType
 from utils.debug_helper import debug_log, info_log, error_log
 
 
@@ -48,7 +49,7 @@ class WSTaskType(Enum):
 
 
 class TaskStep:
-    """任務步驟記錄"""
+    """任務步驟記錄 - 簡化版本，只記錄不執行"""
     
     def __init__(self, step_id: str, step_name: str, step_type: str):
         self.step_id = step_id
@@ -59,38 +60,28 @@ class TaskStep:
         self.completed_at: Optional[datetime] = None
         self.result: Optional[Dict[str, Any]] = None
         self.error: Optional[str] = None
-        self.retry_count = 0
-        self.max_retries = 3
+        self.metadata: Dict[str, Any] = {}
         
-    def start_execution(self):
-        """開始執行步驟"""
+    def start(self):
+        """標記步驟開始"""
         self.status = "executing"
         self.started_at = datetime.now()
         
-    def complete_execution(self, result: Dict[str, Any]):
-        """完成執行"""
+    def complete(self, result: Dict[str, Any]):
+        """標記步驟完成"""
         self.status = "completed"
         self.completed_at = datetime.now()
         self.result = result
         
-    def fail_execution(self, error: str):
-        """執行失敗"""
+    def fail(self, error: str):
+        """標記步驟失敗"""
         self.status = "failed"
         self.completed_at = datetime.now()
         self.error = error
         
-    def can_retry(self) -> bool:
-        """檢查是否可以重試"""
-        return self.retry_count < self.max_retries
-        
-    def retry(self):
-        """重試執行"""
-        if self.can_retry():
-            self.retry_count += 1
-            self.status = "pending"
-            self.error = None
-            return True
-        return False
+    def add_metadata(self, key: str, value: Any):
+        """添加元數據"""
+        self.metadata[key] = value
         
     def get_duration(self) -> Optional[float]:
         """獲取執行時間"""
@@ -110,12 +101,25 @@ class TaskStep:
             "duration": self.get_duration(),
             "result": self.result,
             "error": self.error,
-            "retry_count": self.retry_count
+            "metadata": self.metadata
         }
 
 
 class WorkflowSession:
-    """工作流會話 (重構版本)"""
+    """
+    工作流會話 - 重構版本
+    
+    職責：
+    - 會話生命週期管理
+    - 任務步驟記錄
+    - 工作流元數據維護
+    - 提供工作流上下文信息
+    
+    不負責：
+    - 模組調用（由 Router 處理）
+    - 任務執行（由 SYS/LLM 模組處理）
+    - 工作流協調（由 Router 和 Working Context 處理）
+    """
     
     def __init__(self, session_id: str, gs_session_id: str, 
                  task_type: WSTaskType, task_definition: Dict[str, Any]):
@@ -127,528 +131,434 @@ class WorkflowSession:
         self.status = WSStatus.INITIALIZING
         self.created_at = datetime.now()
         self.last_activity = self.created_at
+        self.ended_at: Optional[datetime] = None
         
-        # 任務執行相關
+        # 任務步驟記錄
         self.task_steps: List[TaskStep] = []
         self.current_step_index = 0
-        self.execution_context: Dict[str, Any] = {}
-        self.task_result: Optional[Dict[str, Any]] = None
+        
+        # 工作流元數據
+        self.workflow_token = self._generate_workflow_token()
+        self.session_metadata: Dict[str, Any] = {
+            "task_type": task_type.value,
+            "task_name": task_definition.get("name", "unnamed_task"),
+            "task_priority": task_definition.get("priority", "normal"),
+            "expected_steps": task_definition.get("steps_count", 0)
+        }
         
         # 會話配置
         self.config = {
             "timeout_seconds": 300,  # 5 分鐘超時
-            "auto_retry": True,
-            "parallel_execution": False,
-            "save_intermediate_results": True
+            "max_steps": 50,  # 最大步驟數
+            "allow_parallel": False,  # 是否允許並行執行（供模組參考）
         }
         
-        # 執行器映射
-        self.step_executors: Dict[str, Callable] = {}
+        # 會話統計
+        self.stats = {
+            "total_steps": 0,
+            "completed_steps": 0,
+            "failed_steps": 0,
+            "total_processing_time": 0.0,
+            "avg_step_time": 0.0
+        }
         
-        # 初始化會話
-        self._initialize_session()
+        self._initialize()
         
-    def _initialize_session(self):
+    def _generate_workflow_token(self) -> str:
+        """生成工作流標識符"""
+        return f"ws_{self.session_id}_{int(self.created_at.timestamp())}"
+    
+    def _initialize(self):
         """初始化會話"""
         try:
-            # 1. 解析任務定義
-            self._parse_task_definition()
-            
-            # 2. 設定執行器
-            self._setup_step_executors()
-            
-            # 3. 設定 Working Context
-            self._setup_working_context()
-            
             self.status = WSStatus.READY
             info_log(f"[WorkflowSession] WS 初始化完成: {self.session_id}")
+            debug_log(2, f"  └─ GS: {self.gs_session_id}")
+            debug_log(2, f"  └─ 工作流標識: {self.workflow_token}")
+            debug_log(2, f"  └─ 任務類型: {self.task_type.value}")
             
         except Exception as e:
             error_log(f"[WorkflowSession] WS 初始化失敗: {e}")
             self.status = WSStatus.FAILED
     
-    def _parse_task_definition(self):
-        """解析任務定義"""
-        task_command = self.task_definition.get("command", "")
-        task_params = self.task_definition.get("parameters", {})
+    def add_step(self, step_name: str, step_type: str) -> str:
+        """
+        添加新的任務步驟
         
-        # 根據任務類型生成執行步驟
-        if self.task_type == WSTaskType.SYSTEM_COMMAND:
-            self._generate_system_command_steps(task_command, task_params)
-        elif self.task_type == WSTaskType.FILE_OPERATION:
-            self._generate_file_operation_steps(task_command, task_params)
-        elif self.task_type == WSTaskType.WORKFLOW_AUTOMATION:
-            self._generate_workflow_automation_steps(task_command, task_params)
-        elif self.task_type == WSTaskType.MODULE_INTEGRATION:
-            self._generate_module_integration_steps(task_command, task_params)
-        else:
-            self._generate_custom_task_steps(task_command, task_params)
+        Args:
+            step_name: 步驟名稱
+            step_type: 步驟類型
+            
+        Returns:
+            step_id: 步驟ID
+        """
+        try:
+            step_id = f"step_{len(self.task_steps) + 1}"
+            step = TaskStep(step_id, step_name, step_type)
+            self.task_steps.append(step)
+            
+            self.last_activity = datetime.now()
+            
+            debug_log(2, f"[WorkflowSession] 添加步驟: {step_id} - {step_name}")
+            
+            return step_id
+            
+        except Exception as e:
+            error_log(f"[WorkflowSession] 添加步驟失敗: {e}")
+            return ""
+    
+    def start_step(self, step_id: str):
+        """
+        標記步驟開始執行
         
-        debug_log(2, f"[WorkflowSession] 生成任務步驟: {len(self.task_steps)} 步")
+        Args:
+            step_id: 步驟ID
+        """
+        try:
+            step = self._get_step(step_id)
+            if step:
+                step.start()
+                self.status = WSStatus.EXECUTING
+                self.last_activity = datetime.now()
+                debug_log(2, f"[WorkflowSession] 開始執行步驟: {step_id}")
+            else:
+                error_log(f"[WorkflowSession] 找不到步驟: {step_id}")
+                
+        except Exception as e:
+            error_log(f"[WorkflowSession] 開始步驟失敗: {e}")
     
-    def _generate_system_command_steps(self, command: str, params: Dict[str, Any]):
-        """生成系統命令步驟"""
-        steps = [
-            TaskStep("validate_command", "驗證命令", "validation"),
-            TaskStep("prepare_environment", "準備環境", "preparation"),
-            TaskStep("execute_command", "執行命令", "execution"),
-            TaskStep("process_result", "處理結果", "processing")
-        ]
-        self.task_steps.extend(steps)
+    def complete_step(self, step_id: str, result: Dict[str, Any]):
+        """
+        標記步驟完成
+        
+        Args:
+            step_id: 步驟ID
+            result: 執行結果
+        """
+        try:
+            step = self._get_step(step_id)
+            if step:
+                step.complete(result)
+                self.last_activity = datetime.now()
+                
+                # 更新統計
+                self.stats["total_steps"] += 1
+                self.stats["completed_steps"] += 1
+                
+                duration = step.get_duration()
+                if duration:
+                    self.stats["total_processing_time"] += duration
+                    self.stats["avg_step_time"] = (
+                        self.stats["total_processing_time"] / self.stats["total_steps"]
+                    )
+                
+                debug_log(2, f"[WorkflowSession] 步驟完成: {step_id}")
+                
+                # 檢查是否所有步驟都完成
+                if self._all_steps_completed():
+                    self.status = WSStatus.COMPLETED
+                else:
+                    self.status = WSStatus.READY
+            else:
+                error_log(f"[WorkflowSession] 找不到步驟: {step_id}")
+                
+        except Exception as e:
+            error_log(f"[WorkflowSession] 完成步驟失敗: {e}")
     
-    def _generate_file_operation_steps(self, command: str, params: Dict[str, Any]):
-        """生成文件操作步驟"""
-        steps = [
-            TaskStep("validate_paths", "驗證路徑", "validation"),
-            TaskStep("check_permissions", "檢查權限", "validation"),
-            TaskStep("perform_operation", "執行操作", "execution"),
-            TaskStep("verify_result", "驗證結果", "verification")
-        ]
-        self.task_steps.extend(steps)
+    def fail_step(self, step_id: str, error: str):
+        """
+        標記步驟失敗
+        
+        Args:
+            step_id: 步驟ID
+            error: 錯誤信息
+        """
+        try:
+            step = self._get_step(step_id)
+            if step:
+                step.fail(error)
+                self.last_activity = datetime.now()
+                
+                # 更新統計
+                self.stats["total_steps"] += 1
+                self.stats["failed_steps"] += 1
+                
+                error_log(f"[WorkflowSession] 步驟失敗: {step_id} - {error}")
+                
+                # 步驟失敗可能導致整個工作流失敗
+                self.status = WSStatus.FAILED
+            else:
+                error_log(f"[WorkflowSession] 找不到步驟: {step_id}")
+                
+        except Exception as e:
+            error_log(f"[WorkflowSession] 標記步驟失敗時出錯: {e}")
     
-    def _generate_workflow_automation_steps(self, command: str, params: Dict[str, Any]):
-        """生成工作流自動化步驟"""
-        steps = [
-            TaskStep("analyze_workflow", "分析工作流", "analysis"),
-            TaskStep("prepare_modules", "準備模組", "preparation"),
-            TaskStep("execute_workflow", "執行工作流", "execution"),
-            TaskStep("collect_results", "收集結果", "collection")
-        ]
-        self.task_steps.extend(steps)
-    
-    def _generate_module_integration_steps(self, command: str, params: Dict[str, Any]):
-        """生成模組整合步驟"""
-        steps = [
-            TaskStep("identify_modules", "識別模組", "identification"),
-            TaskStep("setup_integration", "設定整合", "setup"),
-            TaskStep("perform_integration", "執行整合", "execution"),
-            TaskStep("validate_integration", "驗證整合", "validation")
-        ]
-        self.task_steps.extend(steps)
-    
-    def _generate_custom_task_steps(self, command: str, params: Dict[str, Any]):
-        """生成自定義任務步驟"""
-        steps = [
-            TaskStep("parse_custom_task", "解析自定義任務", "parsing"),
-            TaskStep("execute_custom_logic", "執行自定義邏輯", "execution"),
-            TaskStep("format_custom_result", "格式化自定義結果", "formatting")
-        ]
-        self.task_steps.extend(steps)
-    
-    def _setup_step_executors(self):
-        """設定步驟執行器"""
-        self.step_executors = {
-            # 驗證類執行器
-            "validate_command": self._execute_validate_command,
-            "validate_paths": self._execute_validate_paths,
-            "check_permissions": self._execute_check_permissions,
-            
-            # 準備類執行器
-            "prepare_environment": self._execute_prepare_environment,
-            "prepare_modules": self._execute_prepare_modules,
-            "setup_integration": self._execute_setup_integration,
-            
-            # 執行類執行器
-            "execute_command": self._execute_command,
-            "perform_operation": self._execute_file_operation,
-            "execute_workflow": self._execute_workflow,
-            "perform_integration": self._execute_integration,
-            
-            # 處理類執行器
-            "process_result": self._execute_process_result,
-            "verify_result": self._execute_verify_result,
-            "collect_results": self._execute_collect_results,
-            
-            # 其他執行器
-            "analyze_workflow": self._execute_analyze_workflow,
-            "identify_modules": self._execute_identify_modules,
-            "validate_integration": self._execute_validate_integration,
-            
-            # 自定義執行器
-            "parse_custom_task": self._execute_parse_custom_task,
-            "execute_custom_logic": self._execute_custom_logic,
-            "format_custom_result": self._execute_format_custom_result
-        }
-    
-    def _setup_working_context(self):
-        """設定 Working Context"""
-        workflow_context = {
+    def get_session_context(self) -> Dict[str, Any]:
+        """
+        獲取工作流會話上下文（供模組使用）
+        
+        Returns:
+            會話上下文數據
+        """
+        return {
             "session_id": self.session_id,
             "gs_session_id": self.gs_session_id,
+            "workflow_token": self.workflow_token,
             "task_type": self.task_type.value,
             "task_definition": self.task_definition,
-            "execution_mode": "workflow",
-            "step_count": len(self.task_steps)
-        }
-        
-        working_context_manager.set_data(
-            ContextType.SYS_WORKFLOW,
-            "workflow_session",
-            workflow_context
-        )
-    
-    def start_execution(self) -> bool:
-        """開始執行任務"""
-        if self.status != WSStatus.READY:
-            error_log(f"[WorkflowSession] WS 狀態不正確，無法開始執行: {self.status}")
-            return False
-        
-        try:
-            self.status = WSStatus.EXECUTING
-            self.last_activity = datetime.now()
-            self.current_step_index = 0
-            
-            info_log(f"[WorkflowSession] 開始執行任務: {self.session_id}")
-            return True
-            
-        except Exception as e:
-            error_log(f"[WorkflowSession] 開始執行失敗: {e}")
-            self.status = WSStatus.FAILED
-            return False
-    
-    def execute_next_step(self) -> Dict[str, Any]:
-        """執行下一步驟"""
-        if self.status != WSStatus.EXECUTING:
-            return {
-                "success": False,
-                "error": f"會話狀態不正確: {self.status}"
-            }
-        
-        if self.current_step_index >= len(self.task_steps):
-            # 所有步驟完成
-            return self._complete_execution()
-        
-        try:
-            current_step = self.task_steps[self.current_step_index]
-            
-            # 開始執行步驟
-            current_step.start_execution()
-            self.last_activity = datetime.now()
-            
-            # 獲取執行器
-            executor = self.step_executors.get(current_step.step_id)
-            if not executor:
-                raise Exception(f"找不到步驟執行器: {current_step.step_id}")
-            
-            # 執行步驟
-            result = executor(current_step)
-            
-            if result.get("success", False):
-                # 步驟執行成功
-                current_step.complete_execution(result)
-                self.current_step_index += 1
-                
-                info_log(f"[WorkflowSession] 步驟執行成功: {current_step.step_name}")
-                
-                # 如果還有下一步，返回繼續信號
-                if self.current_step_index < len(self.task_steps):
-                    return {
-                        "success": True,
-                        "step_completed": current_step.to_dict(),
-                        "has_next_step": True,
-                        "next_step": self.task_steps[self.current_step_index].step_name
-                    }
-                else:
-                    # 最後一步完成，結束執行
-                    return self._complete_execution()
-            else:
-                # 步驟執行失敗
-                error_msg = result.get("error", "未知錯誤")
-                current_step.fail_execution(error_msg)
-                
-                # 檢查是否可以重試
-                if self.config["auto_retry"] and current_step.can_retry():
-                    current_step.retry()
-                    error_log(f"[WorkflowSession] 步驟失敗，重試中: {current_step.step_name}")
-                    return self.execute_next_step()  # 遞歸重試
-                else:
-                    # 無法重試，標記為失敗
-                    self.status = WSStatus.FAILED
-                    error_log(f"[WorkflowSession] 步驟執行失敗: {current_step.step_name}, 錯誤: {error_msg}")
-                    return {
-                        "success": False,
-                        "error": error_msg,
-                        "failed_step": current_step.to_dict()
-                    }
-                    
-        except Exception as e:
-            error_log(f"[WorkflowSession] 執行步驟時發生異常: {e}")
-            traceback.print_exc()
-            
-            current_step = self.task_steps[self.current_step_index]
-            current_step.fail_execution(str(e))
-            self.status = WSStatus.FAILED
-            
-            return {
-                "success": False,
-                "error": str(e),
-                "failed_step": current_step.to_dict()
-            }
-    
-    def _complete_execution(self) -> Dict[str, Any]:
-        """完成執行"""
-        try:
-            # 收集所有步驟結果
-            step_results = [step.to_dict() for step in self.task_steps]
-            
-            # 生成任務結果
-            self.task_result = {
-                "session_id": self.session_id,
-                "task_type": self.task_type.value,
-                "execution_summary": {
-                    "total_steps": len(self.task_steps),
-                    "completed_steps": len([s for s in self.task_steps if s.status == "completed"]),
-                    "failed_steps": len([s for s in self.task_steps if s.status == "failed"]),
-                    "total_duration": (datetime.now() - self.created_at).total_seconds()
-                },
-                "step_results": step_results,
-                "final_status": "completed"
-            }
-            
-            self.status = WSStatus.COMPLETED
-            self.last_activity = datetime.now()
-            
-            info_log(f"[WorkflowSession] 任務執行完成: {self.session_id}")
-            
-            return {
-                "success": True,
-                "execution_completed": True,
-                "task_result": self.task_result
-            }
-            
-        except Exception as e:
-            error_log(f"[WorkflowSession] 完成執行時發生錯誤: {e}")
-            self.status = WSStatus.FAILED
-            return {
-                "success": False,
-                "error": str(e)
-            }
-    
-    # 步驟執行器實現 (簡化版本，實際使用時需要完整實現)
-    def _execute_validate_command(self, step: TaskStep) -> Dict[str, Any]:
-        """驗證命令執行器"""
-        command = self.task_definition.get("command", "")
-        if command.strip():
-            return {"success": True, "validated_command": command}
-        else:
-            return {"success": False, "error": "命令為空"}
-    
-    def _execute_validate_paths(self, step: TaskStep) -> Dict[str, Any]:
-        """驗證路徑執行器"""
-        # 模擬路徑驗證
-        return {"success": True, "paths_valid": True}
-    
-    def _execute_check_permissions(self, step: TaskStep) -> Dict[str, Any]:
-        """檢查權限執行器"""
-        # 模擬權限檢查
-        return {"success": True, "permissions_ok": True}
-    
-    def _execute_prepare_environment(self, step: TaskStep) -> Dict[str, Any]:
-        """準備環境執行器"""
-        # 模擬環境準備
-        return {"success": True, "environment_ready": True}
-    
-    def _execute_prepare_modules(self, step: TaskStep) -> Dict[str, Any]:
-        """準備模組執行器"""
-        # 模擬模組準備
-        return {"success": True, "modules_prepared": True}
-    
-    def _execute_setup_integration(self, step: TaskStep) -> Dict[str, Any]:
-        """設定整合執行器"""
-        # 模擬整合設定
-        return {"success": True, "integration_setup": True}
-    
-    def _execute_command(self, step: TaskStep) -> Dict[str, Any]:
-        """執行命令執行器"""
-        command = self.task_definition.get("command", "")
-        
-        # 透過 Working Context 發送命令執行請求
-        execution_request = {
-            "action": "execute_system_command",
-            "command": command,
-            "session_id": self.session_id,
-            "context": self.execution_context
-        }
-        
-        working_context_manager.set_data(
-            ContextType.SYS_COMMAND,
-            "command_execution",
-            execution_request
-        )
-        
-        # 模擬命令執行結果
-        return {
-            "success": True,
-            "command_output": f"模擬執行命令: {command}",
-            "exit_code": 0
+            "session_metadata": self.session_metadata,
+            "current_step_index": self.current_step_index,
+            "total_steps": len(self.task_steps),
+            "steps": [step.to_dict() for step in self.task_steps],
+            "config": self.config.copy(),
+            "stats": self.stats.copy(),
+            "status": self.status.value,
+            "created_at": self.created_at.isoformat(),
+            "last_activity": self.last_activity.isoformat()
         }
     
-    def _execute_file_operation(self, step: TaskStep) -> Dict[str, Any]:
-        """執行文件操作執行器"""
-        return {"success": True, "file_operation_completed": True}
+    def get_step(self, step_id: str) -> Optional[Dict[str, Any]]:
+        """
+        獲取特定步驟數據
+        
+        Args:
+            step_id: 步驟ID
+            
+        Returns:
+            步驟數據（字典格式）
+        """
+        step = self._get_step(step_id)
+        return step.to_dict() if step else None
     
-    def _execute_workflow(self, step: TaskStep) -> Dict[str, Any]:
-        """執行工作流執行器"""
-        return {"success": True, "workflow_executed": True}
+    def get_current_step(self) -> Optional[Dict[str, Any]]:
+        """獲取當前步驟"""
+        if 0 <= self.current_step_index < len(self.task_steps):
+            return self.task_steps[self.current_step_index].to_dict()
+        return None
     
-    def _execute_integration(self, step: TaskStep) -> Dict[str, Any]:
-        """執行整合執行器"""
-        return {"success": True, "integration_completed": True}
+    def get_pending_steps(self) -> List[Dict[str, Any]]:
+        """獲取待執行的步驟"""
+        pending = [step for step in self.task_steps if step.status == "pending"]
+        return [step.to_dict() for step in pending]
     
-    def _execute_process_result(self, step: TaskStep) -> Dict[str, Any]:
-        """處理結果執行器"""
-        return {"success": True, "result_processed": True}
+    def update_metadata(self, key: str, value: Any):
+        """
+        更新會話元數據
+        
+        Args:
+            key: 元數據鍵
+            value: 元數據值
+        """
+        self.session_metadata[key] = value
+        debug_log(3, f"[WorkflowSession] 更新元數據: {key} = {value}")
     
-    def _execute_verify_result(self, step: TaskStep) -> Dict[str, Any]:
-        """驗證結果執行器"""
-        return {"success": True, "result_verified": True}
-    
-    def _execute_collect_results(self, step: TaskStep) -> Dict[str, Any]:
-        """收集結果執行器"""
-        return {"success": True, "results_collected": True}
-    
-    def _execute_analyze_workflow(self, step: TaskStep) -> Dict[str, Any]:
-        """分析工作流執行器"""
-        return {"success": True, "workflow_analyzed": True}
-    
-    def _execute_identify_modules(self, step: TaskStep) -> Dict[str, Any]:
-        """識別模組執行器"""
-        return {"success": True, "modules_identified": True}
-    
-    def _execute_validate_integration(self, step: TaskStep) -> Dict[str, Any]:
-        """驗證整合執行器"""
-        return {"success": True, "integration_validated": True}
-    
-    def _execute_parse_custom_task(self, step: TaskStep) -> Dict[str, Any]:
-        """解析自定義任務執行器"""
-        return {"success": True, "custom_task_parsed": True}
-    
-    def _execute_custom_logic(self, step: TaskStep) -> Dict[str, Any]:
-        """執行自定義邏輯執行器"""
-        return {"success": True, "custom_logic_executed": True}
-    
-    def _execute_format_custom_result(self, step: TaskStep) -> Dict[str, Any]:
-        """格式化自定義結果執行器"""
-        return {"success": True, "custom_result_formatted": True}
-    
-    def pause_execution(self):
-        """暫停執行"""
-        if self.status == WSStatus.EXECUTING:
+    def pause(self):
+        """暫停工作流"""
+        if self.status in [WSStatus.READY, WSStatus.EXECUTING, WSStatus.WAITING]:
             self.status = WSStatus.PAUSED
             info_log(f"[WorkflowSession] WS 已暫停: {self.session_id}")
     
-    def resume_execution(self):
-        """恢復執行"""
+    def resume(self):
+        """恢復工作流"""
         if self.status == WSStatus.PAUSED:
-            self.status = WSStatus.EXECUTING
+            self.status = WSStatus.READY
             self.last_activity = datetime.now()
             info_log(f"[WorkflowSession] WS 已恢復: {self.session_id}")
     
-    def cancel_execution(self):
-        """取消執行"""
-        if self.status in [WSStatus.EXECUTING, WSStatus.PAUSED, WSStatus.WAITING]:
-            self.status = WSStatus.CANCELLED
-            info_log(f"[WorkflowSession] WS 已取消: {self.session_id}")
+    def cancel(self, reason: str = "user_cancelled"):
+        """
+        取消工作流
+        
+        Args:
+            reason: 取消原因
+        """
+        self.status = WSStatus.CANCELLED
+        self.ended_at = datetime.now()
+        info_log(f"[WorkflowSession] WS 已取消: {self.session_id} - {reason}")
     
-    def get_progress(self) -> Dict[str, Any]:
-        """獲取執行進度"""
-        total_steps = len(self.task_steps)
-        completed_steps = len([s for s in self.task_steps if s.status == "completed"])
+    def end(self, reason: str = "normal") -> Dict[str, Any]:
+        """
+        結束工作流會話
+        
+        Args:
+            reason: 結束原因
+            
+        Returns:
+            工作流總結數據
+        """
+        try:
+            if self.status not in [WSStatus.COMPLETED, WSStatus.FAILED, WSStatus.CANCELLED]:
+                self.status = WSStatus.COMPLETED
+            
+            self.ended_at = datetime.now()
+            
+            duration = (self.ended_at - self.created_at).total_seconds()
+            
+            summary = {
+                "session_id": self.session_id,
+                "gs_session_id": self.gs_session_id,
+                "workflow_token": self.workflow_token,
+                "task_type": self.task_type.value,
+                "duration": duration,
+                "total_steps": len(self.task_steps),
+                "completed_steps": self.stats["completed_steps"],
+                "failed_steps": self.stats["failed_steps"],
+                "stats": self.stats.copy(),
+                "end_reason": reason,
+                "final_status": self.status.value,
+                "created_at": self.created_at.isoformat(),
+                "ended_at": self.ended_at.isoformat()
+            }
+            
+            info_log(f"[WorkflowSession] WS 已結束: {self.session_id}")
+            info_log(f"  └─ 持續時間: {duration:.1f}秒")
+            info_log(f"  └─ 完成步驟: {self.stats['completed_steps']}/{len(self.task_steps)}")
+            info_log(f"  └─ 平均步驟時間: {self.stats['avg_step_time']:.2f}秒")
+            
+            return summary
+            
+        except Exception as e:
+            error_log(f"[WorkflowSession] 結束會話失敗: {e}")
+            return {}
+    
+    def _get_step(self, step_id: str) -> Optional[TaskStep]:
+        """獲取步驟對象"""
+        for step in self.task_steps:
+            if step.step_id == step_id:
+                return step
+        return None
+    
+    def _all_steps_completed(self) -> bool:
+        """檢查是否所有步驟都已完成"""
+        if not self.task_steps:
+            return False
+        
+        return all(
+            step.status in ["completed", "failed"] 
+            for step in self.task_steps
+        )
+    
+    def get_summary(self) -> Dict[str, Any]:
+        """
+        獲取工作流總結
+        
+        Returns:
+            工作流總結數據
+        """
+        duration = (
+            (self.ended_at or datetime.now()) - self.created_at
+        ).total_seconds()
         
         return {
             "session_id": self.session_id,
-            "status": self.status.value,
-            "progress": {
-                "total_steps": total_steps,
-                "completed_steps": completed_steps,
-                "current_step": self.current_step_index,
-                "progress_percentage": (completed_steps / total_steps * 100) if total_steps > 0 else 0
-            },
-            "current_step_info": self.task_steps[self.current_step_index].to_dict() if self.current_step_index < total_steps else None,
-            "execution_time": (datetime.now() - self.created_at).total_seconds()
-        }
-    
-    def get_session_info(self) -> Dict[str, Any]:
-        """獲取會話信息"""
-        return {
-            "session_id": self.session_id,
             "gs_session_id": self.gs_session_id,
+            "workflow_token": self.workflow_token,
             "task_type": self.task_type.value,
+            "task_definition": self.task_definition,
             "status": self.status.value,
+            "duration": duration,
+            "total_steps": len(self.task_steps),
+            "stats": self.stats.copy(),
+            "session_metadata": self.session_metadata,
             "created_at": self.created_at.isoformat(),
             "last_activity": self.last_activity.isoformat(),
-            "task_definition": self.task_definition,
-            "progress": self.get_progress()["progress"],
-            "config": self.config
+            "ended_at": self.ended_at.isoformat() if self.ended_at else None
         }
 
 
 class WorkflowSessionManager:
-    """WS 管理器 (重構版本)"""
+    """
+    Workflow Session 管理器
+    
+    負責創建、追蹤和管理 WS 實例
+    """
     
     def __init__(self):
-        self.active_sessions: Dict[str, WorkflowSession] = {}
-        self.session_history: List[Dict[str, Any]] = []
+        self.sessions: Dict[str, WorkflowSession] = {}
+        self.active_session_id: Optional[str] = None
         
-        info_log("[WorkflowSessionManager] WS 管理器初始化完成")
+        info_log("[WorkflowSessionManager] WS 管理器已初始化")
     
-    def create_session(self, gs_session_id: str, task_type: WSTaskType, 
-                      task_definition: Dict[str, Any]) -> Optional[WorkflowSession]:
-        """創建新的 WS"""
-        try:
-            session_id = f"ws_{gs_session_id}_{len(self.active_sessions) + 1}"
+    def create_session(self, gs_session_id: str, 
+                      task_type: WSTaskType,
+                      task_definition: Dict[str, Any]) -> str:
+        """
+        創建新的 WS
+        
+        Args:
+            gs_session_id: 所屬的 GS ID
+            task_type: 任務類型
+            task_definition: 任務定義
             
-            new_session = WorkflowSession(session_id, gs_session_id, task_type, task_definition)
-            
-            if new_session.status == WSStatus.READY:
-                self.active_sessions[session_id] = new_session
-                info_log(f"[WorkflowSessionManager] 創建 WS: {session_id}")
-                return new_session
-            else:
-                error_log(f"[WorkflowSessionManager] WS 創建失敗: {session_id}")
-                return None
-                
-        except Exception as e:
-            error_log(f"[WorkflowSessionManager] 創建 WS 時發生錯誤: {e}")
-            return None
+        Returns:
+            session_id: WS ID
+        """
+        session_id = f"ws_{uuid.uuid4().hex[:8]}"
+        
+        session = WorkflowSession(session_id, gs_session_id, task_type, task_definition)
+        self.sessions[session_id] = session
+        self.active_session_id = session_id
+        
+        info_log(f"[WorkflowSessionManager] 創建 WS: {session_id}")
+        
+        return session_id
     
     def get_session(self, session_id: str) -> Optional[WorkflowSession]:
-        """獲取 WS"""
-        return self.active_sessions.get(session_id)
+        """獲取 WS 實例"""
+        return self.sessions.get(session_id)
     
-    def end_session(self, session_id: str) -> bool:
-        """結束 WS"""
-        session = self.active_sessions.get(session_id)
-        if session:
-            session_info = session.get_session_info()
-            session_info["final_result"] = session.task_result
-            
-            self.session_history.append(session_info)
-            del self.active_sessions[session_id]
-            
-            # 清理 Working Context
-            working_context_manager.clear_data(ContextType.SYS_WORKFLOW, "workflow_session")
-            
-            info_log(f"[WorkflowSessionManager] 結束 WS: {session_id}")
-            return True
-        return False
+    def get_active_session(self) -> Optional[WorkflowSession]:
+        """獲取當前活躍的 WS"""
+        if self.active_session_id:
+            return self.sessions.get(self.active_session_id)
+        return None
     
     def get_active_sessions(self) -> List[WorkflowSession]:
-        """獲取所有活躍 WS"""
-        return list(self.active_sessions.values())
+        """獲取所有活躍的 WS（狀態為 EXECUTING 或 READY）"""
+        return [
+            session for session in self.sessions.values()
+            if session.status in [WSStatus.EXECUTING, WSStatus.READY]
+        ]
     
-    def cleanup_completed_sessions(self):
-        """清理已完成的會話"""
-        completed_sessions = []
+    def end_session(self, session_id: str, reason: str = "normal") -> Dict[str, Any]:
+        """結束 WS"""
+        session = self.sessions.get(session_id)
+        if session:
+            summary = session.end(reason)
+            
+            if self.active_session_id == session_id:
+                self.active_session_id = None
+            
+            return summary
         
-        for session_id, session in self.active_sessions.items():
-            if session.status in [WSStatus.COMPLETED, WSStatus.FAILED, WSStatus.CANCELLED]:
-                completed_sessions.append(session_id)
+        return {}
+    
+    def cancel_session(self, session_id: str, reason: str = "user_cancelled"):
+        """取消 WS"""
+        session = self.sessions.get(session_id)
+        if session:
+            session.cancel(reason)
+            
+            if self.active_session_id == session_id:
+                self.active_session_id = None
+    
+    def cleanup_old_sessions(self, keep_recent: int = 10):
+        """清理舊的已完成會話"""
+        completed_sessions = [
+            (sid, s) for sid, s in self.sessions.items()
+            if s.status in [WSStatus.COMPLETED, WSStatus.FAILED, WSStatus.CANCELLED]
+        ]
         
-        for session_id in completed_sessions:
-            self.end_session(session_id)
-            info_log(f"[WorkflowSessionManager] 清理已完成 WS: {session_id}")
+        # 按結束時間排序
+        completed_sessions.sort(key=lambda x: x[1].ended_at or datetime.min)
+        
+        # 保留最近的會話，刪除其餘的
+        if len(completed_sessions) > keep_recent:
+            to_remove = completed_sessions[:-keep_recent]
+            for session_id, _ in to_remove:
+                del self.sessions[session_id]
+                debug_log(2, f"[WorkflowSessionManager] 清理舊會話: {session_id}")
 
 
-# 全域 WS 管理器實例
+# 全局 WS 管理器實例
 workflow_session_manager = WorkflowSessionManager()

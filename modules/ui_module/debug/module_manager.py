@@ -242,9 +242,11 @@ class ModuleManager:
                 "system_status_monitoring": debug_api.llm_test_system_status_monitoring_wrapper,
             }
             
-            # TTS 測試函數 - 使用包裝函數
+            # TTS 測試函數 - GUI 專用測試函數
             self.test_functions["tts"] = {
-                "basic_test": debug_api.tts_test_wrapper,
+                "synthesis": debug_api.tts_synthesis_wrapper,
+                "stop_playback": debug_api.tts_stop_playback_wrapper,
+                "clear_queue": debug_api.tts_clear_queue_wrapper,
             }
             
             # Frontend 測試函數 - 使用包裝函數 (統合 UI、ANI、MOV)

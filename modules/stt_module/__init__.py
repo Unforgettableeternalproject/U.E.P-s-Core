@@ -100,17 +100,28 @@ def register():
                 from datetime import datetime
                 timestamp = datetime.now().isoformat()
                 
+                # 檢查 metadata 以判斷是否為文字輸入模式
+                metadata = {}
+                if hasattr(stt_result, 'metadata'):
+                    metadata = stt_result.metadata if isinstance(stt_result.metadata, dict) else {}
+                elif isinstance(stt_result, dict):
+                    metadata = stt_result.get('metadata', {})
+                
                 nlp_input = {
                     'text': text,
                     'timestamp': timestamp,
                     'source': 'stt_direct',
+                    'metadata': metadata,  # 傳遞 metadata 給 NLP
                     # 不直接包含speaker_id，讓NLP從Working Context獲取
                 }
                 
                 # 將文本傳遞給NLP模組，NLP將從Working Context獲取說話人資料
                 nlp_module = core_framework.get_module('nlp')
                 if nlp_module:
-                    debug_log(2, f"[STT-NLP] 傳遞文本給NLP，說話人資料已存儲到WC")
+                    if metadata.get('input_mode') == 'text':
+                        debug_log(2, f"[STT-NLP] 文字輸入模式：傳遞文本給NLP")
+                    else:
+                        debug_log(2, f"[STT-NLP] 傳遞文本給NLP，說話人資料已存儲到WC")
                     return nlp_module.handle(nlp_input)
                 else:
                     from utils.debug_helper import error_log

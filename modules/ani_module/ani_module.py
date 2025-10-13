@@ -2,11 +2,11 @@ from __future__ import annotations
 from typing import Callable, Dict, Optional, List
 import time
 import os, glob
-from utils.debug_helper import debug_log, info_log, error_log
+from utils.debug_helper import debug_log, debug_log_e, info_log, error_log
 from core.bases.frontend_base import BaseFrontendModule, FrontendModuleType  # type: ignore
 
 try:
-    from PyQt5.QtCore import QTimer
+    from PyQt5.QtCore import QTimer # type: ignore
     from PyQt5.QtGui import QPixmap
     PYQT5 = True
 except Exception:
@@ -59,7 +59,7 @@ class ANIModule(BaseFrontendModule):
             if PYQT5:
                 self.signals.add_timer_callback("ani_update", self._on_tick)
                 self.timer = QTimer()
-                self.timer.timeout.connect(lambda: self.signals.timer_timeout("ani_update"))
+                self.timer.timeout.connect(lambda: self.signals.timer_timeout("ani_update")) # type: ignore
                 self.timer.start(self._tick_interval_ms)
             return True
         except Exception as e:
@@ -72,7 +72,7 @@ class ANIModule(BaseFrontendModule):
         if cmd == "play":
             name = data.get("animation_type")
             loop = data.get("loop")
-            return self.play(name, loop)
+            return self.play(name, loop) # type: ignore
         if cmd == "stop":
             self.stop()
             return {"success": True}
@@ -172,7 +172,7 @@ class ANIModule(BaseFrontendModule):
                     debug_log(3, f"[ANI] get_current_frame: 無法導入 QApplication")
                     return None
 
-                original_pm = QPixmap(frame_path)
+                original_pm = QPixmap(frame_path) # type: ignore
                 if original_pm.isNull():
                     debug_log(2, f"[ANI] get_current_frame: QPixmap 載入失敗 {frame_path}")
                     return None
@@ -283,7 +283,7 @@ class ANIModule(BaseFrontendModule):
             if total_frames <= 0:
                 # 若真的沒提供 frame 數，可回退 30；建議 YAML 填好 total_frames
                 total_frames = 30
-                debug_log(2, f"[ANI] {name} 使用預設幀數: {total_frames}")
+                debug_log_e(2, f"[ANI] {name} 使用預設幀數: {total_frames}")
             try:
                 from .core.animation_clip import AnimationClip
                 self.manager.register_clip(AnimationClip(
@@ -464,7 +464,7 @@ class ANIModule(BaseFrontendModule):
                 # 縮放變換
                 scaled_width = int(orig_width * zoom)
                 scaled_height = int(orig_height * zoom)
-                scaled_pm = original_pm.scaled(scaled_width, scaled_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                scaled_pm = original_pm.scaled(scaled_width, scaled_height, Qt.KeepAspectRatio, Qt.SmoothTransformation) # type: ignore
             else:
                 scaled_pm = original_pm
                 scaled_width = orig_width

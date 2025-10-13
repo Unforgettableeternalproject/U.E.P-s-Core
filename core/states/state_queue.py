@@ -156,8 +156,8 @@ class StateQueueManager:
         except Exception as e:
             error_log(f"[StateQueue] 處理 CHAT 狀態時發生錯誤: {e}")
             self.complete_current_state(success=False, result_data={"error": str(e)})
-    
-    def _on_chat_session_complete(self, session_id: str, success: bool, result_data: Dict[str, Any] = None):
+
+    def _on_chat_session_complete(self, session_id: str, success: bool, result_data: Dict[str, Any] = None):  # type: ignore
         """聊天會話完成回調"""
         try:
             info_log(f"[StateQueue] 聊天會話完成: {session_id} ({'成功' if success else '失敗'})")
@@ -224,7 +224,7 @@ class StateQueueManager:
             error_log(f"[StateQueue] 處理 WORK 狀態時發生錯誤: {e}")
             self.complete_current_state(success=False, result_data={"error": str(e)})
     
-    def _on_work_session_complete(self, session_id: str, success: bool, result_data: Dict[str, Any] = None):
+    def _on_work_session_complete(self, session_id: str, success: bool, result_data: Dict[str, Any] = None): # type: ignore
         """工作會話完成回調"""
         try:
             info_log(f"[StateQueue] 工作會話完成: {session_id} ({'成功' if success else '失敗'})")

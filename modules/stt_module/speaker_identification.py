@@ -16,6 +16,14 @@ from collections import defaultdict
 # 載入環境變數
 load_dotenv()
 
+from utils.debug_helper import debug_log, info_log, error_log
+from core.working_context import working_context_manager, ContextType
+
+# 延遲導入避免循環依賴
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .schemas import SpeakerInfo
+
 try:
     import torch
     import torchaudio
@@ -27,16 +35,26 @@ try:
     from sklearn.cluster import DBSCAN
     PYANNOTE_AVAILABLE = True
 except ImportError:
+    torch = None  # type: ignore
+    torchaudio = None  # type: ignore
+    PyannoteTPipeline = None  # type: ignore
+    Model = None  # type: ignore
+    Segment = None  # type: ignore
+    cosine = None  # type: ignore
+    euclidean = None  # type: ignore
+    normalize = None  # type: ignore
+    DBSCAN = None  # type: ignore
     PYANNOTE_AVAILABLE = False
 
-from utils.debug_helper import debug_log, info_log, error_log
-from core.working_context import working_context_manager, ContextType
-from .schemas import SpeakerInfo
+def _get_speaker_info_class():
+    """延遲導入 SpeakerInfo 避免循環依賴"""
+    from .schemas import SpeakerInfo
+    return SpeakerInfo
 
 class SpeakerIdentification:
     """說話人識別和管理類 - 整合高相似度語者辨識系統"""
     
-    def __init__(self, config: dict = None, model_name: str = "pyannote/speaker-diarization-3.1"):
+    def __init__(self, config: Optional[dict] = None, model_name: str = "pyannote/speaker-diarization-3.1"):
         self.model_name = model_name
         self.pipeline = None
         self.embedding_model = None  # 用於提取說話人嵌入的模型
@@ -126,14 +144,14 @@ class SpeakerIdentification:
             info_log(f"[Speaker] 載入模型: {self.model_name}")
             
             # 載入說話人分離 pipeline
-            self.pipeline = PyannoteTPipeline.from_pretrained(
+            self.pipeline = PyannoteTPipeline.from_pretrained(  # type: ignore
                 self.model_name,
                 use_auth_token=self.hf_token
             )
             
             # 載入說話人嵌入模型
             try:
-                self.embedding_model = Model.from_pretrained(
+                self.embedding_model = Model.from_pretrained(  # type: ignore
                     "pyannote/embedding", 
                     use_auth_token=self.hf_token
                 )
@@ -149,10 +167,10 @@ class SpeakerIdentification:
                 return True
             
             # 設置設備
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            self.pipeline.to(torch.device(device))
+            device = "cuda" if torch.cuda.is_available() else "cpu"  # type: ignore
+            self.pipeline.to(torch.device(device))  # type: ignore
             if self.embedding_model:
-                self.embedding_model.to(torch.device(device))
+                self.embedding_model.to(torch.device(device))  # type: ignore
             
             info_log(f"[Speaker] 模型載入成功 (設備: {device})")
             
@@ -173,7 +191,7 @@ class SpeakerIdentification:
             
             return True  # 返回 True 因為 fallback 模式仍然可用
     
-    def identify_speaker(self, audio_data: np.ndarray) -> SpeakerInfo:
+    def identify_speaker(self, audio_data: np.ndarray) -> "SpeakerInfo":
         """識別說話人"""
         if not self.pipeline:
             return self._fallback_speaker_identification(audio_data)
@@ -187,10 +205,12 @@ class SpeakerIdentification:
                 audio_float = audio_data.astype(np.float32) / 32768.0
                 
                 # 轉換為 torch tensor
-                audio_tensor = torch.from_numpy(audio_float).unsqueeze(0)
+                audio_tensor = torch.from_numpy(  # type: ignore
+                audio_float).unsqueeze(0)
                 
                 # 保存為暫存音頻檔案
-                torchaudio.save(temp_file.name, audio_tensor, self.sample_rate)
+                torchaudio.save(  # type: ignore
+                temp_file.name, audio_tensor, self.sample_rate)
                 temp_path = temp_file.name
             
             # 執行說話人分離
@@ -230,6 +250,7 @@ class SpeakerIdentification:
 
             debug_log(2, f"[Speaker] 識別到說話人: {speaker_id}, 置信度: {final_confidence:.2f}, 時長信心度: {duration_confidence:.2f}")
             
+            SpeakerInfo = _get_speaker_info_class()
             return SpeakerInfo(
                 speaker_id=speaker_id,
                 confidence=final_confidence,
@@ -247,7 +268,7 @@ class SpeakerIdentification:
             error_log(f"[Speaker] 說話人識別失敗: {str(e)}")
             return self._fallback_speaker_identification(audio_data)
     
-    def _direct_embedding_identification(self, audio_data: np.ndarray) -> SpeakerInfo:
+    def _direct_embedding_identification(self, audio_data: np.ndarray) -> "SpeakerInfo":
         """當 pyannote 說話人分離失敗時，直接使用嵌入模型進行說話人識別"""
         try:
             # 計算音頻嵌入
@@ -268,6 +289,7 @@ class SpeakerIdentification:
                         'similarity': match_similarity,
                         'distances': match_distances
                     }
+                    SpeakerInfo = _get_speaker_info_class()
                     return SpeakerInfo(
                         speaker_id=match_id,
                         confidence=match_similarity,
@@ -311,7 +333,8 @@ class SpeakerIdentification:
                 # 傳統餘弦相似度計算
                 for known_id, data in qualified_speakers.items():
                     for known_embedding in data['embeddings']:
-                        similarity = 1 - cosine(embedding, known_embedding)
+                        similarity = 1 - cosine(  # type: ignore
+                        embedding, known_embedding)
                         if similarity > best_similarity:
                             best_similarity = similarity
                             best_match_id = known_id
@@ -331,7 +354,7 @@ class SpeakerIdentification:
                     debug_log(3, f"[Speaker] [直接嵌入] 匹配已知說話人: {best_match_id} "
                              f"(多距離分數: {best_distance_score:.3f}, 餘弦相似度: {best_similarity:.3f})")
                     # 由多距離分數映射置信度並加上上限
-                    confidence = self._confidence_from_scores(best_similarity, best_distance_score, self.multi_distance_threshold)
+                    confidence = self._confidence_from_scores(float(best_similarity), best_distance_score, self.multi_distance_threshold)
 
                     # 構建豐富的語音特徵
                     voice_features = {
@@ -353,9 +376,10 @@ class SpeakerIdentification:
                         "similarity": best_similarity
                     }
                 
+                SpeakerInfo = _get_speaker_info_class()
                 return SpeakerInfo(
-                    speaker_id=best_match_id,
-                    confidence=confidence,
+                    speaker_id=best_match_id or "unknown",
+                    confidence=float(confidence),
                     is_new_speaker=False,
                     voice_features=voice_features
                 )
@@ -373,14 +397,16 @@ class SpeakerIdentification:
             )
             
             # 獲取上下文信息
-            context_info = working_context_manager.get_context_status(context_id)
-            if context_info:
+            if context_id:
+                context_info = working_context_manager.get_context_status(context_id)
+            if context_info: # type: ignore
                 data_count = context_info['data_count']
                 is_ready = context_info['is_ready']
                 
                 debug_log(3, f"[Speaker] [直接嵌入] 樣本添加到工作上下文 {context_id} "
                          f"(樣本數: {data_count}/{self.context_sample_threshold})")
-                
+
+                SpeakerInfo = _get_speaker_info_class()
                 return SpeakerInfo(
                     speaker_id=f"context_{context_id}",
                     confidence=0.5,  # 中等信心度，表示待確認
@@ -396,6 +422,8 @@ class SpeakerIdentification:
                 )
             else:
                 # 如果無法獲取上下文信息，使用預設回應
+                debug_log(3, f"[Speaker] [直接嵌入] 樣本添加到工作上下文失敗，無法獲取上下文信息")
+                SpeakerInfo = _get_speaker_info_class()
                 return SpeakerInfo(
                     speaker_id="context_pending",
                     confidence=0.5,
@@ -408,12 +436,7 @@ class SpeakerIdentification:
             
         except Exception as e:
             error_log(f"[Speaker] 直接嵌入識別失敗: {str(e)}")
-            return SpeakerInfo(
-                speaker_id="unknown",
-                confidence=0.0,
-                is_new_speaker=False,
-                voice_features=None
-            )
+            return self._fallback_speaker_identification(audio_data)
     
     def _map_speaker(self, raw_speaker_id: str, audio_data: np.ndarray) -> Tuple[str, bool, float]:
         """將原始說話人ID映射到持久化的說話人ID，返回 (speaker_id, is_new, similarity)"""
@@ -462,7 +485,8 @@ class SpeakerIdentification:
                 # 傳統餘弦相似度計算
                 for known_id, data in qualified_speakers.items():
                     for known_embedding in data['embeddings']:
-                        similarity = 1 - cosine(embedding, known_embedding)
+                        similarity = 1 - cosine(  # type: ignore
+                        embedding, known_embedding)
                         if similarity > best_similarity:
                             best_similarity = similarity
                             best_match_id = known_id
@@ -488,7 +512,7 @@ class SpeakerIdentification:
                 else:
                     debug_log(3, f"[Speaker] 匹配已知說話人: {best_match_id} (相似度: {best_similarity:.3f}, 閾值: {self.similarity_threshold})")
                     
-                return best_match_id, False, best_similarity
+                return best_match_id or "unknown", False, float(best_similarity)
             
             # 沒有匹配的合格說話人，使用工作上下文累積樣本
             context_id = working_context_manager.add_data_to_context(
@@ -503,14 +527,15 @@ class SpeakerIdentification:
             )
             
             # 獲取上下文信息
-            context_info = working_context_manager.get_context_status(context_id)
-            if context_info:
+            if context_id:
+                context_info = working_context_manager.get_context_status(context_id)
+            if context_info: # type: ignore
                 data_count = context_info['data_count']
                 debug_log(3, f"[Speaker] 樣本添加到工作上下文 {context_id} (樣本數: {data_count})")
                 
-                return f"context_{context_id}", False, best_similarity
+                return f"context_{context_id}", False, float(best_similarity)
             else:
-                return "context_pending", False, best_similarity
+                return "context_pending", False, float(best_similarity)
             
         except Exception as e:
             error_log(f"[Speaker] 說話人映射失敗: {str(e)}")
@@ -524,26 +549,28 @@ class SpeakerIdentification:
                 audio_float = audio_data.astype(np.float32) / 32768.0
                 
                 # 轉換為 torch tensor
-                audio_tensor = torch.from_numpy(audio_float).unsqueeze(0)
+                audio_tensor = torch.from_numpy(  # type: ignore
+                audio_float).unsqueeze(0)
                 
                 # 確保音頻長度足夠（至少 0.5 秒）
                 min_length = int(0.5 * self.sample_rate)
                 if audio_tensor.shape[1] < min_length:
                     # 填充音頻
                     padding = min_length - audio_tensor.shape[1]
-                    audio_tensor = torch.nn.functional.pad(audio_tensor, (0, padding))
+                    audio_tensor = torch.nn.functional.pad(  # type: ignore
+                    audio_tensor, (0, padding))
                 
                 # 移到正確的設備
                 device = next(self.embedding_model.parameters()).device
                 audio_tensor = audio_tensor.to(device)
                 
                 # 使用嵌入模型提取特徵
-                with torch.no_grad():
+                with torch.no_grad():  # type: ignore
                     # pyannote 嵌入模型期望的輸入格式
                     embedding = self.embedding_model(audio_tensor)
                     
                 # 轉換為 numpy
-                if isinstance(embedding, torch.Tensor):
+                if isinstance(embedding, torch.Tensor):  # type: ignore
                     embedding_np = embedding.cpu().numpy()
                 else:
                     # 如果返回的是字典，嘗試獲取嵌入
@@ -664,7 +691,7 @@ class SpeakerIdentification:
             # 最後的備用方案：返回隨機向量
             return np.random.normal(0, 1, 32)
     
-    def _fallback_speaker_identification(self, audio_data: np.ndarray) -> SpeakerInfo:
+    def _fallback_speaker_identification(self, audio_data: np.ndarray) -> "SpeakerInfo":
         """回退的說話人識別方法（當 pyannote 不可用時）"""
         try:
             debug_log(2, "[Speaker] 使用回退說話人識別...")
@@ -687,6 +714,7 @@ class SpeakerIdentification:
                         'similarity': match_similarity,
                         'distances': match_distances
                     }
+                    SpeakerInfo = _get_speaker_info_class()
                     return SpeakerInfo(
                         speaker_id=match_id,
                         confidence=match_similarity,
@@ -730,7 +758,8 @@ class SpeakerIdentification:
                 # 傳統餘弦相似度計算
                 for known_id, data in qualified_speakers.items():
                     for known_embedding in data['embeddings']:
-                        similarity = 1 - cosine(embedding, known_embedding)
+                        similarity = 1 - cosine(  # type: ignore
+                        embedding, known_embedding)
                         if similarity > best_similarity:
                             best_similarity = similarity
                             best_match_id = known_id
@@ -747,7 +776,7 @@ class SpeakerIdentification:
                 
                 if self.use_multi_distance:
                     debug_log(3, f"[Speaker] [Fallback] 匹配已知說話人: {best_match_id} (多距離分數: {best_distance_score:.3f})")
-                    confidence = self._confidence_from_scores(best_similarity, best_distance_score, self.fallback_multi_distance_threshold)
+                    confidence = self._confidence_from_scores(float(best_similarity), best_distance_score, self.fallback_multi_distance_threshold)
                     
                     # 構建豐富的語音特徵
                     voice_features = {
@@ -764,9 +793,10 @@ class SpeakerIdentification:
                     confidence = min(best_similarity, self.confidence_max_cap)
                     voice_features = {"method": "fallback", "similarity": best_similarity}
                 
+                SpeakerInfo = _get_speaker_info_class()
                 return SpeakerInfo(
-                    speaker_id=best_match_id,
-                    confidence=confidence,
+                    speaker_id=best_match_id, # type: ignore
+                    confidence=float(confidence),
                     is_new_speaker=False,
                     voice_features=voice_features
                 )
@@ -783,11 +813,12 @@ class SpeakerIdentification:
             )
             
             # 獲取上下文信息
-            context_info = working_context_manager.get_context_status(context_id)
-            if context_info:
+            if context_id:
+                context_info = working_context_manager.get_context_status(context_id)
+            if context_info: # type: ignore
                 data_count = context_info['data_count']
                 debug_log(3, f"[Speaker] [Fallback] 樣本添加到工作上下文 {context_id} (樣本數: {data_count})")
-                
+                SpeakerInfo = _get_speaker_info_class()
                 return SpeakerInfo(
                     speaker_id=f"context_{context_id}",
                     confidence=0.4,  # 較低信心度，表示 fallback 模式
@@ -801,6 +832,8 @@ class SpeakerIdentification:
                     }
                 )
             else:
+                debug_log(3, f"[Speaker] [Fallback] 樣本添加到工作上下文失敗，無法獲取上下文信息")
+                SpeakerInfo = _get_speaker_info_class()
                 return SpeakerInfo(
                     speaker_id="fallback_context_pending",
                     confidence=0.4,
@@ -813,6 +846,7 @@ class SpeakerIdentification:
             
         except Exception as e:
             error_log(f"[Speaker] 回退識別失敗: {str(e)}")
+            SpeakerInfo = _get_speaker_info_class()
             return SpeakerInfo(
                 speaker_id="unknown",
                 confidence=0.0,
@@ -1007,7 +1041,7 @@ class SpeakerIdentification:
         std = np.std(data)
         if std == 0:
             return 0
-        return np.mean(((data - mean) / std) ** 3)
+        return float(np.mean(((data - mean) / std) ** 3))
     
     def _calculate_kurtosis(self, data: np.ndarray) -> float:
         """計算峰態"""
@@ -1015,7 +1049,7 @@ class SpeakerIdentification:
         std = np.std(data)
         if std == 0:
             return 0
-        return np.mean(((data - mean) / std) ** 4) - 3
+        return float(np.mean(((data - mean) / std) ** 4) - 3)
         
     def _extract_enhanced_features(self, embedding: np.ndarray) -> Dict[str, float]:
         """提取增強特徵來區分高相似度嵌入"""
@@ -1049,14 +1083,20 @@ class SpeakerIdentification:
         distances = {}
         
         # 標準化嵌入
-        norm_emb1 = normalize([emb1])[0] if 'sklearn.preprocessing' in globals() else emb1 / np.linalg.norm(emb1)
-        norm_emb2 = normalize([emb2])[0] if 'sklearn.preprocessing' in globals() else emb2 / np.linalg.norm(emb2)
-        
+        if normalize is not None:
+            norm_emb1 = normalize([emb1])[0]  # type: ignore
+            norm_emb2 = normalize([emb2])[0]  # type: ignore
+        else:
+            norm_emb1 = emb1 / np.linalg.norm(emb1)
+            norm_emb2 = emb2 / np.linalg.norm(emb2)
+
         # 1. 餘弦距離
-        distances['cosine'] = cosine(norm_emb1, norm_emb2)
+        if cosine is None or euclidean is None:
+            return distances
+        distances['cosine'] = cosine(norm_emb1, norm_emb2)  # type: ignore
         
         # 2. 歐幾里得距離（原始）
-        distances['euclidean'] = euclidean(emb1, emb2)
+        distances['euclidean'] = euclidean(norm_emb1, norm_emb2)  # type: ignore
         
         # 3. 向量大小差異
         if self.use_magnitude_difference:
@@ -1119,38 +1159,6 @@ class SpeakerIdentification:
         conf = (base + max(0.0, min(1.0, cosine_similarity))) / 2.0
         return min(conf, self.confidence_max_cap)
 
-    def _find_best_speaker_match(self, session_embeddings: List[np.ndarray], qualified_speakers: Dict[str, Dict]) -> Optional[Tuple[str, float]]:
-        """找到與 session 樣本最匹配的合格說話人"""
-        best_speaker = None
-        best_avg_similarity = 0.0
-        
-        for speaker_id in qualified_speakers.keys():
-            speaker_data = self.speaker_database[speaker_id]
-            speaker_embeddings = speaker_data['embeddings']
-            
-            # 計算 session 樣本與該說話人的平均相似度
-            similarities = []
-            for session_emb in session_embeddings:
-                for speaker_emb in speaker_embeddings:
-                    if self.use_multi_distance:
-                        distances = self._calculate_multi_distance(session_emb, speaker_emb)
-                        combined_score = self._combine_distances(distances)
-                        similarity = 1 - min(1.0, combined_score / self.multi_distance_threshold)
-                    else:
-                        similarity = 1 - cosine(session_emb, speaker_emb)
-                    similarities.append(similarity)
-            
-            if similarities:
-                avg_similarity = np.mean(similarities)
-                if avg_similarity > best_avg_similarity:
-                    best_avg_similarity = avg_similarity
-                    best_speaker = speaker_id
-        
-        # 只有相似度夠高才返回匹配
-        if best_avg_similarity > 0.7:  # 可調整的閾值
-            return best_speaker, best_avg_similarity
-        return None
-
     def update_distance_weights(self, weights: Dict[str, float]):
         """更新距離權重設置"""
         for key, value in weights.items():
@@ -1189,18 +1197,19 @@ class SpeakerIdentification:
             
             # 檢查是否滿足閾值
             if best_distance_score < self.multi_distance_threshold:
-                return best_match_id, best_similarity
+                return best_match_id, best_similarity # type: ignore
         else:
             for known_id, data in qualified_speakers.items():
                 for known_embedding in data['embeddings']:
-                    similarity = 1 - cosine(avg_embedding, known_embedding)
+                    similarity = 1 - cosine(  # type: ignore
+                        avg_embedding, known_embedding)
                     if similarity > best_similarity:
                         best_similarity = similarity
                         best_match_id = known_id
             
             # 檢查是否滿足閾值
             if best_similarity > self.similarity_threshold:
-                return best_match_id, best_similarity
+                return best_match_id, best_similarity # type: ignore
         
         return None
 
@@ -1269,6 +1278,9 @@ class SpeakerIdentification:
         這個方法構造一個暫時的嵌入列表，執行 DBSCAN，並檢查新 embedding 是否被分到某個已有的類別。
         若找到類別，會回傳該類別最接近的新樣本的 speaker_id 與相似度/距離細節。
         """
+        if DBSCAN is None or cosine is None or euclidean is None:
+            return None
+            
         try:
             # 只使用達到最小樣本數要求的說話人
             qualified_speakers = self._get_qualified_speakers()
@@ -1289,7 +1301,7 @@ class SpeakerIdentification:
             X = np.vstack(embeddings)
 
             # 使用 sklearn DBSCAN
-            db = DBSCAN(eps=self.dbscan_eps, min_samples=self.dbscan_min_samples, metric=self.dbscan_metric)
+            db = DBSCAN(eps=self.dbscan_eps, min_samples=self.dbscan_min_samples, metric=self.dbscan_metric)  # type: ignore
             clusters = db.fit_predict(X)
 
             # 把新 embedding 與所有 embeddings 做距離比較，看是否屬於某個 cluster
@@ -1311,7 +1323,7 @@ class SpeakerIdentification:
             distances = self._calculate_multi_distance(embedding, matched_embedding) if self.use_multi_distance else {'cosine': cosine(embedding, matched_embedding)}
             similarity = 1 - distances.get('cosine', 0)
 
-            return matched_speaker, similarity, distances
+            return matched_speaker, similarity, distances # type: ignore
         except Exception as e:
             debug_log(2, f"[Speaker] DBSCAN 匹配失敗: {e}")
             return None

@@ -13,6 +13,7 @@ from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 from enum import Enum
 import time
+import re
 
 from core.states.state_manager import UEPState, state_manager
 from core.working_context import working_context_manager
@@ -31,7 +32,7 @@ class Input:
     text: str                    # 純文字內容
     source: TextSource          # 來源類型
     source_module: str          # 來源模組名稱
-    metadata: Dict[str, Any] = None  # 簡單元數據
+    metadata: Dict[str, Any] = None  # type: ignore # 簡單元數據
 
 
 @dataclass
@@ -39,7 +40,7 @@ class TextRoutingDecision:
     """文字路由決策"""
     target_module: str          # 目標模組
     text_content: str          # 要傳遞的文字
-    routing_metadata: Dict[str, Any] = None  # 路由元數據
+    routing_metadata: Dict[str, Any] = None  # type: ignore # 路由元數據
     reasoning: str = ""        # 決策原因
 
 
@@ -67,6 +68,23 @@ class Router:
             }
         }
         
+        # 表情符號過濾正則表達式
+        # 匹配所有 emoji 和特殊 Unicode 字符
+        self.emoji_pattern = re.compile(
+            "["
+            "\U0001F600-\U0001F64F"  # emoticons
+            "\U0001F300-\U0001F5FF"  # symbols & pictographs
+            "\U0001F680-\U0001F6FF"  # transport & map symbols
+            "\U0001F1E0-\U0001F1FF"  # flags (iOS)
+            "\U00002702-\U000027B0"  # dingbats
+            "\U000024C2-\U0001F251"
+            "\U0001F900-\U0001F9FF"  # supplemental symbols
+            "\U0001FA00-\U0001FAFF"  # extended symbols
+            "\x01-\x1F"              # 控制字符
+            "]+", 
+            flags=re.UNICODE
+        )
+        
         info_log("[SimpleRouter] 簡化文字路由器初始化完成")
     
     def route_text(self, text_input: Input) -> TextRoutingDecision:
@@ -82,6 +100,11 @@ class Router:
         debug_log(2, f"[SimpleRouter] 處理文字路由 - 來源: {text_input.source.value}")
         debug_log(3, f"[SimpleRouter] 文字內容: {text_input.text[:50]}...")
         
+        # 0. 對系統輸出過濾表情符號 (防止 TTS 處理錯誤)
+        filtered_text = text_input.text
+        if text_input.source == TextSource.SYSTEM_OUTPUT:
+            filtered_text = self._filter_emojis(text_input.text)
+        
         # 1. 獲取當前系統狀態
         current_state = self.state_manager.get_current_state()
         debug_log(2, f"[SimpleRouter] 當前狀態: {current_state}")
@@ -92,18 +115,40 @@ class Router:
         # 3. 創建路由決策
         decision = TextRoutingDecision(
             target_module=target_module,
-            text_content=text_input.text,
+            text_content=filtered_text,  # 使用過濾後的文字
             routing_metadata={
                 "source": text_input.source.value,
                 "source_module": text_input.source_module,
                 "current_state": current_state.value,
-                "timestamp": time.time()
+                "timestamp": time.time(),
+                "emoji_filtered": filtered_text != text_input.text
             },
             reasoning=f"狀態:{current_state.value} -> 模組:{target_module}"
         )
         
         debug_log(1, f"[SimpleRouter] 路由決策: {decision.reasoning}")
         return decision
+    
+    def _filter_emojis(self, text: str) -> str:
+        """
+        過濾文字中的表情符號和特殊字符
+        
+        Args:
+            text: 原始文字
+            
+        Returns:
+            str: 過濾後的文字
+        """
+        if not text:
+            return text
+            
+        filtered = self.emoji_pattern.sub('', text)
+        
+        # 如果過濾掉了內容，記錄日誌
+        if filtered != text:
+            debug_log(2, f"[SimpleRouter] 過濾表情符號: {len(text)} -> {len(filtered)} 字符")
+        
+        return filtered.strip()
     
     def _decide_target_module(self, current_state: UEPState, text_input: Input) -> str:
         """

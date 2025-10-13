@@ -121,7 +121,7 @@ class VoiceActivityDetection:
         """計算窗口能量"""
         if len(window) == 0:
             return 0.0
-        return np.mean(window ** 2)
+        return np.mean(window ** 2) # type: ignore
     
     def _is_speech(self, energy: float) -> bool:
         """判斷是否為語音"""

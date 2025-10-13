@@ -9,6 +9,7 @@ import numpy as np
 import tempfile
 import os
 import warnings
+from typing import Optional, Dict, Any, cast
 warnings.filterwarnings("ignore", category=UserWarning)
 
 # 新的核心依賴
@@ -19,8 +20,7 @@ from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 from core.bases.module_base import BaseModule
 from utils.debug_helper import debug_log, info_log, error_log
 from configs.config_loader import load_module_config
-from core.schemas import STTModuleData, create_stt_data
-from core.schema_adapter import STTSchemaAdapter
+from core.schemas import STTModuleData
 from .schemas import STTInput, STTOutput, ActivationMode, SpeakerInfo
 
 # 獨立模組
@@ -195,8 +195,9 @@ class STTModule(BaseModule):
             debug_log(3, "[STT] 可用音頻設備：")
             for i in range(self.pyaudio_instance.get_device_count()):
                 device_info = self.pyaudio_instance.get_device_info_by_index(i)
-                if device_info['maxInputChannels'] > 0:
-                    device_name = device_info['name']
+                max_input = device_info.get('maxInputChannels', 0)
+                if isinstance(max_input, int) and max_input > 0:
+                    device_name = device_info.get('name', 'Unknown')
                     debug_log(3, f"  設備 {i}: {device_name}")
             
             # 設置初始化完成標誌
@@ -211,12 +212,8 @@ class STTModule(BaseModule):
     def handle(self, data: dict = {}) -> dict:
         """處理 STT 請求"""
         try:
-            # 使用 schema adapter 轉換輸入數據
-            schema_adapter = STTSchemaAdapter()
-            adapted_input = schema_adapter.adapt_input(data)
-            
-            # 轉換為模組內部使用的格式
-            validated = STTInput(**adapted_input)
+            # 直接轉換為模組內部使用的格式
+            validated = STTInput(**data)
             debug_log(1, f"[STT] 處理請求: {validated.mode}")
             
             start_time = time.time()
@@ -229,14 +226,12 @@ class STTModule(BaseModule):
                 result = self._continuous_recognition(validated)
             else:
                 # 不支持的模式
-                raw_result = STTOutput(
+                return STTOutput(
                     text="", 
                     confidence=0.0, 
                     error="不支持的模式",
                     activation_reason="不支持的模式"
                 ).model_dump()
-                # 使用 schema adapter 轉換輸出數據
-                return schema_adapter.adapt_output(raw_result)
                 
             processing_time = time.time() - start_time
             result["processing_time"] = processing_time
@@ -247,19 +242,12 @@ class STTModule(BaseModule):
             # 檢查是否有識別出文本
             if not stt_output.text or not stt_output.text.strip():
                 info_log("[STT] 🔇 未識別到有效語音內容")
-                # 更新錯誤信息
                 stt_output.error = "未識別到有效語音內容"
-                result["error"] = "未識別到有效語音內容"
             else:
-                # 確保當有識別文本時，移除可能的錯誤信息
                 stt_output.error = None
-                result["error"] = None
             
-            # 使用 STTOutput 的方法轉換為統一格式
-            unified_data = stt_output.to_unified_format()
-            
-            # 將統一格式轉換為 API 輸出格式
-            return schema_adapter.adapt_output(result)
+            # 返回字典格式
+            return stt_output.model_dump()
             
         except Exception as e:
             error_log(f"[STT] 處理失敗: {str(e)}")
@@ -278,6 +266,78 @@ class STTModule(BaseModule):
         """恢復監聽能力"""
         self.should_stop_listening = False
         debug_log(2, "[STT] 清除停止監聽標誌")
+    
+    def handle_text_input(self, text: str) -> dict:
+        """
+        處理文字輸入 - 繞過語音識別和說話人辨識
+        
+        這是一個特殊的入口點,用於:
+        1. 不需要語音活動檢測的情況
+        2. 用戶選擇關閉 STT 功能但仍想使用系統的情況
+        3. 測試和開發目的
+        
+        特性:
+        - 不進行語音識別 (直接使用文字)
+        - 不進行說話人辨識 (speaker_info=None)
+        - 不創建 speaker_accumulation 上下文
+        - NLP 將使用預設身份處理
+        
+        Args:
+            text: 用戶輸入的文字內容
+            
+        Returns:
+            dict: 統一格式的輸出結果
+        """
+        try:
+            if not text or text.isspace():
+                debug_log(2, "[STT] 文字輸入為空，忽略")
+                return STTOutput(
+                    text="",
+                    confidence=0.0,
+                    speaker_info=None,
+                    activation_reason="text_input_empty",
+                    error="文字輸入為空"
+                ).model_dump()
+            
+            info_log(f"[STT] 文字輸入模式: '{text}'")
+            
+            # 創建輸出物件 - 不包含說話人資訊
+            output = STTOutput(
+                text=text.strip(),
+                confidence=1.0,  # 文字輸入視為 100% 信心度
+                speaker_info=None,  # 明確設為 None,表示繞過說話人識別
+                activation_reason="text_input",
+                error=None
+            )
+            
+            # 轉換為統一格式
+            unified_data = output.to_unified_format()
+            
+            # 添加特殊標記到 metadata
+            unified_data.metadata["input_mode"] = "text"
+            unified_data.metadata["bypass_speaker_id"] = True
+            
+            # 通過回調將結果發送給 NLP 模組
+            if self.result_callback:
+                try:
+                    self.result_callback(unified_data)
+                    info_log(f"[STT] 文字輸入已發送給 NLP 模組: '{text}'")
+                except Exception as e:
+                    error_log(f"[STT] 發送文字輸入結果失敗: {e}")
+            else:
+                debug_log(2, "[STT] 未設定結果回調函數")
+            
+            return output.model_dump()
+            
+        except Exception as e:
+            error_log(f"[STT] 處理文字輸入失敗: {str(e)}")
+            return STTOutput(
+                text="",
+                confidence=0.0,
+                speaker_info=None,
+                activation_reason="text_input_error",
+                error=f"處理文字輸入失敗: {str(e)}"
+            ).model_dump()
 
     def _manual_recognition(self, input_data: STTInput) -> dict:
         """手動語音識別 - 使用 Transformers Whisper"""
@@ -319,14 +379,20 @@ class STTModule(BaseModule):
                 info_log("[STT] VAD 檢測：未檢測到足夠語音內容，但仍嘗試識別")
             
             # 使用 Transformers pipeline 進行語音識別
+            if self.pipe is None:
+                error_log("[STT] Pipeline 未初始化")
+                return STTOutput(text="", confidence=0.0, error="Pipeline 未初始化").model_dump()
+            
             result = self.pipe(
                 audio_float,
                 generate_kwargs=generate_kwargs
             )
             
-            text = result["text"].strip()
+            # 類型轉換 - Transformers pipeline 返回 dict
+            result_dict = cast(Dict[str, Any], result)
+            text = str(result_dict.get("text", "")).strip()
             text = correct_stt(text)
-            confidence = self._calculate_transformers_confidence(result)
+            confidence = self._calculate_transformers_confidence(result_dict)
             
             # 檢查結果是否為空
             if not text or text.isspace():
@@ -382,6 +448,10 @@ class STTModule(BaseModule):
             # 只有當設備索引被明確指定時才添加
             if self.device_index is not None:
                 stream_params["input_device_index"] = self.device_index
+            
+            if self.pyaudio_instance is None:
+                error_log("[STT] PyAudio 未初始化")
+                return np.array([])
                 
             stream = self.pyaudio_instance.open(**stream_params)
             
@@ -413,7 +483,7 @@ class STTModule(BaseModule):
             
         except Exception as e:
             error_log(f"[STT] 錄音失敗: {str(e)}")
-            return None
+            return np.array([])
 
     def _calculate_transformers_confidence(self, result: dict) -> float:
         """計算 Transformers Whisper 結果的信心度"""
@@ -455,14 +525,25 @@ class STTModule(BaseModule):
 
     def shutdown(self):
         """關閉模組"""
+        # 清理 PyAudio
         if self.pyaudio_instance:
             self.pyaudio_instance.terminate()
         
-        # 關閉新的獨立模組
+        # 清理 GPU 記憶體
+        if self.model is not None:
+            del self.model
+        if self.pipe is not None:
+            del self.pipe
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        # 關閉獨立模組
         if hasattr(self, 'vad_module'):
             self.vad_module.shutdown()
         if hasattr(self, 'speaker_module'):
             self.speaker_module.shutdown()
+        
+        info_log("[STT] 模組已關閉")
 
     def _continuous_recognition(self, input_data: STTInput) -> dict:
         """持續背景監聽 - 持續錄音並實時傳送結果給NLP模組"""
@@ -526,12 +607,17 @@ class STTModule(BaseModule):
                     "language": "en",  # 使用標準代碼
                 }
                 
-                result = self.pipe(audio_float, generate_kwargs=recognition_kwargs)
-                text = result["text"].strip()
+                if self.pipe is None:
+                    error_log("[STT] Pipeline 未初始化，跳過識別")
+                    continue
+                
+                result = self.pipe(audio_float, generate_kwargs=recognition_kwargs)  # type: ignore
+                result_dict = cast(Dict[str, Any], result)
+                text = str(result_dict.get("text", "")).strip()
                 text = correct_stt(text)  # 應用STT修正
                 
                 # 計算信心度
-                confidence = self._calculate_transformers_confidence(result)
+                confidence = self._calculate_transformers_confidence(result_dict)
                 
                 # 檢查是否有識別出文本
                 if not text or text.isspace():
@@ -544,10 +630,11 @@ class STTModule(BaseModule):
                 speaker_info = None
                 if input_data.enable_speaker_id:
                     speaker_info = self._identify_speaker_with_mode(audio_data)
-                    # 兼容物件和字典格式的speaker_info存取
-                    speaker_id = speaker_info.speaker_id if hasattr(speaker_info, 'speaker_id') else speaker_info.get('speaker_id', 'unknown')
-                    confidence = speaker_info.confidence if hasattr(speaker_info, 'confidence') else speaker_info.get('confidence', 0.0)
-                    debug_log(2, f"[STT] 識別語者: {speaker_id} (信心度: {confidence:.2f})")
+                    if speaker_info:
+                        # SpeakerInfo 是 Pydantic model,直接使用屬性
+                        speaker_id = speaker_info.speaker_id
+                        speaker_confidence = speaker_info.confidence
+                        debug_log(2, f"[STT] 識別語者: {speaker_id} (信心度: {speaker_confidence:.2f})")
                 
                 # 創建輸出物件
                 output = STTOutput(
@@ -622,22 +709,7 @@ class STTModule(BaseModule):
                 voice_features={"error": str(e)}
             )
 
-    def shutdown(self):
-        # 清理 GPU 記憶體
-        if self.model is not None:
-            del self.model
-        if self.pipe is not None:
-            del self.pipe
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        
-        # 清理說話人識別模組
-        if hasattr(self, 'speaker_module'):
-            self.speaker_module.shutdown()
-        
-        info_log("[STT] 模組已關閉")
-
-    def _add_audio_sample_to_accumulation(self, audio_data: np.ndarray, speaker_info: 'SpeakerInfo' = None):
+    def _add_audio_sample_to_accumulation(self, audio_data: np.ndarray, speaker_info: Optional[SpeakerInfo] = None):
         """將音頻樣本添加到 Speaker_Accumulation 上下文中"""
         try:
             if not self.working_context_manager:
@@ -669,14 +741,8 @@ class STTModule(BaseModule):
                 # 添加音頻樣本到上下文
                 # 安全地獲取說話人資訊
                 if speaker_info:
-                    if hasattr(speaker_info, 'speaker_id'):
-                        # SpeakerInfo 物件格式
-                        speaker_id = speaker_info.speaker_id
-                        confidence = speaker_info.confidence
-                    else:
-                        # 字典格式
-                        speaker_id = speaker_info.get('speaker_id', 'unknown')
-                        confidence = speaker_info.get('confidence', 0.0)
+                    speaker_id = speaker_info.speaker_id
+                    confidence = speaker_info.confidence
                 else:
                     speaker_id = "unknown"
                     confidence = 0.0

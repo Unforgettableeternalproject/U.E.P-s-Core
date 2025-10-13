@@ -19,7 +19,7 @@ modules_refactored:
   ani_module: false
   mov_module: false
 logging:
-  enabled: true
+  enabled: false
   log_level: DEBUG
   log_dir: logs
   enable_split_logs: false

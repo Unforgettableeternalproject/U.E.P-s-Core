@@ -20,6 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from utils.debug_helper import info_log, error_log, debug_log
+
 from utils.logger import force_enable_file_logging
 
 
@@ -117,5 +118,10 @@ def test_text_input_mode():
 
 
 if __name__ == "__main__":
-    force_enable_file_logging()
+    try:
+        force_enable_file_logging()
+    except NameError:
+        pass
+    finally:
+        pass
     test_text_input_mode()

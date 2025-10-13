@@ -1032,6 +1032,28 @@ def get_working_context_status():
     
     return contexts
 
+def get_deduplication_status():
+    """
+    獲取去重統計信息 (G. 監控與除錯)
+    
+    顯示 ModuleCoordinator 的去重命中次數、清理次數、活躍鍵數量等診斷資訊
+    """
+    from core.module_coordinator import module_coordinator
+    
+    stats = module_coordinator.get_deduplication_stats()
+    
+    print("🔍 去重系統診斷:")
+    print(f"   去重命中次數: {stats['dedupe_hit_count']}")
+    print(f"   清理次數: {stats['cleanup_count']}")
+    print(f"   活躍去重鍵: {stats['active_dedupe_keys']} / {stats['max_dedupe_keys']}")
+    print(f"   活躍流程數: {stats['active_flows']}")
+    print(f"   記憶體壓力: {stats['memory_pressure']:.1%}")
+    print(f"   各層分布: INPUT={stats['layers_distribution']['INPUT']}, "
+          f"PROCESSING={stats['layers_distribution']['PROCESSING']}, "
+          f"OUTPUT={stats['layers_distribution']['OUTPUT']}")
+    
+    return stats
+
 def test_speaker_context_workflow():
     """測試語者上下文工作流程"""
     print("🎤 語者上下文工作流程測試")

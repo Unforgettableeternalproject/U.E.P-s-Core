@@ -266,6 +266,78 @@ class STTModule(BaseModule):
         """恢復監聽能力"""
         self.should_stop_listening = False
         debug_log(2, "[STT] 清除停止監聽標誌")
+    
+    def handle_text_input(self, text: str) -> dict:
+        """
+        處理文字輸入 - 繞過語音識別和說話人辨識
+        
+        這是一個特殊的入口點,用於:
+        1. 不需要語音活動檢測的情況
+        2. 用戶選擇關閉 STT 功能但仍想使用系統的情況
+        3. 測試和開發目的
+        
+        特性:
+        - 不進行語音識別 (直接使用文字)
+        - 不進行說話人辨識 (speaker_info=None)
+        - 不創建 speaker_accumulation 上下文
+        - NLP 將使用預設身份處理
+        
+        Args:
+            text: 用戶輸入的文字內容
+            
+        Returns:
+            dict: 統一格式的輸出結果
+        """
+        try:
+            if not text or text.isspace():
+                debug_log(2, "[STT] 文字輸入為空，忽略")
+                return STTOutput(
+                    text="",
+                    confidence=0.0,
+                    speaker_info=None,
+                    activation_reason="text_input_empty",
+                    error="文字輸入為空"
+                ).model_dump()
+            
+            info_log(f"[STT] 文字輸入模式: '{text}'")
+            
+            # 創建輸出物件 - 不包含說話人資訊
+            output = STTOutput(
+                text=text.strip(),
+                confidence=1.0,  # 文字輸入視為 100% 信心度
+                speaker_info=None,  # 明確設為 None,表示繞過說話人識別
+                activation_reason="text_input",
+                error=None
+            )
+            
+            # 轉換為統一格式
+            unified_data = output.to_unified_format()
+            
+            # 添加特殊標記到 metadata
+            unified_data.metadata["input_mode"] = "text"
+            unified_data.metadata["bypass_speaker_id"] = True
+            
+            # 通過回調將結果發送給 NLP 模組
+            if self.result_callback:
+                try:
+                    self.result_callback(unified_data)
+                    info_log(f"[STT] 文字輸入已發送給 NLP 模組: '{text}'")
+                except Exception as e:
+                    error_log(f"[STT] 發送文字輸入結果失敗: {e}")
+            else:
+                debug_log(2, "[STT] 未設定結果回調函數")
+            
+            return output.model_dump()
+            
+        except Exception as e:
+            error_log(f"[STT] 處理文字輸入失敗: {str(e)}")
+            return STTOutput(
+                text="",
+                confidence=0.0,
+                speaker_info=None,
+                activation_reason="text_input_error",
+                error=f"處理文字輸入失敗: {str(e)}"
+            ).model_dump()
 
     def _manual_recognition(self, input_data: STTInput) -> dict:
         """手動語音識別 - 使用 Transformers Whisper"""

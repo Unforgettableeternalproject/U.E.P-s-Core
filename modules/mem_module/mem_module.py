@@ -1238,6 +1238,12 @@ class MEMModule(BaseModule):
                     'error': 'MEM模組只在CHAT狀態下運行',
                     'status': 'failed'
                 }
+            
+            # ✅ 檢查臨時身份,優雅跳過個人記憶存取
+            if self.identity_manager and self.identity_manager.is_temporary_identity():
+                identity_desc = self.identity_manager.get_identity_type_description()
+                debug_log(2, f"[MEM] handle() 檢測到{identity_desc}，跳過個人記憶存取")
+                return self._create_temporary_identity_response()
 
             # 如果是字符串，嘗試轉換為MEMInput
             if isinstance(data, str):

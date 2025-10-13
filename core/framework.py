@@ -405,17 +405,9 @@ class CoreFramework:
             # 註冊到本地註冊表
             self.modules[module_info.module_id] = module_info
             
-            # 註冊到全局 registry(如果可用)
-            try:
-                from core.registry import registry  # type: ignore
-                if hasattr(registry, 'register_module'):
-                    registry.register_module(
-                        module_info.module_name,
-                        module_info.module_instance,
-                        module_info.capabilities
-                    )
-            except ImportError:
-                debug_log(2, "[CoreFramework] Registry 不可用,僅本地註冊")
+            # 註意: registry.py 只提供 get_module() 函數用於載入模組
+            # 它會自動調用模組的 register() 並緩存實例
+            # 不需要手動註冊到 registry,因為模組已經通過 get_module() 載入
             
             debug_log(2, f"[CoreFramework] 已註冊模組: {module_info.module_id}")
             return True
@@ -433,13 +425,9 @@ class CoreFramework:
             
             module_info = self.modules[module_id]
             
-            # 從全局 registry 註銷
-            try:
-                from core.registry import registry  # type: ignore
-                if hasattr(registry, 'unregister_module'):
-                    registry.unregister_module(module_info.module_name)
-            except ImportError:
-                pass
+            # 註意: registry.py 的 _loaded_modules 是模組級私有變數
+            # 不提供 unregister 方法,也不應該直接操作
+            # 模組註銷只影響 framework 本地註冊表
             
             # 從本地註冊表移除
             del self.modules[module_id]

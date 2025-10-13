@@ -19,7 +19,7 @@ chunking:
 
 # 情感配置
 emotion:
-  max_strength: 0.3  # 情感強度上限 (0.0 - 1.0)，0.3 表示保留 70% 原聲
+  max_strength: 0.5  # 情感強度上限 (0.0 - 1.0)，0.3 表示保留 70% 原聲
   default: null  # 預設情感向量 (null = 使用角色原聲，也可設置為 8D 列表)
   # 例如: default: [0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.2]  # [happy, angry, sad, afraid, disgusted, melancholic, surprised, calm]
 

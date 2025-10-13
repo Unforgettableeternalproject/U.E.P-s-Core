@@ -1498,3 +1498,15 @@
 
 ---
 
+### feat: Implement text input mode in SystemLoop and related modules
+
+> Date: Mon, 13 Oct 2025 15:41:02 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/tts_module_rework`
+
+> Commit: `261bbd2384d284fe34f0df3d8c95d1513a292533`
+
+---
+

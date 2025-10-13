@@ -57,6 +57,10 @@ class UnifiedController:
         self.state_manager = state_manager
         self.core_framework = core_framework
         
+        # 使用全局單例模組協調器 (避免重複訂閱事件)
+        from core.module_coordinator import module_coordinator
+        self.module_coordinator = module_coordinator
+        
         # 系統統計
         self.startup_time = None
         self.total_gs_sessions = 0

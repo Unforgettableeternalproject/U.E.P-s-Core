@@ -223,6 +223,40 @@ class TTSModule(BaseModule):
             error_log(f"[TTS] 獲取使用者偏好失敗: {str(e)}")
             return {}
     
+    def _get_current_gs_id(self) -> str:
+        """
+        獲取當前 General Session ID
+        從 working_context 的全局數據中讀取 (由 SystemLoop 設置)
+        
+        Returns:
+            str: 當前 GS ID,如果無法獲取則返回 'unknown'
+        """
+        try:
+            if self.working_context_manager:
+                gs_id = self.working_context_manager.global_context_data.get('current_gs_id', 'unknown')
+                return gs_id
+            return 'unknown'
+        except Exception as e:
+            error_log(f"[TTS] 獲取 GS ID 失敗: {e}")
+            return 'unknown'
+    
+    def _get_current_cycle_index(self) -> int:
+        """
+        獲取當前循環計數
+        從 working_context 的全局數據中讀取 (由 SystemLoop 設置)
+        
+        Returns:
+            int: 當前 cycle_index,如果無法獲取則返回 -1
+        """
+        try:
+            if self.working_context_manager:
+                cycle_index = self.working_context_manager.global_context_data.get('current_cycle_index', -1)
+                return cycle_index
+            return -1
+        except Exception as e:
+            error_log(f"[TTS] 獲取 cycle_index 失敗: {e}")
+            return -1
+    
     def _on_output_complete(self, result: Dict[str, Any]):
         """
         ✅ 事件驅動版本：TTS 輸出完成回調
@@ -246,14 +280,23 @@ class TTSModule(BaseModule):
             try:
                 from core.event_bus import event_bus, SystemEvent
                 
+                # 獲取當前 GS session_id 和 cycle_index (用於去重)
+                session_id = self._get_current_gs_id()
+                cycle_index = self._get_current_cycle_index()
+                
                 output_completion_data = {
+                    # Flow-based 去重所需欄位
+                    "session_id": session_id,
+                    "cycle_index": cycle_index,
+                    "layer": "OUTPUT",
+                    
+                    # 原有數據
                     "tts_result": result,
                     "output_path": result.get("output_path"),
                     "duration": result.get("duration"),
                     "chunk_count": result.get("chunk_count"),
                     "timestamp": time.time(),
                     "source_module": "tts",
-                    "layer": "output",
                     "completion_type": "output_layer_finished"
                 }
                 
@@ -263,7 +306,7 @@ class TTSModule(BaseModule):
                     source="tts"
                 )
                 
-                debug_log(2, "[TTS] 輸出層完成事件已發布到事件總線")
+                debug_log(2, f"[TTS] 輸出層完成事件已發布 (session={session_id}, cycle={cycle_index})")
                 
             except Exception as event_err:
                 error_log(f"[TTS] 發布輸出完成事件失敗: {event_err}")

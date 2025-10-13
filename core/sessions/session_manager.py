@@ -171,16 +171,16 @@ class UnifiedSessionManager:
             else:
                 gs_type_enum = gs_type
             
-            session = gs_manager.start_session(gs_type_enum, trigger_event)
-            if session:
+            session_id = gs_manager.start_session(gs_type_enum, trigger_event)
+            if session_id:
                 self._create_session_record(
-                    session.session_id, 
+                    session_id, 
                     SessionType.GENERAL,
                     trigger_event.get("content", ""),
                     str(trigger_event)
                 )
-                info_log(f"[UnifiedSessionManager] 已啟動 GS: {session.session_id}")
-                return session.session_id
+                info_log(f"[UnifiedSessionManager] 已啟動 GS: {session_id}")
+                return session_id
         except Exception as e:
             error_log(f"[UnifiedSessionManager] 啟動 GS 失敗: {e}")
         return None
@@ -231,17 +231,17 @@ class UnifiedSessionManager:
                 raise ValueError("提供的 GS ID 與當前活躍的 GS 不匹配")
             
             cs_manager = self.managers['cs_manager']
-            session = cs_manager.create_session(gs_session_id, identity_context)
+            session_id = cs_manager.create_session(gs_session_id, identity_context)
             
-            if session:
+            if session_id:
                 self._create_session_record(
-                    session.session_id,
+                    session_id,
                     SessionType.CHATTING,
                     f"對話會話 (GS: {gs_session_id})",
                     str(identity_context)
                 )
-                info_log(f"[UnifiedSessionManager] 已創建 CS: {session.session_id}")
-                return session.session_id
+                info_log(f"[UnifiedSessionManager] 已創建 CS: {session_id}")
+                return session_id
         except Exception as e:
             error_log(f"[UnifiedSessionManager] 創建 CS 失敗: {e}")
             raise  # 重新拋出錯誤，因為這是架構問題
@@ -306,17 +306,17 @@ class UnifiedSessionManager:
             else:
                 task_type_enum = task_type
             
-            session = ws_manager.create_session(gs_session_id, task_type_enum, task_definition)
+            session_id = ws_manager.create_session(gs_session_id, task_type_enum, task_definition)
             
-            if session:
+            if session_id:
                 self._create_session_record(
-                    session.session_id,
+                    session_id,
                     SessionType.WORKFLOW,
                     f"工作流會話: {task_definition.get('command', 'unknown')}",
                     str(task_definition)
                 )
-                info_log(f"[UnifiedSessionManager] 已創建 WS: {session.session_id}")
-                return session.session_id
+                info_log(f"[UnifiedSessionManager] 已創建 WS: {session_id}")
+                return session_id
         except Exception as e:
             error_log(f"[UnifiedSessionManager] 創建 WS 失敗: {e}")
             raise  # 重新拋出錯誤，因為這是架構問題
@@ -536,15 +536,14 @@ class UnifiedSessionManager:
         """清理過期會話"""
         try:
             # 清理各個管理器的過期會話
-            gs_manager = self.managers['gs_manager']
             cs_manager = self.managers['cs_manager']
             ws_manager = self.managers['ws_manager']
             
-            # 清理 CS 非活躍會話
-            cs_manager.cleanup_inactive_sessions(max_idle_minutes=30)
+            # 清理 CS 舊會話
+            cs_manager.cleanup_old_sessions(keep_recent=10)
             
-            # 清理 WS 已完成會話
-            ws_manager.cleanup_completed_sessions()
+            # 清理 WS 舊會話
+            ws_manager.cleanup_old_sessions(keep_recent=10)
             
             # 清理舊的會話記錄
             self._cleanup_old_records()

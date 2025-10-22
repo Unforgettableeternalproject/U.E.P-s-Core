@@ -424,9 +424,9 @@ class ModuleInvocationCoordinator:
             success = response.result == InvocationResult.SUCCESS
             if success:
                 info_log("[ModuleCoordinator] 輸出層完成，三層流程結束")
-                
-                # 通知 System Loop 輸出層完成
-                self._notify_output_completion(response.output_data)
+                # ✅ TTS 模組已經通過事件總線發布 OUTPUT_LAYER_COMPLETE 事件
+                # ✅ SystemLoop 會自動接收並處理，不需要重複通知
+                debug_log(2, "[ModuleCoordinator] 等待 TTS 發布的 OUTPUT_LAYER_COMPLETE 事件完成循環")
             else:
                 error_log(f"[ModuleCoordinator] 輸出層調用失敗: {response.error_message}")
             
@@ -779,19 +779,6 @@ class ModuleInvocationCoordinator:
         except Exception as e:
             error_log(f"[ModuleCoordinator] 提取回應文字失敗: {e}")
             return ""
-    
-    def _notify_output_completion(self, output_data: Optional[Dict[str, Any]]):
-        """通知輸出層完成（觸發循環結束邏輯）"""
-        try:
-            # 通知 System Loop
-            from core.system_loop import system_loop
-            if hasattr(system_loop, 'handle_output_completion'):
-                system_loop.handle_output_completion(output_data or {})
-            else:
-                debug_log(2, "[ModuleCoordinator] System Loop 不支持輸出完成通知")
-            
-        except Exception as e:
-            debug_log(1, f"[ModuleCoordinator] 通知輸出完成失敗: {e}")
     
     def get_active_invocations(self) -> Dict[str, Any]:
         """獲取當前活躍的調用狀態"""

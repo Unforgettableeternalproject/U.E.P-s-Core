@@ -329,6 +329,7 @@ class TTSModule(BaseModule):
         except Exception as e:
             return TTSOutput(
                 status="error",
+                success=False,
                 message=f"Invalid input: {e}",
                 output_path=None,
                 is_chunked=False,
@@ -339,6 +340,7 @@ class TTSModule(BaseModule):
         if not text:
             return TTSOutput(
                 status="error",
+                success=False,
                 message="Text is required",
                 output_path=None,
                 is_chunked=False,
@@ -399,6 +401,7 @@ class TTSModule(BaseModule):
                 error_log("[TTS] 引擎未初始化")
                 return TTSOutput(
                     status="error",
+                    success=False,
                     message="Engine not initialized",
                     output_path=None,
                     is_chunked=False,
@@ -446,6 +449,7 @@ class TTSModule(BaseModule):
                 self._playback_state = PlaybackState.ERROR
                 return TTSOutput(
                     status="error",
+                    success=False,
                     message="Synthesis failed",
                     output_path=None,
                     is_chunked=False,
@@ -480,6 +484,7 @@ class TTSModule(BaseModule):
             
             return TTSOutput(
                 status="success",
+                success=True,
                 message="TTS completed",
                 output_path=final_path,
                 is_chunked=False,
@@ -493,6 +498,7 @@ class TTSModule(BaseModule):
             debug_log(1, f"[TTS] 錯誤詳情:\n{traceback.format_exc()}")
             return TTSOutput(
                 status="error",
+                success=False,
                 message=f"TTS failed: {str(e)}",
                 output_path=None,
                 is_chunked=False,
@@ -526,6 +532,7 @@ class TTSModule(BaseModule):
                 error_log("[TTS] 引擎未初始化")
                 return TTSOutput(
                     status="error",
+                    success=False,
                     message="Engine not initialized",
                     output_path=None,
                     is_chunked=True,
@@ -672,6 +679,7 @@ class TTSModule(BaseModule):
             
             return TTSOutput(
                 status="success",
+                success=True,
                 message=f"Streaming completed",
                 output_path=output_path,
                 is_chunked=True,
@@ -697,6 +705,7 @@ class TTSModule(BaseModule):
             
             return TTSOutput(
                 status="error",
+                success=False,
                 message=f"Streaming failed: {str(e)}",
                 output_path=None,
                 is_chunked=True,

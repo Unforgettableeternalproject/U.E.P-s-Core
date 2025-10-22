@@ -172,7 +172,7 @@ class UnifiedController:
         """
         try:
             # 調用 SessionManager 的超時檢查
-            timeout_sessions = self.session_manager.check_session_timeout()
+            timeout_sessions = self.session_manager.check_session_timeouts()
             
             # 如果有會話超時,記錄並處理
             if timeout_sessions:

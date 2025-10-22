@@ -876,6 +876,11 @@ class NLPModule(BaseModule):
             latest_context = max(contexts, key=lambda c: c.created_at)
             context_data = working_context_manager.get_context_data(latest_context.context_id)
             
+            # 防禦性檢查: context_data 可能為 None
+            if context_data is None:
+                debug_log(3, "[NLP] Working Context返回的資料為空")
+                return None
+            
             speaker_data = context_data.get('current_speaker')
             if speaker_data:
                 debug_log(2, f"[NLP] 從Working Context獲取說話人: {speaker_data.get('speaker_id')}")

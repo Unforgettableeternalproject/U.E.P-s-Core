@@ -409,8 +409,8 @@ class MEMModule(BaseModule):
                 return self._create_error_response("MEM模組只在CHAT狀態下運行")
             
             # 檢查身份狀態，優雅處理臨時身份
-            if self.identity_manager and self.identity_manager.is_temporary_identity():
-                identity_desc = self.identity_manager.get_identity_type_description()
+            if self.memory_manager and self.memory_manager.identity_manager and self.memory_manager.identity_manager.is_temporary_identity():
+                identity_desc = self.memory_manager.identity_manager.get_identity_type_description()
                 info_log(f"[MEM] 檢測到{identity_desc}，跳過個人記憶存取，返回基本回應")
                 return self._create_temporary_identity_response()
             
@@ -419,8 +419,8 @@ class MEMModule(BaseModule):
             debug_log(3, f"[MEM] 會話檢查結果: {session_check}")
             
             # 記錄當前身份類型（用於調試）
-            if self.identity_manager:
-                identity_desc = self.identity_manager.get_identity_type_description()
+            if self.memory_manager and self.memory_manager.identity_manager:
+                identity_desc = self.memory_manager.identity_manager.get_identity_type_description()
                 debug_log(2, f"[MEM] 當前身份: {identity_desc}")
             
             # 處理舊 API 格式 (向後相容)
@@ -1240,8 +1240,8 @@ class MEMModule(BaseModule):
                 }
             
             # ✅ 檢查臨時身份,優雅跳過個人記憶存取
-            if self.identity_manager and self.identity_manager.is_temporary_identity():
-                identity_desc = self.identity_manager.get_identity_type_description()
+            if self.memory_manager and self.memory_manager.identity_manager and self.memory_manager.identity_manager.is_temporary_identity():
+                identity_desc = self.memory_manager.identity_manager.get_identity_type_description()
                 debug_log(2, f"[MEM] handle() 檢測到{identity_desc}，跳過個人記憶存取")
                 return self._create_temporary_identity_response()
 
@@ -1465,7 +1465,7 @@ class MEMModule(BaseModule):
     def _create_temporary_identity_response(self) -> dict:
         """為臨時身份創建適當的回應，不存取個人記憶"""
         try:
-            identity_desc = self.identity_manager.get_identity_type_description() if self.identity_manager else "未知身份"
+            identity_desc = self.memory_manager.identity_manager.get_identity_type_description() if (self.memory_manager and self.memory_manager.identity_manager) else "未知身份"
             
             return {
                 'success': True,

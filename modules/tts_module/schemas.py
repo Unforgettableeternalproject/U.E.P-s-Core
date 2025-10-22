@@ -11,6 +11,7 @@ class TTSInput(BaseModel):
 
 class TTSOutput(BaseModel):
     status: str = Field(..., description="Status of the TTS process")
+    success: bool = Field(..., description="Whether the TTS process was successful")
     output_path: Optional[str] = Field(None, description="Path to the output audio file if saved")
     message: str = Field(..., description="Status message or error description")
     is_chunked: bool = Field(False, description="Whether the text was processed as chunks")

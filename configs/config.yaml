@@ -19,12 +19,12 @@ modules_refactored:
   ani_module: false
   mov_module: false
 logging:
-  enabled: false
+  enabled: true
   log_level: DEBUG
   log_dir: logs
   enable_split_logs: false
 debug:
-  enabled: true
+  enabled: false
   debug_level: 3
 system:
   main_loop_interval: 0.1

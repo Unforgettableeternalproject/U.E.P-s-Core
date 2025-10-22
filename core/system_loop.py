@@ -719,59 +719,10 @@ class SystemLoop:
         except Exception as e:
             debug_log(2, f"[SystemLoop] 循環結束條件檢查失敗: {e}")
 
-    def handle_nlp_completion(self, nlp_data: Dict[str, Any]):
-        """
-        處理NLP模組（輸入層）完成通知，觸發三層架構流程
-        輸入層完成 → 協調器處理 → 處理層 → 輸出層
-        """
-        try:
-            info_log("[SystemLoop] 接收到輸入層（NLP）完成通知，啟動三層架構流程")
-            debug_log(2, f"[SystemLoop] NLP結果意圖: {nlp_data.get('nlp_result', {}).get('primary_intent')}")
-            
-            # 使用三層架構協調器處理輸入層完成
-            from core.module_coordinator import module_coordinator, ProcessingLayer
-            
-            success = module_coordinator.handle_layer_completion(
-                layer=ProcessingLayer.INPUT,
-                completion_data=nlp_data
-            )
-            
-            if success:
-                info_log("[SystemLoop] 三層架構流程啟動成功")
-            else:
-                error_log("[SystemLoop] 三層架構流程啟動失敗")
-                
-        except Exception as e:
-            error_log(f"[SystemLoop] 處理輸入層完成通知失敗: {e}")
-
-    def handle_processing_completion(self, processing_data: Dict[str, Any]):
-        """
-        處理處理層完成通知，觸發輸出層
-        這個方法可由處理層模組調用，觸發輸出層處理
-        """
-        try:
-            info_log("[SystemLoop] 接收到處理層完成通知，觸發輸出層")
-            debug_log(2, f"[SystemLoop] 處理層結果: {list(processing_data.keys())}")
-            
-            # 使用三層架構協調器處理處理層完成
-            from core.module_coordinator import module_coordinator, ProcessingLayer
-            
-            success = module_coordinator.handle_layer_completion(
-                layer=ProcessingLayer.PROCESSING,
-                completion_data=processing_data
-            )
-            
-            if success:
-                info_log("[SystemLoop] 輸出層處理成功，三層流程完成")
-            else:
-                error_log("[SystemLoop] 輸出層處理失敗")
-                
-        except Exception as e:
-            error_log(f"[SystemLoop] 處理處理層完成通知失敗: {e}")
-
     def handle_output_completion(self, output_data: Dict[str, Any]):
         """
         處理輸出層完成通知，完成整個三層流程
+        在 VAD 模式下重新啟動 STT 監聽
         """
         try:
             info_log("[SystemLoop] 接收到輸出層完成通知，三層架構流程結束")
@@ -779,6 +730,14 @@ class SystemLoop:
             
             # 記錄完整流程完成
             self._complete_cycle()
+            
+            # ✅ 在 VAD 模式下重新啟動 STT 監聽
+            if self.input_mode == "vad":
+                debug_log(2, "[SystemLoop] VAD 模式：重新啟動 STT 語音監聽")
+                self._restart_stt_listening()
+            
+            # 檢查 GS 結束條件
+            self._check_cycle_end_conditions()
             
         except Exception as e:
             error_log(f"[SystemLoop] 處理輸出層完成通知失敗: {e}")

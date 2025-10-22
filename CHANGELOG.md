@@ -1522,3 +1522,15 @@
 
 ---
 
+### Adopt event-driven layer flow; enable logging; fix TTS/MEM/NLP/engine integrations and many more. 10/23
+
+> Date: Thu, 23 Oct 2025 03:29:54 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `548a23c50c2219c0bff45dd695808727541a6fee`
+
+---
+

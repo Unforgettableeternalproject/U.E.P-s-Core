@@ -33,14 +33,15 @@ WorkflowStep = workflows_module.WorkflowStep
 StepResult = workflows_module.StepResult
 StepTemplate = workflows_module.StepTemplate
 WorkflowType = workflows_module.WorkflowType
+WorkflowMode = workflows_module.WorkflowMode
 
 # Import file interaction actions
 from ..actions.file_interaction import (
     drop_and_read,
     intelligent_archive,
     summarize_tag,
-    translate,
-    clean_trash_bin
+    # translate,  # TODO: 尚未實現
+    # clean_trash_bin  # TODO: 尚未實現
 )
 
 
@@ -48,8 +49,11 @@ def create_drop_and_read_workflow(session: WorkflowSession) -> WorkflowEngine:
     """創建檔案讀取工作流程"""
     workflow_def = WorkflowDefinition(
         workflow_type="drop_and_read",
-        name="檔案讀取工作流程", 
-        description="等待使用者提供檔案路徑，自動讀取檔案內容"
+        name="檔案讀取工作流程",
+        description="讀取檔案內容並提供摘要",
+        workflow_mode=WorkflowMode.BACKGROUND,  # 檔案工作流使用背景模式
+        requires_llm_review=True,  # 啟用 LLM 審核
+        auto_advance_on_approval=True
     )
     
     # 步驟1: 等待檔案路徑輸入
@@ -124,7 +128,10 @@ def create_intelligent_archive_workflow(session: WorkflowSession) -> WorkflowEng
     workflow_def = WorkflowDefinition(
         workflow_type="intelligent_archive",
         name="智慧歸檔工作流程",
-        description="選擇要歸檔的檔案，可選目標資料夾，確認後執行歸檔"
+        description="選擇要歸檔的檔案，可選目標資料夾，確認後執行歸檔",
+        workflow_mode=WorkflowMode.BACKGROUND,
+        requires_llm_review=True,
+        auto_advance_on_approval=True
     )
     
     # 檢查初始數據，決定入口點
@@ -240,7 +247,10 @@ def create_summarize_tag_workflow(session: WorkflowSession) -> WorkflowEngine:
     workflow_def = WorkflowDefinition(
         workflow_type="summarize_tag",
         name="摘要標籤工作流程",
-        description="等待使用者提供檔案路徑，可選標籤數量，確認後使用LLM生成摘要和標籤"
+        description="等待使用者提供檔案路徑，可選標籤數量，確認後使用LLM生成摘要和標籤",
+        workflow_mode=WorkflowMode.BACKGROUND,
+        requires_llm_review=True,
+        auto_advance_on_approval=True
     )
     
     # 步驟1: 等待檔案路徑輸入
@@ -358,7 +368,9 @@ def create_file_selection_workflow(session: WorkflowSession) -> WorkflowEngine:
     workflow_def = WorkflowDefinition(
         workflow_type="file_selection",
         name="文件操作選擇工作流程",
-        description="讓用戶選擇要執行的文件操作類型"
+        description="讓用戶選擇要執行的文件操作類型",
+        workflow_mode=WorkflowMode.DIRECT,  # 選擇流程使用直接模式
+        requires_llm_review=False
     )
     
     # 步驟1: 選擇文件操作類型

@@ -137,6 +137,9 @@ class WorkflowSession:
         self.task_steps: List[TaskStep] = []
         self.current_step_index = 0
         
+        # 工作流數據存儲（用於在步驟間傳遞數據）
+        self.workflow_data: Dict[str, Any] = {}
+        
         # 工作流元數據
         self.workflow_token = self._generate_workflow_token()
         self.session_metadata: Dict[str, Any] = {
@@ -351,6 +354,34 @@ class WorkflowSession:
         """
         self.session_metadata[key] = value
         debug_log(3, f"[WorkflowSession] 更新元數據: {key} = {value}")
+    
+    def add_data(self, key: str, value: Any):
+        """
+        添加工作流數據（用於在步驟間傳遞數據）
+        
+        Args:
+            key: 數據鍵
+            value: 數據值
+        """
+        if not hasattr(self, 'workflow_data'):
+            self.workflow_data = {}
+        self.workflow_data[key] = value
+        debug_log(3, f"[WorkflowSession] 添加數據: {key}")
+    
+    def get_data(self, key: str, default: Any = None) -> Any:
+        """
+        獲取工作流數據
+        
+        Args:
+            key: 數據鍵
+            default: 默認值（如果鍵不存在）
+            
+        Returns:
+            數據值或默認值
+        """
+        if not hasattr(self, 'workflow_data'):
+            self.workflow_data = {}
+        return self.workflow_data.get(key, default)
     
     def pause(self):
         """暫停工作流"""

@@ -37,6 +37,12 @@ class WorkflowType(Enum):
     OTHER = "other"
 
 
+class WorkflowMode(str, Enum):
+    """工作流程執行模式枚舉"""
+    DIRECT = "direct"           # 直接工作 (阻塞主循環，同步執行)
+    BACKGROUND = "background"   # 背景工作 (獨立執行緒，非阻塞)
+
+
 class StepResult:
     """結果資料類，包含工作流程步驟執行結果"""
     
@@ -49,7 +55,9 @@ class StepResult:
         skip_to: Optional[str] = None,
         cancel: bool = False,
         complete: bool = False,
-        continue_current_step: bool = False
+        continue_current_step: bool = False,
+        llm_review_data: Optional[Dict[str, Any]] = None,
+        requires_user_confirmation: bool = False
     ):
         """
         初始化步驟結果
@@ -63,6 +71,8 @@ class StepResult:
             cancel: 是否取消整個工作流程
             complete: 是否已完成工作流程
             continue_current_step: 是否繼續在當前步驟（用於循環步驟）
+            llm_review_data: 供 LLM 審核的結構化資料
+            requires_user_confirmation: 是否需要使用者確認
         """
         self.success = success
         self.message = message
@@ -72,6 +82,8 @@ class StepResult:
         self.cancel = cancel
         self.complete = complete
         self.continue_current_step = continue_current_step
+        self.llm_review_data = llm_review_data
+        self.requires_user_confirmation = requires_user_confirmation
         
     @classmethod
     def success(cls, message: str, data: Optional[Dict[str, Any]] = None, 
@@ -108,7 +120,9 @@ class StepResult:
             "next_step": self.next_step,
             "cancel": self.cancel,
             "complete": self.complete,
-            "continue_current_step": self.continue_current_step
+            "continue_current_step": self.continue_current_step,
+            "llm_review_data": self.llm_review_data,
+            "requires_user_confirmation": self.requires_user_confirmation
         }
 
 
@@ -436,7 +450,10 @@ class ConfirmationStep(WorkflowStep):
 class WorkflowDefinition:
     """工作流程定義類，包含步驟、轉換規則和元數據"""
     
-    def __init__(self, workflow_type: str, name: str, description: str = ""):
+    def __init__(self, workflow_type: str, name: str, description: str = "",
+                 workflow_mode: WorkflowMode = WorkflowMode.DIRECT,
+                 requires_llm_review: bool = False,
+                 auto_advance_on_approval: bool = True):
         """
         初始化工作流程定義
         
@@ -444,10 +461,16 @@ class WorkflowDefinition:
             workflow_type: 工作流程類型
             name: 工作流程名稱
             description: 工作流程描述
+            workflow_mode: 工作流程執行模式 (DIRECT/BACKGROUND)
+            requires_llm_review: 是否需要 LLM 審核每步驟
+            auto_advance_on_approval: LLM 批准後自動推進
         """
         self.workflow_type = workflow_type
         self.name = name
         self.description = description
+        self.workflow_mode = workflow_mode
+        self.requires_llm_review = requires_llm_review
+        self.auto_advance_on_approval = auto_advance_on_approval
         self.steps: Dict[str, WorkflowStep] = {}
         self.transitions: Dict[str, List[Tuple[str, Optional[Callable]]]] = {}
         self.entry_point: Optional[str] = None
@@ -525,6 +548,9 @@ class WorkflowDefinition:
             "workflow_type": self.workflow_type,
             "name": self.name,
             "description": self.description,
+            "workflow_mode": self.workflow_mode.value if isinstance(self.workflow_mode, WorkflowMode) else self.workflow_mode,
+            "requires_llm_review": self.requires_llm_review,
+            "auto_advance_on_approval": self.auto_advance_on_approval,
             "steps": list(self.steps.keys()),
             "entry_point": self.entry_point,
             "metadata": self.metadata
@@ -546,6 +572,9 @@ class WorkflowEngine:
         self.session = session
         self.auto_advance = False
         self.max_auto_steps = 50  # 防止無限循環，但允許更多步驟
+        self.llm_review_timeout = 60  # LLM 審核超時時間（秒）
+        self.awaiting_llm_review = False  # 是否正在等待 LLM 審核
+        self.pending_review_result: Optional[StepResult] = None  # 待審核的步驟結果
         
         # 驗證工作流程定義
         is_valid, error = self.definition.validate()
@@ -570,9 +599,135 @@ class WorkflowEngine:
         if current_step:
             return current_step.get_prompt()
         return "工作流程已完成"
+    
+    def is_awaiting_llm_review(self) -> bool:
+        """檢查是否正在等待 LLM 審核"""
+        return self.awaiting_llm_review
+    
+    def handle_llm_review_response(self, action: str, modified_params: Optional[Dict[str, Any]] = None) -> StepResult:
+        """
+        處理 LLM 審核響應
+        
+        Args:
+            action: LLM 決策 ('approve', 'modify', 'cancel')
+            modified_params: 修改的參數（當 action='modify' 時）
+            
+        Returns:
+            StepResult: 處理結果
+        """
+        if not self.awaiting_llm_review or not self.pending_review_result:
+            return StepResult.failure("當前沒有待審核的步驟")
+        
+        debug_log(2, f"[WorkflowEngine] 處理 LLM 審核響應: action={action}")
+        
+        # 重置審核狀態
+        self.awaiting_llm_review = False
+        result = self.pending_review_result
+        self.pending_review_result = None
+        
+        if action == 'approve':
+            # 批准：繼續工作流程
+            info_log("[WorkflowEngine] LLM 已批准步驟，繼續執行")
+            
+            # 如果設置了自動推進，則移動到下一步
+            if self.definition.auto_advance_on_approval:
+                current_step_id = self.session.get_data("current_step")
+                next_step_id = self.definition.get_next_step(current_step_id, result)
+                
+                if next_step_id:
+                    self.session.add_data("current_step", next_step_id)
+                    # 如果下一步可以自動推進，則繼續執行
+                    if self.auto_advance:
+                        next_step = self.definition.steps.get(next_step_id)
+                        if next_step and next_step.should_auto_advance():
+                            return self._auto_advance(result)
+                else:
+                    self.session.add_data("current_step", None)
+                    return StepResult.complete_workflow("工作流程已完成")
+            
+            return result
+            
+        elif action == 'modify':
+            # 修改：使用新參數重新執行當前步驟
+            if not modified_params:
+                return StepResult.failure("修改操作需要提供參數")
+            
+            info_log(f"[WorkflowEngine] LLM 要求修改參數並重新執行: {modified_params}")
+            
+            # 更新會話數據
+            for key, value in modified_params.items():
+                self.session.add_data(key, value)
+            
+            # 重新執行當前步驟
+            current_step = self.get_current_step()
+            if not current_step:
+                return StepResult.failure("無法重新執行：找不到當前步驟")
+            
+            try:
+                new_result = current_step.execute()
+                
+                # 如果需要 LLM 審核，再次進入審核流程
+                if self.definition.requires_llm_review and new_result.success:
+                    return self._request_llm_review(new_result, current_step)
+                
+                return new_result
+                
+            except Exception as e:
+                error_log(f"[WorkflowEngine] 重新執行步驟錯誤: {e}")
+                return StepResult.failure(f"重新執行失敗: {e}")
+            
+        elif action == 'cancel':
+            # 取消：終止工作流程
+            info_log("[WorkflowEngine] LLM 取消工作流程")
+            self.session.add_data("current_step", None)
+            return StepResult.cancel_workflow("LLM 已取消工作流程")
+        
+        else:
+            return StepResult.failure(f"未知的 LLM 審核操作: {action}")
+    
+    def _request_llm_review(self, result: StepResult, current_step: WorkflowStep) -> StepResult:
+        """
+        請求 LLM 審核步驟結果
+        
+        Args:
+            result: 步驟執行結果
+            current_step: 當前步驟
+            
+        Returns:
+            StepResult: 審核請求結果
+        """
+        debug_log(2, f"[WorkflowEngine] 請求 LLM 審核步驟: {current_step.id}")
+        
+        # 設置審核狀態
+        self.awaiting_llm_review = True
+        self.pending_review_result = result
+        
+        # 準備審核數據
+        review_data = result.llm_review_data or {}
+        review_data.update({
+            "step_id": current_step.id,
+            "step_type": current_step.step_type,
+            "message": result.message,
+            "data": result.data,
+            "workflow_type": self.definition.workflow_type,
+            "workflow_name": self.definition.name
+        })
+        
+        # 返回特殊結果，指示需要 LLM 審核
+        return StepResult(
+            success=True,
+            message="步驟執行完成，等待 LLM 審核",
+            data=result.data,
+            llm_review_data=review_data,
+            requires_user_confirmation=False
+        )
         
     def process_input(self, user_input: Any = None) -> StepResult:
         """處理用戶輸入並執行步驟"""
+        # 檢查是否正在等待 LLM 審核
+        if self.awaiting_llm_review:
+            return StepResult.failure("工作流程正在等待 LLM 審核，請稍候")
+        
         current_step = self.get_current_step()
         if not current_step:
             return StepResult.complete_workflow("工作流程已完成")
@@ -608,6 +763,10 @@ class WorkflowEngine:
                 if result.data:
                     for key, value in result.data.items():
                         self.session.add_data(key, value)
+                
+                # **檢查是否需要 LLM 審核**
+                if self.definition.requires_llm_review:
+                    return self._request_llm_review(result, current_step)
                 
                 # 檢查是否需要繼續在當前步驟
                 if result.continue_current_step:
@@ -781,8 +940,11 @@ class WorkflowEngine:
         return {
             "workflow_type": self.definition.workflow_type,
             "workflow_name": self.definition.name,
+            "workflow_mode": self.definition.workflow_mode.value if isinstance(self.definition.workflow_mode, WorkflowMode) else self.definition.workflow_mode,
+            "requires_llm_review": self.definition.requires_llm_review,
             "current_step": current_step.id if current_step else None,
             "is_complete": current_step is None,
+            "awaiting_llm_review": self.awaiting_llm_review,
             "step_history": self.session.get_data("step_history", []),
             "auto_advance": self.auto_advance
         }

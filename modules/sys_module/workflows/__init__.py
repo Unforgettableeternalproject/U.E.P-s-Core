@@ -16,6 +16,7 @@ spec.loader.exec_module(workflows_module)
 
 # Export core classes
 WorkflowType = workflows_module.WorkflowType
+WorkflowMode = workflows_module.WorkflowMode
 StepResult = workflows_module.StepResult
 WorkflowEngine = workflows_module.WorkflowEngine
 WorkflowDefinition = workflows_module.WorkflowDefinition
@@ -30,7 +31,7 @@ from .test_workflows import create_test_workflow, get_available_test_workflows
 from .file_workflows import create_file_workflow, get_available_file_workflows
 
 __all__ = [
-    'WorkflowType', 'StepResult', 'WorkflowEngine', 'WorkflowDefinition',
+    'WorkflowType', 'WorkflowMode', 'StepResult', 'WorkflowEngine', 'WorkflowDefinition',
     'WorkflowStep', 'FileSelectionStep', 'ActionSelectionStep', 'ConfirmationStep',
     'StepTemplate',
     'create_test_workflow', 'get_available_test_workflows',

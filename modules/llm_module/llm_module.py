@@ -30,6 +30,7 @@ from .gemini_client import GeminiWrapper
 from .prompt_manager import PromptManager
 from .learning_engine import LearningEngine
 from .cache_manager import cache_manager, CacheType
+from .mcp_client import MCPClient
 from .module_interfaces import (
     state_aware_interface, CollaborationChannel, set_collaboration_state
 )
@@ -59,6 +60,9 @@ class LLMModule(BaseModule):
         # 狀態感知模組接口
         self.module_interface = state_aware_interface
         
+        # MCP 客戶端 (用於與 SYS 模組的 MCP Server 通訊)
+        self.mcp_client = MCPClient()
+        
         # 監聽系統狀態變化以自動切換協作管道
         self._setup_state_listener()
         
@@ -81,6 +85,7 @@ class LLMModule(BaseModule):
         debug_log(2, f"[LLM] 最大輸出字元數: {self.model.max_tokens}")
         debug_log(2, f"[LLM] 統一快取管理器: 啟用 (Gemini + 本地快取)")
         debug_log(2, f"[LLM] Learning Engine: {'啟用' if self.learning_engine.learning_enabled else '停用'}")
+        debug_log(2, f"[LLM] MCP Client: {'已連接' if self.mcp_client.mcp_server else '未連接'}")
         # Debug level = 4
         debug_log(4, f"[LLM] 完整模組設定: {self.config}")
     
@@ -135,6 +140,40 @@ class LLMModule(BaseModule):
         except Exception as e:
             error_log(f"[LLM] 初始化失敗: {e}")
             return False
+    
+    def set_mcp_server(self, mcp_server):
+        """
+        設置 MCP Server 實例
+        
+        Args:
+            mcp_server: SYS 模組的 MCP Server 實例
+        """
+        self.mcp_client.set_mcp_server(mcp_server)
+        info_log("[LLM] MCP Server 已設置，MCP 工具功能已啟用")
+        debug_log(2, f"[LLM] 可用的 MCP 工具: {len(self.mcp_client.get_tools_for_llm())} 個")
+    
+    def get_mcp_tools_for_llm(self) -> List[Dict[str, Any]]:
+        """
+        獲取 MCP 工具規範供 LLM function calling 使用
+        
+        Returns:
+            工具規範列表
+        """
+        return self.mcp_client.get_tools_for_llm()
+    
+    async def handle_mcp_tool_call(self, tool_name: str, tool_params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        處理 LLM 的 MCP 工具呼叫
+        
+        Args:
+            tool_name: 工具名稱
+            tool_params: 工具參數
+            
+        Returns:
+            工具執行結果
+        """
+        debug_log(2, f"[LLM] 處理 MCP 工具呼叫: {tool_name}")
+        return await self.mcp_client.call_tool(tool_name, tool_params)
         
     def handle(self, data: dict) -> dict:
         """主要處理方法 - 重構版本，支援新的 CHAT/WORK 模式和新 Router 整合"""

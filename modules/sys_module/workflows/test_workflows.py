@@ -32,6 +32,7 @@ WorkflowStep = workflows_module.WorkflowStep
 StepResult = workflows_module.StepResult
 StepTemplate = workflows_module.StepTemplate
 WorkflowType = workflows_module.WorkflowType
+WorkflowMode = workflows_module.WorkflowMode
 
 
 def create_echo_workflow(session: WorkflowSession) -> WorkflowEngine:
@@ -39,7 +40,9 @@ def create_echo_workflow(session: WorkflowSession) -> WorkflowEngine:
     workflow_def = WorkflowDefinition(
         workflow_type="echo",
         name="回顯測試工作流程",
-        description="簡單的回顯測試，用於驗證工作流程基本功能"
+        description="簡單的回顯測試，用於驗證工作流程基本功能",
+        workflow_mode=WorkflowMode.DIRECT,  # 測試工作流為直接模式
+        requires_llm_review=False  # 測試工作流不需要 LLM 審核
     )
     
     # 創建輸入步驟
@@ -87,7 +90,9 @@ def create_countdown_workflow(session: WorkflowSession) -> WorkflowEngine:
     workflow_def = WorkflowDefinition(
         workflow_type="countdown",
         name="倒數測試工作流程",
-        description="倒數測試，用於驗證多步驟工作流程"
+        description="倒數測試，用於驗證多步驟工作流程",
+        workflow_mode=WorkflowMode.DIRECT,
+        requires_llm_review=False
     )
     
     # 步驟 1: 輸入起始數字
@@ -216,7 +221,9 @@ def create_data_collector_workflow(session: WorkflowSession, llm_module=None) ->
     workflow_def = WorkflowDefinition(
         workflow_type="data_collector",
         name="資料收集測試工作流程",
-        description="收集用戶資料並生成摘要報告，用於測試多步驟工作流程和LLM整合"
+        description="收集用戶資料並生成摘要報告，用於測試多步驟工作流程和LLM整合",
+        workflow_mode=WorkflowMode.DIRECT,
+        requires_llm_review=False
     )
     
     # 步驟 1: 收集姓名
@@ -360,7 +367,9 @@ def create_random_fail_workflow(session: WorkflowSession) -> WorkflowEngine:
     workflow_def = WorkflowDefinition(
         workflow_type="random_fail",
         name="隨機失敗測試工作流程",
-        description="測試系統錯誤處理與自動重試能力的工作流程"
+        description="測試系統錯誤處理與自動重試能力的工作流程",
+        workflow_mode=WorkflowMode.DIRECT,
+        requires_llm_review=False
     )
     
     # 步驟 1: 設定失敗機率
@@ -590,7 +599,9 @@ def create_tts_test_workflow(session: WorkflowSession, tts_module=None) -> Workf
     workflow_def = WorkflowDefinition(
         workflow_type="tts_test",
         name="TTS測試工作流程",
-        description="測試與TTS模組整合的工作流程，包含文字輸入、情緒選擇和語音生成"
+        description="測試與TTS模組整合的工作流程，包含文字輸入、情緒選擇和語音生成",
+        workflow_mode=WorkflowMode.DIRECT,
+        requires_llm_review=False
     )
     
     # 檢查TTS模組是否可用

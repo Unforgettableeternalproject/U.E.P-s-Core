@@ -701,13 +701,14 @@ class UnifiedSessionManager:
         try:
             # 如果指定了 workflow_type，創建 WorkflowSession
             if workflow_type is not None:
-                # 首先需要 GS session ID
-                gs_id = kwargs.get('gs_session_id') or f"gs_{int(time.time())}"
-                
                 # 確保有 GS 會話存在 - 使用正確的 GSType 枚舉值
                 current_gs = self.get_current_general_session()
                 if not current_gs:
                     self.start_general_session("system_event", {"trigger": "create_workflow"})
+                    current_gs = self.get_current_general_session()
+                
+                # 使用當前 GS 的 session_id，而不是生成新的
+                gs_id = kwargs.get('gs_session_id') or (current_gs.session_id if current_gs else f"gs_{int(time.time())}")
                 
                 # 將 workflow_type 映射到正確的 WSTaskType（使用枚舉的 value）
                 task_type_mapping = {

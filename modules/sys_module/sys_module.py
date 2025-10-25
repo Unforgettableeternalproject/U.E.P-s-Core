@@ -1,5 +1,6 @@
 import os
 import time
+import asyncio
 
 import yaml
 from core.bases.module_base import BaseModule
@@ -17,6 +18,9 @@ from core.sessions.session_manager import session_manager, WorkflowSession, Sess
 from .workflows import (
     WorkflowType, StepResult, WorkflowEngine, WorkflowDefinition
 )
+
+# Import MCP Server
+from .mcp_server import MCPServer
 
 # Import test workflows
 from .workflows.test_workflows import (
@@ -38,6 +42,10 @@ class SYSModule(BaseModule):
         self.session_manager = session_manager
         # Custom session storage for engines
         self.workflow_engines = {}  # session_id -> engine mapping
+        
+        # Initialize MCP Server
+        self.mcp_server = MCPServer(sys_module=self)
+        debug_log(2, "[SYS] MCP Server 已初始化")
 
     def initialize(self):
         info_log("[SYS] 初始化完成，啟用模式：" + ", ".join(self.enabled_modes))
@@ -97,13 +105,24 @@ class SYSModule(BaseModule):
         debug_log(1, f"[SYS] 啟動統一工作流程: {workflow_type}")
         
         # Create session
-        session = self.session_manager.create_session(
+        session_result = self.session_manager.create_session(
             workflow_type=workflow_type,
             command=command,
             initial_data=initial_data or {}
         )
         
-        session_id = session.session_id
+        # Handle return value - could be session object or session_id string
+        if isinstance(session_result, str):
+            session_id = session_result
+            # Get the actual session object from session manager
+            session = self.session_manager.get_workflow_session(session_id)
+            if not session:
+                raise ValueError(f"無法獲取會話對象: {session_id}")
+        elif hasattr(session_result, 'session_id'):
+            session = session_result
+            session_id = session.session_id
+        else:
+            raise ValueError(f"無效的會話創建結果: {type(session_result)}")
         
         try:
             # Determine workflow engine based on type
@@ -187,8 +206,7 @@ class SYSModule(BaseModule):
             error_log(f"[SYS] 創建統一工作流程引擎失敗: {e}")
             self.session_manager.end_session(
                 session_id, 
-                success=False, 
-                message=f"無法為 {workflow_type} 創建工作流程"
+                reason=f"無法為 {workflow_type} 創建工作流程: {e}"
             )
             # Clean up engine if it was created
             if session_id in self.workflow_engines:
@@ -225,7 +243,9 @@ class SYSModule(BaseModule):
                 "message": f"找不到工作流程引擎 ID: {session_id}"
             }
         
-        if session.status != SessionStatus.ACTIVE:
+        # Check if session is in an active state (ready, executing, or waiting)
+        active_statuses = [SessionStatus.READY, SessionStatus.EXECUTING, SessionStatus.WAITING]
+        if session.status not in active_statuses:
             return {
                 "status": "error",
                 "message": f"工作流程已不再活動狀態: {session.status.value}"
@@ -240,8 +260,7 @@ class SYSModule(BaseModule):
                 # Workflow was cancelled
                 self.session_manager.end_session(
                     session_id,
-                    success=False,
-                    message=result.message
+                    reason=f"cancelled: {result.message}"
                 )
                 # Clean up engine
                 if session_id in self.workflow_engines:
@@ -256,8 +275,7 @@ class SYSModule(BaseModule):
                 # Workflow completed successfully
                 self.session_manager.end_session(
                     session_id,
-                    success=True,
-                    message=result.message
+                    reason=f"completed: {result.message}"
                 )
                 # Clean up engine
                 if session_id in self.workflow_engines:
@@ -294,8 +312,7 @@ class SYSModule(BaseModule):
                     # Workflow completed
                     self.session_manager.end_session(
                         session_id,
-                        success=True,
-                        message=result.message
+                        reason=f"completed: {result.message}"
                     )
                     # Clean up engine
                     if session_id in self.workflow_engines:
@@ -310,8 +327,7 @@ class SYSModule(BaseModule):
             error_log(f"[SYS] 工作流程執行錯誤: {e}")
             self.session_manager.end_session(
                 session_id,
-                success=False,
-                message=f"工作流程執行錯誤: {e}"
+                reason=f"error: {str(e)}"
             )
             # Clean up engine
             if session_id in self.workflow_engines:
@@ -331,17 +347,23 @@ class SYSModule(BaseModule):
                 "message": f"找不到工作流程會話 ID: {session_id}"
             }
         
-        if session.status != SessionStatus.ACTIVE:
+        # Check if session is in an active state
+        active_statuses = [SessionStatus.READY, SessionStatus.EXECUTING, SessionStatus.WAITING]
+        if session.status not in active_statuses:
             return {
-                "status": "warning",
-                "message": f"工作流程已經處於非活動狀態: {session.status.value}"
+                "status": "error",
+                "message": f"工作流程不在活動狀態: {session.status.value}"
             }
         
-        session.cancel_session(reason)
+        session.cancel(reason)
         info_log(f"[SYS] 已取消工作流程 ID: {session_id}, 原因: {reason}")
         
+        # Clean up engine
+        if session_id in self.workflow_engines:
+            del self.workflow_engines[session_id]
+        
         return {
-            "status": "success",
+            "status": "cancelled",
             "message": f"已取消工作流程: {reason}"
         }
     
@@ -538,3 +560,246 @@ class SYSModule(BaseModule):
         }
     
     # 舊的專門處理函數已被移除，統一使用 _start_workflow 和 _continue_workflow
+    # ========== Async Methods for MCP Server ==========
+    
+    async def start_workflow_async(self, workflow_type: str, command: str, initial_data: dict = None) -> dict:
+        """
+        Async wrapper for starting a workflow (for MCP Server)
+        
+        Args:
+            workflow_type: Type of workflow to start
+            command: Original command that triggered this workflow
+            initial_data: Initial data for the workflow
+            
+        Returns:
+            Dict with status, session_id, and workflow info
+        """
+        # Run synchronous _start_workflow in executor to avoid blocking
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            self._start_workflow,
+            workflow_type,
+            command,
+            initial_data or {}
+        )
+        return result
+    
+    async def continue_workflow_async(self, session_id: str, user_input: str = None, additional_data: dict = None) -> dict:
+        """
+        Async wrapper for continuing a workflow (for MCP Server)
+        
+        Args:
+            session_id: Workflow session ID
+            user_input: User's input for the current step
+            additional_data: Additional data to pass to the workflow
+            
+        Returns:
+            Dict with status, message, and workflow state
+        """
+        # Merge user_input into additional_data if needed
+        if user_input is None and additional_data:
+            user_input = additional_data.get("user_input", "")
+        
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            self._continue_workflow,
+            session_id,
+            user_input or ""
+        )
+        return result
+    
+    async def modify_and_reexecute_step_async(self, session_id: str, modifications: dict) -> dict:
+        """
+        Modify current step parameters and re-execute (for MCP Server)
+        
+        Args:
+            session_id: Workflow session ID
+            modifications: Parameters to modify
+            
+        Returns:
+            Dict with status and new step result
+        """
+        # Get the workflow engine
+        engine = self.workflow_engines.get(session_id)
+        if not engine:
+            return {
+                "status": "error",
+                "message": f"找不到工作流程引擎 ID: {session_id}"
+            }
+        
+        try:
+            # Get current step
+            current_step = engine.get_current_step()
+            if not current_step:
+                return {
+                    "status": "error",
+                    "message": "沒有當前步驟可以修改"
+                }
+            
+            # Apply modifications to session data
+            session = self.session_manager.get_session(session_id)
+            if session:
+                for key, value in modifications.items():
+                    session.set_data(key, value)
+                
+                debug_log(2, f"[SYS] 已應用修改: {modifications}")
+            
+            # Re-execute the current step
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                engine.process_input,
+                ""  # Empty input to trigger re-execution
+            )
+            
+            return {
+                "status": "success",
+                "message": "步驟已修改並重新執行",
+                "data": result.to_dict()
+            }
+            
+        except Exception as e:
+            error_log(f"[SYS] 修改步驟失敗: {e}")
+            return {
+                "status": "error",
+                "message": f"修改步驟失敗: {str(e)}"
+            }
+    
+    async def cancel_workflow_async(self, session_id: str, reason: str = "使用者取消") -> dict:
+        """
+        Async wrapper for cancelling a workflow (for MCP Server)
+        
+        Args:
+            session_id: Workflow session ID
+            reason: Reason for cancellation
+            
+        Returns:
+            Dict with status and cancellation message
+        """
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            self._cancel_workflow,
+            session_id,
+            reason
+        )
+        return result
+    
+    async def handle_llm_review_response_async(self, session_id: str, action: str, modified_params: dict = None) -> dict:
+        """
+        處理 LLM 審核響應（異步方法供 MCP Server 調用）
+        
+        Args:
+            session_id: 工作流會話 ID
+            action: LLM 決策 ('approve', 'modify', 'cancel')
+            modified_params: 修改的參數（當 action='modify' 時）
+            
+        Returns:
+            包含狀態和結果的字典
+        """
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            self._handle_llm_review_response,
+            session_id,
+            action,
+            modified_params
+        )
+        return result
+    
+    def _handle_llm_review_response(self, session_id: str, action: str, modified_params: dict = None) -> dict:
+        """
+        處理 LLM 審核響應（同步方法）
+        
+        Args:
+            session_id: 工作流會話 ID
+            action: LLM 決策 ('approve', 'modify', 'cancel')
+            modified_params: 修改的參數（當 action='modify' 時）
+            
+        Returns:
+            包含狀態和結果的字典
+        """
+        # 檢查會話是否存在
+        engine = self.workflow_engines.get(session_id)
+        if not engine:
+            return {
+                "status": "error",
+                "message": f"找不到工作流程引擎 ID: {session_id}"
+            }
+        
+        # 檢查引擎是否正在等待 LLM 審核
+        if not engine.is_awaiting_llm_review():
+            return {
+                "status": "error",
+                "message": "當前工作流沒有待審核的步驟"
+            }
+        
+        try:
+            # 調用引擎的 LLM 審核響應處理方法
+            result = engine.handle_llm_review_response(action, modified_params)
+            
+            if result.cancel:
+                # 工作流被取消
+                self.session_manager.end_session(session_id, reason="LLM 取消工作流")
+                del self.workflow_engines[session_id]
+                
+                return {
+                    "status": "cancelled",
+                    "message": result.message,
+                    "data": result.to_dict()
+                }
+            elif result.complete:
+                # 工作流完成
+                self.session_manager.end_session(session_id, reason="工作流正常完成")
+                del self.workflow_engines[session_id]
+                
+                return {
+                    "status": "completed",
+                    "message": result.message,
+                    "data": result.to_dict()
+                }
+            elif result.success:
+                # 步驟成功，繼續工作流
+                current_step = engine.get_current_step()
+                if current_step:
+                    return {
+                        "status": "success",
+                        "requires_input": current_step.step_type == current_step.STEP_TYPE_INTERACTIVE,
+                        "prompt": engine.get_prompt() if current_step else "工作流程已完成",
+                        "message": result.message,
+                        "data": {
+                            "workflow_type": engine.definition.workflow_type,
+                            "current_step": current_step.id,
+                            **result.data
+                        }
+                    }
+                else:
+                    # 工作流已完成
+                    self.session_manager.end_session(session_id, reason="工作流正常完成")
+                    del self.workflow_engines[session_id]
+                    
+                    return {
+                        "status": "completed",
+                        "message": "工作流程已完成",
+                        "data": result.to_dict()
+                    }
+            else:
+                # 處理失敗
+                return {
+                    "status": "error",
+                    "message": result.message,
+                    "data": result.to_dict()
+                }
+            
+        except Exception as e:
+            error_log(f"[SYS] 處理 LLM 審核響應失敗: {e}")
+            return {
+                "status": "error",
+                "message": f"處理 LLM 審核響應失敗: {str(e)}"
+            }
+    
+    def get_mcp_server(self):
+        """Get the MCP Server instance"""
+        return self.mcp_server

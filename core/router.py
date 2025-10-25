@@ -166,6 +166,19 @@ class Router:
             debug_log(3, "[SimpleRouter] 系統輸出，路由到 TTS")
             return "tts"
         
+        # 階段三：WORK 狀態下檢查工作流輸入需求
+        if current_state == UEPState.WORK and text_input.source == TextSource.USER_INPUT:
+            # 檢查是否有工作流正在等待輸入
+            is_workflow_waiting = self.context_manager.is_workflow_waiting_input()
+            
+            if is_workflow_waiting:
+                debug_log(2, "[SimpleRouter] 工作流等待輸入，路由到 SYS 模組")
+                return "sys"
+            else:
+                # 工作流不需要輸入，正常路由到 SYS 處理
+                debug_log(3, "[SimpleRouter] WORK 狀態，路由到 SYS 模組")
+                return "sys"
+        
         # 使用者輸入根據狀態決定處理模組
         if current_state in self.state_routing_map:
             primary_module = self.state_routing_map[current_state]["primary"]

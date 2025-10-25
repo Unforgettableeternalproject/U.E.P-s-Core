@@ -11,7 +11,11 @@ import sys
 import threading
 import queue
 import time
+import uuid
+from datetime import datetime
 from typing import Dict, Any, Optional, List, Callable
+from enum import Enum
+from dataclasses import dataclass, field
 
 try:
     from PyQt5.QtCore import QObject, pyqtSignal, QThread
@@ -28,6 +32,49 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from utils.debug_helper import debug_log, info_log, error_log
+
+
+class TaskStatus(str, Enum):
+    """Background task status enumeration"""
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+@dataclass
+class BackgroundWorkflowTask:
+    """
+    Background workflow task data structure
+    
+    Tracks workflow execution in background thread with status, progress, and metadata.
+    """
+    task_id: str
+    workflow_type: str
+    session_id: Optional[str] = None
+    status: TaskStatus = TaskStatus.QUEUED
+    progress: float = 0.0  # 0.0 - 1.0
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+    error_message: Optional[str] = None
+    result: Optional[Dict[str, Any]] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization"""
+        return {
+            "task_id": self.task_id,
+            "workflow_type": self.workflow_type,
+            "session_id": self.session_id,
+            "status": self.status.value,
+            "progress": self.progress,
+            "start_time": self.start_time.isoformat() if self.start_time else None,
+            "end_time": self.end_time.isoformat() if self.end_time else None,
+            "error_message": self.error_message,
+            "result": self.result,
+            "metadata": self.metadata
+        }
 
 
 class WorkerSignals(QObject):
@@ -148,6 +195,7 @@ class BackgroundWorkerManager:
     def __init__(self):
         """初始化管理器"""
         self.workers = {}
+        self.workflow_tasks: Dict[str, BackgroundWorkflowTask] = {}  # Track workflow tasks
         self.max_workers = 5
         self.signals = WorkerSignals() if PYQT5_AVAILABLE else None
         
@@ -303,6 +351,14 @@ class BackgroundWorkerManager:
         """處理任務錯誤信號"""
         error_log(f"[BackgroundWorkerManager] 任務 {task_id} 發生錯誤: {error_msg}")
         
+        # Update workflow task status if it exists
+        if task_id in self.workflow_tasks:
+            task = self.workflow_tasks[task_id]
+            task.status = TaskStatus.FAILED
+            task.error_message = error_msg
+            task.end_time = datetime.now()
+            debug_log(2, f"[BackgroundWorkerManager] Workflow task {task_id} marked as FAILED")
+        
         # 移除工作線程
         if task_id in self.workers:
             del self.workers[task_id]
@@ -310,6 +366,204 @@ class BackgroundWorkerManager:
         # 轉發信號
         if self.signals and self.signals.error:
             self.signals.error.emit(task_id, error_msg)
+    
+    # ==================== Workflow-specific methods ====================
+    
+    def submit_workflow(self, workflow_engine, workflow_type: str, 
+                       session_id: Optional[str] = None,
+                       metadata: Optional[Dict[str, Any]] = None) -> str:
+        """
+        Submit workflow to background execution
+        
+        Args:
+            workflow_engine: WorkflowEngine instance to execute
+            workflow_type: Type identifier for the workflow
+            session_id: Associated session ID (optional)
+            metadata: Additional metadata (optional)
+            
+        Returns:
+            task_id: Unique identifier for the background task
+        """
+        # Generate unique task ID
+        task_id = f"workflow_{workflow_type}_{uuid.uuid4().hex[:8]}"
+        
+        # Create workflow task record
+        workflow_task = BackgroundWorkflowTask(
+            task_id=task_id,
+            workflow_type=workflow_type,
+            session_id=session_id,
+            status=TaskStatus.QUEUED,
+            metadata=metadata or {}
+        )
+        
+        self.workflow_tasks[task_id] = workflow_task
+        
+        # Create wrapper function for workflow execution
+        def workflow_executor():
+            """Execute workflow in background thread"""
+            try:
+                # Update status to RUNNING
+                workflow_task.status = TaskStatus.RUNNING
+                workflow_task.start_time = datetime.now()
+                debug_log(2, f"[BackgroundWorkerManager] Starting workflow execution: {task_id}")
+                
+                # Execute workflow engine
+                result = workflow_engine.execute()
+                
+                # Update task with result
+                workflow_task.status = TaskStatus.COMPLETED
+                workflow_task.end_time = datetime.now()
+                workflow_task.result = result
+                workflow_task.progress = 1.0
+                
+                info_log(f"[BackgroundWorkerManager] Workflow {task_id} completed successfully")
+                
+                # Publish event (will be handled by Controller)
+                try:
+                    from core.event_bus import get_event_bus, SystemEvent
+                    event_bus = get_event_bus()
+                    event_bus.publish(SystemEvent.BACKGROUND_WORKFLOW_COMPLETED, {
+                        "task_id": task_id,
+                        "workflow_type": workflow_type,
+                        "session_id": session_id,
+                        "result": result
+                    })
+                except Exception as e:
+                    error_log(f"[BackgroundWorkerManager] Failed to publish completion event: {e}")
+                
+                return result
+                
+            except Exception as e:
+                # Update task with error
+                workflow_task.status = TaskStatus.FAILED
+                workflow_task.end_time = datetime.now()
+                workflow_task.error_message = str(e)
+                
+                error_log(f"[BackgroundWorkerManager] Workflow {task_id} failed: {e}")
+                
+                # Publish failure event
+                try:
+                    from core.event_bus import get_event_bus, SystemEvent
+                    event_bus = get_event_bus()
+                    event_bus.publish(SystemEvent.BACKGROUND_WORKFLOW_FAILED, {
+                        "task_id": task_id,
+                        "workflow_type": workflow_type,
+                        "session_id": session_id,
+                        "error": str(e)
+                    })
+                except Exception as event_error:
+                    error_log(f"[BackgroundWorkerManager] Failed to publish failure event: {event_error}")
+                
+                raise
+        
+        # Start background task
+        success = self.start_task(task_id, workflow_executor)
+        
+        if not success:
+            # Failed to start, update status
+            workflow_task.status = TaskStatus.FAILED
+            workflow_task.error_message = "Failed to start background worker"
+            error_log(f"[BackgroundWorkerManager] Failed to start workflow task: {task_id}")
+            raise RuntimeError(f"Failed to start background workflow task: {task_id}")
+        
+        info_log(f"[BackgroundWorkerManager] Submitted workflow {workflow_type} as task {task_id}")
+        return task_id
+    
+    def get_task_status(self, task_id: str) -> Optional[BackgroundWorkflowTask]:
+        """
+        Get status of background workflow task
+        
+        Args:
+            task_id: Task identifier
+            
+        Returns:
+            BackgroundWorkflowTask or None if not found
+        """
+        return self.workflow_tasks.get(task_id)
+    
+    def get_all_tasks(self) -> List[BackgroundWorkflowTask]:
+        """
+        Get all workflow tasks
+        
+        Returns:
+            List of all BackgroundWorkflowTask objects
+        """
+        return list(self.workflow_tasks.values())
+    
+    def get_active_tasks(self) -> List[BackgroundWorkflowTask]:
+        """
+        Get currently active (QUEUED or RUNNING) workflow tasks
+        
+        Returns:
+            List of active BackgroundWorkflowTask objects
+        """
+        return [
+            task for task in self.workflow_tasks.values()
+            if task.status in [TaskStatus.QUEUED, TaskStatus.RUNNING]
+        ]
+    
+    def cancel_task(self, task_id: str) -> bool:
+        """
+        Cancel background workflow task
+        
+        Args:
+            task_id: Task identifier
+            
+        Returns:
+            True if cancelled successfully, False otherwise
+        """
+        # Check if task exists
+        if task_id not in self.workflow_tasks:
+            debug_log(2, f"[BackgroundWorkerManager] Task {task_id} not found in workflow tasks")
+            return False
+        
+        task = self.workflow_tasks[task_id]
+        
+        # Can only cancel QUEUED or RUNNING tasks
+        if task.status not in [TaskStatus.QUEUED, TaskStatus.RUNNING]:
+            debug_log(2, f"[BackgroundWorkerManager] Task {task_id} is {task.status.value}, cannot cancel")
+            return False
+        
+        # Update task status
+        task.status = TaskStatus.CANCELLED
+        task.end_time = datetime.now()
+        
+        # Stop the background worker
+        success = self.stop_task(task_id)
+        
+        if success:
+            info_log(f"[BackgroundWorkerManager] Cancelled workflow task: {task_id}")
+        else:
+            error_log(f"[BackgroundWorkerManager] Failed to stop worker for task: {task_id}")
+        
+        return success
+    
+    def cleanup_completed_tasks(self, max_history: int = 100):
+        """
+        Clean up old completed/failed/cancelled tasks
+        
+        Args:
+            max_history: Maximum number of completed tasks to keep
+        """
+        # Get completed tasks sorted by end time
+        completed_tasks = [
+            task for task in self.workflow_tasks.values()
+            if task.status in [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED]
+        ]
+        
+        if len(completed_tasks) <= max_history:
+            return
+        
+        # Sort by end time (oldest first)
+        completed_tasks.sort(key=lambda t: t.end_time or datetime.min)
+        
+        # Remove oldest tasks
+        tasks_to_remove = completed_tasks[:len(completed_tasks) - max_history]
+        for task in tasks_to_remove:
+            del self.workflow_tasks[task.task_id]
+            debug_log(3, f"[BackgroundWorkerManager] Cleaned up old task: {task.task_id}")
+        
+        debug_log(2, f"[BackgroundWorkerManager] Cleaned up {len(tasks_to_remove)} old tasks")
 
 
 # 全局工作線程管理器實例

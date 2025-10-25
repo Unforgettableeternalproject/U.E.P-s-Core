@@ -232,6 +232,11 @@ class WorkingContextManager:
         # 全局上下文數據 - 用於跨模組數據共享
         self.global_context_data: Dict[str, Any] = {}
         
+        # 階段三：層級跳過控制旗標（用於工作流驅動的輸入層跳過）
+        self.global_context_data['skip_input_layer'] = False
+        self.global_context_data['input_layer_reason'] = None  # 跳過原因
+        self.global_context_data['workflow_waiting_input'] = False
+        
         # 通用回調機制
         self.inquiry_callback: Optional[Callable] = None
         self.notification_callback: Optional[Callable] = None
@@ -706,6 +711,63 @@ class WorkingContextManager:
 
     def stop_cleanup_worker(self):
         self._stop_cleanup = True
+    
+    # === 階段三：層級跳過控制方法 ===
+    
+    def set_skip_input_layer(self, skip: bool, reason: Optional[str] = None):
+        """
+        設置是否跳過輸入層
+        
+        Args:
+            skip: 是否跳過輸入層
+            reason: 跳過原因（用於日誌記錄）
+        """
+        self.global_context_data['skip_input_layer'] = skip
+        self.global_context_data['input_layer_reason'] = reason
+        if skip:
+            debug_log(2, f"[WorkingContextManager] 設置跳過輸入層: {reason}")
+        else:
+            debug_log(3, "[WorkingContextManager] 重置輸入層跳過旗標")
+    
+    def should_skip_input_layer(self) -> bool:
+        """
+        檢查是否應該跳過輸入層
+        
+        Returns:
+            bool: 是否應該跳過輸入層
+        """
+        return self.global_context_data.get('skip_input_layer', False)
+    
+    def get_skip_reason(self) -> Optional[str]:
+        """
+        獲取跳過輸入層的原因
+        
+        Returns:
+            Optional[str]: 跳過原因
+        """
+        return self.global_context_data.get('input_layer_reason')
+    
+    def set_workflow_waiting_input(self, waiting: bool):
+        """
+        設置工作流是否正在等待輸入
+        
+        Args:
+            waiting: 是否等待輸入
+        """
+        self.global_context_data['workflow_waiting_input'] = waiting
+        if waiting:
+            debug_log(2, "[WorkingContextManager] 工作流等待使用者輸入")
+        else:
+            debug_log(3, "[WorkingContextManager] 工作流輸入完成")
+    
+    def is_workflow_waiting_input(self) -> bool:
+        """
+        檢查工作流是否正在等待輸入
+        
+        Returns:
+            bool: 是否等待輸入
+        """
+        return self.global_context_data.get('workflow_waiting_input', False)
 
 
 # 全局工作上下文管理器實例

@@ -1546,3 +1546,15 @@
 
 ---
 
+### Retrained BIOS tagger and refined NLP module with a more delicate tagging approach, as well remade the workflow engine. 10/26
+
+> Date: Sun, 26 Oct 2025 03:25:41 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `b355e4809e7dde67a247e40193a6439b7b790572`
+
+---
+

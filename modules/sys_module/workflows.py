@@ -19,6 +19,7 @@ import json
 import os
 import inspect
 import datetime
+import time
 from abc import ABC, abstractmethod
 
 from core.sessions.session_manager import WorkflowSession
@@ -731,6 +732,37 @@ class WorkflowEngine:
         current_step = self.get_current_step()
         if not current_step:
             return StepResult.complete_workflow("工作流程已完成")
+        
+        # 階段三：如果是 Interactive 步驟且沒有提供輸入，發布事件請求輸入
+        if current_step.step_type == current_step.STEP_TYPE_INTERACTIVE and user_input is None:
+            try:
+                from core.event_bus import event_bus, SystemEvent
+                
+                # 發布工作流需要輸入事件
+                event_bus.publish(
+                    SystemEvent.WORKFLOW_REQUIRES_INPUT,
+                    {
+                        "workflow_type": self.definition.workflow_type,
+                        "session_id": self.session.session_id,
+                        "step_id": current_step.id,
+                        "prompt": current_step.get_prompt(),
+                        "timestamp": time.time()
+                    },
+                    source="WorkflowEngine"
+                )
+                
+                debug_log(2, f"[WorkflowEngine] Interactive 步驟需要輸入: {current_step.id}")
+                
+                # 返回需要輸入的結果
+                return StepResult(
+                    success=False,
+                    message=current_step.get_prompt(),
+                    data={"requires_input": True, "step_id": current_step.id}
+                )
+                
+            except Exception as e:
+                error_log(f"[WorkflowEngine] 發布輸入請求事件失敗: {e}")
+                # 繼續執行，使用傳統流程
             
         # 驗證步驟要求
         is_valid, error = current_step.validate_requirements()
@@ -740,6 +772,27 @@ class WorkflowEngine:
         # 執行步驟
         try:
             result = current_step.execute(user_input)
+            
+            # 階段三：如果是 Interactive 步驟且執行成功，發布輸入完成事件
+            if current_step.step_type == current_step.STEP_TYPE_INTERACTIVE and result.success:
+                try:
+                    from core.event_bus import event_bus, SystemEvent
+                    
+                    event_bus.publish(
+                        SystemEvent.WORKFLOW_INPUT_COMPLETED,
+                        {
+                            "workflow_type": self.definition.workflow_type,
+                            "session_id": self.session.session_id,
+                            "step_id": current_step.id,
+                            "timestamp": time.time()
+                        },
+                        source="WorkflowEngine"
+                    )
+                    
+                    debug_log(2, f"[WorkflowEngine] Interactive 步驟輸入完成: {current_step.id}")
+                    
+                except Exception as e:
+                    error_log(f"[WorkflowEngine] 發布輸入完成事件失敗: {e}")
             
             # 記錄步驟歷史
             step_history = self.session.get_data("step_history", [])

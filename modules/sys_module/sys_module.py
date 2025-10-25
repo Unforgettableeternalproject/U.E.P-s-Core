@@ -16,7 +16,7 @@ from .actions.integrations import news_summary, get_weather, get_world_time, cod
 # Import session management
 from core.sessions.session_manager import session_manager, WorkflowSession, SessionStatus
 from .workflows import (
-    WorkflowType, StepResult, WorkflowEngine, WorkflowDefinition
+    WorkflowType, WorkflowMode, StepResult, WorkflowEngine, WorkflowDefinition
 )
 
 # Import MCP Server
@@ -181,7 +181,63 @@ class SYSModule(BaseModule):
                     "status": "error",
                     "message": f"無法為 {workflow_type} 創建工作流程引擎"
                 }
-                
+            
+            # 階段五：檢查工作流程執行模式
+            workflow_def = engine.definition
+            workflow_mode = workflow_def.workflow_mode
+            
+            debug_log(2, f"[SYS] 工作流程執行模式: {workflow_mode}")
+            
+            # 如果是背景模式，提交到 BackgroundWorker
+            if workflow_mode == WorkflowMode.BACKGROUND:
+                try:
+                    from modules.ui_module.debug.background_worker import get_worker_manager
+                    worker_manager = get_worker_manager()
+                    
+                    # 提交背景任務
+                    task_id = worker_manager.submit_workflow(
+                        workflow_engine=engine,
+                        workflow_type=workflow_type,
+                        session_id=session_id,
+                        metadata={
+                            "command": command,
+                            "initial_data": initial_data
+                        }
+                    )
+                    
+                    info_log(f"[SYS] 已提交背景工作流程 '{workflow_type}', task_id: {task_id}, session_id: {session_id}")
+                    
+                    # 將 task_id 儲存到 session
+                    session.add_data("background_task_id", task_id)
+                    
+                    # 不儲存 engine 到 workflow_engines，因為在背景執行
+                    # BackgroundWorker 會管理 engine 的生命週期
+                    
+                    return {
+                        "status": "submitted",
+                        "session_id": session_id,
+                        "task_id": task_id,
+                        "message": f"已提交 {workflow_type} 工作流程到背景執行",
+                        "data": {
+                            "workflow_type": workflow_type,
+                            "workflow_mode": "background",
+                            "task_id": task_id
+                        }
+                    }
+                    
+                except Exception as e:
+                    error_log(f"[SYS] 提交背景工作流程失敗: {e}")
+                    # 清理會話
+                    self.session_manager.end_session(
+                        session_id,
+                        reason=f"提交背景任務失敗: {e}"
+                    )
+                    return {
+                        "status": "error",
+                        "message": f"提交背景工作流程失敗: {e}"
+                    }
+            
+            # 直接模式：同步執行，保留原有邏輯
             # Store engine separately and register session in SessionManager
             self.workflow_engines[session_id] = engine
             # Session is already registered in SessionManager via create_session

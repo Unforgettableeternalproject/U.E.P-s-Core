@@ -85,6 +85,19 @@ class SystemLoop:
                 handler_name="SystemLoop.output_complete"
             )
             
+            # 階段三：訂閱工作流輸入事件
+            event_bus.subscribe(
+                SystemEvent.WORKFLOW_REQUIRES_INPUT,
+                self._on_workflow_requires_input,
+                handler_name="SystemLoop.workflow_requires_input"
+            )
+            
+            event_bus.subscribe(
+                SystemEvent.WORKFLOW_INPUT_COMPLETED,
+                self._on_workflow_input_completed,
+                handler_name="SystemLoop.workflow_input_completed"
+            )
+            
             info_log("[SystemLoop] ✅ 已訂閱事件總線")
             
         except Exception as e:
@@ -118,6 +131,48 @@ class SystemLoop:
             self.handle_output_completion(event.data)
         except Exception as e:
             error_log(f"[SystemLoop] 處理輸出層完成事件失敗: {e}")
+    
+    def _on_workflow_requires_input(self, event):
+        """
+        工作流需要輸入事件處理器（階段三）
+        當工作流 Interactive 步驟觸發時
+        """
+        try:
+            from core.working_context import working_context_manager
+            
+            debug_log(2, f"[SystemLoop] 工作流需要使用者輸入: {event.data}")
+            
+            # 設置工作流等待輸入旗標
+            working_context_manager.set_workflow_waiting_input(True)
+            
+            # 清除跳過輸入層旗標，允許輸入層執行
+            working_context_manager.set_skip_input_layer(False, reason="workflow_input")
+            
+            info_log("[SystemLoop] 💬 工作流等待使用者輸入，輸入層已啟用")
+            
+        except Exception as e:
+            error_log(f"[SystemLoop] 處理工作流輸入請求失敗: {e}")
+    
+    def _on_workflow_input_completed(self, event):
+        """
+        工作流輸入完成事件處理器（階段三）
+        當使用者提供輸入後由工作流引擎發布
+        """
+        try:
+            from core.working_context import working_context_manager
+            
+            debug_log(2, f"[SystemLoop] 工作流輸入完成: {event.data}")
+            
+            # 重置工作流等待輸入旗標
+            working_context_manager.set_workflow_waiting_input(False)
+            
+            # 設置跳過輸入層旗標（下一循環跳過）
+            working_context_manager.set_skip_input_layer(True, reason="workflow_processing")
+            
+            debug_log(2, "[SystemLoop] 工作流輸入完成，下一循環將跳過輸入層")
+            
+        except Exception as e:
+            error_log(f"[SystemLoop] 處理工作流輸入完成事件失敗: {e}")
     
     def _get_current_gs_id(self) -> str:
         """
@@ -460,10 +515,21 @@ class SystemLoop:
         try:
             from core.states.state_manager import state_manager, UEPState
             from core.states.state_queue import get_state_queue_manager
+            from core.working_context import working_context_manager
             
             current_state = state_manager.get_current_state()
             state_queue = get_state_queue_manager()
             queue_size = len(state_queue.queue) if hasattr(state_queue, 'queue') else 0
+            
+            # 階段三：檢查層級跳過旗標（在循環開始前檢查並重置）
+            should_skip = working_context_manager.should_skip_input_layer()
+            is_workflow_waiting = working_context_manager.is_workflow_waiting_input()
+            
+            if should_skip and not is_workflow_waiting:
+                skip_reason = working_context_manager.get_skip_reason()
+                debug_log(2, f"[SystemLoop] 跳過輸入層 (原因: {skip_reason})")
+                # 注意：實際的輸入層跳過邏輯由各輸入模組（STT/NLP）實現
+                # 這裡只記錄日誌，循環結束後會重置旗標
             
             # 基本循環計數（每次監控迭代）
             self.loop_count += 1
@@ -493,6 +559,11 @@ class SystemLoop:
             # 檢查是否回到IDLE狀態，如果是則重新啟動STT監聽
             elif current_state == UEPState.IDLE and hasattr(self, '_previous_state'):
                 if self._previous_state != UEPState.IDLE:
+                    # 階段三：循環結束後重置跳過旗標
+                    if should_skip:
+                        working_context_manager.set_skip_input_layer(False)
+                        debug_log(3, "[SystemLoop] 循環結束，重置輸入層跳過旗標")
+                    
                     debug_log(2, f"[SystemLoop] 系統回到IDLE狀態，重新啟動STT監聽")
                     self._restart_stt_listening()
                     

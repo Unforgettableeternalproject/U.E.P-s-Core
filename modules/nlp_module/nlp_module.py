@@ -30,6 +30,8 @@ from .schemas import (
 from .identity_manager import IdentityManager
 from .intent_analyzer import IntentAnalyzer
 from .multi_intent_context import get_multi_intent_context_manager
+from .intent_segmenter import get_intent_segmenter
+from .intent_types import IntentSegment
 
 
 class NLPModule(BaseModule):
@@ -241,53 +243,67 @@ class NLPModule(BaseModule):
         return result
     
     def _analyze_intent(self, input_data: NLPInput, identity: Optional[UserProfile]) -> Dict[str, Any]:
-        """分析文本意圖 - 支援 CS 感知邏輯"""
+        """
+        分析文本意圖 - Stage 4 使用 IntentSegmenter
+        
+        Returns intent segments from BIOS Tagger model
+        """
         try:
-            # 檢查當前是否有活動的 Chatting Session
-            active_cs_context = self._check_active_chatting_sessions()
+            # Use new IntentSegmenter for Stage 4
+            intent_segmenter = get_intent_segmenter()
+            segments = intent_segmenter.segment_intents(input_data.text)
             
-            # 準備上下文
-            context = {
-                "current_system_state": input_data.current_system_state,
-                "conversation_history": input_data.conversation_history,
-                "identity": identity.dict() if identity else None,
-                "active_chatting_sessions": active_cs_context
-            }
-            
-            # 添加使用者偏好資訊 (如果有身份)
-            if identity:
-                context["user_preferences"] = {
-                    "system_habits": identity.system_habits,
-                    "conversation_style": identity.conversation_style
+            if not segments:
+                error_log("[NLP] IntentSegmenter returned no segments")
+                return {
+                    "intent_segments": [],
+                    "primary_intent": IntentType.UNKNOWN,
+                    "overall_confidence": 0.0,
+                    "entities": [],
+                    "state_transition": None
                 }
             
-            # CS 感知意圖調整
-            intent_bias = self._determine_intent_bias(active_cs_context, input_data.text)
+            # Determine primary intent (highest priority)
+            from .intent_types import IntentSegment as NewIntentSegment
+            if NewIntentSegment.is_compound_input(segments):
+                primary_segment = NewIntentSegment.get_highest_priority_segment(segments)
+                primary_intent_type = primary_segment.intent_type if primary_segment else segments[0].intent_type
+            else:
+                primary_intent_type = segments[0].intent_type
             
-            # 執行意圖分析
-            result = self.intent_analyzer.analyze_intent(  # type: ignore
-                input_data.text,
-                enable_segmentation=input_data.enable_segmentation,
-                context=context,
-                intent_bias=intent_bias  # 添加意圖偏向
-            )
+            # Map new IntentType to old IntentType for compatibility
+            from .intent_types import IntentType as NewIntentType
+            intent_type_map = {
+                NewIntentType.CALL: IntentType.CALL,
+                NewIntentType.CHAT: IntentType.CHAT,
+                NewIntentType.DIRECT_WORK: IntentType.COMMAND,
+                NewIntentType.BACKGROUND_WORK: IntentType.COMMAND,
+                NewIntentType.UNKNOWN: IntentType.UNKNOWN
+            }
             
-            # 應用 CS 感知邏輯調整結果
-            if active_cs_context and active_cs_context["has_active_sessions"]:
-                result = self._apply_cs_aware_adjustments(result, active_cs_context, input_data.text)
+            primary_intent = intent_type_map.get(primary_intent_type, IntentType.UNKNOWN)
             
-            # 處理指令中斷（在 CHAT 狀態中）
-            if result.get("command_interruption"):
-                self._handle_command_interruption(result["command_interruption"], input_data.text, context)
+            # Calculate overall confidence (average of all segments)
+            overall_confidence = sum(s.confidence for s in segments) / len(segments)
             
-            debug_log(3, f"[NLP] 意圖分析完成：{result['primary_intent']}, "
-                       f"片段數={len(result['intent_segments'])}, "
-                       f"CS感知={'是' if active_cs_context['has_active_sessions'] else '否'}")
+            debug_log(2, f"[NLP] IntentSegmenter analysis: {len(segments)} segment(s), "
+                         f"primary={primary_intent_type.name}, confidence={overall_confidence:.3f}")
+            for i, seg in enumerate(segments):
+                debug_log(3, f"[NLP]   Segment {i+1}: '{seg.text}' -> {seg.intent_type.name} "
+                             f"(priority={seg.priority}, conf={seg.confidence:.3f})")
             
-            return result
+            return {
+                "intent_segments": segments,  # List[IntentSegment] from Stage 4
+                "primary_intent": primary_intent,
+                "overall_confidence": overall_confidence,
+                "entities": [],  # Entity extraction not implemented yet
+                "state_transition": None
+            }
             
         except Exception as e:
             error_log(f"[NLP] 意圖分析失敗：{e}")
+            import traceback
+            error_log(f"[NLP] Traceback: {traceback.format_exc()}")
             return {
                 "primary_intent": IntentType.UNKNOWN,
                 "intent_segments": [],
@@ -355,26 +371,126 @@ class NLPModule(BaseModule):
         return result
     
     def _process_intent_to_state_queue(self, intent_result: Dict[str, Any]) -> List:
-        """將意圖分析結果轉換為系統狀態並添加到佇列"""
+        """
+        將意圖分析結果轉換為系統狀態並添加到佇列
+        
+        Stage 4: Uses session state restrictions per NLP狀態處理.md
+        """
         try:
             intent_segments = intent_result.get("intent_segments", [])
             if not intent_segments:
-                debug_log(2, "[NLP] 沒有意圖片段需要處理")
+                debug_log(2, "[NLP] No intent segments to process")
                 return []
             
-            # 使用狀態佇列管理器處理意圖
-            added_states = self.state_queue_manager.process_nlp_intents(intent_segments)
+            # Check current session state
+            session_state = self._check_session_state()
+            debug_log(2, f"[NLP] Session state: {session_state}")
+            
+            # Route to appropriate handler based on session state
+            from core.sessions.session_manager import session_manager
+            
+            if session_state == 'no_session':
+                # No active CS or WS
+                result = self._process_no_session_state(intent_segments)
+                
+            elif session_state == 'active_cs':
+                # Active chatting session
+                cs_sessions = session_manager.get_active_chatting_sessions()
+                result = self._process_active_cs_state(intent_segments, cs_sessions)
+                
+                # Handle CS pause if needed
+                if result.get("interrupt_cs"):
+                    for session_id in result.get("pause_cs_sessions", []):
+                        try:
+                            cs_session = session_manager.get_chatting_session(session_id)
+                            if cs_session and hasattr(cs_session, 'pause'):
+                                cs_session.pause()
+                                info_log(f"[NLP] Paused CS: {session_id}")
+                        except Exception as e:
+                            error_log(f"[NLP] Failed to pause CS {session_id}: {e}")
+                
+            elif session_state == 'active_ws':
+                # Active workflow session
+                ws_sessions = session_manager.get_active_workflow_sessions()
+                result = self._process_active_ws_state(intent_segments, ws_sessions)
+                
+                # In WS, inputs are handled by workflow logic, not state queue
+                # Store metadata in working context for downstream processing
+                if result.get("response_metadata"):
+                    working_context_manager.set_context_data(
+                        "ws_response_metadata",
+                        result["response_metadata"]
+                    )
+                    debug_log(3, f"[NLP] Set WS response metadata: {result['response_metadata']}")
+                
+                # Don't add states in WS mode
+                return []
+            
+            else:
+                error_log(f"[NLP] Unknown session state: {session_state}")
+                return []
+            
+            # Set skip_input_layer flag if needed
+            if result.get("skip_input_layer"):
+                working_context_manager.set_context_data("skip_input_layer", True)
+                debug_log(2, "[NLP] Set skip_input_layer=True for interrupt")
+            
+            # Add states to queue
+            added_states = []
+            for state_info in result.get("states_to_add", []):
+                segment = state_info["segment"]
+                state_type_str = state_info["state_type"]
+                priority = state_info["priority"]
+                work_mode = state_info.get("work_mode")
+                
+                # Map state_type string to UEPState enum
+                if state_type_str == "CHAT":
+                    state_type = SystemState.CHAT
+                elif state_type_str == "WORK":
+                    state_type = SystemState.WORK
+                elif state_type_str == "CALL":
+                    state_type = SystemState.CALL
+                else:
+                    error_log(f"[NLP] Unknown state type: {state_type_str}")
+                    continue
+                
+                # Add state with proper parameters
+                from core.states.state_queue import WorkflowMode
+                work_mode_enum = None
+                if work_mode == "direct":
+                    work_mode_enum = WorkflowMode.DIRECT
+                elif work_mode == "background":
+                    work_mode_enum = WorkflowMode.BACKGROUND
+                
+                # Add to state queue with segment text as context
+                self.state_queue_manager.add_state(
+                    state_type,
+                    context_data={"segment_text": segment.text, "intent_type": segment.intent_type.name},
+                    custom_priority=priority,
+                    work_mode=work_mode_enum
+                )
+                added_states.append(state_type)
+                
+                debug_log(3, f"[NLP] Added state: {state_type.value} "
+                             f"(priority={priority}, work_mode={work_mode})")
             
             if added_states:
-                info_log(f"[NLP] 添加系統狀態到佇列: {[state.value for state in added_states]}")
-                debug_log(3, f"[NLP] 目前佇列狀態: {self.state_queue_manager.get_queue_status()}")
+                info_log(f"[NLP] Added {len(added_states)} state(s) to queue: "
+                         f"{[s.value for s in added_states]}")
+                debug_log(3, f"[NLP] Queue status: {self.state_queue_manager.get_queue_status()}")
             else:
-                debug_log(2, "[NLP] 沒有新的系統狀態需要添加")
+                debug_log(2, "[NLP] No states added to queue")
+            
+            # Log processing notes
+            for note in result.get("processing_notes", []):
+                debug_log(3, f"[NLP] {note}")
             
             return added_states
                 
         except Exception as e:
-            error_log(f"[NLP] 狀態佇列處理失敗: {e}")
+            error_log(f"[NLP] State queue processing failed: {e}")
+            import traceback
+            error_log(f"[NLP] Traceback: {traceback.format_exc()}")
             return []
     
     def _combine_results(self, input_data: NLPInput, identity_result: Dict[str, Any],
@@ -588,6 +704,338 @@ class NLPModule(BaseModule):
                 "session_ids": [],
                 "session_contexts": []
             }
+    
+    def _check_session_state(self) -> str:
+        """
+        Check current session state for Stage 4 intent priority logic
+        
+        Returns:
+            'no_session': No active CS or WS
+            'active_cs': Active chatting session
+            'active_ws': Active workflow session
+        """
+        try:
+            from core.sessions.session_manager import session_manager
+            
+            # Check for active workflow sessions first (higher priority)
+            active_ws = session_manager.get_active_workflow_sessions()
+            if active_ws:
+                debug_log(2, f"[NLP] Active WS detected: {len(active_ws)} session(s)")
+                return 'active_ws'
+            
+            # Check for active chatting sessions
+            active_cs = session_manager.get_active_chatting_sessions()
+            if active_cs:
+                debug_log(2, f"[NLP] Active CS detected: {len(active_cs)} session(s)")
+                return 'active_cs'
+            
+            debug_log(2, "[NLP] No active sessions detected")
+            return 'no_session'
+            
+        except Exception as e:
+            error_log(f"[NLP] Error checking session state: {e}")
+            return 'no_session'
+    
+    def _process_no_session_state(self, segments: List[IntentSegment]) -> Dict[str, Any]:
+        """
+        Process intents when no CS or WS is active
+        
+        Rules per NLP狀態處理.md:
+        - DW and BW both treated as COMMAND
+        - CALL: Ignore input, interrupt loop, expect CHAT/COMMAND next
+        - CHAT: Add CHAT state to queue
+        - COMMAND (DW/BW): Add WORK state to queue
+        - UNKNOWN: Ignore input, interrupt loop
+        - COMPOUND: Apply filtering rules, add states by priority
+        """
+        from .intent_types import IntentType as NewIntentType
+        
+        result = {
+            "states_to_add": [],
+            "skip_input_layer": False,
+            "processing_notes": []
+        }
+        
+        try:
+            # Filter out UNKNOWN segments
+            valid_segments = [s for s in segments if s.intent_type != NewIntentType.UNKNOWN]
+            
+            if not valid_segments:
+                # All segments are UNKNOWN - ignore input and interrupt
+                result["skip_input_layer"] = True
+                result["processing_notes"].append("All segments UNKNOWN - ignoring input")
+                debug_log(2, "[NLP] No session: All UNKNOWN segments, interrupting")
+                return result
+            
+            # Check for COMPOUND (multiple segments after filtering)
+            if len(valid_segments) > 1:
+                result["processing_notes"].append(f"COMPOUND intent detected: {len(valid_segments)} segments")
+                # Apply COMPOUND filtering rules
+                valid_segments = self._filter_compound_no_session(valid_segments)
+            
+            # Process each segment
+            for segment in valid_segments:
+                if segment.intent_type == NewIntentType.CALL:
+                    # CALL: Ignore input, interrupt loop
+                    result["skip_input_layer"] = True
+                    result["processing_notes"].append("CALL detected - interrupting for next input")
+                    debug_log(2, "[NLP] No session: CALL - interrupting loop")
+                    
+                elif segment.intent_type == NewIntentType.CHAT:
+                    # CHAT: Add CHAT state
+                    result["states_to_add"].append({
+                        "segment": segment,
+                        "state_type": "CHAT",
+                        "priority": segment.priority
+                    })
+                    debug_log(2, f"[NLP] No session: CHAT - adding CHAT state (priority={segment.priority})")
+                    
+                elif segment.intent_type in [NewIntentType.DIRECT_WORK, NewIntentType.BACKGROUND_WORK]:
+                    # DW/BW treated as COMMAND: Add WORK state
+                    work_mode = "direct" if segment.intent_type == NewIntentType.DIRECT_WORK else "background"
+                    result["states_to_add"].append({
+                        "segment": segment,
+                        "state_type": "WORK",
+                        "priority": segment.priority,
+                        "work_mode": work_mode
+                    })
+                    debug_log(2, f"[NLP] No session: {segment.intent_type.name} - adding WORK state "
+                                 f"(mode={work_mode}, priority={segment.priority})")
+            
+        except Exception as e:
+            error_log(f"[NLP] Error in _process_no_session_state: {e}")
+            result["processing_notes"].append(f"Error: {str(e)}")
+        
+        return result
+    
+    def _filter_compound_no_session(self, segments: List[IntentSegment]) -> List[IntentSegment]:
+        """
+        Filter COMPOUND intents for no session state
+        
+        Rules:
+        - CALL + CHAT/COMMAND: Ignore CALL, process CHAT/COMMAND
+        - CHAT + COMMAND: Prioritize COMMAND (add first regardless of DW/BW)
+        - CALL + UNKNOWN: Ignore UNKNOWN, process CALL
+        """
+        from .intent_types import IntentType as NewIntentType
+        
+        # Separate by type
+        call_segs = [s for s in segments if s.intent_type == NewIntentType.CALL]
+        chat_segs = [s for s in segments if s.intent_type == NewIntentType.CHAT]
+        command_segs = [s for s in segments if s.intent_type in 
+                        [NewIntentType.DIRECT_WORK, NewIntentType.BACKGROUND_WORK]]
+        
+        # Rule: CALL + CHAT/COMMAND -> ignore CALL
+        if call_segs and (chat_segs or command_segs):
+            debug_log(3, "[NLP] COMPOUND filter: Ignoring CALL in presence of CHAT/COMMAND")
+            segments = [s for s in segments if s.intent_type != NewIntentType.CALL]
+        
+        # Rule: CHAT + COMMAND -> prioritize COMMAND (add first)
+        if chat_segs and command_segs:
+            debug_log(3, "[NLP] COMPOUND filter: Prioritizing COMMAND over CHAT")
+            # Sort: COMMAND first, then CHAT
+            segments = command_segs + chat_segs
+        
+        return segments
+    
+    def _process_active_cs_state(self, segments: List[IntentSegment], cs_sessions: List[Any]) -> Dict[str, Any]:
+        """
+        Process intents when CS is active
+        
+        Rules per NLP狀態處理.md:
+        - Default all inputs to CHAT, but detect DW and BW
+        - CALL -> CHAT (treat as chat continuation)
+        - UNKNOWN -> Ignore but continue CS
+        - CHAT: Don't queue, continue CS, route to processing layer
+        - DW: **Interrupt CS**, add WORK state, **end current loop**
+        - BW: Add WORK state, **don't interrupt CS**
+        - COMPOUND: Complex filtering with interrupt logic
+        """
+        from .intent_types import IntentType as NewIntentType
+        
+        result = {
+            "states_to_add": [],
+            "skip_input_layer": False,
+            "interrupt_cs": False,
+            "pause_cs_sessions": [],
+            "processing_notes": []
+        }
+        
+        try:
+            # Filter out UNKNOWN segments (continue CS)
+            valid_segments = [s for s in segments if s.intent_type != NewIntentType.UNKNOWN]
+            
+            if not valid_segments:
+                # All UNKNOWN - continue CS, don't interrupt
+                result["processing_notes"].append("All segments UNKNOWN - continuing CS")
+                debug_log(2, "[NLP] Active CS: All UNKNOWN, continuing CS")
+                return result
+            
+            # Check for COMPOUND
+            if len(valid_segments) > 1:
+                result["processing_notes"].append(f"COMPOUND intent in CS: {len(valid_segments)} segments")
+                # Apply COMPOUND filtering for CS
+                valid_segments, should_interrupt = self._filter_compound_active_cs(valid_segments)
+                if should_interrupt:
+                    result["interrupt_cs"] = True
+                    result["pause_cs_sessions"] = [cs.session_id for cs in cs_sessions]
+            
+            # Process each segment
+            for segment in valid_segments:
+                if segment.intent_type == NewIntentType.CALL:
+                    # CALL -> treat as CHAT in CS
+                    result["states_to_add"].append({
+                        "segment": segment,
+                        "state_type": "CHAT",
+                        "priority": segment.priority
+                    })
+                    debug_log(2, "[NLP] Active CS: CALL -> CHAT")
+                    
+                elif segment.intent_type == NewIntentType.CHAT:
+                    # CHAT: Continue CS, don't queue
+                    result["processing_notes"].append("CHAT in CS - continuing conversation")
+                    debug_log(2, "[NLP] Active CS: CHAT - continuing CS")
+                    
+                elif segment.intent_type == NewIntentType.DIRECT_WORK:
+                    # DW: Interrupt CS, add WORK, end loop
+                    result["interrupt_cs"] = True
+                    result["pause_cs_sessions"] = [cs.session_id for cs in cs_sessions]
+                    result["skip_input_layer"] = True
+                    result["states_to_add"].append({
+                        "segment": segment,
+                        "state_type": "WORK",
+                        "priority": segment.priority,
+                        "work_mode": "direct"
+                    })
+                    result["processing_notes"].append("DW in CS - interrupting CS and ending loop")
+                    debug_log(2, f"[NLP] Active CS: DIRECT_WORK - interrupting CS, ending loop "
+                                 f"(priority={segment.priority})")
+                    
+                elif segment.intent_type == NewIntentType.BACKGROUND_WORK:
+                    # BW: Add WORK, don't interrupt CS
+                    result["states_to_add"].append({
+                        "segment": segment,
+                        "state_type": "WORK",
+                        "priority": segment.priority,
+                        "work_mode": "background"
+                    })
+                    result["processing_notes"].append("BW in CS - queuing work without interrupt")
+                    debug_log(2, f"[NLP] Active CS: BACKGROUND_WORK - queuing without interrupt "
+                                 f"(priority={segment.priority})")
+            
+        except Exception as e:
+            error_log(f"[NLP] Error in _process_active_cs_state: {e}")
+            result["processing_notes"].append(f"Error: {str(e)}")
+        
+        return result
+    
+    def _filter_compound_active_cs(self, segments: List[IntentSegment]) -> tuple[List[IntentSegment], bool]:
+        """
+        Filter COMPOUND intents for active CS state
+        
+        Rules:
+        - DW + CHAT: Interrupt CS, add WORK (DW), then add CHAT, end loop
+        - BW + CHAT: Add WORK (BW), don't interrupt CS
+        - DW + BW: Interrupt CS, add both WORK states, end loop
+        
+        Returns:
+            (filtered_segments, should_interrupt_cs)
+        """
+        from .intent_types import IntentType as NewIntentType
+        
+        dw_segs = [s for s in segments if s.intent_type == NewIntentType.DIRECT_WORK]
+        bw_segs = [s for s in segments if s.intent_type == NewIntentType.BACKGROUND_WORK]
+        chat_segs = [s for s in segments if s.intent_type == NewIntentType.CHAT]
+        
+        should_interrupt = False
+        
+        # Rule: DW + CHAT -> interrupt, add DW then CHAT
+        if dw_segs and chat_segs:
+            debug_log(3, "[NLP] COMPOUND CS filter: DW+CHAT -> interrupt CS")
+            should_interrupt = True
+            # Sort: DW first (higher priority), then CHAT
+            segments = dw_segs + chat_segs
+        
+        # Rule: BW + CHAT -> no interrupt, add BW
+        elif bw_segs and chat_segs:
+            debug_log(3, "[NLP] COMPOUND CS filter: BW+CHAT -> queue BW, continue CS")
+            # Keep all segments
+            pass
+        
+        # Rule: DW + BW -> interrupt, add both
+        elif dw_segs and bw_segs:
+            debug_log(3, "[NLP] COMPOUND CS filter: DW+BW -> interrupt CS, add both")
+            should_interrupt = True
+            # Sort by priority (DW=100 > BW=30)
+            segments = sorted(segments, key=lambda s: s.priority, reverse=True)
+        
+        # If any DW present, should interrupt
+        if dw_segs:
+            should_interrupt = True
+        
+        return segments, should_interrupt
+    
+    def _process_active_ws_state(self, segments: List[IntentSegment], ws_sessions: List[Any]) -> Dict[str, Any]:
+        """
+        Process intents when WS is active
+        
+        Rules per NLP狀態處理.md:
+        - All inputs treated as Response for workflow steps
+        - CHAT: Mark for LLM to ask if work should end
+        - DW/BW: Treat as Response, mark as work content
+        - UNKNOWN: Treat as Response, let LLM handle
+        """
+        from .intent_types import IntentType as NewIntentType
+        
+        result = {
+            "states_to_add": [],
+            "skip_input_layer": False,
+            "response_metadata": {},
+            "processing_notes": []
+        }
+        
+        try:
+            # In WS, all inputs are Response
+            result["processing_notes"].append("Active WS - treating all inputs as Response")
+            
+            # Analyze intent types for metadata
+            has_chat = any(s.intent_type == NewIntentType.CHAT for s in segments)
+            has_dw = any(s.intent_type == NewIntentType.DIRECT_WORK for s in segments)
+            has_bw = any(s.intent_type == NewIntentType.BACKGROUND_WORK for s in segments)
+            has_unknown = any(s.intent_type == NewIntentType.UNKNOWN for s in segments)
+            
+            # Set metadata for LLM processing
+            if has_chat:
+                result["response_metadata"]["chat_detected"] = True
+                result["response_metadata"]["suggest_end_work"] = True
+                result["processing_notes"].append("CHAT in WS - suggesting LLM ask if work should end")
+                debug_log(2, "[NLP] Active WS: CHAT detected - mark for end-work question")
+            
+            if has_dw or has_bw:
+                result["response_metadata"]["work_content"] = True
+                work_types = []
+                if has_dw:
+                    work_types.append("direct_work")
+                if has_bw:
+                    work_types.append("background_work")
+                result["response_metadata"]["work_types"] = work_types
+                result["processing_notes"].append(f"Work intent in WS - treating as work content: {work_types}")
+                debug_log(2, f"[NLP] Active WS: Work intents detected - {work_types}")
+            
+            if has_unknown:
+                result["response_metadata"]["uncertain_input"] = True
+                result["processing_notes"].append("UNKNOWN in WS - let LLM handle")
+                debug_log(2, "[NLP] Active WS: UNKNOWN - let LLM handle")
+            
+            # Add Response state (or continue WS processing)
+            # Note: In WS, the input is typically handled by the workflow logic
+            # We don't add states here, just set metadata for downstream processing
+            
+        except Exception as e:
+            error_log(f"[NLP] Error in _process_active_ws_state: {e}")
+            result["processing_notes"].append(f"Error: {str(e)}")
+        
+        return result
     
     def _determine_intent_bias(self, cs_context: Dict[str, Any], text: str) -> Dict[str, float]:
         """根據 CS 上下文確定意圖偏向"""

@@ -480,10 +480,18 @@ class WorkflowSession:
             (self.ended_at or datetime.now()) - self.created_at
         ).total_seconds()
         
+        # Get current step name
+        current_step_info = self.get_current_step()
+        current_step_name = current_step_info.get("step_name") if current_step_info else None
+        
         return {
             "session_id": self.session_id,
             "gs_session_id": self.gs_session_id,
             "workflow_token": self.workflow_token,
+            "workflow_type": self.task_definition.get("workflow_type", "unknown"),  # 從 task_definition 提取
+            "command": self.task_definition.get("command", ""),  # 從 task_definition 提取
+            "current_step": current_step_name,  # 當前步驟名稱
+            "current_step_index": self.current_step_index,  # 當前步驟索引
             "task_type": self.task_type.value,
             "task_definition": self.task_definition,
             "status": self.status.value,
@@ -495,6 +503,15 @@ class WorkflowSession:
             "last_activity": self.last_activity.isoformat(),
             "ended_at": self.ended_at.isoformat() if self.ended_at else None
         }
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        轉換為字典格式（與 get_summary 相同，為兼容性提供）
+        
+        Returns:
+            工作流數據字典
+        """
+        return self.get_summary()
 
 
 class WorkflowSessionManager:

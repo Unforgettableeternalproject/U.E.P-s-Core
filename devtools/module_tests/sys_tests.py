@@ -1,477 +1,632 @@
 # -*- coding: utf-8 -*-
 """
 SYS 模組測試函數
-⚠️ 未重構模組 - 使用傳統模組呼叫方式
+簡單的功能測試 - 專注於使用者可見的工作流程功能
 """
 
 from utils.debug_helper import debug_log, info_log, error_log
-from utils.debug_file_dropper import open_demo_window, open_folder_dialog
-import psutil
-import platform
+from utils.debug_file_dropper import open_demo_window
 import time
 
-# ⚠️ 未重構模組標註
-# 以下測試函數適用於尚未重構的 SYS 模組
-# 使用傳統的模組呼叫方式而非統一的 handle 介面
+# ===== 測試工作流程測試 =====
 
-def sys_list_functions(modules):
+def sys_test_echo(modules):
+    """測試簡單回顯工作流程"""
     sysmod = modules.get("sysmod")
-
     if sysmod is None:
-        error_log("[Controller] ❌ 無法載入 SYS 模組")
-        return
+        print("❌ SYS 模組未載入")
+        return {"success": False, "error": "SYS 模組未載入"}
 
-    resp = sysmod.handle({"mode": "list_functions", "params": {}})
+    print("\n🔄 測試 Echo 工作流程")
+    print("=" * 60)
 
-    print("=== SYS 功能清單 ===")
-    import json
-    print(json.dumps(resp.get("data", {}), ensure_ascii=False, indent=2))
-
-# 測試多步驟工作流程
-def test_command_workflow(modules, command_text: str = "幫我整理和摘要桌面上的文件"):
-    """測試多步驟指令工作流程"""
-    sysmod = modules.get("sysmod")
-    llm = modules.get("llm")
-
-    if sysmod is None or llm is None:
-        error_log("[Controller] ❌ 無法載入 SYS 或 LLM 模組")
-        return
-
-    info_log(f"[Controller] 測試指令工作流程：'{command_text}'")
-    
-    # 第一步：LLM 分析指令
-    llm_resp = llm.handle({
-        "text": command_text,
-        "intent": "command",
-        "memory": ""
-    })
-    
-    print("\n🧠 LLM 分析指令：", llm_resp.get("text", "[無回應]"))
-    
-    # 第二步：啟動工作流程（假設為檔案處理類型）
-    workflow_resp = sysmod.handle({
-        "mode": "start_workflow",
-        "params": {
-            "workflow_type": "file_processing",
-            "command": command_text
-        }
-    })
-    
-    session_id = workflow_resp.get("session_id")
-    if not session_id:
-        error_log("[Controller] ❌ 工作流程啟動失敗")
-        return
-        
-    print(f"\n🔄 工作流程已啟動，ID: {session_id}")
-    print(f"🔹 系統提示：{workflow_resp.get('prompt')}")
-    
-    # 模擬用戶交互
-    while workflow_resp.get("requires_input", False):
-        # 請求用戶輸入
-        user_input = input("\n✍️ 請輸入回應: ")
-        
-        if user_input.lower() in ("exit", "quit", "取消"):
-            # 取消工作流程
-            cancel_resp = sysmod.handle({
-                "mode": "cancel_workflow",
-                "params": {
-                    "session_id": session_id,
-                    "reason": "用戶取消"
-                }
-            })
-            print(f"\n❌ 工作流程已取消：{cancel_resp.get('message')}")
-            break
-            
-        # 繼續工作流程
-        workflow_resp = sysmod.handle({
-            "mode": "continue_workflow",
+    try:
+        # 啟動 echo 工作流程
+        result = sysmod.handle({
+            "mode": "start_workflow",
             "params": {
-                "session_id": session_id,
-                "user_input": user_input
+                "workflow_type": "echo",
+                "command": "測試回顯工作流程",
+                "initial_data": {}
             }
         })
-        
-        print(f"\n🔄 工作流程步驟 {workflow_resp.get('data', {}).get('step', '?')} 完成")
-        print(f"🔹 系統訊息：{workflow_resp.get('message')}")
-        
-        if workflow_resp.get("requires_input", False):
-            print(f"🔹 下一步提示：{workflow_resp.get('prompt')}")
-        else:
-            # 工作流程完成或異常終止
-            status = workflow_resp.get("status")
-            if status == "completed":
-                print("\n✅ 工作流程成功完成！")
-                result_data = workflow_resp.get("data", {})
-                if result_data:
-                    print("\n📊 工作流程結果:")
-                    for key, value in result_data.items():
-                        if isinstance(value, str) and len(value) > 100:
-                            print(f"  {key}: {value[:100]}...")
-                        else:
-                            print(f"  {key}: {value}")
-            else:
-                print(f"\n⚠️ 工作流程異常結束，狀態: {status}")
-    
-    print("\n==== 工作流程測試結束 ====")
 
-def sys_test_functions(modules, mode : int = 1, sub : int = 1): 
-    sysmod = modules.get("sysmod")
-    if sysmod is None:
-        error_log("[Controller] ❌ 無法載入 SYS 模組")
-        return
+        if not result.get("success") and result.get("status") not in ["success", "ok", "pending"]:
+            print(f"❌ 工作流程啟動失敗: {result.get('message', '未知錯誤')}")
+            return result
 
-    match mode:
-        case 1: # 檔案互動功能 (僅工作流程模式)
-            info_log("[Controller] 開啟檔案互動功能 (工作流程模式)")
-            match sub:
-                case 1: # 測試檔案工作流程 - Drop and Read
-                    print("=== 測試檔案讀取工作流程 ===")
-                    test_file_workflow("drop_and_read")
-                case 2: # 測試檔案工作流程 - Intelligent Archive
-                    print("=== 測試智慧歸檔工作流程 ===")
-                    test_file_workflow("intelligent_archive")
-                case 3: # 測試檔案工作流程 - Summarize Tag
-                    print("=== 測試摘要標籤工作流程 ===")
-                    test_file_workflow("summarize_tag")
-                case 4: # 測試一般多步驟工作流程
-                    command = input("請輸入指令（如：幫我整理文件）：")
-                    if command:
-                        test_command_workflow(command)
-                    else:
-                        print("未輸入指令，取消測試")
-                case _:
-                    print("未知的子功能選項")
-        case _:
-            print("未知的功能選項")
+        session_id = result.get("session_id")
+        print(f"✅ 工作流程已啟動 (ID: {session_id})")
+        print(f"📝 系統提示: {result.get('message', '')}")
 
-def sys_test_workflows(modules, workflow_type: int = 1):
-    """測試各種測試工作流程
-    
-    Args:
-        workflow_type: 工作流程類型
-            1: echo - 簡單回顯
-            2: countdown - 倒數計時
-            3: data_collector - 資料收集
-            4: random_fail - 隨機失敗
-            5: tts_test - TTS文字轉語音測試
-    """
-    sysmod = modules.get("sysmod")
-    if sysmod is None:
-        error_log("[Controller] ❌ 無法載入 SYS 模組")
-        return
-        
-    workflow_map = {
-        1: "echo",
-        2: "countdown", 
-        3: "data_collector",
-        4: "random_fail",
-        5: "tts_test"
-    }
-    
-    workflow_display_name = {
-        1: "簡單回顯",
-        2: "倒數計時",
-        3: "資料收集",
-        4: "隨機失敗",
-        5: "TTS文字轉語音"
-    }
-    
-    if workflow_type not in workflow_map:
-        error_log(f"[Controller] ❌ 無效的工作流程類型: {workflow_type}")
-        return
-        
-    workflow_name = workflow_display_name[workflow_type]
-    workflow_type_name = workflow_map[workflow_type]
-    
-    print(f"\n=== 開始測試 {workflow_name} 工作流程 ===")
-    
-    # 啟動工作流程（使用統一的 start_workflow 模式）
-    resp = sysmod.handle({
-        "mode": "start_workflow", 
-        "params": {
-            "workflow_type": workflow_type_name,
-            "command": f"測試 {workflow_name} 工作流程"
-        }
-    })
-    
-    print("\n工作流程已啟動!")
-    print(f"回應狀態: {resp.get('status', '未知')}")
-    print(f"回應訊息: {resp.get('message', '無訊息')}")
-    
-    # 處理工作流程後續互動
-    session_id = resp.get("session_id")
-    if not session_id:
-        print("無法獲取會話 ID，工作流程可能無法繼續")
-        return
-    
-    # 進入互動循環
-    while resp.get("requires_input", False) or resp.get("status") == "waiting":
-        requires_input = resp.get("requires_input", False)
-        prompt = resp.get("prompt", "請輸入")
-        
-        if requires_input:
-            print(f"\n{prompt}")
-            user_input = input("> ")
+        # 如果需要輸入
+        if result.get("requires_input"):
+            user_input = input("\n請輸入訊息: ")
             
-            # 如果用戶輸入 exit 或 quit，取消工作流程
-            if user_input.lower() in ["exit", "quit", "取消"]:
-                cancel_resp = sysmod.handle({
-                    "mode": "cancel_workflow",
-                    "params": {
-                        "session_id": session_id,
-                        "reason": "用戶取消"
-                    }
-                })
-                print(f"\n❌ 工作流程已取消：{cancel_resp.get('message', '已取消')}")
-                break
-            
-            # 繼續工作流程（使用統一的 continue_workflow 模式）
-            resp = sysmod.handle({
-                "mode": "continue_workflow", 
-                "params": {
-                    "session_id": session_id,
-                    "user_input": user_input
-                }
-            })
-            
-            print(f"\n回應狀態: {resp.get('status', '未知')}")
-            print(f"回應訊息: {resp.get('message', '無訊息')}")
-            
-            # 如果狀態是 waiting，繼續自動推進
-            while resp.get("status") == "waiting" and not resp.get("requires_input", False):
-                import time
-                time.sleep(0.5)  # 短暫延遲
-                resp = sysmod.handle({
-                    "mode": "continue_workflow", 
-                    "params": {
-                        "session_id": session_id,
-                        "user_input": ""  # 自動推進不需要輸入
-                    }
-                })
-                print(f"回應狀態: {resp.get('status', '未知')}")
-                print(f"回應訊息: {resp.get('message', '無訊息')}")
-        else:
-            # 工作流程已完成或失敗
-            break
-    
-    print(f"\n=== {workflow_name} 工作流程結束 ===")
-    print(f"最終狀態: {resp.get('status', '未知')}")
-    print(f"最終訊息: {resp.get('message', '無訊息')}")
-    
-    # 顯示工作流程結果（如果有）
-    if "data" in resp:
-        print("\n工作流程結果:")
-        data = resp["data"]
-        print(data)
-        
-        # 特殊處理資料收集工作流程的結果
-        if workflow_type == 3 and data and "enhanced_summary" in data:
-            print("\n========== LLM 增強摘要 ==========")
-            print(data["enhanced_summary"])
-            print("========== 摘要結束 ==========")
-
-def sys_list_test_workflows(modules):
-    """列出所有可用的測試工作流程"""
-    print("\n=== 可用的測試工作流程 ===")
-    print("1. echo - 簡單回顯工作流程")
-    print("   - 單步驟工作流程")
-    print("   - 測試工作流程機制的基本功能")
-    print("   - 接受一個訊息並回顯它")
-    print()
-    print("2. countdown - 倒數計時工作流程")
-    print("   - 多步驟工作流程")
-    print("   - 測試工作流程中的狀態保持")
-    print("   - 從指定數字開始倒數計時直到零")
-    print()
-    print("3. data_collector - 資料收集工作流程")
-    print("   - 多步驟工作流程")
-    print("   - 測試工作流程中的用戶輸入處理")
-    print("   - 收集各種用戶資訊並在最後匯總")
-    print()
-    print("4. random_fail - 隨機失敗工作流程")
-    print("   - 多步驟工作流程")
-    print("   - 測試工作流程的錯誤處理")
-    print("   - 在隨機步驟可能失敗，以測試錯誤恢復機制")
-    print()
-    print("5. tts_test - TTS文字轉語音測試工作流程")
-    print("   - 多步驟工作流程")
-    print("   - 測試與TTS模組的整合")
-    print("   - 讓用戶輸入文字、情緒，並將其轉換成語音")
-    print()
-    print("=== 可用的文件工作流程 ===")
-    print("drop_and_read - 檔案讀取工作流程")
-    print("   - 多步驟工作流程")
-    print("   - 等待檔案路徑輸入，確認後讀取檔案內容")
-    print()
-    print("intelligent_archive - 智慧歸檔工作流程")
-    print("   - 多步驟工作流程")
-    print("   - 根據檔案類型和歷史記錄智慧歸檔檔案")
-    print()
-    print("summarize_tag - 摘要標籤工作流程")
-    print("   - 多步驟工作流程")
-    print("   - 使用LLM為檔案生成摘要和標籤")
-
-def test_file_workflow(modules, workflow_type: str):
-    """測試檔案工作流程
-    
-    Args:
-        workflow_type: 工作流程類型 ('drop_and_read', 'intelligent_archive', 'summarize_tag')
-    """
-    sysmod = modules.get("sysmod")
-    if sysmod is None:
-        error_log("[Controller] ❌ 無法載入 SYS 模組")
-        return
-        
-    workflow_display_names = {
-        "drop_and_read": "檔案讀取",
-        "intelligent_archive": "智慧歸檔", 
-        "summarize_tag": "摘要標籤"
-    }
-    
-    workflow_name = workflow_display_names.get(workflow_type, workflow_type)
-    
-    print(f"\n=== 開始測試 {workflow_name} 工作流程 ===")
-    
-    # 啟動工作流程
-    resp = sysmod.handle({
-        "mode": "start_workflow",
-        "params": {
-            "workflow_type": workflow_type,
-            "command": f"測試 {workflow_name} 工作流程"
-        }
-    })
-    
-    print("\n工作流程已啟動!")
-    print(f"回應狀態: {resp.get('status', '未知')}")
-    print(f"回應訊息: {resp.get('message', '無訊息')}")
-    
-    # 處理工作流程後續互動
-    session_id = resp.get("session_id")
-    if not session_id:
-        print("無法獲取會話 ID，工作流程可能無法繼續")
-        return
-    
-    # 進入互動循環
-    while resp.get("requires_input", False) or resp.get("status") == "waiting":
-        requires_input = resp.get("requires_input", False)
-        prompt = resp.get("prompt", "請輸入")
-        
-        if requires_input:
-            print(f"\n{prompt}")
-            
-            # 檢查是否需要檔案選擇（更精確的判斷）
-            # 只有當提示明確要求選擇檔案，且不是確認步驟時，才開啟檔案選擇視窗
-            needs_file_selection = (
-                any(keyword in prompt.lower() for keyword in [
-                    "請輸入要讀取的檔案路徑", 
-                    "請選擇要歸檔的檔案路徑",
-                    "請輸入要生成摘要的檔案路徑",
-                    "請選擇檔案", 
-                    "請輸入檔案路徑", 
-                    "file path"
-                ]) and
-                "確認" not in prompt.lower() and
-                "是否" not in prompt.lower() and
-                "y/n" not in prompt.lower()
-            )
-            
-            if needs_file_selection:
-                print("🔍 正在開啟檔案選擇視窗...")
-                try:
-                    file_path = open_demo_window()
-                    if file_path:
-                        print(f"✅ 已選擇檔案: {file_path}")
-                        user_input = file_path
-                    else:
-                        print("❌ 未選擇檔案，取消測試")
-                        break
-                except Exception as e:
-                    error_log(f"[Controller] 檔案選擇出現錯誤: {e}")
-                    print("❌ 檔案選擇失敗，取消測試")
-                    break
-            else:
-                # 一般文字輸入或確認步驟
-                user_input = input("> ")
-                
-                # 如果用戶輸入 exit 或 quit，取消工作流程
-                if user_input.lower() in ["exit", "quit", "取消"]:
-                    cancel_resp = sysmod.handle({
-                        "mode": "cancel_workflow",
-                        "params": {
-                            "session_id": session_id,
-                            "reason": "用戶取消"
-                        }
-                    })
-                    print(f"\n❌ 工作流程已取消：{cancel_resp.get('message', '已取消')}")
-                    break
-            
-            # 繼續工作流程
-            resp = sysmod.handle({
+            result = sysmod.handle({
                 "mode": "continue_workflow",
                 "params": {
                     "session_id": session_id,
                     "user_input": user_input
                 }
             })
+
+            if result.get("status") == "completed":
+                print(f"\n✅ 工作流程完成！")
+                if "data" in result:
+                    print(f"📤 回顯訊息: {result['data'].get('echo_message', '無')}")
+                return {"success": True, "data": result.get("data")}
+            else:
+                print(f"❌ 工作流程異常: {result.get('message', '未知')}")
+                return result
+        
+        return result
+
+    except Exception as e:
+        print(f"❌ 測試異常: {e}")
+        return {"success": False, "error": str(e)}
+
+
+def sys_test_countdown(modules):
+    """測試倒數計時工作流程"""
+    sysmod = modules.get("sysmod")
+    if sysmod is None:
+        print("❌ SYS 模組未載入")
+        return {"success": False, "error": "SYS 模組未載入"}
+
+    print("\n⏰ 測試 Countdown 工作流程")
+    print("=" * 60)
+
+    try:
+        # 啟動倒數工作流程
+        result = sysmod.handle({
+            "mode": "start_workflow",
+            "params": {
+                "workflow_type": "countdown",
+                "command": "測試倒數計時",
+                "initial_data": {}
+            }
+        })
+
+        session_id = result.get("session_id")
+        print(f"✅ 工作流程已啟動 (ID: {session_id})")
+
+        # 輸入起始數字
+        if result.get("requires_input"):
+            start_num = input("\n請輸入起始數字 (建議3-5): ")
             
-            print(f"\n回應狀態: {resp.get('status', '未知')}")
-            print(f"回應訊息: {resp.get('message', '無訊息')}")
+            result = sysmod.handle({
+                "mode": "continue_workflow",
+                "params": {
+                    "session_id": session_id,
+                    "user_input": start_num
+                }
+            })
+
+            print(f"\n⏳ 倒數開始...")
             
-            # 如果狀態是 waiting，繼續自動推進
-            while resp.get("status") == "waiting" and not resp.get("requires_input", False):
-                import time
-                time.sleep(0.5)  # 短暫延遲
-                resp = sysmod.handle({
-                    "mode": "continue_workflow", 
+            # 等待倒數完成
+            while result.get("status") == "waiting":
+                time.sleep(0.5)
+                result = sysmod.handle({
+                    "mode": "continue_workflow",
                     "params": {
                         "session_id": session_id,
-                        "user_input": ""  # 自動推進不需要輸入
+                        "user_input": ""
                     }
                 })
-                print(f"自動推進 - 回應狀態: {resp.get('status', '未知')}")
-                print(f"自動推進 - 回應訊息: {resp.get('message', '無訊息')}")
-        else:
-            # 工作流程已完成或失敗
-            break
-    
-    print(f"\n=== {workflow_name} 工作流程結束 ===")
-    print(f"最終狀態: {resp.get('status', '未知')}")
-    print(f"最終訊息: {resp.get('message', '無訊息')}")
-    
-    # 顯示工作流程結果（如果有）
-    if "data" in resp:
-        print("\n🎯 工作流程結果:")
-        data = resp["data"]
-        
-        if isinstance(data, dict):
-            for key, value in data.items():
-                if isinstance(value, str) and len(value) > 200:
-                    print(f"  {key}: {value[:200]}...")
-                elif isinstance(value, list) and len(value) > 5:
-                    print(f"  {key}: {value[:5]}... (總共 {len(value)} 項)")
-                else:
-                    print(f"  {key}: {value}")
-        else:
-            print(f"  結果: {data}")
+                print(".", end="", flush=True)
+
+            print(f"\n✅ 倒數完成！")
+            if "data" in result:
+                print(f"📊 結果: {result['data']}")
             
-        # 特殊處理不同類型的檔案工作流程結果
-        if workflow_type == "drop_and_read" and isinstance(data, dict):
-            if "content" in data:
-                print(f"\n📄 檔案內容預覽:")
-                content = data["content"]
-                if len(content) > 500:
-                    print(f"{content[:500]}...")
-                else:
-                    print(content)
-                    
-        elif workflow_type == "intelligent_archive" and isinstance(data, dict):
-            if "archive_path" in data:
-                print(f"\n📁 檔案已歸檔至: {data['archive_path']}")
-            if "category" in data:
-                print(f"📂 分類: {data['category']}")
+            return {"success": True, "data": result.get("data")}
+
+    except Exception as e:
+        print(f"❌ 測試異常: {e}")
+        return {"success": False, "error": str(e)}
+
+
+def sys_test_data_collector(modules):
+    """測試資料收集工作流程"""
+    sysmod = modules.get("sysmod")
+    if sysmod is None:
+        print("❌ SYS 模組未載入")
+        return {"success": False, "error": "SYS 模組未載入"}
+
+    print("\n📊 測試 Data Collector 工作流程")
+    print("=" * 60)
+
+    try:
+        # 啟動資料收集工作流程
+        result = sysmod.handle({
+            "mode": "start_workflow",
+            "params": {
+                "workflow_type": "data_collector",
+                "command": "測試資料收集",
+                "initial_data": {}
+            }
+        })
+
+        session_id = result.get("session_id")
+        print(f"✅ 工作流程已啟動 (ID: {session_id})")
+        print(f"📝 這個工作流程會詢問你一系列問題\n")
+
+        # 互動循環
+        while result.get("requires_input"):
+            prompt = result.get("message", "請輸入")
+            user_input = input(f"{prompt}: ")
+            
+            result = sysmod.handle({
+                "mode": "continue_workflow",
+                "params": {
+                    "session_id": session_id,
+                    "user_input": user_input
+                }
+            })
+
+        if result.get("status") == "completed":
+            print(f"\n✅ 資料收集完成！")
+            if "data" in result:
+                print(f"📊 收集的資料:")
+                for key, value in result["data"].items():
+                    print(f"   {key}: {value}")
+            return {"success": True, "data": result.get("data")}
+
+    except Exception as e:
+        print(f"❌ 測試異常: {e}")
+        return {"success": False, "error": str(e)}
+
+
+def sys_test_random_fail(modules):
+    """測試隨機失敗工作流程（測試錯誤處理）"""
+    sysmod = modules.get("sysmod")
+    if sysmod is None:
+        print("❌ SYS 模組未載入")
+        return {"success": False, "error": "SYS 模組未載入"}
+
+    print("\n🎲 測試 Random Fail 工作流程")
+    print("=" * 60)
+
+    try:
+        # 啟動隨機失敗工作流程
+        result = sysmod.handle({
+            "mode": "start_workflow",
+            "params": {
+                "workflow_type": "random_fail",
+                "command": "測試錯誤處理",
+                "initial_data": {}
+            }
+        })
+
+        session_id = result.get("session_id")
+        print(f"✅ 工作流程已啟動 (ID: {session_id})")
+        print(f"📝 這個工作流程可能會隨機失敗，用於測試錯誤處理\n")
+
+        # 互動循環
+        while result.get("requires_input") or result.get("status") == "waiting":
+            if result.get("requires_input"):
+                prompt = result.get("message", "請輸入")
+                user_input = input(f"{prompt}: ")
                 
-        elif workflow_type == "summarize_tag" and isinstance(data, dict):
-            if "summary" in data:
-                print(f"\n📝 摘要: {data['summary']}")
-            if "tags" in data:
-                print(f"🏷️ 標籤: {', '.join(data['tags'])}")
+                result = sysmod.handle({
+                    "mode": "continue_workflow",
+                    "params": {
+                        "session_id": session_id,
+                        "user_input": user_input
+                    }
+                })
+            elif result.get("status") == "waiting":
+                time.sleep(0.5)
+                result = sysmod.handle({
+                    "mode": "continue_workflow",
+                    "params": {
+                        "session_id": session_id,
+                        "user_input": ""
+                    }
+                })
+
+        if result.get("status") == "completed":
+            print(f"\n✅ 測試完成！")
+            if "data" in result:
+                print(f"📊 測試結果: {result['data']}")
+            return {"success": True, "data": result.get("data")}
+        else:
+            print(f"\n⚠️ 工作流程結束，狀態: {result.get('status')}")
+            return result
+
+    except Exception as e:
+        print(f"❌ 測試異常: {e}")
+        return {"success": False, "error": str(e)}
+
+
+def sys_test_tts(modules):
+    """測試 TTS 文字轉語音工作流程"""
+    sysmod = modules.get("sysmod")
+    if sysmod is None:
+        print("❌ SYS 模組未載入")
+        return {"success": False, "error": "SYS 模組未載入"}
+
+    print("\n🔊 測試 TTS 工作流程")
+    print("=" * 60)
+
+    try:
+        # 啟動 TTS 測試工作流程
+        result = sysmod.handle({
+            "mode": "start_workflow",
+            "params": {
+                "workflow_type": "tts_test",
+                "command": "測試文字轉語音",
+                "initial_data": {}
+            }
+        })
+
+        session_id = result.get("session_id")
+        print(f"✅ 工作流程已啟動 (ID: {session_id})")
+
+        # 互動循環
+        while result.get("requires_input"):
+            prompt = result.get("message", "請輸入")
+            user_input = input(f"{prompt}: ")
+            
+            result = sysmod.handle({
+                "mode": "continue_workflow",
+                "params": {
+                    "session_id": session_id,
+                    "user_input": user_input
+                }
+            })
+
+        if result.get("status") == "completed":
+            print(f"\n✅ TTS 測試完成！")
+            if "data" in result:
+                print(f"📊 結果: {result['data']}")
+            return {"success": True, "data": result.get("data")}
+
+    except Exception as e:
+        print(f"❌ 測試異常: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ===== 檔案工作流程測試 =====
+
+def sys_test_file_read(modules):
+    """測試檔案讀取工作流程"""
+    sysmod = modules.get("sysmod")
+    if sysmod is None:
+        print("❌ SYS 模組未載入")
+        return {"success": False, "error": "SYS 模組未載入"}
+
+    print("\n📄 測試檔案讀取工作流程")
+    print("=" * 60)
+
+    try:
+        # 啟動檔案讀取工作流程
+        result = sysmod.handle({
+            "mode": "start_workflow",
+            "params": {
+                "workflow_type": "drop_and_read",
+                "command": "讀取檔案",
+                "initial_data": {}
+            }
+        })
+
+        session_id = result.get("session_id")
+        print(f"✅ 工作流程已啟動 (ID: {session_id})")
+
+        # 處理輸入
+        if result.get("requires_input"):
+            # 檢查是否需要檔案選擇
+            prompt = result.get("message", "")
+            if "檔案" in prompt or "file" in prompt.lower():
+                print("🔍 開啟檔案選擇視窗...")
+                try:
+                    file_path = open_demo_window()
+                    if file_path:
+                        print(f"✅ 已選擇: {file_path}")
+                        user_input = file_path
+                    else:
+                        print("❌ 未選擇檔案")
+                        return {"success": False, "error": "未選擇檔案"}
+                except Exception as e:
+                    print(f"❌ 檔案選擇失敗: {e}")
+                    return {"success": False, "error": str(e)}
+            else:
+                user_input = input(f"{prompt}: ")
+
+            result = sysmod.handle({
+                "mode": "continue_workflow",
+                "params": {
+                    "session_id": session_id,
+                    "user_input": user_input
+                }
+            })
+
+            # 繼續處理後續步驟
+            while result.get("requires_input"):
+                user_input = input(f"{result.get('message', '請輸入')}: ")
+                result = sysmod.handle({
+                    "mode": "continue_workflow",
+                    "params": {
+                        "session_id": session_id,
+                        "user_input": user_input
+                    }
+                })
+
+        if result.get("status") == "completed":
+            print(f"\n✅ 檔案讀取完成！")
+            if "data" in result and "content" in result["data"]:
+                content = result["data"]["content"]
+                print(f"📄 檔案內容預覽:")
+                print(content[:500] + ("..." if len(content) > 500 else ""))
+            return {"success": True, "data": result.get("data")}
+
+    except Exception as e:
+        print(f"❌ 測試異常: {e}")
+        return {"success": False, "error": str(e)}
+
+
+def sys_test_file_archive(modules):
+    """測試智慧歸檔工作流程"""
+    sysmod = modules.get("sysmod")
+    if sysmod is None:
+        print("❌ SYS 模組未載入")
+        return {"success": False, "error": "SYS 模組未載入"}
+
+    print("\n📁 測試智慧歸檔工作流程")
+    print("=" * 60)
+
+    try:
+        # 啟動智慧歸檔工作流程
+        result = sysmod.handle({
+            "mode": "start_workflow",
+            "params": {
+                "workflow_type": "intelligent_archive",
+                "command": "歸檔檔案",
+                "initial_data": {}
+            }
+        })
+
+        session_id = result.get("session_id")
+        print(f"✅ 工作流程已啟動 (ID: {session_id})")
+
+        # 互動循環
+        while result.get("requires_input"):
+            prompt = result.get("message", "")
+            
+            # 檢查是否需要檔案選擇
+            if "檔案" in prompt and "確認" not in prompt and "y/n" not in prompt.lower():
+                print("🔍 開啟檔案選擇視窗...")
+                try:
+                    file_path = open_demo_window()
+                    if file_path:
+                        print(f"✅ 已選擇: {file_path}")
+                        user_input = file_path
+                    else:
+                        print("❌ 未選擇檔案")
+                        return {"success": False, "error": "未選擇檔案"}
+                except Exception as e:
+                    print(f"❌ 檔案選擇失敗: {e}")
+                    return {"success": False, "error": str(e)}
+            else:
+                user_input = input(f"{prompt}: ")
+
+            result = sysmod.handle({
+                "mode": "continue_workflow",
+                "params": {
+                    "session_id": session_id,
+                    "user_input": user_input
+                }
+            })
+
+        if result.get("status") == "completed":
+            print(f"\n✅ 歸檔完成！")
+            if "data" in result:
+                print(f"📊 歸檔資訊:")
+                for key, value in result["data"].items():
+                    print(f"   {key}: {value}")
+            return {"success": True, "data": result.get("data")}
+
+    except Exception as e:
+        print(f"❌ 測試異常: {e}")
+        return {"success": False, "error": str(e)}
+
+
+def sys_test_file_summarize(modules):
+    """測試摘要標籤工作流程"""
+    sysmod = modules.get("sysmod")
+    if sysmod is None:
+        print("❌ SYS 模組未載入")
+        return {"success": False, "error": "SYS 模組未載入"}
+
+    print("\n🏷️ 測試摘要標籤工作流程")
+    print("=" * 60)
+
+    try:
+        # 啟動摘要標籤工作流程
+        result = sysmod.handle({
+            "mode": "start_workflow",
+            "params": {
+                "workflow_type": "summarize_tag",
+                "command": "生成摘要和標籤",
+                "initial_data": {}
+            }
+        })
+
+        session_id = result.get("session_id")
+        print(f"✅ 工作流程已啟動 (ID: {session_id})")
+
+        # 互動循環
+        while result.get("requires_input"):
+            prompt = result.get("message", "")
+            
+            # 檢查是否需要檔案選擇
+            if "檔案" in prompt and "確認" not in prompt and "y/n" not in prompt.lower():
+                print("🔍 開啟檔案選擇視窗...")
+                try:
+                    file_path = open_demo_window()
+                    if file_path:
+                        print(f"✅ 已選擇: {file_path}")
+                        user_input = file_path
+                    else:
+                        print("❌ 未選擇檔案")
+                        return {"success": False, "error": "未選擇檔案"}
+                except Exception as e:
+                    print(f"❌ 檔案選擇失敗: {e}")
+                    return {"success": False, "error": str(e)}
+            else:
+                user_input = input(f"{prompt}: ")
+
+            result = sysmod.handle({
+                "mode": "continue_workflow",
+                "params": {
+                    "session_id": session_id,
+                    "user_input": user_input
+                }
+            })
+
+        if result.get("status") == "completed":
+            print(f"\n✅ 摘要生成完成！")
+            if "data" in result:
+                print(f"📝 摘要: {result['data'].get('summary', '無')}")
+                print(f"🏷️ 標籤: {result['data'].get('tags', '無')}")
+            return {"success": True, "data": result.get("data")}
+
+    except Exception as e:
+        print(f"❌ 測試異常: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ===== 工作流程管理測試 =====
+
+def sys_test_list_workflows(modules):
+    """列出所有可用的工作流程"""
+    print("\n📋 可用的工作流程")
+    print("=" * 60)
+    
+    print("\n🧪 測試工作流程:")
+    print("  • echo - 簡單回顯")
+    print("  • countdown - 倒數計時")
+    print("  • data_collector - 資料收集")
+    print("  • random_fail - 隨機失敗（錯誤處理測試）")
+    print("  • tts_test - TTS 文字轉語音測試")
+    
+    print("\n📄 檔案工作流程:")
+    print("  • drop_and_read - 讀取檔案")
+    print("  • intelligent_archive - 智慧歸檔")
+    print("  • summarize_tag - 摘要標籤生成")
+    
+    return {"success": True}
+
+
+def sys_test_active_workflows(modules):
+    """查詢當前活躍的工作流程"""
+    sysmod = modules.get("sysmod")
+    if sysmod is None:
+        print("❌ SYS 模組未載入")
+        return {"success": False, "error": "SYS 模組未載入"}
+
+    print("\n🔍 查詢活躍工作流程")
+    print("=" * 60)
+
+    try:
+        result = sysmod.handle({
+            "mode": "list_active_workflows",
+            "params": {}
+        })
+
+        if result.get("status") == "success" and "data" in result:
+            sessions = result["data"].get("sessions", [])
+            if sessions:
+                print(f"📊 找到 {len(sessions)} 個活躍工作流程:")
+                for session in sessions:
+                    print(f"  • ID: {session.get('session_id')}")
+                    print(f"    類型: {session.get('workflow_type')}")
+                    print(f"    狀態: {session.get('status')}")
+                    print()
+            else:
+                print("📭 目前沒有活躍的工作流程")
+            
+            return {"success": True, "sessions": sessions}
+        else:
+            print(f"❌ 查詢失敗: {result.get('message', '未知錯誤')}")
+            return result
+
+    except Exception as e:
+        print(f"❌ 查詢異常: {e}")
+        return {"success": False, "error": str(e)}
+
+
+def sys_test_workflow_status(modules, session_id: str = None):
+    """查詢工作流程狀態"""
+    sysmod = modules.get("sysmod")
+    if sysmod is None:
+        print("❌ SYS 模組未載入")
+        return {"success": False, "error": "SYS 模組未載入"}
+
+    if not session_id:
+        session_id = input("請輸入工作流程 ID: ")
+
+    print(f"\n🔍 查詢工作流程狀態 (ID: {session_id})")
+    print("=" * 60)
+
+    try:
+        result = sysmod.handle({
+            "mode": "get_workflow_status",
+            "params": {
+                "session_id": session_id
+            }
+        })
+
+        if result.get("status") == "success" and "data" in result:
+            info = result["data"]
+            print("📊 工作流程資訊:")
+            print(f"  ID: {info.get('session_id')}")
+            print(f"  類型: {info.get('workflow_type')}")
+            print(f"  狀態: {info.get('status')}")
+            print(f"  當前步驟: {info.get('current_step')}")
+            
+            return {"success": True, "info": info}
+        else:
+            print(f"❌ 查詢失敗: {result.get('message', '未知錯誤')}")
+            return result
+
+    except Exception as e:
+        print(f"❌ 查詢異常: {e}")
+        return {"success": False, "error": str(e)}
+
+
+def sys_test_cancel_workflow(modules, session_id: str = None):
+    """取消工作流程"""
+    sysmod = modules.get("sysmod")
+    if sysmod is None:
+        print("❌ SYS 模組未載入")
+        return {"success": False, "error": "SYS 模組未載入"}
+
+    if not session_id:
+        session_id = input("請輸入要取消的工作流程 ID: ")
+
+    print(f"\n❌ 取消工作流程 (ID: {session_id})")
+    print("=" * 60)
+
+    try:
+        result = sysmod.handle({
+            "mode": "cancel_workflow",
+            "params": {
+                "session_id": session_id,
+                "reason": "使用者測試取消"
+            }
+        })
+
+        if result.get("status") == "success":
+            print(f"✅ 工作流程已取消")
+            print(f"📝 訊息: {result.get('message', '')}")
+            return {"success": True}
+        else:
+            print(f"❌ 取消失敗: {result.get('message', '未知錯誤')}")
+            return result
+
+    except Exception as e:
+        print(f"❌ 取消異常: {e}")
+        return {"success": False, "error": str(e)}

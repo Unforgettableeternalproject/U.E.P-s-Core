@@ -407,16 +407,46 @@ class BackgroundWorkerManager:
                 workflow_task.start_time = datetime.now()
                 debug_log(2, f"[BackgroundWorkerManager] Starting workflow execution: {task_id}")
                 
-                # Execute workflow engine
-                result = workflow_engine.execute()
+                # Execute workflow engine in automated mode
+                # Background workflows must be non-interactive - process all steps automatically
+                final_result = None
+                max_iterations = 100  # Prevent infinite loops
+                iteration = 0
+                
+                while iteration < max_iterations:
+                    iteration += 1
+                    
+                    # Process current step with empty input (automated mode)
+                    step_result = workflow_engine.process_input("")
+                    
+                    # Update progress
+                    workflow_task.progress = min(0.1 + (iteration * 0.01), 0.9)
+                    
+                    # Check if workflow is complete
+                    if step_result.complete:
+                        final_result = step_result
+                        break
+                    elif step_result.cancel:
+                        raise Exception(f"Workflow cancelled: {step_result.message}")
+                    elif not step_result.success:
+                        raise Exception(f"Workflow step failed: {step_result.message}")
+                    
+                    # Check if current step requires user input
+                    current_step = workflow_engine.get_current_step()
+                    if current_step and current_step.step_type == current_step.STEP_TYPE_INTERACTIVE:
+                        # Background workflows should not have interactive steps
+                        raise Exception(f"Background workflow cannot have interactive step: {current_step.id}")
+                
+                if iteration >= max_iterations:
+                    raise Exception("Workflow exceeded maximum iterations (possible infinite loop)")
                 
                 # Update task with result
                 workflow_task.status = TaskStatus.COMPLETED
                 workflow_task.end_time = datetime.now()
-                workflow_task.result = result
+                workflow_task.result = final_result.data if final_result else {}
                 workflow_task.progress = 1.0
                 
-                info_log(f"[BackgroundWorkerManager] Workflow {task_id} completed successfully")
+                info_log(f"[BackgroundWorkerManager] Workflow {task_id} completed successfully in {iteration} steps")
                 
                 # Publish event (will be handled by Controller)
                 try:

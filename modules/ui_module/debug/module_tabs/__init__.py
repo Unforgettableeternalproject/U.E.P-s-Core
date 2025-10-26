@@ -22,15 +22,13 @@ from nlp_test_tab import NLPTestTab
 from mem_test_tab import MEMTestTab
 from llm_test_tab import LLMTestTab
 from tts_test_tab import TTSTestTab
+from sys_test_tab import SYSTestTab
 
 # 導入 Frontend 整合分頁（UI+ANI+MOV 的整合版本）
 from frontend_test_tab import FrontendTestTab
 
 # 導入待重構的模組分頁（使用佔位模式）
-from placeholder_test_tab import (
-    PlaceholderTestTab,
-    SYSTestTab
-)
+from placeholder_test_tab import PlaceholderTestTab
 
 # 向後兼容的導出
 __all__ = [

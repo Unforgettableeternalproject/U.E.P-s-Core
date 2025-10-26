@@ -724,6 +724,7 @@ class UnifiedSessionManager:
                     gs_session_id=gs_id,
                     task_type=mapped_task_type,
                     task_definition={
+                        "workflow_type": workflow_type,  # 保存原始的 workflow_type
                         "command": command or "unknown",
                         "initial_data": initial_data or {}
                     }

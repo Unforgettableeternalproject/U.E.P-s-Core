@@ -559,13 +559,21 @@ class SystemLoop:
             # 檢查是否回到IDLE狀態，如果是則重新啟動STT監聽
             elif current_state == UEPState.IDLE and hasattr(self, '_previous_state'):
                 if self._previous_state != UEPState.IDLE:
-                    # 階段三：循環結束後重置跳過旗標
-                    if should_skip:
-                        working_context_manager.set_skip_input_layer(False)
-                        debug_log(3, "[SystemLoop] 循環結束，重置輸入層跳過旗標")
+                    # ✅ 階段三：層級跳過邏輯 - 檢查是否應該跳過輸入層
+                    from core.working_context import working_context_manager
+                    should_skip = working_context_manager.should_skip_input_layer()
+                    workflow_waiting = working_context_manager.is_workflow_waiting_input()
                     
-                    debug_log(2, f"[SystemLoop] 系統回到IDLE狀態，重新啟動STT監聽")
-                    self._restart_stt_listening()
+                    if should_skip and not workflow_waiting:
+                        # 工作流自動推進中，跳過輸入層（不重啟 STT VAD）
+                        skip_reason = working_context_manager.get_skip_reason() or "工作流自動推進"
+                        debug_log(2, f"[SystemLoop] ⏭️ 跳過輸入層（不啟動 VAD）: {skip_reason}")
+                        # 重置旗標，準備下次可能的輸入
+                        working_context_manager.set_skip_input_layer(False)
+                    else:
+                        # 正常流程：重啟 STT 監聽
+                        debug_log(2, f"[SystemLoop] 系統回到IDLE狀態，重新啟動STT監聽")
+                        self._restart_stt_listening()
                     
                     # 系統循環結束，檢查 GS 結束條件
                     self._check_cycle_end_conditions()

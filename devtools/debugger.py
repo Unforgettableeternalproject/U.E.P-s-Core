@@ -414,33 +414,93 @@ def debug_interactive():
                     print("==========================\n")
                     continue                
                 
-                print("<SYS 模組測試>\n")
-                choice = input("請選擇欲測試之功能 (1: 檔案互動功能, 2: 測試工作流程, help: 列出所有功能以及其參數, exit: 離開): \n\n> ")
+                print("<SYS 模組工作流測試>\n")
+                print("=== 工作流測試分類 ===")
+                print("1. 測試工作流 (5)")
+                print("2. 檔案工作流 (3)")
+                print("3. 工作流管理 (4)")
+                print("4. 列出所有可用工作流")
+                print("\nhelp: 顯示詳細說明")
+                print("exit: 離開\n")
+                
+                choice = input("> ")
                 
                 match choice:
-                    case "1":
-                        sub = input("請選擇欲測試之子功能 (1-3: 工作流程模式, exit: 離開):\n1: 檔案讀取工作流程, 2: 智慧歸檔工作流程, 3: 摘要標籤工作流程\n\n> ")
-                        # Test if sub is not a number or "exit"
-                        if sub in ["1", "2", "3"]:
-                            controller.sys_test_functions(mode=1, sub=int(sub))
-                        elif sub.lower() in ["exit", "e", "quit", "q", "back", "b"]:
-                            break
-                        else:
-                            print("\033[31m無效的選擇，請再試一次。\033[0m")
-                    case "2":
-                        sub = input("請選擇欲測試之工作流程 (1: 簡單回顯, 2: 倒數計時, 3: 資料收集, 4: 隨機失敗, 5: TTS工作流測試, exit: 離開): \n\n> ")
-                        if sub in ["1", "2", "3", "4", "5"]:
-                            controller.sys_test_workflows(workflow_type=int(sub))
-                        elif sub.lower() in ["exit", "e", "quit", "q", "back", "b"]:
-                            break
-                        else:
-                            print("\033[31m無效的選擇，請再試一次。\033[0m")
+                    case "1":  # 測試工作流
+                        print("\n<測試工作流>")
+                        sub = input("請選擇:\n1: Echo (簡單回顯)\n2: Countdown (倒數計時)\n3: Data Collector (資料收集)\n4: Random Fail (隨機失敗)\n5: TTS (文字轉語音)\nexit: 返回\n\n> ")
+                        match sub:
+                            case "1":
+                                controller.sys_test_echo_wrapper()
+                            case "2":
+                                controller.sys_test_countdown_wrapper()
+                            case "3":
+                                controller.sys_test_data_collector_wrapper()
+                            case "4":
+                                controller.sys_test_random_fail_wrapper()
+                            case "5":
+                                controller.sys_test_tts_wrapper()
+                            case s if s.lower() in ["exit", "e", "quit", "q", "back", "b"]:
+                                pass
+                            case _:
+                                print("\033[31m無效的選擇，請再試一次。\033[0m")
+                    
+                    case "2":  # 檔案工作流
+                        print("\n<檔案工作流>")
+                        sub = input("請選擇:\n1: File Read (檔案讀取)\n2: Intelligent Archive (智慧歸檔)\n3: Summarize & Tag (摘要標籤)\nexit: 返回\n\n> ")
+                        match sub:
+                            case "1":
+                                controller.sys_test_file_read_wrapper()
+                            case "2":
+                                controller.sys_test_file_archive_wrapper()
+                            case "3":
+                                controller.sys_test_file_summarize_wrapper()
+                            case s if s.lower() in ["exit", "e", "quit", "q", "back", "b"]:
+                                pass
+                            case _:
+                                print("\033[31m無效的選擇，請再試一次。\033[0m")
+                    
+                    case "3":  # 工作流管理
+                        print("\n<工作流管理>")
+                        sub = input("請選擇:\n1: List Active (列出活躍工作流)\n2: Query Status (查詢工作流狀態)\n3: Cancel Workflow (取消工作流)\nexit: 返回\n\n> ")
+                        match sub:
+                            case "1":
+                                controller.sys_test_active_workflows_wrapper()
+                            case "2":
+                                session_id = input("請輸入 Session ID (留空則互動輸入): ")
+                                controller.sys_test_workflow_status_wrapper(session_id if session_id else None)
+                            case "3":
+                                session_id = input("請輸入要取消的 Session ID (留空則互動輸入): ")
+                                controller.sys_test_cancel_workflow_wrapper(session_id if session_id else None)
+                            case s if s.lower() in ["exit", "e", "quit", "q", "back", "b"]:
+                                pass
+                            case _:
+                                print("\033[31m無效的選擇，請再試一次。\033[0m")
+                    
+                    case "4":  # 列出所有工作流
+                        controller.sys_test_list_workflows_wrapper()
+                    
                     case "help" | "h":
-                        controller.sys_list_functions()
-                        print("\n=== 測試工作流程選項 ===")
-                        controller.sys_list_test_workflows()
+                        print("\n=== SYS 工作流測試說明 ===")
+                        print("\n【測試工作流】- 基礎功能測試")
+                        print("  Echo: 簡單的輸入輸出回顯測試")
+                        print("  Countdown: 倒數計時器測試")
+                        print("  Data Collector: 多步驟資料收集測試")
+                        print("  Random Fail: 錯誤處理與重試機制測試")
+                        print("  TTS: 文字轉語音整合測試")
+                        print("\n【檔案工作流】- 檔案處理功能")
+                        print("  File Read: 檔案選擇與讀取測試")
+                        print("  Intelligent Archive: 智慧歸檔測試")
+                        print("  Summarize & Tag: 檔案摘要與標籤生成測試")
+                        print("\n【工作流管理】- 會話管理功能")
+                        print("  List Active: 顯示所有活躍的工作流會話")
+                        print("  Query Status: 查詢特定工作流的執行狀態")
+                        print("  Cancel Workflow: 取消正在執行的工作流")
+                        print("\n提示：未來新增的工作流將自動出現在相應分類中\n")
+                    
                     case "exit" | "e" | "quit" | "q":
                         pass
+                    
                     case _:
                         print("\033[31m無效的選擇，請再試一次。\033[0m")
             case "int":

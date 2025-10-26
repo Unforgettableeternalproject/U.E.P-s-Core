@@ -48,6 +48,9 @@ class SYSModule(BaseModule):
         debug_log(2, "[SYS] MCP Server 已初始化")
 
     def initialize(self):
+        # 註冊 WORK_SYS 協作管道的資料提供者
+        self._register_collaboration_providers()
+        
         info_log("[SYS] 初始化完成，啟用模式：" + ", ".join(self.enabled_modes))
         return True
     
@@ -66,6 +69,175 @@ class SYSModule(BaseModule):
             with open(path, "r", encoding="utf-8") as f:
                 self._function_specs = yaml.safe_load(f)
         return self._function_specs
+
+    def _register_collaboration_providers(self):
+        """註冊 WORK_SYS 協作管道的資料提供者"""
+        try:
+            from modules.llm_module.module_interfaces import state_aware_interface
+            
+            # 1. 註冊工作流狀態提供者
+            state_aware_interface.register_work_sys_provider(
+                data_type="workflow_status",
+                provider_func=self._provide_workflow_status
+            )
+            
+            # 2. 註冊功能列表提供者
+            state_aware_interface.register_work_sys_provider(
+                data_type="function_registry",
+                provider_func=self._provide_function_registry
+            )
+            
+            info_log("[SYS] ✅ 已註冊 WORK_SYS 協作管道資料提供者")
+            debug_log(2, "[SYS] 註冊提供者: workflow_status, function_registry")
+            
+        except Exception as e:
+            error_log(f"[SYS] ❌ 註冊協作管道提供者失敗: {e}")
+    
+    def _provide_workflow_status(self, **kwargs):
+        """提供當前工作流狀態給 LLM"""
+        try:
+            workflow_id = kwargs.get('workflow_id')
+            
+            if not workflow_id:
+                # 如果沒有指定 workflow_id，返回所有活躍工作流的摘要
+                active_workflows = []
+                for wf_id, engine in self.workflow_engines.items():
+                    session = self.session_manager.get_workflow_session(wf_id)
+                    if session:
+                        # 檢查會話狀態（兼容不同的狀態類型）
+                        status_value = session.status.value if hasattr(session.status, 'value') else str(session.status)
+                        
+                        # 只包含活躍的工作流
+                        if 'active' in status_value.lower() or 'executing' in status_value.lower() or 'ready' in status_value.lower():
+                            # 計算進度
+                            progress = 0.0
+                            if hasattr(session, 'stats') and session.stats:
+                                total_steps = session.stats.get('total_steps', 0)
+                                completed_steps = session.stats.get('completed_steps', 0)
+                                if total_steps > 0:
+                                    progress = completed_steps / total_steps
+                            
+                            active_workflows.append({
+                                "workflow_id": wf_id,
+                                "workflow_type": engine.definition.workflow_type,
+                                "status": status_value,
+                                "progress": progress
+                            })
+                
+                return {
+                    "active_workflows": active_workflows,
+                    "total_count": len(active_workflows)
+                }
+            
+            # 查詢特定工作流的詳細狀態
+            session = self.session_manager.get_workflow_session(workflow_id)
+            if not session:
+                return {
+                    "status": "not_found",
+                    "workflow_id": workflow_id,
+                    "message": "找不到指定的工作流會話"
+                }
+            
+            engine = self.workflow_engines.get(workflow_id)
+            if not engine:
+                return {
+                    "status": "no_engine",
+                    "workflow_id": workflow_id,
+                    "message": "工作流引擎未初始化"
+                }
+            
+            # 獲取當前步驟
+            current_step = engine.get_current_step()
+            
+            # 獲取可用功能（根據當前工作流類型）
+            available_functions = self._get_available_functions_for_workflow(engine)
+            
+            # 計算進度（基於步驟完成情況）
+            progress = 0.0
+            if hasattr(session, 'stats') and session.stats:
+                total_steps = session.stats.get('total_steps', 0)
+                completed_steps = session.stats.get('completed_steps', 0)
+                if total_steps > 0:
+                    progress = completed_steps / total_steps
+            
+            return {
+                "workflow_id": workflow_id,
+                "workflow_type": engine.definition.workflow_type,
+                "workflow_name": engine.definition.name,
+                "workflow_mode": engine.definition.workflow_mode.value,
+                "current_step": current_step.id if current_step else None,
+                "current_step_type": current_step.step_type if current_step else None,
+                "progress": progress,
+                "status": session.status.value if hasattr(session.status, 'value') else str(session.status),
+                "requires_llm_review": engine.definition.requires_llm_review,
+                "available_functions": available_functions,
+                "metadata": session.session_metadata if hasattr(session, 'session_metadata') else {}
+            }
+            
+        except Exception as e:
+            error_log(f"[SYS] 提供工作流狀態失敗: {e}")
+            return {
+                "status": "error",
+                "message": str(e)
+            }
+    
+    def _provide_function_registry(self, **kwargs):
+        """提供可用的系統功能列表給 LLM"""
+        try:
+            category = kwargs.get('category', 'all')
+            
+            # 從 functions.yaml 讀取可用功能
+            specs = self._load_function_specs()
+            
+            if category == 'all':
+                # 返回所有功能
+                functions = []
+                for name, spec in specs.items():
+                    if name in self.enabled_modes:
+                        functions.append({
+                            "name": name,
+                            "category": spec.get('category', 'general'),
+                            "description": spec.get('description', ''),
+                            "params": list(spec.get('params', {}).keys())
+                        })
+                return functions
+            else:
+                # 根據分類過濾
+                functions = []
+                for name, spec in specs.items():
+                    if name in self.enabled_modes and spec.get('category') == category:
+                        functions.append({
+                            "name": name,
+                            "category": category,
+                            "description": spec.get('description', ''),
+                            "params": list(spec.get('params', {}).keys())
+                        })
+                return functions
+                
+        except Exception as e:
+            error_log(f"[SYS] 提供功能列表失敗: {e}")
+            return []
+    
+    def _get_available_functions_for_workflow(self, engine):
+        """根據工作流類型獲取可用功能"""
+        try:
+            # 基本功能始終可用
+            base_functions = ["cancel_workflow", "get_workflow_status"]
+            
+            # 根據工作流類型添加特定功能
+            workflow_type = engine.definition.workflow_type
+            
+            if "file" in workflow_type.lower():
+                base_functions.extend(["file_read", "file_write", "file_list"])
+            
+            if engine.definition.requires_llm_review:
+                base_functions.extend(["review_step", "approve_step", "modify_step"])
+            
+            return base_functions
+            
+        except Exception as e:
+            debug_log(2, f"[SYS] 獲取可用功能失敗: {e}")
+            return []
 
     def _validate_params(self, mode, params):
         specs = self._load_function_specs()
@@ -436,10 +608,14 @@ class SYSModule(BaseModule):
         # Convert to dict for output
         session_data = session.to_dict()
         
+        # Get current step info
+        current_step_info = session.get_current_step()
+        current_step_name = current_step_info.get("step_name", "N/A") if current_step_info else "無"
+        
         return {
             "status": "success",
             "data": session_data,
-            "message": f"工作流程狀態: {session.status.value}, 步驟: {session.current_step}"
+            "message": f"工作流程狀態: {session.status.value}, 當前步驟: {current_step_name}"
         }
     
     def _list_active_workflows(self):
@@ -451,13 +627,17 @@ class SYSModule(BaseModule):
         for session in active_sessions:
             # Only include sessions that have corresponding engines
             if session.session_id in self.workflow_engines:
+                # Get current step info
+                current_step_info = session.get_current_step()
+                current_step_name = current_step_info.get("step_name") if current_step_info else None
+                
                 sessions_info.append({
                     "session_id": session.session_id,
-                    "workflow_type": session.workflow_type,
-                    "command": session.command,
-                    "current_step": session.current_step,
-                    "created_at": session.created_at,
-                    "last_active": session.last_active
+                    "workflow_type": session.task_definition.get("workflow_type", "unknown"),
+                    "command": session.task_definition.get("command", ""),
+                    "current_step": current_step_name,
+                    "created_at": session.created_at.isoformat() if hasattr(session.created_at, 'isoformat') else str(session.created_at),
+                    "last_active": session.last_activity.isoformat() if hasattr(session.last_activity, 'isoformat') else str(session.last_activity)
                 })
         
         return {

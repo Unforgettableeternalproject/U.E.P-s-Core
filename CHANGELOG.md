@@ -1558,3 +1558,15 @@
 
 ---
 
+### Register SYS WORK_SYS providers and harden workflow handling; update tooling, UI, tests and docs. 10/26
+
+> Date: Sun, 26 Oct 2025 23:54:17 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `3d0501694db48299c639c10affd89bead56c4f1b`
+
+---
+

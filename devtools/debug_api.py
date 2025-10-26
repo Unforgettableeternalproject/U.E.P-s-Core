@@ -391,10 +391,23 @@ from .module_tests.tts_tests import (
     tts_emotion_variation_test, tts_interactive_synthesis, tts_streaming_test
 )
 
-# 測試 SYS 模組（尚未重構）
+# SYS 模組測試（已重構）
 from .module_tests.sys_tests import (
-    sys_list_functions, test_command_workflow, sys_test_functions,
-    sys_test_workflows, sys_list_test_workflows, test_file_workflow
+    # 測試工作流 (5)
+    sys_test_echo,
+    sys_test_countdown,
+    sys_test_data_collector,
+    sys_test_random_fail,
+    sys_test_tts,
+    # 檔案工作流 (3)
+    sys_test_file_read,
+    sys_test_file_archive,
+    sys_test_file_summarize,
+    # 管理功能 (4)
+    sys_test_list_workflows,
+    sys_test_active_workflows,
+    sys_test_workflow_status,
+    sys_test_cancel_workflow
 )
 
 # 創建包裝函數，自動傳遞 modules 參數
@@ -468,6 +481,55 @@ def nlp_analyze_context_queue_wrapper():
 def nlp_clear_contexts_wrapper():
     from .module_tests.nlp_tests import nlp_clear_contexts as nlp_clear_contexts_func
     return nlp_clear_contexts_func(modules)
+
+# SYS 模組包裝函數（新版工作流測試）
+def sys_test_echo_wrapper():
+    """SYS Echo 工作流測試"""
+    return sys_test_echo(modules)
+
+def sys_test_countdown_wrapper():
+    """SYS Countdown 工作流測試"""
+    return sys_test_countdown(modules)
+
+def sys_test_data_collector_wrapper():
+    """SYS Data Collector 工作流測試"""
+    return sys_test_data_collector(modules)
+
+def sys_test_random_fail_wrapper():
+    """SYS Random Fail 工作流測試"""
+    return sys_test_random_fail(modules)
+
+def sys_test_tts_wrapper():
+    """SYS TTS 工作流測試"""
+    return sys_test_tts(modules)
+
+def sys_test_file_read_wrapper():
+    """SYS 檔案讀取工作流測試"""
+    return sys_test_file_read(modules)
+
+def sys_test_file_archive_wrapper():
+    """SYS 智慧歸檔工作流測試"""
+    return sys_test_file_archive(modules)
+
+def sys_test_file_summarize_wrapper():
+    """SYS 摘要標籤工作流測試"""
+    return sys_test_file_summarize(modules)
+
+def sys_test_list_workflows_wrapper():
+    """列出所有可用的工作流"""
+    return sys_test_list_workflows(modules)
+
+def sys_test_active_workflows_wrapper():
+    """列出所有活躍的工作流"""
+    return sys_test_active_workflows(modules)
+
+def sys_test_workflow_status_wrapper(session_id: str = None):
+    """查詢工作流狀態"""
+    return sys_test_workflow_status(modules, session_id)
+
+def sys_test_cancel_workflow_wrapper(session_id: str = None):
+    """取消工作流"""
+    return sys_test_cancel_workflow(modules, session_id)
 
 # Frontend 模組包裝函數
 def show_desktop_pet_wrapper():
@@ -805,30 +867,6 @@ def tts_clear_queue_wrapper():
         return {"success": False, "error": str(e)}
 
 # SYS 模組包裝函數（尚未重構）
-def sys_list_functions_wrapper():
-    from .module_tests.sys_tests import sys_list_functions as sys_list_functions_func
-    return sys_list_functions_func(modules)
-
-def test_command_workflow_wrapper(command_text: str = "幫我整理和摘要桌面上的文件"):
-    from .module_tests.sys_tests import test_command_workflow as test_command_workflow_func
-    return test_command_workflow_func(modules, command_text)
-
-def sys_test_functions_wrapper(mode: int = 1, sub: int = 1):
-    from .module_tests.sys_tests import sys_test_functions as sys_test_functions_func
-    return sys_test_functions_func(modules, mode, sub)
-
-def sys_test_workflows_wrapper(workflow_type: int = 1):
-    from .module_tests.sys_tests import sys_test_workflows as sys_test_workflows_func
-    return sys_test_workflows_func(modules, workflow_type)
-
-def sys_list_test_workflows_wrapper():
-    from .module_tests.sys_tests import sys_list_test_workflows as sys_list_test_workflows_func
-    return sys_list_test_workflows_func(modules)
-
-def test_file_workflow_wrapper(workflow_type: str):
-    from .module_tests.sys_tests import test_file_workflow as test_file_workflow_func
-    return test_file_workflow_func(modules, workflow_type)
-
 # 整合測試包裝函數
 def test_stt_nlp_wrapper():
     from .module_tests.integration_tests import test_stt_nlp as test_stt_nlp_func
@@ -909,17 +947,19 @@ tts_test = tts_interactive_synthesis_wrapper  # 預設使用互動式測試
 tts_test_emotion = tts_emotion_variation_test_wrapper
 tts_test_stream = tts_streaming_test_wrapper
 
-# SYS 函數別名（匹配實際的函數名稱）
-sys_list_functions = sys_list_functions_wrapper
-test_command_workflow = test_command_workflow_wrapper
-sys_test_functions = sys_test_functions_wrapper
-sys_test_workflows = sys_test_workflows_wrapper
-sys_list_test_workflows = sys_list_test_workflows_wrapper
-test_file_workflow = test_file_workflow_wrapper
-# 為了向後兼容，添加一些常用的別名
-sys_test_resources = sys_list_functions_wrapper
-sys_test_performance = sys_test_functions_wrapper
-sys_test_cleanup = test_command_workflow_wrapper
+# SYS 測試別名（新版工作流測試）
+sys_test_echo = sys_test_echo_wrapper
+sys_test_countdown = sys_test_countdown_wrapper
+sys_test_data_collector = sys_test_data_collector_wrapper
+sys_test_random_fail = sys_test_random_fail_wrapper
+sys_test_tts = sys_test_tts_wrapper
+sys_test_file_read = sys_test_file_read_wrapper
+sys_test_file_archive = sys_test_file_archive_wrapper
+sys_test_file_summarize = sys_test_file_summarize_wrapper
+sys_test_list_workflows = sys_test_list_workflows_wrapper
+sys_test_active_workflows = sys_test_active_workflows_wrapper
+sys_test_workflow_status = sys_test_workflow_status_wrapper
+sys_test_cancel_workflow = sys_test_cancel_workflow_wrapper
 
 # 整合測試別名
 integration_test_SN = test_stt_nlp_wrapper

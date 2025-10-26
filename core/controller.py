@@ -61,6 +61,9 @@ class UnifiedController:
         from core.module_coordinator import module_coordinator
         self.module_coordinator = module_coordinator
         
+        # 模組註冊表引用（用於獲取模組實例）
+        self.module_registry = core_framework.module_registry if hasattr(core_framework, 'module_registry') else None
+        
         # 系統統計
         self.startup_time = None
         self.total_gs_sessions = 0

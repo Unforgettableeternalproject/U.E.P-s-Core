@@ -278,7 +278,7 @@ class UserAccessWidget(QWidget):
         self.title_label.setFont(QFont("Arial", 11, QFont.Bold))
         self.title_label.setStyleSheet("""
             QLabel {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #346ddb, stop:1 #4a7cdb);
+                background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #346ddb, stop:1 #4a7cdb);
                 color: white;
                 border-radius: 8px;
                 padding: 6px;
@@ -293,7 +293,7 @@ class UserAccessWidget(QWidget):
         self.toggle_button.clicked.connect(self.toggle_expanded)
         self.toggle_button.setStyleSheet("""
             QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #fafafa, stop:1 #e0e0e8);
+                background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #fafafa, stop:1 #e0e0e8);
                 color: #2d3142;
                 border: none;
                 border-radius: 8px;
@@ -301,10 +301,10 @@ class UserAccessWidget(QWidget):
                 font-size: 14px;
             }
             QPushButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #f0f0f5, stop:1 #dadade);
+                background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #f0f0f5, stop:1 #dadade);
             }
             QPushButton:pressed {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #e0e0e8, stop:1 #c0c0c8);
+                background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #e0e0e8, stop:1 #c0c0c8);
             }
         """)
         self._add_shadow(self.toggle_button)
@@ -329,17 +329,17 @@ class UserAccessWidget(QWidget):
             b.clicked.connect(lambda _=False, f=fid: self._emit_request(f))
             b.setStyleSheet("""
                 QPushButton {
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ffffff, stop:1 #f5f5fa);
-                    border: None;
+                    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ffffff, stop:1 #f5f5fa);
+                    border: none;
                     border-radius: 10px;
                     font-size: 18px;
                 }
                 QPushButton:hover {
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #f0f0f5, stop:1 #e6e6fa);
+                    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #f0f0f5, stop:1 #e6e6fa);
                     border-color: #346ddb;
                 }
                 QPushButton:pressed {
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #e0e0e8, stop:1 #c0c0c8);
+                    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #e0e0e8, stop:1 #c0c0c8);
                 }
             """)
             self._add_shadow(b)
@@ -433,7 +433,7 @@ class MainButton(QWidget):
 
         button.setStyleSheet(f"""
             QPushButton, QPushButton:hover, QPushButton:pressed{{
-                background: transparent;
+                background-color: transparent;
                 border: none;
                 padding: 0px;
                 border-radius: {d/2}px;
@@ -537,7 +537,7 @@ class MainButton(QWidget):
             QPushButton,
             QPushButton:hover,
             QPushButton:pressed {{
-                background: transparent;
+                background-color: transparent;
                 border: none;
                 border-radius: {size/2}px;
             }}
@@ -621,24 +621,30 @@ class MainButton(QWidget):
 
         b.setStyleSheet(f"""
             QPushButton {{
-                background: qlineargradient(x1:0, y1:1, x2:1, y2:0,
+                background-color: qlineargradient(
+                    x1:0, y1:1, x2:1, y2:0,
                     stop:0 rgba(201, 150, 20, 1),
-                    stop:1 rgba(0, 67, 173, 1));
-                    border-radius: {size/2}px;
-                    color: #fff;
-                    padding: 0px;
-                    border: none;
+                    stop:1 rgba(0, 67, 173, 1)
+                );
+                border-radius: {size/2}px;
+                color: #fff;
+                padding: 0px;
+                border: none;
             }}
             QPushButton:hover {{
-                background: qlineargradient(x1:0, y1:1, x2:1, y2:0,
+                background-color: qlineargradient(
+                    x1:0, y1:1, x2:1, y2:0,
                     stop:0 rgba(201, 150, 20, 0.75),
-                    stop:1 rgba(0, 67, 173, 0.75));
+                    stop:1 rgba(0, 67, 173, 0.75)
+                );
                 border: none;
             }}
             QPushButton:pressed {{
-                background: qlineargradient(x1:0, y1:1, x2:1, y2:0,
+                background-color: qlineargradient(
+                    x1:0, y1:1, x2:1, y2:0,
                     stop:0 rgba(201, 150, 20, 0.9),
-                    stop:1 rgba(0, 67, 173, 0.9));
+                    stop:1 rgba(0, 67, 173, 0.9)
+                );
                 border: none;
             }}
         """)
@@ -658,27 +664,34 @@ class MainButton(QWidget):
        
         b.setStyleSheet(f"""
             QPushButton {{
-                background: qlineargradient(x1:0, y1:1, x2:1, y2:0,
-                    stop:0 rgba(255, 174, 183,  1.00),      /* #ff4d4f */
-                    stop:1 rgba(255, 174, 183,  1.00);     /* #d9363e */
+                background-color: qlineargradient(
+                    x1:0, y1:1, x2:1, y2:0,
+                    stop:0 rgba(255, 174, 183, 1.0),
+                    stop:1 rgba(255, 174, 183, 1.0)
+                );
                 border-radius: {size/2}px;
                 color: #fff;
                 padding: 0px;
                 border: none;
             }}
             QPushButton:hover {{
-                background: qlineargradient(x1:0, y1:1, x2:1, y2:0,
-                    stop:0 rgba(255, 174, 183,  0.75),
-                    stop:1 rgba(255, 174, 183,  0.75);
+                background-color: qlineargradient(
+                    x1:0, y1:1, x2:1, y2:0,
+                    stop:0 rgba(255, 174, 183, 0.75),
+                    stop:1 rgba(255, 174, 183, 0.75)
+                );
                 border: none;
             }}
             QPushButton:pressed {{
-                background: qlineargradient(x1:0, y1:1, x2:1, y2:0,
-                    stop:0 rgba(255, 174, 183,  0.90),
-                    stop:1 rgba(255, 174, 183,  0.90);
+                background-color: qlineargradient(
+                    x1:0, y1:1, x2:1, y2:0,
+                    stop:0 rgba(255, 174, 183, 0.90),
+                    stop:1 rgba(255, 174, 183, 0.90)
+                );
                 border: none;
             }}
         """)
+
         b.clicked.connect(callback)
         return b
 

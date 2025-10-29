@@ -735,7 +735,7 @@ class MainButton(QWidget):
         self.expanded = not self.expanded
         self.is_pinned = self.expanded 
 
-        radius = 140
+        radius = 110
         angle_start = 240
         angle_step = 60
 

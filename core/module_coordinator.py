@@ -343,30 +343,38 @@ class ModuleInvocationCoordinator:
             return False
     
     def _transition_to_processing_layer(self, input_data: Dict[str, Any]) -> bool:
-        """輸入層 → 處理層轉換"""
+        """輸入層 → 處理層轉換
+        
+        重要架構設計：
+        - 不使用 Router（Router 依賴系統狀態，而狀態尚未轉換）
+        - 直接從 NLP 結果的 primary_intent 決定處理層路徑
+        - WORK → LLM + SYS, CHAT → MEM + LLM
+        """
         try:
             info_log("[ModuleCoordinator] 輸入層 → 處理層轉換")
             
-            # 通過Router決定處理層目標模組
-            from core.router import router
+            # 從 NLP 結果獲取主要意圖
             nlp_result = input_data.get('nlp_result', {})
-            user_text = input_data.get('input_data', {}).get('text', '')
+            primary_intent = nlp_result.get('primary_intent')
             
-            if not user_text:
-                debug_log(2, "[ModuleCoordinator] 無有效用戶文本，跳過處理層")
+            if not primary_intent:
+                debug_log(2, "[ModuleCoordinator] NLP 結果無主要意圖，跳過處理層")
                 return False
             
-            # 獲取路由決策
-            routing_decision = router.route_user_input(text=user_text, source_module="input_layer")
+            # 導入 IntentType 以進行判斷
+            from modules.nlp_module.intent_types import IntentType
             
-            if not routing_decision or not routing_decision.target_module:
-                debug_log(2, "[ModuleCoordinator] 無路由目標，跳過處理層調用")
-                return False
+            # 處理枚舉或字符串值
+            intent_value = primary_intent.value if hasattr(primary_intent, 'value') else primary_intent
+            intent_name = primary_intent.name if hasattr(primary_intent, 'name') else str(primary_intent)
             
-            info_log(f"[ModuleCoordinator] 處理層目標: {routing_decision.target_module}")
+            info_log(f"[ModuleCoordinator] 主要意圖: {intent_name} (value={intent_value})")
             
-            # 準備處理層調用請求
-            requests = self._prepare_processing_requests(routing_decision.target_module, input_data)
+            # 直接使用 primary_intent 作為 target（_prepare_processing_requests 會根據它決定路徑）
+            # 這裡傳入 intent_name 作為形式上的 target，實際路徑由 _prepare_processing_requests 決定
+            
+            # 準備處理層調用請求（根據 primary_intent 決定 WORK/CHAT 路徑）
+            requests = self._prepare_processing_requests(intent_name, input_data)
             
             # 執行處理層調用
             responses = self.invoke_multiple_modules(requests)
@@ -442,9 +450,19 @@ class ModuleInvocationCoordinator:
         nlp_result = input_data.get('nlp_result', {})
         primary_intent = nlp_result.get('primary_intent')
         
+        # 導入 IntentType 以進行正確的枚舉比較
+        from modules.nlp_module.intent_types import IntentType
+        
+        # 處理枚舉或字符串值
+        intent_value = primary_intent.value if hasattr(primary_intent, 'value') else primary_intent
+        intent_name = primary_intent.name if hasattr(primary_intent, 'name') else str(primary_intent)
+        
+        debug_log(2, f"[ModuleCoordinator] 準備處理層請求 - Intent: {intent_name} (value={intent_value})")
+        
         # 根據意圖決定處理層模組組合
-        if primary_intent == "chat":
+        if primary_intent == IntentType.CHAT or intent_value == "chat":
             # CHAT路徑：MEM + LLM
+            info_log("[ModuleCoordinator] CHAT 路徑: MEM + LLM")
             requests.extend([
                 ModuleInvocationRequest(
                     target_module="mem",
@@ -463,8 +481,9 @@ class ModuleInvocationCoordinator:
                     priority=3
                 )
             ])
-        elif primary_intent in ["command", "work"]:
-            # WORK路徑：LLM + SYS
+        elif primary_intent == IntentType.WORK or intent_value == "work":
+            # WORK路徑：LLM + SYS (不需要 MEM)
+            info_log("[ModuleCoordinator] WORK 路徑: LLM + SYS")
             requests.extend([
                 ModuleInvocationRequest(
                     target_module="llm",
@@ -485,11 +504,12 @@ class ModuleInvocationCoordinator:
             ])
         else:
             # 默認：使用主要目標
+            info_log(f"[ModuleCoordinator] 默認路徑: {primary_target}")
             requests.append(ModuleInvocationRequest(
                 target_module=primary_target,
                 input_data=self._prepare_module_input(primary_target, input_data),
                 source_module="input_layer",
-                reasoning=f"默認處理：{primary_intent}",
+                reasoning=f"默認處理：{intent_name}",
                 layer=ProcessingLayer.PROCESSING,
                 priority=3
             ))
@@ -513,13 +533,58 @@ class ModuleInvocationCoordinator:
         }
     
     def _prepare_llm_input(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
-        """準備LLM模組輸入"""
+        """準備LLM模組輸入
+        
+        重要架構設計：
+        - 第一次進入處理層 (cycle_index = 0)：從狀態上下文 (WorkflowSession) 獲取命令文本
+        - 第二次以後 (cycle_index > 0)：從 Router 獲取用戶回應文本
+        """
         nlp_result = input_data.get('nlp_result', {})
-        input_text = input_data.get('input_data', {}).get('text', '')
+        cycle_index = input_data.get('cycle_index', 0)
+        primary_intent = nlp_result.get('primary_intent')
+        
+        # 導入 IntentType 以進行判斷
+        from modules.nlp_module.intent_types import IntentType
+        intent_value = primary_intent.value if hasattr(primary_intent, 'value') else primary_intent
+        
+        # 判斷文本來源：第一次進入 WORK 狀態時，從 WorkflowSession 獲取命令
+        if (primary_intent == IntentType.WORK or intent_value == "work") and cycle_index == 0:
+            # 第一次進入 WORK 狀態：從 WorkflowSession.task_definition 獲取 command
+            try:
+                from core.sessions.session_manager import session_manager
+                
+                active_ws_ids = session_manager.get_active_workflow_session_ids()
+                if active_ws_ids:
+                    ws = session_manager.get_workflow_session(active_ws_ids[0])
+                    if ws and hasattr(ws, 'task_definition'):
+                        # ✅ 從狀態上下文獲取命令文本
+                        input_text = ws.task_definition.get('command', '')
+                        debug_log(2, f"[ModuleCoordinator] 第一次進入 WORK - 從 WS 獲取 command: {input_text[:50]}...")
+                    else:
+                        input_text = input_data.get('input_data', {}).get('text', '')
+                        debug_log(2, f"[ModuleCoordinator] WS 無 task_definition，使用 Router 文本")
+                else:
+                    input_text = input_data.get('input_data', {}).get('text', '')
+                    debug_log(2, f"[ModuleCoordinator] 無活躍 WS，使用 Router 文本")
+            except Exception as e:
+                error_log(f"[ModuleCoordinator] 從 WS 獲取 command 失敗: {e}")
+                input_text = input_data.get('input_data', {}).get('text', '')
+        else:
+            # 其他情況：從 Router 獲取文本（CHAT 路徑或 WORK 第二次以後）
+            input_text = input_data.get('input_data', {}).get('text', '')
+            if cycle_index > 0:
+                debug_log(2, f"[ModuleCoordinator] WORK cycle {cycle_index} - 從 Router 獲取用戶回應")
+        
+        # ✅ 根據 primary_intent 決定 LLM 模式
+        if primary_intent == IntentType.WORK or intent_value == "work":
+            llm_mode = "work"
+        else:
+            llm_mode = "chat"
         
         return {
             "text": input_text,
             "source": "three_layer_coordinator",
+            "mode": llm_mode,  # ✅ 添加 mode 參數，讓 LLM 知道是 WORK 還是 CHAT
             "conversation_type": nlp_result.get('primary_intent'),
             "user_input": input_text,
             "context": {
@@ -531,15 +596,49 @@ class ModuleInvocationCoordinator:
             "nlp_result": nlp_result,
             "identity": nlp_result.get('identity'),
             "intent": nlp_result.get('primary_intent'),
-            "confidence": nlp_result.get('overall_confidence', 0.0)
+            "confidence": nlp_result.get('overall_confidence', 0.0),
+            "cycle_index": cycle_index  # ✅ 傳遞 cycle_index 供 LLM 模組使用
         }
     
     def _prepare_sys_input(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
-        """準備SYS模組輸入"""
+        """準備SYS模組輸入
+        
+        重要架構設計：
+        - 第一次進入處理層 (cycle_index = 0)：從狀態上下文 (WorkflowSession) 獲取命令文本
+        - 第二次以後 (cycle_index > 0)：從 Router 獲取用戶回應文本
+        """
         nlp_result = input_data.get('nlp_result', {})
+        cycle_index = input_data.get('cycle_index', 0)
+        
+        # 判斷文本來源（與 LLM 使用相同邏輯）
+        if cycle_index == 0:
+            # 第一次進入：從 WorkflowSession 獲取命令
+            try:
+                from core.sessions.session_manager import session_manager
+                
+                active_ws_ids = session_manager.get_active_workflow_session_ids()
+                if active_ws_ids:
+                    ws = session_manager.get_workflow_session(active_ws_ids[0])
+                    if ws and hasattr(ws, 'task_definition'):
+                        # ✅ 從狀態上下文獲取命令文本
+                        input_text = ws.task_definition.get('command', '')
+                        debug_log(2, f"[ModuleCoordinator] 第一次進入 WORK - SYS 從 WS 獲取 command: {input_text[:50]}...")
+                    else:
+                        input_text = input_data.get('input_data', {}).get('text', '')
+                else:
+                    input_text = input_data.get('input_data', {}).get('text', '')
+            except Exception as e:
+                error_log(f"[ModuleCoordinator] SYS 從 WS 獲取 command 失敗: {e}")
+                input_text = input_data.get('input_data', {}).get('text', '')
+        else:
+            # 第二次以後：從 Router 獲取用戶回應
+            input_text = input_data.get('input_data', {}).get('text', '')
+            debug_log(2, f"[ModuleCoordinator] WORK cycle {cycle_index} - SYS 從 Router 獲取文本")
+        
         return {
-            "text": input_data.get('input_data', {}).get('text', ''),
+            "text": input_text,
             "source": "three_layer_coordinator",
+            "mode": "workflow",  # ✅ 添加 mode 參數，SYS 模組必需
             "operation": "workflow_execution",
             "system_context": {
                 "intent": nlp_result.get('primary_intent'),
@@ -547,7 +646,8 @@ class ModuleInvocationCoordinator:
                 "command_type": "work_task"
             },
             "timestamp": input_data.get('timestamp', time.time()),
-            "nlp_result": nlp_result
+            "nlp_result": nlp_result,
+            "cycle_index": cycle_index  # ✅ 傳遞 cycle_index 供 SYS 模組使用
         }
     
     def _prepare_output_input(self, processing_data: Dict[str, Any]) -> Dict[str, Any]:

@@ -216,8 +216,11 @@ def summarize_tag(file_path: str, tag_count: int = 3) -> dict:
                 from configs.config_loader import load_module_config
                 
                 config = load_module_config("llm_module")
+                # 禁用隱性快取，避免測試影響系統快取
+                if "use_prompt_caching" in config:
+                    config["use_prompt_caching"] = False
                 llm_module = LLMModule(config)
-                info_log(f"[file] 成功載入LLM模組")
+                info_log(f"[file] 成功載入LLM模組（測試模式，已禁用快取）")
             except ImportError as e:
                 info_log(f"[file] LLM模組未啟用或無法導入，將使用簡單摘要: {e}")
                 

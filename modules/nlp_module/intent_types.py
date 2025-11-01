@@ -2,8 +2,8 @@
 意圖類型定義和意圖分段數據結構
 
 用於 BIOS 標籤化的多意圖分段系統，支援：
-- 意圖類型枚舉（CHAT/DIRECT_WORK/BACKGROUND_WORK/CALL/COMPOUND）
-- 意圖分段數據結構
+- 意圖類型枚舉（CHAT/WORK/CALL/UNKNOWN/COMPOUND）
+- 意圖分段數據結構（WORK 使用 work_mode metadata 區分 direct/background）
 - 優先級計算
 """
 
@@ -16,23 +16,24 @@ class IntentType(Enum):
     """
     意圖類型枚舉 (BIOS Tagger 輸出標籤)
     
-    注意: COMPOUND 不是 BIOS 標籤，而是系統層級判斷。
-    當一個輸入包含多個意圖分段時，系統自動識別為複合意圖。
+    注意: 
+    - COMPOUND 不是 BIOS 標籤，而是系統層級判斷（當輸入包含多個意圖分段時）
+    - WORK 意圖使用 work_mode metadata 區分 direct/background 執行模式
+    - work_mode 僅影響 CS 場景下的中斷行為和優先級，不影響意圖類型本身
     """
-    CHAT = "chat"                      # 一般對話 (priority: 50)
-    DIRECT_WORK = "direct_work"        # 直接工作，可中斷 (priority: 100)
-    BACKGROUND_WORK = "background_work"  # 背景工作，排隊執行 (priority: 30)
-    CALL = "call"                      # 呼叫功能，不進佇列 (priority: 70)
-    UNKNOWN = "unknown"                # 未知意圖 (priority: 10)
+    CHAT = "chat"          # 一般對話
+    WORK = "work"          # 工作任務（使用 work_mode metadata 區分 direct/background）
+    CALL = "call"          # 呼叫功能，不進佇列
+    UNKNOWN = "unknown"    # 未知意圖
 
 
-# 意圖類型優先級映射 (用於 BIOS Tagger 輸出)
+# 意圖類型基礎優先級映射
+# 注意：WORK 的實際優先級由 work_mode 決定 (direct=100, background=30)
 INTENT_PRIORITY_MAP = {
-    IntentType.DIRECT_WORK: 100,      # 最高優先級，可中斷現有對話
-    IntentType.CALL: 70,              # 呼叫系統，不進入狀態佇列
-    IntentType.CHAT: 50,              # 普通對話，標準優先權
-    IntentType.BACKGROUND_WORK: 30,   # 背景工作，可排隊等待
-    IntentType.UNKNOWN: 10            # 未知意圖，最低優先級
+    IntentType.CALL: 70,     # 呼叫系統，不進入狀態佇列
+    IntentType.WORK: 50,     # 工作任務，基礎優先級（實際由 work_mode 覆蓋）
+    IntentType.CHAT: 50,     # 普通對話，標準優先權
+    IntentType.UNKNOWN: 10   # 未知意圖，最低優先級
 }
 
 
@@ -84,8 +85,8 @@ class IntentSegment:
         )
     
     def is_work_intent(self) -> bool:
-        """檢查是否為工作意圖（直接或背景）"""
-        return self.intent_type in [IntentType.DIRECT_WORK, IntentType.BACKGROUND_WORK]
+        """檢查是否為工作意圖"""
+        return self.intent_type == IntentType.WORK
     
     def is_chat_intent(self) -> bool:
         """檢查是否為對話意圖"""
@@ -137,14 +138,17 @@ def get_intent_priority(intent_type: IntentType) -> int:
     return INTENT_PRIORITY_MAP.get(intent_type, 10)
 
 
-def should_interrupt_chat(intent_type: IntentType) -> bool:
+def should_interrupt_chat(intent_type: IntentType, work_mode: Optional[str] = None) -> bool:
     """
     判斷該意圖類型是否應該中斷當前聊天
     
     Args:
         intent_type: 意圖類型
+        work_mode: 工作模式 ("direct" 或 "background")，僅當 intent_type 為 WORK 時需要
         
     Returns:
         bool: 是否應該中斷
     """
-    return intent_type == IntentType.DIRECT_WORK
+    if intent_type == IntentType.WORK:
+        return work_mode == "direct"
+    return False

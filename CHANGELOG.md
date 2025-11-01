@@ -1570,3 +1570,15 @@
 
 ---
 
+### Unify WORK intent flow and harden workflow/workflow-testing infra; enable SYS & debug. 11/1
+
+> Date: Sat, 01 Nov 2025 17:44:29 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `f9ca2bd91544548e4a867a2fa93d5d63e955a565`
+
+---
+

@@ -711,14 +711,15 @@ class UnifiedSessionManager:
                 gs_id = kwargs.get('gs_session_id') or (current_gs.session_id if current_gs else f"gs_{int(time.time())}")
                 
                 # 將 workflow_type 映射到正確的 WSTaskType（使用枚舉的 value）
+                # 注意：single_command 已棄用，所有工作都使用 workflow_automation
                 task_type_mapping = {
-                    'single_command': 'system_command',
+                    'single_command': 'workflow_automation',  # Legacy: 舊的單一指令現在也用工作流
                     'file_operation': 'file_operation', 
                     'workflow_automation': 'workflow_automation',
                     'module_integration': 'module_integration',
                     'custom_task': 'custom_task'
                 }
-                mapped_task_type = task_type_mapping.get(workflow_type, 'custom_task')
+                mapped_task_type = task_type_mapping.get(workflow_type, 'workflow_automation')
                 
                 return self.create_workflow_session(
                     gs_session_id=gs_id,

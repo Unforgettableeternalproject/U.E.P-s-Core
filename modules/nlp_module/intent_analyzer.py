@@ -36,11 +36,14 @@ class IntentAnalyzer:
         self.max_segments = config.get('max_segments', 5)
         self.min_segment_length = config.get('min_segment_length', 3)
         
-        # 意圖映射
+        # 意圖映射 (Stage 3 - deprecated, using Stage 4 IntentSegmenter now)
         self.bio_to_intent_map = {
             'CALL': IntentType.CALL,
             'CHAT': IntentType.CHAT,
-            'COMMAND': IntentType.COMMAND
+            'DIRECT_WORK': IntentType.WORK,
+            'BACKGROUND_WORK': IntentType.WORK,
+            'COMMAND': IntentType.WORK,  # Legacy fallback
+            'WORK': IntentType.WORK
         }
         
         info_log("[IntentAnalyzer] 意圖分析器初始化")

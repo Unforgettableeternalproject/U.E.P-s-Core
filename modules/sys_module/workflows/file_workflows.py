@@ -51,17 +51,42 @@ def create_drop_and_read_workflow(session: WorkflowSession) -> WorkflowEngine:
         workflow_type="drop_and_read",
         name="檔案讀取工作流程",
         description="讀取檔案內容並提供摘要",
-        workflow_mode=WorkflowMode.BACKGROUND,  # 檔案工作流使用背景模式
-        requires_llm_review=True,  # 啟用 LLM 審核
+        workflow_mode=WorkflowMode.DIRECT,  # 使用同步模式以支援 LLM 互動
+        requires_llm_review=False,  # 暫時禁用 LLM 審核（審核機制尚未實現）
         auto_advance_on_approval=True
     )
     
-    # 步驟1: 等待檔案路徑輸入
-    file_input_step = StepTemplate.create_input_step(
+    # 步驟1: 開啟檔案拖曳視窗並獲取檔案路徑（自動處理步驟）
+    def get_file_path_via_dropper(session):
+        """使用檔案拖曳視窗獲取檔案路徑"""
+        try:
+            from utils.debug_file_dropper import open_demo_window
+            
+            info_log("[Workflow] 開啟檔案拖曳視窗...")
+            file_path = open_demo_window()
+            
+            if not file_path:
+                return StepResult.failure("未提供檔案路徑")
+            
+            if not os.path.exists(file_path):
+                return StepResult.failure(f"檔案不存在: {file_path}")
+            
+            info_log(f"[Workflow] 已選擇檔案: {file_path}")
+            return StepResult.success(
+                f"使用者選擇了檔案: {Path(file_path).name}",
+                {"file_path_input": file_path}
+            )
+        except Exception as e:
+            error_log(f"[Workflow] 獲取檔案路徑失敗: {e}")
+            return StepResult.failure(f"獲取檔案路徑失敗: {e}")
+    
+    # 使用 processing step（需要 LLM 審核）
+    file_input_step = StepTemplate.create_processing_step(
         session,
         "file_path_input",
-        "請輸入要讀取的檔案路徑:",
-        validator=lambda path: (os.path.exists(path), f"檔案不存在: {path}") if path.strip() else (False, "請提供檔案路徑")
+        get_file_path_via_dropper,
+        required_data=None,
+        auto_advance=False  # 需要 LLM 審核後才能繼續
     )
     
     # 步驟2: 自動執行檔案讀取（自動步驟）
@@ -129,8 +154,8 @@ def create_intelligent_archive_workflow(session: WorkflowSession) -> WorkflowEng
         workflow_type="intelligent_archive",
         name="智慧歸檔工作流程",
         description="選擇要歸檔的檔案，可選目標資料夾，確認後執行歸檔",
-        workflow_mode=WorkflowMode.BACKGROUND,
-        requires_llm_review=True,
+        workflow_mode=WorkflowMode.DIRECT,  # 使用同步模式以支援 LLM 互動
+        requires_llm_review=False,  # 暫時禁用 LLM 審核（審核機制尚未實現）
         auto_advance_on_approval=True
     )
     
@@ -172,7 +197,7 @@ def create_intelligent_archive_workflow(session: WorkflowSession) -> WorkflowEng
         get_archive_confirmation_message,
         "確認歸檔",
         "取消歸檔",
-        ["file_selection", "target_dir_input"]
+        ["file_selection"]
     )
     
     # 步驟4: 執行歸檔
@@ -248,8 +273,8 @@ def create_summarize_tag_workflow(session: WorkflowSession) -> WorkflowEngine:
         workflow_type="summarize_tag",
         name="摘要標籤工作流程",
         description="等待使用者提供檔案路徑，可選標籤數量，確認後使用LLM生成摘要和標籤",
-        workflow_mode=WorkflowMode.BACKGROUND,
-        requires_llm_review=True,
+        workflow_mode=WorkflowMode.DIRECT,  # 使用同步模式以支援 LLM 互動
+        requires_llm_review=False,  # 暫時禁用 LLM 審核（審核機制尚未實現）
         auto_advance_on_approval=True
     )
     
@@ -267,6 +292,7 @@ def create_summarize_tag_workflow(session: WorkflowSession) -> WorkflowEngine:
         "tag_count_input",
         "請輸入要生成的標籤數量 (預設為3個，直接按Enter使用預設值):",
         validator=lambda count: (True, "") if not count.strip() else (count.strip().isdigit() and int(count.strip()) > 0, "標籤數量必須是正整數"),
+        required_data=["file_path_input"],
         optional=True
     )
     
@@ -284,7 +310,7 @@ def create_summarize_tag_workflow(session: WorkflowSession) -> WorkflowEngine:
         get_summary_confirmation_message,
         "確認生成摘要",
         "取消摘要",
-        ["file_path_input", "tag_count_input"]
+        ["file_path_input"]
     )
     
     # 步驟4: 執行摘要生成 (使用LLM內部調用)
@@ -423,4 +449,31 @@ def get_available_file_workflows() -> List[str]:
         "summarize_tag",
         "file_processing",
         "file_interaction"
+    ]
+
+
+def get_file_workflows_info() -> List[Dict[str, Any]]:
+    """Get detailed information about file workflows (for NLP querying)"""
+    return [
+        {
+            "workflow_type": "drop_and_read",
+            "name": "File Reading Workflow",
+            "description": "Read file content and provide summary",
+            "work_mode": "direct",  # Direct work - immediate execution
+            "keywords": ["read", "file", "content", "open", "view", "show", "display"],
+        },
+        {
+            "workflow_type": "intelligent_archive",
+            "name": "Intelligent Archive Workflow",
+            "description": "Archive files with intelligent organization",
+            "work_mode": "background",  # Background work - can be queued
+            "keywords": ["archive", "organize", "sort", "categorize", "files", "folder"],
+        },
+        {
+            "workflow_type": "summarize_tag",
+            "name": "Summarize and Tag Workflow",
+            "description": "Summarize file content and add tags",
+            "work_mode": "background",  # Background work - can be queued
+            "keywords": ["summarize", "tag", "label", "categorize", "metadata", "summary"],
+        }
     ]

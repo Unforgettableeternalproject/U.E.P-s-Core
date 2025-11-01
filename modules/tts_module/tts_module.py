@@ -364,11 +364,11 @@ class TTSModule(BaseModule):
         
         if should_chunk:
             result = loop.run_until_complete(
-                self._handle_streaming(text, inp.save, inp.character, inp.emotion_vector)
+                self._handle_streaming(text, inp.save, inp.save_name, character=inp.character, emotion_vector=inp.emotion_vector)
             )
         else:
             result = loop.run_until_complete(
-                self._handle_single(text, inp.save, inp.character, inp.emotion_vector)
+                self._handle_single(text, inp.save, inp.save_name, inp.character, inp.emotion_vector)
             )
         
         # TTS 作為輸出層完成後，通知系統進行循環結束檢查
@@ -380,6 +380,7 @@ class TTSModule(BaseModule):
         self, 
         text: str, 
         save: bool, 
+        save_name: Optional[str] = None,
         character: Optional[str] = None,
         emotion_vector: Optional[List[float]] = None
     ) -> dict:
@@ -427,7 +428,7 @@ class TTSModule(BaseModule):
             # 準備輸出路徑
             output_path = None
             if save:
-                output_path = os.path.join("outputs", "tts", f"uep_{uuid.uuid4().hex[:8]}.wav")
+                output_path = os.path.join("outputs", "tts", f"{save_name or f'uep_{uuid.uuid4().hex[:8]}'}.wav")
             else:
                 output_path = os.path.join("temp", "tts", f"temp_{uuid.uuid4().hex[:8]}.wav")
             
@@ -509,6 +510,7 @@ class TTSModule(BaseModule):
         self,
         text: str,
         save: bool,
+        save_name: Optional[str] = None,
         character: Optional[str] = None,
         emotion_vector: Optional[List[float]] = None
     ) -> dict:
@@ -662,7 +664,7 @@ class TTSModule(BaseModule):
                 
                 if buffers:
                     merged = np.concatenate(buffers, axis=0)
-                    output_path = os.path.join("outputs", "tts", f"uep_{uuid.uuid4().hex[:8]}.wav")
+                    output_path = os.path.join("outputs", "tts", f"{save_name or f'uep_{uuid.uuid4().hex[:8]}'}.wav")
                     sf.write(output_path, merged, sr)
                     info_log(f"[TTS] 已合併音頻到 {output_path}")
                     

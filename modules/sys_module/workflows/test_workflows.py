@@ -230,7 +230,7 @@ def create_data_collector_workflow(session: WorkflowSession, llm_module=None) ->
     name_step = StepTemplate.create_input_step(
         session,
         "name_input",
-        "歡迎參與資料收集測試，請輸入您的姓名:"
+        "【步驟 1/4】請輸入您的姓名（例如：張三）"
     )
     
     # 步驟 2: 收集年齡
@@ -244,8 +244,8 @@ def create_data_collector_workflow(session: WorkflowSession, llm_module=None) ->
     age_step = StepTemplate.create_input_step(
         session,
         "age_input",
-        "請輸入您的年齡:",
-        lambda x: (validate_age(x), "請輸入1-120之間的有效年齡"),
+        "【步驟 2/4】請輸入您的年齡（1-120之間的數字）",
+        lambda x: (validate_age(x), "❌ 年齡必須是 1-120 之間的數字，請重新輸入"),
         ["name_input"]
     )
     
@@ -253,7 +253,7 @@ def create_data_collector_workflow(session: WorkflowSession, llm_module=None) ->
     interests_step = StepTemplate.create_input_step(
         session,
         "interests_input",
-        "請輸入您的興趣，以逗號分隔多個興趣:",
+        "【步驟 3/4】請輸入您的興趣（多個興趣請用逗號分隔，例如：閱讀, 旅遊, 音樂）",
         required_data=["name_input", "age_input"]
     )
     
@@ -261,7 +261,7 @@ def create_data_collector_workflow(session: WorkflowSession, llm_module=None) ->
     feedback_step = StepTemplate.create_input_step(
         session,
         "feedback_input",
-        "請分享您對此測試的看法:",
+        "【步驟 4/4】請分享您對此工作流程測試的想法或建議",
         required_data=["name_input", "age_input", "interests_input"]
     )
     
@@ -728,7 +728,7 @@ TEST_WORKFLOWS = {
     "countdown": create_countdown_workflow,
     "data_collector": create_data_collector_workflow,
     "random_fail": create_random_fail_workflow,
-    "tts_test": create_tts_test_workflow,
+    # tts_test 已移除，TTS 模組已重構，應在 TTS 模組測試中直接測試
 }
 
 
@@ -752,8 +752,6 @@ def create_test_workflow(workflow_type: str, session: WorkflowSession, **kwargs)
     # 檢查工作流程是否需要特定參數
     if workflow_type == "data_collector":
         return workflow_factory(session, kwargs.get("llm_module"))
-    elif workflow_type == "tts_test":
-        return workflow_factory(session, kwargs.get("tts_module"))
     else:
         return workflow_factory(session)
 

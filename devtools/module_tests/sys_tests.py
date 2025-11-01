@@ -112,7 +112,7 @@ def sys_test_countdown(modules):
                     "mode": "continue_workflow",
                     "params": {
                         "session_id": session_id,
-                        "user_input": ""
+                        "user_input": None  # 不傳入輸入，只查詢狀態
                     }
                 })
                 print(".", end="", flush=True)
@@ -155,7 +155,14 @@ def sys_test_data_collector(modules):
 
         # 互動循環
         while result.get("requires_input"):
-            prompt = result.get("message", "請輸入")
+            # 優先使用 prompt（下一步的提示），如果沒有則使用 message
+            prompt = result.get("prompt") or result.get("message", "請輸入")
+            
+            # 如果有確認訊息（且與提示不同），先顯示它
+            message = result.get("message")
+            if message and message != prompt:
+                print(f"\n{message}")
+            
             user_input = input(f"{prompt}: ")
             
             result = sysmod.handle({
@@ -241,52 +248,8 @@ def sys_test_random_fail(modules):
         return {"success": False, "error": str(e)}
 
 
-def sys_test_tts(modules):
-    """測試 TTS 文字轉語音工作流程"""
-    sysmod = modules.get("sysmod")
-    if sysmod is None:
-        print("❌ SYS 模組未載入")
-        return {"success": False, "error": "SYS 模組未載入"}
-
-    print("\n🔊 測試 TTS 工作流程")
-    print("=" * 60)
-
-    try:
-        # 啟動 TTS 測試工作流程
-        result = sysmod.handle({
-            "mode": "start_workflow",
-            "params": {
-                "workflow_type": "tts_test",
-                "command": "測試文字轉語音",
-                "initial_data": {}
-            }
-        })
-
-        session_id = result.get("session_id")
-        print(f"✅ 工作流程已啟動 (ID: {session_id})")
-
-        # 互動循環
-        while result.get("requires_input"):
-            prompt = result.get("message", "請輸入")
-            user_input = input(f"{prompt}: ")
-            
-            result = sysmod.handle({
-                "mode": "continue_workflow",
-                "params": {
-                    "session_id": session_id,
-                    "user_input": user_input
-                }
-            })
-
-        if result.get("status") == "completed":
-            print(f"\n✅ TTS 測試完成！")
-            if "data" in result:
-                print(f"📊 結果: {result['data']}")
-            return {"success": True, "data": result.get("data")}
-
-    except Exception as e:
-        print(f"❌ 測試異常: {e}")
-        return {"success": False, "error": str(e)}
+# TTS 測試工作流已移除，TTS 模組已重構
+# 應在 TTS 模組測試 (devtools/module_tests/tts_tests.py) 中直接測試
 
 
 # ===== 檔案工作流程測試 =====

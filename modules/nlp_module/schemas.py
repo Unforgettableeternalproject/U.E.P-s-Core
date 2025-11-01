@@ -46,13 +46,11 @@ class UserProfile(BaseModel):
 # === 意圖分析系統 ===
 
 class IntentType(str, Enum):
-    """意圖類型 - 支援分段標籤"""
-    CALL = "call"                    # 呼叫UEP
-    CHAT = "chat"                    # 聊天對話
-    COMMAND = "command"              # 系統指令
-    COMPOUND = "compound"            # 複合指令
-    NON_SENSE = "non_sense"         # 無意義內容
-    UNKNOWN = "unknown"              # 未知意圖
+    """Intent types - matches intent_types.py IntentType"""
+    CALL = "call"                      # Call UEP
+    CHAT = "chat"                      # Chat conversation
+    WORK = "work"                      # Work task (use work_mode metadata for direct/background)
+    UNKNOWN = "unknown"                # Unknown intent
 
 
 class IntentSegment(BaseModel):

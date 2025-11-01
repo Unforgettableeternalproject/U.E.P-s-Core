@@ -1,6 +1,7 @@
 import os
 import time
 import asyncio
+from typing import List, Dict, Any, Optional
 
 import yaml
 from core.bases.module_base import BaseModule
@@ -91,7 +92,86 @@ class SYSModule(BaseModule):
             debug_log(2, "[SYS] 註冊提供者: workflow_status, function_registry")
             
         except Exception as e:
-            error_log(f"[SYS] ❌ 註冊協作管道提供者失敗: {e}")
+            # Don't fail initialization if LLM module is not available
+            debug_log(2, f"[SYS] ⚠️  協作管道提供者註冊跳過 (LLM 模組不可用): {e}")
+    
+    def query_function_info(self, query_text: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        """
+        Query available functions and their information (for NLP module)
+        
+        Args:
+            query_text: Text to search for relevant functions
+            top_k: Number of top results to return
+            
+        Returns:
+            List of function info dictionaries containing:
+            - name: Function name
+            - description: Function description
+            - work_mode: "direct" or "background"
+            - keywords: List of keywords
+            - relevance_score: Matching score (0-1)
+        """
+        try:
+            from .workflows.file_workflows import get_file_workflows_info
+            
+            results = []
+            query_lower = query_text.lower()
+            query_words = set(query_lower.split())  # Split into words for better matching
+            
+            # Get all workflow information
+            all_workflows = get_file_workflows_info()
+            
+            # Search and score workflows
+            for wf_info in all_workflows:
+                workflow_name = wf_info.get('workflow_type', '')
+                description = wf_info.get('description', '')
+                work_mode = wf_info.get('work_mode', 'direct')
+                keywords = wf_info.get('keywords', [])
+                
+                # Calculate relevance score
+                score = 0.0
+                matched_keywords = []
+                
+                # Check name match (highest priority)
+                if query_lower in workflow_name.lower():
+                    score += 0.5
+                
+                # Check description match
+                if query_lower in description.lower():
+                    score += 0.3
+                
+                # Check keyword matches (word-level matching)
+                for keyword in keywords:
+                    keyword_lower = keyword.lower()
+                    # Match if keyword appears in query or query word matches keyword
+                    if keyword_lower in query_lower or any(word in keyword_lower or keyword_lower in word for word in query_words):
+                        score += 0.15
+                        matched_keywords.append(keyword)
+                
+                # Cap score at 1.0
+                score = min(score, 1.0)
+                
+                if score > 0:
+                    debug_log(3, f"[SYS] Matched workflow: {workflow_name} (score={score:.2f}, keywords={matched_keywords})")
+                    results.append({
+                        'name': workflow_name,
+                        'description': description,
+                        'work_mode': work_mode,
+                        'keywords': keywords,
+                        'relevance_score': score
+                    })
+            
+            # Sort by relevance and return top K
+            results.sort(key=lambda x: x['relevance_score'], reverse=True)
+            top_results = results[:top_k]
+            
+            debug_log(2, f"[SYS] Query '{query_text}' found {len(results)} matches, top score: {top_results[0]['relevance_score']:.2f} ({top_results[0]['name']})" if top_results else "[SYS] No matches found")
+            
+            return top_results
+            
+        except Exception as e:
+            error_log(f"[SYS] Query function info failed: {e}")
+            return []
     
     def _provide_workflow_status(self, **kwargs):
         """提供當前工作流狀態給 LLM"""
@@ -296,6 +376,12 @@ class SYSModule(BaseModule):
         else:
             raise ValueError(f"無效的會話創建結果: {type(session_result)}")
         
+        # 將 initial_data 添加到 session 的 workflow_data 中（用於測試模式等特殊需求）
+        if initial_data:
+            for key, value in initial_data.items():
+                session.add_data(key, value)
+            debug_log(2, f"[SYS] 已將 initial_data 添加到 session: {list(initial_data.keys())}")
+        
         try:
             # Determine workflow engine based on type
             engine = None
@@ -304,28 +390,20 @@ class SYSModule(BaseModule):
             if workflow_type in ["echo", "countdown", "data_collector", "random_fail", "tts_test"]:
                 # Get required modules for test workflows
                 llm_module = None
-                tts_module = None
                 
                 try:
                     from modules.llm_module.llm_module import LLMModule
                     from configs.config_loader import load_module_config
                     config = load_module_config("llm_module")
+                    # 禁用隱性快取，避免測試影響系統快取
+                    if "use_prompt_caching" in config:
+                        config["use_prompt_caching"] = False
                     llm_module = LLMModule(config)
-                    debug_log(2, f"[SYS] 已獲取LLM模組實例")
+                    debug_log(2, f"[SYS] 已獲取LLM模組實例（測試模式，已禁用快取）")
                 except Exception as e:
                     debug_log(2, f"[SYS] 無法獲取LLM模組: {e}")
-                    
-                if workflow_type == "tts_test":
-                    try:
-                        from modules.tts_module.tts_module import TTSModule
-                        from configs.config_loader import load_module_config
-                        config = load_module_config("tts_module")
-                        tts_module = TTSModule(config)
-                        debug_log(2, f"[SYS] 已獲取TTS模組實例")
-                    except Exception as e:
-                        debug_log(2, f"[SYS] 無法獲取TTS模組: {e}")
                 
-                engine = create_test_workflow(workflow_type, session, llm_module=llm_module, tts_module=tts_module)
+                engine = create_test_workflow(workflow_type, session, llm_module=llm_module)
                 
             # File workflows
             elif workflow_type in ["file_processing", "file_interaction"]:
@@ -413,6 +491,43 @@ class SYSModule(BaseModule):
             # Store engine separately and register session in SessionManager
             self.workflow_engines[session_id] = engine
             # Session is already registered in SessionManager via create_session
+            
+            # Check if first step is auto-processing step - if so, execute it immediately
+            current_step = engine.get_current_step()
+            if current_step and current_step.step_type == current_step.STEP_TYPE_PROCESSING:
+                # Auto-process first step
+                debug_log(2, f"[SYS] 第一步是處理步驟，立即執行")
+                result = engine.process_input(None)
+                
+                # Check if workflow needs LLM review
+                if engine.is_awaiting_llm_review():
+                    return {
+                        "status": "success",
+                        "session_id": session_id,
+                        "requires_llm_review": True,
+                        "message": result.message,
+                        "data": result.data,
+                        "llm_review_data": result.llm_review_data
+                    }
+                
+                # Check if completed
+                if result.complete:
+                    self.session_manager.end_session(session_id, reason="completed")
+                    del self.workflow_engines[session_id]
+                    return {
+                        "status": "completed",
+                        "message": result.message,
+                        "data": result.data
+                    }
+                
+                # Check if failed
+                if not result.success:
+                    self.session_manager.end_session(session_id, reason=f"failed: {result.message}")
+                    del self.workflow_engines[session_id]
+                    return {
+                        "status": "error",
+                        "message": result.message
+                    }
             
             # Get initial prompt
             prompt = engine.get_prompt()
@@ -605,17 +720,56 @@ class SYSModule(BaseModule):
                 "message": f"找不到工作流程會話 ID: {session_id}"
             }
         
-        # Convert to dict for output
-        session_data = session.to_dict()
+        # Check if we have an engine for this session
+        engine = self.workflow_engines.get(session_id)
         
-        # Get current step info
-        current_step_info = session.get_current_step()
-        current_step_name = current_step_info.get("step_name", "N/A") if current_step_info else "無"
+        if not engine:
+            # No engine means workflow is not active or completed
+            return {
+                "status": "error",
+                "message": f"找不到工作流程引擎 ID: {session_id}"
+            }
         
+        # Check if workflow is waiting for LLM review
+        if engine.is_awaiting_llm_review():
+            pending_result = engine.pending_review_result
+            return {
+                "status": "waiting_for_llm_review",
+                "session_id": session_id,
+                "requires_llm_review": True,
+                "message": pending_result.message if pending_result else "等待 LLM 審核",
+                "data": pending_result.data if pending_result else {},
+                "llm_review_data": pending_result.llm_review_data if pending_result else {}
+            }
+        
+        # Check current step
+        current_step = engine.get_current_step()
+        
+        if not current_step:
+            # Workflow completed
+            return {
+                "status": "completed",
+                "session_id": session_id,
+                "message": "工作流程已完成"
+            }
+        
+        # Check if step requires input
+        if current_step.step_type == current_step.STEP_TYPE_INTERACTIVE:
+            prompt = engine.get_prompt()
+            return {
+                "status": "waiting_for_input",
+                "session_id": session_id,
+                "requires_input": True,
+                "prompt": prompt,
+                "message": f"等待使用者輸入: {prompt}"
+            }
+        
+        # Workflow is running
         return {
-            "status": "success",
-            "data": session_data,
-            "message": f"工作流程狀態: {session.status.value}, 當前步驟: {current_step_name}"
+            "status": "running",
+            "session_id": session_id,
+            "current_step": current_step.id,
+            "message": f"工作流程執行中，當前步驟: {current_step.id}"
         }
     
     def _list_active_workflows(self):

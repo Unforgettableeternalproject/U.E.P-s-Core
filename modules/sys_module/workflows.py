@@ -576,6 +576,7 @@ class WorkflowEngine:
         self.llm_review_timeout = 60  # LLM 審核超時時間（秒）
         self.awaiting_llm_review = False  # 是否正在等待 LLM 審核
         self.pending_review_result: Optional[StepResult] = None  # 待審核的步驟結果
+        self.waiting_for_input = False  # 是否正在等待用戶輸入（防止重複請求）
         
         # 驗證工作流程定義
         is_valid, error = self.definition.validate()
@@ -734,9 +735,21 @@ class WorkflowEngine:
             return StepResult.complete_workflow("工作流程已完成")
         
         # 階段三：如果是 Interactive 步驟且沒有提供輸入，發布事件請求輸入
-        if current_step.step_type == current_step.STEP_TYPE_INTERACTIVE and user_input is None:
+        # 注意：空字符串也視為無效輸入
+        if current_step.step_type == current_step.STEP_TYPE_INTERACTIVE and not user_input:
+            # 如果已經在等待輸入，不要重複請求，直接返回當前提示
+            if self.waiting_for_input:
+                return StepResult(
+                    success=False,
+                    message=current_step.get_prompt(),
+                    data={"requires_input": True, "step_id": current_step.id, "already_waiting": True}
+                )
+            
             try:
                 from core.event_bus import event_bus, SystemEvent
+                
+                # 設置等待輸入標記
+                self.waiting_for_input = True
                 
                 # 發布工作流需要輸入事件
                 event_bus.publish(
@@ -769,7 +782,11 @@ class WorkflowEngine:
         if not is_valid:
             return StepResult.failure(error)
             
-        # 執行步驟
+        # 執行步驟（有實際輸入時，重置等待標記）
+        # 注意：空字符串不視為有效輸入
+        if user_input:
+            self.waiting_for_input = False
+            
         try:
             result = current_step.execute(user_input)
             

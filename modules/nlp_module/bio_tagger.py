@@ -339,16 +339,28 @@ class EnhancedIntentAnalyzer:
                 for segment in segments:
                     from modules.nlp_module.schemas import IntentSegment, IntentType
                     
-                    # 映射intent類型（Stage 4 更新）
+                    # 映射intent類型（統一為 WORK，使用 work_mode 區分）
                     intent_mapping = {
                         'call': IntentType.CALL,
                         'chat': IntentType.CHAT,
-                        'direct_work': IntentType.DIRECT_WORK,
-                        'background_work': IntentType.BACKGROUND_WORK,
+                        'direct_work': IntentType.WORK,
+                        'background_work': IntentType.WORK,
                         'unknown': IntentType.UNKNOWN
                     }
                     
+                    # work_mode 映射（僅用於 WORK 類型）
+                    work_mode_mapping = {
+                        'direct_work': 'direct',
+                        'background_work': 'background'
+                    }
+                    
                     intent_type = intent_mapping.get(segment['intent'], IntentType.UNKNOWN)
+                    work_mode = work_mode_mapping.get(segment['intent'])
+                    
+                    # 構建 metadata
+                    metadata = {}
+                    if work_mode:
+                        metadata['work_mode'] = work_mode
                     
                     intent_seg = IntentSegment(
                         text=segment['text'],
@@ -356,7 +368,8 @@ class EnhancedIntentAnalyzer:
                         confidence=segment['confidence'],
                         start_pos=segment['start_pos'],
                         end_pos=segment['end_pos'],
-                        entities=[]  # 可以進一步整合實體識別
+                        entities=[],  # 可以進一步整合實體識別
+                        metadata=metadata
                     )
                     
                     intent_segments.append(intent_seg)

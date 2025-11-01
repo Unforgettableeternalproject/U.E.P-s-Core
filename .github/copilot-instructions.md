@@ -12,6 +12,7 @@ Main priorities: correctness, modularity, stability, and respect for existing na
   - Especially avoid suffixes like `V2`, `V3`, etc. unless explicitly instructed.  
 - **Always** gather enough context before analyzing or modifying code.  
   - Read surrounding files/functions to understand how parts interact.  
+  - **If needed, and I strongly recommend it, check the logs folder for the latest logs for more context, the format is full-"timestamped".log.**
 - **Every time you suggest terminal commands**, prepend instructions to activate the Python virtual environment first (since each session starts fresh). Example:  
 ```bash
   source venv/bin/activate   # Linux/macOS

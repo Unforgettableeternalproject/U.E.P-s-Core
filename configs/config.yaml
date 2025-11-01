@@ -4,7 +4,7 @@ modules_enabled:
   mem_module: true
   llm_module: true
   tts_module: true
-  sys_module: false
+  sys_module: true
   ui_module: true
   ani_module: true
   mov_module: true
@@ -14,7 +14,7 @@ modules_refactored:
   mem_module: true
   llm_module: true
   tts_module: true
-  sys_module: false
+  sys_module: true
   ui_module: false
   ani_module: false
   mov_module: false
@@ -24,7 +24,7 @@ logging:
   log_dir: logs
   enable_split_logs: false
 debug:
-  enabled: false
+  enabled: true
   debug_level: 3
 system:
   main_loop_interval: 0.1

@@ -160,6 +160,8 @@ def tts_interactive_synthesis(modules):
         save_input = input("\n💾 是否儲存音檔? (y/n, 預設: n):\n> ").strip().lower()
         save = save_input in ["y", "yes"]
         
+        save_name = input("\n📁 請輸入儲存檔名 (不含副檔名, 或直接 Enter 使用預設名稱):\n> ").strip()
+        
         # 4. 執行合成
         print("\n🎙️  開始合成...")
         start_time = time.perf_counter()
@@ -168,7 +170,8 @@ def tts_interactive_synthesis(modules):
             result = tts.handle({
                 "text": text,
                 "emotion_vector": emotion_vector,
-                "save": save
+                "save": save,
+                "save_name": save_name if save_name else None
             })
             
             end_time = time.perf_counter()

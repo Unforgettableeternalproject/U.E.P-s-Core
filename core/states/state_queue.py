@@ -242,14 +242,17 @@ class StateQueueManager:
     
     def _map_intent_to_workflow_type(self, intent_type: str) -> str:
         """將意圖類型映射為工作流程類型"""
+        # 所有 WORK 狀態都使用工作流方式執行，不再有 single_command
         mapping = {
-            'command': 'single_command',
+            'command': 'workflow_automation',
             'compound': 'workflow_automation',
             'query': 'workflow_automation',
-            'file_operation': 'file_processing',
-            'system_command': 'single_command'
+            'file_operation': 'workflow_automation',
+            'system_command': 'workflow_automation',
+            'direct_work': 'workflow_automation',
+            'background_work': 'workflow_automation'
         }
-        return mapping.get(intent_type.lower(), 'single_command')
+        return mapping.get(intent_type.lower(), 'workflow_automation')
     
     def _handle_work_completion(self, queue_item: StateQueueItem, success: bool):
         """處理 WORK 狀態完成"""
@@ -375,6 +378,86 @@ class StateQueueManager:
         debug_log(4, f"[StateQueue] 上下文內容: {context_content or trigger_content}")
         
         # 保存佇列
+        self._save_queue()
+        
+        # ✅ 如果當前是 IDLE 狀態，自動處理下一個狀態
+        if self.current_state == UEPState.IDLE and not self.current_item:
+            debug_log(2, "[StateQueue] 當前 IDLE，自動處理下一個狀態")
+            self.process_next_state()
+        
+        return True
+    
+    def process_next_state(self):
+        """處理佇列中的下一個狀態"""
+        try:
+            # 檢查是否有待處理狀態
+            if not self.queue:
+                debug_log(3, "[StateQueue] 佇列為空，無狀態需要處理")
+                return
+            
+            # 檢查當前是否正在處理狀態
+            if self.current_item is not None:
+                debug_log(3, f"[StateQueue] 正在處理 {self.current_state.value}，等待完成")
+                return
+            
+            # 取出最高優先級的狀態
+            next_item = self.queue.pop(0)
+            self.current_item = next_item
+            self.current_state = next_item.state
+            next_item.started_at = datetime.now()
+            
+            info_log(f"[StateQueue] 開始處理狀態: {next_item.state.value} (優先級: {next_item.priority})")
+            
+            # 保存狀態
+            self._save_queue()
+            
+            # 調用狀態處理器
+            handler = self.state_handlers.get(next_item.state)
+            if handler:
+                handler(next_item)
+            else:
+                error_log(f"[StateQueue] 沒有註冊 {next_item.state.value} 的處理器")
+                self.complete_current_state(success=False, result_data={"error": "No handler registered"})
+            
+        except Exception as e:
+            error_log(f"[StateQueue] 處理下一個狀態失敗: {e}")
+            if self.current_item:
+                self.complete_current_state(success=False, result_data={"error": str(e)})
+    
+    def complete_current_state(self, success: bool = True, result_data: Optional[Dict[str, Any]] = None):
+        """完成當前狀態處理"""
+        if self.current_item is None:
+            debug_log(3, "[StateQueue] 沒有正在處理的狀態")
+            return
+        
+        self.current_item.completed_at = datetime.now()
+        info_log(f"[StateQueue] 完成狀態: {self.current_state.value} ({'成功' if success else '失敗'})")
+        
+        # 調用完成處理器
+        completion_handler = self.completion_handlers.get(self.current_state)
+        if completion_handler:
+            completion_handler(self.current_item, success, result_data or {})
+        
+        # 重置當前狀態
+        self.current_item = None
+        self.current_state = UEPState.IDLE
+        
+        # 保存並繼續處理下一個
+        self._save_queue()
+        
+        # ✅ 自動處理下一個狀態
+        if self.queue:
+            debug_log(2, f"[StateQueue] 還有 {len(self.queue)} 個待處理狀態，繼續處理")
+            self.process_next_state()
+        else:
+            debug_log(2, "[StateQueue] 佇列已空，回到 IDLE")
+    
+    def _old_get_queue_status(self) -> Dict[str, Any]:
+        """舊版本的 get_queue_status (已被新版本取代)"""
+        # 確保如果沒有正在執行的項目，狀態應該是IDLE
+        if self.current_item is None and self.current_state != UEPState.IDLE:
+            debug_log(4, f"[StateQueue] 修正狀態：沒有執行項目但狀態不是IDLE，從 {self.current_state.value} 修正為 IDLE")
+            self.current_state = UEPState.IDLE
         self._save_queue()
         
         return True

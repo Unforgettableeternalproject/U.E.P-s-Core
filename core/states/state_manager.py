@@ -189,13 +189,14 @@ class StateManager:
             
             queue_callback = (context or {}).get("state_queue_callback")
             
-            # 從上下文獲取工作流程信息
-            workflow_type = "single_command"
-            command = "unknown command"
+            # 從上下文獲取工作流程信息（預設使用工作流自動化）
+            workflow_type = "workflow_automation"
+            command_text = "unknown command"
             
             if context:
                 workflow_type = context.get("workflow_type", workflow_type)
-                command = context.get("command", command)
+                # ✅ 從 NLP 分段提取的對應狀態文本
+                command_text = context.get("text", command_text)
             
             # 獲取現有的 General Session - 如果不存在則為架構錯誤
             current_gs = session_manager.get_current_general_session()
@@ -212,7 +213,7 @@ class StateManager:
                 gs_session_id=gs_id,
                 task_type=workflow_type,
                 task_definition={
-                    "command": command,
+                    "command": command_text,  # ✅ 來自 NLP 分段的 WORK 意圖文本
                     "initial_data": context or {}
                 }
             )
@@ -222,7 +223,7 @@ class StateManager:
                 debug_log(2, f"[StateManager] 創建工作會話成功: {ws_id} (類型: {workflow_type})")
                 
                 if callable(queue_callback):
-                    queue_callback(ws_id, True, {"accepted": True, "workflow_type": workflow_type, "command": command})
+                    queue_callback(ws_id, True, {"accepted": True, "workflow_type": workflow_type, "command": command_text})
             else:
                 debug_log(1, "[StateManager] 創建工作會話失敗")
                 

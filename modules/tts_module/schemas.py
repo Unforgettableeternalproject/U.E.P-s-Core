@@ -5,6 +5,7 @@ class TTSInput(BaseModel):
     text: str = Field(..., description="Text content to synthesize")
     mood: Optional[str] = Field(None, description="Emotional mood for the voice (deprecated, for backward compatibility)")
     save: bool = Field(False, description="Whether to save the output audio file")
+    save_name: Optional[str] = Field(None, description="Filename to save the audio as (if saving)")
     force_chunking: Optional[bool] = Field(False, description="Force chunking even for short text")
     character: Optional[str] = Field(None, description="Character to use for TTS (None = use default)")
     emotion_vector: Optional[List[float]] = Field(None, description="8D emotion vector [happy, angry, sad, afraid, disgusted, melancholic, surprised, calm]. None = derive from Status Manager")

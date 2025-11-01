@@ -2,7 +2,7 @@
 意圖分段器 - 整合 BIOS Tagger 實現多意圖分段
 
 基於訓練好的 BIOS Tagger 模型，將使用者輸入分段為多個意圖片段。
-支援 5 種意圖類型：CALL, CHAT, DIRECT_WORK, BACKGROUND_WORK, UNKNOWN
+支援 4 種意圖類型：CALL, CHAT, WORK (含 work_mode metadata), UNKNOWN
 """
 
 from typing import List, Optional
@@ -59,25 +59,48 @@ class IntentSegmenter:
         
         # 轉換為 IntentSegment 格式
         intent_segments = []
+        
+        # Intent 映射（將 direct_work/background_work 統一為 WORK）
+        intent_mapping = {
+            'call': IntentType.CALL,
+            'chat': IntentType.CHAT,
+            'direct_work': IntentType.WORK,
+            'background_work': IntentType.WORK,
+            'unknown': IntentType.UNKNOWN
+        }
+        
+        # work_mode 映射（區分 WORK 的執行模式）
+        work_mode_mapping = {
+            'direct_work': 'direct',
+            'background_work': 'background'
+        }
+        
         for seg in segments_raw:
             # 映射 intent 字符串到 IntentType
-            intent_str = seg['intent'].upper()
-            try:
-                intent_type = IntentType[intent_str]
-            except KeyError:
+            intent_str = seg['intent'].lower()
+            intent_type = intent_mapping.get(intent_str, IntentType.UNKNOWN)
+            
+            if intent_type == IntentType.UNKNOWN and intent_str not in intent_mapping:
                 debug_log(2, f"[IntentSegmenter] 未知意圖類型: {intent_str}，使用 UNKNOWN")
-                intent_type = IntentType.UNKNOWN
+            
+            # 構建 metadata
+            metadata = {
+                'start_pos': seg.get('start_pos', 0),
+                'end_pos': seg.get('end_pos', len(seg['text'])),
+                'model': 'bio_tagger'
+            }
+            
+            # 如果是 WORK 類型，添加 work_mode
+            work_mode = work_mode_mapping.get(intent_str)
+            if work_mode:
+                metadata['work_mode'] = work_mode
             
             # 創建 IntentSegment
             intent_segment = IntentSegment(
                 segment_text=seg['text'],
                 intent_type=intent_type,
                 confidence=seg.get('confidence', 0.9),
-                metadata={
-                    'start_pos': seg.get('start_pos', 0),
-                    'end_pos': seg.get('end_pos', len(seg['text'])),
-                    'model': 'bio_tagger'
-                }
+                metadata=metadata
             )
             
             intent_segments.append(intent_segment)
@@ -144,12 +167,7 @@ class IntentSegmenter:
         except Exception as e:
             error_log(f"[IntentSegmenter] 模型載入異常: {e}")
             return False
-            return self.model_loaded
-            
-        except Exception as e:
-            error_log(f"[IntentSegmenter] 模型載入異常: {e}")
-            return False
-    
+        
     def update_confidence_threshold(self, threshold: float):
         """
         更新置信度閾值

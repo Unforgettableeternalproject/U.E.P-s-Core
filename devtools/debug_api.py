@@ -4,7 +4,10 @@ from core.registry import get_module
 from configs.config_loader import load_config
 from utils.debug_helper import debug_log, info_log, error_log
 # 導入整合測試
-from .module_tests.integration_tests import test_stt_nlp
+from .module_tests.integration_tests import (
+    test_system_loop_integration,
+    test_single_file_workflow
+)
 # 暫時註解掉這個導入，等相關文件創建後再啟用
 # from .module_tests.extra_tests import test_chunk_and_summarize, test_uep_chatting
 
@@ -46,15 +49,19 @@ def _initialize_modules():
         # 舊版模式：預先載入所有模組（但排除UI相關模組，避免終端測試時的問題）
         info_log("[Controller] 初始化：預先載入模組（終端模式，排除UI）")
         
-        # 模組列表（終端模式排除UI相關模組）
-        module_names = ["stt_module", "nlp_module", "mem_module", "llm_module", 
-                        "tts_module", "sys_module"]
-        # 不載入UI相關模組：ui_module, ani_module, mov_module
+        # 模組名稱映射：full_name -> short_name
+        module_mapping = {
+            "stt_module": "stt",
+            "nlp_module": "nlp",
+            "mem_module": "mem",
+            "llm_module": "llm",
+            "tts_module": "tts",
+            "sys_module": "sysmod"  # 注意：sys_module 映射到 sysmod 而不是 sys
+        }
         
         # 清空並重新載入模組字典
         modules.clear()
-        for full_name in module_names:
-            short_name = full_name.split('_')[0]
+        for full_name, short_name in module_mapping.items():
             module_instance = safe_get_module(full_name)
             modules[short_name] = module_instance
             
@@ -392,23 +399,7 @@ from .module_tests.tts_tests import (
 )
 
 # SYS 模組測試（已重構）
-from .module_tests.sys_tests import (
-    # 測試工作流 (5)
-    sys_test_echo,
-    sys_test_countdown,
-    sys_test_data_collector,
-    sys_test_random_fail,
-    sys_test_tts,
-    # 檔案工作流 (3)
-    sys_test_file_read,
-    sys_test_file_archive,
-    sys_test_file_summarize,
-    # 管理功能 (4)
-    sys_test_list_workflows,
-    sys_test_active_workflows,
-    sys_test_workflow_status,
-    sys_test_cancel_workflow
-)
+# 注意：不在這裡頂層導入，而是在 wrapper 函數內部導入以避免名稱衝突
 
 # 創建包裝函數，自動傳遞 modules 參數
 
@@ -485,51 +476,48 @@ def nlp_clear_contexts_wrapper():
 # SYS 模組包裝函數（新版工作流測試）
 def sys_test_echo_wrapper():
     """SYS Echo 工作流測試"""
-    return sys_test_echo(modules)
+    from .module_tests.sys_tests import sys_test_echo as sys_test_echo_func
+    return sys_test_echo_func(modules)
 
 def sys_test_countdown_wrapper():
     """SYS Countdown 工作流測試"""
-    return sys_test_countdown(modules)
+    from .module_tests.sys_tests import sys_test_countdown as sys_test_countdown_func
+    return sys_test_countdown_func(modules)
 
 def sys_test_data_collector_wrapper():
     """SYS Data Collector 工作流測試"""
-    return sys_test_data_collector(modules)
+    from .module_tests.sys_tests import sys_test_data_collector as sys_test_data_collector_func
+    return sys_test_data_collector_func(modules)
 
 def sys_test_random_fail_wrapper():
     """SYS Random Fail 工作流測試"""
-    return sys_test_random_fail(modules)
+    from .module_tests.sys_tests import sys_test_random_fail as sys_test_random_fail_func
+    return sys_test_random_fail_func(modules)
 
-def sys_test_tts_wrapper():
-    """SYS TTS 工作流測試"""
-    return sys_test_tts(modules)
+# TTS 測試工作流已移除，TTS 模組已重構
 
-def sys_test_file_read_wrapper():
-    """SYS 檔案讀取工作流測試"""
-    return sys_test_file_read(modules)
-
-def sys_test_file_archive_wrapper():
-    """SYS 智慧歸檔工作流測試"""
-    return sys_test_file_archive(modules)
-
-def sys_test_file_summarize_wrapper():
-    """SYS 摘要標籤工作流測試"""
-    return sys_test_file_summarize(modules)
+# 檔案工作流需要 LLM 審核，不適合獨立測試環境
+# 應在主系統循環整合測試中測試（Task 9）
 
 def sys_test_list_workflows_wrapper():
     """列出所有可用的工作流"""
-    return sys_test_list_workflows(modules)
+    from .module_tests.sys_tests import sys_test_list_workflows as sys_test_list_workflows_func
+    return sys_test_list_workflows_func(modules)
 
 def sys_test_active_workflows_wrapper():
     """列出所有活躍的工作流"""
-    return sys_test_active_workflows(modules)
+    from .module_tests.sys_tests import sys_test_active_workflows as sys_test_active_workflows_func
+    return sys_test_active_workflows_func(modules)
 
 def sys_test_workflow_status_wrapper(session_id: str = None):
     """查詢工作流狀態"""
-    return sys_test_workflow_status(modules, session_id)
+    from .module_tests.sys_tests import sys_test_workflow_status as sys_test_workflow_status_func
+    return sys_test_workflow_status_func(modules, session_id)
 
 def sys_test_cancel_workflow_wrapper(session_id: str = None):
     """取消工作流"""
-    return sys_test_cancel_workflow(modules, session_id)
+    from .module_tests.sys_tests import sys_test_cancel_workflow as sys_test_cancel_workflow_func
+    return sys_test_cancel_workflow_func(modules, session_id)
 
 # Frontend 模組包裝函數
 def show_desktop_pet_wrapper():
@@ -866,11 +854,29 @@ def tts_clear_queue_wrapper():
         error_log(f"[TTS GUI] 清除隊列失敗: {e}")
         return {"success": False, "error": str(e)}
 
-# SYS 模組包裝函數（尚未重構）
-# 整合測試包裝函數
-def test_stt_nlp_wrapper():
-    from .module_tests.integration_tests import test_stt_nlp as test_stt_nlp_func
-    return test_stt_nlp_func(modules)
+# ============================================================
+# 系統循環整合測試包裝函數
+# ============================================================
+
+def integration_test_all_file_workflows():
+    """運行所有檔案工作流整合測試"""
+    return test_system_loop_integration(modules)
+
+def integration_test_single_workflow(workflow_name: str):
+    """測試單一檔案工作流"""
+    return test_single_file_workflow(workflow_name, modules)
+
+def integration_test_drop_and_read():
+    """測試 drop_and_read 工作流"""
+    return test_single_file_workflow("drop_and_read", modules)
+
+def integration_test_intelligent_archive():
+    """測試 intelligent_archive 工作流"""
+    return test_single_file_workflow("intelligent_archive", modules)
+
+def integration_test_summarize_tag():
+    """測試 summarize_tag 工作流"""
+    return test_single_file_workflow("summarize_tag", modules)
 
 # 為了向後兼容，保留原來的函數名稱
 stt_test_single = stt_test_single_wrapper
@@ -952,17 +958,24 @@ sys_test_echo = sys_test_echo_wrapper
 sys_test_countdown = sys_test_countdown_wrapper
 sys_test_data_collector = sys_test_data_collector_wrapper
 sys_test_random_fail = sys_test_random_fail_wrapper
-sys_test_tts = sys_test_tts_wrapper
-sys_test_file_read = sys_test_file_read_wrapper
-sys_test_file_archive = sys_test_file_archive_wrapper
-sys_test_file_summarize = sys_test_file_summarize_wrapper
+
+# TTS 測試工作流已移除
+
+# 檔案工作流已移除（需要 LLM 審核）
+
+# SYS 管理功能
 sys_test_list_workflows = sys_test_list_workflows_wrapper
 sys_test_active_workflows = sys_test_active_workflows_wrapper
 sys_test_workflow_status = sys_test_workflow_status_wrapper
 sys_test_cancel_workflow = sys_test_cancel_workflow_wrapper
 
 # 整合測試別名
-integration_test_SN = test_stt_nlp_wrapper
+integration_test_all = integration_test_all_file_workflows
+integration_test_file1 = integration_test_drop_and_read
+integration_test_file2 = integration_test_intelligent_archive
+integration_test_file3 = integration_test_summarize_tag
+integration_test_file2 = integration_test_intelligent_archive
+integration_test_file3 = integration_test_summarize_tag
 
 
 # 整合測試 - 新版

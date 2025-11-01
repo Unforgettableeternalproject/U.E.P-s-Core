@@ -89,6 +89,10 @@ class UnifiedController:
             self.system_status = SystemStatus.INITIALIZING
             info_log("[UnifiedController] 開始系統初始化...")
             
+            # ✅ 清空狀態佇列（避免舊狀態殘留）
+            self.state_queue_manager.clear_queue()
+            info_log("[UnifiedController] 已清空狀態佇列")
+            
             # 初始化核心框架
             if not self._initialize_framework():
                 return False

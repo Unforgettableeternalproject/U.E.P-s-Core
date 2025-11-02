@@ -168,6 +168,7 @@ class WorkflowStep(ABC):
         self._auto_advance_condition: Optional[Callable[[], bool]] = None
         self._step_type = self.STEP_TYPE_INTERACTIVE  # 默認為交互式
         self._priority = self.PRIORITY_REQUIRED  # 默認為必要步驟
+        self._description = ""  # 步驟描述，用於 LLM 上下文
         
     def _get_step_id(self) -> str:
         """獲取步驟 ID，默認使用類名"""
@@ -201,6 +202,11 @@ class WorkflowStep(ABC):
     def set_id(self, step_id: str) -> 'WorkflowStep':
         """設置步驟 ID"""
         self._id = step_id
+        return self
+        
+    def set_description(self, description: str) -> 'WorkflowStep':
+        """設置步驟描述（用於 LLM 上下文）"""
+        self._description = description
         return self
         
     def add_requirement(self, key: str, required: bool = True, 
@@ -264,6 +270,7 @@ class WorkflowStep(ABC):
             "id": self.id,
             "type": self.step_type,
             "priority": self.priority,
+            "description": self._description,
             "requirements": [(req.key, req.required) for req in self._requirements],
             "can_auto_advance": self.should_auto_advance()
         }
@@ -631,18 +638,25 @@ class WorkflowEngine:
             # 批准：繼續工作流程
             info_log("[WorkflowEngine] LLM 已批准步驟，繼續執行")
             
-            # 如果設置了自動推進，則移動到下一步
+            # 🔧 如果設置了自動推進，則移動到下一步
             if self.definition.auto_advance_on_approval:
                 current_step_id = self.session.get_data("current_step")
                 next_step_id = self.definition.get_next_step(current_step_id, result)
                 
                 if next_step_id:
                     self.session.add_data("current_step", next_step_id)
-                    # 如果下一步可以自動推進，則繼續執行
-                    if self.auto_advance:
-                        next_step = self.definition.steps.get(next_step_id)
-                        if next_step and next_step.should_auto_advance():
-                            return self._auto_advance(result)
+                    
+                    # 🔧 關鍵修復：不要在這裡同步執行下一步！
+                    # 發布事件讓 SYS 模組在背景執行（通過事件系統觸發）
+                    next_step = self.definition.steps.get(next_step_id)
+                    if next_step and next_step.should_auto_advance():
+                        debug_log(2, f"[WorkflowEngine] 下一步 {next_step_id} 是自動推進步驟，發布事件通知 SYS")
+                        # 不在這裡執行，讓 SystemLoop 通過 _trigger_workflow_auto_advance 來執行
+                        # 返回成功結果，讓流程繼續
+                        return StepResult.success(
+                            "步驟已批准，等待下一步執行",
+                            {"approved": True, "next_step": next_step_id}
+                        )
                 else:
                     self.session.add_data("current_step", None)
                     return StepResult.complete_workflow("工作流程已完成")
@@ -704,16 +718,19 @@ class WorkflowEngine:
         self.awaiting_llm_review = True
         self.pending_review_result = result
         
-        # 準備審核數據
-        review_data = result.llm_review_data or {}
-        review_data.update({
-            "step_id": current_step.id,
-            "step_type": current_step.step_type,
-            "message": result.message,
-            "data": result.data,
-            "workflow_type": self.definition.workflow_type,
-            "workflow_name": self.definition.name
-        })
+        # 🔧 準備審核數據：只有當步驟明確提供 llm_review_data 時才創建
+        # 如果步驟返回 llm_review_data=None，表示不需要 LLM 生成回應（例如系統操作步驟）
+        review_data = None
+        if result.llm_review_data is not None:
+            review_data = result.llm_review_data.copy()
+            review_data.update({
+                "step_id": current_step.id,
+                "step_type": current_step.step_type,
+                "message": result.message,
+                "data": result.data,
+                "workflow_type": self.definition.workflow_type,
+                "workflow_name": self.definition.name
+            })
         
         # 返回特殊結果，指示需要 LLM 審核
         return StepResult(
@@ -1027,7 +1044,8 @@ class StepTemplate:
     def create_input_step(session: WorkflowSession, step_id: str, prompt: str,
                          validator: Optional[Callable[[str], Tuple[bool, str]]] = None,
                          required_data: Optional[List[str]] = None,
-                         optional: bool = False) -> WorkflowStep:
+                         optional: bool = False,
+                         description: str = "") -> WorkflowStep:
         """
         創建輸入步驟
         
@@ -1038,12 +1056,15 @@ class StepTemplate:
             validator: 驗證函數，返回 (是否有效, 錯誤訊息)
             required_data: 必要數據列表
             optional: 是否為可選輸入，可選輸入允許空值並自動跳過
+            description: 步驟描述，用於 LLM 上下文
         """
         class InputStep(WorkflowStep):
             def __init__(self, session):
                 super().__init__(session)
                 self.set_id(step_id)
                 self.set_step_type(self.STEP_TYPE_INTERACTIVE)
+                if description:
+                    self.set_description(description)
                 
                 if required_data:
                     for req in required_data:
@@ -1090,7 +1111,8 @@ class StepTemplate:
                                 message: Union[str, Callable[[], str]],
                                 confirm_message: str = "操作已確認",
                                 cancel_message: str = "操作已取消",
-                                required_data: Optional[List[str]] = None) -> WorkflowStep:
+                                required_data: Optional[List[str]] = None,
+                                description: str = "") -> WorkflowStep:
         """
         創建確認步驟
         
@@ -1101,12 +1123,15 @@ class StepTemplate:
             confirm_message: 確認時的回應訊息
             cancel_message: 取消時的回應訊息
             required_data: 必要數據列表
+            description: 步驟描述，用於 LLM 上下文
         """
         class ConfirmationStep(WorkflowStep):
             def __init__(self, session):
                 super().__init__(session)
                 self.set_id(step_id)
                 self.set_step_type(self.STEP_TYPE_INTERACTIVE)
+                if description:
+                    self.set_description(description)
                 
                 if required_data:
                     for req in required_data:
@@ -1135,7 +1160,8 @@ class StepTemplate:
     def create_processing_step(session: WorkflowSession, step_id: str,
                               processor: Callable[[WorkflowSession], StepResult],
                               required_data: Optional[List[str]] = None,
-                              auto_advance: bool = False) -> WorkflowStep:
+                              auto_advance: bool = False,
+                              description: str = "") -> WorkflowStep:
         """
         創建處理步驟
         
@@ -1145,6 +1171,7 @@ class StepTemplate:
             processor: 處理函數，接受 session 並返回 StepResult
             required_data: 必要數據列表
             auto_advance: 是否自動推進到下一步
+            description: 步驟描述，用於 LLM 上下文
         """
         class ProcessingStep(WorkflowStep):
             def __init__(self, session):
@@ -1152,6 +1179,8 @@ class StepTemplate:
                 self.set_id(step_id)
                 self.set_step_type(self.STEP_TYPE_PROCESSING)
                 self._auto_advance = auto_advance
+                if description:
+                    self.set_description(description)
                 
                 if required_data:
                     for req in required_data:
@@ -1172,7 +1201,8 @@ class StepTemplate:
     def create_auto_step(session: WorkflowSession, step_id: str,
                         processor: Callable[[WorkflowSession], StepResult],
                         required_data: Optional[List[str]] = None,
-                        prompt: str = "自動處理中...") -> WorkflowStep:
+                        prompt: str = "自動處理中...",
+                        description: str = "") -> WorkflowStep:
         """
         創建自動步驟（總是自動推進）
         
@@ -1182,6 +1212,7 @@ class StepTemplate:
             processor: 處理函數，接受 session 並返回 StepResult
             required_data: 必要數據列表
             prompt: 處理時的提示訊息
+            description: 步驟描述，用於 LLM 上下文
         """
         class AutoStep(WorkflowStep):
             def __init__(self, session):
@@ -1189,6 +1220,8 @@ class StepTemplate:
                 self.set_id(step_id)
                 self.set_step_type(self.STEP_TYPE_PROCESSING)
                 self._prompt = prompt
+                if description:
+                    self.set_description(description)
                 
                 if required_data:
                     for req in required_data:

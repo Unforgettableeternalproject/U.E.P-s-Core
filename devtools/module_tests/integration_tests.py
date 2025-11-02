@@ -61,11 +61,11 @@ class SystemLoopIntegrationTest:
             
             info_log("✅ Controller 初始化成功")
             
-            # 2. 初始化 SystemLoop
-            from core.system_loop import SystemLoop
-            self.system_loop = SystemLoop()
+            # 2. 使用全局 SystemLoop 實例（避免雙重訂閱事件）
+            from core.system_loop import system_loop
+            self.system_loop = system_loop
             
-            info_log("✅ SystemLoop 初始化成功")
+            info_log("✅ SystemLoop 已獲取全局實例")
             
             # ✅ 重要：啟動 EventBus 處理線程
             # 測試環境不會調用 SystemLoop.run()，所以必須手動啟動 EventBus
@@ -230,7 +230,7 @@ class SystemLoopIntegrationTest:
     
     def wait_for_processing_complete(self, timeout: float = 30.0) -> bool:
         """
-        等待處理完成
+        等待處理完成 - 持續運行直到系統返回 IDLE 狀態
         
         Args:
             timeout: 超時時間（秒）
@@ -241,33 +241,55 @@ class SystemLoopIntegrationTest:
         start_time = time.time()
         
         info_log(f"⏳ 等待處理完成 (超時: {timeout}秒)...")
+        info_log(f"   監控系統狀態變化，將持續運行直到返回 IDLE")
+        
+        last_state = None
+        output_count = 0
         
         while time.time() - start_time < timeout:
-            # 檢查是否有 OUTPUT_LAYER_COMPLETE 事件
+            # 檢查狀態變化事件
+            state_events = [e for e in self.event_log 
+                           if e["event_type"] == "state_changed"]
+            
+            if state_events:
+                latest_state = state_events[-1]["event_data"].get("data", {}).get("new_state")
+                if latest_state != last_state:
+                    info_log(f"   狀態變化: {last_state} → {latest_state}")
+                    last_state = latest_state
+                    
+                    # 如果返回 IDLE，說明處理完成
+                    if latest_state == "idle" and output_count > 0:
+                        elapsed = time.time() - start_time
+                        info_log(f"✅ 系統已返回 IDLE 狀態，處理完成 (耗時: {elapsed:.2f}秒)")
+                        return True
+            
+            # 計數 OUTPUT_LAYER_COMPLETE 事件
             output_events = [e for e in self.event_log 
                            if e["event_type"] == "output_layer_complete"]
-            
-            if output_events:
-                elapsed = time.time() - start_time
-                info_log(f"✅ 處理完成 (耗時: {elapsed:.2f}秒)")
-                return True
+            if len(output_events) > output_count:
+                output_count = len(output_events)
+                info_log(f"   完成第 {output_count} 個輸出循環")
             
             time.sleep(0.1)
         
-        error_log(f"❌ 處理超時 ({timeout}秒)")
+        error_log(f"❌ 處理超時 ({timeout}秒)，最終狀態: {last_state}")
         return False
     
-    def test_file_workflow(self, workflow_name: str) -> Dict[str, Any]:
+    def test_file_workflow(self, workflow_name: str, test_llm_sys_collaboration: bool = False) -> Dict[str, Any]:
         """
         測試檔案工作流
         
         Args:
             workflow_name: 工作流名稱 (drop_and_read, intelligent_archive, summarize_tag)
+            test_llm_sys_collaboration: 是否測試 LLM-SYS 協作機制（Cycle 0 三階段）
             
         Returns:
             測試結果
         """
         test_name = f"檔案工作流測試 ({workflow_name})"
+        if test_llm_sys_collaboration:
+            test_name += " [LLM-SYS 協作]"
+        
         info_log(f"\n{'='*60}")
         info_log(f"🧪 開始測試: {test_name}")
         info_log(f"{'='*60}")
@@ -276,16 +298,24 @@ class SystemLoopIntegrationTest:
             # 清空事件日誌
             self.event_log.clear()
             
-            # Build test input (English - internal system language)
-            # Different commands for different workflows
+            # Build test input - 使用英文（系統內部語言）
+            # LLM 會使用 MCP 工具來理解意圖並決定工作流
             if workflow_name == "drop_and_read":
                 test_input = "Please help me read the file content"
             elif workflow_name == "intelligent_archive":
-                test_input = "Please help me archive the file"
+                test_input = "Please help me archive and organize this file"
             elif workflow_name == "summarize_tag":
-                test_input = "Please help me summarize and tag the file"
+                test_input = "Please help me generate summary and tags for the file"
             else:
                 test_input = f"Execute {workflow_name} workflow"
+            
+            info_log(f"📝 測試輸入: \"{test_input}\"")
+            
+            if test_llm_sys_collaboration:
+                info_log("🔍 將驗證 Cycle 0 三階段流程：")
+                info_log("   Phase 1: LLM Decision (關鍵詞匹配)")
+                info_log("   Phase 2: SYS Start (啟動工作流)")
+                info_log("   Phase 3: LLM Response (生成響應)")
             
             # 注入文字輸入
             if not self.inject_text_input(test_input):
@@ -295,14 +325,16 @@ class SystemLoopIntegrationTest:
                 }
             
             # 等待處理完成（或超時）
-            if not self.wait_for_processing_complete(timeout=60.0):
+            timeout = 90.0 if test_llm_sys_collaboration else 60.0
+            if not self.wait_for_processing_complete(timeout=timeout):
                 return {
                     "success": False,
-                    "error": "處理超時"
+                    "error": "處理超時",
+                    "event_log": self.event_log
                 }
             
             # 分析事件日誌
-            result = self._analyze_test_results(workflow_name)
+            result = self._analyze_test_results(workflow_name, test_llm_sys_collaboration)
             
             # 記錄測試結果
             self.test_results.append({
@@ -313,6 +345,13 @@ class SystemLoopIntegrationTest:
             
             if result["success"]:
                 info_log(f"✅ {test_name}: 通過")
+                if test_llm_sys_collaboration and result.get("llm_sys_collaboration"):
+                    collab = result["llm_sys_collaboration"]
+                    info_log(f"   ✓ LLM Decision: {collab.get('llm_decision_detected', False)}")
+                    info_log(f"   ✓ SYS Start: {collab.get('sys_start_detected', False)}")
+                    info_log(f"   ✓ LLM Response: {collab.get('llm_response_detected', False)}")
+                    if collab.get('workflow_type'):
+                        info_log(f"   ✓ 工作流類型: {collab['workflow_type']}")
             else:
                 error_log(f"❌ {test_name}: 失敗 - {result.get('error', 'Unknown error')}")
             
@@ -334,8 +373,14 @@ class SystemLoopIntegrationTest:
                 "error": str(e)
             }
     
-    def _analyze_test_results(self, workflow_name: str) -> Dict[str, Any]:
-        """分析測試結果"""
+    def _analyze_test_results(self, workflow_name: str, check_collaboration: bool = False) -> Dict[str, Any]:
+        """
+        分析測試結果
+        
+        Args:
+            workflow_name: 工作流名稱
+            check_collaboration: 是否檢查 LLM-SYS 協作機制
+        """
         try:
             # 檢查關鍵事件是否都有發生
             input_complete = any(e["event_type"] == "input_layer_complete" 
@@ -355,10 +400,11 @@ class SystemLoopIntegrationTest:
             workflow_events = [e for e in self.event_log 
                              if "workflow" in e["event_type"]]
             
+            # 基本成功條件
             success = (input_complete and processing_complete and 
                       output_complete and work_state_reached)
             
-            return {
+            result = {
                 "success": success,
                 "input_layer_complete": input_complete,
                 "processing_layer_complete": processing_complete,
@@ -369,12 +415,134 @@ class SystemLoopIntegrationTest:
                 "event_log": self.event_log
             }
             
+            # 如果需要檢查 LLM-SYS 協作機制
+            if check_collaboration:
+                collaboration_result = self._check_llm_sys_collaboration()
+                result["llm_sys_collaboration"] = collaboration_result
+                
+                # 更新成功條件：必須完成三階段流程
+                if success:
+                    success = (collaboration_result.get("llm_decision_detected", False) and
+                              collaboration_result.get("sys_start_detected", False) and
+                              collaboration_result.get("llm_response_detected", False))
+                    result["success"] = success
+                    
+                    if not success:
+                        result["error"] = "LLM-SYS 協作三階段流程未完整執行"
+            
+            return result
+            
         except Exception as e:
             error_log(f"❌ 分析測試結果失敗: {e}")
             return {
                 "success": False,
                 "error": str(e)
             }
+    
+    def _check_llm_sys_collaboration(self) -> Dict[str, Any]:
+        """
+        檢查 LLM-SYS 協作機制的三階段執行情況
+        
+        通過檢查日誌或模組調用來驗證：
+        - Phase 1: LLM Decision (phase='decision')
+        - Phase 2: SYS Start (operation='start')
+        - Phase 3: LLM Response (phase='response')
+        
+        Returns:
+            協作機制檢查結果
+        """
+        try:
+            # 讀取最近的日誌文件
+            recent_logs = self._read_recent_logs()
+            
+            # 檢查 LLM Decision 階段
+            llm_decision_detected = any(
+                "phase=decision" in log or 
+                "_decide_workflow" in log or
+                "workflow_decision" in log
+                for log in recent_logs
+            )
+            
+            # 檢查 SYS Start 階段
+            sys_start_detected = any(
+                "operation=start" in log or
+                "operation='start'" in log or
+                "_start_workflow" in log and "operation" in log
+                for log in recent_logs
+            )
+            
+            # 檢查 LLM Response 階段
+            llm_response_detected = any(
+                "phase=response" in log or
+                "_generate_workflow_response" in log or
+                "workflow_context" in log
+                for log in recent_logs
+            )
+            
+            # 嘗試提取工作流類型
+            workflow_type = None
+            for log in recent_logs:
+                if "workflow_type" in log:
+                    # 簡單的字符串匹配
+                    for wf in ["drop_and_read", "intelligent_archive", "summarize_tag"]:
+                        if wf in log:
+                            workflow_type = wf
+                            break
+                    if workflow_type:
+                        break
+            
+            result = {
+                "llm_decision_detected": llm_decision_detected,
+                "sys_start_detected": sys_start_detected,
+                "llm_response_detected": llm_response_detected,
+                "workflow_type": workflow_type,
+                "all_phases_completed": (llm_decision_detected and 
+                                        sys_start_detected and 
+                                        llm_response_detected)
+            }
+            
+            debug_log(2, f"[IntegrationTest] LLM-SYS 協作檢查結果: {result}")
+            
+            return result
+            
+        except Exception as e:
+            error_log(f"❌ 檢查 LLM-SYS 協作失敗: {e}")
+            return {
+                "llm_decision_detected": False,
+                "sys_start_detected": False,
+                "llm_response_detected": False,
+                "workflow_type": None,
+                "all_phases_completed": False,
+                "error": str(e)
+            }
+    
+    def _read_recent_logs(self, max_lines: int = 500) -> List[str]:
+        """讀取最近的日誌行"""
+        import os
+        import glob
+        
+        logs = []
+        
+        try:
+            # 讀取 runtime 日誌
+            runtime_logs = glob.glob("logs/runtime/*.log")
+            if runtime_logs:
+                # 獲取最新的日誌文件
+                latest_log = max(runtime_logs, key=os.path.getmtime)
+                with open(latest_log, 'r', encoding='utf-8') as f:
+                    logs.extend(f.readlines()[-max_lines:])
+            
+            # 讀取 debug 日誌
+            debug_logs = glob.glob("logs/debug/*.log")
+            if debug_logs:
+                latest_log = max(debug_logs, key=os.path.getmtime)
+                with open(latest_log, 'r', encoding='utf-8') as f:
+                    logs.extend(f.readlines()[-max_lines:])
+                    
+        except Exception as e:
+            debug_log(2, f"[IntegrationTest] 讀取日誌失敗: {e}")
+        
+        return logs
     
     def run_all_tests(self):
         """運行所有測試"""
@@ -471,13 +639,15 @@ def test_system_loop_integration():
     return tester.test_results
 
 
-def test_single_file_workflow(workflow_name: str, modules_dict: Optional[Dict[str, Any]] = None):
+def test_single_file_workflow(workflow_name: str, modules_dict: Optional[Dict[str, Any]] = None, 
+                            test_llm_sys_collaboration: bool = False):
     """
     測試單一檔案工作流
     
     Args:
         workflow_name: 工作流名稱 (drop_and_read, intelligent_archive, summarize_tag)
         modules_dict: 來自 debug_api 的已初始化模組字典
+        test_llm_sys_collaboration: 是否測試 LLM-SYS 協作機制（Cycle 0 三階段）
         
     Returns:
         測試結果列表
@@ -492,11 +662,40 @@ def test_single_file_workflow(workflow_name: str, modules_dict: Optional[Dict[st
         return []
     
     time.sleep(2)
-    tester.test_file_workflow(workflow_name)
+    tester.test_file_workflow(workflow_name, test_llm_sys_collaboration)
     tester._print_test_summary()
     tester.cleanup()
     
     return tester.test_results
+
+
+def test_llm_sys_collaboration_workflow(workflow_name: str = "drop_and_read", 
+                                       modules_dict: Optional[Dict[str, Any]] = None):
+    """
+    專門測試 LLM-SYS 協作機制的三階段流程
+    
+    這個測試會驗證：
+    1. Phase 1: LLM Decision - 關鍵詞匹配決定工作流類型
+    2. Phase 2: SYS Start - 啟動工作流並返回步驟信息
+    3. Phase 3: LLM Response - 生成用戶友好的響應
+    
+    Args:
+        workflow_name: 工作流名稱 (drop_and_read, intelligent_archive, summarize_tag)
+        modules_dict: 來自 debug_api 的已初始化模組字典
+        
+    Returns:
+        測試結果列表
+    """
+    info_log("\n" + "="*70)
+    info_log("🔬 LLM-SYS 協作機制專項測試")
+    info_log("="*70)
+    info_log("測試目標：驗證 Cycle 0 三階段流程實現")
+    info_log("  Phase 1: LLM Decision (關鍵詞匹配)")
+    info_log("  Phase 2: SYS Start (工作流啟動)")
+    info_log("  Phase 3: LLM Response (響應生成)")
+    info_log("="*70 + "\n")
+    
+    return test_single_file_workflow(workflow_name, modules_dict, test_llm_sys_collaboration=True)
 
 
 def _clear_state_queue():

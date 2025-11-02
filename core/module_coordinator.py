@@ -115,6 +115,9 @@ class ModuleInvocationCoordinator:
         self._dedupe_hit_count = 0
         self._cleanup_count = 0
         
+        # 會話結束管理 - 雙條件終止機制
+        self._pending_session_end = None  # 標記會話結束請求，等待 CYCLE_COMPLETED
+        
         info_log("[ModuleCoordinator] 三層架構模組調用協調器初始化")
         info_log("[ModuleCoordinator] 使用 flow-based 去重策略 (session_id:cycle_index:layer)")
         
@@ -262,7 +265,10 @@ class ModuleInvocationCoordinator:
     def _on_cycle_completed(self, event):
         """
         循環完成事件處理器
-        清理已完成 cycle 的去重鍵
+        
+        處理兩個任務：
+        1. 清理去重鍵 - 移除已完成 cycle 的所有 layer 鍵
+        2. 檢查會話結束 - 雙條件終止機制的第二個條件
         
         注意: 這裡的 session_id 是 GS (General Session)
         """
@@ -271,6 +277,7 @@ class ModuleInvocationCoordinator:
             cycle_index = event.data.get('cycle_index', -1)
             flow_prefix = f"{session_id}:{cycle_index}:"
             
+            # 任務 1: 清理去重鍵
             with self._dedupe_lock:
                 # 找出並移除此 flow 的所有 layer 鍵
                 keys_to_remove = [k for k in self._layer_dedupe_keys if k.startswith(flow_prefix)]
@@ -280,6 +287,27 @@ class ModuleInvocationCoordinator:
                 self._cleanup_count += len(keys_to_remove)
                 info_log(f"[ModuleCoordinator] 🧹 CYCLE_COMPLETED 清理: 移除 {len(keys_to_remove)} 個去重鍵 (flow={session_id}:{cycle_index})")
                 debug_log(3, f"[ModuleCoordinator] 剩餘去重鍵數量: {len(self._layer_dedupe_keys)}")
+            
+            # 任務 2: 檢查會話結束請求（雙條件終止機制）
+            if self._pending_session_end:
+                pending = self._pending_session_end
+                pending_gs_id = pending.get('gs_id')
+                
+                # 檢查是否是同一個 GS
+                if pending_gs_id == session_id:
+                    reason = pending.get('reason', 'LLM requested')
+                    info_log(f"[ModuleCoordinator] ✅ 雙條件終止機制滿足：")
+                    info_log(f"  └─ 條件 1: 外部中斷點 (LLM session_control) ✅")
+                    info_log(f"  └─ 條件 2: 循環結束 (CYCLE_COMPLETED) ✅")
+                    info_log(f"[ModuleCoordinator] 現在執行會話結束 (gs_id={session_id}, reason={reason})")
+                    
+                    # 執行會話結束
+                    self._handle_session_end(pending.get('session_control'))
+                    
+                    # 清除標記
+                    self._pending_session_end = None
+                else:
+                    debug_log(2, f"[ModuleCoordinator] 會話結束標記的 gs_id ({pending_gs_id}) 與當前循環的 gs_id ({session_id}) 不匹配，繼續等待")
                 
         except Exception as e:
             error_log(f"[ModuleCoordinator] ❌ 處理循環完成事件失敗: {e}")
@@ -370,20 +398,28 @@ class ModuleInvocationCoordinator:
             
             info_log(f"[ModuleCoordinator] 主要意圖: {intent_name} (value={intent_value})")
             
-            # 直接使用 primary_intent 作為 target（_prepare_processing_requests 會根據它決定路徑）
-            # 這裡傳入 intent_name 作為形式上的 target，實際路徑由 _prepare_processing_requests 決定
+            # ✨ 檢查是否為 WORK 路徑的 Cycle 0（需要特殊處理）
+            cycle_index = input_data.get('cycle_index', 0)
             
-            # 準備處理層調用請求（根據 primary_intent 決定 WORK/CHAT 路徑）
-            requests = self._prepare_processing_requests(intent_name, input_data)
-            
-            # 執行處理層調用
-            responses = self.invoke_multiple_modules(requests)
-            
-            # 檢查是否有成功的調用
-            success_count = sum(1 for r in responses if r.result == InvocationResult.SUCCESS)
-            info_log(f"[ModuleCoordinator] 處理層完成: {success_count}/{len(responses)} 成功")
-            
-            return success_count > 0
+            if (primary_intent == IntentType.WORK or intent_value == "work") and cycle_index == 0:
+                # WORK Cycle 0: 三階段處理（LLM 決策 → SYS 啟動 → LLM 回應）
+                info_log("[ModuleCoordinator] 🎯 WORK Cycle 0 - 開始三階段處理")
+                return self._handle_work_cycle_0(input_data)
+            else:
+                # CHAT 路徑或 WORK Cycle 1+: 標準處理
+                info_log(f"[ModuleCoordinator] 標準路徑處理 (intent={intent_name}, cycle={cycle_index})")
+                
+                # 準備處理層調用請求（根據 primary_intent 決定 WORK/CHAT 路徑）
+                requests = self._prepare_processing_requests(intent_name, input_data)
+                
+                # 執行處理層調用
+                responses = self.invoke_multiple_modules(requests)
+                
+                # 檢查是否有成功的調用
+                success_count = sum(1 for r in responses if r.result == InvocationResult.SUCCESS)
+                info_log(f"[ModuleCoordinator] 處理層完成: {success_count}/{len(responses)} 成功")
+                
+                return success_count > 0
             
         except Exception as e:
             error_log(f"[ModuleCoordinator] 輸入層 → 處理層轉換失敗: {e}")
@@ -435,6 +471,32 @@ class ModuleInvocationCoordinator:
                 # ✅ TTS 模組已經通過事件總線發布 OUTPUT_LAYER_COMPLETE 事件
                 # ✅ SystemLoop 會自動接收並處理，不需要重複通知
                 debug_log(2, "[ModuleCoordinator] 等待 TTS 發布的 OUTPUT_LAYER_COMPLETE 事件完成循環")
+                
+                # 🆕 Task 5: 檢查會話結束請求（雙條件終止機制）
+                llm_output = processing_data.get('llm_output', {})
+                session_control = llm_output.get('metadata', {}).get('session_control')
+                
+                # Support both formats: {'action': 'end_session'} and {'session_ended': True}
+                should_end = (session_control and 
+                             (session_control.get('action') == 'end_session' or 
+                              session_control.get('session_ended') is True))
+                
+                if should_end:
+                    reason = session_control.get('reason', 'LLM requested')
+                    info_log(f"[ModuleCoordinator] 🔚 LLM 請求結束會話 (原因: {reason})")
+                    # ⚠️ 雙條件終止機制：
+                    # 條件 1: 外部中斷點被調用 ✅ (此處標記)
+                    # 條件 2: 所屬循環結束 ⌛ (等待 CYCLE_COMPLETED)
+                    # → 不立即結束，等待循環完成後再檢查並執行
+                    
+                    # 從 processing_data 頂層獲取 session_id (GS ID)
+                    gs_id = processing_data.get('session_id', 'unknown')
+                    self._pending_session_end = {
+                        'reason': reason,
+                        'session_control': session_control,
+                        'gs_id': gs_id
+                    }
+                    info_log(f"[ModuleCoordinator] ✅ 已標記會話結束請求，等待循環完成 (gs_id={gs_id})")
             else:
                 error_log(f"[ModuleCoordinator] 輸出層調用失敗: {response.error_message}")
             
@@ -442,6 +504,96 @@ class ModuleInvocationCoordinator:
             
         except Exception as e:
             error_log(f"[ModuleCoordinator] 處理層 → 輸出層轉換失敗: {e}")
+            return False
+    
+    def _handle_work_cycle_0(self, input_data: Dict[str, Any]) -> bool:
+        """處理 WORK 路徑的 Cycle 0（啟動工作流）
+        
+        ✅ MCP 架構：LLM 通過 MCP function calling 啟動工作流
+        
+        Cycle 0 流程：
+        1. LLM 接收用戶請求和可用的 MCP tools
+        2. LLM 決策並調用 start_workflow
+        3. MCP Client → SYS 模組啟動工作流
+        4. LLM 生成回應：「工作流已啟動，第一步是...」
+        
+        Cycle 1+ 流程（工作流步驟互動）：
+        1. SYS 通過 review_step 返回當前步驟信息
+        2. LLM 將步驟轉換為用戶友好的描述
+        3. 用戶回應 → LLM 決定 approve_step/modify_step/cancel_workflow
+        4. 通過 MCP 調用對應工具
+        5. 重複直到工作流完成
+        
+        Args:
+            input_data: 輸入數據
+            
+        Returns:
+            bool: 是否成功
+        """
+        try:
+            info_log("[ModuleCoordinator] 🎯 WORK Cycle 0 - LLM 通過 MCP 處理工作流")
+            
+            # 調用 LLM（LLM 會通過 MCP function calling 啟動工作流）
+            llm_data = self._prepare_llm_input(input_data)
+            llm_data['phase'] = 'response'  # 直接生成回應（包含 MCP 調用）
+            
+            llm_request = ModuleInvocationRequest(
+                target_module="llm",
+                input_data=llm_data,
+                source_module="input_layer",
+                reasoning="WORK Cycle 0 - LLM 處理工作流（含 MCP 調用）",
+                layer=ProcessingLayer.PROCESSING,
+                priority=5
+            )
+            
+            llm_response = self.invoke_module(llm_request)
+            
+            if llm_response.result != InvocationResult.SUCCESS:
+                error_log("[ModuleCoordinator] LLM 處理階段失敗")
+                return False
+            
+            llm_output = llm_response.output_data
+            debug_log(2, f"[ModuleCoordinator] llm 完整返回結果: {llm_output}")
+            
+            # ✅ 檢查是否成功調用了 MCP function
+            function_call_made = llm_output.get('metadata', {}).get('function_call_made', False)
+            function_call_result = llm_output.get('metadata', {}).get('function_call_result', {})
+            
+            if function_call_made:
+                info_log("[ModuleCoordinator] ✅ LLM 已通過 MCP 啟動工作流")
+                
+                # ✅ 檢查工作流是否成功啟動
+                if function_call_result.get('status') == 'success':
+                    debug_log(2, "[ModuleCoordinator] 工作流啟動成功，LLM 已生成初始回應")
+                    # TODO: 在未來的 Cycle 1 中，需要：
+                    # 1. 調用 review_step 獲取第一個步驟
+                    # 2. LLM 將步驟轉換為用戶描述
+                    # 3. 等待用戶回應後再繼續
+                else:
+                    debug_log(2, f"[ModuleCoordinator] 工作流啟動失敗: {function_call_result.get('error')}")
+                    # LLM 已經在 follow-up response 中解釋了錯誤
+            else:
+                debug_log(2, "[ModuleCoordinator] LLM 未調用 MCP function（可能在詢問更多信息）")
+            
+            # 舊架構的兼容處理（如果 LLM 返回了舊格式的 workflow_decision）
+            workflow_decision = llm_output.get('workflow_decision')
+            if workflow_decision:
+                debug_log(1, "[ModuleCoordinator] ⚠️ LLM 返回了舊格式的 workflow_decision，應該使用 MCP function calling")
+            
+            # ✅ Cycle 0 完成，LLM 已經返回初始回應
+            # ⚠️ 注意：完整的 Cycle 0 應該包括：
+            #    1. 啟動工作流 ✓
+            #    2. 獲取第一步信息 (TODO)
+            #    3. LLM 描述第一步給用戶 (TODO)
+            #    4. 等待用戶回應才進入 Cycle 1
+            
+            info_log("[ModuleCoordinator] ✓ WORK Cycle 0 完成（MCP 架構）")
+            return True
+            
+        except Exception as e:
+            error_log(f"[ModuleCoordinator] WORK Cycle 0 處理失敗: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def _prepare_processing_requests(self, primary_target: str, input_data: Dict[str, Any]) -> List[ModuleInvocationRequest]:
@@ -547,28 +699,12 @@ class ModuleInvocationCoordinator:
         from modules.nlp_module.intent_types import IntentType
         intent_value = primary_intent.value if hasattr(primary_intent, 'value') else primary_intent
         
-        # 判斷文本來源：第一次進入 WORK 狀態時，從 WorkflowSession 獲取命令
+        # 判斷文本來源
         if (primary_intent == IntentType.WORK or intent_value == "work") and cycle_index == 0:
-            # 第一次進入 WORK 狀態：從 WorkflowSession.task_definition 獲取 command
-            try:
-                from core.sessions.session_manager import session_manager
-                
-                active_ws_ids = session_manager.get_active_workflow_session_ids()
-                if active_ws_ids:
-                    ws = session_manager.get_workflow_session(active_ws_ids[0])
-                    if ws and hasattr(ws, 'task_definition'):
-                        # ✅ 從狀態上下文獲取命令文本
-                        input_text = ws.task_definition.get('command', '')
-                        debug_log(2, f"[ModuleCoordinator] 第一次進入 WORK - 從 WS 獲取 command: {input_text[:50]}...")
-                    else:
-                        input_text = input_data.get('input_data', {}).get('text', '')
-                        debug_log(2, f"[ModuleCoordinator] WS 無 task_definition，使用 Router 文本")
-                else:
-                    input_text = input_data.get('input_data', {}).get('text', '')
-                    debug_log(2, f"[ModuleCoordinator] 無活躍 WS，使用 Router 文本")
-            except Exception as e:
-                error_log(f"[ModuleCoordinator] 從 WS 獲取 command 失敗: {e}")
-                input_text = input_data.get('input_data', {}).get('text', '')
+            # ✅ Cycle 0: 使用完整的原始輸入文本進行決策
+            # NLP 已經分析過意圖，但 LLM 需要完整上下文來理解和決策
+            input_text = input_data.get('input_data', {}).get('text', '')
+            debug_log(2, f"[ModuleCoordinator] WORK Cycle 0 - 使用完整原始輸入: {input_text[:50]}...")
         else:
             # 其他情況：從 Router 獲取文本（CHAT 路徑或 WORK 第二次以後）
             input_text = input_data.get('input_data', {}).get('text', '')
@@ -581,7 +717,16 @@ class ModuleInvocationCoordinator:
         else:
             llm_mode = "chat"
         
-        return {
+        # ✅ WORK Cycle 0: 提取 NLP 找到的工作流匹配信息
+        suggested_workflow = None
+        if (primary_intent == IntentType.WORK or intent_value == "work") and cycle_index == 0:
+            # 從 NLP 的 processing_notes 或 intent_segments 中提取工作流提示
+            for note in nlp_result.get('processing_notes', []):
+                if 'matching function' in note.lower() or 'workflow' in note.lower():
+                    suggested_workflow = note
+                    break
+        
+        base_data = {
             "text": input_text,
             "source": "three_layer_coordinator",
             "mode": llm_mode,  # ✅ 添加 mode 參數，讓 LLM 知道是 WORK 還是 CHAT
@@ -599,6 +744,12 @@ class ModuleInvocationCoordinator:
             "confidence": nlp_result.get('overall_confidence', 0.0),
             "cycle_index": cycle_index  # ✅ 傳遞 cycle_index 供 LLM 模組使用
         }
+        
+        # ✅ 添加工作流提示（如果有）
+        if suggested_workflow:
+            base_data['workflow_hint'] = suggested_workflow
+        
+        return base_data
     
     def _prepare_sys_input(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """準備SYS模組輸入
@@ -612,24 +763,9 @@ class ModuleInvocationCoordinator:
         
         # 判斷文本來源（與 LLM 使用相同邏輯）
         if cycle_index == 0:
-            # 第一次進入：從 WorkflowSession 獲取命令
-            try:
-                from core.sessions.session_manager import session_manager
-                
-                active_ws_ids = session_manager.get_active_workflow_session_ids()
-                if active_ws_ids:
-                    ws = session_manager.get_workflow_session(active_ws_ids[0])
-                    if ws and hasattr(ws, 'task_definition'):
-                        # ✅ 從狀態上下文獲取命令文本
-                        input_text = ws.task_definition.get('command', '')
-                        debug_log(2, f"[ModuleCoordinator] 第一次進入 WORK - SYS 從 WS 獲取 command: {input_text[:50]}...")
-                    else:
-                        input_text = input_data.get('input_data', {}).get('text', '')
-                else:
-                    input_text = input_data.get('input_data', {}).get('text', '')
-            except Exception as e:
-                error_log(f"[ModuleCoordinator] SYS 從 WS 獲取 command 失敗: {e}")
-                input_text = input_data.get('input_data', {}).get('text', '')
+            # ✅ Cycle 0: 使用完整的原始輸入文本
+            input_text = input_data.get('input_data', {}).get('text', '')
+            debug_log(2, f"[ModuleCoordinator] WORK Cycle 0 - SYS 使用完整原始輸入: {input_text[:50]}...")
         else:
             # 第二次以後：從 Router 獲取用戶回應
             input_text = input_data.get('input_data', {}).get('text', '')
@@ -920,6 +1056,57 @@ class ModuleInvocationCoordinator:
             "active_invocations": len(self._active_invocations),
             "module_stats": module_stats
         }
+    
+    def _handle_session_end(self, session_control: Dict[str, Any]):
+        """
+        🆕 處理會話結束請求（雙條件終止機制）
+        
+        當 LLM 決定結束會話時（通過 session_control），並且循環已完成（CYCLE_COMPLETED）：
+        1. 結束所有活躍的 WS（workflow session）
+        2. 結束所有活躍的 CS（chatting session）
+        
+        注意：
+        - ❌ 不結束 GS！GS 是系統層級會話，由 Controller 管理
+        - ✅ GS 結束條件：狀態佇列清空 + 系統回到 IDLE（由 Controller.check_gs_end_conditions 檢查）
+        - ✅ CS/WS 結束會發布 SESSION_ENDED 事件，StateManager 監聽並通知 StateQueue
+        - ✅ StateQueue 自動處理下一個狀態（或回到 IDLE）
+        
+        Args:
+            session_control: 會話控制指令
+        """
+        try:
+            info_log("[ModuleCoordinator] 處理 CS/WS 結束請求")
+            
+            # 獲取所有活躍的子會話
+            from core.sessions.session_manager import unified_session_manager
+            
+            # 結束所有工作流會話 (WS)
+            active_ws = unified_session_manager.get_active_workflow_session_ids()
+            for ws_id in active_ws:
+                debug_log(2, f"[ModuleCoordinator] 結束工作流會話: {ws_id}")
+                unified_session_manager.end_workflow_session(ws_id)
+            
+            # 結束所有聊天會話 (CS)
+            active_cs = unified_session_manager.get_active_chatting_session_ids()
+            for cs_id in active_cs:
+                debug_log(2, f"[ModuleCoordinator] 結束聊天會話: {cs_id}")
+                unified_session_manager.end_chatting_session(cs_id)
+            
+            # ⚠️ 重要：不結束 GS！
+            # GS 生命週期：
+            #   - 創建：進入非 IDLE 狀態時（由 Controller._monitor_gs_lifecycle）
+            #   - 結束：狀態佇列清空 + IDLE 狀態（由 Controller.check_gs_end_conditions）
+            # 
+            # CS/WS 結束後：
+            #   → 發布 SESSION_ENDED 事件
+            #   → StateManager 監聽並通知 StateQueue.complete_current_state()
+            #   → StateQueue 處理下一個狀態（若有）或轉換到 IDLE（若佇列為空）
+            #   → 當 StateQueue 為空且 IDLE 時，Controller 才結束 GS
+            
+            info_log("[ModuleCoordinator] ✅ CS/WS 結束完成，等待狀態轉換")
+            
+        except Exception as e:
+            error_log(f"[ModuleCoordinator] 處理會話結束失敗: {e}")
     
     def get_deduplication_stats(self) -> Dict[str, Any]:
         """

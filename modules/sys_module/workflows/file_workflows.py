@@ -52,18 +52,30 @@ def create_drop_and_read_workflow(session: WorkflowSession) -> WorkflowEngine:
         name="檔案讀取工作流程",
         description="讀取檔案內容並提供摘要",
         workflow_mode=WorkflowMode.DIRECT,  # 使用同步模式以支援 LLM 互動
-        requires_llm_review=False,  # 暫時禁用 LLM 審核（審核機制尚未實現）
+        requires_llm_review=True,  # ✅ 啟用 LLM 審核，讓 LLM 知道每個步驟的結果
         auto_advance_on_approval=True
     )
     
-    # 步驟1: 開啟檔案拖曳視窗並獲取檔案路徑（自動處理步驟）
-    def get_file_path_via_dropper(session):
-        """使用檔案拖曳視窗獲取檔案路徑"""
+    # 步驟1: 開啟檔案選擇對話框並獲取檔案路徑（自動處理步驟）
+    def get_file_path_via_dialog(session):
+        """使用檔案選擇對話框獲取檔案路徑（線程安全）"""
         try:
-            from utils.debug_file_dropper import open_demo_window
+            # 🔧 使用線程安全的檔案對話框，避免 Tcl_AsyncDelete 錯誤
+            from utils.safe_file_dialog import open_file_dialog_sync
             
-            info_log("[Workflow] 開啟檔案拖曳視窗...")
-            file_path = open_demo_window()
+            info_log("[Workflow] 開啟檔案選擇對話框...")
+            
+            # 調用線程安全的檔案對話框
+            file_path = open_file_dialog_sync(
+                title="請選擇要讀取的檔案",
+                filetypes=[
+                    ("所有檔案", "*.*"),
+                    ("文字檔案", "*.txt"),
+                    ("Markdown", "*.md"),
+                    ("Python", "*.py"),
+                    ("JSON", "*.json"),
+                ]
+            )
             
             if not file_path:
                 return StepResult.failure("未提供檔案路徑")
@@ -80,14 +92,27 @@ def create_drop_and_read_workflow(session: WorkflowSession) -> WorkflowEngine:
             error_log(f"[Workflow] 獲取檔案路徑失敗: {e}")
             return StepResult.failure(f"獲取檔案路徑失敗: {e}")
     
-    # 使用 processing step（需要 LLM 審核）
-    file_input_step = StepTemplate.create_processing_step(
-        session,
-        "file_path_input",
-        get_file_path_via_dropper,
-        required_data=None,
-        auto_advance=False  # 需要 LLM 審核後才能繼續
-    )
+    # 🔧 步驟 1：檔案選擇步驟（SYSTEM 類型 - 系統操作，不需要用戶輸入）
+    # 這個步驟會在 start_workflow 時自動執行，開啟檔案對話框
+    # 完成後不需要生成審核回應（LLM 已經在正常流程中告知用戶工作流已啟動）
+    class FileDialogStep(WorkflowStep):
+        def __init__(self, session):
+            super().__init__(session)
+            self.set_id("file_path_input")
+            self.set_step_type(self.STEP_TYPE_SYSTEM)  # 系統操作步驟
+            self.set_description("透過檔案選擇對話框獲取要讀取的檔案路徑")
+            
+        def get_prompt(self) -> str:
+            return "開啟檔案選擇對話框..."
+            
+        def execute(self, user_input: Any = None) -> StepResult:
+            # 直接執行對話框，不需要用戶輸入
+            return get_file_path_via_dialog(self.session)
+            
+        def should_auto_advance(self) -> bool:
+            return False  # 需要 LLM 批准後才能繼續到步驟 2
+    
+    file_input_step = FileDialogStep(session)
     
     # 步驟2: 自動執行檔案讀取（自動步驟）
     def execute_file_read(session):
@@ -113,8 +138,9 @@ def create_drop_and_read_workflow(session: WorkflowSession) -> WorkflowEngine:
             
             content = drop_and_read(file_path)
             
-            return StepResult.complete_workflow(
-                f"📄 檔案讀取工作流程完成！檔案: {Path(file_path).name}, 內容長度: {len(content)} 字符",
+            # ✅ 返回成功結果並提供 LLM 審核數據，讓 LLM 知道檔案內容
+            result = StepResult.complete_workflow(
+                f"📄 檔案讀取完成！檔案: {Path(file_path).name}, 內容長度: {len(content)} 字符",
                 {
                     "file_path": file_path,
                     "content": content,
@@ -122,6 +148,20 @@ def create_drop_and_read_workflow(session: WorkflowSession) -> WorkflowEngine:
                     "completion_time": datetime.datetime.now().isoformat()
                 }
             )
+            
+            # ✅ 添加 LLM 審核數據，包含檔案內容供 LLM 處理
+            result.llm_review_data = {
+                "action": "file_read_completed",
+                "file_name": Path(file_path).name,
+                "file_path": file_path,
+                "content_preview": content[:500] if len(content) > 500 else content,  # 提供內容預覽
+                "content_length": len(content),
+                "full_content": content,  # 完整內容供 LLM 分析
+                "requires_user_response": True,  # 需要 LLM 生成回應告訴用戶
+                "should_end_session": True  # 建議 LLM 在回應後結束會話
+            }
+            
+            return result
         except Exception as e:
             error_log(f"[Workflow] 檔案讀取失敗: {e}")
             return StepResult.failure(f"檔案讀取失敗: {e}")
@@ -131,7 +171,8 @@ def create_drop_and_read_workflow(session: WorkflowSession) -> WorkflowEngine:
         "execute_read",
         execute_file_read,
         ["file_path_input"],
-        "正在讀取檔案..."
+        "正在讀取檔案...",
+        description="自動讀取選定的檔案內容並完成工作流程"
     )
     
     # 建立工作流程
@@ -168,7 +209,8 @@ def create_intelligent_archive_workflow(session: WorkflowSession) -> WorkflowEng
         session,
         "file_selection",
         "請選擇要歸檔的檔案路徑:",
-        validator=lambda path: (os.path.exists(path), f"檔案不存在: {path}") if path.strip() else (False, "請提供檔案路徑")
+        validator=lambda path: (os.path.exists(path), f"檔案不存在: {path}") if path.strip() else (False, "請提供檔案路徑"),
+        description="等待用戶輸入要歸檔的檔案路徑"
     )
     
     # 步驟2: 詢問目標資料夾 (可選)
@@ -178,7 +220,8 @@ def create_intelligent_archive_workflow(session: WorkflowSession) -> WorkflowEng
         "請輸入目標資料夾路徑:",
         validator=lambda path: (True, "") if not path.strip() or os.path.exists(path) else (False, f"目標資料夾不存在: {path}"),
         required_data=["file_selection"],
-        optional=True
+        optional=True,
+        description="詢問用戶是否指定目標資料夾，留空則自動選擇"
     )
     
     # 步驟3: 確認歸檔操作
@@ -197,7 +240,8 @@ def create_intelligent_archive_workflow(session: WorkflowSession) -> WorkflowEng
         get_archive_confirmation_message,
         "確認歸檔",
         "取消歸檔",
-        ["file_selection"]
+        ["file_selection"],
+        description="等待用戶確認是否執行歸檔操作"
     )
     
     # 步驟4: 執行歸檔
@@ -227,7 +271,8 @@ def create_intelligent_archive_workflow(session: WorkflowSession) -> WorkflowEng
         "execute_archive",
         execute_archive,
         ["file_selection", "target_dir_input"],
-        "正在歸檔檔案..."
+        "正在歸檔檔案...",
+        description="自動執行檔案歸檔操作並完成工作流程"
     )
     
     # 建立工作流程
@@ -283,7 +328,8 @@ def create_summarize_tag_workflow(session: WorkflowSession) -> WorkflowEngine:
         session,
         "file_path_input",
         "請輸入要生成摘要的檔案路徑:",
-        validator=lambda path: (os.path.exists(path), f"檔案不存在: {path}") if path.strip() else (False, "請提供檔案路徑")
+        validator=lambda path: (os.path.exists(path), f"檔案不存在: {path}") if path.strip() else (False, "請提供檔案路徑"),
+        description="等待用戶輸入要生成摘要的檔案路徑"
     )
     
     # 步驟2: 詢問標籤數量 (可選)
@@ -293,7 +339,8 @@ def create_summarize_tag_workflow(session: WorkflowSession) -> WorkflowEngine:
         "請輸入要生成的標籤數量 (預設為3個，直接按Enter使用預設值):",
         validator=lambda count: (True, "") if not count.strip() else (count.strip().isdigit() and int(count.strip()) > 0, "標籤數量必須是正整數"),
         required_data=["file_path_input"],
-        optional=True
+        optional=True,
+        description="詢問用戶想要生成多少個標籤，留空使用預設值 3"
     )
     
     # 步驟3: 確認摘要操作
@@ -310,7 +357,8 @@ def create_summarize_tag_workflow(session: WorkflowSession) -> WorkflowEngine:
         get_summary_confirmation_message,
         "確認生成摘要",
         "取消摘要",
-        ["file_path_input"]
+        ["file_path_input"],
+        description="等待用戶確認是否使用 LLM 生成摘要和標籤"
     )
     
     # 步驟4: 執行摘要生成 (使用LLM內部調用)
@@ -342,7 +390,8 @@ def create_summarize_tag_workflow(session: WorkflowSession) -> WorkflowEngine:
         "execute_summary",
         execute_summary,
         ["file_path_input", "tag_count_input"],
-        "正在生成摘要和標籤..."
+        "正在生成摘要和標籤...",
+        description="使用 LLM 自動生成檔案摘要和標籤並完成工作流程"
     )
     
     # 建立工作流程

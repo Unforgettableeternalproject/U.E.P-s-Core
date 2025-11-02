@@ -68,6 +68,9 @@ class SystemLoop:
         self.snapshot_interval = 5.0  # 5秒間隔蒐集效能快照
         self.status_log_interval = 10.0  # 10秒間隔輸出狀態日誌
         
+        # 🔧 工作流自動推進追蹤（防止重複觸發）
+        self._workflow_advance_tracking = {}  # {workflow_id: last_trigger_time}
+        
         info_log(f"[SystemLoop] 系統循環已創建 (輸入模式: {self.input_mode})")
         
         # ✅ 訂閱事件總線
@@ -96,6 +99,20 @@ class SystemLoop:
                 SystemEvent.WORKFLOW_INPUT_COMPLETED,
                 self._on_workflow_input_completed,
                 handler_name="SystemLoop.workflow_input_completed"
+            )
+            
+            # 🔧 訂閱工作流步驟批准事件（LLM 審核完成後觸發下一步）
+            event_bus.subscribe(
+                SystemEvent.WORKFLOW_STEP_APPROVED,
+                self._on_workflow_step_approved,
+                handler_name="SystemLoop.workflow_step_approved"
+            )
+            
+            # 🔧 訂閱工作流步驟完成事件（步驟執行完成後觸發新循環讓 LLM 處理）
+            event_bus.subscribe(
+                SystemEvent.WORKFLOW_STEP_COMPLETED,
+                self._on_workflow_step_completed,
+                handler_name="SystemLoop.workflow_step_completed"
             )
             
             info_log("[SystemLoop] ✅ 已訂閱事件總線")
@@ -564,16 +581,38 @@ class SystemLoop:
                     should_skip = working_context_manager.should_skip_input_layer()
                     workflow_waiting = working_context_manager.is_workflow_waiting_input()
                     
+                    # ✅ 檢查是否有活躍會話
+                    from core.sessions.session_manager import unified_session_manager
+                    active_ws = unified_session_manager.get_active_workflow_session_ids()
+                    active_cs = unified_session_manager.get_active_chatting_session_ids()
+                    has_active_session = bool(active_ws or active_cs)
+                    
+                    # 🔧 NEW: 檢查活躍工作流的下一步是否為處理步驟
+                    next_step_is_processing = False
+                    if active_ws:
+                        next_step_is_processing = self._check_next_workflow_step_is_processing(active_ws)
+                    
                     if should_skip and not workflow_waiting:
                         # 工作流自動推進中，跳過輸入層（不重啟 STT VAD）
                         skip_reason = working_context_manager.get_skip_reason() or "工作流自動推進"
                         debug_log(2, f"[SystemLoop] ⏭️ 跳過輸入層（不啟動 VAD）: {skip_reason}")
                         # 重置旗標，準備下次可能的輸入
                         working_context_manager.set_skip_input_layer(False)
-                    else:
-                        # 正常流程：重啟 STT 監聽
-                        debug_log(2, f"[SystemLoop] 系統回到IDLE狀態，重新啟動STT監聽")
+                    elif next_step_is_processing:
+                        # 🔧 NEW: 下一步是處理步驟，跳過輸入層，觸發自動推進
+                        debug_log(2, f"[SystemLoop] ⏭️ 下一步是處理步驟，跳過輸入層，觸發自動推進")
+                        # 觸發工作流自動推進
+                        self._trigger_workflow_auto_advance(active_ws)
+                    elif has_active_session and self.input_mode == "vad":
+                        # ✅ 只在 VAD 模式且有活躍會話時重啟 STT
+                        debug_log(2, f"[SystemLoop] 系統回到IDLE狀態，重新啟動STT監聽 (VAD模式)")
                         self._restart_stt_listening()
+                    elif self.input_mode == "text":
+                        # 文字模式：不重啟 VAD，等待手動輸入或會話結束
+                        if has_active_session:
+                            debug_log(2, f"[SystemLoop] 系統回到IDLE狀態 (文字模式)，等待手動輸入")
+                        else:
+                            debug_log(2, f"[SystemLoop] 系統回到IDLE狀態，無活躍會話")
                     
                     # 系統循環結束，檢查 GS 結束條件
                     self._check_cycle_end_conditions()
@@ -797,6 +836,319 @@ class SystemLoop:
                 
         except Exception as e:
             debug_log(2, f"[SystemLoop] 循環結束條件檢查失敗: {e}")
+    
+    def _check_workflow_needs_input(self, active_workflow_session_ids: list) -> bool:
+        """
+        🔧 檢查活躍工作流是否有互動步驟需要使用者輸入
+        
+        Args:
+            active_workflow_session_ids: 活躍的工作流會話 ID 列表
+            
+        Returns:
+            bool: 如果需要使用者輸入則返回 True
+        """
+        try:
+            from core.framework import core_framework
+            
+            if 'sys' not in core_framework.modules:
+                return False
+            
+            sys_module = core_framework.modules['sys'].module_instance
+            
+            for session_id in active_workflow_session_ids:
+                if not hasattr(sys_module, 'workflow_engines'):
+                    continue
+                    
+                engine = sys_module.workflow_engines.get(session_id)
+                if not engine:
+                    continue
+                
+                current_step = engine.get_current_step()
+                if not current_step:
+                    continue
+                
+                # 檢查步驟類型
+                from modules.sys_module.workflows import WorkflowStep
+                if current_step.step_type == WorkflowStep.STEP_TYPE_INTERACTIVE:
+                    debug_log(2, f"[SystemLoop] 💬 工作流 {session_id} 的當前步驟需要輸入: {current_step.id}")
+                    return True
+                
+            return False
+            
+        except Exception as e:
+            debug_log(1, f"[SystemLoop] 檢查工作流輸入需求時出錯: {e}")
+            return False
+    
+    def _check_next_workflow_step_is_processing(self, active_workflow_session_ids: list) -> bool:
+        """
+        🔧 檢查活躍工作流的當前步驟是否為處理步驟（不需要用戶輸入）
+        
+        Args:
+            active_workflow_session_ids: 活躍的工作流會話 ID 列表
+            
+        Returns:
+            bool: 如果當前步驟是處理步驟則返回 True
+        """
+        try:
+            from core.framework import core_framework
+            
+            # 獲取 SYS 模組
+            if 'sys' not in core_framework.modules:
+                return False
+            
+            sys_module = core_framework.modules['sys'].module_instance
+            
+            # 檢查每個活躍的工作流會話
+            for session_id in active_workflow_session_ids:
+                # 獲取工作流引擎
+                if not hasattr(sys_module, 'workflow_engines'):
+                    error_log(f"[SystemLoop] SYS 模組沒有 workflow_engines")
+                    continue
+                    
+                engine = sys_module.workflow_engines.get(session_id)
+                if not engine:
+                    error_log(f"[SystemLoop] 找不到工作流引擎: {session_id}")
+                    continue
+                
+                # 調試：打印當前步驟 ID 和所有可用步驟
+                current_step_id = engine.session.get_data("current_step")
+                all_steps = list(engine.definition.steps.keys()) if engine.definition else []
+                info_log(f"[SystemLoop] 工作流 {session_id}: current_step_id='{current_step_id}', available_steps={all_steps}")
+                
+                # 獲取當前步驟
+                current_step = engine.get_current_step()
+                if not current_step:
+                    error_log(f"[SystemLoop] 工作流 {session_id} 無當前步驟（current_step_id='{current_step_id}' 不在 steps 中）")
+                    continue
+                
+                # 檢查步驟類型 - PROCESSING 或 SYSTEM 步驟都需要自動執行
+                from modules.sys_module.workflows import WorkflowStep
+                info_log(f"[SystemLoop] 檢查步驟 {current_step.id}, 類型: {current_step.step_type}")
+                
+                if current_step.step_type == WorkflowStep.STEP_TYPE_PROCESSING:
+                    info_log(f"[SystemLoop] ✅ 工作流 {session_id} 的當前步驟是處理步驟: {current_step.id}")
+                    return True
+                elif current_step.step_type == WorkflowStep.STEP_TYPE_SYSTEM:
+                    info_log(f"[SystemLoop] ✅ 工作流 {session_id} 的當前步驟是系統步驟: {current_step.id}")
+                    return True
+                else:
+                    debug_log(2, f"[SystemLoop] 步驟 {current_step.id} 是 {current_step.step_type} 類型，不自動執行")
+                
+            return False
+            
+        except Exception as e:
+            debug_log(1, f"[SystemLoop] 檢查下一步驟類型時出錯: {e}")
+            return False
+    
+    def _trigger_workflow_auto_advance(self, active_workflow_session_ids: list):
+        """
+        🔧 觸發工作流自動推進（執行處理步驟）
+        
+        Args:
+            active_workflow_session_ids: 活躍的工作流會話 ID 列表
+        """
+        try:
+            from core.framework import core_framework
+            
+            # 獲取 SYS 模組
+            if 'sys' not in core_framework.modules:
+                return
+            
+            sys_module = core_framework.modules['sys'].module_instance
+            current_time = time.time()
+            
+            # 對每個活躍的工作流會話觸發自動推進
+            for session_id in active_workflow_session_ids:
+                # 🔧 檢查是否在近期（1秒內）已經觸發過
+                last_trigger_time = self._workflow_advance_tracking.get(session_id, 0)
+                if current_time - last_trigger_time < 1.0:
+                    debug_log(2, f"[SystemLoop] 跳過重複推進: {session_id} (距離上次觸發 {current_time - last_trigger_time:.3f}s)")
+                    continue
+                
+                # 記錄觸發時間
+                self._workflow_advance_tracking[session_id] = current_time
+                # 獲取工作流引擎
+                if not hasattr(sys_module, 'workflow_engines'):
+                    continue
+                    
+                engine = sys_module.workflow_engines.get(session_id)
+                if not engine:
+                    continue
+                
+                # 獲取當前步驟
+                current_step = engine.get_current_step()
+                if not current_step:
+                    continue
+                
+                # 如果是處理步驟或系統步驟，提交到背景執行
+                from modules.sys_module.workflows import WorkflowStep
+                if current_step.step_type in (WorkflowStep.STEP_TYPE_PROCESSING, WorkflowStep.STEP_TYPE_SYSTEM):
+                    step_type_name = "處理" if current_step.step_type == WorkflowStep.STEP_TYPE_PROCESSING else "系統"
+                    info_log(f"[SystemLoop] 🚀 觸發工作流自動推進: {session_id}, {step_type_name}步驟: {current_step.id}")
+                    
+                    # 獲取工作流類型
+                    workflow_type = engine.definition.workflow_type if hasattr(engine, 'definition') else 'unknown'
+                    
+                    # 提交到背景執行
+                    if hasattr(sys_module, 'workflow_executor'):
+                        sys_module.workflow_executor.submit(
+                            sys_module._execute_workflow_step_background,
+                            session_id,
+                            workflow_type
+                        )
+                    
+        except Exception as e:
+            error_log(f"[SystemLoop] 觸發工作流自動推進時出錯: {e}")
+    
+    def _on_workflow_step_completed(self, event):
+        """
+        🔧 事件處理器：工作流步驟完成
+        
+        當工作流步驟執行完成後，觸發新的循環讓 LLM 處理步驟結果
+        
+        Args:
+            event: 事件對象
+        """
+        try:
+            completion_data = event.data
+            session_id = completion_data.get('session_id')
+            if not session_id:
+                return
+            
+            info_log(f"[SystemLoop] 📦 收到工作流步驟完成事件: {session_id}")
+            
+            # ✅ 修復：只有當步驟有審核數據（requires_user_response）時才觸發 LLM 處理
+            # 如果步驟沒有審核數據，LLM 已經在事件處理中自動批准，不需要再觸發循環
+            review_data = completion_data.get('llm_review_data')
+            requires_user_response = review_data and review_data.get('requires_user_response', False) if review_data else False
+            
+            if requires_user_response:
+                # 需要 LLM 生成回應：觸發新循環讓 LLM handle() 處理隊列中的事件
+                info_log(f"[SystemLoop] 🔄 步驟需要生成用戶回應，觸發新循環")
+                self._trigger_processing_cycle_for_workflow(session_id)
+            else:
+                debug_log(2, f"[SystemLoop] 步驟無需生成用戶回應，跳過觸發（LLM 已自動批准）")
+                
+        except Exception as e:
+            error_log(f"[SystemLoop] 處理工作流步驟完成事件時出錯: {e}")
+    
+    def _trigger_processing_cycle_for_workflow(self, session_id: str):
+        """
+        為工作流觸發一個新的處理循環
+        
+        這會調用 LLM 的 handle() 方法，讓它處理隊列中的工作流事件
+        
+        Args:
+            session_id: 工作流會話 ID
+        """
+        try:
+            from core.framework import core_framework
+            from core.sessions.session_manager import unified_session_manager
+            
+            # 獲取當前 GS
+            current_gs = unified_session_manager.get_current_general_session()
+            if not current_gs:
+                error_log(f"[SystemLoop] 無法觸發處理循環：沒有活躍的 GS")
+                return
+            
+            # 調用 LLM 模組處理工作流事件
+            if 'llm' in core_framework.modules:
+                llm_module = core_framework.modules['llm'].module_instance
+                
+                # 傳遞空輸入，LLM 會自動檢查 _pending_workflow_events 隊列
+                input_data = {
+                    'text': '',  # 空輸入
+                    'source': 'workflow_step_completed',
+                    'session_id': current_gs.session_id,
+                    'cycle_index': self.cycle_index,
+                    'workflow_session_id': session_id,
+                    'mode': 'work'  # 🔧 明確指定 WORK 模式
+                }
+                
+                info_log(f"[SystemLoop] 🚀 調用 LLM 處理工作流事件 (ws={session_id})")
+                result = llm_module.handle(input_data)
+                
+                if result and result.get('success'):
+                    # LLM 處理成功，發布處理層完成事件
+                    from core.event_bus import event_bus, SystemEvent
+                    
+                    completion_data = {
+                        'session_id': current_gs.session_id,
+                        'cycle_index': self.cycle_index,
+                        'layer': 'PROCESSING',
+                        'response': result.get('text', ''),
+                        'source_module': 'llm',
+                        'llm_output': result,
+                        'timestamp': time.time(),
+                        'completion_type': 'processing_layer_finished',
+                        'mode': 'workflow',
+                        'success': True
+                    }
+                    
+                    event_bus.publish(
+                        event_type=SystemEvent.PROCESSING_LAYER_COMPLETE,
+                        data=completion_data,
+                        source="llm"
+                    )
+                    
+                    info_log(f"[SystemLoop] ✅ 工作流處理循環完成")
+                else:
+                    error_log(f"[SystemLoop] LLM 處理工作流事件失敗: {result}")
+            else:
+                error_log(f"[SystemLoop] 找不到 LLM 模組")
+                
+        except Exception as e:
+            error_log(f"[SystemLoop] 觸發工作流處理循環失敗: {e}")
+            import traceback
+            debug_log(1, f"[SystemLoop] 錯誤詳情: {traceback.format_exc()}")
+    
+    def _on_workflow_step_approved(self, event):
+        """
+        🔧 事件處理器：工作流步驟批准（LLM 審核完成後）
+        
+        當 LLM 批准工作流步驟後，檢查並執行下一個處理步驟
+        
+        Args:
+            event: 事件對象
+        """
+        try:
+            approval_data = event.data
+            session_id = approval_data.get('session_id')
+            if not session_id:
+                return
+            
+            info_log(f"[SystemLoop] 📋 收到工作流步驟批准事件: {session_id}")
+            
+            # 🔍 獲取當前步驟信息用於調試
+            from core.framework import core_framework
+            if 'sys' in core_framework.modules:
+                sys_module = core_framework.modules['sys'].module_instance
+                if hasattr(sys_module, 'workflow_engines'):
+                    engine = sys_module.workflow_engines.get(session_id)
+                    if engine:
+                        current_step = engine.get_current_step()
+                        if current_step:
+                            info_log(f"[SystemLoop] 🔍 當前步驟: ID={current_step.id}, Type={current_step.step_type}")
+                        else:
+                            error_log(f"[SystemLoop] ⚠️ 引擎存在但無法獲取當前步驟！")
+                    else:
+                        error_log(f"[SystemLoop] ⚠️ 找不到工作流引擎: {session_id}")
+                else:
+                    error_log(f"[SystemLoop] ⚠️ SYS 模組沒有 workflow_engines 屬性")
+            else:
+                error_log(f"[SystemLoop] ⚠️ 找不到 SYS 模組")
+            
+            # 檢查該工作流的下一步是否為處理步驟
+            has_processing = self._check_next_workflow_step_is_processing([session_id])
+            
+            if has_processing:
+                info_log(f"[SystemLoop] ⏭️ 批准後檢測到處理步驟，觸發自動推進")
+                self._trigger_workflow_auto_advance([session_id])
+            else:
+                debug_log(2, f"[SystemLoop] 批准後無處理步驟待執行，等待用戶輸入或其他事件")
+                
+        except Exception as e:
+            error_log(f"[SystemLoop] 處理工作流步驟批准事件時出錯: {e}")
 
     def handle_output_completion(self, output_data: Dict[str, Any]):
         """
@@ -810,8 +1162,38 @@ class SystemLoop:
             # 記錄完整流程完成
             self._complete_cycle()
             
-            # ✅ 在 VAD 模式下重新啟動 STT 監聽
-            if self.input_mode == "vad":
+            # 🔧 在 WORK 狀態中，預設跳過輸入層，除非有互動步驟需要輸入
+            from core.sessions.session_manager import unified_session_manager
+            from core.states.state_manager import state_manager, UEPState
+            
+            active_ws = unified_session_manager.get_active_workflow_session_ids()
+            current_state = state_manager.get_current_state()
+            
+            # 檢查工作流是否有互動步驟需要輸入
+            needs_user_input = False
+            has_processing_step = False
+            
+            if active_ws:
+                debug_log(2, f"[SystemLoop] 檢查活躍工作流: {active_ws}")
+                needs_user_input = self._check_workflow_needs_input(active_ws)
+                has_processing_step = self._check_next_workflow_step_is_processing(active_ws)
+                debug_log(2, f"[SystemLoop] 檢查結果: needs_input={needs_user_input}, has_processing={has_processing_step}")
+            
+            # 決策是否啟動輸入層
+            if has_processing_step:
+                # 有處理步驟待執行，觸發背景執行
+                info_log(f"[SystemLoop] ⏭️ 檢測到處理步驟待執行，跳過輸入層，觸發自動推進")
+                self._trigger_workflow_auto_advance(active_ws)
+            elif needs_user_input:
+                # 需要使用者輸入，啟動輸入層
+                info_log(f"[SystemLoop] 💬 工作流需要使用者輸入，啟動輸入層")
+                if self.input_mode == "vad":
+                    self._restart_stt_listening()
+            elif current_state == UEPState.WORK:
+                # WORK 狀態且沒有互動步驟，跳過輸入層
+                debug_log(2, "[SystemLoop] WORK 狀態，無互動步驟，跳過輸入層")
+            elif self.input_mode == "vad":
+                # 非 WORK 狀態（CHAT/IDLE）且為 VAD 模式，啟動輸入層
                 debug_log(2, "[SystemLoop] VAD 模式：重新啟動 STT 語音監聽")
                 self._restart_stt_listening()
             

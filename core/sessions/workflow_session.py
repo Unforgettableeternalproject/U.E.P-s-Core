@@ -446,6 +446,26 @@ class WorkflowSession:
             info_log(f"  └─ 完成步驟: {self.stats['completed_steps']}/{len(self.task_steps)}")
             info_log(f"  └─ 平均步驟時間: {self.stats['avg_step_time']:.2f}秒")
             
+            # 發布會話結束事件 - 通知 StateManager 處理狀態轉換
+            try:
+                from core.event_bus import event_bus, SystemEvent, Event
+                event_bus.publish(Event(
+                    event_type=SystemEvent.SESSION_ENDED,
+                    data={
+                        'session_id': self.session_id,
+                        'session_type': 'workflow',
+                        'reason': reason,
+                        'duration': duration,
+                        'task_type': self.task_type.value,
+                        'completed_steps': self.stats['completed_steps'],
+                        'total_steps': len(self.task_steps)
+                    },
+                    source='workflow_session'
+                ))
+                debug_log(2, f"[WorkflowSession] 已發布 SESSION_ENDED 事件: {self.session_id}")
+            except Exception as e:
+                error_log(f"[WorkflowSession] 發布會話結束事件失敗: {e}")
+            
             return summary
             
         except Exception as e:

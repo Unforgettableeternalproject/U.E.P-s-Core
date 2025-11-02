@@ -1582,3 +1582,15 @@
 
 ---
 
+### Workflow in system loop works now, but some problems occured, will fix tomorrow. 11/03
+
+> Date: Mon, 03 Nov 2025 03:53:13 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `24cefda770a05932d2b4e45de4252d3c82936b43`
+
+---
+

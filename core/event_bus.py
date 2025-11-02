@@ -50,6 +50,10 @@ class SystemEvent(Enum):
     WORKFLOW_REQUIRES_INPUT = "workflow_requires_input"    # 工作流需要使用者輸入
     WORKFLOW_INPUT_COMPLETED = "workflow_input_completed"  # 工作流輸入完成
     
+    # ✅ 工作流步驟事件（用於 LLM-SYS 協作）
+    WORKFLOW_STEP_COMPLETED = "workflow_step_completed"    # 工作流步驟完成，等待 LLM 審核
+    WORKFLOW_STEP_APPROVED = "workflow_step_approved"      # 🔧 工作流步驟已批准（LLM 審核完成）
+    
     # 階段五：背景工作流事件
     BACKGROUND_WORKFLOW_SUBMITTED = "background_workflow_submitted"    # 背景工作流已提交
     BACKGROUND_WORKFLOW_STARTED = "background_workflow_started"        # 背景工作流開始執行

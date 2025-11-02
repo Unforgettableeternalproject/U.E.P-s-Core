@@ -14,7 +14,7 @@ Controller 是系統級的監督者，不直接參與模組層級的處理流程
 
 import time
 import threading
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from enum import Enum
 
 from core.framework import core_framework
@@ -61,8 +61,9 @@ class UnifiedController:
         from core.module_coordinator import module_coordinator
         self.module_coordinator = module_coordinator
         
-        # 模組註冊表引用（用於獲取模組實例）
-        self.module_registry = core_framework.module_registry if hasattr(core_framework, 'module_registry') else None
+        # 狀態佇列管理器引用
+        from core.states.state_queue import get_state_queue_manager
+        self.state_queue_manager = get_state_queue_manager()
         
         # 系統統計
         self.startup_time = None
@@ -427,9 +428,7 @@ class UnifiedController:
     def _setup_event_handlers(self):
         """設置系統級事件處理器"""
         try:
-            from core.event_bus import get_event_bus, SystemEvent
-            
-            event_bus = get_event_bus()
+            from core.event_bus import event_bus, SystemEvent
             
             # 訂閱背景工作流事件
             event_bus.subscribe(SystemEvent.BACKGROUND_WORKFLOW_COMPLETED, 
@@ -847,7 +846,7 @@ class UnifiedController:
         """
         try:
             # 獲取 TTS 模組進行語音通知
-            tts_module = self.module_registry.get("TTS")
+            tts_module = self.core_framework.get_module("tts")
             if tts_module:
                 notification_message = f"背景任務已完成：{workflow_type}"
                 try:
@@ -878,7 +877,7 @@ class UnifiedController:
         """
         try:
             # 獲取 TTS 模組進行語音通知
-            tts_module = self.module_registry.get("TTS")
+            tts_module = self.core_framework.get_module("tts")
             if tts_module:
                 notification_message = f"背景任務失敗：{workflow_type}，錯誤：{error}"
                 try:

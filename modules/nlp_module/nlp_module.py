@@ -358,8 +358,9 @@ class NLPModule(BaseModule):
                 result["next_modules"] = ["mem_module", "llm_module"]
                 
             elif primary_intent == IntentType.WORK:
-                # 工作類型：轉發到SYS, MEM, LLM
-                result["next_modules"] = ["mem_module", "llm_module", "sys_module"]
+                # 工作類型：僅轉發到LLM（Cycle 0 三階段：LLM決策→SYS執行→LLM回應）
+                # MEM 不參與 WORK 模式，SYS 在第二階段由 ModuleCoordinator 調用
+                result["next_modules"] = ["llm_module"]
                 
             elif primary_intent == IntentType.UNKNOWN:
                 # 未知內容：可能轉發到LLM進行處理
@@ -840,9 +841,23 @@ class NLPModule(BaseModule):
                             # Lower threshold to 0.3 for better matching
                             if matches and matches[0]['relevance_score'] > 0.3:
                                 work_mode = matches[0]['work_mode']
+                                workflow_name = matches[0]['name']  # ✅ 獲取工作流名稱
                                 query_source = "sys_query"
-                                debug_log(2, f"[NLP] Found matching function: {matches[0]['name']} "
+                                debug_log(2, f"[NLP] Found matching function: {workflow_name} "
                                              f"(score={matches[0]['relevance_score']:.2f}, mode={work_mode})")
+                                
+                                # ✅ 將工作流名稱添加到結果中，讓 LLM 知道應該調用哪個工作流
+                                workflow_hint_data = {
+                                    "workflow_name": workflow_name,
+                                    "confidence": matches[0]['relevance_score'],
+                                    "work_mode": work_mode
+                                }
+                                result["workflow_hint"] = workflow_hint_data
+                                
+                                # ✅ 同時寫入 working_context，供 LLM 讀取（因為 NLP 和 LLM 沒有直接數據傳遞）
+                                from core.working_context import working_context_manager
+                                working_context_manager.set_context_data("workflow_hint", workflow_hint_data)
+                                debug_log(3, f"[NLP] 已將工作流提示寫入 working_context: {workflow_hint_data}")
                                 
                                 # 更新 work_mode metadata（intent_type 始終為 WORK）
                                 if work_mode and (not segment.metadata or segment.metadata.get('work_mode') != work_mode):

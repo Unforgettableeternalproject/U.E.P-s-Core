@@ -47,126 +47,126 @@ class MCPServer:
     def _register_core_tools(self):
         """註冊核心工作流控制工具"""
         
-        # 1. start_workflow - 啟動工作流
+        # 1. start_workflow - Start a workflow
         self.register_tool(MCPTool(
             name="start_workflow",
-            description="啟動新的工作流程（用於複雜指令處理）",
+            description="Start a new workflow for complex task handling",
             parameters=[
                 ToolParameter(
                     name="workflow_type",
                     type=ToolParameterType.STRING,
-                    description="工作流程類型，例如 drop_and_read, intelligent_archive, file_processing 等",
+                    description="Workflow type, e.g., drop_and_read, intelligent_archive, file_processing",
                     required=True
                 ),
                 ToolParameter(
                     name="command",
                     type=ToolParameterType.STRING,
-                    description="觸發工作流程的原始指令",
+                    description="Original command that triggered this workflow",
                     required=True
                 ),
                 ToolParameter(
                     name="initial_data",
                     type=ToolParameterType.OBJECT,
-                    description="初始化工作流程的資料",
+                    description="Initial data for workflow initialization",
                     required=False
                 ),
             ],
             handler=self._handle_start_workflow
         ))
         
-        # 2. review_step - 審核步驟執行結果
+        # 2. review_step - Review step execution result
         self.register_tool(MCPTool(
             name="review_step",
-            description="審核工作流程步驟的執行結果，決定是否繼續",
+            description="Review workflow step execution result and decide whether to continue",
             parameters=[
                 ToolParameter(
                     name="session_id",
                     type=ToolParameterType.STRING,
-                    description="工作流程會話 ID",
+                    description="Workflow session ID",
                     required=True
                 ),
                 ToolParameter(
                     name="step_id",
                     type=ToolParameterType.STRING,
-                    description="步驟 ID",
+                    description="Step ID",
                     required=True
                 ),
             ],
             handler=self._handle_review_step
         ))
         
-        # 3. approve_step - 批准並繼續下一步驟
+        # 3. approve_step - Approve and continue to next step
         self.register_tool(MCPTool(
             name="approve_step",
-            description="批准當前步驟結果並繼續執行下一步驟",
+            description="Approve current step result and continue to next step",
             parameters=[
                 ToolParameter(
                     name="session_id",
                     type=ToolParameterType.STRING,
-                    description="工作流程會話 ID",
+                    description="Workflow session ID",
                     required=True
                 ),
                 ToolParameter(
                     name="continue_data",
                     type=ToolParameterType.OBJECT,
-                    description="傳遞給下一步驟的資料",
+                    description="Data to pass to the next step",
                     required=False
                 ),
             ],
             handler=self._handle_approve_step
         ))
         
-        # 4. modify_step - 修改步驟參數後重新執行
+        # 4. modify_step - Modify step parameters and re-execute
         self.register_tool(MCPTool(
             name="modify_step",
-            description="修改當前步驟的參數並重新執行",
+            description="Modify current step parameters and re-execute",
             parameters=[
                 ToolParameter(
                     name="session_id",
                     type=ToolParameterType.STRING,
-                    description="工作流程會話 ID",
+                    description="Workflow session ID",
                     required=True
                 ),
                 ToolParameter(
                     name="modifications",
                     type=ToolParameterType.OBJECT,
-                    description="要修改的參數",
+                    description="Parameters to modify",
                     required=True
                 ),
             ],
             handler=self._handle_modify_step
         ))
         
-        # 5. cancel_workflow - 取消工作流
+        # 5. cancel_workflow - Cancel workflow
         self.register_tool(MCPTool(
             name="cancel_workflow",
-            description="取消進行中的工作流程",
+            description="Cancel an ongoing workflow",
             parameters=[
                 ToolParameter(
                     name="session_id",
                     type=ToolParameterType.STRING,
-                    description="要取消的工作流程會話 ID",
+                    description="Workflow session ID to cancel",
                     required=True
                 ),
                 ToolParameter(
                     name="reason",
                     type=ToolParameterType.STRING,
-                    description="取消原因",
+                    description="Reason for cancellation",
                     required=False
                 ),
             ],
             handler=self._handle_cancel_workflow
         ))
         
-        # 6. get_workflow_status - 查詢工作流狀態
+        # 6. get_workflow_status - Query workflow status
         self.register_tool(MCPTool(
             name="get_workflow_status",
-            description="查詢工作流程的當前狀態與進度",
+            description="Query current status and progress of a workflow",
             parameters=[
                 ToolParameter(
                     name="session_id",
                     type=ToolParameterType.STRING,
-                    description="工作流程會話 ID",
+                    description="Workflow session ID",
                     required=True
                 ),
             ],
@@ -224,6 +224,7 @@ class MCPServer:
             MCP 響應物件
         """
         debug_log(3, f"[MCP] 收到請求: {request.method}")
+        debug_log(3, f"[MCP] 請求參數: {request.params}")
         
         # 檢查工具是否存在
         tool = self.get_tool(request.method)
@@ -290,15 +291,17 @@ class MCPServer:
                 return ToolResult.error(result.get("message", "工作流啟動失敗"))
             
             session_id = result.get("session_id")
+            result_status = result.get("status")
             
-            # 註冊工作流資源
-            self.resource_provider.register_workflow(WorkflowResource(
-                session_id=session_id,
-                workflow_type=workflow_type,
-                status="running",
-                progress=0.0,
-                metadata={"command": command}
-            ))
+            # ✅ 工作流已啟動時註冊資源（completed 不需要註冊）
+            if result_status in ["started", "success", "submitted", "pending"] and session_id:
+                self.resource_provider.register_workflow(WorkflowResource(
+                    session_id=session_id,
+                    workflow_type=workflow_type,
+                    status="running",
+                    progress=0.0,
+                    metadata={"command": command}
+                ))
             
             return ToolResult.success(
                 message=f"工作流 '{workflow_type}' 已啟動",
@@ -352,10 +355,16 @@ class MCPServer:
             workflow = self.resource_provider.get_workflow(session_id)
             if workflow and result.get("status") != "error":
                 status = result.get("status", "running")
+                next_step = result.get("data", {}).get("next_step")
                 self.resource_provider.update_workflow(session_id, {
                     "status": status,
-                    "current_step": result.get("data", {}).get("current_step")
+                    "current_step": next_step
                 })
+                
+                # ✅ 不在這裡執行下一步！
+                # SystemLoop 會在 OUTPUT_LAYER_COMPLETE 事件中檢測處理步驟並觸發執行
+                if next_step and result.get("data", {}).get("approved"):
+                    debug_log(2, f"[MCP] 批准後移至下一步 {next_step}，等待 SystemLoop 觸發執行")
             
             return ToolResult.success(
                 message=result.get("message", "步驟已批准，工作流繼續執行"),

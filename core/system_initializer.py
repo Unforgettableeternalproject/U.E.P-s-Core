@@ -157,10 +157,47 @@ class SystemInitializer:
             core_framework.enable_performance_monitoring(True)
             info_log("   📊 效能監控已啟用")
             
+            # 🔗 建立模組間連接（在所有模組初始化後）
+            if not self._setup_module_connections():
+                error_log("   ⚠️  模組間連接設置失敗（非致命）")
+            
             return True
             
         except Exception as e:
             error_log(f"❌ Framework 初始化失敗: {e}")
+            return False
+    
+    def _setup_module_connections(self) -> bool:
+        """設置模組間的連接（例如 LLM-SYS MCP 連接）"""
+        try:
+            info_log("   🔗 設置模組間連接...")
+            
+            # 1. 連接 LLM 和 SYS 的 MCP Server
+            from core.registry import get_module
+            
+            llm_module = get_module("llm_module")
+            sys_module = get_module("sys_module")
+            
+            if llm_module and sys_module:
+                # 檢查 SYS 模組是否有 MCP Server
+                if hasattr(sys_module, 'mcp_server'):
+                    # 將 MCP Server 傳遞給 LLM 模組
+                    if hasattr(llm_module, 'set_mcp_server'):
+                        llm_module.set_mcp_server(sys_module.mcp_server)
+                        info_log("   ✅ LLM-SYS MCP 連接已建立")
+                    else:
+                        debug_log(2, "   ⚠️  LLM 模組沒有 set_mcp_server 方法")
+                else:
+                    debug_log(2, "   ⚠️  SYS 模組沒有 mcp_server 屬性")
+            else:
+                debug_log(2, f"   ⚠️  模組不可用 - LLM: {llm_module is not None}, SYS: {sys_module is not None}")
+            
+            # 未來可以在這裡添加其他模組間連接
+            
+            return True
+            
+        except Exception as e:
+            error_log(f"   ❌ 模組間連接設置失敗: {e}")
             return False
     
     def _initialize_router(self) -> bool:

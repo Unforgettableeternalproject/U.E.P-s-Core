@@ -41,6 +41,32 @@ def safe_get_module(name):
 modules = {}
 modules_load_times = {}  # 儲存模組載入的時間戳
 
+def _setup_module_connections():
+    """設置模組間的連接（例如 LLM-SYS MCP 連接）"""
+    try:
+        # 1. 連接 LLM 和 SYS 的 MCP Server
+        llm_module = modules.get("llm")
+        sys_module = modules.get("sysmod")
+        
+        if llm_module and sys_module:
+            # 檢查 SYS 模組是否有 MCP Server
+            if hasattr(sys_module, 'mcp_server'):
+                # 將 MCP Server 傳遞給 LLM 模組
+                if hasattr(llm_module, 'set_mcp_server'):
+                    llm_module.set_mcp_server(sys_module.mcp_server)
+                    info_log("[Controller] ✅ LLM-SYS MCP 連接已建立")
+                else:
+                    debug_log(2, "[Controller] ⚠️  LLM 模組沒有 set_mcp_server 方法")
+            else:
+                debug_log(2, "[Controller] ⚠️  SYS 模組沒有 mcp_server 屬性")
+        else:
+            debug_log(2, f"[Controller] ⚠️  模組不可用 - LLM: {llm_module is not None}, SYS: {sys_module is not None}")
+        
+        # 未來可以在這裡添加其他模組間連接
+        
+    except Exception as e:
+        error_log(f"[Controller] 模組間連接設置失敗: {e}")
+
 def _initialize_modules():
     """根據當前載入模式初始化模組字典"""
     global modules, modules_load_times
@@ -74,6 +100,9 @@ def _initialize_modules():
         modules["ui"] = None
         modules["ani"] = None  
         modules["mov"] = None
+        
+        # 🔗 建立模組間連接（在所有模組初始化後）
+        _setup_module_connections()
     else:
         # GUI模式：延遲載入
         info_log("[Controller] 初始化：按需載入模式")
@@ -353,8 +382,34 @@ def get_or_load_module(name):
                 from datetime import datetime
                 modules_load_times[name] = datetime.now().strftime('%H:%M:%S')
                 debug_log(1, f"[Controller] 模組 '{name}' 載入時間: {modules_load_times[name]}")
+                
+                # 🔗 按需載入時，檢查是否需要建立模組間連接
+                # 如果剛載入的是 LLM 或 SYS，嘗試建立 MCP 連接
+                if name in ['llm', 'sysmod']:
+                    _check_and_setup_mcp_connection()
         
         return modules[name]
+
+def _check_and_setup_mcp_connection():
+    """檢查並建立 LLM-SYS MCP 連接（用於按需載入模式）"""
+    try:
+        llm_module = modules.get("llm")
+        sys_module = modules.get("sysmod")
+        
+        # 只有當兩個模組都載入且尚未連接時才建立連接
+        if llm_module and sys_module:
+            # 檢查是否已經連接
+            if hasattr(llm_module, 'mcp_client') and hasattr(llm_module.mcp_client, 'mcp_server'):
+                if llm_module.mcp_client.mcp_server is not None:
+                    # 已經連接，不需要重複建立
+                    return
+            
+            # 建立連接
+            if hasattr(sys_module, 'mcp_server') and hasattr(llm_module, 'set_mcp_server'):
+                llm_module.set_mcp_server(sys_module.mcp_server)
+                info_log("[Controller] ✅ LLM-SYS MCP 連接已建立（按需載入模式）")
+    except Exception as e:
+        debug_log(2, f"[Controller] 檢查 MCP 連接時出錯: {e}")
 
 
 # 測試 STT 模組

@@ -171,9 +171,9 @@ class GeminiWrapper:
                 },
                 "sys_action": {
                     "type": "object",
-                    "nullable": True,
+                    "nullable": False,
                     "properties": {
-                        "action_type": {
+                        "action": {
                             "type": "string",
                             "enum": ["start_workflow", "execute_function", "provide_options"],
                             "description": "系統動作類型"
@@ -201,7 +201,7 @@ class GeminiWrapper:
                             "description": "選擇此動作的詳細理由"
                         }
                     },
-                    "required": ["action_type", "target", "reason"],
+                    "required": ["action", "target", "reason"],
                     "description": "建議的系統動作"
                 },
                 "status_updates": {
@@ -300,18 +300,31 @@ class GeminiWrapper:
 
 
     # [修改] 允許 str 或 list[str]
-    def query(self, prompt: str, mode: str = "chat", cached_content=None) -> dict:
+    def query(self, prompt: str, mode: str = "chat", cached_content=None, tools=None) -> dict:
         contents = [types.Content(role="user", parts=[types.Part(text=prompt)])]
         schema = self.response_schemas.get(mode, self.response_schemas["chat"])
 
-        config = types.GenerateContentConfig(
-            temperature=self.temperature,
-            top_p=self.top_p,
-            max_output_tokens=self.max_tokens,
-            response_mime_type="application/json",
-            response_schema=schema,
-            safety_settings=self.safety_settings
-        )
+        config_params = {
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "max_output_tokens": self.max_tokens,
+            "safety_settings": self.safety_settings
+        }
+        
+        # ✅ 如果提供了 tools，使用 function calling 模式；否則使用 JSON schema 模式
+        if tools:
+            config_params["tools"] = tools
+            # ✅ 強制要求 Gemini 調用函數（ANY mode）
+            config_params["tool_config"] = {"function_calling_config": {"mode": "ANY"}}
+            # 🔍 DEBUG: 記錄 tools 數量
+            from devtools.debugger import debug_log
+            tool_count = sum(len(t.get('function_declarations', [])) for t in tools)
+            debug_log(3, f"[Gemini] 使用 function calling 模式（強制），工具數量: {tool_count}")
+        else:
+            config_params["response_mime_type"] = "application/json"
+            config_params["response_schema"] = schema
+        
+        config = types.GenerateContentConfig(**config_params)
 
         # [修改] 支援單一 id 或多個 id
         if self.cache_enabled and cached_content:
@@ -330,8 +343,26 @@ class GeminiWrapper:
 
         import json
         payload: dict[str, Any] = {}
-        if hasattr(part, 'text') and part.text:
-            payload = json.loads(part.text)
+        
+        # ✅ 處理 function call 回應
+        if hasattr(part, 'function_call') and part.function_call:
+            payload = {
+                "function_call": {
+                    "name": part.function_call.name,
+                    "args": dict(part.function_call.args) if hasattr(part.function_call, 'args') else {}
+                },
+                "text": ""  # function call 時沒有文本回應
+            }
+        elif hasattr(part, 'text') and part.text:
+            # 當使用 tools 時，Gemini 可能返回純文本而非 JSON
+            if tools:
+                payload = {"text": part.text}
+            else:
+                try:
+                    payload = json.loads(part.text)
+                except json.JSONDecodeError:
+                    # Fallback: 若 JSON 解析失敗，當作純文本處理
+                    payload = {"text": part.text}
         elif hasattr(part, 'struct') and part.struct:  # type: ignore
             payload = part.struct  # type: ignore
         else:

@@ -88,6 +88,7 @@ class LLMInput(BaseModel):
     # 系統功能上下文（WORK 模式用）
     available_functions: Optional[str] = Field(None, description="可用系統功能")
     workflow_context: Optional[Dict[str, Any]] = Field(None, description="工作流上下文")
+    workflow_session_id: Optional[str] = Field(None, description="工作流會話ID（用於指定處理哪個工作流）")
     
     # 對話歷史和快取
     ignore_cache: Optional[bool] = Field(False, description="是否忽略回應快取")

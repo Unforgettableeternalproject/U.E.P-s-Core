@@ -24,14 +24,16 @@ class MCPClient:
     用於 LLM 模組與 SYS 模組的 MCP Server 通訊。
     """
     
-    def __init__(self, mcp_server=None):
+    def __init__(self, mcp_server=None, llm_module=None):
         """
         初始化 MCP 客戶端
         
         Args:
             mcp_server: MCP Server 實例
+            llm_module: LLM 模組實例（用於獲取當前會話信息）
         """
         self.mcp_server = mcp_server
+        self.llm_module = llm_module  # ✅ 保存 LLM 模組引用以獲取會話信息
         self._request_id_counter = 0
         
         debug_log(2, "[MCP Client] MCP 客戶端初始化完成")
@@ -133,14 +135,16 @@ class MCPClient:
             tool_call: LLM 的工具呼叫物件，格式:
                 {
                     "name": "tool_name",
-                    "arguments": {...}  # 或 "arguments": "{...}" (JSON string)
+                    "arguments": {...}  # 或 "args": {...} (Gemini 格式)
                 }
         
         Returns:
             (工具名稱, 工具參數)
         """
         tool_name = tool_call.get("name", "")
-        arguments = tool_call.get("arguments", {})
+        
+        # ✅ 支持兩種參數格式: "arguments" (標準) 或 "args" (Gemini)
+        arguments = tool_call.get("arguments") or tool_call.get("args", {})
         
         # 如果 arguments 是字串，嘗試解析為 JSON
         if isinstance(arguments, str):
@@ -150,6 +154,7 @@ class MCPClient:
                 error_log(f"[MCP Client] 解析工具參數失敗: {e}")
                 arguments = {}
         
+        debug_log(3, f"[MCP Client] 解析工具調用: tool={tool_name}, args={arguments}")
         return tool_name, arguments
     
     async def handle_llm_function_call(self, function_call: Dict[str, Any]) -> Dict[str, Any]:
@@ -158,8 +163,9 @@ class MCPClient:
         
         完整流程:
         1. 解析 LLM 的工具呼叫
-        2. 呼叫 MCP 工具
-        3. 將結果格式化為 LLM 可理解的格式
+        2. 自動注入系統級參數（如 session_id）
+        3. 呼叫 MCP 工具
+        4. 將結果格式化為 LLM 可理解的格式
         
         Args:
             function_call: LLM 的 function call 物件
@@ -170,6 +176,9 @@ class MCPClient:
         tool_name, params = self.parse_llm_tool_call(function_call)
         
         info_log(f"[MCP Client] 處理 LLM function call: {tool_name}")
+        
+        # ✅ 自動注入 session_id（如果工具需要且 LLM 未提供）
+        params = self._inject_system_params(tool_name, params)
         
         # 呼叫 MCP 工具
         result = await self.call_tool(tool_name, params)
@@ -247,6 +256,45 @@ class MCPClient:
         """
         return f"執行工具 '{tool_name}' 時發生錯誤: {error}"
     
+    def _inject_system_params(self, tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        自動注入系統級參數
+        
+        某些參數（如 session_id）是系統級的全局狀態，不應該讓 LLM 提供。
+        這個方法會自動注入這些參數，如果 LLM 已經提供則保留 LLM 的值。
+        
+        Args:
+            tool_name: 工具名稱
+            params: LLM 提供的參數
+            
+        Returns:
+            注入系統參數後的參數字典
+        """
+        # 需要 session_id 的工具列表
+        tools_requiring_session = {
+            'review_step', 'approve_step', 'modify_step', 
+            'cancel_workflow', 'get_workflow_status'
+        }
+        
+        # 如果工具需要 session_id 且 LLM 未提供（或提供了錯誤的）
+        if tool_name in tools_requiring_session:
+            # 從 LLM 模組獲取當前會話 ID
+            if self.llm_module and hasattr(self.llm_module, 'session_info'):
+                session_info = self.llm_module.session_info
+                current_session_id = session_info.get('session_id') if session_info else None
+                
+                if current_session_id:
+                    # ✅ 自動注入或覆蓋 session_id
+                    if 'session_id' not in params or not params['session_id']:
+                        debug_log(2, f"[MCP Client] 自動注入 session_id: {current_session_id}")
+                        params['session_id'] = current_session_id
+                    elif params['session_id'] != current_session_id:
+                        # LLM 提供了錯誤的 session_id，覆蓋它
+                        debug_log(2, f"[MCP Client] 覆蓋錯誤的 session_id: {params['session_id']} -> {current_session_id}")
+                        params['session_id'] = current_session_id
+        
+        return params
+    
     def is_workflow_tool(self, tool_name: str) -> bool:
         """
         判斷是否為工作流控制工具
@@ -263,3 +311,46 @@ class MCPClient:
             "get_workflow_status"
         }
         return tool_name in workflow_tools
+    
+    def get_tools_as_gemini_format(self) -> Optional[List[Dict[str, Any]]]:
+        """
+        取得 Gemini Function Calling 格式的工具規範
+        
+        將 MCP 工具規範轉換為 Gemini API 所需的格式
+        
+        Returns:
+            Gemini tools 格式的列表，或 None 如果無工具可用
+        """
+        if self.mcp_server is None:
+            return None
+        
+        try:
+            mcp_tools = self.mcp_server.get_tools_spec_for_llm()
+            if not mcp_tools:
+                return None
+            
+            # 轉換為 Gemini Function Calling 格式
+            # ✅ Gemini 要求單一 dict 包含所有 function_declarations
+            function_declarations = []
+            for tool in mcp_tools:
+                function_declarations.append({
+                    "name": tool["name"],
+                    "description": tool.get("description", ""),
+                    "parameters": tool.get("parameters", {
+                        "type": "object",
+                        "properties": {}
+                    })
+                })
+            
+            gemini_tools = [{"function_declarations": function_declarations}]
+            debug_log(2, f"[MCP Client] 轉換了 {len(function_declarations)} 個工具為 Gemini 格式")
+            
+            # 🔍 DEBUG: 顯示完整的工具格式
+            import json
+            debug_log(3, f"[MCP Client] Gemini 工具格式:\n{json.dumps(gemini_tools, indent=2, ensure_ascii=False)}")
+            
+            return gemini_tools
+        
+        except Exception as e:
+            error_log(f"[MCP Client] 轉換工具規範為 Gemini 格式失敗: {e}")
+            return None

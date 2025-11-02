@@ -123,10 +123,15 @@ class MCPTool(BaseModel):
         Returns:
             (是否有效, 錯誤訊息)
         """
+        from devtools.debugger import debug_log
+        debug_log(3, f"[MCPTool] 驗證參數: {params}")
+        
         for param_def in self.parameters:
             param_value = params.get(param_def.name)
+            debug_log(3, f"[MCPTool] 檢查參數 '{param_def.name}': value={repr(param_value)}, required={param_def.required}")
             is_valid, error_msg = param_def.validate_value(param_value)
             if not is_valid:
+                debug_log(3, f"[MCPTool] 參數驗證失敗: {error_msg}")
                 return False, error_msg
         
         return True, None

@@ -356,6 +356,24 @@ class ChattingSession:
             info_log(f"  └─ 對話輪次: {self.turn_counter}")
             info_log(f"  └─ 平均處理時間: {self.stats['avg_processing_time']:.2f}秒")
             
+            # 發布會話結束事件 - 通知 StateManager 處理狀態轉換
+            try:
+                from core.event_bus import event_bus, SystemEvent, Event
+                event_bus.publish(Event(
+                    event_type=SystemEvent.SESSION_ENDED,
+                    data={
+                        'session_id': self.session_id,
+                        'session_type': 'chatting',
+                        'reason': reason,
+                        'duration': duration,
+                        'total_turns': self.turn_counter
+                    },
+                    source='chatting_session'
+                ))
+                debug_log(2, f"[ChattingSession] 已發布 SESSION_ENDED 事件: {self.session_id}")
+            except Exception as e:
+                error_log(f"[ChattingSession] 發布會話結束事件失敗: {e}")
+            
             return summary
             
         except Exception as e:

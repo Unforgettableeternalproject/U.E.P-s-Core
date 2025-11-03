@@ -440,6 +440,10 @@ class PromptManager:
                 # 這是工作流步驟完成，需要 LLM 生成用戶回應
                 return self._build_workflow_step_response_context(workflow_context)
             
+            if context_type == "workflow_input_required":
+                # 這是工作流需要用戶輸入，需要 LLM 判斷並提供輸入
+                return self._build_workflow_input_required_context(workflow_context)
+            
             # 原有邏輯：工作流進度追蹤
             parts = []
             
@@ -556,6 +560,113 @@ class PromptManager:
         context_parts.append("   original language in the workflow data.")
         context_parts.append("   Your role is to translate/interpret the data for the user.")
         context_parts.append("=" * 60)
+        
+        return "\n".join(context_parts)
+    
+    def _build_workflow_input_required_context(self, workflow_context: Dict) -> str:
+        """
+        構建工作流需要輸入的上下文
+        
+        指示 LLM 使用 provide_workflow_input 工具處理用戶輸入,
+        並判斷是否為委託意圖(delegation intent)
+        
+        Args:
+            workflow_context: 工作流上下文數據
+            
+        Returns:
+            格式化的上下文字符串
+        """
+        workflow_type = workflow_context.get('workflow_type', 'unknown')
+        step_id = workflow_context.get('step_id', 'unknown')
+        prompt = workflow_context.get('prompt', '請提供輸入')
+        is_optional = workflow_context.get('is_optional', False)
+        fallback_value = workflow_context.get('fallback_value', '')
+        
+        context_parts = []
+        
+        # 基礎資訊
+        context_parts.append("=" * 60)
+        context_parts.append("WORKFLOW INPUT REQUIRED - USE provide_workflow_input TOOL")
+        context_parts.append("=" * 60)
+        
+        context_parts.append(f"\nWorkflow Type: {workflow_type}")
+        context_parts.append(f"Step ID: {step_id}")
+        context_parts.append(f"Step Type: Interactive Input Step")
+        context_parts.append(f"Optional: {is_optional}")
+        if is_optional and fallback_value:
+            context_parts.append(f"Fallback Value: {fallback_value}")
+        
+        # 提示信息
+        context_parts.append(f"\nPrompt for User: {prompt}")
+        
+        # 用戶輸入
+        user_input = workflow_context.get('user_input', '')
+        context_parts.append(f"\nUser's Response: {user_input}")
+        
+        # 指引說明
+        context_parts.append("\n" + "=" * 60)
+        context_parts.append("INSTRUCTIONS")
+        context_parts.append("=" * 60)
+        
+        context_parts.append(
+            "\nYou MUST use the provide_workflow_input tool to handle this input."
+            "\nDo NOT generate a text response directly."
+        )
+        
+        context_parts.append(
+            "\n\nYour task:"
+            "\n1. Analyze the user's response semantically and understand their intent"
+            "\n2. EXTRACT the key information from natural language:"
+            "\n   - For paths: extract the essential description (e.g., 'd drive root', 'documents folder')"
+            "\n   - The workflow will handle path resolution and validation internally"
+            "\n   - Don't try to construct absolute paths yourself"
+            "\n3. Determine if it's DELEGATION INTENT or EXPLICIT VALUE"
+        )
+        
+        # Optional 步驟的特殊說明
+        if is_optional:
+            context_parts.append(
+                "\n\n⚠️  This is an OPTIONAL step with fallback."
+                "\n\nDELEGATION INTENT examples (use_fallback=True):"
+                "\n  - '你決定' / 'you decide'"
+                "\n  - '幫我選' / 'help me choose'"
+                "\n  - '隨便' / 'whatever' / 'anything'"
+                "\n  - '不知道' / 'don't know'"
+                "\n  - '預設' / 'default'"
+                "\n  - Empty or very vague responses"
+                "\n\nEXPLICIT VALUE examples (use_fallback=False):"
+                "\n  - Natural language: 'put it in my d drive root' → extract 'd drive root'"
+                "\n  - Natural language: 'save to documents folder' → extract 'documents folder'"
+                "\n  - Specific path: 'C:\\\\temp' → pass 'C:\\\\temp' as-is"
+                "\n  - Any clear indication of what the user wants"
+            )
+        else:
+            context_parts.append(
+                "\n\n⚠️  This is a REQUIRED step (not optional)."
+                "\n\nYour job is to EXTRACT the key information from user's natural language:"
+                "\n  - 'Can you put the file in my d drive root?' → extract 'd drive root'"
+                "\n  - 'Save it to the documents folder' → extract 'documents folder'"
+                "\n  - 'Use C:\\\\temp' → pass 'C:\\\\temp' as-is"
+                "\n\nThe workflow will handle path resolution and validation internally."
+                "\n\nSet use_fallback=False for explicit values."
+                "\nSet use_fallback=True ONLY if user explicitly delegates the decision to you."
+            )
+        
+        context_parts.append(
+            "\n\nHow to respond:"
+            "\n  1. Extract the key information from user's response"
+            "\n  2. Call provide_workflow_input("
+            "\n       session_id: <auto-injected>,"
+            "\n       user_input: <extracted key info>,"
+            "\n       use_fallback: <True if delegation, False otherwise>"
+            "\n     )"
+            "\n\nIMPORTANT:"
+            "\n- user_input should be the EXTRACTED key information (e.g., 'd drive root'), NOT the full sentence"
+            "\n- Let the workflow handle path resolution, validation, and processing"
+            "\n- Do NOT try to resolve paths yourself or call other tools first"
+        )
+        
+        context_parts.append("\n" + "=" * 60)
         
         return "\n".join(context_parts)
     

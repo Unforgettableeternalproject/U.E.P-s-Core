@@ -1594,3 +1594,15 @@
 
 ---
 
+### There are some serious issue with the interactive workflow. 11/04
+
+> Date: Tue, 04 Nov 2025 03:23:44 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `7c52992e0b2eeaddfaf9aa206d5c7bd927167205`
+
+---
+

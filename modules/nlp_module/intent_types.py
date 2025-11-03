@@ -20,20 +20,23 @@ class IntentType(Enum):
     - COMPOUND 不是 BIOS 標籤，而是系統層級判斷（當輸入包含多個意圖分段時）
     - WORK 意圖使用 work_mode metadata 區分 direct/background 執行模式
     - work_mode 僅影響 CS 場景下的中斷行為和優先級，不影響意圖類型本身
+    - RESPONSE 用於工作流場景中的用戶回應（根據 NLP狀態處理.md）
     """
     CHAT = "chat"          # 一般對話
     WORK = "work"          # 工作任務（使用 work_mode metadata 區分 direct/background）
     CALL = "call"          # 呼叫功能，不進佇列
+    RESPONSE = "response"  # 工作流回應（WS 場景中的用戶輸入）
     UNKNOWN = "unknown"    # 未知意圖
 
 
 # 意圖類型基礎優先級映射
 # 注意：WORK 的實際優先級由 work_mode 決定 (direct=100, background=30)
 INTENT_PRIORITY_MAP = {
-    IntentType.CALL: 70,     # 呼叫系統，不進入狀態佇列
-    IntentType.WORK: 50,     # 工作任務，基礎優先級（實際由 work_mode 覆蓋）
-    IntentType.CHAT: 50,     # 普通對話，標準優先權
-    IntentType.UNKNOWN: 10   # 未知意圖，最低優先級
+    IntentType.CALL: 70,       # 呼叫系統，不進入狀態佇列
+    IntentType.WORK: 50,       # 工作任務，基礎優先級（實際由 work_mode 覆蓋）
+    IntentType.CHAT: 50,       # 普通對話，標準優先權
+    IntentType.RESPONSE: 50,   # 工作流回應，標準優先權
+    IntentType.UNKNOWN: 10     # 未知意圖，最低優先級
 }
 
 

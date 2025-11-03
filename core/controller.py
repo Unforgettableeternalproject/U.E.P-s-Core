@@ -286,6 +286,15 @@ class UnifiedController:
             )
             
             if gs_result:
+                # 🔧 立即設置到全局上下文，供所有模組訪問
+                try:
+                    from core.working_context import working_context_manager
+                    working_context_manager.global_context_data['current_gs_id'] = gs_result
+                    working_context_manager.global_context_data['current_cycle_index'] = -1
+                    debug_log(2, f"[Controller] 自動創建的 GS ID 已設置到全局上下文: {gs_result}")
+                except Exception as e:
+                    error_log(f"[Controller] 設置全局 GS ID 失敗: {e}")
+                
                 info_log(f"[Controller] 已自動創建 GS: {gs_result}")
             else:
                 error_log("[Controller] GS 創建失敗")
@@ -327,10 +336,18 @@ class UnifiedController:
                 working_context_manager.cleanup_expired_contexts()
                 debug_log(3, "[Controller] Working Context 過期項目已清理")
             
-            # 2. 重置 Speaker_Accumulation（確保新 GS 時清理）
+            # 2. 清理全局上下文中的 GS ID 和 cycle_index
+            try:
+                working_context_manager.global_context_data['current_gs_id'] = 'unknown'
+                working_context_manager.global_context_data['current_cycle_index'] = -1
+                debug_log(3, "[Controller] 全局 GS ID 已重置")
+            except Exception as e:
+                error_log(f"[Controller] 清理全局 GS ID 失敗: {e}")
+            
+            # 3. 重置 Speaker_Accumulation（確保新 GS 時清理）
             self._reset_speaker_accumulation()
             
-            # 3. 驗證系統狀態一致性
+            # 4. 驗證系統狀態一致性
             self._verify_system_state_consistency()
             
             debug_log(3, "[Controller] 系統級清理完成")
@@ -403,6 +420,18 @@ class UnifiedController:
             
             if current_gs_id:
                 self.total_gs_sessions += 1
+                
+                # 🔧 立即設置到全局上下文，供所有模組訪問
+                # 這確保 NLP/LLM/TTS 等模組在處理時能立即讀取到正確的 GS ID
+                try:
+                    from core.working_context import working_context_manager
+                    working_context_manager.global_context_data['current_gs_id'] = current_gs_id
+                    # 初始化 cycle_index 為 -1 (SystemLoop 會在檢測到循環開始時遞增為 0)
+                    working_context_manager.global_context_data['current_cycle_index'] = -1
+                    debug_log(2, f"[UnifiedController] GS ID 已設置到全局上下文: {current_gs_id}")
+                except Exception as e:
+                    error_log(f"[UnifiedController] 設置全局 GS ID 失敗: {e}")
+                
                 info_log(f"[UnifiedController] GS 已創建: {current_gs_id}")
                 
                 return {

@@ -71,6 +71,11 @@ class SystemLoop:
         # 🔧 工作流自動推進追蹤（防止重複觸發）
         self._workflow_advance_tracking = {}  # {workflow_id: last_trigger_time}
         
+        # 🔧 Cycle 層級的處理/輸出追蹤（確保所有輸出完成後才發布 CYCLE_COMPLETED）
+        # 格式: {"session_id:cycle_index": {"processing_count": int, "output_count": int}}
+        self._cycle_layer_tracking = {}  # 追蹤每個 cycle 的處理層和輸出層完成情況
+        self._cycle_tracking_lock = threading.Lock()  # 保護 _cycle_layer_tracking
+        
         info_log(f"[SystemLoop] 系統循環已創建 (輸入模式: {self.input_mode})")
         
         # ✅ 訂閱事件總線
@@ -99,6 +104,13 @@ class SystemLoop:
                 SystemEvent.WORKFLOW_INPUT_COMPLETED,
                 self._on_workflow_input_completed,
                 handler_name="SystemLoop.workflow_input_completed"
+            )
+            
+            # 訂閱處理層完成事件（追蹤輸出任務啟動）
+            event_bus.subscribe(
+                SystemEvent.PROCESSING_LAYER_COMPLETE,
+                self._on_processing_layer_complete_for_tracking,
+                handler_name="SystemLoop.processing_complete_tracking"
             )
             
             # 🔧 訂閱工作流步驟批准事件（LLM 審核完成後觸發下一步）
@@ -138,6 +150,27 @@ class SystemLoop:
         except Exception as e:
             error_log(f"[SystemLoop] 停止事件總線失敗: {e}")
     
+    def _on_processing_layer_complete_for_tracking(self, event):
+        """處理處理層完成事件 - 用於追蹤輸出任務啟動"""
+        try:
+            # 從處理層數據提取響應，如果有文字內容則表示會啟動 TTS
+            response = event.data.get('response', '')
+            if response and response.strip():
+                # 使用真實的 GS ID 而不是事件中的 session_id（可能是測試用的假 ID）
+                gs_id = self._get_current_gs_id()
+                cycle_index = self.cycle_index  # 使用 SystemLoop 自己的 cycle_index
+                cycle_key = f"{gs_id}:{cycle_index}"
+                
+                with self._cycle_tracking_lock:
+                    if cycle_key not in self._cycle_layer_tracking:
+                        self._cycle_layer_tracking[cycle_key] = {"processing_count": 0, "output_count": 0}
+                    
+                    self._cycle_layer_tracking[cycle_key]["processing_count"] += 1
+                    counts = self._cycle_layer_tracking[cycle_key]
+                    debug_log(2, f"[SystemLoop] 📝 PROCESSING 完成 (cycle={cycle_key}, P={counts['processing_count']}, O={counts['output_count']})")
+        except Exception as e:
+            error_log(f"[SystemLoop] 追蹤 PROCESSING 完成失敗: {e}")
+    
     def _on_output_layer_complete(self, event):
         """
         輸出層完成事件處理器
@@ -145,6 +178,21 @@ class SystemLoop:
         """
         try:
             debug_log(2, f"[SystemLoop] 收到輸出層完成事件: {event.event_id}")
+            
+            # 使用真實的 GS ID 而不是事件中的 session_id
+            gs_id = self._get_current_gs_id()
+            cycle_index = self.cycle_index  # 使用 SystemLoop 自己的 cycle_index
+            cycle_key = f"{gs_id}:{cycle_index}"
+            
+            with self._cycle_tracking_lock:
+                if cycle_key in self._cycle_layer_tracking:
+                    self._cycle_layer_tracking[cycle_key]["output_count"] += 1
+                    counts = self._cycle_layer_tracking[cycle_key]
+                    debug_log(2, f"[SystemLoop] ✅ OUTPUT 完成 (cycle={cycle_key}, P={counts['processing_count']}, O={counts['output_count']})")
+                else:
+                    # 沒有對應的 PROCESSING 記錄（可能是直接調用 TTS）
+                    debug_log(3, f"[SystemLoop] OUTPUT 完成但無對應的 PROCESSING 記錄 (cycle={cycle_key})")
+            
             self.handle_output_completion(event.data)
         except Exception as e:
             error_log(f"[SystemLoop] 處理輸出層完成事件失敗: {e}")
@@ -162,8 +210,41 @@ class SystemLoop:
             # 設置工作流等待輸入旗標
             working_context_manager.set_workflow_waiting_input(True)
             
+            # 🆕 保存工作流輸入上下文信息供 LLM 使用
+            workflow_input_context = {
+                'workflow_type': event.data.get('workflow_type', 'unknown'),
+                'workflow_session_id': event.data.get('session_id'),
+                'step_id': event.data.get('step_id', 'input_step'),
+                'step_type': event.data.get('step_type', 'interactive'),
+                'prompt': event.data.get('prompt', '請提供輸入'),
+                'optional': event.data.get('optional', False)
+            }
+            working_context_manager.set_context_data('workflow_input_context', workflow_input_context)
+            debug_log(2, f"[SystemLoop] 保存工作流輸入上下文: {workflow_input_context}")
+            
             # 清除跳過輸入層旗標，允許輸入層執行
             working_context_manager.set_skip_input_layer(False, reason="workflow_input")
+            
+            # ✅ 更新 global_context_data 使用原始 GS ID 和當前 cycle_index
+            # 注入的輸入應該關聯到觸發工作流的原始 GS，而不是工作流自己的 session
+            workflow_session_id = event.data.get('session_id')
+            if workflow_session_id:
+                from core.sessions.session_manager import session_manager
+                ws = session_manager.get_workflow_session(workflow_session_id)
+                if ws and hasattr(ws, 'gs_session_id'):
+                    # 使用觸發工作流的原始 GS ID（stored in ws.gs_session_id）
+                    working_context_manager.set_context_data('current_gs_id', ws.gs_session_id)
+                    # cycle_index 使用當前 SystemLoop 的循環索引
+                    working_context_manager.set_context_data('current_cycle_index', self.cycle_index)
+                    debug_log(2, f"[SystemLoop] 更新 global_context 為原始 GS: gs_id={ws.gs_session_id}, cycle={self.cycle_index}")
+            
+            # 🆕 保存工作流 prompt，供 text_input_loop 使用
+            workflow_prompt = event.data.get('prompt', '請輸入: ')
+            self.current_workflow_prompt = workflow_prompt
+            
+            # 在 text mode 下顯示工作流 prompt
+            if self.input_mode == "text":
+                info_log(f"[SystemLoop] 💬 {workflow_prompt}")
             
             info_log("[SystemLoop] 💬 工作流等待使用者輸入，輸入層已啟用")
             
@@ -179,6 +260,9 @@ class SystemLoop:
             from core.working_context import working_context_manager
             
             debug_log(2, f"[SystemLoop] 工作流輸入完成: {event.data}")
+            
+            # 清除工作流 prompt
+            self.current_workflow_prompt = None
             
             # 重置工作流等待輸入旗標
             working_context_manager.set_workflow_waiting_input(False)
@@ -395,11 +479,22 @@ class SystemLoop:
                 try:
                     while not self.stop_event.is_set():
                         try:
-                            # 等待用戶輸入
-                            user_input = input(self.text_input_prompt)
+                            # 🆕 檢查是否有工作流 prompt
+                            current_prompt = getattr(self, 'current_workflow_prompt', None)
+                            if current_prompt:
+                                # 使用工作流 prompt
+                                prompt_to_use = f"\n{current_prompt}\n>>> "
+                                # 清除工作流 prompt（只使用一次）
+                                self.current_workflow_prompt = None
+                            else:
+                                # 使用默認 prompt
+                                prompt_to_use = self.text_input_prompt
                             
-                            # 過濾空輸入
-                            if not user_input.strip():
+                            # 等待用戶輸入
+                            user_input = input(prompt_to_use)
+                            
+                            # 過濾空輸入（但工作流輸入允許空字串）
+                            if not user_input.strip() and not current_prompt:
                                 continue
                             
                             # 處理特殊命令
@@ -441,8 +536,13 @@ class SystemLoop:
             return False
     
     def _start_stt_listening(self):
-        """啟動STT持續監聽"""
+        """啟動STT持續監聽（僅在 VAD 模式）"""
         try:
+            # 🔧 檢查輸入模式，只在 VAD 模式才啟動 STT 監聽
+            if self.input_mode != "vad":
+                debug_log(2, f"[SystemLoop] 非 VAD 模式 ({self.input_mode})，跳過 STT 監聽啟動")
+                return True  # 返回 True 表示「不需要啟動」這個狀態正常
+            
             from core.framework import core_framework
             
             # 獲取STT模組
@@ -451,7 +551,7 @@ class SystemLoop:
                 error_log("❌ 無法獲取STT模組")
                 return False
             
-            info_log("🎤 啟動STT持續監聽...")
+            info_log("🎤 啟動STT持續監聽 (VAD 模式)...")
             
             # 創建持續監聽的輸入
             from modules.stt_module.schemas import STTInput, ActivationMode
@@ -479,15 +579,20 @@ class SystemLoop:
             return False
     
     def _restart_stt_listening(self):
-        """重新啟動STT監聽"""
+        """重新啟動STT監聽（僅在 VAD 模式）"""
         try:
+            # 🔧 檢查輸入模式，只在 VAD 模式才重啟 STT 監聽
+            if self.input_mode != "vad":
+                debug_log(2, f"[SystemLoop] 非 VAD 模式 ({self.input_mode})，跳過 STT 監聽重啟")
+                return True  # 返回 True 表示「不需要重啟」這個狀態正常
+            
             from core.framework import core_framework
             
             # 獲取STT模組並恢復監聽能力
             stt_module = core_framework.get_module('stt')
             if stt_module:
                 stt_module.resume_listening()
-                info_log("🔄 重新啟動STT監聽")
+                info_log("🔄 重新啟動STT監聽 (VAD 模式)")
                 return self._start_stt_listening()
             else:
                 error_log("❌ 無法獲取STT模組進行重啟")
@@ -879,6 +984,51 @@ class SystemLoop:
             debug_log(1, f"[SystemLoop] 檢查工作流輸入需求時出錯: {e}")
             return False
     
+    def _display_workflow_prompt(self, active_workflow_session_ids: list):
+        """
+        🔧 在 text mode 下顯示工作流的輸入提示
+        
+        Args:
+            active_workflow_session_ids: 活躍的工作流會話 ID 列表
+        """
+        try:
+            from core.framework import core_framework
+            
+            if 'sys' not in core_framework.modules:
+                return
+            
+            sys_module = core_framework.modules['sys'].module_instance
+            
+            for session_id in active_workflow_session_ids:
+                if not hasattr(sys_module, 'workflow_engines'):
+                    continue
+                    
+                engine = sys_module.workflow_engines.get(session_id)
+                if not engine:
+                    continue
+                
+                current_step = engine.get_current_step()
+                if not current_step:
+                    continue
+                
+                # 檢查步驟類型
+                from modules.sys_module.workflows import WorkflowStep
+                if current_step.step_type == WorkflowStep.STEP_TYPE_INTERACTIVE:
+                    # 取得 prompt
+                    prompt = current_step.get_prompt()
+                    
+                    # 顯示 prompt
+                    info_log(f"[SystemLoop] 📝 工作流輸入提示: {prompt}")
+                    print(f"\n💬 {prompt}")
+                    print("⌨️  請輸入回覆（或說「你決定」讓 AI 自行選擇）：")
+                    
+                    # 設定上下文標記，讓下一次輸入會被路由到工作流
+                    # （這個標記已經在 _on_workflow_requires_input 中設定了）
+                    return
+                    
+        except Exception as e:
+            debug_log(1, f"[SystemLoop] 顯示工作流提示時出錯: {e}")
+    
     def _check_next_workflow_step_is_processing(self, active_workflow_session_ids: list) -> bool:
         """
         🔧 檢查活躍工作流的當前步驟是否為處理步驟（不需要用戶輸入）
@@ -931,6 +1081,19 @@ class SystemLoop:
                 elif current_step.step_type == WorkflowStep.STEP_TYPE_SYSTEM:
                     info_log(f"[SystemLoop] ✅ 工作流 {session_id} 的當前步驟是系統步驟: {current_step.id}")
                     return True
+                elif current_step.step_type == WorkflowStep.STEP_TYPE_INTERACTIVE:
+                    # 🔧 Interactive 步驟：調用 process_input(None) 觸發輸入請求
+                    info_log(f"[SystemLoop] 💬 工作流 {session_id} 遇到 Interactive 步驟: {current_step.id}，觸發輸入請求")
+                    try:
+                        result = engine.process_input(None)
+                        if result and result.data and result.data.get('requires_input'):
+                            # 輸入請求已發布，WorkflowEngine 會通過事件通知我們
+                            info_log(f"[SystemLoop] ✅ Interactive 步驟輸入請求已發布")
+                        else:
+                            error_log(f"[SystemLoop] ❌ Interactive 步驟未正確返回輸入請求")
+                    except Exception as e:
+                        error_log(f"[SystemLoop] ❌ 觸發 Interactive 步驟輸入請求失敗: {e}")
+                    return False  # Interactive 步驟不算 processing step
                 else:
                     debug_log(2, f"[SystemLoop] 步驟 {current_step.id} 是 {current_step.step_type} 類型，不自動執行")
                 
@@ -1159,7 +1322,39 @@ class SystemLoop:
             info_log("[SystemLoop] 接收到輸出層完成通知，三層架構流程結束")
             debug_log(2, f"[SystemLoop] 輸出層結果: {list(output_data.keys())}")
             
-            # 記錄完整流程完成
+            # 🔧 檢查當前 cycle 的所有 PROCESSING 是否都有對應的 OUTPUT
+            # 使用真實的 GS ID 而不是事件中的 session_id（可能是測試用的假 ID）
+            gs_id = self._get_current_gs_id()
+            cycle_index = self.cycle_index  # 使用 SystemLoop 自己的 cycle_index
+            cycle_key = f"{gs_id}:{cycle_index}"
+            
+            should_complete_cycle = False
+            with self._cycle_tracking_lock:
+                if cycle_key in self._cycle_layer_tracking:
+                    counts = self._cycle_layer_tracking[cycle_key]
+                    processing_count = counts["processing_count"]
+                    output_count = counts["output_count"]
+                    
+                    if output_count >= processing_count:
+                        # 所有 PROCESSING 都有對應的 OUTPUT 完成
+                        info_log(f"[SystemLoop] ✅ Cycle 所有輸出完成 (P={processing_count}, O={output_count})")
+                        should_complete_cycle = True
+                        # 清理追蹤記錄
+                        del self._cycle_layer_tracking[cycle_key]
+                    else:
+                        # 還有 PROCESSING 沒有對應的 OUTPUT
+                        info_log(f"[SystemLoop] ⏳ 還有輸出待完成 (P={processing_count}, O={output_count})")
+                else:
+                    # 沒有追蹤記錄，可能是直接調用或單次輸出
+                    debug_log(2, f"[SystemLoop] 無追蹤記錄，直接發布 CYCLE_COMPLETED (cycle={cycle_key})")
+                    should_complete_cycle = True
+            
+            if should_complete_cycle:
+                # 🔧 所有輸出任務完成，發布 CYCLE_COMPLETED 事件
+                # 這確保即使主循環未運行（如測試環境），也能觸發去重清理和會話結束檢查
+                self._publish_cycle_completed()
+            
+            # 記錄完整流程完成（如果循環追蹤已啟動）
             self._complete_cycle()
             
             # 🔧 在 WORK 狀態中，預設跳過輸入層，除非有互動步驟需要輸入
@@ -1189,6 +1384,9 @@ class SystemLoop:
                 info_log(f"[SystemLoop] 💬 工作流需要使用者輸入，啟動輸入層")
                 if self.input_mode == "vad":
                     self._restart_stt_listening()
+                else:
+                    # Text mode: 顯示工作流的 prompt
+                    self._display_workflow_prompt(active_ws)
             elif current_state == UEPState.WORK:
                 # WORK 狀態且沒有互動步驟，跳過輸入層
                 debug_log(2, "[SystemLoop] WORK 狀態，無互動步驟，跳過輸入層")

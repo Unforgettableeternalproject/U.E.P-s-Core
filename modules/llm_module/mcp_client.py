@@ -273,7 +273,8 @@ class MCPClient:
         # 需要 session_id 的工具列表
         tools_requiring_session = {
             'review_step', 'approve_step', 'modify_step', 
-            'cancel_workflow', 'get_workflow_status'
+            'cancel_workflow', 'get_workflow_status',
+            'provide_workflow_input'  # ✅ 工作流輸入也需要自動注入 session_id
         }
         
         # 如果工具需要 session_id 且 LLM 未提供（或提供了錯誤的）

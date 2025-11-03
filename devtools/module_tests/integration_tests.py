@@ -150,6 +150,7 @@ class SystemLoopIntegrationTest:
                 SystemEvent.INPUT_LAYER_COMPLETE,
                 SystemEvent.PROCESSING_LAYER_COMPLETE,
                 SystemEvent.OUTPUT_LAYER_COMPLETE,
+                SystemEvent.CYCLE_COMPLETED,  # 🔧 添加循環完成事件訂閱
                 SystemEvent.WORKFLOW_REQUIRES_INPUT,
                 SystemEvent.WORKFLOW_INPUT_COMPLETED,
                 SystemEvent.STATE_CHANGED,
@@ -179,6 +180,63 @@ class SystemLoopIntegrationTest:
         self.event_log.append(event)
         debug_log(2, f"[Event] {event_type}: {data}")
     
+    def _determine_test_input(self, step_id: str, step_type: str, 
+                              is_optional: bool, prompt: str) -> str:
+        """
+        根據工作流步驟的屬性決定要注入的測試資料
+        
+        Args:
+            step_id: 步驟 ID
+            step_type: 步驟類型 (INPUT, CONFIRMATION, etc.)
+            is_optional: 是否為可選步驟
+            prompt: 步驟提示文字
+            
+        Returns:
+            要注入的測試資料字串
+        """
+        # 快速測試用：可以直接修改這個變數來測試不同的輸入場景
+        # 如果設定了非空字串，會優先使用這個輸入（跳過下面的自動邏輯）
+        # TODO: 技術債務 - 未來需要實現自然語言路徑解析
+        # 目前工作流固定使用 D:\\ 進行測試
+        custom_input = "yes"
+        
+        # 優先使用 custom_input（如果有設定且非空）
+        if custom_input and custom_input.strip():
+            info_log(f"      → 使用自定義測試輸入: {custom_input}")
+            return custom_input
+        
+        # CONFIRMATION 步驟：一律確認
+        if step_type == "confirmation":
+            info_log(f"      → Confirmation 步驟，注入 'yes'")
+            return "yes"
+        
+        # INTERACTIVE 步驟（需要用戶輸入）：根據 optional 屬性決定
+        if step_type == "interactive":
+            # 可選步驟：注入空字串觸發 fallback
+            if is_optional:
+                info_log(f"      → Optional 步驟，注入空字串觸發 fallback")
+                return ""
+            
+            # 必填步驟：根據步驟 ID 提供合理的測試資料
+            test_data_map = {
+                "target_dir_input": "Can you put the file in my d drive root?",
+                "file_path_input": "C:\\temp\\test_file.txt",
+                "tag_input": "test_tag",
+                "category_input": "documents",
+            }
+            
+            if step_id in test_data_map:
+                info_log(f"      → Required 步驟，注入測試資料: {test_data_map[step_id]}")
+                return test_data_map[step_id]
+            
+            # 預設：注入通用測試資料
+            info_log(f"      → Required 步驟，注入預設測試資料")
+            return "test_input"
+        
+        # PROCESSING / SYSTEM 類型：不需要用戶輸入，工作流自動執行
+        info_log(f"      → 處理類型步驟 ({step_type})，注入空字串")
+        return ""
+    
     def inject_text_input(self, text: str) -> bool:
         """
         注入文字輸入到系統
@@ -187,19 +245,10 @@ class SystemLoopIntegrationTest:
         """
         try:
             from core.framework import core_framework
-            from core.working_context import working_context_manager
-            import uuid
             
-            # ✅ 在測試環境下手動設置 cycle_index（因為沒有通過 SystemLoop）
-            # 這確保 ModuleCoordinator 能正確判斷是否第一次進入處理層
-            # 
-            # ⚠️ 重要：每次測試使用唯一的 session_id 以避免去重機制誤擋
-            # ModuleCoordinator 使用 flow-based 去重: session_id:cycle_index:layer
-            test_session_id = f'test_gs_{uuid.uuid4().hex[:8]}'
-            
-            working_context_manager.global_context_data['current_cycle_index'] = 0
-            working_context_manager.global_context_data['current_gs_id'] = test_session_id
-            debug_log(2, f"[IntegrationTest] 已設置測試環境 cycle_index=0, session_id={test_session_id}")
+            # ⚠️ 不再手動設置 session_id 和 cycle_index
+            # 讓 Controller 自己管理 GS 生命週期
+            # SystemLoop 會從 Controller 獲取當前的 GS ID
             
             # 獲取 STT 模組
             stt_module = core_framework.get_module('stt')
@@ -230,7 +279,7 @@ class SystemLoopIntegrationTest:
     
     def wait_for_processing_complete(self, timeout: float = 30.0) -> bool:
         """
-        等待處理完成 - 持續運行直到系統返回 IDLE 狀態
+        等待處理完成 - 監控 OUTPUT_LAYER_COMPLETE、SESSION_ENDED 和 WORKFLOW_REQUIRES_INPUT 事件
         
         Args:
             timeout: 超時時間（秒）
@@ -241,38 +290,141 @@ class SystemLoopIntegrationTest:
         start_time = time.time()
         
         info_log(f"⏳ 等待處理完成 (超時: {timeout}秒)...")
-        info_log(f"   監控系統狀態變化，將持續運行直到返回 IDLE")
+        info_log(f"   監控 OUTPUT_LAYER_COMPLETE、SESSION_ENDED 和 WORKFLOW_REQUIRES_INPUT 事件")
         
-        last_state = None
+        last_output_time = start_time
         output_count = 0
+        cycle_count = 0
+        session_ended_count = 0
+        workflow_inputs_handled = set()  # 記錄已處理的工作流輸入請求
+        pending_input = None  # 待注入的輸入（等待當前循環完成）
+        
+        # 工作流完成的標準：
+        # 1. 至少有一個 OUTPUT_LAYER_COMPLETE 事件
+        # 2. 系統狀態回到 IDLE（工作流完全結束）
+        # 或者：有 SESSION_ENDED 事件（明確的會話結束信號）
         
         while time.time() - start_time < timeout:
-            # 檢查狀態變化事件
-            state_events = [e for e in self.event_log 
-                           if e["event_type"] == "state_changed"]
+            current_time = time.time()
             
-            if state_events:
-                latest_state = state_events[-1]["event_data"].get("data", {}).get("new_state")
-                if latest_state != last_state:
-                    info_log(f"   狀態變化: {last_state} → {latest_state}")
-                    last_state = latest_state
+            # 🔧 測試環境自動處理 WORKFLOW_REQUIRES_INPUT 事件
+            # 策略：
+            # 1. 檢測到 WORKFLOW_REQUIRES_INPUT 時，記錄待注入的輸入
+            # 2. 等待 CYCLE_COMPLETED 事件（確保當前循環的 TTS 已完成）
+            # 3. 循環完成後才注入輸入，觸發下一個循環
+            
+            # 檢查 WORKFLOW_REQUIRES_INPUT 事件
+            workflow_input_events = [e for e in self.event_log 
+                                    if e["event_type"] == "workflow_requires_input"]
+            new_input_requests = len(workflow_input_events) - len(workflow_inputs_handled)
+            if new_input_requests > 0 and pending_input is None:
+                for event in workflow_input_events:
+                    event_data_obj = event["data"]["event_data"]
+                    event_id = getattr(event_data_obj, 'event_id', 'unknown')
                     
-                    # 如果返回 IDLE，說明處理完成
-                    if latest_state == "idle" and output_count > 0:
-                        elapsed = time.time() - start_time
-                        info_log(f"✅ 系統已返回 IDLE 狀態，處理完成 (耗時: {elapsed:.2f}秒)")
-                        return True
+                    if event_id not in workflow_inputs_handled:
+                        workflow_inputs_handled.add(event_id)
+                        
+                        event_actual_data = getattr(event_data_obj, 'data', {})
+                        step_id = event_actual_data.get("step_id", "unknown")
+                        step_type = event_actual_data.get("step_type", "unknown")
+                        prompt = event_actual_data.get("prompt", "")
+                        is_optional = event_actual_data.get("optional", False)
+                        
+                        info_log(f"   ⏸️  工作流等待輸入: {step_id}")
+                        info_log(f"      步驟類型: {step_type}, Optional: {is_optional}")
+                        info_log(f"      提示: {prompt}")
+                        
+                        # 決定要注入的測試資料
+                        test_input = self._determine_test_input(
+                            step_id, step_type, is_optional, prompt
+                        )
+                        
+                        # 記錄待注入的輸入，等待循環完成
+                        pending_input = (step_id, test_input)
+                        info_log(f"   🔄 測試環境：準備注入輸入 = '{test_input}'")
+                        info_log(f"   ⏳ 等待當前循環完成...")
             
-            # 計數 OUTPUT_LAYER_COMPLETE 事件
+            # 檢查 CYCLE_COMPLETED 事件
+            cycle_events = [e for e in self.event_log 
+                          if e["event_type"] == "cycle_completed"]
+            if len(cycle_events) > cycle_count:
+                cycle_count = len(cycle_events)
+                info_log(f"   ✅ 完成第 {cycle_count} 個循環")
+                
+                # 如果有待注入的輸入，現在注入
+                if pending_input is not None:
+                    step_id, test_input = pending_input
+                    info_log(f"   🤖 循環已完成，現在注入輸入: '{test_input}'")
+                    
+                    # 延遲 0.5 秒確保系統已準備好
+                    time.sleep(0.5)
+                    if not self.inject_text_input(test_input):
+                        error_log(f"   ❌ 注入輸入失敗: {step_id}")
+                    
+                    pending_input = None
+            
+            # 檢查 OUTPUT_LAYER_COMPLETE 事件
             output_events = [e for e in self.event_log 
                            if e["event_type"] == "output_layer_complete"]
             if len(output_events) > output_count:
                 output_count = len(output_events)
+                last_output_time = current_time
                 info_log(f"   完成第 {output_count} 個輸出循環")
+            
+            # 檢查 SESSION_ENDED 事件
+            session_ended_events = [e for e in self.event_log 
+                                   if e["event_type"] == "session_ended"]
+            if len(session_ended_events) > session_ended_count:
+                session_ended_count = len(session_ended_events)
+                info_log(f"   檢測到會話結束事件 ({session_ended_count})")
+            
+            # 檢查系統狀態 - 從 state_manager 獲取當前狀態
+            try:
+                from core.states.state_manager import state_manager, UEPState
+                current_state = state_manager.get_current_state()
+                
+                # 每 5 秒記錄一次當前狀態（避免日誌過多）
+                if int(current_time - start_time) % 5 == 0 and (current_time - start_time) > 0:
+                    debug_log(2, f"[IntegrationTest] 等待中... 狀態={current_state}, 輸出={output_count}, 會話結束={session_ended_count}")
+                
+                # 完成條件判斷（必須至少有一個輸出）
+                if output_count > 0:
+                    # 方式 1: 有明確的 SESSION_ENDED 事件
+                    if session_ended_count > 0:
+                        elapsed = current_time - start_time
+                        info_log(f"✅ 檢測到會話結束，處理完成 (耗時: {elapsed:.2f}秒)")
+                        return True
+                    
+                    # 方式 2: 系統狀態回到 IDLE（工作流完全結束）
+                    if current_state == UEPState.IDLE:
+                        elapsed = current_time - start_time
+                        info_log(f"✅ 系統狀態回到 IDLE，工作流完成 (耗時: {elapsed:.2f}秒)")
+                        return True
+                    
+                    # ⚠️ 移除了「10秒無輸出」的後備方案
+                    # 因為它會導致測試在系統還在 WORK 狀態時就提早結束
+                    # 必須等待系統狀態回到 IDLE 或收到 SESSION_ENDED 事件
+            except Exception as e:
+                debug_log(1, f"[IntegrationTest] 檢查系統狀態失敗: {e}")
             
             time.sleep(0.1)
         
-        error_log(f"❌ 處理超時 ({timeout}秒)，最終狀態: {last_state}")
+        # 超時檢查
+        elapsed = time.time() - start_time
+        
+        # 獲取最終狀態信息
+        try:
+            from core.states.state_manager import state_manager
+            final_state = state_manager.get_current_state()
+            error_log(f"❌ 處理超時 ({timeout}秒)")
+            error_log(f"   已完成輸出: {output_count}")
+            error_log(f"   會話結束事件: {session_ended_count}")
+            error_log(f"   最終狀態: {final_state}")
+            error_log(f"   ⚠️  系統未能回到 IDLE 狀態，工作流可能卡住")
+        except Exception as e:
+            error_log(f"❌ 處理超時 ({timeout}秒)，已完成 {output_count} 個輸出")
+        
         return False
     
     def test_file_workflow(self, workflow_name: str, test_llm_sys_collaboration: bool = False) -> Dict[str, Any]:

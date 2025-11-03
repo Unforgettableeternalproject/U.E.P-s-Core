@@ -401,7 +401,8 @@ class ModuleInvocationCoordinator:
             # ✨ 檢查是否為 WORK 路徑的 Cycle 0（需要特殊處理）
             cycle_index = input_data.get('cycle_index', 0)
             
-            if (primary_intent == IntentType.WORK or intent_value == "work") and cycle_index == 0:
+            # cycle_index 為 0 或 -1（未設置/測試環境）時，都視為首次進入處理層
+            if (primary_intent == IntentType.WORK or intent_value == "work") and cycle_index <= 0:
                 # WORK Cycle 0: 三階段處理（LLM 決策 → SYS 啟動 → LLM 回應）
                 info_log("[ModuleCoordinator] 🎯 WORK Cycle 0 - 開始三階段處理")
                 return self._handle_work_cycle_0(input_data)
@@ -633,6 +634,19 @@ class ModuleInvocationCoordinator:
                     priority=3
                 )
             ])
+        elif primary_intent == IntentType.RESPONSE or intent_value == "response":
+            # RESPONSE路徑：僅 LLM（工作流輸入回應，不需要 MEM 和 SYS）
+            info_log("[ModuleCoordinator] RESPONSE 路徑: LLM only (工作流輸入)")
+            requests.append(
+                ModuleInvocationRequest(
+                    target_module="llm",
+                    input_data=self._prepare_llm_input(input_data),
+                    source_module="input_layer",
+                    reasoning="工作流用戶回應處理",
+                    layer=ProcessingLayer.PROCESSING,
+                    priority=4
+                )
+            )
         elif primary_intent == IntentType.WORK or intent_value == "work":
             # WORK路徑：LLM + SYS (不需要 MEM)
             info_log("[ModuleCoordinator] WORK 路徑: LLM + SYS")
@@ -714,6 +728,10 @@ class ModuleInvocationCoordinator:
         # ✅ 根據 primary_intent 決定 LLM 模式
         if primary_intent == IntentType.WORK or intent_value == "work":
             llm_mode = "work"
+        elif primary_intent == IntentType.RESPONSE or intent_value == "response":
+            # RESPONSE 意圖：工作流輸入回應，使用 work 模式讓 LLM 調用 provide_workflow_input
+            llm_mode = "work"
+            debug_log(2, "[ModuleCoordinator] RESPONSE intent - using work mode for workflow input")
         else:
             llm_mode = "chat"
         

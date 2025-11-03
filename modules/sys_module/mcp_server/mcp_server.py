@@ -173,7 +173,55 @@ class MCPServer:
             handler=self._handle_get_workflow_status
         ))
         
-        debug_log(2, "[MCP] 已註冊 6 個核心工作流控制工具")
+        # 7. provide_workflow_input - Provide user input for workflow Input Step
+        self.register_tool(MCPTool(
+            name="provide_workflow_input",
+            description="Provide user input for workflow Input Step. Can judge delegation intent and trigger fallback.",
+            parameters=[
+                ToolParameter(
+                    name="session_id",
+                    type=ToolParameterType.STRING,
+                    description="Workflow session ID",
+                    required=True
+                ),
+                ToolParameter(
+                    name="user_input",
+                    type=ToolParameterType.STRING,
+                    description="User's input text for the Input Step",
+                    required=True
+                ),
+                ToolParameter(
+                    name="use_fallback",
+                    type=ToolParameterType.BOOLEAN,
+                    description="True if user delegated decision (e.g., 'you decide', '幫我選', '隨便'). False if user provided explicit value.",
+                    required=False
+                ),
+            ],
+            handler=self._handle_provide_workflow_input
+        ))
+        
+        # 8. resolve_path - Resolve natural language path descriptions to actual system paths
+        self.register_tool(MCPTool(
+            name="resolve_path",
+            description="Resolve natural language path descriptions (e.g., 'd drive root', 'documents folder', 'desktop') to actual system paths. Returns the resolved absolute path and whether it exists.",
+            parameters=[
+                ToolParameter(
+                    name="path_description",
+                    type=ToolParameterType.STRING,
+                    description="Natural language path description or partial path (e.g., 'd drive', 'documents', 'C:\\temp', '~/downloads')",
+                    required=True
+                ),
+                ToolParameter(
+                    name="create_if_missing",
+                    type=ToolParameterType.BOOLEAN,
+                    description="If True, create the directory if it doesn't exist (default: False)",
+                    required=False
+                ),
+            ],
+            handler=self._handle_resolve_path
+        ))
+        
+        debug_log(2, "[MCP] 已註冊 8 個核心工作流控制工具")
     
     def register_tool(self, tool: MCPTool):
         """
@@ -464,6 +512,142 @@ class MCPServer:
                 "step_count": len(step_results)
             }
         )
+    
+    async def _handle_provide_workflow_input(self, params: Dict[str, Any]) -> ToolResult:
+        """處理 provide_workflow_input 工具 - 讓 LLM 提供並判斷用戶輸入"""
+        session_id = params["session_id"]
+        user_input = params["user_input"]
+        use_fallback = params.get("use_fallback", False)
+        
+        if self.sys_module is None:
+            return ToolResult.error("SYS 模組未初始化")
+        
+        try:
+            # 如果 LLM 判斷用戶是委託意圖,使用空輸入觸發 fallback
+            actual_input = "" if use_fallback else user_input
+            
+            debug_log(2, f"[MCP] provide_workflow_input: use_fallback={use_fallback}, input={'<empty>' if use_fallback else user_input[:50]}")
+            
+            # 調用 SYS 模組繼續工作流並傳入輸入
+            result = await self.sys_module.continue_workflow_async(
+                session_id=session_id,
+                user_input=actual_input
+            )
+            
+            if result.get("status") == "error":
+                return ToolResult.error(result.get("message", "提供輸入失敗"))
+            
+            # 更新工作流資源
+            workflow = self.resource_provider.get_workflow(session_id)
+            if workflow:
+                status = result.get("status", "running")
+                if status == "completed":
+                    self.resource_provider.update_workflow(session_id, {"status": "completed"})
+                elif status == "cancelled":
+                    self.resource_provider.update_workflow(session_id, {"status": "cancelled"})
+            
+            return ToolResult.success(
+                message=f"輸入已處理 (fallback={use_fallback})",
+                data=result
+            )
+        
+        except Exception as e:
+            error_log(f"[MCP] provide_workflow_input 失敗: {e}")
+            return ToolResult.error(f"提供工作流輸入失敗: {str(e)}")
+    
+    async def _handle_resolve_path(self, params: Dict[str, Any]) -> ToolResult:
+        """處理 resolve_path 工具 - 解析自然語言路徑描述為實際系統路徑"""
+        import os
+        from pathlib import Path
+        
+        path_description = params["path_description"].strip()
+        create_if_missing = params.get("create_if_missing", False)
+        
+        try:
+            debug_log(2, f"[MCP] resolve_path: 解析路徑描述 '{path_description}'")
+            
+            # 解析常見的自然語言路徑描述
+            resolved_path = None
+            description_lower = path_description.lower()
+            
+            # 1. 檢查是否已經是完整路徑
+            if os.path.isabs(path_description):
+                resolved_path = path_description
+                debug_log(2, f"[MCP] 檢測到絕對路徑: {resolved_path}")
+            
+            # 2. Windows 驅動器簡稱 (d drive, c drive, etc.)
+            elif 'd drive' in description_lower or 'd:' in description_lower or description_lower == 'd\\':
+                resolved_path = "D:\\"
+            elif 'c drive' in description_lower or 'c:' in description_lower or description_lower == 'c\\':
+                resolved_path = "C:\\"
+            elif 'e drive' in description_lower:
+                resolved_path = "E:\\"
+            
+            # 3. 常見系統文件夾
+            elif 'desktop' in description_lower or '桌面' in description_lower:
+                resolved_path = str(Path.home() / "Desktop")
+            elif 'document' in description_lower or '文件' in description_lower or '文檔' in description_lower:
+                resolved_path = str(Path.home() / "Documents")
+            elif 'download' in description_lower or '下載' in description_lower:
+                resolved_path = str(Path.home() / "Downloads")
+            elif 'picture' in description_lower or 'photo' in description_lower or '圖片' in description_lower:
+                resolved_path = str(Path.home() / "Pictures")
+            elif 'music' in description_lower or '音樂' in description_lower:
+                resolved_path = str(Path.home() / "Music")
+            elif 'video' in description_lower or '影片' in description_lower:
+                resolved_path = str(Path.home() / "Videos")
+            elif 'home' in description_lower or '主目錄' in description_lower or description_lower.startswith('~'):
+                resolved_path = str(Path.home())
+            
+            # 4. 相對路徑（從用戶主目錄）
+            elif description_lower.startswith('./') or description_lower.startswith('.\\'):
+                resolved_path = str(Path.home() / path_description[2:])
+            
+            # 5. 如果無法解析，嘗試作為相對於主目錄的路徑
+            else:
+                # 移除常見的介詞和冠詞
+                cleaned = path_description.replace('my ', '').replace('the ', '').strip()
+                resolved_path = str(Path.home() / cleaned)
+                debug_log(2, f"[MCP] 嘗試作為相對路徑: {resolved_path}")
+            
+            if resolved_path is None:
+                return ToolResult.error(f"無法解析路徑描述: {path_description}")
+            
+            # 標準化路徑
+            resolved_path = os.path.normpath(resolved_path)
+            
+            # 檢查路徑是否存在
+            path_exists = os.path.exists(resolved_path)
+            
+            # 如果需要，創建目錄
+            if create_if_missing and not path_exists:
+                try:
+                    os.makedirs(resolved_path, exist_ok=True)
+                    path_exists = True
+                    debug_log(2, f"[MCP] 已創建目錄: {resolved_path}")
+                except Exception as e:
+                    return ToolResult.error(f"無法創建目錄 {resolved_path}: {str(e)}")
+            
+            result_data = {
+                "original_description": path_description,
+                "resolved_path": resolved_path,
+                "exists": path_exists,
+                "is_directory": os.path.isdir(resolved_path) if path_exists else None,
+                "is_file": os.path.isfile(resolved_path) if path_exists else None,
+                "absolute_path": os.path.abspath(resolved_path)
+            }
+            
+            status_msg = "存在" if path_exists else "不存在"
+            debug_log(2, f"[MCP] 路徑解析成功: {resolved_path} ({status_msg})")
+            
+            return ToolResult.success(
+                message=f"路徑已解析: {resolved_path} ({status_msg})",
+                data=result_data
+            )
+        
+        except Exception as e:
+            error_log(f"[MCP] resolve_path 失敗: {e}")
+            return ToolResult.error(f"路徑解析失敗: {str(e)}")
     
     def notify_step_completed(self, session_id: str, step_id: str, step_result: Dict[str, Any]):
         """

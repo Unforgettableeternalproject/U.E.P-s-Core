@@ -46,7 +46,7 @@ class SystemEvent(Enum):
     CYCLE_STARTED = "cycle_started"                        # 處理循環開始
     CYCLE_COMPLETED = "cycle_completed"                    # 處理循環完成
     
-    # 階段三：工作流輸入控制事件
+    # 工作流輸入控制事件
     WORKFLOW_REQUIRES_INPUT = "workflow_requires_input"    # 工作流需要使用者輸入
     WORKFLOW_INPUT_COMPLETED = "workflow_input_completed"  # 工作流輸入完成
     

@@ -775,6 +775,8 @@ class WorkflowEngine:
                         "workflow_type": self.definition.workflow_type,
                         "session_id": self.session.session_id,
                         "step_id": current_step.id,
+                        "step_type": current_step.step_type,
+                        "optional": getattr(current_step, 'optional', False),
                         "prompt": current_step.get_prompt(),
                         "timestamp": time.time()
                     },
@@ -852,7 +854,9 @@ class WorkflowEngine:
                         self.session.add_data(key, value)
                 
                 # **檢查是否需要 LLM 審核**
-                if self.definition.requires_llm_review:
+                # 🔧 Interactive 步驟不需要審核，因為它們只是收集輸入參數
+                # 審核應該在下一個實際執行步驟完成後進行
+                if self.definition.requires_llm_review and current_step.step_type != current_step.STEP_TYPE_INTERACTIVE:
                     return self._request_llm_review(result, current_step)
                 
                 # 檢查是否需要繼續在當前步驟

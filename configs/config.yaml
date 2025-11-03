@@ -30,5 +30,5 @@ system:
   main_loop_interval: 0.1
   shutdown_timeout: 5.0
   input_mode:
-    mode: vad
+    mode: text
     text_input_prompt: '>>> '

@@ -2,7 +2,7 @@
 
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any, Literal, Union
-from enum import Enum
+from enum import Enum  # ✅ 保留用於 IdentityStatus
 from datetime import datetime
 
 
@@ -45,12 +45,8 @@ class UserProfile(BaseModel):
 
 # === 意圖分析系統 ===
 
-class IntentType(str, Enum):
-    """Intent types - matches intent_types.py IntentType"""
-    CALL = "call"                      # Call UEP
-    CHAT = "chat"                      # Chat conversation
-    WORK = "work"                      # Work task (use work_mode metadata for direct/background)
-    UNKNOWN = "unknown"                # Unknown intent
+# ✅ 導入統一的 IntentType 定義（避免重複定義）
+from .intent_types import IntentType
 
 
 class IntentSegment(BaseModel):

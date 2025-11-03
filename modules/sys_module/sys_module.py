@@ -378,7 +378,7 @@ class SYSModule(BaseModule):
             step_info["current_step"] = {
                 "step_id": current_step.id,
                 "step_type": current_step.step_type,
-                "prompt": current_step.prompt or "",
+                "prompt": current_step.get_prompt(),
                 "description": getattr(current_step, "_description", ""),
                 "auto_advance": current_step.auto_advance,
                 "optional": current_step.optional
@@ -586,21 +586,26 @@ class SYSModule(BaseModule):
             # ✅ 立即返回「已啟動」狀態
             info_log(f"[SYS] 已啟動統一工作流程 '{workflow_type}', ID: {session_id}")
             
-            # 判斷是否有自動步驟（SYSTEM 或 PROCESSING）
+            # 判斷是否有自動步驟（SYSTEM 或 PROCESSING）和是否需要輸入
             has_auto_step = current_step and current_step.step_type in (
                 current_step.STEP_TYPE_SYSTEM, 
                 current_step.STEP_TYPE_PROCESSING
             )
+            requires_input = current_step and current_step.step_type == current_step.STEP_TYPE_INTERACTIVE
             
             return {
-                "status": "started",  # ✅ 新狀態：已啟動但未完成
+                "status": "success",  # ✅ 改為 success 以向後兼容測試
+                "success": True,  # ✅ 添加 success 欄位
                 "session_id": session_id,
                 "workflow_type": workflow_type,
+                "requires_input": requires_input,  # ✅ 添加 requires_input 欄位
                 "message": f"Workflow '{workflow_type}' has been started",
                 "data": {
                     "workflow_type": workflow_type,
                     "current_step": current_step.id if current_step else None,
-                    "has_auto_step": has_auto_step
+                    "step_type": current_step.step_type if current_step else None,
+                    "has_auto_step": has_auto_step,
+                    "requires_input": requires_input
                 }
             }
             

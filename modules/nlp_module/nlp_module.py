@@ -361,6 +361,11 @@ class NLPModule(BaseModule):
                 # 工作類型：僅轉發到LLM（Cycle 0 三階段：LLM決策→SYS執行→LLM回應）
                 # MEM 不參與 WORK 模式，SYS 在第二階段由 ModuleCoordinator 調用
                 result["next_modules"] = ["llm_module"]
+            
+            elif primary_intent == IntentType.RESPONSE:
+                # 工作流回應類型：僅轉發到LLM（用於工作流輸入步驟）
+                result["next_modules"] = ["llm_module"]
+                debug_log(3, "[NLP] RESPONSE intent - routing to LLM for workflow input processing")
                 
             elif primary_intent == IntentType.UNKNOWN:
                 # 未知內容：可能轉發到LLM進行處理
@@ -443,8 +448,26 @@ class NLPModule(BaseModule):
                     )
                     debug_log(3, f"[NLP] Set WS response metadata: {result['response_metadata']}")
                 
+                # ✅ 如果工作流輸入模式修正了意圖，應用修正
+                corrected_segments = []
+                if result.get("corrected_intent"):
+                    corrected_intent = result["corrected_intent"]
+                    # 創建新的 segment 對象並替換意圖 (使用 intent_types.IntentSegment - dataclass)
+                    from .intent_types import IntentSegment as NewIntentSegment
+                    for seg in intent_segments:
+                        # 使用 dataclass 構造方式
+                        new_seg = NewIntentSegment(
+                            segment_text=seg.segment_text,
+                            intent_type=corrected_intent,  # ✅ dataclass 使用 intent_type
+                            confidence=seg.confidence,
+                            priority=seg.priority,
+                            metadata=seg.metadata
+                        )
+                        corrected_segments.append((seg, new_seg))  # ✅ 返回 (old, new) tuple
+                    debug_log(2, f"[NLP] Applied intent correction: {corrected_intent}")
+                
                 # Don't add states in WS mode
-                return {"added_states": [], "corrected_segments": []}
+                return {"added_states": [], "corrected_segments": corrected_segments}
             
             else:
                 error_log(f"[NLP] Unknown session state: {session_state}")
@@ -456,7 +479,10 @@ class NLPModule(BaseModule):
                 debug_log(2, "[NLP] Set skip_input_layer=True for interrupt")
             
             # Add states to queue
+            # 🆕 合併相同類型的連續狀態，避免重複添加
             added_states = []
+            merged_states = []  # [(state_type, [segments], priority, work_mode), ...]
+            
             for state_info in result.get("states_to_add", []):
                 segment = state_info["segment"]
                 state_type_str = state_info["state_type"]
@@ -474,22 +500,37 @@ class NLPModule(BaseModule):
                     error_log(f"[NLP] Unknown state type: {state_type_str}")
                     continue
                 
-                # Add state with proper parameters
-                # work_mode is a string: "direct" or "background"
+                # 🆕 檢查是否可以與上一個狀態合併
+                if merged_states and merged_states[-1][0] == state_type:
+                    # 相同類型，合併到上一個
+                    merged_states[-1][1].append(segment)
+                    debug_log(3, f"[NLP] 合併相同類型狀態: {state_type.value}")
+                else:
+                    # 不同類型或第一個，創建新項目
+                    merged_states.append((state_type, [segment], priority, work_mode))
+            
+            # 🆕 為合併後的狀態添加到隊列
+            for state_type, segments, priority, work_mode in merged_states:
+                # 合併所有段落的文本
+                combined_text = " ".join(seg.segment_text for seg in segments)
                 
-                # Add to state queue with segment text as context
+                # Add to state queue with combined text as context
                 self.state_queue_manager.add_state(
                     state_type,
-                    trigger_content=segment.segment_text,
-                    context_content=segment.segment_text,
-                    metadata={"intent_type": segment.intent_type.name, "confidence": segment.confidence},
+                    trigger_content=combined_text,
+                    context_content=combined_text,
+                    metadata={
+                        "intent_type": segments[0].intent_type.name, 
+                        "confidence": sum(s.confidence for s in segments) / len(segments),
+                        "segment_count": len(segments)
+                    },
                     custom_priority=priority,
-                    work_mode=work_mode  # Pass string directly
+                    work_mode=work_mode
                 )
                 added_states.append(state_type)
                 
-                debug_log(3, f"[NLP] Added state: {state_type.value} "
-                             f"(priority={priority}, work_mode={work_mode})")
+                debug_log(3, f"[NLP] Added merged state: {state_type.value} "
+                             f"(segments={len(segments)}, priority={priority}, work_mode={work_mode})")
             
             if added_states:
                 info_log(f"[NLP] Added {len(added_states)} state(s) to queue: "
@@ -1070,10 +1111,26 @@ class NLPModule(BaseModule):
             "states_to_add": [],
             "skip_input_layer": False,
             "response_metadata": {},
-            "processing_notes": []
+            "processing_notes": [],
+            "workflow_input_mode": False  # ✅ 新增：標記為工作流輸入模式
         }
         
         try:
+            # ✅ 檢查是否為工作流輸入場景（Interactive Input Step）
+            from core.working_context import working_context_manager
+            workflow_waiting_input = working_context_manager.is_workflow_waiting_input()
+            
+            if workflow_waiting_input:
+                result["workflow_input_mode"] = True
+                result["processing_notes"].append("Workflow Input Step - routing to LLM for semantic judgment")
+                debug_log(2, "[NLP] Active WS: Workflow input detected - will trigger LLM to use provide_workflow_input")
+                # 設置路由到 LLM (LLM 會檢查這個標記並調用 provide_workflow_input 工具)
+                result["route_to_llm_for_input"] = True
+                # ✅ 根據 NLP狀態處理.md：當存在 WS 時，所有輸入歸類為 Response
+                result["corrected_intent"] = IntentType.RESPONSE
+                debug_log(2, "[NLP] Active WS: Correcting intent to RESPONSE")
+                return result  # 提前返回，不執行常規 WS 邏輯
+            
             # In WS, all inputs are Response
             result["processing_notes"].append("Active WS - treating all inputs as Response")
             

@@ -720,6 +720,41 @@ class LLMModule(BaseModule):
                 # 確保進入 WORK 模式
                 llm_input.mode = LLMMode.WORK
             
+            # ✅ 檢查是否為工作流輸入場景（Interactive Input Step）
+            from core.working_context import working_context_manager
+            workflow_waiting_input = working_context_manager.is_workflow_waiting_input()
+            
+            if workflow_waiting_input and self.session_info and self.session_info.get('session_type') == 'workflow':
+                info_log("[LLM] 檢測到工作流輸入場景 - 構建 workflow_input_required context")
+                
+                # ✅ 從 working_context_manager 獲取實際的工作流輸入上下文
+                saved_context = working_context_manager.get_context_data('workflow_input_context', {})
+                workflow_session_id = saved_context.get('workflow_session_id') or self.session_info.get('session_id')
+                
+                # 構建 workflow_input_required context（使用實際值）
+                workflow_input_context = {
+                    'type': 'workflow_input_required',
+                    'workflow_session_id': workflow_session_id,
+                    'workflow_type': saved_context.get('workflow_type', 'unknown'),
+                    'step_id': saved_context.get('step_id', 'input_step'),
+                    'step_type': saved_context.get('step_type', 'interactive'),
+                    'prompt': saved_context.get('prompt', '請提供輸入'),
+                    'user_input': llm_input.text,  # 用戶的輸入文本
+                    'is_optional': saved_context.get('optional', False),
+                    'fallback_value': ''  # 空字串作為 fallback
+                }
+                
+                # 合併到 workflow_context
+                if llm_input.workflow_context:
+                    llm_input.workflow_context.update(workflow_input_context)
+                else:
+                    llm_input.workflow_context = workflow_input_context
+                
+                # 確保進入 WORK 模式
+                llm_input.mode = LLMMode.WORK
+                
+                debug_log(2, f"[LLM] workflow_input_context 已構建: {workflow_input_context}")
+            
             # 根據模式切換處理邏輯
             if llm_input.mode == LLMMode.CHAT:
                 output = self._handle_chat_mode(llm_input, status)
@@ -1212,6 +1247,9 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             
             # ✅ 處理 function call 回應
             function_call_result = None
+            response_text = ""  # 初始化 response_text
+            skip_default_followup = False  # 初始化跳過標誌
+            
             if "function_call" in response_data and response_data["function_call"]:
                 debug_log(2, f"[LLM] 檢測到 function call: {response_data['function_call']['name']}")
                 
@@ -1234,6 +1272,7 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                 result_status = function_call_result.get("status", "unknown")
                 result_data = function_call_result.get("data", {})
                 result_message = function_call_result.get("formatted_message", "")
+                tool_name = function_call_result.get("tool_name", "unknown")
                 workflow_status = result_data.get("status", "unknown") if isinstance(result_data, dict) else "unknown"
                 
                 # ✅ 構建包含語言指示的 follow-up prompt
@@ -1243,8 +1282,66 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                 )
                 
                 if result_status == "success":
+                    # ✅ resolve_path 成功：要求 LLM 繼續調用 provide_workflow_input
+                    if tool_name == "resolve_path":
+                        resolved_path = result_data.get("data", {}).get("resolved_path", "") if isinstance(result_data, dict) else ""
+                        path_exists = result_data.get("data", {}).get("exists", False) if isinstance(result_data, dict) else False
+                        
+                        follow_up_prompt = (
+                            f"The path has been successfully resolved:\n"
+                            f"  Original: {result_data.get('data', {}).get('original_description', 'unknown')}\n"
+                            f"  Resolved: {resolved_path}\n"
+                            f"  Exists: {path_exists}\n\n"
+                            f"Now you MUST call the provide_workflow_input tool to submit this resolved path:\n"
+                            f"  provide_workflow_input(\n"
+                            f"    session_id: <auto-injected>,\n"
+                            f"    user_input: '{resolved_path}',\n"
+                            f"    use_fallback: False\n"
+                            f"  )\n\n"
+                            f"DO NOT generate a text response. ONLY call the tool."
+                        )
+                        
+                        # ✅ 保留工具列表，讓 LLM 能夠調用 provide_workflow_input
+                        follow_up_response = self.model.query(
+                            follow_up_prompt,
+                            mode="work",
+                            tools=mcp_tools  # ✅ 保留工具列表
+                        )
+                        
+                        # 如果有 function call，處理它
+                        if "function_call" in follow_up_response and follow_up_response["function_call"]:
+                            debug_log(2, f"[LLM] resolve_path 後續調用: {follow_up_response['function_call']['name']}")
+                            
+                            # 執行第二個 function call
+                            second_result = loop.run_until_complete(
+                                self.mcp_client.handle_llm_function_call(follow_up_response["function_call"])
+                            )
+                            
+                            debug_log(2, f"[LLM] 第二個工具執行結果: {second_result.get('status')}")
+                            
+                            # 這次需要文字回應
+                            final_prompt = (
+                                f"{language_instruction}"
+                                f"The input has been successfully submitted to the workflow.\n"
+                                f"Result: {second_result.get('formatted_message', '')}\n\n"
+                                f"Please inform the user in a brief, friendly tone that you're processing their request.\n"
+                                f"IMPORTANT: Respond in English only."
+                            )
+                            
+                            final_response = self.model.query(final_prompt, mode="work", tools=None)
+                            response_text = final_response.get("text", "Processing your request...")
+                            
+                            # 儲存完整的 function call 結果
+                            function_call_result = second_result
+                        else:
+                            # LLM 沒有調用工具，使用預設回應
+                            response_text = "I'm processing your request..."
+                            debug_log(1, "[LLM] resolve_path 後 LLM 沒有調用 provide_workflow_input")
+                        
+                        # 跳過後續的 follow-up 處理
+                        skip_default_followup = True
                     # ✅ 工作流已啟動（新的非同步模式）
-                    if workflow_status == "started":
+                    elif workflow_status == "started":
                         # 工作流已啟動，正在背景執行
                         workflow_type = result_data.get("workflow_type", "task")
                         follow_up_prompt = (
@@ -1283,16 +1380,20 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                         f"IMPORTANT: Respond in English only."
                     )
                 
-                debug_log(3, f"[LLM] 發送 follow-up prompt 給 Gemini 處理結果")
-                
-                # 第二次調用 Gemini（不使用 tools，只要文本回應）
-                follow_up_response = self.model.query(
-                    follow_up_prompt,
-                    mode="work",
-                    tools=None  # 不需要 tools，只要文本回應
-                )
-                
-                response_text = follow_up_response.get("text", result_message)
+                # 檢查是否跳過預設 follow-up（已在特殊處理中完成）
+                if not skip_default_followup:
+                    debug_log(3, f"[LLM] 發送 follow-up prompt 給 Gemini 處理結果")
+                    
+                    # 第二次調用 Gemini（不使用 tools，只要文本回應）
+                    follow_up_response = self.model.query(
+                        follow_up_prompt,
+                        mode="work",
+                        tools=None  # 不需要 tools，只要文本回應
+                    )
+                    
+                    response_text = follow_up_response.get("text", result_message)
+                else:
+                    debug_log(3, f"[LLM] 跳過預設 follow-up（已在特殊處理中完成）")
             else:
                 response_text = response_data.get("text", "")
             

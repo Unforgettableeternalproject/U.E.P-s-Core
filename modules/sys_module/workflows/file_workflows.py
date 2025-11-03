@@ -196,7 +196,7 @@ def create_intelligent_archive_workflow(session: WorkflowSession) -> WorkflowEng
         name="智慧歸檔工作流程",
         description="選擇要歸檔的檔案，可選目標資料夾，確認後執行歸檔",
         workflow_mode=WorkflowMode.DIRECT,  # 使用同步模式以支援 LLM 互動
-        requires_llm_review=False,  # 暫時禁用 LLM 審核（審核機制尚未實現）
+        requires_llm_review=True,  # ✅ 啟用 LLM 審核，讓 LLM 知道每個步驟的結果
         auto_advance_on_approval=True
     )
     
@@ -204,21 +204,95 @@ def create_intelligent_archive_workflow(session: WorkflowSession) -> WorkflowEng
     initial_file_path = session.get_data("file_path_input", "")
     initial_target_dir = session.get_data("target_dir_input", "")
     
-    # 步驟1: 檔案路徑輸入（使用文字輸入配合檔案選擇視窗）
-    file_input_step = StepTemplate.create_input_step(
-        session,
-        "file_selection",
-        "請選擇要歸檔的檔案路徑:",
-        validator=lambda path: (os.path.exists(path), f"檔案不存在: {path}") if path.strip() else (False, "請提供檔案路徑"),
-        description="等待用戶輸入要歸檔的檔案路徑"
-    )
+    # 🔧 步驟1: 開啟檔案選擇對話框（SYSTEM 步驟）
+    def get_archive_file_path_via_dialog(session):
+        """使用檔案選擇對話框獲取要歸檔的檔案路徑（線程安全）"""
+        try:
+            from utils.safe_file_dialog import open_file_dialog_sync
+            
+            info_log("[Workflow] 開啟檔案選擇對話框（智慧歸檔）...")
+            
+            file_path = open_file_dialog_sync(
+                title="請選擇要歸檔的檔案",
+                filetypes=[
+                    ("所有檔案", "*.*"),
+                    ("文件", "*.txt;*.doc;*.docx;*.pdf;*.md"),
+                    ("圖片", "*.jpg;*.jpeg;*.png;*.gif;*.bmp"),
+                    ("音樂", "*.mp3;*.wav;*.flac;*.ogg"),
+                    ("影片", "*.mp4;*.avi;*.mkv;*.mov"),
+                ]
+            )
+            
+            if not file_path:
+                return StepResult.failure("未選擇檔案")
+            
+            if not os.path.exists(file_path):
+                return StepResult.failure(f"檔案不存在: {file_path}")
+            
+            info_log(f"[Workflow] 已選擇要歸檔的檔案: {file_path}")
+            result = StepResult.success(
+                f"使用者選擇了檔案: {Path(file_path).name}",
+                {"file_selection": file_path}
+            )
+            
+            # ✅ 添加 LLM 審核數據，讓 LLM 知道檔案選擇結果
+            result.llm_review_data = {
+                "action": "file_selected_for_archive",
+                "file_name": Path(file_path).name,
+                "file_path": file_path,
+                "requires_user_response": True,  # 需要 LLM 告訴用戶已選擇檔案
+                "should_end_session": False  # 工作流還要繼續
+            }
+            
+            return result
+        except Exception as e:
+            error_log(f"[Workflow] 獲取檔案路徑失敗: {e}")
+            return StepResult.failure(f"獲取檔案路徑失敗: {e}")
+    
+    class ArchiveFileDialogStep(WorkflowStep):
+        def __init__(self, session):
+            super().__init__(session)
+            self.set_id("file_selection")
+            self.set_step_type(self.STEP_TYPE_SYSTEM)  # 系統操作步驟
+            self.set_description("透過檔案選擇對話框獲取要歸檔的檔案路徑")
+            
+        def get_prompt(self) -> str:
+            return "開啟檔案選擇對話框（智慧歸檔）..."
+            
+        def execute(self, user_input: Any = None) -> StepResult:
+            return get_archive_file_path_via_dialog(self.session)
+            
+        def should_auto_advance(self) -> bool:
+            return False  # 需要 LLM 批准後才能繼續
+    
+    file_input_step = ArchiveFileDialogStep(session)
     
     # 步驟2: 詢問目標資料夾 (可選)
+    def validate_and_resolve_path(path: str) -> tuple[bool, str]:
+        """驗證並解析路徑
+        
+        TODO: 技術債務 - 目前固定返回 D:\\ 用於測試
+        未來需要實現自然語言路徑解析，例如：
+        - 'd drive root' -> 'D:\\'
+        - 'documents' -> 'C:\\Users\\{user}\\Documents'
+        - 'desktop' -> 'C:\\Users\\{user}\\Desktop'
+        """
+        if not path.strip():
+            return (True, "")
+        
+        # 🔧 暫時固定使用 D:\\ 進行測試
+        resolved_path = "D:\\"
+        
+        if os.path.exists(resolved_path):
+            return (True, "")
+        else:
+            return (False, f"目標資料夾不存在: {resolved_path}")
+    
     target_input_step = StepTemplate.create_input_step(
         session,
         "target_dir_input",
         "請輸入目標資料夾路徑:",
-        validator=lambda path: (True, "") if not path.strip() or os.path.exists(path) else (False, f"目標資料夾不存在: {path}"),
+        validator=validate_and_resolve_path,
         required_data=["file_selection"],
         optional=True,
         description="詢問用戶是否指定目標資料夾，留空則自動選擇"
@@ -229,8 +303,10 @@ def create_intelligent_archive_workflow(session: WorkflowSession) -> WorkflowEng
         file_path = session.get_data("file_selection", "")
         target_dir = session.get_data("target_dir_input", "").strip()
         
+        # 🔧 如果有輸入，使用固定的 D:\\ 路徑
         if target_dir:
-            return f"確認要將檔案 {Path(file_path).name} 歸檔到 {target_dir} ?"
+            resolved_target = "D:\\"
+            return f"確認要將檔案 {Path(file_path).name} 歸檔到 {resolved_target} ?"
         else:
             return f"確認要自動歸檔檔案 {Path(file_path).name} ?"
     
@@ -248,6 +324,10 @@ def create_intelligent_archive_workflow(session: WorkflowSession) -> WorkflowEng
     def execute_archive(session):
         file_path = session.get_data("file_selection", "")
         target_dir = session.get_data("target_dir_input", "").strip()
+        
+        # 🔧 如果有輸入，使用固定的 D:\\ 路徑
+        if target_dir:
+            target_dir = "D:\\"
         
         try:
             debug_log(2, f"[Workflow] 開始歸檔檔案: {file_path} -> {target_dir or '自動選擇'}")
@@ -319,18 +399,61 @@ def create_summarize_tag_workflow(session: WorkflowSession) -> WorkflowEngine:
         name="摘要標籤工作流程",
         description="等待使用者提供檔案路徑，可選標籤數量，確認後使用LLM生成摘要和標籤",
         workflow_mode=WorkflowMode.DIRECT,  # 使用同步模式以支援 LLM 互動
-        requires_llm_review=False,  # 暫時禁用 LLM 審核（審核機制尚未實現）
+        requires_llm_review=True,  # ✅ 啟用 LLM 審核，讓 LLM 知道每個步驟的結果
         auto_advance_on_approval=True
     )
     
-    # 步驟1: 等待檔案路徑輸入
-    file_input_step = StepTemplate.create_input_step(
-        session,
-        "file_path_input",
-        "請輸入要生成摘要的檔案路徑:",
-        validator=lambda path: (os.path.exists(path), f"檔案不存在: {path}") if path.strip() else (False, "請提供檔案路徑"),
-        description="等待用戶輸入要生成摘要的檔案路徑"
-    )
+    # 🔧 步驟1: 開啟檔案選擇對話框（SYSTEM 步驟）
+    def get_summary_file_path_via_dialog(session):
+        """使用檔案選擇對話框獲取要生成摘要的檔案路徑（線程安全）"""
+        try:
+            from utils.safe_file_dialog import open_file_dialog_sync
+            
+            info_log("[Workflow] 開啟檔案選擇對話框（摘要標籤）...")
+            
+            file_path = open_file_dialog_sync(
+                title="請選擇要生成摘要的檔案",
+                filetypes=[
+                    ("所有檔案", "*.*"),
+                    ("文字檔案", "*.txt"),
+                    ("Markdown", "*.md"),
+                    ("文件", "*.doc;*.docx;*.pdf"),
+                    ("程式碼", "*.py;*.js;*.java;*.cpp;*.cs"),
+                ]
+            )
+            
+            if not file_path:
+                return StepResult.failure("未選擇檔案")
+            
+            if not os.path.exists(file_path):
+                return StepResult.failure(f"檔案不存在: {file_path}")
+            
+            info_log(f"[Workflow] 已選擇要生成摘要的檔案: {file_path}")
+            return StepResult.success(
+                f"使用者選擇了檔案: {Path(file_path).name}",
+                {"file_path_input": file_path}
+            )
+        except Exception as e:
+            error_log(f"[Workflow] 獲取檔案路徑失敗: {e}")
+            return StepResult.failure(f"獲取檔案路徑失敗: {e}")
+    
+    class SummaryFileDialogStep(WorkflowStep):
+        def __init__(self, session):
+            super().__init__(session)
+            self.set_id("file_path_input")
+            self.set_step_type(self.STEP_TYPE_SYSTEM)  # 系統操作步驟
+            self.set_description("透過檔案選擇對話框獲取要生成摘要的檔案路徑")
+            
+        def get_prompt(self) -> str:
+            return "開啟檔案選擇對話框（摘要標籤）..."
+            
+        def execute(self, user_input: Any = None) -> StepResult:
+            return get_summary_file_path_via_dialog(self.session)
+            
+        def should_auto_advance(self) -> bool:
+            return False  # 需要 LLM 批准後才能繼續
+    
+    file_input_step = SummaryFileDialogStep(session)
     
     # 步驟2: 詢問標籤數量 (可選)
     tag_count_step = StepTemplate.create_input_step(

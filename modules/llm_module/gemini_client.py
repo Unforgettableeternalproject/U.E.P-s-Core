@@ -339,7 +339,25 @@ class GeminiWrapper:
             config=config
         )
 
-        part = result.candidates[0].content.parts[0] # type: ignore
+        # 🔧 防禦性檢查：確保 result 和 candidates 不是 None
+        if result is None:
+            error_log("[Gemini] API 返回 None")
+            return {"text": "❌ Gemini API 未產出回應"}
+        
+        if not hasattr(result, 'candidates') or result.candidates is None or len(result.candidates) == 0:
+            error_log(f"[Gemini] API 返回無效的 candidates: {result}")
+            return {"text": "❌ Gemini API 返回無效回應"}
+        
+        candidate = result.candidates[0]
+        if candidate is None or not hasattr(candidate, 'content') or candidate.content is None:
+            error_log(f"[Gemini] candidate 或 content 為 None")
+            return {"text": "❌ Gemini API 返回空內容"}
+        
+        if not hasattr(candidate.content, 'parts') or candidate.content.parts is None or len(candidate.content.parts) == 0:
+            error_log(f"[Gemini] content.parts 為空")
+            return {"text": "❌ Gemini API 返回空回應部分"}
+        
+        part = candidate.content.parts[0] # type: ignore
 
         import json
         payload: dict[str, Any] = {}
@@ -356,7 +374,23 @@ class GeminiWrapper:
         elif hasattr(part, 'text') and part.text:
             # 當使用 tools 時，Gemini 可能返回純文本而非 JSON
             if tools:
-                payload = {"text": part.text}
+                # 🔧 修復：Gemini 在 function calling 模式下可能返回雙重編碼的 JSON
+                try:
+                    # 嘗試解析外層 JSON
+                    parsed = json.loads(part.text)
+                    if isinstance(parsed, dict) and 'text' in parsed:
+                        # 解碼內層的 Unicode 轉義序列
+                        decoded_text = parsed['text'].encode().decode('unicode_escape')
+                        payload = {"text": decoded_text}
+                        # 保留其他字段
+                        for key, value in parsed.items():
+                            if key != 'text':
+                                payload[key] = value
+                    else:
+                        payload = {"text": part.text}
+                except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
+                    # Fallback: 當作純文本處理
+                    payload = {"text": part.text}
             else:
                 try:
                     payload = json.loads(part.text)

@@ -228,6 +228,13 @@ class GeneralSession:
         # 調試信息
         debug_log(3, f"[GeneralSession] 初始化前檢查 working_context_manager 類型: {type(working_context_manager)}")
         
+        # 🔧 更新全局上下文中的當前 GS ID，確保所有模組都能獲取到最新的 session ID
+        try:
+            working_context_manager.global_context_data['current_gs_id'] = self.session_id
+            debug_log(2, f"[GeneralSession] 已更新全局上下文 current_gs_id: {self.session_id}")
+        except Exception as e:
+            error_log(f"[GeneralSession] 更新全局 GS ID 失敗: {e}")
+        
         # 設定 General Session 上下文資訊
         working_context_manager.set_data(
             ContextType.GENERAL_SESSION, 

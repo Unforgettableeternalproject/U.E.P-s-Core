@@ -60,16 +60,32 @@ class SYSModule(BaseModule):
         # 註冊 WORK_SYS 協作管道的資料提供者
         self._register_collaboration_providers()
         
-        # ✅ 獲取 event_bus 引用
+        # ✅ 獲取 event_bus 引用並訂閱 SESSION_ENDED 事件
         try:
-            from core.event_bus import event_bus
+            from core.event_bus import event_bus, SystemEvent
             self.event_bus = event_bus
-            debug_log(2, "[SYS] Event bus 已連接")
+            # 訂閱 SESSION_ENDED 事件以清理 workflow_engine
+            event_bus.subscribe(SystemEvent.SESSION_ENDED, self._on_session_ended)
+            debug_log(2, "[SYS] Event bus 已連接，已訂閱 SESSION_ENDED")
         except Exception as e:
             error_log(f"[SYS] 無法連接 event bus: {e}")
         
         info_log("[SYS] 初始化完成，啟用模式：" + ", ".join(self.enabled_modes))
         return True
+    
+    def _on_session_ended(self, event):
+        """處理 SESSION_ENDED 事件 - 清理 workflow_engine"""
+        try:
+            session_id = event.data.get('session_id')
+            session_type = event.data.get('session_type')
+            
+            # 只處理 workflow 類型的會話
+            if session_type == 'workflow' and session_id in self.workflow_engines:
+                debug_log(2, f"[SYS] 清理 workflow_engine: {session_id}")
+                del self.workflow_engines[session_id]
+                debug_log(1, f"[SYS] ✅ 已清理 WS {session_id} 的 engine")
+        except Exception as e:
+            error_log(f"[SYS] 處理 SESSION_ENDED 事件失敗: {e}")
     
     def debug(self):
         # Debug level = 1
@@ -380,8 +396,9 @@ class SYSModule(BaseModule):
                 "step_type": current_step.step_type,
                 "prompt": current_step.get_prompt(),
                 "description": getattr(current_step, "_description", ""),
-                "auto_advance": current_step.auto_advance,
-                "optional": current_step.optional
+                "auto_advance": current_step.should_auto_advance(),  # 使用方法而非屬性
+                "priority": current_step.priority,  # 使用 priority 而非 optional
+                "optional": current_step.priority == "optional"  # 計算 optional 狀態
             }
         else:
             step_info["current_step"] = None
@@ -663,6 +680,11 @@ class SYSModule(BaseModule):
                 # 如果工作流完成且需要回應，強制設置為需要 LLM 審核
                 requires_llm_review = engine.is_awaiting_llm_review() or (is_workflow_complete and requires_user_response)
                 
+                # 🆕 預覽下一步資訊（僅當工作流未完成時）
+                next_step_info = None
+                if not is_workflow_complete:
+                    next_step_info = engine.peek_next_step()
+                
                 event_data = {
                     "session_id": session_id,
                     "workflow_type": workflow_type,
@@ -674,7 +696,8 @@ class SYSModule(BaseModule):
                         "data": result.data
                     },
                     "requires_llm_review": requires_llm_review,
-                    "llm_review_data": llm_review_data
+                    "llm_review_data": llm_review_data,
+                    "next_step_info": next_step_info  # 🆕 新增下一步資訊
                 }
                 
                 # ✅ 使用正確的 publish 簽名：event_type, data, source
@@ -761,18 +784,44 @@ class SYSModule(BaseModule):
                 }
                 
             elif result.complete:
-                # Workflow completed successfully
-                self.session_manager.end_session(
-                    session_id,
-                    reason=f"completed: {result.message}"
-                )
-                # Clean up engine
-                if session_id in self.workflow_engines:
-                    del self.workflow_engines[session_id]
+                # 🔧 工作流完成：不立即結束會話，讓 LLM 處理完成事件後調用中斷點
+                # LLM 會在生成最終回應後調用 end_workflow_session()
+                # 這樣 SESSION_ENDED 和 CYCLE_COMPLETED 會在同一個 Cycle 發布
+                debug_log(1, f"[SYS] 工作流完成 {session_id}，等待 LLM 處理")
+                
+                # ✅ 發布工作流完成事件，讓 LLM 生成最終回應
+                if self.event_bus:
+                    from core.event_bus import SystemEvent
+                    workflow_type = session.task_definition.get("workflow_type", "unknown")
+                    llm_review_data = result.llm_review_data if hasattr(result, 'llm_review_data') else None
+                    
+                    event_data = {
+                        "session_id": session_id,
+                        "workflow_type": workflow_type,
+                        "step_result": {
+                            "success": result.success,
+                            "complete": result.complete,
+                            "cancel": result.cancel,
+                            "message": result.message,
+                            "data": result.data
+                        },
+                        "requires_llm_review": True,  # 完成時總是需要 LLM 審核
+                        "llm_review_data": llm_review_data,
+                        "next_step_info": None  # 工作流已完成，沒有下一步
+                    }
+                    
+                    self.event_bus.publish(
+                        event_type=SystemEvent.WORKFLOW_STEP_COMPLETED,
+                        data=event_data,
+                        source="sys"
+                    )
+                    debug_log(2, f"[SYS] 已發布 workflow_step_completed 事件 (complete=True): {session_id}")
+                
                 return {
                     "status": "completed",
                     "message": result.message,
-                    "data": result.data
+                    "data": result.data,
+                    "session_id": session_id
                 }
                 
             elif not result.success:

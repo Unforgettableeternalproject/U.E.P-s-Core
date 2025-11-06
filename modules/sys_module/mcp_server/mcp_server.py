@@ -546,9 +546,34 @@ class MCPServer:
                 elif status == "cancelled":
                     self.resource_provider.update_workflow(session_id, {"status": "cancelled"})
             
+            # ✅ 簡化返回格式，只保留 LLM 需要的關鍵信息
+            simplified_result = {
+                "status": result.get("status"),
+                "session_id": session_id,
+                "requires_input": result.get("requires_input", False),
+                "prompt": result.get("prompt", ""),
+                "message": result.get("message", "")
+            }
+            
+            # 只在需要下一步輸入時提供步驟信息
+            if result.get("requires_input") and "step_info" in result:
+                step_info = result["step_info"]
+                simplified_result["step_info"] = {
+                    "current_step": {
+                        "step_id": step_info.get("current_step", {}).get("step_id"),
+                        "step_type": step_info.get("current_step", {}).get("step_type"),
+                        "prompt": step_info.get("current_step", {}).get("prompt"),
+                        "description": step_info.get("current_step", {}).get("description")
+                    },
+                    "previous_step_result": {
+                        "success": step_info.get("previous_step_result", {}).get("success"),
+                        "message": step_info.get("previous_step_result", {}).get("message")
+                    }
+                }
+            
             return ToolResult.success(
                 message=f"輸入已處理 (fallback={use_fallback})",
-                data=result
+                data=simplified_result
             )
         
         except Exception as e:

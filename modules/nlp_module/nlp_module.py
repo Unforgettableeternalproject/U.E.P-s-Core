@@ -113,6 +113,10 @@ class NLPModule(BaseModule):
             # 通知 Controller 有活動
             self._notify_controller_activity()
             
+            # 🔧 在處理開始時獲取並保存 session_id 和 cycle_index
+            self._current_processing_session_id = self._get_current_gs_id()
+            self._current_processing_cycle_index = self._get_current_cycle_index()
+            
             # 驗證輸入 - 支援字典或 NLPInput 物件
             if isinstance(data, NLPInput):
                 validated_input = data
@@ -120,6 +124,7 @@ class NLPModule(BaseModule):
                 validated_input = NLPInput(**data)
             debug_log(2, f"[NLP] 接收到請求：文本長度={len(validated_input.text)}, "
                        f"語者ID={validated_input.speaker_id}")
+            debug_log(3, f"[NLP] 記錄處理上下文: session={self._current_processing_session_id}, cycle={self._current_processing_cycle_index}")
             
             # 第一階段：語者身份處理
             identity_result = self._process_speaker_identity(validated_input)
@@ -1300,9 +1305,11 @@ class NLPModule(BaseModule):
         try:
             info_log(f"[NLP] 輸入層處理完成，發布事件: 意圖={nlp_result.primary_intent}, 文本='{input_data.text[:50]}...'")
             
-            # 獲取當前 GS session_id 和 cycle_index (用於去重)
-            session_id = self._get_current_gs_id()
-            cycle_index = self._get_current_cycle_index()
+            # 🔧 使用處理開始時保存的 session_id 和 cycle_index
+            session_id = getattr(self, '_current_processing_session_id', self._get_current_gs_id())
+            cycle_index = getattr(self, '_current_processing_cycle_index', self._get_current_cycle_index())
+            
+            debug_log(3, f"[NLP] 發布事件使用: session={session_id}, cycle={cycle_index}")
             
             # 準備輸入層完成數據
             input_layer_completion_data = {

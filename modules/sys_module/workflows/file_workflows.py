@@ -224,7 +224,7 @@ def create_intelligent_archive_workflow(session: WorkflowSession) -> WorkflowEng
             )
             
             if not file_path:
-                return StepResult.failure("未選擇檔案")
+                return StepResult.cancel_workflow("用戶取消了檔案選擇")
             
             if not os.path.exists(file_path):
                 return StepResult.failure(f"檔案不存在: {file_path}")

@@ -444,6 +444,10 @@ class PromptManager:
                 # 這是工作流需要用戶輸入，需要 LLM 判斷並提供輸入
                 return self._build_workflow_input_required_context(workflow_context)
             
+            if context_type == "workflow_error":
+                # 🆕 這是工作流錯誤，需要 LLM 生成錯誤說明並取消工作流
+                return self._build_workflow_error_context(workflow_context)
+            
             # 原有邏輯：工作流進度追蹤
             parts = []
             
@@ -497,8 +501,14 @@ class PromptManager:
         context_parts.append("WORKFLOW STEP COMPLETED - GENERATE USER RESPONSE")
         context_parts.append("=" * 60)
         
-        context_parts.append(f"\nWorkflow Type: {workflow_type}")
-        context_parts.append(f"Step Status: {'COMPLETED (Final)' if is_complete else 'IN PROGRESS'}")
+        # 🆕 獲取下一步資訊
+        next_step_info = workflow_context.get('next_step_info')
+        next_step_is_interactive = next_step_info and next_step_info.get('step_type') == 'interactive' if next_step_info else False
+        
+        context_parts.append(f"\nWorkflow Status: {'COMPLETED (Final)' if is_complete else 'IN PROGRESS'}")
+        
+        # ⚠️ 不顯示技術元信息（workflow_type, session_id 等）
+        # context_parts.append(f"\nWorkflow Type: {workflow_type}")  # ❌ 移除
         
         # 步驟結果資訊
         if step_result:
@@ -535,30 +545,47 @@ class PromptManager:
         if is_complete:
             context_parts.append("\n✅ The workflow has completed successfully.")
             context_parts.append("\nGenerate a natural, friendly response in ENGLISH that:")
-            context_parts.append("1. Acknowledges the workflow completion")
-            context_parts.append("2. Summarizes the key results/data provided above")
-            context_parts.append("3. If the data contains content in another language (e.g., Chinese):")
-            context_parts.append("   - Translate or explain it naturally in English")
-            context_parts.append("   - Focus on the main points and key information")
-            context_parts.append("4. Keep your response conversational and concise (2-4 sentences)")
-            context_parts.append("5. Maintain your U.E.P. personality")
+            context_parts.append("1. Summarizes the key results/data provided above")
+            context_parts.append("2. Keep your response conversational and concise (2-3 sentences)")
+            context_parts.append("3. Act as a personal assistant with personality, NOT a robot")
+            context_parts.append("4. ❌ AVOID: Technical terms like 'session_id', 'workflow_type', 'ws_id'")
+            context_parts.append("5. ✅ BE: Natural, warm, and human-like")
             
+            context_parts.append("\n📋 REQUIRED ACTION:")
+            context_parts.append("   1. Call approve_step() MCP tool to confirm completion")
             if should_end_session:
-                context_parts.append("\n⚠️ IMPORTANT: This is the final response.")
-                context_parts.append("   Set session_control={'action': 'end_session'} in metadata")
+                context_parts.append("   2. Set session_control={'action': 'end_session'} in metadata")
+        
+        elif next_step_is_interactive:
+            context_parts.append("\n⏭️ The next step requires USER INPUT.")
+            if next_step_info:
+                context_parts.append(f"\nNext Step Prompt: {next_step_info.get('prompt', '')}")
+            
+            context_parts.append("\nGenerate a natural response in ENGLISH that:")
+            context_parts.append("1. BRIEFLY acknowledges the current step (1 sentence max)")
+            context_parts.append("2. Asks the user for the needed input (use the prompt above as guide)")
+            context_parts.append("3. Keep it conversational and friendly (2-3 sentences total)")
+            context_parts.append("4. Act as a helpful assistant, NOT a system notification")
+            context_parts.append("5. ❌ AVOID: Mentioning 'workflow', 'step', 'session' or other tech terms")
+            
+            context_parts.append("\n📋 REQUIRED ACTION:")
+            context_parts.append("   Call approve_step() MCP tool AFTER generating your response")
+        
         else:
-            context_parts.append("\n⏳ The workflow is in progress.")
-            context_parts.append("\nGenerate a brief progress update in ENGLISH that:")
-            context_parts.append("1. Acknowledges the current step completion")
-            context_parts.append("2. Briefly mentions what's happening or what will happen next")
-            context_parts.append("3. Keep it short and reassuring (1-2 sentences)")
+            # 這個分支理論上不應該被執行到（因為已被 3 時刻過濾）
+            context_parts.append("\n⏳ Processing step completed, continuing automatically.")
+            context_parts.append("\n📋 REQUIRED ACTION:")
+            context_parts.append("   Call approve_step() MCP tool silently (no text response needed)")
         
         context_parts.append("\n" + "=" * 60)
-        context_parts.append("LANGUAGE REQUIREMENT:")
+        context_parts.append("LANGUAGE & PERSONALITY REQUIREMENTS:")
         context_parts.append("=" * 60)
-        context_parts.append("⚠️ CRITICAL: Always respond in ENGLISH, regardless of the")
-        context_parts.append("   original language in the workflow data.")
-        context_parts.append("   Your role is to translate/interpret the data for the user.")
+        context_parts.append("⚠️ CRITICAL:")
+        context_parts.append("   1. Always respond in ENGLISH")
+        context_parts.append("   2. You are U.E.P., a personal assistant with personality")
+        context_parts.append("   3. Be natural, warm, and conversational")
+        context_parts.append("   4. NEVER mention technical details like IDs, session names, etc.")
+        context_parts.append("   5. Talk like a helpful friend, not a machine")
         context_parts.append("=" * 60)
         
         return "\n".join(context_parts)
@@ -667,6 +694,65 @@ class PromptManager:
         )
         
         context_parts.append("\n" + "=" * 60)
+        
+        return "\n".join(context_parts)
+    
+    def _build_workflow_error_context(self, workflow_context: Dict) -> str:
+        """
+        構建工作流錯誤的上下文
+        
+        當工作流執行過程中發生錯誤時，指示 LLM：
+        1. 生成自然語言的錯誤說明給使用者
+        2. 調用 cancel_workflow MCP 工具優雅終止工作流
+        
+        Args:
+            workflow_context: 工作流錯誤上下文數據
+            
+        Returns:
+            格式化的上下文字符串
+        """
+        session_id = workflow_context.get('workflow_session_id', 'unknown')
+        error_message = workflow_context.get('error_message', '未知錯誤')
+        current_step = workflow_context.get('current_step', '未知步驟')
+        
+        context_parts = []
+        
+        # 基礎資訊
+        context_parts.append("=" * 60)
+        context_parts.append("WORKFLOW ERROR - INFORM USER AND CANCEL")
+        context_parts.append("=" * 60)
+        
+        context_parts.append(f"\n⚠️ A workflow has encountered an error and cannot continue.")
+        context_parts.append(f"\nError Details:")
+        context_parts.append(f"  - Current Step: {current_step}")
+        context_parts.append(f"  - Error Message: {error_message}")
+        
+        # 指引說明
+        context_parts.append("\n" + "=" * 60)
+        context_parts.append("YOUR TASK:")
+        context_parts.append("=" * 60)
+        
+        context_parts.append("\nYou MUST do the following:")
+        context_parts.append("1. Generate a natural, friendly error explanation in ENGLISH")
+        context_parts.append("   - Explain what went wrong in simple terms")
+        context_parts.append("   - Apologize for the inconvenience")
+        context_parts.append("   - Suggest what the user might try instead (if applicable)")
+        context_parts.append("   - Keep it conversational (2-3 sentences)")
+        context_parts.append("")
+        context_parts.append("2. Call the cancel_workflow MCP tool to gracefully terminate:")
+        context_parts.append(f"   - session_id: {session_id}")
+        context_parts.append(f"   - reason: Brief technical reason (for logs)")
+        
+        context_parts.append("\n⚠️ IMPORTANT:")
+        context_parts.append("   - Do NOT mention technical terms like 'session_id', 'workflow', 'step'")
+        context_parts.append("   - Be empathetic and helpful, like a personal assistant")
+        context_parts.append("   - The cancel_workflow call will handle cleanup automatically")
+        
+        context_parts.append("\n" + "=" * 60)
+        context_parts.append("LANGUAGE REQUIREMENT:")
+        context_parts.append("=" * 60)
+        context_parts.append("⚠️ CRITICAL: Always respond in ENGLISH")
+        context_parts.append("=" * 60)
         
         return "\n".join(context_parts)
     

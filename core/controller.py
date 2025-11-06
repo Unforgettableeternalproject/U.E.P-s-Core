@@ -247,6 +247,10 @@ class UnifiedController:
             from core.states.state_queue import get_state_queue_manager
             from core.states.state_manager import UEPState
             
+            # 1. 首先檢查並處理待結束的 WS（符合會話生命週期架構）
+            self._check_and_end_pending_workflow_sessions()
+            
+            # 2. 然後檢查 GS 結束條件
             current_state = self.state_manager.get_current_state()
             current_gs = self.session_manager.get_current_general_session()
             
@@ -266,6 +270,30 @@ class UnifiedController:
                 
         except Exception as e:
             debug_log(2, f"[Controller] GS 結束條件檢查失敗: {e}")
+    
+    def _check_and_end_pending_workflow_sessions(self):
+        """檢查並結束標記待結束的 Workflow Sessions - 在循環完成邊界執行"""
+        try:
+            active_ws_list = self.session_manager.get_active_workflow_sessions()
+            
+            for ws in active_ws_list:
+                # 檢查是否有 pending_end 標記
+                if hasattr(ws, 'pending_end') and ws.pending_end:
+                    session_id = ws.session_id
+                    reason = getattr(ws, 'pending_end_reason', 'workflow_complete')
+                    
+                    debug_log(1, f"[Controller] 在循環邊界處理待結束的 WS: {session_id} (原因: {reason})")
+                    
+                    # 在循環完成邊界真正結束會話
+                    success = self.session_manager.end_workflow_session(session_id)
+                    
+                    if success:
+                        info_log(f"[Controller] ✅ 已在循環邊界結束 WS: {session_id}")
+                    else:
+                        error_log(f"[Controller] ⚠️ 在循環邊界結束 WS 失敗: {session_id}")
+                        
+        except Exception as e:
+            error_log(f"[Controller] 檢查待結束 WS 時出錯: {e}")
 
     def _create_gs_for_processing(self):
         """創建 GS 以支持處理流程"""

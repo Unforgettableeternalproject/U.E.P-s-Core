@@ -358,8 +358,8 @@ class ChattingSession:
             
             # 發布會話結束事件 - 通知 StateManager 處理狀態轉換
             try:
-                from core.event_bus import event_bus, SystemEvent, Event
-                event_bus.publish(Event(
+                from core.event_bus import event_bus, SystemEvent
+                event_bus.publish(
                     event_type=SystemEvent.SESSION_ENDED,
                     data={
                         'session_id': self.session_id,
@@ -369,7 +369,7 @@ class ChattingSession:
                         'total_turns': self.turn_counter
                     },
                     source='chatting_session'
-                ))
+                )
                 debug_log(2, f"[ChattingSession] 已發布 SESSION_ENDED 事件: {self.session_id}")
             except Exception as e:
                 error_log(f"[ChattingSession] 發布會話結束事件失敗: {e}")

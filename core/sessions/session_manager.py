@@ -322,6 +322,31 @@ class UnifiedSessionManager:
             raise  # 重新拋出錯誤，因為這是架構問題
         return None
     
+    def mark_workflow_session_for_end(self, session_id: str, reason: str = "workflow_complete") -> bool:
+        """
+        標記 Workflow Session 待結束 - 符合會話生命週期架構
+        會話將在循環完成邊界時真正終止
+        
+        Args:
+            session_id: 會話 ID
+            reason: 標記原因
+            
+        Returns:
+            是否成功標記
+        """
+        try:
+            ws = self.get_workflow_session(session_id)
+            if ws and hasattr(ws, 'mark_for_end'):
+                ws.mark_for_end(reason)
+                debug_log(2, f"[UnifiedSessionManager] 已標記 WS 待結束: {session_id} - {reason}")
+                return True
+            else:
+                error_log(f"[UnifiedSessionManager] 找不到 WS 或不支援標記: {session_id}")
+                return False
+        except Exception as e:
+            error_log(f"[UnifiedSessionManager] 標記 WS 待結束失敗: {e}")
+        return False
+    
     def end_workflow_session(self, session_id: str) -> bool:
         """結束 Workflow Session"""
         try:

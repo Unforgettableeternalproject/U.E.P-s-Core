@@ -133,6 +133,11 @@ class WorkflowSession:
         self.last_activity = self.created_at
         self.ended_at: Optional[datetime] = None
         
+        # 待結束標記 - 符合會話生命週期架構
+        # 設置後會在循環完成邊界時終止會話
+        self.pending_end = False
+        self.pending_end_reason: Optional[str] = None
+        
         # 任務步驟記錄
         self.task_steps: List[TaskStep] = []
         self.current_step_index = 0
@@ -396,6 +401,18 @@ class WorkflowSession:
             self.last_activity = datetime.now()
             info_log(f"[WorkflowSession] WS 已恢復: {self.session_id}")
     
+    def mark_for_end(self, reason: str = "workflow_complete"):
+        """
+        標記會話待結束 - 符合會話生命週期架構
+        會話將在循環完成邊界時真正終止
+        
+        Args:
+            reason: 標記原因
+        """
+        self.pending_end = True
+        self.pending_end_reason = reason
+        debug_log(2, f"[WorkflowSession] WS 已標記待結束: {self.session_id} - {reason}")
+    
     def cancel(self, reason: str = "user_cancelled"):
         """
         取消工作流
@@ -448,8 +465,8 @@ class WorkflowSession:
             
             # 發布會話結束事件 - 通知 StateManager 處理狀態轉換
             try:
-                from core.event_bus import event_bus, SystemEvent, Event
-                event_bus.publish(Event(
+                from core.event_bus import event_bus, SystemEvent
+                event_bus.publish(
                     event_type=SystemEvent.SESSION_ENDED,
                     data={
                         'session_id': self.session_id,
@@ -461,7 +478,7 @@ class WorkflowSession:
                         'total_steps': len(self.task_steps)
                     },
                     source='workflow_session'
-                ))
+                )
                 debug_log(2, f"[WorkflowSession] 已發布 SESSION_ENDED 事件: {self.session_id}")
             except Exception as e:
                 error_log(f"[WorkflowSession] 發布會話結束事件失敗: {e}")

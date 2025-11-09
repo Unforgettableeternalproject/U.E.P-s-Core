@@ -190,9 +190,12 @@ class LLMModule(BaseModule):
             
             debug_log(2, f"[LLM] 工作流 {workflow_type} ({session_id}) 步驟完成")
             debug_log(3, f"[LLM] 需要審核: {requires_review}, 結果: {step_result.get('success')}")
+            debug_log(2, f"[LLM] 接收到的 review_data keys: {list(review_data.keys()) if review_data else 'None'}")
             
             # 🆕 檢查是否為工作流完成（最後一步）
             is_workflow_complete = step_result.get('complete', False)
+            debug_log(2, f"[LLM] 步驟結果數據: {step_result}")
+            debug_log(2, f"[LLM] 工作流完成標記: {is_workflow_complete}")
             should_respond_to_user = review_data and review_data.get('requires_user_response', False) if review_data else False
             should_end_session = review_data and review_data.get('should_end_session', False) if review_data else False
             
@@ -224,6 +227,8 @@ class LLMModule(BaseModule):
             if not hasattr(self, '_pending_workflow_events'):
                 self._pending_workflow_events = []
             
+            debug_log(2, f"[LLM] 將工作流事件加入待處理隊列，review_data keys: {list(review_data.keys()) if review_data else 'None'}")
+            
             self._pending_workflow_events.append({
                 "type": "workflow_step_completed" if not is_workflow_complete else "workflow_completed",
                 "session_id": session_id,
@@ -239,13 +244,18 @@ class LLMModule(BaseModule):
             
             info_log(f"[LLM] 工作流事件已加入隊列: {workflow_type}, is_complete={is_workflow_complete}, next_interactive={next_step_is_interactive}")
             
-            # 🔧 不在這裡批准步驟！
-            # LLM 生成回應後會調用 approve_step MCP 工具來批准
-            # 這樣可以確保：回應生成 → TTS 播放 → 批准推進
-            debug_log(2, f"[LLM] 工作流事件已準備好，等待下次 handle() 調用生成回應並批准")
+            # 🆕 如果工作流完成，立即處理並生成最終回應
+            if is_workflow_complete:
+                debug_log(2, f"[LLM] 工作流完成，立即生成最終總結回應")
+                self._process_workflow_completion(session_id, workflow_type, step_result, review_data)
+            else:
+                # 🔧 對於需要用戶輸入的步驟，等待下次 handle() 調用
+                debug_log(2, f"[LLM] 工作流事件已準備好，等待下次 handle() 調用生成回應")
             
         except Exception as e:
+            import traceback
             error_log(f"[LLM] 處理工作流步驟完成事件失敗: {e}")
+            error_log(f"[LLM] 堆疊追蹤:\n{traceback.format_exc()}")
     
     def _handle_workflow_failed(self, event):
         """
@@ -1602,6 +1612,7 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                             next_step_is_interactive = next_step_info and next_step_info.get('step_type') == 'interactive' if next_step_info else False
                             step_result = pending_workflow.get('step_result', {})
                             review_data = pending_workflow.get('review_data', {})
+                            debug_log(2, f"[LLM] 從 pending_workflow 提取的 review_data keys: {list(review_data.keys()) if review_data else 'None'}")
                             
                             if is_complete:
                                 # 🔧 工作流完成：生成總結回應並結束會話
@@ -1610,29 +1621,52 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                                     f"The workflow has completed successfully.\n"
                                     f"Step Result: {step_result.get('message', 'Success')}\n"
                                 )
+                                
+                                # ✅ 提供豐富的審核數據給 LLM（包括文件內容等）
                                 if review_data:
-                                    follow_up_prompt += f"Workflow Data: {str(review_data)[:500]}\n"
+                                    debug_log(2, f"[LLM] 檢查 review_data 是否包含 full_content: {'full_content' in review_data}")
+                                    # 特殊處理：如果有 full_content（文件讀取），提供完整內容
+                                    if 'full_content' in review_data:
+                                        debug_log(2, f"[LLM] 發現 full_content，添加到 prompt")
+                                        file_name = review_data.get('file_name', 'unknown')
+                                        content = review_data.get('full_content', '')
+                                        content_length = review_data.get('content_length', len(content))
+                                        follow_up_prompt += (
+                                            f"\nFile Read Results:\n"
+                                            f"- File: {file_name}\n"
+                                            f"- Content Length: {content_length} characters\n"
+                                            f"- Full Content:\n{content}\n"
+                                        )
+                                    else:
+                                        debug_log(2, f"[LLM] 未發現 full_content，使用通用數據")
+                                        # 通用數據：顯示前 500 字符
+                                        follow_up_prompt += f"Workflow Data: {str(review_data)[:500]}\n"
+                                
                                 follow_up_prompt += (
                                     f"\nGenerate a natural, friendly response that:\n"
                                     f"1. Confirms the task is complete\n"
-                                    f"2. Summarizes the key results/data\n"
+                                    f"2. Summarizes the key results/data (for file read, briefly mention the content)\n"
                                     f"3. Keep it conversational (2-3 sentences)\n"
                                     f"IMPORTANT: Respond in English only."
                                 )
                                 
-                                # ✅ 工作流完成後立即結束 WS（在當前 cycle 內）
-                                # 這樣 SESSION_ENDED 會和 CYCLE_COMPLETED 在同一個 cycle 發布
+                                # ✅ 工作流完成：設置 session_control 以觸發會話結束
+                                # 在生成 follow-up 回應後，將通過 _process_session_control 檢測並標記待結束
+                                # ModuleCoordinator 會在 processing→output 時檢測 session_control 並標記 WS
+                                # Controller 會在 CYCLE_COMPLETED 時結束 WS（確保 LLM 回應和 TTS 輸出完成）
                                 try:
-                                    from core.sessions.session_manager import session_manager
                                     session_id = pending_workflow.get('session_id')
+                                    wf_type = pending_workflow.get('workflow_type', 'workflow')
                                     if session_id:
-                                        success = session_manager.end_workflow_session(session_id)
-                                        if success:
-                                            debug_log(1, f"[LLM] ✅ 工作流完成，已結束 WS: {session_id}")
-                                        else:
-                                            debug_log(2, f"[LLM] ⚠️ 工作流完成但結束 WS 失敗: {session_id}")
+                                        # 將 session_control 添加到 response_data，以便後續處理
+                                        response_data["session_control"] = {
+                                            "should_end_session": True,
+                                            "end_reason": f"workflow_completed:{wf_type}",
+                                            "confidence": 0.9
+                                        }
+                                        debug_log(1, f"[LLM] 🔚 工作流完成，已設置 session_control: {session_id}")
                                 except Exception as e:
-                                    error_log(f"[LLM] 結束工作流會話時出錯: {e}")
+                                    error_log(f"[LLM] 設置 session_control 時出錯: {e}")
                             elif next_step_is_interactive:
                                 # 下一步需要輸入：生成提示
                                 next_prompt = next_step_info.get('prompt', 'Please provide input') if next_step_info else 'Please provide input'
@@ -1796,7 +1830,9 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             return output
             
         except Exception as e:
+            import traceback
             error_log(f"[LLM] WORK 模式處理錯誤: {e}")
+            error_log(f"[LLM] 堆疊追蹤:\n{traceback.format_exc()}")
             return LLMOutput(
                 text="工作任務處理時發生錯誤，請稍後再試。",
                 processing_time=time.time() - start_time,
@@ -2554,38 +2590,30 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             return None
     
     def _request_session_end(self, mode: str, reason: str, confidence: float, llm_input: "LLMInput") -> None:
-        """請求結束當前會話"""
+        """標記會話待結束 - 由 ModuleCoordinator 的雙條件機制處理實際結束"""
         try:
-            from core.sessions.session_manager import session_manager
+            # ✅ 架構正確性：LLM 通過 session_control 建議結束
+            # ModuleCoordinator 檢測到後標記 pending_end
+            # Controller 會在 CYCLE_COMPLETED 時檢查並執行結束
+            # 這確保：
+            # 1. LLM 回應能完整生成並輸出
+            # 2. TTS 能完成語音合成
+            # 3. 所有去重鍵能正確清理
+            # 4. 會話在循環邊界乾淨地結束
+            
+            # session_control 已在回應中設置，ModuleCoordinator 會檢測並標記
+            debug_log(1, f"[LLM] 📋 會話結束請求已通過 session_control 發送: {reason} (mode={mode}, confidence={confidence:.2f})")
             
             if mode == "CHAT":
-                # 結束當前的 Chatting Session
-                active_cs_ids = session_manager.get_active_chatting_session_ids()
-                if active_cs_ids:
-                    session_id = active_cs_ids[0]
-                    success = session_manager.end_chatting_session(
-                        session_id, 
-                    )
-                    if success:
-                        debug_log(1, f"[LLM] 成功結束 CS {session_id}")
-                    else:
-                        debug_log(2, f"[LLM] 結束 CS {session_id} 失敗")
+                debug_log(1, f"[LLM] 🔚 標記 CS 待結束 (原因: {reason}, 信心度: {confidence:.2f})")
+                debug_log(2, f"[LLM] session_control 已設置，等待循環完成後由 ModuleCoordinator 處理")
                         
             elif mode == "WORK":
-                # 結束當前的 Workflow Session
-                active_ws_ids = session_manager.get_active_workflow_session_ids()
-                if active_ws_ids:
-                    session_id = active_ws_ids[0]
-                    success = session_manager.end_workflow_session(
-                        session_id,
-                    )
-                    if success:
-                        debug_log(1, f"[LLM] 成功結束 WS {session_id}")
-                    else:
-                        debug_log(2, f"[LLM] 結束 WS {session_id} 失敗")
+                debug_log(1, f"[LLM] 🔚 標記 WS 待結束 (原因: {reason}, 信心度: {confidence:.2f})")
+                debug_log(2, f"[LLM] session_control 已設置，等待循環完成後由 ModuleCoordinator 處理")
             
         except Exception as e:
-            error_log(f"[LLM] 請求會話結束失敗: {e}")
+            error_log(f"[LLM] 標記會話結束失敗: {e}")
     
     def _send_to_sys_module(self, sys_actions: List[Dict[str, Any]], workflow_context: Optional[Dict[str, Any]]) -> None:
         """向SYS模組發送系統動作 - 通過狀態感知接口"""
@@ -2785,6 +2813,128 @@ U.E.P 系統可用功能規格：
             
         except Exception as e:
             error_log(f"[LLM] 發布處理層完成事件失敗: {e}")
+    
+    def _process_workflow_completion(self, session_id: str, workflow_type: str, 
+                                     step_result: dict, review_data: dict):
+        """
+        處理工作流完成，生成最終總結回應並觸發 TTS
+        
+        Args:
+            session_id: 工作流會話 ID
+            workflow_type: 工作流類型
+            step_result: 最後步驟的結果
+            review_data: 審核數據（包含完整的工作流結果）
+        """
+        try:
+            debug_log(2, f"[LLM] 開始處理工作流完成: {workflow_type} ({session_id})")
+            debug_log(2, f"[LLM] review_data keys: {list(review_data.keys()) if review_data else 'None'}")
+            
+            # 構建總結 prompt
+            result_message = step_result.get('message', 'Task completed successfully')
+            
+            prompt = (
+                f"The '{workflow_type}' workflow has completed successfully.\n\n"
+                f"Result: {result_message}\n"
+            )
+            
+            # ✅ 優先處理 full_content（文件讀取結果）
+            if review_data:
+                if 'full_content' in review_data:
+                    debug_log(2, f"[LLM] 發現 full_content，添加到 prompt")
+                    file_name = review_data.get('file_name', 'unknown')
+                    content = review_data.get('full_content', '')
+                    content_length = review_data.get('content_length', len(content))
+                    
+                    # 判斷內容是否應該完整唸出（英文且不超過 500 字符）
+                    should_read_full = content_length <= 500 and content.strip()
+                    
+                    if should_read_full:
+                        prompt += (
+                            f"\nFile Read Results:\n"
+                            f"- File: {file_name}\n"
+                            f"- Content ({content_length} characters):\n{content}\n\n"
+                            f"Generate a natural response that:\n"
+                            f"1. Briefly confirms you've read the file '{file_name}'\n"
+                            f"2. READ OUT THE ACTUAL FILE CONTENT directly (don't just summarize - say what's written in the file)\n"
+                            f"3. Keep your introduction brief, then read the content naturally\n"
+                            f"IMPORTANT: Actually read the file content aloud, not just describe it. Respond in English only."
+                        )
+                    else:
+                        # 內容太長，只總結
+                        prompt += (
+                            f"\nFile Read Results:\n"
+                            f"- File: {file_name}\n"
+                            f"- Content Length: {content_length} characters\n"
+                            f"- Content Preview:\n{content[:200]}...\n\n"
+                            f"Generate a natural response that:\n"
+                            f"1. Confirms the file has been read\n"
+                            f"2. Briefly summarize what the file contains (the content is too long to read fully)\n"
+                            f"3. Keep it conversational (2-3 sentences)\n"
+                            f"IMPORTANT: Respond in English only."
+                        )
+                else:
+                    # 通用數據
+                    result_data = review_data.get('result_data', review_data)
+                    if result_data:
+                        prompt += f"Data: {str(result_data)[:500]}\n\n"
+                    
+                    prompt += (
+                        f"Generate a natural, friendly response that:\n"
+                        f"1. Confirms the task is complete\n"
+                        f"2. Summarizes the key results\n"
+                        f"3. Keep it conversational (2-3 sentences)\n"
+                        f"IMPORTANT: Respond in English only."
+                    )
+            else:
+                prompt += (
+                    f"Generate a natural, friendly response that:\n"
+                    f"1. Confirms the task is complete\n"
+                    f"2. Summarizes the key results\n"
+                    f"3. Keep it conversational (2-3 sentences)\n"
+                    f"IMPORTANT: Respond in English only."
+                )
+            
+            # 生成回應
+            info_log(f"[LLM] 生成工作流完成總結回應...")
+            response = self.model.query(prompt, mode="work", tools=None)
+            response_text = response.get("text", "The task has been completed successfully.")
+            
+            info_log(f"[LLM] 工作流完成回應: {response_text[:100]}...")
+            
+            # 觸發 TTS 輸出
+            from core.framework import core_framework
+            tts_module = core_framework.get_module('tts')
+            if tts_module:
+                debug_log(2, f"[LLM] 觸發 TTS 輸出最終總結")
+                tts_module.handle({
+                    "text": response_text,
+                    "session_id": session_id,
+                    "emotion": "neutral"
+                })
+            
+            # ✅ 標記工作流會話待結束
+            # Controller 會在下一個 CYCLE_COMPLETED 時執行實際結束
+            from core.sessions.session_manager import unified_session_manager
+            unified_session_manager.mark_workflow_session_for_end(
+                session_id, 
+                reason=f"workflow_completed:{workflow_type}"
+            )
+            debug_log(1, f"[LLM] 🔚 已標記 WS 待結束: {session_id} (workflow_completed:{workflow_type})")
+            
+            # 批准並結束工作流
+            self._approve_workflow_step(session_id, None)
+            
+            debug_log(1, f"[LLM] ✅ 工作流完成處理完畢: {session_id}")
+            
+        except Exception as e:
+            import traceback
+            error_log(f"[LLM] 處理工作流完成失敗: {e}")
+            error_log(f"[LLM] 堆疊追蹤:\n{traceback.format_exc()}")
+            # 即使失敗也要批准步驟，避免工作流卡住
+            try:
+                self._approve_workflow_step(session_id, None)
+            except:
+                pass
     
     def _validate_session_architecture(self, current_state) -> bool:
         """驗證會話架構 - 確保 LLM 在適當的會話上下文中運作"""

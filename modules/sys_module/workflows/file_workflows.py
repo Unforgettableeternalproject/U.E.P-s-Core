@@ -106,7 +106,36 @@ def create_drop_and_read_workflow(session: WorkflowSession) -> WorkflowEngine:
             return "開啟檔案選擇對話框..."
             
         def execute(self, user_input: Any = None) -> StepResult:
-            # 直接執行對話框，不需要用戶輸入
+            # 🔧 優先順序：
+            # 1. session 中的 initial_data（由 LLM 通過 MCP 傳遞）
+            # 2. WorkingContext 中的先行資料（由系統設置）
+            # 3. 開啟檔案對話框（手動選擇）
+            
+            # 1. 檢查 session 中是否已有路徑（透過 initial_data 提供）
+            existing_path = self.session.get_data("file_path_input", "")
+            if existing_path:
+                info_log(f"[Workflow] 使用 session 中的檔案路徑: {existing_path}")
+                if not os.path.exists(existing_path):
+                    return StepResult.failure(f"檔案不存在: {existing_path}")
+                return StepResult.success(
+                    f"使用者提供了檔案: {Path(existing_path).name}",
+                    {"file_path_input": existing_path}
+                )
+            
+            # 2. 檢查 WorkingContext 中是否有路徑
+            try:
+                from core.working_context import working_context_manager
+                context_path = working_context_manager.get_context_data("current_file_path")
+                if context_path and os.path.exists(str(context_path)):
+                    info_log(f"[Workflow] 使用 WorkingContext 中的檔案路徑: {context_path}")
+                    return StepResult.success(
+                        f"使用上下文中的檔案: {Path(context_path).name}",
+                        {"file_path_input": str(context_path)}
+                    )
+            except Exception as e:
+                debug_log(2, f"[Workflow] 無法從 WorkingContext 讀取檔案路徑: {e}")
+            
+            # 3. 都沒有，開啟對話框
             return get_file_path_via_dialog(self.session)
             
         def should_auto_advance(self) -> bool:
@@ -201,7 +230,8 @@ def create_intelligent_archive_workflow(session: WorkflowSession) -> WorkflowEng
     )
     
     # 檢查初始數據，決定入口點
-    initial_file_path = session.get_data("file_path_input", "")
+    # 注意：intelligent_archive 使用 "file_selection" 而不是 "file_path_input"
+    initial_file_path = session.get_data("file_selection", "")
     initial_target_dir = session.get_data("target_dir_input", "")
     
     # 🔧 步驟1: 開啟檔案選擇對話框（SYSTEM 步驟）
@@ -260,6 +290,58 @@ def create_intelligent_archive_workflow(session: WorkflowSession) -> WorkflowEng
             return "開啟檔案選擇對話框（智慧歸檔）..."
             
         def execute(self, user_input: Any = None) -> StepResult:
+            # 🔧 優先順序：
+            # 1. session 中的 initial_data
+            # 2. WorkingContext 中的先行資料
+            # 3. 開啟檔案對話框
+            
+            # 1. 檢查 session 中是否已有路徑
+            existing_path = self.session.get_data("file_selection", "")
+            if existing_path:
+                info_log(f"[Workflow] 使用 session 中的檔案路徑: {existing_path}")
+                if not os.path.exists(existing_path):
+                    return StepResult.failure(f"檔案不存在: {existing_path}")
+                
+                result = StepResult.success(
+                    f"使用者提供了檔案: {Path(existing_path).name}",
+                    {"file_selection": existing_path}
+                )
+                
+                result.llm_review_data = {
+                    "action": "file_selected_for_archive",
+                    "file_name": Path(existing_path).name,
+                    "file_path": existing_path,
+                    "requires_user_response": True,
+                    "should_end_session": False
+                }
+                
+                return result
+            
+            # 2. 檢查 WorkingContext 中是否有路徑
+            try:
+                from core.working_context import working_context_manager
+                context_path = working_context_manager.get_context_data("current_file_path")
+                if context_path and os.path.exists(str(context_path)):
+                    info_log(f"[Workflow] 使用 WorkingContext 中的檔案路徑: {context_path}")
+                    
+                    result = StepResult.success(
+                        f"使用上下文中的檔案: {Path(context_path).name}",
+                        {"file_selection": str(context_path)}
+                    )
+                    
+                    result.llm_review_data = {
+                        "action": "file_selected_for_archive",
+                        "file_name": Path(context_path).name,
+                        "file_path": str(context_path),
+                        "requires_user_response": True,
+                        "should_end_session": False
+                    }
+                    
+                    return result
+            except Exception as e:
+                debug_log(2, f"[Workflow] 無法從 WorkingContext 讀取檔案路徑: {e}")
+            
+            # 3. 都沒有，開啟對話框
             return get_archive_file_path_via_dialog(self.session)
             
         def should_auto_advance(self) -> bool:
@@ -448,6 +530,36 @@ def create_summarize_tag_workflow(session: WorkflowSession) -> WorkflowEngine:
             return "開啟檔案選擇對話框（摘要標籤）..."
             
         def execute(self, user_input: Any = None) -> StepResult:
+            # 🔧 優先順序：
+            # 1. session 中的 initial_data
+            # 2. WorkingContext 中的先行資料
+            # 3. 開啟檔案對話框
+            
+            # 1. 檢查 session 中是否已有路徑
+            existing_path = self.session.get_data("file_path_input", "")
+            if existing_path:
+                info_log(f"[Workflow] 使用 session 中的檔案路徑: {existing_path}")
+                if not os.path.exists(existing_path):
+                    return StepResult.failure(f"檔案不存在: {existing_path}")
+                return StepResult.success(
+                    f"使用者提供了檔案: {Path(existing_path).name}",
+                    {"file_path_input": existing_path}
+                )
+            
+            # 2. 檢查 WorkingContext 中是否有路徑
+            try:
+                from core.working_context import working_context_manager
+                context_path = working_context_manager.get_context_data("current_file_path")
+                if context_path and os.path.exists(str(context_path)):
+                    info_log(f"[Workflow] 使用 WorkingContext 中的檔案路徑: {context_path}")
+                    return StepResult.success(
+                        f"使用上下文中的檔案: {Path(context_path).name}",
+                        {"file_path_input": str(context_path)}
+                    )
+            except Exception as e:
+                debug_log(2, f"[Workflow] 無法從 WorkingContext 讀取檔案路徑: {e}")
+            
+            # 3. 都沒有，開啟對話框
             return get_summary_file_path_via_dialog(self.session)
             
         def should_auto_advance(self) -> bool:

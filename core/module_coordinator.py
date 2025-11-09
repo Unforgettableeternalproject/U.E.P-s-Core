@@ -485,10 +485,15 @@ class ModuleInvocationCoordinator:
                 if should_end:
                     reason = session_control.get('reason', 'LLM requested')
                     info_log(f"[ModuleCoordinator] 🔚 LLM 請求結束會話 (原因: {reason})")
-                    # ⚠️ 雙條件終止機制：
-                    # 條件 1: 外部中斷點被調用 ✅ (此處標記)
-                    # 條件 2: 所屬循環結束 ⌛ (等待 CYCLE_COMPLETED)
-                    # → 不立即結束，等待循環完成後再檢查並執行
+                    
+                    # ✅ 標記所有活躍的工作流會話待結束（不是立即結束）
+                    # 會話將在本次循環的 CYCLE_COMPLETED 時由 Controller 結束
+                    from core.sessions.session_manager import unified_session_manager
+                    
+                    active_ws = unified_session_manager.get_active_workflow_session_ids()
+                    for ws_id in active_ws:
+                        unified_session_manager.mark_workflow_session_for_end(ws_id, reason=reason)
+                        debug_log(2, f"[ModuleCoordinator] ✅ 已標記 WS 待結束: {ws_id}")
                     
                     # 從 processing_data 頂層獲取 session_id (GS ID)
                     gs_id = processing_data.get('session_id', 'unknown')

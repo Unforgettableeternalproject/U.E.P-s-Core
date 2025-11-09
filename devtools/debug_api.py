@@ -3,13 +3,8 @@ import asyncio
 from core.registry import get_module
 from configs.config_loader import load_config
 from utils.debug_helper import debug_log, info_log, error_log
-# 導入整合測試
-from .module_tests.integration_tests import (
-    test_system_loop_integration,
-    test_single_file_workflow
-)
 # 暫時註解掉這個導入，等相關文件創建後再啟用
-# from .module_tests.extra_tests import test_chunk_and_summarize, test_uep_chatting
+# from devtools.module_tests.extra_tests import test_chunk_and_summarize, test_uep_chatting
 
 config = load_config()
 enabled = config.get("modules_enabled", {})

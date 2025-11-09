@@ -317,7 +317,7 @@ class GeminiWrapper:
             # ✅ 強制要求 Gemini 調用函數（ANY mode）
             config_params["tool_config"] = {"function_calling_config": {"mode": "ANY"}}
             # 🔍 DEBUG: 記錄 tools 數量
-            from devtools.debugger import debug_log
+            from utils.debug_helper import debug_log
             tool_count = sum(len(t.get('function_declarations', [])) for t in tools)
             debug_log(3, f"[Gemini] 使用 function calling 模式（強制），工具數量: {tool_count}")
         else:

@@ -675,28 +675,76 @@ class WorkflowEngine:
             # 批准：繼續工作流程
             info_log("[WorkflowEngine] LLM 已批准步驟，繼續執行")
             
-            # 🔧 如果設置了自動推進，則移動到下一步
+            # 🔧 如果設置了自動推進，則移動到下一步並執行
             if self.definition.auto_advance_on_approval:
                 current_step_id = self.session.get_data("current_step")
-                next_step_id = self.definition.get_next_step(current_step_id, result)
+                
+                # ✅ 直接查詢轉換表，不使用 get_next_step（它會被 complete=True 阻擋）
+                next_step_id = None
+                if current_step_id in self.definition.transitions:
+                    transitions = self.definition.transitions[current_step_id]
+                    if transitions:
+                        # 取第一個轉換（不檢查條件，因為我們已經批准了）
+                        next_step_id = transitions[0][0] if transitions[0][0] != "END" else None
+                
+                debug_log(2, f"[WorkflowEngine] 當前步驟: {current_step_id}, 下一步驟: {next_step_id}")
                 
                 if next_step_id:
-                    self.session.add_data("current_step", next_step_id)
-                    
-                    # 🔧 關鍵修復：不要在這裡同步執行下一步！
-                    # 發布事件讓 SYS 模組在背景執行（通過事件系統觸發）
+                    # ⚠️ 重要：先執行下一步，再移動 current_step
+                    # 這樣如果執行失敗，current_step 仍然指向當前步驟
                     next_step = self.definition.steps.get(next_step_id)
+                    
+                    # ✅ 執行下一步（如果是自動推進步驟）
                     if next_step and next_step.should_auto_advance():
-                        debug_log(2, f"[WorkflowEngine] 下一步 {next_step_id} 是自動推進步驟，發布事件通知 SYS")
-                        # 不在這裡執行，讓 SystemLoop 通過 _trigger_workflow_auto_advance 來執行
-                        # 返回成功結果，讓流程繼續
+                        debug_log(2, f"[WorkflowEngine] 批准後自動執行下一步: {next_step_id}")
+                        try:
+                            # 🔧 移動到下一步
+                            self.session.add_data("current_step", next_step_id)
+                            
+                            # 執行下一步
+                            next_result = next_step.execute()
+                            debug_log(2, f"[WorkflowEngine] 下一步執行結果: success={next_result.success}, complete={next_result.complete}")
+                            
+                            # ⚠️ 重要：返回完整的結果，包括 complete 標誌
+                            # 這樣 SYS 模組才能正確判斷工作流是否完成並發布事件
+                            # 如果需要審核，包裝成審核請求
+                            if self.definition.requires_llm_review and next_result.success:
+                                return self._request_llm_review(next_result, next_step)
+                            
+                            return next_result
+                        except Exception as e:
+                            error_log(f"[WorkflowEngine] 執行下一步失敗: {e}")
+                            import traceback
+                            error_log(f"[WorkflowEngine] 堆疊追蹤:\n{traceback.format_exc()}")
+                            return StepResult.failure(f"執行下一步失敗: {e}")
+                    else:
+                        # 下一步不是自動推進，移動到下一步並返回等待用戶輸入
+                        self.session.add_data("current_step", next_step_id)
                         return StepResult.success(
-                            "步驟已批准，等待下一步執行",
+                            "步驟已批准，等待用戶輸入",
                             {"approved": True, "next_step": next_step_id}
                         )
                 else:
-                    self.session.add_data("current_step", None)
-                    return StepResult.complete_workflow("工作流程已完成")
+                    # ✅ 沒有下一步：工作流完成
+                    # 但當前步驟（current_step_id）可能是最後一個自動步驟，需要先執行它
+                    current_step = self.definition.steps.get(current_step_id)
+                    if current_step and current_step.should_auto_advance():
+                        debug_log(2, f"[WorkflowEngine] 執行最後的自動步驟: {current_step_id}")
+                        try:
+                            final_result = current_step.execute()
+                            debug_log(2, f"[WorkflowEngine] 最後步驟執行結果: success={final_result.success}, complete={final_result.complete}")
+                            # 標記 current_step 為 None（工作流完成）
+                            self.session.add_data("current_step", None)
+                            # 返回最後步驟的結果（包含所有數據）
+                            return final_result
+                        except Exception as e:
+                            error_log(f"[WorkflowEngine] 執行最後步驟失敗: {e}")
+                            self.session.add_data("current_step", None)
+                            return StepResult.failure(f"執行最後步驟失敗: {e}")
+                    else:
+                        # 當前步驟不是自動步驟，直接完成
+                        self.session.add_data("current_step", None)
+                        return StepResult.complete_workflow("工作流程已完成")
             
             return result
             
@@ -769,14 +817,15 @@ class WorkflowEngine:
                 "workflow_name": self.definition.name
             })
         
-        # 🔧 返回特殊結果，指示需要 LLM 審核，保留原始的 complete 標誌
+        # 🔧 返回特殊結果，指示需要 LLM 審核
+        # ✅ 保留原始的 complete 標誌，讓 SYS 模組能正確判斷工作流是否完成
         return StepResult(
             success=True,
             message="步驟執行完成，等待 LLM 審核",
             data=result.data,
             llm_review_data=review_data,
             requires_user_confirmation=False,
-            complete=result.complete  # 保留原始的完成標誌
+            complete=result.complete  # 保留原始 complete 標誌
         )
         
     def process_input(self, user_input: Any = None) -> StepResult:

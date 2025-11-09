@@ -7,6 +7,7 @@ from typing import List, Dict, Any, Optional
 
 import yaml
 from core.bases.module_base import BaseModule
+from core.event_bus import SystemEvent
 from configs.config_loader import load_module_config
 from utils.debug_helper import info_log, error_log, debug_log
 from .schemas import SYSInput, SYSOutput, SessionInfo, SessionDetail
@@ -1357,9 +1358,9 @@ class SYSModule(BaseModule):
             result = engine.handle_llm_review_response(action, modified_params)
             
             if result.cancel:
-                # 工作流被取消
-                self.session_manager.end_session(session_id, reason="LLM 取消工作流")
-                del self.workflow_engines[session_id]
+                # 工作流被取消 - 標記待結束，等待循環完成
+                self.session_manager.mark_workflow_session_for_end(session_id, reason="LLM 取消工作流")
+                # 不刪除引擎，讓循環結束時清理
                 
                 return {
                     "status": "cancelled",
@@ -1367,9 +1368,50 @@ class SYSModule(BaseModule):
                     "data": result.to_dict()
                 }
             elif result.complete:
-                # 工作流完成
-                self.session_manager.end_session(session_id, reason="工作流正常完成")
-                del self.workflow_engines[session_id]
+                # 工作流完成 - 發布完成事件讓 LLM 生成 follow-up，然後標記待結束
+                workflow_type = engine.definition.workflow_type
+                
+                # ✅ 優先使用步驟自定義的 llm_review_data（包含豐富的上下文數據如文件內容）
+                # 如果沒有則使用基本的工作流結果數據
+                if hasattr(result, 'llm_review_data') and result.llm_review_data:
+                    llm_review_data = result.llm_review_data
+                    debug_log(2, f"[SYS] 使用步驟的 llm_review_data，keys: {list(llm_review_data.keys())}")
+                else:
+                    llm_review_data = {
+                        "workflow_result": result.data,
+                        "requires_user_response": True,
+                        "should_end_session": True
+                    }
+                    debug_log(2, f"[SYS] 使用默認 llm_review_data")
+                
+                # 🔧 發布 WORKFLOW_STEP_COMPLETED 事件（complete=True）讓 LLM 知道工作流完成
+                event_data = {
+                    "session_id": session_id,
+                    "workflow_type": workflow_type,
+                    "step_result": {
+                        "success": result.success,
+                        "complete": result.complete,  # True
+                        "cancel": result.cancel,
+                        "message": result.message,
+                        "data": result.data
+                    },
+                    "requires_llm_review": True,  # 完成時需要 LLM 生成總結
+                    "llm_review_data": llm_review_data,  # ✅ 使用豐富的審核數據
+                    "next_step_info": None  # 工作流已完成
+                }
+                
+                self.event_bus.publish(
+                    event_type=SystemEvent.WORKFLOW_STEP_COMPLETED,
+                    data=event_data,
+                    source="sys"
+                )
+                debug_log(2, f"[SYS] ✅ 已發布 workflow_step_completed 事件 (complete=True): {session_id}")
+                debug_log(2, f"[SYS] 事件中的 llm_review_data keys: {list(event_data.get('llm_review_data', {}).keys())}")
+                
+                # ✅ 不在這裡標記會話結束
+                # LLM 會在下一個循環收到事件、生成 follow-up、輸出 TTS 後
+                # 通過 session_control 標記結束，確保完整的回應週期
+                # 不刪除引擎，讓循環結束時清理
                 
                 return {
                     "status": "completed",
@@ -1392,9 +1434,8 @@ class SYSModule(BaseModule):
                         }
                     }
                 else:
-                    # 工作流已完成
-                    self.session_manager.end_session(session_id, reason="工作流正常完成")
-                    del self.workflow_engines[session_id]
+                    # 工作流已完成 - 讓 LLM 在下次循環通過 session_control 標記
+                    # 不刪除引擎，讓循環結束時清理
                     
                     return {
                         "status": "completed",

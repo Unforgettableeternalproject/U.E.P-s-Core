@@ -1630,3 +1630,15 @@
 
 ---
 
+### Added some unit tests to reflect on our current structure. 11/9
+
+> Date: Sun, 09 Nov 2025 17:31:01 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `6e47a03e4eff14395bb1184ce8e489f19a00210e`
+
+---
+

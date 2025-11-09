@@ -414,6 +414,11 @@ additional_tests/*
 deprecated/*
 
 *.t7
+*.ninja*
+*.o
+*.exp
+*.lib
+*.pyd
 
 #Ignore insiders AI rules
 .github\instructions\codacy.instructions.md

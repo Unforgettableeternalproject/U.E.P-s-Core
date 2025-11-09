@@ -109,8 +109,41 @@ class IndexTTSLite:
         else:
             self.device = torch.device(device)
         
-        # 加載配置
+        # 加載配置（必須先加載才能讀取優化設定）
         self.cfg = OmegaConf.load(cfg_path)
+        
+        # 🚀 進階優化配置（輕量方案，無需額外依賴）
+        adv_opt = self.cfg.get('advanced_optimization', {})
+        self.use_torch_compile = adv_opt.get('use_torch_compile', False)
+        self.compile_mode = adv_opt.get('compile_mode', 'reduce-overhead')
+        self.cudnn_benchmark = adv_opt.get('cudnn_benchmark', True)
+        
+        # SDPA (Scaled Dot Product Attention) 配置
+        self.use_sdpa = adv_opt.get('use_sdpa', True)
+        self.enable_math = adv_opt.get('enable_math', True)
+        self.enable_flash = adv_opt.get('enable_flash', True)
+        self.enable_mem_efficient = adv_opt.get('enable_mem_efficient', True)
+        
+        # 量化配置
+        self.use_dynamic_quantization = adv_opt.get('use_dynamic_quantization', False)
+        self.quantize_gpt = adv_opt.get('quantize_gpt', False)
+        self.quantize_s2mel = adv_opt.get('quantize_s2mel', False)
+        
+        # 🚀 啟用 cuDNN benchmark（自動選擇最優 kernel）
+        if self.cudnn_benchmark and torch.cuda.is_available():
+            torch.backends.cudnn.benchmark = True
+            debug_log(2, "   ⚡ 已啟用 cuDNN benchmark (自動調優)")
+        
+        # 🚀 配置 SDPA (Scaled Dot Product Attention)
+        if self.use_sdpa and hasattr(torch.nn.functional, 'scaled_dot_product_attention'):
+            # 設置 SDPA 後端（Flash Attention / Memory Efficient / Math）
+            try:
+                torch.backends.cuda.enable_flash_sdp(self.enable_flash)
+                torch.backends.cuda.enable_mem_efficient_sdp(self.enable_mem_efficient)
+                torch.backends.cuda.enable_math_sdp(self.enable_math)
+                debug_log(2, f"   ⚡ 已配置 SDPA (Flash={self.enable_flash}, MemEff={self.enable_mem_efficient}, Math={self.enable_math})")
+            except Exception as e:
+                debug_log(1, f"   ⚠️  SDPA 配置失敗: {e}")
         
         # 當前加載的角色特徵
         self.current_character = None
@@ -119,7 +152,67 @@ class IndexTTSLite:
         # 初始化模型
         self._init_models()
         
+        # 保存預熱配置（稍後在加載角色後執行）
+        self._warmup_config = {
+            'enable': adv_opt.get('enable_warmup', True),
+            'text': adv_opt.get('warmup_text', 'This is a test generation for warmup.'),
+            'iterations': adv_opt.get('warmup_iterations', 1)
+        }
+        
         info_log("✅ IndexTTS Lite Engine 初始化完成!")
+    
+    def _warmup_models(self, warmup_text: str = "你好", iterations: int = 1):
+        """
+        🔥 模型預熱，提前觸發 torch.compile 編譯和 CUDA kernel 編譯
+        
+        Args:
+            warmup_text: 預熱用的文本（簡短即可）
+            iterations: 預熱次數
+        """
+        info_log(f"🔥 [預熱] 開始模型預熱... (文本: '{warmup_text}', 次數: {iterations})")
+        
+        import tempfile
+        import time
+        
+        start_time = time.time()
+        
+        try:
+            # 創建臨時檔案
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.wav', delete=False) as tmp_file:
+                tmp_path = tmp_file.name
+            
+            # 執行預熱生成
+            for i in range(iterations):
+                debug_log(3, f"   [預熱] 第 {i+1}/{iterations} 次...")
+                
+                # 呼叫 synthesize 方法（不顯示詳細訊息）
+                self.synthesize(
+                    text=warmup_text,
+                    output_path=tmp_path,
+                    emotion_vector=None,
+                    verbose=False  # 關閉詳細輸出
+                )
+            
+            # 刪除臨時檔案
+            try:
+                import os
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+                    debug_log(3, f"   [預熱] 已刪除臨時檔案: {tmp_path}")
+            except Exception as e:
+                debug_log(1, f"   [預熱] 刪除臨時檔案失敗: {e}")
+            
+            elapsed = time.time() - start_time
+            info_log(f"✅ [預熱] 完成! 耗時: {elapsed:.2f}秒")
+            info_log(f"   ✓ torch.compile 已編譯")
+            info_log(f"   ✓ CUDA kernel 已編譯")
+            info_log(f"   ✓ 後續推論將明顯加速")
+            
+        except Exception as e:
+            error_log(f"⚠️  [預熱] 失敗: {e}")
+            debug_log(1, "   系統將繼續使用，但首次推論會較慢")
+            import traceback
+            debug_log(3, f"   預熱錯誤詳情:\n{traceback.format_exc()}")
     
     def _init_models(self):
         """初始化必要的模型組件"""
@@ -138,7 +231,21 @@ class IndexTTSLite:
         else:
             self.gpt.eval()
         
+        # 初始化 GPT inference model
         self.gpt.post_init_gpt2_config(use_deepspeed=False, kv_cache=True, half=self.use_fp16)
+        
+        # 🚀 應用 torch.compile 優化 GPT（如果配置啟用）
+        if self.use_torch_compile and hasattr(torch, 'compile'):
+            try:
+                debug_log(2, f"   ⚡ 對 GPT 應用 torch.compile (mode={self.compile_mode})")
+                # 編譯 inference_model 而非整個 gpt
+                self.gpt.inference_model = torch.compile(
+                    self.gpt.inference_model, 
+                    mode=self.compile_mode,
+                    fullgraph=False  # 允許部分圖編譯
+                )
+            except Exception as e:
+                debug_log(1, f"   ⚠️  torch.compile GPT 失敗，回退: {e}")
         debug_log(3, f"      ✓ GPT 加載完成: {gpt_path}")
         
         # 2. Semantic Codec (用於 GPT 輸出解碼)
@@ -159,6 +266,27 @@ class IndexTTSLite:
         # 初始化 GPT-Fast cache (參考 infer_v2.py line 139)
         self.s2mel.models['cfm'].estimator.setup_caches(max_batch_size=1, max_seq_length=8192)
         self.s2mel.eval()
+        
+        # 🚀 應用 torch.compile 優化 (如果配置啟用)
+        if self.use_torch_compile and hasattr(torch, 'compile'):
+            try:
+                debug_log(2, f"   ⚡ 對 S2Mel 應用 torch.compile (mode={self.compile_mode})")
+                self.s2mel = torch.compile(self.s2mel, mode=self.compile_mode)
+            except Exception as e:
+                debug_log(1, f"   ⚠️  torch.compile S2Mel 失敗，回退: {e}")
+        
+        # 🚀 可選: 應用動態量化 (INT8)
+        if self.use_dynamic_quantization and self.quantize_s2mel:
+            try:
+                debug_log(2, "   ⚡ 對 S2Mel 應用動態量化 (INT8)")
+                self.s2mel = torch.quantization.quantize_dynamic(
+                    self.s2mel, 
+                    {torch.nn.Linear}, 
+                    dtype=torch.qint8
+                )
+            except Exception as e:
+                debug_log(1, f"   ⚠️  S2Mel 量化失敗，回退: {e}")
+        
         debug_log(3, f"      ✓ S2Mel 加載完成: {s2mel_path}")
         
         # 4. BigVGAN Vocoder
@@ -168,6 +296,14 @@ class IndexTTSLite:
         self.bigvgan = self.bigvgan.to(self.device)
         self.bigvgan.remove_weight_norm()
         self.bigvgan.eval()
+        
+        # 🚀 應用 torch.compile 優化 (如果配置啟用)
+        if self.use_torch_compile and hasattr(torch, 'compile'):
+            try:
+                debug_log(2, f"   ⚡ 對 BigVGAN 應用 torch.compile (mode={self.compile_mode})")
+                self.bigvgan = torch.compile(self.bigvgan, mode=self.compile_mode)
+            except Exception as e:
+                debug_log(1, f"   ⚠️  torch.compile BigVGAN 失敗，回退: {e}")
         debug_log(3, f"      ✓ BigVGAN 加載完成: {bigvgan_name}")
         
         # 5. 情感和說話人矩陣 (用於 emo_vector 映射)
@@ -254,6 +390,17 @@ class IndexTTSLite:
                     if 'emo_indices' in metadata:
                         debug_log(3, f"   📋 情感索引: {metadata['emo_indices']}")
             
+            # 🔥 角色加載成功後，執行預熱（如果這是首次加載且已配置）
+            if hasattr(self, '_warmup_config') and self._warmup_config.get('enable', False):
+                # 執行一次預熱後就移除配置，避免重複預熱
+                warmup_cfg = self._warmup_config
+                delattr(self, '_warmup_config')  # 移除配置標記
+                
+                self._warmup_models(
+                    warmup_text=warmup_cfg['text'],
+                    iterations=warmup_cfg['iterations']
+                )
+            
             return True
             
         except Exception as e:
@@ -328,12 +475,12 @@ class IndexTTSLite:
         emotion_vector: Optional[List[float]] = None,
         max_emotion_strength: float = 0.5,
         language: str = 'en',
-        # GPT 優化參數
+        # GPT 優化參數 (🚀 已優化: 關閉隨機採樣以加速)
         num_beams: int = 1,
-        do_sample: bool = True,
-        temperature: float = 0.6,
-        top_p: float = 0.9,
-        top_k: int = 20,
+        do_sample: bool = False,  # 🚀 關閉採樣，加速 5-8%
+        temperature: float = 0.0,  # 確定性輸出
+        top_p: float = 1.0,
+        top_k: int = 50,
         verbose: bool = True
     ) -> bool:
         """

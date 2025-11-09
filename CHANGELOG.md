@@ -1618,3 +1618,15 @@
 
 ---
 
+### Add comprehensive design docs, tests, UMLs. 11/9
+
+> Date: Sun, 09 Nov 2025 16:02:49 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `b5718d406643102a1abe37548c59b7de2dafe48e`
+
+---
+

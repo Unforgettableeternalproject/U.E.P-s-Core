@@ -1,0 +1,205 @@
+@startuml SD-06-會話生命週期
+
+' 會話生命週期流程
+' 展示 GS, CS, WS 的創建與結束
+
+participant "Controller\n統一控制器" as Controller #LightGray
+participant "StateManager\n狀態管理器" as StateManager #LightGray
+participant "SessionManager\n會話管理器" as SessionManager #LightCyan
+participant "GeneralSession\nGS" as GS #LightCyan
+participant "ChattingSession\nCS" as CS #LightCyan
+participant "WorkflowSession\nWS" as WS #LightCyan
+participant "EventBus\n事件總線" as EventBus #LightYellow
+participant "WorkingContext\n工作上下文" as Context #LightGray
+
+== GS 創建 ==
+
+Controller -> Controller: 檢測到狀態佇列活動
+note right: 有待處理的狀態
+
+Controller -> SessionManager: start_general_session(INTERACTIVE)
+activate SessionManager
+SessionManager -> GS: 創建新的 GeneralSession
+activate GS
+GS -> GS: 生成 session_id\n"gs_20251107_001"
+GS -> GS: 設置 gs_type = INTERACTIVE
+GS -> GS: 設置 status = ACTIVE
+GS --> SessionManager: GS created
+deactivate GS
+
+SessionManager -> Context: set_context_data("current_gs_id", gs_id)
+activate Context
+Context --> SessionManager: GS ID 已設置
+deactivate Context
+
+SessionManager -> EventBus: publish(SESSION_STARTED)
+deactivate SessionManager
+
+note over Controller, Context
+  **GS 已創建**
+  GS 是系統級會話
+  生命週期貫穿整個互動過程
+end note
+
+== CS 創建 (CHAT 狀態) ==
+
+StateManager -> StateManager: set_state(CHAT)
+activate StateManager
+StateManager -> SessionManager: create_chatting_session(gs_id, identity)
+activate SessionManager
+SessionManager -> CS: 創建 ChattingSession
+activate CS
+CS -> CS: 生成 session_id = "cs_001"
+CS -> CS: 關聯 gs_session_id = gs_id
+CS -> CS: 設置 identity_context
+note right
+  identity_context:
+  {
+    "identity_id": "identity_A",
+    "name": "使用者A",
+    "preferences": {...}
+  }
+end note
+CS --> SessionManager: CS created
+deactivate CS
+
+SessionManager -> Context: set_context_data("current_cs_id", cs_id)
+activate Context
+Context --> SessionManager: CS ID 已設置
+deactivate Context
+
+SessionManager --> StateManager: CS ready
+deactivate SessionManager
+deactivate StateManager
+
+note over StateManager, CS
+  **CS 已創建**
+  CS 依附於 GS
+  包含身份上下文
+  維護對話歷史
+end note
+
+== CS 運行期間 ==
+
+CS -> CS: add_message("user", "今天天氣如何?")
+CS -> CS: add_message("assistant", "今天台北天氣晴朗...")
+note right: 累積對話歷史
+
+CS -> CS: update_last_activity()
+note right: 每次互動更新時間
+
+== CS 結束 ==
+
+StateManager -> StateManager: 檢查 CS 結束條件
+note right
+  結束條件:
+  1. LLM session_control
+  2. 超時 (5分鐘無互動)
+  3. 所屬 GS 結束
+end note
+
+StateManager -> SessionManager: end_chatting_session(cs_id)
+activate SessionManager
+SessionManager -> CS: 標記為結束
+activate CS
+CS -> CS: 保存對話歷史
+CS -> CS: status = ENDED
+CS --> SessionManager: CS ended
+deactivate CS
+
+SessionManager -> EventBus: publish(SESSION_ENDED)
+deactivate SessionManager
+
+== WS 創建 (WORK 狀態) ==
+
+StateManager -> StateManager: set_state(WORK)
+activate StateManager
+StateManager -> SessionManager: create_workflow_session(gs_id, task_type)
+activate SessionManager
+SessionManager -> WS: 創建 WorkflowSession
+activate WS
+WS -> WS: 生成 session_id = "ws_001"
+WS -> WS: 關聯 gs_session_id = gs_id
+WS -> WS: 設置 task_type = FILE_OPERATION
+WS -> WS: task_definition = {}
+WS -> WS: pending_end = False
+WS --> SessionManager: WS created
+deactivate WS
+
+SessionManager -> Context: set_context_data("current_ws_id", ws_id)
+activate Context
+Context --> SessionManager: WS ID 已設置
+deactivate Context
+
+SessionManager --> StateManager: WS ready
+deactivate SessionManager
+deactivate StateManager
+
+== WS 運行期間 ==
+
+WS -> WS: update_progress("scan_files")
+WS -> WS: update_progress("confirm_backup")
+WS -> WS: update_progress("execute_backup")
+note right: 追蹤工作流進度
+
+== WS 結束 ==
+
+WS -> WS: 工作流完成
+WS -> SessionManager: mark_for_end()
+activate SessionManager
+SessionManager -> WS: pending_end = True
+note right
+  WS 使用 pending_end 機制
+  等待循環邊界才真正結束
+end note
+
+SessionManager -> SessionManager: 等待 CYCLE_COMPLETED
+EventBus -> SessionManager: CYCLE_COMPLETED 事件
+SessionManager -> WS: 執行最終清理
+activate WS
+WS -> WS: status = COMPLETED
+WS --> SessionManager: WS ended
+deactivate WS
+
+SessionManager -> EventBus: publish(SESSION_ENDED)
+deactivate SessionManager
+
+== GS 結束 ==
+
+Controller -> Controller: check_gs_end_conditions()
+note right
+  結束條件:
+  - 狀態佇列清空
+  - 當前狀態 = IDLE
+  - 無活躍的 CS/WS
+end note
+
+Controller -> SessionManager: end_general_session(gs_id)
+activate SessionManager
+SessionManager -> GS: 標記為結束
+activate GS
+GS -> GS: 保存會話記錄
+GS -> GS: status = ENDED
+GS --> SessionManager: GS ended
+deactivate GS
+
+SessionManager -> Context: clear_context_data("current_gs_id")
+activate Context
+Context --> SessionManager: GS ID 已清除
+deactivate Context
+
+SessionManager -> EventBus: publish(SESSION_ENDED)
+deactivate SessionManager
+
+note over Controller, Context
+  **完整會話週期結束**
+  
+  會話層級關係:
+  GS ⊃ (CS ∪ WS)
+  
+  GS 生命週期最長
+  CS/WS 依附於 GS
+  GS 結束時所有子會話結束
+end note
+
+@enduml

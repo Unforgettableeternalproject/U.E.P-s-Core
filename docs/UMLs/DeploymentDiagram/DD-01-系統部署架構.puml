@@ -1,0 +1,223 @@
+@startuml DD-01-系統部署架構
+
+' U.E.P 系統部署架構圖
+' 展示部署環境、組件和依賴關係
+
+' 執行環境節點
+node "Windows PC / Linux Server" as PC <<execution environment>> #LightSteelBlue {
+    
+    node "Python 3.10+ Runtime" as PythonRuntime <<runtime>> {
+        node "CUDA Toolkit 12.8" as CUDA <<gpu acceleration>>
+        
+        node "Virtual Environment (venv/)" as Venv <<isolation>> #LightGreen {
+            
+            ' 應用程序組件
+            component "Entry.py" as Entry <<entry point>>
+            component "production_runner.py" as Runner <<production>>
+            
+            package "core/ (核心系統)" as Core {
+                component "controller.py" as Controller
+                component "event_bus.py" as EventBus
+                component "system_loop.py" as SystemLoop
+                component "framework.py" as Framework
+                component "state_manager.py" as StateManager
+                component "sessions/" as Sessions
+                component "router.py" as Router
+            }
+            
+            package "modules/ (功能模組)" as Modules {
+                component "stt_module/" as STT
+                component "nlp_module/" as NLP
+                component "mem_module/" as MEM
+                component "llm_module/" as LLM
+                component "sys_module/" as SYS
+                component "tts_module/" as TTS
+                component "ui_module/" as UI
+                component "mov_module/" as MOV
+                component "ani_module/" as ANI
+            }
+            
+            package "configs/ (配置)" as Configs {
+                component "config.yaml" as ConfigYAML
+                component "config_loader.py" as ConfigLoader
+            }
+        }
+    }
+    
+    ' 本地存儲
+    database "Local Storage" as Storage <<file system>> #LightYellow {
+        folder "memory/" as MemoryFolder {
+            file "faiss_index" as FAISSIndex
+            file "mem_metadata.json" as MemMetadata
+            folder "identities/" as Identities
+        }
+        
+        folder "logs/" as LogsFolder {
+            folder "runtime/" as RuntimeLogs
+            folder "error/" as ErrorLogs
+            folder "debug/" as DebugLogs
+        }
+        
+        folder "models/" as ModelsFolder {
+            folder "stt/ (Whisper)" as STTModels
+            folder "nlp/ (BIO Tagger)" as NLPModels
+            folder "tts/ (IndexTTS)" as TTSModels
+        }
+        
+        folder "outputs/" as OutputsFolder {
+            folder "tts/ (音頻文件)" as TTSOutputs
+        }
+    }
+}
+
+' 外部服務
+cloud "External Services" as ExternalServices <<cloud>> #LightCoral {
+    component "Google Gemini API" as GeminiAPI <<LLM service>>
+    component "HuggingFace Model Hub" as HuggingFace <<model repository>>
+}
+
+' 組件依賴關係
+Entry --> Runner : runs
+Runner --> Controller : initializes
+Controller --> Framework : manages
+Framework --> Modules : registers
+Controller --> SystemLoop : controls
+SystemLoop --> EventBus : uses
+EventBus --> Modules : coordinates
+StateManager --> Sessions : manages
+Router --> Modules : routes to
+
+' 配置依賴
+ConfigLoader --> ConfigYAML : loads
+Modules --> ConfigLoader : uses
+
+' 模組到存儲的依賴
+STT --> STTModels : loads models
+NLP --> NLPModels : loads models
+MEM --> FAISSIndex : reads/writes
+MEM --> MemMetadata : reads/writes
+MEM --> Identities : manages
+TTS --> TTSModels : loads models
+TTS --> TTSOutputs : generates audio
+
+' 日誌依賴
+Core --> RuntimeLogs : writes
+Core --> ErrorLogs : writes
+Core --> DebugLogs : writes
+Modules --> RuntimeLogs : writes
+Modules --> ErrorLogs : writes
+
+' 外部服務依賴
+LLM -down-> GeminiAPI : HTTPS calls
+STT -down-> HuggingFace : model download
+TTS -down-> HuggingFace : model download
+
+' GPU 加速
+STT ..> CUDA : uses (optional)
+TTS ..> CUDA : uses (optional)
+
+' 注釋
+note right of PC
+  **硬體需求**
+  
+  最低配置:
+  - CPU: 4核心+
+  - RAM: 16GB
+  - GPU: RTX 3060 (6GB VRAM)
+  - Storage: 20GB+
+  
+  建議配置:
+  - CPU: 8核心+
+  - RAM: 32GB
+  - GPU: RTX 4060/4070 (8GB+ VRAM)
+  - Storage: 50GB+
+end note
+
+note right of Venv
+  **Python 依賴套件**
+  
+  核心:
+  - torch (2.7.0+cu128)
+  - transformers
+  - google-generativeai
+  
+  STT/TTS:
+  - faster-whisper
+  - pyannote-audio
+  - webrtcvad
+  
+  記憶:
+  - faiss-cpu
+  - sentence-transformers
+  
+  工具:
+  - pydantic
+  - pyyaml
+  - numpy
+end note
+
+note bottom of ExternalServices
+  **外部服務通信**
+  
+  Gemini API:
+  - Protocol: HTTPS
+  - Endpoint: generativelanguage.googleapis.com
+  - Auth: API Key
+  - Rate Limit: 視方案而定
+  
+  HuggingFace:
+  - Protocol: HTTPS
+  - 用途: 模型下載 (首次運行)
+  - 快取: models/ 目錄
+end note
+
+note bottom of Storage
+  **數據持久化**
+  
+  memory/:
+  - FAISS 向量索引
+  - 記憶元數據
+  - 身份配置文件
+  
+  logs/:
+  - 運行時日誌 (INFO)
+  - 錯誤日誌 (ERROR)
+  - 調試日誌 (DEBUG)
+  
+  models/:
+  - Whisper: ~1-2GB
+  - NLP: ~100MB
+  - TTS: ~2-4GB
+  
+  outputs/:
+  - TTS 生成的 WAV 文件
+end note
+
+note as DeploymentNote
+  **部署流程**
+  
+  1. 環境準備:
+     - 安裝 Python 3.10+
+     - 安裝 CUDA Toolkit (GPU 加速)
+     - 創建虛擬環境: python -m venv env
+  
+  2. 依賴安裝:
+     - pip install -r requirements.txt
+     - 首次運行自動下載模型
+  
+  3. 配置設定:
+     - 編輯 configs/config.yaml
+     - 設置 Gemini API Key
+     - 調整模組啟用狀態
+  
+  4. 啟動系統:
+     - Windows: run_debug.bat
+     - Linux: ./run_debug.sh
+     - 或: python Entry.py
+  
+  5. 監控:
+     - 查看 logs/ 目錄
+     - SystemLoop 健康檢查
+end note
+
+@enduml

@@ -1,0 +1,123 @@
+@startuml CD-02-事件驅動架構
+
+' 事件驅動架構類別圖
+' 展示事件總線和事件流動機制
+
+skinparam classAttributeIconSize 0
+skinparam class {
+    BackgroundColor<<event>> LightGreen
+    BackgroundColor<<coordinator>> LightYellow
+    BorderColor DarkGreen
+}
+
+package "事件驅動架構 (Event-Driven Architecture)" {
+    
+    class EventBus <<event>> {
+        ' 全局事件總線
+        - _handlers: Dict[SystemEvent, List[Callable]]
+        - _event_queue: Queue
+        - _stats: Dict
+        - _running: bool
+        --
+        + subscribe(event_type, handler): void
+        + unsubscribe(event_type, handler): void
+        + publish(event): void
+        + start(): void
+        + stop(): void
+        - _dispatch_event(event): void
+        + get_statistics(): Dict
+    }
+    
+    enum SystemEvent {
+        ' 系統事件類型枚舉
+        INPUT_LAYER_COMPLETE
+        PROCESSING_LAYER_COMPLETE
+        OUTPUT_LAYER_COMPLETE
+        STATE_CHANGED
+        SESSION_STARTED
+        SESSION_ENDED
+        CYCLE_COMPLETED
+        MODULE_ERROR
+        WORKFLOW_REQUIRES_INPUT
+        WORKFLOW_INPUT_COMPLETED
+    }
+    
+    class Event {
+        ' 事件數據結構
+        + event_type: SystemEvent
+        + data: Dict
+        + source: str
+        + timestamp: float
+        + event_id: str
+        --
+        + to_dict(): Dict
+        + __repr__(): str
+    }
+    
+    class ModuleInvocationCoordinator <<coordinator>> {
+        ' 模組調用協調器
+        - _layer_dedupe_keys: Set[str]
+        - MODULE_LAYERS: Dict
+        - _invocation_history: List
+        --
+        + handle_layer_completion(event): void
+        - _on_input_layer_complete(event): void
+        - _on_processing_layer_complete(event): void
+        - _on_output_layer_complete(event): void
+        - _should_process_event(dedupe_key): bool
+        + clear_session_deduplication(session_id): void
+    }
+    
+    note as LayerDefinition
+        **模組分層**
+        INPUT: STT, NLP
+        PROCESSING: MEM, LLM, SYS
+        OUTPUT: TTS, UI, MOV, ANI
+    end note
+}
+
+' 關係定義
+EventBus "1" --> "*" Event : publishes
+Event --> SystemEvent : categorized by
+ModuleInvocationCoordinator --> EventBus : subscribes to
+ModuleInvocationCoordinator .. LayerDefinition
+
+' 注釋
+note right of EventBus
+  **全局事件總線**
+  使用 Queue + threading
+  支援異步事件分發
+  提供訂閱/發布機制
+  事件統計與監控
+end note
+
+note right of ModuleInvocationCoordinator
+  **三層協調機制**
+  INPUT → PROCESSING → OUTPUT
+  使用去重鍵防止重複調用
+  格式: {session_id}:{cycle}:{layer}
+  
+  範例流程:
+  1. INPUT_LAYER_COMPLETE
+  2. 調用 MEM + LLM
+  3. PROCESSING_LAYER_COMPLETE
+  4. 調用 TTS
+  5. OUTPUT_LAYER_COMPLETE
+end note
+
+note bottom of Event
+  **事件結構範例**
+  {
+    "event_type": "INPUT_LAYER_COMPLETE",
+    "source": "NLPModule",
+    "data": {
+      "session_id": "gs_001",
+      "cycle_index": 3,
+      "intent": "CHAT"
+    },
+    "timestamp": 1699350000.123,
+    "event_id": "evt_abc123"
+  }
+end note
+
+@enduml

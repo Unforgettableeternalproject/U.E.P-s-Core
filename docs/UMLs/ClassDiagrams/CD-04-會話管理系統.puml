@@ -1,0 +1,184 @@
+@startuml CD-04-會話管理系統
+
+' 會話管理系統類別圖
+' 展示三層會話架構 (GS → CS/WS)
+
+skinparam classAttributeIconSize 0
+skinparam class {
+    BackgroundColor<<manager>> LightCoral
+    BackgroundColor<<session>> LightSkyBlue
+    BorderColor DarkRed
+}
+
+package "會話管理系統 (Session Management)" {
+    
+    class UnifiedSessionManager <<manager>> {
+        ' 統一會話管理器
+        - session_records: List[SessionRecord]
+        - config: Dict
+        - _session_storage_path: str
+        --
+        + start_general_session(gs_type): GeneralSession
+        + end_general_session(gs_id): void
+        + create_chatting_session(gs_id, identity): ChattingSession
+        + create_workflow_session(gs_id, task_type): WorkflowSession
+        + check_session_timeouts(): void
+        + get_active_sessions(): List
+        + save_session_records(): void
+    }
+    
+    class GeneralSession <<session>> {
+        ' 系統級會話 (GS)
+        + session_id: str
+        + gs_type: GSType
+        + created_at: float
+        + last_activity: float
+        + status: GSStatus
+        + metadata: Dict
+        --
+        + update_last_activity(): void
+        + get_status_info(): Dict
+        + is_active(): bool
+    }
+    
+    class ChattingSession <<session>> {
+        ' 對話會話 (CS)
+        + session_id: str
+        + gs_session_id: str
+        + identity_context: Dict
+        + conversation_history: List
+        + created_at: float
+        + status: str
+        --
+        + add_message(role, content): void
+        + get_session_info(): Dict
+        + get_conversation_context(): List
+    }
+    
+    class WorkflowSession <<session>> {
+        ' 工作流會話 (WS)
+        + session_id: str
+        + gs_session_id: str
+        + task_type: WSTaskType
+        + task_definition: Dict
+        + current_step: str
+        + pending_end: bool
+        + created_at: float
+        --
+        + mark_for_end(): void
+        + get_session_info(): Dict
+        + update_progress(step): void
+    }
+    
+    enum GSType {
+        ' General Session 類型
+        INTERACTIVE
+        AUTONOMOUS
+    }
+    
+    enum GSStatus {
+        ' General Session 狀態
+        ACTIVE
+        PENDING_END
+        ENDED
+    }
+    
+    enum WSTaskType {
+        ' Workflow Session 任務類型
+        FILE_OPERATION
+        SYSTEM_CONFIG
+        DATA_ANALYSIS
+        CUSTOM
+    }
+    
+    class SessionRecord {
+        ' 會話記錄 (持久化)
+        + session_id: str
+        + session_type: str
+        + start_time: float
+        + end_time: float
+        + events: List[Dict]
+        --
+        + to_json(): Dict
+        + from_json(data): SessionRecord
+    }
+}
+
+' 關係定義
+UnifiedSessionManager "1" --> "*" GeneralSession : manages
+UnifiedSessionManager "1" --> "*" ChattingSession : manages
+UnifiedSessionManager "1" --> "*" WorkflowSession : manages
+UnifiedSessionManager --> SessionRecord : persists
+
+GeneralSession --> GSType : has
+GeneralSession --> GSStatus : has
+ChattingSession ..> GeneralSession : depends on
+WorkflowSession ..> GeneralSession : depends on
+WorkflowSession --> WSTaskType : has
+
+' 注釋
+note right of UnifiedSessionManager
+  **統一會話管理**
+  管理所有會話生命週期
+  負責超時檢測
+  持久化會話記錄
+  
+  會話層級關係:
+  GS ⊃ (CS ∪ WS)
+end note
+
+note right of GeneralSession
+  **General Session (GS)**
+  系統級會話
+  生命週期:
+  - 狀態佇列有活動時創建
+  - IDLE 且佇列清空時結束
+  
+  類型:
+  - INTERACTIVE: 用戶互動觸發
+  - AUTONOMOUS: 系統自主行為
+end note
+
+note right of ChattingSession
+  **Chatting Session (CS)**
+  對話會話
+  - 依附於 GS
+  - 包含身份上下文
+  - 維護對話歷史
+  - 可中斷/恢復
+  
+  結束條件:
+  1. LLM session_control
+  2. 超時 (5分鐘無互動)
+  3. 所屬 GS 結束
+end note
+
+note right of WorkflowSession
+  **Workflow Session (WS)**
+  工作流會話
+  - 依附於 GS
+  - 追蹤任務進度
+  - 支援 pending_end 機制
+  
+  結束條件:
+  1. 工作流完成
+  2. 用戶取消
+  3. 錯誤中斷
+  4. 所屬 GS 結束
+end note
+
+note bottom of SessionRecord
+  **會話記錄範例**
+  {
+    "session_id": "gs_20251107_001",
+    "session_type": "GENERAL",
+    "start_time": 1699350000.0,
+    "end_time": 1699350300.0,
+    "events": [
+      {"type": "STATE_CHANGED", "from": "IDLE", "to": "CHAT"},
+      {"type": "CS_CREATED", "cs_id": "cs_001"}
+    ]
+  }
+end note
+
+@enduml

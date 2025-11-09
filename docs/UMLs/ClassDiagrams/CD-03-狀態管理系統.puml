@@ -1,0 +1,154 @@
+@startuml CD-03-狀態管理系統
+
+' 狀態管理系統類別圖
+' 展示狀態轉換和佇列管理機制
+
+skinparam classAttributeIconSize 0
+skinparam class {
+    BackgroundColor<<manager>> LightSalmon
+    BackgroundColor<<queue>> LightYellow
+    BorderColor DarkOrange
+}
+
+package "狀態管理系統 (State Management)" {
+    
+    class StateManager <<manager>> {
+        ' 狀態管理器
+        - _state: UEPState
+        - _current_session_id: str
+        - _state_change_callbacks: List[Callable]
+        - _transition_history: List[Dict]
+        --
+        + set_state(new_state, context): void
+        + get_current_state(): UEPState
+        + sync_with_sessions(): void
+        - _create_chat_session(): void
+        - _create_work_session(): void
+        - _cleanup_sessions(): void
+        + register_state_callback(callback): void
+    }
+    
+    enum UEPState {
+        ' 系統狀態枚舉
+        IDLE
+        CHAT
+        WORK
+        MISCHIEF
+        SLEEP
+        ERROR
+    }
+    
+    class StateQueueManager <<queue>> {
+        ' 狀態佇列管理器
+        - queue: List[StateQueueItem]
+        - current_state: UEPState
+        - processing_state: bool
+        - max_queue_size: int
+        --
+        + push_state(item): void
+        + pop_state(): StateQueueItem
+        + complete_current_state(): void
+        + get_queue_status(): Dict
+        + clear_queue(): void
+        + is_empty(): bool
+    }
+    
+    class StateQueueItem {
+        ' 狀態佇列項目
+        + target_state: UEPState
+        + priority: int
+        + context: Dict
+        + callback: Callable
+        + created_at: float
+        --
+        + to_dict(): Dict
+        + __repr__(): str
+    }
+    
+    class StateTransition {
+        ' 狀態轉換記錄
+        + from_state: UEPState
+        + to_state: UEPState
+        + trigger: str
+        + timestamp: float
+        + context: Dict
+        --
+        + to_dict(): Dict
+    }
+}
+
+' 關係定義
+StateManager --> UEPState : manages
+StateManager "1" --> "1" StateQueueManager : uses
+StateQueueManager "1" --> "*" StateQueueItem : contains
+StateManager --> StateTransition : records
+
+' 注釋
+note right of StateManager
+  **狀態管理核心**
+  
+  主要職責:
+  1. 管理系統當前狀態
+  2. 處理狀態轉換邏輯
+  3. 觸發會話創建/結束
+  4. 記錄轉換歷史
+  
+  狀態轉換流程:
+  1. 接收狀態變更請求
+  2. 驗證轉換合法性
+  3. 執行進入/退出動作
+  4. 更新當前狀態
+  5. 通知訂閱者
+end note
+
+note right of StateQueueManager
+  **狀態佇列機制**
+  
+  用途:
+  - 管理待處理狀態
+  - 支援優先級排序
+  - 防止狀態衝突
+  
+  佇列處理邏輯:
+  1. push_state() 加入佇列
+  2. 按 priority 排序
+  3. 當前狀態完成後 pop
+  4. 清空佇列 → IDLE
+  
+  範例:
+  queue = [
+    {state: CHAT, priority: 1},
+    {state: WORK, priority: 2}
+  ]
+end note
+
+note right of StateQueueItem
+  **佇列項目結構**
+  
+  Priority 等級:
+  - 0: 最高優先級 (ERROR)
+  - 1: 高優先級 (WORK)
+  - 2: 中優先級 (CHAT)
+  - 3: 低優先級 (MISCHIEF)
+  
+  Context 可能包含:
+  - session_id
+  - intent_data
+  - trigger_source
+end note
+
+note bottom of StateTransition
+  **轉換記錄範例**
+  {
+    "from_state": "IDLE",
+    "to_state": "CHAT",
+    "trigger": "NLP_INTENT_CHAT",
+    "timestamp": 1699350000.0,
+    "context": {
+      "session_id": "cs_001",
+      "intent": "CHAT"
+    }
+  }
+end note
+
+@enduml

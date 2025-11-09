@@ -1,0 +1,132 @@
+@startuml SD-02-CHAT模式完整流程
+
+' CHAT 模式完整流程
+' 展示從用戶輸入到 TTS 輸出的完整三層流程
+
+participant "User\n使用者" as User
+participant "STTModule\n語音輸入" as STT #LightBlue
+participant "NLPModule\n意圖分析" as NLP #LightBlue
+participant "EventBus\n事件總線" as EventBus #LightGray
+participant "ModuleCoordinator\n模組協調器" as Coordinator #LightGray
+participant "StateManager\n狀態管理器" as StateManager #LightGray
+participant "SessionManager\n會話管理器" as SessionManager #LightGray
+participant "MEMModule\n記憶管理" as MEM #LightYellow
+participant "LLMModule\nLLM模組" as LLM #LightYellow
+participant "TTSModule\n語音輸出" as TTS #LightGreen
+
+== 輸入層 (Input Layer) ==
+
+User -> STT: 說話 "今天天氣如何?"
+activate STT
+note right: VAD 檢測語音活動
+STT -> STT: Whisper 轉文字
+STT -> STT: Pyannote 語者識別
+note right: 識別為 identity_A
+STT -> NLP: 自動觸發 handle()
+deactivate STT
+
+activate NLP
+NLP -> NLP: 意圖分析
+note right
+  分析結果:
+  - primary_intent = CHAT
+  - entities = []
+  - speaker = identity_A
+end note
+NLP -> EventBus: publish(INPUT_LAYER_COMPLETE)
+deactivate NLP
+
+== 狀態轉換與會話創建 ==
+
+EventBus -> Coordinator: on_input_layer_complete(event)
+activate Coordinator
+Coordinator -> Coordinator: 檢查去重鍵\n{gs_id}:{cycle}:INPUT
+note right: 防止重複處理
+Coordinator -> StateManager: 推送 CHAT 狀態
+deactivate Coordinator
+
+activate StateManager
+StateManager -> StateManager: set_state(CHAT)
+StateManager -> SessionManager: create_chatting_session()
+activate SessionManager
+SessionManager -> SessionManager: 創建 ChattingSession (CS)
+note right
+  CS 屬性:
+  - gs_session_id = current_gs
+  - identity = identity_A
+  - conversation_history = []
+end note
+SessionManager --> StateManager: CS created
+deactivate SessionManager
+StateManager -> EventBus: publish(STATE_CHANGED)
+deactivate StateManager
+
+== 處理層 (Processing Layer) ==
+
+Coordinator -> MEM: handle(text, identity)
+activate MEM
+MEM -> MEM: 查詢相關記憶
+note right
+  FAISS 向量搜索
+  基於 identity_A
+  返回前 5 筆記憶
+end note
+MEM --> Coordinator: 記憶上下文
+deactivate MEM
+
+Coordinator -> LLM: handle(text, context)
+activate LLM
+LLM -> LLM: 從 WorkingContext\n獲取身份與記憶
+LLM -> LLM: 調用 Gemini API
+note right
+  Prompt:
+  - 系統提示詞
+  - 身份上下文
+  - 記憶上下文
+  - 用戶問題
+end note
+LLM --> Coordinator: "今天台北天氣晴朗..."
+LLM -> EventBus: publish(PROCESSING_LAYER_COMPLETE)
+deactivate LLM
+
+== 輸出層 (Output Layer) ==
+
+EventBus -> Coordinator: on_processing_layer_complete(event)
+activate Coordinator
+Coordinator -> Coordinator: 檢查去重鍵\n{gs_id}:{cycle}:PROCESSING
+Coordinator -> TTS: handle(response_text)
+deactivate Coordinator
+
+activate TTS
+TTS -> TTS: 文字分塊
+TTS -> TTS: TTS 引擎合成語音
+TTS -> User: 播放音頻
+note left: "今天台北天氣晴朗..."
+TTS -> EventBus: publish(OUTPUT_LAYER_COMPLETE)
+deactivate TTS
+
+== 循環結束 ==
+
+EventBus -> Coordinator: on_output_layer_complete(event)
+activate Coordinator
+Coordinator -> EventBus: publish(CYCLE_COMPLETED)
+deactivate Coordinator
+
+EventBus -> StateManager: on_cycle_completed()
+activate StateManager
+StateManager -> StateManager: 清空狀態佇列
+StateManager -> StateManager: set_state(IDLE)
+StateManager -> SessionManager: 檢查 CS 結束條件
+deactivate StateManager
+
+note over User, TTS
+  **CHAT 模式完成**
+  時間線: 約 3-8 秒
+  - STT: 1-2s
+  - NLP: 0.1-0.3s
+  - MEM: 0.1-0.5s
+  - LLM: 1-3s
+  - TTS: 0.5-2s
+end note
+
+@enduml

@@ -1,0 +1,200 @@
+@startuml CD-09-NLP模組
+
+' NLP 模組類別圖
+' 意圖分析層架構
+
+skinparam classAttributeIconSize 0
+skinparam class {
+    BackgroundColor<<module>> LightGoldenRodYellow
+    BackgroundColor<<analyzer>> Wheat
+    BorderColor DarkGoldenRod
+}
+
+package "NLP 模組 (Natural Language Processing Module)" {
+    
+    class NLPModule <<module>> {
+        ' NLP 主模組
+        - intent_analyzer: IntentAnalyzer
+        - identity_manager: IdentityManager
+        - intent_segmenter: IntentSegmenter
+        - bio_tagger: BIOTagger
+        - config: Dict
+        --
+        + initialize(): bool
+        + handle(input_data): ModuleResponse
+        - _analyze_intent(text): IntentType
+        - _identify_speaker(speaker_info): str
+        - _segment_intents(text): List[Intent]
+        + shutdown(): void
+    }
+    
+    class IntentAnalyzer <<analyzer>> {
+        ' 意圖分析器
+        - intent_patterns: Dict[IntentType, List[Pattern]]
+        - confidence_threshold: float
+        --
+        + analyze(text): IntentResult
+        + classify_intent(text): IntentType
+        + extract_entities(text): List[Entity]
+        + get_confidence(text, intent): float
+    }
+    
+    class IdentityManager <<analyzer>> {
+        ' 身份管理器
+        - identity_profiles: Dict[str, Identity]
+        - speaker_mapping: Dict[str, str]
+        --
+        + identify_user(speaker_id): str
+        + get_identity_profile(identity_id): Identity
+        + create_identity(speaker_id): str
+        + update_speaker_mapping(speaker, identity): void
+    }
+    
+    class IntentSegmenter <<analyzer>> {
+        ' 多意圖分段器
+        - segmentation_model: Model
+        --
+        + segment(text): List[TextSegment]
+        + find_boundaries(text): List[int]
+        + validate_segments(segments): bool
+    }
+    
+    class BIOTagger <<analyzer>> {
+        ' BIO 標註器 (實體識別)
+        - model: BIOModel
+        - tag_schema: Dict
+        --
+        + tag(text): List[Tag]
+        + extract_entities(tags): List[Entity]
+        + train(data): void
+    }
+    
+    enum IntentType {
+        ' 意圖類型
+        CHAT
+        WORK
+        RESPONSE
+        CONTROL
+        QUERY
+        COMMAND
+    }
+    
+    class NLPModuleData {
+        ' NLP 輸出數據結構
+        + text: str
+        + intent: IntentType
+        + confidence: float
+        + entities: List[Entity]
+        + identity_id: str
+        + metadata: Dict
+        --
+        + to_dict(): Dict
+    }
+}
+
+' 關係定義
+NLPModule "1" --> "1" IntentAnalyzer : uses
+NLPModule "1" --> "1" IdentityManager : uses
+NLPModule "1" --> "1" IntentSegmenter : uses
+NLPModule "1" --> "1" BIOTagger : uses
+NLPModule ..> NLPModuleData : produces
+IntentAnalyzer --> IntentType : classifies to
+NLPModuleData --> IntentType : contains
+
+' 注釋
+note right of NLPModule
+  **NLP 主模組職責**
+  
+  1. 意圖分析
+  2. 身份識別
+  3. 實體提取
+  4. 多意圖分段
+  
+  處理流程:
+  1. 接收 STT 文字
+  2. BIO 標註實體
+  3. 意圖分類
+  4. 語者 → 身份映射
+  5. 多意圖處理
+  6. 發布 INPUT_LAYER_COMPLETE
+end note
+
+note right of IntentAnalyzer
+  **意圖分析機制**
+  
+  分析方法:
+  - 關鍵詞匹配
+  - 模式匹配 (regex)
+  - 上下文分析
+  
+  意圖類型:
+  - CHAT: 對話互動
+  - WORK: 工作流請求
+  - RESPONSE: 回應型輸入
+  - CONTROL: 系統控制
+  - QUERY: 查詢請求
+  - COMMAND: 直接指令
+  
+  信心度計算:
+  - 關鍵詞權重
+  - 模式匹配強度
+  - 上下文一致性
+end note
+
+note right of IdentityManager
+  **身份管理機制**
+  
+  speaker_id → identity_id 映射:
+  - speaker_A → identity_A
+  - speaker_B → identity_B
+  - unknown_speaker → 創建新身份
+  
+  Identity 配置文件:
+  {
+    "identity_id": "identity_A",
+    "name": "使用者A",
+    "preferences": {...},
+    "memory_namespace": "identity_A",
+    "speaker_ids": ["speaker_A"]
+  }
+  
+  用途:
+  - MEM 記憶隔離
+  - 個性化回應
+end note
+
+note right of IntentSegmenter
+  **多意圖分段**
+  
+  範例:
+  輸入: "今天天氣如何? 順便幫我備份文件"
+  
+  分段結果:
+  1. "今天天氣如何?" → CHAT
+  2. "順便幫我備份文件" → WORK
+  
+  處理策略:
+  - 順序處理每個意圖
+  - 每個意圖獨立循環
+  - 狀態佇列排隊
+end note
+
+note bottom of NLPModuleData
+  **輸出數據範例**
+  {
+    "text": "幫我備份所有 Python 文件",
+    "intent": "WORK",
+    "confidence": 0.92,
+    "entities": [
+      {"type": "FILE_TYPE", "value": "Python"},
+      {"type": "ACTION", "value": "備份"}
+    ],
+    "identity_id": "identity_A",
+    "metadata": {
+      "detected_workflow": "backup_files",
+      "parameters": {"file_type": "*.py"}
+    }
+  }
+end note
+
+@enduml

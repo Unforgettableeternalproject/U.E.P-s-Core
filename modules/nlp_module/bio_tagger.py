@@ -18,17 +18,19 @@ from utils.debug_helper import debug_log, info_log, error_log
 class BIOTagger:
     """BIO標記的序列標註器"""
     
-    # BIO標籤定義
+    # BIO標籤定義（Stage 4 更新）
     BIO_LABELS = [
-        "O",           # Outside
-        "B-CALL",      # Begin Call
-        "I-CALL",      # Inside Call  
-        "B-CHAT",      # Begin Chat
-        "I-CHAT",      # Inside Chat
-        "B-COMMAND",   # Begin Command
-        "I-COMMAND",   # Inside Command
-        "B-COMPOUND",  # Begin Compound
-        "I-COMPOUND"   # Inside Compound
+        "O",                    # Outside
+        "B-CALL",              # Begin Call
+        "I-CALL",              # Inside Call  
+        "B-CHAT",              # Begin Chat
+        "I-CHAT",              # Inside Chat
+        "B-DIRECT_WORK",       # Begin Direct Work (緊急工作)
+        "I-DIRECT_WORK",       # Inside Direct Work
+        "B-BACKGROUND_WORK",   # Begin Background Work (背景任務)
+        "I-BACKGROUND_WORK",   # Inside Background Work
+        "B-UNKNOWN",           # Begin Unknown (無法識別)
+        "I-UNKNOWN"            # Inside Unknown
     ]
     
     def __init__(self, model_name: str = "distilbert-base-uncased"):
@@ -121,16 +123,19 @@ class BIOTagger:
         # 檢測呼叫意圖
         call_keywords = ['hey', 'hello', 'hi', 'uep', 'system', 'wake up']
         chat_keywords = ['how are you', 'what do you think', 'tell me', 'story', 'chat']
-        command_keywords = ['save', 'open', 'create', 'delete', 'play', 'stop', 'set', 'remind']
+        direct_work_keywords = ['save', 'open', 'create', 'delete', 'show', 'search', 'find']
+        background_work_keywords = ['play', 'sync', 'backup', 'download', 'install', 'update']
         
         if any(keyword in text_lower for keyword in call_keywords):
             intent = 'call'
-        elif any(keyword in text_lower for keyword in command_keywords):
-            intent = 'command'  
+        elif any(keyword in text_lower for keyword in direct_work_keywords):
+            intent = 'direct_work'
+        elif any(keyword in text_lower for keyword in background_work_keywords):
+            intent = 'background_work'
         elif any(keyword in text_lower for keyword in chat_keywords):
             intent = 'chat'
         else:
-            intent = 'chat'  # 默認為聊天
+            intent = 'unknown'  # 無法識別時返回 unknown
         
         # 創建單一分段（簡化版本）
         segment = {
@@ -334,15 +339,28 @@ class EnhancedIntentAnalyzer:
                 for segment in segments:
                     from modules.nlp_module.schemas import IntentSegment, IntentType
                     
-                    # 映射intent類型
+                    # 映射intent類型（統一為 WORK，使用 work_mode 區分）
                     intent_mapping = {
                         'call': IntentType.CALL,
                         'chat': IntentType.CHAT,
-                        'command': IntentType.COMMAND,
-                        'compound': IntentType.COMPOUND
+                        'direct_work': IntentType.WORK,
+                        'background_work': IntentType.WORK,
+                        'unknown': IntentType.UNKNOWN
+                    }
+                    
+                    # work_mode 映射（僅用於 WORK 類型）
+                    work_mode_mapping = {
+                        'direct_work': 'direct',
+                        'background_work': 'background'
                     }
                     
                     intent_type = intent_mapping.get(segment['intent'], IntentType.UNKNOWN)
+                    work_mode = work_mode_mapping.get(segment['intent'])
+                    
+                    # 構建 metadata
+                    metadata = {}
+                    if work_mode:
+                        metadata['work_mode'] = work_mode
                     
                     intent_seg = IntentSegment(
                         text=segment['text'],
@@ -350,7 +368,8 @@ class EnhancedIntentAnalyzer:
                         confidence=segment['confidence'],
                         start_pos=segment['start_pos'],
                         end_pos=segment['end_pos'],
-                        entities=[]  # 可以進一步整合實體識別
+                        entities=[],  # 可以進一步整合實體識別
+                        metadata=metadata
                     )
                     
                     intent_segments.append(intent_seg)
@@ -384,11 +403,11 @@ class EnhancedIntentAnalyzer:
         if not segments:
             return "unknown"
             
-        # 優先級規則
+        # 優先級規則（Stage 4 更新）
         priority = {
-            "command": 3,
-            "compound": 3,
-            "call": 2,
+            "direct_work": 4,      # 最高優先級
+            "call": 3,
+            "background_work": 2,
             "chat": 1,
             "unknown": 0
         }

@@ -1,0 +1,186 @@
+@startuml SM-01-UEP系統狀態機
+
+' UEP 系統狀態機
+' 展示系統主要狀態及其轉換條件
+
+skinparam state {
+    BackgroundColor<<normal>> LightBlue
+    BackgroundColor<<active>> LightGreen
+    BackgroundColor<<special>> LightYellow
+    BackgroundColor<<error>> LightCoral
+    BorderColor DarkBlue
+}
+
+[*] --> IDLE : 系統初始化完成
+
+state IDLE <<normal>> {
+    state "閒置狀態" as idle_desc
+    idle_desc : 等待用戶輸入或系統事件
+    idle_desc : GS 不存在或已結束
+    idle_desc : 狀態佇列為空
+}
+
+state CHAT <<active>> {
+    state "對話狀態" as chat_desc
+    chat_desc : ChattingSession 活躍
+    chat_desc : 處理對話互動
+    chat_desc : 記憶存取與 LLM 回應
+}
+
+state WORK <<active>> {
+    state "工作狀態" as work_desc
+    work_desc : WorkflowSession 活躍
+    work_desc : 執行工作流步驟
+    work_desc : MCP 函數調用
+}
+
+state MISCHIEF <<special>> {
+    state "搣蛋狀態" as mischief_desc
+    mischief_desc : 系統自主行為
+    mischief_desc : Boredom ≥ 0.6
+    mischief_desc : Mood ≤ -0.3
+    mischief_desc : Helpfulness = -1
+}
+
+state SLEEP <<special>> {
+    state "休眠狀態" as sleep_desc
+    sleep_desc : 長時間無互動
+    sleep_desc : Boredom ≥ 0.8
+    sleep_desc : 資源釋放,降低活動度
+}
+
+state ERROR <<error>> {
+    state "錯誤狀態" as error_desc
+    error_desc : 關鍵模組失敗
+    error_desc : 系統異常
+    error_desc : 觸發恢復機制
+}
+
+' IDLE 的轉換
+IDLE --> CHAT : NLP 分析\nintent = CHAT
+note on link
+  **動作**:
+  1. StateManager.set_state(CHAT)
+  2. 創建 ChattingSession
+  3. 推送 CHAT 狀態到佇列
+end note
+
+IDLE --> WORK : NLP 分析\nintent = WORK
+note on link
+  **動作**:
+  1. StateManager.set_state(WORK)
+  2. 創建 WorkflowSession
+  3. 推送 WORK 狀態到佇列
+end note
+
+IDLE --> MISCHIEF : Boredom ≥ 0.6\nAND Mood ≤ -0.3
+note on link
+  **動作**:
+  1. 設置 Helpfulness = -1
+  2. 觸發自主搗蛋行為
+end note
+
+IDLE --> SLEEP : Boredom ≥ 0.8\nAND 無互動 > 30分鐘
+note on link
+  **動作**:
+  1. 資源釋放
+  2. 降低系統活動度
+end note
+
+' CHAT 的轉換
+CHAT --> IDLE : CS 結束\nAND 狀態佇列清空
+note on link
+  **動作**:
+  1. SessionManager.end_chatting_session()
+  2. 清理上下文
+  3. 發布 SESSION_ENDED 事件
+end note
+
+CHAT --> WORK : 對話中觸發\nWORK intent
+note on link
+  **狀態切換**:
+  CS 可能繼續存在
+  創建新的 WS
+end note
+
+' WORK 的轉換
+WORK --> IDLE : WS 結束\nAND 狀態佇列清空
+note on link
+  **動作**:
+  1. WorkflowEngine 完成
+  2. SessionManager.end_workflow_session()
+  3. 清理工作流資源
+end note
+
+WORK --> CHAT : 工作流中\n需要對話確認
+note on link
+  **INTERACTIVE 步驟**:
+  暫時切換到 CHAT
+  獲取用戶輸入後返回
+end note
+
+' MISCHIEF 的轉換
+MISCHIEF --> IDLE : 用戶互動\nOR Mood 恢復
+note on link
+  **動作**:
+  1. 恢復 Helpfulness
+  2. 重置 Boredom
+end note
+
+' SLEEP 的轉換
+SLEEP --> IDLE : 用戶互動
+note on link
+  **動作**:
+  1. 恢復系統活動
+  2. 重新載入資源
+end note
+
+' ERROR 的轉換
+IDLE --> ERROR : 關鍵模組失敗
+CHAT --> ERROR : 系統異常
+WORK --> ERROR : 工作流錯誤
+ERROR --> IDLE : 恢復機制完成
+note on link
+  **恢復動作**:
+  1. 清理狀態佇列
+  2. 重置會話
+  3. 記錄錯誤日誌
+end note
+
+' 進入/退出動作說明
+note right of CHAT
+  **進入動作**:
+  StateManager._create_chat_session()
+  
+  **退出動作**:
+  清理對話上下文
+  保存對話歷史到 MEM
+end note
+
+note right of WORK
+  **進入動作**:
+  StateManager._create_work_session()
+  
+  **退出動作**:
+  清理工作流引擎
+  保存執行記錄
+end note
+
+note right of IDLE
+  **進入動作**:
+  StateManager._cleanup_sessions()
+  
+  **常駐檢查**:
+  - check_gs_end_conditions()
+  - 監控狀態佇列
+end note
+
+note bottom of ERROR
+  **錯誤處理策略**:
+  - STT/LLM 失敗: 系統暫停
+  - 非關鍵模組失敗: 繼續運行
+  - 記錄詳細錯誤日誌
+  - 通知監控系統
+end note
+
+@enduml

@@ -14,7 +14,7 @@ Controller 是系統級的監督者，不直接參與模組層級的處理流程
 
 import time
 import threading
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from enum import Enum
 
 from core.framework import core_framework
@@ -61,10 +61,20 @@ class UnifiedController:
         from core.module_coordinator import module_coordinator
         self.module_coordinator = module_coordinator
         
+        # 狀態佇列管理器引用
+        from core.states.state_queue import get_state_queue_manager
+        self.state_queue_manager = get_state_queue_manager()
+        
         # 系統統計
         self.startup_time = None
         self.total_gs_sessions = 0
         self.system_errors = []
+        
+        # 階段五：背景任務監控
+        self.background_tasks: Dict[str, Dict[str, Any]] = {}  # task_id -> task_info
+        self.background_task_history: List[Dict[str, Any]] = []  # Completed tasks
+        self.max_task_history = 100
+        self.background_tasks_file = "memory/background_tasks.json"  # 持久化文件路徑
         
         info_log("[UnifiedController] 系統級控制器初始化")
     
@@ -80,12 +90,19 @@ class UnifiedController:
             self.system_status = SystemStatus.INITIALIZING
             info_log("[UnifiedController] 開始系統初始化...")
             
+            # ✅ 清空狀態佇列（避免舊狀態殘留）
+            self.state_queue_manager.clear_queue()
+            info_log("[UnifiedController] 已清空狀態佇列")
+            
             # 初始化核心框架
             if not self._initialize_framework():
                 return False
                 
             # 設置事件處理器
             self._setup_event_handlers()
+            
+            # 載入背景任務歷史
+            self._load_background_tasks()
             
             # 啟動監控
             self._start_monitoring()
@@ -172,7 +189,7 @@ class UnifiedController:
         """
         try:
             # 調用 SessionManager 的超時檢查
-            timeout_sessions = self.session_manager.check_session_timeout()
+            timeout_sessions = self.session_manager.check_session_timeouts()
             
             # 如果有會話超時,記錄並處理
             if timeout_sessions:
@@ -230,6 +247,10 @@ class UnifiedController:
             from core.states.state_queue import get_state_queue_manager
             from core.states.state_manager import UEPState
             
+            # 1. 首先檢查並處理待結束的 WS（符合會話生命週期架構）
+            self._check_and_end_pending_workflow_sessions()
+            
+            # 2. 然後檢查 GS 結束條件
             current_state = self.state_manager.get_current_state()
             current_gs = self.session_manager.get_current_general_session()
             
@@ -249,6 +270,30 @@ class UnifiedController:
                 
         except Exception as e:
             debug_log(2, f"[Controller] GS 結束條件檢查失敗: {e}")
+    
+    def _check_and_end_pending_workflow_sessions(self):
+        """檢查並結束標記待結束的 Workflow Sessions - 在循環完成邊界執行"""
+        try:
+            active_ws_list = self.session_manager.get_active_workflow_sessions()
+            
+            for ws in active_ws_list:
+                # 檢查是否有 pending_end 標記
+                if hasattr(ws, 'pending_end') and ws.pending_end:
+                    session_id = ws.session_id
+                    reason = getattr(ws, 'pending_end_reason', 'workflow_complete')
+                    
+                    debug_log(1, f"[Controller] 在循環邊界處理待結束的 WS: {session_id} (原因: {reason})")
+                    
+                    # 在循環完成邊界真正結束會話
+                    success = self.session_manager.end_workflow_session(session_id)
+                    
+                    if success:
+                        info_log(f"[Controller] ✅ 已在循環邊界結束 WS: {session_id}")
+                    else:
+                        error_log(f"[Controller] ⚠️ 在循環邊界結束 WS 失敗: {session_id}")
+                        
+        except Exception as e:
+            error_log(f"[Controller] 檢查待結束 WS 時出錯: {e}")
 
     def _create_gs_for_processing(self):
         """創建 GS 以支持處理流程"""
@@ -269,6 +314,15 @@ class UnifiedController:
             )
             
             if gs_result:
+                # 🔧 立即設置到全局上下文，供所有模組訪問
+                try:
+                    from core.working_context import working_context_manager
+                    working_context_manager.global_context_data['current_gs_id'] = gs_result
+                    working_context_manager.global_context_data['current_cycle_index'] = -1
+                    debug_log(2, f"[Controller] 自動創建的 GS ID 已設置到全局上下文: {gs_result}")
+                except Exception as e:
+                    error_log(f"[Controller] 設置全局 GS ID 失敗: {e}")
+                
                 info_log(f"[Controller] 已自動創建 GS: {gs_result}")
             else:
                 error_log("[Controller] GS 創建失敗")
@@ -310,10 +364,18 @@ class UnifiedController:
                 working_context_manager.cleanup_expired_contexts()
                 debug_log(3, "[Controller] Working Context 過期項目已清理")
             
-            # 2. 重置 Speaker_Accumulation（確保新 GS 時清理）
+            # 2. 清理全局上下文中的 GS ID 和 cycle_index
+            try:
+                working_context_manager.global_context_data['current_gs_id'] = 'unknown'
+                working_context_manager.global_context_data['current_cycle_index'] = -1
+                debug_log(3, "[Controller] 全局 GS ID 已重置")
+            except Exception as e:
+                error_log(f"[Controller] 清理全局 GS ID 失敗: {e}")
+            
+            # 3. 重置 Speaker_Accumulation（確保新 GS 時清理）
             self._reset_speaker_accumulation()
             
-            # 3. 驗證系統狀態一致性
+            # 4. 驗證系統狀態一致性
             self._verify_system_state_consistency()
             
             debug_log(3, "[Controller] 系統級清理完成")
@@ -386,6 +448,18 @@ class UnifiedController:
             
             if current_gs_id:
                 self.total_gs_sessions += 1
+                
+                # 🔧 立即設置到全局上下文，供所有模組訪問
+                # 這確保 NLP/LLM/TTS 等模組在處理時能立即讀取到正確的 GS ID
+                try:
+                    from core.working_context import working_context_manager
+                    working_context_manager.global_context_data['current_gs_id'] = current_gs_id
+                    # 初始化 cycle_index 為 -1 (SystemLoop 會在檢測到循環開始時遞增為 0)
+                    working_context_manager.global_context_data['current_cycle_index'] = -1
+                    debug_log(2, f"[UnifiedController] GS ID 已設置到全局上下文: {current_gs_id}")
+                except Exception as e:
+                    error_log(f"[UnifiedController] 設置全局 GS ID 失敗: {e}")
+                
                 info_log(f"[UnifiedController] GS 已創建: {current_gs_id}")
                 
                 return {
@@ -411,9 +485,17 @@ class UnifiedController:
     def _setup_event_handlers(self):
         """設置系統級事件處理器"""
         try:
-            # 監聽 GS 生命週期事件
-            # TODO: 根據具體的事件系統實現來設置
-            info_log("[UnifiedController] 事件處理器設置完成")
+            from core.event_bus import event_bus, SystemEvent
+            
+            # 訂閱背景工作流事件
+            event_bus.subscribe(SystemEvent.BACKGROUND_WORKFLOW_COMPLETED, 
+                               self._handle_background_workflow_completed)
+            event_bus.subscribe(SystemEvent.BACKGROUND_WORKFLOW_FAILED,
+                               self._handle_background_workflow_failed)
+            event_bus.subscribe(SystemEvent.BACKGROUND_WORKFLOW_CANCELLED,
+                               self._handle_background_workflow_cancelled)
+            
+            info_log("[UnifiedController] 事件處理器設置完成 (包含背景工作流事件)")
         except Exception as e:
             error_log(f"[UnifiedController] 事件處理器設置失敗: {e}")
     
@@ -623,11 +705,318 @@ class UnifiedController:
             self.system_errors.clear()
             
             # 確保系統回到正常狀態
-            self.system_status = SystemStatus.RUNNING
-            info_log("[UnifiedController] 系統恢復完成")
+            self.system_status = SystemStatus.STOPPED
+            info_log("[UnifiedController] 系統已關閉")
             
         except Exception as e:
-            error_log(f"[UnifiedController] 系統恢復失敗: {e}")
+            error_log(f"[UnifiedController] 系統關閉失敗: {e}")
+    
+    # ========== 階段五：背景任務監控 ==========
+    
+    def _handle_background_workflow_completed(self, event_data: Dict[str, Any]):
+        """
+        處理背景工作流完成事件
+        
+        Args:
+            event_data: 事件數據，包含 task_id, workflow_type, session_id, result
+        """
+        try:
+            task_id = event_data.get('task_id')
+            workflow_type = event_data.get('workflow_type')
+            result = event_data.get('result')
+            
+            info_log(f"[Controller] 背景工作流完成: {workflow_type} (task_id: {task_id})")
+            
+            # 從活躍任務移至歷史記錄
+            if task_id in self.background_tasks:
+                task_info = self.background_tasks[task_id]
+                task_info['status'] = 'completed'
+                task_info['end_time'] = time.time()
+                task_info['result'] = result
+                
+                # 添加到歷史記錄
+                self.background_task_history.append(task_info.copy())
+                
+                # 從活躍列表移除
+                del self.background_tasks[task_id]
+                
+                debug_log(2, f"[Controller] Task {task_id} moved to history")
+            
+            # 清理舊歷史記錄
+            self._cleanup_task_history()
+            
+            # 持久化到文件
+            self._save_background_tasks()
+            
+            # 可選：通知使用者（透過 TTS 或 UI）
+            self._notify_task_completion(task_id, workflow_type, result)
+            
+        except Exception as e:
+            error_log(f"[Controller] 處理背景工作流完成事件失敗: {e}")
+    
+    def _handle_background_workflow_failed(self, event_data: Dict[str, Any]):
+        """
+        處理背景工作流失敗事件
+        
+        Args:
+            event_data: 事件數據，包含 task_id, workflow_type, session_id, error
+        """
+        try:
+            task_id = event_data.get('task_id')
+            workflow_type = event_data.get('workflow_type')
+            error = event_data.get('error')
+            
+            error_log(f"[Controller] 背景工作流失敗: {workflow_type} (task_id: {task_id}), 錯誤: {error}")
+            
+            # 更新任務狀態
+            if task_id in self.background_tasks:
+                task_info = self.background_tasks[task_id]
+                task_info['status'] = 'failed'
+                task_info['end_time'] = time.time()
+                task_info['error'] = error
+                
+                # 添加到歷史記錄
+                self.background_task_history.append(task_info.copy())
+                
+                # 從活躍列表移除
+                del self.background_tasks[task_id]
+            
+            # 清理舊歷史記錄
+            self._cleanup_task_history()
+            
+            # 持久化到文件
+            self._save_background_tasks()
+            
+            # 可選：通知使用者失敗
+            self._notify_task_failure(task_id, workflow_type, error)
+            
+        except Exception as e:
+            error_log(f"[Controller] 處理背景工作流失敗事件失敗: {e}")
+    
+    def _handle_background_workflow_cancelled(self, event_data: Dict[str, Any]):
+        """
+        處理背景工作流取消事件
+        
+        Args:
+            event_data: 事件數據，包含 task_id, workflow_type
+        """
+        try:
+            task_id = event_data.get('task_id')
+            workflow_type = event_data.get('workflow_type')
+            
+            info_log(f"[Controller] 背景工作流取消: {workflow_type} (task_id: {task_id})")
+            
+            # 更新任務狀態
+            if task_id in self.background_tasks:
+                task_info = self.background_tasks[task_id]
+                task_info['status'] = 'cancelled'
+                task_info['end_time'] = time.time()
+                
+                # 添加到歷史記錄
+                self.background_task_history.append(task_info.copy())
+                
+                # 從活躍列表移除
+                del self.background_tasks[task_id]
+            
+            # 清理舊歷史記錄
+            self._cleanup_task_history()
+            
+            # 持久化到文件
+            self._save_background_tasks()
+            
+        except Exception as e:
+            error_log(f"[Controller] 處理背景工作流取消事件失敗: {e}")
+    
+    def register_background_task(self, task_id: str, task_info: Dict[str, Any]):
+        """
+        註冊新的背景任務
+        
+        Args:
+            task_id: 任務ID
+            task_info: 任務資訊（workflow_type, session_id, metadata等）
+        """
+        try:
+            self.background_tasks[task_id] = {
+                'task_id': task_id,
+                'start_time': time.time(),
+                'status': 'running',
+                **task_info
+            }
+            
+            debug_log(2, f"[Controller] Registered background task: {task_id}")
+            
+        except Exception as e:
+            error_log(f"[Controller] 註冊背景任務失敗: {e}")
+    
+    def get_background_task_status(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """
+        獲取背景任務狀態
+        
+        Args:
+            task_id: 任務ID
+            
+        Returns:
+            任務資訊或 None
+        """
+        # 先查活躍任務
+        if task_id in self.background_tasks:
+            return self.background_tasks[task_id].copy()
+        
+        # 再查歷史記錄
+        for task in self.background_task_history:
+            if task['task_id'] == task_id:
+                return task.copy()
+        
+        return None
+    
+    def get_all_background_tasks(self) -> Dict[str, Any]:
+        """
+        獲取所有背景任務資訊
+        
+        Returns:
+            包含活躍任務和歷史記錄的字典
+        """
+        return {
+            'active_tasks': list(self.background_tasks.values()),
+            'task_history': self.background_task_history.copy(),
+            'active_count': len(self.background_tasks),
+            'completed_count': sum(1 for t in self.background_task_history if t.get('status') == 'completed'),
+            'failed_count': sum(1 for t in self.background_task_history if t.get('status') == 'failed')
+        }
+    
+    def _cleanup_task_history(self):
+        """清理舊的任務歷史記錄，保留最近的 max_task_history 個"""
+        if len(self.background_task_history) > self.max_task_history:
+            # 按結束時間排序，保留最新的
+            self.background_task_history.sort(key=lambda t: t.get('end_time', 0))
+            self.background_task_history = self.background_task_history[-self.max_task_history:]
+            debug_log(3, f"[Controller] Cleaned up task history, keeping {self.max_task_history} recent tasks")
+    
+    def _notify_task_completion(self, task_id: str, workflow_type: str, result: Any):
+        """
+        通知使用者任務完成（可選功能）
+        
+        Args:
+            task_id: 任務ID
+            workflow_type: 工作流類型
+            result: 執行結果
+        """
+        try:
+            # 獲取 TTS 模組進行語音通知
+            tts_module = self.core_framework.get_module("tts")
+            if tts_module:
+                notification_message = f"背景任務已完成：{workflow_type}"
+                try:
+                    # 異步發送 TTS 通知（不阻塞）
+                    tts_module.speak(notification_message, priority="low")
+                    debug_log(2, f"[Controller] 已發送 TTS 完成通知: {workflow_type}")
+                except Exception as e:
+                    debug_log(2, f"[Controller] TTS 通知失敗: {e}")
+            
+            # TODO: 整合 UI 模組顯示通知
+            # ui_module = self.module_registry.get("UI")
+            # if ui_module:
+            #     ui_module.show_notification(f"任務完成: {workflow_type}", "success")
+            
+            debug_log(2, f"[Controller] Task completion notification: {workflow_type} completed")
+            
+        except Exception as e:
+            error_log(f"[Controller] 發送任務完成通知失敗: {e}")
+    
+    def _notify_task_failure(self, task_id: str, workflow_type: str, error: str):
+        """
+        通知使用者任務失敗（可選功能）
+        
+        Args:
+            task_id: 任務ID
+            workflow_type: 工作流類型
+            error: 錯誤訊息
+        """
+        try:
+            # 獲取 TTS 模組進行語音通知
+            tts_module = self.core_framework.get_module("tts")
+            if tts_module:
+                notification_message = f"背景任務失敗：{workflow_type}，錯誤：{error}"
+                try:
+                    # 異步發送 TTS 通知（不阻塞）
+                    tts_module.speak(notification_message, priority="high")
+                    debug_log(2, f"[Controller] 已發送 TTS 失敗通知: {workflow_type}")
+                except Exception as e:
+                    debug_log(2, f"[Controller] TTS 通知失敗: {e}")
+            
+            # TODO: 整合 UI 模組顯示錯誤通知
+            # ui_module = self.module_registry.get("UI")
+            # if ui_module:
+            #     ui_module.show_notification(f"任務失敗: {workflow_type}", "error")
+            
+            debug_log(2, f"[Controller] Task failure notification: {workflow_type} failed - {error}")
+            
+        except Exception as e:
+            error_log(f"[Controller] 發送任務失敗通知失敗: {e}")
+    
+    def _save_background_tasks(self):
+        """
+        持久化背景任務到文件
+        儲存當前活躍任務和歷史記錄
+        """
+        try:
+            import json
+            import os
+            
+            # 確保目錄存在
+            os.makedirs(os.path.dirname(self.background_tasks_file), exist_ok=True)
+            
+            # 準備數據
+            data = {
+                "active_tasks": list(self.background_tasks.values()),
+                "task_history": self.background_task_history,
+                "last_updated": time.time()
+            }
+            
+            # 寫入文件
+            with open(self.background_tasks_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            
+            debug_log(3, f"[Controller] 已儲存背景任務到 {self.background_tasks_file}")
+            
+        except Exception as e:
+            error_log(f"[Controller] 儲存背景任務失敗: {e}")
+    
+    def _load_background_tasks(self):
+        """
+        從文件載入背景任務歷史
+        注意：活躍任務不會恢復，因為執行緒已終止
+        """
+        try:
+            import json
+            import os
+            
+            if not os.path.exists(self.background_tasks_file):
+                debug_log(2, "[Controller] 背景任務文件不存在，跳過載入")
+                return
+            
+            # 讀取文件
+            with open(self.background_tasks_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            # 載入歷史記錄（不載入活躍任務，因為無法恢復執行狀態）
+            self.background_task_history = data.get("task_history", [])
+            
+            # 檢查是否有未完成的任務（這些任務可能在上次關閉時丟失）
+            active_tasks = data.get("active_tasks", [])
+            if active_tasks:
+                info_log(f"[Controller] 發現 {len(active_tasks)} 個未完成的背景任務（已丟失，無法恢復）")
+                # 將這些任務標記為失敗並加入歷史
+                for task in active_tasks:
+                    task['status'] = 'failed'
+                    task['end_time'] = time.time()
+                    task['error'] = '系統重啟導致任務中斷'
+                    self.background_task_history.append(task)
+            
+            info_log(f"[Controller] 已載入 {len(self.background_task_history)} 條背景任務歷史記錄")
+            
+        except Exception as e:
+            error_log(f"[Controller] 載入背景任務失敗: {e}")
             self.system_status = SystemStatus.ERROR
     
     # ========== 系統關閉 ==========

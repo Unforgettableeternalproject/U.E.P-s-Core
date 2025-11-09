@@ -94,7 +94,6 @@ if __name__ == "__main__":
     # 處理命令行參數
     import argparse
     parser = argparse.ArgumentParser(description='U.E.P 系統')
-    parser.add_argument('--reset-speaker-models', action='store_true', help='重置說話人模型')
     parser.add_argument('--log-test', action='store_true', help='測試日誌功能')
     parser.add_argument('--test-logger', action='store_true', help='測試日誌檢查邏輯')
     parser.add_argument('--debug', action='store_true', help='強制啟用除錯模式')
@@ -117,16 +116,6 @@ if __name__ == "__main__":
     elif args.production:
         debug_mode = False
         print("🚀 通過命令行參數強制啟用生產模式")
-    
-    # 處理特殊命令
-    if args.reset_speaker_models:
-        from modules.stt_module.speaker_identification import SpeakerIdentifier
-        speaker_id = SpeakerIdentifier(config.get("modules", {}).get("stt_module", {}))
-        if speaker_id.reset_speaker_models():
-            print("已重置說話人模型")
-        else:
-            print("重置說話人模型失敗")
-        sys.exit(0)
     
     # 處理圖形除錯介面啟動
     if args.debug_gui:

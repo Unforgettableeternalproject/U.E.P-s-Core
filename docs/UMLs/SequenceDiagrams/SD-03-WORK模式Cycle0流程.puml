@@ -1,0 +1,172 @@
+@startuml SD-03-WORK模式Cycle0流程
+
+' WORK 模式 Cycle 0 流程
+' 展示工作流啟動的初始循環
+
+participant "User\n使用者" as User
+participant "STTModule\n語音輸入" as STT #LightBlue
+participant "NLPModule\n意圖分析" as NLP #LightBlue
+participant "EventBus\n事件總線" as EventBus #LightGray
+participant "ModuleCoordinator\n模組協調器" as Coordinator #LightGray
+participant "StateManager\n狀態管理器" as StateManager #LightGray
+participant "SessionManager\n會話管理器" as SessionManager #LightGray
+participant "LLMModule\nLLM模組" as LLM #LightYellow
+participant "MCPClient\nMCP客戶端" as MCP #LightYellow
+participant "SYSModule\n工作流引擎" as SYS #LightYellow
+participant "TTSModule\n語音輸出" as TTS #LightGreen
+
+== 輸入層 - 工作請求 ==
+
+User -> STT: "幫我備份所有 Python 文件"
+activate STT
+STT -> STT: 語音轉文字
+STT -> NLP: handle(text)
+deactivate STT
+
+activate NLP
+NLP -> NLP: 意圖分析
+note right
+  分析結果:
+  - primary_intent = WORK
+  - detected_workflow = "backup_files"
+  - parameters = {
+      file_type: "*.py"
+    }
+end note
+NLP -> EventBus: publish(INPUT_LAYER_COMPLETE)
+deactivate NLP
+
+== 狀態轉換 - 創建 Workflow Session ==
+
+EventBus -> Coordinator: on_input_layer_complete(event)
+activate Coordinator
+Coordinator -> Coordinator: 檢測到 WORK intent\n且 cycle_index = 0
+note right: 特殊處理 Cycle 0
+Coordinator -> StateManager: 推送 WORK 狀態
+deactivate Coordinator
+
+activate StateManager
+StateManager -> StateManager: set_state(WORK)
+StateManager -> SessionManager: create_workflow_session()
+activate SessionManager
+SessionManager -> SessionManager: 創建 WorkflowSession (WS)
+note right
+  WS 屬性:
+  - task_type = FILE_OPERATION
+  - task_definition = {}
+  - current_step = null
+  - status = CREATED
+end note
+SessionManager --> StateManager: WS created
+deactivate SessionManager
+StateManager -> EventBus: publish(STATE_CHANGED)
+deactivate StateManager
+
+== 處理層 - LLM MCP 決策 (Cycle 0 特殊處理) ==
+
+Coordinator -> LLM: handle_work_cycle_0(user_request)
+activate LLM
+note right of LLM
+  Cycle 0 特殊邏輯:
+  不等待 PROCESSING_LAYER_COMPLETE
+  直接調用 LLM + MCP
+end note
+
+LLM -> LLM: 準備 MCP tools 列表
+note right
+  可用 MCP tools:
+  - start_workflow
+  - review_step
+  - approve_step
+  - provide_workflow_input
+  - cancel_workflow
+end note
+
+LLM -> LLM: 調用 Gemini API
+note right
+  Prompt:
+  用戶: "備份所有 Python 文件"
+  可用工具: [MCP tools]
+  請決策如何啟動工作流
+end note
+
+LLM -> MCP: call_function("start_workflow")
+activate MCP
+note right
+  參數:
+  {
+    workflow_type: "backup_files",
+    parameters: {
+      file_pattern: "*.py",
+      backup_location: "./backups/"
+    }
+  }
+end note
+
+MCP -> SYS: start_workflow(params)
+activate SYS
+SYS -> SYS: 載入工作流定義
+SYS -> SYS: 創建 WorkflowEngine
+note right
+  WorkflowEngine:
+  - definition = backup_files
+  - steps = [scan, confirm, execute]
+  - current_step = "scan"
+  - status = ACTIVE
+end note
+SYS --> MCP: {"success": true, "workflow_id": "wf_001"}
+deactivate SYS
+
+MCP --> LLM: MCP 函數調用結果
+deactivate MCP
+
+LLM -> LLM: 生成用戶回應
+note right
+  LLM 回應:
+  "好的,我已經啟動備份工作流。
+  第一步是掃描所有 Python 文件,
+  接下來會讓您確認。"
+end note
+
+LLM -> EventBus: publish(PROCESSING_LAYER_COMPLETE)
+deactivate LLM
+
+== 輸出層 ==
+
+EventBus -> Coordinator: on_processing_layer_complete(event)
+activate Coordinator
+Coordinator -> TTS: handle(response_text)
+deactivate Coordinator
+
+activate TTS
+TTS -> TTS: 合成語音
+TTS -> User: 播放回應
+TTS -> EventBus: publish(OUTPUT_LAYER_COMPLETE)
+deactivate TTS
+
+== Cycle 0 結束 - 等待下一個 Cycle ==
+
+EventBus -> Coordinator: on_output_layer_complete(event)
+activate Coordinator
+Coordinator -> EventBus: publish(CYCLE_COMPLETED)
+deactivate Coordinator
+
+note over User, TTS
+  **Cycle 0 完成**
+  工作流狀態: ACTIVE (waiting)
+  下一步: Cycle 1 LLM 調用 review_step()
+  獲取第一步驟詳情並執行
+end note
+
+note right of SYS
+  **WorkflowEngine 狀態**
+  workflow_id: wf_001
+  current_step: scan
+  waiting_for_llm: true
+  
+  等待 LLM 在 Cycle 1+ 調用:
+  1. review_step() - 審核當前步驟
+  2. approve_step() - 批准執行
+end note
+
+@enduml

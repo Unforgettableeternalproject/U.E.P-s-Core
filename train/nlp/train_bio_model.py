@@ -339,17 +339,19 @@ class BIOTrainer:
 def main():
     """主函數"""
     # 檢查是否有訓練數據
-    training_data_path = "./data/annotated/train.jsonl"
-    if not Path(training_data_path).exists():
-        info_log("[Main] 沒有找到訓練數據，請先運行資料生成器或標註工具")
+    training_data_path = Path(__file__).parent / "nlp_training_data.jsonl"
+    if not training_data_path.exists():
+        error_log("[Main] 沒有找到訓練數據，請確認 nlp_training_data.jsonl 存在")
         return
+    
+    info_log(f"[Main] 使用訓練數據: {training_data_path}")
     
     # 配置訓練參數
     config = TrainingConfig(
         model_name="distilbert-base-uncased",
-        output_dir="../../models/nlp/bio_tagger",
-        training_data_path=training_data_path,
-        num_epochs=3,
+        output_dir=str(Path(__file__).parent.parent.parent / "models" / "nlp" / "bio_tagger"),
+        training_data_path=str(training_data_path),
+        num_epochs=5,  # 增加訓練輪數
         train_batch_size=16,
         eval_batch_size=16,
         learning_rate=2e-5

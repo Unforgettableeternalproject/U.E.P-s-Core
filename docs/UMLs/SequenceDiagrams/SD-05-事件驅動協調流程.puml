@@ -1,0 +1,128 @@
+@startuml SD-05-事件驅動協調流程
+
+' 事件驅動架構協調流程
+' 展示事件發布、訂閱、執行流程
+
+title 事件驅動協調流程 (Event-Driven Coordination)
+
+participant "ModuleA\n(發布者)" as ModA #LightBlue
+participant "EventBus" as EB #LightCyan
+participant "ModuleInvocation\nCoordinator" as MIC #PaleTurquoise
+participant "ModuleB\n(訂閱者)" as ModB #LightGreen
+participant "ModuleC\n(訂閱者)" as ModC #LightGreen
+
+== 事件訂閱階段 ==
+
+ModB -> EB: subscribe(\n  event_type="DATA_READY",\n  handler=ModB.handle\n)
+activate EB
+EB -> EB: 註冊訂閱者\nsubscribers["DATA_READY"].append(ModB)
+EB --> ModB: 訂閱成功
+deactivate EB
+
+ModC -> EB: subscribe(\n  event_type="DATA_READY",\n  handler=ModC.handle\n)
+activate EB
+EB -> EB: 註冊訂閱者\nsubscribers["DATA_READY"].append(ModC)
+EB --> ModC: 訂閱成功
+deactivate EB
+
+== 事件發布階段 ==
+
+ModA -> ModA: 完成處理\n準備發布事件
+ModA -> EB: publish_event(\n  Event(\n    type="DATA_READY",\n    data={"result": ...},\n    source="ModA"\n  )\n)
+activate EB
+EB -> EB: 將事件加入佇列\nevent_queue.put(event)
+EB --> ModA: 發布成功 (非阻塞)
+deactivate EB
+
+note over ModA
+  ModuleA 繼續執行
+  不等待訂閱者處理
+end note
+
+== 事件處理階段 ==
+
+EB -> EB: 事件循環\nprocess_events()
+activate EB
+EB -> EB: event = event_queue.get()
+EB -> EB: 查找訂閱者\nsubscribers = get_subscribers("DATA_READY")
+
+EB -> MIC: coordinate_module_call(\n  module=ModB,\n  event=event\n)
+activate MIC
+
+== 三層去重機制 ==
+
+MIC -> MIC: **Layer 1: 事件級去重**\ncheck_event_dedup(\n  event_id="evt_001"\n)
+note right of MIC
+  檢查 event_id 是否已處理
+  相同 event_id → 跳過
+end note
+
+MIC -> MIC: **Layer 2: 模組級去重**\ncheck_module_dedup(\n  module="ModB",\n  event_type="DATA_READY"\n)
+note right of MIC
+  檢查該模組是否正在處理\n相同類型的事件
+  正在處理 → 跳過
+end note
+
+MIC -> MIC: **Layer 3: 函數級去重**\ncheck_function_dedup(\n  function="ModB.handle",\n  event_data_hash="abc123"\n)
+note right of MIC
+  檢查是否有相同參數的\n函數調用正在執行
+  相同參數 → 跳過
+end note
+
+== 去重通過，執行模組 ==
+
+MIC -> MIC: 標記為執行中\nmark_as_executing(\n  module="ModB",\n  event_id="evt_001"\n)
+
+MIC -> ModB: handle(event)
+activate ModB
+ModB -> ModB: 處理事件數據
+ModB --> MIC: 處理完成\nModuleResponse
+deactivate ModB
+
+MIC -> MIC: 移除執行標記\nremove_executing_mark("ModB")
+MIC --> EB: 執行完成
+deactivate MIC
+
+== 處理下一個訂閱者 ==
+
+EB -> MIC: coordinate_module_call(\n  module=ModC,\n  event=event\n)
+activate MIC
+
+MIC -> MIC: **三層去重檢查**\n(同上)
+
+MIC -> ModC: handle(event)
+activate ModC
+ModC -> ModC: 處理事件數據
+ModC --> MIC: 處理完成
+deactivate ModC
+
+MIC -> MIC: 移除執行標記
+MIC --> EB: 執行完成
+deactivate MIC
+
+EB -> EB: 所有訂閱者處理完成
+deactivate EB
+
+note over EB, ModC
+  事件處理完成
+  事件循環繼續處理下一個事件
+end note
+
+== 去重示例：重複事件被攔截 ==
+
+ModA -> EB: publish_event(\n  Event(\n    type="DATA_READY",\n    event_id="evt_001"  # 相同 ID\n  )\n)
+activate EB
+EB -> MIC: coordinate_module_call(ModB, event)
+activate MIC
+MIC -> MIC: Layer 1 去重檢查\nevent_id="evt_001" 已處理
+MIC -> MIC: **跳過執行**
+MIC --> EB: 重複事件，已跳過
+deactivate MIC
+deactivate EB
+
+note over EB, MIC
+  重複事件被成功攔截
+  避免重複處理
+end note
+
+@enduml

@@ -118,12 +118,13 @@ def test_schemas():
     # 測試 TTSOutput
     out = TTSOutput(
         status="success",
+        success=True,
         message="Test completed",
         output_path="test.wav",
         is_chunked=False,
         chunk_count=1
     )
-    print(f"  ✓ TTSOutput 創建: status='{out.status}', chunked={out.is_chunked}")
+    print(f"  ✓ TTSOutput 創建: status='{out.status}', success={out.success}, chunked={out.is_chunked}")
     
     print("\n✓ 測試 5 通過\n")
 

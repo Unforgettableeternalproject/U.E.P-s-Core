@@ -329,6 +329,7 @@ class TTSModule(BaseModule):
         except Exception as e:
             return TTSOutput(
                 status="error",
+                success=False,
                 message=f"Invalid input: {e}",
                 output_path=None,
                 is_chunked=False,
@@ -339,6 +340,7 @@ class TTSModule(BaseModule):
         if not text:
             return TTSOutput(
                 status="error",
+                success=False,
                 message="Text is required",
                 output_path=None,
                 is_chunked=False,
@@ -362,11 +364,11 @@ class TTSModule(BaseModule):
         
         if should_chunk:
             result = loop.run_until_complete(
-                self._handle_streaming(text, inp.save, inp.character, inp.emotion_vector)
+                self._handle_streaming(text, inp.save, inp.save_name, character=inp.character, emotion_vector=inp.emotion_vector)
             )
         else:
             result = loop.run_until_complete(
-                self._handle_single(text, inp.save, inp.character, inp.emotion_vector)
+                self._handle_single(text, inp.save, inp.save_name, inp.character, inp.emotion_vector)
             )
         
         # TTS 作為輸出層完成後，通知系統進行循環結束檢查
@@ -378,6 +380,7 @@ class TTSModule(BaseModule):
         self, 
         text: str, 
         save: bool, 
+        save_name: Optional[str] = None,
         character: Optional[str] = None,
         emotion_vector: Optional[List[float]] = None
     ) -> dict:
@@ -399,6 +402,7 @@ class TTSModule(BaseModule):
                 error_log("[TTS] 引擎未初始化")
                 return TTSOutput(
                     status="error",
+                    success=False,
                     message="Engine not initialized",
                     output_path=None,
                     is_chunked=False,
@@ -424,7 +428,7 @@ class TTSModule(BaseModule):
             # 準備輸出路徑
             output_path = None
             if save:
-                output_path = os.path.join("outputs", "tts", f"uep_{uuid.uuid4().hex[:8]}.wav")
+                output_path = os.path.join("outputs", "tts", f"{save_name or f'uep_{uuid.uuid4().hex[:8]}'}.wav")
             else:
                 output_path = os.path.join("temp", "tts", f"temp_{uuid.uuid4().hex[:8]}.wav")
             
@@ -446,6 +450,7 @@ class TTSModule(BaseModule):
                 self._playback_state = PlaybackState.ERROR
                 return TTSOutput(
                     status="error",
+                    success=False,
                     message="Synthesis failed",
                     output_path=None,
                     is_chunked=False,
@@ -480,6 +485,7 @@ class TTSModule(BaseModule):
             
             return TTSOutput(
                 status="success",
+                success=True,
                 message="TTS completed",
                 output_path=final_path,
                 is_chunked=False,
@@ -493,6 +499,7 @@ class TTSModule(BaseModule):
             debug_log(1, f"[TTS] 錯誤詳情:\n{traceback.format_exc()}")
             return TTSOutput(
                 status="error",
+                success=False,
                 message=f"TTS failed: {str(e)}",
                 output_path=None,
                 is_chunked=False,
@@ -503,6 +510,7 @@ class TTSModule(BaseModule):
         self,
         text: str,
         save: bool,
+        save_name: Optional[str] = None,
         character: Optional[str] = None,
         emotion_vector: Optional[List[float]] = None
     ) -> dict:
@@ -526,6 +534,7 @@ class TTSModule(BaseModule):
                 error_log("[TTS] 引擎未初始化")
                 return TTSOutput(
                     status="error",
+                    success=False,
                     message="Engine not initialized",
                     output_path=None,
                     is_chunked=True,
@@ -655,7 +664,7 @@ class TTSModule(BaseModule):
                 
                 if buffers:
                     merged = np.concatenate(buffers, axis=0)
-                    output_path = os.path.join("outputs", "tts", f"uep_{uuid.uuid4().hex[:8]}.wav")
+                    output_path = os.path.join("outputs", "tts", f"{save_name or f'uep_{uuid.uuid4().hex[:8]}'}.wav")
                     sf.write(output_path, merged, sr)
                     info_log(f"[TTS] 已合併音頻到 {output_path}")
                     
@@ -672,6 +681,7 @@ class TTSModule(BaseModule):
             
             return TTSOutput(
                 status="success",
+                success=True,
                 message=f"Streaming completed",
                 output_path=output_path,
                 is_chunked=True,
@@ -697,6 +707,7 @@ class TTSModule(BaseModule):
             
             return TTSOutput(
                 status="error",
+                success=False,
                 message=f"Streaming failed: {str(e)}",
                 output_path=None,
                 is_chunked=True,

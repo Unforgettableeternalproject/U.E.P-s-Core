@@ -171,9 +171,9 @@ class GeminiWrapper:
                 },
                 "sys_action": {
                     "type": "object",
-                    "nullable": True,
+                    "nullable": False,
                     "properties": {
-                        "action_type": {
+                        "action": {
                             "type": "string",
                             "enum": ["start_workflow", "execute_function", "provide_options"],
                             "description": "系統動作類型"
@@ -201,7 +201,7 @@ class GeminiWrapper:
                             "description": "選擇此動作的詳細理由"
                         }
                     },
-                    "required": ["action_type", "target", "reason"],
+                    "required": ["action", "target", "reason"],
                     "description": "建議的系統動作"
                 },
                 "status_updates": {
@@ -300,18 +300,31 @@ class GeminiWrapper:
 
 
     # [修改] 允許 str 或 list[str]
-    def query(self, prompt: str, mode: str = "chat", cached_content=None) -> dict:
+    def query(self, prompt: str, mode: str = "chat", cached_content=None, tools=None) -> dict:
         contents = [types.Content(role="user", parts=[types.Part(text=prompt)])]
         schema = self.response_schemas.get(mode, self.response_schemas["chat"])
 
-        config = types.GenerateContentConfig(
-            temperature=self.temperature,
-            top_p=self.top_p,
-            max_output_tokens=self.max_tokens,
-            response_mime_type="application/json",
-            response_schema=schema,
-            safety_settings=self.safety_settings
-        )
+        config_params = {
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "max_output_tokens": self.max_tokens,
+            "safety_settings": self.safety_settings
+        }
+        
+        # ✅ 如果提供了 tools，使用 function calling 模式；否則使用 JSON schema 模式
+        if tools:
+            config_params["tools"] = tools
+            # ✅ 強制要求 Gemini 調用函數（ANY mode）
+            config_params["tool_config"] = {"function_calling_config": {"mode": "ANY"}}
+            # 🔍 DEBUG: 記錄 tools 數量
+            from devtools.debugger import debug_log
+            tool_count = sum(len(t.get('function_declarations', [])) for t in tools)
+            debug_log(3, f"[Gemini] 使用 function calling 模式（強制），工具數量: {tool_count}")
+        else:
+            config_params["response_mime_type"] = "application/json"
+            config_params["response_schema"] = schema
+        
+        config = types.GenerateContentConfig(**config_params)
 
         # [修改] 支援單一 id 或多個 id
         if self.cache_enabled and cached_content:
@@ -326,12 +339,64 @@ class GeminiWrapper:
             config=config
         )
 
-        part = result.candidates[0].content.parts[0] # type: ignore
+        # 🔧 防禦性檢查：確保 result 和 candidates 不是 None
+        if result is None:
+            error_log("[Gemini] API 返回 None")
+            return {"text": "❌ Gemini API 未產出回應"}
+        
+        if not hasattr(result, 'candidates') or result.candidates is None or len(result.candidates) == 0:
+            error_log(f"[Gemini] API 返回無效的 candidates: {result}")
+            return {"text": "❌ Gemini API 返回無效回應"}
+        
+        candidate = result.candidates[0]
+        if candidate is None or not hasattr(candidate, 'content') or candidate.content is None:
+            error_log(f"[Gemini] candidate 或 content 為 None")
+            return {"text": "❌ Gemini API 返回空內容"}
+        
+        if not hasattr(candidate.content, 'parts') or candidate.content.parts is None or len(candidate.content.parts) == 0:
+            error_log(f"[Gemini] content.parts 為空")
+            return {"text": "❌ Gemini API 返回空回應部分"}
+        
+        part = candidate.content.parts[0] # type: ignore
 
         import json
         payload: dict[str, Any] = {}
-        if hasattr(part, 'text') and part.text:
-            payload = json.loads(part.text)
+        
+        # ✅ 處理 function call 回應
+        if hasattr(part, 'function_call') and part.function_call:
+            payload = {
+                "function_call": {
+                    "name": part.function_call.name,
+                    "args": dict(part.function_call.args) if hasattr(part.function_call, 'args') else {}
+                },
+                "text": ""  # function call 時沒有文本回應
+            }
+        elif hasattr(part, 'text') and part.text:
+            # 當使用 tools 時，Gemini 可能返回純文本而非 JSON
+            if tools:
+                # 🔧 修復：Gemini 在 function calling 模式下可能返回雙重編碼的 JSON
+                try:
+                    # 嘗試解析外層 JSON
+                    parsed = json.loads(part.text)
+                    if isinstance(parsed, dict) and 'text' in parsed:
+                        # 解碼內層的 Unicode 轉義序列
+                        decoded_text = parsed['text'].encode().decode('unicode_escape')
+                        payload = {"text": decoded_text}
+                        # 保留其他字段
+                        for key, value in parsed.items():
+                            if key != 'text':
+                                payload[key] = value
+                    else:
+                        payload = {"text": part.text}
+                except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
+                    # Fallback: 當作純文本處理
+                    payload = {"text": part.text}
+            else:
+                try:
+                    payload = json.loads(part.text)
+                except json.JSONDecodeError:
+                    # Fallback: 若 JSON 解析失敗，當作純文本處理
+                    payload = {"text": part.text}
         elif hasattr(part, 'struct') and part.struct:  # type: ignore
             payload = part.struct  # type: ignore
         else:

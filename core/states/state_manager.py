@@ -19,6 +19,11 @@ class StateManager:
     管理 U.E.P 各種狀態。
     接受事件，並在需要時切換 state。
     負責根據狀態變化創建對應的會話。
+    
+    架構原則：
+    - 狀態創建會話（State → Session）
+    - 會話結束觸發狀態轉換（Session End → State Transition）
+    - 狀態和會話是一體的，生命週期綁定
     """
 
     def __init__(self):
@@ -28,6 +33,8 @@ class StateManager:
         self.status_manager = status_manager
         # 與 StatusManager 整合
         self._setup_status_integration()
+        # 訂閱會話結束事件
+        self._subscribe_to_session_events()
         
     def get_state(self) -> UEPState:
         return self._state
@@ -189,13 +196,14 @@ class StateManager:
             
             queue_callback = (context or {}).get("state_queue_callback")
             
-            # 從上下文獲取工作流程信息
-            workflow_type = "single_command"
-            command = "unknown command"
+            # 從上下文獲取工作流程信息（預設使用工作流自動化）
+            workflow_type = "workflow_automation"
+            command_text = "unknown command"
             
             if context:
                 workflow_type = context.get("workflow_type", workflow_type)
-                command = context.get("command", command)
+                # ✅ 從 NLP 分段提取的對應狀態文本
+                command_text = context.get("text", command_text)
             
             # 獲取現有的 General Session - 如果不存在則為架構錯誤
             current_gs = session_manager.get_current_general_session()
@@ -212,7 +220,7 @@ class StateManager:
                 gs_session_id=gs_id,
                 task_type=workflow_type,
                 task_definition={
-                    "command": command,
+                    "command": command_text,  # ✅ 來自 NLP 分段的 WORK 意圖文本
                     "initial_data": context or {}
                 }
             )
@@ -222,7 +230,7 @@ class StateManager:
                 debug_log(2, f"[StateManager] 創建工作會話成功: {ws_id} (類型: {workflow_type})")
                 
                 if callable(queue_callback):
-                    queue_callback(ws_id, True, {"accepted": True, "workflow_type": workflow_type, "command": command})
+                    queue_callback(ws_id, True, {"accepted": True, "workflow_type": workflow_type, "command": command_text})
             else:
                 debug_log(1, "[StateManager] 創建工作會話失敗")
                 
@@ -449,6 +457,68 @@ class StateManager:
             
         except Exception as e:
             debug_log(1, f"[StateManager] StatusManager 整合設置失敗: {e}")
+    
+    def _subscribe_to_session_events(self):
+        """訂閱會話結束事件，實現狀態-會話一體化管理
+        
+        架構說明：
+        - GS (General Session): 系統層級會話，不綁定特定狀態
+        - CS (Chatting Session): 綁定 CHAT 狀態
+        - WS (Workflow Session): 綁定 WORK 狀態
+        - CS/WS 結束時觸發狀態轉換，由 StateQueue 決定下一個狀態
+        """
+        try:
+            from core.event_bus import event_bus, SystemEvent
+            
+            # 監聽 SESSION_ENDED 事件 - CS/WS 結束觸發狀態轉換
+            event_bus.subscribe(SystemEvent.SESSION_ENDED, self._on_session_ended)
+            
+            debug_log(2, "[StateManager] 已訂閱會話結束事件")
+            
+        except Exception as e:
+            debug_log(1, f"[StateManager] 訂閱會話事件失敗: {e}")
+    
+    def _on_session_ended(self, event):
+        """處理會話結束事件 - 通知 StateQueue 完成當前狀態
+        
+        這是狀態-會話一體化的核心：
+        - 狀態創建會話 (State → Session)
+        - 會話結束觸發狀態完成 (Session End → State Complete)
+        - StateQueue 決定下一個狀態（可能是下一個任務，也可能是 IDLE）
+        - 不硬編碼狀態轉換，由佇列自動管理
+        
+        Args:
+            event: Event 對象，包含 session_id, reason, session_type 等數據
+        """
+        try:
+            # Event 對象的 data 屬性包含事件數據
+            session_id = event.data.get('session_id')
+            reason = event.data.get('reason', 'session_completed')
+            session_type = event.data.get('session_type', 'unknown')
+            
+            debug_log(2, f"[StateManager] 收到會話結束事件: {session_id} ({session_type}), 原因: {reason}")
+            
+            # 只處理 CS 和 WS 結束（GS 是系統層級，不觸發狀態轉換）
+            if session_type in ['chatting', 'workflow']:
+                # 通知 StateQueue 完成當前狀態
+                from core.states.state_queue import get_state_queue_manager
+                state_queue = get_state_queue_manager()
+                
+                success = reason != 'error' and reason != 'failed'
+                state_queue.complete_current_state(
+                    success=success,
+                    result_data={
+                        'session_id': session_id,
+                        'session_type': session_type,
+                        'end_reason': reason
+                    }
+                )
+                
+                debug_log(1, f"[StateManager] ✅ {session_type.upper()} 會話結束，已通知 StateQueue 完成當前狀態")
+                debug_log(2, f"[StateManager] StateQueue 將自動處理下一個狀態（若佇列為空則回到 IDLE）")
+            
+        except Exception as e:
+            debug_log(1, f"[StateManager] 處理會話結束事件失敗: {e}")
     
     def _on_status_update(self, field: str, old_value: Any, new_value: Any, reason: str):
         """

@@ -25,6 +25,7 @@ class StateQueueItem:
     priority: int                     # 優先級 (數字越大優先級越高)
     metadata: Dict[str, Any]          # 額外元數據
     created_at: datetime
+    work_mode: Optional[str] = None   # 工作模式: "direct", "background", None (Stage 4)
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     
@@ -37,6 +38,7 @@ class StateQueueItem:
             "trigger_user": self.trigger_user,
             "priority": self.priority,
             "metadata": self.metadata,
+            "work_mode": self.work_mode,
             "created_at": self.created_at.isoformat(),
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None
@@ -52,6 +54,7 @@ class StateQueueItem:
             trigger_user=data.get("trigger_user"),
             priority=data["priority"],
             metadata=data.get("metadata", {}),
+            work_mode=data.get("work_mode"),
             created_at=datetime.fromisoformat(data["created_at"]),
             started_at=datetime.fromisoformat(data["started_at"]) if data.get("started_at") else None,
             completed_at=datetime.fromisoformat(data["completed_at"]) if data.get("completed_at") else None
@@ -239,14 +242,17 @@ class StateQueueManager:
     
     def _map_intent_to_workflow_type(self, intent_type: str) -> str:
         """將意圖類型映射為工作流程類型"""
+        # 所有 WORK 狀態都使用工作流方式執行，不再有 single_command
         mapping = {
-            'command': 'single_command',
+            'command': 'workflow_automation',
             'compound': 'workflow_automation',
             'query': 'workflow_automation',
-            'file_operation': 'file_processing',
-            'system_command': 'single_command'
+            'file_operation': 'workflow_automation',
+            'system_command': 'workflow_automation',
+            'direct_work': 'workflow_automation',
+            'background_work': 'workflow_automation'
         }
-        return mapping.get(intent_type.lower(), 'single_command')
+        return mapping.get(intent_type.lower(), 'workflow_automation')
     
     def _handle_work_completion(self, queue_item: StateQueueItem, success: bool):
         """處理 WORK 狀態完成"""
@@ -307,22 +313,52 @@ class StateQueueManager:
     def add_state(self, state: UEPState, trigger_content: str, 
                   context_content: Optional[str] = None,
                   trigger_user: Optional[str] = None, 
-                  metadata: Optional[Dict[str, Any]] = None) -> bool:
-        """添加狀態到佇列"""
+                  metadata: Optional[Dict[str, Any]] = None,
+                  work_mode: Optional[str] = None,
+                  custom_priority: Optional[int] = None) -> bool:
+        """
+        添加狀態到佇列
+        
+        Args:
+            state: 目標狀態
+            trigger_content: 觸發內容
+            context_content: 上下文內容（可選，默認使用 trigger_content）
+            trigger_user: 觸發用戶ID
+            metadata: 額外元數據
+            work_mode: 工作模式（Stage 4）- "direct", "background", None
+            custom_priority: 自訂優先權（Stage 4）- 如果提供，覆蓋默認優先權
+        
+        Returns:
+            bool: 是否成功添加
+        """
         
         if state == UEPState.IDLE:
             debug_log(2, "[StateQueue] IDLE狀態不能手動添加到佇列")
             return False
         
+        # 確定優先權（Stage 4 擴展）
+        if custom_priority is not None:
+            priority = custom_priority
+            debug_log(3, f"[StateQueue] 使用自訂優先權: {priority}")
+        else:
+            priority = self.STATE_PRIORITIES.get(state, 0)
+            # Stage 4: 工作模式調整優先權
+            if work_mode == "direct":
+                priority = max(priority, 100)  # 直接工作最高優先權
+                debug_log(3, f"[StateQueue] 直接工作模式，優先權提升到: {priority}")
+            elif work_mode == "background":
+                priority = min(priority, 30)  # 背景工作降低優先權
+                debug_log(3, f"[StateQueue] 背景工作模式，優先權降低到: {priority}")
+        
         # 創建佇列項目
-        priority = self.STATE_PRIORITIES.get(state, 0)
         queue_item = StateQueueItem(
             state=state,
             trigger_content=trigger_content,
-            context_content=context_content or trigger_content,  # 如果沒有指定上下文，使用觸發內容
+            context_content=context_content or trigger_content,
             trigger_user=trigger_user,
             priority=priority,
             metadata=metadata or {},
+            work_mode=work_mode,
             created_at=datetime.now()
         )
         
@@ -336,70 +372,206 @@ class StateQueueManager:
         
         self.queue.insert(insert_index, queue_item)
         
-        info_log(f"[StateQueue] 添加狀態 {state.value} 到佇列 (優先級: {priority}, 位置: {insert_index})")
+        work_mode_str = f" (工作模式: {work_mode})" if work_mode else ""
+        info_log(f"[StateQueue] 添加狀態 {state.value} 到佇列 (優先級: {priority}, 位置: {insert_index}){work_mode_str}")
         debug_log(4, f"[StateQueue] 觸發內容: {trigger_content}")
         debug_log(4, f"[StateQueue] 上下文內容: {context_content or trigger_content}")
         
         # 保存佇列
         self._save_queue()
         
+        # ✅ 如果當前是 IDLE 狀態，自動處理下一個狀態
+        if self.current_state == UEPState.IDLE and not self.current_item:
+            debug_log(2, "[StateQueue] 當前 IDLE，自動處理下一個狀態")
+            self.process_next_state()
+        
+        return True
+    
+    def process_next_state(self):
+        """處理佇列中的下一個狀態"""
+        try:
+            # 檢查是否有待處理狀態
+            if not self.queue:
+                debug_log(3, "[StateQueue] 佇列為空，無狀態需要處理")
+                return
+            
+            # 檢查當前是否正在處理狀態
+            if self.current_item is not None:
+                debug_log(3, f"[StateQueue] 正在處理 {self.current_state.value}，等待完成")
+                return
+            
+            # 取出最高優先級的狀態
+            next_item = self.queue.pop(0)
+            self.current_item = next_item
+            self.current_state = next_item.state
+            next_item.started_at = datetime.now()
+            
+            info_log(f"[StateQueue] 開始處理狀態: {next_item.state.value} (優先級: {next_item.priority})")
+            
+            # 保存狀態
+            self._save_queue()
+            
+            # 調用狀態處理器
+            handler = self.state_handlers.get(next_item.state)
+            if handler:
+                handler(next_item)
+            else:
+                error_log(f"[StateQueue] 沒有註冊 {next_item.state.value} 的處理器")
+                self.complete_current_state(success=False, result_data={"error": "No handler registered"})
+            
+        except Exception as e:
+            error_log(f"[StateQueue] 處理下一個狀態失敗: {e}")
+            if self.current_item:
+                self.complete_current_state(success=False, result_data={"error": str(e)})
+    
+    def complete_current_state(self, success: bool = True, result_data: Optional[Dict[str, Any]] = None):
+        """完成當前狀態處理"""
+        if self.current_item is None:
+            debug_log(3, "[StateQueue] 沒有正在處理的狀態")
+            return
+        
+        self.current_item.completed_at = datetime.now()
+        info_log(f"[StateQueue] 完成狀態: {self.current_state.value} ({'成功' if success else '失敗'})")
+        
+        # 調用完成處理器
+        completion_handler = self.completion_handlers.get(self.current_state)
+        if completion_handler:
+            completion_handler(self.current_item, success, result_data or {})
+        
+        # 重置當前狀態
+        self.current_item = None
+        self.current_state = UEPState.IDLE
+        
+        # 保存並繼續處理下一個
+        self._save_queue()
+        
+        # ✅ 自動處理下一個狀態
+        if self.queue:
+            debug_log(2, f"[StateQueue] 還有 {len(self.queue)} 個待處理狀態，繼續處理")
+            self.process_next_state()
+        else:
+            debug_log(2, "[StateQueue] 佇列已空，回到 IDLE")
+    
+    def _old_get_queue_status(self) -> Dict[str, Any]:
+        """舊版本的 get_queue_status (已被新版本取代)"""
+        # 確保如果沒有正在執行的項目，狀態應該是IDLE
+        if self.current_item is None and self.current_state != UEPState.IDLE:
+            debug_log(4, f"[StateQueue] 修正狀態：沒有執行項目但狀態不是IDLE，從 {self.current_state.value} 修正為 IDLE")
+            self.current_state = UEPState.IDLE
+        self._save_queue()
+        
         return True
     
     def process_nlp_intents(self, intent_segments: List[Any]) -> List[UEPState]:
-        """處理NLP意圖分析結果，添加相應狀態到佇列"""
+        """
+        處理NLP意圖分析結果，添加相應狀態到佇列
+        
+        Stage 4: 支援 IntentSegment 類型，使用意圖優先權
+        """
         added_states = []
         
         debug_log(4, f"[StateQueue] 處理 {len(intent_segments)} 個意圖分段")
         
+        # 嘗試導入 IntentSegment 和 IntentType（Stage 4）
+        try:
+            from modules.nlp_module.intent_types import IntentSegment, IntentType
+            has_stage4 = True
+        except ImportError:
+            has_stage4 = False
+            debug_log(3, "[StateQueue] Stage 4 意圖類型未找到，使用舊版本處理")
+        
         for i, segment in enumerate(intent_segments):
-            # 根據意圖類型決定系統狀態
-            if hasattr(segment, 'intent'):
-                intent_value = segment.intent.value if hasattr(segment.intent, 'value') else str(segment.intent)
-            else:
-                intent_value = str(segment.get('intent', 'unknown'))
-            
-            state_mapping = {
-                'command': UEPState.WORK,
-                'compound': UEPState.WORK,  # 複合指令也是工作
-                'chat': UEPState.CHAT,      # 只有真正的chat意圖才需要對話處理
-                'query': UEPState.WORK      # 查詢也算工作
-                # 注意：'call' 意圖不加入佇列，因為它只是呼叫而不需要狀態處理
-            }
-            
-            target_state = state_mapping.get(intent_value.lower())
-            
-            if target_state:
-                # 獲取觸發內容和上下文內容
-                if hasattr(segment, 'text'):
-                    context_content = segment.text
+            # Stage 4: 支援 IntentSegment 類型
+            if has_stage4 and isinstance(segment, IntentSegment):
+                # 使用 IntentSegment 的新邏輯
+                intent_type = segment.intent_type
+                
+                # 根據意圖類型決定系統狀態和工作模式
+                if intent_type == IntentType.DIRECT_WORK:
+                    target_state = UEPState.WORK
+                    work_mode = "direct"
+                elif intent_type == IntentType.BACKGROUND_WORK:
+                    target_state = UEPState.WORK
+                    work_mode = "background"
+                elif intent_type == IntentType.CHAT:
+                    target_state = UEPState.CHAT
+                    work_mode = None
+                elif intent_type == IntentType.COMPOUND:
+                    target_state = UEPState.WORK
+                    work_mode = "direct"
+                elif intent_type == IntentType.CALL:
+                    # CALL 意圖不加入佇列
+                    debug_log(4, f"[StateQueue] 分段 {i+1} 是 CALL 意圖，不加入狀態佇列")
+                    continue
                 else:
-                    context_content = segment.get('text', '未知內容')
+                    # UNKNOWN 或其他
+                    debug_log(4, f"[StateQueue] 分段 {i+1} 是 {intent_type.value} 意圖，不加入佇列")
+                    continue
                 
-                # 觸發內容包含分段信息以便追蹤
-                trigger_content = f"意圖分段 {i+1}: {context_content}"
-                
-                # 支援多個相同狀態 - 每個分段都獨立加入佇列
+                # 添加到佇列，使用 IntentSegment 的優先權
                 success = self.add_state(
                     state=target_state,
-                    trigger_content=trigger_content,
-                    context_content=context_content,  # 這是該狀態實際要處理的內容
+                    trigger_content=f"意圖分段 {i+1}: {segment.segment_text}",
+                    context_content=segment.segment_text,
+                    work_mode=work_mode,
+                    custom_priority=segment.priority,
                     metadata={
-                        'intent_type': intent_value,
-                        'confidence': getattr(segment, 'confidence', 0.0),
-                        'entities': getattr(segment, 'entities', []),
+                        'intent_type': intent_type.value,
+                        'confidence': segment.confidence,
                         'segment_index': i,
-                        'segment_id': getattr(segment, 'segment_id', f'seg_{i}')
+                        'stage4_segment': True
                     }
                 )
                 
                 if success:
                     added_states.append(target_state)
-                    debug_log(4, f"[StateQueue] 分段 {i+1} -> {target_state.value}: '{context_content}'")
+                    debug_log(4, f"[StateQueue] 分段 {i+1} -> {target_state.value} (優先權: {segment.priority}, 模式: {work_mode}): '{segment.segment_text[:50]}...'")
+            
             else:
-                if intent_value.lower() == 'call':
-                    debug_log(4, f"[StateQueue] 分段 {i+1} 是 call 意圖，不加入狀態佇列: '{segment.get('text', '未知內容') if hasattr(segment, 'get') else getattr(segment, 'text', '未知內容')}'")
+                # 舊版本邏輯（向下相容）
+                if hasattr(segment, 'intent'):
+                    intent_value = segment.intent.value if hasattr(segment.intent, 'value') else str(segment.intent)
                 else:
-                    debug_log(4, f"[StateQueue] 忽略未知意圖類型: {intent_value}")
+                    intent_value = str(segment.get('intent', 'unknown'))
+                
+                state_mapping = {
+                    'command': UEPState.WORK,
+                    'compound': UEPState.WORK,
+                    'chat': UEPState.CHAT,
+                    'query': UEPState.WORK
+                }
+                
+                target_state = state_mapping.get(intent_value.lower())
+                
+                if target_state:
+                    if hasattr(segment, 'text'):
+                        context_content = segment.text
+                    else:
+                        context_content = segment.get('text', '未知內容')
+                    
+                    trigger_content = f"意圖分段 {i+1}: {context_content}"
+                    
+                    success = self.add_state(
+                        state=target_state,
+                        trigger_content=trigger_content,
+                        context_content=context_content,
+                        metadata={
+                            'intent_type': intent_value,
+                            'confidence': getattr(segment, 'confidence', 0.0),
+                            'entities': getattr(segment, 'entities', []),
+                            'segment_index': i,
+                            'segment_id': getattr(segment, 'segment_id', f'seg_{i}')
+                        }
+                    )
+                    
+                    if success:
+                        added_states.append(target_state)
+                        debug_log(4, f"[StateQueue] 分段 {i+1} -> {target_state.value}: '{context_content}'")
+                else:
+                    if intent_value.lower() == 'call':
+                        debug_log(4, f"[StateQueue] 分段 {i+1} 是 call 意圖，不加入狀態佇列: '{segment.get('text', '未知內容') if hasattr(segment, 'get') else getattr(segment, 'text', '未知內容')}'")
+                    else:
+                        debug_log(4, f"[StateQueue] 忽略未知意圖類型: {intent_value}")
         
         debug_log(4, f"[StateQueue] 總共添加 {len(added_states)} 個狀態到佇列")
         return added_states

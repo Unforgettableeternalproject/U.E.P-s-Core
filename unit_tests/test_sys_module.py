@@ -286,7 +286,7 @@ def test_workflow_cancellation(sys_module):
     
     print("❌ 工作流程取消結果：", cancel_result)
     
-    assert cancel_result["status"] == "success"
+    assert cancel_result["status"] == "cancelled"
     assert "message" in cancel_result
     assert "pytest 測試取消" in cancel_result["message"]
 

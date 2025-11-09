@@ -1522,3 +1522,123 @@
 
 ---
 
+### Adopt event-driven layer flow; enable logging; fix TTS/MEM/NLP/engine integrations and many more. 10/23
+
+> Date: Thu, 23 Oct 2025 03:29:54 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `548a23c50c2219c0bff45dd695808727541a6fee`
+
+---
+
+### MCP server implementation. 10/25
+
+> Date: Sat, 25 Oct 2025 17:07:07 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `41916204f2055e6af8a658177032d8baa9df118a`
+
+---
+
+### Retrained BIOS tagger and refined NLP module with a more delicate tagging approach, as well remade the workflow engine. 10/26
+
+> Date: Sun, 26 Oct 2025 03:25:41 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `b355e4809e7dde67a247e40193a6439b7b790572`
+
+---
+
+### Register SYS WORK_SYS providers and harden workflow handling; update tooling, UI, tests and docs. 10/26
+
+> Date: Sun, 26 Oct 2025 23:54:17 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `3d0501694db48299c639c10affd89bead56c4f1b`
+
+---
+
+### Unify WORK intent flow and harden workflow/workflow-testing infra; enable SYS & debug. 11/1
+
+> Date: Sat, 01 Nov 2025 17:44:29 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `f9ca2bd91544548e4a867a2fa93d5d63e955a565`
+
+---
+
+### Workflow in system loop works now, but some problems occured, will fix tomorrow. 11/03
+
+> Date: Mon, 03 Nov 2025 03:53:13 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `24cefda770a05932d2b4e45de4252d3c82936b43`
+
+---
+
+### There are some serious issue with the interactive workflow. 11/04
+
+> Date: Tue, 04 Nov 2025 03:23:44 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `7c52992e0b2eeaddfaf9aa206d5c7bd927167205`
+
+---
+
+### Rework workflow lifecycle and stabilize SystemLoop / LLM-SYS collaboration. 11/7
+
+> Date: Fri, 07 Nov 2025 01:13:10 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `c1f8c3cea3a7bbe7e656f84896939aa7896380b2`
+
+---
+
+### Add comprehensive design docs, tests, UMLs. 11/9
+
+> Date: Sun, 09 Nov 2025 16:02:49 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `b5718d406643102a1abe37548c59b7de2dafe48e`
+
+---
+
+### Added some unit tests to reflect on our current structure. 11/9
+
+> Date: Sun, 09 Nov 2025 17:31:01 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `6e47a03e4eff14395bb1184ce8e489f19a00210e`
+
+---
+

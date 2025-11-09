@@ -1,0 +1,234 @@
+@startuml CD-12-SYS模組
+
+' SYS 模組類別圖
+' 系統工作流引擎
+
+skinparam classAttributeIconSize 0
+skinparam class {
+    BackgroundColor<<module>> Lavender
+    BackgroundColor<<engine>> Thistle
+    BorderColor DarkMagenta
+}
+
+package "SYS 模組 (System Workflow Module)" {
+    
+    class SYSModule <<module>> {
+        ' SYS 主模組
+        - workflow_engines: Dict[str, WorkflowEngine]
+        - mcp_server: MCPServer
+        - workflow_definitions: Dict[str, WorkflowDefinition]
+        - config: Dict
+        --
+        + initialize(): bool
+        + handle(input_data): ModuleResponse
+        + start_workflow(workflow_type, params): Dict
+        + execute_step(workflow_id, step_id): Dict
+        - _provide_workflow_input(workflow_id, input): void
+        + shutdown(): void
+    }
+    
+    class WorkflowEngine <<engine>> {
+        ' 工作流執行引擎
+        - definition: WorkflowDefinition
+        - session: WorkflowSession
+        - current_step: str
+        - waiting_for_input: bool
+        - execution_log: List[Dict]
+        --
+        + execute_step(step_id): Dict
+        + process_input(user_input): void
+        + get_current_step(): WorkflowStep
+        + is_completed(): bool
+        + cancel(): void
+    }
+    
+    class WorkflowDefinition {
+        ' 工作流定義
+        + workflow_id: str
+        + workflow_name: str
+        + description: str
+        + steps: Dict[str, WorkflowStep]
+        + initial_step: str
+        + metadata: Dict
+        --
+        + get_step(step_id): WorkflowStep
+        + validate(): bool
+        + to_dict(): Dict
+    }
+    
+    class WorkflowStep {
+        ' 工作流步驟
+        + step_id: str
+        + step_name: str
+        + step_type: StepType
+        + action: Callable
+        + parameters: Dict
+        + next_step: str
+        --
+        + execute(context): Dict
+        + get_prompt(): str
+        + requires_approval(): bool
+    }
+    
+    enum StepType {
+        ' 步驟類型
+        PROCESSING
+        INTERACTIVE
+        DECISION
+        PARALLEL
+    }
+    
+    class MCPServer {
+        ' MCP 伺服器
+        - tools: Dict[str, MCPTool]
+        - sys_module: SYSModule
+        --
+        + register_tool(tool): void
+        + handle_request(request): Dict
+        + get_tools_schema(): List[Dict]
+    }
+    
+    class MCPTool {
+        ' MCP 工具定義
+        + name: str
+        + description: str
+        + parameters_schema: Dict
+        + handler: Callable
+        --
+        + execute(args): Dict
+        + validate_args(args): bool
+    }
+}
+
+' 關係定義
+SYSModule "1" --> "*" WorkflowEngine : manages
+SYSModule "1" --> "*" WorkflowDefinition : loads
+SYSModule "1" --> "1" MCPServer : provides
+WorkflowEngine --> WorkflowDefinition : executes
+WorkflowDefinition "1" --> "*" WorkflowStep : contains
+WorkflowStep --> StepType : categorized by
+MCPServer --> MCPTool : manages
+MCPServer --> SYSModule : calls
+
+' 注釋
+note right of SYSModule
+  **SYS 主模組職責**
+  
+  1. 工作流定義管理
+  2. 工作流引擎生命週期
+  3. MCP Server 提供
+  4. 步驟執行協調
+  
+  MCP 工具:
+  - start_workflow
+  - review_step
+  - approve_step
+  - provide_workflow_input
+  - cancel_workflow
+  
+  處理流程:
+  1. LLM 調用 start_workflow
+  2. 創建 WorkflowEngine
+  3. 執行步驟
+  4. 等待 LLM review/approve
+  5. 循環直到完成
+end note
+
+note right of WorkflowEngine
+  **工作流引擎**
+  
+  生命週期:
+  1. CREATED: 初始化
+  2. ACTIVE: 執行中
+  3. WAITING: 等待輸入
+  4. COMPLETED: 完成
+  5. FAILED: 失敗
+  6. CANCELLED: 取消
+  
+  執行邏輯:
+  - execute_step(): 執行當前步驟
+  - 根據 step_type 決定行為
+  - PROCESSING: 自動執行
+  - INTERACTIVE: 等待用戶輸入
+  - DECISION: 分支選擇
+  
+  狀態持久化:
+  - execution_log 記錄
+  - 可恢復執行
+end note
+
+note right of WorkflowDefinition
+  **工作流定義範例**
+  
+  backup_files 工作流:
+  {
+    "workflow_id": "backup_files",
+    "workflow_name": "文件備份",
+    "steps": {
+      "scan": {
+        "step_type": "PROCESSING",
+        "action": "scan_files",
+        "parameters": {"pattern": "*.py"}
+      },
+      "confirm": {
+        "step_type": "INTERACTIVE",
+        "prompt": "找到 {count} 個文件,是否繼續?"
+      },
+      "execute": {
+        "step_type": "PROCESSING",
+        "action": "copy_files",
+        "parameters": {"dest": "./backups/"}
+      }
+    },
+    "initial_step": "scan"
+  }
+end note
+
+note right of WorkflowStep
+  **步驟類型說明**
+  
+  PROCESSING:
+  - 自動執行的步驟
+  - 不需用戶介入
+  - 範例: 掃描文件, 複製文件
+  
+  INTERACTIVE:
+  - 需要用戶輸入
+  - 發布 WORKFLOW_REQUIRES_INPUT
+  - 範例: 確認操作, 提供參數
+  
+  DECISION:
+  - 條件分支
+  - 根據結果選擇 next_step
+  - 範例: 檔案存在檢查
+  
+  PARALLEL:
+  - 並行執行多個子步驟
+  - 等待全部完成
+end note
+
+note bottom of MCPServer
+  **MCP Server 工具註冊**
+  
+  start_workflow:
+  - 啟動新工作流
+  - 參數: workflow_type, parameters
+  - 返回: workflow_id
+  
+  review_step:
+  - 審核當前步驟
+  - 參數: workflow_id
+  - 返回: 步驟詳情
+  
+  approve_step:
+  - 批准執行步驟
+  - 參數: workflow_id, step_id
+  - 返回: 執行結果
+  
+  provide_workflow_input:
+  - 提供用戶輸入
+  - 參數: workflow_id, user_input
+  - 返回: 處理狀態
+end note
+
+@enduml

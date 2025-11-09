@@ -133,9 +133,17 @@ class WorkflowSession:
         self.last_activity = self.created_at
         self.ended_at: Optional[datetime] = None
         
+        # 待結束標記 - 符合會話生命週期架構
+        # 設置後會在循環完成邊界時終止會話
+        self.pending_end = False
+        self.pending_end_reason: Optional[str] = None
+        
         # 任務步驟記錄
         self.task_steps: List[TaskStep] = []
         self.current_step_index = 0
+        
+        # 工作流數據存儲（用於在步驟間傳遞數據）
+        self.workflow_data: Dict[str, Any] = {}
         
         # 工作流元數據
         self.workflow_token = self._generate_workflow_token()
@@ -352,6 +360,34 @@ class WorkflowSession:
         self.session_metadata[key] = value
         debug_log(3, f"[WorkflowSession] 更新元數據: {key} = {value}")
     
+    def add_data(self, key: str, value: Any):
+        """
+        添加工作流數據（用於在步驟間傳遞數據）
+        
+        Args:
+            key: 數據鍵
+            value: 數據值
+        """
+        if not hasattr(self, 'workflow_data'):
+            self.workflow_data = {}
+        self.workflow_data[key] = value
+        debug_log(3, f"[WorkflowSession] 添加數據: {key}")
+    
+    def get_data(self, key: str, default: Any = None) -> Any:
+        """
+        獲取工作流數據
+        
+        Args:
+            key: 數據鍵
+            default: 默認值（如果鍵不存在）
+            
+        Returns:
+            數據值或默認值
+        """
+        if not hasattr(self, 'workflow_data'):
+            self.workflow_data = {}
+        return self.workflow_data.get(key, default)
+    
     def pause(self):
         """暫停工作流"""
         if self.status in [WSStatus.READY, WSStatus.EXECUTING, WSStatus.WAITING]:
@@ -364,6 +400,18 @@ class WorkflowSession:
             self.status = WSStatus.READY
             self.last_activity = datetime.now()
             info_log(f"[WorkflowSession] WS 已恢復: {self.session_id}")
+    
+    def mark_for_end(self, reason: str = "workflow_complete"):
+        """
+        標記會話待結束 - 符合會話生命週期架構
+        會話將在循環完成邊界時真正終止
+        
+        Args:
+            reason: 標記原因
+        """
+        self.pending_end = True
+        self.pending_end_reason = reason
+        debug_log(2, f"[WorkflowSession] WS 已標記待結束: {self.session_id} - {reason}")
     
     def cancel(self, reason: str = "user_cancelled"):
         """
@@ -415,6 +463,26 @@ class WorkflowSession:
             info_log(f"  └─ 完成步驟: {self.stats['completed_steps']}/{len(self.task_steps)}")
             info_log(f"  └─ 平均步驟時間: {self.stats['avg_step_time']:.2f}秒")
             
+            # 發布會話結束事件 - 通知 StateManager 處理狀態轉換
+            try:
+                from core.event_bus import event_bus, SystemEvent
+                event_bus.publish(
+                    event_type=SystemEvent.SESSION_ENDED,
+                    data={
+                        'session_id': self.session_id,
+                        'session_type': 'workflow',
+                        'reason': reason,
+                        'duration': duration,
+                        'task_type': self.task_type.value,
+                        'completed_steps': self.stats['completed_steps'],
+                        'total_steps': len(self.task_steps)
+                    },
+                    source='workflow_session'
+                )
+                debug_log(2, f"[WorkflowSession] 已發布 SESSION_ENDED 事件: {self.session_id}")
+            except Exception as e:
+                error_log(f"[WorkflowSession] 發布會話結束事件失敗: {e}")
+            
             return summary
             
         except Exception as e:
@@ -449,10 +517,18 @@ class WorkflowSession:
             (self.ended_at or datetime.now()) - self.created_at
         ).total_seconds()
         
+        # Get current step name
+        current_step_info = self.get_current_step()
+        current_step_name = current_step_info.get("step_name") if current_step_info else None
+        
         return {
             "session_id": self.session_id,
             "gs_session_id": self.gs_session_id,
             "workflow_token": self.workflow_token,
+            "workflow_type": self.task_definition.get("workflow_type", "unknown"),  # 從 task_definition 提取
+            "command": self.task_definition.get("command", ""),  # 從 task_definition 提取
+            "current_step": current_step_name,  # 當前步驟名稱
+            "current_step_index": self.current_step_index,  # 當前步驟索引
             "task_type": self.task_type.value,
             "task_definition": self.task_definition,
             "status": self.status.value,
@@ -464,6 +540,15 @@ class WorkflowSession:
             "last_activity": self.last_activity.isoformat(),
             "ended_at": self.ended_at.isoformat() if self.ended_at else None
         }
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        轉換為字典格式（與 get_summary 相同，為兼容性提供）
+        
+        Returns:
+            工作流數據字典
+        """
+        return self.get_summary()
 
 
 class WorkflowSessionManager:

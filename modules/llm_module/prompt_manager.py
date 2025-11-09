@@ -92,8 +92,15 @@ class PromptManager:
     
     def build_work_prompt(self, user_input: str, available_functions: Optional[str] = None,
                          workflow_context: Optional[Dict] = None,
-                         identity_context: Optional[Dict] = None) -> str:
-        """構建工作模式提示詞 - 整合系統功能與工作流上下文"""
+                         identity_context: Optional[Dict] = None,
+                         workflow_hint: Optional[str] = None,
+                         use_mcp_tools: bool = False,
+                         suppress_start_workflow_instruction: bool = False) -> str:
+        """構建工作模式提示詞 - 整合系統功能與工作流上下文
+        
+        Args:
+            suppress_start_workflow_instruction: 當已有工作流運行時，抑制「立即啟動工作流」的強制指示
+        """
         
         prompt_parts = []
         
@@ -124,10 +131,11 @@ class PromptManager:
         if identity_info:
             prompt_parts.append(identity_info)
         
-        # 可用系統功能 - 從 SYS 模組獲取或使用傳入的內容
-        functions_section = self._build_functions_context(available_functions)
-        if functions_section:
-            prompt_parts.append(functions_section)
+        # 可用系統功能 - 只在不使用 MCP tools 時才添加文字描述
+        if not use_mcp_tools:
+            functions_section = self._build_functions_context(available_functions)
+            if functions_section:
+                prompt_parts.append(functions_section)
         
         # 工作流上下文
         if workflow_context:
@@ -139,13 +147,94 @@ class PromptManager:
         request_section = f"User Request: {user_input}"
         prompt_parts.append(request_section)
         
-        # 工作模式指引
-        work_guidance = (
-            "Please analyze the user's request and decide:\n"
-            "1. If system function execution is needed, provide sys_action recommendation\n"
-            "2. Provide appropriate user feedback\n"
-            "3. If more information is needed, ask for specific details"
-        )
+        # ✅ 工作模式指引（根據是否使用 MCP tools 而不同）
+        if use_mcp_tools:
+            work_guidance = (
+                "Available Workflows:\n"
+                "- drop_and_read: Read file content (for requests like 'read file', 'show content', 'open file')\n"
+                "- intelligent_archive: Smart file organization (for 'organize', 'archive', 'sort files')\n"
+                "- summarize_tag: Summarize and tag files (for 'summarize', 'tag', 'analyze files')\n"
+                "- file_processing: General file operations (for other file tasks)\n\n"
+            )
+            
+            # ✅ NLP 工作流提示（如果有）- 放在可用工作流之後
+            if workflow_hint:
+                if isinstance(workflow_hint, dict):
+                    workflow_name = workflow_hint.get('workflow_name', 'unknown')
+                    confidence = workflow_hint.get('confidence', 0)
+                    work_guidance += (
+                        f"**NLP Analysis Result:**\n"
+                        f"The system has analyzed the user's request and identified a matching workflow:\n"
+                        f"- Recommended workflow: '{workflow_name}'\n"
+                        f"- Match confidence: {confidence:.2f}\n"
+                        f"- YOU MUST use this workflow name as the 'workflow_type' parameter\n\n"
+                    )
+                elif isinstance(workflow_hint, str):
+                    work_guidance += (
+                        f"**NLP Analysis Result:**\n"
+                        f"- Recommended workflow: '{workflow_hint}'\n"
+                        f"- YOU MUST use this workflow name as the 'workflow_type' parameter\n\n"
+                    )
+                else:
+                    work_guidance += f"**NLP suggests:** {workflow_hint}\n\n"
+            
+            # ✅ 只在沒有活躍工作流時才添加「立即啟動」指示
+            if not suppress_start_workflow_instruction:
+                work_guidance += (
+                    "**CRITICAL INSTRUCTIONS - DO NOT IGNORE:**\n"
+                    "1. YOU MUST IMMEDIATELY call the 'start_workflow' function. DO NOT ask for clarification.\n"
+                    "2. Required parameters:\n"
+                    "   - workflow_type: Use the NLP recommended workflow above (if provided) or select from the available workflows list\n"
+                    "   - command: Copy the user's original request exactly as provided\n"
+                    "   - initial_data: Use empty dict {} (the workflow will collect missing information)\n"
+                    "3. DO NOT respond with plain text asking for more information\n"
+                    "4. DO NOT say you need the file name - the workflow will handle file selection\n"
+                    "5. The workflow system is designed to collect missing information interactively AFTER it starts\n\n"
+                    "**REPEAT: You MUST call start_workflow immediately. Do not ask questions first.**\n\n"
+                    "Example:\n"
+                    "User: 'read the file'\n"
+                    "YOU MUST: call start_workflow(workflow_type='drop_and_read', command='read the file', initial_data={})"
+                )
+            else:
+                # 已有工作流運行，檢查是否為步驟回應上下文
+                # ✅ 修復：確保 workflow_context 不為 None
+                is_step_response = (workflow_context is not None and 
+                                   workflow_context.get('type') == 'workflow_step_response')
+                
+                if is_step_response:
+                    # ✅ 步驟已完成，LLM 應該生成回應，不要呼叫工具
+                    work_guidance += (
+                        "\n**Instructions:**\n"
+                        "A workflow step has completed. The step data is provided in the context above.\n"
+                        "Your task:\n"
+                        "1. Read the workflow data from the context\n"
+                        "2. Generate a natural, friendly response in ENGLISH explaining the result to the user\n"
+                        "3. DO NOT call any MCP tools (review_step, approve_step, etc.) - just provide a text response\n"
+                        "4. The workflow context already contains all the data you need\n"
+                    )
+                else:
+                    # 工作流正在進行中，等待用戶輸入或系統操作
+                    work_guidance += (
+                        "\n**Instructions:**\n"
+                        "The workflow is currently running. Based on the situation:\n"
+                        "- If you need to check workflow status: use get_workflow_status\n"
+                        "- If the workflow is waiting for user input: provide guidance on what's needed\n"
+                        "- DO NOT call start_workflow again - a workflow is already active\n"
+                    )
+        else:
+            work_guidance = (
+                "Instructions:\n"
+                "1. Analyze the user's request against the Available System Functions above\n"
+                "2. If the request matches a system function:\n"
+                "   - Set sys_action.action to the appropriate action type (start_workflow, execute_function, or provide_options)\n"
+                "   - Set sys_action.target to the exact function name from the list\n"
+                "   - Provide sys_action.reason explaining why this function matches\n"
+                "   - Include any required parameters in sys_action.parameters\n"
+                "3. If the request is unclear or needs more information:\n"
+                "   - Ask for specific clarification in your text response\n"
+                "   - Set sys_action.action to 'provide_options' and sys_action.target to 'clarification'\n"
+                "4. Always provide a helpful text response to the user"
+            )
         prompt_parts.append(work_guidance)
         
         return "\n\n".join(prompt_parts)
@@ -344,6 +433,22 @@ class PromptManager:
     def _build_workflow_context(self, workflow_context: Dict) -> Optional[str]:
         """構建工作流上下文"""
         try:
+            # 🆕 檢查是否為工作流步驟回應類型
+            context_type = workflow_context.get("type")
+            
+            if context_type == "workflow_step_response":
+                # 這是工作流步驟完成，需要 LLM 生成用戶回應
+                return self._build_workflow_step_response_context(workflow_context)
+            
+            if context_type == "workflow_input_required":
+                # 這是工作流需要用戶輸入，需要 LLM 判斷並提供輸入
+                return self._build_workflow_input_required_context(workflow_context)
+            
+            if context_type == "workflow_error":
+                # 🆕 這是工作流錯誤，需要 LLM 生成錯誤說明並取消工作流
+                return self._build_workflow_error_context(workflow_context)
+            
+            # 原有邏輯：工作流進度追蹤
             parts = []
             
             # Current step
@@ -369,6 +474,287 @@ class PromptManager:
             error_log(f"[PromptManager] 構建工作流上下文失敗: {e}")
             
         return None
+    
+    def _build_workflow_step_response_context(self, workflow_context: Dict) -> str:
+        """
+        構建工作流步驟回應的上下文（通用框架模式）
+        
+        這個方法生成通用的指引，讓 LLM 能夠處理任何類型的工作流步驟數據
+        而不是針對特定工作流硬編碼邏輯
+        
+        Args:
+            workflow_context: 工作流上下文數據
+            
+        Returns:
+            格式化的上下文字符串
+        """
+        workflow_type = workflow_context.get('workflow_type', 'unknown')
+        is_complete = workflow_context.get('is_complete', False)
+        should_end_session = workflow_context.get('should_end_session', False)
+        review_data = workflow_context.get('review_data', {})
+        step_result = workflow_context.get('step_result', {})
+        
+        context_parts = []
+        
+        # 基礎資訊
+        context_parts.append("=" * 60)
+        context_parts.append("WORKFLOW STEP COMPLETED - GENERATE USER RESPONSE")
+        context_parts.append("=" * 60)
+        
+        # 🆕 獲取下一步資訊
+        next_step_info = workflow_context.get('next_step_info')
+        next_step_is_interactive = next_step_info and next_step_info.get('step_type') == 'interactive' if next_step_info else False
+        
+        context_parts.append(f"\nWorkflow Status: {'COMPLETED (Final)' if is_complete else 'IN PROGRESS'}")
+        
+        # ⚠️ 不顯示技術元信息（workflow_type, session_id 等）
+        # context_parts.append(f"\nWorkflow Type: {workflow_type}")  # ❌ 移除
+        
+        # 步驟結果資訊
+        if step_result:
+            context_parts.append(f"\nStep Result:")
+            if 'success' in step_result:
+                context_parts.append(f"  - Success: {step_result['success']}")
+            if 'message' in step_result:
+                context_parts.append(f"  - Message: {step_result['message']}")
+        
+        # 工作流數據（通用處理）
+        if review_data:
+            context_parts.append(f"\nWorkflow Data:")
+            for key, value in review_data.items():
+                # 格式化不同類型的數據
+                if isinstance(value, str):
+                    # 長文本截斷預覽
+                    if len(value) > 200:
+                        preview = value[:200] + f"... ({len(value)} chars total)"
+                        context_parts.append(f"  - {key}: {preview}")
+                    else:
+                        context_parts.append(f"  - {key}: {value}")
+                elif isinstance(value, (int, float, bool)):
+                    context_parts.append(f"  - {key}: {value}")
+                elif isinstance(value, (list, dict)):
+                    context_parts.append(f"  - {key}: {type(value).__name__} with {len(value)} items")
+                else:
+                    context_parts.append(f"  - {key}: {str(value)[:100]}")
+        
+        # 🔧 通用指引（框架模式，不針對特定工作流）
+        context_parts.append("\n" + "=" * 60)
+        context_parts.append("YOUR TASK:")
+        context_parts.append("=" * 60)
+        
+        if is_complete:
+            context_parts.append("\n✅ The workflow has completed successfully.")
+            context_parts.append("\nGenerate a natural, friendly response in ENGLISH that:")
+            context_parts.append("1. Summarizes the key results/data provided above")
+            context_parts.append("2. Keep your response conversational and concise (2-3 sentences)")
+            context_parts.append("3. Act as a personal assistant with personality, NOT a robot")
+            context_parts.append("4. ❌ AVOID: Technical terms like 'session_id', 'workflow_type', 'ws_id'")
+            context_parts.append("5. ✅ BE: Natural, warm, and human-like")
+            
+            context_parts.append("\n📋 REQUIRED ACTION:")
+            context_parts.append("   1. Call approve_step() MCP tool to confirm completion")
+            if should_end_session:
+                context_parts.append("   2. Set session_control={'action': 'end_session'} in metadata")
+        
+        elif next_step_is_interactive:
+            context_parts.append("\n⏭️ The next step requires USER INPUT.")
+            if next_step_info:
+                context_parts.append(f"\nNext Step Prompt: {next_step_info.get('prompt', '')}")
+            
+            context_parts.append("\nGenerate a natural response in ENGLISH that:")
+            context_parts.append("1. BRIEFLY acknowledges the current step (1 sentence max)")
+            context_parts.append("2. Asks the user for the needed input (use the prompt above as guide)")
+            context_parts.append("3. Keep it conversational and friendly (2-3 sentences total)")
+            context_parts.append("4. Act as a helpful assistant, NOT a system notification")
+            context_parts.append("5. ❌ AVOID: Mentioning 'workflow', 'step', 'session' or other tech terms")
+            
+            context_parts.append("\n📋 REQUIRED ACTION:")
+            context_parts.append("   Call approve_step() MCP tool AFTER generating your response")
+        
+        else:
+            # 這個分支理論上不應該被執行到（因為已被 3 時刻過濾）
+            context_parts.append("\n⏳ Processing step completed, continuing automatically.")
+            context_parts.append("\n📋 REQUIRED ACTION:")
+            context_parts.append("   Call approve_step() MCP tool silently (no text response needed)")
+        
+        context_parts.append("\n" + "=" * 60)
+        context_parts.append("LANGUAGE & PERSONALITY REQUIREMENTS:")
+        context_parts.append("=" * 60)
+        context_parts.append("⚠️ CRITICAL:")
+        context_parts.append("   1. Always respond in ENGLISH")
+        context_parts.append("   2. You are U.E.P., a personal assistant with personality")
+        context_parts.append("   3. Be natural, warm, and conversational")
+        context_parts.append("   4. NEVER mention technical details like IDs, session names, etc.")
+        context_parts.append("   5. Talk like a helpful friend, not a machine")
+        context_parts.append("=" * 60)
+        
+        return "\n".join(context_parts)
+    
+    def _build_workflow_input_required_context(self, workflow_context: Dict) -> str:
+        """
+        構建工作流需要輸入的上下文
+        
+        指示 LLM 使用 provide_workflow_input 工具處理用戶輸入,
+        並判斷是否為委託意圖(delegation intent)
+        
+        Args:
+            workflow_context: 工作流上下文數據
+            
+        Returns:
+            格式化的上下文字符串
+        """
+        workflow_type = workflow_context.get('workflow_type', 'unknown')
+        step_id = workflow_context.get('step_id', 'unknown')
+        prompt = workflow_context.get('prompt', '請提供輸入')
+        is_optional = workflow_context.get('is_optional', False)
+        fallback_value = workflow_context.get('fallback_value', '')
+        
+        context_parts = []
+        
+        # 基礎資訊
+        context_parts.append("=" * 60)
+        context_parts.append("WORKFLOW INPUT REQUIRED - USE provide_workflow_input TOOL")
+        context_parts.append("=" * 60)
+        
+        context_parts.append(f"\nWorkflow Type: {workflow_type}")
+        context_parts.append(f"Step ID: {step_id}")
+        context_parts.append(f"Step Type: Interactive Input Step")
+        context_parts.append(f"Optional: {is_optional}")
+        if is_optional and fallback_value:
+            context_parts.append(f"Fallback Value: {fallback_value}")
+        
+        # 提示信息
+        context_parts.append(f"\nPrompt for User: {prompt}")
+        
+        # 用戶輸入
+        user_input = workflow_context.get('user_input', '')
+        context_parts.append(f"\nUser's Response: {user_input}")
+        
+        # 指引說明
+        context_parts.append("\n" + "=" * 60)
+        context_parts.append("INSTRUCTIONS")
+        context_parts.append("=" * 60)
+        
+        context_parts.append(
+            "\nYou MUST use the provide_workflow_input tool to handle this input."
+            "\nDo NOT generate a text response directly."
+        )
+        
+        context_parts.append(
+            "\n\nYour task:"
+            "\n1. Analyze the user's response semantically and understand their intent"
+            "\n2. EXTRACT the key information from natural language:"
+            "\n   - For paths: extract the essential description (e.g., 'd drive root', 'documents folder')"
+            "\n   - The workflow will handle path resolution and validation internally"
+            "\n   - Don't try to construct absolute paths yourself"
+            "\n3. Determine if it's DELEGATION INTENT or EXPLICIT VALUE"
+        )
+        
+        # Optional 步驟的特殊說明
+        if is_optional:
+            context_parts.append(
+                "\n\n⚠️  This is an OPTIONAL step with fallback."
+                "\n\nDELEGATION INTENT examples (use_fallback=True):"
+                "\n  - '你決定' / 'you decide'"
+                "\n  - '幫我選' / 'help me choose'"
+                "\n  - '隨便' / 'whatever' / 'anything'"
+                "\n  - '不知道' / 'don't know'"
+                "\n  - '預設' / 'default'"
+                "\n  - Empty or very vague responses"
+                "\n\nEXPLICIT VALUE examples (use_fallback=False):"
+                "\n  - Natural language: 'put it in my d drive root' → extract 'd drive root'"
+                "\n  - Natural language: 'save to documents folder' → extract 'documents folder'"
+                "\n  - Specific path: 'C:\\\\temp' → pass 'C:\\\\temp' as-is"
+                "\n  - Any clear indication of what the user wants"
+            )
+        else:
+            context_parts.append(
+                "\n\n⚠️  This is a REQUIRED step (not optional)."
+                "\n\nYour job is to EXTRACT the key information from user's natural language:"
+                "\n  - 'Can you put the file in my d drive root?' → extract 'd drive root'"
+                "\n  - 'Save it to the documents folder' → extract 'documents folder'"
+                "\n  - 'Use C:\\\\temp' → pass 'C:\\\\temp' as-is"
+                "\n\nThe workflow will handle path resolution and validation internally."
+                "\n\nSet use_fallback=False for explicit values."
+                "\nSet use_fallback=True ONLY if user explicitly delegates the decision to you."
+            )
+        
+        context_parts.append(
+            "\n\nHow to respond:"
+            "\n  1. Extract the key information from user's response"
+            "\n  2. Call provide_workflow_input("
+            "\n       session_id: <auto-injected>,"
+            "\n       user_input: <extracted key info>,"
+            "\n       use_fallback: <True if delegation, False otherwise>"
+            "\n     )"
+            "\n\nIMPORTANT:"
+            "\n- user_input should be the EXTRACTED key information (e.g., 'd drive root'), NOT the full sentence"
+            "\n- Let the workflow handle path resolution, validation, and processing"
+            "\n- Do NOT try to resolve paths yourself or call other tools first"
+        )
+        
+        context_parts.append("\n" + "=" * 60)
+        
+        return "\n".join(context_parts)
+    
+    def _build_workflow_error_context(self, workflow_context: Dict) -> str:
+        """
+        構建工作流錯誤的上下文
+        
+        當工作流執行過程中發生錯誤時，指示 LLM：
+        1. 生成自然語言的錯誤說明給使用者
+        2. 調用 cancel_workflow MCP 工具優雅終止工作流
+        
+        Args:
+            workflow_context: 工作流錯誤上下文數據
+            
+        Returns:
+            格式化的上下文字符串
+        """
+        session_id = workflow_context.get('workflow_session_id', 'unknown')
+        error_message = workflow_context.get('error_message', '未知錯誤')
+        current_step = workflow_context.get('current_step', '未知步驟')
+        
+        context_parts = []
+        
+        # 基礎資訊
+        context_parts.append("=" * 60)
+        context_parts.append("WORKFLOW ERROR - INFORM USER AND CANCEL")
+        context_parts.append("=" * 60)
+        
+        context_parts.append(f"\n⚠️ A workflow has encountered an error and cannot continue.")
+        context_parts.append(f"\nError Details:")
+        context_parts.append(f"  - Current Step: {current_step}")
+        context_parts.append(f"  - Error Message: {error_message}")
+        
+        # 指引說明
+        context_parts.append("\n" + "=" * 60)
+        context_parts.append("YOUR TASK:")
+        context_parts.append("=" * 60)
+        
+        context_parts.append("\nYou MUST do the following:")
+        context_parts.append("1. Generate a natural, friendly error explanation in ENGLISH")
+        context_parts.append("   - Explain what went wrong in simple terms")
+        context_parts.append("   - Apologize for the inconvenience")
+        context_parts.append("   - Suggest what the user might try instead (if applicable)")
+        context_parts.append("   - Keep it conversational (2-3 sentences)")
+        context_parts.append("")
+        context_parts.append("2. Call the cancel_workflow MCP tool to gracefully terminate:")
+        context_parts.append(f"   - session_id: {session_id}")
+        context_parts.append(f"   - reason: Brief technical reason (for logs)")
+        
+        context_parts.append("\n⚠️ IMPORTANT:")
+        context_parts.append("   - Do NOT mention technical terms like 'session_id', 'workflow', 'step'")
+        context_parts.append("   - Be empathetic and helpful, like a personal assistant")
+        context_parts.append("   - The cancel_workflow call will handle cleanup automatically")
+        
+        context_parts.append("\n" + "=" * 60)
+        context_parts.append("LANGUAGE REQUIREMENT:")
+        context_parts.append("=" * 60)
+        context_parts.append("⚠️ CRITICAL: Always respond in ENGLISH")
+        context_parts.append("=" * 60)
+        
+        return "\n".join(context_parts)
     
     def _replace_system_values_placeholder(self, instruction: str) -> str:
         """替換系統指令中的 {system_values} 佔位符"""

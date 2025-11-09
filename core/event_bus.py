@@ -45,6 +45,22 @@ class SystemEvent(Enum):
     # 循環控制事件
     CYCLE_STARTED = "cycle_started"                        # 處理循環開始
     CYCLE_COMPLETED = "cycle_completed"                    # 處理循環完成
+    
+    # 工作流輸入控制事件
+    WORKFLOW_REQUIRES_INPUT = "workflow_requires_input"    # 工作流需要使用者輸入
+    WORKFLOW_INPUT_COMPLETED = "workflow_input_completed"  # 工作流輸入完成
+    
+    # ✅ 工作流步驟事件（用於 LLM-SYS 協作）
+    WORKFLOW_STEP_COMPLETED = "workflow_step_completed"    # 工作流步驟完成，等待 LLM 審核
+    WORKFLOW_STEP_APPROVED = "workflow_step_approved"      # 🔧 工作流步驟已批准（LLM 審核完成）
+    WORKFLOW_FAILED = "workflow_failed"                    # 工作流執行失敗
+    
+    # 階段五：背景工作流事件
+    BACKGROUND_WORKFLOW_SUBMITTED = "background_workflow_submitted"    # 背景工作流已提交
+    BACKGROUND_WORKFLOW_STARTED = "background_workflow_started"        # 背景工作流開始執行
+    BACKGROUND_WORKFLOW_COMPLETED = "background_workflow_completed"    # 背景工作流完成
+    BACKGROUND_WORKFLOW_FAILED = "background_workflow_failed"          # 背景工作流失敗
+    BACKGROUND_WORKFLOW_CANCELLED = "background_workflow_cancelled"    # 背景工作流取消
 
 
 @dataclass

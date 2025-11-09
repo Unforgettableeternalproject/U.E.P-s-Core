@@ -4,7 +4,7 @@ modules_enabled:
   mem_module: true
   llm_module: true
   tts_module: true
-  sys_module: false
+  sys_module: true
   ui_module: true
   ani_module: true
   mov_module: true
@@ -14,12 +14,12 @@ modules_refactored:
   mem_module: true
   llm_module: true
   tts_module: true
-  sys_module: false
+  sys_module: true
   ui_module: false
   ani_module: false
   mov_module: false
 logging:
-  enabled: false
+  enabled: true
   log_level: DEBUG
   log_dir: logs
   enable_split_logs: false
@@ -30,5 +30,5 @@ system:
   main_loop_interval: 0.1
   shutdown_timeout: 5.0
   input_mode:
-    mode: vad
+    mode: text
     text_input_prompt: '>>> '

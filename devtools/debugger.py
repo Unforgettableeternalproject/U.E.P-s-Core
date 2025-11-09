@@ -20,104 +20,6 @@ mod_list = {"stt": (module_enabled.get("stt_module", False), module_refactored.g
             "ani": (module_enabled.get("ani_module", False), module_refactored.get("ani_module", False)),
             "mov": (module_enabled.get("mov_module", False), module_refactored.get("mov_module", False))}
 
-def handle_module_integration(user_input):
-    """
-    處理模組整合測試輸入
-    支援新版架構的整合測試
-    
-    輸入格式:
-    - stt+nlp: STT + NLP 整合測試
-    - nlp+mem: NLP + MEM 整合測試  
-    - pipeline 或 all: 完整管道測試
-    - debug: 使用除錯模式
-    - production: 使用生產模式
-    """
-    
-    # 處理模式選擇
-    use_production = False
-    if "production" in user_input:
-        use_production = True
-        user_input = user_input.replace("production", "").strip()
-    elif "debug" in user_input:
-        use_production = False
-        user_input = user_input.replace("debug", "").strip()
-    
-    # 處理特殊關鍵字
-    if user_input in ["pipeline", "all"]:
-        debug_log(1, f"執行完整管道測試 ({'生產模式' if use_production else '除錯模式'})")
-        if hasattr(controller, "test_full_pipeline_production" if use_production else "test_full_pipeline_debug"):
-            func = getattr(controller, "test_full_pipeline_production" if use_production else "test_full_pipeline_debug")
-            func()
-        else:
-            print("\033[31m完整管道測試功能不可用\033[0m")
-        return
-    
-    # 解析模組組合
-    if "+" not in user_input:
-        print("\033[31m請使用 + 號連接模組 (例如: stt+nlp)，或使用 'pipeline'/'all' 進行完整測試\033[0m")
-        return
-    
-    modules = [m.strip() for m in user_input.split("+")]
-    
-    # 驗證模組名稱
-    valid_modules = ["stt", "nlp", "mem", "llm", "tts", "sys"]
-    invalid_modules = [m for m in modules if m not in valid_modules]
-    if invalid_modules:
-        print(f"\033[31m無效的模組名稱：{', '.join(invalid_modules)}，請確認拼字。\033[0m")
-        print(f"有效的模組名稱：{', '.join(valid_modules)}")
-        return
-    
-    # 生成測試函數名稱 (使用新版命名規則)
-    code_map = {
-        "stt": "S",
-        "nlp": "N", 
-        "mem": "M",
-        "llm": "L",
-        "tts": "T",
-        "sys": "Y"
-    }
-    
-    execution_order = ["stt", "nlp", "mem", "llm", "tts", "sys"]
-    
-    try:
-        # 排序以保證一致性
-        normalized = sorted(modules, key=lambda m: execution_order.index(m))
-        code = "".join(code_map[m] for m in normalized)
-        
-        # 先嘗試使用新版整合測試
-        new_func_name = None
-        
-        # 特殊映射：直接對應到新版測試函數
-        # 注意：目前只有 STT+NLP 整合測試可用，其他將在模組重構後添加
-        direct_mappings = {
-            "SN": "integration_test_SN"
-        }
-        
-        if code in direct_mappings:
-            new_func_name = direct_mappings[code]
-            if hasattr(controller, new_func_name):
-                debug_log(1, f"執行新版整合測試：{'+'.join(normalized)} ({'生產模式' if use_production else '除錯模式'})")
-                func = getattr(controller, new_func_name)
-                func(production_mode=use_production)
-                return
-        
-        # 這裡不再嘗試使用舊版整合測試函數
-        print(f"\033[33m模組整合測試 '{'+'.join(normalized)}' 尚未實作或尚未重構。\033[0m")
-        print("目前僅有 STT+NLP 整合測試已經完成重構")
-        
-        # 提供可用的替代方案
-        if len(available_tests := ["stt+nlp"]) > 0:
-            print(f"可用的整合測試: {', '.join(available_tests)}")
-        
-        if available_tests:
-            print(f"\033[32m可用的整合測試：{', '.join(available_tests)}\033[0m")
-        
-        # 建議分別測試
-        print(f"\033[36m建議分別測試各模組，或使用 'pipeline' 進行完整測試\033[0m")
-        
-    except (KeyError, ValueError) as e:
-        print(f"\033[31m處理模組組合時發生錯誤：{e}\033[0m")
-
 def colorful_text(text : str, enabled : tuple=(False, False)):
     return '\033[32m' + text + '\033[0m' if enabled[1] and enabled[0] else '\033[33m' + text + ' (待重構)\033[0m' if enabled[0] else '\033[31m' + text + '\033[0m'
 
@@ -285,7 +187,7 @@ def debug_interactive():
 
                 debug_log(1, "MEM 模組測試")
                 print("<MEM 模組測試>\n")
-                choice = input("請選擇欲測試之功能 (1: 記憶查詢, 2: 對話快照查詢, 3: 記憶庫列表, 4: 記憶統計, exit: 離開): \n\n> ")
+                choice = input("請選擇欲測試之功能 (1: 記憶查詢, 2: 對話快照查詢, 3: 身份統計, 4: 寫入並查詢測試, exit: 離開): \n\n> ")
                 if choice == "1":
                     print("記憶查詢測試 (使用 Mock 身份) (或輸入 'exit' 來結束):")
                     while True:
@@ -307,13 +209,13 @@ def debug_interactive():
                         print()
                         controller.mem_test_conversation_snapshot("test_user", conversation)
                 elif choice == "3":
-                    print("記憶庫列表測試 (使用預設記憶令牌):")
+                    print("身份統計測試 (使用 Mock 身份):")
                     print()
-                    controller.mem_test_memory_access_control("mem_token_debug_2024")
+                    controller.mem_test_identity_stats("test_user")
                 elif choice == "4":
-                    print("記憶統計測試 (使用 Mock 身份):")
+                    print("寫入並查詢測試 (使用 Mock 身份):")
                     print()
-                    controller.mem_test_identity_manager_stats("test_user")
+                    controller.mem_test_write_then_query("test_user")
                 elif choice in ["exit", "e", "quit", "q", "back", "b"]:
                     pass
                 else:
@@ -414,33 +316,71 @@ def debug_interactive():
                     print("==========================\n")
                     continue                
                 
-                print("<SYS 模組測試>\n")
-                choice = input("請選擇欲測試之功能 (1: 檔案互動功能, 2: 測試工作流程, help: 列出所有功能以及其參數, exit: 離開): \n\n> ")
+                print("<SYS 模組工作流測試>\n")
+                print("=== 工作流測試分類 ===")
+                print("1. 測試工作流 (4)")
+                print("2. 工作流管理 (4)")
+                print("3. 列出所有可用工作流")
+                print("\nhelp: 顯示詳細說明")
+                print("exit: 離開\n")
+                
+                choice = input("> ")
                 
                 match choice:
-                    case "1":
-                        sub = input("請選擇欲測試之子功能 (1-3: 工作流程模式, exit: 離開):\n1: 檔案讀取工作流程, 2: 智慧歸檔工作流程, 3: 摘要標籤工作流程\n\n> ")
-                        # Test if sub is not a number or "exit"
-                        if sub in ["1", "2", "3"]:
-                            controller.sys_test_functions(mode=1, sub=int(sub))
-                        elif sub.lower() in ["exit", "e", "quit", "q", "back", "b"]:
-                            break
-                        else:
-                            print("\033[31m無效的選擇，請再試一次。\033[0m")
-                    case "2":
-                        sub = input("請選擇欲測試之工作流程 (1: 簡單回顯, 2: 倒數計時, 3: 資料收集, 4: 隨機失敗, 5: TTS工作流測試, exit: 離開): \n\n> ")
-                        if sub in ["1", "2", "3", "4", "5"]:
-                            controller.sys_test_workflows(workflow_type=int(sub))
-                        elif sub.lower() in ["exit", "e", "quit", "q", "back", "b"]:
-                            break
-                        else:
-                            print("\033[31m無效的選擇，請再試一次。\033[0m")
+                    case "1":  # 測試工作流
+                        print("\n<測試工作流>")
+                        sub = input("請選擇:\n1: Echo (簡單回顯)\n2: Countdown (倒數計時)\n3: Data Collector (資料收集)\n4: Random Fail (隨機失敗)\nexit: 返回\n\n> ")
+                        match sub:
+                            case "1":
+                                controller.sys_test_echo_wrapper()
+                            case "2":
+                                controller.sys_test_countdown_wrapper()
+                            case "3":
+                                controller.sys_test_data_collector_wrapper()
+                            case "4":
+                                controller.sys_test_random_fail_wrapper()
+                            case s if s.lower() in ["exit", "e", "quit", "q", "back", "b"]:
+                                pass
+                            case _:
+                                print("\033[31m無效的選擇，請再試一次。\033[0m")
+                    
+                    case "2":  # 工作流管理
+                        print("\n<工作流管理>")
+                        sub = input("請選擇:\n1: List Active (列出活躍工作流)\n2: Query Status (查詢工作流狀態)\n3: Cancel Workflow (取消工作流)\nexit: 返回\n\n> ")
+                        match sub:
+                            case "1":
+                                controller.sys_test_active_workflows_wrapper()
+                            case "2":
+                                session_id = input("請輸入 Session ID (留空則互動輸入): ")
+                                controller.sys_test_workflow_status_wrapper(session_id if session_id else None)
+                            case "3":
+                                session_id = input("請輸入要取消的 Session ID (留空則互動輸入): ")
+                                controller.sys_test_cancel_workflow_wrapper(session_id if session_id else None)
+                            case s if s.lower() in ["exit", "e", "quit", "q", "back", "b"]:
+                                pass
+                            case _:
+                                print("\033[31m無效的選擇，請再試一次。\033[0m")
+                    
+                    case "3":  # 列出所有工作流
+                        controller.sys_test_list_workflows_wrapper()
+                    
                     case "help" | "h":
-                        controller.sys_list_functions()
-                        print("\n=== 測試工作流程選項 ===")
-                        controller.sys_list_test_workflows()
+                        print("\n=== SYS 工作流測試說明 ===")
+                        print("\n【測試工作流】- 基礎功能測試")
+                        print("  Echo: 簡單的輸入輸出回顯測試")
+                        print("  Countdown: 倒數計時器測試")
+                        print("  Data Collector: 多步驟資料收集測試")
+                        print("  Random Fail: 錯誤處理與重試機制測試")
+                        print("\n注：TTS 測試已移至 TTS 模組測試 (tts 選單)")
+                        print("\n【工作流管理】- 會話管理功能")
+                        print("  List Active: 顯示所有活躍的工作流會話")
+                        print("  Query Status: 查詢特定工作流的執行狀態")
+                        print("  Cancel Workflow: 取消正在執行的工作流")
+                        print("\n提示：未來新增的工作流將自動出現在相應分類中\n")
+                    
                     case "exit" | "e" | "quit" | "q":
                         pass
+                    
                     case _:
                         print("\033[31m無效的選擇，請再試一次。\033[0m")
             case "int":
@@ -450,83 +390,33 @@ def debug_interactive():
                 # 整合測試子選單
                 while True:
                     integration_choice = input("請選擇整合測試:\n" +
-                                            "1: STT + NLP 整合測試 (可用)\n" +
-                                            "2: NLP + MEM 整合測試 (未重構)\n" +
-                                            "3: NLP + LLM 整合測試 (未重構)\n" +
-                                            "4: LLM + TTS 整合測試 (未重構)\n" +
-                                            "5: 完整管道測試 (未重構)\n" +
+                                            "1: 所有檔案工作流測試 (處理層 WORK 狀態)\n" +
+                                            "2: drop_and_read 工作流\n" +
+                                            "3: intelligent_archive 工作流\n" +
+                                            "4: summarize_tag 工作流\n" +
                                             "back: 返回上級\n\n> ")
                     
                     if integration_choice == "1":
-                        print("\n[測試] STT + NLP 整合")
-                        handle_module_integration("stt+nlp")
+                        print("\n[測試] 所有檔案工作流整合測試")
+                        from devtools.debug_api import integration_test_all
+                        integration_test_all()
                     elif integration_choice == "2":
-                        print("\n[⚠️] NLP + MEM 整合測試尚未重構")
-                        print("僅有 STT 和 NLP 模組已完成重構")
+                        print("\n[測試] drop_and_read 工作流")
+                        from devtools.debug_api import integration_test_file1
+                        integration_test_file1()
                     elif integration_choice == "3":
-                        print("\n[⚠️] NLP + LLM 整合測試尚未重構")
-                        print("僅有 STT 和 NLP 模組已完成重構")
+                        print("\n[測試] intelligent_archive 工作流")
+                        from devtools.debug_api import integration_test_file2
+                        integration_test_file2()
                     elif integration_choice == "4":
-                        print("\n[⚠️] LLM + TTS 整合測試尚未重構")
-                        print("僅有 STT 和 NLP 模組已完成重構")
-                    elif integration_choice == "5":
-                        print("\n[⚠️] 完整管道測試尚未重構")
-                        print("僅有 STT 和 NLP 模組已完成重構")
+                        print("\n[測試] summarize_tag 工作流")
+                        from devtools.debug_api import integration_test_file3
+                        integration_test_file3()
                     elif integration_choice.lower() in ["exit", "e", "back", "b", "quit", "q"]:
                         break
                     else:
                         print("\033[31m無效的選擇，請再試一次。\033[0m")
                     
-                    # 詢問測試模式
-                    def get_test_mode():
-                        mode_choice = input("選擇測試模式 (1: 除錯模式, 2: 生產模式, 預設: 除錯): ")
-                        return mode_choice == "2"
-                    
-                    if integration_choice == "1":
-                        use_production = get_test_mode()
-                        print(f"🧪 執行 STT + NLP 整合測試 ({'生產模式' if use_production else '除錯模式'})")
-                        controller.test_stt_nlp_v2(production_mode=use_production)
-                    
-                    elif integration_choice == "2":
-                        print("\n[⚠️] NLP + MEM 整合測試尚未重構")
-                        print("僅有 STT 和 NLP 模組已完成重構")
-
-                    elif integration_choice == "3":
-                        print("\n[⚠️] NLP + LLM 整合測試尚未重構")
-                        print("僅有 STT 和 NLP 模組已完成重構")
-                    
-                    elif integration_choice == "4":
-                        print("\n[⚠️] LLM + TTS 整合測試尚未重構")
-                        print("僅有 STT 和 NLP 模組已完成重構")
-                    
-                    elif integration_choice == "5":
-                        print("\n[⚠️] 完整管道測試尚未重構")
-                        print("僅有 STT 和 NLP 模組已完成重構")
-                    
-                    elif integration_choice == "6":
-                        print("\n[⚠️] 所有整合測試尚未重構")
-                        print("僅有 STT 和 NLP 模組已完成重構")
-                        print("請使用 STT+NLP 整合測試")
-                    
-                    elif integration_choice == "7":
-                        print("輸入模組組合 (例如: stt+nlp, nlp+mem+llm):")
-                        print("可用模組: stt, nlp, mem, llm, tts, sys")
-                        custom_input = input("\n模組組合> ")
-                        if custom_input and custom_input.lower() not in ["exit", "e", "quit", "q", "back", "b"]:
-                            use_production = get_test_mode()
-                            mode_suffix = " production" if use_production else " debug"
-                            handle_module_integration(custom_input + mode_suffix)
-                    
-                    elif integration_choice.lower() == "mode":
-                        print("當前版本支援兩種測試模式:")
-                        print("🔧 除錯模式 - 使用 UnifiedController，適合開發測試")
-                        print("🚀 生產模式 - 使用 SystemInitializer + SystemLoop，模擬真實環境")
-                        print("\n選擇測試項目時會提示選擇模式")
-                    
-                    elif integration_choice.lower() in ["exit", "e", "back", "b", "quit", "q"]:
-                        break
-                    else:
-                        print("\033[31m無效的選擇，請再試一次。\033[0m")
             case "frontend":
                 debug_log(1, "前端整合測試")
                 print("<前端整合測試>\n")
@@ -540,15 +430,8 @@ def debug_interactive():
             case "ex":
                 debug_log(1, "額外功能測試")
                 print("<額外功能測試>\n")
-                choice = input("請選擇欲進行測試 (1: 重點整理測試 (LLM), 2: 聊天測試 (STT+LLM+TTS), exit: 離開): \n\n> ")
-                if choice == "1":
-                    controller.test_summarize()
-                elif choice == "2":
-                    controller.test_chat()
-                elif choice in ["exit", "e", "quit", "q", "back", "b"]:
-                    break
-                else:
-                    print("\033[31m無效的選擇，請再試一次。\033[0m")
+                print("⚠️  額外功能測試已移除，相關測試請使用整合測試選單")
+                print("💡 使用 'int' 命令進入整合測試套件\n")
             case "exit" | "e" | "quit" | "q":
                 debug_log(1, "離開測試介面")
                 print("\n離開測試介面")

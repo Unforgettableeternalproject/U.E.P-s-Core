@@ -240,5 +240,6 @@ class LegacyModuleDataProvider:
 # 提供向後相容實例
 module_data_provider = LegacyModuleDataProvider()
 
-# 開發期間自動載入模擬提供者
-register_mock_providers()
+# ⚠️ 模擬提供者已停用，真實提供者由各模組在 initialize() 時註冊
+# 如需測試，手動調用: register_mock_providers()
+# register_mock_providers()  # ← 已註釋，避免覆蓋真實提供者

@@ -322,6 +322,31 @@ class UnifiedSessionManager:
             raise  # 重新拋出錯誤，因為這是架構問題
         return None
     
+    def mark_workflow_session_for_end(self, session_id: str, reason: str = "workflow_complete") -> bool:
+        """
+        標記 Workflow Session 待結束 - 符合會話生命週期架構
+        會話將在循環完成邊界時真正終止
+        
+        Args:
+            session_id: 會話 ID
+            reason: 標記原因
+            
+        Returns:
+            是否成功標記
+        """
+        try:
+            ws = self.get_workflow_session(session_id)
+            if ws and hasattr(ws, 'mark_for_end'):
+                ws.mark_for_end(reason)
+                debug_log(2, f"[UnifiedSessionManager] 已標記 WS 待結束: {session_id} - {reason}")
+                return True
+            else:
+                error_log(f"[UnifiedSessionManager] 找不到 WS 或不支援標記: {session_id}")
+                return False
+        except Exception as e:
+            error_log(f"[UnifiedSessionManager] 標記 WS 待結束失敗: {e}")
+        return False
+    
     def end_workflow_session(self, session_id: str) -> bool:
         """結束 Workflow Session"""
         try:
@@ -701,28 +726,31 @@ class UnifiedSessionManager:
         try:
             # 如果指定了 workflow_type，創建 WorkflowSession
             if workflow_type is not None:
-                # 首先需要 GS session ID
-                gs_id = kwargs.get('gs_session_id') or f"gs_{int(time.time())}"
-                
                 # 確保有 GS 會話存在 - 使用正確的 GSType 枚舉值
                 current_gs = self.get_current_general_session()
                 if not current_gs:
                     self.start_general_session("system_event", {"trigger": "create_workflow"})
+                    current_gs = self.get_current_general_session()
+                
+                # 使用當前 GS 的 session_id，而不是生成新的
+                gs_id = kwargs.get('gs_session_id') or (current_gs.session_id if current_gs else f"gs_{int(time.time())}")
                 
                 # 將 workflow_type 映射到正確的 WSTaskType（使用枚舉的 value）
+                # 注意：single_command 已棄用，所有工作都使用 workflow_automation
                 task_type_mapping = {
-                    'single_command': 'system_command',
+                    'single_command': 'workflow_automation',  # Legacy: 舊的單一指令現在也用工作流
                     'file_operation': 'file_operation', 
                     'workflow_automation': 'workflow_automation',
                     'module_integration': 'module_integration',
                     'custom_task': 'custom_task'
                 }
-                mapped_task_type = task_type_mapping.get(workflow_type, 'custom_task')
+                mapped_task_type = task_type_mapping.get(workflow_type, 'workflow_automation')
                 
                 return self.create_workflow_session(
                     gs_session_id=gs_id,
                     task_type=mapped_task_type,
                     task_definition={
+                        "workflow_type": workflow_type,  # 保存原始的 workflow_type
                         "command": command or "unknown",
                         "initial_data": initial_data or {}
                     }

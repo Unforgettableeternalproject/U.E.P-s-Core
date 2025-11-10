@@ -176,28 +176,48 @@ monitor_folder:
       description: "輪詢間隔秒數，預設10"
 
 news_summary:
-  description: "擷取 RSS 新聞並生成重點摘要"
+  description: "擷取新聞標題（適合給 LLM 總結台灣近況）"
   params:
-    rss_url:
+    source:
       type: str
-      required: true
-      description: "RSS feed 網址"
+      required: false
+      description: "新聞來源：'google_news_tw' 爬取 Google News 台灣首頁（預設），'rss' 使用 RSS feed"
     max_items:
       type: int
       required: false
-      description: "擷取條數，預設5"
+      description: "擷取條數，預設 10"
+    rss_url:
+      type: str
+      required: false
+      description: "RSS feed 網址（當 source='rss' 時必填）"
+    use_full_crawler:
+      type: bool
+      required: false
+      description: "是否爬取完整文章內容（僅 RSS 模式支援，預設 false）"
 
-weather_time:
-  description: "回傳指定地區的天氣或當前時間"
+get_weather:
+  description: "回傳指定地區的天氣資訊（使用 wttr.in API，無需 API key）"
   params:
     location:
       type: str
       required: true
-      description: "城市名稱或地點"
-    query_type:
+      description: "城市名稱或地點（支援中文或英文）"
+
+get_world_time:
+  description: "取得世界時間或特定時區時間"
+  params:
+    target_num:
+      type: int
+      required: false
+      description: "1=世界標準時間（UTC），2=特定時區時間（需搭配 tz 參數），預設為1"
+    tz:
       type: str
       required: false
-      description: "查詢類型：'weather' 或 'time'，預設 'weather'"
+      description: "時區名稱（當 target_num=2 時必填），如：日本、台灣、美國東部等"
+
+clean_trash_bin:
+  description: "清空系統資源回收桶（支援 Windows、macOS、Linux）"
+  params: {}
 
 code_analysis:
   description: "對程式碼片段做 AST 分析，找出結構或瓶頸"
@@ -208,13 +228,81 @@ code_analysis:
       description: "要分析的程式碼字串"
 
 media_control:
-  description: "播放／暫停／切歌等多媒體控制"
+  description: "音樂播放控制器 - 支援本地音樂、YouTube、Spotify"
   params:
     action:
       type: str
       required: true
-      description: "操作指令，例如 'play', 'pause', 'next'"
-    target:
+      description: "動作指令 (play, pause, stop, next, previous, search, youtube, spotify)"
+    song_query:
       type: str
       required: false
-      description: "媒體目標，例如 'spotify', 'vlc' 等"
+      description: "歌曲查詢關鍵字"
+    music_folder:
+      type: str
+      required: false
+      description: "本地音樂資料夾路徑（預設 ~/Music）"
+    youtube:
+      type: bool
+      required: false
+      description: "是否使用 YouTube 播放（預設 false）"
+    spotify:
+      type: bool
+      required: false
+      description: "是否使用 Spotify 播放（預設 false）"
+
+translate_document:
+  description: "翻譯文件內容並匯出 - 支援 PDF、DOCX、TXT 多格式"
+  params:
+    file_path:
+      type: str
+      required: true
+      description: "要翻譯的檔案路徑"
+    target_lang:
+      type: str
+      required: false
+      description: "目標語言（預設 zh-tw 繁體中文）"
+    source_lang:
+      type: str
+      required: false
+      description: "來源語言（預設 auto 自動偵測）"
+    output_path:
+      type: str
+      required: false
+      description: "輸出檔案路徑（若為空則自動生成）"
+
+google_calendar_agent:
+  description: "Google Calendar 整合 - 支援事件建立、查詢、刪除"
+  params:
+    action:
+      type: str
+      required: true
+      description: "動作 (auth, create, list, delete)"
+    summary:
+      type: str
+      required: false
+      description: "事件標題"
+    start_time:
+      type: str
+      required: false
+      description: "開始時間（ISO 格式或相對時間，如：明天 3pm）"
+    end_time:
+      type: str
+      required: false
+      description: "結束時間（若為空則預設 1 小時後）"
+    description:
+      type: str
+      required: false
+      description: "事件描述"
+    event_id:
+      type: str
+      required: false
+      description: "事件 ID（用於刪除）"
+    credentials_path:
+      type: str
+      required: false
+      description: "OAuth credentials 檔案路徑（預設 configs/credentials.json）"
+    token_path:
+      type: str
+      required: false
+      description: "OAuth token 快取路徑（預設 configs/token.json）"

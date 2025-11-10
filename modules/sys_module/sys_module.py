@@ -16,6 +16,7 @@ from .actions.window_control   import push_window, fold_window, switch_workspace
 from .actions.text_processing  import clipboard_tracker, quick_phrases, ocr_extract
 from .actions.automation_helper import set_reminder, generate_backup_script, monitor_folder
 from .actions.integrations import news_summary, get_weather, get_world_time, code_analysis, media_control
+from .actions.file_interaction import clean_trash_bin
 
 # Import session management
 from core.sessions.session_manager import session_manager, WorkflowSession, SessionStatus
@@ -1079,6 +1080,10 @@ class SYSModule(BaseModule):
                 # "drop_and_read": use start_workflow with workflow_type="drop_and_read"
                 # "intelligent_archive": use start_workflow with workflow_type="intelligent_archive" 
                 # "summarize_tag": use start_workflow with workflow_type="summarize_tag"
+                # NEW: clean_trash_bin - direct action for trash cleanup
+                
+                # File Management Actions
+                "clean_trash_bin": clean_trash_bin,
                 
                 # Window Control Actions
                 "push_window": push_window,

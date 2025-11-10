@@ -1,0 +1,269 @@
+@startuml CD-07-狀態管理與人性化回應
+
+' StatusManager 系統數值管理與人性化回應
+' 展示內部狀態如何影響各模組的行為
+
+skinparam classAttributeIconSize 0
+skinparam class {
+    BackgroundColor<<manager>> LightYellow
+    BackgroundColor<<data>> Wheat
+    BackgroundColor<<module>> LightBlue
+    BorderColor DarkOrange
+}
+
+package "狀態管理與人性化回應系統 (Status Management & Humanized Response)" {
+    
+    class StatusManager <<manager>> {
+        ' 系統狀態管理器 (全局單例)
+        - status: SystemStatus
+        - storage_path: Path
+        - update_callbacks: Dict[str, Callable]
+        - _helpfulness_override: Optional[float]
+        - auto_save: bool
+        - _lock: Lock
+        --
+        + get_status(): SystemStatus
+        + get_status_dict(): Dict
+        + update_mood(delta, reason): void
+        + update_pride(delta, reason): void
+        + update_helpfulness(delta, reason): void
+        + update_boredom(delta, reason): void
+        + reset_boredom(reason): void
+        + record_interaction(successful, task_type): void
+        + get_personality_modifiers(): Dict
+        + register_update_callback(name, callback): void
+        + save_status(): void
+        + get_summary(): str
+        --
+        - _get_mood_level(): str
+        - _get_pride_level(): str
+        - _get_helpfulness_level(): str
+        - _get_boredom_level(): str
+        - _trigger_callbacks(field, old, new, reason): void
+    }
+    
+    class SystemStatus <<data>> {
+        ' 系統狀態數值
+        + mood: float = 0.0
+        + pride: float = 0.0
+        + helpfulness: float = 0.8
+        + boredom: float = 0.0
+        + total_interactions: int = 0
+        + successful_tasks: int = 0
+        + failed_tasks: int = 0
+        + last_interaction_time: float = 0.0
+        + last_update_reason: str = ""
+        --
+        + to_dict(): Dict
+        + from_dict(data): SystemStatus
+        + validate_ranges(): void
+        + get(key, default): Any
+    }
+    
+    class LLMModule <<module>> {
+        ' LLM 模組 (狀態消費者)
+        - prompt_manager: PromptManager
+        - status_manager: StatusManager
+        --
+        + _build_system_prompt(): str
+        + _on_status_update(type, old, new, reason): void
+        - _apply_personality_to_prompt(modifiers): str
+    }
+    
+    class TTSModule <<module>> {
+        ' TTS 模組 (狀態消費者)
+        - emotion_controller: EmotionController
+        - status_manager: StatusManager
+        --
+        + synthesize_speech(text): bytes
+        - _detect_emotion_from_status(): EmotionParams
+        - _adjust_voice_parameters(mood, pride): Dict
+    }
+    
+    class GeneralSession <<module>> {
+        ' 會話管理 (狀態消費者)
+        - status_manager: StatusManager
+        --
+        + start_session(): void
+        + end_session(): void
+        - _apply_session_penalties(): void
+        - _record_session_outcome(successful): void
+    }
+}
+
+' 關係定義
+StatusManager "1" --> "1" SystemStatus : manages
+StatusManager <.. LLMModule : observes
+StatusManager <.. TTSModule : observes
+StatusManager <.. GeneralSession : observes
+
+' 注釋
+note right of StatusManager
+  **StatusManager 職責**
+  
+  核心數值 (範圍):
+  - mood: 情緒 (-1 負面 ~ +1 正面)
+  - pride: 自尊心 (-1 自卑 ~ +1 自信)
+  - helpfulness: 助人意願 (0 ~ 1)
+  - boredom: 無聊程度 (0 ~ 1)
+  
+  數值更新觸發:
+  1. 成功互動 → mood↑, pride↑, helpfulness↑
+  2. 失敗任務 → mood↓, pride↓
+  3. 長時間無互動 → boredom↑
+  4. 會話結束 → 根據類型調整
+  
+  回調機制:
+  - 註冊: register_update_callback(name, fn)
+  - 觸發: _trigger_callbacks(field, old, new, reason)
+  - 模組收到通知 → 調整行為
+  
+  持久化:
+  - 自動保存: memory/system_status.json
+  - 每 60 秒或數值變化時保存
+end note
+
+note right of SystemStatus
+  **系統狀態數值結構**
+  
+  數值範圍:
+  - mood: [-1.0, +1.0]
+  - pride: [-1.0, +1.0]
+  - helpfulness: [0.0, 1.0]
+  - boredom: [0.0, 1.0]
+  
+  等級映射 (mood 範例):
+  - >= 0.6: 非常開心 😄
+  - >= 0.2: 開心 😊
+  - >= -0.2: 普通 😐
+  - >= -0.6: 不開心 😟
+  - < -0.6: 非常不開心 😢
+  
+  統計數據:
+  - 總互動次數
+  - 成功/失敗任務數
+  - 上次互動時間
+  - 成功率計算
+end note
+
+note bottom of LLMModule
+  **LLM 模組的狀態感知**
+  
+  提示詞注入:
+  ```
+  Current Status:
+  - Mood: Happy (0.5)
+  - Pride: Confident (0.6)
+  - Helpfulness: Very willing (0.9)
+  - Boredom: Not bored (0.1)
+  ```
+  
+  行為調整:
+  1. mood < 0.3 → 使用更溫和的語氣
+  2. pride < 0 → 避免複雜任務,降低期望
+  3. helpfulness < 0.4 → 簡短回應
+  4. boredom > 0.8 → 主動提出互動建議
+  
+  狀態更新回調:
+  ```python
+  def _on_status_update(type, old, new, reason):
+      if type == "mood" and new < 0.3:
+          self.adjust_response_style("gentle")
+      elif type == "boredom" and new > 0.8:
+          self.suggest_interaction()
+  ```
+end note
+
+note bottom of TTSModule
+  **TTS 模組的情感控制**
+  
+  根據系統狀態調整語氣:
+  
+  mood 影響 pitch:
+  - mood > 0.5 → pitch +3 (開心音調)
+  - mood < -0.5 → pitch -2 (低沉音調)
+  
+  pride 影響 energy:
+  - pride > 0.5 → energy 1.2 (有力)
+  - pride < 0 → energy 0.8 (虛弱)
+  
+  helpfulness 影響 speed:
+  - helpfulness > 0.8 → speed 1.1 (積極)
+  - helpfulness < 0.4 → speed 0.9 (消極)
+  
+  範例:
+  ```python
+  status = status_manager.get_status()
+  emotion_params = EmotionParams(
+      pitch = status.mood * 3.0,
+      speed = 0.8 + status.helpfulness * 0.4,
+      energy = 0.9 + status.pride * 0.3
+  )
+  ```
+end note
+
+note bottom of GeneralSession
+  **會話管理的狀態交互**
+  
+  會話開始:
+  - 重置 boredom → 0
+  - 記錄開始時間
+  
+  會話結束:
+  - 應用懲罰 (長時間會話)
+    * mood -= session_duration / 3600 * 0.1
+    * boredom += 0.05
+  
+  - 記錄結果
+    * 成功 → pride↑, helpfulness↑
+    * 失敗 → pride↓, mood↓
+  
+  範例:
+  ```python
+  def end_session(self):
+      penalties = status_manager.apply_session_penalties(
+          session_type="chat"
+      )
+      
+      if self.task_successful:
+          status_manager.record_interaction(
+              successful=True,
+              task_type="conversation"
+          )
+      else:
+          status_manager.record_interaction(
+              successful=False
+          )
+  ```
+end note
+
+note as N1
+  **完整狀態更新流程**
+  
+  範例: 用戶成功互動
+  
+  1. GeneralSession.end_session()
+     → status_manager.record_interaction(successful=True)
+  
+  2. StatusManager 更新數值
+     - mood: 0.0 → +0.05 (成功互動)
+     - pride: 0.2 → +0.1 (成功完成)
+     - helpfulness: 0.8 → +0.01 (成功幫助)
+     - boredom: 0.3 → 0.0 (重置)
+  
+  3. 觸發回調通知
+     → LLMModule._on_status_update("mood", 0.0, 0.05, "成功互動")
+     → TTSModule._on_status_update("mood", 0.0, 0.05, "成功互動")
+  
+  4. 模組調整行為
+     - LLM: 使用更積極的提示詞
+     - TTS: 提高音調和能量
+  
+  5. 保存狀態
+     → status_manager.save_status()
+     → memory/system_status.json
+  
+  結果: 下次對話更有活力!
+end note
+
+@enduml

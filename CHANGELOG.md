@@ -1678,3 +1678,15 @@
 
 ---
 
+### Migrated more functions to the sys module, not yet tested. Also added more UML diagrams. 11/11
+
+> Date: Tue, 11 Nov 2025 00:36:03 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `5d68a4add70065be4a6e9cee8f522987c3872398`
+
+---
+

@@ -52,8 +52,7 @@ def _monitor_loop():
 # threading.Thread(target=_monitor_loop, daemon=True).start()
 
 def clipboard_tracker(parent=None):
-    raise NotImplementedError("clipboard_tracker 尚未實作")
-
+    """搜尋剪貼簿歷史並複製選定項目"""
     kw = simpledialog.askstring("搜尋剪貼簿", "請輸入關鍵字：", parent=parent)
     if not kw: return None
     matches = difflib.get_close_matches(kw, _history, n=5, cutoff=0.1)
@@ -79,8 +78,60 @@ def clipboard_tracker(parent=None):
         return None
 
 
-def quick_phrases(parent=None):
-    raise NotImplementedError("quick_phrases 尚未實作")
+def quick_phrases(template_name: str = None, parent=None):
+    """快速貼上預先定義的文字範本"""
+    # 預設範本
+    templates = {
+        "email": "您好，\n\n\n此致\n敬祥",
+        "signature": "-- \nU.E.P 智慧助理",
+        "meeting": "會議議程：\n1. \n2. \n3. ",
+        "thanks": "感謝您的協助！"
+    }
+    
+    try:
+        if not template_name:
+            # 如果沒有指定，顯示選單
+            from tkinter import Toplevel, Listbox, Button, SINGLE
+            if not parent:
+                import tkinter as tk
+                parent = tk.Tk()
+                parent.withdraw()
+            
+            dialog = Toplevel(parent)
+            dialog.title("選擇範本")
+            
+            listbox = Listbox(dialog, selectmode=SINGLE)
+            for name in templates.keys():
+                listbox.insert('end', name)
+            listbox.pack()
+            
+            selected = [None]
+            def on_select():
+                if listbox.curselection():
+                    idx = listbox.curselection()[0]
+                    selected[0] = listbox.get(idx)
+                dialog.destroy()
+            
+            Button(dialog, text="確定", command=on_select).pack()
+            dialog.wait_window()
+            
+            template_name = selected[0]
+        
+        if template_name and template_name in templates:
+            text = templates[template_name]
+            # 複製到剪貼簿
+            win32clipboard.OpenClipboard()
+            win32clipboard.EmptyClipboard()
+            win32clipboard.SetClipboardText(text)
+            win32clipboard.CloseClipboard()
+            info_log(f"[PHRASE] 已複製範本: {template_name}")
+            return text
+        else:
+            error_log(f"[PHRASE] 未知範本: {template_name}")
+            return None
+    except Exception as e:
+        error_log(f"[PHRASE] 快速範本失敗: {e}")
+        return None
 
 
 def ocr_extract(image_path: str, target_num : int = 1):

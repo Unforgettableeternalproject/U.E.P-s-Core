@@ -944,6 +944,40 @@ class LLMModule(BaseModule):
                 if llm_input.processing_context:
                     debug_log(3, f"[LLM] 處理層上下文: {llm_input.processing_context}")
             
+            # 🔧 檢查是否為內部呼叫（繞過會話檢查和系統提示詞）
+            is_internal = getattr(llm_input, 'is_internal', False)
+            
+            if is_internal:
+                debug_log(1, "[LLM] 內部呼叫模式 - 繞過會話檢查和系統提示詞")
+                # 內部呼叫：直接處理，不使用快取、系統提示詞或會話檢查
+                try:
+                    response_data = self.model.query(
+                        llm_input.text,
+                        mode="chat",
+                        cached_content=None  # 內部呼叫不使用快取
+                    )
+                    
+                    response_text = response_data.get("content", response_data.get("text", ""))
+                    
+                    processing_time = time.time() - start_time
+                    self.processing_stats["total_requests"] += 1
+                    self.processing_stats["total_processing_time"] += processing_time
+                    
+                    return {
+                        "status": "ok",
+                        "text": response_text,
+                        "mode": "internal",
+                        "processing_time": processing_time,
+                        "timestamp": time.time()
+                    }
+                except Exception as e:
+                    error_log(f"[LLM] 內部呼叫失敗: {e}")
+                    return {
+                        "status": "error",
+                        "message": f"內部呼叫失敗: {str(e)}",
+                        "timestamp": time.time()
+                    }
+            
             # 1. 獲取當前系統狀態和會話信息
             current_state = self.state_manager.get_current_state()
             info_log(f"[LLM] 當前系統狀態: {current_state}")

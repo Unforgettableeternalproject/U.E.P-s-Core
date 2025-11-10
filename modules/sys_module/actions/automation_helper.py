@@ -3,9 +3,13 @@ import threading
 import time
 import os
 from datetime import datetime
+from pathlib import Path
 from utils.debug_helper import info_log, error_log
 
-_DB = "uep_tasks.db"
+# 將資料庫放在 memory 目錄中
+_DB_DIR = Path(__file__).parent.parent.parent.parent / "memory"
+_DB_DIR.mkdir(exist_ok=True)
+_DB = str(_DB_DIR / "uep_tasks.db")
 
 def _init_db():
     conn = sqlite3.connect(_DB)
@@ -22,8 +26,6 @@ def _init_db():
 _init_db()
 
 def set_reminder(dt: datetime, message: str):
-    raise NotImplementedError("set_reminder 尚未實作")
-
     """新增提醒"""
     try:
         conn = sqlite3.connect(_DB)
@@ -52,8 +54,6 @@ def _checker_loop():
 threading.Thread(target=_checker_loop, daemon=True).start()
 
 def generate_backup_script(target_folder: str, dest_folder: str, output_path: str):
-    raise NotImplementedError("generate_backup_script 尚未實作")
-
     """產生備份腳本 (.bat / .sh)"""
     try:
         if os.name == "nt":
@@ -72,8 +72,6 @@ def generate_backup_script(target_folder: str, dest_folder: str, output_path: st
         return None
 
 def monitor_folder(path: str, callback, interval: int = 10):
-    raise NotImplementedError("monitor_folder 尚未實作")
-
     """監控資料夾變更"""
     def _loop():
         prev = set(os.listdir(path))

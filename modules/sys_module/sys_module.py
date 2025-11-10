@@ -15,7 +15,8 @@ from .schemas import SYSInput, SYSOutput, SessionInfo, SessionDetail
 from .actions.window_control   import push_window, fold_window, switch_workspace, screenshot_and_annotate
 from .actions.text_processing  import clipboard_tracker, quick_phrases, ocr_extract
 from .actions.automation_helper import set_reminder, generate_backup_script, monitor_folder
-from .actions.integrations import news_summary, get_weather, get_world_time, code_analysis, media_control
+from .actions.integrations import news_summary, get_weather, get_world_time, code_analysis
+from .actions.automation_helper import media_control, local_calendar
 from .actions.file_interaction import clean_trash_bin
 
 # Import session management

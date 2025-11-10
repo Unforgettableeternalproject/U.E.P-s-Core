@@ -112,28 +112,48 @@ screenshot_and_annotate:
       description: "擷取區域 {x, y, width, height}；留空表示全螢幕"
 
 clipboard_tracker:
-  description: "搜尋剪貼簿歷史並複製選定項目"
+  description: "搜尋剪貼簿歷史記錄"
   params:
-    pattern:
+    keyword:
       type: str
-      required: true
-      description: "搜尋關鍵字"
+      required: false
+      description: "搜尋關鍵字（空字串則返回最近歷史）"
+    max_results:
+      type: int
+      required: false
+      description: "最大結果數量，預設 5"
+    copy_index:
+      type: int
+      required: false
+      description: "要複製的項目索引（-1 表示不複製，只返回結果），預設 -1"
 
 quick_phrases:
-  description: "快速貼上預先定義的文字範本"
+  description: "快速取得預先定義的文字範本或使用 LLM 生成自訂範本"
   params:
     template_name:
       type: str
-      required: true
-      description: "範本名稱，例如 'email', 'signature' 等"
+      required: false
+      description: "範本名稱（空字串則返回所有範本列表），例如 'email', 'signature', 'meeting', 'thanks' 等"
+    copy_to_clipboard:
+      type: bool
+      required: false
+      description: "是否複製到剪貼簿，預設 false"
+    custom_prompt:
+      type: str
+      required: false
+      description: "自訂提示詞，若提供則使用 LLM 生成範本（優先於 template_name）"
 
 ocr_extract:
-  description: "對拖入的圖片做 OCR 並回傳文字"
+  description: "利用 OCR 辨識圖片內容"
   params:
     image_path:
       type: str
       required: true
       description: "圖片檔案路徑"
+    target_num:
+      type: int
+      required: false
+      description: "1=返回文字，2=生成 PDF，預設 1"
 
 set_reminder:
   description: "設定待辦／提醒，到點自動觸發"
@@ -220,15 +240,20 @@ clean_trash_bin:
   params: {}
 
 code_analysis:
-  description: "對程式碼片段做 AST 分析，找出結構或瓶頸"
+  description: "使用 LLM 進行智能程式碼分析"
   params:
     code:
       type: str
       required: true
       description: "要分析的程式碼字串"
+    analysis_type:
+      type: str
+      required: false
+      description: "分析類型：general（一般分析）、security（安全檢查）、optimize（優化建議）、explain（解釋說明），預設 general"
 
 media_control:
-  description: "音樂播放控制器 - 支援本地音樂、YouTube、Spotify"
+  description: "音樂播放控制器 - 支援本地音樂、YouTube、Spotify（背景任務）"
+  location: automation_helper
   params:
     action:
       type: str
@@ -271,13 +296,14 @@ translate_document:
       required: false
       description: "輸出檔案路徑（若為空則自動生成）"
 
-google_calendar_agent:
-  description: "Google Calendar 整合 - 支援事件建立、查詢、刪除"
+local_calendar:
+  description: "本地日曆管理 - 使用 SQLite 儲存事件（背景任務）"
+  location: automation_helper
   params:
     action:
       type: str
       required: true
-      description: "動作 (auth, create, list, delete)"
+      description: "動作 (create, list, get, update, delete)"
     summary:
       type: str
       required: false
@@ -285,7 +311,7 @@ google_calendar_agent:
     start_time:
       type: str
       required: false
-      description: "開始時間（ISO 格式或相對時間，如：明天 3pm）"
+      description: "開始時間（ISO 格式）"
     end_time:
       type: str
       required: false
@@ -294,15 +320,11 @@ google_calendar_agent:
       type: str
       required: false
       description: "事件描述"
+    location:
+      type: str
+      required: false
+      description: "事件地點"
     event_id:
-      type: str
+      type: int
       required: false
-      description: "事件 ID（用於刪除）"
-    credentials_path:
-      type: str
-      required: false
-      description: "OAuth credentials 檔案路徑（預設 configs/credentials.json）"
-    token_path:
-      type: str
-      required: false
-      description: "OAuth token 快取路徑（預設 configs/token.json）"
+      description: "事件 ID（用於 get, update, delete）"

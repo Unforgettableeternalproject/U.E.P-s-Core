@@ -1690,3 +1690,15 @@
 
 ---
 
+### Functions tested, will convert to workflow later on. 11/11
+
+> Date: Tue, 11 Nov 2025 01:28:04 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `1947824cc334bde54165ce15fd411bce56f1db90`
+
+---
+

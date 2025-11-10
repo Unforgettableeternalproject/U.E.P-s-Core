@@ -793,7 +793,8 @@ class SYSModule(BaseModule):
                 # ✅ 發布工作流完成事件，讓 LLM 生成最終回應
                 if self.event_bus:
                     from core.event_bus import SystemEvent
-                    workflow_type = session.task_definition.get("workflow_type", "unknown")
+                    # 🔧 從 engine.definition 獲取正確的 workflow_type
+                    workflow_type = engine.definition.workflow_type
                     llm_review_data = result.llm_review_data if hasattr(result, 'llm_review_data') else None
                     
                     event_data = {
@@ -839,8 +840,8 @@ class SYSModule(BaseModule):
                 # Step succeeded, check if more input is needed
                 current_step = engine.get_current_step()
                 if current_step:
-                    # Get workflow type from session
-                    workflow_type = session.task_definition.get("workflow_type", "unknown")
+                    # 🔧 從 engine.definition 獲取正確的 workflow_type
+                    workflow_type = engine.definition.workflow_type
                     
                     # Get step info for LLM context
                     step_info = self._get_step_info_for_llm(engine, workflow_type)

@@ -887,23 +887,13 @@ class NLPModule(BaseModule):
                             # Lower threshold to 0.3 for better matching
                             if matches and matches[0]['relevance_score'] > 0.3:
                                 work_mode = matches[0]['work_mode']
-                                workflow_name = matches[0]['name']  # ✅ 獲取工作流名稱
+                                workflow_name = matches[0]['name']
                                 query_source = "sys_query"
                                 debug_log(2, f"[NLP] Found matching function: {workflow_name} "
                                              f"(score={matches[0]['relevance_score']:.2f}, mode={work_mode})")
                                 
-                                # ✅ 將工作流名稱添加到結果中，讓 LLM 知道應該調用哪個工作流
-                                workflow_hint_data = {
-                                    "workflow_name": workflow_name,
-                                    "confidence": matches[0]['relevance_score'],
-                                    "work_mode": work_mode
-                                }
-                                result["workflow_hint"] = workflow_hint_data
-                                
-                                # ✅ 同時寫入 working_context，供 LLM 讀取（因為 NLP 和 LLM 沒有直接數據傳遞）
-                                from core.working_context import working_context_manager
-                                working_context_manager.set_context_data("workflow_hint", workflow_hint_data)
-                                debug_log(3, f"[NLP] 已將工作流提示寫入 working_context: {workflow_hint_data}")
+                                # ✅ 只修正 work_mode，不添加 workflow_hint
+                                # LLM 會通過 MCP 自己查詢和選擇工作流
                                 
                                 # 更新 work_mode metadata（intent_type 始終為 WORK）
                                 if work_mode and (not segment.metadata or segment.metadata.get('work_mode') != work_mode):
@@ -1169,9 +1159,11 @@ class NLPModule(BaseModule):
                 result["processing_notes"].append("UNKNOWN in WS - let LLM handle")
                 debug_log(2, "[NLP] Active WS: UNKNOWN - let LLM handle")
             
-            # Add Response state (or continue WS processing)
-            # Note: In WS, the input is typically handled by the workflow logic
-            # We don't add states here, just set metadata for downstream processing
+            # ✅ 在活躍 WS 時，所有輸入都應該被視為 RESPONSE
+            # 根據 NLP狀態處理.md：當存在 WS 時，所有輸入歸類為 Response
+            result["corrected_intent"] = IntentType.RESPONSE
+            result["processing_notes"].append("Active WS - correcting intent to RESPONSE")
+            debug_log(2, "[NLP] Active WS: Correcting all inputs to RESPONSE")
             
         except Exception as e:
             error_log(f"[NLP] Error in _process_active_ws_state: {e}")
@@ -1305,9 +1297,9 @@ class NLPModule(BaseModule):
         try:
             info_log(f"[NLP] 輸入層處理完成，發布事件: 意圖={nlp_result.primary_intent}, 文本='{input_data.text[:50]}...'")
             
-            # 🔧 使用處理開始時保存的 session_id 和 cycle_index
-            session_id = getattr(self, '_current_processing_session_id', self._get_current_gs_id())
-            cycle_index = getattr(self, '_current_processing_cycle_index', self._get_current_cycle_index())
+            # 🔧 實時獲取 session_id 和 cycle_index（StateManager可能在處理過程中創建了GS）
+            session_id = self._get_current_gs_id()
+            cycle_index = self._get_current_cycle_index()
             
             debug_log(3, f"[NLP] 發布事件使用: session={session_id}, cycle={cycle_index}")
             

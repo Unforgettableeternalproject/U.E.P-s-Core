@@ -394,6 +394,18 @@ class GeneralSession:
         
         # 清理過期的上下文
         working_context_manager.cleanup_expired_contexts()
+        
+        # 清理 LLM 模組的待處理工作流事件隊列
+        try:
+            from core.framework import core_framework
+            llm_module = core_framework.get_module('llm')
+            if llm_module and hasattr(llm_module, '_pending_workflow_events'):
+                events_count = len(llm_module._pending_workflow_events)
+                if events_count > 0:
+                    llm_module._pending_workflow_events.clear()
+                    debug_log(2, f"[GeneralSession] 清理 LLM 模組的 {events_count} 個待處理工作流事件")
+        except Exception as e:
+            debug_log(3, f"[GeneralSession] 清理 LLM 模組事件隊列時發生錯誤: {e}")
     
     def register_lifecycle_handler(self, status: GSStatus, handler: Callable):
         """註冊生命週期處理器"""

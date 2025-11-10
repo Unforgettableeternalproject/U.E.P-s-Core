@@ -376,8 +376,9 @@ def create_intelligent_archive_workflow(session: WorkflowSession) -> WorkflowEng
         "請輸入目標資料夾路徑:",
         validator=validate_and_resolve_path,
         required_data=["file_selection"],
-        optional=True,
-        description="詢問用戶是否指定目標資料夾，留空則自動選擇"
+        optional=True,  # 接受沒有輸入（fallback）
+        skip_if_data_exists=True,  # 接受初始數據（有數據就跳過）
+        description="詢問用戶是否指定目標資料夾，留空則自動選擇。如果 initial_data 中已有目標路徑則直接跳過。"
     )
     
     # 步驟3: 確認歸檔操作
@@ -415,6 +416,8 @@ def create_intelligent_archive_workflow(session: WorkflowSession) -> WorkflowEng
             debug_log(2, f"[Workflow] 開始歸檔檔案: {file_path} -> {target_dir or '自動選擇'}")
             result_path = intelligent_archive(file_path, target_dir)
             
+            # 🔧 工作流完成：直接返回結果，不需要 LLM 審核
+            # 最後一個步驟已經是最終結果，不應該再讓 LLM 生成回應
             return StepResult.complete_workflow(
                 f"📁 智慧歸檔工作流程完成！原檔案: {Path(file_path).name}, 新位置: {result_path}",
                 {
@@ -596,49 +599,181 @@ def create_summarize_tag_workflow(session: WorkflowSession) -> WorkflowEngine:
         description="等待用戶確認是否使用 LLM 生成摘要和標籤"
     )
     
-    # 步驟4: 執行摘要生成 (使用LLM內部調用)
-    def execute_summary(session):
+    # 🔧 步驟4: 讀取檔案內容 (SYSTEM 步驟)
+    def read_file_content(session):
+        """讀取檔案內容，準備給LLM處理"""
         file_path = session.get_data("file_path_input", "")
+        
+        try:
+            from modules.sys_module.actions.file_interaction import drop_and_read
+            
+            debug_log(2, f"[Workflow] 讀取檔案內容: {file_path}")
+            content = drop_and_read(file_path)
+            
+            # 限制內容長度（避免過長）
+            max_length = 5000
+            truncated_content = content[:max_length]
+            if len(content) > max_length:
+                truncated_content += f"\n\n...(內容已截斷，原始長度: {len(content)} 字符)"
+            
+            return StepResult.success(
+                f"已讀取檔案內容，長度: {len(content)} 字符",
+                {"file_content": truncated_content, "full_content_length": len(content)}
+            )
+        except Exception as e:
+            error_log(f"[Workflow] 讀取檔案失敗: {e}")
+            return StepResult.failure(f"讀取檔案失敗: {e}")
+    
+    read_step = StepTemplate.create_auto_step(
+        session,
+        "read_file_content",
+        read_file_content,
+        ["file_path_input"],
+        "正在讀取檔案內容...",
+        description="讀取用戶選擇的檔案內容，準備進行摘要生成"
+    )
+    
+    # 🔧 步驟5: LLM生成摘要和標籤 (LLM_PROCESSING 步驟)
+    def build_summary_prompt(session):
+        """構建摘要生成的提示詞"""
+        file_path = session.get_data("file_path_input", "")
+        file_content = session.get_data("file_content", "")
+        tag_count_input = session.get_data("tag_count_input", "").strip()
+        tag_count = int(tag_count_input) if tag_count_input else 3
+        
+        debug_log(2, f"[Workflow] build_summary_prompt - file_path: {file_path}")
+        debug_log(2, f"[Workflow] build_summary_prompt - file_content length: {len(file_content) if file_content else 0}")
+        debug_log(2, f"[Workflow] build_summary_prompt - tag_count: {tag_count}")
+        
+        prompt = f"""Please generate a summary and tags for the following file content:
+
+File name: {Path(file_path).name}
+File content:
+{file_content}
+
+Please respond in the following format:
+Tags: tag1, tag2, tag3{', ...' if tag_count > 3 else ''}
+Summary: [Write the summary content here]
+
+Requirements:
+1. Generate {tag_count} relevant key tags
+2. Provide a concise but comprehensive summary (approximately 100-300 words)
+3. Tags should reflect the main themes and content characteristics of the file
+4. Summary should outline the core content and key points of the file
+"""
+        return prompt
+    
+    llm_summary_step = StepTemplate.create_llm_processing_step(
+        session,
+        "llm_generate_summary",
+        "為檔案生成摘要和標籤",
+        ["file_path_input", "file_content", "tag_count_input"],
+        "llm_summary_result",
+        required_data=["file_path_input", "file_content"],
+        llm_prompt_builder=build_summary_prompt,
+        description="使用LLM分析檔案內容，生成摘要和相關標籤"
+    )
+    
+    # 🔧 步驟6: 保存摘要到檔案 (SYSTEM 步驟)
+    def save_summary_file(session):
+        """將LLM生成的摘要保存到檔案"""
+        file_path = session.get_data("file_path_input", "")
+        llm_result = session.get_data("llm_summary_result", "")
         tag_count_input = session.get_data("tag_count_input", "").strip()
         tag_count = int(tag_count_input) if tag_count_input else 3
         
         try:
-            debug_log(2, f"[Workflow] 開始生成摘要: {file_path}, 標籤數量: {tag_count}")
-            result = summarize_tag(file_path, tag_count)
+            debug_log(2, f"[Workflow] 解析LLM摘要結果並保存檔案")
+            
+            # 解析LLM回應（提取標籤和摘要）
+            tags = []
+            summary = ""
+            
+            lines = llm_result.split('\n')
+            for line in lines:
+                line = line.strip()
+                # 支援英文和中文格式
+                if (("Tags:" in line or "Tags：" in line or "標籤：" in line or "標籤:" in line) and not tags):
+                    # 找到冒號後的內容
+                    if "：" in line:
+                        tags_line = line.split("：")[1]
+                    else:
+                        tags_line = line.split(":")[1]
+                    tags = [tag.strip() for tag in tags_line.split(',') if tag.strip()]
+                elif (("Summary:" in line or "Summary：" in line or "摘要：" in line or "摘要:" in line) and not summary):
+                    # 找到冒號後的內容
+                    if "：" in line:
+                        summary = line.split("：")[1]
+                    else:
+                        summary = line.split(":")[1]
+                elif summary and line:  # 摘要可能跨多行
+                    summary += " " + line
+            
+            # 如果沒有解析到，使用整個回應
+            if not tags:
+                tags = ["未能解析標籤"]
+            if not summary:
+                summary = llm_result
+            
+            # 確保標籤數量正確
+            if len(tags) > tag_count:
+                tags = tags[:tag_count]
+            
+            # 生成摘要檔案路徑
+            file_path_obj = Path(file_path)
+            desktop_path = Path.home() / "Desktop"
+            summary_file_name = f"{file_path_obj.stem}_summary.txt"
+            summary_file_path = desktop_path / summary_file_name
+            
+            # 寫入摘要檔案
+            summary_content = f"檔案: {file_path_obj.name}\n"
+            summary_content += f"生成時間: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            summary_content += f"標籤: {', '.join(tags)}\n\n"
+            summary_content += f"摘要:\n{summary}\n"
+            
+            with open(summary_file_path, 'w', encoding='utf-8') as f:
+                f.write(summary_content)
+            
+            info_log(f"[Workflow] 摘要檔案已保存: {summary_file_path}")
             
             return StepResult.complete_workflow(
-                f"📝 摘要標籤工作流程完成！檔案: {Path(file_path).name}, 摘要檔案: {result['summary_file']}, 標籤: {', '.join(result['tags'])}",
+                f"📝 摘要標籤工作流程完成！\n檔案: {file_path_obj.name}\n摘要檔案: {summary_file_path}\n標籤: {', '.join(tags)}",
                 {
                     "original_file": file_path,
-                    "summary_file": result["summary_file"],
-                    "tags": result["tags"],
-                    "tag_count": len(result["tags"]),
+                    "summary_file": str(summary_file_path),
+                    "tags": tags,
+                    "summary": summary,
+                    "tag_count": len(tags),
                     "completion_time": datetime.datetime.now().isoformat()
                 }
             )
         except Exception as e:
-            error_log(f"[Workflow] 摘要生成失敗: {e}")
-            return StepResult.failure(f"摘要生成失敗: {e}")
+            error_log(f"[Workflow] 保存摘要檔案失敗: {e}")
+            return StepResult.failure(f"保存摘要檔案失敗: {e}")
     
-    summary_step = StepTemplate.create_auto_step(
+    save_step = StepTemplate.create_auto_step(
         session,
-        "execute_summary",
-        execute_summary,
-        ["file_path_input", "tag_count_input"],
-        "正在生成摘要和標籤...",
-        description="使用 LLM 自動生成檔案摘要和標籤並完成工作流程"
+        "save_summary_file",
+        save_summary_file,
+        ["file_path_input", "llm_summary_result"],
+        "正在保存摘要檔案...",
+        description="將LLM生成的摘要和標籤保存到桌面上的txt檔案"
     )
     
     # 建立工作流程
     workflow_def.add_step(file_input_step)
     workflow_def.add_step(tag_count_step)
     workflow_def.add_step(summary_confirm_step)
-    workflow_def.add_step(summary_step)
+    workflow_def.add_step(read_step)
+    workflow_def.add_step(llm_summary_step)
+    workflow_def.add_step(save_step)
     
     workflow_def.set_entry_point("file_path_input")
     workflow_def.add_transition("file_path_input", "tag_count_input")
     workflow_def.add_transition("tag_count_input", "summary_confirm")
-    workflow_def.add_transition("summary_confirm", "execute_summary")
+    workflow_def.add_transition("summary_confirm", "read_file_content")
+    workflow_def.add_transition("read_file_content", "llm_generate_summary")
+    workflow_def.add_transition("llm_generate_summary", "save_summary_file")
     
     # 創建引擎並啟用自動推進
     engine = WorkflowEngine(workflow_def, session)

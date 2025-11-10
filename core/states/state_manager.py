@@ -55,12 +55,19 @@ class StateManager:
             bool: 狀態轉換是否成功
         """
         old_state = self._state
-        if old_state == new_state:
-            return True  # 狀態沒有變化，視為成功
+        
+        # ✅ 即使狀態相同，如果有 context 也要觸發狀態處理
+        # 這允許在 WORK -> WORK 轉換時創建新的 WS
+        if old_state == new_state and context is None:
+            return True  # 狀態沒有變化且沒有新上下文，視為成功
             
         try:
             self._state = new_state
-            debug_log(2, f"[StateManager] 狀態變更: {old_state.name} -> {new_state.name}")
+            
+            if old_state != new_state:
+                debug_log(2, f"[StateManager] 狀態變更: {old_state.name} -> {new_state.name}")
+            else:
+                debug_log(2, f"[StateManager] 重新進入 {new_state.name} 狀態（創建新會話）")
             
             # 觸發狀態變化回調
             self._on_state_changed(old_state, new_state, context)
@@ -134,6 +141,9 @@ class StateManager:
             
             queue_callback = (context or {}).get("state_queue_callback")
             
+            # ✅ 確保 GS 存在（由 Controller 管理）
+            self._ensure_gs_exists()
+            
             # 從 Working Context 獲取身份信息
             current_identity = working_context_manager.get_current_identity()
             if current_identity:
@@ -171,14 +181,12 @@ class StateManager:
             if cs_id:
                 self._current_session_id = cs_id
                 debug_log(2, f"[StateManager] 創建聊天會話成功: {cs_id}")
-                
-                # 注意：處理輸入現在由 Router 負責，CS 只記錄
-                # 這裡只是創建會話，不處理輸入
-                
-                if callable(queue_callback):
-                    queue_callback(cs_id, True, {"session_created": True})
+                # ✅ 不在創建時呼叫 callback，等待 session_ended 事件
+                # StateQueue 會通過 _on_session_ended 收到完成通知
+                debug_log(2, "[StateManager] CS 已創建，等待聊天會話完成...")
             else:
                 debug_log(1, "[StateManager] 創建聊天會話失敗")
+                # ❌ 創建失敗時才呼叫 callback 報告錯誤
                 if callable(queue_callback):
                     queue_callback(None, False, {"error": "Failed to create chat session"})
                 
@@ -205,6 +213,9 @@ class StateManager:
                 # ✅ 從 NLP 分段提取的對應狀態文本
                 command_text = context.get("text", command_text)
             
+            # ✅ 確保 GS 存在（由 Controller 管理）
+            self._ensure_gs_exists()
+            
             # 獲取現有的 General Session - 如果不存在則為架構錯誤
             current_gs = session_manager.get_current_general_session()
             if not current_gs:
@@ -228,11 +239,14 @@ class StateManager:
             if ws_id:
                 self._current_session_id = ws_id
                 debug_log(2, f"[StateManager] 創建工作會話成功: {ws_id} (類型: {workflow_type})")
-                
-                if callable(queue_callback):
-                    queue_callback(ws_id, True, {"accepted": True, "workflow_type": workflow_type, "command": command_text})
+                # ✅ 不在創建時呼叫 callback，等待 session_ended 事件
+                # StateQueue 會通過 _on_session_ended 收到完成通知
+                debug_log(2, "[StateManager] WS 已創建，等待工作流程完成...")
             else:
                 debug_log(1, "[StateManager] 創建工作會話失敗")
+                # ❌ 創建失敗時才呼叫 callback 報告錯誤
+                if callable(queue_callback):
+                    queue_callback(None, False, {"error": "Failed to create workflow session"})
                 
         except RuntimeError as e:
             # 對於架構錯誤，直接向上拋出
@@ -240,6 +254,26 @@ class StateManager:
             raise
         except Exception as e:
             debug_log(1, f"[StateManager] 創建工作會話時發生錯誤: {e}")
+    
+    def _ensure_gs_exists(self):
+        """確保 GS 存在，如果不存在則通知 Controller 創建"""
+        from utils.debug_helper import debug_log, error_log
+        
+        try:
+            from core.sessions.session_manager import session_manager
+            
+            current_gs = session_manager.get_current_general_session()
+            if not current_gs:
+                debug_log(2, "[StateManager] 檢測到沒有活躍的 GS，通知 Controller 創建")
+                # 通過 Controller 單例同步創建 GS
+                try:
+                    from core.controller import unified_controller
+                    unified_controller._create_gs_for_processing()
+                    debug_log(2, "[StateManager] GS 創建請求已完成")
+                except Exception as e:
+                    error_log(f"[StateManager] 通知 Controller 創建 GS 失敗: {e}")
+        except Exception as e:
+            error_log(f"[StateManager] 檢查 GS 存在性失敗: {e}")
     
     def _cleanup_sessions(self):
         """清理會話 (當回到IDLE狀態時)"""

@@ -424,43 +424,6 @@ class StateQueueManager:
             if self.current_item:
                 self.complete_current_state(success=False, result_data={"error": str(e)})
     
-    def complete_current_state(self, success: bool = True, result_data: Optional[Dict[str, Any]] = None):
-        """完成當前狀態處理"""
-        if self.current_item is None:
-            debug_log(3, "[StateQueue] 沒有正在處理的狀態")
-            return
-        
-        self.current_item.completed_at = datetime.now()
-        info_log(f"[StateQueue] 完成狀態: {self.current_state.value} ({'成功' if success else '失敗'})")
-        
-        # 調用完成處理器
-        completion_handler = self.completion_handlers.get(self.current_state)
-        if completion_handler:
-            completion_handler(self.current_item, success, result_data or {})
-        
-        # 重置當前狀態
-        self.current_item = None
-        self.current_state = UEPState.IDLE
-        
-        # 保存並繼續處理下一個
-        self._save_queue()
-        
-        # ✅ 自動處理下一個狀態
-        if self.queue:
-            debug_log(2, f"[StateQueue] 還有 {len(self.queue)} 個待處理狀態，繼續處理")
-            self.process_next_state()
-        else:
-            debug_log(2, "[StateQueue] 佇列已空，回到 IDLE")
-    
-    def _old_get_queue_status(self) -> Dict[str, Any]:
-        """舊版本的 get_queue_status (已被新版本取代)"""
-        # 確保如果沒有正在執行的項目，狀態應該是IDLE
-        if self.current_item is None and self.current_state != UEPState.IDLE:
-            debug_log(4, f"[StateQueue] 修正狀態：沒有執行項目但狀態不是IDLE，從 {self.current_state.value} 修正為 IDLE")
-            self.current_state = UEPState.IDLE
-        self._save_queue()
-        
-        return True
     
     def process_nlp_intents(self, intent_segments: List[Any]) -> List[UEPState]:
         """
@@ -622,9 +585,16 @@ class StateQueueManager:
         return True
     
     def complete_current_state(self, success: bool = True, result_data: Optional[Dict[str, Any]] = None):
-        """完成當前狀態"""
+        """完成當前狀態
+        
+        即使沒有 current_item，也要檢查佇列並在必要時轉換到 IDLE。
+        這確保當會話結束通知到達時，StateQueue 能正確處理狀態轉換。
+        """
         if not self.current_item:
             debug_log(2, "[StateQueue] 沒有正在執行的狀態")
+            # ✅ 即使沒有當前狀態，也要檢查佇列和轉換到 IDLE
+            if not self.start_next_state():
+                self._transition_to_idle()
             return
         
         # 標記完成
@@ -659,6 +629,14 @@ class StateQueueManager:
             debug_log(4, "[StateQueue] 切換到 IDLE 狀態 - 佇列已空")
             self.current_state = UEPState.IDLE
             self.current_item = None
+            
+            # ✅ 通知 StateManager 狀態已轉換到 IDLE
+            try:
+                from core.states.state_manager import state_manager
+                state_manager.set_state(UEPState.IDLE, context=None)
+                debug_log(2, "[StateQueue] 已通知 StateManager 轉換到 IDLE")
+            except Exception as e:
+                error_log(f"[StateQueue] 通知 StateManager 失敗: {e}")
             
             # 調用IDLE處理器
             if UEPState.IDLE in self.state_handlers:

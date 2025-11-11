@@ -499,8 +499,6 @@ class NLPModule(BaseModule):
                     state_type = SystemState.CHAT
                 elif state_type_str == "WORK":
                     state_type = SystemState.WORK
-                elif state_type_str == "CALL":
-                    state_type = SystemState.CALL
                 else:
                     error_log(f"[NLP] Unknown state type: {state_type_str}")
                     continue
@@ -872,61 +870,17 @@ class NLPModule(BaseModule):
                     debug_log(2, f"[NLP] No session: CHAT - adding CHAT state (priority={segment.priority})")
                     
                 elif segment.intent_type == IntentType.WORK:
-                    # WORK 意圖：添加 WORK 狀態
-                    # 查詢 SYS 模組獲取實際工作流資訊
-                    # 先從 metadata 中獲取 work_mode（BIO Tagger 已設定）
-                    work_mode = segment.metadata.get('work_mode') if segment.metadata else None
-                    query_source = "bio_tagger" if work_mode else "fallback"
-                    corrected_segment = segment  # 預設使用原始 segment
-                    
-                    try:
-                        from core.framework import core_framework
-                        sys_module = core_framework.get_module('sys')
-                        if sys_module:
-                            matches = sys_module.query_function_info(segment.segment_text, top_k=1)
-                            # Lower threshold to 0.3 for better matching
-                            if matches and matches[0]['relevance_score'] > 0.3:
-                                work_mode = matches[0]['work_mode']
-                                workflow_name = matches[0]['name']
-                                query_source = "sys_query"
-                                debug_log(2, f"[NLP] Found matching function: {workflow_name} "
-                                             f"(score={matches[0]['relevance_score']:.2f}, mode={work_mode})")
-                                
-                                # ✅ 只修正 work_mode，不添加 workflow_hint
-                                # LLM 會通過 MCP 自己查詢和選擇工作流
-                                
-                                # 更新 work_mode metadata（intent_type 始終為 WORK）
-                                if work_mode and (not segment.metadata or segment.metadata.get('work_mode') != work_mode):
-                                    from .intent_types import IntentSegment as NewIntentSegment
-                                    corrected_segment = NewIntentSegment(
-                                        segment_text=segment.segment_text,
-                                        intent_type=IntentType.WORK,
-                                        confidence=segment.confidence,
-                                        priority=0,  # Will be recalculated
-                                        metadata={'work_mode': work_mode}
-                                    )
-                                    # 記錄 segment 被更正
-                                    result["corrected_segments"] = result.get("corrected_segments", []) + [(segment, corrected_segment)]
-                                    debug_log(2, f"[NLP] Corrected segment work_mode: {segment.metadata.get('work_mode') if segment.metadata else 'None'} -> {work_mode}")
-                    except Exception as e:
-                        debug_log(3, f"[NLP] SYS query failed: {e}, using fallback")
-                    
-                    # Fallback: 如果 SYS 查詢沒有找到匹配，使用 BIO Tagger 的 metadata
-                    if work_mode is None:
-                        work_mode = segment.metadata.get('work_mode', 'background') if segment.metadata else 'background'
-                        debug_log(2, f"[NLP] Using BIO Tagger classification: work_mode={work_mode}")
-                    
-                    # Calculate priority based on final work_mode (not BIO Tagger prediction)
+                    # WORK: work_mode 已在 _correct_intent_with_mcp 中設定
+                    work_mode = segment.metadata.get('work_mode', 'background') if segment.metadata else 'background'
                     final_priority = 100 if work_mode == "direct" else 30
                     
                     result["states_to_add"].append({
-                        "segment": corrected_segment,  # 使用更正後的 segment
+                        "segment": segment,
                         "state_type": "WORK",
                         "priority": final_priority,
                         "work_mode": work_mode
                     })
-                    debug_log(2, f"[NLP] No session: {corrected_segment.intent_type.name} - adding WORK state "
-                                 f"(mode={work_mode}, priority={final_priority}, source={query_source})")
+                    debug_log(2, f"[NLP] No session: WORK - adding WORK state (mode={work_mode}, priority={final_priority})")
             
         except Exception as e:
             error_log(f"[NLP] Error in _process_no_session_state: {e}")
@@ -1004,13 +958,10 @@ class NLPModule(BaseModule):
             # Process each segment
             for segment in valid_segments:
                 if segment.intent_type == IntentType.CALL:
-                    # CALL -> treat as CHAT in CS
-                    result["states_to_add"].append({
-                        "segment": segment,
-                        "state_type": "CHAT",
-                        "priority": segment.priority
-                    })
-                    debug_log(2, "[NLP] Active CS: CALL -> CHAT")
+                    # CALL -> treat as CHAT in CS (per NLP狀態處理.md)
+                    # Don't queue, just continue CS as if it's CHAT
+                    result["processing_notes"].append("CALL in CS - treating as CHAT, continuing conversation")
+                    debug_log(2, "[NLP] Active CS: CALL -> treat as CHAT (no queue, continue CS)")
                     
                 elif segment.intent_type == IntentType.CHAT:
                     # CHAT: Continue CS, don't queue
@@ -1130,11 +1081,18 @@ class NLPModule(BaseModule):
             result["processing_notes"].append("Active WS - treating all inputs as Response")
             
             # Analyze intent types for metadata
+            has_call = any(s.intent_type == IntentType.CALL for s in segments)
             has_chat = any(s.intent_type == IntentType.CHAT for s in segments)
             work_segs = [s for s in segments if s.intent_type == IntentType.WORK]
             has_dw = any(s.metadata and s.metadata.get('work_mode') == 'direct' for s in work_segs)
             has_bw = any(s.metadata and s.metadata.get('work_mode') == 'background' for s in work_segs)
             has_unknown = any(s.intent_type == IntentType.UNKNOWN for s in segments)
+            
+            # CALL in WS: treat as Response (per NLP狀態處理.md)
+            if has_call:
+                result["response_metadata"]["call_detected"] = True
+                result["processing_notes"].append("CALL in WS - treating as Response")
+                debug_log(2, "[NLP] Active WS: CALL detected - treat as Response")
             
             # Set metadata for LLM processing
             if has_chat:
@@ -1415,8 +1373,6 @@ class NLPModule(BaseModule):
                 
                 # 直接返回 CALL 回應，不進行路由
                 return call_response.dict()
-            elif primary_intent == "compound":
-                target_state = UEPState.WORK
             
             if target_state and current_state != target_state:
                 info_log(f"[NLP] 執行狀態轉換: {current_state} → {target_state}")
@@ -1482,7 +1438,7 @@ class NLPModule(BaseModule):
             error_log(f"[NLP] 從Working Context獲取說話人失敗: {e}")
             return None
 
-    def _extract_state_text(self, nlp_result: 'NLPOutput', target_state: 'UEPState') -> str:
+    def _extract_state_text(self, nlp_result: 'NLPOutput', target_state: 'SystemState') -> str:
         """
         提取屬於目標狀態的分段文本
         
@@ -1500,13 +1456,11 @@ class NLPModule(BaseModule):
             對應狀態的分段文本
         """
         from .intent_types import IntentType
-        from core.states.uep_states import UEPState
         
         # 映射：狀態 → 意圖類型
         state_to_intent = {
-            UEPState.CHAT: IntentType.CHAT,
-            UEPState.WORK: IntentType.WORK,
-            UEPState.CALL: IntentType.CALL
+            SystemState.CHAT: IntentType.CHAT,
+            SystemState.WORK: IntentType.WORK,
         }
         
         target_intent = state_to_intent.get(target_state)
@@ -1594,6 +1548,83 @@ class NLPModule(BaseModule):
             error_log(f"[NLP] 創建通用身份失敗: {e}")
             return None
 
+    def _correct_intent_with_mcp(self, segment: 'IntentSegment') -> 'IntentSegment':
+        """
+        使用 MCP 工具列表查詢來糾正意圖分類
+        
+        目的：防止工作請求被錯誤分類為 CHAT/UNKNOWN
+        例如："What's the weather in Taipei?" 應該被識別為 WORK
+        
+        Args:
+            segment: 原始意圖段落
+            
+        Returns:
+            糾正後的意圖段落（如果找到匹配的工作流）
+        """
+        try:
+            from core.framework import core_framework
+            from .intent_types import IntentSegment as NewIntentSegment
+            
+            # 查詢 SYS 模組的 MCP 工具
+            sys_module = core_framework.get_module('sys')
+            if not sys_module:
+                debug_log(3, "[NLP] SYS module not available for intent correction")
+                return segment
+            
+            # 查詢所有註冊的工作流
+            matches = sys_module.query_function_info(segment.segment_text, top_k=1)
+            
+            # 降低閾值到 0.3 以捕獲更多可能的工作請求
+            if matches and matches[0]['relevance_score'] > 0.3:
+                match = matches[0]
+                work_mode = match['work_mode']
+                workflow_name = match['name']
+                score = match['relevance_score']
+                
+                debug_log(2, f"[NLP] MCP match found: '{workflow_name}' (score={score:.2f}, mode={work_mode})")
+                
+                # 如果當前不是 WORK 意圖，但找到了匹配的工作流，糾正為 WORK
+                if segment.intent_type != IntentType.WORK:
+                    debug_log(1, f"[NLP] Correcting intent: {segment.intent_type.name} -> WORK based on MCP match '{workflow_name}'")
+                    
+                    corrected_segment = NewIntentSegment(
+                        segment_text=segment.segment_text,
+                        intent_type=IntentType.WORK,
+                        confidence=min(segment.confidence + 0.2, 0.95),  # 增加信心度
+                        priority=0,  # 會根據 work_mode 重新計算
+                        metadata={'work_mode': work_mode, 'mcp_corrected': True, 'matched_workflow': workflow_name}
+                    )
+                    return corrected_segment
+                
+                # 如果已經是 WORK，更新或確認 work_mode
+                elif segment.intent_type == IntentType.WORK:
+                    current_work_mode = segment.metadata.get('work_mode') if segment.metadata else None
+                    
+                    # 如果 work_mode 不一致，使用 MCP 的結果
+                    if current_work_mode != work_mode:
+                        debug_log(2, f"[NLP] Updating work_mode: {current_work_mode} -> {work_mode} based on MCP")
+                        
+                        updated_metadata = segment.metadata.copy() if segment.metadata else {}
+                        updated_metadata['work_mode'] = work_mode
+                        updated_metadata['mcp_verified'] = True
+                        updated_metadata['matched_workflow'] = workflow_name
+                        
+                        corrected_segment = NewIntentSegment(
+                            segment_text=segment.segment_text,
+                            intent_type=IntentType.WORK,
+                            confidence=segment.confidence,
+                            priority=segment.priority,
+                            metadata=updated_metadata
+                        )
+                        return corrected_segment
+            
+            # 沒有找到匹配或分數太低，返回原始 segment
+            return segment
+            
+        except Exception as e:
+            error_log(f"[NLP] Intent correction with MCP failed: {e}")
+            return segment
+    
     def get_module_info(self) -> Dict[str, Any]:
         """獲取模組資訊"""
         return {

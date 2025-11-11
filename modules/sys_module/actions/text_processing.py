@@ -4,7 +4,6 @@ import json
 import os
 import win32clipboard
 import difflib
-from tkinter import simpledialog
 from dotenv import load_dotenv
 from utils.debug_helper import info_log, error_log
 

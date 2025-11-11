@@ -40,6 +40,30 @@ from .workflows.file_workflows import (
     get_available_file_workflows
 )
 
+# Import text workflows
+from .workflows.text_workflows import (
+    create_text_workflow,
+    get_available_text_workflows
+)
+
+# Import analysis workflows
+from .workflows.analysis_workflows import (
+    create_analysis_workflow,
+    get_available_analysis_workflows
+)
+
+# Import info workflows
+from .workflows.info_workflows import (
+    create_info_workflow,
+    get_available_info_workflows
+)
+
+# Import utility workflows
+from .workflows.utility_workflows import (
+    create_utility_workflow,
+    get_available_utility_workflows
+)
+
 class SYSModule(BaseModule):
     def __init__(self, config=None):
         self.config = config or load_module_config("sys_module")
@@ -72,6 +96,9 @@ class SYSModule(BaseModule):
             debug_log(2, "[SYS] Event bus 已連接，已訂閱 SESSION_ENDED")
         except Exception as e:
             error_log(f"[SYS] 無法連接 event bus: {e}")
+        
+        # Register Phase 2 workflows to MCP
+        self._register_phase2_workflows_to_mcp()
         
         info_log("[SYS] 初始化完成，啟用模式：" + ", ".join(self.enabled_modes))
         return True
@@ -129,6 +156,16 @@ class SYSModule(BaseModule):
         except Exception as e:
             # Don't fail initialization if LLM module is not available
             debug_log(2, f"[SYS] ⚠️  協作管道提供者註冊跳過 (LLM 模組不可用): {e}")
+    
+    def _register_phase2_workflows_to_mcp(self):
+        """Register Phase 2 workflows to MCP Server using centralized registry"""
+        info_log("[SYS] Registering Phase 2 workflows to MCP Server...")
+        
+        # 使用集中式工作流註冊器
+        from .workflows.workflow_registry import register_all_workflows
+        register_all_workflows(self.mcp_server, self)
+        
+        info_log("[SYS] ✅ Phase 2 workflows registered to MCP Server (9 workflows)")
     
     def query_function_info(self, query_text: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """
@@ -467,11 +504,34 @@ class SYSModule(BaseModule):
             else:
                 raise ValueError(f"無效的會話創建結果: {type(session_result)}")
         
-        # 將 initial_data 添加到 session 的 workflow_data 中（用於測試模式等特殊需求）
+        # 將 initial_data 添加到 session，根據 YAML 的 maps_to_step 映射參數名
         if initial_data:
-            for key, value in initial_data.items():
-                session.add_data(key, value)
-            debug_log(2, f"[SYS] 已將 initial_data 添加到 session: {list(initial_data.keys())}")
+            # 載入 workflow_definitions.yaml 獲取參數映射
+            try:
+                from pathlib import Path
+                import yaml
+                yaml_path = Path(__file__).parent / "workflows" / "workflow_definitions.yaml"
+                with open(yaml_path, 'r', encoding='utf-8') as f:
+                    workflow_defs = yaml.safe_load(f).get('workflows', {})
+                
+                # 獲取當前工作流的參數映射
+                workflow_def = workflow_defs.get(workflow_type, {})
+                initial_params = workflow_def.get('initial_params', {})
+                
+                # 根據 maps_to_step 映射參數名
+                for key, value in initial_data.items():
+                    param_def = initial_params.get(key, {})
+                    target_step = param_def.get('maps_to_step', key)  # 默認使用原始 key
+                    session.add_data(target_step, value)
+                    debug_log(2, f"[SYS] initial_data: {key} -> {target_step} = {value}")
+                
+                debug_log(2, f"[SYS] 已將 initial_data 映射到 session: {list(initial_data.keys())}")
+            except Exception as e:
+                # 降級處理：直接使用原始 key
+                debug_log(1, f"[SYS] 無法載入工作流定義進行參數映射: {e}")
+                for key, value in initial_data.items():
+                    session.add_data(key, value)
+                debug_log(2, f"[SYS] 已將 initial_data 添加到 session（降級模式）: {list(initial_data.keys())}")
         
         try:
             # Determine workflow engine based on type
@@ -501,6 +561,22 @@ class SYSModule(BaseModule):
                 engine = create_file_workflow(workflow_type, session)
             elif workflow_type in ["drop_and_read", "intelligent_archive", "summarize_tag"]:
                 engine = create_file_workflow(workflow_type, session)
+            
+            # Text workflows
+            elif workflow_type in get_available_text_workflows():
+                engine = create_text_workflow(workflow_type, session)
+            
+            # Analysis workflows
+            elif workflow_type in get_available_analysis_workflows():
+                engine = create_analysis_workflow(workflow_type, session)
+            
+            # Info workflows
+            elif workflow_type in get_available_info_workflows():
+                engine = create_info_workflow(workflow_type, session)
+            
+            # Utility workflows
+            elif workflow_type in get_available_utility_workflows():
+                engine = create_utility_workflow(workflow_type, session)
                 
             # Other workflow types - validate against WorkflowType enum
             else:
@@ -589,29 +665,58 @@ class SYSModule(BaseModule):
             # 🔧 區分步驟類型處理：
             # - SYSTEM 步驟（如檔案對話框）：在當前線程直接執行
             # - PROCESSING 步驟：提交到背景執行
-            # - INTERACTIVE 步驟：等待用戶輸入
+            # 檢查第一步是否需要執行或可以跳過
+            # - SYSTEM 步驟：立即執行
+            # - PROCESSING 步驟：背景執行
+            # - INTERACTIVE 步驟：檢查是否可跳過
+            #   - 如果設定 skip_if_data_exists 且數據已存在 → 自動執行
+            #   - 否則 → 等待用戶輸入
             if current_step:
+                should_execute_immediately = False
+                
                 if current_step.step_type == current_step.STEP_TYPE_SYSTEM:
                     # SYSTEM 步驟直接執行（如檔案對話框）
                     debug_log(2, f"[SYS] 第一步是系統操作步驟，立即執行: {current_step.id}")
-                    self.workflow_executor.submit(self._execute_workflow_step_background, session_id, workflow_type)
+                    should_execute_immediately = True
                 elif current_step.step_type == current_step.STEP_TYPE_PROCESSING:
                     # PROCESSING 步驟提交到背景執行
                     debug_log(2, f"[SYS] 第一步是處理步驟，提交到背景執行: {current_step.id}")
+                    should_execute_immediately = True
+                elif current_step.step_type == current_step.STEP_TYPE_INTERACTIVE:
+                    # 檢查互動步驟是否可跳過
+                    should_skip = hasattr(current_step, 'should_skip') and current_step.should_skip()
+                    if should_skip:
+                        debug_log(2, f"[SYS] 第一步是互動步驟但數據已存在，自動執行: {current_step.id}")
+                        should_execute_immediately = True
+                    else:
+                        debug_log(2, f"[SYS] 第一步是互動步驟，等待用戶輸入: {current_step.id}")
+                
+                # 如果需要立即執行，提交到背景執行器
+                if should_execute_immediately:
                     self.workflow_executor.submit(self._execute_workflow_step_background, session_id, workflow_type)
-                else:
-                    # INTERACTIVE 步驟等待用戶輸入
-                    debug_log(2, f"[SYS] 第一步是互動步驟，等待用戶輸入: {current_step.id}")
             
             # ✅ 立即返回「已啟動」狀態
             info_log(f"[SYS] 已啟動統一工作流程 '{workflow_type}', ID: {session_id}")
+            
+            # 判斷當前步驟是否會被跳過
+            step_will_be_skipped = False
+            if current_step and current_step.step_type == current_step.STEP_TYPE_INTERACTIVE:
+                # 檢查是否設定了 skip_if_data_exists 且數據已存在
+                if hasattr(current_step, 'should_skip') and current_step.should_skip():
+                    step_will_be_skipped = True
+                    debug_log(2, f"[SYS] 步驟 {current_step.id} 將被跳過（數據已存在）")
             
             # 判斷是否有自動步驟（SYSTEM 或 PROCESSING）和是否需要輸入
             has_auto_step = current_step and current_step.step_type in (
                 current_step.STEP_TYPE_SYSTEM, 
                 current_step.STEP_TYPE_PROCESSING
             )
-            requires_input = current_step and current_step.step_type == current_step.STEP_TYPE_INTERACTIVE
+            # 只有在步驟是互動類型且不會被跳過時才需要輸入
+            requires_input = (
+                current_step and 
+                current_step.step_type == current_step.STEP_TYPE_INTERACTIVE and 
+                not step_will_be_skipped
+            )
             
             return {
                 "status": "success",  # ✅ 改為 success 以向後兼容測試
@@ -620,12 +725,15 @@ class SYSModule(BaseModule):
                 "workflow_type": workflow_type,
                 "requires_input": requires_input,  # ✅ 添加 requires_input 欄位
                 "message": f"Workflow '{workflow_type}' has been started",
+                "current_step_prompt": current_step.get_prompt() if (current_step and requires_input) else None,  # 新增：提供步驟提示給 LLM
                 "data": {
                     "workflow_type": workflow_type,
                     "current_step": current_step.id if current_step else None,
                     "step_type": current_step.step_type if current_step else None,
                     "has_auto_step": has_auto_step,
-                    "requires_input": requires_input
+                    "requires_input": requires_input,
+                    "step_will_be_skipped": step_will_be_skipped,  # 新增：告訴 LLM 步驟是否被跳過
+                    "auto_continue": step_will_be_skipped  # 新增：可以自動繼續
                 }
             }
             
@@ -661,14 +769,19 @@ class SYSModule(BaseModule):
                 error_log(f"[SYS] 背景執行失敗：找不到引擎 {session_id}")
                 return
             
-            # 🔧 暫時禁用自動推進，避免在背景執行中連續執行多個步驟
+            # 🔧 記錄執行前的步驟 ID（用於事件報告）
+            current_step_before = engine.get_current_step()
+            executed_step_id = current_step_before.id if current_step_before else None
+            
+            # 🔧 啟用自動推進，讓引擎根據步驟類型自動決定是否推進
+            # 例如：Interactive 步驟跳過後應該自動推進到下一個 Processing 步驟
             original_auto_advance = engine.auto_advance
-            engine.auto_advance = False
+            engine.auto_advance = True
             
             # Execute step
             result = engine.process_input(None)
             
-            # 🔧 恢復自動推進設置
+            # 🔧 恢復原始設置（但通常應該保持 True）
             engine.auto_advance = original_auto_advance
             
             # ✅ 發布事件通知步驟完成
@@ -678,10 +791,10 @@ class SYSModule(BaseModule):
                 # 🔧 檢查是否為工作流完成且需要用戶回應
                 llm_review_data = result.llm_review_data if hasattr(result, 'llm_review_data') else None
                 is_workflow_complete = result.complete
-                requires_user_response = llm_review_data and llm_review_data.get('requires_user_response', False) if llm_review_data else False
                 
-                # 如果工作流完成且需要回應，強制設置為需要 LLM 審核
-                requires_llm_review = engine.is_awaiting_llm_review() or (is_workflow_complete and requires_user_response)
+                # 🔧 修正：工作流完成時總是需要 LLM 生成最終回應（向用戶報告結果）
+                # 或者當引擎明確標記為等待審核時
+                requires_llm_review = engine.is_awaiting_llm_review() or is_workflow_complete
                 
                 # 🆕 預覽下一步資訊（僅當工作流未完成時）
                 next_step_info = None
@@ -696,7 +809,8 @@ class SYSModule(BaseModule):
                         "complete": result.complete,
                         "cancel": result.cancel,
                         "message": result.message,
-                        "data": result.data
+                        "data": result.data,
+                        "step_id": executed_step_id  # 🆕 添加步驟 ID 用於測試監控（使用執行前記錄的 ID）
                     },
                     "requires_llm_review": requires_llm_review,
                     "llm_review_data": llm_review_data,
@@ -1176,11 +1290,15 @@ class SYSModule(BaseModule):
         獲取所有可用的工作流程類型
         
         Returns:
-            包含測試和文件工作流程的字典
+            包含所有類別工作流程的字典
         """
         return {
             "test_workflows": get_available_test_workflows(),
-            "file_workflows": get_available_file_workflows()
+            "file_workflows": get_available_file_workflows(),
+            "text_workflows": get_available_text_workflows(),
+            "analysis_workflows": get_available_analysis_workflows(),
+            "info_workflows": get_available_info_workflows(),
+            "utility_workflows": get_available_utility_workflows()
         }
     
     # 舊的專門處理函數已被移除，統一使用 _start_workflow 和 _continue_workflow

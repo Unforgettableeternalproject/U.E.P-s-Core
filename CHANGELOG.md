@@ -1702,3 +1702,15 @@
 
 ---
 
+### Converted functions to workflow (besides the background works) and tested some. 11/12
+
+> Date: Wed, 12 Nov 2025 04:02:27 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `25750ea9795482f14b908b06b39a822463c4c0a4`
+
+---
+

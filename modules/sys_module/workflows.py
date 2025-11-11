@@ -252,9 +252,13 @@ class WorkflowStep(ABC):
     def should_auto_advance(self) -> bool:
         """判斷是否應該自動推進到下一步"""
         if self._auto_advance_condition:
-            return self._auto_advance_condition()
+            result = self._auto_advance_condition()
+            debug_log(3, f"[WorkflowStep] {self.id} should_auto_advance (custom): {result}")
+            return result
         # 支援 PROCESSING 和 LLM_PROCESSING 兩種自動推進類型
-        return self.step_type in (self.STEP_TYPE_PROCESSING, self.STEP_TYPE_LLM_PROCESSING)
+        result = self.step_type in (self.STEP_TYPE_PROCESSING, self.STEP_TYPE_LLM_PROCESSING)
+        debug_log(3, f"[WorkflowStep] {self.id} should_auto_advance (type={self.step_type}): {result}")
+        return result
         
     @abstractmethod
     def get_prompt(self) -> str:
@@ -912,63 +916,69 @@ class WorkflowEngine:
         if not current_step:
             return StepResult.complete_workflow("工作流程已完成")
         
-        # 階段三：如果是 Interactive 步驟且沒有提供輸入，發布事件請求輸入
-        # 注意：不在這裡檢查 should_skip()，讓步驟的 execute() 方法自行決定
+        # 階段三：如果是 Interactive 步驟且沒有提供輸入，檢查是否可以跳過
+        # 🔧 修正：先檢查 should_skip()，如果可以跳過則繼續執行，不要請求輸入
         # 注意：空字符串也視為無效輸入
         if current_step.step_type == current_step.STEP_TYPE_INTERACTIVE and not user_input:
-            # 如果已經在等待輸入，不要重複請求，直接返回當前提示
-            if self.waiting_for_input:
-                return StepResult(
-                    success=False,
-                    message=current_step.get_prompt(),
-                    data={"requires_input": True, "step_id": current_step.id, "already_waiting": True}
-                )
-            
-            try:
-                from core.event_bus import event_bus, SystemEvent
-                from core.working_context import working_context_manager
+            # 🆕 檢查步驟是否可以跳過（數據已存在）
+            can_skip = hasattr(current_step, 'should_skip') and current_step.should_skip()
+            if can_skip:
+                debug_log(2, f"[WorkflowEngine] Interactive 步驟可以跳過（數據已存在），繼續執行: {current_step.id}")
+                # 繼續執行步驟，不要請求輸入
+            else:
+                # 如果已經在等待輸入，不要重複請求，直接返回當前提示
+                if self.waiting_for_input:
+                    return StepResult(
+                        success=False,
+                        message=current_step.get_prompt(),
+                        data={"requires_input": True, "step_id": current_step.id, "already_waiting": True}
+                    )
                 
-                # 設置等待輸入標記
-                self.waiting_for_input = True
-                
-                # ✅ 設置 working_context，標記工作流正在等待輸入
-                working_context_manager.set_workflow_waiting_input(True)
-                working_context_manager.set_context_data('workflow_input_context', {
-                    'workflow_session_id': self.session.session_id,
-                    'workflow_type': self.definition.workflow_type,
-                    'step_id': current_step.id,
-                    'step_type': current_step.step_type,
-                    'optional': getattr(current_step, 'optional', False),
-                    'prompt': current_step.get_prompt()
-                })
-                
-                # 發布工作流需要輸入事件
-                event_bus.publish(
-                    SystemEvent.WORKFLOW_REQUIRES_INPUT,
-                    {
-                        "workflow_type": self.definition.workflow_type,
-                        "session_id": self.session.session_id,
-                        "step_id": current_step.id,
-                        "step_type": current_step.step_type,
-                        "optional": getattr(current_step, 'optional', False),
-                        "prompt": current_step.get_prompt(),
-                        "timestamp": time.time()
-                    },
-                    source="WorkflowEngine"
-                )
-                
-                debug_log(2, f"[WorkflowEngine] Interactive 步驟需要輸入: {current_step.id}")
-                
-                # 返回需要輸入的結果
-                return StepResult(
-                    success=False,
-                    message=current_step.get_prompt(),
-                    data={"requires_input": True, "step_id": current_step.id}
-                )
-                
-            except Exception as e:
-                error_log(f"[WorkflowEngine] 發布輸入請求事件失敗: {e}")
-                # 繼續執行，使用傳統流程
+                try:
+                    from core.event_bus import event_bus, SystemEvent
+                    from core.working_context import working_context_manager
+                    
+                    # 設置等待輸入標記
+                    self.waiting_for_input = True
+                    
+                    # ✅ 設置 working_context，標記工作流正在等待輸入
+                    working_context_manager.set_workflow_waiting_input(True)
+                    working_context_manager.set_context_data('workflow_input_context', {
+                        'workflow_session_id': self.session.session_id,
+                        'workflow_type': self.definition.workflow_type,
+                        'step_id': current_step.id,
+                        'step_type': current_step.step_type,
+                        'optional': getattr(current_step, 'optional', False),
+                        'prompt': current_step.get_prompt()
+                    })
+                    
+                    # 發布工作流需要輸入事件
+                    event_bus.publish(
+                        SystemEvent.WORKFLOW_REQUIRES_INPUT,
+                        {
+                            "workflow_type": self.definition.workflow_type,
+                            "session_id": self.session.session_id,
+                            "step_id": current_step.id,
+                            "step_type": current_step.step_type,
+                            "optional": getattr(current_step, 'optional', False),
+                            "prompt": current_step.get_prompt(),
+                            "timestamp": time.time()
+                        },
+                        source="WorkflowEngine"
+                    )
+                    
+                    debug_log(2, f"[WorkflowEngine] Interactive 步驟需要輸入: {current_step.id}")
+                    
+                    # 返回需要輸入的結果
+                    return StepResult(
+                        success=False,
+                        message=current_step.get_prompt(),
+                        data={"requires_input": True, "step_id": current_step.id}
+                    )
+                    
+                except Exception as e:
+                    error_log(f"[WorkflowEngine] 發布輸入請求事件失敗: {e}")
+                    # 繼續執行，使用傳統流程
             
         # 驗證步驟要求
         is_valid, error = current_step.validate_requirements()
@@ -1115,6 +1125,7 @@ class WorkflowEngine:
                 # 自動推進或等待下一次調用
                 if next_step_id:
                     self.session.add_data("current_step", next_step_id)
+                    debug_log(2, f"[WorkflowEngine] 已更新 current_step -> {next_step_id}")
                     
                     # 🔧 如果下一步是 Interactive 步驟，發布需要輸入事件
                     if next_step and next_step.step_type == next_step.STEP_TYPE_INTERACTIVE:
@@ -1166,7 +1177,13 @@ class WorkflowEngine:
                             error_log(f"[WorkflowEngine] 發布下一步輸入請求事件失敗: {e}")
                     
                     # 檢查下一步是否可以自動推進
+                    debug_log(2, f"[WorkflowEngine] 檢查自動推進: auto_advance={self.auto_advance}, next_step={next_step.id if next_step else None}, step_type={next_step.step_type if next_step else None}")
+                    if next_step:
+                        should_advance = next_step.should_auto_advance()
+                        debug_log(2, f"[WorkflowEngine] should_auto_advance() = {should_advance}")
+                    
                     if self.auto_advance and next_step and next_step.should_auto_advance():
+                        debug_log(2, f"[WorkflowEngine] 開始自動推進到 {next_step.id}")
                         return self._auto_advance(result)
                 else:
                     self.session.add_data("current_step", None)
@@ -1609,7 +1626,7 @@ class StepTemplate:
     def create_processing_step(session: WorkflowSession, step_id: str,
                               processor: Callable[[WorkflowSession], StepResult],
                               required_data: Optional[List[str]] = None,
-                              auto_advance: bool = False,
+                              auto_advance: bool = True,  # 🔧 修正：PROCESSING 步驟默認應該自動推進
                               description: str = "") -> WorkflowStep:
         """
         創建處理步驟
@@ -1619,7 +1636,7 @@ class StepTemplate:
             step_id: 步驟 ID
             processor: 處理函數，接受 session 並返回 StepResult
             required_data: 必要數據列表
-            auto_advance: 是否自動推進到下一步
+            auto_advance: 是否自動推進到下一步（默認 True）
             description: 步驟描述，用於 LLM 上下文
         """
         class ProcessingStep(WorkflowStep):
@@ -1998,3 +2015,111 @@ class StepTemplate:
                 return True
                 
         return LLMProcessingStep(session)
+    
+    @staticmethod
+    def create_conditional_step(
+        session: WorkflowSession,
+        step_id: str,
+        selection_step_id: str,
+        branches: Dict[Any, List[WorkflowStep]],
+        description: str = ""
+    ) -> WorkflowStep:
+        """
+        創建條件步驟（根據 selection 結果執行不同分支）
+        
+        這個步驟會：
+        1. 從 session 中獲取 selection 步驟的結果
+        2. 根據結果選擇對應的分支步驟列表
+        3. 依序執行分支中的所有步驟
+        4. 統合所有步驟的結果並返回
+        
+        Args:
+            session: 工作流程會話
+            step_id: 步驟 ID
+            selection_step_id: 依賴的 selection 步驟 ID（用於獲取選擇結果）
+            branches: 分支字典，key 是 selection 的可能值，value 是該分支的步驟列表
+            description: 步驟描述
+            
+        Example:
+            branches = {
+                1: [],  # UTC - 不需要額外步驟
+                2: [input_timezone_step],  # 需要輸入時區
+                3: []   # Local - 不需要額外步驟
+            }
+        """
+        class ConditionalStep(WorkflowStep):
+            def __init__(self, session):
+                super().__init__(session)
+                self.set_id(step_id)
+                self.set_step_type(self.STEP_TYPE_PROCESSING)
+                if description:
+                    self.set_description(description)
+                
+                # Conditional 總是自動推進
+                self._auto_advance = True
+                
+            def get_prompt(self) -> str:
+                return f"根據選擇執行對應步驟..."
+            
+            def execute(self, user_input: Any = None) -> StepResult:
+                """執行條件分支"""
+                # 1. 獲取 selection 的結果
+                selection_value = self.session.get_data(selection_step_id)
+                
+                if selection_value is None:
+                    return StepResult.failure(
+                        f"無法獲取選擇結果: {selection_step_id}"
+                    )
+                
+                debug_log(2, f"[ConditionalStep] {step_id}: selection_value = {selection_value}")
+                
+                # 2. 找到對應的分支
+                branch_steps = branches.get(selection_value)
+                
+                if branch_steps is None:
+                    return StepResult.failure(
+                        f"未定義的選擇值: {selection_value}"
+                    )
+                
+                # 3. 如果分支為空，直接返回成功
+                if not branch_steps:
+                    debug_log(2, f"[ConditionalStep] {step_id}: 空分支，直接繼續")
+                    return StepResult.success(
+                        f"分支 {selection_value}: 無需額外步驟",
+                        {}
+                    )
+                
+                # 4. 依序執行分支中的所有步驟
+                debug_log(2, f"[ConditionalStep] {step_id}: 執行分支 {selection_value}，共 {len(branch_steps)} 個步驟")
+                
+                aggregated_data = {}
+                
+                for i, step in enumerate(branch_steps):
+                    debug_log(3, f"[ConditionalStep] {step_id}: 執行分支步驟 {i+1}/{len(branch_steps)}: {step.id}")
+                    
+                    # 執行步驟
+                    step_result = step.execute(user_input)
+                    
+                    # 檢查執行結果
+                    if not step_result.success:
+                        return StepResult.failure(
+                            f"分支步驟執行失敗: {step.id} - {step_result.message}"
+                        )
+                    
+                    # 聚合數據
+                    if step_result.data:
+                        aggregated_data.update(step_result.data)
+                        # 同時更新 session，讓後續步驟可以使用
+                        for key, value in step_result.data.items():
+                            self.session.add_data(key, value)
+                
+                # 5. 返回統合結果
+                return StepResult.success(
+                    f"分支 {selection_value} 執行完成",
+                    aggregated_data
+                )
+            
+            def should_auto_advance(self) -> bool:
+                return True
+        
+        return ConditionalStep(session)

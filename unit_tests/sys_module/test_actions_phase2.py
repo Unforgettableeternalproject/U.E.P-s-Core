@@ -5,16 +5,13 @@ Phase 2 功能測試 - 測試新搬運的進階功能
 1. news_summary - RSS 和 Selenium 爬蟲
 2. translate_document - 多格式翻譯
 3. media_control - 音樂播放控制
-4. google_calendar_agent - Google Calendar 整合
+4. local_calendar - 本地 SQLite 日曆（已取代 google_calendar_agent）
 """
 
 import pytest
 from pathlib import Path
-from modules.sys_module.actions.integrations import (
-    news_summary, 
-    media_control,
-    google_calendar_agent
-)
+from modules.sys_module.actions.integrations import news_summary
+from modules.sys_module.actions.automation_helper import media_control, local_calendar
 from modules.sys_module.actions.file_interaction import translate_document
 
 
@@ -113,30 +110,35 @@ class TestMusicControlFeatures:
         print(f"YouTube 播放結果：{result}")
 
 
-class TestGoogleCalendarFeatures:
-    """測試 Google Calendar 功能"""
+class TestLocalCalendarFeatures:
+    """測試本地日曆功能（SQLite）"""
     
-    @pytest.mark.skipif(True, reason="Google Calendar 需要 OAuth 授權，跳過自動測試")
-    def test_calendar_list(self):
-        """測試列出事件（需要授權）"""
-        result = google_calendar_agent(
-            action="list",
-            credentials_path="configs/credentials.json"
+    def test_calendar_create_event(self):
+        """測試建立事件"""
+        from datetime import datetime, timedelta
+        
+        start = (datetime.now() + timedelta(days=1)).isoformat()
+        end = (datetime.now() + timedelta(days=1, hours=2)).isoformat()
+        
+        result = local_calendar(
+            action="create",
+            summary="測試會議",
+            start_time=start,
+            end_time=end,
+            description="單元測試建立的事件"
         )
         
-        assert "status" in result
-        print(f"日曆事件：{result}")
+        assert result["status"] == "ok"
+        assert "event_id" in result
+        print(f"建立事件成功：ID {result['event_id']}")
     
-    def test_calendar_missing_credentials(self):
-        """測試缺少授權檔案的情況"""
-        result = google_calendar_agent(
-            action="list",
-            credentials_path="non_existent_file.json"
-        )
+    def test_calendar_list_events(self):
+        """測試列出事件"""
+        result = local_calendar(action="list")
         
-        assert result["status"] == "error"
-        assert "缺少授權檔案" in result["message"]
-        print(f"預期錯誤：{result['message']}")
+        assert result["status"] == "ok"
+        assert "events" in result
+        print(f"事件列表：{len(result['events'])} 個事件")
 
 
 class TestIntegrationReadiness:
@@ -148,9 +150,7 @@ class TestIntegrationReadiness:
             news_summary,
             get_weather,
             get_world_time,
-            code_analysis,
-            media_control,
-            google_calendar_agent
+            code_analysis
         )
         from modules.sys_module.actions.file_interaction import (
             drop_and_read,
@@ -162,7 +162,9 @@ class TestIntegrationReadiness:
         from modules.sys_module.actions.automation_helper import (
             set_reminder,
             generate_backup_script,
-            monitor_folder
+            monitor_folder,
+            media_control,
+            local_calendar
         )
         
         assert True  # 如果能導入就通過
@@ -175,7 +177,7 @@ class TestIntegrationReadiness:
             functions = yaml.safe_load(f)
         
         assert "translate_document" in functions
-        assert "google_calendar_agent" in functions
+        assert "local_calendar" in functions
         assert "media_control" in functions
         assert "news_summary" in functions
         
@@ -189,7 +191,7 @@ class TestIntegrationReadiness:
         
         modes = config.get("modes", [])
         assert "translate_document" in modes
-        assert "google_calendar_agent" in modes
+        assert "local_calendar" in modes
         assert "media_control" in modes
         
         print("✓ config.yaml 已啟用所有新功能")

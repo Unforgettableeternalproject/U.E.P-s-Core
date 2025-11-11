@@ -40,8 +40,6 @@ from ..actions.file_interaction import (
     drop_and_read,
     intelligent_archive,
     summarize_tag,
-    # translate,  # TODO: 尚未實現
-    # clean_trash_bin  # TODO: 尚未實現
 )
 
 

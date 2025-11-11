@@ -29,11 +29,19 @@ StepTemplate = workflows_module.StepTemplate
 # Import workflow creators
 from .test_workflows import create_test_workflow, get_available_test_workflows
 from .file_workflows import create_file_workflow, get_available_file_workflows
+from .text_workflows import create_text_workflow, get_available_text_workflows
+from .analysis_workflows import create_analysis_workflow, get_available_analysis_workflows
+from .info_workflows import create_info_workflow, get_available_info_workflows
+from .utility_workflows import create_utility_workflow, get_available_utility_workflows
 
 __all__ = [
     'WorkflowType', 'WorkflowMode', 'StepResult', 'WorkflowEngine', 'WorkflowDefinition',
     'WorkflowStep', 'FileSelectionStep', 'ActionSelectionStep', 'ConfirmationStep',
     'StepTemplate',
     'create_test_workflow', 'get_available_test_workflows',
-    'create_file_workflow', 'get_available_file_workflows'
+    'create_file_workflow', 'get_available_file_workflows',
+    'create_text_workflow', 'get_available_text_workflows',
+    'create_analysis_workflow', 'get_available_analysis_workflows',
+    'create_info_workflow', 'get_available_info_workflows',
+    'create_utility_workflow', 'get_available_utility_workflows'
 ]

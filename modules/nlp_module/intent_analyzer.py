@@ -186,32 +186,33 @@ class IntentAnalyzer:
         }
     
     def _determine_primary_intent(self, segments: List[IntentSegment]) -> IntentType:
-        """決定主要意圖"""
+        """決定主要意圖
+        
+        注意：不返回 COMPOUND。當有多個不同意圖的 segment 時，
+        返回優先級最高的意圖。COMPOUND 的判斷應該在更高層級（NLP 模組）處理。
+        """
         if not segments:
             return IntentType.UNKNOWN
         
-        # 統計各意圖類型
-        intent_counts = {}
-        intent_confidences = {}
+        # 如果只有一個 segment，直接返回其意圖
+        if len(segments) == 1:
+            return segments[0].intent
+        
+        # 多個segments：根據優先級選擇主要意圖
+        # 優先級定義在 intent_types.py 的 INTENT_PRIORITY_MAP
+        from .intent_types import INTENT_PRIORITY_MAP
+        
+        # 找出優先級最高的意圖
+        highest_priority = -1
+        primary_intent = IntentType.UNKNOWN
         
         for segment in segments:
-            intent = segment.intent
-            if intent not in intent_counts:
-                intent_counts[intent] = 0
-                intent_confidences[intent] = []
-            
-            intent_counts[intent] += 1
-            intent_confidences[intent].append(segment.confidence)
+            intent_priority = INTENT_PRIORITY_MAP.get(segment.intent, 0)
+            if intent_priority > highest_priority:
+                highest_priority = intent_priority
+                primary_intent = segment.intent
         
-        # 如果有多種意圖，標記為複合意圖
-        if len(intent_counts) > 1:
-            return IntentType.COMPOUND
-        
-        # 如果只有一種意圖，返回該意圖
-        if len(intent_counts) == 1:
-            return list(intent_counts.keys())[0]
-        
-        return IntentType.UNKNOWN
+        return primary_intent
     
     def _calculate_overall_confidence(self, segments: List[IntentSegment]) -> float:
         """計算整體信心度"""
@@ -291,7 +292,7 @@ class IntentAnalyzer:
             # 檢查是否是連接詞
             if (current.text.strip().lower() in connective_words and 
                 len(result) > 0 and 
-                result[-1].intent == IntentType.COMMAND):
+                result[-1].intent == IntentType.WORK):
                 
                 # 合併到前一個分段
                 last = result[-1]
@@ -354,7 +355,7 @@ class IntentAnalyzer:
             
             if (len(result) > 0 and 
                 segment.intent == result[-1].intent and
-                segment.intent == IntentType.COMMAND):
+                segment.intent == IntentType.WORK):
                 
                 # 檢查是否是相關的命令片段
                 should_merge = True
@@ -446,11 +447,11 @@ class IntentAnalyzer:
                 return None
             
             # 檢查是否有明顯的 COMMAND 意圖
-            has_command_intent = any(seg.intent == IntentType.COMMAND for seg in intent_segments)
+            has_command_intent = any(seg.intent == IntentType.WORK for seg in intent_segments)
             
             if has_command_intent:
                 # 找出命令相關的片段
-                command_segments = [seg for seg in intent_segments if seg.intent == IntentType.COMMAND]
+                command_segments = [seg for seg in intent_segments if seg.intent == IntentType.WORK]
                 command_confidence = max(seg.confidence for seg in command_segments)
                 
                 # 如果命令意圖信心度夠高，建議中斷切換到 WORK
@@ -516,7 +517,7 @@ class IntentAnalyzer:
             intent_type = IntentType.CHAT
         # 命令檢測  
         elif any(cmd in clean_text for cmd in ['please', 'help', 'show', 'tell me', 'do', 'get', 'find']):
-            intent_type = IntentType.COMMAND
+            intent_type = IntentType.WORK
         # 默認為聊天
         else:
             intent_type = IntentType.CHAT

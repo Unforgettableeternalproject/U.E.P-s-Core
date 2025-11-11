@@ -1971,15 +1971,33 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                         # 不跳過，使用構建的 follow_up_prompt
                     # ✅ 工作流已啟動（新的非同步模式）
                     elif workflow_status == "started":
-                        # 工作流已啟動，正在背景執行
+                        # 工作流已啟動，檢查是否需要用戶輸入
                         workflow_type = result_data.get("workflow_type", "task")
-                        follow_up_prompt = (
-                            f"{language_instruction}"
-                            f"The workflow '{workflow_type}' has been started successfully.\n"
-                            f"Result: {result_message}\n\n"
-                            f"Please inform the user in a natural, friendly tone that you're processing their request and explain what will happen next (e.g., 'I'm reading the file now').\n"
-                            f"IMPORTANT: Respond in English only."
-                        )
+                        requires_input = result_data.get("requires_input", False)
+                        current_step_prompt = result_data.get("current_step_prompt")
+                        
+                        if requires_input and current_step_prompt:
+                            # 第一步需要輸入：生成提示詢問用戶
+                            follow_up_prompt = (
+                                f"{language_instruction}"
+                                f"The workflow '{workflow_type}' has been started.\n"
+                                f"The first step requires user input.\n"
+                                f"Prompt: {current_step_prompt}\n\n"
+                                f"Generate a natural response that:\n"
+                                f"1. BRIEFLY confirms the workflow has started (1 sentence)\n"
+                                f"2. Asks the user for the needed input based on the prompt\n"
+                                f"3. Be friendly and conversational (2-3 sentences total)\n"
+                                f"IMPORTANT: Respond in English only."
+                            )
+                        else:
+                            # 工作流自動執行（參數已提供或無需輸入）
+                            follow_up_prompt = (
+                                f"{language_instruction}"
+                                f"The workflow '{workflow_type}' has been started successfully.\n"
+                                f"Result: {result_message}\n\n"
+                                f"Please inform the user in a natural, friendly tone that you're processing their request and explain what will happen next (e.g., 'I'm checking the weather now').\n"
+                                f"IMPORTANT: Respond in English only."
+                            )
                     elif workflow_status == "completed":
                         # 工作流已完成（一步到位，舊模式）
                         follow_up_prompt = (

@@ -40,7 +40,7 @@ modes:
   - code_analysis
   - media_control
   - translate_document
-  - google_calendar_agent
+  - local_calendar
   
   # 八、測試工作流程 (開發測試用)
   - test_workflow_echo

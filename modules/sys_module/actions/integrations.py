@@ -330,23 +330,28 @@ def get_world_time(target_num: int = 1, tz: str = ""):
     """取得當前時間
     
     Args:
-        target_num: 1=世界標準時間（UTC）, 2=指定時區時間
+        target_num: 
+            1 = 世界標準時間（UTC）
+            2 = 指定時區時間（需搭配 tz 參數）
+            3 = 本地時區時間（自動偵測）
         tz: 時區名稱（繁體中文），如：台灣、日本、美國東岸等（詳細時區表於 maps/time_zone.py）
         
     Returns:
         時間字串
     """
-    from datetime import datetime
+    from datetime import datetime, timezone
     from modules.sys_module.actions.maps.time_zone import timezone_map
     from zoneinfo import ZoneInfo
 
     try:
         if target_num == 1:
-            now = datetime.now()
-            info_log(f"[INT] 當前時間（UTC）：{now}")
-            return f"當前時間（UTC）：{now.strftime('%Y-%m-%d %H:%M:%S')}"
+            # UTC 時間
+            now = datetime.now(timezone.utc)
+            info_log(f"[INT] 世界標準時間（UTC）：{now}")
+            return f"世界標準時間（UTC）：{now.strftime('%Y-%m-%d %H:%M:%S %Z')}"
 
         elif target_num == 2:
+            # 指定時區時間
             if not tz:
                 error_log("[INT] 未輸入時區參數")
                 raise ValueError("target_num=2 時必須傳入 tz 參數")
@@ -361,9 +366,23 @@ def get_world_time(target_num: int = 1, tz: str = ""):
             info_log(f"[INT] {tz} 時區時間：{assign_time}")
             return f"{tz} 當前時間：{assign_time.strftime('%Y-%m-%d %H:%M:%S %Z')}"
         
+        elif target_num == 3:
+            # 本地時區時間（使用 tzlocal 自動偵測）
+            try:
+                from tzlocal import get_localzone
+                local_tz = get_localzone()
+                local_time = datetime.now(local_tz)
+                info_log(f"[INT] 本地時區時間：{local_time} ({local_tz})")
+                return f"本地時間：{local_time.strftime('%Y-%m-%d %H:%M:%S %Z')} (時區: {local_tz})"
+            except ImportError:
+                error_log("[INT] tzlocal 套件未安裝，改用系統時間")
+                local_time = datetime.now()
+                info_log(f"[INT] 本地時間（系統）：{local_time}")
+                return f"本地時間：{local_time.strftime('%Y-%m-%d %H:%M:%S')} (tzlocal 未安裝，無時區資訊)"
+        
         else:
             error_log(f"[INT] 無效的 target_num：{target_num}")
-            return "錯誤：target_num 必須是 1（UTC）或 2（指定時區）"
+            return "錯誤：target_num 必須是 1（UTC）、2（指定時區）或 3（本地時區）"
 
     except Exception as e:
         error_log(f"[INT] 取得時間失敗: {e}")
@@ -488,7 +507,6 @@ def code_analysis(code: str, analysis_type: str = "general") -> dict:
             "status": "error",
             "message": str(e)
         }
-        return _fallback_ast_analysis(code)
 
 
 def _fallback_ast_analysis(code: str) -> str:

@@ -725,18 +725,16 @@ class SYSModule(BaseModule):
             
             # 🆕 找到「等效第一步」（Effective First Step）
             # 重要：不執行步驟，只是找到第一個需要處理的步驟
-            # 暫時禁用 auto_advance 避免工作流在啟動時就執行完畢
+            # 但如果工作流可以自動完成（無需用戶輸入），則讓它完成並保存數據
             debug_log(2, "[SYS] 尋找等效第一步...")
-            original_auto_advance = engine.auto_advance
-            engine.auto_advance = False  # 🔧 禁用自動推進
             try:
-                # 執行一次以跳過可以跳過的步驟，但不會自動推進到後續步驟
-                engine.process_input(None)
+                # 執行一次，讓工作流跳過可以跳過的步驟
+                # auto_advance=True 允許自動執行處理步驟並保存數據
+                step_result = engine.process_input(None)
                 debug_log(2, "[SYS] 等效第一步查找完成")
             except Exception as e:
                 debug_log(1, f"[SYS] 等效第一步查找失敗: {e}")
-            finally:
-                engine.auto_advance = original_auto_advance  # 🔧 恢復設定
+                step_result = None
             
             # ✅ 獲取當前步驟（這才是真正的「等效第一步」）
             current_step = engine.get_current_step()
@@ -788,13 +786,18 @@ class SYSModule(BaseModule):
                     step_history = session.get_data("step_history", []) if session else []
                     executed_step_ids = [step["step_id"] for step in step_history] if step_history else []
                     
-                    # 獲取最後一步的結果數據
+                    # 🔧 優先從 step_result.data 獲取結果數據（最準確）
+                    if step_result and hasattr(step_result, 'data') and step_result.data:
+                        final_result_data = step_result.data.copy()
+                        debug_log(2, f"[SYS] 從 step_result 獲取最終結果數據，鍵: {list(final_result_data.keys())}")
+                    
+                    # 🔧 補充從 session 中獲取可能遺漏的數據
                     if session:
-                        # 嘗試從常見的結果鍵獲取數據
-                        for key in ["time_info", "full_result", "result_data", "output"]:
-                            value = session.get_data(key)
-                            if value:
-                                final_result_data[key] = value
+                        for key in ["time_info", "full_result", "result_data", "output", "news_list", "source", "count", "weather_info", "weather_data", "location"]:
+                            if key not in final_result_data:  # 只補充不存在的鍵
+                                value = session.get_data(key)
+                                if value:
+                                    final_result_data[key] = value
                     
                     event_data = {
                         "session_id": session_id,
@@ -806,7 +809,8 @@ class SYSModule(BaseModule):
                             "data": final_result_data
                         },
                         "executed_steps": executed_step_ids,
-                        "requires_llm_review": True,  # 需要 LLM 生成最終回應
+                        # 🔧 不設置 requires_llm_review，避免雙重回應
+                        # 工作流完成事件會觸發 LLM 的 _process_workflow_completion，生成最終總結
                         "llm_review_data": {
                             "requires_user_response": True,
                             "should_end_session": True,
@@ -821,21 +825,23 @@ class SYSModule(BaseModule):
                     )
                     debug_log(2, f"[SYS] 已發布 workflow_step_completed 事件（工作流自動完成）: {session_id}")
                 
-                # 返回完成狀態
+                # 返回啟動狀態（auto_continue=True），讓 LLM 跳過初始回應
+                # LLM 會等待 workflow_step_completed 事件來生成最終總結
                 return {
-                    "status": "completed",
+                    "status": "started",
                     "success": True,
                     "session_id": session_id,
                     "workflow_type": workflow_type,
                     "requires_input": False,
-                    "message": f"Workflow '{workflow_type}' completed automatically",
+                    "message": f"Workflow '{workflow_type}' started and will complete automatically",
                     "current_step_prompt": None,
                     "data": {
                         "workflow_type": workflow_type,
                         "current_step": None,
                         "step_type": None,
-                        "completed": True,
+                        "completed": False,  # 尚未完成（從 LLM 的角度）
                         "requires_input": False,
+                        "auto_continue": True,  # 🔧 關鍵：告訴 LLM 跳過初始回應
                         "executed_steps": executed_step_ids,
                         "final_result": final_result_data
                     }
@@ -873,15 +879,41 @@ class SYSModule(BaseModule):
                     # 🔧 如果工作流中有互動步驟（除了當前被跳過的），可能後續需要輸入
                     requires_input = has_interactive_steps
                 else:
-                    # 🆕 當前步驟不會被跳過，檢查是否為互動類型
-                    # 這包括 Conditional 自動推進後到達的 Interactive 步驟
-                    requires_input = current_step.step_type == current_step.STEP_TYPE_INTERACTIVE
-                    current_step_prompt = current_step.get_prompt() if requires_input else None
+                    # 🆕 當前步驟不會被跳過，檢查是否為互動類型或 Processing 類型
+                    if current_step.step_type == current_step.STEP_TYPE_INTERACTIVE:
+                        requires_input = True
+                        current_step_prompt = current_step.get_prompt()
+                    elif current_step.step_type == current_step.STEP_TYPE_PROCESSING:
+                        # 🔧 Processing 步驟（如 ConditionalStep）可能會跳轉到 Interactive 步驟
+                        # 檢查工作流中是否有未滿足數據的 Interactive 步驟
+                        workflow_steps = engine.definition.steps.values() if engine else []
+                        for step in workflow_steps:
+                            if step.step_type == step.STEP_TYPE_INTERACTIVE:
+                                # 檢查步驟數據是否不存在
+                                if hasattr(step, 'should_skip') and not step.should_skip():
+                                    requires_input = True
+                                    current_step_prompt = step.get_prompt()
+                                    debug_log(2, f"[SYS] ConditionalStep 可能跳轉到互動步驟: {step.id}")
+                                    break
                     debug_log(2, f"[SYS] 當前步驟 {current_step.id} (類型: {current_step.step_type}), requires_input={requires_input}, prompt={current_step_prompt}")
             
             # 🔧 auto_continue 應該只在確定所有步驟都會自動完成時為 True
-            # 如果可能有互動步驟需要輸入，不應該 auto_continue
-            auto_continue = step_will_be_skipped and not requires_input
+            # 檢查是否所有 Interactive 步驟的數據都已存在
+            auto_continue = False
+            if engine and engine.definition and not requires_input:
+                # 檢查所有 Interactive 步驟
+                all_interactive_data_exists = True
+                for step in engine.definition.steps.values():
+                    if step.step_type == step.STEP_TYPE_INTERACTIVE:
+                        # 檢查步驟是否應該被跳過（數據已存在）
+                        if hasattr(step, 'should_skip') and not step.should_skip():
+                            all_interactive_data_exists = False
+                            break
+                
+                # 如果所有 Interactive 步驟的數據都存在，工作流會自動完成
+                if all_interactive_data_exists:
+                    auto_continue = True
+                    debug_log(2, f"[SYS] 所有互動步驟數據已存在，工作流將自動完成")
             
             # 🆕 收集工作流的步驟概覽（給 LLM 提供完整流程信息）
             workflow_steps_overview = []

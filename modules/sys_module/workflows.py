@@ -849,6 +849,10 @@ class WorkflowEngine:
         if current_step.step_type == current_step.STEP_TYPE_INTERACTIVE:
             return False
         
+        # 🚫 Conditional 步驟不需要審核（wrapper 步驟，只負責路由）
+        if 'Conditional' in current_step.__class__.__name__:
+            return False
+        
         # LLM_PROCESSING 步驟：只有第一次執行時需要審核（result.llm_review_data 有值）
         # 第二次執行時（已有結果）不需要審核，直接自動推進
         if current_step.step_type == current_step.STEP_TYPE_LLM_PROCESSING:
@@ -1157,57 +1161,67 @@ class WorkflowEngine:
                     
                     # 🔧 如果下一步是 Interactive 步驟，發布需要輸入事件
                     if next_step and next_step.step_type == next_step.STEP_TYPE_INTERACTIVE:
-                        try:
-                            from core.event_bus import event_bus, SystemEvent
-                            
-                            # 🆕 Interactive → Interactive 轉換：需要 LLM 生成下一步提示
-                            if current_step.step_type == current_step.STEP_TYPE_INTERACTIVE and self.definition.requires_llm_review:
-                                # 發布步驟完成事件，讓 LLM 生成提示
-                                event_bus.publish(
-                                    SystemEvent.WORKFLOW_STEP_COMPLETED,
-                                    {
-                                        "session_id": self.session.session_id,
-                                        "workflow_type": self.definition.workflow_type,
-                                        "step_result": result.to_dict(),
-                                        "requires_llm_review": True,
-                                        "llm_review_data": {
-                                            "requires_user_response": True,
-                                            "should_end_session": False,
-                                        },
-                                        "next_step_info": {
-                                            "step_id": next_step.id,
-                                            "step_type": next_step.step_type,
-                                            "requires_input": True,
-                                            "prompt": next_step.get_prompt()
-                                        }
-                                    },
-                                    source="sys"
-                                )
-                                debug_log(2, f"[WorkflowEngine] Interactive → Interactive: 已發布步驟完成事件供 LLM 生成提示")
-                            
-                            # 檢查是否已經為此步驟發布過事件（防止重複）
-                            last_input_request = self.session.get_data("_last_input_request_step")
-                            if last_input_request != next_step.id:
-                                self.session.add_data("_last_input_request_step", next_step.id)
+                        # 🔧 檢查步驟是否應該被跳過（數據已存在）
+                        should_skip_next = hasattr(next_step, 'should_skip') and next_step.should_skip()
+                        
+                        if not should_skip_next:
+                            try:
+                                from core.event_bus import event_bus, SystemEvent
                                 
-                                # 發布工作流需要輸入事件
-                                event_bus.publish(
-                                    SystemEvent.WORKFLOW_REQUIRES_INPUT,
-                                {
-                                    "workflow_type": self.definition.workflow_type,
-                                    "session_id": self.session.session_id,
-                                    "step_id": next_step.id,
-                                    "step_type": next_step.step_type,
-                                    "optional": getattr(next_step, 'optional', False),
-                                    "prompt": next_step.get_prompt(),
-                                    "timestamp": time.time()
-                                },
-                                source="WorkflowEngine"
-                            )
-                            
-                            debug_log(2, f"[WorkflowEngine] 推進到下一個 Interactive 步驟: {next_step.id}")
-                        except Exception as e:
-                            error_log(f"[WorkflowEngine] 發布下一步輸入請求事件失敗: {e}")
+                                # 🆕 Interactive → Interactive 轉換：需要 LLM 生成下一步提示
+                                if current_step.step_type == current_step.STEP_TYPE_INTERACTIVE and self.definition.requires_llm_review:
+                                    # 發布步驟完成事件，讓 LLM 生成提示
+                                    event_bus.publish(
+                                        SystemEvent.WORKFLOW_STEP_COMPLETED,
+                                        {
+                                            "session_id": self.session.session_id,
+                                            "workflow_type": self.definition.workflow_type,
+                                            "step_result": result.to_dict(),
+                                            "requires_llm_review": True,
+                                            "llm_review_data": {
+                                                "requires_user_response": True,
+                                                "should_end_session": False,
+                                            },
+                                            "next_step_info": {
+                                                "step_id": next_step.id,
+                                                "step_type": next_step.step_type,
+                                                "requires_input": True,
+                                                "prompt": next_step.get_prompt()
+                                            }
+                                        },
+                                        source="sys"
+                                    )
+                                    debug_log(2, f"[WorkflowEngine] Interactive → Interactive: 已發布步驟完成事件供 LLM 生成提示")
+                                
+                                # 檢查是否已經為此步驟發布過事件（防止重複）
+                                last_input_request = self.session.get_data("_last_input_request_step")
+                                if last_input_request != next_step.id:
+                                    self.session.add_data("_last_input_request_step", next_step.id)
+                                    
+                                    # 發布工作流需要輸入事件
+                                    event_bus.publish(
+                                        SystemEvent.WORKFLOW_REQUIRES_INPUT,
+                                    {
+                                        "workflow_type": self.definition.workflow_type,
+                                        "session_id": self.session.session_id,
+                                        "step_id": next_step.id,
+                                        "step_type": next_step.step_type,
+                                        "optional": getattr(next_step, 'optional', False),
+                                        "prompt": next_step.get_prompt(),
+                                        "timestamp": time.time()
+                                    },
+                                    source="WorkflowEngine"
+                                )
+                                
+                                debug_log(2, f"[WorkflowEngine] 推進到下一個 Interactive 步驟: {next_step.id}")
+                            except Exception as e:
+                                error_log(f"[WorkflowEngine] 發布下一步輸入請求事件失敗: {e}")
+                        else:
+                            debug_log(2, f"[WorkflowEngine] Interactive 步驟 {next_step.id} 將被跳過（數據已存在），不發布輸入請求")
+                            # 🔧 步驟會被跳過，需要調用 _auto_advance 來執行步驟並繼續推進
+                            if self.auto_advance:
+                                debug_log(2, f"[WorkflowEngine] 調用 _auto_advance 來執行跳過的步驟並繼續推進")
+                                return self._auto_advance(result)
                     
                     # 檢查下一步是否可以自動推進
                     debug_log(2, f"[WorkflowEngine] 檢查自動推進: auto_advance={self.auto_advance}, next_step={next_step.id if next_step else None}, step_type={next_step.step_type if next_step else None}")

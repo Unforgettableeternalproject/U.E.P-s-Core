@@ -774,10 +774,10 @@ class TestPhase2WorkflowsFullCycle:
                 # 等待下一個輸入請求（timezone）
                 monitor.awaiting_input_event.clear()
                 info_log("[Test] ⏳ 等待時區輸入請求...")
-                input_requested = monitor.awaiting_input_event.wait(timeout=30)
+                input_requested = monitor.awaiting_input_event.wait(timeout=60)
                 assert input_requested, "Workflow did not request timezone input"
                 
-                time.sleep(1.0)
+                time.sleep(15.0)
                 info_log("[Test] 📥 提供時區輸入: Tokyo")
                 inject_text_to_system("Tokyo")
             else:

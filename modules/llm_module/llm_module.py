@@ -250,9 +250,10 @@ class LLMModule(BaseModule):
             debug_log(3, f"[LLM] 當前步驟是互動步驟: {current_step_is_interactive}")
             debug_log(3, f"[LLM] 下一步是互動步驟: {next_step_is_interactive}")
             
-            # 🔧 過濾條件：如果不需要審核
-            if not requires_review:
-                debug_log(2, f"[LLM] 步驟不需要審核")
+            # 🔧 過濾條件：如果不需要審核且工作流未完成
+            # ⚠️ 重要：工作流完成時即使不需要審核也要生成最終總結
+            if not requires_review and not is_workflow_complete:
+                debug_log(2, f"[LLM] 步驟不需要審核且工作流未完成")
                 return
             
             # 🔧 實施 3 時刻回應模式：
@@ -315,6 +316,20 @@ class LLMModule(BaseModule):
                 
                 # 靜默批准當前步驟，讓工作流進入互動狀態
                 self._approve_workflow_step(session_id, None)
+                
+                # ⚠️ 重要：立即處理互動步驟提示，不等待 OUTPUT 完成
+                # 因為在某些情況下（如步驟完成事件晚於輸出完成），OUTPUT 可能已經完成
+                # 此時不會再觸發 OUTPUT_LAYER_COMPLETE 事件處理，導致提示永遠不會生成
+                debug_log(2, f"[LLM] 立即生成互動步驟提示: {workflow_type}")
+                self._process_interactive_step_prompt(
+                    session_id,
+                    workflow_type,
+                    step_result,
+                    review_data,
+                    next_step_info
+                )
+                # 從隊列中移除（已經處理）
+                self._pending_interactive_prompts.pop()
             else:
                 # 🔧 其他情況：等待下次 handle() 調用
                 debug_log(2, f"[LLM] 工作流事件已準備好，等待下次 handle() 調用生成回應")
@@ -1763,15 +1778,18 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                 tool_name = function_call_result.get("tool_name", "unknown")
                 
                 # ✅ 判斷工作流狀態：從 message 推斷
-                # - "has been started" → started
+                # - "started" (但不是 "completed" 或 "finished") → started
                 # - "completed" 或 "finished" → completed
                 # - 其他 → unknown
                 workflow_status = "unknown"
                 if isinstance(result_message, str):
-                    if "has been started" in result_message or "已啟動" in result_message:
-                        workflow_status = "started"
-                    elif "completed" in result_message or "finished" in result_message or "完成" in result_message:
+                    msg_lower = result_message.lower()
+                    # 先檢查 completed/finished（優先級較高）
+                    if " completed" in msg_lower or " finished" in msg_lower or "完成" in result_message:
                         workflow_status = "completed"
+                    # 再檢查 started（但確保不是 "will complete" 這類未來式）
+                    elif "started" in msg_lower or "已啟動" in result_message:
+                        workflow_status = "started"
                 
                 debug_log(2, f"[LLM] 推斷工作流狀態: {workflow_status} (from message: {result_message[:50]}...)")
                 
@@ -3204,18 +3222,51 @@ U.E.P 系統可用功能規格：
                             f"IMPORTANT: Respond in English only."
                         )
                 else:
-                    # 通用數據
-                    result_data = review_data.get('result_data', review_data)
-                    if result_data:
-                        prompt += f"Data: {str(result_data)[:500]}\n\n"
+                    # 通用數據：優先從 step_result 獲取實際結果數據
+                    result_data = step_result.get('data', {})
+                    if not result_data:
+                        result_data = review_data.get('result_data', review_data)
                     
-                    prompt += (
-                        f"Generate a natural, friendly response that:\n"
-                        f"1. Confirms the task is complete\n"
-                        f"2. Summarizes the key results\n"
-                        f"3. Keep it conversational (2-3 sentences)\n"
-                        f"IMPORTANT: Respond in English only."
-                    )
+                    if result_data:
+                        debug_log(2, f"[LLM] 添加結果數據到 prompt，鍵: {list(result_data.keys())}")
+                        # 對於新聞摘要，特別處理 news_list
+                        if 'news_list' in result_data:
+                            news_list = result_data.get('news_list', [])
+                            source = result_data.get('source', 'unknown')
+                            count = result_data.get('count', len(news_list))
+                            prompt += (
+                                f"\nNews Summary Results:\n"
+                                f"- Source: {source}\n"
+                                f"- Count: {count}\n"
+                                f"- Headlines:\n"
+                            )
+                            for i, title in enumerate(news_list[:10], 1):  # 最多顯示 10 條
+                                prompt += f"  {i}. {title}\n"
+                            prompt += (
+                                f"\nGenerate a natural response that:\n"
+                                f"1. Confirms the news summary is ready\n"
+                                f"2. Mention how many news items were found\n"
+                                f"3. Briefly mention 1-2 interesting headlines\n"
+                                f"4. Keep it conversational (2-3 sentences)\n"
+                                f"IMPORTANT: Respond in English only."
+                            )
+                        else:
+                            prompt += f"Data: {str(result_data)[:500]}\n\n"
+                            prompt += (
+                                f"Generate a natural, friendly response that:\n"
+                                f"1. Confirms the task is complete\n"
+                                f"2. Summarizes the key results\n"
+                                f"3. Keep it conversational (2-3 sentences)\n"
+                                f"IMPORTANT: Respond in English only."
+                            )
+                    else:
+                        prompt += (
+                            f"Generate a natural, friendly response that:\n"
+                            f"1. Confirms the task is complete\n"
+                            f"2. Summarizes the key results\n"
+                            f"3. Keep it conversational (2-3 sentences)\n"
+                            f"IMPORTANT: Respond in English only."
+                        )
             else:
                 prompt += (
                     f"Generate a natural, friendly response that:\n"
@@ -3258,6 +3309,17 @@ U.E.P 系統可用功能規格：
             debug_log(2, f"[LLM] 工作流已完成，跳過批准步驟")
             
             debug_log(1, f"[LLM] ✅ 工作流完成處理完畢: {session_id}")
+            
+            # 🔧 清除待處理隊列中該工作流的所有互動提示
+            # 工作流已完成，不應該再生成互動步驟的提示
+            if hasattr(self, '_pending_interactive_prompts'):
+                prompts_to_remove = [
+                    prompt for prompt in self._pending_interactive_prompts
+                    if prompt.get('session_id') == session_id
+                ]
+                for prompt in prompts_to_remove:
+                    self._pending_interactive_prompts.remove(prompt)
+                    debug_log(2, f"[LLM] 已從隊列移除已完成工作流的互動提示: {prompt.get('workflow_type')}/{prompt.get('next_step_info', {}).get('step_id')}")
             
             # 🔧 清除 workflow_processing 標誌，允許下一次輸入層運行
             from core.working_context import working_context_manager

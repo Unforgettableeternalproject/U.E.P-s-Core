@@ -654,7 +654,7 @@ def create_tts_test_workflow(session: WorkflowSession, tts_module=None) -> Workf
         emotion = session.get_data("emotion_input", "neutral")
         
         if not text.strip():
-            return StepResult.failure("文字內容不能為空")
+            return StepResult.failure("Text content cannot be empty")
         
         try:
             import asyncio

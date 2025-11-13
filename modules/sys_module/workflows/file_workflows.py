@@ -76,7 +76,7 @@ def create_drop_and_read_workflow(session: WorkflowSession) -> WorkflowEngine:
             )
             
             if not file_path:
-                return StepResult.failure("未提供檔案路徑")
+                return StepResult.failure("No file path provided")
             
             if not os.path.exists(file_path):
                 return StepResult.failure(f"檔案不存在: {file_path}")
@@ -506,7 +506,7 @@ def create_summarize_tag_workflow(session: WorkflowSession) -> WorkflowEngine:
             )
             
             if not file_path:
-                return StepResult.failure("未選擇檔案")
+                return StepResult.failure("No file selected")
             
             if not os.path.exists(file_path):
                 return StepResult.failure(f"檔案不存在: {file_path}")
@@ -839,7 +839,7 @@ def create_file_selection_workflow(session: WorkflowSession) -> WorkflowEngine:
                 }
             )
         else:
-            return StepResult.failure("無效的操作選擇")
+            return StepResult.failure("Invalid operation selection")
     
     redirect_step = StepTemplate.create_processing_step(
         session,
@@ -883,14 +883,14 @@ def get_file_workflows_info() -> List[Dict[str, Any]]:
             "workflow_type": "intelligent_archive",
             "name": "Intelligent Archive Workflow",
             "description": "Archive files with intelligent organization",
-            "work_mode": "background",  # Background work - can be queued
+            "work_mode": "direct",
             "keywords": ["archive", "organize", "sort", "categorize", "files", "folder"],
         },
         {
             "workflow_type": "summarize_tag",
             "name": "Summarize and Tag Workflow",
             "description": "Summarize file content and add tags",
-            "work_mode": "background",  # Background work - can be queued
+            "work_mode": "direct",
             "keywords": ["summarize", "tag", "label", "categorize", "metadata", "summary"],
         }
     ]

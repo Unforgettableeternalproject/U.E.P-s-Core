@@ -281,7 +281,7 @@ class PromptManager:
             return None
     
     def _format_system_values_english(self, modifiers: Dict[str, Any]) -> str:
-        """格式化系統值為英文格式"""
+        """格式化系統值為英文格式，並提供數值以便動態調整語氣"""
         status_mapping = {
             "非常積極": "very positive", "積極": "positive", "中性": "neutral",
             "消極": "negative", "非常消極": "very negative",
@@ -298,7 +298,20 @@ class PromptManager:
         helpfulness_en = status_mapping.get(modifiers['helpfulness_level'], modifiers['helpfulness_level'])
         boredom_en = status_mapping.get(modifiers['boredom_level'], modifiers['boredom_level'])
         
-        return f"mood={mood_en}, pride={pride_en}, helpfulness={helpfulness_en}, boredom={boredom_en}"
+        # 獲取原始數值（用於動態調整語氣）
+        helpfulness_value = modifiers.get('helpfulness', 0.5)  # 預設中等
+        
+        # 判斷 helpfulness 級別
+        if helpfulness_value > 0.7:
+            helpfulness_level = "HIGH"
+        elif helpfulness_value >= 0.3:
+            helpfulness_level = "MEDIUM"
+        else:
+            helpfulness_level = "LOW"
+        
+        return (f"mood={mood_en}, pride={pride_en}, "
+                f"helpfulness={helpfulness_en} (level={helpfulness_level}, value={helpfulness_value:.2f}), "
+                f"boredom={boredom_en}")
     
     def _build_memory_context(self, memory_context: Optional[str] = None, 
                              relevant_memories: Optional[List[Dict]] = None) -> Optional[str]:

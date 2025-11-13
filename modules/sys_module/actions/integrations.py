@@ -348,7 +348,11 @@ def get_world_time(target_num: int = 1, tz: str = ""):
             # UTC 時間
             now = datetime.now(timezone.utc)
             info_log(f"[INT] 世界標準時間（UTC）：{now}")
-            return f"世界標準時間（UTC）：{now.strftime('%Y-%m-%d %H:%M:%S %Z')}"
+            return {
+                "status": "ok",
+                "time": now.strftime('%Y-%m-%d %H:%M:%S %Z'),
+                "message": f"UTC time: {now.strftime('%Y-%m-%d %H:%M:%S %Z')}"
+            }
 
         elif target_num == 2:
             # 指定時區時間
@@ -359,12 +363,22 @@ def get_world_time(target_num: int = 1, tz: str = ""):
             tz_key = timezone_map.get(tz)
             if not tz_key:
                 error_log(f"[INT] 未知時區：{tz}")
-                available_zones = ", ".join(timezone_map.keys())
-                return f"錯誤：未知時區 '{tz}'。可用時區：{available_zones}"
+                # 只列出部分常用時區，避免訊息過長
+                common_zones = ["Tokyo", "Taipei", "New York", "London", "Paris", "Sydney"]
+                return {
+                    "status": "error",
+                    "time": None,
+                    "message": f"Unknown timezone '{tz}'. Common timezones: {', '.join(common_zones)}"
+                }
             
             assign_time = datetime.now(ZoneInfo(tz_key))
             info_log(f"[INT] {tz} 時區時間：{assign_time}")
-            return f"{tz} 當前時間：{assign_time.strftime('%Y-%m-%d %H:%M:%S %Z')}"
+            return {
+                "status": "ok",
+                "time": assign_time.strftime('%Y-%m-%d %H:%M:%S %Z'),
+                "timezone": tz,
+                "message": f"{tz} current time: {assign_time.strftime('%Y-%m-%d %H:%M:%S %Z')}"
+            }
         
         elif target_num == 3:
             # 本地時區時間（使用 tzlocal 自動偵測）
@@ -373,20 +387,37 @@ def get_world_time(target_num: int = 1, tz: str = ""):
                 local_tz = get_localzone()
                 local_time = datetime.now(local_tz)
                 info_log(f"[INT] 本地時區時間：{local_time} ({local_tz})")
-                return f"本地時間：{local_time.strftime('%Y-%m-%d %H:%M:%S %Z')} (時區: {local_tz})"
+                return {
+                    "status": "ok",
+                    "time": local_time.strftime('%Y-%m-%d %H:%M:%S %Z'),
+                    "timezone": str(local_tz),
+                    "message": f"Local time: {local_time.strftime('%Y-%m-%d %H:%M:%S %Z')} (Timezone: {local_tz})"
+                }
             except ImportError:
                 error_log("[INT] tzlocal 套件未安裝，改用系統時間")
                 local_time = datetime.now()
                 info_log(f"[INT] 本地時間（系統）：{local_time}")
-                return f"本地時間：{local_time.strftime('%Y-%m-%d %H:%M:%S')} (tzlocal 未安裝，無時區資訊)"
+                return {
+                    "status": "ok",
+                    "time": local_time.strftime('%Y-%m-%d %H:%M:%S'),
+                    "message": f"Local time: {local_time.strftime('%Y-%m-%d %H:%M:%S')} (tzlocal not installed)"
+                }
         
         else:
             error_log(f"[INT] 無效的 target_num：{target_num}")
-            return "錯誤：target_num 必須是 1（UTC）、2（指定時區）或 3（本地時區）"
+            return {
+                "status": "error",
+                "time": None,
+                "message": f"Invalid target_num: {target_num}. Must be 1 (UTC), 2 (timezone), or 3 (local)"
+            }
 
     except Exception as e:
         error_log(f"[INT] 取得時間失敗: {e}")
-        return f"錯誤：{str(e)}"
+        return {
+            "status": "error",
+            "time": None,
+            "message": f"Error: {str(e)}"
+        }
 
 def code_analysis(code: str, analysis_type: str = "general") -> dict:
     """

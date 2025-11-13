@@ -227,11 +227,27 @@ class LLMModule(BaseModule):
             should_respond_to_user = review_data and review_data.get('requires_user_response', False) if review_data else False
             should_end_session = review_data and review_data.get('should_end_session', False) if review_data else False
             
-            # 🆕 獲取下一步資訊
+            # 🆕 獲取當前步驟和下一步資訊
+            current_step_info = data.get('current_step_info')
             next_step_info = data.get('next_step_info')
-            next_step_is_interactive = next_step_info and next_step_info.get('step_type') == 'interactive' if next_step_info else False
             
+            # 🔧 修正：檢查當前步驟是否為 Interactive（等待輸入），且不會被跳過
+            # ⚠️ 重要：如果步驟會被跳過（step_will_be_skipped=True），不應視為需要互動
+            current_step_is_interactive = (
+                current_step_info 
+                and current_step_info.get('step_type') == 'interactive' 
+                and not current_step_info.get('step_will_be_skipped', False)
+            ) if current_step_info else False
+            
+            next_step_is_interactive = (
+                next_step_info 
+                and next_step_info.get('step_type') == 'interactive'
+                and not next_step_info.get('step_will_be_skipped', False)
+            ) if next_step_info else False
+            
+            debug_log(3, f"[LLM] 當前步驟資訊: {current_step_info}")
             debug_log(3, f"[LLM] 下一步資訊: {next_step_info}")
+            debug_log(3, f"[LLM] 當前步驟是互動步驟: {current_step_is_interactive}")
             debug_log(3, f"[LLM] 下一步是互動步驟: {next_step_is_interactive}")
             
             # 🔧 過濾條件：如果不需要審核
@@ -241,9 +257,9 @@ class LLMModule(BaseModule):
             
             # 🔧 實施 3 時刻回應模式：
             # 1. 工作流觸發 - 由 start_workflow MCP 工具處理（不在這裡）
-            # 2. 下一步為互動步驟 - 需要生成提示給使用者
+            # 2. 當前步驟為互動步驟，或下一步為互動步驟 - 需要生成提示給使用者
             # 3. 工作流完成 - 需要生成最終結果
-            should_generate_response = is_workflow_complete or next_step_is_interactive
+            should_generate_response = is_workflow_complete or current_step_is_interactive or next_step_is_interactive
             
             if not should_generate_response:
                 debug_log(2, f"[LLM] 步驟完成，下一步非互動步驟，靜默批准並推進")
@@ -266,20 +282,23 @@ class LLMModule(BaseModule):
                 "is_complete": is_workflow_complete,
                 "should_respond": should_respond_to_user,
                 "should_end_session": should_end_session,
+                "current_step_info": current_step_info,  # 🆕 傳遞當前步驟資訊
                 "next_step_info": next_step_info,  # 🆕 傳遞下一步資訊
                 "timestamp": time.time()
             })
             
-            info_log(f"[LLM] 工作流事件已加入隊列: {workflow_type}, is_complete={is_workflow_complete}, next_interactive={next_step_is_interactive}")
+            info_log(f"[LLM] 工作流事件已加入隊列: {workflow_type}, is_complete={is_workflow_complete}, current_interactive={current_step_is_interactive}")
             
             # 🆕 處理需要生成回應的情況
+            # 🔧 修正：工作流完成時不檢查互動步驟，直接處理完成邏輯
             if is_workflow_complete:
                 debug_log(2, f"[LLM] 工作流完成，立即生成最終總結回應")
                 self._process_workflow_completion(session_id, workflow_type, step_result, review_data)
-            elif next_step_is_interactive:
+                return  # ⚠️ 重要：工作流完成後直接返回，不再處理後續邏輯
+            elif current_step_is_interactive or next_step_is_interactive:
                 # ⚠️ 關鍵修正：訂閱 OUTPUT_LAYER_COMPLETE，在當前 cycle 的輸出完成後再處理
                 # 這樣可以確保互動步驟提示在正確的順序生成
-                debug_log(2, f"[LLM] 下一步是互動步驟，訂閱 OUTPUT_LAYER_COMPLETE 等待當前輸出完成")
+                debug_log(2, f"[LLM] 當前或下一步是互動步驟，訂閱 OUTPUT_LAYER_COMPLETE 等待當前輸出完成")
                 
                 # 保存待處理的互動步驟信息
                 if not hasattr(self, '_pending_interactive_prompts'):
@@ -1737,10 +1756,24 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                 # ✅ 讓 Gemini 根據 MCP 結果生成回應
                 # 構建包含工具執行結果的 follow-up prompt
                 result_status = function_call_result.get("status", "unknown")
-                result_data = function_call_result.get("data", {})
-                result_message = function_call_result.get("formatted_message", "")
+                # ✅ 從 content.data 獲取工作流資料（MCP ToolResult 結構）
+                content = function_call_result.get("content", {})
+                result_data = content.get("data", {}) if isinstance(content, dict) else {}
+                result_message = function_call_result.get("formatted_message", "") or content.get("message", "")
                 tool_name = function_call_result.get("tool_name", "unknown")
-                workflow_status = result_data.get("status", "unknown") if isinstance(result_data, dict) else "unknown"
+                
+                # ✅ 判斷工作流狀態：從 message 推斷
+                # - "has been started" → started
+                # - "completed" 或 "finished" → completed
+                # - 其他 → unknown
+                workflow_status = "unknown"
+                if isinstance(result_message, str):
+                    if "has been started" in result_message or "已啟動" in result_message:
+                        workflow_status = "started"
+                    elif "completed" in result_message or "finished" in result_message or "完成" in result_message:
+                        workflow_status = "completed"
+                
+                debug_log(2, f"[LLM] 推斷工作流狀態: {workflow_status} (from message: {result_message[:50]}...)")
                 
                 # ✅ 構建包含語言指示的 follow-up prompt
                 language_instruction = (
@@ -1975,13 +2008,18 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                         workflow_type = result_data.get("workflow_type", "task")
                         requires_input = result_data.get("requires_input", False)
                         current_step_prompt = result_data.get("current_step_prompt")
+                        # 🔧 auto_continue 在嵌套的 data 字典中
+                        workflow_data = result_data.get("data", {})
+                        auto_continue = workflow_data.get("auto_continue", False)
                         
+                        # 🔧 修正：requires_input 優先於 auto_continue
+                        # 即使 auto_continue=True，如果當前步驟需要用戶輸入，也必須生成提示
                         if requires_input and current_step_prompt:
-                            # 第一步需要輸入：生成提示詢問用戶
+                            # 當前步驟需要輸入：生成提示詢問用戶
                             follow_up_prompt = (
                                 f"{language_instruction}"
                                 f"The workflow '{workflow_type}' has been started.\n"
-                                f"The first step requires user input.\n"
+                                f"The current step requires user input.\n"
                                 f"Prompt: {current_step_prompt}\n\n"
                                 f"Generate a natural response that:\n"
                                 f"1. BRIEFLY confirms the workflow has started (1 sentence)\n"
@@ -1989,6 +2027,12 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                                 f"3. Be friendly and conversational (2-3 sentences total)\n"
                                 f"IMPORTANT: Respond in English only."
                             )
+                        elif auto_continue:
+                            # 🔧 工作流會自動完成（所有步驟都會自動執行，無需輸入）
+                            # 跳過初始回應，等待工作流完成後再生成總結
+                            debug_log(2, f"[LLM] 工作流會自動完成 ({workflow_type})，跳過初始回應，等待完成事件")
+                            skip_default_followup = True
+                            response_text = ""  # 不輸出初始回應
                         else:
                             # 工作流自動執行（參數已提供或無需輸入）
                             follow_up_prompt = (
@@ -3208,8 +3252,10 @@ U.E.P 系統可用功能規格：
             )
             debug_log(1, f"[LLM] 🔚 已標記 WS 待結束: {session_id} (workflow_completed:{workflow_type})")
             
-            # 批准並結束工作流
-            self._approve_workflow_step(session_id, None)
+            # 🔧 修正：工作流完成時不需要批准步驟
+            # 工作流已經完成，不需要繼續執行下一步
+            # 只需標記會話待結束即可，Controller 會在循環邊界處理
+            debug_log(2, f"[LLM] 工作流已完成，跳過批准步驟")
             
             debug_log(1, f"[LLM] ✅ 工作流完成處理完畢: {session_id}")
             

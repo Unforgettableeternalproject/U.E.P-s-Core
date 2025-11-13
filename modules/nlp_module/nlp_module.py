@@ -291,6 +291,16 @@ class NLPModule(BaseModule):
                     "state_transition": None
                 }
             
+            # ⚠️ 暫時禁用 MCP 意圖校正 - 完全依賴 BIO 模型
+            # 原因：關鍵字匹配有嚴重 bug（子字串匹配問題），可能導致錯誤識別
+            # 例如："Show me the time" 被錯誤匹配到 "summarize_tag" (因為 "time" in "summarize")
+            # TODO: 未來考慮從 YAML 讀取完整工作流信息進行更精確的匹配
+            # corrected_segments = []
+            # for segment in segments:
+            #     corrected_segment = self._correct_intent_with_mcp(segment)
+            #     corrected_segments.append(corrected_segment)
+            # segments = corrected_segments
+            
             # Determine primary intent (highest priority)
             from .intent_types import IntentSegment as NewIntentSegment
             if NewIntentSegment.is_compound_input(segments):

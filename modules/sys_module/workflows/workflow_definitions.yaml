@@ -20,6 +20,7 @@ workflows:
     name: "drop_and_read"
     description: "Read file content and provide summary using LLM"
     category: "file"
+    work_mode: "direct"
     
     initial_params:
       file_path_input:
@@ -43,6 +44,7 @@ workflows:
     name: "intelligent_archive"
     description: "Archive files to organized folders using LLM suggestions"
     category: "file"
+    work_mode: "direct"
     
     initial_params:
       file_selection:
@@ -73,6 +75,7 @@ workflows:
     name: "summarize_tag"
     description: "Generate summary and tags for a file using LLM"
     category: "file"
+    work_mode: "direct"
     
     initial_params:
       file_path_input:
@@ -105,6 +108,7 @@ workflows:
     name: "get_weather"
     description: "Get weather information for a specific location using wttr.in API"
     category: "info"
+    work_mode: "direct"
     
     initial_params:
       location:
@@ -128,6 +132,7 @@ workflows:
     name: "get_world_time"
     description: "Get current time in different timezones: UTC, specific timezone, or local time"
     category: "info"
+    work_mode: "direct"
     
     initial_params:
       target_num:
@@ -135,14 +140,19 @@ workflows:
         optional: true
         description: "Time query mode: 1=UTC, 2=specific timezone, 3=local time"
         maps_to_step: "mode_selection"
-        extraction_hint: "Extract from phrases: UTC time=1, Tokyo time/timezone=2, my local time/current time=3"
+        extraction_hint: "If query mentions specific location/timezone (Tokyo, New York, etc.) → 2. If asks for UTC → 1. If asks for local/current time → 3. Default to 2 if location mentioned."
+        infer_from:
+          - param: "tz"
+            condition: "exists"
+            value: 2
+            reason: "If timezone is provided, mode must be 2 (specific timezone)"
       
       tz:
         type: str
         optional: true
         description: "Timezone name (e.g., Tokyo, Taiwan, New York) - only needed when target_num=2"
         maps_to_step: "timezone_input"
-        extraction_hint: "Extract location/city names that indicate timezone, e.g., Tokyo, New York, 東京"
+        extraction_hint: "Extract location/city names from query (Tokyo, New York, Taipei, 東京, etc.). Required when target_num=2."
         condition: "target_num == 2"
     
     mcp_tool_params:
@@ -157,33 +167,17 @@ workflows:
 
   news_summary:
     name: "news_summary"
-    description: "Fetch and summarize news headlines from Google News Taiwan or RSS feeds"
+    description: "Quick peek at latest Taiwan news headlines (6 items) from Google News Taiwan. LLM will summarize headlines in English."
     category: "info"
+    work_mode: "direct"
     
-    initial_params:
-      source:
-        type: str
-        optional: true
-        description: "News source: google_news_tw (default) or rss"
-        maps_to_step: "source_selection"
-        extraction_hint: "Default to google_news_tw unless user specifically mentions RSS"
-      
-      max_items:
-        type: int
-        optional: true
-        description: "Maximum number of items to fetch (default: 10)"
-        maps_to_step: "max_items_input"
-        extraction_hint: "Extract numbers from phrases like top 5 news, 10 headlines"
+    initial_params: {}  # No parameters needed - fixed source and count
     
     mcp_tool_params:
       command:
         type: string
         required: true
         description: "User original command"
-      initial_data:
-        type: object
-        required: false
-        description: "Initial data: source (default: google_news_tw), max_items (default: 10)"
 
   # ==================== Text Workflows ====================
   
@@ -191,6 +185,7 @@ workflows:
     name: "clipboard_tracker"
     description: "Search clipboard history for specific keywords or view recent items"
     category: "text"
+    work_mode: "direct"
     
     initial_params:
       keyword:
@@ -221,6 +216,7 @@ workflows:
     name: "quick_phrases"
     description: "Get predefined text templates or generate custom templates using LLM"
     category: "text"
+    work_mode: "direct"
     
     initial_params:
       template_name:
@@ -251,6 +247,7 @@ workflows:
     name: "ocr_extract"
     description: "Extract text from images using OCR (supports Chinese Traditional and English)"
     category: "text"
+    work_mode: "direct"
     
     initial_params:
       image_path:
@@ -283,6 +280,7 @@ workflows:
     name: "code_analysis"
     description: "Analyze code using LLM with different analysis types: general, security, optimize, explain"
     category: "analysis"
+    work_mode: "direct"
     
     initial_params:
       code:
@@ -315,6 +313,7 @@ workflows:
     name: "clean_trash_bin"
     description: "Clean system trash bin/recycle bin (supports Windows, macOS, Linux)"
     category: "utility"
+    work_mode: "direct"
     
     initial_params: {}
     
@@ -332,6 +331,7 @@ workflows:
     name: "translate_document"
     description: "Translate documents (PDF, DOCX, TXT) using LLM, supports 20 languages"
     category: "utility"
+    work_mode: "direct"
     
     initial_params:
       file_path:

@@ -88,9 +88,10 @@ class StepResult:
         
     @classmethod
     def success(cls, message: str, data: Optional[Dict[str, Any]] = None, 
-                next_step: Optional[str] = None, continue_current_step: bool = False):
+                next_step: Optional[str] = None, skip_to: Optional[str] = None, 
+                continue_current_step: bool = False):
         """成功結果的工廠方法"""
-        return cls(True, message, data, next_step, continue_current_step=continue_current_step)
+        return cls(True, message, data, next_step, skip_to, False, False, continue_current_step)
         
     @classmethod
     def failure(cls, message: str, data: Optional[Dict[str, Any]] = None):
@@ -584,7 +585,7 @@ class WorkflowEngine:
         """
         self.definition = definition
         self.session = session
-        self.auto_advance = False
+        self.auto_advance = True  # 🔧 修復：默認啟用自動推進，讓 PROCESSING 步驟自動執行
         self.max_auto_steps = 50  # 防止無限循環，但允許更多步驟
         self.llm_review_timeout = 60  # LLM 審核超時時間（秒）
         self.awaiting_llm_review = False  # 是否正在等待 LLM 審核
@@ -713,10 +714,30 @@ class WorkflowEngine:
                             next_result = next_step.execute()
                             debug_log(2, f"[WorkflowEngine] 下一步執行結果: success={next_result.success}, complete={next_result.complete}")
                             
+                            # 🔧 手動記錄步驟歷史（因為直接調用 execute() 不會經過 process_input）
+                            step_history = self.session.get_data("step_history", [])
+                            step_history.append({
+                                "step_id": next_step.id,
+                                "timestamp": datetime.datetime.now().isoformat(),
+                                "success": next_result.success,
+                                "message": next_result.message
+                            })
+                            self.session.add_data("step_history", step_history)
+                            debug_log(3, f"[WorkflowEngine] 已記錄步驟歷史: {next_step.id}")
+                            
                             # ⚠️ 重要：返回完整的結果，包括 complete 標誌
                             # 這樣 SYS 模組才能正確判斷工作流是否完成並發布事件
-                            # 如果需要審核，包裝成審核請求
-                            if self.definition.requires_llm_review and next_result.success:
+                            # 🔧 修正：工作流完成時（complete=True），不再請求 LLM 審核
+                            # 最後一步的結果會由之前的 WORKFLOW_STEP_COMPLETED 事件觸發 LLM 生成最終回應
+                            if next_result.complete:
+                                debug_log(2, f"[WorkflowEngine] 工作流完成，不請求 LLM 審核")
+                                return next_result
+                            
+                            # 如果需要審核且未完成，包裝成審核請求
+                            # 🚫 但不對 wrapper 步驟（如 ConditionalStep）請求審核
+                            # ConditionalStep 的類名包含 'Conditional'
+                            is_conditional_step = 'Conditional' in next_step.__class__.__name__
+                            if self.definition.requires_llm_review and next_result.success and not is_conditional_step:
                                 return self._request_llm_review(next_result, next_step)
                             
                             return next_result
@@ -952,9 +973,14 @@ class WorkflowEngine:
                         'prompt': current_step.get_prompt()
                     })
                     
-                    # 發布工作流需要輸入事件
-                    event_bus.publish(
-                        SystemEvent.WORKFLOW_REQUIRES_INPUT,
+                    # 檢查是否已經為此步驟發布過事件（防止重複）
+                    last_input_request = self.session.get_data("_last_input_request_step")
+                    if last_input_request != current_step.id:
+                        self.session.add_data("_last_input_request_step", current_step.id)
+                        
+                        # 發布工作流需要輸入事件
+                        event_bus.publish(
+                            SystemEvent.WORKFLOW_REQUIRES_INPUT,
                         {
                             "workflow_type": self.definition.workflow_type,
                             "session_id": self.session.session_id,
@@ -1041,10 +1067,12 @@ class WorkflowEngine:
         # 注意：空字符串不視為有效輸入
         if user_input:
             self.waiting_for_input = False
-            # ✅ 清除 working_context 中的等待標記
+            # ✅ 清除 working_context 中的等待標記和去重標記
             from core.working_context import working_context_manager
             working_context_manager.set_workflow_waiting_input(False)
             working_context_manager.set_context_data('workflow_input_context', None)
+            # 清除去重標記，允許下一個 Interactive 步驟發布事件
+            self.session.add_data("_last_input_request_step", None)
             
         try:
             result = current_step.execute(user_input)
@@ -1157,9 +1185,14 @@ class WorkflowEngine:
                                 )
                                 debug_log(2, f"[WorkflowEngine] Interactive → Interactive: 已發布步驟完成事件供 LLM 生成提示")
                             
-                            # 發布工作流需要輸入事件
-                            event_bus.publish(
-                                SystemEvent.WORKFLOW_REQUIRES_INPUT,
+                            # 檢查是否已經為此步驟發布過事件（防止重複）
+                            last_input_request = self.session.get_data("_last_input_request_step")
+                            if last_input_request != next_step.id:
+                                self.session.add_data("_last_input_request_step", next_step.id)
+                                
+                                # 發布工作流需要輸入事件
+                                event_bus.publish(
+                                    SystemEvent.WORKFLOW_REQUIRES_INPUT,
                                 {
                                     "workflow_type": self.definition.workflow_type,
                                     "session_id": self.session.session_id,
@@ -1333,9 +1366,73 @@ class WorkflowEngine:
             debug_log(2, f"[WorkflowEngine] [_auto_advance] should_auto_advance() = {should_advance}")
             
             if not should_advance:
-                # 如果當前步驟不能自動推進，返回之前的結果
-                debug_log(2, f"[WorkflowEngine] [_auto_advance] 步驟不能自動推進，退出")
-                return current_result
+                # 如果當前步驟不能自動推進，檢查是否為 INTERACTIVE 步驟需要輸入
+                if current_step.step_type == current_step.STEP_TYPE_INTERACTIVE:
+                    # 🔧 先檢查是否可以跳過（數據已存在）
+                    can_skip = hasattr(current_step, 'should_skip') and current_step.should_skip()
+                    if can_skip:
+                        debug_log(2, f"[WorkflowEngine] [_auto_advance] Interactive 步驟可以跳過（數據已存在），繼續執行: {current_step.id}")
+                        # 不發布輸入請求，讓後續邏輯執行步驟並自動推進
+                    else:
+                        debug_log(2, f"[WorkflowEngine] [_auto_advance] Interactive 步驟需要輸入，發布事件")
+                        
+                        try:
+                            from core.event_bus import event_bus, SystemEvent
+                            
+                            # 檢查是否已經為此步驟發布過事件（防止重複）
+                            last_input_request = self.session.get_data("_last_input_request_step")
+                            if last_input_request != current_step.id:
+                                self.session.add_data("_last_input_request_step", current_step.id)
+                                
+                                # 🔧 發布 WORKFLOW_STEP_COMPLETED 事件讓 LLM 生成提示
+                                # 構建步驟結果（表示成功推進到 Interactive 步驟）
+                                if self.definition.requires_llm_review:
+                                    event_bus.publish(
+                                        SystemEvent.WORKFLOW_STEP_COMPLETED,
+                                        {
+                                            "session_id": self.session.session_id,
+                                            "workflow_type": self.definition.workflow_type,
+                                            "step_result": current_result.to_dict() if current_result else {},
+                                            "requires_llm_review": True,
+                                            "llm_review_data": {
+                                                "requires_user_response": True,
+                                                "should_end_session": False,
+                                            },
+                                            "next_step_info": {
+                                                "step_id": current_step.id,
+                                                "step_type": current_step.step_type,
+                                                "requires_input": True,
+                                                "prompt": current_step.get_prompt()
+                                            }
+                                        },
+                                        source="sys"
+                                    )
+                                    debug_log(2, f"[WorkflowEngine] [_auto_advance] 已發布 WORKFLOW_STEP_COMPLETED 事件供 LLM 生成提示")
+                                
+                                # 發布 WORKFLOW_REQUIRES_INPUT 事件
+                                event_bus.publish(
+                                    SystemEvent.WORKFLOW_REQUIRES_INPUT,
+                                {
+                                    "workflow_type": self.definition.workflow_type,
+                                    "session_id": self.session.session_id,
+                                    "step_id": current_step.id,
+                                    "step_type": current_step.step_type,
+                                    "optional": getattr(current_step, 'optional', False),
+                                    "prompt": current_step.get_prompt(),
+                                    "timestamp": time.time()
+                                },
+                                source="WorkflowEngine"
+                            )
+                        except Exception as e:
+                            error_log(f"[WorkflowEngine] 發布 WORKFLOW_REQUIRES_INPUT 事件失敗: {e}")
+                        
+                        # 如果發布了輸入請求，返回之前的結果
+                        debug_log(2, f"[WorkflowEngine] [_auto_advance] 步驟不能自動推進，退出")
+                        return current_result
+                else:
+                    # 非 Interactive 步驟且不能自動推進，返回之前的結果
+                    debug_log(2, f"[WorkflowEngine] [_auto_advance] 步驟不能自動推進，退出")
+                    return current_result
                 
             # 🔧 特殊處理：LLM_PROCESSING 步驟
             if current_step.step_type == current_step.STEP_TYPE_LLM_PROCESSING:
@@ -1614,8 +1711,12 @@ class StepTemplate:
                 user_str = str(user_input).strip().lower()
                 
                 if user_str in ["確認", "y", "yes", "ok"]:
+                    # ✅ 保存確認狀態到 session（使用 step_id 作為鍵）
+                    self.session.add_data(step_id, True)
                     return StepResult.success(confirm_message)
                 elif user_str in ["取消", "n", "no", "cancel"]:
+                    # ✅ 保存取消狀態到 session
+                    self.session.add_data(step_id, False)
                     return StepResult.cancel_workflow(cancel_message)
                 else:
                     return StepResult.failure("請輸入 '確認' 或 '取消'")
@@ -1762,7 +1863,8 @@ class StepTemplate:
     @staticmethod
     def create_selection_step(session: WorkflowSession, step_id: str, prompt: str,
                              options: List[str], labels: Optional[List[str]] = None,
-                             required_data: Optional[List[str]] = None) -> WorkflowStep:
+                             required_data: Optional[List[str]] = None,
+                             skip_if_data_exists: bool = False) -> WorkflowStep:
         """
         創建選擇步驟
         
@@ -1773,6 +1875,7 @@ class StepTemplate:
             options: 選項列表
             labels: 選項標籤列表
             required_data: 必要數據列表
+            skip_if_data_exists: 是否在數據已存在時跳過步驟
         """
         class SelectionStep(WorkflowStep):
             def __init__(self, session):
@@ -1783,6 +1886,24 @@ class StepTemplate:
                 if required_data:
                     for req in required_data:
                         self.add_requirement(req)
+            
+            def should_skip(self) -> bool:
+                """檢查是否應該跳過此步驟（因為數據已存在）"""
+                if not skip_if_data_exists:
+                    return False
+                
+                # 檢查 session 中是否已有此步驟的有效數據
+                existing_data = self.session.get_data(step_id, None)
+                
+                if existing_data is None:
+                    return False
+                
+                # 檢查數據是否在選項列表中
+                if existing_data in options:
+                    debug_log(2, f"[Workflow] 步驟 {step_id} 跳過：數據已存在 ({existing_data})")
+                    return True
+                
+                return False
                         
             def get_prompt(self) -> str:
                 option_labels = labels or options
@@ -1792,6 +1913,16 @@ class StepTemplate:
                 return prompt_text.strip()
                 
             def execute(self, user_input: Any = None) -> StepResult:
+                # ✅ 檢查是否應該跳過（數據已存在且 skip_if_data_exists=True）
+                if self.should_skip():
+                    existing_data = self.session.get_data(step_id)
+                    label_index = options.index(existing_data) if existing_data in options else None
+                    display_label = labels[label_index] if labels and label_index is not None else existing_data
+                    return StepResult.success(
+                        f"使用現有選擇: {display_label}",
+                        {step_id: existing_data}
+                    )
+                
                 if not user_input:
                     return StepResult.failure("請選擇選項")
                 
@@ -2096,6 +2227,32 @@ class StepTemplate:
                 
                 for i, step in enumerate(branch_steps):
                     debug_log(3, f"[ConditionalStep] {step_id}: 執行分支步驟 {i+1}/{len(branch_steps)}: {step.id}")
+                    
+                    # 🔧 檢查：如果是 INTERACTIVE 步驟且沒有輸入
+                    if step.step_type == step.STEP_TYPE_INTERACTIVE and user_input is None:
+                        # 先檢查步驟是否可以跳過（數據已存在）
+                        if hasattr(step, 'should_skip') and step.should_skip():
+                            debug_log(2, f"[ConditionalStep] {step_id}: 分支步驟 {step.id} 數據已存在，直接執行")
+                            # 數據已存在，直接執行步驟（會使用 existing data）
+                            step_result = step.execute(None)
+                            if not step_result.success:
+                                return StepResult.failure(
+                                    f"分支步驟執行失敗: {step.id} - {step_result.message}"
+                                )
+                            # 更新 aggregated_data
+                            if step_result.data:
+                                aggregated_data.update(step_result.data)
+                                for key, value in step_result.data.items():
+                                    self.session.add_data(key, value)
+                            continue  # 繼續下一個步驟
+                        else:
+                            debug_log(2, f"[ConditionalStep] {step_id}: 分支步驟 {step.id} 需要用戶輸入，跳轉到該步驟")
+                            # 需要用戶輸入，跳轉到該步驟
+                            return StepResult.success(
+                                f"需要執行互動步驟: {step.id}",
+                                {},
+                                skip_to=step.id
+                            )
                     
                     # 執行步驟
                     step_result = step.execute(user_input)

@@ -22,74 +22,36 @@ def create_news_summary_workflow(session: WorkflowSession) -> WorkflowEngine:
     """
     新聞摘要工作流
     
-    步驟：
-    1. 選擇新聞來源
-    2. 輸入要抓取的數量（可選）
-    3. 執行抓取
+    快速查看台灣最新新聞標題（固定抓取 5-6 則）
+    LLM 會總結這些新聞標題並用英文回應使用者
     """
     workflow_def = WorkflowDefinition(
         workflow_type="news_summary",
         name="新聞摘要",
-        description="從多個新聞源抓取新聞標題",
-        workflow_mode=WorkflowMode.DIRECT
+        description="快速查看台灣 Google 新聞標題",
+        workflow_mode=WorkflowMode.DIRECT,
+        requires_llm_review=True  # 🔧 啟用 LLM 審核以生成步驟間的提示
     )
     
-    # 步驟 1: 選擇新聞來源
-    source_selection_step = StepTemplate.create_selection_step(
-        session=session,
-        step_id="select_source",
-        prompt="請選擇新聞來源：",
-        options=["all", "bbc", "cnn"],
-        labels=["全部", "BBC", "CNN"],
-        required_data=[]
-    )
+    # 固定參數：來源固定為 google_news_tw，數量固定為 6
+    session.add_data("news_source", "google_news_tw")
+    session.add_data("news_count", 6)
+    debug_log(2, f"[news_summary] 使用固定參數: source=google_news_tw, count=6")
     
-    # 步驟 2: 輸入抓取數量（可選）
-    max_items_step = StepTemplate.create_input_step(
-        session=session,
-        step_id="input_max_items",
-        prompt="請輸入要抓取的新聞數量（預設 5，按 Enter 使用預設值）：",
-        skip_if_data_exists=False,
-        description="設定抓取數量"
-    )
-    
-    # 步驟 3: 處理數量輸入
-    def process_max_items(session: WorkflowSession) -> StepResult:
-        max_items_input = session.get_data("input_max_items", "").strip()
-        
-        if not max_items_input:
-            max_items = 5
-        else:
-            try:
-                max_items = int(max_items_input)
-                if max_items < 1 or max_items > 20:
-                    return StepResult.failure("數量必須在 1-20 之間")
-            except ValueError:
-                return StepResult.failure("請輸入有效的數字")
-        
-        return StepResult.success(f"將抓取 {max_items} 則新聞", {"max_items": max_items})
-    
-    process_max_items_step = StepTemplate.create_processing_step(
-        session=session,
-        step_id="process_max_items",
-        processor=process_max_items,
-        required_data=["input_max_items"],
-        description="處理數量輸入"
-    )
-    
-    # 步驟 4: 執行新聞抓取
+    # 唯一步驟: 執行新聞抓取
     def execute_news_fetch(session: WorkflowSession) -> StepResult:
         from modules.sys_module.actions.integrations import news_summary
         
-        source = session.get_data("select_source", "all")
-        max_items = session.get_data("max_items", 5)
+        source = session.get_data("news_source", "google_news_tw")
+        max_items = session.get_data("news_count", 6)
         
-        info_log(f"[Workflow] 抓取新聞：來源={source}, 數量={max_items}")
+        info_log(f"[Workflow] 快速查看新聞：來源={source}, 數量={max_items}")
         
         result = news_summary(source=source, max_items=max_items)
         
         if result["status"] == "ok":
-            news_list = result.get("news", [])
+            # 🔧 修正：news_summary 返回的鍵是 'titles' 而不是 'news'
+            news_list = result.get("titles", [])
             
             # 格式化新聞列表
             formatted_news = "\n".join([f"{i+1}. {item}" for i, item in enumerate(news_list)])
@@ -110,20 +72,14 @@ def create_news_summary_workflow(session: WorkflowSession) -> WorkflowEngine:
         session=session,
         step_id="execute_news_fetch",
         processor=execute_news_fetch,
-        required_data=["select_source", "max_items"],
+        required_data=["news_source", "news_count"],
         description="執行新聞抓取"
     )
     
-    # 組裝工作流
-    workflow_def.add_step(source_selection_step)
-    workflow_def.add_step(max_items_step)
-    workflow_def.add_step(process_max_items_step)
+    # 組裝工作流（只有一個處理步驟）
     workflow_def.add_step(fetch_news_step)
     
-    workflow_def.set_entry_point("select_source")
-    workflow_def.add_transition("select_source", "input_max_items")
-    workflow_def.add_transition("input_max_items", "process_max_items")
-    workflow_def.add_transition("process_max_items", "execute_news_fetch")
+    workflow_def.set_entry_point("execute_news_fetch")
     workflow_def.add_transition("execute_news_fetch", "END")
     
     return WorkflowEngine(workflow_def, session)
@@ -143,7 +99,8 @@ def create_get_weather_workflow(session: WorkflowSession) -> WorkflowEngine:
         workflow_type="get_weather",
         name="天氣查詢",
         description="查詢指定位置的天氣資訊",
-        workflow_mode=WorkflowMode.DIRECT
+        workflow_mode=WorkflowMode.DIRECT,
+        requires_llm_review=True  # 🔧 啟用 LLM 審核以生成步驟間的提示
     )
     
     # 從 initial_data 提取參數到 session
@@ -169,7 +126,7 @@ def create_get_weather_workflow(session: WorkflowSession) -> WorkflowEngine:
         location = session.get_data("location_input", "").strip()
         
         if not location:
-            return StepResult.failure("請提供有效的位置")
+            return StepResult.failure("Please provide a valid location")
         
         info_log(f"[Workflow] 查詢天氣：位置={location}")
         
@@ -236,17 +193,12 @@ def create_get_world_time_workflow(session: WorkflowSession) -> WorkflowEngine:
         workflow_type="get_world_time",
         name="世界時間查詢",
         description="查詢世界各地的時間",
-        workflow_mode=WorkflowMode.DIRECT
+        workflow_mode=WorkflowMode.DIRECT,
+        requires_llm_review=True  # 🔧 啟用 LLM 審核以生成步驟間的提示
     )
     
-    # 從 initial_data 提取參數到 session
-    initial_data = session.get_data("initial_data", {})
-    if "target_num" in initial_data:
-        session.add_data("mode_selection", initial_data["target_num"])
-        debug_log(2, f"[get_world_time] 從 initial_data 提取 target_num: {initial_data['target_num']}")
-    if "tz" in initial_data:
-        session.add_data("timezone_input", initial_data["tz"])
-        debug_log(2, f"[get_world_time] 從 initial_data 提取 tz: {initial_data['tz']}")
+    # 注意：initial_data 的參數映射和推斷邏輯已在 sys_module.start_unified_workflow 中處理
+    # session 中已經包含映射後的數據（mode_selection, timezone_input 等）
     
     # 步驟 1: 選擇查詢模式（ID 改為與 YAML 一致：mode_selection）
     mode_selection_step = StepTemplate.create_selection_step(
@@ -255,7 +207,8 @@ def create_get_world_time_workflow(session: WorkflowSession) -> WorkflowEngine:
         prompt="Select time query mode:",
         options=[1, 2, 3],
         labels=["UTC Time", "Specific Timezone", "Local Time"],
-        required_data=[]
+        required_data=[],
+        skip_if_data_exists=True  # 🔧 支援從 initial_data 提取模式
     )
     
     # 步驟 2: 輸入時區（僅當選擇 timezone 模式時需要，ID 改為與 YAML 一致：timezone_input）
@@ -263,11 +216,11 @@ def create_get_world_time_workflow(session: WorkflowSession) -> WorkflowEngine:
         session=session,
         step_id="timezone_input",
         prompt="Please enter timezone (e.g., Asia/Taipei, America/New_York, Europe/London):",
-        optional=True,
+        optional=False,  # 🔧 改為 required - 必須提供時區
         skip_if_data_exists=True,
         description="收集時區資訊"
     )
-    
+     
     # 步驟 3: 使用 ConditionalStep 處理分支邏輯
     timezone_conditional_step = StepTemplate.create_conditional_step(
         session=session,
@@ -291,27 +244,41 @@ def create_get_world_time_workflow(session: WorkflowSession) -> WorkflowEngine:
         
         # 驗證：如果是模式 2，必須有時區
         if target_num == 2 and not timezone_name:
-            return StepResult.failure("請提供有效的時區名稱")
+            return StepResult.failure("Please provide a valid timezone name")
         
         info_log(f"[Workflow] 查詢時間：target_num={target_num}, 時區={timezone_name}")
         
         result = get_world_time(target_num=target_num, tz=timezone_name or "")
         
-        if isinstance(result, dict) and result.get("status") == "ok":
-            time_info = result.get("time", "")
-            
+        # 🔧 處理新的 dict 格式返回值
+        if isinstance(result, dict):
+            if result.get("status") == "ok":
+                time_info = result.get("time", "")
+                message = result.get("message", time_info)
+                
+                return StepResult.complete_workflow(
+                    message,
+                    {
+                        "target_num": target_num,
+                        "timezone": timezone_name or result.get("timezone"),
+                        "time_info": time_info,
+                        "full_result": result
+                    }
+                )
+            else:
+                # 錯誤情況
+                error_msg = result.get("message", "Unknown error")
+                return StepResult.failure(error_msg)
+        else:
+            # 向後兼容：舊的字符串格式
             return StepResult.complete_workflow(
-                f"時間查詢結果：\n{time_info}",
+                str(result),
                 {
                     "target_num": target_num,
                     "timezone": timezone_name,
-                    "time_info": time_info,
-                    "full_result": result
+                    "time_info": str(result)
                 }
             )
-        else:
-            error_msg = result.get("message", "未知錯誤") if isinstance(result, dict) else str(result)
-            return StepResult.failure(f"查詢失敗：{error_msg}")
     
     time_query_step = StepTemplate.create_processing_step(
         session=session,
@@ -323,12 +290,15 @@ def create_get_world_time_workflow(session: WorkflowSession) -> WorkflowEngine:
     
     # 組裝工作流（使用 ConditionalStep）
     workflow_def.add_step(mode_selection_step)
+    workflow_def.add_step(timezone_input_step)  # 🔧 將 timezone_input 添加為正式步驟
     workflow_def.add_step(timezone_conditional_step)
     workflow_def.add_step(time_query_step)
     
     workflow_def.set_entry_point("mode_selection")
     workflow_def.add_transition("mode_selection", "timezone_conditional")
-    workflow_def.add_transition("timezone_conditional", "execute_time_query")
+    workflow_def.add_transition("timezone_conditional", "timezone_input")  # 🔧 ConditionalStep 可以跳轉到 timezone_input
+    workflow_def.add_transition("timezone_conditional", "execute_time_query")  # 🔧 或直接到 execute_time_query
+    workflow_def.add_transition("timezone_input", "execute_time_query")  # 🔧 timezone_input 完成後到 execute_time_query
     workflow_def.add_transition("execute_time_query", "END")
     
     return WorkflowEngine(workflow_def, session)

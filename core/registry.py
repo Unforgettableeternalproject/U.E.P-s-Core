@@ -1,5 +1,6 @@
 ﻿# core/registry.py
 import importlib
+from utils.debug_helper import debug_log, info_log, error_log
 
 _loaded_modules = {}
 
@@ -22,5 +23,5 @@ def get_module(name: str):
     except NotImplementedError as e:
         raise NotImplementedError
     except Exception as e:
-        print(f"[Registry] 無法載入模組 '{name}': {e}")
+        error_log(f"載入模組 {name} 失敗: {e}")
         return None

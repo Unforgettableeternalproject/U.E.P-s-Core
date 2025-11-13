@@ -37,7 +37,7 @@ def create_clean_trash_bin_workflow(session: WorkflowSession) -> WorkflowEngine:
     confirm_step = StepTemplate.create_confirmation_step(
         session=session,
         step_id="confirm_clean",
-        prompt="確定要清空資源回收桶嗎？此操作無法復原。",
+        message="Are you sure you want to empty the Recycle Bin? This action cannot be undone.",
         required_data=[]
     )
     
@@ -48,19 +48,18 @@ def create_clean_trash_bin_workflow(session: WorkflowSession) -> WorkflowEngine:
         confirmed = session.get_data("confirm_clean", False)
         
         if not confirmed:
-            return StepResult.complete_workflow("已取消清空操作", {"cancelled": True})
+            return StepResult.complete_workflow("Operation cancelled", {"cancelled": True})
         
         info_log("[Workflow] 執行清空資源回收桶")
         
-        result = clean_trash_bin()
-        
-        if result["status"] == "ok":
+        try:
+            result_message = clean_trash_bin()  # 返回字符串
             return StepResult.complete_workflow(
-                "資源回收桶已清空",
-                {"cleaned": True, "full_result": result}
+                "Recycle Bin has been emptied successfully",
+                {"cleaned": True, "message": result_message}
             )
-        else:
-            return StepResult.failure(f"清空失敗：{result.get('message', '未知錯誤')}")
+        except Exception as e:
+            return StepResult.failure(f"Failed to empty Recycle Bin: {str(e)}")
     
     clean_step = StepTemplate.create_processing_step(
         session=session,
@@ -78,7 +77,9 @@ def create_clean_trash_bin_workflow(session: WorkflowSession) -> WorkflowEngine:
     workflow_def.add_transition("confirm_clean", "execute_clean")
     workflow_def.add_transition("execute_clean", "END")
     
-    return WorkflowEngine(workflow_def, session)
+    engine = WorkflowEngine(workflow_def, session)
+    engine.auto_advance = True  # 啟用自動推進
+    return engine
 
 
 # ==================== Translate Document Workflow ====================
@@ -117,18 +118,18 @@ def create_translate_document_workflow(session: WorkflowSession) -> WorkflowEngi
         file_path = session.get_data("input_file_path", "").strip().strip('"').strip("'")
         
         if not file_path:
-            return StepResult.failure("請提供檔案路徑")
+            return StepResult.failure("Please provide a file path")
         
         if not os.path.exists(file_path):
-            return StepResult.failure(f"檔案不存在：{file_path}")
+            return StepResult.failure(f"File not found: {file_path}")
         
         # 檢查副檔名
         ext = os.path.splitext(file_path)[1].lower()
         if ext not in ['.txt', '.pdf', '.docx']:
-            return StepResult.failure(f"不支援的檔案格式：{ext}（支援：.txt, .pdf, .docx）")
+            return StepResult.failure(f"Unsupported file format: {ext} (Supported: .txt, .pdf, .docx)")
         
         return StepResult.success(
-            f"檔案驗證成功：{os.path.basename(file_path)}",
+            f"File validated: {os.path.basename(file_path)}",
             {"validated_file_path": file_path, "file_ext": ext}
         )
     
@@ -143,26 +144,26 @@ def create_translate_document_workflow(session: WorkflowSession) -> WorkflowEngi
     # 步驟 3: 選擇來源語言
     # 支援的語言列表
     SUPPORTED_LANGUAGES = [
-        ("auto", "自動偵測"),
-        ("en", "英文"),
-        ("zh-TW", "繁體中文"),
-        ("zh-CN", "簡體中文"),
-        ("ja", "日文"),
-        ("ko", "韓文"),
-        ("fr", "法文"),
-        ("de", "德文"),
-        ("es", "西班牙文"),
-        ("it", "義大利文"),
-        ("pt", "葡萄牙文"),
-        ("ru", "俄文"),
-        ("ar", "阿拉伯文"),
-        ("th", "泰文"),
-        ("vi", "越南文"),
-        ("id", "印尼文"),
-        ("ms", "馬來文"),
-        ("hi", "印度文"),
-        ("tr", "土耳其文"),
-        ("nl", "荷蘭文")
+        ("auto", "Auto Detect"),
+        ("en", "English"),
+        ("zh-TW", "Traditional Chinese"),
+        ("zh-CN", "Simplified Chinese"),
+        ("ja", "Japanese"),
+        ("ko", "Korean"),
+        ("fr", "French"),
+        ("de", "German"),
+        ("es", "Spanish"),
+        ("it", "Italian"),
+        ("pt", "Portuguese"),
+        ("ru", "Russian"),
+        ("ar", "Arabic"),
+        ("th", "Thai"),
+        ("vi", "Vietnamese"),
+        ("id", "Indonesian"),
+        ("ms", "Malay"),
+        ("hi", "Hindi"),
+        ("tr", "Turkish"),
+        ("nl", "Dutch")
     ]
     
     source_lang_step = StepTemplate.create_selection_step(
@@ -203,10 +204,10 @@ def create_translate_document_workflow(session: WorkflowSession) -> WorkflowEngi
         if not output_path:
             # 使用預設路徑
             base, ext = os.path.splitext(file_path)
-            output_path = f"{base}_翻譯{ext}"
+            output_path = f"{base}_translated{ext}"
         
         return StepResult.success(
-            f"輸出路徑：{os.path.basename(output_path)}",
+            f"Output path: {os.path.basename(output_path)}",
             {"output_path": output_path}
         )
     
@@ -229,27 +230,24 @@ def create_translate_document_workflow(session: WorkflowSession) -> WorkflowEngi
         
         info_log(f"[Workflow] 翻譯文件：{file_path} -> {output_path}, {source_lang} -> {target_lang}")
         
-        result = translate_document(
-            file_path=file_path,
-            source_lang=source_lang,
-            target_lang=target_lang,
-            output_path=output_path
-        )
-        
-        if result["status"] == "ok":
-            output_file = result.get("output_file", output_path)
+        try:
+            output_file = translate_document(
+                file_path=file_path,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                output_path=output_path
+            )  # 返回輸出文件路徑（字符串）
             
             return StepResult.complete_workflow(
-                f"翻譯完成！\n輸出檔案：{output_file}",
+                f"Translation completed successfully!\nOutput file: {output_file}",
                 {
                     "output_file": output_file,
                     "source_lang": source_lang,
-                    "target_lang": target_lang,
-                    "full_result": result
+                    "target_lang": target_lang
                 }
             )
-        else:
-            return StepResult.failure(f"翻譯失敗：{result.get('message', '未知錯誤')}")
+        except Exception as e:
+            return StepResult.failure(f"Translation failed: {str(e)}")
     
     translation_step = StepTemplate.create_processing_step(
         session=session,
@@ -277,7 +275,9 @@ def create_translate_document_workflow(session: WorkflowSession) -> WorkflowEngi
     workflow_def.add_transition("process_output_path", "execute_translation")
     workflow_def.add_transition("execute_translation", "END")
     
-    return WorkflowEngine(workflow_def, session)
+    engine = WorkflowEngine(workflow_def, session)
+    engine.auto_advance = True  # 啟用自動推進
+    return engine
 
 
 # ==================== Workflow Registry ====================

@@ -348,7 +348,7 @@ class MCPClient:
             
             # 🔍 DEBUG: 顯示完整的工具格式
             import json
-            debug_log(3, f"[MCP Client] Gemini 工具格式:\n{json.dumps(gemini_tools, indent=2, ensure_ascii=False)}")
+            debug_log(4, f"[MCP Client] Gemini 工具格式:\n{json.dumps(gemini_tools, indent=2, ensure_ascii=False)}")
             
             return gemini_tools
         

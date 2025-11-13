@@ -40,7 +40,7 @@ def create_clipboard_tracker_workflow(session: WorkflowSession) -> WorkflowEngin
     keyword_step = StepTemplate.create_input_step(
         session=session,
         step_id="input_keyword",
-        prompt="請輸入搜尋關鍵字（直接按Enter返回全部歷史）：",
+        prompt="Enter search keyword (press Enter for all history):",
         optional=True,
         skip_if_data_exists=True,
         description="收集搜尋關鍵字"
@@ -50,7 +50,7 @@ def create_clipboard_tracker_workflow(session: WorkflowSession) -> WorkflowEngin
     max_results_step = StepTemplate.create_input_step(
         session=session,
         step_id="input_max_results",
-        prompt="請輸入最大結果數（預設5）：",
+        prompt="Enter max results (default 5):",
         optional=True,
         skip_if_data_exists=True,
         validator=lambda x: (x.isdigit() and int(x) > 0, "請輸入正整數"),
@@ -76,7 +76,7 @@ def create_clipboard_tracker_workflow(session: WorkflowSession) -> WorkflowEngin
         if result["status"] == "ok":
             results = result.get("results", [])
             if not results:
-                return StepResult.complete_workflow("未找到相關記錄")
+                return StepResult.complete_workflow("No matching records found")
             
             # 格式化結果
             formatted_results = []
@@ -108,7 +108,7 @@ def create_clipboard_tracker_workflow(session: WorkflowSession) -> WorkflowEngin
     copy_step = StepTemplate.create_input_step(
         session=session,
         step_id="input_copy_index",
-        prompt="請輸入要複製的項目編號（直接按Enter跳過）：",
+        prompt="Enter item number to copy (press Enter to skip):",
         optional=True,
         validator=lambda x: (x.isdigit(), "請輸入數字"),
         description="選擇要複製的項目"
@@ -120,7 +120,7 @@ def create_clipboard_tracker_workflow(session: WorkflowSession) -> WorkflowEngin
         
         # 如果沒有輸入，跳過複製
         if not copy_index_str:
-            return StepResult.complete_workflow("已完成搜尋（未複製）")
+            return StepResult.complete_workflow("Search completed (not copied)")
         
         from modules.sys_module.actions.text_processing import clipboard_tracker
         
@@ -128,7 +128,7 @@ def create_clipboard_tracker_workflow(session: WorkflowSession) -> WorkflowEngin
         results = session.get_data("search_results", [])
         
         if copy_index < 0 or copy_index >= len(results):
-            return StepResult.failure("無效的項目編號")
+            return StepResult.failure("Invalid item number")
         
         # 重新調用 clipboard_tracker 執行複製
         keyword = session.get_data("input_keyword", "")
@@ -145,7 +145,7 @@ def create_clipboard_tracker_workflow(session: WorkflowSession) -> WorkflowEngin
             preview = copied_text[:50] + "..." if len(copied_text) > 50 else copied_text
             return StepResult.complete_workflow(f"已複製：{preview}")
         else:
-            return StepResult.failure("複製失敗")
+            return StepResult.failure("Copy failed")
     
     copy_execution_step = StepTemplate.create_processing_step(
         session=session,
@@ -192,10 +192,10 @@ def create_quick_phrases_workflow(session: WorkflowSession) -> WorkflowEngine:
     )
     
     # 步驟 1: 選擇模式
-    mode_step = StepTemplate.create_selection_step(
+    mode_selection_step = StepTemplate.create_selection_step(
         session=session,
         step_id="select_mode",
-        prompt="請選擇範本模式：",
+        prompt="Select template mode:",
         options=["preset", "llm"],
         labels=["預設範本", "LLM 自訂生成"],
         required_data=[]
@@ -203,10 +203,10 @@ def create_quick_phrases_workflow(session: WorkflowSession) -> WorkflowEngine:
     
     # 步驟 2a: 選擇預設範本
     preset_templates = ["email", "signature", "meeting", "thanks", "greeting", "apology", "followup"]
-    preset_step = StepTemplate.create_selection_step(
+    template_selection_step = StepTemplate.create_selection_step(
         session=session,
         step_id="select_template",
-        prompt="請選擇範本：",
+        prompt="Select template:",
         options=preset_templates,
         labels=[
             "電子郵件", "簽名檔", "會議議程", "感謝", 
@@ -216,10 +216,10 @@ def create_quick_phrases_workflow(session: WorkflowSession) -> WorkflowEngine:
     )
     
     # 步驟 2b: 輸入 LLM 提示詞
-    llm_prompt_step = StepTemplate.create_input_step(
+    custom_prompt_step = StepTemplate.create_input_step(
         session=session,
-        step_id="input_llm_prompt",
-        prompt="請輸入範本需求（使用英文，例如：Generate a formal business meeting invitation email）：",
+        step_id="input_custom_prompt",
+        prompt="Enter template requirement (e.g., Generate a formal business meeting invitation email):",
         skip_if_data_exists=True,
         description="收集 LLM 生成提示詞"
     )
@@ -274,12 +274,12 @@ def create_quick_phrases_workflow(session: WorkflowSession) -> WorkflowEngine:
     )
     
     # 步驟 4: 詢問是否複製
-    confirm_copy_step = StepTemplate.create_confirmation_step(
+    copy_confirmation_step = StepTemplate.create_confirmation_step(
         session=session,
         step_id="confirm_copy",
-        message="是否複製到剪貼簿？",
-        confirm_message="已複製到剪貼簿",
-        cancel_message="未複製",
+        message="Copy to clipboard?",
+        confirm_message="Copied to clipboard",
+        cancel_message="Not copied",
         description="確認是否複製"
     )
     
@@ -289,7 +289,7 @@ def create_quick_phrases_workflow(session: WorkflowSession) -> WorkflowEngine:
         
         content = session.get_data("phrase_content", "")
         if not content:
-            return StepResult.failure("無內容可複製")
+            return StepResult.failure("No content to copy")
         
         try:
             win32clipboard.OpenClipboard()
@@ -297,7 +297,7 @@ def create_quick_phrases_workflow(session: WorkflowSession) -> WorkflowEngine:
             win32clipboard.SetClipboardData(win32clipboard.CF_UNICODETEXT, content)
             win32clipboard.CloseClipboard()
             
-            return StepResult.complete_workflow("已複製到剪貼簿")
+            return StepResult.complete_workflow("Copied to clipboard")
         except Exception as e:
             error_log(f"[Workflow] 複製失敗：{e}")
             return StepResult.complete_workflow(f"複製失敗：{e}")
@@ -310,11 +310,11 @@ def create_quick_phrases_workflow(session: WorkflowSession) -> WorkflowEngine:
     )
     
     # 組裝工作流
-    workflow_def.add_step(mode_step)
-    workflow_def.add_step(preset_step)
-    workflow_def.add_step(llm_prompt_step)
+    workflow_def.add_step(mode_selection_step)
+    workflow_def.add_step(template_selection_step)
+    workflow_def.add_step(custom_prompt_step)
     workflow_def.add_step(generate_step)
-    workflow_def.add_step(confirm_copy_step)
+    workflow_def.add_step(copy_confirmation_step)
     workflow_def.add_step(copy_phrase_step)
     
     workflow_def.set_entry_point("select_mode")
@@ -322,11 +322,11 @@ def create_quick_phrases_workflow(session: WorkflowSession) -> WorkflowEngine:
     # 根據模式分支
     workflow_def.add_transition("select_mode", "select_template", 
                                 lambda r: r.data.get("select_mode") == "preset")
-    workflow_def.add_transition("select_mode", "input_llm_prompt",
+    workflow_def.add_transition("select_mode", "input_custom_prompt",
                                 lambda r: r.data.get("select_mode") == "llm")
     
     workflow_def.add_transition("select_template", "generate_phrase")
-    workflow_def.add_transition("input_llm_prompt", "generate_phrase")
+    workflow_def.add_transition("input_custom_prompt", "generate_phrase")
     workflow_def.add_transition("generate_phrase", "confirm_copy")
     workflow_def.add_transition("confirm_copy", "copy_phrase")
     workflow_def.add_transition("copy_phrase", "END")

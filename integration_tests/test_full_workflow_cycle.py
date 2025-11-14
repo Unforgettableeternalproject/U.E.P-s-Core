@@ -255,13 +255,15 @@ class TestFileWorkflowFullCycle:
         monitor = WorkflowCycleMonitor(event_bus)
         
         try:
-            # 2. 設置檔案路徑到 WorkingContext（不使用 test_ 前綴）
+            # 2. 準備測試：模擬前端拖曳檔案
+            info_log("[Test] 🎯 測試：檔案讀取完整循環")
+            info_log(f"[Test] 📁 檔案路徑: {test_file}")
+            
+            # 模擬前端拖曳檔案：設置 WorkingContext
             from core.working_context import working_context_manager
             working_context_manager.set_context_data("current_file_path", str(test_file))
-            info_log(f"[Test] 📁 設置檔案路徑: {test_file}")
             
-            # 3. 注入使用者輸入
-            info_log("[Test] 🎯 測試：檔案讀取完整循環")
+            # 用戶請求讀取（不需要指定路徑，因為 WorkingContext 中已有）
             inject_text_to_system("Read the content of the test file")
             
             # 3. 等待工作流程完成（最多 90 秒）
@@ -342,12 +344,23 @@ class TestFileWorkflowFullCycle:
                 self.current_step = None
                 self.tts_output_count = 0
                 self.detected_interactive_steps = set()
-                self.expected_tts_outputs = 2  # workflow start + interactive prompt
+                self.expected_tts_outputs = 1  # 工作流啟動回應（包含互動提示）
                 
-                # 額外訂閱 OUTPUT_LAYER_COMPLETE 事件來追蹤 TTS 輸出
+                # 額外訂閱事件
                 from core.event_bus import SystemEvent
                 self.event_bus.subscribe(SystemEvent.OUTPUT_LAYER_COMPLETE, self._on_output_complete, handler_name="Monitor.output_complete")
+                self.event_bus.subscribe(SystemEvent.WORKFLOW_REQUIRES_INPUT, self._on_requires_input, handler_name="Monitor.requires_input")
                 
+            def _on_requires_input(self, event):
+                """追蹤工作流請求輸入事件"""
+                data = event.data
+                step_id = data.get('step_id')
+                if step_id and step_id not in self.detected_interactive_steps:
+                    self.detected_interactive_steps.add(step_id)
+                    self.interactive_step_count += 1
+                    self.current_step = step_id
+                    info_log(f"[Monitor] 檢測到互動步驟（透過 WORKFLOW_REQUIRES_INPUT）: {self.current_step}")
+            
             def _on_step_completed(self, event):
                 """追蹤步驟完成，檢測互動步驟"""
                 super()._on_step_completed(event)
@@ -369,20 +382,19 @@ class TestFileWorkflowFullCycle:
                 info_log(f"[Monitor] TTS 輸出完成 (第 {self.tts_output_count} 次，期待 {self.expected_tts_outputs} 次)")
                 
                 # 等待所有期望的 TTS 輸出完成後才設置事件
-                # 第1次：workflow start response
-                # 第2次：interactive prompt
                 if self.current_step and self.tts_output_count >= self.expected_tts_outputs:
                     info_log(f"[Monitor] 所有 TTS 輸出完成，設置 awaiting_input_event 以響應步驟: {self.current_step}")
                     self.awaiting_input_event.set()
                     # 重置計數器為下一個互動步驟做準備
                     self.tts_output_count = 0
-                    self.expected_tts_outputs = 2  # 下一個互動步驟也需要2次輸出
+                    self.expected_tts_outputs = 1  # 下一個互動步驟也是1次輸出
             
             def cleanup(self):
                 """清理資源"""
                 from core.event_bus import SystemEvent
                 try:
                     self.event_bus.unsubscribe(SystemEvent.OUTPUT_LAYER_COMPLETE, self._on_output_complete)
+                    self.event_bus.unsubscribe(SystemEvent.WORKFLOW_REQUIRES_INPUT, self._on_requires_input)
                 except:
                     pass
                 super().cleanup()
@@ -390,14 +402,16 @@ class TestFileWorkflowFullCycle:
         monitor = ArchiveWorkflowMonitor(event_bus)
         
         try:
-            # 1. 設置檔案路徑到 WorkingContext
+            # 1. 準備測試：模擬前端拖曳檔案
+            info_log("[Test] 🎯 測試：智慧歸檔完整循環（包含互動步驟）")
+            info_log(f"[Test] 📁 檔案路徑: {test_file}")
+            
+            # 模擬前端拖曳檔案：設置 WorkingContext
             from core.working_context import working_context_manager
             working_context_manager.set_context_data("current_file_path", str(test_file))
-            info_log(f"[Test] 📁 設置檔案路徑: {test_file}")
             
-            # 2. 啟動工作流
-            info_log("[Test] 🎯 測試：智慧歸檔完整循環（包含互動步驟）")
-            inject_text_to_system("Archive this file to D drive")
+            # 用戶請求歸檔（不需要指定路徑）
+            inject_text_to_system("Please archive this file to my D drive")
             
             # 3. 等待互動步驟 (archive_confirm)
             # 注意：target_dir_input 是 optional，會被自動跳過（無需用戶輸入）
@@ -452,8 +466,8 @@ class TestFileWorkflowFullCycle:
         3. LLM 通過 MCP 啟動 file_summarize_tag_workflow
         4. 工作流執行：
            - Step 1 (file_input): 選擇檔案（使用 WorkingContext）
-           - Step 2 (tag_count_input): 可選輸入標籤數量
-           - Step 3 (summary_confirm): 確認執行
+           - Step 2 (tag_count_input): 可選輸入標籤數量（會自動跳過）
+           - Step 3 (summary_confirm): 確認執行（需要用戶輸入）
            - Step 4 (read_file_content): 讀取檔案內容
            - Step 5 (llm_generate_summary): LLM 生成摘要和標籤
            - Step 6 (save_summary_file): 儲存摘要檔案
@@ -472,29 +486,98 @@ class TestFileWorkflowFullCycle:
         system_loop = system_components["system_loop"]
         event_bus = system_components["event_bus"]
         
-        # 創建工作流程監控器
-        monitor = WorkflowCycleMonitor(event_bus)
+        # 創建工作流程監控器（追蹤互動步驟）
+        class SummaryWorkflowMonitor(WorkflowCycleMonitor):
+            def __init__(self, event_bus):
+                super().__init__(event_bus)
+                self.interactive_step_count = 0
+                self.awaiting_input_event = threading.Event()
+                self.current_step = None
+                self.tts_output_count = 0
+                self.detected_interactive_steps = set()
+                self.expected_tts_outputs = 1  # 工作流啟動回應（包含互動提示）
+                
+                # 額外訂閱事件
+                from core.event_bus import SystemEvent
+                self.event_bus.subscribe(SystemEvent.OUTPUT_LAYER_COMPLETE, self._on_output_complete, handler_name="Monitor.output_complete")
+                self.event_bus.subscribe(SystemEvent.WORKFLOW_REQUIRES_INPUT, self._on_requires_input, handler_name="Monitor.requires_input")
+                
+            def _on_requires_input(self, event):
+                """追蹤工作流請求輸入事件"""
+                data = event.data
+                step_id = data.get('step_id')
+                if step_id and step_id not in self.detected_interactive_steps:
+                    self.detected_interactive_steps.add(step_id)
+                    self.interactive_step_count += 1
+                    self.current_step = step_id
+                    info_log(f"[Monitor] 檢測到互動步驟（透過 WORKFLOW_REQUIRES_INPUT）: {self.current_step}")
+            
+            def _on_step_completed(self, event):
+                """追蹤步驟完成，檢測互動步驟"""
+                super()._on_step_completed(event)
+                data = event.data
+                
+                # 檢查下一步是否為互動步驟
+                next_step_info = data.get('next_step_info')
+                if next_step_info and next_step_info.get('step_type') == 'interactive':
+                    step_id = next_step_info.get('step_id')
+                    if step_id not in self.detected_interactive_steps:
+                        self.detected_interactive_steps.add(step_id)
+                        self.interactive_step_count += 1
+                        self.current_step = step_id
+                        info_log(f"[Monitor] 檢測到互動步驟: {self.current_step}")
+            
+            def _on_output_complete(self, event):
+                """追蹤 TTS 輸出完成"""
+                self.tts_output_count += 1
+                info_log(f"[Monitor] TTS 輸出完成 (第 {self.tts_output_count} 次，期待 {self.expected_tts_outputs} 次)")
+                
+                # 等待所有期望的 TTS 輸出完成後才設置事件
+                if self.current_step and self.tts_output_count >= self.expected_tts_outputs:
+                    info_log(f"[Monitor] 所有 TTS 輸出完成，設置 awaiting_input_event 以響應步驟: {self.current_step}")
+                    self.awaiting_input_event.set()
+                    # 重置計數器為下一個互動步驟做準備
+                    self.tts_output_count = 0
+                    self.expected_tts_outputs = 1  # 下一個互動步驟也是1次輸出
+            
+            def cleanup(self):
+                """清理資源"""
+                from core.event_bus import SystemEvent
+                try:
+                    self.event_bus.unsubscribe(SystemEvent.OUTPUT_LAYER_COMPLETE, self._on_output_complete)
+                    self.event_bus.unsubscribe(SystemEvent.WORKFLOW_REQUIRES_INPUT, self._on_requires_input)
+                except:
+                    pass
+                super().cleanup()
+        
+        monitor = SummaryWorkflowMonitor(event_bus)
         
         try:
-            # 1. 設置檔案路徑到 WorkingContext
+            # 1. 準備測試：模擬前端拖曳檔案
+            info_log("[Test] 🎯 測試：檔案摘要標籤完整循環")
+            info_log(f"[Test] 📁 檔案路徑: {test_file}")
+            
+            # 模擬前端拖曳檔案：設置 WorkingContext
             from core.working_context import working_context_manager
             working_context_manager.set_context_data("current_file_path", str(test_file))
-            info_log(f"[Test] 📁 設置檔案路徑: {test_file}")
             
-            # 2. 注入使用者輸入
-            info_log("[Test] 🎯 測試：檔案摘要標籤完整循環")
-            inject_text_to_system("Generate a summary and tags for the test file")
+            # 用戶請求生成摘要（不需要指定路徑）
+            inject_text_to_system("Generate a summary and 5 tags for this file")
             
-            # 3. 等待 TTS 生成和工作流準備
-            # TTS 生成工作流啟動提示需要約 40 秒
-            info_log("[Test] ⏳ 等待 TTS 生成工作流提示（約 45 秒）...")
-            time.sleep(45)
-            
-            info_log("[Test] ✅ TTS 應該已完成，準備注入確認輸入")
-            
-            # 4. 注入確認輸入（響應 summary_confirm 步驟）
-            info_log("[Test] 📝 注入確認輸入")
-            inject_text_to_system("yes")
+            # 3. 等待互動步驟 (summary_confirm)
+            # 注意：tag_count_input 是 optional，會被自動跳過（無需用戶輸入）
+            # 所以我們只需等待 summary_confirm
+            info_log("[Test] ⏳ 等待互動步驟: summary_confirm")
+            if monitor.awaiting_input_event.wait(timeout=60):
+                info_log(f"[Test] 📝 響應步驟: {monitor.current_step}")
+                time.sleep(2)  # 等待 LLM 生成提示
+                
+                # 注入確認輸入
+                inject_text_to_system("yes")
+                monitor.awaiting_input_event.clear()
+            else:
+                info_log(f"[Test] ❌ 超時！TTS輸出次數: {monitor.tts_output_count}/{monitor.expected_tts_outputs}")
+                pytest.fail("Timeout waiting for summary_confirm step")
             
             # 5. 等待工作流程完成（LLM 處理需要較長時間）
             info_log("[Test] ⏳ 等待工作流程完成（LLM 處理中）...")

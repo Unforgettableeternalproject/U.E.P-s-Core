@@ -103,11 +103,8 @@ def create_get_weather_workflow(session: WorkflowSession) -> WorkflowEngine:
         requires_llm_review=True  # 🔧 啟用 LLM 審核以生成步驟間的提示
     )
     
-    # 從 initial_data 提取參數到 session
-    initial_data = session.get_data("initial_data", {})
-    if "location" in initial_data:
-        session.add_data("location_input", initial_data["location"])
-        debug_log(2, f"[get_weather] 從 initial_data 提取 location: {initial_data['location']}")
+    # 注意：initial_data 的參數映射已在 sys_module.start_unified_workflow 中處理
+    # session 中已經包含映射後的數據（location_input 等）
     
     # 步驟 1: 輸入位置（ID 改為與 YAML 一致：location_input）
     location_input_step = StepTemplate.create_input_step(
@@ -205,7 +202,7 @@ def create_get_world_time_workflow(session: WorkflowSession) -> WorkflowEngine:
         session=session,
         step_id="mode_selection",
         prompt="Select time query mode:",
-        options=[1, 2, 3],
+        options=["1", "2", "3"],  # 🔧 使用字串與 initial_data 保持一致
         labels=["UTC Time", "Specific Timezone", "Local Time"],
         required_data=[],
         skip_if_data_exists=True  # 🔧 支援從 initial_data 提取模式
@@ -227,9 +224,9 @@ def create_get_world_time_workflow(session: WorkflowSession) -> WorkflowEngine:
         step_id="timezone_conditional",
         selection_step_id="mode_selection",
         branches={
-            1: [],  # UTC - 不需要額外輸入
-            2: [timezone_input_step],  # Timezone - 需要輸入時區
-            3: []   # Local - 不需要額外輸入
+            "1": [],  # UTC - 不需要額外輸入
+            "2": [timezone_input_step],  # Timezone - 需要輸入時區
+            "3": []   # Local - 不需要額外輸入
         },
         description="根據模式選擇決定是否需要輸入時區"
     )
@@ -239,11 +236,12 @@ def create_get_world_time_workflow(session: WorkflowSession) -> WorkflowEngine:
         from modules.sys_module.actions.integrations import get_world_time
         
         # 從 session 獲取參數（可能來自 selection 或 initial_data）
-        target_num = session.get_data("mode_selection", 1)  # 預設 UTC
-        timezone_name = session.get_data("timezone_input", "").strip() if target_num == 2 else None
+        target_num_str = session.get_data("mode_selection", "1")  # 預設 UTC
+        target_num = int(target_num_str)  # 轉換為整數給 API 使用
+        timezone_name = session.get_data("timezone_input", "").strip() if target_num_str == "2" else None
         
         # 驗證：如果是模式 2，必須有時區
-        if target_num == 2 and not timezone_name:
+        if target_num_str == "2" and not timezone_name:
             return StepResult.failure("Please provide a valid timezone name")
         
         info_log(f"[Workflow] 查詢時間：target_num={target_num}, 時區={timezone_name}")

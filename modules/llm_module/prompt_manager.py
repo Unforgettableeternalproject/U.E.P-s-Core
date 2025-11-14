@@ -182,18 +182,19 @@ class PromptManager:
             if not suppress_start_workflow_instruction:
                 work_guidance += (
                     "**CRITICAL INSTRUCTIONS - DO NOT IGNORE:**\n"
-                    "1. YOU MUST IMMEDIATELY call the 'start_workflow' function. DO NOT ask for clarification.\n"
-                    "2. Required parameters:\n"
-                    "   - workflow_type: Use the NLP recommended workflow above (if provided) or select from the available workflows list\n"
+                    "1. YOU MUST IMMEDIATELY call the appropriate workflow tool directly. DO NOT ask for clarification.\n"
+                    "2. Use the SPECIFIC workflow tool (e.g., intelligent_archive, drop_and_read, get_weather) NOT the generic 'start_workflow'\n"
+                    "3. Each workflow tool has detailed parameter extraction guidance - read it carefully\n"
+                    "4. Extract parameters from the user's input as guided by the tool description\n"
+                    "5. Required parameters:\n"
                     "   - command: Copy the user's original request exactly as provided\n"
-                    "   - initial_data: Use empty dict {} (the workflow will collect missing information)\n"
-                    "3. DO NOT respond with plain text asking for more information\n"
-                    "4. DO NOT say you need the file name - the workflow will handle file selection\n"
-                    "5. The workflow system is designed to collect missing information interactively AFTER it starts\n\n"
-                    "**REPEAT: You MUST call start_workflow immediately. Do not ask questions first.**\n\n"
+                    "   - initial_data: JSON string with extracted parameters (or empty \"{}\" if none can be extracted)\n"
+                    "6. DO NOT respond with plain text asking for more information\n"
+                    "7. DO NOT say you need information - the workflow will collect missing information interactively AFTER it starts\n\n"
+                    "**REPEAT: You MUST call the specific workflow tool immediately. Do not ask questions first.**\n\n"
                     "Example:\n"
-                    "User: 'read the file'\n"
-                    "YOU MUST: call start_workflow(workflow_type='drop_and_read', command='read the file', initial_data={})"
+                    "User: 'Archive this file to D drive'\n"
+                    "YOU MUST: call intelligent_archive(command='Archive this file to D drive', initial_data='{\"target_dir_input\": \"D:\\\\\"}')"
                 )
             else:
                 # 已有工作流運行，檢查是否為步驟回應上下文

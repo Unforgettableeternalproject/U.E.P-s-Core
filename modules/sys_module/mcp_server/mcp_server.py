@@ -47,10 +47,10 @@ class MCPServer:
     def _register_core_tools(self):
         """註冊核心工作流控制工具"""
         
-        # 1. start_workflow - Start a workflow
+        # 1. start_workflow - Start a workflow (DEPRECATED - use direct workflow tools instead)
         self.register_tool(MCPTool(
             name="start_workflow",
-            description="Start a new workflow for complex task handling",
+            description="[DEPRECATED] Generic workflow starter. PREFER using direct workflow tools (e.g., intelligent_archive, drop_and_read) instead, as they provide better parameter extraction guidance. Only use this if the specific workflow tool is unavailable.",
             parameters=[
                 ToolParameter(
                     name="workflow_type",

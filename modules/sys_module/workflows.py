@@ -591,6 +591,7 @@ class WorkflowEngine:
         self.awaiting_llm_review = False  # 是否正在等待 LLM 審核
         self.pending_review_result: Optional[StepResult] = None  # 待審核的步驟結果
         self.waiting_for_input = False  # 是否正在等待用戶輸入（防止重複請求）
+        self.finding_effective_first_step = False  # 🔧 是否正在查找等效第一步（禁用事件發布）
         
         # 🔧 步驟執行狀態追蹤（防止重複觸發長時間運行的步驟）
         self.step_executing = False
@@ -944,9 +945,11 @@ class WorkflowEngine:
         # 階段三：如果是 Interactive 步驟且沒有提供輸入，檢查是否可以跳過
         # 🔧 修正：先檢查 should_skip()，如果可以跳過則繼續執行，不要請求輸入
         # 注意：空字符串也視為無效輸入
+        debug_log(2, f"[WorkflowEngine] 檢查 Interactive 步驟: {current_step.id if current_step else 'None'}, user_input={user_input is not None}")
         if current_step.step_type == current_step.STEP_TYPE_INTERACTIVE and not user_input:
             # 🆕 檢查步驟是否可以跳過（數據已存在）
             can_skip = hasattr(current_step, 'should_skip') and current_step.should_skip()
+            debug_log(2, f"[WorkflowEngine] can_skip 檢查結果: {can_skip}")
             if can_skip:
                 debug_log(2, f"[WorkflowEngine] Interactive 步驟可以跳過（數據已存在），繼續執行: {current_step.id}")
                 # 繼續執行步驟，不要請求輸入
@@ -1135,7 +1138,9 @@ class WorkflowEngine:
                 # ⚠️ Interactive → Interactive 轉換的特殊處理：
                 # 不在這裡立即審核（會導致嵌套 LLM.handle() 調用），
                 # 而是發布特殊事件讓 LLM 在下一個循環生成提示
+                debug_log(2, f"[Workflow] 查找下一步：current={current_step.id}, result.complete={result.complete}, result.cancel={result.cancel}, result.next_step={result.next_step}")
                 next_step_id = self.definition.get_next_step(current_step.id, result)
+                debug_log(2, f"[Workflow] get_next_step 返回: next_step_id={next_step_id}")
                 next_step = self.definition.steps.get(next_step_id) if next_step_id else None
                 
                 # 使用統一的審核判斷方法
@@ -1169,7 +1174,8 @@ class WorkflowEngine:
                                 from core.event_bus import event_bus, SystemEvent
                                 
                                 # 🆕 Interactive → Interactive 轉換：需要 LLM 生成下一步提示
-                                if current_step.step_type == current_step.STEP_TYPE_INTERACTIVE and self.definition.requires_llm_review:
+                                # 🔧 但如果正在查找等效第一步，不要發布事件
+                                if current_step.step_type == current_step.STEP_TYPE_INTERACTIVE and self.definition.requires_llm_review and not self.finding_effective_first_step:
                                     # 發布步驟完成事件，讓 LLM 生成提示
                                     event_bus.publish(
                                         SystemEvent.WORKFLOW_STEP_COMPLETED,
@@ -1400,7 +1406,8 @@ class WorkflowEngine:
                                 
                                 # 🔧 發布 WORKFLOW_STEP_COMPLETED 事件讓 LLM 生成提示
                                 # 構建步驟結果（表示成功推進到 Interactive 步驟）
-                                if self.definition.requires_llm_review:
+                                # 但在查找等效第一步時不發布（避免重複提示）
+                                if self.definition.requires_llm_review and not getattr(self, 'finding_effective_first_step', False):
                                     event_bus.publish(
                                         SystemEvent.WORKFLOW_STEP_COMPLETED,
                                         {
@@ -1422,6 +1429,8 @@ class WorkflowEngine:
                                         source="sys"
                                     )
                                     debug_log(2, f"[WorkflowEngine] [_auto_advance] 已發布 WORKFLOW_STEP_COMPLETED 事件供 LLM 生成提示")
+                                elif getattr(self, 'finding_effective_first_step', False):
+                                    debug_log(2, f"[WorkflowEngine] [_auto_advance] 跳過發布 WORKFLOW_STEP_COMPLETED（正在查找等效第一步）")
                                 
                                 # 發布 WORKFLOW_REQUIRES_INPUT 事件
                                 event_bus.publish(
@@ -1891,6 +1900,9 @@ class StepTemplate:
             required_data: 必要數據列表
             skip_if_data_exists: 是否在數據已存在時跳過步驟
         """
+        # 🔧 統一將 options 轉換為字串，與 initial_data 的字串格式保持一致
+        str_options = [str(opt) for opt in options]
+        
         class SelectionStep(WorkflowStep):
             def __init__(self, session):
                 super().__init__(session)
@@ -1912,15 +1924,15 @@ class StepTemplate:
                 if existing_data is None:
                     return False
                 
-                # 檢查數據是否在選項列表中
-                if existing_data in options:
+                # 檢查數據是否在選項列表中（統一為字串比較）
+                if str(existing_data) in str_options:
                     debug_log(2, f"[Workflow] 步驟 {step_id} 跳過：數據已存在 ({existing_data})")
                     return True
                 
                 return False
                         
             def get_prompt(self) -> str:
-                option_labels = labels or options
+                option_labels = labels or str_options
                 prompt_text = prompt + "\n"
                 for i, label in enumerate(option_labels):
                     prompt_text += f"{i + 1}. {label}\n"
@@ -1929,9 +1941,12 @@ class StepTemplate:
             def execute(self, user_input: Any = None) -> StepResult:
                 # ✅ 檢查是否應該跳過（數據已存在且 skip_if_data_exists=True）
                 if self.should_skip():
-                    existing_data = self.session.get_data(step_id)
-                    label_index = options.index(existing_data) if existing_data in options else None
-                    display_label = labels[label_index] if labels and label_index is not None else existing_data
+                    existing_data = str(self.session.get_data(step_id))
+                    try:
+                        label_index = str_options.index(existing_data)
+                        display_label = labels[label_index] if labels else existing_data
+                    except (ValueError, IndexError):
+                        display_label = existing_data
                     return StepResult.success(
                         f"使用現有選擇: {display_label}",
                         {step_id: existing_data}
@@ -1945,8 +1960,8 @@ class StepTemplate:
                 # 嘗試按索引選擇
                 try:
                     index = int(user_str) - 1
-                    if 0 <= index < len(options):
-                        selected = options[index]
+                    if 0 <= index < len(str_options):
+                        selected = str_options[index]
                         label = labels[index] if labels else selected
                         return StepResult.success(
                             f"已選擇: {label}",
@@ -1955,9 +1970,9 @@ class StepTemplate:
                 except ValueError:
                     pass
                 
-                # 嘗試按名稱選擇
-                for option in options:
-                    if option.lower() == user_str.lower():
+                # 嘗試按名稱選擇（統一字串比較）
+                for option in str_options:
+                    if str(option).lower() == user_str.lower():
                         return StepResult.success(
                             f"已選擇: {option}",
                             {step_id: option}

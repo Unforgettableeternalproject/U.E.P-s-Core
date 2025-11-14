@@ -583,8 +583,12 @@ class SYSModule(BaseModule):
                 for key, value in initial_data.items():
                     param_def = initial_params.get(key, {})
                     target_step = param_def.get('maps_to_step', key)  # 默認使用原始 key
-                    session.add_data(target_step, value)
-                    debug_log(2, f"[SYS] initial_data: {key} -> {target_step} = {value}")
+                    
+                    # 🔧 將所有值轉換為字符串，確保 validator 能正確處理
+                    # 因為工作流步驟的 validator 假設輸入是字符串
+                    value_str = str(value) if value is not None else ""
+                    session.add_data(target_step, value_str)
+                    debug_log(2, f"[SYS] initial_data: {key} -> {target_step} = {value_str} (原始類型: {type(value).__name__})")
                 
                 # 🔧 參數推斷：根據 infer_from 規則自動推斷缺失參數
                 self._apply_parameter_inference(initial_params, initial_data, session)
@@ -594,7 +598,9 @@ class SYSModule(BaseModule):
                 # 降級處理：直接使用原始 key
                 debug_log(1, f"[SYS] 無法載入工作流定義進行參數映射: {e}")
                 for key, value in initial_data.items():
-                    session.add_data(key, value)
+                    # 🔧 同樣轉換為字符串
+                    value_str = str(value) if value is not None else ""
+                    session.add_data(key, value_str)
                 debug_log(2, f"[SYS] 已將 initial_data 添加到 session（降級模式）: {list(initial_data.keys())}")
         
         try:
@@ -728,12 +734,67 @@ class SYSModule(BaseModule):
             # 但如果工作流可以自動完成（無需用戶輸入），則讓它完成並保存數據
             debug_log(2, "[SYS] 尋找等效第一步...")
             try:
-                # 執行一次，讓工作流跳過可以跳過的步驟
-                # auto_advance=True 允許自動執行處理步驟並保存數據
-                step_result = engine.process_input(None)
-                debug_log(2, "[SYS] 等效第一步查找完成")
+                # 🔧 循環執行 process_input(None) 直到遇到真正需要用戶輸入的步驟
+                # 這樣可以跳過所有可以自動執行/跳過的步驟（包括有 initial_data 的 Interactive 步驟）
+                max_iterations = 10  # 防止無限循環
+                iteration = 0
+                step_result = None
+                
+                # 🔧 設置標記：正在查找等效第一步，禁用事件發布
+                engine.finding_effective_first_step = True
+                
+                while iteration < max_iterations:
+                    current_step = engine.get_current_step()
+                    if not current_step:
+                        debug_log(2, "[SYS] 工作流已完成，無當前步驟")
+                        break
+                    
+                    # 保存舊步驟ID用於後續檢測步驟是否改變
+                    old_step_id = current_step.id
+                    
+                    # 檢查是否是可跳過的 Interactive 步驟
+                    is_interactive = current_step.step_type == current_step.STEP_TYPE_INTERACTIVE
+                    can_skip = is_interactive and hasattr(current_step, 'should_skip') and current_step.should_skip()
+                    
+                    debug_log(2, f"[SYS] 檢查步驟 {current_step.id} (類型: {current_step.step_type}, can_skip: {can_skip})")
+                    
+                    # 🔧 如果不能跳過，這就是等效第一步，停止循環（不執行）
+                    if is_interactive and not can_skip:
+                        debug_log(2, f"[SYS] 找到需要用戶輸入的步驟: {current_step.id}")
+                        break
+                    
+                    # 🔧 可以跳過或自動執行的步驟，執行它並繼續
+                    debug_log(2, f"[SYS] 步驟 {current_step.id} 將被跳過或自動執行")
+                    
+                    # 🔧 清除 awaiting_llm_review 和 waiting_for_input 標記
+                    # 避免阻塞後續步驟的執行和發布不必要的事件
+                    # 因為我們只是在尋找等效第一步，不需要真的等待 LLM 審核或用戶輸入
+                    engine.awaiting_llm_review = False
+                    engine.waiting_for_input = False
+                    
+                    step_result = engine.process_input(None)
+                    iteration += 1
+                    
+                    # 🔧 檢查 step_result.skip_to（ConditionalStep 可能返回跳轉目標）
+                    if step_result and hasattr(step_result, 'skip_to') and step_result.skip_to:
+                        debug_log(2, f"[SYS] 檢測到跳轉目標: {step_result.skip_to}")
+                        # ConditionalStep 返回了需要跳轉的步驟，繼續循環
+                        continue
+                    
+                    # 如果步驟沒有改變，也停止（避免卡住）
+                    new_current_step = engine.get_current_step()
+                    if new_current_step and new_current_step.id == old_step_id:
+                        debug_log(2, f"[SYS] 步驟未改變，停止循環: {old_step_id}")
+                        break
+                
+                # 🔧 清除標記：查找完成，恢復正常事件發布
+                engine.finding_effective_first_step = False
+                
+                debug_log(2, f"[SYS] 等效第一步查找完成 (迭代次數: {iteration})")
             except Exception as e:
                 debug_log(1, f"[SYS] 等效第一步查找失敗: {e}")
+                import traceback
+                debug_log(1, f"[SYS] 錯誤堆棧: {traceback.format_exc()}")
                 step_result = None
             
             # ✅ 獲取當前步驟（這才是真正的「等效第一步」）
@@ -743,6 +804,28 @@ class SYSModule(BaseModule):
             info_log(f"[SYS] 已啟動統一工作流程 '{workflow_type}', ID: {session_id}")
             if current_step:
                 info_log(f"[SYS] 等效第一步: {current_step.id} (類型: {current_step.step_type})")
+                
+                # 🔧 如果等效第一步是 Interactive，需要發布 WORKFLOW_REQUIRES_INPUT 事件
+                # 因為在查找過程中我們禁用了事件發布
+                if current_step.step_type == current_step.STEP_TYPE_INTERACTIVE:
+                    try:
+                        from core.event_bus import event_bus, SystemEvent
+                        event_bus.publish(
+                            SystemEvent.WORKFLOW_REQUIRES_INPUT,
+                            {
+                                "workflow_type": workflow_type,
+                                "session_id": session_id,
+                                "step_id": current_step.id,
+                                "step_type": current_step.step_type,
+                                "optional": getattr(current_step, 'optional', False),
+                                "prompt": current_step.get_prompt(),
+                                "timestamp": time.time()
+                            },
+                            source="sys"
+                        )
+                        debug_log(2, f"[SYS] 已為等效第一步發布 WORKFLOW_REQUIRES_INPUT 事件: {current_step.id}")
+                    except Exception as e:
+                        debug_log(1, f"[SYS] 發布輸入請求事件失敗: {e}")
             
             # 🔧 根據等效第一步的類型，決定後續處理方式
             # 重要：process_input(None) 已經執行過了，所以：
@@ -1462,9 +1545,8 @@ class SYSModule(BaseModule):
             # Standard action handlers (excluding file interaction - use workflows instead)
             action_handlers = {
                 # File interaction actions are now workflow-only
-                # "drop_and_read": use start_workflow with workflow_type="drop_and_read"
-                # "intelligent_archive": use start_workflow with workflow_type="intelligent_archive" 
-                # "summarize_tag": use start_workflow with workflow_type="summarize_tag"
+                # Use direct workflow tools: drop_and_read, intelligent_archive, summarize_tag
+                # (instead of the deprecated start_workflow with workflow_type parameter)
                 # NEW: clean_trash_bin - direct action for trash cleanup
                 
                 # File Management Actions

@@ -88,8 +88,8 @@ workflows:
       num_tags:
         type: int
         optional: true
-        description: "Number of tags to generate (default: 5)"
-        maps_to_step: "num_tags_input"
+        description: "Number of tags to generate (default: 3)"
+        maps_to_step: "tag_count_input"
         extraction_hint: "Extract numbers from phrases like generate 10 tags, 5 keywords"
     
     mcp_tool_params:

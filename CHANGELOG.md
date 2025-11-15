@@ -1750,3 +1750,15 @@
 
 ---
 
+### Made sure all file workflows uses the same file selection template for better management, and made llm processing step internal. 11/15
+
+> Date: Sat, 15 Nov 2025 17:53:07 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `2cb82169ec031712b8355249230869d3df5c1266`
+
+---
+

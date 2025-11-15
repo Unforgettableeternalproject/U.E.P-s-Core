@@ -629,7 +629,7 @@ class SYSModule(BaseModule):
             # File workflows
             elif workflow_type in ["file_processing", "file_interaction"]:
                 engine = create_file_workflow(workflow_type, session)
-            elif workflow_type in ["drop_and_read", "intelligent_archive", "summarize_tag"]:
+            elif workflow_type in ["drop_and_read", "intelligent_archive", "summarize_tag", "translate_document", "ocr_extract"]:
                 engine = create_file_workflow(workflow_type, session)
             
             # Text workflows

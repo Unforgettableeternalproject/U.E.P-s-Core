@@ -229,19 +229,19 @@ def summarize_tag(file_path: str, tag_count: int = 3) -> dict:
                 
             if llm_module:
                 # 構建清晰的摘要提示詞
-                prompt = f"""請為以下檔案內容生成摘要和標籤：
+                prompt = f"""Summarize the file and generate tags:
 
-檔案內容：
+File content：
 {content[:5000]}{"..." if len(content) > 5000 else ""}
 
-請按照以下格式回應：
-標籤：標籤1, 標籤2, 標籤3{"" if tag_count == 3 else f", 標籤{tag_count}"}
-摘要：[在這裡寫摘要內容]
+Please respond in the following format:
+Tags: Tag1, Tag2, Tag3{"" if tag_count == 3 else f", Tag{tag_count}"}
+Summary: [Write the summary here]
 
-要求：
-1. 生成 {tag_count} 個相關的關鍵標籤
-2. 提供簡潔但全面的摘要
-3. 標籤應該反映檔案的主要主題和內容特徵
+Requirements:
+1. Generate {tag_count} relevant key tags
+2. Provide a concise yet comprehensive summary
+3. Tags should reflect the main themes and content features of the file
 """
                 
                 # 構建摘要請求 (需要符合LLMInput格式)
@@ -262,7 +262,7 @@ def summarize_tag(file_path: str, tag_count: int = 3) -> dict:
                     # 改進的標籤和摘要解析邏輯
                     try:
                         # 提取標籤部分
-                        if "標籤：" in llm_response_text or "標籤:" in llm_response_text:
+                        if "Tags:" in llm_response_text or "Tags：" in llm_response_text:
                             # 查找標籤行
                             lines = llm_response_text.split('\n')
                             tags_line = ""
@@ -272,10 +272,10 @@ def summarize_tag(file_path: str, tag_count: int = 3) -> dict:
                             
                             for line in lines:
                                 line = line.strip()
-                                if not found_tags and ("標籤：" in line or "標籤:" in line):
+                                if not found_tags and ("Tags:" in line or "Tags：" in line):
                                     tags_line = line.split("：")[1] if "：" in line else line.split(":")[1]
                                     found_tags = True
-                                elif found_tags and ("摘要：" in line or "摘要:" in line):
+                                elif found_tags and ("Summary:" in line or "Summary：" in line):
                                     summary_start = line.split("：")[1] if "：" in line else line.split(":")[1]
                                     if summary_start.strip():
                                         summary_lines.append(summary_start.strip())

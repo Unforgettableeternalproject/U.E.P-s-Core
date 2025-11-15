@@ -217,6 +217,22 @@ class LLMModule(BaseModule):
             if requires_llm_processing:
                 debug_log(2, f"[LLM] 檢測到 LLM_PROCESSING 請求")
                 llm_request_data = data.get('llm_request_data', {})
+                
+                # 🔧 去重檢查：避免重複處理同一個 LLM_PROCESSING 步驟
+                step_id = llm_request_data.get('step_id', '')
+                processing_key = f"{session_id}:{step_id}"
+                
+                if not hasattr(self, '_processed_llm_steps'):
+                    self._processed_llm_steps = set()
+                
+                if processing_key in self._processed_llm_steps:
+                    debug_log(2, f"[LLM] ⚠️ 跳過重複的 LLM_PROCESSING 請求: {processing_key}")
+                    return
+                
+                # 標記為已處理
+                self._processed_llm_steps.add(processing_key)
+                debug_log(2, f"[LLM] ✅ 開始處理 LLM_PROCESSING 請求: {processing_key}")
+                
                 self._handle_llm_processing_request(session_id, workflow_type, llm_request_data)
                 return
             
@@ -374,15 +390,23 @@ class LLMModule(BaseModule):
             debug_log(3, f"[LLM] 輸出鍵: {output_key}")
             debug_log(3, f"[LLM] Prompt 長度: {len(prompt)} 字符")
             
-            # 使用 GeminiWrapper 生成 LLM 回應
-            # 使用簡單的 query 調用，不使用 MCP 工具
-            debug_log(2, f"[LLM] 正在調用 Gemini API...")
+            # 🔧 使用 internal 模式生成 LLM 回應（節省 token）
+            # internal 模式：不使用 UEP 系統提示詞、不使用快取、不使用 MCP 工具
+            debug_log(2, f"[LLM] 正在調用 Gemini API（internal 模式）...")
+            
+            # 構建簡潔的系統提示詞（僅針對工作流任務）
+            workflow_system_prompt = (
+                "You are a helpful assistant processing workflow tasks. "
+                "Provide clear, concise responses based on the given instructions. "
+                "Follow the format requirements strictly. And ALWAYS respond in English"
+            )
             
             response_data = self.model.query(
                 prompt, 
-                mode="work",  # 使用 WORK 模式
+                mode="internal",  # 🔧 使用 internal 模式
                 cached_content=None,  # 不使用快取
-                tools=None  # 不使用 MCP 工具
+                tools=None,  # 不使用 MCP 工具
+                system_instruction=workflow_system_prompt  # 使用簡潔的系統提示詞
             )
             
             if not response_data or 'text' not in response_data:
@@ -918,6 +942,14 @@ class LLMModule(BaseModule):
                 self._processed_workflow_completions.discard(session_id)
                 debug_log(2, f"[LLM] 已移除工作流完成追蹤: {session_id}")
             
+            # 🔧 清理該工作流的所有 LLM_PROCESSING 步驟標記
+            if hasattr(self, '_processed_llm_steps'):
+                steps_to_remove = {key for key in self._processed_llm_steps if key.startswith(f"{session_id}:")}
+                for step_key in steps_to_remove:
+                    self._processed_llm_steps.discard(step_key)
+                if steps_to_remove:
+                    debug_log(2, f"[LLM] 已清理 {len(steps_to_remove)} 個 LLM_PROCESSING 步驟標記")
+            
         except Exception as e:
             error_log(f"[LLM] 處理工作流完成失敗: {e}")
     
@@ -982,13 +1014,22 @@ class LLMModule(BaseModule):
             is_internal = getattr(llm_input, 'is_internal', False)
             
             if is_internal:
-                debug_log(1, "[LLM] 內部呼叫模式 - 繞過會話檢查和系統提示詞")
-                # 內部呼叫：直接處理，不使用快取、系統提示詞或會話檢查
+                debug_log(1, "[LLM] 內部呼叫模式 - 使用簡潔系統提示詞")
+                # 內部呼叫：使用簡潔提示詞，不使用快取或會話檢查
                 try:
+                    # 允許自定義系統提示詞（用於工作流），否則使用默認簡潔版本
+                    internal_system_prompt = getattr(llm_input, 'system_instruction', None)
+                    if not internal_system_prompt:
+                        internal_system_prompt = (
+                            "You are a helpful assistant. "
+                            "Provide clear and concise responses."
+                        )
+                    
                     response_data = self.model.query(
                         llm_input.text,
-                        mode="chat",
-                        cached_content=None  # 內部呼叫不使用快取
+                        mode="internal",
+                        cached_content=None,  # 內部呼叫不使用快取
+                        system_instruction=internal_system_prompt
                     )
                     
                     response_text = response_data.get("content", response_data.get("text", ""))
@@ -3330,6 +3371,14 @@ U.E.P 系統可用功能規格：
             if session_id in self._processed_workflow_completions:
                 self._processed_workflow_completions.discard(session_id)
                 debug_log(2, f"[LLM] 已移除工作流完成追蹤: {session_id}")
+            
+            # 🔧 清理該工作流的所有 LLM_PROCESSING 步驟標記
+            if hasattr(self, '_processed_llm_steps'):
+                steps_to_remove = {key for key in self._processed_llm_steps if key.startswith(f"{session_id}:")}
+                for step_key in steps_to_remove:
+                    self._processed_llm_steps.discard(step_key)
+                if steps_to_remove:
+                    debug_log(2, f"[LLM] 已清理 {len(steps_to_remove)} 個 LLM_PROCESSING 步驟標記")
             
         except Exception as e:
             import traceback

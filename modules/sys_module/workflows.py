@@ -1987,7 +1987,9 @@ class StepTemplate:
                                   prompt: str = "請選擇文件:",
                                   file_types: Optional[List[str]] = None,
                                   multiple: bool = False,
-                                  required_data: Optional[List[str]] = None) -> WorkflowStep:
+                                  required_data: Optional[List[str]] = None,
+                                  skip_if_data_exists: bool = False,
+                                  description: str = "") -> WorkflowStep:
         """
         創建文件選擇步驟
         
@@ -1995,19 +1997,77 @@ class StepTemplate:
             session: 工作流程會話
             step_id: 步驟 ID
             prompt: 提示訊息
-            file_types: 支援的文件類型
+            file_types: 支援的文件類型（例如 [".txt", ".md"]）
             multiple: 是否允許多選
             required_data: 必要數據列表
+            skip_if_data_exists: 是否在數據已存在時跳過步驟
+            description: 步驟描述，用於 LLM 上下文
         """
         class FileSelectionStep(WorkflowStep):
             def __init__(self, session):
                 super().__init__(session)
                 self.set_id(step_id)
                 self.set_step_type(self.STEP_TYPE_INTERACTIVE)
+                if description:
+                    self.set_description(description)
                 
                 if required_data:
                     for req in required_data:
                         self.add_requirement(req)
+            
+            def should_skip(self) -> bool:
+                """檢查是否應該跳過此步驟（因為數據已存在）"""
+                if not skip_if_data_exists:
+                    return False
+                
+                # 優先順序：
+                # 1. WorkingContext 中的 current_file_path（前端拖曳檔案）
+                # 2. session 中的 initial_data（LLM 提取或已存在的數據）
+                
+                # 1. 檢查 WorkingContext（前端拖曳）
+                try:
+                    from core.working_context import working_context_manager
+                    context_path = working_context_manager.get_context_data("current_file_path")
+                    if context_path:
+                        path_obj = Path(str(context_path).strip().strip('"').strip("'"))
+                        if path_obj.exists():
+                            # 驗證文件類型
+                            if file_types:
+                                ext = path_obj.suffix.lower()
+                                if ext not in [ft.lower() for ft in file_types]:
+                                    return False
+                            
+                            # 有效的 WorkingContext 路徑，跳過此步驟
+                            debug_log(2, f"[Workflow] 步驟 {step_id} 跳過：WorkingContext 中有檔案 ({context_path})")
+                            # 確保 session 中也有這個數據
+                            self.session.add_data(step_id, str(path_obj))
+                            return True
+                except Exception as e:
+                    debug_log(2, f"[Workflow] 無法從 WorkingContext 讀取: {e}")
+                
+                # 2. 檢查 session 中是否已有此步驟的有效數據
+                existing_path = self.session.get_data(step_id, None)
+                
+                if existing_path is None:
+                    return False
+                
+                # 轉換為 Path 對象並驗證
+                try:
+                    path_obj = Path(str(existing_path).strip().strip('"').strip("'"))
+                    if not path_obj.exists():
+                        return False
+                    
+                    # 驗證文件類型
+                    if file_types:
+                        ext = path_obj.suffix.lower()
+                        if ext not in [ft.lower() for ft in file_types]:
+                            return False
+                    
+                    # 有有效數據，跳過此步驟
+                    debug_log(2, f"[Workflow] 步驟 {step_id} 跳過：session 中有檔案 ({existing_path})")
+                    return True
+                except Exception:
+                    return False
                         
             def get_prompt(self) -> str:
                 prompt_text = prompt
@@ -2018,43 +2078,59 @@ class StepTemplate:
                 return prompt_text
                 
             def execute(self, user_input: Any = None) -> StepResult:
-                if not user_input:
-                    return StepResult.failure("請選擇文件")
+                # ✅ 檢查是否應該跳過（數據已存在且 skip_if_data_exists=True）
+                if self.should_skip():
+                    existing_path = self.session.get_data(step_id)
+                    path_obj = Path(str(existing_path).strip().strip('"').strip("'"))
+                    return StepResult.success(
+                        f"使用現有檔案: {path_obj.name}",
+                        {step_id: str(path_obj)}
+                    )
                 
-                # 解析文件路徑
+                if not user_input:
+                    return StepResult.failure("請提供檔案路徑")
+                
+                # 解析文件路徑（清理引號）
                 file_paths = []
                 if isinstance(user_input, str):
                     if multiple:
-                        file_paths = [f.strip() for f in user_input.split(',') if f.strip()]
+                        file_paths = [f.strip().strip('"').strip("'") for f in user_input.split(',') if f.strip()]
                     else:
-                        file_paths = [user_input.strip()]
+                        file_paths = [user_input.strip().strip('"').strip("'")]
                 elif isinstance(user_input, list):
-                    file_paths = user_input
+                    file_paths = [str(f).strip().strip('"').strip("'") for f in user_input]
                 else:
                     return StepResult.failure("無效的文件選擇格式")
                 
                 # 驗證文件
                 valid_files = []
                 for file_path in file_paths:
-                    if not os.path.exists(file_path):
-                        return StepResult.failure(f"文件不存在: {file_path}")
+                    path_obj = Path(file_path)
+                    
+                    if not path_obj.exists():
+                        return StepResult.failure(f"檔案不存在: {file_path}")
+                    
+                    if not path_obj.is_file():
+                        return StepResult.failure(f"請提供檔案路徑，而非資料夾: {file_path}")
                     
                     if file_types:
-                        _, ext = os.path.splitext(file_path)
-                        if ext.lower() not in [ft.lower() for ft in file_types]:
-                            return StepResult.failure(f"不支援的文件類型: {ext}")
+                        ext = path_obj.suffix.lower()
+                        if ext not in [ft.lower() for ft in file_types]:
+                            return StepResult.failure(f"不支援的檔案格式 {ext}。支援格式: {', '.join(file_types)}")
                     
-                    valid_files.append(file_path)
+                    valid_files.append(str(path_obj))
                 
                 result_data = {
-                    step_id: valid_files if multiple else valid_files[0],
-                    f"{step_id}_count": len(valid_files)
+                    step_id: valid_files if multiple else valid_files[0]
                 }
                 
-                return StepResult.success(
-                    f"已選擇 {len(valid_files)} 個文件",
-                    result_data
-                )
+                if multiple:
+                    result_data[f"{step_id}_count"] = len(valid_files)
+                    message = f"已選擇 {len(valid_files)} 個檔案"
+                else:
+                    message = f"已選擇檔案: {Path(valid_files[0]).name}"
+                
+                return StepResult.success(message, result_data)
                 
         return FileSelectionStep(session)
     

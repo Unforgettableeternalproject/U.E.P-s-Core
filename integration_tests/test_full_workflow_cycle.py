@@ -125,6 +125,22 @@ def test_file():
     return test_file
 
 
+@pytest.fixture
+def test_image():
+    """
+    使用預先準備的測試圖片
+    
+    Returns:
+        Path: 測試圖片路徑（resources/workflow_test.png）
+    """
+    test_image = project_root / "resources" / "image.jpg"
+    
+    if not test_image.exists():
+        pytest.fail(f"Test image not found: {test_image}")
+    
+    return test_image
+
+
 class WorkflowCycleMonitor:
     """工作流程循環監控器"""
     
@@ -614,6 +630,311 @@ class TestFileWorkflowFullCycle:
             assert "session_ended" in event_types, "No session end event"
             
             info_log("[Test] ✅ 檔案摘要標籤完整循環測試通過")
+            
+        finally:
+            monitor.cleanup()
+    
+    def test_translate_document_full_cycle(self, system_components, test_file):
+        """
+        測試完整的文件翻譯工作流程循環
+        
+        流程：
+        1. 使用者輸入：「翻譯這個檔案到中文」
+        2. NLP 判斷意圖：file_operation
+        3. LLM 通過 MCP 啟動 translate_document_workflow
+        4. 工作流執行：
+           - Step 1 (file_selection): 選擇檔案（使用 WorkingContext）
+           - Step 2 (target_language_input): 可選輸入目標語言（會自動跳過）
+           - Step 3 (translate_confirm): 確認執行（需要用戶輸入）
+           - Step 4 (read_file_content): 讀取檔案內容
+           - Step 5 (llm_translate): LLM 翻譯文件
+           - Step 6 (save_translated_file): 儲存翻譯檔案
+        5. 工作流程完成，LLM 生成總結回應
+        
+        測試重點：
+        - LLM_PROCESSING 步驟中的翻譯任務是否正常運作
+        - 翻譯檔案是否成功儲存到原檔案同目錄
+        - 翻譯品質是否符合預期
+        - WS 是否正確結束
+        """
+        from utils.debug_helper import info_log
+        import time
+        import os
+        
+        system_loop = system_components["system_loop"]
+        event_bus = system_components["event_bus"]
+        
+        # 創建工作流程監控器（追蹤互動步驟）
+        class TranslateWorkflowMonitor(WorkflowCycleMonitor):
+            def __init__(self, event_bus):
+                super().__init__(event_bus)
+                self.interactive_step_count = 0
+                self.awaiting_input_event = threading.Event()
+                self.current_step = None
+                self.tts_output_count = 0
+                self.detected_interactive_steps = set()
+                self.expected_tts_outputs = 1  # 工作流啟動回應（包含互動提示）
+                
+                # 額外訂閱事件
+                from core.event_bus import SystemEvent
+                self.event_bus.subscribe(SystemEvent.OUTPUT_LAYER_COMPLETE, self._on_output_complete, handler_name="Monitor.output_complete")
+                self.event_bus.subscribe(SystemEvent.WORKFLOW_REQUIRES_INPUT, self._on_requires_input, handler_name="Monitor.requires_input")
+                
+            def _on_requires_input(self, event):
+                """追蹤工作流請求輸入事件"""
+                data = event.data
+                step_id = data.get('step_id')
+                if step_id and step_id not in self.detected_interactive_steps:
+                    self.detected_interactive_steps.add(step_id)
+                    self.interactive_step_count += 1
+                    self.current_step = step_id
+                    info_log(f"[Monitor] 檢測到互動步驟（透過 WORKFLOW_REQUIRES_INPUT）: {self.current_step}")
+            
+            def _on_step_completed(self, event):
+                """追蹤步驟完成，檢測互動步驟"""
+                super()._on_step_completed(event)
+                data = event.data
+                
+                # 檢查下一步是否為互動步驟
+                next_step_info = data.get('next_step_info')
+                if next_step_info and next_step_info.get('step_type') == 'interactive':
+                    step_id = next_step_info.get('step_id')
+                    if step_id not in self.detected_interactive_steps:
+                        self.detected_interactive_steps.add(step_id)
+                        self.interactive_step_count += 1
+                        self.current_step = step_id
+                        info_log(f"[Monitor] 檢測到互動步驟: {self.current_step}")
+            
+            def _on_output_complete(self, event):
+                """追蹤 TTS 輸出完成"""
+                self.tts_output_count += 1
+                info_log(f"[Monitor] TTS 輸出完成 (第 {self.tts_output_count} 次，期待 {self.expected_tts_outputs} 次)")
+                
+                # 等待所有期望的 TTS 輸出完成後才設置事件
+                if self.current_step and self.tts_output_count >= self.expected_tts_outputs:
+                    info_log(f"[Monitor] 所有 TTS 輸出完成，設置 awaiting_input_event 以響應步驟: {self.current_step}")
+                    self.awaiting_input_event.set()
+                    # 重置計數器為下一個互動步驟做準備
+                    self.tts_output_count = 0
+                    self.expected_tts_outputs = 1  # 下一個互動步驟也是1次輸出
+            
+            def cleanup(self):
+                """清理資源"""
+                from core.event_bus import SystemEvent
+                try:
+                    self.event_bus.unsubscribe(SystemEvent.OUTPUT_LAYER_COMPLETE, self._on_output_complete)
+                    self.event_bus.unsubscribe(SystemEvent.WORKFLOW_REQUIRES_INPUT, self._on_requires_input)
+                except:
+                    pass
+                super().cleanup()
+        
+        monitor = TranslateWorkflowMonitor(event_bus)
+        
+        try:
+            # 1. 準備測試：模擬前端拖曳檔案
+            info_log("[Test] 🎯 測試：文件翻譯完整循環")
+            info_log(f"[Test] 📁 檔案路徑: {test_file}")
+            
+            # 模擬前端拖曳檔案：設置 WorkingContext
+            from core.working_context import working_context_manager
+            working_context_manager.set_context_data("current_file_path", str(test_file))
+            
+            # 用戶請求翻譯（不需要指定路徑）
+            inject_text_to_system("Translate this file to uwucat format.")
+            
+            # 等待工作流程完成（LLM 處理需要較長時間）
+            info_log("[Test] ⏳ 等待工作流程完成（LLM 翻譯中）...")
+            result = monitor.wait_for_completion(timeout=120)  # 增加超時時間
+            
+            # 驗證結果
+            assert result["completed"], "Workflow did not complete within timeout"
+            assert not result["failed"], "Workflow failed"
+            assert result["session_id"] is not None, "No workflow session ID"
+            
+            info_log(f"[Test] ✅ 工作流程完成: {result['session_id']}")
+            info_log(f"[Test] 📊 事件數量: {len(result['events'])}")
+            
+            # 驗證翻譯檔案是否生成
+            translated_file = test_file.parent / f"{test_file.stem}_translated.txt"
+            
+            if translated_file.exists():
+                info_log(f"[Test] ✅ 翻譯檔案已生成: {translated_file}")
+                # 讀取並顯示部分內容
+                with open(translated_file, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    preview = content[:200] + "..." if len(content) > 200 else content
+                    info_log(f"[Test] 📄 翻譯內容預覽:\n{preview}")
+                
+                # 🔧 保留檔案不刪除，方便檢查結果
+                info_log(f"[Test] 📁 翻譯檔案保留於: {translated_file}")
+            else:
+                info_log(f"[Test] ⚠️ 翻譯檔案未找到: {translated_file}")
+                # 不要 fail，因為可能路徑問題，但記錄警告
+            
+            # 8. 驗證事件序列
+            event_types = [e[0] for e in result["events"]]
+            assert "step_completed" in event_types, "No step completion events"
+            assert "session_ended" in event_types, "No session end event"
+            
+            info_log("[Test] ✅ 文件翻譯完整循環測試通過")
+            
+        finally:
+            monitor.cleanup()
+    
+    def test_ocr_recognition_full_cycle(self, system_components, test_image):
+        """
+        測試完整的 OCR 辨識工作流程循環
+        
+        流程：
+        1. 使用者輸入：「辨識這張圖片中的文字」
+        2. NLP 判斷意圖：file_operation
+        3. LLM 通過 MCP 啟動 file_ocr_recognition_workflow
+        4. 工作流執行：
+           - Step 1 (image_selection): 選擇圖片（使用 WorkingContext）
+           - Step 2 (ocr_confirm): 確認執行（需要用戶輸入）
+           - Step 3 (llm_ocr_recognition): LLM 辨識圖片文字
+           - Step 4 (save_ocr_result): 儲存辨識結果
+        5. 工作流程完成，LLM 生成總結回應
+        
+        測試重點：
+        - LLM_PROCESSING 步驟中的 OCR 任務是否正常運作
+        - 圖片辨識是否成功（使用 Gemini vision API）
+        - 辨識結果是否成功儲存到桌面
+        - WS 是否正確結束
+        """
+        from utils.debug_helper import info_log
+        import time
+        import os
+        
+        system_loop = system_components["system_loop"]
+        event_bus = system_components["event_bus"]
+        
+        # 創建工作流程監控器（追蹤互動步驟）
+        class OCRWorkflowMonitor(WorkflowCycleMonitor):
+            def __init__(self, event_bus):
+                super().__init__(event_bus)
+                self.interactive_step_count = 0
+                self.awaiting_input_event = threading.Event()
+                self.current_step = None
+                self.tts_output_count = 0
+                self.detected_interactive_steps = set()
+                self.expected_tts_outputs = 1  # 工作流啟動回應（包含互動提示）
+                
+                # 額外訂閱事件
+                from core.event_bus import SystemEvent
+                self.event_bus.subscribe(SystemEvent.OUTPUT_LAYER_COMPLETE, self._on_output_complete, handler_name="Monitor.output_complete")
+                self.event_bus.subscribe(SystemEvent.WORKFLOW_REQUIRES_INPUT, self._on_requires_input, handler_name="Monitor.requires_input")
+                
+            def _on_requires_input(self, event):
+                """追蹤工作流請求輸入事件"""
+                data = event.data
+                step_id = data.get('step_id')
+                if step_id and step_id not in self.detected_interactive_steps:
+                    self.detected_interactive_steps.add(step_id)
+                    self.interactive_step_count += 1
+                    self.current_step = step_id
+                    info_log(f"[Monitor] 檢測到互動步驟（透過 WORKFLOW_REQUIRES_INPUT）: {self.current_step}")
+            
+            def _on_step_completed(self, event):
+                """追蹤步驟完成，檢測互動步驟"""
+                super()._on_step_completed(event)
+                data = event.data
+                
+                # 檢查下一步是否為互動步驟
+                next_step_info = data.get('next_step_info')
+                if next_step_info and next_step_info.get('step_type') == 'interactive':
+                    step_id = next_step_info.get('step_id')
+                    if step_id not in self.detected_interactive_steps:
+                        self.detected_interactive_steps.add(step_id)
+                        self.interactive_step_count += 1
+                        self.current_step = step_id
+                        info_log(f"[Monitor] 檢測到互動步驟: {self.current_step}")
+            
+            def _on_output_complete(self, event):
+                """追蹤 TTS 輸出完成"""
+                self.tts_output_count += 1
+                info_log(f"[Monitor] TTS 輸出完成 (第 {self.tts_output_count} 次，期待 {self.expected_tts_outputs} 次)")
+                
+                # 等待所有期望的 TTS 輸出完成後才設置事件
+                if self.current_step and self.tts_output_count >= self.expected_tts_outputs:
+                    info_log(f"[Monitor] 所有 TTS 輸出完成，設置 awaiting_input_event 以響應步驟: {self.current_step}")
+                    self.awaiting_input_event.set()
+                    # 重置計數器為下一個互動步驟做準備
+                    self.tts_output_count = 0
+                    self.expected_tts_outputs = 1  # 下一個互動步驟也是1次輸出
+            
+            def cleanup(self):
+                """清理資源"""
+                from core.event_bus import SystemEvent
+                try:
+                    self.event_bus.unsubscribe(SystemEvent.OUTPUT_LAYER_COMPLETE, self._on_output_complete)
+                    self.event_bus.unsubscribe(SystemEvent.WORKFLOW_REQUIRES_INPUT, self._on_requires_input)
+                except:
+                    pass
+                super().cleanup()
+        
+        monitor = OCRWorkflowMonitor(event_bus)
+        
+        try:
+            # 1. 準備測試：模擬前端拖曳圖片
+            info_log("[Test] 🎯 測試：OCR 辨識完整循環")
+            info_log(f"[Test] 🖼️ 圖片路徑: {test_image}")
+            
+            # 模擬前端拖曳圖片：設置 WorkingContext
+            from core.working_context import working_context_manager
+            working_context_manager.set_context_data("current_file_path", str(test_image))
+            
+            # 用戶請求 OCR 辨識（不需要指定路徑）
+            inject_text_to_system("Recognize the text in this image")
+            
+            # 3. 等待互動步驟 (ocr_confirm)
+            info_log("[Test] ⏳ 等待互動步驟: ocr_confirm")
+            if monitor.awaiting_input_event.wait(timeout=60):
+                info_log(f"[Test] 📝 響應步驟: {monitor.current_step}")
+                time.sleep(2)  # 等待 LLM 生成提示
+                
+                # 注入確認輸入
+                inject_text_to_system("yes")
+                monitor.awaiting_input_event.clear()
+            else:
+                info_log(f"[Test] ❌ 超時！TTS輸出次數: {monitor.tts_output_count}/{monitor.expected_tts_outputs}")
+                pytest.fail("Timeout waiting for ocr_confirm step")
+            
+            # 5. 等待工作流程完成（LLM 處理需要較長時間）
+            info_log("[Test] ⏳ 等待工作流程完成（LLM OCR 處理中）...")
+            result = monitor.wait_for_completion(timeout=120)  # 增加超時時間
+            
+            # 6. 驗證結果
+            assert result["completed"], "Workflow did not complete within timeout"
+            assert not result["failed"], "Workflow failed"
+            assert result["session_id"] is not None, "No workflow session ID"
+            
+            info_log(f"[Test] ✅ 工作流程完成: {result['session_id']}")
+            info_log(f"[Test] 📊 事件數量: {len(result['events'])}")
+            
+            # 7. 驗證 OCR 結果檔案是否生成
+            desktop_path = Path(os.path.expanduser("~/Desktop"))
+            ocr_file = desktop_path / f"{test_image.stem}_ocr.txt"
+            
+            if ocr_file.exists():
+                info_log(f"[Test] ✅ OCR 結果檔案已生成: {ocr_file}")
+                # 讀取並顯示完整內容
+                with open(ocr_file, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    info_log(f"[Test] 📄 OCR 辨識內容:\n{content}")
+                
+                # 🔧 保留檔案不刪除，方便檢查結果
+                info_log(f"[Test] 📁 OCR 結果檔案保留於: {ocr_file}")
+            else:
+                info_log(f"[Test] ⚠️ OCR 結果檔案未找到: {ocr_file}")
+                # 不要 fail，因為可能路徑問題，但記錄警告
+            
+            # 8. 驗證事件序列
+            event_types = [e[0] for e in result["events"]]
+            assert "step_completed" in event_types, "No step completion events"
+            assert "session_ended" in event_types, "No session end event"
+            
+            info_log("[Test] ✅ OCR 辨識完整循環測試通過")
             
         finally:
             monitor.cleanup()

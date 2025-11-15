@@ -1576,7 +1576,7 @@ class NLPModule(BaseModule):
             from .intent_types import IntentSegment as NewIntentSegment
             
             # 查詢 SYS 模組的 MCP 工具
-            sys_module = core_framework.get_module('sys')
+            sys_module = core_framework.get_module('sys_module')
             if not sys_module:
                 debug_log(3, "[NLP] SYS module not available for intent correction")
                 return segment

@@ -333,117 +333,14 @@ def create_quick_phrases_workflow(session: WorkflowSession) -> WorkflowEngine:
     
     return WorkflowEngine(workflow_def, session)
 
-
-# ==================== OCR Extract Workflow ====================
-
-def create_ocr_extract_workflow(session: WorkflowSession) -> WorkflowEngine:
-    """
-    OCR 辨識工作流
-    
-    步驟：
-    1. 輸入圖片路徑
-    2. 選擇輸出模式（文字 / PDF）
-    3. 執行 OCR
-    """
-    workflow_def = WorkflowDefinition(
-        workflow_type="ocr_extract",
-        name="OCR 文字辨識",
-        description="從圖片中辨識文字",
-        workflow_mode=WorkflowMode.DIRECT
-    )
-    
-    # 步驟 1: 輸入圖片路徑
-    def validate_image_path(path: str) -> tuple:
-        import os
-        path = path.strip().strip('"').strip("'")
-        if not os.path.exists(path):
-            return False, "檔案不存在"
-        
-        ext = os.path.splitext(path)[1].lower()
-        if ext not in ['.png', '.jpg', '.jpeg', '.bmp', '.tiff']:
-            return False, "不支援的圖片格式"
-        
-        return True, ""
-    
-    image_path_step = StepTemplate.create_input_step(
-        session=session,
-        step_id="input_image_path",
-        prompt="Enter image path:",
-        skip_if_data_exists=True,
-        validator=validate_image_path,
-        description="收集圖片路徑"
-    )
-    
-    # 步驟 2: 選擇輸出模式
-    output_mode_selection_step = StepTemplate.create_selection_step(
-        session=session,
-        step_id="select_output_mode",
-        prompt="Select output mode:",
-        options=["text", "pdf"],
-        labels=["Plain Text", "PDF Document"],
-        required_data=[]
-    )
-    
-    # 步驟 3: 執行 OCR
-    def execute_ocr(session: WorkflowSession) -> StepResult:
-        from modules.sys_module.actions.text_processing import ocr_extract
-        
-        image_path = session.get_data("input_image_path", "").strip().strip('"').strip("'")
-        output_mode = session.get_data("select_output_mode")
-        
-        target_num = 1 if output_mode == "text" else 2
-        
-        info_log(f"[Workflow] 執行 OCR：路徑={image_path}, 模式={output_mode}")
-        
-        try:
-            result = ocr_extract(image_path=image_path, target_num=target_num)
-            
-            if target_num == 1:
-                # 文字模式
-                preview = result[:200] + "..." if len(result) > 200 else result
-                return StepResult.complete_workflow(
-                    f"辨識結果：\n{preview}",
-                    {"ocr_result": result}
-                )
-            else:
-                # PDF 模式
-                return StepResult.complete_workflow(
-                    f"PDF 已生成：{result}",
-                    {"pdf_path": result}
-                )
-        except Exception as e:
-            error_log(f"[Workflow] OCR 執行失敗：{e}")
-            return StepResult.failure(f"OCR 執行失敗：{e}")
-    
-    ocr_step = StepTemplate.create_processing_step(
-        session=session,
-        step_id="execute_ocr",
-        processor=execute_ocr,
-        required_data=["input_image_path", "select_output_mode"],
-        description="執行 OCR 辨識"
-    )
-    
-    # 組裝工作流
-    workflow_def.add_step(image_path_step)
-    workflow_def.add_step(output_mode_selection_step)
-    workflow_def.add_step(ocr_step)
-    
-    workflow_def.set_entry_point("input_image_path")
-    workflow_def.add_transition("input_image_path", "select_output_mode")
-    workflow_def.add_transition("select_output_mode", "execute_ocr")
-    workflow_def.add_transition("execute_ocr", "END")
-    
-    return WorkflowEngine(workflow_def, session)
-
-
 # ==================== Workflow Registry ====================
 
 def get_available_text_workflows() -> list:
     """獲取可用的文字處理工作流列表"""
     return [
         "clipboard_tracker",
-        "quick_phrases",
-        "ocr_extract"
+        "quick_phrases"
+        # ocr_extract 已移至 file_workflows.py
     ]
 
 
@@ -451,8 +348,8 @@ def create_text_workflow(workflow_type: str, session: WorkflowSession) -> Workfl
     """創建文字處理工作流"""
     workflows = {
         "clipboard_tracker": create_clipboard_tracker_workflow,
-        "quick_phrases": create_quick_phrases_workflow,
-        "ocr_extract": create_ocr_extract_workflow
+        "quick_phrases": create_quick_phrases_workflow
+        # ocr_extract 已移至 file_workflows.py
     }
     
     if workflow_type not in workflows:

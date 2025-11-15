@@ -1,7 +1,7 @@
 # modules/llm_module/gemini_client.py
 
 import os
-from typing import Any
+from typing import Any, Optional
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
@@ -301,7 +301,17 @@ class GeminiWrapper:
 
 
     # [修改] 允許 str 或 list[str]
-    def query(self, prompt: str, mode: str = "chat", cached_content=None, tools=None) -> dict:
+    def query(self, prompt: str, mode: str = "chat", cached_content=None, tools=None, system_instruction: Optional[str] = None) -> dict:
+        """
+        查詢 Gemini API
+        
+        Args:
+            prompt: 用戶輸入
+            mode: 模式（chat/work/internal）
+            cached_content: 快取內容 ID
+            tools: MCP 工具列表
+            system_instruction: 自定義系統提示詞（用於 internal 模式）
+        """
         contents = [types.Content(role="user", parts=[types.Part(text=prompt)])]
         schema = self.response_schemas.get(mode, self.response_schemas["chat"])
 
@@ -311,6 +321,10 @@ class GeminiWrapper:
             "max_output_tokens": self.max_tokens,
             "safety_settings": self.safety_settings
         }
+        
+        # 🔧 支援自定義系統提示詞（用於 internal 模式或工作流）
+        if system_instruction:
+            config_params["system_instruction"] = types.Part(text=system_instruction)
         
         # ✅ 如果提供了 tools，使用 function calling 模式；否則使用 JSON schema 模式
         if tools:

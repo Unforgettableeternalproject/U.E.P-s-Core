@@ -74,7 +74,7 @@ def system_components():
     
     # 3. 獲取 sys_module
     from core.registry import get_module
-    sys_module = get_module("sys")
+    sys_module = get_module("sys_module")
     
     # 4. 準備組件
     components = {

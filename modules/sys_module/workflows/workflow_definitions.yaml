@@ -22,14 +22,8 @@ workflows:
     category: "file"
     work_mode: "direct"
     
-    initial_params:
-      file_path_input:
-        type: str
-        optional: false
-        description: "Path to the file to read"
-        maps_to_step: "file_path_input"
-        extraction_hint: "Extract file paths from user input"
-    
+    initial_params: {}
+
     mcp_tool_params:
       command:
         type: string
@@ -47,13 +41,6 @@ workflows:
     work_mode: "direct"
     
     initial_params:
-      file_selection:
-        type: str
-        optional: false
-        description: "Path to the file to archive"
-        maps_to_step: "file_selection"
-        extraction_hint: "Extract file paths from user input"
-      
       target_dir_input:
         type: str
         optional: true
@@ -78,13 +65,6 @@ workflows:
     work_mode: "direct"
     
     initial_params:
-      file_path_input:
-        type: str
-        optional: false
-        description: "Path to the file to summarize"
-        maps_to_step: "file_path_input"
-        extraction_hint: "Extract file paths from user input"
-      
       num_tags:
         type: int
         optional: true
@@ -101,6 +81,48 @@ workflows:
         type: object
         required: false
         description: "Initial data: file_path_input (required), num_tags (default: 5)"
+
+  translate_document:
+    name: "translate_document"
+    description: "Translate text documents (TXT, MD) to target language using LLM"
+    category: "file"
+    work_mode: "direct"
+    
+    initial_params:
+      target_language:
+        type: str
+        optional: false
+        description: "Target language (e.g., English, 日本語, 한국어)"
+        maps_to_step: "target_language"
+        extraction_hint: "Extract target language from user input (English, Japanese, Korean, etc.)"
+    
+    mcp_tool_params:
+      command:
+        type: string
+        required: true
+        description: "User original command"
+      initial_data:
+        type: object
+        required: false
+        description: "Initial data: file_path_input (required), target_language (optional)"
+
+  ocr_extract:
+    name: "ocr_extract"
+    description: "Extract text from images using OCR (supports Chinese Traditional and English)"
+    category: "file"
+    work_mode: "direct"
+    
+    initial_params: {}
+    
+    mcp_tool_params:
+      command:
+        type: string
+        required: true
+        description: "User original command"
+      initial_data:
+        type: object
+        required: false
+        description: "Initial data: file_path_input (required)"
 
   # ==================== Info Workflows ====================
   
@@ -243,37 +265,6 @@ workflows:
         required: false
         description: "Initial data: template_name (optional), custom_prompt (optional, English)"
 
-  ocr_extract:
-    name: "ocr_extract"
-    description: "Extract text from images using OCR (supports Chinese Traditional and English)"
-    category: "text"
-    work_mode: "direct"
-    
-    initial_params:
-      image_path:
-        type: str
-        optional: false
-        description: "Path to the image file"
-        maps_to_step: "image_path_step"
-        extraction_hint: "Extract file paths from user input"
-      
-      target_num:
-        type: int
-        optional: true
-        description: "Output format: 1=text (default), 2=PDF"
-        maps_to_step: "target_selection"
-        extraction_hint: "1 for text, 2 if user mentions PDF"
-    
-    mcp_tool_params:
-      command:
-        type: string
-        required: true
-        description: "User original command"
-      initial_data:
-        type: object
-        required: false
-        description: "Initial data: image_path (required), target_num (1=text, 2=PDF)"
-
   # ==================== Analysis Workflows ====================
   
   code_analysis:
@@ -326,41 +317,3 @@ workflows:
         type: object
         required: false
         description: "No additional data needed"
-
-  translate_document:
-    name: "translate_document"
-    description: "Translate documents (PDF, DOCX, TXT) using LLM, supports 20 languages"
-    category: "utility"
-    work_mode: "direct"
-    
-    initial_params:
-      file_path:
-        type: str
-        optional: false
-        description: "Path to the document file"
-        maps_to_step: "file_path_input_step"
-        extraction_hint: "Extract file paths from user input"
-      
-      target_lang:
-        type: str
-        optional: true
-        description: "Target language (default: zh-tw)"
-        maps_to_step: "target_lang_step"
-        extraction_hint: "Extract target language: English=en, 中文/繁體=zh-tw, 日文=ja"
-      
-      source_lang:
-        type: str
-        optional: true
-        description: "Source language (default: auto-detect)"
-        maps_to_step: "source_lang_step"
-        extraction_hint: "Extract source language, default to auto for auto-detection"
-    
-    mcp_tool_params:
-      command:
-        type: string
-        required: true
-        description: "User original command"
-      initial_data:
-        type: object
-        required: false
-        description: "Initial data: file_path (required), target_lang (default: zh-tw), source_lang (default: auto)"

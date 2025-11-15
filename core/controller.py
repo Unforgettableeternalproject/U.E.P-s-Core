@@ -318,8 +318,8 @@ class UnifiedController:
                 try:
                     from core.working_context import working_context_manager
                     working_context_manager.global_context_data['current_gs_id'] = gs_result
-                    working_context_manager.global_context_data['current_cycle_index'] = -1
-                    debug_log(2, f"[Controller] 自動創建的 GS ID 已設置到全局上下文: {gs_result}")
+                    working_context_manager.global_context_data['current_cycle_index'] = 0
+                    debug_log(2, f"[Controller] 自動創建的 GS ID 和 cycle_index 已設置到全局上下文: {gs_result}, cycle=0")
                 except Exception as e:
                     error_log(f"[Controller] 設置全局 GS ID 失敗: {e}")
                 
@@ -367,8 +367,8 @@ class UnifiedController:
             # 2. 清理全局上下文中的 GS ID 和 cycle_index
             try:
                 working_context_manager.global_context_data['current_gs_id'] = 'unknown'
-                working_context_manager.global_context_data['current_cycle_index'] = -1
-                debug_log(3, "[Controller] 全局 GS ID 已重置")
+                working_context_manager.global_context_data['current_cycle_index'] = 0
+                debug_log(3, "[Controller] 全局 GS ID 和 cycle_index 已重置")
             except Exception as e:
                 error_log(f"[Controller] 清理全局 GS ID 失敗: {e}")
             
@@ -454,9 +454,9 @@ class UnifiedController:
                 try:
                     from core.working_context import working_context_manager
                     working_context_manager.global_context_data['current_gs_id'] = current_gs_id
-                    # 初始化 cycle_index 為 -1 (SystemLoop 會在檢測到循環開始時遞增為 0)
-                    working_context_manager.global_context_data['current_cycle_index'] = -1
-                    debug_log(2, f"[UnifiedController] GS ID 已設置到全局上下文: {current_gs_id}")
+                    # 初始化 cycle_index 為 0（每個新 GS 從 cycle 0 開始）
+                    working_context_manager.global_context_data['current_cycle_index'] = 0
+                    debug_log(2, f"[UnifiedController] GS ID 和 cycle_index 已設置到全局上下文: {current_gs_id}, cycle=0")
                 except Exception as e:
                     error_log(f"[UnifiedController] 設置全局 GS ID 失敗: {e}")
                 

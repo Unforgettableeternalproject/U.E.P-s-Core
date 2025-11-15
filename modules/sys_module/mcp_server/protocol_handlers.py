@@ -40,7 +40,7 @@ class MCPRequest(BaseModel):
         {
             "jsonrpc": "2.0",
             "method": "start_workflow",
-            "params": {"workflow_type": "file_processing", "command": "處理檔案"},
+            "params": {"workflow_type": "drop_and_read", "command": "讀取檔案內容"},
             "id": 1
         }
     """

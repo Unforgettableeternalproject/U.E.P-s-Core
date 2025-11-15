@@ -557,7 +557,7 @@ def create_file_workflow(workflow_type: str, session: WorkflowSession) -> Workfl
     根據工作流程類型創建對應的文件工作流程引擎
     
     Args:
-        workflow_type: 工作流程類型 (drop_and_read, intelligent_archive, summarize_tag, file_processing)
+        workflow_type: 工作流程類型 (drop_and_read, intelligent_archive, summarize_tag, translate_document, ocr_extract)
         session: 工作流程會話
         
     Returns:
@@ -575,63 +575,8 @@ def create_file_workflow(workflow_type: str, session: WorkflowSession) -> Workfl
         return create_translate_document_workflow(session)
     elif workflow_type == "ocr_extract":
         return create_ocr_extract_workflow(session)
-    elif workflow_type in ["file_processing", "file_interaction"]:
-        # 通用文件處理工作流程，讓用戶選擇具體操作
-        return create_file_selection_workflow(session)
     else:
         raise ValueError(f"未知的文件工作流程類型: {workflow_type}")
-
-
-def create_file_selection_workflow(session: WorkflowSession) -> WorkflowEngine:
-    """創建文件操作選擇工作流程"""
-    workflow_def = WorkflowDefinition(
-        workflow_type="file_selection",
-        name="文件操作選擇工作流程",
-        description="讓用戶選擇要執行的文件操作類型",
-        workflow_mode=WorkflowMode.DIRECT,  # 選擇流程使用直接模式
-        requires_llm_review=False
-    )
-    
-    # 步驟1: 選擇文件操作類型
-    operation_step = StepTemplate.create_selection_step(
-        session,
-        "operation_selection",
-        "請選擇要執行的文件操作:",
-        ["drop_and_read", "intelligent_archive", "summarize_tag"],
-        ["讀取檔案內容", "智慧歸檔檔案", "生成摘要標籤"]
-    )
-    
-    # 步驟2: 重定向到對應的工作流程
-    def redirect_to_workflow(session):
-        operation = session.get_data("operation_selection", "")
-        
-        if operation in ["drop_and_read", "intelligent_archive", "summarize_tag"]:
-            return StepResult.complete_workflow(
-                f"已選擇操作: {operation}，請使用 start_workflow 啟動對應的工作流程",
-                {
-                    "selected_operation": operation,
-                    "redirect_workflow": operation,
-                    "completion_time": datetime.datetime.now().isoformat()
-                }
-            )
-        else:
-            return StepResult.failure("Invalid operation selection")
-    
-    redirect_step = StepTemplate.create_processing_step(
-        session,
-        "redirect_workflow",
-        redirect_to_workflow,
-        ["operation_selection"]
-    )
-    
-    # 建立工作流程
-    workflow_def.add_step(operation_step)
-    workflow_def.add_step(redirect_step)
-    
-    workflow_def.set_entry_point("operation_selection")
-    workflow_def.add_transition("operation_selection", "redirect_workflow")
-    
-    return WorkflowEngine(workflow_def, session)
 
 
 def get_available_file_workflows() -> List[str]:
@@ -641,9 +586,7 @@ def get_available_file_workflows() -> List[str]:
         "intelligent_archive", 
         "summarize_tag",
         "translate_document",
-        "ocr_extract",
-        "file_processing",
-        "file_interaction"
+        "ocr_extract"
     ]
 
 

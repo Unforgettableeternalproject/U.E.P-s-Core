@@ -517,7 +517,7 @@ class SYSModule(BaseModule):
         Start a new workflow session using the unified workflow engine
         
         Args:
-            workflow_type: The type of workflow (test workflows: echo, countdown, data_collector, random_fail, tts_test; file workflows: file_processing, file_interaction, etc.)
+            workflow_type: The type of workflow (test workflows: echo, countdown, data_collector, random_fail, tts_test; file workflows: drop_and_read, intelligent_archive, summarize_tag, translate_document, etc.)
             command: The original command that triggered this workflow
             initial_data: Initial data for the workflow
             
@@ -627,8 +627,6 @@ class SYSModule(BaseModule):
                 engine = create_test_workflow(workflow_type, session, llm_module=llm_module)
                 
             # File workflows
-            elif workflow_type in ["file_processing", "file_interaction"]:
-                engine = create_file_workflow(workflow_type, session)
             elif workflow_type in ["drop_and_read", "intelligent_archive", "summarize_tag", "translate_document", "ocr_extract"]:
                 engine = create_file_workflow(workflow_type, session)
             
@@ -648,20 +646,12 @@ class SYSModule(BaseModule):
             elif workflow_type in get_available_utility_workflows():
                 engine = create_utility_workflow(workflow_type, session)
                 
-            # Other workflow types - validate against WorkflowType enum
+            # Unknown workflow type
             else:
-                try:
-                    wf_type = WorkflowType(workflow_type)
-                    if wf_type == WorkflowType.FILE_PROCESSING:
-                        engine = create_file_workflow("file_processing", session)
-                    else:
-                        # Try as test workflow
-                        engine = create_test_workflow(workflow_type, session)
-                except ValueError:
-                    return {
-                        "status": "error",
-                        "message": f"未知的工作流程類型: {workflow_type}"
-                    }
+                return {
+                    "status": "error",
+                    "message": f"未知的工作流程類型: {workflow_type}。可用的工作流: {', '.join(get_available_file_workflows() + get_available_text_workflows() + get_available_analysis_workflows() + get_available_info_workflows() + get_available_utility_workflows())}"
+                }
             
             if not engine:
                 return {

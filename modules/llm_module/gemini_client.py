@@ -357,20 +357,20 @@ class GeminiWrapper:
         # 🔧 防禦性檢查：確保 result 和 candidates 不是 None
         if result is None:
             error_log("[Gemini] API 返回 None")
-            return {"text": "❌ Gemini API 未產出回應"}
+            return {"text": "Welp...I did not come up with any response, sorry."}
         
         if not hasattr(result, 'candidates') or result.candidates is None or len(result.candidates) == 0:
             error_log(f"[Gemini] API 返回無效的 candidates: {result}")
-            return {"text": "❌ Gemini API 返回無效回應"}
+            return {"text": "Welp...I did not come up with any valid response, sorry."}
         
         candidate = result.candidates[0]
         if candidate is None or not hasattr(candidate, 'content') or candidate.content is None:
             error_log(f"[Gemini] candidate 或 content 為 None")
-            return {"text": "❌ Gemini API 返回空內容"}
+            return {"text": "Welp...I did not come up with any content, sorry."}
         
         if not hasattr(candidate.content, 'parts') or candidate.content.parts is None or len(candidate.content.parts) == 0:
             error_log(f"[Gemini] content.parts 為空")
-            return {"text": "❌ Gemini API 返回空回應部分"}
+            return {"text": "Sorry, I could not generate any response parts."}
         
         part = candidate.content.parts[0] # type: ignore
 
@@ -415,7 +415,7 @@ class GeminiWrapper:
         elif hasattr(part, 'struct') and part.struct:  # type: ignore
             payload = part.struct  # type: ignore
         else:
-            payload = {"text": "❌ Gemini 未產出有效回應"}
+            payload = {"text": "Gemini did not produce a valid response."}
 
         # [建議] 把快取命中資訊帶回去，方便 Debug GUI 顯示
         meta = getattr(result, "usage_metadata", None)

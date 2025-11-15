@@ -1324,18 +1324,18 @@ class NLPModule(BaseModule):
     def _get_current_cycle_index(self) -> int:
         """
         獲取當前循環計數
-        從 working_context 的全局數據中讀取 (由 SystemLoop 設置)
+        從 working_context 的全局數據中讀取 (由 Controller 在 GS 創建時設置)
         
         Returns:
-            int: 當前 cycle_index,如果無法獲取則返回 -1
+            int: 當前 cycle_index,如果無法獲取則返回 0（假設為第一個 cycle）
         """
         try:
             from core.working_context import working_context_manager
-            cycle_index = working_context_manager.global_context_data.get('current_cycle_index', -1)
+            cycle_index = working_context_manager.global_context_data.get('current_cycle_index', 0)
             return cycle_index
         except Exception as e:
             error_log(f"[NLP] 獲取 cycle_index 失敗: {e}")
-            return -1
+            return 0
 
     # === 以下是原有不當的路由邏輯，已移除 ===
     # _invoke_target_module() 和 _prepare_module_input() 方法

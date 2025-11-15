@@ -55,7 +55,7 @@ class MCPServer:
                 ToolParameter(
                     name="workflow_type",
                     type=ToolParameterType.STRING,
-                    description="Workflow type, e.g., drop_and_read, intelligent_archive, file_processing",
+                    description="Workflow type, e.g., drop_and_read, intelligent_archive, summarize_tag, translate_document",
                     required=True
                 ),
                 ToolParameter(

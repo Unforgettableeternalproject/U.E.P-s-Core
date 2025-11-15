@@ -154,7 +154,8 @@ class PromptManager:
                 "- drop_and_read: Read file content (for requests like 'read file', 'show content', 'open file')\n"
                 "- intelligent_archive: Smart file organization (for 'organize', 'archive', 'sort files')\n"
                 "- summarize_tag: Summarize and tag files (for 'summarize', 'tag', 'analyze files')\n"
-                "- file_processing: General file operations (for other file tasks)\n\n"
+                "- translate_document: Translate documents to different languages\n"
+                "- code_analysis: Analyze code files for issues and improvements\n\n"
             )
             
             # ✅ NLP 工作流提示（如果有）- 放在可用工作流之後

@@ -33,8 +33,21 @@ async def _wrap_workflow_handler(workflow_type: str, params: dict, sys_module) -
     initial_data_raw = params.get("initial_data", "{}")
     if isinstance(initial_data_raw, str):
         try:
-            initial_data = json.loads(initial_data_raw) if initial_data_raw else {}
-        except json.JSONDecodeError:
+            # 🔧 容錯處理：自動修復 Windows 路徑中的反斜槓問題
+            # LLM 可能生成 "D:\" 這種格式，需要轉換為有效的 JSON
+            fixed_json_str = initial_data_raw
+            if initial_data_raw:
+                # 將 Windows 路徑中的單反斜槓替換為雙反斜槓或正斜槓
+                # 例如: "D:\" -> "D:/" 或 "D:\\" -> "D:\\\\"
+                import re
+                # 方案：將路徑中的反斜槓替換為正斜槓（更安全，跨平台）
+                # 匹配模式：盤符後的反斜槓，如 "C:\", "D:\"
+                fixed_json_str = re.sub(r'([A-Za-z]:)\\+', r'\1/', fixed_json_str)
+                debug_log(3, f"[WorkflowRegistry] 修復 JSON 路徑: {initial_data_raw} -> {fixed_json_str}")
+            
+            initial_data = json.loads(fixed_json_str) if fixed_json_str else {}
+        except json.JSONDecodeError as e:
+            error_log(f"[WorkflowRegistry] JSON 解析失敗: {e}, 原始字串: {initial_data_raw}")
             return ToolResult.error(f"initial_data 格式錯誤: 無效的 JSON 字串")
     else:
         initial_data = initial_data_raw if isinstance(initial_data_raw, dict) else {}
@@ -148,6 +161,7 @@ def _build_initial_data_description(initial_params: Dict[str, Any]) -> str:
     return (
         f"JSON string containing initial workflow data. Extract from user input if available:\n{params_text}\n"
         f'Example format: {example_json}\n'
+        f'⚠️ Important: For file paths, use forward slashes (/) or double backslashes (\\\\) in JSON. Example: "C:/Users" or "C:\\\\Users"\n'
         f'If no parameters can be extracted, provide empty JSON string "{{}}"'
     )
 

@@ -156,6 +156,45 @@ def test_image():
     return test_image
 
 
+@pytest.fixture
+def isolated_gs(system_components):
+    """
+    確保每個測試使用獨立的 GS
+    
+    工作原理:
+    - Setup: 清理測試開始前的殘留 GS (如果有)
+    - 測試執行期間: Controller 監控線程會在檢測到狀態佇列有項目時自動創建新 GS
+    - Teardown: 明確結束測試期間創建的 GS
+    
+    這確保了:
+    1. 測試之間完全隔離,不共享 GS
+    2. 每個測試都在乾淨的環境中開始
+    3. 測試結束後不留下殘留狀態
+    """
+    from utils.debug_helper import info_log
+    controller = system_components["controller"]
+    
+    # Setup: 確保測試開始前沒有活躍的 GS
+    current_gs = controller.session_manager.get_current_general_session()
+    if current_gs:
+        info_log(f"[Test Fixture] ⚠️ 發現殘留 GS: {current_gs.session_id}，正在清理...")
+        controller.session_manager.end_general_session({"status": "test_cleanup"})
+        import time
+        time.sleep(0.5)
+    
+    yield
+    
+    # Teardown: 測試結束後明確結束 GS
+    current_gs = controller.session_manager.get_current_general_session()
+    if current_gs:
+        info_log(f"[Test Fixture] 🧹 測試結束，清理 GS: {current_gs.session_id}")
+        controller.session_manager.end_general_session({"status": "test_complete"})
+        import time
+        time.sleep(0.5)
+    else:
+        info_log("[Test Fixture] ✅ 測試結束，沒有需要清理的 GS")
+
+
 class WorkflowCycleMonitor:
     """工作流程循環監控器"""
     
@@ -165,6 +204,7 @@ class WorkflowCycleMonitor:
         self.workflow_completed = threading.Event()
         self.workflow_failed = threading.Event()
         self.workflow_session_id = None
+        self.completed_steps = []
         
         # 訂閱相關事件
         self.event_bus.subscribe(SystemEvent.WORKFLOW_STEP_COMPLETED, self._on_step_completed)
@@ -174,8 +214,28 @@ class WorkflowCycleMonitor:
     def _on_step_completed(self, event):
         """記錄步驟完成事件"""
         self.events.append(("step_completed", event.data))
+        
+        # 🔧 檢查步驟是否實際成功
+        step_result = event.data.get('step_result', {})
+        if not step_result.get('success', True):
+            # 步驟執行失敗，標記為工作流失敗
+            self.workflow_failed.set()
+            from utils.debug_helper import error_log
+            error_log(f"[Monitor] 步驟執行失敗: {step_result}")
+        
+        # 🆕 優先使用 executed_steps 列表（包含所有自動執行的步驟）
+        executed_steps = event.data.get('executed_steps', [])
+        if executed_steps:
+            for step_id in executed_steps:
+                if step_id and step_id != 'unknown':
+                    self.completed_steps.append(step_id)
+        else:
+            # 回退到單一 step_id（向後兼容）
+            step_id = step_result.get('step_id', 'unknown')
+            self.completed_steps.append(step_id)
+        
         from utils.debug_helper import debug_log
-        debug_log(2, f"[Monitor] 步驟完成: {event.data.get('session_id')}")
+        debug_log(2, f"[Monitor] 步驟完成: {self.completed_steps[-1] if self.completed_steps else 'unknown'} (session: {event.data.get('session_id')})")
     
     def _on_workflow_failed(self, event):
         """記錄工作流程失敗事件"""
@@ -208,7 +268,8 @@ class WorkflowCycleMonitor:
             "completed": completed,
             "failed": failed,
             "events": self.events,
-            "session_id": self.workflow_session_id
+            "session_id": self.workflow_session_id,
+            "completed_steps": self.completed_steps
         }
     
     def cleanup(self):
@@ -343,7 +404,7 @@ class TestFileWorkflowFullCycle:
     """完整工作流程循環測試"""
     
     #@pytest.mark.skip(reason="先測試 summarize_tag")
-    def test_drop_and_read_full_cycle(self, system_components, test_file):
+    def test_drop_and_read_full_cycle(self, system_components, isolated_gs, test_file):
         """
         測試完整的檔案讀取工作流程循環
         
@@ -417,7 +478,7 @@ class TestFileWorkflowFullCycle:
             time.sleep(1.0)
             info_log("[Test] ✅ 測試清理完成")
     
-    def test_intelligent_archive_full_cycle(self, system_components, test_file):
+    def test_intelligent_archive_full_cycle(self, system_components, isolated_gs, test_file):
         """
         測試完整的智慧歸檔工作流程循環（包含互動步驟）
         
@@ -441,74 +502,14 @@ class TestFileWorkflowFullCycle:
         from utils.debug_helper import info_log
         import time
         
+        from core.framework import core_framework
+        
         system_loop = system_components["system_loop"]
         event_bus = system_components["event_bus"]
+        sys_mod = core_framework.get_module("sys_module")
         
-        # 創建工作流程監控器（追蹤互動步驟）
-        class ArchiveWorkflowMonitor(WorkflowCycleMonitor):
-            def __init__(self, event_bus):
-                super().__init__(event_bus)
-                self.interactive_step_count = 0
-                self.awaiting_input_event = threading.Event()
-                self.current_step = None
-                self.tts_output_count = 0
-                self.detected_interactive_steps = set()
-                self.expected_tts_outputs = 1  # 工作流啟動回應（包含互動提示）
-                
-                # 額外訂閱事件
-                from core.event_bus import SystemEvent
-                self.event_bus.subscribe(SystemEvent.OUTPUT_LAYER_COMPLETE, self._on_output_complete, handler_name="Monitor.output_complete")
-                self.event_bus.subscribe(SystemEvent.WORKFLOW_REQUIRES_INPUT, self._on_requires_input, handler_name="Monitor.requires_input")
-                
-            def _on_requires_input(self, event):
-                """追蹤工作流請求輸入事件"""
-                data = event.data
-                step_id = data.get('step_id')
-                if step_id and step_id not in self.detected_interactive_steps:
-                    self.detected_interactive_steps.add(step_id)
-                    self.interactive_step_count += 1
-                    self.current_step = step_id
-                    info_log(f"[Monitor] 檢測到互動步驟（透過 WORKFLOW_REQUIRES_INPUT）: {self.current_step}")
-            
-            def _on_step_completed(self, event):
-                """追蹤步驟完成，檢測互動步驟"""
-                super()._on_step_completed(event)
-                data = event.data
-                
-                # 檢查下一步是否為互動步驟
-                next_step_info = data.get('next_step_info')
-                if next_step_info and next_step_info.get('step_type') == 'interactive':
-                    step_id = next_step_info.get('step_id')
-                    if step_id not in self.detected_interactive_steps:
-                        self.detected_interactive_steps.add(step_id)
-                        self.interactive_step_count += 1
-                        self.current_step = step_id
-                        info_log(f"[Monitor] 檢測到互動步驟: {self.current_step}")
-            
-            def _on_output_complete(self, event):
-                """追蹤 TTS 輸出完成"""
-                self.tts_output_count += 1
-                info_log(f"[Monitor] TTS 輸出完成 (第 {self.tts_output_count} 次，期待 {self.expected_tts_outputs} 次)")
-                
-                # 等待所有期望的 TTS 輸出完成後才設置事件
-                if self.current_step and self.tts_output_count >= self.expected_tts_outputs:
-                    info_log(f"[Monitor] 所有 TTS 輸出完成，設置 awaiting_input_event 以響應步驟: {self.current_step}")
-                    self.awaiting_input_event.set()
-                    # 重置計數器為下一個互動步驟做準備
-                    self.tts_output_count = 0
-                    self.expected_tts_outputs = 1  # 下一個互動步驟也是1次輸出
-            
-            def cleanup(self):
-                """清理資源"""
-                from core.event_bus import SystemEvent
-                try:
-                    self.event_bus.unsubscribe(SystemEvent.OUTPUT_LAYER_COMPLETE, self._on_output_complete)
-                    self.event_bus.unsubscribe(SystemEvent.WORKFLOW_REQUIRES_INPUT, self._on_requires_input)
-                except:
-                    pass
-                super().cleanup()
-        
-        monitor = ArchiveWorkflowMonitor(event_bus)
+        # 使用標準的 InteractiveWorkflowMonitor（期待2個互動步驟）
+        monitor = InteractiveWorkflowMonitor(event_bus, sys_module=sys_mod, expected_interactive_steps=2)
         
         try:
             # 1. 準備測試：模擬前端拖曳檔案
@@ -565,7 +566,7 @@ class TestFileWorkflowFullCycle:
         finally:
             monitor.cleanup()
     
-    def test_summarize_tag_full_cycle(self, system_components, test_file):
+    def test_summarize_tag_full_cycle(self, system_components, isolated_gs, test_file):
         """
         測試完整的檔案摘要標籤工作流程循環
         
@@ -592,74 +593,14 @@ class TestFileWorkflowFullCycle:
         import time
         import os
         
+        from core.framework import core_framework
+        
         system_loop = system_components["system_loop"]
         event_bus = system_components["event_bus"]
+        sys_mod = core_framework.get_module("sys_module")
         
-        # 創建工作流程監控器（追蹤互動步驟）
-        class SummaryWorkflowMonitor(WorkflowCycleMonitor):
-            def __init__(self, event_bus):
-                super().__init__(event_bus)
-                self.interactive_step_count = 0
-                self.awaiting_input_event = threading.Event()
-                self.current_step = None
-                self.tts_output_count = 0
-                self.detected_interactive_steps = set()
-                self.expected_tts_outputs = 1  # 工作流啟動回應（包含互動提示）
-                
-                # 額外訂閱事件
-                from core.event_bus import SystemEvent
-                self.event_bus.subscribe(SystemEvent.OUTPUT_LAYER_COMPLETE, self._on_output_complete, handler_name="Monitor.output_complete")
-                self.event_bus.subscribe(SystemEvent.WORKFLOW_REQUIRES_INPUT, self._on_requires_input, handler_name="Monitor.requires_input")
-                
-            def _on_requires_input(self, event):
-                """追蹤工作流請求輸入事件"""
-                data = event.data
-                step_id = data.get('step_id')
-                if step_id and step_id not in self.detected_interactive_steps:
-                    self.detected_interactive_steps.add(step_id)
-                    self.interactive_step_count += 1
-                    self.current_step = step_id
-                    info_log(f"[Monitor] 檢測到互動步驟（透過 WORKFLOW_REQUIRES_INPUT）: {self.current_step}")
-            
-            def _on_step_completed(self, event):
-                """追蹤步驟完成，檢測互動步驟"""
-                super()._on_step_completed(event)
-                data = event.data
-                
-                # 檢查下一步是否為互動步驟
-                next_step_info = data.get('next_step_info')
-                if next_step_info and next_step_info.get('step_type') == 'interactive':
-                    step_id = next_step_info.get('step_id')
-                    if step_id not in self.detected_interactive_steps:
-                        self.detected_interactive_steps.add(step_id)
-                        self.interactive_step_count += 1
-                        self.current_step = step_id
-                        info_log(f"[Monitor] 檢測到互動步驟: {self.current_step}")
-            
-            def _on_output_complete(self, event):
-                """追蹤 TTS 輸出完成"""
-                self.tts_output_count += 1
-                info_log(f"[Monitor] TTS 輸出完成 (第 {self.tts_output_count} 次，期待 {self.expected_tts_outputs} 次)")
-                
-                # 等待所有期望的 TTS 輸出完成後才設置事件
-                if self.current_step and self.tts_output_count >= self.expected_tts_outputs:
-                    info_log(f"[Monitor] 所有 TTS 輸出完成，設置 awaiting_input_event 以響應步驟: {self.current_step}")
-                    self.awaiting_input_event.set()
-                    # 重置計數器為下一個互動步驟做準備
-                    self.tts_output_count = 0
-                    self.expected_tts_outputs = 1  # 下一個互動步驟也是1次輸出
-            
-            def cleanup(self):
-                """清理資源"""
-                from core.event_bus import SystemEvent
-                try:
-                    self.event_bus.unsubscribe(SystemEvent.OUTPUT_LAYER_COMPLETE, self._on_output_complete)
-                    self.event_bus.unsubscribe(SystemEvent.WORKFLOW_REQUIRES_INPUT, self._on_requires_input)
-                except:
-                    pass
-                super().cleanup()
-        
-        monitor = SummaryWorkflowMonitor(event_bus)
+        # 使用標準的 InteractiveWorkflowMonitor（期待1個互動步驟: summary_confirm）
+        monitor = InteractiveWorkflowMonitor(event_bus, sys_module=sys_mod, expected_interactive_steps=1)
         
         try:
             # 1. 準備測試：模擬前端拖曳檔案
@@ -727,7 +668,7 @@ class TestFileWorkflowFullCycle:
         finally:
             monitor.cleanup()
     
-    def test_translate_document_full_cycle(self, system_components, test_file):
+    def test_translate_document_full_cycle(self, system_components, isolated_gs, test_file):
         """
         測試完整的文件翻譯工作流程循環
         
@@ -758,70 +699,8 @@ class TestFileWorkflowFullCycle:
         event_bus = system_components["event_bus"]
         
         # 創建工作流程監控器（追蹤互動步驟）
-        class TranslateWorkflowMonitor(WorkflowCycleMonitor):
-            def __init__(self, event_bus):
-                super().__init__(event_bus)
-                self.interactive_step_count = 0
-                self.awaiting_input_event = threading.Event()
-                self.current_step = None
-                self.tts_output_count = 0
-                self.detected_interactive_steps = set()
-                self.expected_tts_outputs = 1  # 工作流啟動回應（包含互動提示）
-                
-                # 額外訂閱事件
-                from core.event_bus import SystemEvent
-                self.event_bus.subscribe(SystemEvent.OUTPUT_LAYER_COMPLETE, self._on_output_complete, handler_name="Monitor.output_complete")
-                self.event_bus.subscribe(SystemEvent.WORKFLOW_REQUIRES_INPUT, self._on_requires_input, handler_name="Monitor.requires_input")
-                
-            def _on_requires_input(self, event):
-                """追蹤工作流請求輸入事件"""
-                data = event.data
-                step_id = data.get('step_id')
-                if step_id and step_id not in self.detected_interactive_steps:
-                    self.detected_interactive_steps.add(step_id)
-                    self.interactive_step_count += 1
-                    self.current_step = step_id
-                    info_log(f"[Monitor] 檢測到互動步驟（透過 WORKFLOW_REQUIRES_INPUT）: {self.current_step}")
-            
-            def _on_step_completed(self, event):
-                """追蹤步驟完成，檢測互動步驟"""
-                super()._on_step_completed(event)
-                data = event.data
-                
-                # 檢查下一步是否為互動步驟
-                next_step_info = data.get('next_step_info')
-                if next_step_info and next_step_info.get('step_type') == 'interactive':
-                    step_id = next_step_info.get('step_id')
-                    if step_id not in self.detected_interactive_steps:
-                        self.detected_interactive_steps.add(step_id)
-                        self.interactive_step_count += 1
-                        self.current_step = step_id
-                        info_log(f"[Monitor] 檢測到互動步驟: {self.current_step}")
-            
-            def _on_output_complete(self, event):
-                """追蹤 TTS 輸出完成"""
-                self.tts_output_count += 1
-                info_log(f"[Monitor] TTS 輸出完成 (第 {self.tts_output_count} 次，期待 {self.expected_tts_outputs} 次)")
-                
-                # 等待所有期望的 TTS 輸出完成後才設置事件
-                if self.current_step and self.tts_output_count >= self.expected_tts_outputs:
-                    info_log(f"[Monitor] 所有 TTS 輸出完成，設置 awaiting_input_event 以響應步驟: {self.current_step}")
-                    self.awaiting_input_event.set()
-                    # 重置計數器為下一個互動步驟做準備
-                    self.tts_output_count = 0
-                    self.expected_tts_outputs = 1  # 下一個互動步驟也是1次輸出
-            
-            def cleanup(self):
-                """清理資源"""
-                from core.event_bus import SystemEvent
-                try:
-                    self.event_bus.unsubscribe(SystemEvent.OUTPUT_LAYER_COMPLETE, self._on_output_complete)
-                    self.event_bus.unsubscribe(SystemEvent.WORKFLOW_REQUIRES_INPUT, self._on_requires_input)
-                except:
-                    pass
-                super().cleanup()
-        
-        monitor = TranslateWorkflowMonitor(event_bus)
+        # 使用標準的 WorkflowCycleMonitor（無互動步驟）
+        monitor = WorkflowCycleMonitor(event_bus)
         
         try:
             # 1. 準備測試：模擬前端拖曳檔案
@@ -833,7 +712,7 @@ class TestFileWorkflowFullCycle:
             working_context_manager.set_context_data("current_file_path", str(test_file))
             
             # 用戶請求翻譯（不需要指定路徑）
-            inject_text_to_system("Translate this file to uwucat format.")
+            inject_text_to_system("Translate this file to French.")
             
             # 等待工作流程完成（LLM 處理需要較長時間）
             info_log("[Test] ⏳ 等待工作流程完成（LLM 翻譯中）...")
@@ -874,7 +753,7 @@ class TestFileWorkflowFullCycle:
         finally:
             monitor.cleanup()
     
-    def test_code_analysis_full_cycle(self, system_components, test_code):
+    def test_code_analysis_full_cycle(self, system_components, isolated_gs, test_code):
         """
         測試完整的程式碼分析工作流程循環
         
@@ -897,38 +776,14 @@ class TestFileWorkflowFullCycle:
         from utils.debug_helper import info_log
         from pathlib import Path
         
+        from core.framework import core_framework
+        
         system_loop = system_components["system_loop"]
         event_bus = system_components["event_bus"]
+        sys_mod = core_framework.get_module("sys_module")
         
-        # 創建工作流程監控器
-        class AnalysisWorkflowMonitor(WorkflowCycleMonitor):
-            def __init__(self, event_bus):
-                super().__init__(event_bus)
-                self.interactive_step_count = 0
-                self.awaiting_input_event = threading.Event()
-                
-            def _on_requires_input(self, event):
-                """記錄互動步驟請求"""
-                self.events.append(("requires_input", event.data))
-                self.interactive_step_count += 1
-                self.awaiting_input_event.set()
-                info_log(f"[Monitor] 互動步驟請求: {event.data.get('step_id')}")
-            
-            def _on_step_completed(self, event):
-                """記錄步驟完成事件"""
-                self.events.append(("step_completed", event.data))
-                step_id = event.data.get("step_id", "")
-                info_log(f"[Monitor] 步驟完成: {step_id}")
-            
-            def _on_output_complete(self, event):
-                """記錄輸出完成事件"""
-                self.events.append(("output_complete", event.data))
-                info_log(f"[Monitor] 輸出完成: {event.data.get('session_id')}")
-            
-            def cleanup(self):
-                super().cleanup()
-        
-        monitor = AnalysisWorkflowMonitor(event_bus)
+        # 使用標準的 WorkflowCycleMonitor（無互動步驟）
+        monitor = WorkflowCycleMonitor(event_bus)
         
         try:
             # 1. 準備測試：選擇一個程式碼檔案
@@ -963,9 +818,6 @@ class TestFileWorkflowFullCycle:
             assert "step_completed" in event_types, "No step completion events"
             assert "session_ended" in event_types, "No session end event"
             
-            # 5. 驗證沒有互動步驟（因為檔案和焦點都是 optional 且會被自動跳過）
-            assert monitor.interactive_step_count == 0, f"Expected 0 interactive steps, got {monitor.interactive_step_count}"
-            
             info_log("[Test] ✅ 程式碼分析完整循環測試通過")
             
         finally:
@@ -981,7 +833,7 @@ class TestFileWorkflowFullCycle:
             time.sleep(1.0)
             info_log("[Test] ✅ 測試清理完成")
     
-    def test_quick_phrases_full_cycle(self, system_components):
+    def test_quick_phrases_full_cycle(self, system_components, isolated_gs):
         """
         測試快速範本工作流 - 完整參數（測試 ConditionalStep）
         
@@ -1090,7 +942,7 @@ class TestFileWorkflowFullCycle:
             time.sleep(1.0)
             info_log("[Test] ✅ 測試清理完成")
     
-    def test_ocr_recognition_full_cycle(self, system_components, test_image):
+    def test_ocr_recognition_full_cycle(self, system_components, isolated_gs, test_image):
         """
         測試完整的 OCR 辨識工作流程循環
         
@@ -1115,74 +967,14 @@ class TestFileWorkflowFullCycle:
         import time
         import os
         
+        from core.framework import core_framework
+        
         system_loop = system_components["system_loop"]
         event_bus = system_components["event_bus"]
+        sys_mod = core_framework.get_module("sys_module")
         
-        # 創建工作流程監控器（追蹤互動步驟）
-        class OCRWorkflowMonitor(WorkflowCycleMonitor):
-            def __init__(self, event_bus):
-                super().__init__(event_bus)
-                self.interactive_step_count = 0
-                self.awaiting_input_event = threading.Event()
-                self.current_step = None
-                self.tts_output_count = 0
-                self.detected_interactive_steps = set()
-                self.expected_tts_outputs = 1  # 工作流啟動回應（包含互動提示）
-                
-                # 額外訂閱事件
-                from core.event_bus import SystemEvent
-                self.event_bus.subscribe(SystemEvent.OUTPUT_LAYER_COMPLETE, self._on_output_complete, handler_name="Monitor.output_complete")
-                self.event_bus.subscribe(SystemEvent.WORKFLOW_REQUIRES_INPUT, self._on_requires_input, handler_name="Monitor.requires_input")
-                
-            def _on_requires_input(self, event):
-                """追蹤工作流請求輸入事件"""
-                data = event.data
-                step_id = data.get('step_id')
-                if step_id and step_id not in self.detected_interactive_steps:
-                    self.detected_interactive_steps.add(step_id)
-                    self.interactive_step_count += 1
-                    self.current_step = step_id
-                    info_log(f"[Monitor] 檢測到互動步驟（透過 WORKFLOW_REQUIRES_INPUT）: {self.current_step}")
-            
-            def _on_step_completed(self, event):
-                """追蹤步驟完成，檢測互動步驟"""
-                super()._on_step_completed(event)
-                data = event.data
-                
-                # 檢查下一步是否為互動步驟
-                next_step_info = data.get('next_step_info')
-                if next_step_info and next_step_info.get('step_type') == 'interactive':
-                    step_id = next_step_info.get('step_id')
-                    if step_id not in self.detected_interactive_steps:
-                        self.detected_interactive_steps.add(step_id)
-                        self.interactive_step_count += 1
-                        self.current_step = step_id
-                        info_log(f"[Monitor] 檢測到互動步驟: {self.current_step}")
-            
-            def _on_output_complete(self, event):
-                """追蹤 TTS 輸出完成"""
-                self.tts_output_count += 1
-                info_log(f"[Monitor] TTS 輸出完成 (第 {self.tts_output_count} 次，期待 {self.expected_tts_outputs} 次)")
-                
-                # 等待所有期望的 TTS 輸出完成後才設置事件
-                if self.current_step and self.tts_output_count >= self.expected_tts_outputs:
-                    info_log(f"[Monitor] 所有 TTS 輸出完成，設置 awaiting_input_event 以響應步驟: {self.current_step}")
-                    self.awaiting_input_event.set()
-                    # 重置計數器為下一個互動步驟做準備
-                    self.tts_output_count = 0
-                    self.expected_tts_outputs = 1  # 下一個互動步驟也是1次輸出
-            
-            def cleanup(self):
-                """清理資源"""
-                from core.event_bus import SystemEvent
-                try:
-                    self.event_bus.unsubscribe(SystemEvent.OUTPUT_LAYER_COMPLETE, self._on_output_complete)
-                    self.event_bus.unsubscribe(SystemEvent.WORKFLOW_REQUIRES_INPUT, self._on_requires_input)
-                except:
-                    pass
-                super().cleanup()
-        
-        monitor = OCRWorkflowMonitor(event_bus)
+        # 使用標準的 InteractiveWorkflowMonitor（期待1個互動步驟: ocr_confirm）
+        monitor = InteractiveWorkflowMonitor(event_bus, sys_module=sys_mod, expected_interactive_steps=1)
         
         try:
             # 1. 準備測試：模擬前端拖曳圖片
@@ -1248,7 +1040,7 @@ class TestFileWorkflowFullCycle:
         finally:
             monitor.cleanup()
     
-    def test_clipboard_tracker_full_cycle(self, system_components):
+    def test_clipboard_tracker_full_cycle(self, system_components, isolated_gs):
         """
         測試完整的剪貼簿追蹤工作流程循環
         
@@ -1282,74 +1074,14 @@ class TestFileWorkflowFullCycle:
         import time
         from unittest.mock import patch, MagicMock
         
+        from core.framework import core_framework
+        
         system_loop = system_components["system_loop"]
         event_bus = system_components["event_bus"]
+        sys_mod = core_framework.get_module("sys_module")
         
-        # 創建工作流程監控器（追蹤互動步驟）
-        class ClipboardWorkflowMonitor(WorkflowCycleMonitor):
-            def __init__(self, event_bus):
-                super().__init__(event_bus)
-                self.interactive_step_count = 0
-                self.awaiting_input_event = threading.Event()
-                self.current_step = None
-                self.tts_output_count = 0
-                self.detected_interactive_steps = set()
-                self.expected_tts_outputs = 1  # LLM 呈現結果
-                
-                # 額外訂閱事件
-                from core.event_bus import SystemEvent
-                self.event_bus.subscribe(SystemEvent.OUTPUT_LAYER_COMPLETE, self._on_output_complete, handler_name="Monitor.output_complete")
-                self.event_bus.subscribe(SystemEvent.WORKFLOW_REQUIRES_INPUT, self._on_requires_input, handler_name="Monitor.requires_input")
-                
-            def _on_requires_input(self, event):
-                """追蹤工作流請求輸入事件"""
-                data = event.data
-                step_id = data.get('step_id')
-                if step_id and step_id not in self.detected_interactive_steps:
-                    self.detected_interactive_steps.add(step_id)
-                    self.interactive_step_count += 1
-                    self.current_step = step_id
-                    info_log(f"[Monitor] 檢測到互動步驟（透過 WORKFLOW_REQUIRES_INPUT）: {self.current_step}")
-            
-            def _on_step_completed(self, event):
-                """追蹤步驟完成，檢測互動步驟"""
-                super()._on_step_completed(event)
-                data = event.data
-                
-                # 檢查下一步是否為互動步驟
-                next_step_info = data.get('next_step_info')
-                if next_step_info and next_step_info.get('step_type') == 'interactive':
-                    step_id = next_step_info.get('step_id')
-                    if step_id not in self.detected_interactive_steps:
-                        self.detected_interactive_steps.add(step_id)
-                        self.interactive_step_count += 1
-                        self.current_step = step_id
-                        info_log(f"[Monitor] 檢測到互動步驟: {self.current_step}")
-            
-            def _on_output_complete(self, event):
-                """追蹤 TTS 輸出完成"""
-                self.tts_output_count += 1
-                info_log(f"[Monitor] TTS 輸出完成 (第 {self.tts_output_count} 次，期待 {self.expected_tts_outputs} 次)")
-                
-                # 等待所有期望的 TTS 輸出完成後才設置事件
-                if self.current_step and self.tts_output_count >= self.expected_tts_outputs:
-                    info_log(f"[Monitor] 所有 TTS 輸出完成，設置 awaiting_input_event 以響應步驟: {self.current_step}")
-                    self.awaiting_input_event.set()
-                    # 重置計數器為下一個互動步驟做準備
-                    self.tts_output_count = 0
-                    self.expected_tts_outputs = 1  # 下一個互動步驟也是1次輸出
-            
-            def cleanup(self):
-                """清理資源"""
-                from core.event_bus import SystemEvent
-                try:
-                    self.event_bus.unsubscribe(SystemEvent.OUTPUT_LAYER_COMPLETE, self._on_output_complete)
-                    self.event_bus.unsubscribe(SystemEvent.WORKFLOW_REQUIRES_INPUT, self._on_requires_input)
-                except:
-                    pass
-                super().cleanup()
-        
-        monitor = ClipboardWorkflowMonitor(event_bus)
+        # 使用標準的 InteractiveWorkflowMonitor（期待1個互動步驟: input_copy_index）
+        monitor = InteractiveWorkflowMonitor(event_bus, sys_module=sys_mod, expected_interactive_steps=1)
         
         # Mock 剪貼簿數據
         mock_history = [
@@ -1430,3 +1162,555 @@ class TestFileWorkflowFullCycle:
             
         finally:
             monitor.cleanup()
+    
+    def test_get_weather_full_cycle(self, system_components, isolated_gs):
+        """
+        測試天氣查詢工作流（最簡單，2步驟，參數已提供，無需互動）
+        
+        流程：
+        1. 用戶輸入：「Check weather in Taipei」（包含 location 參數）
+        2. NLP 判斷意圖：weather_query
+        3. LLM 通過 MCP 啟動 get_weather workflow
+           - LLM 提取參數: {"location": "Taipei"}
+        4. 工作流執行：
+           - Step 1 (location_input): 跳過（數據已存在）
+           - Step 2 (execute_weather_query): 自動執行查詢
+        5. 工作流程完成，返回天氣資訊
+        
+        測試重點：
+        - LLM 是否正確提取 location 參數
+        - location_input 步驟是否被正確跳過
+        - 工作流是否自動完成（無需用戶輸入）
+        - WS 是否正確結束
+        """
+        from utils.debug_helper import info_log
+        from core.states.state_manager import state_manager, UEPState
+        
+        system_loop = system_components["system_loop"]
+        event_bus = system_components["event_bus"]
+        
+        # 創建監控器（無需互動）
+        monitor = WorkflowCycleMonitor(event_bus)
+        
+        try:
+            # 注入用戶輸入 - 包含完整參數
+            info_log("[Test] 🎯 測試：天氣查詢完整循環（參數已提供）")
+            inject_text_to_system("Check weather in Taipei")
+            
+            # 等待工作流程完成
+            # 預期時間：LLM處理(~5s) + 工作流執行(~10s) + TTS輸出(~30s) = ~45s
+            info_log("[Test] ⏳ 等待工作流程完成...")
+            result = monitor.wait_for_completion(timeout=90)
+            
+            # 驗證結果
+            assert result["completed"], "Workflow did not complete within timeout"
+            assert not result["failed"], "Workflow failed"
+            assert result["session_id"] is not None, "No workflow session ID"
+            
+            info_log(f"[Test] ✅ 工作流程完成: {result['session_id']}")
+            info_log(f"[Test] 📊 完成的步驟: {result['completed_steps']}")
+            info_log(f"[Test] 📊 事件數量: {len(result['events'])}")
+            
+            # 驗證步驟完成
+            # 預期：應該有1個步驟完成事件（execute_weather_query）
+            # location_input 應該被跳過，不會出現在 WORKFLOW_STEP_COMPLETED 中
+            step_completed_events = [e for e in result["events"] if e[0] == "step_completed"]
+            assert len(step_completed_events) >= 1, f"Expected at least 1 step completion, got {len(step_completed_events)}"
+            
+            # 驗證事件序列
+            event_types = [e[0] for e in result["events"]]
+            assert "step_completed" in event_types, "No step completion events"
+            assert "session_ended" in event_types, "No session end event"
+            
+            # 驗證步驟順序
+            completed_steps = result["completed_steps"]
+            info_log(f"[Test] 📝 步驟執行順序（從事件）: {completed_steps}")
+            
+            # 🔧 修正：由於自動推進，事件可能只捕獲部分步驟
+            # 驗證至少捕獲了 location_input 步驟
+            assert "location_input" in completed_steps, "location_input step not found in events"
+            
+            # 🔧 從工作流會話驗證實際執行的步驟（通過 step_history）
+            # 獲取工作流會話的 step_history
+            from core.framework import core_framework
+            sys_mod = core_framework.get_module("sys_module")
+            workflow_session = sys_mod.session_manager.get_session(monitor.workflow_session_id) if sys_mod else None
+            if workflow_session:
+                step_history = workflow_session.step_history
+                info_log(f"[Test] 📜 工作流會話步驟歷史: {step_history}")
+                # 驗證執行了正確的步驟
+                assert "location_input" in step_history, "location_input not in step_history"
+                assert "execute_weather_query" in step_history, "execute_weather_query not in step_history"
+            else:
+                info_log("[Test] ⚠️ 無法獲取工作流會話來驗證步驟歷史")
+            
+            info_log("[Test] ✅ 天氣查詢完整循環測試通過")
+            
+        finally:
+            # 清理
+            monitor.cleanup()
+            
+            # 等待系統回到 IDLE
+            info_log("[Test] ⏳ 等待系統回到 IDLE...")
+            for _ in range(30):
+                if state_manager.get_current_state() == UEPState.IDLE:
+                    break
+                time.sleep(0.5)
+            
+            time.sleep(1.0)
+            info_log("[Test] ✅ 測試清理完成")
+    
+    def test_clean_trash_bin_full_cycle(self, system_components, isolated_gs):
+        """
+        測試清空回收桶工作流（2步驟，含確認）
+        
+        流程：
+        1. 用戶輸入：「Clean the trash bin」
+        2. NLP 判斷意圖：system_operation
+        3. LLM 通過 MCP 啟動 clean_trash_bin workflow
+        4. 工作流執行：
+           - Step 1 (confirm_clean): 互動步驟 - LLM 提示用戶確認
+           - Step 2 (execute_clean): 自動執行清空
+        5. 工作流程完成
+        
+        測試重點：
+        - 互動步驟前 LLM 是否生成提示
+        - 自動注入用戶輸入來響應互動步驟
+        - 工作流最終是否成功執行清空
+        - WS 是否正確結束
+        """
+        from utils.debug_helper import info_log
+        from core.states.state_manager import state_manager, UEPState
+        
+        system_loop = system_components["system_loop"]
+        event_bus = system_components["event_bus"]
+        
+        # 使用基礎監控器（不需要複雜的互動步驟檢測）
+        monitor = WorkflowCycleMonitor(event_bus)
+        
+        try:
+            info_log("[Test] 🎯 測試：清空回收桶完整循環（含確認）")
+            inject_text_to_system("Clean the trash bin")
+            
+            # 等待 TTS 生成和工作流準備
+            # TTS 生成工作流啟動提示需要約 40 秒
+            info_log("[Test] ⏳ 等待 TTS 生成工作流提示（約 45 秒）...")
+            time.sleep(45)
+            
+            info_log("[Test] ✅ TTS 應該已完成，準備注入確認輸入")
+            
+            # 注入確認輸入（響應 confirm_clean 步驟）
+            info_log("[Test] 📝 注入確認輸入")
+            inject_text_to_system("yes")
+            
+            # 等待工作流程完成
+            info_log("[Test] ⏳ 等待工作流程完成...")
+            result = monitor.wait_for_completion(timeout=60)
+            
+            # 驗證結果
+            assert result["completed"], "Workflow did not complete"
+            assert not result["failed"], "Workflow failed"
+            assert result["session_id"] is not None, "No workflow session ID"
+            
+            info_log(f"[Test] ✅ 工作流程完成: {result['session_id']}")
+            info_log(f"[Test] 📊 完成的步驟: {result['completed_steps']}")
+            
+            # 驗證步驟完成
+            assert len(result["completed_steps"]) >= 1, f"Expected at least 1 step, got {len(result['completed_steps'])}"
+            assert "execute_clean" in result["completed_steps"], "execute_clean step not found"
+            
+            info_log("[Test] ✅ 清空回收桶完整循環測試通過")
+            
+        finally:
+            monitor.cleanup()
+            
+            # 等待系統回到 IDLE
+            info_log("[Test] ⏳ 等待系統回到 IDLE...")
+            for _ in range(30):
+                if state_manager.get_current_state() == UEPState.IDLE:
+                    break
+                time.sleep(0.5)
+            
+            time.sleep(1.0)
+            info_log("[Test] ✅ 測試清理完成")
+    
+    def test_news_summary_full_cycle(self, system_components, isolated_gs):
+        """
+        測試新聞摘要工作流（無參數，固定抓取 6 則新聞）
+        
+        流程：
+        1. 用戶輸入：「Show me the news」或「news summary」
+        2. NLP 判斷意圖：news_query
+        3. LLM 通過 MCP 啟動 news_summary workflow
+           - 無需參數，固定來源和數量
+        4. 工作流執行：
+           - Step 1 (execute_news_fetch): 自動執行抓取 Google 新聞
+        5. 工作流程完成，返回新聞列表
+        6. LLM 總結新聞標題並用英文回應使用者
+        
+        測試重點：
+        - 工作流是否自動完成（無需用戶輸入）
+        - 是否成功抓取 6 則新聞
+        - LLM 是否正確總結新聞標題
+        - WS 是否正確結束
+        """
+        from utils.debug_helper import info_log
+        from core.states.state_manager import state_manager, UEPState
+        
+        system_loop = system_components["system_loop"]
+        event_bus = system_components["event_bus"]
+        
+        # 創建監控器（無需互動）
+        monitor = WorkflowCycleMonitor(event_bus)
+        
+        try:
+            # 注入用戶輸入
+            info_log("[Test] 🎯 測試：新聞摘要完整循環（無參數）")
+            inject_text_to_system("Show me the latest Taiwan news")
+            
+            # 等待工作流程完成
+            # 預期時間：LLM處理(~5s) + 工作流執行(~15s) + TTS輸出(~30s) = ~50s
+            info_log("[Test] ⏳ 等待工作流程完成...")
+            result = monitor.wait_for_completion(timeout=90)
+            
+            # 驗證結果
+            assert result["completed"], "Workflow did not complete within timeout"
+            assert not result["failed"], "Workflow failed"
+            assert result["session_id"] is not None, "No workflow session ID"
+            
+            info_log(f"[Test] ✅ 工作流程完成: {result['session_id']}")
+            info_log(f"[Test] 📊 完成的步驟: {result['completed_steps']}")
+            info_log(f"[Test] 📊 事件數量: {len(result['events'])}")
+            
+            # 驗證步驟完成
+            step_completed_events = [e for e in result["events"] if e[0] == "step_completed"]
+            assert len(step_completed_events) >= 1, f"Expected at least 1 step completion, got {len(step_completed_events)}"
+            
+            # 驗證事件序列
+            event_types = [e[0] for e in result["events"]]
+            assert "step_completed" in event_types, "No step completion events"
+            assert "session_ended" in event_types, "No session end event"
+            
+            # 驗證步驟順序
+            completed_steps = result["completed_steps"]
+            info_log(f"[Test] 📝 步驟執行順序（從事件）: {completed_steps}")
+            
+            # 驗證執行了新聞抓取步驟
+            assert "execute_news_fetch" in completed_steps, "execute_news_fetch step not found"
+            
+            # 從工作流會話驗證實際執行的步驟
+            from core.framework import core_framework
+            sys_mod = core_framework.get_module("sys_module")
+            workflow_session = sys_mod.session_manager.get_session(monitor.workflow_session_id) if sys_mod else None
+            if workflow_session:
+                step_history = workflow_session.step_history
+                info_log(f"[Test] 📜 工作流會話步驟歷史: {step_history}")
+                # 驗證執行了正確的步驟
+                assert "execute_news_fetch" in step_history, "execute_news_fetch not in step_history"
+                # 驗證工作流數據包含新聞結果
+                workflow_data = workflow_session.workflow_data
+                if "news_results" in workflow_data:
+                    news_count = len(workflow_data["news_results"])
+                    info_log(f"[Test] 📰 抓取的新聞數量: {news_count}")
+                    assert news_count > 0, "No news was fetched"
+            else:
+                info_log("[Test] ⚠️ 無法獲取工作流會話來驗證步驟歷史")
+            
+            info_log("[Test] ✅ 新聞摘要完整循環測試通過")
+            
+        finally:
+            # 清理
+            monitor.cleanup()
+            
+            # 等待系統回到 IDLE
+            info_log("[Test] ⏳ 等待系統回到 IDLE...")
+            for _ in range(30):
+                if state_manager.get_current_state() == UEPState.IDLE:
+                    break
+                time.sleep(0.5)
+            
+            time.sleep(1.0)
+            info_log("[Test] ✅ 測試清理完成")
+    
+    @pytest.mark.skip(reason="暫時跳過")
+    def test_get_world_time_full_params(self, system_components, isolated_gs):
+        """
+        測試世界時間查詢工作流 - 完整參數（測試 ConditionalStep）
+        
+        流程：
+        1. 用戶輸入：「What time is it in Tokyo?」（包含 mode=2 和 timezone=Tokyo）
+        2. NLP 判斷意圖：time_query
+        3. LLM 通過 MCP 啟動 get_world_time workflow
+           - LLM 提取參數: {"target_num": 2, "tz": "Tokyo"}
+        4. 工作流執行：
+           - Step 1 (mode_selection): 跳過（數據已存在，值為 2）
+           - Step 2 (timezone_conditional): ConditionalStep 檢測到 mode=2
+           - Step 3 (timezone_input): 跳過（數據已存在）
+           - Step 4 (execute_time_query): 自動執行查詢
+        5. 工作流程完成，返回時間資訊
+        
+        測試重點：
+        - LLM 是否正確提取 target_num 和 tz 參數
+        - ConditionalStep 是否正確執行分支邏輯
+        - 所有互動步驟是否被正確跳過
+        - 工作流是否自動完成（無需用戶輸入）
+        """
+        from utils.debug_helper import info_log
+        from core.states.state_manager import state_manager, UEPState
+        
+        system_loop = system_components["system_loop"]
+        event_bus = system_components["event_bus"]
+        
+        # 創建監控器（無需互動）
+        monitor = WorkflowCycleMonitor(event_bus)
+        
+        try:
+            # 注入用戶輸入 - 包含完整參數
+            info_log("[Test] 🎯 測試：世界時間查詢（完整參數 - Tokyo）")
+            inject_text_to_system("What time is it in Tokyo right now?")
+            
+            # 等待工作流程完成
+            info_log("[Test] ⏳ 等待工作流程完成...")
+            result = monitor.wait_for_completion(timeout=90)
+            
+            # 驗證結果
+            assert result["completed"], "Workflow did not complete within timeout"
+            assert not result["failed"], "Workflow failed"
+            assert result["session_id"] is not None, "No workflow session ID"
+            
+            info_log(f"[Test] ✅ 工作流程完成: {result['session_id']}")
+            info_log(f"[Test] 📊 完成的步驟: {result['completed_steps']}")
+            info_log(f"[Test] 📊 事件數量: {len(result['events'])}")
+            
+            # 驗證步驟完成
+            step_completed_events = [e for e in result["events"] if e[0] == "step_completed"]
+            assert len(step_completed_events) >= 1, f"Expected at least 1 step completion, got {len(step_completed_events)}"
+            
+            # 驗證事件序列
+            event_types = [e[0] for e in result["events"]]
+            assert "step_completed" in event_types, "No step completion events"
+            assert "session_ended" in event_types, "No session end event"
+            
+            # 驗證步驟順序
+            completed_steps = result["completed_steps"]
+            info_log(f"[Test] 📝 步驟執行順序（從事件）: {completed_steps}")
+            
+            # 驗證執行了時間查詢步驟
+            assert "execute_time_query" in completed_steps, "execute_time_query step not found"
+            
+            # 從工作流會話驗證實際執行的步驟
+            from core.framework import core_framework
+            sys_mod = core_framework.get_module("sys_module")
+            workflow_session = sys_mod.session_manager.get_session(monitor.workflow_session_id) if sys_mod else None
+            if workflow_session:
+                step_history = workflow_session.step_history
+                info_log(f"[Test] 📜 工作流會話步驟歷史: {step_history}")
+                # 驗證執行了正確的步驟
+                assert "mode_selection" in step_history, "mode_selection not in step_history"
+                assert "timezone_conditional" in step_history, "timezone_conditional not in step_history"
+                assert "timezone_input" in step_history, "timezone_input not in step_history"
+                assert "execute_time_query" in step_history, "execute_time_query not in step_history"
+            else:
+                info_log("[Test] ⚠️ 無法獲取工作流會話來驗證步驟歷史")
+            
+            info_log("[Test] ✅ 世界時間查詢（完整參數）測試通過")
+            
+        finally:
+            # 清理
+            monitor.cleanup()
+            
+            # 等待系統回到 IDLE
+            info_log("[Test] ⏳ 等待系統回到 IDLE...")
+            for _ in range(30):
+                if state_manager.get_current_state() == UEPState.IDLE:
+                    break
+                time.sleep(0.5)
+            
+            time.sleep(1.0)
+            info_log("[Test] ✅ 測試清理完成")
+    
+    def test_get_world_time_no_params(self, system_components, isolated_gs):
+        """
+        測試世界時間查詢工作流 - 無參數（測試「等效第一步」概念）
+        
+        流程：
+        1. 用戶輸入：「Check the time」（沒有任何參數）
+        2. NLP 判斷意圖：time_query
+        3. LLM 通過 MCP 啟動 get_world_time workflow
+           - LLM 沒有提取到任何參數: {}
+        4. 工作流執行：
+           - Step 1 (mode_selection): Interactive 等待用戶選擇模式
+           - **問題**：但這是 ConditionalStep 會自動執行，直接跳到分支
+           - 實際「等效第一步」應該是分支後的 Interactive 步驟
+        
+        測試目的：
+        - 展示「等效第一步」的概念問題
+        - mode_selection 是名義上的第一步，但會立即執行
+        - 真正需要用戶輸入的是 ConditionalStep 執行後的步驟
+        - LLM 在工作流啟動時不知道「等效第一步」是什麼
+        """
+        from utils.debug_helper import info_log
+        from core.states.state_manager import state_manager, UEPState
+        from core.framework import core_framework
+        
+        system_loop = system_components["system_loop"]
+        event_bus = system_components["event_bus"]
+        
+        # 獲取 sys_module
+        sys_mod = core_framework.get_module("sys_module")
+        
+        # 創建互動監控器
+        monitor = InteractiveWorkflowMonitor(event_bus, sys_module=sys_mod, expected_interactive_steps=1)
+        
+        try:
+            # 注入用戶輸入 - 完全沒有參數
+            info_log("[Test] 🎯 測試：世界時間查詢（無參數 - 展示等效第一步問題）")
+            inject_text_to_system("Check the time")
+            
+            # 等待工作流啟動並要求輸入
+            info_log("[Test] ⏳ 等待工作流要求輸入...")
+            input_requested = monitor.awaiting_input_event.wait(timeout=30)
+            
+            # 驗證工作流已啟動並等待輸入
+            assert input_requested, "Workflow did not request input within timeout"
+            assert monitor.interactive_step_count > 0, f"No interactive steps detected"
+            
+            info_log(f"[Test] ✅ 工作流已啟動並等待輸入")
+            info_log(f"[Test] 📝 等待的步驟: {monitor.current_step}")
+            info_log(f"[Test] 🔍 這就是「等效第一步」- 工作流定義的第一步是 mode_selection，但實際執行後等待輸入的步驟是: {monitor.current_step}")
+            
+            # 根據等待的步驟提供相應輸入
+            time.sleep(1.0)
+            if monitor.current_step == "mode_selection":
+                info_log("[Test] 📥 提供模式選擇: 2 (specific timezone)")
+                inject_text_to_system("2")
+                
+                # 等待下一個輸入請求（timezone）
+                monitor.awaiting_input_event.clear()
+                info_log("[Test] ⏳ 等待時區輸入請求...")
+                input_requested = monitor.awaiting_input_event.wait(timeout=60)
+                assert input_requested, "Workflow did not request timezone input"
+                
+                time.sleep(15.0)
+                info_log("[Test] 📥 提供時區輸入: Tokyo")
+                inject_text_to_system("Tokyo")
+            else:
+                # 如果直接跳到了其他步驟（如 timezone_input）
+                info_log(f"[Test] 📥 直接提供輸入給步驟 {monitor.current_step}: Tokyo")
+                inject_text_to_system("Tokyo")
+            
+            # 等待工作流完成
+            info_log("[Test] ⏳ 等待工作流完成...")
+            result = monitor.wait_for_completion(timeout=60)
+            
+            # 驗證結果
+            assert result["completed"], "Workflow did not complete after input"
+            assert not result["failed"], "Workflow failed"
+            
+            info_log(f"[Test] ✅ 工作流程完成: {result['session_id']}")
+            info_log(f"[Test] 📊 完成的步驟: {result['completed_steps']}")
+            
+            info_log("[Test] ✅ 世界時間查詢（無參數）測試通過")
+            info_log("[Test] 💡 關鍵發現：「等效第一步」不等於「定義的第一步」")
+            
+        finally:
+            # 清理
+            monitor.cleanup()
+            
+            # 等待系統回到 IDLE
+            info_log("[Test] ⏳ 等待系統回到 IDLE...")
+            for _ in range(30):
+                if state_manager.get_current_state() == UEPState.IDLE:
+                    break
+                time.sleep(0.5)
+            
+            time.sleep(1.0)
+            info_log("[Test] ✅ 測試清理完成")
+    
+    @pytest.mark.skip(reason="暫時跳過")
+    def test_get_world_time_partial_params(self, system_components, isolated_gs):
+        """
+        測試世界時間查詢工作流 - 部分參數（測試 ConditionalStep 互動）
+        
+        流程：
+        1. 用戶輸入：「What's the time in a specific timezone?」（只提示 mode=2，沒有具體時區）
+        2. NLP 判斷意圖：time_query
+        3. LLM 通過 MCP 啟動 get_world_time workflow
+           - LLM 提取參數: {"target_num": 2}（沒有 tz）
+        4. 工作流執行：
+           - Step 1 (mode_selection): 跳過（數據已存在，值為 2）
+           - Step 2 (timezone_conditional): ConditionalStep 檢測到 mode=2，分支到 timezone_input
+           - Step 3 (timezone_input): 等待用戶輸入時區 -> 用戶輸入 "Asia/Tokyo"
+           - Step 4 (execute_time_query): 自動執行查詢
+        5. 工作流程完成，返回時間資訊
+        
+        測試重點：
+        - ConditionalStep 是否正確根據 mode 選擇分支
+        - timezone_input 步驟是否正確等待用戶輸入
+        - 用戶輸入後工作流是否繼續執行
+        - 工作流是否正確完成並返回結果
+        """
+        from utils.debug_helper import info_log
+        from core.states.state_manager import state_manager, UEPState
+        from core.framework import core_framework
+        
+        system_loop = system_components["system_loop"]
+        event_bus = system_components["event_bus"]
+        
+        # 獲取 sys_module
+        sys_mod = core_framework.get_module("sys_module")
+        
+        # 創建互動監控器（期待 1 個互動步驟）
+        monitor = InteractiveWorkflowMonitor(event_bus, sys_module=sys_mod, expected_interactive_steps=1)
+        
+        try:
+            # 注入用戶輸入 - 只包含 mode，沒有 timezone
+            info_log("[Test] 🎯 測試：世界時間查詢（部分參數 - 需要互動）")
+            inject_text_to_system("Show me the time in a specific timezone")
+            
+            # 等待工作流啟動並要求輸入
+            info_log("[Test] ⏳ 等待工作流要求時區輸入...")
+            input_requested = monitor.awaiting_input_event.wait(timeout=30)
+            
+            # 驗證工作流已啟動並等待輸入
+            assert input_requested, "Workflow did not request input within timeout"
+            assert monitor.interactive_step_count > 0, f"No interactive steps detected"
+            
+            info_log(f"[Test] ✅ 工作流已啟動並等待輸入")
+            info_log(f"[Test] 📝 等待的步驟: {monitor.current_step}")
+            
+            # 提供時區輸入
+            time.sleep(1.0)
+            info_log("[Test] 📥 提供時區輸入: Tokyo")
+            inject_text_to_system("Tokyo")
+            
+            # 等待工作流完成
+            info_log("[Test] ⏳ 等待工作流完成...")
+            result = monitor.wait_for_completion(timeout=60)
+            
+            # 驗證結果
+            assert result["completed"], "Workflow did not complete after input"
+            assert not result["failed"], "Workflow failed"
+            
+            info_log(f"[Test] ✅ 工作流程完成: {result['session_id']}")
+            info_log(f"[Test] 📊 完成的步驟: {result['completed_steps']}")
+            
+            # 驗證步驟順序
+            completed_steps = result["completed_steps"]
+            info_log(f"[Test] 📝 步驟執行順序: {completed_steps}")
+            
+            info_log("[Test] ✅ 世界時間查詢（部分參數）測試通過")
+            
+        finally:
+            # 清理
+            monitor.cleanup()
+            
+            # 等待系統回到 IDLE
+            info_log("[Test] ⏳ 等待系統回到 IDLE...")
+            for _ in range(30):
+                if state_manager.get_current_state() == UEPState.IDLE:
+                    break
+                time.sleep(0.5)
+            
+            time.sleep(1.0)
+            info_log("[Test] ✅ 測試清理完成")

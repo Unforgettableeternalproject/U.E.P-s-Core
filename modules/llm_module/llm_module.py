@@ -2470,18 +2470,18 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
     def _get_current_cycle_index(self) -> int:
         """
         獲取當前循環計數
-        從 working_context 的全局數據中讀取 (由 SystemLoop 設置)
+        從 working_context 的全局數據中讀取 (由 Controller 在 GS 創建時設置)
         
         Returns:
-            int: 當前 cycle_index,如果無法獲取則返回 -1
+            int: 當前 cycle_index,如果無法獲取則返回 0（假設為第一個 cycle）
         """
         try:
             from core.working_context import working_context_manager
-            cycle_index = working_context_manager.global_context_data.get('current_cycle_index', -1)
+            cycle_index = working_context_manager.global_context_data.get('current_cycle_index', 0)
             return cycle_index
         except Exception as e:
             error_log(f"[LLM] 獲取 cycle_index 失敗: {e}")
-            return -1
+            return 0
     
     def _get_current_session_info(self, workflow_session_id: Optional[str] = None) -> Dict[str, Any]:
         """獲取當前會話信息 - 優先獲取 CS 或 WS（LLM 作為邏輯中樞的執行會話）
@@ -3264,16 +3264,17 @@ U.E.P 系統可用功能規格：
                             f"IMPORTANT: Actually read the file content aloud, not just describe it. Respond in English only."
                         )
                     else:
-                        # 內容太長，只總結
+                        # 內容太長，明確告知用戶
                         prompt += (
                             f"\nFile Read Results:\n"
                             f"- File: {file_name}\n"
                             f"- Content Length: {content_length} characters\n"
                             f"- Content Preview:\n{content[:200]}...\n\n"
                             f"Generate a natural response that:\n"
-                            f"1. Confirms the file has been read\n"
-                            f"2. Briefly summarize what the file contains (the content is too long to read fully)\n"
-                            f"3. Keep it conversational (2-3 sentences)\n"
+                            f"1. Confirms the file has been read successfully\n"
+                            f"2. EXPLICITLY state that the file is too long ({content_length} characters) to read out completely\n"
+                            f"3. Offer to help in other ways (e.g., summarize, search for specific content, answer questions about it)\n"
+                            f"4. Keep it conversational (2-3 sentences)\n"
                             f"IMPORTANT: Respond in English only."
                         )
                 else:

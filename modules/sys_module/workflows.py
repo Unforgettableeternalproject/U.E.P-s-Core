@@ -854,15 +854,16 @@ class WorkflowEngine:
         if 'Conditional' in current_step.__class__.__name__:
             return False
         
-        # LLM_PROCESSING 步驟：只有第一次執行時需要審核（result.llm_review_data 有值）
-        # 第二次執行時（已有結果）不需要審核，直接自動推進
-        if current_step.step_type == current_step.STEP_TYPE_LLM_PROCESSING:
-            return result.llm_review_data is not None
-        
         # 🔧 工作流完成步驟（complete=True）不需要審核
         # 這是最終結果，不應該再讓 LLM 生成回應
         if result.complete:
             return False
+        
+        # LLM_PROCESSING 步驟特殊處理
+        if current_step.step_type == current_step.STEP_TYPE_LLM_PROCESSING:
+            # 只有當步驟自己提供了 llm_review_data 時才需要審核
+            # 第二次執行時（已有結果）不需要審核，讓 _auto_advance 自然推進
+            return result.llm_review_data is not None
         
         # 其他情況需要審核
         return True
@@ -884,10 +885,10 @@ class WorkflowEngine:
         self.awaiting_llm_review = True
         self.pending_review_result = result
         
-        # 🔧 準備審核數據：只有當步驟明確提供 llm_review_data 時才創建
-        # 如果步驟返回 llm_review_data=None，表示不需要 LLM 生成回應（例如系統操作步驟）
+        # 🔧 準備審核數據
         review_data = None
         if result.llm_review_data is not None:
+            # 步驟已提供審核數據，使用它
             review_data = result.llm_review_data.copy()
             review_data.update({
                 "step_id": current_step.id,
@@ -897,6 +898,64 @@ class WorkflowEngine:
                 "workflow_type": self.definition.workflow_type,
                 "workflow_name": self.definition.name
             })
+        else:
+            # 步驟沒有提供審核數據，使用基本數據
+            review_data = {
+                "step_id": current_step.id,
+                "step_type": current_step.step_type,
+                "message": result.message,
+                "data": result.data,
+                "workflow_type": self.definition.workflow_type,
+                "workflow_name": self.definition.name
+            }
+        
+        # 🔧 檢查下一步是否為 INTERACTIVE，如果是則添加 next_step_info
+        # 這樣 LLM 可以檢測到並生成適當的提示
+        if review_data and "next_step_info" not in review_data:
+            next_step_id = self.definition.get_next_step(current_step.id, result)
+            if next_step_id:
+                next_step = self.definition.steps.get(next_step_id)
+                if next_step and next_step.step_type == next_step.STEP_TYPE_INTERACTIVE:
+                    # 添加 next_step_info 讓 LLM 知道下一步需要互動
+                    review_data["next_step_info"] = {
+                        "step_id": next_step.id,
+                        "step_type": next_step.step_type,
+                        "requires_input": True,
+                        "prompt": next_step.get_prompt()
+                    }
+                    review_data["requires_user_response"] = True
+                    review_data["should_end_session"] = False
+                    debug_log(2, f"[WorkflowEngine] 為下一個 INTERACTIVE 步驟添加 next_step_info: {next_step.id}")
+        
+        # 🆕 發布 WORKFLOW_STEP_COMPLETED 事件讓 LLM 模組接收審核請求
+        if review_data:
+            try:
+                from core.event_bus import event_bus, SystemEvent
+                
+                # 🔍 調試：檢查發布的數據
+                event_data = {
+                    "session_id": self.session.session_id,
+                    "workflow_type": self.definition.workflow_type,
+                    "step_result": result.to_dict(),
+                    "requires_llm_review": True,
+                    "llm_review_data": review_data,
+                    "timestamp": time.time()
+                }
+                debug_log(2, f"[WorkflowEngine] 準備發布審核事件，review_data keys: {list(review_data.keys())}")
+                debug_log(3, f"[WorkflowEngine] event_data keys: {list(event_data.keys())}")
+                
+                event_bus.publish(
+                    SystemEvent.WORKFLOW_STEP_COMPLETED,
+                    event_data,
+                    source="sys"
+                )
+                debug_log(2, f"[WorkflowEngine] 已發布 WORKFLOW_STEP_COMPLETED 事件供 LLM 審核")
+            except Exception as e:
+                error_log(f"[WorkflowEngine] 發布審核事件失敗: {e}")
+        
+        # 如果沒有審核數據，直接返回原始結果，讓 _auto_advance 繼續
+        if not review_data:
+            return result
         
         # 🔧 返回特殊結果，指示需要 LLM 審核
         # ✅ 保留原始的 complete 標誌，讓 SYS 模組能正確判斷工作流是否完成
@@ -1457,55 +1516,23 @@ class WorkflowEngine:
                     debug_log(2, f"[WorkflowEngine] [_auto_advance] 步驟不能自動推進，退出")
                     return current_result
                 
-            # 🔧 特殊處理：LLM_PROCESSING 步驟
-            if current_step.step_type == current_step.STEP_TYPE_LLM_PROCESSING:
-                debug_log(2, f"[WorkflowEngine] [_auto_advance] 檢測到 LLM_PROCESSING 步驟: {current_step.id}")
+            # 顯示當前步驟的提示（如果有且不為空）
+            prompt = current_step.get_prompt()
+            if prompt and prompt.strip() and prompt != "處理中...":
+                print(f"🔄 {prompt}")
                 
-                # 檢查是否已有LLM處理結果
-                output_key = getattr(current_step, '_output_data_key', None)
-                if output_key and self.session.get_data(output_key) is not None:
-                    debug_log(2, f"[WorkflowEngine] [_auto_advance] LLM處理結果已存在，繼續執行步驟")
-                    # 已有結果，正常執行步驟（會直接返回成功）
-                    step_result = current_step.execute()
-                else:
-                    debug_log(2, f"[WorkflowEngine] [_auto_advance] 首次執行LLM處理步驟，發布事件給LLM模組")
-                    # 第一次執行，請求LLM處理
-                    step_result = current_step.execute()
-                    
-                    # 檢查是否包含LLM處理請求
-                    if step_result.llm_review_data and step_result.llm_review_data.get("requires_llm_processing"):
-                        debug_log(2, f"[WorkflowEngine] [_auto_advance] 發布 LLM 處理請求事件")
-                        
-                        from core.event_bus import event_bus, SystemEvent
-                        
-                        # 發布事件給LLM模組
-                        event_bus.publish(
-                            SystemEvent.WORKFLOW_STEP_COMPLETED,
-                            {
-                                "session_id": self.session.session_id,
-                                "workflow_type": self.definition.workflow_type,
-                                "step_result": step_result.to_dict(),
-                                "requires_llm_processing": True,
-                                "llm_request_data": step_result.llm_review_data.get("request_data"),
-                                "timestamp": time.time()
-                            },
-                            source="sys"
-                        )
-                        
-                        # 返回等待LLM處理的結果
-                        return StepResult(
-                            success=False,
-                            message=f"等待LLM處理: {step_result.llm_review_data.get('task', '未知任務')}",
-                            data={"requires_llm_processing": True, "step_id": current_step.id}
-                        )
-            else:
-                # 顯示當前步驟的提示（如果有且不為空）
-                prompt = current_step.get_prompt()
-                if prompt and prompt.strip() and prompt != "處理中...":
-                    print(f"🔄 {prompt}")
-                    
-                # 執行當前步驟
-                step_result = current_step.execute()
+            # 執行當前步驟（所有步驟統一處理，包括 LLM_PROCESSING）
+            step_result = current_step.execute()
+            
+            # 🔧 檢查是否需要等待 LLM 處理
+            if step_result.llm_review_data and step_result.llm_review_data.get("requires_llm_processing"):
+                debug_log(2, f"[WorkflowEngine] [_auto_advance] 步驟需要 LLM 處理: {current_step.id}")
+                # 直接調用審核邏輯，發布事件給 LLM 模組
+                if self._should_request_review(step_result, current_step):
+                    debug_log(2, f"[WorkflowEngine] [_auto_advance] 請求 LLM 審核")
+                    return self._request_llm_review(step_result, current_step)
+                # 如果不需要審核，直接返回
+                return step_result
             
             auto_steps += 1
             
@@ -2247,7 +2274,7 @@ class StepTemplate:
                 return result
                 
             def should_auto_advance(self) -> bool:
-                # LLM處理步驟應該自動推進（由引擎處理LLM請求）
+                # LLM處理步驟應該自動推進（統一處理）
                 return True
                 
         return LLMProcessingStep(session)

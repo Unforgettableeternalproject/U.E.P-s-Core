@@ -205,7 +205,7 @@ workflows:
   
   clipboard_tracker:
     name: "clipboard_tracker"
-    description: "Search clipboard history for specific keywords or view recent items"
+    description: "Search clipboard history (max 5 recent items) and copy selected item. Requires background monitoring service."
     category: "text"
     work_mode: "direct"
     
@@ -213,16 +213,9 @@ workflows:
       keyword:
         type: str
         optional: true
-        description: "Search keyword (empty to view recent history)"
-        maps_to_step: "keyword_input"
-        extraction_hint: "Extract search terms from user input"
-      
-      max_results:
-        type: int
-        optional: true
-        description: "Maximum number of results to return (default: 5)"
-        maps_to_step: "max_results_input"
-        extraction_hint: "Extract numbers like show 10 items, last 5 copies"
+        description: "Search keyword (empty to view all recent history, max 5 items)"
+        maps_to_step: "input_keyword"
+        extraction_hint: "Extract search terms from user input (e.g., search for email, find phone number)"
     
     mcp_tool_params:
       command:
@@ -232,28 +225,21 @@ workflows:
       initial_data:
         type: object
         required: false
-        description: "Initial data: keyword (optional), max_results (default 5)"
+        description: "Initial data: keyword (optional search keyword, empty for all history)"
 
   quick_phrases:
     name: "quick_phrases"
-    description: "Get predefined text templates or generate custom templates using LLM"
+    description: "Generate text templates using LLM and save as file to desktop (letters, resumes, emails, etc.)"
     category: "text"
     work_mode: "direct"
     
     initial_params:
-      template_name:
+      template_request:
         type: str
         optional: true
-        description: "Template name (e.g., email, meeting, thanks)"
-        maps_to_step: "template_selection"
-        extraction_hint: "Extract template names from user input"
-      
-      custom_prompt:
-        type: str
-        optional: true
-        description: "Custom prompt for LLM to generate template (English)"
-        maps_to_step: "custom_prompt_input"
-        extraction_hint: "If user asks to generate/create template, extract their requirements"
+        description: "Description of the template needed (e.g., business email, cover letter, meeting agenda, thank you note)"
+        maps_to_step: "input_template_request"
+        extraction_hint: "Extract template type/purpose from user input: email, letter, resume, cover letter, meeting agenda, thank you note, apology letter, etc."
     
     mcp_tool_params:
       command:
@@ -263,30 +249,23 @@ workflows:
       initial_data:
         type: object
         required: false
-        description: "Initial data: template_name (optional), custom_prompt (optional, English)"
+        description: "Initial data: template_request (optional, description of template type)"
 
   # ==================== Analysis Workflows ====================
   
   code_analysis:
     name: "code_analysis"
-    description: "Analyze code using LLM with different analysis types: general, security, optimize, explain"
+    description: "Analyze code file using LLM with flexible analysis focus (security, performance, quality, etc.)"
     category: "analysis"
     work_mode: "direct"
     
     initial_params:
-      code:
+      analysis_focus:
         type: str
         optional: false
-        description: "Code to analyze"
-        maps_to_step: "code_input"
-        extraction_hint: "Extract code from user input (in code blocks or plain text)"
-      
-      analysis_type:
-        type: str
-        optional: true
-        description: "Analysis type: general (default), security, optimize, explain"
-        maps_to_step: "analysis_type_selection_step"
-        extraction_hint: "Extract from keywords: security=security, optimize/improve=optimize, explain=explain"
+        description: "Analysis focus/goal (e.g., security, performance, code quality). Leave empty for general analysis."
+        maps_to_step: "input_analysis_focus"
+        extraction_hint: "Extract analysis intent from user input: security vulnerabilities, performance optimization, code quality, best practices, etc."
     
     mcp_tool_params:
       command:
@@ -296,7 +275,7 @@ workflows:
       initial_data:
         type: object
         required: false
-        description: "Initial data: code (required), analysis_type (default: general)"
+        description: "Initial data: file_path_input (required), analysis_focus (optional, for flexible analysis goals)"
 
   # ==================== Utility Workflows ====================
   

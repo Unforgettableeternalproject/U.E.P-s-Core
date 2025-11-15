@@ -244,8 +244,9 @@ class LLMModule(BaseModule):
             should_end_session = review_data and review_data.get('should_end_session', False) if review_data else False
             
             # 🆕 獲取當前步驟和下一步資訊
-            current_step_info = data.get('current_step_info')
-            next_step_info = data.get('next_step_info')
+            # 🔧 優先從 review_data 中讀取，否則從 data 中讀取
+            current_step_info = (review_data.get('current_step_info') if review_data else None) or data.get('current_step_info')
+            next_step_info = (review_data.get('next_step_info') if review_data else None) or data.get('next_step_info')
             
             # 🔧 修正：檢查當前步驟是否為 Interactive（等待輸入），且不會被跳過
             # ⚠️ 重要：如果步驟會被跳過（step_will_be_skipped=True），不應視為需要互動
@@ -330,8 +331,11 @@ class LLMModule(BaseModule):
                     'current_cycle_session': self._get_current_gs_id()  # 記錄當前 cycle 的 session
                 })
                 
-                # 靜默批准當前步驟，讓工作流進入互動狀態
-                self._approve_workflow_step(session_id, None)
+                # 🔧 修正：不要立即批准步驟！
+                # 當下一步是互動步驟時，LLM 應該生成提示給用戶，但不批准當前步驟
+                # 工作流會自動進入等待輸入狀態（因為 _auto_advance 檢測到 InteractiveStep）
+                # 只有當 LLM 需要批准當前步驟的結果時才調用 approve_step
+                # 在這種情況下（LLM_PROCESSING → INTERACTIVE），LLM 只是提供提示，不批准
                 
                 # ⚠️ 重要：立即處理互動步驟提示，不等待 OUTPUT 完成
                 # 因為在某些情況下（如步驟完成事件晚於輸出完成），OUTPUT 可能已經完成
@@ -344,8 +348,18 @@ class LLMModule(BaseModule):
                     review_data,
                     next_step_info
                 )
-                # 從隊列中移除（已經處理）
+                # 🔧 修正：從兩個隊列中移除（已經處理）
+                # ⚠️ 重要：必須從 _pending_workflow_events 中移除，否則會在 handle() 中被再次處理
+                # 導致 LLM 生成決策並錯誤地調用 approve_step
                 self._pending_interactive_prompts.pop()
+                # 從 _pending_workflow_events 中找到並移除對應的事件
+                if hasattr(self, '_pending_workflow_events') and self._pending_workflow_events:
+                    # 找到匹配的事件（session_id 相同）
+                    self._pending_workflow_events = [
+                        e for e in self._pending_workflow_events 
+                        if e.get('session_id') != session_id
+                    ]
+                    debug_log(2, f"[LLM] 已從待處理隊列中移除互動步驟事件: {session_id}")
             else:
                 # 🔧 其他情況：等待下次 handle() 調用
                 debug_log(2, f"[LLM] 工作流事件已準備好，等待下次 handle() 調用生成回應")
@@ -3429,18 +3443,53 @@ U.E.P 系統可用功能規格：
                 if action:
                     prompt += f"- Recent Action: {action}\n"
                 
+                # 🔧 如果是 LLM 處理請求，添加處理結果的上下文
+                if action == 'llm_processing_request':
+                    request_data = review_data.get('request_data', {})
+                    input_data = request_data.get('input_data', {})
+                    
+                    # 檢查是否有格式化的結果列表（例如搜尋結果）
+                    if 'formatted_results' in input_data:
+                        formatted_results = input_data['formatted_results']
+                        prompt += f"\nAvailable Options:\n{formatted_results}\n\n"
+                        debug_log(2, f"[LLM] 添加格式化結果到提示中: {len(formatted_results)} 字符")
+                    
+                    # 或者如果有其他輸入數據
+                    elif input_data:
+                        # 將輸入數據轉換為可讀格式
+                        data_str = "\n".join([f"  - {k}: {v}" for k, v in input_data.items() if k != 'formatted_results'])
+                        if data_str:
+                            prompt += f"\nContext Data:\n{data_str}\n\n"
+                
                 # 如果有文件相關信息
                 if 'file_name' in review_data:
                     prompt += f"- File: {review_data.get('file_name')}\n"
             
-            prompt += (
-                f"\nGenerate a natural response that:\n"
-                f"1. BRIEFLY acknowledges the current progress (1 sentence)\n"
-                f"2. Clearly asks the user for the needed input\n"
-                f"3. Translate any non-English prompt to English and use it naturally\n"
-                f"4. Be friendly and conversational (2-3 sentences total)\n"
-                f"\nIMPORTANT: Respond in English only. Keep it concise and natural."
-            )
+            # 檢查是否有可用選項需要顯示
+            has_options = review_data and review_data.get('action') == 'llm_processing_request' and \
+                         review_data.get('request_data', {}).get('input_data', {}).get('formatted_results')
+            
+            if has_options:
+                prompt += (
+                    f"\nGenerate a natural response that:\n"
+                    f"1. BRIEFLY acknowledges the search/processing results (1 sentence)\n"
+                    f"2. **MUST include the complete list of available options shown above**\n"
+                    f"3. Clearly asks the user to choose from the options\n"
+                    f"4. Be friendly and conversational\n"
+                    f"\nIMPORTANT: \n"
+                    f"- Respond in English only\n"
+                    f"- MUST show all the numbered options to the user\n"
+                    f"- Keep introduction brief, focus on presenting the options clearly"
+                )
+            else:
+                prompt += (
+                    f"\nGenerate a natural response that:\n"
+                    f"1. BRIEFLY acknowledges the current progress (1 sentence)\n"
+                    f"2. Clearly asks the user for the needed input\n"
+                    f"3. Translate any non-English prompt to English and use it naturally\n"
+                    f"4. Be friendly and conversational (2-3 sentences total)\n"
+                    f"\nIMPORTANT: Respond in English only. Keep it concise and natural."
+                )
             
             # 安全地記錄 prompt 的前 200 字符
             prompt_preview = str(prompt)[:200] if len(str(prompt)) > 200 else str(prompt)
@@ -3484,9 +3533,11 @@ U.E.P 系統可用功能規格：
                     "emotion": "neutral"
                 })
             
-            # ✅ 批准當前步驟，讓工作流進入互動步驟
-            # 注意：不要結束會話，工作流還在進行中
-            self._approve_workflow_step(session_id, None)
+            # 🔧 修正：不要批准步驟！
+            # 當下一步是互動步驟時，LLM 只是提供提示，不批准當前步驟
+            # 工作流應該停在 INTERACTIVE 步驟，等待用戶輸入
+            # WorkflowEngine 的 _auto_advance 會檢測到 InteractiveStep 並自動發布 workflow_requires_input 事件
+            # 用戶提供輸入後，才會調用 provide_workflow_input 繼續工作流
             
             debug_log(1, f"[LLM] ✅ 互動步驟提示處理完畢: {session_id}")
             

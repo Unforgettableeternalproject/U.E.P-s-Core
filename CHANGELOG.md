@@ -1774,3 +1774,15 @@
 
 ---
 
+### Fixed an issues where whenever llm process is followed by an interactive the data passing is always weird. 11/15
+
+> Date: Sat, 15 Nov 2025 23:59:48 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `d2cf0f5dae7347d6f4c1381f2be8b6432152a0f9`
+
+---
+

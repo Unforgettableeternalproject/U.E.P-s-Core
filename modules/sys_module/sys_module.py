@@ -1322,7 +1322,9 @@ class SYSModule(BaseModule):
                         "data": result.data or {}
                     }
                     
-                    return {
+                    # 🆕 檢查是否需要 LLM 審核（例如 LLM_PROCESSING 完成後下一步是 INTERACTIVE）
+                    # 如果 result.llm_review_data 存在，說明步驟需要審核
+                    response = {
                         "status": "waiting",
                         "session_id": session_id,
                         "requires_input": True,
@@ -1331,6 +1333,14 @@ class SYSModule(BaseModule):
                         "data": result.data,
                         "step_info": step_info
                     }
+                    
+                    # 🆕 如果需要審核，添加 llm_review_data 到返回值
+                    if hasattr(result, 'llm_review_data') and result.llm_review_data is not None:
+                        response["llm_review_data"] = result.llm_review_data
+                        response["requires_llm_review"] = True
+                        debug_log(2, f"[SYS] 步驟需要 LLM 審核，已添加 review_data 到返回值")
+                    
+                    return response
                 else:
                     # Workflow completed
                     self.session_manager.end_session(

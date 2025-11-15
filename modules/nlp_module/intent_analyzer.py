@@ -274,7 +274,7 @@ class IntentAnalyzer:
         improved_segments = segments.copy()
         improved_segments = self._merge_connectives(improved_segments, connective_words)
         improved_segments = self._merge_short_segments(improved_segments)
-        improved_segments = self._merge_context_related(improved_segments)
+        improved_segments = self._merge_context_related(improved_segments, original_text, connective_words)
         
         debug_log(2, f"[PostProcess] 改進後分段數: {len(improved_segments)}")
         
@@ -343,8 +343,10 @@ class IntentAnalyzer:
         
         return result
     
-    def _merge_context_related(self, segments: List[IntentSegment]) -> List[IntentSegment]:
-        """合併上下文相關的分段"""
+    def _merge_context_related(self, segments: List[IntentSegment], 
+                              original_text: str, 
+                              connective_words: set) -> List[IntentSegment]:
+        """合併上下文相關的分段 - 但避免跨連接詞合併不同任務"""
         if len(segments) <= 1:
             return segments
             
@@ -357,8 +359,18 @@ class IntentAnalyzer:
                 segment.intent == result[-1].intent and
                 segment.intent == IntentType.WORK):
                 
-                # 檢查是否是相關的命令片段
-                should_merge = True
+                # 檢查兩個段落之間是否存在連接詞 (表示是不同任務)
+                last_seg = result[-1]
+                between_text = original_text[last_seg.end_pos:segment.start_pos].strip().lower()
+                has_connective = any(conn in between_text.split() for conn in connective_words)
+                
+                if has_connective:
+                    # 有連接詞分隔,視為獨立任務,不合併
+                    debug_log(3, f"[PostProcess] 檢測到連接詞 '{between_text}',不合併段落")
+                    should_merge = False
+                else:
+                    # 無連接詞,可能是同一任務的延續
+                    should_merge = True
             
             if should_merge:
                 last = result[-1]

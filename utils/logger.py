@@ -297,7 +297,10 @@ else:
             print(f"啟用文件日誌時出錯: {str(e)}")
 
     # 初始化時不啟用文件日誌，等待動態啟用
-    print("📺 日誌系統已初始化，等待動態啟用文件記錄")
+    try:
+        print("📺 日誌系統已初始化，等待動態啟用文件記錄")
+    except UnicodeEncodeError:
+        print("[LOG] Logger initialized, waiting for dynamic file logging activation")
 
 # 公開函數
 def cleanup_empty_log_files():

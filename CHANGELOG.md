@@ -1762,3 +1762,15 @@
 
 ---
 
+### Added more data to train the BIO model better, seemed to be working. 11/15
+
+> Date: Sat, 15 Nov 2025 18:33:09 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `750b04965ca2e53c8175b0304679540461786943`
+
+---
+

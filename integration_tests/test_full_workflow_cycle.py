@@ -340,15 +340,15 @@ class InteractiveWorkflowMonitor(WorkflowCycleMonitor):
         """追蹤 TTS 輸出完成"""
         self.tts_output_count += 1
         from utils.debug_helper import info_log
-        info_log(f"[Monitor] TTS 輸出完成 (第 {self.tts_output_count} 次，期待 {self.expected_tts_outputs} 次)")
+        info_log(f"[Monitor] TTS 輸出完成 (第 {self.tts_output_count} 次)")
         
-        # 等待所有期望的 TTS 輸出完成後才設置事件
-        if self.current_step and self.tts_output_count >= self.expected_tts_outputs:
-            info_log(f"[Monitor] 所有 TTS 輸出完成，設置 awaiting_input_event 以響應步驟: {self.current_step}")
+        # 如果已經檢測到互動步驟，在收到 TTS 輸出後短暫延遲即可設置事件
+        # 不再依賴固定的輸出次數，因為不同步驟可能產生不同次數的輸出
+        if self.current_step and self.tts_output_count >= 1:
+            info_log(f"[Monitor] TTS 輸出完成，設置 awaiting_input_event 以響應步驟: {self.current_step}")
             self.awaiting_input_event.set()
             # 重置計數器為下一個互動步驟做準備
             self.tts_output_count = 0
-            self.expected_tts_outputs = 2  # 下一個互動步驟也需要2次輸出
     
     def cleanup(self):
         """清理資源"""
@@ -1432,7 +1432,6 @@ class TestFileWorkflowFullCycle:
             time.sleep(1.0)
             info_log("[Test] ✅ 測試清理完成")
     
-    @pytest.mark.skip(reason="暫時跳過")
     def test_get_world_time_full_params(self, system_components, isolated_gs):
         """
         測試世界時間查詢工作流 - 完整參數（測試 ConditionalStep）
@@ -1591,7 +1590,8 @@ class TestFileWorkflowFullCycle:
                 input_requested = monitor.awaiting_input_event.wait(timeout=60)
                 assert input_requested, "Workflow did not request timezone input"
                 
-                time.sleep(15.0)
+                # 收到輸入請求後，等待 LLM 提示完成並立即注入
+                time.sleep(2.0)
                 info_log("[Test] 📥 提供時區輸入: Tokyo")
                 inject_text_to_system("Tokyo")
             else:
@@ -1627,7 +1627,6 @@ class TestFileWorkflowFullCycle:
             time.sleep(1.0)
             info_log("[Test] ✅ 測試清理完成")
     
-    @pytest.mark.skip(reason="暫時跳過")
     def test_get_world_time_partial_params(self, system_components, isolated_gs):
         """
         測試世界時間查詢工作流 - 部分參數（測試 ConditionalStep 互動）

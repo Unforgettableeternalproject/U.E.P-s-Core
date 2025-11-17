@@ -61,6 +61,12 @@ class SystemEvent(Enum):
     BACKGROUND_WORKFLOW_COMPLETED = "background_workflow_completed"    # 背景工作流完成
     BACKGROUND_WORKFLOW_FAILED = "background_workflow_failed"          # 背景工作流失敗
     BACKGROUND_WORKFLOW_CANCELLED = "background_workflow_cancelled"    # 背景工作流取消
+    
+    # 自動化觸發事件
+    REMINDER_TRIGGERED = "reminder_triggered"                          # 提醒觸發
+    CALENDAR_EVENT_STARTING = "calendar_event_starting"                # 日曆事件即將開始
+    FOLDER_CHANGE_DETECTED = "folder_change_detected"                  # 資料夾變更偵測
+    MEDIA_CONTROL_EXECUTED = "media_control_executed"                  # 媒體控制已執行
 
 
 @dataclass

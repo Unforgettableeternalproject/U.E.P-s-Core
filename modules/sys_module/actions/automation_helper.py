@@ -2,14 +2,466 @@ import sqlite3
 import threading
 import time
 import os
+import json
 from datetime import datetime
 from pathlib import Path
-from utils.debug_helper import info_log, error_log
+from typing import Dict, List, Any, Optional, Callable
+from concurrent.futures import ThreadPoolExecutor
+from utils.debug_helper import info_log, error_log, debug_log
 
 # 將資料庫放在 memory 目錄中
 _DB_DIR = Path(__file__).parent.parent.parent.parent / "memory"
 _DB_DIR.mkdir(exist_ok=True)
 _DB = str(_DB_DIR / "uep_tasks.db")
+
+# ==================== 監控線程池管理器 ====================
+
+class MonitoringThreadPool:
+    """
+    專門用於長期運行監控任務的線程池管理器
+    
+    與 BackgroundWorkerManager 的區別：
+    - BackgroundWorkerManager: 一次性執行完畢的背景工作流（有限步驟）
+    - MonitoringThreadPool: 持續運行的監控任務（無限循環直到觸發或取消）
+    """
+    
+    _instance = None
+    _lock = threading.Lock()
+    
+    def __new__(cls):
+        """單例模式"""
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
+        return cls._instance
+    
+    def __init__(self):
+        """初始化監控線程池"""
+        if self._initialized:
+            return
+        
+        self.executor = ThreadPoolExecutor(
+            max_workers=10,
+            thread_name_prefix="Monitor"
+        )
+        self.active_monitors: Dict[str, threading.Event] = {}  # task_id -> stop_event
+        self.monitor_threads: Dict[str, Any] = {}  # task_id -> Future
+        self._initialized = True
+        
+        info_log("[MonitoringThreadPool] 監控線程池已初始化（max_workers=10）")
+    
+    def submit_monitor(
+        self,
+        task_id: str,
+        monitor_func: Callable,
+        check_interval: int = 60,
+        **kwargs
+    ) -> bool:
+        """
+        提交新的監控任務到線程池
+        
+        Args:
+            task_id: 監控任務 ID（唯一識別碼）
+            monitor_func: 監控函數，簽名為 func(stop_event, **kwargs) -> None
+            check_interval: 檢查間隔（秒）
+            **kwargs: 傳遞給監控函數的額外參數
+            
+        Returns:
+            是否成功提交
+        """
+        if task_id in self.active_monitors:
+            error_log(f"[MonitoringThreadPool] 監控任務已存在：{task_id}")
+            return False
+        
+        try:
+            # 建立停止事件
+            stop_event = threading.Event()
+            self.active_monitors[task_id] = stop_event
+            
+            # 包裝監控函數
+            def monitor_wrapper():
+                try:
+                    info_log(f"[MonitoringThreadPool] 監控任務已啟動：{task_id}")
+                    
+                    # 執行監控函數（會持續運行直到 stop_event 被設置）
+                    monitor_func(stop_event=stop_event, check_interval=check_interval, **kwargs)
+                    
+                    info_log(f"[MonitoringThreadPool] 監控任務已正常結束：{task_id}")
+                    
+                except Exception as e:
+                    error_log(f"[MonitoringThreadPool] 監控任務異常：{task_id}, 錯誤：{e}")
+                    
+                    # 更新資料庫狀態
+                    update_workflow_status(
+                        task_id=task_id,
+                        status="FAILED",
+                        error_message=str(e)
+                    )
+                
+                finally:
+                    # 清理
+                    if task_id in self.active_monitors:
+                        del self.active_monitors[task_id]
+                    if task_id in self.monitor_threads:
+                        del self.monitor_threads[task_id]
+            
+            # 提交到線程池
+            future = self.executor.submit(monitor_wrapper)
+            self.monitor_threads[task_id] = future
+            
+            info_log(f"[MonitoringThreadPool] 已提交監控任務：{task_id}（間隔 {check_interval} 秒）")
+            return True
+            
+        except Exception as e:
+            error_log(f"[MonitoringThreadPool] 提交監控任務失敗：{task_id}, 錯誤：{e}")
+            
+            # 清理
+            if task_id in self.active_monitors:
+                del self.active_monitors[task_id]
+            
+            return False
+    
+    def stop_monitor(self, task_id: str, timeout: int = 10) -> bool:
+        """
+        停止指定的監控任務
+        
+        Args:
+            task_id: 監控任務 ID
+            timeout: 等待停止的超時時間（秒）
+            
+        Returns:
+            是否成功停止
+        """
+        if task_id not in self.active_monitors:
+            debug_log(2, f"[MonitoringThreadPool] 監控任務不存在或已停止：{task_id}")
+            return False
+        
+        try:
+            # 設置停止事件
+            stop_event = self.active_monitors[task_id]
+            stop_event.set()
+            
+            info_log(f"[MonitoringThreadPool] 已發送停止信號：{task_id}")
+            
+            # 等待線程結束（可選）
+            if task_id in self.monitor_threads:
+                future = self.monitor_threads[task_id]
+                try:
+                    future.result(timeout=timeout)
+                    info_log(f"[MonitoringThreadPool] 監控任務已停止：{task_id}")
+                except TimeoutError:
+                    error_log(f"[MonitoringThreadPool] 停止監控任務超時：{task_id}")
+                    return False
+            
+            # 更新資料庫狀態
+            update_workflow_status(
+                task_id=task_id,
+                status="CANCELLED",
+                error_message="用戶取消"
+            )
+            
+            return True
+            
+        except Exception as e:
+            error_log(f"[MonitoringThreadPool] 停止監控任務失敗：{task_id}, 錯誤：{e}")
+            return False
+    
+    def stop_all_monitors(self, timeout: int = 10) -> None:
+        """停止所有監控任務"""
+        info_log(f"[MonitoringThreadPool] 正在停止所有監控任務（共 {len(self.active_monitors)} 個）")
+        
+        task_ids = list(self.active_monitors.keys())
+        for task_id in task_ids:
+            self.stop_monitor(task_id, timeout=timeout)
+    
+    def get_active_monitors(self) -> List[str]:
+        """獲取所有活躍的監控任務 ID"""
+        return list(self.active_monitors.keys())
+    
+    def is_monitor_running(self, task_id: str) -> bool:
+        """檢查指定監控任務是否正在運行"""
+        return task_id in self.active_monitors
+    
+    def get_monitor_status(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """
+        獲取指定監控任務的詳細狀態（供前端使用）
+        
+        Args:
+            task_id: 監控任務 ID
+            
+        Returns:
+            監控任務狀態字典，包含：
+            - task_id: 任務 ID
+            - workflow_type: 工作流類型
+            - status: 運行狀態
+            - is_running: 是否正在線程池中運行
+            - created_at: 建立時間
+            - last_check_at: 最後檢查時間
+            - next_check_at: 下次檢查時間
+            - trigger_conditions: 觸發條件
+            - metadata: 元數據
+            - uptime_seconds: 運行時長（秒）
+        """
+        # 從資料庫獲取任務資訊
+        workflow = get_workflow_by_id(task_id)
+        if not workflow:
+            return None
+        
+        # 計算運行時長
+        uptime_seconds = None
+        if workflow.get("created_at"):
+            created_time = datetime.fromisoformat(workflow["created_at"])
+            uptime_seconds = (datetime.now() - created_time).total_seconds()
+        
+        return {
+            "task_id": task_id,
+            "workflow_type": workflow["workflow_type"],
+            "status": workflow["status"],
+            "is_running": self.is_monitor_running(task_id),
+            "created_at": workflow["created_at"],
+            "last_check_at": workflow.get("last_check_at"),
+            "next_check_at": workflow.get("next_check_at"),
+            "trigger_conditions": workflow.get("trigger_conditions"),
+            "metadata": workflow.get("metadata"),
+            "uptime_seconds": uptime_seconds,
+            "error_message": workflow.get("error_message")
+        }
+    
+    def get_all_monitor_status(self) -> List[Dict[str, Any]]:
+        """
+        獲取所有監控任務的狀態（供前端監控視窗使用）
+        
+        Returns:
+            所有監控任務的狀態列表
+        """
+        all_status = []
+        
+        # 獲取資料庫中所有活躍的工作流
+        active_workflows = get_active_workflows()
+        
+        for workflow in active_workflows:
+            task_id = workflow["task_id"]
+            status = self.get_monitor_status(task_id)
+            if status:
+                all_status.append(status)
+        
+        return all_status
+    
+    def prepare_shutdown(self) -> Dict[str, Any]:
+        """
+        準備系統關機：優雅地停止所有監控任務並保存狀態
+        
+        這個方法會：
+        1. 將所有運行中的監控標記為 SUSPENDED（暫停）
+        2. 發送停止信號給所有線程
+        3. 保存當前狀態到資料庫
+        4. 等待線程優雅退出
+        
+        Returns:
+            關機報告：
+            - suspended_count: 暫停的任務數量
+            - failed_count: 停止失敗的任務數量
+            - suspended_tasks: 暫停的任務 ID 列表
+        """
+        info_log("[MonitoringThreadPool] 準備系統關機，正在暫停所有監控任務...")
+        
+        suspended_tasks = []
+        failed_tasks = []
+        
+        # 獲取所有正在運行的監控任務
+        running_task_ids = list(self.active_monitors.keys())
+        
+        for task_id in running_task_ids:
+            try:
+                # 更新資料庫狀態為 SUSPENDED
+                success = update_workflow_status(
+                    task_id=task_id,
+                    status="SUSPENDED",
+                    error_message="系統關機，任務已暫停"
+                )
+                
+                if success:
+                    # 發送停止信號
+                    stop_event = self.active_monitors[task_id]
+                    stop_event.set()
+                    suspended_tasks.append(task_id)
+                    info_log(f"[MonitoringThreadPool] 已暫停監控任務：{task_id}")
+                else:
+                    failed_tasks.append(task_id)
+                    error_log(f"[MonitoringThreadPool] 暫停監控任務失敗：{task_id}")
+                    
+            except Exception as e:
+                error_log(f"[MonitoringThreadPool] 暫停監控任務異常：{task_id}, 錯誤：{e}")
+                failed_tasks.append(task_id)
+        
+        # 等待所有線程退出（較短超時）
+        info_log("[MonitoringThreadPool] 等待監控線程退出...")
+        for task_id, future in list(self.monitor_threads.items()):
+            try:
+                future.result(timeout=5)  # 5 秒超時
+            except TimeoutError:
+                error_log(f"[MonitoringThreadPool] 監控任務停止超時：{task_id}")
+            except Exception as e:
+                error_log(f"[MonitoringThreadPool] 監控任務停止異常：{task_id}, 錯誤：{e}")
+        
+        shutdown_report = {
+            "suspended_count": len(suspended_tasks),
+            "failed_count": len(failed_tasks),
+            "suspended_tasks": suspended_tasks,
+            "failed_tasks": failed_tasks
+        }
+        
+        info_log(f"[MonitoringThreadPool] 關機準備完成：已暫停 {len(suspended_tasks)} 個任務")
+        return shutdown_report
+    
+    def restore_monitors(self, monitor_factory: Callable) -> Dict[str, Any]:
+        """
+        系統啟動時恢復暫停的監控任務
+        
+        這個方法會：
+        1. 從資料庫查詢所有 SUSPENDED 狀態的任務
+        2. 使用 monitor_factory 重新建立監控函數
+        3. 重新提交到線程池
+        4. 更新狀態為 RUNNING
+        
+        Args:
+            monitor_factory: 監控函數工廠，簽名為 factory(workflow_type, metadata) -> monitor_func
+                            用於根據工作流類型和元數據重新建立監控函數
+        
+        Returns:
+            恢復報告：
+            - restored_count: 恢復的任務數量
+            - failed_count: 恢復失敗的任務數量
+            - restored_tasks: 恢復的任務 ID 列表
+        """
+        info_log("[MonitoringThreadPool] 正在恢復暫停的監控任務...")
+        
+        restored_tasks = []
+        failed_tasks = []
+        
+        try:
+            # 從資料庫查詢所有 SUSPENDED 狀態的工作流
+            conn = sqlite3.connect(_DB)
+            c = conn.cursor()
+            
+            c.execute("""
+                SELECT task_id, workflow_type, trigger_conditions, metadata, next_check_at
+                FROM background_workflows
+                WHERE status = 'SUSPENDED'
+                ORDER BY created_at ASC
+            """)
+            
+            suspended_workflows = []
+            for row in c.fetchall():
+                suspended_workflows.append({
+                    "task_id": row[0],
+                    "workflow_type": row[1],
+                    "trigger_conditions": json.loads(row[2]) if row[2] else None,
+                    "metadata": json.loads(row[3]) if row[3] else None,
+                    "next_check_at": row[4]
+                })
+            
+            conn.close()
+            
+            info_log(f"[MonitoringThreadPool] 找到 {len(suspended_workflows)} 個暫停的監控任務")
+            
+            # 恢復每個任務
+            for workflow in suspended_workflows:
+                task_id = workflow["task_id"]
+                workflow_type = workflow["workflow_type"]
+                metadata = workflow["metadata"] or {}
+                
+                try:
+                    # 使用工廠函數重新建立監控函數
+                    monitor_func = monitor_factory(workflow_type, metadata)
+                    
+                    if monitor_func is None:
+                        error_log(f"[MonitoringThreadPool] 無法建立監控函數：{workflow_type}")
+                        failed_tasks.append(task_id)
+                        continue
+                    
+                    # 計算檢查間隔
+                    check_interval = metadata.get("check_interval", 60)
+                    
+                    # 重新提交到線程池
+                    success = self.submit_monitor(
+                        task_id=task_id,
+                        monitor_func=monitor_func,
+                        check_interval=check_interval,
+                        **metadata
+                    )
+                    
+                    if success:
+                        # 更新狀態為 RUNNING
+                        update_workflow_status(
+                            task_id=task_id,
+                            status="RUNNING",
+                            error_message=None
+                        )
+                        restored_tasks.append(task_id)
+                        info_log(f"[MonitoringThreadPool] 已恢復監控任務：{task_id}")
+                    else:
+                        failed_tasks.append(task_id)
+                        error_log(f"[MonitoringThreadPool] 恢復監控任務失敗：{task_id}")
+                        
+                except Exception as e:
+                    error_log(f"[MonitoringThreadPool] 恢復監控任務異常：{task_id}, 錯誤：{e}")
+                    failed_tasks.append(task_id)
+            
+            restore_report = {
+                "restored_count": len(restored_tasks),
+                "failed_count": len(failed_tasks),
+                "restored_tasks": restored_tasks,
+                "failed_tasks": failed_tasks
+            }
+            
+            info_log(f"[MonitoringThreadPool] 監控任務恢復完成：成功 {len(restored_tasks)} 個，失敗 {len(failed_tasks)} 個")
+            return restore_report
+            
+        except Exception as e:
+            error_log(f"[MonitoringThreadPool] 恢復監控任務過程異常：{e}")
+            return {
+                "restored_count": len(restored_tasks),
+                "failed_count": len(failed_tasks) + 1,
+                "restored_tasks": restored_tasks,
+                "failed_tasks": failed_tasks,
+                "error": str(e)
+            }
+    
+    def shutdown(self, wait: bool = True, timeout: int = 30) -> None:
+        """
+        關閉監控線程池
+        
+        Args:
+            wait: 是否等待所有任務完成
+            timeout: 等待超時時間（秒）
+        """
+        info_log("[MonitoringThreadPool] 正在關閉監控線程池...")
+        
+        # 停止所有監控任務
+        self.stop_all_monitors(timeout=timeout)
+        
+        # 關閉線程池
+        self.executor.shutdown(wait=wait)
+        
+        info_log("[MonitoringThreadPool] 監控線程池已關閉")
+
+
+# 全域監控線程池實例
+_monitoring_pool = None
+_monitoring_pool_lock = threading.Lock()
+
+
+def get_monitoring_pool() -> MonitoringThreadPool:
+    """獲取全域監控線程池實例（單例）"""
+    global _monitoring_pool
+    if _monitoring_pool is None:
+        with _monitoring_pool_lock:
+            if _monitoring_pool is None:
+                _monitoring_pool = MonitoringThreadPool()
+    return _monitoring_pool
 
 def _init_db():
     conn = sqlite3.connect(_DB)
@@ -35,6 +487,40 @@ def _init_db():
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )""")
+    
+    # 背景工作流追蹤表
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS background_workflows (
+      task_id TEXT PRIMARY KEY,
+      workflow_type TEXT NOT NULL,
+      trigger_conditions TEXT,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      last_check_at TEXT,
+      next_check_at TEXT,
+      metadata TEXT,
+      error_message TEXT
+    )""")
+    
+    # 工作流干預審計表
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS workflow_interventions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      parameters TEXT,
+      performed_at TEXT NOT NULL,
+      performed_by TEXT,
+      result TEXT,
+      FOREIGN KEY (task_id) REFERENCES background_workflows(task_id)
+    )""")
+    
+    # 為常用查詢建立索引
+    c.execute("CREATE INDEX IF NOT EXISTS idx_bg_workflows_status ON background_workflows(status)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_bg_workflows_type ON background_workflows(workflow_type)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_bg_workflows_next_check ON background_workflows(next_check_at)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_interventions_task ON workflow_interventions(task_id)")
     
     conn.commit()
     conn.close()
@@ -565,3 +1051,680 @@ def local_calendar(
     except Exception as e:
         error_log(f"[AUTO] 本地日曆操作失敗：{e}")
         return {"status": "error", "message": str(e)}
+
+
+# ==================== 背景工作流資料庫管理 ====================
+
+def register_background_workflow(
+    task_id: str,
+    workflow_type: str,
+    trigger_conditions: Optional[Dict[str, Any]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    next_check_at: Optional[str] = None
+) -> bool:
+    """
+    註冊新的背景工作流到資料庫
+    
+    Args:
+        task_id: 工作流任務 ID（唯一識別碼）
+        workflow_type: 工作流類型（如 set_reminder, monitor_folder）
+        trigger_conditions: 觸發條件（JSON 格式，如 {"type": "time", "target": "2025-12-01T10:00:00"}）
+        metadata: 額外的元數據（JSON 格式）
+        next_check_at: 下次檢查時間（ISO 格式字串）
+        
+    Returns:
+        是否註冊成功
+    """
+    try:
+        conn = sqlite3.connect(_DB)
+        now = datetime.now().isoformat()
+        
+        trigger_json = json.dumps(trigger_conditions) if trigger_conditions else None
+        metadata_json = json.dumps(metadata) if metadata else None
+        
+        conn.execute("""
+            INSERT INTO background_workflows 
+            (task_id, workflow_type, trigger_conditions, status, created_at, updated_at, next_check_at, metadata)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            task_id,
+            workflow_type,
+            trigger_json,
+            "RUNNING",
+            now,
+            now,
+            next_check_at,
+            metadata_json
+        ))
+        
+        conn.commit()
+        conn.close()
+        
+        info_log(f"[AUTO] 已註冊背景工作流：{task_id} (類型: {workflow_type})")
+        return True
+        
+    except Exception as e:
+        error_log(f"[AUTO] 註冊背景工作流失敗：{e}")
+        return False
+
+
+def get_active_workflows(workflow_type: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    取得所有活躍的背景工作流
+    
+    Args:
+        workflow_type: 可選的工作流類型過濾器
+        
+    Returns:
+        工作流資訊列表
+    """
+    try:
+        conn = sqlite3.connect(_DB)
+        c = conn.cursor()
+        
+        if workflow_type:
+            c.execute("""
+                SELECT task_id, workflow_type, trigger_conditions, status, 
+                       created_at, updated_at, last_check_at, next_check_at, metadata
+                FROM background_workflows
+                WHERE status IN ('RUNNING', 'QUEUED') AND workflow_type = ?
+                ORDER BY created_at DESC
+            """, (workflow_type,))
+        else:
+            c.execute("""
+                SELECT task_id, workflow_type, trigger_conditions, status, 
+                       created_at, updated_at, last_check_at, next_check_at, metadata
+                FROM background_workflows
+                WHERE status IN ('RUNNING', 'QUEUED')
+                ORDER BY created_at DESC
+            """)
+        
+        workflows = []
+        for row in c.fetchall():
+            workflows.append({
+                "task_id": row[0],
+                "workflow_type": row[1],
+                "trigger_conditions": json.loads(row[2]) if row[2] else None,
+                "status": row[3],
+                "created_at": row[4],
+                "updated_at": row[5],
+                "last_check_at": row[6],
+                "next_check_at": row[7],
+                "metadata": json.loads(row[8]) if row[8] else None
+            })
+        
+        conn.close()
+        return workflows
+        
+    except Exception as e:
+        error_log(f"[AUTO] 取得活躍工作流失敗：{e}")
+        return []
+
+
+def get_workflow_by_id(task_id: str) -> Optional[Dict[str, Any]]:
+    """
+    根據 task_id 取得工作流詳細資訊
+    
+    Args:
+        task_id: 工作流任務 ID
+        
+    Returns:
+        工作流資訊，若不存在則返回 None
+    """
+    try:
+        conn = sqlite3.connect(_DB)
+        c = conn.cursor()
+        
+        c.execute("""
+            SELECT task_id, workflow_type, trigger_conditions, status, 
+                   created_at, updated_at, last_check_at, next_check_at, metadata, error_message
+            FROM background_workflows
+            WHERE task_id = ?
+        """, (task_id,))
+        
+        row = c.fetchone()
+        conn.close()
+        
+        if not row:
+            return None
+        
+        return {
+            "task_id": row[0],
+            "workflow_type": row[1],
+            "trigger_conditions": json.loads(row[2]) if row[2] else None,
+            "status": row[3],
+            "created_at": row[4],
+            "updated_at": row[5],
+            "last_check_at": row[6],
+            "next_check_at": row[7],
+            "metadata": json.loads(row[8]) if row[8] else None,
+            "error_message": row[9]
+        }
+        
+    except Exception as e:
+        error_log(f"[AUTO] 取得工作流失敗：{e}")
+        return None
+
+
+def update_workflow_status(
+    task_id: str,
+    status: str,
+    error_message: Optional[str] = None,
+    last_check_at: Optional[str] = None,
+    next_check_at: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None
+) -> bool:
+    """
+    更新工作流狀態
+    
+    Args:
+        task_id: 工作流任務 ID
+        status: 新狀態（RUNNING, QUEUED, COMPLETED, FAILED, CANCELLED）
+        error_message: 錯誤訊息（如果有）
+        last_check_at: 最後檢查時間
+        next_check_at: 下次檢查時間
+        metadata: 更新的元數據
+        
+    Returns:
+        是否更新成功
+    """
+    try:
+        conn = sqlite3.connect(_DB)
+        now = datetime.now().isoformat()
+        
+        # 構建動態更新語句
+        updates = ["status = ?", "updated_at = ?"]
+        params = [status, now]
+        
+        if error_message is not None:
+            updates.append("error_message = ?")
+            params.append(error_message)
+        
+        if last_check_at is not None:
+            updates.append("last_check_at = ?")
+            params.append(last_check_at)
+        
+        if next_check_at is not None:
+            updates.append("next_check_at = ?")
+            params.append(next_check_at)
+        
+        if metadata is not None:
+            updates.append("metadata = ?")
+            params.append(json.dumps(metadata))
+        
+        params.append(task_id)
+        
+        conn.execute(f"""
+            UPDATE background_workflows
+            SET {', '.join(updates)}
+            WHERE task_id = ?
+        """, params)
+        
+        conn.commit()
+        conn.close()
+        
+        debug_log(3, f"[AUTO] 已更新工作流狀態：{task_id} -> {status}")
+        return True
+        
+    except Exception as e:
+        error_log(f"[AUTO] 更新工作流狀態失敗：{e}")
+        return False
+
+
+def delete_workflow(task_id: str) -> bool:
+    """
+    從資料庫刪除工作流記錄
+    
+    Args:
+        task_id: 工作流任務 ID
+        
+    Returns:
+        是否刪除成功
+    """
+    try:
+        conn = sqlite3.connect(_DB)
+        conn.execute("DELETE FROM background_workflows WHERE task_id = ?", (task_id,))
+        conn.commit()
+        conn.close()
+        
+        info_log(f"[AUTO] 已刪除工作流記錄：{task_id}")
+        return True
+        
+    except Exception as e:
+        error_log(f"[AUTO] 刪除工作流記錄失敗：{e}")
+        return False
+
+
+def log_intervention(
+    task_id: str,
+    action: str,
+    parameters: Optional[Dict[str, Any]] = None,
+    performed_by: str = "system",
+    result: Optional[str] = None
+) -> bool:
+    """
+    記錄工作流干預操作到審計日誌
+    
+    Args:
+        task_id: 工作流任務 ID
+        action: 干預動作（edit, cancel, pause, resume 等）
+        parameters: 干預參數（JSON 格式）
+        performed_by: 執行者（預設為 system）
+        result: 執行結果
+        
+    Returns:
+        是否記錄成功
+    """
+    try:
+        conn = sqlite3.connect(_DB)
+        now = datetime.now().isoformat()
+        
+        params_json = json.dumps(parameters) if parameters else None
+        
+        conn.execute("""
+            INSERT INTO workflow_interventions 
+            (task_id, action, parameters, performed_at, performed_by, result)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (task_id, action, params_json, now, performed_by, result))
+        
+        conn.commit()
+        conn.close()
+        
+        debug_log(3, f"[AUTO] 已記錄干預操作：{action} on {task_id}")
+        return True
+        
+    except Exception as e:
+        error_log(f"[AUTO] 記錄干預操作失敗：{e}")
+        return False
+
+
+def get_workflow_interventions(task_id: str) -> List[Dict[str, Any]]:
+    """
+    取得工作流的所有干預歷史記錄
+    
+    Args:
+        task_id: 工作流任務 ID
+        
+    Returns:
+        干預記錄列表
+    """
+    try:
+        conn = sqlite3.connect(_DB)
+        c = conn.cursor()
+        
+        c.execute("""
+            SELECT id, action, parameters, performed_at, performed_by, result
+            FROM workflow_interventions
+            WHERE task_id = ?
+            ORDER BY performed_at DESC
+        """, (task_id,))
+        
+        interventions = []
+        for row in c.fetchall():
+            interventions.append({
+                "id": row[0],
+                "action": row[1],
+                "parameters": json.loads(row[2]) if row[2] else None,
+                "performed_at": row[3],
+                "performed_by": row[4],
+                "result": row[5]
+            })
+        
+        conn.close()
+        return interventions
+        
+    except Exception as e:
+        error_log(f"[AUTO] 取得干預記錄失敗：{e}")
+        return []
+
+
+def get_workflows_due_for_check(current_time: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    取得需要檢查的工作流（next_check_at 時間已到）
+    
+    Args:
+        current_time: 當前時間（ISO 格式），預設使用現在時間
+        
+    Returns:
+        需要檢查的工作流列表
+    """
+    try:
+        if current_time is None:
+            current_time = datetime.now().isoformat()
+        
+        conn = sqlite3.connect(_DB)
+        c = conn.cursor()
+        
+        c.execute("""
+            SELECT task_id, workflow_type, trigger_conditions, status, 
+                   created_at, updated_at, last_check_at, next_check_at, metadata
+            FROM background_workflows
+            WHERE status = 'RUNNING' 
+              AND next_check_at IS NOT NULL 
+              AND next_check_at <= ?
+            ORDER BY next_check_at ASC
+        """, (current_time,))
+        
+        workflows = []
+        for row in c.fetchall():
+            workflows.append({
+                "task_id": row[0],
+                "workflow_type": row[1],
+                "trigger_conditions": json.loads(row[2]) if row[2] else None,
+                "status": row[3],
+                "created_at": row[4],
+                "updated_at": row[5],
+                "last_check_at": row[6],
+                "next_check_at": row[7],
+                "metadata": json.loads(row[8]) if row[8] else None
+            })
+        
+        conn.close()
+        return workflows
+        
+    except Exception as e:
+        error_log(f"[AUTO] 取得待檢查工作流失敗：{e}")
+        return []
+
+
+# ==================== 系統自主事件循環觸發器 ====================
+
+class BackgroundEventScheduler:
+    """
+    背景事件排程器 - 處理非使用者導致的系統循環
+    
+    這個類負責：
+    1. 定期檢查資料庫中到期的觸發條件（提醒、日曆事件等）
+    2. 在條件滿足時主動發布系統事件
+    3. 觸發 Controller 的事件處理流程（非使用者輸入觸發）
+    4. 管理自己的背景檢查線程
+    
+    與 MonitoringThreadPool 的區別：
+    - MonitoringThreadPool: 管理用戶創建的監控工作流（多個獨立線程）
+    - BackgroundEventScheduler: 系統級定時檢查器（單一線程，輕量級）
+    """
+    
+    _instance = None
+    _lock = threading.Lock()
+    
+    def __new__(cls):
+        """單例模式"""
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
+        return cls._instance
+    
+    def __init__(self):
+        """初始化背景事件排程器"""
+        if self._initialized:
+            return
+        
+        self.check_interval = 30  # 預設每 30 秒檢查一次
+        self.is_running = False
+        self.stop_event = threading.Event()
+        self.scheduler_thread = None
+        self._initialized = True
+        
+        info_log("[BackgroundEventScheduler] 背景事件排程器已初始化")
+    
+    def start(self, check_interval: int = 30) -> bool:
+        """
+        啟動背景事件排程器
+        
+        Args:
+            check_interval: 檢查間隔（秒），預設 30 秒
+            
+        Returns:
+            是否成功啟動
+        """
+        if self.is_running:
+            debug_log(2, "[BackgroundEventScheduler] 排程器已在運行中")
+            return False
+        
+        try:
+            self.check_interval = check_interval
+            self.stop_event.clear()
+            self.is_running = True
+            
+            # 啟動背景檢查線程
+            self.scheduler_thread = threading.Thread(
+                target=self._scheduler_loop,
+                name="BackgroundEventScheduler",
+                daemon=True
+            )
+            self.scheduler_thread.start()
+            
+            info_log(f"[BackgroundEventScheduler] 排程器已啟動（檢查間隔 {check_interval} 秒）")
+            return True
+            
+        except Exception as e:
+            error_log(f"[BackgroundEventScheduler] 啟動排程器失敗：{e}")
+            self.is_running = False
+            return False
+    
+    def stop(self, timeout: int = 10) -> bool:
+        """
+        停止背景事件排程器
+        
+        Args:
+            timeout: 等待停止的超時時間（秒）
+            
+        Returns:
+            是否成功停止
+        """
+        if not self.is_running:
+            debug_log(2, "[BackgroundEventScheduler] 排程器未在運行")
+            return False
+        
+        try:
+            info_log("[BackgroundEventScheduler] 正在停止排程器...")
+            
+            # 設置停止事件
+            self.stop_event.set()
+            
+            # 等待線程退出
+            if self.scheduler_thread and self.scheduler_thread.is_alive():
+                self.scheduler_thread.join(timeout=timeout)
+                
+                if self.scheduler_thread.is_alive():
+                    error_log("[BackgroundEventScheduler] 停止排程器超時")
+                    return False
+            
+            self.is_running = False
+            info_log("[BackgroundEventScheduler] 排程器已停止")
+            return True
+            
+        except Exception as e:
+            error_log(f"[BackgroundEventScheduler] 停止排程器失敗：{e}")
+            return False
+    
+    def _scheduler_loop(self) -> None:
+        """
+        排程器主循環（在獨立線程中運行）
+        
+        定期檢查：
+        1. 提醒（reminders 表）
+        2. 日曆事件（calendar_events 表）
+        3. 其他到期的觸發條件（background_workflows 表）
+        """
+        info_log("[BackgroundEventScheduler] 排程器循環已啟動")
+        
+        while not self.stop_event.is_set():
+            try:
+                # 檢查到期的提醒
+                self._check_reminders()
+                
+                # 檢查即將開始的日曆事件（提前 15 分鐘通知）
+                self._check_calendar_events()
+                
+                # 檢查其他到期的背景工作流觸發條件
+                self._check_workflow_triggers()
+                
+            except Exception as e:
+                error_log(f"[BackgroundEventScheduler] 檢查循環異常：{e}")
+            
+            # 等待下次檢查（可被中斷）
+            self.stop_event.wait(self.check_interval)
+        
+        info_log("[BackgroundEventScheduler] 排程器循環已退出")
+    
+    def _check_reminders(self) -> None:
+        """檢查到期的提醒並發布事件"""
+        try:
+            now = datetime.now().isoformat()
+            conn = sqlite3.connect(_DB)
+            c = conn.cursor()
+            
+            # 查詢到期的提醒
+            c.execute("""
+                SELECT id, time, message 
+                FROM reminders 
+                WHERE time <= ?
+                ORDER BY time ASC
+            """, (now,))
+            
+            triggered_reminders = c.fetchall()
+            
+            for reminder in triggered_reminders:
+                reminder_id, trigger_time, message = reminder
+                
+                try:
+                    # 發布提醒觸發事件
+                    from core.event_bus import EventBus, SystemEvent
+                    
+                    event_bus = EventBus.get_instance()
+                    event_bus.publish(
+                        SystemEvent.REMINDER_TRIGGERED,
+                        {
+                            "reminder_id": reminder_id,
+                            "trigger_time": trigger_time,
+                            "message": message,
+                            "source": "background_scheduler"
+                        }
+                    )
+                    
+                    info_log(f"[BackgroundEventScheduler] 提醒已觸發：{message}")
+                    
+                    # 刪除已觸發的提醒
+                    c.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
+                    
+                except Exception as e:
+                    error_log(f"[BackgroundEventScheduler] 處理提醒失敗：{e}")
+            
+            conn.commit()
+            conn.close()
+            
+            if triggered_reminders:
+                debug_log(2, f"[BackgroundEventScheduler] 已處理 {len(triggered_reminders)} 個提醒")
+                
+        except Exception as e:
+            error_log(f"[BackgroundEventScheduler] 檢查提醒失敗：{e}")
+    
+    def _check_calendar_events(self) -> None:
+        """檢查即將開始的日曆事件（提前 15 分鐘通知）"""
+        try:
+            from datetime import timedelta
+            
+            # 計算提前通知時間（15 分鐘）
+            now = datetime.now()
+            notify_window_start = now
+            notify_window_end = now + timedelta(minutes=15)
+            
+            conn = sqlite3.connect(_DB)
+            c = conn.cursor()
+            
+            # 查詢即將開始的事件（未來 15 分鐘內）
+            c.execute("""
+                SELECT id, summary, description, start_time, location
+                FROM calendar_events
+                WHERE start_time >= ? AND start_time <= ?
+                ORDER BY start_time ASC
+            """, (notify_window_start.isoformat(), notify_window_end.isoformat()))
+            
+            upcoming_events = c.fetchall()
+            
+            for event in upcoming_events:
+                event_id, summary, description, start_time, location = event
+                
+                try:
+                    # 發布日曆事件即將開始事件
+                    from core.event_bus import EventBus, SystemEvent
+                    
+                    event_bus = EventBus.get_instance()
+                    event_bus.publish(
+                        SystemEvent.CALENDAR_EVENT_STARTING,
+                        {
+                            "event_id": event_id,
+                            "summary": summary,
+                            "description": description,
+                            "start_time": start_time,
+                            "location": location,
+                            "source": "background_scheduler"
+                        }
+                    )
+                    
+                    info_log(f"[BackgroundEventScheduler] 日曆事件即將開始：{summary} ({start_time})")
+                    
+                except Exception as e:
+                    error_log(f"[BackgroundEventScheduler] 處理日曆事件失敗：{e}")
+            
+            conn.close()
+            
+            if upcoming_events:
+                debug_log(2, f"[BackgroundEventScheduler] 已處理 {len(upcoming_events)} 個日曆事件")
+                
+        except Exception as e:
+            error_log(f"[BackgroundEventScheduler] 檢查日曆事件失敗：{e}")
+    
+    def _check_workflow_triggers(self) -> None:
+        """檢查背景工作流的觸發條件"""
+        try:
+            # 獲取所有到期需要檢查的工作流
+            due_workflows = get_workflows_due_for_check()
+            
+            for workflow in due_workflows:
+                task_id = workflow["task_id"]
+                workflow_type = workflow["workflow_type"]
+                trigger_conditions = workflow.get("trigger_conditions", {})
+                
+                try:
+                    # 根據觸發條件類型處理
+                    trigger_type = trigger_conditions.get("type")
+                    
+                    if trigger_type == "time":
+                        # 時間觸發（已在 _check_reminders 中處理）
+                        pass
+                    
+                    elif trigger_type == "file_change":
+                        # 檔案變更觸發（由 MonitoringThreadPool 中的監控函數處理）
+                        pass
+                    
+                    else:
+                        # 其他自定義觸發條件
+                        debug_log(3, f"[BackgroundEventScheduler] 未知觸發類型：{trigger_type} (task_id: {task_id})")
+                    
+                except Exception as e:
+                    error_log(f"[BackgroundEventScheduler] 處理工作流觸發失敗 (task_id: {task_id})：{e}")
+            
+            if due_workflows:
+                debug_log(3, f"[BackgroundEventScheduler] 已檢查 {len(due_workflows)} 個到期工作流")
+                
+        except Exception as e:
+            error_log(f"[BackgroundEventScheduler] 檢查工作流觸發失敗：{e}")
+
+
+# 全域背景事件排程器實例
+_background_scheduler = None
+_scheduler_lock = threading.Lock()
+
+
+def get_background_scheduler() -> BackgroundEventScheduler:
+    """獲取全域背景事件排程器實例（單例）"""
+    global _background_scheduler
+    if _background_scheduler is None:
+        with _scheduler_lock:
+            if _background_scheduler is None:
+                _background_scheduler = BackgroundEventScheduler()
+    return _background_scheduler

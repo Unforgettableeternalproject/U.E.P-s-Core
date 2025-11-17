@@ -10,9 +10,9 @@ from modules.sys_module.workflows import (
     WorkflowDefinition,
     WorkflowEngine,
     WorkflowMode,
-    StepResult,
-    StepTemplate
+    StepResult
 )
+from modules.sys_module.step_templates import StepTemplate
 from utils.debug_helper import info_log, error_log, debug_log
 
 

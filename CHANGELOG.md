@@ -1798,3 +1798,15 @@
 
 ---
 
+### Extracted the step template from workflow, and added backgound work steps. 11/17
+
+> Date: Mon, 17 Nov 2025 17:41:30 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `66cc466ac677daefdd66af1ff18bd3d8e25966f7`
+
+---
+

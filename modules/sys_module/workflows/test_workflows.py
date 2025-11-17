@@ -12,27 +12,14 @@ import random
 
 from core.sessions.session_manager import WorkflowSession
 from utils.debug_helper import info_log, error_log, debug_log
-
-# Import the workflow engine components
-# We need to import directly from the module file to avoid circular imports
-import sys
-import os
-import importlib.util
-
-# Load workflows.py directly
-workflows_path = os.path.join(os.path.dirname(__file__), '..', 'workflows.py')
-spec = importlib.util.spec_from_file_location("workflows", workflows_path)
-workflows_module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(workflows_module)
-
-# Get the classes we need
-WorkflowDefinition = workflows_module.WorkflowDefinition
-WorkflowEngine = workflows_module.WorkflowEngine
-WorkflowStep = workflows_module.WorkflowStep
-StepResult = workflows_module.StepResult
-StepTemplate = workflows_module.StepTemplate
-WorkflowType = workflows_module.WorkflowType
-WorkflowMode = workflows_module.WorkflowMode
+from modules.sys_module.workflows import (
+    WorkflowDefinition,
+    WorkflowEngine,
+    WorkflowMode,
+    WorkflowStep,
+    StepResult
+)
+from modules.sys_module.step_templates import StepTemplate
 
 
 def create_echo_workflow(session: WorkflowSession) -> WorkflowEngine:

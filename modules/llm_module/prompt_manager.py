@@ -520,37 +520,11 @@ class PromptManager:
         next_step_info = workflow_context.get('next_step_info')
         next_step_is_interactive = next_step_info and next_step_info.get('step_type') == 'interactive' if next_step_info else False
         
-        context_parts.append(f"\nWorkflow Status: {'COMPLETED (Final)' if is_complete else 'IN PROGRESS'}")
+        # ⚠️ 不顯示任何技術細節給 LLM
+        # 使用者不需要知道 workflow_type, task_id, session_id, executed_steps 等
+        # LLM 只需要知道：完成了 / 進行中，以及如何回應
         
-        # ⚠️ 不顯示技術元信息（workflow_type, session_id 等）
-        # context_parts.append(f"\nWorkflow Type: {workflow_type}")  # ❌ 移除
-        
-        # 步驟結果資訊
-        if step_result:
-            context_parts.append(f"\nStep Result:")
-            if 'success' in step_result:
-                context_parts.append(f"  - Success: {step_result['success']}")
-            if 'message' in step_result:
-                context_parts.append(f"  - Message: {step_result['message']}")
-        
-        # 工作流數據（通用處理）
-        if review_data:
-            context_parts.append(f"\nWorkflow Data:")
-            for key, value in review_data.items():
-                # 格式化不同類型的數據
-                if isinstance(value, str):
-                    # 長文本截斷預覽
-                    if len(value) > 200:
-                        preview = value[:200] + f"... ({len(value)} chars total)"
-                        context_parts.append(f"  - {key}: {preview}")
-                    else:
-                        context_parts.append(f"  - {key}: {value}")
-                elif isinstance(value, (int, float, bool)):
-                    context_parts.append(f"  - {key}: {value}")
-                elif isinstance(value, (list, dict)):
-                    context_parts.append(f"  - {key}: {type(value).__name__} with {len(value)} items")
-                else:
-                    context_parts.append(f"  - {key}: {str(value)[:100]}")
+        context_parts.append(f"\nStatus: {'All done' if is_complete else 'Still working'}")
         
         # 🔧 通用指引（框架模式，不針對特定工作流）
         context_parts.append("\n" + "=" * 60)
@@ -558,18 +532,32 @@ class PromptManager:
         context_parts.append("=" * 60)
         
         if is_complete:
-            context_parts.append("\n✅ The workflow has completed successfully.")
-            context_parts.append("\nGenerate a natural, friendly response in ENGLISH that:")
-            context_parts.append("1. Summarizes the key results/data provided above")
-            context_parts.append("2. Keep your response conversational and concise (2-3 sentences)")
-            context_parts.append("3. Act as a personal assistant with personality, NOT a robot")
-            context_parts.append("4. ❌ AVOID: Technical terms like 'session_id', 'workflow_type', 'ws_id'")
-            context_parts.append("5. ✅ BE: Natural, warm, and human-like")
+            context_parts.append("\n✅ Done! Everything wrapped up.")
             
-            context_parts.append("\n📋 REQUIRED ACTION:")
-            context_parts.append("   1. Call approve_step() MCP tool to confirm completion")
+            # 🔧 檢測是否為自動完成的簡單工作流（直接模式，立即完成）
+            # 判斷依據：executed_steps 數量少（≤2步）且沒有復雜的回傳資料
+            executed_steps = review_data.get('executed_steps', [])
+            is_simple_auto_workflow = (
+                len(executed_steps) <= 2 and  # 簡單工作流，步驟數少
+                not next_step_is_interactive  # 沒有後續互動
+            )
+            
+            if is_simple_auto_workflow:
+                # 簡單自動完成工作流 - 給簡短確認即可
+                context_parts.append("\nKeep it super brief - just 1-3 casual words:")
+                context_parts.append("'Done!', 'All set!', 'Got it!', 'Yep!', 'Finished!'")
+                context_parts.append("\nDon't explain anything or mention technical stuff.")
+            else:
+                # 複雜工作流 - 需要詳細說明
+                context_parts.append("\nLet the user know what happened in a casual, friendly way:")
+                context_parts.append("- Mention the key info from above (keep it simple)")
+                context_parts.append("- Stay conversational, like telling a friend")
+                context_parts.append("- 2-3 sentences max")
+                context_parts.append("- Skip the tech talk (no IDs, no formal terms)")
+            
+            context_parts.append("\nThen call approve_step() to wrap things up.")
             if should_end_session:
-                context_parts.append("   2. Set session_control={'action': 'end_session'} in metadata")
+                context_parts.append("Also set session_control={'action': 'end_session'} in metadata.")
         
         elif next_step_is_interactive:
             context_parts.append("\n⏭️ The next step requires USER INPUT.")

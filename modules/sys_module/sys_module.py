@@ -64,6 +64,11 @@ from .workflows.utility_workflows import (
     get_available_utility_workflows
 )
 
+# Import automation workflows
+from .workflows.automation_workflows import (
+    get_automation_workflow_creator
+)
+
 class SYSModule(BaseModule):
     def __init__(self, config=None):
         self.config = config or load_module_config("sys_module")
@@ -98,7 +103,7 @@ class SYSModule(BaseModule):
             error_log(f"[SYS] 無法連接 event bus: {e}")
         
         # Register Phase 2 workflows to MCP
-        self._register_phase2_workflows_to_mcp()
+        self._register_workflows_to_mcp()
         
         info_log("[SYS] 初始化完成，啟用模式：" + ", ".join(self.enabled_modes))
         return True
@@ -201,15 +206,15 @@ class SYSModule(BaseModule):
             # Don't fail initialization if LLM module is not available
             debug_log(2, f"[SYS] ⚠️  協作管道提供者註冊跳過 (LLM 模組不可用): {e}")
     
-    def _register_phase2_workflows_to_mcp(self):
-        """Register Phase 2 workflows to MCP Server using centralized registry"""
-        info_log("[SYS] Registering Phase 2 workflows to MCP Server...")
+    def _register_workflows_to_mcp(self):
+        """Register workflows to MCP Server using centralized registry"""
+        info_log("[SYS] Registering workflows to MCP Server...")
         
         # 使用集中式工作流註冊器
         from .workflows.workflow_registry import register_all_workflows
         register_all_workflows(self.mcp_server, self)
         
-        info_log("[SYS] ✅ Phase 2 workflows registered to MCP Server (9 workflows)")
+        info_log("[SYS] ✅ Workflows registered to MCP Server.")
     
     def query_function_info(self, query_text: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """
@@ -645,13 +650,30 @@ class SYSModule(BaseModule):
             # Utility workflows
             elif workflow_type in get_available_utility_workflows():
                 engine = create_utility_workflow(workflow_type, session)
-                
-            # Unknown workflow type
+            
+            # Automation workflows (background services)
             else:
-                return {
-                    "status": "error",
-                    "message": f"未知的工作流程類型: {workflow_type}。可用的工作流: {', '.join(get_available_file_workflows() + get_available_text_workflows() + get_available_analysis_workflows() + get_available_info_workflows() + get_available_utility_workflows())}"
-                }
+                # 嘗試從 automation workflows 中獲取創建函數
+                creator = get_automation_workflow_creator(workflow_type)
+                if creator:
+                    # 解析 initial_data 中的參數並傳遞給創建函數
+                    workflow_params = initial_data.copy() if initial_data else {}
+                    
+                    # 從 workflow_params 中提取所有可能的參數
+                    workflow_def = creator(
+                        session=session,
+                        **workflow_params  # 使用字典解包傳遞所有參數
+                    )
+                    
+                    # 創建 WorkflowEngine
+                    engine = WorkflowEngine(workflow_def, session)
+                    engine.auto_advance = True  # ✅ 啟用自動推進
+                else:
+                    # Unknown workflow type
+                    return {
+                        "status": "error",
+                        "message": f"未知的工作流程類型: {workflow_type}。可用的工作流: {', '.join(get_available_file_workflows() + get_available_text_workflows() + get_available_analysis_workflows() + get_available_info_workflows() + get_available_utility_workflows())}"
+                    }
             
             if not engine:
                 return {
@@ -665,14 +687,14 @@ class SYSModule(BaseModule):
             
             debug_log(2, f"[SYS] 工作流程執行模式: {workflow_mode}")
             
-            # 如果是背景模式，提交到 BackgroundWorker
+            # 如果是背景模式，提交到 SYS 模組的背景工作流執行器
             if workflow_mode == WorkflowMode.BACKGROUND:
                 try:
-                    from modules.ui_module.debug.background_worker import get_worker_manager
-                    worker_manager = get_worker_manager()
+                    from modules.sys_module.workflow_executor import get_workflow_executor
+                    executor = get_workflow_executor()
                     
                     # 提交背景任務
-                    task_id = worker_manager.submit_workflow(
+                    task_id = executor.submit_workflow(
                         workflow_engine=engine,
                         workflow_type=workflow_type,
                         session_id=session_id,
@@ -687,14 +709,24 @@ class SYSModule(BaseModule):
                     # 將 task_id 儲存到 session
                     session.add_data("background_task_id", task_id)
                     
-                    # 不儲存 engine 到 workflow_engines，因為在背景執行
-                    # BackgroundWorker 會管理 engine 的生命週期
+                    # ✅ 背景工作流的 MCP session 應該立即結束
+                    # 因為 MCP 的工作已完成（提交到背景執行器）
+                    # 背景執行器會使用自己的 workflow session
+                    self.session_manager.end_session(
+                        session_id,
+                        reason="背景工作流已提交，MCP session 完成"
+                    )
                     
                     return {
                         "status": "submitted",
                         "session_id": session_id,
                         "task_id": task_id,
-                        "message": f"已提交 {workflow_type} 工作流程到背景執行",
+                        "message": (
+                            f"Alright, handling that in the background.\n\n"
+                            f"Just respond with 1-3 casual words to acknowledge.\n"
+                            f"Examples: 'Sure!', 'On it!', 'Got it!', 'Yep!', 'Okay!'\n"
+                            f"Don't explain or mention any technical details."
+                        ),
                         "data": {
                             "workflow_type": workflow_type,
                             "workflow_mode": "background",

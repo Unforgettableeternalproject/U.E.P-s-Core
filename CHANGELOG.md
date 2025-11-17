@@ -1810,3 +1810,15 @@
 
 ---
 
+### One background work is tested fine, three others left. 11/18
+
+> Date: Tue, 18 Nov 2025 03:01:23 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `1d2a61c247ca4c19069f152a3f931db30d6985a0`
+
+---
+

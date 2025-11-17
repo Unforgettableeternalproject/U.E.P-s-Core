@@ -603,6 +603,35 @@ def monitor_folder(path: str, callback, interval: int = 10):
 # 全域音樂播放器實例
 _music_player = None
 
+def get_music_player_status() -> Dict[str, Any]:
+    """
+    獲取音樂播放器當前狀態
+    
+    Returns:
+        包含播放器狀態的字典：
+        - is_playing: 是否正在播放
+        - is_finished: 是否播放完成
+        - is_looping: 是否單曲循環
+        - current_song: 當前歌曲名稱
+    """
+    global _music_player
+    
+    if _music_player is None:
+        return {
+            "is_playing": False,
+            "is_finished": False,
+            "is_looping": False,
+            "current_song": None
+        }
+    
+    return {
+        "is_playing": _music_player.is_playing,
+        "is_finished": _music_player.is_finished,
+        "is_looping": _music_player.is_looping,
+        "current_song": _music_player.current_song
+    }
+
+
 def media_control(
     action: str,
     song_query: str = "",
@@ -720,6 +749,7 @@ class MusicPlayer:
         self.current_index = 0
         self.is_playing = False
         self.is_looping = False
+        self.is_finished = False  # ✅ 初始化完成標記
         self.current_song = None
         self.playback_obj = None
         
@@ -742,35 +772,62 @@ class MusicPlayer:
         info_log(f"[AUTO] 載入 {len(self.playlist)} 首歌曲")
     
     def search_song(self, query: str) -> list:
-        """搜尋歌曲（使用模糊比對）"""
+        """
+        搜尋歌曲（使用模糊比對）
+        
+        改進策略：
+        1. 優先完全匹配（不區分大小寫）
+        2. 使用 token_set_ratio 提升部分匹配準確度
+        3. 降低相似度閾值到 50%，擴大搜尋範圍
+        4. 按相似度排序結果
+        """
         try:
             from rapidfuzz import process, fuzz
             
             # 從檔名中提取歌曲名稱
             song_names = [Path(song).stem for song in self.playlist]
+            query_lower = query.lower()
             
-            # 使用 rapidfuzz 進行模糊搜尋
+            # 策略 1: 優先檢查完全匹配（不區分大小寫）
+            exact_matches = []
+            for name in song_names:
+                if query_lower in name.lower():
+                    exact_matches.append(name)
+            
+            # 如果有完全匹配，優先返回（最多 10 個）
+            if exact_matches:
+                debug_log(3, f"[MusicSearch] 完全匹配找到 {len(exact_matches)} 首")
+                return exact_matches[:10]
+            
+            # 策略 2: 使用 token_set_ratio 進行模糊搜尋
+            # token_set_ratio 會將字串分割成 token，更適合處理包含括號、符號的歌曲名
             results = process.extract(
                 query, 
                 song_names, 
-                scorer=fuzz.WRatio, 
-                limit=10
+                scorer=fuzz.token_set_ratio,  # 改用 token_set_ratio
+                limit=15  # 增加候選數量
             )
             
-            # 回傳相似度 > 60 的結果
-            matched = [r[0] for r in results if r[1] > 60]
-            return matched
+            # 降低閾值到 50%，並按相似度排序
+            matched = [(r[0], r[1]) for r in results if r[1] > 50]
+            
+            # 按相似度從高到低排序，只返回歌曲名
+            matched.sort(key=lambda x: x[1], reverse=True)
+            matched_names = [m[0] for m in matched[:10]]  # 最多返回 10 首
+            
+            debug_log(3, f"[MusicSearch] 模糊搜尋找到 {len(matched_names)} 首 (閾值 > 50%)")
+            return matched_names
         
         except ImportError:
             info_log("[AUTO] rapidfuzz 未安裝，使用簡單搜尋")
-            # 簡單字串比對
+            # 簡單字串比對（fallback）
             matched = []
             query_lower = query.lower()
             for song in self.playlist:
                 song_name = Path(song).stem.lower()
                 if query_lower in song_name:
                     matched.append(Path(song).stem)
-            return matched
+            return matched[:10]  # 限制最多 10 個結果
     
     def search_and_play(self, query: str) -> bool:
         """搜尋並播放歌曲"""
@@ -805,6 +862,9 @@ class MusicPlayer:
             # 載入音訊
             audio = AudioSegment.from_file(song_path)
             
+            # ✅ 設置音量為 50% (-6 dB 約為 50% 音量)
+            audio = audio - 6
+            
             # 播放（在背景執行緒）
             self.is_playing = True
             
@@ -814,13 +874,18 @@ class MusicPlayer:
                     self.playback_obj.wait_done()
                     
                     # 播放完成後
+                    self.is_playing = False
                     if self.is_looping:
+                        # 單曲循環：重新播放當前歌曲
                         self.play()
                     else:
-                        self.next_song()
+                        # 單曲播放模式：標記為完成
+                        self.is_finished = True
+                        info_log(f"[AUTO] 歌曲播放完成：{self.current_song}")
                 except Exception as e:
                     error_log(f"[AUTO] 播放錯誤：{e}")
                     self.is_playing = False
+                    self.is_finished = True
             
             play_thread = threading.Thread(target=_play_thread, daemon=True)
             play_thread.start()
@@ -849,12 +914,14 @@ class MusicPlayer:
         """下一首"""
         self.stop()
         self.current_index = (self.current_index + 1) % len(self.playlist)
+        self.is_finished = False  # 重置完成狀態
         self.play()
     
     def previous_song(self):
         """上一首"""
         self.stop()
         self.current_index = (self.current_index - 1) % len(self.playlist)
+        self.is_finished = False  # 重置完成狀態
         self.play()
     
     def toggle_loop(self):

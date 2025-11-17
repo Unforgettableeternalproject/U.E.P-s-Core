@@ -450,8 +450,7 @@ class BackgroundWorkerManager:
                 
                 # Publish event (will be handled by Controller)
                 try:
-                    from core.event_bus import get_event_bus, SystemEvent
-                    event_bus = get_event_bus()
+                    from core.event_bus import event_bus, SystemEvent
                     event_bus.publish(SystemEvent.BACKGROUND_WORKFLOW_COMPLETED, {
                         "task_id": task_id,
                         "workflow_type": workflow_type,
@@ -473,8 +472,7 @@ class BackgroundWorkerManager:
                 
                 # Publish failure event
                 try:
-                    from core.event_bus import get_event_bus, SystemEvent
-                    event_bus = get_event_bus()
+                    from core.event_bus import event_bus, SystemEvent
                     event_bus.publish(SystemEvent.BACKGROUND_WORKFLOW_FAILED, {
                         "task_id": task_id,
                         "workflow_type": workflow_type,

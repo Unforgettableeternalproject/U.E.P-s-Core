@@ -32,3 +32,5 @@ system:
   input_mode:
     mode: text
     text_input_prompt: '>>> '
+  media:
+    music_folder: "E:\\Music\\My Songs\\Full Playlist"  # null 表示使用系統預設的 ~/Music 資料夾，可設定為自訂路徑

@@ -713,14 +713,15 @@ class UnifiedController:
     
     # ========== 階段五：背景任務監控 ==========
     
-    def _handle_background_workflow_completed(self, event_data: Dict[str, Any]):
+    def _handle_background_workflow_completed(self, event):
         """
         處理背景工作流完成事件
         
         Args:
-            event_data: 事件數據，包含 task_id, workflow_type, session_id, result
+            event: Event 對象，包含 task_id, workflow_type, session_id, result
         """
         try:
+            event_data = event.data
             task_id = event_data.get('task_id')
             workflow_type = event_data.get('workflow_type')
             result = event_data.get('result')
@@ -754,14 +755,15 @@ class UnifiedController:
         except Exception as e:
             error_log(f"[Controller] 處理背景工作流完成事件失敗: {e}")
     
-    def _handle_background_workflow_failed(self, event_data: Dict[str, Any]):
+    def _handle_background_workflow_failed(self, event):
         """
         處理背景工作流失敗事件
         
         Args:
-            event_data: 事件數據，包含 task_id, workflow_type, session_id, error
+            event: Event 對象，包含 task_id, workflow_type, session_id, error
         """
         try:
+            event_data = event.data
             task_id = event_data.get('task_id')
             workflow_type = event_data.get('workflow_type')
             error = event_data.get('error')

@@ -301,45 +301,24 @@ workflows:
   
   media_playback:
     name: "media_playback"
-    description: "Background media playback control with persistent monitoring. Supports play, pause, stop, next, previous commands. Can play from local files, YouTube, or Spotify."
+    description: "Background media playback control with persistent monitoring. Supports local files, YouTube, or Spotify playback. ⚠️ IMPORTANT: Extract playback_type as EXACT value (local/youtube/spotify) - do NOT use other words or variations."
     category: "automation"
     work_mode: "background"
     
     initial_params:
-      initial_action:
-        type: str
+      playback_type:
+        type: int
         optional: true
-        description: "Initial playback action (play, youtube, spotify). Default: play"
-        maps_to_step: "initial_action"
-        extraction_hint: "Extract from: play music, play on YouTube, search on Spotify, etc."
+        description: "Playback type: 1=local, 2=youtube, 3=spotify"
+        maps_to_step: "playback_type_selection"
+        extraction_hint: "Extract playback type from user input. CRITICAL: Return ONLY the number (1, 2, or 3). Examples: 'play music' → 1 (local), 'play on YouTube' → 2 (youtube), 'search on Spotify' → 3 (spotify). If user doesn't specify, leave empty."
       
-      song_query:
+      query:
         type: str
         optional: true
         description: "Song or artist name to search and play"
-        maps_to_step: "song_query"
-        extraction_hint: "Extract song/artist names from: play Jay Chou, search for Imagine Dragons, etc."
-      
-      music_folder:
-        type: str
-        optional: true
-        description: "Local music folder path (default: ~/Music)"
-        maps_to_step: "music_folder"
-        extraction_hint: "Extract folder paths from user input"
-      
-      youtube:
-        type: bool
-        optional: true
-        description: "Whether to use YouTube (default: false)"
-        maps_to_step: "youtube"
-        extraction_hint: "Set true if user mentions YouTube, 在YouTube上播放, play on YouTube"
-      
-      spotify:
-        type: bool
-        optional: true
-        description: "Whether to use Spotify (default: false)"
-        maps_to_step: "spotify"
-        extraction_hint: "Set true if user mentions Spotify, 在Spotify上播放, search on Spotify"
+        maps_to_step: "query_input"
+        extraction_hint: "Extract song/artist names from user input: 'play Jay Chou' → 'Jay Chou', 'search for Imagine Dragons' → 'Imagine Dragons', etc. For local playback without specific song, can be empty."
     
     mcp_tool_params:
       command:
@@ -349,35 +328,35 @@ workflows:
       initial_data:
         type: object
         required: false
-        description: "Initial data: initial_action, song_query, music_folder, youtube, spotify (all optional)"
+        description: "Initial data: playback_type (1=local, 2=youtube, 3=spotify), query (song/artist name, optional)"
   
   control_media:
     name: "control_media"
-    description: "Send control commands to active media playback: play, pause, stop, next, previous, search"
+    description: "Send control commands to active media playback: play, pause, stop, next, previous, search, stop_service"
     category: "automation"
     work_mode: "direct"
     
     initial_params:
       task_id:
         type: str
-        optional: false
-        description: "Task ID of the running media playback workflow"
-        maps_to_step: "task_id"
-        extraction_hint: "Extract from context or ask user for the media player task ID"
-      
-      action:
-        type: str
-        optional: false
-        description: "Control action: play, pause, stop, next, previous, search"
-        maps_to_step: "action"
-        extraction_hint: "Extract control commands: pause music, next song, stop playing, search for X, etc."
-      
-      song_query:
-        type: str
         optional: true
-        description: "Song name for search action"
-        maps_to_step: "song_query"
-        extraction_hint: "Extract song name when action is search"
+        description: "Task ID of the running media playback workflow (auto-detected if not provided)"
+        maps_to_step: "task_id"
+        extraction_hint: "Usually auto-detected from active workflows. Only extract if user explicitly mentions a task ID."
+      
+      control_action:
+        type: str
+        optional: false
+        description: "Control action: play, pause, stop, next, previous, search, stop_service"
+        maps_to_step: "control_action"
+        extraction_hint: "CRITICAL: Extract the control command: 'pause' for pause/暫停, 'stop' for stop/停止, 'next' for next song/下一首, 'previous' for previous song/上一首, 'search' for search/搜尋, 'stop_service' for stop service/停止服務"
+      
+      control_params:
+        type: dict
+        optional: true
+        description: "Additional parameters (e.g., song_query for search action)"
+        maps_to_step: "control_params"
+        extraction_hint: "For search action, extract {'song_query': 'song name'}. For other actions, return {}"
     
     mcp_tool_params:
       command:

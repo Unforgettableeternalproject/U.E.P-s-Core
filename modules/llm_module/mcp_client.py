@@ -214,7 +214,19 @@ class MCPClient:
         if tool_name == "start_workflow":
             session_id = data.get("data", {}).get("session_id", "unknown")
             workflow_type = data.get("data", {}).get("workflow_type", "unknown")
-            return f"工作流 '{workflow_type}' 已成功啟動 (會話ID: {session_id})"
+            status = data.get("data", {}).get("status", "unknown")
+            
+            # ✅ 區分背景工作流和一般工作流的回應指引
+            if status == "submitted":
+                # 背景工作流 - 提示 LLM 給簡短確認
+                return (
+                    f"Background task '{workflow_type}' submitted (session: {session_id}).\n\n"
+                    f"🎯 CRITICAL: Respond with ONLY 1-3 words. Examples: 'Sure!', 'On it!', 'Got it!', 'Yep!'\n"
+                    f"❌ DO NOT: explain, describe process, mention background, say what you're doing."
+                )
+            else:
+                # 一般工作流
+                return f"Workflow '{workflow_type}' successfully started (session ID: {session_id})"
         
         elif tool_name == "get_workflow_status":
             status_data = data.get("data", {})

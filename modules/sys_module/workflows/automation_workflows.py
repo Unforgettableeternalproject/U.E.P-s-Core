@@ -36,12 +36,12 @@ from utils.debug_helper import info_log, error_log, debug_log
 
 def _execute_media_playback(session: WorkflowSession) -> StepResult:
     """
-    執行媒體播放（不包含監控註冊，監控註冊由 monitor_creation_step 負責）
+    執行本地音樂播放（不包含監控註冊，監控註冊由 monitor_creation_step 負責）
     
-    根據 playback_type 執行不同的播放邏輯：
-    1 = 本地播放
-    2 = YouTube
-    3 = Spotify
+    支援功能：
+    - 播放指定歌曲或整個資料夾
+    - shuffle: 隨機播放
+    - loop: 循環播放
     
     此步驟只負責啟動播放，並將結果保存到 session 中供後續步驟使用。
     """
@@ -50,60 +50,64 @@ def _execute_media_playback(session: WorkflowSession) -> StepResult:
         from configs.config_loader import load_config
         
         # 獲取參數
-        playback_type = session.get_data("playback_type_selection")
         query = session.get_data("query_input", "")
+        shuffle = session.get_data("shuffle", False)
+        loop = session.get_data("loop", False)
         
-        if not playback_type:
-            return StepResult.failure("缺少播放類型")
-        
-        # 根據類型執行播放
-        playback_type_int = int(playback_type)
-        
-        if playback_type_int == 1:
-            # 本地播放 - 從配置讀取音樂資料夾
-            config = load_config()
-            music_folder = config.get("system", {}).get("media", {}).get("music_folder")
-            if not music_folder:
-                music_folder = str(Path.home() / "Music")  # 預設值
-            else:
-                music_folder = str(Path(music_folder).expanduser())
-            result_message = media_control(
-                action="play",
-                song_query=query,
-                music_folder=music_folder,
-                youtube=False,
-                spotify=False
-            )
-            playback_mode = "local"
-            
-        elif playback_type_int == 2:
-            # YouTube
-            result_message = media_control(
-                action="youtube",
-                song_query=query,
-                youtube=True
-            )
-            playback_mode = "youtube"
-            
-        elif playback_type_int == 3:
-            # Spotify
-            result_message = media_control(
-                action="spotify",
-                song_query=query,
-                spotify=True
-            )
-            playback_mode = "spotify"
-            
+        # 從配置讀取音樂資料夾
+        config = load_config()
+        music_folder = config.get("system", {}).get("media", {}).get("music_folder")
+        if not music_folder:
+            music_folder = str(Path.home() / "Music")  # 預設值
         else:
-            return StepResult.failure(f"未知的播放類型：{playback_type}")
+            music_folder = str(Path(music_folder).expanduser())
         
-        info_log(f"[MediaPlayback] 播放已啟動 ({playback_mode})：{result_message}")
+        # 智能判斷循環模式
+        loop_mode = "off"
+        if loop:
+            if query:  # 有指定歌曲 → 單曲循環
+                loop_mode = "one"
+            else:  # 無指定歌曲 → 播放清單循環
+                loop_mode = "all"
+        
+        # 構建播放參數
+        play_params = {
+            "action": "play",
+            "song_query": query,
+            "music_folder": music_folder,
+            "shuffle": shuffle,
+            "loop_mode": loop_mode
+        }
+        
+        result_message = media_control(**play_params)
+        
+        # 判斷播放模式
+        if query:
+            playback_type = "single_song"
+            description = f"播放歌曲: {query}"
+        else:
+            playback_type = "playlist"
+            description = f"播放資料夾: {music_folder}"
+        
+        if shuffle:
+            description += " (隨機)"
+        if loop_mode == "one":
+            description += " (單曲循環)"
+        elif loop_mode == "all":
+            description += " (播放清單循環)"
+        
+        info_log(f"[MediaPlayback] {description} - {result_message}")
         
         # 將播放結果保存到 session，供 monitor_creation_step 使用
         return StepResult.success(
-            f"媒體播放已啟動 ({playback_mode})\n{result_message}",
+            f"本地音樂播放已啟動\n{result_message}",
             data={
-                "playback_mode": playback_mode,
+                "playback_mode": "local",
+                "playback_type": playback_type,
+                "query": query,
+                "shuffle": shuffle,
+                "loop": loop,
+                "loop_mode": loop_mode,
                 "initial_result": result_message
             }
         )
@@ -115,80 +119,77 @@ def _execute_media_playback(session: WorkflowSession) -> StepResult:
 
 def create_media_playback_workflow(
     session: WorkflowSession,
-    playback_type: Optional[int] = None,
-    query: Optional[str] = None
+    query: Optional[str] = None,
+    shuffle: bool = False,
+    loop: bool = False
 ) -> WorkflowEngine:
     """
-    創建媒體播放服務工作流（背景服務啟動）
+    創建本地音樂播放服務工作流（背景服務啟動）
     
     工作流程：
-    1. playback_type_selection - 選擇播放類型（可跳過）
-    2. playback_type_conditional - 根據類型分支
-    3. query_input - 輸入查詢（可跳過）
-    4. execute_playback - 執行播放
-    5. create_monitor - 建立監控任務並提交到執行緒池（自動步驟）
+    1. execute_playback - 執行播放（query 由 LLM 在啟動時提供）
+    2. create_monitor - 建立監控任務並提交到執行緒池（自動步驟）
+    
+    ❌ 已移除 query_input 互動步驟：背景工作流不能有互動步驟
     
     Args:
-        playback_type: 播放類型 (1=local, 2=youtube, 3=spotify)
-        query: 歌曲/藝人查詢
+        query: 歌曲查詢（必需，留空字串則播放整個資料夾）
+        shuffle: 是否隨機播放
+        loop: 是否循環播放
     
     Returns:
         WorkflowDefinition 實例
+        
+    播放邏輯：
+    - 有指定歌曲：播放該歌曲，完畢後任務結束
+    - 無指定歌曲：播放整個資料夾，完畢後任務結束
+    - 開啟循環：持續播放直到用戶手動停止
     """
     workflow_def = WorkflowDefinition(
         workflow_type="media_playback",
-        name="媒體播放服務",
-        description="啟動媒體播放服務（本地/YouTube/Spotify）",
+        name="本地音樂播放",
+        description="播放本地音樂（支援隨機、循環）",
         workflow_mode=WorkflowMode.BACKGROUND,  # ✅ 背景工作流
-        requires_llm_review=True  # ✅ 啟用 LLM 審核
+        requires_llm_review=False  # ❌ 背景工作流不需要 LLM 審核（完全自動化）
     )
     
-    # 步驟 1: 選擇播放類型（可跳過）
-    type_selection_step = StepTemplate.create_selection_step(
-        session=session,
-        step_id="playback_type_selection",
-        prompt="請選擇播放類型：",
-        options=["1", "2", "3"],
-        labels=["本地音樂播放", "YouTube 播放", "Spotify 播放"],
-        required_data=[],
-        skip_if_data_exists=True  # 如果 initial_data 已提供則跳過
-    )
+    # 預先保存參數到 session（包括空值）
+    # ❌ 移除 Interactive 步驟：背景工作流不能有互動步驟
+    # query 現在是必需參數，LLM 必須在啟動工作流時提供（即使是空字串）
+    if query is not None:  # 只要有提供（即使是空字符串），就設置
+        session.add_data("query_input", query)
+    else:
+        # 如果 LLM 沒有提供 query（不應該發生），設為空字串
+        session.add_data("query_input", "")
     
-    # 步驟 2: 條件式步驟 - 所有類型都導向查詢輸入（query_input 支援跳過）
-    type_conditional_step = StepTemplate.create_conditional_step(
-        session=session,
-        step_id="playback_type_conditional",
-        selection_step_id="playback_type_selection",
-        branches={
-            "1": [],  # 本地 - 進入查詢輸入
-            "2": [],  # YouTube - 進入查詢輸入
-            "3": []   # Spotify - 進入查詢輸入
-        },
-        description="根據播放類型分支"
-    )
+    if shuffle:
+        session.add_data("shuffle", shuffle)
+    if loop:
+        session.add_data("loop", loop)
     
-    # 步驟 3: 輸入查詢（可跳過）
-    query_input_step = StepTemplate.create_input_step(
-        session=session,
-        step_id="query_input",
-        prompt="請輸入歌曲或藝人名稱（本地播放可留空）：",
-        required_data=[],
-        skip_if_data_exists=True  # 如果 initial_data 已提供則跳過
-    )
+    # ❌ 步驟 1: 輸入歌曲查詢（已移除 - 背景工作流不能有互動步驟）
+    # query_input_step = StepTemplate.create_input_step(
+    #     session=session,
+    #     step_id="query_input",
+    #     prompt="請輸入歌曲名稱（留空則播放整個音樂資料夾）：",
+    #     required_data=[],
+    #     skip_if_data_exists=True,  # 如果 initial_data 已提供則跳過
+    #     optional=True  # 標記為可選
+    # )
     
-    # 步驟 4: 執行播放（自動步驟）
+    # 步驟 2: 執行播放（自動步驟）
     execute_step = StepTemplate.create_auto_step(
         session=session,
         step_id="execute_playback",
         processor=_execute_media_playback,
-        required_data=["playback_type_selection"],
-        prompt="正在啟動媒體播放...",
-        description="執行播放操作"
+        required_data=[],  # query 是可選的
+        prompt="正在啟動本地音樂播放...",
+        description="執行本地音樂播放"
     )
     
-    # 步驟 5: 建立監控任務（自訂處理步驟）
+    # 步驟 3: 建立監控任務（自訂處理步驟）
     def create_media_monitor(sess: WorkflowSession) -> StepResult:
-        """建立媒體播放監控任務"""
+        """建立本地音樂播放監控任務"""
         try:
             import uuid
             from pathlib import Path
@@ -201,7 +202,10 @@ def create_media_playback_workflow(
             
             # 獲取播放信息
             playback_mode = sess.get_data("playback_mode", "")
+            playback_type = sess.get_data("playback_type", "")
             query = sess.get_data("query_input", "")
+            shuffle = sess.get_data("shuffle", False)
+            loop = sess.get_data("loop", False)
             initial_result = sess.get_data("initial_result", "")
             
             if not playback_mode:
@@ -216,7 +220,10 @@ def create_media_playback_workflow(
                 workflow_type="media_playback",
                 metadata={
                     "playback_mode": playback_mode,
+                    "playback_type": playback_type,
                     "query": query,
+                    "shuffle": shuffle,
+                    "loop": loop,
                     "initial_result": initial_result
                 }
             )
@@ -224,15 +231,9 @@ def create_media_playback_workflow(
             if not success:
                 return StepResult.failure("無法註冊背景服務到資料庫")
             
-            # 定義監控函數（僅用於本地播放）
+            # 定義監控函數（本地播放專用）
             def media_monitor_func(stop_event, check_interval, **kwargs):
-                """媒體播放監控函數"""
-                # YouTube 和 Spotify 不需要監控（它們在瀏覽器中運行）
-                if playback_mode != "local":
-                    info_log(f"[MediaMonitor] {playback_mode} 模式不需要背景監控")
-                    update_workflow_status(task_id=task_id, status="COMPLETED")
-                    return
-                
+                """本地音樂播放監控函數"""
                 # 從配置讀取音樂資料夾
                 from configs.config_loader import load_config
                 config = load_config()
@@ -250,21 +251,32 @@ def create_media_playback_workflow(
                         
                         metadata = workflow.get("metadata", {})
                         control_action = metadata.get("control_action")
+                        playback_type = metadata.get("playback_type", "playlist")  # ✅ 從 metadata 獲取
                         
-                        # 檢查播放器狀態（如果播放完成，結束監控）
+                        # 檢查播放器狀態
                         from modules.sys_module.actions.automation_helper import get_music_player_status
                         player_status = get_music_player_status()
                         
-                        if player_status["is_finished"] and not player_status["is_looping"]:
+                        # 判斷是否應該結束任務
+                        is_looping = player_status.get("is_looping", False)
+                        is_finished = player_status.get("is_finished", False)
+                        
+                        # 結束條件：
+                        # 1. 沒有開啟循環 且 播放完成
+                        # 2. 用戶要求停止
+                        if is_finished and not is_looping:
                             info_log(f"[MediaMonitor] 播放完成，結束監控：{task_id}")
-                            info_log(f"[MediaMonitor] 最後播放歌曲：{player_status.get('current_song', 'Unknown')}")
+                            
+                            completion_reason = "單曲播放完成" if playback_type == "single_song" else "播放清單完成"
+                            info_log(f"[MediaMonitor] {completion_reason}")
+                            
                             update_workflow_status(
                                 task_id=task_id,
                                 status="COMPLETED",
                                 metadata={
                                     **metadata,
-                                    "completion_reason": "播放完成",
-                                    "last_song": player_status.get("current_song")
+                                    "completion_reason": completion_reason,
+                                    "last_song": player_status.get("current_song", "Unknown")
                                 }
                             )
                             break
@@ -272,13 +284,51 @@ def create_media_playback_workflow(
                         # 處理控制指令
                         if control_action:
                             control_params = metadata.get("control_params", {})
-                            result = media_control(
-                                action=control_action,
-                                song_query=control_params.get("song_query", ""),
-                                music_folder=music_folder
-                            )
+                            
+                            # 構建控制參數
+                            control_kwargs = {
+                                "action": control_action,
+                                "music_folder": music_folder
+                            }
+                            
+                            # 根據不同控制動作添加參數
+                            if control_action in ["search", "play"]:
+                                control_kwargs["song_query"] = control_params.get("song_query", "")
+                            elif control_action == "shuffle":
+                                control_kwargs["shuffle"] = control_params.get("shuffle", True)
+                            elif control_action == "loop":
+                                # 智能判斷循環模式（基於當前播放狀態）
+                                # 獲取當前播放器狀態
+                                from modules.sys_module.actions.automation_helper import get_music_player_status
+                                player_status = get_music_player_status()
+                                
+                                # 如果當前沒有循環，根據 playback_type 設定適當的循環模式
+                                if not player_status.get("is_looping", False):
+                                    playback_type = metadata.get("playback_type", "playlist")
+                                    if playback_type == "single_song":
+                                        # 單曲播放 → 直接設定為單曲循環
+                                        control_kwargs["action"] = "set_loop_mode"  # 自定義動作
+                                        control_kwargs["loop_mode"] = "one"
+                                        debug_log(2, f"[MediaMonitor] 單曲播放，設定為單曲循環")
+                                    else:
+                                        # 播放清單播放 → 直接設定為播放清單循環
+                                        control_kwargs["action"] = "set_loop_mode"  # 自定義動作
+                                        control_kwargs["loop_mode"] = "all"
+                                        debug_log(2, f"[MediaMonitor] 播放清單播放，設定為播放清單循環")
+                                else:
+                                    # 如果已經有循環，則使用 toggle（切換到下一個模式）
+                                    control_kwargs["action"] = "loop"
+                                    debug_log(2, f"[MediaMonitor] 已有循環模式，使用 toggle 切換")
+                            
+                            result = media_control(**control_kwargs)
                             
                             info_log(f"[MediaMonitor] 執行控制：{control_action} -> {result}")
+                            
+                            # 更新 metadata 中的 shuffle/loop 狀態
+                            if control_action == "shuffle":
+                                metadata["shuffle"] = control_params.get("shuffle", True)
+                            elif control_action == "loop":
+                                metadata["loop"] = control_params.get("loop", True)
                             
                             # 清除控制指令
                             metadata["control_action"] = None
@@ -300,6 +350,7 @@ def create_media_playback_workflow(
                         
                         # 檢查是否要求停止
                         if metadata.get("stop_requested", False):
+                            info_log(f"[MediaMonitor] 用戶要求停止：{task_id}")
                             break
                         
                         # 更新狀態
@@ -317,32 +368,43 @@ def create_media_playback_workflow(
                 info_log(f"[MediaMonitor] 監控結束：{task_id}")
                 update_workflow_status(task_id=task_id, status="COMPLETED")
             
-            # 提交到監控線程池（僅本地播放需要）
-            if playback_mode == "local":
-                monitoring_pool = get_monitoring_pool()
-                submitted = monitoring_pool.submit_monitor(
-                    task_id=task_id,
-                    monitor_func=media_monitor_func,
-                    check_interval=5
-                )
-                
-                if not submitted:
-                    return StepResult.failure("無法啟動背景監控服務")
-                
-                info_log(f"[MediaPlayback] 背景監控已啟動，任務 ID: {task_id}")
-            else:
-                info_log(f"[MediaPlayback] {playback_mode} 模式不需要背景監控")
+            # 提交到監控線程池
+            monitoring_pool = get_monitoring_pool()
+            submitted = monitoring_pool.submit_monitor(
+                task_id=task_id,
+                monitor_func=media_monitor_func,
+                check_interval=5
+            )
+            
+            if not submitted:
+                return StepResult.failure("無法啟動背景監控服務")
+            
+            info_log(f"[MediaPlayback] 背景監控已啟動，任務 ID: {task_id}")
             
             # 保存 task_id 到 session
             sess.add_data("task_id", task_id)
             
+            # 構建完成訊息
+            mode_desc = ""
+            if shuffle:
+                mode_desc += "隨機"
+            if loop:
+                mode_desc += "循環"
+            if mode_desc:
+                mode_desc = f" ({mode_desc})"
+            
+            completion_msg = f"本地音樂播放已啟動{mode_desc}！\n{initial_result}\n\n任務 ID: {task_id}\n隨時可以控制播放。"
+            
             # 工作流完成
             return StepResult.complete_workflow(
-                f"媒體播放服務已啟動！\n{initial_result}\n\n任務 ID: {task_id}\n您可以隨時說「暫停音樂」「下一首」等來控制播放。",
+                completion_msg,
                 data={
                     "task_id": task_id,
                     "playback_mode": playback_mode,
-                    "query": query
+                    "playback_type": playback_type,
+                    "query": query,
+                    "shuffle": shuffle,
+                    "loop": loop
                 }
             )
             
@@ -360,16 +422,14 @@ def create_media_playback_workflow(
     )
     
     # 組裝工作流
-    workflow_def.add_step(type_selection_step)
-    workflow_def.add_step(type_conditional_step)
-    workflow_def.add_step(query_input_step)
+    # ❌ 移除 query_input_step（背景工作流不能有互動步驟）
+    # workflow_def.add_step(query_input_step)
     workflow_def.add_step(execute_step)
     workflow_def.add_step(monitor_creation_step)
     
-    workflow_def.set_entry_point("playback_type_selection")
-    workflow_def.add_transition("playback_type_selection", "playback_type_conditional")
-    workflow_def.add_transition("playback_type_conditional", "query_input")
-    workflow_def.add_transition("query_input", "execute_playback")
+    # ✅ 直接從 execute_playback 開始（query 由 LLM 在啟動時提供）
+    workflow_def.set_entry_point("execute_playback")
+    # workflow_def.add_transition("query_input", "execute_playback")  # ❌ 移除
     workflow_def.add_transition("execute_playback", "create_monitor")
     workflow_def.add_transition("create_monitor", "END")
     
@@ -410,11 +470,13 @@ def _media_control_intervention_processor(
     control_params: Optional[Dict[str, Any]] = None
 ) -> StepResult:
     """
-    媒體播放控制干涉處理器
+    本地音樂播放控制干涉處理器
     
-    用於控制正在運行的媒體播放服務：
+    用於控制正在運行的本地音樂播放服務：
     - play, pause, stop, next, previous
     - search (搜尋並播放歌曲)
+    - shuffle (開啟/關閉隨機播放)
+    - loop (開啟/關閉循環播放)
     - stop_service (停止整個監控服務)
     
     注意：背景服務是跨會話的，所有參數通過函數參數傳遞，不依賴 session
@@ -508,9 +570,9 @@ def create_media_control_intervention_workflow(
     control_params: Optional[Dict[str, Any]] = None
 ) -> WorkflowEngine:
     """
-    創建媒體播放控制干涉工作流
+    創建本地音樂播放控制干涉工作流
     
-    用於控制正在運行的媒體播放服務，這是一個「干涉工作流」：
+    用於控制正在運行的本地音樂播放服務，這是一個「干涉工作流」：
     1. 獲取要控制的任務 ID 和動作
     2. 將控制指令寫入資料庫
     3. 監控線程會讀取並執行
@@ -518,8 +580,8 @@ def create_media_control_intervention_workflow(
     
     Args:
         task_id: 要控制的媒體播放任務 ID（如未提供則自動獲取）
-        control_action: 控制動作（play, pause, stop, next, previous, search, stop_service）
-        control_params: 控制參數（如 song_query）
+        control_action: 控制動作（play, pause, stop, next, previous, search, shuffle, loop, stop_service）
+        control_params: 控制參數（如 song_query, shuffle, loop）
     """
     # 如果未提供 task_id，從資料庫獲取最近的活躍媒體任務
     # 注意：不使用 WorkingContext 因為它會在 GS 結束時清空
@@ -560,8 +622,8 @@ def create_media_control_intervention_workflow(
     # 創建工作流定義（干涉工作流使用 DIRECT 模式）
     workflow_def = WorkflowDefinition(
         workflow_type="media_control_intervention",
-        name="媒體播放控制",
-        description="控制正在運行的媒體播放服務",
+        name="本地音樂播放控制",
+        description="控制正在運行的本地音樂播放服務",
         workflow_mode=WorkflowMode.DIRECT,  # 干涉工作流是 DIRECT（快速完成）
         requires_llm_review=True  # ✅ 啟用 LLM 審核，讓 LLM 在干涉時給予回應
     )

@@ -722,10 +722,10 @@ class SYSModule(BaseModule):
                         "session_id": session_id,
                         "task_id": task_id,
                         "message": (
-                            f"Alright, handling that in the background.\n\n"
-                            f"Just respond with 1-3 casual words to acknowledge.\n"
-                            f"Examples: 'Sure!', 'On it!', 'Got it!', 'Yep!', 'Okay!'\n"
-                            f"Don't explain or mention any technical details."
+                            f"Got it, working on it!\n\n"
+                            f"Respond naturally like you're talking to a friend - just 1-3 words.\n"
+                            f"Examples: 'Sure~', 'Yep!', 'Okay!', 'On it~', 'Got it~'\n"
+                            f"No need to say anything professional or explain what you're doing."
                         ),
                         "data": {
                             "workflow_type": workflow_type,

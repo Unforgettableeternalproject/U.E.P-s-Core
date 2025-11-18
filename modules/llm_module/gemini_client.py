@@ -301,7 +301,7 @@ class GeminiWrapper:
 
 
     # [修改] 允許 str 或 list[str]
-    def query(self, prompt: str, mode: str = "chat", cached_content=None, tools=None, system_instruction: Optional[str] = None) -> dict:
+    def query(self, prompt: str, mode: str = "chat", cached_content=None, tools=None, system_instruction: Optional[str] = None, tool_choice: str = "ANY") -> dict:
         """
         查詢 Gemini API
         
@@ -311,6 +311,7 @@ class GeminiWrapper:
             cached_content: 快取內容 ID
             tools: MCP 工具列表
             system_instruction: 自定義系統提示詞（用於 internal 模式）
+            tool_choice: Function calling 模式 ("ANY" 強制調用 | "AUTO" 自動決定 | "NONE" 不調用)
         """
         contents = [types.Content(role="user", parts=[types.Part(text=prompt)])]
         schema = self.response_schemas.get(mode, self.response_schemas["chat"])
@@ -329,12 +330,17 @@ class GeminiWrapper:
         # ✅ 如果提供了 tools，使用 function calling 模式；否則使用 JSON schema 模式
         if tools:
             config_params["tools"] = tools
-            # ✅ 強制要求 Gemini 調用函數（ANY mode）
-            config_params["tool_config"] = {"function_calling_config": {"mode": "ANY"}}
-            # 🔍 DEBUG: 記錄 tools 數量
+            # ✅ 根據 tool_choice 參數決定 function calling 模式
+            config_params["tool_config"] = {"function_calling_config": {"mode": tool_choice}}
+            # 🔍 DEBUG: 記錄 tools 數量和模式
             from utils.debug_helper import debug_log
             tool_count = sum(len(t.get('function_declarations', [])) for t in tools)
-            debug_log(3, f"[Gemini] 使用 function calling 模式（強制），工具數量: {tool_count}")
+            mode_desc = {
+                "ANY": "強制調用",
+                "AUTO": "自動決定",
+                "NONE": "不調用"
+            }.get(tool_choice, tool_choice)
+            debug_log(3, f"[Gemini] 使用 function calling 模式（{mode_desc}），工具數量: {tool_count}")
         else:
             config_params["response_mime_type"] = "application/json"
             config_params["response_schema"] = schema
@@ -368,9 +374,23 @@ class GeminiWrapper:
             error_log(f"[Gemini] candidate 或 content 為 None")
             return {"text": "Welp...I did not come up with any content, sorry."}
         
+        # 🔧 修復：優先使用 result.text 便利方法（新 SDK 推薦），再嘗試 parts[0]
+        part = None
         if not hasattr(candidate.content, 'parts') or candidate.content.parts is None or len(candidate.content.parts) == 0:
-            error_log(f"[Gemini] content.parts 為空")
-            return {"text": "Sorry, I could not generate any response parts."}
+            # content.parts 為空，嘗試使用 result.text 便利方法
+            if hasattr(result, 'text') and result.text:
+                debug_log(3, f"[Gemini] content.parts 為空，但 result.text 可用，使用便利方法")
+                return {"text": result.text}
+            else:
+                error_log(f"[Gemini] content.parts 為空且 result.text 不可用")
+                # 記錄更多調試信息
+                if hasattr(result, 'prompt_feedback'):
+                    debug_log(3, f"[Gemini] prompt_feedback: {result.prompt_feedback}")
+                if hasattr(candidate, 'finish_reason'):
+                    debug_log(3, f"[Gemini] finish_reason: {candidate.finish_reason}")
+                if hasattr(candidate, 'safety_ratings'):
+                    debug_log(3, f"[Gemini] safety_ratings: {candidate.safety_ratings}")
+                return {"text": "Sorry, I could not generate any response parts."}
         
         part = candidate.content.parts[0] # type: ignore
 
@@ -379,10 +399,15 @@ class GeminiWrapper:
         
         # ✅ 處理 function call 回應
         if hasattr(part, 'function_call') and part.function_call:
+            # 修復類型錯誤：直接轉換為 dict，避免 dict() 構造函數的類型問題
+            args_dict = {}
+            if hasattr(part.function_call, 'args') and part.function_call.args:
+                args_dict = {k: v for k, v in part.function_call.args.items()}
+            
             payload = {
                 "function_call": {
                     "name": part.function_call.name,
-                    "args": dict(part.function_call.args) if hasattr(part.function_call, 'args') else {}
+                    "args": args_dict
                 },
                 "text": ""  # function call 時沒有文本回應
             }

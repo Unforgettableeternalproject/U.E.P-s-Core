@@ -1690,7 +1690,26 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
         
         try:
             # ✅ 檢查是否有運行中的工作流會話
-            has_active_workflow = self.session_info and self.session_info.get('session_type') == 'workflow'
+            # 🔧 修正：不能只檢查 session_type，還要確認工作流引擎已啟動
+            # 因為 StateManager 會在 WORK intent 時立即創建 WS，但此時工作流引擎還未啟動
+            has_active_workflow = False
+            if self.session_info and self.session_info.get('session_type') == 'workflow':
+                session_id = self.session_info.get('session_id')
+                # 檢查 SYS 模組是否有此工作流的引擎
+                try:
+                    from core.module_coordinator import module_coordinator
+                    sys_module = module_coordinator.get_module('sys')
+                    if sys_module and hasattr(sys_module, 'workflow_engines'):
+                        has_active_workflow = session_id in sys_module.workflow_engines
+                        debug_log(2, f"[LLM] 工作流引擎檢查: session={session_id}, has_engine={has_active_workflow}")
+                    else:
+                        # 如果 SYS 模組沒有 workflow_engines 屬性，假設沒有活躍工作流
+                        has_active_workflow = False
+                        debug_log(2, f"[LLM] SYS 模組無 workflow_engines 屬性，假設無活躍工作流")
+                except Exception as e:
+                    # 如果獲取失敗，保守假設沒有活躍工作流（讓 LLM 嘗試啟動）
+                    has_active_workflow = False
+                    debug_log(2, f"[LLM] 無法檢查工作流引擎（{e}），假設無活躍工作流")
             
             # ✅ 檢查是否有待處理的工作流事件（正在審核步驟）
             pending_workflow = getattr(llm_input, 'workflow_context', None)
@@ -1786,11 +1805,16 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                 debug_log(3, f"[LLM] Prompt 包含 workflow_hint: {workflow_hint}")
             
             # ✅ 呼叫 Gemini API (使用 MCP tools 進行 function calling)
+            # 🔧 修復：已有工作流運行時使用 AUTO 模式，讓 Gemini 自行決定是否調用工具
+            tool_choice = "AUTO" if (has_active_workflow or is_reviewing_step) else "ANY"
+            debug_log(2, f"[LLM] Function calling 模式: {tool_choice} (has_active_workflow={has_active_workflow}, is_reviewing_step={is_reviewing_step})")
+            
             response_data = self.model.query(
                 prompt, 
                 mode="work",
                 cached_content=cached_content_ids.get("functions"),
-                tools=mcp_tools  # 傳入 MCP tools
+                tools=mcp_tools,  # 傳入 MCP tools
+                tool_choice=tool_choice  # 🔧 修復：使用動態決定的模式
             )
             
             # 🔍 DEBUG: 記錄 Gemini 的原始響應

@@ -1822,3 +1822,15 @@
 
 ---
 
+### Added several new functions such as loop and shuffle to media playback workflow. 11/18
+
+> Date: Tue, 18 Nov 2025 16:59:10 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `2cc4b9d8bc520808866ea2f63aac85464cdfc24d`
+
+---
+

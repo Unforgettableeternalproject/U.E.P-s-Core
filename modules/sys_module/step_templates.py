@@ -69,28 +69,25 @@ class StepTemplate:
                 
                 跳過條件：
                 1. skip_if_data_exists=True
-                2. session 中已有該步驟的數據
-                3. 數據不是 None 且不是空字符串
+                2. session 中已有該步驟的數據（包括空字符串）
+                3. 數據不是 None
                 
-                注意：空字符串不算有效數據，不會觸發跳過
+                注意：空字符串算作有效數據（例如：query="" 表示播放整個資料夾）
                 """
                 if not skip_if_data_exists:
                     return False
                 
-                # 檢查 session 中是否已有此步驟的**有效**數據
-                existing_data = self.session.get_data(step_id, None)
+                # 檢查 session 中是否已有此步驟的數據
+                # 使用特殊標記來區分「沒有數據」和「空字符串數據」
+                _SENTINEL = object()
+                existing_data = self.session.get_data(step_id, _SENTINEL)
                 
-                # None 或空字符串都不算有效數據
-                if existing_data is None:
-                    return False
-                    
-                # 轉換為字符串並去除空白
-                data_str = str(existing_data).strip()
-                if not data_str:
+                # 只有 None 或未設置才算沒有數據
+                if existing_data is _SENTINEL or existing_data is None:
                     return False
                 
-                # 有有效數據，跳過此步驟
-                debug_log(2, f"[Workflow] 步驟 {step_id} 跳過：數據已存在 ({existing_data})")
+                # 有數據（包括空字符串），跳過此步驟
+                debug_log(2, f"[Workflow] 步驟 {step_id} 跳過：數據已存在 (值: '{existing_data}')")
                 return True
                         
             def get_prompt(self) -> str:

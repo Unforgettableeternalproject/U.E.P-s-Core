@@ -1887,7 +1887,7 @@ class TestBackgroundWorkflowFullCycle:
             info_log("[Test] 📝 階段 1: 啟動媒體播放服務")
             
             # ==================== 階段 1: 啟動服務 ====================
-            inject_text_to_system("Play Something just like this on Youtube")
+            inject_text_to_system("Play Neon Escapism in my local library")
             
             # 等待 TTS 生成和工作流準備
             info_log("[Test] ⏳ 等待 TTS 生成工作流提示（約 45 秒）...")
@@ -1988,3 +1988,250 @@ class TestBackgroundWorkflowFullCycle:
             
             time.sleep(1.0)
             info_log("[Test] ✅ 測試清理完成")
+            
+    def test_media_playback_with_shuffle_full_cycle(self, system_components, isolated_gs):
+        """
+        測試媒體播放 shuffle 功能完整循環
+        
+        流程：
+        1. 用戶輸入：「Play my music library with shuffle」
+        2. NLP 判斷意圖：media_control
+        3. LLM 通過 MCP 啟動 media_playback workflow（shuffle=True）
+        4. 工作流執行並啟動播放器，開啟 shuffle
+        5. 驗證播放器狀態：is_shuffled = True
+        
+        測試重點：
+        - LLM 能否正確解析 shuffle 需求並傳遞參數
+        - 播放器是否正確開啟 shuffle
+        - 回應是否簡短自然
+        """
+        from utils.debug_helper import info_log
+        from core.states.state_manager import state_manager, UEPState
+        from modules.sys_module.actions.automation_helper import (
+            get_active_workflows,
+            get_monitoring_pool,
+            get_music_player_status
+        )
+        
+        system_loop = system_components["system_loop"]
+        event_bus = system_components["event_bus"]
+        
+        # 使用基礎監控器
+        monitor = WorkflowCycleMonitor(event_bus)
+        
+        try:
+            info_log("[Test] 🎯 測試：媒體播放 shuffle 功能")
+            
+            # 注入測試輸入
+            inject_text_to_system("Play my music library with shuffle")
+            
+            # 等待 TTS 生成
+            info_log("[Test] ⏳ 等待 TTS 生成（約 45 秒）...")
+            time.sleep(45)
+            
+            # 等待工作流完成
+            info_log("[Test] ⏳ 等待工作流完成...")
+            result = monitor.wait_for_completion(timeout=60)
+            
+            # 驗證結果
+            assert result["completed"], "Workflow did not complete"
+            assert not result["failed"], "Workflow failed"
+            
+            info_log(f"[Test] ✅ 工作流完成: {result['session_id']}")
+            
+            # 等待播放器初始化
+            time.sleep(2)
+            
+            # 檢查播放器狀態
+            status = get_music_player_status()
+            info_log(f"[Test] 播放器狀態: is_shuffled={status['is_shuffled']}, is_looping={status['is_looping']}")
+            
+            # 驗證 shuffle 已開啟
+            assert status["is_shuffled"] == True, "Shuffle should be enabled"
+            
+            info_log("[Test] ✅ Shuffle 功能測試通過")
+            
+        finally:
+            # 清理
+            try:
+                active_workflows = get_active_workflows(workflow_type="media_playback")
+                if active_workflows:
+                    task_id = active_workflows[0]["task_id"]
+                    monitoring_pool = get_monitoring_pool()
+                    monitoring_pool.stop_monitor(task_id)
+                    info_log(f"[Test] 🧹 已停止背景服務: {task_id}")
+            except Exception as e:
+                info_log(f"[Test] ⚠️ 清理失敗: {e}")
+            
+            monitor.cleanup()
+            time.sleep(1.0)
+    
+    def test_media_playback_with_loop_full_cycle(self, system_components, isolated_gs):
+        """
+        測試媒體播放 loop 功能完整循環
+        
+        流程：
+        1. 用戶輸入：「Play Ancient Wisdom on repeat」
+        2. NLP 判斷意圖：media_control
+        3. LLM 通過 MCP 啟動 media_playback workflow（loop=True）
+        4. 工作流執行並啟動播放器，開啟 loop
+        5. 驗證播放器狀態：is_looping = True
+        
+        測試重點：
+        - LLM 能否正確解析 loop/repeat 需求並傳遞參數
+        - 播放器是否正確開啟 loop
+        - 回應是否簡短自然
+        """
+        from utils.debug_helper import info_log
+        from core.states.state_manager import state_manager, UEPState
+        from modules.sys_module.actions.automation_helper import (
+            get_active_workflows,
+            get_monitoring_pool,
+            get_music_player_status
+        )
+        
+        system_loop = system_components["system_loop"]
+        event_bus = system_components["event_bus"]
+        
+        # 使用基礎監控器
+        monitor = WorkflowCycleMonitor(event_bus)
+        
+        try:
+            info_log("[Test] 🎯 測試：媒體播放 loop 功能")
+            
+            # 注入測試輸入
+            inject_text_to_system("Play Ancient Wisdom on repeat")
+            
+            # 等待 TTS 生成
+            info_log("[Test] ⏳ 等待 TTS 生成（約 45 秒）...")
+            time.sleep(45)
+            
+            # 等待工作流完成
+            info_log("[Test] ⏳ 等待工作流完成...")
+            result = monitor.wait_for_completion(timeout=60)
+            
+            # 驗證結果
+            assert result["completed"], "Workflow did not complete"
+            assert not result["failed"], "Workflow failed"
+            
+            info_log(f"[Test] ✅ 工作流完成: {result['session_id']}")
+            
+            # 等待播放器初始化
+            time.sleep(2)
+            
+            # 檢查播放器狀態
+            status = get_music_player_status()
+            info_log(f"[Test] 播放器狀態: is_shuffled={status['is_shuffled']}, is_looping={status['is_looping']}")
+            
+            # 驗證 loop 已開啟
+            assert status["is_looping"] == True, "Loop should be enabled"
+            
+            info_log("[Test] ✅ Loop 功能測試通過")
+            
+        finally:
+            # 清理
+            try:
+                active_workflows = get_active_workflows(workflow_type="media_playback")
+                if active_workflows:
+                    task_id = active_workflows[0]["task_id"]
+                    monitoring_pool = get_monitoring_pool()
+                    monitoring_pool.stop_monitor(task_id)
+                    info_log(f"[Test] 🧹 已停止背景服務: {task_id}")
+            except Exception as e:
+                info_log(f"[Test] ⚠️ 清理失敗: {e}")
+            
+            monitor.cleanup()
+            time.sleep(1.0)
+    
+    def test_media_control_shuffle_toggle_full_cycle(self, system_components, isolated_gs):
+        """
+        測試媒體控制 shuffle 切換完整循環
+        
+        流程：
+        1. 先啟動播放（無 shuffle）
+        2. 用戶輸入：「Turn on shuffle」或「Shuffle the playlist」
+        3. NLP 判斷意圖：media_control
+        4. LLM 通過 MCP 啟動 control_media workflow（action=shuffle）
+        5. 驗證控制指令發送成功
+        
+        測試重點：
+        - LLM 能否理解 shuffle 控制指令
+        - 干涉工作流是否正確發送 shuffle 控制
+        - 回應是否簡短自然
+        """
+        from utils.debug_helper import info_log
+        from core.states.state_manager import state_manager, UEPState
+        from modules.sys_module.actions.automation_helper import (
+            get_active_workflows,
+            get_monitoring_pool,
+            get_music_player_status
+        )
+        
+        system_loop = system_components["system_loop"]
+        event_bus = system_components["event_bus"]
+        
+        # 使用基礎監控器
+        monitor = WorkflowCycleMonitor(event_bus)
+        
+        try:
+            info_log("[Test] 🎯 測試：媒體控制 shuffle 切換")
+            info_log("[Test] 📝 階段 1: 啟動播放（無 shuffle）")
+            
+            # 先啟動播放
+            inject_text_to_system("Play my local music")
+            
+            # 等待 TTS 和工作流完成
+            time.sleep(45)
+            result = monitor.wait_for_completion(timeout=60)
+            
+            assert result["completed"], "Startup workflow did not complete"
+            info_log("[Test] ✅ 播放已啟動")
+            
+            # 檢查初始狀態
+            time.sleep(2)
+            status = get_music_player_status()
+            initial_shuffle = status["is_shuffled"]
+            info_log(f"[Test] 初始狀態: is_shuffled={initial_shuffle}")
+            
+            # 等待回到 IDLE
+            for _ in range(30):
+                if state_manager.get_current_state() == UEPState.IDLE:
+                    break
+                time.sleep(0.5)
+            time.sleep(2.0)
+            
+            info_log("[Test] 📝 階段 2: 切換 shuffle")
+            
+            # 重置監控器
+            monitor.cleanup()
+            monitor = WorkflowCycleMonitor(event_bus)
+            
+            # 發送 shuffle 控制指令
+            inject_text_to_system("Shuffle the music.")
+            
+            # 等待 TTS 和工作流完成
+            time.sleep(45)
+            result = monitor.wait_for_completion(timeout=60)
+            
+            assert result["completed"], "Control workflow did not complete"
+            info_log("[Test] ✅ Shuffle 控制指令已發送")
+            
+            # 驗證控制步驟完成
+            assert "media_control_intervention" in result["completed_steps"], "Control step not found"
+            
+            info_log("[Test] ✅ Shuffle 切換測試通過")
+            
+        finally:
+            # 清理
+            try:
+                active_workflows = get_active_workflows(workflow_type="media_playback")
+                if active_workflows:
+                    task_id = active_workflows[0]["task_id"]
+                    monitoring_pool = get_monitoring_pool()
+                    monitoring_pool.stop_monitor(task_id)
+                    info_log(f"[Test] 🧹 已停止背景服務: {task_id}")
+            except Exception as e:
+                info_log(f"[Test] ⚠️ 清理失敗: {e}")
+            
+            monitor.cleanup()
+            time.sleep(1.0)

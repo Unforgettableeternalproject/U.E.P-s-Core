@@ -612,6 +612,7 @@ def get_music_player_status() -> Dict[str, Any]:
         - is_playing: 是否正在播放
         - is_finished: 是否播放完成
         - is_looping: 是否單曲循環
+        - is_shuffled: 是否隨機播放
         - current_song: 當前歌曲名稱
     """
     global _music_player
@@ -620,15 +621,22 @@ def get_music_player_status() -> Dict[str, Any]:
         return {
             "is_playing": False,
             "is_finished": False,
-            "is_looping": False,
+            "is_looping": False,  # 向後兼容
+            "loop_one": False,
+            "loop_all": False,
+            "is_shuffled": False,
             "current_song": None
         }
     
     return {
         "is_playing": _music_player.is_playing,
         "is_finished": _music_player.is_finished,
-        "is_looping": _music_player.is_looping,
-        "current_song": _music_player.current_song
+        "is_looping": _music_player.is_looping,  # 向後兼容
+        "loop_one": _music_player.loop_one,
+        "loop_all": _music_player.loop_all,
+        "is_shuffled": _music_player.is_shuffled,
+        "current_song": _music_player.current_song or "Unknown",
+        "total_songs": len(_music_player.playlist)
     }
 
 
@@ -637,20 +645,37 @@ def media_control(
     song_query: str = "",
     music_folder: str = "",
     youtube: bool = False,
-    spotify: bool = False
+    spotify: bool = False,
+    shuffle: bool = False,
+    loop: bool = False,
+    loop_mode: str = ""
 ) -> str:
     """
     音樂播放控制器 - 支援本地音樂、YouTube、Spotify（背景運行）
     
     Args:
-        action: 動作指令 (play, pause, stop, next, previous, search, youtube, spotify)
+        action: 動作指令 (play, pause, stop, next, previous, search, shuffle, loop, set_loop_mode, youtube, spotify)
         song_query: 歌曲查詢關鍵字
         music_folder: 本地音樂資料夾路徑
         youtube: 是否使用 YouTube 播放
         spotify: 是否使用 Spotify 播放
+        shuffle: 是否開啟隨機播放（僅在 action="play" 時使用）
+        loop: 是否開啟循環播放（僅在 action="play" 時使用，向後兼容）
+        loop_mode: 循環模式 ('off', 'one', 'all')，優先於 loop 參數
         
     Returns:
         操作結果訊息
+        
+    Actions:
+        - play: 播放歌曲或整個資料夾
+        - pause: 暫停播放
+        - stop: 停止播放
+        - next: 下一首
+        - previous: 上一首
+        - search: 搜尋歌曲
+        - shuffle: 切換隨機播放模式
+        - loop: 切換循環模式 (off → loop_one → loop_all → off)
+        - set_loop_mode: 直接設定循環模式（需配合 loop_mode 參數）
     """
     global _music_player
     
@@ -669,6 +694,16 @@ def media_control(
                 info_log("[AUTO] 音樂播放器已初始化")
             
             if action == "play":
+                # 應用 shuffle 和 loop 設定
+                if shuffle:
+                    _music_player.set_shuffle(True)
+                
+                # 優先使用 loop_mode，若未指定則使用舊的 loop 參數（向後兼容）
+                if loop_mode:
+                    _music_player.set_loop_mode(loop_mode)
+                elif loop:
+                    _music_player.set_loop(True)
+                
                 if song_query:
                     # 搜尋並播放
                     found = _music_player.search_and_play(song_query)
@@ -703,6 +738,28 @@ def media_control(
                     return f"找到 {len(results)} 首歌曲：" + ", ".join(results[:5])
                 else:
                     return f"找不到：{song_query}"
+            
+            elif action == "shuffle":
+                _music_player.toggle_shuffle()
+                return f"隨機播放：{'開啟' if _music_player.is_shuffled else '關閉'}"
+            
+            elif action == "loop":
+                _music_player.toggle_loop()
+                return f"循環播放：{'開啟' if _music_player.is_looping else '關閉'}"
+            
+            elif action == "set_loop_mode":
+                # 直接設定循環模式（用於智能推斷）
+                if not loop_mode:
+                    return "錯誤：缺少 loop_mode 參數"
+                _music_player.set_loop_mode(loop_mode)
+                
+                # 返回對應的狀態訊息
+                if loop_mode == "one":
+                    return "單曲循環：開啟"
+                elif loop_mode == "all":
+                    return "播放清單循環：開啟"
+                else:
+                    return "循環播放：關閉"
             
             else:
                 return f"未知指令：{action}"
@@ -746,15 +803,23 @@ class MusicPlayer:
     def __init__(self, music_folder: str):
         self.music_folder = Path(music_folder)
         self.playlist = []
+        self.original_playlist = []  # 保存原始播放順序
         self.current_index = 0
         self.is_playing = False
-        self.is_looping = False
+        self.loop_one = False  # 單曲循環
+        self.loop_all = False  # 播放清單循環
+        self.is_shuffled = False
         self.is_finished = False  # ✅ 初始化完成標記
         self.current_song = None
         self.playback_obj = None
         
         # 載入播放清單
         self._load_playlist()
+    
+    @property
+    def is_looping(self) -> bool:
+        """向後兼容：返回是否有任何循環模式"""
+        return self.loop_one or self.loop_all
         
     def _load_playlist(self):
         """載入音樂資料夾中的歌曲"""
@@ -768,6 +833,9 @@ class MusicPlayer:
         for file in self.music_folder.rglob('*'):
             if file.suffix.lower() in audio_formats:
                 self.playlist.append(str(file))
+        
+        # 保存原始順序
+        self.original_playlist = self.playlist.copy()
         
         info_log(f"[AUTO] 載入 {len(self.playlist)} 首歌曲")
     
@@ -875,11 +943,18 @@ class MusicPlayer:
                     
                     # 播放完成後
                     self.is_playing = False
-                    if self.is_looping:
+                    
+                    if self.loop_one:
                         # 單曲循環：重新播放當前歌曲
+                        info_log(f"[AUTO] 單曲循環：重新播放 {self.current_song}")
+                        self.play()
+                    elif self.loop_all:
+                        # 播放清單循環：播放下一首，如果到最後一首則從頭開始
+                        self.current_index = (self.current_index + 1) % len(self.playlist)
+                        info_log(f"[AUTO] 播放清單循環：下一首")
                         self.play()
                     else:
-                        # 單曲播放模式：標記為完成
+                        # 普通播放：標記為完成
                         self.is_finished = True
                         info_log(f"[AUTO] 歌曲播放完成：{self.current_song}")
                 except Exception as e:
@@ -925,9 +1000,84 @@ class MusicPlayer:
         self.play()
     
     def toggle_loop(self):
-        """切換單曲循環"""
-        self.is_looping = not self.is_looping
-        info_log(f"[AUTO] 單曲循環：{'開啟' if self.is_looping else '關閉'}")
+        """切換循環模式：off -> loop_one -> loop_all -> off"""
+        if not self.loop_one and not self.loop_all:
+            # off -> loop_one
+            self.loop_one = True
+            self.loop_all = False
+            info_log(f"[AUTO] 單曲循環：開啟")
+        elif self.loop_one:
+            # loop_one -> loop_all
+            self.loop_one = False
+            self.loop_all = True
+            info_log(f"[AUTO] 播放清單循環：開啟")
+        else:
+            # loop_all -> off
+            self.loop_one = False
+            self.loop_all = False
+            info_log(f"[AUTO] 循環播放：關閉")
+    
+    def set_loop(self, enabled: bool):
+        """設定循環播放狀態（向後兼容：設定單曲循環）"""
+        self.loop_one = enabled
+        self.loop_all = False
+        info_log(f"[AUTO] 單曲循環：{'開啟' if enabled else '關閉'}")
+    
+    def set_loop_mode(self, mode: str):
+        """設定循環模式：'off', 'one', 'all'"""
+        if mode == "off":
+            self.loop_one = False
+            self.loop_all = False
+            info_log(f"[AUTO] 循環播放：關閉")
+        elif mode == "one":
+            self.loop_one = True
+            self.loop_all = False
+            info_log(f"[AUTO] 單曲循環：開啟")
+        elif mode == "all":
+            self.loop_one = False
+            self.loop_all = True
+            info_log(f"[AUTO] 播放清單循環：開啟")
+        else:
+            error_log(f"[AUTO] 未知的循環模式：{mode}")
+    
+    def toggle_shuffle(self):
+        """切換隨機播放"""
+        import random
+        
+        self.is_shuffled = not self.is_shuffled
+        
+        if self.is_shuffled:
+            # 隨機打亂播放清單
+            random.shuffle(self.playlist)
+            
+            # 如果正在播放歌曲，將當前歌曲移到第一位（保持播放連續性）
+            # 但如果還沒開始播放（current_index == 0 且 is_playing == False），
+            # 就不需要移動，讓它從隨機後的第一首開始
+            if self.is_playing and self.current_index < len(self.playlist):
+                current_song = self.playlist[self.current_index]
+                # 找到當前歌曲在打亂後清單中的位置，移到第一位
+                if current_song in self.playlist:
+                    idx = self.playlist.index(current_song)
+                    self.playlist[0], self.playlist[idx] = self.playlist[idx], self.playlist[0]
+                    self.current_index = 0
+            else:
+                # 還沒開始播放，從隨機後的第一首開始
+                self.current_index = 0
+        else:
+            # 恢復原始順序
+            current_song = self.playlist[self.current_index] if self.current_index < len(self.playlist) else None
+            self.playlist = self.original_playlist.copy()
+            
+            # 找回當前歌曲的位置
+            if current_song and current_song in self.playlist:
+                self.current_index = self.playlist.index(current_song)
+        
+        info_log(f"[AUTO] 隨機播放：{'開啟' if self.is_shuffled else '關閉'}")
+    
+    def set_shuffle(self, enabled: bool):
+        """設定隨機播放狀態"""
+        if enabled != self.is_shuffled:
+            self.toggle_shuffle()
 
 
 # ==================== 本地日曆功能 ====================

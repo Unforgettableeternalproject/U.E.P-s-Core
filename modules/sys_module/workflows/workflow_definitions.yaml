@@ -301,24 +301,31 @@ workflows:
   
   media_playback:
     name: "media_playback"
-    description: "Background media playback control with persistent monitoring. Supports local files, YouTube, or Spotify playback. ⚠️ IMPORTANT: Extract playback_type as EXACT value (local/youtube/spotify) - do NOT use other words or variations."
+    description: "Local music playback with background monitoring. Supports shuffle and smart loop mode (auto-infers single-song loop or playlist loop based on query). Task ends when: 1) Specific song finishes (without loop), 2) Playlist finishes (without loop), 3) User manually stops (with loop enabled)."
     category: "automation"
     work_mode: "background"
     
     initial_params:
-      playback_type:
-        type: int
-        optional: true
-        description: "Playback type: 1=local, 2=youtube, 3=spotify"
-        maps_to_step: "playback_type_selection"
-        extraction_hint: "Extract playback type from user input. CRITICAL: Return ONLY the number (1, 2, or 3). Examples: 'play music' → 1 (local), 'play on YouTube' → 2 (youtube), 'search on Spotify' → 3 (spotify). If user doesn't specify, leave empty."
-      
       query:
         type: str
+        optional: false
+        description: "Song name to play (empty string \"\" means play entire music folder)"
+        # maps_to_step: "query_input"  # ❌ Removed: background workflows cannot have Interactive steps
+        extraction_hint: "**REQUIRED** - Always extract and provide query parameter. Extract song name from user input. Examples: 'play Jay Chou' → query='Jay Chou', 'play Something just like this' → query='Something just like this'. If user wants to play ALL music or doesn't specify a song (e.g., 'play my music', 'play local music', 'play some music'), provide empty string: query=''. **ALWAYS provide query parameter, never omit it**."
+      
+      shuffle:
+        type: bool
         optional: true
-        description: "Song or artist name to search and play"
-        maps_to_step: "query_input"
-        extraction_hint: "Extract song/artist names from user input: 'play Jay Chou' → 'Jay Chou', 'search for Imagine Dragons' → 'Imagine Dragons', etc. For local playback without specific song, can be empty."
+        description: "Enable shuffle/random playback"
+        maps_to_step: "shuffle"
+        extraction_hint: "Return true if user mentions shuffle/random, otherwise false"
+      
+      loop:
+        type: bool
+        optional: true
+        description: "Enable loop/repeat playback. System will intelligently choose: (1) Single-song loop if query is provided, (2) Playlist loop if query is empty."
+        maps_to_step: "loop"
+        extraction_hint: "Return true if user mentions loop/repeat/循環/重複, otherwise false. System automatically selects appropriate loop mode (single-song or playlist) based on context."
     
     mcp_tool_params:
       command:
@@ -327,12 +334,12 @@ workflows:
         description: "User original command"
       initial_data:
         type: object
-        required: false
-        description: "Initial data: playback_type (1=local, 2=youtube, 3=spotify), query (song/artist name, optional)"
+        required: true
+        description: "Initial data with REQUIRED 'query' field. Format: {\"query\": \"song name or empty string\", \"shuffle\": bool (optional), \"loop\": bool (optional)}. The 'query' field is REQUIRED - use empty string \"\" if user wants to play all music."
   
   control_media:
     name: "control_media"
-    description: "Send control commands to active media playback: play, pause, stop, next, previous, search, stop_service"
+    description: "Control active local music playback: play, pause, stop, next, previous, search, shuffle on/off, loop on/off (intelligently switches between single-song and playlist loop based on playback type), stop_service"
     category: "automation"
     work_mode: "direct"
     
@@ -347,16 +354,16 @@ workflows:
       control_action:
         type: str
         optional: false
-        description: "Control action: play, pause, stop, next, previous, search, stop_service"
+        description: "Control action: play, pause, stop, next, previous, search, shuffle, loop, stop_service. Loop intelligently selects mode based on playback type."
         maps_to_step: "control_action"
-        extraction_hint: "CRITICAL: Extract the control command: 'pause' for pause/暫停, 'stop' for stop/停止, 'next' for next song/下一首, 'previous' for previous song/上一首, 'search' for search/搜尋, 'stop_service' for stop service/停止服務"
+        extraction_hint: "CRITICAL: Extract the control command: 'pause' for pause/暫停, 'stop' for stop/停止, 'next' for next song/下一首, 'previous' for previous song/上一首, 'search' for search/搜尋, 'shuffle' for shuffle/隨機, 'loop' for loop/循環 (system auto-selects single-song or playlist loop), 'stop_service' for stop service/停止服務"
       
       control_params:
         type: dict
         optional: true
-        description: "Additional parameters (e.g., song_query for search action)"
+        description: "Additional parameters (e.g., song_query for search). For loop action, system auto-infers appropriate mode based on current playback type."
         maps_to_step: "control_params"
-        extraction_hint: "For search action, extract {'song_query': 'song name'}. For other actions, return {}"
+        extraction_hint: "For search: {'song_query': 'song name'}. For shuffle: {'shuffle': true/false}. For loop: {} (empty, system handles intelligent mode selection). For other actions: {}"
     
     mcp_tool_params:
       command:
@@ -366,7 +373,7 @@ workflows:
       initial_data:
         type: object
         required: false
-        description: "Initial data: task_id (required), action (required), song_query (optional for search)"
+        description: "Initial data: task_id (optional), control_action (required), control_params (optional)"
 
   generate_backup_script:
     name: "generate_backup_script"

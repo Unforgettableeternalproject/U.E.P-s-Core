@@ -192,6 +192,11 @@ def register_all_workflows(mcp_server: 'MCPServer', sys_module) -> None:
             initial_params = workflow_def.get('initial_params', {})
             initial_data_description = _build_initial_data_description(initial_params)
             
+            # 🔧 從 mcp_tool_params 讀取 initial_data 的 required 設定
+            mcp_tool_params = workflow_def.get('mcp_tool_params', {})
+            initial_data_config = mcp_tool_params.get('initial_data', {})
+            initial_data_required = initial_data_config.get('required', False)
+            
             # 創建工具參數
             parameters = [
                 ToolParameter(
@@ -204,7 +209,7 @@ def register_all_workflows(mcp_server: 'MCPServer', sys_module) -> None:
                     name="initial_data",
                     type=ToolParameterType.STRING,  # 改為 STRING 類型，內容為 JSON
                     description=initial_data_description,
-                    required=False
+                    required=initial_data_required  # ✅ 從 YAML 配置讀取
                 )
             ]
             

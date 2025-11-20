@@ -139,12 +139,12 @@ class WorkflowStepProcessor:
             debug_log(2, f"[LLM.StepProcessor] 開始處理工作流完成: {workflow_type} ({session_id})")
             debug_log(2, f"[LLM.StepProcessor] review_data keys: {list(review_data.keys()) if review_data else 'None'}")
             
-            # 構建總結 prompt
-            result_message = step_result.get('message', 'Task completed successfully')
+            # 構建總結 prompt（不包含 result_message，避免 LLM 復述原始訊息）
+            # 從 step_result.data 獲取結構化數據
+            result_data = step_result.get('data', {})
             
             prompt = (
                 f"The '{workflow_type}' workflow has completed successfully.\n\n"
-                f"Result: {result_message}\n"
             )
             
             # 處理 full_content（文件讀取結果）
@@ -185,7 +185,7 @@ class WorkflowStepProcessor:
                 result_data = step_result.get('data', {}) or review_data.get('result_data', review_data)
                 
                 if result_data:
-                    self._add_result_data_to_prompt(prompt, result_data, workflow_type)
+                    prompt = self._add_result_data_to_prompt(prompt, result_data, workflow_type)
                 else:
                     prompt += (
                         f"Generate a natural, friendly response that:\n"

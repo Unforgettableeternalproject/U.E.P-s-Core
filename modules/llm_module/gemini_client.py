@@ -379,18 +379,18 @@ class GeminiWrapper:
         if not hasattr(candidate.content, 'parts') or candidate.content.parts is None or len(candidate.content.parts) == 0:
             # content.parts 為空，嘗試使用 result.text 便利方法
             if hasattr(result, 'text') and result.text:
-                debug_log(3, f"[Gemini] content.parts 為空，但 result.text 可用，使用便利方法")
+                debug_log(3, f"[Gemini] content.parts 為空，但 result.text 可用，使用便利方法")  # type: ignore
                 return {"text": result.text}
             else:
                 error_log(f"[Gemini] content.parts 為空且 result.text 不可用")
                 # 記錄更多調試信息
                 if hasattr(result, 'prompt_feedback'):
-                    debug_log(3, f"[Gemini] prompt_feedback: {result.prompt_feedback}")
+                    debug_log(3, f"[Gemini] prompt_feedback: {result.prompt_feedback}") # type: ignore
                 if hasattr(candidate, 'finish_reason'):
-                    debug_log(3, f"[Gemini] finish_reason: {candidate.finish_reason}")
+                    debug_log(3, f"[Gemini] finish_reason: {candidate.finish_reason}")  # type: ignore
                 if hasattr(candidate, 'safety_ratings'):
-                    debug_log(3, f"[Gemini] safety_ratings: {candidate.safety_ratings}")
-                return {"text": "Sorry, I could not generate any response parts."}
+                    debug_log(3, f"[Gemini] safety_ratings: {candidate.safety_ratings}") # type: ignore
+                return {"text": "Sorry, I could not generate any response parts."} 
         
         part = candidate.content.parts[0] # type: ignore
 

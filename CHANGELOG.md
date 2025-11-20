@@ -1858,3 +1858,15 @@
 
 ---
 
+### Tried more refactor, decided to went back to developing first. 11/21
+
+> Date: Fri, 21 Nov 2025 02:15:25 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_partial_refactor`
+
+> Commit: `0e43f20f5ec39e9e86136a4448295d5398b8e788`
+
+---
+

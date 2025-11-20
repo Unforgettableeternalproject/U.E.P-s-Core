@@ -880,7 +880,7 @@ def manage_todo_workflow(
                 if result.get("status") == "ok":
                     tasks = result.get("tasks", [])
                     if not tasks:
-                        return StepResult.complete_workflow("目前沒有待辦事項", {"tasks": []})
+                        return StepResult.complete_workflow("No todo tasks found", {"tasks": []})
                     
                     # 格式化輸出（移除 emojis）
                     task_list = []
@@ -906,7 +906,7 @@ def manage_todo_workflow(
                 if result.get("status") == "ok":
                     tasks = result.get("tasks", [])
                     if not tasks:
-                        return StepResult.complete_workflow(f"找不到包含「{search_query}」的待辦事項", {"tasks": []})
+                        return StepResult.complete_workflow(f"No tasks found matching '{search_query}'", {"tasks": []})
                     
                     # 格式化輸出（移除 emojis）
                     task_list = []
@@ -941,7 +941,7 @@ def manage_todo_workflow(
                 if result.get("status") == "ok":
                     info_log(f"[ManageTodo] 已更新任務 ID: {task_id}")
                     return StepResult.complete_workflow(
-                        f"✅ 已更新任務 ID: {task_id}",
+                        f"Task updated successfully (ID: {task_id})",
                         {"task_id": task_id, "update_fields": update_fields}
                     )
                 else:
@@ -957,7 +957,7 @@ def manage_todo_workflow(
                 if result.get("status") == "ok":
                     info_log(f"[ManageTodo] 已刪除任務 ID: {task_id}")
                     return StepResult.complete_workflow(
-                        f"🗑️ 已刪除任務 ID: {task_id}",
+                        f"Task deleted successfully (ID: {task_id})",
                         {"task_id": task_id}
                     )
                 else:
@@ -973,7 +973,7 @@ def manage_todo_workflow(
                 if result.get("status") == "ok":
                     info_log(f"[ManageTodo] 已完成任務 ID: {task_id}")
                     return StepResult.complete_workflow(
-                        f"✅ 已完成任務 ID: {task_id}",
+                        f"Task marked as completed (ID: {task_id})",
                         {"task_id": task_id}
                     )
                 else:
@@ -1299,7 +1299,7 @@ def manage_calendar_workflow(
                     ]
                     
                     if not events:
-                        return StepResult.complete_workflow(f"找不到包含「{search_query}」的行事曆事件", {"events": []})
+                        return StepResult.complete_workflow(f"No calendar events found matching '{search_query}'", {"events": []})
                     
                     # 格式化輸出（移除 emoji）
                     event_list = []
@@ -1335,7 +1335,7 @@ def manage_calendar_workflow(
                 if result.get("status") == "ok":
                     info_log(f"[ManageCalendar] 已更新事件 ID: {event_id}")
                     return StepResult.complete_workflow(
-                        f"✅ 已更新事件 ID: {event_id}",
+                        f"Calendar event updated successfully (ID: {event_id})",
                         {"event_id": event_id, "update_fields": update_fields}
                     )
                 else:
@@ -1351,7 +1351,7 @@ def manage_calendar_workflow(
                 if result.get("status") == "ok":
                     info_log(f"[ManageCalendar] 已刪除事件 ID: {event_id}")
                     return StepResult.complete_workflow(
-                        f"🗑️ 已刪除事件 ID: {event_id}",
+                        f"Calendar event deleted successfully (ID: {event_id})",
                         {"event_id": event_id}
                     )
                 else:

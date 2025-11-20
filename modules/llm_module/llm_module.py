@@ -31,6 +31,8 @@ from .prompt_manager import PromptManager
 from .learning_engine import LearningEngine
 from .cache_manager import cache_manager, CacheType
 from .mcp_client import MCPClient
+from .mcp_client import MCPManager
+from .core import SessionController, ContextManager
 from .module_interfaces import (
     state_aware_interface, CollaborationChannel, set_collaboration_state
 )
@@ -69,6 +71,15 @@ class LLMModule(BaseModule):
         # MCP 客戶端 (用於與 SYS 模組的 MCP Server 通訊)
         # ✅ 傳遞 self 以便 MCP Client 可以獲取當前會話信息
         self.mcp_client = MCPClient(llm_module=self)
+        
+        # MCP 管理器 (封裝 MCP 工具獲取和管理邏輯)
+        self.mcp_manager = MCPManager(self.mcp_client)
+        
+        # 會話控制器 (封裝會話結束判斷和控制邏輯)
+        self.session_controller = SessionController()
+        
+        # 上下文管理器 (封裝系統上下文、會話信息、身份信息獲取)
+        self.context_manager = ContextManager(self)
         
         # ✅ 初始化 workflow 子模組組件
         self.workflow_event_handler = WorkflowEventHandler(self)
@@ -200,7 +211,7 @@ class LLMModule(BaseModule):
             if not hasattr(self, '_pending_interactive_prompts') or not self._pending_interactive_prompts:
                 return
             
-            current_gs = self._get_current_gs_id()
+            current_gs = self.context_manager.get_current_gs_id()
             
             # 處理所有待處理的提示（只處理當前 cycle 的）
             prompts_to_process = []
@@ -549,7 +560,7 @@ class LLMModule(BaseModule):
         Args:
             mcp_server: SYS 模組的 MCP Server 實例
         """
-        self.mcp_client.set_mcp_server(mcp_server)
+        self.mcp_manager.set_mcp_server(mcp_server)
         info_log("[LLM] MCP Server 已設置，MCP 工具功能已啟用")
         debug_log(2, f"[LLM] 可用的 MCP 工具: {len(self.mcp_client.get_tools_for_llm())} 個")
     
@@ -588,8 +599,8 @@ class LLMModule(BaseModule):
             
             # 🔧 在處理開始時獲取並保存 session_id 和 cycle_index
             # 避免在事件發布時動態讀取導致cycle已遞增的問題
-            self._current_processing_session_id = self._get_current_gs_id()
-            self._current_processing_cycle_index = self._get_current_cycle_index()
+            self._current_processing_session_id = self.context_manager.get_current_gs_id()
+            self._current_processing_cycle_index = self.context_manager.get_current_cycle_index()
             debug_log(3, f"[LLM] 記錄處理上下文: session={self._current_processing_session_id}, cycle={self._current_processing_cycle_index}")
             
             # 檢查是否來自新 Router
@@ -649,10 +660,10 @@ class LLMModule(BaseModule):
             # 1.1 更新協作管道（確保與系統狀態同步）
             self._update_collaboration_channels(current_state)
             
-            status = self._get_current_system_status()
-            # 🔧 如果有工作流會話ID，傳遞給 _get_current_session_info
+            status = self.context_manager.get_current_system_status()
+            # 🔧 如果有工作流會話ID，傳遞給 get_current_session_info
             workflow_session_id = getattr(llm_input, 'workflow_session_id', None)
-            self.session_info = self._get_current_session_info(workflow_session_id)
+            self.session_info = self.context_manager.get_current_session_info(workflow_session_id)
             
             # 1.2 會話架構檢查 - LLM 不應該在沒有適當會話的情況下運作
             from core.sessions.session_manager import session_manager
@@ -671,7 +682,7 @@ class LLMModule(BaseModule):
                 identity_context = llm_input.identity_context
                 debug_log(2, f"[LLM] 使用Router提供的Identity上下文: {identity_context}")
             else:
-                identity_context = self._get_identity_context()
+                identity_context = self.context_manager.get_identity_context()
                 debug_log(2, f"[LLM] 使用本地Identity上下文: {identity_context}")
             
             debug_log(2, f"[LLM] 系統狀態: {current_state}")
@@ -679,7 +690,7 @@ class LLMModule(BaseModule):
             debug_log(2, f"[LLM] 會話信息: {self.session_info}")
             
             # 3. 補充系統上下文到llm_input (整合Router數據)
-            llm_input = self._enrich_with_system_context(
+            llm_input = self.context_manager.enrich_with_system_context(
                 llm_input, current_state, status, self.session_info, identity_context
             )
             
@@ -908,7 +919,7 @@ class LLMModule(BaseModule):
                 )
             
             # 5. 處理會話控制建議
-            session_control_result = self._process_session_control(
+            session_control_result = self.session_controller.process_session_control(
                 response_data, "CHAT", llm_input
             )
             
@@ -1509,15 +1520,13 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                     working_context_manager.set_context_data("workflow_hint", None)
                     debug_log(2, f"[LLM] 已清除 workflow_hint（僅使用一次）")
             
-            # ✅ 檢查是否有 MCP Server 可用
+            # ✅ 使用 MCPManager 獲取工具
             # ⚠️ 關鍵修復：當 workflow_step_response 時，不提供 MCP 工具（避免 LLM 調用工具而不返回文本）
-            is_step_response = pending_workflow and pending_workflow.get('type') == 'workflow_step_response'
-            mcp_tools = None
-            if self.mcp_client and hasattr(self.mcp_client, 'get_tools_as_gemini_format') and not is_step_response:
-                mcp_tools = self.mcp_client.get_tools_as_gemini_format()
-                debug_log(2, f"[LLM] MCP 工具已準備: {len(mcp_tools) if mcp_tools else 0} 個")
-            elif is_step_response:
-                debug_log(2, "[LLM] 步驟回應模式：不提供 MCP 工具（避免 LLM 調用工具）")
+            is_step_response = bool(pending_workflow and pending_workflow.get('type') == 'workflow_step_response')
+            mcp_tools = self.mcp_manager.get_tools_for_workflow(
+                is_step_response=is_step_response,
+                suppress_tools=False
+            )
             
             # 構建 WORK 提示
             prompt = self.prompt_manager.build_work_prompt(
@@ -1538,13 +1547,12 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                 debug_log(3, f"[LLM] Prompt 總長度: {len(prompt)} 字符")
                 debug_log(3, f"[LLM] Prompt 前 500 字符:\n{prompt[:500]}...")
             
-            # ✅ 呼叫 Gemini API (使用 MCP tools 進行 function calling)
-            # 🔧 使用 AUTO 模式：讓 LLM 根據情況自主決定是否調用工具
-            # - 有 MCP 工具可用時，LLM 可以選擇調用或直接回應
-            # - 沒有 MCP 工具時，只能生成文本回應
-            # - 避免使用 ANY 強制調用（會在沒有明確指引時導致錯誤）
-            tool_choice = "AUTO"
-            debug_log(2, f"[LLM] Function calling 模式: {tool_choice} (has_active_workflow={has_active_workflow}, is_reviewing_step={is_reviewing_step}, has_tools={mcp_tools is not None})")
+            # ✅ 使用 MCPManager 決定 tool_choice 模式
+            tool_choice = self.mcp_manager.determine_tool_choice(
+                has_mcp_tools=bool(mcp_tools),
+                has_active_workflow=bool(has_active_workflow),
+                is_reviewing_step=bool(is_reviewing_step)
+            )
             
             response_data = self.model.query(
                 prompt, 
@@ -1955,7 +1963,7 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                 )
             
             # 6. 處理會話控制建議
-            session_control_result = self._process_session_control(
+            session_control_result = self.session_controller.process_session_control(
                 response_data, "WORK", llm_input
             )
             
@@ -2052,20 +2060,6 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                 mood="neutral",
                 metadata={"legacy_intent": legacy_intent}
             )
-    
-    def _analyze_system_action(self, response_text: str, workflow_context: Optional[Dict[str, Any]]) -> Optional["SystemAction"]:
-        """
-        [DEPRECATED] 分析回應文本是否需要系統動作
-        
-        注意：此方法已廢棄。根據 U.E.P 架構設計：
-        1. 意圖分析應該在 NLP 模組階段完成
-        2. LLM 在 WORK 模式下應該從 Gemini 結構化回應中獲取系統動作
-        3. 不應該重複分析文本來判斷系統功能需求
-        
-        此方法保留僅用於向後兼容，建議移除對此方法的調用。
-        """
-        debug_log(3, "[LLM] 警告：使用了已廢棄的 _analyze_system_action 方法")
-        return None
     
     def _on_status_update(self, status_type: str, old_value: float, new_value: float, reason: str = ""):
         """StatusManager 狀態更新回調"""
@@ -2189,239 +2183,10 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
         except Exception as e:
             error_log(f"[LLM] 處理StatusManager更新時出錯: {e}")
     
-    def _get_current_system_status(self) -> Dict[str, Any]:
-        """獲取當前系統狀態"""
-        try:
-            # 🔧 添加 None 檢查，防止 'NoneType' object is not subscriptable 錯誤
-            status_dict = self.status_manager.get_status_dict()
-            if status_dict is None:
-                debug_log(1, "[LLM] status_manager.get_status_dict() 返回 None，使用預設值")
-                status_dict = {}
-            
-            personality_modifiers = self.status_manager.get_personality_modifiers()
-            if personality_modifiers is None:
-                debug_log(1, "[LLM] status_manager.get_personality_modifiers() 返回 None，使用預設值")
-                personality_modifiers = {}
-            
-            return {
-                "status_values": status_dict,
-                "personality_modifiers": personality_modifiers,
-                "system_mode": self.state_manager.get_current_state().value
-            }
-        except Exception as e:
-            error_log(f"[LLM] 獲取系統狀態失敗: {e}")
-            return {"error": str(e)}
-    
-    def _get_current_gs_id(self) -> str:
-        """
-        獲取當前 General Session ID
-        從 working_context 的全局數據中讀取 (由 SystemLoop 設置)
-        
-        Returns:
-            str: 當前 GS ID,如果無法獲取則返回 'unknown'
-        """
-        try:
-            from core.working_context import working_context_manager
-            gs_id = working_context_manager.global_context_data.get('current_gs_id', 'unknown')
-            return gs_id
-        except Exception as e:
-            error_log(f"[LLM] 獲取 GS ID 失敗: {e}")
-            return 'unknown'
-    
-    def _get_current_cycle_index(self) -> int:
-        """
-        獲取當前循環計數
-        從 working_context 的全局數據中讀取 (由 Controller 在 GS 創建時設置)
-        
-        Returns:
-            int: 當前 cycle_index,如果無法獲取則返回 0（假設為第一個 cycle）
-        """
-        try:
-            from core.working_context import working_context_manager
-            cycle_index = working_context_manager.global_context_data.get('current_cycle_index', 0)
-            return cycle_index
-        except Exception as e:
-            error_log(f"[LLM] 獲取 cycle_index 失敗: {e}")
-            return 0
-    
-    def _get_current_session_info(self, workflow_session_id: Optional[str] = None) -> Dict[str, Any]:
-        """獲取當前會話信息 - 優先獲取 CS 或 WS（LLM 作為邏輯中樞的執行會話）
-        
-        Args:
-            workflow_session_id: 可選的指定工作流會話ID，如果提供則優先返回該會話的信息
-        """
-        try:
-            # 從統一會話管理器獲取會話信息
-            from core.sessions.session_manager import session_manager
-            
-            # 如果指定了 workflow_session_id，優先獲取該特定會話
-            if workflow_session_id:
-                current_ws = session_manager.get_workflow_session(workflow_session_id)
-                if current_ws:
-                    debug_log(2, f"[LLM] 使用指定的工作流會話: {workflow_session_id}")
-                    return {
-                        "session_id": workflow_session_id,
-                        "session_type": "workflow",
-                        "start_time": getattr(current_ws, 'start_time', None),
-                        "interaction_count": getattr(current_ws, 'step_count', 0),
-                        "last_activity": getattr(current_ws, 'last_activity', None),
-                        "active_session_type": "WS"
-                    }
-            
-            # LLM 在 CHAT 狀態時應該獲取當前 CS
-            active_cs_ids = session_manager.get_active_chatting_session_ids()
-            if active_cs_ids:
-                # 在架構下，同一時間只會有一個 CS 執行中
-                current_cs_id = active_cs_ids[0]
-                current_cs = session_manager.get_chatting_session(current_cs_id)
-                
-                if current_cs:
-                    return {
-                        "session_id": current_cs_id,
-                        "session_type": "chatting",
-                        "start_time": getattr(current_cs, 'start_time', None),
-                        "interaction_count": getattr(current_cs, 'turn_count', 0),
-                        "last_activity": getattr(current_cs, 'last_activity', None),
-                        "active_session_type": "CS"
-                    }
-            
-            # LLM 在 WORK 狀態時應該獲取當前 WS
-            active_ws_ids = session_manager.get_active_workflow_session_ids()
-            if active_ws_ids:
-                # 在架構下，同一時間只會有一個 WS 執行中
-                current_ws_id = active_ws_ids[0]
-                current_ws = session_manager.get_workflow_session(current_ws_id)
-                
-                if current_ws:
-                    return {
-                        "session_id": current_ws_id,
-                        "session_type": "workflow",
-                        "start_time": getattr(current_ws, 'start_time', None),
-                        "interaction_count": getattr(current_ws, 'step_count', 0),
-                        "last_activity": getattr(current_ws, 'last_activity', None),
-                        "active_session_type": "WS"
-                    }
-            
-            # 如果沒有 CS 或 WS，可能系統處於 IDLE 狀態或其他狀態
-            return {
-                "session_id": "no_active_session", 
-                "session_type": "idle",
-                "start_time": None,
-                "interaction_count": 0,
-                "last_activity": None,
-                "active_session_type": "NONE"
-            }
-            
-        except Exception as e:
-            error_log(f"[LLM] 獲取會話信息失敗: {e}")
-            return {
-                "session_id": "error", 
-                "session_type": "error",
-                "active_session_type": "ERROR"
-            }
-    
-    def _get_identity_context(self) -> Dict[str, Any]:
-        """從Working Context獲取Identity信息，對通用身份採用預設處理"""
-        try:
-            # 使用正確的方法獲取當前身份
-            identity_data = working_context_manager.get_current_identity()
-            
-            if not identity_data:
-                debug_log(2, "[LLM] 沒有設置身份信息，使用預設值")
-                return {
-                    "identity": {
-                        "name": "default_user",
-                        "traits": {}
-                    },
-                    "preferences": {}
-                }
-            
-            # 檢查是否為通用身份
-            identity_status = identity_data.get("status", "unknown")
-            if identity_status == "temporary":
-                debug_log(2, "[LLM] 檢測到通用身份，使用基本設置")
-                return {
-                    "identity": {
-                        "name": "用戶",
-                        "traits": {},
-                        "status": "temporary"
-                    },
-                    "preferences": {}  # 通用身份不使用特殊偏好
-                }
-            
-            # 正式身份使用完整資料
-            return {
-                "identity": {
-                    "name": identity_data.get("user_identity", identity_data.get("identity_id", "default_user")),
-                    "traits": identity_data.get("traits", {}),
-                    "status": identity_status
-                },
-                "preferences": identity_data.get("conversation_preferences", {})
-            }
-        except Exception as e:
-            error_log(f"[LLM] 獲取Identity上下文失敗: {e}")
-            return {}
-    
-    def _enrich_with_system_context(self, 
-                                  llm_input: LLMInput,
-                                  current_state: Any,
-                                  status: Dict[str, Any],
-                                  session_info: Dict[str, Any],
-                                  identity_context: Dict[str, Any]) -> LLMInput:
-        """補充系統上下文到LLM輸入 - 支援新 Router 整合"""
-        try:
-            # 創建新的enriched input
-            enriched_data = llm_input.dict()
-            
-            # 補充系統上下文
-            if not enriched_data.get("system_context"):
-                enriched_data["system_context"] = {}
-            
-            enriched_data["system_context"].update({
-                "current_state": current_state.value if hasattr(current_state, 'value') else str(current_state),
-                "status_manager": status,
-                "session_info": session_info
-            })
-            
-            # 補充身份上下文 (不覆蓋Router提供的)
-            if not enriched_data.get("identity_context"):
-                enriched_data["identity_context"] = {}
-            # 只在沒有Router數據時補充本地身份上下文
-            if not llm_input.source_layer:
-                enriched_data["identity_context"].update(identity_context)
-            
-            # 處理新Router提供的協作上下文
-            if llm_input.collaboration_context:
-                debug_log(2, f"[LLM] 處理協作上下文: {list(llm_input.collaboration_context.keys())}")
-                
-                # 設置記憶檢索標誌
-                if "mem" in llm_input.collaboration_context:
-                    enriched_data["enable_memory_retrieval"] = True
-                    mem_config = llm_input.collaboration_context["mem"]
-                    if mem_config.get("retrieve_relevant"):
-                        enriched_data["memory_context"] = "協作模式：需要檢索相關記憶"
-                
-                # 設置系統動作標誌
-                if "sys" in llm_input.collaboration_context:
-                    enriched_data["enable_system_actions"] = True
-                    sys_config = llm_input.collaboration_context["sys"]
-                    if sys_config.get("allow_execution"):
-                        enriched_data["workflow_context"] = {"execution_allowed": True}
-            
-            # 處理Router的會話上下文
-            if llm_input.session_context:
-                enriched_data["session_id"] = llm_input.session_context.get("session_id")
-                enriched_data["system_context"]["router_session"] = llm_input.session_context
-            
-            # 處理NLP實體信息
-            if llm_input.entities:
-                enriched_data["system_context"]["nlp_entities"] = llm_input.entities
-            
-            return LLMInput(**enriched_data)
-            
-        except Exception as e:
-            error_log(f"[LLM] 補充系統上下文失敗: {e}")
-            return llm_input
+    # ===== 上下文管理方法已移至 ContextManager =====
+    # _get_current_system_status, _get_current_gs_id, _get_current_cycle_index
+    # _get_current_session_info, _get_identity_context, _enrich_with_system_context
+    # 已移至 modules/llm_module/core/context_manager.py
     
     def _process_chat_memory_operations(self, 
                                       llm_input: LLMInput,
@@ -2723,63 +2488,6 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             error_log(f"[LLM] 格式化功能列表失敗: {e}")
             return "功能列表格式化失敗，無法提供系統功能信息。"
     
-    def _process_session_control(self, response_data: Dict[str, Any], mode: str, llm_input: "LLMInput") -> Optional[Dict[str, Any]]:
-        """處理會話控制建議 - LLM 決定會話是否應該結束"""
-        try:
-            session_control = response_data.get("session_control")
-            if not session_control:
-                return None
-            
-            should_end = session_control.get("should_end_session", False)
-            end_reason = session_control.get("end_reason", "unknown")
-            confidence = session_control.get("confidence", 0.5)
-            
-            if should_end and confidence >= 0.7:  # 只在高信心度時結束會話
-                debug_log(1, f"[LLM] 會話結束建議: {mode} 模式 - 原因: {end_reason} (信心度: {confidence:.2f})")
-                
-                # 通知 session manager 結束當前會話
-                self._request_session_end(mode, end_reason, confidence, llm_input)
-                
-                return {
-                    "session_ended": True,
-                    "reason": end_reason,
-                    "confidence": confidence
-                }
-            elif should_end:
-                debug_log(2, f"[LLM] 會話結束建議信心度不足: {confidence:.2f} < 0.7")
-                
-            return None
-            
-        except Exception as e:
-            error_log(f"[LLM] 處理會話控制失敗: {e}")
-            return None
-    
-    def _request_session_end(self, mode: str, reason: str, confidence: float, llm_input: "LLMInput") -> None:
-        """標記會話待結束 - 由 ModuleCoordinator 的雙條件機制處理實際結束"""
-        try:
-            # ✅ 架構正確性：LLM 通過 session_control 建議結束
-            # ModuleCoordinator 檢測到後標記 pending_end
-            # Controller 會在 CYCLE_COMPLETED 時檢查並執行結束
-            # 這確保：
-            # 1. LLM 回應能完整生成並輸出
-            # 2. TTS 能完成語音合成
-            # 3. 所有去重鍵能正確清理
-            # 4. 會話在循環邊界乾淨地結束
-            
-            # session_control 已在回應中設置，ModuleCoordinator 會檢測並標記
-            debug_log(1, f"[LLM] 📋 會話結束請求已通過 session_control 發送: {reason} (mode={mode}, confidence={confidence:.2f})")
-            
-            if mode == "CHAT":
-                debug_log(1, f"[LLM] 🔚 標記 CS 待結束 (原因: {reason}, 信心度: {confidence:.2f})")
-                debug_log(2, f"[LLM] session_control 已設置，等待循環完成後由 ModuleCoordinator 處理")
-                        
-            elif mode == "WORK":
-                debug_log(1, f"[LLM] 🔚 標記 WS 待結束 (原因: {reason}, 信心度: {confidence:.2f})")
-                debug_log(2, f"[LLM] session_control 已設置，等待循環完成後由 ModuleCoordinator 處理")
-            
-        except Exception as e:
-            error_log(f"[LLM] 標記會話結束失敗: {e}")
-    
     def _send_to_sys_module(self, sys_actions: List[Dict[str, Any]], workflow_context: Optional[Dict[str, Any]]) -> None:
         """向SYS模組發送系統動作 - 通過狀態感知接口"""
         try:
@@ -2944,8 +2652,8 @@ U.E.P 系統可用功能規格：
             # 從 working_context 獲取 session_id 和 cycle_index
             # 🔧 使用處理開始時保存的 session_id 和 cycle_index
             # 而不是動態讀取，避免 SystemLoop 已遞增 cycle_index 導致的不一致
-            session_id = getattr(self, '_current_processing_session_id', self._get_current_gs_id())
-            cycle_index = getattr(self, '_current_processing_cycle_index', self._get_current_cycle_index())
+            session_id = getattr(self, '_current_processing_session_id', self.context_manager.get_current_gs_id())
+            cycle_index = getattr(self, '_current_processing_cycle_index', self.context_manager.get_current_cycle_index())
             
             debug_log(3, f"[LLM] 發布事件使用: session={session_id}, cycle={cycle_index}")
             

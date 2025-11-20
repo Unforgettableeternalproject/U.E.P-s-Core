@@ -143,10 +143,10 @@ def create_get_weather_workflow(session: WorkflowSession) -> WorkflowEngine:
             if result.get("humidity"):
                 weather_parts.append(f"濕度: {result['humidity']}")
             
-            weather_info = " | ".join(weather_parts) if weather_parts else result.get("raw_text", "無天氣資訊")
+            weather_info = " | ".join(weather_parts) if weather_parts else result.get("raw_text", "No weather data available")
             
             return StepResult.complete_workflow(
-                f"{result['location']} 的天氣：{weather_info}",
+                f"Weather in {result['location']}: {weather_info}",
                 {
                     "location": result["location"],
                     "weather_info": weather_info,
@@ -154,7 +154,7 @@ def create_get_weather_workflow(session: WorkflowSession) -> WorkflowEngine:
                 }
             )
         else:
-            return StepResult.failure(f"查詢失敗：無法取得 {location} 的天氣資訊")
+            return StepResult.failure(f"Query failed: Unable to retrieve weather information for {location}")
     
     weather_query_step = StepTemplate.create_processing_step(
         session=session,

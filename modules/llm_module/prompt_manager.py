@@ -153,11 +153,15 @@ class PromptManager:
             # 沒有活躍工作流：提供基本指引
             basic_guidance = (
                 "\n**Instructions:**\n"
-                "You have access to MCP tools (see function declarations) to help with tasks.\n"
-                "- If the user's request requires a specific action (file operations, information lookup, etc.), "
-                "use the appropriate tool by calling the corresponding function\n"
-                "- If you just need to respond conversationally, provide a text response without calling any tools\n"
-                "- The tools have detailed descriptions - choose the most appropriate one for the task\n"
+                "You have access to MCP tools (see function declarations) to help with user tasks.\n"
+                "**IMPORTANT**: When the user requests an action that matches a tool's purpose, ALWAYS call that tool first.\n"
+                "Examples of when to call tools:\n"
+                "- File operations (manage_files_and_folders, archive_files)\n"
+                "- Calendar/schedule tasks (manage_calendar)\n"
+                "- Todo/task management (manage_todo)\n"
+                "- Any action that requires system operations\n\n"
+                "**Do NOT ask for more information if the user's intent is clear** - start the appropriate workflow and let it guide the user through any needed inputs.\n"
+                "Only provide a conversational response (without calling tools) if the user is asking a general question or having casual chat.\n"
             )
             prompt_parts.append(basic_guidance)
         elif suppress_start_workflow_instruction and workflow_context:

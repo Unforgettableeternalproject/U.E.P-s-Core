@@ -23,6 +23,7 @@ logging:
   log_level: DEBUG
   log_dir: logs
   enable_split_logs: false
+  enable_console_output: false  # 控制是否將日誌輸出到終端（測試時建議關閉）
 debug:
   enabled: true
   debug_level: 3

@@ -1940,6 +1940,14 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             elif is_step_response:
                 debug_log(2, "[LLM] 步驟回應模式：不提供 MCP 工具（避免 LLM 調用工具）")
             
+            # 🔧 決定 tool_choice 模式（在構建 prompt 之前）
+            if not has_active_workflow and not is_reviewing_step and mcp_tools:
+                tool_choice = "ANY"  # 強制調用工具（新請求應該啟動工作流）
+                force_tool_use = True
+            else:
+                tool_choice = "AUTO"  # 自動決定（可能需要繼續工作流或只是回應）
+                force_tool_use = False
+            
             # 構建 WORK 提示
             prompt = self.prompt_manager.build_work_prompt(
                 user_input=llm_input.text,
@@ -1948,7 +1956,8 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                 identity_context=llm_input.identity_context,
                 workflow_hint=workflow_hint,  # 只在不是審核步驟時使用 hint
                 use_mcp_tools=True if mcp_tools else False,
-                suppress_start_workflow_instruction=bool(has_active_workflow or is_reviewing_step)  # ✅ 已有工作流時抑制啟動指示
+                suppress_start_workflow_instruction=bool(has_active_workflow or is_reviewing_step),  # ✅ 已有工作流時抑制啟動指示
+                force_tool_use=force_tool_use  # 🔧 傳遞是否強制調用工具
             )
             
             # 獲取或創建任務快取
@@ -1960,11 +1969,7 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                 debug_log(3, f"[LLM] Prompt 前 500 字符:\n{prompt[:500]}...")
             
             # ✅ 呼叫 Gemini API (使用 MCP tools 進行 function calling)
-            # 🔧 使用 AUTO 模式：讓 LLM 根據情況自主決定是否調用工具
-            # - 有 MCP 工具可用時，LLM 可以選擇調用或直接回應
-            # - 沒有 MCP 工具時，只能生成文本回應
-            # - 避免使用 ANY 強制調用（會在沒有明確指引時導致錯誤）
-            tool_choice = "AUTO"
+            # tool_choice 已在構建 prompt 時決定
             debug_log(2, f"[LLM] Function calling 模式: {tool_choice} (has_active_workflow={has_active_workflow}, is_reviewing_step={is_reviewing_step}, has_tools={mcp_tools is not None})")
             
             response_data = self.model.query(

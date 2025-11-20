@@ -9,6 +9,7 @@ import inspect
 _config = load_config()
 conf = _config.get("logging", {})
 enabled = conf.get("enabled", True)
+ENABLE_CONSOLE_OUTPUT = conf.get("enable_console_output", True)  # 控制終端輸出
 
 def should_write_file_logs():
     """檢查當前調用堆疊，只有在真正的系統運行時才寫入文件日誌"""
@@ -218,12 +219,13 @@ else:
     for handler in list(logger.handlers):
         logger.removeHandler(handler)
 
-    # 添加控制台處理程序
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(console_formatter)
-    # 確保控制台也能顯示 DEBUG 訊息
-    stream_handler.setLevel(logging.DEBUG)
-    logger.addHandler(stream_handler)
+    # 添加控制台處理程序（根據配置決定是否啟用）
+    if ENABLE_CONSOLE_OUTPUT:
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(console_formatter)
+        # 確保控制台也能顯示 DEBUG 訊息
+        stream_handler.setLevel(logging.DEBUG)
+        logger.addHandler(stream_handler)
 
     # 文件日誌處理器變數
     _file_handlers_added = False

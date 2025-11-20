@@ -1846,3 +1846,15 @@
 
 ---
 
+### Fixed some issue regarding function calling, and added a config to reduce terminal logging. 11/21
+
+> Date: Fri, 21 Nov 2025 02:36:12 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `4d2ab4bf62cef0d5c2c91f83c4af4d9217b9b775`
+
+---
+

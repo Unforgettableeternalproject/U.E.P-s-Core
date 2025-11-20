@@ -95,11 +95,13 @@ class PromptManager:
                          identity_context: Optional[Dict] = None,
                          workflow_hint: Optional[str] = None,
                          use_mcp_tools: bool = False,
-                         suppress_start_workflow_instruction: bool = False) -> str:
+                         suppress_start_workflow_instruction: bool = False,
+                         force_tool_use: bool = False) -> str:
         """構建工作模式提示詞 - 整合系統功能與工作流上下文
         
         Args:
             suppress_start_workflow_instruction: 當已有工作流運行時，抑制「立即啟動工作流」的強制指示
+            force_tool_use: 當 tool_choice=ANY 時為 True，需要強制調用工具
         """
         
         prompt_parts = []
@@ -148,18 +150,30 @@ class PromptManager:
         prompt_parts.append(request_section)
         
         # 工作模式指引
-        # 提供基本指引，讓 LLM 知道何時該使用工具
+        # 根據 tool_choice 模式提供不同的指引
         if not suppress_start_workflow_instruction and use_mcp_tools:
-            # 沒有活躍工作流：提供基本指引
-            basic_guidance = (
-                "\n**Instructions:**\n"
-                "You have access to MCP tools (see function declarations) to help with tasks.\n"
-                "- If the user's request requires a specific action (file operations, information lookup, etc.), "
-                "use the appropriate tool by calling the corresponding function\n"
-                "- If you just need to respond conversationally, provide a text response without calling any tools\n"
-                "- The tools have detailed descriptions - choose the most appropriate one for the task\n"
-            )
-            prompt_parts.append(basic_guidance)
+            if force_tool_use:
+                # tool_choice=ANY：強制調用工具
+                mandatory_guidance = (
+                    "\n**IMPORTANT - Tool Usage Required:**\n"
+                    "You MUST call one of the available MCP tools to handle this request.\n"
+                    "- Analyze the user's request: '{}'\n"
+                    "- Select the most appropriate tool from the function declarations\n"
+                    "- Call the tool with the correct parameters\n"
+                    "- DO NOT provide a text-only response\n"
+                ).format(user_input[:100])
+                prompt_parts.append(mandatory_guidance)
+            else:
+                # tool_choice=AUTO：LLM 自行決定
+                basic_guidance = (
+                    "\n**Instructions:**\n"
+                    "You have access to MCP tools (see function declarations) to help with tasks.\n"
+                    "- If the user's request requires a specific action (file operations, information lookup, etc.), "
+                    "use the appropriate tool by calling the corresponding function\n"
+                    "- If you just need to respond conversationally, provide a text response without calling any tools\n"
+                    "- The tools have detailed descriptions - choose the most appropriate one for the task\n"
+                )
+                prompt_parts.append(basic_guidance)
         elif suppress_start_workflow_instruction and workflow_context:
             # 已有工作流運行，提供上下文相關指引
             is_step_response = workflow_context.get('type') == 'workflow_step_response'

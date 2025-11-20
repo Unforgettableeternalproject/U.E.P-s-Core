@@ -46,6 +46,7 @@ class WSTaskType(Enum):
     WORKFLOW_AUTOMATION = "workflow_automation"
     MODULE_INTEGRATION = "module_integration"
     CUSTOM_TASK = "custom_task"
+    SYSTEM_NOTIFICATION = "system_notification"
 
 
 class TaskStep:

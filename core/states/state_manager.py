@@ -3,8 +3,9 @@ from enum import Enum, auto
 from typing import Dict, Any, Optional, List, Callable
 import time
 from core.status_manager import status_manager
-from utils.debug_helper import debug_log
+from utils.debug_helper import debug_log, info_log, error_log
 from core.working_context import ContextType
+from core.sessions.workflow_session import WSTaskType
 
 class UEPState(Enum):
     IDLE      = "idle"  # 閒置
@@ -204,17 +205,25 @@ class StateManager:
             
             queue_callback = (context or {}).get("state_queue_callback")
             
-            # 從上下文獲取工作流程信息（預設使用工作流自動化）
-            workflow_type = "workflow_automation"
+            # 從上下文獲取工作流程信息
+            workflow_type = None if context is None else context.get("workflow_type", "workflow_automation")
             command_text = "unknown command"
+            is_system_report = (context or {}).get("system_report", False)
             
             if context:
-                workflow_type = context.get("workflow_type", workflow_type)
                 # ✅ 從 NLP 分段提取的對應狀態文本
-                command_text = context.get("text", command_text)
+                command_text = context.get("text", context.get("command", command_text))
             
             # ✅ 確保 GS 存在（由 Controller 管理）
             self._ensure_gs_exists()
+            
+            # 檢查是否為系統匯報模式（不需要工作流引擎，但仍需要 WS）
+            if is_system_report:
+                info_log(f"[StateManager] WORK 狀態（系統匯報模式）：創建 WS 但不啟動工作流引擎")
+                debug_log(3, f"[StateManager] 系統匯報內容: {command_text[:100]}...")
+                
+                # 使用枚舉來標記這是系統通知
+                workflow_type = WSTaskType.SYSTEM_NOTIFICATION.value
             
             # 獲取現有的 General Session - 如果不存在則為架構錯誤
             current_gs = session_manager.get_current_general_session()
@@ -239,9 +248,15 @@ class StateManager:
             if ws_id:
                 self._current_session_id = ws_id
                 debug_log(2, f"[StateManager] 創建工作會話成功: {ws_id} (類型: {workflow_type})")
-                # ✅ 不在創建時呼叫 callback，等待 session_ended 事件
-                # StateQueue 會通過 _on_session_ended 收到完成通知
-                debug_log(2, "[StateManager] WS 已創建，等待工作流程完成...")
+                
+                # 🔑 系統通知：WS 已創建，直接觸發處理層（跳過輸入層）
+                if workflow_type == WSTaskType.SYSTEM_NOTIFICATION.value:
+                    info_log(f"[StateManager] 系統通知 WS 已創建，直接觸發處理層")
+                    self._trigger_system_report_processing(command_text, context)
+                    # 系統通知的 WS 在處理完成後會自動結束，不需要等待工作流
+                else:
+                    # 正常工作流：等待工作流程完成
+                    debug_log(2, "[StateManager] WS 已創建，等待工作流程完成...")
             else:
                 debug_log(1, "[StateManager] 創建工作會話失敗")
                 # ❌ 創建失敗時才呼叫 callback 報告錯誤
@@ -254,6 +269,49 @@ class StateManager:
             raise
         except Exception as e:
             debug_log(1, f"[StateManager] 創建工作會話時發生錯誤: {e}")
+    
+    def _trigger_system_report_processing(self, content: str, context: Dict[str, Any]):
+        """直接觸發系統報告的處理層處理（跳過輸入層）
+        
+        系統報告不需要經過輸入層（STT/NLP），直接構建處理層輸入並調用
+        """
+        try:
+            from core.module_coordinator import module_coordinator, ProcessingLayer
+            
+            info_log("[StateManager] 🚀 系統報告：直接觸發處理層")
+            
+            # 構建處理層輸入（模擬輸入層完成的格式）
+            processing_input = {
+                "text": content,
+                "system_report": True,  # 標記為系統報告
+                "system_initiated": True,
+                "notification_type": context.get("notification_type", "unknown"),
+                "metadata": context,
+                "cycle_index": 0,
+                # 模擬 NLP 結果（系統報告不需要意圖分析）
+                "nlp_result": {
+                    "primary_intent": "work",  # 系統報告視為 WORK 路徑
+                    "overall_confidence": 1.0,
+                    "segments": []
+                }
+            }
+            
+            # 直接調用 ModuleCoordinator 的處理層處理
+            # 注意：使用 INPUT 層完成來觸發處理層轉換
+            success = module_coordinator.handle_layer_completion(
+                layer=ProcessingLayer.INPUT,  # 模擬輸入層完成
+                completion_data=processing_input  # 參數名稱是 completion_data
+            )
+            
+            if success:
+                info_log("[StateManager] ✅ 系統報告處理層已觸發")
+            else:
+                error_log("[StateManager] ❌ 系統報告處理層觸發失敗")
+                
+        except Exception as e:
+            error_log(f"[StateManager] 觸發系統報告處理層失敗: {e}")
+            import traceback
+            error_log(traceback.format_exc())
     
     def _ensure_gs_exists(self):
         """確保 GS 存在，如果不存在則通知 Controller 創建"""

@@ -35,6 +35,7 @@ class WorkflowType(Enum):
     TASK_AUTOMATION = "task_automation"
     SYSTEM_CONFIG = "system_config"
     MULTI_FILE = "multi_file"
+    SYSTEM_NOTIFICATION = "system_notification"
     OTHER = "other"
 
 

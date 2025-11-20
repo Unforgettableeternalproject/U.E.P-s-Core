@@ -98,6 +98,7 @@ class LLMInput(BaseModel):
     # 控制選項
     is_internal: bool = Field(False, description="是否為內部系統調用")
     enable_learning: bool = Field(True, description="是否啟用學習功能")
+    system_report: bool = Field(False, description="是否為系統報告模式（系統主動通知）")
     
     # 新 Router 整合支援
     source_layer: Optional[str] = Field(None, description="來源層級（input/processing/output）")

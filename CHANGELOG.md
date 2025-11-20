@@ -1834,3 +1834,15 @@
 
 ---
 
+### Seemly, the to-do and calendar is tested fine, but there might be some other issues. 11/20
+
+> Date: Thu, 20 Nov 2025 21:37:20 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `d22e62889a62d21a83963eaf2af4537a0a0b0ce6`
+
+---
+

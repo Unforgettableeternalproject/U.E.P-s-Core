@@ -147,97 +147,35 @@ class PromptManager:
         request_section = f"User Request: {user_input}"
         prompt_parts.append(request_section)
         
-        # ✅ 工作模式指引（根據是否使用 MCP tools 而不同）
-        if use_mcp_tools:
-            work_guidance = (
-                "Available Workflows:\n"
-                "- drop_and_read: Read file content (for requests like 'read file', 'show content', 'open file')\n"
-                "- intelligent_archive: Smart file organization (for 'organize', 'archive', 'sort files')\n"
-                "- summarize_tag: Summarize and tag files (for 'summarize', 'tag', 'analyze files')\n"
-                "- translate_document: Translate documents to different languages\n"
-                "- code_analysis: Analyze code files for issues and improvements\n\n"
+        # 工作模式指引
+        # 提供基本指引，讓 LLM 知道何時該使用工具
+        if not suppress_start_workflow_instruction and use_mcp_tools:
+            # 沒有活躍工作流：提供基本指引
+            basic_guidance = (
+                "\n**Instructions:**\n"
+                "You have access to MCP tools (see function declarations) to help with tasks.\n"
+                "- If the user's request requires a specific action (file operations, information lookup, etc.), "
+                "use the appropriate tool by calling the corresponding function\n"
+                "- If you just need to respond conversationally, provide a text response without calling any tools\n"
+                "- The tools have detailed descriptions - choose the most appropriate one for the task\n"
             )
+            prompt_parts.append(basic_guidance)
+        elif suppress_start_workflow_instruction and workflow_context:
+            # 已有工作流運行，提供上下文相關指引
+            is_step_response = workflow_context.get('type') == 'workflow_step_response'
             
-            # ✅ NLP 工作流提示（如果有）- 放在可用工作流之後
-            if workflow_hint:
-                if isinstance(workflow_hint, dict):
-                    workflow_name = workflow_hint.get('workflow_name', 'unknown')
-                    confidence = workflow_hint.get('confidence', 0)
-                    work_guidance += (
-                        f"**NLP Analysis Result:**\n"
-                        f"The system has analyzed the user's request and identified a matching workflow:\n"
-                        f"- Recommended workflow: '{workflow_name}'\n"
-                        f"- Match confidence: {confidence:.2f}\n"
-                        f"- YOU MUST use this workflow name as the 'workflow_type' parameter\n\n"
-                    )
-                elif isinstance(workflow_hint, str):
-                    work_guidance += (
-                        f"**NLP Analysis Result:**\n"
-                        f"- Recommended workflow: '{workflow_hint}'\n"
-                        f"- YOU MUST use this workflow name as the 'workflow_type' parameter\n\n"
-                    )
-                else:
-                    work_guidance += f"**NLP suggests:** {workflow_hint}\n\n"
-            
-            # ✅ 只在沒有活躍工作流時才添加「立即啟動」指示
-            if not suppress_start_workflow_instruction:
-                work_guidance += (
-                    "**CRITICAL INSTRUCTIONS - DO NOT IGNORE:**\n"
-                    "1. YOU MUST IMMEDIATELY call the appropriate workflow tool directly. DO NOT ask for clarification.\n"
-                    "2. Use the SPECIFIC workflow tool (e.g., intelligent_archive, drop_and_read, get_weather) NOT the generic 'start_workflow'\n"
-                    "3. Each workflow tool has detailed parameter extraction guidance - read it carefully\n"
-                    "4. Extract parameters from the user's input as guided by the tool description\n"
-                    "5. Required parameters:\n"
-                    "   - command: Copy the user's original request exactly as provided\n"
-                    "   - initial_data: JSON string with extracted parameters (or empty \"{}\" if none can be extracted)\n"
-                    "6. DO NOT respond with plain text asking for more information\n"
-                    "7. DO NOT say you need information - the workflow will collect missing information interactively AFTER it starts\n\n"
-                    "**REPEAT: You MUST call the specific workflow tool immediately. Do not ask questions first.**\n\n"
-                    "Example:\n"
-                    "User: 'Archive this file to D drive'\n"
-                    "YOU MUST: call intelligent_archive(command='Archive this file to D drive', initial_data='{\"target_dir_input\": \"D:\\\\\"}')"
+            if is_step_response:
+                # 步驟已完成，LLM 應該生成回應
+                work_guidance = (
+                    "\n**Instructions:**\n"
+                    "A workflow step has completed. The step data is provided in the context above.\n"
+                    "Your task:\n"
+                    "1. Read the workflow data from the context\n"
+                    "2. Generate a natural, friendly response in ENGLISH explaining the result to the user\n"
+                    "3. DO NOT call any MCP tools - just provide a text response\n"
+                    "4. The workflow context already contains all the data you need\n"
                 )
-            else:
-                # 已有工作流運行，檢查是否為步驟回應上下文
-                # ✅ 修復：確保 workflow_context 不為 None
-                is_step_response = (workflow_context is not None and 
-                                   workflow_context.get('type') == 'workflow_step_response')
-                
-                if is_step_response:
-                    # ✅ 步驟已完成，LLM 應該生成回應，不要呼叫工具
-                    work_guidance += (
-                        "\n**Instructions:**\n"
-                        "A workflow step has completed. The step data is provided in the context above.\n"
-                        "Your task:\n"
-                        "1. Read the workflow data from the context\n"
-                        "2. Generate a natural, friendly response in ENGLISH explaining the result to the user\n"
-                        "3. DO NOT call any MCP tools (review_step, approve_step, etc.) - just provide a text response\n"
-                        "4. The workflow context already contains all the data you need\n"
-                    )
-                else:
-                    # 工作流正在進行中，等待用戶輸入或系統操作
-                    work_guidance += (
-                        "\n**Instructions:**\n"
-                        "The workflow is currently running. Based on the situation:\n"
-                        "- If you need to check workflow status: use get_workflow_status\n"
-                        "- If the workflow is waiting for user input: provide guidance on what's needed\n"
-                        "- DO NOT call start_workflow again - a workflow is already active\n"
-                    )
-        else:
-            work_guidance = (
-                "Instructions:\n"
-                "1. Analyze the user's request against the Available System Functions above\n"
-                "2. If the request matches a system function:\n"
-                "   - Set sys_action.action to the appropriate action type (start_workflow, execute_function, or provide_options)\n"
-                "   - Set sys_action.target to the exact function name from the list\n"
-                "   - Provide sys_action.reason explaining why this function matches\n"
-                "   - Include any required parameters in sys_action.parameters\n"
-                "3. If the request is unclear or needs more information:\n"
-                "   - Ask for specific clarification in your text response\n"
-                "   - Set sys_action.action to 'provide_options' and sys_action.target to 'clarification'\n"
-                "4. Always provide a helpful text response to the user"
-            )
-        prompt_parts.append(work_guidance)
+                prompt_parts.append(work_guidance)
         
         return "\n\n".join(prompt_parts)
     

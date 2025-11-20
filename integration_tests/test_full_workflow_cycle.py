@@ -821,7 +821,7 @@ class TestFileWorkflowFullCycle:
             working_context_manager.set_context_data("current_file_path", str(test_code))
             
             # 用戶請求分析（不需要指定路徑和焦點）
-            inject_text_to_system("Analyze this code file for general code quality")
+            inject_text_to_system("Analyze this code file for its quality")
             
             # 2. 等待工作流程完成（LLM 處理需要較長時間）
             info_log("[Test] ⏳ 等待工作流程完成（LLM 處理中）...")
@@ -2235,3 +2235,868 @@ class TestBackgroundWorkflowFullCycle:
             
             monitor.cleanup()
             time.sleep(1.0)
+    
+    def test_add_todo_workflow_full_cycle(self, system_components, isolated_gs):
+        """
+        測試完整的待辦事項新增背景工作流
+        
+        流程：
+        1. 使用者輸入：「Add a task to buy groceries tomorrow」
+        2. NLP 判斷意圖：work
+        3. LLM 通過 MCP 調用 add_todo 工具
+        4. SYS 模組啟動 add_todo_workflow 背景工作流
+        5. 工作流寫入資料庫
+        6. 驗證資料已新增
+        """
+        import sqlite3
+        from datetime import datetime
+        from utils.debug_helper import info_log
+        from modules.sys_module.actions.automation_helper import _DB
+        from core.states.state_manager import state_manager, UEPState
+        
+        event_bus = system_components["event_bus"]
+        
+        # 創建工作流程監控器
+        monitor = WorkflowCycleMonitor(event_bus)
+        
+        try:
+            info_log("[Test] 🎯 測試：待辦事項新增背景工作流")
+            
+            # 清空測試資料（買菜任務）
+            conn = sqlite3.connect(_DB)
+            c = conn.cursor()
+            c.execute("DELETE FROM todos WHERE task_name = 'Buy groceries'")
+            conn.commit()
+            conn.close()
+            
+            # 注入用戶輸入
+            inject_text_to_system("Add a task called 'Buy groceries' with high priority")
+            
+            # 等待工作流完成
+            info_log("[Test] ⏳ 等待工作流完成...")
+            result = monitor.wait_for_completion(timeout=90)
+            
+            # 驗證工作流完成
+            assert result["completed"], "Workflow did not complete within timeout"
+            assert not result["failed"], "Workflow failed"
+            
+            info_log(f"[Test] ✅ 工作流程完成")
+            info_log(f"[Test] 📊 事件數量: {len(result['events'])}")
+            
+            # 等待資料庫寫入（背景工作流可能需要時間）
+            time.sleep(2.0)
+            
+            # 驗證資料庫中是否有新增的待辦事項
+            conn = sqlite3.connect(_DB)
+            c = conn.cursor()
+            c.execute("SELECT task_name, priority, status FROM todos WHERE task_name = 'Buy groceries'")
+            todos = c.fetchall()
+            conn.close()
+            
+            info_log(f"[Test] 📊 查詢到 {len(todos)} 個測試待辦事項")
+            
+            # 驗證至少有一個待辦事項被新增
+            assert len(todos) > 0, "No todo item was added to database"
+            
+            task_name, priority, status = todos[0]
+            info_log(f"[Test] ✅ 待辦事項已新增: {task_name} (priority={priority}, status={status})")
+            
+            # 驗證內容
+            assert task_name == "Buy groceries", f"Task name mismatch: {task_name}"
+            assert priority == "high", f"Priority mismatch: {priority}"
+            
+            info_log("[Test] ✅ 待辦事項新增背景工作流測試通過")
+            
+        finally:
+            # 清理測試資料
+            info_log("[Test] 🧹 清理測試資料")
+            try:
+                conn = sqlite3.connect(_DB)
+                c = conn.cursor()
+                c.execute("DELETE FROM todos WHERE task_name = 'Buy groceries'")
+                conn.commit()
+                conn.close()
+                info_log("[Test] ✅ 測試資料已清理")
+            except Exception as e:
+                info_log(f"[Test] ⚠️ 清理失敗: {e}")
+            
+            monitor.cleanup()
+            
+            # 等待系統回到 IDLE
+            info_log("[Test] ⏳ 等待系統回到 IDLE...")
+            for _ in range(30):
+                if state_manager.get_current_state() == UEPState.IDLE:
+                    info_log("[Test] ✅ 系統已回到 IDLE")
+                    break
+                time.sleep(0.1)
+            
+            time.sleep(1.0)
+    
+    def test_add_calendar_event_workflow_full_cycle(self, system_components, isolated_gs):
+        """
+        測試完整的日曆事件新增背景工作流
+        
+        流程：
+        1. 使用者輸入：「Schedule a meeting tomorrow at 2pm」
+        2. NLP 判斷意圖：work
+        3. LLM 通過 MCP 調用 add_calendar_event 工具
+        4. SYS 模組啟動 add_calendar_event_workflow 背景工作流
+        5. 工作流寫入資料庫
+        6. 驗證資料已新增
+        """
+        import sqlite3
+        from datetime import datetime
+        from utils.debug_helper import info_log
+        from modules.sys_module.actions.automation_helper import _DB
+        from core.states.state_manager import state_manager, UEPState
+        
+        event_bus = system_components["event_bus"]
+        
+        # 創建工作流程監控器
+        monitor = WorkflowCycleMonitor(event_bus)
+        
+        try:
+            info_log("[Test] 🎯 測試：日曆事件新增背景工作流")
+            
+            # 清空測試資料（團隊會議事件）
+            conn = sqlite3.connect(_DB)
+            c = conn.cursor()
+            c.execute("DELETE FROM calendar_events WHERE summary = 'Team Meeting'")
+            conn.commit()
+            conn.close()
+            
+            # 注入用戶輸入
+            inject_text_to_system("Schedule an event called 'Team Meeting' tomorrow at 2pm for 1 hour")
+            
+            # 等待工作流完成
+            info_log("[Test] ⏳ 等待工作流完成...")
+            result = monitor.wait_for_completion(timeout=90)
+            
+            # 驗證工作流完成
+            assert result["completed"], "Workflow did not complete within timeout"
+            assert not result["failed"], "Workflow failed"
+            
+            info_log(f"[Test] ✅ 工作流程完成")
+            info_log(f"[Test] 📊 事件數量: {len(result['events'])}")
+            
+            # 等待資料庫寫入（背景工作流可能需要時間）
+            time.sleep(2.0)
+            
+            # 驗證資料庫中是否有新增的日曆事件
+            conn = sqlite3.connect(_DB)
+            c = conn.cursor()
+            c.execute("SELECT summary, start_time, end_time FROM calendar_events WHERE summary = 'Team Meeting'")
+            events = c.fetchall()
+            conn.close()
+            
+            info_log(f"[Test] 📊 查詢到 {len(events)} 個測試日曆事件")
+            
+            # 驗證至少有一個事件被新增
+            assert len(events) > 0, "No calendar event was added to database"
+            
+            summary, start_time, end_time = events[0]
+            info_log(f"[Test] ✅ 日曆事件已新增: {summary}")
+            info_log(f"[Test] 📅 時間: {start_time} - {end_time}")
+            
+            # 驗證內容
+            assert summary == "Team Meeting", f"Event summary mismatch: {summary}"
+            
+            info_log("[Test] ✅ 日曆事件新增背景工作流測試通過")
+            
+        finally:
+            # 清理測試資料
+            info_log("[Test] 🧹 清理測試資料")
+            try:
+                conn = sqlite3.connect(_DB)
+                c = conn.cursor()
+                c.execute("DELETE FROM calendar_events WHERE summary = 'Team Meeting'")
+                conn.commit()
+                conn.close()
+                info_log("[Test] ✅ 測試資料已清理")
+            except Exception as e:
+                info_log(f"[Test] ⚠️ 清理失敗: {e}")
+            
+            monitor.cleanup()
+            
+            # 等待系統回到 IDLE
+            info_log("[Test] ⏳ 等待系統回到 IDLE...")
+            for _ in range(30):
+                if state_manager.get_current_state() == UEPState.IDLE:
+                    info_log("[Test] ✅ 系統已回到 IDLE")
+                    break
+                time.sleep(0.1)
+            
+            time.sleep(1.0)
+    
+    def test_manage_todo_workflow_full_cycle(self, system_components, isolated_gs):
+        """
+        測試完整的待辦事項管理工作流（查詢特定任務）
+        
+        流程：
+        1. 先創建一些待辦事項（包含關鍵字 "Meeting" 的任務）
+        2. 使用者輸入：「Search for my meeting task」
+        3. LLM 通過 MCP 調用 manage_todo 工具（operation=search, task_name_hint=meeting）
+        4. SYS 模組啟動 manage_todo_workflow 直接工作流
+        5. 工作流使用提供的參數執行搜索
+        6. LLM 審核並生成回應
+        """
+        import sqlite3
+        from datetime import datetime
+        from utils.debug_helper import info_log
+        from modules.sys_module.actions.automation_helper import _DB
+        from core.states.state_manager import state_manager, UEPState
+        
+        event_bus = system_components["event_bus"]
+        
+        # 創建工作流程監控器
+        monitor = WorkflowCycleMonitor(event_bus)
+        
+        try:
+            info_log("[Test] 🎯 測試：待辦事項管理工作流 - 搜索特定任務")
+            
+            # 準備測試資料：創建幾個待辦事項
+            conn = sqlite3.connect(_DB)
+            c = conn.cursor()
+            
+            # 清空測試資料
+            c.execute("DELETE FROM todos WHERE task_name LIKE 'Test Task%'")
+            c.execute("DELETE FROM todos WHERE task_name LIKE 'Meeting%'")
+            
+            # 插入測試待辦事項（包含 Meeting 關鍵字）
+            now = datetime.now()
+            test_tasks = [
+                ("Meeting with Team", "Discuss project progress", "high", "pending"),
+                ("Test Task 1", "First test task", "medium", "pending"),
+                ("Meeting Preparation", "Prepare slides", "high", "pending"),
+                ("Test Task 2", "Second test task", "low", "pending"),
+            ]
+            
+            for task_name, desc, priority, status in test_tasks:
+                c.execute("""
+                    INSERT INTO todos (task_name, task_description, priority, status, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (task_name, desc, priority, status, now.isoformat(), now.isoformat()))
+            
+            conn.commit()
+            conn.close()
+            
+            info_log(f"[Test] 📝 已創建 {len(test_tasks)} 個測試待辦事項（2個包含 Meeting）")
+            
+            # 注入用戶輸入（搜索特定任務）
+            inject_text_to_system("Search for my meeting task.")
+            
+            # 等待工作流完成
+            info_log("[Test] ⏳ 等待工作流完成...")
+            result = monitor.wait_for_completion(timeout=90)
+            
+            # 驗證工作流完成
+            assert result["completed"], "Workflow did not complete within timeout"
+            assert not result["failed"], "Workflow failed"
+            
+            info_log(f"[Test] ✅ 工作流程完成")
+            info_log(f"[Test] 📊 事件數量: {len(result['events'])}")
+            
+            # 驗證資料庫中的待辦事項仍然存在（搜索不應刪除）
+            conn = sqlite3.connect(_DB)
+            c = conn.cursor()
+            c.execute("SELECT task_name FROM todos WHERE task_name LIKE '%Meeting%'")
+            meeting_tasks = c.fetchall()
+            conn.close()
+            
+            info_log(f"[Test] 📊 資料庫中有 {len(meeting_tasks)} 個 Meeting 相關任務")
+            assert len(meeting_tasks) == 2, f"Expected 2 meeting tasks, found {len(meeting_tasks)}"
+            
+            info_log("[Test] ✅ 待辦事項管理工作流測試通過（搜索特定任務）")
+            
+        finally:
+            # 清理測試資料
+            info_log("[Test] 🧹 清理測試資料")
+            try:
+                conn = sqlite3.connect(_DB)
+                c = conn.cursor()
+                c.execute("DELETE FROM todos WHERE task_name LIKE 'Test Task%'")
+                c.execute("DELETE FROM todos WHERE task_name LIKE 'Meeting%'")
+                conn.commit()
+                conn.close()
+                info_log("[Test] ✅ 測試資料已清理")
+            except Exception as e:
+                info_log(f"[Test] ⚠️ 清理失敗: {e}")
+            
+            monitor.cleanup()
+            
+            # 等待系統回到 IDLE
+            info_log("[Test] ⏳ 等待系統回到 IDLE...")
+            for _ in range(30):
+                if state_manager.get_current_state() == UEPState.IDLE:
+                    info_log("[Test] ✅ 系統已回到 IDLE")
+                    break
+                time.sleep(0.1)
+    
+    def test_manage_todo_workflow_partial_params(self, system_components, isolated_gs):
+        """
+        測試待辦事項管理工作流 - 部分參數（只有 operation，沒有關鍵字）
+        
+        流程：
+        1. 創建測試待辦事項
+        2. 使用者輸入：「Search for a task」（沒有提供具體關鍵字）
+        3. LLM 調用 manage_todo（operation=search，但沒有 task_name_hint）
+        4. 工作流應該進入互動模式，要求用戶輸入搜索關鍵字
+        5. 提供關鍵字後繼續執行
+        """
+        import sqlite3
+        from datetime import datetime
+        from utils.debug_helper import info_log
+        from modules.sys_module.actions.automation_helper import _DB
+        from core.states.state_manager import state_manager, UEPState
+        from core.framework import core_framework
+        
+        event_bus = system_components["event_bus"]
+        sys_mod = core_framework.get_module("sys_module")
+        monitor = InteractiveWorkflowMonitor(event_bus, sys_module=sys_mod, expected_interactive_steps=1)
+        
+        try:
+            info_log("[Test] 🎯 測試：待辦事項管理工作流 - 部分參數")
+            
+            # 準備測試資料
+            conn = sqlite3.connect(_DB)
+            c = conn.cursor()
+            c.execute("DELETE FROM todos WHERE task_name LIKE 'Important%'")
+            
+            now = datetime.now()
+            test_tasks = [
+                ("Important Task 1", "Critical task", "high", "pending"),
+                ("Regular Task", "Normal task", "medium", "pending"),
+            ]
+            
+            for task_name, desc, priority, status in test_tasks:
+                c.execute("""
+                    INSERT INTO todos (task_name, task_description, priority, status, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (task_name, desc, priority, status, now.isoformat(), now.isoformat()))
+            
+            conn.commit()
+            conn.close()
+            
+            info_log(f"[Test] 📝 已創建 {len(test_tasks)} 個測試待辦事項")
+            
+            # 注入用戶輸入（明確表達搜索意圖，但沒有提供關鍵字）
+            inject_text_to_system("Search a task in my to-do.")
+            
+            # 等待工作流要求輸入（使用事件驅動方式）
+            info_log("[Test] ⏳ 等待工作流要求輸入關鍵字...")
+            if monitor.awaiting_input_event.wait(timeout=60):
+                info_log(f"[Test] 📝 響應步驟: {monitor.current_step}")
+                time.sleep(2)  # 等待 LLM 生成提示
+                
+                # 提供搜索關鍵字
+                inject_text_to_system("important")
+                monitor.awaiting_input_event.clear()
+            else:
+                info_log(f"[Test] ❌ 超時！未收到工作流輸入請求")
+                pytest.fail("Timeout waiting for workflow input request")
+            
+            # 等待工作流完成
+            result = monitor.wait_for_completion(timeout=90)
+            
+            assert result["completed"], "Workflow did not complete within timeout"
+            assert not result["failed"], "Workflow failed"
+            
+            info_log("[Test] ✅ 待辦事項管理工作流測試通過（部分參數）")
+            
+        finally:
+            # 清理測試資料
+            try:
+                conn = sqlite3.connect(_DB)
+                c = conn.cursor()
+                c.execute("DELETE FROM todos WHERE task_name LIKE 'Important%'")
+                c.execute("DELETE FROM todos WHERE task_name LIKE 'Regular%'")
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                info_log(f"[Test] ⚠️ 清理失敗: {e}")
+            
+            monitor.cleanup()
+            
+            # 等待系統回到 IDLE
+            for _ in range(30):
+                if state_manager.get_current_state() == UEPState.IDLE:
+                    break
+                time.sleep(0.1)
+    
+    def test_manage_todo_workflow_no_params(self, system_components, isolated_gs):
+        """
+        測試待辦事項管理工作流 - 無參數（完全互動，測試 update 多步驟分支）
+        
+        流程：
+        1. 創建測試待辦事項
+        2. 使用者輸入：「Manage my tasks」（沒有提供任何具體操作）
+        3. LLM 調用 manage_todo（沒有 initial_data）
+        4. 工作流要求選擇操作 → 用戶選擇 "update"
+        5. 工作流列出任務 → 用戶選擇任務
+        6. 工作流要求更新欄位 → 用戶提供更新內容
+        7. 工作流完成並返回更新結果
+        
+        這個測試驗證 ConditionalStep 能否正確處理 3 步驟的 update 分支。
+        """
+        import sqlite3
+        from datetime import datetime
+        from utils.debug_helper import info_log
+        from modules.sys_module.actions.automation_helper import _DB
+        from core.states.state_manager import state_manager, UEPState
+        from core.framework import core_framework
+        
+        event_bus = system_components["event_bus"]
+        sys_mod = core_framework.get_module("sys_module")
+        monitor = InteractiveWorkflowMonitor(event_bus, sys_module=sys_mod, expected_interactive_steps=3)
+        
+        try:
+            info_log("[Test] 🎯 測試：待辦事項管理工作流 - 無參數（完全互動）")
+            
+            # 準備測試資料
+            conn = sqlite3.connect(_DB)
+            c = conn.cursor()
+            c.execute("DELETE FROM todos WHERE task_name LIKE 'Interactive%'")
+            
+            now = datetime.now()
+            test_tasks = [
+                ("Go buy some dinner", "I am hungry and need some dinner", "high", "pending"),
+                ("Continue working on project", "The project is almost due", "medium", "pending"),
+            ]
+            
+            for task_name, desc, priority, status in test_tasks:
+                c.execute("""
+                    INSERT INTO todos (task_name, task_description, priority, status, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (task_name, desc, priority, status, now.isoformat(), now.isoformat()))
+            
+            conn.commit()
+            conn.close()
+            
+            info_log(f"[Test] 📝 已創建 {len(test_tasks)} 個測試待辦事項")
+            
+            # 注入用戶輸入（沒有提供任何操作細節）
+            inject_text_to_system("Manage my tasks.")
+            
+            # 步驟 1: 等待工作流要求選擇操作
+            info_log("[Test] ⏳ [步驟 1/3] 等待工作流要求選擇操作...")
+            
+            if monitor.awaiting_input_event.wait(timeout=60):
+                info_log(f"[Test] 📝 響應步驟: {monitor.current_step}")
+                time.sleep(2)  # 等待 LLM 生成提示
+                
+                # 提供操作選擇（update）
+                inject_text_to_system("update a task")
+                monitor.awaiting_input_event.clear()
+            else:
+                info_log(f"[Test] ❌ 超時！未收到工作流輸入請求")
+                pytest.fail("Timeout waiting for operation selection")
+            
+            # 步驟 2: 等待工作流要求選擇任務
+            info_log("[Test] ⏳ [步驟 2/3] 等待工作流要求選擇任務...")
+            
+            if monitor.awaiting_input_event.wait(timeout=60):
+                info_log(f"[Test] 📝 響應步驟: {monitor.current_step}")
+                time.sleep(2)  # 等待 LLM 生成提示
+                
+                # 選擇第一個任務（Go buy some dinner）
+                inject_text_to_system("The dinner one")
+                monitor.awaiting_input_event.clear()
+            else:
+                info_log(f"[Test] ❌ 超時！未收到任務選擇請求")
+                pytest.fail("Timeout waiting for task selection")
+            
+            # 步驟 3: 等待工作流要求更新欄位
+            info_log("[Test] ⏳ [步驟 3/3] 等待工作流要求更新欄位...")
+            
+            if monitor.awaiting_input_event.wait(timeout=60):
+                info_log(f"[Test] 📝 響應步驟: {monitor.current_step}")
+                time.sleep(2)  # 等待 LLM 生成提示
+                
+                # 提供更新內容（改變優先級和描述）
+                inject_text_to_system('change the priority to "medium".')
+                monitor.awaiting_input_event.clear()
+            else:
+                info_log(f"[Test] ❌ 超時！未收到更新欄位請求")
+                pytest.fail("Timeout waiting for update fields")
+            
+            # 等待工作流完成
+            result = monitor.wait_for_completion(timeout=90)
+            
+            assert result["completed"], "Workflow did not complete within timeout"
+            assert not result["failed"], "Workflow failed"
+            
+            info_log("[Test] ✅ 待辦事項管理工作流測試通過（無參數）")
+            
+        finally:
+            # 清理測試資料
+            try:
+                conn = sqlite3.connect(_DB)
+                c = conn.cursor()
+                c.execute("DELETE FROM todos WHERE task_name = 'Go buy some dinner'")
+                c.execute("DELETE FROM todos WHERE task_name = 'Continue working on project'")
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                info_log(f"[Test] ⚠️ 清理失敗: {e}")
+            
+            monitor.cleanup()
+            
+            # 等待系統回到 IDLE
+            for _ in range(30):
+                if state_manager.get_current_state() == UEPState.IDLE:
+                    break
+                time.sleep(0.1)
+            
+            time.sleep(1.0)
+    
+    def test_manage_calendar_workflow_full_cycle(self, system_components, isolated_gs):
+        """
+        測試完整的行事曆管理工作流（查詢）
+        
+        流程：
+        1. 先創建一些行事曆事件
+        2. 使用者輸入：「列出我的行事曆」
+        3. LLM 通過 MCP 調用 manage_calendar 工具（action=list）
+        4. SYS 模組啟動 manage_calendar_workflow 直接工作流
+        5. 工作流查詢資料庫並返回結果
+        6. LLM 審核並生成回應
+        """
+        import sqlite3
+        from datetime import datetime, timedelta
+        from utils.debug_helper import info_log
+        from modules.sys_module.actions.automation_helper import _DB
+        from core.states.state_manager import state_manager, UEPState
+        
+        event_bus = system_components["event_bus"]
+        
+        # 創建工作流程監控器
+        monitor = WorkflowCycleMonitor(event_bus)
+        
+        try:
+            info_log("[Test] 🎯 測試：行事曆管理工作流")
+            
+            # 準備測試資料：創建幾個行事曆事件
+            conn = sqlite3.connect(_DB)
+            c = conn.cursor()
+            
+            # 清空測試資料
+            c.execute("DELETE FROM calendar_events WHERE summary LIKE 'Try new structure' OR summary LIKE 'Complete the project' OR summary LIKE 'Birthday!'")
+            
+            # 插入測試行事曆事件
+            now = datetime.now()
+            test_events = [
+                ("Try new structure", "Testing the new workflow structure", now + timedelta(days=1), now + timedelta(days=1, hours=1)),
+                ("Complete the project", "Finish the U.E.P project", now + timedelta(days=2), now + timedelta(days=2, hours=2)),
+                ("Birthday!", "Celebrate birthday party", now + timedelta(days=3), now + timedelta(days=3, hours=1)),
+            ]
+            
+            for summary, description, start, end in test_events:
+                c.execute("""
+                    INSERT INTO calendar_events (summary, description, start_time, end_time, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (summary, description, start.isoformat(), end.isoformat(), now.isoformat(), now.isoformat()))
+            
+            conn.commit()
+            conn.close()
+            
+            info_log(f"[Test] 📝 已創建 {len(test_events)} 個測試行事曆事件")
+            
+            # 注入用戶輸入（查詢行事曆）
+            inject_text_to_system("Search for birthday in my calendar.")
+            
+            # 等待工作流完成
+            info_log("[Test] ⏳ 等待工作流完成...")
+            result = monitor.wait_for_completion(timeout=90)
+            
+            # 驗證工作流完成
+            assert result["completed"], "Workflow did not complete within timeout"
+            assert not result["failed"], "Workflow failed"
+            
+            info_log(f"[Test] ✅ 工作流程完成")
+            info_log(f"[Test] 📊 事件數量: {len(result['events'])}")
+            
+            # 驗證資料庫中的事件仍然存在（查詢不應刪除）
+            conn = sqlite3.connect(_DB)
+            c = conn.cursor()
+            c.execute("SELECT summary FROM calendar_events WHERE summary LIKE 'Try new structure' OR summary LIKE 'Complete the project' OR summary LIKE 'Birthday!'")
+            events = c.fetchall()
+            conn.close()
+            
+            info_log(f"[Test] 📊 資料庫中有 {len(events)} 個測試行事曆事件")
+            assert len(events) == 3, f"Expected 3 events, found {len(events)}"
+            
+            info_log("[Test] ✅ 行事曆管理工作流測試通過")
+            
+        finally:
+            # 清理測試資料
+            info_log("[Test] 🧹 清理測試資料")
+            try:
+                conn = sqlite3.connect(_DB)
+                c = conn.cursor()
+                c.execute("DELETE FROM calendar_events WHERE summary LIKE 'Try new structure' OR summary LIKE 'Complete the project' OR summary LIKE 'Birthday!'")
+                conn.commit()
+                conn.close()
+                info_log("[Test] ✅ 測試資料已清理")
+            except Exception as e:
+                info_log(f"[Test] ⚠️ 清理失敗: {e}")
+            
+            monitor.cleanup()
+            
+            # 等待系統回到 IDLE
+            info_log("[Test] ⏳ 等待系統回到 IDLE...")
+            for _ in range(30):
+                if state_manager.get_current_state() == UEPState.IDLE:
+                    info_log("[Test] ✅ 系統已回到 IDLE")
+                    break
+                time.sleep(0.1)
+            
+            time.sleep(1.0)
+
+
+def test_notification_system_integration(system_components):
+    """
+    測試完整的通知系統整合
+    
+    測試流程：
+    1. BackgroundEventScheduler 檢查資料庫（待辦、日曆）
+    2. 發布系統事件到 EventBus
+    3. SYS 模組接收事件並加入狀態佇列
+    4. Controller 監測狀態佇列並創建 GS
+    5. SystemLoop 處理通知（LLM 生成訊息 → TTS 輸出）
+    """
+    import sqlite3
+    from datetime import datetime, timedelta
+    from utils.debug_helper import info_log, debug_log
+    from core.states.state_queue import get_state_queue_manager
+    from core.states.state_manager import UEPState
+    from modules.sys_module.actions.automation_helper import BackgroundEventScheduler, _DB
+    
+    info_log("[Test] 🧪 測試：通知系統整合")
+    
+    event_bus = system_components["event_bus"]
+    
+    # 創建監控器
+    monitor = WorkflowCycleMonitor(event_bus)
+    
+    try:
+        # === 準備階段 ===
+        info_log("[Test] 📝 準備：清空測試資料並創建通知項目")
+        
+        # 清空舊測試資料
+        conn = sqlite3.connect(_DB)
+        c = conn.cursor()
+        c.execute("DELETE FROM todos WHERE task_name LIKE '[NOTIF-TEST]%'")
+        c.execute("DELETE FROM calendar_events WHERE summary LIKE '[NOTIF-TEST]%'")
+        conn.commit()
+        
+        # 創建測試待辦事項（30分鐘後到期 → 觸發 1h_before 通知）
+        now = datetime.now()
+        deadline = now + timedelta(minutes=30)
+        
+        c.execute("""
+            INSERT INTO todos (task_name, task_description, priority, status, created_at, updated_at, deadline)
+            VALUES (?, ?, ?, 'pending', ?, ?, ?)
+        """, (
+            "[NOTIF-TEST] Emergency Task",
+            "This is a test notification for an emergency task",
+            "high",
+            now.isoformat(),
+            now.isoformat(),
+            deadline.isoformat()
+        ))
+        
+        # 創建測試日曆事件（10分鐘後開始 → 觸發 15min_before 通知）
+        start_time = now + timedelta(minutes=10)
+        end_time = now + timedelta(minutes=70)
+        
+        c.execute("""
+            INSERT INTO calendar_events (summary, description, start_time, end_time, location, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            "[NOTIF-TEST] Important Meeting",
+            "Test calendar event notification",
+            start_time.isoformat(),
+            end_time.isoformat(),
+            "Test Meeting Room",
+            now.isoformat(),
+            now.isoformat()
+        ))
+        
+        conn.commit()
+        conn.close()
+        
+        info_log(f"[Test] ✅ 已創建測試資料：待辦事項 (deadline: {deadline.strftime('%H:%M')})")
+        info_log(f"[Test] ✅ 已創建測試資料：日曆事件 (start: {start_time.strftime('%H:%M')})")
+        
+        # === 執行階段 ===
+        info_log("[Test] 📝 執行：觸發 BackgroundEventScheduler 檢查")
+        
+        # 獲取狀態佇列管理器
+        state_queue = get_state_queue_manager()
+        initial_queue_length = len(state_queue.queue)
+        info_log(f"[Test] 初始佇列長度: {initial_queue_length}")
+        
+        # 執行背景檢查
+        scheduler = BackgroundEventScheduler()
+        scheduler._check_todos()
+        scheduler._check_calendar_events()
+        
+        info_log("[Test] ✅ 背景檢查已完成")
+        
+        # 等待事件處理（EventBus 異步處理）
+        time.sleep(1.5)
+        
+        # === 驗證階段 1：檢查系統狀態變化 ===
+        info_log("[Test] 📝 驗證：檢查系統狀態（通知使用 WORK 狀態的 system_report 模式）")
+
+        # 通知現在直接進入 WORK 狀態（system_report=True）
+        # 第一個通知會被立即處理，狀態會變成當前系統狀態
+        # 所以我們需要檢查：
+        # 1. 當前狀態是否為 WORK（正在處理通知）
+        # 2. 或者佇列中是否有待處理的 WORK 狀態（第二個通知）
+        
+        queue_status = state_queue.get_queue_status()
+        queue_length = queue_status["queue_length"]
+        pending_states = queue_status["pending_states"]
+        current_state = queue_status["current_state"]
+
+        info_log(f"[Test] 當前佇列長度: {queue_length}")
+        info_log(f"[Test] 待處理狀態: {pending_states}")
+        info_log(f"[Test] 當前處理狀態: {current_state}")
+
+        # 驗證：系統應該正在處理通知（WORK 狀態）或有通知在等待
+        is_processing_notification = current_state == UEPState.WORK.value
+        has_pending_notification = queue_length >= 1 and "work" in pending_states
+        
+        assert is_processing_notification or has_pending_notification, \
+            f"系統應該正在處理通知或有通知在等待，當前狀態: {current_state}, 佇列: {pending_states}"
+        
+        info_log(f"[Test] ✅ 狀態驗證通過（{'正在處理通知' if is_processing_notification else '有通知在佇列中'}）")
+        
+        # === 驗證階段 2：系統循環處理 ===
+        info_log("[Test] 📝 驗證：等待系統處理通知")
+        
+        # 等待系統循環處理通知
+        # SystemLoop 會自動檢測狀態佇列 → Controller 創建 WS → LLM 生成訊息 → TTS 輸出
+        max_wait = 60  # 最多等待60秒
+        
+        # 記錄初始狀態（可能第一個通知已經在處理中）
+        initial_is_processing = is_processing_notification
+        initial_queue_length = queue_length
+        
+        info_log(f"[Test] 初始狀態 - 正在處理: {initial_is_processing}, 佇列: {initial_queue_length}")
+        
+        # 等待系統返回 IDLE（所有通知處理完成）
+        returned_to_idle = False
+        final_status = None
+        
+        for i in range(max_wait):
+            final_status = state_queue.get_queue_status()
+            current_state_now = final_status["current_state"]
+            current_queue = final_status["queue_length"]
+            
+            # 如果系統回到 IDLE 且佇列清空，表示所有通知已處理完成
+            if current_state_now == UEPState.IDLE.value and current_queue == 0:
+                returned_to_idle = True
+                info_log(f"[Test] ✅ 系統已返回 IDLE（第 {i+1} 秒）")
+                break
+            
+            # 記錄狀態變化
+            if i % 5 == 0:
+                info_log(f"[Test] [{i}s] 當前狀態: {current_state_now}, 佇列: {current_queue}")
+            
+            time.sleep(1.0)
+        
+        # 驗證：系統應該已處理完所有通知並返回 IDLE
+        if final_status:
+            assert returned_to_idle, \
+                f"系統應該處理完通知並返回 IDLE，當前狀態: {final_status['current_state']}, 佇列: {final_status['queue_length']}"
+        else:
+            assert False, "無法獲取系統狀態"
+        
+        info_log("[Test] ✅ 系統循環處理驗證通過（已返回 IDLE）")
+        
+        # === 驗證階段 3：資料庫更新 ===
+        info_log("[Test] 📝 驗證：檢查通知記錄")
+        
+        conn = sqlite3.connect(_DB)
+        c = conn.cursor()
+        
+        # 檢查待辦事項的通知記錄
+        c.execute("""
+            SELECT last_notified_at, last_notified_stage
+            FROM todos
+            WHERE task_name LIKE '[NOTIF-TEST]%'
+        """)
+        todo_record = c.fetchone()
+        
+        # 檢查日曆事件的通知記錄
+        c.execute("""
+            SELECT last_notified_at, last_notified_stage
+            FROM calendar_events
+            WHERE summary LIKE '[NOTIF-TEST]%'
+        """)
+        calendar_record = c.fetchone()
+        
+        conn.close()
+        
+        # 驗證：通知記錄應該已更新
+        assert todo_record is not None, "待辦事項記錄不存在"
+        assert todo_record[0] is not None, "待辦事項未記錄通知時間"
+        assert todo_record[1] is not None, "待辦事項未記錄通知階段"
+        
+        assert calendar_record is not None, "日曆事件記錄不存在"
+        assert calendar_record[0] is not None, "日曆事件未記錄通知時間"
+        assert calendar_record[1] is not None, "日曆事件未記錄通知階段"
+        
+        info_log(f"[Test] ✅ 待辦通知記錄: {todo_record[1]} at {todo_record[0]}")
+        info_log(f"[Test] ✅ 日曆通知記錄: {calendar_record[1]} at {calendar_record[0]}")
+        
+        # === 測試防重複機制 ===
+        info_log("[Test] 📝 測試：防重複通知機制")
+        
+        # 記錄當前狀態（應該已經是 IDLE）
+        before_recheck = state_queue.get_queue_status()
+        before_length = before_recheck["queue_length"]
+        before_state = before_recheck["current_state"]
+        
+        info_log(f"[Test] 再次檢查前狀態: {before_state}, 佇列: {before_length}")
+        
+        # 再次執行檢查
+        scheduler._check_todos()
+        scheduler._check_calendar_events()
+        
+        # 等待可能的事件處理
+        time.sleep(1.5)
+        
+        # 檢查狀態：應該保持 IDLE，佇列應該為空（防重複機制生效）
+        after_recheck = state_queue.get_queue_status()
+        after_length = after_recheck["queue_length"]
+        after_state = after_recheck["current_state"]
+        
+        info_log(f"[Test] 再次檢查後狀態: {after_state}, 佇列: {after_length}")
+        
+        # 驗證：系統應該保持 IDLE，沒有新增重複通知
+        assert after_state == UEPState.IDLE.value, f"系統應該保持 IDLE，當前: {after_state}"
+        assert after_length == 0, f"佇列應該為空（防重複），當前: {after_length}"
+        
+        info_log("[Test] ✅ 防重複機制驗證通過（沒有重複通知）")
+        
+        info_log("[Test] 🎉 通知系統整合測試完全通過！")
+        
+    finally:
+        # 清理測試資料
+        info_log("[Test] 🧹 清理測試資料")
+        try:
+            conn = sqlite3.connect(_DB)
+            c = conn.cursor()
+            c.execute("DELETE FROM todos WHERE task_name LIKE '[NOTIF-TEST]%'")
+            c.execute("DELETE FROM calendar_events WHERE summary LIKE '[NOTIF-TEST]%'")
+            conn.commit()
+            conn.close()
+            info_log("[Test] ✅ 測試資料已清理")
+        except Exception as e:
+            info_log(f"[Test] ⚠️ 清理失敗: {e}")
+        
+        monitor.cleanup()
+        time.sleep(1.0)

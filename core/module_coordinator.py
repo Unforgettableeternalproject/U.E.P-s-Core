@@ -163,7 +163,15 @@ class ModuleInvocationCoordinator:
             )
             info_log(f"[ModuleCoordinator] ✓ 已訂閱 SESSION_ENDED")
             
-            info_log("[ModuleCoordinator] ✅ 事件訂閱完成 (4 個事件)")
+            # ✅ 訂閱系統通知事件 (直接處理，不經過狀態佇列)
+            event_bus.subscribe(SystemEvent.TODO_OVERDUE, self._on_todo_notification)
+            event_bus.subscribe(SystemEvent.TODO_UPCOMING, self._on_todo_notification)
+            event_bus.subscribe(SystemEvent.CALENDAR_EVENT_STARTING, self._on_calendar_notification)
+            event_bus.subscribe(SystemEvent.REMINDER_TRIGGERED, self._on_reminder_notification)
+            event_bus.subscribe(SystemEvent.SYSTEM_STARTUP_REPORT, self._on_startup_report)
+            info_log(f"[ModuleCoordinator] ✓ 已訂閱系統通知事件 (5 個)")
+            
+            info_log("[ModuleCoordinator] ✅ 事件訂閱完成 (9 個事件)")
             
         except Exception as e:
             error_log(f"[ModuleCoordinator] ❌ 事件訂閱失敗: {e}")
@@ -401,11 +409,19 @@ class ModuleInvocationCoordinator:
             # ✨ 檢查是否為 WORK 路徑的 Cycle 0（需要特殊處理）
             cycle_index = input_data.get('cycle_index', 0)
             
+            # 檢查是否為系統匯報模式（不需要工作流程）
+            is_system_report = input_data.get('system_report', False)
+            
             # cycle_index 為 0 或 -1（未設置/測試環境）時，都視為首次進入處理層
             if (primary_intent == IntentType.WORK or intent_value == "work") and cycle_index <= 0:
-                # WORK Cycle 0: 三階段處理（LLM 決策 → SYS 啟動 → LLM 回應）
-                info_log("[ModuleCoordinator] 🎯 WORK Cycle 0 - 開始三階段處理")
-                return self._handle_work_cycle_0(input_data)
+                if is_system_report:
+                    # 系統匯報模式：直接調用 LLM 生成回應，不啟動工作流
+                    info_log("[ModuleCoordinator] 🎯 WORK（系統匯報）- 直接 LLM 處理")
+                    return self._handle_system_report(input_data)
+                else:
+                    # WORK Cycle 0: 三階段處理（LLM 決策 → SYS 啟動 → LLM 回應）
+                    info_log("[ModuleCoordinator] 🎯 WORK Cycle 0 - 開始三階段處理")
+                    return self._handle_work_cycle_0(input_data)
             else:
                 # CHAT 路徑或 WORK Cycle 1+: 標準處理
                 info_log(f"[ModuleCoordinator] 標準路徑處理 (intent={intent_name}, cycle={cycle_index})")
@@ -477,13 +493,24 @@ class ModuleInvocationCoordinator:
                 llm_output = processing_data.get('llm_output', {})
                 session_control = llm_output.get('metadata', {}).get('session_control')
                 
-                # Support both formats: {'action': 'end_session'} and {'session_ended': True}
+                debug_log(2, f"[ModuleCoordinator] 檢查 session_control: {session_control}")
+                
+                # Support multiple formats:
+                # 1. {'action': 'end_session'}
+                # 2. {'session_ended': True}
+                # 3. {'should_end_session': True} (from system notifications)
                 should_end = (session_control and 
                              (session_control.get('action') == 'end_session' or 
-                              session_control.get('session_ended') is True))
+                              session_control.get('session_ended') is True or
+                              session_control.get('should_end_session') is True))
+                
+                debug_log(2, f"[ModuleCoordinator] should_end 判定結果: {should_end}")
                 
                 if should_end:
-                    reason = session_control.get('reason', 'LLM requested')
+                    # Try different reason keys for compatibility
+                    reason = (session_control.get('reason') or 
+                             session_control.get('end_reason') or 
+                             'LLM requested')
                     info_log(f"[ModuleCoordinator] 🔚 LLM 請求結束會話 (原因: {reason})")
                     
                     # ✅ 標記所有活躍的工作流會話待結束（不是立即結束）
@@ -510,6 +537,213 @@ class ModuleInvocationCoordinator:
             
         except Exception as e:
             error_log(f"[ModuleCoordinator] 處理層 → 輸出層轉換失敗: {e}")
+            return False
+    
+    # ========== 系統通知事件處理器 ==========
+    
+    def _on_todo_notification(self, event):
+        """處理待辦事項通知事件 - 發布到狀態佇列"""
+        try:
+            data = event.data
+            title = data.get('title', '待辦事項')
+            deadline = data.get('deadline')
+            stage = data.get('stage', 'unknown')
+            
+            # 根據不同階段調整訊息（使用英文，系統內部統一使用英文）
+            stage_messages = {
+                '1h_before': f'Reminder: Todo item "{title}" is due in one hour',
+                'overdue': f'Alert: Todo item "{title}" is overdue',
+                'urgent': f'Urgent: Todo item "{title}" is due soon'
+            }
+            
+            notification_content = stage_messages.get(stage, f'Todo reminder: {title}')
+            if deadline:
+                notification_content += f', deadline: {deadline}'
+            
+            # 發布到狀態佇列，走正常流程
+            self._publish_notification_to_state_queue(
+                content=notification_content,
+                notification_type='todo',
+                metadata={
+                    'title': title,
+                    'deadline': deadline,
+                    'stage': stage
+                }
+            )
+            
+            info_log(f"[ModuleCoordinator] ✅ 已發布待辦通知到狀態佇列: {title} ({stage})")
+        except Exception as e:
+            error_log(f"[ModuleCoordinator] 處理待辦通知失敗: {e}")
+            import traceback
+            error_log(traceback.format_exc())
+    
+    def _on_calendar_notification(self, event):
+        """處理日曆事件通知 - 發布到狀態佇列"""
+        try:
+            data = event.data
+            summary = data.get('summary', '日曆事件')
+            start_time = data.get('start_time')
+            location = data.get('location')
+            stage = data.get('stage', 'unknown')
+            
+            # 根據不同階段調整訊息（使用英文，系統內部統一使用英文）
+            stage_messages = {
+                '15min_before': f'Reminder: "{summary}" is starting soon',
+                '5min_before': f'Reminder: "{summary}" starts in 5 minutes',
+                'starting': f'Starting now: {summary}'
+            }
+            
+            notification_content = stage_messages.get(stage, f'Calendar reminder: {summary}')
+            if location:
+                notification_content += f', location: {location}'
+            
+            # 發布到狀態佇列，走正常流程
+            self._publish_notification_to_state_queue(
+                content=notification_content,
+                notification_type='calendar',
+                metadata={
+                    'summary': summary,
+                    'start_time': start_time,
+                    'location': location,
+                    'stage': stage
+                }
+            )
+            
+            info_log(f"[ModuleCoordinator] ✅ 已發布日曆通知到狀態佇列: {summary} ({stage})")
+        except Exception as e:
+            error_log(f"[ModuleCoordinator] 處理日曆通知失敗: {e}")
+            import traceback
+            error_log(traceback.format_exc())
+    
+    def _on_reminder_notification(self, event):
+        """處理提醒通知事件 - 發布到狀態佇列"""
+        try:
+            data = event.data
+            message = data.get('message', 'Reminder')
+            
+            notification_content = f'Reminder: {message}'
+            
+            # 發布到狀態佇列，走正常流程
+            self._publish_notification_to_state_queue(
+                content=notification_content,
+                notification_type='reminder',
+                metadata={
+                    'message': message
+                }
+            )
+            
+            info_log(f"[ModuleCoordinator] ✅ 已發布提醒通知到狀態佇列: {message}")
+        except Exception as e:
+            error_log(f"[ModuleCoordinator] 處理提醒通知失敗: {e}")
+    
+    def _on_startup_report(self, event):
+        """處理啟動報告事件 - 發布到狀態佇列"""
+        try:
+            data = event.data
+            report = data.get('report', '系統已啟動')
+            
+            # 發布到狀態佇列，走正常流程
+            self._publish_notification_to_state_queue(
+                content=report,
+                notification_type='startup_report',
+                metadata={}
+            )
+            
+            info_log(f"[ModuleCoordinator] ✅ 已發布啟動報告到狀態佇列")
+        except Exception as e:
+            error_log(f"[ModuleCoordinator] 處理啟動報告失敗: {e}")
+    
+    def _publish_notification_to_state_queue(self, content: str, notification_type: str, metadata: Dict[str, Any]):
+        """將通知發布到狀態佇列，走正常的狀態流程
+        
+        Args:
+            content: 通知內容
+            notification_type: 通知類型（todo, calendar, reminder, startup_report）
+            metadata: 通知元數據
+        """
+        try:
+            from core.states.state_queue import get_state_queue_manager
+            from core.states.state_manager import UEPState
+            
+            debug_log(3, f"[ModuleCoordinator] 發布通知到狀態佇列: {content[:50]}...")
+            
+            # 構建狀態佇列項目的元數據
+            queue_metadata = {
+                'system_report': True,  # 標記為系統匯報模式（不需要工作流）
+                'notification_type': notification_type,
+                'system_initiated': True,  # 標記為系統主動發起
+                **metadata
+            }
+            
+            # 發布到狀態佇列（WORK 狀態）
+            state_queue = get_state_queue_manager()
+            state_queue.add_state(
+                state=UEPState.WORK,
+                context_content=content,
+                trigger_content=f"系統通知：{notification_type}",
+                metadata=queue_metadata
+            )
+            
+            debug_log(2, f"[ModuleCoordinator] 通知已加入狀態佇列，類型: {notification_type}")
+                
+        except Exception as e:
+            error_log(f"[ModuleCoordinator] 發布通知到狀態佇列失敗: {e}")
+            import traceback
+            error_log(traceback.format_exc())
+    
+    # ========== 系統匯報處理 ==========
+    
+    def _handle_system_report(self, input_data: Dict[str, Any]) -> bool:
+        """處理系統匯報（WORK 狀態但不需要工作流程）
+        
+        系統匯報場景：
+        - 待辦事項通知
+        - 日曆事件提醒
+        - 系統狀態報告
+        
+        處理流程：
+        1. 直接調用 LLM 生成友善的通知訊息
+        2. 輸出到 TTS
+        
+        Args:
+            input_data: 包含通知內容的輸入數據
+            
+        Returns:
+            bool: 是否成功
+        """
+        try:
+            info_log("[ModuleCoordinator] 📢 系統匯報模式 - 直接 LLM 處理")
+            
+            # 準備 LLM 輸入（系統匯報不需要 MCP tools）
+            llm_data = self._prepare_llm_input(input_data)
+            llm_data['phase'] = 'response'
+            llm_data['system_report'] = True  # 標記為系統匯報
+            
+            # 添加系統提示：這是系統主動通知
+            if 'metadata' not in llm_data:
+                llm_data['metadata'] = {}
+            llm_data['metadata']['is_system_initiated'] = True
+            
+            llm_request = ModuleInvocationRequest(
+                target_module="llm",
+                input_data=llm_data,
+                source_module="input_layer",
+                reasoning="系統匯報 - LLM 生成通知訊息",
+                layer=ProcessingLayer.PROCESSING,
+                priority=5
+            )
+            
+            llm_response = self.invoke_module(llm_request)
+            
+            if llm_response.result != InvocationResult.SUCCESS:
+                error_log("[ModuleCoordinator] LLM 處理系統匯報失敗")
+                return False
+            
+            info_log("[ModuleCoordinator] ✅ 系統匯報處理完成")
+            return True
+            
+        except Exception as e:
+            error_log(f"[ModuleCoordinator] 處理系統匯報失敗: {e}")
             return False
     
     def _handle_work_cycle_0(self, input_data: Dict[str, Any]) -> bool:

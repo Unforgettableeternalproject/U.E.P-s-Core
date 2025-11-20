@@ -92,13 +92,15 @@ class SYSModule(BaseModule):
         # 註冊 WORK_SYS 協作管道的資料提供者
         self._register_collaboration_providers()
         
-        # ✅ 獲取 event_bus 引用並訂閱 SESSION_ENDED 事件
+        # ✅ 獲取 event_bus 引用並訂閱會話事件
         try:
             from core.event_bus import event_bus, SystemEvent
             self.event_bus = event_bus
+            
             # 訂閱 SESSION_ENDED 事件以清理 workflow_engine
             event_bus.subscribe(SystemEvent.SESSION_ENDED, self._on_session_ended)
-            debug_log(2, "[SYS] Event bus 已連接，已訂閱 SESSION_ENDED")
+            
+            debug_log(2, "[SYS] Event bus 已連接，已訂閱 SESSION_ENDED 事件")
         except Exception as e:
             error_log(f"[SYS] 無法連接 event bus: {e}")
         
@@ -1318,13 +1320,42 @@ class SYSModule(BaseModule):
                 }
                 
             elif not result.success:
-                # Step failed, ask for input again
+                # 🔧 步驟失敗（failure）：終止工作流並讓 LLM 處理錯誤
+                debug_log(1, f"[SYS] 工作流步驟失敗 {session_id}: {result.message}")
+                
+                # 結束會話
+                self.session_manager.end_session(
+                    session_id,
+                    reason=f"failed: {result.message}"
+                )
+                
+                # 清理引擎
+                if session_id in self.workflow_engines:
+                    del self.workflow_engines[session_id]
+                
+                # 發布失敗事件，讓 LLM 生成錯誤回應
+                if self.event_bus:
+                    from core.event_bus import SystemEvent
+                    workflow_type = engine.definition.workflow_type
+                    
+                    self.event_bus.publish(
+                        event_type=SystemEvent.WORKFLOW_FAILED,
+                        data={
+                            "session_id": session_id,
+                            "workflow_type": workflow_type,
+                            "error_message": result.message,
+                            "current_step": engine.session.get_data("current_step")
+                        },
+                        source="sys"
+                    )
+                    debug_log(2, f"[SYS] 已發布 workflow_failed 事件: {session_id}")
+                
+                # 返回失敗狀態
                 return {
-                    "status": "waiting",
+                    "status": "failed",
                     "session_id": session_id,
-                    "requires_input": True,
-                    "prompt": engine.get_prompt(),
-                    "message": result.message
+                    "message": result.message,
+                    "data": result.data
                 }
                 
             else:

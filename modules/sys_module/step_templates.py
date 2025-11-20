@@ -397,7 +397,7 @@ class StepTemplate:
                 if not user_input:
                     return StepResult.failure("請選擇選項")
                 
-                user_str = str(user_input).strip()
+                user_str = str(user_input).strip().lower()
                 
                 # 嘗試按索引選擇
                 try:
@@ -412,13 +412,42 @@ class StepTemplate:
                 except ValueError:
                     pass
                 
-                # 嘗試按名稱選擇（統一字串比較）
+                # 1. 嘗試精確匹配選項
                 for option in str_options:
-                    if str(option).lower() == user_str.lower():
+                    if str(option).lower() == user_str:
                         return StepResult.success(
                             f"已選擇: {option}",
                             {step_id: option}
                         )
+                
+                # 2. 嘗試精確匹配標籤
+                if labels:
+                    for i, label in enumerate(labels):
+                        if str(label).lower() == user_str:
+                            selected = str_options[i]
+                            return StepResult.success(
+                                f"已選擇: {label}",
+                                {step_id: selected}
+                            )
+                
+                # 3. 嘗試部分匹配選項（選項包含在用戶輸入中）
+                for option in str_options:
+                    if str(option).lower() in user_str:
+                        return StepResult.success(
+                            f"已選擇: {option}",
+                            {step_id: option}
+                        )
+                
+                # 4. 嘗試部分匹配標籤（標籤包含在用戶輸入中）
+                if labels:
+                    for i, label in enumerate(labels):
+                        label_lower = str(label).lower()
+                        if label_lower in user_str or user_str in label_lower:
+                            selected = str_options[i]
+                            return StepResult.success(
+                                f"已選擇: {label}",
+                                {step_id: selected}
+                            )
                 
                 return StepResult.failure("無效的選擇")
                 
@@ -741,6 +770,10 @@ class StepTemplate:
             
             def execute(self, user_input: Any = None) -> StepResult:
                 """執行條件分支"""
+                # 0. 檢查是否從中斷處恢復
+                loop_continue_key = f"loop_continue_{step_id}"
+                resume_index = self.session.get_data(loop_continue_key)
+                
                 # 1. 獲取 selection 的結果
                 selection_value = self.session.get_data(selection_step_id)
                 
@@ -768,11 +801,18 @@ class StepTemplate:
                     )
                 
                 # 4. 依序執行分支中的所有步驟
-                debug_log(2, f"[ConditionalStep] {step_id}: 執行分支 {selection_value}，共 {len(branch_steps)} 個步驟")
+                if resume_index is not None:
+                    start_index = resume_index
+                    debug_log(2, f"[ConditionalStep] {step_id}: 從中斷處恢復執行（索引 {start_index}）")
+                    # 清除 loop_continue 標記
+                    self.session.add_data(loop_continue_key, None)
+                else:
+                    debug_log(2, f"[ConditionalStep] {step_id}: 執行分支 {selection_value}，共 {len(branch_steps)} 個步驟")
+                    start_index = 0
                 
                 aggregated_data = {}
                 
-                for i, step in enumerate(branch_steps):
+                for i, step in enumerate(branch_steps[start_index:], start=start_index):
                     debug_log(3, f"[ConditionalStep] {step_id}: 執行分支步驟 {i+1}/{len(branch_steps)}: {step.id}")
                     
                     # 🔧 檢查：如果是 INTERACTIVE 步驟且沒有輸入
@@ -794,6 +834,8 @@ class StepTemplate:
                             continue  # 繼續下一個步驟
                         else:
                             debug_log(2, f"[ConditionalStep] {step_id}: 分支步驟 {step.id} 需要用戶輸入，跳轉到該步驟")
+                            # 保存當前進度（下一個要執行的索引）
+                            self.session.add_data(loop_continue_key, i + 1)
                             # 需要用戶輸入，跳轉到該步驟
                             return StepResult.success(
                                 f"需要執行互動步驟: {step.id}",

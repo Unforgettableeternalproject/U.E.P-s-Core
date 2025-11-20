@@ -65,8 +65,13 @@ class SystemEvent(Enum):
     # 自動化觸發事件
     REMINDER_TRIGGERED = "reminder_triggered"                          # 提醒觸發
     CALENDAR_EVENT_STARTING = "calendar_event_starting"                # 日曆事件即將開始
+    TODO_OVERDUE = "todo_overdue"                                      # 待辦事項已過期
+    TODO_UPCOMING = "todo_upcoming"                                    # 待辦事項即將到期
     FOLDER_CHANGE_DETECTED = "folder_change_detected"                  # 資料夾變更偵測
     MEDIA_CONTROL_EXECUTED = "media_control_executed"                  # 媒體控制已執行
+    
+    # 系統啟動事件
+    SYSTEM_STARTUP_REPORT = "system_startup_report"                    # 系統啟動檢查報告
 
 
 @dataclass

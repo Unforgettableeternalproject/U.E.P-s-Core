@@ -450,13 +450,21 @@ def get_automation_workflow_creator(workflow_type: str):
         工作流建立函數，簽名為 func(session: WorkflowSession, **kwargs) -> WorkflowDefinition
     """
     creators = {
-        # 啟動工作流（與 YAML 中的命名一致）
+        # 媒體播放工作流（與 YAML 中的命名一致）
         "media_playback": create_media_playback_workflow,
         "media_playback_start": create_media_playback_workflow,  # 別名，向後兼容
         
-        # 干涉工作流
+        # 媒體控制工作流
         "control_media": create_media_control_intervention_workflow,
         "media_control_intervention": create_media_control_intervention_workflow,  # 別名，向後兼容
+        
+        # 待辦事項工作流
+        "create_todo": create_todo_workflow,
+        "manage_todo": manage_todo_workflow,
+        
+        # 行事曆工作流
+        "create_calendar": create_calendar_workflow,
+        "manage_calendar": manage_calendar_workflow,
     }
     
     return creators.get(workflow_type)
@@ -631,4 +639,782 @@ def create_media_control_intervention_workflow(
     workflow_def.set_entry_point(control_step.id)
     
     # ✅ 返回 WorkflowDefinition（sys_module 會創建 WorkflowEngine）
+    return workflow_def
+
+
+# ==================== 待辦事項工作流 ====================
+
+def create_todo_workflow(
+    session: WorkflowSession,
+    task_name: str = "General Task",
+    task_description: str = "",
+    priority: str = "none"
+) -> WorkflowDefinition:
+    """
+    創建待辦事項工作流（背景服務）
+    
+    簡單的一次性資料庫寫入操作，不需要監控。
+    
+    Args:
+        task_name: 任務名稱（預設：General Task）
+        task_description: 任務描述（可選）
+        priority: 優先級（none, low, medium, high，預設：none）
+    
+    Returns:
+        WorkflowDefinition 實例
+    """
+    workflow_def = WorkflowDefinition(
+        workflow_type="create_todo",
+        name="創建待辦事項",
+        description="建立新的待辦任務",
+        workflow_mode=WorkflowMode.BACKGROUND,
+        requires_llm_review=False
+    )
+    
+    # 驗證並設定優先級
+    valid_priorities = ["none", "low", "medium", "high"]
+    if priority not in valid_priorities:
+        priority = "none"
+    
+    # 使用 create_processing_step 直接調用 automation_helper
+    def execute_create_todo(sess: WorkflowSession) -> StepResult:
+        """執行創建待辦事項"""
+        try:
+            from modules.sys_module.actions.automation_helper import local_todo
+            
+            # 調用 CRUD 函數創建任務
+            result = local_todo(
+                action="create",
+                task_name=task_name,
+                task_description=task_description,
+                priority=priority
+            )
+            
+            if result.get("status") == "ok":
+                task_id = result.get("task_id")
+                info_log(f"[CreateTodo] 已建立待辦事項：{task_name} (ID: {task_id}, 優先級: {priority})")
+                return StepResult.success(
+                    f"已建立待辦事項「{task_name}」（優先級：{priority}）",
+                    {"task_id": task_id, "task_name": task_name, "priority": priority}
+                )
+            else:
+                error_msg = result.get("message", "未知錯誤")
+                error_log(f"[CreateTodo] 建立失敗：{error_msg}")
+                return StepResult.failure(f"建立待辦事項失敗：{error_msg}")
+        
+        except Exception as e:
+            error_log(f"[CreateTodo] 執行失敗：{e}")
+            return StepResult.failure(f"建立待辦事項時發生錯誤：{str(e)}")
+    
+    # 使用 create_processing_step
+    create_step = StepTemplate.create_processing_step(
+        session=session,
+        step_id="execute_create_todo",
+        processor=execute_create_todo,
+        required_data=[],
+        description="創建待辦事項並保存到資料庫"
+    )
+    
+    workflow_def.add_step(create_step)
+    workflow_def.set_entry_point(create_step.id)
+    
+    return workflow_def
+
+
+def manage_todo_workflow(
+    session: WorkflowSession,
+    operation: Optional[str] = None,
+    **kwargs  # 接收其他 initial_data 參數（如 task_name_hint, update_intent）
+) -> WorkflowDefinition:
+    """
+    管理待辦事項工作流（直接工作流，用於查詢、修改、刪除）
+    
+    支援操作：
+    - list: 列出所有待辦事項
+    - search: 搜尋待辦事項
+    - update: 更新待辦事項
+    - delete: 刪除待辦事項
+    - complete: 完成待辦事項
+    
+    工作流程：
+    1. 選擇操作類型（list/search/update/delete/complete）
+    2. 根據操作類型條件輸入：
+       - list: 無需額外輸入
+       - search: 輸入搜尋關鍵字
+       - update: 選擇任務 → 輸入更新欄位
+       - delete: 選擇任務
+       - complete: 選擇任務
+    3. 執行操作並顯示結果
+    
+    Args:
+        operation: 操作類型（可選，可從 initial_data 提取）
+    
+    Returns:
+        WorkflowDefinition 實例
+    """
+    workflow_def = WorkflowDefinition(
+        workflow_type="manage_todo",
+        name="管理待辦事項",
+        description="查詢、修改或刪除待辦事項",
+        workflow_mode=WorkflowMode.DIRECT,  # 直接工作流
+        requires_llm_review=True  # ✅ DIRECT 工作流需要審核以生成步驟間提示
+    )
+    
+    # 如果從 initial_data 提供了 operation，保存到 session
+    if operation:
+        session.add_data("action_selection", operation)
+    
+    # 步驟 1: 選擇操作類型
+    # SelectionStep 現在支援模糊匹配，可以從 "update a task" 中提取 "update"
+    action_selection_step = StepTemplate.create_selection_step(
+        session=session,
+        step_id="action_selection",
+        prompt="請選擇要執行的操作：",
+        options=["list", "search", "update", "delete", "complete"],
+        labels=["列出所有待辦", "搜尋待辦", "更新待辦", "刪除待辦", "完成待辦"],
+        required_data=[],
+        skip_if_data_exists=True  # 支援從 initial_data 提取
+    )
+    
+    # 步驟 2a: 通用輸入步驟（可用於 search/update/delete/complete）
+    # 對於 search：輸入搜尋關鍵字
+    # 對於 update/delete/complete：輸入任務關鍵字或 ID，LLM 會解析
+    search_input_step = StepTemplate.create_input_step(
+        session=session,
+        step_id="search_query_input",
+        prompt="請輸入搜尋關鍵字或任務 ID：",
+        optional=False,
+        skip_if_data_exists=True,
+        description="收集搜尋關鍵字或任務標識"
+    )
+    
+    # 步驟 2c: 更新欄位輸入（僅 update 需要）
+    update_fields_input_step = StepTemplate.create_input_step(
+        session=session,
+        step_id="update_fields_input",
+        prompt="請輸入要更新的內容（可包含：task_name, task_description, priority, deadline）：",
+        optional=False,
+        skip_if_data_exists=True,
+        description="收集更新欄位"
+    )
+    
+
+    # 步驟 3: 條件分支（根據操作類型決定需要哪些輸入）
+    action_conditional_step = StepTemplate.create_conditional_step(
+        session=session,
+        step_id="action_conditional",
+        selection_step_id="action_selection",
+        branches={
+            "list": [],  # 無需額外輸入
+            "search": [search_input_step],  # 需要搜尋關鍵字
+            "update": [search_input_step, update_fields_input_step],  # 需要任務關鍵字 + 更新欄位（LLM 會在審核時解析自然語言）
+            "delete": [search_input_step],  # 需要任務關鍵字
+            "complete": [search_input_step],  # 需要任務關鍵字
+        },
+        description="根據操作類型決定需要的輸入"
+    )
+    
+    # 步驟 4: 執行管理任務
+    def execute_manage_todo(sess: WorkflowSession) -> StepResult:
+        """執行管理待辦事項"""
+        try:
+            from modules.sys_module.actions.automation_helper import local_todo
+            
+            # 獲取參數
+            action = sess.get_data("action_selection", "list")
+            search_query = sess.get_data("search_query_input", "")
+            update_fields_str = sess.get_data("update_fields_input", "")
+            
+            # 對於 update/delete/complete 操作，search_query_input 包含任務關鍵字或 ID
+            # 需要先搜尋找到任務 ID
+            task_id = None
+            if action in ["update", "delete", "complete"] and search_query:
+                # 嘗試直接解析為 ID
+                try:
+                    task_id = int(search_query)
+                except ValueError:
+                    # 如果不是數字，則用關鍵字搜尋
+                    result = local_todo(action="search", search_query=search_query)
+                    if result.get("status") == "ok":
+                        tasks = result.get("tasks", [])
+                        if tasks:
+                            # 使用第一個匹配的任務
+                            task_id = tasks[0]["id"]
+                            info_log(f"[ManageTodo] 從關鍵字「{search_query}」找到任務 ID: {task_id}")
+                        else:
+                            # 找不到任務，中止工作流
+                            return StepResult.failure(
+                                f"找不到包含「{search_query}」的待辦事項"
+                            )
+                    else:
+                        return StepResult.failure(
+                            f"搜尋失敗：{result.get('message', '未知錯誤')}"
+                        )
+            
+            # 解析更新欄位（如果有）
+            # LLM 應該已經將自然語言轉換為結構化數據（JSON 或 key=value）
+            update_fields = {}
+            if update_fields_str:
+                try:
+                    import json
+                    # 嘗試 JSON 格式（LLM 應該提供這個）
+                    update_fields = json.loads(update_fields_str)
+                except:
+                    # 嘗試簡單的 key=value 格式
+                    for pair in update_fields_str.split(","):
+                        if "=" in pair:
+                            key, value = pair.split("=", 1)
+                            update_fields[key.strip()] = value.strip()
+                
+                # 如果仍然無法解析（純自然語言），返回明確錯誤讓 LLM 看到
+                if not update_fields:
+                    return StepResult.failure(
+                        f"無法解析更新欄位：「{update_fields_str}」。"
+                        f"請提供 JSON 格式（例如：{{\"priority\": \"medium\"}}）或 key=value 格式（例如：priority=medium）"
+                    )
+            
+            # 根據不同操作調用 CRUD 函數
+            if action == "list":
+                result = local_todo(action="list")
+                
+                if result.get("status") == "ok":
+                    tasks = result.get("tasks", [])
+                    if not tasks:
+                        return StepResult.complete_workflow("目前沒有待辦事項", {"tasks": []})
+                    
+                    # 格式化輸出（移除 emojis）
+                    task_list = []
+                    for task in tasks:
+                        priority_text = {"high": "[高]", "medium": "[中]", "low": "[低]", "none": ""}.get(task["priority"], "")
+                        task_list.append(
+                            f"{priority_text} [{task['id']}] {task['task_name']}"
+                            + (f" - {task['task_description']}" if task.get("task_description") else "")
+                        )
+                    
+                    info_log(f"[ManageTodo] 列出 {len(tasks)} 個待辦事項")
+                    return StepResult.complete_workflow(
+                        f"您有 {len(tasks)} 個待辦事項：\n" + "\n".join(task_list),
+                        {"tasks": tasks}
+                    )
+            
+            elif action == "search":
+                if not search_query:
+                    return StepResult.failure("搜尋需要提供關鍵字")
+                
+                result = local_todo(action="search", search_query=search_query)
+                
+                if result.get("status") == "ok":
+                    tasks = result.get("tasks", [])
+                    if not tasks:
+                        return StepResult.complete_workflow(f"找不到包含「{search_query}」的待辦事項", {"tasks": []})
+                    
+                    # 格式化輸出（移除 emojis）
+                    task_list = []
+                    for task in tasks:
+                        priority_text = {"high": "[高]", "medium": "[中]", "low": "[低]", "none": ""}.get(task["priority"], "")
+                        task_list.append(
+                            f"{priority_text} [{task['id']}] {task['task_name']}"
+                            + (f" - {task['task_description']}" if task.get("task_description") else "")
+                        )
+                    
+                    info_log(f"[ManageTodo] 搜尋「{search_query}」找到 {len(tasks)} 個結果")
+                    return StepResult.complete_workflow(
+                        f"找到 {len(tasks)} 個結果：\n" + "\n".join(task_list),
+                        {"tasks": tasks}
+                    )
+            
+            elif action == "update":
+                if task_id is None:
+                    return StepResult.failure("更新任務需要選擇任務")
+                if not update_fields:
+                    return StepResult.failure("更新任務需要提供更新欄位")
+                
+                result = local_todo(
+                    action="update",
+                    task_id=task_id,
+                    task_name=update_fields.get("task_name", ""),
+                    task_description=update_fields.get("task_description", ""),
+                    priority=update_fields.get("priority", ""),
+                    deadline=update_fields.get("deadline", "")
+                )
+                
+                if result.get("status") == "ok":
+                    info_log(f"[ManageTodo] 已更新任務 ID: {task_id}")
+                    return StepResult.complete_workflow(
+                        f"✅ 已更新任務 ID: {task_id}",
+                        {"task_id": task_id, "update_fields": update_fields}
+                    )
+                else:
+                    error_msg = result.get("message", "未知錯誤")
+                    return StepResult.failure(f"更新失敗：{error_msg}")
+            
+            elif action == "delete":
+                if task_id is None:
+                    return StepResult.failure("刪除任務需要選擇任務")
+                
+                result = local_todo(action="delete", task_id=task_id)
+                
+                if result.get("status") == "ok":
+                    info_log(f"[ManageTodo] 已刪除任務 ID: {task_id}")
+                    return StepResult.complete_workflow(
+                        f"🗑️ 已刪除任務 ID: {task_id}",
+                        {"task_id": task_id}
+                    )
+                else:
+                    error_msg = result.get("message", "未知錯誤")
+                    return StepResult.failure(f"刪除失敗：{error_msg}")
+            
+            elif action == "complete":
+                if task_id is None:
+                    return StepResult.failure("完成任務需要選擇任務")
+                
+                result = local_todo(action="complete", task_id=task_id)
+                
+                if result.get("status") == "ok":
+                    info_log(f"[ManageTodo] 已完成任務 ID: {task_id}")
+                    return StepResult.complete_workflow(
+                        f"✅ 已完成任務 ID: {task_id}",
+                        {"task_id": task_id}
+                    )
+                else:
+                    error_msg = result.get("message", "未知錯誤")
+                    return StepResult.failure(f"完成失敗：{error_msg}")
+            
+            else:
+                return StepResult.failure(f"不支援的操作：{action}")
+        
+        except Exception as e:
+            error_log(f"[ManageTodo] 執行失敗：{e}")
+            return StepResult.failure(f"管理待辦事項時發生錯誤：{str(e)}")
+    
+    # 創建執行步驟
+    execute_step = StepTemplate.create_processing_step(
+        session=session,
+        step_id="execute_manage_todo",
+        processor=execute_manage_todo,
+        required_data=["action_selection"],
+        description="執行待辦事項管理操作"
+    )
+    
+    # 組裝工作流
+    workflow_def.add_step(action_selection_step)
+    workflow_def.add_step(search_input_step)
+    workflow_def.add_step(update_fields_input_step)
+    workflow_def.add_step(action_conditional_step)
+    workflow_def.add_step(execute_step)
+    
+    workflow_def.set_entry_point("action_selection")
+    workflow_def.add_transition("action_selection", "action_conditional")
+    # 🔧 分支步驟完成後需要回到 conditional 繼續執行
+    workflow_def.add_transition("search_query_input", "action_conditional")
+    workflow_def.add_transition("update_fields_input", "action_conditional")
+    workflow_def.add_transition("action_conditional", "execute_manage_todo")
+    workflow_def.add_transition("execute_manage_todo", "END")
+    
+    return workflow_def
+
+
+# ==================== 行事曆工作流 ====================
+
+def create_calendar_workflow(
+    session: WorkflowSession,
+    start_time: str,
+    end_time: Optional[str] = None,
+    event_name: str = "General Event"
+) -> WorkflowDefinition:
+    """
+    創建行事曆事件工作流（背景服務）
+    
+    簡單的一次性資料庫寫入操作，不需要監控。
+    
+    Args:
+        start_time: 開始時間（ISO 格式，必填）
+        end_time: 結束時間（ISO 格式，可選，預設為當天 23:59）
+        event_name: 事件名稱（預設：General Event）
+    
+    Returns:
+        WorkflowDefinition 實例
+    """
+    workflow_def = WorkflowDefinition(
+        workflow_type="create_calendar",
+        name="創建行事曆事件",
+        description="建立新的行事曆事件",
+        workflow_mode=WorkflowMode.BACKGROUND,
+        requires_llm_review=False
+    )
+    
+    # 處理 end_time 預設值（當天 23:59）
+    if not end_time:
+        try:
+            start_dt = datetime.fromisoformat(start_time)
+            end_dt = start_dt.replace(hour=23, minute=59, second=59)
+            end_time = end_dt.isoformat()
+        except Exception as e:
+            error_log(f"[CreateCalendar] 無法解析 start_time: {e}")
+            end_time = ""
+    
+    # 使用 create_processing_step 直接調用 automation_helper
+    def execute_create_calendar(sess: WorkflowSession) -> StepResult:
+        """執行創建行事曆事件"""
+        try:
+            from modules.sys_module.actions.automation_helper import local_calendar
+            
+            # 驗證必要參數
+            if not start_time:
+                return StepResult.failure("缺少開始時間")
+            if not end_time:
+                return StepResult.failure("缺少結束時間")
+            
+            # 調用 CRUD 函數創建事件
+            result = local_calendar(
+                action="create",
+                summary=event_name,
+                start_time=start_time,
+                end_time=end_time
+            )
+            
+            if result.get("status") == "ok":
+                event_id = result.get("event_id")
+                info_log(f"[CreateCalendar] 已建立事件：{event_name} ({start_time} ~ {end_time})")
+                return StepResult.success(
+                    f"已建立行事曆事件「{event_name}」（{start_time} ~ {end_time}）",
+                    {"event_id": event_id, "event_name": event_name, "start_time": start_time, "end_time": end_time}
+                )
+            else:
+                error_msg = result.get("message", "未知錯誤")
+                error_log(f"[CreateCalendar] 建立失敗：{error_msg}")
+                return StepResult.failure(f"建立行事曆事件失敗：{error_msg}")
+        
+        except Exception as e:
+            error_log(f"[CreateCalendar] 執行失敗：{e}")
+            return StepResult.failure(f"建立行事曆事件時發生錯誤：{str(e)}")
+    
+    # 使用 create_processing_step
+    create_step = StepTemplate.create_processing_step(
+        session=session,
+        step_id="execute_create_calendar",
+        processor=execute_create_calendar,
+        required_data=[],
+        description="創建行事曆事件並保存到資料庫"
+    )
+    
+    workflow_def.add_step(create_step)
+    workflow_def.set_entry_point(create_step.id)
+    
+    return workflow_def
+
+
+def manage_calendar_workflow(
+    session: WorkflowSession,
+    operation: Optional[str] = None,
+    **kwargs  # 接收其他 initial_data 參數（如 event_name_hint, time_context, update_intent）
+) -> WorkflowDefinition:
+    """
+    管理行事曆事件工作流（直接工作流，用於查詢、修改、刪除）
+    
+    支援操作：
+    - list: 列出行事曆事件
+    - search: 搜尋事件
+    - update: 更新事件
+    - delete: 刪除事件
+    - find_free_time: 查找空閒時段
+    
+    工作流程：
+    1. 選擇操作類型（list/search/update/delete/find_free_time）
+    2. 根據操作類型條件輸入：
+       - list: 無需額外輸入（或可選時間範圍）
+       - search: 輸入搜尋關鍵字
+       - update: 選擇事件 → 輸入更新欄位
+       - delete: 選擇事件
+       - find_free_time: 無需額外輸入
+    3. 執行操作並顯示結果
+    
+    Args:
+        operation: 操作類型（可選，可從 initial_data 提取）
+    
+    Returns:
+        WorkflowDefinition 實例
+    """
+    workflow_def = WorkflowDefinition(
+        workflow_type="manage_calendar",
+        name="管理行事曆事件",
+        description="查詢、修改或刪除行事曆事件",
+        workflow_mode=WorkflowMode.DIRECT,  # 直接工作流
+        requires_llm_review=True  # ✅ DIRECT 工作流需要審核以生成步驟間提示
+    )
+    
+    # 如果從 initial_data 提供了 operation，保存到 session
+    if operation:
+        session.add_data("action_selection", operation)
+    
+    # 步驟 1: 選擇操作類型
+    action_selection_step = StepTemplate.create_selection_step(
+        session=session,
+        step_id="action_selection",
+        prompt="請選擇要執行的操作：",
+        options=["list", "search", "update", "delete", "find_free_time"],
+        labels=["列出行事曆", "搜尋事件", "更新事件", "刪除事件", "查找空閒時段"],
+        required_data=[],
+        skip_if_data_exists=True
+    )
+    
+    # 步驟 2a: 通用輸入步驟（可用於 search/update/delete）
+    # 對於 search：輸入搜尋關鍵字
+    # 對於 update/delete：輸入事件關鍵字或 ID，LLM 會解析
+    search_input_step = StepTemplate.create_input_step(
+        session=session,
+        step_id="search_query_input",
+        prompt="請輸入搜尋關鍵字或事件 ID：",
+        optional=False,
+        skip_if_data_exists=True,
+        description="收集搜尋關鍵字或事件標識"
+    )
+    
+    # 步驟 2b: 更新欄位輸入（僅 update 需要）
+    update_fields_input_step = StepTemplate.create_input_step(
+        session=session,
+        step_id="update_fields_input",
+        prompt="請輸入要更新的內容（可包含：event_name, start_time, end_time, location, description）：",
+        optional=False,
+        skip_if_data_exists=True,
+        description="收集更新欄位"
+    )
+    
+    # 步驟 3: 條件分支（根據操作類型決定需要哪些輸入）
+    action_conditional_step = StepTemplate.create_conditional_step(
+        session=session,
+        step_id="action_conditional",
+        selection_step_id="action_selection",
+        branches={
+            "list": [],  # 無需額外輸入
+            "search": [search_input_step],  # 需要搜尋關鍵字
+            "update": [search_input_step, update_fields_input_step],  # 需要事件關鍵字 + 更新欄位（LLM 會在審核時解析自然語言）
+            "delete": [search_input_step],  # 需要事件關鍵字
+            "find_free_time": [],  # 無需額外輸入
+        },
+        description="根據操作類型決定需要的輸入"
+    )
+    
+    # 步驟 4: 執行管理事件
+    def execute_manage_calendar(sess: WorkflowSession) -> StepResult:
+        """執行管理行事曆事件"""
+        try:
+            from modules.sys_module.actions.automation_helper import local_calendar
+            from datetime import datetime
+            
+            # 獲取參數
+            action = sess.get_data("action_selection", "list")
+            search_query = sess.get_data("search_query_input", "")
+            update_fields_str = sess.get_data("update_fields_input", "")
+            
+            # 對於 update/delete 操作，search_query_input 包含事件關鍵字或 ID
+            # 需要先搜尋找到事件 ID
+            event_id = None
+            if action in ["update", "delete"] and search_query:
+                # 嘗試直接解析為 ID
+                try:
+                    event_id = int(search_query)
+                except ValueError:
+                    # 如果不是數字，則用關鍵字搜尋
+                    # 先列出所有事件
+                    result = local_calendar(action="list")
+                    if result.get("status") == "ok":
+                        events = result.get("events", [])
+                        # 過濾包含關鍵字的事件
+                        search_lower = search_query.lower() if search_query else ""
+                        matching_events = [
+                            e for e in events
+                            if search_lower in (e.get("summary") or "").lower() or
+                               search_lower in (e.get("description") or "").lower()
+                        ]
+                        
+                        if matching_events:
+                            # 使用第一個匹配的事件
+                            event_id = matching_events[0]["id"]
+                            info_log(f"[ManageCalendar] 從關鍵字「{search_query}」找到事件 ID: {event_id}")
+                        else:
+                            # 找不到事件，中止工作流
+                            return StepResult.failure(
+                                f"找不到包含「{search_query}」的行事曆事件"
+                            )
+                    else:
+                        return StepResult.failure(
+                            f"搜尋失敗：{result.get('message', '未知錯誤')}"
+                        )
+            
+            # 解析更新欄位（如果有）
+            # LLM 應該已經將自然語言轉換為結構化數據（JSON 或 key=value）
+            update_fields = {}
+            if update_fields_str:
+                try:
+                    import json
+                    # 嘗試 JSON 格式（LLM 應該提供這個）
+                    update_fields = json.loads(update_fields_str)
+                except:
+                    # 嘗試簡單的 key=value 格式
+                    for pair in update_fields_str.split(","):
+                        if "=" in pair:
+                            key, value = pair.split("=", 1)
+                            update_fields[key.strip()] = value.strip()
+            
+            # 根據不同操作調用 CRUD 函數
+            if action == "list":
+                result = local_calendar(action="list")
+                
+                if result.get("status") == "ok":
+                    events = result.get("events", [])
+                    if not events:
+                        return StepResult.success("目前沒有行事曆事件")
+                    
+                    # 格式化輸出
+                    event_list = []
+                    for event in events:
+                        start_str = event.get("start_time", "")
+                        end_str = event.get("end_time", "")
+                        event_list.append(
+                            f"[{event['id']}] {event['summary']}: {start_str} ~ {end_str}"
+                            + (f"\n    📍 {event['location']}" if event.get("location") else "")
+                        )
+                    
+                    info_log(f"[ManageCalendar] 列出 {len(events)} 個事件")
+                    return StepResult.complete_workflow(
+                        f"您有 {len(events)} 個行事曆事件：\n" + "\n".join(event_list),
+                        {"events": events}
+                    )
+            
+            elif action == "search":
+                if not search_query:
+                    return StepResult.failure("搜尋需要提供關鍵字")
+                
+                # 使用 list 然後手動過濾（因為 local_calendar 沒有 search action）
+                result = local_calendar(action="list")
+                
+                if result.get("status") == "ok":
+                    all_events = result.get("events", [])
+                    # 手動過濾
+                    events = [
+                        e for e in all_events
+                        if search_query.lower() in e.get("summary", "").lower()
+                        or search_query.lower() in e.get("description", "").lower()
+                    ]
+                    
+                    if not events:
+                        return StepResult.complete_workflow(f"找不到包含「{search_query}」的行事曆事件", {"events": []})
+                    
+                    # 格式化輸出（移除 emoji）
+                    event_list = []
+                    for event in events:
+                        start_str = event.get("start_time", "")
+                        end_str = event.get("end_time", "")
+                        event_list.append(
+                            f"[{event['id']}] {event['summary']}: {start_str} ~ {end_str}"
+                        )
+                    
+                    info_log(f"[ManageCalendar] 搜尋「{search_query}」找到 {len(events)} 個結果")
+                    return StepResult.complete_workflow(
+                        f"找到 {len(events)} 個結果：\n" + "\n".join(event_list),
+                        {"events": events}
+                    )
+            
+            elif action == "update":
+                if event_id is None:
+                    return StepResult.failure("更新事件需要選擇事件")
+                if not update_fields:
+                    return StepResult.failure("更新事件需要提供更新欄位")
+                
+                result = local_calendar(
+                    action="update",
+                    event_id=event_id,
+                    summary=update_fields.get("event_name", ""),
+                    start_time=update_fields.get("start_time", ""),
+                    end_time=update_fields.get("end_time", ""),
+                    description=update_fields.get("description", ""),
+                    location=update_fields.get("location", "")
+                )
+                
+                if result.get("status") == "ok":
+                    info_log(f"[ManageCalendar] 已更新事件 ID: {event_id}")
+                    return StepResult.complete_workflow(
+                        f"✅ 已更新事件 ID: {event_id}",
+                        {"event_id": event_id, "update_fields": update_fields}
+                    )
+                else:
+                    error_msg = result.get("message", "未知錯誤")
+                    return StepResult.failure(f"更新失敗：{error_msg}")
+            
+            elif action == "delete":
+                if event_id is None:
+                    return StepResult.failure("刪除事件需要選擇事件")
+                
+                result = local_calendar(action="delete", event_id=event_id)
+                
+                if result.get("status") == "ok":
+                    info_log(f"[ManageCalendar] 已刪除事件 ID: {event_id}")
+                    return StepResult.complete_workflow(
+                        f"🗑️ 已刪除事件 ID: {event_id}",
+                        {"event_id": event_id}
+                    )
+                else:
+                    error_msg = result.get("message", "未知錯誤")
+                    return StepResult.failure(f"刪除失敗：{error_msg}")
+            
+            elif action == "find_free_time":
+                # 簡單實現：列出所有事件，讓 LLM 分析空閒時段
+                result = local_calendar(action="list")
+                
+                if result.get("status") == "ok":
+                    events = result.get("events", [])
+                    
+                    # 按時間排序
+                    events_sorted = sorted(events, key=lambda e: e.get("start_time", ""))
+                    
+                    # 格式化事件列表
+                    event_list = []
+                    for event in events_sorted:
+                        start_str = event.get("start_time", "")
+                        end_str = event.get("end_time", "")
+                        event_list.append(f"{start_str} ~ {end_str}: {event['summary']}")
+                    
+                    info_log(f"[ManageCalendar] 查找空閒時段（已排序 {len(events)} 個事件）")
+                    return StepResult.complete_workflow(
+                        f"您的行程如下（共 {len(events)} 個事件）：\n" + "\n".join(event_list),
+                        {"events": events_sorted}
+                    )
+                else:
+                    return StepResult.complete_workflow(
+                        "🕐 目前沒有行事曆事件，所有時間都是空閒的",
+                        {"events": []}
+                    )
+            
+            else:
+                return StepResult.failure(f"不支援的操作：{action}")
+        
+        except Exception as e:
+            error_log(f"[ManageCalendar] 執行失敗：{e}")
+            return StepResult.failure(f"管理行事曆事件時發生錯誤：{str(e)}")
+    
+    # 創建執行步驟
+    execute_step = StepTemplate.create_processing_step(
+        session=session,
+        step_id="execute_manage_calendar",
+        processor=execute_manage_calendar,
+        required_data=["action_selection"],
+        description="執行行事曆事件管理操作"
+    )
+    
+    # 組裝工作流
+    workflow_def.add_step(action_selection_step)
+    workflow_def.add_step(search_input_step)
+    workflow_def.add_step(update_fields_input_step)
+    workflow_def.add_step(action_conditional_step)
+    workflow_def.add_step(execute_step)
+    
+    workflow_def.set_entry_point("action_selection")
+    workflow_def.add_transition("action_selection", "action_conditional")
+    # 🔧 分支步驟完成後需要回到 conditional 繼續執行
+    workflow_def.add_transition("search_query_input", "action_conditional")
+    workflow_def.add_transition("update_fields_input", "action_conditional")
+    workflow_def.add_transition("action_conditional", "execute_manage_calendar")
+    workflow_def.add_transition("execute_manage_calendar", "END")
+    
     return workflow_def

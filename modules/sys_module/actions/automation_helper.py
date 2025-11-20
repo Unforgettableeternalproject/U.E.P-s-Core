@@ -485,7 +485,25 @@ def _init_db():
       end_time TEXT NOT NULL,
       location TEXT,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      last_notified_at TEXT,
+      last_notified_stage TEXT
+    )""")
+    
+    # 待辦事項表
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS todos (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_name TEXT NOT NULL,
+      task_description TEXT,
+      priority TEXT NOT NULL DEFAULT 'none',
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deadline TEXT,
+      completed_at TEXT,
+      last_notified_at TEXT,
+      last_notified_stage TEXT
     )""")
     
     # 背景工作流追蹤表
@@ -517,12 +535,33 @@ def _init_db():
     )""")
     
     # 為常用查詢建立索引
+    c.execute("CREATE INDEX IF NOT EXISTS idx_todos_status ON todos(status)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_todos_priority ON todos(priority)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_todos_deadline ON todos(deadline)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_bg_workflows_status ON background_workflows(status)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_bg_workflows_type ON background_workflows(workflow_type)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_bg_workflows_next_check ON background_workflows(next_check_at)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_interventions_task ON workflow_interventions(task_id)")
     
     conn.commit()
+    
+    # 添加缺失的欄位（如果不存在）
+    try:
+        c.execute("ALTER TABLE calendar_events ADD COLUMN last_notified_at TEXT")
+        c.execute("ALTER TABLE calendar_events ADD COLUMN last_notified_stage TEXT")
+        conn.commit()
+        info_log("已添加 calendar_events 通知追蹤欄位")
+    except sqlite3.OperationalError:
+        pass  # 欄位已存在
+    
+    try:
+        c.execute("ALTER TABLE todos ADD COLUMN last_notified_at TEXT")
+        c.execute("ALTER TABLE todos ADD COLUMN last_notified_stage TEXT")
+        conn.commit()
+        info_log("已添加 todos 通知追蹤欄位")
+    except sqlite3.OperationalError:
+        pass  # 欄位已存在
+    
     conn.close()
 
 _init_db()
@@ -1270,6 +1309,261 @@ def local_calendar(
         return {"status": "error", "message": str(e)}
 
 
+# ==================== 待辦事項管理 ====================
+
+def local_todo(
+    action: str,
+    task_name: str = "",
+    task_description: str = "",
+    priority: str = "none",
+    deadline: str = "",
+    task_id: int = -1,
+    search_query: str = ""
+) -> dict:
+    """
+    本地待辦事項管理 - 使用 SQLite 儲存任務
+    
+    Args:
+        action: 動作 (create, list, get, update, delete, complete, search)
+        task_name: 任務名稱
+        task_description: 任務描述
+        priority: 優先級 (none, low, medium, high)
+        deadline: 截止時間（ISO 格式）
+        task_id: 任務 ID（用於 get, update, delete, complete）
+        search_query: 搜尋關鍵字（用於 search）
+        
+    Returns:
+        操作結果（dict）
+    """
+    try:
+        conn = sqlite3.connect(_DB)
+        c = conn.cursor()
+        now = datetime.now().isoformat()
+        
+        # 驗證優先級
+        valid_priorities = ["none", "low", "medium", "high"]
+        if priority not in valid_priorities:
+            priority = "none"
+        
+        if action == "create":
+            # 建立任務
+            if not task_name:
+                return {"status": "error", "message": "缺少必要參數：task_name"}
+            
+            c.execute("""
+                INSERT INTO todos 
+                (task_name, task_description, priority, status, created_at, updated_at, deadline)
+                VALUES (?, ?, ?, 'pending', ?, ?, ?)
+            """, (task_name, task_description, priority, now, now, deadline or None))
+            
+            task_id = c.lastrowid
+            conn.commit()
+            conn.close()
+            
+            info_log(f"[AUTO] 已建立待辦事項：{task_name} (優先級：{priority})")
+            return {
+                "status": "ok",
+                "message": f"已建立任務：{task_name}",
+                "task_id": task_id
+            }
+        
+        elif action == "list":
+            # 列出任務（僅未完成）
+            c.execute("""
+                SELECT id, task_name, task_description, priority, status, deadline, created_at
+                FROM todos
+                WHERE status != 'completed'
+                ORDER BY 
+                    CASE priority
+                        WHEN 'high' THEN 1
+                        WHEN 'medium' THEN 2
+                        WHEN 'low' THEN 3
+                        ELSE 4
+                    END,
+                    deadline ASC,
+                    created_at ASC
+            """)
+            
+            tasks = []
+            for row in c.fetchall():
+                tasks.append({
+                    "id": row[0],
+                    "task_name": row[1],
+                    "task_description": row[2],
+                    "priority": row[3],
+                    "status": row[4],
+                    "deadline": row[5],
+                    "created_at": row[6]
+                })
+            
+            conn.close()
+            info_log(f"[AUTO] 查詢到 {len(tasks)} 個待辦事項")
+            return {"status": "ok", "tasks": tasks}
+        
+        elif action == "search":
+            # 搜尋任務（支援分詞模糊匹配）
+            if not search_query:
+                return {"status": "error", "message": "缺少 search_query"}
+            
+            # 分詞：移除常見的連接詞，提取關鍵字
+            keywords = [word.strip().lower() for word in search_query.split() 
+                       if word.strip().lower() not in ['the', 'a', 'an', 'one', 'some', 'my']]
+            
+            if not keywords:
+                # 如果過濾後沒有關鍵字，使用原始查詢
+                keywords = [search_query.lower()]
+            
+            # 構建查詢條件：任何一個關鍵字匹配即可
+            where_conditions = []
+            params = []
+            for keyword in keywords:
+                where_conditions.append("(task_name LIKE ? OR task_description LIKE ?)")
+                params.extend([f"%{keyword}%", f"%{keyword}%"])
+            
+            query = f"""
+                SELECT id, task_name, task_description, priority, status, deadline, created_at
+                FROM todos
+                WHERE ({' OR '.join(where_conditions)})
+                AND status != 'completed'
+                ORDER BY 
+                    CASE priority
+                        WHEN 'high' THEN 1
+                        WHEN 'medium' THEN 2
+                        WHEN 'low' THEN 3
+                        ELSE 4
+                    END,
+                    created_at DESC
+            """
+            
+            c.execute(query, params)
+            
+            tasks = []
+            for row in c.fetchall():
+                tasks.append({
+                    "id": row[0],
+                    "task_name": row[1],
+                    "task_description": row[2],
+                    "priority": row[3],
+                    "status": row[4],
+                    "deadline": row[5],
+                    "created_at": row[6]
+                })
+            
+            conn.close()
+            info_log(f"[AUTO] 搜尋「{search_query}」找到 {len(tasks)} 個結果")
+            return {"status": "ok", "tasks": tasks}
+        
+        elif action == "get":
+            # 取得單一任務
+            if task_id < 0:
+                return {"status": "error", "message": "缺少 task_id"}
+            
+            c.execute("""
+                SELECT id, task_name, task_description, priority, status, deadline, created_at, updated_at, completed_at
+                FROM todos
+                WHERE id = ?
+            """, (task_id,))
+            
+            row = c.fetchone()
+            conn.close()
+            
+            if not row:
+                return {"status": "error", "message": f"找不到任務 ID: {task_id}"}
+            
+            return {
+                "status": "ok",
+                "task": {
+                    "id": row[0],
+                    "task_name": row[1],
+                    "task_description": row[2],
+                    "priority": row[3],
+                    "status": row[4],
+                    "deadline": row[5],
+                    "created_at": row[6],
+                    "updated_at": row[7],
+                    "completed_at": row[8]
+                }
+            }
+        
+        elif action == "update":
+            # 更新任務
+            if task_id < 0:
+                return {"status": "error", "message": "缺少 task_id"}
+            
+            # 構建更新語句
+            updates = []
+            params = []
+            
+            if task_name:
+                updates.append("task_name = ?")
+                params.append(task_name)
+            if task_description:
+                updates.append("task_description = ?")
+                params.append(task_description)
+            if priority:
+                updates.append("priority = ?")
+                params.append(priority)
+            if deadline:
+                updates.append("deadline = ?")
+                params.append(deadline)
+            
+            if not updates:
+                return {"status": "error", "message": "沒有要更新的欄位"}
+            
+            updates.append("updated_at = ?")
+            params.append(now)
+            params.append(task_id)
+            
+            c.execute(f"""
+                UPDATE todos
+                SET {', '.join(updates)}
+                WHERE id = ?
+            """, params)
+            
+            conn.commit()
+            conn.close()
+            
+            info_log(f"[AUTO] 已更新任務 ID: {task_id}")
+            return {"status": "ok", "message": f"已更新任務 ID: {task_id}"}
+        
+        elif action == "complete":
+            # 完成任務
+            if task_id < 0:
+                return {"status": "error", "message": "缺少 task_id"}
+            
+            c.execute("""
+                UPDATE todos
+                SET status = 'completed', completed_at = ?, updated_at = ?
+                WHERE id = ?
+            """, (now, now, task_id))
+            
+            conn.commit()
+            conn.close()
+            
+            info_log(f"[AUTO] 已完成任務 ID: {task_id}")
+            return {"status": "ok", "message": f"已完成任務 ID: {task_id}"}
+        
+        elif action == "delete":
+            # 刪除任務
+            if task_id < 0:
+                return {"status": "error", "message": "缺少 task_id"}
+            
+            c.execute("DELETE FROM todos WHERE id = ?", (task_id,))
+            conn.commit()
+            conn.close()
+            
+            info_log(f"[AUTO] 已刪除任務 ID: {task_id}")
+            return {"status": "ok", "message": f"已刪除任務 ID: {task_id}"}
+        
+        else:
+            conn.close()
+            return {"status": "error", "message": f"未知動作：{action}"}
+    
+    except Exception as e:
+        error_log(f"[AUTO] 待辦事項操作失敗：{e}")
+        return {"status": "error", "message": str(e)}
+
+
 # ==================== 背景工作流資料庫管理 ====================
 
 def register_background_workflow(
@@ -1661,6 +1955,20 @@ class BackgroundEventScheduler:
     - BackgroundEventScheduler: 系統級定時檢查器（單一線程，輕量級）
     """
     
+    # 通知階段定義
+    NOTIFICATION_STAGES = {
+        "calendar_events": [
+            {"hours_before": 24, "stage_name": "24h_before", "message": "明天有行程"},
+            {"hours_before": 1, "stage_name": "1h_before", "message": "一小時後有行程"},
+            {"minutes_before": 15, "stage_name": "15min_before", "message": "即將開始"}
+        ],
+        "todos": [
+            {"hours_before": 24, "stage_name": "24h_before", "message": "明天到期"},
+            {"hours_before": 1, "stage_name": "1h_before", "message": "一小時後到期"},
+            {"at_deadline": True, "stage_name": "at_deadline", "message": "已到期"}
+        ]
+    }
+    
     _instance = None
     _lock = threading.Lock()
     
@@ -1764,7 +2072,8 @@ class BackgroundEventScheduler:
         定期檢查：
         1. 提醒（reminders 表）
         2. 日曆事件（calendar_events 表）
-        3. 其他到期的觸發條件（background_workflows 表）
+        3. 待辦事項（todos 表）- 檢查過期任務
+        4. 其他到期的觸發條件（background_workflows 表）
         """
         info_log("[BackgroundEventScheduler] 排程器循環已啟動")
         
@@ -1775,6 +2084,9 @@ class BackgroundEventScheduler:
                 
                 # 檢查即將開始的日曆事件（提前 15 分鐘通知）
                 self._check_calendar_events()
+                
+                # 檢查過期的待辦事項
+                self._check_todos()
                 
                 # 檢查其他到期的背景工作流觸發條件
                 self._check_workflow_triggers()
@@ -1809,9 +2121,8 @@ class BackgroundEventScheduler:
                 
                 try:
                     # 發布提醒觸發事件
-                    from core.event_bus import EventBus, SystemEvent
+                    from core.event_bus import event_bus, SystemEvent
                     
-                    event_bus = EventBus.get_instance()
                     event_bus.publish(
                         SystemEvent.REMINDER_TRIGGERED,
                         {
@@ -1840,60 +2151,298 @@ class BackgroundEventScheduler:
             error_log(f"[BackgroundEventScheduler] 檢查提醒失敗：{e}")
     
     def _check_calendar_events(self) -> None:
-        """檢查即將開始的日曆事件（提前 15 分鐘通知）"""
+        """檢查日曆事件並根據通知階段發布事件"""
         try:
             from datetime import timedelta
+            from core.event_bus import EventBus, SystemEvent
+            from core.states.state_manager import UEPState
             
-            # 計算提前通知時間（15 分鐘）
             now = datetime.now()
-            notify_window_start = now
-            notify_window_end = now + timedelta(minutes=15)
+            conn = sqlite3.connect(_DB)
+            c = conn.cursor()
+            
+            # 查詢所有未開始的日曆事件
+            c.execute("""
+                SELECT id, summary, description, start_time, location,
+                       last_notified_at, last_notified_stage
+                FROM calendar_events
+                WHERE start_time >= ?
+                ORDER BY start_time ASC
+            """, (now.isoformat(),))
+            
+            events = c.fetchall()
+            notifications_sent = 0
+            
+            for event in events:
+                event_id, summary, description, start_time_str, location, last_notified_at, last_notified_stage = event
+                
+                try:
+                    start_time = datetime.fromisoformat(start_time_str)
+                    time_until_start = start_time - now
+                    
+                    # 判斷當前應該處於哪個通知階段
+                    current_stage = None
+                    
+                    if time_until_start.total_seconds() <= 900:
+                        # 15 分鐘內開始
+                        current_stage = "15min_before"
+                    elif time_until_start.total_seconds() <= 3600:
+                        # 1 小時內開始
+                        current_stage = "1h_before"
+                    elif time_until_start.total_seconds() <= 86400:
+                        # 24 小時內開始
+                        current_stage = "24h_before"
+                    
+                    # 如果有應該通知的階段，且該階段還沒通知過
+                    if current_stage and current_stage != last_notified_stage:
+                        # 發布事件
+                        from core.event_bus import event_bus
+                        event_bus.publish(
+                            SystemEvent.CALENDAR_EVENT_STARTING,
+                            {
+                                "event_id": event_id,
+                                "summary": summary,
+                                "description": description,
+                                "start_time": start_time_str,
+                                "location": location,
+                                "stage": current_stage,
+                                "source": "background_scheduler"
+                            }
+                        )
+                        
+                        # 更新資料庫中的通知記錄
+                        c.execute("""
+                            UPDATE calendar_events 
+                            SET last_notified_at = ?, last_notified_stage = ?
+                            WHERE id = ?
+                        """, (now.isoformat(), current_stage, event_id))
+                        conn.commit()
+                        
+                        notifications_sent += 1
+                        info_log(f"[BackgroundEventScheduler] 日曆事件通知（{current_stage}）：{summary} (start: {start_time_str})")
+                    
+                except Exception as e:
+                    error_log(f"[BackgroundEventScheduler] 處理日曆事件 {event_id} 失敗：{e}")
+            
+            conn.close()
+            
+            if notifications_sent > 0:
+                debug_log(2, f"[BackgroundEventScheduler] 已發送 {notifications_sent} 個日曆事件通知")
+                
+        except Exception as e:
+            error_log(f"[BackgroundEventScheduler] 檢查日曆事件失敗：{e}")
+    
+    def _check_todos(self) -> None:
+        """檢查待辦事項並根據通知階段發布事件"""
+        try:
+            from datetime import timedelta
+            from core.event_bus import EventBus, SystemEvent
+            from core.states.state_manager import UEPState
+            
+            now = datetime.now()
+            conn = sqlite3.connect(_DB)
+            c = conn.cursor()
+            
+            # 查詢所有未完成且有 deadline 的待辦事項
+            c.execute("""
+                SELECT id, task_name, task_description, priority, deadline, 
+                       last_notified_at, last_notified_stage
+                FROM todos
+                WHERE deadline IS NOT NULL 
+                  AND status != 'completed'
+                ORDER BY priority DESC, deadline ASC
+            """)
+            
+            todos = c.fetchall()
+            notifications_sent = 0
+            
+            for todo in todos:
+                todo_id, task_name, task_description, priority, deadline_str, last_notified_at, last_notified_stage = todo
+                
+                try:
+                    deadline = datetime.fromisoformat(deadline_str)
+                    time_until_deadline = deadline - now
+                    
+                    # 判斷當前應該處於哪個通知階段
+                    current_stage = None
+                    event_type = None
+                    
+                    if time_until_deadline.total_seconds() <= 0:
+                        # 已到期
+                        current_stage = "at_deadline"
+                        event_type = SystemEvent.TODO_OVERDUE
+                    elif time_until_deadline.total_seconds() <= 3600:
+                        # 1 小時內到期
+                        current_stage = "1h_before"
+                        event_type = SystemEvent.TODO_UPCOMING
+                    elif time_until_deadline.total_seconds() <= 86400:
+                        # 24 小時內到期
+                        current_stage = "24h_before"
+                        event_type = SystemEvent.TODO_UPCOMING
+                    
+                    # 如果有應該通知的階段，且該階段還沒通知過
+                    if current_stage and current_stage != last_notified_stage:
+                        # 發布事件
+                        from core.event_bus import event_bus
+                        event_bus.publish(
+                            event_type,
+                            {
+                                "todo_id": todo_id,
+                                "task_name": task_name,
+                                "task_description": task_description,
+                                "priority": priority,
+                                "deadline": deadline_str,
+                                "stage": current_stage,
+                                "source": "background_scheduler"
+                            }
+                        )
+                        
+                        # 更新資料庫中的通知記錄
+                        c.execute("""
+                            UPDATE todos 
+                            SET last_notified_at = ?, last_notified_stage = ?
+                            WHERE id = ?
+                        """, (now.isoformat(), current_stage, todo_id))
+                        conn.commit()
+                        
+                        notifications_sent += 1
+                        info_log(f"[BackgroundEventScheduler] 待辦事項通知（{current_stage}）：{task_name} (deadline: {deadline_str})")
+                    
+                except Exception as e:
+                    error_log(f"[BackgroundEventScheduler] 處理待辦事項 {todo_id} 失敗：{e}")
+            
+            conn.close()
+            
+            if notifications_sent > 0:
+                debug_log(2, f"[BackgroundEventScheduler] 已發送 {notifications_sent} 個待辦事項通知")
+                
+        except Exception as e:
+            error_log(f"[BackgroundEventScheduler] 檢查待辦事項失敗：{e}")
+    
+    def check_overdue_items_on_startup(self) -> Dict[str, Any]:
+        """
+        系統啟動時檢查所有過期的項目並返回報告
+        
+        這個方法應該在系統初始化時被調用，用於：
+        1. 檢查資料庫中所有過期的待辦事項
+        2. 檢查資料庫中所有已過時的提醒
+        3. 檢查資料庫中所有已過期的日曆事件
+        4. 生成報告並可選地發布事件
+        
+        Returns:
+            包含過期項目統計的報告字典
+        """
+        try:
+            now = datetime.now()
+            report = {
+                "overdue_todos": [],
+                "missed_reminders": [],
+                "past_calendar_events": []
+            }
             
             conn = sqlite3.connect(_DB)
             c = conn.cursor()
             
-            # 查詢即將開始的事件（未來 15 分鐘內）
+            # 1. 檢查過期待辦事項
             c.execute("""
-                SELECT id, summary, description, start_time, location
+                SELECT id, task_name, task_description, priority, deadline
+                FROM todos
+                WHERE deadline IS NOT NULL 
+                  AND deadline < ?
+                  AND status != 'completed'
+                ORDER BY deadline ASC
+            """, (now.isoformat(),))
+            
+            for row in c.fetchall():
+                todo_id, task_name, task_description, priority, deadline = row
+                report["overdue_todos"].append({
+                    "id": todo_id,
+                    "task_name": task_name,
+                    "task_description": task_description,
+                    "priority": priority,
+                    "deadline": deadline
+                })
+            
+            # 2. 檢查錯過的提醒
+            c.execute("""
+                SELECT id, time, message
+                FROM reminders
+                WHERE time < ?
+                ORDER BY time ASC
+            """, (now.isoformat(),))
+            
+            for row in c.fetchall():
+                reminder_id, trigger_time, message = row
+                report["missed_reminders"].append({
+                    "id": reminder_id,
+                    "time": trigger_time,
+                    "message": message
+                })
+            
+            # 3. 檢查已過期的日曆事件（過去 24 小時內）
+            from datetime import timedelta
+            past_24h = now - timedelta(hours=24)
+            
+            c.execute("""
+                SELECT id, summary, description, start_time, end_time
                 FROM calendar_events
-                WHERE start_time >= ? AND start_time <= ?
+                WHERE end_time >= ? AND end_time < ?
                 ORDER BY start_time ASC
-            """, (notify_window_start.isoformat(), notify_window_end.isoformat()))
+            """, (past_24h.isoformat(), now.isoformat()))
             
-            upcoming_events = c.fetchall()
-            
-            for event in upcoming_events:
-                event_id, summary, description, start_time, location = event
-                
-                try:
-                    # 發布日曆事件即將開始事件
-                    from core.event_bus import EventBus, SystemEvent
-                    
-                    event_bus = EventBus.get_instance()
-                    event_bus.publish(
-                        SystemEvent.CALENDAR_EVENT_STARTING,
-                        {
-                            "event_id": event_id,
-                            "summary": summary,
-                            "description": description,
-                            "start_time": start_time,
-                            "location": location,
-                            "source": "background_scheduler"
-                        }
-                    )
-                    
-                    info_log(f"[BackgroundEventScheduler] 日曆事件即將開始：{summary} ({start_time})")
-                    
-                except Exception as e:
-                    error_log(f"[BackgroundEventScheduler] 處理日曆事件失敗：{e}")
+            for row in c.fetchall():
+                event_id, summary, description, start_time, end_time = row
+                report["past_calendar_events"].append({
+                    "id": event_id,
+                    "summary": summary,
+                    "description": description,
+                    "start_time": start_time,
+                    "end_time": end_time
+                })
             
             conn.close()
             
-            if upcoming_events:
-                debug_log(2, f"[BackgroundEventScheduler] 已處理 {len(upcoming_events)} 個日曆事件")
+            # 統計
+            total_overdue = len(report["overdue_todos"])
+            total_missed = len(report["missed_reminders"])
+            total_past = len(report["past_calendar_events"])
+            
+            if total_overdue > 0 or total_missed > 0 or total_past > 0:
+                info_log(
+                    f"[BackgroundEventScheduler] 系統啟動檢查完成：\n"
+                    f"  - {total_overdue} 個過期待辦事項\n"
+                    f"  - {total_missed} 個錯過的提醒\n"
+                    f"  - {total_past} 個最近結束的日曆事件"
+                )
                 
+                # 可選：發布系統啟動報告事件
+                try:
+                    from core.event_bus import event_bus, SystemEvent
+                    event_bus.publish(
+                        SystemEvent.SYSTEM_STARTUP_REPORT,
+                        {
+                            "report": report,
+                            "total_overdue": total_overdue,
+                            "total_missed": total_missed,
+                            "total_past": total_past,
+                            "source": "background_scheduler"
+                        }
+                    )
+                except Exception as e:
+                    error_log(f"[BackgroundEventScheduler] 發布啟動報告失敗：{e}")
+            else:
+                info_log("[BackgroundEventScheduler] 系統啟動檢查完成：沒有過期項目")
+            
+            return report
+            
         except Exception as e:
-            error_log(f"[BackgroundEventScheduler] 檢查日曆事件失敗：{e}")
+            error_log(f"[BackgroundEventScheduler] 啟動檢查失敗：{e}")
+            return {
+                "overdue_todos": [],
+                "missed_reminders": [],
+                "past_calendar_events": [],
+                "error": str(e)
+            }
     
     def _check_workflow_triggers(self) -> None:
         """檢查背景工作流的觸發條件"""

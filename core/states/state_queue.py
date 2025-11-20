@@ -199,27 +199,53 @@ class StateQueueManager:
         try:
             from core.states.state_manager import state_manager
             
-            # 確定工作流程類型
-            intent_type = queue_item.metadata.get('intent_type', 'command')
-            workflow_type = self._map_intent_to_workflow_type(intent_type)
+            # 檢查是否為系統匯報模式（不需要工作流程）
+            workflow_type = queue_item.metadata.get('workflow_type')
+            is_system_report = workflow_type == 'system_report' or queue_item.metadata.get('system_report', False)
             
-            # 準備上下文信息
-            context = {
-                "workflow_type": workflow_type,
-                "command": queue_item.context_content,
-                "intent_type": intent_type,
-                "trigger_content": queue_item.trigger_content,
-                "queue_item_id": f"{queue_item.state.value}_{queue_item.created_at.timestamp()}",
-                "state_queue_callback": self._on_work_session_complete,  # 回調函數
-                **queue_item.metadata
-            }
-            
-            # 通知狀態管理器創建工作會話
-            state_manager.set_state(UEPState.WORK, context)
-            
-            info_log(f"[StateQueue] WORK 狀態啟動: {queue_item.context_content[:50]}...")
-            debug_log(4, f"[StateQueue] 工作意圖: {intent_type}, 工作流程類型: {workflow_type}")
-            debug_log(4, f"[StateQueue] 等待工作會話完成...")
+            if is_system_report:
+                # 系統匯報模式：簡單對話，不啟動工作流程
+                # 保持 WORK 狀態，但 workflow_type 為 None 表示不需要工作流程
+                info_log(f"[StateQueue] WORK 狀態啟動（系統匯報模式）: {queue_item.context_content[:50]}...")
+                debug_log(3, "[StateQueue] 系統匯報模式：保持 WORK 狀態但不啟動工作流程")
+                
+                # 準備上下文，明確標記為系統匯報（不啟動工作流程）
+                context = {
+                    "workflow_type": None,  # 明確標記：不需要工作流程
+                    "command": queue_item.context_content,
+                    "trigger_content": queue_item.trigger_content,
+                    "queue_item_id": f"{queue_item.state.value}_{queue_item.created_at.timestamp()}",
+                    "state_queue_callback": self._on_work_session_complete,
+                    "system_report": True,  # 標記為系統匯報
+                    **queue_item.metadata
+                }
+                
+                # 保持 WORK 狀態，讓 StateManager 處理無工作流的 WORK
+                state_manager.set_state(UEPState.WORK, context)
+                
+            else:
+                # 正常工作流程模式
+                intent_type = queue_item.metadata.get('intent_type', 'command')
+                if workflow_type is None:
+                    workflow_type = self._map_intent_to_workflow_type(intent_type)
+                
+                # 準備上下文信息
+                context = {
+                    "workflow_type": workflow_type,
+                    "command": queue_item.context_content,
+                    "intent_type": intent_type,
+                    "trigger_content": queue_item.trigger_content,
+                    "queue_item_id": f"{queue_item.state.value}_{queue_item.created_at.timestamp()}",
+                    "state_queue_callback": self._on_work_session_complete,  # 回調函數
+                    **queue_item.metadata
+                }
+                
+                # 通知狀態管理器創建工作會話
+                state_manager.set_state(UEPState.WORK, context)
+                
+                info_log(f"[StateQueue] WORK 狀態啟動: {queue_item.context_content[:50]}...")
+                debug_log(4, f"[StateQueue] 工作意圖: {intent_type}, 工作流程類型: {workflow_type}")
+                debug_log(4, f"[StateQueue] 等待工作會話完成...")
             
             # 不立即完成狀態，等待會話完成回調
             

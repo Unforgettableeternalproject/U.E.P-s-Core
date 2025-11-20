@@ -375,34 +375,14 @@ workflows:
         required: false
         description: "Initial data: task_id (optional), control_action (required), control_params (optional)"
 
-  generate_backup_script:
+  generate_backup_script: # 他不是背景了，之後再移上去
     name: "generate_backup_script"
     description: "Generate system backup script (.bat/.sh) for automated file backup. Future: will include UEP's personalized user cognition and preferences."
     category: "automation"
     work_mode: "background"
     
-    initial_params:
-      target_folder:
-        type: str
-        optional: false
-        description: "Folder to backup (source folder)"
-        maps_to_step: "target_folder"
-        extraction_hint: "Extract source folder paths from: backup Documents, backup from C:\\Users\\, etc."
-      
-      dest_folder:
-        type: str
-        optional: false
-        description: "Backup destination folder"
-        maps_to_step: "dest_folder"
-        extraction_hint: "Extract destination paths from: to D:\\Backup, save to external drive, etc."
-      
-      output_path:
-        type: str
-        optional: true
-        description: "Script output path (default: Desktop/backup_script.bat or .sh)"
-        maps_to_step: "output_path"
-        extraction_hint: "Extract script save location, default to Desktop if not specified"
-    
+    initial_params: {}
+
     mcp_tool_params:
       command:
         type: string
@@ -412,3 +392,292 @@ workflows:
         type: object
         required: false
         description: "Initial data: target_folder (required), dest_folder (required), output_path (optional)"
+
+  # ==================== Task Management Workflows ====================
+  
+  create_todo:
+    name: "create_todo"
+    description: "Create a new to-do task with title, description, and priority. Background workflow for quick task creation."
+    category: "productivity"
+    work_mode: "background"
+    
+    initial_params:
+      task_name:
+        type: str
+        optional: false
+        description: "Task name/title (default: 'General Task' if not provided)"
+        maps_to_step: "task_name"
+        extraction_hint: "Extract task name from user input. Examples: 'Prepare meeting materials', 'Buy groceries', 'Complete report'. Default to 'General Task' if unclear."
+      
+      task_description:
+        type: str
+        optional: true
+        description: "Task description/details (optional)"
+        maps_to_step: "task_description"
+        extraction_hint: "Extract detailed description if provided. Example: 'Need to prepare slides and data analysis'"
+      
+      priority:
+        type: str
+        optional: false
+        description: "Task priority: none, low, medium, high (default: 'none')"
+        maps_to_step: "priority"
+        extraction_hint: |
+          Extract priority level:
+          - 'none': no priority/general task/default
+          - 'low': not urgent/low priority
+          - 'medium': normal/medium importance
+          - 'high': important/urgent
+          Default to 'none' if not mentioned.
+    
+    mcp_tool_params:
+      command:
+        type: string
+        required: true
+        description: "User original command"
+      initial_data:
+        type: object
+        required: true
+        description: "Initial data with REQUIRED fields. Format: {\"task_name\": \"string (default: General Task)\", \"task_description\": \"string (optional)\", \"priority\": \"none|low|medium|high (default: none)\"}"
+
+  manage_todo:
+    name: "manage_todo"
+    description: "Query, modify, or delete to-do tasks. Direct workflow for user intervention on existing tasks."
+    category: "productivity"
+    work_mode: "direct"
+    
+    initial_params:
+      operation:
+        type: str
+        optional: true
+        description: "Operation to perform: list, search, update, delete, complete"
+        maps_to_step: "action_selection"
+        extraction_hint: |
+          Extract operation from user intent:
+          - 'list' for: "show my tasks", "list todos", "what are my todos"
+          - 'search' for: "find task about X", "search for X"
+          - 'update' for: "change task X", "modify task", "update priority"
+          - 'delete' for: "remove task X", "delete the X task"
+          - 'complete' for: "mark X as done", "finish X", "complete X"
+          If unclear, leave empty - workflow will ask user to choose.
+      
+      search_query_input:
+        type: str
+        optional: true
+        description: "Task name, keywords, or ID mentioned by user (for all operations except list)"
+        maps_to_step: "search_query_input"
+        extraction_hint: |
+          Extract task identifier from user input:
+          - For search: keywords like "meeting", "groceries", "report"
+          - For update/delete/complete: task name, ID (e.g., "69"), or keywords
+          Examples:
+          - "find my meeting task" → "meeting"
+          - "delete task 69" → "69"
+          - "complete the report" → "report"
+          - "update buy milk task" → "buy milk"
+          Can be task ID number or descriptive keywords.
+      
+      update_fields_input:
+        type: str
+        optional: true
+        description: "What field user wants to update (for update action only)"
+        maps_to_step: "update_fields_input"
+        extraction_hint: |
+          Extract update intent from phrases like:
+          - "change priority to high" → "priority=high"
+          - "rename to 'New Name'" → "task_name=New Name"
+          - "set deadline to tomorrow" → "deadline=2025-11-21"
+          - "change description to 'details'" → "task_description=details"
+          Format as simple key=value pairs separated by commas or JSON format.
+    
+    mcp_tool_params:
+      command:
+        type: string
+        required: true
+        description: "User original command"
+      initial_data:
+        type: object
+        required: false
+        description: "Initial data: {\"operation\": \"list|search|update|delete|complete (optional)\", \"search_query_input\": \"keywords or task ID (optional)\", \"update_fields_input\": \"field=value (optional for update)\"}. All optional - workflow will ask if not provided."
+
+  create_calendar:
+    name: "create_calendar"
+    description: "Create a new calendar event with start time, end time, and event name. Background workflow for quick event scheduling."
+    category: "productivity"
+    work_mode: "background"
+    
+    initial_params:
+      start_time:
+        type: str
+        optional: false
+        description: "Event start time in ISO format (YYYY-MM-DD HH:MM). If not provided, task will be added to to-do list instead."
+        maps_to_step: "start_time"
+        extraction_hint: "Extract start time and convert to ISO format. Handle relative time: 'two in the afternoon' → 2025-11-21 14:00, 'next Monday 10:00' → next Monday 10:00. **REQUIRED** - if user doesn't specify time, this should trigger todo creation instead."
+      
+      end_time:
+        type: str
+        optional: true
+        description: "Event end time in ISO format (YYYY-MM-DD HH:MM). If not provided, defaults to 23:59 of start_time date."
+        maps_to_step: "end_time"
+        extraction_hint: "Extract end time if mentioned. If not specified, set to 23:59 of the start_time date. Example: start='2025-11-21 14:00' → end='2025-11-21 23:59'"
+      
+      event_name:
+        type: str
+        optional: false
+        description: "Event name/title (default: 'General Event' if not provided)"
+        maps_to_step: "event_name"
+        extraction_hint: "Extract event name. Examples: 'team meeting', 'Doctor appointment', 'final exam'. Default to 'General Event' if unclear."
+    
+    mcp_tool_params:
+      command:
+        type: string
+        required: true
+        description: "User original command"
+      initial_data:
+        type: object
+        required: true
+        description: "Initial data with REQUIRED fields. Format: {\"start_time\": \"YYYY-MM-DD HH:MM (required)\", \"end_time\": \"YYYY-MM-DD HH:MM (optional, defaults to 23:59 of start date)\", \"event_name\": \"string (default: General Event)\"}"
+
+  manage_calendar:
+    name: "manage_calendar"
+    description: "Query, modify, or delete calendar events. Direct workflow for user intervention on existing events."
+    category: "productivity"
+    work_mode: "direct"
+    
+    initial_params:
+      operation:
+        type: str
+        optional: true
+        description: "Operation to perform: list, search, update, delete, find_free_time"
+        maps_to_step: "action_selection"
+        extraction_hint: |
+          Extract operation from user intent:
+          - 'list' for: "show my schedule", "list events", "what's on my calendar"
+          - 'search' for: "find meeting X", "search for event"
+          - 'update' for: "reschedule X", "change event time", "update meeting"
+          - 'delete' for: "cancel meeting X", "remove event", "delete appointment"
+          - 'find_free_time' for: "when am I free", "find available time"
+          If unclear, leave empty - workflow will ask user to choose.
+      
+      event_name_hint:
+        type: str
+        optional: true
+        description: "Event name or keywords mentioned by user (for search/update/delete)"
+        maps_to_step: "search_query_input"
+        extraction_hint: |
+          Extract event-related keywords from user input. Examples:
+          - "find my team meeting" → "team meeting"
+          - "cancel the doctor appointment" → "doctor appointment"
+          - "reschedule exam" → "exam"
+          This helps narrow down which event user wants to operate on.
+      
+      time_context:
+        type: str
+        optional: true
+        description: "Time range or context (for list/search/find_free_time)"
+        maps_to_step: "time_range_input"
+        extraction_hint: |
+          Extract time context from phrases like:
+          - "this week" → calculate week range
+          - "next month" → calculate month range
+          - "tomorrow" → calculate tomorrow's range
+          - "2025-11-25 to 2025-11-30" → use exact range
+      
+      update_intent:
+        type: str
+        optional: true
+        description: "What field user wants to update (for update action only)"
+        maps_to_step: "update_fields_input"
+        extraction_hint: |
+          Extract update intent from phrases like:
+          - "change time to 3pm" → "start_time=2025-XX-XX 15:00"
+          - "rename to 'New Meeting'" → "event_name=New Meeting"
+          - "move to tomorrow" → "start_time=2025-XX-XX HH:MM"
+          Format as simple key=value pairs separated by commas.
+
+    mcp_tool_params:
+      command:
+        type: string
+        required: true
+        description: "User original command"
+      initial_data:
+        type: object
+        required: false
+        description: "Initial data: {\"operation\": \"list|search|update|delete|find_free_time (optional)\", \"event_name_hint\": \"keywords (optional)\", \"time_context\": \"time range (optional)\", \"update_intent\": \"field=value (optional for update)\"}. All optional - workflow will ask if not provided."
+
+  # ==================== Cross-workflow Operations ====================
+  
+  schedule_todo_to_calendar:
+    name: "schedule_todo_to_calendar"
+    description: "Promote a to-do task to calendar event by finding available time slot and creating calendar entry. Requires user confirmation."
+    category: "productivity"
+    work_mode: "direct"
+    
+    initial_params:
+      task_id:
+        type: str
+        optional: false
+        description: "To-do task ID to schedule"
+        maps_to_step: "task_id"
+        extraction_hint: "Extract task ID from user reference"
+      
+      preferred_time:
+        type: dict
+        optional: true
+        description: "Preferred time constraints: {\"date\": \"YYYY-MM-DD\", \"time_of_day\": \"morning/afternoon/evening\", \"duration_minutes\": int}"
+        maps_to_step: "preferred_time"
+        extraction_hint: "Extract time preferences: 'Tomorrow Morning', 'This Afternoon', 'For two hours', etc."
+      
+      auto_schedule:
+        type: bool
+        optional: true
+        description: "Auto-find first available slot without asking (default: false, will ask for confirmation)"
+        maps_to_step: "auto_schedule"
+        extraction_hint: "true if user says 'auto schedule', 'find time for me', false if 'let me choose time'"
+    
+    mcp_tool_params:
+      command:
+        type: string
+        required: true
+        description: "User original command"
+      initial_data:
+        type: object
+        required: true
+        description: "Initial data with REQUIRED 'task_id' field. Format: {\"task_id\": \"string\", \"preferred_time\": {\"date\": \"YYYY-MM-DD\", \"time_of_day\": \"morning/afternoon/evening\", \"duration_minutes\": int}, \"auto_schedule\": bool}"
+
+  generate_prep_todos:
+    name: "generate_prep_todos"
+    description: "Auto-generate preparation to-do tasks for a calendar event (meetings, exams, presentations). Creates task group linked to the event."
+    category: "productivity"
+    work_mode: "direct"
+    
+    initial_params:
+      event_id:
+        type: str
+        optional: false
+        description: "Calendar event ID that requires preparation"
+        maps_to_step: "event_id"
+        extraction_hint: "Extract event ID from user reference or from event just created"
+      
+      prep_type:
+        type: str
+        optional: true
+        description: "Type of preparation: meeting, exam, presentation, interview (auto-inferred if not specified)"
+        maps_to_step: "prep_type"
+        extraction_hint: "Extract or infer from event type."
+      
+      custom_tasks:
+        type: list
+        optional: true
+        description: "Custom preparation tasks if user specifies (otherwise auto-generate based on event type)"
+        maps_to_step: "custom_tasks"
+        extraction_hint: "Extract specific prep tasks if user mentions them: 'Need to prepare slides', 'Review past exams', etc."
+    
+    mcp_tool_params:
+      command:
+        type: string
+        required: true
+        description: "User original command"
+      initial_data:
+        type: object
+        required: true
+        description: "Initial data with REQUIRED 'event_id' field. Format: {\"event_id\": \"string\", \"prep_type\": \"meeting/exam/presentation/interview\", \"custom_tasks\": [\"task1\", \"task2\"]}"

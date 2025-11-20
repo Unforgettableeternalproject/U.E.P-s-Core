@@ -1442,6 +1442,133 @@ class LLMModule(BaseModule):
                 metadata={"mode": "WORK", "error_type": "processing_error", "phase": phase}
             )
     
+    def _generate_system_report_response(self, llm_input: "LLMInput", status: Dict[str, Any], start_time: float) -> "LLMOutput":
+        """生成系統報告回應（系統主動通知）
+        
+        系統報告是系統主動發出的通知（如待辦事項提醒、日曆事件等）
+        不需要工作流引擎或 MCP 工具，直接生成簡潔友善的訊息
+        
+        Args:
+            llm_input: LLM 輸入（包含通知內容）
+            status: 系統狀態
+            start_time: 開始時間
+            
+        Returns:
+            LLMOutput: 生成的通知訊息
+        """
+        try:
+            info_log("[LLM] 🔔 生成系統通知訊息")
+            
+            # Build system report prompt (request concise, friendly notification)
+            notification_content = llm_input.text
+            debug_log(2, f"[LLM] 📋 通知內容（輸入）: {notification_content}")
+            
+            system_report_prompt = f"""You are U.E.P., an interdimensional being. Your system has detected an event that you need to inform the user about.
+
+System detected event:
+{notification_content}
+
+Your task: Convert this system-detected event into a friendly, natural spoken message to inform the user.
+Think of it as: "I (U.E.P.) noticed this and want to let you know."
+
+Requirements:
+1. Use first person ("I") to show you're informing them (e.g., "I noticed...", "Just wanted to let you know...")
+2. Keep it brief (1-2 sentences)
+3. Friendly, conversational tone
+4. Include all the important details from the notification
+5. Don't ask questions - you're informing, not requesting
+
+Examples:
+
+System event: "Reminder: Todo item 'Complete Report' is due in one hour"
+Your message: "Hey, just wanted to remind you - 'Complete Report' is due in an hour."
+
+System event: "Reminder: 'Team Meeting' is about to start, Location: Meeting Room A"
+Your message: "Heads up, 'Team Meeting' is starting soon in Meeting Room A."
+
+System event: "Alert: Todo item 'Submit Proposal' is overdue"
+Your message: "Just letting you know, 'Submit Proposal' is overdue."
+
+Now convert the system event above into your spoken message:"""
+
+            # 調試：記錄完整 Prompt
+            debug_log(3, f"[LLM] 📝 系統通知 Prompt（前200字符）:\n{system_report_prompt[:200]}...")
+            debug_log(3, f"[LLM] 📝 系統通知 Prompt（後200字符）:\n...{system_report_prompt[-200:]}")
+
+            # 調用 Gemini API（不使用 MCP 工具和 function calling）
+            response_data = self.model.query(
+                system_report_prompt,
+                mode="chat"  # 使用 chat 模式避免 function calling
+            )
+            
+            # 調試：記錄 LLM 原始回應
+            debug_log(3, f"[LLM] 🤖 Gemini 原始回應: {response_data.get('text', '')[:200]}")
+            
+            response_text = response_data.get("text", "").strip()
+            
+            if not response_text:
+                # 如果 LLM 沒有生成回應，使用原始通知內容
+                response_text = notification_content
+                info_log("[LLM] ⚠️ LLM 未生成回應，使用原始通知內容")
+            
+            info_log(f"[LLM] ✅ 系統通知訊息已生成：{response_text[:50]}...")
+            
+            # 🔑 設置 session_control：系統通知完成後應該結束會話
+            # 通知是一次性的，不需要持續對話
+            session_control = {
+                "should_end_session": True,
+                "end_reason": "system_notification_complete",
+                "confidence": 1.0
+            }
+            debug_log(2, f"[LLM] 🔚 系統通知完成，設置會話結束標記")
+            
+            return LLMOutput(
+                text=response_text,
+                processing_time=time.time() - start_time,
+                tokens_used=response_data.get("_meta", {}).get("total_input_tokens", 0),
+                success=True,
+                error=None,
+                confidence=1.0,
+                sys_action=None,
+                status_updates=None,
+                learning_data=None,
+                conversation_entry=None,
+                session_state=None,
+                memory_observation=None,
+                memory_summary=None,
+                emotion="neutral",
+                mood="cheerful",
+                metadata={
+                    "mode": "WORK",
+                    "phase": "response",
+                    "system_report": True,
+                    "notification_type": getattr(llm_input, 'metadata', {}).get('notification_type', 'unknown'),
+                    "session_control": session_control  # ✅ 添加 session_control
+                }
+            )
+            
+        except Exception as e:
+            error_log(f"[LLM] 生成系統通知訊息失敗: {e}")
+            # 失敗時返回原始通知內容
+            return LLMOutput(
+                text=llm_input.text,
+                processing_time=time.time() - start_time,
+                tokens_used=0,
+                success=False,
+                error=str(e),
+                confidence=0.0,
+                sys_action=None,
+                status_updates=None,
+                learning_data=None,
+                conversation_entry=None,
+                session_state=None,
+                memory_observation=None,
+                memory_summary=None,
+                emotion="neutral",
+                mood="neutral",
+                metadata={"mode": "WORK", "error_type": "system_report_error", "system_report": True}
+            )
+    
     def _decide_workflow(self, llm_input: "LLMInput", start_time: float) -> "LLMOutput":
         """決策工作流類型（Cycle 0, phase=decision）
         
@@ -1570,13 +1697,15 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
         當檢測到 workflow_input_required 時，直接調用 provide_workflow_input 工具
         避免通過 Gemini API 理解用戶意圖，加快響應速度並避免超時
         
+        ⚠️ 注意：如果輸入需要 LLM 解析（如自然語言轉結構化數據），返回 None 讓正常流程處理
+        
         Args:
             llm_input: LLM 輸入
             workflow_context: 工作流上下文（包含 workflow_session_id、user_input 等）
             start_time: 開始時間
             
         Returns:
-            LLMOutput: 處理結果
+            LLMOutput: 處理結果，或 None 表示需要正常流程處理
         """
         try:
             import asyncio
@@ -1586,6 +1715,24 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             user_input = workflow_context.get('user_input', llm_input.text)
             is_optional = workflow_context.get('is_optional', False)
             step_id = workflow_context.get('step_id', 'unknown')
+            prompt = workflow_context.get('prompt', '')
+            
+            # 🔧 檢測是否需要 LLM 解析
+            # 如果提示要求結構化數據（包含 JSON、task_name、priority 等關鍵字），
+            # 且用戶輸入是自然語言（不是 JSON 或 key=value 格式），
+            # 則不使用快速路徑，讓 LLM 解析
+            requires_structured_data = any(keyword in prompt.lower() for keyword in [
+                'json', 'task_name', 'task_description', 'priority', 'deadline'
+            ])
+            
+            is_natural_language = not (
+                user_input.strip().startswith('{') or  # JSON 格式
+                '=' in user_input  # key=value 格式
+            )
+            
+            if requires_structured_data and is_natural_language:
+                debug_log(2, f"[LLM] 快速路徑跳過：輸入需要 LLM 解析（step={step_id}）")
+                return None  # 返回 None 讓正常流程處理
             
             info_log(f"[LLM] 快速路徑：直接提交工作流輸入 '{user_input}' 到步驟 {step_id}")
             
@@ -1689,27 +1836,38 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
         debug_log(2, "[LLM] 💬 生成工作流回應")
         
         try:
-            # ✅ 檢查是否有運行中的工作流會話
-            # 🔧 修正：不能只檢查 session_type，還要確認工作流引擎已啟動
-            # 因為 StateManager 會在 WORK intent 時立即創建 WS，但此時工作流引擎還未啟動
+            # ✅ 檢查是否為系統報告模式（系統主動通知）
+            is_system_report = getattr(llm_input, 'system_report', False)
+            if is_system_report:
+                debug_log(2, "[LLM] 🔔 系統報告模式：生成簡潔通知訊息")
+                return self._generate_system_report_response(llm_input, status, start_time)
+            
+            # ✅ 檢查是否有運行中的工作流引擎
+            # 這個檢查很重要：
+            # 1. WS 是容器（可能存在但沒有工作流）
+            # 2. WorkflowEngine 是實際的工作流執行器
+            # 3. 只有當 WorkflowEngine 存在時，才認為有活躍的工作流
             has_active_workflow = False
             if self.session_info and self.session_info.get('session_type') == 'workflow':
                 session_id = self.session_info.get('session_id')
-                # 檢查 SYS 模組是否有此工作流的引擎
+                
+                # 檢查 SYS 模組的 workflow_engines 字典中是否有對應的引擎
                 try:
-                    from core.module_coordinator import module_coordinator
-                    sys_module = module_coordinator.get_module('sys')
+                    from core.framework import core_framework
+                    sys_module = core_framework.get_module('sys')
+                    
                     if sys_module and hasattr(sys_module, 'workflow_engines'):
                         has_active_workflow = session_id in sys_module.workflow_engines
-                        debug_log(2, f"[LLM] 工作流引擎檢查: session={session_id}, has_engine={has_active_workflow}")
+                        if has_active_workflow:
+                            debug_log(2, f"[LLM] 檢測到活躍的工作流引擎: {session_id}")
+                        else:
+                            debug_log(2, f"[LLM] WS 存在但無工作流引擎: {session_id}")
                     else:
-                        # 如果 SYS 模組沒有 workflow_engines 屬性，假設沒有活躍工作流
-                        has_active_workflow = False
-                        debug_log(2, f"[LLM] SYS 模組無 workflow_engines 屬性，假設無活躍工作流")
+                        debug_log(2, f"[LLM] 無法訪問 SYS 模組的 workflow_engines")
                 except Exception as e:
-                    # 如果獲取失敗，保守假設沒有活躍工作流（讓 LLM 嘗試啟動）
-                    has_active_workflow = False
-                    debug_log(2, f"[LLM] 無法檢查工作流引擎（{e}），假設無活躍工作流")
+                    debug_log(2, f"[LLM] 檢查工作流引擎時出錯: {e}")
+                    # 保守策略：如果無法檢查，假設有工作流（避免重複啟動）
+                    has_active_workflow = True
             
             # ✅ 檢查是否有待處理的工作流事件（正在審核步驟）
             pending_workflow = getattr(llm_input, 'workflow_context', None)
@@ -1748,8 +1906,12 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                         is_reviewing_step = False
             
             if is_workflow_input and pending_workflow:
-                info_log("[LLM] 🚀 檢測到工作流輸入場景，使用快速路徑直接提交輸入")
-                return self._handle_workflow_input_fast_path(llm_input, pending_workflow, start_time)
+                info_log("[LLM] 🚀 檢測到工作流輸入場景，嘗試使用快速路徑直接提交輸入")
+                fast_path_result = self._handle_workflow_input_fast_path(llm_input, pending_workflow, start_time)
+                if fast_path_result is not None:
+                    return fast_path_result
+                # 快速路徑返回 None 表示需要 LLM 解析，繼續正常流程
+                debug_log(2, "[LLM] 快速路徑返回 None，繼續正常流程讓 LLM 解析輸入")
             
             # ✅ 從 working_context 讀取 workflow_hint（由 NLP 寫入）
             # 但如果已有工作流運行或正在審核步驟，不要使用 workflow_hint（避免重複啟動工作流）
@@ -1796,18 +1958,14 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             if mcp_tools:
                 debug_log(3, f"[LLM] Prompt 總長度: {len(prompt)} 字符")
                 debug_log(3, f"[LLM] Prompt 前 500 字符:\n{prompt[:500]}...")
-                # 記錄包含工作流指引的部分
-                if "Available Workflows" in prompt:
-                    start_idx = prompt.find("Available Workflows")
-                    debug_log(3, f"[LLM] 工作流指引部分:\n{prompt[start_idx:start_idx+800]}")
-                else:
-                    debug_log(3, "[LLM] ⚠️ Prompt 中缺少 'Available Workflows' 指引！")
-                debug_log(3, f"[LLM] Prompt 包含 workflow_hint: {workflow_hint}")
             
             # ✅ 呼叫 Gemini API (使用 MCP tools 進行 function calling)
-            # 🔧 修復：已有工作流運行時使用 AUTO 模式，讓 Gemini 自行決定是否調用工具
-            tool_choice = "AUTO" if (has_active_workflow or is_reviewing_step) else "ANY"
-            debug_log(2, f"[LLM] Function calling 模式: {tool_choice} (has_active_workflow={has_active_workflow}, is_reviewing_step={is_reviewing_step})")
+            # 🔧 使用 AUTO 模式：讓 LLM 根據情況自主決定是否調用工具
+            # - 有 MCP 工具可用時，LLM 可以選擇調用或直接回應
+            # - 沒有 MCP 工具時，只能生成文本回應
+            # - 避免使用 ANY 強制調用（會在沒有明確指引時導致錯誤）
+            tool_choice = "AUTO"
+            debug_log(2, f"[LLM] Function calling 模式: {tool_choice} (has_active_workflow={has_active_workflow}, is_reviewing_step={is_reviewing_step}, has_tools={mcp_tools is not None})")
             
             response_data = self.model.query(
                 prompt, 
@@ -3330,6 +3488,176 @@ U.E.P 系統可用功能規格：
                                 f"4. Keep it conversational (2-3 sentences)\n"
                                 f"IMPORTANT: Respond in English only."
                             )
+                        # 對於待辦事項查詢，特別處理 tasks
+                        elif 'tasks' in result_data:
+                            tasks = result_data.get('tasks', [])
+                            task_count = len(tasks)
+                            
+                            # 如果任務超過 3 件，只顯示前 3 件並提供摘要統計
+                            if task_count > 3:
+                                prompt += (
+                                    f"\nTodo Tasks List ({task_count} tasks total - showing first 3):\n\n"
+                                )
+                                
+                                # 只顯示前 3 件
+                                for i, task in enumerate(tasks[:3], 1):
+                                    task_name = task.get('task_name', 'Unnamed task')
+                                    priority = task.get('priority', 'medium')
+                                    status = task.get('status', 'pending')
+                                    deadline = task.get('deadline', '')
+                                    
+                                    prompt += f"{i}. {task_name} (Priority: {priority}, Status: {status})\n"
+                                    if deadline:
+                                        prompt += f"   Deadline: {deadline}\n"
+                                    prompt += "\n"
+                                
+                                # 提供摘要統計
+                                priority_counts = {}
+                                status_counts = {}
+                                for task in tasks:
+                                    priority = task.get('priority', 'medium')
+                                    status = task.get('status', 'pending')
+                                    priority_counts[priority] = priority_counts.get(priority, 0) + 1
+                                    status_counts[status] = status_counts.get(status, 0) + 1
+                                
+                                prompt += f"Summary Statistics:\n"
+                                prompt += f"- Total: {task_count} tasks\n"
+                                prompt += f"- By Priority: {', '.join(f'{k}: {v}' for k, v in priority_counts.items())}\n"
+                                prompt += f"- By Status: {', '.join(f'{k}: {v}' for k, v in status_counts.items())}\n\n"
+                                
+                                prompt += (
+                                    f"Generate a natural response that:\n"
+                                    f"1. Confirms you found {task_count} todo tasks\n"
+                                    f"2. LIST the first 3 tasks briefly (name and priority)\n"
+                                    f"3. Provide a SUMMARY of all tasks (e.g., 'In total, you have 5 high priority tasks, 3 medium priority tasks')\n"
+                                    f"4. Mention any urgent or overdue items if present\n"
+                                    f"5. Keep it concise (2-3 sentences max)\n"
+                                    f"6. DO NOT use emojis or special characters (for TTS compatibility)\n"
+                                    f"IMPORTANT: Don't read all tasks - summarize! Respond in English only."
+                                )
+                            else:
+                                # 3 件或更少，全部列出
+                                prompt += (
+                                    f"\nTodo Tasks List ({task_count} tasks):\n\n"
+                                )
+                                for i, task in enumerate(tasks, 1):
+                                    task_name = task.get('task_name', 'Unnamed task')
+                                    priority = task.get('priority', 'medium')
+                                    status = task.get('status', 'pending')
+                                    description = task.get('task_description', '')
+                                    deadline = task.get('deadline', '')
+                                    
+                                    prompt += f"{i}. {task_name} (Priority: {priority}, Status: {status})\n"
+                                    if description:
+                                        prompt += f"   Description: {description}\n"
+                                    if deadline:
+                                        prompt += f"   Deadline: {deadline}\n"
+                                    prompt += "\n"
+                                
+                                prompt += (
+                                    f"Generate a natural response that:\n"
+                                    f"1. Confirms you found {task_count} todo task(s)\n"
+                                    f"2. LIST OUT ALL the tasks clearly with their names, priorities, and status\n"
+                                    f"3. Mention any high-priority or overdue tasks if present\n"
+                                    f"4. Keep it organized and easy to understand\n"
+                                    f"5. DO NOT use emojis or special characters (for TTS compatibility)\n"
+                                    f"IMPORTANT: Actually list all the tasks, don't just say they exist. Respond in English only."
+                                )
+                        # 對於行事曆查詢，特別處理 events
+                        elif 'events' in result_data:
+                            events = result_data.get('events', [])
+                            event_count = len(events)
+                            
+                            # 如果事件超過 3 件，只顯示前 3 件並提供摘要
+                            if event_count > 3:
+                                prompt += (
+                                    f"\nCalendar Events ({event_count} events total - showing first 3):\n\n"
+                                )
+                                
+                                # 只顯示前 3 件
+                                for i, event in enumerate(events[:3], 1):
+                                    summary = event.get('summary', 'Untitled event')
+                                    start_time = event.get('start_time', '')
+                                    location = event.get('location', '')
+                                    
+                                    prompt += f"{i}. {summary}\n"
+                                    if start_time:
+                                        prompt += f"   Start: {start_time}\n"
+                                    if location:
+                                        prompt += f"   Location: {location}\n"
+                                    prompt += "\n"
+                                
+                                # 計算今天/本週的事件數量
+                                from datetime import datetime, timedelta
+                                now = datetime.now()
+                                today_end = now.replace(hour=23, minute=59, second=59)
+                                week_end = now + timedelta(days=7)
+                                
+                                today_count = 0
+                                week_count = 0
+                                
+                                for event in events:
+                                    start_str = event.get('start_time', '')
+                                    if start_str:
+                                        try:
+                                            start_dt = datetime.fromisoformat(start_str.replace('Z', '+00:00'))
+                                            if start_dt <= today_end:
+                                                today_count += 1
+                                            elif start_dt <= week_end:
+                                                week_count += 1
+                                        except:
+                                            pass
+                                
+                                prompt += f"Summary:\n"
+                                prompt += f"- Total: {event_count} events\n"
+                                if today_count > 0:
+                                    prompt += f"- Today: {today_count} events\n"
+                                if week_count > 0:
+                                    prompt += f"- This week: {week_count} events\n"
+                                prompt += "\n"
+                                
+                                prompt += (
+                                    f"Generate a natural response that:\n"
+                                    f"1. Confirms you found {event_count} calendar events\n"
+                                    f"2. LIST the first 3 events briefly (title and time)\n"
+                                    f"3. Provide a SUMMARY (e.g., 'You have 2 events today and 3 more this week')\n"
+                                    f"4. Mention any upcoming or important events\n"
+                                    f"5. Keep it concise (2-3 sentences max)\n"
+                                    f"6. DO NOT use emojis or special characters (for TTS compatibility)\n"
+                                    f"IMPORTANT: Don't read all events - summarize! Respond in English only."
+                                )
+                            else:
+                                # 3 件或更少，全部列出
+                                prompt += (
+                                    f"\nCalendar Events ({event_count} events):\n\n"
+                                )
+                                for i, event in enumerate(events, 1):
+                                    summary = event.get('summary', 'Untitled event')
+                                    start_time = event.get('start_time', '')
+                                    end_time = event.get('end_time', '')
+                                    location = event.get('location', '')
+                                    description = event.get('description', '')
+                                    
+                                    prompt += f"{i}. {summary}\n"
+                                    if start_time:
+                                        prompt += f"   Start: {start_time}\n"
+                                    if end_time:
+                                        prompt += f"   End: {end_time}\n"
+                                    if location:
+                                        prompt += f"   Location: {location}\n"
+                                    if description:
+                                        prompt += f"   Description: {description}\n"
+                                    prompt += "\n"
+                                
+                                prompt += (
+                                    f"Generate a natural response that:\n"
+                                    f"1. Confirms you found {event_count} calendar event(s)\n"
+                                    f"2. LIST OUT ALL the events with their times and locations\n"
+                                    f"3. Mention any upcoming or important events\n"
+                                    f"4. Keep it organized and easy to understand\n"
+                                    f"5. DO NOT use emojis or special characters (for TTS compatibility)\n"
+                                    f"IMPORTANT: Actually list all the events, don't just say they exist. Respond in English only."
+                                )
                         else:
                             prompt += f"Data: {str(result_data)[:500]}\n\n"
                             prompt += (

@@ -1846,3 +1846,15 @@
 
 ---
 
+### Experimental llm changes **VERY BAD DON'T USE** 11/21
+
+> Date: Fri, 21 Nov 2025 00:17:39 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/llm_partial_refactor`
+
+> Commit: `e93078c06c0940a7a265a839a4498c62dfaade8e`
+
+---
+

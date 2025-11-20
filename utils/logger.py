@@ -146,6 +146,7 @@ else:
     LOG_LEVEL = conf.get("log_level", conf.get("level", "INFO")).upper()
     LOG_DIR = conf.get("log_dir", "logs")
     SPLIT_LOGS = conf.get("split_logs", conf.get("enable_split_logs", True))  # 支持兩種配置名稱
+    ENABLE_CONSOLE_OUTPUT = conf.get("enable_console_output", True)  # 控制終端日誌輸出
     MAX_FILES_PER_MONTH = conf.get("max_files_per_month", 15)
 
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -218,12 +219,16 @@ else:
     for handler in list(logger.handlers):
         logger.removeHandler(handler)
 
-    # 添加控制台處理程序
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(console_formatter)
-    # 確保控制台也能顯示 DEBUG 訊息
-    stream_handler.setLevel(logging.DEBUG)
-    logger.addHandler(stream_handler)
+    # 根據配置決定是否添加控制台處理程序
+    if ENABLE_CONSOLE_OUTPUT:
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(console_formatter)
+        # 確保控制台也能顯示 DEBUG 訊息
+        stream_handler.setLevel(logging.DEBUG)
+        logger.addHandler(stream_handler)
+    else:
+        # 即使不輸出到終端，也添加一個 NullHandler 避免 "No handlers" 警告
+        logger.addHandler(logging.NullHandler())
 
     # 文件日誌處理器變數
     _file_handlers_added = False

@@ -896,65 +896,41 @@ class UnifiedController:
     
     def _notify_task_completion(self, task_id: str, workflow_type: str, result: Any):
         """
-        通知使用者任務完成（可選功能）
+        通知使用者任務完成
+        
+        ✅ 架構注釋：
+        Controller 不應該直接調用 TTS 模組，這會違反事件驅動架構。
+        此方法已經發布 BACKGROUND_WORKFLOW_COMPLETED 事件，
+        Coordinator 可以訂閱該事件並處理通知。
         
         Args:
             task_id: 任務ID
             workflow_type: 工作流類型
             result: 執行結果
         """
-        try:
-            # 獲取 TTS 模組進行語音通知
-            tts_module = self.core_framework.get_module("tts")
-            if tts_module:
-                notification_message = f"背景任務已完成：{workflow_type}"
-                try:
-                    # 異步發送 TTS 通知（不阻塞）
-                    tts_module.speak(notification_message, priority="low")
-                    debug_log(2, f"[Controller] 已發送 TTS 完成通知: {workflow_type}")
-                except Exception as e:
-                    debug_log(2, f"[Controller] TTS 通知失敗: {e}")
-            
-            # TODO: 整合 UI 模組顯示通知
-            # ui_module = self.module_registry.get("UI")
-            # if ui_module:
-            #     ui_module.show_notification(f"任務完成: {workflow_type}", "success")
-            
-            debug_log(2, f"[Controller] Task completion notification: {workflow_type} completed")
-            
-        except Exception as e:
-            error_log(f"[Controller] 發送任務完成通知失敗: {e}")
+        # ✅ 事件已經在 _poll_background_tasks() 中發布
+        # Coordinator 可以訂閱 BACKGROUND_WORKFLOW_COMPLETED 並處理通知
+        debug_log(2, f"[Controller] Background task completed: {workflow_type} (task_id: {task_id})")
+        debug_log(3, "[Controller] 通知應由 Coordinator 透過事件訂閱處理")
     
     def _notify_task_failure(self, task_id: str, workflow_type: str, error: str):
         """
-        通知使用者任務失敗（可選功能）
+        通知使用者任務失敗
+        
+        ✅ 架構注釋：
+        Controller 不應該直接調用 TTS 模組，這會違反事件驅動架構。
+        此方法已經發布 BACKGROUND_WORKFLOW_FAILED 事件，
+        Coordinator 可以訂閱該事件並處理通知。
         
         Args:
             task_id: 任務ID
             workflow_type: 工作流類型
             error: 錯誤訊息
         """
-        try:
-            # 獲取 TTS 模組進行語音通知
-            tts_module = self.core_framework.get_module("tts")
-            if tts_module:
-                notification_message = f"背景任務失敗：{workflow_type}，錯誤：{error}"
-                try:
-                    # 異步發送 TTS 通知（不阻塞）
-                    tts_module.speak(notification_message, priority="high")
-                    debug_log(2, f"[Controller] 已發送 TTS 失敗通知: {workflow_type}")
-                except Exception as e:
-                    debug_log(2, f"[Controller] TTS 通知失敗: {e}")
-            
-            # TODO: 整合 UI 模組顯示錯誤通知
-            # ui_module = self.module_registry.get("UI")
-            # if ui_module:
-            #     ui_module.show_notification(f"任務失敗: {workflow_type}", "error")
-            
-            debug_log(2, f"[Controller] Task failure notification: {workflow_type} failed - {error}")
-            
-        except Exception as e:
-            error_log(f"[Controller] 發送任務失敗通知失敗: {e}")
+        # ✅ 事件已經在 _poll_background_tasks() 中發布
+        # Coordinator 可以訂閱 BACKGROUND_WORKFLOW_FAILED 並處理通知
+        debug_log(2, f"[Controller] Background task failed: {workflow_type} - {error} (task_id: {task_id})")
+        debug_log(3, "[Controller] 通知應由 Coordinator 透過事件訂閱處理")
     
     def _save_background_tasks(self):
         """

@@ -17,15 +17,74 @@ class IdentityStatus(str, Enum):
     TEMPORARY = "temporary"          # 臨時通用身份
 
 
+# === Speaker 數據結構（嵌入 Identity）===
+
+class SpeakerSample(BaseModel):
+    """單個語音樣本"""
+    embedding: List[float] = Field(..., description="語音特徵向量")
+    timestamp: datetime = Field(default_factory=datetime.now, description="採集時間")
+    confidence: float = Field(..., description="樣本信心度")
+    audio_duration: Optional[float] = Field(None, description="音頻長度（秒）")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="額外元數據")
+
+
+class SpeakerAccumulation(BaseModel):
+    """該 Identity 的語音數據累積"""
+    samples: List[SpeakerSample] = Field(default_factory=list, description="語音樣本列表")
+    total_samples: int = Field(0, description="累積樣本總數")
+    min_samples_threshold: int = Field(15, description="確認身份所需最小樣本數")
+    is_confirmed: bool = Field(False, description="是否已達到確認閾值")
+    last_updated: datetime = Field(default_factory=datetime.now, description="最後更新時間")
+    
+    # 語音模型數據（達到閾值後生成）
+    speaker_model: Optional[Dict[str, Any]] = Field(None, description="語音識別模型數據")
+    model_trained: bool = Field(False, description="模型是否已訓練")
+
+
+# === Identity 工作歷史（每個 Identity 獨立）===
+# 注意：系統狀態（UEPState）由 Status Manager 維護，不在 UserProfile 裡
+
+class WorkflowRecord(BaseModel):
+    """工作流記錄"""
+    workflow_type: str = Field(..., description="工作流類型")
+    started_at: datetime = Field(..., description="開始時間")
+    completed_at: Optional[datetime] = Field(None, description="完成時間")
+    status: str = Field(..., description="狀態: completed/failed/cancelled")
+    duration: Optional[float] = Field(None, description="持續時間（秒）")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="額外元數據")
+
+
+class IdentityWorkHistory(BaseModel):
+    """該身份的工作歷史"""
+    completed_workflows: List[WorkflowRecord] = Field(default_factory=list, description="完成的工作流列表")
+    workflow_usage_count: Dict[str, int] = Field(default_factory=dict, description="工作流使用次數統計")
+    total_work_time: float = Field(0.0, description="總工作時間（秒）")
+    last_workflow: Optional[str] = Field(None, description="最後執行的工作流")
+    preferred_workflows: List[str] = Field(default_factory=list, description="偏好工作流（按使用頻率排序）")
+
+
 class UserProfile(BaseModel):
     """使用者檔案"""
     identity_id: str = Field(..., description="身份識別ID")
-    speaker_id: Optional[str] = Field(None, description="對應的語者ID")
+    speaker_id: Optional[str] = Field(None, description="對應的語者ID（向後兼容，實際由 speaker_accumulation 管理）")
     display_name: Optional[str] = Field(None, description="顯示名稱")
     status: IdentityStatus = Field(IdentityStatus.UNKNOWN, description="身份狀態")
     
+    # 🆕 Speaker 數據（直接嵌入 Identity）
+    speaker_accumulation: SpeakerAccumulation = Field(
+        default_factory=lambda: SpeakerAccumulation(), 
+        description="語音數據累積（該 Identity 專屬）"
+    )
+    
     # 記憶令牌與憑證 (用於MEM模組存取記憶庫)
     memory_token: Optional[str] = Field(None, description="記憶庫存取令牌")
+    
+    # 🆕 工作歷史（該 Identity 專屬）
+    # 注意：系統狀態（UEPState）由 Status Manager 維護，不在這裡
+    work_history: IdentityWorkHistory = Field(
+        default_factory=lambda: IdentityWorkHistory(),
+        description="該身份的工作歷史"
+    )
     
     # 偏好設定
     preferences: Dict[str, Any] = Field(default_factory=dict, description="使用者偏好")

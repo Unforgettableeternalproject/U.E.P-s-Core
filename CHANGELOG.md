@@ -1858,3 +1858,15 @@
 
 ---
 
+### Reworked identity mechanism. 11/21
+
+> Date: Fri, 21 Nov 2025 04:00:04 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `795d9d8e1c5d20f5a033310b313a26455b1cdafd`
+
+---
+

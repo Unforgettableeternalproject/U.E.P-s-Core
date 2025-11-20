@@ -74,12 +74,20 @@ class StatusManager:
             return
             
         self._initialized = True
-        self.status = SystemStatus()
-        self.storage_path = Path("memory/system_status.json")
-        self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # 特殊狀態覆寫
-        self._helpfulness_override: float | None = None
+        # 🆕 Identity-aware 狀態管理
+        self.status_by_identity: Dict[str, SystemStatus] = {}  # identity_id -> SystemStatus
+        self.current_identity_id: Optional[str] = None
+        self.status = SystemStatus()  # 向後兼容的 fallback（無 Identity 時使用）
+        
+        # 存儲路徑
+        self.storage_path = Path("memory/system_status.json")  # 舊格式，向後兼容
+        self.identity_storage_dir = Path("memory/identities")  # 🆕 每個 Identity 獨立文件
+        self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+        self.identity_storage_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 特殊狀態覆寫（現在是 Identity-aware）
+        self._helpfulness_override: Dict[str, Optional[float]] = {}  # identity_id -> override_value
         
         # 更新回調
         self.update_callbacks: Dict[str, Callable] = {}
@@ -92,7 +100,45 @@ class StatusManager:
         # 載入現有狀態
         self._load_status()
         
-        info_log("[StatusManager] 系統狀態管理器初始化完成")
+        info_log("[StatusManager] 系統狀態管理器初始化完成（Identity-aware）")
+    
+    def switch_identity(self, identity_id: str):
+        """切換到指定 Identity 的系統狀態
+        
+        Args:
+            identity_id: 要切換到的 Identity ID
+        """
+        # 保存當前 Identity 的狀態
+        if self.current_identity_id:
+            self.status_by_identity[self.current_identity_id] = self.status
+            self._save_identity_status(self.current_identity_id)
+        
+        # 切換到新 Identity
+        self.current_identity_id = identity_id
+        
+        # 載入新 Identity 的狀態（如果不存在則創建）
+        if identity_id not in self.status_by_identity:
+            self.status_by_identity[identity_id] = SystemStatus()
+            info_log(f"[StatusManager] 為 Identity {identity_id} 創建新的系統狀態")
+        
+        self.status = self.status_by_identity[identity_id]
+        info_log(f"[StatusManager] 切換到 Identity: {identity_id}")
+        debug_log(2, f"[StatusManager] 當前狀態: {self.get_summary()}")
+    
+    def get_current_identity(self) -> Optional[str]:
+        """獲取當前 Identity ID"""
+        return self.current_identity_id
+    
+    def clear_identity(self):
+        """清除當前 Identity（回到 fallback 狀態）"""
+        if self.current_identity_id:
+            # 保存當前狀態
+            self.status_by_identity[self.current_identity_id] = self.status
+            self._save_identity_status(self.current_identity_id)
+            
+            info_log(f"[StatusManager] 清除 Identity: {self.current_identity_id}")
+            self.current_identity_id = None
+            self.status = SystemStatus()  # 回到默認狀態
     
     def register_update_callback(self, name: str, callback: Callable):
         """註冊狀態更新回調"""
@@ -105,8 +151,17 @@ class StatusManager:
             del self.update_callbacks[name]
             debug_log(2, f"[StatusManager] 取消註冊回調: {name}")
     
-    def get_status(self) -> SystemStatus:
-        """獲取當前系統狀態"""
+    def get_status(self, identity_id: Optional[str] = None) -> SystemStatus:
+        """獲取系統狀態
+        
+        Args:
+            identity_id: 指定 Identity ID，如果為 None 則返回當前 Identity 的狀態
+        
+        Returns:
+            SystemStatus: 對應 Identity 的系統狀態
+        """
+        if identity_id:
+            return self.status_by_identity.get(identity_id, SystemStatus())
         return self.status
     
     def get_status_dict(self) -> Dict[str, Any]:
@@ -388,37 +443,88 @@ class StatusManager:
                 self._last_save_time = current_time
     
     def save_status(self):
-        """手動保存狀態"""
+        """手動保存狀態（向後兼容 + Identity-aware）"""
         try:
+            # 保存當前 Identity 的狀態
+            if self.current_identity_id:
+                self._save_identity_status(self.current_identity_id)
+            
+            # 向後兼容：保存 fallback 狀態到舊路徑
             with open(self.storage_path, 'w', encoding='utf-8') as f:
                 json.dump(self.status.to_dict(), f, ensure_ascii=False, indent=2)
             debug_log(3, f"[StatusManager] 狀態已保存到 {self.storage_path}")
         except Exception as e:
             error_log(f"[StatusManager] 保存狀態失敗: {e}")
     
-    def _load_status(self):
-        """載入狀態"""
+    def _save_identity_status(self, identity_id: str):
+        """保存指定 Identity 的狀態到獨立文件"""
         try:
+            status = self.status_by_identity.get(identity_id)
+            if not status:
+                return
+            
+            identity_file = self.identity_storage_dir / f"{identity_id}_status.json"
+            with open(identity_file, 'w', encoding='utf-8') as f:
+                json.dump(status.to_dict(), f, ensure_ascii=False, indent=2)
+            debug_log(3, f"[StatusManager] Identity {identity_id} 狀態已保存")
+        except Exception as e:
+            error_log(f"[StatusManager] 保存 Identity {identity_id} 狀態失敗: {e}")
+    
+    def _load_status(self):
+        """載入狀態（向後兼容 + Identity-aware）"""
+        try:
+            # 載入舊格式的 fallback 狀態（向後兼容）
             if self.storage_path.exists():
                 with open(self.storage_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 
                 # 檢查並遷移舊的 Pride 範圍 (0-100 -> -1 到 +1)
                 if 'pride' in data and data['pride'] > 1.0:
-                    # 將 0-100 範圍轉換為 -1 到 +1 範圍
-                    # 50 -> 0, 0 -> -1, 100 -> +1
                     old_pride = data['pride']
                     data['pride'] = (old_pride - 50.0) / 50.0
                     info_log(f"[StatusManager] Pride 範圍遷移: {old_pride} -> {data['pride']:.2f}")
                 
                 self.status = SystemStatus.from_dict(data)
                 self.status.validate_ranges()
-                info_log(f"[StatusManager] 狀態已從 {self.storage_path} 載入")
+                info_log(f"[StatusManager] Fallback 狀態已從 {self.storage_path} 載入")
             else:
-                info_log("[StatusManager] 使用預設狀態")
+                info_log("[StatusManager] 使用預設 fallback 狀態")
+            
+            # 🆕 載入所有 Identity 的狀態
+            self._load_all_identity_statuses()
+            
         except Exception as e:
             error_log(f"[StatusManager] 載入狀態失敗: {e}，使用預設狀態")
             self.status = SystemStatus()
+    
+    def _load_all_identity_statuses(self):
+        """載入所有 Identity 的狀態文件"""
+        try:
+            if not self.identity_storage_dir.exists():
+                return
+            
+            loaded_count = 0
+            for status_file in self.identity_storage_dir.glob("*_status.json"):
+                try:
+                    identity_id = status_file.stem.replace("_status", "")
+                    
+                    with open(status_file, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    
+                    status = SystemStatus.from_dict(data)
+                    status.validate_ranges()
+                    self.status_by_identity[identity_id] = status
+                    loaded_count += 1
+                    debug_log(3, f"[StatusManager] 載入 Identity {identity_id} 的狀態")
+                    
+                except Exception as e:
+                    error_log(f"[StatusManager] 載入 {status_file} 失敗: {e}")
+            
+            if loaded_count > 0:
+                info_log(f"[StatusManager] 已載入 {loaded_count} 個 Identity 的狀態")
+                
+        except Exception as e:
+            error_log(f"[StatusManager] 載入 Identity 狀態失敗: {e}")
     
     def reset_status(self):
         """重置狀態到預設值"""
@@ -438,18 +544,22 @@ class StatusManager:
         
     def get_effective_helpfulness(self) -> float:
         """回傳『有效的』助人意願。若有覆蓋值（例如 Mischief），回傳覆蓋值；否則回自然值。"""
-        if self._helpfulness_override is not None:
-            return float(self._helpfulness_override)
+        if self.current_identity_id:
+            override = self._helpfulness_override.get(self.current_identity_id)
+            if override is not None:
+                return float(override)
         return float(self.status.helpfulness)
     
     def suppress_helpfulness(self, reason: str = "system_override"):
         """將助人意願以覆蓋值 -1 強制關閉（不影響自然值），適用於 Mischief 等態。"""
-        self._helpfulness_override = -1.0
+        if self.current_identity_id:
+            self._helpfulness_override[self.current_identity_id] = -1.0
         self.status.last_update_reason = reason
 
     def clear_helpfulness_override(self, reason: str = "system_restore"):
         """解除覆蓋，恢復使用自然值（0~1）。"""
-        self._helpfulness_override = None
+        if self.current_identity_id and self.current_identity_id in self._helpfulness_override:
+            del self._helpfulness_override[self.current_identity_id]
         self.status.last_update_reason = reason
 
 

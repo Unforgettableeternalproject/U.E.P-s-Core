@@ -177,7 +177,13 @@ class NLPModule(BaseModule):
             return self._create_error_response(str(e))
     
     def _process_speaker_identity(self, input_data: NLPInput) -> Dict[str, Any]:
-        """處理語者身份識別 - 從Working Context獲取說話人資料"""
+        """處理語者身份識別 - 從Working Context獲取說話人資料
+        
+        新架構（Identity 為主，Speaker 為輔）：
+        1. 優先檢查 declared_identity（主動聲明）
+        2. 如果有 declared_identity，直接添加 Speaker 樣本到該 Identity
+        3. 如果沒有，使用原有的被動推斷邏輯
+        """
         result = {
             "identity": None,
             "identity_action": None,
@@ -201,6 +207,17 @@ class NLPModule(BaseModule):
                     self._add_identity_to_working_context(default_identity)
                 return result
             
+            # 🆕 檢查是否有主動聲明的 Identity
+            from core.working_context import working_context_manager
+            declared_identity_id = working_context_manager.get_declared_identity()
+            
+            if declared_identity_id:
+                # 方案 A: 主動聲明模式
+                debug_log(2, f"[NLP] 檢測到主動聲明的 Identity: {declared_identity_id}")
+                result.update(self._handle_declared_identity(declared_identity_id, input_data))
+                return result
+            
+            # 方案 B: 被動推斷模式（原有邏輯）
             # 從Working Context獲取說話人資料，而非直接從input_data
             speaker_data = self._get_speaker_from_working_context()
             
@@ -232,6 +249,12 @@ class NLPModule(BaseModule):
             
             result["identity"] = identity
             result["identity_action"] = action
+            
+            # 🆕 如果確認了正式 Identity，同步 StatusManager
+            if identity and action in ["existing", "newly_created"]:
+                from core.status_manager import status_manager
+                status_manager.switch_identity(identity.identity_id)
+                debug_log(2, f"[NLP] 已切換 StatusManager 到 Identity: {identity.identity_id}")
             
             if action == "accumulating":
                 # 語者樣本累積狀態，創建通用身份供當前使用
@@ -1415,6 +1438,111 @@ class NLPModule(BaseModule):
         except Exception as e:
             error_log(f"[NLP] 狀態轉換執行失敗: {e}")
 
+    def _handle_declared_identity(self, identity_id: str, input_data: NLPInput) -> Dict[str, Any]:
+        """處理主動聲明的 Identity（方案 A）
+        
+        Args:
+            identity_id: 主動聲明的 Identity ID
+            input_data: NLP 輸入數據
+            
+        Returns:
+            Dict: 包含 identity, identity_action, processing_notes
+        """
+        result = {
+            "identity": None,
+            "identity_action": None,
+            "processing_notes": []
+        }
+        
+        try:
+            # 載入該 Identity
+            identity = self.identity_manager.get_identity_by_id(identity_id)
+            
+            if not identity:
+                error_log(f"[NLP] 聲明的 Identity {identity_id} 不存在")
+                result["processing_notes"].append(f"聲明的 Identity {identity_id} 不存在")
+                return result
+            
+            # 🆕 從 Working Context 獲取 Speaker 數據
+            speaker_data = self._get_speaker_from_working_context()
+            
+            if speaker_data:
+                speaker_id = speaker_data.get('speaker_id')
+                speaker_confidence = speaker_data.get('confidence', 0.0)
+                
+                # 從 voice_features 中提取 embedding（如果有）
+                voice_features = speaker_data.get('voice_features')
+                speaker_embedding = None
+                
+                if voice_features and isinstance(voice_features, dict):
+                    speaker_embedding = voice_features.get('embedding')
+                
+                # 如果有 embedding，添加到 Identity 的 speaker_accumulation
+                if speaker_embedding and isinstance(speaker_embedding, list):
+                    success = self.identity_manager.add_speaker_sample(
+                        identity_id,
+                        speaker_embedding,
+                        speaker_confidence,
+                        audio_duration=voice_features.get('audio_duration') if voice_features else None,
+                        metadata={
+                            "speaker_id": speaker_id,
+                            "timestamp": time.time(),
+                            "mode": "declared_identity"
+                        }
+                    )
+                    
+                    if success:
+                        debug_log(2, f"[NLP] 已添加 Speaker 樣本到 Identity {identity_id}")
+                        result["processing_notes"].append(f"Speaker 樣本已添加到 Identity")
+                        
+                        # 關聯 Speaker ID 到 Identity（如果尚未關聯）
+                        if speaker_id:
+                            self.identity_manager.associate_speaker_to_identity(speaker_id, identity_id)
+                    else:
+                        error_log(f"[NLP] 添加 Speaker 樣本到 Identity {identity_id} 失敗")
+                else:
+                    debug_log(3, f"[NLP] Speaker 數據中無 embedding，嘗試從 SPEAKER_ACCUMULATION 獲取")
+                    
+                    # 🆕 從 Working Context 的 SPEAKER_ACCUMULATION 獲取 embedding
+                    embeddings = self._get_speaker_embeddings_from_context()
+                    if embeddings:
+                        debug_log(2, f"[NLP] 從 SPEAKER_ACCUMULATION 獲取到 {len(embeddings)} 個 embedding")
+                        for emb_data in embeddings:
+                            self.identity_manager.add_speaker_sample(
+                                identity_id,
+                                emb_data['embedding'],
+                                emb_data.get('confidence', 0.8),
+                                metadata={
+                                    "speaker_id": speaker_id,
+                                    "timestamp": emb_data.get('timestamp', time.time()),
+                                    "mode": "declared_identity_batch"
+                                }
+                            )
+                        result["processing_notes"].append(f"從上下文添加了 {len(embeddings)} 個 Speaker 樣本")
+                    else:
+                        debug_log(3, f"[NLP] 無法獲取 Speaker embedding")
+            
+            # 設置結果
+            result["identity"] = identity
+            result["identity_action"] = "declared"
+            result["processing_notes"].append(f"使用主動聲明的 Identity: {identity.display_name}")
+            
+            # 🆕 同步 StatusManager：切換到該 Identity 的系統狀態
+            from core.status_manager import status_manager
+            status_manager.switch_identity(identity_id)
+            debug_log(2, f"[NLP] 已切換 StatusManager 到 Identity: {identity_id}")
+            
+            # 將身份添加到 Working Context
+            self._add_identity_to_working_context(identity)
+            
+            info_log(f"[NLP] 使用主動聲明的 Identity: {identity.identity_id} ({identity.display_name})")
+            
+        except Exception as e:
+            error_log(f"[NLP] 處理主動聲明 Identity 失敗: {e}")
+            result["processing_notes"].append(f"處理聲明 Identity 錯誤: {str(e)}")
+        
+        return result
+    
     def _get_speaker_from_working_context(self) -> Optional[Dict[str, Any]]:
         """從Working Context獲取當前說話人資料"""
         try:
@@ -1447,6 +1575,53 @@ class NLPModule(BaseModule):
         except Exception as e:
             error_log(f"[NLP] 從Working Context獲取說話人失敗: {e}")
             return None
+    
+    def _get_speaker_embeddings_from_context(self) -> List[Dict[str, Any]]:
+        """從 Working Context 的 SPEAKER_ACCUMULATION 獲取所有 embedding
+        
+        Returns:
+            List[Dict]: 包含 embedding 的字典列表
+        """
+        embeddings = []
+        
+        try:
+            from core.working_context import working_context_manager, ContextType
+            import numpy as np
+            
+            # 獲取所有 SPEAKER_ACCUMULATION 上下文
+            contexts = working_context_manager.get_contexts_by_type(ContextType.SPEAKER_ACCUMULATION)
+            
+            if not contexts:
+                return embeddings
+            
+            # 遍歷所有上下文，提取 embedding
+            for context in contexts:
+                context_data = working_context_manager.get_context_data(context.context_id)
+                
+                if not context_data:
+                    continue
+                
+                # data 字段包含累積的樣本
+                data_items = context_data.get('data', [])
+                
+                for item in data_items:
+                    # item 可能是 numpy array (embedding) 或包含 embedding 的字典
+                    if isinstance(item, np.ndarray):
+                        embeddings.append({
+                            'embedding': item.tolist(),
+                            'timestamp': time.time(),
+                            'confidence': 0.8
+                        })
+                    elif isinstance(item, dict) and 'embedding' in item:
+                        embeddings.append(item)
+                
+                debug_log(3, f"[NLP] 從上下文 {context.context_id} 提取了 {len(data_items)} 個樣本")
+            
+            return embeddings
+            
+        except Exception as e:
+            error_log(f"[NLP] 從 SPEAKER_ACCUMULATION 獲取 embedding 失敗: {e}")
+            return embeddings
 
     def _extract_state_text(self, nlp_result: 'NLPOutput', target_state: 'SystemState') -> str:
         """

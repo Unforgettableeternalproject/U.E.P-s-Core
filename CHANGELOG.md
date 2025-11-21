@@ -1870,3 +1870,15 @@
 
 ---
 
+### Was testing the chat route, and discovered some fatal issues to fix, will finish tomorrow. 11/22
+
+> Date: Sat, 22 Nov 2025 01:29:26 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `69e4272e481f132272c268460f0589754dbdd76f`
+
+---
+

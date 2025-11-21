@@ -136,7 +136,7 @@ class NLPModule(BaseModule):
             state_result = self._process_system_state(intent_result, validated_input)
             
             # 如果有 segment 被 SYS 更正，更新 intent_result
-            if "corrected_segments" in state_result:
+            if "corrected_segments" in state_result and state_result["corrected_segments"]:
                 corrected_segments = state_result["corrected_segments"]
                 # 更新 intent_segments
                 for old_seg, new_seg in corrected_segments:
@@ -152,6 +152,15 @@ class NLPModule(BaseModule):
                     primary_segment = NewIntentSegment.get_highest_priority_segment(intent_result["intent_segments"])
                     intent_result["primary_intent"] = primary_segment.intent_type
                     debug_log(2, f"[NLP] Updated primary_intent after SYS correction: {primary_segment.intent_type.name}")
+            
+            # 如果狀態處理後有過濾的 segments（例如 COMPOUND 過濾掉 CALL），更新 primary_intent
+            if "filtered_segments" in state_result and state_result["filtered_segments"]:
+                from .intent_types import IntentSegment as NewIntentSegment
+                filtered_segs = state_result["filtered_segments"]
+                if filtered_segs:
+                    primary_segment = NewIntentSegment.get_highest_priority_segment(filtered_segs)
+                    intent_result["primary_intent"] = primary_segment.intent_type
+                    debug_log(2, f"[NLP] Updated primary_intent after filtering: {primary_segment.intent_type.name}")
             
             # 組合結果
             final_result = self._combine_results(validated_input, identity_result, 
@@ -193,6 +202,17 @@ class NLPModule(BaseModule):
         try:
             # 檢查是否為文字輸入模式 (繞過說話人識別)
             metadata = getattr(input_data, 'metadata', {})
+            # 🆕 優先檢查是否有主動聲明的 Identity（不管是否文字輸入）
+            from core.working_context import working_context_manager
+            declared_identity_id = working_context_manager.get_declared_identity()
+            
+            if declared_identity_id:
+                # 方案 A: 主動聲明模式
+                debug_log(2, f"[NLP] 檢測到主動聲明的 Identity: {declared_identity_id}")
+                result.update(self._handle_declared_identity(declared_identity_id, input_data))
+                return result
+            
+            # 檢查是否為文字輸入模式
             is_text_input = metadata.get('input_mode') == 'text' or metadata.get('bypass_speaker_id', False)
             
             if is_text_input:
@@ -207,13 +227,12 @@ class NLPModule(BaseModule):
                     self._add_identity_to_working_context(default_identity)
                 return result
             
-            # 🆕 檢查是否有主動聲明的 Identity
-            from core.working_context import working_context_manager
+            # 再次檢查 declared_identity（為了向後兼容，保留這個檢查）
             declared_identity_id = working_context_manager.get_declared_identity()
             
             if declared_identity_id:
-                # 方案 A: 主動聲明模式
-                debug_log(2, f"[NLP] 檢測到主動聲明的 Identity: {declared_identity_id}")
+                # 方案 A: 主動聲明模式（第二次檢查，保留向後兼容）
+                debug_log(2, f"[NLP] 檢測到主動聲明的 Identity（語音模式）: {declared_identity_id}")
                 result.update(self._handle_declared_identity(declared_identity_id, input_data))
                 return result
             
@@ -324,17 +343,33 @@ class NLPModule(BaseModule):
             #     corrected_segments.append(corrected_segment)
             # segments = corrected_segments
             
-            # Determine primary intent (highest priority)
+            # 🆕 CALL 過濾邏輯：如果有 CALL + 其他實質意圖，過濾掉 CALL
+            # CALL 只是過渡狀態，一旦有實質意圖（CHAT/WORK）出現，CALL 就應該被忽略
             from .intent_types import IntentSegment as NewIntentSegment
+            
+            filtered_segments = segments
             if NewIntentSegment.is_compound_input(segments):
-                primary_segment = NewIntentSegment.get_highest_priority_segment(segments)
-                primary_intent_type = primary_segment.intent_type if primary_segment else segments[0].intent_type
+                call_segs = [s for s in segments if s.intent_type == IntentType.CALL]
+                non_call_segs = [s for s in segments if s.intent_type != IntentType.CALL and s.intent_type != IntentType.UNKNOWN]
+                
+                # 如果有 CALL + 其他實質意圖，過濾掉 CALL
+                if call_segs and non_call_segs:
+                    debug_log(2, f"[NLP] COMPOUND with CALL: Filtering out CALL, keeping {len(non_call_segs)} substantial intent(s)")
+                    filtered_segments = non_call_segs
+            
+            # Determine primary intent (highest priority from filtered segments)
+            if NewIntentSegment.is_compound_input(filtered_segments):
+                primary_segment = NewIntentSegment.get_highest_priority_segment(filtered_segments)
+                primary_intent_type = primary_segment.intent_type if primary_segment else filtered_segments[0].intent_type
             else:
-                primary_intent_type = segments[0].intent_type
+                primary_intent_type = filtered_segments[0].intent_type
             
             # Use Stage 4 IntentType directly (no mapping needed)
             # Primary intent is now directly from Stage 4
             primary_intent = primary_intent_type
+            
+            # 使用過濾後的 segments 作為最終結果
+            segments = filtered_segments
             
             # Calculate overall confidence (average of all segments)
             overall_confidence = sum(s.confidence for s in segments) / len(segments)
@@ -579,10 +614,11 @@ class NLPModule(BaseModule):
             for note in result.get("processing_notes", []):
                 debug_log(3, f"[NLP] {note}")
             
-            # 返回字典包含 added_states 和 corrected_segments
+            # 返回字典包含 added_states、corrected_segments 和 filtered_segments
             return_dict = {
                 "added_states": added_states,
-                "corrected_segments": result.get("corrected_segments", [])
+                "corrected_segments": result.get("corrected_segments", []),
+                "filtered_segments": result.get("filtered_segments", [])  # 🆕 傳遞 filtered_segments
             }
             return return_dict
                 
@@ -884,6 +920,8 @@ class NLPModule(BaseModule):
                 result["processing_notes"].append(f"COMPOUND intent detected: {len(valid_segments)} segments")
                 # Apply COMPOUND filtering rules
                 valid_segments = self._filter_compound_no_session(valid_segments)
+                # 保存過濾後的 segments，用於更新 primary_intent
+                result["filtered_segments"] = valid_segments
             
             # Process each segment
             for segment in valid_segments:

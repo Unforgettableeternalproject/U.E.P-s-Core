@@ -941,7 +941,7 @@ class ModuleInvocationCoordinator:
         """準備LLM模組輸入
         
         重要架構設計：
-        - 第一次進入處理層 (cycle_index = 0)：從狀態上下文 (WorkflowSession) 獲取命令文本
+        - 第一次進入處理層 (cycle_index = 0)：從狀態上下文獲取命令文本和 metadata
         - 第二次以後 (cycle_index > 0)：從 Router 獲取用戶回應文本
         """
         nlp_result = input_data.get('nlp_result', {})
@@ -952,17 +952,35 @@ class ModuleInvocationCoordinator:
         from modules.nlp_module.intent_types import IntentType
         intent_value = primary_intent.value if hasattr(primary_intent, 'value') else primary_intent
         
-        # 判斷文本來源
-        if (primary_intent == IntentType.WORK or intent_value == "work") and cycle_index == 0:
-            # ✅ Cycle 0: 使用完整的原始輸入文本進行決策
-            # NLP 已經分析過意圖，但 LLM 需要完整上下文來理解和決策
-            input_text = input_data.get('input_data', {}).get('text', '')
-            debug_log(2, f"[ModuleCoordinator] WORK Cycle 0 - 使用完整原始輸入: {input_text[:50]}...")
+        # ✅ Cycle 0: 從狀態上下文獲取文本和 metadata
+        intent_metadata = None
+        if cycle_index == 0:
+            from core.states.state_queue import get_state_queue_manager
+            state_queue = get_state_queue_manager()
+            current_item = state_queue.current_item
+            
+            if current_item:
+                # 使用狀態的 context_content 作為輸入文本
+                input_text = current_item.context_content
+                debug_log(2, f"[ModuleCoordinator] Cycle 0 - 從狀態上下文獲取: {input_text[:50]}...")
+                
+                # 從狀態 metadata 提取降級標記
+                state_metadata = current_item.metadata or {}
+                if state_metadata.get('degraded_from_work'):
+                    intent_metadata = {
+                        'degraded_from_work': state_metadata['degraded_from_work'],
+                        'original_intent': state_metadata.get('original_intent'),
+                        'degradation_reason': state_metadata.get('degradation_reason')
+                    }
+                    debug_log(2, f"[ModuleCoordinator] 從狀態上下文檢測到降級的 WORK 請求: {intent_metadata}")
+            else:
+                # Fallback: 使用原始輸入文本
+                input_text = input_data.get('input_data', {}).get('text', '')
+                debug_log(1, f"[ModuleCoordinator] ⚠️ Cycle 0 但無 current_item，使用原始輸入")
         else:
-            # 其他情況：從 Router 獲取文本（CHAT 路徑或 WORK 第二次以後）
+            # Cycle > 0: 從 Router 獲取用戶回應文本
             input_text = input_data.get('input_data', {}).get('text', '')
-            if cycle_index > 0:
-                debug_log(2, f"[ModuleCoordinator] WORK cycle {cycle_index} - 從 Router 獲取用戶回應")
+            debug_log(2, f"[ModuleCoordinator] Cycle {cycle_index} - 從 Router 獲取用戶回應")
         
         # ✅ 根據 primary_intent 決定 LLM 模式
         if primary_intent == IntentType.WORK or intent_value == "work":
@@ -994,6 +1012,7 @@ class ModuleInvocationCoordinator:
                 "entities": nlp_result.get('entities', []),
                 "processing_notes": nlp_result.get('processing_notes', [])
             },
+            "processing_context": {"intent_metadata": intent_metadata} if intent_metadata else None,  # ✅ 添加降級 metadata
             "timestamp": input_data.get('timestamp', time.time()),
             "nlp_result": nlp_result,
             "identity": nlp_result.get('identity'),

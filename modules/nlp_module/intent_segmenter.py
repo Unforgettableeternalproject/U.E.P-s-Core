@@ -9,6 +9,8 @@ from typing import List, Optional
 from pathlib import Path
 from modules.nlp_module.intent_types import IntentSegment, IntentType
 from modules.nlp_module.bio_tagger import BIOTagger
+from modules.nlp_module.intent_post_processor import IntentPostProcessor
+from modules.nlp_module.workflow_validator import WorkflowValidator
 from utils.debug_helper import debug_log, info_log, error_log
 
 
@@ -26,7 +28,11 @@ class IntentSegmenter:
         """
         self.bio_tagger = BIOTagger()
         self.model_loaded = False
-        self.confidence_threshold = 0.7  # 置信度閾值
+        self.confidence_threshold = 0.7  # 置信度閖值
+        
+        # 初始化後處理器和驗證器
+        self.post_processor = IntentPostProcessor()
+        self.workflow_validator = WorkflowValidator()
         
         # 預設模型路徑
         if model_path is None:
@@ -50,14 +56,24 @@ class IntentSegmenter:
         """
         debug_log(3, f"[IntentSegmenter] 分段輸入: {text[:50]}...")
         
-        # 使用 BIOS Tagger 預測
+        # Step 1: 使用 BIOS Tagger 預測
         segments_raw = self.bio_tagger.predict(text)
         
         if not segments_raw:
             debug_log(2, "[IntentSegmenter] BIOS Tagger 未返回分段，使用備用方案")
             return self._fallback_segment(text)
         
-        # 轉換為 IntentSegment 格式
+        debug_log(3, f"[IntentSegmenter] BIO Tagger 初次分段: {len(segments_raw)} 個分段")
+        
+        # Step 2: 後處理 - 合併與交叉比對
+        segments_processed = self.post_processor.process(segments_raw, text)
+        debug_log(3, f"[IntentSegmenter] 後處理後: {len(segments_processed)} 個分段")
+        
+        # Step 3: WORK 意圖校驗
+        segments_validated = self.workflow_validator.validate(segments_processed)
+        debug_log(3, f"[IntentSegmenter] 校驗後: {len(segments_validated)} 個分段")
+        
+        # Step 4: 轉換為 IntentSegment 格式
         intent_segments = []
         
         # Intent 映射（將 direct_work/background_work 統一為 WORK）
@@ -75,7 +91,7 @@ class IntentSegmenter:
             'background_work': 'background'
         }
         
-        for seg in segments_raw:
+        for seg in segments_validated:
             # 映射 intent 字符串到 IntentType
             intent_str = seg['intent'].lower()
             intent_type = intent_mapping.get(intent_str, IntentType.UNKNOWN)
@@ -83,12 +99,13 @@ class IntentSegmenter:
             if intent_type == IntentType.UNKNOWN and intent_str not in intent_mapping:
                 debug_log(2, f"[IntentSegmenter] 未知意圖類型: {intent_str}，使用 UNKNOWN")
             
-            # 構建 metadata
-            metadata = {
+            # 構建 metadata（保留 WorkflowValidator 添加的標記）
+            metadata = seg.get('metadata', {}).copy()  # 保留現有 metadata
+            metadata.update({
                 'start_pos': seg.get('start_pos', 0),
                 'end_pos': seg.get('end_pos', len(seg['text'])),
                 'model': 'bio_tagger'
-            }
+            })
             
             # 如果是 WORK 類型，添加 work_mode
             work_mode = work_mode_mapping.get(intent_str)
@@ -107,17 +124,15 @@ class IntentSegmenter:
         
         debug_log(2, f"[IntentSegmenter] 識別到 {len(intent_segments)} 個意圖分段")
         
-        # 過濾低置信度分段
-        filtered_segments = [
-            seg for seg in intent_segments 
-            if seg.confidence >= self.confidence_threshold
-        ]
+        # 注意：不再使用固定的 confidence_threshold 過濾
+        # 因為 WorkflowValidator 已經進行過驗證和調整
+        # 如果 validator 認為分段應該被轉為 CHAT（即使 confidence 降低），仍然應該保留
         
-        if not filtered_segments:
-            debug_log(2, "[IntentSegmenter] 所有分段置信度過低，使用備用方案")
+        if not intent_segments:
+            debug_log(2, "[IntentSegmenter] 沒有識別到任何分段，使用備用方案")
             return self._fallback_segment(text)
         
-        return filtered_segments
+        return intent_segments
     
     def _fallback_segment(self, text: str) -> List[IntentSegment]:
         """

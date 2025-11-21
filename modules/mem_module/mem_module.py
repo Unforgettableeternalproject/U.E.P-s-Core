@@ -95,6 +95,9 @@ class MEMModule(BaseModule):
                 error_log("[MEM] 重構記憶管理器初始化失敗")
                 return False
             
+            # 註冊 CHAT-MEM 協作管道的 provider
+            self._register_collaboration_providers()
+            
             # 註冊Working Context處理器
             self.working_context_handler = register_memory_context_handler(
                 working_context_manager, self.memory_manager
@@ -117,6 +120,115 @@ class MEMModule(BaseModule):
         except Exception as e:
             error_log(f"[MEM] 重構架構初始化失敗: {e}")
             return False
+    
+    def _register_collaboration_providers(self):
+        """註冊 CHAT-MEM 協作管道的資料提供者"""
+        try:
+            from modules.llm_module.module_interfaces import state_aware_interface
+            
+            # 註冊記憶檢索 provider
+            def memory_retrieval_provider(**kwargs):
+                from .schemas import MemoryType
+                
+                query = kwargs.get('query', '')
+                max_results = kwargs.get('max_results', 3)
+                memory_types_raw = kwargs.get('memory_types', None)
+                
+                # 舊類型名稱到新類型的映射
+                type_mapping = {
+                    'conversation': MemoryType.INTERACTION_HISTORY,
+                    'user_info': MemoryType.PROFILE,
+                    'context': MemoryType.SNAPSHOT,
+                    'preference': MemoryType.PREFERENCE,
+                    'long_term': MemoryType.LONG_TERM,
+                    'system_learning': MemoryType.SYSTEM_LEARNING
+                }
+                
+                # 轉換 memory_types 為 MemoryType 枚舉（如果需要）
+                memory_types = None
+                if memory_types_raw:
+                    if isinstance(memory_types_raw, list):
+                        memory_types = []
+                        for t in memory_types_raw:
+                            if isinstance(t, str):
+                                # 使用映射或直接轉換
+                                if t in type_mapping:
+                                    memory_types.append(type_mapping[t])
+                                else:
+                                    try:
+                                        memory_types.append(MemoryType(t))
+                                    except ValueError:
+                                        debug_log(2, f"[MEM] 忽略無效的記憶類型: {t}")
+                            else:
+                                memory_types.append(t)
+                        
+                        if not memory_types:
+                            memory_types = None  # 如果全部無效，使用默認值
+                
+                # 從 working context 獲取當前身份的 memory_token
+                memory_token = working_context_manager.get_memory_token()
+                
+                debug_log(2, f"[MEM] 記憶檢索請求 - query: {query[:50]}, types: {memory_types}, token: {memory_token}")
+                
+                memories = self.memory_manager.retrieve_memories(
+                    query_text=query,
+                    memory_token=memory_token,
+                    max_results=max_results,
+                    memory_types=memory_types
+                )
+                
+                debug_log(2, f"[MEM] 記憶檢索完成 - 找到 {len(memories)} 條記憶")
+                return memories
+            
+            # 註冊對話儲存 provider
+            def conversation_storage_provider(**kwargs):
+                from .schemas import MemoryType, MemoryImportance
+                
+                conversation_data = kwargs.get('conversation_data', {})
+                
+                # 從 working context 獲取當前身份的 memory_token
+                memory_token = working_context_manager.get_memory_token()
+                
+                debug_log(2, f"[MEM] 對話儲存請求 - token: {memory_token}")
+                
+                # 提取對話內容
+                content = conversation_data.get('content', {})
+                metadata = conversation_data.get('metadata', {})
+                
+                # 構建儲存內容
+                storage_content = f"User: {content.get('user_input', '')}\nAssistant: {content.get('assistant_response', '')}"
+                
+                # 處理 memory_type：將字符串轉換為 MemoryType 枚舉
+                memory_type_raw = metadata.get('memory_type', 'interaction_history')
+                if memory_type_raw == 'conversation':
+                    memory_type_raw = 'interaction_history'  # 轉換舊的類型名
+                memory_type = MemoryType(memory_type_raw) if isinstance(memory_type_raw, str) else memory_type_raw
+                
+                # 處理 importance
+                importance_raw = metadata.get('importance', 'medium')
+                if importance_raw == 'normal':
+                    importance_raw = 'medium'  # 轉換舊的重要性名稱
+                importance = MemoryImportance(importance_raw) if isinstance(importance_raw, str) else importance_raw
+                
+                result = self.memory_manager.store_memory(
+                    content=storage_content,
+                    memory_token=memory_token,
+                    memory_type=memory_type,
+                    importance=importance,
+                    metadata=metadata
+                )
+                
+                debug_log(2, f"[MEM] 對話儲存完成 - 成功: {result}")
+                return result
+            
+            # 註冊到 state_aware_interface
+            state_aware_interface.register_chat_mem_provider("memory_retrieval", memory_retrieval_provider)
+            state_aware_interface.register_chat_mem_provider("conversation_storage", conversation_storage_provider)
+            
+            info_log("[MEM] CHAT-MEM 協作管道 provider 註冊完成")
+            
+        except Exception as e:
+            error_log(f"[MEM] 協作 provider 註冊失敗: {e}")
     
     def _register_state_change_listener(self):
         """註冊狀態變化監聽器"""
@@ -179,13 +291,28 @@ class MEMModule(BaseModule):
             # 3. 從Session Manager獲取目前會話相關資料（根據代辦.md要求4）
             session_context = self._get_session_context_from_session_manager(current_session_id)
             
+            # 4. 從 StateQueue 獲取實際的觸發內容（用戶輸入）
+            trigger_content = ""
+            context_content = ""
+            try:
+                from core.states.state_queue import StateQueue
+                state_queue = StateQueue.get_instance()
+                current_item = state_queue.get_current_item()
+                trigger_content = current_item.get("trigger_content", "") if current_item else ""
+                context_content = current_item.get("context_content", trigger_content) if current_item else ""
+                debug_log(2, f"[MEM] 從 StateQueue 獲取觸發內容: {trigger_content[:100] if trigger_content else '(空)'}")
+            except Exception as e:
+                debug_log(3, f"[MEM] 無法獲取 StateQueue 內容: {e}")
+            
             # 構建初始上下文
             initial_context = {
                 "session_type": "chat",
                 "started_by_state_change": True,
                 "memory_token": memory_token,
                 "identity_context": identity_context,
-                "session_context": session_context
+                "session_context": session_context,
+                "trigger_content": trigger_content,
+                "state_context_content": context_content  # 提供實際用戶輸入
             }
             
             # 委託給MemoryManager處理實際的會話加入邏輯

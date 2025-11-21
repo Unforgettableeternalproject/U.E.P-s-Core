@@ -30,7 +30,7 @@ from .identity_isolation import IdentityIsolationManager
 class MemoryStorageManager:
     """統一記憶存儲管理器"""
     
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any], identity_manager=None):
         self.config = config
         
         # 子系統配置
@@ -41,7 +41,14 @@ class MemoryStorageManager:
         # 初始化子系統
         self.vector_manager = VectorIndexManager(vector_config)
         self.metadata_manager = MetadataStorageManager(metadata_config)
-        self.identity_manager = IdentityIsolationManager(identity_config)
+        
+        # 使用傳入的 identity_manager 或創建新的
+        if identity_manager:
+            self.identity_manager = identity_manager
+            debug_log(2, "[StorageManager] 使用共享的 IdentityManager")
+        else:
+            self.identity_manager = IdentityIsolationManager(identity_config)
+            debug_log(2, "[StorageManager] 創建獨立的 IdentityIsolationManager")
         
         # 嵌入模型
         self.embedding_model_name = config.get("embedding_model", "all-MiniLM-L6-v2")

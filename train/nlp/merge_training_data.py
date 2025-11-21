@@ -125,8 +125,7 @@ def main():
     # 設定路徑
     script_dir = Path(__file__).parent
     old_file = script_dir / "nlp_training_data.jsonl"
-    new_file = script_dir / "nlp_training_data2.jsonl"
-    additional_file = script_dir / "workflow_additional_examples.jsonl"
+    new_file = script_dir / "nlp_training_data_additional.jsonl"
     
     # 檢查文件是否存在
     if not old_file.exists():
@@ -142,14 +141,6 @@ def main():
     # 載入資料
     old_data = load_jsonl(old_file)
     new_data = load_jsonl(new_file)
-    
-    # 載入額外的工作流範例（如果存在）
-    additional_data = []
-    if additional_file.exists():
-        additional_data = load_jsonl(additional_file)
-        print(f"✅ 已載入額外工作流範例: {len(additional_data)} 項")
-        # 合併到 new_data
-        new_data.extend(additional_data)
     
     print(f"✅ 已載入舊資料: {len(old_data)} 項")
     print(f"✅ 已載入新資料: {len(new_data)} 項")

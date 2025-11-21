@@ -38,8 +38,13 @@ class PromptManager:
                          memory_context: Optional[str] = None, 
                          conversation_history: Optional[List] = None,
                          is_internal: bool = False,
-                         relevant_memories: Optional[List[Dict]] = None) -> str:
-        """構建對話模式提示詞 - 整合靜態配置與動態模組資料"""
+                         relevant_memories: Optional[List[Dict]] = None,
+                         intent_metadata: Optional[Dict] = None) -> str:
+        """構建對話模式提示詞 - 整合靜態配置與動態模組資料
+        
+        Args:
+            intent_metadata: Intent segment metadata, may contain degradation info
+        """
         
         prompt_parts = []
         
@@ -80,9 +85,27 @@ class PromptManager:
         if history_section:
             prompt_parts.append(history_section)
         
+        # 檢查是否為降級的 WORK 請求
+        degraded_work_warning = None
+        if intent_metadata and intent_metadata.get('degraded_from_work'):
+            degraded_work_warning = (
+                "\n**IMPORTANT CONTEXT - Capability Limitation:**\n"
+                "The user's request appears to be asking for a task execution or tool usage, "
+                "but there is currently NO matching workflow or tool available in the system to handle this request.\n\n"
+                "Just take it easy and reply conversationally.\n\n"
+                "**DO NOT:**\n"
+                "- Pretend you can execute the task\n"
+                "- Give the impression the task will be completed\n"
+                "- Provide code or detailed instructions as if you're executing them\n"
+            )
+        
         # 用戶輸入
         user_section = f"User: {user_input}"
         prompt_parts.append(user_section)
+        
+        # 降級警告（如果有）
+        if degraded_work_warning:
+            prompt_parts.append(degraded_work_warning)
         
         # 回應引導
         if not is_internal:
@@ -268,29 +291,40 @@ class PromptManager:
                 f"boredom={boredom_en}")
     
     def _build_memory_context(self, memory_context: Optional[str] = None, 
-                             relevant_memories: Optional[List[Dict]] = None) -> Optional[str]:
-        """構建記憶上下文區段 - 整合檢索到的記憶"""
+                             relevant_memories: Optional[List[Any]] = None) -> Optional[str]:
+        """構建記憶上下文區段 - 整合檢索到的記憶
+        
+        Args:
+            memory_context: 原有的記憶上下文字串
+            relevant_memories: MemorySearchResult 對象列表
+        """
         context_parts = []
         
         # 原有的記憶上下文
         if memory_context:
             context_parts.append(f"Memory Context:\n{memory_context}")
         
-        # 新的檢索記憶
+        # 新的檢索記憶（MemorySearchResult 對象列表）
         if relevant_memories:
             memory_text_parts = ["Retrieved Relevant Memories:"]
-            for i, memory in enumerate(relevant_memories, 1):
-                memory_type = memory.get("type", "general")
-                content = memory.get("content", "")
+            for i, memory_result in enumerate(relevant_memories, 1):
+                # 從 MemorySearchResult 中取得 memory_entry
+                memory_entry = memory_result.memory_entry
+                memory_type = memory_entry.memory_type.value  # MemoryType enum
+                content = memory_entry.content
                 
-                if memory_type == "conversation":
-                    user_input = memory.get("user_input", "")
-                    assistant_response = memory.get("assistant_response", "")
-                    memory_text_parts.append(f"{i}. [Conversation] User: {user_input} | Assistant: {assistant_response}")
-                elif memory_type == "user_info":
+                if memory_type == "interaction_history":
+                    # 對話記憶
+                    memory_text_parts.append(f"{i}. [Conversation] {content}")
+                elif memory_type == "profile":
+                    # 用戶信息
                     memory_text_parts.append(f"{i}. [User Info] {content}")
+                elif memory_type == "snapshot":
+                    # 快照記憶
+                    memory_text_parts.append(f"{i}. [Recent Context] {content}")
                 else:
-                    memory_text_parts.append(f"{i}. [{memory_type}] {content}")
+                    # 其他類型
+                    memory_text_parts.append(f"{i}. [{memory_type.replace('_', ' ').title()}] {content}")
                     
             context_parts.append("\n".join(memory_text_parts))
         

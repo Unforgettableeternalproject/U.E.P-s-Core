@@ -461,29 +461,34 @@ class StateManager:
                 return True
             
             # 檢查 Mischief 狀態條件
-            mischief_conditions = [
-                # 條件1: 高無聊 + 負面情緒
-                (status.boredom >= 0.6 and status.mood <= -0.3),
-                # 條件2: 極端自尊（過高或過低）+ 中等無聊
-                (abs(status.pride) >= 0.7 and status.boredom >= 0.4),
-                # 條件3: 低助人意願 + 負面情緒
-                (status.helpfulness <= 0.3 and status.mood <= -0.2)
-            ]
+            # TODO: MISCHIEF 狀態尚未完全實作，暫時禁用自動觸發
+            # 避免干擾正常的 CHAT 和 WORK 流程
+            mischief_enabled = False  # 設為 True 以啟用 MISCHIEF 狀態
             
-            if (any(mischief_conditions) and 
-                self._state in [UEPState.IDLE, UEPState.CHAT]):
+            if mischief_enabled:
+                mischief_conditions = [
+                    # 條件1: 高無聊 + 負面情緒
+                    (status.boredom >= 0.6 and status.mood <= -0.3),
+                    # 條件2: 極端自尊（過高或過低）+ 中等無聊
+                    (abs(status.pride) >= 0.7 and status.boredom >= 0.4),
+                    # 條件3: 低助人意願 + 負面情緒
+                    (status.helpfulness <= 0.3 and status.mood <= -0.2)
+                ]
                 
-                debug_log(2, f"[StateManager] Mischief 條件滿足: Mood={status.mood:.2f}, "
-                         f"Pride={status.pride:.2f}, Boredom={status.boredom:.2f}, "
-                         f"Helpfulness={status.helpfulness:.2f}")
-                self.set_state(UEPState.MISCHIEF, {
-                    "trigger_reason": "negative_system_values",
-                    "mood": status.mood,
-                    "pride": status.pride,
-                    "boredom": status.boredom,
-                    "helpfulness": status.helpfulness
-                })
-                return True
+                if (any(mischief_conditions) and 
+                    self._state in [UEPState.IDLE, UEPState.CHAT]):
+                    
+                    debug_log(2, f"[StateManager] Mischief 條件滿足: Mood={status.mood:.2f}, "
+                             f"Pride={status.pride:.2f}, Boredom={status.boredom:.2f}, "
+                             f"Helpfulness={status.helpfulness:.2f}")
+                    self.set_state(UEPState.MISCHIEF, {
+                        "trigger_reason": "negative_system_values",
+                        "mood": status.mood,
+                        "pride": status.pride,
+                        "boredom": status.boredom,
+                        "helpfulness": status.helpfulness
+                    })
+                    return True
                 
             return False
             

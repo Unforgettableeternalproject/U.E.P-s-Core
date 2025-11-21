@@ -64,6 +64,9 @@ def info_log(msg: str, type: str = "INFO"):
         logger.warning(msg)
     else:
         logger.info(f"[Unrecognized type '{type}'] {msg}")
+        
+def warning_log(msg: str): #Alias for info log but which logs as warning
+    info_log(msg, "WARNING")
 
 def error_log(msg: str, type: str = "ERROR"):
 
@@ -77,6 +80,9 @@ def error_log(msg: str, type: str = "ERROR"):
         logger.critical(msg)
     else:
         logger.error(f"[Unrecognized type '{type}'] {msg}")
+        
+def critical_log(msg: str): #Alias for error log but which logs as critical
+    error_log(msg, "CRITICAL")
         
 def get_debug_level() -> int:
     """獲取當前除錯等級"""

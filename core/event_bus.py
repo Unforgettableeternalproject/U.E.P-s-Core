@@ -72,6 +72,16 @@ class SystemEvent(Enum):
     
     # 系統啟動事件
     SYSTEM_STARTUP_REPORT = "system_startup_report"                    # 系統啟動檢查報告
+    
+    # LLM 模組事件
+    LLM_RESPONSE_GENERATED = "llm_response_generated"                  # LLM 回應已生成
+    LLM_LEARNING_DATA_RETURNED = "llm_learning_data_returned"          # LLM 返回學習資料
+    
+    # MEM 模組事件
+    MEMORY_CREATED = "memory_created"                                  # 記憶已創建
+    MEMORY_RETRIEVED = "memory_retrieved"                              # 記憶已檢索
+    SNAPSHOT_CREATED = "snapshot_created"                              # 快照已創建
+    SNAPSHOT_CONSOLIDATED = "snapshot_consolidated"                    # 快照已整合
 
 
 @dataclass

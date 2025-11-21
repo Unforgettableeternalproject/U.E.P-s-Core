@@ -476,18 +476,19 @@ class StateQueueManager:
                 intent_type = segment.intent_type
                 
                 # 根據意圖類型決定系統狀態和工作模式
-                if intent_type == IntentType.DIRECT_WORK:
+                if intent_type == IntentType.WORK:
                     target_state = UEPState.WORK
-                    work_mode = "direct"
-                elif intent_type == IntentType.BACKGROUND_WORK:
-                    target_state = UEPState.WORK
-                    work_mode = "background"
+                    # work_mode 從 segment.metadata 獲取（NLP 已設定）
+                    work_mode = segment.metadata.get('work_mode', 'direct') if segment.metadata else 'direct'
+                    debug_log(3, f"[StateQueue] WORK 意圖，work_mode={work_mode}")
                 elif intent_type == IntentType.CHAT:
                     target_state = UEPState.CHAT
                     work_mode = None
-                elif intent_type == IntentType.COMPOUND:
+                elif intent_type == IntentType.RESPONSE:
+                    # RESPONSE 意圖用於工作流回應
                     target_state = UEPState.WORK
-                    work_mode = "direct"
+                    work_mode = "direct"  # 工作流回應應立即處理
+                    debug_log(3, f"[StateQueue] RESPONSE 意圖，視為 direct WORK")
                 elif intent_type == IntentType.CALL:
                     # CALL 意圖不加入佇列
                     debug_log(4, f"[StateQueue] 分段 {i+1} 是 CALL 意圖，不加入狀態佇列")
@@ -497,6 +498,22 @@ class StateQueueManager:
                     debug_log(4, f"[StateQueue] 分段 {i+1} 是 {intent_type.value} 意圖，不加入佇列")
                     continue
                 
+                # 準備狀態 metadata（包括 degradation 標記）
+                state_metadata = {
+                    'intent_type': intent_type.value,
+                    'confidence': segment.confidence,
+                    'segment_index': i,
+                    'stage4_segment': True
+                }
+                
+                # 從 segment metadata 提取降級標記
+                if segment.metadata:
+                    if segment.metadata.get('degraded_from_work'):
+                        state_metadata['degraded_from_work'] = segment.metadata['degraded_from_work']
+                        state_metadata['original_intent'] = segment.metadata.get('original_intent')
+                        state_metadata['degradation_reason'] = segment.metadata.get('degradation_reason')
+                        debug_log(2, f"[StateQueue] 分段 {i+1} 包含降級標記，已傳遞到狀態 metadata")
+                
                 # 添加到佇列，使用 IntentSegment 的優先權
                 success = self.add_state(
                     state=target_state,
@@ -504,12 +521,7 @@ class StateQueueManager:
                     context_content=segment.segment_text,
                     work_mode=work_mode,
                     custom_priority=segment.priority,
-                    metadata={
-                        'intent_type': intent_type.value,
-                        'confidence': segment.confidence,
-                        'segment_index': i,
-                        'stage4_segment': True
-                    }
+                    metadata=state_metadata
                 )
                 
                 if success:
@@ -540,17 +552,32 @@ class StateQueueManager:
                     
                     trigger_content = f"意圖分段 {i+1}: {context_content}"
                     
+                    # 準備狀態 metadata（包括 degradation 標記）
+                    state_metadata = {
+                        'intent_type': intent_value,
+                        'confidence': getattr(segment, 'confidence', 0.0),
+                        'entities': getattr(segment, 'entities', []),
+                        'segment_index': i,
+                        'segment_id': getattr(segment, 'segment_id', f'seg_{i}')
+                    }
+                    
+                    # 從 segment metadata 提取降級標記（舊版本）
+                    if isinstance(segment, dict):
+                        segment_metadata = segment.get('metadata', {})
+                    else:
+                        segment_metadata = getattr(segment, 'metadata', {}) or {}
+                    
+                    if segment_metadata.get('degraded_from_work'):
+                        state_metadata['degraded_from_work'] = segment_metadata['degraded_from_work']
+                        state_metadata['original_intent'] = segment_metadata.get('original_intent')
+                        state_metadata['degradation_reason'] = segment_metadata.get('degradation_reason')
+                        debug_log(2, f"[StateQueue] 分段 {i+1} 包含降級標記，已傳遞到狀態 metadata")
+                    
                     success = self.add_state(
                         state=target_state,
                         trigger_content=trigger_content,
                         context_content=context_content,
-                        metadata={
-                            'intent_type': intent_value,
-                            'confidence': getattr(segment, 'confidence', 0.0),
-                            'entities': getattr(segment, 'entities', []),
-                            'segment_index': i,
-                            'segment_id': getattr(segment, 'segment_id', f'seg_{i}')
-                        }
+                        metadata=state_metadata
                     )
                     
                     if success:

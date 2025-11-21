@@ -52,16 +52,16 @@ class MemoryManager:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         
-        # 初始化存儲管理器
+        # 先初始化身份管理器（其他模組需要使用）
+        identity_config = config.get("identity", {})
+        self.identity_manager = IdentityManager(identity_config)
+        
+        # 初始化存儲管理器（共享 identity_manager）
         storage_config = config.get("storage", {})
-        self.storage_manager = MemoryStorageManager(storage_config)
+        self.storage_manager = MemoryStorageManager(storage_config, self.identity_manager)
         
         # 初始化記憶總結器（需要在SnapshotManager之前）
         self.memory_summarizer = MemorySummarizer(config.get("summarization", {}))
-        
-        # 初始化子模組
-        identity_config = config.get("identity", {})
-        self.identity_manager = IdentityManager(identity_config)
         
         snapshot_config = config.get("snapshot", {})
         self.snapshot_manager = SnapshotManager(snapshot_config, self.memory_summarizer)

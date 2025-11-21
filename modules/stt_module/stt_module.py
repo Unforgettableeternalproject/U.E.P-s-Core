@@ -299,6 +299,51 @@ class STTModule(BaseModule):
                     error="文字輸入為空"
                 ).model_dump()
             
+            # 🆕 檢查是否有任何 cycle 正在處理輸入
+            # 如果有，等待當前所有 cycle 完成（模擬 VAD 在 cycle 未結束時不接受新輸入的行為）
+            from core.sessions.session_manager import unified_session_manager
+            from core.system_loop import system_loop
+            import time
+            
+            active_cs = unified_session_manager.get_active_chatting_session_ids()
+            active_ws = unified_session_manager.get_active_workflow_session_ids()
+            
+            debug_log(2, f"[STT] 文字輸入等待檢查: active_cs={len(active_cs) if active_cs else 0}, active_ws={len(active_ws) if active_ws else 0}")
+            
+            if active_cs or active_ws:
+                debug_log(2, f"[STT] 檢測到活躍會話，檢查 cycle tracking")
+                # 有活躍會話，檢查是否有任何 cycle 正在處理
+                if hasattr(system_loop, '_cycle_layer_tracking'):
+                    max_wait_time = 30.0  # 最多等待 30 秒
+                    wait_start = time.time()
+                    
+                    with system_loop._cycle_tracking_lock:
+                        tracking_count = len(system_loop._cycle_layer_tracking)
+                        debug_log(2, f"[STT] 當前 cycle tracking 數量: {tracking_count}")
+                    
+                    if tracking_count > 0:
+                        info_log(f"[STT] ⏳ 等待當前 cycle 完成（模擬 VAD 行為）...")
+                    
+                    while time.time() - wait_start < max_wait_time:
+                        with system_loop._cycle_tracking_lock:
+                            # 如果沒有任何 cycle 正在追蹤，表示可以接受新輸入
+                            if len(system_loop._cycle_layer_tracking) == 0:
+                                debug_log(2, f"[STT] ✓ 所有 cycle 已完成，接受新輸入")
+                                break
+                            
+                            # 記錄等待的 cycle
+                            tracking_keys = list(system_loop._cycle_layer_tracking.keys())
+                            debug_log(3, f"[STT] 等待 cycle 完成: {tracking_keys}")
+                        
+                        time.sleep(0.1)
+                    else:
+                        # 等待超時
+                        debug_log(1, f"[STT] ⚠️ 等待 cycle 完成超時，強制接受輸入")
+                else:
+                    debug_log(2, f"[STT] system_loop 沒有 _cycle_layer_tracking 屬性")
+            else:
+                debug_log(2, f"[STT] 沒有活躍會話，直接接受輸入")
+            
             info_log(f"[STT] 文字輸入模式: '{text}'")
             
             # 創建輸出物件 - 不包含說話人資訊

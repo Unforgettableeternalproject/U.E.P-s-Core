@@ -97,14 +97,18 @@ class BIOTagger:
             with torch.no_grad():
                 outputs = self.model(**{k: v for k, v in inputs.items() if k != 'offset_mapping'})
                 predictions = torch.argmax(outputs.logits, dim=-1)
+                # 計算 softmax 機率作為 confidence
+                probabilities = torch.softmax(outputs.logits, dim=-1)
+                confidences = torch.max(probabilities, dim=-1).values
             
             # 獲取token到字符的映射
             offset_mapping = inputs['offset_mapping'][0]
             tokens = self.tokenizer.convert_ids_to_tokens(inputs['input_ids'][0])
             predicted_labels = [self.id2label[pred.item()] for pred in predictions[0]] # type: ignore
+            token_confidences = confidences[0].tolist()
             
-            # 將BIO標籤轉換為分段
-            segments = self._bio_to_segments(text, tokens, predicted_labels, offset_mapping)
+            # 將BIO標籤轉換為分段（傳遞 confidence 值）
+            segments = self._bio_to_segments(text, tokens, predicted_labels, offset_mapping, token_confidences)
             
             debug_log(3, f"[BIOTagger] 識別到 {len(segments)} 個分段")
             return segments
@@ -152,12 +156,22 @@ class BIOTagger:
         return segments
     
     def _bio_to_segments(self, text: str, tokens: List[str], labels: List[str], 
-                        offset_mapping: torch.Tensor) -> List[Dict[str, Any]]:
-        """將BIO標籤序列轉換為分段結果"""
+                        offset_mapping: torch.Tensor, token_confidences: Optional[List[float]] = None) -> List[Dict[str, Any]]:
+        """將BIO標籤序列轉換為分段結果
+        
+        Args:
+            text: 原始文本
+            tokens: tokenizer 分詞結果
+            labels: BIO 標籤序列
+            offset_mapping: token 到字符的映射
+            token_confidences: 每個 token 的預測信心度（可選）
+        """
         segments = []
         current_segment = None
+        segment_confidences = []  # 追蹤當前分段的所有 token confidence
         
         for i, (token, label, offset) in enumerate(zip(tokens, labels, offset_mapping)):
+            confidence = token_confidences[i] if token_confidences else 0.9
             # 跳過特殊token
             if token in ['[CLS]', '[SEP]', '[PAD]']:
                 continue
@@ -167,6 +181,9 @@ class BIOTagger:
             if label.startswith('B-'):
                 # 開始新分段
                 if current_segment:
+                    # 計算當前分段的平均 confidence
+                    avg_confidence = sum(segment_confidences) / len(segment_confidences) if segment_confidences else 0.9
+                    current_segment['confidence'] = round(avg_confidence, 3)
                     segments.append(current_segment)
                 
                 intent_type = label[2:].lower()  # 移除 'B-' 前綴
@@ -174,9 +191,9 @@ class BIOTagger:
                     'text': text[start_pos:end_pos],
                     'intent': intent_type,
                     'start_pos': start_pos,
-                    'end_pos': end_pos,
-                    'confidence': 0.9  # 可以從logits計算實際confidence
+                    'end_pos': end_pos
                 }
+                segment_confidences = [confidence]  # 重置並添加當前 token confidence
                 
             elif label.startswith('I-') and current_segment:
                 # 延續當前分段
@@ -184,25 +201,33 @@ class BIOTagger:
                 if current_segment['intent'] == intent_type:
                     current_segment['end_pos'] = end_pos
                     current_segment['text'] = text[current_segment['start_pos']:end_pos]
+                    segment_confidences.append(confidence)  # 追蹤 confidence
                 else:
                     # 標籤不一致，結束當前分段，開始新分段
+                    avg_confidence = sum(segment_confidences) / len(segment_confidences) if segment_confidences else 0.9
+                    current_segment['confidence'] = round(avg_confidence, 3)
                     segments.append(current_segment)
                     current_segment = {
                         'text': text[start_pos:end_pos],
                         'intent': intent_type,
                         'start_pos': start_pos,
-                        'end_pos': end_pos,
-                        'confidence': 0.9
+                        'end_pos': end_pos
                     }
+                    segment_confidences = [confidence]  # 重置
             
             elif label == 'O':
                 # 結束當前分段
                 if current_segment:
+                    avg_confidence = sum(segment_confidences) / len(segment_confidences) if segment_confidences else 0.9
+                    current_segment['confidence'] = round(avg_confidence, 3)
                     segments.append(current_segment)
                     current_segment = None
+                    segment_confidences = []  # 重置
         
         # 添加最後一個分段
         if current_segment:
+            avg_confidence = sum(segment_confidences) / len(segment_confidences) if segment_confidences else 0.9
+            current_segment['confidence'] = round(avg_confidence, 3)
             segments.append(current_segment)
         
         return segments

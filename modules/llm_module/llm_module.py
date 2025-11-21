@@ -1223,14 +1223,22 @@ class LLMModule(BaseModule):
                 debug_log(2, "[LLM] 使用快取回應（包含記憶上下文）")
                 return cached_response
             
-            # 3. 構建 CHAT 提示（整合記憶）
+            # 提取 intent metadata（用於檢測降級的 WORK 請求）
+            intent_metadata = None
+            if llm_input.entities and isinstance(llm_input.entities, dict):
+                intent_metadata = llm_input.entities.get('intent_metadata')
+            elif llm_input.processing_context and isinstance(llm_input.processing_context, dict):
+                intent_metadata = llm_input.processing_context.get('intent_metadata')
+            
+            # 3. 構建 CHAT 提示（整合記憶和降級警告）
             prompt = self.prompt_manager.build_chat_prompt(
                 user_input=llm_input.text,
                 identity_context=llm_input.identity_context,
                 memory_context=llm_input.memory_context,
                 conversation_history=getattr(llm_input, 'conversation_history', None),
                 is_internal=False,
-                relevant_memories=relevant_memories  # 新增：傳入檢索到的記憶
+                relevant_memories=relevant_memories,  # 新增：傳入檢索到的記憶
+                intent_metadata=intent_metadata  # 新增：傳入 intent metadata
             )
             
             # 3. 獲取或創建系統快取
@@ -1364,6 +1372,13 @@ class LLMModule(BaseModule):
             )
             
             self.cache_manager.cache_response(cache_key, output)
+            
+            # 發布 LLM 回應生成事件
+            self._publish_llm_response_event(output, "CHAT", {
+                "memory_context_used": bool(llm_input.memory_context),
+                "relevant_memories_count": len(relevant_memories) if relevant_memories else 0
+            })
+            
             return output
             
         except Exception as e:
@@ -2418,6 +2433,13 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                 }
             )
             
+            # 發布 LLM 回應生成事件
+            self._publish_llm_response_event(output, "WORK", {
+                "workflow_context": bool(llm_input.workflow_context),
+                "function_call_made": function_call_result is not None,
+                "tool_name": function_call_result.get("tool_name") if function_call_result else None
+            })
+            
             return output
             
         except Exception as e:
@@ -2991,30 +3013,39 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             error_log(f"[LLM] 記憶檢索失敗: {e}")
             return []
     
-    def _format_memories_for_context(self, memories: List[Dict[str, Any]]) -> str:
-        """將檢索到的記憶格式化為對話上下文"""
+    def _format_memories_for_context(self, memories: List[Any]) -> str:
+        """將檢索到的記憶格式化為對話上下文
+        
+        Args:
+            memories: MemorySearchResult 對象列表
+        """
         try:
             if not memories:
                 return ""
             
             context_parts = ["Relevant Memory Context:"]
             
-            for i, memory in enumerate(memories[:5], 1):  # 限制最多5條記憶
-                memory_type = memory.get("type", "unknown")
-                content = memory.get("content", "")
-                timestamp = memory.get("timestamp", "")
+            for i, memory_result in enumerate(memories[:5], 1):  # 限制最多5條記憶
+                # 從 MemorySearchResult 中取得 memory_entry
+                memory_entry = memory_result.memory_entry
                 
-                if memory_type == "conversation":
+                memory_type = memory_entry.memory_type.value  # MemoryType enum
+                content = memory_entry.content
+                timestamp = memory_entry.created_at.strftime("%Y-%m-%d %H:%M") if memory_entry.created_at else ""
+                
+                # 格式化記憶內容
+                if memory_type == "interaction_history":
                     # 對話記憶格式
-                    user_input = memory.get("user_input", "")
-                    assistant_response = memory.get("assistant_response", "")
-                    context_parts.append(f"{i}. [Conversation] User: {user_input} Assistant: {assistant_response}")
-                elif memory_type == "user_info":
+                    context_parts.append(f"{i}. [Conversation] {content}")
+                elif memory_type == "profile":
                     # 用戶信息記憶格式
                     context_parts.append(f"{i}. [User Info] {content}")
+                elif memory_type == "snapshot":
+                    # 快照記憶格式
+                    context_parts.append(f"{i}. [Recent Context] {content}")
                 else:
                     # 一般記憶格式
-                    context_parts.append(f"{i}. [{memory_type.title()}] {content}")
+                    context_parts.append(f"{i}. [{memory_type.replace('_', ' ').title()}] {content}")
             
             formatted_context = "\n".join(context_parts)
             debug_log(3, f"[LLM] 格式化記憶上下文: {len(formatted_context)} 字符")
@@ -3023,6 +3054,8 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             
         except Exception as e:
             error_log(f"[LLM] 格式化記憶上下文失敗: {e}")
+            import traceback
+            debug_log(1, traceback.format_exc())
             return ""
     
     def _process_work_system_actions(self, 
@@ -3942,4 +3975,59 @@ U.E.P 系統可用功能規格：
         except Exception as e:
             error_log(f"[LLM] 會話架構檢查失敗: {e}")
             return False
+    
+    def _publish_llm_response_event(self, output: LLMOutput, mode: str, extra_data: Dict[str, Any]):
+        """發布 LLM 回應生成事件"""
+        try:
+            from core.event_bus import event_bus, SystemEvent
+            
+            event_data = {
+                "mode": mode,
+                "response": output.text,  # 使用 "response" 而非 "response_text" 以符合測試
+                "confidence": output.confidence,
+                "processing_time": output.processing_time,
+                "tokens_used": output.tokens_used,
+                "session_id": getattr(self, '_current_processing_session_id', None),
+                "cycle_index": getattr(self, '_current_processing_cycle_index', None),
+                "success": output.success,
+                **extra_data
+            }
+            
+            event_bus.publish(
+                SystemEvent.LLM_RESPONSE_GENERATED,
+                event_data,
+                source="llm"
+            )
+            
+            debug_log(2, f"[LLM] 已發布 LLM_RESPONSE_GENERATED 事件 (mode={mode})")
+            
+        except Exception as e:
+            error_log(f"[LLM] 發布回應事件失敗: {e}")
+    
+    def _publish_learning_data_event(self, identity_id: str, interaction_type: str, 
+                                     learning_signals: Dict, user_input: str, system_response: str):
+        """發布學習資料返回事件"""
+        try:
+            from core.event_bus import event_bus, SystemEvent
+            
+            event_data = {
+                "identity_id": identity_id,
+                "interaction_type": interaction_type,
+                "learning_signals": learning_signals,
+                "user_input_length": len(user_input),
+                "response_length": len(system_response),
+                "session_id": getattr(self, '_current_processing_session_id', None),
+                "timestamp": time.time()
+            }
+            
+            event_bus.publish(
+                SystemEvent.LLM_LEARNING_DATA_RETURNED,
+                event_data,
+                source="llm"
+            )
+            
+            debug_log(2, f"[LLM] 已發布 LLM_LEARNING_DATA_RETURNED 事件")
+            
+        except Exception as e:
+            error_log(f"[LLM] 發布學習資料事件失敗: {e}")
 

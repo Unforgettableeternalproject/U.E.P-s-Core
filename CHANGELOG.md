@@ -1882,3 +1882,15 @@
 
 ---
 
+### All current chat path tests can pass, that's good, but we're left with snapshot handling and GS history trace. 11/22
+
+> Date: Sat, 22 Nov 2025 02:53:01 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `42a79b794810813401fb3b9a8bdcf8aab0f92dcc`
+
+---
+

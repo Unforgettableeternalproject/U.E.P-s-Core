@@ -273,6 +273,14 @@ class NLPModule(BaseModule):
             if identity and action in ["existing", "newly_created"]:
                 from core.status_manager import status_manager
                 status_manager.switch_identity(identity.identity_id)
+                
+                # 同步 Identity 的 last_interaction 到 StatusManager
+                if hasattr(identity, 'last_interaction') and identity.last_interaction:
+                    from datetime import datetime
+                    if isinstance(identity.last_interaction, datetime):
+                        status_manager.status.last_interaction_time = identity.last_interaction.timestamp()
+                        debug_log(3, f"[NLP] 同步 last_interaction 到 StatusManager: {identity.last_interaction}")
+                
                 debug_log(2, f"[NLP] 已切換 StatusManager 到 Identity: {identity.identity_id}")
             
             if action == "accumulating":

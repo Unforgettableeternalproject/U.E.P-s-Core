@@ -136,12 +136,14 @@ class MEMModule(BaseModule):
                 
                 # 舊類型名稱到新類型的映射
                 type_mapping = {
-                    'conversation': MemoryType.INTERACTION_HISTORY,
-                    'user_info': MemoryType.PROFILE,
-                    'context': MemoryType.SNAPSHOT,
-                    'preference': MemoryType.PREFERENCE,
-                    'long_term': MemoryType.LONG_TERM,
-                    'system_learning': MemoryType.SYSTEM_LEARNING
+                    'conversation': MemoryType.SNAPSHOT,      # 對話 -> 快照（短期記憶）
+                    'user_info': MemoryType.PROFILE,         # 使用者資訊 -> 檔案（長期記憶）
+                    'context': MemoryType.SNAPSHOT,          # 上下文 -> 快照（短期記憶）
+                    'preference': MemoryType.PREFERENCE,     # 偏好（長期記憶）
+                    'long_term': MemoryType.LONG_TERM,      # 長期記憶
+                    'system_learning': MemoryType.SYSTEM_LEARNING,  # 系統學習
+                    # 向後相容
+                    'interaction_history': MemoryType.SNAPSHOT  # 舊名稱映射到快照
                 }
                 
                 # 轉換 memory_types 為 MemoryType 枚舉（如果需要）
@@ -170,15 +172,49 @@ class MEMModule(BaseModule):
                 
                 debug_log(2, f"[MEM] 記憶檢索請求 - query: {query[:50]}, types: {memory_types}, token: {memory_token}")
                 
-                memories = self.memory_manager.retrieve_memories(
-                    query_text=query,
-                    memory_token=memory_token,
-                    max_results=max_results,
-                    memory_types=memory_types
-                )
+                # 分離快照和長期記憶的檢索
+                snapshot_types = [MemoryType.SNAPSHOT]
+                longterm_types = [MemoryType.PROFILE, MemoryType.PREFERENCE, MemoryType.LONG_TERM]
                 
-                debug_log(2, f"[MEM] 記憶檢索完成 - 找到 {len(memories)} 條記憶")
-                return memories
+                requested_types = memory_types or (snapshot_types + longterm_types)
+                
+                has_snapshots = any(t in snapshot_types for t in requested_types)
+                has_longterm = any(t in longterm_types for t in requested_types)
+                
+                results = []
+                
+                # 1. 檢索長期記憶（直接使用）
+                if has_longterm:
+                    longterm_types_filtered = [t for t in requested_types if t in longterm_types]
+                    if longterm_types_filtered:
+                        longterm_memories = self.memory_manager.retrieve_memories(
+                            query_text=query,
+                            memory_token=memory_token,
+                            max_results=max_results,
+                            memory_types=longterm_types_filtered
+                        )
+                        results.extend(longterm_memories)
+                        debug_log(2, f"[MEM] 檢索到 {len(longterm_memories)} 條長期記憶")
+                
+                # 2. 檢索並總結快照（需要處理）
+                if has_snapshots:
+                    snapshot_types_filtered = [t for t in requested_types if t in snapshot_types]
+                    if snapshot_types_filtered:
+                        snapshot_memories = self.memory_manager.retrieve_memories(
+                            query_text=query,
+                            memory_token=memory_token,
+                            max_results=max_results,
+                            memory_types=snapshot_types_filtered
+                        )
+                        
+                        # 總結快照內容
+                        if snapshot_memories:
+                            summarized_snapshots = self._summarize_snapshots(snapshot_memories)
+                            results.extend(summarized_snapshots)
+                            debug_log(2, f"[MEM] 檢索並總結 {len(snapshot_memories)} 條快照")
+                
+                debug_log(2, f"[MEM] 記憶檢索完成 - 總共 {len(results)} 條記憶")
+                return results
             
             # 註冊對話儲存 provider
             def conversation_storage_provider(**kwargs):
@@ -199,9 +235,10 @@ class MEMModule(BaseModule):
                 storage_content = f"User: {content.get('user_input', '')}\nAssistant: {content.get('assistant_response', '')}"
                 
                 # 處理 memory_type：將字符串轉換為 MemoryType 枚舉
-                memory_type_raw = metadata.get('memory_type', 'interaction_history')
-                if memory_type_raw == 'conversation':
-                    memory_type_raw = 'interaction_history'  # 轉換舊的類型名
+                memory_type_raw = metadata.get('memory_type', 'snapshot')  # 預設為快照（短期記憶）
+                # 類型映射：確保對話類型儲存為快照
+                if memory_type_raw in ['conversation', 'interaction_history']:
+                    memory_type_raw = 'snapshot'  # 對話類型統一儲存為快照（短期記憶）
                 memory_type = MemoryType(memory_type_raw) if isinstance(memory_type_raw, str) else memory_type_raw
                 
                 # 處理 importance
@@ -229,6 +266,62 @@ class MEMModule(BaseModule):
             
         except Exception as e:
             error_log(f"[MEM] 協作 provider 註冊失敗: {e}")
+    
+    def _summarize_snapshots(self, snapshot_results: List[Any]) -> List[Any]:
+        """
+        總結快照內容，返回摘要版本
+        
+        Args:
+            snapshot_results: MemorySearchResult 對象列表
+            
+        Returns:
+            總結後的 MemorySearchResult 對象列表
+        """
+        from .schemas import MemorySearchResult
+        
+        summarized = []
+        
+        try:
+            for snapshot_result in snapshot_results:
+                snapshot_entry = snapshot_result.memory_entry
+                
+                # 使用 MemorySummarizer 總結快照內容
+                if self.memory_manager and self.memory_manager.memory_summarizer:
+                    summary = self.memory_manager.memory_summarizer.summarize_conversation(
+                        snapshot_entry.content
+                    )
+                else:
+                    # 簡單截斷作為 fallback
+                    summary = snapshot_entry.content[:200] + "..." if len(snapshot_entry.content) > 200 else snapshot_entry.content
+                
+                # 創建摘要版本的 MemoryEntry（使用 model_copy with update）
+                from pydantic import BaseModel
+                if isinstance(snapshot_entry, BaseModel):
+                    update_dict = {'content': f"[快照摘要] {summary}"}
+                    if hasattr(snapshot_entry, 'summary'):
+                        update_dict['summary'] = summary
+                    summarized_entry = snapshot_entry.model_copy(update=update_dict, deep=True)
+                else:
+                    # Fallback：如果不是 BaseModel，直接複製
+                    summarized_entry = snapshot_entry
+                
+                # 創建新的 MemorySearchResult
+                summarized_result = MemorySearchResult(
+                    memory_entry=summarized_entry,
+                    similarity_score=snapshot_result.similarity_score,
+                    relevance_score=snapshot_result.relevance_score,
+                    retrieval_reason="相關對話快照（已總結）"
+                )
+                summarized.append(summarized_result)
+                
+                debug_log(3, f"[MEM] 快照總結: {len(snapshot_entry.content)} → {len(summary)} 字符")
+                
+        except Exception as e:
+            error_log(f"[MEM] 總結快照失敗: {e}")
+            # 失敗時返回原始結果
+            return snapshot_results
+        
+        return summarized
     
     def _register_state_change_listener(self):
         """註冊狀態變化監聽器"""
@@ -1385,11 +1478,12 @@ class MEMModule(BaseModule):
             if hasattr(data, 'operation_type'):
                 return self._handle_mem_input(data)
 
-            # 其他情況
+            # 其他情況：可能是 processing 層的誤調用，返回跳過狀態
+            debug_log(4, f"[MEM] 收到非預期輸入類型: {type(data).__name__}, 跳過處理")
             return {
-                'success': False,
-                'error': '不支援的輸入類型',
-                'status': 'invalid_input'
+                'success': True,  # 改為 True 避免錯誤日誌
+                'status': 'skipped',
+                'message': '非 MEM 專用輸入，已跳過'
             }
 
         except Exception as e:

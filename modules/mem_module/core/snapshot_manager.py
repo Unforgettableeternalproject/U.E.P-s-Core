@@ -170,6 +170,119 @@ class SnapshotManager:
         debug_log(3, "[SnapshotManager] 設定自動清理計時器")
         # 這裡可以設定定期清理任務
     
+    def find_similar_snapshot(self, memory_token: str, query_text: str,
+                            similarity_threshold: float = 0.7) -> Optional[ConversationSnapshot]:
+        """
+        查找相似的快照（用於判斷是否應該延續現有對話）
+        
+        Args:
+            memory_token: 記憶令牌
+            query_text: 查詢文本
+            similarity_threshold: 相似度閾值
+            
+        Returns:
+            如果找到相似快照則返回 ConversationSnapshot，否則返回 None
+        """
+        try:
+            # 使用 SnapshotKeyManager 查找相似快照
+            related_snapshots, should_create_new = self.key_manager.query_related_snapshots(
+                content=query_text,
+                memory_token=memory_token
+            )
+            
+            if not should_create_new and related_snapshots:
+                # 找到相似快照，返回最近更新的一個
+                latest_snapshot_id = None
+                latest_time = None
+                
+                for snapshot_id in related_snapshots:
+                    if snapshot_id in self._active_snapshots:
+                        snapshot = self._active_snapshots[snapshot_id]
+                        updated_at = getattr(snapshot, 'updated_at', snapshot.created_at)
+                        
+                        if latest_time is None or updated_at > latest_time:
+                            latest_time = updated_at
+                            latest_snapshot_id = snapshot_id
+                
+                if latest_snapshot_id:
+                    debug_log(2, f"[SnapshotManager] 找到相似快照: {latest_snapshot_id}")
+                    return self._active_snapshots[latest_snapshot_id]
+            
+            debug_log(2, f"[SnapshotManager] 未找到相似快照")
+            return None
+            
+        except Exception as e:
+            error_log(f"[SnapshotManager] 查找相似快照失敗: {e}")
+            return None
+    
+    def update_snapshot_content(self, snapshot_id: str, new_content: str,
+                              refresh_gsid: bool = True) -> bool:
+        """
+        更新現有快照的內容，並可選擇性刷新 GSID
+        
+        Args:
+            snapshot_id: 快照ID
+            new_content: 新的內容
+            refresh_gsid: 是否刷新 GSID（延長快照生命週期）
+            
+        Returns:
+            更新是否成功
+        """
+        try:
+            snapshot = self._active_snapshots.get(snapshot_id)
+            if not snapshot:
+                debug_log(2, f"[SnapshotManager] 快照不存在: {snapshot_id}")
+                return False
+            
+            # 使用 Pydantic model_copy 更新內容
+            update_dict = {
+                'content': new_content,
+                'updated_at': datetime.now()
+            }
+            
+            # 刷新 GSID（延長快照生命週期）
+            if refresh_gsid:
+                current_gsid = self._get_current_gsid_from_working_context()
+                update_dict['gsid'] = current_gsid
+                debug_log(2, f"[SnapshotManager] 刷新快照 GSID: {snapshot_id} -> {current_gsid}")
+            
+            # 創建更新後的快照
+            updated_snapshot = snapshot.model_copy(update=update_dict, deep=True)
+            self._active_snapshots[snapshot_id] = updated_snapshot
+            
+            debug_log(3, f"[SnapshotManager] 更新快照內容成功: {snapshot_id}")
+            return True
+            
+        except Exception as e:
+            error_log(f"[SnapshotManager] 更新快照失敗: {e}")
+            return False
+    
+    def _get_current_gsid_from_working_context(self) -> int:
+        """
+        從 Working Context 獲取當前 GSID
+        
+        Returns:
+            當前 GSID，如果無法獲取則返回當前 SnapshotManager 的 GSID
+        """
+        try:
+            from core.working_context import working_context_manager
+            
+            # 嘗試從 PERSISTENT SCOPE 讀取 GS 歷史
+            gs_history = working_context_manager.get_persistent_data('gs_history', [])
+            
+            if gs_history:
+                latest_gsid = gs_history[-1].get('gsid', self.current_gsid)
+                debug_log(4, f"[SnapshotManager] 從 Working Context 獲取 GSID: {latest_gsid}")
+                return latest_gsid
+            else:
+                # 如果沒有歷史記錄，返回當前 GSID
+                debug_log(4, f"[SnapshotManager] Working Context 無 GS 歷史，使用當前 GSID: {self.current_gsid}")
+                return self.current_gsid
+                
+        except Exception as e:
+            error_log(f"[SnapshotManager] 從 Working Context 獲取 GSID 失敗: {e}")
+            return self.current_gsid
+    
     def query_and_decide_snapshot_creation(self, memory_token: str, content: str, 
                                          context: Dict[str, Any] = None) -> Dict[str, Any]:
         """
@@ -259,13 +372,20 @@ class SnapshotManager:
                 interaction_depth=0
             )
             
+            # 使用臨時名稱，待第一次對話後生成語義名稱
+            timestamp = int(time.time())
+            memory_id = f"temp_snapshot_{timestamp}"
+            snapshot_id = memory_id
+            
+            debug_log(3, f"[SnapshotManager] 創建臨時快照: {memory_id} (待第一次對話後命名)")
+            
             # 創建會話快照
             snapshot = ConversationSnapshot(
-                memory_id=f"snapshot_{session_id}_{int(time.time())}",
+                memory_id=memory_id,
                 memory_token=memory_token,
                 content="",  # 初始為空，會在添加消息時填充
                 stage_number=1,  # 初始階段
-                snapshot_id=f"snapshot_{session_id}_{int(time.time())}",
+                snapshot_id=snapshot_id,
                 session_id=session_id,
                 start_time=datetime.now(),
                 end_time=None,
@@ -274,7 +394,7 @@ class SnapshotManager:
                 key_topics=[],
                 participant_info={memory_token: {"role": "user", "name": "User"}},
                 context_data=initial_context or {},
-                metadata={"auto_generated": False},
+                metadata={"auto_generated": False, "needs_semantic_naming": True},
                 gsid=self.current_gsid  # 設置當前GSID
             )
             
@@ -360,6 +480,10 @@ class SnapshotManager:
             topics = self._extract_topics_from_message(content)
             context.primary_topics.update(topics)
             
+            # 檢查是否需要生成語義名稱（第一次對話後）
+            if snapshot.metadata.get("needs_semantic_naming") and len(snapshot.messages) >= 2:
+                self._apply_semantic_naming(session_id, snapshot)
+            
             # 檢查是否需要自動快照
             self._check_auto_snapshot(session_id)
             
@@ -415,6 +539,106 @@ class SnapshotManager:
         except Exception as e:
             error_log(f"[SnapshotManager] 更新快照內容失敗: {e}")
             return snapshot  # 返回原始snapshot
+    
+    def _apply_semantic_naming(self, session_id: str, snapshot: 'ConversationSnapshot') -> None:
+        """在第一次對話後應用語義命名"""
+        try:
+            # 從前幾條消息中提取對話內容
+            conversation_content = self._extract_conversation_for_naming(snapshot.messages)
+            
+            if not conversation_content or len(conversation_content.strip()) < 10:
+                debug_log(2, f"[SnapshotManager] 對話內容太短，保留臨時名稱: {session_id}")
+                return
+            
+            # 生成語義化名稱（5-6個字）
+            semantic_name = self._generate_semantic_name_from_conversation(conversation_content)
+            
+            if semantic_name and semantic_name != "general_conversation":
+                # 生成新的 memory_id
+                old_memory_id = snapshot.memory_id
+                timestamp = int(time.time())
+                new_memory_id = f"snapshot_{semantic_name}_{timestamp}"
+                
+                # 更新快照
+                snapshot_data = snapshot.model_dump()
+                snapshot_data["memory_id"] = new_memory_id
+                snapshot_data["metadata"]["semantic_name"] = semantic_name
+                snapshot_data["metadata"]["needs_semantic_naming"] = False
+                snapshot_data["metadata"]["original_temp_id"] = old_memory_id
+                
+                updated_snapshot = ConversationSnapshot(**snapshot_data)
+                self._active_snapshots[session_id] = updated_snapshot
+                
+                # 重新註冊到 SnapshotKeyManager
+                self.key_manager.register_snapshot(new_memory_id, conversation_content)
+                
+                debug_log(1, f"[SnapshotManager] 快照重命名: {old_memory_id} → {new_memory_id}")
+                debug_log(2, f"[SnapshotManager] 語義名稱: {semantic_name}")
+            else:
+                debug_log(2, f"[SnapshotManager] 未能生成有效語義名稱，保留臨時名稱: {session_id}")
+                
+        except Exception as e:
+            error_log(f"[SnapshotManager] 應用語義命名失敗: {e}")
+    
+    def _extract_conversation_for_naming(self, messages: List[Dict[str, Any]]) -> str:
+        """從消息列表提取用於命名的對話內容"""
+        try:
+            # 提取前3-5條消息的內容
+            content_parts = []
+            for msg in messages[:5]:
+                speaker = msg.get("speaker", "unknown")
+                content = msg.get("content", "")
+                if content and len(content.strip()) > 0:
+                    content_parts.append(f"{speaker}: {content}")
+            
+            return "\n".join(content_parts)
+        except Exception as e:
+            error_log(f"[SnapshotManager] 提取對話內容失敗: {e}")
+            return ""
+    
+    def _generate_semantic_name_from_conversation(self, conversation_content: str) -> str:
+        """從對話內容生成5-6個字的語義化名稱"""
+        try:
+            # 使用 SnapshotKeyManager 生成簡短摘要
+            if self.key_manager:
+                # 要求生成簡短名稱（5-6個字）
+                key = self.key_manager.generate_snapshot_key(conversation_content, {})
+                
+                # 清理：移除 memory_token 等前綴
+                # 如果包含 "'s" 這樣的所有格，取後面的部分
+                if "'s" in key:
+                    parts = key.split("'s", 1)
+                    if len(parts) > 1:
+                        key = parts[1].strip()
+                
+                # 移除常見的前綴詞
+                prefixes_to_remove = ["mem_", "user_", "snapshot_"]
+                for prefix in prefixes_to_remove:
+                    if key.startswith(prefix):
+                        key = key[len(prefix):]
+                
+                # 限制長度為5-6個中文字或15-20個英文字符
+                if len(key) > 25:
+                    # 嘗試截取前面有意義的部分
+                    words = key.split("_")
+                    if len(words) > 3:
+                        key = "_".join(words[:3])  # 取前3個詞
+                    else:
+                        key = key[:25]  # 直接截斷
+                
+                # 清理並格式化
+                key = key.strip().lower().replace(" ", "_")
+                # 移除多餘的底線
+                while "__" in key:
+                    key = key.replace("__", "_")
+                key = key.strip("_")
+                
+                return key if key else "conversation"
+            
+            return "conversation"
+        except Exception as e:
+            error_log(f"[SnapshotManager] 生成語義名稱失敗: {e}")
+            return "conversation"
     
     def _extract_topics_from_message(self, content: str) -> Set[str]:
         """從訊息內容提取主題 - 使用summarizer生成主題標籤"""

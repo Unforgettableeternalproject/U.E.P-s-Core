@@ -107,10 +107,15 @@ class MemorySummarizer:
                     continue
                 
                 try:
+                    # 動態調整 min_length，避免超過輸入長度
+                    input_length = len(text_block.split())
+                    adjusted_min_length = min(self.min_summary_length, max(5, input_length - 5))
+                    adjusted_max_length = max(self.max_summary_length, input_length + 10)
+                    
                     summary = self._summarizer(
                         text_block, 
-                        max_length=self.max_summary_length, 
-                        min_length=self.min_summary_length, 
+                        max_length=adjusted_max_length, 
+                        min_length=adjusted_min_length, 
                         do_sample=False
                     )[0]["summary_text"]
                     summaries.append(summary)
@@ -142,6 +147,52 @@ class MemorySummarizer:
         except Exception as e:
             error_log(f"[MemorySummarizer] 記憶總結失敗: {e}")
             return ""
+    
+    def summarize_conversation(self, conversation_text: str) -> str:
+        """
+        總結單個對話內容（用於快照總結）
+        
+        Args:
+            conversation_text: 對話內容文本
+            
+        Returns:
+            總結後的文本
+        """
+        try:
+            if not self.is_initialized:
+                debug_log(1, "[MemorySummarizer] 總結器未初始化，使用截斷")
+                return conversation_text[:200] + "..." if len(conversation_text) > 200 else conversation_text
+            
+            if not conversation_text or len(conversation_text.strip()) < 10:
+                return conversation_text
+            
+            # 如果文本已經很短，直接返回
+            if len(conversation_text) <= self.max_summary_length:
+                return conversation_text
+            
+            try:
+                # 動態調整 min_length，避免超過輸入長度
+                input_length = len(conversation_text.split())
+                adjusted_min_length = min(self.min_summary_length, max(5, input_length - 5))
+                adjusted_max_length = max(self.max_summary_length, input_length + 10)
+                
+                summary = self._summarizer(
+                    conversation_text,
+                    max_length=adjusted_max_length,
+                    min_length=adjusted_min_length,
+                    do_sample=False
+                )[0]["summary_text"]
+                
+                debug_log(3, f"[MemorySummarizer] 對話總結: {len(conversation_text)} → {len(summary)} 字符")
+                return summary
+                
+            except Exception as e:
+                debug_log(1, f"[MemorySummarizer] 對話總結失敗，使用截斷: {e}")
+                return conversation_text[:self.max_summary_length] + "..."
+                
+        except Exception as e:
+            error_log(f"[MemorySummarizer] 總結對話失敗: {e}")
+            return conversation_text[:200] + "..." if len(conversation_text) > 200 else conversation_text
     
     def summarize_search_results(self, search_results: List[MemorySearchResult],
                                context: str = "") -> str:

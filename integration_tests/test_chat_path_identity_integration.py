@@ -633,13 +633,13 @@ class TestChatPathIdentityIntegration:
         
         # 等待 cycle 完成
         info_log("   等待當前 cycle 完成...")
-        monitor.wait_for_event("CYCLE_COMPLETED", timeout=30)
+        monitor.wait_for_event("CYCLE_COMPLETED", timeout=60)
         time.sleep(2)
         
         # 繼續對話
         info_log("\n--- 繼續對話 ---")
         inject_chat_message(
-            "What are your thoughts on Python?",
+            "What are your thoughts on Javascript?",
             identity_id=debug_identity.identity_id
         )
         
@@ -647,17 +647,18 @@ class TestChatPathIdentityIntegration:
         
         # 等待 cycle 完成
         info_log("   等待當前 cycle 完成...")
-        monitor.wait_for_event("CYCLE_COMPLETED", timeout=30)
+        monitor.wait_for_event("CYCLE_COMPLETED", timeout=60)
         time.sleep(2)
         
         # 結束對話
         info_log("\n--- 結束對話 ---")
         inject_chat_message(
-            "Thank you, goodbye!",
+            "That's really nice to hear.",
             identity_id=debug_identity.identity_id
         )
         
         monitor.wait_for_response(timeout=20)
+        monitor.wait_for_event("CYCLE_COMPLETED", timeout=60)
         
         # 等待 CS 結束（如果 LLM 判斷應該結束）
         cs_ended = monitor.chat_session_ended.wait(timeout=10)

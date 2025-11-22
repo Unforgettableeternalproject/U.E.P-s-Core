@@ -109,6 +109,9 @@ class MEMModule(BaseModule):
             # 註冊狀態變化監聽器
             self._register_state_change_listener()
             
+            # Phase 4: 註冊 GS 推進事件監聽器
+            self._register_gs_advanced_listener()
+            
             # 啟動會話同步
             self._start_session_sync()
             
@@ -332,6 +335,34 @@ class MEMModule(BaseModule):
             debug_log(2, "[MEM] 狀態變化監聽器註冊完成")
         except Exception as e:
             error_log(f"[MEM] 狀態變化監聽器註冊失敗: {e}")
+    
+    def _register_gs_advanced_listener(self):
+        """註冊 GS 推進事件監聽器（Phase 4）"""
+        try:
+            from core.event_bus import event_bus, SystemEvent
+            event_bus.subscribe(SystemEvent.GS_ADVANCED, self._on_gs_advanced)
+            debug_log(2, "[MEM] GS_ADVANCED 事件監聽器註冊完成")
+        except Exception as e:
+            error_log(f"[MEM] GS_ADVANCED 事件監聽器註冊失敗: {e}")
+    
+    def _on_gs_advanced(self, event):
+        """處理 GS 推進事件 - 清理過期快照"""
+        try:
+            current_session_id = event.data.get('session_id')
+            gs_history = event.data.get('gs_history', [])  # 字符串 session_id 列表
+            
+            debug_log(2, f"[MEM] 收到 GS 推進通知: {current_session_id}")
+            
+            # 保留最近 3 個 GS 的快照
+            recent_session_ids = gs_history[-3:] if gs_history else []
+            
+            # 清理過期的快照
+            if self.memory_manager and self.memory_manager.snapshot_manager:
+                self.memory_manager.snapshot_manager.cleanup_expired_snapshots(recent_session_ids, keep_count=3)
+                debug_log(2, f"[MEM] 快照清理完成，保留 session_id: {recent_session_ids}")
+            
+        except Exception as e:
+            error_log(f"[MEM] 處理 GS 推進事件失敗: {e}")
     
     def _handle_state_change(self, old_state, new_state):
         """處理狀態變化"""

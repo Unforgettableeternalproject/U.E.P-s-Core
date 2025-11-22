@@ -598,8 +598,13 @@ class TestChatPathIdentityIntegration:
         """
         測試 4: Chat Session 生命週期
         驗證 CS 的創建、維持和結束機制
+        
+        注意：
+        - 每個 cycle 結束後會清理去重鍵，所以同樣的輸入在不同 cycle 不會被去重
+        - LLM 通過 session_control 建議結束會話，需要信心度 >= 0.7
+        - ModuleCoordinator 檢測到 session_control 後會在 CYCLE_COMPLETED 時結束會話
         """
-        from utils.debug_helper import info_log
+        from utils.debug_helper import info_log, debug_log
         from modules.nlp_module.identity_manager import IdentityManager
         
         info_log("\n" + "=" * 70)
@@ -623,50 +628,92 @@ class TestChatPathIdentityIntegration:
         monitor = ChatPathMonitor(event_bus)
         
         # 開始對話
-        info_log("\n--- 開始對話 ---")
+        info_log("\n--- 第 1 次輸入：開始對話 ---")
         inject_chat_message(
             "Let's talk about programming.",
             identity_id=debug_identity.identity_id
         )
         
-        monitor.wait_for_response(timeout=20)
+        response_received = monitor.wait_for_response(timeout=20)
+        if response_received:
+            info_log(f"   ✅ 收到回應: {monitor.llm_responses[-1].get('response', '')[:100]}...")
         
-        # 等待 cycle 完成
-        info_log("   等待當前 cycle 完成...")
-        monitor.wait_for_event("CYCLE_COMPLETED", timeout=60)
-        time.sleep(2)
+        # 等待 cycle 完成（這會清理去重鍵）
+        info_log("   ⏳ 等待 cycle 完成...")
+        cycle_completed = monitor.wait_for_event("CYCLE_COMPLETED", timeout=60)
+        if cycle_completed:
+            info_log("   ✅ Cycle 完成，去重鍵已清理")
+        monitor.cycle_completed.clear()  # 重置標誌
+        time.sleep(2)  # 額外等待確保清理完成
         
         # 繼續對話
-        info_log("\n--- 繼續對話 ---")
+        info_log("\n--- 第 2 次輸入：繼續對話 ---")
         inject_chat_message(
-            "What are your thoughts on Javascript?",
+            "I know a lot about CSharp, what about you?",
             identity_id=debug_identity.identity_id
         )
         
-        monitor.wait_for_response(timeout=20)
+        response_received = monitor.wait_for_response(timeout=20)
+        if response_received:
+            info_log(f"   ✅ 收到回應: {monitor.llm_responses[-1].get('response', '')[:100]}...")
         
         # 等待 cycle 完成
-        info_log("   等待當前 cycle 完成...")
-        monitor.wait_for_event("CYCLE_COMPLETED", timeout=60)
+        info_log("   ⏳ 等待 cycle 完成...")
+        cycle_completed = monitor.wait_for_event("CYCLE_COMPLETED", timeout=60)
+        if cycle_completed:
+            info_log("   ✅ Cycle 完成，去重鍵已清理")
+        monitor.cycle_completed.clear()  # 重置標誌
         time.sleep(2)
         
-        # 結束對話
-        info_log("\n--- 結束對話 ---")
+        # 明確表示要結束對話
+        info_log("\n--- 第 3 次輸入：明確結束對話 ---")
         inject_chat_message(
-            "That's really nice to hear.",
+            "Thanks for the chat! I need to go now. Goodbye!",
             identity_id=debug_identity.identity_id
         )
         
-        monitor.wait_for_response(timeout=20)
-        monitor.wait_for_event("CYCLE_COMPLETED", timeout=60)
+        response_received = monitor.wait_for_response(timeout=20)
+        if response_received:
+            latest_response = monitor.llm_responses[-1]
+            response_text = latest_response.get('response', '')
+            info_log(f"   ✅ 收到回應: {response_text[:100]}...")
+            
+            # 檢查 metadata 中的 session_control
+            metadata = latest_response.get('metadata', {})
+            session_control = metadata.get('session_control')
+            if session_control:
+                info_log(f"   📋 LLM 設置了 session_control: {session_control}")
+                should_end = (session_control.get('action') == 'end_session' or 
+                            session_control.get('session_ended') is True or
+                            session_control.get('should_end_session') is True)
+                confidence = session_control.get('confidence', 0.0)
+                info_log(f"   🔍 should_end={should_end}, confidence={confidence}")
+            else:
+                info_log("   ⚠️  LLM 未設置 session_control")
         
-        # 等待 CS 結束（如果 LLM 判斷應該結束）
+        # 等待 cycle 完成（ModuleCoordinator 會在這時檢查 session_control）
+        info_log("   ⏳ 等待 cycle 完成（等待 ModuleCoordinator 檢測結束信號）...")
+        cycle_completed = monitor.wait_for_event("CYCLE_COMPLETED", timeout=60)
+        if cycle_completed:
+            info_log("   ✅ Cycle 完成")
+        
+        # 等待 CS 結束（ModuleCoordinator 應該會觸發結束）
+        info_log("   ⏳ 等待 Chat Session 結束事件...")
         cs_ended = monitor.chat_session_ended.wait(timeout=10)
         
         if cs_ended:
-            info_log("✅ Chat Session 已結束（LLM 判斷結束）")
+            info_log("✅ Chat Session 已結束（LLM 判斷結束且 confidence >= 0.7）")
         else:
-            info_log("⚠️  Chat Session 未自動結束（需要手動結束或 LLM 未判斷結束）")
+            info_log("⚠️  Chat Session 未自動結束")
+            info_log("   可能原因：")
+            info_log("   1. LLM 未識別出結束意圖")
+            info_log("   2. LLM 的 confidence < 0.7（需要更明確的結束語）")
+            info_log("   3. session_control 格式不正確")
+        
+        info_log("\n📊 測試總結:")
+        info_log(f"   - 總回應數: {len(monitor.llm_responses)}")
+        info_log(f"   - 總事件數: {len(monitor.events)}")
+        info_log(f"   - CS 自動結束: {'是' if cs_ended else '否'}")
         
         info_log("\n✅ TEST 4 PASSED: Chat Session 生命週期測試完成")
 

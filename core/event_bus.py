@@ -82,6 +82,9 @@ class SystemEvent(Enum):
     MEMORY_RETRIEVED = "memory_retrieved"                              # 記憶已檢索
     SNAPSHOT_CREATED = "snapshot_created"                              # 快照已創建
     SNAPSHOT_CONSOLIDATED = "snapshot_consolidated"                    # 快照已整合
+    
+    # GS 推進事件（Phase 4）
+    GS_ADVANCED = "gs_advanced"                                        # General Session 已推進（GSID 更新）
 
 
 @dataclass

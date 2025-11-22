@@ -21,6 +21,7 @@ import time
 import uuid
 import json
 import os
+from datetime import datetime
 from typing import Dict, List, Any, Optional, Callable, Protocol
 from enum import Enum, auto
 from utils.debug_helper import debug_log, info_log, error_log
@@ -808,7 +809,7 @@ class WorkingContextManager:
             os.makedirs(os.path.dirname(self._persistent_file), exist_ok=True)
             
             # 序列化 persistent_contexts
-            persistent_data = {}
+            persistent_contexts = {}
             for context_id, context in self.persistent_contexts.items():
                 # 只保存必要的數據（避免大型 embedding 對象無法序列化）
                 context_data = {
@@ -822,12 +823,24 @@ class WorkingContextManager:
                     "created_at": context.created_at,
                     "last_activity": context.last_activity
                 }
-                persistent_data[context_id] = context_data
+                persistent_contexts[context_id] = context_data
+            
+            # Phase 4: 保存需要持久化的 global_context_data（如 gs_history）
+            persistent_global_data = {
+                "gs_history": self.global_context_data.get('gs_history', [])
+            }
+            
+            # 組合成完整的持久化數據
+            full_persistent_data = {
+                "persistent_contexts": persistent_contexts,
+                "global_data": persistent_global_data,
+                "version": "1.0"
+            }
             
             with open(self._persistent_file, 'w', encoding='utf-8') as f:
-                json.dump(persistent_data, f, ensure_ascii=False, indent=2)
+                json.dump(full_persistent_data, f, ensure_ascii=False, indent=2)
             
-            debug_log(3, f"[WorkingContextManager] 持久化數據已保存: {len(persistent_data)} 個上下文")
+            debug_log(3, f"[WorkingContextManager] 持久化數據已保存: {len(persistent_contexts)} 個上下文, gs_history={len(persistent_global_data['gs_history'])} 條記錄")
         
         except Exception as e:
             error_log(f"[WorkingContextManager] 持久化數據保存失敗: {e}")
@@ -840,10 +853,19 @@ class WorkingContextManager:
                 return
             
             with open(self._persistent_file, 'r', encoding='utf-8') as f:
-                persistent_data = json.load(f)
+                full_persistent_data = json.load(f)
+            
+            # 兼容舊格式（直接是 contexts 字典）
+            if "persistent_contexts" in full_persistent_data:
+                persistent_contexts = full_persistent_data["persistent_contexts"]
+                global_data = full_persistent_data.get("global_data", {})
+            else:
+                # 舊格式：整個文件就是 contexts
+                persistent_contexts = full_persistent_data
+                global_data = {}
             
             # 恢復 persistent_contexts（但不恢復 data，只恢復結構）
-            for context_id, context_data in persistent_data.items():
+            for context_id, context_data in persistent_contexts.items():
                 try:
                     context_type = ContextType(context_data["context_type"])
                     context = WorkingContext(
@@ -864,10 +886,51 @@ class WorkingContextManager:
                 except Exception as e:
                     error_log(f"[WorkingContextManager] 恢復上下文 {context_id} 失敗: {e}")
             
+            # Phase 4: 恢復 global_context_data 中的持久化數據
+            if global_data:
+                gs_history = global_data.get("gs_history", [])
+                if gs_history:
+                    self.global_context_data['gs_history'] = gs_history
+                    info_log(f"[WorkingContextManager] 恢復 gs_history: {len(gs_history)} 條記錄")
+            
             info_log(f"[WorkingContextManager] 載入持久化數據: {len(self.persistent_contexts)} 個上下文")
         
         except Exception as e:
             error_log(f"[WorkingContextManager] 載入持久化數據失敗: {e}")
+    
+    # === GS History 管理方法（Phase 4）===
+    def get_gs_history(self) -> List[str]:
+        """獲取 GS 歷史記錄（session_id 列表）"""
+        return self.global_context_data.get('gs_history', [])
+    
+    def add_to_gs_history(self, session_id: str, max_history: int = 10):
+        """
+        添加 GS session_id 到歷史記錄
+        
+        Args:
+            session_id: GS session ID（字符串格式，如 'gs_1234567890_abcd1234'）
+            max_history: 最大保留歷史數量
+        """
+        gs_history = self.get_gs_history()
+        
+        # 添加新的 session_id
+        gs_history.append(session_id)
+        
+        # 限制歷史記錄數量
+        if len(gs_history) > max_history:
+            gs_history = gs_history[-max_history:]
+        
+        # 保存回 global_context_data
+        self.global_context_data['gs_history'] = gs_history
+        
+        # Phase 4: 持久化到文件（跨系統重啟保留）
+        self._save_persistent_data()
+        
+        debug_log(2, f"[WorkingContextManager] GS 歷史已更新: {session_id}, 總記錄={len(gs_history)}")
+    
+    def get_current_gs_id(self) -> Optional[str]:
+        """獲取當前活躍的 GS session_id（從 global_context_data 讀取）"""
+        return self.global_context_data.get('current_gs_id', None)
     
     # === 兼容性方法 ===
     def set_data(self, context_type: ContextType, key: str, data: Any):

@@ -126,6 +126,54 @@ class SnapshotManager:
         except Exception as e:
             error_log(f"[SnapshotManager] 清理過期快照失敗: {e}")
     
+    def cleanup_expired_snapshots(self, valid_session_ids: List[str], keep_count: int = 3):
+        """
+        清理不在有效 session_id 列表中的快照（Phase 4）
+        
+        Args:
+            valid_session_ids: 有效的 GS session_id 列表（字符串格式，最近的幾個 GS）
+            keep_count: 保留最近幾個 GS 的快照
+        """
+        try:
+            if not valid_session_ids:
+                debug_log(2, "[SnapshotManager] 沒有有效的 session_id，跳過清理")
+                return
+            
+            valid_set = set(valid_session_ids[-keep_count:]) if valid_session_ids else set()
+            expired_snapshots = []
+            
+            # 檢查所有快照的 gsid（存儲的是 session_id 字符串）是否在有效列表中
+            for snapshot_id, snapshot in list(self._active_snapshots.items()):
+                if hasattr(snapshot, 'gsid') and snapshot.gsid:
+                    if snapshot.gsid not in valid_set:
+                        expired_snapshots.append(snapshot_id)
+                        debug_log(2, f"[SnapshotManager] 快照過期: {snapshot_id} (gsid: {snapshot.gsid}, 不在有效列表: {valid_set})")
+            
+            # 刪除過期的快照
+            for snapshot_id in expired_snapshots:
+                if snapshot_id in self._active_snapshots:
+                    # 從鍵值管理器中註銷
+                    self.key_manager.unregister_snapshot(snapshot_id)
+                    del self._active_snapshots[snapshot_id]
+                if snapshot_id in self._snapshot_contexts:
+                    del self._snapshot_contexts[snapshot_id]
+                if snapshot_id in self._session_messages:
+                    del self._session_messages[snapshot_id]
+                if snapshot_id in self._last_auto_snapshot:
+                    del self._last_auto_snapshot[snapshot_id]
+            
+            # 清理鍵值管理器中的過期映射
+            valid_snapshot_ids = set(self._active_snapshots.keys())
+            self.key_manager.cleanup_expired_keys(valid_snapshot_ids)
+            
+            if expired_snapshots:
+                debug_log(1, f"[SnapshotManager] Phase 4 清理了 {len(expired_snapshots)} 個過期快照")
+            else:
+                debug_log(3, f"[SnapshotManager] 沒有過期快照需要清理 (有效 session_id: {valid_set})")
+                
+        except Exception as e:
+            error_log(f"[SnapshotManager] Phase 4 清理過期快照失敗: {e}")
+    
     def get_current_gsid(self) -> int:
         """獲取當前General Session ID"""
         return self.current_gsid
@@ -257,31 +305,29 @@ class SnapshotManager:
             error_log(f"[SnapshotManager] 更新快照失敗: {e}")
             return False
     
-    def _get_current_gsid_from_working_context(self) -> int:
+    def _get_current_gsid_from_working_context(self) -> Optional[str]:
         """
-        從 Working Context 獲取當前 GSID
+        從 Working Context 獲取當前 GS session_id
         
         Returns:
-            當前 GSID，如果無法獲取則返回當前 SnapshotManager 的 GSID
+            當前 GS session_id（字符串格式），如果無法獲取則返回 None
         """
         try:
             from core.working_context import working_context_manager
             
-            # 嘗試從 PERSISTENT SCOPE 讀取 GS 歷史
-            gs_history = working_context_manager.get_persistent_data('gs_history', [])
+            # 從 global_context_data 讀取當前 GS session_id
+            current_gs_id = working_context_manager.get_current_gs_id()
             
-            if gs_history:
-                latest_gsid = gs_history[-1].get('gsid', self.current_gsid)
-                debug_log(4, f"[SnapshotManager] 從 Working Context 獲取 GSID: {latest_gsid}")
-                return latest_gsid
+            if current_gs_id:
+                debug_log(4, f"[SnapshotManager] 從 Working Context 獲取當前 GS: {current_gs_id}")
+                return current_gs_id
             else:
-                # 如果沒有歷史記錄，返回當前 GSID
-                debug_log(4, f"[SnapshotManager] Working Context 無 GS 歷史，使用當前 GSID: {self.current_gsid}")
-                return self.current_gsid
+                debug_log(4, "[SnapshotManager] Working Context 無當前 GS")
+                return None
                 
         except Exception as e:
-            error_log(f"[SnapshotManager] 從 Working Context 獲取 GSID 失敗: {e}")
-            return self.current_gsid
+            error_log(f"[SnapshotManager] 從 Working Context 獲取 GS session_id 失敗: {e}")
+            return None
     
     def query_and_decide_snapshot_creation(self, memory_token: str, content: str, 
                                          context: Dict[str, Any] = None) -> Dict[str, Any]:

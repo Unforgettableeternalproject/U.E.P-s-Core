@@ -350,6 +350,9 @@ class GeneralSession:
             self.ended_at = datetime.now()
             self._trigger_lifecycle_handlers(GSStatus.COMPLETED)
             
+            # Phase 4: 推進 GSID 並發布事件
+            self._on_general_session_end()
+            
             duration = (self.ended_at - self.started_at).total_seconds() if self.started_at else 0
             info_log(f"[GeneralSession] GS {self.session_id} 已完成 (持續時間: {duration:.2f}s)")
             
@@ -418,6 +421,33 @@ class GeneralSession:
                 handler(self)
             except Exception as e:
                 error_log(f"[GeneralSession] 生命週期處理器錯誤 ({status.name}): {e}")
+    
+    def _on_general_session_end(self):
+        """GS 結束時的處理邏輯（Phase 4：GSID 管理）"""
+        try:
+            # 添加當前 session_id 到 gs_history
+            working_context_manager.add_to_gs_history(self.session_id)
+            
+            debug_log(1, f"[GeneralSession] GS 結束，記錄到歷史: {self.session_id}")
+            
+            # 發布 GS_ADVANCED 事件
+            from core.event_bus import event_bus, SystemEvent
+            gs_history = working_context_manager.get_gs_history()
+            
+            event_bus.publish(
+                SystemEvent.GS_ADVANCED,
+                {
+                    'session_id': self.session_id,
+                    'ended_at': self.ended_at.isoformat() if self.ended_at else None,
+                    'gs_history': gs_history  # 最近的 session_id 列表
+                },
+                source='general_session'
+            )
+            
+            debug_log(2, f"[GeneralSession] GS_ADVANCED 事件已發布: {self.session_id}")
+            
+        except Exception as e:
+            error_log(f"[GeneralSession] GS 結束處理失敗: {e}")
     
     def get_status_info(self) -> Dict[str, Any]:
         """獲取狀態資訊"""

@@ -1014,7 +1014,14 @@ class LLMModule(BaseModule):
             # 🔧 在處理開始時獲取並保存 session_id 和 cycle_index
             # 避免在事件發布時動態讀取導致cycle已遞增的問題
             self._current_processing_session_id = self._get_current_gs_id()
-            self._current_processing_cycle_index = self._get_current_cycle_index()
+            # ✅ 優先從輸入數據中讀取 cycle_index（由 MC 從 STATE_ADVANCED 或 INPUT_LAYER_COMPLETE 傳遞）
+            # 如果輸入數據中沒有，才從 working_context 讀取
+            if hasattr(llm_input, 'cycle_index') and llm_input.cycle_index is not None:
+                self._current_processing_cycle_index = llm_input.cycle_index
+                debug_log(3, f"[LLM] 從輸入數據讀取 cycle_index: {self._current_processing_cycle_index}")
+            else:
+                self._current_processing_cycle_index = self._get_current_cycle_index()
+                debug_log(3, f"[LLM] 從 working_context 讀取 cycle_index: {self._current_processing_cycle_index}")
             debug_log(3, f"[LLM] 記錄處理上下文: session={self._current_processing_session_id}, cycle={self._current_processing_cycle_index}")
             
             # 檢查是否來自新 Router
@@ -1928,32 +1935,17 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                 # 快速路徑返回 None 表示需要 LLM 解析，繼續正常流程
                 debug_log(2, "[LLM] 快速路徑返回 None，繼續正常流程讓 LLM 解析輸入")
             
-            # ✅ 從 working_context 讀取 workflow_hint（由 NLP 寫入）
-            # 但如果已有工作流運行或正在審核步驟，不要使用 workflow_hint（避免重複啟動工作流）
-            workflow_hint = None
             from core.working_context import working_context_manager
             
-            if has_active_workflow or is_reviewing_step:
-                debug_log(2, f"[LLM] 已有工作流運行或正在審核步驟，跳過 workflow_hint（避免重複啟動）")
-                # 清除 hint，避免影響後續處理
-                working_context_manager.set_context_data("workflow_hint", None)
-            else:
-                workflow_hint = working_context_manager.get_context_data("workflow_hint")
-                if workflow_hint:
-                    debug_log(2, f"[LLM] 從 working_context 讀取工作流提示: {workflow_hint}")
-                    # 讀取後立即清除，確保只使用一次
-                    working_context_manager.set_context_data("workflow_hint", None)
-                    debug_log(2, f"[LLM] 已清除 workflow_hint（僅使用一次）")
-            
             # ✅ 檢查是否有 MCP Server 可用
-            # ⚠️ 關鍵修復：當 workflow_step_response 時，不提供 MCP 工具（避免 LLM 調用工具而不返回文本）
+            # 即使在 workflow_step_response 時也提供工具，讓 LLM 自己決定是否使用（tool_choice=AUTO）
             is_step_response = pending_workflow and pending_workflow.get('type') == 'workflow_step_response'
             mcp_tools = None
-            if self.mcp_client and hasattr(self.mcp_client, 'get_tools_as_gemini_format') and not is_step_response:
+            if self.mcp_client and hasattr(self.mcp_client, 'get_tools_as_gemini_format'):
                 mcp_tools = self.mcp_client.get_tools_as_gemini_format()
                 debug_log(2, f"[LLM] MCP 工具已準備: {len(mcp_tools) if mcp_tools else 0} 個")
-            elif is_step_response:
-                debug_log(2, "[LLM] 步驟回應模式：不提供 MCP 工具（避免 LLM 調用工具）")
+                if is_step_response:
+                    debug_log(2, "[LLM] 步驟回應模式：提供工具但不強制使用（tool_choice=AUTO）")
             
             # 🔧 決定 tool_choice 模式（在構建 prompt 之前）
             if not has_active_workflow and not is_reviewing_step and mcp_tools:
@@ -1969,7 +1961,6 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                 available_functions=None,  # 不再需要文字描述，使用 MCP tools
                 workflow_context=pending_workflow,
                 identity_context=llm_input.identity_context,
-                workflow_hint=workflow_hint,  # 只在不是審核步驟時使用 hint
                 use_mcp_tools=True if mcp_tools else False,
                 suppress_start_workflow_instruction=bool(has_active_workflow or is_reviewing_step),  # ✅ 已有工作流時抑制啟動指示
                 force_tool_use=force_tool_use  # 🔧 傳遞是否強制調用工具
@@ -1995,7 +1986,31 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                 tool_choice=tool_choice  # 🔧 修復：使用動態決定的模式
             )
             
-            # 🔍 DEBUG: 記錄 Gemini 的原始響應
+            # � 處理 MALFORMED_FUNCTION_CALL 錯誤：降級為 AUTO 模式重試
+            if response_data.get("error") == "malformed_function_call" and tool_choice == "ANY":
+                error_log(f"[LLM] 檢測到 MALFORMED_FUNCTION_CALL，降級為 AUTO 模式重試")
+                debug_log(2, "[LLM] 使用 tool_choice=AUTO 重新調用 Gemini")
+                
+                response_data = self.model.query(
+                    prompt, 
+                    mode="work",
+                    cached_content=cached_content_ids.get("functions"),
+                    tools=mcp_tools,
+                    tool_choice="AUTO"  # 降級為 AUTO 模式
+                )
+                
+                # 如果還是失敗，最後嘗試不使用工具（純文本回應）
+                if response_data.get("error") == "malformed_function_call":
+                    error_log(f"[LLM] AUTO 模式仍然失敗，使用純文本模式")
+                    response_data = self.model.query(
+                        prompt, 
+                        mode="work",
+                        cached_content=cached_content_ids.get("functions"),
+                        tools=None,  # 不使用工具
+                        tool_choice="NONE"
+                    )
+            
+            # �🔍 DEBUG: 記錄 Gemini 的原始響應
             debug_log(3, f"[LLM] Gemini 響應類型: {list(response_data.keys())}")
             if 'function_call' in response_data:
                 debug_log(3, f"[LLM] Function call: {response_data['function_call']}")

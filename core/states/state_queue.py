@@ -85,6 +85,9 @@ class StateQueueManager:
         self.current_state = UEPState.IDLE
         self.current_item: Optional[StateQueueItem] = None
         
+        # 🔧 記錄上次完成狀態的 cycle_index，用於計算下次狀態推進的 cycle
+        self.last_completion_cycle: Optional[int] = None
+        
         # 狀態處理回調
         self.state_handlers: Dict[UEPState, Callable] = {}
         self.completion_handlers: Dict[UEPState, Callable] = {}
@@ -599,8 +602,34 @@ class StateQueueManager:
             return next_item.state
         return UEPState.IDLE
     
+    def check_and_advance_state(self) -> bool:
+        """檢查並推進到下一個狀態（由 SystemLoop 在循環開始時調用）
+        
+        檢查條件：
+        1. 當前沒有執行中的狀態項目（current_item == None）
+        2. 佇列中有待處理的狀態
+        
+        如果滿足條件，推進到下一個狀態並設置 skip_input_layer 標記。
+        
+        Returns:
+            bool: 是否成功推進到下一個狀態
+        """
+        # 如果當前有執行中的狀態，不推進
+        if self.current_item is not None:
+            return False
+        
+        # 如果佇列為空，轉換到 IDLE
+        if not self.queue:
+            if self.current_state != UEPState.IDLE:
+                self._transition_to_idle()
+            return False
+        
+        # 有待處理的狀態，執行推進
+        info_log(f"[StateQueue] 🔄 循環開始時檢測到待推進狀態，佇列長度: {len(self.queue)}")
+        return self.start_next_state()
+    
     def start_next_state(self) -> bool:
-        """開始執行下一個狀態"""
+        """開始執行下一個狀態（內部方法）"""
         if not self.queue:
             # 佇列為空，切換到IDLE
             if self.current_state != UEPState.IDLE:
@@ -622,6 +651,32 @@ class StateQueueManager:
         debug_log(4, f"[StateQueue] 上下文內容: {next_item.context_content}")
         debug_log(4, f"[StateQueue] 佇列剩餘: {len(self.queue)} 項目")
         
+        # ✅ 發布 STATE_ADVANCED 事件，通知 MC 跳過輸入層直接啟動處理層
+        try:
+            from core.event_bus import event_bus, SystemEvent
+            from core.working_context import working_context_manager
+            
+            # ✅ 直接從 working_context 讀取當前 cycle_index（循環已完成，值已更新）
+            # 不再使用 last_completion_cycle 計算，統一使用同一來源
+            next_cycle = working_context_manager.global_context_data.get('current_cycle_index', 0)
+            debug_log(1, f"[StateQueue] 🔢 STATE_ADVANCED: 使用當前 cycle_index={next_cycle}（循環已遞增）")
+            
+            event_bus.publish(
+                event_type=SystemEvent.STATE_ADVANCED,
+                data={
+                    "old_state": old_state.value,
+                    "new_state": next_item.state.value,
+                    "content": next_item.context_content,
+                    "trigger": next_item.trigger_content,
+                    "metadata": next_item.metadata,
+                    "cycle_index": next_cycle  # 使用下一個循環的 index
+                },
+                source="StateQueue"
+            )
+            debug_log(2, f"[StateQueue] ✅ 已發布 STATE_ADVANCED 事件: {old_state.value} -> {next_item.state.value} (cycle={next_cycle})")
+        except Exception as e:
+            error_log(f"[StateQueue] 發布 STATE_ADVANCED 事件失敗: {e}")
+        
         # 調用狀態處理器
         if next_item.state in self.state_handlers:
             try:
@@ -637,18 +692,44 @@ class StateQueueManager:
         self._save_queue()
         return True
     
-    def complete_current_state(self, success: bool = True, result_data: Optional[Dict[str, Any]] = None):
+    def complete_current_state(self, success: bool = True, result_data: Optional[Dict[str, Any]] = None,
+                              completion_cycle: Optional[int] = None):
+        debug_log(1, f"[StateQueue] complete_current_state 被調用, completion_cycle={completion_cycle}")
         """完成當前狀態
         
-        即使沒有 current_item，也要檢查佇列並在必要時轉換到 IDLE。
-        這確保當會話結束通知到達時，StateQueue 能正確處理狀態轉換。
+        只標記當前狀態完成，不自動推進到下一個狀態。
+        狀態推進由 SystemLoop 在循環開始時統一處理。
+        
+        Args:
+            success: 是否成功完成
+            result_data: 結果數據
+            completion_cycle: 完成時的循環索引（優先使用此參數，避免讀取可能過期的 working_context）
+        
+        這確保：
+        1. 清晰的循環邊界
+        2. 可追蹤的狀態推進時機
+        3. 避免在事件處理中嵌套過多邏輯
         """
+        debug_log(1, f"[StateQueue] 📥 complete_current_state 被調用, completion_cycle={completion_cycle}")
+        
         if not self.current_item:
             debug_log(2, "[StateQueue] 沒有正在執行的狀態")
-            # ✅ 即使沒有當前狀態，也要檢查佇列和轉換到 IDLE
-            if not self.start_next_state():
-                self._transition_to_idle()
             return
+        
+        # 🔧 記錄完成時的 cycle_index，供下次狀態推進使用
+        try:
+            if completion_cycle is not None:
+                # ✅ 優先使用傳入的 cycle_index（來自 SESSION_ENDED 事件）
+                self.last_completion_cycle = completion_cycle
+                debug_log(3, f"[StateQueue] 狀態完成於 Cycle {completion_cycle} (來自會話事件)")
+            else:
+                # 🔧 回退到讀取 working_context（僅用於向後兼容）
+                from core.working_context import working_context_manager
+                completion_cycle = working_context_manager.global_context_data.get('current_cycle_index', 0)
+                self.last_completion_cycle = completion_cycle
+                debug_log(3, f"[StateQueue] 狀態完成於 Cycle {completion_cycle} (來自 working_context)")
+        except Exception as e:
+            error_log(f"[StateQueue] 記錄完成 cycle 失敗: {e}")
         
         # 標記完成
         self.current_item.completed_at = datetime.now()
@@ -657,6 +738,7 @@ class StateQueueManager:
         
         completed_state = self.current_state
         info_log(f"[StateQueue] 完成狀態: {completed_state.value} ({'成功' if success else '失敗'})")
+        debug_log(2, "[StateQueue] 等待下一個循環推進狀態...")
         
         # 調用完成處理器
         if completed_state in self.completion_handlers:
@@ -665,12 +747,9 @@ class StateQueueManager:
             except Exception as e:
                 error_log(f"[StateQueue] 完成處理器執行失敗: {e}")
         
-        # 清理當前狀態
+        # 清理當前狀態，但不自動推進
         self.current_item = None
-        
-        # 自動開始下一個狀態
-        if not self.start_next_state():
-            self._transition_to_idle()
+        # current_state 保持原樣，等待 SystemLoop 推進
         
         self._save_queue()
     

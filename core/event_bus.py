@@ -39,6 +39,7 @@ class SystemEvent(Enum):
     
     # 系統狀態事件
     STATE_CHANGED = "state_changed"                        # 系統狀態改變
+    STATE_ADVANCED = "state_advanced"                      # 狀態佇列推進（需跳過輸入層）
     SESSION_STARTED = "session_started"                    # 會話開始
     SESSION_ENDED = "session_ended"                        # 會話結束
     

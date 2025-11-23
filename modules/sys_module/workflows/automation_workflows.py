@@ -34,7 +34,7 @@ from utils.debug_helper import info_log, error_log, debug_log
 
 # ==================== 媒體播放服務工作流 ====================
 
-def _execute_media_playback(session: WorkflowSession) -> StepResult:
+def _execute_play_media(session: WorkflowSession) -> StepResult:
     """
     執行本地音樂播放（不包含監控註冊，監控註冊由 monitor_creation_step 負責）
     
@@ -117,7 +117,7 @@ def _execute_media_playback(session: WorkflowSession) -> StepResult:
         return StepResult.failure(f"媒體播放失敗：{str(e)}")
 
 
-def create_media_playback_workflow(
+def create_play_media_workflow(
     session: WorkflowSession,
     query: Optional[str] = None,
     shuffle: bool = False,
@@ -146,7 +146,7 @@ def create_media_playback_workflow(
     - 開啟循環：持續播放直到用戶手動停止
     """
     workflow_def = WorkflowDefinition(
-        workflow_type="media_playback",
+        workflow_type="play_media",
         name="本地音樂播放",
         description="播放本地音樂（支援隨機、循環）",
         workflow_mode=WorkflowMode.BACKGROUND,  # ✅ 背景工作流
@@ -181,7 +181,7 @@ def create_media_playback_workflow(
     execute_step = StepTemplate.create_auto_step(
         session=session,
         step_id="execute_playback",
-        processor=_execute_media_playback,
+        processor=_execute_play_media,
         required_data=[],  # query 是可選的
         prompt="正在啟動本地音樂播放...",
         description="執行本地音樂播放"
@@ -217,7 +217,7 @@ def create_media_playback_workflow(
             # 註冊到資料庫
             success = register_background_workflow(
                 task_id=task_id,
-                workflow_type="media_playback",
+                workflow_type="play_media",
                 metadata={
                     "playback_mode": playback_mode,
                     "playback_type": playback_type,
@@ -451,8 +451,9 @@ def get_automation_workflow_creator(workflow_type: str):
     """
     creators = {
         # 媒體播放工作流（與 YAML 中的命名一致）
-        "media_playback": create_media_playback_workflow,
-        "media_playback_start": create_media_playback_workflow,  # 別名，向後兼容
+        "play_media": create_play_media_workflow,
+        "media_playback": create_play_media_workflow,  # 別名，向後兼容
+        "media_playback_start": create_play_media_workflow,  # 別名，向後兼容
         
         # 媒體控制工作流
         "control_media": create_media_control_intervention_workflow,
@@ -597,7 +598,7 @@ def create_media_control_intervention_workflow(
     if not task_id:
         try:
             from modules.sys_module.actions.automation_helper import get_active_workflows
-            active_workflows = get_active_workflows(workflow_type="media_playback")
+            active_workflows = get_active_workflows(workflow_type="play_media")
             if active_workflows:
                 # 取最近創建的任務（已按 created_at DESC 排序）
                 task_id = active_workflows[0]["task_id"]

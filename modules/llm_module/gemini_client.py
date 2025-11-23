@@ -374,6 +374,17 @@ class GeminiWrapper:
             error_log(f"[Gemini] candidate 或 content 為 None")
             return {"text": "Welp...I did not come up with any content, sorry."}
         
+        # 🔧 **優先檢查 finish_reason** - MALFORMED_FUNCTION_CALL 時 content.parts 通常為空
+        # 必須在檢查 parts 之前執行，否則會被提前返回攔截
+        if hasattr(candidate, 'finish_reason') and str(candidate.finish_reason) == 'FinishReason.MALFORMED_FUNCTION_CALL':
+            error_log(f"[Gemini] 檢測到 MALFORMED_FUNCTION_CALL，Gemini 無法正確調用工具")
+            # 返回錯誤標記，讓上層可以降級處理
+            return {
+                "text": "",
+                "error": "malformed_function_call",
+                "finish_reason": "MALFORMED_FUNCTION_CALL"
+            }
+        
         # 🔧 修復：優先使用 result.text 便利方法（新 SDK 推薦），再嘗試 parts[0]
         part = None
         if not hasattr(candidate.content, 'parts') or candidate.content.parts is None or len(candidate.content.parts) == 0:

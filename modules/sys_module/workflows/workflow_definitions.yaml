@@ -299,8 +299,8 @@ workflows:
 
   # ==================== Automation Workflows (Background) ====================
   
-  media_playback:
-    name: "media_playback"
+  play_media:
+    name: "play_media"
     description: "Local music playback with background monitoring. Supports shuffle and smart loop mode (auto-infers single-song loop or playlist loop based on query). Task ends when: 1) Specific song finishes (without loop), 2) Playlist finishes (without loop), 3) User manually stops (with loop enabled)."
     category: "automation"
     work_mode: "background"
@@ -310,8 +310,7 @@ workflows:
         type: str
         optional: false
         description: "Song name to play (empty string \"\" means play entire music folder)"
-        # maps_to_step: "query_input"  # ❌ Removed: background workflows cannot have Interactive steps
-        extraction_hint: "**REQUIRED** - Always extract and provide query parameter. Extract song name from user input. Examples: 'play Jay Chou' → query='Jay Chou', 'play Something just like this' → query='Something just like this'. If user wants to play ALL music or doesn't specify a song (e.g., 'play my music', 'play local music', 'play some music'), provide empty string: query=''. **ALWAYS provide query parameter, never omit it**."
+        extraction_hint: "Always extract and provide query parameter. Extract song name from user input. If user wants to play ALL music or doesn't specify a song (e.g., 'play my music', 'play local music', 'play some music'), provide empty string: query=''."
       
       shuffle:
         type: bool
@@ -325,7 +324,7 @@ workflows:
         optional: true
         description: "Enable loop/repeat playback. System will intelligently choose: (1) Single-song loop if query is provided, (2) Playlist loop if query is empty."
         maps_to_step: "loop"
-        extraction_hint: "Return true if user mentions loop/repeat/循環/重複, otherwise false. System automatically selects appropriate loop mode (single-song or playlist) based on context."
+        extraction_hint: "Return true if user mentions loop/repeat, otherwise false. System automatically selects appropriate loop mode (single-song or playlist) based on context."
     
     mcp_tool_params:
       command:
@@ -334,8 +333,8 @@ workflows:
         description: "User original command"
       initial_data:
         type: object
-        required: true
-        description: "Initial data with REQUIRED 'query' field. Format: {\"query\": \"song name or empty string\", \"shuffle\": bool (optional), \"loop\": bool (optional)}. The 'query' field is REQUIRED - use empty string \"\" if user wants to play all music."
+        required: false
+        description: "Optional initial data. If provided, format: {\"query\": \"song name or empty string\", \"shuffle\": bool (optional), \"loop\": bool (optional)}. If 'query' is included, use empty string \"\" if user wants to play all music."
   
   control_media:
     name: "control_media"
@@ -436,8 +435,8 @@ workflows:
         description: "User original command"
       initial_data:
         type: object
-        required: true
-        description: "Initial data with REQUIRED fields. Format: {\"task_name\": \"string (default: General Task)\", \"task_description\": \"string (optional)\", \"priority\": \"none|low|medium|high (default: none)\"}"
+        required: false
+        description: "Optional initial data. If provided, format: {\"task_name\": \"string (default: General Task)\", \"task_description\": \"string (optional)\", \"priority\": \"none|low|medium|high (default: none)\"}"
 
   manage_todo:
     name: "manage_todo"
@@ -534,8 +533,8 @@ workflows:
         description: "User original command"
       initial_data:
         type: object
-        required: true
-        description: "Initial data with REQUIRED fields. Format: {\"start_time\": \"YYYY-MM-DD HH:MM (required)\", \"end_time\": \"YYYY-MM-DD HH:MM (optional, defaults to 23:59 of start date)\", \"event_name\": \"string (default: General Event)\"}"
+        required: false
+        description: "Optional initial data. If provided, format: {\"start_time\": \"YYYY-MM-DD HH:MM (required)\", \"end_time\": \"YYYY-MM-DD HH:MM (optional, defaults to 23:59 of start date)\", \"event_name\": \"string (default: General Event)\"}"
 
   manage_calendar:
     name: "manage_calendar"
@@ -641,8 +640,8 @@ workflows:
         description: "User original command"
       initial_data:
         type: object
-        required: true
-        description: "Initial data with REQUIRED 'task_id' field. Format: {\"task_id\": \"string\", \"preferred_time\": {\"date\": \"YYYY-MM-DD\", \"time_of_day\": \"morning/afternoon/evening\", \"duration_minutes\": int}, \"auto_schedule\": bool}"
+        required: false
+        description: "Optional initial data. If provided, should include 'task_id'. Format: {\"task_id\": \"string\", \"preferred_time\": {\"date\": \"YYYY-MM-DD\", \"time_of_day\": \"morning/afternoon/evening\", \"duration_minutes\": int}, \"auto_schedule\": bool}"
 
   generate_prep_todos:
     name: "generate_prep_todos"
@@ -679,5 +678,5 @@ workflows:
         description: "User original command"
       initial_data:
         type: object
-        required: true
-        description: "Initial data with REQUIRED 'event_id' field. Format: {\"event_id\": \"string\", \"prep_type\": \"meeting/exam/presentation/interview\", \"custom_tasks\": [\"task1\", \"task2\"]}"
+        required: false
+        description: "Optional initial data. If provided, should include 'event_id'. Format: {\"event_id\": \"string\", \"prep_type\": \"meeting/exam/presentation/interview\", \"custom_tasks\": [\"task1\", \"task2\"]}"

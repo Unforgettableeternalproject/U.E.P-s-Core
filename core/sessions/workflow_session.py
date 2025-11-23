@@ -467,6 +467,12 @@ class WorkflowSession:
             # 發布會話結束事件 - 通知 StateManager 處理狀態轉換
             try:
                 from core.event_bus import event_bus, SystemEvent
+                from core.working_context import working_context_manager
+                
+                # ✅ 讀取當前 cycle_index（會話在循環結束後才真正結束，值已正確更新）
+                current_cycle = working_context_manager.global_context_data.get('current_cycle_index', 0)
+                debug_log(1, f"[WorkflowSession] 📍 發布 SESSION_ENDED: session={self.session_id}, cycle={current_cycle}")
+                
                 event_bus.publish(
                     event_type=SystemEvent.SESSION_ENDED,
                     data={
@@ -476,7 +482,8 @@ class WorkflowSession:
                         'duration': duration,
                         'task_type': self.task_type.value,
                         'completed_steps': self.stats['completed_steps'],
-                        'total_steps': len(self.task_steps)
+                        'total_steps': len(self.task_steps),
+                        'cycle_index': current_cycle  # ✅ 附帶當前循環索引
                     },
                     source='workflow_session'
                 )

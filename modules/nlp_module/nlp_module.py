@@ -420,12 +420,16 @@ class NLPModule(BaseModule):
         }
         
         try:
-            primary_intent = intent_result["primary_intent"]
+            original_intent = intent_result["primary_intent"]
             context_ids = intent_result.get("context_ids", [])
             execution_plan = intent_result.get("execution_plan", [])
             
             result["context_ids"] = context_ids
             result["execution_plan"] = execution_plan
+            
+            # 直接使用原始 intent，不再覆蓋
+            # 新架構：BW/DW 都會立即中斷 CS 並處理 WORK
+            primary_intent = original_intent
             
             # 根據意圖決定下一步處理
             if primary_intent == IntentType.CALL:
@@ -452,13 +456,14 @@ class NLPModule(BaseModule):
                 # 未知內容：可能轉發到LLM進行處理
                 result["next_modules"] = ["llm_module"]
             
-            debug_log(3, f"[NLP] 系統狀態處理：下一步模組={result['next_modules']}, "
-                       f"等待輸入={result['awaiting_input']}, 上下文數={len(context_ids)}")
-            
             # 將意圖分段添加到狀態佇列
             queue_result = self._process_intent_to_state_queue(intent_result)
             result["added_states"] = queue_result.get("added_states", [])
             result["corrected_segments"] = queue_result.get("corrected_segments", [])
+            result["session_control"] = queue_result.get("session_control")  # 保存 session_control 信息
+            
+            debug_log(3, f"[NLP] 系統狀態處理：下一步模組={result['next_modules']}, "
+                       f"等待輸入={result['awaiting_input']}, 上下文數={len(context_ids)}")
             
             # 處理多意圖上下文的狀態轉換
             if intent_result.get("state_transition"):
@@ -560,15 +565,16 @@ class NLPModule(BaseModule):
                 debug_log(2, "[NLP] Set skip_input_layer=True for interrupt")
             
             # Add states to queue
-            # 🆕 合併相同類型的連續狀態，避免重複添加
+            # 不合併相同類型的狀態，因為用戶可能有多個不同的主題或任務要處理
             added_states = []
-            merged_states = []  # [(state_type, [segments], priority, work_mode), ...]
             
             for state_info in result.get("states_to_add", []):
-                segment = state_info["segment"]
+                segment = state_info.get("segment")  # Resume 狀態可能沒有 segment
                 state_type_str = state_info["state_type"]
                 priority = state_info["priority"]
                 work_mode = state_info.get("work_mode")
+                is_resume = state_info.get("is_resume", False)
+                resume_context = state_info.get("resume_context")
                 
                 # Map state_type string to UEPState enum
                 if state_type_str == "CHAT":
@@ -579,37 +585,39 @@ class NLPModule(BaseModule):
                     error_log(f"[NLP] Unknown state type: {state_type_str}")
                     continue
                 
-                # 🆕 檢查是否可以與上一個狀態合併
-                if merged_states and merged_states[-1][0] == state_type:
-                    # 相同類型，合併到上一個
-                    merged_states[-1][1].append(segment)
-                    debug_log(3, f"[NLP] 合併相同類型狀態: {state_type.value}")
+                # 準備狀態數據
+                if is_resume:
+                    # Resume 狀態：使用保存的上下文
+                    trigger_text = "恢復對話會話"
+                    metadata = {
+                        "is_resume": True,
+                        "resume_context": resume_context,
+                        "intent_type": "CHAT"  # 就是普通 CHAT 狀態，只是帶有 resume 標記
+                    }
+                    debug_log(2, f"[NLP] 添加 resume CHAT 狀態到佇列 (priority={priority})")
                 else:
-                    # 不同類型或第一個，創建新項目
-                    merged_states.append((state_type, [segment], priority, work_mode))
-            
-            # 🆕 為合併後的狀態添加到隊列
-            for state_type, segments, priority, work_mode in merged_states:
-                # 合併所有段落的文本
-                combined_text = " ".join(seg.segment_text for seg in segments)
+                    # 正常狀態：使用 segment 的文本
+                    trigger_text = segment.segment_text if segment else ""
+                    metadata = {
+                        "intent_type": segment.intent_type.name if segment else "UNKNOWN",
+                        "confidence": segment.confidence if segment else 0.0
+                    }
                 
-                # Add to state queue with combined text as context
+                # Add to state queue
                 self.state_queue_manager.add_state(
                     state_type,
-                    trigger_content=combined_text,
-                    context_content=combined_text,
-                    metadata={
-                        "intent_type": segments[0].intent_type.name, 
-                        "confidence": sum(s.confidence for s in segments) / len(segments),
-                        "segment_count": len(segments)
-                    },
+                    trigger_content=trigger_text,
+                    context_content=trigger_text,
+                    metadata=metadata,
                     custom_priority=priority,
                     work_mode=work_mode
                 )
                 added_states.append(state_type)
                 
-                debug_log(3, f"[NLP] Added merged state: {state_type.value} "
-                             f"(segments={len(segments)}, priority={priority}, work_mode={work_mode})")
+                if is_resume:
+                    debug_log(3, f"[NLP] Added resume state: {state_type.value} (priority={priority})")
+                else:
+                    debug_log(3, f"[NLP] Added state: {state_type.value} (priority={priority}, work_mode={work_mode})")
             
             if added_states:
                 info_log(f"[NLP] Added {len(added_states)} state(s) to queue: "
@@ -622,11 +630,12 @@ class NLPModule(BaseModule):
             for note in result.get("processing_notes", []):
                 debug_log(3, f"[NLP] {note}")
             
-            # 返回字典包含 added_states、corrected_segments 和 filtered_segments
+            # 返回字典包含 added_states、corrected_segments、filtered_segments 和 session_control
             return_dict = {
                 "added_states": added_states,
                 "corrected_segments": result.get("corrected_segments", []),
-                "filtered_segments": result.get("filtered_segments", [])  # 🆕 傳遞 filtered_segments
+                "filtered_segments": result.get("filtered_segments", []),
+                "session_control": result.get("session_control")  # 🆕 傳遞 session_control
             }
             return return_dict
                 
@@ -664,6 +673,13 @@ class NLPModule(BaseModule):
         queue_status = self.state_queue_manager.get_queue_status()
         added_states = state_result.get("added_states", [])
         
+        # 🔍 調試：檢查 session_control
+        session_control_value = state_result.get("session_control")
+        if session_control_value:
+            debug_log(1, f"[NLP] _combine_results: session_control = {session_control_value}")
+        else:
+            debug_log(3, "[NLP] _combine_results: session_control is None")
+        
         # Convert intent_types.IntentSegment (dataclass) to schemas.IntentSegment (Pydantic model)
         from modules.nlp_module.schemas import IntentSegment as SchemaIntentSegment
         pydantic_segments = []
@@ -694,7 +710,8 @@ class NLPModule(BaseModule):
             awaiting_further_input=state_result.get("awaiting_input", False),
             timeout_seconds=state_result.get("timeout_seconds"),
             queue_states_added=added_states,
-            current_system_state=queue_status.get("current_state")
+            current_system_state=queue_status.get("current_state"),
+            session_control=state_result.get("session_control")  # 🆕 傳遞 session_control
         )
     
     def _add_to_speaker_accumulation(self, input_data: NLPInput):
@@ -783,6 +800,23 @@ class NLPModule(BaseModule):
                 interaction_data
             )
             
+            # 🆕 更新 StatusManager 的 last_interaction_time
+            # 確保系統不會因為長時間無互動而進入 SLEEP
+            from core.status_manager import StatusManager
+            status_manager = StatusManager()
+            
+            # 判斷互動是否成功（confidence > 0.5 視為成功）
+            is_successful = result.overall_confidence > 0.5
+            task_type = interaction_data["module"]
+            
+            status_manager.record_interaction(
+                successful=is_successful,
+                task_type=task_type
+            )
+            
+            debug_log(3, f"[NLP] 已記錄互動時間 (Identity: {identity.identity_id}, "
+                       f"Type: {task_type}, Success: {is_successful})")
+            
         except Exception as e:
             debug_log(3, f"[NLP] 更新互動歷史失敗：{e}")
     
@@ -801,7 +835,8 @@ class NLPModule(BaseModule):
             timeout_seconds=None,
             queue_states_added=None,
             current_system_state=None,
-            processing_notes=[f"處理錯誤：{error_message}"]
+            processing_notes=[f"處理錯誤：{error_message}"],
+            session_control=None
         ).dict()
     
     def shutdown(self):
@@ -1009,10 +1044,10 @@ class NLPModule(BaseModule):
         """
         result = {
             "states_to_add": [],
-            "skip_input_layer": False,
             "interrupt_cs": False,
             "pause_cs_sessions": [],
-            "processing_notes": []
+            "processing_notes": [],
+            "session_control": None  # For DW interrupt - follows LLM pattern
         }
         
         try:
@@ -1033,6 +1068,14 @@ class NLPModule(BaseModule):
                 if should_interrupt:
                     result["interrupt_cs"] = True
                     result["pause_cs_sessions"] = [cs.session_id for cs in cs_sessions]
+                    # Set session_control for DW in COMPOUND case
+                    result["session_control"] = {
+                        "action": "end_session",
+                        "should_end_session": True,
+                        "reason": "Direct work interrupt (COMPOUND)",
+                        "confidence": 1.0
+                    }
+                    debug_log(2, "[NLP] COMPOUND with DW - set session_control for immediate interrupt")
             
             # Process each segment
             for segment in valid_segments:
@@ -1048,28 +1091,61 @@ class NLPModule(BaseModule):
                     debug_log(2, "[NLP] Active CS: CHAT - continuing CS")
                     
                 elif segment.intent_type == IntentType.WORK:
-                    # WORK: Check work_mode to decide if interrupt
+                    # WORK: Check work_mode to decide if interrupt and resume
                     work_mode = segment.metadata.get('work_mode', 'background') if segment.metadata else 'background'
                     priority = 100 if work_mode == "direct" else 30
                     
-                    if work_mode == "direct":
-                        # DW: Interrupt CS, add WORK, end loop
-                        result["interrupt_cs"] = True
-                        result["pause_cs_sessions"] = [cs.session_id for cs in cs_sessions]
-                        result["skip_input_layer"] = True
-                        result["processing_notes"].append("DW in CS - interrupting CS and ending loop")
-                        debug_log(2, f"[NLP] Active CS: WORK (direct) - interrupting CS, ending loop (priority={priority})")
-                    else:
-                        # BW: Add WORK, don't interrupt CS
-                        result["processing_notes"].append("BW in CS - queuing work without interrupt")
-                        debug_log(2, f"[NLP] Active CS: WORK (background) - queuing without interrupt (priority={priority})")
+                    # 🆕 新架構：BW 和 DW 都立即中斷 CS，差別在於是否恢復
+                    result["interrupt_cs"] = True
+                    result["pause_cs_sessions"] = [cs.session_id for cs in cs_sessions]
+                    result["session_control"] = {
+                        "action": "end_session",
+                        "should_end_session": True,
+                        "reason": "Work interrupt (BW)" if work_mode == "background" else "Work interrupt (DW)",
+                        "confidence": 1.0
+                    }
                     
-                    result["states_to_add"].append({
-                        "segment": segment,
-                        "state_type": "WORK",
-                        "priority": priority,
-                        "work_mode": work_mode
-                    })
+                    if work_mode == "background":
+                        # BW: 中斷 CS，處理 WORK，然後恢復 CHAT
+                        result["processing_notes"].append("BW in CS - interrupting CS, will resume after WORK")
+                        debug_log(2, f"[NLP] Active CS: WORK (background) - interrupting CS, queuing WORK + resume CHAT (priority={priority})")
+                        
+                        # 保存 CS 上下文以便恢復
+                        from core.sessions.session_manager import unified_session_manager
+                        cs_context = None
+                        if cs_sessions:
+                            cs = cs_sessions[0]  # 取第一個活躍 CS
+                            cs_context = cs.get_session_context()
+                        
+                        # 添加 WORK 狀態
+                        result["states_to_add"].append({
+                            "segment": segment,
+                            "state_type": "WORK",
+                            "priority": priority,
+                            "work_mode": work_mode
+                        })
+                        
+                        # 添加恢復 CHAT 狀態（優先級較低，在 WORK 後執行）
+                        result["states_to_add"].append({
+                            "segment": None,  # 無新輸入，恢復對話
+                            "state_type": "CHAT",
+                            "priority": 10,  # 低優先級，確保在 WORK 後
+                            "resume_context": cs_context,  # 保存的 CS 上下文
+                            "is_resume": True
+                        })
+                        debug_log(2, f"[NLP] BW: 已添加 WORK (priority=30) + resume CHAT (priority=10) 到佇列")
+                    else:
+                        # DW: 中斷 CS，處理 WORK，不恢復
+                        result["processing_notes"].append("DW in CS - interrupting CS, no resume")
+                        debug_log(2, f"[NLP] Active CS: WORK (direct) - interrupting CS, queuing WORK only (priority={priority})")
+                        
+                        # 只添加 WORK 狀態
+                        result["states_to_add"].append({
+                            "segment": segment,
+                            "state_type": "WORK",
+                            "priority": priority,
+                            "work_mode": work_mode
+                        })
             
         except Exception as e:
             error_log(f"[NLP] Error in _process_active_cs_state: {e}")
@@ -1447,7 +1523,8 @@ class NLPModule(BaseModule):
                     timeout_seconds=30,  # 30秒超時
                     queue_states_added=None,
                     current_system_state=current_state.value if current_state else None,
-                    processing_notes=["CALL 意圖檢測，終止當前循環"]
+                    processing_notes=["CALL 意圖檢測，終止當前循環"],
+                    session_control=None
                 )
                 
                 # 直接返回 CALL 回應，不進行路由

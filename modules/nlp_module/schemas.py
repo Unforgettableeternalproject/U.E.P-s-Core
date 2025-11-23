@@ -190,6 +190,9 @@ class NLPOutput(BaseModel):
     queue_states_added: Optional[List[str]] = Field(None, description="添加到狀態佇列的狀態")
     current_system_state: Optional[str] = Field(None, description="當前系統狀態")
     
+    # 🆕 會話控制（用於 BW/DW 中斷 CS）
+    session_control: Optional[Dict[str, Any]] = Field(None, description="會話控制指令（如結束會話）")
+    
     # Working Context更新記錄
     working_context_updates: List[Dict[str, Any]] = Field(default_factory=list, description="Working Context更新記錄")
 

@@ -135,33 +135,50 @@ class StateManager:
             # 記錄錯誤但不拋出，讓狀態轉換繼續進行
     
     def _create_chat_session(self, context: Optional[Dict[str, Any]] = None):
-        """創建聊天會話 - 使用現有的GS"""
+        """創建聊天會話 - 使用現有的GS，或恢復之前的CS"""
         try:
-            from core.sessions.session_manager import session_manager
+            from core.sessions.session_manager import session_manager, unified_session_manager
             from core.working_context import working_context_manager
             
             queue_callback = (context or {}).get("state_queue_callback")
             
-            # ✅ 確保 GS 存在（由 Controller 管理）
-            self._ensure_gs_exists()
+            # 🆕 檢查是否為 resume 模式
+            is_resume = (context or {}).get("is_resume", False)
+            resume_context = (context or {}).get("resume_context")
             
-            # 從 Working Context 獲取身份信息
-            current_identity = working_context_manager.get_current_identity()
-            if current_identity:
-                identity_context = {
-                    "user_id": current_identity.get("user_identity", current_identity.get("identity_id", "default_user")),
-                    "personality": current_identity.get("personality_profile", "default"),
-                    "preferences": current_identity.get("conversation_preferences", {})
-                }
-                debug_log(2, f"[StateManager] 使用Working Context身份: {identity_context}")
-            else:
-                # 如果沒有身份信息，使用默認值
-                identity_context = {
+            if is_resume and resume_context:
+                # 🆕 Resume 模式：使用保存的上下文重新創建 CS
+                debug_log(2, f"[StateManager] Resume 模式：恢復對話會話")
+                debug_log(3, f"[StateManager] Resume context: session_id={resume_context.get('session_id')}, "
+                             f"turns={resume_context.get('turn_counter')}")
+                
+                # 使用保存的身份上下文
+                identity_context = resume_context.get("identity_context", {
                     "user_id": "default_user",
                     "personality": "default",
                     "preferences": {}
-                }
-                debug_log(2, f"[StateManager] 使用默認身份: {identity_context}")
+                })
+            else:
+                # 正常模式：從 Working Context 獲取身份信息
+                current_identity = working_context_manager.get_current_identity()
+                if current_identity:
+                    identity_context = {
+                        "user_id": current_identity.get("user_identity", current_identity.get("identity_id", "default_user")),
+                        "personality": current_identity.get("personality_profile", "default"),
+                        "preferences": current_identity.get("conversation_preferences", {})
+                    }
+                    debug_log(2, f"[StateManager] 使用Working Context身份: {identity_context}")
+                else:
+                    # 如果沒有身份信息，使用默認值
+                    identity_context = {
+                        "user_id": "default_user",
+                        "personality": "default",
+                        "preferences": {}
+                    }
+                    debug_log(2, f"[StateManager] 使用默認身份: {identity_context}")
+            
+            # ✅ 確保 GS 存在（由 Controller 管理）
+            self._ensure_gs_exists()
             
             # 獲取現有的 General Session - 如果不存在則為架構錯誤
             current_gs = session_manager.get_current_general_session()
@@ -181,7 +198,14 @@ class StateManager:
             
             if cs_id:
                 self._current_session_id = cs_id
-                debug_log(2, f"[StateManager] 創建聊天會話成功: {cs_id}")
+                
+                # 🆕 如果是 resume 模式，將 resume_context 保存到 working_context
+                if is_resume and resume_context:
+                    working_context_manager.set_resume_context(resume_context)
+                    debug_log(2, f"[StateManager] Resume CS 成功: {cs_id}，已保存 resume_context")
+                else:
+                    debug_log(2, f"[StateManager] 創建聊天會話成功: {cs_id}")
+                
                 # ✅ 不在創建時呼叫 callback，等待 session_ended 事件
                 # StateQueue 會通過 _on_session_ended 收到完成通知
                 debug_log(2, "[StateManager] CS 已創建，等待聊天會話完成...")
@@ -249,14 +273,14 @@ class StateManager:
                 self._current_session_id = ws_id
                 debug_log(2, f"[StateManager] 創建工作會話成功: {ws_id} (類型: {workflow_type})")
                 
-                # 🔑 系統通知：WS 已創建，直接觸發處理層（跳過輸入層）
                 if workflow_type == WSTaskType.SYSTEM_NOTIFICATION.value:
+                    # 系統通知：直接觸發處理層
                     info_log(f"[StateManager] 系統通知 WS 已創建，直接觸發處理層")
-                    self._trigger_system_report_processing(command_text, context)
+                    self._trigger_work_processing(command_text, context, is_system_report=True)
                     # 系統通知的 WS 在處理完成後會自動結束，不需要等待工作流
                 else:
-                    # 正常工作流：等待工作流程完成
-                    debug_log(2, "[StateManager] WS 已創建，等待工作流程完成...")
+                    # 等待 STATE_ADVANCED 事件（佇列推進）或 INPUT_LAYER_COMPLETE 事件（用戶輸入）
+                    debug_log(2, "[StateManager] WS 已創建，等待事件觸發處理層...")
             else:
                 debug_log(1, "[StateManager] 創建工作會話失敗")
                 # ❌ 創建失敗時才呼叫 callback 報告錯誤
@@ -270,11 +294,21 @@ class StateManager:
         except Exception as e:
             debug_log(1, f"[StateManager] 創建工作會話時發生錯誤: {e}")
     
-    def _trigger_system_report_processing(self, content: str, context: Dict[str, Any]):
+    def _trigger_work_processing(self, content: str, context: Dict[str, Any], is_system_report: bool = True):
         """直接觸發系統報告的處理層處理（跳過輸入層）
         
-        系統報告不需要經過輸入層（STT/NLP），直接構建處理層輸入並調用
+        系統報告不需要經過輸入層（STT/NLP），直接構建處理層輸入並調用。
+        注意：此方法僅用於 system_report 模式，不用於一般 WORK 狀態推進。
+        
+        Args:
+            content: 報告內容文本
+            context: 狀態上下文
+            is_system_report: 必須為 True，僅支持系統報告模式
         """
+        if not is_system_report:
+            error_log("[StateManager] ❌ _trigger_work_processing 僅支持 system_report 模式")
+            return
+            
         try:
             from core.module_coordinator import module_coordinator, ProcessingLayer
             
@@ -592,8 +626,9 @@ class StateManager:
             session_id = event.data.get('session_id')
             reason = event.data.get('reason', 'session_completed')
             session_type = event.data.get('session_type', 'unknown')
+            cycle_index = event.data.get('cycle_index')  # ✅ 讀取會話結束時的循環索引
             
-            debug_log(2, f"[StateManager] 收到會話結束事件: {session_id} ({session_type}), 原因: {reason}")
+            debug_log(2, f"[StateManager] 收到會話結束事件: {session_id} ({session_type}), 原因: {reason}, cycle: {cycle_index}")
             
             # 只處理 CS 和 WS 結束（GS 是系統層級，不觸發狀態轉換）
             if session_type in ['chatting', 'workflow']:
@@ -608,7 +643,8 @@ class StateManager:
                         'session_id': session_id,
                         'session_type': session_type,
                         'end_reason': reason
-                    }
+                    },
+                    completion_cycle=cycle_index  # ✅ 傳遞實際的完成循環索引
                 )
                 
                 debug_log(1, f"[StateManager] ✅ {session_type.upper()} 會話結束，已通知 StateQueue 完成當前狀態")

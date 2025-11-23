@@ -79,6 +79,7 @@ class LLMInput(BaseModel):
     # 系統狀態上下文
     system_state: Optional[SystemState] = Field(None, description="當前系統狀態")
     session_id: Optional[str] = Field(None, description="會話ID")
+    cycle_index: Optional[int] = Field(None, description="當前循環索引（由 MC 從事件傳遞）")
     
     # 身份和記憶上下文
     identity_context: Optional[Dict[str, Any]] = Field(None, description="身份上下文")

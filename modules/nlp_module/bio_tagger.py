@@ -195,18 +195,22 @@ class BIOTagger:
                 }
                 segment_confidences = [confidence]  # 重置並添加當前 token confidence
                 
-            elif label.startswith('I-') and current_segment:
-                # 延續當前分段
+            elif label.startswith('I-'):
                 intent_type = label[2:].lower()
-                if current_segment['intent'] == intent_type:
+                
+                if current_segment and current_segment['intent'] == intent_type:
+                    # 延續當前分段
                     current_segment['end_pos'] = end_pos
                     current_segment['text'] = text[current_segment['start_pos']:end_pos]
                     segment_confidences.append(confidence)  # 追蹤 confidence
                 else:
-                    # 標籤不一致，結束當前分段，開始新分段
-                    avg_confidence = sum(segment_confidences) / len(segment_confidences) if segment_confidences else 0.9
-                    current_segment['confidence'] = round(avg_confidence, 3)
-                    segments.append(current_segment)
+                    # 沒有對應的 B- 標籤，或標籤不一致
+                    # 將孤立的 I- 標籤視為 B- 開始新分段
+                    if current_segment:
+                        avg_confidence = sum(segment_confidences) / len(segment_confidences) if segment_confidences else 0.9
+                        current_segment['confidence'] = round(avg_confidence, 3)
+                        segments.append(current_segment)
+                    
                     current_segment = {
                         'text': text[start_pos:end_pos],
                         'intent': intent_type,

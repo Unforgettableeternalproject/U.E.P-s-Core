@@ -212,12 +212,7 @@ class SystemLoop:
             # 清除跳過輸入層旗標，允許輸入層執行
             working_context_manager.set_skip_input_layer(False, reason="workflow_input")
             
-            # 🔧 遞增 cycle_index，因為工作流等待輸入代表新的交互周期開始
-            # 這確保了去重機制能正確區分不同的用戶輸入
-            self.cycle_index += 1
-            debug_log(2, f"[SystemLoop] 工作流等待輸入，遞增 cycle_index -> {self.cycle_index}")
-            
-            # ✅ 更新 global_context_data 使用原始 GS ID 和新的 cycle_index
+            # ✅ 更新 global_context_data 使用原始 GS ID（cycle_index 不變，等待循環完成後統一遞增）
             # 注入的輸入應該關聯到觸發工作流的原始 GS，而不是工作流自己的 session
             workflow_session_id = event.data.get('session_id')
             if workflow_session_id:
@@ -635,8 +630,15 @@ class SystemLoop:
             from core.states.state_queue import get_state_queue_manager
             from core.working_context import working_context_manager
             
-            current_state = state_manager.get_current_state()
             state_queue = get_state_queue_manager()
+            
+            # 🆕 循環開始時：檢查並推進狀態佇列
+            # 如果上一個狀態已完成且佇列有待處理項目，推進到下一個狀態
+            state_advanced = state_queue.check_and_advance_state()
+            if state_advanced:
+                debug_log(2, "[SystemLoop] ✅ 循環開始時成功推進狀態")
+            
+            current_state = state_manager.get_current_state()
             queue_size = len(state_queue.queue) if hasattr(state_queue, 'queue') else 0
             
             # 階段三：檢查層級跳過旗標（在循環開始前檢查並重置）
@@ -794,12 +796,18 @@ class SystemLoop:
         if publish_event:
             self._publish_cycle_completed()
         
-        # 🔧 在循環完成後遞增 cycle_index，準備下一個循環
-        # 這樣第一個循環是 0，第二個是 1，以此類推
+        # ✅ 統一循環索引管理：發布 CYCLE_COMPLETED 後立即遞增
+        # 所有層級使用同一個 cycle_index，不再有其他遞增邏輯
+        debug_log(2, f"[SystemLoop] 循環 #{self.cycle_index} 完成，遞增 cycle_index")
         self.cycle_index += 1
         self.processing_cycles = self.cycle_index  # 向後兼容
         # ✅ 立即更新 global_context，讓下一個 cycle 的模組能讀到新值
         self._update_global_cycle_info()
+        debug_log(2, f"[SystemLoop] 下一個循環索引: {self.cycle_index}")
+        
+        # ✅ 循環完成後，調用 Controller 檢查 CS/WS pending_end 和 GS 結束條件
+        debug_log(2, "[SystemLoop] 調用 Controller 檢查會話結束條件")
+        self._check_cycle_end_conditions()
         
         # 重置週期追蹤
         self.cycle_tracking = {

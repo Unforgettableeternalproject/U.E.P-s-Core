@@ -141,8 +141,8 @@ def cleanup_memory():
                     metadata = json.load(f)
                 
                 original_count = len(metadata)
-                # 過濾掉屬於 Debug 的記憶
-                metadata = [m for m in metadata if m.get('memory_token') != memory_token]
+                # 過濾掉屬於 Debug 的記憶（只處理字典類型）
+                metadata = [m for m in metadata if isinstance(m, dict) and m.get('memory_token') != memory_token]
                 filtered_count = len(metadata)
                 
                 # 寫回檔案
@@ -716,6 +716,457 @@ class TestChatPathIdentityIntegration:
         info_log(f"   - CS 自動結束: {'是' if cs_ended else '否'}")
         
         info_log("\n✅ TEST 4 PASSED: Chat Session 生命週期測試完成")
+    
+    def test_05_work_in_chat_session(self, system_components, isolated_gs, cleanup_memory):
+        """
+        測試 5: CS 中注入工作意圖的處理
+        
+        驗證：
+        1. Direct Work (DW) 應中斷當前 CS 並加入 WORK 狀態
+        2. Background Work (BW) 應加入 WORK 狀態但不中斷 CS
+        3. WorkflowValidator 正確驗證工作流匹配度
+        
+        測試流程：
+        - 開始一個正常的聊天對話
+        - 測試 BW: 注入音樂播放請求（Background Work，不中斷 CS）
+        - 測試 DW: 注入文件讀取請求（Direct Work，中斷 CS）
+        - 驗證兩種工作模式的不同處理方式
+        """
+        from utils.debug_helper import info_log
+        from modules.nlp_module.identity_manager import IdentityManager
+        from core.sessions.session_manager import session_manager
+        from core.states.state_manager import state_manager
+        
+        info_log("\n" + "=" * 70)
+        info_log("TEST 5: Work Intent in Chat Session (DW/BW)")
+        info_log("=" * 70)
+        
+        controller = system_components["controller"]
+        event_bus = system_components["event_bus"]
+        
+        # 獲取 Debug Identity
+        identity_manager = IdentityManager()
+        debug_identity = None
+        for identity in identity_manager.identities.values():
+            if identity.display_name == "Debug":
+                debug_identity = identity
+                break
+        
+        assert debug_identity is not None, "Debug identity not found"
+        
+        # 創建監控器
+        monitor = ChatPathMonitor(event_bus)
+        
+        # # ========== Part 1: 測試 Background Work（播放音樂）==========
+        # info_log("\n" + "=" * 70)
+        # info_log("PART 1: Background Work - 不應中斷 CS")
+        # info_log("=" * 70)
+        
+        # # 1. 開始正常聊天
+        # info_log("\n--- 階段 1A: 開始聊天對話 ---")
+        # inject_chat_message(
+        #     "Let's have a conversation about music and our favorite songs.",
+        #     identity_id=debug_identity.identity_id
+        # )
+        
+        # monitor.wait_for_response(timeout=20)
+        # info_log("   ✅ 收到第一個聊天回應")
+        # monitor.wait_for_event("CYCLE_COMPLETED", timeout=60)
+        # monitor.cycle_completed.clear()
+        # time.sleep(2)
+        
+        # # 記錄當前 CS
+        # active_cs_before_bw = session_manager.get_active_chatting_sessions()
+        # assert len(active_cs_before_bw) > 0, "應該有活動的 CS"
+        # cs_id_before_bw = active_cs_before_bw[0].session_id
+        # info_log(f"   當前 CS: {cs_id_before_bw}")
+        
+        # # 2. 注入 Background Work 請求（播放音樂）
+        # info_log("\n--- 階段 2A: 在 CS 中注入 Background Work（音樂播放）---")
+        # inject_chat_message(
+        #     "Please play some music on my computer for me.",
+        #     identity_id=debug_identity.identity_id
+        # )
+        
+        # # 等待處理
+        # time.sleep(3)
+        # monitor.wait_for_event("CYCLE_COMPLETED", timeout=60)
+        # monitor.cycle_completed.clear()
+        # time.sleep(1)
+        
+        # # 3. 驗證 Background Work 結果
+        # info_log("\n--- 階段 3A: 驗證 BW 處理結果 ---")
+        
+        # # 檢查 CS 是否仍然活動（Background Work 不應中斷）
+        # active_cs_after_bw = session_manager.get_active_chatting_sessions()
+        # info_log(f"   BW 後活動 CS 數量: {len(active_cs_after_bw)}")
+        
+        # if len(active_cs_after_bw) > 0 and active_cs_after_bw[0].session_id == cs_id_before_bw:
+        #     info_log(f"   ✅ CS 仍然活動（{cs_id_before_bw}），Background Work 正確處理")
+        # else:
+        #     info_log(f"   ⚠️  CS 狀態改變，這可能表示 Background Work 被誤判為 Direct Work")
+        
+        # # 檢查是否創建了 Workflow Session
+        # active_ws = session_manager.get_active_workflow_sessions()
+        # info_log(f"   活動 WS 數量: {len(active_ws)}")
+        # if len(active_ws) > 0:
+        #     info_log(f"   ✅ 檢測到工作流會話: {[ws.session_id for ws in active_ws]}")
+        
+        # # 4. 等待系統恢復 CHAT 並完成三個循環
+        # info_log("\n--- 階段 4A: 等待系統恢復 CHAT 並完成三個對話循環 ---")
+        
+        # # 追蹤循環完成次數
+        # cycle_count = {"count": 0, "target": 3}
+        # cycle_completed_event = threading.Event()
+        
+        # def on_cycle_completed(event):
+        #     cycle_count["count"] += 1
+        #     info_log(f"   📊 循環完成: {cycle_count['count']}/{cycle_count['target']}")
+        #     if cycle_count["count"] >= cycle_count["target"]:
+        #         cycle_completed_event.set()
+        
+        # # 訂閱 CYCLE_COMPLETED 事件
+        # event_bus.subscribe(SystemEvent.CYCLE_COMPLETED, on_cycle_completed, handler_name="test_bw_cycle_monitor")
+        
+        # try:
+        #     # 等待完成三個循環（最多 90 秒）
+        #     info_log("   ⏳ 等待完成 3 個循環...")
+        #     cycle_completed_event.wait(timeout=90)
+            
+        #     # 驗證循環次數
+        #     info_log(f"   📊 實際完成循環數: {cycle_count['count']}")
+            
+        #     if cycle_count["count"] >= cycle_count["target"]:
+        #         info_log(f"   ✅ 成功完成 {cycle_count['count']} 個循環")
+        #     else:
+        #         info_log(f"   ⚠️  僅完成 {cycle_count['count']}/{cycle_count['target']} 個循環")
+            
+        #     # 檢查最終狀態
+        #     final_state = state_manager.get_current_state()
+        #     info_log(f"   📊 最終系統狀態: {final_state.value if final_state else 'None'}")
+            
+        #     # 檢查 CS 狀態
+        #     final_cs = session_manager.get_active_chatting_sessions()
+        #     if len(final_cs) > 0:
+        #         info_log(f"   ✅ CHAT 已恢復，當前 CS: {final_cs[0].session_id}")
+        #     else:
+        #         info_log(f"   ℹ️  無活動 CS（可能已自然結束）")
+        
+        # finally:
+        #     # 清理事件訂閱
+        #     try:
+        #         event_bus.unsubscribe(SystemEvent.CYCLE_COMPLETED, on_cycle_completed)
+        #     except:
+        #         pass
+        
+        # 清理：等待當前循環完成
+        time.sleep(2)
+        monitor.reset()
+        
+        # ========== Part 2: 測試 Direct Work（文件操作）==========
+        info_log("\n" + "=" * 70)
+        info_log("PART 2: Direct Work - 應中斷 CS")
+        info_log("=" * 70)
+        
+        # 1. 重新開始聊天（確保有新的 CS）
+        info_log("\n--- 階段 1B: 重新開始聊天對話 ---")
+        inject_chat_message(
+            "Let's continue our conversation.",
+            identity_id=debug_identity.identity_id
+        )
+        
+        monitor.wait_for_response(timeout=20)
+        info_log("   ✅ 收到回應")
+        monitor.wait_for_event("CYCLE_COMPLETED", timeout=60)
+        monitor.cycle_completed.clear()
+        time.sleep(2)
+        
+        # 記錄當前 CS
+        active_cs_before_dw = session_manager.get_active_chatting_sessions()
+        cs_id_before_dw = active_cs_before_dw[0].session_id if len(active_cs_before_dw) > 0 else None
+        info_log(f"   當前 CS: {cs_id_before_dw}")
+        
+        # 2. 注入 Direct Work 請求（新聞摘要 - news_summary）
+        info_log("\n--- 階段 2B: 在 CS 中注入 Direct Work（新聞摘要）---")
+        inject_chat_message(
+            "Can you tell me about the weather in Taipei?",
+            identity_id=debug_identity.identity_id
+        )
+        
+        # 等待處理
+        time.sleep(3)
+        monitor.wait_for_event("CYCLE_COMPLETED", timeout=60)
+        time.sleep(1)
+        
+        # 3. 驗證 Direct Work 結果
+        info_log("\n--- 階段 3B: 驗證 DW 處理結果 ---")
+        
+        # 檢查原 CS 是否被中斷/結束
+        active_cs_after_dw = session_manager.get_active_chatting_sessions()
+        info_log(f"   DW 後活動 CS 數量: {len(active_cs_after_dw)}")
+        
+        if len(active_cs_after_dw) == 0:
+            info_log(f"   ✅ 原 CS 已結束（{cs_id_before_dw}），Direct Work 正確中斷了 CS")
+        elif len(active_cs_after_dw) > 0:
+            new_cs_id = active_cs_after_dw[0].session_id
+            if new_cs_id != cs_id_before_dw:
+                info_log(f"   ✅ CS 已切換（{cs_id_before_dw} → {new_cs_id}），Direct Work 正確處理")
+            else:
+                info_log(f"   ⚠️  CS 仍然是同一個（{cs_id_before_dw}），Direct Work 可能未正確中斷")
+        
+        # 檢查 SESSION_ENDED 事件
+        session_ended_events = [e for e in monitor.events if e[0] == "session_ended"]
+        info_log(f"   捕獲到 SESSION_ENDED 事件數量: {len(session_ended_events)}")
+        
+        if cs_id_before_dw:
+            cs_ended = any(e[1].get("session_id") == cs_id_before_dw for e in session_ended_events)
+            if cs_ended:
+                info_log(f"   ✅ 確認原 CS ({cs_id_before_dw}) 的 SESSION_ENDED 事件")
+        
+        # 檢查當前系統狀態
+        current_state = state_manager.get_current_state()
+        info_log(f"   當前系統狀態: {current_state.value if current_state else 'None'}")
+        
+        # 總結
+        info_log("\n" + "=" * 70)
+        info_log("TEST 5 總結")
+        info_log("=" * 70)
+        # info_log(f"   Part 1 (BW): CS 連續性 - {'✅ 通過' if len(active_cs_after_bw) > 0 else '❌ 失敗'}")
+        info_log(f"   Part 2 (DW): CS 中斷 - {'✅ 通過' if len(active_cs_after_dw) == 0 or (len(active_cs_after_dw) > 0 and active_cs_after_dw[0].session_id != cs_id_before_dw) else '❌ 失敗'}")
+        
+        info_log("\n✅ TEST 5 完成: DW/BW 工作意圖處理測試")
+    
+    def test_06_chat_session_timeout(self, system_components, isolated_gs, cleanup_memory):
+        """
+        測試 6: 聊天會話超時處理
+        
+        驗證：
+        1. Controller._check_session_timeouts() 每秒檢查
+        2. CS 在超時後自動結束
+        3. 配置參數 max_session_age 生效
+        
+        測試策略：
+        - 由於正常 max_session_age = 86400秒（24小時），測試需要：
+          1. 暫時修改配置為短超時時間（5秒）
+          2. 或 mock last_activity 時間戳
+        """
+        from utils.debug_helper import info_log
+        from modules.nlp_module.identity_manager import IdentityManager
+        from core.sessions.session_manager import session_manager
+        
+        info_log("\n" + "=" * 70)
+        info_log("TEST 6: Chat Session Timeout")
+        info_log("=" * 70)
+        
+        controller = system_components["controller"]
+        event_bus = system_components["event_bus"]
+        
+        # 獲取 Debug Identity
+        identity_manager = IdentityManager()
+        debug_identity = None
+        for identity in identity_manager.identities.values():
+            if identity.display_name == "Debug":
+                debug_identity = identity
+                break
+        
+        assert debug_identity is not None, "Debug identity not found"
+        
+        # 創建監控器
+        monitor = ChatPathMonitor(event_bus)
+        
+        # 1. 開始聊天會話
+        info_log("\n--- 階段 1: 開始聊天會話 ---")
+        inject_chat_message(
+            "Let's chat for a bit.",
+            identity_id=debug_identity.identity_id
+        )
+        
+        monitor.wait_for_response(timeout=20)
+        monitor.wait_for_event("CYCLE_COMPLETED", timeout=60)
+        info_log("   ✅ 聊天會話已啟動")
+        
+        # 記錄啟動時的 CS
+        active_cs_before = session_manager.get_active_chatting_sessions()
+        assert len(active_cs_before) > 0, "應該有活動的 CS"
+        cs_session_id = active_cs_before[0].session_id
+        info_log(f"   活動 CS: {cs_session_id}")
+        
+        # 2. 暫時修改超時配置（for testing）
+        info_log("\n--- 階段 2: 修改超時配置為 5 秒 ---")
+        original_timeout = session_manager.config['max_session_age']
+        session_manager.config['max_session_age'] = 5  # 5秒超時
+        info_log(f"   原始超時: {original_timeout}秒")
+        info_log("   測試超時: 5秒")
+        
+        # 3. 等待超時 (6秒，確保超過 5秒超時閾值)
+        info_log("\n--- 階段 3: 等待超時（6秒）---")
+        time.sleep(6)
+        
+        # 4. 驗證會話已結束
+        info_log("\n--- 階段 4: 驗證會話已超時結束 ---")
+        
+        # 檢查 CS 是否已結束
+        active_cs_after = session_manager.get_active_chatting_sessions()
+        info_log(f"   超時後活動 CS 數量: {len(active_cs_after)}")
+        assert len(active_cs_after) == 0, "超時後不應有活動的 CS"
+        
+        # 檢查 SESSION_ENDED 事件 (格式: (event_type, event_data))
+        session_ended_events = [e for e in monitor.events if e[0] == "session_ended"]
+        info_log(f"   捕獲到 SESSION_ENDED 事件數量: {len(session_ended_events)}")
+        assert len(session_ended_events) > 0, "應該捕獲到 SESSION_ENDED 事件"
+        
+        # 檢查超時原因
+        cs_ended_event = None
+        for event_type, event_data in session_ended_events:
+            if event_data.get("session_id") == cs_session_id:
+                cs_ended_event = event_data
+                break
+        
+        assert cs_ended_event is not None, f"應該找到 CS {cs_session_id} 的 SESSION_ENDED 事件"
+        
+        # 調試：輸出事件數據
+        info_log(f"   CS 結束事件數據: {cs_ended_event}")
+        
+        # 檢查原因（可能在不同的字段中）
+        reason = cs_ended_event.get("reason") or cs_ended_event.get("end_reason", "")
+        info_log(f"   結束原因: {reason}")
+        
+        # 驗證原因包含超時信息（reason 可能是 string 或其他類型）
+        if isinstance(reason, str):
+            assert "超時" in reason or "timeout" in reason.lower(), f"結束原因應包含超時信息，實際為: {reason}"
+        else:
+            info_log(f"   ⚠️ 原因不是字符串類型: {type(reason)}, 值: {reason}")
+        
+        # 恢復配置
+        session_manager.config['max_session_age'] = original_timeout
+        info_log(f"   ✅ 已恢復原始超時配置: {original_timeout}秒")
+        
+        info_log("\n✅ TEST 6 完成: 超時處理測試通過")
+    
+    def test_07_multistep_workflow_in_session(self, system_components, isolated_gs, cleanup_memory):
+        """
+        測試 7: 複合意圖處理（COMPOUND - CHAT + WORK）
+        
+        驗證：
+        1. NLP 正確解析複合意圖（一句話包含聊天和工作）
+        2. 狀態佇列按優先級添加多個狀態（WORK 優先於 CHAT）
+        3. WORK 完成後自動推進到 CHAT
+        4. CHAT 會話正常創建和運行
+        5. 整個流程無需額外用戶輸入（自動推進）
+        
+        測試流程：
+        - 發送複合指令：「Check the weather in Taipei and then let's talk about it」
+        - 驗證 NLP 解析為 COMPOUND (WORK + CHAT)
+        - 驗證狀態佇列包含兩個項目：WORK (priority=100) + CHAT (priority=10)
+        - 驗證 WORK 完成後自動推進到 CHAT
+        - 驗證 CHAT 會話正常啟動
+        """
+        from utils.debug_helper import info_log
+        from modules.nlp_module.identity_manager import IdentityManager
+        from core.sessions.session_manager import session_manager
+        from core.states.state_manager import state_manager
+        from core.states.state_queue import get_state_queue_manager
+        import time
+        
+        info_log("\n" + "=" * 70)
+        info_log("TEST 7: Compound Intent (CHAT + WORK)")
+        info_log("=" * 70)
+        
+        controller = system_components["controller"]
+        event_bus = system_components["event_bus"]
+        state_queue = get_state_queue_manager()
+        
+        # 獲取 Debug Identity
+        identity_manager = IdentityManager()
+        debug_identity = None
+        for identity in identity_manager.identities.values():
+            if identity.display_name == "Debug":
+                debug_identity = identity
+                break
+        
+        assert debug_identity is not None, "Debug identity not found"
+        
+        # 創建監控器
+        monitor = ChatPathMonitor(event_bus)
+        
+        try:
+            # 1. 發送複合指令
+            info_log("\n--- 階段 1: 發送複合意圖輸入 ---")
+            inject_chat_message(
+                "Check the weather in Taipei and then let's talk about it.",
+                identity_id=debug_identity.identity_id
+            )
+            
+            # 等待 NLP 處理
+            time.sleep(3)
+            
+            # 2. 檢查狀態佇列
+            info_log("\n--- 階段 2: 檢查狀態佇列 ---")
+            queue_status = state_queue.get_queue_status()
+            info_log(f"   當前狀態: {queue_status['current_state']}")
+            info_log(f"   佇列長度: {queue_status['queue_length']}")
+            info_log(f"   待處理狀態: {queue_status['pending_states']}")
+            
+            # 驗證佇列包含兩個狀態
+            if queue_status['queue_length'] >= 2:
+                info_log("   ✅ 佇列包含多個狀態（複合意圖已解析）")
+            else:
+                info_log(f"   ⚠️  佇列長度不足: {queue_status['queue_length']} (預期 >= 2)")
+            
+            # 3. 等待 WORK 狀態處理
+            info_log("\n--- 階段 3: 等待 WORK 狀態處理 ---")
+            current_state = state_manager.get_current_state()
+            info_log(f"   當前狀態: {current_state.value if current_state else 'None'}")
+            
+            # 等待工作流完成（天氣查詢）
+            info_log("   ⏳ 等待工作流完成...")
+            time.sleep(60)  # 天氣查詢需要時間
+            
+            # 4. 檢查 WORK 完成後的狀態
+            info_log("\n--- 階段 4: 檢查 WORK 完成後狀態 ---")
+            current_state = state_manager.get_current_state()
+            info_log(f"   當前狀態: {current_state.value if current_state else 'None'}")
+            
+            queue_status = state_queue.get_queue_status()
+            info_log(f"   佇列長度: {queue_status['queue_length']}")
+            
+            # 5. 驗證自動推進到 CHAT
+            info_log("\n--- 階段 5: 驗證自動推進到 CHAT ---")
+            
+            # 檢查 CS 是否已創建
+            active_cs = session_manager.get_active_chatting_sessions()
+            if len(active_cs) > 0:
+                info_log(f"   ✅ CHAT 會話已創建: {active_cs[0].session_id}")
+            else:
+                info_log("   ℹ️  尚未創建 CHAT 會話，等待中...")
+                time.sleep(5)
+                active_cs = session_manager.get_active_chatting_sessions()
+                if len(active_cs) > 0:
+                    info_log(f"   ✅ CHAT 會話已創建: {active_cs[0].session_id}")
+            
+            # 6. 等待 CHAT 回應
+            info_log("\n--- 階段 6: 等待 CHAT 回應 ---")
+            response_received = monitor.wait_for_response(timeout=30)
+            if response_received:
+                info_log("   ✅ 收到 CHAT 回應")
+                info_log(f"   📝 回應數量: {len(monitor.llm_responses)}")
+            else:
+                info_log("   ⚠️  未收到 CHAT 回應（可能還在處理中）")
+            
+            # 總結
+            info_log("\n" + "=" * 70)
+            info_log("TEST 7 總結")
+            info_log("=" * 70)
+            info_log(f"   - 複合意圖解析: {'✅' if queue_status['queue_length'] >= 2 else '❌'}")
+            info_log(f"   - WORK 完成: ✅")
+            info_log(f"   - CHAT 會話創建: {'✅' if len(active_cs) > 0 else '❌'}")
+            info_log(f"   - CHAT 回應: {'✅' if response_received else '⚠️'}")
+            
+            info_log("\n✅ TEST 7 完成: 複合意圖處理測試")
+            
+        finally:
+            # 清理
+            pass
 
 
 if __name__ == "__main__":

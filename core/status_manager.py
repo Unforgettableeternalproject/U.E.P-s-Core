@@ -32,8 +32,15 @@ class SystemStatus:
     total_interactions: int = 0
     successful_tasks: int = 0
     failed_tasks: int = 0
-    last_interaction_time: float = 0.0
+    last_interaction_time: float = 0.0  # 將在 __post_init__ 中初始化
     last_update_reason: str = ""
+    
+    def __post_init__(self):
+        """初始化後處理：設定 last_interaction_time 預設值"""
+        import time
+        # 只有當 last_interaction_time 為 0.0 時才設定為當前時間
+        if self.last_interaction_time == 0.0:
+            self.last_interaction_time = time.time()
     
     def to_dict(self) -> Dict[str, Any]:
         """轉換為字典格式"""
@@ -122,6 +129,13 @@ class StatusManager:
             info_log(f"[StatusManager] 為 Identity {identity_id} 創建新的系統狀態")
         
         self.status = self.status_by_identity[identity_id]
+        
+        # 確保 last_interaction_time 已初始化（避免計算出從 1970 年至今的時間）
+        if self.status.last_interaction_time == 0.0:
+            import time
+            self.status.last_interaction_time = time.time()
+            debug_log(2, f"[StatusManager] 初始化 Identity {identity_id} 的 last_interaction_time")
+        
         info_log(f"[StatusManager] 切換到 Identity: {identity_id}")
         debug_log(2, f"[StatusManager] 當前狀態: {self.get_summary()}")
     

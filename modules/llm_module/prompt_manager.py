@@ -116,7 +116,6 @@ class PromptManager:
     def build_work_prompt(self, user_input: str, available_functions: Optional[str] = None,
                          workflow_context: Optional[Dict] = None,
                          identity_context: Optional[Dict] = None,
-                         workflow_hint: Optional[str] = None,
                          use_mcp_tools: bool = False,
                          suppress_start_workflow_instruction: bool = False,
                          force_tool_use: bool = False) -> str:
@@ -180,11 +179,13 @@ class PromptManager:
                 mandatory_guidance = (
                     "\n**IMPORTANT - Tool Usage Required:**\n"
                     "You MUST call one of the available MCP tools to handle this request.\n"
-                    "- Analyze the user's request: '{}'\n"
-                    "- Select the most appropriate tool from the function declarations\n"
-                    "- Call the tool with the correct parameters\n"
+                    "- User's request: '{}'\n"
+                    "- Carefully read the function declarations and their descriptions\n"
+                    "- Match the user's intent with the tool's purpose (e.g., 'play music' → play_media tool, 'get weather' → get_weather tool)\n"
+                    "- Select the tool whose description best matches what the user wants to do\n"
+                    "- Call the tool with the correct parameters (extract relevant information from user's request)\n"
                     "- DO NOT provide a text-only response\n"
-                ).format(user_input[:100])
+                ).format(user_input[:150])
                 prompt_parts.append(mandatory_guidance)
             else:
                 # tool_choice=AUTO：LLM 自行決定
@@ -209,8 +210,7 @@ class PromptManager:
                     "Your task:\n"
                     "1. Read the workflow data from the context\n"
                     "2. Generate a natural, friendly response in ENGLISH explaining the result to the user\n"
-                    "3. DO NOT call any MCP tools - just provide a text response\n"
-                    "4. The workflow context already contains all the data you need\n"
+                    "3. IMPORTANT: You MUST provide a text response - the workflow context contains all the data you need\n"
                 )
                 prompt_parts.append(work_guidance)
         

@@ -232,9 +232,21 @@ class WorkingContextManager:
         
         self.active_contexts_by_type: Dict[ContextType, str] = {}
         
+        # 全局上下文數據 - GLOBAL 層級（系統運行期間保留，重啟後清空）
+        self.global_context_data: Dict[str, Any] = {}
+        
+        # 階段三：層級跳過控制旗標（用於工作流驅動的輸入層跳過）
+        self.global_context_data['skip_input_layer'] = False
+        self.global_context_data['input_layer_reason'] = None  # 跳過原因
+        self.global_context_data['workflow_waiting_input'] = False
+        
+        # 持久化上下文數據 - PERSISTENT 層級（跨系統重啟保留）
+        self.persistent_context_data: Dict[str, Any] = {}
+        self.persistent_context_data['gs_history'] = []  # GS 歷史記錄
+        
         # 🆕 持久化文件路徑
         self._persistent_file = "memory/persistent_context.json"
-        self._load_persistent_data()  # 系統啟動時載入
+        self._load_persistent_data()  # 系統啟動時載入（需要 global_context_data 已初始化）
         
         # 類型默認配置（添加 scope 配置）
         self._type_defaults = {
@@ -253,14 +265,6 @@ class WorkingContextManager:
         
         # 決策處理器註冊表
         self.decision_handlers: Dict[ContextType, DecisionHandler] = {}
-        
-        # 全局上下文數據 - 用於跨模組數據共享
-        self.global_context_data: Dict[str, Any] = {}
-        
-        # 階段三：層級跳過控制旗標（用於工作流驅動的輸入層跳過）
-        self.global_context_data['skip_input_layer'] = False
-        self.global_context_data['input_layer_reason'] = None  # 跳過原因
-        self.global_context_data['workflow_waiting_input'] = False
         
         # 通用回調機制
         self.inquiry_callback: Optional[Callable] = None
@@ -798,7 +802,8 @@ class WorkingContextManager:
         self.session_contexts.clear()
         self.global_contexts.clear()
         self.persistent_contexts.clear()
-        self.global_context_data.clear()
+        self.global_context_data.clear()  # GLOBAL 層級
+        self.persistent_context_data.clear()  # PERSISTENT 層級
         info_log("[WorkingContextManager] 清理所有上下文數據")
     
     # === 🆕 持久化方法 ===
@@ -825,9 +830,9 @@ class WorkingContextManager:
                 }
                 persistent_contexts[context_id] = context_data
             
-            # Phase 4: 保存需要持久化的 global_context_data（如 gs_history）
+            # Phase 4: 保存 PERSISTENT 層級數據（如 gs_history）
             persistent_global_data = {
-                "gs_history": self.global_context_data.get('gs_history', [])
+                "gs_history": self.persistent_context_data.get('gs_history', [])
             }
             
             # 組合成完整的持久化數據
@@ -886,11 +891,11 @@ class WorkingContextManager:
                 except Exception as e:
                     error_log(f"[WorkingContextManager] 恢復上下文 {context_id} 失敗: {e}")
             
-            # Phase 4: 恢復 global_context_data 中的持久化數據
+            # Phase 4: 恢復 PERSISTENT 層級數據
             if global_data:
                 gs_history = global_data.get("gs_history", [])
                 if gs_history:
-                    self.global_context_data['gs_history'] = gs_history
+                    self.persistent_context_data['gs_history'] = gs_history
                     info_log(f"[WorkingContextManager] 恢復 gs_history: {len(gs_history)} 條記錄")
             
             info_log(f"[WorkingContextManager] 載入持久化數據: {len(self.persistent_contexts)} 個上下文")
@@ -900,8 +905,8 @@ class WorkingContextManager:
     
     # === GS History 管理方法（Phase 4）===
     def get_gs_history(self) -> List[str]:
-        """獲取 GS 歷史記錄（session_id 列表）"""
-        return self.global_context_data.get('gs_history', [])
+        """獲取 GS 歷史記錄（session_id 列表）- PERSISTENT 層級"""
+        return self.persistent_context_data.get('gs_history', [])
     
     def add_to_gs_history(self, session_id: str, max_history: int = 10):
         """
@@ -920,8 +925,8 @@ class WorkingContextManager:
         if len(gs_history) > max_history:
             gs_history = gs_history[-max_history:]
         
-        # 保存回 global_context_data
-        self.global_context_data['gs_history'] = gs_history
+        # 保存回 persistent_context_data（PERSISTENT 層級）
+        self.persistent_context_data['gs_history'] = gs_history
         
         # Phase 4: 持久化到文件（跨系統重啟保留）
         self._save_persistent_data()
@@ -1024,6 +1029,32 @@ class WorkingContextManager:
             bool: 是否等待輸入
         """
         return self.global_context_data.get('workflow_waiting_input', False)
+    
+    # 🆕 Resume Context 管理（用於 BW 恢復 CS）
+    def set_resume_context(self, resume_context: Dict[str, Any]):
+        """
+        設置 resume context（用於 BW 中斷後恢復 CS）
+        
+        Args:
+            resume_context: CS 的上下文信息（從 get_session_context 獲取）
+        """
+        self.global_context_data['resume_context'] = resume_context
+        debug_log(2, f"[WorkingContextManager] 已設置 resume_context: session_id={resume_context.get('session_id')}")
+    
+    def get_resume_context(self) -> Optional[Dict[str, Any]]:
+        """
+        獲取 resume context
+        
+        Returns:
+            Optional[Dict[str, Any]]: Resume context 或 None
+        """
+        return self.global_context_data.get('resume_context')
+    
+    def clear_resume_context(self):
+        """清除 resume context"""
+        if 'resume_context' in self.global_context_data:
+            del self.global_context_data['resume_context']
+            debug_log(3, "[WorkingContextManager] 已清除 resume_context")
 
 
 # 全局工作上下文管理器實例

@@ -1839,14 +1839,14 @@ class TestFileWorkflowFullCycle:
 class TestBackgroundWorkflowFullCycle:
     """背景工作流完整循環測試"""
     
-    def test_media_playback_service_full_cycle(self, system_components, isolated_gs):
+    def test_play_media_service_full_cycle(self, system_components, isolated_gs):
         """
         測試媒體播放背景服務完整循環（啟動 + 干涉）
         
         流程：
         1. 用戶輸入：「Play Entangled Misery in my local library」
         2. NLP 判斷意圖：media_control
-        3. LLM 通過 MCP 啟動 media_playback workflow
+        3. LLM 通過 MCP 啟動 play_media workflow
         4. 工作流執行：
            - Step 1 (playback_type_selection): 選擇播放類型（跳過，使用 initial_data）
            - Step 2 (playback_type_conditional): 條件分支
@@ -1912,7 +1912,7 @@ class TestBackgroundWorkflowFullCycle:
             info_log(f"[Test] ✅ 監控建立步驟已完成")
             
             # 檢查背景服務是否已註冊
-            active_workflows = get_active_workflows(workflow_type="media_playback")
+            active_workflows = get_active_workflows(workflow_type="play_media")
             assert len(active_workflows) > 0, "No active media playback service found in database"
             
             task_id = active_workflows[0]["task_id"]
@@ -1968,7 +1968,7 @@ class TestBackgroundWorkflowFullCycle:
         finally:
             # 清理：停止背景服務
             try:
-                active_workflows = get_active_workflows(workflow_type="media_playback")
+                active_workflows = get_active_workflows(workflow_type="play_media")
                 if active_workflows:
                     task_id = active_workflows[0]["task_id"]
                     monitoring_pool = get_monitoring_pool()
@@ -1989,14 +1989,14 @@ class TestBackgroundWorkflowFullCycle:
             time.sleep(1.0)
             info_log("[Test] ✅ 測試清理完成")
             
-    def test_media_playback_with_shuffle_full_cycle(self, system_components, isolated_gs):
+    def test_play_media_with_shuffle_full_cycle(self, system_components, isolated_gs):
         """
         測試媒體播放 shuffle 功能完整循環
         
         流程：
         1. 用戶輸入：「Play my music library with shuffle」
         2. NLP 判斷意圖：media_control
-        3. LLM 通過 MCP 啟動 media_playback workflow（shuffle=True）
+        3. LLM 通過 MCP 啟動 play_media workflow（shuffle=True）
         4. 工作流執行並啟動播放器，開啟 shuffle
         5. 驗證播放器狀態：is_shuffled = True
         
@@ -2054,7 +2054,7 @@ class TestBackgroundWorkflowFullCycle:
         finally:
             # 清理
             try:
-                active_workflows = get_active_workflows(workflow_type="media_playback")
+                active_workflows = get_active_workflows(workflow_type="play_media")
                 if active_workflows:
                     task_id = active_workflows[0]["task_id"]
                     monitoring_pool = get_monitoring_pool()
@@ -2066,14 +2066,14 @@ class TestBackgroundWorkflowFullCycle:
             monitor.cleanup()
             time.sleep(1.0)
     
-    def test_media_playback_with_loop_full_cycle(self, system_components, isolated_gs):
+    def test_play_media_with_loop_full_cycle(self, system_components, isolated_gs):
         """
         測試媒體播放 loop 功能完整循環
         
         流程：
         1. 用戶輸入：「Play Ancient Wisdom on repeat」
         2. NLP 判斷意圖：media_control
-        3. LLM 通過 MCP 啟動 media_playback workflow（loop=True）
+        3. LLM 通過 MCP 啟動 play_media workflow（loop=True）
         4. 工作流執行並啟動播放器，開啟 loop
         5. 驗證播放器狀態：is_looping = True
         
@@ -2131,7 +2131,7 @@ class TestBackgroundWorkflowFullCycle:
         finally:
             # 清理
             try:
-                active_workflows = get_active_workflows(workflow_type="media_playback")
+                active_workflows = get_active_workflows(workflow_type="play_media")
                 if active_workflows:
                     task_id = active_workflows[0]["task_id"]
                     monitoring_pool = get_monitoring_pool()
@@ -2224,7 +2224,7 @@ class TestBackgroundWorkflowFullCycle:
         finally:
             # 清理
             try:
-                active_workflows = get_active_workflows(workflow_type="media_playback")
+                active_workflows = get_active_workflows(workflow_type="play_media")
                 if active_workflows:
                     task_id = active_workflows[0]["task_id"]
                     monitoring_pool = get_monitoring_pool()

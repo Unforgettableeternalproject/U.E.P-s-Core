@@ -711,13 +711,14 @@ class SYSModule(BaseModule):
                     # 將 task_id 儲存到 session
                     session.add_data("background_task_id", task_id)
                     
-                    # ✅ 背景工作流的 MCP session 應該立即結束
-                    # 因為 MCP 的工作已完成（提交到背景執行器）
-                    # 背景執行器會使用自己的 workflow session
-                    self.session_manager.end_session(
-                        session_id,
-                        reason="背景工作流已提交，MCP session 完成"
-                    )
+                    # ✅ 背景工作流已提交，標記 Session 待結束（符合雙條件終止機制）
+                    # 條件 1: 外部中斷點（工作已完成） - 設置 pending_end
+                    # 條件 2: 循環結束 - 由 Controller 在 CYCLE_COMPLETED 時檢查並執行
+                    session = self.session_manager.get_workflow_session(session_id)
+                    if session:
+                        session.pending_end = True
+                        session.pending_end_reason = "背景工作流已提交，MCP session 完成"
+                        debug_log(1, f"[SYS] 📋 標記 WS 待結束: {session_id}（等待循環完成）")
                     
                     return {
                         "status": "submitted",

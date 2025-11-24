@@ -1990,3 +1990,15 @@
 
 ---
 
+### Fixed release.yml issues. 11/24
+
+> Date: Mon, 24 Nov 2025 19:35:06 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `release/v0.7.4`
+
+> Commit: `3cf6f7d84e4bd8088fa12a48fb565de4018156e1`
+
+---
+

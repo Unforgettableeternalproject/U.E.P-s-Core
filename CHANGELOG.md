@@ -1966,3 +1966,15 @@
 
 ---
 
+### Updated README.md and requirements (it's been a long time). 11/24
+
+> Date: Mon, 24 Nov 2025 18:28:26 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `release/v0.7.4`
+
+> Commit: `8ab05ba7cb50a1f82e6de62f151e829ea4c9eada`
+
+---
+

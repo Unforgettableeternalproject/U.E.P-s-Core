@@ -21,12 +21,17 @@ if TYPE_CHECKING:
 
 class MemoryType(str, Enum):
     """記憶類型"""
-    SNAPSHOT = "snapshot"              # 對話快照（短期記憶）
-    LONG_TERM = "long_term"           # 長期記憶（向後相容）
-    PROFILE = "profile"                # 使用者檔案（長期記憶）
-    PREFERENCE = "preference"          # 使用者偏好（長期記憶）
-    INTERACTION_HISTORY = "interaction_history"  # 互動歷史（長期記憶）
-    SYSTEM_LEARNING = "system_learning"         # 系統學習（長期記憶）
+    # === 短期記憶 ===
+    SNAPSHOT = "snapshot"              # 對話快照（短期記憶，儲存對話內容）
+    
+    # === 長期記憶 ===
+    PROFILE = "profile"                # 使用者檔案（系統對使用者的認知）
+    PREFERENCE = "preference"          # 使用者偏好（系統學到的使用者喜好）
+    LONG_TERM = "long_term"           # 通用長期記憶（向後相容）
+    SYSTEM_LEARNING = "system_learning"         # 系統學習資料
+    
+    # 已廢棄（向後相容，映射到 SNAPSHOT）
+    # INTERACTION_HISTORY = "interaction_history"  # 已廢棄，請使用 SNAPSHOT
 
 
 class MemoryImportance(str, Enum):
@@ -106,7 +111,7 @@ class LongTermMemoryEntry(MemoryEntry):
     memory_type: Literal[
         MemoryType.PROFILE, 
         MemoryType.PREFERENCE, 
-        MemoryType.INTERACTION_HISTORY,
+        MemoryType.LONG_TERM,
         MemoryType.SYSTEM_LEARNING
     ] = Field(..., description="長期記憶類型")
     

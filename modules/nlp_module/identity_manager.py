@@ -135,9 +135,45 @@ class IdentityManager:
             return self.identities.get(identity_id)
         return None
     
-    def create_identity(self, speaker_id: str, display_name: Optional[str] = None) -> UserProfile:
-        """為語者創建新的使用者身份"""
-        identity_id = f"user_{int(time.time())}_{speaker_id[:8]}"
+    def get_identity_by_name(self, display_name: str) -> Optional[UserProfile]:
+        """根據顯示名稱獲取使用者身份"""
+        for profile in self.identities.values():
+            if profile.display_name == display_name:
+                return profile
+        return None
+    
+    def create_identity(self, speaker_id: str, display_name: Optional[str] = None, 
+                       force_new: bool = False) -> UserProfile:
+        """為語者創建新的使用者身份
+        
+        Args:
+            speaker_id: 語者ID
+            display_name: 顯示名稱（可選）
+            force_new: 是否強制創建新身份（即使名稱已存在）
+        
+        Returns:
+            UserProfile: 創建的身份檔案
+        
+        注意：
+            - 如果 speaker_id 已關聯到現有身份，會返回該身份
+            - 如果 display_name 已存在且 force_new=False，會記錄警告但仍創建新身份
+        """
+        # 檢查該 speaker_id 是否已經有關聯的身份
+        existing_identity = self.get_identity_by_speaker(speaker_id)
+        if existing_identity:
+            info_log(f"[IdentityManager] Speaker {speaker_id} 已關聯到身份 {existing_identity.identity_id}")
+            return existing_identity
+        
+        # 檢查 display_name 是否已存在
+        if display_name and not force_new:
+            existing_by_name = self.get_identity_by_name(display_name)
+            if existing_by_name:
+                info_log(f"[IdentityManager] ⚠️  顯示名稱 '{display_name}' 已被 {existing_by_name.identity_id} 使用")
+                info_log(f"[IdentityManager] 建議使用 get_or_create_identity() 或設置 force_new=True")
+        
+        # 使用 UUID 確保唯一性，避免不同 speaker_id 產生相同的 identity_id
+        unique_id = uuid.uuid4().hex[:8]
+        identity_id = f"user_{int(time.time())}_{unique_id}"
         
         # 生成記憶存取令牌 - 用於MEM模組
         memory_token = f"mem_{identity_id}_{uuid.uuid4().hex[:8]}"
@@ -177,6 +213,46 @@ class IdentityManager:
         
         info_log(f"[IdentityManager] 創建新身份：{identity_id} (語者：{speaker_id})")
         return profile
+    
+    def get_or_create_identity(self, speaker_id: str, display_name: Optional[str] = None) -> UserProfile:
+        """獲取或創建使用者身份（智能處理重複）
+        
+        優先級：
+        1. 如果 speaker_id 已關聯身份 → 返回該身份
+        2. 如果 display_name 已存在 → 關聯到該身份並返回
+        3. 否則 → 創建新身份
+        
+        Args:
+            speaker_id: 語者ID
+            display_name: 顯示名稱（可選）
+        
+        Returns:
+            UserProfile: 身份檔案
+        """
+        # 1. 檢查 speaker_id 是否已關聯
+        existing_by_speaker = self.get_identity_by_speaker(speaker_id)
+        if existing_by_speaker:
+            debug_log(2, f"[IdentityManager] Speaker {speaker_id} 已關聯到 {existing_by_speaker.identity_id}")
+            return existing_by_speaker
+        
+        # 2. 檢查 display_name 是否已存在
+        if display_name:
+            existing_by_name = self.get_identity_by_name(display_name)
+            if existing_by_name:
+                # 將此 speaker 關聯到現有身份
+                info_log(f"[IdentityManager] 將 Speaker {speaker_id} 關聯到現有身份 '{display_name}'")
+                self.speaker_to_identity[speaker_id] = existing_by_name.identity_id
+                
+                # 如果該身份還沒有 speaker_id，設置它
+                if not existing_by_name.speaker_id or existing_by_name.speaker_id == speaker_id:
+                    existing_by_name.speaker_id = speaker_id
+                    self._save_identity(existing_by_name)
+                
+                self._save_mapping()
+                return existing_by_name
+        
+        # 3. 創建新身份
+        return self.create_identity(speaker_id, display_name, force_new=True)
     
     def update_identity_interaction(self, identity_id: str, interaction_data: Dict[str, Any]):
         """更新使用者互動記錄"""
@@ -263,6 +339,164 @@ class IdentityManager:
     def get_decision_handler(self) -> IdentityDecisionHandler:
         """獲取決策處理器"""
         return self.decision_handler
+    
+    # 🆕 Speaker 管理方法（Identity 為主，Speaker 為輔）
+    
+    def add_speaker_sample(self, identity_id: str, embedding: List[float], 
+                          confidence: float, audio_duration: Optional[float] = None,
+                          metadata: Optional[Dict[str, Any]] = None) -> bool:
+        """添加語音樣本到指定 Identity
+        
+        Args:
+            identity_id: Identity ID
+            embedding: 語音特徵向量
+            confidence: 樣本信心度
+            audio_duration: 音頻長度（秒）
+            metadata: 額外元數據
+            
+        Returns:
+            bool: 是否添加成功
+        """
+        if identity_id not in self.identities:
+            error_log(f"[IdentityManager] Identity {identity_id} 不存在")
+            return False
+        
+        try:
+            from .schemas import SpeakerSample
+            profile = self.identities[identity_id]
+            
+            # 創建新樣本
+            sample = SpeakerSample(
+                embedding=embedding,
+                confidence=confidence,
+                audio_duration=audio_duration,
+                metadata=metadata or {}
+            )
+            
+            # 添加到 Identity 的 speaker_accumulation
+            profile.speaker_accumulation.samples.append(sample)
+            profile.speaker_accumulation.total_samples += 1
+            profile.speaker_accumulation.last_updated = datetime.now()
+            
+            # 檢查是否達到確認閾值
+            if (profile.speaker_accumulation.total_samples >= 
+                profile.speaker_accumulation.min_samples_threshold):
+                profile.speaker_accumulation.is_confirmed = True
+                info_log(f"[IdentityManager] Identity {identity_id} 的 Speaker 已達到確認閾值")
+            
+            # 保存更新
+            self._save_identity(profile)
+            
+            debug_log(3, f"[IdentityManager] 已添加 Speaker 樣本到 Identity {identity_id} "
+                        f"(總數: {profile.speaker_accumulation.total_samples})")
+            return True
+            
+        except Exception as e:
+            error_log(f"[IdentityManager] 添加 Speaker 樣本失敗: {e}")
+            return False
+    
+    def get_speaker_accumulation(self, identity_id: str) -> Optional[Dict[str, Any]]:
+        """獲取 Identity 的 Speaker 累積數據
+        
+        Args:
+            identity_id: Identity ID
+            
+        Returns:
+            Optional[Dict]: Speaker 累積數據，包含樣本列表和統計信息
+        """
+        if identity_id not in self.identities:
+            return None
+        
+        profile = self.identities[identity_id]
+        accumulation = profile.speaker_accumulation
+        
+        return {
+            "total_samples": accumulation.total_samples,
+            "min_samples_threshold": accumulation.min_samples_threshold,
+            "is_confirmed": accumulation.is_confirmed,
+            "model_trained": accumulation.model_trained,
+            "last_updated": accumulation.last_updated.isoformat() if accumulation.last_updated else None,
+            "samples": [
+                {
+                    "confidence": s.confidence,
+                    "timestamp": s.timestamp.isoformat(),
+                    "audio_duration": s.audio_duration
+                }
+                for s in accumulation.samples
+            ]
+        }
+    
+    def update_speaker_model(self, identity_id: str, model_data: Dict[str, Any]) -> bool:
+        """更新 Identity 的 Speaker 模型數據
+        
+        Args:
+            identity_id: Identity ID
+            model_data: 模型數據（如平均 embedding、協方差矩陣等）
+            
+        Returns:
+            bool: 是否更新成功
+        """
+        if identity_id not in self.identities:
+            return False
+        
+        try:
+            profile = self.identities[identity_id]
+            profile.speaker_accumulation.speaker_model = model_data
+            profile.speaker_accumulation.model_trained = True
+            profile.speaker_accumulation.last_updated = datetime.now()
+            
+            self._save_identity(profile)
+            info_log(f"[IdentityManager] 已更新 Identity {identity_id} 的 Speaker 模型")
+            return True
+            
+        except Exception as e:
+            error_log(f"[IdentityManager] 更新 Speaker 模型失敗: {e}")
+            return False
+    
+    def associate_speaker_to_identity(self, speaker_id: str, identity_id: str) -> bool:
+        """將 Speaker ID 關聯到指定 Identity（用於主動聲明場景）
+        
+        Args:
+            speaker_id: Speaker ID
+            identity_id: Identity ID
+            
+        Returns:
+            bool: 是否關聯成功
+        """
+        if identity_id not in self.identities:
+            error_log(f"[IdentityManager] Identity {identity_id} 不存在")
+            return False
+        
+        try:
+            # 更新映射
+            self.speaker_to_identity[speaker_id] = identity_id
+            
+            # 更新 Identity 的 speaker_id（向後兼容）
+            profile = self.identities[identity_id]
+            if not profile.speaker_id:
+                profile.speaker_id = speaker_id
+                self._save_identity(profile)
+            
+            # 保存映射
+            self._save_mapping()
+            
+            info_log(f"[IdentityManager] 已關聯 Speaker {speaker_id} 到 Identity {identity_id}")
+            return True
+            
+        except Exception as e:
+            error_log(f"[IdentityManager] 關聯 Speaker 失敗: {e}")
+            return False
+    
+    def get_identity_by_id(self, identity_id: str) -> Optional[UserProfile]:
+        """根據 Identity ID 獲取用戶檔案
+        
+        Args:
+            identity_id: Identity ID
+            
+        Returns:
+            Optional[UserProfile]: 用戶檔案
+        """
+        return self.identities.get(identity_id)
     
     def get_memory_token(self, identity_id: str) -> Optional[str]:
         """獲取身份的記憶庫存取令牌"""

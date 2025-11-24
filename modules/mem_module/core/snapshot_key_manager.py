@@ -69,8 +69,9 @@ class SnapshotKeyManager:
             
             # 使用summarizer生成摘要作為鍵值
             if self.memory_summarizer and self.memory_summarizer.is_initialized:
-                # 生成簡短摘要
-                summary = self.memory_summarizer.chunk_and_summarize_memories([content])
+                # 使用 summarize_conversation 而不是 chunk_and_summarize_memories
+                # 因為 content 是單個對話文本，不是記憶列表
+                summary = self.memory_summarizer.summarize_conversation(content)
                 
                 if summary and len(summary.strip()) > 5:
                     # 清理和格式化摘要作為鍵值

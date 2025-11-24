@@ -39,6 +39,7 @@ class SystemEvent(Enum):
     
     # 系統狀態事件
     STATE_CHANGED = "state_changed"                        # 系統狀態改變
+    STATE_ADVANCED = "state_advanced"                      # 狀態佇列推進（需跳過輸入層）
     SESSION_STARTED = "session_started"                    # 會話開始
     SESSION_ENDED = "session_ended"                        # 會話結束
     
@@ -61,6 +62,30 @@ class SystemEvent(Enum):
     BACKGROUND_WORKFLOW_COMPLETED = "background_workflow_completed"    # 背景工作流完成
     BACKGROUND_WORKFLOW_FAILED = "background_workflow_failed"          # 背景工作流失敗
     BACKGROUND_WORKFLOW_CANCELLED = "background_workflow_cancelled"    # 背景工作流取消
+    
+    # 自動化觸發事件
+    REMINDER_TRIGGERED = "reminder_triggered"                          # 提醒觸發
+    CALENDAR_EVENT_STARTING = "calendar_event_starting"                # 日曆事件即將開始
+    TODO_OVERDUE = "todo_overdue"                                      # 待辦事項已過期
+    TODO_UPCOMING = "todo_upcoming"                                    # 待辦事項即將到期
+    FOLDER_CHANGE_DETECTED = "folder_change_detected"                  # 資料夾變更偵測
+    MEDIA_CONTROL_EXECUTED = "media_control_executed"                  # 媒體控制已執行
+    
+    # 系統啟動事件
+    SYSTEM_STARTUP_REPORT = "system_startup_report"                    # 系統啟動檢查報告
+    
+    # LLM 模組事件
+    LLM_RESPONSE_GENERATED = "llm_response_generated"                  # LLM 回應已生成
+    LLM_LEARNING_DATA_RETURNED = "llm_learning_data_returned"          # LLM 返回學習資料
+    
+    # MEM 模組事件
+    MEMORY_CREATED = "memory_created"                                  # 記憶已創建
+    MEMORY_RETRIEVED = "memory_retrieved"                              # 記憶已檢索
+    SNAPSHOT_CREATED = "snapshot_created"                              # 快照已創建
+    SNAPSHOT_CONSOLIDATED = "snapshot_consolidated"                    # 快照已整合
+    
+    # GS 推進事件（Phase 4）
+    GS_ADVANCED = "gs_advanced"                                        # General Session 已推進（GSID 更新）
 
 
 @dataclass

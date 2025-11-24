@@ -85,6 +85,9 @@ class StateQueueManager:
         self.current_state = UEPState.IDLE
         self.current_item: Optional[StateQueueItem] = None
         
+        # 🔧 記錄上次完成狀態的 cycle_index，用於計算下次狀態推進的 cycle
+        self.last_completion_cycle: Optional[int] = None
+        
         # 狀態處理回調
         self.state_handlers: Dict[UEPState, Callable] = {}
         self.completion_handlers: Dict[UEPState, Callable] = {}
@@ -199,27 +202,53 @@ class StateQueueManager:
         try:
             from core.states.state_manager import state_manager
             
-            # 確定工作流程類型
-            intent_type = queue_item.metadata.get('intent_type', 'command')
-            workflow_type = self._map_intent_to_workflow_type(intent_type)
+            # 檢查是否為系統匯報模式（不需要工作流程）
+            workflow_type = queue_item.metadata.get('workflow_type')
+            is_system_report = workflow_type == 'system_report' or queue_item.metadata.get('system_report', False)
             
-            # 準備上下文信息
-            context = {
-                "workflow_type": workflow_type,
-                "command": queue_item.context_content,
-                "intent_type": intent_type,
-                "trigger_content": queue_item.trigger_content,
-                "queue_item_id": f"{queue_item.state.value}_{queue_item.created_at.timestamp()}",
-                "state_queue_callback": self._on_work_session_complete,  # 回調函數
-                **queue_item.metadata
-            }
-            
-            # 通知狀態管理器創建工作會話
-            state_manager.set_state(UEPState.WORK, context)
-            
-            info_log(f"[StateQueue] WORK 狀態啟動: {queue_item.context_content[:50]}...")
-            debug_log(4, f"[StateQueue] 工作意圖: {intent_type}, 工作流程類型: {workflow_type}")
-            debug_log(4, f"[StateQueue] 等待工作會話完成...")
+            if is_system_report:
+                # 系統匯報模式：簡單對話，不啟動工作流程
+                # 保持 WORK 狀態，但 workflow_type 為 None 表示不需要工作流程
+                info_log(f"[StateQueue] WORK 狀態啟動（系統匯報模式）: {queue_item.context_content[:50]}...")
+                debug_log(3, "[StateQueue] 系統匯報模式：保持 WORK 狀態但不啟動工作流程")
+                
+                # 準備上下文，明確標記為系統匯報（不啟動工作流程）
+                context = {
+                    "workflow_type": None,  # 明確標記：不需要工作流程
+                    "command": queue_item.context_content,
+                    "trigger_content": queue_item.trigger_content,
+                    "queue_item_id": f"{queue_item.state.value}_{queue_item.created_at.timestamp()}",
+                    "state_queue_callback": self._on_work_session_complete,
+                    "system_report": True,  # 標記為系統匯報
+                    **queue_item.metadata
+                }
+                
+                # 保持 WORK 狀態，讓 StateManager 處理無工作流的 WORK
+                state_manager.set_state(UEPState.WORK, context)
+                
+            else:
+                # 正常工作流程模式
+                intent_type = queue_item.metadata.get('intent_type', 'command')
+                if workflow_type is None:
+                    workflow_type = self._map_intent_to_workflow_type(intent_type)
+                
+                # 準備上下文信息
+                context = {
+                    "workflow_type": workflow_type,
+                    "command": queue_item.context_content,
+                    "intent_type": intent_type,
+                    "trigger_content": queue_item.trigger_content,
+                    "queue_item_id": f"{queue_item.state.value}_{queue_item.created_at.timestamp()}",
+                    "state_queue_callback": self._on_work_session_complete,  # 回調函數
+                    **queue_item.metadata
+                }
+                
+                # 通知狀態管理器創建工作會話
+                state_manager.set_state(UEPState.WORK, context)
+                
+                info_log(f"[StateQueue] WORK 狀態啟動: {queue_item.context_content[:50]}...")
+                debug_log(4, f"[StateQueue] 工作意圖: {intent_type}, 工作流程類型: {workflow_type}")
+                debug_log(4, f"[StateQueue] 等待工作會話完成...")
             
             # 不立即完成狀態，等待會話完成回調
             
@@ -424,43 +453,6 @@ class StateQueueManager:
             if self.current_item:
                 self.complete_current_state(success=False, result_data={"error": str(e)})
     
-    def complete_current_state(self, success: bool = True, result_data: Optional[Dict[str, Any]] = None):
-        """完成當前狀態處理"""
-        if self.current_item is None:
-            debug_log(3, "[StateQueue] 沒有正在處理的狀態")
-            return
-        
-        self.current_item.completed_at = datetime.now()
-        info_log(f"[StateQueue] 完成狀態: {self.current_state.value} ({'成功' if success else '失敗'})")
-        
-        # 調用完成處理器
-        completion_handler = self.completion_handlers.get(self.current_state)
-        if completion_handler:
-            completion_handler(self.current_item, success, result_data or {})
-        
-        # 重置當前狀態
-        self.current_item = None
-        self.current_state = UEPState.IDLE
-        
-        # 保存並繼續處理下一個
-        self._save_queue()
-        
-        # ✅ 自動處理下一個狀態
-        if self.queue:
-            debug_log(2, f"[StateQueue] 還有 {len(self.queue)} 個待處理狀態，繼續處理")
-            self.process_next_state()
-        else:
-            debug_log(2, "[StateQueue] 佇列已空，回到 IDLE")
-    
-    def _old_get_queue_status(self) -> Dict[str, Any]:
-        """舊版本的 get_queue_status (已被新版本取代)"""
-        # 確保如果沒有正在執行的項目，狀態應該是IDLE
-        if self.current_item is None and self.current_state != UEPState.IDLE:
-            debug_log(4, f"[StateQueue] 修正狀態：沒有執行項目但狀態不是IDLE，從 {self.current_state.value} 修正為 IDLE")
-            self.current_state = UEPState.IDLE
-        self._save_queue()
-        
-        return True
     
     def process_nlp_intents(self, intent_segments: List[Any]) -> List[UEPState]:
         """
@@ -487,18 +479,19 @@ class StateQueueManager:
                 intent_type = segment.intent_type
                 
                 # 根據意圖類型決定系統狀態和工作模式
-                if intent_type == IntentType.DIRECT_WORK:
+                if intent_type == IntentType.WORK:
                     target_state = UEPState.WORK
-                    work_mode = "direct"
-                elif intent_type == IntentType.BACKGROUND_WORK:
-                    target_state = UEPState.WORK
-                    work_mode = "background"
+                    # work_mode 從 segment.metadata 獲取（NLP 已設定）
+                    work_mode = segment.metadata.get('work_mode', 'direct') if segment.metadata else 'direct'
+                    debug_log(3, f"[StateQueue] WORK 意圖，work_mode={work_mode}")
                 elif intent_type == IntentType.CHAT:
                     target_state = UEPState.CHAT
                     work_mode = None
-                elif intent_type == IntentType.COMPOUND:
+                elif intent_type == IntentType.RESPONSE:
+                    # RESPONSE 意圖用於工作流回應
                     target_state = UEPState.WORK
-                    work_mode = "direct"
+                    work_mode = "direct"  # 工作流回應應立即處理
+                    debug_log(3, f"[StateQueue] RESPONSE 意圖，視為 direct WORK")
                 elif intent_type == IntentType.CALL:
                     # CALL 意圖不加入佇列
                     debug_log(4, f"[StateQueue] 分段 {i+1} 是 CALL 意圖，不加入狀態佇列")
@@ -508,6 +501,22 @@ class StateQueueManager:
                     debug_log(4, f"[StateQueue] 分段 {i+1} 是 {intent_type.value} 意圖，不加入佇列")
                     continue
                 
+                # 準備狀態 metadata（包括 degradation 標記）
+                state_metadata = {
+                    'intent_type': intent_type.value,
+                    'confidence': segment.confidence,
+                    'segment_index': i,
+                    'stage4_segment': True
+                }
+                
+                # 從 segment metadata 提取降級標記
+                if segment.metadata:
+                    if segment.metadata.get('degraded_from_work'):
+                        state_metadata['degraded_from_work'] = segment.metadata['degraded_from_work']
+                        state_metadata['original_intent'] = segment.metadata.get('original_intent')
+                        state_metadata['degradation_reason'] = segment.metadata.get('degradation_reason')
+                        debug_log(2, f"[StateQueue] 分段 {i+1} 包含降級標記，已傳遞到狀態 metadata")
+                
                 # 添加到佇列，使用 IntentSegment 的優先權
                 success = self.add_state(
                     state=target_state,
@@ -515,12 +524,7 @@ class StateQueueManager:
                     context_content=segment.segment_text,
                     work_mode=work_mode,
                     custom_priority=segment.priority,
-                    metadata={
-                        'intent_type': intent_type.value,
-                        'confidence': segment.confidence,
-                        'segment_index': i,
-                        'stage4_segment': True
-                    }
+                    metadata=state_metadata
                 )
                 
                 if success:
@@ -551,17 +555,32 @@ class StateQueueManager:
                     
                     trigger_content = f"意圖分段 {i+1}: {context_content}"
                     
+                    # 準備狀態 metadata（包括 degradation 標記）
+                    state_metadata = {
+                        'intent_type': intent_value,
+                        'confidence': getattr(segment, 'confidence', 0.0),
+                        'entities': getattr(segment, 'entities', []),
+                        'segment_index': i,
+                        'segment_id': getattr(segment, 'segment_id', f'seg_{i}')
+                    }
+                    
+                    # 從 segment metadata 提取降級標記（舊版本）
+                    if isinstance(segment, dict):
+                        segment_metadata = segment.get('metadata', {})
+                    else:
+                        segment_metadata = getattr(segment, 'metadata', {}) or {}
+                    
+                    if segment_metadata.get('degraded_from_work'):
+                        state_metadata['degraded_from_work'] = segment_metadata['degraded_from_work']
+                        state_metadata['original_intent'] = segment_metadata.get('original_intent')
+                        state_metadata['degradation_reason'] = segment_metadata.get('degradation_reason')
+                        debug_log(2, f"[StateQueue] 分段 {i+1} 包含降級標記，已傳遞到狀態 metadata")
+                    
                     success = self.add_state(
                         state=target_state,
                         trigger_content=trigger_content,
                         context_content=context_content,
-                        metadata={
-                            'intent_type': intent_value,
-                            'confidence': getattr(segment, 'confidence', 0.0),
-                            'entities': getattr(segment, 'entities', []),
-                            'segment_index': i,
-                            'segment_id': getattr(segment, 'segment_id', f'seg_{i}')
-                        }
+                        metadata=state_metadata
                     )
                     
                     if success:
@@ -583,8 +602,34 @@ class StateQueueManager:
             return next_item.state
         return UEPState.IDLE
     
+    def check_and_advance_state(self) -> bool:
+        """檢查並推進到下一個狀態（由 SystemLoop 在循環開始時調用）
+        
+        檢查條件：
+        1. 當前沒有執行中的狀態項目（current_item == None）
+        2. 佇列中有待處理的狀態
+        
+        如果滿足條件，推進到下一個狀態並設置 skip_input_layer 標記。
+        
+        Returns:
+            bool: 是否成功推進到下一個狀態
+        """
+        # 如果當前有執行中的狀態，不推進
+        if self.current_item is not None:
+            return False
+        
+        # 如果佇列為空，轉換到 IDLE
+        if not self.queue:
+            if self.current_state != UEPState.IDLE:
+                self._transition_to_idle()
+            return False
+        
+        # 有待處理的狀態，執行推進
+        info_log(f"[StateQueue] 🔄 循環開始時檢測到待推進狀態，佇列長度: {len(self.queue)}")
+        return self.start_next_state()
+    
     def start_next_state(self) -> bool:
-        """開始執行下一個狀態"""
+        """開始執行下一個狀態（內部方法）"""
         if not self.queue:
             # 佇列為空，切換到IDLE
             if self.current_state != UEPState.IDLE:
@@ -606,6 +651,32 @@ class StateQueueManager:
         debug_log(4, f"[StateQueue] 上下文內容: {next_item.context_content}")
         debug_log(4, f"[StateQueue] 佇列剩餘: {len(self.queue)} 項目")
         
+        # ✅ 發布 STATE_ADVANCED 事件，通知 MC 跳過輸入層直接啟動處理層
+        try:
+            from core.event_bus import event_bus, SystemEvent
+            from core.working_context import working_context_manager
+            
+            # ✅ 直接從 working_context 讀取當前 cycle_index（循環已完成，值已更新）
+            # 不再使用 last_completion_cycle 計算，統一使用同一來源
+            next_cycle = working_context_manager.global_context_data.get('current_cycle_index', 0)
+            debug_log(1, f"[StateQueue] 🔢 STATE_ADVANCED: 使用當前 cycle_index={next_cycle}（循環已遞增）")
+            
+            event_bus.publish(
+                event_type=SystemEvent.STATE_ADVANCED,
+                data={
+                    "old_state": old_state.value,
+                    "new_state": next_item.state.value,
+                    "content": next_item.context_content,
+                    "trigger": next_item.trigger_content,
+                    "metadata": next_item.metadata,
+                    "cycle_index": next_cycle  # 使用下一個循環的 index
+                },
+                source="StateQueue"
+            )
+            debug_log(2, f"[StateQueue] ✅ 已發布 STATE_ADVANCED 事件: {old_state.value} -> {next_item.state.value} (cycle={next_cycle})")
+        except Exception as e:
+            error_log(f"[StateQueue] 發布 STATE_ADVANCED 事件失敗: {e}")
+        
         # 調用狀態處理器
         if next_item.state in self.state_handlers:
             try:
@@ -621,11 +692,44 @@ class StateQueueManager:
         self._save_queue()
         return True
     
-    def complete_current_state(self, success: bool = True, result_data: Optional[Dict[str, Any]] = None):
-        """完成當前狀態"""
+    def complete_current_state(self, success: bool = True, result_data: Optional[Dict[str, Any]] = None,
+                              completion_cycle: Optional[int] = None):
+        debug_log(1, f"[StateQueue] complete_current_state 被調用, completion_cycle={completion_cycle}")
+        """完成當前狀態
+        
+        只標記當前狀態完成，不自動推進到下一個狀態。
+        狀態推進由 SystemLoop 在循環開始時統一處理。
+        
+        Args:
+            success: 是否成功完成
+            result_data: 結果數據
+            completion_cycle: 完成時的循環索引（優先使用此參數，避免讀取可能過期的 working_context）
+        
+        這確保：
+        1. 清晰的循環邊界
+        2. 可追蹤的狀態推進時機
+        3. 避免在事件處理中嵌套過多邏輯
+        """
+        debug_log(1, f"[StateQueue] 📥 complete_current_state 被調用, completion_cycle={completion_cycle}")
+        
         if not self.current_item:
             debug_log(2, "[StateQueue] 沒有正在執行的狀態")
             return
+        
+        # 🔧 記錄完成時的 cycle_index，供下次狀態推進使用
+        try:
+            if completion_cycle is not None:
+                # ✅ 優先使用傳入的 cycle_index（來自 SESSION_ENDED 事件）
+                self.last_completion_cycle = completion_cycle
+                debug_log(3, f"[StateQueue] 狀態完成於 Cycle {completion_cycle} (來自會話事件)")
+            else:
+                # 🔧 回退到讀取 working_context（僅用於向後兼容）
+                from core.working_context import working_context_manager
+                completion_cycle = working_context_manager.global_context_data.get('current_cycle_index', 0)
+                self.last_completion_cycle = completion_cycle
+                debug_log(3, f"[StateQueue] 狀態完成於 Cycle {completion_cycle} (來自 working_context)")
+        except Exception as e:
+            error_log(f"[StateQueue] 記錄完成 cycle 失敗: {e}")
         
         # 標記完成
         self.current_item.completed_at = datetime.now()
@@ -634,6 +738,7 @@ class StateQueueManager:
         
         completed_state = self.current_state
         info_log(f"[StateQueue] 完成狀態: {completed_state.value} ({'成功' if success else '失敗'})")
+        debug_log(2, "[StateQueue] 等待下一個循環推進狀態...")
         
         # 調用完成處理器
         if completed_state in self.completion_handlers:
@@ -642,12 +747,9 @@ class StateQueueManager:
             except Exception as e:
                 error_log(f"[StateQueue] 完成處理器執行失敗: {e}")
         
-        # 清理當前狀態
+        # 清理當前狀態，但不自動推進
         self.current_item = None
-        
-        # 自動開始下一個狀態
-        if not self.start_next_state():
-            self._transition_to_idle()
+        # current_state 保持原樣，等待 SystemLoop 推進
         
         self._save_queue()
     
@@ -659,6 +761,14 @@ class StateQueueManager:
             debug_log(4, "[StateQueue] 切換到 IDLE 狀態 - 佇列已空")
             self.current_state = UEPState.IDLE
             self.current_item = None
+            
+            # ✅ 通知 StateManager 狀態已轉換到 IDLE
+            try:
+                from core.states.state_manager import state_manager
+                state_manager.set_state(UEPState.IDLE, context=None)
+                debug_log(2, "[StateQueue] 已通知 StateManager 轉換到 IDLE")
+            except Exception as e:
+                error_log(f"[StateQueue] 通知 StateManager 失敗: {e}")
             
             # 調用IDLE處理器
             if UEPState.IDLE in self.state_handlers:

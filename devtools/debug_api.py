@@ -3,13 +3,8 @@ import asyncio
 from core.registry import get_module
 from configs.config_loader import load_config
 from utils.debug_helper import debug_log, info_log, error_log
-# 導入整合測試
-from .module_tests.integration_tests import (
-    test_system_loop_integration,
-    test_single_file_workflow
-)
 # 暫時註解掉這個導入，等相關文件創建後再啟用
-# from .module_tests.extra_tests import test_chunk_and_summarize, test_uep_chatting
+# from devtools.module_tests.extra_tests import test_chunk_and_summarize, test_uep_chatting
 
 config = load_config()
 enabled = config.get("modules_enabled", {})
@@ -549,31 +544,6 @@ def sys_test_random_fail_wrapper():
     from .module_tests.sys_tests import sys_test_random_fail as sys_test_random_fail_func
     return sys_test_random_fail_func(modules)
 
-# TTS 測試工作流已移除，TTS 模組已重構
-
-# 檔案工作流需要 LLM 審核，不適合獨立測試環境
-# 應在主系統循環整合測試中測試（Task 9）
-
-def sys_test_list_workflows_wrapper():
-    """列出所有可用的工作流"""
-    from .module_tests.sys_tests import sys_test_list_workflows as sys_test_list_workflows_func
-    return sys_test_list_workflows_func(modules)
-
-def sys_test_active_workflows_wrapper():
-    """列出所有活躍的工作流"""
-    from .module_tests.sys_tests import sys_test_active_workflows as sys_test_active_workflows_func
-    return sys_test_active_workflows_func(modules)
-
-def sys_test_workflow_status_wrapper(session_id: str = None):
-    """查詢工作流狀態"""
-    from .module_tests.sys_tests import sys_test_workflow_status as sys_test_workflow_status_func
-    return sys_test_workflow_status_func(modules, session_id)
-
-def sys_test_cancel_workflow_wrapper(session_id: str = None):
-    """取消工作流"""
-    from .module_tests.sys_tests import sys_test_cancel_workflow as sys_test_cancel_workflow_func
-    return sys_test_cancel_workflow_func(modules, session_id)
-
 # Frontend 模組包裝函數
 def show_desktop_pet_wrapper():
     from .module_tests.frontend_tests import show_desktop_pet as show_desktop_pet_func
@@ -690,26 +660,6 @@ def mem_test_identity_stats_wrapper(identity="test_user"):
     finally:
         # 清理測試環境
         cleanup_test_environment()
-
-
-
-def mem_test_memory_query_wrapper(identity="test_user", query_text="天氣"):
-    from .module_tests.mem_tests import mem_test_memory_query as mem_test_func
-    
-    # 按需載入MEM模組
-    mem_module = safe_get_module("mem_module")
-    test_modules = {"mem": mem_module}
-    
-    return mem_test_func(test_modules, identity, query_text)
-
-def mem_test_identity_manager_stats_wrapper(identity="test_user"):
-    from .module_tests.mem_tests import mem_test_identity_manager_stats as mem_test_func
-    
-    # 按需載入MEM模組
-    mem_module = safe_get_module("mem_module")
-    test_modules = {"mem": mem_module}
-    
-    return mem_test_func(test_modules, identity)
 
 # LLM 模組包裝函數（簡化版 - 純功能測試）
 def llm_test_chat_wrapper(text: str = "你好，請介紹一下你自己"):
@@ -909,30 +859,6 @@ def tts_clear_queue_wrapper():
         error_log(f"[TTS GUI] 清除隊列失敗: {e}")
         return {"success": False, "error": str(e)}
 
-# ============================================================
-# 系統循環整合測試包裝函數
-# ============================================================
-
-def integration_test_all_file_workflows():
-    """運行所有檔案工作流整合測試"""
-    return test_system_loop_integration(modules)
-
-def integration_test_single_workflow(workflow_name: str):
-    """測試單一檔案工作流"""
-    return test_single_file_workflow(workflow_name, modules)
-
-def integration_test_drop_and_read():
-    """測試 drop_and_read 工作流"""
-    return test_single_file_workflow("drop_and_read", modules)
-
-def integration_test_intelligent_archive():
-    """測試 intelligent_archive 工作流"""
-    return test_single_file_workflow("intelligent_archive", modules)
-
-def integration_test_summarize_tag():
-    """測試 summarize_tag 工作流"""
-    return test_single_file_workflow("summarize_tag", modules)
-
 # 為了向後兼容，保留原來的函數名稱
 stt_test_single = stt_test_single_wrapper
 stt_test_continuous_listening = stt_test_continuous_listening_wrapper
@@ -973,13 +899,6 @@ mem_test_conversation_snapshot = mem_test_conversation_snapshot_wrapper
 mem_test_memory_query = mem_test_memory_query_wrapper
 mem_test_identity_stats = mem_test_identity_stats_wrapper
 
-# 為了向後兼容，保留一些常用的別名
-mem_test_snapshot = mem_test_conversation_snapshot_wrapper
-mem_test_query = mem_test_memory_query_wrapper
-mem_test_stats = mem_test_identity_stats_wrapper
-mem_test_write = mem_test_store_memory_wrapper
-mem_test_memory = mem_test_store_memory_wrapper
-
 # LLM 函數別名（簡化版 - 純功能測試）
 llm_test_chat = llm_test_chat_wrapper
 llm_test_command = llm_test_command_wrapper
@@ -1013,48 +932,6 @@ sys_test_echo = sys_test_echo_wrapper
 sys_test_countdown = sys_test_countdown_wrapper
 sys_test_data_collector = sys_test_data_collector_wrapper
 sys_test_random_fail = sys_test_random_fail_wrapper
-
-# TTS 測試工作流已移除
-
-# 檔案工作流已移除（需要 LLM 審核）
-
-# SYS 管理功能
-sys_test_list_workflows = sys_test_list_workflows_wrapper
-sys_test_active_workflows = sys_test_active_workflows_wrapper
-sys_test_workflow_status = sys_test_workflow_status_wrapper
-sys_test_cancel_workflow = sys_test_cancel_workflow_wrapper
-
-# 整合測試別名
-integration_test_all = integration_test_all_file_workflows
-integration_test_file1 = integration_test_drop_and_read
-integration_test_file2 = integration_test_intelligent_archive
-integration_test_file3 = integration_test_summarize_tag
-integration_test_file2 = integration_test_intelligent_archive
-integration_test_file3 = integration_test_summarize_tag
-
-
-# 整合測試 - 新版
-
-def integration_test_SN():
-    """STT + NLP 整合測試"""
-    # 直接傳入模組字典
-    test_stt_nlp(modules)
-
-# 暫時停用其他整合測試，只保留 STT+NLP (因為其他模組尚未完成重構)
-# 其他整合測試將在相應模組重構完成後添加
-
-# 注意：目前只有 STT 和 NLP 模組完成重構，其他整合測試將在模組重構後添加
-#
-# 以下是可用的整合測試：
-# - STT + NLP: integration_test_SN()
-#
-# 為保持程式碼整潔，其餘整合測試函數已移除
-
-def integration_test_SN(production_mode=False):
-    """STT + NLP 整合測試"""
-    info_log(f"[Controller] 執行 STT+NLP 整合測試 (新版) ({'生產模式' if production_mode else '除錯模式'})")
-    # 目前生產模式參數未被使用，因為新版整合測試不區分生產和除錯模式
-    return test_stt_nlp(modules)
 
 # 額外測試（暫時停用，等相關模組完成後再啟用）
 
@@ -1173,7 +1050,7 @@ def test_speaker_context_workflow():
     # 執行多次 STT 測試以累積樣本
     for i in range(5):
         print(f"\n--- 第 {i+1} 次語音識別 ---")
-        result = stt_test_single(mode="manual", enable_speaker_id=True)
+        result = stt_test_single(modules, enable_speaker_id=True, language="en-US")
         
         # 顯示工作上下文狀態
         get_working_context_status()

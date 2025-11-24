@@ -79,6 +79,7 @@ class LLMInput(BaseModel):
     # 系統狀態上下文
     system_state: Optional[SystemState] = Field(None, description="當前系統狀態")
     session_id: Optional[str] = Field(None, description="會話ID")
+    cycle_index: Optional[int] = Field(None, description="當前循環索引（由 MC 從事件傳遞）")
     
     # 身份和記憶上下文
     identity_context: Optional[Dict[str, Any]] = Field(None, description="身份上下文")
@@ -98,6 +99,7 @@ class LLMInput(BaseModel):
     # 控制選項
     is_internal: bool = Field(False, description="是否為內部系統調用")
     enable_learning: bool = Field(True, description="是否啟用學習功能")
+    system_report: bool = Field(False, description="是否為系統報告模式（系統主動通知）")
     
     # 新 Router 整合支援
     source_layer: Optional[str] = Field(None, description="來源層級（input/processing/output）")

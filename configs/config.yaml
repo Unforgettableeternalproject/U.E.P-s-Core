@@ -23,6 +23,7 @@ logging:
   log_level: DEBUG
   log_dir: logs
   enable_split_logs: false
+  enable_console_output: true  # 控制是否將日誌輸出到終端（測試時建議關閉）
 debug:
   enabled: true
   debug_level: 3
@@ -30,5 +31,7 @@ system:
   main_loop_interval: 0.1
   shutdown_timeout: 5.0
   input_mode:
-    mode: text
+    mode: vad # 可選值：vad、text
     text_input_prompt: '>>> '
+  media:
+    music_folder: "E:\\Music\\My Songs\\Full Playlist"  # null 表示使用系統預設的 ~/Music 資料夾，可設定為自訂路徑

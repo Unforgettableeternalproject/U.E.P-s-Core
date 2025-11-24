@@ -99,6 +99,11 @@ class ChattingSession:
         self.last_activity = self.created_at
         self.ended_at: Optional[datetime] = None
         
+        # 待結束標記 - 符合會話生命週期架構
+        # 設置後會在循環完成邊界時終止會話
+        self.pending_end = False
+        self.pending_end_reason: Optional[str] = None
+        
         # 對話記錄
         self.conversation_turns: List[ConversationTurn] = []
         self.turn_counter = 0
@@ -359,6 +364,12 @@ class ChattingSession:
             # 發布會話結束事件 - 通知 StateManager 處理狀態轉換
             try:
                 from core.event_bus import event_bus, SystemEvent
+                from core.working_context import working_context_manager
+                
+                # ✅ 讀取當前 cycle_index（會話在循環結束後才真正結束，值已正確更新）
+                current_cycle = working_context_manager.global_context_data.get('current_cycle_index', 0)
+                debug_log(1, f"[ChattingSession] 📍 發布 SESSION_ENDED: session={self.session_id}, cycle={current_cycle}")
+                
                 event_bus.publish(
                     event_type=SystemEvent.SESSION_ENDED,
                     data={
@@ -366,7 +377,8 @@ class ChattingSession:
                         'session_type': 'chatting',
                         'reason': reason,
                         'duration': duration,
-                        'total_turns': self.turn_counter
+                        'total_turns': self.turn_counter,
+                        'cycle_index': current_cycle  # ✅ 使用當前 cycle_index
                     },
                     source='chatting_session'
                 )

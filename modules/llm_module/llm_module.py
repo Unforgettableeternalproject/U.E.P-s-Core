@@ -67,6 +67,9 @@ class LLMModule(BaseModule):
         # 🔧 工作流事件隊列（初始化為空列表，防止遺留舊事件）
         self._pending_workflow_events = []
         
+        # 🔧 工作流完成事件去重（追蹤已處理的 (session_id, complete=True) 事件）
+        self._processed_workflow_completions = set()
+        
         # 監聽系統狀態變化以自動切換協作管道
         self._setup_state_listener()
         
@@ -153,7 +156,13 @@ class LLMModule(BaseModule):
                     self._handle_workflow_failed,
                     handler_name="LLM.workflow_error_handler"
                 )
-                debug_log(2, "[LLM] Event bus 已連接，已訂閱 WORKFLOW_STEP_COMPLETED 和 WORKFLOW_FAILED 事件")
+                # 🆕 訂閱輸出層完成事件（用於處理待處理的互動步驟提示）
+                self.event_bus.subscribe(
+                    SystemEvent.OUTPUT_LAYER_COMPLETE,
+                    self._handle_output_complete,
+                    handler_name="LLM.output_complete_handler"
+                )
+                debug_log(2, "[LLM] Event bus 已連接，已訂閱 WORKFLOW_STEP_COMPLETED, WORKFLOW_FAILED 和 OUTPUT_LAYER_COMPLETE 事件")
             except Exception as e:
                 error_log(f"[LLM] 無法連接 event bus: {e}")
                 self.event_bus = None
@@ -188,31 +197,87 @@ class LLMModule(BaseModule):
             requires_review = data.get("requires_llm_review", False)
             review_data = data.get("llm_review_data")
             
+            # 🔧 去重檢查：如果是完成事件且已處理過，跳過
+            is_complete = step_result.get('complete', False)
+            if is_complete and session_id in self._processed_workflow_completions:
+                debug_log(2, f"[LLM] ⚠️ 跳過重複的工作流完成事件: {session_id}")
+                return
+            
+            # 🔧 標記為已處理（在加入隊列前就標記，避免重複加入）
+            if is_complete:
+                self._processed_workflow_completions.add(session_id)
+                debug_log(2, f"[LLM] ✅ 已標記工作流完成事件: {session_id}")
+            
             debug_log(2, f"[LLM] 工作流 {workflow_type} ({session_id}) 步驟完成")
             debug_log(3, f"[LLM] 需要審核: {requires_review}, 結果: {step_result.get('success')}")
+            debug_log(2, f"[LLM] 接收到的 review_data keys: {list(review_data.keys()) if review_data else 'None'}")
+            
+            # 🔧 檢查是否為 LLM_PROCESSING 請求
+            requires_llm_processing = data.get('requires_llm_processing', False)
+            if requires_llm_processing:
+                debug_log(2, f"[LLM] 檢測到 LLM_PROCESSING 請求")
+                llm_request_data = data.get('llm_request_data', {})
+                
+                # 🔧 去重檢查：避免重複處理同一個 LLM_PROCESSING 步驟
+                step_id = llm_request_data.get('step_id', '')
+                processing_key = f"{session_id}:{step_id}"
+                
+                if not hasattr(self, '_processed_llm_steps'):
+                    self._processed_llm_steps = set()
+                
+                if processing_key in self._processed_llm_steps:
+                    debug_log(2, f"[LLM] ⚠️ 跳過重複的 LLM_PROCESSING 請求: {processing_key}")
+                    return
+                
+                # 標記為已處理
+                self._processed_llm_steps.add(processing_key)
+                debug_log(2, f"[LLM] ✅ 開始處理 LLM_PROCESSING 請求: {processing_key}")
+                
+                self._handle_llm_processing_request(session_id, workflow_type, llm_request_data)
+                return
             
             # 🆕 檢查是否為工作流完成（最後一步）
             is_workflow_complete = step_result.get('complete', False)
+            debug_log(2, f"[LLM] 步驟結果數據: {step_result}")
+            debug_log(2, f"[LLM] 工作流完成標記: {is_workflow_complete}")
             should_respond_to_user = review_data and review_data.get('requires_user_response', False) if review_data else False
             should_end_session = review_data and review_data.get('should_end_session', False) if review_data else False
             
-            # 🆕 獲取下一步資訊
-            next_step_info = data.get('next_step_info')
-            next_step_is_interactive = next_step_info and next_step_info.get('step_type') == 'interactive' if next_step_info else False
+            # 🆕 獲取當前步驟和下一步資訊
+            # 🔧 優先從 review_data 中讀取，否則從 data 中讀取
+            current_step_info = (review_data.get('current_step_info') if review_data else None) or data.get('current_step_info')
+            next_step_info = (review_data.get('next_step_info') if review_data else None) or data.get('next_step_info')
             
+            # 🔧 修正：檢查當前步驟是否為 Interactive（等待輸入），且不會被跳過
+            # ⚠️ 重要：如果步驟會被跳過（step_will_be_skipped=True），不應視為需要互動
+            current_step_is_interactive = (
+                current_step_info 
+                and current_step_info.get('step_type') == 'interactive' 
+                and not current_step_info.get('step_will_be_skipped', False)
+            ) if current_step_info else False
+            
+            next_step_is_interactive = (
+                next_step_info 
+                and next_step_info.get('step_type') == 'interactive'
+                and not next_step_info.get('step_will_be_skipped', False)
+            ) if next_step_info else False
+            
+            debug_log(3, f"[LLM] 當前步驟資訊: {current_step_info}")
             debug_log(3, f"[LLM] 下一步資訊: {next_step_info}")
+            debug_log(3, f"[LLM] 當前步驟是互動步驟: {current_step_is_interactive}")
             debug_log(3, f"[LLM] 下一步是互動步驟: {next_step_is_interactive}")
             
-            # 🔧 過濾條件：如果不需要審核
-            if not requires_review:
-                debug_log(2, f"[LLM] 步驟不需要審核")
+            # 🔧 過濾條件：如果不需要審核且工作流未完成
+            # ⚠️ 重要：工作流完成時即使不需要審核也要生成最終總結
+            if not requires_review and not is_workflow_complete:
+                debug_log(2, f"[LLM] 步驟不需要審核且工作流未完成")
                 return
             
             # 🔧 實施 3 時刻回應模式：
             # 1. 工作流觸發 - 由 start_workflow MCP 工具處理（不在這裡）
-            # 2. 下一步為互動步驟 - 需要生成提示給使用者
+            # 2. 當前步驟為互動步驟，或下一步為互動步驟 - 需要生成提示給使用者
             # 3. 工作流完成 - 需要生成最終結果
-            should_generate_response = is_workflow_complete or next_step_is_interactive
+            should_generate_response = is_workflow_complete or current_step_is_interactive or next_step_is_interactive
             
             if not should_generate_response:
                 debug_log(2, f"[LLM] 步驟完成，下一步非互動步驟，靜默批准並推進")
@@ -224,6 +289,8 @@ class LLMModule(BaseModule):
             if not hasattr(self, '_pending_workflow_events'):
                 self._pending_workflow_events = []
             
+            debug_log(2, f"[LLM] 將工作流事件加入待處理隊列，review_data keys: {list(review_data.keys()) if review_data else 'None'}")
+            
             self._pending_workflow_events.append({
                 "type": "workflow_step_completed" if not is_workflow_complete else "workflow_completed",
                 "session_id": session_id,
@@ -233,19 +300,178 @@ class LLMModule(BaseModule):
                 "is_complete": is_workflow_complete,
                 "should_respond": should_respond_to_user,
                 "should_end_session": should_end_session,
+                "current_step_info": current_step_info,  # 🆕 傳遞當前步驟資訊
                 "next_step_info": next_step_info,  # 🆕 傳遞下一步資訊
                 "timestamp": time.time()
             })
             
-            info_log(f"[LLM] 工作流事件已加入隊列: {workflow_type}, is_complete={is_workflow_complete}, next_interactive={next_step_is_interactive}")
+            info_log(f"[LLM] 工作流事件已加入隊列: {workflow_type}, is_complete={is_workflow_complete}, current_interactive={current_step_is_interactive}")
             
-            # 🔧 不在這裡批准步驟！
-            # LLM 生成回應後會調用 approve_step MCP 工具來批准
-            # 這樣可以確保：回應生成 → TTS 播放 → 批准推進
-            debug_log(2, f"[LLM] 工作流事件已準備好，等待下次 handle() 調用生成回應並批准")
+            # 🆕 處理需要生成回應的情況
+            # 🔧 修正：工作流完成時不檢查互動步驟，直接處理完成邏輯
+            if is_workflow_complete:
+                debug_log(2, f"[LLM] 工作流完成，立即生成最終總結回應")
+                self._process_workflow_completion(session_id, workflow_type, step_result, review_data)
+                return  # ⚠️ 重要：工作流完成後直接返回，不再處理後續邏輯
+            elif current_step_is_interactive or next_step_is_interactive:
+                # ⚠️ 關鍵修正：訂閱 OUTPUT_LAYER_COMPLETE，在當前 cycle 的輸出完成後再處理
+                # 這樣可以確保互動步驟提示在正確的順序生成
+                debug_log(2, f"[LLM] 當前或下一步是互動步驟，訂閱 OUTPUT_LAYER_COMPLETE 等待當前輸出完成")
+                
+                # 保存待處理的互動步驟信息
+                if not hasattr(self, '_pending_interactive_prompts'):
+                    self._pending_interactive_prompts = []
+                
+                self._pending_interactive_prompts.append({
+                    'session_id': session_id,
+                    'workflow_type': workflow_type,
+                    'step_result': step_result,
+                    'review_data': review_data,
+                    'next_step_info': next_step_info,
+                    'current_cycle_session': self._get_current_gs_id()  # 記錄當前 cycle 的 session
+                })
+                
+                # 🔧 修正：不要立即批准步驟！
+                # 當下一步是互動步驟時，LLM 應該生成提示給用戶，但不批准當前步驟
+                # 工作流會自動進入等待輸入狀態（因為 _auto_advance 檢測到 InteractiveStep）
+                # 只有當 LLM 需要批准當前步驟的結果時才調用 approve_step
+                # 在這種情況下（LLM_PROCESSING → INTERACTIVE），LLM 只是提供提示，不批准
+                
+                # ⚠️ 重要：立即處理互動步驟提示，不等待 OUTPUT 完成
+                # 因為在某些情況下（如步驟完成事件晚於輸出完成），OUTPUT 可能已經完成
+                # 此時不會再觸發 OUTPUT_LAYER_COMPLETE 事件處理，導致提示永遠不會生成
+                debug_log(2, f"[LLM] 立即生成互動步驟提示: {workflow_type}")
+                self._process_interactive_step_prompt(
+                    session_id,
+                    workflow_type,
+                    step_result,
+                    review_data,
+                    next_step_info
+                )
+                # 🔧 修正：從兩個隊列中移除（已經處理）
+                # ⚠️ 重要：必須從 _pending_workflow_events 中移除，否則會在 handle() 中被再次處理
+                # 導致 LLM 生成決策並錯誤地調用 approve_step
+                self._pending_interactive_prompts.pop()
+                # 從 _pending_workflow_events 中找到並移除對應的事件
+                if hasattr(self, '_pending_workflow_events') and self._pending_workflow_events:
+                    # 找到匹配的事件（session_id 相同）
+                    self._pending_workflow_events = [
+                        e for e in self._pending_workflow_events 
+                        if e.get('session_id') != session_id
+                    ]
+                    debug_log(2, f"[LLM] 已從待處理隊列中移除互動步驟事件: {session_id}")
+            else:
+                # 🔧 其他情況：等待下次 handle() 調用
+                debug_log(2, f"[LLM] 工作流事件已準備好，等待下次 handle() 調用生成回應")
             
         except Exception as e:
+            import traceback
             error_log(f"[LLM] 處理工作流步驟完成事件失敗: {e}")
+            error_log(f"[LLM] 堆疊追蹤:\n{traceback.format_exc()}")
+    
+    def _handle_llm_processing_request(self, session_id: str, workflow_type: str, llm_request_data: dict):
+        """
+        處理工作流中的 LLM_PROCESSING 請求
+        
+        當工作流步驟類型為 STEP_TYPE_LLM_PROCESSING 時，會調用此方法來：
+        1. 提取 LLM 請求數據（prompt, output_key）
+        2. 生成 LLM 回應
+        3. 將結果寫入工作流會話數據
+        4. 觸發工作流繼續執行
+        
+        Args:
+            session_id: 工作流會話ID
+            workflow_type: 工作流類型
+            llm_request_data: 包含 prompt, output_data_key 等的請求數據
+        """
+        try:
+            debug_log(2, f"[LLM] 開始處理 LLM_PROCESSING 請求: {workflow_type}")
+            
+            # 提取請求數據
+            prompt = llm_request_data.get('prompt')
+            output_key = llm_request_data.get('output_data_key')
+            task_description = llm_request_data.get('task_description', '')
+            
+            if not prompt:
+                error_log(f"[LLM] LLM_PROCESSING 請求缺少 prompt")
+                return
+            
+            if not output_key:
+                error_log(f"[LLM] LLM_PROCESSING 請求缺少 output_data_key")
+                return
+            
+            debug_log(3, f"[LLM] 任務描述: {task_description}")
+            debug_log(3, f"[LLM] 輸出鍵: {output_key}")
+            debug_log(3, f"[LLM] Prompt 長度: {len(prompt)} 字符")
+            
+            # 🔧 使用 internal 模式生成 LLM 回應（節省 token）
+            # internal 模式：不使用 UEP 系統提示詞、不使用快取、不使用 MCP 工具
+            debug_log(2, f"[LLM] 正在調用 Gemini API（internal 模式）...")
+            
+            # 構建簡潔的系統提示詞（僅針對工作流任務）
+            workflow_system_prompt = (
+                "You are a helpful assistant processing workflow tasks. "
+                "Provide clear, concise responses based on the given instructions. "
+                "Follow the format requirements strictly. And ALWAYS respond in English"
+            )
+            
+            response_data = self.model.query(
+                prompt, 
+                mode="internal",  # 🔧 使用 internal 模式
+                cached_content=None,  # 不使用快取
+                tools=None,  # 不使用 MCP 工具
+                system_instruction=workflow_system_prompt  # 使用簡潔的系統提示詞
+            )
+            
+            if not response_data or 'text' not in response_data:
+                error_log(f"[LLM] Gemini API 回應無效: {response_data}")
+                return
+            
+            llm_result = response_data['text']
+            debug_log(2, f"[LLM] LLM 回應已生成 (長度: {len(llm_result)})")
+            debug_log(3, f"[LLM] 回應內容預覽: {llm_result[:200]}...")
+            
+            # 寫入工作流會話數據
+            from core.sessions.session_manager import session_manager
+            workflow_session = session_manager.get_workflow_session(session_id)
+            
+            if not workflow_session:
+                error_log(f"[LLM] 找不到工作流會話: {session_id}")
+                return
+            
+            workflow_session.add_data(output_key, llm_result)
+            debug_log(2, f"[LLM] 已將 LLM 結果寫入會話數據鍵: {output_key}")
+            
+            # 🔧 觸發工作流繼續執行
+            # 使用 provide_workflow_input MCP 工具來推進工作流
+            debug_log(2, f"[LLM] 調用 provide_workflow_input 推進工作流...")
+            
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            # 調用 MCP 工具推進工作流（使用空字符串作為輸入，因為LLM結果已寫入會話）
+            continue_result = loop.run_until_complete(
+                self.mcp_client.call_tool(
+                    "provide_workflow_input",
+                    {
+                        "session_id": session_id,
+                        "user_input": "",  # 空輸入，因為數據已在會話中
+                        "use_fallback": True  # 使用 fallback 模式直接推進
+                    }
+                )
+            )
+            
+            debug_log(2, f"[LLM] 工作流推進結果: {continue_result.get('status')}")
+            debug_log(2, f"[LLM] LLM_PROCESSING 請求處理完成，工作流已繼續")
+            
+        except Exception as e:
+            import traceback
+            error_log(f"[LLM] 處理 LLM_PROCESSING 請求失敗: {e}")
+            error_log(f"[LLM] 堆疊追蹤:\n{traceback.format_exc()}")
     
     def _handle_workflow_failed(self, event):
         """
@@ -287,6 +513,51 @@ class LLMModule(BaseModule):
             
         except Exception as e:
             error_log(f"[LLM] 處理工作流失敗事件錯誤: {e}")
+    
+    def _handle_output_complete(self, event):
+        """
+        處理輸出層完成事件
+        
+        當 TTS 輸出完成後，檢查是否有待處理的互動步驟提示需要生成
+        這確保互動步驟提示在正確的時序生成（在當前 cycle 的輸出之後）
+        
+        Args:
+            event: OUTPUT_LAYER_COMPLETE 事件
+        """
+        try:
+            # 檢查是否有待處理的互動步驟提示
+            if not hasattr(self, '_pending_interactive_prompts') or not self._pending_interactive_prompts:
+                return
+            
+            current_gs = self._get_current_gs_id()
+            
+            # 處理所有待處理的提示（只處理當前 cycle 的）
+            prompts_to_process = []
+            remaining_prompts = []
+            
+            for prompt_info in self._pending_interactive_prompts:
+                if prompt_info['current_cycle_session'] == current_gs:
+                    prompts_to_process.append(prompt_info)
+                else:
+                    remaining_prompts.append(prompt_info)
+            
+            self._pending_interactive_prompts = remaining_prompts
+            
+            # 處理每個待處理的提示
+            for prompt_info in prompts_to_process:
+                debug_log(2, f"[LLM] OUTPUT 完成後處理互動步驟提示: {prompt_info['workflow_type']}")
+                self._process_interactive_step_prompt(
+                    prompt_info['session_id'],
+                    prompt_info['workflow_type'],
+                    prompt_info['step_result'],
+                    prompt_info['review_data'],
+                    prompt_info['next_step_info']
+                )
+        
+        except Exception as e:
+            import traceback
+            error_log(f"[LLM] 處理輸出完成事件失敗: {e}")
+            error_log(f"[LLM] 堆疊追蹤:\n{traceback.format_exc()}")
     
     def _submit_workflow_review_request(self, session_id: str, workflow_type: str, is_complete: bool):
         """
@@ -612,8 +883,9 @@ class LLMModule(BaseModule):
             )
             
             # 調用 LLM 生成回應
-            debug_log(2, f"[LLM] 生成工作流完成回應")
-            response = self.model.query(prompt, mode="internal")
+            # ⚠️ 關鍵：工作流完成回應時不提供 MCP 工具且不使用快取（避免 LLM 從快取中調用 approve_step 等工具）
+            debug_log(2, f"[LLM] 生成工作流完成回應（不提供 MCP 工具，不使用快取）")
+            response = self.model.query(prompt, mode="internal", tools=None, cached_content=None)
             
             if "text" in response:
                 user_response = response["text"]
@@ -674,6 +946,24 @@ class LLMModule(BaseModule):
             info_log(f"[LLM] 已發布工作流完成回應到處理層" + 
                     (f"，將結束會話" if should_end_session else ""))
             
+            # ✅ 清除 workflow_processing 標誌，允許下一次輸入層運行
+            from core.working_context import working_context_manager
+            working_context_manager.set_skip_input_layer(False, reason="workflow_completion_processed")
+            debug_log(2, "[LLM] 已清除 workflow_processing 標誌")
+            
+            # 🔧 清理追蹤標記，防止內存洩漏
+            if session_id in self._processed_workflow_completions:
+                self._processed_workflow_completions.discard(session_id)
+                debug_log(2, f"[LLM] 已移除工作流完成追蹤: {session_id}")
+            
+            # 🔧 清理該工作流的所有 LLM_PROCESSING 步驟標記
+            if hasattr(self, '_processed_llm_steps'):
+                steps_to_remove = {key for key in self._processed_llm_steps if key.startswith(f"{session_id}:")}
+                for step_key in steps_to_remove:
+                    self._processed_llm_steps.discard(step_key)
+                if steps_to_remove:
+                    debug_log(2, f"[LLM] 已清理 {len(steps_to_remove)} 個 LLM_PROCESSING 步驟標記")
+            
         except Exception as e:
             error_log(f"[LLM] 處理工作流完成失敗: {e}")
     
@@ -724,7 +1014,14 @@ class LLMModule(BaseModule):
             # 🔧 在處理開始時獲取並保存 session_id 和 cycle_index
             # 避免在事件發布時動態讀取導致cycle已遞增的問題
             self._current_processing_session_id = self._get_current_gs_id()
-            self._current_processing_cycle_index = self._get_current_cycle_index()
+            # ✅ 優先從輸入數據中讀取 cycle_index（由 MC 從 STATE_ADVANCED 或 INPUT_LAYER_COMPLETE 傳遞）
+            # 如果輸入數據中沒有，才從 working_context 讀取
+            if hasattr(llm_input, 'cycle_index') and llm_input.cycle_index is not None:
+                self._current_processing_cycle_index = llm_input.cycle_index
+                debug_log(3, f"[LLM] 從輸入數據讀取 cycle_index: {self._current_processing_cycle_index}")
+            else:
+                self._current_processing_cycle_index = self._get_current_cycle_index()
+                debug_log(3, f"[LLM] 從 working_context 讀取 cycle_index: {self._current_processing_cycle_index}")
             debug_log(3, f"[LLM] 記錄處理上下文: session={self._current_processing_session_id}, cycle={self._current_processing_cycle_index}")
             
             # 檢查是否來自新 Router
@@ -733,6 +1030,49 @@ class LLMModule(BaseModule):
                 debug_log(2, f"[LLM] 來自新Router - 來源層級: {llm_input.source_layer}")
                 if llm_input.processing_context:
                     debug_log(3, f"[LLM] 處理層上下文: {llm_input.processing_context}")
+            
+            # 🔧 檢查是否為內部呼叫（繞過會話檢查和系統提示詞）
+            is_internal = getattr(llm_input, 'is_internal', False)
+            
+            if is_internal:
+                debug_log(1, "[LLM] 內部呼叫模式 - 使用簡潔系統提示詞")
+                # 內部呼叫：使用簡潔提示詞，不使用快取或會話檢查
+                try:
+                    # 允許自定義系統提示詞（用於工作流），否則使用默認簡潔版本
+                    internal_system_prompt = getattr(llm_input, 'system_instruction', None)
+                    if not internal_system_prompt:
+                        internal_system_prompt = (
+                            "You are a helpful assistant. "
+                            "Provide clear and concise responses."
+                        )
+                    
+                    response_data = self.model.query(
+                        llm_input.text,
+                        mode="internal",
+                        cached_content=None,  # 內部呼叫不使用快取
+                        system_instruction=internal_system_prompt
+                    )
+                    
+                    response_text = response_data.get("content", response_data.get("text", ""))
+                    
+                    processing_time = time.time() - start_time
+                    self.processing_stats["total_requests"] += 1
+                    self.processing_stats["total_processing_time"] += processing_time
+                    
+                    return {
+                        "status": "ok",
+                        "text": response_text,
+                        "mode": "internal",
+                        "processing_time": processing_time,
+                        "timestamp": time.time()
+                    }
+                except Exception as e:
+                    error_log(f"[LLM] 內部呼叫失敗: {e}")
+                    return {
+                        "status": "error",
+                        "message": f"內部呼叫失敗: {str(e)}",
+                        "timestamp": time.time()
+                    }
             
             # 1. 獲取當前系統狀態和會話信息
             current_state = self.state_manager.get_current_state()
@@ -787,11 +1127,16 @@ class LLMModule(BaseModule):
                 llm_input.mode = LLMMode.WORK
             
             # ✅ 檢查是否為工作流輸入場景（Interactive Input Step）
-            # 🚨 優先級：如果有待處理事件，不要構建 workflow_input_context（避免衝突）
+            # ✅ 優先級：如果工作流正在等待輸入，清除舊的 pending_workflow 並構建新的 workflow_input_required context
             from core.working_context import working_context_manager
             workflow_waiting_input = working_context_manager.is_workflow_waiting_input()
             
-            if workflow_waiting_input and self.session_info and self.session_info.get('session_type') == 'workflow' and not pending_workflow:
+            if workflow_waiting_input and self.session_info and self.session_info.get('session_type') == 'workflow':
+                # ✅ 如果有舊的 pending_workflow 數據，清除它（工作流現在需要用戶輸入，不再是審核場景）
+                if pending_workflow:
+                    debug_log(2, "[LLM] 工作流等待輸入，清除舊的 pending_workflow 數據")
+                    self._pending_workflow_events.clear()  # 清除待處理事件
+                    pending_workflow = None
                 info_log("[LLM] 檢測到工作流輸入場景 - 構建 workflow_input_required context")
                 
                 # ✅ 從 working_context_manager 獲取實際的工作流輸入上下文
@@ -885,14 +1230,22 @@ class LLMModule(BaseModule):
                 debug_log(2, "[LLM] 使用快取回應（包含記憶上下文）")
                 return cached_response
             
-            # 3. 構建 CHAT 提示（整合記憶）
+            # 提取 intent metadata（用於檢測降級的 WORK 請求）
+            intent_metadata = None
+            if llm_input.entities and isinstance(llm_input.entities, dict):
+                intent_metadata = llm_input.entities.get('intent_metadata')
+            elif llm_input.processing_context and isinstance(llm_input.processing_context, dict):
+                intent_metadata = llm_input.processing_context.get('intent_metadata')
+            
+            # 3. 構建 CHAT 提示（整合記憶和降級警告）
             prompt = self.prompt_manager.build_chat_prompt(
                 user_input=llm_input.text,
                 identity_context=llm_input.identity_context,
                 memory_context=llm_input.memory_context,
                 conversation_history=getattr(llm_input, 'conversation_history', None),
                 is_internal=False,
-                relevant_memories=relevant_memories  # 新增：傳入檢索到的記憶
+                relevant_memories=relevant_memories,  # 新增：傳入檢索到的記憶
+                intent_metadata=intent_metadata  # 新增：傳入 intent metadata
             )
             
             # 3. 獲取或創建系統快取
@@ -905,9 +1258,6 @@ class LLMModule(BaseModule):
                 cached_content=cached_content_ids.get("persona")
             )
             response_text = response_data.get("text", "")
-            
-            # 🔧 修復 Unicode 轉義序列問題
-            response_text = self._decode_response_text(response_text)
             
             # === 詳細回應日誌 ===
             info_log(f"[LLM] 🤖 Gemini回應: {response_text}")
@@ -1029,6 +1379,13 @@ class LLMModule(BaseModule):
             )
             
             self.cache_manager.cache_response(cache_key, output)
+            
+            # 發布 LLM 回應生成事件
+            self._publish_llm_response_event(output, "CHAT", {
+                "memory_context_used": bool(llm_input.memory_context),
+                "relevant_memories_count": len(relevant_memories) if relevant_memories else 0
+            })
+            
             return output
             
         except Exception as e:
@@ -1105,6 +1462,133 @@ class LLMModule(BaseModule):
                 emotion="neutral",
                 mood="neutral",
                 metadata={"mode": "WORK", "error_type": "processing_error", "phase": phase}
+            )
+    
+    def _generate_system_report_response(self, llm_input: "LLMInput", status: Dict[str, Any], start_time: float) -> "LLMOutput":
+        """生成系統報告回應（系統主動通知）
+        
+        系統報告是系統主動發出的通知（如待辦事項提醒、日曆事件等）
+        不需要工作流引擎或 MCP 工具，直接生成簡潔友善的訊息
+        
+        Args:
+            llm_input: LLM 輸入（包含通知內容）
+            status: 系統狀態
+            start_time: 開始時間
+            
+        Returns:
+            LLMOutput: 生成的通知訊息
+        """
+        try:
+            info_log("[LLM] 🔔 生成系統通知訊息")
+            
+            # Build system report prompt (request concise, friendly notification)
+            notification_content = llm_input.text
+            debug_log(2, f"[LLM] 📋 通知內容（輸入）: {notification_content}")
+            
+            system_report_prompt = f"""You are U.E.P., an interdimensional being. Your system has detected an event that you need to inform the user about.
+
+System detected event:
+{notification_content}
+
+Your task: Convert this system-detected event into a friendly, natural spoken message to inform the user.
+Think of it as: "I (U.E.P.) noticed this and want to let you know."
+
+Requirements:
+1. Use first person ("I") to show you're informing them (e.g., "I noticed...", "Just wanted to let you know...")
+2. Keep it brief (1-2 sentences)
+3. Friendly, conversational tone
+4. Include all the important details from the notification
+5. Don't ask questions - you're informing, not requesting
+
+Examples:
+
+System event: "Reminder: Todo item 'Complete Report' is due in one hour"
+Your message: "Hey, just wanted to remind you - 'Complete Report' is due in an hour."
+
+System event: "Reminder: 'Team Meeting' is about to start, Location: Meeting Room A"
+Your message: "Heads up, 'Team Meeting' is starting soon in Meeting Room A."
+
+System event: "Alert: Todo item 'Submit Proposal' is overdue"
+Your message: "Just letting you know, 'Submit Proposal' is overdue."
+
+Now convert the system event above into your spoken message:"""
+
+            # 調試：記錄完整 Prompt
+            debug_log(3, f"[LLM] 📝 系統通知 Prompt（前200字符）:\n{system_report_prompt[:200]}...")
+            debug_log(3, f"[LLM] 📝 系統通知 Prompt（後200字符）:\n...{system_report_prompt[-200:]}")
+
+            # 調用 Gemini API（不使用 MCP 工具和 function calling）
+            response_data = self.model.query(
+                system_report_prompt,
+                mode="chat"  # 使用 chat 模式避免 function calling
+            )
+            
+            # 調試：記錄 LLM 原始回應
+            debug_log(3, f"[LLM] 🤖 Gemini 原始回應: {response_data.get('text', '')[:200]}")
+            
+            response_text = response_data.get("text", "").strip()
+            
+            if not response_text:
+                # 如果 LLM 沒有生成回應，使用原始通知內容
+                response_text = notification_content
+                info_log("[LLM] ⚠️ LLM 未生成回應，使用原始通知內容")
+            
+            info_log(f"[LLM] ✅ 系統通知訊息已生成：{response_text[:50]}...")
+            
+            # 🔑 設置 session_control：系統通知完成後應該結束會話
+            # 通知是一次性的，不需要持續對話
+            session_control = {
+                "should_end_session": True,
+                "end_reason": "system_notification_complete",
+                "confidence": 1.0
+            }
+            debug_log(2, f"[LLM] 🔚 系統通知完成，設置會話結束標記")
+            
+            return LLMOutput(
+                text=response_text,
+                processing_time=time.time() - start_time,
+                tokens_used=response_data.get("_meta", {}).get("total_input_tokens", 0),
+                success=True,
+                error=None,
+                confidence=1.0,
+                sys_action=None,
+                status_updates=None,
+                learning_data=None,
+                conversation_entry=None,
+                session_state=None,
+                memory_observation=None,
+                memory_summary=None,
+                emotion="neutral",
+                mood="cheerful",
+                metadata={
+                    "mode": "WORK",
+                    "phase": "response",
+                    "system_report": True,
+                    "notification_type": getattr(llm_input, 'metadata', {}).get('notification_type', 'unknown'),
+                    "session_control": session_control  # ✅ 添加 session_control
+                }
+            )
+            
+        except Exception as e:
+            error_log(f"[LLM] 生成系統通知訊息失敗: {e}")
+            # 失敗時返回原始通知內容
+            return LLMOutput(
+                text=llm_input.text,
+                processing_time=time.time() - start_time,
+                tokens_used=0,
+                success=False,
+                error=str(e),
+                confidence=0.0,
+                sys_action=None,
+                status_updates=None,
+                learning_data=None,
+                conversation_entry=None,
+                session_state=None,
+                memory_observation=None,
+                memory_summary=None,
+                emotion="neutral",
+                mood="neutral",
+                metadata={"mode": "WORK", "error_type": "system_report_error", "system_report": True}
             )
     
     def _decide_workflow(self, llm_input: "LLMInput", start_time: float) -> "LLMOutput":
@@ -1235,13 +1719,15 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
         當檢測到 workflow_input_required 時，直接調用 provide_workflow_input 工具
         避免通過 Gemini API 理解用戶意圖，加快響應速度並避免超時
         
+        ⚠️ 注意：如果輸入需要 LLM 解析（如自然語言轉結構化數據），返回 None 讓正常流程處理
+        
         Args:
             llm_input: LLM 輸入
             workflow_context: 工作流上下文（包含 workflow_session_id、user_input 等）
             start_time: 開始時間
             
         Returns:
-            LLMOutput: 處理結果
+            LLMOutput: 處理結果，或 None 表示需要正常流程處理
         """
         try:
             import asyncio
@@ -1251,6 +1737,24 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             user_input = workflow_context.get('user_input', llm_input.text)
             is_optional = workflow_context.get('is_optional', False)
             step_id = workflow_context.get('step_id', 'unknown')
+            prompt = workflow_context.get('prompt', '')
+            
+            # 🔧 檢測是否需要 LLM 解析
+            # 如果提示要求結構化數據（包含 JSON、task_name、priority 等關鍵字），
+            # 且用戶輸入是自然語言（不是 JSON 或 key=value 格式），
+            # 則不使用快速路徑，讓 LLM 解析
+            requires_structured_data = any(keyword in prompt.lower() for keyword in [
+                'json', 'task_name', 'task_description', 'priority', 'deadline'
+            ])
+            
+            is_natural_language = not (
+                user_input.strip().startswith('{') or  # JSON 格式
+                '=' in user_input  # key=value 格式
+            )
+            
+            if requires_structured_data and is_natural_language:
+                debug_log(2, f"[LLM] 快速路徑跳過：輸入需要 LLM 解析（step={step_id}）")
+                return None  # 返回 None 讓正常流程處理
             
             info_log(f"[LLM] 快速路徑：直接提交工作流輸入 '{user_input}' 到步驟 {step_id}")
             
@@ -1354,8 +1858,38 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
         debug_log(2, "[LLM] 💬 生成工作流回應")
         
         try:
-            # ✅ 檢查是否有運行中的工作流會話
-            has_active_workflow = self.session_info and self.session_info.get('session_type') == 'workflow'
+            # ✅ 檢查是否為系統報告模式（系統主動通知）
+            is_system_report = getattr(llm_input, 'system_report', False)
+            if is_system_report:
+                debug_log(2, "[LLM] 🔔 系統報告模式：生成簡潔通知訊息")
+                return self._generate_system_report_response(llm_input, status, start_time)
+            
+            # ✅ 檢查是否有運行中的工作流引擎
+            # 這個檢查很重要：
+            # 1. WS 是容器（可能存在但沒有工作流）
+            # 2. WorkflowEngine 是實際的工作流執行器
+            # 3. 只有當 WorkflowEngine 存在時，才認為有活躍的工作流
+            has_active_workflow = False
+            if self.session_info and self.session_info.get('session_type') == 'workflow':
+                session_id = self.session_info.get('session_id')
+                
+                # 檢查 SYS 模組的 workflow_engines 字典中是否有對應的引擎
+                try:
+                    from core.framework import core_framework
+                    sys_module = core_framework.get_module('sys')
+                    
+                    if sys_module and hasattr(sys_module, 'workflow_engines'):
+                        has_active_workflow = session_id in sys_module.workflow_engines
+                        if has_active_workflow:
+                            debug_log(2, f"[LLM] 檢測到活躍的工作流引擎: {session_id}")
+                        else:
+                            debug_log(2, f"[LLM] WS 存在但無工作流引擎: {session_id}")
+                    else:
+                        debug_log(2, f"[LLM] 無法訪問 SYS 模組的 workflow_engines")
+                except Exception as e:
+                    debug_log(2, f"[LLM] 檢查工作流引擎時出錯: {e}")
+                    # 保守策略：如果無法檢查，假設有工作流（避免重複啟動）
+                    has_active_workflow = True
             
             # ✅ 檢查是否有待處理的工作流事件（正在審核步驟）
             pending_workflow = getattr(llm_input, 'workflow_context', None)
@@ -1364,32 +1898,63 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             # 🔧 快速路徑：如果是工作流輸入場景，直接調用 provide_workflow_input
             # 避免花費時間通過 Gemini API 理解用戶意圖，加快響應速度
             is_workflow_input = pending_workflow and pending_workflow.get('type') == 'workflow_input_required'
-            if is_workflow_input:
-                info_log("[LLM] 🚀 檢測到工作流輸入場景，使用快速路徑直接提交輸入")
-                return self._handle_workflow_input_fast_path(llm_input, pending_workflow, start_time)
+            debug_log(2, f"[LLM] 檢查快速路徑條件: pending_workflow={pending_workflow is not None}, type={pending_workflow.get('type') if pending_workflow else None}, is_workflow_input={is_workflow_input}")
             
-            # ✅ 從 working_context 讀取 workflow_hint（由 NLP 寫入）
-            # 但如果已有工作流運行或正在審核步驟，不要使用 workflow_hint（避免重複啟動工作流）
-            workflow_hint = None
+            # ✅ 檢查：如果正在審核步驟結果，但用戶只是提供了簡單回應（如 "yes", "no"），
+            # 這可能是誤判，實際上用戶是在回應互動步驟而不是審核步驟
+            if is_reviewing_step and llm_input.text:
+                user_text_lower = llm_input.text.strip().lower()
+                simple_responses = ['yes', 'y', 'no', 'n', 'ok', 'confirm', 'cancel', 
+                                   '確認', '取消', 'skip', '跳過', '']
+                if user_text_lower in simple_responses:
+                    # 用戶提供了簡單回應，這可能是互動步驟的輸入而非步驟審核
+                    # 檢查是否有活躍的互動步驟在等待輸入
+                    from core.working_context import working_context_manager
+                    if working_context_manager.is_workflow_waiting_input():
+                        debug_log(2, "[LLM] 檢測到簡單回應且工作流在等待輸入，切換為工作流輸入場景")
+                        # 構建 workflow_input_required context
+                        saved_context = working_context_manager.get_context_data('workflow_input_context', {})
+                        workflow_session_id = saved_context.get('workflow_session_id') or self.session_info.get('session_id')
+                        
+                        pending_workflow = {
+                            'type': 'workflow_input_required',
+                            'workflow_session_id': workflow_session_id,
+                            'workflow_type': saved_context.get('workflow_type', 'unknown'),
+                            'step_id': saved_context.get('step_id', 'input_step'),
+                            'user_input': llm_input.text,
+                            'is_optional': saved_context.get('optional', False)
+                        }
+                        is_workflow_input = True
+                        is_reviewing_step = False
+            
+            if is_workflow_input and pending_workflow:
+                info_log("[LLM] 🚀 檢測到工作流輸入場景，嘗試使用快速路徑直接提交輸入")
+                fast_path_result = self._handle_workflow_input_fast_path(llm_input, pending_workflow, start_time)
+                if fast_path_result is not None:
+                    return fast_path_result
+                # 快速路徑返回 None 表示需要 LLM 解析，繼續正常流程
+                debug_log(2, "[LLM] 快速路徑返回 None，繼續正常流程讓 LLM 解析輸入")
+            
             from core.working_context import working_context_manager
             
-            if has_active_workflow or is_reviewing_step:
-                debug_log(2, f"[LLM] 已有工作流運行或正在審核步驟，跳過 workflow_hint（避免重複啟動）")
-                # 清除 hint，避免影響後續處理
-                working_context_manager.set_context_data("workflow_hint", None)
-            else:
-                workflow_hint = working_context_manager.get_context_data("workflow_hint")
-                if workflow_hint:
-                    debug_log(2, f"[LLM] 從 working_context 讀取工作流提示: {workflow_hint}")
-                    # 讀取後立即清除，確保只使用一次
-                    working_context_manager.set_context_data("workflow_hint", None)
-                    debug_log(2, f"[LLM] 已清除 workflow_hint（僅使用一次）")
-            
             # ✅ 檢查是否有 MCP Server 可用
+            # 即使在 workflow_step_response 時也提供工具，讓 LLM 自己決定是否使用（tool_choice=AUTO）
+            is_step_response = pending_workflow and pending_workflow.get('type') == 'workflow_step_response'
             mcp_tools = None
             if self.mcp_client and hasattr(self.mcp_client, 'get_tools_as_gemini_format'):
                 mcp_tools = self.mcp_client.get_tools_as_gemini_format()
                 debug_log(2, f"[LLM] MCP 工具已準備: {len(mcp_tools) if mcp_tools else 0} 個")
+                if is_step_response:
+                    debug_log(2, "[LLM] 步驟回應模式：提供工具但不強制使用（tool_choice=AUTO）")
+            
+            # 🔧 決定 tool_choice 模式（在構建 prompt 之前）
+            if not has_active_workflow and not is_reviewing_step and mcp_tools:
+                tool_choice = "ANY"  # 強制調用工具（新請求應該啟動工作流） # 考慮切換回全部都用AUTO?
+                force_tool_use = True
+            else:
+                tool_choice = "AUTO"  # 自動決定（可能需要繼續工作流或只是回應）
+                force_tool_use = False
+                
             
             # 構建 WORK 提示
             prompt = self.prompt_manager.build_work_prompt(
@@ -1397,9 +1962,9 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                 available_functions=None,  # 不再需要文字描述，使用 MCP tools
                 workflow_context=pending_workflow,
                 identity_context=llm_input.identity_context,
-                workflow_hint=workflow_hint,  # 只在不是審核步驟時使用 hint
                 use_mcp_tools=True if mcp_tools else False,
-                suppress_start_workflow_instruction=bool(has_active_workflow or is_reviewing_step)  # ✅ 已有工作流時抑制啟動指示
+                suppress_start_workflow_instruction=bool(has_active_workflow or is_reviewing_step),  # ✅ 已有工作流時抑制啟動指示
+                force_tool_use=force_tool_use  # 🔧 傳遞是否強制調用工具
             )
             
             # 獲取或創建任務快取
@@ -1409,23 +1974,44 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             if mcp_tools:
                 debug_log(3, f"[LLM] Prompt 總長度: {len(prompt)} 字符")
                 debug_log(3, f"[LLM] Prompt 前 500 字符:\n{prompt[:500]}...")
-                # 記錄包含工作流指引的部分
-                if "Available Workflows" in prompt:
-                    start_idx = prompt.find("Available Workflows")
-                    debug_log(3, f"[LLM] 工作流指引部分:\n{prompt[start_idx:start_idx+800]}")
-                else:
-                    debug_log(3, "[LLM] ⚠️ Prompt 中缺少 'Available Workflows' 指引！")
-                debug_log(3, f"[LLM] Prompt 包含 workflow_hint: {workflow_hint}")
             
             # ✅ 呼叫 Gemini API (使用 MCP tools 進行 function calling)
+            # tool_choice 已在構建 prompt 時決定
+            debug_log(2, f"[LLM] Function calling 模式: {tool_choice} (has_active_workflow={has_active_workflow}, is_reviewing_step={is_reviewing_step}, has_tools={mcp_tools is not None})")
+            
             response_data = self.model.query(
                 prompt, 
                 mode="work",
                 cached_content=cached_content_ids.get("functions"),
-                tools=mcp_tools  # 傳入 MCP tools
+                tools=mcp_tools,  # 傳入 MCP tools
+                tool_choice=tool_choice  # 🔧 修復：使用動態決定的模式
             )
             
-            # 🔍 DEBUG: 記錄 Gemini 的原始響應
+            # � 處理 MALFORMED_FUNCTION_CALL 錯誤：降級為 AUTO 模式重試
+            if response_data.get("error") == "malformed_function_call" and tool_choice == "ANY":
+                error_log(f"[LLM] 檢測到 MALFORMED_FUNCTION_CALL，降級為 AUTO 模式重試")
+                debug_log(2, "[LLM] 使用 tool_choice=AUTO 重新調用 Gemini")
+                
+                response_data = self.model.query(
+                    prompt, 
+                    mode="work",
+                    cached_content=cached_content_ids.get("functions"),
+                    tools=mcp_tools,
+                    tool_choice="AUTO"  # 降級為 AUTO 模式
+                )
+                
+                # 如果還是失敗，最後嘗試不使用工具（純文本回應）
+                if response_data.get("error") == "malformed_function_call":
+                    error_log(f"[LLM] AUTO 模式仍然失敗，使用純文本模式")
+                    response_data = self.model.query(
+                        prompt, 
+                        mode="work",
+                        cached_content=cached_content_ids.get("functions"),
+                        tools=None,  # 不使用工具
+                        tool_choice="NONE"
+                    )
+            
+            # �🔍 DEBUG: 記錄 Gemini 的原始響應
             debug_log(3, f"[LLM] Gemini 響應類型: {list(response_data.keys())}")
             if 'function_call' in response_data:
                 debug_log(3, f"[LLM] Function call: {response_data['function_call']}")
@@ -1458,10 +2044,27 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                 # ✅ 讓 Gemini 根據 MCP 結果生成回應
                 # 構建包含工具執行結果的 follow-up prompt
                 result_status = function_call_result.get("status", "unknown")
-                result_data = function_call_result.get("data", {})
-                result_message = function_call_result.get("formatted_message", "")
+                # ✅ 從 content.data 獲取工作流資料（MCP ToolResult 結構）
+                content = function_call_result.get("content", {})
+                result_data = content.get("data", {}) if isinstance(content, dict) else {}
+                result_message = function_call_result.get("formatted_message", "") or content.get("message", "")
                 tool_name = function_call_result.get("tool_name", "unknown")
-                workflow_status = result_data.get("status", "unknown") if isinstance(result_data, dict) else "unknown"
+                
+                # ✅ 判斷工作流狀態：從 message 推斷
+                # - "started" (但不是 "completed" 或 "finished") → started
+                # - "completed" 或 "finished" → completed
+                # - 其他 → unknown
+                workflow_status = "unknown"
+                if isinstance(result_message, str):
+                    msg_lower = result_message.lower()
+                    # 先檢查 completed/finished（優先級較高）
+                    if " completed" in msg_lower or " finished" in msg_lower or "完成" in result_message:
+                        workflow_status = "completed"
+                    # 再檢查 started（但確保不是 "will complete" 這類未來式）
+                    elif "started" in msg_lower or "已啟動" in result_message:
+                        workflow_status = "started"
+                
+                debug_log(2, f"[LLM] 推斷工作流狀態: {workflow_status} (from message: {result_message[:50]}...)")
                 
                 # ✅ 構建包含語言指示的 follow-up prompt
                 language_instruction = (
@@ -1602,6 +2205,7 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                             next_step_is_interactive = next_step_info and next_step_info.get('step_type') == 'interactive' if next_step_info else False
                             step_result = pending_workflow.get('step_result', {})
                             review_data = pending_workflow.get('review_data', {})
+                            debug_log(2, f"[LLM] 從 pending_workflow 提取的 review_data keys: {list(review_data.keys()) if review_data else 'None'}")
                             
                             if is_complete:
                                 # 🔧 工作流完成：生成總結回應並結束會話
@@ -1610,29 +2214,52 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                                     f"The workflow has completed successfully.\n"
                                     f"Step Result: {step_result.get('message', 'Success')}\n"
                                 )
+                                
+                                # ✅ 提供豐富的審核數據給 LLM（包括文件內容等）
                                 if review_data:
-                                    follow_up_prompt += f"Workflow Data: {str(review_data)[:500]}\n"
+                                    debug_log(2, f"[LLM] 檢查 review_data 是否包含 full_content: {'full_content' in review_data}")
+                                    # 特殊處理：如果有 full_content（文件讀取），提供完整內容
+                                    if 'full_content' in review_data:
+                                        debug_log(2, f"[LLM] 發現 full_content，添加到 prompt")
+                                        file_name = review_data.get('file_name', 'unknown')
+                                        content = review_data.get('full_content', '')
+                                        content_length = review_data.get('content_length', len(content))
+                                        follow_up_prompt += (
+                                            f"\nFile Read Results:\n"
+                                            f"- File: {file_name}\n"
+                                            f"- Content Length: {content_length} characters\n"
+                                            f"- Full Content:\n{content}\n"
+                                        )
+                                    else:
+                                        debug_log(2, f"[LLM] 未發現 full_content，使用通用數據")
+                                        # 通用數據：顯示前 500 字符
+                                        follow_up_prompt += f"Workflow Data: {str(review_data)[:500]}\n"
+                                
                                 follow_up_prompt += (
                                     f"\nGenerate a natural, friendly response that:\n"
                                     f"1. Confirms the task is complete\n"
-                                    f"2. Summarizes the key results/data\n"
+                                    f"2. Summarizes the key results/data (for file read, briefly mention the content)\n"
                                     f"3. Keep it conversational (2-3 sentences)\n"
                                     f"IMPORTANT: Respond in English only."
                                 )
                                 
-                                # ✅ 工作流完成後立即結束 WS（在當前 cycle 內）
-                                # 這樣 SESSION_ENDED 會和 CYCLE_COMPLETED 在同一個 cycle 發布
+                                # ✅ 工作流完成：設置 session_control 以觸發會話結束
+                                # 在生成 follow-up 回應後，將通過 _process_session_control 檢測並標記待結束
+                                # ModuleCoordinator 會在 processing→output 時檢測 session_control 並標記 WS
+                                # Controller 會在 CYCLE_COMPLETED 時結束 WS（確保 LLM 回應和 TTS 輸出完成）
                                 try:
-                                    from core.sessions.session_manager import session_manager
                                     session_id = pending_workflow.get('session_id')
+                                    wf_type = pending_workflow.get('workflow_type', 'workflow')
                                     if session_id:
-                                        success = session_manager.end_workflow_session(session_id)
-                                        if success:
-                                            debug_log(1, f"[LLM] ✅ 工作流完成，已結束 WS: {session_id}")
-                                        else:
-                                            debug_log(2, f"[LLM] ⚠️ 工作流完成但結束 WS 失敗: {session_id}")
+                                        # 將 session_control 添加到 response_data，以便後續處理
+                                        response_data["session_control"] = {
+                                            "should_end_session": True,
+                                            "end_reason": f"workflow_completed:{wf_type}",
+                                            "confidence": 0.9
+                                        }
+                                        debug_log(1, f"[LLM] 🔚 工作流完成，已設置 session_control: {session_id}")
                                 except Exception as e:
-                                    error_log(f"[LLM] 結束工作流會話時出錯: {e}")
+                                    error_log(f"[LLM] 設置 session_control 時出錯: {e}")
                             elif next_step_is_interactive:
                                 # 下一步需要輸入：生成提示
                                 next_prompt = next_step_info.get('prompt', 'Please provide input') if next_step_info else 'Please provide input'
@@ -1668,15 +2295,44 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                         # 不跳過，使用構建的 follow_up_prompt
                     # ✅ 工作流已啟動（新的非同步模式）
                     elif workflow_status == "started":
-                        # 工作流已啟動，正在背景執行
+                        # 工作流已啟動，檢查是否需要用戶輸入
                         workflow_type = result_data.get("workflow_type", "task")
-                        follow_up_prompt = (
-                            f"{language_instruction}"
-                            f"The workflow '{workflow_type}' has been started successfully.\n"
-                            f"Result: {result_message}\n\n"
-                            f"Please inform the user in a natural, friendly tone that you're processing their request and explain what will happen next (e.g., 'I'm reading the file now').\n"
-                            f"IMPORTANT: Respond in English only."
-                        )
+                        requires_input = result_data.get("requires_input", False)
+                        current_step_prompt = result_data.get("current_step_prompt")
+                        # 🔧 auto_continue 在嵌套的 data 字典中
+                        workflow_data = result_data.get("data", {})
+                        auto_continue = workflow_data.get("auto_continue", False)
+                        
+                        # 🔧 修正：requires_input 優先於 auto_continue
+                        # 即使 auto_continue=True，如果當前步驟需要用戶輸入，也必須生成提示
+                        if requires_input and current_step_prompt:
+                            # 當前步驟需要輸入：生成提示詢問用戶
+                            follow_up_prompt = (
+                                f"{language_instruction}"
+                                f"The workflow '{workflow_type}' has been started.\n"
+                                f"The current step requires user input.\n"
+                                f"Prompt: {current_step_prompt}\n\n"
+                                f"Generate a natural response that:\n"
+                                f"1. BRIEFLY confirms the workflow has started (1 sentence)\n"
+                                f"2. Asks the user for the needed input based on the prompt\n"
+                                f"3. Be friendly and conversational (2-3 sentences total)\n"
+                                f"IMPORTANT: Respond in English only."
+                            )
+                        elif auto_continue:
+                            # 🔧 工作流會自動完成（所有步驟都會自動執行，無需輸入）
+                            # 跳過初始回應，等待工作流完成後再生成總結
+                            debug_log(2, f"[LLM] 工作流會自動完成 ({workflow_type})，跳過初始回應，等待完成事件")
+                            skip_default_followup = True
+                            response_text = ""  # 不輸出初始回應
+                        else:
+                            # 工作流自動執行（參數已提供或無需輸入）
+                            follow_up_prompt = (
+                                f"{language_instruction}"
+                                f"The workflow '{workflow_type}' has been started successfully.\n"
+                                f"Result: {result_message}\n\n"
+                                f"Please inform the user in a natural, friendly tone that you're processing their request and explain what will happen next (e.g., 'I'm checking the weather now').\n"
+                                f"IMPORTANT: Respond in English only."
+                            )
                     elif workflow_status == "completed":
                         # 工作流已完成（一步到位，舊模式）
                         follow_up_prompt = (
@@ -1793,10 +2449,19 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                 }
             )
             
+            # 發布 LLM 回應生成事件
+            self._publish_llm_response_event(output, "WORK", {
+                "workflow_context": bool(llm_input.workflow_context),
+                "function_call_made": function_call_result is not None,
+                "tool_name": function_call_result.get("tool_name") if function_call_result else None
+            })
+            
             return output
             
         except Exception as e:
+            import traceback
             error_log(f"[LLM] WORK 模式處理錯誤: {e}")
+            error_log(f"[LLM] 堆疊追蹤:\n{traceback.format_exc()}")
             return LLMOutput(
                 text="工作任務處理時發生錯誤，請稍後再試。",
                 processing_time=time.time() - start_time,
@@ -2030,18 +2695,18 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
     def _get_current_cycle_index(self) -> int:
         """
         獲取當前循環計數
-        從 working_context 的全局數據中讀取 (由 SystemLoop 設置)
+        從 working_context 的全局數據中讀取 (由 Controller 在 GS 創建時設置)
         
         Returns:
-            int: 當前 cycle_index,如果無法獲取則返回 -1
+            int: 當前 cycle_index,如果無法獲取則返回 0（假設為第一個 cycle）
         """
         try:
             from core.working_context import working_context_manager
-            cycle_index = working_context_manager.global_context_data.get('current_cycle_index', -1)
+            cycle_index = working_context_manager.global_context_data.get('current_cycle_index', 0)
             return cycle_index
         except Exception as e:
             error_log(f"[LLM] 獲取 cycle_index 失敗: {e}")
-            return -1
+            return 0
     
     def _get_current_session_info(self, workflow_session_id: Optional[str] = None) -> Dict[str, Any]:
         """獲取當前會話信息 - 優先獲取 CS 或 WS（LLM 作為邏輯中樞的執行會話）
@@ -2364,30 +3029,39 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             error_log(f"[LLM] 記憶檢索失敗: {e}")
             return []
     
-    def _format_memories_for_context(self, memories: List[Dict[str, Any]]) -> str:
-        """將檢索到的記憶格式化為對話上下文"""
+    def _format_memories_for_context(self, memories: List[Any]) -> str:
+        """將檢索到的記憶格式化為對話上下文
+        
+        Args:
+            memories: MemorySearchResult 對象列表
+        """
         try:
             if not memories:
                 return ""
             
             context_parts = ["Relevant Memory Context:"]
             
-            for i, memory in enumerate(memories[:5], 1):  # 限制最多5條記憶
-                memory_type = memory.get("type", "unknown")
-                content = memory.get("content", "")
-                timestamp = memory.get("timestamp", "")
+            for i, memory_result in enumerate(memories[:5], 1):  # 限制最多5條記憶
+                # 從 MemorySearchResult 中取得 memory_entry
+                memory_entry = memory_result.memory_entry
                 
-                if memory_type == "conversation":
+                memory_type = memory_entry.memory_type.value  # MemoryType enum
+                content = memory_entry.content
+                timestamp = memory_entry.created_at.strftime("%Y-%m-%d %H:%M") if memory_entry.created_at else ""
+                
+                # 格式化記憶內容
+                if memory_type == "interaction_history":
                     # 對話記憶格式
-                    user_input = memory.get("user_input", "")
-                    assistant_response = memory.get("assistant_response", "")
-                    context_parts.append(f"{i}. [Conversation] User: {user_input} Assistant: {assistant_response}")
-                elif memory_type == "user_info":
+                    context_parts.append(f"{i}. [Conversation] {content}")
+                elif memory_type == "profile":
                     # 用戶信息記憶格式
                     context_parts.append(f"{i}. [User Info] {content}")
+                elif memory_type == "snapshot":
+                    # 快照記憶格式
+                    context_parts.append(f"{i}. [Recent Context] {content}")
                 else:
                     # 一般記憶格式
-                    context_parts.append(f"{i}. [{memory_type.title()}] {content}")
+                    context_parts.append(f"{i}. [{memory_type.replace('_', ' ').title()}] {content}")
             
             formatted_context = "\n".join(context_parts)
             debug_log(3, f"[LLM] 格式化記憶上下文: {len(formatted_context)} 字符")
@@ -2396,6 +3070,8 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             
         except Exception as e:
             error_log(f"[LLM] 格式化記憶上下文失敗: {e}")
+            import traceback
+            debug_log(1, traceback.format_exc())
             return ""
     
     def _process_work_system_actions(self, 
@@ -2554,38 +3230,30 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             return None
     
     def _request_session_end(self, mode: str, reason: str, confidence: float, llm_input: "LLMInput") -> None:
-        """請求結束當前會話"""
+        """標記會話待結束 - 由 ModuleCoordinator 的雙條件機制處理實際結束"""
         try:
-            from core.sessions.session_manager import session_manager
+            # ✅ 架構正確性：LLM 通過 session_control 建議結束
+            # ModuleCoordinator 檢測到後標記 pending_end
+            # Controller 會在 CYCLE_COMPLETED 時檢查並執行結束
+            # 這確保：
+            # 1. LLM 回應能完整生成並輸出
+            # 2. TTS 能完成語音合成
+            # 3. 所有去重鍵能正確清理
+            # 4. 會話在循環邊界乾淨地結束
+            
+            # session_control 已在回應中設置，ModuleCoordinator 會檢測並標記
+            debug_log(1, f"[LLM] 📋 會話結束請求已通過 session_control 發送: {reason} (mode={mode}, confidence={confidence:.2f})")
             
             if mode == "CHAT":
-                # 結束當前的 Chatting Session
-                active_cs_ids = session_manager.get_active_chatting_session_ids()
-                if active_cs_ids:
-                    session_id = active_cs_ids[0]
-                    success = session_manager.end_chatting_session(
-                        session_id, 
-                    )
-                    if success:
-                        debug_log(1, f"[LLM] 成功結束 CS {session_id}")
-                    else:
-                        debug_log(2, f"[LLM] 結束 CS {session_id} 失敗")
+                debug_log(1, f"[LLM] 🔚 標記 CS 待結束 (原因: {reason}, 信心度: {confidence:.2f})")
+                debug_log(2, f"[LLM] session_control 已設置，等待循環完成後由 ModuleCoordinator 處理")
                         
             elif mode == "WORK":
-                # 結束當前的 Workflow Session
-                active_ws_ids = session_manager.get_active_workflow_session_ids()
-                if active_ws_ids:
-                    session_id = active_ws_ids[0]
-                    success = session_manager.end_workflow_session(
-                        session_id,
-                    )
-                    if success:
-                        debug_log(1, f"[LLM] 成功結束 WS {session_id}")
-                    else:
-                        debug_log(2, f"[LLM] 結束 WS {session_id} 失敗")
+                debug_log(1, f"[LLM] 🔚 標記 WS 待結束 (原因: {reason}, 信心度: {confidence:.2f})")
+                debug_log(2, f"[LLM] session_control 已設置，等待循環完成後由 ModuleCoordinator 處理")
             
         except Exception as e:
-            error_log(f"[LLM] 請求會話結束失敗: {e}")
+            error_log(f"[LLM] 標記會話結束失敗: {e}")
     
     def _send_to_sys_module(self, sys_actions: List[Dict[str, Any]], workflow_context: Optional[Dict[str, Any]]) -> None:
         """向SYS模組發送系統動作 - 通過狀態感知接口"""
@@ -2786,6 +3454,510 @@ U.E.P 系統可用功能規格：
         except Exception as e:
             error_log(f"[LLM] 發布處理層完成事件失敗: {e}")
     
+    def _process_workflow_completion(self, session_id: str, workflow_type: str, 
+                                     step_result: dict, review_data: dict):
+        """
+        處理工作流完成，生成最終總結回應並觸發 TTS
+        
+        Args:
+            session_id: 工作流會話 ID
+            workflow_type: 工作流類型
+            step_result: 最後步驟的結果
+            review_data: 審核數據（包含完整的工作流結果）
+        """
+        try:
+            debug_log(2, f"[LLM] 開始處理工作流完成: {workflow_type} ({session_id})")
+            debug_log(2, f"[LLM] review_data keys: {list(review_data.keys()) if review_data else 'None'}")
+            
+            # 構建總結 prompt
+            result_message = step_result.get('message', 'Task completed successfully')
+            
+            prompt = (
+                f"The '{workflow_type}' workflow has completed successfully.\n\n"
+                f"Result: {result_message}\n"
+            )
+            
+            # ✅ 優先處理 full_content（文件讀取結果）
+            if review_data:
+                if 'full_content' in review_data:
+                    debug_log(2, f"[LLM] 發現 full_content，添加到 prompt")
+                    file_name = review_data.get('file_name', 'unknown')
+                    content = review_data.get('full_content', '')
+                    content_length = review_data.get('content_length', len(content))
+                    
+                    # 判斷內容是否應該完整唸出（英文且不超過 500 字符）
+                    should_read_full = content_length <= 500 and content.strip()
+                    
+                    if should_read_full:
+                        prompt += (
+                            f"\nFile Read Results:\n"
+                            f"- File: {file_name}\n"
+                            f"- Content ({content_length} characters):\n{content}\n\n"
+                            f"Generate a natural response that:\n"
+                            f"1. Briefly confirms you've read the file '{file_name}'\n"
+                            f"2. READ OUT THE ACTUAL FILE CONTENT directly (don't just summarize - say what's written in the file)\n"
+                            f"3. Keep your introduction brief, then read the content naturally\n"
+                            f"IMPORTANT: Actually read the file content aloud, not just describe it. Respond in English only."
+                        )
+                    else:
+                        # 內容太長，明確告知用戶
+                        prompt += (
+                            f"\nFile Read Results:\n"
+                            f"- File: {file_name}\n"
+                            f"- Content Length: {content_length} characters\n"
+                            f"- Content Preview:\n{content[:200]}...\n\n"
+                            f"Generate a natural response that:\n"
+                            f"1. Confirms the file has been read successfully\n"
+                            f"2. EXPLICITLY state that the file is too long ({content_length} characters) to read out completely\n"
+                            f"3. Offer to help in other ways (e.g., summarize, search for specific content, answer questions about it)\n"
+                            f"4. Keep it conversational (2-3 sentences)\n"
+                            f"IMPORTANT: Respond in English only."
+                        )
+                else:
+                    # 通用數據：優先從 step_result 獲取實際結果數據
+                    result_data = step_result.get('data', {})
+                    if not result_data:
+                        result_data = review_data.get('result_data', review_data)
+                    
+                    if result_data:
+                        debug_log(2, f"[LLM] 添加結果數據到 prompt，鍵: {list(result_data.keys())}")
+                        # 對於新聞摘要，特別處理 news_list
+                        if 'news_list' in result_data:
+                            news_list = result_data.get('news_list', [])
+                            source = result_data.get('source', 'unknown')
+                            count = result_data.get('count', len(news_list))
+                            prompt += (
+                                f"\nNews Summary Results:\n"
+                                f"- Source: {source}\n"
+                                f"- Count: {count}\n"
+                                f"- Headlines:\n"
+                            )
+                            for i, title in enumerate(news_list[:10], 1):  # 最多顯示 10 條
+                                prompt += f"  {i}. {title}\n"
+                            prompt += (
+                                f"\nGenerate a natural response that:\n"
+                                f"1. Confirms the news summary is ready\n"
+                                f"2. Mention how many news items were found\n"
+                                f"3. Briefly mention 1-2 interesting headlines\n"
+                                f"4. Keep it conversational (2-3 sentences)\n"
+                                f"IMPORTANT: Respond in English only."
+                            )
+                        # 對於待辦事項查詢，特別處理 tasks
+                        elif 'tasks' in result_data:
+                            tasks = result_data.get('tasks', [])
+                            task_count = len(tasks)
+                            
+                            # 如果任務超過 3 件，只顯示前 3 件並提供摘要統計
+                            if task_count > 3:
+                                prompt += (
+                                    f"\nTodo Tasks List ({task_count} tasks total - showing first 3):\n\n"
+                                )
+                                
+                                # 只顯示前 3 件
+                                for i, task in enumerate(tasks[:3], 1):
+                                    task_name = task.get('task_name', 'Unnamed task')
+                                    priority = task.get('priority', 'medium')
+                                    status = task.get('status', 'pending')
+                                    deadline = task.get('deadline', '')
+                                    
+                                    prompt += f"{i}. {task_name} (Priority: {priority}, Status: {status})\n"
+                                    if deadline:
+                                        prompt += f"   Deadline: {deadline}\n"
+                                    prompt += "\n"
+                                
+                                # 提供摘要統計
+                                priority_counts = {}
+                                status_counts = {}
+                                for task in tasks:
+                                    priority = task.get('priority', 'medium')
+                                    status = task.get('status', 'pending')
+                                    priority_counts[priority] = priority_counts.get(priority, 0) + 1
+                                    status_counts[status] = status_counts.get(status, 0) + 1
+                                
+                                prompt += f"Summary Statistics:\n"
+                                prompt += f"- Total: {task_count} tasks\n"
+                                prompt += f"- By Priority: {', '.join(f'{k}: {v}' for k, v in priority_counts.items())}\n"
+                                prompt += f"- By Status: {', '.join(f'{k}: {v}' for k, v in status_counts.items())}\n\n"
+                                
+                                prompt += (
+                                    f"Generate a natural response that:\n"
+                                    f"1. Confirms you found {task_count} todo tasks\n"
+                                    f"2. LIST the first 3 tasks briefly (name and priority)\n"
+                                    f"3. Provide a SUMMARY of all tasks (e.g., 'In total, you have 5 high priority tasks, 3 medium priority tasks')\n"
+                                    f"4. Mention any urgent or overdue items if present\n"
+                                    f"5. Keep it concise (2-3 sentences max)\n"
+                                    f"6. DO NOT use emojis or special characters (for TTS compatibility)\n"
+                                    f"IMPORTANT: Don't read all tasks - summarize! Respond in English only."
+                                )
+                            else:
+                                # 3 件或更少，全部列出
+                                prompt += (
+                                    f"\nTodo Tasks List ({task_count} tasks):\n\n"
+                                )
+                                for i, task in enumerate(tasks, 1):
+                                    task_name = task.get('task_name', 'Unnamed task')
+                                    priority = task.get('priority', 'medium')
+                                    status = task.get('status', 'pending')
+                                    description = task.get('task_description', '')
+                                    deadline = task.get('deadline', '')
+                                    
+                                    prompt += f"{i}. {task_name} (Priority: {priority}, Status: {status})\n"
+                                    if description:
+                                        prompt += f"   Description: {description}\n"
+                                    if deadline:
+                                        prompt += f"   Deadline: {deadline}\n"
+                                    prompt += "\n"
+                                
+                                prompt += (
+                                    f"Generate a natural response that:\n"
+                                    f"1. Confirms you found {task_count} todo task(s)\n"
+                                    f"2. LIST OUT ALL the tasks clearly with their names, priorities, and status\n"
+                                    f"3. Mention any high-priority or overdue tasks if present\n"
+                                    f"4. Keep it organized and easy to understand\n"
+                                    f"5. DO NOT use emojis or special characters (for TTS compatibility)\n"
+                                    f"IMPORTANT: Actually list all the tasks, don't just say they exist. Respond in English only."
+                                )
+                        # 對於行事曆查詢，特別處理 events
+                        elif 'events' in result_data:
+                            events = result_data.get('events', [])
+                            event_count = len(events)
+                            
+                            # 如果事件超過 3 件，只顯示前 3 件並提供摘要
+                            if event_count > 3:
+                                prompt += (
+                                    f"\nCalendar Events ({event_count} events total - showing first 3):\n\n"
+                                )
+                                
+                                # 只顯示前 3 件
+                                for i, event in enumerate(events[:3], 1):
+                                    summary = event.get('summary', 'Untitled event')
+                                    start_time = event.get('start_time', '')
+                                    location = event.get('location', '')
+                                    
+                                    prompt += f"{i}. {summary}\n"
+                                    if start_time:
+                                        prompt += f"   Start: {start_time}\n"
+                                    if location:
+                                        prompt += f"   Location: {location}\n"
+                                    prompt += "\n"
+                                
+                                # 計算今天/本週的事件數量
+                                from datetime import datetime, timedelta
+                                now = datetime.now()
+                                today_end = now.replace(hour=23, minute=59, second=59)
+                                week_end = now + timedelta(days=7)
+                                
+                                today_count = 0
+                                week_count = 0
+                                
+                                for event in events:
+                                    start_str = event.get('start_time', '')
+                                    if start_str:
+                                        try:
+                                            start_dt = datetime.fromisoformat(start_str.replace('Z', '+00:00'))
+                                            if start_dt <= today_end:
+                                                today_count += 1
+                                            elif start_dt <= week_end:
+                                                week_count += 1
+                                        except:
+                                            pass
+                                
+                                prompt += f"Summary:\n"
+                                prompt += f"- Total: {event_count} events\n"
+                                if today_count > 0:
+                                    prompt += f"- Today: {today_count} events\n"
+                                if week_count > 0:
+                                    prompt += f"- This week: {week_count} events\n"
+                                prompt += "\n"
+                                
+                                prompt += (
+                                    f"Generate a natural response that:\n"
+                                    f"1. Confirms you found {event_count} calendar events\n"
+                                    f"2. LIST the first 3 events briefly (title and time)\n"
+                                    f"3. Provide a SUMMARY (e.g., 'You have 2 events today and 3 more this week')\n"
+                                    f"4. Mention any upcoming or important events\n"
+                                    f"5. Keep it concise (2-3 sentences max)\n"
+                                    f"6. DO NOT use emojis or special characters (for TTS compatibility)\n"
+                                    f"IMPORTANT: Don't read all events - summarize! Respond in English only."
+                                )
+                            else:
+                                # 3 件或更少，全部列出
+                                prompt += (
+                                    f"\nCalendar Events ({event_count} events):\n\n"
+                                )
+                                for i, event in enumerate(events, 1):
+                                    summary = event.get('summary', 'Untitled event')
+                                    start_time = event.get('start_time', '')
+                                    end_time = event.get('end_time', '')
+                                    location = event.get('location', '')
+                                    description = event.get('description', '')
+                                    
+                                    prompt += f"{i}. {summary}\n"
+                                    if start_time:
+                                        prompt += f"   Start: {start_time}\n"
+                                    if end_time:
+                                        prompt += f"   End: {end_time}\n"
+                                    if location:
+                                        prompt += f"   Location: {location}\n"
+                                    if description:
+                                        prompt += f"   Description: {description}\n"
+                                    prompt += "\n"
+                                
+                                prompt += (
+                                    f"Generate a natural response that:\n"
+                                    f"1. Confirms you found {event_count} calendar event(s)\n"
+                                    f"2. LIST OUT ALL the events with their times and locations\n"
+                                    f"3. Mention any upcoming or important events\n"
+                                    f"4. Keep it organized and easy to understand\n"
+                                    f"5. DO NOT use emojis or special characters (for TTS compatibility)\n"
+                                    f"IMPORTANT: Actually list all the events, don't just say they exist. Respond in English only."
+                                )
+                        else:
+                            prompt += f"Data: {str(result_data)[:500]}\n\n"
+                            prompt += (
+                                f"Generate a natural, friendly response that:\n"
+                                f"1. Confirms the task is complete\n"
+                                f"2. Summarizes the key results\n"
+                                f"3. Keep it conversational (2-3 sentences)\n"
+                                f"IMPORTANT: Respond in English only."
+                            )
+                    else:
+                        prompt += (
+                            f"Generate a natural, friendly response that:\n"
+                            f"1. Confirms the task is complete\n"
+                            f"2. Summarizes the key results\n"
+                            f"3. Keep it conversational (2-3 sentences)\n"
+                            f"IMPORTANT: Respond in English only."
+                        )
+            else:
+                prompt += (
+                    f"Generate a natural, friendly response that:\n"
+                    f"1. Confirms the task is complete\n"
+                    f"2. Summarizes the key results\n"
+                    f"3. Keep it conversational (2-3 sentences)\n"
+                    f"IMPORTANT: Respond in English only."
+                )
+            
+            # 生成回應
+            info_log(f"[LLM] 生成工作流完成總結回應...")
+            response = self.model.query(prompt, mode="work", tools=None)
+            response_text = response.get("text", "The task has been completed successfully.")
+            
+            info_log(f"[LLM] 工作流完成回應: {response_text[:100]}...")
+            
+            # 觸發 TTS 輸出
+            from core.framework import core_framework
+            tts_module = core_framework.get_module('tts')
+            if tts_module:
+                debug_log(2, f"[LLM] 觸發 TTS 輸出最終總結")
+                tts_module.handle({
+                    "text": response_text,
+                    "session_id": session_id,
+                    "emotion": "neutral"
+                })
+            
+            # ✅ 標記工作流會話待結束
+            # Controller 會在下一個 CYCLE_COMPLETED 時執行實際結束
+            from core.sessions.session_manager import unified_session_manager
+            unified_session_manager.mark_workflow_session_for_end(
+                session_id, 
+                reason=f"workflow_completed:{workflow_type}"
+            )
+            debug_log(1, f"[LLM] 🔚 已標記 WS 待結束: {session_id} (workflow_completed:{workflow_type})")
+            
+            # 🔧 修正：工作流完成時不需要批准步驟
+            # 工作流已經完成，不需要繼續執行下一步
+            # 只需標記會話待結束即可，Controller 會在循環邊界處理
+            debug_log(2, f"[LLM] 工作流已完成，跳過批准步驟")
+            
+            debug_log(1, f"[LLM] ✅ 工作流完成處理完畢: {session_id}")
+            
+            # 🔧 清除待處理隊列中該工作流的所有互動提示
+            # 工作流已完成，不應該再生成互動步驟的提示
+            if hasattr(self, '_pending_interactive_prompts'):
+                prompts_to_remove = [
+                    prompt for prompt in self._pending_interactive_prompts
+                    if prompt.get('session_id') == session_id
+                ]
+                for prompt in prompts_to_remove:
+                    self._pending_interactive_prompts.remove(prompt)
+                    debug_log(2, f"[LLM] 已從隊列移除已完成工作流的互動提示: {prompt.get('workflow_type')}/{prompt.get('next_step_info', {}).get('step_id')}")
+            
+            # 🔧 清除 workflow_processing 標誌，允許下一次輸入層運行
+            from core.working_context import working_context_manager
+            working_context_manager.set_skip_input_layer(False, reason="workflow_completion_processed")
+            debug_log(2, "[LLM] 已清除 workflow_processing 標誌")
+            
+            # 🔧 清理追蹤標記，防止內存洩漏
+            if session_id in self._processed_workflow_completions:
+                self._processed_workflow_completions.discard(session_id)
+                debug_log(2, f"[LLM] 已移除工作流完成追蹤: {session_id}")
+            
+            # 🔧 清理該工作流的所有 LLM_PROCESSING 步驟標記
+            if hasattr(self, '_processed_llm_steps'):
+                steps_to_remove = {key for key in self._processed_llm_steps if key.startswith(f"{session_id}:")}
+                for step_key in steps_to_remove:
+                    self._processed_llm_steps.discard(step_key)
+                if steps_to_remove:
+                    debug_log(2, f"[LLM] 已清理 {len(steps_to_remove)} 個 LLM_PROCESSING 步驟標記")
+            
+        except Exception as e:
+            import traceback
+            error_log(f"[LLM] 處理工作流完成失敗: {e}")
+            error_log(f"[LLM] 堆疊追蹤:\n{traceback.format_exc()}")
+            # 即使失敗也要批准步驟，避免工作流卡住
+            try:
+                self._approve_workflow_step(session_id, None)
+            except:
+                pass
+    
+    def _process_interactive_step_prompt(self, session_id: str, workflow_type: str,
+                                         step_result: dict, review_data: dict, next_step_info: dict):
+        """
+        處理互動步驟前的提示回應
+        
+        當當前步驟完成且下一步需要用戶輸入時，生成提示回應
+        
+        Args:
+            session_id: 工作流會話 ID
+            workflow_type: 工作流類型
+            step_result: 當前步驟的結果
+            review_data: 審核數據
+            next_step_info: 下一步資訊
+        """
+        try:
+            debug_log(2, f"[LLM] 開始處理互動步驟提示: {workflow_type} ({session_id})")
+            
+            # 獲取下一步的提示信息
+            next_step_prompt = next_step_info.get('prompt', 'Please provide input')
+            next_step_id = next_step_info.get('step_id', 'unknown')
+            
+            # 構建提示 prompt
+            current_result = step_result.get('message', 'Current step completed')
+            
+            prompt = (
+                f"You are U.E.P., helping the user with a workflow.\n\n"
+                f"Current Situation:\n"
+                f"- Workflow: {workflow_type}\n"
+                f"- Current Step Result: {current_result}\n"
+                f"- Next Step: {next_step_id} (requires user input)\n"
+                f"- Prompt for User: {next_step_prompt}\n\n"
+            )
+            
+            # 如果有審核數據，添加上下文
+            if review_data:
+                action = review_data.get('action', '')
+                if action:
+                    prompt += f"- Recent Action: {action}\n"
+                
+                # 🔧 如果是 LLM 處理請求，添加處理結果的上下文
+                if action == 'llm_processing_request':
+                    request_data = review_data.get('request_data', {})
+                    input_data = request_data.get('input_data', {})
+                    
+                    # 檢查是否有格式化的結果列表（例如搜尋結果）
+                    if 'formatted_results' in input_data:
+                        formatted_results = input_data['formatted_results']
+                        prompt += f"\nAvailable Options:\n{formatted_results}\n\n"
+                        debug_log(2, f"[LLM] 添加格式化結果到提示中: {len(formatted_results)} 字符")
+                    
+                    # 或者如果有其他輸入數據
+                    elif input_data:
+                        # 將輸入數據轉換為可讀格式
+                        data_str = "\n".join([f"  - {k}: {v}" for k, v in input_data.items() if k != 'formatted_results'])
+                        if data_str:
+                            prompt += f"\nContext Data:\n{data_str}\n\n"
+                
+                # 如果有文件相關信息
+                if 'file_name' in review_data:
+                    prompt += f"- File: {review_data.get('file_name')}\n"
+            
+            # 檢查是否有可用選項需要顯示
+            has_options = review_data and review_data.get('action') == 'llm_processing_request' and \
+                         review_data.get('request_data', {}).get('input_data', {}).get('formatted_results')
+            
+            if has_options:
+                prompt += (
+                    f"\nGenerate a natural response that:\n"
+                    f"1. BRIEFLY acknowledges the search/processing results (1 sentence)\n"
+                    f"2. **MUST include the complete list of available options shown above**\n"
+                    f"3. Clearly asks the user to choose from the options\n"
+                    f"4. Be friendly and conversational\n"
+                    f"\nIMPORTANT: \n"
+                    f"- Respond in English only\n"
+                    f"- MUST show all the numbered options to the user\n"
+                    f"- Keep introduction brief, focus on presenting the options clearly"
+                )
+            else:
+                prompt += (
+                    f"\nGenerate a natural response that:\n"
+                    f"1. BRIEFLY acknowledges the current progress (1 sentence)\n"
+                    f"2. Clearly asks the user for the needed input\n"
+                    f"3. Translate any non-English prompt to English and use it naturally\n"
+                    f"4. Be friendly and conversational (2-3 sentences total)\n"
+                    f"\nIMPORTANT: Respond in English only. Keep it concise and natural."
+                )
+            
+            # 安全地記錄 prompt 的前 200 字符
+            prompt_preview = str(prompt)[:200] if len(str(prompt)) > 200 else str(prompt)
+            debug_log(3, f"[LLM] 互動步驟提示 prompt:\n{prompt_preview}...")
+            
+            # 調用 LLM 生成回應
+            try:
+                response_data = self.model.query(
+                    prompt=prompt,
+                    mode="work",
+                    tools=None  # 不需要工具
+                )
+                
+                # 提取文本回應
+                response_text = response_data.get('text', '') if isinstance(response_data, dict) else str(response_data)
+                
+                if not response_text or not response_text.strip():
+                    error_log("[LLM] 互動步驟提示生成失敗：空回應")
+                    response_text = f"Got it! {next_step_prompt}"
+                
+                info_log(f"[LLM] 互動步驟提示已生成: {response_text[:100]}...")
+                
+            except Exception as e:
+                error_log(f"[LLM] 生成互動步驟提示時出錯: {e}")
+                # 使用英文備用回應，避免中文出現在 TTS 中
+                if next_step_id == 'target_dir_input':
+                    response_text = "Got it! Please specify the target directory, or leave it empty to use auto-selection."
+                elif next_step_id == 'archive_confirm':
+                    response_text = "Understood. Please confirm if you want to proceed with archiving this file. Reply with 'yes' to continue or 'no' to cancel."
+                else:
+                    response_text = "Got it! Please provide the required input to continue."
+            
+            # 觸發 TTS 輸出提示
+            from core.framework import core_framework
+            tts_module = core_framework.get_module('tts')
+            if tts_module:
+                debug_log(2, f"[LLM] 觸發 TTS 輸出互動步驟提示")
+                tts_module.handle({
+                    "text": response_text,
+                    "session_id": session_id,
+                    "emotion": "neutral"
+                })
+            
+            # 🔧 修正：不要批准步驟！
+            # 當下一步是互動步驟時，LLM 只是提供提示，不批准當前步驟
+            # 工作流應該停在 INTERACTIVE 步驟，等待用戶輸入
+            # WorkflowEngine 的 _auto_advance 會檢測到 InteractiveStep 並自動發布 workflow_requires_input 事件
+            # 用戶提供輸入後，才會調用 provide_workflow_input 繼續工作流
+            
+            debug_log(1, f"[LLM] ✅ 互動步驟提示處理完畢: {session_id}")
+            
+        except Exception as e:
+            import traceback
+            error_log(f"[LLM] 處理互動步驟提示失敗: {e}")
+            error_log(f"[LLM] 堆疊追蹤:\n{traceback.format_exc()}")
+            # 即使失敗也要批准步驟，避免工作流卡住
+            try:
+                self._approve_workflow_step(session_id, None)
+            except:
+                pass
+    
     def _validate_session_architecture(self, current_state) -> bool:
         """驗證會話架構 - 確保 LLM 在適當的會話上下文中運作"""
         try:
@@ -2819,4 +3991,59 @@ U.E.P 系統可用功能規格：
         except Exception as e:
             error_log(f"[LLM] 會話架構檢查失敗: {e}")
             return False
+    
+    def _publish_llm_response_event(self, output: LLMOutput, mode: str, extra_data: Dict[str, Any]):
+        """發布 LLM 回應生成事件"""
+        try:
+            from core.event_bus import event_bus, SystemEvent
+            
+            event_data = {
+                "mode": mode,
+                "response": output.text,  # 使用 "response" 而非 "response_text" 以符合測試
+                "confidence": output.confidence,
+                "processing_time": output.processing_time,
+                "tokens_used": output.tokens_used,
+                "session_id": getattr(self, '_current_processing_session_id', None),
+                "cycle_index": getattr(self, '_current_processing_cycle_index', None),
+                "success": output.success,
+                **extra_data
+            }
+            
+            event_bus.publish(
+                SystemEvent.LLM_RESPONSE_GENERATED,
+                event_data,
+                source="llm"
+            )
+            
+            debug_log(2, f"[LLM] 已發布 LLM_RESPONSE_GENERATED 事件 (mode={mode})")
+            
+        except Exception as e:
+            error_log(f"[LLM] 發布回應事件失敗: {e}")
+    
+    def _publish_learning_data_event(self, identity_id: str, interaction_type: str, 
+                                     learning_signals: Dict, user_input: str, system_response: str):
+        """發布學習資料返回事件"""
+        try:
+            from core.event_bus import event_bus, SystemEvent
+            
+            event_data = {
+                "identity_id": identity_id,
+                "interaction_type": interaction_type,
+                "learning_signals": learning_signals,
+                "user_input_length": len(user_input),
+                "response_length": len(system_response),
+                "session_id": getattr(self, '_current_processing_session_id', None),
+                "timestamp": time.time()
+            }
+            
+            event_bus.publish(
+                SystemEvent.LLM_LEARNING_DATA_RETURNED,
+                event_data,
+                source="llm"
+            )
+            
+            debug_log(2, f"[LLM] 已發布 LLM_LEARNING_DATA_RETURNED 事件")
+            
+        except Exception as e:
+            error_log(f"[LLM] 發布學習資料事件失敗: {e}")
 

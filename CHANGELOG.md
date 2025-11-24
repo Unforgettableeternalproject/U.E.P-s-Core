@@ -1654,3 +1654,303 @@
 
 ---
 
+### Workflow test **finally** passed... took me a whole week to achieve this. 11/10
+
+> Date: Mon, 10 Nov 2025 01:49:53 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `8edc708a5ecb226275182dae1a07da54c91c9820`
+
+---
+
+### All three current workflow passed the test, finally! We can move on to the next step. 11/10
+
+> Date: Mon, 10 Nov 2025 21:44:02 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `00d4c7a29d6fccb6f3f79adc046539ff6c4bf441`
+
+---
+
+### Migrated more functions to the sys module, not yet tested. Also added more UML diagrams. 11/11
+
+> Date: Tue, 11 Nov 2025 00:36:03 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `5d68a4add70065be4a6e9cee8f522987c3872398`
+
+---
+
+### Functions tested, will convert to workflow later on. 11/11
+
+> Date: Tue, 11 Nov 2025 01:28:04 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `1947824cc334bde54165ce15fd411bce56f1db90`
+
+---
+
+### Converted functions to workflow (besides the background works) and tested some. 11/12
+
+> Date: Wed, 12 Nov 2025 04:02:27 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `25750ea9795482f14b908b06b39a822463c4c0a4`
+
+---
+
+### Still testing the workflows. 11/13
+
+> Date: Thu, 13 Nov 2025 15:31:57 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `38458e4c82fe6193678acf085ea32141d8ef002a`
+
+---
+
+### Workflows with initial data can now be successfully processed. 11/14
+
+> Date: Fri, 14 Nov 2025 01:16:20 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `b22e24193332a88627dafb8092cb3b3d7adb63ce`
+
+---
+
+### Improved processing once more. 11/15
+
+> Date: Sat, 15 Nov 2025 02:30:13 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `d9336556a6e1e3343a206ce66d0d9cef62482f60`
+
+---
+
+### Made sure all file workflows uses the same file selection template for better management, and made llm processing step internal. 11/15
+
+> Date: Sat, 15 Nov 2025 17:53:07 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `2cb82169ec031712b8355249230869d3df5c1266`
+
+---
+
+### Added more data to train the BIO model better, seemed to be working. 11/15
+
+> Date: Sat, 15 Nov 2025 18:33:09 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `750b04965ca2e53c8175b0304679540461786943`
+
+---
+
+### Fixed an issues where whenever llm process is followed by an interactive the data passing is always weird. 11/15
+
+> Date: Sat, 15 Nov 2025 23:59:48 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `d2cf0f5dae7347d6f4c1381f2be8b6432152a0f9`
+
+---
+
+### All direct works proved to be working. 11/16
+
+> Date: Sun, 16 Nov 2025 02:21:33 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `a023d8553c981474584bb50c05c9a7a1be5384c6`
+
+---
+
+### Extracted the step template from workflow, and added backgound work steps. 11/17
+
+> Date: Mon, 17 Nov 2025 17:41:30 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `66cc466ac677daefdd66af1ff18bd3d8e25966f7`
+
+---
+
+### One background work is tested fine, three others left. 11/18
+
+> Date: Tue, 18 Nov 2025 03:01:23 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `1d2a61c247ca4c19069f152a3f931db30d6985a0`
+
+---
+
+### Added several new functions such as loop and shuffle to media playback workflow. 11/18
+
+> Date: Tue, 18 Nov 2025 16:59:10 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `2cc4b9d8bc520808866ea2f63aac85464cdfc24d`
+
+---
+
+### Seemly, the to-do and calendar is tested fine, but there might be some other issues. 11/20
+
+> Date: Thu, 20 Nov 2025 21:37:20 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `d22e62889a62d21a83963eaf2af4537a0a0b0ce6`
+
+---
+
+### Fixed some issue regarding function calling, and added a config to reduce terminal logging. 11/21
+
+> Date: Fri, 21 Nov 2025 02:36:12 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `4d2ab4bf62cef0d5c2c91f83c4af4d9217b9b775`
+
+---
+
+### Reworked identity mechanism. 11/21
+
+> Date: Fri, 21 Nov 2025 04:00:04 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `795d9d8e1c5d20f5a033310b313a26455b1cdafd`
+
+---
+
+### Was testing the chat route, and discovered some fatal issues to fix, will finish tomorrow. 11/22
+
+> Date: Sat, 22 Nov 2025 01:29:26 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `69e4272e481f132272c268460f0589754dbdd76f`
+
+---
+
+### All current chat path tests can pass, that's good, but we're left with snapshot handling and GS history trace. 11/22
+
+> Date: Sat, 22 Nov 2025 02:53:01 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `42a79b794810813401fb3b9a8bdcf8aab0f92dcc`
+
+---
+
+### Refined GS history management. 11/22
+
+> Date: Sat, 22 Nov 2025 22:58:58 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `80917d9d51315c5f6d5550e69b0ffedbd120ad75`
+
+---
+
+### All chat route related test passed, what a miracle. 11/24
+
+> Date: Mon, 24 Nov 2025 04:10:34 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `8e97bf6c321cff993854b54417bb9b134622110e`
+
+---
+
+### The main loop test seem fine and that was rather surprising.
+
+> Date: Mon, 24 Nov 2025 10:41:52 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `835d19aecb53d3849d7f75d6b26c7b7976374c18`
+
+---
+
+### Some deprecated code cleaning. 11/24
+
+> Date: Mon, 24 Nov 2025 11:31:03 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `18b6f788a65860b2ac9e97514878aa95b893b9b2`
+
+---
+
+### Update on some documents. 11/24
+
+> Date: Mon, 24 Nov 2025 11:37:54 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `66e875aed996769d267a7159f8cf8cde23abcac9`
+
+---
+

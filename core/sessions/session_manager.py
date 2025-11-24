@@ -247,15 +247,15 @@ class UnifiedSessionManager:
             raise  # 重新拋出錯誤，因為這是架構問題
         return None
     
-    def end_chatting_session(self, session_id: str, save_memory: bool = True) -> bool:
+    def end_chatting_session(self, session_id: str, save_memory: bool = True, reason: str = "normal") -> bool:
         """結束 Chatting Session"""
         try:
             cs_manager = self.managers['cs_manager']
-            result = cs_manager.end_session(session_id, save_memory)
+            result = cs_manager.end_session(session_id, reason)
             
             if result:
                 self._update_session_record(session_id, SessionRecordStatus.COMPLETED, 
-                                          {"save_memory": save_memory})
+                                          {"save_memory": save_memory, "reason": reason})
                 info_log(f"[UnifiedSessionManager] 已結束 CS: {session_id}")
             return result
         except Exception as e:
@@ -632,7 +632,7 @@ class UnifiedSessionManager:
             for cs in active_cs:
                 if self._is_session_timeout(cs, current_time):
                     reason = f"會話超時：超過 {self.config['max_session_age']} 秒無活動"
-                    if self.end_chatting_session(cs.session_id, save_memory=True):
+                    if self.end_chatting_session(cs.session_id, save_memory=True, reason=reason):
                         timeout_sessions.append({
                             "session_id": cs.session_id,
                             "session_type": "chatting",

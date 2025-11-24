@@ -73,6 +73,10 @@ class SystemLoop:
         self._cycle_layer_tracking = {}  # 追蹤每個 cycle 的處理層和輸出層完成情況
         self._cycle_tracking_lock = threading.Lock()  # 保護 _cycle_layer_tracking
         
+        # ✅ 狀態監控相關
+        from core.states.state_manager import UEPState
+        self._previous_state = UEPState.IDLE  # 初始化為 IDLE，避免首次檢查失敗
+        
         info_log(f"[SystemLoop] 系統循環已創建 (輸入模式: {self.input_mode})")
         
         # ✅ 訂閱事件總線
@@ -208,12 +212,7 @@ class SystemLoop:
             # 清除跳過輸入層旗標，允許輸入層執行
             working_context_manager.set_skip_input_layer(False, reason="workflow_input")
             
-            # 🔧 遞增 cycle_index，因為工作流等待輸入代表新的交互周期開始
-            # 這確保了去重機制能正確區分不同的用戶輸入
-            self.cycle_index += 1
-            debug_log(2, f"[SystemLoop] 工作流等待輸入，遞增 cycle_index -> {self.cycle_index}")
-            
-            # ✅ 更新 global_context_data 使用原始 GS ID 和新的 cycle_index
+            # ✅ 更新 global_context_data 使用原始 GS ID（cycle_index 不變，等待循環完成後統一遞增）
             # 注入的輸入應該關聯到觸發工作流的原始 GS，而不是工作流自己的 session
             workflow_session_id = event.data.get('session_id')
             if workflow_session_id:
@@ -235,6 +234,11 @@ class SystemLoop:
                 info_log(f"[SystemLoop] 💬 {workflow_prompt}")
             
             info_log("[SystemLoop] 💬 工作流等待使用者輸入，輸入層已啟用")
+            
+            # 🔧 VAD 模式下，主動重啟 STT 監聽
+            if self.input_mode == "vad":
+                debug_log(2, "[SystemLoop] 工作流等待輸入，重新啟動STT監聽 (VAD模式)")
+                self._restart_stt_listening()
             
         except Exception as e:
             error_log(f"[SystemLoop] 處理工作流輸入請求失敗: {e}")
@@ -335,6 +339,10 @@ class SystemLoop:
             
             # ✅ 啟動事件總線
             self._start_event_bus()
+            
+            # 🔧 初始化 global_context 的 cycle_index，讓模組能讀到正確的初始值
+            self._update_global_cycle_info()
+            info_log(f"[SystemLoop] 已初始化全局循環資訊: cycle_index={self.cycle_index}")
             
             # 驗證系統組件就緒
             if not self._verify_system_ready():
@@ -627,8 +635,15 @@ class SystemLoop:
             from core.states.state_queue import get_state_queue_manager
             from core.working_context import working_context_manager
             
-            current_state = state_manager.get_current_state()
             state_queue = get_state_queue_manager()
+            
+            # 🆕 循環開始時：檢查並推進狀態佇列
+            # 如果上一個狀態已完成且佇列有待處理項目，推進到下一個狀態
+            state_advanced = state_queue.check_and_advance_state()
+            if state_advanced:
+                debug_log(2, "[SystemLoop] ✅ 循環開始時成功推進狀態")
+            
+            current_state = state_manager.get_current_state()
             queue_size = len(state_queue.queue) if hasattr(state_queue, 'queue') else 0
             
             # 階段三：檢查層級跳過旗標（在循環開始前檢查並重置）
@@ -637,7 +652,7 @@ class SystemLoop:
             
             if should_skip and not is_workflow_waiting:
                 skip_reason = working_context_manager.get_skip_reason()
-                debug_log(2, f"[SystemLoop] 跳過輸入層 (原因: {skip_reason})")
+                # debug_log(2, f"[SystemLoop] 跳過輸入層 (原因: {skip_reason})")  # 註解：減少日誌噪音
                 # 注意：實際的輸入層跳過邏輯由各輸入模組（STT/NLP）實現
                 # 這裡只記錄日誌，循環結束後會重置旗標
             
@@ -695,16 +710,17 @@ class SystemLoop:
                         # 🔧 下一步是處理步驟，跳過輸入層
                         # 步驟會在 WorkflowEngine 批准後自動執行，不需要手動觸發
                         debug_log(2, f"[SystemLoop] ⏭️ 下一步是處理步驟，跳過輸入層（等待自動執行）")
-                    elif has_active_session and self.input_mode == "vad":
-                        # ✅ 只在 VAD 模式且有活躍會話時重啟 STT
-                        debug_log(2, f"[SystemLoop] 系統回到IDLE狀態，重新啟動STT監聽 (VAD模式)")
+                    elif self.input_mode == "vad":
+                        # ✅ VAD 模式下，無論是否有活躍會話都重啟 STT
+                        # 理由：即使沒有會話，也需要持續監聽新的使用者輸入
+                        debug_log(2, f"[SystemLoop] 系統回到IDLE狀態，重新啟動STT監聽 (VAD模式, 會話: {has_active_session})")
                         self._restart_stt_listening()
                     elif self.input_mode == "text":
-                        # 文字模式：不重啟 VAD，等待手動輸入或會話結束
+                        # 文字模式：不重啟 VAD，等待手動輸入
                         if has_active_session:
                             debug_log(2, f"[SystemLoop] 系統回到IDLE狀態 (文字模式)，等待手動輸入")
                         else:
-                            debug_log(2, f"[SystemLoop] 系統回到IDLE狀態，無活躍會話")
+                            debug_log(2, f"[SystemLoop] 系統回到IDLE狀態 (文字模式)，無活躍會話，等待新輸入")
                     
                     # 系統循環結束，檢查 GS 結束條件
                     self._check_cycle_end_conditions()
@@ -759,7 +775,8 @@ class SystemLoop:
             else:
                 # 有TTS模組，檢查是否回到IDLE狀態（輸出完成）
                 if current_state == UEPState.IDLE and queue_size == 0:
-                    self._complete_cycle()
+                    # 主循環檢測到輸出完成，發布事件並完成循環
+                    self._complete_cycle(publish_event=True)
         
         # 更新最後狀態變化時間
         if hasattr(self, '_last_queue_size'):
@@ -767,8 +784,13 @@ class SystemLoop:
                 self._last_queue_change_time = time.time()
         self._last_queue_size = queue_size
     
-    def _complete_cycle(self):
-        """完成一次處理循環"""
+    def _complete_cycle(self, publish_event: bool = False):
+        """
+        完成一次處理循環
+        
+        Args:
+            publish_event: 是否發布 CYCLE_COMPLETED 事件（由調用方決定，避免重複發布）
+        """
         if self.current_cycle_start_time:
             cycle_time = time.time() - self.current_cycle_start_time
             debug_log(1, f"[SystemLoop] 處理循環 #{self.cycle_index} 完成，耗時 {cycle_time:.2f}秒")
@@ -776,14 +798,22 @@ class SystemLoop:
             # 🔧 測試環境：沒有 cycle_start_time，但仍然需要遞增 cycle_index
             debug_log(1, f"[SystemLoop] 處理循環 #{self.cycle_index} 完成（測試環境）")
         
-        # 發布 CYCLE_COMPLETED 事件用於清理去重鍵
-        self._publish_cycle_completed()
+        # 🔧 由調用方決定是否發布事件，避免重複發布
+        if publish_event:
+            self._publish_cycle_completed()
         
-        # 🔧 在循環完成後遞增 cycle_index，準備下一個循環
-        # 這樣第一個循環是 0，第二個是 1，以此類推
+        # ✅ 統一循環索引管理：發布 CYCLE_COMPLETED 後立即遞增
+        # 所有層級使用同一個 cycle_index，不再有其他遞增邏輯
+        debug_log(2, f"[SystemLoop] 循環 #{self.cycle_index} 完成，遞增 cycle_index")
         self.cycle_index += 1
         self.processing_cycles = self.cycle_index  # 向後兼容
+        # ✅ 立即更新 global_context，讓下一個 cycle 的模組能讀到新值
         self._update_global_cycle_info()
+        debug_log(2, f"[SystemLoop] 下一個循環索引: {self.cycle_index}")
+        
+        # ✅ 循環完成後，調用 Controller 檢查 CS/WS pending_end 和 GS 結束條件
+        debug_log(2, "[SystemLoop] 調用 Controller 檢查會話結束條件")
+        self._check_cycle_end_conditions()
         
         # 重置週期追蹤
         self.cycle_tracking = {
@@ -1146,12 +1176,13 @@ class SystemLoop:
                     should_complete_cycle = False
             
             if should_complete_cycle:
-                # 🔧 所有輸出任務完成，發布 CYCLE_COMPLETED 事件
+                # 🔧 所有輸出任務完成，發布 CYCLE_COMPLETED 事件並完成循環
                 # 這確保即使主循環未運行（如測試環境），也能觸發去重清理和會話結束檢查
-                self._publish_cycle_completed()
-            
-            # 記錄完整流程完成（如果循環追蹤已啟動）
-            self._complete_cycle()
+                self._complete_cycle(publish_event=True)
+            else:
+                # 🔧 還有輸出待完成，不遞增 cycle_index，不發布事件
+                # 只有當所有 PROCESSING 都有對應的 OUTPUT 時才真正完成循環
+                pass
             
             # 🔧 在 WORK 狀態中，預設跳過輸入層，除非有互動步驟需要輸入
             from core.sessions.session_manager import unified_session_manager
@@ -1168,15 +1199,22 @@ class SystemLoop:
                 needs_user_input = self._check_workflow_needs_input(active_ws)
                 debug_log(2, f"[SystemLoop] 檢查結果: needs_input={needs_user_input}")
             
-            # 決策是否啟動輸入層
+            # ✅ 決策是否啟動輸入層（檢查是否已經在等待輸入，避免重複啟動）
+            from core.working_context import working_context_manager
+            already_waiting = working_context_manager.is_workflow_waiting_input()
+            
             if needs_user_input:
-                # 需要使用者輸入，啟動輸入層
-                info_log(f"[SystemLoop] 💬 工作流需要使用者輸入，啟動輸入層")
-                if self.input_mode == "vad":
-                    self._restart_stt_listening()
+                if already_waiting:
+                    # 已經在等待輸入，不要重複啟動
+                    debug_log(2, "[SystemLoop] 工作流已在等待輸入，跳過重複啟動")
                 else:
-                    # Text mode: 顯示工作流的 prompt
-                    self._display_workflow_prompt(active_ws)
+                    # 需要使用者輸入，啟動輸入層
+                    info_log(f"[SystemLoop] 💬 工作流需要使用者輸入，啟動輸入層")
+                    if self.input_mode == "vad":
+                        self._restart_stt_listening()
+                    else:
+                        # Text mode: 顯示工作流的 prompt
+                        self._display_workflow_prompt(active_ws)
             elif current_state == UEPState.WORK:
                 # WORK 狀態且沒有互動步驟，跳過輸入層
                 debug_log(2, "[SystemLoop] WORK 狀態，無互動步驟，跳過輸入層")

@@ -245,19 +245,19 @@ class TTSModule(BaseModule):
     def _get_current_cycle_index(self) -> int:
         """
         獲取當前循環計數
-        從 working_context 的全局數據中讀取 (由 SystemLoop 設置)
+        從 working_context 的全局數據中讀取 (由 Controller 在 GS 創建時設置)
         
         Returns:
-            int: 當前 cycle_index,如果無法獲取則返回 -1
+            int: 當前 cycle_index,如果無法獲取則返回 0（假設為第一個 cycle）
         """
         try:
             if self.working_context_manager:
-                cycle_index = self.working_context_manager.global_context_data.get('current_cycle_index', -1)
+                cycle_index = self.working_context_manager.global_context_data.get('current_cycle_index', 0)
                 return cycle_index
-            return -1
+            return 0
         except Exception as e:
             error_log(f"[TTS] 獲取 cycle_index 失敗: {e}")
-            return -1
+            return 0
     
     def _on_output_complete(self, result: Dict[str, Any]):
         """

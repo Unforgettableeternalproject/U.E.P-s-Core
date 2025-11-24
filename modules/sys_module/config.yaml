@@ -30,14 +30,19 @@ modes:
   - generate_backup_script
   - monitor_folder
 
-  # 六、外部整合
+  # 六、檔案管理
+  - clean_trash_bin
+  
+  # 七、外部整合
   - news_summary
   - get_weather
   - get_world_time
   - code_analysis
   - media_control
+  - translate_document
+  - local_calendar
   
-  # 七、測試工作流程 (開發測試用)
+  # 八、測試工作流程 (開發測試用)
   - test_workflow_echo
   - test_workflow_countdown
   - test_workflow_data_collector

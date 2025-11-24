@@ -47,34 +47,11 @@ class MCPServer:
     def _register_core_tools(self):
         """註冊核心工作流控制工具"""
         
-        # 1. start_workflow - Start a workflow
-        self.register_tool(MCPTool(
-            name="start_workflow",
-            description="Start a new workflow for complex task handling",
-            parameters=[
-                ToolParameter(
-                    name="workflow_type",
-                    type=ToolParameterType.STRING,
-                    description="Workflow type, e.g., drop_and_read, intelligent_archive, file_processing",
-                    required=True
-                ),
-                ToolParameter(
-                    name="command",
-                    type=ToolParameterType.STRING,
-                    description="Original command that triggered this workflow",
-                    required=True
-                ),
-                ToolParameter(
-                    name="initial_data",
-                    type=ToolParameterType.OBJECT,
-                    description="Initial data for workflow initialization",
-                    required=False
-                ),
-            ],
-            handler=self._handle_start_workflow
-        ))
+        # ❌ start_workflow 已移除 - 現在每個工作流都有專屬的 MCP 工具
+        # 例如：play_media, intelligent_archive, drop_and_read 等
+        # LLM 應該直接調用這些專屬工具，而不是通過 start_workflow
         
-        # 2. review_step - Review step execution result
+        # 1. review_step - Review step execution result
         self.register_tool(MCPTool(
             name="review_step",
             description="Review workflow step execution result and decide whether to continue",
@@ -221,7 +198,7 @@ class MCPServer:
             handler=self._handle_resolve_path
         ))
         
-        debug_log(2, "[MCP] 已註冊 8 個核心工作流控制工具")
+        debug_log(2, "[MCP] 已註冊 7 個核心工作流控制工具 (start_workflow 已移除)")
     
     def register_tool(self, tool: MCPTool):
         """

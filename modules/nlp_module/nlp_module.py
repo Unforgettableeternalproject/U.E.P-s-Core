@@ -136,7 +136,7 @@ class NLPModule(BaseModule):
             state_result = self._process_system_state(intent_result, validated_input)
             
             # 如果有 segment 被 SYS 更正，更新 intent_result
-            if "corrected_segments" in state_result:
+            if "corrected_segments" in state_result and state_result["corrected_segments"]:
                 corrected_segments = state_result["corrected_segments"]
                 # 更新 intent_segments
                 for old_seg, new_seg in corrected_segments:
@@ -152,6 +152,15 @@ class NLPModule(BaseModule):
                     primary_segment = NewIntentSegment.get_highest_priority_segment(intent_result["intent_segments"])
                     intent_result["primary_intent"] = primary_segment.intent_type
                     debug_log(2, f"[NLP] Updated primary_intent after SYS correction: {primary_segment.intent_type.name}")
+            
+            # 如果狀態處理後有過濾的 segments（例如 COMPOUND 過濾掉 CALL），更新 primary_intent
+            if "filtered_segments" in state_result and state_result["filtered_segments"]:
+                from .intent_types import IntentSegment as NewIntentSegment
+                filtered_segs = state_result["filtered_segments"]
+                if filtered_segs:
+                    primary_segment = NewIntentSegment.get_highest_priority_segment(filtered_segs)
+                    intent_result["primary_intent"] = primary_segment.intent_type
+                    debug_log(2, f"[NLP] Updated primary_intent after filtering: {primary_segment.intent_type.name}")
             
             # 組合結果
             final_result = self._combine_results(validated_input, identity_result, 
@@ -177,7 +186,13 @@ class NLPModule(BaseModule):
             return self._create_error_response(str(e))
     
     def _process_speaker_identity(self, input_data: NLPInput) -> Dict[str, Any]:
-        """處理語者身份識別 - 從Working Context獲取說話人資料"""
+        """處理語者身份識別 - 從Working Context獲取說話人資料
+        
+        新架構（Identity 為主，Speaker 為輔）：
+        1. 優先檢查 declared_identity（主動聲明）
+        2. 如果有 declared_identity，直接添加 Speaker 樣本到該 Identity
+        3. 如果沒有，使用原有的被動推斷邏輯
+        """
         result = {
             "identity": None,
             "identity_action": None,
@@ -187,6 +202,19 @@ class NLPModule(BaseModule):
         try:
             # 檢查是否為文字輸入模式 (繞過說話人識別)
             metadata = getattr(input_data, 'metadata', {})
+            # 🆕 優先檢查是否有主動聲明的 Identity（不管是否文字輸入）
+            from core.working_context import working_context_manager
+            
+            # 從 global_context_data 獲取 current_identity_id
+            declared_identity_id = working_context_manager.global_context_data.get('current_identity_id')
+            
+            if declared_identity_id and declared_identity_id != 'unknown':
+                # 方案 A: 主動聲明模式
+                debug_log(2, f"[NLP] 檢測到主動聲明的 Identity: {declared_identity_id}")
+                result.update(self._handle_declared_identity(declared_identity_id, input_data))
+                return result
+            
+            # 檢查是否為文字輸入模式
             is_text_input = metadata.get('input_mode') == 'text' or metadata.get('bypass_speaker_id', False)
             
             if is_text_input:
@@ -201,6 +229,7 @@ class NLPModule(BaseModule):
                     self._add_identity_to_working_context(default_identity)
                 return result
             
+            # 方案 B: 被動推斷模式（原有邏輯）
             # 從Working Context獲取說話人資料，而非直接從input_data
             speaker_data = self._get_speaker_from_working_context()
             
@@ -232,6 +261,20 @@ class NLPModule(BaseModule):
             
             result["identity"] = identity
             result["identity_action"] = action
+            
+            # 🆕 如果確認了正式 Identity，同步 StatusManager
+            if identity and action in ["existing", "newly_created"]:
+                from core.status_manager import status_manager
+                status_manager.switch_identity(identity.identity_id)
+                
+                # 同步 Identity 的 last_interaction 到 StatusManager
+                if hasattr(identity, 'last_interaction') and identity.last_interaction:
+                    from datetime import datetime
+                    if isinstance(identity.last_interaction, datetime):
+                        status_manager.status.last_interaction_time = identity.last_interaction.timestamp()
+                        debug_log(3, f"[NLP] 同步 last_interaction 到 StatusManager: {identity.last_interaction}")
+                
+                debug_log(2, f"[NLP] 已切換 StatusManager 到 Identity: {identity.identity_id}")
             
             if action == "accumulating":
                 # 語者樣本累積狀態，創建通用身份供當前使用
@@ -291,17 +334,43 @@ class NLPModule(BaseModule):
                     "state_transition": None
                 }
             
-            # Determine primary intent (highest priority)
+            # ⚠️ 暫時禁用 MCP 意圖校正 - 完全依賴 BIO 模型
+            # 原因：關鍵字匹配有嚴重 bug（子字串匹配問題），可能導致錯誤識別
+            # 例如："Show me the time" 被錯誤匹配到 "summarize_tag" (因為 "time" in "summarize")
+            # TODO: 未來考慮從 YAML 讀取完整工作流信息進行更精確的匹配
+            # corrected_segments = []
+            # for segment in segments:
+            #     corrected_segment = self._correct_intent_with_mcp(segment)
+            #     corrected_segments.append(corrected_segment)
+            # segments = corrected_segments
+            
+            # 🆕 CALL 過濾邏輯：如果有 CALL + 其他實質意圖，過濾掉 CALL
+            # CALL 只是過渡狀態，一旦有實質意圖（CHAT/WORK）出現，CALL 就應該被忽略
             from .intent_types import IntentSegment as NewIntentSegment
+            
+            filtered_segments = segments
             if NewIntentSegment.is_compound_input(segments):
-                primary_segment = NewIntentSegment.get_highest_priority_segment(segments)
-                primary_intent_type = primary_segment.intent_type if primary_segment else segments[0].intent_type
+                call_segs = [s for s in segments if s.intent_type == IntentType.CALL]
+                non_call_segs = [s for s in segments if s.intent_type != IntentType.CALL and s.intent_type != IntentType.UNKNOWN]
+                
+                # 如果有 CALL + 其他實質意圖，過濾掉 CALL
+                if call_segs and non_call_segs:
+                    debug_log(2, f"[NLP] COMPOUND with CALL: Filtering out CALL, keeping {len(non_call_segs)} substantial intent(s)")
+                    filtered_segments = non_call_segs
+            
+            # Determine primary intent (highest priority from filtered segments)
+            if NewIntentSegment.is_compound_input(filtered_segments):
+                primary_segment = NewIntentSegment.get_highest_priority_segment(filtered_segments)
+                primary_intent_type = primary_segment.intent_type if primary_segment else filtered_segments[0].intent_type
             else:
-                primary_intent_type = segments[0].intent_type
+                primary_intent_type = filtered_segments[0].intent_type
             
             # Use Stage 4 IntentType directly (no mapping needed)
             # Primary intent is now directly from Stage 4
             primary_intent = primary_intent_type
+            
+            # 使用過濾後的 segments 作為最終結果
+            segments = filtered_segments
             
             # Calculate overall confidence (average of all segments)
             overall_confidence = sum(s.confidence for s in segments) / len(segments)
@@ -344,12 +413,16 @@ class NLPModule(BaseModule):
         }
         
         try:
-            primary_intent = intent_result["primary_intent"]
+            original_intent = intent_result["primary_intent"]
             context_ids = intent_result.get("context_ids", [])
             execution_plan = intent_result.get("execution_plan", [])
             
             result["context_ids"] = context_ids
             result["execution_plan"] = execution_plan
+            
+            # 直接使用原始 intent，不再覆蓋
+            # 新架構：BW/DW 都會立即中斷 CS 並處理 WORK
+            primary_intent = original_intent
             
             # 根據意圖決定下一步處理
             if primary_intent == IntentType.CALL:
@@ -376,13 +449,14 @@ class NLPModule(BaseModule):
                 # 未知內容：可能轉發到LLM進行處理
                 result["next_modules"] = ["llm_module"]
             
-            debug_log(3, f"[NLP] 系統狀態處理：下一步模組={result['next_modules']}, "
-                       f"等待輸入={result['awaiting_input']}, 上下文數={len(context_ids)}")
-            
             # 將意圖分段添加到狀態佇列
             queue_result = self._process_intent_to_state_queue(intent_result)
             result["added_states"] = queue_result.get("added_states", [])
             result["corrected_segments"] = queue_result.get("corrected_segments", [])
+            result["session_control"] = queue_result.get("session_control")  # 保存 session_control 信息
+            
+            debug_log(3, f"[NLP] 系統狀態處理：下一步模組={result['next_modules']}, "
+                       f"等待輸入={result['awaiting_input']}, 上下文數={len(context_ids)}")
             
             # 處理多意圖上下文的狀態轉換
             if intent_result.get("state_transition"):
@@ -484,58 +558,59 @@ class NLPModule(BaseModule):
                 debug_log(2, "[NLP] Set skip_input_layer=True for interrupt")
             
             # Add states to queue
-            # 🆕 合併相同類型的連續狀態，避免重複添加
+            # 不合併相同類型的狀態，因為用戶可能有多個不同的主題或任務要處理
             added_states = []
-            merged_states = []  # [(state_type, [segments], priority, work_mode), ...]
             
             for state_info in result.get("states_to_add", []):
-                segment = state_info["segment"]
+                segment = state_info.get("segment")  # Resume 狀態可能沒有 segment
                 state_type_str = state_info["state_type"]
                 priority = state_info["priority"]
                 work_mode = state_info.get("work_mode")
+                is_resume = state_info.get("is_resume", False)
+                resume_context = state_info.get("resume_context")
                 
                 # Map state_type string to UEPState enum
                 if state_type_str == "CHAT":
                     state_type = SystemState.CHAT
                 elif state_type_str == "WORK":
                     state_type = SystemState.WORK
-                elif state_type_str == "CALL":
-                    state_type = SystemState.CALL
                 else:
                     error_log(f"[NLP] Unknown state type: {state_type_str}")
                     continue
                 
-                # 🆕 檢查是否可以與上一個狀態合併
-                if merged_states and merged_states[-1][0] == state_type:
-                    # 相同類型，合併到上一個
-                    merged_states[-1][1].append(segment)
-                    debug_log(3, f"[NLP] 合併相同類型狀態: {state_type.value}")
+                # 準備狀態數據
+                if is_resume:
+                    # Resume 狀態：使用保存的上下文
+                    trigger_text = "恢復對話會話"
+                    metadata = {
+                        "is_resume": True,
+                        "resume_context": resume_context,
+                        "intent_type": "CHAT"  # 就是普通 CHAT 狀態，只是帶有 resume 標記
+                    }
+                    debug_log(2, f"[NLP] 添加 resume CHAT 狀態到佇列 (priority={priority})")
                 else:
-                    # 不同類型或第一個，創建新項目
-                    merged_states.append((state_type, [segment], priority, work_mode))
-            
-            # 🆕 為合併後的狀態添加到隊列
-            for state_type, segments, priority, work_mode in merged_states:
-                # 合併所有段落的文本
-                combined_text = " ".join(seg.segment_text for seg in segments)
+                    # 正常狀態：使用 segment 的文本
+                    trigger_text = segment.segment_text if segment else ""
+                    metadata = {
+                        "intent_type": segment.intent_type.name if segment else "UNKNOWN",
+                        "confidence": segment.confidence if segment else 0.0
+                    }
                 
-                # Add to state queue with combined text as context
+                # Add to state queue
                 self.state_queue_manager.add_state(
                     state_type,
-                    trigger_content=combined_text,
-                    context_content=combined_text,
-                    metadata={
-                        "intent_type": segments[0].intent_type.name, 
-                        "confidence": sum(s.confidence for s in segments) / len(segments),
-                        "segment_count": len(segments)
-                    },
+                    trigger_content=trigger_text,
+                    context_content=trigger_text,
+                    metadata=metadata,
                     custom_priority=priority,
                     work_mode=work_mode
                 )
                 added_states.append(state_type)
                 
-                debug_log(3, f"[NLP] Added merged state: {state_type.value} "
-                             f"(segments={len(segments)}, priority={priority}, work_mode={work_mode})")
+                if is_resume:
+                    debug_log(3, f"[NLP] Added resume state: {state_type.value} (priority={priority})")
+                else:
+                    debug_log(3, f"[NLP] Added state: {state_type.value} (priority={priority}, work_mode={work_mode})")
             
             if added_states:
                 info_log(f"[NLP] Added {len(added_states)} state(s) to queue: "
@@ -548,10 +623,12 @@ class NLPModule(BaseModule):
             for note in result.get("processing_notes", []):
                 debug_log(3, f"[NLP] {note}")
             
-            # 返回字典包含 added_states 和 corrected_segments
+            # 返回字典包含 added_states、corrected_segments、filtered_segments 和 session_control
             return_dict = {
                 "added_states": added_states,
-                "corrected_segments": result.get("corrected_segments", [])
+                "corrected_segments": result.get("corrected_segments", []),
+                "filtered_segments": result.get("filtered_segments", []),
+                "session_control": result.get("session_control")  # 🆕 傳遞 session_control
             }
             return return_dict
                 
@@ -589,6 +666,13 @@ class NLPModule(BaseModule):
         queue_status = self.state_queue_manager.get_queue_status()
         added_states = state_result.get("added_states", [])
         
+        # 🔍 調試：檢查 session_control
+        session_control_value = state_result.get("session_control")
+        if session_control_value:
+            debug_log(1, f"[NLP] _combine_results: session_control = {session_control_value}")
+        else:
+            debug_log(3, "[NLP] _combine_results: session_control is None")
+        
         # Convert intent_types.IntentSegment (dataclass) to schemas.IntentSegment (Pydantic model)
         from modules.nlp_module.schemas import IntentSegment as SchemaIntentSegment
         pydantic_segments = []
@@ -619,7 +703,8 @@ class NLPModule(BaseModule):
             awaiting_further_input=state_result.get("awaiting_input", False),
             timeout_seconds=state_result.get("timeout_seconds"),
             queue_states_added=added_states,
-            current_system_state=queue_status.get("current_state")
+            current_system_state=queue_status.get("current_state"),
+            session_control=state_result.get("session_control")  # 🆕 傳遞 session_control
         )
     
     def _add_to_speaker_accumulation(self, input_data: NLPInput):
@@ -708,6 +793,23 @@ class NLPModule(BaseModule):
                 interaction_data
             )
             
+            # 🆕 更新 StatusManager 的 last_interaction_time
+            # 確保系統不會因為長時間無互動而進入 SLEEP
+            from core.status_manager import StatusManager
+            status_manager = StatusManager()
+            
+            # 判斷互動是否成功（confidence > 0.5 視為成功）
+            is_successful = result.overall_confidence > 0.5
+            task_type = interaction_data["module"]
+            
+            status_manager.record_interaction(
+                successful=is_successful,
+                task_type=task_type
+            )
+            
+            debug_log(3, f"[NLP] 已記錄互動時間 (Identity: {identity.identity_id}, "
+                       f"Type: {task_type}, Success: {is_successful})")
+            
         except Exception as e:
             debug_log(3, f"[NLP] 更新互動歷史失敗：{e}")
     
@@ -726,7 +828,8 @@ class NLPModule(BaseModule):
             timeout_seconds=None,
             queue_states_added=None,
             current_system_state=None,
-            processing_notes=[f"處理錯誤：{error_message}"]
+            processing_notes=[f"處理錯誤：{error_message}"],
+            session_control=None
         ).dict()
     
     def shutdown(self):
@@ -853,6 +956,8 @@ class NLPModule(BaseModule):
                 result["processing_notes"].append(f"COMPOUND intent detected: {len(valid_segments)} segments")
                 # Apply COMPOUND filtering rules
                 valid_segments = self._filter_compound_no_session(valid_segments)
+                # 保存過濾後的 segments，用於更新 primary_intent
+                result["filtered_segments"] = valid_segments
             
             # Process each segment
             for segment in valid_segments:
@@ -872,71 +977,17 @@ class NLPModule(BaseModule):
                     debug_log(2, f"[NLP] No session: CHAT - adding CHAT state (priority={segment.priority})")
                     
                 elif segment.intent_type == IntentType.WORK:
-                    # WORK 意圖：添加 WORK 狀態
-                    # 查詢 SYS 模組獲取實際工作流資訊
-                    # 先從 metadata 中獲取 work_mode（BIO Tagger 已設定）
-                    work_mode = segment.metadata.get('work_mode') if segment.metadata else None
-                    query_source = "bio_tagger" if work_mode else "fallback"
-                    corrected_segment = segment  # 預設使用原始 segment
-                    
-                    try:
-                        from core.framework import core_framework
-                        sys_module = core_framework.get_module('sys')
-                        if sys_module:
-                            matches = sys_module.query_function_info(segment.segment_text, top_k=1)
-                            # Lower threshold to 0.3 for better matching
-                            if matches and matches[0]['relevance_score'] > 0.3:
-                                work_mode = matches[0]['work_mode']
-                                workflow_name = matches[0]['name']  # ✅ 獲取工作流名稱
-                                query_source = "sys_query"
-                                debug_log(2, f"[NLP] Found matching function: {workflow_name} "
-                                             f"(score={matches[0]['relevance_score']:.2f}, mode={work_mode})")
-                                
-                                # ✅ 將工作流名稱添加到結果中，讓 LLM 知道應該調用哪個工作流
-                                workflow_hint_data = {
-                                    "workflow_name": workflow_name,
-                                    "confidence": matches[0]['relevance_score'],
-                                    "work_mode": work_mode
-                                }
-                                result["workflow_hint"] = workflow_hint_data
-                                
-                                # ✅ 同時寫入 working_context，供 LLM 讀取（因為 NLP 和 LLM 沒有直接數據傳遞）
-                                from core.working_context import working_context_manager
-                                working_context_manager.set_context_data("workflow_hint", workflow_hint_data)
-                                debug_log(3, f"[NLP] 已將工作流提示寫入 working_context: {workflow_hint_data}")
-                                
-                                # 更新 work_mode metadata（intent_type 始終為 WORK）
-                                if work_mode and (not segment.metadata or segment.metadata.get('work_mode') != work_mode):
-                                    from .intent_types import IntentSegment as NewIntentSegment
-                                    corrected_segment = NewIntentSegment(
-                                        segment_text=segment.segment_text,
-                                        intent_type=IntentType.WORK,
-                                        confidence=segment.confidence,
-                                        priority=0,  # Will be recalculated
-                                        metadata={'work_mode': work_mode}
-                                    )
-                                    # 記錄 segment 被更正
-                                    result["corrected_segments"] = result.get("corrected_segments", []) + [(segment, corrected_segment)]
-                                    debug_log(2, f"[NLP] Corrected segment work_mode: {segment.metadata.get('work_mode') if segment.metadata else 'None'} -> {work_mode}")
-                    except Exception as e:
-                        debug_log(3, f"[NLP] SYS query failed: {e}, using fallback")
-                    
-                    # Fallback: 如果 SYS 查詢沒有找到匹配，使用 BIO Tagger 的 metadata
-                    if work_mode is None:
-                        work_mode = segment.metadata.get('work_mode', 'background') if segment.metadata else 'background'
-                        debug_log(2, f"[NLP] Using BIO Tagger classification: work_mode={work_mode}")
-                    
-                    # Calculate priority based on final work_mode (not BIO Tagger prediction)
+                    # WORK: work_mode 已在 _correct_intent_with_mcp 中設定
+                    work_mode = segment.metadata.get('work_mode', 'background') if segment.metadata else 'background'
                     final_priority = 100 if work_mode == "direct" else 30
                     
                     result["states_to_add"].append({
-                        "segment": corrected_segment,  # 使用更正後的 segment
+                        "segment": segment,
                         "state_type": "WORK",
                         "priority": final_priority,
                         "work_mode": work_mode
                     })
-                    debug_log(2, f"[NLP] No session: {corrected_segment.intent_type.name} - adding WORK state "
-                                 f"(mode={work_mode}, priority={final_priority}, source={query_source})")
+                    debug_log(2, f"[NLP] No session: WORK - adding WORK state (mode={work_mode}, priority={final_priority})")
             
         except Exception as e:
             error_log(f"[NLP] Error in _process_no_session_state: {e}")
@@ -986,10 +1037,10 @@ class NLPModule(BaseModule):
         """
         result = {
             "states_to_add": [],
-            "skip_input_layer": False,
             "interrupt_cs": False,
             "pause_cs_sessions": [],
-            "processing_notes": []
+            "processing_notes": [],
+            "session_control": None  # For DW interrupt - follows LLM pattern
         }
         
         try:
@@ -1010,17 +1061,22 @@ class NLPModule(BaseModule):
                 if should_interrupt:
                     result["interrupt_cs"] = True
                     result["pause_cs_sessions"] = [cs.session_id for cs in cs_sessions]
+                    # Set session_control for DW in COMPOUND case
+                    result["session_control"] = {
+                        "action": "end_session",
+                        "should_end_session": True,
+                        "reason": "Direct work interrupt (COMPOUND)",
+                        "confidence": 1.0
+                    }
+                    debug_log(2, "[NLP] COMPOUND with DW - set session_control for immediate interrupt")
             
             # Process each segment
             for segment in valid_segments:
                 if segment.intent_type == IntentType.CALL:
-                    # CALL -> treat as CHAT in CS
-                    result["states_to_add"].append({
-                        "segment": segment,
-                        "state_type": "CHAT",
-                        "priority": segment.priority
-                    })
-                    debug_log(2, "[NLP] Active CS: CALL -> CHAT")
+                    # CALL -> treat as CHAT in CS (per NLP狀態處理.md)
+                    # Don't queue, just continue CS as if it's CHAT
+                    result["processing_notes"].append("CALL in CS - treating as CHAT, continuing conversation")
+                    debug_log(2, "[NLP] Active CS: CALL -> treat as CHAT (no queue, continue CS)")
                     
                 elif segment.intent_type == IntentType.CHAT:
                     # CHAT: Continue CS, don't queue
@@ -1028,28 +1084,67 @@ class NLPModule(BaseModule):
                     debug_log(2, "[NLP] Active CS: CHAT - continuing CS")
                     
                 elif segment.intent_type == IntentType.WORK:
-                    # WORK: Check work_mode to decide if interrupt
+                    # WORK: Check work_mode to decide if interrupt and resume
                     work_mode = segment.metadata.get('work_mode', 'background') if segment.metadata else 'background'
                     priority = 100 if work_mode == "direct" else 30
                     
-                    if work_mode == "direct":
-                        # DW: Interrupt CS, add WORK, end loop
-                        result["interrupt_cs"] = True
-                        result["pause_cs_sessions"] = [cs.session_id for cs in cs_sessions]
-                        result["skip_input_layer"] = True
-                        result["processing_notes"].append("DW in CS - interrupting CS and ending loop")
-                        debug_log(2, f"[NLP] Active CS: WORK (direct) - interrupting CS, ending loop (priority={priority})")
-                    else:
-                        # BW: Add WORK, don't interrupt CS
-                        result["processing_notes"].append("BW in CS - queuing work without interrupt")
-                        debug_log(2, f"[NLP] Active CS: WORK (background) - queuing without interrupt (priority={priority})")
+                    # 🆕 新架構：BW 和 DW 都立即中斷 CS，差別在於是否恢復
+                    result["interrupt_cs"] = True
+                    result["pause_cs_sessions"] = [cs.session_id for cs in cs_sessions]
+                    result["session_control"] = {
+                        "action": "end_session",
+                        "should_end_session": True,
+                        "reason": "Work interrupt (BW)" if work_mode == "background" else "Work interrupt (DW)",
+                        "confidence": 1.0
+                    }
                     
-                    result["states_to_add"].append({
-                        "segment": segment,
-                        "state_type": "WORK",
-                        "priority": priority,
-                        "work_mode": work_mode
-                    })
+                    if work_mode == "background":
+                        # BW: 中斷 CS，處理 WORK，然後恢復 CHAT
+                        result["processing_notes"].append("BW in CS - interrupting CS, will resume after WORK")
+                        debug_log(2, f"[NLP] Active CS: WORK (background) - interrupting CS, queuing WORK + resume CHAT (priority={priority})")
+                        
+                        # 保存 CS 上下文以便恢復
+                        from core.sessions.session_manager import unified_session_manager
+                        cs_context = None
+                        if cs_sessions:
+                            cs = cs_sessions[0]  # 取第一個活躍 CS
+                            cs_context = cs.get_session_context()
+                        
+                        # 添加 WORK 狀態
+                        result["states_to_add"].append({
+                            "segment": segment,
+                            "state_type": "WORK",
+                            "priority": priority,
+                            "work_mode": work_mode
+                        })
+                        
+                        # 添加恢復 CHAT 狀態（優先級較低，在 WORK 後執行）
+                        result["states_to_add"].append({
+                            "segment": None,  # 無新輸入，恢復對話
+                            "state_type": "CHAT",
+                            "priority": 10,  # 低優先級，確保在 WORK 後
+                            "resume_context": cs_context,  # 保存的 CS 上下文
+                            "is_resume": True
+                        })
+                        debug_log(2, f"[NLP] BW: 已添加 WORK (priority=30) + resume CHAT (priority=10) 到佇列")
+                    else:
+                        # DW: 中斷 CS，處理 WORK，不恢復
+                        result["processing_notes"].append("DW in CS - interrupting CS, no resume")
+                        debug_log(2, f"[NLP] Active CS: WORK (direct) - interrupting CS, queuing WORK only (priority={priority})")
+                        
+                        # 只添加 WORK 狀態
+                        result["states_to_add"].append({
+                            "segment": segment,
+                            "state_type": "WORK",
+                            "priority": priority,
+                            "work_mode": work_mode
+                        })
+                    
+                    # 🔧 CRITICAL: 檢測到 WORK 意圖後，立即返回，不再處理後續分段
+                    # 原因：WORK 已添加到佇列並將被優先處理，後續的 CHAT 分段應該被忽略
+                    # 避免發布混淆的 INPUT_LAYER_COMPLETE 事件（意圖=CHAT 但狀態=WORK）
+                    debug_log(2, f"[NLP] BW/DW 已添加到佇列，停止處理後續分段")
+                    return result
             
         except Exception as e:
             error_log(f"[NLP] Error in _process_active_cs_state: {e}")
@@ -1140,11 +1235,18 @@ class NLPModule(BaseModule):
             result["processing_notes"].append("Active WS - treating all inputs as Response")
             
             # Analyze intent types for metadata
+            has_call = any(s.intent_type == IntentType.CALL for s in segments)
             has_chat = any(s.intent_type == IntentType.CHAT for s in segments)
             work_segs = [s for s in segments if s.intent_type == IntentType.WORK]
             has_dw = any(s.metadata and s.metadata.get('work_mode') == 'direct' for s in work_segs)
             has_bw = any(s.metadata and s.metadata.get('work_mode') == 'background' for s in work_segs)
             has_unknown = any(s.intent_type == IntentType.UNKNOWN for s in segments)
+            
+            # CALL in WS: treat as Response (per NLP狀態處理.md)
+            if has_call:
+                result["response_metadata"]["call_detected"] = True
+                result["processing_notes"].append("CALL in WS - treating as Response")
+                debug_log(2, "[NLP] Active WS: CALL detected - treat as Response")
             
             # Set metadata for LLM processing
             if has_chat:
@@ -1169,9 +1271,11 @@ class NLPModule(BaseModule):
                 result["processing_notes"].append("UNKNOWN in WS - let LLM handle")
                 debug_log(2, "[NLP] Active WS: UNKNOWN - let LLM handle")
             
-            # Add Response state (or continue WS processing)
-            # Note: In WS, the input is typically handled by the workflow logic
-            # We don't add states here, just set metadata for downstream processing
+            # ✅ 在活躍 WS 時，所有輸入都應該被視為 RESPONSE
+            # 根據 NLP狀態處理.md：當存在 WS 時，所有輸入歸類為 Response
+            result["corrected_intent"] = IntentType.RESPONSE
+            result["processing_notes"].append("Active WS - correcting intent to RESPONSE")
+            debug_log(2, "[NLP] Active WS: Correcting all inputs to RESPONSE")
             
         except Exception as e:
             error_log(f"[NLP] Error in _process_active_ws_state: {e}")
@@ -1305,9 +1409,9 @@ class NLPModule(BaseModule):
         try:
             info_log(f"[NLP] 輸入層處理完成，發布事件: 意圖={nlp_result.primary_intent}, 文本='{input_data.text[:50]}...'")
             
-            # 🔧 使用處理開始時保存的 session_id 和 cycle_index
-            session_id = getattr(self, '_current_processing_session_id', self._get_current_gs_id())
-            cycle_index = getattr(self, '_current_processing_cycle_index', self._get_current_cycle_index())
+            # 🔧 實時獲取 session_id 和 cycle_index（StateManager可能在處理過程中創建了GS）
+            session_id = self._get_current_gs_id()
+            cycle_index = self._get_current_cycle_index()
             
             debug_log(3, f"[NLP] 發布事件使用: session={session_id}, cycle={cycle_index}")
             
@@ -1364,18 +1468,18 @@ class NLPModule(BaseModule):
     def _get_current_cycle_index(self) -> int:
         """
         獲取當前循環計數
-        從 working_context 的全局數據中讀取 (由 SystemLoop 設置)
+        從 working_context 的全局數據中讀取 (由 Controller 在 GS 創建時設置)
         
         Returns:
-            int: 當前 cycle_index,如果無法獲取則返回 -1
+            int: 當前 cycle_index,如果無法獲取則返回 0（假設為第一個 cycle）
         """
         try:
             from core.working_context import working_context_manager
-            cycle_index = working_context_manager.global_context_data.get('current_cycle_index', -1)
+            cycle_index = working_context_manager.global_context_data.get('current_cycle_index', 0)
             return cycle_index
         except Exception as e:
             error_log(f"[NLP] 獲取 cycle_index 失敗: {e}")
-            return -1
+            return 0
 
     # === 以下是原有不當的路由邏輯，已移除 ===
     # _invoke_target_module() 和 _prepare_module_input() 方法
@@ -1418,13 +1522,12 @@ class NLPModule(BaseModule):
                     timeout_seconds=30,  # 30秒超時
                     queue_states_added=None,
                     current_system_state=current_state.value if current_state else None,
-                    processing_notes=["CALL 意圖檢測，終止當前循環"]
+                    processing_notes=["CALL 意圖檢測，終止當前循環"],
+                    session_control=None
                 )
                 
                 # 直接返回 CALL 回應，不進行路由
                 return call_response.dict()
-            elif primary_intent == "compound":
-                target_state = UEPState.WORK
             
             if target_state and current_state != target_state:
                 info_log(f"[NLP] 執行狀態轉換: {current_state} → {target_state}")
@@ -1457,6 +1560,111 @@ class NLPModule(BaseModule):
         except Exception as e:
             error_log(f"[NLP] 狀態轉換執行失敗: {e}")
 
+    def _handle_declared_identity(self, identity_id: str, input_data: NLPInput) -> Dict[str, Any]:
+        """處理主動聲明的 Identity（方案 A）
+        
+        Args:
+            identity_id: 主動聲明的 Identity ID
+            input_data: NLP 輸入數據
+            
+        Returns:
+            Dict: 包含 identity, identity_action, processing_notes
+        """
+        result = {
+            "identity": None,
+            "identity_action": None,
+            "processing_notes": []
+        }
+        
+        try:
+            # 載入該 Identity
+            identity = self.identity_manager.get_identity_by_id(identity_id)
+            
+            if not identity:
+                error_log(f"[NLP] 聲明的 Identity {identity_id} 不存在")
+                result["processing_notes"].append(f"聲明的 Identity {identity_id} 不存在")
+                return result
+            
+            # 🆕 從 Working Context 獲取 Speaker 數據
+            speaker_data = self._get_speaker_from_working_context()
+            
+            if speaker_data:
+                speaker_id = speaker_data.get('speaker_id')
+                speaker_confidence = speaker_data.get('confidence', 0.0)
+                
+                # 從 voice_features 中提取 embedding（如果有）
+                voice_features = speaker_data.get('voice_features')
+                speaker_embedding = None
+                
+                if voice_features and isinstance(voice_features, dict):
+                    speaker_embedding = voice_features.get('embedding')
+                
+                # 如果有 embedding，添加到 Identity 的 speaker_accumulation
+                if speaker_embedding and isinstance(speaker_embedding, list):
+                    success = self.identity_manager.add_speaker_sample(
+                        identity_id,
+                        speaker_embedding,
+                        speaker_confidence,
+                        audio_duration=voice_features.get('audio_duration') if voice_features else None,
+                        metadata={
+                            "speaker_id": speaker_id,
+                            "timestamp": time.time(),
+                            "mode": "declared_identity"
+                        }
+                    )
+                    
+                    if success:
+                        debug_log(2, f"[NLP] 已添加 Speaker 樣本到 Identity {identity_id}")
+                        result["processing_notes"].append(f"Speaker 樣本已添加到 Identity")
+                        
+                        # 關聯 Speaker ID 到 Identity（如果尚未關聯）
+                        if speaker_id:
+                            self.identity_manager.associate_speaker_to_identity(speaker_id, identity_id)
+                    else:
+                        error_log(f"[NLP] 添加 Speaker 樣本到 Identity {identity_id} 失敗")
+                else:
+                    debug_log(3, f"[NLP] Speaker 數據中無 embedding，嘗試從 SPEAKER_ACCUMULATION 獲取")
+                    
+                    # 🆕 從 Working Context 的 SPEAKER_ACCUMULATION 獲取 embedding
+                    embeddings = self._get_speaker_embeddings_from_context()
+                    if embeddings:
+                        debug_log(2, f"[NLP] 從 SPEAKER_ACCUMULATION 獲取到 {len(embeddings)} 個 embedding")
+                        for emb_data in embeddings:
+                            self.identity_manager.add_speaker_sample(
+                                identity_id,
+                                emb_data['embedding'],
+                                emb_data.get('confidence', 0.8),
+                                metadata={
+                                    "speaker_id": speaker_id,
+                                    "timestamp": emb_data.get('timestamp', time.time()),
+                                    "mode": "declared_identity_batch"
+                                }
+                            )
+                        result["processing_notes"].append(f"從上下文添加了 {len(embeddings)} 個 Speaker 樣本")
+                    else:
+                        debug_log(3, f"[NLP] 無法獲取 Speaker embedding")
+            
+            # 設置結果
+            result["identity"] = identity
+            result["identity_action"] = "declared"
+            result["processing_notes"].append(f"使用主動聲明的 Identity: {identity.display_name}")
+            
+            # 🆕 同步 StatusManager：切換到該 Identity 的系統狀態
+            from core.status_manager import status_manager
+            status_manager.switch_identity(identity_id)
+            debug_log(2, f"[NLP] 已切換 StatusManager 到 Identity: {identity_id}")
+            
+            # 將身份添加到 Working Context
+            self._add_identity_to_working_context(identity)
+            
+            info_log(f"[NLP] 使用主動聲明的 Identity: {identity.identity_id} ({identity.display_name})")
+            
+        except Exception as e:
+            error_log(f"[NLP] 處理主動聲明 Identity 失敗: {e}")
+            result["processing_notes"].append(f"處理聲明 Identity 錯誤: {str(e)}")
+        
+        return result
+    
     def _get_speaker_from_working_context(self) -> Optional[Dict[str, Any]]:
         """從Working Context獲取當前說話人資料"""
         try:
@@ -1489,8 +1697,55 @@ class NLPModule(BaseModule):
         except Exception as e:
             error_log(f"[NLP] 從Working Context獲取說話人失敗: {e}")
             return None
+    
+    def _get_speaker_embeddings_from_context(self) -> List[Dict[str, Any]]:
+        """從 Working Context 的 SPEAKER_ACCUMULATION 獲取所有 embedding
+        
+        Returns:
+            List[Dict]: 包含 embedding 的字典列表
+        """
+        embeddings = []
+        
+        try:
+            from core.working_context import working_context_manager, ContextType
+            import numpy as np
+            
+            # 獲取所有 SPEAKER_ACCUMULATION 上下文
+            contexts = working_context_manager.get_contexts_by_type(ContextType.SPEAKER_ACCUMULATION)
+            
+            if not contexts:
+                return embeddings
+            
+            # 遍歷所有上下文，提取 embedding
+            for context in contexts:
+                context_data = working_context_manager.get_context_data(context.context_id)
+                
+                if not context_data:
+                    continue
+                
+                # data 字段包含累積的樣本
+                data_items = context_data.get('data', [])
+                
+                for item in data_items:
+                    # item 可能是 numpy array (embedding) 或包含 embedding 的字典
+                    if isinstance(item, np.ndarray):
+                        embeddings.append({
+                            'embedding': item.tolist(),
+                            'timestamp': time.time(),
+                            'confidence': 0.8
+                        })
+                    elif isinstance(item, dict) and 'embedding' in item:
+                        embeddings.append(item)
+                
+                debug_log(3, f"[NLP] 從上下文 {context.context_id} 提取了 {len(data_items)} 個樣本")
+            
+            return embeddings
+            
+        except Exception as e:
+            error_log(f"[NLP] 從 SPEAKER_ACCUMULATION 獲取 embedding 失敗: {e}")
+            return embeddings
 
-    def _extract_state_text(self, nlp_result: 'NLPOutput', target_state: 'UEPState') -> str:
+    def _extract_state_text(self, nlp_result: 'NLPOutput', target_state: 'SystemState') -> str:
         """
         提取屬於目標狀態的分段文本
         
@@ -1508,13 +1763,11 @@ class NLPModule(BaseModule):
             對應狀態的分段文本
         """
         from .intent_types import IntentType
-        from core.states.uep_states import UEPState
         
         # 映射：狀態 → 意圖類型
         state_to_intent = {
-            UEPState.CHAT: IntentType.CHAT,
-            UEPState.WORK: IntentType.WORK,
-            UEPState.CALL: IntentType.CALL
+            SystemState.CHAT: IntentType.CHAT,
+            SystemState.WORK: IntentType.WORK,
         }
         
         target_intent = state_to_intent.get(target_state)
@@ -1602,6 +1855,83 @@ class NLPModule(BaseModule):
             error_log(f"[NLP] 創建通用身份失敗: {e}")
             return None
 
+    def _correct_intent_with_mcp(self, segment: 'IntentSegment') -> 'IntentSegment':
+        """
+        使用 MCP 工具列表查詢來糾正意圖分類
+        
+        目的：防止工作請求被錯誤分類為 CHAT/UNKNOWN
+        例如："What's the weather in Taipei?" 應該被識別為 WORK
+        
+        Args:
+            segment: 原始意圖段落
+            
+        Returns:
+            糾正後的意圖段落（如果找到匹配的工作流）
+        """
+        try:
+            from core.framework import core_framework
+            from .intent_types import IntentSegment as NewIntentSegment
+            
+            # 查詢 SYS 模組的 MCP 工具
+            sys_module = core_framework.get_module('sys_module')
+            if not sys_module:
+                debug_log(3, "[NLP] SYS module not available for intent correction")
+                return segment
+            
+            # 查詢所有註冊的工作流
+            matches = sys_module.query_function_info(segment.segment_text, top_k=1)
+            
+            # 降低閾值到 0.3 以捕獲更多可能的工作請求
+            if matches and matches[0]['relevance_score'] > 0.3:
+                match = matches[0]
+                work_mode = match['work_mode']
+                workflow_name = match['name']
+                score = match['relevance_score']
+                
+                debug_log(2, f"[NLP] MCP match found: '{workflow_name}' (score={score:.2f}, mode={work_mode})")
+                
+                # 如果當前不是 WORK 意圖，但找到了匹配的工作流，糾正為 WORK
+                if segment.intent_type != IntentType.WORK:
+                    debug_log(1, f"[NLP] Correcting intent: {segment.intent_type.name} -> WORK based on MCP match '{workflow_name}'")
+                    
+                    corrected_segment = NewIntentSegment(
+                        segment_text=segment.segment_text,
+                        intent_type=IntentType.WORK,
+                        confidence=min(segment.confidence + 0.2, 0.95),  # 增加信心度
+                        priority=0,  # 會根據 work_mode 重新計算
+                        metadata={'work_mode': work_mode, 'mcp_corrected': True, 'matched_workflow': workflow_name}
+                    )
+                    return corrected_segment
+                
+                # 如果已經是 WORK，更新或確認 work_mode
+                elif segment.intent_type == IntentType.WORK:
+                    current_work_mode = segment.metadata.get('work_mode') if segment.metadata else None
+                    
+                    # 如果 work_mode 不一致，使用 MCP 的結果
+                    if current_work_mode != work_mode:
+                        debug_log(2, f"[NLP] Updating work_mode: {current_work_mode} -> {work_mode} based on MCP")
+                        
+                        updated_metadata = segment.metadata.copy() if segment.metadata else {}
+                        updated_metadata['work_mode'] = work_mode
+                        updated_metadata['mcp_verified'] = True
+                        updated_metadata['matched_workflow'] = workflow_name
+                        
+                        corrected_segment = NewIntentSegment(
+                            segment_text=segment.segment_text,
+                            intent_type=IntentType.WORK,
+                            confidence=segment.confidence,
+                            priority=segment.priority,
+                            metadata=updated_metadata
+                        )
+                        return corrected_segment
+            
+            # 沒有找到匹配或分數太低，返回原始 segment
+            return segment
+            
+        except Exception as e:
+            error_log(f"[NLP] Intent correction with MCP failed: {e}")
+            return segment
+    
     def get_module_info(self) -> Dict[str, Any]:
         """獲取模組資訊"""
         return {

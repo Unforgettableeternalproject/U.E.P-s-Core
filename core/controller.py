@@ -247,7 +247,12 @@ class UnifiedController:
             from core.states.state_queue import get_state_queue_manager
             from core.states.state_manager import UEPState
             
-            # 1. 首先檢查並處理待結束的 WS（符合會話生命週期架構）
+            debug_log(1, "[Controller] ✅ check_gs_end_conditions() 被調用（循環完成邊界）")
+            
+            # 1. 首先檢查並處理待結束的 CS/WS（符合會話生命週期架構 - 雙條件終止）
+            debug_log(2, "[Controller] 檢查 CS pending_end...")
+            self._check_and_end_pending_chatting_sessions()
+            debug_log(2, "[Controller] 檢查 WS pending_end...")
             self._check_and_end_pending_workflow_sessions()
             
             # 2. 然後檢查 GS 結束條件
@@ -294,6 +299,30 @@ class UnifiedController:
                         
         except Exception as e:
             error_log(f"[Controller] 檢查待結束 WS 時出錯: {e}")
+    
+    def _check_and_end_pending_chatting_sessions(self):
+        """檢查並結束標記待結束的 Chatting Sessions - 在循環完成邊界執行"""
+        try:
+            active_cs_list = self.session_manager.get_active_chatting_sessions()
+            
+            for cs in active_cs_list:
+                # 檢查是否有 pending_end 標記
+                if hasattr(cs, 'pending_end') and cs.pending_end:
+                    session_id = cs.session_id
+                    reason = getattr(cs, 'pending_end_reason', 'chat_complete')
+                    
+                    debug_log(1, f"[Controller] 在循環邊界處理待結束的 CS: {session_id} (原因: {reason})")
+                    
+                    # 在循環完成邊界真正結束會話
+                    success = self.session_manager.end_chatting_session(session_id)
+                    
+                    if success:
+                        info_log(f"[Controller] ✅ 已在循環邊界結束 CS: {session_id}")
+                    else:
+                        error_log(f"[Controller] ⚠️ 在循環邊界結束 CS 失敗: {session_id}")
+                        
+        except Exception as e:
+            error_log(f"[Controller] 檢查待結束 CS 時出錯: {e}")
 
     def _create_gs_for_processing(self):
         """創建 GS 以支持處理流程"""
@@ -318,8 +347,8 @@ class UnifiedController:
                 try:
                     from core.working_context import working_context_manager
                     working_context_manager.global_context_data['current_gs_id'] = gs_result
-                    working_context_manager.global_context_data['current_cycle_index'] = -1
-                    debug_log(2, f"[Controller] 自動創建的 GS ID 已設置到全局上下文: {gs_result}")
+                    working_context_manager.global_context_data['current_cycle_index'] = 0
+                    debug_log(2, f"[Controller] 自動創建的 GS ID 和 cycle_index 已設置到全局上下文: {gs_result}, cycle=0")
                 except Exception as e:
                     error_log(f"[Controller] 設置全局 GS ID 失敗: {e}")
                 
@@ -367,8 +396,8 @@ class UnifiedController:
             # 2. 清理全局上下文中的 GS ID 和 cycle_index
             try:
                 working_context_manager.global_context_data['current_gs_id'] = 'unknown'
-                working_context_manager.global_context_data['current_cycle_index'] = -1
-                debug_log(3, "[Controller] 全局 GS ID 已重置")
+                working_context_manager.global_context_data['current_cycle_index'] = 0
+                debug_log(3, "[Controller] 全局 GS ID 和 cycle_index 已重置")
             except Exception as e:
                 error_log(f"[Controller] 清理全局 GS ID 失敗: {e}")
             
@@ -454,9 +483,9 @@ class UnifiedController:
                 try:
                     from core.working_context import working_context_manager
                     working_context_manager.global_context_data['current_gs_id'] = current_gs_id
-                    # 初始化 cycle_index 為 -1 (SystemLoop 會在檢測到循環開始時遞增為 0)
-                    working_context_manager.global_context_data['current_cycle_index'] = -1
-                    debug_log(2, f"[UnifiedController] GS ID 已設置到全局上下文: {current_gs_id}")
+                    # 初始化 cycle_index 為 0（每個新 GS 從 cycle 0 開始）
+                    working_context_manager.global_context_data['current_cycle_index'] = 0
+                    debug_log(2, f"[UnifiedController] GS ID 和 cycle_index 已設置到全局上下文: {current_gs_id}, cycle=0")
                 except Exception as e:
                     error_log(f"[UnifiedController] 設置全局 GS ID 失敗: {e}")
                 
@@ -713,14 +742,15 @@ class UnifiedController:
     
     # ========== 階段五：背景任務監控 ==========
     
-    def _handle_background_workflow_completed(self, event_data: Dict[str, Any]):
+    def _handle_background_workflow_completed(self, event):
         """
         處理背景工作流完成事件
         
         Args:
-            event_data: 事件數據，包含 task_id, workflow_type, session_id, result
+            event: Event 對象，包含 task_id, workflow_type, session_id, result
         """
         try:
+            event_data = event.data
             task_id = event_data.get('task_id')
             workflow_type = event_data.get('workflow_type')
             result = event_data.get('result')
@@ -754,14 +784,15 @@ class UnifiedController:
         except Exception as e:
             error_log(f"[Controller] 處理背景工作流完成事件失敗: {e}")
     
-    def _handle_background_workflow_failed(self, event_data: Dict[str, Any]):
+    def _handle_background_workflow_failed(self, event):
         """
         處理背景工作流失敗事件
         
         Args:
-            event_data: 事件數據，包含 task_id, workflow_type, session_id, error
+            event: Event 對象，包含 task_id, workflow_type, session_id, error
         """
         try:
+            event_data = event.data
             task_id = event_data.get('task_id')
             workflow_type = event_data.get('workflow_type')
             error = event_data.get('error')

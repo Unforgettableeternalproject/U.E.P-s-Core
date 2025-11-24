@@ -3,8 +3,9 @@ from enum import Enum, auto
 from typing import Dict, Any, Optional, List, Callable
 import time
 from core.status_manager import status_manager
-from utils.debug_helper import debug_log
+from utils.debug_helper import debug_log, info_log, error_log
 from core.working_context import ContextType
+from core.sessions.workflow_session import WSTaskType
 
 class UEPState(Enum):
     IDLE      = "idle"  # 閒置
@@ -55,12 +56,19 @@ class StateManager:
             bool: 狀態轉換是否成功
         """
         old_state = self._state
-        if old_state == new_state:
-            return True  # 狀態沒有變化，視為成功
+        
+        # ✅ 即使狀態相同，如果有 context 也要觸發狀態處理
+        # 這允許在 WORK -> WORK 轉換時創建新的 WS
+        if old_state == new_state and context is None:
+            return True  # 狀態沒有變化且沒有新上下文，視為成功
             
         try:
             self._state = new_state
-            debug_log(2, f"[StateManager] 狀態變更: {old_state.name} -> {new_state.name}")
+            
+            if old_state != new_state:
+                debug_log(2, f"[StateManager] 狀態變更: {old_state.name} -> {new_state.name}")
+            else:
+                debug_log(2, f"[StateManager] 重新進入 {new_state.name} 狀態（創建新會話）")
             
             # 觸發狀態變化回調
             self._on_state_changed(old_state, new_state, context)
@@ -127,30 +135,50 @@ class StateManager:
             # 記錄錯誤但不拋出，讓狀態轉換繼續進行
     
     def _create_chat_session(self, context: Optional[Dict[str, Any]] = None):
-        """創建聊天會話 - 使用現有的GS"""
+        """創建聊天會話 - 使用現有的GS，或恢復之前的CS"""
         try:
-            from core.sessions.session_manager import session_manager
+            from core.sessions.session_manager import session_manager, unified_session_manager
             from core.working_context import working_context_manager
             
             queue_callback = (context or {}).get("state_queue_callback")
             
-            # 從 Working Context 獲取身份信息
-            current_identity = working_context_manager.get_current_identity()
-            if current_identity:
-                identity_context = {
-                    "user_id": current_identity.get("user_identity", current_identity.get("identity_id", "default_user")),
-                    "personality": current_identity.get("personality_profile", "default"),
-                    "preferences": current_identity.get("conversation_preferences", {})
-                }
-                debug_log(2, f"[StateManager] 使用Working Context身份: {identity_context}")
-            else:
-                # 如果沒有身份信息，使用默認值
-                identity_context = {
+            # 🆕 檢查是否為 resume 模式
+            is_resume = (context or {}).get("is_resume", False)
+            resume_context = (context or {}).get("resume_context")
+            
+            if is_resume and resume_context:
+                # 🆕 Resume 模式：使用保存的上下文重新創建 CS
+                debug_log(2, f"[StateManager] Resume 模式：恢復對話會話")
+                debug_log(3, f"[StateManager] Resume context: session_id={resume_context.get('session_id')}, "
+                             f"turns={resume_context.get('turn_counter')}")
+                
+                # 使用保存的身份上下文
+                identity_context = resume_context.get("identity_context", {
                     "user_id": "default_user",
                     "personality": "default",
                     "preferences": {}
-                }
-                debug_log(2, f"[StateManager] 使用默認身份: {identity_context}")
+                })
+            else:
+                # 正常模式：從 Working Context 獲取身份信息
+                current_identity = working_context_manager.get_current_identity()
+                if current_identity:
+                    identity_context = {
+                        "user_id": current_identity.get("user_identity", current_identity.get("identity_id", "default_user")),
+                        "personality": current_identity.get("personality_profile", "default"),
+                        "preferences": current_identity.get("conversation_preferences", {})
+                    }
+                    debug_log(2, f"[StateManager] 使用Working Context身份: {identity_context}")
+                else:
+                    # 如果沒有身份信息，使用默認值
+                    identity_context = {
+                        "user_id": "default_user",
+                        "personality": "default",
+                        "preferences": {}
+                    }
+                    debug_log(2, f"[StateManager] 使用默認身份: {identity_context}")
+            
+            # ✅ 確保 GS 存在（由 Controller 管理）
+            self._ensure_gs_exists()
             
             # 獲取現有的 General Session - 如果不存在則為架構錯誤
             current_gs = session_manager.get_current_general_session()
@@ -170,15 +198,20 @@ class StateManager:
             
             if cs_id:
                 self._current_session_id = cs_id
-                debug_log(2, f"[StateManager] 創建聊天會話成功: {cs_id}")
                 
-                # 注意：處理輸入現在由 Router 負責，CS 只記錄
-                # 這裡只是創建會話，不處理輸入
+                # 🆕 如果是 resume 模式，將 resume_context 保存到 working_context
+                if is_resume and resume_context:
+                    working_context_manager.set_resume_context(resume_context)
+                    debug_log(2, f"[StateManager] Resume CS 成功: {cs_id}，已保存 resume_context")
+                else:
+                    debug_log(2, f"[StateManager] 創建聊天會話成功: {cs_id}")
                 
-                if callable(queue_callback):
-                    queue_callback(cs_id, True, {"session_created": True})
+                # ✅ 不在創建時呼叫 callback，等待 session_ended 事件
+                # StateQueue 會通過 _on_session_ended 收到完成通知
+                debug_log(2, "[StateManager] CS 已創建，等待聊天會話完成...")
             else:
                 debug_log(1, "[StateManager] 創建聊天會話失敗")
+                # ❌ 創建失敗時才呼叫 callback 報告錯誤
                 if callable(queue_callback):
                     queue_callback(None, False, {"error": "Failed to create chat session"})
                 
@@ -196,14 +229,25 @@ class StateManager:
             
             queue_callback = (context or {}).get("state_queue_callback")
             
-            # 從上下文獲取工作流程信息（預設使用工作流自動化）
-            workflow_type = "workflow_automation"
+            # 從上下文獲取工作流程信息
+            workflow_type = None if context is None else context.get("workflow_type", "workflow_automation")
             command_text = "unknown command"
+            is_system_report = (context or {}).get("system_report", False)
             
             if context:
-                workflow_type = context.get("workflow_type", workflow_type)
                 # ✅ 從 NLP 分段提取的對應狀態文本
-                command_text = context.get("text", command_text)
+                command_text = context.get("text", context.get("command", command_text))
+            
+            # ✅ 確保 GS 存在（由 Controller 管理）
+            self._ensure_gs_exists()
+            
+            # 檢查是否為系統匯報模式（不需要工作流引擎，但仍需要 WS）
+            if is_system_report:
+                info_log(f"[StateManager] WORK 狀態（系統匯報模式）：創建 WS 但不啟動工作流引擎")
+                debug_log(3, f"[StateManager] 系統匯報內容: {command_text[:100]}...")
+                
+                # 使用枚舉來標記這是系統通知
+                workflow_type = WSTaskType.SYSTEM_NOTIFICATION.value
             
             # 獲取現有的 General Session - 如果不存在則為架構錯誤
             current_gs = session_manager.get_current_general_session()
@@ -229,10 +273,19 @@ class StateManager:
                 self._current_session_id = ws_id
                 debug_log(2, f"[StateManager] 創建工作會話成功: {ws_id} (類型: {workflow_type})")
                 
-                if callable(queue_callback):
-                    queue_callback(ws_id, True, {"accepted": True, "workflow_type": workflow_type, "command": command_text})
+                if workflow_type == WSTaskType.SYSTEM_NOTIFICATION.value:
+                    # 系統通知：直接觸發處理層
+                    info_log(f"[StateManager] 系統通知 WS 已創建，直接觸發處理層")
+                    self._trigger_work_processing(command_text, context, is_system_report=True)
+                    # 系統通知的 WS 在處理完成後會自動結束，不需要等待工作流
+                else:
+                    # 等待 STATE_ADVANCED 事件（佇列推進）或 INPUT_LAYER_COMPLETE 事件（用戶輸入）
+                    debug_log(2, "[StateManager] WS 已創建，等待事件觸發處理層...")
             else:
                 debug_log(1, "[StateManager] 創建工作會話失敗")
+                # ❌ 創建失敗時才呼叫 callback 報告錯誤
+                if callable(queue_callback):
+                    queue_callback(None, False, {"error": "Failed to create workflow session"})
                 
         except RuntimeError as e:
             # 對於架構錯誤，直接向上拋出
@@ -240,6 +293,79 @@ class StateManager:
             raise
         except Exception as e:
             debug_log(1, f"[StateManager] 創建工作會話時發生錯誤: {e}")
+    
+    def _trigger_work_processing(self, content: str, context: Dict[str, Any], is_system_report: bool = True):
+        """直接觸發系統報告的處理層處理（跳過輸入層）
+        
+        系統報告不需要經過輸入層（STT/NLP），直接構建處理層輸入並調用。
+        注意：此方法僅用於 system_report 模式，不用於一般 WORK 狀態推進。
+        
+        Args:
+            content: 報告內容文本
+            context: 狀態上下文
+            is_system_report: 必須為 True，僅支持系統報告模式
+        """
+        if not is_system_report:
+            error_log("[StateManager] ❌ _trigger_work_processing 僅支持 system_report 模式")
+            return
+            
+        try:
+            from core.module_coordinator import module_coordinator, ProcessingLayer
+            
+            info_log("[StateManager] 🚀 系統報告：直接觸發處理層")
+            
+            # 構建處理層輸入（模擬輸入層完成的格式）
+            processing_input = {
+                "text": content,
+                "system_report": True,  # 標記為系統報告
+                "system_initiated": True,
+                "notification_type": context.get("notification_type", "unknown"),
+                "metadata": context,
+                "cycle_index": 0,
+                # 模擬 NLP 結果（系統報告不需要意圖分析）
+                "nlp_result": {
+                    "primary_intent": "work",  # 系統報告視為 WORK 路徑
+                    "overall_confidence": 1.0,
+                    "segments": []
+                }
+            }
+            
+            # 直接調用 ModuleCoordinator 的處理層處理
+            # 注意：使用 INPUT 層完成來觸發處理層轉換
+            success = module_coordinator.handle_layer_completion(
+                layer=ProcessingLayer.INPUT,  # 模擬輸入層完成
+                completion_data=processing_input  # 參數名稱是 completion_data
+            )
+            
+            if success:
+                info_log("[StateManager] ✅ 系統報告處理層已觸發")
+            else:
+                error_log("[StateManager] ❌ 系統報告處理層觸發失敗")
+                
+        except Exception as e:
+            error_log(f"[StateManager] 觸發系統報告處理層失敗: {e}")
+            import traceback
+            error_log(traceback.format_exc())
+    
+    def _ensure_gs_exists(self):
+        """確保 GS 存在，如果不存在則通知 Controller 創建"""
+        from utils.debug_helper import debug_log, error_log
+        
+        try:
+            from core.sessions.session_manager import session_manager
+            
+            current_gs = session_manager.get_current_general_session()
+            if not current_gs:
+                debug_log(2, "[StateManager] 檢測到沒有活躍的 GS，通知 Controller 創建")
+                # 通過 Controller 單例同步創建 GS
+                try:
+                    from core.controller import unified_controller
+                    unified_controller._create_gs_for_processing()
+                    debug_log(2, "[StateManager] GS 創建請求已完成")
+                except Exception as e:
+                    error_log(f"[StateManager] 通知 Controller 創建 GS 失敗: {e}")
+        except Exception as e:
+            error_log(f"[StateManager] 檢查 GS 存在性失敗: {e}")
     
     def _cleanup_sessions(self):
         """清理會話 (當回到IDLE狀態時)"""
@@ -352,46 +478,56 @@ class StateManager:
             current_time = time.time()
             
             # 檢查 Sleep 狀態條件（優先級較高）
-            time_since_interaction = current_time - status.last_interaction_time
-            sleep_threshold = 1800  # 30分鐘無互動
+            # TODO: SLEEP 狀態暫時禁用自動觸發，等待前後端整合時正式實作
+            # 將在前後端整合階段實現完整的資源釋放和喚醒機制
+            sleep_enabled = False  # 設為 True 以啟用 SLEEP 狀態
             
-            if (status.boredom >= 0.8 and 
-                time_since_interaction > sleep_threshold and 
-                self._state in [UEPState.IDLE]):
+            if sleep_enabled:
+                time_since_interaction = current_time - status.last_interaction_time
+                sleep_threshold = 1800  # 30分鐘無互動
                 
-                debug_log(2, f"[StateManager] Sleep 條件滿足: Boredom={status.boredom:.2f}, "
-                         f"無互動時間={time_since_interaction/60:.1f}分鐘")
-                self.set_state(UEPState.SLEEP, {
-                    "trigger_reason": "high_boredom_and_inactivity",
-                    "boredom_level": status.boredom,
-                    "inactive_duration": time_since_interaction
-                })
-                return True
+                if (status.boredom >= 0.8 and 
+                    time_since_interaction > sleep_threshold and 
+                    self._state in [UEPState.IDLE]):
+                    
+                    debug_log(2, f"[StateManager] Sleep 條件滿足: Boredom={status.boredom:.2f}, "
+                             f"無互動時間={time_since_interaction/60:.1f}分鐘")
+                    self.set_state(UEPState.SLEEP, {
+                        "trigger_reason": "high_boredom_and_inactivity",
+                        "boredom_level": status.boredom,
+                        "inactive_duration": time_since_interaction
+                    })
+                    return True
             
             # 檢查 Mischief 狀態條件
-            mischief_conditions = [
-                # 條件1: 高無聊 + 負面情緒
-                (status.boredom >= 0.6 and status.mood <= -0.3),
-                # 條件2: 極端自尊（過高或過低）+ 中等無聊
-                (abs(status.pride) >= 0.7 and status.boredom >= 0.4),
-                # 條件3: 低助人意願 + 負面情緒
-                (status.helpfulness <= 0.3 and status.mood <= -0.2)
-            ]
+            # TODO: MISCHIEF 狀態尚未完全實作，暫時禁用自動觸發
+            # 避免干擾正常的 CHAT 和 WORK 流程
+            mischief_enabled = False  # 設為 True 以啟用 MISCHIEF 狀態
             
-            if (any(mischief_conditions) and 
-                self._state in [UEPState.IDLE, UEPState.CHAT]):
+            if mischief_enabled:
+                mischief_conditions = [
+                    # 條件1: 高無聊 + 負面情緒
+                    (status.boredom >= 0.6 and status.mood <= -0.3),
+                    # 條件2: 極端自尊（過高或過低）+ 中等無聊
+                    (abs(status.pride) >= 0.7 and status.boredom >= 0.4),
+                    # 條件3: 低助人意願 + 負面情緒
+                    (status.helpfulness <= 0.3 and status.mood <= -0.2)
+                ]
                 
-                debug_log(2, f"[StateManager] Mischief 條件滿足: Mood={status.mood:.2f}, "
-                         f"Pride={status.pride:.2f}, Boredom={status.boredom:.2f}, "
-                         f"Helpfulness={status.helpfulness:.2f}")
-                self.set_state(UEPState.MISCHIEF, {
-                    "trigger_reason": "negative_system_values",
-                    "mood": status.mood,
-                    "pride": status.pride,
-                    "boredom": status.boredom,
-                    "helpfulness": status.helpfulness
-                })
-                return True
+                if (any(mischief_conditions) and 
+                    self._state in [UEPState.IDLE, UEPState.CHAT]):
+                    
+                    debug_log(2, f"[StateManager] Mischief 條件滿足: Mood={status.mood:.2f}, "
+                             f"Pride={status.pride:.2f}, Boredom={status.boredom:.2f}, "
+                             f"Helpfulness={status.helpfulness:.2f}")
+                    self.set_state(UEPState.MISCHIEF, {
+                        "trigger_reason": "negative_system_values",
+                        "mood": status.mood,
+                        "pride": status.pride,
+                        "boredom": status.boredom,
+                        "helpfulness": status.helpfulness
+                    })
+                    return True
                 
             return False
             
@@ -495,8 +631,9 @@ class StateManager:
             session_id = event.data.get('session_id')
             reason = event.data.get('reason', 'session_completed')
             session_type = event.data.get('session_type', 'unknown')
+            cycle_index = event.data.get('cycle_index')  # ✅ 讀取會話結束時的循環索引
             
-            debug_log(2, f"[StateManager] 收到會話結束事件: {session_id} ({session_type}), 原因: {reason}")
+            debug_log(2, f"[StateManager] 收到會話結束事件: {session_id} ({session_type}), 原因: {reason}, cycle: {cycle_index}")
             
             # 只處理 CS 和 WS 結束（GS 是系統層級，不觸發狀態轉換）
             if session_type in ['chatting', 'workflow']:
@@ -511,7 +648,8 @@ class StateManager:
                         'session_id': session_id,
                         'session_type': session_type,
                         'end_reason': reason
-                    }
+                    },
+                    completion_cycle=cycle_index  # ✅ 傳遞實際的完成循環索引
                 )
                 
                 debug_log(1, f"[StateManager] ✅ {session_type.upper()} 會話結束，已通知 StateQueue 完成當前狀態")

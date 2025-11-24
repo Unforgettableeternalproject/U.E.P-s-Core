@@ -239,10 +239,16 @@ class STTModule(BaseModule):
             # 將結果轉換為 STTOutput 物件
             stt_output = STTOutput(**result)
             
-            # 檢查是否有識別出文本
+            # 檢查是否有識別出文本（但持續監聽完成不算錯誤）
+            is_listening_completed = stt_output.activation_reason == "continuous_listening_completed"
             if not stt_output.text or not stt_output.text.strip():
-                info_log("[STT] 🔇 未識別到有效語音內容")
-                stt_output.error = "未識別到有效語音內容"
+                if is_listening_completed:
+                    # 持續監聽正常結束，不是錯誤
+                    stt_output.error = None
+                else:
+                    # 其他情況下，空文本是錯誤
+                    info_log("[STT] 🔇 未識別到有效語音內容")
+                    stt_output.error = "未識別到有效語音內容"
             else:
                 stt_output.error = None
             
@@ -298,6 +304,51 @@ class STTModule(BaseModule):
                     activation_reason="text_input_empty",
                     error="文字輸入為空"
                 ).model_dump()
+            
+            # 🆕 檢查是否有任何 cycle 正在處理輸入
+            # 如果有，等待當前所有 cycle 完成（模擬 VAD 在 cycle 未結束時不接受新輸入的行為）
+            from core.sessions.session_manager import unified_session_manager
+            from core.system_loop import system_loop
+            import time
+            
+            active_cs = unified_session_manager.get_active_chatting_session_ids()
+            active_ws = unified_session_manager.get_active_workflow_session_ids()
+            
+            debug_log(2, f"[STT] 文字輸入等待檢查: active_cs={len(active_cs) if active_cs else 0}, active_ws={len(active_ws) if active_ws else 0}")
+            
+            if active_cs or active_ws:
+                debug_log(2, f"[STT] 檢測到活躍會話，檢查 cycle tracking")
+                # 有活躍會話，檢查是否有任何 cycle 正在處理
+                if hasattr(system_loop, '_cycle_layer_tracking'):
+                    max_wait_time = 30.0  # 最多等待 30 秒
+                    wait_start = time.time()
+                    
+                    with system_loop._cycle_tracking_lock:
+                        tracking_count = len(system_loop._cycle_layer_tracking)
+                        debug_log(2, f"[STT] 當前 cycle tracking 數量: {tracking_count}")
+                    
+                    if tracking_count > 0:
+                        info_log(f"[STT] ⏳ 等待當前 cycle 完成（模擬 VAD 行為）...")
+                    
+                    while time.time() - wait_start < max_wait_time:
+                        with system_loop._cycle_tracking_lock:
+                            # 如果沒有任何 cycle 正在追蹤，表示可以接受新輸入
+                            if len(system_loop._cycle_layer_tracking) == 0:
+                                debug_log(2, f"[STT] ✓ 所有 cycle 已完成，接受新輸入")
+                                break
+                            
+                            # 記錄等待的 cycle
+                            tracking_keys = list(system_loop._cycle_layer_tracking.keys())
+                            debug_log(3, f"[STT] 等待 cycle 完成: {tracking_keys}")
+                        
+                        time.sleep(0.1)
+                    else:
+                        # 等待超時
+                        debug_log(1, f"[STT] ⚠️ 等待 cycle 完成超時，強制接受輸入")
+                else:
+                    debug_log(2, f"[STT] system_loop 沒有 _cycle_layer_tracking 屬性")
+            else:
+                debug_log(2, f"[STT] 沒有活躍會話，直接接受輸入")
             
             info_log(f"[STT] 文字輸入模式: '{text}'")
             
@@ -371,7 +422,7 @@ class STTModule(BaseModule):
                 "logprob_threshold": -1.0,
                 "no_speech_threshold": 0.4,  # 降低閾值以提高敏感度
                 "return_timestamps": True,
-                "language": "en",  # 使用標準代碼
+                "task": "translate",  # 翻譯任務：將所有語言翻譯成英文
             }
             
             # 檢查音頻數據是否有語音內容
@@ -546,21 +597,26 @@ class STTModule(BaseModule):
         info_log("[STT] 模組已關閉")
 
     def _continuous_recognition(self, input_data: STTInput) -> dict:
-        """持續背景監聽 - 持續錄音並實時傳送結果給NLP模組"""
+        """持續背景監聽 - 持續錄音，檢測到完整語音片段後合併發送給NLP模組"""
         try:
-            info_log("[STT] 開始持續背景監聽模式...")
+            info_log("[STT] 開始持續背景監聽模式（智能語音片段合併）...")
             
             # 設定監聽時長，如果未指定則使用默認值
             duration = input_data.duration or 30.0
             start_time = time.time()
             
-            info_log(f"[STT] 持續監聽時長: {duration} 秒")
+            # VAD 參數配置
+            chunk_duration = 2.0  # 每次錄音的片段長度（秒）
+            silence_threshold = 1.5  # 靜音持續時間閾值（秒），超過此時間視為語音結束
+            max_speech_duration = 30.0  # 單次語音最大長度（秒），防止無限累積
+            
+            info_log(f"[STT] 持續監聽配置: 總時長={duration}s, 片段長度={chunk_duration}s, "
+                    f"靜音閾值={silence_threshold}s, 最大語音長度={max_speech_duration}s")
             
             # 創建語者上下文，用於累積語者資訊
             context_id = None
             if self.working_context_manager:
                 from core.working_context import ContextType
-                # 創建或獲取SPEAKER_ACCUMULATION上下文
                 context_id = self.working_context_manager.create_context(
                     ContextType.SPEAKER_ACCUMULATION, 
                     threshold=15,  # 樣本閾值
@@ -568,116 +624,97 @@ class STTModule(BaseModule):
                 )
                 debug_log(2, f"[STT] 已建立持續監聽的語音累積上下文: {context_id}")
             
+            # 語音片段緩衝區
+            audio_buffer = []  # 存儲待合併的音頻片段
+            last_speech_time = None  # 最後檢測到語音的時間
+            speech_start_time = None  # 當前語音片段開始時間
+            
             # 持續監聽直到達到指定時間或收到停止信號
             while time.time() - start_time < duration and not self.should_stop_listening:
-                # 短暫錄音檢測
-                chunk_duration = 2.0
-                audio_data = self._record_audio(chunk_duration)
+                current_time = time.time()
                 
-                if audio_data is None:
+                # 錄製音頻片段
+                audio_chunk = self._record_audio(chunk_duration)
+                
+                if audio_chunk is None or len(audio_chunk) == 0:
+                    debug_log(3, "[STT] 錄音失敗或音頻為空，繼續監聽")
                     continue
                 
                 # 使用VAD檢查是否有語音內容
-                if not self.vad_module.has_sufficient_speech(audio_data, min_duration=0.05):
-                    debug_log(3, "[STT] 音頻中語音內容不足，繼續監聽")
-                    continue
+                has_speech = self.vad_module.has_sufficient_speech(audio_chunk, min_duration=0.05)
                 
-                # 將音頻數據添加到語者上下文
-                if context_id and self.working_context_manager:
-                    self.working_context_manager.add_data_to_context(
-                        context_id, 
-                        audio_data,
-                        metadata={"timestamp": time.time(), "type": "audio_sample"}
-                    )
-                
-                # 使用Whisper進行語音識別
-                info_log("[STT] 檢測到語音，進行識別...")
-                audio_float = audio_data.astype(np.float32) / 32768.0
-                
-                # 識別參數
-                recognition_kwargs = {
-                    "max_new_tokens": 128,
-                    "num_beams": 1,
-                    "condition_on_prev_tokens": False,
-                    "compression_ratio_threshold": 1.35,  # 與手動模式保持一致
-                    "temperature": 0.0,  # 在連續模式下使用固定溫度以提高速度
-                    "logprob_threshold": -1.0,  # 添加此參數避免 logprobs 錯誤
-                    "no_speech_threshold": 0.4,  # 較低的閾值
-                    "return_timestamps": True,
-                    "language": "en",  # 使用標準代碼
-                }
-                
-                if self.pipe is None:
-                    error_log("[STT] Pipeline 未初始化，跳過識別")
-                    continue
-                
-                result = self.pipe(audio_float, generate_kwargs=recognition_kwargs)  # type: ignore
-                result_dict = cast(Dict[str, Any], result)
-                text = str(result_dict.get("text", "")).strip()
-                text = correct_stt(text)  # 應用STT修正
-                
-                # 計算信心度
-                confidence = self._calculate_transformers_confidence(result_dict)
-                
-                # 檢查是否有識別出文本
-                if not text or text.isspace():
-                    debug_log(2, "[STT] 未識別到有效語音內容，繼續監聽")
-                    continue
-                
-                info_log(f"[STT] 識別到語音內容: '{text}' (信心度: {confidence:.2f})")
-                
-                # 進行說話人識別
-                speaker_info = None
-                if input_data.enable_speaker_id:
-                    speaker_info = self._identify_speaker_with_mode(audio_data)
-                    if speaker_info:
-                        # SpeakerInfo 是 Pydantic model,直接使用屬性
-                        speaker_id = speaker_info.speaker_id
-                        speaker_confidence = speaker_info.confidence
-                        debug_log(2, f"[STT] 識別語者: {speaker_id} (信心度: {speaker_confidence:.2f})")
-                
-                # 創建輸出物件
-                output = STTOutput(
-                    text=text,
-                    confidence=confidence,
-                    speaker_info=speaker_info,
-                    activation_reason="continuous_listening",
-                    error=None
-                )
-                
-                # 轉換為統一格式
-                unified_data = output.to_unified_format()
-                
-                # 如果有上下文ID，添加到metadata
-                if context_id:
-                    unified_data.metadata["context_id"] = context_id
-                
-                # 通過回調將結果發送給NLP模組
-                if self.result_callback:
-                    try:
-                        # 將結果發送給回調函數
-                        self.result_callback(unified_data)
-                        # 從 unified_data 中獲取說話人資訊（已經是字典格式）
-                        speaker_id = unified_data.speaker_info.get('speaker_id', 'unknown') if unified_data.speaker_info else 'unknown'
-                        info_log(f"[STT] 將識別結果實時發送給NLP模組：'{text}' (語者: {speaker_id})")
-                    except Exception as e:
-                        error_log(f"[STT] 發送識別結果失敗: {e}")
+                if has_speech:
+                    # 檢測到語音
+                    debug_log(3, "[STT] 檢測到語音內容，加入緩衝區")
+                    
+                    # 如果這是新的語音片段開始
+                    if speech_start_time is None:
+                        speech_start_time = current_time
+                        info_log("[STT] 🎤 語音開始...")
+                    
+                    # 將音頻添加到緩衝區
+                    audio_buffer.append(audio_chunk)
+                    last_speech_time = current_time
+                    
+                    # 檢查是否超過最大語音長度
+                    if current_time - speech_start_time > max_speech_duration:
+                        info_log(f"[STT] 語音片段達到最大長度 ({max_speech_duration}s)，強制處理")
+                        self._process_audio_buffer(
+                            audio_buffer, 
+                            context_id, 
+                            input_data.enable_speaker_id
+                        )
+                        # 重置緩衝區
+                        audio_buffer = []
+                        last_speech_time = None
+                        speech_start_time = None
+                    
                 else:
-                    debug_log(2, "[STT] 未設定結果回調函數，識別結果將不會發送給NLP模組")
+                    # 未檢測到語音（靜音）
+                    if audio_buffer:
+                        # 計算靜音持續時間
+                        silence_duration = current_time - last_speech_time if last_speech_time else 0
+                        debug_log(3, f"[STT] 靜音持續: {silence_duration:.2f}s / {silence_threshold}s")
+                        
+                        # 如果靜音時間超過閾值，處理緩衝區中的音頻
+                        if silence_duration >= silence_threshold:
+                            speech_duration = (last_speech_time - speech_start_time) if (last_speech_time and speech_start_time) else 0
+                            info_log(f"[STT] 📝 語音結束 (時長: {speech_duration:.2f}s)，開始處理...")
+                            
+                            self._process_audio_buffer(
+                                audio_buffer, 
+                                context_id, 
+                                input_data.enable_speaker_id
+                            )
+                            
+                            # 重置緩衝區
+                            audio_buffer = []
+                            last_speech_time = None
+                            speech_start_time = None
+                    else:
+                        debug_log(3, "[STT] 靜音狀態，等待語音...")
                 
-                # 短暫休息
-                time.sleep(0.1)
+                # 短暫休息避免過度佔用CPU
+                time.sleep(0.05)
+            
+            # 監聽結束時，如果緩衝區還有未處理的音頻，處理它
+            if audio_buffer:
+                info_log("[STT] 監聽結束，處理剩餘音頻緩衝區...")
+                self._process_audio_buffer(
+                    audio_buffer, 
+                    context_id, 
+                    input_data.enable_speaker_id
+                )
             
             # 監聽結束
             if context_id and self.working_context_manager:
                 # 不要標記為完成，因為是持續監聽
-                # self.working_context_manager.mark_context_completed(context_id)
                 pass
                 
-            # 返回最後的監聽狀態
+            info_log("[STT] 持續監聽模式正常結束")
             return STTOutput(
                 text="",
-                confidence=0.0,
+                confidence=1.0,
                 speaker_info=None,
                 activation_reason="continuous_listening_completed",
                 error=None
@@ -691,6 +728,105 @@ class STTModule(BaseModule):
                 error=f"持續監聽失敗: {str(e)}",
                 activation_reason="continuous_listening_failed"
             ).model_dump()
+    
+    def _process_audio_buffer(self, audio_buffer: list, context_id: Optional[str], 
+                             enable_speaker_id: bool) -> None:
+        """處理音頻緩衝區 - 合併音頻並進行識別"""
+        try:
+            if not audio_buffer:
+                debug_log(2, "[STT] 音頻緩衝區為空，跳過處理")
+                return
+            
+            # 合併所有音頻片段
+            info_log(f"[STT] 合併 {len(audio_buffer)} 個音頻片段...")
+            merged_audio = np.concatenate(audio_buffer)
+            total_duration = len(merged_audio) / self.sample_rate
+            info_log(f"[STT] 合併後音頻長度: {total_duration:.2f} 秒")
+            
+            # 將音頻數據添加到語者上下文
+            if context_id and self.working_context_manager:
+                self.working_context_manager.add_data_to_context(
+                    context_id, 
+                    merged_audio,
+                    metadata={"timestamp": time.time(), "type": "merged_audio_sample"}
+                )
+            
+            # 使用Whisper進行語音識別
+            info_log("[STT] 對合併音頻進行語音識別...")
+            audio_float = merged_audio.astype(np.float32) / 32768.0
+            
+            # 識別參數
+            recognition_kwargs = {
+                "max_new_tokens": 128,
+                "num_beams": 1,
+                "condition_on_prev_tokens": False,
+                "compression_ratio_threshold": 1.35,
+                "temperature": 0.0,
+                "logprob_threshold": -1.0,
+                "no_speech_threshold": 0.4,
+                "return_timestamps": True,
+                "task": "translate",  # 翻譯任務：將所有語言翻譯成英文
+            }
+            
+            if self.pipe is None:
+                error_log("[STT] Pipeline 未初始化，無法識別")
+                return
+            
+            result = self.pipe(audio_float, generate_kwargs=recognition_kwargs)  # type: ignore
+            result_dict = cast(Dict[str, Any], result)
+            text = str(result_dict.get("text", "")).strip()
+            text = correct_stt(text)  # 應用STT修正
+            
+            # 計算信心度
+            confidence = self._calculate_transformers_confidence(result_dict)
+            
+            # 檢查是否有識別出文本
+            if not text or text.isspace():
+                debug_log(2, "[STT] 未識別到有效語音內容")
+                return
+            
+            info_log(f"[STT] ✅ 識別結果: '{text}' (信心度: {confidence:.2f})")
+            
+            # 進行說話人識別
+            speaker_info = None
+            if enable_speaker_id:
+                speaker_info = self._identify_speaker_with_mode(merged_audio)
+                if speaker_info:
+                    speaker_id = speaker_info.speaker_id
+                    speaker_confidence = speaker_info.confidence
+                    debug_log(2, f"[STT] 識別語者: {speaker_id} (信心度: {speaker_confidence:.2f})")
+            
+            # 創建輸出物件
+            output = STTOutput(
+                text=text,
+                confidence=confidence,
+                speaker_info=speaker_info,
+                activation_reason="continuous_listening",
+                error=None
+            )
+            
+            # 轉換為統一格式
+            unified_data = output.to_unified_format()
+            
+            # 如果有上下文ID，添加到metadata
+            if context_id:
+                unified_data.metadata["context_id"] = context_id
+            unified_data.metadata["audio_duration"] = total_duration
+            unified_data.metadata["num_chunks_merged"] = len(audio_buffer)
+            
+            # 通過回調將結果發送給NLP模組
+            if self.result_callback:
+                try:
+                    self.result_callback(unified_data)
+                    speaker_id = unified_data.speaker_info.get('speaker_id', 'unknown') if unified_data.speaker_info else 'unknown'
+                    info_log(f"[STT] 📤 識別結果已發送給NLP模組: '{text}' (語者: {speaker_id})")
+                except Exception as e:
+                    error_log(f"[STT] 發送識別結果失敗: {e}")
+            else:
+                debug_log(2, "[STT] 未設定結果回調函數")
+            
+        except Exception as e:
+            error_log(f"[STT] 處理音頻緩衝區失敗: {str(e)}")
             
     def _identify_speaker_with_mode(self, audio_data: np.ndarray) -> SpeakerInfo:
         """根據配置的模式進行說話人識別"""
@@ -710,11 +846,24 @@ class STTModule(BaseModule):
             )
 
     def _add_audio_sample_to_accumulation(self, audio_data: np.ndarray, speaker_info: Optional[SpeakerInfo] = None):
-        """將音頻樣本添加到 Speaker_Accumulation 上下文中"""
+        """將音頻樣本添加到 Speaker_Accumulation 上下文中
+        
+        ⚠️ 重要：只有在已指定使用者身分時才會累積樣本
+        檢查 Working Context 中是否有 declared_identity 來判斷
+        """
         try:
             if not self.working_context_manager:
                 debug_log(3, "[STT] Working Context 管理器不可用，跳過樣本累積")
                 return
+            
+            # 🆕 檢查是否有已聲明的 Identity
+            # 只有在使用者已明確指定身分時才累積樣本
+            has_declared_identity = self._check_has_declared_identity()
+            if not has_declared_identity:
+                debug_log(3, "[STT] 無已聲明的 Identity，跳過 Speaker 樣本累積")
+                return
+            
+            debug_log(3, "[STT] 檢測到已聲明的 Identity，開始累積 Speaker 樣本")
             
             from core.working_context import ContextType
             import time
@@ -767,3 +916,42 @@ class STTModule(BaseModule):
             
         except Exception as e:
             error_log(f"[STT] 添加音頻樣本到累積上下文失敗: {e}")
+    
+    def _check_has_declared_identity(self) -> bool:
+        """檢查 Working Context 中是否有已聲明的 Identity
+        
+        Returns:
+            bool: 是否有已聲明的 Identity
+        """
+        try:
+            if not self.working_context_manager:
+                return False
+            
+            # 檢查全局上下文數據中的 declared_identity 標記
+            global_data = self.working_context_manager.global_context_data
+            
+            # 方法1: 檢查 declared_identity 標記
+            if global_data.get('declared_identity'):
+                debug_log(3, "[STT] 檢測到 declared_identity 標記")
+                return True
+            
+            # 方法2: 檢查 current_identity_id
+            current_identity_id = global_data.get('current_identity_id')
+            if current_identity_id and current_identity_id != 'unknown':
+                debug_log(3, f"[STT] 檢測到 current_identity_id: {current_identity_id}")
+                return True
+            
+            # 方法3: 檢查 StatusManager 的當前 Identity
+            try:
+                from core.status_manager import status_manager
+                if status_manager.current_identity_id and status_manager.current_identity_id != 'unknown':
+                    debug_log(3, f"[STT] StatusManager 有當前 Identity: {status_manager.current_identity_id}")
+                    return True
+            except Exception:
+                pass
+            
+            return False
+            
+        except Exception as e:
+            error_log(f"[STT] 檢查 declared_identity 失敗: {e}")
+            return False

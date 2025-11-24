@@ -13,6 +13,7 @@ Main priorities: correctness, modularity, stability, and respect for existing na
 - **Always** gather enough context before analyzing or modifying code.  
   - Read surrounding files/functions to understand how parts interact.  
   - **If needed, and I strongly recommend it, check the logs folder for the latest logs for more context, the format is full-"timestamped".log.**
+- **Respect module boundaries**. Do not cross-import between modules unless explicitly instructed.
 - **Every time you suggest terminal commands**, prepend instructions to activate the Python virtual environment first (since each session starts fresh). Example:  
 ```bash
   source venv/bin/activate   # Linux/macOS
@@ -20,7 +21,7 @@ Main priorities: correctness, modularity, stability, and respect for existing na
 ```
 - **Every required package has been installed** in the virtual environment.
 
-* Our system only accepts English as user input, but user-facing strings in the code and comments should be in Traditional Chinese (zh-TW).
+### **Our system only accepts English as user input, but user-facing strings in the code and comments should be in Traditional Chinese (zh-TW).**
 * Keep code changes **minimal and targeted**. Suggest only the section that needs modification, not the entire file.
 * Use **Python 3.10**, type hints, and docstrings (Google style).
 * No hardcoding secrets, absolute paths, or adding stray `print()` calls.

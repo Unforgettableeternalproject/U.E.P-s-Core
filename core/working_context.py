@@ -19,10 +19,20 @@
 
 import time
 import uuid
+import json
+import os
+from datetime import datetime
 from typing import Dict, List, Any, Optional, Callable, Protocol
 from enum import Enum, auto
 from utils.debug_helper import debug_log, info_log, error_log
 import threading
+
+
+class ContextScope(Enum):
+    """工作上下文作用域"""
+    SESSION = "session"         # 會話級別（GS 結束時清理）
+    GLOBAL = "global"           # 全局級別（系統運行期間保留，重啟清除）
+    PERSISTENT = "persistent"   # 持久化級別（存入文件，跨重啟保留）
 
 
 class ContextType(Enum):
@@ -70,9 +80,11 @@ class WorkingContext:
     """單個工作上下文實例"""
     
     def __init__(self, context_id: str, context_type: ContextType, 
-                 threshold: int = 15, timeout: float = 300.0):
+                 threshold: int = 15, timeout: float = 300.0,
+                 scope: ContextScope = ContextScope.SESSION):
         self.context_id = context_id
         self.context_type = context_type
+        self.scope = scope  # 🆕 作用域
         self.status = ContextStatus.ACTIVE
         self.created_at = time.time()
         self.last_activity = time.time()
@@ -209,33 +221,50 @@ class WorkingContextManager:
             
         self._initialized = True
         self._rwlock = threading.RLock()  # 添加缺失的讀寫鎖
-        self.contexts: Dict[str, WorkingContext] = {}
+        
+        # 🆕 多層級數據存儲
+        self.session_contexts: Dict[str, WorkingContext] = {}      # SESSION scope
+        self.global_contexts: Dict[str, WorkingContext] = {}       # GLOBAL scope
+        self.persistent_contexts: Dict[str, WorkingContext] = {}   # PERSISTENT scope
+        
+        # 繼續支持舊的 contexts 屬性（映射到 session_contexts）
+        self.contexts = self.session_contexts
+        
         self.active_contexts_by_type: Dict[ContextType, str] = {}
         
-        # 類型默認配置
-        self._type_defaults = {
-            ContextType.SPEAKER_ACCUMULATION: {"threshold": 15, "timeout": 600.0},
-            ContextType.IDENTITY_MANAGEMENT:  {"threshold": 1,  "timeout": 900.0},
-            ContextType.CONVERSATION:         {"threshold": 1,  "timeout": 300.0},
-            ContextType.WORKFLOW_SESSION:     {"threshold": 1,  "timeout": 900.0},
-            ContextType.LEARNING:             {"threshold": 1,  "timeout": 300.0},
-            ContextType.CROSS_MODULE_DATA:    {"threshold": 1,  "timeout": 300.0},
-            ContextType.MEM_EXTERNAL_ACCESS:  {"threshold": 1,  "timeout": 300.0},
-            ContextType.LLM_CONTEXT:          {"threshold": 1,  "timeout": 300.0},
-            ContextType.SYS_WORKFLOW:         {"threshold": 1,  "timeout": 300.0},
-            ContextType.GENERAL_SESSION:      {"threshold": 1,  "timeout": 300.0},
-        }
-        
-        # 決策處理器註冊表
-        self.decision_handlers: Dict[ContextType, DecisionHandler] = {}
-        
-        # 全局上下文數據 - 用於跨模組數據共享
+        # 全局上下文數據 - GLOBAL 層級（系統運行期間保留，重啟後清空）
         self.global_context_data: Dict[str, Any] = {}
         
         # 階段三：層級跳過控制旗標（用於工作流驅動的輸入層跳過）
         self.global_context_data['skip_input_layer'] = False
         self.global_context_data['input_layer_reason'] = None  # 跳過原因
         self.global_context_data['workflow_waiting_input'] = False
+        
+        # 持久化上下文數據 - PERSISTENT 層級（跨系統重啟保留）
+        self.persistent_context_data: Dict[str, Any] = {}
+        self.persistent_context_data['gs_history'] = []  # GS 歷史記錄
+        
+        # 🆕 持久化文件路徑
+        self._persistent_file = "memory/persistent_context.json"
+        self._load_persistent_data()  # 系統啟動時載入（需要 global_context_data 已初始化）
+        
+        # 類型默認配置（添加 scope 配置）
+        self._type_defaults = {
+            # 🔄 Speaker Accumulation 改為 GLOBAL（跟隨當前聲明的 Identity，系統運行期間保留）
+            ContextType.SPEAKER_ACCUMULATION: {"threshold": 15, "timeout": 600.0, "scope": ContextScope.GLOBAL},
+            ContextType.IDENTITY_MANAGEMENT:  {"threshold": 1,  "timeout": 900.0, "scope": ContextScope.GLOBAL},
+            ContextType.CONVERSATION:         {"threshold": 1,  "timeout": 300.0, "scope": ContextScope.SESSION},
+            ContextType.WORKFLOW_SESSION:     {"threshold": 1,  "timeout": 900.0, "scope": ContextScope.SESSION},
+            ContextType.LEARNING:             {"threshold": 1,  "timeout": 300.0, "scope": ContextScope.GLOBAL},
+            ContextType.CROSS_MODULE_DATA:    {"threshold": 1,  "timeout": 300.0, "scope": ContextScope.GLOBAL},
+            ContextType.MEM_EXTERNAL_ACCESS:  {"threshold": 1,  "timeout": 300.0, "scope": ContextScope.SESSION},
+            ContextType.LLM_CONTEXT:          {"threshold": 1,  "timeout": 300.0, "scope": ContextScope.SESSION},
+            ContextType.SYS_WORKFLOW:         {"threshold": 1,  "timeout": 300.0, "scope": ContextScope.SESSION},
+            ContextType.GENERAL_SESSION:      {"threshold": 1,  "timeout": 300.0, "scope": ContextScope.SESSION},
+        }
+        
+        # 決策處理器註冊表
+        self.decision_handlers: Dict[ContextType, DecisionHandler] = {}
         
         # 通用回調機制
         self.inquiry_callback: Optional[Callable] = None
@@ -253,44 +282,80 @@ class WorkingContextManager:
         info_log(f"[WorkingContextManager] 註冊決策處理器: {context_type.value}")
     
     def create_context(self, context_type: ContextType, 
-                      threshold: int = 1, timeout: float = 300.0) -> str:
+                      threshold: int = 1, timeout: float = 300.0,
+                      scope: Optional[ContextScope] = None) -> str:
         """創建新的工作上下文"""
         with self._rwlock:
+            # 如果未指定 scope，使用類型默認配置
+            effective_scope: ContextScope = scope if scope is not None else self._type_defaults.get(
+                context_type, {}
+            ).get("scope", ContextScope.SESSION)
+            
             context_id = f"{context_type.value}_{int(time.time())}_{uuid.uuid4().hex[:8]}"
             
-            context = WorkingContext(context_id, context_type, threshold, timeout)
-            self.contexts[context_id] = context
+            context = WorkingContext(context_id, context_type, threshold, timeout, effective_scope)
+            
+            # 🆕 根據 scope 存儲到不同的字典
+            if effective_scope == ContextScope.SESSION:
+                self.session_contexts[context_id] = context
+            elif effective_scope == ContextScope.GLOBAL:
+                self.global_contexts[context_id] = context
+            elif effective_scope == ContextScope.PERSISTENT:
+                self.persistent_contexts[context_id] = context
             
             # 設定為該類型的活躍上下文
             self.active_contexts_by_type[context_type] = context_id
             
             info_log(f"[WorkingContextManager] 創建新工作上下文: {context_id} "
-                    f"(類型: {context_type.value}, 閾值: {threshold})")
+                    f"(類型: {context_type.value}, 閉值: {threshold}, scope: {effective_scope.value})")
             
             return context_id
     
     def get_active_context(self, context_type: ContextType) -> Optional[WorkingContext]:
         """獲取指定類型的活躍上下文"""
         context_id = self.active_contexts_by_type.get(context_type)
-        if context_id and context_id in self.contexts:
-            context = self.contexts[context_id]
-            if context.status == ContextStatus.ACTIVE and not context.is_expired():
-                return context
+        if not context_id:
+            return None
+        
+        # 🆕 從所有層級查詢
+        context = (self.session_contexts.get(context_id) or 
+                   self.global_contexts.get(context_id) or 
+                   self.persistent_contexts.get(context_id))
+        
+        if context and context.status == ContextStatus.ACTIVE and not context.is_expired():
+            return context
         return None
     
     def add_data_to_context(self, context_type: ContextType, data_item: Any, 
-                           metadata: Optional[Dict] = None) -> Optional[str]:
+                           metadata: Optional[Dict] = None,
+                           scope: Optional[ContextScope] = None) -> Optional[str]:
         """添加數據到指定類型的上下文"""
         with self._rwlock:
             context = self.get_active_context(context_type)
             
             if context is None:
                 # 自動創建新上下文
-                d = self._type_defaults.get(context_type, {"threshold": 1, "timeout": 300.0})
-                context_id = self.create_context(context_type, threshold=d["threshold"], timeout=d["timeout"])
-                context = self.contexts[context_id]
+                d = self._type_defaults.get(context_type, {"threshold": 1, "timeout": 300.0, "scope": ContextScope.SESSION})
+                # scope 參數優先級：函數參數 > 類型配置
+                effective_scope = scope if scope is not None else d.get("scope", ContextScope.SESSION)
+                context_id = self.create_context(
+                    context_type, 
+                    threshold=d["threshold"], 
+                    timeout=d["timeout"],
+                    scope=effective_scope
+                )
+                context = self.get_active_context(context_type)  # 🆕 使用多層級查詢
+            
+            # 類型檢查：確保 context 不為 None
+            if context is None:
+                error_log(f"[WorkingContextManager] 無法創建或獲取上下文: {context_type}")
+                return None
             
             context.add_data(data_item, metadata)
+            
+            # 🆕 PERSISTENT scope 每次添加數據後都保存
+            if context.scope == ContextScope.PERSISTENT:
+                self._save_persistent_data()
             
             # 檢查是否達到決策條件
             if context.is_ready_for_decision():
@@ -418,28 +483,29 @@ class WorkingContextManager:
         return None
     
     def cleanup_expired_contexts(self):
-        """清理過期的上下文"""
+        """清理過期的上下文（只清理 SESSION scope，保留 GLOBAL 和 PERSISTENT）"""
         expired_contexts = []
         
-        for context_id, context in self.contexts.items():
+        # 🆕 只清理 SESSION scope 的上下文
+        for context_id, context in self.session_contexts.items():
             if context.is_expired() or context.status in [ContextStatus.COMPLETED, ContextStatus.EXPIRED]:
                 expired_contexts.append(context_id)
         
         for context_id in expired_contexts:
-            del self.contexts[context_id]
+            del self.session_contexts[context_id]
             # 如果是活躍上下文，也要清理
             for ctx_type, active_id in list(self.active_contexts_by_type.items()):
                 if active_id == context_id:
                     del self.active_contexts_by_type[ctx_type]
         
         if expired_contexts:
-            debug_log(3, f"[WorkingContextManager] 清理 {len(expired_contexts)} 個過期上下文")
+            debug_log(3, f"[WorkingContextManager] 清理 {len(expired_contexts)} 個過期的 SESSION 上下文")
         
         return len(expired_contexts)
     
     def cleanup_incomplete_contexts(self, context_type: ContextType, min_threshold: int = 15) -> int:
         """
-        清理未完成的上下文（樣本數不足的上下文）
+        清理未完成的上下文（樣本數不足的上下文）- 只清理 SESSION scope
         
         Args:
             context_type: 要清理的上下文類型
@@ -450,7 +516,8 @@ class WorkingContextManager:
         """
         cleanup_contexts = []
         
-        for context_id, context in self.contexts.items():
+        # 🆕 只清理 SESSION scope 的上下文
+        for context_id, context in self.session_contexts.items():
             # 只清理指定類型且狀態為 ACTIVE 且樣本數不足的上下文
             # 不清理 COMPLETED 狀態的上下文，即使樣本數不足（因為可能已經觸發決策）
             if (context.context_type == context_type and 
@@ -460,20 +527,20 @@ class WorkingContextManager:
         
         # 執行清理
         for context_id in cleanup_contexts:
-            context = self.contexts[context_id]
+            context = self.session_contexts[context_id]
             info_log(f"[WorkingContextManager] 清理未完成上下文 {context_id} "
                     f"(樣本數: {len(context.data)}/{min_threshold})")
             
             # 標記為已清理
             context.status = ContextStatus.EXPIRED
-            del self.contexts[context_id]
+            del self.session_contexts[context_id]
             
             # 清理活躍上下文引用
             if self.active_contexts_by_type.get(context_type) == context_id:
                 del self.active_contexts_by_type[context_type]
         
         if cleanup_contexts:
-            info_log(f"[WorkingContextManager] 清理 {len(cleanup_contexts)} 個未完成的 {context_type} 上下文")
+            info_log(f"[WorkingContextManager] 清理 {len(cleanup_contexts)} 個未完成的 SESSION {context_type} 上下文")
         
         return len(cleanup_contexts)
     
@@ -488,8 +555,12 @@ class WorkingContextManager:
         info_log("[WorkingContextManager] 通知回調已設定")
     
     def get_all_contexts_info(self) -> List[Dict[str, Any]]:
-        """獲取所有上下文資訊"""
-        return [context.get_context_info() for context in self.contexts.values()]
+        """獲取所有上下文資訊（所有 scope）"""
+        all_contexts = []
+        all_contexts.extend(self.session_contexts.values())
+        all_contexts.extend(self.global_contexts.values())
+        all_contexts.extend(self.persistent_contexts.values())
+        return [context.get_context_info() for context in all_contexts]
     
     def set_context_data(self, key: str, data: Any) -> None:
         """
@@ -599,12 +670,47 @@ class WorkingContextManager:
         """獲取對話風格"""
         return self.get_context_data("conversation_style")
     
+    # === 🆕 Identity 主動聲明機制 ===
+    
+    def set_declared_identity(self, identity_id: str):
+        """
+        用戶主動聲明身份（優先級高於 Speaker 推斷）
+        
+        適用場景：
+        - 前端用戶選擇/創建身份
+        - 文字模式指定身份
+        - 需要明確身份時
+        
+        Args:
+            identity_id: 身份ID
+        """
+        self.set_context_data("declared_identity", identity_id)
+        info_log(f"[WorkingContextManager] 用戶聲明身份: {identity_id}")
+    
+    def get_declared_identity(self) -> Optional[str]:
+        """
+        獲取已聲明的身份ID
+        
+        Returns:
+            已聲明的身份ID，如果未聲明則返回 None
+        """
+        return self.get_context_data("declared_identity")
+    
+    def clear_declared_identity(self):
+        """清除聲明的身份（用戶登出時）"""
+        if self.delete_context_data("declared_identity"):
+            info_log("[WorkingContextManager] 已清除聲明的身份")
+    
+    def has_declared_identity(self) -> bool:
+        """檢查是否有聲明的身份"""
+        return self.get_declared_identity() is not None
+    
     # === 上下文查找和管理便利方法 ===
     
     def find_context(self, context_type: ContextType, 
                     metadata_filter: Optional[Dict[str, Any]] = None) -> Optional[WorkingContext]:
         """
-        根據類型和元數據篩選條件查找上下文
+        根據類型和元數據篩選條件查找上下文（所有 scope）
         
         Args:
             context_type: 上下文類型
@@ -613,7 +719,13 @@ class WorkingContextManager:
         Returns:
             匹配的上下文實例或None
         """
-        for context in self.contexts.values():
+        # 🆕 收集所有層級的上下文
+        all_contexts = []
+        all_contexts.extend(self.session_contexts.values())
+        all_contexts.extend(self.global_contexts.values())
+        all_contexts.extend(self.persistent_contexts.values())
+        
+        for context in all_contexts:
             if context.context_type == context_type:
                 if metadata_filter:
                     # 檢查所有篩選條件是否匹配
@@ -628,9 +740,15 @@ class WorkingContextManager:
         return None
     
     def get_contexts_by_type(self, context_type: ContextType) -> List[WorkingContext]:
-        """獲取指定類型的所有上下文"""
+        """獲取指定類型的所有上下文（所有 scope）"""
+        all_contexts = []
+        # 🆕 收集所有層級的上下文
+        all_contexts.extend(self.session_contexts.values())
+        all_contexts.extend(self.global_contexts.values())
+        all_contexts.extend(self.persistent_contexts.values())
+        
         return [
-            context for context in self.contexts.values() 
+            context for context in all_contexts
             if context.context_type == context_type
         ]
     
@@ -653,16 +771,25 @@ class WorkingContextManager:
     
     def get_context_summary(self) -> Dict[str, Any]:
         """獲取上下文管理器的摘要信息"""
+        # 🆕 收集所有層級的上下文
+        all_contexts = []
+        all_contexts.extend(self.session_contexts.values())
+        all_contexts.extend(self.global_contexts.values())
+        all_contexts.extend(self.persistent_contexts.values())
+        
         summary = {
-            "total_contexts": len(self.contexts),
-            "active_contexts": len([c for c in self.contexts.values() if c.status == ContextStatus.ACTIVE]),
+            "total_contexts": len(all_contexts),
+            "session_contexts": len(self.session_contexts),
+            "global_contexts": len(self.global_contexts),
+            "persistent_contexts": len(self.persistent_contexts),
+            "active_contexts": len([c for c in all_contexts if c.status == ContextStatus.ACTIVE]),
             "contexts_by_type": {},
             "global_data_keys": list(self.global_context_data.keys()),
             "decision_handlers": list(self.decision_handlers.keys())
         }
         
         # 按類型統計上下文
-        for context in self.contexts.values():
+        for context in all_contexts:
             ctx_type = context.context_type.value
             if ctx_type not in summary["contexts_by_type"]:
                 summary["contexts_by_type"][ctx_type] = 0
@@ -671,10 +798,144 @@ class WorkingContextManager:
         return summary
     
     def clear_all_data(self):
-        """清理所有上下文數據"""
-        self.contexts.clear()
-        self.global_context_data.clear()
+        """清理所有上下文數據（所有 scope）"""
+        self.session_contexts.clear()
+        self.global_contexts.clear()
+        self.persistent_contexts.clear()
+        self.global_context_data.clear()  # GLOBAL 層級
+        self.persistent_context_data.clear()  # PERSISTENT 層級
         info_log("[WorkingContextManager] 清理所有上下文數據")
+    
+    # === 🆕 持久化方法 ===
+    
+    def _save_persistent_data(self):
+        """持久化 PERSISTENT scope 的數據到文件"""
+        try:
+            os.makedirs(os.path.dirname(self._persistent_file), exist_ok=True)
+            
+            # 序列化 persistent_contexts
+            persistent_contexts = {}
+            for context_id, context in self.persistent_contexts.items():
+                # 只保存必要的數據（避免大型 embedding 對象無法序列化）
+                context_data = {
+                    "context_id": context.context_id,
+                    "context_type": context.context_type.value,
+                    "threshold": context.threshold,
+                    "timeout": context.timeout,
+                    "scope": context.scope.value,
+                    "data_count": len(context.data),
+                    "metadata": context.metadata,
+                    "created_at": context.created_at,
+                    "last_activity": context.last_activity
+                }
+                persistent_contexts[context_id] = context_data
+            
+            # Phase 4: 保存 PERSISTENT 層級數據（如 gs_history）
+            persistent_global_data = {
+                "gs_history": self.persistent_context_data.get('gs_history', [])
+            }
+            
+            # 組合成完整的持久化數據
+            full_persistent_data = {
+                "persistent_contexts": persistent_contexts,
+                "global_data": persistent_global_data,
+                "version": "1.0"
+            }
+            
+            with open(self._persistent_file, 'w', encoding='utf-8') as f:
+                json.dump(full_persistent_data, f, ensure_ascii=False, indent=2)
+            
+            debug_log(3, f"[WorkingContextManager] 持久化數據已保存: {len(persistent_contexts)} 個上下文, gs_history={len(persistent_global_data['gs_history'])} 條記錄")
+        
+        except Exception as e:
+            error_log(f"[WorkingContextManager] 持久化數據保存失敗: {e}")
+    
+    def _load_persistent_data(self):
+        """系統啟動時載入 PERSISTENT scope 的數據"""
+        try:
+            if not os.path.exists(self._persistent_file):
+                info_log("[WorkingContextManager] 無持久化文件，跳過載入")
+                return
+            
+            with open(self._persistent_file, 'r', encoding='utf-8') as f:
+                full_persistent_data = json.load(f)
+            
+            # 兼容舊格式（直接是 contexts 字典）
+            if "persistent_contexts" in full_persistent_data:
+                persistent_contexts = full_persistent_data["persistent_contexts"]
+                global_data = full_persistent_data.get("global_data", {})
+            else:
+                # 舊格式：整個文件就是 contexts
+                persistent_contexts = full_persistent_data
+                global_data = {}
+            
+            # 恢復 persistent_contexts（但不恢復 data，只恢復結構）
+            for context_id, context_data in persistent_contexts.items():
+                try:
+                    context_type = ContextType(context_data["context_type"])
+                    context = WorkingContext(
+                        context_id=context_data["context_id"],
+                        context_type=context_type,
+                        threshold=context_data["threshold"],
+                        timeout=context_data["timeout"],
+                        scope=ContextScope.PERSISTENT
+                    )
+                    context.metadata = context_data.get("metadata", {})
+                    context.created_at = context_data.get("created_at", time.time())
+                    context.last_activity = context_data.get("last_activity", time.time())
+                    # 註：data 不恢復，需要重新累積（避免反序列化大型對象）
+                    
+                    self.persistent_contexts[context_id] = context
+                    self.active_contexts_by_type[context_type] = context_id
+                    
+                except Exception as e:
+                    error_log(f"[WorkingContextManager] 恢復上下文 {context_id} 失敗: {e}")
+            
+            # Phase 4: 恢復 PERSISTENT 層級數據
+            if global_data:
+                gs_history = global_data.get("gs_history", [])
+                if gs_history:
+                    self.persistent_context_data['gs_history'] = gs_history
+                    info_log(f"[WorkingContextManager] 恢復 gs_history: {len(gs_history)} 條記錄")
+            
+            info_log(f"[WorkingContextManager] 載入持久化數據: {len(self.persistent_contexts)} 個上下文")
+        
+        except Exception as e:
+            error_log(f"[WorkingContextManager] 載入持久化數據失敗: {e}")
+    
+    # === GS History 管理方法（Phase 4）===
+    def get_gs_history(self) -> List[str]:
+        """獲取 GS 歷史記錄（session_id 列表）- PERSISTENT 層級"""
+        return self.persistent_context_data.get('gs_history', [])
+    
+    def add_to_gs_history(self, session_id: str, max_history: int = 10):
+        """
+        添加 GS session_id 到歷史記錄
+        
+        Args:
+            session_id: GS session ID（字符串格式，如 'gs_1234567890_abcd1234'）
+            max_history: 最大保留歷史數量
+        """
+        gs_history = self.get_gs_history()
+        
+        # 添加新的 session_id
+        gs_history.append(session_id)
+        
+        # 限制歷史記錄數量
+        if len(gs_history) > max_history:
+            gs_history = gs_history[-max_history:]
+        
+        # 保存回 persistent_context_data（PERSISTENT 層級）
+        self.persistent_context_data['gs_history'] = gs_history
+        
+        # Phase 4: 持久化到文件（跨系統重啟保留）
+        self._save_persistent_data()
+        
+        debug_log(2, f"[WorkingContextManager] GS 歷史已更新: {session_id}, 總記錄={len(gs_history)}")
+    
+    def get_current_gs_id(self) -> Optional[str]:
+        """獲取當前活躍的 GS session_id（從 global_context_data 讀取）"""
+        return self.global_context_data.get('current_gs_id', None)
     
     # === 兼容性方法 ===
     def set_data(self, context_type: ContextType, key: str, data: Any):
@@ -768,6 +1029,32 @@ class WorkingContextManager:
             bool: 是否等待輸入
         """
         return self.global_context_data.get('workflow_waiting_input', False)
+    
+    # 🆕 Resume Context 管理（用於 BW 恢復 CS）
+    def set_resume_context(self, resume_context: Dict[str, Any]):
+        """
+        設置 resume context（用於 BW 中斷後恢復 CS）
+        
+        Args:
+            resume_context: CS 的上下文信息（從 get_session_context 獲取）
+        """
+        self.global_context_data['resume_context'] = resume_context
+        debug_log(2, f"[WorkingContextManager] 已設置 resume_context: session_id={resume_context.get('session_id')}")
+    
+    def get_resume_context(self) -> Optional[Dict[str, Any]]:
+        """
+        獲取 resume context
+        
+        Returns:
+            Optional[Dict[str, Any]]: Resume context 或 None
+        """
+        return self.global_context_data.get('resume_context')
+    
+    def clear_resume_context(self):
+        """清除 resume context"""
+        if 'resume_context' in self.global_context_data:
+            del self.global_context_data['resume_context']
+            debug_log(3, "[WorkingContextManager] 已清除 resume_context")
 
 
 # 全局工作上下文管理器實例

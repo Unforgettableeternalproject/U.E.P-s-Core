@@ -1,4 +1,7 @@
 import os
+import platform
+import subprocess
+import shutil as shutil_module
 from pathlib import Path
 from utils.debug_helper import debug_log, debug_log_e, info_log, error_log
 
@@ -226,19 +229,19 @@ def summarize_tag(file_path: str, tag_count: int = 3) -> dict:
                 
             if llm_module:
                 # 構建清晰的摘要提示詞
-                prompt = f"""請為以下檔案內容生成摘要和標籤：
+                prompt = f"""Summarize the file and generate tags:
 
-檔案內容：
+File content：
 {content[:5000]}{"..." if len(content) > 5000 else ""}
 
-請按照以下格式回應：
-標籤：標籤1, 標籤2, 標籤3{"" if tag_count == 3 else f", 標籤{tag_count}"}
-摘要：[在這裡寫摘要內容]
+Please respond in the following format:
+Tags: Tag1, Tag2, Tag3{"" if tag_count == 3 else f", Tag{tag_count}"}
+Summary: [Write the summary here]
 
-要求：
-1. 生成 {tag_count} 個相關的關鍵標籤
-2. 提供簡潔但全面的摘要
-3. 標籤應該反映檔案的主要主題和內容特徵
+Requirements:
+1. Generate {tag_count} relevant key tags
+2. Provide a concise yet comprehensive summary
+3. Tags should reflect the main themes and content features of the file
 """
                 
                 # 構建摘要請求 (需要符合LLMInput格式)
@@ -259,7 +262,7 @@ def summarize_tag(file_path: str, tag_count: int = 3) -> dict:
                     # 改進的標籤和摘要解析邏輯
                     try:
                         # 提取標籤部分
-                        if "標籤：" in llm_response_text or "標籤:" in llm_response_text:
+                        if "Tags:" in llm_response_text or "Tags：" in llm_response_text:
                             # 查找標籤行
                             lines = llm_response_text.split('\n')
                             tags_line = ""
@@ -269,10 +272,10 @@ def summarize_tag(file_path: str, tag_count: int = 3) -> dict:
                             
                             for line in lines:
                                 line = line.strip()
-                                if not found_tags and ("標籤：" in line or "標籤:" in line):
+                                if not found_tags and ("Tags:" in line or "Tags：" in line):
                                     tags_line = line.split("：")[1] if "：" in line else line.split(":")[1]
                                     found_tags = True
-                                elif found_tags and ("摘要：" in line or "摘要:" in line):
+                                elif found_tags and ("Summary:" in line or "Summary：" in line):
                                     summary_start = line.split("：")[1] if "：" in line else line.split(":")[1]
                                     if summary_start.strip():
                                         summary_lines.append(summary_start.strip())
@@ -366,4 +369,342 @@ def summarize_tag(file_path: str, tag_count: int = 3) -> dict:
         "summary_file": str(summary_file_path),
         "tags": tags
     }
+
+
+def clean_trash_bin() -> str:
+    """
+    清空系統資源回收桶 - 支援 Windows、macOS 和 Linux 跨平台
+    
+    Returns:
+        清空結果訊息
+        
+    Raises:
+        Exception: 清空失敗時拋出異常
+    """
+    system = platform.system()
+    info_log(f"[file] 準備清空資源回收桶（系統：{system}）")
+    
+    try:
+        if system == "Windows":
+            result = subprocess.run(
+                ["powershell", "-Command", "Clear-RecycleBin -Force"],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0 or result.returncode == 1:
+                # returncode 1 在某些情況下是正常的（如回收桶已空）
+                info_log("[file] Windows 資源回收桶已清空")
+                return "Windows 資源回收桶已成功清空"
+            else:
+                error_log(f"[file] 清空失敗，錯誤碼：{result.returncode}，輸出：{result.stderr}")
+                raise Exception(f"清空資源回收桶失敗：{result.stderr}")
+
+        elif system == "Darwin":  # macOS
+            trash_path = os.path.expanduser("~/.Trash")
+            if os.path.exists(trash_path):
+                for file in os.listdir(trash_path):
+                    file_path = os.path.join(trash_path, file)
+                    if os.path.isfile(file_path) or os.path.islink(file_path):
+                        os.remove(file_path)
+                    elif os.path.isdir(file_path):
+                        shutil_module.rmtree(file_path)
+                info_log("[file] macOS 資源回收桶已清空")
+                return "macOS 資源回收桶已成功清空"
+            else:
+                info_log("[file] macOS 資源回收桶路徑不存在或已空")
+                return "macOS 資源回收桶已空"
+
+        elif system == "Linux":
+            trash_paths = [
+                os.path.expanduser("~/.local/share/Trash/files"),
+                os.path.expanduser("~/.local/share/Trash/info")
+            ]
+            for path in trash_paths:
+                if os.path.exists(path):
+                    for file in os.listdir(path):
+                        file_path = os.path.join(path, file)
+                        if os.path.isfile(file_path) or os.path.islink(file_path):
+                            os.remove(file_path)
+                        elif os.path.isdir(file_path):
+                            shutil_module.rmtree(file_path)
+            info_log("[file] Linux 資源回收桶已清空")
+            return "Linux 資源回收桶已成功清空"
+
+        else:
+            error_log(f"[file] 不支援的作業系統：{system}")
+            raise Exception(f"不支援的作業系統：{system}")
+
+    except Exception as e:
+        error_log(f"[file] 清空資源回收桶失敗：{e}")
+        raise
+
+
+def translate_document(
+    file_path: str, 
+    target_lang: str = "zh-tw", 
+    source_lang: str = "auto",
+    output_path: str = ""
+) -> str:
+    """
+    翻譯文件內容並匯出 - 支援 PDF、DOCX、TXT 多格式
+    
+    Args:
+        file_path: 要翻譯的檔案路徑
+        target_lang: 目標語言（預設繁體中文 zh-tw）
+        source_lang: 來源語言（預設自動偵測 auto）
+        output_path: 輸出檔案路徑（若為空則自動生成）
+        
+    Returns:
+        翻譯後的檔案路徑
+        
+    Raises:
+        ValueError: 不支援的檔案格式
+        Exception: 翻譯或儲存失敗
+    """
+    info_log(f"[file] 準備翻譯文件：{file_path}")
+    
+    file_path_obj = Path(file_path)
+    if not file_path_obj.exists():
+        error_log(f"[file] 翻譯失敗：檔案 {file_path} 不存在")
+        raise FileNotFoundError(f"檔案 {file_path} 不存在")
+    
+    file_ext = file_path_obj.suffix.lower()
+    
+    # 偵測檔案類型並提取文本
+    try:
+        text_content = _extract_text_from_file(file_path, file_ext)
+        if not text_content:
+            raise ValueError("文件內容為空")
+        info_log(f"[file] 成功提取文本，長度：{len(text_content)} 字元")
+    except Exception as e:
+        error_log(f"[file] 提取文本失敗：{e}")
+        raise
+    
+    # 翻譯文本
+    try:
+        translated_text = _translate_text(text_content, target_lang, source_lang)
+        info_log(f"[file] 翻譯完成，長度：{len(translated_text)} 字元")
+    except Exception as e:
+        error_log(f"[file] 翻譯失敗：{e}")
+        raise
+    
+    # 儲存翻譯結果
+    try:
+        if not output_path:
+            # 自動生成輸出路徑（同目錄，加上 _translated 後綴）
+            output_path = str(file_path_obj.parent / f"{file_path_obj.stem}_translated{file_ext}")
+        
+        _save_translated_file(translated_text, output_path, file_ext)
+        info_log(f"[file] 翻譯檔案已儲存至：{output_path}")
+        return output_path
+    except Exception as e:
+        error_log(f"[file] 儲存翻譯檔案失敗：{e}")
+        raise
+
+
+def _extract_text_from_file(file_path: str, file_ext: str) -> str:
+    """從不同格式的檔案中提取文本"""
+    if file_ext == ".txt" or file_ext == ".md":
+        return Path(file_path).read_text(encoding="utf-8")
+    
+    elif file_ext == ".pdf":
+        try:
+            import pdfplumber
+            text_parts = []
+            with pdfplumber.open(file_path) as pdf:
+                for page in pdf.pages:
+                    text = page.extract_text()
+                    if text:
+                        text_parts.append(text)
+            return "\n\n".join(text_parts)
+        except ImportError:
+            error_log("[file] pdfplumber 未安裝，請執行：pip install pdfplumber")
+            raise ImportError("需要安裝 pdfplumber：pip install pdfplumber")
+    
+    elif file_ext == ".docx":
+        try:
+            from docx import Document
+            doc = Document(file_path)
+            paragraphs = [para.text for para in doc.paragraphs if para.text.strip()]
+            return "\n\n".join(paragraphs)
+        except ImportError:
+            error_log("[file] python-docx 未安裝，請執行：pip install python-docx")
+            raise ImportError("需要安裝 python-docx：pip install python-docx")
+    
+    else:
+        raise ValueError(f"不支援的檔案格式：{file_ext}")
+
+
+def _translate_text(text: str, target_lang: str, source_lang: str) -> str:
+    """翻譯文本（使用 LLM）"""
+    try:
+        from modules.llm_module.llm_module import LLMModule
+        from configs.config_loader import load_module_config
+        from .maps.language_map import lang_map
+        
+        # 初始化 LLM 模組
+        config = load_module_config("llm_module")
+        if "use_prompt_caching" in config:
+            config["use_prompt_caching"] = False  # 禁用快取避免測試影響
+        llm_module = LLMModule(config)
+        
+        # 建立反向映射（代碼 -> 名稱）和擴展的語言名稱
+        code_to_name = {code: name for name, code in lang_map.items()}
+        lang_names = {
+            "zh-tw": "Traditional Chinese (繁體中文)",
+            "zh-cn": "Simplified Chinese (简体中文)",
+            "en": "English (英文)",
+            "ja": "Japanese (日本語)",
+            "ko": "Korean (한국어)",
+            "fr": "French (法文)",
+            "de": "German (德文)",
+            "es": "Spanish (西班牙文)",
+            "pt": "Portuguese (葡萄牙文)",
+            "it": "Italian (義大利文)",
+            "ru": "Russian (俄文)",
+            "ar": "Arabic (阿拉伯文)",
+            "th": "Thai (泰文)",
+            "vi": "Vietnamese (越南文)",
+            "hi": "Hindi (印地文)",
+            "id": "Indonesian (印尼文)",
+            "nl": "Dutch (荷蘭文)",
+            "el": "Greek (希臘文)",
+            "tr": "Turkish (土耳其文)",
+            "sv": "Swedish (瑞典文)",
+            "auto": "auto-detect"
+        }
+        
+        # 支援中文名稱或代碼輸入
+        if target_lang in lang_map:
+            target_lang = lang_map[target_lang]  # 中文名稱轉代碼
+        if source_lang in lang_map:
+            source_lang = lang_map[source_lang]  # 中文名稱轉代碼
+            
+        target_lang_name = lang_names.get(target_lang.lower(), target_lang)
+        source_lang_name = lang_names.get(source_lang.lower(), "auto-detect")
+        
+        # 分段處理長文本（避免 token 限制）
+        segments = _segment_text(text, max_length=8000)  # LLM 可以處理更長的文本
+        translated_segments = []
+        
+        info_log(f"[file] 使用 LLM 翻譯，共 {len(segments)} 個段落")
+        
+        for i, segment in enumerate(segments):
+            try:
+                # 構建翻譯提示詞
+                if source_lang == "auto":
+                    prompt = f"""Please translate the following text to {target_lang_name}.
+Maintain the original formatting and structure.
+
+Text to translate:
+{segment}
+
+Translated text:"""
+                else:
+                    prompt = f"""Please translate the following text from {source_lang_name} to {target_lang_name}.
+Maintain the original formatting and structure.
+
+Text to translate:
+{segment}
+
+Translated text:"""
+                
+                # 使用內部呼叫模式（繞過會話檢查）
+                request_data = {
+                    "text": prompt,
+                    "intent": "chat",
+                    "is_internal": True
+                }
+                
+                response = llm_module.handle(request_data)
+                
+                if response and response.get("status") == "ok" and "text" in response:
+                    translated_segments.append(response["text"].strip())
+                    info_log(f"[file] 翻譯進度：{i+1}/{len(segments)}")
+                else:
+                    error_log(f"[file] 翻譯段落 {i+1} 失敗，保留原文")
+                    translated_segments.append(segment)
+            
+            except Exception as seg_error:
+                error_log(f"[file] 翻譯段落 {i+1} 失敗：{seg_error}")
+                translated_segments.append(segment)
+        
+        return "\n\n".join(translated_segments)
+    
+    except ImportError as e:
+        error_log(f"[file] LLM 模組未安裝或無法導入：{e}")
+        raise ImportError(f"需要 LLM 模組進行翻譯：{e}")
+
+
+def _segment_text(text: str, max_length: int = 8000) -> list:
+    """分段文本（避免單次處理過長）"""
+    if len(text) <= max_length:
+        return [text]
+    
+    # 簡單分段：按段落或固定長度
+    info_log("[file] 文本過長，進行分段處理")
+    segments = []
+    
+    # 優先按雙換行符分段（段落）
+    paragraphs = text.split('\n\n')
+    current_segment = ""
+    
+    for para in paragraphs:
+        if len(current_segment) + len(para) <= max_length:
+            current_segment += para + "\n\n"
+        else:
+            if current_segment:
+                segments.append(current_segment.strip())
+            
+            # 如果單個段落太長，按單換行符分段
+            if len(para) > max_length:
+                lines = para.split('\n')
+                temp_segment = ""
+                for line in lines:
+                    if len(temp_segment) + len(line) <= max_length:
+                        temp_segment += line + "\n"
+                    else:
+                        if temp_segment:
+                            segments.append(temp_segment.strip())
+                        temp_segment = line + "\n"
+                if temp_segment:
+                    current_segment = temp_segment
+                else:
+                    current_segment = ""
+            else:
+                current_segment = para + "\n\n"
+    
+    if current_segment:
+        segments.append(current_segment.strip())
+    
+    return segments
+
+
+def _save_translated_file(text: str, output_path: str, file_ext: str):
+    """儲存翻譯後的文件"""
+    output_path_obj = Path(output_path)
+    output_path_obj.parent.mkdir(parents=True, exist_ok=True)
+    
+    if file_ext == ".txt" or file_ext == ".md":
+        output_path_obj.write_text(text, encoding="utf-8")
+    
+    elif file_ext == ".pdf":
+        # PDF 轉存為 TXT（因為 PDF 生成較複雜）
+        txt_path = output_path_obj.with_suffix(".txt")
+        txt_path.write_text(text, encoding="utf-8")
+        info_log(f"[file] PDF 翻譯結果已儲存為 TXT：{txt_path}")
+        return str(txt_path)
+    
+    elif file_ext == ".docx":
+        try:
+            from docx import Document
+            doc = Document()
+            for para in text.split('\n\n'):
+                doc.add_paragraph(para)
+            doc.save(output_path)
+        except ImportError:
+            # 降級為 TXT
+            txt_path = output_path_obj.with_suffix(".txt")
+            txt_path.write_text(text, encoding="utf-8")
+            info_log(f"[file] python-docx 未安裝，翻譯結果已儲存為 TXT：{txt_path}")
+            return str(txt_path)
     

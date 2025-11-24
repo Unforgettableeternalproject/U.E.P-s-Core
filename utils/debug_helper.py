@@ -64,6 +64,9 @@ def info_log(msg: str, type: str = "INFO"):
         logger.warning(msg)
     else:
         logger.info(f"[Unrecognized type '{type}'] {msg}")
+        
+def warning_log(msg: str): #Alias for info log but which logs as warning
+    info_log(msg, "WARNING")
 
 def error_log(msg: str, type: str = "ERROR"):
 
@@ -78,6 +81,27 @@ def error_log(msg: str, type: str = "ERROR"):
     else:
         logger.error(f"[Unrecognized type '{type}'] {msg}")
         
+def critical_log(msg: str): #Alias for error log but which logs as critical
+    error_log(msg, "CRITICAL")
+        
 def get_debug_level() -> int:
     """獲取當前除錯等級"""
     return _debug_level
+
+def set_debug_level(level: int):
+    """
+    動態設置除錯等級
+    
+    Args:
+        level: 除錯等級 (1-4)
+            1 (KEY_LEVEL): 關鍵事件、和重要狀態變更 (極少)
+            2 (OPERATION_LEVEL): 警告、一般操作和中等重要性的事件 (適中)
+            3 (SYSTEM_LEVEL): 詳細信息、運行狀態、一般流程 (較多)
+            4 (ELABORATIVE_LEVEL): 非常詳細的除錯信息 (大量)
+    """
+    global _debug_level
+    if level < 1 or level > 4:
+        logger.warning(f"[DebugHelper] 無效的除錯等級 {level}，應該在 1-4 之間")
+        return
+    _debug_level = level
+    logger.info(f"[DebugHelper] 除錯等級已設置為 {level}")

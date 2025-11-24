@@ -52,16 +52,16 @@ class MemoryManager:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         
-        # 初始化存儲管理器
+        # 先初始化身份管理器（其他模組需要使用）
+        identity_config = config.get("identity", {})
+        self.identity_manager = IdentityManager(identity_config)
+        
+        # 初始化存儲管理器（共享 identity_manager）
         storage_config = config.get("storage", {})
-        self.storage_manager = MemoryStorageManager(storage_config)
+        self.storage_manager = MemoryStorageManager(storage_config, self.identity_manager)
         
         # 初始化記憶總結器（需要在SnapshotManager之前）
         self.memory_summarizer = MemorySummarizer(config.get("summarization", {}))
-        
-        # 初始化子模組
-        identity_config = config.get("identity", {})
-        self.identity_manager = IdentityManager(identity_config)
         
         snapshot_config = config.get("snapshot", {})
         self.snapshot_manager = SnapshotManager(snapshot_config, self.memory_summarizer)
@@ -322,12 +322,54 @@ class MemoryManager:
             
             debug_log(3, f"[MemoryManager] 最終對話內容 (來源: {context_source}): {conversation_content[:150]}...")
             
-            # 4. 使用新的快照查詢和決策機制
-            snapshot_decision = self.snapshot_manager.query_and_decide_snapshot_creation(
-                memory_token, conversation_content, initial_context
+            # 4. 先嘗試查找相似的快照（Phase 3 新增）
+            similar_snapshot = self.snapshot_manager.find_similar_snapshot(
+                memory_token=memory_token,
+                query_text=conversation_content,
+                similarity_threshold=0.7
             )
             
-            debug_log(2, f"[MemoryManager] 快照決策: {snapshot_decision['flow_analysis']['flow_decision']}")
+            if similar_snapshot:
+                # 找到相似快照，延續現有對話
+                existing_session_id = similar_snapshot.session_id
+                debug_log(1, f"[MemoryManager] 找到相似快照，延續對話: {existing_session_id}")
+                debug_log(2, f"[MemoryManager] 快照摘要: {similar_snapshot.summary[:100] if similar_snapshot.summary else '(無摘要)'}")
+                
+                # 更新快照內容和 GSID
+                updated_content = f"{similar_snapshot.content}\n{conversation_content}" if similar_snapshot.content else conversation_content
+                self.snapshot_manager.update_snapshot_content(
+                    snapshot_id=existing_session_id,
+                    new_content=updated_content,
+                    refresh_gsid=True  # 刷新 GSID 延長快照生命週期
+                )
+                
+                # 更新上下文
+                self.current_context = MemoryContext(
+                    current_session_id=existing_session_id,
+                    current_intent="continue_conversation",
+                    user_profile={"memory_token": memory_token, "session_info": session_context, "context_source": context_source},
+                    recent_memories=[similar_snapshot.memory_id],
+                    active_topics=set(similar_snapshot.key_topics or []),
+                    conversation_depth=similar_snapshot.message_count or 0
+                )
+                
+                # 跳過創建新快照的流程
+                snapshot_decision = {
+                    'need_new_snapshot': False,
+                    'related_snapshots': [{
+                        'snapshot_id': similar_snapshot.memory_id,
+                        'session_id': existing_session_id,
+                        'summary': similar_snapshot.summary,
+                        'message_count': similar_snapshot.message_count
+                    }]
+                }
+            else:
+                # 沒有相似快照，使用原有的查詢和決策機制
+                snapshot_decision = self.snapshot_manager.query_and_decide_snapshot_creation(
+                    memory_token, conversation_content, initial_context
+                )
+            
+            debug_log(2, f"[MemoryManager] 快照決策: {snapshot_decision.get('flow_analysis', {}).get('flow_decision', '延續現有對話' if similar_snapshot else '創建新快照')}")
             
             # 5. 根據決策結果處理
             if snapshot_decision['need_new_snapshot']:

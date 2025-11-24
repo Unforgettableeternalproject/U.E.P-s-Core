@@ -47,12 +47,16 @@ class STTOutput(BaseModel):
             **self.metadata  # 包含文字輸入模式等特殊標記
         }
         
+        # 判斷狀態：持續監聽完成視為成功，即使沒有文本
+        is_listening_completed = self.activation_reason in ["continuous_listening_completed", "text_input_empty"]
+        status = "success" if (has_valid_text or is_listening_completed) and not self.error else "error"
+        
         return STTModuleData(
             text=self.text,
             confidence=self.confidence,
             speaker_info=self.speaker_info.model_dump() if self.speaker_info else None,
             activation_reason=self.activation_reason,
-            status="success" if has_valid_text and not self.error else "error",
+            status=status,
             error=self.error,
             source_module="stt",
             metadata=combined_metadata

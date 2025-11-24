@@ -110,68 +110,125 @@ def system_components():
 
 
 @pytest.fixture
-def cleanup_memory():
+def cleanup_memory(system_components):
     """
     測試前清空測試用 Identity 的記憶，避免殘留數據影響
+    同時清理 MEM 模組的內存緩存，確保測試隔離
     """
     from utils.debug_helper import info_log, debug_log
     from modules.nlp_module.identity_manager import IdentityManager
     import json
     import os
     
-    info_log("[Test Fixture] 🧹 清空測試用 Debug Identity 的記憶...")
-    
-    try:
-        # 獲取 Debug Identity
-        identity_manager = IdentityManager()
-        debug_identity = None
-        for identity in identity_manager.identities.values():
-            if identity.display_name == "Debug":
-                debug_identity = identity
-                break
+    def _cleanup_debug_memory():
+        """清理 Debug Identity 的記憶數據和內存狀態"""
+        info_log("[Test Fixture] 🧹 清空測試用 Debug Identity 的記憶...")
         
-        if debug_identity and debug_identity.memory_token:
-            memory_token = debug_identity.memory_token
-            info_log(f"[Test Fixture]   Debug memory_token: {memory_token}")
+        try:
+            # 獲取 Debug Identity
+            identity_manager = IdentityManager()
+            debug_identity = None
+            for identity in identity_manager.identities.values():
+                if identity.display_name == "Debug":
+                    debug_identity = identity
+                    break
             
-            # 1. 清理元資料檔案中該 token 的記憶
-            metadata_file = "memory/mem_metadata.json"
-            if os.path.exists(metadata_file):
-                with open(metadata_file, 'r', encoding='utf-8') as f:
-                    metadata = json.load(f)
+            if debug_identity and debug_identity.memory_token:
+                memory_token = debug_identity.memory_token
+                info_log(f"[Test Fixture]   Debug memory_token: {memory_token}")
                 
-                original_count = len(metadata)
-                # 過濾掉屬於 Debug 的記憶（只處理字典類型）
-                metadata = [m for m in metadata if isinstance(m, dict) and m.get('memory_token') != memory_token]
-                filtered_count = len(metadata)
+                # 1. 清理元資料檔案中該 token 的記憶
+                metadata_file = "memory/mem_metadata.json"
+                if os.path.exists(metadata_file):
+                    with open(metadata_file, 'r', encoding='utf-8') as f:
+                        metadata = json.load(f)
+                    
+                    original_count = len(metadata)
+                    # 過濾掉屬於 Debug 的記憶（只處理字典類型）
+                    metadata = [m for m in metadata if isinstance(m, dict) and m.get('memory_token') != memory_token]
+                    filtered_count = len(metadata)
+                    
+                    # 寫回檔案
+                    with open(metadata_file, 'w', encoding='utf-8') as f:
+                        json.dump(metadata, f, ensure_ascii=False, indent=2)
+                    
+                    removed = original_count - filtered_count
+                    if removed > 0:
+                        info_log(f"[Test Fixture]   已從元資料移除 {removed} 條 Debug 記憶")
+                    else:
+                        info_log(f"[Test Fixture]   元資料中無 Debug 記憶")
                 
-                # 寫回檔案
-                with open(metadata_file, 'w', encoding='utf-8') as f:
-                    json.dump(metadata, f, ensure_ascii=False, indent=2)
+                # 2. 清理 FAISS 向量索引（重建索引，排除 Debug 的記憶）
+                # 注意：由於 FAISS 索引結構複雜，這裡採用簡單策略
+                # 如果需要更精確的清理，應該重建整個索引
+                faiss_index = "memory/dev_faiss_index"
+                if os.path.exists(faiss_index):
+                    info_log(f"[Test Fixture]   FAISS 索引存在，但無法直接刪除特定 token 的向量")
+                    info_log(f"[Test Fixture]   建議：手動刪除 {faiss_index} 以完全清理")
                 
-                removed = original_count - filtered_count
-                if removed > 0:
-                    info_log(f"[Test Fixture]   已從元資料移除 {removed} 條 Debug 記憶")
-                else:
-                    info_log(f"[Test Fixture]   元資料中無 Debug 記憶")
-            
-            # 2. 清理 FAISS 向量索引（重建索引，排除 Debug 的記憶）
-            # 注意：由於 FAISS 索引結構複雜，這裡採用簡單策略
-            # 如果需要更精確的清理，應該重建整個索引
-            faiss_index = "memory/dev_faiss_index"
-            if os.path.exists(faiss_index):
-                info_log(f"[Test Fixture]   FAISS 索引存在，但無法直接刪除特定 token 的向量")
-                info_log(f"[Test Fixture]   建議：手動刪除 {faiss_index} 以完全清理")
-            
-            info_log("[Test Fixture] ✅ Debug Identity 記憶清理完成")
-        else:
-            info_log("[Test Fixture] ⚠️  未找到 Debug Identity 或無 memory_token")
-    except Exception as e:
-        info_log(f"[Test Fixture] ⚠️  清理記憶時發生錯誤: {e}")
-        import traceback
-        debug_log(1, traceback.format_exc())
+                # 3. 清理 MEM 模組的內存緩存
+                info_log("[Test Fixture] 🔄 清理 MEM 模組內存緩存...")
+                try:
+                    # 獲取 MEM 模組實例
+                    from core.framework import core_framework
+                    mem_module = core_framework.get_module('mem')
+                    
+                    if mem_module and mem_module.memory_manager:
+                        # 清理 SnapshotManager 的活躍快照緩存
+                        if hasattr(mem_module.memory_manager, 'snapshot_manager'):
+                            snapshot_mgr = mem_module.memory_manager.snapshot_manager
+                            
+                            # 清理屬於 Debug 的活躍快照
+                            if hasattr(snapshot_mgr, '_active_snapshots'):
+                                snapshots_to_remove = []
+                                for snapshot_id, snapshot in snapshot_mgr._active_snapshots.items():
+                                    if hasattr(snapshot, 'memory_token') and snapshot.memory_token == memory_token:
+                                        snapshots_to_remove.append(snapshot_id)
+                                
+                                for snapshot_id in snapshots_to_remove:
+                                    del snapshot_mgr._active_snapshots[snapshot_id]
+                                
+                                if snapshots_to_remove:
+                                    info_log(f"[Test Fixture]   已清理 {len(snapshots_to_remove)} 個活躍快照緩存")
+                            
+                            # 清理 SnapshotKeyManager 的鍵值緩存
+                            if hasattr(snapshot_mgr, 'key_manager'):
+                                key_mgr = snapshot_mgr.key_manager
+                                
+                                # 重置鍵值緩存
+                                if hasattr(key_mgr, '_snapshot_keys'):
+                                    keys_count = len(key_mgr._snapshot_keys)
+                                    key_mgr._snapshot_keys.clear()
+                                    if keys_count > 0:
+                                        info_log(f"[Test Fixture]   已清理 {keys_count} 個快照鍵值緩存")
+                                
+                                if hasattr(key_mgr, '_key_snapshots'):
+                                    key_mgr._key_snapshots.clear()
+                        
+                        info_log("[Test Fixture] ✅ MEM 模組內存緩存已清理")
+                    else:
+                        info_log("[Test Fixture] ⚠️  MEM 模組未初始化，跳過內存清理")
+                        
+                except Exception as e:
+                    info_log(f"[Test Fixture] ⚠️  清理 MEM 模組緩存時發生錯誤: {e}")
+                    import traceback
+                    debug_log(2, traceback.format_exc())
+                
+                info_log("[Test Fixture] ✅ Debug Identity 記憶清理完成")
+            else:
+                info_log("[Test Fixture] ⚠️  未找到 Debug Identity 或無 memory_token")
+        except Exception as e:
+            info_log(f"[Test Fixture] ⚠️  清理記憶時發生錯誤: {e}")
+            import traceback
+            debug_log(1, traceback.format_exc())
+    
+    # Setup: 測試開始前清理
+    _cleanup_debug_memory()
     
     yield
+    
+    # Teardown: 測試結束後也清理，確保不影響後續測試
+    _cleanup_debug_memory()
 
 
 @pytest.fixture

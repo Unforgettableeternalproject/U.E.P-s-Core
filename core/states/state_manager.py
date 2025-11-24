@@ -478,21 +478,26 @@ class StateManager:
             current_time = time.time()
             
             # 檢查 Sleep 狀態條件（優先級較高）
-            time_since_interaction = current_time - status.last_interaction_time
-            sleep_threshold = 1800  # 30分鐘無互動
+            # TODO: SLEEP 狀態暫時禁用自動觸發，等待前後端整合時正式實作
+            # 將在前後端整合階段實現完整的資源釋放和喚醒機制
+            sleep_enabled = False  # 設為 True 以啟用 SLEEP 狀態
             
-            if (status.boredom >= 0.8 and 
-                time_since_interaction > sleep_threshold and 
-                self._state in [UEPState.IDLE]):
+            if sleep_enabled:
+                time_since_interaction = current_time - status.last_interaction_time
+                sleep_threshold = 1800  # 30分鐘無互動
                 
-                debug_log(2, f"[StateManager] Sleep 條件滿足: Boredom={status.boredom:.2f}, "
-                         f"無互動時間={time_since_interaction/60:.1f}分鐘")
-                self.set_state(UEPState.SLEEP, {
-                    "trigger_reason": "high_boredom_and_inactivity",
-                    "boredom_level": status.boredom,
-                    "inactive_duration": time_since_interaction
-                })
-                return True
+                if (status.boredom >= 0.8 and 
+                    time_since_interaction > sleep_threshold and 
+                    self._state in [UEPState.IDLE]):
+                    
+                    debug_log(2, f"[StateManager] Sleep 條件滿足: Boredom={status.boredom:.2f}, "
+                             f"無互動時間={time_since_interaction/60:.1f}分鐘")
+                    self.set_state(UEPState.SLEEP, {
+                        "trigger_reason": "high_boredom_and_inactivity",
+                        "boredom_level": status.boredom,
+                        "inactive_duration": time_since_interaction
+                    })
+                    return True
             
             # 檢查 Mischief 狀態條件
             # TODO: MISCHIEF 狀態尚未完全實作，暫時禁用自動觸發

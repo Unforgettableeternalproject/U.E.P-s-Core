@@ -167,15 +167,21 @@ class StepTemplate:
                         
             def get_prompt(self) -> str:
                 msg = message() if callable(message) else message
-                return f"{msg}\n輸入 '確認' 或 'y' 繼續，輸入 '取消' 或 'n' 結束"
+                # 🔧 根據輸入模式調整提示文字
+                from core.system_loop import system_loop
+                if hasattr(system_loop, 'input_mode') and system_loop.input_mode == "vad":
+                    instruction = "Say 'yes' or 'confirm' to continue, 'no' or 'cancel' to abort"
+                else:
+                    instruction = "Type 'y' or 'yes' to continue, 'n' or 'no' to abort"
+                return f"{msg}\n{instruction}"
                 
             def execute(self, user_input: Any = None) -> StepResult:
                 if not user_input:
-                    return StepResult.failure("請輸入確認或取消")
+                    return StepResult.failure("Please confirm or cancel")
                 
                 user_str = str(user_input).strip().lower()
                 
-                if user_str in ["確認", "y", "yes", "ok"]:
+                if user_str in ["確認", "y", "yes", "ok", "confirm"]:
                     # ✅ 保存確認狀態到 session（使用 step_id 作為鍵）
                     self.session.add_data(step_id, True)
                     return StepResult.success(confirm_message)
@@ -184,7 +190,7 @@ class StepTemplate:
                     self.session.add_data(step_id, False)
                     return StepResult.cancel_workflow(cancel_message)
                 else:
-                    return StepResult.failure("請輸入 '確認' 或 '取消'")
+                    return StepResult.failure("Please enter 'yes' or 'no'")
                     
         return ConfirmationStep(session)
         
@@ -922,7 +928,7 @@ class StepTemplate:
                     next_check_at = next_check_time.isoformat()
                     
                     # 更新資料庫狀態
-                    task_id = session.metadata.get("task_id")
+                    task_id = session.get_data("task_id")
                     if task_id:
                         from modules.sys_module.actions.automation_helper import update_workflow_status
                         update_workflow_status(
@@ -1009,7 +1015,7 @@ class StepTemplate:
                     next_check_at = next_check_time.isoformat()
                     
                     # 更新資料庫
-                    task_id = session.metadata.get("task_id")
+                    task_id = session.get_data("task_id")
                     if task_id:
                         from modules.sys_module.actions.automation_helper import update_workflow_status
                         update_workflow_status(
@@ -1115,7 +1121,7 @@ class StepTemplate:
                 try:
                     # 驗證必要參數
                     for key in self.param_keys:
-                        if not session.has_data(key):
+                        if session.get_data(key) is None:
                             return StepResult.failure(f"缺少必要參數：{key}")
                     
                     # 生成唯一的 task_id
@@ -1123,10 +1129,10 @@ class StepTemplate:
                     
                     # 收集觸發條件
                     trigger_conditions = {}
-                    if session.has_data("trigger_time"):
+                    if session.get_data("trigger_time") is not None:
                         trigger_conditions["type"] = "time"
                         trigger_conditions["target_time"] = session.get_data("trigger_time")
-                    elif session.has_data("check_path"):
+                    elif session.get_data("check_path") is not None:
                         trigger_conditions["type"] = "file_change"
                         trigger_conditions["path"] = session.get_data("check_path")
                     
@@ -1156,8 +1162,7 @@ class StepTemplate:
                         return StepResult.failure("註冊監控任務失敗")
                     
                     # 保存 task_id 到 session
-                    session.set_data("task_id", task_id)
-                    session.metadata["task_id"] = task_id
+                    session.add_data("task_id", task_id)
                     
                     info_log(f"[MonitorCreationStep] 已建立監控任務：{task_id}")
                     

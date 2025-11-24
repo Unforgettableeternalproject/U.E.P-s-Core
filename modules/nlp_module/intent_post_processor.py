@@ -17,6 +17,10 @@ class IntentPostProcessor:
     # 問候詞（應歸類為 CALL）
     GREETING_KEYWORDS = {'hello', 'hi', 'hey', 'greetings', 'good morning', 'good afternoon', 'good evening'}
     
+    # CALL 意圖長度限制（超過此長度應改判為 CHAT）
+    MAX_CALL_WORDS = 3
+    MAX_CALL_CHARS = 20
+    
     def __init__(self):
         """初始化後處理器"""
         info_log("[IntentPostProcessor] 初始化意圖後處理器")
@@ -42,6 +46,9 @@ class IntentPostProcessor:
         
         # Step 2: 合併相鄰分段
         segments = self._merge_segments(segments, original_text)
+        
+        # Step 3: 檢查 CALL 意圖的長度限制
+        segments = self._apply_call_length_constraint(segments)
         
         debug_log(2, f"[IntentPostProcessor] 後處理完成，剩餘 {len(segments)} 個分段")
         return segments
@@ -200,3 +207,30 @@ class IntentPostProcessor:
         }
         
         return merged
+    
+    def _apply_call_length_constraint(self, segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        檢查 CALL 意圖的長度限制
+        
+        規則：
+        - CALL 意圖通常是簡短的問候或呼叫（如 "Hello", "Hi there"）
+        - 如果 CALL 分段超過 4 個詞或 20 個字元，改判為 CHAT
+        - 理由：長句子通常是對話或詢問，不是簡單的問候
+        """
+        constrained = []
+        
+        for seg in segments:
+            if seg['intent'] == 'call':
+                text = seg['text'].strip()
+                word_count = len(text.split())
+                char_count = len(text)
+                
+                # 檢查長度限制
+                if word_count > self.MAX_CALL_WORDS or char_count > self.MAX_CALL_CHARS:
+                    seg['intent'] = 'chat'
+                    seg['confidence'] = max(0.5, seg['confidence'] * 0.7)  # 降低信心度
+                    debug_log(3, f"[IntentPostProcessor] CALL 過長 ({word_count} 詞, {char_count} 字) → 改判為 CHAT: '{text}'")
+            
+            constrained.append(seg)
+        
+        return constrained

@@ -1918,3 +1918,15 @@
 
 ---
 
+### The main loop test seem fine and that was rather surprising.
+
+> Date: Mon, 24 Nov 2025 10:41:52 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `835d19aecb53d3849d7f75d6b26c7b7976374c18`
+
+---
+

@@ -1949,11 +1949,12 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             
             # 🔧 決定 tool_choice 模式（在構建 prompt 之前）
             if not has_active_workflow and not is_reviewing_step and mcp_tools:
-                tool_choice = "ANY"  # 強制調用工具（新請求應該啟動工作流）
+                tool_choice = "ANY"  # 強制調用工具（新請求應該啟動工作流） # 考慮切換回全部都用AUTO?
                 force_tool_use = True
             else:
                 tool_choice = "AUTO"  # 自動決定（可能需要繼續工作流或只是回應）
                 force_tool_use = False
+                
             
             # 構建 WORK 提示
             prompt = self.prompt_manager.build_work_prompt(

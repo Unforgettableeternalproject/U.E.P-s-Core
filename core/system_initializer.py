@@ -86,6 +86,10 @@ class SystemInitializer:
             # Phase 5: Working Context 設置
             if not self._setup_working_context():
                 return False
+            
+            # Phase 5.5: 設置默認測試 Identity（臨時測試用）
+            if not self._setup_default_identity():
+                return False
                 
             # Phase 6: 系統健康檢查
             if not self._health_check():
@@ -279,6 +283,67 @@ class SystemInitializer:
             
         except Exception as e:
             error_log(f"❌ Working Context 設置失敗: {e}")
+            return False
+    
+    def _setup_default_identity(self) -> bool:
+        """設置默認測試 Identity（臨時測試階段使用）
+        
+        ⚠️ 這是臨時測試功能，用於在沒有正式身分指定機制前進行測試
+        正式版本應該移除此功能，讓使用者通過語音或其他方式指定身分
+        """
+        try:
+            info_log("👤 設置默認測試 Identity (Bernie)...")
+            
+            # 導入必要的模組
+            from core.framework import core_framework
+            from core.working_context import working_context_manager
+            from core.status_manager import status_manager
+            
+            # 獲取 NLP 模組（包含 IdentityManager）
+            nlp_module = core_framework.get_module('nlp')
+            if not nlp_module or not hasattr(nlp_module, 'identity_manager'):
+                error_log("   ❌ NLP 模組或 IdentityManager 不可用")
+                return False
+            
+            identity_manager = nlp_module.identity_manager
+            
+            # 創建或獲取 Bernie Identity
+            identity = identity_manager.get_or_create_identity(
+                speaker_id="test_bernie_speaker",
+                display_name="Bernie"
+            )
+            
+            if not identity:
+                error_log("   ❌ 無法創建或獲取 Bernie Identity")
+                return False
+            
+            info_log(f"   ✅ Identity 已就緒: {identity.identity_id} ({identity.display_name})")
+            
+            # 設置到 Working Context 全局數據
+            working_context_manager.global_context_data['declared_identity'] = True
+            working_context_manager.global_context_data['current_identity_id'] = identity.identity_id
+            working_context_manager.global_context_data['current_identity'] = {
+                'identity_id': identity.identity_id,
+                'display_name': identity.display_name,
+                'speaker_id': identity.speaker_id
+            }
+            info_log(f"   📝 已設置到 Working Context")
+            
+            # 切換 StatusManager 到此 Identity
+            status_manager.switch_identity(identity.identity_id)
+            info_log(f"   🔄 StatusManager 已切換到 Identity: {identity.identity_id}")
+            
+            # 記錄測試配置
+            info_log("   ⚠️  注意：這是臨時測試配置")
+            info_log("   📊 現在所有語音樣本都會累積到 Bernie 的 Identity")
+            info_log("   🎯 可以測試：語音樣本添加、記憶路徑、完整系統循環")
+            
+            return True
+            
+        except Exception as e:
+            error_log(f"❌ 設置默認 Identity 失敗: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def _health_check(self) -> bool:

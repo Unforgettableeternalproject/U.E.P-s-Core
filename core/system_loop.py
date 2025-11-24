@@ -235,6 +235,11 @@ class SystemLoop:
             
             info_log("[SystemLoop] 💬 工作流等待使用者輸入，輸入層已啟用")
             
+            # 🔧 VAD 模式下，主動重啟 STT 監聽
+            if self.input_mode == "vad":
+                debug_log(2, "[SystemLoop] 工作流等待輸入，重新啟動STT監聽 (VAD模式)")
+                self._restart_stt_listening()
+            
         except Exception as e:
             error_log(f"[SystemLoop] 處理工作流輸入請求失敗: {e}")
     
@@ -705,16 +710,17 @@ class SystemLoop:
                         # 🔧 下一步是處理步驟，跳過輸入層
                         # 步驟會在 WorkflowEngine 批准後自動執行，不需要手動觸發
                         debug_log(2, f"[SystemLoop] ⏭️ 下一步是處理步驟，跳過輸入層（等待自動執行）")
-                    elif has_active_session and self.input_mode == "vad":
-                        # ✅ 只在 VAD 模式且有活躍會話時重啟 STT
-                        debug_log(2, f"[SystemLoop] 系統回到IDLE狀態，重新啟動STT監聽 (VAD模式)")
+                    elif self.input_mode == "vad":
+                        # ✅ VAD 模式下，無論是否有活躍會話都重啟 STT
+                        # 理由：即使沒有會話，也需要持續監聽新的使用者輸入
+                        debug_log(2, f"[SystemLoop] 系統回到IDLE狀態，重新啟動STT監聽 (VAD模式, 會話: {has_active_session})")
                         self._restart_stt_listening()
                     elif self.input_mode == "text":
-                        # 文字模式：不重啟 VAD，等待手動輸入或會話結束
+                        # 文字模式：不重啟 VAD，等待手動輸入
                         if has_active_session:
                             debug_log(2, f"[SystemLoop] 系統回到IDLE狀態 (文字模式)，等待手動輸入")
                         else:
-                            debug_log(2, f"[SystemLoop] 系統回到IDLE狀態，無活躍會話")
+                            debug_log(2, f"[SystemLoop] 系統回到IDLE狀態 (文字模式)，無活躍會話，等待新輸入")
                     
                     # 系統循環結束，檢查 GS 結束條件
                     self._check_cycle_end_conditions()

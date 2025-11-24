@@ -204,9 +204,11 @@ class NLPModule(BaseModule):
             metadata = getattr(input_data, 'metadata', {})
             # 🆕 優先檢查是否有主動聲明的 Identity（不管是否文字輸入）
             from core.working_context import working_context_manager
-            declared_identity_id = working_context_manager.get_declared_identity()
             
-            if declared_identity_id:
+            # 從 global_context_data 獲取 current_identity_id
+            declared_identity_id = working_context_manager.global_context_data.get('current_identity_id')
+            
+            if declared_identity_id and declared_identity_id != 'unknown':
                 # 方案 A: 主動聲明模式
                 debug_log(2, f"[NLP] 檢測到主動聲明的 Identity: {declared_identity_id}")
                 result.update(self._handle_declared_identity(declared_identity_id, input_data))
@@ -225,15 +227,6 @@ class NLPModule(BaseModule):
                     result["processing_notes"].append("文字輸入模式：使用預設身份")
                     # 將預設身份設置到Working Context
                     self._add_identity_to_working_context(default_identity)
-                return result
-            
-            # 再次檢查 declared_identity（為了向後兼容，保留這個檢查）
-            declared_identity_id = working_context_manager.get_declared_identity()
-            
-            if declared_identity_id:
-                # 方案 A: 主動聲明模式（第二次檢查，保留向後兼容）
-                debug_log(2, f"[NLP] 檢測到主動聲明的 Identity（語音模式）: {declared_identity_id}")
-                result.update(self._handle_declared_identity(declared_identity_id, input_data))
                 return result
             
             # 方案 B: 被動推斷模式（原有邏輯）
@@ -1146,6 +1139,12 @@ class NLPModule(BaseModule):
                             "priority": priority,
                             "work_mode": work_mode
                         })
+                    
+                    # 🔧 CRITICAL: 檢測到 WORK 意圖後，立即返回，不再處理後續分段
+                    # 原因：WORK 已添加到佇列並將被優先處理，後續的 CHAT 分段應該被忽略
+                    # 避免發布混淆的 INPUT_LAYER_COMPLETE 事件（意圖=CHAT 但狀態=WORK）
+                    debug_log(2, f"[NLP] BW/DW 已添加到佇列，停止處理後續分段")
+                    return result
             
         except Exception as e:
             error_log(f"[NLP] Error in _process_active_cs_state: {e}")

@@ -1930,3 +1930,15 @@
 
 ---
 
+### Some deprecated code cleaning. 11/24
+
+> Date: Mon, 24 Nov 2025 11:31:03 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `18b6f788a65860b2ac9e97514878aa95b893b9b2`
+
+---
+

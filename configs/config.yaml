@@ -25,7 +25,7 @@ logging:
   enable_split_logs: false
   enable_console_output: true  # 控制是否將日誌輸出到終端（測試時建議關閉）
 debug:
-  enabled: false
+  enabled: true
   debug_level: 3
 system:
   main_loop_interval: 0.1

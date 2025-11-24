@@ -308,8 +308,6 @@ def debug_interactive():
                         break
                     else:
                         print("\033[31m無效的選擇，請再試一次。\033[0m")
-                else:
-                    print("\033[31m無效的選擇，請再試一次。\033[0m")
             case "sys":
                 if not mod_list['sys']:
                     info_log("SYS 模組未啟用，請檢查配置。", "WARNING")
@@ -343,27 +341,7 @@ def debug_interactive():
                                 pass
                             case _:
                                 print("\033[31m無效的選擇，請再試一次。\033[0m")
-                    
-                    case "2":  # 工作流管理
-                        print("\n<工作流管理>")
-                        sub = input("請選擇:\n1: List Active (列出活躍工作流)\n2: Query Status (查詢工作流狀態)\n3: Cancel Workflow (取消工作流)\nexit: 返回\n\n> ")
-                        match sub:
-                            case "1":
-                                controller.sys_test_active_workflows_wrapper()
-                            case "2":
-                                session_id = input("請輸入 Session ID (留空則互動輸入): ")
-                                controller.sys_test_workflow_status_wrapper(session_id if session_id else None)
-                            case "3":
-                                session_id = input("請輸入要取消的 Session ID (留空則互動輸入): ")
-                                controller.sys_test_cancel_workflow_wrapper(session_id if session_id else None)
-                            case s if s.lower() in ["exit", "e", "quit", "q", "back", "b"]:
-                                pass
-                            case _:
-                                print("\033[31m無效的選擇，請再試一次。\033[0m")
-                    
-                    case "3":  # 列出所有工作流
-                        controller.sys_test_list_workflows_wrapper()
-                    
+
                     case "help" | "h":
                         print("\n=== SYS 工作流測試說明 ===")
                         print("\n【測試工作流】- 基礎功能測試")
@@ -371,12 +349,6 @@ def debug_interactive():
                         print("  Countdown: 倒數計時器測試")
                         print("  Data Collector: 多步驟資料收集測試")
                         print("  Random Fail: 錯誤處理與重試機制測試")
-                        print("\n注：TTS 測試已移至 TTS 模組測試 (tts 選單)")
-                        print("\n【工作流管理】- 會話管理功能")
-                        print("  List Active: 顯示所有活躍的工作流會話")
-                        print("  Query Status: 查詢特定工作流的執行狀態")
-                        print("  Cancel Workflow: 取消正在執行的工作流")
-                        print("\n提示：未來新增的工作流將自動出現在相應分類中\n")
                     
                     case "exit" | "e" | "quit" | "q":
                         pass

@@ -1,10 +1,7 @@
-from logging import config
 import asyncio
 from core.registry import get_module
 from configs.config_loader import load_config
 from utils.debug_helper import debug_log, info_log, error_log
-# 暫時註解掉這個導入，等相關文件創建後再啟用
-# from devtools.module_tests.extra_tests import test_chunk_and_summarize, test_uep_chatting
 
 config = load_config()
 enabled = config.get("modules_enabled", {})
@@ -439,7 +436,7 @@ from .module_tests.mem_tests import (
 # 測試 LLM 模組（簡化版 - 純功能測試）
 from .module_tests.llm_tests import (
     llm_test_chat, llm_test_command,
-    llm_test_cache_functionality, llm_test_learning_engine,
+    llm_test_learning_engine,
     llm_test_system_status_monitoring
 )
 

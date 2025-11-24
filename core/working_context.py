@@ -307,7 +307,7 @@ class WorkingContextManager:
             self.active_contexts_by_type[context_type] = context_id
             
             info_log(f"[WorkingContextManager] 創建新工作上下文: {context_id} "
-                    f"(類型: {context_type.value}, 閉值: {threshold}, scope: {effective_scope.value})")
+                    f"(類型: {context_type.value}, 閾值: {threshold}, scope: {effective_scope.value})")
             
             return context_id
     

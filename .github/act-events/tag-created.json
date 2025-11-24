@@ -1,0 +1,16 @@
+{
+  "ref": "refs/tags/v0.7.5",
+  "ref_name": "v0.7.5",
+  "ref_type": "tag",
+  "repository": {
+    "name": "U.E.P-s-Core",
+    "full_name": "Unforgettableeternalproject/U.E.P-s-Core",
+    "owner": {
+      "login": "Unforgettableeternalproject"
+    }
+  },
+  "pusher": {
+    "name": "github-actions[bot]",
+    "email": "github-actions[bot]@users.noreply.github.com"
+  }
+}

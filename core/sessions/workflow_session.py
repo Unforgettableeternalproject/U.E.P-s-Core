@@ -525,7 +525,7 @@ class WorkflowSession:
             (self.ended_at or datetime.now()) - self.created_at
         ).total_seconds()
         
-        # Get current step name
+        # 獲取當前步驟名稱
         current_step_info = self.get_current_step()
         current_step_name = current_step_info.get("step_name") if current_step_info else None
         

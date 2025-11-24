@@ -37,7 +37,6 @@ class SystemStatus:
     
     def __post_init__(self):
         """初始化後處理：設定 last_interaction_time 預設值"""
-        import time
         # 只有當 last_interaction_time 為 0.0 時才設定為當前時間
         if self.last_interaction_time == 0.0:
             self.last_interaction_time = time.time()
@@ -132,7 +131,6 @@ class StatusManager:
         
         # 確保 last_interaction_time 已初始化（避免計算出從 1970 年至今的時間）
         if self.status.last_interaction_time == 0.0:
-            import time
             self.status.last_interaction_time = time.time()
             debug_log(2, f"[StatusManager] 初始化 Identity {identity_id} 的 last_interaction_time")
         

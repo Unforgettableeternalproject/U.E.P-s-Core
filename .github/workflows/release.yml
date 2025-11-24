@@ -1,0 +1,51 @@
+name: Tag on Release PR Merge
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - main
+      
+jobs:
+  tag_release:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # 將 permissions 移到 job 級別
+      pull-requests: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}  # 明確設置 token
+          fetch-depth: 0
+      
+      - name: Extract tag from source branch and tag commit
+        run: |
+          SOURCE_BRANCH="${{ github.event.pull_request.head.ref }}"
+          echo "🔍 PR 來源分支：$SOURCE_BRANCH"
+          
+          if [[ $SOURCE_BRANCH == release/* ]]; then
+            VERSION="${SOURCE_BRANCH#release/}"  # 移除 release/ 前綴
+            
+            # 檢查 VERSION 是否已包含 'v' 前綴，避免重複
+            if [[ $VERSION == v* ]]; then
+              TAG_NAME="$VERSION-stable"
+            else
+              TAG_NAME="v$VERSION-stable"
+            fi
+            
+            echo "🏷️ 將要打的穩定版 tag：$TAG_NAME"
+            
+            # 使用 github-actions[bot] 用戶
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            
+            if git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
+              echo "🚫 Tag $TAG_NAME 已存在，跳過"
+            else
+              git tag "$TAG_NAME"
+              git push origin "$TAG_NAME"
+            fi
+          else
+            echo "⚠️ PR 來源不是 release/* 分支，跳過 tagging"
+          fi

@@ -1954,3 +1954,75 @@
 
 ---
 
+### Documentation Preparation. 11/24
+
+> Date: Mon, 24 Nov 2025 12:10:38 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `release/v0.7.4`
+
+> Commit: `6dbc6e2c4c24062126f6c959c5d12e92db912551`
+
+---
+
+### Updated README.md and requirements (it's been a long time). 11/24
+
+> Date: Mon, 24 Nov 2025 18:28:26 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `release/v0.7.4`
+
+> Commit: `8ab05ba7cb50a1f82e6de62f151e829ea4c9eada`
+
+---
+
+### Added some CI flows to help tagging and updating version history. 11/24
+
+> Date: Mon, 24 Nov 2025 19:32:22 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `release/v0.7.4`
+
+> Commit: `be56fb12df0af7ac3006b76f584234e8b0fefcb0`
+
+---
+
+### Fixed release.yml issues. 11/24
+
+> Date: Mon, 24 Nov 2025 19:35:06 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `release/v0.7.4`
+
+> Commit: `3cf6f7d84e4bd8088fa12a48fb565de4018156e1`
+
+---
+
+### Other nicpicks, prepare to merge. 11/24
+
+> Date: Mon, 24 Nov 2025 19:42:20 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `release/v0.7.4`
+
+> Commit: `27c691df6b8e2ffb2c705916ea2691ccd665b387`
+
+---
+
+### Remove unnecessary temp file. 11/24
+
+> Date: Mon, 24 Nov 2025 19:51:59 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `release/v0.7.4`
+
+> Commit: `c709c67514fe5f1e1d5bae310b31d64f13988dd4`
+
+---
+

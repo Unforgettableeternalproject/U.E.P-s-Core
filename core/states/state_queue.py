@@ -694,7 +694,6 @@ class StateQueueManager:
     
     def complete_current_state(self, success: bool = True, result_data: Optional[Dict[str, Any]] = None,
                               completion_cycle: Optional[int] = None):
-        debug_log(1, f"[StateQueue] complete_current_state 被調用, completion_cycle={completion_cycle}")
         """完成當前狀態
         
         只標記當前狀態完成，不自動推進到下一個狀態。

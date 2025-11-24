@@ -2002,3 +2002,15 @@
 
 ---
 
+### Other nicpicks, prepare to merge. 11/24
+
+> Date: Mon, 24 Nov 2025 19:42:20 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `release/v0.7.4`
+
+> Commit: `27c691df6b8e2ffb2c705916ea2691ccd665b387`
+
+---
+

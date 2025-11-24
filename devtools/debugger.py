@@ -20,7 +20,7 @@ mod_list = {"stt": (module_enabled.get("stt_module", False), module_refactored.g
             "ani": (module_enabled.get("ani_module", False), module_refactored.get("ani_module", False)),
             "mov": (module_enabled.get("mov_module", False), module_refactored.get("mov_module", False))}
 
-def colorful_text(text : str, enabled : tuple=(False, False)):
+def colorful_text(text : str, enabled : tuple = (False, False)):
     return '\033[32m' + text + '\033[0m' if enabled[1] and enabled[0] else '\033[33m' + text + ' (待重構)\033[0m' if enabled[0] else '\033[31m' + text + '\033[0m'
 
 def debug_interactive():

@@ -2014,3 +2014,15 @@
 
 ---
 
+### Remove unnecessary temp file. 11/24
+
+> Date: Mon, 24 Nov 2025 19:51:59 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `release/v0.7.4`
+
+> Commit: `c709c67514fe5f1e1d5bae310b31d64f13988dd4`
+
+---
+

@@ -582,6 +582,40 @@ def frontend_test_user_interaction_wrapper():
     from .module_tests.frontend_tests import frontend_test_user_interaction as frontend_test_user_interaction_func
     return frontend_test_user_interaction_func(modules)
 
+def launch_animation_tester():
+    """啟動動畫測試器（獨立GUI工具）"""
+    try:
+        info_log("[Debug API] 正在啟動動畫測試器...")
+        
+        # 檢查 PyQt5 是否可用
+        try:
+            from PyQt5.QtWidgets import QApplication
+        except ImportError:
+            error_log("[Debug API] 無法導入 PyQt5，請確認已安裝")
+            return {"success": False, "error": "PyQt5 未安裝"}
+        
+        # 導入並啟動動畫測試器
+        import subprocess
+        import sys
+        from pathlib import Path
+        
+        # 獲取動畫測試器腳本路徑
+        script_path = Path(__file__).parent / "animation_tester.py"
+        
+        if not script_path.exists():
+            error_log(f"[Debug API] 找不到動畫測試器: {script_path}")
+            return {"success": False, "error": "動畫測試器腳本不存在"}
+        
+        # 使用當前 Python 環境啟動
+        subprocess.Popen([sys.executable, str(script_path)])
+        
+        info_log("[Debug API] 動畫測試器已在新進程中啟動")
+        return {"success": True, "message": "動畫測試器已啟動"}
+        
+    except Exception as e:
+        error_log(f"[Debug API] 啟動動畫測試器失敗: {e}")
+        return {"success": False, "error": str(e)}
+
 # MEM 模組包裝函數（簡化版 - 純功能測試）
 def mem_test_store_memory_wrapper(identity="test_user", content="測試記憶內容", memory_type="long_term"):
     """MEM 記憶存儲測試包裝函數"""

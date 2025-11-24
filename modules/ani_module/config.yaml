@@ -1,72 +1,333 @@
-# ANI Module Configuration
-
-module_name: "ani_module"
-module_type: "frontend"
+module_name: ani_module
+module_type: frontend
 priority: 2
-
-# 動畫設定
 animation:
-  # ANI 計時器 tick（毫秒）；你也可以改回 100 取決於 UI 刷新方式
   frame_interval: 16
-  default_frame_duration: 0.10
+  default_frame_duration: 0.1
   request_cooldown: 0.25
-
 resources:
-  animations_path: "resources/animations"
-  # 全域命名規則（UI 可用來找檔案；ANIModule 只需要 total_frames/fps）
-  filename_format: "{prefix}{index:02d}.png"  # 例如 diamond_girl_walk_right_00.png
+  animations_path: resources/animations
+  filename_format: '{prefix}{index:02d}.png'
   index_start: 0
   clips:
-    angry_idle_f:    { prefix: "diamond_girl_angry_idle_",          total_frames: 38, frame_duration: 0.10, loop: true, zoom: 1.0, offsetX: 0, offsetY: 0 }
-    awkward_f:       { prefix: "diamond_girl_awkward_idle_",         total_frames: 39, frame_duration: 0.10, loop: true, zoom: 1.0, offsetX: 0, offsetY: 0 }
-    click_f:         { prefix: "diamond_girl_click_",                total_frames: 45, frame_duration: 0.08, loop: false, zoom: 1.0, offsetX: 0, offsetY: 0 }
-    curious_idle_f:  { prefix: "diamond_girl_curious_idle_",         total_frames: 38, frame_duration: 0.10, loop: true, zoom: 1.0, offsetX: 0, offsetY: 0 }
-    dance2_g:        { prefix: "diamond_girl_dance2_",               total_frames: 55, frame_duration: 0.08, loop: true, zoom: 1.0, offsetX: 0, offsetY: 0 }
-    dance_f:         { prefix: "diamond_girl_dance_",                total_frames: 55, frame_duration: 0.08, loop: true, zoom: 1.0, offsetX: 0, offsetY: 0 }
-    data_search_f:   { prefix: "diamond_girl_data_processing_",    total_frames: 39, frame_duration: 0.10, loop: true, zoom: 1.0, offsetX: 0, offsetY: 0 }
-
-    f_to_g:          { prefix: "diamond_girl_floating_to_standing_", total_frames: 38, frame_duration: 0.06, loop: false, zoom: 1.1, offsetX: 2, offsetY: -2 }
-    g_to_f:          { prefix: "diamond_girl_standing_to_floating_", total_frames: 38, frame_duration: 0.06, loop: false, zoom: 1.1, offsetX: 2, offsetY: 0 }
-
-    g_to_l:          { prefix: "diamond_girl_lying_to_standing_",  total_frames: 35, frame_duration: 0.06, loop: false, zoom: 1.0, offsetX: 0, offsetY: 0 }
-    l_to_g:          { prefix: "diamond_girl_standing_to_lying_",             total_frames: 48, frame_duration: 0.06, loop: false, zoom: 1.0, offsetX: 0, offsetY: 0 }
-
-    laugh_f:         { prefix: "diamond_girl_laugh_",                total_frames: 75, frame_duration: 0.08, loop: false, zoom: 1.0, offsetX: 0, offsetY: 0 }
-    push_down:       { prefix: "diamond_girl_push_down_",            total_frames: 38, frame_duration: 0.08, loop: true, zoom: 1.0, offsetX: 0, offsetY: 0 }
-    push_left:       { prefix: "diamond_girl_push_left_",            total_frames: 57, frame_duration: 0.08, loop: true, zoom: 1.0, offsetX: 0, offsetY: 0 }
-    push_right:      { prefix: "diamond_girl_push_right_",           total_frames: 57, frame_duration: 0.08, loop: true, zoom: 1.0, offsetX: 0, offsetY: 0 }
-    push_up:         { prefix: "diamond_girl_push_up_",              total_frames: 74, frame_duration: 0.08, loop: true, zoom: 1.0, offsetX: 0, offsetY: 0 }
-
-    sleep_l:         { prefix: "diamond_girl_sleep_",                total_frames: 48, frame_duration: 0.12, loop: true, zoom: 1.0, offsetX: 0, offsetY: 0 }
-
-    smile_idle_f:    { prefix: "diamond_girl_smile_idle_",           total_frames: 38, frame_duration: 0.10, loop: true, zoom: 1.0, offsetX: 0, offsetY: 0 }
-    stand_idle_g:    { prefix: "diamond_girl_stand_idle_",           total_frames: 38, frame_duration: 0.10, loop: true, zoom: 1.0, offsetX: 0, offsetY: 0 }
-    struggle_f:      { prefix: "diamond_girl_struggle_",             total_frames: 61, frame_duration: 0.10, loop: false, zoom: 1.1, offsetX: 0, offsetY: 0 }
-
-    talk_ani2_f:     { prefix: "diamond_girl_talk2_",                total_frames: 38, frame_duration: 0.10, loop: true, zoom: 1.0, offsetX: 0, offsetY: 0 }
-    talk_ani_f:      { prefix: "diamond_girl_talk1_",                total_frames: 38, frame_duration: 0.10, loop: true, zoom: 1.0, offsetX: 0, offsetY: 0 }
-
-    tease2_f:        { prefix: "diamond_girl_tease2_",               total_frames: 55, frame_duration: 0.10, loop: false, zoom: 1.0, offsetX: 0, offsetY: 0 }
-    tease_f:         { prefix: "diamond_girl_tease_",                total_frames: 38, frame_duration: 0.10, loop: false, zoom: 1.0, offsetX: 0, offsetY: 0 }
-
-    turn_head_g:     { prefix: "diamond_girl_turn_head_", total_frames: 41, frame_duration: 0.08, loop: false, zoom: 1.0, offsetX: 0, offsetY: 0 }
-    turn_left_g:     { prefix: "diamond_girl_turn_left_",            total_frames: 29, frame_duration: 0.08, loop: false, zoom: 1.0, offsetX: 0, offsetY: 0 }
-    turn_right_g:    { prefix: "diamond_girl_turn_right_",           total_frames: 29, frame_duration: 0.08, loop: false, zoom: 1.0, offsetX: 0, offsetY: 0 }
-    turn_walk_g:     { prefix: "diamond_girl_turn_walking_", total_frames: 59, frame_duration: 0.08, loop: false, zoom: 1.0, offsetX: 0, offsetY: 0 }
-
-    walk_left_g:     { prefix: "diamond_girl_walk_left_",            total_frames: 33, frame_duration: 0.08, loop: true, zoom: 1.0, offsetX: 0, offsetY: 0 }
-    walk_right_g:    { prefix: "diamond_girl_walk_right_",           total_frames: 33, frame_duration: 0.08, loop: true, zoom: 1.0, offsetX: 0, offsetY: 0 }
-
-    yawn_g:          { prefix: "diamond_girl_yawn_",                 total_frames: 45, frame_duration: 0.10, loop: false, zoom: 1.0, offsetX: 0, offsetY: 0 }
+    enter:
+      prefix: diamond_girl_start_
+      total_frames: 54
+      frame_duration: 0.08
+      loop: false
+      zoom: 1.0
+      offsetX: 0
+      offsetY: 0
+    leave:
+      prefix: diamond_girl_end_
+      total_frames: 74
+      frame_duration: 0.08
+      loop: false
+      zoom: 1.0
+      offsetX: 0
+      offsetY: -20
+    angry_idle_f:
+      prefix: diamond_girl_angry_idle_
+      total_frames: 38
+      frame_duration: 0.1
+      loop: true
+      zoom: 0.9999999999999999
+      offsetX: 0
+      offsetY: 0
+    awkward_f:
+      prefix: diamond_girl_awkward_idle_
+      total_frames: 39
+      frame_duration: 0.1
+      loop: true
+      zoom: 1.0
+      offsetX: 0
+      offsetY: 0
+    click_f:
+      prefix: diamond_girl_click_
+      total_frames: 45
+      frame_duration: 0.08
+      loop: false
+      zoom: 1.05
+      offsetX: -40
+      offsetY: 0
+    curious_idle_f:
+      prefix: diamond_girl_curious_idle_
+      total_frames: 38
+      frame_duration: 0.05
+      loop: true
+      zoom: 1.0
+      offsetX: 15
+      offsetY: 0
+    dance2_g:
+      prefix: diamond_girl_dance2_
+      total_frames: 55
+      frame_duration: 0.05
+      loop: true
+      zoom: 1.0
+      offsetX: 0
+      offsetY: 0
+    dance_f:
+      prefix: diamond_girl_dance_
+      total_frames: 55
+      frame_duration: 0.03
+      loop: true
+      zoom: 1.0
+      offsetX: 0
+      offsetY: 0
+    data_search_f:
+      prefix: diamond_girl_data_processing_
+      total_frames: 39
+      frame_duration: 0.08
+      loop: true
+      zoom: 1.0
+      offsetX: 0
+      offsetY: 0
+    chilling_f:
+      prefix: diamond_girl_listen_music_
+      total_frames: 74
+      frame_duration: 0.08
+      loop: false
+      zoom: 0.93
+      offsetX: -75
+      offsetY: 0
+    f_to_g:
+      prefix: diamond_girl_floating_to_standing_
+      total_frames: 38
+      frame_duration: 0.06
+      loop: false
+      zoom: 1.1
+      offsetX: 2
+      offsetY: -2
+    g_to_f:
+      prefix: diamond_girl_standing_to_floating_
+      total_frames: 38
+      frame_duration: 0.06
+      loop: false
+      zoom: 1.1
+      offsetX: 2
+      offsetY: 0
+    g_to_l:
+      prefix: diamond_girl_lying_to_standing_
+      total_frames: 35
+      frame_duration: 0.06
+      loop: false
+      zoom: 1.3
+      offsetX: 25
+      offsetY: -40
+    l_to_g:
+      prefix: diamond_girl_standing_to_lying_
+      total_frames: 48
+      frame_duration: 0.06
+      loop: false
+      zoom: 1.3
+      offsetX: 0
+      offsetY: 0
+    laugh_f:
+      prefix: diamond_girl_laugh_
+      total_frames: 75
+      frame_duration: 0.08
+      loop: false
+      zoom: 1.0
+      offsetX: 0
+      offsetY: 0
+    push_down:
+      prefix: diamond_girl_push_down_
+      total_frames: 38
+      frame_duration: 0.08
+      loop: true
+      zoom: 1.0
+      offsetX: 0
+      offsetY: 0
+    push_left:
+      prefix: diamond_girl_push_left_
+      total_frames: 57
+      frame_duration: 0.08
+      loop: true
+      zoom: 1.0
+      offsetX: 0
+      offsetY: 0
+    push_right:
+      prefix: diamond_girl_push_right_
+      total_frames: 57
+      frame_duration: 0.08
+      loop: true
+      zoom: 1.0
+      offsetX: 0
+      offsetY: 0
+    push_up:
+      prefix: diamond_girl_push_up_
+      total_frames: 74
+      frame_duration: 0.08
+      loop: true
+      zoom: 1.0
+      offsetX: 0
+      offsetY: 0
+    sleep_l:
+      prefix: diamond_girl_sleep_
+      total_frames: 48
+      frame_duration: 0.12
+      loop: true
+      zoom: 1.3
+      offsetX: 0
+      offsetY: 0
+    smile_idle_f:
+      prefix: diamond_girl_smile_idle_
+      total_frames: 38
+      frame_duration: 0.1
+      loop: true
+      zoom: 1.0
+      offsetX: 0
+      offsetY: 0
+    stand_idle_g:
+      prefix: diamond_girl_stand_idle_
+      total_frames: 38
+      frame_duration: 0.1
+      loop: true
+      zoom: 1.0
+      offsetX: 0
+      offsetY: 0
+    struggle_f:
+      prefix: diamond_girl_struggle_
+      total_frames: 61
+      frame_duration: 0.06
+      loop: false
+      zoom: 1.1
+      offsetX: 0
+      offsetY: 0
+    talk_ani2_f:
+      prefix: diamond_girl_talk2_
+      total_frames: 38
+      frame_duration: 0.1
+      loop: true
+      zoom: 1.0
+      offsetX: 0
+      offsetY: 0
+    talk_ani_f:
+      prefix: diamond_girl_talk1_
+      total_frames: 38
+      frame_duration: 0.1
+      loop: true
+      zoom: 1.0
+      offsetX: 0
+      offsetY: 0
+    thinking_g:
+      prefix: diamond_girl_thinking(std_
+      total_frames: 118
+      frame_duration: 0.06
+      loop: true
+      zoom: 1.0
+      offsetX: 0
+      offsetY: 0
+    thinking_f:
+      prefix: diamond_girl_thinking(flt_
+      total_frames: 118
+      frame_duration: 0.06
+      loop: true
+      zoom: 1.0
+      offsetX: 0
+      offsetY: 0
+    take_file_g:
+      prefix: U-diamond_girl_take_file(standing_
+      total_frames: 118
+      frame_duration: 0.06
+      loop: true
+      zoom: 1.0
+      offsetX: 0
+      offsetY: 0
+    take_file_f:
+      prefix: diamond_girl_take_file(floating_
+      total_frames: 118
+      frame_duration: 0.06
+      loop: true
+      zoom: 1.0
+      offsetX: 0
+      offsetY: 0
+    tease2_f:
+      prefix: diamond_girl_tease2_
+      total_frames: 55
+      frame_duration: 0.1
+      loop: false
+      zoom: 1.0
+      offsetX: 0
+      offsetY: 0
+    tease_f:
+      prefix: diamond_girl_tease_
+      total_frames: 38
+      frame_duration: 0.05
+      loop: false
+      zoom: 1.5
+      offsetX: 0
+      offsetY: 0
+    turn_head_g:
+      prefix: diamond_girl_turn_head_
+      total_frames: 41
+      frame_duration: 0.08
+      loop: false
+      zoom: 1.0
+      offsetX: 0
+      offsetY: 0
+    turn_head_f:
+      prefix: diamond_girl_floating_turn_head_
+      total_frames: 38
+      frame_duration: 0.08
+      loop: false
+      zoom: 1.0
+      offsetX: 0
+      offsetY: 0
+    turn_left_g:
+      prefix: diamond_girl_turn_left_
+      total_frames: 29
+      frame_duration: 0.08
+      loop: false
+      zoom: 1.0
+      offsetX: 0
+      offsetY: 0
+    turn_right_g:
+      prefix: diamond_girl_turn_right_
+      total_frames: 29
+      frame_duration: 0.08
+      loop: false
+      zoom: 1.0
+      offsetX: 0
+      offsetY: 0
+    turn_walk_g:
+      prefix: diamond_girl_turn_walking_
+      total_frames: 59
+      frame_duration: 0.08
+      loop: false
+      zoom: 1.0
+      offsetX: 0
+      offsetY: 0
+    walk_left_g:
+      prefix: diamond_girl_walk_left_
+      total_frames: 33
+      frame_duration: 0.08
+      loop: true
+      zoom: 1.0
+      offsetX: 0
+      offsetY: 0
+    walk_right_g:
+      prefix: diamond_girl_walk_right_
+      total_frames: 33
+      frame_duration: 0.08
+      loop: true
+      zoom: 1.0
+      offsetX: 0
+      offsetY: 0
+    yawn_g:
+      prefix: diamond_girl_yawn_
+      total_frames: 45
+      frame_duration: 0.07
+      loop: false
+      zoom: 1.0
+      offsetX: 0
+      offsetY: 0
   aliases:
-    walk_left:  walk_left_g
+    walk_left: walk_left_g
     walk_right: walk_right_g
-    turn_left:  turn_left_g
+    turn_left: turn_left_g
     turn_right: turn_right_g
-    struggle:   struggle_f
-    # 之後會放更多
-
-# 調試設定
+    struggle: struggle_f
 debug:
   log_frame_changes: false
   show_animation_info: false

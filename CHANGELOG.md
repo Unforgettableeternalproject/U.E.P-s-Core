@@ -2026,3 +2026,15 @@
 
 ---
 
+### Added an animation tester for correcting clips. 11/25
+
+> Date: Tue, 25 Nov 2025 02:50:51 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `3e44536f85c4fd6aff3f53a651d37029f9ee7110`
+
+---
+

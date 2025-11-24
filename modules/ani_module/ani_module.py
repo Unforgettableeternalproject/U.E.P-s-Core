@@ -134,7 +134,6 @@ class ANIModule(BaseFrontendModule):
             anim_name = st["name"]
             idx = st.get("frame")
             if idx is None:
-                debug_log(3, f"[ANI] get_current_frame: 幀索引為 None")
                 return None
 
             # 從狀態中獲取變換屬性
@@ -146,7 +145,6 @@ class ANIModule(BaseFrontendModule):
             transform_key = (anim_name, idx, 1.0, offset_x, offset_y)
             pm = self._try_get_transformed_cached_pixmap(transform_key)
             if pm is not None:
-                debug_log(3, f"[ANI] get_current_frame: 使用變換快取 {anim_name}[{idx}]")
                 return pm
 
             # 先獲取原始圖片
@@ -179,14 +177,12 @@ class ANIModule(BaseFrontendModule):
                     
                 # 放到原始圖片快取
                 self._cache_pixmap(anim_name, idx, original_pm)
-                debug_log(3, f"[ANI] get_current_frame: 成功載入 {anim_name}[{idx}] from {frame_path}")
 
             # 應用變換（只處理偏移，縮放交給 UI 層處理）
             transformed_pm = self._apply_transform(original_pm, 1.0, offset_x, offset_y)  # zoom 固定為 1.0
             if transformed_pm:
                 # 放到變換快取
                 self._cache_transformed_pixmap(transform_key, transformed_pm)
-                debug_log(3, f"[ANI] get_current_frame: 應用變換 zoom={zoom} offset=({offset_x},{offset_y})")
                 return transformed_pm
             else:
                 return original_pm
@@ -239,13 +235,11 @@ class ANIModule(BaseFrontendModule):
             except Exception: pass
 
     def _emit_start(self, name: str):
-        debug_log(3, f"[ANI] start: {name}")
         for cb in list(self._start_callbacks):
             try: cb(name)
             except Exception as e: error_log(f"[ANI] start-callback error: {e}")
 
     def _emit_finish(self, name: str):
-        debug_log(3, f"[ANI] finish: {name}")
         for cb in list(self._finish_callbacks):
             try: cb(name)
             except Exception as e: error_log(f"[ANI] finish-callback error: {e}")
@@ -297,7 +291,8 @@ class ANIModule(BaseFrontendModule):
                 ))
                 # 可把 prefix/filename_format/index_start 留給 UI 用（ANI 不需）
                 from utils.debug_helper import debug_log
-                debug_log(3, f"[ANI] ✓ 註冊動畫: {name} frames={total_frames} fps={fps:.2f} loop={loop} zoom={zoom} offset=({offset_x},{offset_y})")
+                # 動畫註冊成功（不輸出日誌以減少噪音）
+                pass
             except Exception as e:
                 from utils.debug_helper import error_log
                 error_log(f"[ANI] ✗ 註冊動畫失敗 {name}: {e}")
@@ -377,6 +372,7 @@ class ANIModule(BaseFrontendModule):
         根據實際檔案結構解析動畫幀路徑。
         實際結構：resources/animations/{anim_name}/{prefix}{idx:02d}.png
         支援 alias 動畫解析到原始檔案路徑
+        自動根據幀數選擇正確的格式 (02d 或 03d)
         """
         try:
             # 取得基礎路徑
@@ -415,14 +411,20 @@ class ANIModule(BaseFrontendModule):
             prefix = clip_info.get("prefix", f"{actual_anim_name}_")
             # 注意：不要移除底線，因為實際檔案名是 diamond_girl_angry_idle_00.png
             
-            # 組合路徑：{base_path}/{actual_anim_name}/{prefix}{idx:02d}.png
-            filename = f"{prefix}{idx:02d}.png"
+            # 根據總幀數自動選擇格式
+            total_frames = clip_info.get("total_frames", 100)
+            if total_frames >= 100:
+                # 使用 3 位數格式
+                filename = f"{prefix}{idx:03d}.png"
+            else:
+                # 使用 2 位數格式
+                filename = f"{prefix}{idx:02d}.png"
+            
             full_path = os.path.join(base_animations_path, actual_anim_name, filename)
             
-            # 增加更詳細的偵錯信息
-            debug_log(3, f"[ANI] 解析路徑: {anim_name}[{idx}] -> {actual_anim_name}")
-            debug_log(3, f"[ANI] - full_path: {full_path}")
-            debug_log(3, f"[ANI] - exists: {os.path.exists(full_path)}")
+            # 只在檔案不存在時才記錄錯誤
+            if not os.path.exists(full_path):
+                debug_log(2, f"[ANI] 檔案不存在: {anim_name}[{idx}] -> {full_path}")
             
             return full_path
             

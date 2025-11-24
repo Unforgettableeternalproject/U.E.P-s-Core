@@ -1954,3 +1954,15 @@
 
 ---
 
+### Documentation Preparation. 11/24
+
+> Date: Mon, 24 Nov 2025 12:10:38 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `release/v0.7.4`
+
+> Commit: `6dbc6e2c4c24062126f6c959c5d12e92db912551`
+
+---
+

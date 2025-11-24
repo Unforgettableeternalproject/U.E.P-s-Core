@@ -1,0 +1,80 @@
+name: Auto Version Tag on Config Change
+
+on:
+  push:
+    branches:
+      - 'develop'
+      - 'feature/**'
+    paths:
+      - 'configs/config.yaml'
+
+jobs:
+  check_and_tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 2  # 需要取得前一個 commit 來比對差異
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Check if system_version changed
+        id: version_check
+        run: |
+          echo "🔍 檢查 system_version 是否有變更..."
+          
+          # 取得當前的 system_version
+          CURRENT_VERSION=$(grep -E '^\s*system_version:' configs/config.yaml | sed -E 's/^\s*system_version:\s*//;s/\s*$//')
+          echo "📌 當前版本: $CURRENT_VERSION"
+          
+          # 取得前一個 commit 的 system_version
+          git show HEAD~1:configs/config.yaml > /tmp/old_config.yaml 2>/dev/null || echo "system_version: none" > /tmp/old_config.yaml
+          OLD_VERSION=$(grep -E '^\s*system_version:' /tmp/old_config.yaml | sed -E 's/^\s*system_version:\s*//;s/\s*$//')
+          echo "📌 舊版本: $OLD_VERSION"
+          
+          # 比較版本是否改變
+          if [ "$CURRENT_VERSION" != "$OLD_VERSION" ]; then
+            echo "✅ 版本已變更：$OLD_VERSION -> $CURRENT_VERSION"
+            echo "version_changed=true" >> $GITHUB_OUTPUT
+            echo "new_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ 版本未變更，跳過標籤"
+            echo "version_changed=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Create and push tag
+        if: steps.version_check.outputs.version_changed == 'true'
+        run: |
+          VERSION="${{ steps.version_check.outputs.new_version }}"
+          
+          # 確保版本號有 'v' 前綴
+          if [[ $VERSION == v* ]]; then
+            TAG_NAME="$VERSION"
+          else
+            TAG_NAME="v$VERSION"
+          fi
+          
+          echo "🏷️ 準備打標籤: $TAG_NAME"
+          
+          # 設定 git 用戶
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # 檢查 tag 是否已存在
+          if git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
+            echo "🚫 Tag $TAG_NAME 已存在，跳過"
+          else
+            # 創建帶註解的標籤
+            git tag -a "$TAG_NAME" -m "Auto-tagged version $TAG_NAME from config.yaml change"
+            git push origin "$TAG_NAME"
+            echo "✅ 成功創建並推送標籤: $TAG_NAME"
+          fi
+      
+      - name: Comment on commit (optional)
+        if: steps.version_check.outputs.version_changed == 'true'
+        run: |
+          VERSION="${{ steps.version_check.outputs.new_version }}"
+          echo "💬 版本已更新為 $VERSION 並自動打上標籤"

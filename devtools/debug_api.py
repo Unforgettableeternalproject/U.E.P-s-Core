@@ -439,7 +439,7 @@ from .module_tests.mem_tests import (
 # 測試 LLM 模組（簡化版 - 純功能測試）
 from .module_tests.llm_tests import (
     llm_test_chat, llm_test_command,
-    llm_test_cache_functionality, llm_test_learning_engine,
+    llm_test_learning_engine,
     llm_test_system_status_monitoring
 )
 

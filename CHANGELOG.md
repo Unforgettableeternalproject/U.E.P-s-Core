@@ -1978,3 +1978,15 @@
 
 ---
 
+### Added some CI flows to help tagging and updating version history. 11/24
+
+> Date: Mon, 24 Nov 2025 19:32:22 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `release/v0.7.4`
+
+> Commit: `be56fb12df0af7ac3006b76f584234e8b0fefcb0`
+
+---
+

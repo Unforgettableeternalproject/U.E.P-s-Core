@@ -1,0 +1,23 @@
+{
+  "ref": "refs/heads/develop",
+  "ref_name": "develop",
+  "repository": {
+    "name": "U.E.P-s-Core",
+    "full_name": "Unforgettableeternalproject/U.E.P-s-Core",
+    "owner": {
+      "login": "Unforgettableeternalproject"
+    }
+  },
+  "pusher": {
+    "name": "test-user",
+    "email": "test@example.com"
+  },
+  "commits": [
+    {
+      "id": "test-commit-id",
+      "message": "bump: 升級版本至 v0.7.5",
+      "added": ["configs/config.yaml"],
+      "modified": ["configs/config.yaml"]
+    }
+  ]
+}

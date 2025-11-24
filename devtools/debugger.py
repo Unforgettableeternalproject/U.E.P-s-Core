@@ -233,9 +233,8 @@ def debug_interactive():
                     llm_choice = input("\n選擇測試功能:\n" +
                                      "1: 聊天對話測試 (CHAT 模式)\n" +
                                      "2: 指令分析測試 (WORK 模式)\n" +
-                                     "3: 快取功能測試 (暫時停用)\n" +
-                                     "4: 學習引擎測試\n" +
-                                     "5: 狀況變動測試\n" +
+                                     "3: 學習引擎測試\n" +
+                                     "4: 狀況變動測試\n" +
                                      "back: 返回上級\n\n> ")
                     
                     if llm_choice == "1":
@@ -259,16 +258,10 @@ def debug_interactive():
                             controller.llm_test_command(text)
                     
                     elif llm_choice == "3":
-                        print("⚠️ 快取功能測試暫時停用")
-                        pass
-                        print("🗄️ 執行快取功能測試...")
-                        controller.llm_test_cache_functionality()
-                    
-                    elif llm_choice == "4":
                         print("🧠 執行學習引擎測試...")
                         controller.llm_test_learning_engine()
                         
-                    elif llm_choice == "5":
+                    elif llm_choice == "4":
                         print("🔄 執行狀況變動測試...")
                         controller.llm_test_system_status_monitoring()
                     

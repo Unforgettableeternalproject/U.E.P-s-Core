@@ -1942,3 +1942,15 @@
 
 ---
 
+### Update on some documents. 11/24
+
+> Date: Mon, 24 Nov 2025 11:37:54 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/sys_module_rework`
+
+> Commit: `66e875aed996769d267a7159f8cf8cde23abcac9`
+
+---
+

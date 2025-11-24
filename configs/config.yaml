@@ -1,5 +1,5 @@
-# Default config for general modules
-
+metadata:
+  system_version: v0.7.4
 modules_enabled:
   stt_module: true
   nlp_module: true
@@ -7,13 +7,33 @@ modules_enabled:
   llm_module: true
   tts_module: true
   sys_module: true
-
+  ui_module: true
+  ani_module: true
+  mov_module: true
+modules_refactored:
+  stt_module: true
+  nlp_module: true
+  mem_module: true
+  llm_module: true
+  tts_module: true
+  sys_module: true
+  ui_module: false
+  ani_module: false
+  mov_module: false
 logging:
   enabled: true
-  log_level: "DEBUG"
-  log_dir: "logs"
-  enable_split_logs: true
-
+  log_level: DEBUG
+  log_dir: logs
+  enable_split_logs: false
+  enable_console_output: true  # 控制是否將日誌輸出到終端（測試時建議關閉）
 debug:
   enabled: true
   debug_level: 3
+system:
+  main_loop_interval: 0.1
+  shutdown_timeout: 5.0
+  input_mode:
+    mode: vad # 可選值：vad、text
+    text_input_prompt: '>>> '
+  media:
+    music_folder: "E:\\Music\\My Songs\\Full Playlist"  # null 表示使用系統預設的 ~/Music 資料夾，可設定為自訂路徑

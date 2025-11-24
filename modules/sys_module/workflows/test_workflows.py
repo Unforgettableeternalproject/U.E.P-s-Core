@@ -10,28 +10,16 @@ from typing import Dict, Any, List, Optional, Tuple, Callable, Union
 import datetime
 import random
 
-from core.session_manager import WorkflowSession
+from core.sessions.session_manager import WorkflowSession
 from utils.debug_helper import info_log, error_log, debug_log
-
-# Import the workflow engine components
-# We need to import directly from the module file to avoid circular imports
-import sys
-import os
-import importlib.util
-
-# Load workflows.py directly
-workflows_path = os.path.join(os.path.dirname(__file__), '..', 'workflows.py')
-spec = importlib.util.spec_from_file_location("workflows", workflows_path)
-workflows_module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(workflows_module)
-
-# Get the classes we need
-WorkflowDefinition = workflows_module.WorkflowDefinition
-WorkflowEngine = workflows_module.WorkflowEngine
-WorkflowStep = workflows_module.WorkflowStep
-StepResult = workflows_module.StepResult
-StepTemplate = workflows_module.StepTemplate
-WorkflowType = workflows_module.WorkflowType
+from modules.sys_module.workflows import (
+    WorkflowDefinition,
+    WorkflowEngine,
+    WorkflowMode,
+    WorkflowStep,
+    StepResult
+)
+from modules.sys_module.step_templates import StepTemplate
 
 
 def create_echo_workflow(session: WorkflowSession) -> WorkflowEngine:
@@ -39,7 +27,9 @@ def create_echo_workflow(session: WorkflowSession) -> WorkflowEngine:
     workflow_def = WorkflowDefinition(
         workflow_type="echo",
         name="回顯測試工作流程",
-        description="簡單的回顯測試，用於驗證工作流程基本功能"
+        description="簡單的回顯測試，用於驗證工作流程基本功能",
+        workflow_mode=WorkflowMode.DIRECT,  # 測試工作流為直接模式
+        requires_llm_review=False  # 測試工作流不需要 LLM 審核
     )
     
     # 創建輸入步驟
@@ -87,7 +77,9 @@ def create_countdown_workflow(session: WorkflowSession) -> WorkflowEngine:
     workflow_def = WorkflowDefinition(
         workflow_type="countdown",
         name="倒數測試工作流程",
-        description="倒數測試，用於驗證多步驟工作流程"
+        description="倒數測試，用於驗證多步驟工作流程",
+        workflow_mode=WorkflowMode.DIRECT,
+        requires_llm_review=False
     )
     
     # 步驟 1: 輸入起始數字
@@ -216,14 +208,16 @@ def create_data_collector_workflow(session: WorkflowSession, llm_module=None) ->
     workflow_def = WorkflowDefinition(
         workflow_type="data_collector",
         name="資料收集測試工作流程",
-        description="收集用戶資料並生成摘要報告，用於測試多步驟工作流程和LLM整合"
+        description="收集用戶資料並生成摘要報告，用於測試多步驟工作流程和LLM整合",
+        workflow_mode=WorkflowMode.DIRECT,
+        requires_llm_review=False
     )
     
     # 步驟 1: 收集姓名
     name_step = StepTemplate.create_input_step(
         session,
         "name_input",
-        "歡迎參與資料收集測試，請輸入您的姓名:"
+        "【步驟 1/4】請輸入您的姓名（例如：張三）"
     )
     
     # 步驟 2: 收集年齡
@@ -237,8 +231,8 @@ def create_data_collector_workflow(session: WorkflowSession, llm_module=None) ->
     age_step = StepTemplate.create_input_step(
         session,
         "age_input",
-        "請輸入您的年齡:",
-        lambda x: (validate_age(x), "請輸入1-120之間的有效年齡"),
+        "【步驟 2/4】請輸入您的年齡（1-120之間的數字）",
+        lambda x: (validate_age(x), "❌ 年齡必須是 1-120 之間的數字，請重新輸入"),
         ["name_input"]
     )
     
@@ -246,7 +240,7 @@ def create_data_collector_workflow(session: WorkflowSession, llm_module=None) ->
     interests_step = StepTemplate.create_input_step(
         session,
         "interests_input",
-        "請輸入您的興趣，以逗號分隔多個興趣:",
+        "【步驟 3/4】請輸入您的興趣（多個興趣請用逗號分隔，例如：閱讀, 旅遊, 音樂）",
         required_data=["name_input", "age_input"]
     )
     
@@ -254,7 +248,7 @@ def create_data_collector_workflow(session: WorkflowSession, llm_module=None) ->
     feedback_step = StepTemplate.create_input_step(
         session,
         "feedback_input",
-        "請分享您對此測試的看法:",
+        "【步驟 4/4】請分享您對此工作流程測試的想法或建議",
         required_data=["name_input", "age_input", "interests_input"]
     )
     
@@ -360,7 +354,9 @@ def create_random_fail_workflow(session: WorkflowSession) -> WorkflowEngine:
     workflow_def = WorkflowDefinition(
         workflow_type="random_fail",
         name="隨機失敗測試工作流程",
-        description="測試系統錯誤處理與自動重試能力的工作流程"
+        description="測試系統錯誤處理與自動重試能力的工作流程",
+        workflow_mode=WorkflowMode.DIRECT,
+        requires_llm_review=False
     )
     
     # 步驟 1: 設定失敗機率
@@ -590,7 +586,9 @@ def create_tts_test_workflow(session: WorkflowSession, tts_module=None) -> Workf
     workflow_def = WorkflowDefinition(
         workflow_type="tts_test",
         name="TTS測試工作流程",
-        description="測試與TTS模組整合的工作流程，包含文字輸入、情緒選擇和語音生成"
+        description="測試與TTS模組整合的工作流程，包含文字輸入、情緒選擇和語音生成",
+        workflow_mode=WorkflowMode.DIRECT,
+        requires_llm_review=False
     )
     
     # 檢查TTS模組是否可用
@@ -643,7 +641,7 @@ def create_tts_test_workflow(session: WorkflowSession, tts_module=None) -> Workf
         emotion = session.get_data("emotion_input", "neutral")
         
         if not text.strip():
-            return StepResult.failure("文字內容不能為空")
+            return StepResult.failure("Text content cannot be empty")
         
         try:
             import asyncio
@@ -717,7 +715,7 @@ TEST_WORKFLOWS = {
     "countdown": create_countdown_workflow,
     "data_collector": create_data_collector_workflow,
     "random_fail": create_random_fail_workflow,
-    "tts_test": create_tts_test_workflow,
+    # tts_test 已移除，TTS 模組已重構，應在 TTS 模組測試中直接測試
 }
 
 
@@ -741,8 +739,6 @@ def create_test_workflow(workflow_type: str, session: WorkflowSession, **kwargs)
     # 檢查工作流程是否需要特定參數
     if workflow_type == "data_collector":
         return workflow_factory(session, kwargs.get("llm_module"))
-    elif workflow_type == "tts_test":
-        return workflow_factory(session, kwargs.get("tts_module"))
     else:
         return workflow_factory(session)
 

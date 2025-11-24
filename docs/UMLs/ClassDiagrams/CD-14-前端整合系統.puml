@@ -1,0 +1,299 @@
+@startuml CD-14-前端整合系統
+
+' 前端整合系統 (UI + ANI + MOV)
+' 三個前端模組的協調架構
+
+skinparam classAttributeIconSize 0
+skinparam class {
+    BackgroundColor<<integrator>> PaleVioletRed
+    BackgroundColor<<ui>> LightSkyBlue
+    BackgroundColor<<ani>> PaleGreen
+    BackgroundColor<<mov>> Plum
+    BackgroundColor<<interface>> Lavender
+    BorderColor DarkSlateGray
+}
+
+package "前端整合系統 (Frontend Integration System)" {
+    
+    class FrontendIntegrator <<integrator>> {
+        ' 前端整合器
+        - framework: CoreFramework
+        - config: Dict
+        - ui_module: UIModule
+        - ani_module: ANIModule
+        - mov_module: MOVModule
+        - frontend_adapter: FrontendAdapter
+        - is_initialized: bool
+        - is_running: bool
+        --
+        + initialize(): bool
+        + start(): bool
+        + stop(): void
+        + shutdown(): void
+        + get_frontend_status(): Dict
+        + execute_frontend_command(module, command): Dict
+        --
+        - _initialize_modules(): bool
+        - _register_modules(): bool
+        - _setup_module_connections(): void
+        - _on_animation_finished(name): void
+    }
+    
+    class UIModule <<ui>> {
+        ' UI 主模組 (前端中樞)
+        - app: QApplication
+        - interfaces: Dict[UIInterfaceType, QWidget]
+        - active_interfaces: Set
+        - ani_module: ANIModule
+        - mov_module: MOVModule
+        - _modules_initialized: bool
+        --
+        + initialize_frontend(): bool
+        + show_interface(interface_type): Dict
+        + hide_interface(interface_type): Dict
+        + request_animation(animation_type, data): void
+        + connect_frontend_modules(ani, mov): void
+        --
+        - _initialize_ani_mov_modules(): bool
+        - _initialize_interfaces(): bool
+        - _register_event_handlers(): void
+        - _on_animation_ready(name): void
+        - _on_position_changed(x, y): void
+    }
+    
+    class ANIModule <<ani>> {
+        ' 動畫模組
+        - clips: Dict[str, AnimationClip]
+        - current_clip: Optional[str]
+        - is_playing: bool
+        - timer: QTimer
+        - frame_callbacks: List[Callable]
+        - start_callbacks: List[Callable]
+        - finish_callbacks: List[Callable]
+        --
+        + play(name, loop): void
+        + stop(): void
+        + register_clips(clips): void
+        + get_current_animation_status(): Dict
+        + add_frame_callback(callback): void
+        + add_start_callback(callback): void
+        + add_finish_callback(callback): void
+        --
+        - _tick(): void
+        - _on_animation_finish(): void
+    }
+    
+    class MOVModule <<mov>> {
+        ' 移動/行為協調器
+        - ani_module: ANIModule
+        - behavior_timer: QTimer
+        - position_callbacks: List[Callable]
+        - animation_callbacks: List[Callable]
+        - current_behavior: Optional[str]
+        - is_dragging: bool
+        - config: Dict
+        --
+        + attach_ani(ani): void
+        + handle_frontend_request(data): Dict
+        + add_position_callback(callback): void
+        + add_animation_callback(callback): void
+        + pause(reason): void
+        + resume(): void
+        --
+        - _tick_behavior(): void
+        - _tick_physics(): void
+        - _on_ani_start(name): void
+        - _on_ani_finish(name): void
+    }
+    
+    class DesktopPetApp <<interface>> {
+        ' 桌面寵物窗口
+        - ani_module: ANIModule
+        - mov_module: MOVModule
+        - current_pixmap: QPixmap
+        - is_dragging: bool
+        - drag_position: QPoint
+        --
+        + setup_module_connections(): void
+        + on_animation_frame_update(frame_data): void
+        + on_position_update(x, y): void
+        + on_animation_trigger(name, data): void
+        --
+        # mousePressEvent(event): void
+        # mouseMoveEvent(event): void
+        # mouseReleaseEvent(event): void
+        # paintEvent(event): void
+    }
+    
+    enum UIInterfaceType {
+        ' UI 介面類型
+        MAIN_DESKTOP_PET
+        USER_ACCESS_WIDGET
+        USER_MAIN_WINDOW
+        DEBUG_INTERFACE
+    }
+}
+
+' 關係定義
+FrontendIntegrator "1" --> "1" UIModule : manages
+FrontendIntegrator "1" --> "1" ANIModule : manages
+FrontendIntegrator "1" --> "1" MOVModule : manages
+FrontendIntegrator "1" --> "1" FrontendAdapter : uses
+
+UIModule "1" --> "1" ANIModule : delegates to
+UIModule "1" --> "1" MOVModule : delegates to
+UIModule "1" --> "*" DesktopPetApp : manages
+UIModule --> UIInterfaceType : manages
+
+MOVModule "1" --> "1" ANIModule : attached to
+DesktopPetApp "1" --> "1" ANIModule : observes
+DesktopPetApp "1" --> "1" MOVModule : observes
+
+' 注釋
+note right of FrontendIntegrator
+  **前端整合器職責**
+  
+  生命週期管理:
+  1. initialize(): 初始化三個模組
+  2. _register_modules(): 註冊到適配器
+  3. _setup_module_connections(): 建立連接
+  4. start(): 啟動前端系統
+  5. stop(): 停止運行
+  6. shutdown(): 清理資源
+  
+  模組協調:
+  - UI 是中樞控制器
+  - ANI 提供動畫能力
+  - MOV 協調行為與動畫
+  
+  統一接口:
+  - execute_frontend_command()
+  - get_frontend_status()
+end note
+
+note right of UIModule
+  **UI 模組 (前端中樞)**
+  
+  主要職責:
+  1. Qt 應用程式管理
+  2. 多介面生命週期
+  3. ANI/MOV 初始化與注入
+  4. 事件路由與分發
+  
+  介面類型:
+  - MAIN_DESKTOP_PET: 桌面寵物
+  - USER_ACCESS_WIDGET: 快速訪問窗口
+  - USER_MAIN_WINDOW: 主控制面板
+  - DEBUG_INTERFACE: 調試介面
+  
+  模組初始化順序:
+  1. 初始化 ANI
+  2. 初始化 MOV
+  3. 將 ANI 注入 MOV
+  4. 創建介面實例
+  5. 建立連接
+end note
+
+note right of ANIModule
+  **動畫模組**
+  
+  核心功能:
+  1. 動畫剪輯管理
+  2. 幀序列播放
+  3. 循環控制
+  4. 事件回調
+  
+  API:
+  - play(name, loop): 播放動畫
+  - stop(): 停止播放
+  - register_clips(): 註冊素材
+  - get_current_animation_status(): 查詢狀態
+  
+  回調機制:
+  - frame_callback: 每幀通知 (UI 繪製)
+  - start_callback: 動畫開始 (MOV 同步)
+  - finish_callback: 動畫結束 (MOV 行為)
+  
+  待播隊列:
+  - coalesce: 合併相同動畫
+  - 中斷當前 → 立即播放
+end note
+
+note right of MOVModule
+  **移動/行為協調器**
+  
+  核心功能:
+  1. 行為決策 (閒置/遊蕩/追蹤)
+  2. 動畫觸發與等待
+  3. 位置更新與通知
+  4. 拖拽暫停機制
+  
+  計時器:
+  - behavior_timer: 行為邏輯 (100ms)
+  - 通過 ANI 的 timer 驅動物理
+  
+  與 ANI 協作:
+  1. MOV 決定要播放的動畫
+  2. 調用 ani.play(name)
+  3. 註冊 finish_callback
+  4. 等待動畫完成
+  5. 繼續下一個行為
+  
+  拖拽處理:
+  - pause("拖拽中"): 停止行為
+  - resume(): 恢復行為
+end note
+
+note bottom of DesktopPetApp
+  **桌面寵物窗口**
+  
+  Qt 窗口特性:
+  - 無邊框、置頂、透明背景
+  - 支援拖拽移動
+  - 自定義繪製
+  
+  模組連接:
+  1. 註冊 ANI 幀回調
+     ani.add_frame_callback(on_animation_frame_update)
+     → 接收幀數據 → 更新 pixmap → 重繪
+  
+  2. 註冊 MOV 位置回調
+     mov.add_position_callback(on_position_update)
+     → 接收座標 → 移動窗口
+  
+  3. 註冊 MOV 動畫回調
+     mov.add_animation_callback(on_animation_trigger)
+     → 觸發動畫播放
+  
+  拖拽邏輯:
+  - mousePressEvent: 開始拖拽 → MOV.pause()
+  - mouseMoveEvent: 更新位置
+  - mouseReleaseEvent: 結束拖拽 → MOV.resume()
+end note
+
+note as N1
+  **前端模組協作流程**
+  
+  範例: 切換動畫
+  
+  1. MOV 決定播放 "walk" 動畫
+     mov._tick_behavior() → ani.play("walk")
+  
+  2. ANI 開始播放
+     ani._tick() → 更新當前幀 → 觸發 frame_callback
+  
+  3. DesktopPetApp 接收幀更新
+     on_animation_frame_update(frame_data)
+     → 載入圖片 → current_pixmap = load_image(path)
+     → update() 觸發重繪
+  
+  4. Qt 繪製事件
+     paintEvent() → painter.drawPixmap(current_pixmap)
+     → 顯示在螢幕上
+  
+  5. 動畫結束
+     ani._on_animation_finish() → 觸發 finish_callback
+     → MOV 收到通知 → 決定下一個行為
+end note
+
+@enduml

@@ -1,0 +1,114 @@
+@startuml SD-04-WORK模式Cycle1流程
+
+' WORK 模式 Cycle 1+ 流程 (後續循環)
+' 展示工作流步驟執行和用戶交互
+
+title WORK 模式 Cycle 1+ 流程 (步驟執行與交互)
+
+participant "WorkflowEngine\n(SYS)" as WE #Lavender
+participant "LLMModule" as LLM #LightSeaGreen
+participant "MCPClient" as MCP #PaleTurquoise
+participant "MCPServer\n(SYS)" as MCPS #Lavender
+participant "EventBus" as EB #LightCyan
+participant "StateManager" as SM #Wheat
+
+== Cycle 1: 審核步驟 ==
+
+WE -> MCPS: 當前步驟完成\n等待審核
+activate MCPS
+MCPS -> EB: 發布 WORKFLOW_REQUIRES_INPUT
+activate EB
+EB -> SM: 更新狀態提示
+EB -> LLM: 通知 LLM
+deactivate EB
+
+LLM -> MCP: call review_step(\n  workflow_id="wf_001"\n)
+activate MCP
+MCP -> MCPS: review_step 請求
+MCPS -> WE: 獲取步驟詳情
+activate WE
+WE --> MCPS: 返回步驟信息\n{\n  "step": "scan",\n  "result": "找到 15 個 .py 文件",\n  "action": "準備備份"\n}
+deactivate WE
+MCPS --> MCP: 步驟詳情
+MCP --> LLM: 返回結果
+deactivate MCP
+
+LLM -> LLM: Gemini 分析結果\n生成審核描述
+LLM -> EB: 發布 TTS 事件\n"掃描完成，找到 15 個 Python 文件"
+EB -> SM: 更新狀態
+
+== Cycle 2: 批准執行 ==
+
+LLM -> MCP: call approve_step(\n  workflow_id="wf_001",\n  step_id="scan"\n)
+activate MCP
+MCP -> MCPS: approve_step 請求
+activate MCPS
+MCPS -> WE: 執行下一步驟
+activate WE
+WE -> WE: execute_step("confirm")
+WE -> WE: 步驟類型: INTERACTIVE\n需要用戶確認
+WE --> MCPS: 返回執行狀態\n{\n  "status": "waiting_input",\n  "prompt": "是否繼續備份?"\n}
+deactivate WE
+MCPS -> EB: 發布 WORKFLOW_REQUIRES_INPUT
+MCPS --> MCP: 執行結果
+deactivate MCPS
+MCP --> LLM: 返回狀態
+deactivate MCP
+
+LLM -> EB: 發布 TTS 事件\n"是否要繼續備份這些文件?"
+EB -> SM: 更新狀態
+
+== Cycle 3: 提供用戶輸入 ==
+
+note over SM
+  用戶說: "是的，繼續"
+  觸發新的 RESPONSE 輸入循環
+end note
+
+SM -> EB: INPUT_LAYER_COMPLETE
+activate EB
+EB -> LLM: 路由到 LLM
+deactivate EB
+
+LLM -> LLM: Gemini 理解:\n用戶確認繼續
+LLM -> MCP: call provide_workflow_input(\n  workflow_id="wf_001",\n  user_input="確認繼續"\n)
+activate MCP
+MCP -> MCPS: provide_workflow_input 請求
+activate MCPS
+MCPS -> WE: 提供輸入
+activate WE
+WE -> WE: 處理確認\n繼續執行
+WE -> WE: execute_step("execute")
+WE -> WE: 執行備份操作
+WE --> MCPS: 返回執行結果\n{\n  "status": "completed",\n  "result": "15 個文件已備份"\n}
+deactivate WE
+MCPS --> MCP: 執行結果
+deactivate MCPS
+MCP --> LLM: 返回結果
+deactivate MCP
+
+LLM -> EB: 發布 TTS 事件\n"備份完成！15 個文件已成功備份"
+EB -> SM: 更新狀態
+
+== Cycle 4: 工作流完成 ==
+
+WE -> WE: 檢查工作流狀態\nis_completed() = True
+WE -> MCPS: 工作流完成
+activate MCPS
+MCPS -> EB: 發布 WORKFLOW_COMPLETED
+activate EB
+EB -> SM: 轉換狀態\nWORK → IDLE
+EB -> LLM: 通知完成
+deactivate EB
+deactivate MCPS
+
+LLM -> EB: 發布 TTS 事件\n"備份工作流已完成"
+EB -> SM: 確認 IDLE 狀態
+
+note over WE, SM
+  工作流循環結束
+  WorkflowSession 終止
+  系統返回 IDLE 狀態
+end note
+
+@enduml

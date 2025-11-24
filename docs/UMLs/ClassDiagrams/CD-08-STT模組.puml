@@ -1,0 +1,162 @@
+@startuml CD-08-STT模組
+
+' STT 模組類別圖
+' 語音輸入層架構
+
+skinparam classAttributeIconSize 0
+skinparam class {
+    BackgroundColor<<module>> LightSkyBlue
+    BackgroundColor<<engine>> LightCyan
+    BorderColor DarkBlue
+}
+
+package "STT 模組 (Speech-to-Text Module)" {
+    
+    class STTModule <<module>> {
+        ' STT 主模組
+        - whisper_engine: WhisperEngine
+        - speaker_identifier: PyannoteIdentifier
+        - vad_module: VADModule
+        - text_mode: bool
+        - config: Dict
+        --
+        + initialize(): bool
+        + handle(input_data): ModuleResponse
+        + handle_text_input(text): ModuleResponse
+        - _process_audio(audio_data): STTModuleData
+        - _identify_speaker(audio_segment): str
+        + shutdown(): void
+    }
+    
+    class WhisperEngine <<engine>> {
+        ' Whisper 語音識別引擎
+        - model: WhisperModel
+        - model_size: str
+        - device: str
+        --
+        + load_model(model_size): void
+        + transcribe(audio_path): Dict
+        + get_model_info(): Dict
+    }
+    
+    class PyannoteIdentifier <<engine>> {
+        ' Pyannote 語者識別器
+        - embedding_model: Model
+        - speaker_profiles: Dict[str, ndarray]
+        --
+        + identify_speaker(audio_segment): str
+        + extract_embedding(audio): ndarray
+        + register_speaker(speaker_id, embedding): void
+        + get_similarity(emb1, emb2): float
+    }
+    
+    class VADModule <<engine>> {
+        ' 語音活動檢測模組
+        - vad: WebRTCVAD
+        - sensitivity: int
+        - frame_duration: int
+        --
+        + detect_speech(audio): bool
+        + continuous_listen(callback): void
+        + stop_listening(): void
+    }
+    
+    class STTModuleData {
+        ' STT 輸出數據結構
+        + text: str
+        + confidence: float
+        + speaker_info: Dict
+        + activation_reason: str
+        + source_module: str
+        --
+        + to_dict(): Dict
+    }
+}
+
+' 關係定義
+STTModule "1" --> "1" WhisperEngine : uses
+STTModule "1" --> "1" PyannoteIdentifier : uses
+STTModule "1" --> "1" VADModule : uses
+STTModule ..> STTModuleData : produces
+
+' 注釋
+note right of STTModule
+  **STT 主模組職責**
+  
+  1. 語音轉文字 (Whisper)
+  2. 語者識別 (Pyannote)
+  3. VAD 感應式錄音
+  4. 文字模式支援
+  
+  處理流程:
+  1. VAD 檢測語音活動
+  2. Whisper 轉換文字
+  3. Pyannote 識別語者
+  4. 包裝成 STTModuleData
+  5. 自動觸發 NLPModule
+end note
+
+note right of WhisperEngine
+  **Whisper 引擎**
+  
+  模型選項:
+  - tiny: 最快,準確度較低
+  - base: 平衡
+  - small: 推薦 (預設)
+  - medium: 高準確度
+  - large: 最高準確度,最慢
+  
+  支援:
+  - GPU 加速 (CUDA)
+  - 多語言 (自動偵測)
+  - 時間戳記
+end note
+
+note right of PyannoteIdentifier
+  **語者識別機制**
+  
+  工作原理:
+  1. 提取音頻特徵向量
+  2. 與已知語者比對
+  3. 計算相似度 (cosine)
+  4. 超過閾值 → 識別成功
+  5. 未識別 → unknown_speaker
+  
+  語者註冊:
+  - 累積多個音頻片段
+  - 平均嵌入向量
+  - 存儲到 speaker_profiles
+end note
+
+note right of VADModule
+  **語音活動檢測**
+  
+  使用 WebRTC VAD:
+  - 靈敏度: 0-3 (預設 2)
+  - 幀時長: 10/20/30ms
+  
+  連續監聽:
+  1. 檢測到語音 → 開始錄音
+  2. 靜音超過閾值 → 停止
+  3. 觸發 Whisper 轉換
+  
+  優點:
+  - 低延遲
+  - 減少誤觸發
+end note
+
+note bottom of STTModuleData
+  **輸出數據範例**
+  {
+    "text": "今天天氣如何?",
+    "confidence": 0.95,
+    "speaker_info": {
+      "speaker_id": "identity_A",
+      "similarity": 0.88
+    },
+    "activation_reason": "vad_detected",
+    "source_module": "STT"
+  }
+end note
+
+@enduml

@@ -1,0 +1,206 @@
+@startuml CD-13-TTS模組
+
+' TTS 模組類別圖
+' 語音輸出層架構
+
+skinparam classAttributeIconSize 0
+skinparam class {
+    BackgroundColor<<module>> LightGreen
+    BackgroundColor<<engine>> PaleGreen
+    BorderColor DarkGreen
+}
+
+package "TTS 模組 (Text-to-Speech Module)" {
+    
+    class TTSModule <<module>> {
+        ' TTS 主模組
+        - tts_engine: TTSEngine
+        - audio_player: AudioPlayer
+        - output_queue: Queue
+        - emotion_controller: EmotionController
+        - config: Dict
+        --
+        + initialize(): bool
+        + handle(input_data): ModuleResponse
+        - _synthesize_speech(text, emotion): bytes
+        - _play_audio(audio_data): void
+        - _chunk_text(text): List[str]
+        + shutdown(): void
+    }
+    
+    class TTSEngine <<engine>> {
+        ' TTS 合成引擎
+        - model: TTSModel
+        - model_path: str
+        - device: str
+        - speaker_id: int
+        --
+        + load_model(model_path): void
+        + synthesize(text, speaker_id, emotion): bytes
+        + get_available_speakers(): List[int]
+        + set_speed(speed): void
+    }
+    
+    class AudioPlayer <<engine>> {
+        ' 音頻播放器
+        - audio_device: Device
+        - is_playing: bool
+        - volume: float
+        --
+        + play(audio_data): void
+        + stop(): void
+        + pause(): void
+        + resume(): void
+        + set_volume(vol): void
+    }
+    
+    class EmotionController {
+        ' 情感控制器
+        - emotion_mappings: Dict[str, EmotionParams]
+        - current_emotion: str
+        --
+        + set_emotion(emotion): void
+        + get_emotion_params(emotion): EmotionParams
+        + reset_to_neutral(): void
+        + interpolate_emotions(from, to, factor): EmotionParams
+    }
+    
+    class EmotionParams {
+        ' 情感參數
+        + pitch: float
+        + speed: float
+        + energy: float
+        + emotion_name: str
+        --
+        + to_dict(): Dict
+        + from_dict(data): EmotionParams
+    }
+    
+    enum EmotionType {
+        ' 情感類型
+        NEUTRAL
+        HAPPY
+        SAD
+        ANGRY
+        EXCITED
+        CALM
+    }
+}
+
+' 關係定義
+TTSModule "1" --> "1" TTSEngine : uses
+TTSModule "1" --> "1" AudioPlayer : uses
+TTSModule "1" --> "1" EmotionController : uses
+EmotionController --> EmotionParams : manages
+EmotionParams --> EmotionType : categorized by
+
+' 注釋
+note right of TTSModule
+  **TTS 主模組職責**
+  
+  1. 文字合成語音
+  2. 情感控制
+  3. 音頻播放
+  4. 文字分塊
+  
+  處理流程:
+  1. 接收 LLM 輸出文字
+  2. 檢測情感標記
+  3. 文字分塊 (長文)
+  4. TTS 引擎合成
+  5. 音頻播放
+  6. 發布 OUTPUT_LAYER_COMPLETE
+  
+  優化:
+  - 流式合成 (逐句)
+  - 音頻快取
+  - 背景播放
+end note
+
+note right of TTSEngine
+  **TTS 合成引擎**
+  
+  模型選項:
+  - IndexTTS (推薦)
+  - VITS
+  - GPT-SoVITS
+  
+  合成參數:
+  - speaker_id: 說話人 ID
+  - pitch: 音調 (-12 ~ +12)
+  - speed: 語速 (0.5 ~ 2.0)
+  - energy: 能量/音量
+  
+  支援:
+  - GPU 加速 (CUDA)
+  - 多說話人
+  - 情感控制
+  - 實時合成
+  
+  輸出格式:
+  - WAV (16kHz, 16bit)
+  - 存儲到 outputs/tts/
+end note
+
+note right of AudioPlayer
+  **音頻播放器**
+  
+  使用庫:
+  - sounddevice (跨平台)
+  - pyaudio (備選)
+  
+  功能:
+  - 播放 WAV/MP3
+  - 音量控制
+  - 播放控制 (播放/暫停/停止)
+  
+  非阻塞播放:
+  - 使用 threading
+  - 播放完成回調
+  
+  設備選擇:
+  - 列出可用設備
+  - 默認輸出設備
+end note
+
+note right of EmotionController
+  **情感控制機制**
+  
+  情感映射:
+  NEUTRAL:  {pitch: 0, speed: 1.0, energy: 1.0}
+  HAPPY:    {pitch: +3, speed: 1.1, energy: 1.2}
+  SAD:      {pitch: -2, speed: 0.9, energy: 0.8}
+  ANGRY:    {pitch: +1, speed: 1.2, energy: 1.3}
+  EXCITED:  {pitch: +5, speed: 1.3, energy: 1.4}
+  CALM:     {pitch: -1, speed: 0.8, energy: 0.9}
+  
+  檢測方式:
+  - LLM 輸出包含表情符號
+  - 文字情感分析
+  - 明確標記 [emotion:happy]
+  
+  過渡:
+  - 情感漸變 (interpolation)
+  - 避免突兀切換
+end note
+
+note bottom of EmotionParams
+  **情感參數範例**
+  
+  檢測到 😊 表情:
+  {
+    "emotion_name": "HAPPY",
+    "pitch": +3.0,
+    "speed": 1.1,
+    "energy": 1.2
+  }
+  
+  應用到 TTS:
+  - 音調提高 3 半音
+  - 語速加快 10%
+  - 音量增加 20%
+  
+  結果: 開心的語氣
+end note
+
+@enduml

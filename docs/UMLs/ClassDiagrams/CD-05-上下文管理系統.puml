@@ -1,0 +1,163 @@
+@startuml CD-05-上下文管理系統
+
+' 上下文管理系統類別圖
+' 展示跨模組數據共享機制
+
+skinparam classAttributeIconSize 0
+skinparam class {
+    BackgroundColor<<manager>> Wheat
+    BackgroundColor<<context>> LightCyan
+    BorderColor Brown
+}
+
+package "上下文管理系統 (Context Management)" {
+    
+    class WorkingContextManager <<manager>> {
+        ' 工作上下文管理器
+        - contexts: Dict[str, WorkingContext]
+        - global_context_data: Dict
+        - decision_handlers: Dict[ContextType, Callable]
+        --
+        + create_context(context_type): WorkingContext
+        + add_data_to_context(context_id, data): void
+        + set_context_data(key, value): void
+        + get_context_data(key): Any
+        + get_current_identity(): str
+        + get_current_gs_id(): str
+        + clear_context(context_id): void
+    }
+    
+    class WorkingContext <<context>> {
+        ' 單個工作上下文
+        + context_id: str
+        + context_type: ContextType
+        + data: List[Any]
+        + metadata: Dict
+        + status: ContextStatus
+        + created_at: float
+        --
+        + add_data(item): void
+        + is_ready_for_decision(): bool
+        + get_decision_package(): Dict
+        + clear(): void
+    }
+    
+    enum ContextType {
+        ' 上下文類型
+        SPEAKER_ACCUMULATION
+        IDENTITY_MANAGEMENT
+        CONVERSATION
+        WORKFLOW_SESSION
+        CROSS_MODULE_DATA
+        MEMORY_RETRIEVAL
+        LLM_RESPONSE
+    }
+    
+    enum ContextStatus {
+        ' 上下文狀態
+        COLLECTING
+        READY
+        PROCESSING
+        COMPLETED
+        CLEARED
+    }
+    
+    class GlobalContextData {
+        ' 全局上下文數據
+        + current_gs_id: str
+        + current_identity: str
+        + workflow_waiting_input: bool
+        + last_user_input: str
+        + session_metadata: Dict
+        --
+        + to_dict(): Dict
+        + update(key, value): void
+    }
+}
+
+' 關係定義
+WorkingContextManager "1" --> "*" WorkingContext : manages
+WorkingContextManager --> GlobalContextData : maintains
+WorkingContext --> ContextType : categorized by
+WorkingContext --> ContextStatus : has
+
+' 注釋
+note right of WorkingContextManager
+  **跨模組數據共享**
+  
+  主要功能:
+  1. 管理多個工作上下文
+  2. 維護全局共享數據
+  3. 支援決策處理器
+  
+  使用場景:
+  - STT 語者累積 → NLP 身份識別
+  - MEM 記憶查詢 → LLM 上下文
+  - LLM 回應 → TTS 輸出
+  
+  全局數據訪問:
+  - current_gs_id: 當前 GS
+  - current_identity: 當前用戶身份
+  - workflow_waiting_input: 工作流等待標記
+end note
+
+note right of WorkingContext
+  **工作上下文生命週期**
+  
+  1. COLLECTING: 收集數據
+     - STT 累積語者信息
+     - MEM 累積記憶片段
+  
+  2. READY: 數據就緒
+     - 達到決策條件
+     - is_ready_for_decision() = true
+  
+  3. PROCESSING: 處理中
+     - 決策處理器執行
+  
+  4. COMPLETED: 完成
+     - 數據已使用
+  
+  5. CLEARED: 已清理
+     - 釋放資源
+end note
+
+note bottom of ContextType
+  **上下文類型說明**
+  
+  SPEAKER_ACCUMULATION:
+  - STT 模組累積語者片段
+  - 用於語者識別
+  
+  IDENTITY_MANAGEMENT:
+  - NLP 身份識別結果
+  - 全局身份上下文
+  
+  CONVERSATION:
+  - 對話歷史
+  - CS 關聯數據
+  
+  WORKFLOW_SESSION:
+  - 工作流執行狀態
+  - WS 關聯數據
+  
+  CROSS_MODULE_DATA:
+  - 任意模組間數據傳遞
+  - 靈活擴展
+end note
+
+note bottom of GlobalContextData
+  **全局數據範例**
+  {
+    "current_gs_id": "gs_20251107_001",
+    "current_identity": "identity_A",
+    "workflow_waiting_input": false,
+    "last_user_input": "今天天氣如何?",
+    "session_metadata": {
+      "cs_id": "cs_001",
+      "conversation_turns": 3
+    }
+  }
+end note
+
+@enduml

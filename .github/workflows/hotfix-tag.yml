@@ -1,0 +1,70 @@
+name: Auto Hotfix Tag
+
+on:
+  push:
+    branches:
+      - 'hotfix/**'
+
+jobs:
+  create_hotfix_tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Extract base version and create patch tag
+        id: patch_version
+        run: |
+          BRANCH_NAME="${{ github.ref_name }}"
+          echo "🔍 Hotfix 分支: $BRANCH_NAME"
+          
+          # 從分支名提取基礎版本 (例如: hotfix/v0.7.4 -> v0.7.4)
+          BASE_VERSION="${BRANCH_NAME#hotfix/}"
+          
+          # 確保有 'v' 前綴
+          if [[ ! $BASE_VERSION == v* ]]; then
+            BASE_VERSION="v$BASE_VERSION"
+          fi
+          
+          echo "📌 基礎版本: $BASE_VERSION"
+          
+          # 查找當前基礎版本的最大 patch 編號
+          MAX_PATCH=0
+          for tag in $(git tag -l "${BASE_VERSION}-patch-*"); do
+            PATCH_NUM=$(echo "$tag" | grep -oP 'patch-\K\d+')
+            if [ "$PATCH_NUM" -gt "$MAX_PATCH" ]; then
+              MAX_PATCH=$PATCH_NUM
+            fi
+          done
+          
+          # 新的 patch 編號
+          NEW_PATCH=$((MAX_PATCH + 1))
+          PATCH_TAG="${BASE_VERSION}-patch-${NEW_PATCH}"
+          
+          echo "🏷️ 新的 Hotfix 標籤: $PATCH_TAG"
+          echo "patch_tag=$PATCH_TAG" >> $GITHUB_OUTPUT
+      
+      - name: Create and push patch tag
+        run: |
+          PATCH_TAG="${{ steps.patch_version.outputs.patch_tag }}"
+          
+          # 設定 git 用戶
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # 檢查 tag 是否已存在
+          if git rev-parse "$PATCH_TAG" >/dev/null 2>&1; then
+            echo "🚫 Tag $PATCH_TAG 已存在，跳過"
+          else
+            # 取得 commit 訊息作為標籤描述
+            COMMIT_MSG=$(git log -1 --pretty=%B)
+            git tag -a "$PATCH_TAG" -m "Hotfix: $COMMIT_MSG"
+            git push origin "$PATCH_TAG"
+            echo "✅ 成功創建並推送 Hotfix 標籤: $PATCH_TAG"
+          fi

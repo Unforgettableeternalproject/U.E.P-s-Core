@@ -1,0 +1,141 @@
+@startuml SD-08-記憶存儲與檢索流程
+
+' 記憶存儲與檢索流程
+' 展示 MEM 模組的核心功能
+
+title 記憶存儲與檢索流程 (Memory Store & Retrieval)
+
+participant "LLMModule" as LLM #LightSeaGreen
+participant "MEMModule" as MEM #LightPink
+participant "SentenceTransformer\n(Embedding)" as ST #MistyRose
+participant "FAISSVectorStore" as FAISS #MistyRose
+participant "MemoryMetadata" as Meta #MistyRose
+
+== 記憶檢索流程 (CHAT 開始時) ==
+
+LLM -> LLM: 準備生成回應\n需要相關記憶
+LLM -> MEM: retrieve_memories(\n  query="今天天氣如何?",\n  identity_id="identity_A",\n  top_k=5\n)
+activate MEM
+
+MEM -> ST: encode(\n  text="今天天氣如何?"\n)
+activate ST
+ST -> ST: 使用預訓練模型\n生成向量
+ST --> MEM: query_vector\n[768-dim numpy array]
+deactivate ST
+
+MEM -> FAISS: search(\n  query_vector=vector,\n  top_k=5\n)
+activate FAISS
+FAISS -> FAISS: 相似度搜索\nL2 距離計算
+FAISS --> MEM: 返回 top-k 結果\n[\n  (id=10, distance=0.12),\n  (id=25, distance=0.18),\n  ...\n]
+deactivate FAISS
+
+MEM -> Meta: 過濾身份\nfilter_by_identity(\n  ids=[10, 25, ...],\n  identity_id="identity_A"\n)
+activate Meta
+Meta -> Meta: 檢查每個條目的\nidentity_id
+Meta --> MEM: 過濾後的條目\n[\n  MemoryEntry(id=10, text="..."),\n  MemoryEntry(id=25, text="..."),\n  ...\n]
+deactivate Meta
+
+MEM -> MEM: 格式化記憶上下文\nformat_memories(entries)
+MEM --> LLM: 返回記憶列表\n[\n  "使用者喜歡晴天",\n  "使用者討厭下雨",\n  ...\n]
+deactivate MEM
+
+LLM -> LLM: 將記憶注入提示詞\nprompt = build_prompt(\n  query,\n  memories\n)
+LLM -> LLM: Gemini 生成回應
+
+== 記憶存儲流程 (CHAT 結束時) ==
+
+note over LLM
+  對話結束
+  需要存儲重要記憶
+end note
+
+LLM -> MEM: store_memory(\n  text="使用者今天心情很好",\n  identity_id="identity_A",\n  metadata={\n    "session_id": "cs_001",\n    "source": "chat"\n  }\n)
+activate MEM
+
+MEM -> MEM: 生成唯一 ID\nentry_id = generate_id()
+
+MEM -> ST: encode(\n  text="使用者今天心情很好"\n)
+activate ST
+ST -> ST: 文字向量化
+ST --> MEM: embedding_vector
+deactivate ST
+
+MEM -> FAISS: add_vectors(\n  vectors=[embedding_vector],\n  ids=[entry_id]\n)
+activate FAISS
+FAISS -> FAISS: 將向量添加到索引\nindex.add(vectors)
+FAISS --> MEM: 添加成功
+deactivate FAISS
+
+MEM -> Meta: add_entry(\n  entry_id=entry_id,\n  entry=MemoryEntry(...)\n)
+activate Meta
+Meta -> Meta: 存儲元數據\nmetadata[entry_id] = entry
+Meta -> Meta: 持久化到磁盤\nsave_metadata()
+Meta --> MEM: 存儲成功
+deactivate Meta
+
+MEM --> LLM: 記憶已存儲
+deactivate MEM
+
+== 會話快照創建 (ChattingSession 結束) ==
+
+note over LLM
+  ChattingSession 完成
+  創建會話快照
+end note
+
+LLM -> MEM: create_session_snapshot(\n  session_id="cs_001"\n)
+activate MEM
+
+MEM -> Meta: filter_by_session(\n  session_id="cs_001"\n)
+activate Meta
+Meta -> Meta: 查找該會話的\n所有記憶條目
+Meta --> MEM: 返回條目列表\n[entry_id_1, entry_id_2, ...]
+deactivate Meta
+
+MEM -> MEM: 生成會話摘要\nsummary = summarize_session(\n  entries\n)
+
+MEM -> MEM: 創建快照對象\nsnapshot = SessionSnapshot(\n  session_id="cs_001",\n  session_type="CHAT",\n  start_time=...,\n  end_time=...,\n  memory_entries=[...],\n  summary="與使用者討論天氣和心情"\n)
+
+MEM -> Meta: save_snapshot(snapshot)
+activate Meta
+Meta -> Meta: 存儲快照\nsession_snapshots[session_id] = snapshot
+Meta -> Meta: 持久化\nsave_to_disk()
+Meta --> MEM: 快照已存儲
+deactivate Meta
+
+MEM --> LLM: 快照創建完成
+deactivate MEM
+
+note over MEM, Meta
+  會話快照已保存
+  可用於:
+  - 長期記憶回顧
+  - 訓練數據收集
+  - 對話分析
+end note
+
+== 身份隔離示例 ==
+
+note over MEM
+  不同身份的記憶互相隔離
+end note
+
+LLM -> MEM: retrieve_memories(\n  query="天氣",\n  identity_id="identity_B",\n  top_k=5\n)
+activate MEM
+MEM -> FAISS: search(...)
+FAISS --> MEM: 返回相似向量
+MEM -> Meta: filter_by_identity(\n  identity_id="identity_B"\n)
+activate Meta
+Meta -> Meta: 只返回 identity_B\n的記憶
+Meta --> MEM: 過濾後的條目\n(不包含 identity_A 的記憶)
+deactivate Meta
+MEM --> LLM: identity_B 的記憶
+deactivate MEM
+
+note over MEM
+  identity_A 和 identity_B
+  的記憶完全隔離
+  保護隱私
+end note
+
+@enduml

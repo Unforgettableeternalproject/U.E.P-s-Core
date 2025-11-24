@@ -29,12 +29,12 @@ jobs:
             
             # 檢查 VERSION 是否已包含 'v' 前綴，避免重複
             if [[ $VERSION == v* ]]; then
-              TAG_NAME="$VERSION"
+              TAG_NAME="$VERSION-stable"
             else
-              TAG_NAME="v$VERSION"
+              TAG_NAME="v$VERSION-stable"
             fi
             
-            echo "🏷️ 將要打的 tag：$TAG_NAME"
+            echo "🏷️ 將要打的穩定版 tag：$TAG_NAME"
             
             # 使用 github-actions[bot] 用戶
             git config user.name "github-actions[bot]"

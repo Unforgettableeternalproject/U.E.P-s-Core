@@ -1,48 +1,314 @@
-﻿# PyTorch + CUDA（支援 RTX 50xx / RTX 40xx）
-torch==2.7.0+cu128 --index-url https://download.pytorch.org/whl/cu128
-torchvision==0.22.0+cu128 --index-url https://download.pytorch.org/whl/cu128
-torchaudio==2.7.0+cu128 --index-url https://download.pytorch.org/whl/cu128
+# ========================================
+# U.E.P Core Dependencies - Phase 2 Complete (v0.7.4)
+# ========================================
+# 注意: 部分套件需從 wheel/ 目錄手動安裝 (不對外散布)
+# PyTorch+CUDA 需單獨安裝 (見 README.md)
+#
+# 完整依賴清單基於: pip freeze (2025-11-24)
+# 總套件數: 230+ (包含所有傳遞依賴)
 
-# 核心語音相關
+# ========================================
+# PyTorch + CUDA (手動安裝 - 第一步)
+# ========================================
+# 適用於 RTX 40xx/50xx 系列與 CUDA 12.8
+# 安裝指令:
+# pip install torch==2.7.0+cu128 torchvision==0.22.0+cu128 torchaudio==2.7.0+cu128 --index-url https://download.pytorch.org/whl/cu128
+#
+# torch==2.7.0+cu128
+# torchvision==0.22.0+cu128
+# torchaudio==2.7.0+cu128
+
+# ========================================
+# STT 模組核心依賴
+# ========================================
+# 語音辨識基礎
 speechrecognition==3.14.0
 pyaudio==0.2.14
 
-# 基本語音合成與處理
+# Whisper 語音辨識
+openai-whisper==20250625
+
+# 說話人識別 (從 wheel/ 手動安裝)
+# pyannote.audio==3.3.2 (需手動安裝 .whl)
+# pyannote.core==5.0.0
+# pyannote.database==5.1.3
+# pyannote.metrics==3.2.1
+# pyannote.pipeline==3.0.1
+
+# 語音處理依賴
+speechbrain==1.0.3
+asteroid-filterbanks==0.4.0
+julius==0.2.7
+torch-audiomentations==0.12.0
+
+# ========================================
+# TTS 模組核心依賴
+# ========================================
+# 語音合成引擎
 edge-tts==7.0.1
+
+# 音訊處理與特徵提取
 librosa==0.11.0
-pyworld==0.3.5
-torchcrepe==0.0.23
-praat-parselmouth==0.4.5
-numpy==2.0.0
 soundfile==0.13.1
 ffmpeg-python==0.2.0
+audioread==3.0.1
+resampy==0.4.3
+soxr==0.5.0.post1
 
-# 語音模型與推理
-git+https://github.com/facebookresearch/fairseq.git@main
-fsspec==2023.6.0
-filelock==3.16.1
+# 音高與聲學處理
+pyworld==0.3.5
+torchcrepe==0.0.23
+torch_pitch_shift==1.2.5
+praat-parselmouth==0.4.5
 
-# NLP 模型與訓練
+# 音訊增強
+pydub==0.25.1
+
+# ========================================
+# NLP 模組核心依賴
+# ========================================
+# Transformer 模型 (BIOS 意圖分段)
 transformers==4.48.1
-datasets==2.14.5
-sentence-transformers==3.3.1
-scikit-learn==1.6.1
+tokenizers==0.21.0
+safetensors==0.5.2
+huggingface-hub==0.27.1
 
-# 記憶向量管理
+# 句子嵌入 (MEM 模組也用)
+sentence-transformers==3.3.1
+
+# 資料集處理
+datasets==2.14.5
+pyarrow==18.0.0
+
+# 機器學習工具
+scikit-learn==1.6.1
+scipy==1.15.1
+numpy==2.0.0
+
+# ========================================
+# MEM 模組核心依賴
+# ========================================
+# 向量相似度搜尋
 faiss-cpu==1.9.0.post1
 
-# Gemini / Google AI API
+# 資料持久化
+SQLAlchemy==2.0.42
+alembic==1.16.4
+
+# ========================================
+# LLM 模組核心依賴
+# ========================================
+# Google Gemini API
 google-cloud-aiplatform==1.71.1
+google-genai==1.10.0
+google-api-core==2.22.0
+google-auth==2.35.0
+google-cloud-core==2.4.1
+google-cloud-storage==2.18.2
+google-cloud-bigquery==3.26.0
+google-cloud-resource-manager==1.13.0
+
+# OpenAI 工具 (tiktoken for token counting)
+tiktoken==0.9.0
+
+# API 通訊
+requests==2.32.3
+httpx==0.28.1
+httpcore==1.0.9
+
+# ========================================
+# SYS 模組核心依賴
+# ========================================
+# 桌面自動化
+pyautogui==0.9.54
+pyperclip==1.11.0
+pywin32==310; sys_platform == "win32"
+
+# 網頁自動化
+selenium==4.38.0
+beautifulsoup4==4.14.2
+lxml==5.3.2
+
+# PDF 處理
+pdfplumber==0.11.8
+pdfminer.six==20251107
+pypdfium2==5.0.0
+
+# 文檔處理
+python-docx==1.2.0
+
+# OCR
+pytesseract==0.3.13
+opencv-python==4.12.0.88
+
+# 網路爬蟲與 API
+feedparser==6.0.11
+wikipedia==1.4.0
+
+# 自動化工具
+pywhatkit==5.4
+
+# ========================================
+# 前端模組依賴 (Phase 3)
+# ========================================
+# GUI 框架
+PyQt5==5.15.11
+PyQt5-Qt5==5.15.2
+PyQt5_sip==12.17.0
+
+# 圖形與繪圖
+matplotlib==3.10.3
+pillow==11.1.0
+
+# ========================================
+# 深度學習訓練工具 (開發用)
+# ========================================
+# PyTorch Lightning
+pytorch-lightning==2.5.2
+lightning==2.5.2
+lightning-utilities==0.15.0
+torchmetrics==1.8.0
+
+# 訓練加速
+accelerate==1.1.0
+
+# 度量學習
+pytorch-metric-learning==2.8.1
+
+# 超參數優化
+optuna==4.4.0
+
+# 模型監控
+tensorboardX==2.6.2.2
+
+# ========================================
+# 語音/NLP 模型框架依賴
+# ========================================
+# Fairseq (從 wheel/ 手動安裝)
+# fairseq==0.12.2 (需手動安裝 .whl)
+
+# 其他模型工具
+sentencepiece==0.2.0
+einops==0.8.1
+onnxruntime==1.21.1
+
+# ========================================
+# 配置與工作流管理
+# ========================================
+# 配置文件
+pyyaml==6.0.2
+omegaconf==2.0.6
+hydra-core==1.0.7
+HyperPyYAML==1.2.2
+
+# 環境變數
 python-dotenv==1.0.1
 
-# 實用工具
-pyyaml==6.0.2
-tqdm==4.67.1
-
-# 開發與測試
+# ========================================
+# 開發工具
+# ========================================
+# 測試框架
 pytest==8.3.3
+pytest-asyncio==0.26.0
+pytest-order==1.3.0
 
-# Windows 專用 TTS 條件
+# 類型檢查
+pydantic==2.11.3
+pydantic_core==2.33.1
+typing_extensions==4.15.0
+
+# 命令列工具
+click==8.1.8
+typer==0.16.0
+rich==14.1.0
+
+# 日誌
+coloredlogs==15.0.1
+colorlog==6.9.0
+
+# ========================================
+# 實用工具庫
+# ========================================
+# 進度條與 UI
+tqdm==4.67.1
+tkinterdnd2==0.4.3
+
+# 檔案處理
+fsspec==2023.6.0
+filelock==3.16.1
+portalocker==3.1.1
+
+# 資料處理
+pandas==2.2.3
+joblib==1.4.2
+dill==0.3.7
+msgpack==1.1.0
+
+# 網路工具
+aiohttp==3.10.5
+websockets==15.0.1
+websocket-client==1.9.0
+h2==3.2.0
+h11==0.16.0
+
+# 時間與日期
+python-dateutil==2.9.0.post0
+pytz==2024.2
+tzdata==2024.2
+tzlocal==5.3.1
+
+# 加密
+cryptography==46.0.3
+pycryptodome==3.22.0
+
+# 系統工具
+psutil==6.1.0
+platformdirs==4.3.7
+
+# 數學與科學計算
+sympy==1.13.3
+numba==0.61.2
+
+# 字串處理
+rapidfuzz==3.14.3
+regex==2024.11.6
+
+# 其他工具
+more-itertools==10.7.0
+sortedcontainers==2.4.0
+bitarray==3.3.1
+xxhash==3.5.0
+
+# ========================================
+# Web 開發 (Debug GUI 用)
+# ========================================
+Flask==3.1.2
+Werkzeug==3.1.3
+Jinja2==3.1.5
+
+# ========================================
+# 平台特定依賴
+# ========================================
+# Windows 專用
 networkx==3.2.1; sys_platform == "win32"
 yarl==1.6.3; sys_platform == "win32"
-typing_extensions==4.12.2
+pywin32==310; sys_platform == "win32"
+pyreadline3==3.5.4; sys_platform == "win32"
+
+# ========================================
+# 開發依賴管理
+# ========================================
+pip-tools==7.4.1
+build==1.2.2.post1
+
+# ========================================
+# 備註
+# ========================================
+# 本檔案列出核心依賴和主要功能套件
+# 實際安裝會包含 230+ 個套件 (含所有傳遞依賴)
+# 
+# 手動安裝步驟:
+# 1. 安裝 PyTorch+CUDA (見上方註解)
+# 2. pip install -r requirements.txt
+# 3. 從 wheel/ 安裝: pyannote.audio, fairseq
+# 4. 檢查: pip freeze 確認所有套件已安裝

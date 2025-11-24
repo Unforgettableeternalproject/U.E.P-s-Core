@@ -1,0 +1,143 @@
+@startuml CD-06-路由系統
+
+' 路由系統類別圖
+' 展示文字路由和模組調用決策
+
+skinparam classAttributeIconSize 0
+skinparam class {
+    BackgroundColor<<router>> LightGoldenRodYellow
+    BackgroundColor<<decision>> LightPink
+    BorderColor DarkGoldenRod
+}
+
+package "路由系統 (Routing System)" {
+    
+    class Router <<router>> {
+        ' 簡化文字路由器
+        - state_routing_map: Dict[UEPState, List[str]]
+        - emoji_pattern: Pattern
+        --
+        + route_text(input): TextRoutingDecision
+        + route_user_input(text): str
+        + route_system_output(text): str
+        - _decide_target_module(text, state): str
+        - _extract_emoji(text): List[str]
+    }
+    
+    class Input {
+        ' 輸入數據結構
+        + text: str
+        + source: TextSource
+        + source_module: str
+        + metadata: Dict
+        --
+        + to_dict(): Dict
+        + __repr__(): str
+    }
+    
+    enum TextSource {
+        ' 文字來源
+        USER_INPUT
+        SYSTEM_OUTPUT
+        MODULE_INTERNAL
+        WORKFLOW_RESPONSE
+    }
+    
+    class TextRoutingDecision <<decision>> {
+        ' 文字路由決策結果
+        + target_module: str
+        + text_content: str
+        + routing_metadata: Dict
+        + reasoning: str
+        --
+        + to_dict(): Dict
+    }
+    
+    note as RoutingRules
+        **路由規則對應表**
+        
+        IDLE 狀態:
+        - 用戶輸入 → NLP
+        
+        CHAT 狀態:
+        - 用戶輸入 → NLP
+        - LLM 輸出 → TTS
+        
+        WORK 狀態:
+        - 用戶輸入 → NLP (可能是回應)
+        - LLM 輸出 → TTS
+        - SYS 輸出 → LLM (MCP 結果)
+        
+        特殊規則:
+        - 包含表情符號 → ANI (動畫表情)
+        - 系統控制指令 → SYS
+    end note
+}
+
+' 關係定義
+Router --> Input : processes
+Router --> TextRoutingDecision : produces
+Input --> TextSource : categorized by
+Router .. RoutingRules
+
+' 注釋
+note right of Router
+  **簡化路由機制**
+  
+  設計理念:
+  - 基於當前系統狀態決策
+  - 不依賴複雜的意圖分析
+  - 專注於文字流向控制
+  
+  路由決策流程:
+  1. 獲取當前系統狀態
+  2. 識別文字來源
+  3. 應用狀態路由規則
+  4. 返回目標模組
+  
+  與 NLP 的區別:
+  - Router: 控制文字流向
+  - NLP: 分析意圖內容
+end note
+
+note right of TextRoutingDecision
+  **路由決策範例**
+  
+  範例 1 - CHAT 狀態用戶輸入:
+  {
+    "target_module": "NLP",
+    "text_content": "今天天氣如何?",
+    "routing_metadata": {
+      "state": "CHAT",
+      "source": "USER_INPUT"
+    },
+    "reasoning": "CHAT狀態用戶輸入路由到NLP"
+  }
+  
+  範例 2 - CHAT 狀態 LLM 輸出:
+  {
+    "target_module": "TTS",
+    "text_content": "今天台北天氣晴朗...",
+    "routing_metadata": {
+      "state": "CHAT",
+      "source": "SYSTEM_OUTPUT"
+    },
+    "reasoning": "LLM輸出路由到TTS合成語音"
+  }
+end note
+
+note bottom of Input
+  **輸入結構範例**
+  {
+    "text": "幫我備份文件",
+    "source": "USER_INPUT",
+    "source_module": "STT",
+    "metadata": {
+      "speaker": "identity_A",
+      "confidence": 0.95,
+      "timestamp": 1699350000.0
+    }
+  }
+end note
+
+@enduml

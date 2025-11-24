@@ -383,10 +383,12 @@ temp/*
 # 模型輸出
 /models/*
 !/models/.gitkeep
+checkpoints/
 
 # 訓練資料
 train/**/dataset.csv
 train/**/results/
+train/**/data
 
 # Logs and Memories
 logs/*
@@ -394,3 +396,29 @@ memory/*
 
 # Wheels
 wheel/*
+
+# Temp
+*.wav
+*.mp3
+additional/*
+
+# Resources
+resources/animations/*
+
+# Debug Window Inverse
+!debug/
+
+# Local Docs
+hidden_docs/*
+additional_tests/*
+deprecated/*
+
+*.t7
+*.ninja*
+*.o
+*.exp
+*.lib
+*.pyd
+
+#Ignore insiders AI rules
+.github\instructions\codacy.instructions.md

@@ -1,0 +1,114 @@
+@startuml CD-01-核心控制系統
+
+' 核心控制系統類別圖
+' 展示系統最頂層的控制和初始化機制
+
+skinparam classAttributeIconSize 0
+skinparam class {
+    BackgroundColor<<core>> LightBlue
+    BorderColor DarkBlue
+}
+
+package "核心控制系統 (Core Control System)" {
+    
+    class UnifiedController <<core>> {
+        ' 系統級監督者 - 統一控制器
+        - system_status: Dict
+        - is_initialized: bool
+        - total_gs_sessions: int
+        - background_tasks: List
+        --
+        + initialize(): bool
+        + trigger_user_input(): void
+        + check_gs_end_conditions(): void
+        + get_system_status(): Dict
+        + shutdown(): void
+    }
+    
+    class SystemInitializer <<core>> {
+        ' 7 階段初始化管理器
+        - phase: InitializationPhase
+        - initialized_modules: List[str]
+        - failed_modules: List[str]
+        --
+        + initialize_system(): bool
+        - _initialize_controller(): bool
+        - _initialize_framework(): bool
+        - _initialize_event_bus(): bool
+        - _health_check(): bool
+    }
+    
+    class SystemLoop <<core>> {
+        ' 主循環執行器
+        - status: LoopStatus
+        - cycle_index: int
+        - loop_count: int
+        - input_mode: InputMode
+        --
+        + start(): void
+        + stop(): void
+        - _main_loop(): void
+        - _monitor_system_state(): void
+        + get_loop_status(): Dict
+    }
+    
+    enum InitializationPhase {
+        ' 初始化階段
+        PHASE_1_CONTROLLER
+        PHASE_2_FRAMEWORK
+        PHASE_3_EVENT_BUS
+        PHASE_4_STATE_MANAGER
+        PHASE_5_SESSION_MANAGER
+        PHASE_6_SYSTEM_LOOP
+        PHASE_7_HEALTH_CHECK
+    }
+    
+    enum LoopStatus {
+        ' 循環狀態
+        RUNNING
+        PAUSED
+        STOPPED
+    }
+    
+    enum InputMode {
+        ' 輸入模式
+        VOICE
+        TEXT
+        MIXED
+    }
+}
+
+' 關係定義
+SystemInitializer ..> UnifiedController : <<creates>>
+SystemInitializer --> InitializationPhase : uses
+UnifiedController --> SystemLoop : manages
+SystemLoop --> LoopStatus : has
+SystemLoop --> InputMode : has
+
+' 注釋
+note right of UnifiedController
+  **系統級監督者**
+  負責整體系統協調
+  管理 General Session
+  監控系統健康狀態
+end note
+
+note right of SystemInitializer
+  **7 階段初始化流程**
+  Phase 1: Controller
+  Phase 2: Framework
+  Phase 3: EventBus
+  Phase 4: StateManager
+  Phase 5: SessionManager
+  Phase 6: SystemLoop
+  Phase 7: HealthCheck
+end note
+
+note right of SystemLoop
+  **主循環執行**
+  監控事件完成
+  管理 cycle_index
+  觸發用戶輸入
+end note
+
+@enduml

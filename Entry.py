@@ -1,12 +1,46 @@
 ﻿import sys
+import os
+import argparse
 from datetime import datetime
 from configs.config_loader import load_config
-from devtools.debugger import debug_interactive
-from utils.debug_helper import debug_log
+from utils.debug_helper import debug_log, info_log, error_log
 
 config = load_config()
 
+def test_logger_check():
+    """測試日誌檢查邏輯"""
+    from utils.logger import should_write_file_logs
+    import inspect
+    
+    print("=" * 60)
+    print("從Entry.py測試日誌檢查邏輯")
+    print("=" * 60)
+    
+    stack = inspect.stack()
+    print(f"\n當前調用堆疊有 {len(stack)} 個 frame:")
+    
+    for i, frame_info in enumerate(stack):
+        filename = frame_info.filename
+        print(f"  Frame {i}: {os.path.basename(filename)}")
+        print(f"    完整路徑: {filename}")
+        print(f"    包含entry.py? {'entry.py' in filename.lower()}")
+        
+    result = should_write_file_logs()
+    print(f"\n結果: should_write_file_logs() = {result}")
+    
+    if result:
+        print("✅ 系統會寫入文件日誌")
+    else:
+        print("❌ 系統不會寫入文件日誌")
+    
+    print("=" * 60)
+    return result
+
 debug_mode = config.get("debug", {}).get("enabled", False)
+
+# 確保從Entry.py啟動時啟用文件日誌
+from utils.logger import force_enable_file_logging
+force_enable_file_logging()
 
 def clear_empty_logs():
     # 清除空的日誌檔案，作為一個後手
@@ -41,18 +75,91 @@ def clear_empty_logs():
                 print(f"已移除空文件夾: {root}")
             except Exception as e:
                 print(f"無法移除文件夾 {root}: {str(e)}")
+                
+def log_test():
+    # 測試日誌功能
+    debug_log(1, "這是一條關鍵等級的除錯日誌")
+    debug_log(2, "這是一條操作等級的除錯日誌")
+    debug_log(3, "這是一條系統等級的除錯日誌")
+    debug_log(4, "這是一條詳盡等級的除錯日誌")
+    info_log("這是一條資訊日誌")
+    info_log("這是一條警告日誌", type="WARNING")
+    error_log("這是一條錯誤日誌")
+    error_log("這是一條嚴重錯誤日誌", type="CRITICAL")
 
 if __name__ == "__main__":
+    version = config.get("metadata", {}).get("system_version", "invalid_version")
     print("\n=========================\n")
-    print(f"U.E.P <v.0.1.0> - 開發中版本 - {datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}\n")
+    print(f"U.E.P <{version}> - 開發中版本 - {datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}\n")
+
+    # 處理命令行參數
+    import argparse
+    parser = argparse.ArgumentParser(description='U.E.P 系統')
+    parser.add_argument('--log-test', action='store_true', help='測試日誌功能')
+    parser.add_argument('--test-logger', action='store_true', help='測試日誌檢查邏輯')
+    parser.add_argument('--debug', action='store_true', help='強制啟用除錯模式')
+    parser.add_argument('--debug-gui', action='store_true', help='啟動圖形除錯介面')
+    parser.add_argument('--production', action='store_true', help='強制啟用生產模式')
+    args = parser.parse_args()
+    
+    if args.test_logger:
+        test_logger_check()
+        sys.exit(0)
+    
+    if args.log_test:
+        log_test()
+        sys.exit(0)
+    
+    # 命令行參數可以覆蓋配置文件設定
+    if args.debug:
+        debug_mode = True
+        print("🔧 通過命令行參數強制啟用除錯模式")
+    elif args.production:
+        debug_mode = False
+        print("🚀 通過命令行參數強制啟用生產模式")
+    
+    # 處理圖形除錯介面啟動
+    if args.debug_gui:
+        print("🖥️ 啟動圖形除錯介面...")
+        try:
+            # 設定為按需載入模式（GUI模式）
+            import devtools.debug_api as debug_api
+            debug_api.set_loading_mode(preload=False)
+            print("✅ 已設定為按需載入模式")
+            
+            # 不預先載入任何模組，直接啟動除錯介面
+            # 讓使用者在除錯介面中手動決定載入哪些模組
+            from modules.ui_module.debug import launch_debug_interface
+            launch_debug_interface(prefer_gui=True, blocking=True)
+        except Exception as e:
+            print(f"❌ 圖形除錯介面啟動失敗: {e}")
+            sys.exit(1)
+        sys.exit(0)
 
     if debug_mode:
-        debug_log(1, "除錯模式啟用")
+        debug_log(1, "🔧 除錯模式啟用，正在準備各項模組...")
+        # 設定為預先載入模式（舊版終端模式）
+        import devtools.debug_api as debug_api
+        debug_api.set_loading_mode(preload=True)
+        print("✅ 已設定為預先載入模式")
+        
+        from devtools.debugger import debug_interactive
         debug_interactive()  # 啟動互動式命令行介面
     else:
-        print("\n除錯模式未啟用，請檢查配置文件")
-        print("如果您想要進入除錯模式，請在配置文件中將 debug 設置為 True")
-        print("退出程式...")
+        print("🚀 正式模式啟用，啟動 UEP 生產環境...")
+        print("💡 這將使用 UnifiedController 運行已重構的模組")
+        print("🔄 如果您想要進入除錯模式，請在配置文件中將 debug.enabled 設置為 true")
+        print()
+        
+        # 啟動生產環境
+        try:
+            from core.production_runner import run_production_mode
+            run_production_mode()
+        except KeyboardInterrupt:
+            print("⌨️ 用戶中斷程序")
+        except Exception as e:
+            print(f"❌ 啟動生產環境時發生錯誤: {e}")
+            sys.exit(1)
 
     clear_empty_logs()
 

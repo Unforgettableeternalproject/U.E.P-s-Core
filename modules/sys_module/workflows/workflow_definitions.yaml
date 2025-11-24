@@ -1,0 +1,682 @@
+﻿# U.E.P System Module Workflow Definitions
+#
+# 這個文件定義了所有可用的工作流，包括：
+# - 工作流的基本信息（名稱、描述、分類）
+# - 可接受的初始參數（用於工作流加速）
+# - MCP Tool 生成所需的參數定義
+#
+# 初始參數機制：
+# - LLM 可以從用戶輸入中提取初始參數
+# - 如果提供了初始參數，工作流會跳過相應的互動步驟
+# - 這使得工作流能夠更快速地響應用戶需求
+#
+# 注意：file_selection 類型的參數暫時保持 optional: false
+#       未來會在前端紙盒實現後改為 optional: true
+
+workflows:
+  # ==================== File Workflows ====================
+  
+  drop_and_read:
+    name: "drop_and_read"
+    description: "Read file content and provide summary using LLM"
+    category: "file"
+    work_mode: "direct"
+    
+    initial_params: {}
+
+    mcp_tool_params:
+      command:
+        type: string
+        required: true
+        description: "User original command"
+      initial_data:
+        type: object
+        required: false
+        description: "Initial data: file_path_input (optional file path)"
+
+  intelligent_archive:
+    name: "intelligent_archive"
+    description: "Archive files to organized folders using LLM suggestions"
+    category: "file"
+    work_mode: "direct"
+    
+    initial_params:
+      target_dir_input:
+        type: str
+        optional: true
+        description: "Target directory for archiving (optional, LLM will suggest if not provided)"
+        maps_to_step: "target_dir_input"
+        extraction_hint: "Extract directory paths from phrases like archive to Documents, move to folder X"
+    
+    mcp_tool_params:
+      command:
+        type: string
+        required: true
+        description: "User original command"
+      initial_data:
+        type: object
+        required: false
+        description: "Initial data: file_selection (required), target_dir_input (optional)"
+
+  summarize_tag:
+    name: "summarize_tag"
+    description: "Generate summary and tags for a file using LLM"
+    category: "file"
+    work_mode: "direct"
+    
+    initial_params:
+      num_tags:
+        type: int
+        optional: true
+        description: "Number of tags to generate (default: 3)"
+        maps_to_step: "tag_count_input"
+        extraction_hint: "Extract numbers from phrases like generate 10 tags, 5 keywords"
+    
+    mcp_tool_params:
+      command:
+        type: string
+        required: true
+        description: "User original command"
+      initial_data:
+        type: object
+        required: false
+        description: "Initial data: file_path_input (required), num_tags (default: 5)"
+
+  translate_document:
+    name: "translate_document"
+    description: "Translate text documents (TXT, MD) to target language using LLM"
+    category: "file"
+    work_mode: "direct"
+    
+    initial_params:
+      target_language:
+        type: str
+        optional: false
+        description: "Target language (e.g., English, 日本語, 한국어)"
+        maps_to_step: "target_language"
+        extraction_hint: "Extract target language from user input (English, Japanese, Korean, etc.)"
+    
+    mcp_tool_params:
+      command:
+        type: string
+        required: true
+        description: "User original command"
+      initial_data:
+        type: object
+        required: false
+        description: "Initial data: file_path_input (required), target_language (optional)"
+
+  ocr_extract:
+    name: "ocr_extract"
+    description: "Extract text from images using OCR (supports Chinese Traditional and English)"
+    category: "file"
+    work_mode: "direct"
+    
+    initial_params: {}
+    
+    mcp_tool_params:
+      command:
+        type: string
+        required: true
+        description: "User original command"
+      initial_data:
+        type: object
+        required: false
+        description: "Initial data: file_path_input (required)"
+
+  # ==================== Info Workflows ====================
+  
+  get_weather:
+    name: "get_weather"
+    description: "Get weather information for a specific location using wttr.in API"
+    category: "info"
+    work_mode: "direct"
+    
+    initial_params:
+      location:
+        type: str
+        optional: true
+        description: "City name or location (supports Chinese or English)"
+        maps_to_step: "location_input"
+        extraction_hint: "Extract location/city names from user input, e.g., Tokyo, Taipei, 台北"
+    
+    mcp_tool_params:
+      command:
+        type: string
+        required: true
+        description: "User original command"
+      initial_data:
+        type: object
+        required: false
+        description: "Initial data: location (optional, Chinese or English city name)"
+
+  get_world_time:
+    name: "get_world_time"
+    description: "Get current time in different timezones: UTC, specific timezone, or local time"
+    category: "info"
+    work_mode: "direct"
+    
+    initial_params:
+      target_num:
+        type: int
+        optional: true
+        description: "Time query mode: 1=UTC, 2=specific timezone, 3=local time"
+        maps_to_step: "mode_selection"
+        extraction_hint: "If query mentions specific location/timezone (Tokyo, New York, etc.) → 2. If asks for UTC → 1. If asks for local/current time → 3. Default to 2 if location mentioned."
+        infer_from:
+          - param: "tz"
+            condition: "exists"
+            value: 2
+            reason: "If timezone is provided, mode must be 2 (specific timezone)"
+      
+      tz:
+        type: str
+        optional: true
+        description: "Timezone name (e.g., Tokyo, Taiwan, New York) - only needed when target_num=2"
+        maps_to_step: "timezone_input"
+        extraction_hint: "Extract location/city names from query (Tokyo, New York, Taipei, 東京, etc.). Required when target_num=2."
+        condition: "target_num == 2"
+    
+    mcp_tool_params:
+      command:
+        type: string
+        required: true
+        description: "User original command"
+      initial_data:
+        type: object
+        required: false
+        description: "Initial data: target_num (1=UTC, 2=timezone, 3=local), tz (timezone name for mode 2)"
+
+  news_summary:
+    name: "news_summary"
+    description: "Quick peek at latest Taiwan news headlines (6 items) from Google News Taiwan. LLM will summarize headlines in English."
+    category: "info"
+    work_mode: "direct"
+    
+    initial_params: {}  # No parameters needed - fixed source and count
+    
+    mcp_tool_params:
+      command:
+        type: string
+        required: true
+        description: "User original command"
+
+  # ==================== Text Workflows ====================
+  
+  clipboard_tracker:
+    name: "clipboard_tracker"
+    description: "Search clipboard history (max 5 recent items) and copy selected item. Requires background monitoring service."
+    category: "text"
+    work_mode: "direct"
+    
+    initial_params:
+      keyword:
+        type: str
+        optional: true
+        description: "Search keyword (empty to view all recent history, max 5 items)"
+        maps_to_step: "input_keyword"
+        extraction_hint: "Extract search terms from user input (e.g., search for email, find phone number)"
+    
+    mcp_tool_params:
+      command:
+        type: string
+        required: true
+        description: "User original command"
+      initial_data:
+        type: object
+        required: false
+        description: "Initial data: keyword (optional search keyword, empty for all history)"
+
+  quick_phrases:
+    name: "quick_phrases"
+    description: "Generate text templates using LLM and save as file to desktop (letters, resumes, emails, etc.)"
+    category: "text"
+    work_mode: "direct"
+    
+    initial_params:
+      template_request:
+        type: str
+        optional: true
+        description: "Description of the template needed (e.g., business email, cover letter, meeting agenda, thank you note)"
+        maps_to_step: "input_template_request"
+        extraction_hint: "Extract template type/purpose from user input: email, letter, resume, cover letter, meeting agenda, thank you note, apology letter, etc."
+    
+    mcp_tool_params:
+      command:
+        type: string
+        required: true
+        description: "User original command"
+      initial_data:
+        type: object
+        required: false
+        description: "Initial data: template_request (optional, description of template type)"
+
+  # ==================== Analysis Workflows ====================
+  
+  code_analysis:
+    name: "code_analysis"
+    description: "Analyze code file using LLM with flexible analysis focus (security, performance, quality, etc.)"
+    category: "analysis"
+    work_mode: "direct"
+    
+    initial_params:
+      analysis_focus:
+        type: str
+        optional: false
+        description: "Analysis focus/goal (e.g., security, performance, code quality). Leave empty for general analysis."
+        maps_to_step: "input_analysis_focus"
+        extraction_hint: "Extract analysis intent from user input: security vulnerabilities, performance optimization, code quality, best practices, etc."
+    
+    mcp_tool_params:
+      command:
+        type: string
+        required: true
+        description: "User original command"
+      initial_data:
+        type: object
+        required: false
+        description: "Initial data: file_path_input (required), analysis_focus (optional, for flexible analysis goals)"
+
+  # ==================== Utility Workflows ====================
+  
+  clean_trash_bin:
+    name: "clean_trash_bin"
+    description: "Clean system trash bin/recycle bin (supports Windows, macOS, Linux)"
+    category: "utility"
+    work_mode: "direct"
+    
+    initial_params: {}
+    
+    mcp_tool_params:
+      command:
+        type: string
+        required: true
+        description: "User original command"
+      initial_data:
+        type: object
+        required: false
+        description: "No additional data needed"
+
+  # ==================== Automation Workflows (Background) ====================
+  
+  play_media:
+    name: "play_media"
+    description: "Local music playback with background monitoring. Supports shuffle and smart loop mode (auto-infers single-song loop or playlist loop based on query). Task ends when: 1) Specific song finishes (without loop), 2) Playlist finishes (without loop), 3) User manually stops (with loop enabled)."
+    category: "automation"
+    work_mode: "background"
+    
+    initial_params:
+      query:
+        type: str
+        optional: false
+        description: "Song name to play (empty string \"\" means play entire music folder)"
+        extraction_hint: "Always extract and provide query parameter. Extract song name from user input. If user wants to play ALL music or doesn't specify a song (e.g., 'play my music', 'play local music', 'play some music'), provide empty string: query=''."
+      
+      shuffle:
+        type: bool
+        optional: true
+        description: "Enable shuffle/random playback"
+        maps_to_step: "shuffle"
+        extraction_hint: "Return true if user mentions shuffle/random, otherwise false"
+      
+      loop:
+        type: bool
+        optional: true
+        description: "Enable loop/repeat playback. System will intelligently choose: (1) Single-song loop if query is provided, (2) Playlist loop if query is empty."
+        maps_to_step: "loop"
+        extraction_hint: "Return true if user mentions loop/repeat, otherwise false. System automatically selects appropriate loop mode (single-song or playlist) based on context."
+    
+    mcp_tool_params:
+      command:
+        type: string
+        required: true
+        description: "User original command"
+      initial_data:
+        type: object
+        required: false
+        description: "Optional initial data. If provided, format: {\"query\": \"song name or empty string\", \"shuffle\": bool (optional), \"loop\": bool (optional)}. If 'query' is included, use empty string \"\" if user wants to play all music."
+  
+  control_media:
+    name: "control_media"
+    description: "Control active local music playback: play, pause, stop, next, previous, search, shuffle on/off, loop on/off (intelligently switches between single-song and playlist loop based on playback type), stop_service"
+    category: "automation"
+    work_mode: "direct"
+    
+    initial_params:
+      task_id:
+        type: str
+        optional: true
+        description: "Task ID of the running media playback workflow (auto-detected if not provided)"
+        maps_to_step: "task_id"
+        extraction_hint: "Usually auto-detected from active workflows. Only extract if user explicitly mentions a task ID."
+      
+      control_action:
+        type: str
+        optional: false
+        description: "Control action: play, pause, stop, next, previous, search, shuffle, loop, stop_service. Loop intelligently selects mode based on playback type."
+        maps_to_step: "control_action"
+        extraction_hint: "CRITICAL: Extract the control command: 'pause' for pause/暫停, 'stop' for stop/停止, 'next' for next song/下一首, 'previous' for previous song/上一首, 'search' for search/搜尋, 'shuffle' for shuffle/隨機, 'loop' for loop/循環 (system auto-selects single-song or playlist loop), 'stop_service' for stop service/停止服務"
+      
+      control_params:
+        type: dict
+        optional: true
+        description: "Additional parameters (e.g., song_query for search). For loop action, system auto-infers appropriate mode based on current playback type."
+        maps_to_step: "control_params"
+        extraction_hint: "For search: {'song_query': 'song name'}. For shuffle: {'shuffle': true/false}. For loop: {} (empty, system handles intelligent mode selection). For other actions: {}"
+    
+    mcp_tool_params:
+      command:
+        type: string
+        required: true
+        description: "User original command"
+      initial_data:
+        type: object
+        required: false
+        description: "Initial data: task_id (optional), control_action (required), control_params (optional)"
+
+  generate_backup_script: # 他不是背景了，之後再移上去
+    name: "generate_backup_script"
+    description: "Generate system backup script (.bat/.sh) for automated file backup. Future: will include UEP's personalized user cognition and preferences."
+    category: "automation"
+    work_mode: "background"
+    
+    initial_params: {}
+
+    mcp_tool_params:
+      command:
+        type: string
+        required: true
+        description: "User original command"
+      initial_data:
+        type: object
+        required: false
+        description: "Initial data: target_folder (required), dest_folder (required), output_path (optional)"
+
+  # ==================== Task Management Workflows ====================
+  
+  create_todo:
+    name: "create_todo"
+    description: "Create a new to-do task with title, description, and priority. Background workflow for quick task creation."
+    category: "productivity"
+    work_mode: "background"
+    
+    initial_params:
+      task_name:
+        type: str
+        optional: false
+        description: "Task name/title (default: 'General Task' if not provided)"
+        maps_to_step: "task_name"
+        extraction_hint: "Extract task name from user input. Examples: 'Prepare meeting materials', 'Buy groceries', 'Complete report'. Default to 'General Task' if unclear."
+      
+      task_description:
+        type: str
+        optional: true
+        description: "Task description/details (optional)"
+        maps_to_step: "task_description"
+        extraction_hint: "Extract detailed description if provided. Example: 'Need to prepare slides and data analysis'"
+      
+      priority:
+        type: str
+        optional: false
+        description: "Task priority: none, low, medium, high (default: 'none')"
+        maps_to_step: "priority"
+        extraction_hint: |
+          Extract priority level:
+          - 'none': no priority/general task/default
+          - 'low': not urgent/low priority
+          - 'medium': normal/medium importance
+          - 'high': important/urgent
+          Default to 'none' if not mentioned.
+    
+    mcp_tool_params:
+      command:
+        type: string
+        required: true
+        description: "User original command"
+      initial_data:
+        type: object
+        required: false
+        description: "Optional initial data. If provided, format: {\"task_name\": \"string (default: General Task)\", \"task_description\": \"string (optional)\", \"priority\": \"none|low|medium|high (default: none)\"}"
+
+  manage_todo:
+    name: "manage_todo"
+    description: "Query, modify, or delete to-do tasks. Direct workflow for user intervention on existing tasks."
+    category: "productivity"
+    work_mode: "direct"
+    
+    initial_params:
+      operation:
+        type: str
+        optional: true
+        description: "Operation to perform: list, search, update, delete, complete"
+        maps_to_step: "action_selection"
+        extraction_hint: |
+          Extract operation from user intent:
+          - 'list' for: "show my tasks", "list todos", "what are my todos"
+          - 'search' for: "find task about X", "search for X"
+          - 'update' for: "change task X", "modify task", "update priority"
+          - 'delete' for: "remove task X", "delete the X task"
+          - 'complete' for: "mark X as done", "finish X", "complete X"
+          If unclear, leave empty - workflow will ask user to choose.
+      
+      search_query_input:
+        type: str
+        optional: true
+        description: "Task name, keywords, or ID mentioned by user (for all operations except list)"
+        maps_to_step: "search_query_input"
+        extraction_hint: |
+          Extract task identifier from user input:
+          - For search: keywords like "meeting", "groceries", "report"
+          - For update/delete/complete: task name, ID (e.g., "69"), or keywords
+          Examples:
+          - "find my meeting task" → "meeting"
+          - "delete task 69" → "69"
+          - "complete the report" → "report"
+          - "update buy milk task" → "buy milk"
+          Can be task ID number or descriptive keywords.
+      
+      update_fields_input:
+        type: str
+        optional: true
+        description: "What field user wants to update (for update action only)"
+        maps_to_step: "update_fields_input"
+        extraction_hint: |
+          Extract update intent from phrases like:
+          - "change priority to high" → "priority=high"
+          - "rename to 'New Name'" → "task_name=New Name"
+          - "set deadline to tomorrow" → "deadline=2025-11-21"
+          - "change description to 'details'" → "task_description=details"
+          Format as simple key=value pairs separated by commas or JSON format.
+    
+    mcp_tool_params:
+      command:
+        type: string
+        required: true
+        description: "User original command"
+      initial_data:
+        type: object
+        required: false
+        description: "Initial data: {\"operation\": \"list|search|update|delete|complete (optional)\", \"search_query_input\": \"keywords or task ID (optional)\", \"update_fields_input\": \"field=value (optional for update)\"}. All optional - workflow will ask if not provided."
+
+  create_calendar:
+    name: "create_calendar"
+    description: "Create a new calendar event with start time, end time, and event name. Background workflow for quick event scheduling."
+    category: "productivity"
+    work_mode: "background"
+    
+    initial_params:
+      start_time:
+        type: str
+        optional: false
+        description: "Event start time in ISO format (YYYY-MM-DD HH:MM). If not provided, task will be added to to-do list instead."
+        maps_to_step: "start_time"
+        extraction_hint: "Extract start time and convert to ISO format. Handle relative time: 'two in the afternoon' → 2025-11-21 14:00, 'next Monday 10:00' → next Monday 10:00. **REQUIRED** - if user doesn't specify time, this should trigger todo creation instead."
+      
+      end_time:
+        type: str
+        optional: true
+        description: "Event end time in ISO format (YYYY-MM-DD HH:MM). If not provided, defaults to 23:59 of start_time date."
+        maps_to_step: "end_time"
+        extraction_hint: "Extract end time if mentioned. If not specified, set to 23:59 of the start_time date. Example: start='2025-11-21 14:00' → end='2025-11-21 23:59'"
+      
+      event_name:
+        type: str
+        optional: false
+        description: "Event name/title (default: 'General Event' if not provided)"
+        maps_to_step: "event_name"
+        extraction_hint: "Extract event name. Examples: 'team meeting', 'Doctor appointment', 'final exam'. Default to 'General Event' if unclear."
+    
+    mcp_tool_params:
+      command:
+        type: string
+        required: true
+        description: "User original command"
+      initial_data:
+        type: object
+        required: false
+        description: "Optional initial data. If provided, format: {\"start_time\": \"YYYY-MM-DD HH:MM (required)\", \"end_time\": \"YYYY-MM-DD HH:MM (optional, defaults to 23:59 of start date)\", \"event_name\": \"string (default: General Event)\"}"
+
+  manage_calendar:
+    name: "manage_calendar"
+    description: "Query, modify, or delete calendar events. Direct workflow for user intervention on existing events."
+    category: "productivity"
+    work_mode: "direct"
+    
+    initial_params:
+      operation:
+        type: str
+        optional: true
+        description: "Operation to perform: list, search, update, delete, find_free_time"
+        maps_to_step: "action_selection"
+        extraction_hint: |
+          Extract operation from user intent:
+          - 'list' for: "show my schedule", "list events", "what's on my calendar"
+          - 'search' for: "find meeting X", "search for event"
+          - 'update' for: "reschedule X", "change event time", "update meeting"
+          - 'delete' for: "cancel meeting X", "remove event", "delete appointment"
+          - 'find_free_time' for: "when am I free", "find available time"
+          If unclear, leave empty - workflow will ask user to choose.
+      
+      event_name_hint:
+        type: str
+        optional: true
+        description: "Event name or keywords mentioned by user (for search/update/delete)"
+        maps_to_step: "search_query_input"
+        extraction_hint: |
+          Extract event-related keywords from user input. Examples:
+          - "find my team meeting" → "team meeting"
+          - "cancel the doctor appointment" → "doctor appointment"
+          - "reschedule exam" → "exam"
+          This helps narrow down which event user wants to operate on.
+      
+      time_context:
+        type: str
+        optional: true
+        description: "Time range or context (for list/search/find_free_time)"
+        maps_to_step: "time_range_input"
+        extraction_hint: |
+          Extract time context from phrases like:
+          - "this week" → calculate week range
+          - "next month" → calculate month range
+          - "tomorrow" → calculate tomorrow's range
+          - "2025-11-25 to 2025-11-30" → use exact range
+      
+      update_intent:
+        type: str
+        optional: true
+        description: "What field user wants to update (for update action only)"
+        maps_to_step: "update_fields_input"
+        extraction_hint: |
+          Extract update intent from phrases like:
+          - "change time to 3pm" → "start_time=2025-XX-XX 15:00"
+          - "rename to 'New Meeting'" → "event_name=New Meeting"
+          - "move to tomorrow" → "start_time=2025-XX-XX HH:MM"
+          Format as simple key=value pairs separated by commas.
+
+    mcp_tool_params:
+      command:
+        type: string
+        required: true
+        description: "User original command"
+      initial_data:
+        type: object
+        required: false
+        description: "Initial data: {\"operation\": \"list|search|update|delete|find_free_time (optional)\", \"event_name_hint\": \"keywords (optional)\", \"time_context\": \"time range (optional)\", \"update_intent\": \"field=value (optional for update)\"}. All optional - workflow will ask if not provided."
+
+  # ==================== Cross-workflow Operations ====================
+  
+  schedule_todo_to_calendar:
+    name: "schedule_todo_to_calendar"
+    description: "Promote a to-do task to calendar event by finding available time slot and creating calendar entry. Requires user confirmation."
+    category: "productivity"
+    work_mode: "direct"
+    
+    initial_params:
+      task_id:
+        type: str
+        optional: false
+        description: "To-do task ID to schedule"
+        maps_to_step: "task_id"
+        extraction_hint: "Extract task ID from user reference"
+      
+      preferred_time:
+        type: dict
+        optional: true
+        description: "Preferred time constraints: {\"date\": \"YYYY-MM-DD\", \"time_of_day\": \"morning/afternoon/evening\", \"duration_minutes\": int}"
+        maps_to_step: "preferred_time"
+        extraction_hint: "Extract time preferences: 'Tomorrow Morning', 'This Afternoon', 'For two hours', etc."
+      
+      auto_schedule:
+        type: bool
+        optional: true
+        description: "Auto-find first available slot without asking (default: false, will ask for confirmation)"
+        maps_to_step: "auto_schedule"
+        extraction_hint: "true if user says 'auto schedule', 'find time for me', false if 'let me choose time'"
+    
+    mcp_tool_params:
+      command:
+        type: string
+        required: true
+        description: "User original command"
+      initial_data:
+        type: object
+        required: false
+        description: "Optional initial data. If provided, should include 'task_id'. Format: {\"task_id\": \"string\", \"preferred_time\": {\"date\": \"YYYY-MM-DD\", \"time_of_day\": \"morning/afternoon/evening\", \"duration_minutes\": int}, \"auto_schedule\": bool}"
+
+  generate_prep_todos:
+    name: "generate_prep_todos"
+    description: "Auto-generate preparation to-do tasks for a calendar event (meetings, exams, presentations). Creates task group linked to the event."
+    category: "productivity"
+    work_mode: "direct"
+    
+    initial_params:
+      event_id:
+        type: str
+        optional: false
+        description: "Calendar event ID that requires preparation"
+        maps_to_step: "event_id"
+        extraction_hint: "Extract event ID from user reference or from event just created"
+      
+      prep_type:
+        type: str
+        optional: true
+        description: "Type of preparation: meeting, exam, presentation, interview (auto-inferred if not specified)"
+        maps_to_step: "prep_type"
+        extraction_hint: "Extract or infer from event type."
+      
+      custom_tasks:
+        type: list
+        optional: true
+        description: "Custom preparation tasks if user specifies (otherwise auto-generate based on event type)"
+        maps_to_step: "custom_tasks"
+        extraction_hint: "Extract specific prep tasks if user mentions them: 'Need to prepare slides', 'Review past exams', etc."
+    
+    mcp_tool_params:
+      command:
+        type: string
+        required: true
+        description: "User original command"
+      initial_data:
+        type: object
+        required: false
+        description: "Optional initial data. If provided, should include 'event_id'. Format: {\"event_id\": \"string\", \"prep_type\": \"meeting/exam/presentation/interview\", \"custom_tasks\": [\"task1\", \"task2\"]}"

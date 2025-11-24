@@ -50,7 +50,7 @@ Your response should contain two parts:
 
 ## Supported Action Types
 
-1. **start_workflow**: Start a new workflow
+1. **Direct Workflow Tools**: Use specific workflow tools (e.g., intelligent_archive, drop_and_read) instead of deprecated start_workflow
    - workflow_type: Type of workflow (drop_and_read, intelligent_archive, summarize_tag)
    - params: Initialization parameters
    - reason: Why this workflow was chosen

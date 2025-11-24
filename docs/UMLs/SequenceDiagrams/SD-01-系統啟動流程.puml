@@ -1,0 +1,155 @@
+@startuml SD-01-系統啟動流程
+
+' 系統啟動流程
+' 展示 7 階段初始化過程
+
+participant "ProductionRunner\n生產運行器" as Runner #LightYellow
+participant "SystemInitializer\n初始化器" as Initializer #LightYellow
+participant "UnifiedController\n統一控制器" as Controller #LightGray
+participant "CoreFramework\n核心框架" as Framework #LightGray
+participant "EventBus\n事件總線" as EventBus #LightGray
+participant "StateManager\n狀態管理器" as StateManager #LightGray
+participant "SessionManager\n會話管理器" as SessionManager #LightGray
+participant "SystemLoop\n系統循環" as SystemLoop #LightGray
+participant "Modules\n各模組" as Modules #LightBlue
+
+== Phase 1: Controller 初始化 ==
+
+Runner -> Initializer: initialize_system()
+activate Initializer
+Initializer -> Initializer: phase = PHASE_1_CONTROLLER
+note right: 設置初始化階段
+
+Initializer -> Controller: initialize()
+activate Controller
+Controller -> Controller: 載入配置
+Controller -> Controller: 設置日誌系統
+note right
+  配置項:
+  - debug_level
+  - log_level
+  - system_mode
+end note
+Controller --> Initializer: initialized
+deactivate Controller
+
+== Phase 2: Framework 初始化 ==
+
+Initializer -> Initializer: phase = PHASE_2_FRAMEWORK
+Initializer -> Framework: initialize()
+activate Framework
+Framework -> Framework: 掃描 modules/ 目錄
+note right
+  自動發現模組:
+  - STTModule
+  - NLPModule
+  - MEMModule
+  - LLMModule
+  - SYSModule
+  - TTSModule
+  - UIModule
+  - MOVModule
+  - ANIModule
+end note
+
+loop 每個模組
+    Framework -> Modules: register_module(module)
+    activate Modules
+    Modules -> Modules: 驗證模組介面
+    Modules --> Framework: registered
+    deactivate Modules
+end
+
+Framework --> Initializer: framework ready
+deactivate Framework
+
+== Phase 3: EventBus 初始化 ==
+
+Initializer -> Initializer: phase = PHASE_3_EVENT_BUS
+Initializer -> EventBus: start()
+activate EventBus
+EventBus -> EventBus: 創建事件隊列
+EventBus -> EventBus: 啟動處理線程
+note right: 使用 threading.Thread
+EventBus --> Initializer: event bus running
+deactivate EventBus
+
+== Phase 4: StateManager 初始化 ==
+
+Initializer -> Initializer: phase = PHASE_4_STATE_MANAGER
+Initializer -> StateManager: initialize()
+activate StateManager
+StateManager -> StateManager: 設置初始狀態 = IDLE
+StateManager -> StateManager: 初始化狀態佇列
+StateManager -> EventBus: subscribe(events)
+note right
+  訂閱事件:
+  - INPUT_LAYER_COMPLETE
+  - CYCLE_COMPLETED
+end note
+StateManager --> Initializer: state manager ready
+deactivate StateManager
+
+== Phase 5: SessionManager 初始化 ==
+
+Initializer -> Initializer: phase = PHASE_5_SESSION_MANAGER
+Initializer -> SessionManager: initialize()
+activate SessionManager
+SessionManager -> SessionManager: 載入會話記錄
+SessionManager -> SessionManager: 清理過期會話
+SessionManager --> Initializer: session manager ready
+deactivate SessionManager
+
+== Phase 6: SystemLoop 初始化 ==
+
+Initializer -> Initializer: phase = PHASE_6_SYSTEM_LOOP
+Initializer -> SystemLoop: initialize()
+activate SystemLoop
+SystemLoop -> SystemLoop: 設置循環參數
+SystemLoop -> EventBus: subscribe(CYCLE_COMPLETED)
+SystemLoop --> Initializer: system loop ready
+deactivate SystemLoop
+
+== Phase 7: Health Check ==
+
+Initializer -> Initializer: phase = PHASE_7_HEALTH_CHECK
+Initializer -> Framework: health_check()
+activate Framework
+Framework -> Modules: check_module_status()
+activate Modules
+Modules --> Framework: all modules OK
+deactivate Modules
+Framework --> Initializer: health check passed
+deactivate Framework
+
+Initializer -> Controller: initialization_complete()
+activate Controller
+Controller -> SystemLoop: start()
+activate SystemLoop
+SystemLoop -> SystemLoop: 進入主循環
+note right
+  SystemLoop 開始監控:
+  - 事件完成
+  - 用戶輸入觸發
+  - 狀態變化
+end note
+deactivate SystemLoop
+deactivate Controller
+
+Initializer --> Runner: system ready
+deactivate Initializer
+
+note over Runner, Modules
+  **系統啟動完成**
+  總時間: 2-5 秒
+  
+  系統狀態:
+  - State = IDLE
+  - EventBus = RUNNING
+  - SystemLoop = ACTIVE
+  - All Modules = INITIALIZED
+  
+  準備接收用戶輸入
+end note
+
+@enduml

@@ -1,0 +1,160 @@
+@startuml SD-07-錯誤處理與狀態恢復
+
+' 錯誤處理與狀態恢復流程
+' 展示系統如何處理異常並恢復
+
+title 錯誤處理與狀態恢復流程
+
+participant "Module" as Mod #LightBlue
+participant "EventBus" as EB #LightCyan
+participant "StateManager" as SM #Wheat
+participant "ErrorHandler" as EH #LightCoral
+participant "UnifiedController" as UC #LightYellow
+
+== 正常處理流程 ==
+
+Mod -> Mod: 執行操作
+activate Mod
+Mod -> Mod: **發生異常!**\nException: API timeout
+deactivate Mod
+
+== 模組級錯誤處理 ==
+
+Mod -> EH: handle_error(\n  error=TimeoutError,\n  context={"module": "LLM"}\n)
+activate EH
+
+EH -> EH: 分析錯誤類型\nerror_type = "TIMEOUT"
+EH -> EH: 檢查重試策略\nretry_count < max_retries?
+
+alt 可以重試
+    EH -> EH: 應用退避策略\nbackoff = 2^retry_count
+    EH -> Mod: 重試操作 (延遲 2s)
+    activate Mod
+    Mod -> Mod: 重試成功!
+    Mod --> EH: 返回結果
+    deactivate Mod
+    EH --> Mod: 錯誤已恢復
+    deactivate EH
+    
+else 重試失敗或無法重試
+    EH -> EB: publish_event(\n  Event(\n    type="ERROR_OCCURRED",\n    data=error_info\n  )\n)
+    activate EB
+    EB -> SM: 通知狀態管理器
+    deactivate EB
+    
+    EH -> SM: request_state_transition(\n  target_state=ERROR\n)
+    deactivate EH
+end
+
+== 狀態管理器錯誤處理 ==
+
+activate SM
+SM -> SM: 驗證狀態轉換\ncan_transition_to(ERROR)?
+
+alt 允許轉換到 ERROR
+    SM -> SM: 保存當前狀態\nsaved_state = current_state
+    SM -> SM: 轉換到 ERROR 狀態\ncurrent_state = ERROR
+    
+    SM -> EB: publish_event(\n  Event(\n    type="STATE_CHANGED",\n    from=CHAT,\n    to=ERROR\n  )\n)
+    activate EB
+    EB -> UC: 通知控制器
+    deactivate EB
+    
+else 不允許轉換
+    SM -> SM: 記錄錯誤\nlog_error(transition_denied)
+end
+deactivate SM
+
+== 控制器級錯誤處理 ==
+
+UC -> UC: 收到 ERROR 狀態通知
+activate UC
+
+UC -> UC: 評估錯誤嚴重性\nseverity = get_severity(error)
+
+alt 可恢復錯誤
+    UC -> SM: request_state_recovery()
+    activate SM
+    SM -> SM: 恢復到之前狀態\ncurrent_state = saved_state
+    SM -> EB: publish_event(\n  Event(\n    type="STATE_RECOVERED"\n  )\n)
+    activate EB
+    EB -> UC: 狀態已恢復
+    deactivate EB
+    SM --> UC: 恢復成功
+    deactivate SM
+    
+    UC -> EB: publish_event(\n  Event(\n    type="TTS_SPEAK",\n    text="發生了一個小錯誤，已經修復了"\n  )\n)
+    
+else 嚴重錯誤
+    UC -> UC: 記錄錯誤詳情\nlog_critical_error()
+    
+    UC -> EB: publish_event(\n  Event(\n    type="TTS_SPEAK",\n    text="系統遇到錯誤，正在重啟相關模組"\n  )\n)
+    
+    UC -> Mod: shutdown()
+    activate Mod
+    Mod -> Mod: 清理資源
+    Mod --> UC: 關閉完成
+    deactivate Mod
+    
+    UC -> Mod: initialize()
+    activate Mod
+    Mod -> Mod: 重新初始化
+    Mod --> UC: 初始化完成
+    deactivate Mod
+    
+    UC -> SM: request_state_transition(\n  target_state=IDLE\n)
+    activate SM
+    SM -> SM: current_state = IDLE
+    SM --> UC: 狀態已重置
+    deactivate SM
+end
+
+deactivate UC
+
+== 錯誤記錄 ==
+
+UC -> UC: log_to_error_file(\n  error_info,\n  timestamp,\n  context\n)
+
+note over UC
+  錯誤記錄到:
+  logs/error/error_YYYYMMDD.log
+  
+  包含:
+  - 錯誤類型
+  - 堆疊跟蹤
+  - 上下文信息
+  - 恢復操作
+end note
+
+== 健康檢查 ==
+
+UC -> UC: 執行健康檢查\nrun_health_check()
+activate UC
+
+UC -> Mod: health_check()
+activate Mod
+Mod -> Mod: 檢查模組狀態
+alt 模組健康
+    Mod --> UC: {"status": "healthy"}
+else 模組異常
+    Mod --> UC: {"status": "unhealthy"}
+    UC -> UC: 標記模組為不健康\nunhealthy_modules.add(Mod)
+end
+deactivate Mod
+
+UC -> UC: 評估系統健康度\nhealth_score = calculate_health()
+
+alt 系統健康
+    UC -> UC: 繼續正常運行
+else 系統不健康
+    UC -> UC: 觸發自動恢復流程
+end
+deactivate UC
+
+note over UC
+  系統已恢復正常運行
+  或已標記問題模組
+  等待人工介入
+end note
+
+@enduml

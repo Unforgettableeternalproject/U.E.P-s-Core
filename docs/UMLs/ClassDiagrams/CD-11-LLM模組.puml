@@ -1,0 +1,204 @@
+@startuml CD-11-LLM模組
+
+' LLM 模組類別圖
+' LLM 整合和工作流決策
+
+skinparam classAttributeIconSize 0
+skinparam class {
+    BackgroundColor<<module>> LightSeaGreen
+    BackgroundColor<<client>> PaleTurquoise
+    BorderColor DarkCyan
+}
+
+package "LLM 模組 (Large Language Model Module)" {
+    
+    class LLMModule <<module>> {
+        ' LLM 主模組
+        - gemini_client: GeminiClient
+        - prompt_manager: PromptManager
+        - mcp_client: MCPClient
+        - cache_manager: CacheManager
+        - config: Dict
+        --
+        + initialize(): bool
+        + handle(input_data): ModuleResponse
+        - _generate_response(prompt, context): str
+        - _handle_function_call(function_call): Dict
+        + set_mcp_server(server): void
+        + shutdown(): void
+    }
+    
+    class GeminiClient <<client>> {
+        ' Gemini API 客戶端
+        - api_key: str
+        - model_name: str
+        - generation_config: Dict
+        --
+        + generate(prompt, context): str
+        + stream_generate(prompt): Generator
+        + get_model_info(): Dict
+        + set_temperature(temp): void
+    }
+    
+    class MCPClient <<client>> {
+        ' MCP 協議客戶端
+        - connected_servers: Dict[str, MCPServer]
+        - available_tools: Dict[str, Tool]
+        --
+        + connect_to_server(server_name): void
+        + call_function(function_name, args): Dict
+        + list_tools(): List[Tool]
+        + disconnect(): void
+    }
+    
+    class PromptManager {
+        ' 提示詞管理器
+        - system_prompts: Dict[str, str]
+        - template_cache: Dict
+        --
+        + get_system_prompt(mode): str
+        + format_conversation(history): str
+        + format_memory_context(memories): str
+        + build_mcp_prompt(tools): str
+    }
+    
+    class CacheManager {
+        ' 上下文快取管理器
+        - cache: Dict[str, CachedContext]
+        - max_cache_size: int
+        --
+        + get_cached_context(key): CachedContext
+        + set_cache(key, context): void
+        + clear_expired_cache(): void
+        + get_cache_stats(): Dict
+    }
+    
+    class Tool {
+        ' MCP 工具定義
+        + name: str
+        + description: str
+        + parameters: Dict
+        + function: Callable
+        --
+        + to_dict(): Dict
+    }
+}
+
+' 關係定義
+LLMModule "1" --> "1" GeminiClient : uses
+LLMModule "1" --> "1" MCPClient : uses
+LLMModule "1" --> "1" PromptManager : uses
+LLMModule "1" --> "1" CacheManager : uses
+MCPClient --> Tool : manages
+
+' 注釋
+note right of LLMModule
+  **LLM 主模組職責**
+  
+  1. Gemini API 調用
+  2. MCP 函數調用協調
+  3. 提示詞管理
+  4. 上下文快取
+  
+  處理流程 (CHAT):
+  1. 從 WorkingContext 獲取:
+     - 身份上下文
+     - 記憶上下文
+     - 對話歷史
+  2. 構建提示詞
+  3. Gemini 生成回應
+  4. 返回文字
+  
+  處理流程 (WORK):
+  1. 獲取 MCP tools 列表
+  2. Gemini 決策函數調用
+  3. MCPClient 執行函數
+  4. 返回結果給 Gemini
+  5. Gemini 生成描述
+end note
+
+note right of GeminiClient
+  **Gemini API 整合**
+  
+  模型選項:
+  - gemini-1.5-flash (快速)
+  - gemini-1.5-pro (高品質)
+  - gemini-2.0-flash-exp (實驗)
+  
+  功能特性:
+  - Function Calling (MCP)
+  - Context Caching
+  - System Instructions
+  - Temperature 控制
+  
+  配置:
+  - temperature: 0.7
+  - max_output_tokens: 2048
+  - top_p: 0.95
+end note
+
+note right of MCPClient
+  **MCP 協議客戶端**
+  
+  Model Context Protocol:
+  - Anthropic 開發的標準
+  - LLM ↔ 外部工具通信
+  
+  支援的 MCP Server:
+  - SYSModule.mcp_server
+  
+  可用工具:
+  - start_workflow
+  - review_step
+  - approve_step
+  - provide_workflow_input
+  - cancel_workflow
+  
+  調用流程:
+  1. LLM 返回 function_call
+  2. MCPClient 解析
+  3. 路由到對應 server
+  4. 執行並返回結果
+end note
+
+note right of PromptManager
+  **提示詞管理**
+  
+  系統提示詞類型:
+  - chat_mode: 對話模式
+  - work_mode: 工作流模式
+  - mcp_decision: MCP 決策
+  
+  提示詞模板:
+  - 變數替換
+  - 上下文注入
+  - 格式化
+  
+  範例:
+  """
+  你是 U.E.P AI 助理。
+  當前用戶: {identity_name}
+  記憶: {memory_context}
+  對話歷史: {conversation}
+  """
+end note
+
+note bottom of CacheManager
+  **上下文快取**
+  
+  Gemini Context Caching:
+  - 快取系統提示詞
+  - 快取長對話歷史
+  - 節省 API 費用
+  - 降低延遲
+  
+  快取策略:
+  - 超過 1000 tokens → 啟用快取
+  - TTL: 5 分鐘
+  - 自動失效清理
+  
+  快取鍵:
+  - {identity_id}_{session_id}
+end note
+
+@enduml

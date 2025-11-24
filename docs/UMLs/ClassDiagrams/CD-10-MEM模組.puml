@@ -1,0 +1,190 @@
+@startuml CD-10-MEM模組
+
+' MEM 模組類別圖
+' 記憶管理系統架構
+
+skinparam classAttributeIconSize 0
+skinparam class {
+    BackgroundColor<<module>> LightPink
+    BackgroundColor<<storage>> MistyRose
+    BorderColor DarkRed
+}
+
+package "MEM 模組 (Memory Module)" {
+    
+    class MEMModule <<module>> {
+        ' MEM 主模組
+        - faiss_index: FAISSVectorStore
+        - metadata_storage: MemoryMetadata
+        - embedding_model: SentenceTransformer
+        - session_records: Dict
+        - config: Dict
+        --
+        + initialize(): bool
+        + handle(input_data): ModuleResponse
+        + store_memory(text, identity, metadata): void
+        + retrieve_memories(query, identity, top_k): List[Memory]
+        + create_session_snapshot(session_id): void
+        + shutdown(): void
+    }
+    
+    class FAISSVectorStore <<storage>> {
+        ' FAISS 向量存儲
+        - index: faiss.Index
+        - dimension: int
+        - index_path: str
+        --
+        + add_vectors(vectors, ids): void
+        + search(query_vector, top_k): List[Tuple]
+        + save(path): void
+        + load(path): void
+        + get_index_size(): int
+    }
+    
+    class MemoryMetadata <<storage>> {
+        ' 記憶元數據管理
+        - metadata: Dict[str, MemoryEntry]
+        - metadata_path: str
+        --
+        + save_metadata(): void
+        + load_metadata(): void
+        + add_entry(entry_id, entry): void
+        + get_entry(entry_id): MemoryEntry
+        + filter_by_identity(identity_id): List[MemoryEntry]
+        + filter_by_timerange(start, end): List[MemoryEntry]
+    }
+    
+    class MemoryEntry {
+        ' 單筆記憶條目
+        + entry_id: str
+        + text: str
+        + identity_id: str
+        + timestamp: float
+        + source: str
+        + metadata: Dict
+        --
+        + to_dict(): Dict
+        + from_dict(data): MemoryEntry
+    }
+    
+    class SessionSnapshot {
+        ' 會話快照
+        + session_id: str
+        + session_type: str
+        + start_time: float
+        + end_time: float
+        + memory_entries: List[str]
+        + summary: str
+        --
+        + to_dict(): Dict
+    }
+}
+
+' 關係定義
+MEMModule "1" --> "1" FAISSVectorStore : uses
+MEMModule "1" --> "1" MemoryMetadata : uses
+MemoryMetadata "1" --> "*" MemoryEntry : manages
+MEMModule ..> SessionSnapshot : creates
+
+' 注釋
+note right of MEMModule
+  **MEM 主模組職責**
+  
+  1. 記憶存儲 (向量化)
+  2. 記憶檢索 (相似度搜索)
+  3. 身份隔離
+  4. 會話快照
+  
+  處理流程:
+  1. 接收查詢請求 (from LLM)
+  2. 文字向量化
+  3. FAISS 相似度搜索
+  4. 過濾身份
+  5. 返回前 k 筆記憶
+  
+  存儲時機:
+  - 對話結束時
+  - 重要事件發生
+  - 會話快照
+end note
+
+note right of FAISSVectorStore
+  **FAISS 向量存儲**
+  
+  FAISS (Facebook AI Similarity Search):
+  - 高效向量相似度搜索
+  - 支援大規模索引
+  - CPU/GPU 加速
+  
+  索引類型:
+  - IndexFlatL2 (精確搜索)
+  - IndexIVFFlat (近似搜索)
+  
+  向量維度:
+  - SentenceTransformer: 384/768
+  - 取決於嵌入模型
+  
+  操作:
+  - add_vectors: 批次添加
+  - search: top-k 檢索
+  - save/load: 持久化
+end note
+
+note right of MemoryMetadata
+  **元數據管理**
+  
+  為何需要元數據?
+  - FAISS 只存向量,不存文字
+  - 需要映射 vector_id → text
+  - 支援過濾查詢
+  
+  元數據包含:
+  - entry_id: 唯一標識
+  - text: 原始文字
+  - identity_id: 所屬身份
+  - timestamp: 時間戳記
+  - source: 來源 (chat/work)
+  - metadata: 擴展信息
+  
+  過濾功能:
+  - 按身份過濾
+  - 按時間範圍過濾
+  - 按來源類型過濾
+end note
+
+note right of SessionSnapshot
+  **會話快照機制**
+  
+  用途:
+  - 記錄完整對話
+  - 支援長期記憶
+  - 訓練數據收集
+  
+  快照包含:
+  - 會話 ID 和類型
+  - 時間範圍
+  - 關聯的記憶條目
+  - 會話摘要
+  
+  創建時機:
+  - ChattingSession 結束
+  - WorkflowSession 完成
+  - 系統關閉時
+end note
+
+note bottom of MemoryEntry
+  **記憶條目範例**
+  {
+    "entry_id": "mem_20251107_001",
+    "text": "使用者喜歡晴天",
+    "identity_id": "identity_A",
+    "timestamp": 1699350000.0,
+    "source": "chat",
+    "metadata": {
+      "session_id": "cs_001",
+      "relevance_score": 0.95
+    }
+  }
+end note
+
+@enduml

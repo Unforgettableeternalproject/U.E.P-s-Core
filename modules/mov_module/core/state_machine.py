@@ -62,14 +62,15 @@ class MovementStateMachine:
             states, weights = zip(*w.items())
             selected_state = random.choices(states, weights=weights, k=1)[0]
             
-            # 當選到轉換狀態時，特別記錄
-            if selected_state == BehaviorState.TRANSITION:
-                print(f"🔄 TRANSITION狀態被觸發！當前模式: {mode.value}, 權重: {dict(w)}")
+            # 移除 print 洗屏，改用 debug_log（需在外部處理）
+            # TRANSITION 觸發已經在 mov_module 的 _switch_behavior 有日誌記錄
             
             return selected_state
         except Exception as e:
             # 錯誤處理：如果權重有問題，回到預設狀態
-            print(f"權重選擇錯誤: {e}, 權重字典: {w}")
+            # 使用 error_log 而非 print
+            from devtools.debugger import error_log
+            error_log(f"[StateMachine] 權重選擇錯誤: {e}, 權重字典: {w}")
             return BehaviorState.IDLE
 
     # —— Idle 管理 ——

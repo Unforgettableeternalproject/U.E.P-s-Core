@@ -77,6 +77,9 @@ class SystemLoop:
         from core.states.state_manager import UEPState
         self._previous_state = UEPState.IDLE  # 初始化為 IDLE，避免首次檢查失敗
         
+        # 🔧 工作流輸入相關
+        self._pending_stt_restart = False  # 延遲 STT 重啟標記
+        
         info_log(f"[SystemLoop] 系統循環已創建 (輸入模式: {self.input_mode})")
         
         # ✅ 訂閱事件總線
@@ -235,10 +238,11 @@ class SystemLoop:
             
             info_log("[SystemLoop] 💬 工作流等待使用者輸入，輸入層已啟用")
             
-            # 🔧 VAD 模式下，主動重啟 STT 監聽
+            # 🔧 VAD 模式下，設置延遲啟動標記，等待當前循環完全結束後再啟動 STT
+            # 原因：避免在 TTS 播放提示或輸出層未完成時過早啟動 VAD
             if self.input_mode == "vad":
-                debug_log(2, "[SystemLoop] 工作流等待輸入，重新啟動STT監聽 (VAD模式)")
-                self._restart_stt_listening()
+                self._pending_stt_restart = True
+                debug_log(2, "[SystemLoop] 工作流等待輸入，設置延遲 STT 重啟標記 (等待循環結束)")
             
         except Exception as e:
             error_log(f"[SystemLoop] 處理工作流輸入請求失敗: {e}")
@@ -724,6 +728,12 @@ class SystemLoop:
                     
                     # 系統循環結束，檢查 GS 結束條件
                     self._check_cycle_end_conditions()
+                    
+                    # 🔧 檢查是否有延遲的 STT 重啟請求
+                    if hasattr(self, '_pending_stt_restart') and self._pending_stt_restart:
+                        self._pending_stt_restart = False
+                        debug_log(2, "[SystemLoop] 循環已結束，現在執行延遲的 STT 重啟")
+                        self._restart_stt_listening()
             
             # 記錄前一個狀態
             self._previous_state = current_state

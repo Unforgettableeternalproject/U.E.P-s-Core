@@ -94,13 +94,31 @@ class ANIModule(BaseFrontendModule):
             debug_log(2, "[ANI] play: 動畫名稱為空")
             return {"error": "animation name required"}
         
-        debug_log(1, f"[ANI] 請求播放動畫: {name}, loop={loop}")
+        # 只在非 coalesced 的情況下記錄（減少日誌洗屏）
         result = self.manager.play(name, loop=loop)
-        debug_log(2, f"[ANI] 播放結果: {result}")
+        if not result.get("coalesced"):
+            debug_log(2, f"[ANI] 播放動畫: {name}, loop={loop}")
         return result
     
     def stop(self):
         self.manager.stop()
+    
+    def set_current_frame(self, frame_index: int) -> Dict:
+        """
+        直接設置當前動畫的幀索引（不重新播放）
+        
+        用於 turn_head 等需要即時響應的動畫
+        
+        Args:
+            frame_index: 目標幀索引
+            
+        Returns:
+            操作結果
+        """
+        result = self.manager.set_frame(frame_index)
+        if result.get("success"):
+            debug_log(3, f"[ANI] 設置幀索引: {frame_index}")
+        return result
 
     def register_clips(self, clips_meta: list[Dict]):
         """clips_meta: [{name,total_frames,fps,default_loop}]"""
@@ -132,7 +150,7 @@ class ANIModule(BaseFrontendModule):
         try:
             st = self.get_current_animation_status()  # 你現有的狀態查詢介面
             if not st or not st.get("name") or not st.get("is_playing"):
-                debug_log(3, f"[ANI] get_current_frame: 沒有活動動畫 - status: {st}")
+                # 移除洗屏日誌 - 這個情況非常常見不需記錄
                 return None
                 
             anim_name = st["name"]

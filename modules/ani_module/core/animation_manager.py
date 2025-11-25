@@ -28,6 +28,7 @@ class AnimationManager:
         self.last_request_time: float = 0.0
         self.request_cooldown = request_cooldown
         self._pending: Optional[tuple[str, dict]] = None  # 單槽
+        self.static_frame_mode: bool = False  # 靜態幀模式：不自動更新幀
         # 事件回呼
         self.on_start: Optional[Callable[[str], None]] = None
         self.on_frame: Optional[Callable[[str, int], None]] = None
@@ -79,10 +80,33 @@ class AnimationManager:
         if self.on_finish:
             try: self.on_finish(finished)
             except Exception: pass
+    
+    def set_frame(self, frame_index: int) -> Dict:
+        """直接設置當前動畫的幀索引（參考 desktop_pet.py）"""
+        if not self.current:
+            return {"error": "no active animation"}
+        
+        # 確保幀索引在有效範圍內（使用模運算自動循環）
+        frame_index = frame_index % self.current.total_frames
+        
+        # 直接設置幀
+        self.current.current_frame = frame_index
+        
+        # 觸發幀回調以更新 UI
+        if self.on_frame:
+            try:
+                self.on_frame(self.current.name, frame_index)
+            except Exception:
+                pass
+        
+        return {"success": True, "frame": frame_index}
 
     # 更新
     def update(self, now: Optional[float] = None):
         if not self.current:
+            return
+        # 靜態幀模式：不自動更新幀（用於 turn_head 等需要手動控制幀的動畫）
+        if self.static_frame_mode:
             return
         now = now or time.time()
         dt = self.current.frame_duration()
@@ -111,6 +135,31 @@ class AnimationManager:
                         self.play(pname, loop=params.get("loop", True))
                     break
 
+    def enter_static_frame_mode(self, clip_name: str, initial_frame: int = 0) -> Dict:
+        """進入靜態幀模式（用於 turn_head 等需要手動控制幀的動畫）"""
+        clip = self.clips.get(clip_name)
+        if not clip:
+            return {"error": f"clip not found: {clip_name}"}
+        
+        # 停止當前動畫
+        self.stop()
+        
+        # 設置為靜態幀模式
+        self.current = clip
+        self.current.current_frame = initial_frame % clip.total_frames
+        self.current.last_frame_time = time.time()
+        self.state = AnimPlayState.PLAYING
+        self._active_loop = False
+        self.static_frame_mode = True
+        
+        return {"success": True, "clip": clip_name, "frame": self.current.current_frame}
+    
+    def exit_static_frame_mode(self):
+        """退出靜態幀模式並停止當前動畫"""
+        self.static_frame_mode = False
+        # 停止當前動畫，避免繼續播放完
+        self.stop()
+    
     def get_status(self) -> Dict:
         if not self.current:
             return {"name": None, "is_playing": False, "loop": False, "state": self.state.value}
@@ -122,6 +171,7 @@ class AnimationManager:
             "is_playing": self.state == AnimPlayState.PLAYING,
             "loop": self._active_loop,
             "state": self.state.value,
+            "static_frame_mode": self.static_frame_mode,
             # 新增：變換屬性
             "zoom": self.current.zoom,
             "offset_x": self.current.offset_x,

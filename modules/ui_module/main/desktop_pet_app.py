@@ -129,6 +129,13 @@ class DesktopPetApp(QWidget):
         # 標記是否需要調整視窗大小
         self.pending_resize = None
         
+        # 日誌頻率控制
+        self._frame_update_log_counter = 0
+        self._pause_log_counter = 0
+        self._position_log_counter = 0
+        self._scale_log_counter = 0
+        self.LOG_INTERVAL = 100  # 每100次才輸出一次日誌
+        
         # 添加定期檢查模組是否更新的計時器
         if QTimer:
             self.module_check_timer = QTimer(self)
@@ -139,6 +146,20 @@ class DesktopPetApp(QWidget):
             self.resize_timer = QTimer(self)
             self.resize_timer.timeout.connect(self._apply_pending_resize)
             self.resize_timer.setSingleShot(True)  # 單次觸發
+            
+            # 添加滑鼠追蹤計時器（事件驅動架構）
+            self.cursor_tracking_timer = QTimer(self)
+            self.cursor_tracking_timer.timeout.connect(self._check_cursor_tracking)
+            self.cursor_tracking_timer.start(100)  # 降低到 10 FPS，減少性能消耗
+        
+        # 滑鼠追蹤狀態
+        self._cursor_was_near = False  # 上一幀是否在追蹤範圍內
+        self._last_cursor_angle = None  # 上一次的角度
+        self._cursor_tracking_config = {
+            'watch_radius': 300,      # 追蹤半徑
+            'watch_radius_out': 330,  # 離開半徑（防抖動）
+            'angle_threshold': 10.0,  # 角度變化閾值（度），低於此值不觸發更新
+        }
         
         # 渲染控制
         self.rendering_paused = False
@@ -221,7 +242,11 @@ class DesktopPetApp(QWidget):
         """更新動畫幀"""
         try:
             if self.rendering_paused:
-                debug_log(3, f"[DesktopPetApp] 渲染已暫停: {self.pause_reason}")
+                # 降低日誌頻率：每100次才輸出一次
+                self._pause_log_counter += 1
+                if self._pause_log_counter >= self.LOG_INTERVAL:
+                    debug_log(3, f"[DesktopPetApp] 渲染已暫停: {self.pause_reason}")
+                    self._pause_log_counter = 0
                 return
 
             if not self.ani_module:
@@ -233,7 +258,11 @@ class DesktopPetApp(QWidget):
                 if current_frame:
                     self.current_image = current_frame
                     self.update()
-                    debug_log(3, "[DesktopPetApp] 成功更新動畫幀")
+                    # 降低日誌頻率：每100次才輸出一次
+                    self._frame_update_log_counter += 1
+                    if self._frame_update_log_counter >= self.LOG_INTERVAL:
+                        debug_log(3, "[DesktopPetApp] 成功更新動畫幀")
+                        self._frame_update_log_counter = 0
             # 若沒有，靠回呼機制推動即可（這裡就不做事）
         except Exception as e:
             debug_log(2, f"[DesktopPetApp] 動畫幀更新異常: {e}")
@@ -349,8 +378,8 @@ class DesktopPetApp(QWidget):
                 self.setAttribute(Qt.WA_TranslucentBackground)
                 self.setFixedSize(*self.default_size)
                 
-                # 設置初始位置
-                self.center_on_screen()
+                # 注意：不在這裡設置初始位置，由 MOV 模組的入場動畫控制
+                # self.center_on_screen()  # 已註解，避免覆蓋 MOV 模組的位置設定
             else:
                 # 模擬版本
                 self.setFixedSize(*self.default_size)
@@ -459,7 +488,12 @@ class DesktopPetApp(QWidget):
                 x = (self.width() - scaled_image.width()) // 2
                 y = (self.height() - scaled_image.height()) // 2
                 painter.drawPixmap(x, y, scaled_image)
-                debug_log(3, f"[DesktopPetApp] 比例縮放: zoom={zoom_factor:.2f}, 圖片={scaled_image.width()}x{scaled_image.height()}, 視窗={self.width()}x{self.height()}")
+                
+                # 使用計數器減少日誌頻率
+                self._scale_log_counter += 1
+                if self._scale_log_counter >= self.LOG_INTERVAL:
+                    debug_log(3, f"[DesktopPetApp] 比例縮放: zoom={zoom_factor:.2f}, 圖片={scaled_image.width()}x{scaled_image.height()}, 視窗={self.width()}x{self.height()}")
+                    self._scale_log_counter = 0
         except Exception as e:
             error_log(f"[DesktopPetApp] 繪製事件異常: {e}")
     
@@ -621,7 +655,12 @@ class DesktopPetApp(QWidget):
             x_value = int(x)
             y_value = int(y)
             self.move(x_value, y_value)
-            debug_log(3, f"[DesktopPetApp] 已設置位置: ({x_value}, {y_value})")
+            
+            # 使用計數器減少日誌頻率
+            self._position_log_counter += 1
+            if self._position_log_counter >= self.LOG_INTERVAL:
+                debug_log(3, f"[DesktopPetApp] 已設置位置: ({x_value}, {y_value})")
+                self._position_log_counter = 0
         except (ValueError, TypeError) as e:
             error_log(f"[DesktopPetApp] 位置值無效: x={x}, y={y}, 錯誤: {e}")
             # 保持當前位置
@@ -666,7 +705,7 @@ class DesktopPetApp(QWidget):
         """處理來自 MOV 模組的位置變更"""
         try:
             self.set_position(x, y)
-            debug_log(3, f"[DesktopPetApp] MOV 模組更新位置: ({x}, {y})")
+            # 日誌已在 set_position 內部處理
         except Exception as e:
             error_log(f"[DesktopPetApp] 處理位置變更失敗: {e}")
     
@@ -964,6 +1003,9 @@ class DesktopPetApp(QWidget):
             if hasattr(self, 'rendering_timeout_timer') and self.rendering_timeout_timer:
                 self.rendering_timeout_timer.deleteLater()
                 self.rendering_timeout_timer = None
+            if hasattr(self, 'cursor_tracking_timer'):
+                self.cursor_tracking_timer.deleteLater()
+                self.cursor_tracking_timer = None
         except Exception as e:
             error_log(f"[DesktopPetApp] 刪除計時器時發生錯誤: {e}")
             
@@ -988,3 +1030,104 @@ class DesktopPetApp(QWidget):
         info_log("[DesktopPetApp] 收到窗口關閉事件")
         self.close()
         event.accept()
+    
+    # ========== 滑鼠追蹤（事件驅動架構）==========
+    
+    def _check_cursor_tracking(self):
+        """
+        檢查滑鼠追蹤狀態並發送事件給 MOV 模組
+        
+        使用前端事件總線（FrontendEventBus）減少直接調用開銷
+        
+        職責：
+        1. 計算滑鼠到角色中心的距離
+        2. 判斷是否進入/離開追蹤範圍
+        3. 透過事件總線發送事件（降低延遲）
+        """
+        try:
+            # 拖曳時不追蹤
+            if self.is_dragging:
+                return
+            
+            # MOV 模組必須存在
+            if not self.mov_module or not hasattr(self.mov_module, 'handle_cursor_tracking_event'):
+                return
+            
+            # 獲取滑鼠位置（使用 PyQt 的 QCursor）
+            try:
+                from PyQt5.QtGui import QCursor
+                cursor_pos = QCursor.pos()
+            except ImportError:
+                return
+            
+            # 計算角色中心
+            pet_center_x = self.x() + self.width() // 2
+            pet_center_y = self.y() + self.height() // 2
+            
+            # 計算距離
+            import math
+            dx = cursor_pos.x() - pet_center_x
+            dy = cursor_pos.y() - pet_center_y
+            distance = math.hypot(dx, dy)
+            
+            # 計算角度（0° = 右，90° = 上，180° = 左，270° = 下）
+            angle_rad = math.atan2(-dy, dx)  # 螢幕 y+ 向下，反轉
+            angle_deg = (math.degrees(angle_rad) + 360) % 360
+            
+            # 判斷是否在追蹤範圍內
+            watch_radius = self._cursor_tracking_config['watch_radius']
+            watch_radius_out = self._cursor_tracking_config['watch_radius_out']
+            
+            is_near_now = distance <= watch_radius
+            
+            # 使用滯後半徑防止抖動
+            if self._cursor_was_near:
+                is_near_now = distance <= watch_radius_out
+            
+            # 檢測進入/離開事件
+            if is_near_now and not self._cursor_was_near:
+                # 進入追蹤範圍
+                self.mov_module.handle_cursor_tracking_event({
+                    "type": "cursor_near",
+                    "distance": distance,
+                    "angle": angle_deg
+                })
+                self._last_cursor_angle = angle_deg
+                debug_log(2, f"[DesktopPetApp] 滑鼠進入追蹤範圍，距離={distance:.1f}px，角度={angle_deg:.1f}°")
+                
+            elif not is_near_now and self._cursor_was_near:
+                # 離開追蹤範圍
+                self.mov_module.handle_cursor_tracking_event({
+                    "type": "cursor_far",
+                    "distance": distance
+                })
+                self._last_cursor_angle = None
+                debug_log(2, f"[DesktopPetApp] 滑鼠離開追蹤範圍，距離={distance:.1f}px")
+            
+            elif is_near_now:
+                # 在追蹤範圍內，只有角度變化超過閾值才更新
+                angle_threshold = self._cursor_tracking_config['angle_threshold']
+                
+                if self._last_cursor_angle is None:
+                    # 首次更新
+                    angle_changed = True
+                else:
+                    # 計算角度差（處理 0°/360° 邊界）
+                    angle_diff = abs(angle_deg - self._last_cursor_angle)
+                    if angle_diff > 180:
+                        angle_diff = 360 - angle_diff
+                    angle_changed = angle_diff >= angle_threshold
+                
+                if angle_changed:
+                    self.mov_module.handle_cursor_tracking_event({
+                        "type": "cursor_angle",
+                        "angle": angle_deg,
+                        "distance": distance
+                    })
+                    self._last_cursor_angle = angle_deg
+            
+            # 更新狀態
+            self._cursor_was_near = is_near_now
+            
+        except Exception as e:
+            error_log(f"[DesktopPetApp] 滑鼠追蹤檢查失敗: {e}")

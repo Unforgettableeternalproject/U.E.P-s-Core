@@ -2050,3 +2050,15 @@
 
 ---
 
+### Added some more behaviors and animations, as well a full-on handler for varioius actions and stuff. 11/26
+
+> Date: Wed, 26 Nov 2025 02:53:31 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `8b87b52dc3a50e498f3c64ecabb3f476ecb7ddb0`
+
+---
+

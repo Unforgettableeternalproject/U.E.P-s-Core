@@ -43,6 +43,9 @@ class AnimationPreviewWidget(QWidget):
         self.show_grid = False
         self.grid_size = 50  # 網格大小（像素）
         
+        # 原始尺寸邊框顯示
+        self.show_original_size = False
+        
         self.setMinimumSize(400, 400)
         self.setStyleSheet("""
             background-color: #1e1e1e;
@@ -74,6 +77,11 @@ class AnimationPreviewWidget(QWidget):
     def set_show_grid(self, show: bool):
         """設置是否顯示網格"""
         self.show_grid = show
+        self.update()
+    
+    def set_show_original_size(self, show: bool):
+        """設置是否顯示原始尺寸邊框"""
+        self.show_original_size = show
         self.update()
     
     def wheelEvent(self, event):
@@ -161,12 +169,35 @@ class AnimationPreviewWidget(QWidget):
             )
             painter.drawPixmap(x, y, scaled_pixmap)
             
+            # 繪製原始尺寸邊框（如果啟用）
+            if self.show_original_size:
+                # 使用淺藍色細線邊框
+                painter.setPen(QColor(100, 180, 255, 180))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawRect(x, y, scaled_width, scaled_height)
+                
+                # 在邊框右上角顯示原始尺寸標註
+                painter.setPen(QColor(100, 180, 255, 220))
+                size_text = f"{self.current_pixmap.width()} × {self.current_pixmap.height()}"
+                text_x = x + scaled_width - 10
+                text_y = y + 20
+                
+                # 繪製半透明背景
+                text_rect = painter.fontMetrics().boundingRect(size_text)
+                text_rect.adjust(-4, -2, 4, 2)
+                text_rect.moveTo(text_x - text_rect.width(), text_y - text_rect.height())
+                painter.fillRect(text_rect, QColor(30, 30, 30, 180))
+                
+                # 繪製文字
+                painter.drawText(text_x - painter.fontMetrics().horizontalAdvance(size_text), text_y, size_text)
+            
             # 在左上角顯示資訊（使用陰影效果）
             font = painter.font()
             font.setPointSize(9)
             painter.setFont(font)
             
             info_text = (
+                f"【原始尺寸】{self.current_pixmap.width()} × {self.current_pixmap.height()} px\n"
                 f"【縮放控制】\n"
                 f"  視圖: {self.view_zoom:.1f}x (滾輪)\n"
                 f"  Config: {self.config_zoom:.1f}x\n"
@@ -279,6 +310,12 @@ class AnimationTesterWindow(QMainWindow):
         self.grid_checkbox = QCheckBox("顯示網格")
         self.grid_checkbox.stateChanged.connect(self.on_grid_toggle)
         control_layout.addWidget(self.grid_checkbox)
+        
+        # 原始尺寸邊框選項
+        self.size_border_checkbox = QCheckBox("顯示原始尺寸邊框")
+        self.size_border_checkbox.setChecked(True)  # 預設開啟
+        self.size_border_checkbox.stateChanged.connect(self.on_size_border_toggle)
+        control_layout.addWidget(self.size_border_checkbox)
         
         # 當前幀信息
         self.frame_label = QLabel("當前幀: 0 / 0")
@@ -497,6 +534,10 @@ class AnimationTesterWindow(QMainWindow):
     def on_grid_toggle(self, state):
         """網格顯示開關"""
         self.preview_widget.set_show_grid(state == Qt.Checked)
+    
+    def on_size_border_toggle(self, state):
+        """原始尺寸邊框顯示開關"""
+        self.preview_widget.set_show_original_size(state == Qt.Checked)
         
     def on_animation_selected(self, item):
         """選擇動畫時的處理"""

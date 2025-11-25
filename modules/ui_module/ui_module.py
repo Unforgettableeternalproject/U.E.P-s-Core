@@ -229,6 +229,12 @@ class UIModule(BaseFrontendModule):
                     ani_module=self.ani_module, 
                     mov_module=self.mov_module
                 )
+                
+                # 將 pet_app 設置給 MOV 模組，啟用滑鼠追蹤
+                if self.mov_module and hasattr(self.mov_module, 'set_pet_app'):
+                    self.mov_module.set_pet_app(self.interfaces[UIInterfaceType.MAIN_DESKTOP_PET])
+                    debug_log(1, f"[{self.module_id}] 已將 pet_app 設置給 MOV 模組")
+                
                 info_log(f"[{self.module_id}] 主桌面寵物介面已準備（含 ANI/MOV 模組）")
             except ImportError as e:
                 error_log(f"[{self.module_id}] 無法導入主桌面寵物介面: {e}")
@@ -307,6 +313,28 @@ class UIModule(BaseFrontendModule):
                 info_log(f"[{self.module_id}] 介面 {interface_type.value} 已經可見")
                 return {"success": True, "interface": interface_type.value, "already_visible": True}
             
+            # 對於主介面，先準備動畫再顯示窗口
+            if interface_type == UIInterfaceType.MAIN_DESKTOP_PET:
+                # 清理離場動畫狀態
+                if self.mov_module and hasattr(self.mov_module, '_is_leaving'):
+                    if self.mov_module._is_leaving:
+                        debug_log(1, f"[{self.module_id}] 清理未完成的離場動畫狀態")
+                        self.mov_module._is_leaving = False
+                        self.mov_module.resume_movement("leave_animation")
+                
+                # 停止 ANI 模組當前播放（清理殘留動畫）
+                if self.ani_module and hasattr(self.ani_module, 'stop'):
+                    self.ani_module.stop()
+                    debug_log(2, f"[{self.module_id}] 已停止 ANI 模組當前動畫")
+                
+                # 先觸發入場動畫（設置起始位置、開始播放動畫）
+                if self.mov_module:
+                    # 檢查入場動畫是否啟用
+                    if self.mov_module._entry_behavior_config.get("enabled", True):
+                        debug_log(1, f"[{self.module_id}] 準備入場動畫")
+                        self.mov_module._play_entry_animation()
+            
+            # 顯示窗口（此時動畫已經開始）
             interface.show()
             self.active_interfaces.add(interface_type)
             
@@ -323,11 +351,28 @@ class UIModule(BaseFrontendModule):
             if not interface:
                 return {"error": f"介面 {interface_type.value} 不存在"}
             
-            interface.hide()
-            self.active_interfaces.discard(interface_type)
-            
-            info_log(f"[{self.module_id}] 隱藏介面: {interface_type.value}")
-            return {"success": True, "interface": interface_type.value}
+            # 如果是主介面且 MOV 模組已初始化，先播放離場動畫
+            if (interface_type == UIInterfaceType.MAIN_DESKTOP_PET and 
+                self.mov_module and 
+                hasattr(self.mov_module, '_play_leave_animation')):
+                
+                debug_log(1, f"[{self.module_id}] 播放離場動畫後隱藏介面")
+                
+                # 定義隱藏回調
+                def _hide_after_animation():
+                    interface.hide()
+                    self.active_interfaces.discard(interface_type)
+                    info_log(f"[{self.module_id}] 隱藏介面: {interface_type.value}")
+                
+                # 播放離場動畫，完成後隱藏
+                self.mov_module._play_leave_animation(_hide_after_animation)
+                return {"success": True, "interface": interface_type.value, "playing_leave_animation": True}
+            else:
+                # 其他介面直接隱藏
+                interface.hide()
+                self.active_interfaces.discard(interface_type)
+                info_log(f"[{self.module_id}] 隱藏介面: {interface_type.value}")
+                return {"success": True, "interface": interface_type.value}
         except Exception as e:
             return {"error": str(e)}
     
@@ -429,6 +474,23 @@ class UIModule(BaseFrontendModule):
                 settings = data.get('settings', {})
                 self.update_system_settings(settings)
                 return {"success": True, "updated_settings": list(settings.keys())}
+            
+            elif command == 'move_interface':
+                # 移動介面命令（轉換為 move_window 給主桌寵）
+                interface_name = data.get('interface')
+                if interface_name == 'main_desktop_pet':
+                    interface_type = UIInterfaceType.MAIN_DESKTOP_PET
+                    interface = self.interfaces.get(interface_type)
+                    if interface and hasattr(interface, 'handle_request'):
+                        # 轉換為 move_window 命令
+                        move_data = {
+                            'command': 'move_window',
+                            'x': data.get('x'),
+                            'y': data.get('y')
+                        }
+                        return interface.handle_request(move_data)
+                    return {"error": "主桌寵介面不可用"}
+                return {"error": f"不支援的介面: {interface_name}"}
             
             # 向後相容的舊命令 (主要針對 main desktop pet)
             elif command in ['show_window', 'hide_window']:

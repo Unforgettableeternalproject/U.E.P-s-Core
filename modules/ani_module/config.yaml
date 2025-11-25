@@ -13,17 +13,17 @@ resources:
     enter:
       prefix: diamond_girl_start_
       total_frames: 54
-      frame_duration: 0.08
+      frame_duration: 0.06
       loop: false
-      zoom: 1.0
-      offsetX: 0
-      offsetY: 0
+      zoom: 1.35
+      offsetX: 30
+      offsetY: -20
     leave:
       prefix: diamond_girl_end_
       total_frames: 74
-      frame_duration: 0.08
+      frame_duration: 0.06
       loop: false
-      zoom: 1.0
+      zoom: 1.35
       offsetX: 0
       offsetY: -20
     angry_idle_f:
@@ -74,9 +74,17 @@ resources:
       zoom: 1.0
       offsetX: 0
       offsetY: 0
-    data_search_f:
+    data_processing_f:
       prefix: diamond_girl_data_processing_
       total_frames: 39
+      frame_duration: 0.08
+      loop: true
+      zoom: 1.0
+      offsetX: 0
+      offsetY: 0
+    data_processing_g:
+      prefix: diamond_girl_data_processing_standing_
+      total_frames: 62
       frame_duration: 0.08
       loop: true
       zoom: 1.0
@@ -95,7 +103,7 @@ resources:
       total_frames: 38
       frame_duration: 0.06
       loop: false
-      zoom: 1.1
+      zoom: 1.3
       offsetX: 200
       offsetY: -200
     g_to_f:
@@ -103,7 +111,7 @@ resources:
       total_frames: 38
       frame_duration: 0.06
       loop: false
-      zoom: 1.1
+      zoom: 1.3
       offsetX: 200
       offsetY: -200
     g_to_l:
@@ -111,7 +119,7 @@ resources:
       total_frames: 35
       frame_duration: 0.06
       loop: false
-      zoom: 1.3
+      zoom: 1.6
       offsetX: 25
       offsetY: -40
     l_to_g:
@@ -119,7 +127,7 @@ resources:
       total_frames: 48
       frame_duration: 0.06
       loop: false
-      zoom: 1.3
+      zoom: 1.6
       offsetX: 0
       offsetY: 0
     laugh_f:
@@ -191,7 +199,7 @@ resources:
       total_frames: 61
       frame_duration: 0.06
       loop: false
-      zoom: 1.0
+      zoom: 1.15
       offsetX: 150
       offsetY: -100
     talk_ani2_f:
@@ -247,7 +255,7 @@ resources:
       total_frames: 55
       frame_duration: 0.1
       loop: false
-      zoom: 1.0
+      zoom: 1.3
       offsetX: 0
       offsetY: 0
     tease_f:
@@ -255,7 +263,7 @@ resources:
       total_frames: 38
       frame_duration: 0.05
       loop: false
-      zoom: 1.5
+      zoom: 2.0
       offsetX: 0
       offsetY: 0
     turn_head_g:

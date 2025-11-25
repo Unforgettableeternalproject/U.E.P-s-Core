@@ -11,6 +11,8 @@ from .interaction_handler import (
     DragInteractionHandler,
     FileDropHandler
 )
+from .cursor_tracking_handler import CursorTrackingHandler
+from .throw_handler import ThrowHandler
 
 __all__ = [
     'BaseHandler',
@@ -19,4 +21,6 @@ __all__ = [
     'InteractionHandler',
     'DragInteractionHandler',
     'FileDropHandler',
+    'CursorTrackingHandler',
+    'ThrowHandler',
 ]

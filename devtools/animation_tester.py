@@ -729,7 +729,7 @@ def main():
     palette.setColor(QPalette.HighlightedText, QColor(35, 35, 35))
     app.setPalette(palette)
     
-    force_enable_file_logging()
+    # force_enable_file_logging()
     # 創建主窗口
     window = AnimationTesterWindow()
     window.show()

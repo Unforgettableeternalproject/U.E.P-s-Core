@@ -96,16 +96,16 @@ resources:
       frame_duration: 0.06
       loop: false
       zoom: 1.1
-      offsetX: 2
-      offsetY: -2
+      offsetX: 200
+      offsetY: -200
     g_to_f:
       prefix: diamond_girl_standing_to_floating_
       total_frames: 38
       frame_duration: 0.06
       loop: false
       zoom: 1.1
-      offsetX: 2
-      offsetY: 0
+      offsetX: 200
+      offsetY: -200
     g_to_l:
       prefix: diamond_girl_lying_to_standing_
       total_frames: 35
@@ -191,9 +191,9 @@ resources:
       total_frames: 61
       frame_duration: 0.06
       loop: false
-      zoom: 1.1
-      offsetX: 0
-      offsetY: 0
+      zoom: 1.0
+      offsetX: 150
+      offsetY: -100
     talk_ani2_f:
       prefix: diamond_girl_talk2_
       total_frames: 38
@@ -328,6 +328,7 @@ resources:
     turn_left: turn_left_g
     turn_right: turn_right_g
     struggle: struggle_f
+    talking_f: talk_ani_f
 debug:
   log_frame_changes: false
   show_animation_info: false

@@ -2038,3 +2038,15 @@
 
 ---
 
+### MOV module handler base implementation. 11/25
+
+> Date: Tue, 25 Nov 2025 15:29:59 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `38f5514d60786fdf6795656205e327a095af7d54`
+
+---
+

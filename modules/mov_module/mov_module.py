@@ -13,8 +13,10 @@ MOV 協調器（重構版）
 from __future__ import annotations
 
 import math
+import os
 import random
 import time
+import yaml
 from typing import Callable, Optional, Dict, Any, List
 
 from core.bases.frontend_base import BaseFrontendModule, FrontendModuleType, UIEventType
@@ -137,6 +139,11 @@ class MOVModule(BaseFrontendModule):
         self.keep_on_screen = True
         self.bounce_off_edges = False
         self._apply_config(self.config)
+        
+        # --- 狀態動畫系統 ---
+        self._current_layer: Optional[str] = None  # "input", "processing", "output"
+        self._current_system_state: UEPState = UEPState.IDLE
+        self._state_animation_config: Optional[Dict] = None
 
         info_log(f"[{self.module_id}] MOV 初始化完成")
 
@@ -181,6 +188,12 @@ class MOVModule(BaseFrontendModule):
             # 進入第一個行為
             debug_log(1, f"[{self.module_id}] 初始行為: {self.current_behavior_state.value}")
             self._enter_behavior(self.current_behavior_state)
+            
+            # 訂閱層級事件以驅動動畫
+            self._subscribe_to_layer_events()
+            
+            # 載入狀態動畫配置
+            self._state_animation_config = self._load_state_animation_config()
 
             return True
         except Exception as e:
@@ -830,6 +843,261 @@ class MOVModule(BaseFrontendModule):
 
     def on_system_state_changed(self, old_state: UEPState, new_state: UEPState):
         debug_log(1, f"[{self.module_id}] 系統狀態變更: {old_state} -> {new_state}")
+        self._current_system_state = new_state
+        
+        # IDLE 狀態時清除層級並播放閒置動畫
+        if new_state == UEPState.IDLE:
+            self._current_layer = None
+            self._update_animation_for_current_state()
+    
+    # ========= 層級事件訂閱與處理 =========
+    
+    def _subscribe_to_layer_events(self):
+        """訂閱層級完成事件以驅動動畫"""
+        try:
+            from core.event_bus import event_bus, SystemEvent
+            
+            event_bus.subscribe(
+                SystemEvent.INPUT_LAYER_COMPLETE,
+                self._on_input_layer_complete,
+                handler_name="mov_input_layer"
+            )
+            
+            event_bus.subscribe(
+                SystemEvent.PROCESSING_LAYER_COMPLETE,
+                self._on_processing_layer_complete,
+                handler_name="mov_processing_layer"
+            )
+            
+            event_bus.subscribe(
+                SystemEvent.OUTPUT_LAYER_COMPLETE,
+                self._on_output_layer_complete,
+                handler_name="mov_output_layer"
+            )
+            
+            debug_log(2, f"[{self.module_id}] 已訂閱層級完成事件")
+            
+        except Exception as e:
+            error_log(f"[{self.module_id}] 訂閱層級事件失敗: {e}")
+    
+    def _on_input_layer_complete(self, event):
+        """輸入層完成 - 進入處理層"""
+        try:
+            debug_log(2, f"[{self.module_id}] 輸入層完成，進入處理層")
+            self._current_layer = "processing"
+            self._update_animation_for_current_state()
+        except Exception as e:
+            error_log(f"[{self.module_id}] 處理輸入層完成事件失敗: {e}")
+    
+    def _on_processing_layer_complete(self, event):
+        """處理層完成 - 進入輸出層"""
+        try:
+            debug_log(2, f"[{self.module_id}] 處理層完成，進入輸出層")
+            self._current_layer = "output"
+            self._update_animation_for_current_state()
+        except Exception as e:
+            error_log(f"[{self.module_id}] 處理處理層完成事件失敗: {e}")
+    
+    def _on_output_layer_complete(self, event):
+        """輸出層完成 - 回到輸入層（或閒置）"""
+        try:
+            debug_log(2, f"[{self.module_id}] 輸出層完成")
+            self._current_layer = None
+            self._update_animation_for_current_state()
+        except Exception as e:
+            error_log(f"[{self.module_id}] 處理輸出層完成事件失敗: {e}")
+    
+    def _load_state_animation_config(self) -> Optional[Dict]:
+        """載入狀態-動畫映射配置"""
+        try:
+            # 從 ANI 模組目錄載入配置
+            ani_path = os.path.join(
+                os.path.dirname(os.path.dirname(__file__)),
+                "ani_module",
+                "state_animations.yaml"
+            )
+            if os.path.exists(ani_path):
+                with open(ani_path, 'r', encoding='utf-8') as f:
+                    config = yaml.safe_load(f)
+                    debug_log(2, f"[{self.module_id}] 已載入狀態動畫配置")
+                    return config
+            else:
+                debug_log(2, f"[{self.module_id}] 未找到狀態動畫配置檔案: {ani_path}")
+            return None
+        except Exception as e:
+            error_log(f"[{self.module_id}] 載入狀態動畫配置失敗: {e}")
+            return None
+    
+    def _update_animation_for_current_state(self):
+        """根據當前層級和系統狀態更新動畫"""
+        try:
+            if not self.ani_module:
+                debug_log(3, f"[{self.module_id}] ANI 模組未注入，無法更新動畫")
+                return
+            
+            if not self._state_animation_config:
+                debug_log(2, f"[{self.module_id}] 無狀態動畫配置")
+                return
+            
+            # IDLE 狀態：播放閒置動畫
+            if self._current_system_state == UEPState.IDLE:
+                self._handle_idle_animation()
+                return
+            
+            # 有層級時根據層級選擇動畫
+            if self._current_layer:
+                self._handle_layer_animation()
+            else:
+                # 無層級時使用預設閒置動畫
+                debug_log(3, f"[{self.module_id}] 無當前層級，使用閒置動畫")
+                self._handle_idle_animation()
+                
+        except Exception as e:
+            error_log(f"[{self.module_id}] 更新動畫失敗: {e}")
+    
+    def _handle_idle_animation(self):
+        """處理 IDLE 狀態的動畫"""
+        try:
+            config = self._state_animation_config
+            if not config:
+                return
+            
+            idle_config = config.get("IDLE", {})
+            idle_anims = idle_config.get("idle_animations", [])
+            
+            if idle_anims:
+                # 選擇符合當前移動模式的動畫
+                anim_name = self._get_compatible_animation_from_list(idle_anims)
+                if anim_name:
+                    self._trigger_anim(anim_name, {"loop": True})
+                    debug_log(2, f"[{self.module_id}] IDLE 動畫: {anim_name}")
+            else:
+                debug_log(2, f"[{self.module_id}] IDLE 狀態: 無可用動畫")
+                
+        except Exception as e:
+            error_log(f"[{self.module_id}] 處理 IDLE 動畫失敗: {e}")
+    
+    def _handle_layer_animation(self):
+        """根據當前層級選擇動畫"""
+        try:
+            config = self._state_animation_config
+            if not config:
+                return
+            
+            layer_config = config.get("LAYERS", {})
+            fallbacks = config.get("fallbacks", {})
+            
+            anim_name = None
+            loop = False
+            
+            if self._current_layer == "input":
+                # 輸入層：偵測到使用者互動
+                input_config = layer_config.get("input", {})
+                anim_name = input_config.get("default", "smile_idle_f")
+                loop = True
+                
+            elif self._current_layer == "processing":
+                # 處理層：系統思考/處理
+                processing_config = layer_config.get("processing", {})
+                anim_name = processing_config.get("default", "thinking_f")
+                loop = True
+                
+            elif self._current_layer == "output":
+                # 輸出層：系統回應（根據 mood）
+                output_config = layer_config.get("output", {})
+                
+                # 獲取當前 mood 值
+                try:
+                    from core.status_manager import status_manager
+                    mood = status_manager.status.mood
+                    
+                    if mood > 0:
+                        anim_name = output_config.get("positive_mood", "talk_ani_f")
+                    else:
+                        anim_name = output_config.get("negative_mood", "talk_ani2_f")
+                except Exception:
+                    anim_name = output_config.get("positive_mood", "talk_ani_f")
+                
+                loop = False  # talk 動畫播放一次
+            
+            # 使用 fallback 映射
+            if anim_name and anim_name in fallbacks:
+                anim_name = fallbacks[anim_name]
+            
+            # 根據當前移動模式轉換動畫名稱
+            if anim_name:
+                anim_name = self._convert_animation_for_movement_mode(anim_name)
+                if anim_name:
+                    self._trigger_anim(anim_name, {"loop": loop})
+                    debug_log(2, f"[{self.module_id}] 層級動畫: {self._current_layer} -> {anim_name} (loop={loop})")
+                else:
+                    debug_log(2, f"[{self.module_id}] 層級 {self._current_layer}: 無相容動畫")
+            else:
+                debug_log(2, f"[{self.module_id}] 層級 {self._current_layer}: 無合適動畫")
+                
+        except Exception as e:
+            error_log(f"[{self.module_id}] 處理層級動畫失敗: {e}")
+    
+    def _convert_animation_for_movement_mode(self, name: str) -> Optional[str]:
+        """
+        根據當前移動模式轉換動畫名稱
+        
+        規則：
+        - _f 後綴：浮空動畫（FLOAT 模式）
+        - _g 後綴：地面動畫（GROUND 模式）
+        - 自動轉換不相容的動畫
+        """
+        if not name:
+            return None
+        
+        try:
+            # 檢查動畫後綴
+            if name.endswith('_f'):
+                # 浮空動畫
+                if self.movement_mode == MovementMode.GROUND:
+                    # 當前在地面，嘗試找地面版本
+                    alternative = name[:-2] + '_g'
+                    if self.ani_module and hasattr(self.ani_module, 'manager'):
+                        if alternative in self.ani_module.manager.clips:
+                            debug_log(2, f"[{self.module_id}] 動畫轉換: {name} -> {alternative} (地面)")
+                            return alternative
+                    # 沒有地面版本，使用原動畫
+                    return name
+                return name
+                
+            elif name.endswith('_g'):
+                # 地面動畫
+                if self.movement_mode == MovementMode.FLOAT:
+                    # 當前在浮空，嘗試找浮空版本
+                    alternative = name[:-2] + '_f'
+                    if self.ani_module and hasattr(self.ani_module, 'manager'):
+                        if alternative in self.ani_module.manager.clips:
+                            debug_log(2, f"[{self.module_id}] 動畫轉換: {name} -> {alternative} (浮空)")
+                            return alternative
+                    # 沒有浮空版本，使用原動畫
+                    return name
+                return name
+            else:
+                # 通用動畫：適用所有模式
+                return name
+                
+        except Exception as e:
+            error_log(f"[{self.module_id}] 轉換動畫名稱失敗: {e}")
+            return name
+    
+    def _get_compatible_animation_from_list(self, anim_list: List[str]) -> Optional[str]:
+        """從動畫列表中選擇與當前移動模式相容的動畫"""
+        if not anim_list:
+            return None
+        
+        # 優先選擇符合當前模式的動畫
+        for anim_name in anim_list:
+            converted = self._convert_animation_for_movement_mode(anim_name)
+            if converted:
+                return converted
+        
+        # 如果沒有相容的，返回第一個並轉換
+        return self._convert_animation_for_movement_mode(anim_list[0])
 
     # ========= 暫停/恢復 =========
 

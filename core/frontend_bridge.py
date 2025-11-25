@@ -5,7 +5,8 @@
 
 from typing import Optional, Dict, Any
 from utils.debug_helper import debug_log, info_log, error_log
-from core.schemas import SystemState, SystemEvent
+from core.event_bus import SystemEvent
+from core.states.state_manager import UEPState
 
 
 class FrontendBridge:
@@ -117,40 +118,40 @@ class FrontendBridge:
             event_bus.subscribe(
                 SystemEvent.STATE_CHANGED,
                 self._on_state_changed,
-                source="frontend_bridge"
+                handler_name="frontend_bridge"
             )
             
             # 訂閱會話事件
             event_bus.subscribe(
                 SystemEvent.SESSION_STARTED,
                 self._on_session_started,
-                source="frontend_bridge"
+                handler_name="frontend_bridge"
             )
             
             event_bus.subscribe(
                 SystemEvent.SESSION_ENDED,
                 self._on_session_ended,
-                source="frontend_bridge"
+                handler_name="frontend_bridge"
             )
             
             # 訂閱工作流事件
             event_bus.subscribe(
                 SystemEvent.WORKFLOW_REQUIRES_INPUT,
                 self._on_workflow_input_required,
-                source="frontend_bridge"
+                handler_name="frontend_bridge"
             )
             
             # 訂閱模組狀態事件
             event_bus.subscribe(
                 SystemEvent.MODULE_BUSY,
                 self._on_module_busy,
-                source="frontend_bridge"
+                handler_name="frontend_bridge"
             )
             
             event_bus.subscribe(
                 SystemEvent.MODULE_ERROR,
                 self._on_module_error,
-                source="frontend_bridge"
+                handler_name="frontend_bridge"
             )
             
             info_log("[FrontendBridge] ✓ 事件訂閱已設置")
@@ -183,11 +184,11 @@ class FrontendBridge:
                     self.ui_module.set_animation_controller(self.ani_module)
                     debug_log(2, "[FrontendBridge] UI → ANI 連接已建立")
             
-            # ANI 需要知道 MOV 來同步動畫與移動
-            if self.ani_module and self.mov_module:
-                if hasattr(self.ani_module, 'set_movement_controller'):
-                    self.ani_module.set_movement_controller(self.mov_module)
-                    debug_log(2, "[FrontendBridge] ANI → MOV 連接已建立")
+            # MOV 需要知道 ANI 來播放動畫（MOV 控制動畫決策）
+            if self.mov_module and self.ani_module:
+                if hasattr(self.mov_module, 'attach_ani'):
+                    self.mov_module.attach_ani(self.ani_module)
+                    debug_log(2, "[FrontendBridge] MOV → ANI 連接已建立（MOV 控制動畫）")
             
             info_log("[FrontendBridge] ✓ 模組間連接已建立")
             
@@ -204,12 +205,9 @@ class FrontendBridge:
             
             debug_log(2, f"[FrontendBridge] 狀態變化: {old_state} → {new_state}")
             
-            # 通知所有前端模組
-            if self.ani_module and hasattr(self.ani_module, 'on_state_change'):
-                self.ani_module.on_state_change(new_state)
-            
-            if self.mov_module and hasattr(self.mov_module, 'on_state_change'):
-                self.mov_module.on_state_change(new_state)
+            # 通知前端模組（ANI 不需要，MOV 會自己訂閱）
+            if self.mov_module and hasattr(self.mov_module, 'on_system_state_changed'):
+                self.mov_module.on_system_state_changed(old_state, new_state)
             
             if self.ui_module and hasattr(self.ui_module, 'on_state_change'):
                 self.ui_module.on_state_change(new_state)
@@ -254,9 +252,7 @@ class FrontendBridge:
             if self.ui_module and hasattr(self.ui_module, 'request_user_input'):
                 self.ui_module.request_user_input(workflow_id, prompt)
             
-            # ANI 顯示等待動畫
-            if self.ani_module and hasattr(self.ani_module, 'play'):
-                self.ani_module.play('waiting', loop=True)
+            # 等待動畫由 MOV 根據層級事件處理（input 層）
                 
         except Exception as e:
             error_log(f"[FrontendBridge] 處理工作流輸入請求失敗: {e}")
@@ -267,9 +263,8 @@ class FrontendBridge:
             module_name = event.data.get('module_name')
             debug_log(3, f"[FrontendBridge] 模組忙碌: {module_name}")
             
-            # ANI 可以顯示忙碌動畫
-            if self.ani_module and hasattr(self.ani_module, 'play'):
-                self.ani_module.play('processing', loop=True)
+            # MOV 會根據層級事件自動處理動畫，這裡不需要直接控制
+            # 若需要特殊處理，由 MOV 模組決定
                 
         except Exception as e:
             error_log(f"[FrontendBridge] 處理模組忙碌狀態失敗: {e}")
@@ -286,9 +281,7 @@ class FrontendBridge:
             if self.ui_module and hasattr(self.ui_module, 'show_error'):
                 self.ui_module.show_error(f"{module_name}: {error_msg}")
             
-            # ANI 顯示錯誤動畫
-            if self.ani_module and hasattr(self.ani_module, 'play'):
-                self.ani_module.play('error', loop=False)
+            # 錯誤動畫由 MOV 根據 ERROR 狀態處理
                 
         except Exception as e:
             error_log(f"[FrontendBridge] 處理模組錯誤失敗: {e}")
@@ -312,13 +305,8 @@ class FrontendBridge:
     def _handle_mood_change(self, mood: float):
         """處理情緒變化"""
         try:
-            # 根據情緒選擇表情動畫
-            expression = self._map_mood_to_expression(mood)
-            
-            if self.ani_module and hasattr(self.ani_module, 'set_base_expression'):
-                self.ani_module.set_base_expression(expression)
-            
-            debug_log(3, f"[FrontendBridge] 情緒表情更新: {expression} (mood={mood:.2f})")
+            # MOV 會在輸出層根據 mood 選擇 talk 動畫（talk_ani_f 或 talk_ani2_f）
+            debug_log(3, f"[FrontendBridge] 情緒更新: mood={mood:.2f}")
             
         except Exception as e:
             error_log(f"[FrontendBridge] 處理情緒變化失敗: {e}")
@@ -343,23 +331,6 @@ class FrontendBridge:
             
         except Exception as e:
             error_log(f"[FrontendBridge] 處理助人意願變化失敗: {e}")
-    
-    def _map_mood_to_expression(self, mood: float) -> str:
-        """
-        將情緒值映射到表情動畫
-        
-        mood 範圍: -1 (負面) 到 +1 (正面)
-        """
-        if mood >= 0.6:
-            return "happy"
-        elif mood >= 0.2:
-            return "neutral_positive"
-        elif mood >= -0.2:
-            return "neutral"
-        elif mood >= -0.6:
-            return "neutral_negative"
-        else:
-            return "sad"
     
     def shutdown(self):
         """關閉前端橋接器"""

@@ -2,8 +2,10 @@ from __future__ import annotations
 from typing import Callable, Dict, Optional, List
 import time
 import os, glob
+import yaml
 from utils.debug_helper import debug_log, debug_log_e, info_log, error_log
 from core.bases.frontend_base import BaseFrontendModule, FrontendModuleType  # type: ignore
+from core.states.state_manager import UEPState
 
 try:
     from PyQt5.QtCore import QTimer # type: ignore
@@ -61,12 +63,13 @@ class ANIModule(BaseFrontendModule):
                 self.timer = QTimer()
                 self.timer.timeout.connect(lambda: self.signals.timer_timeout("ani_update")) # type: ignore
                 self.timer.start(self._tick_interval_ms)
+            
             return True
         except Exception as e:
             from utils.debug_helper import error_log
             error_log(f"[ANI] 初始化失敗: {e}")
             return False
-
+    
     def handle_frontend_request(self, data: Dict) -> Dict:
         cmd = data.get("command")
         if cmd == "play":
@@ -86,6 +89,7 @@ class ANIModule(BaseFrontendModule):
 
     # ===== 公開 API（給 MOV/UI） =====
     def play(self, name: str, loop: Optional[bool] = None) -> Dict:
+        """播放動畫（純播放器，不做相容性檢查）"""
         if not name:
             debug_log(2, "[ANI] play: 動畫名稱為空")
             return {"error": "animation name required"}
@@ -94,7 +98,7 @@ class ANIModule(BaseFrontendModule):
         result = self.manager.play(name, loop=loop)
         debug_log(2, f"[ANI] 播放結果: {result}")
         return result
-
+    
     def stop(self):
         self.manager.stop()
 
@@ -499,6 +503,19 @@ class ANIModule(BaseFrontendModule):
         except Exception as e:
             error_log(f"[ANI] 變換失敗: {e}")
             return original_pm
+    
+    # ===== 回調註冊（供外部模組使用）=====
+    
+    def on_module_busy(self, module_name: str):
+        """當其他模組忙碌時顯示處理動畫"""
+        try:
+            debug_log(3, f"[ANI] 模組忙碌: {module_name}")
+            # 可以根據不同模組選擇不同的忙碌動畫
+            self.play("thinking", loop=True)
+        except Exception as e:
+            error_log(f"[ANI] 處理模組忙碌狀態失敗: {e}")
+    
+    # ===== 關閉方法 =====
     
     def shutdown(self):
         """關閉動畫模組，停止所有計時器和清理資源"""

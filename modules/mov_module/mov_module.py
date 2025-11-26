@@ -44,6 +44,7 @@ try:
     from .core.physics import PhysicsEngine
     from .core.state_machine import MovementStateMachine, MovementMode, BehaviorState
     from .core.drag_tracker import DragTracker
+    from .core.tease_tracker import TeaseTracker
     from .core.animation_query import AnimationQueryHelper
     from .behaviors.base_behavior import BehaviorContext, BehaviorFactory
     from .handlers import CursorTrackingHandler, ThrowHandler
@@ -52,6 +53,7 @@ except Exception:
     from core.physics import PhysicsEngine  # type: ignore
     from core.state_machine import MovementStateMachine, MovementMode, BehaviorState  # type: ignore
     from core.drag_tracker import DragTracker  # type: ignore
+    from core.tease_tracker import TeaseTracker  # type: ignore
     from core.animation_query import AnimationQueryHelper  # type: ignore
     from behaviors.base_behavior import BehaviorContext, BehaviorFactory  # type: ignore
     from handlers import CursorTrackingHandler, ThrowHandler  # type: ignore
@@ -131,6 +133,13 @@ class MOVModule(BaseFrontendModule):
         self._drag_start_mode: Optional[MovementMode] = None  # 記錄拖曳前的模式
         self._drag_tracker = DragTracker(max_history=5)
         
+        # --- 互動追蹤（tease 動畫） ---
+        tease_config = self.config.get("tease_tracking", {})
+        self._tease_tracker = TeaseTracker(
+            time_window=float(tease_config.get("time_window", 10.0)),
+            interaction_threshold=int(tease_config.get("interaction_threshold", 3))
+        )
+        
         # --- 處理器 ---
         self._cursor_tracking_handler = CursorTrackingHandler(self)
         self._throw_handler = ThrowHandler(self)
@@ -174,6 +183,24 @@ class MOVModule(BaseFrontendModule):
             ani_module=None,  # 將在 initialize_frontend 後設置
             state_animation_config=self._state_animation_config
         )
+        
+        # --- 層級動畫策略 ---
+        try:
+            from .strategies.layer_strategy import LayerAnimationStrategy
+            self._layer_strategy = LayerAnimationStrategy(self, self._state_animation_config)
+            debug_log(2, f"[{self.module_id}] LayerAnimationStrategy 初始化完成")
+        except Exception as e:
+            error_log(f"[{self.module_id}] LayerAnimationStrategy 初始化失敗: {e}")
+            self._layer_strategy = None
+        
+        # --- 層級事件處理器 ---
+        try:
+            from .handlers.layer_handler import LayerEventHandler
+            self._layer_handler = LayerEventHandler(self)
+            debug_log(2, f"[{self.module_id}] LayerEventHandler 初始化完成")
+        except Exception as e:
+            error_log(f"[{self.module_id}] LayerEventHandler 初始化失敗: {e}")
+            self._layer_handler = None
 
 
         # --- 停滯保護 ---
@@ -343,6 +370,10 @@ class MOVModule(BaseFrontendModule):
         # 鎖移動期間，仍讓行為跑（交由 TransitionBehavior 控制）
         # 拖曳期間需要允許行為tick執行，以觸發struggle動畫
         if self.movement_paused and not self.is_being_dragged:
+            return
+        
+        # 滑鼠追蹤時也暫停行為更新（防止移動中播放閒置動畫）
+        if hasattr(self, '_cursor_tracking_handler') and self._cursor_tracking_handler._is_turning_head:
             return
 
         # 檢查是否到達目標（提供給 MovementBehavior 判斷）
@@ -1157,7 +1188,7 @@ class MOVModule(BaseFrontendModule):
 
     def _on_drag_move(self, event):
         """處理拖曳移動事件，直接更新位置跟隨滑鼠"""
-        if not self.is_being_dragged:
+        if not self.is_being_dragged or self._tease_tracker.is_teasing():
             return
             
         # 支持字典格式的事件數據（來自UI）
@@ -1236,10 +1267,27 @@ class MOVModule(BaseFrontendModule):
         
         支持空中接住：在 THROWN 模式下也可以重新拖動
         """
+        # 如果正在播放 tease 動畫，忽略事件
+        if self._tease_tracker.is_teasing():
+            return
+        
         self.is_being_dragged = False
+        
+        # 記錄互動（拖曳或投擲都算）
+        self._tease_tracker.record_interaction()
         
         # 使用 ThrowHandler 檢測投擲
         is_throw = self._throw_handler.check_throw(self._drag_tracker, self._drag_start_position)
+        
+        # 只在非投擲情況下才檢查 tease（投擲時不觸發 tease，避免干擾投擲動畫）
+        if not is_throw:
+            should_tease = self._tease_tracker.should_trigger_tease()
+            
+            if should_tease:
+                # 觸發 tease 動畫
+                self._trigger_tease_animation()
+                # 不繼續正常流程，等待 tease 動畫完成
+                return
         
         if not is_throw:
             # 沒有投擲，根據高度判斷模式
@@ -1284,6 +1332,10 @@ class MOVModule(BaseFrontendModule):
         }
 
     def _api_set_position(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        # Tease 動畫期間禁止位置設置
+        if self._tease_tracker.is_teasing():
+            return {"success": False, "reason": "tease_animation_playing"}
+        
         x = float(data.get("x", self.position.x))
         y = float(data.get("y", self.position.y))
         
@@ -1396,31 +1448,20 @@ class MOVModule(BaseFrontendModule):
             error_log(f"[{self.module_id}] 處理互動開始事件失敗: {e}")
     
     def _on_input_layer_complete(self, event):
-        """輸入層完成 - 進入處理層（thinking 動畫）"""
-        try:
-            debug_log(2, f"[{self.module_id}] 🤔 輸入層完成，進入處理層")
-            self._current_layer = "processing"
-            self._update_animation_for_current_state()
-        except Exception as e:
-            error_log(f"[{self.module_id}] 處理輸入層完成事件失敗: {e}")
+        """輸入層完成 - 進入處理層（由 LayerEventHandler 處理）"""
+        debug_log(2, f"[{self.module_id}] 🤔 輸入層完成，進入處理層")
+        # LayerEventHandler 會更新 _current_layer 並觸發動畫
     
     def _on_processing_layer_complete(self, event):
-        """處理層完成 - 進入輸出層（talking 動畫）"""
-        try:
-            debug_log(2, f"[{self.module_id}] 💬 處理層完成，進入輸出層")
-            self._current_layer = "output"
-            self._update_animation_for_current_state()
-        except Exception as e:
-            error_log(f"[{self.module_id}] 處理處理層完成事件失敗: {e}")
+        """處理層完成 - 進入輸出層（由 LayerEventHandler 處理）"""
+        debug_log(2, f"[{self.module_id}] 💬 處理層完成，進入輸出層")
+        # LayerEventHandler 會更新 _current_layer 並觸發動畫
     
     def _on_output_layer_complete(self, event):
         """輸出層完成 - 保持 talking 動畫直到循環結束"""
-        try:
-            debug_log(2, f"[{self.module_id}] ✅ 輸出層完成，等待循環結束")
-            # 不清除 _current_layer，保持 talking 動畫
-            # 等待 CYCLE_COMPLETED 事件才恢復 idle
-        except Exception as e:
-            error_log(f"[{self.module_id}] 處理輸出層完成事件失敗: {e}")
+        debug_log(2, f"[{self.module_id}] ✅ 輸出層完成，等待循環結束")
+        # 不清除 _current_layer，保持 talking 動畫
+        # 等待 GS_ADVANCED 事件才恢復 idle
     
     def _on_session_started(self, event):
         """會話開始 - 記錄當前 GS ID"""
@@ -1537,62 +1578,38 @@ GS 推進 - 當前 GS 結束，恢復 idle 狀態和移動"""
             error_log(f"[{self.module_id}] 處理 IDLE 動畫失敗: {e}")
     
     def _handle_layer_animation(self):
-        """根據當前層級選擇動畫"""
+        """根據當前層級選擇動畫（透過 LayerAnimationStrategy）"""
         try:
-            config = self._state_animation_config
-            if not config:
+            if not self._current_layer:
                 return
             
-            layer_config = config.get("LAYERS", {})
-            fallbacks = config.get("fallbacks", {})
+            # 準備 context 給 strategy
+            context = {
+                'layer': self._current_layer,
+                'state': self._current_system_state,
+                'movement_mode': self.movement_mode,
+                'mood': 0  # 預設 mood
+            }
             
-            anim_name = None
-            loop = False
+            # 嘗試從 status_manager 獲取 mood
+            try:
+                from core.status_manager import status_manager
+                context['mood'] = status_manager.status.mood
+            except Exception:
+                pass
             
-            if self._current_layer == "input":
-                # 輸入層：偵測到使用者互動
-                input_config = layer_config.get("input", {})
-                anim_name = input_config.get("default", "smile_idle_f")
-                loop = True
-                
-            elif self._current_layer == "processing":
-                # 處理層：系統思考/處理
-                processing_config = layer_config.get("processing", {})
-                anim_name = processing_config.get("default", "thinking_f")
-                loop = True
-                
-            elif self._current_layer == "output":
-                # 輸出層：系統回應（根據 mood）
-                output_config = layer_config.get("output", {})
-                
-                # 獲取當前 mood 值
-                try:
-                    from core.status_manager import status_manager
-                    mood = status_manager.status.mood
-                    
-                    if mood > 0:
-                        anim_name = output_config.get("positive_mood", "talk_ani_f")
-                    else:
-                        anim_name = output_config.get("negative_mood", "talk_ani2_f")
-                except Exception:
-                    anim_name = output_config.get("positive_mood", "talk_ani_f")
-                
-                loop = False  # talk 動畫播放一次
-            
-            # 使用 fallback 映射
-            if anim_name and anim_name in fallbacks:
-                anim_name = fallbacks[anim_name]
-            
-            # 根據當前移動模式轉換動畫名稱
-            if anim_name:
-                anim_name = self._convert_animation_for_movement_mode(anim_name)
+            # 使用 LayerAnimationStrategy 選擇動畫
+            if hasattr(self, '_layer_strategy') and self._layer_strategy:
+                anim_name = self._layer_strategy.select_animation(context)
                 if anim_name:
+                    # 根據層級決定是否循環
+                    loop = self._current_layer in ["input", "processing"]
                     self._trigger_anim(anim_name, {"loop": loop})
                     debug_log(2, f"[{self.module_id}] 層級動畫: {self._current_layer} -> {anim_name} (loop={loop})")
                 else:
-                    debug_log(2, f"[{self.module_id}] 層級 {self._current_layer}: 無相容動畫")
+                    debug_log(2, f"[{self.module_id}] 層級 {self._current_layer}: strategy 未返回動畫")
             else:
-                debug_log(2, f"[{self.module_id}] 層級 {self._current_layer}: 無合適動畫")
+                debug_log(2, f"[{self.module_id}] LayerAnimationStrategy 未初始化")
                 
         except Exception as e:
             error_log(f"[{self.module_id}] 處理層級動畫失敗: {e}")
@@ -1657,6 +1674,82 @@ GS 推進 - 當前 GS 結束，恢復 idle 狀態和移動"""
         
         # 如果沒有相容的，返回第一個並轉換
         return self._convert_animation_for_movement_mode(anim_list[0])
+
+    def _trigger_tease_animation(self) -> None:
+        """
+        觸發 tease 捉弄動畫
+        
+        動畫選擇只由 mood 決定：
+        - mood > 0: tease2_f (活潑版)
+        - mood ≤ 0: tease_f (基本版)
+        """
+        try:
+            # 強制結束拖曳狀態（如果正在拖曳）
+            if self.is_being_dragged:
+                self.is_being_dragged = False
+                self.resume_movement(self.DRAG_PAUSE_REASON)
+                debug_log(2, f"[{self.module_id}] Tease 觸發，強制結束拖曳")
+            
+            # 標記開始播放 tease
+            self._tease_tracker.start_tease()
+            
+            # 獲取 mood 來決定動畫，同時更新 status_manager
+            mood = 0
+            try:
+                from core.status_manager import status_manager
+                mood = status_manager.status.mood
+                
+                # 捉弄互動會降低 mood（被捉弄不開心）但緩解 boredom（有趣的互動）
+                status_manager.update_mood(-0.1, "使用者捉弄互動")
+                status_manager.update_boredom(-0.2, "捉弄互動緩解無聊")
+                debug_log(1, f"[{self.module_id}] Tease 互動影響系統數值: mood-=0.1, boredom-=0.2")
+            except Exception as e:
+                debug_log(2, f"[{self.module_id}] 無法獲取/更新 status_manager: {e}")
+            
+            # 決定使用哪個 tease 動畫（只看 mood）
+            if mood > 0:
+                # 正面情緒 -> tease2_f
+                tease_anim = self.anim_query.get_tease_animation(variant=2)
+                debug_log(1, f"[{self.module_id}] 觸發 tease2_f (互動次數達標, mood={mood:.2f})")
+            else:
+                # 負面/中性情緒 -> tease_f
+                tease_anim = self.anim_query.get_tease_animation(variant=1)
+                debug_log(1, f"[{self.module_id}] 觸發 tease_f (互動次數達標, mood={mood:.2f})")
+            
+            # 播放 tease 動畫，完成後恢復 idle
+            idle_anim = self.anim_query.get_idle_animation_for_mode(
+                is_ground=(self.movement_mode == MovementMode.GROUND)
+            )
+            
+            # 播放 tease 並設置回調
+            self._trigger_anim(
+                tease_anim,
+                {
+                    "loop": False,
+                    "next_anim": idle_anim,
+                    "next_params": {"loop": True}
+                }
+            )
+            
+            # 暫停移動直到動畫完成
+            self.pause_movement("tease_animation")
+            
+            # 註冊動畫完成回調來清理 tease 狀態
+            def on_tease_complete():
+                self._tease_tracker.end_tease()
+                self.resume_movement("tease_animation")
+                # 恢復正常行為
+                self._switch_behavior(BehaviorState.IDLE)
+                debug_log(2, f"[{self.module_id}] Tease 動畫完成，恢復正常")
+            
+            # 等待動畫完成（假設 tease 動畫約 2-3 秒）
+            self._await_animation(tease_anim, timeout=5.0, follow=on_tease_complete)
+            
+        except Exception as e:
+            error_log(f"[{self.module_id}] 觸發 tease 動畫失敗: {e}")
+            # 發生錯誤時清理狀態
+            self._tease_tracker.end_tease()
+            self.resume_movement("tease_animation")
 
     # ========= 暫停/恢復 =========
 

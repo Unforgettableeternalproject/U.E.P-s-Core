@@ -36,7 +36,7 @@ state_machine:
     TRANSITION: 0.05          # 大幅提高轉換機率（從5%提高到25%）
 
 boundaries:
-  screen_padding: 30
+  screen_padding: 20
   keep_on_screen: true
   bounce_off_edges: false
   # 邊界處理模式（新增，參考 desktop_pet.py）
@@ -71,6 +71,10 @@ movement_smoothing:
   velocity_lerp_factor: 0.15     # 速度平滑係數 (0-1，越小越平滑)
   pause_damping: 0.85            # 暫停時的慣性減速係數
   resume_acceleration: 0.2       # 恢復時的加速係數
+
+tease_tracking:
+  time_window: 10.0            # 追蹤時間窗口 (秒)
+  interaction_threshold: 5     # 互動次數閾值（拖曳+投擲）
 
 interaction:
   drag_enabled: true

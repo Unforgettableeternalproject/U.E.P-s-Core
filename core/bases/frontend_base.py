@@ -348,20 +348,30 @@ class FrontendAdapter:
     def register_frontend_module(self, module: BaseFrontendModule) -> bool:
         """註冊前端模組"""
         try:
+            # 從正確的位置導入 context_manager 和 state_manager
+            from core.working_context import working_context_manager
+            from core.states.state_manager import state_manager
+            from core.framework import ModuleInfo, ModuleType, ModuleState
+            
             # 設置框架引用
             module.set_framework_references(
                 self.framework,
-                self.framework.context_manager,
-                self.framework.state_manager
+                working_context_manager,
+                state_manager
+            )
+            
+            # 創建 ModuleInfo 對象
+            module_info = ModuleInfo(
+                module_id=module.module_id,
+                module_name=module.module_id,
+                module_instance=module,
+                module_type=ModuleType.UI,  # 前端模組統一使用 UI 類型
+                capabilities=[f"frontend_{module.module_type.value}"],
+                state=ModuleState.AVAILABLE
             )
             
             # 註冊到核心框架
-            success = self.framework.register_module(
-                module_id=module.module_id,
-                module_instance=module,
-                capabilities=[f"frontend_{module.module_type.value}"],
-                priority=100  # 前端模組高優先級
-            )
+            success = self.framework.register_module(module_info)
             
             if success:
                 self.frontend_modules[module.module_id] = module

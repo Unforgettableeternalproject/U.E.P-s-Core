@@ -21,12 +21,12 @@ LAYERS:
   # 輸入層：偵測到使用者互動時（STT 開始接收語音）
   # 觸發時機：INTERACTION_STARTED 事件發布時
   input:
-    default: data_processing_f  # listening 動畫（會自動根據 movement_mode 切換 _f/_g）
+    default: thinking_f  # listening 動畫（會自動根據 movement_mode 切換 _f/_g）
   
   # 處理層：系統思考/處理階段
   # 觸發時機：INPUT_LAYER_COMPLETE 事件發布後
   processing:
-    default: thinking_f  # 一般思考動畫（會自動根據 movement_mode 切換 _f/_g）
+    default: data_processing_f  # 一般思考動畫（會自動根據 movement_mode 切換 _f/_g）
   
   # 輸出層：系統回應階段
   # 觸發時機：PROCESSING_LAYER_COMPLETE 事件發布後

@@ -118,10 +118,10 @@ class LLMInput(BaseModel):
 
 class StatusUpdate(BaseModel):
     """系統狀態更新"""
-    mood_delta: Optional[float] = Field(None, description="情緒變化")
-    pride_delta: Optional[float] = Field(None, description="自尊變化") 
-    helpfulness_delta: Optional[float] = Field(None, description="助人意願變化")
-    boredom_delta: Optional[float] = Field(None, description="無聊程度變化")
+    mood_delta: Optional[float] = Field(None, description="情緒變化 (建議範圍: ±0.05 到 ±0.2)")
+    pride_delta: Optional[float] = Field(None, description="自尊變化 (建議範圍: ±0.05 到 ±0.2)") 
+    helpfulness_delta: Optional[float] = Field(None, description="助人意願變化 (建議範圍: ±0.05 到 ±0.2)")
+    boredom_delta: Optional[float] = Field(None, description="無聊程度變化 (建議範圍: ±0.05 到 ±0.2)")
     reason: Optional[str] = Field(None, description="變化原因")
 
 

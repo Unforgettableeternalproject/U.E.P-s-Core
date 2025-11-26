@@ -59,6 +59,10 @@ class UIModule(BaseFrontendModule):
         # Qt 應用程式實例
         self.app = None
         
+        # Qt 事件處理線程（確保 UI 不凍結）
+        self._qt_event_thread = None
+        self._qt_event_thread_running = False
+        
         # 三個前端介面實例
         self.interfaces = {
             UIInterfaceType.MAIN_DESKTOP_PET: None,
@@ -92,6 +96,9 @@ class UIModule(BaseFrontendModule):
                 self.app = QApplication(sys.argv)
             else:
                 self.app = QApplication.instance()
+            
+            # 啟動 Qt 事件處理線程（避免 UI 凍結）
+            self._start_qt_event_thread()
 
             # 首先初始化 ANI 和 MOV 模組
             if not self._initialize_ani_mov_modules():
@@ -335,9 +342,26 @@ class UIModule(BaseFrontendModule):
                         self.mov_module._play_entry_animation()
             
             # 顯示窗口（此時動畫已經開始）
-            interface.show()
+            # 使用 QMetaObject.invokeMethod 確保在主線程執行
+            from PyQt5.QtCore import QMetaObject, Qt
+            
+            debug_log(1, f"[{self.module_id}] 調用 interface.show() for {interface_type.value}")
+            debug_log(1, f"[{self.module_id}] Interface 類型: {type(interface).__name__}")
+            debug_log(1, f"[{self.module_id}] Interface isVisible 前: {interface.isVisible() if hasattr(interface, 'isVisible') else 'N/A'}")
+            
+            # 線程安全的顯示調用
+            QMetaObject.invokeMethod(interface, "show", Qt.QueuedConnection)
             self.active_interfaces.add(interface_type)
             
+            # 強制處理事件，確保顯示立即生效
+            if self.app:
+                self.app.processEvents()
+            
+            # 再次處理事件以確保 invokeMethod 執行
+            if self.app:
+                self.app.processEvents()
+            
+            debug_log(1, f"[{self.module_id}] Interface isVisible 後: {interface.isVisible() if hasattr(interface, 'isVisible') else 'N/A'}")
             info_log(f"[{self.module_id}] 顯示介面: {interface_type.value}")
             return {"success": True, "interface": interface_type.value}
         except Exception as e:
@@ -347,6 +371,8 @@ class UIModule(BaseFrontendModule):
     def hide_interface(self, interface_type: UIInterfaceType) -> dict:
         """隱藏指定介面"""
         try:
+            from PyQt5.QtCore import QMetaObject, Qt
+            
             interface = self.interfaces.get(interface_type)
             if not interface:
                 return {"error": f"介面 {interface_type.value} 不存在"}
@@ -360,7 +386,8 @@ class UIModule(BaseFrontendModule):
                 
                 # 定義隱藏回調
                 def _hide_after_animation():
-                    interface.hide()
+                    # 線程安全的隱藏調用
+                    QMetaObject.invokeMethod(interface, "hide", Qt.QueuedConnection)
                     self.active_interfaces.discard(interface_type)
                     info_log(f"[{self.module_id}] 隱藏介面: {interface_type.value}")
                 
@@ -368,8 +395,8 @@ class UIModule(BaseFrontendModule):
                 self.mov_module._play_leave_animation(_hide_after_animation)
                 return {"success": True, "interface": interface_type.value, "playing_leave_animation": True}
             else:
-                # 其他介面直接隱藏
-                interface.hide()
+                # 其他介面直接隱藏（線程安全）
+                QMetaObject.invokeMethod(interface, "hide", Qt.QueuedConnection)
                 self.active_interfaces.discard(interface_type)
                 info_log(f"[{self.module_id}] 隱藏介面: {interface_type.value}")
                 return {"success": True, "interface": interface_type.value}
@@ -853,9 +880,64 @@ class UIModule(BaseFrontendModule):
         except Exception as e:
             return {"success": False, "error": f"前端測試執行失敗: {e}"}
     
+    def _start_qt_event_thread(self):
+        """啟動 Qt 事件處理線程
+        
+        在獨立線程中持續處理 Qt 事件，確保 UI 不會凍結。
+        這對於在系統循環運行時保持 UI 響應至關重要。
+        """
+        if self._qt_event_thread_running:
+            debug_log(1, f"[{self.module_id}] Qt 事件處理線程已在運行")
+            return
+        
+        import threading
+        
+        def qt_event_loop():
+            """持續處理 Qt 事件的線程"""
+            info_log(f"[{self.module_id}] Qt 事件處理線程已啟動")
+            event_count = 0
+            while self._qt_event_thread_running:
+                try:
+                    if self.app:
+                        self.app.processEvents()
+                        event_count += 1
+                        if event_count % 1000 == 0:  # 每 10 秒記錄一次
+                            debug_log(2, f"[{self.module_id}] Qt 事件處理: {event_count} 次")
+                except Exception as e:
+                    error_log(f"[{self.module_id}] Qt 事件處理異常: {e}")
+                time.sleep(0.01)  # 10ms 間隔，約 100 FPS
+            info_log(f"[{self.module_id}] Qt 事件處理線程已停止 (共處理 {event_count} 次事件)")
+        
+        self._qt_event_thread_running = True
+        self._qt_event_thread = threading.Thread(
+            target=qt_event_loop,
+            name="UIModuleQtEventLoop",
+            daemon=True
+        )
+        self._qt_event_thread.start()
+        info_log(f"[{self.module_id}] Qt 事件處理線程已創建並啟動")
+    
+    def _stop_qt_event_thread(self):
+        """停止 Qt 事件處理線程"""
+        if not self._qt_event_thread_running:
+            return
+        
+        info_log(f"[{self.module_id}] 停止 Qt 事件處理線程...")
+        self._qt_event_thread_running = False
+        
+        if self._qt_event_thread and self._qt_event_thread.is_alive():
+            self._qt_event_thread.join(timeout=2.0)
+            if self._qt_event_thread.is_alive():
+                info_log(f"[{self.module_id}] Qt 事件線程仍在運行（daemon 模式）")
+            else:
+                info_log(f"[{self.module_id}] Qt 事件線程已停止")
+    
     def shutdown(self):
         """關閉 UI 模組"""
         info_log(f"[{self.module_id}] 開始關閉 UI 模組")
+        
+        # 停止 Qt 事件處理線程
+        self._stop_qt_event_thread()
         
         # 關閉所有活動介面
         for interface_type in list(self.active_interfaces):

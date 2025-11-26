@@ -49,12 +49,12 @@ class LayerAnimationStrategy(AnimationStrategy):
             if layer == "input":
                 # 輸入層：等待輸入
                 input_config = layer_config.get('input', {})
-                anim_name = input_config.get('default', 'smile_idle_f')
+                anim_name = input_config.get('default', 'thinking_f')
                 
             elif layer == "processing":
                 # 處理層：思考
                 processing_config = layer_config.get('processing', {})
-                anim_name = processing_config.get('default', 'thinking_f')
+                anim_name = processing_config.get('default', 'data_processing_f')
                 
             elif layer == "output":
                 # 輸出層：根據情緒回應
@@ -65,6 +65,12 @@ class LayerAnimationStrategy(AnimationStrategy):
                     anim_name = output_config.get('positive_mood', 'talk_ani_f')
                 else:
                     anim_name = output_config.get('negative_mood', 'talk_ani2_f')
+                
+                # 地面模式例外：只有 talk_ani_g，沒有 talk_ani2_g
+                if movement_mode:
+                    from ..core.state_machine import MovementMode
+                    if movement_mode == MovementMode.GROUND and anim_name == 'talk_ani2_f':
+                        anim_name = 'talk_ani_f'  # 地面負面情緒也用 talk_ani
             
             # 使用 fallback 映射
             if anim_name and anim_name in fallbacks:

@@ -90,8 +90,13 @@ class SystemInitializer:
             # Phase 5.5: 設置默認測試 Identity（臨時測試用）
             if not self._setup_default_identity():
                 return False
+            
+            # Phase 6: 前端初始化（可選）
+            if not self._initialize_frontend():
+                # 前端初始化失敗不阻止系統啟動（前端是可選的）
+                info_log("⚠️  前端初始化失敗或未啟用，繼續啟動核心系統")
                 
-            # Phase 6: 系統健康檢查
+            # Phase 7: 系統健康檢查
             if not self._health_check():
                 return False
                 
@@ -283,6 +288,68 @@ class SystemInitializer:
             
         except Exception as e:
             error_log(f"❌ Working Context 設置失敗: {e}")
+            return False
+    
+    def _initialize_frontend(self) -> bool:
+        """初始化前端模組（UI, ANI, MOV）
+        
+        根據配置決定是否啟動前端，前端初始化失敗不影響核心系統運行
+        """
+        try:
+            # 檢查配置是否啟用前端
+            enable_frontend = self.config.get('debug', {}).get('enable_frontend', False)
+            
+            if not enable_frontend:
+                info_log("📺 前端未啟用（debug.enable_frontend=false），跳過前端初始化")
+                return True  # 返回 True 表示沒有錯誤（只是未啟用）
+            
+            info_log("📺 初始化前端模組（UI, ANI, MOV）...")
+            
+            # 導入前端整合器
+            from modules.frontend_integration import FrontendIntegrator
+            from core.framework import core_framework
+            
+            # 創建前端整合器
+            frontend_config = {
+                'ui_module': self.config.get('ui_module', {}),
+                'ani_module': self.config.get('ani_module', {}),
+                'mov_module': self.config.get('mov_module', {})
+            }
+            
+            self.frontend_integrator = FrontendIntegrator(core_framework, frontend_config)
+            
+            # 初始化前端
+            if not self.frontend_integrator.initialize():
+                error_log("   ❌ 前端整合器初始化失敗")
+                return False
+            
+            info_log("   ✅ 前端整合器初始化完成")
+            
+            # 啟動前端
+            if not self.frontend_integrator.start():
+                error_log("   ❌ 前端啟動失敗")
+                return False
+            
+            info_log("   ✅ 前端系統已啟動")
+            
+            # 顯示 UEP 主程式
+            show_result = self.frontend_integrator.ui_module.handle_frontend_request({
+                'command': 'show_interface',
+                'interface': 'main_desktop_pet'
+            })
+            
+            if show_result.get('success'):
+                info_log("   🎈 UEP 主程式已顯示")
+            else:
+                error_log(f"   ⚠️  顯示主程式失敗: {show_result.get('error', '未知錯誤')}")
+                # 不返回 False，因為前端已啟動，只是視窗顯示失敗
+            
+            return True
+            
+        except Exception as e:
+            error_log(f"❌ 前端初始化失敗: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def _setup_default_identity(self) -> bool:

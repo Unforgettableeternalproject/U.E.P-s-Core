@@ -2074,3 +2074,15 @@
 
 ---
 
+### Frontend integration tests, and we discovered a huge issue. 11/27
+
+> Date: Thu, 27 Nov 2025 01:18:06 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `98fb1056550e9fdbffe3de6aa24374deabe5ba68`
+
+---
+

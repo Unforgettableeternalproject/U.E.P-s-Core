@@ -487,14 +487,8 @@ class GeneralSessionManager:
         if self.current_session:
             self.end_current_session()
         
-        # 應用系統狀態 penalty（每次創建 GS 時的自動微調）
-        try:
-            status_manager = _get_status_manager()
-            penalties = status_manager.apply_session_penalties(gs_type.value)
-            if penalties:
-                debug_log(2, f"[GeneralSessionManager] 會話啟動時應用 penalty: {penalties}")
-        except Exception as e:
-            error_log(f"[GeneralSessionManager] 應用 status penalty 失敗: {e}")
+        # 注意：系統狀態調整已移至 OUTPUT_LAYER_COMPLETE 事件（互動循環結束時）
+        # 而非在 GS 創建時，以提供更即時的回饋
         
         # 創建新會話
         new_session = GeneralSession(gs_type, trigger_event, self.preserved_data)

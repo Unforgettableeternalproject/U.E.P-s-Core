@@ -177,6 +177,9 @@ class MOVModule(BaseFrontendModule):
         self._await_follow: Optional[Callable[[], None]] = None
         self._default_anim_timeout = float(self.config.get("anim_timeout", 2.0))
         
+        # --- Qt 橋接器（線程安全的動畫觸發） ---
+        self._qt_bridge = None  # 將在 initialize_frontend 後創建
+        
         # --- 動畫查詢輔助器 ---
         self._state_animation_config = self._load_state_animation_config()
         self.anim_query = AnimationQueryHelper(
@@ -228,6 +231,7 @@ class MOVModule(BaseFrontendModule):
         self._current_system_state: UEPState = UEPState.IDLE
         self._current_gs_id: Optional[str] = None  # 當前 General Session ID
         self._state_animation_config: Optional[Dict] = None
+        self._current_playing_anim: Optional[str] = None  # 當前播放的動畫名稱（用於避免重複觸發）
 
         info_log(f"[{self.module_id}] MOV 初始化完成")
 
@@ -271,6 +275,7 @@ class MOVModule(BaseFrontendModule):
                 self.attach_ani(maybe_ani)
                 # 同時將 ANI 模組傳給動畫查詢輔助器
                 self.anim_query.ani_module = self.ani_module
+                # Qt 橋接器將在 attach_ani() 中創建
 
             # 入場動畫延遲到 UI 準備好後再播放
             # 標記需要播放入場動畫，由 UI 模組在顯示時觸發
@@ -369,8 +374,11 @@ class MOVModule(BaseFrontendModule):
 
         # 鎖移動期間，仍讓行為跑（交由 TransitionBehavior 控制）
         # 拖曳期間需要允許行為tick執行，以觸發struggle動畫
+        # SYSTEM_CYCLE 也需要執行 tick，以便 SystemCycleBehavior 處理層級動畫
         if self.movement_paused and not self.is_being_dragged:
-            return
+            # 🔧 允許 SYSTEM_CYCLE 狀態繼續執行 tick（需要檢測層級變化並觸發動畫）
+            if self.current_behavior_state != BehaviorState.SYSTEM_CYCLE:
+                return
         
         # 滑鼠追蹤時也暫停行為更新（防止移動中播放閒置動畫）
         if hasattr(self, '_cursor_tracking_handler') and self._cursor_tracking_handler._is_turning_head:
@@ -409,6 +417,8 @@ class MOVModule(BaseFrontendModule):
             transition_start_time=self.transition_start_time,
             movement_locked_until=self.movement_locked_until,
             previous_state=self.previous_behavior_state,
+            current_layer=self._current_layer,
+            layer_strategy=self._layer_strategy,
         )
 
         # on_tick 可能建議切換狀態
@@ -602,6 +612,8 @@ class MOVModule(BaseFrontendModule):
             transition_start_time=self.transition_start_time,
             movement_locked_until=self.movement_locked_until,
             previous_state=self.previous_behavior_state,
+            current_layer=self._current_layer,
+            layer_strategy=self._layer_strategy,
         )
 
         try:
@@ -656,6 +668,8 @@ class MOVModule(BaseFrontendModule):
                         transition_start_time=self.transition_start_time,
                         movement_locked_until=self.movement_locked_until,
                         previous_state=self.previous_behavior_state,
+                        current_layer=self._current_layer,
+                        layer_strategy=self._layer_strategy,
                     )
                 )
         except Exception as e:
@@ -1069,27 +1083,42 @@ class MOVModule(BaseFrontendModule):
         immediate_interrupt = params.get("immediate_interrupt", False)  # 立即中斷現有動畫
         
         # 檢查是否正在被干涉（拖動、拋擲中不應該切換動畫）
+        # SYSTEM_CYCLE 狀態下的層級動畫不檢查 dragging（已在 INTERACTION_STARTED 時清除）
         if not immediate_interrupt:
-            if self.is_being_dragged:
-                debug_log(3, f"[{self.module_id}] 跳過動畫觸發（正在被拖動）: {name}")
-                return
-            if self.movement_mode == MovementMode.THROWN:
-                debug_log(3, f"[{self.module_id}] 跳過動畫觸發（正在拋擲）: {name}")
-                return
+            if self.current_behavior_state != BehaviorState.SYSTEM_CYCLE:
+                if self.is_being_dragged:
+                    debug_log(3, f"[{self.module_id}] 跳過動畫觸發（正在被拖動）: {name}")
+                    return
+                if self.movement_mode == MovementMode.THROWN:
+                    debug_log(3, f"[{self.module_id}] 跳過動畫觸發（正在拋擲）: {name}")
+                    return
             
             # 檢查是否處於靜態幀模式（滑鼠追蹤中）
-            if self.ani_module and hasattr(self.ani_module, 'manager'):
-                if getattr(self.ani_module.manager, 'static_frame_mode', False):
-                    debug_log(3, f"[{self.module_id}] 跳過動畫觸發（滑鼠追蹤中）: {name}")
-                    return
+            # 但 SYSTEM_CYCLE 狀態下的層級動畫應優先於滑鼠追蹤
+            if self.current_behavior_state != BehaviorState.SYSTEM_CYCLE:
+                if self.ani_module and hasattr(self.ani_module, 'manager'):
+                    if getattr(self.ani_module.manager, 'static_frame_mode', False):
+                        debug_log(3, f"[{self.module_id}] 跳過動畫觸發（滑鼠追蹤中）: {name}")
+                        return
 
         # 保護機制：如果正在等待動畫完成，避免重複觸發相同動畫（除非強制重新開始）
         if self._awaiting_anim and self._awaiting_anim == name and await_finish and not force_restart:
             debug_log(2, f"[{self.module_id}] 跳過重複動畫觸發: {name}")
             return
         
-        # 動畫切換緩衝：避免頻繁切換導致的閃現
+        # 🔧 檢查動畫超時（防止卡住）
         now = time.time()
+        ANIM_TIMEOUT = 5.0  # 30秒超時
+        if self._awaiting_anim and self._await_deadline > 0:
+            if now > self._await_deadline + ANIM_TIMEOUT:
+                debug_log(1, f"[{self.module_id}] ⚠️ 動畫 {self._awaiting_anim} 超時，強制結束")
+                # 清除等待狀態
+                self._awaiting_anim = None
+                self._await_deadline = 0.0
+                self.movement_locked_until = 0.0
+                self.resume_movement(self.WAIT_ANIM_REASON)
+        
+        # 動畫切換緩衝：避免頻繁切換導致的閃現
         if hasattr(self, '_last_anim_trigger_time'):
             time_since_last = now - self._last_anim_trigger_time
             MIN_ANIM_INTERVAL = 0.1  # 最小動畫間隔 100ms
@@ -1106,15 +1135,26 @@ class MOVModule(BaseFrontendModule):
             self.movement_locked_until = 0.0
             self.resume_movement(self.WAIT_ANIM_REASON)
 
-        # 先送到 ANI
-        if self.ani_module and hasattr(self.ani_module, "play"):
+        # 先送到 ANI（使用 Qt 橋接器確保線程安全）
+        if self._qt_bridge:
             try:
                 # 如果需要強制重新開始，先停止當前動畫
+                if force_restart:
+                    self._qt_bridge.stop_animation()
+                
+                # 使用橋接器觸發動畫（線程安全）
+                self._qt_bridge.trigger_animation(name, {"loop": loop})
+                debug_log(2, f"[{self.module_id}] 透過 Qt 橋接器觸發動畫: {name} force_restart={force_restart}")
+            except Exception as e:
+                error_log(f"[{self.module_id}] Qt 橋接器播放動畫失敗: {e}")
+        elif self.ani_module and hasattr(self.ani_module, "play"):
+            # Fallback：直接調用（不安全，但保持向後兼容）
+            try:
                 if force_restart and hasattr(self.ani_module, "stop"):
                     self.ani_module.stop()
                 
                 res = self.ani_module.play(name, loop=loop)
-                debug_log(2, f"[{self.module_id}] 觸發動畫: {name} res={res} force_restart={force_restart}")
+                debug_log(2, f"[{self.module_id}] 直接觸發動畫: {name} res={res} force_restart={force_restart}")
             except Exception as e:
                 error_log(f"[{self.module_id}] 向 ANI 播放動畫失敗: {e}")
         else:
@@ -1162,6 +1202,12 @@ class MOVModule(BaseFrontendModule):
         # 初始化拖曳追蹤器
         self._drag_tracker.clear()
         self._drag_tracker.add_point(self.position.x, self.position.y)
+        
+        # 🔧 SYSTEM_CYCLE 狀態下允許拖曳但不改變狀態
+        if self.current_behavior_state == BehaviorState.SYSTEM_CYCLE:
+            debug_log(2, f"[{self.module_id}] SYSTEM_CYCLE 期間拖曳：允許位置變化但保持狀態")
+            self.is_being_dragged = True  # 標記拖曳中（用於位置更新）
+            return  # 不改變 movement_mode 和動畫
         
         # 切換到拖曳狀態
         self.is_being_dragged = True
@@ -1269,6 +1315,12 @@ class MOVModule(BaseFrontendModule):
         """
         # 如果正在播放 tease 動畫，忽略事件
         if self._tease_tracker.is_teasing():
+            return
+        
+        # 🔧 SYSTEM_CYCLE 期間拖曳結束：只清除拖曳標記，不改變狀態
+        if self.current_behavior_state == BehaviorState.SYSTEM_CYCLE:
+            debug_log(2, f"[{self.module_id}] SYSTEM_CYCLE 期間拖曳結束：保持原狀態")
+            self.is_being_dragged = False
             return
         
         self.is_being_dragged = False
@@ -1382,7 +1434,7 @@ class MOVModule(BaseFrontendModule):
         # IDLE 狀態時清除層級並播放閒置動畫
         if new_state == UEPState.IDLE:
             self._current_layer = None
-            self._update_animation_for_current_state()
+            # SystemCycleBehavior 已結束，切換回 IdleBehavior 會自動處理 IDLE 動畫
     
     # ========= 層級事件訂閱與處理 =========
     
@@ -1416,6 +1468,12 @@ class MOVModule(BaseFrontendModule):
                 handler_name="mov_output_layer"
             )
             
+            event_bus.subscribe(
+                SystemEvent.CYCLE_COMPLETED,
+                self._on_cycle_completed,
+                handler_name="mov_cycle_completed"
+            )
+            
             # 訂閱 GS 生命週期事件
             event_bus.subscribe(
                 SystemEvent.SESSION_STARTED,
@@ -1429,39 +1487,117 @@ class MOVModule(BaseFrontendModule):
                 handler_name="mov_gs_advanced"
             )
             
-            debug_log(2, f"[{self.module_id}] 已訂閱系統事件（互動 + 層級 + GS 生命週期）")
+            # 使用 info_log 確保在生產模式也能看到
+            info_log(f"[{self.module_id}] ✅ 已訂閱系統事件（互動 + 層級 + GS 生命週期）")
+            info_log(f"[{self.module_id}]    - INTERACTION_STARTED")
+            info_log(f"[{self.module_id}]    - INPUT_LAYER_COMPLETE")
+            info_log(f"[{self.module_id}]    - PROCESSING_LAYER_COMPLETE")
+            info_log(f"[{self.module_id}]    - OUTPUT_LAYER_COMPLETE")
+            info_log(f"[{self.module_id}]    - SESSION_STARTED")
+            info_log(f"[{self.module_id}]    - GS_ADVANCED")
             
         except Exception as e:
-            error_log(f"[{self.module_id}] 訂閱層級事件失敗: {e}")
+            error_log(f"[{self.module_id}] ❌ 訂閱層級事件失敗: {e}")
+            import traceback
+            error_log(traceback.format_exc())
     
     def _on_interaction_started(self, event):
         """使用者互動開始 - STT 檢測到語音輸入"""
         try:
-            debug_log(2, f"[{self.module_id}] 🎤 使用者互動開始（語音輸入）")
+            info_log(f"[{self.module_id}] 🎤 收到 INTERACTION_STARTED 事件")
+            info_log(f"[{self.module_id}]    當前行為: {self.current_behavior_state.value}")
+            
+            # 如果正在拖動，強制結束拖動並清除 dragging 模式
+            if self.is_being_dragged:
+                debug_log(2, f"[{self.module_id}] INTERACTION_STARTED 時正在拖動，強制結束拖動")
+                self.is_being_dragged = False
+                if self.movement_mode == MovementMode.DRAGGING:
+                    # 恢復到之前的模式（ground 或 float）
+                    if self._drag_start_mode:
+                        self.movement_mode = self._drag_start_mode
+                    else:
+                        self.movement_mode = MovementMode.GROUND
+                    debug_log(2, f"[{self.module_id}] 恢復移動模式: {self.movement_mode.value}")
+            
             # 進入系統循環狀態，暫停移動
             self._switch_behavior(BehaviorState.SYSTEM_CYCLE)
             self.pause_movement("system_cycle")
-            # 設定為輸入層狀態，觸發 listening 動畫
+            
+            # 設置輸入層狀態並觸發動畫
             self._current_layer = "input"
-            self._update_animation_for_current_state()
+            info_log(f"[{self.module_id}]    切換至: {self.current_behavior_state.value}, 層級: input")
+            
+            # 使用 LayerEventHandler 處理
+            if self._layer_handler:
+                info_log(f"[{self.module_id}]    使用 LayerEventHandler 處理")
+                self._layer_handler.handle(event)
+            
+            # 動畫由 SystemCycleBehavior.on_tick() 處理
+            
         except Exception as e:
-            error_log(f"[{self.module_id}] 處理互動開始事件失敗: {e}")
+            error_log(f"[{self.module_id}] ❌ 處理互動開始事件失敗: {e}")
+            import traceback
+            error_log(traceback.format_exc())
     
     def _on_input_layer_complete(self, event):
-        """輸入層完成 - 進入處理層（由 LayerEventHandler 處理）"""
-        debug_log(2, f"[{self.module_id}] 🤔 輸入層完成，進入處理層")
-        # LayerEventHandler 會更新 _current_layer 並觸發動畫
+        """輸入層完成 - 進入處理層"""
+        try:
+            info_log(f"[{self.module_id}] 📥 收到 INPUT_LAYER_COMPLETE 事件")
+            info_log(f"[{self.module_id}]    當前層級: {self._current_layer}")
+            
+            # 使用 LayerEventHandler 處理
+            if self._layer_handler and self._layer_handler.can_handle(event):
+                info_log(f"[{self.module_id}]    使用 LayerEventHandler 處理")
+                self._layer_handler.handle(event)
+            else:
+                info_log(f"[{self.module_id}]    使用 Fallback 處理")
+                # Fallback：手動更新
+                self._current_layer = "processing"
+                # 動畫由 SystemCycleBehavior.on_tick() 處理
+                
+        except Exception as e:
+            error_log(f"[{self.module_id}] ❌ 處理輸入層完成事件失敗: {e}")
+            import traceback
+            error_log(traceback.format_exc())
     
     def _on_processing_layer_complete(self, event):
-        """處理層完成 - 進入輸出層（由 LayerEventHandler 處理）"""
-        debug_log(2, f"[{self.module_id}] 💬 處理層完成，進入輸出層")
-        # LayerEventHandler 會更新 _current_layer 並觸發動畫
+        """處理層完成 - 進入輸出層"""
+        try:
+            info_log(f"[{self.module_id}] ⚙️ 收到 PROCESSING_LAYER_COMPLETE 事件")
+            info_log(f"[{self.module_id}]    當前層級: {self._current_layer}")
+            
+            # 使用 LayerEventHandler 處理
+            if self._layer_handler and self._layer_handler.can_handle(event):
+                info_log(f"[{self.module_id}]    使用 LayerEventHandler 處理")
+                self._layer_handler.handle(event)
+            else:
+                info_log(f"[{self.module_id}]    使用 Fallback 處理")
+                # Fallback：手動更新
+                self._current_layer = "output"
+                # 動畫由 SystemCycleBehavior.on_tick() 處理
+                
+        except Exception as e:
+            error_log(f"[{self.module_id}] ❌ 處理處理層完成事件失敗: {e}")
+            import traceback
+            error_log(traceback.format_exc())
     
     def _on_output_layer_complete(self, event):
-        """輸出層完成 - 保持 talking 動畫直到循環結束"""
-        debug_log(2, f"[{self.module_id}] ✅ 輸出層完成，等待循環結束")
-        # 不清除 _current_layer，保持 talking 動畫
-        # 等待 GS_ADVANCED 事件才恢復 idle
+        """輸出層完成 - 觸發輸出層動畫並觸發動畫更新"""
+        try:
+            info_log(f"[{self.module_id}] 📤 收到 OUTPUT_LAYER_COMPLETE 事件")
+            info_log(f"[{self.module_id}]    當前層級: {self._current_layer}")
+            
+            # 使用 LayerEventHandler 處理
+            if self._layer_handler and self._layer_handler.can_handle(event):
+                info_log(f"[{self.module_id}]    使用 LayerEventHandler 處理")
+                self._layer_handler.handle(event)
+            
+            # 觸發動畫更新（讓 output 層動畫播放）
+            self._update_animation_for_current_state()
+            
+            # 注意：_current_layer 會在 GS_ADVANCED 事件時清除並恢復 idle
+        except Exception as e:
+            error_log(f"[{self.module_id}] 處理輸出層完成事件失敗: {e}")
     
     def _on_session_started(self, event):
         """會話開始 - 記錄當前 GS ID"""
@@ -1475,6 +1611,28 @@ class MOVModule(BaseFrontendModule):
                 debug_log(2, f"[{self.module_id}] 📝 GS 開始: {session_id}")
         except Exception as e:
             error_log(f"[{self.module_id}] 處理會話開始事件失敗: {e}")
+    
+    def _on_cycle_completed(self, event):
+        """循環完成 - 回到 IDLE 狀態"""
+        try:
+            # 如果當前在 SYSTEM_CYCLE 狀態，循環完成時回到 IDLE
+            if self.current_behavior_state == BehaviorState.SYSTEM_CYCLE:
+                debug_log(2, f"[{self.module_id}] 🔄 循環完成，回到 IDLE 狀態")
+                
+                # 清除層級狀態
+                self._current_layer = None
+                
+                # 清除當前播放的動畫記錄（允許重新觸發 IDLE 動畫）
+                self._current_playing_anim = None
+                
+                # 恢復移動
+                self.resume_movement("system_cycle")
+                
+                # 切換回 IDLE 行為（IdleBehavior.on_enter() 會自動播放 idle 動畫）
+                self._switch_behavior(BehaviorState.IDLE)
+                
+        except Exception as e:
+            error_log(f"[{self.module_id}] 處理循環完成事件失敗: {e}")
     
     def _on_gs_advanced(self, event):
         """
@@ -1494,12 +1652,14 @@ GS 推進 - 當前 GS 結束，恢復 idle 狀態和移動"""
                 # 清除層級狀態
                 self._current_layer = None
                 
+                # 清除當前播放的動畫記錄（允許重新觸發 IDLE 動畫）
+                self._current_playing_anim = None
+                
                 # 恢復移動
                 self.resume_movement("system_cycle")
                 
-                # 切換回 IDLE 行為並播放 idle 動畫
+                # 切換回 IDLE 行為（IdleBehavior.on_enter() 會自動播放 idle 動畫）
                 self._switch_behavior(BehaviorState.IDLE)
-                self._update_animation_for_current_state()
             
             # 更新當前 GS ID
             self._current_gs_id = new_gs_id
@@ -1531,6 +1691,11 @@ GS 推進 - 當前 GS 結束，恢復 idle 狀態和移動"""
     def _update_animation_for_current_state(self):
         """根據當前層級和系統狀態更新動畫"""
         try:
+            debug_log(2, f"[{self.module_id}] 🔄 _update_animation_for_current_state 被調用")
+            debug_log(2, f"[{self.module_id}]    系統狀態: {self._current_system_state}")
+            debug_log(2, f"[{self.module_id}]    當前層級: {self._current_layer}")
+            debug_log(2, f"[{self.module_id}]    行為狀態: {self.current_behavior_state}")
+            
             if not self.ani_module:
                 debug_log(3, f"[{self.module_id}] ANI 模組未注入，無法更新動畫")
                 return
@@ -1541,11 +1706,13 @@ GS 推進 - 當前 GS 結束，恢復 idle 狀態和移動"""
             
             # IDLE 狀態：播放閒置動畫
             if self._current_system_state == UEPState.IDLE:
+                debug_log(2, f"[{self.module_id}] → 處理 IDLE 動畫")
                 self._handle_idle_animation()
                 return
             
             # 有層級時根據層級選擇動畫
             if self._current_layer:
+                debug_log(2, f"[{self.module_id}] → 處理層級動畫: {self._current_layer}")
                 self._handle_layer_animation()
             else:
                 # 無層級時使用預設閒置動畫
@@ -1556,7 +1723,7 @@ GS 推進 - 當前 GS 結束，恢復 idle 狀態和移動"""
             error_log(f"[{self.module_id}] 更新動畫失敗: {e}")
     
     def _handle_idle_animation(self):
-        """處理 IDLE 狀態的動畫"""
+        """處理 IDLE 狀態的動畫（只在未播放時觸發）"""
         try:
             config = self._state_animation_config
             if not config:
@@ -1569,6 +1736,12 @@ GS 推進 - 當前 GS 結束，恢復 idle 狀態和移動"""
                 # 選擇符合當前移動模式的動畫
                 anim_name = self._get_compatible_animation_from_list(idle_anims)
                 if anim_name:
+                    # 檢查是否已經在播放相同的 loop 動畫
+                    if hasattr(self, '_current_playing_anim') and self._current_playing_anim == anim_name:
+                        debug_log(3, f"[{self.module_id}] IDLE 動畫已在播放: {anim_name}")
+                        return
+                    
+                    self._current_playing_anim = anim_name
                     self._trigger_anim(anim_name, {"loop": True})
                     debug_log(2, f"[{self.module_id}] IDLE 動畫: {anim_name}")
             else:
@@ -1581,7 +1754,10 @@ GS 推進 - 當前 GS 結束，恢復 idle 狀態和移動"""
         """根據當前層級選擇動畫（透過 LayerAnimationStrategy）"""
         try:
             if not self._current_layer:
+                debug_log(2, f"[{self.module_id}] 層級動畫: 無當前層級")
                 return
+            
+            debug_log(2, f"[{self.module_id}] 🎬 處理層級動畫: {self._current_layer}")
             
             # 準備 context 給 strategy
             context = {
@@ -1602,10 +1778,25 @@ GS 推進 - 當前 GS 結束，恢復 idle 狀態和移動"""
             if hasattr(self, '_layer_strategy') and self._layer_strategy:
                 anim_name = self._layer_strategy.select_animation(context)
                 if anim_name:
+                    debug_log(2, f"[{self.module_id}] 層級動畫選擇: {anim_name}（層級: {self._current_layer}）")
+                    
+                    # 清除當前播放的動畫記錄（層級動畫優先）
+                    if hasattr(self, '_current_playing_anim'):
+                        self._current_playing_anim = None
+                    
                     # 根據層級決定是否循環
                     loop = self._current_layer in ["input", "processing"]
-                    self._trigger_anim(anim_name, {"loop": loop})
-                    debug_log(2, f"[{self.module_id}] 層級動畫: {self._current_layer} -> {anim_name} (loop={loop})")
+                    
+                    debug_log(1, f"[{self.module_id}] ⚡ 強制觸發層級動畫: {anim_name}（層級: {self._current_layer}, loop={loop}）")
+                    
+                    # 層級動畫必須立即中斷當前動畫，避免被防抖機制阻擋
+                    self._trigger_anim(anim_name, {
+                        "loop": loop,
+                        "immediate_interrupt": True,  # 強制中斷當前動畫
+                        "force_restart": True  # 強制重新開始
+                    })
+                    
+                    debug_log(1, f"[{self.module_id}] ✅ 層級動畫已觸發: {anim_name}")
                 else:
                     debug_log(2, f"[{self.module_id}] 層級 {self._current_layer}: strategy 未返回動畫")
             else:
@@ -1793,6 +1984,22 @@ GS 推進 - 當前 GS 結束，恢復 idle 狀態和移動"""
             if hasattr(ani, "add_finish_callback"):
                 ani.add_finish_callback(self._on_ani_finish)
             debug_log(2, f"[{self.module_id}] 已注入 ANI 並完成事件註冊")
+            
+            # === 創建 Qt 橋接器（線程安全的動畫觸發） ===
+            if PYQT5 and not self._qt_bridge:
+                try:
+                    from .qt_bridge import MovQtBridge
+                    from PyQt5.QtWidgets import QApplication
+                    app = QApplication.instance()
+                    if app:
+                        self._qt_bridge = MovQtBridge(self.ani_module, parent=app)
+                        info_log(f"[{self.module_id}] Qt 橋接器已創建（線程安全動畫觸發）")
+                    else:
+                        debug_log(2, f"[{self.module_id}] QApplication 不可用，跳過 Qt 橋接器創建")
+                except Exception as e:
+                    error_log(f"[{self.module_id}] 創建 Qt 橋接器失敗: {e}")
+                    self._qt_bridge = None
+            
         except Exception as e:
             error_log(f"[{self.module_id}] 注入 ANI 失敗: {e}")
     

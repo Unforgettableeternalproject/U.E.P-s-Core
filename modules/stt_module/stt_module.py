@@ -352,6 +352,21 @@ class STTModule(BaseModule):
             
             info_log(f"[STT] 文字輸入模式: '{text}'")
             
+            # 🎤 發布 INTERACTION_STARTED 事件（與 VAD 模式保持一致）
+            try:
+                from core.event_bus import event_bus, SystemEvent
+                event_bus.publish(
+                    SystemEvent.INTERACTION_STARTED,
+                    {
+                        "source": "stt_text_input",
+                        "input_mode": "text"
+                    },
+                    source="stt_module"
+                )
+                debug_log(2, "[STT] 已發布 INTERACTION_STARTED 事件（文字輸入模式）")
+            except Exception as e:
+                debug_log(2, f"[STT] 無法發布 INTERACTION_STARTED 事件: {e}")
+            
             # 創建輸出物件 - 不包含說話人資訊
             output = STTOutput(
                 text=text.strip(),

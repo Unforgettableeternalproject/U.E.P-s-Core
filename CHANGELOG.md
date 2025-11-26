@@ -2086,3 +2086,15 @@
 
 ---
 
+### Integrated frontend into system loop, some behaviors left to fix. 11/27
+
+> Date: Thu, 27 Nov 2025 04:24:54 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `ee2e90b9dc700e7b1954e078b74d93556dec04b6`
+
+---
+

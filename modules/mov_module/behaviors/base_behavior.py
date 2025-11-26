@@ -55,6 +55,10 @@ class BehaviorContext:
     
     # 狀態追蹤
     previous_state: Optional[BehaviorState] = None
+    
+    # 系統循環相關（供 SystemCycleBehavior 使用）
+    current_layer: Optional[str] = None
+    layer_strategy: Optional[object] = None  # LayerAnimationStrategy instance
 
     def ground_y(self) -> float:
         # 用 v_bottom，避免原點偏移造成地面高度錯誤
@@ -85,9 +89,9 @@ class BehaviorFactory:
             from .idle_behavior import IdleBehavior
             return IdleBehavior()
         if state == BehaviorState.SYSTEM_CYCLE:
-            # SYSTEM_CYCLE 期間暫停移動，使用 idle 行為
-            from .idle_behavior import IdleBehavior
-            return IdleBehavior()
+            # SYSTEM_CYCLE 期間暫停移動，使用專門的系統循環行為
+            from .system_cycle_behavior import SystemCycleBehavior
+            return SystemCycleBehavior()
         if state == BehaviorState.NORMAL_MOVE:
             from .movement_behavior import MovementBehavior
             return MovementBehavior()

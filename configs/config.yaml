@@ -17,15 +17,15 @@ modules_refactored:
   llm_module: true
   tts_module: true
   sys_module: true
-  ui_module: false
-  ani_module: false
-  mov_module: false
+  ui_module: true
+  ani_module: true
+  mov_module: true
 logging:
   enabled: true
   log_level: DEBUG
   log_dir: logs
   enable_split_logs: false
-  enable_console_output: true
+  enable_console_output: false
 debug:
   enabled: true
   debug_level: 3
@@ -34,7 +34,7 @@ system:
   main_loop_interval: 0.1
   shutdown_timeout: 5.0
   input_mode:
-    mode: vad
+    mode: text
     text_input_prompt: '>>> '
   media:
     music_folder: E:\Music\My Songs\Full Playlist

@@ -2062,3 +2062,15 @@
 
 ---
 
+### Added more behaviors and animations, now trying to connect with system loop. 11/26
+
+> Date: Wed, 26 Nov 2025 21:21:24 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `c9e5c5c90be7aad6453ad3b1da0b91083e5912a0`
+
+---
+

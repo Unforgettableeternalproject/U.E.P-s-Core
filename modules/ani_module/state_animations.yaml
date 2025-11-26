@@ -18,10 +18,10 @@ IDLE:
 # 每個系統循環都會經過三個層級，動畫由層級事件驅動而非狀態驅動
 # 層級流程：input (使用者輸入) → processing (系統處理) → output (系統回應)
 LAYERS:
-  # 輸入層：偵測到使用者互動時
-  # 觸發時機：INPUT_LAYER_COMPLETE 事件發布前
+  # 輸入層：偵測到使用者互動時（STT 開始接收語音）
+  # 觸發時機：INTERACTION_STARTED 事件發布時
   input:
-    default: smile_idle_f  # 等待輸入時的閒置動畫（會自動根據 movement_mode 切換 _f/_g）
+    default: data_processing_f  # listening 動畫（會自動根據 movement_mode 切換 _f/_g）
   
   # 處理層：系統思考/處理階段
   # 觸發時機：INPUT_LAYER_COMPLETE 事件發布後

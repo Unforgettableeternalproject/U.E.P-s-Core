@@ -6,7 +6,7 @@ physics:
   gravity: 0.8               # 重力加速度
   damping: 0.978             # 通用阻尼（已棄用，保留相容性）
   ground_friction: 0.95      # 地面摩擦係數
-  air_resistance: 0.985      # 空氣阻力係數（調高以減少空中慣性衰減）
+  air_resistance: 0.95      # 空氣阻力係數（調高以減少空中慣性衰減）
   bounce_factor: 0.4         # 地面反彈係數
   ground_offset: 48          # 地面偏移量
 

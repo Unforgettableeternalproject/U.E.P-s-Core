@@ -743,6 +743,23 @@ class STTModule(BaseModule):
             total_duration = len(merged_audio) / self.sample_rate
             info_log(f"[STT] 合併後音頻長度: {total_duration:.2f} 秒")
             
+            # 發布 INTERACTION_STARTED 事件，通知前端使用者開始互動
+            try:
+                from core.event_bus import event_bus, SystemEvent
+                event_bus.publish(
+                    SystemEvent.INTERACTION_STARTED,
+                    {
+                        "module": "stt",
+                        "input_type": "voice",
+                        "audio_duration": total_duration,
+                        "num_chunks": len(audio_buffer)
+                    },
+                    source="stt_module"
+                )
+                debug_log(2, "[STT] 已發布 INTERACTION_STARTED 事件")
+            except Exception as e:
+                debug_log(2, f"[STT] 無法發布 INTERACTION_STARTED 事件: {e}")
+            
             # 將音頻數據添加到語者上下文
             if context_id and self.working_context_manager:
                 self.working_context_manager.add_data_to_context(

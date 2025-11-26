@@ -16,8 +16,8 @@ resources:
       frame_duration: 0.06
       loop: false
       zoom: 1.35
-      offsetX: 30
-      offsetY: -20
+      offsetX: 10
+      offsetY: -50
     leave:
       prefix: diamond_girl_end_
       total_frames: 74
@@ -205,7 +205,7 @@ resources:
     talk_ani2_f:
       prefix: diamond_girl_talk2_
       total_frames: 38
-      frame_duration: 0.1
+      frame_duration: 0.08
       loop: true
       zoom: 1.0
       offsetX: 0
@@ -213,7 +213,15 @@ resources:
     talk_ani_f:
       prefix: diamond_girl_talk1_
       total_frames: 38
-      frame_duration: 0.1
+      frame_duration: 0.08
+      loop: true
+      zoom: 1.0
+      offsetX: 0
+      offsetY: 0
+    talk_ani_g:
+      prefix: diamond_girl_talk_standing_
+      total_frames: 38
+      frame_duration: 0.08
       loop: true
       zoom: 1.0
       offsetX: 0
@@ -285,7 +293,7 @@ resources:
     turn_left_g:
       prefix: diamond_girl_turn_left_
       total_frames: 29
-      frame_duration: 0.08
+      frame_duration: 0.03
       loop: false
       zoom: 1.0
       offsetX: 0
@@ -293,7 +301,7 @@ resources:
     turn_right_g:
       prefix: diamond_girl_turn_right_
       total_frames: 29
-      frame_duration: 0.08
+      frame_duration: 0.03
       loop: false
       zoom: 1.0
       offsetX: 0
@@ -301,7 +309,7 @@ resources:
     turn_walk_g:
       prefix: diamond_girl_turn_walking_
       total_frames: 59
-      frame_duration: 0.08
+      frame_duration: 0.03
       loop: false
       zoom: 1.0
       offsetX: 0

@@ -26,7 +26,10 @@ from utils.debug_helper import debug_log, info_log, error_log
 
 class SystemEvent(Enum):
     """系統事件類型"""
-    # 層級完成事件
+    # 互動層級事件（追蹤使用者互動狀態）
+    INTERACTION_STARTED = "interaction_started"            # 使用者開始互動（STT 開始接收語音）
+    
+    # 層級完成事件（三層架構）
     INPUT_LAYER_COMPLETE = "input_layer_complete"          # 輸入層完成 (NLP)
     PROCESSING_LAYER_COMPLETE = "processing_layer_complete"  # 處理層完成 (LLM/MEM/SYS)
     OUTPUT_LAYER_COMPLETE = "output_layer_complete"        # 輸出層完成 (TTS)
@@ -43,9 +46,9 @@ class SystemEvent(Enum):
     SESSION_STARTED = "session_started"                    # 會話開始
     SESSION_ENDED = "session_ended"                        # 會話結束
     
-    # 循環控制事件
-    CYCLE_STARTED = "cycle_started"                        # 處理循環開始
-    CYCLE_COMPLETED = "cycle_completed"                    # 處理循環完成
+    # 循環控制事件（注意：CYCLE_STARTED ≠ INTERACTION_STARTED）
+    CYCLE_STARTED = "cycle_started"                        # 處理循環開始（系統內部事件）
+    CYCLE_COMPLETED = "cycle_completed"                    # 處理循環完成（包含使用者互動結束）
     
     # 工作流輸入控制事件
     WORKFLOW_REQUIRES_INPUT = "workflow_requires_input"    # 工作流需要使用者輸入
@@ -56,7 +59,7 @@ class SystemEvent(Enum):
     WORKFLOW_STEP_APPROVED = "workflow_step_approved"      # 🔧 工作流步驟已批准（LLM 審核完成）
     WORKFLOW_FAILED = "workflow_failed"                    # 工作流執行失敗
     
-    # 階段五：背景工作流事件
+    # 背景工作流事件
     BACKGROUND_WORKFLOW_SUBMITTED = "background_workflow_submitted"    # 背景工作流已提交
     BACKGROUND_WORKFLOW_STARTED = "background_workflow_started"        # 背景工作流開始執行
     BACKGROUND_WORKFLOW_COMPLETED = "background_workflow_completed"    # 背景工作流完成

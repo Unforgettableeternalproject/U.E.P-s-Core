@@ -24,11 +24,16 @@ from core.states.state_manager import UEPState
 
 try:
     from PyQt5.QtCore import QTimer
+    from PyQt5.QtGui import QCursor
     PYQT5 = True
 except Exception:
     PYQT5 = False
     class QTimer:  # fallback 型別
         def __init__(self): pass
+    class QCursor:  # fallback
+        @staticmethod
+        def pos():
+            return type('Point', (), {'x': lambda: 0, 'y': lambda: 0})()
         def start(self, *a, **k): pass
         def stop(self): pass
         def timeout(self, *a, **k): pass
@@ -194,6 +199,7 @@ class MOVModule(BaseFrontendModule):
         # --- 狀態動畫系統 ---
         self._current_layer: Optional[str] = None  # "input", "processing", "output"
         self._current_system_state: UEPState = UEPState.IDLE
+        self._current_gs_id: Optional[str] = None  # 當前 General Session ID
         self._state_animation_config: Optional[Dict] = None
 
         info_log(f"[{self.module_id}] MOV 初始化完成")
@@ -367,6 +373,7 @@ class MOVModule(BaseFrontendModule):
             sm=self.sm,
             trigger_anim=self._trigger_anim,
             set_target=self._set_target,
+            get_cursor_pos=self._get_cursor_pos,
             now=now,
             transition_start_time=self.transition_start_time,
             movement_locked_until=self.movement_locked_until,
@@ -520,6 +527,11 @@ class MOVModule(BaseFrontendModule):
         self.current_behavior_state = state
         self.current_behavior = BehaviorFactory.create(state)
         
+        # **重置移動計時器，避免進入移動行為時立即觸發停滯檢測**
+        if state in (BehaviorState.NORMAL_MOVE, BehaviorState.SPECIAL_MOVE):
+            self.last_movement_time = time.time()
+            debug_log(3, f"[{self.module_id}] 進入移動行為，重置移動計時器")
+        
         # **檢查投擲後調皮行為**
         if self._post_throw_tease_pending and state == BehaviorState.NORMAL_MOVE:
             debug_log(1, f"[{self.module_id}] 投擲後調皮：播放 tease 動畫")
@@ -554,6 +566,7 @@ class MOVModule(BaseFrontendModule):
             sm=self.sm,
             trigger_anim=self._trigger_anim,
             set_target=self._set_target,
+            get_cursor_pos=self._get_cursor_pos,
             now=now,
             transition_start_time=self.transition_start_time,
             movement_locked_until=self.movement_locked_until,
@@ -592,7 +605,7 @@ class MOVModule(BaseFrontendModule):
                         SIZE=self.SIZE,
                         GROUND_OFFSET=self.GROUND_OFFSET,
                         v_left=self.v_left,
-                        v_top=self.v_top,
+                        v_top=self.v_right,
                         v_right=self.v_right,
                         v_bottom=self.v_bottom,
                         movement_mode=self.movement_mode,
@@ -607,6 +620,7 @@ class MOVModule(BaseFrontendModule):
                         sm=self.sm,
                         trigger_anim=self._trigger_anim,
                         set_target=self._set_target,
+                        get_cursor_pos=self._get_cursor_pos,
                         now=time.time(),
                         transition_start_time=self.transition_start_time,
                         movement_locked_until=self.movement_locked_until,
@@ -857,6 +871,15 @@ class MOVModule(BaseFrontendModule):
         self.position.y = min(max(self.position.y, min_y), max_y)
         self._emit_position()
 
+
+    def _get_cursor_pos(self) -> tuple[float, float]:
+        """獲取當前滑鼠位置（螢幕座標）- 使用 QCursor"""
+        try:
+            from PyQt5.QtGui import QCursor
+            pos = QCursor.pos()
+            return (float(pos.x()), float(pos.y()))
+        except Exception:
+            return (0.0, 0.0)  # fallback
 
     def _set_target(self, x: float, y: float):
         margin = self.screen_padding
@@ -1316,6 +1339,13 @@ class MOVModule(BaseFrontendModule):
         try:
             from core.event_bus import event_bus, SystemEvent
             
+            # 訂閱使用者互動開始事件（語音輸入開始）
+            event_bus.subscribe(
+                SystemEvent.INTERACTION_STARTED,
+                self._on_interaction_started,
+                handler_name="mov_interaction_started"
+            )
+            
             event_bus.subscribe(
                 SystemEvent.INPUT_LAYER_COMPLETE,
                 self._on_input_layer_complete,
@@ -1334,37 +1364,107 @@ class MOVModule(BaseFrontendModule):
                 handler_name="mov_output_layer"
             )
             
-            debug_log(2, f"[{self.module_id}] 已訂閱層級完成事件")
+            # 訂閱 GS 生命週期事件
+            event_bus.subscribe(
+                SystemEvent.SESSION_STARTED,
+                self._on_session_started,
+                handler_name="mov_session_started"
+            )
+            
+            event_bus.subscribe(
+                SystemEvent.GS_ADVANCED,
+                self._on_gs_advanced,
+                handler_name="mov_gs_advanced"
+            )
+            
+            debug_log(2, f"[{self.module_id}] 已訂閱系統事件（互動 + 層級 + GS 生命週期）")
             
         except Exception as e:
             error_log(f"[{self.module_id}] 訂閱層級事件失敗: {e}")
     
-    def _on_input_layer_complete(self, event):
-        """輸入層完成 - 進入處理層"""
+    def _on_interaction_started(self, event):
+        """使用者互動開始 - STT 檢測到語音輸入"""
         try:
-            debug_log(2, f"[{self.module_id}] 輸入層完成，進入處理層")
+            debug_log(2, f"[{self.module_id}] 🎤 使用者互動開始（語音輸入）")
+            # 進入系統循環狀態，暫停移動
+            self._switch_behavior(BehaviorState.SYSTEM_CYCLE)
+            self.pause_movement("system_cycle")
+            # 設定為輸入層狀態，觸發 listening 動畫
+            self._current_layer = "input"
+            self._update_animation_for_current_state()
+        except Exception as e:
+            error_log(f"[{self.module_id}] 處理互動開始事件失敗: {e}")
+    
+    def _on_input_layer_complete(self, event):
+        """輸入層完成 - 進入處理層（thinking 動畫）"""
+        try:
+            debug_log(2, f"[{self.module_id}] 🤔 輸入層完成，進入處理層")
             self._current_layer = "processing"
             self._update_animation_for_current_state()
         except Exception as e:
             error_log(f"[{self.module_id}] 處理輸入層完成事件失敗: {e}")
     
     def _on_processing_layer_complete(self, event):
-        """處理層完成 - 進入輸出層"""
+        """處理層完成 - 進入輸出層（talking 動畫）"""
         try:
-            debug_log(2, f"[{self.module_id}] 處理層完成，進入輸出層")
+            debug_log(2, f"[{self.module_id}] 💬 處理層完成，進入輸出層")
             self._current_layer = "output"
             self._update_animation_for_current_state()
         except Exception as e:
             error_log(f"[{self.module_id}] 處理處理層完成事件失敗: {e}")
     
     def _on_output_layer_complete(self, event):
-        """輸出層完成 - 回到輸入層（或閒置）"""
+        """輸出層完成 - 保持 talking 動畫直到循環結束"""
         try:
-            debug_log(2, f"[{self.module_id}] 輸出層完成")
-            self._current_layer = None
-            self._update_animation_for_current_state()
+            debug_log(2, f"[{self.module_id}] ✅ 輸出層完成，等待循環結束")
+            # 不清除 _current_layer，保持 talking 動畫
+            # 等待 CYCLE_COMPLETED 事件才恢復 idle
         except Exception as e:
             error_log(f"[{self.module_id}] 處理輸出層完成事件失敗: {e}")
+    
+    def _on_session_started(self, event):
+        """會話開始 - 記錄當前 GS ID"""
+        try:
+            session_id = event.data.get('session_id')
+            session_type = event.data.get('session_type', 'unknown')
+            
+            # 只追蹤 General Session
+            if session_type == 'general':
+                self._current_gs_id = session_id
+                debug_log(2, f"[{self.module_id}] 📝 GS 開始: {session_id}")
+        except Exception as e:
+            error_log(f"[{self.module_id}] 處理會話開始事件失敗: {e}")
+    
+    def _on_gs_advanced(self, event):
+        """
+GS 推進 - 當前 GS 結束，恢復 idle 狀態和移動"""
+        try:
+            old_gs_id = event.data.get('old_gs_id')
+            new_gs_id = event.data.get('new_gs_id')
+            
+            debug_log(2, f"[{self.module_id}] 🔄 GS 推進: {old_gs_id} → {new_gs_id}")
+            
+            # 如果當前在 SYSTEM_CYCLE 狀態，且舊 GS 結束，恢復正常狀態
+            if (self.current_behavior_state == BehaviorState.SYSTEM_CYCLE and 
+                old_gs_id == self._current_gs_id):
+                
+                debug_log(2, f"[{self.module_id}] ✅ GS {old_gs_id} 結束，恢復 idle 狀態")
+                
+                # 清除層級狀態
+                self._current_layer = None
+                
+                # 恢復移動
+                self.resume_movement("system_cycle")
+                
+                # 切換回 IDLE 行為並播放 idle 動畫
+                self._switch_behavior(BehaviorState.IDLE)
+                self._update_animation_for_current_state()
+            
+            # 更新當前 GS ID
+            self._current_gs_id = new_gs_id
+            
+        except Exception as e:
+            error_log(f"[{self.module_id}] 處理 GS 推進事件失敗: {e}")
     
     def _load_state_animation_config(self) -> Optional[Dict]:
         """載入狀態-動畫映射配置"""

@@ -44,6 +44,7 @@ class BehaviorContext:
     # 事件/輸出接口（由協調器提供）
     trigger_anim: Callable[[str, dict], None]
     set_target: Callable[[float, float], None]
+    get_cursor_pos: Callable[[], tuple[float, float]]  # 返回 (x, y)
 
     # 時序
     now: float
@@ -83,9 +84,16 @@ class BehaviorFactory:
         if state == BehaviorState.IDLE:
             from .idle_behavior import IdleBehavior
             return IdleBehavior()
-        if state == BehaviorState.NORMAL_MOVE or state == BehaviorState.SPECIAL_MOVE:
+        if state == BehaviorState.SYSTEM_CYCLE:
+            # SYSTEM_CYCLE 期間暫停移動，使用 idle 行為
+            from .idle_behavior import IdleBehavior
+            return IdleBehavior()
+        if state == BehaviorState.NORMAL_MOVE:
             from .movement_behavior import MovementBehavior
             return MovementBehavior()
+        if state == BehaviorState.SPECIAL_MOVE:
+            from .special_move_behavior import SpecialMoveBehavior
+            return SpecialMoveBehavior()
         if state == BehaviorState.TRANSITION:
             from .transition_behavior import TransitionBehavior
             return TransitionBehavior()

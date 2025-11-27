@@ -40,7 +40,7 @@ class UEPStateProfileWidget(QWidget):
         self.settings = QSettings("UEP", "DiaryStation")
 
         self._text_feels = "I feel bright and steady, like sunshine after rain."
-        self._text_helped = "Organized your study plan and fixed two UI bugs."
+        self._text_helped = "Organized your study plan  and fixed two UI bugs."
         self._text_tips = "Tip: Short breaks (5–10m) boost focus. Try 25/5 Pomodoro."
         self._image_path = None
 
@@ -85,13 +85,13 @@ class UEPStateProfileWidget(QWidget):
         mainLayout.setContentsMargins(30, 18, 30, 18)
         mainLayout.setSpacing(20)
 
-        self.cardFeels = self._make_card(" U.E.P now feels…", min_height=275)
-        self.cardHelped = self._make_card(" U.E.P lately helped you to…", min_height=275)
-        self.cardTips = self._make_card(" Random facts / tips", min_height=90)
+        self.cardFeels = self._make_card("✩ 小 U 的秘密空間 ✩", min_height=275, role="feels")
+        self.cardHelped = self._make_card("୨୧ ♡ 小 U 最近偷偷幫了你 ♡ ୨୧", min_height=275, role="helped")
+        self.cardTips   = self._make_card("ʚɞ 小 U 的小提示 ʚɞ", min_height=90,  role="tips")
 
-        self.feelsLabel = self._card_text_label()
-        self.helpedLabel = self._card_text_label()
-        self.tipsLabel = self._card_text_label()
+        self.feelsLabel = self._card_text_label(point_size = 11)
+        self.helpedLabel = self._card_text_label(point_size = 11)
+        self.tipsLabel = self._card_text_label(point_size = 11)
 
         self._put_content(self.cardFeels, self.feelsLabel)
         self._put_content(self.cardHelped, self.helpedLabel)
@@ -104,9 +104,18 @@ class UEPStateProfileWidget(QWidget):
 
         self.containerWidget = container
 
-    def _make_card(self, title: str, min_height: int = None) -> QGroupBox:
+    def _make_card(self, title: str, min_height: int = None, role: str = None) -> QGroupBox:
         box = QGroupBox(title)
         box.setObjectName("settingsGroup")
+
+        title_font = box.font()
+        title_font.setPointSize(14) 
+        title_font.setBold(True)
+        box.setFont(title_font)
+
+        if role is not None:
+            box.setProperty("cardRole", role)   
+
         install_theme_hook(box)
         box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
@@ -118,13 +127,13 @@ class UEPStateProfileWidget(QWidget):
         lay.setSpacing(10)
         return box
 
-    def _card_text_label(self) -> QLabel:
+    def _card_text_label(self, point_size: int =11) -> QLabel:
         lb = QLabel()
         lb.setObjectName("diaryText")
         lb.setWordWrap(True)
         lb.setTextInteractionFlags(Qt.TextSelectableByMouse)
         f = QFont()
-        f.setPointSize(11)
+        f.setPointSize(point_size)
         lb.setFont(f)
         install_theme_hook(lb)
         return lb

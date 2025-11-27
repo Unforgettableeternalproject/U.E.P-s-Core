@@ -155,7 +155,7 @@ class ThemeManager(QObject):
 
         QPushButton#themeToggle {{
             background:#000000;
-            color:#e6e6e6;
+            color:#ffd85a;
             border:none;
             min-width:56px;
             min-height:56px;

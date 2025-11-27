@@ -957,15 +957,14 @@ class UserMainWindow(QMainWindow):
                 QPushButton:hover { background:#e6c51c; }
                 QPushButton:pressed { background:#b89f14; }
                 QPushButton:disabled { background:#3a3b42; color:#7e8087; }
-                QPushButton#themeToggle{ 
-                    background:#000;
-                    color:#000;
-                    border:none;
+
+                QPushButton#themeToggle{
+                    background:#000000;
+                    color:#ffd85a;              
                     min-width:56px;
                     min-height:56px;
-                    border-radius:28px;  
-                    font-size:20px;
-                    line-height:1;
+                    border-radius:28px;
+                    font-size:22px;
                     padding:0;
                 }
                 QPushButton#headerClose{
@@ -978,8 +977,9 @@ class UserMainWindow(QMainWindow):
                     font-size:18px;
                     padding:0;
                 }
-                QPushButton#themeToggle:hover{ background:#000; }
-                QPushButton#themeToggle:pressed{ background:#b89f14; }
+                QPushButton#themeToggle:hover{ background:#111111; }
+                QPushButton#themeToggle:pressed{ background:#26272b; }
+
                 QCheckBox, QRadioButton { color:#e6e6e6; spacing:8px; }
                 QCheckBox::indicator, QRadioButton::indicator { width:18px; height:18px; border-radius:4px; border:2px solid #2f3136; background:#26272b; }
                 QCheckBox::indicator:checked, QRadioButton::indicator:checked { background:#d5b618; border-color:#d5b618; }
@@ -1055,6 +1055,7 @@ class UserMainWindow(QMainWindow):
                 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical{ height:0; }
                 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical{ background:transparent; }
             """)
+
 
     def load_settings(self):
         try:

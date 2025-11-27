@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QPushButton, QVBoxLayout, QLabel,
     QFrame, QDialog, QHBoxLayout, QGraphicsDropShadowEffect
 )
-from PyQt5.QtCore import Qt, QPropertyAnimation, QPoint, QEasingCurve, QTimer, pyqtSignal, QSize, QSettings
+from PyQt5.QtCore import Qt, QPropertyAnimation, QPoint, QEasingCurve, QTimer, pyqtSignal, QSize, QSettings, QRect
 from PyQt5.QtGui import QPainter, QColor, QBrush, QIcon, QPixmap, QFont, QRegion
 
 try:
@@ -190,7 +190,6 @@ class MainButton(QWidget):
         button.setFlat(True)
         button.setFocusPolicy(Qt.NoFocus)
 
-        # Make the button visually and logically circular
         button.setStyleSheet(f"""
             QPushButton, QPushButton:hover, QPushButton:pressed{{
                 background-color: transparent;
@@ -205,7 +204,6 @@ class MainButton(QWidget):
         super().__init__()
         self.bridge = bridge
 
-        # Frameless, always-on-top overlay style window
         self.setWindowFlags(
             Qt.FramelessWindowHint |
             Qt.WindowStaysOnTopHint |
@@ -215,7 +213,6 @@ class MainButton(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.resize(400, 400)
 
-        # Colors for options (not heavily used now, but kept for styling)
         self.color_opt1 = "#E3F2FD"
         self.color_opt2 = "#E8F5E9"
         self.color_opt3 = "#FFF3E0"
@@ -309,7 +306,7 @@ class MainButton(QWidget):
                 pass
 
             if is_dark:
-                # Dark them
+                # Dark theme
                 grad  = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
                          "stop:0 rgba(60,60,60,180), stop:1 rgba(90,90,90,180))")
                 hover = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
@@ -354,7 +351,6 @@ class MainButton(QWidget):
             sz = tb.width() 
 
             if is_dark:
-                # Darker, semi-transparent greys for tool buttons in dark theme
                 tgrad  = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
                           "stop:0 rgba(50,50,50,220), stop:1 rgba(36,36,36,200))")
                 thover = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
@@ -363,7 +359,6 @@ class MainButton(QWidget):
                           "stop:0 rgba(40,40,40,240), stop:1 rgba(24,24,24,220))")
                 tfg    = "#e6e6e6"
             else:
-                # Slightly darker semi-transparent greys for tool buttons in light theme
                 tgrad  = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
                           "stop:0 rgba(80,80,80,180), stop:1 rgba(56,56,56,160))")
                 thover = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
@@ -388,7 +383,6 @@ class MainButton(QWidget):
                 }}
             """)
 
-
     def _place_circle(self):
         app = QApplication.instance()
         screen = app.primaryScreen()
@@ -400,7 +394,6 @@ class MainButton(QWidget):
             self.original_position = QPoint(x, y)
             self.visible_position = QPoint(g.right() - self.width() + 20, y)
         else:
-            # Fallback positions if we can't get screen geometry
             self.move(1200, 40)
             self.original_position = QPoint(1200, 40)
             self.visible_position = QPoint(1030, 40)
@@ -412,7 +405,6 @@ class MainButton(QWidget):
         global_cursor_pos = QApplication.instance().desktop().cursor().pos()
         widget_rect = self.geometry()
 
-        # Slightly enlarge the hover area so it feels more forgiving
         detection_margin = 10
         expanded_rect = widget_rect.adjusted(
             -detection_margin, -detection_margin,
@@ -425,7 +417,6 @@ class MainButton(QWidget):
         elif not is_hovering and self.is_fully_visible and not self.is_pinned:
             self._slide_to_hidden()
             if self.expanded:
-                # If menu is open, schedule auto-collapse after sliding out
                 self._schedule_auto_collapse(900)
 
     def _slide_to_visible(self):
@@ -463,43 +454,62 @@ class MainButton(QWidget):
     def _make_opt_btn(self, size, text, color, callback):
         b = DraggableButton(text, self)
         b.setFixedSize(size, size)
-        b._circle_size = size     
+        b._circle_size = size
         b.setCursor(Qt.PointingHandCursor)
 
-        font = QFont("Segoe UI Emoji")
-        font.setPixelSize(int(size * 0.42))
-        b.setFont(font)
+
+        b.setObjectName("uepOptButton")
+
+        if text:
+            pix = QPixmap(size, size)
+            pix.fill(Qt.transparent)
+            painter = QPainter(pix)
+            painter.setRenderHint(QPainter.Antialiasing)
+            emoji_font = QFont("Segoe UI Emoji")
+            emoji_font.setPixelSize(int(size *0.4))
+            painter.setFont(emoji_font)
+            painter.setPen(QColor(255,255,255))
+            painter.drawText(QRect(0,0, size, size), Qt.AlignCenter, text)
+            painter.end()
+            b.setIcon(QIcon(pix))
+            #slightly inset icon so it doesn't touch the circular mask edge
+            inset = max(2, int(size *0.10))
+            b.setIconSize(QSize(size - inset *2, size - inset *2))
+            b.setText("")
 
         b.setStyleSheet(f"""
-            QPushButton {{
+            QPushButton#uepOptButton {{
                 background-color: qlineargradient(
                     x1:0, y1:1, x2:1, y2:0,
-                    stop:0 rgba(201, 150, 20, 255),
-                    stop:1 rgba(0, 67, 173, 255)
+                    stop:0 rgba(201,150,20,255),
+                    stop:1 rgba(0,67,173,255)
                 );
                 border-radius: {size/2}px;
                 color: #fff;
-                padding: 0px;
+                padding:0px;
                 border: none;
+                outline: none;
             }}
-            QPushButton:hover {{
+            QPushButton#uepOptButton:hover {{
                 background-color: qlineargradient(
                     x1:0, y1:1, x2:1, y2:0,
-                    stop:0 rgba(201, 150, 20, 191),
-                    stop:1 rgba(0, 67, 173, 191)
+                    stop:0 rgba(201,150,20,191),
+                    stop:1 rgba(0,67,173,191)
                 );
                 border: none;
+                outline: none;
             }}
-            QPushButton:pressed {{
+            QPushButton#uepOptButton:pressed {{
                 background-color: qlineargradient(
                     x1:0, y1:1, x2:1, y2:0,
-                    stop:0 rgba(201, 150, 20, 230),
-                    stop:1 rgba(0, 67, 173, 230)
+                    stop:0 rgba(201,150,20,230),
+                    stop:1 rgba(0,67,173,230)
                 );
                 border: none;
+                outline: none;
             }}
         """)
-        
+
         try:
             b.setMask(QRegion(0, 0, size, size, QRegion.Ellipse))
         except Exception:
@@ -509,17 +519,28 @@ class MainButton(QWidget):
         return b
 
 
+
     def _make_tool_btn(self, size, text, callback):
         b = DraggableButton(text, self)
         b.setFixedSize(size, size)
         b.setCursor(Qt.PointingHandCursor)
 
-        font = QFont("Segoe UI Emoji")
-        # Slightly reduce emoji font so it fits neatly in small circular buttons
-        font.setPixelSize(max(8, int(size *0.6)))
-        b.setFont(font)
+        if text:
+            pix = QPixmap(size, size)
+            pix.fill(Qt.transparent)
+            painter = QPainter(pix)
+            painter.setRenderHint(QPainter.Antialiasing)
+            emoji_font = QFont("Segoe UI Emoji")
+            emoji_font.setPixelSize(int(size *0.6))
+            painter.setFont(emoji_font)
+            painter.setPen(QColor(255,255,255))
+            painter.drawText(QRect(0,0, size, size), Qt.AlignCenter, text)
+            painter.end()
+            b.setIcon(QIcon(pix))
+            inset = max(1, int(size *0.08))
+            b.setIconSize(QSize(size - inset *2, size - inset *2))
+            b.setText("")
 
-        # Ensure the tool buttons are visually circular and clipped to a circle
         b.setStyleSheet(f"""
             QPushButton {{
                 background-color: qlineargradient(
@@ -531,6 +552,7 @@ class MainButton(QWidget):
                 color: #fff;
                 padding:0px;
                 border: none;
+                outline: none;
             }}
             QPushButton:hover {{
                 background-color: qlineargradient(
@@ -539,6 +561,7 @@ class MainButton(QWidget):
                     stop:1 rgba(34,34,34,190)
                 );
                 border: none;
+                outline: none;
             }}
             QPushButton:pressed {{
                 background-color: qlineargradient(
@@ -547,10 +570,10 @@ class MainButton(QWidget):
                     stop:1 rgba(20,20,20,200)
                 );
                 border: none;
+                outline: none;
             }}
         """)
         
-        # Clip the widget to an ellipse so it's truly round (visual and hit area)
         try:
             b.setMask(QRegion(0,0, size, size, QRegion.Ellipse))
         except Exception:
@@ -562,7 +585,6 @@ class MainButton(QWidget):
         self._cancel_auto_collapse()
 
         if e.button() == Qt.LeftButton:
-            # Clicked outside all visible buttons -> collapse menu
             if self.expanded and not any(
                 w.isVisible() and w.geometry().contains(e.pos())
                 for w in [self.mainButton] + self.options + self.tool_buttons
@@ -571,14 +593,12 @@ class MainButton(QWidget):
                 e.accept()
                 return
 
-            # Otherwise, prepare for dragging if not clicking on the main/options
             if not any(btn.geometry().contains(e.pos()) for btn in [self.mainButton] + self.options):
                 self.dragPos = e.globalPos() - self.frameGeometry().topLeft()
                 self.setCursor(Qt.ClosedHandCursor)
                 e.accept()
 
         elif e.button() == Qt.RightButton:
-            # Right click: hold a bit, then allow dragging with right button
             self.dragPos = e.globalPos() - self.frameGeometry().topLeft()
             self.right_click_timer.start(500)
             self.setCursor(Qt.ClosedHandCursor)

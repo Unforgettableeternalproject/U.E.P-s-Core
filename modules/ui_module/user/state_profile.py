@@ -85,9 +85,9 @@ class UEPStateProfileWidget(QWidget):
         mainLayout.setContentsMargins(30, 30, 30, 30)
         mainLayout.setSpacing(20)
 
-        self.cardFeels = self._make_card(" U.E.P now feels…")
-        self.cardHelped = self._make_card(" U.E.P lately helped you to…")
-        self.cardTips = self._make_card(" Random facts / tips")
+        self.cardFeels = self._make_card(" U.E.P now feels…", min_height=275)
+        self.cardHelped = self._make_card(" U.E.P lately helped you to…", min_height=275)
+        self.cardTips = self._make_card(" Random facts / tips", min_height=90)
 
         self.feelsLabel = self._card_text_label()
         self.helpedLabel = self._card_text_label()
@@ -104,12 +104,14 @@ class UEPStateProfileWidget(QWidget):
 
         self.containerWidget = container
 
-    def _make_card(self, title: str) -> QGroupBox:
+    def _make_card(self, title: str, min_height: int = None) -> QGroupBox:
         box = QGroupBox(title)
         box.setObjectName("settingsGroup")
         install_theme_hook(box)
-        box.setMinimumHeight(500)
         box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        if min_height is not None:
+            box.setMinimumHeight(min_height)
 
         lay = QVBoxLayout(box)
         lay.setContentsMargins(18, 16, 18, 18)

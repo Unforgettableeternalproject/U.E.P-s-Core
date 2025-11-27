@@ -519,30 +519,43 @@ class MainButton(QWidget):
         return b
 
 
-
     def _make_tool_btn(self, size, text, callback):
         b = DraggableButton(text, self)
         b.setFixedSize(size, size)
+        b._circle_size = size  # Store size for theme manager
         b.setCursor(Qt.PointingHandCursor)
-
+    
+        # Set object name for consistent styling
+        b.setObjectName("uepToolButton")
+    
         if text:
+            # Create pixmap for the emoji icon
             pix = QPixmap(size, size)
             pix.fill(Qt.transparent)
             painter = QPainter(pix)
             painter.setRenderHint(QPainter.Antialiasing)
+        
+            # Set up emoji font
             emoji_font = QFont("Segoe UI Emoji")
-            emoji_font.setPixelSize(int(size *0.6))
+            emoji_font.setPixelSize(int(size * 0.5))
             painter.setFont(emoji_font)
-            painter.setPen(QColor(255,255,255))
-            painter.drawText(QRect(0,0, size, size), Qt.AlignCenter, text)
+            painter.setPen(QColor(255, 255, 255))
+        
+            # Draw text centered in the exact same way as opt buttons
+            painter.drawText(QRect(0, 0, size, size), Qt.AlignCenter, text)
             painter.end()
+        
+            # Set the icon
             b.setIcon(QIcon(pix))
-            inset = max(1, int(size *0.08))
-            b.setIconSize(QSize(size - inset *2, size - inset *2))
+        
+            # Use the exact same inset calculation as opt buttons
+            inset = max(2, int(size * 0.10))
+            b.setIconSize(QSize(size - inset * 2, size - inset * 2))
             b.setText("")
-
+    
+        # Apply stylesheet with proper circular styling
         b.setStyleSheet(f"""
-            QPushButton {{
+            QPushButton#uepToolButton {{
                 background-color: qlineargradient(
                     x1:0, y1:1, x2:1, y2:0,
                     stop:0 rgba(40,40,40,200),
@@ -550,11 +563,11 @@ class MainButton(QWidget):
                 );
                 border-radius: {size/2}px;
                 color: #fff;
-                padding:0px;
+                padding: 0px;
                 border: none;
                 outline: none;
             }}
-            QPushButton:hover {{
+            QPushButton#uepToolButton:hover {{
                 background-color: qlineargradient(
                     x1:0, y1:1, x2:1, y2:0,
                     stop:0 rgba(52,52,52,210),
@@ -563,7 +576,7 @@ class MainButton(QWidget):
                 border: none;
                 outline: none;
             }}
-            QPushButton:pressed {{
+            QPushButton#uepToolButton:pressed {{
                 background-color: qlineargradient(
                     x1:0, y1:1, x2:1, y2:0,
                     stop:0 rgba(36,36,36,220),
@@ -573,13 +586,17 @@ class MainButton(QWidget):
                 outline: none;
             }}
         """)
-        
+    
+        # Apply circular mask for perfect round shape
         try:
-            b.setMask(QRegion(0,0, size, size, QRegion.Ellipse))
+            b.setMask(QRegion(6, 6, size, size, QRegion.Ellipse))
         except Exception:
             pass
+    
         b.clicked.connect(callback)
         return b
+
+
 
     def mousePressEvent(self, e):
         self._cancel_auto_collapse()

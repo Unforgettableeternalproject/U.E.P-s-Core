@@ -606,7 +606,7 @@ class MainButton(QWidget):
             # Place tool buttons in a smaller arc
             TOOL_ARC_RADIUS = 110
             ANGLE_CENTER = 0
-            ANGLE_STEP = 24
+            ANGLE_STEP = 35
 
             for i, tb in enumerate(self.tool_buttons):
                 tb.show()

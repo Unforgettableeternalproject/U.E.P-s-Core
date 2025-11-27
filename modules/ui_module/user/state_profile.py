@@ -28,6 +28,8 @@ class UEPStateProfileWidget(QWidget):
     settings_changed = pyqtSignal(str, object)
     apply_requested = pyqtSignal(dict)
 
+    SCROLL_AREA_MIN_H = 620
+
     def __init__(self, parent=None):
         super().__init__(parent)
         if not PYQT5_AVAILABLE:
@@ -71,6 +73,8 @@ class UEPStateProfileWidget(QWidget):
         install_theme_hook(scroll)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        scroll.setMinimumHeight(self.SCROLL_AREA_MIN_H)
         containerLayout.addWidget(scroll)
 
         body = QWidget()
@@ -78,8 +82,8 @@ class UEPStateProfileWidget(QWidget):
         scroll.setWidget(body)
 
         mainLayout = QVBoxLayout(body)
-        mainLayout.setContentsMargins(24, 24, 24, 24)
-        mainLayout.setSpacing(18)
+        mainLayout.setContentsMargins(30, 30, 30, 30)
+        mainLayout.setSpacing(20)
 
         self.cardFeels = self._make_card(" U.E.P now feels…")
         self.cardHelped = self._make_card(" U.E.P lately helped you to…")
@@ -104,6 +108,9 @@ class UEPStateProfileWidget(QWidget):
         box = QGroupBox(title)
         box.setObjectName("settingsGroup")
         install_theme_hook(box)
+        box.setMinimumHeight(500)
+        box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
         lay = QVBoxLayout(box)
         lay.setContentsMargins(18, 16, 18, 18)
         lay.setSpacing(10)
@@ -239,8 +246,22 @@ class StateProfileDialog(QDialog):
         self.settings = QSettings("UEP", "StateProfile")
 
         self.setWindowTitle("UEP 狀態檔案")
-        self.setWindowFlags(Qt.Dialog | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
-        self.resize(900, 800)
+        self.setWindowFlags(
+            Qt.Window |
+            Qt.WindowTitleHint |
+            Qt.WindowMinMaxButtonsHint |
+            Qt.WindowCloseButtonHint
+        )
+
+        self.setMinimumSize(900, 950)
+        self.resize(1200, 950)
+
+        try:
+            icon_path = os.path.join(os.path.dirname(__file__), "../../../arts/U.E.P.png")
+            if os.path.exists(icon_path):
+                self.setWindowIcon(QIcon(icon_path))
+        except Exception:
+            pass
 
         install_theme_hook(self)
         self._build_ui()
@@ -314,7 +335,6 @@ class StateProfileDialog(QDialog):
         layout.addWidget(bottom)
 
         status = QStatusBar()
-        status.setFixedHeight(28)
         install_theme_hook(status)
         status.showMessage("狀態檔案已就緒")
         layout.addWidget(status)
@@ -387,4 +407,3 @@ if __name__ == "__main__":
     app, window = create_test_window()
     if app and window:
         sys.exit(app.exec_())
-

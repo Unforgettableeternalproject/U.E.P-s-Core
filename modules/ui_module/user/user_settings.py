@@ -3,20 +3,27 @@ import sys
 from typing import Dict, Any, Optional
 
 try:
-    from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                                QTabWidget, QLabel, QGroupBox, QScrollArea,
-                                QFrame, QPushButton, QCheckBox, QSpinBox,
-                                QSlider, QComboBox, QLineEdit, QTextEdit,
-                                QSplitter, QTreeWidget, QTreeWidgetItem,
-                                QFormLayout, QGridLayout, QSizePolicy, QGroupBox,
-                                QApplication, QMessageBox, QFileDialog, QVBoxLayout,
-                                QProgressBar, QStatusBar, QMenuBar, QGroupBox,
-                                QToolBar, QAction, QButtonGroup)
-    from PyQt5.QtCore import (Qt, QTimer, pyqtSignal, QSize, QRect,
-                             QPropertyAnimation, QEasingCurve, QThread,
-                             QSettings, QStandardPaths)
-    from PyQt5.QtGui import (QIcon, QFont, QPixmap, QPalette, QColor,
-                            QPainter, QLinearGradient, QBrush)
+    from PyQt5.QtWidgets import (
+        QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+        QTabWidget, QLabel, QGroupBox, QScrollArea,
+        QFrame, QPushButton, QCheckBox, QSpinBox,
+        QSlider, QComboBox, QLineEdit, QTextEdit,
+        QSplitter, QTreeWidget, QTreeWidgetItem,
+        QFormLayout, QGridLayout, QSizePolicy, QGroupBox,
+        QApplication, QMessageBox, QFileDialog, QVBoxLayout,
+        QProgressBar, QStatusBar, QMenuBar, QGroupBox,
+        QStyledItemDelegate,
+        QToolBar, QAction, QButtonGroup
+    )
+    from PyQt5.QtCore import (
+        Qt, QTimer, pyqtSignal, QSize, QRect,
+        QPropertyAnimation, QEasingCurve, QThread,
+        QSettings, QStandardPaths
+    )
+    from PyQt5.QtGui import (
+        QIcon, QFont, QPixmap, QPalette, QColor,
+        QPainter, QLinearGradient, QBrush, QPen
+    )
     PYQT5_AVAILABLE = True
 except ImportError:
     QMainWindow = object
@@ -50,6 +57,7 @@ except ImportError:
     QToolBar = object
     QAction = object
     QButtonGroup = object
+    QStyledItemDelegate = object
     Qt = None
     QTimer = None
     pyqtSignal = None
@@ -68,10 +76,24 @@ except ImportError:
     QPainter = None
     QLinearGradient = None
     QBrush = None
+    QPen = None
     PYQT5_AVAILABLE = False
+
 
 from theme_manager import theme_manager, Theme, install_theme_hook
 from utils.debug_helper import debug_log, info_log, error_log, KEY_LEVEL, OPERATION_LEVEL, SYSTEM_LEVEL, ELABORATIVE_LEVEL
+
+class LightGreyGridDelegate(QStyledItemDelegate):
+    def paint(self, painter, option, index):
+        super().paint(painter, option, index)
+
+        # light grey but not pure white
+        pen = QPen(QColor("#b5b8bf"))  
+        pen.setWidth(1)
+        painter.setPen(pen)
+
+        rect: QRect = option.rect
+        painter.drawRect(rect)
 
 
 class UserMainWindow(QMainWindow):
@@ -563,7 +585,26 @@ class UserMainWindow(QMainWindow):
         layout.setSpacing(15)
 
         self.state_tree = QTreeWidget()
-        self.state_tree.setHeaderLabels(["模組/狀態", "狀態", "狀態2"])
+        self.state_tree.setHeaderLabels(["模組", "狀態", "狀態2"])
+
+        self.state_tree.setStyleSheet("""
+        QTreeWidget {
+            background: transparent;
+        }
+        QTreeWidget::item {
+            padding: 6px;
+        }
+        QTreeWidget::item:selected {
+            background-color: #345ddb33;
+        }
+        """)
+
+        self.state_tree.setMinimumHeight(360)
+        self.state_tree.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        group.setMinimumHeight(420)  
+
+        delegate = LightGreyGridDelegate(self.state_tree)
+        self.state_tree.setItemDelegate(delegate)
 
         modules = ["STT模組", "NLP模組", "MEM模組", "LLM模組", "TTS模組", "SYS模組"]
         for module in modules:
@@ -584,7 +625,10 @@ class UserMainWindow(QMainWindow):
 
         layout.addLayout(button_layout)
 
-        return self._loose_group(group)
+        group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        return group
+
+
 
     def create_mov_limits_group(self):
         group = QGroupBox("移動行為限制")

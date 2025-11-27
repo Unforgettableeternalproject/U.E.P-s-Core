@@ -1,5 +1,4 @@
-﻿# user_settings.py
-import os
+﻿import os
 import sys
 from typing import Dict, Any, Optional
 
@@ -9,9 +8,9 @@ try:
                                 QFrame, QPushButton, QCheckBox, QSpinBox,
                                 QSlider, QComboBox, QLineEdit, QTextEdit,
                                 QSplitter, QTreeWidget, QTreeWidgetItem,
-                                QFormLayout, QGridLayout, QSizePolicy,QGroupBox,
-                                QApplication, QMessageBox, QFileDialog,QVBoxLayout,
-                                QProgressBar, QStatusBar, QMenuBar,QGroupBox,
+                                QFormLayout, QGridLayout, QSizePolicy, QGroupBox,
+                                QApplication, QMessageBox, QFileDialog, QVBoxLayout,
+                                QProgressBar, QStatusBar, QMenuBar, QGroupBox,
                                 QToolBar, QAction, QButtonGroup)
     from PyQt5.QtCore import (Qt, QTimer, pyqtSignal, QSize, QRect,
                              QPropertyAnimation, QEasingCurve, QThread,
@@ -71,7 +70,9 @@ except ImportError:
     QBrush = None
     PYQT5_AVAILABLE = False
 
+from theme_manager import theme_manager, Theme
 from utils.debug_helper import debug_log, info_log, error_log, KEY_LEVEL, OPERATION_LEVEL, SYSTEM_LEVEL, ELABORATIVE_LEVEL
+
 
 class UserMainWindow(QMainWindow):
     settings_changed = pyqtSignal(str, object)
@@ -91,11 +92,13 @@ class UserMainWindow(QMainWindow):
 
         self.is_minimized_to_orb = False
         self.original_geometry = None
-        self.dark_mode = False
+        self.dark_mode = (theme_manager.theme == Theme.DARK)
 
         self.init_ui()
         self.load_settings()
         self.hide()
+
+        theme_manager.theme_changed.connect(self._on_global_theme_changed)
 
         info_log("[UserMainWindow] 設定視窗初始化完成")
 
@@ -152,7 +155,7 @@ class UserMainWindow(QMainWindow):
         header_layout.addLayout(title_container)
         header_layout.addStretch()
 
-        self.theme_toggle = QPushButton("🌙")
+        self.theme_toggle = QPushButton()
         self.theme_toggle.setObjectName("themeToggle")
 
         self.theme_toggle.setFixedSize(56, 56)
@@ -161,6 +164,7 @@ class UserMainWindow(QMainWindow):
         btn_font = QFont("Segoe UI Emoji, Apple Color Emoji, Noto Color Emoji")
         btn_font.setPointSize(20)
         self.theme_toggle.setFont(btn_font)
+        self.theme_toggle.setText("☀️" if self.dark_mode else "🌙")
 
         self.theme_toggle.clicked.connect(self.toggle_theme)
         header_layout.addWidget(self.theme_toggle)
@@ -915,7 +919,18 @@ class UserMainWindow(QMainWindow):
         scroll_area.setAlignment(Qt.AlignTop)
 
     def toggle_theme(self):
-        self.dark_mode = not self.dark_mode
+        new_theme = Theme.DARK if theme_manager.theme == Theme.LIGHT else Theme.LIGHT
+        theme_manager.set_theme(new_theme)
+        self.dark_mode = (new_theme == Theme.DARK)
+        self.theme_toggle.setText("☀️" if self.dark_mode else "🌙")
+        self.apply_theme()
+
+    def _on_global_theme_changed(self, theme_str: str):
+        try:
+            t = Theme(theme_str)
+        except ValueError:
+            t = Theme.LIGHT
+        self.dark_mode = (t == Theme.DARK)
         self.theme_toggle.setText("☀️" if self.dark_mode else "🌙")
         self.apply_theme()
 
@@ -1176,6 +1191,7 @@ class UserMainWindow(QMainWindow):
             error_log(f"[UserMainWindow] 處理請求時發生錯誤:{e}")
             return {"error": str(e)}
 
+
 def create_test_window():
     if not PYQT5_AVAILABLE:
         error_log("[UserMainWindow] PyQt5不可用，無法創建測試視窗")
@@ -1183,9 +1199,11 @@ def create_test_window():
     app = QApplication.instance()
     if app is None:
         app = QApplication([])
+    theme_manager.apply_app()
     window = UserMainWindow()
     window.show()
     return app, window
+
 
 if __name__ == "__main__":
     app, window = create_test_window()

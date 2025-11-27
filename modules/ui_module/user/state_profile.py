@@ -274,7 +274,7 @@ class StateProfileDialog(QDialog):
 
         header = QFrame()
         header.setObjectName("header")
-        header.setFixedHeight(92)
+        header.setFixedHeight(110)
         install_theme_hook(header)
 
         header_layout = QHBoxLayout(header)

@@ -101,6 +101,7 @@ class ThemeManager(QObject):
 
         QLabel {{
             color:#e6e6e6;
+            background: transparent
         }}
 
         QLabel#infoText {{

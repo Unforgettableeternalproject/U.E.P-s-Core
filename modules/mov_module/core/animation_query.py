@@ -343,3 +343,44 @@ class AnimationQueryHelper:
             return random.choice(available)
         
         return None
+    
+    def get_mood_based_idle_animation(self, mood: float, pride: float, is_ground: bool = False) -> Optional[str]:
+        """
+        根據情緒值獲取對應的閒置動畫
+        
+        Args:
+            mood: 情緒值 (0.0 - 1.0)
+            pride: 自尊值 (0.0 - 1.0)
+            is_ground: 是否為地面模式
+            
+        Returns:
+            動畫名稱，如果沒有特殊情緒動畫則返回 None（使用預設 idle）
+            
+        情緒動畫邏輯：
+        - angry_idle_f: mood < 0.4 且 pride > 0.6 (不爽但自尊高 → 生氣)
+        - awkward_f: mood > 0.6 且 pride < 0.4 (開心但自尊低 → 尷尬/不好意思)
+        - curious_idle_f: mood > 0.6 且 pride > 0.6 (開心且自尊高 → 好奇/興奮)
+        """
+        # 目前情緒動畫只有浮空模式
+        if is_ground:
+            return None
+        
+        # 根據 mood 和 pride 選擇動畫
+        if mood < 0.4 and pride > 0.6:
+            # 不爽但自尊高 → 生氣
+            anim = "angry_idle_f"
+        elif mood > 0.6 and pride < 0.4:
+            # 開心但自尊低 → 尷尬
+            anim = "awkward_f"
+        elif mood > 0.6 and pride > 0.6:
+            # 開心且自尊高 → 好奇/興奮
+            anim = "curious_idle_f"
+        else:
+            # 中性情緒，使用預設 idle
+            return None
+        
+        # 檢查動畫是否存在
+        if self.animation_exists(anim):
+            return anim
+        
+        return None

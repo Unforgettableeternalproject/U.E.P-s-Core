@@ -50,6 +50,10 @@ class ThrowHandler(BaseHandler):
         self._post_throw_time = 0.0
         self._post_throw_delay = float(config.get("throw_post_tease_delay", 3.0))
         
+        # 🔧 投擲動畫超時保護
+        self._throw_anim_name: Optional[str] = None
+        self._throw_anim_deadline: float = 0.0
+        
         info_log(f"[{self.__class__.__name__}] 初始化: 速度門檻={self.throw_threshold_speed}, "
                 f"距離門檻={self.throw_threshold_dist}, 最大速度={self.max_throw_speed}")
     
@@ -141,6 +145,13 @@ class ThrowHandler(BaseHandler):
             )
             if throw_anim == "struggle":
                 debug_log(2, f"[{self.__class__.__name__}] 使用 struggle 作為投擲動畫 (loop=False)")
+            
+            # 🔧 設置手動超時保護（防止動畫卡住）
+            # 投擲動畫應該在 2 秒內完成，超時後強制清除優先度
+            import time
+            self._throw_anim_name = throw_anim
+            self._throw_anim_deadline = time.time() + 2.0
+            debug_log(2, f"[{self.__class__.__name__}] 投擲動畫超時保護已啟動 (2.0s)")
         
         info_log(f"[{self.__class__.__name__}] 觸發投擲！速度={speed:.1f} (vx={vx:.1f}, vy={vy:.1f})")
     
@@ -176,6 +187,18 @@ class ThrowHandler(BaseHandler):
         Args:
             now: 當前時間
         """
+        # 🔧 檢查投擲動畫超時（防止卡住）
+        if self._throw_anim_name and self._throw_anim_deadline > 0:
+            if now > self._throw_anim_deadline:
+                debug_log(1, f"[{self.__class__.__name__}] ⚠️ 投擲動畫 {self._throw_anim_name} 超時，強制清除優先度")
+                # 手動清除優先度管理器中的動畫請求
+                if hasattr(self.coordinator, '_animation_priority'):
+                    self.coordinator._animation_priority.on_animation_finished(self._throw_anim_name)
+                    debug_log(2, f"[{self.__class__.__name__}] 已手動清除動畫優先度: {self._throw_anim_name}")
+                # 清除超時狀態
+                self._throw_anim_name = None
+                self._throw_anim_deadline = 0.0
+        
         # 檢查投擲後調皮時間
         if self._post_throw_tease and now >= self._post_throw_time:
             self._execute_post_throw_tease()

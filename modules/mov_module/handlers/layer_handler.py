@@ -80,7 +80,7 @@ class LayerEventHandler(BaseHandler):
                         self.coordinator._current_layer = self.current_layer
                     debug_log(2, f"[LayerHandler] ⏱️ 延遲結束 → 進入輸出層（觸發說話動畫）")
                 
-                self._processing_transition_timer = threading.Timer(1.0, _transition_to_output)
+                self._processing_transition_timer = threading.Timer(2.5, _transition_to_output)
                 self._processing_transition_timer.daemon = True
                 self._processing_transition_timer.start()
                 

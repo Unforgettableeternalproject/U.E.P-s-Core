@@ -1,8 +1,11 @@
 from __future__ import annotations
 from typing import Optional
+import random
+import time
 
 from .base_behavior import BaseBehavior, BehaviorContext
 from ..core.state_machine import BehaviorState
+from utils.debug_helper import debug_log
 
 
 class IdleBehavior(BaseBehavior):
@@ -11,6 +14,9 @@ class IdleBehavior(BaseBehavior):
     def __init__(self):
         super().__init__()
         self._has_triggered_idle_anim = False
+        # 🎲 彩蛋動畫追蹤
+        self._last_easter_egg_time = 0.0
+        self._easter_egg_cooldown = 60.0  # 預設冷卻時間（會從 config 讀取）
 
     def on_enter(self, ctx: BehaviorContext) -> None:
         # 停止移動
@@ -38,6 +44,14 @@ class IdleBehavior(BaseBehavior):
         ctx.sm.begin_idle(ctx.now)
 
     def on_tick(self, ctx: BehaviorContext):
+        # 🎲 檢查是否應該觸發彩蛋動畫
+        if not self._has_triggered_idle_anim:
+            # 還沒播放基礎 idle 動畫，先不嘗試彩蛋
+            pass
+        elif self._should_trigger_easter_egg(ctx):
+            self._trigger_easter_egg_animation(ctx)
+            return None  # 停留在 IDLE，讓彩蛋動畫播完
+        
         # 檢查是否應該退出 IDLE 狀態
         if ctx.sm.should_exit_idle(ctx.now):
             # 用狀態機的權重決定下一步
@@ -45,21 +59,93 @@ class IdleBehavior(BaseBehavior):
         return None
 
     def _trigger_idle_animation(self, ctx: BehaviorContext):
-        """觸發閒置動畫"""
+        """觸發閒置動畫（基於情緒值選擇）"""
         if self._has_triggered_idle_anim:
             return
         
         self._has_triggered_idle_anim = True
+        
         # 修復：確保 movement_mode 是枚舉類型，不是字符串
         if hasattr(ctx.movement_mode, 'value'):
             mode_value = ctx.movement_mode.value
         else:
             mode_value = str(ctx.movement_mode)
-            
-        idle_anim = "stand_idle_g" if mode_value == "ground" else "smile_idle_f"
+        
+        is_ground = (mode_value == "ground")
+        
+        # 🎭 嘗試根據情緒值選擇特殊閒置動畫
+        mood_anim = None
+        if hasattr(ctx, 'status_manager'):
+            try:
+                status = ctx.status_manager.status
+                mood = status.get("mood", 0.5)
+                pride = status.get("pride", 0.5)
+                
+                mood_anim = ctx.anim_query.get_mood_based_idle_animation(mood, pride, is_ground)
+                
+                if mood_anim:
+                    debug_log(1, f"[IdleBehavior] 🎭 使用情緒閒置動畫: {mood_anim} (mood={mood:.2f}, pride={pride:.2f})")
+            except Exception as e:
+                debug_log(2, f"[IdleBehavior] 獲取情緒閒置動畫失敗: {e}")
+        
+        # 如果沒有情緒動畫，使用預設閒置動畫
+        idle_anim = mood_anim if mood_anim else ("stand_idle_g" if is_ground else "smile_idle_f")
         
         # 先停止當前動畫，然後播放閒置動畫
         ctx.trigger_anim(idle_anim, {
             "loop": True,
             "force_restart": True  # 強制重新開始動畫
+        })
+    
+    def _should_trigger_easter_egg(self, ctx: BehaviorContext) -> bool:
+        """
+        判斷是否應該觸發彩蛋動畫
+        
+        條件：
+        1. 已經播放基礎 idle 動畫
+        2. 冷卻時間已過
+        3. 隨機機率通過
+        """
+        now = ctx.now
+        
+        # 檢查冷卻時間
+        if now - self._last_easter_egg_time < self._easter_egg_cooldown:
+            return False
+        
+        # 從 config 讀取觸發機率（預設 3%）
+        trigger_chance = 0.03
+        if hasattr(ctx, 'config'):
+            easter_egg_config = ctx.config.get("easter_egg", {})
+            trigger_chance = easter_egg_config.get("trigger_chance", 0.03)
+            self._easter_egg_cooldown = easter_egg_config.get("cooldown", 60.0)
+        
+        # 隨機機率判斷
+        return random.random() < trigger_chance
+    
+    def _trigger_easter_egg_animation(self, ctx: BehaviorContext):
+        """觸發彩蛋動畫"""
+        # 判斷當前模式
+        if hasattr(ctx.movement_mode, 'value'):
+            mode_value = ctx.movement_mode.value
+        else:
+            mode_value = str(ctx.movement_mode)
+        
+        is_ground = (mode_value == "ground")
+        
+        # 從動畫查詢輔助器獲取彩蛋動畫
+        easter_egg_anim = ctx.anim_query.get_easter_egg_animation(is_ground)
+        
+        if not easter_egg_anim:
+            debug_log(3, "[IdleBehavior] 沒有可用的彩蛋動畫")
+            return
+        
+        debug_log(1, f"[IdleBehavior] 🎲 觸發彩蛋動畫: {easter_egg_anim}")
+        
+        # 更新最後觸發時間
+        self._last_easter_egg_time = ctx.now
+        
+        # 觸發彩蛋動畫（不循環）
+        ctx.trigger_anim(easter_egg_anim, {
+            "loop": False,
+            "force_restart": True
         })

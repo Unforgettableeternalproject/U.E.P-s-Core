@@ -117,13 +117,6 @@ class SystemLoop:
                 handler_name="SystemLoop.processing_complete_tracking"
             )
             
-            # 訂閱循環完成事件（應用系統狀態調整）
-            event_bus.subscribe(
-                SystemEvent.CYCLE_COMPLETED,
-                self._on_cycle_completed_for_status,
-                handler_name="SystemLoop.cycle_completed_status"
-            )
-            
             info_log("[SystemLoop] ✅ 已訂閱事件總線")
             
         except Exception as e:
@@ -146,18 +139,6 @@ class SystemLoop:
             info_log("[SystemLoop] ✅ 事件總線已停止")
         except Exception as e:
             error_log(f"[SystemLoop] 停止事件總線失敗: {e}")
-    
-    def _on_cycle_completed_for_status(self, event):
-        """循環完成事件處理器 - 應用系統狀態調整"""
-        try:
-            from core.status_manager import status_manager
-            
-            # 在互動循環結束時應用系統狀態調整（時間流逝、數值回歸等）
-            penalties = status_manager.apply_session_penalties("general")
-            if penalties:
-                debug_log(2, f"[SystemLoop] 互動循環結束，應用 status penalties: {penalties}")
-        except Exception as e:
-            error_log(f"[SystemLoop] 應用 status penalties 失敗: {e}")
     
     def _on_processing_layer_complete_for_tracking(self, event):
         """處理處理層完成事件 - 用於追蹤輸出任務啟動"""

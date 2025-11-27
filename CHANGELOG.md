@@ -2110,3 +2110,15 @@
 
 ---
 
+### Fixed some issues regarding MEM and some animation error. 11/27
+
+> Date: Thu, 27 Nov 2025 20:17:37 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `dfbeffdbe9ecd35d9f680a1dc596560bbb5f11d1`
+
+---
+

@@ -1445,18 +1445,30 @@ class MOVModule(BaseFrontendModule):
             if current_height > height_threshold:
                 # 拖曳到較高位置 -> 浮空模式
                 self.movement_mode = MovementMode.FLOAT
-                idle_anim = self.anim_query.get_idle_animation_for_mode(is_ground=False)
-                # 拖曳結束時必須強制中斷掙扎動畫
-                self._trigger_anim(idle_anim, {"loop": True, "immediate_interrupt": True, "force_restart": True}, source="drag_handler")
+                # 🔧 手動停止 struggle 動畫並重置優先度管理器
+                if self.ani_module and hasattr(self.ani_module, 'stop'):
+                    self.ani_module.stop()
+                self._animation_priority.reset()
+                # 🔧 如果有 pending tease，不觸發 idle 動畫，讓 tease 優先播放
+                if not self._tease_tracker.has_pending():
+                    # 以正常的 IDLE_ANIMATION 優先度觸發 idle 動畫
+                    idle_anim = self.anim_query.get_idle_animation_for_mode(is_ground=False)
+                    self._trigger_anim(idle_anim, {"loop": True, "force_restart": True}, source="idle_behavior", priority=AnimationPriority.IDLE_ANIMATION)
                 debug_log(1, f"[{self.module_id}] 切換到浮空模式 (高度:{current_height:.1f} > {height_threshold})")
             else:
                 # 拖曳到較低位置 -> 落地模式
                 self.movement_mode = MovementMode.GROUND
                 # 確保在地面上
                 self.position.y = gy
-                idle_anim = self.anim_query.get_idle_animation_for_mode(is_ground=True)
-                # 拖曳結束時必須強制中斷掙扎動畫
-                self._trigger_anim(idle_anim, {"loop": True, "immediate_interrupt": True, "force_restart": True}, source="drag_handler")
+                # 🔧 手動停止 struggle 動畫並重置優先度管理器
+                if self.ani_module and hasattr(self.ani_module, 'stop'):
+                    self.ani_module.stop()
+                self._animation_priority.reset()
+                # 🔧 如果有 pending tease，不觸發 idle 動畫，讓 tease 優先播放
+                if not self._tease_tracker.has_pending():
+                    # 以正常的 IDLE_ANIMATION 優先度觸發 idle 動畫
+                    idle_anim = self.anim_query.get_idle_animation_for_mode(is_ground=True)
+                    self._trigger_anim(idle_anim, {"loop": True, "force_restart": True}, source="idle_behavior", priority=AnimationPriority.IDLE_ANIMATION)
                 debug_log(1, f"[{self.module_id}] 切換到落地模式 (高度:{current_height:.1f} <= {height_threshold})")
         
         # 恢復移動並切換到idle狀態

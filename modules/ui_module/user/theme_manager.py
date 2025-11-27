@@ -259,6 +259,32 @@ class ThemeManager(QObject):
             border-radius:8px;
         }}
 
+        /* ==== Tables in dark mode ==== */
+        QTableView,
+        QTableWidget {{
+            background: #26272b;
+            color: #e6e6e6;
+            gridline-color: #3a3b40;
+            selection-background-color: {BRAND_YELLOW};
+            selection-color: #000000;
+            border: 1px solid #2f3136;
+        }}
+
+        /* Header row */
+        QHeaderView::section {{
+            background: #333439;
+            color: #e6e6e6;
+            padding: 4px 8px;
+            border: 1px solid #3a3b40;
+        }}
+
+        /* Top-left corner piece of the table */
+        QTableCornerButton::section {{
+            background: #333439;
+            border: 1px solid #3a3b40;
+        }}
+
+
         QScrollArea > QWidget#qt_scrollarea_viewport,
         QAbstractScrollArea > QWidget#qt_scrollarea_viewport,
         QTreeWidget > QWidget#qt_scrollarea_viewport,

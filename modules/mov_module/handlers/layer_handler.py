@@ -85,8 +85,11 @@ class LayerEventHandler(BaseHandler):
                 self._processing_transition_timer.start()
                 
             elif event.event_type == SystemEvent.OUTPUT_LAYER_COMPLETE:
-                # 保持 output 狀態，不要立即清空（讓 on_tick 有時間檢測到）
-                debug_log(2, f"[LayerHandler] 輸出層完成（保持 output 狀態直到 CYCLE_COMPLETED）")
+                self.current_layer = "output"
+                debug_log(2, f"[LayerHandler] 輸出層完成 → 進入輸出層")
+                
+                # 立即觸發 output 層動畫（不要等待 on_tick）
+                self._trigger_layer_animation("output")
                 
             elif event.event_type == SystemEvent.CYCLE_COMPLETED:
                 self.current_layer = None
@@ -103,3 +106,50 @@ class LayerEventHandler(BaseHandler):
         except Exception as e:
             error_log(f"[LayerHandler] 處理層級事件失敗: {e}")
             return False
+    
+    def _trigger_layer_animation(self, layer: str) -> None:
+        """立即觸發層級動畫"""
+        try:
+            # 獲取 layer_strategy
+            layer_strategy = getattr(self.coordinator, '_layer_strategy', None)
+            if not layer_strategy:
+                debug_log(2, "[LayerHandler] LayerAnimationStrategy 未找到")
+                return
+            
+            # 準備 context
+            from ..core.state_machine import MovementMode
+            movement_mode = getattr(self.coordinator, 'movement_mode', MovementMode.GROUND)
+            
+            # 獲取 mood
+            mood = 0
+            try:
+                from core.status_manager import status_manager
+                mood = status_manager.status.mood
+            except Exception:
+                pass
+            
+            strategy_context = {
+                'layer': layer,
+                'movement_mode': movement_mode,
+                'mood': mood
+            }
+            
+            # 選擇動畫
+            anim_name = layer_strategy.select_animation(strategy_context)
+            
+            if anim_name:
+                debug_log(1, f"[LayerHandler] ⚡ 立即觸發層級動畫: {anim_name}（層級: {layer}）")
+                
+                # 使用 coordinator 的 _trigger_anim 方法
+                self.coordinator._trigger_anim(anim_name, {
+                    "loop": True,
+                    "immediate_interrupt": True,
+                    "force_restart": True
+                }, source="system_cycle_behavior")
+                
+                debug_log(1, f"[LayerHandler] ✅ 層級動畫已觸發: {anim_name}")
+            else:
+                debug_log(2, f"[LayerHandler] 無可用動畫（層級: {layer}）")
+                
+        except Exception as e:
+            error_log(f"[LayerHandler] 觸發層級動畫失敗: {e}")

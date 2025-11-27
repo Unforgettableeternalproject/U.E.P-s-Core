@@ -126,40 +126,23 @@ class StatusUpdate(BaseModel):
 
 
 class LLMOutput(BaseModel):
-    """LLM 模組輸出 - 重構版本"""
+    """LLM 模組輸出 - 簡化版本（僅保留實際使用的欄位）"""
     # 基本輸出
     text: str = Field(..., description="LLM 生成的回應文字")
-    
-    # 系統動作（WORK 模式）
-    sys_action: Optional[SystemAction] = Field(None, description="系統動作建議")
-    
-    # 狀態更新
-    status_updates: Optional[StatusUpdate] = Field(None, description="系統狀態更新")
-    
-    # 學習數據
-    learning_data: Optional[LearningData] = Field(None, description="學習到的資訊")
-    
-    # 會話管理
-    conversation_entry: Optional[ConversationEntry] = Field(None, description="對話條目")
-    session_state: Optional[str] = Field(None, description="會話狀態")
-    
-    # 記憶處理（CHAT 模式與 MEM 協作）
-    memory_observation: Optional[str] = Field(None, description="對話觀察摘要")
-    memory_summary: Optional[str] = Field(None, description="記憶摘要")
-    
-    # 其他輸出
-    emotion: Optional[str] = Field("neutral", description="情緒標記")
-    confidence: Optional[float] = Field(1.0, description="回應信心度")
-    processing_time: Optional[float] = Field(None, description="處理時間")
     
     # 執行狀態
     success: bool = Field(True, description="處理是否成功")
     error: Optional[str] = Field(None, description="錯誤訊息")
-    tokens_used: Optional[int] = Field(None, description="使用的 token 數量")
-    metadata: Optional[Dict[str, Any]] = Field(default_factory=dict, description="額外元數據")
     
-    # 向後兼容
-    mood: Optional[str] = Field("neutral", description="舊版情緒標記（向後兼容）")
+    # 效能指標
+    processing_time: Optional[float] = Field(None, description="處理時間（秒）")
+    tokens_used: Optional[int] = Field(None, description="使用的 token 數量")
+    
+    # 信心度（用於某些判斷場景）
+    confidence: Optional[float] = Field(1.0, description="回應信心度 (0.0-1.0)")
+    
+    # 擴展資訊（如 function_call_made, workflow_decision 等）
+    metadata: Optional[Dict[str, Any]] = Field(default_factory=dict, description="額外元數據")
 
 
 class LLMModuleData(BaseModel):

@@ -26,7 +26,7 @@ class CursorConfig:
     """滑鼠追蹤配置"""
     active_speed: float = 120.0          # 判斷滑鼠活躍的速度閾值 (px/s)
     active_window: float = 0.25          # 活躍判定的時間窗口 (秒)
-    watch_radius: int = 300              # 開始追蹤的距離 (px)
+    watch_radius: int = 150              # 開始追蹤的距離 (px)
     watch_radius_out: int = 330          # 停止追蹤的距離 (px) - 有滯後防止抖動
     head_turn_sensitivity: int = 9       # 轉頭靈敏度 (360度 / 靈敏度 = 幀數)
 

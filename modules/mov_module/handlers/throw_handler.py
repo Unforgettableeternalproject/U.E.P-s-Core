@@ -127,11 +127,31 @@ class ThrowHandler(BaseHandler):
             self.coordinator.velocity.x = vx
             self.coordinator.velocity.y = vy
         
-        # 播放投擲動畫
+        # **投擲動畫處理**
+        # 目前沒有專用 throw 動畫，使用 struggle 作為 fallback
+        # 關鍵：設置 loop=False，讓 struggle 播放一次後停止（避免卡住）
+        # 使用 immediate_interrupt 強制結束拖曳時的 loop=True struggle
         if hasattr(self.coordinator, '_trigger_anim'):
-            self.coordinator._trigger_anim("throw", {"loop": False})
+            # 檢查是否有 throw 動畫（未來擴展）
+            throw_anim = "throw" if self._has_animation("throw") else "struggle"
+            self.coordinator._trigger_anim(
+                throw_anim, 
+                {"loop": False, "immediate_interrupt": True, "force_restart": True}, 
+                source="throw_handler"
+            )
+            if throw_anim == "struggle":
+                debug_log(2, f"[{self.__class__.__name__}] 使用 struggle 作為投擲動畫 (loop=False)")
         
         info_log(f"[{self.__class__.__name__}] 觸發投擲！速度={speed:.1f} (vx={vx:.1f}, vy={vy:.1f})")
+    
+    def _has_animation(self, anim_name: str) -> bool:
+        """檢查動畫是否存在"""
+        if not hasattr(self.coordinator, 'ani_module'):
+            return False
+        ani = self.coordinator.ani_module
+        if not hasattr(ani, 'manager') or not hasattr(ani.manager, 'clips'):
+            return False
+        return anim_name in ani.manager.clips
     
     def handle_throw_landing(self):
         """
@@ -181,7 +201,7 @@ class ThrowHandler(BaseHandler):
         
         # 播放轉場動畫然後切換到漂浮模式移動
         if hasattr(self.coordinator, '_trigger_anim'):
-            self.coordinator._trigger_anim("g_to_f", {"loop": False})
+            self.coordinator._trigger_anim("g_to_f", {"loop": False}, source="throw_handler")
         
         if hasattr(self.coordinator, '_switch_behavior') and BehaviorState:
             self.coordinator._switch_behavior(BehaviorState.TRANSITION)

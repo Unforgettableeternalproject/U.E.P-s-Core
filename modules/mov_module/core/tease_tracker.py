@@ -33,6 +33,9 @@ class TeaseTracker:
         self._is_teasing = False
         self._tease_start_time: Optional[float] = None
         
+        # 待觸發的 tease（達到閾值但尚未播放）
+        self._pending_tease = False
+        
     def record_interaction(self) -> None:
         """記錄一次互動（拖曳或投擲）"""
         now = time.time()
@@ -84,8 +87,21 @@ class TeaseTracker:
         self._cleanup_old_interactions(now)
         return len(self.interactions)
     
+    def set_pending(self) -> None:
+        """標記 tease 為待觸發（達到閾值但延遲播放）"""
+        self._pending_tease = True
+    
+    def has_pending(self) -> bool:
+        """是否有待觸發的 tease"""
+        return self._pending_tease
+    
+    def clear_pending(self) -> None:
+        """清除待觸發標記"""
+        self._pending_tease = False
+    
     def reset(self) -> None:
         """重置所有追蹤狀態"""
         self.interactions.clear()
         self._is_teasing = False
         self._tease_start_time = None
+        self._pending_tease = False

@@ -1172,6 +1172,10 @@ class LLMModule(BaseModule):
                 output = self._handle_chat_mode(llm_input, status)
             elif llm_input.mode == LLMMode.WORK:
                 output = self._handle_work_mode(llm_input, status)
+            elif llm_input.mode == 'UNKNOWN' or (hasattr(llm_input, 'intent') and llm_input.intent == 'UNKNOWN'):
+                # 🔧 處理 UNKNOWN 意圖：給予不知所措的回應
+                debug_log(2, "[LLM] 檢測到 UNKNOWN 意圖，給予友善回應")
+                output = self._handle_unknown_intent(llm_input, status)
             else:
                 # 向後兼容舊的 intent 系統
                 output = self._handle_legacy_mode(llm_input, status)
@@ -1202,6 +1206,64 @@ class LLMModule(BaseModule):
                 "metadata": {},
                 "status": "error"
             }
+    
+    def _handle_unknown_intent(self, llm_input: "LLMInput", status: Dict[str, Any]) -> "LLMOutput":
+        """處理 UNKNOWN 意圖 - 給予友善但不知所措的回應"""
+        start_time = time.time()
+        debug_log(2, "[LLM] 處理 UNKNOWN 意圖")
+        
+        try:
+            # 🔧 構建英文提示詞（LLM只接受英文）
+            prompt = f"""User said: "{llm_input.text}"
+
+You are uncertain about what the user wants to do or talk about. Give a friendly, brief response expressing that you're not quite sure what they mean, and politely ask them to explain in a different way.
+
+Response requirements:
+1. In English
+2. Friendly and polite tone
+3. Brief (1-2 sentences)
+4. Express uncertainty without being too stiff"""
+
+            # 使用簡潔系統提示詞進行單次查詢
+            response_data = self.model.query(
+                prompt,
+                mode="internal",
+                cached_content=None
+            )
+            
+            response_text = response_data.get("content", response_data.get("text", "Sorry, I am not sure what you mean. Could you please explain in a different way?"))
+            
+            processing_time = time.time() - start_time
+            self.processing_stats["total_requests"] += 1
+            self.processing_stats["total_processing_time"] += processing_time
+            
+            # 🔧 構建輸出（使用LLM實際生成的回應）
+            from .schemas import LLMOutput
+            return LLMOutput(
+                text=response_text,
+                success=True,
+                error=None,
+                processing_time=processing_time,
+                tokens_used=response_data.get("tokens_used", 0),
+                confidence=0.7,
+                metadata={
+                    "intent": "unknown",
+                    "response_type": "uncertain"
+                }
+            )
+            
+        except Exception as e:
+            error_log(f"[LLM] UNKNOWN 意圖處理失敗: {e}")
+            processing_time = time.time() - start_time
+            from .schemas import LLMOutput
+            return LLMOutput(
+                text="抱歉，我不太確定你的意思。可以換個方式說明嗎？",
+                success=False,
+                error=str(e),
+                processing_time=processing_time,
+                tokens_used=0,
+                confidence=0.5
+            )
     
     def _handle_chat_mode(self, llm_input: "LLMInput", status: Dict[str, Any]) -> "LLMOutput":
         """處理 CHAT 模式 - 與 MEM 協作的日常對話"""
@@ -1358,15 +1420,6 @@ class LLMModule(BaseModule):
                 success=True,
                 error=None,
                 confidence=response_data.get("confidence", 0.85),
-                sys_action=None,
-                status_updates=StatusUpdate(**response_data["status_updates"]) if response_data.get("status_updates") else None,
-                learning_data=None,
-                conversation_entry=None,
-                session_state=None,
-                memory_observation=response_data.get("memory_observation"),
-                memory_summary=None,
-                emotion="neutral",
-                mood="neutral",
                 metadata={
                     "mode": "CHAT",
                     "cached": False,
@@ -1392,20 +1445,11 @@ class LLMModule(BaseModule):
             error_log(f"[LLM] CHAT 模式處理錯誤: {e}")
             return LLMOutput(
                 text="聊天處理時發生錯誤，請稍後再試。",
-                processing_time=time.time() - start_time,
-                tokens_used=0,
                 success=False,
                 error=str(e),
+                processing_time=time.time() - start_time,
+                tokens_used=0,
                 confidence=0.0,
-                sys_action=None,
-                status_updates=None,
-                learning_data=None,
-                conversation_entry=None,
-                session_state=None,
-                memory_observation=None,
-                memory_summary=None,
-                emotion="neutral",
-                mood="neutral",
                 metadata={"mode": "CHAT", "error_type": "processing_error"}
             )
     
@@ -1452,15 +1496,6 @@ class LLMModule(BaseModule):
                 success=False,
                 error=str(e),
                 confidence=0.0,
-                sys_action=None,
-                status_updates=None,
-                learning_data=None,
-                conversation_entry=None,
-                session_state=None,
-                memory_observation=None,
-                memory_summary=None,
-                emotion="neutral",
-                mood="neutral",
                 metadata={"mode": "WORK", "error_type": "processing_error", "phase": phase}
             )
     
@@ -1551,15 +1586,6 @@ Now convert the system event above into your spoken message:"""
                 success=True,
                 error=None,
                 confidence=1.0,
-                sys_action=None,
-                status_updates=None,
-                learning_data=None,
-                conversation_entry=None,
-                session_state=None,
-                memory_observation=None,
-                memory_summary=None,
-                emotion="neutral",
-                mood="cheerful",
                 metadata={
                     "mode": "WORK",
                     "phase": "response",
@@ -1579,15 +1605,6 @@ Now convert the system event above into your spoken message:"""
                 success=False,
                 error=str(e),
                 confidence=0.0,
-                sys_action=None,
-                status_updates=None,
-                learning_data=None,
-                conversation_entry=None,
-                session_state=None,
-                memory_observation=None,
-                memory_summary=None,
-                emotion="neutral",
-                mood="neutral",
                 metadata={"mode": "WORK", "error_type": "system_report_error", "system_report": True}
             )
     
@@ -1655,15 +1672,6 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                 success=True,
                 error=None,
                 confidence=0.85,
-                sys_action=None,
-                status_updates=None,
-                learning_data=None,
-                conversation_entry=None,
-                session_state=None,
-                memory_observation=None,
-                memory_summary=None,
-                emotion="neutral",
-                mood="neutral",
                 metadata={
                     "mode": "WORK",
                     "phase": "decision",
@@ -1713,7 +1721,7 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             error_log(f"[LLM] Error parsing workflow decision: {e}")
             return None
     
-    def _handle_workflow_input_fast_path(self, llm_input: "LLMInput", workflow_context: Dict[str, Any], start_time: float) -> "LLMOutput":
+    def _handle_workflow_input_fast_path(self, llm_input: "LLMInput", workflow_context: Dict[str, Any], start_time: float) -> Optional["LLMOutput"]:
         """
         快速路徑處理工作流輸入場景
         當檢測到 workflow_input_required 時，直接調用 provide_workflow_input 工具
@@ -1805,15 +1813,6 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                 success=result_status == "success",
                 error=None if result_status == "success" else function_call_result.get("error"),
                 confidence=0.9,
-                sys_action=None,
-                status_updates=None,
-                learning_data=None,
-                conversation_entry=None,
-                session_state=None,
-                memory_observation=None,
-                memory_summary=None,
-                emotion="neutral",
-                mood="neutral",
                 metadata={
                     "mode": "WORK",
                     "workflow_context_size": len(str(workflow_context)),
@@ -1837,15 +1836,6 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                 success=False,
                 error=str(e),
                 confidence=0.0,
-                sys_action=None,
-                status_updates=None,
-                learning_data=None,
-                conversation_entry=None,
-                session_state=None,
-                memory_observation=None,
-                memory_summary=None,
-                emotion="neutral",
-                mood="neutral",
                 metadata={
                     "mode": "WORK",
                     "error_type": "fast_path_error",
@@ -2428,15 +2418,6 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                 success=True,
                 error=None,
                 confidence=response_data.get("confidence", 0.90),
-                sys_action=sys_action_obj,
-                status_updates=StatusUpdate(**response_data["status_updates"]) if response_data.get("status_updates") else None,
-                learning_data=None,
-                conversation_entry=None,
-                session_state=None,
-                memory_observation=None,
-                memory_summary=None,
-                emotion="neutral",
-                mood="neutral",
                 metadata={
                     "mode": "WORK",
                     "workflow_context_size": len(llm_input.workflow_context) if llm_input.workflow_context else 0,
@@ -2469,15 +2450,6 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                 success=False,
                 error=str(e),
                 confidence=0.0,
-                sys_action=None,
-                status_updates=None,
-                learning_data=None,
-                conversation_entry=None,
-                session_state=None,
-                memory_observation=None,
-                memory_summary=None,
-                emotion="neutral",
-                mood="neutral",
                 metadata={"mode": "WORK", "error_type": "processing_error"}
             )
     
@@ -2505,15 +2477,6 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                 success=False,
                 error=f"不支援的 intent: {legacy_intent}",
                 confidence=0.0,
-                sys_action=None,
-                status_updates=None,
-                learning_data=None,
-                conversation_entry=None,
-                session_state=None,
-                memory_observation=None,
-                memory_summary=None,
-                emotion="neutral",
-                mood="neutral",
                 metadata={"legacy_intent": legacy_intent}
             )
     
@@ -3083,9 +3046,8 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
         
         try:
             # 從Gemini回應中提取系統動作決策
-            if "sys_action" in response_data:
-                sys_action = response_data["sys_action"]
-                if isinstance(sys_action, dict):
+            if "sys_action" in response_data and isinstance(response_data["sys_action"], dict):
+                    sys_action = response_data["sys_action"]
                     sys_actions.append(sys_action)
                     action = sys_action.get('action', 'unknown')
                     target = sys_action.get('target', 'unknown')

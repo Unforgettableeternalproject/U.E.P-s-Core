@@ -124,13 +124,21 @@ class BIOTagger:
         # 簡單的關鍵詞檢測
         text_lower = text.lower()
         
+        # 🔧 特殊處理：U.E.P 名字識別（提及名字視為聊天或呼叫）
+        # 支援多種格式: u.e.p / uep / U.E.P / UEP
+        uep_patterns = ['u.e.p', 'u e p', 'uep']
+        contains_uep_name = any(pattern in text_lower for pattern in uep_patterns)
+        
         # 檢測呼叫意圖
         call_keywords = ['hey', 'hello', 'hi', 'uep', 'system', 'wake up']
-        chat_keywords = ['how are you', 'what do you think', 'tell me', 'story', 'chat']
+        chat_keywords = ['how are you', 'what do you think', 'tell me', 'story', 'chat', 'name', 'nickname', 'real name']
         direct_work_keywords = ['save', 'open', 'create', 'delete', 'show', 'search', 'find']
         background_work_keywords = ['play', 'sync', 'backup', 'download', 'install', 'update']
         
-        if any(keyword in text_lower for keyword in call_keywords):
+        # 🔧 如果提及 U.E.P 名字且有問題，視為聊天
+        if contains_uep_name and ('?' in text or 'what' in text_lower or 'who' in text_lower or 'name' in text_lower):
+            intent = 'chat'
+        elif any(keyword in text_lower for keyword in call_keywords):
             intent = 'call'
         elif any(keyword in text_lower for keyword in direct_work_keywords):
             intent = 'direct_work'

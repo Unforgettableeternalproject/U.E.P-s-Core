@@ -59,6 +59,10 @@ class BehaviorContext:
     # 系統循環相關（供 SystemCycleBehavior 使用）
     current_layer: Optional[str] = None
     layer_strategy: Optional[object] = None  # LayerAnimationStrategy instance
+    
+    # Tease 系統相關（供 IdleBehavior 使用）
+    tease_tracker: Optional[object] = None  # TeaseTracker instance
+    trigger_tease_callback: Optional[Callable[[], None]] = None
 
     def ground_y(self) -> float:
         # 用 v_bottom，避免原點偏移造成地面高度錯誤

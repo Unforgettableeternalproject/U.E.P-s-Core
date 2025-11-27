@@ -46,6 +46,7 @@ try:
     from .core.drag_tracker import DragTracker
     from .core.tease_tracker import TeaseTracker
     from .core.animation_query import AnimationQueryHelper
+    from .core.animation_priority import AnimationPriorityManager, AnimationPriority
     from .behaviors.base_behavior import BehaviorContext, BehaviorFactory
     from .handlers import CursorTrackingHandler, ThrowHandler
 except Exception:
@@ -55,6 +56,7 @@ except Exception:
     from core.drag_tracker import DragTracker  # type: ignore
     from core.tease_tracker import TeaseTracker  # type: ignore
     from core.animation_query import AnimationQueryHelper  # type: ignore
+    from core.animation_priority import AnimationPriorityManager, AnimationPriority  # type: ignore
     from behaviors.base_behavior import BehaviorContext, BehaviorFactory  # type: ignore
     from handlers import CursorTrackingHandler, ThrowHandler  # type: ignore
 
@@ -186,6 +188,14 @@ class MOVModule(BaseFrontendModule):
             ani_module=None,  # 將在 initialize_frontend 後設置
             state_animation_config=self._state_animation_config
         )
+        
+        # --- 動畫優先度管理器 ---
+        self._animation_priority = AnimationPriorityManager(
+            module_id=self.module_id,
+            config=self.config
+        )
+        debug_log(2, f"[{self.module_id}] AnimationPriorityManager 初始化完成 "
+                     f"(enabled={self._animation_priority.enabled})")
         
         # --- 層級動畫策略 ---
         try:
@@ -327,7 +337,7 @@ class MOVModule(BaseFrontendModule):
                 if not name:
                     return {"error": "animation name required"}
                 # 走統一入口（內部會自動處理 await_finish / loop / 超時）
-                self._trigger_anim(name, params)
+                self._trigger_anim(name, params, source="frontend_request")
                 return {"success": True, "animation": name}
             return {"error": f"未知命令: {cmd}"}
         except Exception as e:
@@ -419,8 +429,24 @@ class MOVModule(BaseFrontendModule):
             previous_state=self.previous_behavior_state,
             current_layer=self._current_layer,
             layer_strategy=self._layer_strategy,
+            tease_tracker=self._tease_tracker,
+            trigger_tease_callback=self._trigger_tease_animation,
         )
 
+        # **建立帶有正確 source 的 trigger_anim 包裝器（for on_tick）**
+        def trigger_anim_for_tick(name: str, params: dict):
+            source_map = {
+                BehaviorState.IDLE: "idle_behavior",
+                BehaviorState.NORMAL_MOVE: "movement_behavior",
+                BehaviorState.SPECIAL_MOVE: "special_move_behavior",
+                BehaviorState.TRANSITION: "transition_behavior",
+                BehaviorState.SYSTEM_CYCLE: "system_cycle_behavior",
+            }
+            source = source_map.get(self.current_behavior_state, "behavior")
+            self._trigger_anim(name, params, source=source)
+        
+        ctx.trigger_anim = trigger_anim_for_tick  # 替換為帶 source 的版本
+        
         # on_tick 可能建議切換狀態
         try:
             next_state = self.current_behavior.on_tick(ctx)
@@ -492,7 +518,7 @@ class MOVModule(BaseFrontendModule):
                 self.target_velocity.y = 0.0
                 # 播放落地動畫並切換到 IDLE
                 idle_anim = self.anim_query.get_idle_animation_for_mode(is_ground=True)
-                self._trigger_anim(idle_anim, {"loop": True})
+                self._trigger_anim(idle_anim, {"loop": True}, source="throw_handler")
                 self._switch_behavior(BehaviorState.IDLE)
         elif self.movement_mode == MovementMode.DRAGGING:
             # 拖曳模式：不應該到達這裡（上面已經 return）
@@ -522,7 +548,7 @@ class MOVModule(BaseFrontendModule):
                     
                     # 播放落地動畫並切換到 IDLE
                     idle_anim = self.anim_query.get_idle_animation_for_mode(is_ground=True)
-                    self._trigger_anim(idle_anim, {"loop": True})
+                    self._trigger_anim(idle_anim, {"loop": True}, source="throw_handler")
                     self._switch_behavior(BehaviorState.IDLE)
                     
                     # 通知 ThrowHandler 處理落地後行為
@@ -553,10 +579,11 @@ class MOVModule(BaseFrontendModule):
             self.last_movement_time = now
         self._emit_position()
 
-        # 停滯保護（可視需要）- 但排除轉場狀態
+        # 停滯保護（可視需要）- 但排除特殊狀態
         if (now - self.last_movement_time > self.max_idle_time and 
             self.current_behavior_state != BehaviorState.IDLE and 
-            self.current_behavior_state != BehaviorState.TRANSITION):
+            self.current_behavior_state != BehaviorState.TRANSITION and
+            self.current_behavior_state != BehaviorState.SYSTEM_CYCLE):  # 系統循環期間應保持狀態
             debug_log(2, f"[{self.module_id}] 檢測到移動停滯，強制切換狀態")
             self._switch_behavior(BehaviorState.IDLE)
 
@@ -568,6 +595,19 @@ class MOVModule(BaseFrontendModule):
         self.current_behavior_state = state
         self.current_behavior = BehaviorFactory.create(state)
         
+        # **建立帶有正確 source 的 trigger_anim 包裝器**
+        def trigger_anim_with_source(name: str, params: dict):
+            # 根據當前 behavior 推斷 source
+            source_map = {
+                BehaviorState.IDLE: "idle_behavior",
+                BehaviorState.NORMAL_MOVE: "movement_behavior",
+                BehaviorState.SPECIAL_MOVE: "special_move_behavior",
+                BehaviorState.TRANSITION: "transition_behavior",
+                BehaviorState.SYSTEM_CYCLE: "system_cycle_behavior",
+            }
+            source = source_map.get(state, "behavior")
+            self._trigger_anim(name, params, source=source)
+        
         # **重置移動計時器，避免進入移動行為時立即觸發停滯檢測**
         if state in (BehaviorState.NORMAL_MOVE, BehaviorState.SPECIAL_MOVE):
             self.last_movement_time = time.time()
@@ -578,7 +618,7 @@ class MOVModule(BaseFrontendModule):
             debug_log(1, f"[{self.module_id}] 投擲後調皮：播放 tease 動畫")
             tease_anim = self.anim_query.get_tease_animation(variant=1)
             idle_anim = self.anim_query.get_idle_animation_for_mode(is_ground=False)
-            self._trigger_anim(tease_anim, {"loop": False, "next_anim": idle_anim, "next_params": {"loop": True}})
+            self._trigger_anim(tease_anim, {"loop": False, "next_anim": idle_anim, "next_params": {"loop": True}}, source="tease_system")
             self._post_throw_tease_pending = False  # 清除標記
 
         # 建 ctx 給 on_enter
@@ -614,6 +654,8 @@ class MOVModule(BaseFrontendModule):
             previous_state=self.previous_behavior_state,
             current_layer=self._current_layer,
             layer_strategy=self._layer_strategy,
+            tease_tracker=self._tease_tracker,
+            trigger_tease_callback=self._trigger_tease_animation,
         )
 
         try:
@@ -670,6 +712,8 @@ class MOVModule(BaseFrontendModule):
                         previous_state=self.previous_behavior_state,
                         current_layer=self._current_layer,
                         layer_strategy=self._layer_strategy,
+                        tease_tracker=self._tease_tracker,
+                        trigger_tease_callback=self._trigger_tease_animation,
                     )
                 )
         except Exception as e:
@@ -717,7 +761,7 @@ class MOVModule(BaseFrontendModule):
             self.pause_movement("entry_animation")
             
             # 播放動畫並等待完成
-            self._trigger_anim(anim_name, {"loop": False})
+            self._trigger_anim(anim_name, {"loop": False}, source="entry_animation")
             self._await_animation(anim_name, timeout, self._on_entry_complete)
             
             info_log(f"[{self.module_id}] 播放入場動畫: {anim_name} (持續 {duration:.2f}秒)")
@@ -797,7 +841,7 @@ class MOVModule(BaseFrontendModule):
             # 保留入場動畫結束時的位置，不強制修改
             # 使用動畫查詢輔助器獲取浮空閒置動畫
             idle_anim = self.anim_query.get_idle_animation_for_mode(is_ground=False)
-            self._trigger_anim(idle_anim, {"loop": True})
+            self._trigger_anim(idle_anim, {"loop": True}, source="entry_animation")
             
             # 進入第一個行為
             self._enter_behavior(self.current_behavior_state)
@@ -834,7 +878,7 @@ class MOVModule(BaseFrontendModule):
             self.pause_movement("leave_animation")
             
             # 播放動畫並等待完成
-            self._trigger_anim(anim_name, {"loop": False})
+            self._trigger_anim(anim_name, {"loop": False}, source="exit_animation")
             self._await_animation(
                 anim_name, 
                 timeout, 
@@ -1015,15 +1059,15 @@ class MOVModule(BaseFrontendModule):
                         "await_finish": True,
                         # 不要硬寫 1.0，交給 _trigger_anim 動態算時長 + 裕度
                         "next_anim": idle_anim,
-                        "next_params": {"loop": True}
-                    })
+                        "next_params": {"loop": True, "allow_interrupt": True}
+                    }, source="movement_behavior")
                 else:
                     # 如果沒有轉向動畫，直接播閒置動畫
-                    self._trigger_anim(idle_anim, {"loop": True})
+                    self._trigger_anim(idle_anim, {"loop": True, "allow_interrupt": True}, source="movement_behavior")
             else:
                 # 浮空時沒有轉向動畫，直接播閒置動畫
                 idle_anim = self.anim_query.get_idle_animation_for_mode(is_ground=False)
-                self._trigger_anim(idle_anim, {"loop": True})
+                self._trigger_anim(idle_anim, {"loop": True, "allow_interrupt": True}, source="movement_behavior")
 
         # 漂浮模式的高度限制：只限制上方，不限制下方（讓它能落地）
         if self.movement_mode == MovementMode.FLOAT:
@@ -1060,9 +1104,9 @@ class MOVModule(BaseFrontendModule):
 
     # ========= 動畫觸發 =========
 
-    def _trigger_anim(self, name: str, params: Optional[dict] = None):
+    def _trigger_anim(self, name: str, params: Optional[dict] = None, source: str = "unknown", priority: Optional[AnimationPriority] = None):
         """
-        觸發動畫播放（改進版，減少閃現）
+        觸發動畫播放（改進版，帶優先度管理）
         
         閃現問題來源：
         1. 使用者干涉時動作模組仍在演算
@@ -1072,6 +1116,7 @@ class MOVModule(BaseFrontendModule):
         - 添加動畫鎖機制
         - 檢查是否正在被干涉（拖動、拋擲）
         - 提供 immediate_interrupt 參數強制中斷
+        - 使用優先度系統避免動畫衝突
         """
         params = params or {}
         loop = params.get("loop", None)
@@ -1081,6 +1126,26 @@ class MOVModule(BaseFrontendModule):
         next_params = params.get("next_params", {})  # 其參數
         force_restart = params.get("force_restart", False)  # 強制重新開始
         immediate_interrupt = params.get("immediate_interrupt", False)  # 立即中斷現有動畫
+        
+        # === 優先度檢查 ===
+        # 如果沒有指定優先度，根據當前狀態推斷
+        if priority is None:
+            priority = self._infer_animation_priority(params)
+        
+        # 檢查優先度是否足夠
+        lock_duration = 0.0
+        if await_finish and not loop:  # 非循環動畫完成前鎖定優先度
+            lock_duration = max_wait
+        
+        if not self._animation_priority.request_animation(
+            name=name,
+            priority=priority,
+            source=source,
+            params=params,
+            lock_duration=lock_duration,
+        ):
+            debug_log(3, f"[{self.module_id}] 動畫請求被優先度系統拒絕: {name} (來源: {source})")
+            return
         
         # 檢查是否正在被干涉（拖動、拋擲中不應該切換動畫）
         # SYSTEM_CYCLE 狀態下的層級動畫不檢查 dragging（已在 INTERACTION_STARTED 時清除）
@@ -1119,12 +1184,43 @@ class MOVModule(BaseFrontendModule):
                 self.resume_movement(self.WAIT_ANIM_REASON)
         
         # 動畫切換緩衝：避免頻繁切換導致的閃現
-        if hasattr(self, '_last_anim_trigger_time'):
+        # 但是高優先度動畫應該能突破防抖限制
+        debounce_config = self.config.get("animation_priority", {}).get("debounce", {})
+        debounce_enabled = debounce_config.get("enabled", True)
+        min_interval = float(debounce_config.get("min_interval", 0.1))
+        allow_priority_override = debounce_config.get("allow_priority_override", True)
+        
+        if debounce_enabled and hasattr(self, '_last_anim_trigger_time'):
             time_since_last = now - self._last_anim_trigger_time
-            MIN_ANIM_INTERVAL = 0.1  # 最小動畫間隔 100ms
-            if time_since_last < MIN_ANIM_INTERVAL and not immediate_interrupt and not force_restart:
-                debug_log(3, f"[{self.module_id}] 動畫切換過於頻繁，跳過: {name}")
-                return
+            
+            # 檢查是否應該套用防抖
+            should_debounce = (
+                time_since_last < min_interval and 
+                not immediate_interrupt and 
+                not force_restart
+            )
+            
+            if should_debounce:
+                if allow_priority_override:
+                    # 檢查當前請求的優先度是否高於上次的動畫
+                    current_priority = self._animation_priority.get_current_priority()
+                    if current_priority is not None and priority <= current_priority:
+                        debug_log(3, 
+                            f"[{self.module_id}] 動畫切換過於頻繁且優先度不足，跳過: {name} "
+                            f"(priority={priority.name} <= current={current_priority.name})"
+                        )
+                        return
+                    else:
+                        # 高優先度請求，允許突破防抖
+                        debug_log(2, 
+                            f"[{self.module_id}] 高優先度動畫突破防抖: {name} "
+                            f"(priority={priority.name} > current={current_priority.name if current_priority else 'None'})"
+                        )
+                else:
+                    # 不允許優先度覆蓋，直接跳過
+                    debug_log(3, f"[{self.module_id}] 動畫切換過於頻繁，跳過: {name}")
+                    return
+        
         self._last_anim_trigger_time = now
 
         # 如果強制重新開始或立即中斷，先清除等待狀態
@@ -1227,7 +1323,7 @@ class MOVModule(BaseFrontendModule):
             self.ani_module.stop()
         
         struggle_anim = self.anim_query.get_struggle_animation()
-        self._trigger_anim(struggle_anim, {"loop": True, "immediate_interrupt": True, "force_restart": True})
+        self._trigger_anim(struggle_anim, {"loop": True, "immediate_interrupt": True, "force_restart": True}, source="drag_handler")
         
         mode_desc = "投擲中" if (self._drag_start_mode == MovementMode.THROWN) else (self._drag_start_mode.value if self._drag_start_mode else "未知")
         debug_log(1, f"[{self.module_id}] 拖拽開始於 ({self.position.x:.1f}, {self.position.y:.1f})，從{mode_desc}模式，播放掙扎動畫")
@@ -1331,15 +1427,14 @@ class MOVModule(BaseFrontendModule):
         # 使用 ThrowHandler 檢測投擲
         is_throw = self._throw_handler.check_throw(self._drag_tracker, self._drag_start_position)
         
-        # 只在非投擲情況下才檢查 tease（投擲時不觸發 tease，避免干擾投擲動畫）
+        # 檢查是否達到 tease 閾值（不立即觸發，標記為 pending）
         if not is_throw:
             should_tease = self._tease_tracker.should_trigger_tease()
             
             if should_tease:
-                # 觸發 tease 動畫
-                self._trigger_tease_animation()
-                # 不繼續正常流程，等待 tease 動畫完成
-                return
+                # 標記為待觸發，等回到 IDLE 時才播放
+                self._tease_tracker.set_pending()
+                debug_log(2, f"[{self.module_id}] Tease 閾值已達到，標記為待觸發")
         
         if not is_throw:
             # 沒有投擲，根據高度判斷模式
@@ -1351,7 +1446,8 @@ class MOVModule(BaseFrontendModule):
                 # 拖曳到較高位置 -> 浮空模式
                 self.movement_mode = MovementMode.FLOAT
                 idle_anim = self.anim_query.get_idle_animation_for_mode(is_ground=False)
-                self._trigger_anim(idle_anim, {"loop": True})
+                # 拖曳結束時必須強制中斷掙扎動畫
+                self._trigger_anim(idle_anim, {"loop": True, "immediate_interrupt": True, "force_restart": True}, source="drag_handler")
                 debug_log(1, f"[{self.module_id}] 切換到浮空模式 (高度:{current_height:.1f} > {height_threshold})")
             else:
                 # 拖曳到較低位置 -> 落地模式
@@ -1359,7 +1455,8 @@ class MOVModule(BaseFrontendModule):
                 # 確保在地面上
                 self.position.y = gy
                 idle_anim = self.anim_query.get_idle_animation_for_mode(is_ground=True)
-                self._trigger_anim(idle_anim, {"loop": True})
+                # 拖曳結束時必須強制中斷掙扎動畫
+                self._trigger_anim(idle_anim, {"loop": True, "immediate_interrupt": True, "force_restart": True}, source="drag_handler")
                 debug_log(1, f"[{self.module_id}] 切換到落地模式 (高度:{current_height:.1f} <= {height_threshold})")
         
         # 恢復移動並切換到idle狀態
@@ -1582,20 +1679,21 @@ class MOVModule(BaseFrontendModule):
             error_log(traceback.format_exc())
     
     def _on_output_layer_complete(self, event):
-        """輸出層完成 - 觸發輸出層動畫並觸發動畫更新"""
+        """輸出層完成 - 觸發輸出層動畫"""
         try:
             info_log(f"[{self.module_id}] 📤 收到 OUTPUT_LAYER_COMPLETE 事件")
             info_log(f"[{self.module_id}]    當前層級: {self._current_layer}")
             
-            # 使用 LayerEventHandler 處理
+            # 使用 LayerEventHandler 處理（更新層級狀態）
             if self._layer_handler and self._layer_handler.can_handle(event):
                 info_log(f"[{self.module_id}]    使用 LayerEventHandler 處理")
                 self._layer_handler.handle(event)
             
-            # 觸發動畫更新（讓 output 層動畫播放）
-            self._update_animation_for_current_state()
+            # ⚠️ 不要調用 _update_animation_for_current_state()
+            # 因為它會檢查 behavior_state 而不是 current_layer
+            # SystemCycleBehavior.on_tick() 會自動檢測 current_layer 並觸發動畫
             
-            # 注意：_current_layer 會在 GS_ADVANCED 事件時清除並恢復 idle
+            # 注意：_current_layer 會在 CYCLE_COMPLETED 事件時清除並恢復 idle
         except Exception as e:
             error_log(f"[{self.module_id}] 處理輸出層完成事件失敗: {e}")
     
@@ -1618,6 +1716,15 @@ class MOVModule(BaseFrontendModule):
             # 如果當前在 SYSTEM_CYCLE 狀態，循環完成時回到 IDLE
             if self.current_behavior_state == BehaviorState.SYSTEM_CYCLE:
                 debug_log(2, f"[{self.module_id}] 🔄 循環完成，回到 IDLE 狀態")
+                
+                # 🔧 停止當前的系統循環動畫（thinking等）
+                if self._current_playing_anim:
+                    debug_log(2, f"[{self.module_id}] 停止系統循環動畫: {self._current_playing_anim}")
+                    try:
+                        if self._qt_bridge:
+                            self._qt_bridge.stop_animation()
+                    except Exception as e:
+                        debug_log(3, f"[{self.module_id}] 停止動畫失敗: {e}")
                 
                 # 清除層級狀態
                 self._current_layer = None
@@ -1742,7 +1849,7 @@ GS 推進 - 當前 GS 結束，恢復 idle 狀態和移動"""
                         return
                     
                     self._current_playing_anim = anim_name
-                    self._trigger_anim(anim_name, {"loop": True})
+                    self._trigger_anim(anim_name, {"loop": True}, source="idle_behavior")
                     debug_log(2, f"[{self.module_id}] IDLE 動畫: {anim_name}")
             else:
                 debug_log(2, f"[{self.module_id}] IDLE 狀態: 無可用動畫")
@@ -1794,7 +1901,7 @@ GS 推進 - 當前 GS 結束，恢復 idle 狀態和移動"""
                         "loop": loop,
                         "immediate_interrupt": True,  # 強制中斷當前動畫
                         "force_restart": True  # 強制重新開始
-                    })
+                    }, source="system_cycle_behavior")
                     
                     debug_log(1, f"[{self.module_id}] ✅ 層級動畫已觸發: {anim_name}")
                 else:
@@ -1919,7 +2026,8 @@ GS 推進 - 當前 GS 結束，恢復 idle 狀態和移動"""
                     "loop": False,
                     "next_anim": idle_anim,
                     "next_params": {"loop": True}
-                }
+                },
+                source="tease_system"
             )
             
             # 暫停移動直到動畫完成
@@ -2041,8 +2149,57 @@ GS 推進 - 當前 GS 結束，恢復 idle 狀態和移動"""
     def _on_ani_start(self, name: str):
         # 目前僅記錄；之後若要精細同步（例如算轉場起點）可在此補
         debug_log(3, f"[{self.module_id}] ANI start: {name}")
+    
+    def _infer_animation_priority(self, params: Dict[str, Any]) -> AnimationPriority:
+        """
+        根據當前狀態和參數推斷動畫優先度
+        
+        優先度推斷規則：
+        1. immediate_interrupt=True → FORCE_OVERRIDE
+        2. SYSTEM_CYCLE 狀態 → SYSTEM_CYCLE
+        3. 拖曳或投擲移動模式 → USER_INTERACTION
+        4. Tease 狀態 → TEASE
+        5. TRANSITION 行為 → TRANSITION
+        6. NORMAL_MOVE 行為 → MOVEMENT
+        7. SPECIAL_MOVE 行為 → SPECIAL_MOVE
+        8. 滑鼠追蹤靜態幀 → CURSOR_TRACKING
+        9. 其他 → IDLE_ANIMATION (預設)
+        """
+        # 強制覆蓋
+        if params.get("immediate_interrupt", False):
+            return AnimationPriority.FORCE_OVERRIDE
+        
+        # 根據行為狀態推斷
+        if self.current_behavior_state == BehaviorState.SYSTEM_CYCLE:
+            return AnimationPriority.SYSTEM_CYCLE
+        elif self.movement_mode == MovementMode.DRAGGING or self.is_being_dragged:
+            return AnimationPriority.USER_INTERACTION
+        elif self.movement_mode == MovementMode.THROWN:
+            return AnimationPriority.USER_INTERACTION
+        elif self.current_behavior_state == BehaviorState.TRANSITION:
+            return AnimationPriority.TRANSITION
+        elif self.current_behavior_state == BehaviorState.NORMAL_MOVE:
+            return AnimationPriority.MOVEMENT
+        elif self.current_behavior_state == BehaviorState.SPECIAL_MOVE:
+            return AnimationPriority.SPECIAL_MOVE
+        elif self.current_behavior_state == BehaviorState.IDLE:
+            # 檢查是否為 tease
+            if self._tease_tracker.is_teasing():
+                return AnimationPriority.TEASE
+            # 檢查是否為滑鼠追蹤靜態幀
+            if self.ani_module and hasattr(self.ani_module, 'manager'):
+                if getattr(self.ani_module.manager, 'static_frame_mode', False):
+                    return AnimationPriority.CURSOR_TRACKING
+            # 預設 IDLE
+            return AnimationPriority.IDLE_ANIMATION
+        
+        # 預設為 IDLE 優先度
+        return AnimationPriority.IDLE_ANIMATION
 
     def _on_ani_finish(self, finished_name: str):
+        # 通知優先度管理器動畫完成
+        self._animation_priority.on_animation_finished(finished_name)
+        
         # 若有指定等待且名稱吻合才解除
         if self._awaiting_anim and finished_name == self._awaiting_anim:
             debug_log(2, f"[{self.module_id}] 收到動畫完成: {finished_name}，解除等待")

@@ -223,7 +223,7 @@ class CursorTrackingHandler(BaseHandler):
             
             # 降級方案：使用 _trigger_anim
             debug_log(1, "[CursorTrackingHandler] 警告：無法設置轉頭動畫，使用降級方案")
-            self.coordinator._trigger_anim(turn_anim, {"loop": False})
+            self.coordinator._trigger_anim(turn_anim, {"loop": False}, source="cursor_tracking")
             self._current_turn_anim = turn_anim
             self._current_turn_frame = frame_index
             self._set_turn_head_frame(frame_index)
@@ -319,7 +319,7 @@ class CursorTrackingHandler(BaseHandler):
                         hasattr(self.coordinator, 'movement_mode') and 
                         self.coordinator.movement_mode == MovementMode.GROUND)
             idle_anim = self.coordinator.anim_query.get_idle_animation_for_mode(is_ground=bool(is_ground))
-            self.coordinator._trigger_anim(idle_anim, {"loop": True})
+            self.coordinator._trigger_anim(idle_anim, {"loop": True}, source="cursor_tracking")
             debug_log(2, f"[CursorTrackingHandler] 恢復閒置動畫: {idle_anim}")
             
         except Exception as e:

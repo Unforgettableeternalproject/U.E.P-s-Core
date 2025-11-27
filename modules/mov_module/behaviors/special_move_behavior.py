@@ -110,7 +110,7 @@ class SpecialMoveBehavior(BaseBehavior):
             
             # 播放走路動畫（速度加快）
             anim = "walk_right_g" if desired_dir > 0 else "walk_left_g"
-            ctx.trigger_anim(anim, {"loop": True})
+            ctx.trigger_anim(anim, {"loop": True, "allow_interrupt": True})
         else:
             # 浮空模式加速
             angle = random.uniform(-math.pi, math.pi)
@@ -149,7 +149,7 @@ class SpecialMoveBehavior(BaseBehavior):
             ctx.target_velocity.x = ctx.ground_speed * 1.3 * ctx.facing_direction
             
             anim = "walk_right_g" if ctx.facing_direction > 0 else "walk_left_g"
-            ctx.trigger_anim(anim, {"loop": True})
+            ctx.trigger_anim(anim, {"loop": True, "allow_interrupt": True})
         else:
             # 浮空模式靠近游標
             target_x = cursor_x
@@ -220,7 +220,7 @@ class SpecialMoveBehavior(BaseBehavior):
             ctx.target_velocity.x = ctx.ground_speed * 1.5 * flee_dir
             
             anim = "walk_right_g" if flee_dir > 0 else "walk_left_g"
-            ctx.trigger_anim(anim, {"loop": True})
+            ctx.trigger_anim(anim, {"loop": True, "allow_interrupt": True})
         else:
             # 浮空模式遠離游標
             dx = ctx.position.x - cursor_x
@@ -295,7 +295,7 @@ class SpecialMoveBehavior(BaseBehavior):
             ctx.target_velocity.x = ctx.ground_speed * ctx.facing_direction
             
             anim = "walk_right_g" if ctx.facing_direction > 0 else "walk_left_g"
-            ctx.trigger_anim(anim, {"loop": True})
+            ctx.trigger_anim(anim, {"loop": True, "allow_interrupt": True})
 
     def _enter_zigzag(self, ctx: BehaviorContext):
         """Z字型移動"""
@@ -333,7 +333,7 @@ class SpecialMoveBehavior(BaseBehavior):
                 ctx.target_velocity.x = ctx.ground_speed * 1.2 * ctx.facing_direction
                 
                 anim = "walk_right_g" if ctx.facing_direction > 0 else "walk_left_g"
-                ctx.trigger_anim(anim, {"loop": True})
+                ctx.trigger_anim(anim, {"loop": True, "allow_interrupt": True})
 
     def _update_zigzag(self, ctx: BehaviorContext):
         """更新Z字型移動"""
@@ -352,4 +352,4 @@ class SpecialMoveBehavior(BaseBehavior):
                 
                 # 切換動畫
                 anim = "walk_right_g" if new_dir > 0 else "walk_left_g"
-                ctx.trigger_anim(anim, {"loop": True})
+                ctx.trigger_anim(anim, {"loop": True, "allow_interrupt": True})

@@ -2098,3 +2098,15 @@
 
 ---
 
+### Added priority checks to animations to avoid conflicts, also slightly altered LLM schema to simplify code. 11/27
+
+> Date: Thu, 27 Nov 2025 17:40:53 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `17106f47fb12c7b129d39845afb4683f0a6ec437`
+
+---
+

@@ -22,6 +22,14 @@ class IdleBehavior(BaseBehavior):
         self._has_triggered_idle_anim = False
         self._idle_start_time = ctx.now
         
+        # 🎯 檢查是否有待觸發的 tease 動畫
+        if hasattr(ctx, 'tease_tracker') and ctx.tease_tracker.has_pending():
+            ctx.tease_tracker.clear_pending()
+            # 觸發 tease 動畫（通過回調到主模組）
+            if hasattr(ctx, 'trigger_tease_callback'):
+                ctx.trigger_tease_callback()
+                return  # 不播放 idle 動畫，等 tease 完成
+        
         # 立即觸發閒置動畫（移除不必要的延遲）
         # 動畫切換緩衝已在 _trigger_anim 中處理
         self._trigger_idle_animation(ctx)

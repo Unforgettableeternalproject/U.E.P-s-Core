@@ -111,7 +111,7 @@ class DragInteractionHandler(InteractionHandler):
         
         # 觸發掙扎動畫
         if hasattr(self.coordinator, '_trigger_anim'):
-            self.coordinator._trigger_anim("struggle", {"loop": True})
+            self.coordinator._trigger_anim("struggle", {"loop": True}, source="drag_handler")
         
         info_log(f"[DragHandler] 拖曳開始")
         return True
@@ -149,6 +149,7 @@ class DragInteractionHandler(InteractionHandler):
         
         # 判斷是否為投擲動作（快速移動）
         is_throw = False
+        velocity = 0.0
         if self.drag_start_position and hasattr(self.coordinator, 'position'):
             import math
             dx = self.coordinator.position.x - self.drag_start_position.x

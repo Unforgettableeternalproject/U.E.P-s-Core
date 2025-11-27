@@ -99,27 +99,61 @@ interaction:
 handlers:
   layer:
     enabled: true
-    priority: 100
-  drag:
-    enabled: true
-    priority: 90
     throw_velocity_threshold: 500.0
     height_threshold: 100
+  drag:
+    enabled: true
   file_drop:
     enabled: false
-    priority: 80
 
-animation_strategies:
-  priority_order:
-    - interaction  # 最高優先級
-    - layer        # 中等優先級
-    - state        # 基礎優先級
-  layer:
+# ==================== 動畫優先度系統 ====================
+# 對應 AnimationPriority 枚舉值（數字越大優先度越高）
+animation_priority:
+  # 啟用優先度管理系統
+  enabled: true
+  
+  # 優先度等級定義（參考 core/animation_priority.py）
+  # 注意：IDLE 和 MOVEMENT 同級（30），可互相打斷，避免動畫卡住
+  levels:
+    CURSOR_TRACKING: 10      # 滑鼠追蹤靜態幀
+    EASTER_EGG: 35           # 彩蛋動畫（打哈欠、dance 等）
+    IDLE_ANIMATION: 30       # 一般 idle 動畫（與 MOVEMENT 同級）
+    MOVEMENT: 30             # 移動動畫（與 IDLE 同級，可互相切換）
+    SPECIAL_MOVE: 35         # 特殊移動（smile, curious, excited）
+    TRANSITION: 40           # 轉場動畫（ground ↔ float）
+    TEASE: 45                # Tease 動畫
+    SYSTEM_CYCLE: 50         # 系統循環（input/processing/output）
+    USER_INTERACTION: 60     # 用戶互動（拖曳 struggle、投擲 throw）
+    FORCE_OVERRIDE: 100      # 強制覆蓋（immediate_interrupt=True）
+  
+  # 動畫來源優先度映射（可選：用於手動指定來源的預設優先度）
+  source_defaults:
+    idle_behavior: IDLE_ANIMATION
+    system_cycle_behavior: SYSTEM_CYCLE
+    movement_behavior: MOVEMENT
+    transition_behavior: TRANSITION
+    special_move_behavior: SPECIAL_MOVE
+    drag_handler: USER_INTERACTION
+    throw_handler: USER_INTERACTION
+    cursor_tracking: CURSOR_TRACKING
+    tease_system: TEASE
+    easter_egg: EASTER_EGG
+  
+  # 優先度鎖定設定
+  locking:
+    # 非循環動畫完成前是否鎖定優先度（防止被低優先度動畫打斷）
+    lock_during_playback: true
+    # 預設鎖定時間（秒），用於沒有指定時長的動畫
+    default_lock_duration: 2.0
+  
+  # 防抖設定
+  debounce:
+    # 啟用防抖機制（防止動畫切換過於頻繁導致閃現）
     enabled: true
-    priority: 50
-  interaction:
-    enabled: true
-    priority: 100
+    # 最小動畫間隔（秒）
+    min_interval: 0.1
+    # 高優先度動畫是否可以突破防抖限制
+    allow_priority_override: true
 
 debug:
   show_velocity_vector: false

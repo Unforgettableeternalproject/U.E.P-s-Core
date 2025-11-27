@@ -103,7 +103,7 @@ resources:
       total_frames: 38
       frame_duration: 0.06
       loop: false
-      zoom: 1.22
+      zoom: 1.1
       offsetX: 200
       offsetY: 0
     g_to_f:
@@ -111,13 +111,13 @@ resources:
       total_frames: 38
       frame_duration: 0.06
       loop: false
-      zoom: 1.22
+      zoom: 1.1
       offsetX: 200
       offsetY: -50
     g_to_l:
       prefix: diamond_girl_lying_to_standing_
       total_frames: 35
-      frame_duration: 0.06
+      frame_duration: 0.05
       loop: false
       zoom: 1.6
       offsetX: 25
@@ -125,7 +125,7 @@ resources:
     l_to_g:
       prefix: diamond_girl_standing_to_lying_
       total_frames: 48
-      frame_duration: 0.06
+      frame_duration: 0.05
       loop: false
       zoom: 1.6
       offsetX: 0
@@ -225,7 +225,7 @@ resources:
       loop: true
       zoom: 1.15
       offsetX: 0
-      offsetY: 100
+      offsetY: 70 
     thinking_g:
       prefix: diamond_girl_thinking(std_
       total_frames: 118
@@ -233,7 +233,7 @@ resources:
       loop: true
       zoom: 1.15
       offsetX: 0
-      offsetY: 100
+      offsetY: 70
     thinking_f:
       prefix: diamond_girl_thinking(flt_
       total_frames: 118

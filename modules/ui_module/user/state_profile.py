@@ -282,14 +282,7 @@ class StateProfileDialog(QDialog):
         self.theme_toggle.setFont(btn_font)
         self.theme_toggle.clicked.connect(self.toggle_theme)
 
-        self.close_btn = QPushButton("✖")
-        self.close_btn.setObjectName("headerClose")
-        self.close_btn.setFixedSize(56, 56)
-        self.close_btn.setCursor(Qt.PointingHandCursor)
-        self.close_btn.clicked.connect(self.close)
-
         header_layout.addWidget(self.theme_toggle)
-        header_layout.addWidget(self.close_btn)
         layout.addWidget(header)
 
         self.panel = UEPStateProfileWidget(parent=self)

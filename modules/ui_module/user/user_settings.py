@@ -169,14 +169,6 @@ class UserMainWindow(QMainWindow):
         self.theme_toggle.clicked.connect(self.toggle_theme)
         header_layout.addWidget(self.theme_toggle)
 
-        self.header_close = QPushButton("✕")
-        self.header_close.setObjectName("headerClose")
-        self.header_close.setFixedSize(56, 56)
-        self.header_close.setCursor(Qt.PointingHandCursor)
-        self.header_close.setFont(btn_font)
-        self.header_close.clicked.connect(self.close)
-        header_layout.addWidget(self.header_close)
-
         parent_layout.addWidget(header)
 
     def create_tab_widget(self, parent_layout: QVBoxLayout):

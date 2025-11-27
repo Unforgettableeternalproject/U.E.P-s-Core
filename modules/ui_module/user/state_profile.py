@@ -313,7 +313,7 @@ class StateProfileDialog(QDialog):
 
         bottom = QFrame()
         bottom.setObjectName("bottomBar")
-        bottom.setFixedHeight(70)
+        bottom.setFixedHeight(80)
         install_theme_hook(bottom)
 
         bottom_layout = QHBoxLayout(bottom)

@@ -30,7 +30,6 @@ class SystemBackgroundWindow(QMainWindow):
     settings_changed = pyqtSignal(str, object)
     action_triggered = pyqtSignal(str, dict)
     window_closed = pyqtSignal()
-    SCROLL_AREA_MIN_H = 620
 
     def __init__(self, ui_module=None):
         super().__init__()
@@ -116,15 +115,13 @@ class SystemBackgroundWindow(QMainWindow):
             pass
         return False
 
-
-    def _tall_scroll(self, scroll_area: QScrollArea):  
-            scroll_area.setWidgetResizable(True)
-            scroll_area.setFrameShape(QFrame.NoFrame)
-            scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-            scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-            scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-            scroll_area.setSizeAdjustPolicy(QAbstractScrollArea.AdjustToContents)
-
+    def _tall_scroll(self, scroll_area: QScrollArea):
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.NoFrame)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        scroll_area.setAlignment(Qt.AlignTop)
 
     def create_header(self, parent_layout):
         header = QFrame()
@@ -187,7 +184,7 @@ class SystemBackgroundWindow(QMainWindow):
     def create_reminder_tab(self):
         reminder_widget = QWidget()
         reminder_layout = QVBoxLayout(reminder_widget)
-        reminder_layout.setContentsMargins(30, 30, 30, 200)
+        reminder_layout.setContentsMargins(30, 30, 30, 30)
         reminder_layout.setSpacing(20)
 
         scroll_area = QScrollArea()
@@ -327,7 +324,7 @@ class SystemBackgroundWindow(QMainWindow):
     def create_calendar_tab(self):
         calendar_widget = QWidget()
         calendar_layout = QVBoxLayout(calendar_widget)
-        calendar_layout.setContentsMargins(30, 30, 30, 100)
+        calendar_layout.setContentsMargins(30, 30, 30, 30)
         calendar_layout.setSpacing(20)
 
         scroll_area = QScrollArea()
@@ -924,10 +921,9 @@ class SystemBackgroundWindow(QMainWindow):
         return self._loose_group(group)
 
     def create_bottom_buttons(self, parent_layout):
-        """創建底部按鈕區"""
         button_frame = QFrame()
         button_frame.setObjectName("bottomBar")
-        button_frame.setFixedHeight(70)
+        button_frame.setFixedHeight(80)
         button_layout = QHBoxLayout(button_frame)
         button_layout.setContentsMargins(30, 15, 30, 15)
 
@@ -956,12 +952,6 @@ class SystemBackgroundWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         self.status_bar.addPermanentWidget(self.progress_bar)
 
-    def _tall_scroll(self, scroll_area: QScrollArea):
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setFrameShape(QFrame.NoFrame)
-        scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        scroll_area.setMinimumHeight(self.SCROLL_AREA_MIN_H)
-        scroll_area.setAlignment(Qt.AlignTop)
 
     def _loose_group(self, group: QGroupBox):
         group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
@@ -985,45 +975,35 @@ class SystemBackgroundWindow(QMainWindow):
 
     
     def add_new_task(self):
-        """新增任務"""
         print("[SystemBackground] 新增任務")
         self.status_bar.showMessage("功能開發中...", 2000)
 
     def refresh_today_tasks(self):
-        """重新整理今日任務"""
         print("[SystemBackground] 重新整理今日任務")
         self.status_bar.showMessage("已重新整理今日任務", 2000)
 
     def filter_tasks_by_priority(self, priority):
-        """根據優先級篩選任務"""
         print(f"[SystemBackground] 篩選任務: {priority}")
 
     def clear_expired_tasks(self):
-        """清除過期任務"""
         print("[SystemBackground] 清除過期任務")
         self.status_bar.showMessage("已清除完成的過期任務", 2000)
-
-    # ==================== 行事曆功能 ====================
     
     def add_calendar_event(self):
-        """新增行事曆事件"""
         print("[SystemBackground] 新增行事曆事件")
         self.status_bar.showMessage("功能開發中...", 2000)
 
     def sync_calendar(self):
-        """同步行事曆"""
         print("[SystemBackground] 同步行事曆")
         self.status_bar.showMessage("正在同步...", 2000)
 
     def authorize_google_calendar(self):
-        """授權 Google Calendar"""
         print("[SystemBackground] 授權 Google Calendar")
         self.auth_status_label.setText("✅ 已授權")
         self.auth_status_label.setStyleSheet("color: #10b981;")
         self.revoke_btn.setEnabled(True)
 
     def revoke_authorization(self):
-        """撤銷授權"""
         print("[SystemBackground] 撤銷授權")
         self.auth_status_label.setText("❌ 未授權")
         self.auth_status_label.setStyleSheet("color: #f44336;")

@@ -2,6 +2,7 @@
 import os
 import sys
 from typing import Dict, Any, Optional
+from theme_manager import theme_manager, Theme
 
 try:
     from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -43,7 +44,6 @@ class SystemBackgroundWindow(QMainWindow):
         
         self.is_minimized_to_orb = False
         self.original_geometry = None
-        self.dark_mode = False
 
         # 音樂播放器狀態
         self.current_music_player = None
@@ -53,6 +53,7 @@ class SystemBackgroundWindow(QMainWindow):
         self.dialog_history = []
 
         self.init_ui()
+        self._wire_theme_manager()
         self.load_settings()
         
         print("[SystemBackground] 系統背景視窗初始化完成")
@@ -62,10 +63,9 @@ class SystemBackgroundWindow(QMainWindow):
         self.setMinimumSize(900, 950)
         self.resize(1200, 950)
 
-        # 設定圖標
         try:
             icon_path = os.path.join(os.path.dirname(__file__), "../../../arts/U.E.P.png")
-            if os.path.exists(icon_path):
+            if os.path.exists(icon_path):   
                 self.setWindowIcon(QIcon(icon_path))
         except Exception as e:
             print(f"[SystemBackground] 無法載入圖標: {e}")
@@ -81,7 +81,40 @@ class SystemBackgroundWindow(QMainWindow):
         self.create_tab_widget(main_layout)
         self.create_bottom_buttons(main_layout)
         self.create_status_bar()
-        self.apply_theme()
+
+    def _wire_theme_manager(self):
+        try:
+            theme_manager.theme_changed.connect(self._on_theme_changed)
+        except Exception as e:
+            print(f"[SystemBackground] 無法連接 theme_changed: {e}")
+
+        self._on_theme_changed()
+
+    def _on_theme_changed(self, name: str = None):
+        is_dark = self._tm_is_dark(name)
+        self.theme_toggle.setText("☀️" if is_dark else "🌙")
+
+    def _tm_is_dark(self, name: str = None) -> bool:
+        try:
+            if isinstance(name, str):
+                return name.lower() == "dark"
+            cur = getattr(theme_manager, "current", None)
+            if cur is not None:
+                if isinstance(cur, Theme):
+                    return cur == Theme.DARK
+                if isinstance(cur, str):
+                    return cur.lower() == "dark"
+            getter = getattr(theme_manager, "current_theme", None) or getattr(theme_manager, "get_theme", None)
+            if callable(getter):
+                val = getter()
+                if isinstance(val, Theme):
+                    return val == Theme.DARK
+                if isinstance(val, str):
+                    return val.lower() == "dark"
+        except Exception:
+            pass
+        return False
+
 
     def _tall_scroll(self, scroll_area: QScrollArea):  
             scroll_area.setWidgetResizable(True)
@@ -470,7 +503,6 @@ class SystemBackgroundWindow(QMainWindow):
         self.tab_widget.addTab(music_widget, "🎵 音樂")
 
     def create_now_playing_group(self):
-        """創建正在播放組"""
         group = QGroupBox("正在播放")
         group.setObjectName("settingsGroup")
         layout = QVBoxLayout(group)
@@ -934,84 +966,22 @@ class SystemBackgroundWindow(QMainWindow):
         group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         return group
 
-    # ==================== 主題相關 ====================
-    
+ 
     def toggle_theme(self):
-        """切換主題"""
-        self.dark_mode = not self.dark_mode
-        self.theme_toggle.setText("☀️" if self.dark_mode else "🌙")
-        self.apply_theme()
+        try:
+            if hasattr(theme_manager, "toggle") and callable(theme_manager.toggle):
+                theme_manager.toggle()
+            else:
 
-    def apply_theme(self):
-        """應用主題樣式"""
-        if self.dark_mode:
-            self.setStyleSheet("""
-                QMainWindow { background:#000000; }
-                QFrame#bottomBar, QStatusBar { background:#000000; color:#b5b8bf; border-top:1px solid #2f3136; }
-                QWidget#header { background:#1f2023; border-bottom:1px solid #2f3136; }
-                QLabel#mainTitle { color:#ffffff; font-size:28px; font-weight:800; }
-                QLabel#subtitle { color:#b5b8bf; font-size:13px; }
-                QTabWidget#mainTabs::pane { background:#26272b; border:1px solid #2f3136; border-radius:8px; }
-                QTabBar::tab { background:#1f2023; color:#b5b8bf; padding:10px 18px; margin-right:4px; border-top-left-radius:8px; border-top-right-radius:8px; border:1px solid #2f3136; font-weight:600; }
-                QTabBar::tab:selected { background:#26272b; color:#ffffff; border:1px solid #d5b618; }
-                QTabBar::tab:hover:!selected { background:#232427; }
-                QGroupBox#settingsGroup { background:#1f2023; border:1px solid #2f3136; border-radius:10px; margin-top:12px; padding-top:18px; color:#e6e6e6; font-weight:600; }
-                QGroupBox#settingsGroup::title { subcontrol-origin: margin; left:15px; padding:0 8px; color:#e6e6e6; }
-                QLabel { color:#e6e6e6; }
-                QLabel#infoText { color:#b5b8bf; font-style:italic; }
-                QComboBox, QLineEdit, QSpinBox, QTextEdit { background:#26272b; color:#e6e6e6; border:1px solid #2f3136; border-radius:8px; padding:8px 12px; }
-                QComboBox:focus, QLineEdit:focus, QSpinBox:focus, QTextEdit:focus { border:1px solid #d5b618; }
-                QPushButton { background:#d5b618; color:#000000; border:none; border-radius:10px; padding:10px 18px; font-weight:700; }
-                QPushButton:hover { background:#e6c51c; }
-                QPushButton:pressed { background:#b89f14; }
-                QPushButton#themeToggle { background:#000; color:#000; border:none; min-width:56px; min-height:56px; border-radius:28px; font-size:20px; padding:0; }
-                QCheckBox { color:#e6e6e6; spacing:8px; }
-                QCheckBox::indicator { width:18px; height:18px; border-radius:4px; border:2px solid #2f3136; background:#26272b; }
-                QCheckBox::indicator:checked { background:#d5b618; border-color:#d5b618; }
-                QSlider::groove:horizontal { background:#1f2023; height:8px; border-radius:4px; }
-                QSlider::handle:horizontal { background:#d5b618; width:18px; height:18px; border-radius:9px; margin:-6px 0; }
-                QTreeWidget { background:#1f2023; color:#e6e6e6; border:1px solid #2f3136; border-radius:8px; }
-                QTreeWidget::item:selected { background:#d5b618; color:#000000; }
-                QListWidget { background:#1f2023; color:#e6e6e6; border:1px solid #2f3136; border-radius:8px; }
-                QListWidget::item:selected { background:#d5b618; color:#000000; }
-                QScrollBar:vertical { background:#1f2023; width:12px; border:none; }
-                QScrollBar::handle:vertical { background:#3a3b42; border-radius:6px; min-height:40px; }
-            """)
-        else:
-            self.setStyleSheet("""
-                QMainWindow { background:#f5f5f9; }
-                QStatusBar { background:#ffffff; color:#2d3142; border-top:1px solid #bccfef; }
-                QWidget#header { background:qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #d7deec, stop:1 #bccfef); border-bottom:1px solid #a2bef2; }
-                QLabel#mainTitle { color:#2d3142; font-size:28px; font-weight:700; }
-                QLabel#subtitle { color:#4a5568; font-size:13px; }
-                QPushButton#themeToggle { background:#346ddb; color:#ffffff; border:none; min-width:56px; min-height:56px; border-radius:28px; font-size:22px; padding:0; }
-                QTabWidget#mainTabs::pane { border:1px solid #e0e0e8; background:#ffffff; border-radius:8px; }
-                QTabBar::tab { background:#d7deec; color:#5a5a66; padding:10px 18px; margin-right:4px; border-top-left-radius:8px; border-top-right-radius:8px; font-weight:600; }
-                QTabBar::tab:selected { background:#ffffff; color:#2d3142; }
-                QTabBar::tab:hover:!selected { background:#a2bef2; }
-                QGroupBox#settingsGroup { background:#ffffff; border:1px solid #bccfef; border-radius:10px; margin-top:12px; padding-top:20px; font-weight:600; color:#2d3142; }
-                QGroupBox#settingsGroup::title { subcontrol-origin:margin; left:15px; padding:0 8px; }
-                QPushButton { background:#739ef0; color:#ffffff; border:none; padding:10px 20px; border-radius:8px; font-weight:600; }
-                QPushButton:hover { background:#4a7cdb; }
-                QPushButton:pressed { background:#2558b5; }
-                QCheckBox { color:#2d3142; spacing:8px; }
-                QCheckBox::indicator { width:20px; height:20px; border-radius:4px; background:#ffffff; border:2px solid #bccfef; }
-                QCheckBox::indicator:checked { background:#346ddb; border:2px solid #346ddb; }
-                QSlider::groove:horizontal { background:#d7deec; height:8px; border-radius:4px; }
-                QSlider::handle:horizontal { background:#739ef0; width:20px; height:20px; border-radius:10px; margin:-6px 0; }
-                QComboBox, QLineEdit, QSpinBox, QTextEdit { background:#ffffff; color:#2d3142; border:1px solid #bccfef; border-radius:6px; padding:8px 12px; }
-                QLabel { color:#2d3142; }
-                QLabel#infoText { color:#739ef0; font-style:italic; }
-                QFrame#bottomBar { background:#ffffff; border-top:1px solid #bccfef; }
-                QTreeWidget { background:#ffffff; border:1px solid #bccfef; border-radius:6px; color:#2d3142; }
-                QTreeWidget::item:selected { background:#739ef0; color:#ffffff; }
-                QListWidget { background:#ffffff; border:1px solid #bccfef; border-radius:6px; color:#2d3142; }
-                QListWidget::item:selected { background:#739ef0; color:#ffffff; }
-                QScrollBar:vertical { background:#f5f5f9; width:12px; border-radius:6px; }
-                QScrollBar::handle:vertical { background:#a2bef2; border-radius:6px; min-height:40px; }
-            """)
+                is_dark = self._tm_is_dark()
+                setter = getattr(theme_manager, "set_theme", None) or getattr(theme_manager, "apply", None)
+                if callable(setter):
+                    setter(Theme.LIGHT if is_dark else Theme.DARK)
+                else:
+                    print("[SystemBackground] theme_manager 缺少 toggle/set_theme/apply，無法切換主題")
+        except Exception as e:
+            print(f"[SystemBackground] 切換主題失敗: {e}")
 
-    # ==================== 待辦事項功能 ====================
     
     def add_new_task(self):
         """新增任務"""
@@ -1057,11 +1027,8 @@ class SystemBackgroundWindow(QMainWindow):
         self.auth_status_label.setText("❌ 未授權")
         self.auth_status_label.setStyleSheet("color: #f44336;")
         self.revoke_btn.setEnabled(False)
-
-    # ==================== 音樂功能 ====================
     
     def toggle_music_playback(self):
-        """切換播放/暫停"""
         self.is_music_playing = not self.is_music_playing
         if self.is_music_playing:
             self.play_pause_btn.setText("⏸️")
@@ -1071,17 +1038,14 @@ class SystemBackgroundWindow(QMainWindow):
             print("[SystemBackground] 暫停音樂")
 
     def play_next_song(self):
-        """播放下一首"""
         print("[SystemBackground] 下一首")
         self.status_bar.showMessage("播放下一首", 2000)
 
     def play_previous_song(self):
-        """播放上一首"""
         print("[SystemBackground] 上一首")
         self.status_bar.showMessage("播放上一首", 2000)
 
     def toggle_loop_mode(self):
-        """切換循環模式"""
         if self.loop_btn.isChecked():
             print("[SystemBackground] 啟用單曲循環")
             self.status_bar.showMessage("已啟用單曲循環", 2000)
@@ -1090,7 +1054,6 @@ class SystemBackgroundWindow(QMainWindow):
             self.status_bar.showMessage("已關閉單曲循環", 2000)
 
     def play_selected_song(self, item):
-        """播放選中的歌曲"""
         song_name = item.text()
         print(f"[SystemBackground] 播放: {song_name}")
         self.song_title_label.setText(song_name)
@@ -1098,55 +1061,44 @@ class SystemBackgroundWindow(QMainWindow):
         self.play_pause_btn.setText("⏸️")
 
     def add_music_file(self):
-        """新增音樂檔案"""
         print("[SystemBackground] 新增音樂檔案")
         self.status_bar.showMessage("功能開發中...", 2000)
 
     def add_music_folder(self):
-        """新增音樂資料夾"""
         print("[SystemBackground] 新增音樂資料夾")
         self.status_bar.showMessage("功能開發中...", 2000)
 
     def clear_playlist(self):
-        """清空播放列表"""
         self.playlist_widget.clear()
         print("[SystemBackground] 已清空播放列表")
         self.status_bar.showMessage("已清空播放列表", 2000)
 
     def search_music(self):
-        """搜尋音樂"""
         keyword = self.music_search_input.text()
         print(f"[SystemBackground] 搜尋音樂: {keyword}")
         self.status_bar.showMessage(f"搜尋: {keyword}", 2000)
 
     def open_youtube(self):
-        """開啟 YouTube"""
         print("[SystemBackground] 開啟 YouTube")
         self.status_bar.showMessage("功能開發中...", 2000)
 
     def open_spotify(self):
-        """開啟 Spotify"""
         print("[SystemBackground] 開啟 Spotify")
         self.status_bar.showMessage("功能開發中...", 2000)
-
-    # ==================== 對話功能 ====================
     
     def filter_dialog_history(self, filter_type):
-        """篩選對話歷史"""
         print(f"[SystemBackground] 篩選對話: {filter_type}")
 
     def view_dialog_detail(self, item):
-        """查看對話詳情"""
         dialog_text = item.text()
         print(f"[SystemBackground] 查看對話: {dialog_text}")
 
     def export_dialog_history(self):
-        """匯出對話記錄"""
+
         print("[SystemBackground] 匯出對話記錄")
         self.status_bar.showMessage("功能開發中...", 2000)
 
     def clear_dialog_history(self):
-        """清除對話歷史"""
         reply = QMessageBox.question(
             self, "確認清除", 
             "確定要清除所有對話記錄嗎？此操作無法復原。",
@@ -1159,16 +1111,13 @@ class SystemBackgroundWindow(QMainWindow):
             self.status_bar.showMessage("已清除對話歷史", 2000)
 
     def toggle_dialog_box(self, state):
-        """切換對話框顯示"""
         if state == Qt.Checked:
             print("[SystemBackground] 顯示對話框")
         else:
             print("[SystemBackground] 隱藏對話框")
 
-    # ==================== 通用功能 ====================
     
     def minimize_to_orb(self):
-        """最小化到球體"""
         self.is_minimized_to_orb = True
         self.original_geometry = self.geometry()
         self.hide()
@@ -1176,7 +1125,6 @@ class SystemBackgroundWindow(QMainWindow):
         print("[SystemBackground] 已最小化到球體")
 
     def restore_from_orb(self):
-        """從球體恢復"""
         if self.is_minimized_to_orb:
             if self.original_geometry:
                 self.setGeometry(self.original_geometry)
@@ -1187,13 +1135,11 @@ class SystemBackgroundWindow(QMainWindow):
             print("[SystemBackground] 從球體恢復視窗")
 
     def refresh_all_modules(self):
-        """重新整理所有模組"""
         print("[SystemBackground] 重新整理所有模組")
         self.status_bar.showMessage("正在重新整理...", 2000)
         self.refresh_today_tasks()
 
     def load_settings(self):
-        """載入設定"""
         try:
             self.dark_mode = self.settings.value("theme/dark_mode", False, type=bool)
             self.theme_toggle.setText("☀️" if self.dark_mode else "🌙")
@@ -1202,7 +1148,6 @@ class SystemBackgroundWindow(QMainWindow):
             print(f"[SystemBackground] 載入設定時發生錯誤: {e}")
 
     def save_settings(self):
-        """儲存設定"""
         try:
             self.settings.setValue("theme/dark_mode", self.dark_mode)
             self.settings.sync()
@@ -1211,7 +1156,6 @@ class SystemBackgroundWindow(QMainWindow):
             print(f"[SystemBackground] 儲存設定時發生錯誤: {e}")
 
     def closeEvent(self, event):
-        """關閉事件"""
         self.save_settings()
         if not self.is_minimized_to_orb:
             print("[SystemBackground] 視窗關閉")
@@ -1219,10 +1163,8 @@ class SystemBackgroundWindow(QMainWindow):
         event.accept()
 
 
-# ==================== 測試程式 ====================
 
 def create_test_window():
-    """創建測試視窗"""
     if not PYQT5_AVAILABLE:
         print("[SystemBackground] PyQt5不可用，無法創建測試視窗")
         return None

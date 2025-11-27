@@ -327,6 +327,7 @@ class StateProfileDialog(QDialog):
         layout.addWidget(status)
 
         if theme_manager:
+            theme_manager.apply_app()
             theme_manager.theme_changed.connect(self.apply_theme)
             self.apply_theme(theme_manager.theme.value)
 

@@ -9,15 +9,18 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QPropertyAnimation, QPoint, QEasingCurve, QTimer, pyqtSignal, QSize, QSettings, QRect
 from PyQt5.QtGui import QPainter, QColor, QBrush, QIcon, QPixmap, QFont, QRegion
 
+from system_background import SystemBackgroundWindow
+from theme_manager import theme_manager, Theme
+
 try:
-    from state_profile import StateProfileDialog as PersonalSettingsDialog
-    print("[access_widget] Using StateProfileDialog as PersonalSettingsDialog")
+    from state_profile import StateProfileDialog
+    print("[access_widget] Using StateProfileDialog")
 except Exception as e:
     print("[access_widget] Failed to import StateProfileDialog, using placeholder:", e)
 
-    class PersonalSettingsDialog(QDialog):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
+    class StateProfileDialog(QDialog):
+        def __init__(self, controller=None, parent=None):
+            super().__init__(parent)
             self.setWindowTitle("User Settings (placeholder)")
             self.setMinimumSize(600, 420)
 
@@ -30,9 +33,26 @@ except Exception as e:
             btn.clicked.connect(self.close)
             lay.addWidget(btn)
 
-from system_background import SystemBackgroundWindow
-from state_profile import StateProfileDialog
-from theme_manager import theme_manager, Theme
+try:
+    from user_settings import UserMainWindow
+    print("[access_widget] Using UserMainWindow from user_settings.py")
+except Exception as e:
+    print("[access_widget] Failed to import UserMainWindow, using placeholder:", e)
+
+    class UserMainWindow(QDialog):
+        """Very simple placeholder if user_settings.py is missing or broken."""
+        def __init__(self, ui_module=None, parent=None):
+            super().__init__(parent)
+            self.setWindowTitle("User Settings (placeholder)")
+            self.setMinimumSize(600, 420)
+            lay = QVBoxLayout(self)
+            lay.addWidget(QLabel(
+                "Could not load UserMainWindow.\n"
+                "Please check user_settings.py import."
+            ))
+            btn = QPushButton("Close")
+            btn.clicked.connect(self.close)
+            lay.addWidget(btn)
 
 try:
     from core.unified_controller import unified_controller
@@ -48,8 +68,11 @@ def error_log(*a): print(*a)
 class ControllerBridge:
     def __init__(self, controller):
         self.controller = controller
-        self._settings_dialog = None
+        #user settings window
+        self._user_settings_window = None
+        #system background window
         self._bg_window = None
+        #state profile dialog
         self._state_dialog = None
 
     def dispatch(self, fid: str):
@@ -65,31 +88,44 @@ class ControllerBridge:
 
     def open_user_settings(self):
         try:
-            if self._settings_dialog is None or not self._settings_dialog.isVisible():
-                # Try with controller first; fall back if signature does not match.
+            if self._user_settings_window is None:
                 try:
-                    if self.controller is not None:
-                        self._settings_dialog = PersonalSettingsDialog(self.controller)
-                    else:
-                        self._settings_dialog = PersonalSettingsDialog()
+                    self._user_settings_window = UserMainWindow(ui_module=self.controller)
                 except TypeError:
-                    self._settings_dialog = PersonalSettingsDialog()
+                    self._user_settings_window = UserMainWindow()
 
-            self._settings_dialog.show()
-            self._settings_dialog.raise_()
-            self._settings_dialog.activateWindow()
-            info_log("[ControllerBridge] User settings opened")
+                if hasattr(self._user_settings_window, "window_closed"):
+                    self._user_settings_window.window_closed.connect(
+                        lambda: setattr(self, "_user_settings_window", None)
+                    )
+
+            wnd = self._user_settings_window
+            if hasattr(wnd, "is_minimized_to_orb") and getattr(wnd, "is_minimized_to_orb", False):
+                if hasattr(wnd, "restore_from_orb"):
+                    wnd.restore_from_orb()
+                else:
+                    wnd.show()
+            else:
+                wnd.show()
+                wnd.raise_()
+                wnd.activateWindow()
+
+            info_log("[ControllerBridge] User settings (UserMainWindow) opened")
             return {"success": True}
+
         except Exception as e:
+            import traceback
             error_log("[ControllerBridge] Failed to open user settings:", e)
+            traceback.print_exc()
             return {"success": False, "error": str(e)}
+
 
     def open_system_background(self):
         try:
             if self._bg_window is None or not self._bg_window.isVisible():
                 self._bg_window = SystemBackgroundWindow(ui_module=self.controller)
                 if hasattr(self._bg_window, "window_closed"):
-                    # Reset reference when the window is closed
+
                     self._bg_window.window_closed.connect(
                         lambda: setattr(self, "_bg_window", None)
                     )
@@ -99,37 +135,52 @@ class ControllerBridge:
             info_log("[ControllerBridge] SystemBackgroundWindow opened")
             return {"success": True}
         except Exception as e:
+            import traceback
             error_log("[ControllerBridge] Failed to open SystemBackgroundWindow:", e)
+            traceback.print_exc()
             return {"success": False, "error": str(e)}
 
     def show_state_profile(self):
         try:
-            if self._state_dialog is None or not self._state_dialog.isVisible():
-                self._state_dialog = StateProfileDialog(controller=self.controller)
-
-                # Optional: pre-fill some default texts and image
+            dlg = None
+            try:
+                dlg = StateProfileDialog(controller=self.controller)
+            except TypeError:
                 try:
-                    self._state_dialog.panel.set_diary_texts(
-                        feels="Calm & focused. Latency low; mood +8%.",
-                        helped="Fixed UI bugs, refactored theme system, and arranged your study plan."
-                    )
-                    self._state_dialog.panel.set_random_tips(
-                        "Tip: Press Shift+Enter to insert a line. Stay hydrated and take breaks!"
-                    )
-                    guess = os.path.join(os.path.dirname(__file__), "arts", "U.E.P.png")
-                    if os.path.exists(guess):
-                        self._state_dialog.panel.set_uep_image(guess)
-                except Exception as e:
-                    error_log("[ControllerBridge] Failed to set default diary content:", e)
+                    dlg = StateProfileDialog(self.controller)
+                except TypeError:
+                    dlg = StateProfileDialog()
 
-            self._state_dialog.show()
-            self._state_dialog.raise_()
-            self._state_dialog.activateWindow()
+            self._state_dialog = dlg
+
+            try:
+                dlg.panel.set_diary_texts(
+                    feels="Calm & focused. Latency low; mood +8%.",
+                    helped="Fixed UI bugs, refactored theme system, and arranged your study plan."
+                )
+                dlg.panel.set_random_tips(
+                    "Tip: Press Shift+Enter to insert a line. Stay hydrated and take breaks!"
+                )
+                guess = os.path.join(os.path.dirname(__file__), "arts", "U.E.P.png")
+                if os.path.exists(guess):
+                    dlg.panel.set_uep_image(guess)
+            except Exception as e:
+                error_log("[ControllerBridge] Failed to set default diary content:", e)
+
+            dlg.setAttribute(Qt.WA_DeleteOnClose, True)
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
+
             info_log("[ControllerBridge] State profile opened")
             return {"success": True}
+
         except Exception as e:
+            import traceback
             error_log("[ControllerBridge] Failed to open state profile:", e)
+            traceback.print_exc()
             return {"success": False, "error": str(e)}
+
 
 
 class DraggableButton(QPushButton):
@@ -141,18 +192,15 @@ class DraggableButton(QPushButton):
 
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton:
-            # Remember the global position and the current window position
             self._drag_start = e.globalPos()
             self._widget_offset = self.window().frameGeometry().topLeft()
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
         if self._drag_start and (e.buttons() & Qt.LeftButton):
-            # Only treat it as a drag if the movement passes a small threshold
             if (e.globalPos() - self._drag_start).manhattanLength() > 6:
                 self._dragging = True
             if self._dragging:
-                # Move the whole window together with the cursor
                 self.window().move(e.globalPos() - (self._drag_start - self._widget_offset))
                 e.accept()
                 return
@@ -160,7 +208,6 @@ class DraggableButton(QPushButton):
 
     def mouseReleaseEvent(self, e):
         if self._dragging:
-            # Reset drag state
             self._drag_start = None
             self._dragging = False
             e.accept()
@@ -224,7 +271,6 @@ class MainButton(QWidget):
             r"C:\Users\Elisa Kao\Source\Repos\U.E.P-s-Core\arts\U.E.P.png",
             margin=6
         )
-        # Center the main button inside this widget
         self.mainButton.move(
             self.width() // 2 - self.mainButton.width() // 2,
             self.height() // 2 - self.mainButton.height() // 2
@@ -243,7 +289,7 @@ class MainButton(QWidget):
             b.hide()
             self.options.append(b)
 
-        #toolv size
+        # Tool buttons
         self.tool_buttons = []
         self.TOOL_SIZE = 41
         tools = [
@@ -264,7 +310,7 @@ class MainButton(QWidget):
         self.right_drag_enabled = False
 
         # Slide-in/slide-out state
-        self.is_pinned = False       # true if user has the menu expanded
+        self.is_pinned = False
         self.is_fully_visible = False
         self.original_position = None
         self.visible_position = None
@@ -293,10 +339,9 @@ class MainButton(QWidget):
         self.apply_theme(theme_manager.theme.value)
 
     def apply_theme(self, theme_name: str):
-        #dark or light mode
         is_dark = (theme_name == Theme.DARK.value)
 
-        #main opt buttons
+        # Option buttons
         for b in self.options:
             sz = getattr(b, "_circle_size", 65)
 
@@ -306,7 +351,6 @@ class MainButton(QWidget):
                 pass
 
             if is_dark:
-                # Dark theme
                 grad  = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
                          "stop:0 rgba(60,60,60,180), stop:1 rgba(90,90,90,180))")
                 hover = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
@@ -316,7 +360,6 @@ class MainButton(QWidget):
                 fg = "#e6e6e6"
                 shadow = QColor(0, 0, 0, 100)
             else:
-                # Light theme
                 grad  = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
                          "stop:0 rgba(140,140,140,150), stop:1 rgba(110,110,110,150))")
                 hover = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
@@ -346,9 +389,9 @@ class MainButton(QWidget):
             if isinstance(eff, QGraphicsDropShadowEffect):
                 eff.setColor(shadow)
 
-        #tool buttons
+        # Tool buttons
         for tb in self.tool_buttons:
-            sz = tb.width() 
+            sz = tb.width()
 
             if is_dark:
                 tgrad  = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
@@ -370,7 +413,7 @@ class MainButton(QWidget):
             tb.setStyleSheet(f"""
                 QPushButton {{
                     background-color: {tgrad};
-                    border-radius: {sz/2}px;   /* <- make it a circle */
+                    border-radius: {sz/2}px;
                     color: {tfg};
                     padding: 0px;
                     border: none;
@@ -457,7 +500,6 @@ class MainButton(QWidget):
         b._circle_size = size
         b.setCursor(Qt.PointingHandCursor)
 
-
         b.setObjectName("uepOptButton")
 
         if text:
@@ -466,15 +508,14 @@ class MainButton(QWidget):
             painter = QPainter(pix)
             painter.setRenderHint(QPainter.Antialiasing)
             emoji_font = QFont("Segoe UI Emoji")
-            emoji_font.setPixelSize(int(size *0.4))
+            emoji_font.setPixelSize(int(size * 0.4))
             painter.setFont(emoji_font)
-            painter.setPen(QColor(255,255,255))
-            painter.drawText(QRect(0,0, size, size), Qt.AlignCenter, text)
+            painter.setPen(QColor(255, 255, 255))
+            painter.drawText(QRect(0, 0, size, size), Qt.AlignCenter, text)
             painter.end()
             b.setIcon(QIcon(pix))
-            #slightly inset icon so it doesn't touch the circular mask edge
-            inset = max(2, int(size *0.10))
-            b.setIconSize(QSize(size - inset *2, size - inset *2))
+            inset = max(2, int(size * 0.10))
+            b.setIconSize(QSize(size - inset * 2, size - inset * 2))
             b.setText("")
 
         b.setStyleSheet(f"""
@@ -518,42 +559,33 @@ class MainButton(QWidget):
         b.clicked.connect(callback)
         return b
 
-
     def _make_tool_btn(self, size, text, callback):
         b = DraggableButton(text, self)
         b.setFixedSize(size, size)
-        b._circle_size = size  # Store size for theme manager
+        b._circle_size = size
         b.setCursor(Qt.PointingHandCursor)
-    
-        # Set object name for consistent styling
+
         b.setObjectName("uepToolButton")
-    
+
         if text:
-            # Create pixmap for the emoji icon
             pix = QPixmap(size, size)
             pix.fill(Qt.transparent)
             painter = QPainter(pix)
             painter.setRenderHint(QPainter.Antialiasing)
-        
-            # Set up emoji font
+
             emoji_font = QFont("Segoe UI Emoji")
             emoji_font.setPixelSize(int(size * 0.5))
             painter.setFont(emoji_font)
             painter.setPen(QColor(255, 255, 255))
-        
-            # Draw text centered in the exact same way as opt buttons
+
             painter.drawText(QRect(0, 0, size, size), Qt.AlignCenter, text)
             painter.end()
-        
-            # Set the icon
+
             b.setIcon(QIcon(pix))
-        
-            # Use the exact same inset calculation as opt buttons
             inset = max(2, int(size * 0.10))
             b.setIconSize(QSize(size - inset * 2, size - inset * 2))
             b.setText("")
-    
-        # Apply stylesheet with proper circular styling
+
         b.setStyleSheet(f"""
             QPushButton#uepToolButton {{
                 background-color: qlineargradient(
@@ -586,17 +618,14 @@ class MainButton(QWidget):
                 outline: none;
             }}
         """)
-    
-        # Apply circular mask for perfect round shape
+
         try:
             b.setMask(QRegion(6, 6, size, size, QRegion.Ellipse))
         except Exception:
             pass
-    
+
         b.clicked.connect(callback)
         return b
-
-
 
     def mousePressEvent(self, e):
         self._cancel_auto_collapse()
@@ -664,7 +693,7 @@ class MainButton(QWidget):
         )
 
         if self.expanded:
-            # Animate option buttons outwards along an arc
+            # Option buttons
             for i, btn in enumerate(self.options):
                 btn.show()
                 anim = QPropertyAnimation(btn, b"pos")
@@ -683,9 +712,9 @@ class MainButton(QWidget):
                 anim.setStartValue(self.mainButton.pos())
                 anim.setEndValue(target)
                 anim.start()
-                btn._anim = anim  #keep a ref to avoid GC
+                btn._anim = anim
 
-            #tool buttons placement settings
+            # Tool buttons
             TOOL_ARC_RADIUS = 85
             ANGLE_CENTER = 9
             ANGLE_STEP = 40

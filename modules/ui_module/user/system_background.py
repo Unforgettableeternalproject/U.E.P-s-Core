@@ -84,6 +84,7 @@ class SystemBackgroundWindow(QMainWindow):
 
     def _wire_theme_manager(self):
         try:
+            theme_manager.apply_app()
             theme_manager.theme_changed.connect(self._on_theme_changed)
         except Exception as e:
             print(f"[SystemBackground] 無法連接 theme_changed: {e}")
@@ -874,7 +875,7 @@ class SystemBackgroundWindow(QMainWindow):
         return self._loose_group(group)
 
     def create_dialog_control_group(self):
-        """創建對話控制組"""
+        """創建對話設定組"""
         group = QGroupBox("對話設定")
         group.setObjectName("settingsGroup")
         layout = QFormLayout(group)

@@ -129,7 +129,7 @@ class SystemBackgroundWindow(QMainWindow):
     def create_header(self, parent_layout):
         header = QFrame()
         header.setObjectName("header")
-        header.setFixedHeight(92)
+        header.setFixedHeight(110)
 
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(30, 16, 30, 16)
@@ -141,7 +141,7 @@ class SystemBackgroundWindow(QMainWindow):
         title_label.setMinimumHeight(34)
         subtitle_label = QLabel("整合工作區與娛樂中心")
         subtitle_label.setObjectName("subtitle")
-        subtitle_label.setWordWrap(True)
+        subtitle_label.setWordWrap(False)
 
         title_container.addWidget(title_label)
         title_container.addWidget(subtitle_label)

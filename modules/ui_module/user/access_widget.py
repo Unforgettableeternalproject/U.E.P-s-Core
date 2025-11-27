@@ -252,8 +252,8 @@ class MainButton(QWidget):
 
         # Extra tool buttons (small circle icons around the main button)
         self.tool_buttons = []
-        self.TOOL_SIZE = 38
-
+        # Tool buttons: slightly smaller than option buttons and circular
+        self.TOOL_SIZE = 41
         tools = [
             ("🗣", "tool_1"),
             ("👂🏼", "tool_2"),
@@ -261,7 +261,6 @@ class MainButton(QWidget):
         ]
         for label, tid in tools:
             tb = self._make_tool_btn(self.TOOL_SIZE, label, partial(self._handle_option, tid))
-            self._add_shadow(tb)
             tb.hide()
             self.tool_buttons.append(tb)
 
@@ -302,63 +301,95 @@ class MainButton(QWidget):
         self.apply_theme(theme_manager.theme.value)
 
     def apply_theme(self, theme_name: str):
-        """
-        Update button styles based on the global theme (light/dark).
-        """
+        """Apply gray theme to opt buttons and tool buttons based on current Theme."""
+
+        #dark or light mode
         is_dark = (theme_name == Theme.DARK.value)
 
-        if is_dark:
-            grad = "qlineargradient(x1:0,y1:1,x2:1,y2:0, stop:0 rgba(40,40,44,1), stop:1 rgba(64,64,72,1))"
-            hover = "qlineargradient(x1:0,y1:1,x2:1,y2:0, stop:0 rgba(52,52,58,1), stop:1 rgba(80,80,88,1))"
-            press = "qlineargradient(x1:0,y1:1,x2:1,y2:0, stop:0 rgba(34,34,38,1), stop:1 rgba(56,56,64,1))"
-            fg = "#e6e6e6"
-            sh_col = QColor(0, 0, 0, 90)
-        else:
-            grad = "qlineargradient(x1:0,y1:1,x2:1,y2:0, stop:0 rgba(201,150,20,255), stop:1 rgba(0,67,173,255))"
-            hover = "qlineargradient(x1:0,y1:1,x2:1,y2:0, stop:0 rgba(201,150,20,191), stop:1 rgba(0,67,173,191))"
-            press = "qlineargradient(x1:0,y1:1,x2:1,y2:0, stop:0 rgba(201,150,20,230), stop:1 rgba(0,67,173,230))"
-            fg = "#ffffff"
-            sh_col = QColor(0, 0, 0, 60)
-
-        # Style main option buttons
+        #main opt buttons
         for b in self.options:
             sz = b.width()
+
+            if is_dark:
+                # Dark them
+                grad  = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
+                         "stop:0 rgba(60,60,60,180), stop:1 rgba(90,90,90,180))")
+                hover = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
+                         "stop:0 rgba(75,75,75,200), stop:1 rgba(105,105,105,200))")
+                press = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
+                         "stop:0 rgba(50,50,50,220), stop:1 rgba(80,80,80,220))")
+                fg = "#e6e6e6"
+                shadow = QColor(0, 0, 0, 100)
+            else:
+                # Light theme
+                grad  = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
+                         "stop:0 rgba(140,140,140,150), stop:1 rgba(110,110,110,150))")
+                hover = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
+                         "stop:0 rgba(155,155,155,170), stop:1 rgba(125,125,125,170))")
+                press = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
+                         "stop:0 rgba(120,120,120,190), stop:1 rgba(100,100,100,190))")
+                fg = "#ffffff"
+                shadow = QColor(0, 0, 0, 70)
+
             b.setStyleSheet(f"""
                 QPushButton {{
                     background-color: {grad};
-                    border-radius: {sz/2}px; color: {fg};
-                    padding: 0px; border: none;
+                    border-radius: {sz/2}px;
+                    color: {fg};
+                    padding: 0px;
+                    border: none;
                 }}
-                QPushButton:hover {{ background-color: {hover}; }}
-                QPushButton:pressed {{ background-color: {press}; }}
+                QPushButton:hover {{
+                    background-color: {hover};
+                }}
+                QPushButton:pressed {{
+                    background-color: {press};
+                }}
             """)
+
             eff = b.graphicsEffect()
             if isinstance(eff, QGraphicsDropShadowEffect):
-                eff.setColor(sh_col)
+                eff.setColor(shadow)
 
-        # Style smaller tool buttons
+        #tool buttons
         for tb in self.tool_buttons:
-            sz = tb.width()
+            sz = tb.width() 
+
             if is_dark:
-                tgrad  = "qlineargradient(x1:0,y1:1,x2:1,y2:0, stop:0 rgba(90,90,98,1), stop:1 rgba(110,110,120,1))"
-                thover = "qlineargradient(x1:0,y1:1,x2:1,y2:0, stop:0 rgba(104,104,112,1), stop:1 rgba(124,124,134,1))"
-                tpress = "qlineargradient(x1:0,y1:1,x2:1,y2:0, stop:0 rgba(84,84,92,1), stop:1 rgba(100,100,110,1))"
+                # Darker, semi-transparent greys for tool buttons in dark theme
+                tgrad  = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
+                          "stop:0 rgba(50,50,50,220), stop:1 rgba(36,36,36,200))")
+                thover = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
+                          "stop:0 rgba(64,64,64,230), stop:1 rgba(44,44,44,210))")
+                tpress = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
+                          "stop:0 rgba(40,40,40,240), stop:1 rgba(24,24,24,220))")
                 tfg    = "#e6e6e6"
             else:
-                tgrad  = "qlineargradient(x1:0,y1:1,x2:1,y2:0, stop:0 rgba(255,174,183,1), stop:1 rgba(255,174,183,1))"
-                thover = "qlineargradient(x1:0,y1:1,x2:1,y2:0, stop:0 rgba(255,174,183,0.75), stop:1 rgba(255,174,183,0.75))"
-                tpress = "qlineargradient(x1:0,y1:1,x2:1,y2:0, stop:0 rgba(255,174,183,0.9), stop:1 rgba(255,174,183,0.9))"
-                tfg    = "#ffffff"
+                # Slightly darker semi-transparent greys for tool buttons in light theme
+                tgrad  = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
+                          "stop:0 rgba(80,80,80,180), stop:1 rgba(56,56,56,160))")
+                thover = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
+                          "stop:0 rgba(96,96,96,200), stop:1 rgba(68,68,68,180))")
+                tpress = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
+                          "stop:0 rgba(70,70,70,220), stop:1 rgba(40,40,40,200))")
+                tfg    = "#f0f0f0"
 
             tb.setStyleSheet(f"""
                 QPushButton {{
                     background-color: {tgrad};
-                    border-radius: {sz/2}px; color: {tfg};
-                    padding: 0px; border: none;
+                    border-radius: {sz/2}px;   /* <- make it a circle */
+                    color: {tfg};
+                    padding: 0px;
+                    border: none;
                 }}
-                QPushButton:hover {{ background-color: {thover}; }}
-                QPushButton:pressed {{ background-color: {tpress}; }}
+                QPushButton:hover {{
+                    background-color: {thover};
+                }}
+                QPushButton:pressed {{
+                    background-color: {tpress};
+                }}
             """)
+
 
     def _place_circle(self):
         app = QApplication.instance()
@@ -478,38 +509,46 @@ class MainButton(QWidget):
         b.setCursor(Qt.PointingHandCursor)
 
         font = QFont("Segoe UI Emoji")
-        font.setPixelSize(int(size * 0.42))
+        # Slightly reduce emoji font so it fits neatly in small circular buttons
+        font.setPixelSize(max(8, int(size *0.6)))
         b.setFont(font)
 
+        # Ensure the tool buttons are visually circular and clipped to a circle
         b.setStyleSheet(f"""
             QPushButton {{
                 background-color: qlineargradient(
                     x1:0, y1:1, x2:1, y2:0,
-                    stop:0 rgba(255, 174, 183, 255),
-                    stop:1 rgba(255, 174, 183, 255)
+                    stop:0 rgba(40,40,40,200),
+                    stop:1 rgba(28,28,28,180)
                 );
                 border-radius: {size/2}px;
                 color: #fff;
-                padding: 0px;
+                padding:0px;
                 border: none;
             }}
             QPushButton:hover {{
                 background-color: qlineargradient(
                     x1:0, y1:1, x2:1, y2:0,
-                    stop:0 rgba(255, 174, 183, 191),
-                    stop:1 rgba(255, 174, 183, 191)
+                    stop:0 rgba(52,52,52,210),
+                    stop:1 rgba(34,34,34,190)
                 );
                 border: none;
             }}
             QPushButton:pressed {{
                 background-color: qlineargradient(
                     x1:0, y1:1, x2:1, y2:0,
-                    stop:0 rgba(255, 174, 183, 230),
-                    stop:1 rgba(255, 174, 183, 230)
+                    stop:0 rgba(36,36,36,220),
+                    stop:1 rgba(20,20,20,200)
                 );
                 border: none;
             }}
         """)
+        
+        # Clip the widget to an ellipse so it's truly round (visual and hit area)
+        try:
+            b.setMask(QRegion(0,0, size, size, QRegion.Ellipse))
+        except Exception:
+            pass
         b.clicked.connect(callback)
         return b
 
@@ -601,12 +640,12 @@ class MainButton(QWidget):
                 anim.setStartValue(self.mainButton.pos())
                 anim.setEndValue(target)
                 anim.start()
-                btn._anim = anim  # keep a ref to avoid GC
+                btn._anim = anim  #keep a ref to avoid GC
 
-            # Place tool buttons in a smaller arc
-            TOOL_ARC_RADIUS = 110
-            ANGLE_CENTER = 0
-            ANGLE_STEP = 35
+            #tool buttons placement settings
+            TOOL_ARC_RADIUS = 85
+            ANGLE_CENTER = 10
+            ANGLE_STEP = 40
 
             for i, tb in enumerate(self.tool_buttons):
                 tb.show()

@@ -82,7 +82,7 @@ class UEPStateProfileWidget(QWidget):
         scroll.setWidget(body)
 
         mainLayout = QVBoxLayout(body)
-        mainLayout.setContentsMargins(30, 30, 30, 30)
+        mainLayout.setContentsMargins(30, 18, 30, 18)
         mainLayout.setSpacing(20)
 
         self.cardFeels = self._make_card(" U.E.P now feels…", min_height=275)

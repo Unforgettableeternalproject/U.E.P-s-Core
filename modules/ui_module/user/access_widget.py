@@ -174,10 +174,6 @@ class MainButton(QWidget):
 
     @staticmethod
     def set_button_image_fit(button: QPushButton, img_path: str, margin: int = 0):
-        """
-        Load an image and fit it inside the button, keeping aspect ratio,
-        with an optional margin.
-        """
         d = min(button.width(), button.height())
         inner = max(0, d - 2 * margin)
 
@@ -245,14 +241,13 @@ class MainButton(QWidget):
             ("📊", "state_profile", self.color_opt3),
         ]
         for label, fid, col in opts:
-            b = self._make_opt_btn(60, label, col, partial(self._handle_option, fid))
+            b = self._make_opt_btn(75, label, col, partial(self._handle_option, fid))
             self._add_shadow(b)
             b.hide()
             self.options.append(b)
 
-        # Extra tool buttons (small circle icons around the main button)
+        #toolv size
         self.tool_buttons = []
-        # Tool buttons: slightly smaller than option buttons and circular
         self.TOOL_SIZE = 41
         tools = [
             ("🗣", "tool_1"),
@@ -301,14 +296,17 @@ class MainButton(QWidget):
         self.apply_theme(theme_manager.theme.value)
 
     def apply_theme(self, theme_name: str):
-        """Apply gray theme to opt buttons and tool buttons based on current Theme."""
-
         #dark or light mode
         is_dark = (theme_name == Theme.DARK.value)
 
         #main opt buttons
         for b in self.options:
-            sz = b.width()
+            sz = getattr(b, "_circle_size", 65)
+
+            try:
+                b.setMask(QRegion(0, 0, sz, sz, QRegion.Ellipse))
+            except Exception:
+                pass
 
             if is_dark:
                 # Dark them
@@ -465,6 +463,7 @@ class MainButton(QWidget):
     def _make_opt_btn(self, size, text, color, callback):
         b = DraggableButton(text, self)
         b.setFixedSize(size, size)
+        b._circle_size = size     
         b.setCursor(Qt.PointingHandCursor)
 
         font = QFont("Segoe UI Emoji")
@@ -500,8 +499,15 @@ class MainButton(QWidget):
                 border: none;
             }}
         """)
+        
+        try:
+            b.setMask(QRegion(0, 0, size, size, QRegion.Ellipse))
+        except Exception:
+            pass
+
         b.clicked.connect(callback)
         return b
+
 
     def _make_tool_btn(self, size, text, callback):
         b = DraggableButton(text, self)
@@ -644,7 +650,7 @@ class MainButton(QWidget):
 
             #tool buttons placement settings
             TOOL_ARC_RADIUS = 85
-            ANGLE_CENTER = 10
+            ANGLE_CENTER = 9
             ANGLE_STEP = 40
 
             for i, tb in enumerate(self.tool_buttons):

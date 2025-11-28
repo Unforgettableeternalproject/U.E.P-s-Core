@@ -1,403 +1,809 @@
-# user/access_widget.py
-"""
-User Access Widget
+﻿# access_widget.py
+import sys, math, os
+from functools import partial
 
-可拖拽擴展的使用者存取小工具
-提供快速操作和功能存取介面
-"""
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QPushButton, QVBoxLayout, QLabel,
+    QFrame, QDialog, QHBoxLayout, QGraphicsDropShadowEffect
+)
+from PyQt5.QtCore import Qt, QPropertyAnimation, QPoint, QEasingCurve, QTimer, pyqtSignal, QSize, QSettings, QRect
+from PyQt5.QtGui import QPainter, QColor, QBrush, QIcon, QPixmap, QFont, QRegion
 
-import os
-import sys
-from typing import Dict, Any, Optional
+from system_background import SystemBackgroundWindow
+from theme_manager import theme_manager, Theme
 
 try:
-    from PyQt5.QtWidgets import (QWidget, QLabel, QPushButton, QVBoxLayout, 
-                                QHBoxLayout, QFrame, QScrollArea, QGroupBox)
-    from PyQt5.QtCore import Qt, QPoint, QTimer, pyqtSignal, QSize
-    from PyQt5.QtGui import QPixmap, QPainter, QColor, QFont
-except ImportError:
-    QWidget = object
-    QLabel = object
-    QPushButton = object
-    QVBoxLayout = object
-    QHBoxLayout = object
-    QFrame = object
-    QScrollArea = object
-    QGroupBox = object
-    Qt = None
-    QPoint = None
-    QTimer = None
-    pyqtSignal = None
-    QSize = None
-    QPixmap = None
-    QPainter = None
-    QColor = None
-    QFont = None
+    from state_profile import StateProfileDialog
+    print("[access_widget] Using StateProfileDialog")
+except Exception as e:
+    print("[access_widget] Failed to import StateProfileDialog, using placeholder:", e)
 
-# 添加項目根目錄到 Python 路徑
-script_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.abspath(os.path.join(script_dir, '..', '..', '..'))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+    class StateProfileDialog(QDialog):
+        def __init__(self, controller=None, parent=None):
+            super().__init__(parent)
+            self.setWindowTitle("User Settings (placeholder)")
+            self.setMinimumSize(600, 420)
 
-# 嘗試導入設定視窗
+            lay = QVBoxLayout(self)
+            lay.addWidget(QLabel(
+                "Could not load StateProfileDialog.\n"
+                "Please check state_profile.py import."
+            ))
+            btn = QPushButton("Close")
+            btn.clicked.connect(self.close)
+            lay.addWidget(btn)
+
 try:
-    from .user_main_window import UserMainWindow
-except ImportError:
-    UserMainWindow = None
+    from user_settings import UserMainWindow
+    print("[access_widget] Using UserMainWindow from user_settings.py")
+except Exception as e:
+    print("[access_widget] Failed to import UserMainWindow, using placeholder:", e)
 
-from utils.debug_helper import debug_log, info_log, error_log, KEY_LEVEL, OPERATION_LEVEL, SYSTEM_LEVEL
+    class UserMainWindow(QDialog):
+        """Very simple placeholder if user_settings.py is missing or broken."""
+        def __init__(self, ui_module=None, parent=None):
+            super().__init__(parent)
+            self.setWindowTitle("User Settings (placeholder)")
+            self.setMinimumSize(600, 420)
+            lay = QVBoxLayout(self)
+            lay.addWidget(QLabel(
+                "Could not load UserMainWindow.\n"
+                "Please check user_settings.py import."
+            ))
+            btn = QPushButton("Close")
+            btn.clicked.connect(self.close)
+            lay.addWidget(btn)
+
+try:
+    from core.unified_controller import unified_controller
+except Exception:
+    unified_controller = None
 
 
-class UserAccessWidget(QWidget):
-    """
-    使用者存取小工具
-    
-    特性：
-    - 可拖拽移動
-    - 可摺疊/展開
-    - 提供快速功能按鈕
-    - 支持模組狀態顯示
-    """
-    
-    # 信號定義
-    function_requested = pyqtSignal(str) if pyqtSignal else None
-    position_changed = pyqtSignal(int, int) if pyqtSignal else None
-    expanded_changed = pyqtSignal(bool) if pyqtSignal else None
-    
-    def __init__(self, ui_module=None):
-        super().__init__()
-        self.ui_module = ui_module
-        self.is_expanded = False
-        self.is_dragging = False
-        self.drag_position = QPoint() if QPoint else None
-        
-        # 設定視窗實例
-        self.settings_window = None
-        
-        self.init_ui()
-        info_log("[UserAccessWidget] 使用者存取小工具初始化完成")
-    
-    def init_ui(self):
-        """初始化 UI"""
-        if not QWidget:
-            error_log("[UserAccessWidget] PyQt5 未安裝，無法初始化 UI")
+def info_log(*a): print(*a)
+def debug_log(*a): print(*a)
+def error_log(*a): print(*a)
+
+
+class ControllerBridge:
+    def __init__(self, controller):
+        self.controller = controller
+        #user settings window
+        self._user_settings_window = None
+        #system background window
+        self._bg_window = None
+        #state profile dialog
+        self._state_dialog = None
+
+    def dispatch(self, fid: str):
+        info_log(f"[ControllerBridge] dispatch:{fid}")
+        if fid == "user_settings":
+            return self.open_user_settings()
+        elif fid == "system_background":
+            return self.open_system_background()
+        elif fid == "state_profile":
+            return self.show_state_profile()
+        else:
+            info_log(f"[ControllerBridge] Unknown function id: {fid}")
+
+    def open_user_settings(self):
+        try:
+            if self._user_settings_window is None:
+                try:
+                    self._user_settings_window = UserMainWindow(ui_module=self.controller)
+                except TypeError:
+                    self._user_settings_window = UserMainWindow()
+
+                if hasattr(self._user_settings_window, "window_closed"):
+                    self._user_settings_window.window_closed.connect(
+                        lambda: setattr(self, "_user_settings_window", None)
+                    )
+
+            wnd = self._user_settings_window
+            if hasattr(wnd, "is_minimized_to_orb") and getattr(wnd, "is_minimized_to_orb", False):
+                if hasattr(wnd, "restore_from_orb"):
+                    wnd.restore_from_orb()
+                else:
+                    wnd.show()
+            else:
+                wnd.show()
+                wnd.raise_()
+                wnd.activateWindow()
+
+            info_log("[ControllerBridge] User settings (UserMainWindow) opened")
+            return {"success": True}
+
+        except Exception as e:
+            import traceback
+            error_log("[ControllerBridge] Failed to open user settings:", e)
+            traceback.print_exc()
+            return {"success": False, "error": str(e)}
+
+
+    def open_system_background(self):
+        try:
+            if self._bg_window is None or not self._bg_window.isVisible():
+                self._bg_window = SystemBackgroundWindow(ui_module=self.controller)
+                if hasattr(self._bg_window, "window_closed"):
+
+                    self._bg_window.window_closed.connect(
+                        lambda: setattr(self, "_bg_window", None)
+                    )
+            self._bg_window.show()
+            self._bg_window.raise_()
+            self._bg_window.activateWindow()
+            info_log("[ControllerBridge] SystemBackgroundWindow opened")
+            return {"success": True}
+        except Exception as e:
+            import traceback
+            error_log("[ControllerBridge] Failed to open SystemBackgroundWindow:", e)
+            traceback.print_exc()
+            return {"success": False, "error": str(e)}
+
+    def show_state_profile(self):
+        try:
+            dlg = None
+            try:
+                dlg = StateProfileDialog(controller=self.controller)
+            except TypeError:
+                try:
+                    dlg = StateProfileDialog(self.controller)
+                except TypeError:
+                    dlg = StateProfileDialog()
+
+            self._state_dialog = dlg
+
+            try:
+                dlg.panel.set_diary_texts(
+                    feels="Calm & focused. Latency low; mood +8%.",
+                    helped="Fixed UI bugs, refactored theme system, and arranged your study plan."
+                )
+                dlg.panel.set_random_tips(
+                    "Tip: Press Shift+Enter to insert a line. Stay hydrated and take breaks!"
+                )
+                guess = os.path.join(os.path.dirname(__file__), "arts", "U.E.P.png")
+                if os.path.exists(guess):
+                    dlg.panel.set_uep_image(guess)
+            except Exception as e:
+                error_log("[ControllerBridge] Failed to set default diary content:", e)
+
+            dlg.setAttribute(Qt.WA_DeleteOnClose, True)
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
+
+            info_log("[ControllerBridge] State profile opened")
+            return {"success": True}
+
+        except Exception as e:
+            import traceback
+            error_log("[ControllerBridge] Failed to open state profile:", e)
+            traceback.print_exc()
+            return {"success": False, "error": str(e)}
+
+
+
+class DraggableButton(QPushButton):
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self._drag_start = None
+        self._dragging = False
+        self._widget_offset = None
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._drag_start = e.globalPos()
+            self._widget_offset = self.window().frameGeometry().topLeft()
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        if self._drag_start and (e.buttons() & Qt.LeftButton):
+            if (e.globalPos() - self._drag_start).manhattanLength() > 6:
+                self._dragging = True
+            if self._dragging:
+                self.window().move(e.globalPos() - (self._drag_start - self._widget_offset))
+                e.accept()
+                return
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if self._dragging:
+            self._drag_start = None
+            self._dragging = False
+            e.accept()
             return
-            
-        # 設定窗口屬性
+        self._drag_start = None
+        self._dragging = False
+        super().mouseReleaseEvent(e)
+
+
+class MainButton(QWidget):
+
+    @staticmethod
+    def set_button_image_fit(button: QPushButton, img_path: str, margin: int = 0):
+        d = min(button.width(), button.height())
+        inner = max(0, d - 2 * margin)
+
+        pix = QPixmap(img_path)
+        if pix.isNull():
+            error_log(f"[MainButton] Image not found: {img_path}")
+            return
+
+        scaled = pix.scaled(inner, inner, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
+        button.setIcon(QIcon(scaled))
+        button.setIconSize(QSize(inner, inner))
+        button.setText("")
+        button.setFlat(True)
+        button.setFocusPolicy(Qt.NoFocus)
+
+        button.setStyleSheet(f"""
+            QPushButton, QPushButton:hover, QPushButton:pressed{{
+                background-color: transparent;
+                border: none;
+                padding: 0px;
+                border-radius: {d/2}px;
+            }}
+        """)
+        button.setMask(QRegion(0, 0, d, d, QRegion.Ellipse))
+
+    def __init__(self, bridge: ControllerBridge = None):
+        super().__init__()
+        self.bridge = bridge
+
         self.setWindowFlags(
             Qt.FramelessWindowHint |
             Qt.WindowStaysOnTopHint |
-            Qt.Tool
+            Qt.Tool |
+            Qt.NoDropShadowWindowHint
         )
-        
-        self.setFixedSize(60, 120)  # 摺疊狀態大小
-        self.setup_layout()
-        
-        # 設置初始位置（螢幕右上角）
-        try:
-            from PyQt5.QtWidgets import QApplication
-            if QApplication.instance():
-                screen = QApplication.instance().primaryScreen()
-                if screen:
-                    screen_geometry = screen.geometry()
-                    x = screen_geometry.width() - self.width() - 20
-                    y = 50
-                    self.move(x, y)
-                    info_log(f"[UserAccessWidget] 設置位置: ({x}, {y})")
-                else:
-                    # 備援位置
-                    self.move(1200, 50)
-                    info_log("[UserAccessWidget] 使用備援位置: (1200, 50)")
-            else:
-                # 備援位置
-                self.move(1200, 50)
-                info_log("[UserAccessWidget] 無QApplication實例，使用備援位置: (1200, 50)")
-        except Exception as e:
-            # 備援位置
-            self.move(1200, 50)
-            error_log(f"[UserAccessWidget] 位置設置異常，使用備援位置: {e}")
-        
-        info_log("[UserAccessWidget] UI 初始化完成")
-    
-    def setup_layout(self):
-        """設置布局"""
-        if not QVBoxLayout:
-            return
-            
-        # 主布局
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(5, 5, 5, 5)
-        main_layout.setSpacing(3)
-        
-        # 標題區域
-        self.title_label = QLabel("UEP")
-        if QFont:
-            self.title_label.setFont(QFont("Arial", 10, QFont.Bold))
-        self.title_label.setAlignment(Qt.AlignCenter)
-        self.title_label.setStyleSheet("""
-            QLabel {
-                background-color: #2d3142;
-                color: white;
-                border-radius: 3px;
-                padding: 2px;
-            }
-        """)
-        main_layout.addWidget(self.title_label)
-        
-        # 切換按鈕
-        self.toggle_button = QPushButton("▼")
-        self.toggle_button.setFixedSize(50, 25)
-        self.toggle_button.clicked.connect(self.toggle_expanded)
-        self.toggle_button.setStyleSheet("""
-            QPushButton {
-                background-color: #4f5d75;
-                color: white;
-                border: none;
-                border-radius: 3px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #6c7b95;
-            }
-        """)
-        main_layout.addWidget(self.toggle_button)
-        
-        # 功能按鈕容器
-        self.function_container = QFrame()
-        self.function_container.setVisible(False)
-        self.function_layout = QVBoxLayout(self.function_container)
-        self.function_layout.setContentsMargins(0, 0, 0, 0)
-        self.function_layout.setSpacing(2)
-        
-        # 新增功能按鈕
-        self.create_function_buttons()
-        
-        main_layout.addWidget(self.function_container)
-        main_layout.addStretch()
-        
-        # 設置整體樣式
-        self.setStyleSheet("""
-            QWidget {
-                background-color: rgba(255, 255, 255, 240);
-                border: 1px solid #ccc;
-                border-radius: 5px;
-            }
-        """)
-    
-    def create_function_buttons(self):
-        """建立功能按鈕"""
-        if not QPushButton:
-            return
-            
-        functions = [
-            ("📝", "show_note", "筆記"),
-            ("🎭", "ani_control", "動畫"),
-            ("🎬", "mov_control", "影片"),
-            ("⚙️", "settings", "設定"),
-            ("🔧", "debug", "除錯")
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.resize(400, 400)
+
+        self.color_opt1 = "#E3F2FD"
+        self.color_opt2 = "#E8F5E9"
+        self.color_opt3 = "#FFF3E0"
+
+        # Main round button in the center
+        self.mainButton = self._make_opt_btn(110, "", "transparent", self.toggleMenu)
+        self.set_button_image_fit(
+            self.mainButton,
+            r"C:\Users\Elisa Kao\Source\Repos\U.E.P-s-Core\arts\U.E.P.png",
+            margin=6
+        )
+        self.mainButton.move(
+            self.width() // 2 - self.mainButton.width() // 2,
+            self.height() // 2 - self.mainButton.height() // 2
+        )
+
+        # Option buttons (radial menu entries)
+        self.options = []
+        opts = [
+            ("⚙️", "user_settings", self.color_opt1),
+            ("🖼️", "system_background", self.color_opt2),
+            ("📊", "state_profile", self.color_opt3),
         ]
-        
-        for icon, func_id, tooltip in functions:
-            btn = QPushButton(icon)
-            btn.setFixedSize(50, 30)
-            btn.setToolTip(tooltip)
-            btn.clicked.connect(lambda checked, f=func_id: self.request_function(f))
-            btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #f8f9fa;
-                    border: 1px solid #dee2e6;
-                    border-radius: 3px;
-                    font-size: 14px;
-                }
-                QPushButton:hover {
-                    background-color: #e9ecef;
-                }
-                QPushButton:pressed {
-                    background-color: #dee2e6;
-                }
+        for label, fid, col in opts:
+            b = self._make_opt_btn(75, label, col, partial(self._handle_option, fid))
+            self._add_shadow(b)
+            b.hide()
+            self.options.append(b)
+
+        # Tool buttons
+        self.tool_buttons = []
+        self.TOOL_SIZE = 41
+        tools = [
+            ("🗣", "tool_1"),
+            ("👂🏼", "tool_2"),
+            ("😴", "tool_3"),
+        ]
+        for label, tid in tools:
+            tb = self._make_tool_btn(self.TOOL_SIZE, label, partial(self._handle_option, tid))
+            tb.hide()
+            self.tool_buttons.append(tb)
+
+        # Drag + hover state
+        self.dragPos = None
+        self.right_click_timer = QTimer(self)
+        self.right_click_timer.setSingleShot(True)
+        self.right_click_timer.timeout.connect(self._enable_right_drag)
+        self.right_drag_enabled = False
+
+        # Slide-in/slide-out state
+        self.is_pinned = False
+        self.is_fully_visible = False
+        self.original_position = None
+        self.visible_position = None
+
+        # Animation for sliding in/out from the right edge
+        self.slide_animation = QPropertyAnimation(self, b"pos")
+        self.slide_animation.setDuration(300)
+        self.slide_animation.setEasingCurve(QEasingCurve.OutCubic)
+
+        # Periodically check if cursor is hovering near the widget
+        self.hover_check_timer = QTimer(self)
+        self.hover_check_timer.timeout.connect(self._check_hover_state)
+        self.hover_check_timer.start(100)
+
+        # Menu expansion state
+        self.expanded = False
+        self._place_circle()
+
+        # Auto collapse timer for the radial menu
+        self.auto_collapse_timer = QTimer(self)
+        self.auto_collapse_timer.setSingleShot(True)
+        self.auto_collapse_timer.timeout.connect(self._collapse_menu_if_needed)
+
+        # React to theme changes from the central theme manager
+        theme_manager.theme_changed.connect(self.apply_theme)
+        self.apply_theme(theme_manager.theme.value)
+
+    def apply_theme(self, theme_name: str):
+        is_dark = (theme_name == Theme.DARK.value)
+
+        # Option buttons
+        for b in self.options:
+            sz = getattr(b, "_circle_size", 65)
+
+            try:
+                b.setMask(QRegion(0, 0, sz, sz, QRegion.Ellipse))
+            except Exception:
+                pass
+
+            if is_dark:
+                grad  = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
+                         "stop:0 rgba(60,60,60,180), stop:1 rgba(90,90,90,180))")
+                hover = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
+                         "stop:0 rgba(75,75,75,200), stop:1 rgba(105,105,105,200))")
+                press = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
+                         "stop:0 rgba(50,50,50,220), stop:1 rgba(80,80,80,220))")
+                fg = "#e6e6e6"
+                shadow = QColor(0, 0, 0, 100)
+            else:
+                grad  = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
+                         "stop:0 rgba(140,140,140,150), stop:1 rgba(110,110,110,150))")
+                hover = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
+                         "stop:0 rgba(155,155,155,170), stop:1 rgba(125,125,125,170))")
+                press = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
+                         "stop:0 rgba(120,120,120,190), stop:1 rgba(100,100,100,190))")
+                fg = "#ffffff"
+                shadow = QColor(0, 0, 0, 70)
+
+            b.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {grad};
+                    border-radius: {sz/2}px;
+                    color: {fg};
+                    padding: 0px;
+                    border: none;
+                }}
+                QPushButton:hover {{
+                    background-color: {hover};
+                }}
+                QPushButton:pressed {{
+                    background-color: {press};
+                }}
             """)
-            self.function_layout.addWidget(btn)
-    
-    def toggle_expanded(self):
-        """切換展開/摺疊狀態"""
-        self.is_expanded = not self.is_expanded
-        
-        if self.is_expanded:
-            # 展開
-            self.setFixedSize(60, 220)
-            self.function_container.setVisible(True)
-            self.toggle_button.setText("▲")
+
+            eff = b.graphicsEffect()
+            if isinstance(eff, QGraphicsDropShadowEffect):
+                eff.setColor(shadow)
+
+        # Tool buttons
+        for tb in self.tool_buttons:
+            sz = tb.width()
+
+            if is_dark:
+                tgrad  = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
+                          "stop:0 rgba(50,50,50,220), stop:1 rgba(36,36,36,200))")
+                thover = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
+                          "stop:0 rgba(64,64,64,230), stop:1 rgba(44,44,44,210))")
+                tpress = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
+                          "stop:0 rgba(40,40,40,240), stop:1 rgba(24,24,24,220))")
+                tfg    = "#e6e6e6"
+            else:
+                tgrad  = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
+                          "stop:0 rgba(80,80,80,180), stop:1 rgba(56,56,56,160))")
+                thover = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
+                          "stop:0 rgba(96,96,96,200), stop:1 rgba(68,68,68,180))")
+                tpress = ("qlineargradient(x1:0,y1:1,x2:1,y2:0, "
+                          "stop:0 rgba(70,70,70,220), stop:1 rgba(40,40,40,200))")
+                tfg    = "#f0f0f0"
+
+            tb.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {tgrad};
+                    border-radius: {sz/2}px;
+                    color: {tfg};
+                    padding: 0px;
+                    border: none;
+                }}
+                QPushButton:hover {{
+                    background-color: {thover};
+                }}
+                QPushButton:pressed {{
+                    background-color: {tpress};
+                }}
+            """)
+
+    def _place_circle(self):
+        app = QApplication.instance()
+        screen = app.primaryScreen()
+        if screen:
+            g = screen.availableGeometry()
+            x = g.right() - self.width() // 2
+            y = g.top() + 80
+            self.move(x, y)
+            self.original_position = QPoint(x, y)
+            self.visible_position = QPoint(g.right() - self.width() + 20, y)
         else:
-            # 摺疊
-            self.setFixedSize(60, 120)
-            self.function_container.setVisible(False)
-            self.toggle_button.setText("▼")
-        
-        if self.expanded_changed:
-            self.expanded_changed.emit(self.is_expanded)
-        
-        debug_log(OPERATION_LEVEL, f"[UserAccessWidget] 小工具{'展開' if self.is_expanded else '摺疊'}")
-    
-    def request_function(self, function_id: str):
-        """請求執行功能"""
-        debug_log(OPERATION_LEVEL, f"[UserAccessWidget] 請求功能: {function_id}")
-        
-        # 特殊處理設定功能
-        if function_id == "settings":
-            self.open_settings_window()
+            self.move(1200, 40)
+            self.original_position = QPoint(1200, 40)
+            self.visible_position = QPoint(1030, 40)
+
+    def _check_hover_state(self):
+        if self.is_pinned:
             return
-        
-        if self.function_requested:
-            self.function_requested.emit(function_id)
-        
-        # 透過 UI 模組轉發請求
-        if self.ui_module and hasattr(self.ui_module, 'handle_user_request'):
-            self.ui_module.handle_user_request({
-                'command': 'function_request',
-                'function': function_id,
-                'source': 'access_widget'
-            })
-    
-    def mousePressEvent(self, event):
-        """鼠標按下事件"""
-        if event.button() == Qt.LeftButton:
-            self.is_dragging = True
-            if QPoint:
-                self.drag_position = event.globalPos() - self.frameGeometry().topLeft()
-    
-    def mouseMoveEvent(self, event):
-        """鼠標移動事件"""
-        if self.is_dragging and event.buttons() == Qt.LeftButton:
-            if QPoint:
-                new_pos = event.globalPos() - self.drag_position
-                self.move(new_pos)
-                
-                if self.position_changed:
-                    self.position_changed.emit(new_pos.x(), new_pos.y())
-    
-    def mouseReleaseEvent(self, event):
-        """鼠標釋放事件"""
-        if event.button() == Qt.LeftButton:
-            self.is_dragging = False
-    
-    def update_module_status(self, module_id: str, status: str):
-        """更新模組狀態顯示"""
-        # 在標題欄或其他地方顯示模組狀態
-        if status == "active":
-            # 設置為綠色主題
-            debug_log(OPERATION_LEVEL, f"[UserAccessWidget] 模組 {module_id} 狀態: 活躍")
-            self.title_label.setStyleSheet("""
-                QLabel {
-                    background-color: #28a745;
-                    color: white;
-                    border-radius: 3px;
-                    padding: 2px;
-                }
-            """)
-        elif status == "error":
-            # 設置為紅色主題
-            debug_log(OPERATION_LEVEL, f"[UserAccessWidget] 模組 {module_id} 狀態: 錯誤")
-            self.title_label.setStyleSheet("""
-                QLabel {
-                    background-color: #dc3545;
-                    color: white;
-                    border-radius: 3px;
-                    padding: 2px;
-                }
-            """)
+
+        global_cursor_pos = QApplication.instance().desktop().cursor().pos()
+        widget_rect = self.geometry()
+
+        detection_margin = 10
+        expanded_rect = widget_rect.adjusted(
+            -detection_margin, -detection_margin,
+            detection_margin, detection_margin
+        )
+
+        is_hovering = expanded_rect.contains(global_cursor_pos)
+        if is_hovering and not self.is_fully_visible:
+            self._slide_to_visible()
+        elif not is_hovering and self.is_fully_visible and not self.is_pinned:
+            self._slide_to_hidden()
+            if self.expanded:
+                self._schedule_auto_collapse(900)
+
+    def _slide_to_visible(self):
+        if self.is_fully_visible or not self.visible_position:
+            return
+        self.slide_animation.stop()
+        self.slide_animation.setStartValue(self.pos())
+        self.slide_animation.setEndValue(self.visible_position)
+        self.slide_animation.start()
+        self.is_fully_visible = True
+
+    def _slide_to_hidden(self):
+        if not self.is_fully_visible or not self.original_position:
+            return
+        self.slide_animation.stop()
+        self.slide_animation.setStartValue(self.pos())
+        self.slide_animation.setEndValue(self.original_position)
+        self.slide_animation.start()
+        self.is_fully_visible = False
+
+    def _enable_right_drag(self):
+        if self.dragPos:
+            cursor = QApplication.instance().desktop().cursor().pos()
+            self.move(cursor - self.dragPos)
+
+    def _add_shadow(self, w: QWidget):
+        if sys.platform.startswith("win") and self.testAttribute(Qt.WA_TranslucentBackground):
+            return
+        eff = QGraphicsDropShadowEffect(self)
+        eff.setOffset(0, 6)
+        eff.setBlurRadius(20)
+        eff.setColor(QColor(0, 0, 0, 60))
+        w.setGraphicsEffect(eff)
+
+    def _make_opt_btn(self, size, text, color, callback):
+        b = DraggableButton(text, self)
+        b.setFixedSize(size, size)
+        b._circle_size = size
+        b.setCursor(Qt.PointingHandCursor)
+
+        b.setObjectName("uepOptButton")
+
+        if text:
+            pix = QPixmap(size, size)
+            pix.fill(Qt.transparent)
+            painter = QPainter(pix)
+            painter.setRenderHint(QPainter.Antialiasing)
+            emoji_font = QFont("Segoe UI Emoji")
+            emoji_font.setPixelSize(int(size * 0.4))
+            painter.setFont(emoji_font)
+            painter.setPen(QColor(255, 255, 255))
+            painter.drawText(QRect(0, 0, size, size), Qt.AlignCenter, text)
+            painter.end()
+            b.setIcon(QIcon(pix))
+            inset = max(2, int(size * 0.10))
+            b.setIconSize(QSize(size - inset * 2, size - inset * 2))
+            b.setText("")
+
+        b.setStyleSheet(f"""
+            QPushButton#uepOptButton {{
+                background-color: qlineargradient(
+                    x1:0, y1:1, x2:1, y2:0,
+                    stop:0 rgba(201,150,20,255),
+                    stop:1 rgba(0,67,173,255)
+                );
+                border-radius: {size/2}px;
+                color: #fff;
+                padding:0px;
+                border: none;
+                outline: none;
+            }}
+            QPushButton#uepOptButton:hover {{
+                background-color: qlineargradient(
+                    x1:0, y1:1, x2:1, y2:0,
+                    stop:0 rgba(201,150,20,191),
+                    stop:1 rgba(0,67,173,191)
+                );
+                border: none;
+                outline: none;
+            }}
+            QPushButton#uepOptButton:pressed {{
+                background-color: qlineargradient(
+                    x1:0, y1:1, x2:1, y2:0,
+                    stop:0 rgba(201,150,20,230),
+                    stop:1 rgba(0,67,173,230)
+                );
+                border: none;
+                outline: none;
+            }}
+        """)
+
+        try:
+            b.setMask(QRegion(0, 0, size, size, QRegion.Ellipse))
+        except Exception:
+            pass
+
+        b.clicked.connect(callback)
+        return b
+
+    def _make_tool_btn(self, size, text, callback):
+        b = DraggableButton(text, self)
+        b.setFixedSize(size, size)
+        b._circle_size = size
+        b.setCursor(Qt.PointingHandCursor)
+
+        b.setObjectName("uepToolButton")
+
+        if text:
+            pix = QPixmap(size, size)
+            pix.fill(Qt.transparent)
+            painter = QPainter(pix)
+            painter.setRenderHint(QPainter.Antialiasing)
+
+            emoji_font = QFont("Segoe UI Emoji")
+            emoji_font.setPixelSize(int(size * 0.5))
+            painter.setFont(emoji_font)
+            painter.setPen(QColor(255, 255, 255))
+
+            painter.drawText(QRect(0, 0, size, size), Qt.AlignCenter, text)
+            painter.end()
+
+            b.setIcon(QIcon(pix))
+            inset = max(2, int(size * 0.10))
+            b.setIconSize(QSize(size - inset * 2, size - inset * 2))
+            b.setText("")
+
+        b.setStyleSheet(f"""
+            QPushButton#uepToolButton {{
+                background-color: qlineargradient(
+                    x1:0, y1:1, x2:1, y2:0,
+                    stop:0 rgba(40,40,40,200),
+                    stop:1 rgba(28,28,28,180)
+                );
+                border-radius: {size/2}px;
+                color: #fff;
+                padding: 0px;
+                border: none;
+                outline: none;
+            }}
+            QPushButton#uepToolButton:hover {{
+                background-color: qlineargradient(
+                    x1:0, y1:1, x2:1, y2:0,
+                    stop:0 rgba(52,52,52,210),
+                    stop:1 rgba(34,34,34,190)
+                );
+                border: none;
+                outline: none;
+            }}
+            QPushButton#uepToolButton:pressed {{
+                background-color: qlineargradient(
+                    x1:0, y1:1, x2:1, y2:0,
+                    stop:0 rgba(36,36,36,220),
+                    stop:1 rgba(20,20,20,200)
+                );
+                border: none;
+                outline: none;
+            }}
+        """)
+
+        try:
+            b.setMask(QRegion(6, 6, size, size, QRegion.Ellipse))
+        except Exception:
+            pass
+
+        b.clicked.connect(callback)
+        return b
+
+    def mousePressEvent(self, e):
+        self._cancel_auto_collapse()
+
+        if e.button() == Qt.LeftButton:
+            if self.expanded and not any(
+                w.isVisible() and w.geometry().contains(e.pos())
+                for w in [self.mainButton] + self.options + self.tool_buttons
+            ):
+                self._collapse_menu()
+                e.accept()
+                return
+
+            if not any(btn.geometry().contains(e.pos()) for btn in [self.mainButton] + self.options):
+                self.dragPos = e.globalPos() - self.frameGeometry().topLeft()
+                self.setCursor(Qt.ClosedHandCursor)
+                e.accept()
+
+        elif e.button() == Qt.RightButton:
+            self.dragPos = e.globalPos() - self.frameGeometry().topLeft()
+            self.right_click_timer.start(500)
+            self.setCursor(Qt.ClosedHandCursor)
+            e.accept()
+
+    def mouseMoveEvent(self, e):
+        self._cancel_auto_collapse()
+
+        if (e.buttons() & Qt.LeftButton) and self.dragPos is not None:
+            self.move(e.globalPos() - self.dragPos)
+            e.accept()
+        elif (e.buttons() & Qt.RightButton) and self.dragPos is not None and self.right_drag_enabled:
+            self.move(e.globalPos() - self.dragPos)
+            e.accept()
+
+    def mouseReleaseEvent(self, e):
+        if e.button() in (Qt.LeftButton, Qt.RightButton):
+            self.dragPos = None
+            self.right_click_timer.stop()
+            self.right_drag_enabled = False
+            self.setCursor(Qt.ArrowCursor)
+            e.accept()
+            if self.expanded and not self.is_pinned:
+                self._schedule_auto_collapse(1600)
+
+    def enterEvent(self, event):
+        self._cancel_auto_collapse()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        if self.expanded and not self.is_pinned:
+            self._schedule_auto_collapse(900)
+        super().leaveEvent(event)
+
+    def toggleMenu(self):
+        self.expanded = not self.expanded
+        self.is_pinned = self.expanded
+
+        radius = 110
+        angle_start = 240
+        angle_step = 60
+
+        main_center = self.mainButton.pos() + QPoint(
+            self.mainButton.width() // 2,
+            self.mainButton.height() // 2
+        )
+
+        if self.expanded:
+            # Option buttons
+            for i, btn in enumerate(self.options):
+                btn.show()
+                anim = QPropertyAnimation(btn, b"pos")
+                anim.setDuration(320)
+                anim.setEasingCurve(QEasingCurve.OutBack)
+
+                angle_deg = angle_start - i * angle_step
+                angle_rad = math.radians(angle_deg)
+                dx = int(radius * math.cos(angle_rad))
+                dy = int(radius * math.sin(angle_rad))
+                target = main_center + QPoint(dx, dy) - QPoint(
+                    btn.width() // 2,
+                    btn.height() // 2
+                )
+
+                anim.setStartValue(self.mainButton.pos())
+                anim.setEndValue(target)
+                anim.start()
+                btn._anim = anim
+
+            # Tool buttons
+            TOOL_ARC_RADIUS = 85
+            ANGLE_CENTER = 9
+            ANGLE_STEP = 40
+
+            for i, tb in enumerate(self.tool_buttons):
+                tb.show()
+                anim = QPropertyAnimation(tb, b"pos")
+                anim.setDuration(260)
+                anim.setEasingCurve(QEasingCurve.OutBack)
+
+                anim.setStartValue(self.mainButton.pos())
+
+                angle_deg = ANGLE_CENTER + (i - 1) * ANGLE_STEP
+                angle_rad = math.radians(angle_deg)
+                dx = int(TOOL_ARC_RADIUS * math.cos(angle_rad))
+                dy = int(TOOL_ARC_RADIUS * math.sin(angle_rad))
+
+                target = main_center + QPoint(dx, dy) - QPoint(
+                    tb.width() // 2,
+                    tb.height() // 2
+                )
+                anim.setEndValue(target)
+                anim.start()
+                tb._anim = anim
+
+            self._cancel_auto_collapse()
+            self._schedule_auto_collapse(1800)
         else:
-            # 設置為默認主題
-            debug_log(OPERATION_LEVEL, f"[UserAccessWidget] 模組 {module_id} 狀態: {status}")
-            self.title_label.setStyleSheet("""
-                QLabel {
-                    background-color: #2d3142;
-                    color: white;
-                    border-radius: 3px;
-                    padding: 2px;
-                }
-            """)
-    
-    def open_settings_window(self):
-        """開啟設定視窗"""
-        try:
-            # 通過UI模組來管理設定視窗
-            if self.ui_module:
-                # 導入UI模組的介面類型
-                from modules.ui_module.ui_module import UIInterfaceType
-                result = self.ui_module.show_interface(UIInterfaceType.USER_MAIN_WINDOW)
-                if result.get("success"):
-                    info_log("[UserAccessWidget] 設定視窗已透過UI模組開啟")
-                else:
-                    error_log(f"[UserAccessWidget] 透過UI模組開啟設定視窗失敗: {result.get('error')}")
-            else:
-                # 備援方案：直接創建設定視窗
-                if not self.settings_window and UserMainWindow:
-                    self.settings_window = UserMainWindow()
-                
-                if self.settings_window:
-                    self.settings_window.show()
-                    self.settings_window.raise_()
-                    self.settings_window.activateWindow()
-                    info_log("[UserAccessWidget] 設定視窗已直接開啟")
-                else:
-                    error_log("[UserAccessWidget] 無法創建設定視窗")
-        except Exception as e:
-            error_log(f"[UserAccessWidget] 開啟設定視窗異常: {e}")
-    
-    def handle_request(self, data: dict) -> dict:
-        """處理來自 UI 模組的請求"""
-        try:
-            command = data.get('command')
-            
-            if command == 'show_widget':
-                self.show()
-                return {"success": True, "message": "存取小工具已顯示"}
-            
-            elif command == 'hide_widget':
-                self.hide()
-                return {"success": True, "message": "存取小工具已隱藏"}
-            
-            elif command == 'set_expanded':
-                expanded = data.get('expanded', True)
-                if expanded != self.is_expanded:
-                    self.toggle_expanded()
-                return {"success": True, "expanded": self.is_expanded}
-            
-            elif command == 'move_widget':
-                x = data.get('x', self.x())
-                y = data.get('y', self.y())
-                self.move(x, y)
-                return {"success": True, "position": {"x": x, "y": y}}
-            
-            elif command == 'update_status':
-                module_id = data.get('module_id')
-                status = data.get('status')
-                if module_id and status:
-                    self.update_module_status(module_id, status)
-                    return {"success": True, "updated": module_id}
-                return {"error": "需要提供 module_id 和 status 參數"}
-            
-            elif command == 'get_widget_info':
-                return {
-                    "position": {"x": self.x(), "y": self.y()},
-                    "size": {"width": self.width(), "height": self.height()},
-                    "visible": self.isVisible(),
-                    "expanded": self.is_expanded
-                }
-            
-            elif command == 'open_settings':
-                self.open_settings_window()
-                return {"success": True, "message": "設定視窗已開啟"}
-            
-            else:
-                return {"error": f"未知命令: {command}"}
-                
-        except Exception as e:
-            error_log(f"[UserAccessWidget] 處理請求異常: {e}")
-            return {"error": str(e)}
-    
-    def closeEvent(self, event):
-        """窗口關閉事件"""
-        info_log("[UserAccessWidget] 使用者存取小工具正在關閉")
-        event.accept()
+            self._collapse_menu()
+
+    def _handle_option(self, fid: str):
+        if self.bridge:
+            self.bridge.dispatch(fid)
+        if self.expanded:
+            self._collapse_menu()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), Qt.transparent)
+
+    def _schedule_auto_collapse(self, ms: int = 1800):
+        if self.is_pinned:
+            return
+        self.auto_collapse_timer.start(ms)
+
+    def _cancel_auto_collapse(self):
+        self.auto_collapse_timer.stop()
+
+    def _collapse_menu_if_needed(self):
+        if self.expanded and not self.is_pinned:
+            self._collapse_menu()
+
+    def _collapse_menu(self):
+        for btn in self.options:
+            anim = QPropertyAnimation(btn, b"pos")
+            anim.setDuration(260)
+            anim.setEasingCurve(QEasingCurve.InBack)
+            anim.setStartValue(btn.pos())
+            anim.setEndValue(self.mainButton.pos())
+            anim.finished.connect(btn.hide)
+            anim.start()
+            btn._anim = anim
+
+        for tb in self.tool_buttons:
+            anim = QPropertyAnimation(tb, b"pos")
+            anim.setDuration(220)
+            anim.setEasingCurve(QEasingCurve.InBack)
+            anim.setStartValue(tb.pos())
+            anim.setEndValue(self.mainButton.pos())
+            anim.finished.connect(tb.hide)
+            anim.start()
+            tb._anim = anim
+
+        self.expanded = False
+        self.is_pinned = False
+        self._cancel_auto_collapse()
+
+
+def main():
+    app = QApplication(sys.argv)
+    theme_manager.apply_app()
+    bridge = ControllerBridge(unified_controller)
+
+    circle = MainButton(bridge=bridge)
+    circle.show()
+
+    sys.exit(app.exec_())
+
+
+if __name__ == "__main__":
+    main()

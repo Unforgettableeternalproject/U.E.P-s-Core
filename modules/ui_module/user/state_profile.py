@@ -108,10 +108,13 @@ class UEPStateProfileWidget(QWidget):
         box = QGroupBox(title)
         box.setObjectName("settingsGroup")
 
+        #set QFont for title
         title_font = box.font()
         title_font.setPointSize(14)
         title_font.setBold(True)
         box.setFont(title_font)
+
+        box.setStyleSheet("font-size: 14pt; font-weight: 600;")
 
         box.setAlignment(Qt.AlignCenter)
 
@@ -135,9 +138,14 @@ class UEPStateProfileWidget(QWidget):
         lb.setObjectName("diaryText")
         lb.setWordWrap(True)
         lb.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
         f = QFont()
         f.setPointSize(point_size)
         lb.setFont(f)
+
+        #lock font-size, override theme manager settings
+        lb.setStyleSheet(f"font-size:{point_size}pt;")
+
         install_theme_hook(lb)
         return lb
 

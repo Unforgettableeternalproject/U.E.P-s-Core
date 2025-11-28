@@ -2122,3 +2122,15 @@
 
 ---
 
+### Simply some animation issues, and added throw. 11/28
+
+> Date: Fri, 28 Nov 2025 16:32:39 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `d00684d08ecb97d62891272353eac75bc7315ad8`
+
+---
+

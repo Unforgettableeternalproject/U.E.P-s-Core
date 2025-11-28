@@ -113,8 +113,14 @@ class CursorTrackingHandler(BaseHandler):
         except Exception as e:
             error_log(f"[CursorTrackingHandler] 處理滑鼠遠離事件失敗: {e}")
     
-    def _stop_tracking(self):
-        """停止追蹤並恢復狀態（內部方法，避免重複代碼）"""
+    def _stop_tracking(self, restore_idle: bool = True):
+        """
+        停止追蹤並恢復狀態（內部方法，避免重複代碼）
+        
+        Args:
+            restore_idle: 是否恢復 idle 動畫（預設 True）
+                         在拖動開始時應設為 False，避免動畫閃現
+        """
         if not self._is_turning_head:
             return
         
@@ -126,12 +132,32 @@ class CursorTrackingHandler(BaseHandler):
             ani_module.manager.exit_static_frame_mode()
             debug_log(3, "[CursorTrackingHandler] 已退出靜態幀模式")
         
+        # 清除追蹤動畫的優先度鎖定
+        if hasattr(self.coordinator, '_animation_priority'):
+            pm = self.coordinator._animation_priority
+            if pm.current_request and pm.current_request.source == "cursor_tracking":
+                # 通知動畫完成，清除優先度
+                if pm.current_request.name:
+                    pm.on_animation_finished(pm.current_request.name)
+                    debug_log(3, f"[CursorTrackingHandler] 已清除追蹤動畫優先度: {pm.current_request.name}")
+        
         # 恢復移動
         if hasattr(self.coordinator, 'resume_movement'):
             self.coordinator.resume_movement(self.CURSOR_TRACKING_REASON)
         
         # 恢復閒置動畫
-        self._restore_idle_animation()
+        if restore_idle and hasattr(self.coordinator, 'current_behavior_state'):
+            from ..core.state_machine import BehaviorState, MovementMode
+            if self.coordinator.current_behavior_state == BehaviorState.IDLE:
+                # 只在 IDLE 狀態下恢復閒置動畫
+                is_ground = (self.coordinator.movement_mode == MovementMode.GROUND)
+                idle_anim = self.coordinator.anim_query.get_idle_animation_for_mode(is_ground)
+                if hasattr(self.coordinator, '_trigger_anim'):
+                    self.coordinator._trigger_anim(idle_anim, {
+                        "loop": True,
+                        "force_restart": False
+                    }, source="cursor_tracking")
+                    debug_log(2, f"[CursorTrackingHandler] 已恢復閒置動畫: {idle_anim}")
     
     def update_turn_head_angle(self, angle: float):
         """
@@ -309,17 +335,32 @@ class CursorTrackingHandler(BaseHandler):
             return False
     
     def _restore_idle_animation(self):
-        """恢復閒置動畫"""
+        """恢復閒置動畫（僅在真正需要時）"""
         try:
-            # 鎖定移動一小段時間，讓轉頭動畫有時間回到閒置
-            self.coordinator.movement_locked_until = time.time() + 0.3
+            from ..core.animation_priority import AnimationPriority
             
-            # 恢復閒置動畫
+            # 不鎖定移動，讓行為系統自然接管
+            # 不強制播放閒置動畫，讓當前行為決定動畫
+            # 只需確保靜態幀模式已退出即可
+            
+            # 如果角色正在移動或有其他行為，不要強制閒置動畫
+            if hasattr(self.coordinator, 'current_behavior'):
+                current = self.coordinator.current_behavior
+                if current and current not in ['idle', None]:
+                    debug_log(2, f"[CursorTrackingHandler] 角色正在執行行為 {current}，跳過閒置動畫恢復")
+                    return
+            
+            # 只在真正閒置時才恢復閒置動畫（使用正常優先度）
             is_ground = (MovementMode and 
                         hasattr(self.coordinator, 'movement_mode') and 
                         self.coordinator.movement_mode == MovementMode.GROUND)
             idle_anim = self.coordinator.anim_query.get_idle_animation_for_mode(is_ground=bool(is_ground))
-            self.coordinator._trigger_anim(idle_anim, {"loop": True}, source="cursor_tracking")
+            self.coordinator._trigger_anim(
+                idle_anim, 
+                {"loop": True, "force_restart": False},  # 不強制重啟
+                source="cursor_tracking",
+                priority=AnimationPriority.IDLE_ANIMATION  # 使用正常優先度
+            )
             debug_log(2, f"[CursorTrackingHandler] 恢復閒置動畫: {idle_anim}")
             
         except Exception as e:

@@ -89,13 +89,13 @@ resources:
       loop: true
       zoom: 1.0
       offsetX: 0
-      offsetY: 0
+      offsetY: 95
     chilling_f:
       prefix: diamond_girl_listen_music_
       total_frames: 74
       frame_duration: 0.08
       loop: false
-      zoom: 0.93
+      zoom: 1.2
       offsetX: -75
       offsetY: 0
     f_to_g:
@@ -105,7 +105,7 @@ resources:
       loop: false
       zoom: 1.1
       offsetX: 200
-      offsetY: -50
+      offsetY: -75
     g_to_f:
       prefix: diamond_girl_standing_to_floating_
       total_frames: 38
@@ -202,6 +202,38 @@ resources:
       zoom: 1.15
       offsetX: 150
       offsetY: -100
+    swoop_left:
+      prefix: diamond_girl_swoop_l_
+      total_frames: 37
+      frame_duration: 0.03
+      loop: false
+      zoom: 1.5
+      offsetX: 0
+      offsetY: 0
+    swoop_right:
+      prefix: diamond_girl_swoop_r_
+      total_frames: 37
+      frame_duration: 0.05
+      loop: false
+      zoom: 1.5
+      offsetX: 0
+      offsetY: 0
+    swoop_left_end:
+      prefix: diamond_girl_swooping_to_standing_l_
+      total_frames: 37
+      frame_duration: 0.05
+      loop: false
+      zoom: 1.5
+      offsetX: 0
+      offsetY: 0
+    swoop_right_end:
+      prefix: diamond_girl_swooping_to_standing_
+      total_frames: 38
+      frame_duration: 0.05
+      loop: false
+      zoom: 1.5
+      offsetX: 0
+      offsetY: 0
     talk_ani2_f:
       prefix: diamond_girl_talk2_
       total_frames: 38
@@ -225,7 +257,7 @@ resources:
       loop: true
       zoom: 1.15
       offsetX: 0
-      offsetY: 85
+      offsetY: 95
     thinking_g:
       prefix: diamond_girl_thinking(std_
       total_frames: 118
@@ -233,7 +265,7 @@ resources:
       loop: true
       zoom: 1.15
       offsetX: 0
-      offsetY: 85
+      offsetY: 95
     thinking_f:
       prefix: diamond_girl_thinking(flt_
       total_frames: 118
@@ -247,15 +279,15 @@ resources:
       total_frames: 118
       frame_duration: 0.06
       loop: true
-      zoom: 1.0
+      zoom: 1.15
       offsetX: 0
-      offsetY: 0
+      offsetY: 95
     take_file_f:
       prefix: diamond_girl_take_file(floating_
       total_frames: 118
       frame_duration: 0.06
       loop: true
-      zoom: 1.0
+      zoom: 1.17
       offsetX: 0
       offsetY: 0
     tease2_f:
@@ -263,7 +295,7 @@ resources:
       total_frames: 55
       frame_duration: 0.07
       loop: false
-      zoom: 1.1
+      zoom: 1.2
       offsetX: 0
       offsetY: 0
     tease_f:
@@ -335,7 +367,7 @@ resources:
       total_frames: 45
       frame_duration: 0.07
       loop: false
-      zoom: 1.0
+      zoom: 0.9
       offsetX: 0
       offsetY: 0
   aliases:

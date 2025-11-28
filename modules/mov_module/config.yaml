@@ -39,8 +39,10 @@ boundaries:
   screen_padding: 20
   keep_on_screen: true
   bounce_off_edges: false
-  # 邊界處理模式（新增，參考 desktop_pet.py）
-  boundary_mode: "barrier"  # "barrier": 碰到邊界停止（預設）, "wrap": 從右邊出去左邊進來（循環模式）
+  # 邊界處理模式
+  # "barrier": 碰到邊界停止並轉向（預設）
+  # "wrap": 從一邊離開後從另一邊進入（循環模式，適合多螢幕或想要連續移動的場景）
+  boundary_mode: "wrap"
 
 timers:
   behavior_interval_ms: 100
@@ -159,6 +161,7 @@ animation_priority:
     special_move_behavior: SPECIAL_MOVE
     drag_handler: USER_INTERACTION
     throw_handler: USER_INTERACTION
+    file_handler: USER_INTERACTION  # 檔案拖曳接收
     cursor_tracking: CURSOR_TRACKING
     tease_system: TEASE
     easter_egg: EASTER_EGG

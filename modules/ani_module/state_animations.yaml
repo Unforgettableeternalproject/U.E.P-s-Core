@@ -27,6 +27,7 @@ LAYERS:
   # 觸發時機：INPUT_LAYER_COMPLETE 事件發布後
   processing:
     default: data_processing_f  # 一般思考動畫（會自動根據 movement_mode 切換 _f/_g）
+    file_workflow: take_file_f  # 檔案工作流動畫（當 WorkingContext 有 current_file_path 時）
   
   # 輸出層：系統回應階段
   # 觸發時機：PROCESSING_LAYER_COMPLETE 事件發布後

@@ -155,10 +155,14 @@ class DesktopPetApp(QWidget):
         # 滑鼠追蹤狀態
         self._cursor_was_near = False  # 上一幀是否在追蹤範圍內
         self._last_cursor_angle = None  # 上一次的角度
+        self._last_cursor_pos = None  # 上一次的滑鼠位置（用於檢測滑鼠移動）
+        self._cursor_idle_time = 0.0  # 滑鼠靜止時間
         self._cursor_tracking_config = {
             'watch_radius': 300,      # 追蹤半徑
             'watch_radius_out': 330,  # 離開半徑（防抖動）
             'angle_threshold': 10.0,  # 角度變化閾值（度），低於此值不觸發更新
+            'cursor_move_threshold': 5.0,  # 滑鼠移動閾值（像素），低於此值視為靜止
+            'max_idle_time': 2.0,  # 滑鼠靜止超過此時間後停止追蹤（秒）
         }
         
         # 渲染控制
@@ -368,15 +372,20 @@ class DesktopPetApp(QWidget):
             # 檢查是否為真正的 Qt 還是模擬版本
             if hasattr(self, 'setWindowFlags') and Qt:
                 # 真正的 PyQt5
+                from PyQt5.QtCore import Qt as QtCore
+                
                 self.setWindowFlags(
-                    Qt.FramelessWindowHint |           # 無邊框
-                    Qt.WindowStaysOnTopHint |          # 置頂
-                    Qt.Tool |                          # 工具窗口
-                    Qt.WA_TranslucentBackground        # 透明背景
+                    QtCore.FramelessWindowHint |           # 無邊框
+                    QtCore.WindowStaysOnTopHint |          # 置頂
+                    QtCore.Tool                            # 工具窗口
                 )
                 
-                self.setAttribute(Qt.WA_TranslucentBackground)
+                self.setAttribute(QtCore.WA_TranslucentBackground)
                 self.setFixedSize(*self.default_size)
+                
+                # 啟用拖放功能（必須在設置窗口標誌之後）
+                self.setAcceptDrops(True)
+                debug_log(2, "[DesktopPetApp] 已啟用檔案拖放功能")
                 
                 # 注意：不在這裡設置初始位置，由 MOV 模組的入場動畫控制
                 # self.center_on_screen()  # 已註解，避免覆蓋 MOV 模組的位置設定
@@ -1060,12 +1069,44 @@ class DesktopPetApp(QWidget):
             except ImportError:
                 return
             
+            # 檢查滑鼠是否移動
+            import math
+            cursor_moved = False
+            if self._last_cursor_pos is not None:
+                cursor_dx = cursor_pos.x() - self._last_cursor_pos.x()
+                cursor_dy = cursor_pos.y() - self._last_cursor_pos.y()
+                cursor_move_dist = math.hypot(cursor_dx, cursor_dy)
+                
+                move_threshold = self._cursor_tracking_config['cursor_move_threshold']
+                if cursor_move_dist >= move_threshold:
+                    cursor_moved = True
+                    self._cursor_idle_time = 0.0  # 重置靜止時間
+                else:
+                    self._cursor_idle_time += 0.1  # 增加靜止時間（timer 間隔為 100ms）
+            else:
+                # 第一次檢測，記錄位置
+                self._cursor_idle_time = 0.0
+            
+            self._last_cursor_pos = cursor_pos
+            
+            # 如果滑鼠靜止太久，停止追蹤
+            max_idle_time = self._cursor_tracking_config['max_idle_time']
+            if self._cursor_idle_time >= max_idle_time and self._cursor_was_near:
+                # 滑鼠靜止超時，離開追蹤模式
+                self.mov_module.handle_cursor_tracking_event({
+                    "type": "cursor_far",
+                    "distance": 0  # 距離不重要
+                })
+                self._cursor_was_near = False
+                self._last_cursor_angle = None
+                debug_log(2, f"[DesktopPetApp] 滑鼠靜止超時，停止追蹤")
+                return
+            
             # 計算角色中心
             pet_center_x = self.x() + self.width() // 2
             pet_center_y = self.y() + self.height() // 2
             
             # 計算距離
-            import math
             dx = cursor_pos.x() - pet_center_x
             dy = cursor_pos.y() - pet_center_y
             distance = math.hypot(dx, dy)
@@ -1084,16 +1125,21 @@ class DesktopPetApp(QWidget):
             if self._cursor_was_near:
                 is_near_now = distance <= watch_radius_out
             
-            # 檢測進入/離開事件
+            # 檢測進入/離開事件（只有在滑鼠移動時才觸發進入事件）
             if is_near_now and not self._cursor_was_near:
-                # 進入追蹤範圍
-                self.mov_module.handle_cursor_tracking_event({
-                    "type": "cursor_near",
-                    "distance": distance,
-                    "angle": angle_deg
-                })
-                self._last_cursor_angle = angle_deg
-                debug_log(2, f"[DesktopPetApp] 滑鼠進入追蹤範圍，距離={distance:.1f}px，角度={angle_deg:.1f}°")
+                # 進入追蹤範圍 - 但只有在滑鼠有移動時才觸發
+                if cursor_moved or self._cursor_idle_time < 0.5:  # 0.5秒內的移動視為有效
+                    self.mov_module.handle_cursor_tracking_event({
+                        "type": "cursor_near",
+                        "distance": distance,
+                        "angle": angle_deg
+                    })
+                    self._last_cursor_angle = angle_deg
+                    debug_log(2, f"[DesktopPetApp] 滑鼠進入追蹤範圍，距離={distance:.1f}px，角度={angle_deg:.1f}°")
+                else:
+                    # 滑鼠沒有移動，是 UEP 自己移動過來的，不觸發追蹤
+                    debug_log(3, f"[DesktopPetApp] 滑鼠未移動，跳過追蹤觸發（距離={distance:.1f}px）")
+                    return
                 
             elif not is_near_now and self._cursor_was_near:
                 # 離開追蹤範圍
@@ -1128,6 +1174,62 @@ class DesktopPetApp(QWidget):
             
             # 更新狀態
             self._cursor_was_near = is_near_now
-            
         except Exception as e:
-            error_log(f"[DesktopPetApp] 滑鼠追蹤檢查失敗: {e}")
+            error_log(f"[DesktopPetApp] 滑鼠追蹤處理失敗: {e}")
+    
+    # ==================== 檔案拖放事件處理 ====================
+    
+    def dragEnterEvent(self, event):
+        """拖放進入事件"""
+        try:
+            if event.mimeData().hasUrls():
+                # 檢查是否有檔案
+                urls = event.mimeData().urls()
+                if urls and urls[0].isLocalFile():
+                    event.accept()  # 接受事件
+                    debug_log(2, "[DesktopPetApp] 接受檔案拖放")
+                else:
+                    event.ignore()
+            else:
+                event.ignore()
+        except Exception as e:
+            error_log(f"[DesktopPetApp] 拖放進入事件處理失敗: {e}")
+            event.ignore()
+    
+    def dragMoveEvent(self, event):
+        """拖放移動事件"""
+        try:
+            if event.mimeData().hasUrls():
+                event.accept()  # 接受拖放移動
+            else:
+                event.ignore()
+        except Exception as e:
+            error_log(f"[DesktopPetApp] 拖放移動事件處理失敗: {e}")
+            event.ignore()
+    
+    def dropEvent(self, event):
+        """拖放釋放事件"""
+        try:
+            if event.mimeData().hasUrls():
+                urls = event.mimeData().urls()
+                if urls:
+                    file_path = urls[0].toLocalFile()
+                    info_log(f"[DesktopPetApp] 收到檔案拖放: {file_path}")
+                    
+                    # 直接調用 MOV 模組處理檔案拖放
+                    if self.mov_module and hasattr(self.mov_module, 'handle_ui_event'):
+                        from core.bases.frontend_base import UIEventType
+                        self.mov_module.handle_ui_event(UIEventType.FILE_DROP, {
+                            "file_path": file_path
+                        })
+                        event.acceptProposedAction()
+                        info_log(f"[DesktopPetApp] 已處理檔案拖放: {file_path}")
+                    else:
+                        error_log("[DesktopPetApp] MOV 模組未初始化，無法處理檔案拖放")
+                        event.ignore()
+            else:
+                event.ignore()
+                
+        except Exception as e:
+            error_log(f"[DesktopPetApp] 拖放釋放事件處理失敗: {e}")
+            event.ignore()

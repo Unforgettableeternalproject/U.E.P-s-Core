@@ -49,6 +49,9 @@ class BehaviorContext:
     # 時序
     now: float
 
+    # 選填的核心元件（有預設值）
+    anim_query: Optional[object] = None  # AnimationQuery instance
+    
     # 轉場臨時（供 TransitionBehavior 使用）
     transition_start_time: Optional[float] = None
     movement_locked_until: float = 0.0

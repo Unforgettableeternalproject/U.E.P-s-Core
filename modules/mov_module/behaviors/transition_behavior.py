@@ -96,13 +96,13 @@ class TransitionBehavior(BaseBehavior):
             ctx.target_velocity.x = 0.0
             ctx.target_velocity.y = 0.0
             
-            # 🔧 手動清除轉場動畫的優先度鎖定，避免阻擋後續動畫
-            # 因為轉場動畫可能還沒正確觸發 on_animation_finished
-            if hasattr(ctx, 'animation_priority'):
-                anim_name = "g_to_f" if self._target_mode == MovementMode.FLOAT else "f_to_g"
-                ctx.animation_priority.on_animation_finished(anim_name)
-                print(f"🔓 手動清除轉場動畫優先度: {anim_name}")
+            print(f"✅ 轉場完成: {self._target_mode.value}")
             
-            # 轉場後交給狀態機決定下一步
-            return ctx.sm.pick_next(ctx.movement_mode)
+            # 轉場後強制觸發正確的 idle 動畫（根據新模式）
+            is_ground = (self._target_mode == MovementMode.GROUND)
+            idle_anim = "stand_idle_g" if is_ground else "smile_idle_f"
+            ctx.trigger_anim(idle_anim, {"loop": True, "force_restart": True})
+            print(f"🎬 轉場後觸發 idle 動畫: {idle_anim}")
+            
+            return BehaviorState.IDLE
         return None

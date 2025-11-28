@@ -659,7 +659,7 @@ class AnimationTesterWindow(QMainWindow):
                     clip_info = self.ani_module.get_clip_info(self.current_animation)
                     if clip_info:
                         total = clip_info['frames']
-                        self.frame_label.setText(f"當前幀: {frame} / {total}")
+                        self.frame_label.setText(f"當前幀: {frame+1} / {total}")
             else:
                 # 動畫可能已結束
                 status = self.ani_module.get_current_animation_status()

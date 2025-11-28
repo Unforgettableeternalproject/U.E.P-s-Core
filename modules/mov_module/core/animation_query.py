@@ -317,27 +317,52 @@ class AnimationQueryHelper:
         """
         return "turn_head_g" if is_ground else "turn_head_f"
     
-    def get_easter_egg_animation(self, is_ground: bool = False) -> Optional[str]:
+    def get_easter_egg_animation(self, is_ground: bool = False, status_manager=None) -> Optional[str]:
         """
-        獲取彩蛋動畫（隨機選擇）
+        獲取彩蛋動畫（根據條件隨機選擇）
         
         Args:
             is_ground: 是否為地面模式
+            status_manager: 狀態管理器（用於檢查 boredom 等狀態）
             
         Returns:
             動畫名稱，如果沒有可用的彩蛋動畫則返回 None
+            
+        彩蛋條件：
+        - yawn_g: 需要 boredom > 0.6
+        - chilling_f: 需要最近播放過音樂（暫時跳過此條件檢查）
+        - dance_f, dance2_g: 無條件
         """
         import random
         
+        available = []
+        
         if is_ground:
             # 地面模式的彩蛋動畫
-            options = ["dance2_g", "yawn_g"]
+            # dance2_g: 無條件
+            if self.animation_exists("dance2_g"):
+                available.append("dance2_g")
+            
+            # yawn_g: 需要 boredom > 0.6
+            if self.animation_exists("yawn_g"):
+                if status_manager:
+                    try:
+                        status = status_manager.status
+                        boredom = status.get("boredom", 0.0)
+                        if boredom > 0.6:
+                            available.append("yawn_g")
+                    except Exception:
+                        pass  # 無法獲取狀態時跳過此動畫
         else:
             # 浮空模式的彩蛋動畫
-            options = ["dance_f", "chilling_f"]
-        
-        # 檢查動畫是否存在
-        available = [anim for anim in options if self.animation_exists(anim)]
+            # dance_f: 無條件
+            if self.animation_exists("dance_f"):
+                available.append("dance_f")
+            
+            # chilling_f: TODO - 需要檢查最近是否播放過音樂
+            # 目前暫時允許隨機出現
+            if self.animation_exists("chilling_f"):
+                available.append("chilling_f")
         
         if available:
             return random.choice(available)

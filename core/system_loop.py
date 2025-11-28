@@ -110,6 +110,13 @@ class SystemLoop:
                 handler_name="SystemLoop.workflow_input_completed"
             )
             
+            # 🔧 訂閱檔案輸入事件（拖放檔案到前端）
+            event_bus.subscribe(
+                SystemEvent.FILE_INPUT_PROVIDED,
+                self._on_file_input_provided,
+                handler_name="SystemLoop.file_input_provided"
+            )
+            
             # 訂閱處理層完成事件（追蹤輸出任務啟動）
             event_bus.subscribe(
                 SystemEvent.PROCESSING_LAYER_COMPLETE,
@@ -270,6 +277,72 @@ class SystemLoop:
             
         except Exception as e:
             error_log(f"[SystemLoop] 處理工作流輸入完成事件失敗: {e}")
+    
+    def _on_file_input_provided(self, event):
+        """
+        檔案輸入事件處理器（透過拖放提供檔案）
+        
+        當使用者透過前端拖放檔案時：
+        1. 檢查是否有工作流正在等待輸入
+        2. 提交檔案路徑到工作流
+        3. 啟動新的循環來繼續工作流執行
+        """
+        try:
+            from core.working_context import working_context_manager
+            from core.framework import core_framework
+            
+            file_path = event.data.get('file_path', '')
+            workflow_session_id = event.data.get('workflow_session_id', '')
+            step_id = event.data.get('step_id', '')
+            
+            if not file_path or not workflow_session_id:
+                error_log("[SystemLoop] 檔案輸入事件缺少必要參數")
+                return
+            
+            info_log(f"[SystemLoop] 📁 收到檔案輸入: {file_path} (workflow={workflow_session_id}, step={step_id})")
+            
+            # 獲取 SYS 模組並提交輸入到工作流
+            sys_module = core_framework.get_module('sys')
+            if not sys_module:
+                error_log("[SystemLoop] 無法獲取 SYS 模組")
+                return
+            
+            # 調用 provide_workflow_input 提交檔案路徑
+            result = sys_module.provide_workflow_input(
+                session_id=workflow_session_id,
+                user_input=file_path,
+                use_fallback=False
+            )
+            
+            if result.get('status') == 'success':
+                info_log(f"[SystemLoop] ✅ 檔案路徑已提交到工作流: {file_path}")
+                
+                # 重置工作流等待輸入旗標
+                working_context_manager.set_workflow_waiting_input(False)
+                
+                # 設置跳過輸入層旗標（下一循環跳過）
+                working_context_manager.set_skip_input_layer(True, reason="file_input_processing")
+                
+                # 🚀 啟動新的循環來繼續工作流執行
+                # 透過狀態佇列加入 WORK 狀態，觸發處理層和輸出層
+                from core.states.state_queue import get_state_queue_manager
+                from core.states.state_manager import UEPState
+                
+                state_queue = get_state_queue_manager()
+                state_queue.add_state(
+                    state=UEPState.WORK,
+                    trigger_content=f"File input: {file_path}",
+                    priority=10,
+                    source="file_input"
+                )
+                
+                debug_log(2, "[SystemLoop] 已加入 WORK 狀態到佇列，啟動工作流繼續執行")
+            else:
+                error_message = result.get('error', 'Unknown error')
+                error_log(f"[SystemLoop] 提交檔案路徑到工作流失敗: {error_message}")
+            
+        except Exception as e:
+            error_log(f"[SystemLoop] 處理檔案輸入事件失敗: {e}")
     
     def _get_current_gs_id(self) -> str:
         """

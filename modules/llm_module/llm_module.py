@@ -1748,9 +1748,59 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             prompt = workflow_context.get('prompt', '')
             
             # 🔧 檢測是否需要 LLM 解析
-            # 如果提示要求結構化數據（包含 JSON、task_name、priority 等關鍵字），
-            # 且用戶輸入是自然語言（不是 JSON 或 key=value 格式），
-            # 則不使用快速路徑，讓 LLM 解析
+            step_type = workflow_context.get('step_type', 'interactive')
+            
+            # 1. 檢查是否為確認步驟（需要 LLM 解析自然語言意圖）
+            is_confirmation_step = workflow_context.get('is_confirmation', False)
+            
+            if is_confirmation_step:
+                debug_log(2, f"[LLM] 快速路徑跳過：確認步驟需要 LLM 解析用戶意圖（step={step_id}, type={step_type}）")
+                return None
+            
+            # 1.5. 檢查輸入步驟是否明確標記需要 LLM 解析（如數字格式、日期格式等）
+            requires_llm_parsing = workflow_context.get('requires_llm_parsing', False)
+            
+            if requires_llm_parsing:
+                debug_log(2, f"[LLM] 快速路徑跳過：輸入步驟需要 LLM 解析格式（step={step_id}, type={step_type}）")
+                return None
+            
+            # 2. 檢查是否為選擇步驟（需要 LLM 解析自然語言選擇）
+            has_options = 'options' in workflow_context
+            
+            if has_options:
+                # 這是選擇步驟，檢查用戶輸入是否為明確的選項值
+                options = workflow_context.get('options', [])
+                labels = workflow_context.get('labels', None)
+                
+                # 檢查用戶輸入是否為明確的數字或精確匹配選項/標籤
+                user_input_lower = user_input.strip().lower()
+                is_explicit_choice = False
+                
+                # 檢查是否為數字索引
+                if user_input.strip().isdigit():
+                    index = int(user_input.strip()) - 1
+                    if 0 <= index < len(options):
+                        is_explicit_choice = True
+                
+                # 檢查是否精確匹配選項
+                if not is_explicit_choice:
+                    for option in options:
+                        if str(option).lower() == user_input_lower:
+                            is_explicit_choice = True
+                            break
+                
+                # 檢查是否精確匹配標籤
+                if not is_explicit_choice and labels:
+                    for label in labels:
+                        if str(label).lower() == user_input_lower:
+                            is_explicit_choice = True
+                            break
+                
+                if not is_explicit_choice:
+                    debug_log(2, f"[LLM] 快速路徑跳過：選擇步驟需要 LLM 解析自然語言（step={step_id}, input='{user_input[:20]}', options={options}）")
+                    return None
+            
+            # 3. 檢查是否需要結構化數據解析
             requires_structured_data = any(keyword in prompt.lower() for keyword in [
                 'json', 'task_name', 'task_description', 'priority', 'deadline'
             ])
@@ -1761,7 +1811,7 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             )
             
             if requires_structured_data and is_natural_language:
-                debug_log(2, f"[LLM] 快速路徑跳過：輸入需要 LLM 解析（step={step_id}）")
+                debug_log(2, f"[LLM] 快速路徑跳過：輸入需要 LLM 結構化解析（step={step_id}）")
                 return None  # 返回 None 讓正常流程處理
             
             info_log(f"[LLM] 快速路徑：直接提交工作流輸入 '{user_input}' 到步驟 {step_id}")

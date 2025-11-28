@@ -29,6 +29,10 @@ class AnimationManager:
         self.request_cooldown = request_cooldown
         self._pending: Optional[tuple[str, dict]] = None  # 單槽
         self.static_frame_mode: bool = False  # 靜態幀模式：不自動更新幀
+        # 保存最後的 zoom 和 offset 值（動畫結束後保持）
+        self._last_zoom: float = 1.0
+        self._last_offset_x: int = 0
+        self._last_offset_y: int = 0
         # 事件回呼
         self.on_start: Optional[Callable[[str], None]] = None
         self.on_frame: Optional[Callable[[str, int], None]] = None
@@ -75,6 +79,10 @@ class AnimationManager:
         if not self.current:
             return
         finished = self.current.name
+        # 保存當前動畫的 zoom/offset 值
+        self._last_zoom = self.current.zoom
+        self._last_offset_x = self.current.offset_x
+        self._last_offset_y = self.current.offset_y
         self.state = AnimPlayState.STOPPED
         self.current = None
         if self.on_finish:
@@ -113,6 +121,10 @@ class AnimationManager:
         while now - self.current.last_frame_time >= dt:
             self.current.last_frame_time += dt
             self.current.current_frame += 1
+            # 每幀顯示時更新保存的 zoom/offset 值（確保與當前顯示一致）
+            self._last_zoom = self.current.zoom
+            self._last_offset_x = self.current.offset_x
+            self._last_offset_y = self.current.offset_y
             if self.on_frame:
                 try: self.on_frame(self.current.name, self.current.current_frame)
                 except Exception: pass
@@ -124,6 +136,10 @@ class AnimationManager:
                         except Exception: pass
                 else:
                     finished = self.current.name
+                    # 保存動畫的 zoom/offset 值
+                    self._last_zoom = self.current.zoom
+                    self._last_offset_x = self.current.offset_x
+                    self._last_offset_y = self.current.offset_y
                     self.state = AnimPlayState.FINISHED
                     self.current = None
                     if self.on_finish:
@@ -155,14 +171,28 @@ class AnimationManager:
         return {"success": True, "clip": clip_name, "frame": self.current.current_frame}
     
     def exit_static_frame_mode(self):
-        """退出靜態幀模式並停止當前動畫"""
+        """退出靜態幀模式"""
         self.static_frame_mode = False
-        # 停止當前動畫，避免繼續播放完
-        self.stop()
+        # 直接中斷動畫，不觸發 on_finish 回調
+        if self.current:
+            self._last_zoom = self.current.zoom
+            self._last_offset_x = self.current.offset_x
+            self._last_offset_y = self.current.offset_y
+        self.state = AnimPlayState.STOPPED
+        self.current = None
     
     def get_status(self) -> Dict:
         if not self.current:
-            return {"name": None, "is_playing": False, "loop": False, "state": self.state.value}
+            # 動畫結束後保持最後的 zoom/offset 值
+            return {
+                "name": None,
+                "is_playing": False,
+                "loop": False,
+                "state": self.state.value,
+                "zoom": self._last_zoom,
+                "offset_x": self._last_offset_x,
+                "offset_y": self._last_offset_y,
+            }
         return {
             "name": self.current.name,
             "frame": self.current.current_frame,
@@ -187,6 +217,8 @@ class AnimationManager:
         self.state = AnimPlayState.PLAYING
         self.last_request_name = clip.name
         self.last_request_time = now
+        # 注意: _last_zoom 不在這裡更新，而是在第一幀顯示時更新
+        # 這樣可以避免動畫切換時的短暫縮放問題
         if self.on_start:
             try: self.on_start(clip.name)
             except Exception: pass

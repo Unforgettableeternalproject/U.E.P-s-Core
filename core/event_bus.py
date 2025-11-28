@@ -53,6 +53,7 @@ class SystemEvent(Enum):
     # 工作流輸入控制事件
     WORKFLOW_REQUIRES_INPUT = "workflow_requires_input"    # 工作流需要使用者輸入
     WORKFLOW_INPUT_COMPLETED = "workflow_input_completed"  # 工作流輸入完成
+    FILE_INPUT_PROVIDED = "file_input_provided"            # 🔧 檔案輸入已提供（透過拖放）
     
     # ✅ 工作流步驟事件（用於 LLM-SYS 協作）
     WORKFLOW_STEP_COMPLETED = "workflow_step_completed"    # 工作流步驟完成，等待 LLM 審核

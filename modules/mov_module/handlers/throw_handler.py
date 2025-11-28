@@ -44,14 +44,16 @@ class ThrowHandler(BaseHandler):
         self.throw_threshold_speed = float(config.get("throw_threshold_speed", 800.0))
         self.throw_threshold_dist = float(config.get("throw_threshold_dist", 30.0))
         self.max_throw_speed = float(config.get("max_throw_speed", 80.0))
+        self.horizontal_threshold = float(config.get("horizontal_throw_threshold", 15.0))  # 水平速度門檻
         
         # 投擲後行為
         self._post_throw_tease = False
         self._post_throw_time = 0.0
         self._post_throw_delay = float(config.get("throw_post_tease_delay", 3.0))
         
-        # 🔧 投擲動畫超時保護
-        self._throw_anim_name: Optional[str] = None
+        # 🔧 投擲動畫追蹤
+        self._throw_direction: Optional[str] = None  # 'left', 'right', 'vertical'
+        self._is_in_throw_animation = False  # 是否正在播放投擲動畫
         self._throw_anim_deadline: float = 0.0
         
         info_log(f"[{self.__class__.__name__}] 初始化: 速度門檻={self.throw_threshold_speed}, "
@@ -119,39 +121,67 @@ class ThrowHandler(BaseHandler):
         if hasattr(self.coordinator, 'movement_mode'):
             self.coordinator.movement_mode = MovementMode.THROWN
         
-        # 限制最大投擲速度
-        if speed > self.max_throw_speed:
-            scale = self.max_throw_speed / speed
-            vx *= scale
-            vy *= scale
-            speed = self.max_throw_speed
+        # 分別限制水平和垂直速度（避免垂直投擲過快）
+        max_vx = 50.0  # 水平最大速度
+        max_vy = 30.0  # 垂直最大速度（向上為負）
+        
+        # 限制水平速度
+        if abs(vx) > max_vx:
+            vx = max_vx if vx > 0 else -max_vx
+            debug_log(2, f"[{self.__class__.__name__}] 水平速度限制到 ±{max_vx}")
+        
+        # 限制垂直速度（向上為負值）
+        if vy < -max_vy:  # 向上投擲
+            vy = -max_vy
+            debug_log(2, f"[{self.__class__.__name__}] 向上速度限制到 -{max_vy}")
+        elif vy > max_vy:  # 向下投擲（不太可能）
+            vy = max_vy
+        
+        # 重新計算總速度
+        speed = math.hypot(vx, vy)
         
         # 設置投擲速度
         if hasattr(self.coordinator, 'velocity'):
             self.coordinator.velocity.x = vx
             self.coordinator.velocity.y = vy
         
-        # **投擲動畫處理**
-        # 目前沒有專用 throw 動畫，使用 struggle 作為 fallback
-        # 關鍵：設置 loop=False，讓 struggle 播放一次後停止（避免卡住）
-        # 使用 immediate_interrupt 強制結束拖曳時的 loop=True struggle
+        # **判斷投擲方向**
+        abs_vx = abs(vx)
+        debug_log(1, f"[{self.__class__.__name__}] 投擲方向判斷: abs_vx={abs_vx:.1f}, threshold={self.horizontal_threshold}")
+        
+        if abs_vx > self.horizontal_threshold:
+            # 水平投擲：使用 swoop 動畫
+            self._throw_direction = 'left' if vx < 0 else 'right'
+            throw_anim = f"swoop_{self._throw_direction}"
+            debug_log(1, f"[{self.__class__.__name__}] 水平投擲 → {throw_anim}")
+        else:
+            # 垂直投擲：使用 struggle 動畫
+            self._throw_direction = 'vertical'
+            throw_anim = "struggle"
+            debug_log(1, f"[{self.__class__.__name__}] 垂直投擲 → {throw_anim}")
+        
+        # **播放投擲動畫**
         if hasattr(self.coordinator, '_trigger_anim'):
-            # 檢查是否有 throw 動畫（未來擴展）
-            throw_anim = "throw" if self._has_animation("throw") else "struggle"
+            from ..core.animation_priority import AnimationPriority
+            
+            # 檢查動畫是否存在，否則 fallback 到 struggle
+            if not self._has_animation(throw_anim):
+                debug_log(1, f"[{self.__class__.__name__}] ⚠️ 動畫 {throw_anim} 不存在，使用 struggle")
+                throw_anim = "struggle"
+                self._throw_direction = 'vertical'
+            
+            self._is_in_throw_animation = True
+            debug_log(1, f"[{self.__class__.__name__}] 🎬 觸發投擲動畫: {throw_anim} (方向={self._throw_direction})")
+            
             self.coordinator._trigger_anim(
                 throw_anim, 
-                {"loop": False, "immediate_interrupt": True, "force_restart": True}, 
-                source="throw_handler"
+                {
+                    "loop": False,  # 只播放一次,自動停在最後一幀
+                    "force_restart": True,
+                }, 
+                source="throw_handler",
+                priority=AnimationPriority.USER_INTERACTION
             )
-            if throw_anim == "struggle":
-                debug_log(2, f"[{self.__class__.__name__}] 使用 struggle 作為投擲動畫 (loop=False)")
-            
-            # 🔧 設置手動超時保護（防止動畫卡住）
-            # 投擲動畫應該在 2 秒內完成，超時後強制清除優先度
-            import time
-            self._throw_anim_name = throw_anim
-            self._throw_anim_deadline = time.time() + 2.0
-            debug_log(2, f"[{self.__class__.__name__}] 投擲動畫超時保護已啟動 (2.0s)")
         
         info_log(f"[{self.__class__.__name__}] 觸發投擲！速度={speed:.1f} (vx={vx:.1f}, vy={vy:.1f})")
     
@@ -169,16 +199,41 @@ class ThrowHandler(BaseHandler):
         處理投擲落地
         
         應該在 coordinator 檢測到投擲結束時調用
-        
-        Note:
-            暂時禁用 tease 動畫，等待未來 throw 專用動畫實現
+        播放對應的落地動畫 (swoop_*_end)
         """
-        # 暂時禁用 tease 動畫
-        # now = time.time()
-        # self._post_throw_tease = True
-        # self._post_throw_time = now + self._post_throw_delay
+        if not self._is_in_throw_animation:
+            return
         
-        debug_log(1, f"[{self.__class__.__name__}] 投擲落地（tease 動畫已禁用）")
+        # 播放落地動畫
+        if hasattr(self.coordinator, '_trigger_anim'):
+            from ..core.animation_priority import AnimationPriority
+            
+            # 根據投擲方向選擇落地動畫
+            if self._throw_direction in ['left', 'right']:
+                land_anim = f"swoop_{self._throw_direction}_end"
+                
+                # 檢查動畫是否存在
+                if self._has_animation(land_anim):
+                    self.coordinator._trigger_anim(
+                        land_anim,
+                        {
+                            "loop": False,
+                            "force_restart": True,
+                            "await_finish": True,  # 等待落地動畫完成
+                            "max_wait": 1.0,  # 最多等待1秒
+                        },
+                        source="throw_handler",
+                        priority=AnimationPriority.USER_INTERACTION
+                    )
+                    debug_log(1, f"[{self.__class__.__name__}] 投擲落地動畫: {land_anim}")
+                else:
+                    debug_log(1, f"[{self.__class__.__name__}] 落地動畫 {land_anim} 不存在")
+                    self._is_in_throw_animation = False
+            else:
+                # struggle 投擲沒有專門的落地動畫
+                self._is_in_throw_animation = False
+        
+        # 不重置 _throw_direction，讓它保持到動畫完成
     
     def update(self, now: float):
         """
@@ -187,18 +242,6 @@ class ThrowHandler(BaseHandler):
         Args:
             now: 當前時間
         """
-        # 🔧 檢查投擲動畫超時（防止卡住）
-        if self._throw_anim_name and self._throw_anim_deadline > 0:
-            if now > self._throw_anim_deadline:
-                debug_log(1, f"[{self.__class__.__name__}] ⚠️ 投擲動畫 {self._throw_anim_name} 超時，強制清除優先度")
-                # 手動清除優先度管理器中的動畫請求
-                if hasattr(self.coordinator, '_animation_priority'):
-                    self.coordinator._animation_priority.on_animation_finished(self._throw_anim_name)
-                    debug_log(2, f"[{self.__class__.__name__}] 已手動清除動畫優先度: {self._throw_anim_name}")
-                # 清除超時狀態
-                self._throw_anim_name = None
-                self._throw_anim_deadline = 0.0
-        
         # 檢查投擲後調皮時間
         if self._post_throw_tease and now >= self._post_throw_time:
             self._execute_post_throw_tease()
@@ -237,6 +280,24 @@ class ThrowHandler(BaseHandler):
     def is_waiting_for_tease(self) -> bool:
         """是否正在等待播放調皮動畫"""
         return self._post_throw_tease
+    
+    @property
+    def is_in_throw_animation(self) -> bool:
+        """是否正在播放投擲動畫序列"""
+        return self._is_in_throw_animation
+    
+    def on_throw_animation_complete(self):
+        """投擲動畫序列完成（落地動畫播完）"""
+        debug_log(1, f"[{self.__class__.__name__}] 投擲動畫序列完成")
+        self._is_in_throw_animation = False
+        self._throw_direction = None
+    
+    def cancel_throw(self):
+        """取消投擲動畫（例如被拖曳打斷）"""
+        if self._is_in_throw_animation:
+            debug_log(1, f"[{self.__class__.__name__}] 取消投擲動畫")
+            self._is_in_throw_animation = False
+            self._throw_direction = None
     
     def cancel_tease(self):
         """取消投擲後的調皮行為（例如被拖曳打斷）"""

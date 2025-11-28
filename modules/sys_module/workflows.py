@@ -577,14 +577,31 @@ class WorkflowEngine:
                         if next_step.step_type == "interactive":  # ✅ 修正：使用字符串而非枚舉
                             debug_log(2, f"[WorkflowEngine] 設置工作流等待輸入標記: {next_step_id}")
                             working_context_manager.set_workflow_waiting_input(True)
-                            working_context_manager.set_context_data('workflow_input_context', {
+                            
+                            # 構建上下文信息（包含選項、標籤等）
+                            context_data = {
                                 'workflow_session_id': self.session.session_id,
                                 'workflow_type': self.definition.workflow_type,
                                 'step_id': next_step.id,
                                 'step_type': next_step.step_type,
                                 'optional': getattr(next_step, 'optional', False),
                                 'prompt': next_step.get_prompt()
-                            })
+                            }
+                            
+                            # 🔧 添加選擇步驟的選項信息
+                            if hasattr(next_step, 'options'):
+                                context_data['options'] = next_step.options
+                                context_data['labels'] = getattr(next_step, 'labels', None)
+                            
+                            # 🔧 添加確認步驟標記
+                            if hasattr(next_step, 'is_confirmation'):
+                                context_data['is_confirmation'] = True
+                            
+                            # 🔧 添加輸入步驟的 LLM 解析需求標記
+                            if hasattr(next_step, 'requires_llm_parsing'):
+                                context_data['requires_llm_parsing'] = next_step.requires_llm_parsing
+                            
+                            working_context_manager.set_context_data('workflow_input_context', context_data)
                         
                         return StepResult.success(
                             "步驟已批准，等待用戶輸入",
@@ -610,6 +627,16 @@ class WorkflowEngine:
                     else:
                         # 當前步驟不是自動步驟，直接完成
                         self.session.add_data("current_step", None)
+                        
+                        # 清理檔案狀態
+                        try:
+                            from core.working_context import working_context_manager
+                            if working_context_manager.get_context_data('current_file_path'):
+                                working_context_manager.set_context_data('current_file_path', None)
+                                debug_log(2, f"[WorkflowEngine] 已清理檔案狀態")
+                        except Exception as e:
+                            debug_log(3, f"[WorkflowEngine] 清理檔案狀態失敗: {e}")
+                        
                         return StepResult.complete_workflow("工作流程已完成")
             
             return result
@@ -820,6 +847,15 @@ class WorkflowEngine:
         
         current_step = self.get_current_step()
         if not current_step:
+            # 清理檔案狀態
+            try:
+                from core.working_context import working_context_manager
+                if working_context_manager.get_context_data('current_file_path'):
+                    working_context_manager.set_context_data('current_file_path', None)
+                    debug_log(2, f"[WorkflowEngine] 已清理檔案狀態")
+            except Exception as e:
+                debug_log(3, f"[WorkflowEngine] 清理檔案狀態失敗: {e}")
+            
             return StepResult.complete_workflow("工作流程已完成")
         
         # 階段三：如果是 Interactive 步驟且沒有提供輸入，檢查是否可以跳過
@@ -851,14 +887,31 @@ class WorkflowEngine:
                     
                     # ✅ 設置 working_context，標記工作流正在等待輸入
                     working_context_manager.set_workflow_waiting_input(True)
-                    working_context_manager.set_context_data('workflow_input_context', {
+                    
+                    # 構建上下文信息（包含選項、標籤等）
+                    context_data = {
                         'workflow_session_id': self.session.session_id,
                         'workflow_type': self.definition.workflow_type,
                         'step_id': current_step.id,
                         'step_type': current_step.step_type,
                         'optional': getattr(current_step, 'optional', False),
                         'prompt': current_step.get_prompt()
-                    })
+                    }
+                    
+                    # 🔧 添加選擇步驟的選項信息（LLM 需要知道有哪些選項）
+                    if hasattr(current_step, 'options'):
+                        context_data['options'] = current_step.options
+                        context_data['labels'] = getattr(current_step, 'labels', None)
+                    
+                    # 🔧 添加確認步驟標記（LLM 需要知道這是確認類步驟）
+                    if hasattr(current_step, 'is_confirmation'):
+                        context_data['is_confirmation'] = True
+                    
+                    # 🔧 添加輸入步驟的 LLM 解析需求標記
+                    if hasattr(current_step, 'requires_llm_parsing'):
+                        context_data['requires_llm_parsing'] = current_step.requires_llm_parsing
+                    
+                    working_context_manager.set_context_data('workflow_input_context', context_data)
                     
                     # 檢查是否已經為此步驟發布過事件（防止重複）
                     last_input_request = self.session.get_data("_last_input_request_step")
@@ -1120,6 +1173,16 @@ class WorkflowEngine:
                         return self._auto_advance(result)
                 else:
                     self.session.add_data("current_step", None)
+                    
+                    # 清理檔案狀態
+                    try:
+                        from core.working_context import working_context_manager
+                        if working_context_manager.get_context_data('current_file_path'):
+                            working_context_manager.set_context_data('current_file_path', None)
+                            debug_log(2, f"[WorkflowEngine] 已清理檔案狀態")
+                    except Exception as e:
+                        debug_log(3, f"[WorkflowEngine] 清理檔案狀態失敗: {e}")
+                    
                     return StepResult.complete_workflow("工作流程已完成")
                     
             return result
@@ -1380,6 +1443,16 @@ class WorkflowEngine:
                 # 🔧 工作流完成：直接返回結果，不需要 LLM 審核
                 # 最後一個步驟已經是最終結果，不應該再讓 LLM 生成回應
                 self.session.add_data("current_step", None)
+                
+                # 清理檔案狀態（如果有）
+                try:
+                    from core.working_context import working_context_manager
+                    if working_context_manager.get_context_data('current_file_path'):
+                        working_context_manager.set_context_data('current_file_path', None)
+                        debug_log(2, f"[WorkflowEngine] 已清理檔案狀態")
+                except Exception as e:
+                    debug_log(3, f"[WorkflowEngine] 清理檔案狀態失敗: {e}")
+                
                 debug_log(2, f"[WorkflowEngine] [_auto_advance] 工作流完成，不請求 LLM 審核")
                 return step_result
             elif step_result.continue_current_step:

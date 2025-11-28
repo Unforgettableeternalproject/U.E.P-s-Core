@@ -203,12 +203,12 @@ class DragInteractionHandler(InteractionHandler):
 
 class FileDropHandler(InteractionHandler):
     """
-    檔案投放處理器（預留）
+    檔案投放處理器
     
     職責：
     1. 檢測檔案拖曳到角色上
-    2. 觸發接收檔案動畫
-    3. 通知後端處理檔案
+    2. 觸發接收檔案動畫（take_file）
+    3. 將檔案路徑儲存到 WorkingContext
     """
     
     def can_handle(self, event: Any) -> bool:
@@ -216,11 +216,100 @@ class FileDropHandler(InteractionHandler):
         if not hasattr(event, 'event_type'):
             return False
         
-        # TODO: 定義 FILE_DROP 事件類型
-        return False
+        if UIEventType is None:
+            return False
+            
+        return event.event_type == UIEventType.FILE_DROP
     
     def handle(self, event: Any) -> bool:
-        """處理檔案投放事件"""
-        # TODO: 實現檔案投放邏輯
-        info_log(f"[FileDropHandler] 檔案投放功能尚未實現")
-        return False
+        """處理檔案投放事件
+        
+        Args:
+            event: 可以是事件物件（有 .data 屬性）或字典（直接包含 file_path）
+        """
+        try:
+            # 支持兩種格式：事件物件或字典
+            if isinstance(event, dict):
+                event_data = event
+            else:
+                event_data = event.data if hasattr(event, 'data') else {}
+            
+            file_path = event_data.get('file_path', '')
+            
+            if not file_path:
+                error_log("[FileDropHandler] 檔案路徑為空")
+                return False
+            
+            # 驗證檔案是否存在
+            from pathlib import Path
+            path_obj = Path(file_path)
+            if not path_obj.exists():
+                error_log(f"[FileDropHandler] 檔案不存在: {file_path}")
+                return False
+            
+            info_log(f"[FileDropHandler] 接收檔案: {path_obj.name}")
+            
+            # 🎯 儲存檔案路徑到 WorkingContext（全局可訪問）
+            try:
+                from core.working_context import working_context_manager
+                working_context_manager.set_context_data("current_file_path", str(path_obj))
+                debug_log(2, f"[FileDropHandler] 檔案路徑已儲存到 WorkingContext: {path_obj}")
+            except Exception as e:
+                error_log(f"[FileDropHandler] 儲存檔案路徑到 WorkingContext 失敗: {e}")
+                return False
+            
+            # 🎬 動畫由 LayerStrategy 在輸入層自動處理
+            # 當有檔案時，輸入層會使用 take_file 而非 thinking
+            debug_log(2, f"[FileDropHandler] 檔案已準備，輸入層將使用 take_file 動畫")
+            
+            # 📢 發送事件通知其他模組
+            if hasattr(self.coordinator, 'event_bus'):
+                try:
+                    self.coordinator.event_bus.publish(
+                        "file_received",
+                        {
+                            "file_path": str(path_obj),
+                            "file_name": path_obj.name,
+                            "file_size": path_obj.stat().st_size,
+                            "file_type": path_obj.suffix
+                        }
+                    )
+                    debug_log(2, "[FileDropHandler] 已發送 file_received 事件")
+                except Exception as e:
+                    error_log(f"[FileDropHandler] 發送事件失敗: {e}")
+            
+            # 🔧 檢查是否有活躍的工作流正在等待檔案輸入
+            # 如果有，發布 FILE_INPUT_PROVIDED 事件來觸發工作流繼續執行
+            try:
+                from core.working_context import working_context_manager
+                workflow_waiting = working_context_manager.get_context_data('workflow_waiting_input')
+                workflow_context = working_context_manager.get_context_data('workflow_input_context')
+                
+                if workflow_waiting and workflow_context:
+                    workflow_session_id = workflow_context.get('workflow_session_id')
+                    step_id = workflow_context.get('step_id')
+                    
+                    debug_log(2, f"[FileDropHandler] 檢測到工作流正在等待輸入: {workflow_session_id}, step={step_id}")
+                    
+                    # 發布事件觸發 SystemLoop 提交檔案路徑到工作流
+                    from core.event_bus import event_bus, SystemEvent
+                    event_bus.publish(
+                        SystemEvent.FILE_INPUT_PROVIDED,
+                        {
+                            "file_path": str(path_obj),
+                            "workflow_session_id": workflow_session_id,
+                            "step_id": step_id,
+                            "timestamp": __import__('time').time()
+                        },
+                        source="file_drop_handler"
+                    )
+                    debug_log(2, f"[FileDropHandler] 已發布 FILE_INPUT_PROVIDED 事件觸發工作流繼續")
+                    info_log(f"[FileDropHandler] 檔案已提交到工作流 {workflow_session_id}")
+            except Exception as e:
+                error_log(f"[FileDropHandler] 檢查工作流狀態失敗: {e}")
+            
+            return True
+            
+        except Exception as e:
+            error_log(f"[FileDropHandler] 處理檔案投放事件失敗: {e}")
+            return False

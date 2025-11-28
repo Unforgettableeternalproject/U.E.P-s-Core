@@ -47,12 +47,28 @@ class LayerAnimationStrategy(AnimationStrategy):
             anim_name = None
             
             if layer == "input":
-                # 輸入層：等待輸入
+                # 輸入層：檢查是否有檔案
                 input_config = layer_config.get('input', {})
-                anim_name = input_config.get('default', 'thinking_f')
+                
+                # 檢查 WorkingContext 是否有檔案
+                has_file = False
+                try:
+                    from core.working_context import working_context_manager
+                    file_path = working_context_manager.get_context_data('current_file_path')
+                    has_file = file_path is not None
+                except Exception:
+                    pass
+                
+                if has_file:
+                    # 有檔案：使用 take_file 動畫（取代 thinking）
+                    anim_name = input_config.get('file_input', 'take_file_f')
+                    debug_log(2, f"[LayerStrategy] 輸入層偵測到檔案，使用 take_file 動畫")
+                else:
+                    # 無檔案：使用一般等待動畫
+                    anim_name = input_config.get('default', 'thinking_f')
                 
             elif layer == "processing":
-                # 處理層：思考
+                # 處理層：使用 data_processing 動畫
                 processing_config = layer_config.get('processing', {})
                 anim_name = processing_config.get('default', 'data_processing_f')
                 

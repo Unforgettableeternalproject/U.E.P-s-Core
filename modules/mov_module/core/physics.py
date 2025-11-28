@@ -12,7 +12,7 @@ class PhysicsEngine:
                  gravity: float = 0.8,
                  damping: float = 0.978,
                  ground_friction: float = 0.95,
-                 air_resistance: float = 0.99,
+                 air_resistance: float = 0.997,  # 提高至 0.997，降低空中水平阻力
                  bounce_factor: float = 0.4):
         self.gravity = gravity
         self.damping = damping

@@ -48,7 +48,7 @@ try:
     from .core.animation_query import AnimationQueryHelper
     from .core.animation_priority import AnimationPriorityManager, AnimationPriority
     from .behaviors.base_behavior import BehaviorContext, BehaviorFactory
-    from .handlers import CursorTrackingHandler, ThrowHandler
+    from .handlers import CursorTrackingHandler, ThrowHandler, FileDropHandler
 except Exception:
     from core.position import Position, Velocity  # type: ignore
     from core.physics import PhysicsEngine  # type: ignore
@@ -145,6 +145,7 @@ class MOVModule(BaseFrontendModule):
         # --- 處理器 ---
         self._cursor_tracking_handler = CursorTrackingHandler(self)
         self._throw_handler = ThrowHandler(self)
+        self._file_drop_handler = FileDropHandler(self)
         
         # --- 投擲後行為標記（由 ThrowHandler 管理，這裡保留供 _enter_behavior 使用） ---
         self._post_throw_tease_pending = False
@@ -393,6 +394,10 @@ class MOVModule(BaseFrontendModule):
         # 滑鼠追蹤時也暫停行為更新（防止移動中播放閒置動畫）
         if hasattr(self, '_cursor_tracking_handler') and self._cursor_tracking_handler._is_turning_head:
             return
+        
+        # 投擲動畫序列進行中時暫停行為更新（防止動畫被打斷）
+        if hasattr(self, '_throw_handler') and self._throw_handler.is_in_throw_animation:
+            return
 
         # 檢查是否到達目標（提供給 MovementBehavior 判斷）
         self._update_target_reached()
@@ -424,6 +429,7 @@ class MOVModule(BaseFrontendModule):
             set_target=self._set_target,
             get_cursor_pos=self._get_cursor_pos,
             now=now,
+            anim_query=self.anim_query,
             transition_start_time=self.transition_start_time,
             movement_locked_until=self.movement_locked_until,
             previous_state=self.previous_behavior_state,
@@ -546,18 +552,21 @@ class MOVModule(BaseFrontendModule):
                     self.target_velocity.y = 0.0
                     self.movement_mode = MovementMode.GROUND
                     
-                    # 播放落地動畫並切換到 IDLE
-                    idle_anim = self.anim_query.get_idle_animation_for_mode(is_ground=True)
-                    self._trigger_anim(idle_anim, {"loop": True}, source="throw_handler")
-                    self._switch_behavior(BehaviorState.IDLE)
-                    
-                    # 通知 ThrowHandler 處理落地後行為
+                    # 通知 ThrowHandler 處理落地動畫 (swoop_*_end)
+                    # 如果有落地動畫，會阻止行為切換直到動畫完成
                     self._throw_handler.handle_throw_landing()
                     
-                    debug_log(1, f"[{self.module_id}] 投擲結束，落地並等待 3 秒")
+                    # 如果沒有投擲動畫序列，直接切換到 IDLE
+                    if not self._throw_handler.is_in_throw_animation:
+                        idle_anim = self.anim_query.get_idle_animation_for_mode(is_ground=True)
+                        self._trigger_anim(idle_anim, {"loop": True}, source="throw_handler")
+                        self._switch_behavior(BehaviorState.IDLE)
+                    
+                    debug_log(1, f"[{self.module_id}] 投擲落地")
 
-        # 速度趨近 target_velocity（拖曳時不處理）
-        if not self.is_being_dragged:
+        # 速度趨近 target_velocity（拖曳和投擲時不處理）
+        # 投擲模式下速度完全由物理引擎控制，不應被 target_velocity 拉回 0
+        if not self.is_being_dragged and self.movement_mode != MovementMode.THROWN:
             self.velocity.x += (self.target_velocity.x - self.velocity.x) * self._approach_k
             self.velocity.y += (self.target_velocity.y - self.velocity.y) * self._approach_k
         
@@ -649,6 +658,7 @@ class MOVModule(BaseFrontendModule):
             set_target=self._set_target,
             get_cursor_pos=self._get_cursor_pos,
             now=now,
+            anim_query=self.anim_query,
             transition_start_time=self.transition_start_time,
             movement_locked_until=self.movement_locked_until,
             previous_state=self.previous_behavior_state,
@@ -956,8 +966,12 @@ class MOVModule(BaseFrontendModule):
         max_x = self.v_right - self.SIZE - margin
         min_y = self.v_top + margin
         max_y = self.v_bottom - self.SIZE - margin
-        self.position.x = min(max(self.position.x, min_x), max_x)
-        self.position.y = min(max(self.position.y, min_y), max_y)
+        
+        # Wrap 模式下不限制初始位置，允許在螢幕外的位置
+        if self.boundary_mode != "wrap":
+            self.position.x = min(max(self.position.x, min_x), max_x)
+            self.position.y = min(max(self.position.y, min_y), max_y)
+        
         self._emit_position()
 
 
@@ -977,8 +991,14 @@ class MOVModule(BaseFrontendModule):
             y = self._ground_y()
         max_x = self.v_right  - self.SIZE
         max_y = self.v_bottom - self.SIZE
-        cx = max(self.v_left + margin,  min(max_x - margin, float(x)))
-        cy = max(self.v_top  + margin,  min(max_y - margin, float(y)))
+        
+        # Wrap 模式下不限制目標位置，允許設置螢幕外的目標
+        if self.boundary_mode == "wrap":
+            cx = float(x)
+            cy = float(y)
+        else:
+            cx = max(self.v_left + margin,  min(max_x - margin, float(x)))
+            cy = max(self.v_top  + margin,  min(max_y - margin, float(y)))
         if self.movement_target is None:
             from .core.position import Position  # 避免循環匯入
             self.movement_target = Position(cx, cy)
@@ -1001,25 +1021,40 @@ class MOVModule(BaseFrontendModule):
         
         支持兩種模式：
         - barrier: 碰到邊界停止（預設）
-        - wrap: 從右邊出去左邊進來（循環模式，參考 desktop_pet.py）
+        - wrap: 從右邊出去左邊進來（循環模式）
         """
         left  = self.v_left
         right = self.v_right  - self.SIZE
         boundary_hit = False
+        wrapped = False  # 標記是否發生了 wrap
         
         # 循環模式（wrap）
         if self.boundary_mode == "wrap":
-            # 左邊界：從左邊出去，從右邊進來
-            if self.position.x < left - self.SIZE:
-                self.position.x = right + self.SIZE  # 從右邊重新出現
-                debug_log(2, f"[{self.module_id}] 邊界循環：左邊 -> 右邊")
-                boundary_hit = True
+            # 左邊界：完全離開左邊後，從右邊進來
+            if self.position.x < left:
+                self.position.x = right  # 從右邊重新出現
+                debug_log(2, f"[{self.module_id}] 邊界循環：左邊 -> 右邊 (x={self.position.x:.1f})")
+                wrapped = True
             
-            # 右邊界：從右邊出去，從左邊進來
-            elif self.position.x > right + self.SIZE:
-                self.position.x = left - self.SIZE  # 從左邊重新出現
-                debug_log(2, f"[{self.module_id}] 邊界循環：右邊 -> 左邊")
-                boundary_hit = True
+            # 右邊界：完全離開右邊後，從左邊進來
+            elif self.position.x > right:
+                self.position.x = left  # 從左邊重新出現
+                debug_log(2, f"[{self.module_id}] 邊界循環：右邊 -> 左邊 (x={self.position.x:.1f})")
+                wrapped = True
+            
+            # Wrap 模式下不改變速度，讓角色繼續原方向移動
+            if wrapped:
+                # 更新移動目標（如果有的話）
+                if self.movement_target:
+                    # 根據當前位置和方向調整目標
+                    if self.facing_direction > 0:  # 向右
+                        # 確保目標在右側
+                        if self.movement_target.x < self.position.x:
+                            self.movement_target.x += (right - left)
+                    else:  # 向左
+                        # 確保目標在左側
+                        if self.movement_target.x > self.position.x:
+                            self.movement_target.x -= (right - left)
         
         # 屏障模式（barrier，預設）
         else:
@@ -1043,6 +1078,7 @@ class MOVModule(BaseFrontendModule):
                     self.velocity.x = -abs(self.velocity.x); self.target_velocity.x = -abs(self.target_velocity.x)
                 self.facing_direction = -1
 
+        # Barrier 模式下到達邊界時的處理
         if boundary_hit and self.current_behavior_state == BehaviorState.NORMAL_MOVE:
             self.velocity = Velocity(0.0, 0.0)
             self.target_velocity = Velocity(0.0, 0.0)
@@ -1148,15 +1184,26 @@ class MOVModule(BaseFrontendModule):
             return
         
         # 檢查是否正在被干涉（拖動、拋擲中不應該切換動畫）
+        # 例外動畫：struggle、transition 動畫（g_to_f, f_to_g）、idle 動畫
         # SYSTEM_CYCLE 狀態下的層級動畫不檢查 dragging（已在 INTERACTION_STARTED 時清除）
-        if not immediate_interrupt:
+        allowed_during_special = (
+            name == "struggle" or 
+            name in ("g_to_f", "f_to_g") or 
+            "idle" in name.lower()
+        )
+        
+        if not immediate_interrupt and not allowed_during_special:
             if self.current_behavior_state != BehaviorState.SYSTEM_CYCLE:
                 if self.is_being_dragged:
-                    debug_log(3, f"[{self.module_id}] 跳過動畫觸發（正在被拖動）: {name}")
-                    return
+                    # 允許 struggle 動畫在拖動時播放
+                    if name != "struggle" and "struggle" not in name:
+                        debug_log(3, f"[{self.module_id}] 跳過動畫觸發（正在被拖動）: {name}")
+                        return
                 if self.movement_mode == MovementMode.THROWN:
-                    debug_log(3, f"[{self.module_id}] 跳過動畫觸發（正在拋擲）: {name}")
-                    return
+                    # 允許投擲相關動畫 (swoop_*, struggle) 在投擲時播放
+                    if not (name.startswith("swoop_") or name == "struggle"):
+                        debug_log(3, f"[{self.module_id}] 跳過動畫觸發（正在拋擲）: {name}")
+                        return
             
             # 檢查是否處於靜態幀模式（滑鼠追蹤中）
             # 但 SYSTEM_CYCLE 狀態下的層級動畫應優先於滑鼠追蹤
@@ -1285,6 +1332,8 @@ class MOVModule(BaseFrontendModule):
                 self._on_drag_move(data)
             elif event_type == UIEventType.DRAG_END:
                 self._on_drag_end(data)
+            elif event_type == UIEventType.FILE_DROP:
+                self._on_file_drop(data)
             else:
                 debug_log(2, f"[{self.module_id}] 未處理的UI事件: {event_type}")
         except Exception as e:
@@ -1298,6 +1347,16 @@ class MOVModule(BaseFrontendModule):
         # 初始化拖曳追蹤器
         self._drag_tracker.clear()
         self._drag_tracker.add_point(self.position.x, self.position.y)
+        
+        # 強制中斷滑鼠追蹤（不恢復 idle 動畫，直接由 struggle 接管）
+        if hasattr(self, '_cursor_tracking_handler'):
+            self._cursor_tracking_handler._stop_tracking(restore_idle=False)
+            debug_log(2, f"[{self.module_id}] 拖動開始，中斷滑鼠追蹤")
+        
+        # 取消投擲動畫序列
+        if hasattr(self, '_throw_handler'):
+            self._throw_handler.cancel_throw()
+            debug_log(2, f"[{self.module_id}] 拖動開始，取消投擲動畫")
         
         # 🔧 SYSTEM_CYCLE 狀態下允許拖曳但不改變狀態
         if self.current_behavior_state == BehaviorState.SYSTEM_CYCLE:
@@ -1313,17 +1372,17 @@ class MOVModule(BaseFrontendModule):
         
         self.pause_movement(self.DRAG_PAUSE_REASON)
         
-        # 強制中斷滑鼠追蹤（如果正在追蹤）
-        if hasattr(self, '_cursor_tracking_handler'):
-            self._cursor_tracking_handler._stop_tracking()
-            debug_log(2, f"[{self.module_id}] 拖動開始，中斷滑鼠追蹤")
-        
-        # 強制停止當前動畫並播放掙扎動畫
-        if self.ani_module and hasattr(self.ani_module, 'stop'):
-            self.ani_module.stop()
-        
+        # 播放掙扎動畫（使用 USER_INTERACTION 優先度）
         struggle_anim = self.anim_query.get_struggle_animation()
-        self._trigger_anim(struggle_anim, {"loop": True, "immediate_interrupt": True, "force_restart": True}, source="drag_handler")
+        self._trigger_anim(
+            struggle_anim, 
+            {
+                "loop": True,
+                "force_restart": True
+            }, 
+            source="drag_handler",
+            priority=AnimationPriority.USER_INTERACTION
+        )
         
         mode_desc = "投擲中" if (self._drag_start_mode == MovementMode.THROWN) else (self._drag_start_mode.value if self._drag_start_mode else "未知")
         debug_log(1, f"[{self.module_id}] 拖拽開始於 ({self.position.x:.1f}, {self.position.y:.1f})，從{mode_desc}模式，播放掙扎動畫")
@@ -1338,13 +1397,16 @@ class MOVModule(BaseFrontendModule):
             new_x = float(event.get('x', self.position.x))
             new_y = float(event.get('y', self.position.y))
             
-            # 只應用螢幕邊界限制，不限制高度範圍
-            max_x = self.v_right - self.SIZE
-            max_y = self.v_bottom - self.SIZE
-            
-            # 允許完全自由的拖曳，只要不超出螢幕範圍
-            self.position.x = max(self.v_left, min(max_x, new_x))
-            self.position.y = max(self.v_top, min(max_y, new_y))
+            # Wrap 模式：允許拖曳到任何位置（會在 _check_boundaries 中處理循環）
+            # Barrier 模式：限制在螢幕範圍內
+            if self.boundary_mode == "wrap":
+                self.position.x = new_x
+                self.position.y = new_y
+            else:
+                max_x = self.v_right - self.SIZE
+                max_y = self.v_bottom - self.SIZE
+                self.position.x = max(self.v_left, min(max_x, new_x))
+                self.position.y = max(self.v_top, min(max_y, new_y))
             
             # **關鍵修復：追蹤拖曳位置以計算速度**
             self._drag_tracker.add_point(self.position.x, self.position.y)
@@ -1364,13 +1426,16 @@ class MOVModule(BaseFrontendModule):
             new_x = float(event.x)
             new_y = float(event.y)
             
-            # 只應用螢幕邊界限制，不限制高度範圍
-            max_x = self.v_right - self.SIZE
-            max_y = self.v_bottom - self.SIZE
-            
-            # 允許完全自由的拖曳，只要不超出螢幕範圍
-            self.position.x = max(self.v_left, min(max_x, new_x))
-            self.position.y = max(self.v_top, min(max_y, new_y))
+            # Wrap 模式：允許拖曳到任何位置
+            # Barrier 模式：限制在螢幕範圍內
+            if self.boundary_mode == "wrap":
+                self.position.x = new_x
+                self.position.y = new_y
+            else:
+                max_x = self.v_right - self.SIZE
+                max_y = self.v_bottom - self.SIZE
+                self.position.x = max(self.v_left, min(max_x, new_x))
+                self.position.y = max(self.v_top, min(max_y, new_y))
             
             # 追蹤拖曳位置以計算速度
             self._drag_tracker.add_point(self.position.x, self.position.y)
@@ -1386,12 +1451,16 @@ class MOVModule(BaseFrontendModule):
                 new_x = float(data['x'])
                 new_y = float(data['y'])
                 
-                max_x = self.v_right - self.SIZE
-                max_y = self.v_bottom - self.SIZE
-                
-                # 允許完全自由的拖曳
-                self.position.x = max(self.v_left, min(max_x, new_x))
-                self.position.y = max(self.v_top, min(max_y, new_y))
+                # Wrap 模式：允許拖曳到任何位置
+                # Barrier 模式：限制在螢幕範圍內
+                if self.boundary_mode == "wrap":
+                    self.position.x = new_x
+                    self.position.y = new_y
+                else:
+                    max_x = self.v_right - self.SIZE
+                    max_y = self.v_bottom - self.SIZE
+                    self.position.x = max(self.v_left, min(max_x, new_x))
+                    self.position.y = max(self.v_top, min(max_y, new_y))
                 
                 # 追蹤拖曳位置以計算速度
                 self._drag_tracker.add_point(self.position.x, self.position.y)
@@ -1480,6 +1549,13 @@ class MOVModule(BaseFrontendModule):
         self._emit_position()
         
         debug_log(1, f"[{self.module_id}] 拖拽結束 → {self.movement_mode.value} 模式")
+
+    def _on_file_drop(self, data: Dict[str, Any]):
+        """處理檔案拖放事件"""
+        if self._file_drop_handler:
+            self._file_drop_handler.handle(data)
+        else:
+            error_log(f"[{self.module_id}] FileDropHandler 未初始化")
 
     # ========= API =========
 
@@ -2212,6 +2288,15 @@ GS 推進 - 當前 GS 結束，恢復 idle 狀態和移動"""
         # 通知優先度管理器動畫完成
         self._animation_priority.on_animation_finished(finished_name)
         
+        # 檢查是否是投擲落地動畫完成
+        if hasattr(self, '_throw_handler') and finished_name.startswith('swoop_') and finished_name.endswith('_end'):
+            debug_log(1, f"[{self.module_id}] 投擲落地動畫完成: {finished_name}")
+            self._throw_handler.on_throw_animation_complete()
+            # 切換到 IDLE 狀態
+            idle_anim = self.anim_query.get_idle_animation_for_mode(is_ground=True)
+            self._trigger_anim(idle_anim, {"loop": True}, source="throw_handler")
+            self._switch_behavior(BehaviorState.IDLE)
+        
         # 若有指定等待且名稱吻合才解除
         if self._awaiting_anim and finished_name == self._awaiting_anim:
             debug_log(2, f"[{self.module_id}] 收到動畫完成: {finished_name}，解除等待")
@@ -2224,6 +2309,26 @@ GS 推進 - 當前 GS 結束，恢復 idle 狀態和移動"""
             if follow:
                 try: follow()
                 except Exception as e: error_log(f"[{self.module_id}] 等待後續執行失敗: {e}")
+        
+        # 🎬 如果當前在 IDLE 狀態且動畫完成，自動恢復 idle 動畫
+        # （處理彩蛋動畫等非循環動畫完成後的情況）
+        if self.current_behavior_state == BehaviorState.IDLE:
+            # 檢查是否是彩蛋動畫或其他特殊動畫（通常包含特定關鍵字）
+            easter_egg_keywords = ['dance', 'chilling', 'angry', 'sleep', 'yawn']
+            is_special_anim = any(keyword in finished_name.lower() for keyword in easter_egg_keywords)
+            
+            if is_special_anim:
+                debug_log(2, f"[{self.module_id}] 彩蛋/特殊動畫 {finished_name} 完成，恢復 idle 動畫")
+                # 獲取適當的 idle 動畫
+                is_ground = (self.movement_mode == MovementMode.GROUND)
+                idle_anim = self.anim_query.get_idle_animation_for_mode(is_ground) if self.anim_query else (
+                    "stand_idle_g" if is_ground else "smile_idle_f"
+                )
+                # 觸發恢復動畫
+                self._trigger_anim(idle_anim, {
+                    "loop": True,
+                    "force_restart": True
+                }, source="auto_recovery")
 
     def _apply_config(self, cfg: Dict):
         # physics

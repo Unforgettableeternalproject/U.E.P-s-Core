@@ -109,12 +109,14 @@ class UEPStateProfileWidget(QWidget):
         box.setObjectName("settingsGroup")
 
         title_font = box.font()
-        title_font.setPointSize(14) 
+        title_font.setPointSize(14)
         title_font.setBold(True)
         box.setFont(title_font)
 
+        box.setAlignment(Qt.AlignCenter)
+
         if role is not None:
-            box.setProperty("cardRole", role)   
+            box.setProperty("cardRole", role)
 
         install_theme_hook(box)
         box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -126,6 +128,7 @@ class UEPStateProfileWidget(QWidget):
         lay.setContentsMargins(18, 16, 18, 18)
         lay.setSpacing(10)
         return box
+
 
     def _card_text_label(self, point_size: int =11) -> QLabel:
         lb = QLabel()
@@ -330,8 +333,8 @@ class StateProfileDialog(QDialog):
         bottom_layout = QHBoxLayout(bottom)
         bottom_layout.setContentsMargins(30, 15, 30, 15)
 
-        self.btn_apply = QPushButton("✓ 套用設定")
-        self.btn_reset = QPushButton("🔄 重置為預設值")
+        self.btn_apply = QPushButton("套用設定")
+        self.btn_reset = QPushButton("重置為預設值")
         self.btn_cancel = QPushButton("取消")
 
         self.btn_apply.clicked.connect(self.apply_settings)
@@ -390,7 +393,17 @@ class StateProfileDialog(QDialog):
         )
         if reply == QMessageBox.Yes:
             self.settings.clear()
+
+            diary_settings = QSettings("UEP", "DiaryStation")
+            diary_settings.clear()
+
+            self.panel._text_feels = ""
+            self.panel._text_helped = ""
+            self.panel._text_tips = ""
+            self.panel._image_path = None
+            self.panel.save_to_qsettings()
             self.panel.load_settings()
+
             QMessageBox.information(self, "完成", "已重置為預設值")
 
     def _handle_apply_request(self, data: dict):

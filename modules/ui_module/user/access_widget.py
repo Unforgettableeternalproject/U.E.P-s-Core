@@ -153,20 +153,6 @@ class ControllerBridge:
 
             self._state_dialog = dlg
 
-            try:
-                dlg.panel.set_diary_texts(
-                    feels="Calm & focused. Latency low; mood +8%.",
-                    helped="Fixed UI bugs, refactored theme system, and arranged your study plan."
-                )
-                dlg.panel.set_random_tips(
-                    "Tip: Press Shift+Enter to insert a line. Stay hydrated and take breaks!"
-                )
-                guess = os.path.join(os.path.dirname(__file__), "arts", "U.E.P.png")
-                if os.path.exists(guess):
-                    dlg.panel.set_uep_image(guess)
-            except Exception as e:
-                error_log("[ControllerBridge] Failed to set default diary content:", e)
-
             dlg.setAttribute(Qt.WA_DeleteOnClose, True)
             dlg.show()
             dlg.raise_()

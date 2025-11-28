@@ -1,5 +1,4 @@
-﻿# state_profile.py
-import os
+﻿import os
 import sys
 from typing import Dict, Any
 
@@ -259,10 +258,77 @@ class UEPStateProfileWidget(QWidget):
 class StateProfileDialog(QDialog):
     settings_changed = pyqtSignal(str, object)
 
+    DIARY_DARK_QSS = """
+    #stateProfileDialog {
+        background-color: #26272b;
+    }
+
+    #stateProfileDialog QScrollArea,
+    #stateProfileDialog QScrollArea > QWidget {
+        background-color: #26272b;
+    }
+
+    #stateProfileDialog QGroupBox {
+        margin-top: 22px;
+        background-color: #26272b;
+        border-radius: 12px;
+    }
+
+    #stateProfileDialog QGroupBox::title {
+        subcontrol-origin: margin;
+        subcontrol-position: top center;
+        padding: 0 6px;
+        background-color: #26272b; 
+        border: none;
+        color: inherit;
+    }
+
+    #stateProfileDialog QGroupBox[cardRole="feels"] {
+        border: 2px solid #aea0de;
+        border-radius: 12px;
+    }
+
+    #stateProfileDialog QGroupBox[cardRole="feels"]::title {
+        color: #aea0de;
+    }
+
+    #stateProfileDialog QGroupBox[cardRole="helped"] {
+        border: 2px solid #f5c6e4;
+        border-radius: 12px;
+    }
+
+    #stateProfileDialog QGroupBox[cardRole="helped"]::title {
+        color: #f5c6e4;
+    }
+
+    #stateProfileDialog QGroupBox[cardRole="tips"] {
+        border: 2px solid #ccc085;
+        border-radius: 12px;
+    }
+
+    #stateProfileDialog QGroupBox[cardRole="tips"]::title {
+        color: #ccc085;
+    }
+
+    #stateProfileDialog QPushButton#themeToggle:hover {
+        background-color: #3b3550;
+    }
+
+    #stateProfileDialog QFrame#bottomBar {
+        background-color: #26272b;
+        border: none;     
+        outline: none;      
+    }
+    """
+
+
+
     def __init__(self, controller=None, parent=None):
         super().__init__(parent)
         if not PYQT5_AVAILABLE:
             return
+
+        self.setObjectName("stateProfileDialog")
 
         self.controller = controller
         self.settings = QSettings("UEP", "StateProfile")
@@ -369,6 +435,10 @@ class StateProfileDialog(QDialog):
     def apply_theme(self, theme_name=None):
         if theme_manager:
             self.theme_toggle.setText("☀️" if theme_manager.theme == Theme.DARK else "🌙")
+            if theme_manager.theme == Theme.DARK:
+                self.setStyleSheet(self.DIARY_DARK_QSS)
+            else:
+                self.setStyleSheet("")
         try:
             self.style().unpolish(self)
             self.style().polish(self)

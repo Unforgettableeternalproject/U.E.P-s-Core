@@ -2134,3 +2134,15 @@
 
 ---
 
+### User setting window migrated. 11/28
+
+> Date: Fri, 28 Nov 2025 23:35:23 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `1212ae0ed973670d4d75c045da05c012a660c4b2`
+
+---
+

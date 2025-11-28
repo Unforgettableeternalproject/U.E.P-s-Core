@@ -259,7 +259,7 @@ class UIModule(BaseFrontendModule):
                 error_log(f"[{self.module_id}] 無法導入使用者存取介面: {e}")
             
             try:
-                from .user.user_main_window import UserMainWindow
+                from .user.user_settings import UserMainWindow
                 self.interfaces[UIInterfaceType.USER_MAIN_WINDOW] = UserMainWindow()
                 # 設定視窗預設隱藏，由 access_widget 控制顯示
                 self.interfaces[UIInterfaceType.USER_MAIN_WINDOW].hide()

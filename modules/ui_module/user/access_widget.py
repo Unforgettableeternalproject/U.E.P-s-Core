@@ -4,19 +4,21 @@ from functools import partial
 
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QPushButton, QVBoxLayout, QLabel,
-    QFrame, QDialog, QHBoxLayout, QGraphicsDropShadowEffect
+    QFrame, QDialog, QHBoxLayout, QGraphicsDropShadowEffect, QMenu
 )
 from PyQt5.QtCore import Qt, QPropertyAnimation, QPoint, QEasingCurve, QTimer, pyqtSignal, QSize, QSettings, QRect
-from PyQt5.QtGui import QPainter, QColor, QBrush, QIcon, QPixmap, QFont, QRegion
+from PyQt5.QtGui import QPainter, QColor, QBrush, QIcon, QPixmap, QFont, QRegion, QCursor
 
-from system_background import SystemBackgroundWindow
-from theme_manager import theme_manager, Theme
+from utils.debug_helper import debug_log, info_log, error_log, OPERATION_LEVEL
+
+from .system_background import SystemBackgroundWindow
+from .theme_manager import theme_manager, Theme
 
 try:
-    from state_profile import StateProfileDialog
-    print("[access_widget] Using StateProfileDialog")
+    from .state_profile import StateProfileDialog
+    info_log("[access_widget] Using StateProfileDialog")
 except Exception as e:
-    print("[access_widget] Failed to import StateProfileDialog, using placeholder:", e)
+    error_log(f"[access_widget] Failed to import StateProfileDialog, using placeholder: {e}")
 
     class StateProfileDialog(QDialog):
         def __init__(self, controller=None, parent=None):
@@ -34,10 +36,10 @@ except Exception as e:
             lay.addWidget(btn)
 
 try:
-    from user_settings import UserMainWindow
-    print("[access_widget] Using UserMainWindow from user_settings.py")
+    from .user_settings import UserMainWindow
+    info_log("[access_widget] Using UserMainWindow from user_settings.py")
 except Exception as e:
-    print("[access_widget] Failed to import UserMainWindow, using placeholder:", e)
+    error_log(f"[access_widget] Failed to import UserMainWindow, using placeholder: {e}")
 
     class UserMainWindow(QDialog):
         """Very simple placeholder if user_settings.py is missing or broken."""
@@ -93,11 +95,11 @@ class ControllerBridge:
                     self._user_settings_window = UserMainWindow(ui_module=self.controller)
                 except TypeError:
                     self._user_settings_window = UserMainWindow()
-
-                if hasattr(self._user_settings_window, "window_closed"):
-                    self._user_settings_window.window_closed.connect(
-                        lambda: setattr(self, "_user_settings_window", None)
-                    )
+                
+                # 問題3修正：設定視窗關閉時不退出應用程式，只是隱藏
+                self._user_settings_window.setAttribute(Qt.WA_QuitOnClose, False)
+                
+                # 不需要 window_closed 信號來清空引用，保留視窗實例以便重複開啟
 
             wnd = self._user_settings_window
             if hasattr(wnd, "is_minimized_to_orb") and getattr(wnd, "is_minimized_to_orb", False):
@@ -122,13 +124,11 @@ class ControllerBridge:
 
     def open_system_background(self):
         try:
-            if self._bg_window is None or not self._bg_window.isVisible():
+            if self._bg_window is None:
                 self._bg_window = SystemBackgroundWindow(ui_module=self.controller)
-                if hasattr(self._bg_window, "window_closed"):
-
-                    self._bg_window.window_closed.connect(
-                        lambda: setattr(self, "_bg_window", None)
-                    )
+                # 問題3修正：設定視窗關閉時不退出應用程式
+                self._bg_window.setAttribute(Qt.WA_QuitOnClose, False)
+            
             self._bg_window.show()
             self._bg_window.raise_()
             self._bg_window.activateWindow()
@@ -142,35 +142,46 @@ class ControllerBridge:
 
     def show_state_profile(self):
         try:
-            dlg = None
-            try:
-                dlg = StateProfileDialog(controller=self.controller)
-            except TypeError:
+            # 如果已有實例且可見，直接顯示
+            if self._state_dialog is not None and not self._state_dialog.isVisible():
+                self._state_dialog.show()
+                self._state_dialog.raise_()
+                self._state_dialog.activateWindow()
+                return {"success": True}
+            
+            # 創建新實例
+            if self._state_dialog is None:
                 try:
-                    dlg = StateProfileDialog(self.controller)
+                    dlg = StateProfileDialog(controller=self.controller)
                 except TypeError:
-                    dlg = StateProfileDialog()
+                    try:
+                        dlg = StateProfileDialog(self.controller)
+                    except TypeError:
+                        dlg = StateProfileDialog()
 
-            self._state_dialog = dlg
+                self._state_dialog = dlg
+                
+                # 問題3修正：對話框關閉時不退出應用程式
+                dlg.setAttribute(Qt.WA_QuitOnClose, False)
+                # 不使用 WA_DeleteOnClose，保留實例以便重複開啟
 
-            try:
-                dlg.panel.set_diary_texts(
-                    feels="Calm & focused. Latency low; mood +8%.",
-                    helped="Fixed UI bugs, refactored theme system, and arranged your study plan."
-                )
-                dlg.panel.set_random_tips(
-                    "Tip: Press Shift+Enter to insert a line. Stay hydrated and take breaks!"
-                )
-                guess = os.path.join(os.path.dirname(__file__), "arts", "U.E.P.png")
-                if os.path.exists(guess):
-                    dlg.panel.set_uep_image(guess)
-            except Exception as e:
-                error_log("[ControllerBridge] Failed to set default diary content:", e)
+                try:
+                    dlg.panel.set_diary_texts(
+                        feels="Calm & focused. Latency low; mood +8%.",
+                        helped="Fixed UI bugs, refactored theme system, and arranged your study plan."
+                    )
+                    dlg.panel.set_random_tips(
+                        "Tip: Press Shift+Enter to insert a line. Stay hydrated and take breaks!"
+                    )
+                    guess = os.path.join(os.path.dirname(__file__), "..", "..", "..", "arts", "U.E.P.png")
+                    if os.path.exists(guess):
+                        dlg.panel.set_uep_image(guess)
+                except Exception as e:
+                    error_log("[ControllerBridge] Failed to set default diary content:", e)
 
-            dlg.setAttribute(Qt.WA_DeleteOnClose, True)
-            dlg.show()
-            dlg.raise_()
-            dlg.activateWindow()
+            self._state_dialog.show()
+            self._state_dialog.raise_()
+            self._state_dialog.activateWindow()
 
             info_log("[ControllerBridge] State profile opened")
             return {"success": True}
@@ -202,6 +213,8 @@ class DraggableButton(QPushButton):
                 self._dragging = True
             if self._dragging:
                 self.window().move(e.globalPos() - (self._drag_start - self._widget_offset))
+                # 拖曳時禁用 hover 樣式
+                self.setAttribute(Qt.WA_UnderMouse, False)
                 e.accept()
                 return
         super().mouseMoveEvent(e)
@@ -210,6 +223,8 @@ class DraggableButton(QPushButton):
         if self._dragging:
             self._drag_start = None
             self._dragging = False
+            # 恢復 hover 檢測
+            self.setAttribute(Qt.WA_UnderMouse, True)
             e.accept()
             return
         self._drag_start = None
@@ -237,15 +252,30 @@ class MainButton(QWidget):
         button.setFlat(True)
         button.setFocusPolicy(Qt.NoFocus)
 
+        # 添加動態效果的樣式
         button.setStyleSheet(f"""
-            QPushButton, QPushButton:hover, QPushButton:pressed{{
+            QPushButton {{
                 background-color: transparent;
                 border: none;
                 padding: 0px;
                 border-radius: {d/2}px;
             }}
+            QPushButton:hover {{
+                background-color: rgba(255, 255, 255, 30);
+                border: 2px solid rgba(255, 255, 255, 100);
+            }}
+            QPushButton:pressed {{
+                background-color: rgba(255, 255, 255, 50);
+                border: 2px solid rgba(255, 255, 255, 150);
+            }}
         """)
         button.setMask(QRegion(0, 0, d, d, QRegion.Ellipse))
+        
+        # 為主按鈕添加縮放動畫
+        button._scale_animation = QPropertyAnimation(button, b"geometry")
+        button._scale_animation.setDuration(150)
+        button._scale_animation.setEasingCurve(QEasingCurve.OutCubic)
+        button._original_geometry = button.geometry()
 
     def __init__(self, bridge: ControllerBridge = None):
         super().__init__()
@@ -266,9 +296,10 @@ class MainButton(QWidget):
 
         # Main round button in the center
         self.mainButton = self._make_opt_btn(110, "", "transparent", self.toggleMenu)
+        uep_icon_path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "arts", "U.E.P.png")
         self.set_button_image_fit(
             self.mainButton,
-            r"C:\Users\Elisa Kao\Source\Repos\U.E.P-s-Core\arts\U.E.P.png",
+            uep_icon_path,
             margin=6
         )
         self.mainButton.move(
@@ -427,40 +458,81 @@ class MainButton(QWidget):
             """)
 
     def _place_circle(self):
+        """計算初始位置，使用虛擬桌面邊界"""
         app = QApplication.instance()
-        screen = app.primaryScreen()
-        if screen:
-            g = screen.availableGeometry()
-            x = g.right() - self.width() // 2
-            y = g.top() + 80
-            self.move(x, y)
-            self.original_position = QPoint(x, y)
-            self.visible_position = QPoint(g.right() - self.width() + 20, y)
+        desktop = app.desktop()
+        
+        # 獲取虛擬桌面尺寸（多螢幕總範圍）
+        virtual_rect = desktop.geometry()
+        
+        # 初始位置設在虛擬桌面右側邊緣（半隱藏狀態）
+        x = virtual_rect.right() - self.width() // 2
+        y = virtual_rect.top() + 80
+        self.move(x, y)
+        self.original_position = QPoint(x, y)
+        
+        # 計算邊緣檢測區域（用於自動收合）
+        self.edge_threshold = 200  # 距離邊緣 200px 內才觸發收合
+        self.virtual_rect = virtual_rect
+        
+        # 判斷是靠近左邊還是右邊，並計算可見位置
+        widget_center_x = x + self.width() // 2
+        distance_to_left = widget_center_x - virtual_rect.left()
+        distance_to_right = virtual_rect.right() - widget_center_x
+        
+        if distance_to_left < distance_to_right:
+            # 靠近左邊界
+            self.edge_side = 'left'
+            self.visible_position = QPoint(virtual_rect.left() - 20, y)
         else:
-            self.move(1200, 40)
-            self.original_position = QPoint(1200, 40)
-            self.visible_position = QPoint(1030, 40)
+            # 靠近右邊界
+            self.edge_side = 'right'
+            self.visible_position = QPoint(virtual_rect.right() - self.width() + 20, y)
+        
+        # 初始狀態為半隱藏
+        self.is_fully_visible = False
 
     def _check_hover_state(self):
-        if self.is_pinned:
+        """檢查是否需要自動收合到邊緣"""
+        if self.is_pinned or not hasattr(self, 'virtual_rect'):
             return
 
-        global_cursor_pos = QApplication.instance().desktop().cursor().pos()
-        widget_rect = self.geometry()
-
-        detection_margin = 10
-        expanded_rect = widget_rect.adjusted(
-            -detection_margin, -detection_margin,
-            detection_margin, detection_margin
-        )
-
-        is_hovering = expanded_rect.contains(global_cursor_pos)
-        if is_hovering and not self.is_fully_visible:
-            self._slide_to_visible()
-        elif not is_hovering and self.is_fully_visible and not self.is_pinned:
-            self._slide_to_hidden()
-            if self.expanded:
-                self._schedule_auto_collapse(900)
+        widget_center = self.geometry().center()
+        
+        # 檢查小工具是否在螢幕邊緣附近
+        near_right_edge = (self.virtual_rect.right() - widget_center.x()) < self.edge_threshold
+        near_left_edge = (widget_center.x() - self.virtual_rect.left()) < self.edge_threshold
+        near_top_edge = (widget_center.y() - self.virtual_rect.top()) < self.edge_threshold
+        near_bottom_edge = (self.virtual_rect.bottom() - widget_center.y()) < self.edge_threshold
+        
+        # 只有在邊緣附近才檢查游標懸停
+        if near_right_edge or near_left_edge or near_top_edge or near_bottom_edge:
+            # 動態更新邊緣方向
+            distance_to_left = widget_center.x() - self.virtual_rect.left()
+            distance_to_right = self.virtual_rect.right() - widget_center.x()
+            
+            if distance_to_left < distance_to_right:
+                self.edge_side = 'left'
+                self.visible_position = QPoint(self.virtual_rect.left() - 20, self.pos().y())
+            else:
+                self.edge_side = 'right'
+                self.visible_position = QPoint(self.virtual_rect.right() - self.width() + 20, self.pos().y())
+            
+            global_cursor_pos = QCursor.pos()
+            widget_rect = self.geometry()
+            detection_margin = 50  # 增加檢測範圍
+            expanded_rect = widget_rect.adjusted(
+                -detection_margin, -detection_margin,
+                detection_margin, detection_margin
+            )
+            
+            is_hovering = expanded_rect.contains(global_cursor_pos)
+            if is_hovering and not self.is_fully_visible:
+                self._slide_to_visible()
+            elif not is_hovering and self.is_fully_visible:
+                self._slide_to_hidden()
+                if self.expanded:
+                    self._schedule_auto_collapse(900)
 
     def _slide_to_visible(self):
         if self.is_fully_visible or not self.visible_position:
@@ -627,6 +699,61 @@ class MainButton(QWidget):
         b.clicked.connect(callback)
         return b
 
+    def contextMenuEvent(self, event):
+        """顯示右鍵選單"""
+        # 檢查右鍵是否在主按鈕上
+        if self.mainButton.geometry().contains(event.pos()):
+            menu = QMenu(self)
+            
+            # 設定選單樣式
+            menu.setStyleSheet("""
+                QMenu {
+                    background-color: rgba(45, 45, 45, 230);
+                    color: #ffffff;
+                    border: 1px solid rgba(255, 255, 255, 50);
+                    border-radius: 6px;
+                    padding: 4px;
+                }
+                QMenu::item {
+                    padding: 6px 20px;
+                    border-radius: 4px;
+                }
+                QMenu::item:selected {
+                    background-color: rgba(70, 70, 70, 200);
+                }
+                QMenu::separator {
+                    height: 1px;
+                    background: rgba(255, 255, 255, 30);
+                    margin: 4px 10px;
+                }
+            """)
+            
+            # 添加選單項目
+            settings_action = menu.addAction("⚙️ 設定")
+            background_action = menu.addAction("🖼️ 背景")
+            profile_action = menu.addAction("📊  狀態")
+            menu.addSeparator()
+            close_action = menu.addAction("❌ 關閉小工具")
+            
+            # 執行選單並取得使用者選擇
+            action = menu.exec_(event.globalPos())
+            
+            if action == settings_action:
+                self._handle_option("user_settings")
+            elif action == background_action:
+                self._handle_option("system_background")
+            elif action == profile_action:
+                self._handle_option("state_profile")
+            elif action == close_action:
+                info_log("[MainButton] 使用者選擇關閉小工具")
+                self.hide()
+                if self.expanded:
+                    self._collapse_menu()
+            
+            event.accept()
+        else:
+            super().contextMenuEvent(event)
+
     def mousePressEvent(self, e):
         self._cancel_auto_collapse()
 
@@ -645,6 +772,12 @@ class MainButton(QWidget):
                 e.accept()
 
         elif e.button() == Qt.RightButton:
+            # 檢查是否點擊在主按鈕上
+            if self.mainButton.geometry().contains(e.pos()):
+                # 主按鈕右鍵交由 contextMenuEvent 處理
+                return
+            
+            # 其他區域的右鍵用於拖曳
             self.dragPos = e.globalPos() - self.frameGeometry().topLeft()
             self.right_click_timer.start(500)
             self.setCursor(Qt.ClosedHandCursor)
@@ -662,6 +795,30 @@ class MainButton(QWidget):
 
     def mouseReleaseEvent(self, e):
         if e.button() in (Qt.LeftButton, Qt.RightButton):
+            # 拖曳結束後，更新原始位置為當前位置
+            if self.dragPos is not None:
+                self.original_position = self.pos()
+                # 檢查是否靠近邊緣，如果是則設定收合位置
+                if hasattr(self, 'virtual_rect'):
+                    widget_center = self.geometry().center()
+                    distance_to_left = widget_center.x() - self.virtual_rect.left()
+                    distance_to_right = self.virtual_rect.right() - widget_center.x()
+                    
+                    if distance_to_left < distance_to_right:
+                        self.edge_side = 'left'
+                        self.visible_position = QPoint(self.virtual_rect.left() - 20, self.pos().y())
+                    else:
+                        self.edge_side = 'right'
+                        self.visible_position = QPoint(
+                            self.virtual_rect.right() - self.width() + 20, 
+                            self.pos().y()
+                        )
+                
+                # 強制刷新主按鈕樣式以清除懸停狀態
+                self.mainButton.style().unpolish(self.mainButton)
+                self.mainButton.style().polish(self.mainButton)
+                self.mainButton.update()
+            
             self.dragPos = None
             self.right_click_timer.stop()
             self.right_drag_enabled = False

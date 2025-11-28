@@ -3,6 +3,8 @@ import os
 import sys
 from typing import Dict, Any
 
+from utils.debug_helper import debug_log, info_log, error_log, OPERATION_LEVEL
+
 try:
     from PyQt5.QtWidgets import (
         QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QScrollArea,
@@ -17,7 +19,7 @@ except ImportError:
     print("[StateProfile] PyQt5 不可用")
 
 try:
-    from theme_manager import theme_manager, Theme, install_theme_hook
+    from .theme_manager import theme_manager, Theme, install_theme_hook
 except Exception:
     theme_manager = None
     Theme = None
@@ -205,7 +207,9 @@ class UEPStateProfileWidget(QWidget):
         painter = QPainter(result)
         painter.setRenderHint(QPainter.Antialiasing, True)
         path = QPainterPath()
-        path.addRoundedRect(QRect(0, 0, w, h), radius, radius)
+        # 修正：使用 QRectF 而非 QRect 以符合 addRoundedRect 的簽名
+        from PyQt5.QtCore import QRectF
+        path.addRoundedRect(QRectF(0, 0, w, h), radius, radius)
         painter.setClipPath(path)
         painter.drawPixmap(0, 0, scaled)
         painter.end()

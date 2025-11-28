@@ -2,7 +2,9 @@
 import os
 import sys
 from typing import Dict, Any, Optional
-from theme_manager import theme_manager, Theme
+from .theme_manager import theme_manager, Theme
+
+from utils.debug_helper import debug_log, info_log, error_log, OPERATION_LEVEL
 
 try:
     from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,

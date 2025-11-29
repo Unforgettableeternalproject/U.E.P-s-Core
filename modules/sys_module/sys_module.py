@@ -19,6 +19,9 @@ from .actions.integrations import news_summary, get_weather, get_world_time, cod
 from .actions.automation_helper import media_control, local_calendar
 from .actions.file_interaction import clean_trash_bin
 
+# Import permission manager
+from .permission_manager import get_permission_manager, PermissionType
+
 # Import session management
 from core.sessions.session_manager import session_manager, WorkflowSession, SessionStatus
 from .workflows import (
@@ -87,6 +90,13 @@ class SYSModule(BaseModule):
         # Initialize MCP Server
         self.mcp_server = MCPServer(sys_module=self)
         debug_log(2, "[SYS] MCP Server 已初始化")
+        
+        # 🔧 獲取權限管理器實例
+        self.permission_manager = get_permission_manager()
+        
+        # 🔧 註冊 user_settings 熱重載回調
+        from configs.user_settings_manager import user_settings_manager
+        user_settings_manager.register_reload_callback("sys_module", self._reload_from_user_settings)
 
     def initialize(self):
         # 註冊 WORK_SYS 協作管道的資料提供者
@@ -2007,3 +2017,35 @@ class SYSModule(BaseModule):
     def get_mcp_server(self):
         """Get the MCP Server instance"""
         return self.mcp_server
+    
+    def _reload_from_user_settings(self, key_path: str, value: Any) -> bool:
+        """
+        從 user_settings 熱重載設定
+        
+        Args:
+            key_path: 設定鍵路徑 (例如 "behavior.permissions.allow_file_creation")
+            value: 新值
+            
+        Returns:
+            是否成功
+        """
+        try:
+            info_log(f"[SYS] 🔄 重載使用者設定: {key_path} = {value}")
+            
+            # 所有 behavior.permissions 的設定都是即時生效
+            if key_path.startswith("behavior.permissions."):
+                permission_name = key_path.split(".")[-1]
+                info_log(f"[SYS] 權限設定已更新: {permission_name} = {value}")
+                return True
+            
+            else:
+                debug_log(2, f"[SYS] 未處理的設定路徑: {key_path}")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            error_log(f"[SYS] 重載使用者設定失敗: {e}")
+            import traceback
+            error_log(traceback.format_exc())
+            return False

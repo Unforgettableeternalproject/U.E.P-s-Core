@@ -1,241 +1,118 @@
-# =================================================================
-# U.E.P User Settings Configuration
-# 使用者可控制的設定項目
-# =================================================================
-# 此檔案包含所有使用者可以通過介面調整的設定
-# 變更後根據設定類型決定是否需要重載系統
-# =================================================================
-
-# =================================================================
-# 一般設定 (General Settings)
-# 熱重載: 大部分項目可即時生效
-# =================================================================
-general:
-  # 使用者身分設定
-  identity:
-    user_name: "user"              # 使用者稱呼
-    uep_name: "U.E.P"                  # UEP 的稱呼
-    current_identity_id: null        # 當前啟用的身分 ID (由 MEM 模組管理)
-    allow_identity_creation: true    # 是否允許創建新身分
-    
-  # 系統行為
-  system:
-    enable_debug_mode: false         # 啟用除錯模式 (需重載: ⚠️ 會啟動日誌視窗)
-    debug_level: 3                   # 除錯級別 (0-5) (即時生效)
-    enable_frontend_debug: true      # 啟用前端除錯 (即時生效)
-    auto_save_settings: true         # 自動保存設定變更 (即時生效)
-    confirm_before_exit: true        # 退出前確認 (即時生效)
-    language: "zh-TW"                # 介面語言 (需重載: ⚠️)
-    main_loop_interval: 0.1          # 主循環間隔 (秒) (需重載: ⚠️)
-    shutdown_timeout: 5.0            # 關機超時 (秒) (即時生效)
-
-# =================================================================
-# 互動設定 (Interaction Settings)
-# 熱重載: STT/TTS 相關需重載，其他可即時生效
-# =================================================================
-interaction:
-  # STT 語音輸入設定
-  speech_input:
-    enabled: true                    # 開啟/關閉語音活動偵測 (需重載: ⚠️ STT 模組)
-    microphone_device_index: 1       # 麥克風裝置索引 (需重載: ⚠️ STT 模組)
-    vad_sensitivity: 0.7             # 語音活動偵測靈敏度 (即時生效)
-    min_speech_duration: 0.3         # 最小語音持續時間 (即時生效)
-    enable_continuous_mode: false    # 連續模式 (需重載: ⚠️ STT 啟動模式)
-    wake_word_confidence: 0.8        # 喚醒詞信心度閾值 (即時生效)
-    
-  # TTS 語音輸出設定
-  speech_output:
-    enabled: true                    # 開啟/關閉 TTS 語音輸出 (需重載: ⚠️ TTS 模組)
-    volume: 70                       # 音量 (即時生效)
-    speed: 1.0                       # 語速倍率 (即時生效)
-    default_emotion: "neutral"       # 預設情緒 (即時生效)
-    emotion_intensity: 0.5           # 情緒強度 (即時生效)
-    
-  # MEM 記憶系統設定
-  memory:
-    enabled: true                    # 開啟/關閉記憶取用 (需重載: ⚠️ MEM 模組)
-    auto_save_conversations: true    # 自動保存對話記錄 (即時生效)
-    memory_retention_days: 90        # 記憶保留天數 (即時生效)
-    enable_semantic_search: true     # 啟用語意搜尋 (即時生效)
-    
-  # LLM 對話設定
-  conversation:
-    user_additional_prompt: ""       # 使用者額外提示 (即時生效, 上限 200 字元)
-    temperature: 0.8                 # 對話溫度 (即時生效)
-    max_context_messages: 10         # 最大上下文訊息數 (即時生效)
-    enable_learning: true            # 啟用學習系統 (即時生效)
-    
-  # 系統主動性設定
-  proactivity:
-    allow_system_initiative: true    # 允許系統主動觸發循環 (即時生效)
-    initiative_cooldown: 300         # 主動觸發冷卻時間 (即時生效)
-    require_user_input: false        # 所有新對話都等待使用者輸入 (即時生效)
-
-# =================================================================
-# 行為設定 (Behavior Settings)
-# 熱重載: 移動相關需重載 MOV，其他可即時生效
-# =================================================================
-behavior:
-  # 搗蛋模式設定
-  mischief:
-    enabled: false                   # 開啟/關閉搗蛋模式 (即時生效)
-    intensity: "medium"              # 行為上限: low/medium/high (即時生效)
-    tease_frequency: 0.03            # 調皮頻率 (即時生效)
-    easter_egg_enabled: true         # 啟用彩蛋動畫 (需重載: ⚠️ MOV 配置)
-    
-  # 系統權限設定
-  permissions:
-    allow_file_creation: true        # 允許創建檔案 (即時生效)
-    allow_file_modification: false   # 允許修改檔案 (即時生效)
-    allow_file_deletion: false       # 允許刪除檔案 (即時生效)
-    allow_app_launch: true           # 允許啟動應用程式 (即時生效)
-    allow_system_commands: false     # 允許執行系統命令 (即時生效)
-    require_confirmation: true       # 執行敏感操作前需確認 (即時生效)
-    
-  # 自動睡眠設定
-  auto_sleep:
-    enabled: true                    # 開啟/關閉自動睡眠 (即時生效)
-    max_idle_time: 1800              # 最大閒置時間 (秒, 最大 1800 = 30分鐘) (即時生效)
-    sleep_animation: "sleep_l"       # 睡眠動畫名稱 (即時生效)
-    wake_on_interaction: true        # 互動時自動喚醒 (即時生效)
-    
-  # MOV 移動與物理設定
-  movement:
-    boundary_mode: "wrap"            # 邊界模式: barrier(屏障)/wrap(無邊界) (需重載: ⚠️ MOV 模組)
-    enable_throw_behavior: true      # 啟用/禁用投擲行為 (需重載: ⚠️ MOV 模組)
-    max_throw_speed: 110.0           # 投擲速度上限 (需重載: ⚠️ MOV 模組)
-    enable_cursor_tracking: true     # 啟用/禁用滑鼠追蹤 (需重載: ⚠️ MOV 模組)
-    movement_smoothing: true         # 移動平滑化 (需重載: ⚠️ MOV 模組)
-    ground_friction: 0.95            # 地面摩擦係數 (需重載: ⚠️ MOV 物理引擎)
-
-# =================================================================
-# 介面設定 (Interface Settings)
-# 熱重載: 大部分可即時生效，主題切換除外
-# =================================================================
-interface:
-  # 使用者小工具設定
-  access_widget:
-    auto_hide: true                  # 允許自動隱藏 (即時生效)
-    hide_edge_threshold: 200         # 邊緣隱藏觸發距離 (即時生效)
-    animation_speed: 320             # 動畫速度 (即時生效)
-    
-  # 主視窗設定
-  main_window:
-    always_on_top: true              # 固定在最上層 (即時生效)
-    transparency: true               # 啟用透明度 (即時生效)
-    show_hitbox: false               # 顯示碰撞框 (即時生效)
-    
-  # 主題與視覺設定
-  appearance:
-    theme: "auto"                    # 主題: auto/light/dark (即時生效)
-    ui_scale: 1.0                    # 介面縮放 (需重載: ⚠️ UI 重繪)
-    animation_quality: "high"        # 動畫品質: low/medium/high (需重載: ⚠️ ANI 模組)
-    enable_effects: true             # 啟用視覺效果 (即時生效)
-    font_size: 12                    # 字體大小 (即時生效)
-    
-  # 視窗顯示控制
-  windows:
-    show_desktop_pet: false          # 顯示桌面寵物主視窗 (即時生效)
-    show_access_widget: true         # 顯示使用者存取小工具 (即時生效)
-    show_debug_window: false         # 顯示除錯視窗 (即時生效)
-
-# =================================================================
-# 監控與背景工作設定 (Monitoring & Background Tasks)
-# 熱重載: 大部分可即時生效
-# =================================================================
-monitoring:
-  # 背景工作設定
-  background_tasks:
-    enabled: true                    # 啟用/禁用背景工作 (即時生效)
-    default_media_folder: "E:\\Music\\My Songs\\Full Playlist"  # 預設媒體資料夾 (即時生效)
-    max_task_duration: -1            # 監控任務最長持續時間 (即時生效)
-    task_check_interval: 60          # 任務檢查間隔 (即時生效)
-    
-  # 網路存取設定
-  network:
-    allow_internet_access: true      # 是否允許連網 (即時生效)
-    allow_api_calls: true            # 允許 API 呼叫 (即時生效)
-    timeout: 30                      # 網路請求超時 (即時生效)
-    
-  # 日曆與提醒設定
-  calendar:
-    enabled: false                   # 啟用日曆整合 (需重載: ⚠️ 需載入日曆模組)
-    google_calendar_sync: false      # Google 日曆同步 (需重載: ⚠️)
-    reminder_advance_time: 15        # 提醒提前時間 (即時生效)
-    
-  # 音樂播放設定
-  music:
-    enabled: false                   # 啟用音樂播放功能 (即時生效)
-    auto_play: false                 # 自動播放 (即時生效)
-    default_volume: 50               # 預設音量 (即時生效)
-    shuffle: false                   # 隨機播放 (即時生效)
-
-# =================================================================
-# 進階設定 (Advanced Settings)
-# 熱重載: 模組控制需要重載，其他大部分即時生效
-# =================================================================
 advanced:
-  # 效能設定
-  performance:
-    max_fps: 60                      # 最大幀率 (需重載: ⚠️ UI 渲染循環)
-    enable_hardware_acceleration: true  # 硬體加速 (需重載: ⚠️ UI 模組)
-    reduce_animations_on_battery: true  # 電池模式下減少動畫 (即時生效)
-    gc_interval: 300                 # 垃圾回收間隔 (即時生效)
-    
-  # 日誌設定
-  logging:
-    enabled: true                    # 啟用日誌系統 (需重載: ⚠️)
-    log_level: "INFO"                # 日誌級別: DEBUG/INFO/WARNING/ERROR (即時生效)
-    log_dir: "logs"                  # 日誌目錄 (即時生效)
-    enable_split_logs: false         # 分割日誌檔案 (需重載: ⚠️)
-    enable_console_output: false     # 啟用控制台輸出 (即時生效)
-    save_logs: true                  # 保存日誌檔案 (即時生效)
-    max_log_size_mb: 50              # 最大日誌檔案大小 (即時生效)
-    log_rotation_days: 7             # 日誌輪替天數 (即時生效)
-    
-  # 模組控制 (進階用戶)
-  modules:
-    stt_enabled: true                # STT 模組 (需重載: ⚠️ 系統級)
-    nlp_enabled: true                # NLP 模組 (需重載: ⚠️ 系統級)
-    mem_enabled: true                # MEM 模組 (需重載: ⚠️ 系統級)
-    llm_enabled: true                # LLM 模組 (需重載: ⚠️ 系統級)
-    tts_enabled: true                # TTS 模組 (需重載: ⚠️ 系統級)
-    sys_enabled: true                # SYS 模組 (需重載: ⚠️ 系統級)
-    ui_enabled: true                 # UI 模組 (需重載: ⚠️ 系統級)
-    ani_enabled: true                # ANI 模組 (需重載: ⚠️ 系統級)
-    mov_enabled: true                # MOV 模組 (需重載: ⚠️ 系統級)
-    
-  # 實驗性功能
   experimental:
-    enable_emotion_analysis: false   # 啟用情緒分析 (需重載: ⚠️ 新功能模組)
-    enable_gesture_control: false    # 啟用手勢控制 (需重載: ⚠️ 新功能模組)
-    enable_voice_commands: false     # 啟用語音命令 (需重載: ⚠️ 新功能模組)
-    enable_smart_suggestions: false  # 啟用智能建議 (需重載: ⚠️ 新功能模組)
-
-# =================================================================
-# 快捷鍵設定 (Keyboard Shortcuts)
-# 熱重載: 即時生效
-# =================================================================
-shortcuts:
-  toggle_visibility: "Ctrl+Alt+U"    # 切換可見性
-  open_settings: "Ctrl+Alt+S"        # 開啟設定
-  open_debug: "Ctrl+Alt+D"           # 開啟除錯視窗
-  force_sleep: "Ctrl+Alt+Z"          # 強制睡眠
-  emergency_stop: "Ctrl+Alt+X"       # 緊急停止所有行為
-
-# =================================================================
-# 隱私與安全設定 (Privacy & Security)
-# 熱重載: 即時生效
-# =================================================================
+    enable_emotion_analysis: false
+    enable_gesture_control: false
+    enable_smart_suggestions: false
+    enable_voice_commands: false
+  performance:
+    enable_hardware_acceleration: true
+    gc_interval: 300
+    max_fps: 60
+    reduce_animations_on_battery: true
+behavior:
+  auto_sleep:
+    enabled: true
+    max_idle_time: 1800
+    sleep_animation: sleep_l
+    wake_on_interaction: true
+  mischief:
+    easter_egg_enabled: true
+    enabled: false
+    intensity: medium
+    tease_frequency: 0.03
+  movement:
+    boundary_mode: barrier
+    enable_cursor_tracking: true
+    enable_throw_behavior: true
+    ground_friction: 0.95
+    max_throw_speed: 110.0
+    movement_smoothing: true
+  permissions:
+    allow_app_launch: true
+    allow_file_creation: true
+    allow_file_deletion: false
+    allow_file_modification: false
+    allow_system_commands: false
+    require_confirmation: true
+general:
+  identity:
+    allow_identity_creation: true
+    current_identity_id: null
+    uep_name: U.E.P
+    user_name: user
+  system:
+    auto_save_settings: true
+    confirm_before_exit: true
+    enable_debug_mode: false
+    language: zh-TW
+interaction:
+  conversation:
+    enable_learning: true
+    temperature: 0.8
+    user_additional_prompt: ''
+  memory:
+    enabled: true
+  proactivity:
+    allow_system_initiative: true
+    initiative_cooldown: 300
+    require_user_input: false
+  speech_input:
+    enable_continuous_mode: false
+    enabled: true
+    microphone_device_index: 1
+    min_speech_duration: 0.3
+    vad_sensitivity: 0.7
+    wake_word_confidence: 0.8
+  speech_output:
+    default_emotion: neutral
+    emotion_intensity: 0.5
+    enabled: true
+    speed: 1.0
+    volume: 70
+interface:
+  access_widget:
+    animation_speed: 320
+    auto_hide: true
+    hide_edge_threshold: 200
+  appearance:
+    theme: auto
+  main_window:
+    always_on_top: true
+    show_hitbox: false
+    transparency: true
+  windows:
+    show_access_widget: true
+    show_debug_window: false
+    show_desktop_pet: false
+monitoring:
+  background_tasks:
+    default_media_folder: E:\Music\My Songs\Full Playlist
+    enabled: true
+    max_task_duration: -1
+    task_check_interval: 60
+  calendar:
+    enabled: false
+    google_calendar_sync: false
+    reminder_advance_time: 15
+  music:
+    auto_play: false
+    default_volume: 50
+    enabled: false
+    shuffle: false
+  network:
+    allow_api_calls: true
+    allow_internet_access: true
+    timeout: 30
 privacy:
-  # 資料收集設定
   data_collection:
-    allow_usage_statistics: false    # 允許收集使用統計
-    allow_error_reporting: true      # 允許錯誤回報
-    anonymize_data: true             # 匿名化資料
-    
-  # 資料保留設定
+    allow_error_reporting: true
+    allow_usage_statistics: false
+    anonymize_data: true
   data_retention:
-    auto_delete_old_conversations: false  # 自動刪除舊對話
-    conversation_retention_days: 365      # 對話保留天數
-    clear_cache_on_exit: false       # 退出時清除快取
+    clear_cache_on_exit: false
+shortcuts:
+  emergency_stop: Ctrl+Alt+X
+  force_sleep: Ctrl+Alt+Z
+  open_debug: Ctrl+Alt+D
+  open_settings: Ctrl+Alt+S
+  toggle_visibility: Ctrl+Alt+U

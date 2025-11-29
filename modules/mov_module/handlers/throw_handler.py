@@ -298,6 +298,12 @@ class ThrowHandler(BaseHandler):
             debug_log(1, f"[{self.__class__.__name__}] 取消投擲動畫")
             self._is_in_throw_animation = False
             self._throw_direction = None
+            
+            # 重置 movement_mode，避免卡在 THROWN 狀態
+            if hasattr(self.coordinator, 'movement_mode') and MovementMode:
+                if self.coordinator.movement_mode == MovementMode.THROWN:
+                    debug_log(1, f"[{self.__class__.__name__}] 重置 movement_mode: THROWN → FLOAT")
+                    self.coordinator.movement_mode = MovementMode.FLOAT
     
     def cancel_tease(self):
         """取消投擲後的調皮行為（例如被拖曳打斷）"""

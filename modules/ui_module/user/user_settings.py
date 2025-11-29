@@ -11,7 +11,8 @@ try:
         QTabWidget, QLabel, QGroupBox, QScrollArea,
         QFrame, QPushButton, QCheckBox, QSpinBox, QDoubleSpinBox,
         QSlider, QComboBox, QLineEdit, QTextEdit,
-        QFormLayout, QSizePolicy, QApplication, QMessageBox
+        QFormLayout, QSizePolicy, QApplication, QMessageBox,
+        QListWidget, QListWidgetItem, QDialog, QDialogButtonBox
     )
     from PyQt5.QtCore import Qt, QTimer, pyqtSignal
     from PyQt5.QtGui import QFont
@@ -21,6 +22,10 @@ except ImportError:
     QMainWindow = object
     QWidget = object
     pyqtSignal = None
+    QListWidget = object
+    QListWidgetItem = object
+    QDialog = object
+    QDialogButtonBox = object
 
 try:
     from .theme_manager import theme_manager, Theme, install_theme_hook
@@ -211,9 +216,13 @@ class UserMainWindow(QMainWindow):
         
         # 1. 身分設定
         identity_group = self._make_group("身分設定")
-        identity_layout = QFormLayout(identity_group)
-        identity_layout.setSpacing(12)
-        identity_layout.setContentsMargins(16, 20, 16, 16)
+        identity_main_layout = QVBoxLayout(identity_group)
+        identity_main_layout.setSpacing(12)
+        identity_main_layout.setContentsMargins(16, 20, 16, 16)
+        
+        # 基本名稱設定
+        identity_layout = QFormLayout()
+        identity_layout.setSpacing(8)
         
         self.user_name_edit = QLineEdit()
         self.user_name_edit.setPlaceholderText("例如：小明")
@@ -223,8 +232,44 @@ class UserMainWindow(QMainWindow):
         self.uep_name_edit.setPlaceholderText("例如：U.E.P")
         identity_layout.addRow("UEP 名稱:", self.uep_name_edit)
         
+        identity_main_layout.addLayout(identity_layout)
+        
+        # 身分清單區域
+        identity_list_label = QLabel("身分清單:")
+        identity_list_label.setStyleSheet("font-weight: bold; margin-top: 8px;")
+        identity_main_layout.addWidget(identity_list_label)
+        
+        # 身分列表
+        self.identity_list_widget = QListWidget()
+        self.identity_list_widget.setMaximumHeight(150)
+        self.identity_list_widget.itemDoubleClicked.connect(self._on_identity_double_clicked)
+        identity_main_layout.addWidget(self.identity_list_widget)
+        
+        # 身分操作按鈕
+        identity_btn_layout = QHBoxLayout()
+        
+        self.switch_identity_btn = QPushButton("切換身分")
+        self.switch_identity_btn.clicked.connect(self._switch_identity)
+        identity_btn_layout.addWidget(self.switch_identity_btn)
+        
+        self.create_identity_btn = QPushButton("新增身分")
+        self.create_identity_btn.clicked.connect(self._create_identity)
+        identity_btn_layout.addWidget(self.create_identity_btn)
+        
+        self.delete_identity_btn = QPushButton("刪除身分")
+        self.delete_identity_btn.clicked.connect(self._delete_identity)
+        identity_btn_layout.addWidget(self.delete_identity_btn)
+        
+        self.refresh_identity_btn = QPushButton("刷新")
+        self.refresh_identity_btn.clicked.connect(self._refresh_identity_list)
+        identity_btn_layout.addWidget(self.refresh_identity_btn)
+        
+        identity_btn_layout.addStretch()
+        identity_main_layout.addLayout(identity_btn_layout)
+        
+        # 身分選項
         self.allow_identity_creation_cb = QCheckBox("允許創建新身分")
-        identity_layout.addRow("", self.allow_identity_creation_cb)
+        identity_main_layout.addWidget(self.allow_identity_creation_cb)
         
         scroll_layout.addWidget(identity_group)
         
@@ -474,16 +519,7 @@ class UserMainWindow(QMainWindow):
         self.mem_enabled_cb = QCheckBox("啟用記憶系統 ⚠️")
         mem_layout.addRow("", self.mem_enabled_cb)
         
-        self.auto_save_conversations_cb = QCheckBox("自動保存對話")
-        mem_layout.addRow("", self.auto_save_conversations_cb)
-        
-        self.memory_retention_days_spin = QSpinBox()
-        self.memory_retention_days_spin.setRange(1, 3650)
-        self.memory_retention_days_spin.setSuffix(" 天")
-        mem_layout.addRow("記憶保留天數:", self.memory_retention_days_spin)
-        
-        self.enable_semantic_search_cb = QCheckBox("啟用語意搜尋")
-        mem_layout.addRow("", self.enable_semantic_search_cb)
+        # 注意：對話已在快照中自動保存，記憶管理基於 GS 疊代數而非天數
         
         scroll_layout.addWidget(mem_group)
         
@@ -503,10 +539,6 @@ class UserMainWindow(QMainWindow):
         self.temperature_spin.setSingleStep(0.1)
         self.temperature_spin.setDecimals(1)
         llm_layout.addRow("對話溫度:", self.temperature_spin)
-        
-        self.max_context_messages_spin = QSpinBox()
-        self.max_context_messages_spin.setRange(1, 50)
-        llm_layout.addRow("最大上下文數:", self.max_context_messages_spin)
         
         self.enable_learning_cb = QCheckBox("啟用學習系統")
         llm_layout.addRow("", self.enable_learning_cb)
@@ -875,6 +907,9 @@ class UserMainWindow(QMainWindow):
             self.uep_name_edit.setText(get_user_setting("general.identity.uep_name", "U.E.P"))
             self.allow_identity_creation_cb.setChecked(get_user_setting("general.identity.allow_identity_creation", True))
             
+            # 載入身分清單
+            self._refresh_identity_list()
+            
             # 系統
             lang = get_user_setting("general.system.language", "zh-TW")
             idx = self.language_combo.findText(lang)
@@ -942,14 +977,10 @@ class UserMainWindow(QMainWindow):
             # Tab 3: 記憶與對話
             # MEM
             self.mem_enabled_cb.setChecked(get_user_setting("interaction.memory.enabled", True))
-            self.auto_save_conversations_cb.setChecked(get_user_setting("interaction.memory.auto_save_conversations", True))
-            self.memory_retention_days_spin.setValue(get_user_setting("interaction.memory.memory_retention_days", 90))
-            self.enable_semantic_search_cb.setChecked(get_user_setting("interaction.memory.enable_semantic_search", True))
             
             # LLM
             self.user_additional_prompt_edit.setPlainText(get_user_setting("interaction.conversation.user_additional_prompt", ""))
             self.temperature_spin.setValue(get_user_setting("interaction.conversation.temperature", 0.8))
-            self.max_context_messages_spin.setValue(get_user_setting("interaction.conversation.max_context_messages", 10))
             self.enable_learning_cb.setChecked(get_user_setting("interaction.conversation.enable_learning", True))
             
             # 主動性
@@ -1100,13 +1131,9 @@ class UserMainWindow(QMainWindow):
             
             # Tab 3: 記憶與對話
             set_user_setting("interaction.memory.enabled", self.mem_enabled_cb.isChecked())
-            set_user_setting("interaction.memory.auto_save_conversations", self.auto_save_conversations_cb.isChecked())
-            set_user_setting("interaction.memory.memory_retention_days", self.memory_retention_days_spin.value())
-            set_user_setting("interaction.memory.enable_semantic_search", self.enable_semantic_search_cb.isChecked())
             
             set_user_setting("interaction.conversation.user_additional_prompt", self.user_additional_prompt_edit.toPlainText()[:200])
             set_user_setting("interaction.conversation.temperature", self.temperature_spin.value())
-            set_user_setting("interaction.conversation.max_context_messages", self.max_context_messages_spin.value())
             set_user_setting("interaction.conversation.enable_learning", self.enable_learning_cb.isChecked())
             
             set_user_setting("interaction.proactivity.allow_system_initiative", self.allow_system_initiative_cb.isChecked())
@@ -1215,6 +1242,191 @@ class UserMainWindow(QMainWindow):
         """取消按鈕"""
         self.load_settings()
         self.close()
+    
+    # ============================================================================
+    # 身分管理功能
+    # ============================================================================
+    
+    def _refresh_identity_list(self):
+        """刷新身分清單"""
+        try:
+            from modules.nlp_module.identity_manager import IdentityManager
+            from pathlib import Path
+            
+            # 獲取 IdentityManager 實例
+            identity_storage_path = Path("memory") / "identities"
+            identity_manager = IdentityManager(storage_path=str(identity_storage_path))
+            
+            # 清空列表
+            self.identity_list_widget.clear()
+            
+            # 獲取當前身分 ID
+            current_id = get_user_setting("general.identity.current_identity_id", None)
+            
+            # 載入所有身分
+            identities = identity_manager.identities
+            if not identities:
+                item = QListWidgetItem("（尚無身分）")
+                item.setData(Qt.UserRole, None)
+                self.identity_list_widget.addItem(item)
+                debug_log(2, "[UserMainWindow] 身分清單為空")
+                return
+            
+            # 添加身分到列表
+            for identity_id, profile in identities.items():
+                # 顯示格式：「名稱 (ID) [樣本: X]」
+                sample_count = profile.speaker_accumulation.total_samples if profile.speaker_accumulation else 0
+                display_text = f"{profile.display_name} ({identity_id[:8]}...) [樣本: {sample_count}]"
+                
+                if identity_id == current_id:
+                    display_text = f"✓ {display_text}"  # 標記當前身分
+                
+                item = QListWidgetItem(display_text)
+                item.setData(Qt.UserRole, identity_id)  # 儲存完整 ID
+                self.identity_list_widget.addItem(item)
+            
+            info_log(f"[UserMainWindow] 已載入 {len(identities)} 個身分")
+            
+        except Exception as e:
+            error_log(f"[UserMainWindow] 刷新身分清單失敗: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _on_identity_double_clicked(self, item):
+        """雙擊身分項目時切換身分"""
+        self._switch_identity()
+    
+    def _switch_identity(self):
+        """切換到選中的身分"""
+        try:
+            current_item = self.identity_list_widget.currentItem()
+            if not current_item:
+                QMessageBox.warning(self, "提示", "請先選擇要切換的身分")
+                return
+            
+            identity_id = current_item.data(Qt.UserRole)
+            if not identity_id:
+                QMessageBox.warning(self, "提示", "無效的身分")
+                return
+            
+            # 更新 user_settings.yaml
+            set_user_setting("general.identity.current_identity_id", identity_id)
+            
+            # 設置到 Working Context
+            from core.working_context import working_context_manager
+            working_context_manager.set_declared_identity(identity_id)
+            
+            # 同步到 StatusManager
+            from core.status_manager import status_manager
+            status_manager.switch_identity(identity_id)
+            
+            # 刷新列表顯示
+            self._refresh_identity_list()
+            
+            QMessageBox.information(self, "成功", f"已切換到身分: {identity_id[:16]}...")
+            info_log(f"[UserMainWindow] 已切換到身分: {identity_id}")
+            
+        except Exception as e:
+            error_log(f"[UserMainWindow] 切換身分失敗: {e}")
+            QMessageBox.critical(self, "錯誤", f"切換身分失敗: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _create_identity(self):
+        """創建新身分"""
+        try:
+            # 檢查是否允許創建
+            if not get_user_setting("general.identity.allow_identity_creation", True):
+                QMessageBox.warning(self, "提示", "目前設定不允許創建新身分")
+                return
+            
+            # 顯示輸入對話框
+            from PyQt5.QtWidgets import QInputDialog
+            display_name, ok = QInputDialog.getText(
+                self, "新增身分", "請輸入身分名稱:", 
+                QLineEdit.Normal, ""
+            )
+            
+            if not ok or not display_name.strip():
+                return
+            
+            display_name = display_name.strip()
+            
+            # 創建新身分
+            from modules.nlp_module.identity_manager import IdentityManager
+            from pathlib import Path
+            
+            identity_storage_path = Path("memory") / "identities"
+            identity_manager = IdentityManager(storage_path=str(identity_storage_path))
+            
+            # 使用 create_identity 方法（speaker_id 使用隨機值）
+            import uuid
+            speaker_id = f"manual_created_{uuid.uuid4().hex[:8]}"
+            new_identity = identity_manager.create_identity(
+                speaker_id=speaker_id,
+                display_name=display_name,
+                force_new=True
+            )
+            
+            # 刷新列表
+            self._refresh_identity_list()
+            
+            QMessageBox.information(self, "成功", f"已創建新身分: {display_name}\nID: {new_identity.identity_id[:16]}...")
+            info_log(f"[UserMainWindow] 已創建新身分: {display_name} ({new_identity.identity_id})")
+            
+        except Exception as e:
+            error_log(f"[UserMainWindow] 創建身分失敗: {e}")
+            QMessageBox.critical(self, "錯誤", f"創建身分失敗: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _delete_identity(self):
+        """刪除選中的身分"""
+        try:
+            current_item = self.identity_list_widget.currentItem()
+            if not current_item:
+                QMessageBox.warning(self, "提示", "請先選擇要刪除的身分")
+                return
+            
+            identity_id = current_item.data(Qt.UserRole)
+            if not identity_id:
+                QMessageBox.warning(self, "提示", "無效的身分")
+                return
+            
+            # 檢查是否為當前身分
+            current_id = get_user_setting("general.identity.current_identity_id", None)
+            if identity_id == current_id:
+                QMessageBox.warning(self, "提示", "無法刪除當前正在使用的身分")
+                return
+            
+            # 確認刪除
+            reply = QMessageBox.question(
+                self, "確認刪除", 
+                f"確定要刪除身分 {identity_id[:16]}... 嗎？\n此操作無法撤銷！",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            
+            if reply != QMessageBox.Yes:
+                return
+            
+            # 刪除身分檔案
+            from pathlib import Path
+            identity_file = Path("memory") / "identities" / f"{identity_id}.json"
+            if identity_file.exists():
+                identity_file.unlink()
+                info_log(f"[UserMainWindow] 已刪除身分檔案: {identity_file}")
+            
+            # 刷新列表
+            self._refresh_identity_list()
+            
+            QMessageBox.information(self, "成功", f"已刪除身分: {identity_id[:16]}...")
+            
+        except Exception as e:
+            error_log(f"[UserMainWindow] 刪除身分失敗: {e}")
+            QMessageBox.critical(self, "錯誤", f"刪除身分失敗: {e}")
+            import traceback
+            traceback.print_exc()
     
     def closeEvent(self, event):
         """視窗關閉事件"""

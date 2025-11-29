@@ -65,8 +65,9 @@ def get_input_mode():
     Returns:
         str: "vad" (語音活動檢測) 或 "text" (文字輸入)
     """
-    config = load_config()
-    return config.get("system", {}).get("input_mode", {}).get("mode", "vad")
+    from configs.user_settings_manager import get_user_setting
+    speech_input_enabled = get_user_setting("interaction.speech_input.enabled", True)
+    return "vad" if speech_input_enabled else "text"
 
 def is_text_input_mode():
     """檢查是否為文字輸入模式"""

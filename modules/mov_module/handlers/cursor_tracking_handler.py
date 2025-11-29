@@ -75,6 +75,10 @@ class CursorTrackingHandler(BaseHandler):
             return  # 已經在轉頭狀態
         
         try:
+            # 檢查使用者設定是否啟用滑鼠追蹤
+            if hasattr(self.coordinator, '_cursor_tracking_enabled') and not self.coordinator._cursor_tracking_enabled:
+                return  # 使用者已禁用滑鼠追蹤
+            
             # 檢查是否處於 IDLE 狀態（只有閒置時才追蹤）
             if not self._is_stationary():
                 # debug_log 已在 _is_stationary() 內部處理

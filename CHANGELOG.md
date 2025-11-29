@@ -2146,3 +2146,15 @@
 
 ---
 
+### Integrated more user settings to map with action system. 11/29
+
+> Date: Sat, 29 Nov 2025 20:08:27 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `fafd0b3ec77c2bb2a0f7f8c8bf80fe4beecaffec`
+
+---
+

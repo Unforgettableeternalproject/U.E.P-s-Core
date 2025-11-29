@@ -79,10 +79,8 @@ class AnimationManager:
         if not self.current:
             return
         finished = self.current.name
-        # 保存當前動畫的 zoom/offset 值
-        self._last_zoom = self.current.zoom
-        self._last_offset_x = self.current.offset_x
-        self._last_offset_y = self.current.offset_y
+        # 🔧 不在這裡更新 _last_zoom，保持之前的值
+        # 新動畫的第一幀顯示時會自動更新，避免切換時的閃爍
         self.state = AnimPlayState.STOPPED
         self.current = None
         if self.on_finish:
@@ -217,8 +215,10 @@ class AnimationManager:
         self.state = AnimPlayState.PLAYING
         self.last_request_name = clip.name
         self.last_request_time = now
-        # 注意: _last_zoom 不在這裡更新，而是在第一幀顯示時更新
-        # 這樣可以避免動畫切換時的短暫縮放問題
+        # 立即更新 _last_zoom，確保UI查詢 get_status() 時能得到正確的值
+        self._last_zoom = clip.zoom
+        self._last_offset_x = clip.offset_x
+        self._last_offset_y = clip.offset_y
         if self.on_start:
             try: self.on_start(clip.name)
             except Exception: pass

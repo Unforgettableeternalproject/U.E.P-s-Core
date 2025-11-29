@@ -49,6 +49,7 @@ try:
     from .core.animation_priority import AnimationPriorityManager, AnimationPriority
     from .behaviors.base_behavior import BehaviorContext, BehaviorFactory
     from .handlers import CursorTrackingHandler, ThrowHandler, FileDropHandler
+    from .idle_manager import IdleManager
 except Exception:
     from core.position import Position, Velocity  # type: ignore
     from core.physics import PhysicsEngine  # type: ignore
@@ -62,6 +63,9 @@ except Exception:
 
 # 日誌
 from utils.debug_helper import debug_log, info_log, error_log
+
+# 使用者設定管理器
+from configs.user_settings_manager import user_settings_manager, get_user_setting
 
 
 class MOVModule(BaseFrontendModule):
@@ -81,13 +85,17 @@ class MOVModule(BaseFrontendModule):
         # --- 核心模組 ---
         # 從 config.yaml 的 physics 區段讀取參數
         physics_config = self.config.get("physics", {})
+        # ground_friction 優先從 user_settings.yaml 讀取，再從 mov_module.yaml 讀取
+        user_ground_friction = get_user_setting("behavior.movement.ground_friction", None)
+        ground_friction_value = float(user_ground_friction if user_ground_friction is not None else physics_config.get("ground_friction", 0.95))
         self.physics = PhysicsEngine(
             gravity=float(physics_config.get("gravity", 0.8)),
             damping=float(physics_config.get("damping", 0.978)),  # 已棄用，保留相容性
-            ground_friction=float(physics_config.get("ground_friction", 0.95)),
+            ground_friction=ground_friction_value,
             air_resistance=float(physics_config.get("air_resistance", 0.985)),
             bounce_factor=float(physics_config.get("bounce_factor", 0.4)),
         )
+        debug_log(2, f"[{self.module_id}] 地面摩擦係數: {ground_friction_value:.3f} (來源: {'user_settings' if user_ground_friction is not None else 'mov_module'}）")
         self.sm = MovementStateMachine()
 
         # --- 模式/行為 ---
@@ -121,8 +129,10 @@ class MOVModule(BaseFrontendModule):
         # --- 邊界處理模式 ---
         # "barrier": 碰到邊界停止（預設）
         # "wrap": 從右邊出去左邊進來（循環模式）
-        self.boundary_mode = self.config.get("boundary_mode", "barrier")
-        debug_log(2, f"[{self.module_id}] 邊界模式: {self.boundary_mode}")
+        # 優先從 user_settings.yaml 讀取
+        user_boundary_mode = get_user_setting("behavior.movement.boundary_mode", None)
+        self.boundary_mode = user_boundary_mode if user_boundary_mode is not None else self.config.get("boundary_mode", "barrier")
+        debug_log(2, f"[{self.module_id}] 邊界模式: {self.boundary_mode} (來源: {'user_settings' if user_boundary_mode is not None else 'mov_module'})")
 
         # --- 控制旗標 ---
         self.is_being_dragged = False
@@ -147,17 +157,33 @@ class MOVModule(BaseFrontendModule):
         self._throw_handler = ThrowHandler(self)
         self._file_drop_handler = FileDropHandler(self)
         
+        # 初始化處理器的使用者設定
+        self._cursor_tracking_enabled = get_user_setting("behavior.movement.enable_cursor_tracking", True)
+        user_throw_enabled = get_user_setting("behavior.movement.enable_throw_behavior", True)
+        user_max_throw_speed = get_user_setting("behavior.movement.max_throw_speed", None)
+        
+        # 套用投擲設定
+        if not user_throw_enabled:
+            self._throw_handler.throw_threshold_speed = 999999.0
+            debug_log(2, f"[{self.module_id}] 投擲行為已禁用（使用者設定）")
+        if user_max_throw_speed is not None:
+            self._throw_handler.max_throw_speed = float(user_max_throw_speed)
+            debug_log(2, f"[{self.module_id}] 最大投擲速度: {user_max_throw_speed} (來源: user_settings)")
+        
         # --- 投擲後行為標記（由 ThrowHandler 管理，這裡保留供 _enter_behavior 使用） ---
         self._post_throw_tease_pending = False
         
         # --- 移動平滑化 ---
+        # 優先從 user_settings.yaml 讀取
+        user_smoothing = get_user_setting("behavior.movement.movement_smoothing", None)
         smoothing_config = self.config.get("movement_smoothing", {})
-        self._smoothing_enabled = smoothing_config.get("enabled", True)
+        self._smoothing_enabled = user_smoothing if user_smoothing is not None else smoothing_config.get("enabled", True)
         self._velocity_lerp_factor = float(smoothing_config.get("velocity_lerp_factor", 0.15))
         self._pause_damping = float(smoothing_config.get("pause_damping", 0.85))
         self._resume_acceleration = float(smoothing_config.get("resume_acceleration", 0.2))
         self._smooth_velocity = Velocity(0.0, 0.0)  # 平滑後的速度
         self._pause_velocity_buffer = Velocity(0.0, 0.0)  # 暫停前的速度緩衝
+        debug_log(2, f"[{self.module_id}] 移動平滑化: {self._smoothing_enabled} (來源: {'user_settings' if user_smoothing is not None else 'mov_module'})")
         
         # --- 入場行為 ---
         self._entry_behavior_config = self.config.get("entry_behavior", {})
@@ -243,6 +269,15 @@ class MOVModule(BaseFrontendModule):
         self._current_gs_id: Optional[str] = None  # 當前 General Session ID
         self._state_animation_config: Optional[Dict] = None
         self._current_playing_anim: Optional[str] = None  # 當前播放的動畫名稱（用於避免重複觸發）
+        
+        # 🔧 閒置管理器（自動睡眠）
+        self.idle_manager = IdleManager()
+        self.idle_manager.set_sleep_callback(self._enter_sleep_mode)
+        self.idle_manager.set_wake_callback(self._exit_sleep_mode)
+        
+        # 🔧 註冊 user_settings 熱重載回調
+        from configs.user_settings_manager import user_settings_manager
+        user_settings_manager.register_reload_callback("mov_module", self._reload_from_user_settings)
 
         info_log(f"[{self.module_id}] MOV 初始化完成")
 
@@ -311,6 +346,10 @@ class MOVModule(BaseFrontendModule):
             
             # 載入狀態動畫配置
             self._state_animation_config = self._load_state_animation_config()
+            
+            # 註冊使用者設定熱重載回調
+            user_settings_manager.register_reload_callback("mov_module", self._reload_from_user_settings)
+            debug_log(2, f"[{self.module_id}] 已註冊使用者設定熱重載回調")
 
             return True
         except Exception as e:
@@ -1372,6 +1411,11 @@ class MOVModule(BaseFrontendModule):
         
         self.pause_movement(self.DRAG_PAUSE_REASON)
         
+        # 停止當前動畫並重置優先度管理器
+        if self.ani_module and hasattr(self.ani_module, 'stop'):
+            self.ani_module.stop()
+        self._animation_priority.reset()
+        
         # 播放掙扎動畫（使用 USER_INTERACTION 優先度）
         struggle_anim = self.anim_query.get_struggle_animation()
         self._trigger_anim(
@@ -2403,6 +2447,87 @@ GS 推進 - 當前 GS 結束，恢復 idle 狀態和移動"""
         timers = cfg.get("timers", {})
         self.config["behavior_interval_ms"] = int(timers.get("behavior_interval_ms", self.config.get("behavior_interval_ms", 100)))
         self.config["movement_interval_ms"] = int(timers.get("movement_interval_ms", self.config.get("movement_interval_ms", 16)))
+
+    def _reload_from_user_settings(self, key_path: str, value: Any) -> bool:
+        """
+        從 user_settings.yaml 重載設定
+        
+        Args:
+            key_path: 設定路徑 (如 "behavior.movement.boundary_mode")
+            value: 新值
+            
+        Returns:
+            是否成功
+        """
+        try:
+            info_log(f"[{self.module_id}] 🔄 重載使用者設定: {key_path} = {value}")
+            
+            # 根據設定路徑處理不同的參數
+            if key_path == "behavior.movement.boundary_mode":
+                # 邊界模式
+                old_mode = self.boundary_mode
+                self.boundary_mode = value
+                info_log(f"[{self.module_id}] 邊界模式已更新: {old_mode} → {value}")
+                
+            elif key_path == "behavior.movement.enable_throw_behavior":
+                # 投擲行為開關
+                if hasattr(self, '_throw_handler') and self._throw_handler:
+                    # ThrowHandler 沒有 enable/disable，但我們可以透過修改閾值來實現
+                    if not value:
+                        # 禁用：設置極高的閾值，實際上不會觸發
+                        self._throw_handler.throw_threshold_speed = 999999.0
+                        info_log(f"[{self.module_id}] 投擲行為已禁用")
+                    else:
+                        # 啟用：恢復預設閾值
+                        config_threshold = float(self.config.get("throw_threshold_speed", 800.0))
+                        self._throw_handler.throw_threshold_speed = config_threshold
+                        info_log(f"[{self.module_id}] 投擲行為已啟用 (閾值={config_threshold})")
+                        
+            elif key_path == "behavior.movement.max_throw_speed":
+                # 最大投擲速度
+                if hasattr(self, '_throw_handler') and self._throw_handler:
+                    old_speed = self._throw_handler.max_throw_speed
+                    self._throw_handler.max_throw_speed = float(value)
+                    info_log(f"[{self.module_id}] 最大投擲速度已更新: {old_speed} → {value}")
+                    
+            elif key_path == "behavior.movement.enable_cursor_tracking":
+                # 滑鼠追蹤開關
+                if hasattr(self, '_cursor_tracking_handler') and self._cursor_tracking_handler:
+                    # CursorTrackingHandler 透過事件驅動，直接記錄開關狀態
+                    self._cursor_tracking_enabled = bool(value)
+                    info_log(f"[{self.module_id}] 滑鼠追蹤已{'啟用' if value else '禁用'}")
+                    # 如果禁用，停止當前追蹤
+                    if not value and hasattr(self._cursor_tracking_handler, '_is_turning_head'):
+                        if self._cursor_tracking_handler._is_turning_head:
+                            self._cursor_tracking_handler._stop_tracking(restore_idle=True)
+                            
+            elif key_path == "behavior.movement.movement_smoothing":
+                # 移動平滑化
+                old_smoothing = self._smoothing_enabled
+                self._smoothing_enabled = bool(value)
+                info_log(f"[{self.module_id}] 移動平滑化已更新: {old_smoothing} → {value}")
+                # 重置平滑速度緩衝
+                self._smooth_velocity = Velocity(0.0, 0.0)
+                self._pause_velocity_buffer = Velocity(0.0, 0.0)
+                
+            elif key_path == "behavior.movement.ground_friction":
+                # 地面摩擦係數
+                if hasattr(self, 'physics') and self.physics:
+                    old_friction = self.physics.ground_friction
+                    self.physics.ground_friction = float(value)
+                    info_log(f"[{self.module_id}] 地面摩擦係數已更新: {old_friction:.3f} → {value:.3f}")
+            
+            else:
+                debug_log(2, f"[{self.module_id}] 未處理的設定路徑: {key_path}")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            error_log(f"[{self.module_id}] 重載使用者設定失敗: {e}")
+            import traceback
+            error_log(traceback.format_exc())
+            return False
 
     def shutdown(self):
         """關閉移動模組，停止所有計時器和清理資源"""

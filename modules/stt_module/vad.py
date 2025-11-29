@@ -21,16 +21,17 @@ from utils.debug_helper import debug_log, info_log, error_log
 class VoiceActivityDetection:
     """語音活動檢測類"""
     
-    def __init__(self, sample_rate: int = 16000):
+    def __init__(self, sample_rate: int = 16000, sensitivity: float = 0.7, min_speech_duration: float = 0.3):
         self.sample_rate = sample_rate
         self.vad_model = None
         
-        # VAD 參數
-        self.energy_threshold = 0.0005  # 進一步降低能量閾值，提高敏感度
-        self.silence_duration_threshold = 0.8  # 降低靜音持續時間閾值（秒）
-        self.speech_duration_threshold = 0.05  # 進一步降低語音持續時間閾值（秒）
+        # VAD 參數（可透過 user_settings 調整）
+        self.sensitivity = sensitivity  # 靈敏度 0.0-1.0
+        self.energy_threshold = 0.0005 * (2.0 - sensitivity)  # 靈敏度越高，閾值越低
+        self.silence_duration_threshold = 0.8  # 靜音持續時間閾值（秒）
+        self.speech_duration_threshold = min_speech_duration  # 最小語音持續時間（秒）
         
-        info_log("[VAD] 語音活動檢測模組初始化")
+        info_log(f"[VAD] 語音活動檢測模組初始化 (靈敏度: {sensitivity:.2f}, 最小語音時長: {min_speech_duration:.2f}s)")
     
     def initialize(self) -> bool:
         """初始化 VAD 模型"""

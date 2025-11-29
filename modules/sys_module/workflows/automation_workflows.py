@@ -54,11 +54,18 @@ def _execute_play_media(session: WorkflowSession) -> StepResult:
         shuffle = session.get_data("shuffle", False)
         loop = session.get_data("loop", False)
         
-        # 從配置讀取音樂資料夾
-        config = load_config()
-        music_folder = config.get("system", {}).get("media", {}).get("music_folder")
+        # 從 user_settings 讀取音樂資料夾（優先）
+        from configs.user_settings_manager import get_user_setting
+        music_folder = get_user_setting("monitoring.background_tasks.default_media_folder", "")
+        
+        # 如果 user_settings 沒有設定，從 config.yaml 讀取
         if not music_folder:
-            music_folder = str(Path.home() / "Music")  # 預設值
+            config = load_config()
+            music_folder = config.get("system", {}).get("media", {}).get("music_folder")
+        
+        # 最後的預設值
+        if not music_folder:
+            music_folder = str(Path.home() / "Music")
         else:
             music_folder = str(Path(music_folder).expanduser())
         
@@ -234,12 +241,19 @@ def create_play_media_workflow(
             # 定義監控函數（本地播放專用）
             def media_monitor_func(stop_event, check_interval, **kwargs):
                 """本地音樂播放監控函數"""
-                # 從配置讀取音樂資料夾
-                from configs.config_loader import load_config
-                config = load_config()
-                music_folder = config.get("system", {}).get("media", {}).get("music_folder")
+                # 從 user_settings 讀取音樂資料夾（優先）
+                from configs.user_settings_manager import get_user_setting
+                music_folder = get_user_setting("monitoring.background_tasks.default_media_folder", "")
+                
+                # 如果 user_settings 沒有設定，從 config.yaml 讀取
                 if not music_folder:
-                    music_folder = str(Path.home() / "Music")  # 預設值
+                    from configs.config_loader import load_config
+                    config = load_config()
+                    music_folder = config.get("system", {}).get("media", {}).get("music_folder")
+                
+                # 最後的預設值
+                if not music_folder:
+                    music_folder = str(Path.home() / "Music")
                 else:
                     music_folder = str(Path(music_folder).expanduser())
                 

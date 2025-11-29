@@ -9,6 +9,7 @@ from .schemas import (
 from core.schemas import MEMModuleData
 from core.working_context import working_context_manager
 from configs.config_loader import load_module_config
+from configs.user_settings_manager import user_settings_manager, get_user_setting
 from utils.debug_helper import debug_log, debug_log_e, info_log, error_log
 
 class MEMModule(BaseModule):
@@ -51,6 +52,9 @@ class MEMModule(BaseModule):
         
         # 模組狀態
         self.is_initialized = False
+        
+        # 註冊使用者設定熱重載回調
+        user_settings_manager.register_reload_callback("mem_module", self._reload_from_user_settings)
 
         info_log("[MEM] Phase 2 記憶管理模組初始化完成")
 
@@ -1883,3 +1887,36 @@ class MEMModule(BaseModule):
         if self.memory_manager:
             # 如果需要，可以在這裡添加記憶管理器的清理邏輯
             pass
+    
+    def _reload_from_user_settings(self, key_path: str, value: Any) -> bool:
+        """
+        從 user_settings.yaml 重載設定
+        
+        Args:
+            key_path: 設定路徑
+            value: 新值
+            
+        Returns:
+            是否成功
+        """
+        try:
+            info_log(f"[MEM] 🔄 重載使用者設定: {key_path} = {value}")
+            
+            if key_path == "interaction.memory.enabled":
+                # MEM 模組開關
+                info_log(f"[MEM] MEM 模組已{'啟用' if value else '禁用'}")
+                # 實際開關控制由外部處理
+                
+
+                
+            else:
+                debug_log(2, f"[MEM] 未處理的設定路徑: {key_path}")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            error_log(f"[MEM] 重載使用者設定失敗: {e}")
+            import traceback
+            error_log(traceback.format_exc())
+            return False

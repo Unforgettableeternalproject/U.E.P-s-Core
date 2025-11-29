@@ -180,7 +180,12 @@ class DesktopPetApp(QWidget):
         self.animation_timer = QTimer(self) if QTimer else None
         if self.animation_timer:
             self.animation_timer.timeout.connect(self.update_animation_frame)
-            self.animation_timer.start(16)  # 60 FPS for smooth animation
+            # 從 user_settings 讀取 max_fps
+            from configs.user_settings_manager import get_user_setting
+            max_fps = get_user_setting("advanced.performance.max_fps", 60)
+            interval_ms = int(1000 / max(max_fps, 1))
+            self.animation_timer.start(interval_ms)
+            debug_log(2, f"[DesktopPetApp] 動畫計時器已啟動: {max_fps} FPS ({interval_ms}ms)")
             
         # 設置超時保護計時器
         if QTimer:

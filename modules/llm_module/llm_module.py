@@ -21,6 +21,7 @@ from core.bases.module_base import BaseModule
 from core.working_context import working_context_manager, ContextType
 from core.status_manager import status_manager
 from core.states.state_manager import state_manager, UEPState
+from configs.user_settings_manager import user_settings_manager, get_user_setting
 
 from .schemas import (
     LLMInput, LLMOutput, SystemAction, LLMMode, SystemState,
@@ -81,6 +82,15 @@ class LLMModule(BaseModule):
             "total_processing_time": 0.0,
             "cache_hits": 0
         }
+        
+        # P2: 讀取 network 設定
+        from configs.user_settings_manager import get_user_setting
+        self.allow_internet_access = get_user_setting("monitoring.network.allow_internet_access", True)
+        self.allow_api_calls = get_user_setting("monitoring.network.allow_api_calls", True)
+        self.network_timeout = get_user_setting("monitoring.network.timeout", 30)
+        
+        # 註冊使用者設定熱重載回調
+        user_settings_manager.register_reload_callback("llm_module", self._reload_from_user_settings)
 
     def debug(self):
         # Debug level = 1
@@ -95,6 +105,16 @@ class LLMModule(BaseModule):
         debug_log(2, f"[LLM] MCP Client: {'已連接' if self.mcp_client.mcp_server else '未連接'}")
         # Debug level = 4
         debug_log(4, f"[LLM] 完整模組設定: {self.config}")
+    
+    def _check_api_permission(self) -> bool:
+        """檢查 API 調用權限"""
+        if not self.allow_internet_access:
+            error_log("[LLM] ❌ 網路存取已禁用（user_settings: monitoring.network.allow_internet_access = false）")
+            return False
+        if not self.allow_api_calls:
+            error_log("[LLM] ❌ API 呼叫已禁用（user_settings: monitoring.network.allow_api_calls = false）")
+            return False
+        return True
     
     def _setup_state_listener(self):
         """設定系統狀態監聽器，自動切換協作管道"""
@@ -414,6 +434,11 @@ class LLMModule(BaseModule):
                 "Provide clear, concise responses based on the given instructions. "
                 "Follow the format requirements strictly. And ALWAYS respond in English"
             )
+            
+            # P2: 檢查 API 權限
+            if not self._check_api_permission():
+                error_log("[LLM] API 呼叫因權限設定而被阻止")
+                return
             
             response_data = self.model.query(
                 prompt, 
@@ -4058,4 +4083,58 @@ U.E.P 系統可用功能規格：
             
         except Exception as e:
             error_log(f"[LLM] 發布學習資料事件失敗: {e}")
+    
+    def _reload_from_user_settings(self, key_path: str, value: Any) -> bool:
+        """
+        從 user_settings.yaml 重載設定
+        
+        Args:
+            key_path: 設定路徑
+            value: 新值
+            
+        Returns:
+            是否成功
+        """
+        try:
+            info_log(f"[LLM] 🔄 重載使用者設定: {key_path} = {value}")
+            
+            if key_path == "interaction.conversation.user_additional_prompt":
+                # 使用者額外提示（即時生效）
+                info_log(f"[LLM] 使用者額外提示已更新 (長度: {len(str(value))})")
+                # 此設定會在下次生成時自動套用
+                
+            elif key_path == "interaction.conversation.temperature":
+                # 對話溫度（即時生效）
+                old_temp = self.model.temperature
+                self.model.temperature = float(value)
+                info_log(f"[LLM] 對話溫度已更新: {old_temp} → {self.model.temperature}")
+                
+            elif key_path == "interaction.conversation.enable_learning":
+                # 啟用學習系統（即時生效）
+                old_learning = self.learning_engine.learning_enabled
+                self.learning_engine.learning_enabled = bool(value)
+                info_log(f"[LLM] 學習系統: {old_learning} → {self.learning_engine.learning_enabled}")
+            
+            # P2: Network 設定
+            elif key_path == "monitoring.network.allow_internet_access":
+                self.allow_internet_access = bool(value)
+                info_log(f"[LLM] 允許網路存取: {self.allow_internet_access}")
+            elif key_path == "monitoring.network.allow_api_calls":
+                self.allow_api_calls = bool(value)
+                info_log(f"[LLM] 允許 API 呼叫: {self.allow_api_calls}")
+            elif key_path == "monitoring.network.timeout":
+                self.network_timeout = int(value)
+                info_log(f"[LLM] 網路逾時: {self.network_timeout}秒")
+                
+            else:
+                debug_log(2, f"[LLM] 未處理的設定路徑: {key_path}")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            error_log(f"[LLM] 重載使用者設定失敗: {e}")
+            import traceback
+            error_log(traceback.format_exc())
+            return False
 

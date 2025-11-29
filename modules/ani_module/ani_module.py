@@ -41,6 +41,12 @@ class ANIModule(BaseFrontendModule):
         self._default_frame_duration = float(anim_cfg.get("default_frame_duration", 0.1))
         if "request_cooldown" in anim_cfg:
             self.manager.request_cooldown = float(anim_cfg["request_cooldown"])
+        
+        # 從 user_settings 讀取 performance 設定
+        from configs.user_settings_manager import get_user_setting
+        self.hardware_acceleration = get_user_setting("advanced.performance.enable_hardware_acceleration", True)
+        self.reduce_on_battery = get_user_setting("advanced.performance.reduce_animations_on_battery", True)
+        debug_log_e(2, f"[ANI] 效能設定: 硬體加速={self.hardware_acceleration}, 電池省電={self.reduce_on_battery}")
 
         # 依 config.resources 自動建立與註冊 clips
         self._apply_config_for_clips(self.config)
@@ -63,6 +69,10 @@ class ANIModule(BaseFrontendModule):
                 self.timer = QTimer()
                 self.timer.timeout.connect(lambda: self.signals.timer_timeout("ani_update")) # type: ignore
                 self.timer.start(self._tick_interval_ms)
+            
+            # 註冊 user_settings 熱重載回調
+            from configs.user_settings_manager import user_settings_manager
+            user_settings_manager.register_reload_callback("ani_module", self._reload_from_user_settings)
             
             return True
         except Exception as e:
@@ -534,6 +544,20 @@ class ANIModule(BaseFrontendModule):
             error_log(f"[ANI] 處理模組忙碌狀態失敗: {e}")
     
     # ===== 關閉方法 =====
+    
+    def _reload_from_user_settings(self, key_path: str, value: Any):
+        """處理 user_settings 熱重載"""
+        try:
+            if key_path == "advanced.performance.enable_hardware_acceleration":
+                self.hardware_acceleration = value
+                info_log(f"[ANI] 硬體加速設定已更新: {value}")
+            elif key_path == "advanced.performance.reduce_animations_on_battery":
+                self.reduce_on_battery = value
+                info_log(f"[ANI] 電池省電模式已更新: {value}")
+            elif key_path == "interface.appearance.animation_quality":
+                info_log(f"[ANI] 動畫品質設定已更新: {value} (需重載 ANI 模組生效)")
+        except Exception as e:
+            error_log(f"[ANI] 熱重載設定失敗: {e}")
     
     def shutdown(self):
         """關閉動畫模組，停止所有計時器和清理資源"""

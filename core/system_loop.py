@@ -50,7 +50,7 @@ class SystemLoop:
         
         # 文字輸入模式專用
         self.text_input_thread: Optional[threading.Thread] = None
-        self.text_input_prompt = self.config.get("system", {}).get("input_mode", {}).get("text_input_prompt", ">>> ")
+        self.text_input_prompt = ">>> "  # 文字輸入提示符
         
         # 效能監控
         self.loop_count = 0  # 基本循環計數（主循環迭代次數）
@@ -79,6 +79,15 @@ class SystemLoop:
         
         # 🔧 工作流輸入相關
         self._pending_stt_restart = False  # 延遲 STT 重啟標記
+        
+        # P1/P2 設定整合
+        from configs.user_settings_manager import get_user_setting
+        self.gc_interval = get_user_setting("advanced.performance.gc_interval", 300)
+        self.last_gc_time = time.time()
+        self.allow_system_initiative = get_user_setting("interaction.proactivity.allow_system_initiative", True)
+        self.initiative_cooldown = get_user_setting("interaction.proactivity.initiative_cooldown", 300)
+        self.require_user_input = get_user_setting("interaction.proactivity.require_user_input", False)
+        debug_log(2, f"[SystemLoop] Proactivity: initiative={self.allow_system_initiative}, cooldown={self.initiative_cooldown}s")
         
         info_log(f"[SystemLoop] 系統循環已創建 (輸入模式: {self.input_mode})")
         
@@ -417,6 +426,10 @@ class SystemLoop:
             # ✅ 啟動事件總線
             self._start_event_bus()
             
+            # 註冊 user_settings 熱重載回調
+            from configs.user_settings_manager import user_settings_manager
+            user_settings_manager.register_reload_callback("system_loop", self._reload_from_user_settings)
+            
             # 🔧 初始化 global_context 的 cycle_index，讓模組能讀到正確的初始值
             self._update_global_cycle_info()
             info_log(f"[SystemLoop] 已初始化全局循環資訊: cycle_index={self.cycle_index}")
@@ -692,6 +705,13 @@ class SystemLoop:
                 if current_time - self.last_status_log_time >= self.status_log_interval:
                     self._log_system_status()
                     self.last_status_log_time = current_time
+                
+                # P1: 定期觸發 GC
+                if self.gc_interval > 0 and current_time - self.last_gc_time >= self.gc_interval:
+                    import gc
+                    collected = gc.collect()
+                    debug_log(3, f"[SystemLoop] GC 觸發，回收 {collected} 個物件")
+                    self.last_gc_time = current_time
                 
                 # 檢查系統狀態變化
                 self._monitor_system_state()
@@ -1311,6 +1331,33 @@ class SystemLoop:
             
         except Exception as e:
             error_log(f"[SystemLoop] 處理輸出層完成通知失敗: {e}")
+    
+    def _reload_from_user_settings(self, key_path: str, value: Any):
+        """處理 user_settings 熱重載"""
+        try:
+            if key_path == "advanced.performance.gc_interval":
+                self.gc_interval = value
+                info_log(f"[SystemLoop] GC 間隔已更新: {value}秒")
+            elif key_path == "interaction.proactivity.allow_system_initiative":
+                self.allow_system_initiative = value
+                info_log(f"[SystemLoop] 系統主動性已更新: {value}")
+            elif key_path == "interaction.proactivity.initiative_cooldown":
+                self.initiative_cooldown = value
+                info_log(f"[SystemLoop] 主動觸發冷卻時間已更新: {value}秒")
+            elif key_path == "interaction.proactivity.require_user_input":
+                self.require_user_input = value
+                info_log(f"[SystemLoop] 需要使用者輸入設定已更新: {value}")
+            elif key_path == "interaction.speech_input.enabled":
+                # 更新輸入模式: True=VAD, False=文字輸入
+                old_mode = self.input_mode
+                new_mode = "vad" if value else "text"
+                self.input_mode = new_mode
+                
+                if old_mode != new_mode:
+                    info_log(f"[SystemLoop] 輸入模式已更新: {old_mode} → {new_mode}")
+                    info_log("⚠️  輸入模式變更將在下次啟動時生效")
+        except Exception as e:
+            error_log(f"[SystemLoop] 熱重載設定失敗: {e}")
 
 
 # 全局系統循環實例

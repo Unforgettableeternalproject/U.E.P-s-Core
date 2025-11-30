@@ -49,7 +49,7 @@ try:
     from .core.animation_priority import AnimationPriorityManager, AnimationPriority
     from .behaviors.base_behavior import BehaviorContext, BehaviorFactory
     from .handlers import CursorTrackingHandler, ThrowHandler, FileDropHandler
-    from .idle_manager import IdleManager
+    # from .idle_manager import IdleManager  # TODO: 睡眠功能尚未實作
 except Exception:
     from core.position import Position, Velocity  # type: ignore
     from core.physics import PhysicsEngine  # type: ignore
@@ -271,9 +271,10 @@ class MOVModule(BaseFrontendModule):
         self._current_playing_anim: Optional[str] = None  # 當前播放的動畫名稱（用於避免重複觸發）
         
         # 🔧 閒置管理器（自動睡眠）
-        self.idle_manager = IdleManager()
-        self.idle_manager.set_sleep_callback(self._enter_sleep_mode)
-        self.idle_manager.set_wake_callback(self._exit_sleep_mode)
+        # TODO: 睡眠功能尚未實作，暫時不初始化 IdleManager
+        # self.idle_manager = IdleManager()
+        # self.idle_manager.set_sleep_callback(self._enter_sleep_mode)
+        # self.idle_manager.set_wake_callback(self._exit_sleep_mode)
         
         # 🔧 註冊 user_settings 熱重載回調
         from configs.user_settings_manager import user_settings_manager

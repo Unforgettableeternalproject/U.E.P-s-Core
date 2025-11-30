@@ -70,6 +70,14 @@ class UIModule(BaseFrontendModule):
         # 活躍介面追蹤
         self.active_interfaces = set()
         
+        # 讀取使用者設定
+        from configs.user_settings_manager import get_user_setting, user_settings_manager
+        self.always_on_top_enabled = get_user_setting("interface.main_window.always_on_top", True)
+        self.show_debug_window = get_user_setting("interface.windows.show_debug_window", False)
+        
+        # 註冊熱重載回調
+        user_settings_manager.register_reload_callback("ui_module", self._reload_from_user_settings)
+        
         # 與其他前端模組的連接 - 直接管理
         self.ani_module = None
         self.mov_module = None
@@ -236,6 +244,15 @@ class UIModule(BaseFrontendModule):
                 if self.mov_module and hasattr(self.mov_module, 'set_pet_app'):
                     self.mov_module.set_pet_app(self.interfaces[UIInterfaceType.MAIN_DESKTOP_PET])
                     debug_log(1, f"[{self.module_id}] 已將 pet_app 設置給 MOV 模組")
+                
+                # 應用 always_on_top 設定到桌面寵物
+                if self.always_on_top_enabled:
+                    pet_window = self.interfaces[UIInterfaceType.MAIN_DESKTOP_PET]
+                    if hasattr(pet_window, 'setWindowFlags'):
+                        from PyQt5.QtCore import Qt
+                        current_flags = pet_window.windowFlags()
+                        pet_window.setWindowFlags(current_flags | Qt.WindowStaysOnTopHint)
+                        info_log(f"[{self.module_id}] 桌面寵物已設置為置頂")
                 
                 info_log(f"[{self.module_id}] 主桌面寵物介面已準備（含 ANI/MOV 模組）")
             except ImportError as e:
@@ -915,3 +932,61 @@ class UIModule(BaseFrontendModule):
         
         super().shutdown()
         info_log(f"[{self.module_id}] UI 模組已完全關閉")
+    
+    def _reload_from_user_settings(self, key_path: str, value):
+        """處理 user_settings 熱重載"""
+        try:
+            if key_path == "interface.main_window.always_on_top":
+                old_value = self.always_on_top_enabled
+                self.always_on_top_enabled = bool(value)
+                info_log(f"[{self.module_id}] 視窗置頂: {old_value} → {self.always_on_top_enabled}")
+                # TODO: 應用到主視窗
+                
+            elif key_path == "interface.main_window.show_hitbox":
+                old_value = self.show_hitbox_enabled
+                self.show_hitbox_enabled = bool(value)
+                info_log(f"[{self.module_id}] 顯示碰撞框: {old_value} → {self.show_hitbox_enabled}")
+                # TODO: 應用到桌面寵物
+                
+            elif key_path == "interface.main_window.transparency":
+                old_value = self.transparency_enabled
+                self.transparency_enabled = bool(value)
+                info_log(f"[{self.module_id}] 透明度: {old_value} → {self.transparency_enabled}")
+                # TODO: 應用到主視窗
+                
+            elif key_path == "interface.windows.show_desktop_pet":
+                old_value = self.show_desktop_pet
+                self.show_desktop_pet = bool(value)
+                info_log(f"[{self.module_id}] 顯示桌面寵物: {old_value} → {self.show_desktop_pet}")
+                # 動態顯示/隱藏桌面寵物
+                pet = self.interfaces.get(UIInterfaceType.MAIN_DESKTOP_PET)
+                if pet:
+                    if self.show_desktop_pet:
+                        pet.show()
+                        self.active_interfaces.add(UIInterfaceType.MAIN_DESKTOP_PET)
+                    else:
+                        pet.hide()
+                        self.active_interfaces.discard(UIInterfaceType.MAIN_DESKTOP_PET)
+                        
+            elif key_path == "interface.windows.show_access_widget":
+                old_value = self.show_access_widget
+                self.show_access_widget = bool(value)
+                info_log(f"[{self.module_id}] 顯示存取小工具: {old_value} → {self.show_access_widget}")
+                # 動態顯示/隱藏存取小工具
+                widget = self.interfaces.get(UIInterfaceType.USER_ACCESS_WIDGET)
+                if widget:
+                    if self.show_access_widget:
+                        widget.show()
+                        self.active_interfaces.add(UIInterfaceType.USER_ACCESS_WIDGET)
+                    else:
+                        widget.hide()
+                        self.active_interfaces.discard(UIInterfaceType.USER_ACCESS_WIDGET)
+                        
+            elif key_path == "interface.windows.show_debug_window":
+                old_value = self.show_debug_window
+                self.show_debug_window = bool(value)
+                info_log(f"[{self.module_id}] 顯示除錯視窗: {old_value} → {self.show_debug_window}")
+                # TODO: 實現除錯視窗控制
+                
+        except Exception as e:
+            error_log(f"[{self.module_id}] 熱重載設定失敗: {e}")

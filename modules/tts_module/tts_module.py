@@ -49,9 +49,22 @@ class TTSModule(BaseModule):
         """
         self.config = config or load_module_config("tts_module")
         
-        # IndexTTS 配置
-        self.model_dir = self.config.get("model_dir", "modules/tts_module/checkpoints")
-        self.character_dir = self.config.get("character_dir", "modules/tts_module/checkpoints")
+        # 取得專案根目錄的絕對路徑
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        
+        # IndexTTS 配置 - 使用絕對路徑
+        default_model_dir = os.path.join(project_root, "modules", "tts_module", "checkpoints")
+        self.model_dir = self.config.get("model_dir", default_model_dir)
+        # 如果配置中的路徑是相對路徑，轉換為絕對路徑
+        if not os.path.isabs(self.model_dir):
+            self.model_dir = os.path.join(project_root, self.model_dir)
+        
+        default_char_dir = os.path.join(project_root, "modules", "tts_module", "checkpoints")
+        self.character_dir = self.config.get("character_dir", default_char_dir)
+        # 如果配置中的路徑是相對路徑，轉換為絕對路徑
+        if not os.path.isabs(self.character_dir):
+            self.character_dir = os.path.join(project_root, self.character_dir)
+        
         self.default_character = self.config.get("default_character", "uep")
         self.use_fp16 = self.config.get("use_fp16", True)
         self.device = self.config.get("device", "cuda")

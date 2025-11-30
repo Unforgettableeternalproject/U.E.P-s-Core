@@ -52,6 +52,39 @@ except ImportError:
 from utils.debug_helper import debug_log, info_log, error_log, OPERATION_LEVEL, SYSTEM_LEVEL
 
 
+class NoWheelComboBox(QComboBox):
+    """不響應滾輪事件的下拉選單，避免誤觸"""
+    def wheelEvent(self, event):
+        # 只有在取得焦點時才響應滾輪事件
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            # 將滾輪事件傳遞給父元件（ScrollArea）
+            event.ignore()
+
+
+class NoWheelSpinBox(QSpinBox):
+    """不響應滾輪事件的數字選擇框，避免誤觸"""
+    def wheelEvent(self, event):
+        # 只有在取得焦點時才響應滾輪事件
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            # 將滾輪事件傳遞給父元件（ScrollArea）
+            event.ignore()
+
+
+class NoWheelDoubleSpinBox(QDoubleSpinBox):
+    """不響應滾輪事件的浮點數選擇框，避免誤觸"""
+    def wheelEvent(self, event):
+        # 只有在取得焦點時才響應滾輪事件
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            # 將滾輪事件傳遞給父元件（ScrollArea）
+            event.ignore()
+
+
 class UserMainWindow(QMainWindow):
     """使用者設定視窗 - 完整版本，對應所有 YAML 設定"""
     
@@ -145,12 +178,12 @@ class UserMainWindow(QMainWindow):
         self.tab_widget = QTabWidget()
         self.tab_widget.setObjectName("mainTabs")
         
-        # 5 個分頁
-        self.create_tab1_basic()
-        self.create_tab2_speech()
-        self.create_tab3_memory()
-        self.create_tab4_behavior()
-        self.create_tab5_advanced()
+        # 5 個分頁，按邏輯順序排列
+        self.create_tab1_basic()      # 0: 基本設定（身分、系統、介面）
+        self.create_tab2_speech()     # 1: 語音設定（輸入、識別、輸出）
+        self.create_tab3_memory()     # 2: 記憶與學習
+        self.create_tab4_behavior()   # 3: 行為設定（情緒、主動性、移動）
+        self.create_tab5_advanced()   # 4: 進階設定（效能、監控、隱私、實驗性）
         
         parent_layout.addWidget(self.tab_widget, 1)
     
@@ -279,14 +312,14 @@ class UserMainWindow(QMainWindow):
         system_layout.setSpacing(12)
         system_layout.setContentsMargins(16, 20, 16, 16)
         
-        self.language_combo = QComboBox()
+        self.language_combo = NoWheelComboBox()
         self.language_combo.addItems(["zh-TW", "zh-CN", "en-US", "ja-JP"])
         system_layout.addRow("語言 ⚠️:", self.language_combo)
         
         self.enable_debug_mode_cb = QCheckBox("啟用除錯模式 ⚠️")
         system_layout.addRow("", self.enable_debug_mode_cb)
         
-        self.debug_level_spin = QSpinBox()
+        self.debug_level_spin = NoWheelSpinBox()
         self.debug_level_spin.setRange(0, 5)
         system_layout.addRow("除錯級別:", self.debug_level_spin)
         
@@ -299,14 +332,14 @@ class UserMainWindow(QMainWindow):
         self.confirm_before_exit_cb = QCheckBox("退出前確認")
         system_layout.addRow("", self.confirm_before_exit_cb)
         
-        self.main_loop_interval_spin = QDoubleSpinBox()
+        self.main_loop_interval_spin = NoWheelDoubleSpinBox()
         self.main_loop_interval_spin.setRange(0.01, 1.0)
         self.main_loop_interval_spin.setSingleStep(0.01)
         self.main_loop_interval_spin.setDecimals(2)
         self.main_loop_interval_spin.setSuffix(" 秒")
         system_layout.addRow("主循環間隔 ⚠️:", self.main_loop_interval_spin)
         
-        self.shutdown_timeout_spin = QDoubleSpinBox()
+        self.shutdown_timeout_spin = NoWheelDoubleSpinBox()
         self.shutdown_timeout_spin.setRange(1.0, 30.0)
         self.shutdown_timeout_spin.setSingleStep(0.5)
         self.shutdown_timeout_spin.setSuffix(" 秒")
@@ -320,24 +353,24 @@ class UserMainWindow(QMainWindow):
         interface_layout.setSpacing(12)
         interface_layout.setContentsMargins(16, 20, 16, 16)
         
-        self.theme_combo = QComboBox()
+        self.theme_combo = NoWheelComboBox()
         self.theme_combo.addItems(["auto", "light", "dark"])
         interface_layout.addRow("主題:", self.theme_combo)
         
-        self.ui_scale_spin = QDoubleSpinBox()
+        self.ui_scale_spin = NoWheelDoubleSpinBox()
         self.ui_scale_spin.setRange(0.5, 2.0)
         self.ui_scale_spin.setSingleStep(0.1)
         self.ui_scale_spin.setDecimals(1)
         interface_layout.addRow("UI 縮放 ⚠️:", self.ui_scale_spin)
         
-        self.animation_quality_combo = QComboBox()
+        self.animation_quality_combo = NoWheelComboBox()
         self.animation_quality_combo.addItems(["low", "medium", "high"])
         interface_layout.addRow("動畫品質 ⚠️:", self.animation_quality_combo)
         
         self.enable_effects_cb = QCheckBox("啟用視覺效果")
         interface_layout.addRow("", self.enable_effects_cb)
         
-        self.font_size_spin = QSpinBox()
+        self.font_size_spin = NoWheelSpinBox()
         self.font_size_spin.setRange(8, 24)
         interface_layout.addRow("字體大小:", self.font_size_spin)
         
@@ -352,12 +385,12 @@ class UserMainWindow(QMainWindow):
         self.auto_hide_cb = QCheckBox("允許自動隱藏")
         widget_layout.addRow("", self.auto_hide_cb)
         
-        self.hide_edge_threshold_spin = QSpinBox()
+        self.hide_edge_threshold_spin = NoWheelSpinBox()
         self.hide_edge_threshold_spin.setRange(50, 500)
         self.hide_edge_threshold_spin.setSuffix(" px")
         widget_layout.addRow("隱藏觸發距離:", self.hide_edge_threshold_spin)
         
-        self.animation_speed_spin = QSpinBox()
+        self.animation_speed_spin = NoWheelSpinBox()
         self.animation_speed_spin.setRange(100, 1000)
         self.animation_speed_spin.setSuffix(" ms")
         widget_layout.addRow("動畫速度:", self.animation_speed_spin)
@@ -421,17 +454,17 @@ class UserMainWindow(QMainWindow):
         self.stt_enabled_cb = QCheckBox("啟用語音輸入 ⚠️")
         stt_layout.addRow("", self.stt_enabled_cb)
         
-        self.microphone_device_index_spin = QSpinBox()
+        self.microphone_device_index_spin = NoWheelSpinBox()
         self.microphone_device_index_spin.setRange(0, 10)
         stt_layout.addRow("麥克風裝置索引 ⚠️:", self.microphone_device_index_spin)
         
-        self.vad_sensitivity_spin = QDoubleSpinBox()
+        self.vad_sensitivity_spin = NoWheelDoubleSpinBox()
         self.vad_sensitivity_spin.setRange(0.0, 1.0)
         self.vad_sensitivity_spin.setSingleStep(0.1)
         self.vad_sensitivity_spin.setDecimals(1)
         stt_layout.addRow("VAD 靈敏度:", self.vad_sensitivity_spin)
         
-        self.min_speech_duration_spin = QDoubleSpinBox()
+        self.min_speech_duration_spin = NoWheelDoubleSpinBox()
         self.min_speech_duration_spin.setRange(0.1, 3.0)
         self.min_speech_duration_spin.setSingleStep(0.1)
         self.min_speech_duration_spin.setDecimals(1)
@@ -441,7 +474,7 @@ class UserMainWindow(QMainWindow):
         self.enable_continuous_mode_cb = QCheckBox("連續模式 ⚠️")
         stt_layout.addRow("", self.enable_continuous_mode_cb)
         
-        self.wake_word_confidence_spin = QDoubleSpinBox()
+        self.wake_word_confidence_spin = NoWheelDoubleSpinBox()
         self.wake_word_confidence_spin.setRange(0.0, 1.0)
         self.wake_word_confidence_spin.setSingleStep(0.1)
         self.wake_word_confidence_spin.setDecimals(1)
@@ -470,17 +503,17 @@ class UserMainWindow(QMainWindow):
         volume_container.addWidget(self.tts_volume_label)
         tts_layout.addRow("音量:", volume_container)
         
-        self.tts_speed_spin = QDoubleSpinBox()
+        self.tts_speed_spin = NoWheelDoubleSpinBox()
         self.tts_speed_spin.setRange(0.5, 2.0)
         self.tts_speed_spin.setSingleStep(0.1)
         self.tts_speed_spin.setDecimals(1)
         tts_layout.addRow("語速倍率:", self.tts_speed_spin)
         
-        self.default_emotion_combo = QComboBox()
+        self.default_emotion_combo = NoWheelComboBox()
         self.default_emotion_combo.addItems(["neutral", "happy", "sad", "angry", "excited"])
         tts_layout.addRow("預設情緒:", self.default_emotion_combo)
         
-        self.emotion_intensity_spin = QDoubleSpinBox()
+        self.emotion_intensity_spin = NoWheelDoubleSpinBox()
         self.emotion_intensity_spin.setRange(0.0, 1.0)
         self.emotion_intensity_spin.setSingleStep(0.1)
         self.emotion_intensity_spin.setDecimals(1)
@@ -534,7 +567,7 @@ class UserMainWindow(QMainWindow):
         self.user_additional_prompt_edit.setPlaceholderText("輸入額外提示（最多 200 字元）")
         llm_layout.addRow("使用者額外提示:", self.user_additional_prompt_edit)
         
-        self.temperature_spin = QDoubleSpinBox()
+        self.temperature_spin = NoWheelDoubleSpinBox()
         self.temperature_spin.setRange(0.0, 2.0)
         self.temperature_spin.setSingleStep(0.1)
         self.temperature_spin.setDecimals(1)
@@ -554,7 +587,7 @@ class UserMainWindow(QMainWindow):
         self.allow_system_initiative_cb = QCheckBox("允許系統主動觸發")
         proactivity_layout.addRow("", self.allow_system_initiative_cb)
         
-        self.initiative_cooldown_spin = QSpinBox()
+        self.initiative_cooldown_spin = NoWheelSpinBox()
         self.initiative_cooldown_spin.setRange(10, 3600)
         self.initiative_cooldown_spin.setSuffix(" 秒")
         proactivity_layout.addRow("主動觸發冷卻:", self.initiative_cooldown_spin)
@@ -582,7 +615,7 @@ class UserMainWindow(QMainWindow):
         self.auto_delete_old_conversations_cb = QCheckBox("自動刪除舊對話")
         privacy_layout.addRow("", self.auto_delete_old_conversations_cb)
         
-        self.conversation_retention_days_spin = QSpinBox()
+        self.conversation_retention_days_spin = NoWheelSpinBox()
         self.conversation_retention_days_spin.setRange(1, 3650)
         self.conversation_retention_days_spin.setSuffix(" 天")
         privacy_layout.addRow("對話保留天數:", self.conversation_retention_days_spin)
@@ -623,11 +656,11 @@ class UserMainWindow(QMainWindow):
         self.mischief_enabled_cb = QCheckBox("啟用搗蛋模式")
         mischief_layout.addRow("", self.mischief_enabled_cb)
         
-        self.intensity_combo = QComboBox()
+        self.intensity_combo = NoWheelComboBox()
         self.intensity_combo.addItems(["low", "medium", "high"])
         mischief_layout.addRow("行為強度上限:", self.intensity_combo)
         
-        self.tease_frequency_spin = QDoubleSpinBox()
+        self.tease_frequency_spin = NoWheelDoubleSpinBox()
         self.tease_frequency_spin.setRange(0.0, 1.0)
         self.tease_frequency_spin.setSingleStep(0.01)
         self.tease_frequency_spin.setDecimals(2)
@@ -664,43 +697,20 @@ class UserMainWindow(QMainWindow):
         
         scroll_layout.addWidget(permissions_group)
         
-        # 3. 自動睡眠設定
-        auto_sleep_group = self._make_group("自動睡眠設定")
-        auto_sleep_layout = QFormLayout(auto_sleep_group)
-        auto_sleep_layout.setSpacing(12)
-        auto_sleep_layout.setContentsMargins(16, 20, 16, 16)
-        
-        self.auto_sleep_enabled_cb = QCheckBox("啟用自動睡眠")
-        auto_sleep_layout.addRow("", self.auto_sleep_enabled_cb)
-        
-        self.max_idle_time_spin = QSpinBox()
-        self.max_idle_time_spin.setRange(60, 1800)
-        self.max_idle_time_spin.setSuffix(" 秒")
-        auto_sleep_layout.addRow("最大閒置時間:", self.max_idle_time_spin)
-        
-        self.sleep_animation_edit = QLineEdit()
-        self.sleep_animation_edit.setPlaceholderText("例如：sleep_l")
-        auto_sleep_layout.addRow("睡眠動畫名稱:", self.sleep_animation_edit)
-        
-        self.wake_on_interaction_cb = QCheckBox("互動時自動喚醒")
-        auto_sleep_layout.addRow("", self.wake_on_interaction_cb)
-        
-        scroll_layout.addWidget(auto_sleep_group)
-        
-        # 4. MOV 移動與物理設定
+        # 3. MOV 移動與物理設定
         mov_group = self._make_group("MOV 移動與物理設定")
         mov_layout = QFormLayout(mov_group)
         mov_layout.setSpacing(12)
         mov_layout.setContentsMargins(16, 20, 16, 16)
         
-        self.boundary_mode_combo = QComboBox()
+        self.boundary_mode_combo = NoWheelComboBox()
         self.boundary_mode_combo.addItems(["barrier", "wrap"])
         mov_layout.addRow("邊界模式 ⚠️:", self.boundary_mode_combo)
         
         self.enable_throw_behavior_cb = QCheckBox("啟用投擲行為 ⚠️")
         mov_layout.addRow("", self.enable_throw_behavior_cb)
         
-        self.max_throw_speed_spin = QDoubleSpinBox()
+        self.max_throw_speed_spin = NoWheelDoubleSpinBox()
         self.max_throw_speed_spin.setRange(10.0, 200.0)
         self.max_throw_speed_spin.setSingleStep(10.0)
         self.max_throw_speed_spin.setDecimals(1)
@@ -712,7 +722,7 @@ class UserMainWindow(QMainWindow):
         self.movement_smoothing_cb = QCheckBox("移動平滑化 ⚠️")
         mov_layout.addRow("", self.movement_smoothing_cb)
         
-        self.ground_friction_spin = QDoubleSpinBox()
+        self.ground_friction_spin = NoWheelDoubleSpinBox()
         self.ground_friction_spin.setRange(0.0, 1.0)
         self.ground_friction_spin.setSingleStep(0.05)
         self.ground_friction_spin.setDecimals(2)
@@ -761,7 +771,7 @@ class UserMainWindow(QMainWindow):
         self.allow_api_calls_cb = QCheckBox("允許 API 呼叫")
         bg_tasks_layout.addRow("", self.allow_api_calls_cb)
         
-        self.network_timeout_spin = QSpinBox()
+        self.network_timeout_spin = NoWheelSpinBox()
         self.network_timeout_spin.setRange(5, 120)
         self.network_timeout_spin.setSuffix(" 秒")
         bg_tasks_layout.addRow("網路請求超時:", self.network_timeout_spin)
@@ -774,10 +784,10 @@ class UserMainWindow(QMainWindow):
         performance_layout.setSpacing(12)
         performance_layout.setContentsMargins(16, 20, 16, 16)
         
-        self.max_fps_spin = QSpinBox()
+        self.max_fps_spin = NoWheelSpinBox()
         self.max_fps_spin.setRange(15, 120)
         self.max_fps_spin.setSuffix(" FPS")
-        performance_layout.addRow("最大幀率 ⚠️:", self.max_fps_spin)
+        performance_layout.addRow("最大幀率 (需重啟) ⚠️:", self.max_fps_spin)
         
         self.enable_hardware_acceleration_cb = QCheckBox("硬體加速 ⚠️")
         performance_layout.addRow("", self.enable_hardware_acceleration_cb)
@@ -785,7 +795,7 @@ class UserMainWindow(QMainWindow):
         self.reduce_animations_on_battery_cb = QCheckBox("電池模式減少動畫")
         performance_layout.addRow("", self.reduce_animations_on_battery_cb)
         
-        self.gc_interval_spin = QSpinBox()
+        self.gc_interval_spin = NoWheelSpinBox()
         self.gc_interval_spin.setRange(60, 3600)
         self.gc_interval_spin.setSuffix(" 秒")
         performance_layout.addRow("垃圾回收間隔:", self.gc_interval_spin)
@@ -801,7 +811,7 @@ class UserMainWindow(QMainWindow):
         self.logging_enabled_cb = QCheckBox("啟用日誌系統 ⚠️")
         logging_layout.addRow("", self.logging_enabled_cb)
         
-        self.log_level_combo = QComboBox()
+        self.log_level_combo = NoWheelComboBox()
         self.log_level_combo.addItems(["DEBUG", "INFO", "WARNING", "ERROR"])
         logging_layout.addRow("日誌級別:", self.log_level_combo)
         
@@ -818,12 +828,12 @@ class UserMainWindow(QMainWindow):
         self.save_logs_cb = QCheckBox("保存日誌檔案")
         logging_layout.addRow("", self.save_logs_cb)
         
-        self.max_log_size_mb_spin = QSpinBox()
+        self.max_log_size_mb_spin = NoWheelSpinBox()
         self.max_log_size_mb_spin.setRange(1, 500)
         self.max_log_size_mb_spin.setSuffix(" MB")
         logging_layout.addRow("最大日誌大小:", self.max_log_size_mb_spin)
         
-        self.log_rotation_days_spin = QSpinBox()
+        self.log_rotation_days_spin = NoWheelSpinBox()
         self.log_rotation_days_spin.setRange(1, 90)
         self.log_rotation_days_spin.setSuffix(" 天")
         logging_layout.addRow("日誌輪替天數:", self.log_rotation_days_spin)
@@ -1016,12 +1026,6 @@ class UserMainWindow(QMainWindow):
             self.allow_system_commands_cb.setChecked(get_user_setting("behavior.permissions.allow_system_commands", False))
             self.require_confirmation_cb.setChecked(get_user_setting("behavior.permissions.require_confirmation", True))
             
-            # 自動睡眠
-            self.auto_sleep_enabled_cb.setChecked(get_user_setting("behavior.auto_sleep.enabled", True))
-            self.max_idle_time_spin.setValue(get_user_setting("behavior.auto_sleep.max_idle_time", 1800))
-            self.sleep_animation_edit.setText(get_user_setting("behavior.auto_sleep.sleep_animation", "sleep_l"))
-            self.wake_on_interaction_cb.setChecked(get_user_setting("behavior.auto_sleep.wake_on_interaction", True))
-            
             # MOV
             boundary = get_user_setting("behavior.movement.boundary_mode", "wrap")
             idx = self.boundary_mode_combo.findText(boundary)
@@ -1159,11 +1163,6 @@ class UserMainWindow(QMainWindow):
             set_user_setting("behavior.permissions.allow_app_launch", self.allow_app_launch_cb.isChecked())
             set_user_setting("behavior.permissions.allow_system_commands", self.allow_system_commands_cb.isChecked())
             set_user_setting("behavior.permissions.require_confirmation", self.require_confirmation_cb.isChecked())
-            
-            set_user_setting("behavior.auto_sleep.enabled", self.auto_sleep_enabled_cb.isChecked())
-            set_user_setting("behavior.auto_sleep.max_idle_time", self.max_idle_time_spin.value())
-            set_user_setting("behavior.auto_sleep.sleep_animation", self.sleep_animation_edit.text())
-            set_user_setting("behavior.auto_sleep.wake_on_interaction", self.wake_on_interaction_cb.isChecked())
             
             set_user_setting("behavior.movement.boundary_mode", self.boundary_mode_combo.currentText())
             set_user_setting("behavior.movement.enable_throw_behavior", self.enable_throw_behavior_cb.isChecked())

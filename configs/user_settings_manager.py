@@ -19,24 +19,17 @@ class UserSettingsManager:
     _instance = None
     
     # 定義需要重載的設定項目 (設定路徑 -> 需要重載的模組)
+    # 注意：只有會影響模組運行時行為的設定才需要 reload
     RELOAD_REQUIRED = {
-        # 一般設定
-        "general.system.enable_debug_mode": ["ui_module"],
-        "general.system.language": ["ui_module"],
-        
-        # 互動設定 - STT
-        "interaction.speech_input.enabled": ["stt_module"],
+        # 互動設定 - STT (運行時行為)
         "interaction.speech_input.microphone_device_index": ["stt_module"],
-        "interaction.speech_input.enable_continuous_mode": ["stt_module"],
+        "interaction.speech_input.vad_sensitivity": ["stt_module"],
         
-        # 互動設定 - TTS
-        "interaction.speech_output.enabled": ["tts_module"],
+        # 互動設定 - TTS (運行時行為)
+        "interaction.speech_output.volume": ["tts_module"],
+        "interaction.speech_output.speed": ["tts_module"],
         
-        # 互動設定 - MEM
-        "interaction.memory.enabled": ["mem_module"],
-        
-        # 行為設定 - MOV
-        "behavior.mischief.easter_egg_enabled": ["mov_module"],
+        # 行為設定 - MOV (運行時物理行為)
         "behavior.movement.boundary_mode": ["mov_module"],
         "behavior.movement.enable_throw_behavior": ["mov_module"],
         "behavior.movement.max_throw_speed": ["mov_module"],
@@ -44,34 +37,13 @@ class UserSettingsManager:
         "behavior.movement.movement_smoothing": ["mov_module"],
         "behavior.movement.ground_friction": ["mov_module"],
         
-        # 介面設定
-        "interface.appearance.ui_scale": ["ui_module"],
-        "interface.appearance.animation_quality": ["ani_module"],
+        # 進階設定 - 效能 (運行時效能調整)
+        # 注意：UI 效能設定需要重啟應用程式才能生效，因此不列入 RELOAD_REQUIRED
+        # "advanced.performance.max_fps": ["ui_module"],  # 需要重啟
+        # "advanced.performance.enable_hardware_acceleration": ["ui_module"],  # 需要重啟
         
-        # 監控設定
-        "monitoring.calendar.enabled": ["sys_module"],
-        "monitoring.calendar.google_calendar_sync": ["sys_module"],
-        
-        # 進階設定 - 效能
-        "advanced.performance.max_fps": ["ui_module"],
-        "advanced.performance.enable_hardware_acceleration": ["ui_module"],
-        
-        # 進階設定 - 模組控制
-        "advanced.modules.stt_enabled": ["stt_module"],
-        "advanced.modules.nlp_enabled": ["nlp_module"],
-        "advanced.modules.mem_enabled": ["mem_module"],
-        "advanced.modules.llm_enabled": ["llm_module"],
-        "advanced.modules.tts_enabled": ["tts_module"],
-        "advanced.modules.sys_enabled": ["sys_module"],
-        "advanced.modules.ui_enabled": ["ui_module"],
-        "advanced.modules.ani_enabled": ["ani_module"],
-        "advanced.modules.mov_enabled": ["mov_module"],
-        
-        # 實驗性功能
+        # 實驗性功能 (運行時功能切換)
         "advanced.experimental.enable_emotion_analysis": ["nlp_module"],
-        "advanced.experimental.enable_gesture_control": ["ui_module"],
-        "advanced.experimental.enable_voice_commands": ["stt_module"],
-        "advanced.experimental.enable_smart_suggestions": ["llm_module"],
     }
     
     def __new__(cls):

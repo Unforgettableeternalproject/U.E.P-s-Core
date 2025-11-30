@@ -25,7 +25,7 @@ logging:
   log_level: DEBUG
   log_dir: logs
   enable_split_logs: false
-  enable_console_output: false
+  enable_console_output: true
 debug:
   enabled: true
   debug_level: 3

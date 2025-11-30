@@ -85,6 +85,14 @@ class ControllerBridge:
             return self.open_system_background()
         elif fid == "state_profile":
             return self.show_state_profile()
+        elif fid == "tool_1":
+            return self.toggle_desktop_pet()
+        elif fid == "tool_2":
+            info_log("[ControllerBridge] tool_2 (呼叫UEP) - 尚未實作")
+            return {"success": False, "message": "功能開發中"}
+        elif fid == "tool_3":
+            info_log("[ControllerBridge] tool_3 (睡眠) - 尚未實作")
+            return {"success": False, "message": "功能開發中"}
         else:
             info_log(f"[ControllerBridge] Unknown function id: {fid}")
 
@@ -140,6 +148,52 @@ class ControllerBridge:
             traceback.print_exc()
             return {"success": False, "error": str(e)}
 
+    def toggle_desktop_pet(self):
+        """切換桌面寵物的顯示/隱藏狀態"""
+        try:
+            # self.controller 就是 ui_module 實例
+            ui_module = self.controller
+            
+            if not ui_module:
+                error_log("[ControllerBridge] UI 模組未初始化")
+                return {"success": False, "error": "UI module not initialized"}
+            
+            # 檢查桌面寵物是否已顯示
+            from modules.ui_module.ui_types import UIInterfaceType
+            desktop_pet = ui_module.interfaces.get(UIInterfaceType.MAIN_DESKTOP_PET)
+            
+            if not desktop_pet:
+                error_log("[ControllerBridge] 桌面寵物未初始化")
+                return {"success": False, "error": "Desktop pet not initialized"}
+            
+            # 使用 handle_frontend_request 切換顯示狀態（會觸發動畫）
+            if desktop_pet.isVisible():
+                result = ui_module.handle_frontend_request({
+                    "command": "hide_interface",
+                    "interface": "main_desktop_pet"
+                })
+                if result and result.get('success'):
+                    info_log("[ControllerBridge] 🙈 桌面寵物已隱藏")
+                    return {"success": True, "state": "hidden"}
+                else:
+                    return {"success": False, "error": result.get('error', '隱藏失敗')}
+            else:
+                result = ui_module.handle_frontend_request({
+                    "command": "show_interface",
+                    "interface": "main_desktop_pet"
+                })
+                if result and result.get('success'):
+                    info_log("[ControllerBridge] 👀 桌面寵物已顯示")
+                    return {"success": True, "state": "visible"}
+                else:
+                    return {"success": False, "error": result.get('error', '顯示失敗')}
+                
+        except Exception as e:
+            import traceback
+            error_log(f"[ControllerBridge] 切換桌面寵物失敗: {e}")
+            traceback.print_exc()
+            return {"success": False, "error": str(e)}
+    
     def show_state_profile(self):
         try:
             # 如果已有實例且可見，直接顯示
@@ -289,6 +343,14 @@ class MainButton(QWidget):
         )
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.resize(400, 400)
+        
+        # 讀取使用者設定
+        from configs.user_settings_manager import get_user_setting, user_settings_manager
+        self.auto_hide_enabled = get_user_setting("interface.access_widget.auto_hide", True)
+        self.hide_edge_threshold = get_user_setting("interface.access_widget.hide_edge_threshold", 200)
+        
+        # 註冊熱重載回調
+        user_settings_manager.register_reload_callback("access_widget", self._reload_from_user_settings)
 
         self.color_opt1 = "#E3F2FD"
         self.color_opt2 = "#E8F5E9"
@@ -320,13 +382,13 @@ class MainButton(QWidget):
             b.hide()
             self.options.append(b)
 
-        # Tool buttons
+        # Tool buttons (右側小按鈕)
         self.tool_buttons = []
         self.TOOL_SIZE = 41
         tools = [
-            ("🗣", "tool_1"),
-            ("👂🏼", "tool_2"),
-            ("😴", "tool_3"),
+            ("👁️", "tool_1"),  # 顯示/隱藏 UEP 桌面寵物
+            ("🗣️", "tool_2"),   # 呼叫 UEP (待實作)
+            ("😴", "tool_3"),   # 睡眠模式 (待實作)
         ]
         for label, tid in tools:
             tb = self._make_tool_btn(self.TOOL_SIZE, label, partial(self._handle_option, tid))
@@ -465,36 +527,38 @@ class MainButton(QWidget):
         # 獲取虛擬桌面尺寸（多螢幕總範圍）
         virtual_rect = desktop.geometry()
         
-        # 初始位置設在虛擬桌面右側邊緣（半隱藏狀態）
-        x = virtual_rect.right() - self.width() // 2
-        y = virtual_rect.top() + 80
-        self.move(x, y)
-        self.original_position = QPoint(x, y)
-        
         # 計算邊緣檢測區域（用於自動收合）
-        self.edge_threshold = 200  # 距離邊緣 200px 內才觸發收合
+        self.edge_threshold = self.hide_edge_threshold  # 使用設定值
         self.virtual_rect = virtual_rect
         
-        # 判斷是靠近左邊還是右邊，並計算可見位置
+        # 初始位置設在虛擬桌面右側邊緣（完全可見狀態）
+        x = virtual_rect.right() - self.width() - 20
+        y = virtual_rect.top() + 80
+        
+        # 判斷是靠近左邊還是右邊，並計算隱藏位置
         widget_center_x = x + self.width() // 2
         distance_to_left = widget_center_x - virtual_rect.left()
         distance_to_right = virtual_rect.right() - widget_center_x
         
         if distance_to_left < distance_to_right:
-            # 靠近左邊界
+            # 靠近左邊界 - 隱藏時大部分藏在左側外面，只露出右邊一點
             self.edge_side = 'left'
-            self.visible_position = QPoint(virtual_rect.left() - 20, y)
+            self.hidden_position = QPoint(virtual_rect.left() - self.width() + 20, y)
         else:
-            # 靠近右邊界
+            # 靠近右邊界 - 隱藏時大部分藏在右側外面，只露出左邊一點
             self.edge_side = 'right'
-            self.visible_position = QPoint(virtual_rect.right() - self.width() + 20, y)
+            self.hidden_position = QPoint(virtual_rect.right() - 20, y)
         
-        # 初始狀態為半隱藏
-        self.is_fully_visible = False
+        # 設置位置並記錄為完全可見位置
+        self.move(x, y)
+        self.original_position = QPoint(x, y)  # original_position 是完全可見的位置
+        
+        # 初始狀態為完全可見
+        self.is_fully_visible = True
 
     def _check_hover_state(self):
         """檢查是否需要自動收合到邊緣"""
-        if self.is_pinned or not hasattr(self, 'virtual_rect'):
+        if self.is_pinned or not hasattr(self, 'virtual_rect') or not self.auto_hide_enabled:
             return
 
         widget_center = self.geometry().center()
@@ -507,16 +571,18 @@ class MainButton(QWidget):
         
         # 只有在邊緣附近才檢查游標懸停
         if near_right_edge or near_left_edge or near_top_edge or near_bottom_edge:
-            # 動態更新邊緣方向
+            # 動態更新邊緣方向和隱藏位置
             distance_to_left = widget_center.x() - self.virtual_rect.left()
             distance_to_right = self.virtual_rect.right() - widget_center.x()
             
             if distance_to_left < distance_to_right:
                 self.edge_side = 'left'
-                self.visible_position = QPoint(self.virtual_rect.left() - 20, self.pos().y())
+                # 左側隱藏：大部分藏在左側外面，只露出右邊一點
+                self.hidden_position = QPoint(self.virtual_rect.left() - self.width() + 20, self.pos().y())
             else:
                 self.edge_side = 'right'
-                self.visible_position = QPoint(self.virtual_rect.right() - self.width() + 20, self.pos().y())
+                # 右側隱藏：大部分藏在右側外面，只露出左邊一點
+                self.hidden_position = QPoint(self.virtual_rect.right() - 20, self.pos().y())
             
             global_cursor_pos = QCursor.pos()
             widget_rect = self.geometry()
@@ -528,27 +594,29 @@ class MainButton(QWidget):
             
             is_hovering = expanded_rect.contains(global_cursor_pos)
             if is_hovering and not self.is_fully_visible:
-                self._slide_to_visible()
+                self._slide_to_visible()  # 滑入到完全可見
             elif not is_hovering and self.is_fully_visible:
-                self._slide_to_hidden()
+                self._slide_to_hidden()  # 滑出到隱藏
                 if self.expanded:
                     self._schedule_auto_collapse(900)
 
     def _slide_to_visible(self):
-        if self.is_fully_visible or not self.visible_position:
-            return
-        self.slide_animation.stop()
-        self.slide_animation.setStartValue(self.pos())
-        self.slide_animation.setEndValue(self.visible_position)
-        self.slide_animation.start()
-        self.is_fully_visible = True
-
-    def _slide_to_hidden(self):
-        if not self.is_fully_visible or not self.original_position:
+        """滑入到完全可見位置（original_position）"""
+        if self.is_fully_visible or not self.original_position:
             return
         self.slide_animation.stop()
         self.slide_animation.setStartValue(self.pos())
         self.slide_animation.setEndValue(self.original_position)
+        self.slide_animation.start()
+        self.is_fully_visible = True
+
+    def _slide_to_hidden(self):
+        """滑出到隱藏位置（hidden_position）"""
+        if not self.is_fully_visible or not hasattr(self, 'hidden_position'):
+            return
+        self.slide_animation.stop()
+        self.slide_animation.setStartValue(self.pos())
+        self.slide_animation.setEndValue(self.hidden_position)
         self.slide_animation.start()
         self.is_fully_visible = False
 
@@ -903,8 +971,13 @@ class MainButton(QWidget):
             self._collapse_menu()
 
     def _handle_option(self, fid: str):
+        """處理選項按鈕點擊"""
         if self.bridge:
-            self.bridge.dispatch(fid)
+            result = self.bridge.dispatch(fid)
+            info_log(f"[MainButton] 功能 '{fid}' 執行結果: {result}")
+        else:
+            error_log(f"[MainButton] Bridge 未初始化，無法執行功能 '{fid}'")
+        
         if self.expanded:
             self._collapse_menu()
 
@@ -949,6 +1022,34 @@ class MainButton(QWidget):
         self.expanded = False
         self.is_pinned = False
         self._cancel_auto_collapse()
+    
+    def _reload_from_user_settings(self, key_path: str, value):
+        """處理 user_settings 熱重載"""
+        try:
+            if key_path == "interface.access_widget.auto_hide":
+                old_value = self.auto_hide_enabled
+                self.auto_hide_enabled = bool(value)
+                info_log(f"[AccessWidget] 自動隱藏: {old_value} → {self.auto_hide_enabled}")
+                # 如果關閉自動隱藏且當前已隱藏，則滑出
+                if not self.auto_hide_enabled and not self.is_fully_visible:
+                    self._slide_to_visible()
+            elif key_path == "interface.access_widget.hide_edge_threshold":
+                old_threshold = self.hide_edge_threshold
+                self.hide_edge_threshold = int(value)
+                self.edge_threshold = self.hide_edge_threshold
+                info_log(f"[AccessWidget] 邊緣隱藏距離: {old_threshold}px → {self.hide_edge_threshold}px")
+        except Exception as e:
+            error_log(f"[AccessWidget] 熱重載設定失敗: {e}")
+
+
+# 為向後兼容提供包裝函數
+def UserAccessWidget(ui_module):
+    """
+    包裝函數，用於從 ui_module 創建 MainButton
+    這是為了向後兼容 ui_module.py 中的初始化方式
+    """
+    bridge = ControllerBridge(ui_module)
+    return MainButton(bridge=bridge)
 
 
 def main():

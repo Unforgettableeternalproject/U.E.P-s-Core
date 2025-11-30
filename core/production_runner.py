@@ -167,6 +167,7 @@ class ProductionRunner:
         """使用 Qt 事件循環作為主循環"""
         try:
             from core.registry import get_module
+            from PyQt5.QtCore import QTimer
             
             ui_module = get_module("ui_module")
             if not ui_module or not hasattr(ui_module, 'app') or not ui_module.app:
@@ -177,8 +178,32 @@ class ProductionRunner:
             info_log("📋 系統流程: STT → NLP → Router → (CS/WS) → 處理模組 → TTS")
             info_log("⚡ 關閉視窗或按 Ctrl+C 退出系統")
             
+            # 設置一個定時器來檢查 Ctrl+C 信號
+            self._interrupt_requested = False
+            
+            def check_interrupt():
+                """定期檢查是否應該退出"""
+                if not self.is_running or self._interrupt_requested:
+                    info_log("⚠️ 檢測到中斷信號，準備退出...")
+                    # 停止 STT 持續監聽
+                    try:
+                        stt_module = get_module("stt_module")
+                        if stt_module:
+                            stt_module.stop_listening()
+                            debug_log(1, "[ProductionRunner] 已通知 STT 停止監聽")
+                    except Exception as e:
+                        debug_log(1, f"[ProductionRunner] 停止 STT 監聽失敗: {e}")
+                    ui_module.app.quit()
+            
+            interrupt_timer = QTimer()
+            interrupt_timer.timeout.connect(check_interrupt)
+            interrupt_timer.start(500)  # 每 500ms 檢查一次
+            
             # 進入 Qt 事件循環（阻塞直到 app.quit()）
             exit_code = ui_module.app.exec_()
+            
+            # 停止定時器
+            interrupt_timer.stop()
             
             info_log(f"✅ Qt 事件循環已退出 (退出碼: {exit_code})")
             
@@ -240,6 +265,14 @@ class ProductionRunner:
                 info_log("   停止系統主循環...")
                 self.system_loop.stop()
             
+            # 停止 Controller 監控線程
+            try:
+                from core.controller import unified_controller
+                info_log("   停止 Controller 監控...")
+                unified_controller.shutdown()
+            except Exception as e:
+                debug_log(1, f"   Controller 關閉警告: {e}")
+            
             # 執行清理工作
             self._cleanup_resources()
             
@@ -295,6 +328,9 @@ class ProductionRunner:
         def signal_handler(signum, frame):
             info_log(f"⚠️ 接收到信號 {signum}，準備優雅關閉...")
             self.is_running = False
+            # 設置中斷標誌，讓 Qt 定時器檢測到
+            if hasattr(self, '_interrupt_requested'):
+                self._interrupt_requested = True
         
         # 註冊信號處理器
         signal.signal(signal.SIGINT, signal_handler)

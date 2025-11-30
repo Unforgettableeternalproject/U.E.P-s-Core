@@ -2158,3 +2158,15 @@
 
 ---
 
+### Integrated user access widget to system main loop, and improved shutdown logic. 11/30
+
+> Date: Sun, 30 Nov 2025 22:58:33 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `550cb366b85c11e35bb5edc9ae9e705d3e648b7b`
+
+---
+

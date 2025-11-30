@@ -10,11 +10,6 @@ advanced:
     max_fps: 60
     reduce_animations_on_battery: true
 behavior:
-  auto_sleep:
-    enabled: true
-    max_idle_time: 1800
-    sleep_animation: sleep_l
-    wake_on_interaction: true
   mischief:
     easter_egg_enabled: true
     enabled: false
@@ -71,19 +66,14 @@ interaction:
     volume: 70
 interface:
   access_widget:
-    animation_speed: 320
     auto_hide: true
     hide_edge_threshold: 200
   appearance:
     theme: auto
   main_window:
     always_on_top: true
-    show_hitbox: false
-    transparency: true
   windows:
-    show_access_widget: true
     show_debug_window: false
-    show_desktop_pet: false
 monitoring:
   background_tasks:
     default_media_folder: E:\Music\My Songs\Full Playlist

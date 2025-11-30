@@ -344,6 +344,17 @@ class SystemInitializer:
                 error_log(f"   ⚠️  顯示主程式失敗: {show_result.get('error', '未知錯誤')}")
                 # 不返回 False，因為前端已啟動，只是視窗顯示失敗
             
+            # 顯示 access_widget
+            access_widget_result = self.frontend_integrator.ui_module.handle_frontend_request({
+                'command': 'show_interface',
+                'interface': 'user_access_widget'
+            })
+            
+            if access_widget_result.get('success'):
+                info_log("   🎛️  Access Widget 已顯示")
+            else:
+                error_log(f"   ⚠️  顯示 Access Widget 失敗: {access_widget_result.get('error', '未知錯誤')}")
+            
             return True
             
         except Exception as e:

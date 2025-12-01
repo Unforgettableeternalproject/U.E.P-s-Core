@@ -2218,3 +2218,15 @@
 
 ---
 
+### Fixed a severe issue with qt loop, which requires a qt application to run. 12/2
+
+> Date: Tue, 02 Dec 2025 01:57:49 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `84a709c3d518cc170928bcad66932d75b7c451ad`
+
+---
+

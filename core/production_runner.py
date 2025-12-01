@@ -116,6 +116,7 @@ class ProductionRunner:
             
             # 檢查是否有前端
             has_frontend = self._check_frontend_enabled()
+            debug_log(4, f"[ProductionRunner] _start_main_loop: has_frontend={has_frontend}")
             
             if has_frontend:
                 # 使用 Qt 包裝啟動（在 QThread 中）
@@ -141,6 +142,7 @@ class ProductionRunner:
                 return True
             else:
                 # 傳統方式啟動（在 daemon 線程中）
+                info_log("🔄 前端未啟用，使用傳統系統循環...")
                 success = self.system_loop.start()
                 if not success:
                     error_log("❌ 主循環啟動失敗")
@@ -158,7 +160,10 @@ class ProductionRunner:
         try:
             from configs.config_loader import load_config
             config = load_config()
-            return config.get("debug", {}).get("enable_frontend", False)
+            enable_frontend = config.get("debug", {}).get("enable_frontend", False)
+            debug_log(4, f"[ProductionRunner] _check_frontend_enabled: type={type(enable_frontend)}, value={enable_frontend}, bool={bool(enable_frontend)}")
+            # 確保是布爾值 True 才啟用
+            return enable_frontend is True
         except Exception as e:
             debug_log(1, f"檢查前端狀態失敗: {e}")
             return False

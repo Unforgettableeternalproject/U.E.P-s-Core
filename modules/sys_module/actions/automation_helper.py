@@ -4,6 +4,13 @@ import time
 import os
 import json
 from datetime import datetime
+
+# 導入事件系統
+from modules.sys_module.actions.monitoring_events import (
+    MonitoringEventType,
+    publish_calendar_event,
+    publish_todo_event
+)
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -687,7 +694,8 @@ def media_control(
     spotify: bool = False,
     shuffle: bool = False,
     loop: bool = False,
-    loop_mode: str = ""
+    loop_mode: str = "",
+    volume: int = None
 ) -> str:
     """
     音樂播放控制器 - 支援本地音樂、YouTube、Spotify（背景運行）
@@ -728,9 +736,16 @@ def media_control(
             if not music_folder:
                 music_folder = str(Path.home() / "Music")
             
+            # 確保單例：如果播放器不存在或資料夾變更，則重新初始化
             if _music_player is None:
                 _music_player = MusicPlayer(music_folder)
                 info_log("[AUTO] 音樂播放器已初始化")
+            elif str(_music_player.music_folder) != music_folder:
+                # 資料夾變更：停止當前播放，重新初始化
+                info_log(f"[AUTO] 音樂資料夾變更: {_music_player.music_folder} -> {music_folder}")
+                _music_player.stop()
+                _music_player = MusicPlayer(music_folder)
+                info_log("[AUTO] 音樂播放器已重新初始化")
             
             if action == "play":
                 # 應用 shuffle 和 loop 設定
@@ -800,6 +815,36 @@ def media_control(
                 else:
                     return "循環播放：關閉"
             
+            elif action == "volume":
+                # 設定音量
+                if volume is None:
+                    return f"當前音量：{_music_player.volume}%"
+                
+                if not 0 <= volume <= 100:
+                    return "錯誤：音量必須在 0-100 之間"
+                
+                _music_player.set_volume(volume)
+                return f"音量已設定為 {volume}%"
+            
+            elif action == "status":
+                # 獲取當前播放狀態
+                status = _music_player.get_status()
+                # 避免在 f-string 表達式中使用反斜線轉義，先計算文字
+                play_state_text = "播放中" if status.get('is_playing') else "暫停"
+                current_song_text = status.get('current_song') or "無"
+                playlist_text = f"{status.get('current_index', 0) + 1}/{status.get('playlist_length', 0)}"
+                volume_text = f"{status.get('volume', 0)}%"
+                shuffle_text = "開" if status.get('is_shuffled') else "關"
+                loop_text = status.get('loop_mode')
+                return (
+                    f"播放狀態：{play_state_text}\n"
+                    f"當前歌曲：{current_song_text}\n"
+                    f"播放清單：{playlist_text}\n"
+                    f"音量：{volume_text}\n"
+                    f"隨機：{shuffle_text}\n"
+                    f"循環：{loop_text}"
+                )
+            
             else:
                 return f"未知指令：{action}"
     
@@ -851,6 +896,16 @@ class MusicPlayer:
         self.is_finished = False  # ✅ 初始化完成標記
         self.current_song = None
         self.playback_obj = None
+        self.volume = 70  # 預設音量 70%
+        
+        # 播放進度追蹤
+        self.playback_start_time = None  # 播放開始時間
+        self.current_duration_ms = 0  # 當前歌曲總長度（毫秒）
+        self.is_paused = False  # 暫停狀態標記
+        
+        # 並發保護：避免背景播放與控制同時操作導致競態
+        import threading
+        self._lock = threading.Lock()
         
         # 載入播放清單
         self._load_playlist()
@@ -954,6 +1009,25 @@ class MusicPlayer:
             error_log("[AUTO] 播放清單為空")
             return
         
+        # 如果是從暫停恢復，重新播放當前歌曲
+        was_paused = self.is_paused
+        if was_paused:
+            info_log("[AUTO] 從暫停恢復播放（重新播放當前歌曲）")
+            self.is_paused = False
+        
+        # 確保單一播放：先停止當前播放（但不重置索引）
+        with self._lock:
+            if self.is_playing:
+                if self.playback_obj:
+                    try:
+                        self.playback_obj.stop()
+                    except:
+                        pass
+                    self.playback_obj = None
+                self.is_playing = False
+                if not was_paused:
+                    info_log("[AUTO] 停止當前播放以切換歌曲")
+        
         try:
             from pydub import AudioSegment
             from pydub.playback import _play_with_simpleaudio
@@ -969,11 +1043,23 @@ class MusicPlayer:
             # 載入音訊
             audio = AudioSegment.from_file(song_path)
             
-            # ✅ 設置音量為 50% (-6 dB 約為 50% 音量)
-            audio = audio - 6
+            # 記錄歌曲時長
+            self.current_duration_ms = len(audio)
+            
+            # 設定音量（將百分比轉換為 dB）
+            # 100% = 0 dB, 50% ≈ -6 dB, 0% = -∞ dB
+            if self.volume > 0:
+                db_change = (self.volume - 100) * 0.6  # 簡單線性映射
+                audio = audio + db_change
+            else:
+                audio = audio - 60  # 靜音
             
             # 播放（在背景執行緒）
             self.is_playing = True
+            
+            # 記錄播放開始時間
+            import time
+            self.playback_start_time = time.time()
             
             def _play_thread():
                 try:
@@ -1010,32 +1096,60 @@ class MusicPlayer:
             error_log(f"[AUTO] 播放失敗：{e}")
     
     def pause(self):
-        """暫停播放"""
-        if self.playback_obj:
-            self.playback_obj.stop()
-            self.is_playing = False
-            info_log("[AUTO] 已暫停")
+        """暫停播放（simpleaudio 不支持真暫停，停止播放對象並標記狀態）"""
+        with self._lock:
+            if self.playback_obj and self.is_playing:
+                self.playback_obj.stop()
+                self.playback_obj = None
+                self.is_playing = False
+                self.is_paused = True  # 標記為暫停
+                info_log("[AUTO] 已暫停（恢復時將從頭播放當前歌曲）")
     
     def stop(self):
         """停止播放"""
-        if self.playback_obj:
-            self.playback_obj.stop()
+        with self._lock:
+            if self.playback_obj:
+                try:
+                    self.playback_obj.stop()
+                except:
+                    pass
+                self.playback_obj = None
             self.is_playing = False
+            self.is_paused = False  # 重置暫停狀態
             self.current_index = 0
+            self.current_song = None
             info_log("[AUTO] 已停止")
     
     def next_song(self):
         """下一首"""
-        self.stop()
+        # 只停止播放，不重置索引
+        if self.playback_obj:
+            try:
+                self.playback_obj.stop()
+            except:
+                pass
+            self.playback_obj = None
+        self.is_playing = False
+        self.is_paused = False  # 重置暫停狀態
         self.current_index = (self.current_index + 1) % len(self.playlist)
         self.is_finished = False  # 重置完成狀態
+        info_log(f"[AUTO] 切換到下一首 (索引: {self.current_index}/{len(self.playlist)})")
         self.play()
     
     def previous_song(self):
         """上一首"""
-        self.stop()
+        # 只停止播放，不重置索引
+        if self.playback_obj:
+            try:
+                self.playback_obj.stop()
+            except:
+                pass
+            self.playback_obj = None
+        self.is_playing = False
+        self.is_paused = False  # 重置暫停狀態
         self.current_index = (self.current_index - 1) % len(self.playlist)
         self.is_finished = False  # 重置完成狀態
+        info_log(f"[AUTO] 切換到上一首 (索引: {self.current_index}/{len(self.playlist)})")
         self.play()
     
     def toggle_loop(self):
@@ -1117,6 +1231,46 @@ class MusicPlayer:
         """設定隨機播放狀態"""
         if enabled != self.is_shuffled:
             self.toggle_shuffle()
+    
+    def set_volume(self, volume: int):
+        """設定音量 (0-100)"""
+        if 0 <= volume <= 100:
+            self.volume = volume
+            info_log(f"[AUTO] 音量設定為 {volume}%（將於下次播放時生效）")
+        else:
+            error_log(f"[AUTO] 無效的音量值: {volume}")
+    
+    def get_status(self) -> dict:
+        """獲取當前播放狀態"""
+        loop_mode = "off"
+        if self.loop_one:
+            loop_mode = "one"
+        elif self.loop_all:
+            loop_mode = "all"
+        
+        return {
+            'is_playing': self.is_playing,
+            'is_paused': self.is_paused,
+            'current_song': self.current_song,
+            'current_index': self.current_index,
+            'playlist_length': len(self.playlist),
+            'volume': self.volume,
+            'is_shuffled': self.is_shuffled,
+            'loop_mode': loop_mode,
+            'duration_ms': self.current_duration_ms,
+            'position_ms': self.get_playback_position()
+        }
+    
+    def get_playback_position(self) -> int:
+        """獲取當前播放位置（毫秒）"""
+        if not self.is_playing or self.playback_start_time is None:
+            return 0
+        
+        import time
+        elapsed_ms = int((time.time() - self.playback_start_time) * 1000)
+        
+        # 不超過總時長
+        return min(elapsed_ms, self.current_duration_ms)
 
 
 # ==================== 本地日曆功能 ====================
@@ -1173,6 +1327,20 @@ def local_calendar(
             conn.close()
             
             info_log(f"[AUTO] 已建立日曆事件：{summary} ({start_time})")
+            
+            # 發布事件：新增項目
+            publish_calendar_event(
+                MonitoringEventType.ITEM_ADDED,
+                item_id=event_id,
+                item_data={
+                    "summary": summary,
+                    "description": description,
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "location": location
+                }
+            )
+            
             return {
                 "status": "ok",
                 "message": f"已建立事件：{summary}",
@@ -1286,6 +1454,26 @@ def local_calendar(
             conn.close()
             
             info_log(f"[AUTO] 已更新事件 ID: {event_id}")
+            
+            # 發布事件：更新項目
+            update_data = {}
+            if summary:
+                update_data["summary"] = summary
+            if description:
+                update_data["description"] = description
+            if start_time:
+                update_data["start_time"] = start_time
+            if end_time:
+                update_data["end_time"] = end_time
+            if location:
+                update_data["location"] = location
+            
+            publish_calendar_event(
+                MonitoringEventType.ITEM_UPDATED,
+                item_id=event_id,
+                item_data=update_data
+            )
+            
             return {"status": "ok", "message": f"已更新事件 ID: {event_id}"}
         
         elif action == "delete":
@@ -1298,6 +1486,12 @@ def local_calendar(
             conn.close()
             
             info_log(f"[AUTO] 已刪除事件 ID: {event_id}")
+            
+            # 發布事件：刪除項目
+            publish_calendar_event(
+                MonitoringEventType.ITEM_DELETED,
+                item_id=event_id
+            )
             return {"status": "ok", "message": f"已刪除事件 ID: {event_id}"}
         
         else:
@@ -1361,6 +1555,20 @@ def local_todo(
             conn.close()
             
             info_log(f"[AUTO] 已建立待辦事項：{task_name} (優先級：{priority})")
+            
+            # 發布事件：新增項目
+            publish_todo_event(
+                MonitoringEventType.ITEM_ADDED,
+                item_id=task_id,
+                item_data={
+                    "task_name": task_name,
+                    "task_description": task_description,
+                    "priority": priority,
+                    "deadline": deadline,
+                    "status": "pending"
+                }
+            )
+            
             return {
                 "status": "ok",
                 "message": f"已建立任務：{task_name}",
@@ -1524,6 +1732,24 @@ def local_todo(
             conn.close()
             
             info_log(f"[AUTO] 已更新任務 ID: {task_id}")
+            
+            # 發布事件：更新項目
+            update_data = {}
+            if task_name:
+                update_data["task_name"] = task_name
+            if task_description:
+                update_data["task_description"] = task_description
+            if priority:
+                update_data["priority"] = priority
+            if deadline:
+                update_data["deadline"] = deadline
+            
+            publish_todo_event(
+                MonitoringEventType.ITEM_UPDATED,
+                item_id=task_id,
+                item_data=update_data
+            )
+            
             return {"status": "ok", "message": f"已更新任務 ID: {task_id}"}
         
         elif action == "complete":
@@ -1541,6 +1767,14 @@ def local_todo(
             conn.close()
             
             info_log(f"[AUTO] 已完成任務 ID: {task_id}")
+            
+            # 發布事件：項目完成
+            publish_todo_event(
+                MonitoringEventType.ITEM_COMPLETED,
+                item_id=task_id,
+                item_data={"completed_at": now}
+            )
+            
             return {"status": "ok", "message": f"已完成任務 ID: {task_id}"}
         
         elif action == "delete":
@@ -1553,6 +1787,13 @@ def local_todo(
             conn.close()
             
             info_log(f"[AUTO] 已刪除任務 ID: {task_id}")
+            
+            # 發布事件：刪除項目
+            publish_todo_event(
+                MonitoringEventType.ITEM_DELETED,
+                item_id=task_id
+            )
+            
             return {"status": "ok", "message": f"已刪除任務 ID: {task_id}"}
         
         else:

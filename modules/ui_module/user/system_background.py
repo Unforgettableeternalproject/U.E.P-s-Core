@@ -2,9 +2,13 @@
 import os
 import sys
 from typing import Dict, Any, Optional
+from datetime import datetime
 from .theme_manager import theme_manager, Theme
 
+from configs.config_loader import load_config
 from utils.debug_helper import debug_log, info_log, error_log, OPERATION_LEVEL
+from modules.sys_module.actions.monitoring_interface import get_monitoring_interface
+from modules.sys_module.actions.monitoring_events import MonitoringEventType, MonitoringEventData
 
 try:
     from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -16,16 +20,17 @@ try:
                                 QApplication, QMessageBox, QFileDialog,
                                 QProgressBar, QStatusBar, QMenuBar,
                                 QToolBar, QAction, QButtonGroup, QListWidget,
-                                QListWidgetItem)
+                                QListWidgetItem, QDialog, QDialogButtonBox, 
+                                QDateTimeEdit)
     from PyQt5.QtCore import (Qt, QTimer, pyqtSignal, QSize, QRect,
                              QPropertyAnimation, QEasingCurve, QThread,
-                             QSettings, QStandardPaths)
+                             QSettings, QStandardPaths, QDateTime)
     from PyQt5.QtGui import (QIcon, QFont, QPixmap, QPalette, QColor,
                             QPainter, QLinearGradient, QBrush)
     PYQT5_AVAILABLE = True
 except ImportError:
     PYQT5_AVAILABLE = False
-    print("[SystemBackground] PyQt5 不可用")
+    debug_log(2, "[SystemBackground] PyQt5 不可用")
 
 
 class SystemBackgroundWindow(QMainWindow):
@@ -37,7 +42,7 @@ class SystemBackgroundWindow(QMainWindow):
         super().__init__()
 
         if not PYQT5_AVAILABLE:
-            print("[SystemBackground] PyQt5不可用，無法初始化")
+            debug_log(2, "[SystemBackground] PyQt5不可用，無法初始化")
             return
 
         self.ui_module = ui_module
@@ -49,27 +54,70 @@ class SystemBackgroundWindow(QMainWindow):
         # 音樂播放器狀態
         self.current_music_player = None
         self.is_music_playing = False
+        self.current_playlist = []  # 當前播放列表
+        self.current_track_index = -1  # 當前播放索引
+        self.current_volume = 70  # 當前音量
         
         # 對話記錄
         self.dialog_history = []
+        
+        # 監控接口 - 根據全域 debug 配置決定是否使用 Mock 模式
+        config = load_config()
+        debug_config = config.get('debug', {})
+        self.use_mock_data = debug_config.get('enabled', False)
+        
+        self.mock_todos = []  # Mock 待辦事項列表
+        self.mock_calendar_events = []  # Mock 行事曆列表
+        self.mock_id_counter = 1  # Mock ID 計數器
+        
+        if self.use_mock_data:
+            debug_log(OPERATION_LEVEL, "[SystemBackground] Debug 模式已啟用，使用 Mock 資料模式")
+            self.monitoring_interface = None
+            self._initialize_mock_data()
+            debug_log(OPERATION_LEVEL, f"[SystemBackground] Mock 資料已初始化: {len(self.mock_todos)} 個待辦, {len(self.mock_calendar_events)} 個行事曆")
+        else:
+            try:
+                self.monitoring_interface = get_monitoring_interface()
+                debug_log(OPERATION_LEVEL, "[SystemBackground] 成功連接到監控後端，使用真實資料模式")
+            except Exception as e:
+                error_log(f"[SystemBackground] 無法連接到監控後端: {e}")
+                self.monitoring_interface = None
+        
+        self._monitoring_data = None  # 儲存快照資料
 
         self.init_ui()
         self._wire_theme_manager()
         self.load_settings()
         
-        print("[SystemBackground] 系統背景視窗初始化完成")
+        # 訂閱監控事件
+        self._subscribe_monitoring_events()
+        
+        # 載入初始資料快照
+        self._load_monitoring_snapshot()
+        
+        # 載入預設媒體資料夾的音樂
+        self._load_default_music_folder()
+        
+        # 播放進度追蹤定時器
+        from PyQt5.QtCore import QTimer
+        self.progress_timer = QTimer(self)
+        self.progress_timer.timeout.connect(self._update_playback_progress)
+        self.progress_timer.start(500)  # 每 500ms 更新一次
+        
+        debug_log(OPERATION_LEVEL, "[SystemBackground] 系統背景視窗初始化完成")
 
     def init_ui(self):
-        self.setWindowTitle("UEP系統背景")
-        self.setMinimumSize(900, 950)
-        self.resize(1200, 950)
+        mode_suffix = " (Mock 模式)" if self.use_mock_data else ""
+        self.setWindowTitle(f"UEP系統背景{mode_suffix}")
+        self.setMinimumSize(900, 700)
+        self.resize(1000, 750)
 
         try:
             icon_path = os.path.join(os.path.dirname(__file__), "../../../resources/assets/static/Logo.ico")
             if os.path.exists(icon_path):   
                 self.setWindowIcon(QIcon(icon_path))
         except Exception as e:
-            print(f"[SystemBackground] 無法載入圖標: {e}")
+            debug_log(2, f"[SystemBackground] 無法載入圖標: {e}")
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -88,7 +136,7 @@ class SystemBackgroundWindow(QMainWindow):
             theme_manager.apply_app()
             theme_manager.theme_changed.connect(self._on_theme_changed)
         except Exception as e:
-            print(f"[SystemBackground] 無法連接 theme_changed: {e}")
+            debug_log(2, f"[SystemBackground] 無法連接 theme_changed: {e}")
 
         self._on_theme_changed()
 
@@ -179,7 +227,7 @@ class SystemBackgroundWindow(QMainWindow):
         self.create_reminder_tab()
         self.create_calendar_tab()
         self.create_music_tab()
-        self.create_dialog_tab()
+        self.create_folder_monitor_tab()
 
         parent_layout.addWidget(self.tab_widget, 1)
 
@@ -240,6 +288,10 @@ class SystemBackgroundWindow(QMainWindow):
                 background: #232427;
             }
         """)
+        # 連接雙擊編輯和右鍵選單
+        self.today_tasks_list.itemDoubleClicked.connect(self.edit_todo_item)
+        self.today_tasks_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.today_tasks_list.customContextMenuRequested.connect(lambda pos: self.show_todo_context_menu(pos, self.today_tasks_list))
         layout.addWidget(self.today_tasks_list)
 
         # 按鈕區
@@ -343,10 +395,6 @@ class SystemBackgroundWindow(QMainWindow):
         calendar_overview_group = self.create_calendar_overview_group()
         scroll_layout.addWidget(calendar_overview_group)
 
-        # Google Calendar 整合
-        google_calendar_group = self.create_google_calendar_group()
-        scroll_layout.addWidget(google_calendar_group)
-
         # 排程管理
         scheduler_group = self.create_scheduler_group()
         scroll_layout.addWidget(scheduler_group)
@@ -374,6 +422,10 @@ class SystemBackgroundWindow(QMainWindow):
                 border-radius: 8px;
             }
         """)
+        # 連接雙擊編輯和右鍵選單
+        self.week_view.itemDoubleClicked.connect(self.edit_calendar_event_item)
+        self.week_view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.week_view.customContextMenuRequested.connect(lambda pos: self.show_calendar_context_menu(pos, self.week_view))
         layout.addWidget(self.week_view)
 
         # 快速操作
@@ -392,39 +444,7 @@ class SystemBackgroundWindow(QMainWindow):
 
         return self._loose_group(group)
 
-    def create_google_calendar_group(self):
-        group = QGroupBox("Google Calendar 整合")
-        group.setObjectName("settingsGroup")
-        layout = QFormLayout(group)
-        layout.setSpacing(15)
-        layout.setContentsMargins(20, 25, 20, 20)
 
-        # 授權狀態
-        self.auth_status_label = QLabel("❌ 未授權")
-        self.auth_status_label.setStyleSheet("color: #f44336;")
-        layout.addRow("授權狀態:", self.auth_status_label)
-
-        # 授權按鈕
-        button_layout = QHBoxLayout()
-        self.authorize_btn = QPushButton("🔐 授權連結")
-        self.revoke_btn = QPushButton("🚫 撤銷授權")
-        self.revoke_btn.setEnabled(False)
-
-        self.authorize_btn.clicked.connect(self.authorize_google_calendar)
-        self.revoke_btn.clicked.connect(self.revoke_authorization)
-
-        button_layout.addWidget(self.authorize_btn)
-        button_layout.addWidget(self.revoke_btn)
-        button_layout.addStretch()
-        
-        layout.addRow("", button_layout)
-
-        # 自動同步
-        self.auto_sync_checkbox = QCheckBox("啟用自動同步")
-        self.auto_sync_checkbox.setChecked(True)
-        layout.addRow(self.auto_sync_checkbox)
-
-        return self._loose_group(group)
 
     def create_scheduler_group(self):
         group = QGroupBox("系統排程")
@@ -569,6 +589,8 @@ class SystemBackgroundWindow(QMainWindow):
         self.progress_slider = QSlider(Qt.Horizontal)
         self.progress_slider.setRange(0, 100)
         self.progress_slider.setValue(0)
+        self.progress_slider.sliderMoved.connect(self._seek_playback)
+        self.progress_slider.setEnabled(False)  # 預設禁用，播放時啟用
         
         time_layout = QHBoxLayout()
         self.current_time_label = QLabel("0:00")
@@ -622,9 +644,7 @@ class SystemBackgroundWindow(QMainWindow):
         volume_layout.addWidget(self.volume_slider)
         volume_layout.addWidget(self.volume_label)
         
-        self.volume_slider.valueChanged.connect(
-            lambda v: self.volume_label.setText(f"{v}%")
-        )
+        self.volume_slider.valueChanged.connect(self.adjust_volume)
         
         layout.addLayout(volume_layout)
 
@@ -726,39 +746,28 @@ class SystemBackgroundWindow(QMainWindow):
 
         return self._loose_group(group)
 
-    def create_dialog_tab(self):
-        dialog_widget = QWidget()
-        dialog_layout = QVBoxLayout(dialog_widget)
-        dialog_layout.setContentsMargins(30, 30, 30, 30)
-        dialog_layout.setSpacing(20)
+    def create_folder_monitor_tab(self):
+        """資料夾監控分頁（即將推出）"""
+        folder_widget = QWidget()
+        folder_layout = QVBoxLayout(folder_widget)
+        folder_layout.setContentsMargins(30, 30, 30, 30)
+        folder_layout.setSpacing(20)
 
-        scroll_area = QScrollArea()
-        self._tall_scroll(scroll_area)
+        # Coming Soon 提示
+        coming_soon_label = QLabel("📁 資料夾監控功能")
+        coming_soon_label.setObjectName("mainTitle")
+        coming_soon_label.setAlignment(Qt.AlignCenter)
+        folder_layout.addWidget(coming_soon_label)
 
-        #scroll area
-        scroll_content = QWidget()
-        scroll_content.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
-        scroll_layout = QVBoxLayout(scroll_content)
-        scroll_layout.setContentsMargins(0, 0, 0, 0)
-        scroll_layout.setSpacing(20)
+        info_label = QLabel("此功能即將推出\n\n將支援監控指定資料夾的檔案變化\n自動整理和管理檔案")
+        info_label.setObjectName("subtitle")
+        info_label.setAlignment(Qt.AlignCenter)
+        info_label.setWordWrap(True)
+        folder_layout.addWidget(info_label)
 
-        # 當前對話
-        current_dialog_group = self.create_current_dialog_group()
-        scroll_layout.addWidget(current_dialog_group)
+        folder_layout.addStretch()
 
-        # 對話歷史
-        dialog_history_group = self.create_dialog_history_group()
-        scroll_layout.addWidget(dialog_history_group)
-
-        # 對話控制
-        dialog_control_group = self.create_dialog_control_group()
-        scroll_layout.addWidget(dialog_control_group)
-
-        scroll_layout.addStretch()
-        scroll_area.setWidget(scroll_content)
-        dialog_layout.addWidget(scroll_area, 1)
-
-        self.tab_widget.addTab(dialog_widget, "💬 對話狀態")
+        self.tab_widget.addTab(folder_widget, "📁 資料夾監控")
 
     def create_current_dialog_group(self):
         """創建當前對話組"""
@@ -971,114 +980,383 @@ class SystemBackgroundWindow(QMainWindow):
                 if callable(setter):
                     setter(Theme.LIGHT if is_dark else Theme.DARK)
                 else:
-                    print("[SystemBackground] theme_manager 缺少 toggle/set_theme/apply，無法切換主題")
+                    debug_log(2, "[SystemBackground] theme_manager 缺少 toggle/set_theme/apply，無法切換主題")
         except Exception as e:
-            print(f"[SystemBackground] 切換主題失敗: {e}")
+            debug_log(2, f"[SystemBackground] 切換主題失敗: {e}")
 
     
     def add_new_task(self):
-        print("[SystemBackground] 新增任務")
-        self.status_bar.showMessage("功能開發中...", 2000)
+        """新增待辦事項"""
+        debug_log(2, "[SystemBackground] 新增任務")
+        try:
+            # 創建輸入對話框
+            dialog = TodoDialog(self)
+            if dialog.exec_() == dialog.Accepted:
+                todo_data = dialog.get_todo_data()
+                
+                if self.use_mock_data:
+                    # Mock 模式：添加到記憶體
+                    self._mock_create_todo(todo_data)
+                    self.status_bar.showMessage(f"✅ 已新增任務（Mock）：{todo_data['title']}", 3000)
+                    self._load_monitoring_snapshot()  # 重新整理 UI
+                else:
+                    # 真實模式：調用 local_todo
+                    from modules.sys_module.actions.automation_helper import local_todo
+                    result = local_todo(
+                        'CREATE',
+                        task_name=todo_data['title'],
+                        task_description=todo_data.get('description', ''),
+                        priority=todo_data.get('priority', 'none'),
+                        deadline=todo_data.get('deadline', '')
+                    )
+                    
+                    if result.get('success'):
+                        self.status_bar.showMessage(f"✅ 已新增任務：{todo_data['title']}", 3000)
+                        # 事件系統會自動更新 UI
+                    else:
+                        self.status_bar.showMessage(f"❌ 新增失敗：{result.get('error', '未知錯誤')}", 3000)
+        except Exception as e:
+            debug_log(2, f"[SystemBackground] 新增任務失敗: {e}")
+            self.status_bar.showMessage(f"❌ 新增任務失敗: {e}", 3000)
 
     def refresh_today_tasks(self):
-        print("[SystemBackground] 重新整理今日任務")
+        """重新整理今日任務 - 從監控接口載入快照"""
+        debug_log(2, "[SystemBackground] 重新整理今日任務")
+        self._load_monitoring_snapshot()
         self.status_bar.showMessage("已重新整理今日任務", 2000)
 
     def filter_tasks_by_priority(self, priority):
-        print(f"[SystemBackground] 篩選任務: {priority}")
+        """根據優先級篩選任務"""
+        debug_log(2, f"[SystemBackground] 篩選任務: {priority}")
+        # 重新加載快照會根據當前篩選器更新 UI
+        if hasattr(self, '_monitoring_data') and self._monitoring_data:
+            self._update_todos_ui(self._monitoring_data.get('todos', {}))
 
     def clear_expired_tasks(self):
-        print("[SystemBackground] 清除過期任務")
-        self.status_bar.showMessage("已清除完成的過期任務", 2000)
+        """清除已完成的過期任務"""
+        debug_log(2, "[SystemBackground] 清除過期任務")
+        try:
+            from modules.sys_module.actions.automation_helper import local_todo
+            
+            if self.use_mock_data:
+                # Mock 模式：從記憶體清除
+                from datetime import datetime
+                now = datetime.now()
+                cleared_count = 0
+                todos_to_remove = []
+                
+                for todo in self.mock_todos:
+                    if todo.get('status') == 'completed' and todo.get('deadline'):
+                        try:
+                            deadline = datetime.strptime(todo['deadline'], '%Y-%m-%d %H:%M:%S')
+                            if deadline < now:
+                                todos_to_remove.append(todo['id'])
+                        except:
+                            pass
+                
+                for todo_id in todos_to_remove:
+                    self._mock_delete_todo(todo_id)
+                    cleared_count += 1
+                
+                self._load_monitoring_snapshot()
+            else:
+                # 真實模式：調用 monitoring_interface
+                expired_todos = self.monitoring_interface.get_expired_todos()
+                cleared_count = 0
+                
+                for todo in expired_todos:
+                    if todo.get('status') == 'completed':
+                        result = local_todo('DELETE', task_id=todo['id'])
+                        if result.get('success'):
+                            cleared_count += 1
+            
+            self.status_bar.showMessage(f"✅ 已清除 {cleared_count} 個已完成的過期任務", 3000)
+        except Exception as e:
+            debug_log(2, f"[SystemBackground] 清除過期任務失敗: {e}")
+            self.status_bar.showMessage(f"❌ 清除失敗: {e}", 3000)
     
     def add_calendar_event(self):
-        print("[SystemBackground] 新增行事曆事件")
-        self.status_bar.showMessage("功能開發中...", 2000)
+        """新增行事曆事件"""
+        debug_log(2, "[SystemBackground] 新增行事曆事件")
+        try:
+            # 創建輸入對話框
+            dialog = CalendarEventDialog(self)
+            if dialog.exec_() == dialog.Accepted:
+                event_data = dialog.get_event_data()
+                
+                if self.use_mock_data:
+                    # Mock 模式：添加到記憶體
+                    self._mock_create_calendar_event(event_data)
+                    self.status_bar.showMessage(f"✅ 已新增事件（Mock）：{event_data['title']}", 3000)
+                    self._load_monitoring_snapshot()  # 重新整理 UI
+                else:
+                    # 真實模式：調用 local_calendar
+                    from modules.sys_module.actions.automation_helper import local_calendar
+                    result = local_calendar(
+                        'CREATE',
+                        summary=event_data['title'],
+                        start_time=event_data['start_time'],
+                        end_time=event_data.get('end_time', ''),
+                        description=event_data.get('description', ''),
+                        location=event_data.get('location', '')
+                    )
+                    
+                    if result.get('success'):
+                        self.status_bar.showMessage(f"✅ 已新增事件：{event_data['title']}", 3000)
+                        # 事件系統會自動更新 UI
+                    else:
+                        self.status_bar.showMessage(f"❌ 新增失敗：{result.get('error', '未知錯誤')}", 3000)
+        except Exception as e:
+            debug_log(2, f"[SystemBackground] 新增行事曆事件失敗: {e}")
+            self.status_bar.showMessage(f"❌ 新增事件失敗: {e}", 3000)
 
     def sync_calendar(self):
-        print("[SystemBackground] 同步行事曆")
+        debug_log(2, "[SystemBackground] 同步行事曆")
         self.status_bar.showMessage("正在同步...", 2000)
 
-    def authorize_google_calendar(self):
-        print("[SystemBackground] 授權 Google Calendar")
-        self.auth_status_label.setText("✅ 已授權")
-        self.auth_status_label.setStyleSheet("color: #10b981;")
-        self.revoke_btn.setEnabled(True)
-
-    def revoke_authorization(self):
-        print("[SystemBackground] 撤銷授權")
-        self.auth_status_label.setText("❌ 未授權")
-        self.auth_status_label.setStyleSheet("color: #f44336;")
-        self.revoke_btn.setEnabled(False)
-    
     def toggle_music_playback(self):
-        self.is_music_playing = not self.is_music_playing
-        if self.is_music_playing:
-            self.play_pause_btn.setText("⏸️")
-            print("[SystemBackground] 播放音樂")
-        else:
-            self.play_pause_btn.setText("▶️")
-            print("[SystemBackground] 暫停音樂")
+        """切換播放/暫停"""
+        try:
+            from modules.sys_module.actions.automation_helper import media_control
+            
+            if self.is_music_playing:
+                # 暫停
+                result = media_control(action="pause")
+                self.is_music_playing = False
+                self.play_pause_btn.setText("▶️")
+                self.progress_slider.setEnabled(False)  # 禁用進度條
+                debug_log(OPERATION_LEVEL, "[SystemBackground] 暫停音樂")
+                self.status_bar.showMessage("已暫停", 2000)
+            else:
+                # 播放
+                result = media_control(action="play")
+                self.is_music_playing = True
+                self.play_pause_btn.setText("⏸️")
+                self.progress_slider.setEnabled(True)  # 啟用進度條
+                debug_log(OPERATION_LEVEL, "[SystemBackground] 播放音樂")
+                self.status_bar.showMessage("正在播放", 2000)
+        except Exception as e:
+            error_log(f"[SystemBackground] 切換播放狀態失敗: {e}")
+            self.status_bar.showMessage(f"操作失敗: {e}", 3000)
 
     def play_next_song(self):
-        print("[SystemBackground] 下一首")
-        self.status_bar.showMessage("播放下一首", 2000)
+        """播放下一首"""
+        try:
+            from modules.sys_module.actions.automation_helper import media_control
+            
+            result = media_control(action="next")
+            
+            # 更新本地播放列表索引
+            if self.current_playlist and self.current_track_index < len(self.current_playlist) - 1:
+                self.current_track_index += 1
+                self.playlist_widget.setCurrentRow(self.current_track_index)
+                current_song = self.current_playlist[self.current_track_index]
+                from pathlib import Path
+                self.song_title_label.setText(Path(current_song).stem)
+            
+            debug_log(OPERATION_LEVEL, "[SystemBackground] 下一首")
+            self.status_bar.showMessage("播放下一首", 2000)
+        except Exception as e:
+            error_log(f"[SystemBackground] 播放下一首失敗: {e}")
+            self.status_bar.showMessage(f"操作失敗: {e}", 3000)
 
     def play_previous_song(self):
-        print("[SystemBackground] 上一首")
-        self.status_bar.showMessage("播放上一首", 2000)
+        """播放上一首"""
+        try:
+            from modules.sys_module.actions.automation_helper import media_control
+            
+            result = media_control(action="previous")
+            
+            # 更新本地播放列表索引
+            if self.current_playlist and self.current_track_index > 0:
+                self.current_track_index -= 1
+                self.playlist_widget.setCurrentRow(self.current_track_index)
+                current_song = self.current_playlist[self.current_track_index]
+                from pathlib import Path
+                self.song_title_label.setText(Path(current_song).stem)
+            
+            debug_log(OPERATION_LEVEL, "[SystemBackground] 上一首")
+            self.status_bar.showMessage("播放上一首", 2000)
+        except Exception as e:
+            error_log(f"[SystemBackground] 播放上一首失敗: {e}")
+            self.status_bar.showMessage(f"操作失敗: {e}", 3000)
 
+    def adjust_volume(self, value):
+        """調整音量"""
+        try:
+            from modules.sys_module.actions.automation_helper import media_control
+            
+            self.current_volume = value
+            self.volume_label.setText(f"{value}%")
+            
+            # 調用 media_control 設置音量
+            result = media_control(action="volume", volume=value)
+            
+            debug_log(OPERATION_LEVEL, f"[SystemBackground] 調整音量: {value}% - {result}")
+        except Exception as e:
+            error_log(f"[SystemBackground] 調整音量失敗: {e}")
+    
+    def _update_playback_progress(self):
+        """更新播放進度條和時間標籤"""
+        if not self.is_music_playing:
+            return
+        
+        try:
+            from modules.sys_module.actions import automation_helper
+            player = automation_helper._music_player
+            
+            if player and player.is_playing:
+                position_ms = player.get_playback_position()
+                duration_ms = player.current_duration_ms
+                
+                if duration_ms > 0:
+                    # 更新進度條
+                    progress_percent = int((position_ms / duration_ms) * 100)
+                    self.progress_slider.blockSignals(True)  # 避免觸發 seek
+                    self.progress_slider.setValue(progress_percent)
+                    self.progress_slider.blockSignals(False)
+                    self.progress_slider.setEnabled(True)
+                    
+                    # 更新時間標籤
+                    current_sec = position_ms // 1000
+                    total_sec = duration_ms // 1000
+                    
+                    self.current_time_label.setText(f"{current_sec // 60}:{current_sec % 60:02d}")
+                    self.total_time_label.setText(f"{total_sec // 60}:{total_sec % 60:02d}")
+                else:
+                    self.progress_slider.setEnabled(False)
+            else:
+                # 沒有播放，重置
+                self.progress_slider.setValue(0)
+                self.progress_slider.setEnabled(False)
+                self.current_time_label.setText("0:00")
+                self.total_time_label.setText("0:00")
+                
+        except Exception as e:
+            pass  # 靜默處理錯誤
+    
+    def _seek_playback(self, value):
+        """拖動進度條時 seek 到指定位置"""
+        try:
+            from modules.sys_module.actions import automation_helper
+            player = automation_helper._music_player
+            
+            if player and player.current_duration_ms > 0:
+                target_ms = int((value / 100) * player.current_duration_ms)
+                debug_log(OPERATION_LEVEL, f"[SystemBackground] Seek 請求: {value}% ({target_ms}ms)")
+                self.status_bar.showMessage(f"Seek 功能開發中", 2000)
+                
+        except Exception as e:
+            error_log(f"[SystemBackground] Seek 失敗: {e}")
+    
     def toggle_loop_mode(self):
-        if self.loop_btn.isChecked():
-            print("[SystemBackground] 啟用單曲循環")
-            self.status_bar.showMessage("已啟用單曲循環", 2000)
-        else:
-            print("[SystemBackground] 關閉單曲循環")
-            self.status_bar.showMessage("已關閉單曲循環", 2000)
+        """切換循環模式"""
+        try:
+            from modules.sys_module.actions.automation_helper import media_control
+            
+            if self.loop_btn.isChecked():
+                # 啟用循環
+                result = media_control(action="loop", loop=True)
+                debug_log(OPERATION_LEVEL, "[SystemBackground] 啟用循環播放")
+                self.status_bar.showMessage("已啟用循環播放", 2000)
+            else:
+                # 關閉循環
+                result = media_control(action="loop", loop=False)
+                debug_log(OPERATION_LEVEL, "[SystemBackground] 關閉循環播放")
+                self.status_bar.showMessage("已關閉循環播放", 2000)
+        except Exception as e:
+            error_log(f"[SystemBackground] 切換循環模式失敗: {e}")
+            self.status_bar.showMessage(f"操作失敗: {e}", 3000)
 
     def play_selected_song(self, item):
-        song_name = item.text()
-        print(f"[SystemBackground] 播放: {song_name}")
-        self.song_title_label.setText(song_name)
-        self.is_music_playing = True
-        self.play_pause_btn.setText("⏸️")
+        """播放選中的歌曲"""
+        try:
+            from modules.sys_module.actions.automation_helper import media_control
+            from pathlib import Path
+            
+            # 獲取選中的索引
+            self.current_track_index = self.playlist_widget.currentRow()
+            
+            if 0 <= self.current_track_index < len(self.current_playlist):
+                selected_file = self.current_playlist[self.current_track_index]
+                song_name = Path(selected_file).stem
+                
+                # 調用 media_control 播放
+                result = media_control(
+                    action="play",
+                    song_query=song_name,
+                    music_folder=str(Path(selected_file).parent)
+                )
+                
+                self.song_title_label.setText(song_name)
+                self.is_music_playing = True
+                self.play_pause_btn.setText("⏸️")
+                
+                debug_log(OPERATION_LEVEL, f"[SystemBackground] 播放: {song_name}")
+                self.status_bar.showMessage(f"正在播放: {song_name}", 3000)
+        except Exception as e:
+            error_log(f"[SystemBackground] 播放歌曲失敗: {e}")
+            self.status_bar.showMessage(f"播放失敗: {e}", 3000)
 
     def add_music_file(self):
-        print("[SystemBackground] 新增音樂檔案")
+        debug_log(2, "[SystemBackground] 新增音樂檔案")
         self.status_bar.showMessage("功能開發中...", 2000)
 
     def add_music_folder(self):
-        print("[SystemBackground] 新增音樂資料夾")
-        self.status_bar.showMessage("功能開發中...", 2000)
+        """新增音樂資料夾"""
+        try:
+            folder_path = QFileDialog.getExistingDirectory(
+                self, "選擇音樂資料夾", ""
+            )
+            
+            if folder_path:
+                from pathlib import Path
+                music_path = Path(folder_path)
+                music_extensions = ['.mp3', '.wav', '.flac', '.m4a', '.ogg', '.wma']
+                music_files = []
+                
+                for ext in music_extensions:
+                    music_files.extend(music_path.glob(f'**/*{ext}'))
+                
+                # 添加到播放列表
+                for music_file in music_files:
+                    self.current_playlist.append(str(music_file))
+                    self.playlist_widget.addItem(music_file.name)
+                
+                debug_log(OPERATION_LEVEL, f"[SystemBackground] 新增 {len(music_files)} 首音樂")
+                self.status_bar.showMessage(f"已新增 {len(music_files)} 首音樂", 3000)
+        except Exception as e:
+            error_log(f"[SystemBackground] 新增音樂資料夾失敗: {e}")
+            self.status_bar.showMessage(f"新增失敗: {e}", 3000)
 
     def clear_playlist(self):
         self.playlist_widget.clear()
-        print("[SystemBackground] 已清空播放列表")
+        debug_log(2, "[SystemBackground] 已清空播放列表")
         self.status_bar.showMessage("已清空播放列表", 2000)
 
     def search_music(self):
         keyword = self.music_search_input.text()
-        print(f"[SystemBackground] 搜尋音樂: {keyword}")
+        debug_log(2, f"[SystemBackground] 搜尋音樂: {keyword}")
         self.status_bar.showMessage(f"搜尋: {keyword}", 2000)
 
     def open_youtube(self):
-        print("[SystemBackground] 開啟 YouTube")
+        debug_log(2, "[SystemBackground] 開啟 YouTube")
         self.status_bar.showMessage("功能開發中...", 2000)
 
     def open_spotify(self):
-        print("[SystemBackground] 開啟 Spotify")
+        debug_log(2, "[SystemBackground] 開啟 Spotify")
         self.status_bar.showMessage("功能開發中...", 2000)
     
     def filter_dialog_history(self, filter_type):
-        print(f"[SystemBackground] 篩選對話: {filter_type}")
+        debug_log(2, f"[SystemBackground] 篩選對話: {filter_type}")
 
     def view_dialog_detail(self, item):
         dialog_text = item.text()
-        print(f"[SystemBackground] 查看對話: {dialog_text}")
+        debug_log(2, f"[SystemBackground] 查看對話: {dialog_text}")
 
     def export_dialog_history(self):
 
-        print("[SystemBackground] 匯出對話記錄")
+        debug_log(2, "[SystemBackground] 匯出對話記錄")
         self.status_bar.showMessage("功能開發中...", 2000)
 
     def clear_dialog_history(self):
@@ -1090,14 +1368,14 @@ class SystemBackgroundWindow(QMainWindow):
         if reply == QMessageBox.Yes:
             self.dialog_history_list.clear()
             self.dialog_history = []
-            print("[SystemBackground] 已清除對話歷史")
+            debug_log(2, "[SystemBackground] 已清除對話歷史")
             self.status_bar.showMessage("已清除對話歷史", 2000)
 
     def toggle_dialog_box(self, state):
         if state == Qt.Checked:
-            print("[SystemBackground] 顯示對話框")
+            debug_log(2, "[SystemBackground] 顯示對話框")
         else:
-            print("[SystemBackground] 隱藏對話框")
+            debug_log(2, "[SystemBackground] 隱藏對話框")
 
     
     def minimize_to_orb(self):
@@ -1105,7 +1383,7 @@ class SystemBackgroundWindow(QMainWindow):
         self.original_geometry = self.geometry()
         self.hide()
         self.action_triggered.emit("minimize_to_orb", {})
-        print("[SystemBackground] 已最小化到球體")
+        debug_log(2, "[SystemBackground] 已最小化到球體")
 
     def restore_from_orb(self):
         if self.is_minimized_to_orb:
@@ -1115,10 +1393,10 @@ class SystemBackgroundWindow(QMainWindow):
             self.raise_()
             self.activateWindow()
             self.is_minimized_to_orb = False
-            print("[SystemBackground] 從球體恢復視窗")
+            debug_log(2, "[SystemBackground] 從球體恢復視窗")
 
     def refresh_all_modules(self):
-        print("[SystemBackground] 重新整理所有模組")
+        debug_log(2, "[SystemBackground] 重新整理所有模組")
         self.status_bar.showMessage("正在重新整理...", 2000)
         self.refresh_today_tasks()
 
@@ -1126,30 +1404,990 @@ class SystemBackgroundWindow(QMainWindow):
         try:
             self.dark_mode = self.settings.value("theme/dark_mode", False, type=bool)
             self.theme_toggle.setText("☀️" if self.dark_mode else "🌙")
-            print("[SystemBackground] 設定載入完成")
+            debug_log(2, "[SystemBackground] 設定載入完成")
         except Exception as e:
-            print(f"[SystemBackground] 載入設定時發生錯誤: {e}")
+            debug_log(2, f"[SystemBackground] 載入設定時發生錯誤: {e}")
 
     def save_settings(self):
         try:
             self.settings.setValue("theme/dark_mode", self.dark_mode)
             self.settings.sync()
-            print("[SystemBackground] 設定儲存完成")
+            debug_log(2, "[SystemBackground] 設定儲存完成")
         except Exception as e:
-            print(f"[SystemBackground] 儲存設定時發生錯誤: {e}")
+            debug_log(2, f"[SystemBackground] 儲存設定時發生錯誤: {e}")
 
+    def showEvent(self, event):
+        """視窗顯示時加載最新快照"""
+        super().showEvent(event)
+        try:
+            # 每次顯示視窗時重新加載快照，確保資料同步
+            self._load_monitoring_snapshot()
+            debug_log(2, "[SystemBackground] 視窗顯示，已加載最新快照")
+        except Exception as e:
+            debug_log(2, f"[SystemBackground] 加載快照失敗: {e}")
+    
     def closeEvent(self, event):
         self.save_settings()
+        # 取消訂閱監控事件
+        try:
+            # MonitoringInterface 會自動清理所有訂閱
+            debug_log(2, "[SystemBackground] 視窗關閉，事件訂閱將由接口管理")
+        except Exception as e:
+            debug_log(2, f"[SystemBackground] 處理關閉事件失敗: {e}")
+        
         if not self.is_minimized_to_orb:
-            print("[SystemBackground] 視窗關閉")
+            debug_log(2, "[SystemBackground] 視窗關閉")
             self.window_closed.emit()
         event.accept()
+    
+    # ==================== 監控接口整合 ====================
+    
+    def _load_default_music_folder(self):
+        """載入預設媒體資料夾的音樂"""
+        try:
+            from pathlib import Path
+            from configs.user_settings_manager import get_user_setting
+            
+            # 從 user_settings 讀取音樂資料夾
+            music_folder = get_user_setting("monitoring.background_tasks.default_media_folder", "")
+            
+            if not music_folder or not Path(music_folder).exists():
+                debug_log(OPERATION_LEVEL, "[SystemBackground] 未設定或找不到預設媒體資料夾")
+                return
+            
+            # 掃描音樂檔案
+            music_path = Path(music_folder)
+            music_extensions = ['.mp3', '.wav', '.flac', '.m4a', '.ogg', '.wma']
+            music_files = []
+            
+            for ext in music_extensions:
+                music_files.extend(music_path.glob(f'**/*{ext}'))
+            
+            # 添加到播放列表
+            self.current_playlist = [str(f) for f in music_files]
+            self.playlist_widget.clear()
+            
+            for music_file in music_files:
+                self.playlist_widget.addItem(music_file.name)
+            
+            debug_log(OPERATION_LEVEL, f"[SystemBackground] 已載入 {len(music_files)} 首音樂")
+            self.status_bar.showMessage(f"已載入 {len(music_files)} 首音樂", 3000)
+            
+        except Exception as e:
+            error_log(f"[SystemBackground] 載入預設音樂資料夾失敗: {e}")
+    
+    def _subscribe_monitoring_events(self):
+        """訂閱監控事件"""
+        if self.use_mock_data:
+            debug_log(OPERATION_LEVEL, "[SystemBackground] Mock 模式：跳過事件訂閱")
+            return
+        
+        if not self.monitoring_interface:
+            error_log("[SystemBackground] 監控接口未初始化，無法訂閱事件")
+            return
+        
+        try:
+            # 訂閱待辦事項事件
+            self.monitoring_interface.subscribe_todo_events(self._handle_todo_event)
+            # 訂閱行事曆事件
+            self.monitoring_interface.subscribe_calendar_events(self._handle_calendar_event)
+            debug_log(OPERATION_LEVEL, "[SystemBackground] 已訂閱監控事件")
+        except Exception as e:
+            error_log(f"[SystemBackground] 訂閱監控事件失敗: {e}")
+    
+    def _load_monitoring_snapshot(self):
+        """加載監控快照資料"""
+        try:
+            mode = "Mock" if self.use_mock_data else "真實"
+            debug_log(OPERATION_LEVEL, f"[SystemBackground] 開始加載監控快照 ({mode}模式)")
+            
+            if self.use_mock_data:
+                # 使用 Mock 資料生成快照
+                snapshot = self._get_mock_snapshot()
+                debug_log(OPERATION_LEVEL, f"[SystemBackground] Mock 快照已生成: {len(snapshot.get('todos', {}).get('all', []))} todos, {len(snapshot.get('calendar', {}).get('all', []))} events")
+            else:
+                # 使用真實監控接口
+                if self.monitoring_interface:
+                    snapshot = self.monitoring_interface.get_monitoring_snapshot()
+                else:
+                    error_log("[SystemBackground] 監控接口未初始化，無法加載快照")
+                    return
+            
+            self._monitoring_data = snapshot
+            
+            # 更新待辦事項 UI
+            debug_log(OPERATION_LEVEL, "[SystemBackground] 正在更新待辦事項 UI...")
+            self._update_todos_ui(snapshot.get('todos', {}))
+            
+            # 更新行事曆 UI
+            debug_log(OPERATION_LEVEL, "[SystemBackground] 正在更新行事曆 UI...")
+            self._update_calendar_ui(snapshot.get('calendar', {}))
+            
+            debug_log(OPERATION_LEVEL, f"[SystemBackground] ✅ 監控快照加載完成 ({mode}模式)")
+        except Exception as e:
+            import traceback
+            error_log(f"[SystemBackground] ❌ 加載監控快照失敗: {e}")
+            debug_log(OPERATION_LEVEL, traceback.format_exc())
+    
+    def _handle_todo_event(self, event_data: MonitoringEventData):
+        """處理待辦事項事件"""
+        try:
+            event_type = event_data.event_type
+            item_data = event_data.item_data
+            
+            if event_type == MonitoringEventType.ITEM_ADDED:
+                self._add_todo_to_ui(item_data)
+            elif event_type == MonitoringEventType.ITEM_UPDATED:
+                self._update_todo_in_ui(item_data)
+            elif event_type == MonitoringEventType.ITEM_COMPLETED:
+                self._complete_todo_in_ui(item_data)
+            elif event_type == MonitoringEventType.ITEM_DELETED:
+                self._remove_todo_from_ui(item_data)
+            elif event_type == MonitoringEventType.SYSTEM_STARTUP:
+                self._load_monitoring_snapshot()
+                
+            debug_log(OPERATION_LEVEL, f"[SystemBackground] 處理待辦事件: {event_type.name}")
+        except Exception as e:
+            error_log(f"[SystemBackground] 處理待辦事件失敗: {e}")
+    
+    def _handle_calendar_event(self, event_data: MonitoringEventData):
+        """處理行事曆事件"""
+        try:
+            event_type = event_data.event_type
+            item_data = event_data.item_data
+            
+            if event_type == MonitoringEventType.ITEM_ADDED:
+                self._add_calendar_event_to_ui(item_data)
+            elif event_type == MonitoringEventType.ITEM_UPDATED:
+                self._update_calendar_event_in_ui(item_data)
+            elif event_type == MonitoringEventType.ITEM_DELETED:
+                self._remove_calendar_event_from_ui(item_data)
+            elif event_type == MonitoringEventType.SYSTEM_STARTUP:
+                self._load_monitoring_snapshot()
+                
+            debug_log(OPERATION_LEVEL, f"[SystemBackground] 處理行事曆事件: {event_type.name}")
+        except Exception as e:
+            error_log(f"[SystemBackground] 處理行事曆事件失敗: {e}")
+    
+    def _update_todos_ui(self, todos_data: dict):
+        """更新待辦事項 UI"""
+        try:
+            all_todos = todos_data.get('all', [])
+            by_priority = todos_data.get('by_priority', {})
+            expired = todos_data.get('expired', [])
+            
+            # 清空現有列表
+            self.today_tasks_list.clear()
+            self.sorting_tree.clear()
+            self.expired_tasks_list.clear()
+            
+            # 今日任務 - 顯示未完成的任務
+            today_todos = [t for t in all_todos if t.get('status') != 'completed']
+            for todo in today_todos[:10]:  # 最多顯示10個
+                self._add_todo_item(self.today_tasks_list, todo)
+            
+            # 分類任務 - 使用 TreeWidget 顯示
+            current_filter = self.priority_filter.currentText()
+            todos_to_show = []
+            
+            if current_filter == "全部":
+                todos_to_show = all_todos
+            elif current_filter == "高優先級":
+                todos_to_show = by_priority.get('high', [])
+            elif current_filter == "中優先級":
+                todos_to_show = by_priority.get('medium', [])
+            elif current_filter == "低優先級":
+                todos_to_show = by_priority.get('low', [])
+            
+            # 將待辦事項添加到 TreeWidget
+            for todo in todos_to_show:
+                self._add_todo_tree_item(self.sorting_tree, todo)
+            
+            # 過期任務
+            for todo in expired:
+                self._add_todo_item(self.expired_tasks_list, todo, is_expired=True)
+            
+            mode = "Mock" if self.use_mock_data else "真實"
+            debug_log(2, f"[SystemBackground] 待辦事項 UI 更新完成 ({mode}): {len(today_todos)} 今日, {len(expired)} 過期, 總計 {len(all_todos)} 項")
+        except Exception as e:
+            debug_log(2, f"[SystemBackground] 更新待辦事項 UI 失敗: {e}")
+    
+    def _update_calendar_ui(self, calendar_data: dict):
+        """更新行事曆 UI"""
+        try:
+            all_events = calendar_data.get('all', [])
+            
+            # 清空現有列表
+            if hasattr(self, 'week_view'):
+                self.week_view.clear()
+            
+            # 按日期分組
+            
+            # 行事曆樹狀結構 - 按日期分組
+            events_by_date = {}
+            for event in all_events:
+                start_time = event.get('start_time', '')
+                if start_time:
+                    date_key = start_time.split(' ')[0]  # 取日期部分
+                    if date_key not in events_by_date:
+                        events_by_date[date_key] = []
+                    events_by_date[date_key].append(event)
+            
+            # 添加到樹狀結構
+            if hasattr(self, 'week_view'):
+                for date_key in sorted(events_by_date.keys()):
+                    date_item = QTreeWidgetItem([date_key, '', ''])
+                    for event in events_by_date[date_key]:
+                        title = event.get('title', '未命名')
+                        start_time = event.get('start_time', '')
+                        time_part = start_time.split(' ')[1] if ' ' in start_time else ''
+                        event_item = QTreeWidgetItem(['', title, time_part])
+                        # 儲存完整事件資料到 item
+                        event_item.setData(0, Qt.UserRole, event)
+                        date_item.addChild(event_item)
+                    self.week_view.addTopLevelItem(date_item)
+                    date_item.setExpanded(True)
+            
+            debug_log(2, f"[SystemBackground] 行事曆 UI 更新完成 ({len(all_events)} 項)")
+        except Exception as e:
+            debug_log(2, f"[SystemBackground] 更新行事曆 UI 失敗: {e}")
+    
+    def _add_todo_item(self, list_widget: 'QListWidget', todo: dict, is_expired: bool = False):
+        """添加待辦事項到列表"""
+        try:
+            title = todo.get('title', '未命名')
+            priority = todo.get('priority', 'none')
+            deadline = todo.get('deadline', '')
+            status = todo.get('status', 'pending')
+            
+            # 格式化顯示文字
+            priority_icon = {'high': '🔴', 'medium': '🟡', 'low': '🟢', 'none': '⚪'}.get(priority, '⚪')
+            status_icon = '✅' if status == 'completed' else '⏳'
+            
+            display_text = f"{priority_icon} {status_icon} {title}"
+            if deadline:
+                display_text += f" (截止: {deadline})"
+            
+            if is_expired:
+                display_text += " ⚠️"
+            
+            debug_log(OPERATION_LEVEL, f"[SystemBackground] 添加待辦項目到 UI: {title} (priority={priority}, status={status})")
+            
+            item = QListWidgetItem(display_text)
+            item.setData(Qt.UserRole, todo.get('id'))  # 儲存 ID 以便後續操作
+            list_widget.addItem(item)
+        except Exception as e:
+            error_log(f"[SystemBackground] 添加待辦項目失敗: {e}")
+    
+    def _add_todo_tree_item(self, tree_widget: 'QTreeWidget', todo: dict):
+        """添加待辦事項到樹狀圖"""
+        try:
+            title = todo.get('title', '未命名')
+            priority = todo.get('priority', 'none')
+            deadline = todo.get('deadline', '')
+            status = todo.get('status', 'pending')
+            
+            # 格式化顯示
+            priority_map = {'high': '🔴 高', 'medium': '🟡 中', 'low': '🟢 低', 'none': '⚪ 無'}
+            priority_text = priority_map.get(priority, '⚪ 無')
+            
+            status_icon = '✅' if status == 'completed' else '⏳'
+            title_with_status = f"{status_icon} {title}"
+            
+            # 創建樹狀項目 [任務, 優先級, 日期]
+            item = QTreeWidgetItem([title_with_status, priority_text, deadline])
+            item.setData(0, Qt.UserRole, todo.get('id'))  # 儲存 ID
+            tree_widget.addTopLevelItem(item)
+            
+            debug_log(OPERATION_LEVEL, f"[SystemBackground] 添加待辦項目到 Tree: {title}")
+        except Exception as e:
+            error_log(f"[SystemBackground] 添加待辦項目到 Tree 失敗: {e}")
+    
+    def _add_calendar_event_item(self, list_widget: 'QListWidget', event: dict):
+        """添加行事曆事件到列表"""
+        try:
+            title = event.get('title', '未命名')
+            start_time = event.get('start_time', '')
+            location = event.get('location', '')
+            
+            display_text = f"📅 {title}"
+            if start_time:
+                display_text += f" - {start_time}"
+            if location:
+                display_text += f" @ {location}"
+            
+            item = QListWidgetItem(display_text)
+            item.setData(Qt.UserRole, event.get('id'))
+            list_widget.addItem(item)
+        except Exception as e:
+            debug_log(2, f"[SystemBackground] 添加行事曆項目失敗: {e}")
+    
+    def _add_todo_to_ui(self, todo: dict):
+        """增量添加待辦事項"""
+        self._load_monitoring_snapshot()  # 重新加載以確保一致性
+    
+    def _update_todo_in_ui(self, todo: dict):
+        """增量更新待辦事項"""
+        self._load_monitoring_snapshot()
+    
+    def _complete_todo_in_ui(self, todo: dict):
+        """標記待辦事項完成"""
+        self._load_monitoring_snapshot()
+    
+    def _remove_todo_from_ui(self, todo: dict):
+        """增量移除待辦事項"""
+        self._load_monitoring_snapshot()
+    
+    def _add_calendar_event_to_ui(self, event: dict):
+        """增量添加行事曆事件"""
+        self._load_monitoring_snapshot()
+    
+    def _update_calendar_event_in_ui(self, event: dict):
+        """增量更新行事曆事件"""
+        self._load_monitoring_snapshot()
+    
+    def _remove_calendar_event_from_ui(self, event: dict):
+        """增量移除行事曆事件"""
+        self._load_monitoring_snapshot()
+    
+    # ==================== Mock 資料管理 ====================
+    
+    def _initialize_mock_data(self):
+        """初始化 Mock 資料"""
+        from datetime import datetime, timedelta
+        
+        # Mock 待辦事項
+        self.mock_todos = [
+            {
+                'id': 1,
+                'title': '完成專案文件',
+                'description': '撰寫技術文件和使用手冊',
+                'priority': 'high',
+                'deadline': (datetime.now() + timedelta(days=2)).strftime('%Y-%m-%d %H:%M:%S'),
+                'status': 'pending',
+                'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            },
+            {
+                'id': 2,
+                'title': '準備會議簡報',
+                'description': '下週一的產品展示會議',
+                'priority': 'medium',
+                'deadline': (datetime.now() + timedelta(days=5)).strftime('%Y-%m-%d %H:%M:%S'),
+                'status': 'pending',
+                'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            },
+            {
+                'id': 3,
+                'title': '回覆客戶郵件',
+                'description': '',
+                'priority': 'low',
+                'deadline': (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d %H:%M:%S'),
+                'status': 'pending',
+                'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            },
+            {
+                'id': 4,
+                'title': '更新系統文件',
+                'description': '已完成的過期任務',
+                'priority': 'none',
+                'deadline': (datetime.now() - timedelta(days=2)).strftime('%Y-%m-%d %H:%M:%S'),
+                'status': 'completed',
+                'created_at': (datetime.now() - timedelta(days=5)).strftime('%Y-%m-%d %H:%M:%S')
+            }
+        ]
+        
+        # Mock 行事曆事件
+        self.mock_calendar_events = [
+            {
+                'id': 1,
+                'title': '團隊會議',
+                'description': '每週固定會議',
+                'start_time': (datetime.now() + timedelta(hours=2)).strftime('%Y-%m-%d %H:%M:%S'),
+                'end_time': (datetime.now() + timedelta(hours=3)).strftime('%Y-%m-%d %H:%M:%S'),
+                'location': '會議室A',
+                'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            },
+            {
+                'id': 2,
+                'title': '產品展示',
+                'description': '向客戶展示新功能',
+                'start_time': (datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d %H:%M:%S'),
+                'end_time': (datetime.now() + timedelta(days=7, hours=2)).strftime('%Y-%m-%d %H:%M:%S'),
+                'location': '線上會議',
+                'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            },
+            {
+                'id': 3,
+                'title': '午餐約會',
+                'description': '',
+                'start_time': (datetime.now() + timedelta(days=1, hours=12)).strftime('%Y-%m-%d %H:%M:%S'),
+                'end_time': (datetime.now() + timedelta(days=1, hours=13)).strftime('%Y-%m-%d %H:%M:%S'),
+                'location': '市區餐廳',
+                'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }
+        ]
+        
+        self.mock_id_counter = 5  # 從 5 開始編號新項目
+        debug_log(2, f"[SystemBackground] Mock 資料已初始化：{len(self.mock_todos)} 個待辦，{len(self.mock_calendar_events)} 個事件")
+    
+    def _get_mock_snapshot(self) -> dict:
+        """生成 Mock 快照"""
+        from datetime import datetime
+        
+        debug_log(2, f"[SystemBackground] 生成 Mock 快照，來源資料: {len(self.mock_todos)} 個待辦, {len(self.mock_calendar_events)} 個事件")
+        
+        # 待辦事項分類
+        all_todos = [t for t in self.mock_todos]
+        by_priority = {
+            'high': [t for t in all_todos if t['priority'] == 'high'],
+            'medium': [t for t in all_todos if t['priority'] == 'medium'],
+            'low': [t for t in all_todos if t['priority'] == 'low'],
+            'none': [t for t in all_todos if t['priority'] == 'none']
+        }
+        
+        # 過期任務
+        now = datetime.now()
+        expired = []
+        for todo in all_todos:
+            if todo.get('deadline'):
+                try:
+                    deadline = datetime.strptime(todo['deadline'], '%Y-%m-%d %H:%M:%S')
+                    if deadline < now:
+                        expired.append({**todo, 'is_expired': True})
+                except:
+                    pass
+        
+        # 行事曆事件
+        all_events = [e for e in self.mock_calendar_events]
+        
+        return {
+            'todos': {
+                'all': all_todos,
+                'by_priority': by_priority,
+                'expired': expired
+            },
+            'calendar': {
+                'all': all_events,
+                'upcoming_24h': []  # 簡化處理
+            }
+        }
+    
+    def _mock_create_todo(self, todo_data: dict):
+        """Mock 新增待辦事項"""
+        from datetime import datetime
+        new_todo = {
+            'id': self.mock_id_counter,
+            'title': todo_data['title'],
+            'description': todo_data.get('description', ''),
+            'priority': todo_data.get('priority', 'none'),
+            'deadline': todo_data.get('deadline', ''),
+            'status': 'pending',
+            'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        self.mock_todos.append(new_todo)
+        self.mock_id_counter += 1
+        debug_log(2, f"[SystemBackground Mock] 已新增待辦：{new_todo['title']} (ID: {new_todo['id']})")
+    
+    def _mock_update_todo(self, task_id: int, todo_data: dict):
+        """Mock 更新待辦事項"""
+        for todo in self.mock_todos:
+            if todo['id'] == task_id:
+                todo['title'] = todo_data['title']
+                todo['description'] = todo_data.get('description', '')
+                todo['priority'] = todo_data.get('priority', 'none')
+                todo['deadline'] = todo_data.get('deadline', '')
+                debug_log(2, f"[SystemBackground Mock] 已更新待辦：{todo['title']} (ID: {task_id})")
+                return True
+        return False
+    
+    def _mock_delete_todo(self, task_id: int):
+        """Mock 刪除待辦事項"""
+        self.mock_todos = [t for t in self.mock_todos if t['id'] != task_id]
+        debug_log(2, f"[SystemBackground Mock] 已刪除待辦 (ID: {task_id})")
+    
+    def _mock_complete_todo(self, task_id: int):
+        """Mock 完成待辦事項"""
+        for todo in self.mock_todos:
+            if todo['id'] == task_id:
+                todo['status'] = 'completed'
+                debug_log(2, f"[SystemBackground Mock] 已完成待辦：{todo['title']} (ID: {task_id})")
+                return True
+        return False
+    
+    def _mock_create_calendar_event(self, event_data: dict):
+        """Mock 新增行事曆事件"""
+        from datetime import datetime
+        new_event = {
+            'id': self.mock_id_counter,
+            'title': event_data['title'],
+            'description': event_data.get('description', ''),
+            'start_time': event_data['start_time'],
+            'end_time': event_data.get('end_time', ''),
+            'location': event_data.get('location', ''),
+            'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        self.mock_calendar_events.append(new_event)
+        self.mock_id_counter += 1
+        debug_log(2, f"[SystemBackground Mock] 已新增事件：{new_event['title']} (ID: {new_event['id']})")
+    
+    def _mock_update_calendar_event(self, event_id: int, event_data: dict):
+        """Mock 更新行事曆事件"""
+        for event in self.mock_calendar_events:
+            if event['id'] == event_id:
+                event['title'] = event_data['title']
+                event['description'] = event_data.get('description', '')
+                event['start_time'] = event_data['start_time']
+                event['end_time'] = event_data.get('end_time', '')
+                event['location'] = event_data.get('location', '')
+                debug_log(2, f"[SystemBackground Mock] 已更新事件：{event['title']} (ID: {event_id})")
+                return True
+        return False
+    
+    def _mock_delete_calendar_event(self, event_id: int):
+        """Mock 刪除行事曆事件"""
+        self.mock_calendar_events = [e for e in self.mock_calendar_events if e['id'] != event_id]
+        debug_log(2, f"[SystemBackground Mock] 已刪除事件 (ID: {event_id})")
+    
+    # ==================== 編輯/刪除功能 ====================
+    
+    def edit_todo_item(self, item: 'QListWidgetItem'):
+        """編輯待辦事項"""
+        try:
+            todo_id = item.data(Qt.UserRole)
+            if not todo_id:
+                return
+            
+            # 從當前資料中找到完整的 todo
+            if not self._monitoring_data:
+                return
+            
+            all_todos = self._monitoring_data.get('todos', {}).get('all', [])
+            todo = next((t for t in all_todos if t.get('id') == todo_id), None)
+            
+            if not todo:
+                return
+            
+            # 顯示編輯對話框
+            dialog = TodoDialog(self, todo_data=todo)
+            if dialog.exec_() == dialog.Accepted:
+                updated_data = dialog.get_todo_data()
+                
+                if self.use_mock_data:
+                    # Mock 模式：更新記憶體
+                    if self._mock_update_todo(updated_data['task_id'], updated_data):
+                        self.status_bar.showMessage(f"✅ 已更新任務（Mock）：{updated_data['title']}", 3000)
+                        self._load_monitoring_snapshot()
+                    else:
+                        self.status_bar.showMessage("❌ 更新失敗：找不到任務", 3000)
+                else:
+                    # 真實模式：調用 local_todo
+                    from modules.sys_module.actions.automation_helper import local_todo
+                    result = local_todo(
+                        'UPDATE',
+                        task_id=updated_data['task_id'],
+                        task_name=updated_data['title'],
+                        task_description=updated_data.get('description', ''),
+                        priority=updated_data.get('priority', 'none'),
+                        deadline=updated_data.get('deadline', '')
+                    )
+                    
+                    if result.get('success'):
+                        self.status_bar.showMessage(f"✅ 已更新任務：{updated_data['title']}", 3000)
+                    else:
+                        self.status_bar.showMessage(f"❌ 更新失敗：{result.get('error', '未知錯誤')}", 3000)
+        except Exception as e:
+            debug_log(2, f"[SystemBackground] 編輯待辦事項失敗: {e}")
+            self.status_bar.showMessage(f"❌ 編輯失敗: {e}", 3000)
+    
+    def delete_todo_item(self, item: 'QListWidgetItem'):
+        """刪除待辦事項"""
+        try:
+            todo_id = item.data(Qt.UserRole)
+            if not todo_id:
+                return
+            
+            # 確認刪除
+            from PyQt5.QtWidgets import QMessageBox
+            reply = QMessageBox.question(
+                self, '確認刪除',
+                '確定要刪除這個待辦事項嗎？',
+                QMessageBox.Yes | QMessageBox.No
+            )
+            
+            if reply == QMessageBox.Yes:
+                if self.use_mock_data:
+                    # Mock 模式：從記憶體刪除
+                    self._mock_delete_todo(todo_id)
+                    self.status_bar.showMessage("✅ 已刪除任務（Mock）", 3000)
+                    self._load_monitoring_snapshot()
+                else:
+                    # 真實模式：調用 local_todo
+                    from modules.sys_module.actions.automation_helper import local_todo
+                    result = local_todo('DELETE', task_id=todo_id)
+                    
+                    if result.get('success'):
+                        self.status_bar.showMessage("✅ 已刪除任務", 3000)
+                    else:
+                        self.status_bar.showMessage(f"❌ 刪除失敗：{result.get('error', '未知錯誤')}", 3000)
+        except Exception as e:
+            debug_log(2, f"[SystemBackground] 刪除待辦事項失敗: {e}")
+            self.status_bar.showMessage(f"❌ 刪除失敗: {e}", 3000)
+    
+    def complete_todo_item(self, item: 'QListWidgetItem'):
+        """標記待辦事項為完成"""
+        try:
+            todo_id = item.data(Qt.UserRole)
+            if not todo_id:
+                return
+            
+            if self.use_mock_data:
+                # Mock 模式：更新記憶體
+                if self._mock_complete_todo(todo_id):
+                    self.status_bar.showMessage("✅ 任務已完成（Mock）", 3000)
+                    self._load_monitoring_snapshot()
+                else:
+                    self.status_bar.showMessage("❌ 標記完成失敗：找不到任務", 3000)
+            else:
+                # 真實模式：調用 local_todo
+                from modules.sys_module.actions.automation_helper import local_todo
+                result = local_todo('COMPLETE', task_id=todo_id)
+                
+                if result.get('success'):
+                    self.status_bar.showMessage("✅ 任務已完成", 3000)
+                else:
+                    self.status_bar.showMessage(f"❌ 標記完成失敗：{result.get('error', '未知錯誤')}", 3000)
+        except Exception as e:
+            debug_log(2, f"[SystemBackground] 標記完成失敗: {e}")
+            self.status_bar.showMessage(f"❌ 標記完成失敗: {e}", 3000)
+    
+    def show_todo_context_menu(self, pos, list_widget: 'QListWidget'):
+        """顯示待辦事項右鍵選單"""
+        try:
+            item = list_widget.itemAt(pos)
+            if not item:
+                return
+            
+            from PyQt5.QtWidgets import QMenu
+            menu = QMenu(self)
+            
+            edit_action = menu.addAction("✏️ 編輯")
+            complete_action = menu.addAction("✅ 標記完成")
+            delete_action = menu.addAction("🗑️ 刪除")
+            
+            action = menu.exec_(list_widget.mapToGlobal(pos))
+            
+            if action == edit_action:
+                self.edit_todo_item(item)
+            elif action == complete_action:
+                self.complete_todo_item(item)
+            elif action == delete_action:
+                self.delete_todo_item(item)
+        except Exception as e:
+            debug_log(2, f"[SystemBackground] 顯示右鍵選單失敗: {e}")
+    
+    def edit_calendar_event_item(self, item: 'QTreeWidgetItem', column: int):
+        """編輯行事曆事件"""
+        try:
+            # 只處理子項目（實際事件），不處理日期標題
+            if item.parent() is None:
+                return
+            
+            event_data = item.data(0, Qt.UserRole)
+            if not event_data:
+                return
+            
+            # 顯示編輯對話框
+            dialog = CalendarEventDialog(self, event_data=event_data)
+            if dialog.exec_() == dialog.Accepted:
+                updated_data = dialog.get_event_data()
+                
+                if self.use_mock_data:
+                    # Mock 模式：更新記憶體
+                    if self._mock_update_calendar_event(updated_data['event_id'], updated_data):
+                        self.status_bar.showMessage(f"✅ 已更新事件（Mock）：{updated_data['title']}", 3000)
+                        self._load_monitoring_snapshot()
+                    else:
+                        self.status_bar.showMessage("❌ 更新失敗：找不到事件", 3000)
+                else:
+                    # 真實模式：調用 local_calendar
+                    from modules.sys_module.actions.automation_helper import local_calendar
+                    result = local_calendar(
+                        'UPDATE',
+                        event_id=updated_data['event_id'],
+                        summary=updated_data['title'],
+                        start_time=updated_data['start_time'],
+                        end_time=updated_data.get('end_time', ''),
+                        description=updated_data.get('description', ''),
+                        location=updated_data.get('location', '')
+                    )
+                    
+                    if result.get('success'):
+                        self.status_bar.showMessage(f"✅ 已更新事件：{updated_data['title']}", 3000)
+                    else:
+                        self.status_bar.showMessage(f"❌ 更新失敗：{result.get('error', '未知錯誤')}", 3000)
+        except Exception as e:
+            debug_log(2, f"[SystemBackground] 編輯行事曆事件失敗: {e}")
+            self.status_bar.showMessage(f"❌ 編輯失敗: {e}", 3000)
+    
+    def delete_calendar_event_item(self, item: 'QTreeWidgetItem'):
+        """刪除行事曆事件"""
+        try:
+            event_data = item.data(0, Qt.UserRole)
+            if not event_data:
+                return
+            
+            event_id = event_data.get('id')
+            if not event_id:
+                return
+            
+            # 確認刪除
+            from PyQt5.QtWidgets import QMessageBox
+            reply = QMessageBox.question(
+                self, '確認刪除',
+                '確定要刪除這個行事曆事件嗎？',
+                QMessageBox.Yes | QMessageBox.No
+            )
+            
+            if reply == QMessageBox.Yes:
+                if self.use_mock_data:
+                    # Mock 模式：從記憶體刪除
+                    self._mock_delete_calendar_event(event_id)
+                    self.status_bar.showMessage("✅ 已刪除事件（Mock）", 3000)
+                    self._load_monitoring_snapshot()
+                else:
+                    # 真實模式：調用 local_calendar
+                    from modules.sys_module.actions.automation_helper import local_calendar
+                    result = local_calendar('DELETE', event_id=event_id)
+                    
+                    if result.get('success'):
+                        self.status_bar.showMessage("✅ 已刪除事件", 3000)
+                    else:
+                        self.status_bar.showMessage(f"❌ 刪除失敗：{result.get('error', '未知錯誤')}", 3000)
+        except Exception as e:
+            debug_log(2, f"[SystemBackground] 刪除行事曆事件失敗: {e}")
+            self.status_bar.showMessage(f"❌ 刪除失敗: {e}", 3000)
+    
+    def show_calendar_context_menu(self, pos, tree_widget: 'QTreeWidget'):
+        """顯示行事曆右鍵選單"""
+        try:
+            item = tree_widget.itemAt(pos)
+            if not item or item.parent() is None:
+                return  # 只對事件項目顯示選單，不對日期標題
+            
+            from PyQt5.QtWidgets import QMenu
+            menu = QMenu(self)
+            
+            edit_action = menu.addAction("✏️ 編輯")
+            delete_action = menu.addAction("🗑️ 刪除")
+            
+            action = menu.exec_(tree_widget.mapToGlobal(pos))
+            
+            if action == edit_action:
+                self.edit_calendar_event_item(item, 0)
+            elif action == delete_action:
+                self.delete_calendar_event_item(item)
+        except Exception as e:
+            debug_log(2, f"[SystemBackground] 顯示行事曆右鍵選單失敗: {e}")
 
+
+# ==================== 對話框類別 ====================
+
+class TodoDialog(QDialog if PYQT5_AVAILABLE else object):
+    """待辦事項新增/編輯對話框"""
+    
+    def __init__(self, parent=None, todo_data=None):
+        super().__init__(parent)
+        self.todo_data = todo_data  # 用於編輯模式
+        self.init_ui()
+    
+    def init_ui(self):
+        self.setWindowTitle("新增待辦事項" if not self.todo_data else "編輯待辦事項")
+        self.setMinimumWidth(500)
+        
+        layout = QVBoxLayout(self)
+        form_layout = QFormLayout()
+        
+        # 標題
+        self.title_input = QLineEdit()
+        self.title_input.setPlaceholderText("請輸入任務標題")
+        if self.todo_data:
+            self.title_input.setText(self.todo_data.get('title', ''))
+        form_layout.addRow("標題*:", self.title_input)
+        
+        # 描述
+        self.description_input = QTextEdit()
+        self.description_input.setPlaceholderText("請輸入任務描述（可選）")
+        self.description_input.setMaximumHeight(100)
+        if self.todo_data:
+            self.description_input.setPlainText(self.todo_data.get('description', ''))
+        form_layout.addRow("描述:", self.description_input)
+        
+        # 優先級
+        self.priority_combo = QComboBox()
+        self.priority_combo.addItems(["無", "低", "中", "高"])
+        priority_map = {'none': 0, 'low': 1, 'medium': 2, 'high': 3}
+        if self.todo_data:
+            priority_index = priority_map.get(self.todo_data.get('priority', 'none'), 0)
+            self.priority_combo.setCurrentIndex(priority_index)
+        form_layout.addRow("優先級:", self.priority_combo)
+        
+        # 截止日期 - 使用日期時間選擇器
+        deadline_layout = QHBoxLayout()
+        self.deadline_edit = QDateTimeEdit()
+        self.deadline_edit.setCalendarPopup(True)
+        self.deadline_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
+        self.deadline_edit.setDateTime(QDateTime.currentDateTime().addDays(1))  # 預設明天
+        
+        # 啟用/停用截止日期的複選框
+        self.deadline_enabled = QCheckBox("設定截止日期")
+        self.deadline_enabled.setChecked(False)
+        self.deadline_edit.setEnabled(False)
+        self.deadline_enabled.toggled.connect(lambda checked: self.deadline_edit.setEnabled(checked))
+        
+        if self.todo_data and self.todo_data.get('deadline'):
+            try:
+                from datetime import datetime as dt
+                deadline_dt = dt.strptime(self.todo_data['deadline'], '%Y-%m-%d %H:%M:%S')
+                self.deadline_edit.setDateTime(QDateTime(deadline_dt.year, deadline_dt.month, deadline_dt.day,
+                                                         deadline_dt.hour, deadline_dt.minute, deadline_dt.second))
+                self.deadline_enabled.setChecked(True)
+                self.deadline_edit.setEnabled(True)
+            except:
+                pass
+        
+        deadline_layout.addWidget(self.deadline_enabled)
+        deadline_layout.addWidget(self.deadline_edit)
+        form_layout.addRow("截止日期:", deadline_layout)
+        
+        layout.addLayout(form_layout)
+        
+        # 按鈕
+        button_layout = QHBoxLayout()
+        save_btn = QPushButton("✅ 儲存")
+        cancel_btn = QPushButton("❌ 取消")
+        
+        save_btn.clicked.connect(self.accept)
+        cancel_btn.clicked.connect(self.reject)
+        
+        button_layout.addWidget(save_btn)
+        button_layout.addWidget(cancel_btn)
+        layout.addLayout(button_layout)
+    
+    def get_todo_data(self) -> dict:
+        """獲取待辦事項資料"""
+        priority_map = {0: 'none', 1: 'low', 2: 'medium', 3: 'high'}
+        
+        data = {
+            'title': self.title_input.text().strip(),
+            'description': self.description_input.toPlainText().strip(),
+            'priority': priority_map[self.priority_combo.currentIndex()],
+        }
+        
+        # 截止日期（可選）
+        if self.deadline_enabled.isChecked():
+            qdt = self.deadline_edit.dateTime()
+            data['deadline'] = qdt.toString('yyyy-MM-dd HH:mm:ss')
+        
+        # 編輯模式：保留 ID
+        if self.todo_data and 'id' in self.todo_data:
+            data['task_id'] = self.todo_data['id']
+        
+        return data
+
+
+class CalendarEventDialog(QDialog if PYQT5_AVAILABLE else object):
+    """行事曆事件新增/編輯對話框"""
+    
+    def __init__(self, parent=None, event_data=None):
+        super().__init__(parent)
+        self.event_data = event_data  # 用於編輯模式
+        self.init_ui()
+    
+    def init_ui(self):
+        self.setWindowTitle("新增行事曆事件" if not self.event_data else "編輯行事曆事件")
+        self.setMinimumWidth(500)
+        
+        layout = QVBoxLayout(self)
+        form_layout = QFormLayout()
+        
+        # 標題
+        self.title_input = QLineEdit()
+        self.title_input.setPlaceholderText("請輸入事件標題")
+        if self.event_data:
+            self.title_input.setText(self.event_data.get('title', ''))
+        form_layout.addRow("標題*:", self.title_input)
+        
+        # 描述
+        self.description_input = QTextEdit()
+        self.description_input.setPlaceholderText("請輸入事件描述（可選）")
+        self.description_input.setMaximumHeight(100)
+        if self.event_data:
+            self.description_input.setPlainText(self.event_data.get('description', ''))
+        form_layout.addRow("描述:", self.description_input)
+        
+        # 開始時間
+        self.start_time_input = QLineEdit()
+        self.start_time_input.setPlaceholderText("YYYY-MM-DD HH:MM:SS")
+        if self.event_data and self.event_data.get('start_time'):
+            self.start_time_input.setText(self.event_data['start_time'])
+        form_layout.addRow("開始時間*:", self.start_time_input)
+        
+        # 結束時間
+        self.end_time_input = QLineEdit()
+        self.end_time_input.setPlaceholderText("YYYY-MM-DD HH:MM:SS（可選）")
+        if self.event_data and self.event_data.get('end_time'):
+            self.end_time_input.setText(self.event_data['end_time'])
+        form_layout.addRow("結束時間:", self.end_time_input)
+        
+        # 地點
+        self.location_input = QLineEdit()
+        self.location_input.setPlaceholderText("請輸入地點（可選）")
+        if self.event_data:
+            self.location_input.setText(self.event_data.get('location', ''))
+        form_layout.addRow("地點:", self.location_input)
+        
+        layout.addLayout(form_layout)
+        
+        # 按鈕
+        button_layout = QHBoxLayout()
+        save_btn = QPushButton("✅ 儲存")
+        cancel_btn = QPushButton("❌ 取消")
+        
+        save_btn.clicked.connect(self.accept)
+        cancel_btn.clicked.connect(self.reject)
+        
+        button_layout.addWidget(save_btn)
+        button_layout.addWidget(cancel_btn)
+        layout.addLayout(button_layout)
+    
+    def get_event_data(self) -> dict:
+        """獲取行事曆事件資料"""
+        data = {
+            'title': self.title_input.text().strip(),
+            'description': self.description_input.toPlainText().strip(),
+            'start_time': self.start_time_input.text().strip(),
+        }
+        
+        # 結束時間（可選）
+        end_time = self.end_time_input.text().strip()
+        if end_time:
+            data['end_time'] = end_time
+        
+        # 地點（可選）
+        location = self.location_input.text().strip()
+        if location:
+            data['location'] = location
+        
+        # 編輯模式：保留 ID
+        if self.event_data and 'id' in self.event_data:
+            data['event_id'] = self.event_data['id']
+        
+        return data
 
 
 def create_test_window():
     if not PYQT5_AVAILABLE:
-        print("[SystemBackground] PyQt5不可用，無法創建測試視窗")
+        debug_log(2, "[SystemBackground] PyQt5不可用，無法創建測試視窗")
         return None
     app = QApplication.instance()
     if app is None:

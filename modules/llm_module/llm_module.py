@@ -1949,17 +1949,31 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                             debug_log(2, f"[LLM] 檢測到活躍的工作流引擎: {session_id}")
                         else:
                             debug_log(2, f"[LLM] WS 存在但無工作流引擎: {session_id}")
-                    else:
-                        debug_log(2, f"[LLM] 無法訪問 SYS 模組的 workflow_engines")
-                except Exception as e:
-                    debug_log(2, f"[LLM] 檢查工作流引擎時出錯: {e}")
-                    # 保守策略：如果無法檢查，假設有工作流（避免重複啟動）
-                    has_active_workflow = True
-            
-            # ✅ 檢查是否有待處理的工作流事件（正在審核步驟）
-            pending_workflow = getattr(llm_input, 'workflow_context', None)
-            is_reviewing_step = pending_workflow and pending_workflow.get('type') == 'workflow_step_response'
-            
+                            
+                            # ✅ 關鍵修復：WS 存在但無對應工作流引擎，使用 session_control 機制結束會話
+                            # 這種情況通常是因為 NLP 誤判導致進入 WORK 模式但未啟動實際工作流
+                            # 使用正規的 session_control 機制，讓 ModuleCoordinator 處理標記
+                            debug_log(1, f"[LLM] 檢測到無效 WS (無工作流引擎): {session_id}，將結束會話")
+                            
+                            # 返回錯誤回應，帶 session_control 指示結束會話
+                            return LLMOutput(
+                                text="抱歉，系統在處理您的請求時遇到問題。請重新輸入您的問題。",
+                                processing_time=time.time() - start_time,
+                                tokens_used=0,
+                                success=False,
+                                error="WS exists without workflow engine",
+                                confidence=0.0,
+                                metadata={
+                                    "mode": "WORK",
+                                    "error_type": "no_workflow_engine",
+                                    "session_id": session_id,
+                                    "session_control": {
+                                        "should_end_session": True,
+                                        "end_reason": "工作流引擎未初始化，WS無法繼續",
+                                        "confidence": 1.0  # 這是系統檢測到的錯誤，100%確定
+                                    }
+                                }
+                            )
             # 🔧 快速路徑：如果是工作流輸入場景，直接調用 provide_workflow_input
             # 避免花費時間通過 Gemini API 理解用戶意圖，加快響應速度
             is_workflow_input = pending_workflow and pending_workflow.get('type') == 'workflow_input_required'

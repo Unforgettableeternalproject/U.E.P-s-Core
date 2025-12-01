@@ -21,14 +21,14 @@ modules_refactored:
   ani_module: true
   mov_module: true
 logging:
-  enabled: false
+  enabled: true
   log_level: DEBUG
   log_dir: logs
   enable_split_logs: false
   enable_console_output: false
 debug:
   enabled: true
-  debug_level: 3
+  debug_level: 4
   enable_frontend: false
 system:
   main_loop_interval: 0.1

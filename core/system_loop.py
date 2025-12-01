@@ -76,6 +76,7 @@ class SystemLoop:
         # ✅ 狀態監控相關
         from core.states.state_manager import UEPState
         self._previous_state = UEPState.IDLE  # 初始化為 IDLE，避免首次檢查失敗
+        self._last_monitored_cycle = -1  # 追蹤最後監控的 cycle_index，初始為 -1
         
         # 🔧 工作流輸入相關
         self._pending_stt_restart = False  # 延遲 STT 重啟標記
@@ -784,24 +785,34 @@ class SystemLoop:
                         # 有活躍模組，短暫等待
                         time.sleep(0.2)
             
-            # 檢查是否回到IDLE狀態，如果是則重新啟動STT監聽
+            # 檢查是否在IDLE狀態（包括一直保持IDLE的情況）
             elif current_state == UEPState.IDLE and hasattr(self, '_previous_state'):
-                if self._previous_state != UEPState.IDLE:
-                    # ✅ 階段三：層級跳過邏輯 - 檢查是否應該跳過輸入層
-                    from core.working_context import working_context_manager
-                    should_skip = working_context_manager.should_skip_input_layer()
-                    workflow_waiting = working_context_manager.is_workflow_waiting_input()
-                    
-                    # ✅ 檢查是否有活躍會話
-                    from core.sessions.session_manager import unified_session_manager
-                    active_ws = unified_session_manager.get_active_workflow_session_ids()
-                    active_cs = unified_session_manager.get_active_chatting_session_ids()
-                    has_active_session = bool(active_ws or active_cs)
-                    
-                    # 🔧 NEW: 檢查活躍工作流的下一步是否為處理步驟
-                    next_step_is_processing = False
-                    if active_ws:
-                        next_step_is_processing = self._check_next_workflow_step_is_processing(active_ws)
+                # ✅ 階段三：層級跳過邏輯 - 檢查是否應該跳過輸入層
+                from core.working_context import working_context_manager
+                should_skip = working_context_manager.should_skip_input_layer()
+                workflow_waiting = working_context_manager.is_workflow_waiting_input()
+                
+                # ✅ 檢查是否有活躍會話
+                from core.sessions.session_manager import unified_session_manager
+                active_ws = unified_session_manager.get_active_workflow_session_ids()
+                active_cs = unified_session_manager.get_active_chatting_session_ids()
+                has_active_session = bool(active_ws or active_cs)
+                
+                # 🔧 NEW: 檢查活躍工作流的下一步是否為處理步驟
+                next_step_is_processing = False
+                if active_ws:
+                    next_step_is_processing = self._check_next_workflow_step_is_processing(active_ws)
+                
+                # 🔧 FIX: 檢查是否剛完成一個循環（cycle_index 遞增了）
+                # 或者從非IDLE狀態回到IDLE
+                state_changed = self._previous_state != UEPState.IDLE
+                current_cycle = working_context_manager.global_context_data.get('current_cycle_index', 0)
+                cycle_completed = hasattr(self, '_last_monitored_cycle') and \
+                                self._last_monitored_cycle < current_cycle
+                
+                if state_changed or cycle_completed:
+                    # 記錄當前監控的 cycle，避免重複處理
+                    self._last_monitored_cycle = current_cycle
                     
                     if should_skip and not workflow_waiting:
                         # 工作流自動推進中，跳過輸入層（不重啟 STT VAD）
@@ -816,14 +827,15 @@ class SystemLoop:
                     elif self.input_mode == "vad":
                         # ✅ VAD 模式下，無論是否有活躍會話都重啟 STT
                         # 理由：即使沒有會話，也需要持續監聽新的使用者輸入
-                        debug_log(2, f"[SystemLoop] 系統回到IDLE狀態，重新啟動STT監聽 (VAD模式, 會話: {has_active_session})")
+                        reason = "狀態變化" if state_changed else "循環完成"
+                        debug_log(2, f"[SystemLoop] 系統在IDLE狀態（{reason}），重新啟動STT監聽 (VAD模式, 會話: {has_active_session})")
                         self._restart_stt_listening()
                     elif self.input_mode == "text":
                         # 文字模式：不重啟 VAD，等待手動輸入
                         if has_active_session:
-                            debug_log(2, f"[SystemLoop] 系統回到IDLE狀態 (文字模式)，等待手動輸入")
+                            debug_log(2, f"[SystemLoop] 系統在IDLE狀態 (文字模式)，等待手動輸入")
                         else:
-                            debug_log(2, f"[SystemLoop] 系統回到IDLE狀態 (文字模式)，無活躍會話，等待新輸入")
+                            debug_log(2, f"[SystemLoop] 系統在IDLE狀態 (文字模式)，無活躍會話，等待新輸入")
                     
                     # 系統循環結束，檢查 GS 結束條件
                     self._check_cycle_end_conditions()

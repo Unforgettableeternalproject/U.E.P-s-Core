@@ -108,9 +108,10 @@ class SpecialMoveBehavior(BaseBehavior):
             ctx.target_velocity.x = ctx.ground_speed * speed_multiplier * desired_dir
             ctx.facing_direction = desired_dir
             
-            # 播放走路動畫（速度加快）
+            # 播放走路動畫（速度加快） - 使用 MOVEMENT 優先級
+            from ..core.animation_priority import AnimationPriority
             anim = "walk_right_g" if desired_dir > 0 else "walk_left_g"
-            ctx.trigger_anim(anim, {"loop": True, "allow_interrupt": True})
+            ctx.trigger_anim(anim, {"loop": True, "allow_interrupt": True, "priority": AnimationPriority.MOVEMENT})
         else:
             # 浮空模式加速
             angle = random.uniform(-math.pi, math.pi)
@@ -148,8 +149,9 @@ class SpecialMoveBehavior(BaseBehavior):
             ctx.facing_direction = 1 if cursor_x > ctx.position.x else -1
             ctx.target_velocity.x = ctx.ground_speed * 1.3 * ctx.facing_direction
             
+            from ..core.animation_priority import AnimationPriority
             anim = "walk_right_g" if ctx.facing_direction > 0 else "walk_left_g"
-            ctx.trigger_anim(anim, {"loop": True, "allow_interrupt": True})
+            ctx.trigger_anim(anim, {"loop": True, "allow_interrupt": True, "priority": AnimationPriority.MOVEMENT})
         else:
             # 浮空模式靠近游標
             target_x = cursor_x
@@ -219,8 +221,9 @@ class SpecialMoveBehavior(BaseBehavior):
             ctx.facing_direction = flee_dir
             ctx.target_velocity.x = ctx.ground_speed * 1.5 * flee_dir
             
+            from ..core.animation_priority import AnimationPriority
             anim = "walk_right_g" if flee_dir > 0 else "walk_left_g"
-            ctx.trigger_anim(anim, {"loop": True, "allow_interrupt": True})
+            ctx.trigger_anim(anim, {"loop": True, "allow_interrupt": True, "priority": AnimationPriority.MOVEMENT})
         else:
             # 浮空模式遠離游標
             dx = ctx.position.x - cursor_x
@@ -294,8 +297,9 @@ class SpecialMoveBehavior(BaseBehavior):
             ctx.facing_direction = 1 if target_x > ctx.position.x else -1
             ctx.target_velocity.x = ctx.ground_speed * ctx.facing_direction
             
+            from ..core.animation_priority import AnimationPriority
             anim = "walk_right_g" if ctx.facing_direction > 0 else "walk_left_g"
-            ctx.trigger_anim(anim, {"loop": True, "allow_interrupt": True})
+            ctx.trigger_anim(anim, {"loop": True, "allow_interrupt": True, "priority": AnimationPriority.MOVEMENT})
 
     def _enter_zigzag(self, ctx: BehaviorContext):
         """Z字型移動"""
@@ -332,8 +336,9 @@ class SpecialMoveBehavior(BaseBehavior):
                 ctx.facing_direction = 1 if first_target > ctx.position.x else -1
                 ctx.target_velocity.x = ctx.ground_speed * 1.2 * ctx.facing_direction
                 
+                from ..core.animation_priority import AnimationPriority
                 anim = "walk_right_g" if ctx.facing_direction > 0 else "walk_left_g"
-                ctx.trigger_anim(anim, {"loop": True, "allow_interrupt": True})
+                ctx.trigger_anim(anim, {"loop": True, "allow_interrupt": True, "priority": AnimationPriority.MOVEMENT})
 
     def _update_zigzag(self, ctx: BehaviorContext):
         """更新Z字型移動"""
@@ -350,6 +355,7 @@ class SpecialMoveBehavior(BaseBehavior):
                 ctx.facing_direction = new_dir
                 ctx.target_velocity.x = ctx.ground_speed * 1.2 * new_dir
                 
-                # 切換動畫
+                # 切換動畫 - 使用 MOVEMENT 優a先級
+                from ..core.animation_priority import AnimationPriority
                 anim = "walk_right_g" if new_dir > 0 else "walk_left_g"
-                ctx.trigger_anim(anim, {"loop": True, "allow_interrupt": True})
+                ctx.trigger_anim(anim, {"loop": True, "allow_interrupt": True, "priority": AnimationPriority.MOVEMENT})

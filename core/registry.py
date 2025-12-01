@@ -37,3 +37,11 @@ def get_module(name: str):
         error_log(f"[Registry] 載入模組 {name} 失敗: {e}")
         error_log(f"[Registry] 詳細錯誤追蹤:\n{traceback.format_exc()}")
         return None
+
+def is_loaded(name: str) -> bool:
+    """檢查指定模組是否已載入（不會觸發載入）。"""
+    return name in _loaded_modules
+
+def get_loaded(name: str):
+    """取得已載入的模組實例，若未載入則回傳 None（不會觸發載入）。"""
+    return _loaded_modules.get(name)

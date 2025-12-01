@@ -464,12 +464,16 @@ class DesktopPetApp(QWidget):
             # 繪製圖片 - 智能視窗大小調整
             if self.current_image:
                 # 從 ANI 模組獲取當前動畫的縮放信息
-                zoom_factor = 1.0
+                # 如果無法獲取，保持當前的 zoom（不要重置為 1.0）
+                zoom_factor = self.current_zoom
+                status = None  # 初始化 status 變數
                 if self.ani_module:
                     try:
                         status = self.ani_module.get_current_animation_status()
                         if status and status.get("is_playing"):
-                            zoom_factor = status.get("zoom", 1.0)
+                            # 只有在動畫正在播放時才更新 zoom
+                            zoom_factor = status.get("zoom", self.current_zoom)
+                        # 如果動畫不在播放（例如動畫結束的最後一幀），保持當前 zoom
                     except Exception as e:
                         debug_log(3, f"[DesktopPetApp] 無法獲取縮放信息: {e}")
                 
@@ -1203,6 +1207,15 @@ class DesktopPetApp(QWidget):
                 if urls and urls[0].isLocalFile():
                     event.accept()  # 接受事件
                     debug_log(2, "[DesktopPetApp] 接受檔案拖放")
+                    # 發送 FILE_HOVER（首次進入）
+                    if not getattr(self, '_file_hovering', False):
+                        self._file_hovering = True
+                        if self.mov_module and hasattr(self.mov_module, 'handle_ui_event'):
+                            from core.bases.frontend_base import UIEventType
+                            self.mov_module.handle_ui_event(UIEventType.FILE_HOVER, {
+                                "file_path": urls[0].toLocalFile()
+                            })
+                            debug_log(2, "[DesktopPetApp] 已發布 FILE_HOVER 事件")
                 else:
                     event.ignore()
             else:
@@ -1216,10 +1229,34 @@ class DesktopPetApp(QWidget):
         try:
             if event.mimeData().hasUrls():
                 event.accept()  # 接受拖放移動
+                # 若已接受且未標記 hover（極少數情況，例如 Qt 未調用 enter）
+                if not getattr(self, '_file_hovering', False):
+                    urls = event.mimeData().urls()
+                    if urls and urls[0].isLocalFile() and self.mov_module and hasattr(self.mov_module, 'handle_ui_event'):
+                        from core.bases.frontend_base import UIEventType
+                        self._file_hovering = True
+                        self.mov_module.handle_ui_event(UIEventType.FILE_HOVER, {
+                            "file_path": urls[0].toLocalFile()
+                        })
+                        debug_log(2, "[DesktopPetApp] 已補發 FILE_HOVER 事件 (dragMove)")
             else:
                 event.ignore()
         except Exception as e:
             error_log(f"[DesktopPetApp] 拖放移動事件處理失敗: {e}")
+            event.ignore()
+
+    def dragLeaveEvent(self, event):
+        """拖放離開事件"""
+        try:
+            if getattr(self, '_file_hovering', False):
+                self._file_hovering = False
+                if self.mov_module and hasattr(self.mov_module, 'handle_ui_event'):
+                    from core.bases.frontend_base import UIEventType
+                    self.mov_module.handle_ui_event(UIEventType.FILE_HOVER_LEAVE, {})
+                    debug_log(2, "[DesktopPetApp] 已發布 FILE_HOVER_LEAVE 事件")
+            event.accept()
+        except Exception as e:
+            error_log(f"[DesktopPetApp] 拖放離開事件處理失敗: {e}")
             event.ignore()
     
     def dropEvent(self, event):
@@ -1234,9 +1271,10 @@ class DesktopPetApp(QWidget):
                     # 直接調用 MOV 模組處理檔案拖放
                     if self.mov_module and hasattr(self.mov_module, 'handle_ui_event'):
                         from core.bases.frontend_base import UIEventType
-                        self.mov_module.handle_ui_event(UIEventType.FILE_DROP, {
-                            "file_path": file_path
-                        })
+                        # 先清理 hover 狀態（避免殘留）
+                        if getattr(self, '_file_hovering', False):
+                            self._file_hovering = False
+                        self.mov_module.handle_ui_event(UIEventType.FILE_DROP, {"file_path": file_path})
                         event.acceptProposedAction()
                         info_log(f"[DesktopPetApp] 已處理檔案拖放: {file_path}")
                     else:

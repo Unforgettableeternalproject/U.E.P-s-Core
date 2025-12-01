@@ -2182,3 +2182,27 @@
 
 ---
 
+### Refined animation movement once again, this time added the final two animation, and enhanced priority system. 12/1
+
+> Date: Mon, 01 Dec 2025 11:48:11 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `32b731bf4188cb08c38103f7d0dbeec4e2d44f4b`
+
+---
+
+### Refined animation movement once again, this time added the final two animation, and enhanced priority system. 12/1
+
+> Date: Mon, 01 Dec 2025 11:48:11 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `7bcb2a85f48ba7a013bd54fd6513dfdb56762954`
+
+---
+

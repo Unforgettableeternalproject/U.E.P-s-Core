@@ -61,6 +61,12 @@ try:
 except Exception:
     unified_controller = None
 
+# 使用正確的介面型別 Enum 以便查找主桌寵介面
+try:
+    from modules.ui_module.ui_module import UIInterfaceType
+except Exception:
+    UIInterfaceType = None
+
 
 def info_log(*a): print(*a)
 def debug_log(*a): print(*a)
@@ -158,15 +164,16 @@ class ControllerBridge:
                 error_log("[ControllerBridge] UI 模組未初始化")
                 return {"success": False, "error": "UI module not initialized"}
             
-            # 直接使用字串作為 key（避免循環 import）
-            desktop_pet = ui_module.interfaces.get('main_desktop_pet')
+            # 正確使用 Enum key 取得主桌寵介面
+            key = UIInterfaceType.MAIN_DESKTOP_PET if UIInterfaceType else 'main_desktop_pet'
+            desktop_pet = ui_module.interfaces.get(key)
             
             if not desktop_pet:
                 error_log("[ControllerBridge] 桌面寵物未初始化")
                 return {"success": False, "error": "Desktop pet not initialized"}
             
             # 使用 handle_frontend_request 切換顯示狀態（會觸發動畫）
-            if desktop_pet.isVisible():
+            if hasattr(desktop_pet, 'isVisible') and desktop_pet.isVisible():
                 result = ui_module.handle_frontend_request({
                     "command": "hide_interface",
                     "interface": "main_desktop_pet"
@@ -268,6 +275,32 @@ class DraggableButton(QPushButton):
                 self.window().move(e.globalPos() - (self._drag_start - self._widget_offset))
                 # 拖曳時禁用 hover 樣式
                 self.setAttribute(Qt.WA_UnderMouse, False)
+                # 清除整個面板的 hover 樣式以避免白色邊框殘留
+                try:
+                    wnd = self.window()
+                    if hasattr(wnd, 'mainButton'):
+                        s = wnd.mainButton.style()
+                        s.unpolish(wnd.mainButton)
+                        s.polish(wnd.mainButton)
+                        wnd.mainButton.update()
+                    for b in getattr(wnd, 'options', []):
+                        try:
+                            sb = b.style()
+                            sb.unpolish(b)
+                            sb.polish(b)
+                            b.update()
+                        except Exception:
+                            pass
+                    for tb in getattr(wnd, 'tool_buttons', []):
+                        try:
+                            st = tb.style()
+                            st.unpolish(tb)
+                            st.polish(tb)
+                            tb.update()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
                 e.accept()
                 return
         super().mouseMoveEvent(e)
@@ -278,6 +311,32 @@ class DraggableButton(QPushButton):
             self._dragging = False
             # 恢復 hover 檢測
             self.setAttribute(Qt.WA_UnderMouse, True)
+            # 釋放後刷新按鈕樣式，確保邊框不殘留
+            try:
+                wnd = self.window()
+                if hasattr(wnd, 'mainButton'):
+                    s = wnd.mainButton.style()
+                    s.unpolish(wnd.mainButton)
+                    s.polish(wnd.mainButton)
+                    wnd.mainButton.update()
+                for b in getattr(wnd, 'options', []):
+                    try:
+                        sb = b.style()
+                        sb.unpolish(b)
+                        sb.polish(b)
+                        b.update()
+                    except Exception:
+                        pass
+                for tb in getattr(wnd, 'tool_buttons', []):
+                    try:
+                        st = tb.style()
+                        st.unpolish(tb)
+                        st.polish(tb)
+                        tb.update()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             e.accept()
             return
         self._drag_start = None
@@ -932,64 +991,112 @@ class MainButton(QWidget):
 
     def _exit_application(self):
         """完全退出應用程式（包括 UEP 和系統）"""
-        import sys  # 必須在函數內導入
+        import sys
         try:
-            info_log("[MainButton] 開始退出應用程式...")
-            
+            info_log("[MainButton] 開始退出應用程式（優雅關閉）...")
+
+            # 0. 先隱藏 U.E.P（播放離場動畫）
+            try:
+                # 使用 ui_module 的介面管理，確保播放離場動畫
+                ui_module = getattr(self.bridge, 'controller', None)
+                if ui_module and hasattr(ui_module, 'handle_frontend_request'):
+                    result = ui_module.handle_frontend_request({
+                        "command": "hide_interface",
+                        "interface": "main_desktop_pet"
+                    })
+                    playing = bool(result.get('playing_leave_animation')) if isinstance(result, dict) else False
+                    if playing:
+                        info_log("[MainButton] 已啟動離場動畫，等待動畫完成後關閉...")
+                        # 輕量輪詢：等待主桌寵不可見或最多 3 秒
+                        def _wait_for_hide(max_wait_ms=5000, interval_ms=150):
+                            waited = 0
+                            def _check():
+                                nonlocal waited
+                                try:
+                                    key = UIInterfaceType.MAIN_DESKTOP_PET if UIInterfaceType else 'main_desktop_pet'
+                                    pet = ui_module.interfaces.get(key)
+                                    is_hidden = (pet is None) or (hasattr(pet, 'isVisible') and not pet.isVisible())
+                                    if is_hidden:
+                                        info_log("[MainButton] 離場動畫完成，開始優雅關閉")
+                                        self._perform_graceful_shutdown()
+                                        return
+                                except Exception:
+                                    # 若檢查失敗，仍嘗試關閉
+                                    self._perform_graceful_shutdown()
+                                    return
+                                waited += interval_ms
+                                if waited >= max_wait_ms:
+                                    info_log("[MainButton] 等待動畫逾時，繼續優雅關閉")
+                                    self._perform_graceful_shutdown()
+                                    return
+                                QTimer.singleShot(interval_ms, _check)
+                            QTimer.singleShot(interval_ms, _check)
+                        _wait_for_hide()
+                        return
+                else:
+                    error_log("[MainButton] ui_module 不可用，跳過離場動畫")
+            except Exception as e:
+                error_log(f"[MainButton] 隱藏 U.E.P 失敗: {e}")
+
+            # 若無法播放離場動畫，直接進入優雅關閉
+            self._perform_graceful_shutdown()
+        except Exception as e:
+            error_log(f"[MainButton] 退出應用程式時發生錯誤: {e}")
+            import traceback, sys
+            traceback.print_exc()
+            sys.exit(0)
+
+    def _perform_graceful_shutdown(self):
+        """優雅關閉所有模組與執行緒，並退出應用程式"""
+        try:
+            info_log("[MainButton] 執行系統優雅關閉...")
+
             # 1. 停止 STT 持續監聽
             try:
-                from core.registry import get_module
-                stt_module = get_module("stt_module")
+                from core.registry import get_loaded, is_loaded
+                stt_module = get_loaded("stt_module") if is_loaded("stt_module") else None
                 if stt_module and hasattr(stt_module, 'stop_listening'):
                     info_log("[MainButton] 停止 STT 持續監聽...")
                     stt_module.stop_listening()
             except Exception as e:
                 error_log(f"[MainButton] 停止 STT 失敗: {e}")
-            
+
             # 2. 使用 unified_controller 進行優雅關閉
-            if unified_controller:
-                info_log("[MainButton] 呼叫 unified_controller.shutdown()...")
-                unified_controller.shutdown()
-            else:
-                error_log("[MainButton] unified_controller 不可用")
-            
+            try:
+                if unified_controller:
+                    info_log("[MainButton] 呼叫 unified_controller.shutdown()...")
+                    unified_controller.shutdown()
+                else:
+                    error_log("[MainButton] unified_controller 不可用")
+            except Exception as e:
+                error_log(f"[MainButton] unified_controller 關閉失敗: {e}")
+
             # 3. 停止 Qt 系統循環線程
             try:
-                from core.qt_system_loop import QtSystemLoopManager
                 from core.production_runner import production_runner
                 if hasattr(production_runner, 'qt_loop_manager') and production_runner.qt_loop_manager:
                     info_log("[MainButton] 停止 Qt 系統循環線程...")
                     production_runner.qt_loop_manager.stop_system_loop()
             except Exception as e:
                 error_log(f"[MainButton] 停止 Qt 系統循環失敗: {e}")
-            
-            # 4. 關閉所有 QTimer
-            try:
-                from PyQt5.QtCore import QTimer
-                info_log("[MainButton] 停止所有 QTimer...")
-                # QTimer 會隨著 app.quit() 自動停止
-            except Exception as e:
-                pass
-            
-            # 5. 關閉所有視窗並退出
+
+            # 4. 關閉所有視窗並退出
             app = QApplication.instance()
             if app:
-                info_log("[MainButton] 關閉所有視窗...")
-                app.closeAllWindows()
+                try:
+                    info_log("[MainButton] 關閉所有視窗...")
+                    app.closeAllWindows()
+                except Exception:
+                    pass
                 info_log("[MainButton] 退出 Qt 事件迴圈...")
                 app.quit()
-            
+
             info_log("[MainButton] 退出序列完成")
-            
-            # 強制退出 Python 程序（確保終端返回）
-            info_log("[MainButton] 強制退出 Python 程序...")
             sys.exit(0)
-            
         except Exception as e:
-            error_log(f"[MainButton] 退出應用程式時發生錯誤: {e}")
+            error_log(f"[MainButton] 優雅關閉過程出錯: {e}")
             import traceback
             traceback.print_exc()
-            # 強制退出
             import sys
             sys.exit(0)
     

@@ -81,8 +81,8 @@ class ThrowHandler(BaseHandler):
         if not drag_tracker or not hasattr(self.coordinator, 'position'):
             return False
         
-        # 計算速度和距離
-        vx, vy, speed = drag_tracker.calculate_velocity()
+        # 計算速度和距離（只使用最近 0.15 秒的拖曳點）
+        vx, vy, speed = drag_tracker.calculate_velocity(time_window=0.15)
         
         drag_distance = 0
         if drag_start_pos:
@@ -91,7 +91,7 @@ class ThrowHandler(BaseHandler):
                 self.coordinator.position.y - drag_start_pos.y
             )
         
-        debug_log(2, f"[{self.__class__.__name__}] 拖曳結束: 速度={speed:.1f} px/s, 距離={drag_distance:.1f} px")
+        debug_log(2, f"[{self.__class__.__name__}] 拖曳結束: 速度={speed:.1f} px/s (最近0.15s), 距離={drag_distance:.1f} px")
         debug_log(2, f"[{self.__class__.__name__}]   速度分量: vx={vx:.1f}, vy={vy:.1f}")
         debug_log(2, f"[{self.__class__.__name__}]   投擲門檻: 速度>{self.throw_threshold_speed} 且 距離>{self.throw_threshold_dist}")
         

@@ -18,6 +18,7 @@ import random
 import time
 import yaml
 from typing import Callable, Optional, Dict, Any, List
+from types import SimpleNamespace
 
 from core.bases.frontend_base import BaseFrontendModule, FrontendModuleType, UIEventType
 from core.states.state_manager import UEPState
@@ -439,6 +440,11 @@ class MOVModule(BaseFrontendModule):
         if hasattr(self, '_throw_handler') and self._throw_handler.is_in_throw_animation:
             debug_log(3, f"[{self.module_id}] 投擲動畫序列中，暫停行為機 tick")
             return
+        
+        # 檔案互動期間（hover 或 receive）暫停行為機
+        if hasattr(self, '_file_drop_handler') and self._file_drop_handler.is_in_file_interaction:
+            debug_log(3, f"[{self.module_id}] 檔案互動中，暫停行為機 tick")
+            return
 
         # 檢查是否到達目標（提供給 MovementBehavior 判斷）
         self._update_target_reached()
@@ -490,7 +496,9 @@ class MOVModule(BaseFrontendModule):
                 BehaviorState.SYSTEM_CYCLE: "system_cycle_behavior",
             }
             source = source_map.get(self.current_behavior_state, "behavior")
-            self._trigger_anim(name, params, source=source)
+            # 從 params 中提取 priority（如果有的話）
+            priority = params.get("priority", None)
+            self._trigger_anim(name, params, source=source, priority=priority)
         
         ctx.trigger_anim = trigger_anim_for_tick  # 替換為帶 source 的版本
         
@@ -680,6 +688,21 @@ class MOVModule(BaseFrontendModule):
 
         # 建 ctx 給 on_enter
         now = time.time()
+        
+        # **建立帶有正確 source 的 trigger_anim 包裝器（for on_enter）**
+        def trigger_anim_for_enter(name: str, params: dict):
+            source_map = {
+                BehaviorState.IDLE: "idle_behavior",
+                BehaviorState.NORMAL_MOVE: "movement_behavior",
+                BehaviorState.SPECIAL_MOVE: "special_move_behavior",
+                BehaviorState.TRANSITION: "transition_behavior",
+                BehaviorState.SYSTEM_CYCLE: "system_cycle_behavior",
+            }
+            source = source_map.get(state, "behavior")
+            # 從 params 中提取 priority（如果有的話）
+            priority = params.get("priority", None)
+            self._trigger_anim(name, params, source=source, priority=priority)
+        
         ctx = BehaviorContext(
             position=self.position,
             velocity=self.velocity,
@@ -702,7 +725,7 @@ class MOVModule(BaseFrontendModule):
             float_max_speed=self.FLOAT_MAX_SPEED,
             physics=self.physics,
             sm=self.sm,
-            trigger_anim=self._trigger_anim,
+            trigger_anim=trigger_anim_for_enter,
             set_target=self._set_target,
             get_cursor_pos=self._get_cursor_pos,
             now=now,
@@ -1380,6 +1403,18 @@ class MOVModule(BaseFrontendModule):
                 self._on_drag_move(data)
             elif event_type == UIEventType.DRAG_END:
                 self._on_drag_end(data)
+            elif event_type == UIEventType.FILE_HOVER:
+                if self._file_drop_handler:
+                    evt = SimpleNamespace(event_type=event_type, data=data)
+                    self._file_drop_handler.handle(evt)
+                else:
+                    error_log(f"[{self.module_id}] FileDropHandler 未初始化")
+            elif event_type == UIEventType.FILE_HOVER_LEAVE:
+                if self._file_drop_handler:
+                    evt = SimpleNamespace(event_type=event_type, data=data)
+                    self._file_drop_handler.handle(evt)
+                else:
+                    error_log(f"[{self.module_id}] FileDropHandler 未初始化")
             elif event_type == UIEventType.FILE_DROP:
                 self._on_file_drop(data)
             else:

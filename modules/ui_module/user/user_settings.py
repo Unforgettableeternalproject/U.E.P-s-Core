@@ -106,8 +106,6 @@ class UserMainWindow(QMainWindow):
         if theme_manager:
             install_theme_hook(self)
             theme_manager.theme_changed.connect(self._on_theme_changed)
-            # 首次打開時立即套用當前主題
-            theme_manager.apply_theme_to_widget(self)
         
         self.load_settings()
         self.hide()

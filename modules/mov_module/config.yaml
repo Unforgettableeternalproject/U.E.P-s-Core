@@ -42,7 +42,7 @@ boundaries:
   # 邊界處理模式
   # "barrier": 碰到邊界停止並轉向（預設）
   # "wrap": 從一邊離開後從另一邊進入（循環模式，適合多螢幕或想要連續移動的場景）
-  boundary_mode: "wrap"
+  boundary_mode: "barrier"
 
 timers:
   behavior_interval_ms: 100

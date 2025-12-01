@@ -35,8 +35,11 @@ class DragTracker:
         now = time.time()
         self.history.append((x, y, now))
     
-    def calculate_velocity(self) -> Tuple[float, float, float]:
-        """計算當前拖曳速度（使用平均速度更穩定）
+    def calculate_velocity(self, time_window: float = 0.15) -> Tuple[float, float, float]:
+        """計算當前拖曳速度（只使用最近時間窗口內的點）
+        
+        Args:
+            time_window: 時間窗口（秒），預設 0.15 秒
         
         Returns:
             (vx, vy, speed): X速度, Y速度, 總速度
@@ -44,9 +47,34 @@ class DragTracker:
         if len(self.history) < 2:
             return (0.0, 0.0, 0.0)
         
-        # 直接使用平均速度，不設時間限制
-        # 速度上限會在 _on_drag_end 中處理
-        return self.get_average_velocity()
+        # 只使用最近時間窗口內的點計算速度
+        now = time.time()
+        recent_points = [p for p in self.history if (now - p[2]) <= time_window]
+        
+        if len(recent_points) < 2:
+            # 如果時間窗口內點數不足，退回使用所有點
+            recent_points = list(self.history)
+        
+        # 計算最近點的平均速度
+        velocities = []
+        for i in range(1, len(recent_points)):
+            x0, y0, t0 = recent_points[i-1]
+            x1, y1, t1 = recent_points[i]
+            dt = t1 - t0
+            if dt > 0.001:
+                vx = (x1 - x0) / dt
+                vy = (y1 - y0) / dt
+                velocities.append((vx, vy))
+        
+        if not velocities:
+            return (0.0, 0.0, 0.0)
+        
+        # 計算平均
+        avg_vx = sum(v[0] for v in velocities) / len(velocities)
+        avg_vy = sum(v[1] for v in velocities) / len(velocities)
+        speed = (avg_vx * avg_vx + avg_vy * avg_vy) ** 0.5
+        
+        return (avg_vx, avg_vy, speed)
     
     def get_average_velocity(self) -> Tuple[float, float, float]:
         """獲取平均速度（更平滑）

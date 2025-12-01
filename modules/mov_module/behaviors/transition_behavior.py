@@ -51,7 +51,7 @@ class TransitionBehavior(BaseBehavior):
             ctx.trigger_anim("g_to_f", {"loop": False})
         else:
             # 從浮空轉落地：直接下降到地面
-            gy = ctx.ground_y()
+            gy = ctx.ground_y()-20
             self._target_y = gy
             self._target_x = ctx.position.x  # 保持 X 位置不變
             

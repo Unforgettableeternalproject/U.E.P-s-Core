@@ -127,36 +127,33 @@ class LogLevelFilter(logging.Filter):
 
 
 class DuplicateLogFilter(logging.Filter):
-    """過濾重複的日誌訊息"""
+    """過濾連續重複的日誌訊息（較寬鬆的策略）"""
     def __init__(self):
         super().__init__()
         self.last_log = None
         self.duplicate_count = 0
+        self.suppress_threshold = 100  # 連續重複超過此次數才開始抑制
     
     def filter(self, record):
         # 建立當前日誌的唯一標識（訊息內容 + 等級）
         current_log = (record.levelno, record.getMessage())
         
-        # 如果與上一條日誌相同，增加計數並忽略
+        # 如果與上一條日誌相同
         if current_log == self.last_log:
             self.duplicate_count += 1
-            return False  # 不記錄重複的日誌
+            # 只有在大量重複時才開始抑制
+            if self.duplicate_count > self.suppress_threshold:
+                # 每 50 次顯示一次
+                if self.duplicate_count % 50 == 0:
+                    original_msg = record.getMessage()
+                    record.msg = f"[重複日誌] {original_msg} (已重複 {self.duplicate_count} 次)"
+                    return True
+                return False  # 抑制過多重複
+            # 前 100 次都正常記錄
+            return True
         
-        # 如果不同，且之前有重複的日誌，記錄一條摘要
+        # 如果不同，重置計數器
         if self.duplicate_count > 0:
-            # 創建一個摘要記錄
-            summary_msg = f"(上一條日誌重複了 {self.duplicate_count} 次)"
-            summary_record = logging.LogRecord(
-                name=record.name,
-                level=logging.INFO,
-                pathname=record.pathname,
-                lineno=record.lineno,
-                msg=summary_msg,
-                args=(),
-                exc_info=None
-            )
-            # 直接通過 logger 發送摘要（會被後續處理）
-            # 注意：這裡我們需要在返回 True 之前處理，所以改變策略
             self.duplicate_count = 0
         
         # 更新最後一條日誌

@@ -39,6 +39,7 @@ class CursorTrackingHandler(BaseHandler):
         self._turn_head_start_time: float = 0.0
         self._current_turn_anim: str = ""
         self._current_turn_frame: int = 0
+        # （已簡化）不再使用檔案互動暫停旗標，直接依賴 FileDropHandler.is_in_file_interaction 判斷
         
         # 配置（用於轉頭動畫幀計算）
         if hasattr(coordinator, 'config'):
@@ -71,6 +72,10 @@ class CursorTrackingHandler(BaseHandler):
         Note:
             只有在角色處於 IDLE 狀態時才會開始追蹤，避免移動中的干擾
         """
+        # 檔案互動期間完全禁止追蹤（包含已在追蹤的情況，交由 suspend 方法處理）
+        # 檔案互動期間禁止開始追蹤（由 FileDropHandler 狀態提供）
+        if hasattr(self.coordinator, '_file_drop_handler') and self.coordinator._file_drop_handler.is_in_file_interaction:
+            return
         if self._is_turning_head:
             return  # 已經在轉頭狀態
         
@@ -149,7 +154,7 @@ class CursorTrackingHandler(BaseHandler):
         if hasattr(self.coordinator, 'resume_movement'):
             self.coordinator.resume_movement(self.CURSOR_TRACKING_REASON)
         
-        # 恢復閒置動畫
+        # 恢復閒置動畫（檔案互動暫停期間不恢復）
         if restore_idle and hasattr(self.coordinator, 'current_behavior_state'):
             from ..core.state_machine import BehaviorState, MovementMode
             if self.coordinator.current_behavior_state == BehaviorState.IDLE:
@@ -162,6 +167,8 @@ class CursorTrackingHandler(BaseHandler):
                         "force_restart": False
                     }, source="cursor_tracking")
                     debug_log(2, f"[CursorTrackingHandler] 已恢復閒置動畫: {idle_anim}")
+
+    # 已移除暫停/恢復方法，直接依賴 FileDropHandler 狀態
     
     def update_turn_head_angle(self, angle: float):
         """
@@ -219,6 +226,7 @@ class CursorTrackingHandler(BaseHandler):
             is_ground = (MovementMode and 
                         hasattr(self.coordinator, 'movement_mode') and 
                         self.coordinator.movement_mode == MovementMode.GROUND)
+            # 選擇標準轉頭動畫（檔案互動期間不追蹤，無需覆蓋）
             turn_anim = self.coordinator.anim_query.get_turn_head_animation(is_ground=bool(is_ground))
             
             if not turn_anim:
@@ -272,6 +280,8 @@ class CursorTrackingHandler(BaseHandler):
             # 獲取 ANI 模組
             ani_module = self.coordinator.ani_module if hasattr(self.coordinator, 'ani_module') else None
             
+            # 不進行 notice 覆蓋；檔案互動期間已被暫停
+
             if ani_module and hasattr(ani_module, 'set_current_frame'):
                 # 使用 ANI 的直接幀設置（最優方案）
                 result = ani_module.set_current_frame(frame_index)
@@ -325,6 +335,19 @@ class CursorTrackingHandler(BaseHandler):
                     debug_log(3, "[CursorTrackingHandler] 投擲動畫序列進行中，禁止追蹤")
                     return False
             
+            # 禁止在 Tease 動畫播放期間追蹤（Tease 動畫優先級最高）
+            if hasattr(self.coordinator, '_tease_tracker'):
+                if self.coordinator._tease_tracker.is_teasing():
+                    debug_log(3, "[CursorTrackingHandler] Tease 動畫播放中，禁止追蹤")
+                    return False
+            
+            # 檔案互動期間完全禁止追蹤（包括 hover）
+            if hasattr(self.coordinator, '_file_drop_handler'):
+                fdh = self.coordinator._file_drop_handler
+                if fdh.is_in_file_interaction:
+                    debug_log(3, "[CursorTrackingHandler] 檔案互動中，禁止追蹤")
+                    return False
+            
             # 檢查是否正在播放閒置動畫（只有閒置動畫時才允許追蹤）
             if hasattr(self.coordinator, 'ani_module'):
                 ani = self.coordinator.ani_module
@@ -340,19 +363,6 @@ class CursorTrackingHandler(BaseHandler):
             
             # 通過所有檢查，允許追蹤
             return True
-            
-            # 降級檢查：如果無法取得狀態，檢查是否暫停
-            if hasattr(self.coordinator, 'movement_paused') and self.coordinator.movement_paused:
-                return True
-            
-            # 最後降級：檢查速度（不可靠）
-            if hasattr(self.coordinator, 'velocity'):
-                velocity = self.coordinator.velocity
-                if hasattr(velocity, 'x') and hasattr(velocity, 'y'):
-                    speed = (velocity.x ** 2 + velocity.y ** 2) ** 0.5
-                    return speed < 0.5
-            
-            return False  # 無法判斷時預設為不靜止（避免誤觸發）
             
         except Exception as e:
             error_log(f"[CursorTrackingHandler] 檢查靜止狀態失敗: {e}")
@@ -402,3 +412,5 @@ class CursorTrackingHandler(BaseHandler):
             
         except Exception as e:
             error_log(f"[CursorTrackingHandler] 關閉失敗: {e}")
+
+    # 已移除檔案 hover 覆蓋模式，改回由 FileDropHandler 直接觸發 notice 動畫

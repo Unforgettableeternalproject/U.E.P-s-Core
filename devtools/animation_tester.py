@@ -23,6 +23,9 @@ from configs.config_loader import load_config
 from utils.debug_helper import debug_log, info_log, error_log
 from utils.logger import force_enable_file_logging
 
+# 導入 DesktopPetApp 用於真實預覽
+from modules.ui_module.main.desktop_pet_app import DesktopPetApp
+
 
 class AnimationPreviewWidget(QWidget):
     """動畫預覽窗口"""
@@ -248,6 +251,10 @@ class AnimationTesterWindow(QMainWindow):
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.update_preview)
         
+        # UEP 實際預覽相關
+        self.desktop_pet = None  # DesktopPetApp 實例
+        self.preview_mode = "static"  # "static" 或 "live"
+        
         self.init_ui()
         self.load_ani_module()
         
@@ -306,7 +313,21 @@ class AnimationTesterWindow(QMainWindow):
         self.loop_checkbox.setChecked(True)
         control_layout.addWidget(self.loop_checkbox)
         
-        # 網格顯示選項
+        # 預覽模式切換
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(QLabel("預覽模式:"))
+        self.static_mode_btn = QPushButton("🖼 靜態預覽")
+        self.static_mode_btn.setCheckable(True)
+        self.static_mode_btn.setChecked(True)
+        self.static_mode_btn.clicked.connect(lambda: self.switch_preview_mode("static"))
+        self.live_mode_btn = QPushButton("🎭 實際 UEP")
+        self.live_mode_btn.setCheckable(True)
+        self.live_mode_btn.clicked.connect(lambda: self.switch_preview_mode("live"))
+        mode_layout.addWidget(self.static_mode_btn)
+        mode_layout.addWidget(self.live_mode_btn)
+        control_layout.addLayout(mode_layout)
+        
+        # 網格顯示選項（僅靜態模式）
         self.grid_checkbox = QCheckBox("顯示網格")
         self.grid_checkbox.stateChanged.connect(self.on_grid_toggle)
         control_layout.addWidget(self.grid_checkbox)
@@ -413,8 +434,37 @@ class AnimationTesterWindow(QMainWindow):
         """)
         preview_layout = QVBoxLayout()
         preview_layout.setContentsMargins(8, 8, 8, 8)
+        
+        # 創建預覽容器 widget（用於切換不同預覽模式）
+        self.preview_container = QWidget()
+        self.preview_container_layout = QVBoxLayout(self.preview_container)
+        self.preview_container_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # 靜態預覽 widget
         self.preview_widget = AnimationPreviewWidget()
-        preview_layout.addWidget(self.preview_widget)
+        self.preview_container_layout.addWidget(self.preview_widget)
+        
+        # 實際 UEP 提示 label（初始隱藏）
+        self.live_preview_label = QLabel(
+            "🎭 實際 UEP 預覽模式\n\n"
+            "UEP 桌寵將以獨立視窗顯示在桌面上\n"
+            "可自由拖曳和互動\n\n"
+            "提示：此模式下的 UEP 會顯示實際動畫效果"
+        )
+        self.live_preview_label.setAlignment(Qt.AlignCenter)
+        self.live_preview_label.setStyleSheet("""
+            QLabel {
+                color: #4CAF50;
+                font-size: 14px;
+                padding: 50px;
+                background-color: #2d2d2d;
+                border-radius: 8px;
+            }
+        """)
+        self.live_preview_label.setVisible(False)
+        self.preview_container_layout.addWidget(self.live_preview_label)
+        
+        preview_layout.addWidget(self.preview_container)
         preview_group.setLayout(preview_layout)
         right_layout.addWidget(preview_group)
         
@@ -597,8 +647,13 @@ class AnimationTesterWindow(QMainWindow):
         """播放動畫"""
         if not self.current_animation or not self.ani_module:
             self.statusBar().showMessage("⚠️ 請先選擇動畫")
-            return
-            
+            return        
+        # 如果在實際 UEP 模式，確保 UEP 存在
+        if self.preview_mode == "live" and not self.desktop_pet:
+            self.create_desktop_pet()
+            if not self.desktop_pet:
+                self.statusBar().showMessage("❌ 無法創建 UEP 實例")
+                return            
         # 停止現有播放
         if self.is_playing:
             self.stop_animation()
@@ -629,6 +684,11 @@ class AnimationTesterWindow(QMainWindow):
         """停止動畫"""
         if self.ani_module:
             self.ani_module.stop()
+        
+        # 如果在實際 UEP 模式，停止 UEP 的動畫
+        if self.preview_mode == "live" and self.desktop_pet:
+            # UEP 會自動停止動畫
+            pass
             
         self.is_playing = False
         self.play_btn.setEnabled(True)
@@ -642,10 +702,28 @@ class AnimationTesterWindow(QMainWindow):
     def update_preview(self):
         """更新預覽畫面"""
         if not self.ani_module or not self.is_playing:
+            self.update_timer.stop()
+            return
+        
+        # 如果在實際 UEP 模式，檢查 UEP 是否存在
+        if self.preview_mode == "live":
+            if not self.desktop_pet or not self.desktop_pet.isVisible():
+                info_log("[AnimationTester] UEP 已關閉，停止播放")
+                self.stop_animation()
+                return
+            # 實際 UEP 模式下，DesktopPetApp 會自動更新畫面
+            # 只需要更新幀信息
+            status = self.ani_module.get_current_animation_status()
+            if status and status.get('status') == 'playing':
+                current_frame = status.get('current_frame', 0)
+                total_frames = status.get('total_frames', 0)
+                self.frame_label.setText(
+                    f"當前幀: {current_frame} / {total_frames}"
+                )
             return
             
         try:
-            # 獲取當前幀
+            # 靜態預覽模式：獲取當前幀
             pixmap = self.ani_module.get_current_frame()
             
             if pixmap and not pixmap.isNull():
@@ -672,11 +750,25 @@ class AnimationTesterWindow(QMainWindow):
             
     def on_zoom_changed(self):
         """縮放參數改變時的處理"""
-        if not self.current_animation or not self.ani_module:
+        if not self.ani_module:
             return
-            
+        
+        zoom_value = self.zoom_spinbox.value()
+        
         # 更新預覽的 config 縮放
-        self.preview_widget.set_config_zoom(self.zoom_spinbox.value())
+        if self.preview_mode == "static":
+            self.preview_widget.set_config_zoom(zoom_value)
+        elif self.preview_mode == "live" and self.desktop_pet:
+            # 在實際 UEP 模式下，需要更新 ANI 模組的縮放並重新播放
+            # 這裡可以通過更新 zoom 並重新播放當前動畫來實現
+            if self.current_animation and self.is_playing:
+                # 停止當前動畫
+                self.ani_module.stop()
+                # 更新 zoom（這裡假設 ani_module 有設置 zoom 的方法）
+                # 如果沒有，可以通過修改 config 並重新播放
+                # 重新播放
+                loop = self.loop_checkbox.isChecked()
+                self.ani_module.play(self.current_animation, loop=loop)
         
     def on_param_changed(self):
         """其他參數改變時的處理"""
@@ -734,9 +826,89 @@ class AnimationTesterWindow(QMainWindow):
             error_log(f"[AnimationTester] 更新配置失敗: {e}")
             self.statusBar().showMessage(f"❌ 更新失敗: {e}")
             
+    def switch_preview_mode(self, mode: str):
+        """切換預覽模式"""
+        if mode == self.preview_mode:
+            return
+            
+        # 停止當前播放
+        if self.is_playing:
+            self.stop_animation()
+        
+        self.preview_mode = mode
+        
+        if mode == "static":
+            # 切換到靜態預覽
+            self.static_mode_btn.setChecked(True)
+            self.live_mode_btn.setChecked(False)
+            self.preview_widget.setVisible(True)
+            self.live_preview_label.setVisible(False)
+            self.grid_checkbox.setEnabled(True)
+            self.size_border_checkbox.setEnabled(True)
+            
+            # 清理 UEP 實例
+            if self.desktop_pet:
+                self.desktop_pet.hide()
+                self.desktop_pet.deleteLater()
+                self.desktop_pet = None
+            
+            self.statusBar().showMessage("📐 已切換到靜態預覽模式")
+            info_log("[AnimationTester] 切換到靜態預覽模式")
+            
+        elif mode == "live":
+            # 切換到實際 UEP 模式
+            self.static_mode_btn.setChecked(False)
+            self.live_mode_btn.setChecked(True)
+            self.preview_widget.setVisible(False)
+            self.live_preview_label.setVisible(True)
+            self.grid_checkbox.setEnabled(False)
+            self.size_border_checkbox.setEnabled(False)
+            
+            # 創建 UEP 實例
+            self.create_desktop_pet()
+            
+            self.statusBar().showMessage("🎭 已切換到實際 UEP 預覽模式")
+            info_log("[AnimationTester] 切換到實際 UEP 預覽模式")
+    
+    def create_desktop_pet(self):
+        """創建 DesktopPetApp 實例"""
+        try:
+            if self.desktop_pet:
+                self.desktop_pet.hide()
+                self.desktop_pet.deleteLater()
+            
+            # 創建 DesktopPetApp（傳入 ani_module）
+            self.desktop_pet = DesktopPetApp(
+                ani_module=self.ani_module,
+                ui_module=None,  # 測試模式不需要完整的 UI 模組
+                mov_module=None   # 測試模式不需要移動模組
+            )
+            
+            # 設置初始位置（螢幕中央）
+            screen = QApplication.desktop().screenGeometry()
+            x = (screen.width() - self.desktop_pet.width()) // 2
+            y = (screen.height() - self.desktop_pet.height()) // 2
+            self.desktop_pet.move(x, y)
+            
+            # 顯示 UEP
+            self.desktop_pet.show()
+            
+            info_log("[AnimationTester] DesktopPetApp 創建成功")
+            
+        except Exception as e:
+            error_log(f"[AnimationTester] 創建 DesktopPetApp 失敗: {e}")
+            self.statusBar().showMessage(f"❌ 創建 UEP 失敗: {e}")
+    
     def closeEvent(self, event):
         """關閉窗口時清理"""
         self.stop_animation()
+        
+        # 清理 UEP 實例
+        if self.desktop_pet:
+            self.desktop_pet.hide()
+            self.desktop_pet.deleteLater()
+            self.desktop_pet = None
+        
         if self.ani_module:
             try:
                 self.ani_module.shutdown()

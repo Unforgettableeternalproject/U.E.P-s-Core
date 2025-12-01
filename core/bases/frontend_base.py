@@ -57,6 +57,8 @@ class UIEventType(Enum):
     DRAG_START = auto()
     DRAG_MOVE = auto()  # 拖曳移動事件
     DRAG_END = auto()
+    FILE_HOVER = auto()  # 檔案懸停在 UEP 上方
+    FILE_HOVER_LEAVE = auto()  # 檔案離開 UEP 區域
     FILE_DROP = auto()
     KEYBOARD_INPUT = auto()
     WINDOW_MOVE = auto()

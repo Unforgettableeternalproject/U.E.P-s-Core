@@ -103,6 +103,14 @@ class UIModule(BaseFrontendModule):
             
             # 注意：Qt 事件循環將在主線程運行（app.exec()）
 
+            # 在應用程式建立後立即套用主題（修正首次啟動未載入主題）
+            try:
+                from .user.theme_manager import theme_manager
+                theme_manager.apply_app()
+                info_log(f"[{self.module_id}] 已套用主題樣式：{theme_manager.theme.value}")
+            except Exception as e:
+                error_log(f"[{self.module_id}] 套用主題樣式失敗: {e}")
+
             # 首先初始化 ANI 和 MOV 模組
             if not self._initialize_ani_mov_modules():
                 error_log(f"[{self.module_id}] 初始化 ANI/MOV 模組失敗")
@@ -313,6 +321,8 @@ class UIModule(BaseFrontendModule):
         self.register_event_handler(UIEventType.DRAG_END, self._on_drag_end)
         
         # 註冊檔案事件
+        self.register_event_handler(UIEventType.FILE_HOVER, self._on_file_hover)
+        self.register_event_handler(UIEventType.FILE_HOVER_LEAVE, self._on_file_hover_leave)
         self.register_event_handler(UIEventType.FILE_DROP, self._on_file_drop)
     
     def _connect_signals(self):
@@ -748,6 +758,16 @@ class UIModule(BaseFrontendModule):
         self.is_dragging = False
         debug_log(2, f"[{self.module_id}] 結束拖拽")
 
+    def _on_file_hover(self, event):
+        """檔案懸停事件處理"""
+        debug_log(2, f"[{self.module_id}] 檔案懸停事件")
+        # 目前不需要特別處理，由 MOV 模組負責
+    
+    def _on_file_hover_leave(self, event):
+        """檔案離開事件處理"""
+        debug_log(2, f"[{self.module_id}] 檔案離開事件")
+        # 目前不需要特別處理，由 MOV 模組負責
+    
     def _on_file_drop(self, event):
         """檔案拖放事件處理"""
         files = event.data.get('files', [])

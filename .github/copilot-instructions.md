@@ -8,6 +8,7 @@ We are current in the phase three of our project, for more infomation please che
 
 ## Core Rules
 
+- **PLEASE BE 100 PERCENT SURE OF CONTEXT BEFORE SUGGESTING ANY CODE.**
 - **PLEASE DO NOT CREATE ANALYSIS OR EXPLANATION FILES** unless explicitly asked.
 - **Do not** arbitrarily rename classes, functions, or variables.  
   - Especially avoid suffixes like `V2`, `V3`, etc. unless explicitly instructed.  

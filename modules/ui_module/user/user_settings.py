@@ -321,9 +321,11 @@ class UserMainWindow(QMainWindow):
         
         self.language_combo = NoWheelComboBox()
         self.language_combo.addItems(["zh-TW", "zh-CN", "en-US", "ja-JP"])
-        system_layout.addRow("語言 ⚠️:", self.language_combo)
+        self.language_combo.setEnabled(False)  # 未實現
+        system_layout.addRow("語言 (未實現):", self.language_combo)
         
-        self.enable_debug_mode_cb = QCheckBox("啟用除錯模式 ⚠️")
+        self.enable_debug_mode_cb = QCheckBox("啟用除錯模式 (未實現)")
+        self.enable_debug_mode_cb.setEnabled(False)  # 未實現
         system_layout.addRow("", self.enable_debug_mode_cb)
         
         self.debug_level_spin = NoWheelSpinBox()
@@ -332,12 +334,6 @@ class UserMainWindow(QMainWindow):
         
         self.enable_frontend_debug_cb = QCheckBox("啟用前端除錯")
         system_layout.addRow("", self.enable_frontend_debug_cb)
-        
-        self.auto_save_settings_cb = QCheckBox("自動保存設定")
-        system_layout.addRow("", self.auto_save_settings_cb)
-        
-        self.confirm_before_exit_cb = QCheckBox("退出前確認")
-        system_layout.addRow("", self.confirm_before_exit_cb)
         
         self.main_loop_interval_spin = NoWheelDoubleSpinBox()
         self.main_loop_interval_spin.setRange(0.01, 1.0)
@@ -918,6 +914,9 @@ class UserMainWindow(QMainWindow):
     def load_settings(self):
         """從 user_settings.yaml 載入所有設定"""
         try:
+            # 🔧 重要：先從 YAML 檔案重新載入到內存
+            load_user_settings()
+            
             # Tab 1: 基本設定
             # 身分
             current_identity = get_user_setting("general.identity.current_identity_id", "default")
@@ -947,8 +946,6 @@ class UserMainWindow(QMainWindow):
             self.enable_debug_mode_cb.setChecked(get_user_setting("general.system.enable_debug_mode", False))
             self.debug_level_spin.setValue(get_user_setting("general.system.debug_level", 3))
             self.enable_frontend_debug_cb.setChecked(get_user_setting("general.system.enable_frontend_debug", True))
-            self.auto_save_settings_cb.setChecked(get_user_setting("general.system.auto_save_settings", True))
-            self.confirm_before_exit_cb.setChecked(get_user_setting("general.system.confirm_before_exit", True))
             self.main_loop_interval_spin.setValue(get_user_setting("general.system.main_loop_interval", 0.1))
             self.shutdown_timeout_spin.setValue(get_user_setting("general.system.shutdown_timeout", 5.0))
             
@@ -1117,8 +1114,6 @@ class UserMainWindow(QMainWindow):
             set_user_setting("general.system.enable_debug_mode", self.enable_debug_mode_cb.isChecked())
             set_user_setting("general.system.debug_level", self.debug_level_spin.value())
             set_user_setting("general.system.enable_frontend_debug", self.enable_frontend_debug_cb.isChecked())
-            set_user_setting("general.system.auto_save_settings", self.auto_save_settings_cb.isChecked())
-            set_user_setting("general.system.confirm_before_exit", self.confirm_before_exit_cb.isChecked())
             set_user_setting("general.system.main_loop_interval", self.main_loop_interval_spin.value())
             set_user_setting("general.system.shutdown_timeout", self.shutdown_timeout_spin.value())
             
@@ -1222,7 +1217,12 @@ class UserMainWindow(QMainWindow):
             set_user_setting("advanced.modules.ani_enabled", self.ani_module_enabled_cb.isChecked())
             set_user_setting("advanced.modules.mov_enabled", self.mov_module_enabled_cb.isChecked())
             
-            info_log("[UserMainWindow] 設定保存完成")
+            # 🔧 重要：將內存中的設定寫入 user_settings.yaml
+            from configs.user_settings_manager import save_user_settings
+            if save_user_settings():
+                info_log("[UserMainWindow] 設定已保存至 user_settings.yaml")
+            else:
+                error_log("[UserMainWindow] 設定保存失敗")
             
         except Exception as e:
             error_log(f"[UserMainWindow] 保存設定時發生錯誤: {e}")

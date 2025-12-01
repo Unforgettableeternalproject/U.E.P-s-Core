@@ -351,9 +351,13 @@ class NLPModule(BaseModule):
             
             if uep_nickname and uep_nickname.strip():
                 # 檢查是否包含暱稱（不區分大小寫）
-                text_lower = input_data.user_input.lower()
+                # 🔧 使用完整單詞匹配，避免子字串誤判
+                import re
+                text_lower = input_data.text.lower()
                 nickname_lower = uep_nickname.strip().lower()
-                if nickname_lower in text_lower:
+                # 使用單詞邊界 \b 確保完整匹配（支援中文和英文）
+                pattern = r'\b' + re.escape(nickname_lower) + r'\b'
+                if re.search(pattern, text_lower):
                     has_nickname_call = True
                     debug_log(2, f"[NLP] 檢測到暱稱 '{uep_nickname}'，視為 CALL 意圖")
                     
@@ -383,8 +387,9 @@ class NLPModule(BaseModule):
             
             # 檢查是否已啟動或有活躍會話
             is_activated = working_context_manager.is_activated()
-            from core.status_manager import status_manager
-            has_active_session = (status_manager.has_active_cs() or status_manager.has_active_ws())
+            from core.sessions.session_manager import session_manager
+            has_active_session = (len(session_manager.get_active_chatting_sessions()) > 0 or 
+                                len(session_manager.get_active_workflow_sessions()) > 0)
             
             if has_call:
                 # 設置啟動標記
@@ -402,16 +407,15 @@ class NLPModule(BaseModule):
             else:
                 # 沒有 CALL 意圖
                 if not is_activated and not has_active_session:
-                    # 未啟動且無活躍會話：忽略此次輸入
-                    debug_log(1, "[NLP] 無 CALL 意圖且未啟動，忽略此次輸入")
+                    # 未啟動且無活躍會話：返回空 segments，由後續處理設置 skip_input_layer
+                    debug_log(1, "[NLP] 無 CALL 意圖且未啟動，返回空 segments 以中斷循環")
                     return {
-                        "intent_segments": [],
+                        "intent_segments": [],  # 空 segments 會被視為需要跳過
                         "primary_intent": IntentType.UNKNOWN,
                         "overall_confidence": 0.0,
                         "entities": [],
                         "state_transition": None,
-                        "ignored": True,
-                        "reason": "no_activation"
+                        "awaiting_activation": True  # 標記為等待啟動
                     }
                 else:
                     # 已啟動或有活躍會話：正常處理
@@ -542,6 +546,13 @@ class NLPModule(BaseModule):
         """
         try:
             intent_segments = intent_result.get("intent_segments", [])
+            
+            # 🔧 檢查是否為等待啟動狀態（無 CALL 且未啟動）
+            if not intent_segments and intent_result.get("awaiting_activation"):
+                debug_log(2, "[NLP] Awaiting activation - no segments to process")
+                # ⚠️ 不設置 skip_input_layer，讓下一個循環正常進入輸入層
+                return {"added_states": [], "corrected_segments": []}
+            
             if not intent_segments:
                 debug_log(2, "[NLP] No intent segments to process")
                 return {"added_states": [], "corrected_segments": []}
@@ -2001,3 +2012,37 @@ class NLPModule(BaseModule):
             "capabilities": self.get_capabilities(),
             "description": "自然語言處理模組 - 支援增強型身份管理、記憶令牌、使用者偏好與多模組集成"
         }
+    
+    def _reload_from_user_settings(self, key_path: str, value: Any) -> bool:
+        """處理使用者設定重載回調"""
+        try:
+            from configs.user_settings_manager import get_user_setting
+            
+            if key_path == "general.identity.user_name":
+                # 更新當前 Identity 的 display_name
+                if self.identity_manager:
+                    current_identity_id = get_user_setting("general.identity.current_identity_id", "default")
+                    if current_identity_id and current_identity_id != "default":
+                        identity = self.identity_manager.identities.get(current_identity_id)
+                        if identity:
+                            old_name = identity.display_name
+                            identity.display_name = str(value)
+                            # 保存更新後的 Identity
+                            self.identity_manager._save_identity(identity)
+                            info_log(f"[NLP] Identity {current_identity_id} 名稱已更新: {old_name} → {value}")
+                        else:
+                            debug_log(2, f"[NLP] 未找到 Identity: {current_identity_id}")
+                    else:
+                        debug_log(2, "[NLP] 當前為 default 身份，無需更新")
+                return True
+                
+            elif key_path == "general.identity.uep_nickname":
+                # 更新 UEP 暱稱（即時生效，下次檢測時使用）
+                info_log(f"[NLP] UEP 暱稱已更新為: {value}")
+                return True
+                
+            return True
+            
+        except Exception as e:
+            error_log(f"[NLP] 使用者設定重載失敗: {e}")
+            return False

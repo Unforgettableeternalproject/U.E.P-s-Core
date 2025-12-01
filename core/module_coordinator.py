@@ -451,6 +451,25 @@ class ModuleInvocationCoordinator:
         try:
             info_log("[ModuleCoordinator] 輸入層 → 處理層轉換")
             
+            # 🔧 檢查是否應該跳過輸入層（例如：未啟動且無 CALL）
+            from core.working_context import working_context_manager
+            should_skip = working_context_manager.should_skip_input_layer()
+            
+            if should_skip:
+                skip_reason = working_context_manager.get_skip_reason() or "等待啟動"
+                info_log(f"[ModuleCoordinator] ⏭️ 跳過處理層 (原因: {skip_reason})，主動完成循環")
+                
+                # 重置跳過標記
+                working_context_manager.set_skip_input_layer(False)
+                
+                # 主動完成循環
+                from core.system_loop import system_loop
+                if system_loop:
+                    system_loop._complete_cycle(publish_event=True)
+                    debug_log(2, "[ModuleCoordinator] 已完成循環並推進 cycle_index")
+                
+                return True
+            
             # 從 NLP 結果獲取主要意圖
             nlp_result = input_data.get('nlp_result', {})
             

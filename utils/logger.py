@@ -42,6 +42,9 @@ def force_enable_file_logging():
     """強制啟用文件日誌記錄（用於測試或特殊情況）"""
     global _file_handlers_added
     
+    if not enabled:
+        return
+    
     if _file_handlers_added:
         return
         

@@ -269,13 +269,21 @@ class UnifiedController:
             state_queue = get_state_queue_manager()
             queue_status = state_queue.get_queue_status()
             
-            # GS 結束條件：狀態佇列完全清空且當前狀態為 IDLE
+            # GS 結束條件：
+            # 1. 當前狀態為 IDLE
+            # 2. 狀態佇列完全清空
+            # 3. 至少進入過一個非 IDLE 狀態（確保有實際處理發生）
+            has_visited_non_idle = current_gs.has_visited_non_idle_state()
+            
             if (current_state == UEPState.IDLE and 
                 queue_status.get('queue_length', 0) == 0 and
                 queue_status.get('current_state') == 'idle'):
                 
-                debug_log(2, f"[Controller] 檢測到 GS 結束條件：狀態佇列已清空，準備結束 GS {current_gs.session_id}")
-                self._end_current_gs_with_cleanup(current_gs.session_id)
+                if has_visited_non_idle:
+                    debug_log(2, f"[Controller] 檢測到 GS 結束條件：狀態佇列已清空且已訪問非 IDLE 狀態，準備結束 GS {current_gs.session_id}")
+                    self._end_current_gs_with_cleanup(current_gs.session_id)
+                else:
+                    debug_log(2, f"[Controller] GS {current_gs.session_id} 尚未訪問非 IDLE 狀態，保持 GS 存在 (visited_states: {current_gs.context.visited_states})")
                 
         except Exception as e:
             debug_log(2, f"[Controller] GS 結束條件檢查失敗: {e}")

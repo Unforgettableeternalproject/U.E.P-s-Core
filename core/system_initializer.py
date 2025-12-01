@@ -170,6 +170,10 @@ class SystemInitializer:
             if not self._setup_module_connections():
                 error_log("   ⚠️  模組間連接設置失敗（非致命）")
             
+            # 🔄 註冊模組的設定重載回調
+            if not self._register_settings_callbacks():
+                error_log("   ⚠️  設定重載回調註冊失敗（非致命）")
+            
             return True
             
         except Exception as e:
@@ -207,6 +211,77 @@ class SystemInitializer:
             
         except Exception as e:
             error_log(f"   ❌ 模組間連接設置失敗: {e}")
+            return False
+    
+    def _register_settings_callbacks(self) -> bool:
+        """註冊各模組的使用者設定重載回調"""
+        try:
+            info_log("   🔄 註冊使用者設定重載回調...")
+            
+            from configs.user_settings_manager import user_settings_manager
+            from core.registry import get_module
+            
+            # 註冊 STT 模組的回調
+            stt_module = get_module("stt_module")
+            if stt_module and hasattr(stt_module, '_reload_from_user_settings'):
+                user_settings_manager.register_reload_callback("stt_module", stt_module._reload_from_user_settings)
+                debug_log(2, "      ✅ STT 模組回調已註冊")
+            
+            # 註冊 TTS 模組的回調
+            tts_module = get_module("tts_module")
+            if tts_module and hasattr(tts_module, '_reload_from_user_settings'):
+                user_settings_manager.register_reload_callback("tts_module", tts_module._reload_from_user_settings)
+                debug_log(2, "      ✅ TTS 模組回調已註冊")
+            
+            # 註冊 NLP 模組的回調
+            nlp_module = get_module("nlp_module")
+            if nlp_module and hasattr(nlp_module, '_reload_from_user_settings'):
+                user_settings_manager.register_reload_callback("nlp_module", nlp_module._reload_from_user_settings)
+                debug_log(2, "      ✅ NLP 模組回調已註冊")
+            
+            # 註冊 LLM 模組的回調
+            llm_module = get_module("llm_module")
+            if llm_module and hasattr(llm_module, '_reload_from_user_settings'):
+                user_settings_manager.register_reload_callback("llm_module", llm_module._reload_from_user_settings)
+                debug_log(2, "      ✅ LLM 模組回調已註冊")
+            
+            # 註冊 MOV 模組的回調
+            mov_module = get_module("mov_module")
+            if mov_module and hasattr(mov_module, '_reload_from_user_settings'):
+                user_settings_manager.register_reload_callback("mov_module", mov_module._reload_from_user_settings)
+                debug_log(2, "      ✅ MOV 模組回調已註冊")
+            
+            # 註冊 UI 模組的回調
+            ui_module = get_module("ui_module")
+            if ui_module and hasattr(ui_module, '_reload_from_user_settings'):
+                user_settings_manager.register_reload_callback("ui_module", ui_module._reload_from_user_settings)
+                debug_log(2, "      ✅ UI 模組回調已註冊")
+            
+            # 註冊 MEM 模組的回調
+            mem_module = get_module("mem_module")
+            if mem_module and hasattr(mem_module, '_reload_from_user_settings'):
+                user_settings_manager.register_reload_callback("mem_module", mem_module._reload_from_user_settings)
+                debug_log(2, "      ✅ MEM 模組回調已註冊")
+            
+            # 註冊 SYS 模組的回調
+            sys_module = get_module("sys_module")
+            if sys_module and hasattr(sys_module, '_reload_from_user_settings'):
+                user_settings_manager.register_reload_callback("sys_module", sys_module._reload_from_user_settings)
+                debug_log(2, "      ✅ SYS 模組回調已註冊")
+            
+            # 註冊 SystemLoop 的回調
+            from core.system_loop import system_loop
+            if system_loop and hasattr(system_loop, '_reload_from_user_settings'):
+                user_settings_manager.register_reload_callback("system_loop", system_loop._reload_from_user_settings)
+                debug_log(2, "      ✅ SystemLoop 回調已註冊")
+            
+            info_log("   ✅ 使用者設定重載回調註冊完成")
+            return True
+            
+        except Exception as e:
+            error_log(f"   ❌ 設定重載回調註冊失敗: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def _initialize_router(self) -> bool:

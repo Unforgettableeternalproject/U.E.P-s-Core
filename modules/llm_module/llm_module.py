@@ -4115,6 +4115,10 @@ U.E.P 系統可用功能規格：
                 self.learning_engine.learning_enabled = bool(value)
                 info_log(f"[LLM] 學習系統: {old_learning} → {self.learning_engine.learning_enabled}")
             
+            elif key_path == "general.identity.uep_nickname":
+                # UEP 暱稱（即時生效，下次生成 prompt 時使用）
+                info_log(f"[LLM] UEP 暱稱已更新為: {value}")
+            
             # P2: Network 設定
             elif key_path == "monitoring.network.allow_internet_access":
                 self.allow_internet_access = bool(value)

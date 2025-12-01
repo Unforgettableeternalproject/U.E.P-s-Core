@@ -80,6 +80,10 @@ class SystemLoop:
         # 🔧 工作流輸入相關
         self._pending_stt_restart = False  # 延遲 STT 重啟標記
         
+        # 🔧 輸入模式切換相關
+        self._stt_listening_active = False  # STT 監聽是否活躍
+        self._text_input_active = False  # 文字輸入是否活躍
+        
         # P1/P2 設定整合
         from configs.user_settings_manager import get_user_setting
         self.gc_interval = get_user_setting("advanced.performance.gc_interval", 300)
@@ -614,6 +618,7 @@ class SystemLoop:
             self.text_input_thread = threading.Thread(target=text_input_loop, daemon=True)
             self.text_input_thread.start()
             
+            self._text_input_active = True
             info_log("✅ 文字輸入循環已啟動")
             return True
             
@@ -657,6 +662,7 @@ class SystemLoop:
             listening_thread = threading.Thread(target=continuous_listening, daemon=True)
             listening_thread.start()
             
+            self._stt_listening_active = True
             info_log("✅ STT持續監聽已啟動")
             return True
             
@@ -1351,11 +1357,36 @@ class SystemLoop:
                 # 更新輸入模式: True=VAD, False=文字輸入
                 old_mode = self.input_mode
                 new_mode = "vad" if value else "text"
-                self.input_mode = new_mode
                 
                 if old_mode != new_mode:
-                    info_log(f"[SystemLoop] 輸入模式已更新: {old_mode} → {new_mode}")
-                    info_log("⚠️  輸入模式變更將在下次啟動時生效")
+                    info_log(f"[SystemLoop] 輸入模式切換: {old_mode} → {new_mode}")
+                    
+                    # 立即切換輸入處理（不需要重啟整個循環）
+                    if self._is_running:
+                        info_log("[SystemLoop] 正在切換輸入處理...")
+                        
+                        # 1. 標記舊模式為非活躍（停止接收新輸入）
+                        if old_mode == "vad":
+                            self._stt_listening_active = False
+                            debug_log(2, "[SystemLoop] 已停止 STT 監聽")
+                        else:
+                            self._text_input_active = False
+                            debug_log(2, "[SystemLoop] 已停止文字輸入")
+                        
+                        # 2. 切換模式
+                        self.input_mode = new_mode
+                        
+                        # 3. 啟動新模式的輸入處理
+                        if new_mode == "vad":
+                            self._start_stt_listening()
+                        else:
+                            self._start_text_input()
+                        
+                        info_log(f"✅ [SystemLoop] 輸入處理已切換至 {new_mode} 模式")
+                    else:
+                        # 系統未運行，只更新模式
+                        self.input_mode = new_mode
+                        info_log(f"[SystemLoop] 輸入模式已更新（將在下次啟動時生效）")
         except Exception as e:
             error_log(f"[SystemLoop] 熱重載設定失敗: {e}")
 

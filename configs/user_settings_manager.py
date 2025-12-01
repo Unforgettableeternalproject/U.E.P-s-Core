@@ -21,6 +21,13 @@ class UserSettingsManager:
     # 定義需要重載的設定項目 (設定路徑 -> 需要重載的模組)
     # 注意：只有會影響模組運行時行為的設定才需要 reload
     RELOAD_REQUIRED = {
+        # 身分設定 - NLP (身分管理)
+        "general.identity.user_name": ["nlp_module"],
+        "general.identity.uep_nickname": ["nlp_module", "llm_module"],
+        
+        # 互動設定 - 輸入模式 (SystemLoop 運行時切換)
+        "interaction.speech_input.enabled": ["system_loop"],
+        
         # 互動設定 - STT (運行時行為)
         "interaction.speech_input.microphone_device_index": ["stt_module"],
         "interaction.speech_input.vad_sensitivity": ["stt_module"],
@@ -28,6 +35,14 @@ class UserSettingsManager:
         # 互動設定 - TTS (運行時行為)
         "interaction.speech_output.volume": ["tts_module"],
         "interaction.speech_output.speed": ["tts_module"],
+        "interaction.speech_output.default_emotion": ["tts_module"],
+        "interaction.speech_output.emotion_intensity": ["tts_module"],
+        
+        # 互動設定 - 對話與記憶
+        "interaction.conversation.temperature": ["llm_module"],
+        "interaction.conversation.enable_learning": ["llm_module"],
+        "interaction.conversation.user_additional_prompt": ["llm_module"],
+        "interaction.memory.enabled": ["mem_module"],
         
         # 行為設定 - MOV (運行時物理行為)
         "behavior.movement.boundary_mode": ["mov_module"],
@@ -36,6 +51,19 @@ class UserSettingsManager:
         "behavior.movement.enable_cursor_tracking": ["mov_module"],
         "behavior.movement.movement_smoothing": ["mov_module"],
         "behavior.movement.ground_friction": ["mov_module"],
+        
+        # 行為設定 - 權限 (SYS 模組)
+        "behavior.permissions.allow_system_commands": ["sys_module"],
+        "behavior.permissions.allow_file_creation": ["sys_module"],
+        "behavior.permissions.allow_file_modification": ["sys_module"],
+        "behavior.permissions.allow_file_deletion": ["sys_module"],
+        "behavior.permissions.allow_app_launch": ["sys_module"],
+        "behavior.permissions.require_confirmation": ["sys_module"],
+        
+        # 監控設定 - 網路 (LLM 模組)
+        "monitoring.network.allow_internet_access": ["llm_module"],
+        "monitoring.network.allow_api_calls": ["llm_module"],
+        "monitoring.network.timeout": ["llm_module"],
         
         # 進階設定 - 效能 (運行時效能調整)
         # 注意：UI 效能設定需要重啟應用程式才能生效，因此不列入 RELOAD_REQUIRED

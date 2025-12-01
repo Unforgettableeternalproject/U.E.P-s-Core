@@ -4,6 +4,25 @@ advanced:
     enable_gesture_control: false
     enable_smart_suggestions: false
     enable_voice_commands: false
+  logging:
+    enable_console_output: false
+    enable_split_logs: false
+    enabled: true
+    log_dir: logs
+    log_level: INFO
+    log_rotation_days: 7
+    max_log_size_mb: 50
+    save_logs: true
+  modules:
+    ani_enabled: true
+    llm_enabled: true
+    mem_enabled: true
+    mov_enabled: true
+    nlp_enabled: true
+    stt_enabled: true
+    sys_enabled: true
+    tts_enabled: true
+    ui_enabled: true
   performance:
     enable_hardware_acceleration: true
     gc_interval: 300
@@ -32,14 +51,18 @@ behavior:
 general:
   identity:
     allow_identity_creation: true
-    current_identity_id: default
-    uep_nickname: null
-    user_name: user
+    current_identity_id: user_1763667679_0a8c93e2
+    uep_nickname: ''
+    user_name: Bernie
   system:
     auto_save_settings: true
     confirm_before_exit: true
+    debug_level: 1
     enable_debug_mode: false
-    language: zh-TW
+    enable_frontend_debug: true
+    language: ja-JP
+    main_loop_interval: 0.1
+    shutdown_timeout: 5.0
 interaction:
   conversation:
     enable_learning: true
@@ -66,14 +89,23 @@ interaction:
     volume: 70
 interface:
   access_widget:
+    animation_speed: 320
     auto_hide: true
     hide_edge_threshold: 200
   appearance:
-    theme: auto
+    animation_quality: high
+    enable_effects: true
+    font_size: 12
+    theme: dark
+    ui_scale: 1.0
   main_window:
     always_on_top: true
+    show_hitbox: false
+    transparency: true
   windows:
+    show_access_widget: true
     show_debug_window: false
+    show_desktop_pet: false
 monitoring:
   background_tasks:
     default_media_folder: E:\Music\My Songs\Full Playlist
@@ -99,7 +131,9 @@ privacy:
     allow_usage_statistics: false
     anonymize_data: true
   data_retention:
+    auto_delete_old_conversations: false
     clear_cache_on_exit: false
+    conversation_retention_days: 365
 shortcuts:
   emergency_stop: Ctrl+Alt+X
   force_sleep: Ctrl+Alt+Z

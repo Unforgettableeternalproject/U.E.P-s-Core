@@ -2206,3 +2206,15 @@
 
 ---
 
+### Check with user settings, and we're moving on to the other two windows. 12/1
+
+> Date: Mon, 01 Dec 2025 20:20:23 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `a2abca050a69d4d08a44faf20e970d28adf2e077`
+
+---
+

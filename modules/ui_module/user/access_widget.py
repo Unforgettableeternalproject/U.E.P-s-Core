@@ -1,4 +1,5 @@
 ﻿# access_widget.py
+from itertools import filterfalse
 import sys, math, os
 from functools import partial
 
@@ -782,6 +783,8 @@ class MainButton(QWidget):
 
 def main():
     app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
+
     theme_manager.apply_app()
     bridge = ControllerBridge(unified_controller)
 

@@ -59,6 +59,7 @@ def force_enable_file_logging():
                 debug_file.setFormatter(formatter)  # 使用無顏色的 formatter
                 debug_file.setLevel(logging.DEBUG)
                 debug_file.addFilter(LogLevelFilter(logging.DEBUG, logging.DEBUG))
+                debug_file.addFilter(duplicate_filter)  # 添加去重過濾器
                 logger.addHandler(debug_file)
             except Exception:
                 pass
@@ -70,6 +71,7 @@ def force_enable_file_logging():
                 info_file.setFormatter(formatter)  # 使用無顏色的 formatter
                 info_file.setLevel(logging.INFO)
                 info_file.addFilter(LogLevelFilter(logging.INFO, logging.WARNING))
+                info_file.addFilter(duplicate_filter)  # 添加去重過濾器
                 logger.addHandler(info_file)
             except Exception:
                 pass
@@ -81,6 +83,7 @@ def force_enable_file_logging():
                 error_file.setFormatter(formatter)  # 使用無顏色的 formatter
                 error_file.setLevel(logging.ERROR)
                 error_file.addFilter(LogLevelFilter(logging.ERROR, logging.CRITICAL))
+                error_file.addFilter(duplicate_filter)  # 添加去重過濾器
                 logger.addHandler(error_file)
             except Exception:
                 pass
@@ -92,6 +95,7 @@ def force_enable_file_logging():
                 full_file = logging.FileHandler(full_log_path, encoding='utf-8')
                 full_file.setFormatter(formatter)  # 使用無顏色的 formatter
                 full_file.setLevel(logging.DEBUG)  # 包含所有等級
+                full_file.addFilter(duplicate_filter)  # 添加去重過濾器
                 logger.addHandler(full_file)
                 print(f"📄 合併日誌文件: {full_log_path}")
             except Exception as e:
@@ -120,6 +124,44 @@ class LogLevelFilter(logging.Filter):
 
     def filter(self, record):
         return self.min_level <= record.levelno <= self.max_level
+
+
+class DuplicateLogFilter(logging.Filter):
+    """過濾重複的日誌訊息"""
+    def __init__(self):
+        super().__init__()
+        self.last_log = None
+        self.duplicate_count = 0
+    
+    def filter(self, record):
+        # 建立當前日誌的唯一標識（訊息內容 + 等級）
+        current_log = (record.levelno, record.getMessage())
+        
+        # 如果與上一條日誌相同，增加計數並忽略
+        if current_log == self.last_log:
+            self.duplicate_count += 1
+            return False  # 不記錄重複的日誌
+        
+        # 如果不同，且之前有重複的日誌，記錄一條摘要
+        if self.duplicate_count > 0:
+            # 創建一個摘要記錄
+            summary_msg = f"(上一條日誌重複了 {self.duplicate_count} 次)"
+            summary_record = logging.LogRecord(
+                name=record.name,
+                level=logging.INFO,
+                pathname=record.pathname,
+                lineno=record.lineno,
+                msg=summary_msg,
+                args=(),
+                exc_info=None
+            )
+            # 直接通過 logger 發送摘要（會被後續處理）
+            # 注意：這裡我們需要在返回 True 之前處理，所以改變策略
+            self.duplicate_count = 0
+        
+        # 更新最後一條日誌
+        self.last_log = current_log
+        return True  # 記錄新的日誌
 
 class ColorFormatter(logging.Formatter):
     COLORS = {
@@ -219,12 +261,17 @@ else:
     for handler in list(logger.handlers):
         logger.removeHandler(handler)
 
+    # 創建全局去重過濾器（所有 handler 共用）
+    duplicate_filter = DuplicateLogFilter()
+
     # 添加控制台處理程序（根據配置決定是否啟用）
     if ENABLE_CONSOLE_OUTPUT:
         stream_handler = logging.StreamHandler()
         stream_handler.setFormatter(console_formatter)
         # 確保控制台也能顯示 DEBUG 訊息
         stream_handler.setLevel(logging.DEBUG)
+        # 添加去重過濾器
+        stream_handler.addFilter(duplicate_filter)
         logger.addHandler(stream_handler)
 
     # 文件日誌處理器變數
@@ -254,6 +301,7 @@ else:
                     debug_file.setFormatter(formatter)  # 使用無顏色的 formatter
                     debug_file.setLevel(logging.DEBUG)
                     debug_file.addFilter(LogLevelFilter(logging.DEBUG, logging.DEBUG))
+                    debug_file.addFilter(duplicate_filter)  # 添加去重過濾器
                     logger.addHandler(debug_file)
                 except Exception:
                     pass
@@ -265,6 +313,7 @@ else:
                     info_file.setFormatter(formatter)  # 使用無顏色的 formatter
                     info_file.setLevel(logging.INFO)
                     info_file.addFilter(LogLevelFilter(logging.INFO, logging.WARNING))
+                    info_file.addFilter(duplicate_filter)  # 添加去重過濾器
                     logger.addHandler(info_file)
                 except Exception:
                     pass
@@ -276,6 +325,7 @@ else:
                     error_file.setFormatter(formatter)  # 使用無顏色的 formatter
                     error_file.setLevel(logging.ERROR)
                     error_file.addFilter(LogLevelFilter(logging.ERROR, logging.CRITICAL))
+                    error_file.addFilter(duplicate_filter)  # 添加去重過濾器
                     logger.addHandler(error_file)
                 except Exception:
                     pass
@@ -287,6 +337,7 @@ else:
                     full_file = logging.FileHandler(full_log_path, encoding='utf-8')
                     full_file.setFormatter(formatter)  # 使用無顏色的 formatter
                     full_file.setLevel(logging.DEBUG)  # 包含所有等級
+                    full_file.addFilter(duplicate_filter)  # 添加去重過濾器
                     logger.addHandler(full_file)
                     print(f"📄 合併日誌文件: {full_log_path}")
                 except Exception as e:

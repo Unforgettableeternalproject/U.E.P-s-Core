@@ -32,8 +32,8 @@ behavior:
 general:
   identity:
     allow_identity_creation: true
-    current_identity_id: null
-    uep_name: U.E.P
+    current_identity_id: default
+    uep_nickname: null
     user_name: user
   system:
     auto_save_settings: true

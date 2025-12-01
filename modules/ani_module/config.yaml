@@ -221,7 +221,7 @@ resources:
     swoop_left_end:
       prefix: diamond_girl_swooping_to_standing_l_
       total_frames: 37
-      frame_duration: 0.05
+      frame_duration: 0.03
       loop: false
       zoom: 1.5
       offsetX: 0
@@ -229,7 +229,7 @@ resources:
     swoop_right_end:
       prefix: diamond_girl_swooping_to_standing_
       total_frames: 38
-      frame_duration: 0.05
+      frame_duration: 0.03
       loop: false
       zoom: 1.5
       offsetX: 0

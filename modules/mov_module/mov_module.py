@@ -435,8 +435,9 @@ class MOVModule(BaseFrontendModule):
         if hasattr(self, '_cursor_tracking_handler') and self._cursor_tracking_handler._is_turning_head:
             return
         
-        # 投擲動畫序列進行中時暫停行為更新（防止動畫被打斷）
+        # 投擲動畫序列進行中時完全暫停行為機（防止任何打斷）
         if hasattr(self, '_throw_handler') and self._throw_handler.is_in_throw_animation:
+            debug_log(3, f"[{self.module_id}] 投擲動畫序列中，暫停行為機 tick")
             return
 
         # 檢查是否到達目標（提供給 MovementBehavior 判斷）
@@ -640,6 +641,13 @@ class MOVModule(BaseFrontendModule):
 
     def _enter_behavior(self, state: BehaviorState):
         """呼叫 on_enter 並更新 current_behavior_state"""
+        
+        # 如果正在投擲動畫序列中，不要觸發 idle 動畫（避免 zoom 被重置）
+        if state == BehaviorState.IDLE and hasattr(self, '_throw_handler'):
+            if self._throw_handler.is_in_throw_animation:
+                debug_log(1, f"[{self.module_id}] ⏸️ 投擲動畫序列進行中，延後進入 IDLE")
+                return
+        
         self.previous_behavior_state = self.current_behavior_state  # 記錄前一個狀態
         self.current_behavior_state = state
         self.current_behavior = BehaviorFactory.create(state)
@@ -2332,6 +2340,27 @@ GS 推進 - 當前 GS 結束，恢復 idle 狀態和移動"""
     def _on_ani_finish(self, finished_name: str):
         # 通知優先度管理器動畫完成
         self._animation_priority.on_animation_finished(finished_name)
+        
+        # 檢查是否是投擲飛行動畫完成 (swoop_left/right，不含 _end)
+        if hasattr(self, '_throw_handler') and finished_name in ['swoop_left', 'swoop_right', 'struggle']:
+            if self._throw_handler.is_in_throw_animation:
+                # 檢查是否已經著地（速度接近零且在地面附近）
+                is_landed = False
+                if hasattr(self, '_physics_handler'):
+                    current_vy = getattr(self._physics_handler, 'velocity_y', 0)
+                    current_y = getattr(self, 'current_position_y', 0)
+                    ground_level = getattr(self, '_ground_level', 0)
+                    # 只有在速度很小且接近地面時才觸發落地動畫
+                    is_landed = abs(current_vy) < 2.0 and abs(current_y - ground_level) < 10
+                
+                if is_landed:
+                    debug_log(1, f"[{self.module_id}] 投擲飛行動畫完成且已著地: {finished_name}，觸發落地動畫")
+                    # 觸發落地動畫 (swoop_*_end)
+                    self._throw_handler.handle_throw_landing()
+                else:
+                    debug_log(2, f"[{self.module_id}] 投擲飛行動畫完成但仍在空中: {finished_name}，等待著地")
+                # 動畫序列繼續，不切換狀態
+                return
         
         # 檢查是否是投擲落地動畫完成
         if hasattr(self, '_throw_handler') and finished_name.startswith('swoop_') and finished_name.endswith('_end'):

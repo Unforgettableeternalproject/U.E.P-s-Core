@@ -344,19 +344,79 @@ class NLPModule(BaseModule):
             #     corrected_segments.append(corrected_segment)
             # segments = corrected_segments
             
-            # 🆕 CALL 過濾邏輯：如果有 CALL + 其他實質意圖，過濾掉 CALL
-            # CALL 只是過渡狀態，一旦有實質意圖（CHAT/WORK）出現，CALL 就應該被忽略
+            # 🆕 暱稱檢測：如果輸入包含 UEP 暱稱，視為包含 CALL 意圖
+            from configs.user_settings_manager import get_user_setting
+            uep_nickname = get_user_setting("general.identity.uep_nickname", None)
+            has_nickname_call = False
+            
+            if uep_nickname and uep_nickname.strip():
+                # 檢查是否包含暱稱（不區分大小寫）
+                text_lower = input_data.user_input.lower()
+                nickname_lower = uep_nickname.strip().lower()
+                if nickname_lower in text_lower:
+                    has_nickname_call = True
+                    debug_log(2, f"[NLP] 檢測到暱稱 '{uep_nickname}'，視為 CALL 意圖")
+                    
+                    # 如果 segments 中沒有 CALL，添加一個 CALL segment
+                    has_call = any(s.intent_type == IntentType.CALL for s in segments)
+                    if not has_call:
+                        from .intent_types import IntentSegment as NewIntentSegment
+                        nickname_call_seg = NewIntentSegment(
+                            segment_text=uep_nickname,
+                            intent_type=IntentType.CALL,
+                            confidence=0.95,
+                            priority=70
+                        )
+                        segments.insert(0, nickname_call_seg)
+                        debug_log(2, "[NLP] 已添加 CALL segment 至意圖列表")
+            
+            # 🆕 CALL 意圖處理邏輯（新版）
+            # 1. 如果輸入只有 CALL 意圖，設置啟動標記並中斷循環
+            # 2. 如果為複合意圖且包含 CALL，設置啟動標記並正常處理其他意圖
+            # 3. 如果沒有 CALL 且未啟動，忽略輸入
             from .intent_types import IntentSegment as NewIntentSegment
+            from core.working_context import working_context_manager
             
             filtered_segments = segments
-            if NewIntentSegment.is_compound_input(segments):
-                call_segs = [s for s in segments if s.intent_type == IntentType.CALL]
-                non_call_segs = [s for s in segments if s.intent_type != IntentType.CALL and s.intent_type != IntentType.UNKNOWN]
+            has_call = any(s.intent_type == IntentType.CALL for s in segments)
+            non_call_segs = [s for s in segments if s.intent_type != IntentType.CALL and s.intent_type != IntentType.UNKNOWN]
+            
+            # 檢查是否已啟動或有活躍會話
+            is_activated = working_context_manager.is_activated()
+            from core.status_manager import status_manager
+            has_active_session = (status_manager.has_active_cs() or status_manager.has_active_ws())
+            
+            if has_call:
+                # 設置啟動標記
+                working_context_manager.set_activation_flag(True)
+                debug_log(2, "[NLP] 檢測到 CALL 意圖，已設置啟動標記")
                 
-                # 如果有 CALL + 其他實質意圖，過濾掉 CALL
-                if call_segs and non_call_segs:
-                    debug_log(2, f"[NLP] COMPOUND with CALL: Filtering out CALL, keeping {len(non_call_segs)} substantial intent(s)")
+                if non_call_segs:
+                    # 複合意圖：過濾掉 CALL，保留其他意圖
+                    debug_log(2, f"[NLP] COMPOUND with CALL: 過濾 CALL，保留 {len(non_call_segs)} 個實質意圖")
                     filtered_segments = non_call_segs
+                else:
+                    # 只有 CALL：保留 CALL segment，但會在後續處理中中斷循環
+                    debug_log(2, "[NLP] 只有 CALL 意圖，保留並等待下次輸入")
+                    filtered_segments = segments
+            else:
+                # 沒有 CALL 意圖
+                if not is_activated and not has_active_session:
+                    # 未啟動且無活躍會話：忽略此次輸入
+                    debug_log(1, "[NLP] 無 CALL 意圖且未啟動，忽略此次輸入")
+                    return {
+                        "intent_segments": [],
+                        "primary_intent": IntentType.UNKNOWN,
+                        "overall_confidence": 0.0,
+                        "entities": [],
+                        "state_transition": None,
+                        "ignored": True,
+                        "reason": "no_activation"
+                    }
+                else:
+                    # 已啟動或有活躍會話：正常處理
+                    debug_log(2, "[NLP] 已啟動或有活躍會話，正常處理輸入")
+                    filtered_segments = segments
             
             # Determine primary intent (highest priority from filtered segments)
             if NewIntentSegment.is_compound_input(filtered_segments):

@@ -2170,3 +2170,15 @@
 
 ---
 
+### Improved access gadget behavior, and fixed some animation related issue. 12/1
+
+> Date: Mon, 01 Dec 2025 09:36:26 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `074821034eae8efe56abb06120e0f0df2cd21319`
+
+---
+

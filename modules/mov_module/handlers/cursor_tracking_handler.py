@@ -318,8 +318,28 @@ class CursorTrackingHandler(BaseHandler):
                     current_state = self.coordinator.current_behavior_state.value if self.coordinator.current_behavior_state else "None"
                     debug_log(3, f"[CursorTrackingHandler] 非閒置狀態({current_state})，跳過追蹤")
                     return False
-                    
-                return True
+            
+            # 禁止在投擲動畫序列期間追蹤（避免打斷落地動畫）
+            if hasattr(self.coordinator, '_throw_handler'):
+                if self.coordinator._throw_handler.is_in_throw_animation:
+                    debug_log(3, "[CursorTrackingHandler] 投擲動畫序列進行中，禁止追蹤")
+                    return False
+            
+            # 檢查是否正在播放閒置動畫（只有閒置動畫時才允許追蹤）
+            if hasattr(self.coordinator, 'ani_module'):
+                ani = self.coordinator.ani_module
+                if hasattr(ani, 'manager') and hasattr(ani.manager, 'current_clip'):
+                    current_anim = ani.manager.current_clip
+                    if current_anim:
+                        # 只有播放閒置動畫時才允許追蹤
+                        idle_keywords = ['idle', 'smile', 'stand']
+                        is_idle_anim = any(keyword in current_anim.lower() for keyword in idle_keywords)
+                        if not is_idle_anim:
+                            debug_log(3, f"[CursorTrackingHandler] 正在播放非閒置動畫({current_anim})，禁止追蹤")
+                            return False
+            
+            # 通過所有檢查，允許追蹤
+            return True
             
             # 降級檢查：如果無法取得狀態，檢查是否暫停
             if hasattr(self.coordinator, 'movement_paused') and self.coordinator.movement_paused:

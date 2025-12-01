@@ -208,7 +208,13 @@ class ProductionRunner:
             info_log(f"✅ Qt 事件循環已退出 (退出碼: {exit_code})")
             
             # 執行清理
-            return self._graceful_shutdown()
+            shutdown_success = self._graceful_shutdown()
+            
+            # 強制退出 Python 程序，確保終端返回
+            info_log("🚪 強制退出 Python 程序...")
+            sys.exit(exit_code)
+            
+            return shutdown_success
             
         except Exception as e:
             error_log(f"❌ Qt 事件循環運行失敗: {e}")

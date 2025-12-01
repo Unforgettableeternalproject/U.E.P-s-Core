@@ -637,9 +637,9 @@ class FrontendTestTab(BaseTestTab):
     # === UEP 主程式控制方法 ===
     
     def show_uep_app(self):
-        """顯示 UEP 主程式"""
+        """顯示 UEP 主程式和小工具"""
         try:
-            self.add_result("🎈 顯示 UEP 主程式...", "INFO")
+            self.add_result("🎈 顯示 UEP 主程式和小工具...", "INFO")
             
             # 檢查 UI 模組是否已載入
             ui_status = self.module_manager.get_module_status("ui")
@@ -650,25 +650,37 @@ class FrontendTestTab(BaseTestTab):
             # 直接調用 UI 模組的方法
             ui_module = ui_status.get('instance')
             if ui_module and hasattr(ui_module, 'handle_frontend_request'):
-                result = ui_module.handle_frontend_request({
+                # 顯示桌面寵物
+                result1 = ui_module.handle_frontend_request({
                     "command": "show_interface",
                     "interface": "main_desktop_pet"
                 })
                 
-                if result and result.get('success'):
-                    self.add_result("✅ UEP 主程式顯示成功", "SUCCESS")
+                if result1 and result1.get('success'):
+                    self.add_result("✅ UEP 桌面寵物顯示成功", "SUCCESS")
                 else:
-                    self.add_result(f"❌ UEP 主程式顯示失敗: {result.get('error', '未知錯誤') if result else '無回應'}", "ERROR")
+                    self.add_result(f"❌ UEP 桌面寵物顯示失敗: {result1.get('error', '未知錯誤') if result1 else '無回應'}", "ERROR")
+                
+                # 顯示小工具
+                result2 = ui_module.handle_frontend_request({
+                    "command": "show_interface",
+                    "interface": "user_access_widget"
+                })
+                
+                if result2 and result2.get('success'):
+                    self.add_result("✅ 小工具顯示成功", "SUCCESS")
+                else:
+                    self.add_result(f"⚠️ 小工具顯示失敗: {result2.get('error', '未知錯誤') if result2 else '無回應'}", "WARNING")
             else:
                 self.add_result("❌ UI 模組不支援前端請求介面", "ERROR")
                 
         except Exception as e:
-            self.add_result(f"顯示 UEP 主程式時發生錯誤: {str(e)}", "ERROR")
+            self.add_result(f"顯示 UEP 時發生錯誤: {str(e)}", "ERROR")
     
     def hide_uep_app(self):
-        """隱藏 UEP 主程式"""
+        """隱藏 UEP 主程式和小工具"""
         try:
-            self.add_result("👻 隱藏 UEP 主程式...", "INFO")
+            self.add_result("👻 隱藏 UEP 主程式和小工具...", "INFO")
             
             # 檢查 UI 模組是否已載入
             ui_status = self.module_manager.get_module_status("ui")
@@ -679,20 +691,32 @@ class FrontendTestTab(BaseTestTab):
             # 直接調用 UI 模組的方法
             ui_module = ui_status.get('instance')
             if ui_module and hasattr(ui_module, 'handle_frontend_request'):
-                result = ui_module.handle_frontend_request({
+                # 隱藏桌面寵物
+                result1 = ui_module.handle_frontend_request({
                     "command": "hide_interface",
                     "interface": "main_desktop_pet"
                 })
                 
-                if result and result.get('success'):
-                    self.add_result("✅ UEP 主程式隱藏成功", "SUCCESS")
+                if result1 and result1.get('success'):
+                    self.add_result("✅ UEP 桌面寵物隱藏成功", "SUCCESS")
                 else:
-                    self.add_result(f"❌ UEP 主程式隱藏失敗: {result.get('error', '未知錯誤') if result else '無回應'}", "ERROR")
+                    self.add_result(f"❌ UEP 桌面寵物隱藏失敗: {result1.get('error', '未知錯誤') if result1 else '無回應'}", "ERROR")
+                
+                # 隱藏小工具
+                result2 = ui_module.handle_frontend_request({
+                    "command": "hide_interface",
+                    "interface": "user_access_widget"
+                })
+                
+                if result2 and result2.get('success'):
+                    self.add_result("✅ 小工具隱藏成功", "SUCCESS")
+                else:
+                    self.add_result(f"⚠️ 小工具隱藏失敗: {result2.get('error', '未知錯誤') if result2 else '無回應'}", "WARNING")
             else:
                 self.add_result("❌ UI 模組不支援前端請求介面", "ERROR")
                 
         except Exception as e:
-            self.add_result(f"隱藏 UEP 主程式時發生錯誤: {str(e)}", "ERROR")
+            self.add_result(f"隱藏 UEP 時發生錯誤: {str(e)}", "ERROR")
 
     def open_animation_tester(self):
         """開啟 Animation Tester 獨立視窗"""

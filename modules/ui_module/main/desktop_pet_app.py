@@ -481,9 +481,15 @@ class DesktopPetApp(QWidget):
                 current_width = self.width()
                 current_height = self.height()
                 
+                zoom_diff = abs(zoom_factor - self.current_zoom)
                 if (abs(target_width - current_width) > 5 or 
                     abs(target_height - current_height) > 5 or 
-                    abs(zoom_factor - self.current_zoom) > 0.05):
+                    zoom_diff > 0.05):
+                    
+                    # 記錄縮放變化
+                    info_log(f"[DesktopPetApp] 🔍 縮放變化: {self.current_zoom:.3f} → {zoom_factor:.3f} (diff={zoom_diff:.3f})")
+                    if status:
+                        info_log(f"[DesktopPetApp]   動畫狀態: {status.get('animation', 'N/A')}")
                     
                     # 使用延遲調整避免遞歸繪製
                     self.pending_resize = (target_width, target_height, zoom_factor)
@@ -519,6 +525,10 @@ class DesktopPetApp(QWidget):
         try:
             target_width, target_height, zoom_factor = self.pending_resize
             
+            # 記錄視窗調整前後的大小
+            old_width, old_height = self.width(), self.height()
+            info_log(f"[DesktopPetApp] 📏 執行視窗調整: {old_width}x{old_height} → {target_width}x{target_height} (zoom={zoom_factor:.3f})")
+            
             # 計算當前視窗中心位置
             current_center_x = self.x() + self.width() // 2
             current_center_y = self.y() + self.height() // 2
@@ -538,10 +548,10 @@ class DesktopPetApp(QWidget):
             self.current_zoom = zoom_factor
             self.pending_resize = None
             
-            debug_log(2, f"[DesktopPetApp] 延遲調整視窗: zoom={zoom_factor:.2f}, 尺寸={target_width}x{target_height}, 位置=({new_x},{new_y})")
+            info_log(f"[DesktopPetApp] ✅ 視窗調整完成: zoom={zoom_factor:.3f}, 尺寸={target_width}x{target_height}, 位置=({new_x},{new_y})")
             
         except Exception as e:
-            error_log(f"[DesktopPetApp] 延遲視窗調整失敗: {e}")
+            error_log(f"[DesktopPetApp] 延遲視窗調整失敹: {e}")
             self.pending_resize = None
     
     def mousePressEvent(self, event):

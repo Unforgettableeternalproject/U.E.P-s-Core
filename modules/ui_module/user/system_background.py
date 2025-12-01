@@ -65,7 +65,7 @@ class SystemBackgroundWindow(QMainWindow):
         self.resize(1200, 950)
 
         try:
-            icon_path = os.path.join(os.path.dirname(__file__), "../../../arts/U.E.P.png")
+            icon_path = os.path.join(os.path.dirname(__file__), "../../../resources/assets/static/Logo.ico")
             if os.path.exists(icon_path):   
                 self.setWindowIcon(QIcon(icon_path))
         except Exception as e:

@@ -106,6 +106,8 @@ class UserMainWindow(QMainWindow):
         if theme_manager:
             install_theme_hook(self)
             theme_manager.theme_changed.connect(self._on_theme_changed)
+            # 首次打開時立即套用當前主題
+            theme_manager.apply_theme_to_widget(self)
         
         self.load_settings()
         self.hide()
@@ -117,6 +119,12 @@ class UserMainWindow(QMainWindow):
         self.setWindowTitle("UEP 設定")
         self.setMinimumSize(900, 700)
         self.resize(1100, 800)
+        
+        # 設定視窗圖標
+        icon_path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "resources", "assets", "static", "Logo.ico")
+        if os.path.exists(icon_path):
+            from PyQt5.QtGui import QIcon
+            self.setWindowIcon(QIcon(icon_path))
         
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -258,12 +266,13 @@ class UserMainWindow(QMainWindow):
         identity_layout.setSpacing(8)
         
         self.user_name_edit = QLineEdit()
-        self.user_name_edit.setPlaceholderText("例如：小明")
+        self.user_name_edit.setPlaceholderText("請先選擇身分")
+        self.user_name_edit.setEnabled(False)  # 預設禁用，選擇身分後啟用
         identity_layout.addRow("使用者名稱:", self.user_name_edit)
         
-        self.uep_name_edit = QLineEdit()
-        self.uep_name_edit.setPlaceholderText("例如：U.E.P")
-        identity_layout.addRow("UEP 名稱:", self.uep_name_edit)
+        self.uep_nickname_edit = QLineEdit()
+        self.uep_nickname_edit.setPlaceholderText("例如：U.E.P, 小 P")
+        identity_layout.addRow("UEP 暱稱:", self.uep_nickname_edit)
         
         identity_main_layout.addLayout(identity_layout)
         
@@ -913,8 +922,19 @@ class UserMainWindow(QMainWindow):
         try:
             # Tab 1: 基本設定
             # 身分
-            self.user_name_edit.setText(get_user_setting("general.identity.user_name", "user"))
-            self.uep_name_edit.setText(get_user_setting("general.identity.uep_name", "U.E.P"))
+            current_identity = get_user_setting("general.identity.current_identity_id", "default")
+            # 如果是 default 身分，禁用名稱欄位
+            if current_identity == "default" or current_identity is None:
+                self.user_name_edit.setText(get_user_setting("general.identity.user_name", "user"))
+                self.user_name_edit.setEnabled(False)
+                self.user_name_edit.setPlaceholderText("請先選擇身分")
+            else:
+                # 已選擇身分，啟用欄位
+                self.user_name_edit.setText(get_user_setting("general.identity.user_name", "user"))
+                self.user_name_edit.setEnabled(True)
+                self.user_name_edit.setPlaceholderText("可修改名稱")
+            
+            self.uep_nickname_edit.setText(get_user_setting("general.identity.uep_nickname", "U.E.P"))
             self.allow_identity_creation_cb.setChecked(get_user_setting("general.identity.allow_identity_creation", True))
             
             # 載入身分清單
@@ -1089,8 +1109,10 @@ class UserMainWindow(QMainWindow):
         """保存所有設定到 user_settings.yaml"""
         try:
             # Tab 1: 基本設定
-            set_user_setting("general.identity.user_name", self.user_name_edit.text())
-            set_user_setting("general.identity.uep_name", self.uep_name_edit.text())
+            # 只有在啟用狀態下才保存使用者名稱（避免保存禁用狀態下的預設值）
+            if self.user_name_edit.isEnabled():
+                set_user_setting("general.identity.user_name", self.user_name_edit.text())
+            set_user_setting("general.identity.uep_nickname", self.uep_nickname_edit.text())
             set_user_setting("general.identity.allow_identity_creation", self.allow_identity_creation_cb.isChecked())
             
             set_user_setting("general.system.language", self.language_combo.currentText())
@@ -1319,6 +1341,19 @@ class UserMainWindow(QMainWindow):
             from core.status_manager import status_manager
             status_manager.switch_identity(identity_id)
             
+            # 獲取身分資訊並自動填入名稱欄位
+            from modules.nlp_module.identity_manager import IdentityManager
+            from pathlib import Path
+            identity_storage_path = Path("memory") / "identities"
+            identity_manager = IdentityManager(storage_path=str(identity_storage_path))
+            
+            if identity_id in identity_manager.identities:
+                profile = identity_manager.identities[identity_id]
+                # 自動填入並啟用名稱欄位
+                self.user_name_edit.setText(profile.display_name)
+                self.user_name_edit.setEnabled(True)
+                self.user_name_edit.setPlaceholderText("可修改名稱")
+            
             # 刷新列表顯示
             self._refresh_identity_list()
             
@@ -1429,6 +1464,17 @@ class UserMainWindow(QMainWindow):
     
     def closeEvent(self, event):
         """視窗關閉事件"""
+        # 保存主題設定
+        try:
+            if theme_manager:
+                current_theme_text = self.theme_combo.currentText()
+                if current_theme_text in ["light", "dark"]:
+                    from .theme_manager import Theme
+                    theme_manager.set_theme(Theme.LIGHT if current_theme_text == "light" else Theme.DARK)
+                    info_log(f"[UserMainWindow] 主題已保存: {current_theme_text}")
+        except Exception as e:
+            error_log(f"[UserMainWindow] 保存主題失敗: {e}")
+        
         self.window_closed.emit()
         event.accept()
     

@@ -171,7 +171,8 @@ class ThrowHandler(BaseHandler):
                 self._throw_direction = 'vertical'
             
             self._is_in_throw_animation = True
-            debug_log(1, f"[{self.__class__.__name__}] 🎬 觸發投擲動畫: {throw_anim} (方向={self._throw_direction})")
+            info_log(f"[{self.__class__.__name__}] 🎬 觸發投擲動畫: {throw_anim} (方向={self._throw_direction})")
+            info_log(f"[{self.__class__.__name__}]   速度: vx={vx:.1f}, vy={vy:.1f}, 總速度={speed:.1f}")
             
             self.coordinator._trigger_anim(
                 throw_anim, 
@@ -225,13 +226,10 @@ class ThrowHandler(BaseHandler):
                         source="throw_handler",
                         priority=AnimationPriority.USER_INTERACTION
                     )
-                    debug_log(1, f"[{self.__class__.__name__}] 投擲落地動畫: {land_anim}")
+                    info_log(f"[{self.__class__.__name__}] 🎬 播放落地動畫: {land_anim}，zoom 保持 1.5")
                 else:
-                    debug_log(1, f"[{self.__class__.__name__}] 落地動畫 {land_anim} 不存在")
-                    self._is_in_throw_animation = False
-            else:
-                # struggle 投擲沒有專門的落地動畫
-                self._is_in_throw_animation = False
+                    debug_log(1, f"[{self.__class__.__name__}] 落地動畫 {land_anim} 不存在，等待動畫完成回調")
+            # 不在這裡重置標記，等待 on_throw_animation_complete() 回調
         
         # 不重置 _throw_direction，讓它保持到動畫完成
     
@@ -269,8 +267,9 @@ class ThrowHandler(BaseHandler):
         if hasattr(self.coordinator, '_trigger_anim'):
             self.coordinator._trigger_anim("g_to_f", {"loop": False}, source="throw_handler")
         
-        if hasattr(self.coordinator, '_switch_behavior') and BehaviorState:
-            self.coordinator._switch_behavior(BehaviorState.TRANSITION)
+        # 投擲時不切換行為狀態（避免 TransitionBehavior 觸發 idle 動畫）
+        # 只改變 MovementMode，保持當前行為狀態
+        debug_log(1, f"[{self.__class__.__name__}] 投擲期間不改變行為狀態，保持當前狀態")
         
         # 標記需要在進入 NORMAL_MOVE 後播放 tease2_f
         if hasattr(self.coordinator, '_post_throw_tease_pending'):
@@ -288,7 +287,7 @@ class ThrowHandler(BaseHandler):
     
     def on_throw_animation_complete(self):
         """投擲動畫序列完成（落地動畫播完）"""
-        debug_log(1, f"[{self.__class__.__name__}] 投擲動畫序列完成")
+        info_log(f"[{self.__class__.__name__}] ✅ 投擲動畫序列完全結束，現在可以重置 zoom")
         self._is_in_throw_animation = False
         self._throw_direction = None
     

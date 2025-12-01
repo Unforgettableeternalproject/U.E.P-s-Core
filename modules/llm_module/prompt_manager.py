@@ -381,6 +381,12 @@ class PromptManager:
                 name = identity.get("name", "User")
                 parts.append(f"User: {name}")
                 
+                # 加入 UEP 暱稱資訊（如果使用者有設定）
+                from configs.user_settings_manager import get_user_setting
+                uep_nickname = get_user_setting("general.identity.uep_nickname", None)
+                if uep_nickname and uep_nickname.strip():
+                    parts.append(f"Note: The user has given you a nickname: '{uep_nickname}'. They may use this nickname when addressing you.")
+                
                 # Conversation preferences
                 conversation_prefs = preferences.get("conversation", {})
                 if conversation_prefs:

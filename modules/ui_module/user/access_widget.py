@@ -158,9 +158,8 @@ class ControllerBridge:
                 error_log("[ControllerBridge] UI 模組未初始化")
                 return {"success": False, "error": "UI module not initialized"}
             
-            # 檢查桌面寵物是否已顯示
-            from modules.ui_module.ui_types import UIInterfaceType
-            desktop_pet = ui_module.interfaces.get(UIInterfaceType.MAIN_DESKTOP_PET)
+            # 直接使用字串作為 key（避免循環 import）
+            desktop_pet = ui_module.interfaces.get('main_desktop_pet')
             
             if not desktop_pet:
                 error_log("[ControllerBridge] 桌面寵物未初始化")
@@ -531,23 +530,14 @@ class MainButton(QWidget):
         self.edge_threshold = self.hide_edge_threshold  # 使用設定值
         self.virtual_rect = virtual_rect
         
-        # 初始位置設在虛擬桌面右側邊緣（完全可見狀態）
-        x = virtual_rect.right() - self.width() - 20
-        y = virtual_rect.top() + 80
+        # 初始位置設在螢幕中央偏右上
+        center_x = virtual_rect.center().x()
+        center_y = virtual_rect.center().y()
+        x = center_x + 100  # 偏右一點避免擋住中心
+        y = center_y - 150  # 偏上一點
         
-        # 判斷是靠近左邊還是右邊，並計算隱藏位置
-        widget_center_x = x + self.width() // 2
-        distance_to_left = widget_center_x - virtual_rect.left()
-        distance_to_right = virtual_rect.right() - widget_center_x
-        
-        if distance_to_left < distance_to_right:
-            # 靠近左邊界 - 隱藏時大部分藏在左側外面，只露出右邊一點
-            self.edge_side = 'left'
-            self.hidden_position = QPoint(virtual_rect.left() - self.width() + 20, y)
-        else:
-            # 靠近右邊界 - 隱藏時大部分藏在右側外面，只露出左邊一點
-            self.edge_side = 'right'
-            self.hidden_position = QPoint(virtual_rect.right() - 20, y)
+        # 初始化時不在邊緣，不啟用自動隱藏
+        self.edge_side = None
         
         # 設置位置並記錄為完全可見位置
         self.move(x, y)
@@ -569,56 +559,95 @@ class MainButton(QWidget):
         near_top_edge = (widget_center.y() - self.virtual_rect.top()) < self.edge_threshold
         near_bottom_edge = (self.virtual_rect.bottom() - widget_center.y()) < self.edge_threshold
         
-        # 只有在邊緣附近才檢查游標懸停
+        # 只有在邊緣附近才檢查游標懸停並啟用自動隱藏
         if near_right_edge or near_left_edge or near_top_edge or near_bottom_edge:
-            # 動態更新邊緣方向和隱藏位置
+            # 動態更新邊緣方向
             distance_to_left = widget_center.x() - self.virtual_rect.left()
             distance_to_right = self.virtual_rect.right() - widget_center.x()
             
+            # 根據距離決定是左邊還是右邊
             if distance_to_left < distance_to_right:
                 self.edge_side = 'left'
-                # 左側隱藏：大部分藏在左側外面，只露出右邊一點
-                self.hidden_position = QPoint(self.virtual_rect.left() - self.width() + 20, self.pos().y())
             else:
                 self.edge_side = 'right'
-                # 右側隱藏：大部分藏在右側外面，只露出左邊一點
-                self.hidden_position = QPoint(self.virtual_rect.right() - 20, self.pos().y())
             
+            # 檢查滑鼠是否在小工具附近
             global_cursor_pos = QCursor.pos()
             widget_rect = self.geometry()
-            detection_margin = 50  # 增加檢測範圍
+            detection_margin = 50
             expanded_rect = widget_rect.adjusted(
                 -detection_margin, -detection_margin,
                 detection_margin, detection_margin
             )
             
             is_hovering = expanded_rect.contains(global_cursor_pos)
-            if is_hovering and not self.is_fully_visible:
-                self._slide_to_visible()  # 滑入到完全可見
-            elif not is_hovering and self.is_fully_visible:
-                self._slide_to_hidden()  # 滑出到隱藏
-                if self.expanded:
-                    self._schedule_auto_collapse(900)
+            
+            # 根據滑鼠位置和當前狀態決定動作
+            if is_hovering:
+                # 滑鼠靠近：如果當前是隱藏狀態，則滑入顯示
+                if not self.is_fully_visible:
+                    self._slide_to_visible()
+            else:
+                # 滑鼠離開：如果當前是完全可見，則滑出隱藏
+                if self.is_fully_visible:
+                    self._slide_to_hidden()
+                    if self.expanded:
+                        self._schedule_auto_collapse(900)
 
     def _slide_to_visible(self):
-        """滑入到完全可見位置（original_position）"""
-        if self.is_fully_visible or not self.original_position:
+        """滑入到完全可見位置（從隱藏位置恢復）"""
+        if self.is_fully_visible:
             return
+        
+        # 計算完全可見的位置（從當前 Y 座標，但 X 在螢幕內）
+        current_geom = self.geometry()
+        current_y = current_geom.y()
+        widget_width = self.width()
+        
+        if self.edge_side == 'left':
+            # 從左側滑入：保持在邊緣範圍內（小工具中心點仍在 edge_threshold 內）
+            # 讓小工具左邊緣剛好在螢幕左邊界，中心點距離邊界 = width/2
+            visible_x = self.virtual_rect.left()
+        else:
+            # 從右側滑入：讓小工具右邊緣稍微往內一點，確保觸發條件
+            visible_x = self.virtual_rect.right() - widget_width + 20
+        
+        target_pos = QPoint(visible_x, current_y)
+        
         self.slide_animation.stop()
         self.slide_animation.setStartValue(self.pos())
-        self.slide_animation.setEndValue(self.original_position)
+        self.slide_animation.setEndValue(target_pos)
         self.slide_animation.start()
         self.is_fully_visible = True
+        
+        # 不更新 original_position，保持記憶原始拖曳位置
+        debug_log(3, f"[AccessWidget] 滑入可見: edge={self.edge_side}, target=({visible_x}, {current_y})")
 
     def _slide_to_hidden(self):
-        """滑出到隱藏位置（hidden_position）"""
-        if not self.is_fully_visible or not hasattr(self, 'hidden_position'):
+        """滑出到隱藏位置（只露出一點邊緣）"""
+        if not self.is_fully_visible:
             return
+        
+        # 使用當前位置計算隱藏位置
+        current_geom = self.geometry()
+        current_y = current_geom.y()
+        widget_width = self.width()
+        
+        if self.edge_side == 'left':
+            # 左側隱藏：讓一半在螢幕內，一半在外
+            hidden_x = self.virtual_rect.left() - (widget_width // 2)
+        else:
+            # 右側隱藏：讓一半在螢幕內，一半在外
+            hidden_x = self.virtual_rect.right() - (widget_width // 2)
+        
+        target_pos = QPoint(hidden_x, current_y)
+        
         self.slide_animation.stop()
         self.slide_animation.setStartValue(self.pos())
-        self.slide_animation.setEndValue(self.hidden_position)
+        self.slide_animation.setEndValue(target_pos)
         self.slide_animation.start()
         self.is_fully_visible = False
+        debug_log(3, f"[AccessWidget] 滑出隱藏: edge={self.edge_side}, target=({hidden_x}, {current_y})")
 
     def _enable_right_drag(self):
         if self.dragPos:
@@ -801,7 +830,7 @@ class MainButton(QWidget):
             background_action = menu.addAction("🖼️ 背景")
             profile_action = menu.addAction("📊  狀態")
             menu.addSeparator()
-            close_action = menu.addAction("❌ 關閉小工具")
+            exit_action = menu.addAction("🚪 離開應用程式")
             
             # 執行選單並取得使用者選擇
             action = menu.exec_(event.globalPos())
@@ -812,11 +841,9 @@ class MainButton(QWidget):
                 self._handle_option("system_background")
             elif action == profile_action:
                 self._handle_option("state_profile")
-            elif action == close_action:
-                info_log("[MainButton] 使用者選擇關閉小工具")
-                self.hide()
-                if self.expanded:
-                    self._collapse_menu()
+            elif action == exit_action:
+                info_log("[MainButton] 使用者選擇離開應用程式")
+                self._exit_application()
             
             event.accept()
         else:
@@ -866,21 +893,29 @@ class MainButton(QWidget):
             # 拖曳結束後，更新原始位置為當前位置
             if self.dragPos is not None:
                 self.original_position = self.pos()
-                # 檢查是否靠近邊緣，如果是則設定收合位置
+                # 檢查是否靠近邊緣
                 if hasattr(self, 'virtual_rect'):
                     widget_center = self.geometry().center()
                     distance_to_left = widget_center.x() - self.virtual_rect.left()
                     distance_to_right = self.virtual_rect.right() - widget_center.x()
                     
-                    if distance_to_left < distance_to_right:
-                        self.edge_side = 'left'
-                        self.visible_position = QPoint(self.virtual_rect.left() - 20, self.pos().y())
+                    # 檢查是否在邊緣範圍內
+                    near_left = distance_to_left < self.edge_threshold
+                    near_right = distance_to_right < self.edge_threshold
+                    
+                    if near_left or near_right:
+                        # 在邊緣範圍內，設定邊緣方向
+                        if distance_to_left < distance_to_right:
+                            self.edge_side = 'left'
+                        else:
+                            self.edge_side = 'right'
+                        # 設為完全可見狀態，等待滑鼠離開後才隱藏
+                        self.is_fully_visible = True
+                        debug_log(3, f"[AccessWidget] 拖曳到邊緣 ({self.edge_side})，啟用自動隱藏")
                     else:
-                        self.edge_side = 'right'
-                        self.visible_position = QPoint(
-                            self.virtual_rect.right() - self.width() + 20, 
-                            self.pos().y()
-                        )
+                        # 不在邊緣範圍內，保持完全可見但不啟用自動隱藏
+                        self.is_fully_visible = True
+                        debug_log(3, f"[AccessWidget] 拖曳到中間區域，不啟用自動隱藏")
                 
                 # 強制刷新主按鈕樣式以清除懸停狀態
                 self.mainButton.style().unpolish(self.mainButton)
@@ -895,6 +930,69 @@ class MainButton(QWidget):
             if self.expanded and not self.is_pinned:
                 self._schedule_auto_collapse(1600)
 
+    def _exit_application(self):
+        """完全退出應用程式（包括 UEP 和系統）"""
+        import sys  # 必須在函數內導入
+        try:
+            info_log("[MainButton] 開始退出應用程式...")
+            
+            # 1. 停止 STT 持續監聽
+            try:
+                from core.registry import get_module
+                stt_module = get_module("stt_module")
+                if stt_module and hasattr(stt_module, 'stop_listening'):
+                    info_log("[MainButton] 停止 STT 持續監聽...")
+                    stt_module.stop_listening()
+            except Exception as e:
+                error_log(f"[MainButton] 停止 STT 失敗: {e}")
+            
+            # 2. 使用 unified_controller 進行優雅關閉
+            if unified_controller:
+                info_log("[MainButton] 呼叫 unified_controller.shutdown()...")
+                unified_controller.shutdown()
+            else:
+                error_log("[MainButton] unified_controller 不可用")
+            
+            # 3. 停止 Qt 系統循環線程
+            try:
+                from core.qt_system_loop import QtSystemLoopManager
+                from core.production_runner import production_runner
+                if hasattr(production_runner, 'qt_loop_manager') and production_runner.qt_loop_manager:
+                    info_log("[MainButton] 停止 Qt 系統循環線程...")
+                    production_runner.qt_loop_manager.stop_system_loop()
+            except Exception as e:
+                error_log(f"[MainButton] 停止 Qt 系統循環失敗: {e}")
+            
+            # 4. 關閉所有 QTimer
+            try:
+                from PyQt5.QtCore import QTimer
+                info_log("[MainButton] 停止所有 QTimer...")
+                # QTimer 會隨著 app.quit() 自動停止
+            except Exception as e:
+                pass
+            
+            # 5. 關閉所有視窗並退出
+            app = QApplication.instance()
+            if app:
+                info_log("[MainButton] 關閉所有視窗...")
+                app.closeAllWindows()
+                info_log("[MainButton] 退出 Qt 事件迴圈...")
+                app.quit()
+            
+            info_log("[MainButton] 退出序列完成")
+            
+            # 強制退出 Python 程序（確保終端返回）
+            info_log("[MainButton] 強制退出 Python 程序...")
+            sys.exit(0)
+            
+        except Exception as e:
+            error_log(f"[MainButton] 退出應用程式時發生錯誤: {e}")
+            import traceback
+            traceback.print_exc()
+            # 強制退出
+            import sys
+            sys.exit(0)
+    
     def enterEvent(self, event):
         self._cancel_auto_collapse()
         super().enterEvent(event)

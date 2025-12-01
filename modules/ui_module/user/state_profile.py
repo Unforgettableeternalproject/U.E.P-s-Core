@@ -321,6 +321,102 @@ class StateProfileDialog(QDialog):
     }
     """
 
+    DIARY_LIGHT_QSS = """
+    #stateProfileDialog {
+        background-color: #f5f5fb;
+    }
+
+    #stateProfileDialog QScrollArea,
+    #stateProfileDialog QScrollArea > QWidget {
+        background-color: transparent;
+    }
+
+    #stateProfileDialog QGroupBox {
+        margin-top: 22px;
+        border-radius: 12px;
+        border: 1px solid #e1e1ec;
+    }
+
+    #stateProfileDialog QGroupBox::title {
+        subcontrol-origin: margin;
+        subcontrol-position: top center;
+        padding: 0 6px;
+        background-color: #f5f5fb;
+        border: none;
+        color: #444444;
+    }
+
+    /* feels card */
+    #stateProfileDialog QGroupBox[cardRole="feels"] {
+        border: 2px solid #b7a3f0;
+        border-radius: 12px;
+
+        background-color: transparent;
+        background: qlineargradient(
+            x1:0, y1:0,
+            x2:1, y2:1,
+            stop:0 rgba(238,214,255,45),
+            stop:1 rgba(206,190,218,10)
+        );
+    }
+
+    #stateProfileDialog QGroupBox[cardRole="feels"]::title {
+        color:rgba(176, 91, 161, 0.81);
+    }
+
+    /* helped card */
+    #stateProfileDialog QGroupBox[cardRole="helped"] {
+        border: 2px solid rgba(176, 91, 161, 0.81);
+        border-radius: 12px;
+
+        background-color: transparent;
+        background: qlineargradient(
+            x1:0, y1:0,
+            x2:1, y2:1,
+            stop:0 rgba(248,222,245,45),
+            stop:1 rgba(196,156,190,10)
+        );
+    }
+
+    #stateProfileDialog QGroupBox[cardRole="helped"]::title {
+        color: #e27aa3;
+    }
+
+    /* tips card */
+    #stateProfileDialog QGroupBox[cardRole="tips"] {
+        border: 2px solid rgba(149, 184, 236, 0.81);
+        border-radius: 12px;
+
+        background-color: transparent;
+        background: qlineargradient(
+            x1:0, y1:0,
+            x2:1, y2:1,
+            stop:0 rgba(179, 196, 220, 45),
+            stop:1 rgba(79, 143, 204, 10)
+        );
+    }
+    #stateProfileDialog QGroupBox[cardRole="tips"]::title {
+        color: rgba(91,127,237,0.8);
+    }
+
+    /* Header */
+    #stateProfileDialog QWidget#header {
+        border-bottom: 1px solid #e1e1ec;
+    }
+
+    #stateProfileDialog QLabel#mainTitle {
+        color: #333333;
+    }
+    #stateProfileDialog QLabel#subtitle {
+        color: #666666;
+    }
+
+    #stateProfileDialog QFrame#bottomBar {
+        background-color: #ffffff;
+        border-top: 1px solid #e1e1ec;
+    }
+    """
+
 
 
     def __init__(self, controller=None, parent=None):
@@ -438,7 +534,7 @@ class StateProfileDialog(QDialog):
             if theme_manager.theme == Theme.DARK:
                 self.setStyleSheet(self.DIARY_DARK_QSS)
             else:
-                self.setStyleSheet("")
+                self.setStyleSheet(self.DIARY_LIGHT_QSS)
         try:
             self.style().unpolish(self)
             self.style().polish(self)

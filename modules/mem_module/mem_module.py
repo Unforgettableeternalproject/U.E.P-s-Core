@@ -9,6 +9,7 @@ from .schemas import (
 from core.schemas import MEMModuleData
 from core.working_context import working_context_manager
 from configs.config_loader import load_module_config
+from configs.user_settings_manager import user_settings_manager, get_user_setting
 from utils.debug_helper import debug_log, debug_log_e, info_log, error_log
 
 class MEMModule(BaseModule):
@@ -51,6 +52,9 @@ class MEMModule(BaseModule):
         
         # 模組狀態
         self.is_initialized = False
+        
+        # 註冊使用者設定熱重載回調
+        user_settings_manager.register_reload_callback("mem_module", self._reload_from_user_settings)
 
         info_log("[MEM] Phase 2 記憶管理模組初始化完成")
 
@@ -111,6 +115,9 @@ class MEMModule(BaseModule):
             
             # Phase 4: 註冊 GS 推進事件監聽器
             self._register_gs_advanced_listener()
+            
+            # 🔧 註冊會話結束和處理層完成事件監聽器（用於更新快照）
+            self._register_snapshot_update_listeners()
             
             # 啟動會話同步
             self._start_session_sync()
@@ -345,6 +352,29 @@ class MEMModule(BaseModule):
         except Exception as e:
             error_log(f"[MEM] GS_ADVANCED 事件監聽器註冊失敗: {e}")
     
+    def _register_snapshot_update_listeners(self):
+        """註冊快照更新相關事件監聽器"""
+        try:
+            from core.event_bus import event_bus, SystemEvent
+            
+            # 訂閱處理層完成事件 - 每次循環後更新快照
+            event_bus.subscribe(
+                SystemEvent.PROCESSING_LAYER_COMPLETE,
+                self._on_processing_complete,
+                handler_name="MEM.snapshot_update"
+            )
+            
+            # 訂閱會話結束事件 - CS 結束時完整保存快照
+            event_bus.subscribe(
+                SystemEvent.SESSION_ENDED,
+                self._on_session_ended,
+                handler_name="MEM.session_end"
+            )
+            
+            debug_log(2, "[MEM] 快照更新事件監聽器註冊完成")
+        except Exception as e:
+            error_log(f"[MEM] 快照更新事件監聽器註冊失敗: {e}")
+    
     def _on_gs_advanced(self, event):
         """處理 GS 推進事件 - 清理過期快照"""
         try:
@@ -363,6 +393,118 @@ class MEMModule(BaseModule):
             
         except Exception as e:
             error_log(f"[MEM] 處理 GS 推進事件失敗: {e}")
+    
+    def _on_processing_complete(self, event):
+        """處理處理層完成事件 - 更新快照記錄當前互動"""
+        try:
+            # 只在 CHAT 狀態下處理
+            if not self._is_in_chat_state():
+                return
+            
+            # 獲取處理層輸出（LLM 回應）
+            # LLM 模組在 PROCESSING_LAYER_COMPLETE 事件中使用 "response" 欄位
+            response_text = event.data.get('response', '')
+            if not response_text:
+                debug_log(3, "[MEM] 處理層輸出無文本內容，跳過快照更新")
+                return
+            
+            # 獲取當前 CS 和用戶輸入
+            from core.sessions.session_manager import unified_session_manager
+            active_cs = unified_session_manager.get_active_chatting_session_ids()
+            
+            if not active_cs:
+                debug_log(3, "[MEM] 沒有活躍 CS，跳過快照更新")
+                return
+            
+            cs_id = active_cs[0]
+            
+            # 從 Working Context 獲取用戶輸入
+            from core.working_context import working_context_manager
+            user_input = working_context_manager.get_context_data('last_user_input') or ''
+            
+            # 構建互動記錄
+            message_data = {
+                'user': user_input,
+                'assistant': response_text,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            # 更新快照
+            if self.memory_manager and self.memory_manager.snapshot_manager:
+                success = self.memory_manager.snapshot_manager.add_message_to_snapshot(
+                    session_id=cs_id,
+                    message_data=message_data
+                )
+                if success:
+                    debug_log(2, f"[MEM] 已更新快照 {cs_id} - 記錄當前互動")
+                else:
+                    debug_log(2, f"[MEM] 快照 {cs_id} 更新失敗")
+            
+        except Exception as e:
+            error_log(f"[MEM] 處理處理層完成事件失敗: {e}")
+    
+    def _on_session_ended(self, event):
+        """處理會話結束事件 - 完整保存快照並總結"""
+        try:
+            session_type = event.data.get('session_type')
+            
+            # 只處理 CS 結束
+            if session_type != 'chatting':
+                return
+            
+            cs_id = event.data.get('session_id')
+            if not cs_id:
+                return
+            
+            debug_log(2, f"[MEM] CS {cs_id} 結束，準備完整保存快照")
+            
+            # 獲取 CS 的完整對話記錄
+            from core.sessions.session_manager import unified_session_manager
+            cs = unified_session_manager.get_chatting_session(cs_id)
+            
+            if not cs:
+                debug_log(2, f"[MEM] 找不到 CS {cs_id}，跳過快照保存")
+                return
+            
+            # 獲取所有對話輪次
+            conversation_turns = cs.get_recent_turns(count=None)  # 獲取所有輪次
+            
+            if not conversation_turns:
+                debug_log(2, f"[MEM] CS {cs_id} 沒有對話記錄，跳過快照保存")
+                return
+            
+            # 構建完整的對話摘要
+            messages = []
+            for turn in conversation_turns:
+                if turn.get('user_input'):
+                    messages.append({
+                        'role': 'user',
+                        'content': turn['user_input'].get('text', ''),
+                        'timestamp': turn.get('start_time', '')
+                    })
+                if turn.get('system_response'):
+                    messages.append({
+                        'role': 'assistant',
+                        'content': turn['system_response'].get('content', ''),
+                        'timestamp': turn.get('end_time', '')
+                    })
+            
+            # 更新快照內容
+            if self.memory_manager and self.memory_manager.snapshot_manager:
+                snapshot = self.memory_manager.snapshot_manager.get_snapshot(cs_id)
+                if snapshot:
+                    # 更新快照的完整內容和摘要
+                    self.memory_manager.snapshot_manager.update_snapshot_content(
+                        snapshot_id=cs_id,
+                        new_content=messages,
+                        new_gsids=snapshot.gs_session_ids  # 保持原有的 GSID 列表
+                    )
+                    info_log(f"[MEM] CS {cs_id} 的快照已完整保存 ({len(messages)} 條訊息)")
+                else:
+                    debug_log(2, f"[MEM] 找不到快照 {cs_id}，跳過保存")
+            
+        except Exception as e:
+            error_log(f"[MEM] 處理會話結束事件失敗: {e}")
     
     def _handle_state_change(self, old_state, new_state):
         """處理狀態變化"""
@@ -1745,3 +1887,36 @@ class MEMModule(BaseModule):
         if self.memory_manager:
             # 如果需要，可以在這裡添加記憶管理器的清理邏輯
             pass
+    
+    def _reload_from_user_settings(self, key_path: str, value: Any) -> bool:
+        """
+        從 user_settings.yaml 重載設定
+        
+        Args:
+            key_path: 設定路徑
+            value: 新值
+            
+        Returns:
+            是否成功
+        """
+        try:
+            info_log(f"[MEM] 🔄 重載使用者設定: {key_path} = {value}")
+            
+            if key_path == "interaction.memory.enabled":
+                # MEM 模組開關
+                info_log(f"[MEM] MEM 模組已{'啟用' if value else '禁用'}")
+                # 實際開關控制由外部處理
+                
+
+                
+            else:
+                debug_log(2, f"[MEM] 未處理的設定路徑: {key_path}")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            error_log(f"[MEM] 重載使用者設定失敗: {e}")
+            import traceback
+            error_log(traceback.format_exc())
+            return False

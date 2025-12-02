@@ -2026,3 +2026,219 @@
 
 ---
 
+### Added an animation tester for correcting clips. 11/25
+
+> Date: Tue, 25 Nov 2025 02:50:51 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `3e44536f85c4fd6aff3f53a651d37029f9ee7110`
+
+---
+
+### MOV module handler base implementation. 11/25
+
+> Date: Tue, 25 Nov 2025 15:29:59 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `38f5514d60786fdf6795656205e327a095af7d54`
+
+---
+
+### Added some more behaviors and animations, as well a full-on handler for varioius actions and stuff. 11/26
+
+> Date: Wed, 26 Nov 2025 02:53:31 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `8b87b52dc3a50e498f3c64ecabb3f476ecb7ddb0`
+
+---
+
+### Added more behaviors and animations, now trying to connect with system loop. 11/26
+
+> Date: Wed, 26 Nov 2025 21:21:24 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `c9e5c5c90be7aad6453ad3b1da0b91083e5912a0`
+
+---
+
+### Frontend integration tests, and we discovered a huge issue. 11/27
+
+> Date: Thu, 27 Nov 2025 01:18:06 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `98fb1056550e9fdbffe3de6aa24374deabe5ba68`
+
+---
+
+### Integrated frontend into system loop, some behaviors left to fix. 11/27
+
+> Date: Thu, 27 Nov 2025 04:24:54 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `ee2e90b9dc700e7b1954e078b74d93556dec04b6`
+
+---
+
+### Added priority checks to animations to avoid conflicts, also slightly altered LLM schema to simplify code. 11/27
+
+> Date: Thu, 27 Nov 2025 17:40:53 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `17106f47fb12c7b129d39845afb4683f0a6ec437`
+
+---
+
+### Fixed some issues regarding MEM and some animation error. 11/27
+
+> Date: Thu, 27 Nov 2025 20:17:37 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `dfbeffdbe9ecd35d9f680a1dc596560bbb5f11d1`
+
+---
+
+### Simply some animation issues, and added throw. 11/28
+
+> Date: Fri, 28 Nov 2025 16:32:39 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `d00684d08ecb97d62891272353eac75bc7315ad8`
+
+---
+
+### User setting window migrated. 11/28
+
+> Date: Fri, 28 Nov 2025 23:35:23 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `1212ae0ed973670d4d75c045da05c012a660c4b2`
+
+---
+
+### Integrated more user settings to map with action system. 11/29
+
+> Date: Sat, 29 Nov 2025 20:08:27 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `fafd0b3ec77c2bb2a0f7f8c8bf80fe4beecaffec`
+
+---
+
+### Integrated user access widget to system main loop, and improved shutdown logic. 11/30
+
+> Date: Sun, 30 Nov 2025 22:58:33 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `550cb366b85c11e35bb5edc9ae9e705d3e648b7b`
+
+---
+
+### Improved access gadget behavior, and fixed some animation related issue. 12/1
+
+> Date: Mon, 01 Dec 2025 09:36:26 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `074821034eae8efe56abb06120e0f0df2cd21319`
+
+---
+
+### Refined animation movement once again, this time added the final two animation, and enhanced priority system. 12/1
+
+> Date: Mon, 01 Dec 2025 11:48:11 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `32b731bf4188cb08c38103f7d0dbeec4e2d44f4b`
+
+---
+
+### Refined animation movement once again, this time added the final two animation, and enhanced priority system. 12/1
+
+> Date: Mon, 01 Dec 2025 11:48:11 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `7bcb2a85f48ba7a013bd54fd6513dfdb56762954`
+
+---
+
+### Check with user settings, and we're moving on to the other two windows. 12/1
+
+> Date: Mon, 01 Dec 2025 20:20:23 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `a2abca050a69d4d08a44faf20e970d28adf2e077`
+
+---
+
+### Fixed a severe issue with qt loop, which requires a qt application to run. 12/2
+
+> Date: Tue, 02 Dec 2025 01:57:49 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `84a709c3d518cc170928bcad66932d75b7c451ad`
+
+---
+
+### Fixed some problem related to bad callback registers. And integrated new audio engine. 12/2
+
+> Date: Tue, 02 Dec 2025 21:20:32 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `1669deca4ace1990dcbd21438f5f93fdbe53ab2e`
+
+---
+

@@ -21,6 +21,7 @@ from core.framework import core_framework
 from core.sessions.session_manager import session_manager
 from core.states.state_manager import state_manager, UEPState
 from configs.config_loader import load_config
+from configs.user_settings_manager import user_settings_manager
 from utils.debug_helper import debug_log, info_log, error_log
 
 
@@ -64,6 +65,9 @@ class UnifiedController:
         # 狀態佇列管理器引用
         from core.states.state_queue import get_state_queue_manager
         self.state_queue_manager = get_state_queue_manager()
+        
+        # 使用者設定管理器
+        self.user_settings_manager = user_settings_manager
         
         # 系統統計
         self.startup_time = None
@@ -265,13 +269,21 @@ class UnifiedController:
             state_queue = get_state_queue_manager()
             queue_status = state_queue.get_queue_status()
             
-            # GS 結束條件：狀態佇列完全清空且當前狀態為 IDLE
+            # GS 結束條件：
+            # 1. 當前狀態為 IDLE
+            # 2. 狀態佇列完全清空
+            # 3. 至少進入過一個非 IDLE 狀態（確保有實際處理發生）
+            has_visited_non_idle = current_gs.has_visited_non_idle_state()
+            
             if (current_state == UEPState.IDLE and 
                 queue_status.get('queue_length', 0) == 0 and
                 queue_status.get('current_state') == 'idle'):
                 
-                debug_log(2, f"[Controller] 檢測到 GS 結束條件：狀態佇列已清空，準備結束 GS {current_gs.session_id}")
-                self._end_current_gs_with_cleanup(current_gs.session_id)
+                if has_visited_non_idle:
+                    debug_log(2, f"[Controller] 檢測到 GS 結束條件：狀態佇列已清空且已訪問非 IDLE 狀態，準備結束 GS {current_gs.session_id}")
+                    self._end_current_gs_with_cleanup(current_gs.session_id)
+                else:
+                    debug_log(2, f"[Controller] GS {current_gs.session_id} 尚未訪問非 IDLE 狀態，保持 GS 存在 (visited_states: {current_gs.context.visited_states})")
                 
         except Exception as e:
             debug_log(2, f"[Controller] GS 結束條件檢查失敗: {e}")
@@ -524,9 +536,42 @@ class UnifiedController:
             event_bus.subscribe(SystemEvent.BACKGROUND_WORKFLOW_CANCELLED,
                                self._handle_background_workflow_cancelled)
             
-            info_log("[UnifiedController] 事件處理器設置完成 (包含背景工作流事件)")
+            # 訂閱 GS 生命週期事件以管理設定熱重載
+            event_bus.subscribe(SystemEvent.SESSION_STARTED,
+                               self._on_gs_started)
+            event_bus.subscribe(SystemEvent.SESSION_ENDED,
+                               self._on_gs_ended)
+            
+            info_log("[UnifiedController] 事件處理器設置完成 (包含背景工作流和 GS 生命週期事件)")
         except Exception as e:
             error_log(f"[UnifiedController] 事件處理器設置失敗: {e}")
+    
+    def _on_gs_started(self, event):
+        """GS 開始事件處理 - 通知設定管理器"""
+        try:
+            session_id = event.get('session_id')
+            debug_log(2, f"[UnifiedController] GS 開始: {session_id}, 設定 GS 為活躍狀態")
+            self.user_settings_manager.set_gs_active(True)
+        except Exception as e:
+            error_log(f"[UnifiedController] 處理 GS 開始事件失敗: {e}")
+    
+    def _on_gs_ended(self, event):
+        """GS 結束事件處理 - 通知設定管理器並套用待處理變更"""
+        try:
+            session_id = event.get('session_id')
+            info_log(f"[UnifiedController] GS 結束: {session_id}, 準備套用待處理的設定變更")
+            
+            # 設定 GS 為非活躍，這會自動觸發待處理變更的套用
+            self.user_settings_manager.set_gs_active(False)
+            
+            # 檢查是否有變更被套用
+            if self.user_settings_manager.has_pending_changes():
+                info_log("[UnifiedController] 注意: 仍有待處理的設定變更未成功套用")
+            else:
+                debug_log(2, "[UnifiedController] 所有待處理的設定變更已成功套用")
+                
+        except Exception as e:
+            error_log(f"[UnifiedController] 處理 GS 結束事件失敗: {e}")
     
     # ========== 系統狀態報告 ==========
     

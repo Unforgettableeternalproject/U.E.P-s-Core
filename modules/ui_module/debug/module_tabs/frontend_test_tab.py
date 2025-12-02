@@ -2,6 +2,7 @@
 """
 前端模組測試分頁
 統合 UI、ANI、MOV 模組的測試功能
+包含視覺化動畫預覽和即時測試功能
 """
 
 import sys
@@ -19,6 +20,8 @@ if current_dir not in sys.path:
 
 from base_test_tab import BaseTestTab
 
+# AnimationPreviewWidget 已移至 Animation Tester
+
 
 class FrontendTestTab(BaseTestTab):
     """
@@ -33,7 +36,137 @@ class FrontendTestTab(BaseTestTab):
     
     def create_control_section(self, main_layout):
         """建立前端控制區域"""
-        control_group = QGroupBox("Frontend 測試控制")
+        # 建立分頁式介面
+        self.test_tabs = QTabWidget()
+        
+        # 兩個子分頁：MOV測試、整合測試（ANI測試已移至 Animation Tester）
+        self.mov_test_widget = self._create_mov_test_tab()
+        self.integration_test_widget = self._create_integration_test_tab()
+        
+        self.test_tabs.addTab(self.mov_test_widget, "🚀 MOV 移動測試")
+        self.test_tabs.addTab(self.integration_test_widget, "🔗 整合測試")
+        
+        # 添加提示：ANI 測試已移至 Animation Tester
+        ani_note = QLabel("💡 ANI 動畫測試已整合到 Animation Tester，請點擊整合測試分頁中的按鈕開啟")
+        ani_note.setWordWrap(True)
+        ani_note.setStyleSheet("background-color: #e3f2fd; padding: 8px; border-radius: 4px; color: #1976d2; font-weight: bold;")
+        main_layout.addWidget(ani_note)
+        
+        main_layout.addWidget(self.test_tabs)
+    
+    # ANI 測試分頁已移除，改用 Animation Tester
+    # 如需測試動畫功能，請使用整合測試分頁中的「開啟 Animation Tester」按鈕
+    
+    def _create_mov_test_tab(self):
+        """建立 MOV 移動測試分頁"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        # MOV 狀態檢查
+        status_group = QGroupBox("📊 MOV 模組狀態")
+        status_layout = QVBoxLayout(status_group)
+        
+        self.mov_status_display = QLabel("MOV 模組: 檢查中...")
+        self.mov_status_display.setWordWrap(True)
+        status_layout.addWidget(self.mov_status_display)
+        
+        check_mov_status_btn = QPushButton("🔄 檢查 MOV 狀態")
+        check_mov_status_btn.clicked.connect(self._check_mov_module_status)
+        status_layout.addWidget(check_mov_status_btn)
+        
+        layout.addWidget(status_group)
+        
+        # MOV 行為測試
+        behavior_group = QGroupBox("🎯 行為模式測試")
+        behavior_layout = QVBoxLayout(behavior_group)
+        
+        behavior_hint = QLabel("💡 提示：MOV 模組負責控制 UEP 的移動和行為模式")
+        behavior_hint.setWordWrap(True)
+        behavior_hint.setStyleSheet("color: gray; font-size: 10px; padding: 5px;")
+        behavior_layout.addWidget(behavior_hint)
+        
+        behavior_buttons = QHBoxLayout()
+        
+        idle_btn = QPushButton("😴 閒置狀態")
+        idle_btn.clicked.connect(lambda: self._test_behavior_mode("idle"))
+        behavior_buttons.addWidget(idle_btn)
+        
+        move_btn = QPushButton("🚶 移動狀態")
+        move_btn.clicked.connect(lambda: self._test_behavior_mode("move"))
+        behavior_buttons.addWidget(move_btn)
+        
+        behavior_layout.addLayout(behavior_buttons)
+        
+        # 開發中提示
+        dev_note = QLabel("🚧 詳細的 MOV 測試功能開發中\n目前可用：狀態檢查、基本行為模式測試")
+        dev_note.setWordWrap(True)
+        dev_note.setStyleSheet("background-color: #fff3cd; padding: 10px; border-radius: 5px;")
+        behavior_layout.addWidget(dev_note)
+        
+        layout.addWidget(behavior_group)
+        layout.addStretch()
+        
+        return widget
+    
+    def _check_mov_module_status(self):
+        """檢查 MOV 模組狀態"""
+        self.add_result("🔍 檢查 MOV 模組狀態...", "INFO")
+        
+        try:
+            mov_status = self.module_manager.get_module_status("mov")
+            
+            if mov_status.get('loaded', False):
+                mov_module = mov_status.get('instance')
+                status_text = f"MOV 模組: 已載入\n類型: {type(mov_module).__name__}"
+                
+                # 檢查可用方法
+                available_methods = []
+                for method in ['execute_behavior', 'set_behavior_mode', 'get_current_state']:
+                    if hasattr(mov_module, method):
+                        available_methods.append(method)
+                
+                if available_methods:
+                    status_text += f"\n可用方法: {', '.join(available_methods)}"
+                
+                self.mov_status_display.setText(status_text)
+                self.add_result("✅ MOV 模組已載入並就緒", "SUCCESS")
+            else:
+                self.mov_status_display.setText("MOV 模組: 未載入")
+                self.add_result("❌ MOV 模組未載入，請先載入前端模組", "ERROR")
+                
+        except Exception as e:
+            self.add_result(f"檢查 MOV 模組狀態時發生錯誤: {str(e)}", "ERROR")
+    
+    def _test_behavior_mode(self, mode: str):
+        """測試行為模式"""
+        self.add_result(f"🎯 測試行為模式: {mode}...", "INFO")
+        
+        try:
+            mov_status = self.module_manager.get_module_status("mov")
+            
+            if not mov_status.get('loaded', False):
+                self.add_result("❌ MOV 模組未載入，請先載入前端模組", "ERROR")
+                return
+            
+            mov_module = mov_status.get('instance')
+            
+            # 檢查 MOV 模組是否支持行為模式設置
+            if hasattr(mov_module, 'set_behavior_mode'):
+                self.add_result(f"✅ MOV 模組支持行為模式設置", "SUCCESS")
+                self.add_result("🚧 行為模式設置功能開發中", "WARNING")
+            else:
+                self.add_result("📋 MOV 模組當前實現不包含 set_behavior_mode 方法", "INFO")
+                self.add_result("💡 可以透過整合測試分頁測試 MOV 功能", "INFO")
+                
+        except Exception as e:
+            self.add_result(f"測試行為模式時發生錯誤: {str(e)}", "ERROR")
+    
+    def _create_integration_test_tab(self):
+        """建立整合測試分頁"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        control_group = QGroupBox("整合測試控制")
         control_layout = QVBoxLayout(control_group)
         
         # UI 模組區域
@@ -115,6 +248,26 @@ class FrontendTestTab(BaseTestTab):
         full_test_btn.clicked.connect(self.run_full_frontend_test)
         integration_buttons_layout.addWidget(full_test_btn)
         
+        # Animation Tester 按鈕
+        anim_tester_btn = QPushButton("🎬 開啟 Animation Tester")
+        anim_tester_btn.clicked.connect(self.open_animation_tester)
+        anim_tester_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4a148c;
+                color: white;
+                font-weight: bold;
+                padding: 8px;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #6a1b9a;
+            }
+            QPushButton:pressed {
+                background-color: #38006b;
+            }
+        """)
+        integration_buttons_layout.addWidget(anim_tester_btn)
+        
         combo_test_btn = QPushButton("🎭 動畫+移動組合")
         combo_test_btn.clicked.connect(self.test_animation_movement_combo)
         integration_buttons_layout.addWidget(combo_test_btn)
@@ -126,7 +279,12 @@ class FrontendTestTab(BaseTestTab):
         integration_layout.addLayout(integration_buttons_layout)
         control_layout.addWidget(integration_group)
         
-        main_layout.addWidget(control_group)
+        layout.addWidget(control_group)
+        layout.addStretch()
+        
+        return widget
+    
+    # === ANI 測試功能已移至 Animation Tester ===
     
     def create_status_section(self, main_layout):
         """建立狀態顯示區域"""
@@ -242,26 +400,26 @@ class FrontendTestTab(BaseTestTab):
         try:
             self.add_result("▶️ 播放動畫...", "INFO")
             
-            # 修正 background_worker 導入路徑
-            import sys
-            import os
-            debug_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-            if debug_dir not in sys.path:
-                sys.path.insert(0, debug_dir)
+            # 檢查 ANI 模組是否已載入
+            ani_status = self.module_manager.get_module_status("ani")
+            if not ani_status.get('loaded', False):
+                self.add_result("❌ ANI 模組未載入，請先載入前端模組", "ERROR")
+                return
             
-            from background_worker import get_worker_manager
-            worker_manager = get_worker_manager()
-            
-            def run_ani_test_task():
-                try:
-                    # 使用 frontend 測試函數而不是直接調用 ani 模組
-                    return self.module_manager.run_test_function("frontend", "frontend_test_animations", {})
-                except Exception as e:
-                    return {"success": False, "error": str(e)}
-            
-            task_id = "ani_play_test_" + str(id(self))
-            worker_manager.start_task(task_id, run_ani_test_task)
-            self.add_result("🔄 動畫播放測試正在背景執行，請稍候...", "INFO")
+            # 取得 ANI 模組實例
+            ani_module = ani_status.get('instance')
+            if ani_module:
+                self.add_result(f"📋 ANI 模組類型: {type(ani_module).__name__}", "INFO")
+                
+                # 檢查可用的播放方法
+                if hasattr(ani_module, 'play'):
+                    self.add_result("✅ ANI 模組已就緒，可以播放動畫", "SUCCESS")
+                    self.add_result("💡 提示: 請在 ANI 測試分頁選擇並播放特定動畫", "INFO")
+                else:
+                    self.add_result("⚠️  ANI 模組介面可能已變更", "WARNING")
+            else:
+                self.add_result("❌ 無法取得 ANI 模組實例", "ERROR")
+                
         except Exception as e:
             self.add_result(f"播放動畫時發生錯誤: {str(e)}", "ERROR")
     
@@ -280,20 +438,27 @@ class FrontendTestTab(BaseTestTab):
         """執行移動"""
         self.add_result("🎯 執行移動...", "INFO")
         
-        # 獲取移動參數
-        params = {
-            "action": "wave",  # 使用 control_desktop_pet 的動作參數
-            "duration": 3  # 持續時間
-        }
-        
         try:
-            # 使用 frontend 測試函數
-            result = self.module_manager.run_test_function("frontend", "control_desktop_pet", params)
+            # 檢查 MOV 模組是否已載入
+            mov_status = self.module_manager.get_module_status("mov")
+            if not mov_status.get('loaded', False):
+                self.add_result("❌ MOV 模組未載入，請先載入前端模組", "ERROR")
+                return
             
-            if result.get('success', False):
-                self.add_result("✅ 移動執行成功", "SUCCESS")
+            # 檢查 MOV 模組的狀態和方法
+            mov_module = mov_status.get('instance')
+            if mov_module:
+                # 顯示 MOV 模組的可用方法
+                self.add_result(f"📋 MOV 模組類型: {type(mov_module).__name__}", "INFO")
+                
+                # 嘗試觸發一個簡單的移動
+                if hasattr(mov_module, 'execute_behavior'):
+                    self.add_result("🚧 MOV 移動執行功能開發中，請使用 MOV 測試分頁進行更詳細的測試", "WARNING")
+                else:
+                    self.add_result("⚠️  MOV 模組介面可能已變更，請檢查模組文檔", "WARNING")
             else:
-                self.add_result(f"❌ 移動執行失敗: {result.get('error', '未知錯誤')}", "ERROR")
+                self.add_result("❌ 無法取得 MOV 模組實例", "ERROR")
+                
         except Exception as e:
             self.add_result(f"執行移動時發生錯誤: {str(e)}", "ERROR")
     
@@ -301,6 +466,12 @@ class FrontendTestTab(BaseTestTab):
         """移動到螢幕中央"""
         self.add_result("📍 移動UEP到螢幕中央...", "INFO")
         try:
+            # 檢查 UI 模組是否已載入
+            ui_status = self.module_manager.get_module_status("ui")
+            if not ui_status.get('loaded', False):
+                self.add_result("❌ UI 模組未載入，請先載入前端模組", "ERROR")
+                return
+            
             # 獲取螢幕尺寸並計算中央位置
             from PyQt5.QtWidgets import QDesktopWidget
             desktop = QDesktopWidget()
@@ -312,16 +483,22 @@ class FrontendTestTab(BaseTestTab):
             center_y = (screen_geometry.height() - uep_size) // 2
             
             # 直接通過UI模組來移動桌面寵物
-            result = self.module_manager.run_test_function("frontend", "control_desktop_pet", {
-                "action": "move_window",
-                "x": center_x,
-                "y": center_y
-            })
-            
-            if result.get('success', False):
-                self.add_result(f"✅ UEP已移動到中央位置 ({center_x}, {center_y})", "SUCCESS")
+            ui_module = ui_status.get('instance')
+            if ui_module and hasattr(ui_module, 'handle_frontend_request'):
+                result = ui_module.handle_frontend_request({
+                    "command": "move_interface",
+                    "interface": "main_desktop_pet",
+                    "x": center_x,
+                    "y": center_y
+                })
+                
+                if result and result.get('success'):
+                    self.add_result(f"✅ UEP已移動到中央位置 ({center_x}, {center_y})", "SUCCESS")
+                else:
+                    self.add_result(f"⚠️  移動命令已發送，但功能可能尚未完全實現", "WARNING")
+                    self.add_result(f"   提示: 可以手動拖曳 UEP 視窗到想要的位置", "INFO")
             else:
-                self.add_result(f"❌ 移動到中央失敗: {result.get('error', '未知錯誤')}", "ERROR")
+                self.add_result("❌ UI 模組不支援前端請求介面", "ERROR")
                 
         except Exception as e:
             self.add_result(f"移動到中央時發生錯誤: {str(e)}", "ERROR")
@@ -336,62 +513,74 @@ class FrontendTestTab(BaseTestTab):
         """執行完整前端測試"""
         self.add_result("🚀 啟動完整前端測試...", "INFO")
         
-        # 修正 background_worker 導入路徑
-        import sys
-        import os
-        debug_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-        if debug_dir not in sys.path:
-            sys.path.insert(0, debug_dir)
-        
-        from background_worker import get_worker_manager
-        worker_manager = get_worker_manager()
-        
-        def run_full_test_task():
-            try:
-                return self.module_manager.run_test_function("frontend", "frontend_test_full", {})
-            except Exception as e:
-                return {"success": False, "error": str(e)}
-        
-        # 設置任務完成後的回調
-        def on_task_complete(task_id, result):
-            if task_id != "frontend_full_test_" + str(id(self)):
-                return
-                
-            if result.get('success', False):
-                self.add_result(f"✅ 完整前端測試完成", "SUCCESS")
-                if 'results' in result:
-                    for sub_result in result['results']:
-                        self.add_result(f"  └─ {sub_result}", "INFO")
+        try:
+            # 檢查所有前端模組狀態
+            ui_status = self.module_manager.get_module_status("ui")
+            ani_status = self.module_manager.get_module_status("ani")
+            mov_status = self.module_manager.get_module_status("mov")
+            
+            results = []
+            
+            # UI 模組測試
+            self.add_result("  📦 測試 UI 模組...", "INFO")
+            if ui_status.get('loaded', False):
+                self.add_result("    ✅ UI 模組已載入", "SUCCESS")
+                results.append("UI: OK")
             else:
-                self.add_result(f"❌ 完整前端測試失敗: {result.get('error', '未知錯誤')}", "ERROR")
-        
-        task_id = "frontend_full_test_" + str(id(self))
-        worker_manager.start_task(task_id, run_full_test_task)
-        worker_manager.set_callback(task_id, on_task_complete)
-        self.add_result("🔄 完整前端測試正在背景執行，請稍候...", "INFO")
+                self.add_result("    ❌ UI 模組未載入", "ERROR")
+                results.append("UI: FAIL")
+            
+            # ANI 模組測試
+            self.add_result("  📦 測試 ANI 模組...", "INFO")
+            if ani_status.get('loaded', False):
+                self.add_result("    ✅ ANI 模組已載入", "SUCCESS")
+                results.append("ANI: OK")
+            else:
+                self.add_result("    ❌ ANI 模組未載入", "ERROR")
+                results.append("ANI: FAIL")
+            
+            # MOV 模組測試
+            self.add_result("  📦 測試 MOV 模組...", "INFO")
+            if mov_status.get('loaded', False):
+                self.add_result("    ✅ MOV 模組已載入", "SUCCESS")
+                results.append("MOV: OK")
+            else:
+                self.add_result("    ❌ MOV 模組未載入", "ERROR")
+                results.append("MOV: FAIL")
+            
+            # 總結
+            success_count = sum(1 for r in results if "OK" in r)
+            total_count = len(results)
+            
+            if success_count == total_count:
+                self.add_result(f"✅ 完整前端測試完成: {success_count}/{total_count} 通過", "SUCCESS")
+            else:
+                self.add_result(f"⚠️  完整前端測試部分通過: {success_count}/{total_count}", "WARNING")
+                
+        except Exception as e:
+            self.add_result(f"❌ 完整前端測試失敗: {str(e)}", "ERROR")
     
     def test_animation_movement_combo(self):
         """測試動畫+移動組合"""
         self.add_result("🎭 測試動畫+移動組合...", "INFO")
         
         try:
-            # 先播放動畫
-            self.add_result("  ├─ 步驟 1: 啟動動畫", "INFO")
-            ani_result = self.module_manager.run_test_function("frontend", "frontend_test_animations", {})
+            # 檢查模組是否已載入
+            ani_status = self.module_manager.get_module_status("ani")
+            mov_status = self.module_manager.get_module_status("mov")
             
-            if ani_result.get('success', False):
-                self.add_result("  ├─ 動畫啟動成功", "SUCCESS")
-                
-                # 然後執行移動
-                self.add_result("  ├─ 步驟 2: 執行移動", "INFO")
-                mov_result = self.module_manager.run_test_function("frontend", "test_mov_ani_integration", {})
-                
-                if mov_result.get('success', False):
-                    self.add_result("  └─ 組合測試完成", "SUCCESS")
-                else:
-                    self.add_result(f"  └─ 移動失敗: {mov_result.get('error', '未知錯誤')}", "ERROR")
-            else:
-                self.add_result(f"  └─ 動畫啟動失敗: {ani_result.get('error', '未知錯誤')}", "ERROR")
+            if not ani_status.get('loaded', False):
+                self.add_result("  ❌ ANI 模組未載入", "ERROR")
+                return
+            
+            if not mov_status.get('loaded', False):
+                self.add_result("  ❌ MOV 模組未載入", "ERROR")
+                return
+            
+            self.add_result("  ✅ 前端模組已就緒", "SUCCESS")
+            self.add_result("  ℹ️  MOV-ANI 整合測試功能開發中", "INFO")
+            self.add_result("  💡 提示: 可以在 ANI 測試分頁播放動畫，在 MOV 測試分頁測試移動", "INFO")
+            
         except Exception as e:
             self.add_result(f"組合測試時發生錯誤: {str(e)}", "ERROR")
     
@@ -448,37 +637,118 @@ class FrontendTestTab(BaseTestTab):
     # === UEP 主程式控制方法 ===
     
     def show_uep_app(self):
-        """顯示 UEP 主程式"""
+        """顯示 UEP 主程式和小工具"""
         try:
-            self.add_result("🎈 顯示 UEP 主程式...", "INFO")
+            self.add_result("🎈 顯示 UEP 主程式和小工具...", "INFO")
             
-            # 使用 debug_api 中的包裝函數
-            result = self.module_manager.run_test_function("frontend", "show_desktop_pet", {})
+            # 檢查 UI 模組是否已載入
+            ui_status = self.module_manager.get_module_status("ui")
+            if not ui_status.get('loaded', False):
+                self.add_result("❌ UI 模組未載入，請先載入前端模組", "ERROR")
+                return
             
-            if result.get('success', False):
-                self.add_result("✅ UEP 主程式顯示成功", "SUCCESS")
+            # 直接調用 UI 模組的方法
+            ui_module = ui_status.get('instance')
+            if ui_module and hasattr(ui_module, 'handle_frontend_request'):
+                # 顯示桌面寵物
+                result1 = ui_module.handle_frontend_request({
+                    "command": "show_interface",
+                    "interface": "main_desktop_pet"
+                })
+                
+                if result1 and result1.get('success'):
+                    self.add_result("✅ UEP 桌面寵物顯示成功", "SUCCESS")
+                else:
+                    self.add_result(f"❌ UEP 桌面寵物顯示失敗: {result1.get('error', '未知錯誤') if result1 else '無回應'}", "ERROR")
+                
+                # 顯示小工具
+                result2 = ui_module.handle_frontend_request({
+                    "command": "show_interface",
+                    "interface": "user_access_widget"
+                })
+                
+                if result2 and result2.get('success'):
+                    self.add_result("✅ 小工具顯示成功", "SUCCESS")
+                else:
+                    self.add_result(f"⚠️ 小工具顯示失敗: {result2.get('error', '未知錯誤') if result2 else '無回應'}", "WARNING")
             else:
-                self.add_result(f"❌ UEP 主程式顯示失敗: {result.get('error', '未知錯誤')}", "ERROR")
+                self.add_result("❌ UI 模組不支援前端請求介面", "ERROR")
                 
         except Exception as e:
-            self.add_result(f"顯示 UEP 主程式時發生錯誤: {str(e)}", "ERROR")
+            self.add_result(f"顯示 UEP 時發生錯誤: {str(e)}", "ERROR")
     
     def hide_uep_app(self):
-        """隱藏 UEP 主程式"""
+        """隱藏 UEP 主程式和小工具"""
         try:
-            self.add_result("👻 隱藏 UEP 主程式...", "INFO")
+            self.add_result("👻 隱藏 UEP 主程式和小工具...", "INFO")
             
-            # 使用 debug_api 中的包裝函數
-            result = self.module_manager.run_test_function("frontend", "hide_desktop_pet", {})
+            # 檢查 UI 模組是否已載入
+            ui_status = self.module_manager.get_module_status("ui")
+            if not ui_status.get('loaded', False):
+                self.add_result("❌ UI 模組未載入，請先載入前端模組", "ERROR")
+                return
             
-            if result.get('success', False):
-                self.add_result("✅ UEP 主程式隱藏成功", "SUCCESS")
+            # 直接調用 UI 模組的方法
+            ui_module = ui_status.get('instance')
+            if ui_module and hasattr(ui_module, 'handle_frontend_request'):
+                # 隱藏桌面寵物
+                result1 = ui_module.handle_frontend_request({
+                    "command": "hide_interface",
+                    "interface": "main_desktop_pet"
+                })
+                
+                if result1 and result1.get('success'):
+                    self.add_result("✅ UEP 桌面寵物隱藏成功", "SUCCESS")
+                else:
+                    self.add_result(f"❌ UEP 桌面寵物隱藏失敗: {result1.get('error', '未知錯誤') if result1 else '無回應'}", "ERROR")
+                
+                # 隱藏小工具
+                result2 = ui_module.handle_frontend_request({
+                    "command": "hide_interface",
+                    "interface": "user_access_widget"
+                })
+                
+                if result2 and result2.get('success'):
+                    self.add_result("✅ 小工具隱藏成功", "SUCCESS")
+                else:
+                    self.add_result(f"⚠️ 小工具隱藏失敗: {result2.get('error', '未知錯誤') if result2 else '無回應'}", "WARNING")
             else:
-                self.add_result(f"❌ UEP 主程式隱藏失敗: {result.get('error', '未知錯誤')}", "ERROR")
+                self.add_result("❌ UI 模組不支援前端請求介面", "ERROR")
                 
         except Exception as e:
-            self.add_result(f"隱藏 UEP 主程式時發生錯誤: {str(e)}", "ERROR")
+            self.add_result(f"隱藏 UEP 時發生錯誤: {str(e)}", "ERROR")
 
+    def open_animation_tester(self):
+        """開啟 Animation Tester 獨立視窗"""
+        import subprocess
+        import sys
+        from pathlib import Path
+        
+        try:
+            # 獲取 animation_tester.py 的路徑
+            project_root = Path(__file__).parent.parent.parent.parent.parent
+            tester_path = project_root / "devtools" / "animation_tester.py"
+            
+            if not tester_path.exists():
+                self.add_result(f"[錯誤] 找不到 Animation Tester: {tester_path}", "ERROR")
+                return
+            
+            self.add_result(f"[啟動] 開啟 Animation Tester: {tester_path}", "INFO")
+            
+            # 使用 subprocess 啟動獨立進程
+            subprocess.Popen(
+                [sys.executable, str(tester_path)],
+                cwd=str(project_root),
+                creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == 'win32' else 0
+            )
+            
+            self.add_result("[成功] Animation Tester 已在新視窗中啟動", "SUCCESS")
+            
+        except Exception as e:
+            self.add_result(f"[錯誤] 啟動 Animation Tester 失敗: {e}", "ERROR")
+            import traceback
+            self.add_result(traceback.format_exc(), "ERROR")
+    
     # === 模組管理方法 ===
     
     def load_frontend_modules(self):

@@ -44,16 +44,28 @@ class BehaviorContext:
     # 事件/輸出接口（由協調器提供）
     trigger_anim: Callable[[str, dict], None]
     set_target: Callable[[float, float], None]
+    get_cursor_pos: Callable[[], tuple[float, float]]  # 返回 (x, y)
 
     # 時序
     now: float
 
+    # 選填的核心元件（有預設值）
+    anim_query: Optional[object] = None  # AnimationQuery instance
+    
     # 轉場臨時（供 TransitionBehavior 使用）
     transition_start_time: Optional[float] = None
     movement_locked_until: float = 0.0
     
     # 狀態追蹤
     previous_state: Optional[BehaviorState] = None
+    
+    # 系統循環相關（供 SystemCycleBehavior 使用）
+    current_layer: Optional[str] = None
+    layer_strategy: Optional[object] = None  # LayerAnimationStrategy instance
+    
+    # Tease 系統相關（供 IdleBehavior 使用）
+    tease_tracker: Optional[object] = None  # TeaseTracker instance
+    trigger_tease_callback: Optional[Callable[[], None]] = None
 
     def ground_y(self) -> float:
         # 用 v_bottom，避免原點偏移造成地面高度錯誤
@@ -83,9 +95,16 @@ class BehaviorFactory:
         if state == BehaviorState.IDLE:
             from .idle_behavior import IdleBehavior
             return IdleBehavior()
-        if state == BehaviorState.NORMAL_MOVE or state == BehaviorState.SPECIAL_MOVE:
+        if state == BehaviorState.SYSTEM_CYCLE:
+            # SYSTEM_CYCLE 期間暫停移動，使用專門的系統循環行為
+            from .system_cycle_behavior import SystemCycleBehavior
+            return SystemCycleBehavior()
+        if state == BehaviorState.NORMAL_MOVE:
             from .movement_behavior import MovementBehavior
             return MovementBehavior()
+        if state == BehaviorState.SPECIAL_MOVE:
+            from .special_move_behavior import SpecialMoveBehavior
+            return SpecialMoveBehavior()
         if state == BehaviorState.TRANSITION:
             from .transition_behavior import TransitionBehavior
             return TransitionBehavior()

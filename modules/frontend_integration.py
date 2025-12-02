@@ -81,34 +81,39 @@ class FrontendIntegrator:
             return False
     
     def _initialize_modules(self) -> bool:
-        """初始化前端模組"""
+        """初始化前端模組
+        
+        注意：UI 模組會在初始化時自動創建和管理 ANI 和 MOV 模組，
+        所以這裡只需要初始化 UI 模組即可。
+        """
         try:
-            # 初始化 UI 模組
+            # 創建並初始化 UI 模組
+            # UI 模組會自動處理 ANI 和 MOV 的創建和連接
             ui_config = self.config.get('ui_module', {})
             self.ui_module = UIModule(ui_config)
+            
             if not self.ui_module.initialize():
                 error_log("[FrontendIntegrator] UI 模組初始化失敗")
                 return False
             
-            # 初始化 ANI 模組
-            ani_config = self.config.get('ani_module', {})
-            self.ani_module = ANIModule(ani_config)
-            if not self.ani_module.initialize():
-                error_log("[FrontendIntegrator] ANI 模組初始化失敗")
-                return False
+            # 從 UI 模組獲取 ANI 和 MOV 模組引用
+            self.ani_module = self.ui_module.ani_module
+            self.mov_module = self.ui_module.mov_module
             
-            # 初始化 MOV 模組
-            mov_config = self.config.get('mov_module', {})
-            self.mov_module = MOVModule(mov_config)
-            if not self.mov_module.initialize():
-                error_log("[FrontendIntegrator] MOV 模組初始化失敗")
+            if not self.ani_module or not self.mov_module:
+                error_log("[FrontendIntegrator] 無法從 UI 模組獲取 ANI/MOV 引用")
                 return False
             
             info_log("[FrontendIntegrator] 所有前端模組初始化完成")
+            info_log(f"[FrontendIntegrator] UI 模組: {type(self.ui_module).__name__}")
+            info_log(f"[FrontendIntegrator] ANI 模組: {type(self.ani_module).__name__}")
+            info_log(f"[FrontendIntegrator] MOV 模組: {type(self.mov_module).__name__}")
             return True
             
         except Exception as e:
             error_log(f"[FrontendIntegrator] 模組初始化異常: {e}")
+            import traceback
+            error_log(traceback.format_exc())
             return False
     
     def _register_modules(self) -> bool:
@@ -137,24 +142,17 @@ class FrontendIntegrator:
             return False
     
     def _setup_module_connections(self):
-        """設置模組間連接"""
+        """設置模組間連接
+        
+        注意：UI 模組在初始化時已經完成了所有模組間的連接：
+        - ANI 已注入到 MOV
+        - MOV 和 ANI 已傳遞給 DesktopPetApp
+        - 所有內部引用都已建立
+        
+        不需要額外的連接設置。
+        """
         try:
-            # UI 模組連接其他模組
-            self.ui_module.connect_frontend_modules(self.ani_module, self.mov_module)
-            
-            # ANI 模組信號連接到 UI 模組
-            self.ani_module.animation_ready.connect(self.ui_module._on_animation_ready)
-            self.ani_module.animation_finished.connect(self._on_animation_finished)
-            
-            # MOV 模組信號連接到 UI 模組
-            self.mov_module.position_changed.connect(self.ui_module._on_position_changed)
-            self.mov_module.animation_trigger.connect(self.ani_module.handle_animation_request)
-            
-            # UI 模組信號連接到其他模組
-            self.ui_module.animation_request.connect(self.ani_module.handle_animation_request)
-            self.ui_module.movement_request.connect(self.mov_module.handle_movement_request)
-            
-            info_log("[FrontendIntegrator] 模組間連接設置完成")
+            info_log("[FrontendIntegrator] 模組間連接已在 UI 初始化時完成")
             
         except Exception as e:
             error_log(f"[FrontendIntegrator] 設置模組連接異常: {e}")
@@ -166,18 +164,9 @@ class FrontendIntegrator:
                 error_log("[FrontendIntegrator] 尚未初始化，無法啟動")
                 return False
             
-            # 顯示主視窗
-            result = self.ui_module.handle_frontend_request({
-                'command': 'show_window'
-            })
-            
-            if result.get('success'):
-                self.is_running = True
-                info_log("[FrontendIntegrator] 前端系統啟動成功")
-                return True
-            else:
-                error_log(f"[FrontendIntegrator] 啟動失敗: {result.get('error')}")
-                return False
+            self.is_running = True
+            info_log("[FrontendIntegrator] 前端系統啟動成功")
+            return True
                 
         except Exception as e:
             error_log(f"[FrontendIntegrator] 啟動異常: {e}")

@@ -50,7 +50,7 @@ class SystemLoop:
         
         # 文字輸入模式專用
         self.text_input_thread: Optional[threading.Thread] = None
-        self.text_input_prompt = self.config.get("system", {}).get("input_mode", {}).get("text_input_prompt", ">>> ")
+        self.text_input_prompt = ">>> "  # 文字輸入提示符
         
         # 效能監控
         self.loop_count = 0  # 基本循環計數（主循環迭代次數）
@@ -76,6 +76,23 @@ class SystemLoop:
         # ✅ 狀態監控相關
         from core.states.state_manager import UEPState
         self._previous_state = UEPState.IDLE  # 初始化為 IDLE，避免首次檢查失敗
+        self._last_monitored_cycle = -1  # 追蹤最後監控的 cycle_index，初始為 -1
+        
+        # 🔧 工作流輸入相關
+        self._pending_stt_restart = False  # 延遲 STT 重啟標記
+        
+        # 🔧 輸入模式切換相關
+        self._stt_listening_active = False  # STT 監聽是否活躍
+        self._text_input_active = False  # 文字輸入是否活躍
+        
+        # P1/P2 設定整合
+        from configs.user_settings_manager import get_user_setting
+        self.gc_interval = get_user_setting("advanced.performance.gc_interval", 300)
+        self.last_gc_time = time.time()
+        self.allow_system_initiative = get_user_setting("interaction.proactivity.allow_system_initiative", True)
+        self.initiative_cooldown = get_user_setting("interaction.proactivity.initiative_cooldown", 300)
+        self.require_user_input = get_user_setting("interaction.proactivity.require_user_input", False)
+        debug_log(2, f"[SystemLoop] Proactivity: initiative={self.allow_system_initiative}, cooldown={self.initiative_cooldown}s")
         
         info_log(f"[SystemLoop] 系統循環已創建 (輸入模式: {self.input_mode})")
         
@@ -105,6 +122,13 @@ class SystemLoop:
                 SystemEvent.WORKFLOW_INPUT_COMPLETED,
                 self._on_workflow_input_completed,
                 handler_name="SystemLoop.workflow_input_completed"
+            )
+            
+            # 🔧 訂閱檔案輸入事件（拖放檔案到前端）
+            event_bus.subscribe(
+                SystemEvent.FILE_INPUT_PROVIDED,
+                self._on_file_input_provided,
+                handler_name="SystemLoop.file_input_provided"
             )
             
             # 訂閱處理層完成事件（追蹤輸出任務啟動）
@@ -235,10 +259,11 @@ class SystemLoop:
             
             info_log("[SystemLoop] 💬 工作流等待使用者輸入，輸入層已啟用")
             
-            # 🔧 VAD 模式下，主動重啟 STT 監聽
+            # 🔧 VAD 模式下，設置延遲啟動標記，等待當前循環完全結束後再啟動 STT
+            # 原因：避免在 TTS 播放提示或輸出層未完成時過早啟動 VAD
             if self.input_mode == "vad":
-                debug_log(2, "[SystemLoop] 工作流等待輸入，重新啟動STT監聽 (VAD模式)")
-                self._restart_stt_listening()
+                self._pending_stt_restart = True
+                debug_log(2, "[SystemLoop] 工作流等待輸入，設置延遲 STT 重啟標記 (等待循環結束)")
             
         except Exception as e:
             error_log(f"[SystemLoop] 處理工作流輸入請求失敗: {e}")
@@ -266,6 +291,72 @@ class SystemLoop:
             
         except Exception as e:
             error_log(f"[SystemLoop] 處理工作流輸入完成事件失敗: {e}")
+    
+    def _on_file_input_provided(self, event):
+        """
+        檔案輸入事件處理器（透過拖放提供檔案）
+        
+        當使用者透過前端拖放檔案時：
+        1. 檢查是否有工作流正在等待輸入
+        2. 提交檔案路徑到工作流
+        3. 啟動新的循環來繼續工作流執行
+        """
+        try:
+            from core.working_context import working_context_manager
+            from core.framework import core_framework
+            
+            file_path = event.data.get('file_path', '')
+            workflow_session_id = event.data.get('workflow_session_id', '')
+            step_id = event.data.get('step_id', '')
+            
+            if not file_path or not workflow_session_id:
+                error_log("[SystemLoop] 檔案輸入事件缺少必要參數")
+                return
+            
+            info_log(f"[SystemLoop] 📁 收到檔案輸入: {file_path} (workflow={workflow_session_id}, step={step_id})")
+            
+            # 獲取 SYS 模組並提交輸入到工作流
+            sys_module = core_framework.get_module('sys')
+            if not sys_module:
+                error_log("[SystemLoop] 無法獲取 SYS 模組")
+                return
+            
+            # 調用 provide_workflow_input 提交檔案路徑
+            result = sys_module.provide_workflow_input(
+                session_id=workflow_session_id,
+                user_input=file_path,
+                use_fallback=False
+            )
+            
+            if result.get('status') == 'success':
+                info_log(f"[SystemLoop] ✅ 檔案路徑已提交到工作流: {file_path}")
+                
+                # 重置工作流等待輸入旗標
+                working_context_manager.set_workflow_waiting_input(False)
+                
+                # 設置跳過輸入層旗標（下一循環跳過）
+                working_context_manager.set_skip_input_layer(True, reason="file_input_processing")
+                
+                # 🚀 啟動新的循環來繼續工作流執行
+                # 透過狀態佇列加入 WORK 狀態，觸發處理層和輸出層
+                from core.states.state_queue import get_state_queue_manager
+                from core.states.state_manager import UEPState
+                
+                state_queue = get_state_queue_manager()
+                state_queue.add_state(
+                    state=UEPState.WORK,
+                    trigger_content=f"File input: {file_path}",
+                    priority=10,
+                    source="file_input"
+                )
+                
+                debug_log(2, "[SystemLoop] 已加入 WORK 狀態到佇列，啟動工作流繼續執行")
+            else:
+                error_message = result.get('error', 'Unknown error')
+                error_log(f"[SystemLoop] 提交檔案路徑到工作流失敗: {error_message}")
+            
+        except Exception as e:
+            error_log(f"[SystemLoop] 處理檔案輸入事件失敗: {e}")
     
     def _get_current_gs_id(self) -> str:
         """
@@ -339,6 +430,10 @@ class SystemLoop:
             
             # ✅ 啟動事件總線
             self._start_event_bus()
+            
+            # 註冊 user_settings 熱重載回調
+            from configs.user_settings_manager import user_settings_manager
+            user_settings_manager.register_reload_callback("system_loop", self._reload_from_user_settings)
             
             # 🔧 初始化 global_context 的 cycle_index，讓模組能讀到正確的初始值
             self._update_global_cycle_info()
@@ -524,6 +619,7 @@ class SystemLoop:
             self.text_input_thread = threading.Thread(target=text_input_loop, daemon=True)
             self.text_input_thread.start()
             
+            self._text_input_active = True
             info_log("✅ 文字輸入循環已啟動")
             return True
             
@@ -567,6 +663,7 @@ class SystemLoop:
             listening_thread = threading.Thread(target=continuous_listening, daemon=True)
             listening_thread.start()
             
+            self._stt_listening_active = True
             info_log("✅ STT持續監聽已啟動")
             return True
             
@@ -615,6 +712,13 @@ class SystemLoop:
                 if current_time - self.last_status_log_time >= self.status_log_interval:
                     self._log_system_status()
                     self.last_status_log_time = current_time
+                
+                # P1: 定期觸發 GC
+                if self.gc_interval > 0 and current_time - self.last_gc_time >= self.gc_interval:
+                    import gc
+                    collected = gc.collect()
+                    debug_log(3, f"[SystemLoop] GC 觸發，回收 {collected} 個物件")
+                    self.last_gc_time = current_time
                 
                 # 檢查系統狀態變化
                 self._monitor_system_state()
@@ -681,24 +785,34 @@ class SystemLoop:
                         # 有活躍模組，短暫等待
                         time.sleep(0.2)
             
-            # 檢查是否回到IDLE狀態，如果是則重新啟動STT監聽
+            # 檢查是否在IDLE狀態（包括一直保持IDLE的情況）
             elif current_state == UEPState.IDLE and hasattr(self, '_previous_state'):
-                if self._previous_state != UEPState.IDLE:
-                    # ✅ 階段三：層級跳過邏輯 - 檢查是否應該跳過輸入層
-                    from core.working_context import working_context_manager
-                    should_skip = working_context_manager.should_skip_input_layer()
-                    workflow_waiting = working_context_manager.is_workflow_waiting_input()
-                    
-                    # ✅ 檢查是否有活躍會話
-                    from core.sessions.session_manager import unified_session_manager
-                    active_ws = unified_session_manager.get_active_workflow_session_ids()
-                    active_cs = unified_session_manager.get_active_chatting_session_ids()
-                    has_active_session = bool(active_ws or active_cs)
-                    
-                    # 🔧 NEW: 檢查活躍工作流的下一步是否為處理步驟
-                    next_step_is_processing = False
-                    if active_ws:
-                        next_step_is_processing = self._check_next_workflow_step_is_processing(active_ws)
+                # ✅ 階段三：層級跳過邏輯 - 檢查是否應該跳過輸入層
+                from core.working_context import working_context_manager
+                should_skip = working_context_manager.should_skip_input_layer()
+                workflow_waiting = working_context_manager.is_workflow_waiting_input()
+                
+                # ✅ 檢查是否有活躍會話
+                from core.sessions.session_manager import unified_session_manager
+                active_ws = unified_session_manager.get_active_workflow_session_ids()
+                active_cs = unified_session_manager.get_active_chatting_session_ids()
+                has_active_session = bool(active_ws or active_cs)
+                
+                # 🔧 NEW: 檢查活躍工作流的下一步是否為處理步驟
+                next_step_is_processing = False
+                if active_ws:
+                    next_step_is_processing = self._check_next_workflow_step_is_processing(active_ws)
+                
+                # 🔧 FIX: 檢查是否剛完成一個循環（cycle_index 遞增了）
+                # 或者從非IDLE狀態回到IDLE
+                state_changed = self._previous_state != UEPState.IDLE
+                current_cycle = working_context_manager.global_context_data.get('current_cycle_index', 0)
+                cycle_completed = hasattr(self, '_last_monitored_cycle') and \
+                                self._last_monitored_cycle < current_cycle
+                
+                if state_changed or cycle_completed:
+                    # 記錄當前監控的 cycle，避免重複處理
+                    self._last_monitored_cycle = current_cycle
                     
                     if should_skip and not workflow_waiting:
                         # 工作流自動推進中，跳過輸入層（不重啟 STT VAD）
@@ -713,17 +827,24 @@ class SystemLoop:
                     elif self.input_mode == "vad":
                         # ✅ VAD 模式下，無論是否有活躍會話都重啟 STT
                         # 理由：即使沒有會話，也需要持續監聽新的使用者輸入
-                        debug_log(2, f"[SystemLoop] 系統回到IDLE狀態，重新啟動STT監聽 (VAD模式, 會話: {has_active_session})")
+                        reason = "狀態變化" if state_changed else "循環完成"
+                        debug_log(2, f"[SystemLoop] 系統在IDLE狀態（{reason}），重新啟動STT監聽 (VAD模式, 會話: {has_active_session})")
                         self._restart_stt_listening()
                     elif self.input_mode == "text":
                         # 文字模式：不重啟 VAD，等待手動輸入
                         if has_active_session:
-                            debug_log(2, f"[SystemLoop] 系統回到IDLE狀態 (文字模式)，等待手動輸入")
+                            debug_log(2, f"[SystemLoop] 系統在IDLE狀態 (文字模式)，等待手動輸入")
                         else:
-                            debug_log(2, f"[SystemLoop] 系統回到IDLE狀態 (文字模式)，無活躍會話，等待新輸入")
+                            debug_log(2, f"[SystemLoop] 系統在IDLE狀態 (文字模式)，無活躍會話，等待新輸入")
                     
                     # 系統循環結束，檢查 GS 結束條件
                     self._check_cycle_end_conditions()
+                    
+                    # 🔧 檢查是否有延遲的 STT 重啟請求
+                    if hasattr(self, '_pending_stt_restart') and self._pending_stt_restart:
+                        self._pending_stt_restart = False
+                        debug_log(2, "[SystemLoop] 循環已結束，現在執行延遲的 STT 重啟")
+                        self._restart_stt_listening()
             
             # 記錄前一個狀態
             self._previous_state = current_state
@@ -1228,6 +1349,58 @@ class SystemLoop:
             
         except Exception as e:
             error_log(f"[SystemLoop] 處理輸出層完成通知失敗: {e}")
+    
+    def _reload_from_user_settings(self, key_path: str, value: Any):
+        """處理 user_settings 熱重載"""
+        try:
+            if key_path == "advanced.performance.gc_interval":
+                self.gc_interval = value
+                info_log(f"[SystemLoop] GC 間隔已更新: {value}秒")
+            elif key_path == "interaction.proactivity.allow_system_initiative":
+                self.allow_system_initiative = value
+                info_log(f"[SystemLoop] 系統主動性已更新: {value}")
+            elif key_path == "interaction.proactivity.initiative_cooldown":
+                self.initiative_cooldown = value
+                info_log(f"[SystemLoop] 主動觸發冷卻時間已更新: {value}秒")
+            elif key_path == "interaction.proactivity.require_user_input":
+                self.require_user_input = value
+                info_log(f"[SystemLoop] 需要使用者輸入設定已更新: {value}")
+            elif key_path == "interaction.speech_input.enabled":
+                # 更新輸入模式: True=VAD, False=文字輸入
+                old_mode = self.input_mode
+                new_mode = "vad" if value else "text"
+                
+                if old_mode != new_mode:
+                    info_log(f"[SystemLoop] 輸入模式切換: {old_mode} → {new_mode}")
+                    
+                    # 立即切換輸入處理（不需要重啟整個循環）
+                    if self._is_running:
+                        info_log("[SystemLoop] 正在切換輸入處理...")
+                        
+                        # 1. 標記舊模式為非活躍（停止接收新輸入）
+                        if old_mode == "vad":
+                            self._stt_listening_active = False
+                            debug_log(2, "[SystemLoop] 已停止 STT 監聽")
+                        else:
+                            self._text_input_active = False
+                            debug_log(2, "[SystemLoop] 已停止文字輸入")
+                        
+                        # 2. 切換模式
+                        self.input_mode = new_mode
+                        
+                        # 3. 啟動新模式的輸入處理
+                        if new_mode == "vad":
+                            self._start_stt_listening()
+                        else:
+                            self._start_text_input()
+                        
+                        info_log(f"✅ [SystemLoop] 輸入處理已切換至 {new_mode} 模式")
+                    else:
+                        # 系統未運行，只更新模式
+                        self.input_mode = new_mode
+                        info_log(f"[SystemLoop] 輸入模式已更新（將在下次啟動時生效）")
+        except Exception as e:
+            error_log(f"[SystemLoop] 熱重載設定失敗: {e}")
 
 
 # 全局系統循環實例

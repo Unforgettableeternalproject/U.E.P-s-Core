@@ -14,6 +14,7 @@ from core.bases.module_base import BaseModule
 from core.working_context import working_context_manager
 from core.status_manager import status_manager
 from configs.config_loader import load_module_config
+from configs.user_settings_manager import user_settings_manager, get_user_setting
 from utils.debug_helper import debug_log, debug_log_e, info_log, error_log
 
 from .schemas import TTSInput, TTSOutput
@@ -48,9 +49,22 @@ class TTSModule(BaseModule):
         """
         self.config = config or load_module_config("tts_module")
         
-        # IndexTTS 配置
-        self.model_dir = self.config.get("model_dir", "modules/tts_module/checkpoints")
-        self.character_dir = self.config.get("character_dir", "modules/tts_module/checkpoints")
+        # 取得專案根目錄的絕對路徑
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        
+        # IndexTTS 配置 - 使用絕對路徑
+        default_model_dir = os.path.join(project_root, "modules", "tts_module", "checkpoints")
+        self.model_dir = self.config.get("model_dir", default_model_dir)
+        # 如果配置中的路徑是相對路徑，轉換為絕對路徑
+        if not os.path.isabs(self.model_dir):
+            self.model_dir = os.path.join(project_root, self.model_dir)
+        
+        default_char_dir = os.path.join(project_root, "modules", "tts_module", "checkpoints")
+        self.character_dir = self.config.get("character_dir", default_char_dir)
+        # 如果配置中的路徑是相對路徑，轉換為絕對路徑
+        if not os.path.isabs(self.character_dir):
+            self.character_dir = os.path.join(project_root, self.character_dir)
+        
         self.default_character = self.config.get("default_character", "uep")
         self.use_fp16 = self.config.get("use_fp16", True)
         self.device = self.config.get("device", "cuda")
@@ -86,6 +100,15 @@ class TTSModule(BaseModule):
         # Working Context 和 Status Manager 引用 (使用全局單例)
         self.working_context_manager = working_context_manager
         self.status_manager = status_manager
+        
+        # 讀取使用者設定
+        self.user_volume = get_user_setting("interaction.speech_output.volume", 70)  # ✅ 已應用於播放
+        self.user_speed = get_user_setting("interaction.speech_output.speed", 1.0)  # ⚠️ IndexTTS 不支持速度（未來功能）
+        self.user_emotion = get_user_setting("interaction.speech_output.default_emotion", "neutral")  # ✅ 已應用
+        self.user_emotion_intensity = get_user_setting("interaction.speech_output.emotion_intensity", 0.5)  # ✅ 已應用
+        
+        # 註冊熱重載回調
+        user_settings_manager.register_reload_callback("tts_module", self._reload_from_user_settings)
         
         # 創建必要目錄
         os.makedirs(os.path.join("temp", "tts"), exist_ok=True)
@@ -623,6 +646,9 @@ class TTSModule(BaseModule):
                         if not save and sa:
                             try:
                                 audio, sr = sf.read(data)
+                                # 🔧 應用使用者音量設定 (0-100 -> 0.0-1.0)
+                                volume_factor = self.user_volume / 100.0
+                                audio = audio * volume_factor
                                 audio_int16 = (audio * 32767).astype(np.int16)
                                 play_obj = sa.play_buffer(
                                     audio_int16.tobytes(), 1, 2, sr
@@ -662,6 +688,9 @@ class TTSModule(BaseModule):
                     if os.path.exists(f):
                         data, _sr = sf.read(f)
                         sr = sr or _sr
+                        # 🔧 應用使用者音量設定 (0-100 -> 0.0-1.0)
+                        volume_factor = self.user_volume / 100.0
+                        data = data * volume_factor
                         buffers.append(data)
                 
                 if buffers:
@@ -715,3 +744,62 @@ class TTSModule(BaseModule):
                 is_chunked=True,
                 chunk_count=0
             ).model_dump()
+    
+    def _reload_from_user_settings(self, key_path: str, value: Any) -> bool:
+        """
+        從 user_settings.yaml 重載設定
+        
+        Args:
+            key_path: 設定路徑
+            value: 新值
+            
+        Returns:
+            是否成功
+        """
+        try:
+            info_log(f"[TTS] 🔄 重載使用者設定: {key_path} = {value}")
+            
+            if key_path == "interaction.speech_output.enabled":
+                # TTS 模組開關
+                info_log(f"[TTS] TTS 已{'啟用' if value else '禁用'}")
+                # 實際開關控制由外部處理
+                
+            elif key_path == "interaction.speech_output.volume":
+                # 音量（即時生效）
+                old_volume = self.user_volume
+                self.user_volume = int(value)
+                info_log(f"[TTS] 音量已更新: {old_volume} → {self.user_volume}")
+                
+            elif key_path == "interaction.speech_output.speed":
+                # 語速（即時生效）
+                old_speed = self.user_speed
+                self.user_speed = float(value)
+                info_log(f"[TTS] 語速已更新: {old_speed} → {self.user_speed}")
+                
+            elif key_path == "interaction.speech_output.default_emotion":
+                # 預設情緒（即時生效）
+                old_emotion = self.user_emotion
+                self.user_emotion = str(value)
+                info_log(f"[TTS] 預設情緒已更新: {old_emotion} → {self.user_emotion}")
+                
+            elif key_path == "interaction.speech_output.emotion_intensity":
+                # 情緒強度（即時生效）
+                old_intensity = self.user_emotion_intensity
+                self.user_emotion_intensity = float(value)
+                info_log(f"[TTS] 情緒強度已更新: {old_intensity} → {self.user_emotion_intensity}")
+                
+                # 更新 emotion_mapper 的最大強度
+                if hasattr(self, 'emotion_mapper') and self.emotion_mapper:
+                    self.emotion_mapper.max_strength = self.user_emotion_intensity
+                
+            else:
+                debug_log(2, f"[TTS] 未處理的設定路徑: {key_path}")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            error_log(f"[TTS] 重載使用者設定失敗: {e}")
+            import traceback
+            error_log(traceback.format_exc())
+            return False

@@ -101,11 +101,11 @@ class MovementBehavior(BaseBehavior):
                 "await_finish": True,
                 "max_wait": 1.2,                 # 依素材調整；避免卡死
                 "next_anim": follow_anim,        # 轉向結束後自動接走路
-                "next_params": {}                # 需要的話可加自定參數
+                "next_params": {"allow_interrupt": True}  # 走路動畫允許被打斷
             })
         else:
             # 不必轉向 → 直接走
-            ctx.trigger_anim(follow_anim, {})
+            ctx.trigger_anim(follow_anim, {"allow_interrupt": True})
 
     def _enter_float(self, ctx: BehaviorContext):
         import math, random

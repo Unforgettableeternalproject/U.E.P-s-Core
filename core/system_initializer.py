@@ -65,52 +65,78 @@ class SystemInitializer:
         """
         info_log("🚀 開始初始化 UEP 系統...")
         self.startup_time = time.time()
+        debug_log(4, "[SystemInitializer] initialize_system 進入 (production_mode=%s)" % production_mode)
+        debug_log(4, f"[SystemInitializer] 目前配置 debug.enable_frontend={self.config.get('debug', {}).get('enable_frontend', False)}")
         
         try:
             # Phase 1: Controller 初始化
+            _t_controller = time.time()
             if not self._initialize_controller():
                 return False
+            debug_log(4, f"[SystemInitializer] Controller 初始化耗時 {time.time() - _t_controller:.3f}s")
                 
             # Phase 2: Framework 和模組初始化
+            _t_framework = time.time()
             if not self._initialize_framework():
                 return False
+            debug_log(4, f"[SystemInitializer] Framework 初始化耗時 {time.time() - _t_framework:.3f}s")
                 
             # Phase 3: Router 初始化
+            _t_router = time.time()
             if not self._initialize_router():
                 return False
+            debug_log(4, f"[SystemInitializer] Router 初始化耗時 {time.time() - _t_router:.3f}s")
                 
             # Phase 4: State/Session Managers 初始化
+            _t_managers = time.time()
             if not self._initialize_managers():
                 return False
+            debug_log(4, f"[SystemInitializer] Managers 初始化耗時 {time.time() - _t_managers:.3f}s")
                 
             # Phase 5: Working Context 設置
+            _t_context = time.time()
             if not self._setup_working_context():
                 return False
+            debug_log(4, f"[SystemInitializer] Working Context 設置耗時 {time.time() - _t_context:.3f}s")
             
             # Phase 5.5: 設置默認測試 Identity（臨時測試用）
+            _t_identity = time.time()
             if not self._setup_default_identity():
                 return False
+            debug_log(4, f"[SystemInitializer] 默認 Identity 設置耗時 {time.time() - _t_identity:.3f}s")
+            
+            # Phase 6: 前端初始化（可選）
+            _t_frontend = time.time()
+            if not self._initialize_frontend():
+                # 前端初始化失敗不阻止系統啟動（前端是可選的）
+                info_log("⚠️  前端初始化失敗或未啟用，繼續啟動核心系統")
+            debug_log(4, f"[SystemInitializer] 前端初始化階段耗時 {time.time() - _t_frontend:.3f}s")
                 
-            # Phase 6: 系統健康檢查
+            # Phase 7: 系統健康檢查
+            _t_health = time.time()
             if not self._health_check():
                 return False
+            debug_log(4, f"[SystemInitializer] 健康檢查耗時 {time.time() - _t_health:.3f}s")
                 
             # 完成初始化
             self.phase = InitializationPhase.READY
             elapsed = time.time() - self.startup_time
             info_log(f"✅ UEP 系統初始化完成！耗時: {elapsed:.2f}秒")
             info_log(f"📊 系統架構: Controller → Framework → Router → Managers → Context")
+            debug_log(4, f"[SystemInitializer] 全部初始化結束 (總耗時={elapsed:.3f}s, 模組數={len(self.initialized_modules)})")
             
             return True
             
         except Exception as e:
             self.phase = InitializationPhase.FAILED
             error_log(f"❌ 系統初始化失敗: {e}")
+            debug_log(1, "[SystemInitializer] initialize_system 捕獲異常，進入 FAILED 狀態")
             return False
     
     def _initialize_controller(self) -> bool:
         """初始化 Controller"""
         try:
+            debug_log(4, "[SystemInitializer] _initialize_controller 開始")
             self.phase = InitializationPhase.CONTROLLER_INIT
             info_log("🎮 初始化 Controller...")
             
@@ -133,11 +159,13 @@ class SystemInitializer:
             
         except Exception as e:
             error_log(f"❌ Controller 初始化失敗: {e}")
+            debug_log(1, "[SystemInitializer] _initialize_controller 發生異常")
             return False
     
     def _initialize_framework(self) -> bool:
         """初始化 Framework 和模組"""
         try:
+            debug_log(4, "[SystemInitializer] _initialize_framework 開始")
             self.phase = InitializationPhase.FRAMEWORK_INIT
             info_log("🏗️ 初始化 Framework 和模組...")
             
@@ -165,15 +193,21 @@ class SystemInitializer:
             if not self._setup_module_connections():
                 error_log("   ⚠️  模組間連接設置失敗（非致命）")
             
+            # 🔄 註冊模組的設定重載回調
+            if not self._register_settings_callbacks():
+                error_log("   ⚠️  設定重載回調註冊失敗（非致命）")
+            
             return True
             
         except Exception as e:
             error_log(f"❌ Framework 初始化失敗: {e}")
+            debug_log(1, "[SystemInitializer] _initialize_framework 發生異常")
             return False
     
     def _setup_module_connections(self) -> bool:
         """設置模組間的連接（例如 LLM-SYS MCP 連接）"""
         try:
+            debug_log(4, "[SystemInitializer] _setup_module_connections 開始")
             info_log("   🔗 設置模組間連接...")
             
             # 1. 連接 LLM 和 SYS 的 MCP Server
@@ -204,9 +238,119 @@ class SystemInitializer:
             error_log(f"   ❌ 模組間連接設置失敗: {e}")
             return False
     
+    def _register_settings_callbacks(self) -> bool:
+        """註冊各模組的使用者設定重載回調"""
+        try:
+            debug_log(4, "[SystemInitializer] _register_settings_callbacks 開始")
+            info_log("   🔄 註冊使用者設定重載回調...")
+            t_start = time.time()
+            
+            from configs.user_settings_manager import user_settings_manager
+            from core.registry import get_module
+            
+            # 檢查前端是否啟用（用於跳過 UI/MOV 模組）
+            enable_frontend = self.config.get('debug', {}).get('enable_frontend', False)
+            debug_log(4, f"      [回調] 前端啟用標誌 enable_frontend={enable_frontend}")
+            
+            # 註冊 STT 模組的回調
+            segment_t = time.time()
+            debug_log(4, f"      [回調] 準備載入 stt_module (elapsed={time.time()-t_start:.3f}s)")
+            stt_module = get_module("stt_module")
+            if stt_module and hasattr(stt_module, '_reload_from_user_settings'):
+                user_settings_manager.register_reload_callback("stt_module", stt_module._reload_from_user_settings)
+                debug_log(2, "      ✅ STT 模組回調已註冊")
+            debug_log(4, f"      [回調] stt_module 完成 (segment={time.time()-segment_t:.3f}s, total={time.time()-t_start:.3f}s)")
+            
+            # 註冊 TTS 模組的回調
+            segment_t = time.time()
+            debug_log(4, f"      [回調] 準備載入 tts_module (elapsed={time.time()-t_start:.3f}s)")
+            tts_module = get_module("tts_module")
+            if tts_module and hasattr(tts_module, '_reload_from_user_settings'):
+                user_settings_manager.register_reload_callback("tts_module", tts_module._reload_from_user_settings)
+                debug_log(2, "      ✅ TTS 模組回調已註冊")
+            debug_log(4, f"      [回調] tts_module 完成 (segment={time.time()-segment_t:.3f}s, total={time.time()-t_start:.3f}s)")
+            
+            # 註冊 NLP 模組的回調
+            segment_t = time.time()
+            debug_log(4, f"      [回調] 準備載入 nlp_module (elapsed={time.time()-t_start:.3f}s)")
+            nlp_module = get_module("nlp_module")
+            if nlp_module and hasattr(nlp_module, '_reload_from_user_settings'):
+                user_settings_manager.register_reload_callback("nlp_module", nlp_module._reload_from_user_settings)
+                debug_log(2, "      ✅ NLP 模組回調已註冊")
+            debug_log(4, f"      [回調] nlp_module 完成 (segment={time.time()-segment_t:.3f}s, total={time.time()-t_start:.3f}s)")
+            
+            # 註冊 LLM 模組的回調
+            segment_t = time.time()
+            debug_log(4, f"      [回調] 準備載入 llm_module (elapsed={time.time()-t_start:.3f}s)")
+            llm_module = get_module("llm_module")
+            if llm_module and hasattr(llm_module, '_reload_from_user_settings'):
+                user_settings_manager.register_reload_callback("llm_module", llm_module._reload_from_user_settings)
+                debug_log(2, "      ✅ LLM 模組回調已註冊")
+            debug_log(4, f"      [回調] llm_module 完成 (segment={time.time()-segment_t:.3f}s, total={time.time()-t_start:.3f}s)")
+            
+            # 註冊 MOV 模組的回調 (只在前端啟用時)
+            # 注意：MOV 模組的回調註冊會在 UI 模組初始化 MOV 後手動執行
+            # 因為 MOV 需要 QApplication 已經建立才能正確初始化
+            if enable_frontend:
+                debug_log(4, f"      [回調] 跳過 mov_module (將在 UI 模組初始化後註冊)")
+            else:
+                debug_log(4, f"      [回調] 跳過 mov_module (前端未啟用)")
+            
+            # 註冊 UI 模組的回調 (只在前端啟用時)
+            enable_frontend = self.config.get('debug', {}).get('enable_frontend', False)
+            if enable_frontend:
+                segment_t = time.time()
+                debug_log(4, f"      [回調] 準備載入 ui_module (elapsed={time.time()-t_start:.3f}s)")
+                ui_module = get_module("ui_module")
+                if ui_module and hasattr(ui_module, '_reload_from_user_settings'):
+                    user_settings_manager.register_reload_callback("ui_module", ui_module._reload_from_user_settings)
+                    debug_log(2, "      ✅ UI 模組回調已註冊")
+                debug_log(4, f"      [回調] ui_module 完成 (segment={time.time()-segment_t:.3f}s, total={time.time()-t_start:.3f}s)")
+            else:
+                debug_log(4, f"      [回調] 跳過 ui_module (前端未啟用)")
+            
+            # 註冊 MEM 模組的回調
+            segment_t = time.time()
+            debug_log(4, f"      [回調] 準備載入 mem_module (elapsed={time.time()-t_start:.3f}s)")
+            mem_module = get_module("mem_module")
+            if mem_module and hasattr(mem_module, '_reload_from_user_settings'):
+                user_settings_manager.register_reload_callback("mem_module", mem_module._reload_from_user_settings)
+                debug_log(2, "      ✅ MEM 模組回調已註冊")
+            debug_log(4, f"      [回調] mem_module 完成 (segment={time.time()-segment_t:.3f}s, total={time.time()-t_start:.3f}s)")
+            
+            # 註冊 SYS 模組的回調
+            segment_t = time.time()
+            debug_log(4, f"      [回調] 準備載入 sys_module (elapsed={time.time()-t_start:.3f}s)")
+            sys_module = get_module("sys_module")
+            if sys_module and hasattr(sys_module, '_reload_from_user_settings'):
+                user_settings_manager.register_reload_callback("sys_module", sys_module._reload_from_user_settings)
+                debug_log(2, "      ✅ SYS 模組回調已註冊")
+            debug_log(4, f"      [回調] sys_module 完成 (segment={time.time()-segment_t:.3f}s, total={time.time()-t_start:.3f}s)")
+            
+            # 註冊 SystemLoop 的回調
+            segment_t = time.time()
+            debug_log(4, f"      [回調] 準備載入 system_loop (elapsed={time.time()-t_start:.3f}s)")
+            from core.system_loop import system_loop
+            if system_loop and hasattr(system_loop, '_reload_from_user_settings'):
+                user_settings_manager.register_reload_callback("system_loop", system_loop._reload_from_user_settings)
+                debug_log(2, "      ✅ SystemLoop 回調已註冊")
+            debug_log(4, f"      [回調] system_loop 完成 (segment={time.time()-segment_t:.3f}s, total={time.time()-t_start:.3f}s)")
+            
+            info_log("   ✅ 使用者設定重載回調註冊完成")
+            debug_log(4, f"[SystemInitializer] _register_settings_callbacks 完成 (總耗時={time.time()-t_start:.3f}s)")
+            debug_log(4, "[SystemInitializer] _register_settings_callbacks 結束")
+            return True
+            
+        except Exception as e:
+            error_log(f"   ❌ 設定重載回調註冊失敗: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
     def _initialize_router(self) -> bool:
         """初始化 Router"""
         try:
+            debug_log(4, "[SystemInitializer] _initialize_router 開始")
             self.phase = InitializationPhase.ROUTER_INIT
             info_log("🔀 初始化 Router...")
             
@@ -219,11 +363,13 @@ class SystemInitializer:
             
         except Exception as e:
             error_log(f"❌ Router 初始化失敗: {e}")
+            debug_log(1, "[SystemInitializer] _initialize_router 發生異常")
             return False
     
     def _initialize_managers(self) -> bool:
         """初始化 State Manager 和 Session Manager"""
         try:
+            debug_log(4, "[SystemInitializer] _initialize_managers 開始")
             self.phase = InitializationPhase.MANAGERS_INIT
             info_log("⚙️ 初始化 State 和 Session Managers...")
             
@@ -255,11 +401,13 @@ class SystemInitializer:
             
         except Exception as e:
             error_log(f"❌ Managers 初始化失敗: {e}")
+            debug_log(1, "[SystemInitializer] _initialize_managers 發生異常")
             return False
     
     def _setup_working_context(self) -> bool:
         """設置 Working Context"""
         try:
+            debug_log(4, "[SystemInitializer] _setup_working_context 開始")
             self.phase = InitializationPhase.CONTEXT_SETUP
             info_log("🔗 設置 Working Context...")
             
@@ -279,10 +427,115 @@ class SystemInitializer:
             
             info_log("   ✅ Working Context 已設置")
             
+            # 初始化監控系統
+            if not self._initialize_monitoring_system():
+                # 監控系統初始化失敗不阻止系統啟動
+                info_log("   ⚠️  監控系統初始化失敗，繼續啟動")
+            
             return True
             
         except Exception as e:
             error_log(f"❌ Working Context 設置失敗: {e}")
+            debug_log(1, "[SystemInitializer] _setup_working_context 發生異常")
+            return False
+    
+    def _initialize_monitoring_system(self) -> bool:
+        """初始化監控系統（待辦事項和行事曆）"""
+        try:
+            debug_log(4, "[SystemInitializer] _initialize_monitoring_system 開始")
+            info_log("   📊 初始化監控系統...")
+            
+            # 導入監控接口初始化函數
+            from modules.sys_module.actions.monitoring_interface import initialize_monitoring_system
+            
+            # 初始化監控系統 - 會發送 SYSTEM_STARTUP 事件
+            initialize_monitoring_system()
+            
+            info_log("   ✅ 監控系統已初始化，SYSTEM_STARTUP 事件已發送")
+            return True
+            
+        except Exception as e:
+            error_log(f"   ❌ 監控系統初始化失敗: {e}")
+            return False
+    
+    def _initialize_frontend(self) -> bool:
+        """初始化前端模組（UI, ANI, MOV）
+        
+        根據配置決定是否啟動前端，前端初始化失敗不影響核心系統運行
+        """
+        try:
+            debug_log(4, "[SystemInitializer] _initialize_frontend 開始")
+            # 檢查配置是否啟用前端
+            enable_frontend = self.config.get('debug', {}).get('enable_frontend', False)
+            debug_log(4, f"[SystemInitializer] 前端啟用標誌 enable_frontend={enable_frontend}")
+            
+            if not enable_frontend:
+                info_log("📺 前端未啟用（debug.enable_frontend=false），跳過前端初始化")
+                return True  # 返回 True 表示沒有錯誤（只是未啟用）
+            
+            info_log("📺 初始化前端模組（UI, ANI, MOV）...")
+            
+            # 導入前端整合器
+            from modules.frontend_integration import FrontendIntegrator
+            from core.framework import core_framework
+            
+            # 創建前端整合器
+            frontend_config = {
+                'ui_module': self.config.get('ui_module', {}),
+                'ani_module': self.config.get('ani_module', {}),
+                'mov_module': self.config.get('mov_module', {})
+            }
+            
+            self.frontend_integrator = FrontendIntegrator(core_framework, frontend_config)
+            
+            # 初始化前端
+            if not self.frontend_integrator.initialize():
+                error_log("   ❌ 前端整合器初始化失敗")
+                return False
+            
+            info_log("   ✅ 前端整合器初始化完成")
+            
+            # 啟動前端
+            if not self.frontend_integrator.start():
+                error_log("   ❌ 前端啟動失敗")
+                return False
+            
+            info_log("   ✅ 前端系統已啟動")
+            
+            # 顯示 UEP 主程式
+            ui = getattr(self.frontend_integrator, 'ui_module', None)
+            if ui and hasattr(ui, 'handle_frontend_request'):
+                show_result = ui.handle_frontend_request({
+                    'command': 'show_interface',
+                    'interface': 'main_desktop_pet'
+                })
+                if show_result.get('success'):
+                    info_log("   🎈 UEP 主程式已顯示")
+                else:
+                    error_log(f"   ⚠️  顯示主程式失敗: {show_result.get('error', '未知錯誤')}")
+                    # 不返回 False，因為前端已啟動，只是視窗顯示失敗
+            else:
+                debug_log(4, "[SystemInitializer] ui_module 不可用或缺少 handle_frontend_request，跳過主程式顯示")
+            
+            # 顯示 access_widget
+            if ui and hasattr(ui, 'handle_frontend_request'):
+                access_widget_result = ui.handle_frontend_request({
+                    'command': 'show_interface',
+                    'interface': 'user_access_widget'
+                })
+                if access_widget_result.get('success'):
+                    info_log("   🎛️  Access Widget 已顯示")
+                else:
+                    error_log(f"   ⚠️  顯示 Access Widget 失敗: {access_widget_result.get('error', '未知錯誤')}")
+            else:
+                debug_log(4, "[SystemInitializer] ui_module 不可用或缺少 handle_frontend_request，跳過 Access Widget 顯示")
+            
+            return True
+            
+        except Exception as e:
+            error_log(f"❌ 前端初始化失敗: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def _setup_default_identity(self) -> bool:
@@ -292,6 +545,7 @@ class SystemInitializer:
         正式版本應該移除此功能，讓使用者通過語音或其他方式指定身分
         """
         try:
+            debug_log(4, "[SystemInitializer] _setup_default_identity 開始")
             info_log("👤 設置默認測試 Identity (Bernie)...")
             
             # 導入必要的模組
@@ -349,6 +603,7 @@ class SystemInitializer:
     def _health_check(self) -> bool:
         """系統健康檢查"""
         try:
+            debug_log(4, "[SystemInitializer] _health_check 開始")
             self.phase = InitializationPhase.HEALTH_CHECK
             info_log("🏥 執行系統健康檢查...")
             
@@ -378,6 +633,7 @@ class SystemInitializer:
             
         except Exception as e:
             error_log(f"❌ 系統健康檢查失敗: {e}")
+            debug_log(1, "[SystemInitializer] _health_check 發生異常")
             return False
     
     def get_initialization_status(self) -> Dict[str, Any]:

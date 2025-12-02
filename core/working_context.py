@@ -240,6 +240,11 @@ class WorkingContextManager:
         self.global_context_data['input_layer_reason'] = None  # 跳過原因
         self.global_context_data['workflow_waiting_input'] = False
         
+        # 啟動標記（用於 VAD 模式下的讓語音啟動保護）
+        self.global_context_data['activation_flag'] = False
+        self.global_context_data['activation_timestamp'] = 0.0
+        self.global_context_data['activation_timeout'] = 30.0  # 30秒過期
+        
         # 持久化上下文數據 - PERSISTENT 層級（跨系統重啟保留）
         self.persistent_context_data: Dict[str, Any] = {}
         self.persistent_context_data['gs_history'] = []  # GS 歷史記錄
@@ -703,6 +708,46 @@ class WorkingContextManager:
     
     def has_declared_identity(self) -> bool:
         """檢查是否有聲明的身份"""
+    
+    def set_activation_flag(self, activated: bool = True):
+        """
+        設置啟動標記（用於 VAD 模式下的讓語音啟動保護）
+        
+        Args:
+            activated: 是否啟動
+        """
+        self.global_context_data['activation_flag'] = activated
+        if activated:
+            self.global_context_data['activation_timestamp'] = time.time()
+            debug_log(2, "[WorkingContextManager] 啟動標記已設置")
+        else:
+            debug_log(2, "[WorkingContextManager] 啟動標記已清除")
+    
+    def is_activated(self) -> bool:
+        """
+        檢查系統是否已啟動（考慮過期時間）
+        
+        Returns:
+            是否已啟動
+        """
+        if not self.global_context_data.get('activation_flag', False):
+            return False
+        
+        # 檢查是否過期
+        timestamp = self.global_context_data.get('activation_timestamp', 0.0)
+        timeout = self.global_context_data.get('activation_timeout', 30.0)
+        elapsed = time.time() - timestamp
+        
+        if elapsed > timeout:
+            debug_log(2, f"[WorkingContextManager] 啟動標記已過期（{elapsed:.1f}s > {timeout}s）")
+            self.global_context_data['activation_flag'] = False
+            return False
+        
+        return True
+    
+    def clear_activation_flag(self):
+        """清除啟動標記"""
+        self.set_activation_flag(False)
         return self.get_declared_identity() is not None
     
     # === 上下文查找和管理便利方法 ===

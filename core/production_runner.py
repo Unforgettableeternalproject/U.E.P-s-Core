@@ -53,13 +53,20 @@ class ProductionRunner:
                 error_log("❌ 系統初始化失敗")
                 return False
             
-            # Phase 2: 啟動主循環
+            # Phase 2: 啟動主循環（在 QThread 中）
             if not self._start_main_loop():
                 error_log("❌ 系統主循環啟動失敗")
                 return False
             
-            # Phase 3: 保持運行並監控
-            return self._keep_running()
+            # Phase 3: 檢查是否有前端 - 決定使用哪種主循環
+            has_frontend = self._check_frontend_enabled()
+            
+            if has_frontend:
+                # 使用 Qt 主循環（阻塞在這裡直到 app.quit()）
+                return self._run_with_qt_event_loop()
+            else:
+                # 使用傳統監控循環
+                return self._keep_running()
             
         except KeyboardInterrupt:
             info_log("⚠️ 接收到用戶中斷信號")
@@ -99,7 +106,7 @@ class ProductionRunner:
             return False
     
     def _start_main_loop(self) -> bool:
-        """啟動主循環"""
+        """啟動主循環（在 QThread 中，如果前端啟用）"""
         try:
             info_log("🔄 啟動系統主循環...")
             
@@ -107,17 +114,115 @@ class ProductionRunner:
             from core.system_loop import system_loop
             self.system_loop = system_loop
             
-            # 啟動循環
-            success = self.system_loop.start()
-            if not success:
-                error_log("❌ 主循環啟動失敗")
-                return False
+            # 檢查是否有前端
+            has_frontend = self._check_frontend_enabled()
+            debug_log(4, f"[ProductionRunner] _start_main_loop: has_frontend={has_frontend}")
             
-            info_log("✅ 系統主循環已啟動")
-            return True
+            if has_frontend:
+                # 使用 Qt 包裝啟動（在 QThread 中）
+                info_log("🎨 前端已啟用，使用 Qt 系統循環包裝...")
+                from core.qt_system_loop import QtSystemLoopManager
+                from core.registry import get_module
+                
+                ui_module = get_module("ui_module")
+                if not ui_module or not hasattr(ui_module, 'app'):
+                    error_log("❌ UI 模組不可用或未初始化")
+                    return False
+                
+                # 創建 Qt 系統循環管理器
+                self.qt_loop_manager = QtSystemLoopManager(parent=ui_module.app)
+                
+                # 啟動系統循環（在 QThread 中）
+                success = self.qt_loop_manager.start_system_loop(system_loop)
+                if not success:
+                    error_log("❌ Qt 系統循環啟動失敗")
+                    return False
+                
+                info_log("✅ Qt 系統循環已在背景線程啟動")
+                return True
+            else:
+                # 傳統方式啟動（在 daemon 線程中）
+                info_log("🔄 前端未啟用，使用傳統系統循環...")
+                success = self.system_loop.start()
+                if not success:
+                    error_log("❌ 主循環啟動失敗")
+                    return False
+                
+                info_log("✅ 系統主循環已啟動")
+                return True
             
         except Exception as e:
             error_log(f"❌ 主循環啟動過程失敗: {e}")
+            return False
+    
+    def _check_frontend_enabled(self) -> bool:
+        """檢查前端是否啟用"""
+        try:
+            from configs.config_loader import load_config
+            config = load_config()
+            enable_frontend = config.get("debug", {}).get("enable_frontend", False)
+            debug_log(4, f"[ProductionRunner] _check_frontend_enabled: type={type(enable_frontend)}, value={enable_frontend}, bool={bool(enable_frontend)}")
+            # 確保是布爾值 True 才啟用
+            return enable_frontend is True
+        except Exception as e:
+            debug_log(1, f"檢查前端狀態失敗: {e}")
+            return False
+    
+    def _run_with_qt_event_loop(self) -> bool:
+        """使用 Qt 事件循環作為主循環"""
+        try:
+            from core.registry import get_module
+            from PyQt5.QtCore import QTimer
+            
+            ui_module = get_module("ui_module")
+            if not ui_module or not hasattr(ui_module, 'app') or not ui_module.app:
+                error_log("❌ UI 模組或 QApplication 不可用")
+                return False
+            
+            info_log("🎯 UEP 系統正在運行（Qt 主循環模式）...")
+            info_log("📋 系統流程: STT → NLP → Router → (CS/WS) → 處理模組 → TTS")
+            info_log("⚡ 關閉視窗或按 Ctrl+C 退出系統")
+            
+            # 設置一個定時器來檢查 Ctrl+C 信號
+            self._interrupt_requested = False
+            
+            def check_interrupt():
+                """定期檢查是否應該退出"""
+                if not self.is_running or self._interrupt_requested:
+                    info_log("⚠️ 檢測到中斷信號，準備退出...")
+                    # 停止 STT 持續監聽
+                    try:
+                        stt_module = get_module("stt_module")
+                        if stt_module:
+                            stt_module.stop_listening()
+                            debug_log(1, "[ProductionRunner] 已通知 STT 停止監聽")
+                    except Exception as e:
+                        debug_log(1, f"[ProductionRunner] 停止 STT 監聽失敗: {e}")
+                    ui_module.app.quit()
+            
+            interrupt_timer = QTimer()
+            interrupt_timer.timeout.connect(check_interrupt)
+            interrupt_timer.start(500)  # 每 500ms 檢查一次
+            
+            # 進入 Qt 事件循環（阻塞直到 app.quit()）
+            exit_code = ui_module.app.exec_()
+            
+            # 停止定時器
+            interrupt_timer.stop()
+            
+            info_log(f"✅ Qt 事件循環已退出 (退出碼: {exit_code})")
+            
+            # 執行清理
+            shutdown_success = self._graceful_shutdown()
+            
+            # 強制退出 Python 程序，確保終端返回
+            info_log("🚪 強制退出 Python 程序...")
+            sys.exit(exit_code)
+            
+            return shutdown_success
+            
+        except Exception as e:
+            error_log(f"❌ Qt 事件循環運行失敗: {e}")
             return False
     
     def _keep_running(self) -> bool:
@@ -170,6 +275,14 @@ class ProductionRunner:
             if self.system_loop:
                 info_log("   停止系統主循環...")
                 self.system_loop.stop()
+            
+            # 停止 Controller 監控線程
+            try:
+                from core.controller import unified_controller
+                info_log("   停止 Controller 監控...")
+                unified_controller.shutdown()
+            except Exception as e:
+                debug_log(1, f"   Controller 關閉警告: {e}")
             
             # 執行清理工作
             self._cleanup_resources()
@@ -226,6 +339,9 @@ class ProductionRunner:
         def signal_handler(signum, frame):
             info_log(f"⚠️ 接收到信號 {signum}，準備優雅關閉...")
             self.is_running = False
+            # 設置中斷標誌，讓 Qt 定時器檢測到
+            if hasattr(self, '_interrupt_requested'):
+                self._interrupt_requested = True
         
         # 註冊信號處理器
         signal.signal(signal.SIGINT, signal_handler)

@@ -421,4 +421,5 @@ deprecated/*
 *.pyd
 
 #Ignore insiders AI rules
-.github\instructions\codacy.instructions.md
+.github/instructions/codacy.instructions.md
+**/.github/prompts/*

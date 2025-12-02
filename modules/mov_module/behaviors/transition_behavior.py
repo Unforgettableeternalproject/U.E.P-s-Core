@@ -51,7 +51,7 @@ class TransitionBehavior(BaseBehavior):
             ctx.trigger_anim("g_to_f", {"loop": False})
         else:
             # 從浮空轉落地：直接下降到地面
-            gy = ctx.ground_y()
+            gy = ctx.ground_y()-20
             self._target_y = gy
             self._target_x = ctx.position.x  # 保持 X 位置不變
             
@@ -95,6 +95,14 @@ class TransitionBehavior(BaseBehavior):
             # 停止轉場速度
             ctx.target_velocity.x = 0.0
             ctx.target_velocity.y = 0.0
-            # 轉場後交給狀態機決定下一步
-            return ctx.sm.pick_next(ctx.movement_mode)
+            
+            print(f"✅ 轉場完成: {self._target_mode.value}")
+            
+            # 轉場後強制觸發正確的 idle 動畫（根據新模式）
+            is_ground = (self._target_mode == MovementMode.GROUND)
+            idle_anim = "stand_idle_g" if is_ground else "smile_idle_f"
+            ctx.trigger_anim(idle_anim, {"loop": True, "force_restart": True})
+            print(f"🎬 轉場後觸發 idle 動畫: {idle_anim}")
+            
+            return BehaviorState.IDLE
         return None

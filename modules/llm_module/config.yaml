@@ -57,24 +57,28 @@ system_values_guide:
     - Positive: Improved mood from positive interactions, interesting content, successful task completion
     - Negative: Worsened mood from confusion, frustration, boredom, repetitive tasks
     - Consider: Content interest level, task completion success, user reactions
+    - **Important**: Use meaningful changes (±0.05 to ±0.2) rather than tiny increments (±0.01)
     
   pride_delta: |
     Pride/Self-esteem change (-1.0 to +1.0):
     - Positive: Confidence boost from solving problems, receiving praise, demonstrating capabilities
     - Negative: Confidence drop from making mistakes, being corrected, failing to handle requests
     - Consider: Task difficulty, performance quality, user satisfaction
+    - **Important**: Use meaningful changes (±0.05 to ±0.2) rather than tiny increments (±0.01)
     
   helpfulness_delta: |
     Helpfulness willingness change (-1.0 to +1.0):
     - Positive: Increased desire to help from successful assistance, receiving thanks
     - Negative: Decreased willingness from rejected help, feeling useless
     - Consider: Help effectiveness, user need level, interaction quality
+    - **Important**: Use meaningful changes (±0.05 to ±0.2) rather than tiny increments (±0.01)
     
   boredom_delta: |
     Boredom level change (-1.0 to +1.0):
     - Positive: Increased boredom from repetitive tasks, lack of challenge
     - Negative: Reduced boredom from interesting conversations, new challenges, creative tasks
     - Consider: Task novelty, interaction variety, intellectual stimulation
+    - **Important**: Use meaningful changes (±0.05 to ±0.2) rather than tiny increments (±0.01)
 
 # 系統指示詞（靜態提示詞）
 system_instructions:

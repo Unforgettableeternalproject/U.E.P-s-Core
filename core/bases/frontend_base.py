@@ -57,6 +57,8 @@ class UIEventType(Enum):
     DRAG_START = auto()
     DRAG_MOVE = auto()  # 拖曳移動事件
     DRAG_END = auto()
+    FILE_HOVER = auto()  # 檔案懸停在 UEP 上方
+    FILE_HOVER_LEAVE = auto()  # 檔案離開 UEP 區域
     FILE_DROP = auto()
     KEYBOARD_INPUT = auto()
     WINDOW_MOVE = auto()
@@ -134,8 +136,9 @@ class BaseFrontendModule(BaseModule):
         self.module_type = module_type
         self.module_id = module_type.value
         
-        # Qt 信號對象
-        self.signals = FrontendSignals()
+        # Qt 信號對象 - 延遲初始化以避免 QApplication 問題
+        self.signals = None
+        self._signals_initialized = False
         
         # 框架引用 (將在註冊時設置)
         self.framework = None
@@ -150,12 +153,42 @@ class BaseFrontendModule(BaseModule):
         # 執行緒安全
         self._lock = threading.RLock()
         
-        # 設置信號連接 (只在 PyQt5 可用時)
-        if PYQT5_AVAILABLE and hasattr(self.signals, 'state_changed') and callable(getattr(self.signals.state_changed, 'connect', None)):
-            self.signals.state_changed.connect(self._on_state_changed)  # type: ignore
-            self.signals.event_occurred.connect(self._on_event_occurred)  # type: ignore
-        
         debug_log(1, f"[{self.module_id}] 前端模組基類初始化完成")
+    
+    def _initialize_signals(self):
+        """延遲初始化 Qt 信號 - 在 QApplication 創建後調用"""
+        if self._signals_initialized:
+            return
+        
+        try:
+            # 檢查 QApplication 是否存在
+            if PYQT5_AVAILABLE:
+                from PyQt5.QtWidgets import QApplication
+                if QApplication.instance() is not None:
+                    # 創建信號對象
+                    self.signals = FrontendSignals()
+                    
+                    # 設置信號連接
+                    if hasattr(self.signals, 'state_changed') and callable(getattr(self.signals.state_changed, 'connect', None)):
+                        self.signals.state_changed.connect(self._on_state_changed)  # type: ignore
+                        self.signals.event_occurred.connect(self._on_event_occurred)  # type: ignore
+                    
+                    self._signals_initialized = True
+                    debug_log(2, f"[{self.module_id}] Qt 信號已初始化")
+                else:
+                    # QApplication 尚未創建，使用空信號容器
+                    self.signals = FrontendSignals() if not PYQT5_AVAILABLE else None
+                    debug_log(2, f"[{self.module_id}] QApplication 尚未就緒，延後 Qt 信號初始化")
+            else:
+                # PyQt5 不可用，使用空信號容器
+                self.signals = FrontendSignals()
+                self._signals_initialized = True
+        except Exception as e:
+            error_log(f"[{self.module_id}] 初始化 Qt 信號失敗: {e}")
+            # 使用空信號容器作為後備
+            if not PYQT5_AVAILABLE:
+                self.signals = FrontendSignals()
+            self._signals_initialized = True
     
     def set_framework_references(self, 
                                framework,
@@ -165,6 +198,9 @@ class BaseFrontendModule(BaseModule):
         self.framework = framework
         self.context_manager = context_manager
         self.state_manager = state_manager
+        
+        # 嘗試初始化 signals（如果 QApplication 已就緒）
+        self._initialize_signals()
         
         # 訂閱狀態變更（如果狀態管理器支持）
         # StateManager 可能沒有 add_state_listener 方法，這裡只是佔位
@@ -228,7 +264,7 @@ class BaseFrontendModule(BaseModule):
         )
         
         # 只在 PyQt5 可用且有信號時發射
-        if PYQT5_AVAILABLE and self.signals.event_occurred:
+        if PYQT5_AVAILABLE and self.signals and hasattr(self.signals, 'event_occurred') and self.signals.event_occurred:
             self.signals.event_occurred.emit(event)
         
         debug_log(1, f"[{self.module_id}] 發送事件: {event_type.name}")
@@ -248,7 +284,7 @@ class BaseFrontendModule(BaseModule):
         with self._lock:
             self.local_state[key] = value
             # 使用信號包裝器發送狀態變更信號
-            if PYQT5_AVAILABLE and hasattr(self.signals, 'state_changed') and callable(getattr(self.signals.state_changed, 'emit', None)):
+            if PYQT5_AVAILABLE and self.signals and hasattr(self.signals, 'state_changed') and callable(getattr(self.signals.state_changed, 'emit', None)):
                 self.signals.state_changed.emit(key, {key: value})  # type: ignore
     
     def get_local_state(self, key: Optional[str] = None) -> Any:
@@ -312,7 +348,7 @@ class BaseFrontendModule(BaseModule):
         self.is_initialized = False
         
         # 清理 Qt 連接 (只在 PyQt5 可用時)
-        if PYQT5_AVAILABLE and hasattr(self.signals, 'state_changed') and callable(getattr(self.signals.state_changed, 'disconnect', None)):
+        if PYQT5_AVAILABLE and self.signals and hasattr(self.signals, 'state_changed') and callable(getattr(self.signals.state_changed, 'disconnect', None)):
             try:
                 self.signals.state_changed.disconnect()  # type: ignore
                 self.signals.event_occurred.disconnect()  # type: ignore
@@ -348,20 +384,30 @@ class FrontendAdapter:
     def register_frontend_module(self, module: BaseFrontendModule) -> bool:
         """註冊前端模組"""
         try:
+            # 從正確的位置導入 context_manager 和 state_manager
+            from core.working_context import working_context_manager
+            from core.states.state_manager import state_manager
+            from core.framework import ModuleInfo, ModuleType, ModuleState
+            
             # 設置框架引用
             module.set_framework_references(
                 self.framework,
-                self.framework.context_manager,
-                self.framework.state_manager
+                working_context_manager,
+                state_manager
+            )
+            
+            # 創建 ModuleInfo 對象
+            module_info = ModuleInfo(
+                module_id=module.module_id,
+                module_name=module.module_id,
+                module_instance=module,
+                module_type=ModuleType.UI,  # 前端模組統一使用 UI 類型
+                capabilities=[f"frontend_{module.module_type.value}"],
+                state=ModuleState.AVAILABLE
             )
             
             # 註冊到核心框架
-            success = self.framework.register_module(
-                module_id=module.module_id,
-                module_instance=module,
-                capabilities=[f"frontend_{module.module_type.value}"],
-                priority=100  # 前端模組高優先級
-            )
+            success = self.framework.register_module(module_info)
             
             if success:
                 self.frontend_modules[module.module_id] = module

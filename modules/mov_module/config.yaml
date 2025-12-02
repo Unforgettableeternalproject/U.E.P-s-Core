@@ -3,12 +3,12 @@ module_type: "frontend"
 priority: 3
 
 physics:
-  gravity: 0.8
-  damping: 0.978
-  ground_offset: 48          # → GROUND_OFFSET
-  # 可選：frictions（若之後 physics.py 想加）
-  # ground_friction: 0.95
-  # air_resistance: 0.99
+  gravity: 0.8               # 重力加速度
+  damping: 0.978             # 通用阻尼（已棄用，保留相容性）
+  ground_friction: 0.95      # 地面摩擦係數
+  air_resistance: 0.95      # 空氣阻力係數（調高以減少空中慣性衰減）
+  bounce_factor: 0.4         # 地面反彈係數
+  ground_offset: 48          # 地面偏移量
 
 movement:
   ground_speed: 2.2
@@ -20,9 +20,9 @@ movement:
 state_machine:
   transition_duration: 2.0
   idle:
-    min_duration: 3.0          # 進一步增加最小閒置時間
-    max_duration: 8.0          # 增加最大閒置時間
-    tick_chance: 0.03          # 進一步降低每 tick 結束閒置的機率
+    min_duration: 4.0          # 增加最小閒置時間（給 cursor tracking 更多時間）
+    max_duration: 12.0         # 大幅增加最大閒置時間
+    tick_chance: 0.02          # 進一步降低每 tick 結束閒置的機率（更穩定的 IDLE）
   # 調整權重讓轉換更容易觸發
   weights_ground:
     NORMAL_MOVE: 0.40         # 稍微降低移動機率
@@ -36,19 +36,156 @@ state_machine:
     TRANSITION: 0.05          # 大幅提高轉換機率（從5%提高到25%）
 
 boundaries:
-  screen_padding: 50
+  screen_padding: 20
   keep_on_screen: true
   bounce_off_edges: false
+  # 邊界處理模式
+  # "barrier": 碰到邊界停止並轉向（預設）
+  # "wrap": 從一邊離開後從另一邊進入（循環模式，適合多螢幕或想要連續移動的場景）
+  boundary_mode: "barrier"
 
 timers:
   behavior_interval_ms: 100
   movement_interval_ms: 16
 
+# 投擲參數（由 ThrowHandler 使用）
+# 參考 desktop_pet.py 優化後的閾值
+throw_threshold_speed: 400.0    # 投擲速度門檻 (px/s) - 從 200 調整到 400（更合理）
+throw_threshold_dist: 100.0      # 投擲距離門檻 (px) - 從 30 調整到 45（更合理）
+max_throw_speed: 110.0           # 最大投擲速度 (px/s) - 降低速度以減少飛行距離
+throw_post_tease_delay: 3.0     # 投擲後調皮動畫延遲 (秒)
+
+# 滑鼠追蹤參數
+cursor_head_turn_sensitivity: 9  # 轉頭靈敏度（角度/幀），影響 turn_head 動畫幀數計算
+
+# 入場/出場行為配置（動畫名稱由 ANI 模組管理）
+entry_behavior:
+  enabled: true
+  mode: "FLOAT"                  # 入場後的模式 (GROUND/FLOAT)
+  start_position: "top_left"   # 起始位置 (top_center/bottom_center/left/right/center)
+  
+exit_behavior:
+  enabled: false                 # 出場功能預留
+
+# 移動平滑化參數
+movement_smoothing:
+  enabled: true
+  velocity_lerp_factor: 0.15     # 速度平滑係數 (0-1，越小越平滑)
+  pause_damping: 0.85            # 暫停時的慣性減速係數
+  resume_acceleration: 0.2       # 恢復時的加速係數
+
+tease_tracking:
+  time_window: 10.0            # 追蹤時間窗口 (秒)
+  interaction_threshold: 5     # 互動次數閾值（拖曳+投擲）
+
+# 🎲 彩蛋動畫配置
+easter_egg:
+  enabled: true
+  trigger_chance: 0.03         # 每次 idle tick 觸發機率（3%）
+  cooldown: 60.0               # 冷卻時間（秒），避免過於頻繁
+  # 特定彩蛋動畫條件
+  chilling_requires_music: false  # chilling_f 是否需要檢測音樂播放（預留功能）
+  yawn_boredom_threshold: 0.7    # yawn_g 觸發的 boredom 閾值（預留功能）
+
+# 🎭 情緒閒置動畫配置
+mood_based_idle:
+  enabled: true
+  # 情緒閾值（用於選擇特殊閒置動畫）
+  thresholds:
+    angry:         # angry_idle_f: 不爽但自尊高
+      mood_max: 0.4
+      pride_min: 0.6
+    awkward:       # awkward_f: 開心但自尊低
+      mood_min: 0.6
+      pride_max: 0.4
+    curious:       # curious_idle_f: 開心且自尊高
+      mood_min: 0.6
+      pride_min: 0.6
+
 interaction:
   drag_enabled: true
   throw_enabled: true
+  drag:
+    trigger_threshold: 5  # 開始拖曳的最小移動距離（像素）
+    struggle_animation: struggle
+    struggle_loop: true
+  throw:
+    velocity_threshold: 500.0  # [已棄用] 判定為投擲的速度閾值（像素/秒）
+    max_velocity: 2000.0  # [已棄用] 最大投擲速度限制
+    gravity_multiplier: 1.2  # [已棄用] 投擲時的重力倍數
+  file_drop:
+    enabled: false  # 預留功能
+    accept_types:
+      - ".txt"
+      - ".md"
+      - ".py"
+      - ".json"
+
+# ==================== 處理器與策略系統 ====================
+handlers:
+  layer:
+    enabled: true
+    throw_velocity_threshold: 500.0
+    height_threshold: 100
+  drag:
+    enabled: true
+  file_drop:
+    enabled: false
+
+# ==================== 動畫優先度系統 ====================
+# 對應 AnimationPriority 枚舉值（數字越大優先度越高）
+animation_priority:
+  # 啟用優先度管理系統
+  enabled: true
+  
+  # 優先度等級定義（參考 core/animation_priority.py）
+  # 注意：IDLE 和 MOVEMENT 同級（30），可互相打斷，避免動畫卡住
+  levels:
+    CURSOR_TRACKING: 10      # 滑鼠追蹤靜態幀
+    EASTER_EGG: 35           # 彩蛋動畫（打哈欠、dance 等）
+    IDLE_ANIMATION: 30       # 一般 idle 動畫（與 MOVEMENT 同級）
+    MOVEMENT: 30             # 移動動畫（與 IDLE 同級，可互相切換）
+    SPECIAL_MOVE: 35         # 特殊移動（smile, curious, excited）
+    TRANSITION: 40           # 轉場動畫（ground ↔ float）
+    TEASE: 45                # Tease 動畫
+    SYSTEM_CYCLE: 50         # 系統循環（input/processing/output）
+    USER_INTERACTION: 60     # 用戶互動（拖曳 struggle、投擲 throw）
+    FORCE_OVERRIDE: 100      # 強制覆蓋（immediate_interrupt=True）
+  
+  # 動畫來源優先度映射（可選：用於手動指定來源的預設優先度）
+  source_defaults:
+    idle_behavior: IDLE_ANIMATION
+    system_cycle_behavior: SYSTEM_CYCLE
+    movement_behavior: MOVEMENT
+    transition_behavior: TRANSITION
+    special_move_behavior: SPECIAL_MOVE
+    drag_handler: USER_INTERACTION
+    throw_handler: USER_INTERACTION
+    file_handler: USER_INTERACTION  # 檔案拖曳接收
+    cursor_tracking: CURSOR_TRACKING
+    tease_system: TEASE
+    easter_egg: EASTER_EGG
+  
+  # 優先度鎖定設定
+  locking:
+    # 非循環動畫完成前是否鎖定優先度（防止被低優先度動畫打斷）
+    lock_during_playback: true
+    # 預設鎖定時間（秒），用於沒有指定時長的動畫
+    default_lock_duration: 2.0
+  
+  # 防抖設定
+  debounce:
+    # 啟用防抖機制（防止動畫切換過於頻繁導致閃現）
+    enabled: true
+    # 最小動畫間隔（秒）
+    min_interval: 0.1
+    # 高優先度動畫是否可以突破防抖限制
+    allow_priority_override: true
 
 debug:
   show_velocity_vector: false
   log_mode_changes: false
   track_cursor: false
+  log_handler_chain: false
+  log_strategy_selection: false
+  log_animation_triggers: false

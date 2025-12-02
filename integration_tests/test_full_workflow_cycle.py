@@ -117,7 +117,7 @@ def test_file():
     Returns:
         Path: 測試檔案路徑（resources/workflow_test.txt）
     """
-    test_file = project_root / "resources" / "workflow_test.txt"
+    test_file = project_root / "tests" / "workflow_test.txt"
     
     if not test_file.exists():
         pytest.fail(f"Test file not found: {test_file}")
@@ -132,7 +132,7 @@ def test_code():
     Returns:
         Path: 測試程式碼檔案路徑（resources/code_test.py）
     """
-    test_code = project_root / "resources" / "code_test.py"
+    test_code = project_root / "tests" / "code_test.py"
     
     if not test_code.exists():
         pytest.fail(f"Test code file not found: {test_code}")
@@ -148,7 +148,7 @@ def test_image():
     Returns:
         Path: 測試圖片路徑（resources/workflow_test.png）
     """
-    test_image = project_root / "resources" / "image.jpg"
+    test_image = project_root / "tests" / "image.jpg"
     
     if not test_image.exists():
         pytest.fail(f"Test image not found: {test_image}")

@@ -21,6 +21,7 @@ from core.bases.module_base import BaseModule
 from core.working_context import working_context_manager, ContextType
 from core.status_manager import status_manager
 from core.states.state_manager import state_manager, UEPState
+from configs.user_settings_manager import user_settings_manager, get_user_setting
 
 from .schemas import (
     LLMInput, LLMOutput, SystemAction, LLMMode, SystemState,
@@ -81,6 +82,15 @@ class LLMModule(BaseModule):
             "total_processing_time": 0.0,
             "cache_hits": 0
         }
+        
+        # P2: 讀取 network 設定
+        from configs.user_settings_manager import get_user_setting
+        self.allow_internet_access = get_user_setting("monitoring.network.allow_internet_access", True)
+        self.allow_api_calls = get_user_setting("monitoring.network.allow_api_calls", True)
+        self.network_timeout = get_user_setting("monitoring.network.timeout", 30)
+        
+        # 註冊使用者設定熱重載回調
+        user_settings_manager.register_reload_callback("llm_module", self._reload_from_user_settings)
 
     def debug(self):
         # Debug level = 1
@@ -95,6 +105,16 @@ class LLMModule(BaseModule):
         debug_log(2, f"[LLM] MCP Client: {'已連接' if self.mcp_client.mcp_server else '未連接'}")
         # Debug level = 4
         debug_log(4, f"[LLM] 完整模組設定: {self.config}")
+    
+    def _check_api_permission(self) -> bool:
+        """檢查 API 調用權限"""
+        if not self.allow_internet_access:
+            error_log("[LLM] ❌ 網路存取已禁用（user_settings: monitoring.network.allow_internet_access = false）")
+            return False
+        if not self.allow_api_calls:
+            error_log("[LLM] ❌ API 呼叫已禁用（user_settings: monitoring.network.allow_api_calls = false）")
+            return False
+        return True
     
     def _setup_state_listener(self):
         """設定系統狀態監聽器，自動切換協作管道"""
@@ -414,6 +434,11 @@ class LLMModule(BaseModule):
                 "Provide clear, concise responses based on the given instructions. "
                 "Follow the format requirements strictly. And ALWAYS respond in English"
             )
+            
+            # P2: 檢查 API 權限
+            if not self._check_api_permission():
+                error_log("[LLM] API 呼叫因權限設定而被阻止")
+                return
             
             response_data = self.model.query(
                 prompt, 
@@ -1172,6 +1197,10 @@ class LLMModule(BaseModule):
                 output = self._handle_chat_mode(llm_input, status)
             elif llm_input.mode == LLMMode.WORK:
                 output = self._handle_work_mode(llm_input, status)
+            elif llm_input.mode == 'UNKNOWN' or (hasattr(llm_input, 'intent') and llm_input.intent == 'UNKNOWN'):
+                # 🔧 處理 UNKNOWN 意圖：給予不知所措的回應
+                debug_log(2, "[LLM] 檢測到 UNKNOWN 意圖，給予友善回應")
+                output = self._handle_unknown_intent(llm_input, status)
             else:
                 # 向後兼容舊的 intent 系統
                 output = self._handle_legacy_mode(llm_input, status)
@@ -1202,6 +1231,64 @@ class LLMModule(BaseModule):
                 "metadata": {},
                 "status": "error"
             }
+    
+    def _handle_unknown_intent(self, llm_input: "LLMInput", status: Dict[str, Any]) -> "LLMOutput":
+        """處理 UNKNOWN 意圖 - 給予友善但不知所措的回應"""
+        start_time = time.time()
+        debug_log(2, "[LLM] 處理 UNKNOWN 意圖")
+        
+        try:
+            # 🔧 構建英文提示詞（LLM只接受英文）
+            prompt = f"""User said: "{llm_input.text}"
+
+You are uncertain about what the user wants to do or talk about. Give a friendly, brief response expressing that you're not quite sure what they mean, and politely ask them to explain in a different way.
+
+Response requirements:
+1. In English
+2. Friendly and polite tone
+3. Brief (1-2 sentences)
+4. Express uncertainty without being too stiff"""
+
+            # 使用簡潔系統提示詞進行單次查詢
+            response_data = self.model.query(
+                prompt,
+                mode="internal",
+                cached_content=None
+            )
+            
+            response_text = response_data.get("content", response_data.get("text", "Sorry, I am not sure what you mean. Could you please explain in a different way?"))
+            
+            processing_time = time.time() - start_time
+            self.processing_stats["total_requests"] += 1
+            self.processing_stats["total_processing_time"] += processing_time
+            
+            # 🔧 構建輸出（使用LLM實際生成的回應）
+            from .schemas import LLMOutput
+            return LLMOutput(
+                text=response_text,
+                success=True,
+                error=None,
+                processing_time=processing_time,
+                tokens_used=response_data.get("tokens_used", 0),
+                confidence=0.7,
+                metadata={
+                    "intent": "unknown",
+                    "response_type": "uncertain"
+                }
+            )
+            
+        except Exception as e:
+            error_log(f"[LLM] UNKNOWN 意圖處理失敗: {e}")
+            processing_time = time.time() - start_time
+            from .schemas import LLMOutput
+            return LLMOutput(
+                text="抱歉，我不太確定你的意思。可以換個方式說明嗎？",
+                success=False,
+                error=str(e),
+                processing_time=processing_time,
+                tokens_used=0,
+                confidence=0.5
+            )
     
     def _handle_chat_mode(self, llm_input: "LLMInput", status: Dict[str, Any]) -> "LLMOutput":
         """處理 CHAT 模式 - 與 MEM 協作的日常對話"""
@@ -1358,15 +1445,6 @@ class LLMModule(BaseModule):
                 success=True,
                 error=None,
                 confidence=response_data.get("confidence", 0.85),
-                sys_action=None,
-                status_updates=StatusUpdate(**response_data["status_updates"]) if response_data.get("status_updates") else None,
-                learning_data=None,
-                conversation_entry=None,
-                session_state=None,
-                memory_observation=response_data.get("memory_observation"),
-                memory_summary=None,
-                emotion="neutral",
-                mood="neutral",
                 metadata={
                     "mode": "CHAT",
                     "cached": False,
@@ -1392,20 +1470,11 @@ class LLMModule(BaseModule):
             error_log(f"[LLM] CHAT 模式處理錯誤: {e}")
             return LLMOutput(
                 text="聊天處理時發生錯誤，請稍後再試。",
-                processing_time=time.time() - start_time,
-                tokens_used=0,
                 success=False,
                 error=str(e),
+                processing_time=time.time() - start_time,
+                tokens_used=0,
                 confidence=0.0,
-                sys_action=None,
-                status_updates=None,
-                learning_data=None,
-                conversation_entry=None,
-                session_state=None,
-                memory_observation=None,
-                memory_summary=None,
-                emotion="neutral",
-                mood="neutral",
                 metadata={"mode": "CHAT", "error_type": "processing_error"}
             )
     
@@ -1452,15 +1521,6 @@ class LLMModule(BaseModule):
                 success=False,
                 error=str(e),
                 confidence=0.0,
-                sys_action=None,
-                status_updates=None,
-                learning_data=None,
-                conversation_entry=None,
-                session_state=None,
-                memory_observation=None,
-                memory_summary=None,
-                emotion="neutral",
-                mood="neutral",
                 metadata={"mode": "WORK", "error_type": "processing_error", "phase": phase}
             )
     
@@ -1551,15 +1611,6 @@ Now convert the system event above into your spoken message:"""
                 success=True,
                 error=None,
                 confidence=1.0,
-                sys_action=None,
-                status_updates=None,
-                learning_data=None,
-                conversation_entry=None,
-                session_state=None,
-                memory_observation=None,
-                memory_summary=None,
-                emotion="neutral",
-                mood="cheerful",
                 metadata={
                     "mode": "WORK",
                     "phase": "response",
@@ -1579,15 +1630,6 @@ Now convert the system event above into your spoken message:"""
                 success=False,
                 error=str(e),
                 confidence=0.0,
-                sys_action=None,
-                status_updates=None,
-                learning_data=None,
-                conversation_entry=None,
-                session_state=None,
-                memory_observation=None,
-                memory_summary=None,
-                emotion="neutral",
-                mood="neutral",
                 metadata={"mode": "WORK", "error_type": "system_report_error", "system_report": True}
             )
     
@@ -1655,15 +1697,6 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                 success=True,
                 error=None,
                 confidence=0.85,
-                sys_action=None,
-                status_updates=None,
-                learning_data=None,
-                conversation_entry=None,
-                session_state=None,
-                memory_observation=None,
-                memory_summary=None,
-                emotion="neutral",
-                mood="neutral",
                 metadata={
                     "mode": "WORK",
                     "phase": "decision",
@@ -1713,7 +1746,7 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             error_log(f"[LLM] Error parsing workflow decision: {e}")
             return None
     
-    def _handle_workflow_input_fast_path(self, llm_input: "LLMInput", workflow_context: Dict[str, Any], start_time: float) -> "LLMOutput":
+    def _handle_workflow_input_fast_path(self, llm_input: "LLMInput", workflow_context: Dict[str, Any], start_time: float) -> Optional["LLMOutput"]:
         """
         快速路徑處理工作流輸入場景
         當檢測到 workflow_input_required 時，直接調用 provide_workflow_input 工具
@@ -1740,9 +1773,59 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             prompt = workflow_context.get('prompt', '')
             
             # 🔧 檢測是否需要 LLM 解析
-            # 如果提示要求結構化數據（包含 JSON、task_name、priority 等關鍵字），
-            # 且用戶輸入是自然語言（不是 JSON 或 key=value 格式），
-            # 則不使用快速路徑，讓 LLM 解析
+            step_type = workflow_context.get('step_type', 'interactive')
+            
+            # 1. 檢查是否為確認步驟（需要 LLM 解析自然語言意圖）
+            is_confirmation_step = workflow_context.get('is_confirmation', False)
+            
+            if is_confirmation_step:
+                debug_log(2, f"[LLM] 快速路徑跳過：確認步驟需要 LLM 解析用戶意圖（step={step_id}, type={step_type}）")
+                return None
+            
+            # 1.5. 檢查輸入步驟是否明確標記需要 LLM 解析（如數字格式、日期格式等）
+            requires_llm_parsing = workflow_context.get('requires_llm_parsing', False)
+            
+            if requires_llm_parsing:
+                debug_log(2, f"[LLM] 快速路徑跳過：輸入步驟需要 LLM 解析格式（step={step_id}, type={step_type}）")
+                return None
+            
+            # 2. 檢查是否為選擇步驟（需要 LLM 解析自然語言選擇）
+            has_options = 'options' in workflow_context
+            
+            if has_options:
+                # 這是選擇步驟，檢查用戶輸入是否為明確的選項值
+                options = workflow_context.get('options', [])
+                labels = workflow_context.get('labels', None)
+                
+                # 檢查用戶輸入是否為明確的數字或精確匹配選項/標籤
+                user_input_lower = user_input.strip().lower()
+                is_explicit_choice = False
+                
+                # 檢查是否為數字索引
+                if user_input.strip().isdigit():
+                    index = int(user_input.strip()) - 1
+                    if 0 <= index < len(options):
+                        is_explicit_choice = True
+                
+                # 檢查是否精確匹配選項
+                if not is_explicit_choice:
+                    for option in options:
+                        if str(option).lower() == user_input_lower:
+                            is_explicit_choice = True
+                            break
+                
+                # 檢查是否精確匹配標籤
+                if not is_explicit_choice and labels:
+                    for label in labels:
+                        if str(label).lower() == user_input_lower:
+                            is_explicit_choice = True
+                            break
+                
+                if not is_explicit_choice:
+                    debug_log(2, f"[LLM] 快速路徑跳過：選擇步驟需要 LLM 解析自然語言（step={step_id}, input='{user_input[:20]}', options={options}）")
+                    return None
+            
+            # 3. 檢查是否需要結構化數據解析
             requires_structured_data = any(keyword in prompt.lower() for keyword in [
                 'json', 'task_name', 'task_description', 'priority', 'deadline'
             ])
@@ -1753,7 +1836,7 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             )
             
             if requires_structured_data and is_natural_language:
-                debug_log(2, f"[LLM] 快速路徑跳過：輸入需要 LLM 解析（step={step_id}）")
+                debug_log(2, f"[LLM] 快速路徑跳過：輸入需要 LLM 結構化解析（step={step_id}）")
                 return None  # 返回 None 讓正常流程處理
             
             info_log(f"[LLM] 快速路徑：直接提交工作流輸入 '{user_input}' 到步驟 {step_id}")
@@ -1805,15 +1888,6 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                 success=result_status == "success",
                 error=None if result_status == "success" else function_call_result.get("error"),
                 confidence=0.9,
-                sys_action=None,
-                status_updates=None,
-                learning_data=None,
-                conversation_entry=None,
-                session_state=None,
-                memory_observation=None,
-                memory_summary=None,
-                emotion="neutral",
-                mood="neutral",
                 metadata={
                     "mode": "WORK",
                     "workflow_context_size": len(str(workflow_context)),
@@ -1837,15 +1911,6 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                 success=False,
                 error=str(e),
                 confidence=0.0,
-                sys_action=None,
-                status_updates=None,
-                learning_data=None,
-                conversation_entry=None,
-                session_state=None,
-                memory_observation=None,
-                memory_summary=None,
-                emotion="neutral",
-                mood="neutral",
                 metadata={
                     "mode": "WORK",
                     "error_type": "fast_path_error",
@@ -1884,17 +1949,37 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                             debug_log(2, f"[LLM] 檢測到活躍的工作流引擎: {session_id}")
                         else:
                             debug_log(2, f"[LLM] WS 存在但無工作流引擎: {session_id}")
+                            
+                            # ✅ 關鍵修復：WS 存在但無對應工作流引擎，使用 session_control 機制結束會話
+                            # 這種情況通常是因為 NLP 誤判導致進入 WORK 模式但未啟動實際工作流
+                            # 使用正規的 session_control 機制，讓 ModuleCoordinator 處理標記
+                            debug_log(1, f"[LLM] 檢測到無效 WS (無工作流引擎): {session_id}，將結束會話")
+                            
+                            # 返回錯誤回應，帶 session_control 指示結束會話
+                            return LLMOutput(
+                                text="抱歉，系統在處理您的請求時遇到問題。請重新輸入您的問題。",
+                                processing_time=time.time() - start_time,
+                                tokens_used=0,
+                                success=False,
+                                error="WS exists without workflow engine",
+                                confidence=0.0,
+                                metadata={
+                                    "mode": "WORK",
+                                    "error_type": "no_workflow_engine",
+                                    "session_id": session_id,
+                                    "session_control": {
+                                        "should_end_session": True,
+                                        "end_reason": "工作流引擎未初始化，WS無法繼續",
+                                        "confidence": 1.0  # 這是系統檢測到的錯誤，100%確定
+                                    }
+                                }
+                            )
                     else:
                         debug_log(2, f"[LLM] 無法訪問 SYS 模組的 workflow_engines")
                 except Exception as e:
                     debug_log(2, f"[LLM] 檢查工作流引擎時出錯: {e}")
                     # 保守策略：如果無法檢查，假設有工作流（避免重複啟動）
                     has_active_workflow = True
-            
-            # ✅ 檢查是否有待處理的工作流事件（正在審核步驟）
-            pending_workflow = getattr(llm_input, 'workflow_context', None)
-            is_reviewing_step = pending_workflow and pending_workflow.get('type') == 'workflow_step_response'
-            
             # 🔧 快速路徑：如果是工作流輸入場景，直接調用 provide_workflow_input
             # 避免花費時間通過 Gemini API 理解用戶意圖，加快響應速度
             is_workflow_input = pending_workflow and pending_workflow.get('type') == 'workflow_input_required'
@@ -2428,15 +2513,6 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                 success=True,
                 error=None,
                 confidence=response_data.get("confidence", 0.90),
-                sys_action=sys_action_obj,
-                status_updates=StatusUpdate(**response_data["status_updates"]) if response_data.get("status_updates") else None,
-                learning_data=None,
-                conversation_entry=None,
-                session_state=None,
-                memory_observation=None,
-                memory_summary=None,
-                emotion="neutral",
-                mood="neutral",
                 metadata={
                     "mode": "WORK",
                     "workflow_context_size": len(llm_input.workflow_context) if llm_input.workflow_context else 0,
@@ -2469,15 +2545,6 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                 success=False,
                 error=str(e),
                 confidence=0.0,
-                sys_action=None,
-                status_updates=None,
-                learning_data=None,
-                conversation_entry=None,
-                session_state=None,
-                memory_observation=None,
-                memory_summary=None,
-                emotion="neutral",
-                mood="neutral",
                 metadata={"mode": "WORK", "error_type": "processing_error"}
             )
     
@@ -2505,15 +2572,6 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                 success=False,
                 error=f"不支援的 intent: {legacy_intent}",
                 confidence=0.0,
-                sys_action=None,
-                status_updates=None,
-                learning_data=None,
-                conversation_entry=None,
-                session_state=None,
-                memory_observation=None,
-                memory_summary=None,
-                emotion="neutral",
-                mood="neutral",
                 metadata={"legacy_intent": legacy_intent}
             )
     
@@ -3083,9 +3141,8 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
         
         try:
             # 從Gemini回應中提取系統動作決策
-            if "sys_action" in response_data:
-                sys_action = response_data["sys_action"]
-                if isinstance(sys_action, dict):
+            if "sys_action" in response_data and isinstance(response_data["sys_action"], dict):
+                    sys_action = response_data["sys_action"]
                     sys_actions.append(sys_action)
                     action = sys_action.get('action', 'unknown')
                     target = sys_action.get('target', 'unknown')
@@ -4046,4 +4103,62 @@ U.E.P 系統可用功能規格：
             
         except Exception as e:
             error_log(f"[LLM] 發布學習資料事件失敗: {e}")
+    
+    def _reload_from_user_settings(self, key_path: str, value: Any) -> bool:
+        """
+        從 user_settings.yaml 重載設定
+        
+        Args:
+            key_path: 設定路徑
+            value: 新值
+            
+        Returns:
+            是否成功
+        """
+        try:
+            info_log(f"[LLM] 🔄 重載使用者設定: {key_path} = {value}")
+            
+            if key_path == "interaction.conversation.user_additional_prompt":
+                # 使用者額外提示（即時生效）
+                info_log(f"[LLM] 使用者額外提示已更新 (長度: {len(str(value))})")
+                # 此設定會在下次生成時自動套用
+                
+            elif key_path == "interaction.conversation.temperature":
+                # 對話溫度（即時生效）
+                old_temp = self.model.temperature
+                self.model.temperature = float(value)
+                info_log(f"[LLM] 對話溫度已更新: {old_temp} → {self.model.temperature}")
+                
+            elif key_path == "interaction.conversation.enable_learning":
+                # 啟用學習系統（即時生效）
+                old_learning = self.learning_engine.learning_enabled
+                self.learning_engine.learning_enabled = bool(value)
+                info_log(f"[LLM] 學習系統: {old_learning} → {self.learning_engine.learning_enabled}")
+            
+            elif key_path == "general.identity.uep_nickname":
+                # UEP 暱稱（即時生效，下次生成 prompt 時使用）
+                info_log(f"[LLM] UEP 暱稱已更新為: {value}")
+            
+            # P2: Network 設定
+            elif key_path == "monitoring.network.allow_internet_access":
+                self.allow_internet_access = bool(value)
+                info_log(f"[LLM] 允許網路存取: {self.allow_internet_access}")
+            elif key_path == "monitoring.network.allow_api_calls":
+                self.allow_api_calls = bool(value)
+                info_log(f"[LLM] 允許 API 呼叫: {self.allow_api_calls}")
+            elif key_path == "monitoring.network.timeout":
+                self.network_timeout = int(value)
+                info_log(f"[LLM] 網路逾時: {self.network_timeout}秒")
+                
+            else:
+                debug_log(2, f"[LLM] 未處理的設定路徑: {key_path}")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            error_log(f"[LLM] 重載使用者設定失敗: {e}")
+            import traceback
+            error_log(traceback.format_exc())
+            return False
 

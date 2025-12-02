@@ -4,7 +4,7 @@
     <SchemaVersion>2.0</SchemaVersion>
     <ProjectGuid>53ea4604-1de6-4edf-9ada-07dee2cab361</ProjectGuid>
     <ProjectHome>.</ProjectHome>
-    <StartupFile>entry.py</StartupFile>
+    <StartupFile>modules\ui_module\user\access_widget.py</StartupFile>
     <SearchPath>
     </SearchPath>
     <WorkingDirectory>.</WorkingDirectory>
@@ -150,6 +150,7 @@
     <Content Include="modules\ui_module\config.yaml" />
     <Content Include="modules\ui_module\example_input.json" />
     <Content Include="modules\ui_module\example_output.json" />
+    <Content Include="modules\ui_module\user\To-do.md" />
     <Content Include="README.md" />
     <Content Include="README.zh-tw.md" />
     <Content Include="requirements.in" />
@@ -264,6 +265,13 @@
     <Compile Include="modules\tts_module\lib\infer_pack\transforms.py" />
     <Compile Include="modules\tts_module\rmvpe.py" />
     <Compile Include="modules\tts_module\vc_infer_pipeline.py" />
+    <Compile Include="modules\ui_module\user\access_widget.py" />
+    <Compile Include="modules\ui_module\user\state_profile.py" />
+    <Compile Include="modules\ui_module\user\system_background.py" />
+    <Compile Include="modules\ui_module\user\theme_manager.py" />
+    <Compile Include="modules\ui_module\user\user_settings.py" />
+    <Compile Include="modules\ui_module\user\user_main_window.py" />
+    <Compile Include="modules\ui_module\user\__init__.py" />
     <Compile Include="module_tests\extra_tests.py" />
     <Compile Include="module_tests\integration_tests.py" />
     <Compile Include="module_tests\test_sys_module.py" />
@@ -379,6 +387,7 @@
     <Folder Include="modules\ui_module\tests\" />
     <Folder Include="models\" />
     <Folder Include="logs\" />
+    <Folder Include="modules\ui_module\user\" />
     <Folder Include="module_tests\" />
     <Folder Include="train\" />
     <Folder Include="train\nlp\" />

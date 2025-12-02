@@ -1,0 +1,143 @@
+advanced:
+  experimental:
+    enable_emotion_analysis: false
+    enable_gesture_control: false
+    enable_smart_suggestions: false
+    enable_voice_commands: false
+  logging:
+    enable_console_output: false
+    enable_split_logs: false
+    enabled: true
+    log_dir: logs
+    log_level: INFO
+    log_rotation_days: 7
+    max_log_size_mb: 50
+    save_logs: true
+  modules:
+    ani_enabled: true
+    llm_enabled: true
+    mem_enabled: true
+    mov_enabled: true
+    nlp_enabled: true
+    stt_enabled: true
+    sys_enabled: true
+    tts_enabled: true
+    ui_enabled: true
+  performance:
+    enable_hardware_acceleration: true
+    gc_interval: 300
+    max_fps: 60
+    reduce_animations_on_battery: true
+behavior:
+  mischief:
+    easter_egg_enabled: true
+    enabled: false
+    intensity: medium
+    tease_frequency: 0.03
+  movement:
+    boundary_mode: barrier
+    enable_cursor_tracking: true
+    enable_throw_behavior: true
+    ground_friction: 0.95
+    max_throw_speed: 110.0
+    movement_smoothing: true
+  permissions:
+    allow_app_launch: true
+    allow_file_creation: true
+    allow_file_deletion: false
+    allow_file_modification: false
+    allow_system_commands: false
+    require_confirmation: true
+general:
+  identity:
+    allow_identity_creation: true
+    current_identity_id: user_1763667679_0a8c93e2
+    uep_nickname: ''
+    user_name: Bernie
+  system:
+    auto_save_settings: true
+    confirm_before_exit: true
+    debug_level: 1
+    enable_debug_mode: false
+    enable_frontend_debug: true
+    language: ja-JP
+    main_loop_interval: 0.1
+    shutdown_timeout: 5.0
+interaction:
+  conversation:
+    enable_learning: true
+    temperature: 0.8
+    user_additional_prompt: ''
+  memory:
+    enabled: true
+  proactivity:
+    allow_system_initiative: true
+    initiative_cooldown: 300
+    require_user_input: false
+  speech_input:
+    enable_continuous_mode: false
+    enabled: true
+    microphone_device_index: 1
+    min_speech_duration: 0.3
+    vad_sensitivity: 0.7
+    wake_word_confidence: 0.8
+  speech_output:
+    default_emotion: neutral
+    emotion_intensity: 0.5
+    enabled: true
+    speed: 1.0
+    volume: 70
+interface:
+  access_widget:
+    animation_speed: 320
+    auto_hide: true
+    hide_edge_threshold: 200
+  appearance:
+    animation_quality: high
+    enable_effects: true
+    font_size: 12
+    theme: dark
+    ui_scale: 1.0
+  main_window:
+    always_on_top: true
+    show_hitbox: false
+    transparency: true
+  windows:
+    show_access_widget: true
+    show_debug_window: false
+    show_desktop_pet: false
+monitoring:
+  background_tasks:
+    default_media_folder: E:\Music\My Songs\Full Playlist
+    enabled: true
+    max_task_duration: -1
+    task_check_interval: 60
+  calendar:
+    enabled: false
+    google_calendar_sync: false
+    reminder_advance_time: 15
+  music:
+    auto_play: false
+    default_volume: 50
+    enabled: false
+    playback_engine: auto
+    shuffle: false
+  network:
+    allow_api_calls: true
+    allow_internet_access: true
+    timeout: 30
+privacy:
+  data_collection:
+    allow_error_reporting: true
+    allow_usage_statistics: false
+    anonymize_data: true
+  data_retention:
+    auto_delete_old_conversations: false
+    clear_cache_on_exit: false
+    conversation_retention_days: 365
+shortcuts:
+  emergency_stop: Ctrl+Alt+X
+  force_sleep: Ctrl+Alt+Z
+  open_debug: Ctrl+Alt+D
+  open_settings: Ctrl+Alt+S
+  toggle_visibility: Ctrl+Alt+U

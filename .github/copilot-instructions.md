@@ -3,10 +3,12 @@
 You are assisting on **U.E.P (Unified Experience Partner)**, a modular Python project.  
 Main priorities: correctness, modularity, stability, and respect for existing naming conventions.
 
+We are current in the phase three of our project, for more infomation please check docs/第三階段進度.md.
 ---
 
 ## Core Rules
 
+- **PLEASE BE 100 PERCENT SURE OF CONTEXT BEFORE SUGGESTING ANY CODE.**
 - **PLEASE DO NOT CREATE ANALYSIS OR EXPLANATION FILES** unless explicitly asked.
 - **Do not** arbitrarily rename classes, functions, or variables.  
   - Especially avoid suffixes like `V2`, `V3`, etc. unless explicitly instructed.  
@@ -53,4 +55,3 @@ Main priorities: correctness, modularity, stability, and respect for existing na
 
 Produce the **smallest viable change** that solves the problem,
 with correct context, correct naming, and proper environment setup.
-Use Traditional Chinese (zh-TW) for user-facing text.

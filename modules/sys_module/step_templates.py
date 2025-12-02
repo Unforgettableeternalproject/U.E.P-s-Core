@@ -35,6 +35,7 @@ class StepTemplate:
                          required_data: Optional[List[str]] = None,
                          optional: bool = False,
                          skip_if_data_exists: bool = False,
+                         requires_llm_parsing: bool = False,
                          description: str = "") -> WorkflowStep:
         """
         創建輸入步驟
@@ -50,6 +51,10 @@ class StepTemplate:
                 - True: 接受初始數據模式（數據存在就跳過）
                 - False: 接受沒有輸入模式（仍然詢問用戶）
                 - optional=True + skip_if_data_exists=True: 兩者皆有模式
+            requires_llm_parsing: 是否需要 LLM 解析用戶輸入
+                - True: 輸入有格式要求（如數字、日期），需要 LLM 理解自然語言並轉換
+                  例如："三個" → "3", "明天" → "2025-11-28"
+                - False: 自由文本輸入，用戶輸入什麼就是什麼
             description: 步驟描述，用於 LLM 上下文
         """
         class InputStep(WorkflowStep):
@@ -59,6 +64,9 @@ class StepTemplate:
                 self.set_step_type(self.STEP_TYPE_INTERACTIVE)
                 if description:
                     self.set_description(description)
+                
+                # 🔧 標記是否需要 LLM 解析（用於快速路徑判斷）
+                self.requires_llm_parsing = requires_llm_parsing
                 
                 if required_data:
                     for req in required_data:
@@ -160,6 +168,9 @@ class StepTemplate:
                 self.set_step_type(self.STEP_TYPE_INTERACTIVE)
                 if description:
                     self.set_description(description)
+                
+                # 🔧 標記為確認步驟（LLM 需要知道這是確認類步驟）
+                self.is_confirmation = True
                 
                 if required_data:
                     for req in required_data:
@@ -356,6 +367,10 @@ class StepTemplate:
                 super().__init__(session)
                 self.set_id(step_id)
                 self.set_step_type(self.STEP_TYPE_INTERACTIVE)
+                
+                # 🔧 暴露選項信息給外部（LLM 需要知道有哪些選項）
+                self.options = str_options
+                self.labels = labels
                 
                 if required_data:
                     for req in required_data:
@@ -564,8 +579,16 @@ class StepTemplate:
                         {step_id: str(path_obj)}
                     )
                 
+                # 如果沒有檔案輸入，提示使用者提供檔案
                 if not user_input:
-                    return StepResult.failure("請提供檔案路徑")
+                    prompt_msg = "請拖曳檔案給我，或告訴我檔案的路徑"
+                    if file_types:
+                        prompt_msg += f"（支援格式: {', '.join(file_types)}）"
+                    
+                    result = StepResult.failure(prompt_msg)
+                    result.requires_user_confirmation = True
+                    result.continue_current_step = True  # 繼續在此步驟等待
+                    return result
                 
                 # 解析文件路徑（清理引號）
                 file_paths = []

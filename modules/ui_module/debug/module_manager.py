@@ -229,7 +229,6 @@ class ModuleManager:
                 "store_memory": debug_api.mem_test_store_memory_wrapper,
                 "memory_query": debug_api.mem_test_memory_query_wrapper,
                 "conversation_snapshot": debug_api.mem_test_conversation_snapshot_wrapper,
-                "identity_manager_stats": debug_api.mem_test_identity_manager_stats_wrapper,
                 "write_then_query": debug_api.mem_test_write_then_query_wrapper,
             }
             
@@ -265,7 +264,6 @@ class ModuleManager:
             
             # SYS 測試函數 - 使用包裝函數
             self.test_functions["sysmod"] = {
-                "list_functions": debug_api.sys_list_functions_wrapper,
                 "test_functions": debug_api.sys_test_functions_wrapper,
                 "test_workflows": debug_api.sys_test_workflows_wrapper,
                 "command_workflow": debug_api.test_command_workflow_wrapper,

@@ -1,0 +1,68 @@
+# ANI 模組狀態-動畫映射配置
+# 根據系統狀態和處理層級自動選擇動畫
+# 層級切換由 event_bus 的層級完成事件（INPUT/PROCESSING/OUTPUT_LAYER_COMPLETE）驅動
+
+# 無會話時（IDLE 狀態）
+IDLE:
+  # 自由移動時的閒置動畫（循環）- 使用實際存在的動畫名稱
+  idle_animations:
+    - smile_idle_f      # 微笑閒置（浮空）
+    - curious_idle_f    # 好奇閒置（浮空）
+    - stand_idle_g      # 站立閒置（地面）
+  
+  # 進入/離開動畫
+  transition_in: enter
+  transition_out: leave
+
+# 層級驅動的動畫（適用於所有有循環的狀態）
+# 每個系統循環都會經過三個層級，動畫由層級事件驅動而非狀態驅動
+# 層級流程：input (使用者輸入) → processing (系統處理) → output (系統回應)
+LAYERS:
+  # 輸入層：偵測到使用者互動時（STT 開始接收語音）
+  # 觸發時機：INTERACTION_STARTED 事件發布時
+  input:
+    default: thinking_f  # listening 動畫（會自動根據 movement_mode 切換 _f/_g）
+  
+  # 處理層：系統思考/處理階段
+  # 觸發時機：INPUT_LAYER_COMPLETE 事件發布後
+  processing:
+    default: data_processing_f  # 一般思考動畫（會自動根據 movement_mode 切換 _f/_g）
+    file_workflow: take_file_f  # 檔案工作流動畫（當 WorkingContext 有 current_file_path 時）
+  
+  # 輸出層：系統回應階段
+  # 觸發時機：PROCESSING_LAYER_COMPLETE 事件發布後
+  output:
+    # 根據 mood 決定使用哪個 talk 動畫
+    positive_mood: talk_ani_f   # mood > 0 時的回應動畫
+    negative_mood: talk_ani2_f  # mood <= 0 時的回應動畫
+
+# 搗蛋模式（MISCHIEF 狀態）
+MISCHIEF:
+  # 未來擴充
+  animations: []
+
+# 休眠模式（SLEEP 狀態）
+SLEEP:
+  # 未來擴充
+  animations: []
+
+# 特殊狀態標記
+special:
+  # 目前只實現了地面動畫
+  has_ground_animations: true
+  has_air_animations: false  # 空中動畫暫時用對應的地面動畫替代
+  
+# 動畫別名映射（根據實際可用的動畫名稱）
+# 參考 config.yaml 中的 clips 定義
+fallbacks:
+  # 輸入層動畫
+  data_research: data_search_f  # 數據搜尋動畫（浮空）
+  idle: smile_idle_f  # 閒置時的微笑動畫
+  
+  # 處理層動畫
+  thinking: thinking_f  # 思考動畫（浮空）
+  take_file: take_file_f  # 拿取檔案動畫（浮空）
+  
+  # 輸出層動畫
+  talk_ani_1: talk_ani_f  # 正面情緒說話動畫
+  talk_ani_2: talk_ani2_f  # 負面情緒說話動畫

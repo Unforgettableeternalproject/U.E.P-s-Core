@@ -127,12 +127,35 @@ if __name__ == "__main__":
             debug_api.set_loading_mode(preload=False)
             print("✅ 已設定為按需載入模式")
             
+            # 初始化核心管理器（不載入模組）
+            print("🔧 初始化核心管理器...")
+            
+            # 確保狀態管理器已初始化（自動初始化的全局單例）
+            from core.status_manager import status_manager
+            print(f"✅ StatusManager 已初始化")
+            
+            # 確保工作上下文管理器已初始化
+            from core.working_context import working_context_manager
+            print(f"✅ WorkingContextManager 已初始化")
+            
+            # 確保會話管理器已初始化
+            from core.sessions import session_manager
+            print(f"✅ SessionManager 已初始化")
+            
+            # 確保狀態管理器已初始化
+            from core.states import state_manager
+            print(f"✅ StateManager 已初始化")
+            
+            print("✅ 所有核心管理器已初始化（模組保持延遲載入）")
+            
             # 不預先載入任何模組，直接啟動除錯介面
             # 讓使用者在除錯介面中手動決定載入哪些模組
             from modules.ui_module.debug import launch_debug_interface
             launch_debug_interface(prefer_gui=True, blocking=True)
         except Exception as e:
             print(f"❌ 圖形除錯介面啟動失敗: {e}")
+            import traceback
+            traceback.print_exc()
             sys.exit(1)
         sys.exit(0)
 

@@ -2242,3 +2242,15 @@
 
 ---
 
+### Added corrected status window and fixed even more animation. 12/3
+
+> Date: Wed, 03 Dec 2025 00:00:42 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `c3858ded41d1a81bd4f1824744b52eba36d5327f`
+
+---
+

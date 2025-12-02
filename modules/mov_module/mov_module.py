@@ -886,16 +886,21 @@ class MOVModule(BaseFrontendModule):
             
             # 獲取動畫持續時間（從 ANI config 讀取）
             duration = self._get_animation_duration(anim_name)
-            # 增加額外緩衝時間以確保動畫完整播放
-            timeout = duration + 0.5
+            # 增加額外緩衝時間以確保動畫完整播放（增加到 1.0 秒）
+            timeout = duration + 1.0
             
             debug_log(1, f"[{self.module_id}] 入場動畫 {anim_name}: 持續時間={duration:.2f}s, 超時={timeout:.2f}s")
             
             # 暫停移動直到動畫完成
             self.pause_movement("entry_animation")
             
-            # 播放動畫並等待完成
-            self._trigger_anim(anim_name, {"loop": False}, source="entry_animation")
+            # 播放動畫並等待完成（使用 USER_INTERACTION 優先度）
+            self._trigger_anim(
+                anim_name, 
+                {"loop": False, "allow_interrupt": False},  # 不允許被打斷
+                source="entry_animation",
+                priority=AnimationPriority.USER_INTERACTION
+            )
             self._await_animation(anim_name, timeout, self._on_entry_complete)
             
             info_log(f"[{self.module_id}] 播放入場動畫: {anim_name} (持續 {duration:.2f}秒)")
@@ -980,6 +985,12 @@ class MOVModule(BaseFrontendModule):
             # 進入第一個行為
             self._enter_behavior(self.current_behavior_state)
         
+        # 通知優先度管理器入場動畫已完成，清理優先度鎖定
+        anim_name = self._get_entry_animation_name()
+        if anim_name and hasattr(self, '_animation_priority') and self._animation_priority:
+            self._animation_priority.on_animation_finished(anim_name)
+            debug_log(2, f"[{self.module_id}] 入場動畫 {anim_name} 優先度已清理")
+        
         # 使用 QTimer.singleShot 延遲執行
         from PyQt5.QtCore import QTimer
         QTimer.singleShot(500, _switch_to_idle)  # 500ms = 0.5秒
@@ -1003,16 +1014,21 @@ class MOVModule(BaseFrontendModule):
             
             # 獲取動畫持續時間（從 ANI 獲取實際幀數和幀持續時間）
             duration = self._get_animation_duration(anim_name)
-            # 增加額外緩衝時間以確保動畫完整播放
-            timeout = duration + 0.5
+            # 增加額外緩衝時間以確保動畫完整播放（增加到 1.0 秒）
+            timeout = duration + 1.0
             
             debug_log(1, f"[{self.module_id}] 離場動畫 {anim_name}: 持續時間={duration:.2f}s, 超時={timeout:.2f}s")
             
             # 暫停移動直到動畫完成
             self.pause_movement("leave_animation")
             
-            # 播放動畫並等待完成
-            self._trigger_anim(anim_name, {"loop": False}, source="exit_animation")
+            # 播放動畫並等待完成（使用 USER_INTERACTION 優先度）
+            self._trigger_anim(
+                anim_name, 
+                {"loop": False, "allow_interrupt": False},  # 不允許被打斷
+                source="exit_animation",
+                priority=AnimationPriority.USER_INTERACTION
+            )
             self._await_animation(
                 anim_name, 
                 timeout, 
@@ -1037,6 +1053,12 @@ class MOVModule(BaseFrontendModule):
         self._last_hide_position = (self.position.x, self.position.y)
         debug_log(1, f"[{self.module_id}] 離場動畫完成，記住位置: ({self.position.x:.0f}, {self.position.y:.0f})")
         info_log(f"[{self.module_id}] 離場動畫完成")
+        
+        # 通知優先度管理器離場動畫已完成，清理優先度鎖定
+        anim_name = self._get_leave_animation_name()
+        if anim_name and hasattr(self, '_animation_priority') and self._animation_priority:
+            self._animation_priority.on_animation_finished(anim_name)
+            debug_log(2, f"[{self.module_id}] 離場動畫 {anim_name} 優先度已清理")
         
         # 停止 ANI 模組動畫，避免隱藏期間繼續播放
         if self.ani_module:
@@ -2458,6 +2480,22 @@ GS 推進 - 當前 GS 結束，恢復 idle 狀態和移動"""
             idle_anim = self.anim_query.get_idle_animation_for_mode(is_ground=True)
             self._trigger_anim(idle_anim, {"loop": True}, source="throw_handler")
             self._switch_behavior(BehaviorState.IDLE)
+        
+        # 檢查是否是轉場動畫完成（f_to_g 或 g_to_f）
+        if finished_name in ('f_to_g', 'g_to_f'):
+            debug_log(2, f"[{self.module_id}] 轉場動畫完成: {finished_name}")
+            # 如果當前已經在 IDLE 狀態（由 TransitionBehavior 切換），觸發相應的 idle 動畫
+            if self.current_behavior_state == BehaviorState.IDLE:
+                is_ground = (self.movement_mode == MovementMode.GROUND)
+                idle_anim = self.anim_query.get_idle_animation_for_mode(is_ground) if self.anim_query else (
+                    "stand_idle_g" if is_ground else "smile_idle_f"
+                )
+                # 明確指定 IDLE_ANIMATION 優先度，確保可以播放
+                self._trigger_anim(idle_anim, {
+                    "loop": True,
+                    "force_restart": True
+                }, source="transition_complete", priority=AnimationPriority.IDLE_ANIMATION)
+                debug_log(2, f"[{self.module_id}] 轉場完成後觸發 idle 動畫: {idle_anim}")
         
         # 若有指定等待且名稱吻合才解除
         if self._awaiting_anim and finished_name == self._awaiting_anim:

@@ -154,24 +154,31 @@ class SystemBackgroundWindow(QMainWindow):
         self.theme_toggle.setText("☀️" if is_dark else "🌙")
 
     def _tm_is_dark(self, name: str = None) -> bool:
+        """檢查當前主題是否為深色模式"""
         try:
+            # 如果傳入主題名稱，直接判斷
             if isinstance(name, str):
                 return name.lower() == "dark"
+            
+            # 檢查 theme_manager.theme 屬性（正確的屬性名稱）
+            if hasattr(theme_manager, "theme"):
+                theme = theme_manager.theme
+                if isinstance(theme, Theme):
+                    return theme == Theme.DARK
+                if isinstance(theme, str):
+                    return theme.lower() == "dark"
+            
+            # 備用：嘗試其他可能的屬性
             cur = getattr(theme_manager, "current", None)
             if cur is not None:
                 if isinstance(cur, Theme):
                     return cur == Theme.DARK
                 if isinstance(cur, str):
                     return cur.lower() == "dark"
-            getter = getattr(theme_manager, "current_theme", None) or getattr(theme_manager, "get_theme", None)
-            if callable(getter):
-                val = getter()
-                if isinstance(val, Theme):
-                    return val == Theme.DARK
-                if isinstance(val, str):
-                    return val.lower() == "dark"
-        except Exception:
-            pass
+        except Exception as e:
+            debug_log(3, f"[SystemBackground] 無法檢查主題狀態: {e}")
+        
+        # 預設返回 False（淺色模式）
         return False
 
     def _tall_scroll(self, scroll_area: QScrollArea):
@@ -212,9 +219,8 @@ class SystemBackgroundWindow(QMainWindow):
         self.theme_toggle.setFixedSize(48, 48)
         self.theme_toggle.setCursor(Qt.PointingHandCursor)
         self.theme_toggle.setFont(QFont("Segoe UI Emoji", 18))
-        # 根據當前主題設定初始圖標
-        is_dark = self._tm_is_dark()
-        self.theme_toggle.setText("☀️" if is_dark else "🌙")
+        # 初始文字留空，由 _wire_theme_manager() 中的 _on_theme_changed() 設置
+        self.theme_toggle.setText("🌙")  # 臨時預設值
         self.theme_toggle.clicked.connect(self.toggle_theme)
         header_layout.addWidget(self.theme_toggle)
 

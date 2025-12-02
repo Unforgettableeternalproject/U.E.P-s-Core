@@ -165,6 +165,8 @@ animation_priority:
     cursor_tracking: CURSOR_TRACKING
     tease_system: TEASE
     easter_egg: EASTER_EGG
+    entry_animation: USER_INTERACTION  # 入場動畫（高優先度）
+    exit_animation: USER_INTERACTION   # 離場動畫（高優先度）
   
   # 優先度鎖定設定
   locking:

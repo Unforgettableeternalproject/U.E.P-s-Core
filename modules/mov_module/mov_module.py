@@ -271,6 +271,11 @@ class MOVModule(BaseFrontendModule):
         self._state_animation_config: Optional[Dict] = None
         self._current_playing_anim: Optional[str] = None  # 當前播放的動畫名稱（用於避免重複觸發）
         
+        # --- SLEEP 狀態管理 ---
+        self._is_sleeping: bool = False  # 是否處於睡眠狀態
+        self._pending_sleep_transition: bool = False  # 是否等待執行睡眠轉換 (f_to_g 完成後)
+        self._pending_wake_transition: bool = False  # 是否等待完成喚醒轉換 (l_to_g 完成後)
+        
         # 🔧 閒置管理器（自動睡眠）
         # TODO: 睡眠功能尚未實作，暫時不初始化 IdleManager
         # self.idle_manager = IdleManager()
@@ -521,12 +526,13 @@ class MOVModule(BaseFrontendModule):
             ground_speed=self.GROUND_SPEED,
             float_min_speed=self.FLOAT_MIN_SPEED,
             float_max_speed=self.FLOAT_MAX_SPEED,
-            physics=self.physics,
+                        source_map = {
             sm=self.sm,
             trigger_anim=self._trigger_anim,
             set_target=self._set_target,
             get_cursor_pos=self._get_cursor_pos,
-            now=now,
+                            BehaviorState.SYSTEM_CYCLE: "system_cycle_behavior",
+                            BehaviorState.SLEEPING: "sleep_behavior",
             anim_query=self.anim_query,
             transition_start_time=self.transition_start_time,
             movement_locked_until=self.movement_locked_until,
@@ -545,6 +551,7 @@ class MOVModule(BaseFrontendModule):
                 BehaviorState.SPECIAL_MOVE: "special_move_behavior",
                 BehaviorState.TRANSITION: "transition_behavior",
                 BehaviorState.SYSTEM_CYCLE: "system_cycle_behavior",
+                BehaviorState.SLEEPING: "sleep_behavior",
             }
             source = source_map.get(self.current_behavior_state, "behavior")
             # 從 params 中提取 priority（如果有的話）
@@ -722,6 +729,7 @@ class MOVModule(BaseFrontendModule):
                 BehaviorState.SPECIAL_MOVE: "special_move_behavior",
                 BehaviorState.TRANSITION: "transition_behavior",
                 BehaviorState.SYSTEM_CYCLE: "system_cycle_behavior",
+                BehaviorState.SLEEPING: "sleep_behavior",
             }
             source = source_map.get(state, "behavior")
             self._trigger_anim(name, params, source=source)
@@ -1757,10 +1765,99 @@ class MOVModule(BaseFrontendModule):
         debug_log(1, f"[{self.module_id}] 系統狀態變更: {old_state} -> {new_state}")
         self._current_system_state = new_state
         
+        # SLEEP 狀態進入處理
+        if new_state == UEPState.SLEEP:
+            self._enter_sleep_state()
+        # SLEEP 狀態退出處理
+        elif old_state == UEPState.SLEEP and new_state != UEPState.SLEEP:
+            self._exit_sleep_state()
         # IDLE 狀態時清除層級並播放閒置動畫
-        if new_state == UEPState.IDLE:
+        elif new_state == UEPState.IDLE:
             self._current_layer = None
             # SystemCycleBehavior 已結束，切換回 IdleBehavior 會自動處理 IDLE 動畫
+    def _enter_sleep_state(self):
+        """進入 SLEEP 狀態處理
+    
+        流程：
+        1. 檢查當前是否在 ground 模式
+        2. 如果在 float 模式，先執行 f_to_g 轉換
+        3. 執行 g_to_l 轉換動畫
+        4. 進入 sleep_l 循環動畫
+        5. 切換行為狀態為 SLEEPING
+        """
+        try:
+            info_log(f"[{self.module_id}] 🌙 進入 SLEEP 狀態")
+        
+            # 停止當前移動
+            self.movement_locked_until = time.time() + 999999  # 鎖定移動
+        
+            # 切換到 SLEEPING 行為狀態
+            self._switch_behavior(BehaviorState.SLEEPING)
+        
+            # 檢查當前模式，如果不在 ground，先轉換
+            if self.mode != MovementMode.GROUND:
+                info_log(f"[{self.module_id}] 當前模式為 {self.mode}，先轉換到 ground")
+                # 如果在 float，執行 f_to_g
+                if self.mode == MovementMode.FLOAT:
+                    self._request_animation("f_to_g", reason="sleep_preparation")
+                    # 等待轉換完成後再執行 g_to_l（在動畫完成回調中處理）
+                    self._pending_sleep_transition = True
+                    return
+        
+            # 已經在 ground，直接執行躺下動畫
+            self._execute_sleep_transition()
+        
+        except Exception as e:
+            error_log(f"[{self.module_id}] 進入 SLEEP 狀態失敗: {e}")
+            import traceback
+            error_log(traceback.format_exc())
+
+    def _execute_sleep_transition(self):
+        """執行睡眠轉換動畫 (g_to_l → sleep_l)"""
+        try:
+            info_log(f"[{self.module_id}] 執行睡眠轉換: g_to_l → sleep_l")
+        
+            # 播放 g_to_l 轉換動畫
+            self._request_animation("g_to_l", reason="entering_sleep")
+        
+            # 標記睡眠動畫已開始
+            self._is_sleeping = True
+        
+            # 在 g_to_l 完成後會自動切換到 sleep_l（在動畫完成回調中處理）
+        
+        except Exception as e:
+            error_log(f"[{self.module_id}] 執行睡眠轉換失敗: {e}")
+
+    def _exit_sleep_state(self):
+        """退出 SLEEP 狀態處理
+    
+        流程：
+        1. 停止 sleep_l 循環動畫
+        2. 播放 l_to_g 起身動畫
+        3. 恢復到 ground 模式的 IDLE 狀態
+        4. 解鎖移動
+        """
+        try:
+            info_log(f"[{self.module_id}] ☀️ 退出 SLEEP 狀態")
+        
+            self._is_sleeping = False
+            self._pending_sleep_transition = False
+        
+            # 播放起身動畫
+            self._request_animation("l_to_g", reason="waking_up")
+        
+            # 解鎖移動
+            self.movement_locked_until = 0
+        
+            # 切換回 IDLE 行為狀態（起身動畫完成後）
+            # 在動畫完成回調中處理
+            self._pending_wake_transition = True
+        
+        except Exception as e:
+            error_log(f"[{self.module_id}] 退出 SLEEP 狀態失敗: {e}")
+            import traceback
+            error_log(traceback.format_exc())
+    
     
     # ========= 層級事件訂閱與處理 =========
     

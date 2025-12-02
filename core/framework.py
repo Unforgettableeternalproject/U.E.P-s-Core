@@ -251,6 +251,9 @@ class CoreFramework:
         # 初始化預定義流程
         self._initialize_system_flows()
         
+        # 🌙 訂閱 SLEEP 相關事件
+        self._subscribe_sleep_events()
+        
         info_log("[CoreFramework] 核心框架初始化完成")
         info_log("[CoreFramework] 效能監控系統已啟用")
     
@@ -764,6 +767,83 @@ class CoreFramework:
                 "monitoring_errors": 0
             }
             info_log("[CoreFramework] 效能指標已重置")
+    
+    # ========== SLEEP 狀態支援 ==========
+    
+    def _subscribe_sleep_events(self):
+        """訂閱 SLEEP 相關事件"""
+        try:
+            from core.event_bus import event_bus, SystemEvent
+            
+            # 訂閱 SLEEP_ENTERED 事件（卸載模組）
+            event_bus.subscribe(
+                SystemEvent.STATE_CHANGED,
+                self._on_state_changed,
+                handler_name="framework_sleep"
+            )
+            
+            debug_log(2, "[CoreFramework] 已訂閱 SLEEP 狀態事件")
+            
+        except Exception as e:
+            error_log(f"[CoreFramework] 訂閱 SLEEP 事件失敗: {e}")
+    
+    def _on_state_changed(self, event):
+        """處理狀態變化事件"""
+        try:
+            new_state_str = event.data.get('new_state')
+            old_state_str = event.data.get('old_state')
+            
+            # 檢查是否進入 SLEEP 狀態
+            if new_state_str == "sleep":
+                self._handle_sleep_entry()
+            # 檢查是否從 SLEEP 狀態喚醒
+            elif old_state_str == "sleep" and new_state_str != "sleep":
+                self._handle_sleep_exit()
+                
+        except Exception as e:
+            error_log(f"[CoreFramework] 處理狀態變化事件失敗: {e}")
+    
+    def _handle_sleep_entry(self):
+        """處理進入 SLEEP 狀態 - 卸載非關鍵模組"""
+        try:
+            info_log("[CoreFramework] 🌙 系統進入 SLEEP 狀態，開始卸載非關鍵模組...")
+            
+            # 定義非關鍵模組（可以卸載的模組）
+            # UI 模組通常不卸載，因為前端需要顯示睡覺動畫和喚醒按鈕
+            non_critical_modules = ["stt", "nlp", "llm", "mem", "tts", "sys"]
+            
+            # 使用 registry 卸載模組
+            from core import registry
+            
+            unloaded_count = 0
+            for module_name in non_critical_modules:
+                if registry.is_loaded(module_name):
+                    success = registry.unload_module(module_name)
+                    if success:
+                        unloaded_count += 1
+                        # 同時從 Framework 註冊表移除
+                        if module_name in self.modules:
+                            del self.modules[module_name]
+            
+            info_log(f"[CoreFramework] ✅ 已卸載 {unloaded_count} 個非關鍵模組")
+            
+        except Exception as e:
+            error_log(f"[CoreFramework] 處理 SLEEP 進入失敗: {e}")
+            import traceback
+            error_log(traceback.format_exc())
+    
+    def _handle_sleep_exit(self):
+        """處理退出 SLEEP 狀態 - 標記需要重載模組"""
+        try:
+            info_log("[CoreFramework] ⏰ 系統從 SLEEP 狀態喚醒")
+            info_log("[CoreFramework] 模組將在下次需要時自動載入")
+            
+            # 注意：不在這裡立即重載模組
+            # 模組會在 SystemLoop 或 ModuleCoordinator 需要時自動通過 registry.get_module() 載入
+            # 這樣可以避免不必要的資源消耗
+            
+        except Exception as e:
+            error_log(f"[CoreFramework] 處理 SLEEP 退出失敗: {e}")
 
 
 # 全局框架實例

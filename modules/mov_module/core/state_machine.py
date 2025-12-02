@@ -17,6 +17,7 @@ class BehaviorState(Enum):
     SPECIAL_MOVE = "special_move" # 15%
     TRANSITION = "transition"     # 5%
     SYSTEM_CYCLE = "system_cycle" # 系統循環運行中（暫停移動，播放層級動畫）
+    SLEEPING = "sleeping"         # 睡眠狀態（播放 g_to_l → sleep_l 循環）
 
 class SpecialMoveVariant(Enum):
     """特殊移動變體 - 多種趣味移動模式"""

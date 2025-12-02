@@ -82,6 +82,9 @@ class ProductionRunner:
         try:
             info_log("🔧 開始系統初始化...")
             
+            # 🌙 檢查是否上次在 SLEEP 狀態
+            self._check_previous_sleep_state()
+            
             # 導入並創建系統初始化器
             from core.system_initializer import SystemInitializer
             self.system_initializer = SystemInitializer()
@@ -333,6 +336,19 @@ class ProductionRunner:
             
         except Exception as e:
             debug_log(1, f"⚠️ 資源清理過程中的警告: {e}")
+    
+    def _check_previous_sleep_state(self):
+        """檢查系統上次是否在 SLEEP 狀態"""
+        try:
+            from core.states.wake_api import check_sleep_on_startup
+            
+            was_sleeping = check_sleep_on_startup()
+            
+            if was_sleeping:
+                info_log("[ProductionRunner] 系統從 SLEEP 狀態恢復，將以正常模式啟動")
+            
+        except Exception as e:
+            debug_log(2, f"[ProductionRunner] 檢查 SLEEP 狀態失敗: {e}")
     
     def _setup_signal_handlers(self):
         """設置信號處理器"""

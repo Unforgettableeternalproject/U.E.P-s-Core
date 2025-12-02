@@ -428,11 +428,24 @@ class StateManager:
             # 取消當前會話（Sleep 不需要會話）
             self._cleanup_sessions()
             
-            # 執行資源釋放操作
-            self._prepare_system_sleep(context)
+            # 使用 SleepManager 進入休眠
+            from core.states.sleep_manager import sleep_manager
             
-            # 降低系統活動度
-            self._reduce_system_activity()
+            # 準備休眠上下文
+            sleep_context = {
+                "previous_state": self._state.value,
+                "trigger_reason": context.get("trigger_reason", "system_idle") if context else "system_idle",
+                "boredom_level": context.get("boredom_level", 0.0) if context else 0.0,
+                "inactive_duration": context.get("inactive_duration", 0.0) if context else 0.0
+            }
+            
+            # 進入休眠
+            success = sleep_manager.enter_sleep(sleep_context)
+            
+            if success:
+                debug_log(1, "[StateManager] ✅ 系統已成功進入休眠狀態")
+            else:
+                debug_log(1, "[StateManager] ❌ 進入休眠狀態失敗")
             
         except Exception as e:
             debug_log(1, f"[StateManager] 處理 Sleep 狀態失敗: {e}")
@@ -571,25 +584,7 @@ class StateManager:
         except Exception as e:
             debug_log(1, f"[StateManager] 觸發 Mischief 行為失敗: {e}")
     
-    def _prepare_system_sleep(self, context: Optional[Dict[str, Any]] = None):
-        """準備系統休眠"""
-        try:
-            # TODO: 實作系統資源釋放邏輯
-            # 例如：暫停不必要的服務、清理快取等
-            debug_log(2, "[StateManager] 準備系統休眠 (待實作資源釋放)")
-            
-        except Exception as e:
-            debug_log(1, f"[StateManager] 準備系統休眠失敗: {e}")
-    
-    def _reduce_system_activity(self):
-        """降低系統活動度"""
-        try:
-            # TODO: 實作降低系統活動的邏輯
-            # 例如：降低監控頻率、暫停背景任務等
-            debug_log(2, "[StateManager] 降低系統活動度 (待實作)")
-            
-        except Exception as e:
-            debug_log(1, f"[StateManager] 降低系統活動度失敗: {e}")
+
     
     def _setup_status_integration(self):
         """設置與 StatusManager 的整合"""
@@ -701,7 +696,7 @@ class StateManager:
                 if old_state == UEPState.MISCHIEF:
                     self._restore_helpfulness_after_mischief()
                 elif old_state == UEPState.SLEEP:
-                    self._restore_activity_after_sleep()
+                    self._wake_from_sleep(reason)
                 
                 # 回到 IDLE 狀態
                 self.set_state(UEPState.IDLE, {"exit_reason": reason})
@@ -710,6 +705,18 @@ class StateManager:
                 
         except Exception as e:
             debug_log(1, f"[StateManager] 退出特殊狀態失敗: {e}")
+    
+    def _wake_from_sleep(self, reason: str):
+        """從 SLEEP 狀態喚醒"""
+        try:
+            from core.states.sleep_manager import sleep_manager
+            
+            if sleep_manager.is_sleeping():
+                sleep_manager.wake_up(reason)
+                debug_log(2, f"[StateManager] 系統已喚醒: {reason}")
+            
+        except Exception as e:
+            debug_log(1, f"[StateManager] 喚醒失敗: {e}")
     
     def _restore_helpfulness_after_mischief(self):
         """Mischief 狀態結束後恢復 Helpfulness"""
@@ -729,14 +736,7 @@ class StateManager:
         except Exception as e:
             debug_log(1, f"[StateManager] 恢復 Mischief 後數值失敗: {e}")
     
-    def _restore_activity_after_sleep(self):
-        """Sleep 狀態結束後恢復系統活動"""
-        try:
-            # TODO: 實作恢復系統活動的邏輯
-            debug_log(2, "[StateManager] 恢復 Sleep 後的系統活動 (待實作)")
-            
-        except Exception as e:
-            debug_log(1, f"[StateManager] 恢復 Sleep 後活動失敗: {e}")
+
 
     def on_event(self, intent: str, result: dict):
         """

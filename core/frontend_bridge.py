@@ -151,6 +151,13 @@ class FrontendBridge:
             event_bus.subscribe(
                 SystemEvent.MODULE_ERROR,
                 self._on_module_error,
+            
+                            # 訂閱用戶互動事件（用於更新 last_interaction_time）
+                            event_bus.subscribe(
+                                SystemEvent.USER_INTERACTION,
+                                self._on_user_interaction,
+                                handler_name="frontend_bridge_interaction"
+                            )
                 handler_name="frontend_bridge"
             )
             
@@ -196,6 +203,25 @@ class FrontendBridge:
             error_log(f"[FrontendBridge] 建立模組連接失敗: {e}")
     
     # ===== 事件處理器 =====
+    
+        def _on_user_interaction(self, event):
+            """處理來自前端的用戶互動事件
+        
+            前端 UI/MOV 模組在檢測到用戶互動時（如點擊、拖拽）應發布此事件
+            此處理器會更新 last_interaction_time，防止系統進入 SLEEP 狀態
+            """
+            try:
+                from core.status_manager import StatusManager
+            
+                interaction_type = event.data.get('type', '前端互動') if hasattr(event, 'data') and event.data else '前端互動'
+            
+                status_mgr = StatusManager()
+                status_mgr.record_interaction(successful=True, task_type=interaction_type)
+            
+                debug_log(3, f"[FrontendBridge] 已記錄用戶互動: {interaction_type}")
+            
+            except Exception as e:
+                error_log(f"[FrontendBridge] 處理用戶互動事件失敗: {e}")
     
     def _on_state_changed(self, event):
         """系統狀態改變處理"""

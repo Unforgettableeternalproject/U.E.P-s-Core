@@ -2242,3 +2242,15 @@
 
 ---
 
+### Added first-hand sleep state logic, might have some problem exist. 12/3
+
+> Date: Wed, 03 Dec 2025 01:40:48 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `0bf7ce6d6a598b5e494b0e924392f6ba45c1cb4a`
+
+---
+

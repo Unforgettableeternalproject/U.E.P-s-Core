@@ -95,6 +95,9 @@ class BehaviorFactory:
         if state == BehaviorState.IDLE:
             from .idle_behavior import IdleBehavior
             return IdleBehavior()
+        if state == BehaviorState.SLEEPING:
+            from .sleep_behavior import SleepBehavior
+            return SleepBehavior()
         if state == BehaviorState.SYSTEM_CYCLE:
             # SYSTEM_CYCLE 期間暫停移動，使用專門的系統循環行為
             from .system_cycle_behavior import SystemCycleBehavior

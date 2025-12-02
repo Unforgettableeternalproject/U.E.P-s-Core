@@ -301,7 +301,7 @@ workflows:
   
   play_media:
     name: "play_media"
-    description: "Local music playback with background monitoring. Supports shuffle and smart loop mode (auto-infers single-song loop or playlist loop based on query). Task ends when: 1) Specific song finishes (without loop), 2) Playlist finishes (without loop), 3) User manually stops (with loop enabled)."
+    description: "Local music playback with background monitoring. Supports shuffle and loop modes (off, single-song loop, or playlist loop). Task ends when: 1) Specific song finishes (without loop), 2) Playlist finishes (without loop), 3) User manually stops (with loop enabled)."
     category: "automation"
     work_mode: "background"
     
@@ -338,7 +338,7 @@ workflows:
   
   control_media:
     name: "control_media"
-    description: "Control active local music playback: play, pause, stop, next, previous, search, shuffle on/off, loop on/off (intelligently switches between single-song and playlist loop based on playback type), stop_service"
+    description: "Control active local music playback: play, pause, stop, next, previous, search, shuffle on/off, loop mode (off/one/all - none, single-song, or playlist loop), seek to position (milliseconds), volume adjustment (0-100), stop_service"
     category: "automation"
     work_mode: "direct"
     

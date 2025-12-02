@@ -64,6 +64,9 @@ class ANIModule(BaseFrontendModule):
     # ===== 前端生命週期 =====
     def initialize_frontend(self) -> bool:
         try:
+            # ✅ 先初始化 signals（確保 QApplication 已建立）
+            self._initialize_signals()
+            
             if PYQT5:
                 self.signals.add_timer_callback("ani_update", self._on_tick)
                 self.timer = QTimer()

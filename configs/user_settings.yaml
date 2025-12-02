@@ -120,6 +120,7 @@ monitoring:
     auto_play: false
     default_volume: 50
     enabled: false
+    playback_engine: auto
     shuffle: false
   network:
     allow_api_calls: true

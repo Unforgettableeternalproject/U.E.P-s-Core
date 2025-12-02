@@ -2230,3 +2230,15 @@
 
 ---
 
+### Fixed some problem related to bad callback registers. And integrated new audio engine. 12/2
+
+> Date: Tue, 02 Dec 2025 21:20:32 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `1669deca4ace1990dcbd21438f5f93fdbe53ab2e`
+
+---
+

@@ -1974,6 +1974,12 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                                     }
                                 }
                             )
+                    else:
+                        debug_log(2, f"[LLM] 無法訪問 SYS 模組的 workflow_engines")
+                except Exception as e:
+                    debug_log(2, f"[LLM] 檢查工作流引擎時出錯: {e}")
+                    # 保守策略：如果無法檢查，假設有工作流（避免重複啟動）
+                    has_active_workflow = True
             # 🔧 快速路徑：如果是工作流輸入場景，直接調用 provide_workflow_input
             # 避免花費時間通過 Gemini API 理解用戶意圖，加快響應速度
             is_workflow_input = pending_workflow and pending_workflow.get('type') == 'workflow_input_required'

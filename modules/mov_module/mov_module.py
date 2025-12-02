@@ -277,9 +277,8 @@ class MOVModule(BaseFrontendModule):
         # self.idle_manager.set_sleep_callback(self._enter_sleep_mode)
         # self.idle_manager.set_wake_callback(self._exit_sleep_mode)
         
-        # 🔧 註冊 user_settings 熱重載回調
-        from configs.user_settings_manager import user_settings_manager
-        user_settings_manager.register_reload_callback("mov_module", self._reload_from_user_settings)
+        # 🔧 註冊 user_settings 熱重載回調會在 initialize_frontend() 中進行
+        # （確保 QApplication 已建立後才註冊，避免過早觸發）
 
         info_log(f"[{self.module_id}] MOV 初始化完成")
 
@@ -290,17 +289,31 @@ class MOVModule(BaseFrontendModule):
         debug_log(1, "前端 - MOV 初始化中")
         try:
             # 計時器 → 交給 BaseFrontendModule.signals 轉發
+            # ✅ 檢查 QApplication 是否已就緒再創建 QTimer
             if PYQT5:
-                self.signals.add_timer_callback("mov_behavior", self._tick_behavior)
-                self.signals.add_timer_callback("mov_movement", self._tick_movement)
+                from PyQt5.QtWidgets import QApplication
+                if QApplication.instance() is not None:
+                    # QApplication 已就緒，可以安全創建 Qt 對象
+                    self._initialize_signals()  # 初始化父類的 signals
+                    
+                    if self.signals:
+                        self.signals.add_timer_callback("mov_behavior", self._tick_behavior)
+                        self.signals.add_timer_callback("mov_movement", self._tick_movement)
 
-                self.behavior_timer = QTimer()
-                self.behavior_timer.timeout.connect(lambda: self.signals.timer_timeout("mov_behavior"))
-                self.behavior_timer.start(int(self.config.get("behavior_interval_ms", 100)))
+                    self.behavior_timer = QTimer()
+                    self.behavior_timer.timeout.connect(lambda: self.signals.timer_timeout("mov_behavior") if self.signals else self._tick_behavior())
+                    self.behavior_timer.start(int(self.config.get("behavior_interval_ms", 100)))
 
-                self.movement_timer = QTimer()
-                self.movement_timer.timeout.connect(lambda: self.signals.timer_timeout("mov_movement"))
-                self.movement_timer.start(int(self.config.get("movement_interval_ms", 16)))
+                    self.movement_timer = QTimer()
+                    self.movement_timer.timeout.connect(lambda: self.signals.timer_timeout("mov_movement") if self.signals else self._tick_movement())
+                    self.movement_timer.start(int(self.config.get("movement_interval_ms", 16)))
+                    
+                    debug_log(2, f"[{self.module_id}] Qt 計時器已初始化")
+                else:
+                    # QApplication 尚未就緒，延後 Qt 對象創建
+                    debug_log(2, f"[{self.module_id}] QApplication 尚未就緒，延後 Qt 計時器初始化")
+                    self.behavior_timer = None
+                    self.movement_timer = None
 
             # 事件
             self._register_handlers()
@@ -385,6 +398,44 @@ class MOVModule(BaseFrontendModule):
         except Exception as e:
             error_log(f"[{self.module_id}] 請求處理錯誤: {e}")
             return {"error": str(e)}
+    
+    def initialize_qt_timers(self):
+        """在 QApplication 就緒後初始化 Qt 計時器（由 UI 模組調用）"""
+        if not PYQT5:
+            return
+        
+        try:
+            from PyQt5.QtWidgets import QApplication
+            if QApplication.instance() is None:
+                debug_log(2, f"[{self.module_id}] QApplication 尚未就緒，無法初始化計時器")
+                return
+            
+            # 如果計時器已經創建，不重複創建
+            if hasattr(self, 'behavior_timer') and self.behavior_timer is not None:
+                debug_log(2, f"[{self.module_id}] Qt 計時器已初始化，跳過")
+                return
+            
+            # 初始化父類的 signals
+            self._initialize_signals()
+            
+            # 創建行為計時器
+            if self.signals:
+                self.signals.add_timer_callback("mov_behavior", self._tick_behavior)
+                self.signals.add_timer_callback("mov_movement", self._tick_movement)
+            
+            self.behavior_timer = QTimer()
+            self.behavior_timer.timeout.connect(lambda: self.signals.timer_timeout("mov_behavior") if self.signals else self._tick_behavior())
+            self.behavior_timer.start(int(self.config.get("behavior_interval_ms", 100)))
+            
+            # 創建移動計時器
+            self.movement_timer = QTimer()
+            self.movement_timer.timeout.connect(lambda: self.signals.timer_timeout("mov_movement") if self.signals else self._tick_movement())
+            self.movement_timer.start(int(self.config.get("movement_interval_ms", 16)))
+            
+            info_log(f"[{self.module_id}] Qt 計時器已初始化")
+            
+        except Exception as e:
+            error_log(f"[{self.module_id}] 初始化 Qt 計時器失敗: {e}")
 
     # ========= 事件/回調 =========
 
@@ -571,10 +622,11 @@ class MOVModule(BaseFrontendModule):
                 self.velocity.y = 0.0
                 self.target_velocity.x = 0.0
                 self.target_velocity.y = 0.0
-                # 播放落地動畫並切換到 IDLE
-                idle_anim = self.anim_query.get_idle_animation_for_mode(is_ground=True)
-                self._trigger_anim(idle_anim, {"loop": True}, source="throw_handler")
+                # 先切換到 IDLE 行為狀態，再播放落地動畫
+                # 這樣可以避免 idle 動畫帶著 TRANSITION 優先度，導致後續走路動畫被阻擋
                 self._switch_behavior(BehaviorState.IDLE)
+                idle_anim = self.anim_query.get_idle_animation_for_mode(is_ground=True)
+                self._trigger_anim(idle_anim, {"loop": True}, source="throw_handler", priority=AnimationPriority.IDLE_ANIMATION)
         elif self.movement_mode == MovementMode.DRAGGING:
             # 拖曳模式：不應該到達這裡（上面已經 return）
             # 但保留以防萬一
@@ -607,9 +659,10 @@ class MOVModule(BaseFrontendModule):
                     
                     # 如果沒有投擲動畫序列，直接切換到 IDLE
                     if not self._throw_handler.is_in_throw_animation:
-                        idle_anim = self.anim_query.get_idle_animation_for_mode(is_ground=True)
-                        self._trigger_anim(idle_anim, {"loop": True}, source="throw_handler")
+                        # 先切換行為狀態，再播放 idle 動畫
                         self._switch_behavior(BehaviorState.IDLE)
+                        idle_anim = self.anim_query.get_idle_animation_for_mode(is_ground=True)
+                        self._trigger_anim(idle_anim, {"loop": True}, source="throw_handler", priority=AnimationPriority.IDLE_ANIMATION)
                     
                     debug_log(1, f"[{self.module_id}] 投擲落地")
 
@@ -2433,11 +2486,11 @@ GS 推進 - 當前 GS 結束，恢復 idle 狀態和移動"""
                 idle_anim = self.anim_query.get_idle_animation_for_mode(is_ground) if self.anim_query else (
                     "stand_idle_g" if is_ground else "smile_idle_f"
                 )
-                # 觸發恢復動畫
+                # 觸發恢復動畫，明確指定 IDLE_ANIMATION 優先度
                 self._trigger_anim(idle_anim, {
                     "loop": True,
                     "force_restart": True
-                }, source="auto_recovery")
+                }, source="auto_recovery", priority=AnimationPriority.IDLE_ANIMATION)
 
     def _apply_config(self, cfg: Dict):
         # physics

@@ -499,7 +499,9 @@ def _media_control_intervention_processor(
     - play, pause, stop, next, previous
     - search (搜尋並播放歌曲)
     - shuffle (開啟/關閉隨機播放)
-    - loop (開啟/關閉循環播放)
+    - loop (設定循環模式：off/one/all)
+    - seek (跳轉到指定時間位置，毫秒)
+    - volume (調整音量 0-100)
     - stop_service (停止整個監控服務)
     
     注意：背景服務是跨會話的，所有參數通過函數參數傳遞，不依賴 session
@@ -526,6 +528,7 @@ def _media_control_intervention_processor(
         workflow = get_workflow_by_id(task_id)
         if not workflow:
             return StepResult.failure(f"找不到媒體播放任務：{task_id}")
+        
         
         # 特殊處理：停止服務
         if action == "stop_service":
@@ -603,8 +606,13 @@ def create_media_control_intervention_workflow(
     
     Args:
         task_id: 要控制的媒體播放任務 ID（如未提供則自動獲取）
-        control_action: 控制動作（play, pause, stop, next, previous, search, shuffle, loop, stop_service）
-        control_params: 控制參數（如 song_query, shuffle, loop）
+        control_action: 控制動作（play, pause, stop, next, previous, search, shuffle, loop, seek, volume, stop_service）
+        control_params: 控制參數
+            - song_query: 歌曲搜尋關鍵字（search 動作）
+            - shuffle: 布林值（shuffle 動作）
+            - loop_mode: 'off'/'one'/'all'（loop 動作）
+            - seek_position: 毫秒數（seek 動作）
+            - volume: 0-100（volume 動作）
     """
     # 如果未提供 task_id，從資料庫獲取最近的活躍媒體任務
     # 注意：不使用 WorkingContext 因為它會在 GS 結束時清空

@@ -29,7 +29,7 @@ logging:
 debug:
   enabled: true
   debug_level: 4
-  enable_frontend: false
+  enable_frontend: true
 system:
   main_loop_interval: 0.1
   shutdown_timeout: 5.0

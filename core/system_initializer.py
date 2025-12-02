@@ -289,14 +289,10 @@ class SystemInitializer:
             debug_log(4, f"      [回調] llm_module 完成 (segment={time.time()-segment_t:.3f}s, total={time.time()-t_start:.3f}s)")
             
             # 註冊 MOV 模組的回調 (只在前端啟用時)
+            # 注意：MOV 模組的回調註冊會在 UI 模組初始化 MOV 後手動執行
+            # 因為 MOV 需要 QApplication 已經建立才能正確初始化
             if enable_frontend:
-                segment_t = time.time()
-                debug_log(4, f"      [回調] 準備載入 mov_module (可能較慢，含大量初始化) (elapsed={time.time()-t_start:.3f}s)")
-                mov_module = get_module("mov_module")
-                if mov_module and hasattr(mov_module, '_reload_from_user_settings'):
-                    user_settings_manager.register_reload_callback("mov_module", mov_module._reload_from_user_settings)
-                    debug_log(2, "      ✅ MOV 模組回調已註冊")
-                debug_log(4, f"      [回調] mov_module 完成 (segment={time.time()-segment_t:.3f}s, total={time.time()-t_start:.3f}s)")
+                debug_log(4, f"      [回調] 跳過 mov_module (將在 UI 模組初始化後註冊)")
             else:
                 debug_log(4, f"      [回調] 跳過 mov_module (前端未啟用)")
             

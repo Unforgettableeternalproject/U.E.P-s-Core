@@ -666,23 +666,32 @@ def get_music_player_status() -> Dict[str, Any]:
     if _music_player is None:
         return {
             "is_playing": False,
+            "is_paused": False,
             "is_finished": False,
             "is_looping": False,  # 向後兼容
             "loop_one": False,
             "loop_all": False,
             "is_shuffled": False,
-            "current_song": None
+            "current_song": None,
+            "position_ms": 0,
+            "duration_ms": 0
         }
     
+    status = _music_player.get_status()
     return {
-        "is_playing": _music_player.is_playing,
+        "is_playing": status['is_playing'],
+        "is_paused": status['is_paused'],
         "is_finished": _music_player.is_finished,
         "is_looping": _music_player.is_looping,  # 向後兼容
         "loop_one": _music_player.loop_one,
         "loop_all": _music_player.loop_all,
         "is_shuffled": _music_player.is_shuffled,
         "current_song": _music_player.current_song or "Unknown",
-        "total_songs": len(_music_player.playlist)
+        "total_songs": len(_music_player.playlist),
+        "position_ms": status['position_ms'],
+        "duration_ms": status['duration_ms'],
+        "engine": status['engine'],
+        "capabilities": status['capabilities']
     }
 
 
@@ -695,7 +704,9 @@ def media_control(
     shuffle: bool = False,
     loop: bool = False,
     loop_mode: str = "",
-    volume: int = None
+    volume: int = None,
+    seek_position: int = None,
+    engine_type: str = "auto"
 ) -> str:
     """
     音樂播放控制器 - 支援本地音樂、YouTube、Spotify（背景運行）
@@ -738,13 +749,13 @@ def media_control(
             
             # 確保單例：如果播放器不存在或資料夾變更，則重新初始化
             if _music_player is None:
-                _music_player = MusicPlayer(music_folder)
+                _music_player = MusicPlayer(music_folder, engine_type)
                 info_log("[AUTO] 音樂播放器已初始化")
             elif str(_music_player.music_folder) != music_folder:
                 # 資料夾變更：停止當前播放，重新初始化
                 info_log(f"[AUTO] 音樂資料夾變更: {_music_player.music_folder} -> {music_folder}")
                 _music_player.stop()
-                _music_player = MusicPlayer(music_folder)
+                _music_player = MusicPlayer(music_folder, engine_type)
                 info_log("[AUTO] 音樂播放器已重新初始化")
             
             if action == "play":
@@ -798,8 +809,19 @@ def media_control(
                 return f"隨機播放：{'開啟' if _music_player.is_shuffled else '關閉'}"
             
             elif action == "loop":
-                _music_player.toggle_loop()
-                return f"循環播放：{'開啟' if _music_player.is_looping else '關閉'}"
+                # 使用 loop_mode 參數設定循環模式
+                if loop_mode:
+                    _music_player.set_loop_mode(loop_mode)
+                    if loop_mode == "one":
+                        return "單曲循環：開啟"
+                    elif loop_mode == "all":
+                        return "播放清單循環：開啟"
+                    else:
+                        return "循環播放：關閉"
+                else:
+                    # 向後相容：如果沒有 loop_mode，使用 toggle
+                    _music_player.toggle_loop()
+                    return f"循環播放：{'開啟' if _music_player.is_looping else '關閉'}"
             
             elif action == "set_loop_mode":
                 # 直接設定循環模式（用於智能推斷）
@@ -825,6 +847,22 @@ def media_control(
                 
                 _music_player.set_volume(volume)
                 return f"音量已設定為 {volume}%"
+            
+            elif action == "seek":
+                # 跳轉到指定位置
+                if seek_position is None:
+                    return "錯誤：缺少 seek_position 參數"
+                
+                if not hasattr(_music_player.engine, 'seek') or not _music_player.engine.get_capabilities().get('seek', False):
+                    return "錯誤：當前引擎不支援 seek 功能"
+                
+                success = _music_player.engine.seek(seek_position)
+                if success:
+                    minutes = seek_position // 60000
+                    seconds = (seek_position % 60000) // 1000
+                    return {"status": "success", "message": f"已跳轉至 {minutes}:{seconds:02d}"}
+                else:
+                    return {"status": "error", "message": "跳轉失敗"}
             
             elif action == "status":
                 # 獲取當前播放狀態
@@ -882,30 +920,28 @@ def _play_spotify(query: str) -> str:
 
 
 class MusicPlayer:
-    """本地音樂播放器（背景運行，無 UI）"""
+    """本地音樂播放器（背景運行，無 UI）- 支援 VLC 和 pydub 雙引擎"""
     
-    def __init__(self, music_folder: str):
+    def __init__(self, music_folder: str, engine_type: str = "auto"):
         self.music_folder = Path(music_folder)
         self.playlist = []
         self.original_playlist = []  # 保存原始播放順序
         self.current_index = 0
-        self.is_playing = False
         self.loop_one = False  # 單曲循環
         self.loop_all = False  # 播放清單循環
         self.is_shuffled = False
         self.is_finished = False  # ✅ 初始化完成標記
         self.current_song = None
-        self.playback_obj = None
         self.volume = 70  # 預設音量 70%
-        
-        # 播放進度追蹤
-        self.playback_start_time = None  # 播放開始時間
-        self.current_duration_ms = 0  # 當前歌曲總長度（毫秒）
-        self.is_paused = False  # 暫停狀態標記
         
         # 並發保護：避免背景播放與控制同時操作導致競態
         import threading
         self._lock = threading.Lock()
+        
+        # 初始化播放引擎
+        from modules.sys_module.actions.music_engines import create_music_engine
+        self.engine = create_music_engine(engine_type)
+        info_log(f"[AUTO] 使用播放引擎: {self.engine.get_engine_name()}")
         
         # 載入播放清單
         self._load_playlist()
@@ -1009,146 +1045,79 @@ class MusicPlayer:
             error_log("[AUTO] 播放清單為空")
             return
         
-        # 如果是從暫停恢復，重新播放當前歌曲
-        was_paused = self.is_paused
-        if was_paused:
-            info_log("[AUTO] 從暫停恢復播放（重新播放當前歌曲）")
-            self.is_paused = False
+        # 檢查是否從暫停恢復
+        if self.engine.is_paused():
+            # VLC 支援真正的恢復，pydub 需要重新播放
+            capabilities = self.engine.get_capabilities()
+            if capabilities['true_pause']:
+                self.engine.resume()
+                info_log("[AUTO] 從暫停位置恢復播放")
+                return
         
-        # 確保單一播放：先停止當前播放（但不重置索引）
-        with self._lock:
-            if self.is_playing:
-                if self.playback_obj:
-                    try:
-                        self.playback_obj.stop()
-                    except:
-                        pass
-                    self.playback_obj = None
-                self.is_playing = False
-                if not was_paused:
-                    info_log("[AUTO] 停止當前播放以切換歌曲")
+        # 播放新歌曲或重新播放
+        if self.current_index >= len(self.playlist):
+            self.current_index = 0
         
-        try:
-            from pydub import AudioSegment
-            from pydub.playback import _play_with_simpleaudio
-            
-            if self.current_index >= len(self.playlist):
-                self.current_index = 0
-            
-            song_path = self.playlist[self.current_index]
-            self.current_song = Path(song_path).stem
-            
-            info_log(f"[AUTO] 正在播放：{self.current_song}")
-            
-            # 載入音訊
-            audio = AudioSegment.from_file(song_path)
-            
-            # 記錄歌曲時長
-            self.current_duration_ms = len(audio)
-            
-            # 設定音量（將百分比轉換為 dB）
-            # 100% = 0 dB, 50% ≈ -6 dB, 0% = -∞ dB
-            if self.volume > 0:
-                db_change = (self.volume - 100) * 0.6  # 簡單線性映射
-                audio = audio + db_change
-            else:
-                audio = audio - 60  # 靜音
-            
-            # 播放（在背景執行緒）
-            self.is_playing = True
-            
-            # 記錄播放開始時間
-            import time
-            self.playback_start_time = time.time()
-            
-            def _play_thread():
-                try:
-                    self.playback_obj = _play_with_simpleaudio(audio)
-                    self.playback_obj.wait_done()
-                    
-                    # 播放完成後
-                    self.is_playing = False
-                    
-                    if self.loop_one:
-                        # 單曲循環：重新播放當前歌曲
-                        info_log(f"[AUTO] 單曲循環：重新播放 {self.current_song}")
-                        self.play()
-                    elif self.loop_all:
-                        # 播放清單循環：播放下一首，如果到最後一首則從頭開始
-                        self.current_index = (self.current_index + 1) % len(self.playlist)
-                        info_log(f"[AUTO] 播放清單循環：下一首")
+        song_path = self.playlist[self.current_index]
+        self.current_song = Path(song_path).stem
+        
+        # 使用引擎播放，傳入播放完成回調
+        def on_finished():
+            """播放完成回調 - 使用 Timer 延遲執行避免線程衝突"""
+            def _deferred_action():
+                if self.loop_one:
+                    # 單曲循環
+                    info_log(f"[AUTO] 單曲循環：重新播放 {self.current_song}")
+                    self.play()
+                elif self.loop_all:
+                    # 播放清單循環
+                    self.current_index = (self.current_index + 1) % len(self.playlist)
+                    info_log(f"[AUTO] 播放清單循環：下一首")
+                    self.play()
+                else:
+                    # 普通播放：自動播放下一首，直到清單結束
+                    if self.current_index + 1 < len(self.playlist):
+                        self.current_index += 1
+                        info_log(f"[AUTO] 自動播放下一首：{Path(self.playlist[self.current_index]).stem}")
                         self.play()
                     else:
-                        # 普通播放：標記為完成
+                        # 清單播放完畢
                         self.is_finished = True
-                        info_log(f"[AUTO] 歌曲播放完成：{self.current_song}")
-                except Exception as e:
-                    error_log(f"[AUTO] 播放錯誤：{e}")
-                    self.is_playing = False
-                    self.is_finished = True
+                        info_log(f"[AUTO] 播放清單已完成")
             
-            play_thread = threading.Thread(target=_play_thread, daemon=True)
-            play_thread.start()
-            
-        except ImportError:
-            error_log("[AUTO] pydub 未安裝，請執行：pip install pydub simpleaudio")
-        except Exception as e:
-            error_log(f"[AUTO] 播放失敗：{e}")
+            # 使用 Timer 延遲 10ms 執行，避免直接從回調線程調用 play()
+            timer = threading.Timer(0.01, _deferred_action)
+            timer.daemon = True
+            timer.start()
+        
+        self.engine.play(song_path, self.volume, on_finished)
+        self.is_finished = False
+        info_log(f"[AUTO] 正在播放：{self.current_song}")
     
     def pause(self):
-        """暫停播放（simpleaudio 不支持真暫停，停止播放對象並標記狀態）"""
-        with self._lock:
-            if self.playback_obj and self.is_playing:
-                self.playback_obj.stop()
-                self.playback_obj = None
-                self.is_playing = False
-                self.is_paused = True  # 標記為暫停
-                info_log("[AUTO] 已暫停（恢復時將從頭播放當前歌曲）")
+        """暫停播放"""
+        self.engine.pause()
     
     def stop(self):
         """停止播放"""
-        with self._lock:
-            if self.playback_obj:
-                try:
-                    self.playback_obj.stop()
-                except:
-                    pass
-                self.playback_obj = None
-            self.is_playing = False
-            self.is_paused = False  # 重置暫停狀態
-            self.current_index = 0
-            self.current_song = None
-            info_log("[AUTO] 已停止")
+        self.engine.stop()
+        self.current_index = 0
+        self.current_song = None
+        info_log("[AUTO] 已停止")
     
     def next_song(self):
         """下一首"""
-        # 只停止播放，不重置索引
-        if self.playback_obj:
-            try:
-                self.playback_obj.stop()
-            except:
-                pass
-            self.playback_obj = None
-        self.is_playing = False
-        self.is_paused = False  # 重置暫停狀態
+        self.engine.stop()
         self.current_index = (self.current_index + 1) % len(self.playlist)
-        self.is_finished = False  # 重置完成狀態
+        self.is_finished = False
         info_log(f"[AUTO] 切換到下一首 (索引: {self.current_index}/{len(self.playlist)})")
         self.play()
     
     def previous_song(self):
         """上一首"""
-        # 只停止播放，不重置索引
-        if self.playback_obj:
-            try:
-                self.playback_obj.stop()
-            except:
-                pass
-            self.playback_obj = None
-        self.is_playing = False
-        self.is_paused = False  # 重置暫停狀態
+        self.engine.stop()
         self.current_index = (self.current_index - 1) % len(self.playlist)
-        self.is_finished = False  # 重置完成狀態
+        self.is_finished = False
         info_log(f"[AUTO] 切換到上一首 (索引: {self.current_index}/{len(self.playlist)})")
         self.play()
     
@@ -1206,7 +1175,7 @@ class MusicPlayer:
             # 如果正在播放歌曲，將當前歌曲移到第一位（保持播放連續性）
             # 但如果還沒開始播放（current_index == 0 且 is_playing == False），
             # 就不需要移動，讓它從隨機後的第一首開始
-            if self.is_playing and self.current_index < len(self.playlist):
+            if self.engine.is_playing() and self.current_index < len(self.playlist):
                 current_song = self.playlist[self.current_index]
                 # 找到當前歌曲在打亂後清單中的位置，移到第一位
                 if current_song in self.playlist:
@@ -1236,7 +1205,7 @@ class MusicPlayer:
         """設定音量 (0-100)"""
         if 0 <= volume <= 100:
             self.volume = volume
-            info_log(f"[AUTO] 音量設定為 {volume}%（將於下次播放時生效）")
+            self.engine.set_volume(volume)
         else:
             error_log(f"[AUTO] 無效的音量值: {volume}")
     
@@ -1249,28 +1218,23 @@ class MusicPlayer:
             loop_mode = "all"
         
         return {
-            'is_playing': self.is_playing,
-            'is_paused': self.is_paused,
+            'is_playing': self.engine.is_playing(),
+            'is_paused': self.engine.is_paused(),
             'current_song': self.current_song,
             'current_index': self.current_index,
             'playlist_length': len(self.playlist),
             'volume': self.volume,
             'is_shuffled': self.is_shuffled,
             'loop_mode': loop_mode,
-            'duration_ms': self.current_duration_ms,
-            'position_ms': self.get_playback_position()
+            'duration_ms': self.engine.get_duration(),
+            'position_ms': self.engine.get_position(),
+            'engine': self.engine.get_engine_name(),
+            'capabilities': self.engine.get_capabilities()
         }
     
     def get_playback_position(self) -> int:
         """獲取當前播放位置（毫秒）"""
-        if not self.is_playing or self.playback_start_time is None:
-            return 0
-        
-        import time
-        elapsed_ms = int((time.time() - self.playback_start_time) * 1000)
-        
-        # 不超過總時長
-        return min(elapsed_ms, self.current_duration_ms)
+        return self.engine.get_position()
 
 
 # ==================== 本地日曆功能 ====================

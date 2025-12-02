@@ -216,6 +216,16 @@ class UIModule(BaseFrontendModule):
             except Exception as e:
                 error_log(f"[{self.module_id}] 注入 ANI 到 MOV 失敗: {e}")
                 return False
+            
+            # ✅ 初始化 MOV 模組的 Qt 計時器（此時 QApplication 已就緒）
+            try:
+                if hasattr(self.mov_module, "initialize_qt_timers"):
+                    self.mov_module.initialize_qt_timers()
+                    info_log(f"[{self.module_id}] MOV 模組 Qt 計時器已初始化")
+            except Exception as e:
+                error_log(f"[{self.module_id}] 初始化 MOV Qt 計時器失敗: {e}")
+            
+            # 註：MOV 模組的使用者設定回調會在其 initialize_frontend() 中自行註冊
 
             self._modules_initialized = True
             info_log(f"[{self.module_id}] ANI 和 MOV 模組初始化完成")

@@ -170,6 +170,7 @@ class UserMainWindow(QMainWindow):
         # 主題切換按鈕
         if theme_manager:
             self.theme_toggle = QPushButton()
+            self.theme_toggle.setObjectName("themeToggle")
             self.theme_toggle.setFixedSize(48, 48)
             self.theme_toggle.setCursor(Qt.PointingHandCursor)
             self.theme_toggle.setFont(QFont("Segoe UI Emoji", 18))
@@ -768,6 +769,17 @@ class UserMainWindow(QMainWindow):
         self.default_media_folder_edit.setPlaceholderText("預設媒體資料夾路徑")
         bg_tasks_layout.addRow("媒體資料夾:", self.default_media_folder_edit)
         
+        # 音樂播放引擎設定
+        self.playback_engine_combo = NoWheelComboBox()
+        self.playback_engine_combo.addItems(["自動 (優先 VLC)", "VLC 引擎", "pydub 引擎"])
+        self.playback_engine_combo.setToolTip(
+            "選擇音樂播放引擎:\n"
+            "• 自動: 優先使用 VLC，若不可用則使用 pydub\n"
+            "• VLC: 完整功能 (真實暫停、即時音量、進度調整)\n"
+            "• pydub: 基本播放 (功能受限)"
+        )
+        bg_tasks_layout.addRow("音樂播放引擎:", self.playback_engine_combo)
+        
         self.allow_internet_access_cb = QCheckBox("允許網路存取")
         bg_tasks_layout.addRow("", self.allow_internet_access_cb)
         
@@ -1057,6 +1069,12 @@ class UserMainWindow(QMainWindow):
             # 背景工作
             self.bg_tasks_enabled_cb.setChecked(get_user_setting("monitoring.background_tasks.enabled", True))
             self.default_media_folder_edit.setText(get_user_setting("monitoring.background_tasks.default_media_folder", ""))
+            
+            # 音樂引擎設定
+            engine_value = get_user_setting("monitoring.music.playback_engine", "auto")
+            engine_index = {"auto": 0, "vlc": 1, "pydub": 2}.get(engine_value, 0)
+            self.playback_engine_combo.setCurrentIndex(engine_index)
+            
             self.allow_internet_access_cb.setChecked(get_user_setting("monitoring.network.allow_internet_access", True))
             self.allow_api_calls_cb.setChecked(get_user_setting("monitoring.network.allow_api_calls", True))
             self.network_timeout_spin.setValue(get_user_setting("monitoring.network.timeout", 30))
@@ -1189,6 +1207,11 @@ class UserMainWindow(QMainWindow):
             # Tab 5: 監控與進階
             set_user_setting("monitoring.background_tasks.enabled", self.bg_tasks_enabled_cb.isChecked())
             set_user_setting("monitoring.background_tasks.default_media_folder", self.default_media_folder_edit.text())
+            
+            # 音樂引擎設定
+            engine_value = ["auto", "vlc", "pydub"][self.playback_engine_combo.currentIndex()]
+            set_user_setting("monitoring.music.playback_engine", engine_value)
+            
             set_user_setting("monitoring.network.allow_internet_access", self.allow_internet_access_cb.isChecked())
             set_user_setting("monitoring.network.allow_api_calls", self.allow_api_calls_cb.isChecked())
             set_user_setting("monitoring.network.timeout", self.network_timeout_spin.value())

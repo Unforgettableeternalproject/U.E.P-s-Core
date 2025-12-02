@@ -57,6 +57,12 @@ class SystemBackgroundWindow(QMainWindow):
         self.current_playlist = []  # 當前播放列表
         self.current_track_index = -1  # 當前播放索引
         self.current_volume = 70  # 當前音量
+        self.music_folder = ""  # 音樂資料夾路徑
+        self.playback_engine = "auto"  # 播放引擎類型
+        self.engine_capabilities = {}  # 引擎功能
+        
+        # 播放狀態同步定時器
+        self.playback_sync_timer = None
         
         # 對話記錄
         self.dialog_history = []
@@ -91,6 +97,9 @@ class SystemBackgroundWindow(QMainWindow):
         
         # 訂閱監控事件
         self._subscribe_monitoring_events()
+        
+        # 啟動播放狀態同步定時器
+        self._start_playback_sync_timer()
         
         # 載入初始資料快照
         self._load_monitoring_snapshot()
@@ -198,15 +207,14 @@ class SystemBackgroundWindow(QMainWindow):
         header_layout.addStretch()
 
         # 主題切換按鈕
-        self.theme_toggle = QPushButton("🌙")
+        self.theme_toggle = QPushButton()
         self.theme_toggle.setObjectName("themeToggle")
-        self.theme_toggle.setFixedSize(56, 56)
+        self.theme_toggle.setFixedSize(48, 48)
         self.theme_toggle.setCursor(Qt.PointingHandCursor)
-
-        btn_font = QFont("Segoe UI Emoji, Apple Color Emoji, Noto Color Emoji")
-        btn_font.setPointSize(20)
-        self.theme_toggle.setFont(btn_font)
-
+        self.theme_toggle.setFont(QFont("Segoe UI Emoji", 18))
+        # 根據當前主題設定初始圖標
+        is_dark = self._tm_is_dark()
+        self.theme_toggle.setText("☀️" if is_dark else "🌙")
         self.theme_toggle.clicked.connect(self.toggle_theme)
         header_layout.addWidget(self.theme_toggle)
 
@@ -569,8 +577,16 @@ class SystemBackgroundWindow(QMainWindow):
         self.song_artist_label.setObjectName("subtitle")
         self.song_artist_label.setAlignment(Qt.AlignCenter)
         
+        # 功能限制提示標籤
+        self.feature_warning_label = QLabel("")
+        self.feature_warning_label.setAlignment(Qt.AlignCenter)
+        self.feature_warning_label.setStyleSheet("color: #FF9800; font-size: 11px; padding: 5px;")
+        self.feature_warning_label.setWordWrap(True)
+        self.feature_warning_label.hide()  # 預設隱藏
+        
         info_layout.addWidget(self.song_title_label)
         info_layout.addWidget(self.song_artist_label)
+        info_layout.addWidget(self.feature_warning_label)
         
         layout.addLayout(info_layout)
 
@@ -591,6 +607,7 @@ class SystemBackgroundWindow(QMainWindow):
         self.progress_slider.setValue(0)
         self.progress_slider.sliderMoved.connect(self._seek_playback)
         self.progress_slider.setEnabled(False)  # 預設禁用，播放時啟用
+        self.progress_slider.setToolTip("拖動調整播放進度（需要 VLC 引擎）")
         
         time_layout = QHBoxLayout()
         self.current_time_label = QLabel("0:00")
@@ -620,14 +637,24 @@ class SystemBackgroundWindow(QMainWindow):
         self.next_btn.setFixedSize(50, 50)
         self.next_btn.clicked.connect(self.play_next_song)
 
-        self.loop_btn = QPushButton("🔂")
+        # 循環按鈕（支持三種模式：關閉/單曲循環/列表循環）
+        self.loop_btn = QPushButton("↻")
         self.loop_btn.setFixedSize(50, 50)
-        self.loop_btn.setCheckable(True)
+        self.loop_btn.setToolTip("循環模式：關閉")
         self.loop_btn.clicked.connect(self.toggle_loop_mode)
+        self.loop_mode = 0  # 0=關閉, 1=單曲循環, 2=列表循環
+
+        # 隨機播放按鈕
+        self.shuffle_btn = QPushButton("🔀")
+        self.shuffle_btn.setFixedSize(50, 50)
+        self.shuffle_btn.setCheckable(True)
+        self.shuffle_btn.setToolTip("隨機播放：關閉")
+        self.shuffle_btn.clicked.connect(self.toggle_shuffle_mode)
 
         control_layout.addWidget(self.previous_btn)
         control_layout.addWidget(self.play_pause_btn)
         control_layout.addWidget(self.next_btn)
+        control_layout.addWidget(self.shuffle_btn)
         control_layout.addWidget(self.loop_btn)
 
         layout.addLayout(control_layout)
@@ -638,6 +665,7 @@ class SystemBackgroundWindow(QMainWindow):
         self.volume_slider = QSlider(Qt.Horizontal)
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(70)
+        self.volume_slider.setToolTip("調整音量（VLC 引擎即時生效，pydub 引擎下次播放生效）")
         self.volume_label = QLabel("70%")
         
         volume_layout.addWidget(volume_icon)
@@ -647,6 +675,35 @@ class SystemBackgroundWindow(QMainWindow):
         self.volume_slider.valueChanged.connect(self.adjust_volume)
         
         layout.addLayout(volume_layout)
+        
+        # 引擎狀態標籤
+        engine_layout = QHBoxLayout()
+        
+        # 幫助圖示
+        help_icon = QLabel("ℹ️")
+        help_icon.setStyleSheet("font-size: 11px;")
+        help_icon.setToolTip(
+            "播放引擎說明：\n\n"
+            "✓ VLC 引擎（推薦）：\n"
+            "  • 真正的暫停/恢復（從當前位置繼續）\n"
+            "  • 即時音量調整\n"
+            "  • 進度條拖動\n"
+            "  • 需要安裝 VLC 播放器\n\n"
+            "⚠ pydub 引擎（基本）：\n"
+            "  • 暫停後從頭播放\n"
+            "  • 音量調整下次播放生效\n"
+            "  • 不支援進度拖動\n"
+            "  • 無需額外安裝\n\n"
+            "可在 user_settings.yaml 中設定引擎類型"
+        )
+        
+        self.engine_status_label = QLabel("播放引擎: 未初始化")
+        self.engine_status_label.setStyleSheet("color: #888; font-size: 11px;")
+        
+        engine_layout.addWidget(help_icon)
+        engine_layout.addWidget(self.engine_status_label)
+        engine_layout.addStretch()
+        layout.addLayout(engine_layout)
 
         return self._loose_group(group)
 
@@ -1117,24 +1174,25 @@ class SystemBackgroundWindow(QMainWindow):
     def toggle_music_playback(self):
         """切換播放/暫停"""
         try:
-            from modules.sys_module.actions.automation_helper import media_control
+            from modules.sys_module.actions.automation_helper import media_control, get_music_player_status
             
-            if self.is_music_playing:
-                # 暫停
-                result = media_control(action="pause")
-                self.is_music_playing = False
-                self.play_pause_btn.setText("▶️")
-                self.progress_slider.setEnabled(False)  # 禁用進度條
+            # 先獲取真實播放器狀態
+            player_status = get_music_player_status()
+            
+            if player_status.get("is_playing", False):
+                # 當前正在播放，執行暫停
+                result = media_control(action="pause", music_folder=self.music_folder, engine_type=self.playback_engine)
                 debug_log(OPERATION_LEVEL, "[SystemBackground] 暫停音樂")
-                self.status_bar.showMessage("已暫停", 2000)
+                self.status_bar.showMessage("已暫停（恢復時將從頭播放當前歌曲）", 3000)
             else:
-                # 播放
-                result = media_control(action="play")
-                self.is_music_playing = True
-                self.play_pause_btn.setText("⏸️")
-                self.progress_slider.setEnabled(True)  # 啟用進度條
-                debug_log(OPERATION_LEVEL, "[SystemBackground] 播放音樂")
+                # 當前已暫停或停止，執行播放
+                result = media_control(action="play", music_folder=self.music_folder, engine_type=self.playback_engine)
+                debug_log(OPERATION_LEVEL, f"[SystemBackground] 播放音樂，資料夾: {self.music_folder}")
                 self.status_bar.showMessage("正在播放", 2000)
+            
+            # 立即同步狀態
+            self._sync_playback_status()
+            
         except Exception as e:
             error_log(f"[SystemBackground] 切換播放狀態失敗: {e}")
             self.status_bar.showMessage(f"操作失敗: {e}", 3000)
@@ -1144,18 +1202,14 @@ class SystemBackgroundWindow(QMainWindow):
         try:
             from modules.sys_module.actions.automation_helper import media_control
             
-            result = media_control(action="next")
-            
-            # 更新本地播放列表索引
-            if self.current_playlist and self.current_track_index < len(self.current_playlist) - 1:
-                self.current_track_index += 1
-                self.playlist_widget.setCurrentRow(self.current_track_index)
-                current_song = self.current_playlist[self.current_track_index]
-                from pathlib import Path
-                self.song_title_label.setText(Path(current_song).stem)
+            result = media_control(action="next", music_folder=self.music_folder, engine_type=self.playback_engine)
             
             debug_log(OPERATION_LEVEL, "[SystemBackground] 下一首")
             self.status_bar.showMessage("播放下一首", 2000)
+            
+            # 立即同步狀態
+            self._sync_playback_status()
+            
         except Exception as e:
             error_log(f"[SystemBackground] 播放下一首失敗: {e}")
             self.status_bar.showMessage(f"操作失敗: {e}", 3000)
@@ -1165,18 +1219,14 @@ class SystemBackgroundWindow(QMainWindow):
         try:
             from modules.sys_module.actions.automation_helper import media_control
             
-            result = media_control(action="previous")
-            
-            # 更新本地播放列表索引
-            if self.current_playlist and self.current_track_index > 0:
-                self.current_track_index -= 1
-                self.playlist_widget.setCurrentRow(self.current_track_index)
-                current_song = self.current_playlist[self.current_track_index]
-                from pathlib import Path
-                self.song_title_label.setText(Path(current_song).stem)
+            result = media_control(action="previous", music_folder=self.music_folder, engine_type=self.playback_engine)
             
             debug_log(OPERATION_LEVEL, "[SystemBackground] 上一首")
             self.status_bar.showMessage("播放上一首", 2000)
+            
+            # 立即同步狀態
+            self._sync_playback_status()
+            
         except Exception as e:
             error_log(f"[SystemBackground] 播放上一首失敗: {e}")
             self.status_bar.showMessage(f"操作失敗: {e}", 3000)
@@ -1190,7 +1240,7 @@ class SystemBackgroundWindow(QMainWindow):
             self.volume_label.setText(f"{value}%")
             
             # 調用 media_control 設置音量
-            result = media_control(action="volume", volume=value)
+            result = media_control(action="volume", volume=value, music_folder=self.music_folder, engine_type=self.playback_engine)
             
             debug_log(OPERATION_LEVEL, f"[SystemBackground] 調整音量: {value}% - {result}")
         except Exception as e:
@@ -1198,80 +1248,149 @@ class SystemBackgroundWindow(QMainWindow):
     
     def _update_playback_progress(self):
         """更新播放進度條和時間標籤"""
-        if not self.is_music_playing:
-            return
-        
         try:
-            from modules.sys_module.actions import automation_helper
-            player = automation_helper._music_player
+            from modules.sys_module.actions.automation_helper import get_music_player_status
             
-            if player and player.is_playing:
-                position_ms = player.get_playback_position()
-                duration_ms = player.current_duration_ms
+            status = get_music_player_status()
+            is_playing = status.get("is_playing", False)
+            is_paused = status.get("is_paused", False)
+            position_ms = status.get("position_ms", 0)
+            duration_ms = status.get("duration_ms", 0)
+            
+            # 如果正在播放且有有效時長
+            if is_playing and duration_ms > 0:
+                # 更新進度條
+                progress_percent = int((position_ms / duration_ms) * 100)
+                self.progress_slider.blockSignals(True)  # 避免觸發 seek
+                self.progress_slider.setValue(progress_percent)
+                self.progress_slider.blockSignals(False)
                 
-                if duration_ms > 0:
-                    # 更新進度條
-                    progress_percent = int((position_ms / duration_ms) * 100)
-                    self.progress_slider.blockSignals(True)  # 避免觸發 seek
-                    self.progress_slider.setValue(progress_percent)
-                    self.progress_slider.blockSignals(False)
-                    self.progress_slider.setEnabled(True)
-                    
-                    # 更新時間標籤
-                    current_sec = position_ms // 1000
-                    total_sec = duration_ms // 1000
-                    
-                    self.current_time_label.setText(f"{current_sec // 60}:{current_sec % 60:02d}")
-                    self.total_time_label.setText(f"{total_sec // 60}:{total_sec % 60:02d}")
-                else:
-                    self.progress_slider.setEnabled(False)
-            else:
-                # 沒有播放，重置
-                self.progress_slider.setValue(0)
+                # 檢查引擎是否支持 seek
+                seek_supported = self.engine_capabilities.get('seek', False)
+                self.progress_slider.setEnabled(seek_supported)
+                
+                # 更新時間標籤
+                current_sec = position_ms // 1000
+                total_sec = duration_ms // 1000
+                
+                self.current_time_label.setText(f"{current_sec // 60}:{current_sec % 60:02d}")
+                self.total_time_label.setText(f"{total_sec // 60}:{total_sec % 60:02d}")
+            elif is_paused and duration_ms > 0:
+                # 暫停時保持當前時間顯示
+                total_sec = duration_ms // 1000
+                self.total_time_label.setText(f"{total_sec // 60}:{total_sec % 60:02d}")
                 self.progress_slider.setEnabled(False)
+            else:
+                # 沒有播放或沒有歌曲，重置顯示
+                self.progress_slider.setValue(0)
                 self.current_time_label.setText("0:00")
                 self.total_time_label.setText("0:00")
+                self.progress_slider.setEnabled(False)
                 
         except Exception as e:
-            pass  # 靜默處理錯誤
+            # 只在 debug 模式記錄錯誤
+            debug_log(3, f"[SystemBackground] 更新進度失敗: {e}")
     
     def _seek_playback(self, value):
         """拖動進度條時 seek 到指定位置"""
         try:
-            from modules.sys_module.actions import automation_helper
-            player = automation_helper._music_player
+            from modules.sys_module.actions.automation_helper import media_control, get_music_player_status
             
-            if player and player.current_duration_ms > 0:
-                target_ms = int((value / 100) * player.current_duration_ms)
-                debug_log(OPERATION_LEVEL, f"[SystemBackground] Seek 請求: {value}% ({target_ms}ms)")
-                self.status_bar.showMessage(f"Seek 功能開發中", 2000)
+            # 檢查是否支持 seek
+            if not self.engine_capabilities.get('seek', False):
+                self.status_bar.showMessage("當前引擎不支援進度調整", 2000)
+                return
+            
+            # 獲取當前歌曲時長
+            status = get_music_player_status()
+            duration_ms = status.get('duration_ms', 0)
+            
+            if duration_ms > 0:
+                target_ms = int((value / 100) * duration_ms)
+                debug_log(OPERATION_LEVEL, f"[SystemBackground] Seek 到: {value}% ({target_ms}ms)")
+                
+                # 調用 media_control 的 seek 功能
+                result = media_control(
+                    action="seek",
+                    seek_position=target_ms,
+                    music_folder=self.music_folder,
+                    engine_type=self.playback_engine
+                )
+                
+                if isinstance(result, dict) and result.get('status') == 'success':
+                    minutes = target_ms // 60000
+                    seconds = (target_ms % 60000) // 1000
+                    self.status_bar.showMessage(f"跳轉至 {minutes}:{seconds:02d}", 1500)
+                else:
+                    self.status_bar.showMessage("跳轉失敗", 2000)
                 
         except Exception as e:
             error_log(f"[SystemBackground] Seek 失敗: {e}")
     
     def toggle_loop_mode(self):
-        """切換循環模式"""
+        """切換循環模式：關閉 -> 單曲循環 -> 列表循環 -> 關閉"""
         try:
             from modules.sys_module.actions.automation_helper import media_control
             
-            if self.loop_btn.isChecked():
-                # 啟用循環
-                result = media_control(action="loop", loop=True)
-                debug_log(OPERATION_LEVEL, "[SystemBackground] 啟用循環播放")
-                self.status_bar.showMessage("已啟用循環播放", 2000)
-            else:
+            # 循環切換模式
+            self.loop_mode = (self.loop_mode + 1) % 3
+            
+            if self.loop_mode == 0:
                 # 關閉循環
-                result = media_control(action="loop", loop=False)
+                self.loop_btn.setText("↻")
+                self.loop_btn.setToolTip("循環模式：關閉")
+                result = media_control(action="loop", loop_mode="off", music_folder=self.music_folder, engine_type=self.playback_engine)
                 debug_log(OPERATION_LEVEL, "[SystemBackground] 關閉循環播放")
-                self.status_bar.showMessage("已關閉循環播放", 2000)
+                self.status_bar.showMessage("循環模式：關閉", 2000)
+            elif self.loop_mode == 1:
+                # 單曲循環
+                self.loop_btn.setText("🔂")
+                self.loop_btn.setToolTip("循環模式：單曲循環")
+                result = media_control(action="loop", loop_mode="one", music_folder=self.music_folder, engine_type=self.playback_engine)
+                debug_log(OPERATION_LEVEL, "[SystemBackground] 啟用單曲循環")
+                self.status_bar.showMessage("循環模式：單曲循環", 2000)
+            else:  # self.loop_mode == 2
+                # 列表循環
+                self.loop_btn.setText("🔁")
+                self.loop_btn.setToolTip("循環模式：列表循環")
+                result = media_control(action="loop", loop_mode="all", music_folder=self.music_folder, engine_type=self.playback_engine)
+                debug_log(OPERATION_LEVEL, "[SystemBackground] 啟用列表循環")
+                self.status_bar.showMessage("循環模式：列表循環", 2000)
+                
         except Exception as e:
             error_log(f"[SystemBackground] 切換循環模式失敗: {e}")
+    
+    def toggle_shuffle_mode(self):
+        """切換隨機播放模式"""
+        try:
+            from modules.sys_module.actions.automation_helper import media_control
+            
+            is_shuffled = self.shuffle_btn.isChecked()
+            
+            result = media_control(
+                action="shuffle",
+                shuffle=is_shuffled,
+                music_folder=self.music_folder,
+                engine_type=self.playback_engine
+            )
+            
+            if is_shuffled:
+                self.shuffle_btn.setToolTip("隨機播放：開啟")
+                debug_log(OPERATION_LEVEL, "[SystemBackground] 啟用隨機播放")
+                self.status_bar.showMessage("已啟用隨機播放", 2000)
+            else:
+                self.shuffle_btn.setToolTip("隨機播放：關閉")
+                debug_log(OPERATION_LEVEL, "[SystemBackground] 關閉隨機播放")
+                self.status_bar.showMessage("已關閉隨機播放", 2000)
+                
+        except Exception as e:
+            error_log(f"[SystemBackground] 切換隨機播放失敗: {e}")
             self.status_bar.showMessage(f"操作失敗: {e}", 3000)
 
     def play_selected_song(self, item):
         """播放選中的歌曲"""
         try:
-            from modules.sys_module.actions.automation_helper import media_control
+            from modules.sys_module.actions import automation_helper
             from pathlib import Path
             
             # 獲取選中的索引
@@ -1281,19 +1400,36 @@ class SystemBackgroundWindow(QMainWindow):
                 selected_file = self.current_playlist[self.current_track_index]
                 song_name = Path(selected_file).stem
                 
-                # 調用 media_control 播放
-                result = media_control(
-                    action="play",
-                    song_query=song_name,
-                    music_folder=str(Path(selected_file).parent)
-                )
+                # 直接訪問播放器並設置索引播放
+                player = automation_helper._music_player
+                if player is not None:
+                    # 找到該歌曲在播放器列表中的索引
+                    try:
+                        player_index = player.playlist.index(selected_file)
+                        player.current_index = player_index
+                        player.is_finished = False  # 重置完成標記
+                        player.play()
+                        
+                        debug_log(OPERATION_LEVEL, f"[SystemBackground] 播放: {song_name} (索引: {player_index})")
+                        self.status_bar.showMessage(f"正在播放: {song_name}", 3000)
+                    except ValueError:
+                        # 如果歌曲不在播放器列表中，使用搜索播放
+                        debug_log(2, f"[SystemBackground] 歌曲不在播放器列表中，使用搜索: {song_name}")
+                        automation_helper.media_control(action="play", song_query=song_name)
+                        self.status_bar.showMessage(f"搜索播放: {song_name}", 3000)
+                else:
+                    # 播放器不存在，初始化並播放
+                    debug_log(2, "[SystemBackground] 播放器不存在，初始化中...")
+                    automation_helper.media_control(
+                        action="play",
+                        song_query=song_name,
+                        music_folder=str(Path(selected_file).parent)
+                    )
+                    self.status_bar.showMessage(f"正在播放: {song_name}", 3000)
                 
-                self.song_title_label.setText(song_name)
-                self.is_music_playing = True
-                self.play_pause_btn.setText("⏸️")
+                # 立即同步狀態
+                self._sync_playback_status()
                 
-                debug_log(OPERATION_LEVEL, f"[SystemBackground] 播放: {song_name}")
-                self.status_bar.showMessage(f"正在播放: {song_name}", 3000)
         except Exception as e:
             error_log(f"[SystemBackground] 播放歌曲失敗: {e}")
             self.status_bar.showMessage(f"播放失敗: {e}", 3000)
@@ -1451,8 +1587,28 @@ class SystemBackgroundWindow(QMainWindow):
             # 從 user_settings 讀取音樂資料夾
             music_folder = get_user_setting("monitoring.background_tasks.default_media_folder", "")
             
+            # 讀取播放引擎設定
+            self.playback_engine = get_user_setting("monitoring.music.playback_engine", "auto")
+            
+            # 保存音樂資料夾路徑
+            self.music_folder = music_folder
+            
+            # 初始化播放引擎（無論是否有音樂資料夾都要初始化）
+            from modules.sys_module.actions.automation_helper import media_control
+            try:
+                # 使用 stop 動作來初始化播放器（安全且不會播放音樂）
+                # 即使沒有音樂資料夾，也要初始化引擎以顯示正確的狀態
+                media_control(action="stop", music_folder=self.music_folder or "", engine_type=self.playback_engine)
+                debug_log(OPERATION_LEVEL, f"[SystemBackground] 播放引擎已初始化: {self.playback_engine}")
+                
+                # 觸發一次狀態同步以更新 UI
+                self._sync_playback_status()
+            except Exception as init_error:
+                debug_log(OPERATION_LEVEL, f"[SystemBackground] 播放引擎初始化警告: {init_error}")
+            
+            # 如果沒有音樂資料夾，提前返回（引擎已初始化）
             if not music_folder or not Path(music_folder).exists():
-                debug_log(OPERATION_LEVEL, "[SystemBackground] 未設定或找不到預設媒體資料夾")
+                debug_log(OPERATION_LEVEL, f"[SystemBackground] 未設定或找不到預設媒體資料夾: {music_folder}")
                 return
             
             # 掃描音樂檔案
@@ -2168,26 +2324,118 @@ class SystemBackgroundWindow(QMainWindow):
             self.status_bar.showMessage(f"❌ 刪除失敗: {e}", 3000)
     
     def show_calendar_context_menu(self, pos, tree_widget: 'QTreeWidget'):
-        """顯示行事曆右鍵選單"""
+        """顯示行事曆事件右鍵選單"""
+        from PyQt5.QtWidgets import QMenu
+        
+        item = tree_widget.itemAt(pos)
+        if not item:
+            return
+        
+        # 檢查是否為事件項目（第二層）
+        if item.parent() is None:
+            return
+        
+        menu = QMenu(self)
+        
+        edit_action = menu.addAction("編輯事件")
+        delete_action = menu.addAction("刪除事件")
+        
+        action = menu.exec_(tree_widget.viewport().mapToGlobal(pos))
+        
+        if action == edit_action:
+            self.edit_calendar_event_item(item, 0)
+        elif action == delete_action:
+            self.delete_calendar_event_item(item)
+    
+    # ==================== 播放狀態同步 ====================
+    
+    def _start_playback_sync_timer(self):
+        """啟動播放狀態同步定時器"""
+        if self.playback_sync_timer is None:
+            self.playback_sync_timer = QTimer(self)
+            self.playback_sync_timer.timeout.connect(self._sync_playback_status)
+            self.playback_sync_timer.start(500)  # 每 500ms 同步一次
+            debug_log(OPERATION_LEVEL, "[SystemBackground] 播放狀態同步定時器已啟動")
+    
+    def _sync_playback_status(self):
+        """同步播放器狀態到 UI"""
         try:
-            item = tree_widget.itemAt(pos)
-            if not item or item.parent() is None:
-                return  # 只對事件項目顯示選單，不對日期標題
+            from modules.sys_module.actions.automation_helper import get_music_player_status
             
-            from PyQt5.QtWidgets import QMenu
-            menu = QMenu(self)
+            status = get_music_player_status()
             
-            edit_action = menu.addAction("✏️ 編輯")
-            delete_action = menu.addAction("🗑️ 刪除")
+            # 更新本地狀態
+            self.is_music_playing = status.get("is_playing", False)
+            is_paused = status.get("is_paused", False)
+            current_song = status.get("current_song")
             
-            action = menu.exec_(tree_widget.mapToGlobal(pos))
+            # 更新引擎狀態和功能
+            engine = status.get("engine", "Unknown")
+            capabilities = status.get("capabilities", {})
+            self.engine_capabilities = capabilities
             
-            if action == edit_action:
-                self.edit_calendar_event_item(item, 0)
-            elif action == delete_action:
-                self.delete_calendar_event_item(item)
+            # 更新引擎狀態標籤和功能提示
+            if engine == "VLC":
+                self.engine_status_label.setText("播放引擎: VLC (✓ 完整功能)")
+                self.engine_status_label.setStyleSheet("color: #4CAF50; font-size: 11px;")
+                self.progress_slider.setToolTip("拖動調整播放進度")
+                self.volume_slider.setToolTip("調整音量（即時生效）")
+                self.feature_warning_label.hide()  # VLC 無限制，隱藏警告
+            elif engine == "pydub":
+                self.engine_status_label.setText("播放引擎: pydub (⚠ 基本功能 | 安裝 VLC 獲得: 真正暫停、即時音量、進度拖動)")
+                self.engine_status_label.setStyleSheet("color: #FF9800; font-size: 11px;")
+                self.progress_slider.setToolTip("⚠ 當前引擎不支援進度拖動（需要 VLC 引擎）")
+                self.volume_slider.setToolTip("⚠ 當前引擎音量調整於下次播放生效（VLC 引擎可即時調整）")
+                
+                # 顯示功能限制警告
+                if self.is_music_playing or is_paused:
+                    warnings = []
+                    if not capabilities.get('true_pause', False):
+                        warnings.append("暫停會從頭播放")
+                    if not capabilities.get('realtime_volume', False):
+                        warnings.append("音量下次生效")
+                    if not capabilities.get('seek', False):
+                        warnings.append("無法拖動進度")
+                    
+                    if warnings:
+                        self.feature_warning_label.setText(f"⚠ 當前限制: {' | '.join(warnings)}")
+                        self.feature_warning_label.show()
+                else:
+                    self.feature_warning_label.hide()
+            else:
+                self.engine_status_label.setText("播放引擎: 未初始化")
+                self.engine_status_label.setStyleSheet("color: #888; font-size: 11px;")
+                self.feature_warning_label.hide()
+            
+            # 根據引擎功能啟用/禁用進度條拖動
+            seek_supported = capabilities.get('seek', False)
+            true_pause = capabilities.get('true_pause', False)
+            realtime_volume = capabilities.get('realtime_volume', False)
+            
+            # 只有 VLC 且正在播放或暫停時才能拖動進度條
+            self.progress_slider.setEnabled(seek_supported and (self.is_music_playing or is_paused))
+            
+            # 更新暫停按鈕 tooltip
+            if not true_pause and (self.is_music_playing or is_paused):
+                self.play_pause_btn.setToolTip("⚠ 當前引擎暫停後會從頭播放（VLC 引擎支援真正暫停）")
+            else:
+                self.play_pause_btn.setToolTip("播放/暫停")
+            
+            # 更新播放/暫停按鈕
+            if self.is_music_playing:
+                self.play_pause_btn.setText("⏸️")
+            else:
+                self.play_pause_btn.setText("▶️")
+            
+            # 更新歌曲標題
+            if current_song:
+                self.song_title_label.setText(current_song)
+            
+            # 更新進度條
+            self._update_playback_progress()
+            
         except Exception as e:
-            debug_log(2, f"[SystemBackground] 顯示行事曆右鍵選單失敗: {e}")
+            pass  # 靜默處理，避免頻繁錯誤訊息
 
 
 # ==================== 對話框類別 ====================

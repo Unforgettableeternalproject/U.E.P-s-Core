@@ -802,18 +802,26 @@ class UserMainWindow(QMainWindow):
         self.max_fps_spin = NoWheelSpinBox()
         self.max_fps_spin.setRange(15, 120)
         self.max_fps_spin.setSuffix(" FPS")
-        performance_layout.addRow("最大幀率 (需重啟) ⚠️:", self.max_fps_spin)
+        self.max_fps_spin.setEnabled(False)
+        self.max_fps_spin.setToolTip("此設定從 config.yaml 讀取，僅供顯示，需在 config.yaml 中修改")
+        performance_layout.addRow("最大幀率 (需重啟) 🔒:", self.max_fps_spin)
         
-        self.enable_hardware_acceleration_cb = QCheckBox("硬體加速 ⚠️")
+        self.enable_hardware_acceleration_cb = QCheckBox("硬體加速 🔒")
+        self.enable_hardware_acceleration_cb.setEnabled(False)
+        self.enable_hardware_acceleration_cb.setToolTip("此設定從 config.yaml 讀取，僅供顯示，需在 config.yaml 中修改")
         performance_layout.addRow("", self.enable_hardware_acceleration_cb)
         
-        self.reduce_animations_on_battery_cb = QCheckBox("電池模式減少動畫")
+        self.reduce_animations_on_battery_cb = QCheckBox("電池模式減少動畫 🔒")
+        self.reduce_animations_on_battery_cb.setEnabled(False)
+        self.reduce_animations_on_battery_cb.setToolTip("此設定從 config.yaml 讀取，僅供顯示，需在 config.yaml 中修改")
         performance_layout.addRow("", self.reduce_animations_on_battery_cb)
         
         self.gc_interval_spin = NoWheelSpinBox()
         self.gc_interval_spin.setRange(60, 3600)
         self.gc_interval_spin.setSuffix(" 秒")
-        performance_layout.addRow("垃圾回收間隔:", self.gc_interval_spin)
+        self.gc_interval_spin.setEnabled(False)
+        self.gc_interval_spin.setToolTip("此設定從 config.yaml 讀取，僅供顯示，需在 config.yaml 中修改")
+        performance_layout.addRow("垃圾回收間隔 🔒:", self.gc_interval_spin)
         
         scroll_layout.addWidget(performance_group)
         
@@ -823,35 +831,56 @@ class UserMainWindow(QMainWindow):
         logging_layout.setSpacing(12)
         logging_layout.setContentsMargins(16, 20, 16, 16)
         
-        self.logging_enabled_cb = QCheckBox("啟用日誌系統 ⚠️")
+        self.show_logs_cb = QCheckBox("在狀態視窗顯示日誌分頁")
+        self.show_logs_cb.setToolTip("啟用後，系統狀態視窗將顯示日誌分頁")
+        self.show_logs_cb.stateChanged.connect(lambda: self._on_show_logs_changed())
+        logging_layout.addRow("", self.show_logs_cb)
+        
+        self.logging_enabled_cb = QCheckBox("啟用日誌系統 🔒")
+        self.logging_enabled_cb.setEnabled(False)
+        self.logging_enabled_cb.setToolTip("此設定從 config.yaml 讀取，僅供顯示，需在 config.yaml 中修改")
         logging_layout.addRow("", self.logging_enabled_cb)
         
         self.log_level_combo = NoWheelComboBox()
         self.log_level_combo.addItems(["DEBUG", "INFO", "WARNING", "ERROR"])
-        logging_layout.addRow("日誌級別:", self.log_level_combo)
+        self.log_level_combo.setEnabled(False)
+        self.log_level_combo.setToolTip("此設定從 config.yaml 讀取，僅供顯示，需在 config.yaml 中修改")
+        logging_layout.addRow("日誌級別 🔒:", self.log_level_combo)
         
         self.log_dir_edit = QLineEdit()
         self.log_dir_edit.setPlaceholderText("logs")
-        logging_layout.addRow("日誌目錄:", self.log_dir_edit)
+        self.log_dir_edit.setEnabled(False)
+        self.log_dir_edit.setToolTip("此設定從 config.yaml 讀取，僅供顯示，需在 config.yaml 中修改")
+        logging_layout.addRow("日誌目錄 🔒:", self.log_dir_edit)
         
-        self.enable_split_logs_cb = QCheckBox("分割日誌檔案 ⚠️")
+        self.enable_split_logs_cb = QCheckBox("分割日誌檔案 🔒")
+        self.enable_split_logs_cb.setEnabled(False)
+        self.enable_split_logs_cb.setToolTip("此設定從 config.yaml 讀取，僅供顯示，需在 config.yaml 中修改")
         logging_layout.addRow("", self.enable_split_logs_cb)
         
-        self.enable_console_output_cb = QCheckBox("啟用控制台輸出")
+        self.enable_console_output_cb = QCheckBox("啟用控制台輸出 🔒")
+        self.enable_console_output_cb.setEnabled(False)
+        self.enable_console_output_cb.setToolTip("此設定從 config.yaml 讀取，僅供顯示，需在 config.yaml 中修改")
         logging_layout.addRow("", self.enable_console_output_cb)
         
-        self.save_logs_cb = QCheckBox("保存日誌檔案")
+        self.save_logs_cb = QCheckBox("保存日誌檔案 🔒")
+        self.save_logs_cb.setEnabled(False)
+        self.save_logs_cb.setToolTip("此設定從 config.yaml 讀取，僅供顯示，需在 config.yaml 中修改")
         logging_layout.addRow("", self.save_logs_cb)
         
         self.max_log_size_mb_spin = NoWheelSpinBox()
         self.max_log_size_mb_spin.setRange(1, 500)
         self.max_log_size_mb_spin.setSuffix(" MB")
-        logging_layout.addRow("最大日誌大小:", self.max_log_size_mb_spin)
+        self.max_log_size_mb_spin.setEnabled(False)
+        self.max_log_size_mb_spin.setToolTip("此設定從 config.yaml 讀取，僅供顯示，需在 config.yaml 中修改")
+        logging_layout.addRow("最大日誌大小 🔒:", self.max_log_size_mb_spin)
         
         self.log_rotation_days_spin = NoWheelSpinBox()
         self.log_rotation_days_spin.setRange(1, 90)
         self.log_rotation_days_spin.setSuffix(" 天")
-        logging_layout.addRow("日誌輪替天數:", self.log_rotation_days_spin)
+        self.log_rotation_days_spin.setEnabled(False)
+        self.log_rotation_days_spin.setToolTip("此設定從 config.yaml 讀取，僅供顯示，需在 config.yaml 中修改")
+        logging_layout.addRow("日誌輪替天數 🔒:", self.log_rotation_days_spin)
         
         scroll_layout.addWidget(logging_group)
         
@@ -861,31 +890,49 @@ class UserMainWindow(QMainWindow):
         modules_layout.setSpacing(12)
         modules_layout.setContentsMargins(16, 20, 16, 16)
         
-        self.stt_module_enabled_cb = QCheckBox("STT 模組 ⚠️")
+        self.stt_module_enabled_cb = QCheckBox("STT 模組 🔒")
+        self.stt_module_enabled_cb.setEnabled(False)
+        self.stt_module_enabled_cb.setToolTip("此設定從 config.yaml 讀取，僅供顯示，需在 config.yaml 中修改")
         modules_layout.addRow("", self.stt_module_enabled_cb)
         
-        self.nlp_module_enabled_cb = QCheckBox("NLP 模組 ⚠️")
+        self.nlp_module_enabled_cb = QCheckBox("NLP 模組 🔒")
+        self.nlp_module_enabled_cb.setEnabled(False)
+        self.nlp_module_enabled_cb.setToolTip("此設定從 config.yaml 讀取，僅供顯示，需在 config.yaml 中修改")
         modules_layout.addRow("", self.nlp_module_enabled_cb)
         
-        self.mem_module_enabled_cb = QCheckBox("MEM 模組 ⚠️")
+        self.mem_module_enabled_cb = QCheckBox("MEM 模組 🔒")
+        self.mem_module_enabled_cb.setEnabled(False)
+        self.mem_module_enabled_cb.setToolTip("此設定從 config.yaml 讀取，僅供顯示，需在 config.yaml 中修改")
         modules_layout.addRow("", self.mem_module_enabled_cb)
         
-        self.llm_module_enabled_cb = QCheckBox("LLM 模組 ⚠️")
+        self.llm_module_enabled_cb = QCheckBox("LLM 模組 🔒")
+        self.llm_module_enabled_cb.setEnabled(False)
+        self.llm_module_enabled_cb.setToolTip("此設定從 config.yaml 讀取，僅供顯示，需在 config.yaml 中修改")
         modules_layout.addRow("", self.llm_module_enabled_cb)
         
-        self.tts_module_enabled_cb = QCheckBox("TTS 模組 ⚠️")
+        self.tts_module_enabled_cb = QCheckBox("TTS 模組 🔒")
+        self.tts_module_enabled_cb.setEnabled(False)
+        self.tts_module_enabled_cb.setToolTip("此設定從 config.yaml 讀取，僅供顯示，需在 config.yaml 中修改")
         modules_layout.addRow("", self.tts_module_enabled_cb)
         
-        self.sys_module_enabled_cb = QCheckBox("SYS 模組 ⚠️")
+        self.sys_module_enabled_cb = QCheckBox("SYS 模組 🔒")
+        self.sys_module_enabled_cb.setEnabled(False)
+        self.sys_module_enabled_cb.setToolTip("此設定從 config.yaml 讀取，僅供顯示，需在 config.yaml 中修改")
         modules_layout.addRow("", self.sys_module_enabled_cb)
         
-        self.ui_module_enabled_cb = QCheckBox("UI 模組 ⚠️")
+        self.ui_module_enabled_cb = QCheckBox("UI 模組 🔒")
+        self.ui_module_enabled_cb.setEnabled(False)
+        self.ui_module_enabled_cb.setToolTip("此設定從 config.yaml 讀取，僅供顯示，需在 config.yaml 中修改")
         modules_layout.addRow("", self.ui_module_enabled_cb)
         
-        self.ani_module_enabled_cb = QCheckBox("ANI 模組 ⚠️")
+        self.ani_module_enabled_cb = QCheckBox("ANI 模組 🔒")
+        self.ani_module_enabled_cb.setEnabled(False)
+        self.ani_module_enabled_cb.setToolTip("此設定從 config.yaml 讀取，僅供顯示，需在 config.yaml 中修改")
         modules_layout.addRow("", self.ani_module_enabled_cb)
         
-        self.mov_module_enabled_cb = QCheckBox("MOV 模組 ⚠️")
+        self.mov_module_enabled_cb = QCheckBox("MOV 模組 🔒")
+        self.mov_module_enabled_cb.setEnabled(False)
+        self.mov_module_enabled_cb.setToolTip("此設定從 config.yaml 讀取，僅供顯示，需在 config.yaml 中修改")
         modules_layout.addRow("", self.mov_module_enabled_cb)
         
         scroll_layout.addWidget(modules_group)
@@ -1079,37 +1126,42 @@ class UserMainWindow(QMainWindow):
             self.allow_api_calls_cb.setChecked(get_user_setting("monitoring.network.allow_api_calls", True))
             self.network_timeout_spin.setValue(get_user_setting("monitoring.network.timeout", 30))
             
-            # 效能
-            self.max_fps_spin.setValue(get_user_setting("advanced.performance.max_fps", 60))
-            self.enable_hardware_acceleration_cb.setChecked(get_user_setting("advanced.performance.enable_hardware_acceleration", True))
-            self.reduce_animations_on_battery_cb.setChecked(get_user_setting("advanced.performance.reduce_animations_on_battery", True))
-            self.gc_interval_spin.setValue(get_user_setting("advanced.performance.gc_interval", 300))
+            # 效能（這些設定現在從全域 config.yaml 讀取，UI 僅供顯示）
+            from configs.config_loader import load_config
+            config = load_config()
+            self.max_fps_spin.setValue(config.get('system', {}).get('max_fps', 60))
+            self.enable_hardware_acceleration_cb.setChecked(config.get('system', {}).get('enable_hardware_acceleration', True))
+            self.reduce_animations_on_battery_cb.setChecked(config.get('system', {}).get('reduce_animations_on_battery', True))
+            self.gc_interval_spin.setValue(config.get('system', {}).get('gc_interval', 300))
             
-            # 日誌
-            self.logging_enabled_cb.setChecked(get_user_setting("advanced.logging.enabled", True))
+            # 日誌（這些設定現在從全域 config.yaml 讀取，UI 僅供顯示）
+            self.show_logs_cb.setChecked(get_user_setting("monitoring.logs.show_logs", False))
+            logging_config = config.get('logging', {})
+            self.logging_enabled_cb.setChecked(logging_config.get('enabled', True))
             
-            log_level = get_user_setting("advanced.logging.log_level", "INFO")
+            log_level = logging_config.get('log_level', 'INFO')
             idx = self.log_level_combo.findText(log_level)
             if idx >= 0:
                 self.log_level_combo.setCurrentIndex(idx)
             
-            self.log_dir_edit.setText(get_user_setting("advanced.logging.log_dir", "logs"))
-            self.enable_split_logs_cb.setChecked(get_user_setting("advanced.logging.enable_split_logs", False))
-            self.enable_console_output_cb.setChecked(get_user_setting("advanced.logging.enable_console_output", False))
-            self.save_logs_cb.setChecked(get_user_setting("advanced.logging.save_logs", True))
-            self.max_log_size_mb_spin.setValue(get_user_setting("advanced.logging.max_log_size_mb", 50))
-            self.log_rotation_days_spin.setValue(get_user_setting("advanced.logging.log_rotation_days", 7))
+            self.log_dir_edit.setText(logging_config.get('log_dir', 'logs'))
+            self.enable_split_logs_cb.setChecked(logging_config.get('enable_split_logs', False))
+            self.enable_console_output_cb.setChecked(logging_config.get('enable_console_output', False))
+            self.save_logs_cb.setChecked(logging_config.get('save_logs', True))
+            self.max_log_size_mb_spin.setValue(logging_config.get('max_log_size_mb', 50))
+            self.log_rotation_days_spin.setValue(logging_config.get('log_rotation_days', 7))
             
-            # 模組
-            self.stt_module_enabled_cb.setChecked(get_user_setting("advanced.modules.stt_enabled", True))
-            self.nlp_module_enabled_cb.setChecked(get_user_setting("advanced.modules.nlp_enabled", True))
-            self.mem_module_enabled_cb.setChecked(get_user_setting("advanced.modules.mem_enabled", True))
-            self.llm_module_enabled_cb.setChecked(get_user_setting("advanced.modules.llm_enabled", True))
-            self.tts_module_enabled_cb.setChecked(get_user_setting("advanced.modules.tts_enabled", True))
-            self.sys_module_enabled_cb.setChecked(get_user_setting("advanced.modules.sys_enabled", True))
-            self.ui_module_enabled_cb.setChecked(get_user_setting("advanced.modules.ui_enabled", True))
-            self.ani_module_enabled_cb.setChecked(get_user_setting("advanced.modules.ani_enabled", True))
-            self.mov_module_enabled_cb.setChecked(get_user_setting("advanced.modules.mov_enabled", True))
+            # 模組（這些設定現在從全域 config.yaml 讀取，UI 僅供顯示）
+            modules_config = config.get('modules', {})
+            self.stt_module_enabled_cb.setChecked(modules_config.get('stt_module', {}).get('enabled', True))
+            self.nlp_module_enabled_cb.setChecked(modules_config.get('nlp_module', {}).get('enabled', True))
+            self.mem_module_enabled_cb.setChecked(modules_config.get('mem_module', {}).get('enabled', True))
+            self.llm_module_enabled_cb.setChecked(modules_config.get('llm_module', {}).get('enabled', True))
+            self.tts_module_enabled_cb.setChecked(modules_config.get('tts_module', {}).get('enabled', True))
+            self.sys_module_enabled_cb.setChecked(modules_config.get('sys_module', {}).get('enabled', True))
+            self.ui_module_enabled_cb.setChecked(modules_config.get('ui_module', {}).get('enabled', True))
+            self.ani_module_enabled_cb.setChecked(modules_config.get('ani_module', {}).get('enabled', True))
+            self.mov_module_enabled_cb.setChecked(modules_config.get('mov_module', {}).get('enabled', True))
             
             info_log("[UserMainWindow] 設定載入完成")
             
@@ -1216,29 +1268,13 @@ class UserMainWindow(QMainWindow):
             set_user_setting("monitoring.network.allow_api_calls", self.allow_api_calls_cb.isChecked())
             set_user_setting("monitoring.network.timeout", self.network_timeout_spin.value())
             
-            set_user_setting("advanced.performance.max_fps", self.max_fps_spin.value())
-            set_user_setting("advanced.performance.enable_hardware_acceleration", self.enable_hardware_acceleration_cb.isChecked())
-            set_user_setting("advanced.performance.reduce_animations_on_battery", self.reduce_animations_on_battery_cb.isChecked())
-            set_user_setting("advanced.performance.gc_interval", self.gc_interval_spin.value())
+            # 效能設定已移至全域 config.yaml，不再保存到 user_settings.yaml
+            # 這些 UI 控件現在是唯讀的，僅供顯示
             
-            set_user_setting("advanced.logging.enabled", self.logging_enabled_cb.isChecked())
-            set_user_setting("advanced.logging.log_level", self.log_level_combo.currentText())
-            set_user_setting("advanced.logging.log_dir", self.log_dir_edit.text())
-            set_user_setting("advanced.logging.enable_split_logs", self.enable_split_logs_cb.isChecked())
-            set_user_setting("advanced.logging.enable_console_output", self.enable_console_output_cb.isChecked())
-            set_user_setting("advanced.logging.save_logs", self.save_logs_cb.isChecked())
-            set_user_setting("advanced.logging.max_log_size_mb", self.max_log_size_mb_spin.value())
-            set_user_setting("advanced.logging.log_rotation_days", self.log_rotation_days_spin.value())
+            set_user_setting("monitoring.logs.show_logs", self.show_logs_cb.isChecked())
             
-            set_user_setting("advanced.modules.stt_enabled", self.stt_module_enabled_cb.isChecked())
-            set_user_setting("advanced.modules.nlp_enabled", self.nlp_module_enabled_cb.isChecked())
-            set_user_setting("advanced.modules.mem_enabled", self.mem_module_enabled_cb.isChecked())
-            set_user_setting("advanced.modules.llm_enabled", self.llm_module_enabled_cb.isChecked())
-            set_user_setting("advanced.modules.tts_enabled", self.tts_module_enabled_cb.isChecked())
-            set_user_setting("advanced.modules.sys_enabled", self.sys_module_enabled_cb.isChecked())
-            set_user_setting("advanced.modules.ui_enabled", self.ui_module_enabled_cb.isChecked())
-            set_user_setting("advanced.modules.ani_enabled", self.ani_module_enabled_cb.isChecked())
-            set_user_setting("advanced.modules.mov_enabled", self.mov_module_enabled_cb.isChecked())
+            # 日誌和模組設定已移至全域 config.yaml，不再保存到 user_settings.yaml
+            # 這些 UI 控件現在是唯讀的，僅供顯示
             
             # 🔧 重要：將內存中的設定寫入 user_settings.yaml
             from configs.user_settings_manager import save_user_settings
@@ -1266,6 +1302,17 @@ class UserMainWindow(QMainWindow):
         if theme_manager and hasattr(self, 'theme_toggle'):
             is_dark = (theme_str == Theme.DARK.value)
             self.theme_toggle.setText("☀️" if is_dark else "🌙")
+    
+    def _on_show_logs_changed(self):
+        """顯示日誌分頁選項變更"""
+        show_logs = self.show_logs_cb.isChecked()
+        from configs.user_settings_manager import set_user_setting, save_user_settings
+        set_user_setting("monitoring.logs.show_logs", show_logs)
+        save_user_settings()
+        
+        # 發送設定變更信號
+        self.settings_changed.emit("monitoring.logs.show_logs", show_logs)
+        debug_log(OPERATION_LEVEL, f"[UserMainWindow] show_logs 設定已變更: {show_logs}")
     
     def apply_settings(self):
         """套用設定"""

@@ -354,12 +354,26 @@ class UIModule(BaseFrontendModule):
             
             # 對於主介面，先準備動畫再顯示窗口
             if interface_type == UIInterfaceType.MAIN_DESKTOP_PET:
-                # 清理離場動畫狀態
-                if self.mov_module and hasattr(self.mov_module, '_is_leaving'):
-                    if self.mov_module._is_leaving:
+                # 清理所有可能的殘留狀態
+                if self.mov_module:
+                    # 清理離場動畫狀態
+                    if hasattr(self.mov_module, '_is_leaving') and self.mov_module._is_leaving:
                         debug_log(1, f"[{self.module_id}] 清理未完成的離場動畫狀態")
                         self.mov_module._is_leaving = False
                         self.mov_module.resume_movement("leave_animation")
+                    
+                    # 清理入場動畫狀態
+                    if hasattr(self.mov_module, '_is_entering') and self.mov_module._is_entering:
+                        debug_log(1, f"[{self.module_id}] 清理未完成的入場動畫狀態")
+                        self.mov_module._is_entering = False
+                        self.mov_module.resume_movement("entry_animation")
+                    
+                    # 清理動畫等待狀態
+                    if hasattr(self.mov_module, '_awaiting_anim') and self.mov_module._awaiting_anim:
+                        debug_log(1, f"[{self.module_id}] 清理等待動畫: {self.mov_module._awaiting_anim}")
+                        self.mov_module._awaiting_anim = None
+                        self.mov_module._await_deadline = 0.0
+                        self.mov_module.movement_locked_until = 0.0
                 
                 # 停止 ANI 模組當前播放（清理殘留動畫）
                 if self.ani_module and hasattr(self.ani_module, 'stop'):
@@ -416,12 +430,22 @@ class UIModule(BaseFrontendModule):
                 
                 debug_log(1, f"[{self.module_id}] 播放離場動畫後隱藏介面")
                 
-                # 定義隱藏回調
+                # 定義隱藏回調（確保在主線程執行且狀態正確）
                 def _hide_after_animation():
-                    # 線程安全的隱藏調用
-                    QMetaObject.invokeMethod(interface, "hide", Qt.QueuedConnection)
-                    self.active_interfaces.discard(interface_type)
-                    info_log(f"[{self.module_id}] 隱藏介面: {interface_type.value}")
+                    try:
+                        # 確保 _is_leaving 狀態已清理
+                        if hasattr(self.mov_module, '_is_leaving'):
+                            self.mov_module._is_leaving = False
+                        
+                        # 線程安全的隱藏調用
+                        if hasattr(interface, 'isVisible') and interface.isVisible():
+                            QMetaObject.invokeMethod(interface, "hide", Qt.QueuedConnection)
+                            self.active_interfaces.discard(interface_type)
+                            info_log(f"[{self.module_id}] 隱藏介面完成: {interface_type.value}")
+                        else:
+                            debug_log(2, f"[{self.module_id}] 介面已隱藏，跳過")
+                    except Exception as e:
+                        error_log(f"[{self.module_id}] 隱藏介面失敗: {e}")
                 
                 # 播放離場動畫，完成後隱藏
                 self.mov_module._play_leave_animation(_hide_after_animation)

@@ -98,11 +98,9 @@ class TransitionBehavior(BaseBehavior):
             
             print(f"✅ 轉場完成: {self._target_mode.value}")
             
-            # 轉場後強制觸發正確的 idle 動畫（根據新模式）
-            is_ground = (self._target_mode == MovementMode.GROUND)
-            idle_anim = "stand_idle_g" if is_ground else "smile_idle_f"
-            ctx.trigger_anim(idle_anim, {"loop": True, "force_restart": True})
-            print(f"🎬 轉場後觸發 idle 動畫: {idle_anim}")
+            # 不在這裡觸發 idle 動畫，等待轉場動畫（f_to_g/g_to_f）完成後
+            # 由 mov_module 的落地邏輯或 _on_ani_finish 處理
+            # 這樣可以避免優先度衝突
             
             return BehaviorState.IDLE
         return None

@@ -15,21 +15,21 @@ from .system_background import SystemBackgroundWindow
 from .theme_manager import theme_manager, Theme
 
 try:
-    from .state_profile import StateProfileDialog
-    info_log("[access_widget] Using StateProfileDialog")
+    from .system_status import SystemStatusWindow
+    info_log("[access_widget] Using SystemStatusWindow")
 except Exception as e:
-    error_log(f"[access_widget] Failed to import StateProfileDialog, using placeholder: {e}")
+    error_log(f"[access_widget] Failed to import SystemStatusWindow, using placeholder: {e}")
 
-    class StateProfileDialog(QDialog):
-        def __init__(self, controller=None, parent=None):
+    class SystemStatusWindow(QDialog):
+        def __init__(self, status_manager=None, parent=None):
             super().__init__(parent)
-            self.setWindowTitle("User Settings (placeholder)")
+            self.setWindowTitle("System Status (placeholder)")
             self.setMinimumSize(600, 420)
 
             lay = QVBoxLayout(self)
             lay.addWidget(QLabel(
-                "Could not load StateProfileDialog.\n"
-                "Please check state_profile.py import."
+                "Could not load SystemStatusWindow.\n"
+                "Please check system_status.py import."
             ))
             btn = QPushButton("Close")
             btn.clicked.connect(self.close)
@@ -112,6 +112,9 @@ class ControllerBridge:
                 
                 # 問題3修正：設定視窗關閉時不退出應用程式，只是隱藏
                 self._user_settings_window.setAttribute(Qt.WA_QuitOnClose, False)
+                
+                # 連接設定變更信號到系統狀態視窗
+                self._user_settings_window.settings_changed.connect(self._on_user_settings_changed)
                 
                 # 不需要 window_closed 信號來清空引用，保留視窗實例以便重複開啟
 
@@ -212,32 +215,25 @@ class ControllerBridge:
             # 創建新實例
             if self._state_dialog is None:
                 try:
-                    dlg = StateProfileDialog(controller=self.controller)
-                except TypeError:
-                    try:
-                        dlg = StateProfileDialog(self.controller)
-                    except TypeError:
-                        dlg = StateProfileDialog()
+                    # 嘗試從 controller 獲取 status_manager
+                    status_mgr = getattr(self.controller, 'status_manager', None)
+                    
+                    # 如果 controller 沒有 status_manager（例如 debug-gui 模式），使用全局單例
+                    if status_mgr is None:
+                        from core.status_manager import status_manager as global_status_mgr
+                        status_mgr = global_status_mgr
+                    
+                    dlg = SystemStatusWindow(status_manager=status_mgr)
+                except Exception as create_err:
+                    error_log(f"[AccessWidget] 無法創建 SystemStatusWindow: {create_err}")
+                    import traceback
+                    traceback.print_exc()
+                    dlg = SystemStatusWindow()
 
                 self._state_dialog = dlg
                 
-                # 問題3修正：對話框關閉時不退出應用程式
+                # 對話框關閉時不退出應用程式
                 dlg.setAttribute(Qt.WA_QuitOnClose, False)
-                # 不使用 WA_DeleteOnClose，保留實例以便重複開啟
-
-                try:
-                    dlg.panel.set_diary_texts(
-                        feels="Calm & focused. Latency low; mood +8%.",
-                        helped="Fixed UI bugs, refactored theme system, and arranged your study plan."
-                    )
-                    dlg.panel.set_random_tips(
-                        "Tip: Press Shift+Enter to insert a line. Stay hydrated and take breaks!"
-                    )
-                    guess = os.path.join(os.path.dirname(__file__), "..", "..", "..", "arts", "U.E.P.png")
-                    if os.path.exists(guess):
-                        dlg.panel.set_uep_image(guess)
-                except Exception as e:
-                    error_log("[ControllerBridge] Failed to set default diary content:", e)
 
             self._state_dialog.show()
             self._state_dialog.raise_()
@@ -252,6 +248,14 @@ class ControllerBridge:
             traceback.print_exc()
             return {"success": False, "error": str(e)}
 
+    def _on_user_settings_changed(self, key: str, value):
+        """用戶設定變更回調"""
+        debug_log(OPERATION_LEVEL, f"[AccessWidget] 收到設定變更: {key} = {value}")
+        
+        # 如果是日誌顯示設定變更，轉發給系統狀態視窗
+        if key == "monitoring.logs.show_logs" and self._state_dialog is not None:
+            if hasattr(self._state_dialog, 'on_settings_changed'):
+                self._state_dialog.on_settings_changed(key, value)
 
 
 class DraggableButton(QPushButton):

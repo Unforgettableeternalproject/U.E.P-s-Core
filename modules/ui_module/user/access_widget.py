@@ -1,6 +1,7 @@
 ﻿# access_widget.py
 import sys, math, os
 from functools import partial
+from typing import Dict, Any
 
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QPushButton, QVBoxLayout, QLabel,
@@ -68,11 +69,6 @@ except Exception:
     UIInterfaceType = None
 
 
-def info_log(*a): print(*a)
-def debug_log(*a): print(*a)
-def error_log(*a): print(*a)
-
-
 class ControllerBridge:
     def __init__(self, controller):
         self.controller = controller
@@ -97,8 +93,7 @@ class ControllerBridge:
             info_log("[ControllerBridge] tool_2 (呼叫UEP) - 尚未實作")
             return {"success": False, "message": "功能開發中"}
         elif fid == "tool_3":
-            info_log("[ControllerBridge] tool_3 (睡眠) - 尚未實作")
-            return {"success": False, "message": "功能開發中"}
+            return self.toggle_sleep_state()
         else:
             info_log(f"[ControllerBridge] Unknown function id: {fid}")
 
@@ -247,6 +242,396 @@ class ControllerBridge:
             error_log("[ControllerBridge] Failed to open state profile:", e)
             traceback.print_exc()
             return {"success": False, "error": str(e)}
+    
+    def toggle_sleep_state(self):
+        """切換睡眠/喚醒狀態（用於測試）- 支持前端模擬模式"""
+        try:
+            info_log("[ControllerBridge] 🌙 tool_3 (睡眠/喚醒) 被觸發")
+            
+            # 檢查後端可用性
+            backend_available = self._check_backend_availability()
+            
+            if not backend_available:
+                # 前端模擬模式
+                info_log("[ControllerBridge] 🎭 後端未就緒，使用前端模擬模式")
+                return self._simulate_sleep_frontend_only()
+            
+            # 完整後端模式
+            info_log("[ControllerBridge] 🔧 後端已就緒，使用完整模式")
+            return self._toggle_sleep_with_backend()
+                
+        except Exception as e:
+            import traceback
+            error_log(f"[ControllerBridge] ❌ toggle_sleep_state 失敗: {e}")
+            traceback.print_exc()
+            return {"success": False, "error": str(e)}
+    
+    def _check_backend_availability(self) -> bool:
+        """檢查後端管理器是否可用"""
+        try:
+            from core.states.state_manager import state_manager
+            from core.states.state_queue import get_state_queue_manager
+            
+            # 嘗試獲取當前狀態和佇列
+            _ = state_manager.get_current_state()
+            state_queue = get_state_queue_manager()
+            
+            if state_queue is None:
+                return False
+            
+            return True
+        except Exception as e:
+            debug_log(3, f"[ControllerBridge] 後端檢查失敗: {e}")
+            return False
+    
+    def _simulate_sleep_frontend_only(self) -> Dict[str, Any]:
+        """前端專用的 SLEEP 模擬（使用 StateQueue 但不執行後端邏輯）
+        
+        通過 StateQueue 處理狀態轉換，保持狀態一致性，
+        但標記為模擬模式，跳過資源管理等後端邏輯
+        """
+        info_log("[ControllerBridge] 🎭 前端模擬模式：通過 StateQueue 處理")
+        
+        try:
+            from core.event_bus import event_bus, SystemEvent
+            from core.states.state_manager import state_manager, UEPState
+            from core.states.state_queue import get_state_queue_manager
+            
+            # 嘗試獲取 StateQueue
+            try:
+                state_queue = get_state_queue_manager()
+                use_state_queue = True
+            except Exception as e:
+                info_log(f"[ControllerBridge] ⚠️ StateQueue 不可用: {e}")
+                info_log("[ControllerBridge] 改用純事件模式")
+                use_state_queue = False
+            
+            # 檢查是否已經在模擬睡眠狀態
+            if not hasattr(self, '_frontend_sleep_simulated'):
+                self._frontend_sleep_simulated = False
+            
+            if not self._frontend_sleep_simulated:
+                # 進入睡眠模擬
+                info_log("[ControllerBridge] 😴 進入前端 SLEEP 模擬")
+                
+                if use_state_queue:
+                    # ✅ 使用 StateQueue + StateManager（但標記為模擬）
+                    info_log("[ControllerBridge] 📋 通過 StateQueue 處理 SLEEP")
+                    
+                    # 直接調用 StateManager 設置狀態（跳過佇列）
+                    context = {
+                        "simulation": True,
+                        "frontend_test": True,
+                        "trigger_reason": "frontend_widget_test",
+                        "skip_resource_management": True  # 標記跳過資源管理
+                    }
+                    
+                    success = state_manager.set_state(UEPState.SLEEP, context)
+                    
+                    if success:
+                        info_log("[ControllerBridge] ✅ StateManager 已設置為 SLEEP")
+                        info_log("[ControllerBridge] 💡 MOV 模組應該會播放 g_to_l → sleep_l 動畫")
+                        
+                        self._frontend_sleep_simulated = True
+                        
+                        # 獲取狀態資訊
+                        queue_info = self._get_state_queue_info()
+                        
+                        return {
+                            "success": True,
+                            "mode": "frontend_simulation_with_state",
+                            "action": "sleep",
+                            "message": "前端 SLEEP 動畫已開始（使用 StateManager）",
+                            "note": "狀態已同步，但不執行資源管理",
+                            "state_info": queue_info
+                        }
+                    else:
+                        error_log("[ControllerBridge] ❌ StateManager 設置失敗")
+                        return {"success": False, "error": "StateManager.set_state failed"}
+                else:
+                    # ❌ StateQueue 不可用，使用純事件模式
+                    info_log("[ControllerBridge] 📢 使用純事件模式")
+                    
+                    event_bus.publish(
+                        SystemEvent.STATE_CHANGED,
+                        {
+                            "old_state": "idle",
+                            "new_state": UEPState.SLEEP.value,
+                            "simulation": True,
+                            "source": "access_widget_frontend_test"
+                        },
+                        source="access_widget"
+                    )
+                    
+                    self._frontend_sleep_simulated = True
+                    
+                    info_log("[ControllerBridge] ✅ 前端 SLEEP 事件已發布")
+                    info_log("[ControllerBridge] 💡 MOV 模組應該會播放 g_to_l → sleep_l 動畫")
+                    info_log("[ControllerBridge] ⚠️ 注意：StateManager 狀態未同步")
+                    
+                    return {
+                        "success": True,
+                        "mode": "frontend_simulation_event_only",
+                        "action": "sleep",
+                        "message": "前端 SLEEP 動畫已開始（純事件模式）",
+                        "note": "狀態未同步，僅觸發動畫"
+                    }
+            else:
+                # 喚醒模擬
+                info_log("[ControllerBridge] 🌅 喚醒前端 SLEEP 模擬")
+                
+                if use_state_queue:
+                    # ✅ 使用 StateManager 退出 SLEEP
+                    info_log("[ControllerBridge] 📋 通過 StateManager 退出 SLEEP")
+                    
+                    # 調用 StateManager 退出特殊狀態
+                    state_manager.exit_special_state("frontend_widget_test")
+                    
+                    # 手動發布 WAKE_READY（因為沒有真正的模組重載）
+                    info_log("[ControllerBridge] 📢 發布 WAKE_READY 事件（模擬）")
+                    event_bus.publish(
+                        SystemEvent.WAKE_READY,
+                        {
+                            "simulation": True,
+                            "reason": "frontend_test"
+                        },
+                        source="access_widget"
+                    )
+                    
+                    self._frontend_sleep_simulated = False
+                    
+                    info_log("[ControllerBridge] ✅ 已退出 SLEEP，狀態已同步")
+                    info_log("[ControllerBridge] 💡 MOV 模組應該會播放 l_to_g 並切回 IDLE")
+                    
+                    # 獲取狀態資訊
+                    queue_info = self._get_state_queue_info()
+                    
+                    return {
+                        "success": True,
+                        "mode": "frontend_simulation_with_state",
+                        "action": "wake",
+                        "message": "前端 WAKE 動畫已開始（使用 StateManager）",
+                        "note": "狀態已同步至 IDLE",
+                        "state_info": queue_info
+                    }
+                else:
+                    # ❌ 純事件模式喚醒
+                    info_log("[ControllerBridge] 📢 使用純事件模式喚醒")
+                    
+                    event_bus.publish(
+                        SystemEvent.STATE_CHANGED,
+                        {
+                            "old_state": UEPState.SLEEP.value,
+                            "new_state": "idle",
+                            "simulation": True,
+                            "source": "access_widget_frontend_test"
+                        },
+                        source="access_widget"
+                    )
+                    
+                    event_bus.publish(
+                        SystemEvent.WAKE_READY,
+                        {
+                            "simulation": True,
+                            "reason": "frontend_test"
+                        },
+                        source="access_widget"
+                    )
+                    
+                    self._frontend_sleep_simulated = False
+                    
+                    info_log("[ControllerBridge] ✅ 前端 WAKE 事件已發布")
+                    info_log("[ControllerBridge] 💡 MOV 模組應該會播放 l_to_g 並切回 IDLE")
+                    
+                    return {
+                        "success": True,
+                        "mode": "frontend_simulation_event_only",
+                        "action": "wake",
+                        "message": "前端 WAKE 動畫已開始（純事件模式）",
+                        "note": "狀態未同步，僅觸發動畫"
+                    }
+                
+        except Exception as e:
+            error_log(f"[ControllerBridge] 前端模擬失敗: {e}")
+            import traceback
+            error_log(traceback.format_exc())
+            return {"success": False, "error": str(e), "mode": "frontend_simulation"}
+    
+    def _toggle_sleep_with_backend(self) -> Dict[str, Any]:
+        """使用完整後端的 SLEEP 切換（生產模式）"""
+        try:
+            from core.states.state_manager import state_manager, UEPState
+            from core.states.state_queue import get_state_queue_manager
+            
+            current_state = state_manager.get_current_state()
+            state_queue = get_state_queue_manager()
+            
+            info_log(f"[ControllerBridge] 📊 當前系統狀態: {current_state.value if current_state else 'Unknown'}")
+            info_log(f"[ControllerBridge] 📋 當前佇列項目: {state_queue.current_item.state.value if state_queue.current_item else 'None'}")
+            info_log(f"[ControllerBridge] 📋 佇列長度: {len(state_queue.queue)}")
+            
+            # 如果在 SLEEP 狀態，則喚醒
+            if current_state == UEPState.SLEEP:
+                info_log("[ControllerBridge] ☀️ 系統正在睡眠，執行喚醒...")
+                from core.states.wake_api import wake_up_system
+                
+                result = wake_up_system(reason="user_widget_button")
+                
+                if result.get("success"):
+                    info_log(f"[ControllerBridge] ✅ 喚醒成功: {result.get('message')}")
+                    info_log(f"[ControllerBridge] 🔄 重載模組: {result.get('modules_reloaded', [])}")
+                    
+                    # 喚醒後獲取新的佇列狀態
+                    queue_info_after = self._get_state_queue_info()
+                    info_log(f"[ControllerBridge] 📊 喚醒後狀態: {queue_info_after}")
+                    
+                    return {
+                        "success": True,
+                        "action": "wake",
+                        "message": "系統已喚醒",
+                        "modules_reloaded": result.get('modules_reloaded', []),
+                        "queue_after": queue_info_after
+                    }
+                else:
+                    error_log(f"[ControllerBridge] ❌ 喚醒失敗: {result.get('message')}")
+                    return {
+                        "success": False,
+                        "action": "wake",
+                        "error": result.get('message', '未知錯誤')
+                    }
+            
+            # 如果不在 SLEEP 狀態，嘗試進入睡眠（測試用）
+            else:
+                info_log(f"[ControllerBridge] 💤 嘗試進入睡眠狀態（當前: {current_state.value}）...")
+                
+                # 檢查是否有活躍的 GS
+                try:
+                    from core.sessions.session_manager import session_manager as gs_manager
+                    active_gs = gs_manager.get_current_general_session()
+                except ImportError:
+                    info_log("[ControllerBridge] ⚠️ session_manager 未載入，跳過 GS 檢查")
+                    active_gs = None
+                
+                if active_gs:
+                    info_log(f"[ControllerBridge] ⚠️ 檢測到活躍 GS: {active_gs.session_id}")
+                    info_log(f"[ControllerBridge] GS 狀態: started={active_gs.start_time}, ended={active_gs.end_time}")
+                    info_log("[ControllerBridge] 💡 SLEEP 需要在沒有 GS 時才能進入（符合設計規範）")
+                    
+                    return {
+                        "success": False,
+                        "action": "sleep",
+                        "message": "當前有活躍會話，無法進入睡眠",
+                        "active_gs": active_gs.session_id,
+                        "gs_start_time": str(active_gs.start_time),
+                        "design_note": "SLEEP requires no active GS (no GS = can sleep)"
+                    }
+                
+                # 沒有活躍 GS，可以進入睡眠
+                info_log("[ControllerBridge] ✅ 沒有活躍 GS，符合 SLEEP 進入條件")
+                
+                # 獲取加入前的佇列狀態
+                queue_info_before = self._get_state_queue_info()
+                info_log(f"[ControllerBridge] 📋 加入前佇列: {queue_info_before}")
+                
+                # 使用 state_queue 添加 SLEEP 狀態
+                info_log("[ControllerBridge] 推送 SLEEP 狀態到佇列...")
+                success = state_queue.add_state(
+                    state=UEPState.SLEEP,
+                    trigger_content="user_widget_button",
+                    context_content="手動觸發睡眠測試",
+                    metadata={
+                        "source": "access_widget",
+                        "manual_trigger": True,
+                        "test_mode": True
+                    }
+                )
+                
+                # 獲取加入後的佇列狀態
+                queue_info_after = self._get_state_queue_info()
+                info_log(f"[ControllerBridge] 📋 加入後佇列: {queue_info_after}")
+                
+                if success:
+                    info_log(f"[ControllerBridge] ✅ SLEEP 狀態成功加入佇列")
+                    info_log(f"[ControllerBridge] 📊 佇列變化: {queue_info_before['queue_length']} -> {queue_info_after['queue_length']}")
+                    info_log(f"[ControllerBridge] 🎯 當前處理項: {state_queue.current_item.state.value if state_queue.current_item else 'None'}")
+                    
+                    return {
+                        "success": True,
+                        "action": "sleep",
+                        "message": "SLEEP 狀態已加入佇列",
+                        "mode": "backend_full",
+                        "queue_before": queue_info_before,
+                        "queue_after": queue_info_after,
+                        "current_item": state_queue.current_item.state.value if state_queue.current_item else None
+                    }
+                else:
+                    error_log("[ControllerBridge] ❌ SLEEP 狀態加入佇列失敗")
+                    return {
+                        "success": False,
+                        "action": "sleep",
+                        "message": "無法加入 SLEEP 狀態到佇列",
+                        "queue_info": queue_info_after
+                    }
+                
+        except ImportError as ie:
+            error_log(f"[ControllerBridge] 無法導入睡眠相關模組: {ie}")
+            import traceback
+            error_log(traceback.format_exc())
+            return {
+                "success": False,
+                "error": "睡眠功能模組未載入",
+                "detail": str(ie)
+            }
+        except Exception as e:
+            import traceback
+            error_log(f"[ControllerBridge] _toggle_sleep_with_backend 失敗: {e}")
+            traceback.print_exc()
+            return {"success": False, "error": str(e)}
+    
+    def _get_state_queue_info(self):
+        """獲取狀態佇列資訊（用於調試）"""
+        try:
+            from core.states.state_manager import state_manager
+            from core.states.state_queue import get_state_queue_manager
+            
+            # 獲取當前狀態
+            current = state_manager.get_current_state()
+            
+            # 獲取 StateQueue 實例
+            state_queue = get_state_queue_manager()
+            
+            # 構建佇列項目詳細資訊
+            queued_items = []
+            for item in state_queue.queue:
+                queued_items.append({
+                    "state": item.state.value,
+                    "priority": item.priority,
+                    "trigger": item.trigger_content[:50] if item.trigger_content else "",
+                    "created_at": item.created_at.strftime("%H:%M:%S") if item.created_at else None
+                })
+            
+            # 獲取當前處理項目資訊
+            current_item_info = None
+            if state_queue.current_item:
+                current_item_info = {
+                    "state": state_queue.current_item.state.value,
+                    "priority": state_queue.current_item.priority,
+                    "started_at": state_queue.current_item.started_at.strftime("%H:%M:%S") if state_queue.current_item.started_at else None
+                }
+            
+            return {
+                "state_manager_state": current.value if current else None,
+                "queue_current_state": state_queue.current_state.value,
+                "current_item": current_item_info,
+                "queue_length": len(state_queue.queue),
+                "queued_items": queued_items,
+                "last_completion_cycle": state_queue.last_completion_cycle
+            }
+        except Exception as e:
+            error_log(f"[ControllerBridge] 獲取狀態佇列失敗: {e}")
+            import traceback
+            error_log(traceback.format_exc())
+            return {"error": str(e)}
 
     def _on_user_settings_changed(self, key: str, value):
         """用戶設定變更回調"""

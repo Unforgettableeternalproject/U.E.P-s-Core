@@ -214,6 +214,8 @@ class ANIModule(BaseFrontendModule):
                 self._cache_pixmap(anim_name, idx, original_pm)
 
             # 應用變換（只處理偏移，縮放交給 UI 層處理）
+            if offset_x != 0 or offset_y != 0:
+                debug_log(3, f"[ANI] 應用 offset 變換: {anim_name} frame={idx}, offset_x={offset_x}, offset_y={offset_y}")
             transformed_pm = self._apply_transform(original_pm, 1.0, offset_x, offset_y)  # zoom 固定為 1.0
             if transformed_pm:
                 # 放到變換快取
@@ -517,9 +519,12 @@ class ANIModule(BaseFrontendModule):
                 result_pm = QPixmap(canvas_width, canvas_height)
                 result_pm.fill(Qt.transparent)
                 
-                # 計算繪製位置
-                draw_x = max(0, offset_x)
-                draw_y = max(0, offset_y)
+                # 🎯 計算繪製位置（修正邏輯）
+                # offsetY > 0: 圖片向上移動 → 在畫布下方留白 → draw_y = abs(offset_y)
+                # offsetY < 0: 圖片向下移動 → 在畫布上方留白 → draw_y = 0
+                # offsetX 同理
+                draw_x = abs(offset_x) if offset_x < 0 else 0
+                draw_y = abs(offset_y) if offset_y < 0 else 0
                 
                 # 在新畫布上繪製偏移後的圖片
                 painter = QPainter(result_pm)

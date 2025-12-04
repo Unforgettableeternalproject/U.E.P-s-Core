@@ -8,6 +8,7 @@
 - 恢復系統正常運作
 """
 
+import time
 from typing import Dict, Any
 from utils.debug_helper import debug_log, info_log, error_log
 
@@ -62,7 +63,43 @@ def wake_up_system(reason: str = "user_widget") -> Dict[str, Any]:
         # 2. 重新載入模組
         reloaded_modules = _reload_modules()
         
-        # 3. 退出 SLEEP 狀態，回到 IDLE
+        # 3. 通知 StateQueue 完成 SLEEP 狀態
+        try:
+            from core.states.state_queue import get_state_queue_manager
+            state_queue = get_state_queue_manager()
+            
+            # 檢查當前是否真的在處理 SLEEP 狀態
+            if state_queue.current_item and state_queue.current_item.state == UEPState.SLEEP:
+                info_log("[WakeAPI] 📤 通知 StateQueue 完成 SLEEP 狀態")
+                state_queue.complete_current_state(
+                    success=True,
+                    result_data={
+                        "wake_reason": reason,
+                        "modules_reloaded": reloaded_modules,
+                        "wake_time": time.time()
+                    }
+                )
+            else:
+                debug_log(2, f"[WakeAPI] StateQueue 當前項目不是 SLEEP: {state_queue.current_item.state.value if state_queue.current_item else 'None'}")
+        except Exception as e:
+            error_log(f"[WakeAPI] 通知 StateQueue 失敗: {e}")
+        
+        # 3.5 發布 WAKE_READY（通知前端與 MOV 可安全轉場）
+        try:
+            from core.event_bus import event_bus, SystemEvent
+            event_bus.publish(
+                SystemEvent.WAKE_READY,
+                {
+                    "wake_reason": reason,
+                    "modules_reloaded": reloaded_modules,
+                },
+                source="wake_api",
+            )
+            debug_log(2, "[WakeAPI] 已發布 WAKE_READY 事件")
+        except Exception as e:
+            debug_log(2, f"[WakeAPI] 發布 WAKE_READY 事件失敗: {e}")
+
+        # 4. 退出 SLEEP 狀態，回到 IDLE
         state_manager.exit_special_state(reason)
         
         info_log(f"[WakeAPI] ✅ 系統喚醒成功，已重載 {len(reloaded_modules)} 個模組")

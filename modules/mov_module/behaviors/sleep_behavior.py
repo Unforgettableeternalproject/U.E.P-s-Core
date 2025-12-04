@@ -24,7 +24,8 @@ class SleepBehavior(BaseBehavior):
             {
                 "loop": False,
                 "force_restart": True,
-                "priority": AnimationPriority.SYSTEM_CYCLE  # 以系統級優先度壓過一般動畫
+                "priority": AnimationPriority.SYSTEM_CYCLE,  # 以系統級優先度壓過一般動畫
+                "allow_interrupt": False  # 睡眠動畫不可被打斷
             }
         )
         return None
@@ -42,6 +43,7 @@ class SleepBehavior(BaseBehavior):
             {
                 "loop": True,
                 "priority": AnimationPriority.SYSTEM_CYCLE,
+                "allow_interrupt": False  # 睡眠循環動畫不可被打斷
             }
         )
         return BehaviorState.SLEEPING  # 維持睡眠狀態

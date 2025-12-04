@@ -26,24 +26,31 @@ class FrontendBridge:
         self.mov_module = None
         self._initialized = False
         self._event_subscriptions = []
+        self._wake_in_progress = False  # 追蹤是否正在進行喚醒流程
         
         info_log("[FrontendBridge] 前端橋接器已創建")
     
-    def initialize(self) -> bool:
+    def initialize(self, coordinator_only: bool = False) -> bool:
         """
         初始化前端橋接器
+        
+        Args:
+            coordinator_only: 僅作為協調器模式
+                - True: 只訂閱事件並轉發給前端模組（debug GUI 模式）
+                - False: 完整初始化，包含後端整合（生產模式）
         
         步驟：
         1. 從 Framework 獲取前端模組實例
         2. 訂閱系統事件
-        3. 註冊 StatusManager 回調
+        3. 註冊 StatusManager 回調（僅 coordinator_only=False）
         4. 建立模組間連接
         
         Returns:
             bool: 初始化是否成功
         """
         try:
-            info_log("[FrontendBridge] 開始初始化前端橋接器...")
+            mode_desc = "協調器模式" if coordinator_only else "完整模式"
+            info_log(f"[FrontendBridge] 開始初始化前端橋接器（{mode_desc}）...")
             
             # 1. 獲取前端模組實例
             if not self._load_frontend_modules():
@@ -53,14 +60,18 @@ class FrontendBridge:
             # 2. 訂閱系統事件
             self._setup_event_subscriptions()
             
-            # 3. 註冊 StatusManager 回調
-            self._setup_status_callbacks()
+            # 3. 註冊 StatusManager 回調（僅生產模式）
+            if not coordinator_only:
+                self._setup_status_callbacks()
+                debug_log(2, "[FrontendBridge] 已註冊 StatusManager 回調")
+            else:
+                debug_log(2, "[FrontendBridge] 協調器模式：跳過 StatusManager 整合")
             
             # 4. 建立模組間連接
             self._connect_modules()
             
             self._initialized = True
-            info_log("[FrontendBridge] ✅ 前端橋接器初始化完成")
+            info_log(f"[FrontendBridge] ✅ 前端橋接器初始化完成（{mode_desc}）")
             return True
             
         except Exception as e:
@@ -98,12 +109,12 @@ class FrontendBridge:
             except Exception as e:
                 debug_log(2, f"[FrontendBridge] MOV 模組未載入: {e}")
             
-            # 至少需要一個前端模組
-            if not any([self.ui_module, self.ani_module, self.mov_module]):
-                error_log("[FrontendBridge] 沒有任何前端模組可用")
-                return False
+            # 在協調器模式下，允許沒有模組（延遲載入）
+            has_modules = any([self.ui_module, self.ani_module, self.mov_module])
+            if not has_modules:
+                debug_log(2, "[FrontendBridge] 當前沒有前端模組，等待延遲註冊")
             
-            return True
+            return True  # 總是返回 True，允許延遲載入
             
         except Exception as e:
             error_log(f"[FrontendBridge] 載入前端模組失敗: {e}")
@@ -148,16 +159,22 @@ class FrontendBridge:
                 handler_name="frontend_bridge"
             )
             
+            # 訂閱 SLEEP/WAKE 事件
+            event_bus.subscribe(
+                SystemEvent.SLEEP_EXITED,
+                self._on_sleep_exited,
+                handler_name="frontend_bridge"
+            )
+            
+            event_bus.subscribe(
+                SystemEvent.WAKE_READY,
+                self._on_wake_ready,
+                handler_name="frontend_bridge"
+            )
+            
             event_bus.subscribe(
                 SystemEvent.MODULE_ERROR,
                 self._on_module_error,
-            
-                            # 訂閱用戶互動事件（用於更新 last_interaction_time）
-                            event_bus.subscribe(
-                                SystemEvent.USER_INTERACTION,
-                                self._on_user_interaction,
-                                handler_name="frontend_bridge_interaction"
-                            )
                 handler_name="frontend_bridge"
             )
             
@@ -182,6 +199,31 @@ class FrontendBridge:
         except Exception as e:
             error_log(f"[FrontendBridge] 註冊 StatusManager 回調失敗: {e}")
     
+    def register_module(self, module_type: str, module_instance):
+        """
+        註冊前端模組（用於延遲載入）
+        
+        Args:
+            module_type: 模組類型 ('ui', 'ani', 'mov')
+            module_instance: 模組實例
+        """
+        try:
+            if module_type == 'ui':
+                self.ui_module = module_instance
+                info_log("[FrontendBridge] ✓ UI 模組已註冊")
+            elif module_type == 'ani':
+                self.ani_module = module_instance
+                info_log("[FrontendBridge] ✓ ANI 模組已註冊")
+            elif module_type == 'mov':
+                self.mov_module = module_instance
+                info_log("[FrontendBridge] ✓ MOV 模組已註冊")
+                # MOV 註冊時立刻建立連接
+                self._connect_modules()
+            else:
+                error_log(f"[FrontendBridge] 未知模組類型: {module_type}")
+        except Exception as e:
+            error_log(f"[FrontendBridge] 註冊模組 {module_type} 失敗: {e}")
+    
     def _connect_modules(self):
         """建立前端模組間的連接"""
         try:
@@ -197,7 +239,8 @@ class FrontendBridge:
                     self.mov_module.attach_ani(self.ani_module)
                     debug_log(2, "[FrontendBridge] MOV → ANI 連接已建立（MOV 控制動畫）")
             
-            info_log("[FrontendBridge] ✓ 模組間連接已建立")
+            if self.ui_module or self.ani_module or self.mov_module:
+                info_log("[FrontendBridge] ✓ 模組間連接已建立")
             
         except Exception as e:
             error_log(f"[FrontendBridge] 建立模組連接失敗: {e}")
@@ -357,6 +400,59 @@ class FrontendBridge:
             
         except Exception as e:
             error_log(f"[FrontendBridge] 處理助人意願變化失敗: {e}")
+    
+    def _on_sleep_exited(self, event):
+        """系統退出睡眠狀態但尚未完全恢復處理
+        
+        在此階段，後端已開始準備模組重載，但前端應保持在睡眠動畫中
+        讓使用者可以看到系統正在重新啟動的視覺回饋
+        只有當 WAKE_READY 事件發布後，前端才會退出睡眠動畫
+        """
+        try:
+            wake_reason = event.data.get('wake_reason', 'unknown') if hasattr(event, 'data') and event.data else 'unknown'
+            
+            info_log(f"[FrontendBridge] 系統開始喚醒流程 (原因: {wake_reason})，前端保持睡眠狀態等待 WAKE_READY")
+            
+            # 設置內部標記表示喚醒正在進行中
+            self._wake_in_progress = True
+            
+            # 前端維持睡眠動畫，不做任何狀態改變
+            # MOV 會繼續循環 sleep_l 動畫直到收到 WAKE_READY
+            
+            debug_log(2, "[FrontendBridge] 等待後端模組重載完成...")
+            
+        except Exception as e:
+            error_log(f"[FrontendBridge] 處理 SLEEP_EXITED 事件失敗: {e}")
+    
+    def _on_wake_ready(self, event):
+        """系統完全恢復就緒處理
+        
+        後端模組重載已完成，現在通知前端退出睡眠動畫
+        恢復使用者互動，系統進入 IDLE 狀態
+        """
+        try:
+            wake_reason = event.data.get('wake_reason', 'unknown') if hasattr(event, 'data') and event.data else 'unknown'
+            modules_reloaded = event.data.get('modules_reloaded', []) if hasattr(event, 'data') and event.data else []
+            
+            info_log(f"[FrontendBridge] 系統喚醒完成 (原因: {wake_reason})，{len(modules_reloaded)} 個模組已重載")
+            
+            # 清除喚醒進行中標記
+            self._wake_in_progress = False
+            
+            # 通知 MOV 退出睡眠動畫，觸發 l_to_g 過渡
+            if self.mov_module and hasattr(self.mov_module, 'on_wake_ready'):
+                self.mov_module.on_wake_ready()
+                debug_log(2, "[FrontendBridge] 已通知 MOV 退出睡眠動畫")
+            
+            # 通知 UI 恢復互動
+            if self.ui_module and hasattr(self.ui_module, 'on_wake_ready'):
+                self.ui_module.on_wake_ready()
+                debug_log(2, "[FrontendBridge] 已通知 UI 恢復互動")
+            
+            info_log("[FrontendBridge] ✅ 前端已完全退出睡眠狀態")
+            
+        except Exception as e:
+            error_log(f"[FrontendBridge] 處理 WAKE_READY 事件失敗: {e}")
     
     def shutdown(self):
         """關閉前端橋接器"""

@@ -67,6 +67,8 @@ class SleepManager:
         
         Args:
             context: 觸發休眠的上下文資訊
+                - skip_resource_management: bool - 是否跳過資源管理（前端測試用）
+                - simulation: bool - 是否為模擬模式
             
         Returns:
             bool: 是否成功進入休眠
@@ -76,7 +78,14 @@ class SleepManager:
             return False
         
         try:
-            info_log("[SleepManager] 🌙 系統準備進入休眠狀態...")
+            # 檢查是否為前端模擬模式
+            is_simulation = context.get("simulation", False)
+            skip_resource_management = context.get("skip_resource_management", False)
+            
+            if is_simulation or skip_resource_management:
+                info_log("[SleepManager] 🎭 前端模擬模式：進入休眠（跳過資源管理）")
+            else:
+                info_log("[SleepManager] 🌙 系統準備進入休眠狀態...")
             
             # 創建休眠上下文
             self._sleep_context = SleepContext(
@@ -87,23 +96,30 @@ class SleepManager:
                 inactive_duration=context.get("inactive_duration", 0.0)
             )
             
-            # 執行資源釋放
-            self._release_resources()
-            
-            # 降低系統活動度
-            self._reduce_system_activity()
-            
-            # 保存休眠上下文
-            if self.config["save_context"]:
-                self._save_sleep_context()
-            
-            # 啟動喚醒監控（如果啟用）
-            if self.config["auto_wake_enabled"]:
-                self._start_wake_monitoring()
+            # 只在非模擬模式下執行資源管理
+            if not skip_resource_management:
+                # 執行資源釋放
+                self._release_resources()
+                
+                # 降低系統活動度
+                self._reduce_system_activity()
+                
+                # 保存休眠上下文
+                if self.config["save_context"]:
+                    self._save_sleep_context()
+                
+                # 啟動喚醒監控（如果啟用）
+                if self.config["auto_wake_enabled"]:
+                    self._start_wake_monitoring()
+            else:
+                debug_log(2, "[SleepManager] ⏭️ 跳過資源管理（前端測試模式）")
             
             self._is_sleeping = True
             
-            info_log(f"[SleepManager] ✅ 系統已進入休眠狀態（原因: {self._sleep_context.reason}）")
+            if is_simulation:
+                info_log(f"[SleepManager] ✅ 已進入休眠狀態（模擬模式，原因: {self._sleep_context.reason}）")
+            else:
+                info_log(f"[SleepManager] ✅ 系統已進入休眠狀態（原因: {self._sleep_context.reason}）")
             
             # 發布休眠事件
             self._publish_sleep_event("SLEEP_ENTERED")

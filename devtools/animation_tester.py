@@ -548,6 +548,12 @@ class AnimationTesterWindow(QMainWindow):
             # 清空現有動畫並重新註冊
             self.ani_module.manager.clips.clear()
             self.ani_module.config = ani_config
+            
+            # 🎯 清空變換快取（重要！否則會使用舊的 offset 快取）
+            if hasattr(self.ani_module, '_transformed_pixmap_cache'):
+                self.ani_module._transformed_pixmap_cache.clear()
+                info_log("[AnimationTester] 已清空 ANI 變換快取")
+            
             self.ani_module._apply_config_for_clips(ani_config)
             
             # 重新初始化前端（定時器等）
@@ -573,6 +579,11 @@ class AnimationTesterWindow(QMainWindow):
                         self.loop_checkbox.setChecked(saved_params['loop'])
                         # 更新預覽縮放
                         self.preview_widget.set_config_zoom(saved_params['zoom'])
+            
+            # 🎭 如果處於實際 UEP 模式，重新創建 desktop_pet 以應用新配置
+            if self.preview_mode == "live" and self.desktop_pet:
+                info_log("[AnimationTester] 重新創建 DesktopPetApp 以應用新配置")
+                self.create_desktop_pet()
             
             self.statusBar().showMessage("✅ 重新整理完成")
             info_log("[AnimationTester] 熱重載完成")

@@ -230,6 +230,9 @@ class CoreFramework:
         
         # Schema 適配器已移除 - 模組使用自己的 Input/Output Schema
         
+        # 前端橋接器（可選，在 debug GUI 或生產模式中初始化）
+        self.frontend_bridge = None
+        
         # 框架狀態
         self.is_initialized = False
         self.initialization_time = None
@@ -775,14 +778,21 @@ class CoreFramework:
         try:
             from core.event_bus import event_bus, SystemEvent
             
-            # 訂閱 SLEEP_ENTERED 事件（卸載模組）
+            # 訂閱狀態變化事件（卸載模組於 SLEEP 進入時）
             event_bus.subscribe(
                 SystemEvent.STATE_CHANGED,
                 self._on_state_changed,
                 handler_name="framework_sleep"
             )
             
-            debug_log(2, "[CoreFramework] 已訂閱 SLEEP 狀態事件")
+            # 訂閱 SLEEP_EXITED 事件（開始重載協調）
+            event_bus.subscribe(
+                SystemEvent.SLEEP_EXITED,
+                self._on_sleep_exited,
+                handler_name="framework_wake"
+            )
+            
+            debug_log(2, "[CoreFramework] 已訂閱 SLEEP/WAKE 事件")
             
         except Exception as e:
             error_log(f"[CoreFramework] 訂閱 SLEEP 事件失敗: {e}")
@@ -832,18 +842,31 @@ class CoreFramework:
             import traceback
             error_log(traceback.format_exc())
     
-    def _handle_sleep_exit(self):
-        """處理退出 SLEEP 狀態 - 標記需要重載模組"""
+    def _on_sleep_exited(self, event):
+        """處理 SLEEP_EXITED 事件 - 開始重載協調（但不恢復操作）"""
         try:
-            info_log("[CoreFramework] ⏰ 系統從 SLEEP 狀態喚醒")
-            info_log("[CoreFramework] 模組將在下次需要時自動載入")
+            wake_reason = event.data.get('wake_reason', 'unknown')
+            info_log(f"[CoreFramework] 🔄 SLEEP 已退出（原因: {wake_reason}），開始準備模組重載...")
             
-            # 注意：不在這裡立即重載模組
-            # 模組會在 SystemLoop 或 ModuleCoordinator 需要時自動通過 registry.get_module() 載入
-            # 這樣可以避免不必要的資源消耗
+            # 標記系統正在重載中，前端此時應保持睡眠 UI
+            # 實際重載由 wake_api 的 _reload_modules() 處理
+            # Framework 只需準備好接收模組請求
+            
+            debug_log(2, "[CoreFramework] 模組將在需要時通過 registry 自動重載")
+            debug_log(2, "[CoreFramework] 等待 WAKE_READY 事件後系統才會完全恢復")
             
         except Exception as e:
-            error_log(f"[CoreFramework] 處理 SLEEP 退出失敗: {e}")
+            error_log(f"[CoreFramework] 處理 SLEEP_EXITED 失敗: {e}")
+    
+    def _handle_sleep_exit(self):
+        """處理退出 SLEEP 狀態（從 STATE_CHANGED 觸發）"""
+        try:
+            info_log("[CoreFramework] ⏰ 系統狀態從 SLEEP 變更")
+            # STATE_CHANGED 的 sleep 退出主要用於狀態追蹤
+            # 實際重載由 SLEEP_EXITED 事件處理
+            
+        except Exception as e:
+            error_log(f"[CoreFramework] 處理 SLEEP 狀態退出失敗: {e}")
 
 
 # 全局框架實例

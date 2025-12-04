@@ -51,7 +51,7 @@ class TransitionBehavior(BaseBehavior):
             ctx.trigger_anim("g_to_f", {"loop": False})
         else:
             # 從浮空轉落地：直接下降到地面
-            gy = ctx.ground_y()-20
+            gy = ctx.ground_y()  # 🔧 移除 -20 偏移，確保降落到正確的地面位置
             self._target_y = gy
             self._target_x = ctx.position.x  # 保持 X 位置不變
             
@@ -80,15 +80,24 @@ class TransitionBehavior(BaseBehavior):
             ctx.target_velocity.x = target_vel_x
             ctx.target_velocity.y = target_vel_y
 
-        # 完成條件：時間到或到達目標位置
+        # 🔧 完成條件：動畫完成 AND (時間到 OR 到達目標位置)
         distance_to_target = ((ctx.position.x - self._target_x) ** 2 + (ctx.position.y - self._target_y) ** 2) ** 0.5
         time_up = prog >= 1.0 or ctx.now >= (ctx.transition_start_time + ctx.sm.transition_duration)
         close_enough = distance_to_target < 30.0
         
-        if time_up or close_enough:
+        # 必須等待動畫完成才能結束轉場
+        animation_finished = ctx.transition_animation_finished
+        
+        if animation_finished and (time_up or close_enough):
             ctx.movement_mode = self._target_mode
-            # 確保最終位置
-            if close_enough:
+            # 🔧 確保最終位置（尤其是轉到地面時，必須精確設置到 ground_y）
+            if self._target_mode == MovementMode.GROUND:
+                # 轉到地面：強制設置到正確的地面高度
+                ctx.position.x = self._target_x
+                ctx.position.y = ctx.ground_y()  # 使用精確的 ground_y()
+                print(f"🎯 轉場完成：強制設置到地面 y={ctx.position.y:.1f}")
+            elif close_enough:
+                # 轉到浮空：只在接近時設置
                 ctx.position.x = self._target_x
                 ctx.position.y = self._target_y
             ctx.transition_start_time = None
@@ -96,7 +105,10 @@ class TransitionBehavior(BaseBehavior):
             ctx.target_velocity.x = 0.0
             ctx.target_velocity.y = 0.0
             
-            print(f"✅ 轉場完成: {self._target_mode.value}")
+            # 重置動畫完成標誌
+            ctx.transition_animation_finished = False
+            
+            print(f"✅ 轉場完成 (動畫已播完): {self._target_mode.value}")
             
             # 不在這裡觸發 idle 動畫，等待轉場動畫（f_to_g/g_to_f）完成後
             # 由 mov_module 的落地邏輯或 _on_ani_finish 處理

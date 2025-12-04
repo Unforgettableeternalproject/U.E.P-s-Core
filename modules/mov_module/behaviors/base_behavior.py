@@ -54,6 +54,7 @@ class BehaviorContext:
     
     # 轉場臨時（供 TransitionBehavior 使用）
     transition_start_time: Optional[float] = None
+    transition_animation_finished: bool = False  # 轉場動畫是否完成
     movement_locked_until: float = 0.0
     
     # 狀態追蹤

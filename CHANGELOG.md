@@ -2278,3 +2278,15 @@
 
 ---
 
+### Sleep animation worked, but there are some positional issue. 12/4
+
+> Date: Thu, 04 Dec 2025 18:55:27 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `fd4a51cef7635e963c693585c30377322d34743b`
+
+---
+

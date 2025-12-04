@@ -227,6 +227,20 @@ class UIModule(BaseFrontendModule):
             
             # 註：MOV 模組的使用者設定回調會在其 initialize_frontend() 中自行註冊
 
+            # 🔗 註冊前端模組到 FrontendBridge（如果存在）
+            try:
+                from core.framework import core_framework
+                if hasattr(core_framework, 'frontend_bridge') and core_framework.frontend_bridge:
+                    frontend_bridge = core_framework.frontend_bridge
+                    frontend_bridge.register_module('ui', self)
+                    frontend_bridge.register_module('ani', self.ani_module)
+                    frontend_bridge.register_module('mov', self.mov_module)
+                    info_log(f"[{self.module_id}] ✅ 前端模組已註冊到 FrontendBridge")
+                else:
+                    debug_log(2, f"[{self.module_id}] FrontendBridge 不存在，跳過註冊")
+            except Exception as e:
+                debug_log(2, f"[{self.module_id}] 註冊到 FrontendBridge 失敗: {e}")
+
             self._modules_initialized = True
             info_log(f"[{self.module_id}] ANI 和 MOV 模組初始化完成")
             return True

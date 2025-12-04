@@ -123,6 +123,18 @@ class StateManager:
             context: 狀態變化上下文
         """
         try:
+            # 發布 STATE_CHANGED 事件給前端模組
+            from core.event_bus import event_bus, SystemEvent
+            event_bus.publish(
+                SystemEvent.STATE_CHANGED,
+                data={
+                    "old_state": old_state,
+                    "new_state": new_state
+                },
+                source="state_manager"
+            )
+            debug_log(2, f"[StateManager] 已發布 STATE_CHANGED 事件: {old_state.name} → {new_state.name}")
+            
             # 記錄狀態訪問到當前 GS
             self._record_state_visit(new_state)
             

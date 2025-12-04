@@ -90,6 +90,11 @@ class SystemEvent(Enum):
     
     # GS 推進事件（Phase 4）
     GS_ADVANCED = "gs_advanced"                                        # General Session 已推進（GSID 更新）
+    
+    # SLEEP 狀態事件
+    SLEEP_ENTERED = "sleep_entered"                                    # 系統已進入睡眠（觸發前端睡眠動畫）
+    SLEEP_EXITED = "sleep_exited"                                      # 系統離開睡眠（準備喚醒動畫/轉場）
+    WAKE_READY = "wake_ready"                                          # 喚醒完成，模組已重載完畢
 
 
 @dataclass

@@ -1016,7 +1016,18 @@ class WorkingContextManager:
         info_log("[WorkingContextManager] 清理執行緒已啟動")
 
     def stop_cleanup_worker(self):
+        """停止清理工作執行緒"""
         self._stop_cleanup = True
+        # 等待清理執行緒結束
+        if self._cleanup_thread and self._cleanup_thread.is_alive():
+            try:
+                self._cleanup_thread.join(timeout=5.0)
+                if self._cleanup_thread.is_alive():
+                    error_log("[WorkingContextManager] ⚠️ 清理執行緒未能正常結束")
+                else:
+                    info_log("[WorkingContextManager] ✅ 清理執行緒已正常停止")
+            except Exception as e:
+                error_log(f"[WorkingContextManager] 停止清理執行緒失敗: {e}")
     
     # === 階段三：層級跳過控制方法 ===
     

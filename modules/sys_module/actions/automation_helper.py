@@ -450,10 +450,22 @@ class MonitoringThreadPool:
         # 停止所有監控任務
         self.stop_all_monitors(timeout=timeout)
         
-        # 關閉線程池
-        self.executor.shutdown(wait=wait)
-        
-        info_log("[MonitoringThreadPool] 監控線程池已關閉")
+        # 關閉線程池並等待所有任務完成
+        try:
+            self.executor.shutdown(wait=wait)
+            if wait:
+                # 確認所有期貨都已完成
+                remaining_futures = [f for f in self.monitor_threads.values() if f and not f.done()]
+                if remaining_futures:
+                    debug_log(1, f"[MonitoringThreadPool] 等待 {len(remaining_futures)} 個未完成的任務...")
+                    for future in remaining_futures:
+                        try:
+                            future.result(timeout=1.0)
+                        except Exception as e:
+                            debug_log(1, f"[MonitoringThreadPool] 任務完成失敗: {e}")
+            info_log("[MonitoringThreadPool] 監控線程池已關閉")
+        except Exception as e:
+            error_log(f"[MonitoringThreadPool] 關閉線程池失敗: {e}")
 
 
 # 全域監控線程池實例

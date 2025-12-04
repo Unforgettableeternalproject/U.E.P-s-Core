@@ -496,11 +496,20 @@ class SystemLoop:
             # 設置停止事件
             self.stop_event.set()
             
-            # 等待循環線程結束
+            # 等待循環線程結束（增加超時時間至 10 秒）
             if self.loop_thread and self.loop_thread.is_alive():
-                self.loop_thread.join(timeout=5.0)
+                debug_log(2, "[SystemLoop] 等待循環線程結束...")
+                self.loop_thread.join(timeout=10.0)
                 if self.loop_thread.is_alive():
-                    error_log("⚠️ 循環線程未能正常結束")
+                    error_log("⚠️ 循環線程未能正常結束，可能還在處理中...")
+                    # 再嘗試一次等待
+                    self.loop_thread.join(timeout=5.0)
+                    if self.loop_thread.is_alive():
+                        error_log("⚠️ 循環線程已放棄等待，強制繼續")
+                    else:
+                        info_log("✅ 循環線程已正常結束")
+                else:
+                    info_log("✅ 循環線程已正常結束")
             
             # ✅ 停止事件總線
             self._stop_event_bus()

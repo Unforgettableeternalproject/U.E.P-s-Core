@@ -2290,3 +2290,15 @@
 
 ---
 
+### Made some changes to stt, nlp and GS creation and stuff. 12/4
+
+> Date: Thu, 04 Dec 2025 21:53:52 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `8354de6de10ffcd0a9d90a62feb9205b91adc20a`
+
+---
+

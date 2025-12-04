@@ -123,6 +123,54 @@ class StateManager:
             context: 狀態變化上下文
         """
         try:
+            # 🔧 GS 生命週期管理 - 標記階段到實際創建階段
+            # 設計: 當系統從 IDLE 進入非 IDLE 狀態時，檢查是否有待機的 GS 標記
+            # 若有，則在此時創建實際 GS（意味著 NLP 已驗證 CALL 意圖）
+            if old_state == UEPState.IDLE and new_state != UEPState.IDLE:
+                # 系統正在進入非 IDLE 狀態（意味著 NLP 驗證通過）
+                try:
+                    from core.controller import unified_controller
+                    if unified_controller and hasattr(unified_controller, '_pending_gs') and unified_controller._pending_gs:
+                        # 有待機的 GS，現在創建實際 GS
+                        pending_data = unified_controller._pending_gs_data or {}
+                        gs_trigger_event = {
+                            "user_input": pending_data.get("user_input", ""),
+                            "input_type": pending_data.get("input_type", "text"),
+                            "timestamp": pending_data.get("timestamp", time.time())
+                        }
+                        
+                        # 創建實際 GS
+                        from core.sessions.session_manager import session_manager
+                        from core.working_context import working_context_manager
+                        
+                        current_gs_id = session_manager.start_general_session(
+                            pending_data.get("input_type", "text") + "_input", 
+                            gs_trigger_event
+                        )
+                        
+                        if current_gs_id:
+                            unified_controller.total_gs_sessions += 1
+                            # 設置到全局上下文
+                            working_context_manager.global_context_data['current_gs_id'] = current_gs_id
+                            working_context_manager.global_context_data['current_cycle_index'] = 0
+                            debug_log(2, f"[StateManager] 🔄 GS 已由待機標記創建: {current_gs_id} (輸入類型: {pending_data.get('input_type')})")
+                            info_log(f"[StateManager] GS 從待機標記轉為實際 GS: {current_gs_id}")
+                        
+                        # 清除待機標記
+                        unified_controller._pending_gs = False
+                        unified_controller._pending_gs_data = None
+                        
+                except Exception as e:
+                    debug_log(1, f"[StateManager] GS 創建失敗（從待機標記）: {e}")
+                    # 清除標記即使創建失敗
+                    try:
+                        from core.controller import unified_controller
+                        if unified_controller:
+                            unified_controller._pending_gs = False
+                            unified_controller._pending_gs_data = None
+                    except:
+                        pass
+            
             # 發布 STATE_CHANGED 事件給前端模組
             from core.event_bus import event_bus, SystemEvent
             event_bus.publish(

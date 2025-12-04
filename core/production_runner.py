@@ -274,12 +274,37 @@ class ProductionRunner:
             info_log("🛑 開始優雅關閉系統...")
             self.is_running = False
             
-            # 停止主循環
+            # 第一階段: 停止所有執行中任務
+            info_log("   📋 第一階段: 停止執行中任務...")
+            
+            # 1. 停止監控線程池
+            try:
+                from modules.sys_module.actions.automation_helper import get_monitoring_pool
+                monitoring_pool = get_monitoring_pool()
+                if monitoring_pool:
+                    info_log("   停止監控線程池...")
+                    monitoring_pool.shutdown(wait=True, timeout=10)
+            except Exception as e:
+                debug_log(1, f"   監控線程池關閉警告: {e}")
+            
+            # 2. 停止 Working Context 清理執行緒
+            try:
+                from core.working_context import working_context_manager
+                if working_context_manager:
+                    info_log("   停止 Working Context 清理執行緒...")
+                    working_context_manager.stop_cleanup_worker()
+            except Exception as e:
+                debug_log(1, f"   Working Context 清理執行緒關閉警告: {e}")
+            
+            # 第二階段: 停止核心服務
+            info_log("   📋 第二階段: 停止核心服務...")
+            
+            # 3. 停止主循環（包含 EventBus）
             if self.system_loop:
                 info_log("   停止系統主循環...")
                 self.system_loop.stop()
             
-            # 停止 Controller 監控線程
+            # 4. 停止 Controller 監控線程
             try:
                 from core.controller import unified_controller
                 info_log("   停止 Controller 監控...")
@@ -287,7 +312,8 @@ class ProductionRunner:
             except Exception as e:
                 debug_log(1, f"   Controller 關閉警告: {e}")
             
-            # 執行清理工作
+            # 第三階段: 資源清理
+            info_log("   📋 第三階段: 清理系統資源...")
             self._cleanup_resources()
             
             info_log("✅ 系統已優雅關閉")
@@ -301,6 +327,25 @@ class ProductionRunner:
         """清理系統資源"""
         try:
             info_log("🧹 清理系統資源...")
+            
+            # 清理 asyncio 事件循環（用於 TTS 的執行器）
+            try:
+                import asyncio
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop and not loop.is_closed():
+                        # 取消所有待機的任務
+                        pending = asyncio.all_tasks(loop)
+                        for task in pending:
+                            task.cancel()
+                        # 簡短等待以允許任務完成
+                        loop.run_until_complete(asyncio.sleep(0.1))
+                        debug_log(2, f"   已取消 {len(pending)} 個未完成的 asyncio 任務")
+                except RuntimeError:
+                    # 沒有事件循環，這是正常的
+                    pass
+            except Exception as e:
+                debug_log(1, f"   asyncio 清理警告: {e}")
             
             # 清理 Working Context
             try:
@@ -383,6 +428,14 @@ class ProductionRunner:
 def run_production_mode():
     """運行生產模式 - 主要入口點"""
     runner = ProductionRunner()
+    
+    # 🆕 將 runner 保存到 __main__ 以供其他模組存取（如 access_widget）
+    try:
+        import __main__
+        __main__.production_runner = runner
+    except:
+        pass
+    
     return runner.run(production_mode=True)
 
 

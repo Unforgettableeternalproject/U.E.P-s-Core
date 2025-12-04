@@ -70,8 +70,10 @@ class IdleBehavior(BaseBehavior):
         
         # 檢查是否應該退出 IDLE 狀態
         if ctx.sm.should_exit_idle(ctx.now):
+            # 🔧 傳遞當前狀態，確保 SYSTEM_CYCLE 期間不會觸發 Transition
+            current_behavior = getattr(ctx, 'current_behavior_state', BehaviorState.IDLE)
             # 用狀態機的權重決定下一步
-            return ctx.sm.pick_next(ctx.movement_mode)
+            return ctx.sm.pick_next(ctx.movement_mode, current_behavior)
         return None
 
     def _trigger_idle_animation(self, ctx: BehaviorContext, force: bool = False):

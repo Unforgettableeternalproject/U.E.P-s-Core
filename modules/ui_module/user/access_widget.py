@@ -514,7 +514,7 @@ class ControllerBridge:
                 
                 if active_gs:
                     info_log(f"[ControllerBridge] ⚠️ 檢測到活躍 GS: {active_gs.session_id}")
-                    info_log(f"[ControllerBridge] GS 狀態: started={active_gs.start_time}, ended={active_gs.end_time}")
+                    info_log(f"[ControllerBridge] GS 狀態: started={active_gs.started_at}, ended={active_gs.ended_at}")
                     info_log("[ControllerBridge] 💡 SLEEP 需要在沒有 GS 時才能進入（符合設計規範）")
                     
                     return {
@@ -522,7 +522,7 @@ class ControllerBridge:
                         "action": "sleep",
                         "message": "當前有活躍會話，無法進入睡眠",
                         "active_gs": active_gs.session_id,
-                        "gs_start_time": str(active_gs.start_time),
+                        "gs_start_time": str(active_gs.started_at),
                         "design_note": "SLEEP requires no active GS (no GS = can sleep)"
                     }
                 
@@ -1440,34 +1440,55 @@ class MainButton(QWidget):
         try:
             info_log("[MainButton] 執行系統優雅關閉...")
 
-            # 1. 停止 STT 持續監聽
+            # 🔧 使用 production_runner 的完整 graceful_shutdown 流程
             try:
-                from core.registry import get_loaded, is_loaded
-                stt_module = get_loaded("stt_module") if is_loaded("stt_module") else None
-                if stt_module and hasattr(stt_module, 'stop_listening'):
-                    info_log("[MainButton] 停止 STT 持續監聽...")
-                    stt_module.stop_listening()
-            except Exception as e:
-                error_log(f"[MainButton] 停止 STT 失敗: {e}")
-
-            # 2. 使用 unified_controller 進行優雅關閉
-            try:
-                if unified_controller:
-                    info_log("[MainButton] 呼叫 unified_controller.shutdown()...")
-                    unified_controller.shutdown()
+                from core.production_runner import ProductionRunner
+                # 尋找全局的 production_runner 實例
+                runner = None
+                
+                # 方法1: 通過 Entry.py 設置的全局變數
+                try:
+                    import __main__
+                    if hasattr(__main__, 'production_runner'):
+                        runner = __main__.production_runner
+                except:
+                    pass
+                
+                # 方法2: 通過模組查找
+                if not runner:
+                    try:
+                        # sys 已在文件頂部 import
+                        for module_name, module in sys.modules.items():
+                            if hasattr(module, 'production_runner'):
+                                runner = module.production_runner
+                                break
+                    except:
+                        pass
+                
+                if runner and hasattr(runner, '_graceful_shutdown'):
+                    info_log("[MainButton] 呼叫 production_runner._graceful_shutdown()...")
+                    runner._graceful_shutdown()
                 else:
-                    error_log("[MainButton] unified_controller 不可用")
+                    # Fallback: 逐步手動關閉
+                    info_log("[MainButton] production_runner 不可用，使用備用關閉流程")
+                    
+                    # 停止 STT
+                    try:
+                        from core.registry import get_loaded, is_loaded
+                        stt_module = get_loaded("stt_module") if is_loaded("stt_module") else None
+                        if stt_module and hasattr(stt_module, 'stop_listening'):
+                            stt_module.stop_listening()
+                    except Exception as e:
+                        error_log(f"[MainButton] 停止 STT 失敗: {e}")
+                    
+                    # 停止 Controller
+                    if unified_controller:
+                        unified_controller.shutdown()
+                        
             except Exception as e:
-                error_log(f"[MainButton] unified_controller 關閉失敗: {e}")
-
-            # 3. 停止 Qt 系統循環線程
-            try:
-                from core.production_runner import production_runner
-                if hasattr(production_runner, 'qt_loop_manager') and production_runner.qt_loop_manager:
-                    info_log("[MainButton] 停止 Qt 系統循環線程...")
-                    production_runner.qt_loop_manager.stop_system_loop()
-            except Exception as e:
-                error_log(f"[MainButton] 停止 Qt 系統循環失敗: {e}")
+                error_log(f"[MainButton] 優雅關閉失敗: {e}")
+                import traceback
+                traceback.print_exc()
 
             # 4. 關閉所有視窗並退出
             app = QApplication.instance()
@@ -1486,8 +1507,7 @@ class MainButton(QWidget):
             error_log(f"[MainButton] 優雅關閉過程出錯: {e}")
             import traceback
             traceback.print_exc()
-            import sys
-            sys.exit(0)
+            sys.exit(1)  # 使用已在文件頂部 import 的 sys
     
     def enterEvent(self, event):
         self._cancel_auto_collapse()

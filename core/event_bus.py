@@ -157,10 +157,18 @@ class EventBus:
         if not self._processing_thread:
             return
         
-        self._stop_event.set()
-        if self._processing_thread.is_alive():
-            self._processing_thread.join(timeout=2.0)
-        info_log("[EventBus] 事件處理線程已停止")
+        try:
+            self._stop_event.set()
+            if self._processing_thread.is_alive():
+                self._processing_thread.join(timeout=5.0)
+                if self._processing_thread.is_alive():
+                    error_log("[EventBus] ⚠️ 事件處理線程未能正常結束")
+                else:
+                    info_log("[EventBus] ✅ 事件處理線程已正常停止")
+            else:
+                info_log("[EventBus] 事件處理線程已停止")
+        except Exception as e:
+            error_log(f"[EventBus] 停止線程失敗: {e}")
     
     def subscribe(self, event_type: SystemEvent, handler: Callable[[Event], None], 
                   handler_name: Optional[str] = None):

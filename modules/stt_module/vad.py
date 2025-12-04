@@ -111,6 +111,20 @@ class VoiceActivityDetection:
                     current_state = "silence"
                     current_start_time = time_stamp
             
+            # 🔧 BUGFIX: 如果音頻末尾還在說話，補充一個 speech_end 事件
+            if current_state == "speech":
+                final_duration = (n_windows * window_size) - current_start_time
+                if final_duration >= self.speech_duration_threshold:
+                    events.append({
+                        'event_type': 'speech_end',
+                        'timestamp': n_windows * window_size,
+                        'confidence': 0.8,
+                        'energy_level': 0.0,
+                        'duration': final_duration,
+                        'is_incomplete': True  # 標記為未完成的語音片段
+                    })
+                    debug_log(3, f"[VAD] 檢測到未完成的語音片段: {final_duration:.3f}s")
+            
             debug_log(3, f"[VAD] 檢測到 {len(events)} 個語音事件")
             return events
             

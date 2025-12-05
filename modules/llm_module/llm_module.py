@@ -1923,6 +1923,18 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
         debug_log(2, "[LLM] 💬 生成工作流回應")
         
         try:
+            # ✅ 提取 workflow_context（來自 llm_input）
+            pending_workflow = llm_input.workflow_context if hasattr(llm_input, 'workflow_context') else None
+            # 🔧 修復：工作流已完成時不應該當作需要審核的步驟
+            is_workflow_complete = pending_workflow and pending_workflow.get('complete', False) if pending_workflow else False
+            is_reviewing_step = (pending_workflow and 
+                                pending_workflow.get('type') == 'workflow_step_response' and 
+                                not is_workflow_complete) if pending_workflow else False
+            
+            debug_log(2, f"[LLM] pending_workflow: {pending_workflow.get('type') if pending_workflow else None}")
+            debug_log(2, f"[LLM] is_workflow_complete: {is_workflow_complete}")
+            debug_log(2, f"[LLM] is_reviewing_step: {is_reviewing_step}")
+            
             # ✅ 檢查是否為系統報告模式（系統主動通知）
             is_system_report = getattr(llm_input, 'system_report', False)
             if is_system_report:
@@ -1948,32 +1960,10 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                         if has_active_workflow:
                             debug_log(2, f"[LLM] 檢測到活躍的工作流引擎: {session_id}")
                         else:
-                            debug_log(2, f"[LLM] WS 存在但無工作流引擎: {session_id}")
-                            
-                            # ✅ 關鍵修復：WS 存在但無對應工作流引擎，使用 session_control 機制結束會話
-                            # 這種情況通常是因為 NLP 誤判導致進入 WORK 模式但未啟動實際工作流
-                            # 使用正規的 session_control 機制，讓 ModuleCoordinator 處理標記
-                            debug_log(1, f"[LLM] 檢測到無效 WS (無工作流引擎): {session_id}，將結束會話")
-                            
-                            # 返回錯誤回應，帶 session_control 指示結束會話
-                            return LLMOutput(
-                                text="抱歉，系統在處理您的請求時遇到問題。請重新輸入您的問題。",
-                                processing_time=time.time() - start_time,
-                                tokens_used=0,
-                                success=False,
-                                error="WS exists without workflow engine",
-                                confidence=0.0,
-                                metadata={
-                                    "mode": "WORK",
-                                    "error_type": "no_workflow_engine",
-                                    "session_id": session_id,
-                                    "session_control": {
-                                        "should_end_session": True,
-                                        "end_reason": "工作流引擎未初始化，WS無法繼續",
-                                        "confidence": 1.0  # 這是系統檢測到的錯誤，100%確定
-                                    }
-                                }
-                            )
+                            # ✅ WS 存在但沒有工作流引擎
+                            # 這是正常情況：LLM 剛收到 WORK 請求，還沒調用 MCP 工具創建工作流
+                            # 不應該報錯，而是讓 LLM 調用工具
+                            debug_log(2, f"[LLM] WS 存在但尚未啟動工作流引擎: {session_id}，將提供 MCP 工具供 LLM 調用")
                     else:
                         debug_log(2, f"[LLM] 無法訪問 SYS 模組的 workflow_engines")
                 except Exception as e:
@@ -2028,17 +2018,22 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             mcp_tools = None
             if self.mcp_client and hasattr(self.mcp_client, 'get_tools_as_gemini_format'):
                 mcp_tools = self.mcp_client.get_tools_as_gemini_format()
-                debug_log(2, f"[LLM] MCP 工具已準備: {len(mcp_tools) if mcp_tools else 0} 個")
+                # 🔧 修復：正確計數工具數量（mcp_tools 是 [{"function_declarations": [...]}]）
+                tool_count = sum(len(t.get('function_declarations', [])) for t in mcp_tools) if mcp_tools else 0
+                debug_log(2, f"[LLM] MCP 工具已準備: {tool_count} 個")
                 if is_step_response:
                     debug_log(2, "[LLM] 步驟回應模式：提供工具但不強制使用（tool_choice=AUTO）")
             
             # 🔧 決定 tool_choice 模式（在構建 prompt 之前）
+            # 策略：新請求用 ANY 強制調用工具，失敗則降級為 AUTO
             if not has_active_workflow and not is_reviewing_step and mcp_tools:
-                tool_choice = "ANY"  # 強制調用工具（新請求應該啟動工作流） # 考慮切換回全部都用AUTO?
+                tool_choice = "ANY"  # 強制調用工具（新請求應該啟動工作流）
                 force_tool_use = True
+                debug_log(2, "[LLM] 使用 ANY 模式強制工具調用（新請求）")
             else:
                 tool_choice = "AUTO"  # 自動決定（可能需要繼續工作流或只是回應）
                 force_tool_use = False
+                debug_log(2, "[LLM] 使用 AUTO 模式（已有工作流或步驟回應）")
                 
             
             # 構建 WORK 提示
@@ -2075,6 +2070,8 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             # � 處理 MALFORMED_FUNCTION_CALL 錯誤：降級為 AUTO 模式重試
             if response_data.get("error") == "malformed_function_call" and tool_choice == "ANY":
                 error_log(f"[LLM] 檢測到 MALFORMED_FUNCTION_CALL，降級為 AUTO 模式重試")
+                _tool_count = sum(len(t.get('function_declarations', [])) for t in mcp_tools) if mcp_tools else 0
+                error_log(f"[LLM] 診斷 - Prompt: {len(prompt)}字, 工具: {_tool_count}個, 輸入: {llm_input.text[:80]}")
                 debug_log(2, "[LLM] 使用 tool_choice=AUTO 重新調用 Gemini")
                 
                 response_data = self.model.query(

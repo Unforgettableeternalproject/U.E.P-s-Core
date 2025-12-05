@@ -136,20 +136,13 @@ class UIModule(BaseFrontendModule):
             return False
     
     def _initialize_ani_mov_modules(self) -> bool:
-        """初始化 ANI 和 MOV 模組（支援debug_api模組管理）"""
+        """初始化 ANI 和 MOV 模組（由 UI 直接透過 Registry 載入）"""
         try:
             from core.registry import get_module
 
-            # 取得或載入 ANI 模組（支援debug_api模組管理）
-            try:
-                # 首先嘗試使用debug_api的模組管理（如果可用）
-                import devtools.debug_api as debug_api
-                self.ani_module = debug_api.get_or_load_module("ani")
-                info_log(f"[{self.module_id}] 通過debug_api載入ANI模組")
-            except (ImportError, AttributeError):
-                # 回退到原始方式
-                self.ani_module = get_module("ani_module")
-                info_log(f"[{self.module_id}] 通過registry載入ANI模組")
+            # 取得或載入 ANI 模組（直接使用 Registry，確保生產環境與 debug 環境隔離）
+            self.ani_module = get_module("ani_module")
+            info_log(f"[{self.module_id}] 通過registry載入ANI模組")
                 
             if self.ani_module is None:
                 error_log(f"[{self.module_id}] 無法取得 ANI 模組")
@@ -171,16 +164,9 @@ class UIModule(BaseFrontendModule):
                     error_log(f"[{self.module_id}] ANI 模組初始化失敗")
                     return False
 
-            # 取得或載入 MOV 模組（支援debug_api模組管理）
-            try:
-                # 首先嘗試使用debug_api的模組管理（如果可用）
-                import devtools.debug_api as debug_api
-                self.mov_module = debug_api.get_or_load_module("mov")
-                info_log(f"[{self.module_id}] 通過debug_api載入MOV模組")
-            except (ImportError, AttributeError):
-                # 回退到原始方式
-                self.mov_module = get_module("mov_module")
-                info_log(f"[{self.module_id}] 通過registry載入MOV模組")
+            # 取得或載入 MOV 模組（直接使用 Registry，確保生產環境與 debug 環境隔離）
+            self.mov_module = get_module("mov_module")
+            info_log(f"[{self.module_id}] 通過registry載入MOV模組")
                 
             if self.mov_module is None:
                 error_log(f"[{self.module_id}] 無法取得 MOV 模組")

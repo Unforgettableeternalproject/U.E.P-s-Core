@@ -1072,24 +1072,17 @@ class ModuleInvocationCoordinator:
                     )
                 )
             else:
-                # WORK路徑：LLM + SYS (不需要 MEM)
-                info_log("[ModuleCoordinator] WORK 路徑: LLM + SYS (基於當前狀態)")
+                # WORK路徑：僅 LLM (透過 MCP function calling 直接調用工具)
+                # LLM 會通過 MCP 決定要調用哪個工具，無需 SYS 作為額外模組
+                info_log("[ModuleCoordinator] WORK 路徑: LLM (LLM 透過 MCP 直接調用工具)")
                 requests.extend([
                     ModuleInvocationRequest(
                         target_module="llm",
                         input_data=self._prepare_llm_input(input_data),
                         source_module="input_layer",
-                        reasoning="工作模式任務分析",
+                        reasoning="工作模式任務分析 - LLM 通過 MCP 執行工具",
                         layer=ProcessingLayer.PROCESSING,
                         priority=4
-                    ),
-                    ModuleInvocationRequest(
-                        target_module="sys",
-                        input_data=self._prepare_sys_input(input_data),
-                        source_module="input_layer",
-                        reasoning="系統工作流執行",
-                        layer=ProcessingLayer.PROCESSING,
-                        priority=3
                     )
                 ])
         else:

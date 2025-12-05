@@ -459,9 +459,13 @@ class SystemInitializer:
             return False
     
     def _initialize_frontend(self) -> bool:
-        """初始化前端模組（UI, ANI, MOV）
+        """初始化前端模組（UI, ANI, MOV）與 FrontendBridge 事件路由
         
         根據配置決定是否啟動前端，前端初始化失敗不影響核心系統運行
+        
+        注意：UIModule 會自動初始化 ANI 和 MOV 模組，所以這裡只需：
+        1. 確保 UI 已初始化（Framework 已提前載入）
+        2. 初始化 FrontendBridge 來訂閱事件並轉發給前端模組
         """
         try:
             debug_log(4, "[SystemInitializer] _initialize_frontend 開始")
@@ -473,38 +477,29 @@ class SystemInitializer:
                 info_log("📺 前端未啟用（debug.enable_frontend=false），跳過前端初始化")
                 return True  # 返回 True 表示沒有錯誤（只是未啟用）
             
-            info_log("📺 初始化前端模組（UI, ANI, MOV）...")
+            info_log("📺 初始化前端模組（UI, ANI, MOV）與事件橋接...")
             
-            # 導入前端整合器
-            from modules.frontend_integration import FrontendIntegrator
+            # 1️⃣ 獲取 Framework（UI 模組已由 Framework 負責初始化）
             from core.framework import core_framework
             
-            # 創建前端整合器
-            frontend_config = {
-                'ui_module': self.config.get('ui_module', {}),
-                'ani_module': self.config.get('ani_module', {}),
-                'mov_module': self.config.get('mov_module', {})
-            }
+            # 2️⃣ 初始化 FrontendBridge 以訂閱系統事件並轉發給前端模組
+            from core.frontend_bridge import FrontendBridge
             
-            self.frontend_integrator = FrontendIntegrator(core_framework, frontend_config)
+            frontend_bridge = FrontendBridge()
             
-            # 初始化前端
-            if not self.frontend_integrator.initialize():
-                error_log("   ❌ 前端整合器初始化失敗")
+            # 使用完整模式（不是協調器模式），以便整合 StatusManager
+            if not frontend_bridge.initialize(coordinator_only=False):
+                error_log("   ❌ FrontendBridge 初始化失敗")
                 return False
             
-            info_log("   ✅ 前端整合器初始化完成")
+            # 將 FrontendBridge 註冊到 core_framework 以供其他組件訪問
+            core_framework.frontend_bridge = frontend_bridge
+            info_log("   ✅ FrontendBridge 已初始化並註冊到 Framework")
             
-            # 啟動前端
-            if not self.frontend_integrator.start():
-                error_log("   ❌ 前端啟動失敗")
-                return False
-            
-            info_log("   ✅ 前端系統已啟動")
-            
-            # 顯示 UEP 主程式
-            ui = getattr(self.frontend_integrator, 'ui_module', None)
+            # 3️⃣ 獲取 UI 模組並顯示介面
+            ui = core_framework.get_module("ui")
             if ui and hasattr(ui, 'handle_frontend_request'):
+                # 顯示 UEP 主程式
                 show_result = ui.handle_frontend_request({
                     'command': 'show_interface',
                     'interface': 'main_desktop_pet'
@@ -514,11 +509,8 @@ class SystemInitializer:
                 else:
                     error_log(f"   ⚠️  顯示主程式失敗: {show_result.get('error', '未知錯誤')}")
                     # 不返回 False，因為前端已啟動，只是視窗顯示失敗
-            else:
-                debug_log(4, "[SystemInitializer] ui_module 不可用或缺少 handle_frontend_request，跳過主程式顯示")
-            
-            # 顯示 access_widget
-            if ui and hasattr(ui, 'handle_frontend_request'):
+                
+                # 顯示 access_widget
                 access_widget_result = ui.handle_frontend_request({
                     'command': 'show_interface',
                     'interface': 'user_access_widget'
@@ -528,8 +520,9 @@ class SystemInitializer:
                 else:
                     error_log(f"   ⚠️  顯示 Access Widget 失敗: {access_widget_result.get('error', '未知錯誤')}")
             else:
-                debug_log(4, "[SystemInitializer] ui_module 不可用或缺少 handle_frontend_request，跳過 Access Widget 顯示")
+                debug_log(4, "[SystemInitializer] ui_module 不可用或缺少 handle_frontend_request，跳過介面顯示")
             
+            info_log("   ✅ 前端系統已就緒（含事件橋接）")
             return True
             
         except Exception as e:

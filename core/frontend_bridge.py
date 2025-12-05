@@ -358,14 +358,16 @@ class FrontendBridge:
     def _on_status_change(self, field: str, old_value: float, new_value: float, reason: str):
         """StatusManager 狀態變化回調"""
         try:
-            debug_log(3, f"[FrontendBridge] 狀態變化: {field} {old_value:.2f} → {new_value:.2f} ({reason})")
+            old_val_str = f"{old_value:.2f}" if old_value is not None else "N/A"
+            new_val_str = f"{new_value:.2f}" if new_value is not None else "N/A"
+            debug_log(3, f"[FrontendBridge] 狀態變化: {field} {old_val_str} → {new_val_str} ({reason})")
             
             # 根據不同狀態欄位處理
-            if field == "mood":
+            if field == "mood" and new_value is not None:
                 self._handle_mood_change(new_value)
-            elif field == "boredom":
+            elif field == "boredom" and new_value is not None:
                 self._handle_boredom_change(new_value)
-            elif field == "helpfulness":
+            elif field == "helpfulness" and new_value is not None:
                 self._handle_helpfulness_change(new_value)
                 
         except Exception as e:

@@ -2302,3 +2302,15 @@
 
 ---
 
+### Removed unnecessary intergration files, and improved LLM-SYS tunnel a little bit more. 12/5
+
+> Date: Fri, 05 Dec 2025 17:30:03 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `3e372851d76133b6a2ba989a07cf4dcf846a5aa6`
+
+---
+

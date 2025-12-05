@@ -373,6 +373,9 @@ class SystemStatusWidget(QWidget):
 class DebugLogWidget(QWidget):
     """調試日誌顯示組件"""
     
+    # 定義信號用於線程安全的日誌添加
+    log_signal = pyqtSignal(str)
+    
     def __init__(self, parent=None):
         super().__init__(parent)
         if not PYQT5_AVAILABLE:
@@ -382,6 +385,9 @@ class DebugLogWidget(QWidget):
         self.log_handler = None
         self._build_ui()
         self._setup_log_handler()
+        
+        # 連接信號到槽函數（保證在主線程執行）
+        self.log_signal.connect(self._append_log_safe)
         
     def _build_ui(self):
         """構建UI"""
@@ -407,9 +413,9 @@ class DebugLogWidget(QWidget):
         import logging
         
         class QtLogHandler(logging.Handler):
-            def __init__(self, text_widget):
+            def __init__(self, widget):
                 super().__init__()
-                self.text_widget = text_widget
+                self.widget = widget
                 self.setFormatter(logging.Formatter('[%(asctime)s] %(levelname)s - %(message)s', 
                                                    datefmt='%H:%M:%S'))
                 # 定義不同等級的顏色
@@ -430,9 +436,9 @@ class DebugLogWidget(QWidget):
                     # 使用 HTML 格式添加顏色
                     colored_msg = f'<span style="color: {color};">{msg}</span>'
                     
-                    # 直接在主線程添加（如果在其他線程會自動排隊）
+                    # 使用信號發送，確保線程安全
                     try:
-                        self.text_widget.append(colored_msg)
+                        self.widget.log_signal.emit(colored_msg)
                     except RuntimeError:
                         # 如果 widget 已被刪除，忽略錯誤
                         pass
@@ -441,18 +447,27 @@ class DebugLogWidget(QWidget):
                     pass
         
         # 創建並添加 handler 到 UEP logger
-        self.log_handler = QtLogHandler(self.log_text)
+        self.log_handler = QtLogHandler(self)
         self.log_handler.setLevel(logging.DEBUG)
         
         logger = logging.getLogger("UEP")
         logger.addHandler(self.log_handler)
         
         debug_log(OPERATION_LEVEL, "[SystemStatus] 日誌處理器已安裝")
+    
+    def _append_log_safe(self, message: str):
+        """線程安全的日誌添加（由信號觸發，保證在主線程執行）"""
+        try:
+            self.log_text.append(message)
+        except RuntimeError:
+            # Widget 已被刪除
+            pass
         
     def append_log(self, message: str):
         """添加日誌訊息（保留用於手動添加）"""
         timestamp = datetime.now().strftime("%H:%M:%S")
-        self.log_text.append(f"[{timestamp}] {message}")
+        colored_msg = f'<span style="color: #2196F3;">[{timestamp}] {message}</span>'
+        self.log_signal.emit(colored_msg)
         
     def clear_logs(self):
         """清除日誌"""

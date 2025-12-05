@@ -8,7 +8,6 @@ User Access Widget Interface Package
 
 from .access_widget import MainButton, ControllerBridge
 from .user_settings import UserMainWindow
-from .state_profile import StateProfileDialog
 from .system_background import SystemBackgroundWindow
 from .theme_manager import theme_manager, Theme
 
@@ -16,7 +15,6 @@ __all__ = [
     'MainButton', 
     'ControllerBridge',
     'UserMainWindow',
-    'StateProfileDialog',
     'SystemBackgroundWindow',
     'theme_manager',
     'Theme'

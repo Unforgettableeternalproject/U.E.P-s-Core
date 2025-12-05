@@ -231,7 +231,7 @@ class CoreFramework:
         # Schema 適配器已移除 - 模組使用自己的 Input/Output Schema
         
         # 前端橋接器（可選，在 debug GUI 或生產模式中初始化）
-        self.frontend_bridge = None
+        self.frontend_bridge: Optional['FrontendBridge'] = None  # type: ignore
         
         # 框架狀態
         self.is_initialized = False
@@ -330,6 +330,14 @@ class CoreFramework:
                     "module_type": ModuleType.PROCESSING,
                     "capabilities": ModuleCapabilities.SYS_CAPABILITIES,
                     "priority": 30
+                },
+                # 前端模組 (UI 由 Framework 管理，ANI/MOV 由 UI 內部透過 debug_api 載入)
+                {
+                    "module_id": "ui",
+                    "module_name": "ui_module",
+                    "module_type": ModuleType.OUTPUT,
+                    "capabilities": [],  # UI 模組不需要 capabilities
+                    "priority": 1
                 }
             ]
             

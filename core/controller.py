@@ -228,7 +228,12 @@ class UnifiedController:
             
             # 檢查是否需要創建 GS
             if not current_gs:
-                # 如果狀態佇列有項目或系統不在 IDLE 狀態，則需要創建 GS
+                # 🆕 SLEEP 狀態不應該創建 GS（系統休眠中）
+                if current_state == UEPState.SLEEP:
+                    debug_log(2, "[Controller] 系統處於 SLEEP 狀態，不創建 GS")
+                    return
+                
+                # 其他非 IDLE 狀態或佇列有項目時創建 GS
                 if (queue_status.get('queue_length', 0) > 0 or 
                     current_state != UEPState.IDLE):
                     
@@ -533,7 +538,7 @@ class UnifiedController:
     def _on_gs_started(self, event):
         """GS 開始事件處理 - 通知設定管理器"""
         try:
-            session_id = event.get('session_id')
+            session_id = event.data.get('session_id')
             debug_log(2, f"[UnifiedController] GS 開始: {session_id}, 設定 GS 為活躍狀態")
             self.user_settings_manager.set_gs_active(True)
         except Exception as e:
@@ -542,7 +547,7 @@ class UnifiedController:
     def _on_gs_ended(self, event):
         """GS 結束事件處理 - 通知設定管理器並套用待處理變更"""
         try:
-            session_id = event.get('session_id')
+            session_id = event.data.get('session_id')
             info_log(f"[UnifiedController] GS 結束: {session_id}, 準備套用待處理的設定變更")
             
             # 設定 GS 為非活躍，這會自動觸發待處理變更的套用

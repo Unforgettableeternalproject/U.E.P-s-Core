@@ -2326,3 +2326,15 @@
 
 ---
 
+### Possibly some ground breaking changes about animation. 12/6
+
+> Date: Sat, 06 Dec 2025 02:25:23 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `e336d06d915ac4ca6edf565a72a5492d9980d3be`
+
+---
+

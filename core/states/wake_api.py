@@ -125,47 +125,85 @@ def _reload_modules() -> list:
     """
     重新載入模組
     
-    注意：實際的模組重載由 ReloadCoordinator 處理
-    這裡只是發布事件並檢查模組狀態
+    睡眠時被卸載的模組需要重新載入並註冊到 Framework
     
     Returns:
-        List[str]: 當前已載入的模組名稱列表
+        List[str]: 成功重載的模組名稱列表
     """
     try:
-        from core.framework import core_framework
-        from core.reload_coordinator import reload_coordinator
-        from core.status_manager import StatusManager
+        from core.framework import core_framework, ModuleType, ModuleCapabilities
         
-        info_log("[WakeAPI] 檢查模組狀態...")
+        info_log("[WakeAPI] 🔄 開始重載被卸載的模組...")
         
-        # 發布喚醒事件，讓 Framework 知道系統已喚醒
-        # Framework 會根據配置自動重載必要的模組
+        # 定義需要重載的模組（與 _handle_sleep_entry 中卸載的模組一致）
+        # 包含完整的模組配置信息
+        modules_to_reload = [
+            {"module_id": "stt", "module_name": "stt_module", "module_type": ModuleType.INPUT, "capabilities": ModuleCapabilities.STT_CAPABILITIES, "priority": 100},
+            {"module_id": "nlp", "module_name": "nlp_module", "module_type": ModuleType.PROCESSING, "capabilities": ModuleCapabilities.NLP_CAPABILITIES, "priority": 90},
+            {"module_id": "llm", "module_name": "llm_module", "module_type": ModuleType.PROCESSING, "capabilities": ModuleCapabilities.LLM_CAPABILITIES, "priority": 80},
+            {"module_id": "mem", "module_name": "mem_module", "module_type": ModuleType.PROCESSING, "capabilities": ModuleCapabilities.MEM_CAPABILITIES, "priority": 70},
+            {"module_id": "tts", "module_name": "tts_module", "module_type": ModuleType.OUTPUT, "capabilities": ModuleCapabilities.TTS_CAPABILITIES, "priority": 60},
+            {"module_id": "sys", "module_name": "sys_module", "module_type": ModuleType.PROCESSING, "capabilities": ModuleCapabilities.SYS_CAPABILITIES, "priority": 30}
+        ]
         
-        loaded_modules = []
+        reloaded_modules = []
         
-        # 獲取當前已載入的模組
-        if hasattr(core_framework, 'modules'):
-            loaded_modules = list(core_framework.modules.keys())
-            info_log(f"[WakeAPI] 當前已載入模組: {loaded_modules}")
+        for config in modules_to_reload:
+            module_id = config["module_id"]
+            
+            # 檢查模組是否已在 Framework 中
+            if core_framework.get_module(module_id) is not None:
+                debug_log(2, f"[WakeAPI] 模組 {module_id} 已載入，跳過")
+                reloaded_modules.append(module_id)
+                continue
+            
+            # 重新載入並註冊模組（使用 Framework 的方法）
+            try:
+                info_log(f"[WakeAPI] 🔄 重載模組: {module_id}")
+                
+                # 使用 Framework 的 _try_register_module 方法
+                success = core_framework._try_register_module(config)
+                
+                if success:
+                    reloaded_modules.append(module_id)
+                    info_log(f"[WakeAPI] ✅ 模組 {module_id} 重載成功")
+                else:
+                    error_log(f"[WakeAPI] ❌ 模組 {module_id} 重載失敗")
+                    
+            except Exception as e:
+                error_log(f"[WakeAPI] 重載模組 {module_id} 時發生錯誤: {e}")
+                import traceback
+                error_log(traceback.format_exc())
         
-        # 如果沒有載入模組，記錄警告
-        if not loaded_modules:
-            info_log("[WakeAPI] ⚠️ 檢測到模組未載入")
-            info_log("[WakeAPI] 系統將在下次循環時自動初始化模組")
+        info_log(f"[WakeAPI] ✅ 模組重載完成: {len(reloaded_modules)}/{len(modules_to_reload)}")
+        
+        # 強制垃圾回收，清理重載過程中的臨時對象
+        import gc
+        gc.collect()
+        debug_log(2, "[WakeAPI] 🗑️ 垃圾回收完成")
         
         # 檢查關鍵模組狀態
-        essential_modules = ["stt", "nlp", "llm", "mem", "tts", "sys"]
         available_modules = []
-        
-        for module_name in essential_modules:
-            module = core_framework.get_module(module_name)
+        for config in modules_to_reload:
+            module_id = config["module_id"]
+            module = core_framework.get_module(module_id)
             if module is not None:
-                available_modules.append(module_name)
-                debug_log(3, f"[WakeAPI] ✓ 模組可用: {module_name}")
+                available_modules.append(module_id)
+                debug_log(3, f"[WakeAPI] ✓ 模組可用: {module_id}")
             else:
-                debug_log(2, f"[WakeAPI] ✗ 模組未載入: {module_name}")
+                debug_log(2, f"[WakeAPI] ✗ 模組未載入: {module_id}")
         
-        info_log(f"[WakeAPI] 模組檢查完成，可用: {len(available_modules)}/{len(essential_modules)}")
+        info_log(f"[WakeAPI] 模組檢查完成，可用: {len(available_modules)}/{len(modules_to_reload)}")
+        
+        # 恢復 sys_module 的監控任務
+        if "sys" in available_modules:
+            try:
+                sys_module = core_framework.get_module("sys")
+                if sys_module and hasattr(sys_module, '_restore_monitoring_tasks'):
+                    sys_module._restore_monitoring_tasks()
+                    info_log("[WakeAPI] ✅ 已恢復 sys_module 監控任務")
+            except Exception as e:
+                error_log(f"[WakeAPI] 恢復監控任務失敗: {e}")
         
         return available_modules
         

@@ -95,7 +95,7 @@ resources:
       total_frames: 74
       frame_duration: 0.08
       loop: false
-      zoom: 1.0
+      zoom: 1.2
       offsetX: 0
       offsetY: 0
     f_to_g:
@@ -119,7 +119,7 @@ resources:
       total_frames: 48
       frame_duration: 0.05
       loop: false
-      zoom: 1.3
+      zoom: 1.5
       offsetX: 100
       offsetY: -50
     l_to_g:
@@ -127,7 +127,7 @@ resources:
       total_frames: 35
       frame_duration: 0.05
       loop: false
-      zoom: 1.3
+      zoom: 1.5
       offsetX: 100
       offsetY: -50
     laugh_f:
@@ -191,7 +191,7 @@ resources:
       total_frames: 48
       frame_duration: 0.12
       loop: true
-      zoom: 1.3
+      zoom: 1.4
       offsetX: 100
       offsetY: -50
     smile_idle_f:

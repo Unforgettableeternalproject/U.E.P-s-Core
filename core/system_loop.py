@@ -729,6 +729,13 @@ class SystemLoop:
                     debug_log(3, f"[SystemLoop] GC 觸發，回收 {collected} 個物件")
                     self.last_gc_time = current_time
                 
+                # 定期更新 boredom（每60秒檢查一次）
+                if not hasattr(self, 'last_boredom_update_time'):
+                    self.last_boredom_update_time = current_time
+                if current_time - self.last_boredom_update_time >= 60:
+                    self._update_boredom_level()
+                    self.last_boredom_update_time = current_time
+                
                 # 檢查系統狀態變化
                 self._monitor_system_state()
                 
@@ -740,6 +747,21 @@ class SystemLoop:
             self.status = LoopStatus.ERROR
         
         info_log("🔄 主循環線程已結束")
+    
+    def _update_boredom_level(self):
+        """定期更新 boredom 數值"""
+        try:
+            from core.status_manager import status_manager as status_mgr
+            from core.states.state_manager import state_manager, UEPState
+            
+            current_state = state_manager.get_current_state()
+            
+            # 只在 IDLE/CHAT 狀態下更新 boredom（WORK/SLEEP/MISCHIEF 不累積無聊）
+            if current_state in [UEPState.IDLE, UEPState.CHAT]:
+                status_mgr.apply_session_penalties()
+                debug_log(3, f"[SystemLoop] 已更新 boredom 數值")
+        except Exception as e:
+            error_log(f"[SystemLoop] 更新 boredom 失敗: {e}")
     
     def _monitor_system_state(self):
         """監控系統狀態變化和處理週期"""

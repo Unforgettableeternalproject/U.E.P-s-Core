@@ -83,6 +83,7 @@ class DragInteractionHandler(InteractionHandler):
     def _handle_drag_start(self, event: Any) -> bool:
         """處理拖曳開始"""
         import time
+        from ..core.state_machine import BehaviorState
         
         # 記錄拖曳前狀態
         if hasattr(self.coordinator, 'position') and Position:
@@ -91,12 +92,25 @@ class DragInteractionHandler(InteractionHandler):
         if hasattr(self.coordinator, 'movement_mode'):
             self.drag_start_mode = self.coordinator.movement_mode
         
+        # 🌙 檢查是否在睡眠狀態
+        is_sleeping = (hasattr(self.coordinator, 'current_behavior_state') and 
+                      self.coordinator.current_behavior_state == BehaviorState.SLEEPING)
+        
         self.drag_start_time = time.time()
         
         # 設置拖曳狀態
         if hasattr(self.coordinator, 'is_being_dragged'):
             self.coordinator.is_being_dragged = True
         
+        # 🌙 睡眠狀態下：設置 DRAGGING 模式但不播放掙扎動畫
+        if is_sleeping:
+            # ⚠️ 必須設置 DRAGGING 模式，否則 throw_handler 會誤判為投擲
+            if hasattr(self.coordinator, 'movement_mode') and MovementMode:
+                self.coordinator.movement_mode = MovementMode.DRAGGING
+            info_log(f"[DragHandler] 睡眠狀態下拖曳開始（維持睡眠狀態，不播放動畫）")
+            return True
+        
+        # 正常狀態：切換到拖曳模式和動畫
         if hasattr(self.coordinator, 'movement_mode') and MovementMode:
             self.coordinator.movement_mode = MovementMode.DRAGGING
         
@@ -138,12 +152,29 @@ class DragInteractionHandler(InteractionHandler):
     def _handle_drag_end(self, event: Any) -> bool:
         """處理拖曳結束"""
         import time
+        from ..core.state_machine import BehaviorState
         
         if not hasattr(self.coordinator, 'is_being_dragged'):
             return False
         
+        # 🌙 檢查是否在睡眠狀態
+        is_sleeping = (hasattr(self.coordinator, 'current_behavior_state') and 
+                      self.coordinator.current_behavior_state == BehaviorState.SLEEPING)
+        
         self.coordinator.is_being_dragged = False
         
+        # 🌙 睡眠狀態下：拖曳結束後維持睡眠，不進行任何狀態切換
+        if is_sleeping:
+            # ⚠️ 重置 movement_mode 為 GROUND（睡眠時不應該是 DRAGGING）
+            if hasattr(self.coordinator, 'movement_mode') and MovementMode:
+                self.coordinator.movement_mode = MovementMode.GROUND
+            # 更新位置（確保前端同步）
+            if hasattr(self.coordinator, '_emit_position'):
+                self.coordinator._emit_position()
+            info_log(f"[DragHandler] 睡眠狀態下拖曳結束（維持睡眠狀態，重置為 GROUND 模式）")
+            return True
+        
+        # 正常狀態：處理拖曳結束邏輯
         # 計算拖曳持續時間和位移
         drag_duration = time.time() - self.drag_start_time
         
@@ -191,7 +222,6 @@ class DragInteractionHandler(InteractionHandler):
         
         # 切換到閒置行為
         if hasattr(self.coordinator, '_switch_behavior'):
-            from ..core.state_machine import BehaviorState
             self.coordinator._switch_behavior(BehaviorState.IDLE)
         
         # 更新位置

@@ -786,11 +786,11 @@ class CoreFramework:
         try:
             from core.event_bus import event_bus, SystemEvent
             
-            # 訂閱狀態變化事件（卸載模組於 SLEEP 進入時）
+            # 訂閱 SLEEP_ENTERED 事件（卸載模組）
             event_bus.subscribe(
-                SystemEvent.STATE_CHANGED,
-                self._on_state_changed,
-                handler_name="framework_sleep"
+                SystemEvent.SLEEP_ENTERED,
+                self._on_sleep_entered,
+                handler_name="framework_sleep_entry"
             )
             
             # 訂閱 SLEEP_EXITED 事件（開始重載協調）
@@ -800,50 +800,81 @@ class CoreFramework:
                 handler_name="framework_wake"
             )
             
-            debug_log(2, "[CoreFramework] 已訂閱 SLEEP/WAKE 事件")
+            debug_log(2, "[CoreFramework] 已訂閱 SLEEP_ENTERED/SLEEP_EXITED 事件")
             
         except Exception as e:
             error_log(f"[CoreFramework] 訂閱 SLEEP 事件失敗: {e}")
     
-    def _on_state_changed(self, event):
-        """處理狀態變化事件"""
+    def _on_sleep_entered(self, event):
+        """處理 SLEEP_ENTERED 事件 - 卸載非關鍵模組"""
         try:
-            new_state_str = event.data.get('new_state')
-            old_state_str = event.data.get('old_state')
-            
-            # 檢查是否進入 SLEEP 狀態
-            if new_state_str == "sleep":
-                self._handle_sleep_entry()
-            # 檢查是否從 SLEEP 狀態喚醒
-            elif old_state_str == "sleep" and new_state_str != "sleep":
-                self._handle_sleep_exit()
-                
+            sleep_reason = event.data.get('reason', 'unknown')
+            debug_log(2, f"[CoreFramework] 收到 SLEEP_ENTERED 事件 (原因: {sleep_reason})")
+            self._handle_sleep_entry()
         except Exception as e:
-            error_log(f"[CoreFramework] 處理狀態變化事件失敗: {e}")
+            error_log(f"[CoreFramework] 處理 SLEEP_ENTERED 事件失敗: {e}")
     
     def _handle_sleep_entry(self):
         """處理進入 SLEEP 狀態 - 卸載非關鍵模組"""
         try:
             info_log("[CoreFramework] 🌙 系統進入 SLEEP 狀態，開始卸載非關鍵模組...")
             
-            # 定義非關鍵模組（可以卸載的模組）
+            # 定義非關鍵模組（可以卸載的模組）- 使用 module_id
             # UI 模組通常不卸載，因為前端需要顯示睡覺動畫和喚醒按鈕
-            non_critical_modules = ["stt", "nlp", "llm", "mem", "tts", "sys"]
+            non_critical_module_ids = ["stt", "nlp", "llm", "mem", "tts", "sys"]
             
-            # 使用 registry 卸載模組
+            # 建立 module_id 到 module_name 的映射
+            id_to_name_map = {
+                "stt": "stt_module",
+                "nlp": "nlp_module",
+                "llm": "llm_module",
+                "mem": "mem_module",
+                "tts": "tts_module",
+                "sys": "sys_module"
+            }
+            
+            # 使用 Framework 自己的模組註冊表檢查
             from core import registry
             
             unloaded_count = 0
-            for module_name in non_critical_modules:
-                if registry.is_loaded(module_name):
-                    success = registry.unload_module(module_name)
+            for module_id in non_critical_module_ids:
+                module_name = id_to_name_map[module_id]  # 獲取完整模組名稱（帶 _module 後綴）
+                
+                # 檢查模組是否已載入（Framework 使用 module_id，Registry 使用 module_name）
+                is_in_framework = module_id in self.modules
+                is_in_registry = registry.is_loaded(module_name)
+                debug_log(2, f"[CoreFramework] 檢查模組 {module_id} ({module_name}): framework={is_in_framework}, registry={is_in_registry}")
+                
+                if is_in_framework or is_in_registry:
+                    # 特別處理 sys_module：先調用 shutdown 暫停監控任務
+                    if module_id == "sys":
+                        sys_module = self.get_module(module_id)
+                        if sys_module and hasattr(sys_module, 'shutdown'):
+                            try:
+                                sys_module.shutdown()
+                                info_log("[CoreFramework] ✅ sys_module 監控任務已暫停")
+                            except Exception as e:
+                                error_log(f"[CoreFramework] sys_module shutdown 失敗: {e}")
+                    
+                    debug_log(2, f"[CoreFramework] 開始卸載模組: {module_name}")
+                    success = registry.unload_module(module_name)  # 使用完整模組名稱卸載
                     if success:
                         unloaded_count += 1
-                        # 同時從 Framework 註冊表移除
-                        if module_name in self.modules:
-                            del self.modules[module_name]
+                        info_log(f"[CoreFramework] ✅ 已卸載模組: {module_name}")
+                        # 同時從 Framework 註冊表移除（使用 module_id）
+                        if module_id in self.modules:
+                            del self.modules[module_id]
+                    else:
+                        error_log(f"[CoreFramework] ❌ 卸載模組失敗: {module_name}")
+                else:
+                    debug_log(2, f"[CoreFramework] 模組 {module_name} 未載入，跳過")
             
             info_log(f"[CoreFramework] ✅ 已卸載 {unloaded_count} 個非關鍵模組")
+            
+            # 強制垃圾回收，釋放模組佔用的記憶體（特別是 GPU 記憶體）
+            import gc
+            gc.collect()
+            info_log("[CoreFramework] 🗑️ 垃圾回收完成")
             
         except Exception as e:
             error_log(f"[CoreFramework] 處理 SLEEP 進入失敗: {e}")

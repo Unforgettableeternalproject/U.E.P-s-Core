@@ -309,6 +309,18 @@ class CursorTrackingHandler(BaseHandler):
                 debug_log(3, "[CursorTrackingHandler] 入場動畫播放中，禁止追蹤")
                 return False
             
+            # 🌙 睡眠狀態下完全禁止追蹤（包括睡眠轉換期間）
+            if hasattr(self.coordinator, 'current_behavior_state'):
+                from modules.mov_module.core.state_machine import BehaviorState
+                if self.coordinator.current_behavior_state == BehaviorState.SLEEPING:
+                    debug_log(3, "[CursorTrackingHandler] 睡眠狀態，禁止追蹤")
+                    return False
+            
+            # 🌙 等待睡眠轉換期間也禁止追蹤（避免 f_to_g 播放時被中斷）
+            if hasattr(self.coordinator, '_pending_sleep_transition') and self.coordinator._pending_sleep_transition:
+                debug_log(3, "[CursorTrackingHandler] 睡眠轉換中，禁止追蹤")
+                return False
+            
             # 優先檢查：禁止在 THROWN 或 DRAGGING 模式下追蹤
             if hasattr(self.coordinator, 'movement_mode'):
                 from modules.mov_module.core.state_machine import MovementMode

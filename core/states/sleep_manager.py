@@ -219,12 +219,6 @@ class SleepManager:
         except Exception as e:
             error_log(f"[SleepManager] 恢復資源失敗: {e}")
     
-
-    
-
-    
-
-    
     def _reduce_system_activity(self):
         """降低系統活動度 - 發布事件通知"""
         try:

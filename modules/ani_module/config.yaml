@@ -95,8 +95,8 @@ resources:
       total_frames: 74
       frame_duration: 0.08
       loop: false
-      zoom: 1.2
-      offsetX: -75
+      zoom: 1.0
+      offsetX: 0
       offsetY: 0
     f_to_g:
       prefix: diamond_girl_floating_to_standing_
@@ -104,7 +104,7 @@ resources:
       frame_duration: 0.06
       loop: false
       zoom: 1.1
-      offsetX: 200
+      offsetX: -50
       offsetY: 0
     g_to_f:
       prefix: diamond_girl_standing_to_floating_
@@ -112,24 +112,24 @@ resources:
       frame_duration: 0.06
       loop: false
       zoom: 1.1
-      offsetX: 200
-      offsetY: -50
+      offsetX: -50
+      offsetY: 0
     g_to_l:
       prefix: diamond_girl_standing_to_lying_
       total_frames: 48
       frame_duration: 0.05
       loop: false
-      zoom: 1.4
-      offsetX: 0
-      offsetY: -70
+      zoom: 1.3
+      offsetX: 100
+      offsetY: -50
     l_to_g:
       prefix: diamond_girl_lying_to_standing_
       total_frames: 35
       frame_duration: 0.05
       loop: false
-      zoom: 1.4
-      offsetX: 25
-      offsetY: -40
+      zoom: 1.3
+      offsetX: 100
+      offsetY: -50
     laugh_f:
       prefix: diamond_girl_laugh_
       total_frames: 75
@@ -191,9 +191,9 @@ resources:
       total_frames: 48
       frame_duration: 0.12
       loop: true
-      zoom: 1.4
-      offsetX: 0
-      offsetY: 0
+      zoom: 1.3
+      offsetX: 100
+      offsetY: -50
     smile_idle_f:
       prefix: diamond_girl_smile_idle_
       total_frames: 38

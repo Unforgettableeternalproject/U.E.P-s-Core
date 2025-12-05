@@ -73,6 +73,21 @@ class ANIModule(BaseFrontendModule):
                 self.timer.timeout.connect(lambda: self.signals.timer_timeout("ani_update")) # type: ignore
                 self.timer.start(self._tick_interval_ms)
             
+            # 🔗 註冊到 FrontendBridge（如果存在）
+            try:
+                from core.framework import core_framework
+                if hasattr(core_framework, 'frontend_bridge') and core_framework.frontend_bridge:
+                    frontend_bridge = core_framework.frontend_bridge
+                    frontend_bridge.register_module('ani', self)
+                    from utils.debug_helper import info_log
+                    info_log(f"[{self.module_id}] ✅ ANI 模組已註冊到 FrontendBridge")
+                else:
+                    from utils.debug_helper import debug_log
+                    debug_log(2, f"[{self.module_id}] FrontendBridge 不存在，跳過註冊")
+            except Exception as e:
+                from utils.debug_helper import debug_log
+                debug_log(2, f"[{self.module_id}] 註冊到 FrontendBridge 失敗: {e}")
+            
             # 註冊 user_settings 熱重載回調
             from configs.user_settings_manager import user_settings_manager
             user_settings_manager.register_reload_callback("ani_module", self._reload_from_user_settings)

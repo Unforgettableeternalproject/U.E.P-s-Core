@@ -371,6 +371,18 @@ class MOVModule(BaseFrontendModule):
             # 載入狀態動畫配置
             self._state_animation_config = self._load_state_animation_config()
             
+            # 🔗 註冊到 FrontendBridge（如果存在）
+            try:
+                from core.framework import core_framework
+                if hasattr(core_framework, 'frontend_bridge') and core_framework.frontend_bridge:
+                    frontend_bridge = core_framework.frontend_bridge
+                    frontend_bridge.register_module('mov', self)
+                    info_log(f"[{self.module_id}] ✅ MOV 模組已註冊到 FrontendBridge")
+                else:
+                    debug_log(2, f"[{self.module_id}] FrontendBridge 不存在，跳過註冊")
+            except Exception as e:
+                debug_log(2, f"[{self.module_id}] 註冊到 FrontendBridge 失敗: {e}")
+            
             # 註冊使用者設定熱重載回調
             user_settings_manager.register_reload_callback("mov_module", self._reload_from_user_settings)
             debug_log(2, f"[{self.module_id}] 已註冊使用者設定熱重載回調")
@@ -1952,84 +1964,19 @@ class MOVModule(BaseFrontendModule):
     # ========= 層級事件訂閱與處理 =========
     
     def _subscribe_to_layer_events(self):
-        """訂閱層級完成事件以驅動動畫"""
+        """訂閱層級完成事件以驅動動畫
+        
+        注意：所有 EventBus 事件訂閱已移至 FrontendBridge 統一管理
+        MOV 模組不再直接訂閱任何 EventBus 事件，而是通過 FrontendBridge 的方法調用接收事件
+        這樣確保了清晰的職責分離和一致的事件流向
+        """
         try:
-            from core.event_bus import event_bus, SystemEvent
-            
-            # 訂閱使用者互動開始事件（語音輸入開始）
-            event_bus.subscribe(
-                SystemEvent.INTERACTION_STARTED,
-                self._on_interaction_started,
-                handler_name="mov_interaction_started"
-            )
-            
-            event_bus.subscribe(
-                SystemEvent.INPUT_LAYER_COMPLETE,
-                self._on_input_layer_complete,
-                handler_name="mov_input_layer"
-            )
-            
-            event_bus.subscribe(
-                SystemEvent.PROCESSING_LAYER_COMPLETE,
-                self._on_processing_layer_complete,
-                handler_name="mov_processing_layer"
-            )
-            
-            event_bus.subscribe(
-                SystemEvent.OUTPUT_LAYER_COMPLETE,
-                self._on_output_layer_complete,
-                handler_name="mov_output_layer"
-            )
-            
-            event_bus.subscribe(
-                SystemEvent.CYCLE_COMPLETED,
-                self._on_cycle_completed,
-                handler_name="mov_cycle_completed"
-            )
-            
-            # 訂閱 GS 生命週期事件
-            event_bus.subscribe(
-                SystemEvent.SESSION_STARTED,
-                self._on_session_started,
-                handler_name="mov_session_started"
-            )
-            
-            event_bus.subscribe(
-                SystemEvent.GS_ADVANCED,
-                self._on_gs_advanced,
-                handler_name="mov_gs_advanced"
-            )
-            
-            # 🔗 STATE_CHANGED 事件由 FrontendBridge 轉發
-            # FrontendBridge 會訂閱 STATE_CHANGED 事件並調用 MOV 的 on_system_state_changed()
-            # 在 debug GUI 和生產模式下都會初始化 FrontendBridge（協調器模式）
-            debug_log(2, f"[{self.module_id}] STATE_CHANGED 事件將由 FrontendBridge 轉發")
-            
-            # 訂閱 WAKE_READY 事件（模組重載完成）
-            event_bus.subscribe(
-                SystemEvent.WAKE_READY,
-                self._on_wake_ready,
-                handler_name="mov_wake_ready"
-            )
-            
-            # 使用 info_log 確保在生產模式也能看到
-            subscribed_events = [
-                "INTERACTION_STARTED",
-                "INPUT_LAYER_COMPLETE",
-                "PROCESSING_LAYER_COMPLETE",
-                "OUTPUT_LAYER_COMPLETE",
-                "SESSION_STARTED",
-                "GS_ADVANCED",
-                "WAKE_READY"
-            ]
-            
-            info_log(f"[{self.module_id}] ✅ 已訂閱系統事件（互動 + 層級 + GS 生命週期）")
-            info_log(f"[{self.module_id}]    STATE_CHANGED 由 FrontendBridge 轉發")
-            for event in subscribed_events:
-                info_log(f"[{self.module_id}]    - {event}")
+            info_log(f"[{self.module_id}] ✅ MOV 模組已準備接收 FrontendBridge 轉發的事件")
+            info_log(f"[{self.module_id}]    所有事件（互動 + 層級 + GS 生命週期 + SLEEP）由 FrontendBridge 統一管理")
+            info_log(f"[{self.module_id}]    MOV 提供回調方法供 FrontendBridge 調用")
             
         except Exception as e:
-            error_log(f"[{self.module_id}] ❌ 訂閱層級事件失敗: {e}")
+            error_log(f"[{self.module_id}] ❌ 準備事件接收失敗: {e}")
             import traceback
             error_log(traceback.format_exc())
     

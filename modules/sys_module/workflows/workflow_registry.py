@@ -59,8 +59,10 @@ async def _wrap_workflow_handler(workflow_type: str, params: dict, sys_module) -
     )
     
     # 將字典結果轉換為 ToolResult
-    if result.get("status") == "error":
-        return ToolResult.error(result.get("message", "工作流啟動失敗"))
+    # ✅ 檢查 error 和 failed 狀態
+    status = result.get("status")
+    if status in ("error", "failed"):
+        return ToolResult.error(result.get("message", "工作流執行失敗"))
     else:
         return ToolResult.success(
             message=result.get("message", f"工作流 '{workflow_type}' 已啟動"),

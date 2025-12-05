@@ -81,29 +81,30 @@ class FrontendBridge:
             return False
     
     def _load_frontend_modules(self) -> bool:
-        """從 Framework 載入前端模組"""
+        """從 Framework/Registry 載入前端模組"""
         try:
             from core.framework import core_framework
+            from core.registry import get_module
             
             # 嘗試載入 UI 模組
             try:
-                self.ui_module = core_framework.get_module("ui")
+                self.ui_module = core_framework.get_module("ui") or get_module("ui_module")
                 if self.ui_module:
                     info_log("[FrontendBridge] ✓ UI 模組已載入")
             except Exception as e:
                 debug_log(2, f"[FrontendBridge] UI 模組未載入: {e}")
             
-            # 嘗試載入 ANI 模組
+            # 嘗試載入 ANI 模組（從 Registry 載入，因為它不在 CoreFramework 中註冊）
             try:
-                self.ani_module = core_framework.get_module("ani")
+                self.ani_module = get_module("ani_module")
                 if self.ani_module:
                     info_log("[FrontendBridge] ✓ ANI 模組已載入")
             except Exception as e:
                 debug_log(2, f"[FrontendBridge] ANI 模組未載入: {e}")
             
-            # 嘗試載入 MOV 模組
+            # 嘗試載入 MOV 模組（從 Registry 載入，因為它不在 CoreFramework 中註冊）
             try:
-                self.mov_module = core_framework.get_module("mov")
+                self.mov_module = get_module("mov_module")
                 if self.mov_module:
                     info_log("[FrontendBridge] ✓ MOV 模組已載入")
             except Exception as e:
@@ -161,6 +162,12 @@ class FrontendBridge:
             
             # 訂閱 SLEEP/WAKE 事件
             event_bus.subscribe(
+                SystemEvent.SLEEP_ENTERED,
+                self._on_sleep_entered,
+                handler_name="frontend_bridge"
+            )
+            
+            event_bus.subscribe(
                 SystemEvent.SLEEP_EXITED,
                 self._on_sleep_exited,
                 handler_name="frontend_bridge"
@@ -172,13 +179,51 @@ class FrontendBridge:
                 handler_name="frontend_bridge"
             )
             
+            # 訂閱層級事件（三層架構）
+            event_bus.subscribe(
+                SystemEvent.INTERACTION_STARTED,
+                self._on_interaction_started,
+                handler_name="frontend_bridge"
+            )
+            
+            event_bus.subscribe(
+                SystemEvent.INPUT_LAYER_COMPLETE,
+                self._on_input_layer_complete,
+                handler_name="frontend_bridge"
+            )
+            
+            event_bus.subscribe(
+                SystemEvent.PROCESSING_LAYER_COMPLETE,
+                self._on_processing_layer_complete,
+                handler_name="frontend_bridge"
+            )
+            
+            event_bus.subscribe(
+                SystemEvent.OUTPUT_LAYER_COMPLETE,
+                self._on_output_layer_complete,
+                handler_name="frontend_bridge"
+            )
+            
+            event_bus.subscribe(
+                SystemEvent.CYCLE_COMPLETED,
+                self._on_cycle_completed,
+                handler_name="frontend_bridge"
+            )
+            
+            # 訂閱 GS 生命週期事件
+            event_bus.subscribe(
+                SystemEvent.GS_ADVANCED,
+                self._on_gs_advanced,
+                handler_name="frontend_bridge"
+            )
+            
             event_bus.subscribe(
                 SystemEvent.MODULE_ERROR,
                 self._on_module_error,
                 handler_name="frontend_bridge"
             )
             
-            info_log("[FrontendBridge] ✓ 事件訂閱已設置")
+            info_log("[FrontendBridge] ✓ 事件訂閱已設置（系統狀態 + 會話 + 層級 + GS + SLEEP）")
             
         except Exception as e:
             error_log(f"[FrontendBridge] 設置事件訂閱失敗: {e}")
@@ -403,17 +448,43 @@ class FrontendBridge:
         except Exception as e:
             error_log(f"[FrontendBridge] 處理助人意願變化失敗: {e}")
     
+    def _on_sleep_entered(self, event):
+        """系統進入睡眠狀態處理
+        
+        通過 on_system_state_changed 通知前端模組觸發睡眠動畫
+        這樣保持了 FrontendBridge 作為事件轉發中心的設計原則
+        """
+        try:
+            sleep_reason = event.data.get('reason', 'unknown') if hasattr(event, 'data') and event.data else 'unknown'
+            
+            info_log(f"[FrontendBridge] 系統進入睡眠狀態 (原因: {sleep_reason})")
+            
+            # 通知 MOV 模組觸發睡眠動畫（通過統一的狀態變化接口）
+            if self.mov_module and hasattr(self.mov_module, 'on_system_state_changed'):
+                self.mov_module.on_system_state_changed(UEPState.IDLE, UEPState.SLEEP)
+                debug_log(2, "[FrontendBridge] 已通知 MOV 進入睡眠狀態")
+            
+            # 通知 UI 模組
+            if self.ui_module and hasattr(self.ui_module, 'on_state_change'):
+                self.ui_module.on_state_change(UEPState.SLEEP)
+                debug_log(2, "[FrontendBridge] 已通知 UI 進入睡眠狀態")
+            
+        except Exception as e:
+            error_log(f"[FrontendBridge] 處理 SLEEP_ENTERED 事件失敗: {e}")
+    
     def _on_sleep_exited(self, event):
         """系統退出睡眠狀態但尚未完全恢復處理
         
         在此階段，後端已開始準備模組重載，但前端應保持在睡眠動畫中
         讓使用者可以看到系統正在重新啟動的視覺回饋
-        只有當 WAKE_READY 事件發布後，前端才會退出睡眠動畫
+        只有當 WAKE_READY 事件發布後，前端才會退出睡眠動畫（播放 l_to_g 喚醒動畫）
+        
+        重要：SLEEP_EXITED 不應該觸發任何前端動畫變化，前端繼續播放 sleep_l 循環動畫
         """
         try:
             wake_reason = event.data.get('wake_reason', 'unknown') if hasattr(event, 'data') and event.data else 'unknown'
             
-            info_log(f"[FrontendBridge] 系統開始喚醒流程 (原因: {wake_reason})，前端保持睡眠狀態等待 WAKE_READY")
+            info_log(f"[FrontendBridge] 系統開始喚醒流程 (原因: {wake_reason})，前端保持睡眠動畫等待 WAKE_READY")
             
             # 設置內部標記表示喚醒正在進行中
             self._wake_in_progress = True
@@ -430,7 +501,8 @@ class FrontendBridge:
         """系統完全恢復就緒處理
         
         後端模組重載已完成，現在通知前端退出睡眠動畫
-        恢復使用者互動，系統進入 IDLE 狀態
+        MOV 將播放 l_to_g 喚醒動畫，然後恢復 IDLE 狀態
+        恢復使用者互動
         """
         try:
             wake_reason = event.data.get('wake_reason', 'unknown') if hasattr(event, 'data') and event.data else 'unknown'
@@ -441,10 +513,11 @@ class FrontendBridge:
             # 清除喚醒進行中標記
             self._wake_in_progress = False
             
-            # 通知 MOV 退出睡眠動畫，觸發 l_to_g 過渡
-            if self.mov_module and hasattr(self.mov_module, 'on_wake_ready'):
-                self.mov_module.on_wake_ready()
-                debug_log(2, "[FrontendBridge] 已通知 MOV 退出睡眠動畫")
+            # 通知 MOV 退出睡眠動畫，觸發 l_to_g 喚醒過渡動畫
+            # 這是觸發前端睡眠結束的正確時機
+            if self.mov_module and hasattr(self.mov_module, '_exit_sleep_state'):
+                self.mov_module._exit_sleep_state()
+                debug_log(2, "[FrontendBridge] 已通知 MOV 退出睡眠動畫（播放 l_to_g）")
             
             # 通知 UI 恢復互動
             if self.ui_module and hasattr(self.ui_module, 'on_wake_ready'):
@@ -455,6 +528,78 @@ class FrontendBridge:
             
         except Exception as e:
             error_log(f"[FrontendBridge] 處理 WAKE_READY 事件失敗: {e}")
+    
+    def _on_interaction_started(self, event):
+        """使用者互動開始事件轉發"""
+        try:
+            debug_log(2, "[FrontendBridge] 收到 INTERACTION_STARTED 事件")
+            
+            # 轉發給 MOV 模組
+            if self.mov_module and hasattr(self.mov_module, '_on_interaction_started'):
+                self.mov_module._on_interaction_started(event)
+            
+        except Exception as e:
+            error_log(f"[FrontendBridge] 處理 INTERACTION_STARTED 事件失敗: {e}")
+    
+    def _on_input_layer_complete(self, event):
+        """輸入層完成事件轉發"""
+        try:
+            debug_log(2, "[FrontendBridge] 收到 INPUT_LAYER_COMPLETE 事件")
+            
+            # 轉發給 MOV 模組
+            if self.mov_module and hasattr(self.mov_module, '_on_input_layer_complete'):
+                self.mov_module._on_input_layer_complete(event)
+            
+        except Exception as e:
+            error_log(f"[FrontendBridge] 處理 INPUT_LAYER_COMPLETE 事件失敗: {e}")
+    
+    def _on_processing_layer_complete(self, event):
+        """處理層完成事件轉發"""
+        try:
+            debug_log(2, "[FrontendBridge] 收到 PROCESSING_LAYER_COMPLETE 事件")
+            
+            # 轉發給 MOV 模組
+            if self.mov_module and hasattr(self.mov_module, '_on_processing_layer_complete'):
+                self.mov_module._on_processing_layer_complete(event)
+            
+        except Exception as e:
+            error_log(f"[FrontendBridge] 處理 PROCESSING_LAYER_COMPLETE 事件失敗: {e}")
+    
+    def _on_output_layer_complete(self, event):
+        """輸出層完成事件轉發"""
+        try:
+            debug_log(2, "[FrontendBridge] 收到 OUTPUT_LAYER_COMPLETE 事件")
+            
+            # 轉發給 MOV 模組
+            if self.mov_module and hasattr(self.mov_module, '_on_output_layer_complete'):
+                self.mov_module._on_output_layer_complete(event)
+            
+        except Exception as e:
+            error_log(f"[FrontendBridge] 處理 OUTPUT_LAYER_COMPLETE 事件失敗: {e}")
+    
+    def _on_cycle_completed(self, event):
+        """處理循環完成事件轉發"""
+        try:
+            debug_log(2, "[FrontendBridge] 收到 CYCLE_COMPLETED 事件")
+            
+            # 轉發給 MOV 模組
+            if self.mov_module and hasattr(self.mov_module, '_on_cycle_completed'):
+                self.mov_module._on_cycle_completed(event)
+            
+        except Exception as e:
+            error_log(f"[FrontendBridge] 處理 CYCLE_COMPLETED 事件失敗: {e}")
+    
+    def _on_gs_advanced(self, event):
+        """GS 推進事件轉發"""
+        try:
+            debug_log(2, "[FrontendBridge] 收到 GS_ADVANCED 事件")
+            
+            # 轉發給 MOV 模組
+            if self.mov_module and hasattr(self.mov_module, '_on_gs_advanced'):
+                self.mov_module._on_gs_advanced(event)
+            
+        except Exception as e:
+            error_log(f"[FrontendBridge] 處理 GS_ADVANCED 事件失敗: {e}")
     
     def shutdown(self):
         """關閉前端橋接器"""

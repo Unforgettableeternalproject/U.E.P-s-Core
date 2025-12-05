@@ -2314,3 +2314,15 @@
 
 ---
 
+### Fixed some issues regarding workflow event handling. 12/5
+
+> Date: Fri, 05 Dec 2025 21:19:35 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `c85a34bcc375c90427e8e74dc59b959ed647120c`
+
+---
+

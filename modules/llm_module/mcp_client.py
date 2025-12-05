@@ -143,6 +143,13 @@ class MCPClient:
         """
         tool_name = tool_call.get("name", "")
         
+        # ✅ 修正 Gemini 錯誤的工具名稱前綴
+        # Gemini 有時會在 ANY 模式下錯誤地添加 "default_api." 前綴
+        if tool_name.startswith("default_api."):
+            original_name = tool_name
+            tool_name = tool_name.replace("default_api.", "", 1)
+            debug_log(2, f"[MCP Client] 修正工具名稱: {original_name} -> {tool_name}")
+        
         # ✅ 支持兩種參數格式: "arguments" (標準) 或 "args" (Gemini)
         arguments = tool_call.get("arguments") or tool_call.get("args", {})
         

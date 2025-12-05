@@ -749,11 +749,9 @@ class SYSModule(BaseModule):
                     
                 except Exception as e:
                     error_log(f"[SYS] 提交背景工作流程失敗: {e}")
-                    # 清理會話
-                    self.session_manager.end_session(
-                        session_id,
-                        reason=f"提交背景任務失敗: {e}"
-                    )
+                    # 清理 workflow engine（WS 交給 LLM 標記後由 Controller 結束）
+                    if session_id in self.workflow_engines:
+                        del self.workflow_engines[session_id]
                     return {
                         "status": "error",
                         "message": f"提交背景工作流程失敗: {e}"
@@ -1073,11 +1071,7 @@ class SYSModule(BaseModule):
             
         except Exception as e:
             error_log(f"[SYS] 創建統一工作流程引擎失敗: {e}")
-            self.session_manager.end_session(
-                session_id, 
-                reason=f"無法為 {workflow_type} 創建工作流程: {e}"
-            )
-            # Clean up engine if it was created
+            # 清理 workflow engine（WS 交給 LLM 標記後由 Controller 結束）
             if session_id in self.workflow_engines:
                 del self.workflow_engines[session_id]
             return {
@@ -1215,17 +1209,101 @@ class SYSModule(BaseModule):
                 info_log(f"[SYS] 工作流步驟已完成: {session_id}, 等待 LLM 生成最終回應")
                 
             elif not result.success and not engine.is_awaiting_llm_review():
-                self.session_manager.end_session(session_id, reason=f"failed: {result.message}")
-                if session_id in self.workflow_engines:
-                    del self.workflow_engines[session_id]
+                # ✅ 工作流失敗：發布事件讓 LLM 處理錯誤並通知用戶
                 error_log(f"[SYS] 工作流執行失敗: {session_id} - {result.message}")
+                
+                if self.event_bus:
+                    from core.event_bus import SystemEvent
+                    
+                    # 獲取步驟資訊
+                    session = self.session_manager.get_session(session_id)
+                    step_history = session.get_data("step_history", []) if session else []
+                    executed_step_ids = [step["step_id"] for step in step_history] if step_history else []
+                    final_executed_step_id = executed_step_ids[-1] if executed_step_ids else executed_step_id
+                    
+                    # 發布失敗事件，讓 LLM 生成錯誤回應並結束會話
+                    event_data = {
+                        "session_id": session_id,
+                        "workflow_type": workflow_type,
+                        "step_result": {
+                            "success": False,
+                            "complete": False,
+                            "cancel": False,
+                            "message": result.message,
+                            "data": result.data,
+                            "step_id": final_executed_step_id,
+                            "error": True  # 標記為錯誤
+                        },
+                        "executed_steps": executed_step_ids,
+                        "requires_llm_review": True,  # 需要 LLM 處理錯誤
+                        "llm_review_data": None,
+                        "current_step_info": None,
+                        "next_step_info": None
+                    }
+                    
+                    self.event_bus.publish(
+                        event_type=SystemEvent.WORKFLOW_STEP_COMPLETED,
+                        data=event_data,
+                        source="sys"
+                    )
+                    
+                    debug_log(2, f"[SYS] 已發布工作流失敗事件，等待 LLM 處理: {session_id}")
+                    
+                    # ✅ 清理 workflow engine（但不結束 WS，交給 LLM 標記後由 Controller 結束）
+                    if session_id in self.workflow_engines:
+                        del self.workflow_engines[session_id]
+                        debug_log(2, f"[SYS] 已清理工作流引擎: {session_id}")
+                else:
+                    # 沒有 event_bus 的緊急情況，記錄錯誤
+                    error_log(f"[SYS] ⚠️ 無法發布工作流失敗事件（缺少 event_bus），工作流可能卡住: {session_id}")
+                    # 清理 engine
+                    if session_id in self.workflow_engines:
+                        del self.workflow_engines[session_id]
                 
         except Exception as e:
             error_log(f"[SYS] 背景執行工作流步驟異常: {e}")
-            # Clean up on error
-            if session_id in self.workflow_engines:
-                self.session_manager.end_session(session_id, reason=f"error: {e}")
-                del self.workflow_engines[session_id]
+            
+            # ✅ 異常情況：發布事件讓 LLM 處理異常並通知用戶
+            if self.event_bus and session_id:
+                from core.event_bus import SystemEvent
+                
+                event_data = {
+                    "session_id": session_id,
+                    "workflow_type": workflow_type,
+                    "step_result": {
+                        "success": False,
+                        "complete": False,
+                        "cancel": False,
+                        "message": f"執行異常: {str(e)}",
+                        "data": {},
+                        "step_id": executed_step_id if 'executed_step_id' in locals() else None,
+                        "error": True,
+                        "exception": str(e)
+                    },
+                    "executed_steps": [],
+                    "requires_llm_review": True,
+                    "llm_review_data": None,
+                    "current_step_info": None,
+                    "next_step_info": None
+                }
+                
+                self.event_bus.publish(
+                    event_type=SystemEvent.WORKFLOW_STEP_COMPLETED,
+                    data=event_data,
+                    source="sys"
+                )
+                
+                debug_log(2, f"[SYS] 已發布工作流異常事件，等待 LLM 處理: {session_id}")
+                
+                # ✅ 清理 workflow engine（但不結束 WS，交給 LLM 標記後由 Controller 結束）
+                if session_id in self.workflow_engines:
+                    del self.workflow_engines[session_id]
+                    debug_log(2, f"[SYS] 已清理工作流引擎（異常）: {session_id}")
+            else:
+                # 沒有 event_bus 的緊急情況
+                error_log(f"[SYS] ⚠️ 無法發布工作流異常事件（缺少 event_bus），工作流可能卡住: {session_id}")
+                if session_id in self.workflow_engines:
+                    del self.workflow_engines[session_id]
     
     def _continue_workflow(self, session_id: str, user_input: str):
         """
@@ -1268,11 +1346,7 @@ class SYSModule(BaseModule):
             
             # Handle the result
             if result.cancel:
-                # Workflow was cancelled
-                self.session_manager.end_session(
-                    session_id,
-                    reason=f"cancelled: {result.message}"
-                )
+                # Workflow was cancelled（WS 交給 LLM 標記後由 Controller 結束）
                 # Clean up engine
                 if session_id in self.workflow_engines:
                     del self.workflow_engines[session_id]
@@ -1331,16 +1405,10 @@ class SYSModule(BaseModule):
                 }
                 
             elif not result.success:
-                # 🔧 步驟失敗（failure）：終止工作流並讓 LLM 處理錯誤
+                # 🔧 步驟失敗（failure）：發布事件讓 LLM 處理錯誤並標記 WS 結束
                 debug_log(1, f"[SYS] 工作流步驟失敗 {session_id}: {result.message}")
                 
-                # 結束會話
-                self.session_manager.end_session(
-                    session_id,
-                    reason=f"failed: {result.message}"
-                )
-                
-                # 清理引擎
+                # 清理引擎（WS 交給 LLM 標記後由 Controller 結束）
                 if session_id in self.workflow_engines:
                     del self.workflow_engines[session_id]
                 
@@ -1406,11 +1474,7 @@ class SYSModule(BaseModule):
                     
                     return response
                 else:
-                    # Workflow completed
-                    self.session_manager.end_session(
-                        session_id,
-                        reason=f"completed: {result.message}"
-                    )
+                    # Workflow completed（WS 交給 LLM 標記後由 Controller 結束）
                     # Clean up engine
                     if session_id in self.workflow_engines:
                         del self.workflow_engines[session_id]
@@ -1422,11 +1486,7 @@ class SYSModule(BaseModule):
                     
         except Exception as e:
             error_log(f"[SYS] 工作流程執行錯誤: {e}")
-            self.session_manager.end_session(
-                session_id,
-                reason=f"error: {str(e)}"
-            )
-            # Clean up engine
+            # 清理 workflow engine（WS 交給 LLM 標記後由 Controller 結束）
             if session_id in self.workflow_engines:
                 del self.workflow_engines[session_id]
             return {

@@ -2338,3 +2338,15 @@
 
 ---
 
+### There are still times LLM would not call the tools, fixed that (hopefully), and made sleep state animations better. 12/6
+
+> Date: Sat, 06 Dec 2025 16:50:33 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `bd377688770e02bf6be572e70e17a0babfde5602`
+
+---
+

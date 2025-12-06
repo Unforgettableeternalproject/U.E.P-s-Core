@@ -242,6 +242,7 @@ class CoreFramework:
         self.performance_metrics: Dict[str, PerformanceMetrics] = {}
         self.performance_history: deque = deque(maxlen=100)  # 保留最近100個快照
         self.metrics_lock = threading.Lock()
+        self.modules_lock = threading.Lock()  # 保護 self.modules 字典的執行緒鎖
         self.system_start_time = time.time()
         
         # 監控統計
@@ -416,19 +417,20 @@ class CoreFramework:
             註冊是否成功
         """
         try:
-            if module_info.module_id in self.modules:
-                debug_log(1, f"[CoreFramework] 模組 {module_info.module_id} 已存在，跳過註冊")
-                return False
-            
-            # 註冊到本地註冊表
-            self.modules[module_info.module_id] = module_info
-            
-            # 註意: registry.py 只提供 get_module() 函數用於載入模組
-            # 它會自動調用模組的 register() 並緩存實例
-            # 不需要手動註冊到 registry,因為模組已經通過 get_module() 載入
-            
-            debug_log(2, f"[CoreFramework] 已註冊模組: {module_info.module_id}")
-            return True
+            with self.modules_lock:
+                if module_info.module_id in self.modules:
+                    debug_log(1, f"[CoreFramework] 模組 {module_info.module_id} 已存在，跳過註冊")
+                    return False
+                
+                # 註冊到本地註冊表
+                self.modules[module_info.module_id] = module_info
+                
+                # 註意: registry.py 只提供 get_module() 函數用於載入模組
+                # 它會自動調用模組的 register() 並緩存實例
+                # 不需要手動註冊到 registry,因為模組已經通過 get_module() 載入
+                
+                debug_log(2, f"[CoreFramework] 已註冊模組: {module_info.module_id}")
+                return True
             
         except Exception as e:
             error_log(f"[CoreFramework] 註冊模組失敗 {module_info.module_id}: {e}")
@@ -437,21 +439,22 @@ class CoreFramework:
     def unregister_module(self, module_id: str) -> bool:
         """註銷模組"""
         try:
-            if module_id not in self.modules:
-                debug_log(1, f"[CoreFramework] 模組 {module_id} 不存在")
-                return False
-            
-            module_info = self.modules[module_id]
-            
-            # 註意: registry.py 的 _loaded_modules 是模組級私有變數
-            # 不提供 unregister 方法,也不應該直接操作
-            # 模組註銷只影響 framework 本地註冊表
-            
-            # 從本地註冊表移除
-            del self.modules[module_id]
-            
-            info_log(f"[CoreFramework] 已註銷模組: {module_id}")
-            return True
+            with self.modules_lock:
+                if module_id not in self.modules:
+                    debug_log(1, f"[CoreFramework] 模組 {module_id} 不存在")
+                    return False
+                
+                module_info = self.modules[module_id]
+                
+                # 註意: registry.py 的 _loaded_modules 是模組級私有變數
+                # 不提供 unregister 方法,也不應該直接操作
+                # 模組註銷只影響 framework 本地註冊表
+                
+                # 從本地註冊表移除
+                del self.modules[module_id]
+                
+                info_log(f"[CoreFramework] 已註銷模組: {module_id}")
+                return True
             
         except Exception as e:
             error_log(f"[CoreFramework] 註銷模組失敗 {module_id}: {e}")
@@ -459,26 +462,30 @@ class CoreFramework:
     
     def get_module(self, module_id: str) -> Optional[Any]:
         """獲取模組實例"""
-        module_info = self.modules.get(module_id)
-        return module_info.module_instance if module_info else None
+        with self.modules_lock:
+            module_info = self.modules.get(module_id)
+            return module_info.module_instance if module_info else None
     
     def get_module_info(self, module_id: str) -> Optional[ModuleInfo]:
         """獲取模組資訊"""
-        return self.modules.get(module_id)
+        with self.modules_lock:
+            return self.modules.get(module_id)
     
     def list_modules(self, module_type: Optional[ModuleType] = None) -> List[ModuleInfo]:
         """列出模組"""
-        if module_type is None:
-            return list(self.modules.values())
-        else:
-            return [info for info in self.modules.values() if info.module_type == module_type]
+        with self.modules_lock:
+            if module_type is None:
+                return list(self.modules.values())
+            else:
+                return [info for info in self.modules.values() if info.module_type == module_type]
     
     def get_modules_by_capability(self, capability: str) -> List[ModuleInfo]:
         """根據能力獲取模組"""
-        return [
-            info for info in self.modules.values()
-            if capability in info.capabilities and info.state == ModuleState.AVAILABLE
-        ]
+        with self.modules_lock:
+            return [
+                info for info in self.modules.values()
+                if capability in info.capabilities and info.state == ModuleState.AVAILABLE
+            ]
     
     # ========== 系統流程骨架 ==========
     
@@ -533,31 +540,36 @@ class CoreFramework:
         uptime = time.time() - self.initialization_time if self.initialization_time else 0
         
         module_states = {}
-        for module_id, info in self.modules.items():
-            module_states[module_id] = {
-                "state": info.state.value,
-                "type": info.module_type.value,
-                "capabilities": info.capabilities,
-                "last_active": info.last_active
-            }
+        with self.modules_lock:
+            for module_id, info in self.modules.items():
+                module_states[module_id] = {
+                    "state": info.state.value,
+                    "type": info.module_type.value,
+                    "capabilities": info.capabilities,
+                    "last_active": info.last_active
+                }
+            
+            total_modules = len(self.modules)
+            available_modules = len([m for m in self.modules.values() if m.state == ModuleState.AVAILABLE])
         
         return {
             "is_initialized": self.is_initialized,
             "uptime_seconds": uptime,
-            "total_modules": len(self.modules),
-            "available_modules": len([m for m in self.modules.values() if m.state == ModuleState.AVAILABLE]),
+            "total_modules": total_modules,
+            "available_modules": available_modules,
             "system_flows": list(self.system_flows.keys()),
             "module_states": module_states
         }
     
     def update_module_state(self, module_id: str, new_state: ModuleState):
         """更新模組狀態"""
-        if module_id in self.modules:
-            old_state = self.modules[module_id].state
-            self.modules[module_id].state = new_state
-            self.modules[module_id].last_active = time.time()
-            
-            debug_log(3, f"[CoreFramework] 模組狀態更新 {module_id}: {old_state.value} → {new_state.value}")
+        with self.modules_lock:
+            if module_id in self.modules:
+                old_state = self.modules[module_id].state
+                self.modules[module_id].state = new_state
+                self.modules[module_id].last_active = time.time()
+                
+                debug_log(3, f"[CoreFramework] 模組狀態更新 {module_id}: {old_state.value} → {new_state.value}")
     
     # ========== 系統骨架支援方法 ==========
     
@@ -570,11 +582,12 @@ class CoreFramework:
         missing_modules = []
         available_modules = []
         
-        for module_id in flow.required_modules:
-            if module_id in self.modules and self.modules[module_id].state == ModuleState.AVAILABLE:
-                available_modules.append(module_id)
-            else:
-                missing_modules.append(module_id)
+        with self.modules_lock:
+            for module_id in flow.required_modules:
+                if module_id in self.modules and self.modules[module_id].state == ModuleState.AVAILABLE:
+                    available_modules.append(module_id)
+                else:
+                    missing_modules.append(module_id)
         
         return {
             "valid": len(missing_modules) == 0,
@@ -862,8 +875,9 @@ class CoreFramework:
                         unloaded_count += 1
                         info_log(f"[CoreFramework] ✅ 已卸載模組: {module_name}")
                         # 同時從 Framework 註冊表移除（使用 module_id）
-                        if module_id in self.modules:
-                            del self.modules[module_id]
+                        with self.modules_lock:
+                            if module_id in self.modules:
+                                del self.modules[module_id]
                     else:
                         error_log(f"[CoreFramework] ❌ 卸載模組失敗: {module_name}")
                 else:

@@ -1243,7 +1243,13 @@ class MOVModule(BaseFrontendModule):
         支持兩種模式：
         - barrier: 碰到邊界停止（預設）
         - wrap: 從右邊出去左邊進來（循環模式）
+        
+        注意：拖曳時不檢查邊界，允許使用者自由拖曳
         """
+        # 🔧 拖曳時跳過邊界檢查，允許使用者自由拖曳到任何位置
+        if self.is_being_dragged or self.movement_mode == MovementMode.DRAGGING:
+            return
+        
         left  = self.v_left
         right = self.v_right  - self.SIZE
         boundary_hit = False
@@ -1405,11 +1411,11 @@ class MOVModule(BaseFrontendModule):
             return
         
         # 檢查是否正在被干涉（拖動、拋擲中不應該切換動畫）
-        # 例外動畫：struggle、transition 動畫（g_to_f, f_to_g）、idle 動畫
+        # 例外動畫：struggle、struggle_l、transition 動畫（g_to_f, f_to_g, l_to_g, g_to_l）、idle 動畫
         # SYSTEM_CYCLE 狀態下的層級動畫不檢查 dragging（已在 INTERACTION_STARTED 時清除）
         allowed_during_special = (
-            name == "struggle" or 
-            name in ("g_to_f", "f_to_g") or 
+            name in ("struggle_f", "struggle_l") or 
+            name in ("g_to_f", "f_to_g", "l_to_g", "g_to_l") or 
             "idle" in name.lower()
         )
         
@@ -1591,11 +1597,26 @@ class MOVModule(BaseFrontendModule):
             self._throw_handler.cancel_throw()
             debug_log(2, f"[{self.module_id}] 拖動開始，取消投擲動畫")
         
+        # ⏸️ 禁止在喚醒期間拖曳（保護 struggle_l 動畫）
+        if self._pending_wake_transition:
+            debug_log(2, f"[{self.module_id}] 喚醒期間禁止拖曳，保護 struggle_l 動畫")
+            return
+        
         # 🔧 SYSTEM_CYCLE 狀態下允許拖曳但不改變狀態
         if self.current_behavior_state == BehaviorState.SYSTEM_CYCLE:
             debug_log(2, f"[{self.module_id}] SYSTEM_CYCLE 期間拖曳：允許位置變化但保持狀態")
             self.is_being_dragged = True  # 標記拖曳中（用於位置更新）
             return  # 不改變 movement_mode 和動畫
+        
+        # 🌙 睡眠狀態下允許拖曳並播放 struggle_l 動畫
+        if self.current_behavior_state == BehaviorState.SLEEPING:
+            info_log(f"[{self.module_id}] 睡眠期間拖曳：播放 struggle_l 掙扎動畫")
+            self.is_being_dragged = True
+            # ⚠️ 必須設置 DRAGGING 模式，避免 throw_handler 誤判
+            self.movement_mode = MovementMode.DRAGGING
+            # 播放睡眠拖曳動畫（struggle_l）
+            self._trigger_anim("struggle_l", {"loop": True}, source="drag_sleep")
+            return
         
         # 切換到拖曳狀態
         self.is_being_dragged = True
@@ -1629,22 +1650,29 @@ class MOVModule(BaseFrontendModule):
         """處理拖曳移動事件，直接更新位置跟隨滑鼠"""
         if not self.is_being_dragged or self._tease_tracker.is_teasing():
             return
+        
+        # 🌙 檢查是否在睡眠狀態
+        is_sleeping = self.current_behavior_state == BehaviorState.SLEEPING
             
         # 支持字典格式的事件數據（來自UI）
         if isinstance(event, dict):
             new_x = float(event.get('x', self.position.x))
             new_y = float(event.get('y', self.position.y))
             
+            # 🌙 睡眠時鎖定 Y 座標在地面
+            if is_sleeping:
+                new_y = self._ground_y()
+            
             # Wrap 模式：允許拖曳到任何位置（會在 _check_boundaries 中處理循環）
-            # Barrier 模式：限制在螢幕範圍內
+            # Barrier 模式：限制 X 在螢幕範圍，Y 自由（允許拖到地面判斷模式切換）
             if self.boundary_mode == "wrap":
                 self.position.x = new_x
                 self.position.y = new_y
             else:
                 max_x = self.v_right - self.SIZE
-                max_y = self.v_bottom - self.SIZE
+                # 🔧 移除 Y 的上下限制，允許自由拖曳到任何高度
                 self.position.x = max(self.v_left, min(max_x, new_x))
-                self.position.y = max(self.v_top, min(max_y, new_y))
+                self.position.y = new_y
             
             # **關鍵修復：追蹤拖曳位置以計算速度**
             self._drag_tracker.add_point(self.position.x, self.position.y)
@@ -1724,6 +1752,22 @@ class MOVModule(BaseFrontendModule):
         if self.current_behavior_state == BehaviorState.SYSTEM_CYCLE:
             debug_log(2, f"[{self.module_id}] SYSTEM_CYCLE 期間拖曳結束：保持原狀態")
             self.is_being_dragged = False
+            return
+        
+        # 🌙 睡眠狀態下：拖曳結束後維持睡眠，不進行任何狀態切換或投擲判定
+        if self.current_behavior_state == BehaviorState.SLEEPING:
+            self.is_being_dragged = False
+            # ⚠️ 重置 movement_mode 為 GROUND（睡眠時不應該是 DRAGGING）
+            self.movement_mode = MovementMode.GROUND
+            # 🔧 停止 struggle 動畫並重置優先度管理器
+            if self.ani_module and hasattr(self.ani_module, 'stop'):
+                self.ani_module.stop()
+            self._animation_priority.reset()
+            # 🌙 恢復 sleep_l 動畫（struggle_l → sleep_l）
+            self._trigger_anim("sleep_l", {"loop": True}, source="drag_end_sleep", priority=AnimationPriority.SYSTEM_CYCLE)
+            # 更新位置（確保前端同步）
+            self._emit_position()
+            info_log(f"[{self.module_id}] 睡眠狀態下拖曳結束（恢復 sleep_l 動畫）")
             return
         
         self.is_being_dragged = False
@@ -1851,16 +1895,21 @@ class MOVModule(BaseFrontendModule):
     # ========= 系統狀態（框架回調） =========
 
     def on_system_state_changed(self, old_state: UEPState, new_state: UEPState):
+        """系統狀態變化回調
+        
+        注意：
+        - SLEEP_ENTERED → FrontendBridge 調用此方法 → _enter_sleep_state()
+        - SLEEP_EXITED → FrontendBridge 直接調用 _exit_sleep_state()（不經過此方法）
+        
+        因此：只處理進入 SLEEP，不處理退出 SLEEP
+        """
         debug_log(1, f"[{self.module_id}] 系統狀態變更: {old_state} -> {new_state}")
         self._current_system_state = new_state
         
         # SLEEP 狀態進入處理
         if new_state == UEPState.SLEEP:
             self._enter_sleep_state()
-        # SLEEP 狀態退出處理
-        elif old_state == UEPState.SLEEP and new_state != UEPState.SLEEP:
-            self._exit_sleep_state()
-        # IDLE 狀態時清除層級並播放閒置動畫
+        # IDLE 狀態時清除層級
         elif new_state == UEPState.IDLE:
             self._current_layer = None
             # SystemCycleBehavior 已結束，切換回 IdleBehavior 會自動處理 IDLE 動畫
@@ -1952,12 +2001,14 @@ class MOVModule(BaseFrontendModule):
     
         流程：
         1. 停止 sleep_l 循環動畫
-        2. 播放 l_to_g 起身動畫
+        2. 播放 struggle_l 作為過渡動畫（後台模組重載時保持 UI 流暢）
         3. 標記 _pending_wake_transition，等待 WAKE_READY 事件
-        4. 收到 WAKE_READY 後才切換回 IDLE（確保模組已重載）
+        4. WAKE_READY（模組重載完成）→ 播放 l_to_g → 切換 IDLE
+        
+        由 FrontendBridge 在收到 SLEEP_EXITED 事件時調用（只會調用一次）
         """
         try:
-            info_log(f"[{self.module_id}] ☀️ 退出 SLEEP 狀態，播放起身動畫...")
+            info_log(f"[{self.module_id}] ☀️ 退出 SLEEP 狀態，播放過渡動畫...")
         
             # 🔧 重置睡眠相關狀態（確保下次睡眠能正常進入）
             self._is_sleeping = False
@@ -1965,23 +2016,24 @@ class MOVModule(BaseFrontendModule):
             self.transition_start_time = None  # 重置轉場計時器
             
             # 🔧 標記等待喚醒轉換完成（等待 WAKE_READY 事件）
+            # WAKE_READY 事件到達時才會播放 l_to_g 動畫
             self._pending_wake_transition = True
             self._wake_ready = False
-            info_log(f"[{self.module_id}] 標記等待 WAKE_READY 事件（模組重載完成後）")
-        
-            # 播放起身動畫（使用高優先度）
+            
+            # 🎬 播放 struggle_l 作為過渡動畫
+            # 此動畫會在後台模組重載時持續播放，讓 UI 保持流暢
+            # 直到 WAKE_READY 事件到達時被 l_to_g 取代
             self._trigger_anim(
-                "l_to_g",
+                "struggle_l",
                 {
-                    "loop": False,
+                    "loop": True,
                     "force_restart": True
                 },
-                source="wake_handler",
+                source="wake_transition",
                 priority=AnimationPriority.SYSTEM_CYCLE
             )
-        
-            # 🔧 暫時不解鎖移動（等到 WAKE_READY 後才恢復）
-            # self.movement_locked_until = 0
+            
+            info_log(f"[{self.module_id}] 播放 struggle_l 過渡動畫，等待 WAKE_READY（模組重載中）")
         
         except Exception as e:
             error_log(f"[{self.module_id}] 退出 SLEEP 狀態失敗: {e}")
@@ -2186,36 +2238,36 @@ GS 推進 - 當前 GS 結束，恢復 idle 狀態和移動"""
     
     def _on_wake_ready(self, event):
         """
-        收到 WAKE_READY 事件 - 後端模組已重載完成，可以安全切換回 IDLE
+        收到 WAKE_READY 事件 - 後端模組已重載完成
         
-        這個事件由 wake_api 在模組重載完成後發送
-        確保在模組尚未載入時不會有用戶互動導致錯誤
+        此時應播放 l_to_g 起身動畫，動畫完成後再切換回 IDLE
+        流程：
+        1. 播放 l_to_g 動畫（使用系統週期優先度）
+        2. 等待動畫完成（由 _on_animation_finished 處理）
+        3. 動畫完成後切換到 IDLE，播放對應的 idle 動畫
         """
         try:
-            info_log(f"[{self.module_id}] 📨 收到 WAKE_READY 事件，模組已重載完成")
+            info_log(f"[{self.module_id}] 📨 收到 WAKE_READY 事件，後端模組已重載完成")
             
             self._wake_ready = True
             
-            # 如果正在等待喚醒轉換完成，現在可以切換回 IDLE 了
+            # 如果正在等待喚醒轉換完成，現在可以播放喚醒動畫了
             if self._pending_wake_transition:
-                info_log(f"[{self.module_id}] ✅ 喚醒完成，切換回 IDLE 狀態")
+                info_log(f"[{self.module_id}] 🎬 播放 l_to_g 起身動畫...")
                 
-                self._pending_wake_transition = False
-                
-                # 切換回 IDLE 行為狀態
-                self._switch_behavior(BehaviorState.IDLE)
-                
-                # 播放 idle 動畫
-                is_ground = (self.movement_mode == MovementMode.GROUND)
-                idle_anim = self.anim_query.get_idle_animation_for_mode(is_ground=is_ground)
+                # 播放起身動畫（使用高優先度，確保優先於其他動畫）
                 self._trigger_anim(
-                    idle_anim,
-                    {"loop": True},
+                    "l_to_g",
+                    {
+                        "loop": False,
+                        "force_restart": True
+                    },
                     source="wake_handler",
-                    priority=AnimationPriority.IDLE_ANIMATION
+                    priority=AnimationPriority.SYSTEM_CYCLE
                 )
                 
-                info_log(f"[{self.module_id}] 🎉 喚醒流程完成，系統已恢復正常")
+                # 標記動畫完成後應自動切換到 IDLE（由動畫完成回調處理）
+                # 不在此處立即切換，讓動畫完成回調負責切換
             
         except Exception as e:
             error_log(f"[{self.module_id}] 處理 WAKE_READY 事件失敗: {e}")
@@ -2702,24 +2754,22 @@ GS 推進 - 當前 GS 結束，恢復 idle 狀態和移動"""
         if finished_name == 'l_to_g' and self._pending_wake_transition:
             debug_log(2, f"[{self.module_id}] 喚醒轉換動畫完成: {finished_name}")
             
-            # 檢查是否已收到 WAKE_READY 事件
-            if self._wake_ready:
-                info_log(f"[{self.module_id}] ✅ 模組已重載，喚醒完成，切換回 IDLE")
-                self._pending_wake_transition = False
-                self.movement_locked_until = 0  # 解鎖移動
-                
-                # 切換回 IDLE 行為
-                self._switch_behavior(BehaviorState.IDLE)
-                # 播放 ground 模式的 idle 動畫
-                idle_anim = self.anim_query.get_idle_animation_for_mode(is_ground=True) if self.anim_query else "stand_idle_g"
-                self._trigger_anim(idle_anim, {
-                    'loop': True,
-                    'force_restart': True
-                }, source='wake_complete', priority=AnimationPriority.IDLE_ANIMATION)
-                info_log(f"[{self.module_id}] ☀️ 喚醒完成，恢復正常行為")
-            else:
-                info_log(f"[{self.module_id}] ⏳ 喚醒動畫完成，等待 WAKE_READY 事件...")
-                # 保持 _pending_wake_transition = True，讓 _on_wake_ready 處理後續
+            # l_to_g 完成後立即切換到 IDLE，不需要再等待 WAKE_READY
+            # WAKE_READY 已經在播放 l_to_g 之前就收到了
+            info_log(f"[{self.module_id}] ✅ 喚醒動畫完成，切換回 IDLE")
+            self._pending_wake_transition = False
+            self._wake_ready = False  # 重置標記
+            self.movement_locked_until = 0  # 解鎖移動
+            
+            # 切換回 IDLE 行為
+            self._switch_behavior(BehaviorState.IDLE)
+            # 播放 ground 模式的 idle 動畫
+            idle_anim = self.anim_query.get_idle_animation_for_mode(is_ground=True) if self.anim_query else "stand_idle_g"
+            self._trigger_anim(idle_anim, {
+                'loop': True,
+                'force_restart': True
+            }, source='wake_complete', priority=AnimationPriority.IDLE_ANIMATION)
+            info_log(f"[{self.module_id}] ☀️ 喚醒完成，恢復正常行為")
             return
         
         # 檢查是否是轉場動畫完成（f_to_g 或 g_to_f）

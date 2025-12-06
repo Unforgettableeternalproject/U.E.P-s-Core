@@ -24,7 +24,7 @@ def wake_up_system(reason: str = "user_widget") -> Dict[str, Any]:
         Dict: 喚醒結果
             - success: bool - 是否成功
             - message: str - 結果訊息
-            - modules_reloaded: List[str] - 重載的模組列表
+            - modules_reloaded: List[str] - 重載的模組列表（異步完成後才有）
     """
     try:
         from core.states.state_manager import state_manager, UEPState
@@ -49,7 +49,7 @@ def wake_up_system(reason: str = "user_widget") -> Dict[str, Any]:
                 "modules_reloaded": []
             }
         
-        # 1. 使用 SleepManager 喚醒（會發布事件）
+        # 1. 使用 SleepManager 喚醒（會發布 SLEEP_EXITED 事件）
         wake_success = sleep_manager.wake_up(reason)
         
         if not wake_success:
@@ -60,54 +60,20 @@ def wake_up_system(reason: str = "user_widget") -> Dict[str, Any]:
                 "modules_reloaded": []
             }
         
-        # 2. 重新載入模組
-        reloaded_modules = _reload_modules()
+        # 2. 異步重新載入模組（在後台執行緒中，避免阻塞 UI）
+        # UI 會在此期間播放 struggle_l 過渡動畫
+        # 模組重載完成後會發布 WAKE_READY 事件
+        _reload_modules_async(reason)
         
-        # 3. 通知 StateQueue 完成 SLEEP 狀態
-        try:
-            from core.states.state_queue import get_state_queue_manager
-            state_queue = get_state_queue_manager()
-            
-            # 檢查當前是否真的在處理 SLEEP 狀態
-            if state_queue.current_item and state_queue.current_item.state == UEPState.SLEEP:
-                info_log("[WakeAPI] 📤 通知 StateQueue 完成 SLEEP 狀態")
-                state_queue.complete_current_state(
-                    success=True,
-                    result_data={
-                        "wake_reason": reason,
-                        "modules_reloaded": reloaded_modules,
-                        "wake_time": time.time()
-                    }
-                )
-            else:
-                debug_log(2, f"[WakeAPI] StateQueue 當前項目不是 SLEEP: {state_queue.current_item.state.value if state_queue.current_item else 'None'}")
-        except Exception as e:
-            error_log(f"[WakeAPI] 通知 StateQueue 失敗: {e}")
+        # 注意：StateQueue 完成和 state_manager 退出狀態會在 WAKE_READY 時處理
+        # 這裡不做任何狀態切換，保持前端播放 struggle_l
         
-        # 3.5 發布 WAKE_READY（通知前端與 MOV 可安全轉場）
-        try:
-            from core.event_bus import event_bus, SystemEvent
-            event_bus.publish(
-                SystemEvent.WAKE_READY,
-                {
-                    "wake_reason": reason,
-                    "modules_reloaded": reloaded_modules,
-                },
-                source="wake_api",
-            )
-            debug_log(2, "[WakeAPI] 已發布 WAKE_READY 事件")
-        except Exception as e:
-            debug_log(2, f"[WakeAPI] 發布 WAKE_READY 事件失敗: {e}")
-
-        # 4. 退出 SLEEP 狀態，回到 IDLE
-        state_manager.exit_special_state(reason)
-        
-        info_log(f"[WakeAPI] ✅ 系統喚醒成功，已重載 {len(reloaded_modules)} 個模組")
+        info_log(f"[WakeAPI] ✅ 系統喚醒流程已啟動，模組重載中（前端播放 struggle_l）")
         
         return {
             "success": True,
-            "message": "系統已成功喚醒",
-            "modules_reloaded": reloaded_modules
+            "message": "系統喚醒中，模組重載進行中",
+            "modules_reloaded": []  # 異步進行，立即返回空列表
         }
         
     except Exception as e:
@@ -119,6 +85,76 @@ def wake_up_system(reason: str = "user_widget") -> Dict[str, Any]:
             "message": f"喚醒失敗: {str(e)}",
             "modules_reloaded": []
         }
+
+
+def _reload_modules_async(reason: str) -> None:
+    """
+    異步重新載入模組（在後台執行緒中運行）
+    
+    完成後發布 WAKE_READY 事件，觸發 l_to_g 動畫
+    
+    Args:
+        reason: 喚醒原因
+    """
+    import threading
+    
+    def _reload_in_thread():
+        """在背景執行緒中重載模組"""
+        try:
+            info_log("[WakeAPI] 🔄 後台執行緒開始重載模組...")
+            reloaded = _reload_modules()
+            info_log(f"[WakeAPI] 🎉 後台模組重載完成: {len(reloaded)} 個模組")
+            
+            # 模組重載完成，通知 StateQueue 完成 SLEEP 狀態
+            try:
+                from core.states.state_queue import get_state_queue_manager
+                from core.states.state_manager import UEPState
+                state_queue = get_state_queue_manager()
+                
+                if state_queue.current_item and state_queue.current_item.state == UEPState.SLEEP:
+                    info_log("[WakeAPI] 📤 通知 StateQueue 完成 SLEEP 狀態")
+                    state_queue.complete_current_state(
+                        success=True,
+                        result_data={
+                            "wake_reason": reason,
+                            "modules_reloaded": reloaded,
+                            "wake_time": time.time()
+                        }
+                    )
+            except Exception as e:
+                error_log(f"[WakeAPI] 通知 StateQueue 失敗: {e}")
+            
+            # 發布 WAKE_READY 事件（觸發 l_to_g 動畫）
+            try:
+                from core.event_bus import event_bus, SystemEvent
+                event_bus.publish(
+                    SystemEvent.WAKE_READY,
+                    {
+                        "wake_reason": reason,
+                        "modules_reloaded": reloaded,
+                    },
+                    source="wake_api",
+                )
+                info_log("[WakeAPI] ✅ 已發布 WAKE_READY 事件，可播放 l_to_g 動畫")
+            except Exception as e:
+                error_log(f"[WakeAPI] 發布 WAKE_READY 事件失敗: {e}")
+            
+            # 退出 SLEEP 狀態，回到 IDLE
+            try:
+                from core.states.state_manager import state_manager
+                state_manager.exit_special_state(reason)
+            except Exception as e:
+                error_log(f"[WakeAPI] 退出 SLEEP 狀態失敗: {e}")
+                
+        except Exception as e:
+            error_log(f"[WakeAPI] 後台模組重載失敗: {e}")
+            import traceback
+            error_log(traceback.format_exc())
+    
+    # 創建並啟動後台執行緒
+    reload_thread = threading.Thread(target=_reload_in_thread, daemon=True, name="ModuleReloadThread")
+    reload_thread.start()
+    debug_log(2, "[WakeAPI] 🔄 啟動後台模組重載執行緒（前端將播放 struggle_l）")
 
 
 def _reload_modules() -> list:

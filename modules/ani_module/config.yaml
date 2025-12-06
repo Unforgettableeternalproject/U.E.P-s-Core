@@ -120,16 +120,16 @@ resources:
       frame_duration: 0.05
       loop: false
       zoom: 1.5
-      offsetX: 100
-      offsetY: -50
+      offsetX: 0
+      offsetY: 60
     l_to_g:
       prefix: diamond_girl_lying_to_standing_
       total_frames: 35
       frame_duration: 0.05
       loop: false
       zoom: 1.5
-      offsetX: 100
-      offsetY: -50
+      offsetX: 0
+      offsetY: 60
     laugh_f:
       prefix: diamond_girl_laugh_
       total_frames: 75
@@ -214,10 +214,18 @@ resources:
       prefix: diamond_girl_struggle_
       total_frames: 61
       frame_duration: 0.06
-      loop: false
+      loop: true
       zoom: 1.2
       offsetX: 50
       offsetY: -100
+    struggle_l:
+      prefix: diamond_girl_sleep_dragging_
+      total_frames: 49
+      frame_duration: 0.06
+      loop: true
+      zoom: 1.45
+      offsetX: 90
+      offsetY: -50
     swoop_left:
       prefix: diamond_girl_swoop_l_
       total_frames: 37

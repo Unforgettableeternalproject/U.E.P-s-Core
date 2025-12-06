@@ -256,10 +256,14 @@ class SYSModule(BaseModule):
 
 
     def _load_function_specs(self):
+        """
+        ⚠️ 已棄用：functions.yaml 不再使用
+        現在所有工作流都透過 workflow_definition 經 MCP 註冊成為工具
+        保留此方法以維持向後兼容性，但返回空字典
+        """
         if self._function_specs is None:
-            path = os.path.join(os.path.dirname(__file__), "functions.yaml")
-            with open(path, "r", encoding="utf-8") as f:
-                self._function_specs = yaml.safe_load(f)
+            debug_log(3, "[SYS] functions.yaml 已棄用，返回空規格")
+            self._function_specs = {}
         return self._function_specs
 
     def _register_collaboration_providers(self):
@@ -463,37 +467,50 @@ class SYSModule(BaseModule):
             }
     
     def _provide_function_registry(self, **kwargs):
-        """提供可用的系統功能列表給 LLM"""
+        """提供可用的系統功能列表給 LLM（從 MCP Server 獲取）"""
         try:
+            if not self.mcp_server:
+                debug_log(2, "[SYS] MCP Server 未初始化，無法提供功能列表")
+                return []
+            
             category = kwargs.get('category', 'all')
             
-            # 從 functions.yaml 讀取可用功能
-            specs = self._load_function_specs()
+            # 從 MCP Server 獲取已註冊的工具
+            functions = []
             
-            if category == 'all':
-                # 返回所有功能
-                functions = []
-                for name, spec in specs.items():
-                    if name in self.enabled_modes:
-                        functions.append({
-                            "name": name,
-                            "category": spec.get('category', 'general'),
-                            "description": spec.get('description', ''),
-                            "params": list(spec.get('params', {}).keys())
-                        })
-                return functions
-            else:
+            # 獲取所有已註冊的工具
+            registered_tools = self.mcp_server.list_tools()
+            
+            for tool in registered_tools:
+                # MCPTool 是 Pydantic 模型，使用屬性訪問
+                tool_name = tool.name if hasattr(tool, 'name') else ''
+                tool_description = tool.description if hasattr(tool, 'description') else ''
+                
+                # 提取參數列表（從 parameters 欄位）
+                params = []
+                if hasattr(tool, 'parameters') and tool.parameters:
+                    params = [param.name for param in tool.parameters]
+                
+                # 簡單的分類邏輯（基於工具名稱前綴）
+                tool_category = 'general'
+                if tool_name.startswith('file_'):
+                    tool_category = 'file_operations'
+                elif tool_name.startswith('workflow_'):
+                    tool_category = 'workflow_management'
+                elif 'step' in tool_name:
+                    tool_category = 'workflow_management'
+                
                 # 根據分類過濾
-                functions = []
-                for name, spec in specs.items():
-                    if name in self.enabled_modes and spec.get('category') == category:
-                        functions.append({
-                            "name": name,
-                            "category": category,
-                            "description": spec.get('description', ''),
-                            "params": list(spec.get('params', {}).keys())
-                        })
-                return functions
+                if category == 'all' or tool_category == category:
+                    functions.append({
+                        "name": tool_name,
+                        "category": tool_category,
+                        "description": tool_description,
+                        "params": params
+                    })
+            
+            debug_log(2, f"[SYS] 提供 {len(functions)} 個功能給 LLM (category={category})")
+            return functions
                 
         except Exception as e:
             error_log(f"[SYS] 提供功能列表失敗: {e}")

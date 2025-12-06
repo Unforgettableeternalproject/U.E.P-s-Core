@@ -8,7 +8,6 @@ from .base_handler import BaseHandler, HandlerChain
 from .layer_handler import LayerEventHandler
 from .interaction_handler import (
     InteractionHandler,
-    DragInteractionHandler,
     FileDropHandler
 )
 from .cursor_tracking_handler import CursorTrackingHandler
@@ -19,7 +18,6 @@ __all__ = [
     'HandlerChain',
     'LayerEventHandler',
     'InteractionHandler',
-    'DragInteractionHandler',
     'FileDropHandler',
     'CursorTrackingHandler',
     'ThrowHandler',

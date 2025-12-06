@@ -473,24 +473,24 @@ class FrontendBridge:
             error_log(f"[FrontendBridge] 處理 SLEEP_ENTERED 事件失敗: {e}")
     
     def _on_sleep_exited(self, event):
-        """系統退出睡眠狀態但尚未完全恢復處理
+        """系統退出睡眠狀態處理
         
-        在此階段，後端已開始準備模組重載，但前端應保持在睡眠動畫中
-        讓使用者可以看到系統正在重新啟動的視覺回饋
-        只有當 WAKE_READY 事件發布後，前端才會退出睡眠動畫（播放 l_to_g 喚醒動畫）
-        
-        重要：SLEEP_EXITED 不應該觸發任何前端動畫變化，前端繼續播放 sleep_l 循環動畫
+        在此階段，後端已開始準備模組重載，通知前端開始播放 l_to_g 喚醒動畫
+        等待 WAKE_READY 事件，確認模組已重載後才切換回 IDLE
         """
         try:
             wake_reason = event.data.get('wake_reason', 'unknown') if hasattr(event, 'data') and event.data else 'unknown'
             
-            info_log(f"[FrontendBridge] 系統開始喚醒流程 (原因: {wake_reason})，前端保持睡眠動畫等待 WAKE_READY")
+            info_log(f"[FrontendBridge] 系統開始喚醒流程 (原因: {wake_reason})，通知 MOV 開始播放 l_to_g 喚醒動畫...")
             
             # 設置內部標記表示喚醒正在進行中
             self._wake_in_progress = True
             
-            # 前端維持睡眠動畫，不做任何狀態改變
-            # MOV 會繼續循環 sleep_l 動畫直到收到 WAKE_READY
+            # 🔧 通知 MOV 模組開始退出睡眠狀態（播放 l_to_g 動畫）
+            # 這會設置 _pending_wake_transition = True，等待 WAKE_READY 事件完成喚醒
+            if self.mov_module and hasattr(self.mov_module, '_exit_sleep_state'):
+                self.mov_module._exit_sleep_state()
+                debug_log(2, "[FrontendBridge] 已通知 MOV 模組開始退出睡眠")
             
             debug_log(2, "[FrontendBridge] 等待後端模組重載完成...")
             
@@ -500,8 +500,8 @@ class FrontendBridge:
     def _on_wake_ready(self, event):
         """系統完全恢復就緒處理
         
-        後端模組重載已完成，現在通知前端退出睡眠動畫
-        MOV 將播放 l_to_g 喚醒動畫，然後恢復 IDLE 狀態
+        後端模組重載已完成，通知 MOV 完成喚醒流程
+        MOV 會在 l_to_g 動畫完成後自動切換回 IDLE 狀態
         恢復使用者互動
         """
         try:
@@ -513,11 +513,10 @@ class FrontendBridge:
             # 清除喚醒進行中標記
             self._wake_in_progress = False
             
-            # 通知 MOV 退出睡眠動畫，觸發 l_to_g 喚醒過渡動畫
-            # 這是觸發前端睡眠結束的正確時機
-            if self.mov_module and hasattr(self.mov_module, '_exit_sleep_state'):
-                self.mov_module._exit_sleep_state()
-                debug_log(2, "[FrontendBridge] 已通知 MOV 退出睡眠動畫（播放 l_to_g）")
+            # 🔧 通知 MOV 模組已重載完成，可以安全切換回 IDLE
+            if self.mov_module and hasattr(self.mov_module, '_on_wake_ready'):
+                self.mov_module._on_wake_ready(event)
+                debug_log(2, "[FrontendBridge] 已通知 MOV 模組重載完成")
             
             # 通知 UI 恢復互動
             if self.ui_module and hasattr(self.ui_module, 'on_wake_ready'):

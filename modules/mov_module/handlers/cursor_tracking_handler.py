@@ -78,6 +78,10 @@ class CursorTrackingHandler(BaseHandler):
         if hasattr(self.coordinator, '_is_leaving') and self.coordinator._is_leaving:
             return
         
+        # 🎤 ON_CALL 期間禁止追蹤
+        if hasattr(self.coordinator, '_on_call_active') and self.coordinator._on_call_active:
+            return
+        
         # 檔案互動期間完全禁止追蹤（包含已在追蹤的情況，交由 suspend 方法處理）
         # 檔案互動期間禁止開始追蹤（由 FileDropHandler 狀態提供）
         if hasattr(self.coordinator, '_file_drop_handler') and self.coordinator._file_drop_handler.is_in_file_interaction:
@@ -326,6 +330,11 @@ class CursorTrackingHandler(BaseHandler):
                 if self.coordinator.current_behavior_state == BehaviorState.SLEEPING:
                     debug_log(3, "[CursorTrackingHandler] 睡眠狀態，禁止追蹤")
                     return False
+                
+# 🎤 ON_CALL 模式下完全禁止追蹤
+            if hasattr(self.coordinator, '_on_call_active') and self.coordinator._on_call_active:
+                debug_log(3, "[CursorTrackingHandler] ON_CALL 模式，禁止追蹤")
+                return False
             
             # 🌙 等待睡眠轉換期間也禁止追蹤（避免 f_to_g 播放時被中斷）
             if hasattr(self.coordinator, '_pending_sleep_transition') and self.coordinator._pending_sleep_transition:

@@ -1111,7 +1111,7 @@ class WorkingContextManager:
         if 'resume_context' in self.global_context_data:
             del self.global_context_data['resume_context']
             debug_log(3, "[WorkingContextManager] 已清除 resume_context")
-
+    
 
 # 全局工作上下文管理器實例
 working_context_manager = WorkingContextManager()

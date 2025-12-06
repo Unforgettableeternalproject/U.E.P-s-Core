@@ -2362,3 +2362,15 @@
 
 ---
 
+### Added on call function as the final tool for access widget. 12/7
+
+> Date: Sun, 07 Dec 2025 01:16:15 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `fec4be97e52f7026fc878260fffedbc3f6538b10`
+
+---
+

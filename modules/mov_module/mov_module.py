@@ -480,6 +480,21 @@ class MOVModule(BaseFrontendModule):
         if self.current_behavior_state == BehaviorState.SLEEPING:
             return
         
+        # 🎤 ON_CALL 狀態下暫停所有移動（參考 system_cycle_behavior 作法）
+        if self._on_call_active:
+            # 完全停止移動
+            self.velocity.x = 0.0
+            self.velocity.y = 0.0
+            self.target_velocity.x = 0.0
+            self.target_velocity.y = 0.0
+            
+            # 清除移動目標
+            self.movement_target = None
+            self.target_reached = False
+            
+            debug_log(3, f"[{self.module_id}] ON_CALL 期間保持靜止")
+            return
+        
         now = time.time()
         
         # 更新投擲處理器（檢查是否需要執行投擲後行為）
@@ -521,7 +536,7 @@ class MOVModule(BaseFrontendModule):
         if hasattr(self, '_file_drop_handler') and self._file_drop_handler.is_in_file_interaction:
             debug_log(3, f"[{self.module_id}] 檔案互動中，暫停行為機 tick")
             return
-
+        
         # 檢查是否到達目標（提供給 MovementBehavior 判斷）
         self._update_target_reached()
 
@@ -1124,9 +1139,10 @@ class MOVModule(BaseFrontendModule):
             self.pause_movement("leave_animation")
             
             # 🔧 使用 ENTRY_EXIT 優先度（最高級，不能被任何其他動畫打斷）
+            # 🎬 使用 immediate_interrupt=True 強制突破優先度鎖定
             self._trigger_anim(
                 anim_name, 
-                {"loop": False, "allow_interrupt": False},  # 不允許被打斷
+                {"loop": False, "allow_interrupt": False, "immediate_interrupt": True},  # 強制覆蓋
                 source="exit_animation",
                 priority=AnimationPriority.ENTRY_EXIT
             )
@@ -3116,5 +3132,74 @@ GS 推進 - 當前 GS 結束，恢復 idle 狀態和移動"""
             error_log(f"[{self.module_id}] 清理ANI模組引用失敗: {e}")
         
         return super().shutdown()
+    
+    # ========= ON_CALL 動畫 =========
+    
+    def trigger_on_call_animation(self, mode: str = "vad"):
+        """
+        觸發 on_call 動畫 - 設置 ON_CALL 標記並播放 notice 動畫
+        
+        Args:
+            mode: on_call 模式 ("vad" 或 "text")
+        """
+        try:
+            from modules.mov_module.core.animation_priority import AnimationPriority
+            
+            # 設置 ON_CALL 標記（停止移動和滑鼠追蹤）
+            self._on_call_active = True
+            debug_log(2, f"[{self.module_id}] 已進入 ON_CALL 模式")
+            
+            # 根據當前狀態和模式播放適當的 notice 動畫
+            # notice 動畫表示系統在聆聽使用者輸入
+            if self.anim_query and self.anim_query.animation_exists("notice_f"):
+                self._trigger_anim(
+                    "notice_f",
+                    params={
+                        "loop": True,  # 循環播放直到 on_call 結束
+                        "await_finish": False
+                    },
+                    source="on_call",
+                    priority=AnimationPriority.USER_INTERACTION  # 使用者交互優先度
+                )
+                debug_log(2, f"[{self.module_id}] ON_CALL notice 動畫已啟動 (模式: {mode})")
+            else:
+                debug_log(1, f"[{self.module_id}] notice_f 動畫不存在")
+        
+        except Exception as e:
+            error_log(f"[{self.module_id}] 觸發 ON_CALL 動畫失敗: {e}")
+    
+    def end_on_call_animation(self, mode: str = "vad"):
+        """
+        結束 on_call 動畫 - 清除 ON_CALL 標記、停止循環動畫並清除優先度
+        
+        Args:
+            mode: on_call 模式 ("vad" 或 "text")
+        """
+        try:
+            # 清除 ON_CALL 標記
+            self._on_call_active = False
+            debug_log(2, f"[{self.module_id}] 已離開 ON_CALL 模式")
+            
+            # 先停止當前動畫（notice_f 是循環播放，需要主動停止）
+            if self.ani_module:
+                try:
+                    self.ani_module.stop_animation()
+                    debug_log(2, f"[{self.module_id}] 已停止 notice_f 循環動畫")
+                except Exception as stop_err:
+                    debug_log(2, f"[{self.module_id}] 停止動畫異常: {stop_err}")
+            
+            # 清除動畫優先度鎖定（讓行為狀態機自然接管）
+            if hasattr(self, '_animation_priority'):
+                self._animation_priority.reset()
+                debug_log(2, f"[{self.module_id}] 已清除 ON_CALL 動畫優先度鎖定")
+            
+            # 通知動畫完成（清除 notice_f 的優先度狀態）
+            if hasattr(self, '_animation_priority'):
+                self._animation_priority.on_animation_finished("notice_f")
+            
+            debug_log(2, f"[{self.module_id}] ON_CALL 已完全結束，行為狀態機已恢復 (模式: {mode})")
+            
+        except Exception as e:
+            error_log(f"[{self.module_id}] 結束 ON_CALL 動畫失敗: {e}")
 
 

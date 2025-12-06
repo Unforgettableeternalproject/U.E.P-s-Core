@@ -95,6 +95,10 @@ class SystemEvent(Enum):
     SLEEP_ENTERED = "sleep_entered"                                    # 系統已進入睡眠（觸發前端睡眠動畫）
     SLEEP_EXITED = "sleep_exited"                                      # 系統離開睡眠（準備喚醒動畫/轉場）
     WAKE_READY = "wake_ready"                                          # 喚醒完成，模組已重載完畢
+    
+    # ON_CALL 事件（使用者呼叫 UEP）
+    ON_CALL_TRIGGERED = "on_call_triggered"                            # 使用者觸發 on_call（暫停行為/狀態機）
+    ON_CALL_ENDED = "on_call_ended"                                    # 使用者結束 on_call（恢復行為/狀態機）
 
 
 @dataclass

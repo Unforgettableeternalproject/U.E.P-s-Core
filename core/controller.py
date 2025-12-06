@@ -1113,6 +1113,8 @@ class UnifiedController:
             
         except Exception as e:
             error_log(f"[UnifiedController] 系統關閉失敗: {e}")
+    
+    # ========== ON_CALL 管理 ==========
 
 
 # 全局控制器實例

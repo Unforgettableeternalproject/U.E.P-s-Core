@@ -27,6 +27,8 @@ class FrontendBridge:
         self._initialized = False
         self._event_subscriptions = []
         self._wake_in_progress = False  # 追蹤是否正在進行喚醒流程
+        self._on_call_in_progress = False  # ON_CALL 進行中標記
+        self._current_on_call_dialog = None  # ON_CALL 對話框實例
         
         info_log("[FrontendBridge] 前端橋接器已創建")
     
@@ -210,6 +212,19 @@ class FrontendBridge:
                 handler_name="frontend_bridge"
             )
             
+            # 訂閱 ON_CALL 事件
+            event_bus.subscribe(
+                SystemEvent.ON_CALL_TRIGGERED,
+                self._on_call_triggered,
+                handler_name="frontend_bridge"
+            )
+            
+            event_bus.subscribe(
+                SystemEvent.ON_CALL_ENDED,
+                self._on_call_ended,
+                handler_name="frontend_bridge"
+            )
+            
             # 訂閱 GS 生命週期事件
             event_bus.subscribe(
                 SystemEvent.GS_ADVANCED,
@@ -223,7 +238,7 @@ class FrontendBridge:
                 handler_name="frontend_bridge"
             )
             
-            info_log("[FrontendBridge] ✓ 事件訂閱已設置（系統狀態 + 會話 + 層級 + GS + SLEEP）")
+            info_log("[FrontendBridge] ✓ 事件訂閱已設置（系統狀態 + 會話 + 層級 + GS + SLEEP + ON_CALL）")
             
         except Exception as e:
             error_log(f"[FrontendBridge] 設置事件訂閱失敗: {e}")
@@ -587,6 +602,293 @@ class FrontendBridge:
             
         except Exception as e:
             error_log(f"[FrontendBridge] 處理 CYCLE_COMPLETED 事件失敗: {e}")
+    
+    # === ON_CALL 公共方法 ===
+    def toggle_on_call(self, mode: str = "vad") -> Dict[str, Any]:
+        """
+        切換 ON_CALL 狀態 - 啟動或結束 ON_CALL
+        
+        Args:
+            mode: on_call 模式 ("vad" 或 "text")
+        
+        Returns:
+            操作結果
+        """
+        try:
+            from core.working_context import working_context_manager
+            
+            # 檢查是否已啟動
+            if working_context_manager.is_activated():
+                # 已啟動，執行結束邏輯
+                debug_log(2, "[FrontendBridge] ON_CALL 已啟動，執行結束邏輯")
+                return self.end_on_call()
+            else:
+                # 未啟動，執行啟動邏輯
+                debug_log(2, "[FrontendBridge] ON_CALL 未啟動，執行啟動邏輯")
+                return self.trigger_on_call(mode)
+        
+        except Exception as e:
+            error_log(f"[FrontendBridge] ON_CALL 切換失敗: {e}")
+            return {"status": "error", "message": str(e)}
+    
+    def trigger_on_call(self, mode: str = "vad") -> Dict[str, Any]:
+        """
+        觸發 ON_CALL 切換 - 若未在 ON_CALL 則啟動，若已在 ON_CALL 則結束
+        
+        Args:
+            mode: on_call 模式 ("vad" 或 "text")
+        
+        Returns:
+            操作結果
+        """
+        # 如果已在 ON_CALL 狀態，則結束 ON_CALL
+        if hasattr(self, '_on_call_in_progress') and self._on_call_in_progress:
+            debug_log(2, "[FrontendBridge] 已在 ON_CALL 狀態中，執行結束操作")
+            return self.end_on_call()
+        
+        try:
+            from core.working_context import working_context_manager
+            from core.event_bus import event_bus, SystemEvent
+            from core.system_loop import system_loop
+            import time
+            
+            self._on_call_in_progress = True
+            
+            # 設置啟動標記（類似 NLP 偵測到 CALL 意圖時的標記）
+            # 這樣 VAD 模式下可以無需 CALL 意圖直接使用
+            working_context_manager.set_activation_flag(True)
+            debug_log(2, "[FrontendBridge] 已設置啟動標記")
+            
+            # 暫停系統循環以防止干擾
+            system_loop.pause()
+            debug_log(2, "[FrontendBridge] 系統循環已暫停")
+            
+            # 🎤 通知 MOV 模組進入 ON_CALL 狀態（暫停行為機和追蹤）
+            try:
+                from core.framework import core_framework
+                if 'mov' in core_framework.modules:
+                    mov_module = core_framework.modules['mov'].module_instance
+                    if hasattr(mov_module, '_on_call_active'):
+                        mov_module._on_call_active = True
+                        debug_log(2, "[FrontendBridge] MOV 模組已進入 ON_CALL 狀態")
+            except Exception as e:
+                debug_log(2, f"[FrontendBridge] 無法通知 MOV 模組: {e}")
+            
+            # 🎤 如果是 text 模式，顯示文字輸入對話框（非阻擋模式）
+            if mode == "text":
+                try:
+                    from modules.ui_module.main.on_call_input_dialog import show_on_call_input_dialog
+                    
+                    # 顯示對話框（非阻擋，返回對話框實例）
+                    dialog = show_on_call_input_dialog()
+                    
+                    # 直接連接信號（異步邏輯已在處理器中實現）
+                    dialog.input_submitted.connect(self._handle_text_input)
+                    dialog.dialog_closed.connect(self._handle_dialog_cancel)
+                    
+                    # 保存對話框實例便於後續關閉
+                    self._current_on_call_dialog = dialog
+                    
+                    debug_log(2, "[FrontendBridge] 底部輸入框已顯示，等待使用者輸入")
+                except Exception as e:
+                    error_log(f"[FrontendBridge] 文字輸入對話框載入失敗: {e}")
+                    import traceback
+                    traceback.print_exc()
+            
+            # 發布 ON_CALL_TRIGGERED 事件（轉發給 MOV 模組播放 notice 動畫）
+            event_bus.publish(
+                SystemEvent.ON_CALL_TRIGGERED,
+                {
+                    "mode": mode,
+                    "timestamp": time.time()
+                },
+                source="frontend_bridge"
+            )
+            
+            info_log(f"[FrontendBridge] ✅ ON_CALL 已啟動 (模式: {mode})")
+            return {
+                "status": "success",
+                "message": f"ON_CALL 已啟動 (模式: {mode})",
+                "mode": mode
+            }
+            
+        except Exception as e:
+            error_log(f"[FrontendBridge] ON_CALL 觸發失敗: {e}")
+            return {"status": "error", "message": str(e)}
+    
+    def _handle_text_input(self, text: str):
+        """處理文字輸入提交（異步執行，不阻塞 UI）"""
+        # 在下一次事件迴圈中執行，避免阻塞
+        try:
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(0, lambda: self._execute_text_input(text))
+        except:
+            # 若不在 Qt 環境，直接執行
+            self._execute_text_input(text)
+    
+    def _execute_text_input(self, text: str):
+        """真正執行文字輸入邏輯"""
+        debug_log(2, f"[FrontendBridge] 使用者輸入: {text}")
+        # 注入文字到系統
+        self.inject_text_input(text)
+        # 結束 ON_CALL
+        self.end_on_call()
+    
+    def _handle_dialog_cancel(self):
+        """處理對話框取消（異步執行，不阻塞 UI）"""
+        try:
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(0, lambda: self._execute_dialog_cancel())
+        except:
+            self._execute_dialog_cancel()
+    
+    def _execute_dialog_cancel(self):
+        """真正執行取消邏輯"""
+        debug_log(2, "[FrontendBridge] 使用者取消文字輸入")
+        # 直接結束 ON_CALL
+        self.end_on_call()
+    
+    def end_on_call(self) -> Dict[str, Any]:
+        """
+        結束 ON_CALL - 恢復系統並清除啟動標記
+        
+        Returns:
+            操作結果
+        """
+        try:
+            from core.working_context import working_context_manager
+            from core.event_bus import event_bus, SystemEvent
+            
+            # 清除 ON_CALL 進行中標記
+            self._on_call_in_progress = False
+            
+            # 關閉對話框
+            if hasattr(self, '_current_on_call_dialog') and self._current_on_call_dialog is not None:
+                try:
+                    # 確保是 QWidget 物件再呼叫 close()
+                    if hasattr(self._current_on_call_dialog, 'close') and callable(self._current_on_call_dialog.close):
+                        self._current_on_call_dialog.close()
+                    self._current_on_call_dialog = None
+                    debug_log(2, "[FrontendBridge] 已關閉輸入對話框")
+                except Exception as close_err:
+                    debug_log(2, f"[FrontendBridge] 關閉對話框異常: {close_err}")
+                    self._current_on_call_dialog = None
+            
+            from core.system_loop import system_loop
+            import time
+            
+            # 獲取當前 ON_CALL 模式
+            mode = "vad"  # 預設值
+            
+            # 清除啟動標記
+            working_context_manager.clear_activation_flag()
+            debug_log(2, "[FrontendBridge] 已清除啟動標記")
+            
+            # 🎤 通知 MOV 模組離開 ON_CALL 狀態（恢復行為機和追蹤）
+            try:
+                from core.framework import core_framework
+                if 'mov' in core_framework.modules:
+                    mov_module = core_framework.modules['mov'].module_instance
+                    if hasattr(mov_module, '_on_call_active'):
+                        mov_module._on_call_active = False
+                        debug_log(2, "[FrontendBridge] MOV 模組已離開 ON_CALL 狀態")
+                    
+                    # 調用 MOV 的 end_on_call_animation 方法（會正確處理優先度）
+                    if hasattr(mov_module, 'end_on_call_animation'):
+                        try:
+                            mov_module.end_on_call_animation(mode)
+                            debug_log(2, "[FrontendBridge] 已調用 MOV 結束 ON_CALL 動畫")
+                        except Exception as anim_err:
+                            debug_log(2, f"[FrontendBridge] 結束動畫失敗: {anim_err}")
+            except Exception as e:
+                debug_log(2, f"[FrontendBridge] 無法通知 MOV 模組: {e}")
+            
+            # 恢復系統循環
+            system_loop.resume()
+            debug_log(2, "[FrontendBridge] 系統循環已恢復")
+            
+            # 發布 ON_CALL_ENDED 事件（轉發給 MOV 模組結束 notice 動畫）
+            event_bus.publish(
+                SystemEvent.ON_CALL_ENDED,
+                {
+                    "mode": mode,
+                    "timestamp": time.time()
+                },
+                source="frontend_bridge"
+            )
+            
+            info_log(f"[FrontendBridge] ✅ ON_CALL 已結束")
+            return {
+                "status": "success",
+                "message": "ON_CALL 已結束",
+                "mode": mode
+            }
+            
+        except Exception as e:
+            error_log(f"[FrontendBridge] ON_CALL 結束失敗: {e}")
+            return {"status": "error", "message": str(e)}
+    
+    def inject_text_input(self, text: str) -> Dict[str, Any]:
+        """
+        注入文本輸入 - 作為用戶輸入送入系統循環
+        
+        Args:
+            text: 要注入的文本
+        
+        Returns:
+            操作結果
+        """
+        try:
+            from core.framework import core_framework
+            
+            # 獲取 STT 模組
+            stt_module = core_framework.get_module('stt')
+            if not stt_module:
+                error_log("[FrontendBridge] 無法獲取 STT 模組用於文本注入")
+                return {"status": "error", "message": "STT 模組未載入"}
+            
+            # 通過 STT 模組將文本視為用戶輸入
+            result = stt_module.handle_text_input(text)
+            debug_log(2, f"[FrontendBridge] 已注入文本輸入: {text}")
+            
+            return {
+                "status": "success",
+                "message": f"已注入文本輸入: {text}"
+            }
+            
+        except Exception as e:
+            error_log(f"[FrontendBridge] 文本注入失敗: {e}")
+            return {"status": "error", "message": str(e)}
+    
+    def _on_call_triggered(self, event):
+        """ON_CALL_TRIGGERED 事件處理 - 播放 notice 動畫"""
+        try:
+            mode = event.data.get("mode", "vad")
+            debug_log(2, f"[FrontendBridge] 收到 ON_CALL_TRIGGERED 事件 (模式: {mode})")
+            
+            # 轉發給 MOV 模組播放 notice 動畫
+            if self.mov_module and hasattr(self.mov_module, 'trigger_on_call_animation'):
+                self.mov_module.trigger_on_call_animation(mode)
+            else:
+                debug_log(1, "[FrontendBridge] MOV 模組未載入或不支援 on_call 動畫")
+            
+        except Exception as e:
+            error_log(f"[FrontendBridge] 處理 ON_CALL_TRIGGERED 事件失敗: {e}")
+    
+    def _on_call_ended(self, event):
+        """ON_CALL_ENDED 事件處理 - 結束 notice 動畫"""
+        try:
+            mode = event.data.get("mode", "vad")
+            debug_log(2, f"[FrontendBridge] 收到 ON_CALL_ENDED 事件 (模式: {mode})")
+            
+            # 轉發給 MOV 模組結束 notice 動畫
+            if self.mov_module and hasattr(self.mov_module, 'end_on_call_animation'):
+                self.mov_module.end_on_call_animation(mode)
+            else:
+                debug_log(1, "[FrontendBridge] MOV 模組未載入或不支援結束 on_call 動畫")
+            
+        except Exception as e:
+            error_log(f"[FrontendBridge] 處理 ON_CALL_ENDED 事件失敗: {e}")
     
     def _on_gs_advanced(self, event):
         """GS 推進事件轉發"""

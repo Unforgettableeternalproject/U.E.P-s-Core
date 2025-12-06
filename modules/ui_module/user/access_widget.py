@@ -90,8 +90,7 @@ class ControllerBridge:
         elif fid == "tool_1":
             return self.toggle_desktop_pet()
         elif fid == "tool_2":
-            info_log("[ControllerBridge] tool_2 (呼叫UEP) - 尚未實作")
-            return {"success": False, "message": "功能開發中"}
+            return self.trigger_on_call()
         elif fid == "tool_3":
             return self.toggle_sleep_state()
         else:
@@ -240,6 +239,56 @@ class ControllerBridge:
         except Exception as e:
             import traceback
             error_log("[ControllerBridge] Failed to open state profile:", e)
+            traceback.print_exc()
+            return {"success": False, "error": str(e)}
+    
+    
+    def trigger_on_call(self) -> Dict[str, Any]:
+        """切換 ON_CALL 功能 - 呼叫 UEP 進行快速互動 (第二次點擊可取消)"""
+        try:
+            info_log("[ControllerBridge] ✨ tool_2 (呼叫UEP) - ON_CALL 切換")
+            
+            # 獲取 FrontendBridge
+            try:
+                from core.frontend_bridge import frontend_bridge
+                from core.working_context import working_context_manager
+                from configs.config_loader import get_input_mode
+                
+                # 檢查是否已啟動
+                if working_context_manager.is_activated():
+                    # 已啟動，執行結束邏輯（第二次點擊）
+                    info_log("[ControllerBridge] 已在 ON_CALL 中，執行結束邏輯")
+                    result = frontend_bridge.end_on_call()
+                    
+                    if result.get("status") == "success":
+                        info_log("[ControllerBridge] ✅ ON_CALL 已結束")
+                        return {"success": True, "message": "ON_CALL 已結束"}
+                    else:
+                        error_log(f"[ControllerBridge] ON_CALL 結束失敗: {result.get('message', '未知錯誤')}")
+                        return {"success": False, "message": result.get("message", "ON_CALL 結束失敗")}
+                else:
+                    # 未啟動，執行啟動邏輯（第一次點擊）
+                    mode = get_input_mode()  # "vad" 或 "text"
+                    info_log(f"[ControllerBridge] 開始 ON_CALL (模式: {mode})")
+                    result = frontend_bridge.trigger_on_call(mode)
+                    
+                    if result.get("status") == "success":
+                        info_log(f"[ControllerBridge] ✅ ON_CALL 已啟動 (模式: {mode})")
+                        return {"success": True, "message": f"ON_CALL 已啟動 (模式: {mode})", "mode": mode}
+                    else:
+                        error_log(f"[ControllerBridge] ON_CALL 啟動失敗: {result.get('message', '未知錯誤')}")
+                        return {"success": False, "message": result.get("message", "ON_CALL 啟動失敗")}
+                    
+            except ImportError as e:
+                error_log(f"[ControllerBridge] 無法導入後端模組: {e}")
+                return {"success": False, "message": "後端未就緒"}
+            except Exception as e:
+                error_log(f"[ControllerBridge] ON_CALL 切換失敗: {e}")
+                return {"success": False, "message": str(e)}
+                
+        except Exception as e:
+            import traceback
+            error_log(f"[ControllerBridge] ❌ trigger_on_call 失敗: {e}")
             traceback.print_exc()
             return {"success": False, "error": str(e)}
     

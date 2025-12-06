@@ -940,6 +940,19 @@ class MOVModule(BaseFrontendModule):
         try:
             self._is_entering = True
             
+            # 🔧 強制清除靜態幀模式（入場是最高級動畫，不能被追蹤模式阻擋）
+            if self.ani_module and hasattr(self.ani_module, 'manager'):
+                if getattr(self.ani_module.manager, 'static_frame_mode', False):
+                    self.ani_module.manager.exit_static_frame_mode()
+                    debug_log(2, f"[{self.module_id}] 入場時強制退出靜態幀模式")
+            
+            # 🔧 清除低優先度的優先度鎖定（特別是滑鼠追蹤）
+            if hasattr(self, '_animation_priority') and self._animation_priority:
+                current_priority = self._animation_priority.get_current_priority()
+                if current_priority and current_priority <= AnimationPriority.CURSOR_TRACKING:
+                    self._animation_priority.reset()
+                    debug_log(2, f"[{self.module_id}] 入場時清除低優先度鎖定")
+            
             # 只在第一次顯示時設置起始位置，後續顯示恢復到隱藏前的位置
             if self._last_hide_position is None:
                 # 第一次顯示：設置入場起始位置
@@ -969,12 +982,12 @@ class MOVModule(BaseFrontendModule):
             # 暫停移動直到動畫完成
             self.pause_movement("entry_animation")
             
-            # 播放動畫並等待完成（使用 USER_INTERACTION 優先度）
+            # 🔧 使用 ENTRY_EXIT 優先度（最高級，不能被任何其他動畫打斷）
             self._trigger_anim(
                 anim_name, 
                 {"loop": False, "allow_interrupt": False},  # 不允許被打斷
                 source="entry_animation",
-                priority=AnimationPriority.USER_INTERACTION
+                priority=AnimationPriority.ENTRY_EXIT
             )
             self._await_animation(anim_name, timeout, self._on_entry_complete)
             
@@ -1079,6 +1092,19 @@ class MOVModule(BaseFrontendModule):
         try:
             self._is_leaving = True
             
+            # 🔧 強制清除靜態幀模式（離場是最高級動畫，不能被追蹤模式阻擋）
+            if self.ani_module and hasattr(self.ani_module, 'manager'):
+                if getattr(self.ani_module.manager, 'static_frame_mode', False):
+                    self.ani_module.manager.exit_static_frame_mode()
+                    debug_log(2, f"[{self.module_id}] 離場時強制退出靜態幀模式")
+            
+            # 🔧 清除低優先度的優先度鎖定（特別是滑鼠追蹤）
+            if hasattr(self, '_animation_priority') and self._animation_priority:
+                current_priority = self._animation_priority.get_current_priority()
+                if current_priority and current_priority <= AnimationPriority.CURSOR_TRACKING:
+                    self._animation_priority.reset()
+                    debug_log(2, f"[{self.module_id}] 離場時清除低優先度鎖定")
+            
             # 從 ANI 模組獲取離場動畫名稱
             anim_name = self._get_leave_animation_name()
             if not anim_name:
@@ -1097,12 +1123,12 @@ class MOVModule(BaseFrontendModule):
             # 暫停移動直到動畫完成
             self.pause_movement("leave_animation")
             
-            # 播放動畫並等待完成（使用 USER_INTERACTION 優先度）
+            # 🔧 使用 ENTRY_EXIT 優先度（最高級，不能被任何其他動畫打斷）
             self._trigger_anim(
                 anim_name, 
                 {"loop": False, "allow_interrupt": False},  # 不允許被打斷
                 source="exit_animation",
-                priority=AnimationPriority.USER_INTERACTION
+                priority=AnimationPriority.ENTRY_EXIT
             )
             self._await_animation(
                 anim_name, 
@@ -1675,6 +1701,17 @@ class MOVModule(BaseFrontendModule):
                 self.position.y = new_y
             
             # **關鍵修復：追蹤拖曳位置以計算速度**
+            # 🛑 檢測停止以清除過時速度數據
+            if len(self._drag_tracker.history) > 0:
+                last_x, last_y, _ = self._drag_tracker.history[-1]
+                move_distance = ((self.position.x - last_x) ** 2 + (self.position.y - last_y) ** 2) ** 0.5
+                
+                # 如果停止（移動距離 < 5px），清除舊點但保留最後一點
+                if move_distance < 5.0 and len(self._drag_tracker.history) > 1:
+                    last_point = self._drag_tracker.history[-1]
+                    self._drag_tracker.history.clear()
+                    self._drag_tracker.history.append(last_point)
+            
             self._drag_tracker.add_point(self.position.x, self.position.y)
             
             # 發射位置更新
@@ -1704,6 +1741,17 @@ class MOVModule(BaseFrontendModule):
                 self.position.y = max(self.v_top, min(max_y, new_y))
             
             # 追蹤拖曳位置以計算速度
+            # 🛑 檢測停止以清除過時速度數據
+            if len(self._drag_tracker.history) > 0:
+                last_x, last_y, _ = self._drag_tracker.history[-1]
+                move_distance = ((self.position.x - last_x) ** 2 + (self.position.y - last_y) ** 2) ** 0.5
+                
+                # 如果停止（移動距離 < 5px），清除舊點但保留最後一點
+                if move_distance < 5.0 and len(self._drag_tracker.history) > 1:
+                    last_point = self._drag_tracker.history[-1]
+                    self._drag_tracker.history.clear()
+                    self._drag_tracker.history.append(last_point)
+            
             self._drag_tracker.add_point(self.position.x, self.position.y)
             
             # 發射位置更新
@@ -1729,6 +1777,17 @@ class MOVModule(BaseFrontendModule):
                     self.position.y = max(self.v_top, min(max_y, new_y))
                 
                 # 追蹤拖曳位置以計算速度
+                # 🛑 檢測停止以清除過時速度數據
+                if len(self._drag_tracker.history) > 0:
+                    last_x, last_y, _ = self._drag_tracker.history[-1]
+                    move_distance = ((self.position.x - last_x) ** 2 + (self.position.y - last_y) ** 2) ** 0.5
+                    
+                    # 如果停止（移動距離 < 5px），清除舊點但保留最後一點
+                    if move_distance < 5.0 and len(self._drag_tracker.history) > 1:
+                        last_point = self._drag_tracker.history[-1]
+                        self._drag_tracker.history.clear()
+                        self._drag_tracker.history.append(last_point)
+                
                 self._drag_tracker.add_point(self.position.x, self.position.y)
                 
                 self._emit_position()
@@ -1746,6 +1805,11 @@ class MOVModule(BaseFrontendModule):
         """
         # 如果正在播放 tease 動畫，忽略事件
         if self._tease_tracker.is_teasing():
+            return
+        
+        # ⏸️ 禁止在喚醒期間處理拖曳結束事件（保護 struggle_l 動畫）
+        if self._pending_wake_transition:
+            debug_log(2, f"[{self.module_id}] 喚醒期間忽略拖曳結束事件")
             return
         
         # 🔧 SYSTEM_CYCLE 期間拖曳結束：只清除拖曳標記，不改變狀態
@@ -2628,6 +2692,11 @@ GS 推進 - 當前 GS 結束，恢復 idle 狀態和移動"""
             }
         """
         try:
+            # 🔧 出入場期間禁用所有 handler
+            if self._is_entering or self._is_leaving:
+                debug_log(3, f"[{self.module_id}] 出入場期間禁用滑鼠追蹤")
+                return
+            
             event_type = event_data.get("type")
             
             if event_type == "cursor_near":

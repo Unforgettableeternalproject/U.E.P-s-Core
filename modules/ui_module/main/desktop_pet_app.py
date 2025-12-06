@@ -392,8 +392,16 @@ class DesktopPetApp(QWidget):
                 self.setAcceptDrops(True)
                 debug_log(2, "[DesktopPetApp] 已啟用檔案拖放功能")
                 
-                # 注意：不在這裡設置初始位置，由 MOV 模組的入場動畫控制
-                # self.center_on_screen()  # 已註解，避免覆蓋 MOV 模組的位置設定
+                # 🎯 從 MOV 模組同步初始位置（顯示前必須定位好）
+                if self.mov_module and hasattr(self.mov_module, 'position'):
+                    initial_x = self.mov_module.position.x
+                    initial_y = self.mov_module.position.y
+                    self.move(int(initial_x), int(initial_y))
+                    debug_log(2, f"[DesktopPetApp] 從 MOV 同步初始位置: ({initial_x:.0f}, {initial_y:.0f})")
+                else:
+                    # 備用位置
+                    self.move(100, 100)
+                    debug_log(2, "[DesktopPetApp] 使用備用初始位置: (100, 100)")
             else:
                 # 模擬版本
                 self.setFixedSize(*self.default_size)

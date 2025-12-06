@@ -323,15 +323,16 @@ class AnimationQueryHelper:
         
         Args:
             is_ground: 是否為地面模式
-            status_manager: 狀態管理器（用於檢查 boredom 等狀態）
+            status_manager: 狀態管理器（用於檢查情緒值等狀態）
             
         Returns:
             動畫名稱，如果沒有可用的彩蛋動畫則返回 None
             
         彩蛋條件：
-        - yawn_g: 需要 boredom > 0.6
-        - chilling_f: 需要最近播放過音樂（暫時跳過此條件檢查）
-        - dance_f, dance2_g: 無條件
+        - yawn_g: 需要 boredom > 0.6（厭煩時打哈欠）
+        - dance2_g: 需要 mood > 0.6 或 pride > 0.6（心情好或自信時跳舞）
+        - dance_f: 需要 mood > 0.6 或 pride > 0.6（心情好或自信時跳舞）
+        - chilling_f: 無條件（放鬆狀態）
         """
         import random
         
@@ -339,9 +340,18 @@ class AnimationQueryHelper:
         
         if is_ground:
             # 地面模式的彩蛋動畫
-            # dance2_g: 無條件
+            # dance2_g: 需要心情好或自信
             if self.animation_exists("dance2_g"):
-                available.append("dance2_g")
+                if status_manager:
+                    try:
+                        status = status_manager.status
+                        mood = status.get("mood", 0.5)
+                        pride = status.get("pride", 0.5)
+                        # 需要心情好或自信才跳舞
+                        if mood > 0.6 or pride > 0.6:
+                            available.append("dance2_g")
+                    except Exception:
+                        pass  # 無法獲取狀態時跳過此動畫
             
             # yawn_g: 需要 boredom > 0.6
             if self.animation_exists("yawn_g"):
@@ -355,14 +365,30 @@ class AnimationQueryHelper:
                         pass  # 無法獲取狀態時跳過此動畫
         else:
             # 浮空模式的彩蛋動畫
-            # dance_f: 無條件
+            # dance_f: 需要心情好或自信
             if self.animation_exists("dance_f"):
-                available.append("dance_f")
+                if status_manager:
+                    try:
+                        status = status_manager.status
+                        mood = status.get("mood", 0.5)
+                        pride = status.get("pride", 0.5)
+                        # 需要心情好或自信才跳舞
+                        if mood > 0.6 or pride > 0.6:
+                            available.append("dance_f")
+                    except Exception:
+                        pass  # 無法獲取狀態時跳過此動畫
             
-            # chilling_f: TODO - 需要檢查最近是否播放過音樂
-            # 目前暫時允許隨機出現
+            # chilling_f: 需要正在播放音樂（放鬆聽歌狀態）
             if self.animation_exists("chilling_f"):
-                available.append("chilling_f")
+                try:
+                    from modules.sys_module.actions.automation_helper import get_music_player_status
+                    music_status = get_music_player_status()
+                    # 只有在音樂播放中才會觸發 chilling
+                    if music_status.get("is_playing", False):
+                        available.append("chilling_f")
+                except Exception:
+                    # 無法獲取音樂狀態時跳過此動畫（不要在沒有音樂時 chill）
+                    pass
         
         if available:
             return random.choice(available)

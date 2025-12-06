@@ -55,7 +55,16 @@ class FileDropHandler(InteractionHandler):
         self._is_receiving = False  # 是否正在播放 receive 動畫
         self._hover_animation_name: Optional[str] = None  # 當前 notice 動畫名稱
         
-        info_log("[FileDropHandler] 初始化完成")
+        # 🔧 從 config 讀取 file_drop 是否啟用
+        self._enabled = False
+        if hasattr(coordinator, 'config'):
+            file_drop_config = coordinator.config.get('file_drop', {})
+            self._enabled = file_drop_config.get('enabled', False)
+        
+        if self._enabled:
+            info_log("[FileDropHandler] 初始化完成（已啟用）")
+        else:
+            debug_log(2, "[FileDropHandler] 初始化完成（已禁用）")
     
     @property
     def is_in_file_interaction(self) -> bool:
@@ -86,6 +95,10 @@ class FileDropHandler(InteractionHandler):
         Args:
             event: 可以是字典 {'file_path': str} 或事件物件（有 event_type 屬性）
         """
+        # 🔧 檢查是否啟用
+        if not self._enabled:
+            return False
+        
         try:
             # 字典格式（直接來自 UI 的 FILE_DROP）
             if isinstance(event, dict):

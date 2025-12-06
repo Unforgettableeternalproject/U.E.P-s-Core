@@ -2350,3 +2350,15 @@
 
 ---
 
+### Fixed some throw logic, and a few animation frame misplacement. 12/6
+
+> Date: Sat, 06 Dec 2025 19:46:00 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `0e1b56ca20aa8d6dc7deacf3fe285aa405155dca`
+
+---
+

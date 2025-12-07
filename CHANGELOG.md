@@ -2374,3 +2374,15 @@
 
 ---
 
+### Fixed some on call logic and settings reload. 12/7
+
+> Date: Sun, 07 Dec 2025 18:58:43 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `62d5eb749381fe37b717af918e382aca454afe4e`
+
+---
+

@@ -19,7 +19,7 @@ import threading
 from typing import Dict, Any, Optional, Callable
 from enum import Enum
 
-from utils.debug_helper import debug_log, info_log, error_log
+from utils.debug_helper import debug_log, info_log, error_log, OPERATION_LEVEL
 
 
 class LoopStatus(Enum):
@@ -1387,15 +1387,19 @@ class SystemLoop:
             if key_path == "advanced.performance.gc_interval":
                 self.gc_interval = value
                 info_log(f"[SystemLoop] GC 間隔已更新: {value}秒")
+                return True
             elif key_path == "interaction.proactivity.allow_system_initiative":
                 self.allow_system_initiative = value
                 info_log(f"[SystemLoop] 系統主動性已更新: {value}")
+                return True
             elif key_path == "interaction.proactivity.initiative_cooldown":
                 self.initiative_cooldown = value
                 info_log(f"[SystemLoop] 主動觸發冷卻時間已更新: {value}秒")
+                return True
             elif key_path == "interaction.proactivity.require_user_input":
                 self.require_user_input = value
                 info_log(f"[SystemLoop] 需要使用者輸入設定已更新: {value}")
+                return True
             elif key_path == "interaction.speech_input.enabled":
                 # 更新輸入模式: True=VAD, False=文字輸入
                 old_mode = self.input_mode
@@ -1405,7 +1409,7 @@ class SystemLoop:
                     info_log(f"[SystemLoop] 輸入模式切換: {old_mode} → {new_mode}")
                     
                     # 立即切換輸入處理（不需要重啟整個循環）
-                    if self._is_running:
+                    if self.status != LoopStatus.STOPPED:
                         info_log("[SystemLoop] 正在切換輸入處理...")
                         
                         # 1. 標記舊模式為非活躍（停止接收新輸入）
@@ -1430,8 +1434,19 @@ class SystemLoop:
                         # 系統未運行，只更新模式
                         self.input_mode = new_mode
                         info_log(f"[SystemLoop] 輸入模式已更新（將在下次啟動時生效）")
+                    
+                    return True
+                else:
+                    debug_log(2, f"[SystemLoop] 輸入模式未改變，已跳過切換: {old_mode}")
+                    return True
+            
+            # 未處理的設定路徑
+            debug_log(OPERATION_LEVEL, f"[SystemLoop] 未知的設定路徑: {key_path}")
+            return True
+            
         except Exception as e:
             error_log(f"[SystemLoop] 熱重載設定失敗: {e}")
+            return False
 
 
 # 全局系統循環實例

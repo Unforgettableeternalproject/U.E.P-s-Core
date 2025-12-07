@@ -1173,6 +1173,10 @@ class UserMainWindow(QMainWindow):
     def save_settings(self):
         """保存所有設定到 user_settings.yaml"""
         try:
+            from configs.user_settings_manager import set_user_setting, save_user_settings, user_settings_manager
+            
+            # 🔧 開始批量更新模式 - 避免每個設定都觸發重載
+            user_settings_manager.start_batch_update()
             # Tab 1: 基本設定
             # 只有在啟用狀態下才保存使用者名稱（避免保存禁用狀態下的預設值）
             if self.user_name_edit.isEnabled():
@@ -1276,8 +1280,10 @@ class UserMainWindow(QMainWindow):
             # 日誌和模組設定已移至全域 config.yaml，不再保存到 user_settings.yaml
             # 這些 UI 控件現在是唯讀的，僅供顯示
             
+            # 🔧 結束批量更新模式 - 套用所有累積的重載
+            user_settings_manager.end_batch_update()
+            
             # 🔧 重要：將內存中的設定寫入 user_settings.yaml
-            from configs.user_settings_manager import save_user_settings
             if save_user_settings():
                 info_log("[UserMainWindow] 設定已保存至 user_settings.yaml")
             else:

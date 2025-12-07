@@ -46,7 +46,7 @@ interaction:
     require_user_input: false
   speech_input:
     enable_continuous_mode: false
-    enabled: false
+    enabled: true
     microphone_device_index: 1
     min_speech_duration: 0.3
     vad_sensitivity: 0.7

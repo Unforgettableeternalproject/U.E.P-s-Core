@@ -142,6 +142,7 @@ class MOVModule(BaseFrontendModule):
         self.movement_paused = False
         self.pause_reasons: set[str] = set()
         self.pause_reason = ""
+        self._on_call_active = False
         
         # --- 拖曳追蹤 ---
         self._drag_start_position: Optional[Position] = None
@@ -492,7 +493,7 @@ class MOVModule(BaseFrontendModule):
             self.movement_target = None
             self.target_reached = False
             
-            debug_log(3, f"[{self.module_id}] ON_CALL 期間保持靜止")
+            # debug_log(3, f"[{self.module_id}] ON_CALL 期間保持靜止")
             return
         
         now = time.time()
@@ -2146,6 +2147,11 @@ class MOVModule(BaseFrontendModule):
             info_log(f"[{self.module_id}] 🎤 收到 INTERACTION_STARTED 事件")
             info_log(f"[{self.module_id}]    當前行為: {self.current_behavior_state.value}")
             
+            # 🎤 如果正在 ON_CALL 中，互動開始表示用戶已說話，應立即結束 ON_CALL
+            if self._on_call_active:
+                info_log(f"[{self.module_id}] 檢測到 ON_CALL 活躍，互動開始時自動結束 ON_CALL")
+                self.end_on_call_animation()
+            
             # 如果正在拖動，強制結束拖動並清除 dragging 模式
             if self.is_being_dragged:
                 debug_log(2, f"[{self.module_id}] INTERACTION_STARTED 時正在拖動，強制結束拖動")
@@ -3149,11 +3155,14 @@ GS 推進 - 當前 GS 結束，恢復 idle 狀態和移動"""
             self._on_call_active = True
             debug_log(2, f"[{self.module_id}] 已進入 ON_CALL 模式")
             
-            # 根據當前狀態和模式播放適當的 notice 動畫
-            # notice 動畫表示系統在聆聽使用者輸入
-            if self.anim_query and self.anim_query.animation_exists("notice_f"):
+            # 根據當前浮空/落地狀態選擇適當的 notice 動畫
+            # notice_f: 浮空狀態, notice_g: 落地狀態
+            is_floating = (self.movement_mode == MovementMode.FLOAT)
+            animation_name = "notice_f" if is_floating else "notice_g"
+            
+            if self.anim_query and self.anim_query.animation_exists(animation_name):
                 self._trigger_anim(
-                    "notice_f",
+                    animation_name,
                     params={
                         "loop": True,  # 循環播放直到 on_call 結束
                         "await_finish": False
@@ -3161,9 +3170,9 @@ GS 推進 - 當前 GS 結束，恢復 idle 狀態和移動"""
                     source="on_call",
                     priority=AnimationPriority.USER_INTERACTION  # 使用者交互優先度
                 )
-                debug_log(2, f"[{self.module_id}] ON_CALL notice 動畫已啟動 (模式: {mode})")
+                debug_log(2, f"[{self.module_id}] ON_CALL notice 動畫已啟動 ({animation_name}, 模式: {mode})")
             else:
-                debug_log(1, f"[{self.module_id}] notice_f 動畫不存在")
+                debug_log(1, f"[{self.module_id}] {animation_name} 動畫不存在")
         
         except Exception as e:
             error_log(f"[{self.module_id}] 觸發 ON_CALL 動畫失敗: {e}")
@@ -3183,7 +3192,7 @@ GS 推進 - 當前 GS 結束，恢復 idle 狀態和移動"""
             # 先停止當前動畫（notice_f 是循環播放，需要主動停止）
             if self.ani_module:
                 try:
-                    self.ani_module.stop_animation()
+                    self.ani_module.stop()
                     debug_log(2, f"[{self.module_id}] 已停止 notice_f 循環動畫")
                 except Exception as stop_err:
                     debug_log(2, f"[{self.module_id}] 停止動畫異常: {stop_err}")

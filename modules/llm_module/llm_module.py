@@ -1186,21 +1186,12 @@ Response requirements:
         debug_log(2, "[LLM] 處理 CHAT 模式")
         
         try:
-            # 1. MEM 協作：檢索相關記憶 (CHAT狀態專用)
-            relevant_memories = []
-            if not llm_input.memory_context:  # 只有在沒有提供記憶上下文時才檢索
-                relevant_memories = self._retrieve_relevant_memory(llm_input.text, max_results=5)
-                if relevant_memories:
-                    debug_log(2, f"[LLM] 整合 {len(relevant_memories)} 條相關記憶到對話上下文")
-                    # 將檢索到的記憶轉換為記憶上下文
-                    llm_input.memory_context = self._format_memories_for_context(relevant_memories)
-            
-            # 2. 檢查 Context Cache (包含動態記憶)
+            # 1. 檢查 Context Cache (記憶改由 LLM 透過工具主動檢索)
             import hashlib
             base = f"{llm_input.mode}|{self.session_info.get('session_id','')}"
             text_sig = hashlib.sha256(llm_input.text.encode("utf-8")).hexdigest()[:16]
             mem_sig  = hashlib.sha256((llm_input.memory_context or "").encode("utf-8")).hexdigest()[:16]
-            cache_key = f"chat:{base}:{text_sig}:{mem_sig}:{len(relevant_memories)}"
+            cache_key = f"chat:{base}:{text_sig}:{mem_sig}"
             cached_response = self.cache_manager.get_cached_response(cache_key)
             
             if cached_response and not llm_input.ignore_cache:
@@ -1214,27 +1205,99 @@ Response requirements:
             elif llm_input.processing_context and isinstance(llm_input.processing_context, dict):
                 intent_metadata = llm_input.processing_context.get('intent_metadata')
             
-            # 3. 構建 CHAT 提示（整合記憶和降級警告）
+            # 2. 構建 CHAT 提示（記憶改由 MCP 工具檢索）
             prompt = self.prompt_manager.build_chat_prompt(
                 user_input=llm_input.text,
                 identity_context=llm_input.identity_context,
                 memory_context=llm_input.memory_context,
                 conversation_history=getattr(llm_input, 'conversation_history', None),
                 is_internal=False,
-                relevant_memories=relevant_memories,  # 新增：傳入檢索到的記憶
-                intent_metadata=intent_metadata  # 新增：傳入 intent metadata
+                intent_metadata=intent_metadata
             )
             
-            # 3. 獲取或創建系統快取
-            cached_content_ids = self._get_system_caches("chat")
+            # 3. 獲取 MCP 工具（CHAT 路徑：記憶檢索工具）
+            mcp_tools = None
+            if self.mcp_client and hasattr(self.mcp_client, 'get_tools_as_gemini_format'):
+                from .mcp_client import PATH_CHAT
+                mcp_tools = self.mcp_client.get_tools_as_gemini_format(path=PATH_CHAT)
+                tool_count = sum(len(t.get('function_declarations', [])) for t in mcp_tools) if mcp_tools else 0
+                debug_log(2, f"[LLM] CHAT 模式 MCP 工具已準備: {tool_count} 個")
             
-            # 4. 呼叫 Gemini API (使用快取)
+            # 4. 獲取或創建系統快取 (包含 PROFILE 記憶)
+            cached_content_ids = self._get_system_caches("chat", llm_input)
+            
+            # 5. 工具調用策略 - 完全由 LLM 自主決定
+            tool_choice_strategy = "AUTO"
+            
+            # 6. 呼叫 Gemini API (使用快取 + MCP 工具)
             response_data = self.model.query(
                 prompt, 
                 mode="chat",
-                cached_content=cached_content_ids.get("persona")
+                cached_content=cached_content_ids.get("persona"),
+                tools=mcp_tools,
+                tool_choice=tool_choice_strategy
             )
+            
+            # 7. 處理工具調用（如果有）
+            function_call_result = None
+            function_call_info = None  # 儲存工具調用信息用於事件發布
             response_text = response_data.get("text", "")
+            
+            if "function_call" in response_data and response_data["function_call"]:
+                function_call_info = response_data["function_call"]  # 保存工具調用信息
+                debug_log(2, f"[LLM] CHAT 模式檢測到工具調用: {function_call_info['name']}")
+                
+                # 執行工具調用
+                import asyncio
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                
+                function_call_result = loop.run_until_complete(
+                    self.mcp_client.handle_llm_function_call(function_call_info)
+                )
+                
+                debug_log(2, f"[LLM] 記憶工具執行結果: {function_call_result.get('status')}")
+                
+                # Cycle 1: 帶著工具結果再次查詢，生成用戶可見的回應
+                tool_name = response_data["function_call"].get("name", "unknown")
+                content = function_call_result.get("content", {})
+                result_data = content.get("data", {}) if isinstance(content, dict) else {}
+                result_message = function_call_result.get("formatted_message", "") or content.get("message", "")
+                
+                # 構建完整的工具結果（包含 data）
+                import json
+                full_result_text = result_message
+                if result_data:
+                    debug_log(2, f"[LLM] 工具返回數據: {result_data}")
+                    full_result_text += f"\n\n**Data:**\n{json.dumps(result_data, ensure_ascii=False, indent=2)}"
+                
+                follow_up_prompt = f"""{prompt}
+
+**Tool Execution Result:**
+Tool: {tool_name}
+Status: {function_call_result.get('status', 'unknown')}
+Result: {full_result_text}
+
+Based on this memory retrieval result, please provide your response to the user.
+Remember to respond in a natural, conversational way using the actual data from the tool result."""
+                
+                # 再次查詢，不帶工具（只要文字回應）
+                follow_up_response = self.model.query(
+                    follow_up_prompt,
+                    mode="chat",
+                    cached_content=cached_content_ids.get("persona"),
+                    tools=None,  # 不再提供工具
+                    tool_choice="NONE"
+                )
+                
+                response_text = follow_up_response.get("text", "")
+                debug_log(2, f"[LLM] CHAT 模式多輪查詢完成，生成最終回應")
+            else:
+                # 沒有工具調用，直接使用第一輪的文字回應
+                debug_log(2, f"[LLM] CHAT 模式無工具調用，使用直接回應")
             
             # === 詳細回應日誌 ===
             info_log(f"[LLM] 🤖 Gemini回應: {response_text}")
@@ -1349,10 +1412,16 @@ Response requirements:
             self.cache_manager.cache_response(cache_key, output)
             
             # 發布 LLM 回應生成事件
-            self._publish_llm_response_event(output, "CHAT", {
+            event_extra_data = {
                 "memory_context_used": bool(llm_input.memory_context),
-                "relevant_memories_count": len(relevant_memories) if relevant_memories else 0
-            })
+                "profile_cached": "persona" in cached_content_ids
+            }
+            # 如果有工具調用，包含在事件數據中
+            if function_call_info:
+                event_extra_data["function_call"] = function_call_info
+                event_extra_data["tool_executed"] = True
+            
+            self._publish_llm_response_event(output, "CHAT", event_extra_data)
             
             return output
             
@@ -3257,17 +3326,29 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
         except Exception as e:
             error_log(f"[LLM] 發送系統動作失敗: {e}")
     
-    def _get_system_caches(self, mode: str) -> Dict[str, str]:
-        """獲取系統快取ID"""
+    def _get_system_caches(self, mode: str, llm_input: Optional['LLMInput'] = None) -> Dict[str, str]:
+        """獲取系統快取ID
+        
+        Args:
+            mode: "chat" 或 "work"
+            llm_input: LLM輸入對象，用於獲取身份和記憶上下文
+        """
         cached_content_ids = {}
         
         try:
             if mode == "chat":
-                # CHAT模式：persona + style_policy + session_anchor
+                # CHAT模式：persona (包含 PROFILE 記憶) + style_policy
+                identity_context = llm_input.identity_context if llm_input else None
+                profile_memories = llm_input.memory_context if llm_input else None
+                
+                # 生成包含用戶資訊的 persona 快取
                 persona_cache = self.cache_manager.get_or_create_cache(
                     name="uep:persona:v1",
                     cache_type=CacheType.PERSONA,
-                    content_builder=lambda: self._build_persona_cache_content()
+                    content_builder=lambda: self._build_persona_cache_content(
+                        identity_context=identity_context,
+                        profile_memories=profile_memories
+                    )
                 )
                 if persona_cache:
                     cached_content_ids["persona"] = persona_cache
@@ -3297,10 +3378,71 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             error_log(f"[LLM] 系統快取獲取失敗: {e}")
             return {}
     
-    def _build_persona_cache_content(self) -> str:
-        """構建persona快取內容"""
-        return f"""
-You are U.E.P (Unified Experience Partner), an intelligent unified experience partner.
+    def _get_profile_memories_via_channel(self) -> Optional[str]:
+        """通過 CHAT-MEM 管道檢索 PROFILE 類型記憶用於快取注入
+        
+        Returns:
+            格式化的 profile 記憶字符串，如果沒有則返回 None
+        """
+        try:
+            from .module_interfaces import state_aware_interface
+            from core.working_context import working_context_manager
+            
+            # 獲取當前 memory_token
+            memory_token = working_context_manager.get_memory_token()
+            if not memory_token:
+                debug_log(3, "[LLM] 無 memory_token，跳過 profile 記憶檢索")
+                return None
+            
+            # 通過 CHAT-MEM 管道請求 profile 記憶
+            profile_data = state_aware_interface.get_chat_mem_data(
+                "profile_memories",
+                memory_token=memory_token,
+                max_results=50
+            )
+            
+            if not profile_data:
+                debug_log(3, "[LLM] CHAT-MEM 管道未返回 profile 記憶")
+                return None
+            
+            # profile_data 應該是格式化好的字符串或記憶列表
+            if isinstance(profile_data, str):
+                return profile_data
+            elif isinstance(profile_data, list):
+                # 格式化記憶列表
+                formatted = "## User Profile (Long-term Observations)\n"
+                for idx, mem in enumerate(profile_data, 1):
+                    if isinstance(mem, dict):
+                        content = mem.get("content", "")
+                        timestamp = mem.get("created_at", "")
+                    else:
+                        content = str(mem)
+                        timestamp = ""
+                    
+                    formatted += f"{idx}. {content}"
+                    if timestamp:
+                        formatted += f" (記錄時間: {timestamp})"
+                    formatted += "\n"
+                return formatted
+            else:
+                debug_log(3, f"[LLM] 未知的 profile 記憶格式: {type(profile_data)}")
+                return None
+                
+        except Exception as e:
+            error_log(f"[LLM] 通過 CHAT-MEM 管道檢索 profile 記憶失敗: {e}")
+            import traceback
+            error_log(traceback.format_exc())
+            return None
+    
+    def _build_persona_cache_content(self, identity_context: Optional[Dict] = None, 
+                                     profile_memories: Optional[str] = None) -> str:
+        """構建 persona 快取內容 - 包含系統人格 + 用戶資訊 (PROFILE)
+        
+        Args:
+            identity_context: 身份上下文
+            profile_memories: 用戶資訊記憶 (PROFILE 類型)
+        """
+        base_content = """You are U.E.P (Unified Experience Partner), an intelligent unified experience partner.
 
 Core Characteristics:
 - Friendly, professional, eager to learn and help
@@ -3310,8 +3452,25 @@ Core Characteristics:
 Current System State: System operational with mood tracking enabled
 
 Response Language: English
-Response Format: JSON structure as required by the mode
-"""
+Response Format: JSON structure as required by the mode"""
+        
+        # 添加用戶身份資訊
+        if identity_context:
+            identity = identity_context.get("identity", {})
+            name = identity.get("name", "User")
+            base_content += f"\n\nUser Identity: {name}"
+            
+            # UEP 暱稱
+            from configs.user_settings_manager import get_user_setting
+            uep_nickname = get_user_setting("general.identity.uep_nickname", None)
+            if uep_nickname and uep_nickname.strip():
+                base_content += f"\nNote: User has given you a nickname: '{uep_nickname}'"
+        
+        # 添加用戶資訊記憶 (PROFILE)
+        if profile_memories:
+            base_content += f"\n\n{profile_memories}"
+        
+        return base_content
     
     def _build_style_policy_cache_content(self) -> str:
         """構建風格策略快取內容"""

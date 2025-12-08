@@ -215,12 +215,13 @@ def register_all_workflows(mcp_server: 'MCPServer', sys_module) -> None:
                 )
             ]
             
-            # 註冊工具
+            # 註冊工具（工作流工具只能在 WORK 路徑使用）
             mcp_server.register_tool(MCPTool(
                 name=workflow_name,
                 description=tool_description,
                 parameters=parameters,
-                handler=lambda params, wf_name=workflow_name: _wrap_workflow_handler(wf_name, params, sys_module)
+                handler=lambda params, wf_name=workflow_name: _wrap_workflow_handler(wf_name, params, sys_module),
+                allowed_paths=["WORK"]  # 工作流工具只在 WORK 路徑允許
             ))
             
             registered_count += 1

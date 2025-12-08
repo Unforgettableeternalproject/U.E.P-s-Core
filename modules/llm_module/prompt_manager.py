@@ -38,12 +38,14 @@ class PromptManager:
                          memory_context: Optional[str] = None, 
                          conversation_history: Optional[List] = None,
                          is_internal: bool = False,
-                         relevant_memories: Optional[List[Dict]] = None,
                          intent_metadata: Optional[Dict] = None) -> str:
         """構建對話模式提示詞 - 整合靜態配置與動態模組資料
         
         Args:
             intent_metadata: Intent segment metadata, may contain degradation info
+            
+        Note:
+            記憶檢索已改為 MCP 工具方式，不再需要 relevant_memories 參數
         """
         
         prompt_parts = []
@@ -75,10 +77,21 @@ class PromptManager:
         if identity_info:
             prompt_parts.append(identity_info)
         
-        # 記憶上下文 - 從 MEM 模組獲取或使用傳入的內容，並整合檢索到的記憶
-        memory_section = self._build_memory_context(memory_context, relevant_memories)
+        # 記憶上下文 - 只包含用戶資訊 (PROFILE)
+        memory_section = self._build_memory_context(memory_context)
         if memory_section:
             prompt_parts.append(memory_section)
+        
+        # 記憶工具提示（精簡版）
+        prompt_parts.append(
+            "You have memory tools. User profile facts are provided above. "
+            "Use tools to retrieve conversation history or store new user information.\n"
+            "**Critical Rules:**\n"
+            "1. When user says 'remember this **about me**' → MUST call memory_store_observation with memory_type='profile'\n"
+            "2. When user shares personal info (interests, background, preferences) → Call memory_store_observation\n"
+            "3. When asking about past info → Call memory_retrieve_profile() first, use actual data in response\n"
+            "4. Never make assumptions - always retrieve actual stored data using tools\n"
+        )
         
         # 對話歷史
         history_section = self._build_conversation_history(conversation_history)
@@ -290,43 +303,19 @@ class PromptManager:
                 f"helpfulness={helpfulness_en} (level={helpfulness_level}, value={helpfulness_value:.2f}), "
                 f"boredom={boredom_en}")
     
-    def _build_memory_context(self, memory_context: Optional[str] = None, 
-                             relevant_memories: Optional[List[Any]] = None) -> Optional[str]:
-        """構建記憶上下文區段 - 整合檢索到的記憶
+    def _build_memory_context(self, memory_context: Optional[str] = None) -> Optional[str]:
+        """構建記憶上下文區段 - 僅用於向後兼容的靜態記憶注入
         
         Args:
-            memory_context: 原有的記憶上下文字串
-            relevant_memories: MemorySearchResult 對象列表
+            memory_context: 原有的記憶上下文字串（通常是 PROFILE 類型）
+            
+        Note:
+            - 記憶檢索已改為 MCP 工具方式，LLM 透過工具主動檢索所需記憶
+            - 此方法現在只處理靜態的 memory_context 字串（用於向後兼容）
         """
-        context_parts = []
-        
-        # 原有的記憶上下文
         if memory_context:
-            context_parts.append(f"Memory Context:\n{memory_context}")
-        
-        # 新的檢索記憶（MemorySearchResult 對象列表）
-        if relevant_memories:
-            memory_text_parts = ["Retrieved Relevant Memories:"]
-            for i, memory_result in enumerate(relevant_memories, 1):
-                # 從 MemorySearchResult 中取得 memory_entry
-                memory_entry = memory_result.memory_entry
-                memory_type = memory_entry.memory_type.value  # MemoryType enum
-                content = memory_entry.content
-                
-                if memory_type == "interaction_history":
-                    # 對話記憶
-                    memory_text_parts.append(f"{i}. [Conversation] {content}")
-                elif memory_type == "profile":
-                    # 用戶信息
-                    memory_text_parts.append(f"{i}. [User Info] {content}")
-                elif memory_type == "snapshot":
-                    # 快照記憶
-                    memory_text_parts.append(f"{i}. [Recent Context] {content}")
-                else:
-                    # 其他類型
-                    memory_text_parts.append(f"{i}. [{memory_type.replace('_', ' ').title()}] {content}")
-                    
-            context_parts.append("\n".join(memory_text_parts))
+            return f"User Profile Context:\n{memory_context}"
+        return None
         
         # 如果都沒有，嘗試從 MEM 模組獲取 (向後兼容)
         if not context_parts:

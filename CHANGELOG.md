@@ -2386,3 +2386,15 @@
 
 ---
 
+### Added the first batch of the experimental memory retrieval. 12/8
+
+> Date: Mon, 08 Dec 2025 22:52:27 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/memory_fix`
+
+> Commit: `cb52b240974a78fd4244be82927931c65d7d4e15`
+
+---
+

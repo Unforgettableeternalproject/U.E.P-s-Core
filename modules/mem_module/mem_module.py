@@ -2020,6 +2020,40 @@ class MEMModule(BaseModule):
                 allowed_paths=["CHAT"]
             ))
             
+            # 2b. memory_retrieve_snapshots - 取用 PROFILE + SNAPSHOT 記憶
+            mcp_server.register_tool(MCPTool(
+                name="memory_retrieve_snapshots",
+                description="Retrieve both long-term user profile facts and conversation snapshots in one call. Use when user asks what you know about them or references past discussions. memory_types defaults to 'profile,snapshot'.",
+                parameters=[
+                    ToolParameter(
+                        name="memory_types",
+                        type=ToolParameterType.STRING,
+                        description="Comma-separated memory types: profile, snapshot, long_term, preference (default: profile,snapshot)",
+                        required=False
+                    ),
+                    ToolParameter(
+                        name="query",
+                        type=ToolParameterType.STRING,
+                        description="Topic to search for when retrieving snapshots/long-term memories (optional for profile-only retrieval)",
+                        required=False
+                    ),
+                    ToolParameter(
+                        name="max_results",
+                        type=ToolParameterType.INTEGER,
+                        description="Maximum number of results to return (default: 5)",
+                        required=False
+                    ),
+                    ToolParameter(
+                        name="similarity_threshold",
+                        type=ToolParameterType.FLOAT,
+                        description="Minimum similarity score 0.0-1.0 (default: 0.6, lowered when query is empty)",
+                        required=False
+                    ),
+                ],
+                handler=self._handle_memory_retrieve_snapshots,
+                allowed_paths=["CHAT"]
+            ))
+            
             # 2. memory_get_snapshot - 獲取完整快照內容
             mcp_server.register_tool(MCPTool(
                 name="memory_get_snapshot",
@@ -2350,28 +2384,24 @@ class MEMModule(BaseModule):
         except Exception as e:
             error_log(f"[MEM] memory_search_snapshots 執行失敗: {e}")
             return ToolResult.error(f"Failed to search snapshots: {str(e)}")
-    
+
     async def _handle_memory_retrieve_snapshots(self, params: Dict[str, Any]):
-        """處理 memory_retrieve_snapshots 工具調用 - 支持 PROFILE 和 SNAPSHOT 類型"""
+        """Handle memory_retrieve_snapshots tool - fetch PROFILE + SNAPSHOT memories together."""
         from modules.sys_module.mcp_server.tool_definitions import ToolResult
-        
+
         try:
-            query = params.get("query", "")
-            memory_types_str = params.get("memory_types", "")
+            query = (params.get("query") or "").strip()
+            memory_types_str = params.get("memory_types") or "profile,snapshot"
             max_results = params.get("max_results", 5)
-            similarity_threshold = params.get("similarity_threshold", 0.6)
-            
-            if not memory_types_str:
-                return ToolResult.error("memory_types parameter is required. Use 'profile' for user traits, 'snapshot' for conversation history, or 'profile,snapshot' for both.")
-            
-            # 解析 memory_types 參數
+            similarity_threshold = params.get("similarity_threshold", 0.6 if query else 0.0)
+
             type_mapping = {
                 'profile': MemoryType.PROFILE,
                 'snapshot': MemoryType.SNAPSHOT,
                 'long_term': MemoryType.LONG_TERM,
                 'preference': MemoryType.PREFERENCE
             }
-            
+
             requested_types = [t.strip().lower() for t in memory_types_str.split(',')]
             memory_types = []
             for type_str in requested_types:
@@ -2379,42 +2409,34 @@ class MEMModule(BaseModule):
                     memory_types.append(type_mapping[type_str])
                 else:
                     return ToolResult.error(f"Invalid memory_type: '{type_str}'. Valid types: profile, snapshot, long_term, preference")
-            
+
             if not memory_types:
                 return ToolResult.error("At least one valid memory_type must be specified")
-            
-            # 獲取當前 memory_token
+
             memory_token = self.memory_manager.identity_manager.get_current_memory_token() if self.memory_manager else None
-            
             if not memory_token:
                 return ToolResult.error("No active memory token found. User identity may not be set.")
-            
-            # 區分 PROFILE 和其他類型的檢索邏輯
+
             has_profile = MemoryType.PROFILE in memory_types
             has_others = any(t != MemoryType.PROFILE for t in memory_types)
-            
+
             results = []
-            
-            # PROFILE: 直接獲取全部，不做語義搜索過濾
+
             if has_profile:
-                debug_log(2, f"[MEM] 檢索 PROFILE 記憶：直接取出全部（不使用語義搜索）")
+                debug_log(2, "[MEM] Retrieving PROFILE memories (full set)")
                 profile_results = self.memory_manager.retrieve_memories(
-                    query_text="",  # 空查詢，不做語義過濾
+                    query_text="",
                     memory_token=memory_token,
                     memory_types=[MemoryType.PROFILE],
-                    max_results=100,  # 取出所有 PROFILE
-                    similarity_threshold=0.0  # 不過濾
+                    max_results=100,
+                    similarity_threshold=0.0
                 )
                 results.extend(profile_results)
                 debug_log(2, f"[MEM] PROFILE 檢索結果: {len(profile_results)} 個")
-            
-            # SNAPSHOT/其他: 使用語義搜索
+
             if has_others:
-                if not query:
-                    return ToolResult.error("Query parameter is required for snapshot/long_term memory types")
-                
                 other_types = [t for t in memory_types if t != MemoryType.PROFILE]
-                debug_log(2, f"[MEM] 檢索 {other_types} 記憶：使用語義搜索（threshold={similarity_threshold}）")
+                debug_log(2, f"[MEM] 檢索 {other_types} 記憶：query='{query}', threshold={similarity_threshold}")
                 other_results = self.memory_manager.retrieve_memories(
                     query_text=query,
                     memory_token=memory_token,
@@ -2424,17 +2446,13 @@ class MEMModule(BaseModule):
                 )
                 results.extend(other_results)
                 debug_log(2, f"[MEM] 其他類型檢索結果: {len(other_results)} 個")
-            
+
             if not results:
                 return ToolResult.success(
                     message="No relevant conversation snapshots found",
-                    data={
-                        "snapshots": [],
-                        "count": 0
-                    }
+                    data={"snapshots": [], "count": 0, "query": query},
                 )
-            
-            # 構建摘要結果
+
             snapshots = []
             for result in results:
                 memory_entry = result.memory_entry
@@ -2442,7 +2460,7 @@ class MEMModule(BaseModule):
                     snapshot_data = memory_entry
                 else:
                     snapshot_data = memory_entry.model_dump() if hasattr(memory_entry, 'model_dump') else memory_entry.__dict__
-                
+
                 snapshots.append({
                     "snapshot_id": snapshot_data.get("memory_id"),
                     "summary": snapshot_data.get("summary", ""),
@@ -2452,20 +2470,17 @@ class MEMModule(BaseModule):
                     "similarity_score": result.similarity_score,
                     "relevance": result.retrieval_reason
                 })
-            
+
             return ToolResult.success(
                 message=f"Retrieved {len(snapshots)} relevant conversation snapshot(s)",
-                data={
-                    "snapshots": snapshots,
-                    "count": len(snapshots),
-                    "query": query
-                }
+                data={"snapshots": snapshots, "count": len(snapshots), "query": query},
             )
-            
+
         except Exception as e:
             error_log(f"[MEM] memory_retrieve_snapshots 執行失敗: {e}")
             return ToolResult.error(f"Failed to retrieve snapshots: {str(e)}")
-    
+
+
     async def _handle_memory_get_snapshot(self, params: Dict[str, Any]):
         """處理 memory_get_snapshot 工具調用"""
         from modules.sys_module.mcp_server.tool_definitions import ToolResult

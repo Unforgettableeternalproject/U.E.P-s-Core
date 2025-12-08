@@ -2398,3 +2398,15 @@
 
 ---
 
+### Added a new easter-egg animation, and refined prompt. 12/9
+
+> Date: Tue, 09 Dec 2025 00:10:39 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/memory_fix`
+
+> Commit: `7ad820db9e029b9232043101e83d0d90d0eb4288`
+
+---
+

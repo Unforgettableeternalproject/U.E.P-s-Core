@@ -254,10 +254,10 @@ class AnimationQueryHelper:
     
     def get_tease_animation(self, variant: int = 1) -> str:
         """
-        獲取捉弄動畫（投擲後等情境）
+        獲取 tease 動畫
         
         Args:
-            variant: 變體編號（1 或 2）
+            variant: 變體（1 或 2）
             
         Returns:
             動畫名稱
@@ -332,7 +332,9 @@ class AnimationQueryHelper:
         - yawn_g: 需要 boredom > 0.6（厭煩時打哈欠）
         - dance2_g: 需要 mood > 0.6 或 pride > 0.6（心情好或自信時跳舞）
         - dance_f: 需要 mood > 0.6 或 pride > 0.6（心情好或自信時跳舞）
-        - chilling_f: 無條件（放鬆狀態）
+        - sad_g: 需要 mood < 0.4（心情低落時悲傷）
+        - sad_f: 需要 mood < 0.4（心情低落時悲傷）
+        - chilling_f: 需要正在播放音樂（放鬆狀態）
         """
         import random
         
@@ -350,6 +352,18 @@ class AnimationQueryHelper:
                         # 需要心情好或自信才跳舞
                         if mood > 0.6 or pride > 0.6:
                             available.append("dance2_g")
+                    except Exception:
+                        pass  # 無法獲取狀態時跳過此動畫
+            
+            # sad_g: 需要心情低落
+            if self.animation_exists("sad_g"):
+                if status_manager:
+                    try:
+                        status = status_manager.status
+                        mood = status.get("mood", 0.5)
+                        # 心情低落時悲傷
+                        if mood < -0.4:
+                            available.append("sad_g")
                     except Exception:
                         pass  # 無法獲取狀態時跳過此動畫
             
@@ -375,6 +389,18 @@ class AnimationQueryHelper:
                         # 需要心情好或自信才跳舞
                         if mood > 0.6 or pride > 0.6:
                             available.append("dance_f")
+                    except Exception:
+                        pass  # 無法獲取狀態時跳過此動畫
+            
+            # sad_f: 需要心情低落
+            if self.animation_exists("sad_f"):
+                if status_manager:
+                    try:
+                        status = status_manager.status
+                        mood = status.get("mood", 0.5)
+                        # 心情低落時悲傷
+                        if mood < -0.4:
+                            available.append("sad_f")
                     except Exception:
                         pass  # 無法獲取狀態時跳過此動畫
             

@@ -1228,6 +1228,9 @@ Response requirements:
             
             # 5. 工具調用策略 - 完全由 LLM 自主決定
             tool_choice_strategy = "AUTO"
+            if mcp_tools and self._should_force_memory_tool_use(llm_input.text):
+                tool_choice_strategy = "ANY"
+                debug_log(2, "[LLM] 記憶意圖強制使用工具 (tool_choice=ANY)")
             
             # 6. 呼叫 Gemini API (使用快取 + MCP 工具)
             response_data = self.model.query(
@@ -2917,6 +2920,34 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             error_log(f"[LLM] 補充系統上下文失敗: {e}")
             return llm_input
     
+
+    def _should_force_memory_tool_use(self, user_text: str) -> bool:
+        """Detect strong memory intent and force tool_choice=ANY so the LLM must call a memory tool."""
+        try:
+            if not user_text:
+                return False
+
+            text = user_text.lower()
+            triggers = [
+                "remember this",
+                "remember that",
+                "remember about me",
+                "what did i tell you",
+                "what did i say",
+                "earlier",
+                "before",
+                "previous",
+                "recall",
+                "memory",
+                "interests",
+                "remind"
+            ]
+            return any(token in text for token in triggers)
+        except Exception as e:
+            error_log(f"[LLM] 檢測記憶意圖失敗: {e}")
+            return False
+
+
     def _process_chat_memory_operations(self, 
                                       llm_input: LLMInput,
                                       response_data: Dict[str, Any], 
@@ -3030,15 +3061,7 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
         except Exception as e:
             error_log(f"[LLM] 發送記憶操作失敗: {e}")
     
-    def _retrieve_relevant_memory(self, user_input: str, max_results: int = 5) -> List[Dict[str, Any]]:
-        """從MEM模組檢索相關記憶 - 通過狀態感知接口"""
-        try:
-            debug_log(2, f"[LLM] 檢索相關記憶: {user_input[:50]}...")
-            
-            # 檢查 CHAT-MEM 協作管道是否啟用
-            if not self.module_interface.is_channel_active(CollaborationChannel.CHAT_MEM):
-                debug_log(2, "[LLM] 記憶檢索失敗: MEM模組只在CHAT狀態下運行")
-                return []
+    
             
             # 通過狀態感知接口檢索記憶
             memories = self.module_interface.get_chat_mem_data(
@@ -3436,11 +3459,11 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
     
     def _build_persona_cache_content(self, identity_context: Optional[Dict] = None, 
                                      profile_memories: Optional[str] = None) -> str:
-        """構建 persona 快取內容 - 包含系統人格 + 用戶資訊 (PROFILE)
+        """構建 persona 快取內容 - 僅包含系統人格 + 輕量身份提示 (PROFILE 轉為工具提示)
         
         Args:
             identity_context: 身份上下文
-            profile_memories: 用戶資訊記憶 (PROFILE 類型)
+            profile_memories: 用戶資訊記憶 (PROFILE 類型) - 現在只用來判斷是否存在
         """
         base_content = """You are U.E.P (Unified Experience Partner), an intelligent unified experience partner.
 
@@ -3466,9 +3489,12 @@ Response Format: JSON structure as required by the mode"""
             if uep_nickname and uep_nickname.strip():
                 base_content += f"\nNote: User has given you a nickname: '{uep_nickname}'"
         
-        # 添加用戶資訊記憶 (PROFILE)
+        # 不再注入完整 PROFILE 記憶，只提示可透過工具取得
         if profile_memories:
-            base_content += f"\n\n{profile_memories}"
+            base_content += (
+                "\n\nUser profile data is available. "
+                "Use memory_retrieve_snapshots with memory_types='profile' when you need user facts."
+            )
         
         return base_content
     

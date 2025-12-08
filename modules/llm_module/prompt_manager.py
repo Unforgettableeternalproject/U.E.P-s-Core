@@ -314,21 +314,13 @@ class PromptManager:
             - 此方法現在只處理靜態的 memory_context 字串（用於向後兼容）
         """
         if memory_context:
-            return f"User Profile Context:\n{memory_context}"
+            # 只提供工具提示，避免將完整 PROFILE 文本塞入 prompt
+            return (
+                "Profile memory exists but is not inlined to save tokens. "
+                "If you need user facts, call memory_retrieve_snapshots with memory_types='profile' "
+                "to fetch them before responding."
+            )
         return None
-        
-        # 如果都沒有，嘗試從 MEM 模組獲取 (向後兼容)
-        if not context_parts:
-            try:
-                mem_data = state_aware_interface.get_chat_mem_data("context")
-                if mem_data and isinstance(mem_data, dict):
-                    mem_memories = mem_data.get("relevant_memories", "")
-                    if mem_memories:
-                        context_parts.append(f"Relevant Memory:\n{mem_memories}")
-            except Exception as e:
-                debug_log(1, f"[PromptManager] 無法從 MEM 模組獲取記憶資料: {e}")
-        
-        return "\n\n".join(context_parts) if context_parts else None
     
     def _build_functions_context(self, available_functions: Optional[str] = None) -> Optional[str]:
         """構建系統功能上下文 - 優先使用傳入內容，否則從 SYS 模組獲取"""

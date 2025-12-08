@@ -64,11 +64,11 @@ class TestMemoryToolsRegistration:
     """測試記憶工具註冊"""
     
     def test_register_memory_tools_success(self, mem_module_with_mcp, mcp_server):
-        """測試成功註冊 7 個記憶工具（3 檢索 + 4 寫入）"""
+        """測試成功註冊記憶工具（3 檢索 + 7 寫入/更新，含 create_snapshot）"""
         result = mem_module_with_mcp.register_memory_tools_to_mcp(mcp_server)
         
         assert result is True
-        assert len(mcp_server.tools) == 8
+        assert len(mcp_server.tools) == 10
         
         # 檢查工具名稱
         tool_names = [tool.name for tool in mcp_server.tools.values()]
@@ -95,7 +95,7 @@ class TestMemoryToolsRegistration:
         mem_module_with_mcp.register_memory_tools_to_mcp(mcp_server)
         
         chat_tools = mcp_server.get_tools_for_path("CHAT")
-        assert len(chat_tools) == 8
+        assert len(chat_tools) == 10
     
     def test_get_tools_for_work_path(self, mem_module_with_mcp, mcp_server):
         """測試 WORK 路徑無法獲取記憶工具"""
@@ -110,7 +110,7 @@ class TestMemoryRetrieveSnapshots:
     
     @pytest.mark.asyncio
     async def test_retrieve_snapshots_with_results(self, mem_module_with_mcp):
-        """測試語義檢索返回快照摘要"""
+        """測試語義檢索返回快照摘要 (PROFILE 分支無結果，SNAPSHOT 有結果)"""
         # Mock retrieve_memories 返回結果
         mock_result = MagicMock()
         mock_result.memory_entry = {
@@ -123,7 +123,11 @@ class TestMemoryRetrieveSnapshots:
         mock_result.similarity_score = 0.85
         mock_result.retrieval_reason = "High relevance"
         
-        mem_module_with_mcp.memory_manager.retrieve_memories.return_value = [mock_result]
+        # PROFILE 分支空，SNAPSHOT 分支有結果
+        mem_module_with_mcp.memory_manager.retrieve_memories.side_effect = [
+            [],              # PROFILE branch
+            [mock_result],   # SNAPSHOT branch
+        ]
         
         # 執行工具
         params = {
@@ -147,7 +151,7 @@ class TestMemoryRetrieveSnapshots:
     @pytest.mark.asyncio
     async def test_retrieve_snapshots_no_results(self, mem_module_with_mcp):
         """測試檢索無結果的情況"""
-        mem_module_with_mcp.memory_manager.retrieve_memories.return_value = []
+        mem_module_with_mcp.memory_manager.retrieve_memories.side_effect = [[], []]
         
         params = {"query": "nonexistent topic"}
         result = await mem_module_with_mcp._handle_memory_retrieve_snapshots(params)
@@ -158,12 +162,30 @@ class TestMemoryRetrieveSnapshots:
     
     @pytest.mark.asyncio
     async def test_retrieve_snapshots_missing_query(self, mem_module_with_mcp):
-        """測試缺少 query 參數"""
+        """測試缺少 query 仍可回傳 PROFILE 記憶"""
+        profile_result = MagicMock()
+        profile_result.memory_entry = {
+            "memory_id": "profile_001",
+            "summary": "User likes ML",
+            "key_topics": [],
+            "created_at": datetime.now(),
+            "message_count": 0
+        }
+        profile_result.similarity_score = 0.0
+        profile_result.retrieval_reason = "profile"
+        
+        mem_module_with_mcp.memory_manager.retrieve_memories.side_effect = [
+            [profile_result],  # PROFILE branch
+            []                 # SNAPSHOT branch
+        ]
+        
         params = {}
         result = await mem_module_with_mcp._handle_memory_retrieve_snapshots(params)
         
-        assert result.status == ToolResultStatus.ERROR
-        assert "required" in result.message.lower()
+        assert result.status == ToolResultStatus.SUCCESS
+        assert result.data["count"] == 1
+        snapshots = result.data["snapshots"]
+        assert snapshots[0]["snapshot_id"] == "profile_001"
     
     @pytest.mark.asyncio
     async def test_retrieve_snapshots_no_memory_token(self, mem_module_with_mcp):

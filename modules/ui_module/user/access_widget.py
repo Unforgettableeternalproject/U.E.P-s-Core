@@ -1325,7 +1325,7 @@ class MainButton(QWidget):
             # 添加選單項目
             settings_action = menu.addAction("⚙️ 設定")
             background_action = menu.addAction("🖼️ 背景")
-            profile_action = menu.addAction("📊  狀態")
+            profile_action = menu.addAction("📊 狀態")
             menu.addSeparator()
             exit_action = menu.addAction("🚪 離開應用程式")
             

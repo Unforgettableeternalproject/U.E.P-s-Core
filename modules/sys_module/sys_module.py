@@ -117,6 +117,9 @@ class SYSModule(BaseModule):
         # Register Phase 2 workflows to MCP
         self._register_workflows_to_mcp()
         
+        # Register MEM module memory tools to MCP
+        self._register_memory_tools_to_mcp()
+        
         # 恢復暫停的監控任務
         self._restore_monitoring_tasks()
         
@@ -299,6 +302,22 @@ class SYSModule(BaseModule):
         register_all_workflows(self.mcp_server, self)
         
         info_log("[SYS] ✅ Workflows registered to MCP Server.")
+    
+    def _register_memory_tools_to_mcp(self):
+        """Register MEM module memory tools to MCP Server"""
+        try:
+            from core import registry
+            mem_module = registry.get_loaded('mem_module')
+            
+            if mem_module and hasattr(mem_module, 'register_memory_tools_to_mcp'):
+                info_log("[SYS] Registering memory tools to MCP Server...")
+                mem_module.register_memory_tools_to_mcp(self.mcp_server)
+            else:
+                debug_log(2, "[SYS] ⚠️  MEM 模組不可用或不支援 MCP 工具註冊")
+        except Exception as e:
+            error_log(f"[SYS] 註冊記憶工具失敗: {e}")
+            import traceback
+            traceback.print_exc()
     
     def query_function_info(self, query_text: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """

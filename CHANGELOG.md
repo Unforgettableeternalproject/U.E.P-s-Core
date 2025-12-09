@@ -2386,3 +2386,51 @@
 
 ---
 
+### Added the first batch of the experimental memory retrieval. 12/8
+
+> Date: Mon, 08 Dec 2025 22:52:27 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/memory_fix`
+
+> Commit: `cb52b240974a78fd4244be82927931c65d7d4e15`
+
+---
+
+### Added a new easter-egg animation, and refined prompt. 12/9
+
+> Date: Tue, 09 Dec 2025 00:10:39 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/memory_fix`
+
+> Commit: `7ad820db9e029b9232043101e83d0d90d0eb4288`
+
+---
+
+### Fixed a certain issue where LLM is provided with chat route tool in work states. 12/9
+
+> Date: Tue, 09 Dec 2025 19:34:20 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/memory_fix`
+
+> Commit: `86a1b5dcfa32090ad20b0f42e560c0b10eaca92c`
+
+---
+
+### Added some mischief infrastructure and actions, and finished memory fix with final touches. 12/9
+
+> Date: Tue, 09 Dec 2025 22:52:01 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/memory_fix`
+
+> Commit: `4e2ada3915e637361c796ba7d3a9fdb290234e12`
+
+---
+

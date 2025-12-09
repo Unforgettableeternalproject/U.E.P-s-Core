@@ -104,6 +104,11 @@ class UnifiedController:
             self.state_queue_manager.clear_queue()
             info_log("[UnifiedController] 已清空狀態佇列")
             
+            # ✅ 同時重置 StateManager 到 IDLE 狀態，確保與 StateQueue 同步
+            from core.states.state_manager import UEPState
+            self.state_manager.set_state(UEPState.IDLE)
+            info_log("[UnifiedController] 已重置系統狀態為 IDLE (與狀態佇列同步)")
+            
             # 初始化核心框架
             if not self._initialize_framework():
                 return False

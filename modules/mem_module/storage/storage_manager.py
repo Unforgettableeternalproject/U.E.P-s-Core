@@ -343,28 +343,51 @@ class MemoryStorageManager:
             candidate_vectors = []
             valid_memories = []
             
-            for memory_data in candidate_memories:
+            debug_log(3, f"[StorageManager] 準備處理 {len(candidate_memories)} 個候選記憶")
+            
+            for idx, memory_data in enumerate(candidate_memories):
                 embedding_vector = memory_data.get('embedding_vector')
+                debug_log(3, f"[StorageManager] 候選 {idx}: embedding_vector type={type(embedding_vector)}, is_list={isinstance(embedding_vector, list)}")
+                
                 if embedding_vector:
+                    # 確保向量是numpy array格式
+                    if isinstance(embedding_vector, list):
+                        debug_log(3, f"[StorageManager] 轉換 list 到 numpy array (長度: {len(embedding_vector)})")
+                        embedding_vector = np.array(embedding_vector, dtype=np.float32)
+                        debug_log(3, f"[StorageManager] 轉換後 shape={embedding_vector.shape}, dtype={embedding_vector.dtype}")
+                    elif not isinstance(embedding_vector, np.ndarray):
+                        debug_log(3, f"[StorageManager] 跳過無效格式: {type(embedding_vector)}")
+                        continue  # 跳過無效格式
                     candidate_vectors.append(embedding_vector)
                     valid_memories.append(memory_data)
+                    debug_log(3, f"[StorageManager] 成功添加候選向量 {idx}")
+                else:
+                    debug_log(3, f"[StorageManager] 候選 {idx} 沒有 embedding_vector")
             
             if not candidate_vectors:
                 return []
             
-            # 計算相似度
-            candidate_array = np.array(candidate_vectors, dtype=np.float32)
+            debug_log(3, f"[StorageManager] 準備計算相似度，候選向量數: {len(candidate_vectors)}")
+            
+            # 計算相似度 - 使用 vstack 而非 array，因為元素已經是 numpy 數組
+            candidate_array = np.vstack(candidate_vectors)
             query_array = query_embedding.reshape(1, -1)
+            
+            debug_log(4, f"[StorageManager] candidate_array shape: {candidate_array.shape}, query_array shape: {query_array.shape}")
             
             # 正規化向量
             from sklearn.metrics.pairwise import cosine_similarity
             similarities = cosine_similarity(query_array, candidate_array)[0]
+            
+            debug_log(3, f"[StorageManager] 相似度計算完成，相似度範圍: {similarities.min():.3f} ~ {similarities.max():.3f}")
             
             # 過濾和排序結果
             results = []
             for memory_data, similarity in zip(valid_memories, similarities):
                 if similarity >= similarity_threshold:
                     results.append((memory_data, float(similarity)))
+            
+            debug_log(3, f"[StorageManager] 過濾後結果數 (threshold={similarity_threshold}): {len(results)}")
             
             # 按相似度排序
             results.sort(key=lambda x: x[1], reverse=True)

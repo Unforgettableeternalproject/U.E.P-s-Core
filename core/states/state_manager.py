@@ -635,16 +635,213 @@ class StateManager:
             debug_log(1, f"[StateManager] 更新 Mischief 狀態數值失敗: {e}")
     
     def _trigger_mischief_behaviors(self, context: Optional[Dict[str, Any]] = None):
-        """觸發 Mischief 狀態的特殊行為"""
+        """
+        觸發 Mischief 狀態的特殊行為
+        
+        流程：
+        1. 獲取用戶配置（是否啟用、最大行為數）
+        2. 根據當前系統數值決定可用行為
+        3. 調用 LLM 生成行為序列
+        4. 使用 MischiefExecutor 執行
+        5. 根據執行結果調整系統數值
+        """
         try:
-            # TODO: 實作搗蛋行為邏輯
-            # 例如：隨機動畫、音效、自主對話等
-            debug_log(2, "[StateManager] Mischief 行為觸發 (待實作具體行為)")
+            from configs.user_settings_manager import user_settings_manager
+            
+            # 檢查 MISCHIEF 是否啟用
+            mischief_enabled = user_settings_manager.get_setting(
+                "behavior.mischief.enabled", False
+            )
+            
+            if not mischief_enabled:
+                info_log("[StateManager] MISCHIEF 狀態已觸發，但用戶未啟用此功能")
+                # 直接退出此狀態
+                self.exit_special_state("mischief_disabled")
+                return
+            
+            # 獲取配置
+            max_actions = user_settings_manager.get_setting(
+                "behavior.mischief.max_actions", 5
+            )
+            intensity = user_settings_manager.get_setting(
+                "behavior.mischief.intensity", "medium"
+            )
+            
+            info_log(f"[StateManager] 開始 MISCHIEF 行為規劃 "
+                    f"(max_actions={max_actions}, intensity={intensity})")
+            
+            # 獲取當前系統數值
+            status_dict = self.status_manager.get_status_dict()
+            mood = status_dict.get("mood", 0.0)
+            boredom = status_dict.get("boredom", 0.0)
+            pride = status_dict.get("pride", 0.0)
+            
+            # 導入 MISCHIEF 執行器
+            from modules.sys_module.actions.mischief.loader import (
+                mischief_executor,
+                mischief_registry
+            )
+            
+            # 獲取可用行為列表
+            available_actions_json = mischief_executor.get_available_actions_for_llm(mood)
+            
+            # 調用 LLM 生成行為規劃
+            action_plan = self._call_llm_for_mischief_planning(
+                available_actions_json,
+                max_actions,
+                mood,
+                boredom,
+                pride,
+                intensity,
+                context
+            )
+            
+            if not action_plan:
+                info_log("[StateManager] LLM 未返回有效的行為規劃")
+                self.exit_special_state("no_plan")
+                return
+            
+            # 解析並執行行為
+            success, actions_list = mischief_executor.parse_llm_response(action_plan)
+            
+            if not success or not actions_list:
+                info_log("[StateManager] 行為規劃解析失敗")
+                self.exit_special_state("parse_failed")
+                return
+            
+            info_log(f"[StateManager] 開始執行 {len(actions_list)} 個 MISCHIEF 行為")
+            
+            # 執行行為序列
+            results = mischief_executor.execute_actions(actions_list)
+            
+            # 根據執行結果調整系統數值
+            self._adjust_status_after_mischief(results, context)
+            
+            # MISCHIEF 完成，退出狀態
+            self.exit_special_state("mischief_completed")
             
         except Exception as e:
-            debug_log(1, f"[StateManager] 觸發 Mischief 行為失敗: {e}")
+            error_log(f"[StateManager] 觸發 Mischief 行為失敗: {e}")
+            self.exit_special_state("error")
     
-
+    def _call_llm_for_mischief_planning(
+        self,
+        available_actions_json: str,
+        max_actions: int,
+        mood: float,
+        boredom: float,
+        pride: float,
+        intensity: str,
+        context: Optional[Dict[str, Any]] = None
+    ) -> Optional[str]:
+        """
+        調用 LLM 生成 MISCHIEF 行為規劃
+        
+        Returns:
+            LLM 返回的 JSON 字串（包含行為序列）
+        """
+        try:
+            from core.framework import core_framework
+            
+            llm_module = core_framework.registry.get_module("llm")
+            
+            if not llm_module:
+                error_log("[StateManager] LLM 模組未找到")
+                return None
+            
+            # 構建 prompt
+            trigger_reason = context.get("trigger_reason", "unknown") if context else "unknown"
+            
+            system_prompt = (
+                "你正處於 MISCHIEF（搗蛋）狀態。\n"
+                "這是系統的自主活動模式，你可以主動進行一些趣味性的互動行為。\n"
+                f"當前系統數值：Mood={mood:.2f}, Boredom={boredom:.2f}, Pride={pride:.2f}\n"
+                f"搗蛋強度：{intensity}\n"
+                f"最大行為數：{max_actions}\n"
+                f"觸發原因：{trigger_reason}\n\n"
+                "請根據當前情緒和可用行為，規劃一個有趣的搗蛋序列。\n"
+                "注意：\n"
+                "- 行為應符合當前情緒（心情好時較溫和，心情差時可能更調皮）\n"
+                "- 搗蛋強度影響行為選擇的激進程度\n"
+                "- 避免過度干擾用戶\n"
+            )
+            
+            user_message = (
+                f"可用行為列表：\n{available_actions_json}\n\n"
+                "請生成行為規劃（JSON 格式）。"
+            )
+            
+            # 調用 LLM
+            response = llm_module.generate_response(
+                user_message=user_message,
+                system_prompt=system_prompt,
+                temperature=0.9,  # 高溫度以獲得更有創意的行為
+                max_tokens=1000
+            )
+            
+            if response:
+                debug_log(2, f"[StateManager] LLM 返回規劃：{response[:200]}...")
+                return response
+            else:
+                error_log("[StateManager] LLM 未返回有效回應")
+                return None
+            
+        except Exception as e:
+            error_log(f"[StateManager] 調用 LLM 規劃失敗: {e}")
+            return None
+    
+    def _adjust_status_after_mischief(
+        self,
+        results: Dict[str, Any],
+        context: Optional[Dict[str, Any]] = None
+    ):
+        """
+        根據 MISCHIEF 執行結果調整系統數值
+        
+        邏輯：
+        - 成功的搗蛋 → 提升 mood，降低 boredom
+        - 失敗過多 → 輕微降低 mood
+        - 執行行為本身 → 小幅提升 pride（嘗試做些事）
+        """
+        try:
+            total = results.get("total", 0)
+            success = results.get("success", 0)
+            failed = results.get("failed", 0)
+            
+            if total == 0:
+                return
+            
+            # 計算成功率
+            success_rate = success / total if total > 0 else 0
+            
+            # 根據成功率調整 mood
+            if success_rate > 0.7:
+                # 大部分成功，心情變好
+                mood_delta = 0.15
+                self.status_manager.update_mood(mood_delta, "mischief_success")
+            elif success_rate > 0.3:
+                # 部分成功
+                mood_delta = 0.08
+                self.status_manager.update_mood(mood_delta, "mischief_partial")
+            else:
+                # 失敗居多，略微失落
+                mood_delta = -0.05
+                self.status_manager.update_mood(mood_delta, "mischief_failed")
+            
+            # 降低無聊感（做了些事情）
+            boredom_delta = -0.20
+            self.status_manager.update_boredom(boredom_delta, "mischief_activity")
+            
+            # 小幅提升 pride（完成了自主活動）
+            if success > 0:
+                pride_delta = 0.10
+                self.status_manager.update_pride(pride_delta, "mischief_completion")
+            
+            info_log(f"[StateManager] MISCHIEF 後數值調整完成 "
+                    f"(成功率={success_rate:.2%}, mood_delta={mood_delta:+.2f})")
+            
+        except Exception as e:
+            error_log(f"[StateManager] 調整 MISCHIEF 後數值失敗: {e}")
     
     def _setup_status_integration(self):
         """設置與 StatusManager 的整合"""

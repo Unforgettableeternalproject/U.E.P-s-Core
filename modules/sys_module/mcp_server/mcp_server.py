@@ -51,7 +51,7 @@ class MCPServer:
         # 例如：play_media, intelligent_archive, drop_and_read 等
         # LLM 應該直接調用這些專屬工具，而不是通過 start_workflow
         
-        # 1. review_step - Review step execution result
+        # 1. review_step - Review step execution result (WORK only)
         self.register_tool(MCPTool(
             name="review_step",
             description="Review workflow step execution result and decide whether to continue",
@@ -69,10 +69,11 @@ class MCPServer:
                     required=True
                 ),
             ],
-            handler=self._handle_review_step
+            handler=self._handle_review_step,
+            allowed_paths=["WORK"]
         ))
         
-        # 3. approve_step - Approve and continue to next step
+        # 3. approve_step - Approve and continue to next step (WORK only)
         self.register_tool(MCPTool(
             name="approve_step",
             description="Approve current step result and continue to next step",
@@ -90,10 +91,11 @@ class MCPServer:
                     required=False
                 ),
             ],
-            handler=self._handle_approve_step
+            handler=self._handle_approve_step,
+            allowed_paths=["WORK"]
         ))
         
-        # 4. modify_step - Modify step parameters and re-execute
+        # 4. modify_step - Modify step parameters and re-execute (WORK only)
         self.register_tool(MCPTool(
             name="modify_step",
             description="Modify current step parameters and re-execute",
@@ -111,10 +113,11 @@ class MCPServer:
                     required=True
                 ),
             ],
-            handler=self._handle_modify_step
+            handler=self._handle_modify_step,
+            allowed_paths=["WORK"]
         ))
         
-        # 5. cancel_workflow - Cancel workflow
+        # 5. cancel_workflow - Cancel workflow (WORK only)
         self.register_tool(MCPTool(
             name="cancel_workflow",
             description="Cancel an ongoing workflow",
@@ -132,10 +135,11 @@ class MCPServer:
                     required=False
                 ),
             ],
-            handler=self._handle_cancel_workflow
+            handler=self._handle_cancel_workflow,
+            allowed_paths=["WORK"]
         ))
         
-        # 6. get_workflow_status - Query workflow status
+        # 6. get_workflow_status - Query workflow status (WORK only)
         self.register_tool(MCPTool(
             name="get_workflow_status",
             description="Query current status and progress of a workflow",
@@ -147,10 +151,11 @@ class MCPServer:
                     required=True
                 ),
             ],
-            handler=self._handle_get_workflow_status
+            handler=self._handle_get_workflow_status,
+            allowed_paths=["WORK"]
         ))
         
-        # 7. provide_workflow_input - Provide user input for workflow Input Step
+        # 7. provide_workflow_input - Provide user input for workflow Input Step (WORK only)
         self.register_tool(MCPTool(
             name="provide_workflow_input",
             description="Provide user input for workflow Input Step. Can judge delegation intent and trigger fallback.",
@@ -174,10 +179,11 @@ class MCPServer:
                     required=False
                 ),
             ],
-            handler=self._handle_provide_workflow_input
+            handler=self._handle_provide_workflow_input,
+            allowed_paths=["WORK"]
         ))
         
-        # 8. resolve_path - Resolve natural language path descriptions to actual system paths
+        # 8. resolve_path - Resolve natural language path descriptions to actual system paths (WORK only)
         self.register_tool(MCPTool(
             name="resolve_path",
             description="Resolve natural language path descriptions (e.g., 'd drive root', 'documents folder', 'desktop') to actual system paths. Returns the resolved absolute path and whether it exists.",
@@ -195,20 +201,26 @@ class MCPServer:
                     required=False
                 ),
             ],
-            handler=self._handle_resolve_path
+            handler=self._handle_resolve_path,
+            allowed_paths=["WORK"]
         ))
         
-        debug_log(2, "[MCP] 已註冊 7 個核心工作流控制工具 (start_workflow 已移除)")
+        debug_log(2, "[MCP] 已註冊 7 個核心工作流控制工具，全部限制於 WORK 路徑")
     
-    def register_tool(self, tool: MCPTool):
+    def register_tool(self, tool: MCPTool, allowed_paths: Optional[list[str]] = None):
         """
         註冊工具
         
         Args:
             tool: 工具定義
+            allowed_paths: 允許的路徑列表 (例如 ["CHAT"] 或 ["WORK"])，若提供則覆蓋工具內設定
         """
+        # 若提供了路徑限制，更新工具定義
+        if allowed_paths is not None:
+            tool.allowed_paths = allowed_paths
+        
         self.tools[tool.name] = tool
-        debug_log(3, f"[MCP] 註冊工具: {tool.name}")
+        debug_log(3, f"[MCP] 註冊工具: {tool.name}, 允許的路徑: {tool.allowed_paths}")
     
     def unregister_tool(self, tool_name: str):
         """
@@ -229,14 +241,35 @@ class MCPServer:
         """列出所有工具"""
         return list(self.tools.values())
     
-    def get_tools_spec_for_llm(self) -> list[Dict[str, Any]]:
+    def get_tools_for_path(self, path: str) -> list[MCPTool]:
         """
-        取得工具規範供 LLM 使用
+        取得特定路徑允許的工具
         
+        Args:
+            path: 路徑類型 ("CHAT" 或 "WORK")
+            
+        Returns:
+            該路徑允許的工具列表
+        """
+        filtered_tools = [
+            tool for tool in self.tools.values()
+            if path in tool.allowed_paths
+        ]
+        debug_log(3, f"[MCP] 路徑 '{path}' 的可用工具數: {len(filtered_tools)}/{len(self.tools)}")
+        return filtered_tools
+    
+    def get_tools_spec_for_llm(self, path: str = "CHAT") -> list[Dict[str, Any]]:
+        """
+        取得工具規範供 LLM 使用（支援路徑過濾）
+        
+        Args:
+            path: 路徑類型 ("CHAT" 或 "WORK")，預設為 "CHAT"
+            
         Returns:
             適合 LLM function calling 的工具規範列表
         """
-        return [tool.to_llm_spec() for tool in self.tools.values()]
+        filtered_tools = self.get_tools_for_path(path)
+        return [tool.to_llm_spec() for tool in filtered_tools]
     
     async def handle_request(self, request: MCPRequest) -> MCPResponse:
         """

@@ -112,6 +112,7 @@ class MCPTool(BaseModel):
     description: str = Field(..., description="工具說明 (Traditional Chinese)")
     parameters: List[ToolParameter] = Field(default_factory=list, description="參數列表")
     handler: Optional[Callable] = Field(default=None, description="處理函數", exclude=True)
+    allowed_paths: List[str] = Field(default_factory=lambda: ["CHAT", "WORK"], description="允許的路徑列表，預設為兩者均可")
     
     class Config:
         arbitrary_types_allowed = True
@@ -146,8 +147,13 @@ class MCPTool(BaseModel):
         required = []
         
         for param in self.parameters:
+            # ✅ 將 "float" 映射為 "number"（Gemini API 要求）
+            param_type = param.type.value
+            if param_type == "float":
+                param_type = "number"
+            
             properties[param.name] = {
-                "type": param.type.value,
+                "type": param_type,
                 "description": param.description,
             }
             if param.enum:

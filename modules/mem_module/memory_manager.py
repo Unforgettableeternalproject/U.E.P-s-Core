@@ -1463,6 +1463,41 @@ class MemoryManager:
             error_log(f"[MemoryManager] 獲取統計失敗: {e}")
             return self.stats
     
+    def delete_memory(self, memory_id: str, memory_token: str = None) -> MemoryOperationResult:
+        """
+        刪除記憶條目
+        
+        Args:
+            memory_id: 記憶ID
+            memory_token: 記憶令牌，如果不提供則從當前身份獲取
+            
+        Returns:
+            MemoryOperationResult: 刪除結果
+        """
+        try:
+            # 如果沒有提供記憶令牌，從Working Context獲取
+            if not memory_token:
+                memory_token = self.identity_manager.get_current_memory_token()
+            
+            # 驗證記憶體存取權限
+            if not self.identity_manager.validate_memory_access(memory_token, "write"):
+                return MemoryOperationResult(
+                    success=False,
+                    operation_type="delete",
+                    message="記憶體存取權限不足"
+                )
+            
+            # 委託給 storage_manager 執行刪除
+            return self.storage_manager.delete_memory(memory_id, memory_token)
+            
+        except Exception as e:
+            error_log(f"[MemoryManager] 刪除記憶失敗: {e}")
+            return MemoryOperationResult(
+                success=False,
+                operation_type="delete",
+                message=f"刪除異常: {str(e)}"
+            )
+    
     def cleanup_resources(self):
         """清理資源"""
         try:

@@ -186,6 +186,45 @@ class TestMemoryRetrieveSnapshots:
         assert result.data["count"] == 1
         snapshots = result.data["snapshots"]
         assert snapshots[0]["snapshot_id"] == "profile_001"
+
+
+class TestMemoryUpdateSnapshotSummary:
+    """測試 memory_update_snapshot_summary 工具"""
+
+    @pytest.mark.asyncio
+    async def test_update_snapshot_summary_calls_manager(self, mem_module_with_mcp):
+        """確認 update_snapshot_content 被呼叫且保留原內容"""
+        # 準備 active snapshot
+        snapshot = MagicMock()
+        snapshot.content = "original content"
+        snapshot.metadata = {"foo": "bar"}
+        mem_module_with_mcp.memory_manager.snapshot_manager._active_snapshots = {
+            "session123": snapshot
+        }
+        # 模擬 current_context
+        class DummyCtx:
+            current_session_id = "session123"
+        mem_module_with_mcp.memory_manager.current_context = DummyCtx()
+
+        # Spy update_snapshot_content
+        mem_module_with_mcp.memory_manager.snapshot_manager.update_snapshot_content = MagicMock(return_value=True)
+
+        params = {
+            "summary": "new summary",
+            "key_topics": "alpha, beta",
+            "notes": "llm note"
+        }
+        result = await mem_module_with_mcp._handle_memory_update_snapshot_summary(params)
+
+        assert result.status == ToolResultStatus.SUCCESS
+        mem_module_with_mcp.memory_manager.snapshot_manager.update_snapshot_content.assert_called_once()
+        call_kwargs = mem_module_with_mcp.memory_manager.snapshot_manager.update_snapshot_content.call_args.kwargs
+        assert call_kwargs["snapshot_id"] == "session123"
+        assert call_kwargs["new_content"] == "original content"
+        assert call_kwargs["new_summary"] == "new summary"
+        assert call_kwargs["key_topics"] == ["alpha", "beta"]
+        # metadata merged presence
+        assert "llm_notes" in call_kwargs["additional_metadata"]
     
     @pytest.mark.asyncio
     async def test_retrieve_snapshots_no_memory_token(self, mem_module_with_mcp):

@@ -283,6 +283,10 @@ class MCPClient:
         elif tool_name == "cancel_workflow":
             return data.get("message", "工作流已取消")
         
+        # 🔧 記憶檢索工具不應該有 formatted_message，強制第二次 LLM 查詢
+        elif tool_name.startswith("memory_"):
+            return None  # 返回 None 表示需要 LLM 二次查詢理解檢索結果
+        
         else:
             # 通用格式
             message = data.get("message", "")

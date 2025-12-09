@@ -2238,7 +2238,7 @@ class MEMModule(BaseModule):
                 allowed_paths=["CHAT"]
             ))
             
-            info_log("[MEM] ✅ 成功註冊 8 個記憶管理 MCP 工具 (3 檢索 + 5 寫入，限制於 CHAT 路徑)")
+            info_log("[MEM] ✅ 成功註冊 10 個記憶管理 MCP 工具 (5 檢索 + 5 寫入，限制於 CHAT 路徑)")
             return True
             
         except Exception as e:
@@ -2916,8 +2916,9 @@ class MEMModule(BaseModule):
             # 使用 snapshot_manager 的更新方法
             success = self.memory_manager.snapshot_manager.update_snapshot_content(
                 snapshot_id=session_id,
-                new_content=summary if summary else snapshot.content,
+                new_content=snapshot.content,  # 保留原始內容
                 new_summary=summary,
+                key_topics=update_content.get("key_topics"),
                 additional_metadata=update_content.get("metadata", {})
             )
             

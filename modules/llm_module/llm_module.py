@@ -1264,20 +1264,24 @@ Response requirements:
                 
                 debug_log(2, f"[LLM] 記憶工具執行結果: {function_call_result.get('status')}")
                 
-                # Cycle 1: 帶著工具結果再次查詢，生成用戶可見的回應
-                tool_name = response_data["function_call"].get("name", "unknown")
-                content = function_call_result.get("content", {})
-                result_data = content.get("data", {}) if isinstance(content, dict) else {}
-                result_message = function_call_result.get("formatted_message", "") or content.get("message", "")
-                
-                # 構建完整的工具結果（包含 data）
-                import json
-                full_result_text = result_message
-                if result_data:
-                    debug_log(2, f"[LLM] 工具返回數據: {result_data}")
-                    full_result_text += f"\n\n**Data:**\n{json.dumps(result_data, ensure_ascii=False, indent=2)}"
-                
-                follow_up_prompt = f"""{prompt}
+                # 如果工具結果已提供格式化訊息，直接回覆以降低延遲/成本
+                formatted_message = function_call_result.get("formatted_message")
+                if formatted_message:
+                    response_text = formatted_message
+                    debug_log(2, "[LLM] 使用工具格式化結果直接回應，跳過第二次 LLM 查詢")
+                else:
+                    # Cycle 1: 帶著工具結果再次查詢，生成用戶可見的回應
+                    tool_name = response_data["function_call"].get("name", "unknown")
+                    content = function_call_result.get("content", {})
+                    result_data = content.get("data", {}) if isinstance(content, dict) else {}
+                    result_message = function_call_result.get("formatted_message", "") or content.get("message", "")
+                    
+                    full_result_text = result_message
+                    if result_data:
+                        debug_log(2, f"[LLM] 工具返回數據: {result_data}")
+                        full_result_text += f"\n\n**Data:**\n{json.dumps(result_data, ensure_ascii=False, indent=2)}"
+                    
+                    follow_up_prompt = f"""{prompt}
 
 **Tool Execution Result:**
 Tool: {tool_name}
@@ -1286,18 +1290,18 @@ Result: {full_result_text}
 
 Based on this memory retrieval result, please provide your response to the user.
 Remember to respond in a natural, conversational way using the actual data from the tool result."""
-                
-                # 再次查詢，不帶工具（只要文字回應）
-                follow_up_response = self.model.query(
-                    follow_up_prompt,
-                    mode="chat",
-                    cached_content=cached_content_ids.get("persona"),
-                    tools=None,  # 不再提供工具
-                    tool_choice="NONE"
-                )
-                
-                response_text = follow_up_response.get("text", "")
-                debug_log(2, f"[LLM] CHAT 模式多輪查詢完成，生成最終回應")
+                    
+                    # 再次查詢，不帶工具（只要文字回應）
+                    follow_up_response = self.model.query(
+                        follow_up_prompt,
+                        mode="chat",
+                        cached_content=cached_content_ids.get("persona"),
+                        tools=None,  # 不再提供工具
+                        tool_choice="NONE"
+                    )
+                    
+                    response_text = follow_up_response.get("text", "")
+                    debug_log(2, f"[LLM] CHAT 模式多輪查詢完成，生成最終回應")
             else:
                 # 沒有工具調用，直接使用第一輪的文字回應
                 debug_log(2, f"[LLM] CHAT 模式無工具調用，使用直接回應")
@@ -3062,26 +3066,7 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
         except Exception as e:
             error_log(f"[LLM] 發送記憶操作失敗: {e}")
     
-    
-            
-            # 通過狀態感知接口檢索記憶
-            memories = self.module_interface.get_chat_mem_data(
-                "memory_retrieval",
-                query=user_input,
-                max_results=max_results,
-                memory_types=["conversation", "user_info", "context"]
-            )
-            
-            if memories:
-                debug_log(1, f"[LLM] 檢索到 {len(memories)} 條相關記憶")
-                return memories
-            else:
-                debug_log(2, "[LLM] 未檢索到相關記憶")
-                return []
-            
-        except Exception as e:
-            error_log(f"[LLM] 記憶檢索失敗: {e}")
-            return []
+ 
     
     def _format_memories_for_context(self, memories: List[Any]) -> str:
         """將檢索到的記憶格式化為對話上下文

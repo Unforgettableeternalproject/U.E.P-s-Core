@@ -32,5 +32,4 @@ LAYERS:
     negative_mood: talk_ani2_f  # mood <= 0 時的回應動畫
 
 # 動畫別名映射（如果需要重定向到其他動畫名稱）
-fallbacks:
-  # 目前無使用
+fallbacks: {}  # 目前無使用

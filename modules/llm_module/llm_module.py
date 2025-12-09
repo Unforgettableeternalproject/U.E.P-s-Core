@@ -1979,7 +1979,8 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             is_step_response = pending_workflow and pending_workflow.get('type') == 'workflow_step_response'
             mcp_tools = None
             if self.mcp_client and hasattr(self.mcp_client, 'get_tools_as_gemini_format'):
-                mcp_tools = self.mcp_client.get_tools_as_gemini_format()
+                from .mcp_client import PATH_WORK
+                mcp_tools = self.mcp_client.get_tools_as_gemini_format(path=PATH_WORK)
                 # 🔧 修復：正確計數工具數量（mcp_tools 是 [{"function_declarations": [...]}]）
                 tool_count = sum(len(t.get('function_declarations', [])) for t in mcp_tools) if mcp_tools else 0
                 debug_log(2, f"[LLM] MCP 工具已準備: {tool_count} 個")

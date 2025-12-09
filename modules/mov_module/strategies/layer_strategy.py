@@ -40,9 +40,13 @@ class LayerAnimationStrategy(AnimationStrategy):
             if not layer:
                 return None
             
-            # 從配置獲取層級動畫映射
-            layer_config = self.config.get('LAYERS', {})
-            fallbacks = self.config.get('fallbacks', {})
+            # 從配置獲取層級動畫映射（防禦性編程：確保不是 None）
+            if not self.config:
+                debug_log(2, f"[LayerStrategy] 配置為空，無法選擇層級動畫")
+                return None
+            
+            layer_config = self.config.get('LAYERS', {}) or {}
+            fallbacks = self.config.get('fallbacks', {}) or {}
             
             anim_name = None
             

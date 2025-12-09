@@ -2410,3 +2410,15 @@
 
 ---
 
+### Fixed a certain issue where LLM is provided with chat route tool in work states. 12/9
+
+> Date: Tue, 09 Dec 2025 19:34:20 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/memory_fix`
+
+> Commit: `86a1b5dcfa32090ad20b0f42e560c0b10eaca92c`
+
+---
+

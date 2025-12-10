@@ -3,7 +3,7 @@ from enum import Enum, auto
 from typing import Dict, Any, Optional, List, Callable
 import time
 from core.status_manager import status_manager
-from configs import user_settings_manager  # 供測試 mock / 直接存取設定
+from configs.user_settings_manager import user_settings_manager  # 導入實例而非模組
 from utils.debug_helper import debug_log, info_log, error_log
 from core.working_context import ContextType
 from core.sessions.workflow_session import WSTaskType

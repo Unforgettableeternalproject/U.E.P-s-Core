@@ -2470,3 +2470,15 @@
 
 ---
 
+### Updated version, fixed some reference issue, and deleted some unnecessary files. 12/11
+
+> Date: Thu, 11 Dec 2025 02:59:51 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `ac40e833e56be41efea7bdf793d593ae6078709e`
+
+---
+

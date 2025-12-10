@@ -1,5 +1,5 @@
 metadata:
-  system_version: v0.8.6
+  system_version: v0.8.8
 modules_enabled:
   stt_module: true
   nlp_module: true

@@ -24,181 +24,13 @@ class InteractionHandler(BaseHandler):
     """
     互動處理器基類
     
-    為具體的互動處理器（拖曳、投擲、檔案投放等）提供基礎
+    為具體的互動處理器（投擲、檔案投放等）提供基礎
+    
+    注意：拖曳邏輯直接在 mov_module.py 中處理，不需要獨立的 handler
     """
     
     def __init__(self, coordinator):
         super().__init__(coordinator)
-
-
-class DragInteractionHandler(InteractionHandler):
-    """
-    拖曳互動處理器
-    
-    職責：
-    1. 處理拖曳開始/移動/結束事件
-    2. 更新角色位置和狀態
-    3. 觸發掙扎動畫
-    4. 判斷投擲動作
-    """
-    
-    # 投擲速度閾值（像素/秒）
-    THROW_VELOCITY_THRESHOLD = 500.0
-    
-    def __init__(self, coordinator):
-        super().__init__(coordinator)
-        self.drag_start_position: Optional[Position] = None
-        self.drag_start_mode: Optional[Any] = None
-        self.drag_start_time: float = 0.0
-        
-    def can_handle(self, event: Any) -> bool:
-        """判斷是否為拖曳事件"""
-        if not hasattr(event, 'event_type'):
-            return False
-            
-        if UIEventType is None:
-            return False
-            
-        return event.event_type in [
-            UIEventType.DRAG_START,
-            UIEventType.DRAG_MOVE,
-            UIEventType.DRAG_END
-        ]
-    
-    def handle(self, event: Any) -> bool:
-        """處理拖曳事件"""
-        try:
-            if event.event_type == UIEventType.DRAG_START:
-                return self._handle_drag_start(event)
-            elif event.event_type == UIEventType.DRAG_MOVE:
-                return self._handle_drag_move(event)
-            elif event.event_type == UIEventType.DRAG_END:
-                return self._handle_drag_end(event)
-            return False
-            
-        except Exception as e:
-            error_log(f"[DragHandler] 處理拖曳事件失敗: {e}")
-            return False
-    
-    def _handle_drag_start(self, event: Any) -> bool:
-        """處理拖曳開始"""
-        import time
-        
-        # 記錄拖曳前狀態
-        if hasattr(self.coordinator, 'position') and Position:
-            self.drag_start_position = self.coordinator.position.copy()
-        
-        if hasattr(self.coordinator, 'movement_mode'):
-            self.drag_start_mode = self.coordinator.movement_mode
-        
-        self.drag_start_time = time.time()
-        
-        # 設置拖曳狀態
-        if hasattr(self.coordinator, 'is_being_dragged'):
-            self.coordinator.is_being_dragged = True
-        
-        if hasattr(self.coordinator, 'movement_mode') and MovementMode:
-            self.coordinator.movement_mode = MovementMode.DRAGGING
-        
-        # 清空速度
-        if hasattr(self.coordinator, 'velocity') and Velocity:
-            self.coordinator.velocity = Velocity(0.0, 0.0)
-            self.coordinator.target_velocity = Velocity(0.0, 0.0)
-        
-        # 暫停移動
-        if hasattr(self.coordinator, 'pause_movement'):
-            self.coordinator.pause_movement("拖曳中")
-        
-        # 觸發掙扎動畫
-        if hasattr(self.coordinator, '_trigger_anim'):
-            self.coordinator._trigger_anim("struggle", {"loop": True}, source="drag_handler")
-        
-        info_log(f"[DragHandler] 拖曳開始")
-        return True
-    
-    def _handle_drag_move(self, event: Any) -> bool:
-        """處理拖曳移動"""
-        if not hasattr(self.coordinator, 'is_being_dragged') or not self.coordinator.is_being_dragged:
-            return False
-        
-        # 更新位置
-        event_data = event.data if hasattr(event, 'data') else {}
-        
-        if 'x' in event_data and 'y' in event_data:
-            if hasattr(self.coordinator, 'position'):
-                self.coordinator.position.x = float(event_data['x'])
-                self.coordinator.position.y = float(event_data['y'])
-            
-            # 發射位置更新
-            if hasattr(self.coordinator, '_emit_position'):
-                self.coordinator._emit_position()
-        
-        return True
-    
-    def _handle_drag_end(self, event: Any) -> bool:
-        """處理拖曳結束"""
-        import time
-        
-        if not hasattr(self.coordinator, 'is_being_dragged'):
-            return False
-        
-        self.coordinator.is_being_dragged = False
-        
-        # 計算拖曳持續時間和位移
-        drag_duration = time.time() - self.drag_start_time
-        
-        # 判斷是否為投擲動作（快速移動）
-        is_throw = False
-        velocity = 0.0
-        if self.drag_start_position and hasattr(self.coordinator, 'position'):
-            import math
-            dx = self.coordinator.position.x - self.drag_start_position.x
-            dy = self.coordinator.position.y - self.drag_start_position.y
-            distance = math.hypot(dx, dy)
-            
-            # 計算平均速度
-            if drag_duration > 0:
-                velocity = distance / drag_duration
-                is_throw = velocity > self.THROW_VELOCITY_THRESHOLD
-        
-        # 根據最終位置判斷模式
-        if not is_throw and hasattr(self.coordinator, '_ground_y'):
-            gy = self.coordinator._ground_y()
-            current_height = gy - self.coordinator.position.y
-            height_threshold = 100
-            
-            if current_height > height_threshold and MovementMode:
-                self.coordinator.movement_mode = MovementMode.FLOAT
-                info_log(f"[DragHandler] 拖曳結束 → 浮空模式 (高度: {current_height:.1f})")
-            elif MovementMode:
-                self.coordinator.movement_mode = MovementMode.GROUND
-                self.coordinator.position.y = gy
-                info_log(f"[DragHandler] 拖曳結束 → 地面模式")
-        
-        # 如果是投擲，設置投擲模式和速度
-        if is_throw and MovementMode and Velocity:
-            self.coordinator.movement_mode = MovementMode.THROWN
-            # 計算投擲速度向量
-            if drag_duration > 0 and self.drag_start_position:
-                vx = (self.coordinator.position.x - self.drag_start_position.x) / drag_duration
-                vy = (self.coordinator.position.y - self.drag_start_position.y) / drag_duration
-                self.coordinator.velocity = Velocity(vx, vy)
-            info_log(f"[DragHandler] 檢測到投擲動作！速度: {velocity:.1f} px/s")
-        
-        # 恢復移動
-        if hasattr(self.coordinator, 'resume_movement'):
-            self.coordinator.resume_movement("拖曳中")
-        
-        # 切換到閒置行為
-        if hasattr(self.coordinator, '_switch_behavior'):
-            from ..core.state_machine import BehaviorState
-            self.coordinator._switch_behavior(BehaviorState.IDLE)
-        
-        # 更新位置
-        if hasattr(self.coordinator, '_emit_position'):
-            self.coordinator._emit_position()
-        
-        return True
 
 
 class FileDropHandler(InteractionHandler):
@@ -223,7 +55,16 @@ class FileDropHandler(InteractionHandler):
         self._is_receiving = False  # 是否正在播放 receive 動畫
         self._hover_animation_name: Optional[str] = None  # 當前 notice 動畫名稱
         
-        info_log("[FileDropHandler] 初始化完成")
+        # 🔧 從 config 讀取 file_drop 是否啟用
+        self._enabled = False
+        if hasattr(coordinator, 'config'):
+            file_drop_config = coordinator.config.get('file_drop', {})
+            self._enabled = file_drop_config.get('enabled', False)
+        
+        if self._enabled:
+            info_log("[FileDropHandler] 初始化完成（已啟用）")
+        else:
+            debug_log(2, "[FileDropHandler] 初始化完成（已禁用）")
     
     @property
     def is_in_file_interaction(self) -> bool:
@@ -254,6 +95,10 @@ class FileDropHandler(InteractionHandler):
         Args:
             event: 可以是字典 {'file_path': str} 或事件物件（有 event_type 屬性）
         """
+        # 🔧 檢查是否啟用
+        if not self._enabled:
+            return False
+        
         try:
             # 字典格式（直接來自 UI 的 FILE_DROP）
             if isinstance(event, dict):
@@ -419,10 +264,6 @@ class FileDropHandler(InteractionHandler):
             from core.working_context import working_context_manager
             working_context_manager.set_context_data("current_file_path", str(path_obj))
             debug_log(2, f"[FileDropHandler] 檔案路徑已儲存到 WorkingContext: {path_obj}")
-        except Exception as e:
-            error_log(f"[FileDropHandler] 儲存檔案路徑到 WorkingContext 失敗: {e}")
-            self._cleanup_file_interaction()
-            return False
             
             # 📢 發送事件通知其他模組
             if hasattr(self.coordinator, 'event_bus'):
@@ -443,7 +284,6 @@ class FileDropHandler(InteractionHandler):
             # 🔧 檢查是否有活躍的工作流正在等待檔案輸入
             # 如果有，發布 FILE_INPUT_PROVIDED 事件來觸發工作流繼續執行
             try:
-                from core.working_context import working_context_manager
                 workflow_waiting = working_context_manager.get_context_data('workflow_waiting_input')
                 workflow_context = working_context_manager.get_context_data('workflow_input_context')
                 
@@ -469,7 +309,12 @@ class FileDropHandler(InteractionHandler):
                     info_log(f"[FileDropHandler] 檔案已提交到工作流 {workflow_session_id}")
             except Exception as e:
                 error_log(f"[FileDropHandler] 檢查工作流狀態失敗: {e}")
-            
+                
+        except Exception as e:
+            error_log(f"[FileDropHandler] 儲存檔案路徑到 WorkingContext 失敗: {e}")
+            self._cleanup_file_interaction()
+            return False
+        
         return True
     
     def _on_receive_animation_finish(self, animation_name: str):

@@ -1,46 +1,17 @@
-advanced:
-  experimental:
-    enable_emotion_analysis: false
-    enable_gesture_control: false
-    enable_smart_suggestions: false
-    enable_voice_commands: false
-  logging:
-    enable_console_output: false
-    enable_split_logs: false
-    enabled: true
-    log_dir: logs
-    log_level: INFO
-    log_rotation_days: 7
-    max_log_size_mb: 50
-    save_logs: true
-  modules:
-    ani_enabled: true
-    llm_enabled: true
-    mem_enabled: true
-    mov_enabled: true
-    nlp_enabled: true
-    stt_enabled: true
-    sys_enabled: true
-    tts_enabled: true
-    ui_enabled: true
-  performance:
-    enable_hardware_acceleration: true
-    gc_interval: 300
-    max_fps: 60
-    reduce_animations_on_battery: true
 behavior:
   mischief:
-    easter_egg_enabled: true
     enabled: false
     intensity: medium
-    tease_frequency: 0.03
+    max_actions: 5
   movement:
     boundary_mode: barrier
+    easter_egg_enabled: true
     enable_cursor_tracking: true
     enable_throw_behavior: true
     ground_friction: 0.95
     max_throw_speed: 110.0
     movement_smoothing: true
+    tease_frequency: 0.03
   permissions:
     allow_app_launch: true
     allow_file_creation: true
@@ -76,7 +47,7 @@ interaction:
     require_user_input: false
   speech_input:
     enable_continuous_mode: false
-    enabled: true
+    enabled: false
     microphone_device_index: 1
     min_speech_duration: 0.3
     vad_sensitivity: 0.7
@@ -116,6 +87,8 @@ monitoring:
     enabled: false
     google_calendar_sync: false
     reminder_advance_time: 15
+  logs:
+    show_logs: true
   music:
     auto_play: false
     default_volume: 50

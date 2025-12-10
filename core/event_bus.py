@@ -90,6 +90,15 @@ class SystemEvent(Enum):
     
     # GS 推進事件（Phase 4）
     GS_ADVANCED = "gs_advanced"                                        # General Session 已推進（GSID 更新）
+    
+    # SLEEP 狀態事件
+    SLEEP_ENTERED = "sleep_entered"                                    # 系統已進入睡眠（觸發前端睡眠動畫）
+    SLEEP_EXITED = "sleep_exited"                                      # 系統離開睡眠（準備喚醒動畫/轉場）
+    WAKE_READY = "wake_ready"                                          # 喚醒完成，模組已重載完畢
+    
+    # ON_CALL 事件（使用者呼叫 UEP）
+    ON_CALL_TRIGGERED = "on_call_triggered"                            # 使用者觸發 on_call（暫停行為/狀態機）
+    ON_CALL_ENDED = "on_call_ended"                                    # 使用者結束 on_call（恢復行為/狀態機）
 
 
 @dataclass
@@ -152,10 +161,18 @@ class EventBus:
         if not self._processing_thread:
             return
         
-        self._stop_event.set()
-        if self._processing_thread.is_alive():
-            self._processing_thread.join(timeout=2.0)
-        info_log("[EventBus] 事件處理線程已停止")
+        try:
+            self._stop_event.set()
+            if self._processing_thread.is_alive():
+                self._processing_thread.join(timeout=5.0)
+                if self._processing_thread.is_alive():
+                    error_log("[EventBus] ⚠️ 事件處理線程未能正常結束")
+                else:
+                    info_log("[EventBus] ✅ 事件處理線程已正常停止")
+            else:
+                info_log("[EventBus] 事件處理線程已停止")
+        except Exception as e:
+            error_log(f"[EventBus] 停止線程失敗: {e}")
     
     def subscribe(self, event_type: SystemEvent, handler: Callable[[Event], None], 
                   handler_name: Optional[str] = None):

@@ -72,6 +72,19 @@ class CursorTrackingHandler(BaseHandler):
         Note:
             只有在角色處於 IDLE 狀態時才會開始追蹤，避免移動中的干擾
         """
+        # MISCHIEF 期間不進行滑鼠追蹤
+        if getattr(self.coordinator, "mischief_active", False):
+            return
+        # 🔧 出入場期間禁止追蹤
+        if hasattr(self.coordinator, '_is_entering') and self.coordinator._is_entering:
+            return
+        if hasattr(self.coordinator, '_is_leaving') and self.coordinator._is_leaving:
+            return
+        
+        # 🎤 ON_CALL 期間禁止追蹤
+        if hasattr(self.coordinator, '_on_call_active') and self.coordinator._on_call_active:
+            return
+        
         # 檔案互動期間完全禁止追蹤（包含已在追蹤的情況，交由 suspend 方法處理）
         # 檔案互動期間禁止開始追蹤（由 FileDropHandler 狀態提供）
         if hasattr(self.coordinator, '_file_drop_handler') and self.coordinator._file_drop_handler.is_in_file_interaction:
@@ -307,6 +320,28 @@ class CursorTrackingHandler(BaseHandler):
             # 最高優先級：入場期間完全禁止追蹤
             if hasattr(self.coordinator, '_is_entering') and self.coordinator._is_entering:
                 debug_log(3, "[CursorTrackingHandler] 入場動畫播放中，禁止追蹤")
+                return False
+            
+            # 🔧 最高優先級：離場期間完全禁止追蹤
+            if hasattr(self.coordinator, '_is_leaving') and self.coordinator._is_leaving:
+                debug_log(3, "[CursorTrackingHandler] 離場動畫播放中，禁止追蹤")
+                return False
+            
+            # 🌙 睡眠狀態下完全禁止追蹤（包括睡眠轉換期間）
+            if hasattr(self.coordinator, 'current_behavior_state'):
+                from modules.mov_module.core.state_machine import BehaviorState
+                if self.coordinator.current_behavior_state == BehaviorState.SLEEPING:
+                    debug_log(3, "[CursorTrackingHandler] 睡眠狀態，禁止追蹤")
+                    return False
+                
+# 🎤 ON_CALL 模式下完全禁止追蹤
+            if hasattr(self.coordinator, '_on_call_active') and self.coordinator._on_call_active:
+                debug_log(3, "[CursorTrackingHandler] ON_CALL 模式，禁止追蹤")
+                return False
+            
+            # 🌙 等待睡眠轉換期間也禁止追蹤（避免 f_to_g 播放時被中斷）
+            if hasattr(self.coordinator, '_pending_sleep_transition') and self.coordinator._pending_sleep_transition:
+                debug_log(3, "[CursorTrackingHandler] 睡眠轉換中，禁止追蹤")
                 return False
             
             # 優先檢查：禁止在 THROWN 或 DRAGGING 模式下追蹤

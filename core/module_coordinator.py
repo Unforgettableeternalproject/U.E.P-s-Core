@@ -336,9 +336,10 @@ class ModuleInvocationCoordinator:
         """
         循環完成事件處理器
         
-        處理兩個任務：
+        處理三個任務：
         1. 清理去重鍵 - 移除已完成 cycle 的所有 layer 鍵
-        2. 檢查會話結束 - 雙條件終止機制的第二個條件
+        2. 清理待機 GS 標記 - 若無狀態變更，表示 NLP 拒絕輸入
+        3. 檢查會話結束 - 雙條件終止機制的第二個條件
         
         注意: 這裡的 session_id 是 GS (General Session)
         """
@@ -358,7 +359,24 @@ class ModuleInvocationCoordinator:
                 info_log(f"[ModuleCoordinator] 🧹 CYCLE_COMPLETED 清理: 移除 {len(keys_to_remove)} 個去重鍵 (flow={session_id}:{cycle_index})")
                 debug_log(3, f"[ModuleCoordinator] 剩餘去重鍵數量: {len(self._layer_dedupe_keys)}")
             
-            # 任務 2: 檢查會話結束請求（雙條件終止機制）
+            # 任務 2: 清理待機 GS 標記（若有的話）
+            # 邏輯: 若循環完成但系統仍在 IDLE 狀態，表示 NLP 拒絕輸入（沒有 CALL 意圖）
+            # 此時應清除待機 GS 標記，防止系統進入阻滯狀態
+            try:
+                from core.states.state_manager import state_manager, UEPState
+                from core.controller import unified_controller
+                
+                current_state = state_manager.get_current_state()
+                if current_state == UEPState.IDLE and unified_controller and hasattr(unified_controller, '_pending_gs') and unified_controller._pending_gs:
+                    # 系統仍在 IDLE 狀態，表示 NLP 拒絕了待機的輸入
+                    debug_log(2, "[ModuleCoordinator] 🧹 循環完成但系統未進入非 IDLE 狀態，清除待機 GS 標記（NLP 拒絕輸入）")
+                    unified_controller._pending_gs = False
+                    unified_controller._pending_gs_data = None
+                    info_log("[ModuleCoordinator] ✅ 待機 GS 標記已清除（輸入被 NLP 拒絕，無 CALL 意圖）")
+            except Exception as e:
+                debug_log(2, f"[ModuleCoordinator] 清理待機 GS 標記失敗: {e}")
+            
+            # 任務 3: 檢查會話結束請求（雙條件終止機制）
             if self._pending_session_end:
                 pending = self._pending_session_end
                 pending_gs_id = pending.get('gs_id')
@@ -1054,24 +1072,17 @@ class ModuleInvocationCoordinator:
                     )
                 )
             else:
-                # WORK路徑：LLM + SYS (不需要 MEM)
-                info_log("[ModuleCoordinator] WORK 路徑: LLM + SYS (基於當前狀態)")
+                # WORK路徑：僅 LLM (透過 MCP function calling 直接調用工具)
+                # LLM 會通過 MCP 決定要調用哪個工具，無需 SYS 作為額外模組
+                info_log("[ModuleCoordinator] WORK 路徑: LLM (LLM 透過 MCP 直接調用工具)")
                 requests.extend([
                     ModuleInvocationRequest(
                         target_module="llm",
                         input_data=self._prepare_llm_input(input_data),
                         source_module="input_layer",
-                        reasoning="工作模式任務分析",
+                        reasoning="工作模式任務分析 - LLM 通過 MCP 執行工具",
                         layer=ProcessingLayer.PROCESSING,
                         priority=4
-                    ),
-                    ModuleInvocationRequest(
-                        target_module="sys",
-                        input_data=self._prepare_sys_input(input_data),
-                        source_module="input_layer",
-                        reasoning="系統工作流執行",
-                        layer=ProcessingLayer.PROCESSING,
-                        priority=3
                     )
                 ])
         else:

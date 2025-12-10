@@ -18,8 +18,9 @@ class AnimationPriority(IntEnum):
     動畫優先度等級（數字越大優先度越高）
     
     優先度規則：
-    - 系統循環（SYSTEM_CYCLE）和用戶互動（拖曳、投擲）優先度最高
-    - Tease 和特殊動作次之
+    - 入場/離場（ENTRY_EXIT）是系統最高級事件，不可被打斷
+    - 系統循環（SYSTEM_CYCLE）和用戶互動（拖曳、投擲）次之
+    - Tease 和特殊動作再次
     - Idle 和滑鼠追蹤優先度最低
     """
     # 最低優先度：背景行為
@@ -37,7 +38,8 @@ class AnimationPriority(IntEnum):
     SYSTEM_CYCLE = 50         # 系統循環（input/processing/output）
     USER_INTERACTION = 60     # 用戶互動（拖曳 struggle、投擲 throw）
     
-    # 最高優先度：強制動畫
+    # 最高優先度：系統事件
+    ENTRY_EXIT = 70           # 入場/離場動畫（最高級，全面暫停其他行為）
     FORCE_OVERRIDE = 100      # 強制覆蓋（immediate_interrupt=True）
 
 

@@ -220,7 +220,55 @@ class FrontendTestTab(BaseTestTab):
         
         ani_layout.addLayout(ani_buttons_layout)
         control_layout.addWidget(ani_group)
-        
+
+        # MISCHIEF 測試區
+        mischief_group = QGroupBox("😼 MISCHIEF 動作測試")
+        mischief_layout = QVBoxLayout(mischief_group)
+
+        hint = QLabel("測試 MISCHIEF 前端動畫定位：\n1) 點擊捷徑（click_f，錨點右上角）\n2) 推動視窗（push_*，對應四邊）\n3) 資料處理（data_processing_f，置中）")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: gray; font-size: 10px; padding: 4px;")
+        mischief_layout.addWidget(hint)
+
+        # 簡單參數輸入
+        form = QFormLayout()
+        self.mischief_x_input = QLineEdit("400")
+        self.mischief_y_input = QLineEdit("300")
+        self.mischief_w_input = QLineEdit("200")
+        self.mischief_h_input = QLineEdit("150")
+        form.addRow("Rect X:", self.mischief_x_input)
+        form.addRow("Rect Y:", self.mischief_y_input)
+        form.addRow("Rect W:", self.mischief_w_input)
+        form.addRow("Rect H:", self.mischief_h_input)
+        self.mischief_label_input = QLineEdit("")
+        form.addRow("Label (name/title):", self.mischief_label_input)
+        mischief_layout.addLayout(form)
+
+        btns = QHBoxLayout()
+        click_btn = QPushButton("👉 Click Shortcut (top-right)")
+        click_btn.clicked.connect(lambda: self._trigger_mischief("ClickShortcutAction", "click_f", edge=None, anchor="top_right"))
+        btns.addWidget(click_btn)
+
+        push_left_btn = QPushButton("⬅️ Push Left")
+        push_left_btn.clicked.connect(lambda: self._trigger_mischief("MoveWindowAction", "push_left", edge="left"))
+        btns.addWidget(push_left_btn)
+        push_right_btn = QPushButton("➡️ Push Right")
+        push_right_btn.clicked.connect(lambda: self._trigger_mischief("MoveWindowAction", "push_right", edge="right"))
+        btns.addWidget(push_right_btn)
+        push_up_btn = QPushButton("⬆️ Push Up")
+        push_up_btn.clicked.connect(lambda: self._trigger_mischief("MoveWindowAction", "push_up", edge="up"))
+        btns.addWidget(push_up_btn)
+        push_down_btn = QPushButton("⬇️ Push Down")
+        push_down_btn.clicked.connect(lambda: self._trigger_mischief("MoveWindowAction", "push_down", edge="down"))
+        btns.addWidget(push_down_btn)
+        mischief_layout.addLayout(btns)
+
+        data_btn = QPushButton("💾 Create File (data_processing_f)")
+        data_btn.clicked.connect(lambda: self._trigger_mischief("CreateTextFileAction", "data_processing_f", edge=None))
+        mischief_layout.addWidget(data_btn)
+
+        control_layout.addWidget(mischief_group)
+
         # MOV 模組區域
         mov_group = QGroupBox("🚀 MOV 模組測試")
         mov_layout = QVBoxLayout(mov_group)
@@ -237,7 +285,61 @@ class FrontendTestTab(BaseTestTab):
         
         mov_layout.addLayout(mov_buttons_layout)
         control_layout.addWidget(mov_group)
-        
+
+        # MISCHIEF 測試區
+        mischief_group = QGroupBox("😼 MISCHIEF 動作測試")
+        mischief_layout = QVBoxLayout(mischief_group)
+
+        hint = QLabel("測試 MISCHIEF 前端動畫定位：\n- Click: click_f (錨點右上)\n- Push: push_left/right/up/down (視窗邊)\n- File: data_processing_f (置中)")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: gray; font-size: 10px; padding: 4px;")
+        mischief_layout.addWidget(hint)
+
+        form = QFormLayout()
+        self.mischief_x_input = QLineEdit("400")
+        self.mischief_y_input = QLineEdit("300")
+        self.mischief_w_input = QLineEdit("200")
+        self.mischief_h_input = QLineEdit("150")
+        form.addRow("Rect X:", self.mischief_x_input)
+        form.addRow("Rect Y:", self.mischief_y_input)
+        form.addRow("Rect W:", self.mischief_w_input)
+        form.addRow("Rect H:", self.mischief_h_input)
+        mischief_layout.addLayout(form)
+
+        # 動畫超時
+        timeout_layout = QHBoxLayout()
+        timeout_layout.addWidget(QLabel("動畫等待(s):"))
+        self.mischief_timeout_input = QLineEdit("1.5")
+        self.mischief_timeout_input.setFixedWidth(60)
+        timeout_layout.addWidget(self.mischief_timeout_input)
+        mischief_layout.addLayout(timeout_layout)
+
+        btns_row1 = QHBoxLayout()
+        click_btn = QPushButton("👉 Click (top-right)")
+        click_btn.clicked.connect(lambda: self._trigger_mischief("ClickShortcutAction", "click_f", edge=None, anchor="top_right"))
+        btns_row1.addWidget(click_btn)
+        data_btn = QPushButton("💾 Create File")
+        data_btn.clicked.connect(lambda: self._trigger_mischief("CreateTextFileAction", "data_processing_f", edge=None, anchor="center"))
+        btns_row1.addWidget(data_btn)
+        mischief_layout.addLayout(btns_row1)
+
+        btns_row2 = QHBoxLayout()
+        push_left_btn = QPushButton("⬅️ Push Left")
+        push_left_btn.clicked.connect(lambda: self._trigger_mischief("MoveWindowAction", "push_left", edge="left"))
+        btns_row2.addWidget(push_left_btn)
+        push_right_btn = QPushButton("➡️ Push Right")
+        push_right_btn.clicked.connect(lambda: self._trigger_mischief("MoveWindowAction", "push_right", edge="right"))
+        btns_row2.addWidget(push_right_btn)
+        push_up_btn = QPushButton("⬆️ Push Up")
+        push_up_btn.clicked.connect(lambda: self._trigger_mischief("MoveWindowAction", "push_up", edge="up"))
+        btns_row2.addWidget(push_up_btn)
+        push_down_btn = QPushButton("⬇️ Push Down")
+        push_down_btn.clicked.connect(lambda: self._trigger_mischief("MoveWindowAction", "push_down", edge="down"))
+        btns_row2.addWidget(push_down_btn)
+        mischief_layout.addLayout(btns_row2)
+
+        control_layout.addWidget(mischief_group)
+
         # 整合測試區域
         integration_group = QGroupBox("🔗 整合測試")
         integration_layout = QVBoxLayout(integration_group)
@@ -332,6 +434,50 @@ class FrontendTestTab(BaseTestTab):
             "frontend_test_full": "完整前端測試",
             "frontend_integration_test": "前端整合測試"
         }
+
+    def _trigger_mischief(self, action_id: str, animation: str, edge: Optional[str] = None, anchor: Optional[str] = None):
+        """觸發 MISCHIEF 前端事件"""
+        try:
+            mov_status = self.module_manager.get_module_status("mov")
+            if not mov_status.get('loaded', False):
+                self.add_result("❌ MOV 模組未載入，請先載入前端模組", "ERROR")
+                return
+            mov_module = mov_status.get('instance')
+
+            rect = {
+                "x": float(self.mischief_x_input.text() or 0),
+                "y": float(self.mischief_y_input.text() or 0),
+                "width": float(self.mischief_w_input.text() or 0),
+                "height": float(self.mischief_h_input.text() or 0),
+            }
+
+            payload = {
+                "command": "mischief_event",
+                "action_id": action_id,
+                "animation": animation,
+                "rect": rect,
+            }
+            label = self.mischief_label_input.text().strip()
+            if label:
+                payload["label"] = label
+            if edge:
+                payload["edge"] = edge
+            if anchor:
+                payload["anchor"] = anchor
+            try:
+                payload["anim_timeout"] = float(self.mischief_timeout_input.text() or 1.5)
+            except Exception:
+                payload["anim_timeout"] = 1.5
+
+            result = mov_module.handle_frontend_request(payload)
+            if result.get("success"):
+                self.add_result(f"✅ MISCHIEF 事件已觸發: {action_id} ({animation})", "SUCCESS")
+                self.add_result(f"   rect={rect}, edge={edge}, anchor={anchor}", "INFO")
+            else:
+                self.add_result(f"❌ MISCHIEF 事件觸發失敗: {result.get('error', 'unknown')}", "ERROR")
+
+        except Exception as e:
+            self.add_result(f"❌ 觸發 MISCHIEF 事件時發生錯誤: {str(e)}", "ERROR")
     
     def refresh_status(self):
         """重新整理模組狀態"""

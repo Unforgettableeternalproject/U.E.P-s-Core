@@ -62,7 +62,7 @@ cursor_head_turn_sensitivity: 9  # 轉頭靈敏度（角度/幀），影響 turn
 entry_behavior:
   enabled: true
   mode: "FLOAT"                  # 入場後的模式 (GROUND/FLOAT)
-  start_position: "top_left"   # 起始位置 (top_center/bottom_center/left/right/center)
+  start_position: "center"   # 起始位置 (top_center/bottom_center/left/right/center)
   
 exit_behavior:
   enabled: false                 # 出場功能預留
@@ -114,7 +114,7 @@ interaction:
     max_velocity: 2000.0  # [已棄用] 最大投擲速度限制
     gravity_multiplier: 1.2  # [已棄用] 投擲時的重力倍數
   file_drop:
-    enabled: false  # 預留功能
+    enabled: true   # 啟用檔案拖放功能
     accept_types:
       - ".txt"
       - ".md"
@@ -150,6 +150,7 @@ animation_priority:
     TEASE: 45                # Tease 動畫
     SYSTEM_CYCLE: 50         # 系統循環（input/processing/output）
     USER_INTERACTION: 60     # 用戶互動（拖曳 struggle、投擲 throw）
+    ENTRY_EXIT: 70           # 入場/離場動畫（最高級系統事件）
     FORCE_OVERRIDE: 100      # 強制覆蓋（immediate_interrupt=True）
   
   # 動畫來源優先度映射（可選：用於手動指定來源的預設優先度）
@@ -164,7 +165,9 @@ animation_priority:
     file_handler: USER_INTERACTION  # 檔案拖曳接收
     cursor_tracking: CURSOR_TRACKING
     tease_system: TEASE
-    easter_egg: EASTER_EGG
+    easter_egg: EASTER_EGG 
+    entry_animation: ENTRY_EXIT      # 入場動畫（最高優先度，全面禁用 handler）
+    exit_animation: ENTRY_EXIT       # 離場動畫（最高優先度，全面禁用 handler）
   
   # 優先度鎖定設定
   locking:

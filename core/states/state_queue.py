@@ -122,6 +122,14 @@ class StateQueueManager:
         # 註冊 WORK 狀態處理器
         self.register_state_handler(UEPState.WORK, self._handle_work_state)
         self.register_completion_handler(UEPState.WORK, self._handle_work_completion)
+        
+        # 註冊 SLEEP 狀態處理器
+        self.register_state_handler(UEPState.SLEEP, self._handle_sleep_state)
+        self.register_completion_handler(UEPState.SLEEP, self._handle_sleep_completion)
+
+        # 註冊 MISCHIEF 狀態處理器（一次性無會話狀態）
+        self.register_state_handler(UEPState.MISCHIEF, self._handle_mischief_state)
+        self.register_completion_handler(UEPState.MISCHIEF, self._handle_mischief_completion)
     
     def _get_session_manager(self):
         """獲取統一 Session 管理器 (延遲導入)"""
@@ -290,6 +298,125 @@ class StateQueueManager:
             
         except Exception as e:
             error_log(f"[StateQueue] 處理 WORK 完成時發生錯誤: {e}")
+    
+    def _handle_sleep_state(self, queue_item: StateQueueItem):
+        """處理 SLEEP 狀態 - 通知狀態管理器進入睡眠狀態
+        
+        SLEEP 狀態特點：
+        - 不創建會話（CS/WS）
+        - 釋放系統資源（卸載模組）
+        - 由 boredom 或手動觸發
+        - 需要等待喚醒才能繼續
+        """
+        try:
+            from core.states.state_manager import state_manager
+            
+            info_log(f"[StateQueue] 😴 開始處理 SLEEP 狀態")
+            debug_log(2, f"[StateQueue] 觸發原因: {queue_item.trigger_content}")
+            debug_log(2, f"[StateQueue] 元數據: {queue_item.metadata}")
+            
+            # 檢查是否有活躍的 GS（不應該有，但安全起見再檢查）
+            try:
+                from core.sessions.session_manager import session_manager as gs_manager
+                active_gs = gs_manager.get_current_general_session()
+                
+                if active_gs:
+                    error_log(f"[StateQueue] ⚠️ 進入 SLEEP 時檢測到活躍 GS: {active_gs.session_id}")
+                    error_log("[StateQueue] 這違反了設計規範（no GS = can sleep）")
+                    # 強制完成 GS
+                    info_log("[StateQueue] 嘗試強制結束活躍 GS...")
+                    gs_manager.end_general_session(active_gs.session_id, reason="forced_by_sleep")
+            except Exception as e:
+                debug_log(3, f"[StateQueue] 檢查 GS 時發生錯誤（可能正常）: {e}")
+            
+            # 準備 SLEEP 上下文
+            sleep_context = {
+                "trigger_reason": queue_item.trigger_content,
+                "metadata": queue_item.metadata,
+                "boredom_level": queue_item.metadata.get("boredom_level", 0.0),
+                "inactive_duration": queue_item.metadata.get("inactive_duration", 0.0),
+                "manual_trigger": queue_item.metadata.get("manual_trigger", False)
+            }
+            
+            info_log("[StateQueue] 📤 通知 StateManager 進入 SLEEP 狀態")
+            
+            # 通知狀態管理器進入睡眠狀態
+            # StateManager 會調用 SleepManager.enter_sleep()
+            state_manager.set_state(UEPState.SLEEP, sleep_context)
+            
+            info_log("[StateQueue] ✅ SLEEP 狀態已啟動")
+            debug_log(2, "[StateQueue] 💡 SLEEP 狀態不自動完成，需要喚醒才會繼續")
+            
+            # ⚠️ SLEEP 狀態不自動完成！
+            # 只有通過 wake_api.wake_up_system() 才會完成並推進到下一個狀態
+            # 這是 SLEEP 與 CHAT/WORK 的主要區別
+            
+        except Exception as e:
+            error_log(f"[StateQueue] ❌ 處理 SLEEP 狀態時發生錯誤: {e}")
+            import traceback
+            error_log(traceback.format_exc())
+            # SLEEP 進入失敗，標記完成並繼續下一個狀態
+            self.complete_current_state(success=False, result_data={"error": str(e)})
+
+    def _handle_mischief_state(self, queue_item: StateQueueItem):
+        """處理 MISCHIEF 狀態 - 直接交給 StateManager 執行一次搗蛋流程"""
+        try:
+            from core.states.state_manager import state_manager
+            from core.working_context import working_context_manager
+
+            info_log("[StateQueue] 🐾 開始處理 MISCHIEF 狀態（系統自主搗蛋）")
+            debug_log(2, f"[StateQueue] 觸發原因: {queue_item.trigger_content}")
+            debug_log(3, f"[StateQueue] 元數據: {queue_item.metadata}")
+
+            # 標記跳過輸入層，本循環不啟動 STT/文字輸入
+            working_context_manager.set_skip_input_layer(True, reason="mischief_state")
+
+            # 準備上下文（傳遞觸發原因與測試旗標）
+            mischief_context = {
+                "trigger_reason": queue_item.trigger_content,
+                **queue_item.metadata
+            }
+
+            state_manager.set_state(UEPState.MISCHIEF, mischief_context)
+
+            # 根據剩餘行為決定是否需要下一循環繼續
+            if state_manager.has_pending_mischief_actions():
+                # 重新排入 MISCHIEF 狀態（保持相同優先權）
+                self.add_state(
+                    state=UEPState.MISCHIEF,
+                    trigger_content="mischief_continue",
+                    context_content=queue_item.context_content,
+                    metadata=queue_item.metadata
+                )
+                debug_log(2, "[StateQueue] MISCHIEF 尚有行為待執行，已重新排入下一循環")
+
+            # 標記當前循環完成
+            self.complete_current_state(success=True)
+
+        except Exception as e:
+            error_log(f"[StateQueue] ❌ 處理 MISCHIEF 狀態時發生錯誤: {e}")
+            import traceback
+            error_log(traceback.format_exc())
+            self.complete_current_state(success=False, result_data={"error": str(e)})
+
+    def _handle_mischief_completion(self, queue_item: StateQueueItem, success: bool):
+        """處理 MISCHIEF 完成（目前無額外清理需求）"""
+        debug_log(2, f"[StateQueue] MISCHIEF 狀態完成: {'成功' if success else '失敗'}")
+    
+    def _handle_sleep_completion(self, queue_item: StateQueueItem, success: bool):
+        """處理 SLEEP 狀態完成
+        
+        注意：這個方法只在喚醒時被調用（由 wake_api 觸發）
+        """
+        try:
+            if success:
+                info_log(f"[StateQueue] 🌅 SLEEP 狀態成功完成（系統已喚醒）")
+                debug_log(2, f"[StateQueue] 睡眠時長: {queue_item.completed_at - queue_item.started_at if queue_item.started_at and queue_item.completed_at else 'Unknown'}")
+            else:
+                error_log(f"[StateQueue] ❌ SLEEP 狀態異常結束")
+            
+        except Exception as e:
+            error_log(f"[StateQueue] 處理 SLEEP 完成時發生錯誤: {e}")
     
     def interrupt_chat_for_work(self, command_task: str, 
                                trigger_user: Optional[str] = None,
@@ -748,7 +875,12 @@ class StateQueueManager:
         
         # 清理當前狀態，但不自動推進
         self.current_item = None
-        # current_state 保持原樣，等待 SystemLoop 推進
+        
+        # 🔧 修復：如果佇列為空，應立即重置為 IDLE，否則 add_state 無法自動處理
+        if not self.queue:
+            debug_log(2, f"[StateQueue] 佇列已空，重置狀態: {self.current_state.value} -> IDLE")
+            self.current_state = UEPState.IDLE
+        # 否則 current_state 保持原樣，等待 SystemLoop 推進
         
         self._save_queue()
     
@@ -834,20 +966,16 @@ class StateQueueManager:
                 with open(self.storage_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 
-                # 載入當前狀態
-                self.current_state = UEPState(data.get("current_state", "idle"))
+                # ✅ 系統啟動時應從乾淨狀態開始，丟棄遺留的項目
+                debug_log(2, f"[StateQueue] 檢測到持久化佇列資料: 當前狀態={data.get('current_state')}, 佇列項目數={len(data.get('queue', []))}")
+                debug_log(2, "[StateQueue] 系統啟動，清空遺留的佇列項目")
                 
-                # 載入當前項目
-                if data.get("current_item"):
-                    self.current_item = StateQueueItem.from_dict(data["current_item"])
-                else:
-                    # 如果沒有當前執行項目，確保狀態是IDLE
-                    self.current_state = UEPState.IDLE
+                # 始終從 IDLE 開始
+                self.current_state = UEPState.IDLE
+                self.current_item = None
+                self.queue = []
                 
-                # 載入佇列
-                self.queue = [StateQueueItem.from_dict(item) for item in data.get("queue", [])]
-                
-                info_log(f"[StateQueue] 載入佇列: {len(self.queue)} 個項目, 當前狀態: {self.current_state.value}")
+                info_log(f"[StateQueue] 佇列已重置: 0 個項目, 當前狀態: idle")
                 
         except Exception as e:
             error_log(f"[StateQueue] 載入佇列失敗: {e}")

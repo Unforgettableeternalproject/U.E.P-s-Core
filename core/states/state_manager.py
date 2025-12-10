@@ -1,8 +1,9 @@
-﻿# core/state_manager.py
+# core/state_manager.py
 from enum import Enum, auto
 from typing import Dict, Any, Optional, List, Callable
 import time
 from core.status_manager import status_manager
+from configs.user_settings_manager import user_settings_manager  # 導入實例而非模組
 from utils.debug_helper import debug_log, info_log, error_log
 from core.working_context import ContextType
 from core.sessions.workflow_session import WSTaskType
@@ -32,6 +33,8 @@ class StateManager:
         self._current_session_id: Optional[str] = None
         self._state_change_callbacks: List[Callable[[UEPState, UEPState], None]] = []
         self.status_manager = status_manager
+        # MISCHIEF 跨循環運行時的計畫與進度
+        self._mischief_runtime: Optional[Dict[str, Any]] = None
         # 與 StatusManager 整合
         self._setup_status_integration()
         # 訂閱會話結束事件
@@ -123,6 +126,66 @@ class StateManager:
             context: 狀態變化上下文
         """
         try:
+            # 🔧 GS 生命週期管理 - 標記階段到實際創建階段
+            # 設計: 當系統從 IDLE 進入非 IDLE 狀態時，檢查是否有待機的 GS 標記
+            # 若有，則在此時創建實際 GS（意味著 NLP 已驗證 CALL 意圖）
+            if old_state == UEPState.IDLE and new_state != UEPState.IDLE:
+                # 系統正在進入非 IDLE 狀態（意味著 NLP 驗證通過）
+                try:
+                    from core.controller import unified_controller
+                    if unified_controller and hasattr(unified_controller, '_pending_gs') and unified_controller._pending_gs:
+                        # 有待機的 GS，現在創建實際 GS
+                        pending_data = unified_controller._pending_gs_data or {}
+                        gs_trigger_event = {
+                            "user_input": pending_data.get("user_input", ""),
+                            "input_type": pending_data.get("input_type", "text"),
+                            "timestamp": pending_data.get("timestamp", time.time())
+                        }
+                        
+                        # 創建實際 GS
+                        from core.sessions.session_manager import session_manager
+                        from core.working_context import working_context_manager
+                        
+                        current_gs_id = session_manager.start_general_session(
+                            pending_data.get("input_type", "text") + "_input", 
+                            gs_trigger_event
+                        )
+                        
+                        if current_gs_id:
+                            unified_controller.total_gs_sessions += 1
+                            # 設置到全局上下文
+                            working_context_manager.global_context_data['current_gs_id'] = current_gs_id
+                            working_context_manager.global_context_data['current_cycle_index'] = 0
+                            debug_log(2, f"[StateManager] 🔄 GS 已由待機標記創建: {current_gs_id} (輸入類型: {pending_data.get('input_type')})")
+                            info_log(f"[StateManager] GS 從待機標記轉為實際 GS: {current_gs_id}")
+                        
+                        # 清除待機標記
+                        unified_controller._pending_gs = False
+                        unified_controller._pending_gs_data = None
+                        
+                except Exception as e:
+                    debug_log(1, f"[StateManager] GS 創建失敗（從待機標記）: {e}")
+                    # 清除標記即使創建失敗
+                    try:
+                        from core.controller import unified_controller
+                        if unified_controller:
+                            unified_controller._pending_gs = False
+                            unified_controller._pending_gs_data = None
+                    except:
+                        pass
+            
+            # 發布 STATE_CHANGED 事件給前端模組
+            from core.event_bus import event_bus, SystemEvent
+            event_bus.publish(
+                SystemEvent.STATE_CHANGED,
+                data={
+                    "old_state": old_state,
+                    "new_state": new_state
+                },
+                source="state_manager"
+            )
+            debug_log(2, f"[StateManager] 已發布 STATE_CHANGED 事件: {old_state.name} → {new_state.name}")
+            
             # 記錄狀態訪問到當前 GS
             self._record_state_visit(new_state)
             
@@ -399,12 +462,16 @@ class StateManager:
         """
         try:
             debug_log(1, "[StateManager] 進入 Mischief 狀態 - 系統將進行自主活動")
+
+            # 確保存在 GS，便於 MISCHIEF 被佇列處理與結束時同步終結 GS。
+            self._ensure_gs_exists()
             
             # 取消當前會話（Mischief 不需要會話）
             self._cleanup_sessions()
             
-            # 更新系統數值 - Mischief 狀態時 Helpfulness 為負值
-            self._update_status_for_mischief()
+            # 更新系統數值 - Mischief 狀態時 Helpfulness 為負值（僅第一次進入）
+            if self._mischief_runtime is None:
+                self._update_status_for_mischief()
             
             # 觸發 Mischief 狀態的特殊行為
             self._trigger_mischief_behaviors(context)
@@ -428,11 +495,24 @@ class StateManager:
             # 取消當前會話（Sleep 不需要會話）
             self._cleanup_sessions()
             
-            # 執行資源釋放操作
-            self._prepare_system_sleep(context)
+            # 使用 SleepManager 進入休眠
+            from core.states.sleep_manager import sleep_manager
             
-            # 降低系統活動度
-            self._reduce_system_activity()
+            # 準備休眠上下文
+            sleep_context = {
+                "previous_state": self._state.value,
+                "trigger_reason": context.get("trigger_reason", "system_idle") if context else "system_idle",
+                "boredom_level": context.get("boredom_level", 0.0) if context else 0.0,
+                "inactive_duration": context.get("inactive_duration", 0.0) if context else 0.0
+            }
+            
+            # 進入休眠
+            success = sleep_manager.enter_sleep(sleep_context)
+            
+            if success:
+                debug_log(1, "[StateManager] ✅ 系統已成功進入休眠狀態")
+            else:
+                debug_log(1, "[StateManager] ❌ 進入休眠狀態失敗")
             
         except Exception as e:
             debug_log(1, f"[StateManager] 處理 Sleep 狀態失敗: {e}")
@@ -512,10 +592,10 @@ class StateManager:
                     })
                     return True
             
-            # 檢查 Mischief 狀態條件
-            # TODO: MISCHIEF 狀態尚未完全實作，暫時禁用自動觸發
-            # 避免干擾正常的 CHAT 和 WORK 流程
-            mischief_enabled = False  # 設為 True 以啟用 MISCHIEF 狀態
+            # 檢查 Mischief 狀態條件（遵循 user_settings）
+            mischief_enabled = user_settings_manager.get(
+                "behavior.mischief.enabled", False
+            )
             
             if mischief_enabled:
                 mischief_conditions = [
@@ -562,34 +642,276 @@ class StateManager:
             debug_log(1, f"[StateManager] 更新 Mischief 狀態數值失敗: {e}")
     
     def _trigger_mischief_behaviors(self, context: Optional[Dict[str, Any]] = None):
-        """觸發 Mischief 狀態的特殊行為"""
+        """
+        觸發 Mischief 狀態的特殊行為（跨循環，一次執行一個行為）
+        
+        返回：
+            True  - 已完成並退出狀態
+            False - 尚有行為待執行，需下一循環
+        """
         try:
-            # TODO: 實作搗蛋行為邏輯
-            # 例如：隨機動畫、音效、自主對話等
-            debug_log(2, "[StateManager] Mischief 行為觸發 (待實作具體行為)")
-            
+            from configs.user_settings_manager import user_settings_manager
+
+            # 檢查 MISCHIEF 是否啟用
+            mischief_enabled = user_settings_manager.get("behavior.mischief.enabled", False)
+            if not mischief_enabled:
+                info_log("[StateManager] MISCHIEF 狀態已觸發，但用戶未啟用此功能")
+                self._clear_mischief_runtime()
+                self.exit_special_state("mischief_disabled")
+                return True
+
+            # 規劃：僅在 runtime 尚未建立時執行
+            if self._mischief_runtime is None:
+                max_actions = user_settings_manager.get("behavior.mischief.max_actions", 5)
+                intensity = user_settings_manager.get("behavior.mischief.intensity", "medium")
+
+                info_log(f"[StateManager] 開始 MISCHIEF 行為規劃 (max_actions={max_actions}, intensity={intensity})")
+
+                # 優先使用 context 中的數值（用於測試），否則從 status_manager 獲取
+                status_dict = self.status_manager.get_status_dict()
+                mood: float = float(context.get("mood", status_dict.get("mood", 0.0))) if context else status_dict.get("mood", 0.0)
+                boredom: float = float(context.get("boredom", status_dict.get("boredom", 0.0))) if context else status_dict.get("boredom", 0.0)
+                pride: float = float(context.get("pride", status_dict.get("pride", 0.0))) if context else status_dict.get("pride", 0.0)
+
+                from modules.sys_module.actions.mischief.loader import mischief_executor
+
+                available_actions_json = mischief_executor.get_available_actions_for_llm(mood, intensity)
+
+                action_plan = self._call_llm_for_mischief_planning(
+                    available_actions_json,
+                    max_actions,
+                    mood,
+                    boredom,
+                    pride,
+                    intensity,
+                    context
+                )
+
+                if not action_plan:
+                    info_log("[StateManager] LLM 未返回有效的行為規劃")
+                    self.exit_special_state("no_plan")
+                    return True
+
+                success, actions_list = mischief_executor.parse_llm_response(action_plan)
+                if not success or not actions_list:
+                    info_log("[StateManager] 行為規劃解析失敗")
+                    self.exit_special_state("parse_failed")
+                    return True
+
+                actions_list = actions_list[:max_actions]
+                self._mischief_runtime = {
+                    "actions": actions_list,
+                    "next_index": 0,
+                    "results": {
+                        "total": 0,
+                        "success": 0,
+                        "failed": 0,
+                        "skipped": 0,
+                        "details": [],
+                        "speech_texts": []
+                    },
+                    "intensity": intensity
+                }
+                info_log(f"[StateManager] MISCHIEF 規劃完成，共 {len(actions_list)} 個行為")
+
+            # 執行當前循環的一個行為
+            runtime = self._mischief_runtime or {}
+            actions_list = runtime.get("actions", [])
+            next_index = runtime.get("next_index", 0)
+
+            if next_index >= len(actions_list):
+                self._finalize_mischief(runtime, context)
+                return True
+
+            from modules.sys_module.actions.mischief.loader import mischief_executor
+
+            current_action = actions_list[next_index]
+            info_log(f"[StateManager] MISCHIEF 循環執行行為 {next_index + 1}/{len(actions_list)}: {current_action.get('action_id')}")
+
+            step_results = mischief_executor.execute_actions([current_action])
+
+            agg = runtime["results"]
+            agg["total"] += step_results.get("total", 0)
+            agg["success"] += step_results.get("success", 0)
+            agg["failed"] += step_results.get("failed", 0)
+            agg["skipped"] += step_results.get("skipped", 0)
+            agg["details"].extend(step_results.get("details", []))
+            agg["speech_texts"].extend(step_results.get("speech_texts", []))
+
+            speech_texts = step_results.get("speech_texts", [])
+            if speech_texts:
+                try:
+                    from core.framework import core_framework
+                    tts_module = core_framework.get_module('tts')
+                    if tts_module:
+                        for text in speech_texts:
+                            tts_module.handle({
+                                "text": text,
+                                "session_id": None,
+                                "emotion": "neutral",
+                                "system_initiated": True
+                            })
+                        debug_log(2, f"[StateManager] 已提交 {len(speech_texts)} 條 MISCHIEF 語音文字給 TTS")
+                except Exception as tts_err:
+                    debug_log(1, f"[StateManager] MISCHIEF 語音提交失敗: {tts_err}")
+
+            runtime["next_index"] = next_index + 1
+            self._mischief_runtime = runtime
+
+            if runtime["next_index"] >= len(actions_list):
+                self._finalize_mischief(runtime, context)
+                return True
+
+            return False
+
         except Exception as e:
-            debug_log(1, f"[StateManager] 觸發 Mischief 行為失敗: {e}")
+            error_log(f"[StateManager] 觸發 Mischief 行為失敗: {e}")
+            self.exit_special_state("error")
+            self._clear_mischief_runtime()
+            return True
     
-    def _prepare_system_sleep(self, context: Optional[Dict[str, Any]] = None):
-        """準備系統休眠"""
+    def _finalize_mischief(self, runtime: Dict[str, Any], context: Optional[Dict[str, Any]] = None):
+        """完成 MISCHIEF 後的收尾與數值調整"""
         try:
-            # TODO: 實作系統資源釋放邏輯
-            # 例如：暫停不必要的服務、清理快取等
-            debug_log(2, "[StateManager] 準備系統休眠 (待實作資源釋放)")
-            
+            results = runtime.get("results", {})
+            self._adjust_status_after_mischief(results, context)
         except Exception as e:
-            debug_log(1, f"[StateManager] 準備系統休眠失敗: {e}")
+            error_log(f"[StateManager] MISCHIEF 收尾計算失敗: {e}")
+        finally:
+            self._clear_mischief_runtime()
+            self.exit_special_state("mischief_completed")
+
+    def _clear_mischief_runtime(self):
+        """清除 MISCHIEF 跨循環計畫/進度"""
+        self._mischief_runtime = None
+
+    def has_pending_mischief_actions(self) -> bool:
+        """是否仍有 MISCHIEF 行為待執行"""
+        runtime = self._mischief_runtime
+        return bool(runtime) and runtime.get("next_index", 0) < len(runtime.get("actions", []))
     
-    def _reduce_system_activity(self):
-        """降低系統活動度"""
+    def _call_llm_for_mischief_planning(
+        self,
+        available_actions_json: str,
+        max_actions: int,
+        mood: float,
+        boredom: float,
+        pride: float,
+        intensity: str,
+        context: Optional[Dict[str, Any]] = None
+    ) -> Optional[str]:
+        """
+        調用 LLM 生成 MISCHIEF 行為規劃
+        
+        Returns:
+            LLM 返回的 JSON 字串（包含行為序列）
+        """
         try:
-            # TODO: 實作降低系統活動的邏輯
-            # 例如：降低監控頻率、暫停背景任務等
-            debug_log(2, "[StateManager] 降低系統活動度 (待實作)")
+            from core.framework import core_framework
+            
+            llm_module = core_framework.get_module("llm")
+            
+            if not llm_module:
+                error_log("[StateManager] LLM 模組未找到")
+                return None
+            
+            # 構建 prompt
+            trigger_reason = context.get("trigger_reason", "unknown") if context else "unknown"
+            
+            system_prompt = (
+                "You are a MISCHIEF action planner. Return ONLY valid JSON, no explanations or extra text.\n"
+                "This is a system-initiated, non-chat mode - do not generate conversational text.\n"
+                f"Current system state: Mood={mood:.2f}, Boredom={boredom:.2f}, Pride={pride:.2f}\n"
+                f"Mischief intensity: {intensity}, Max actions: {max_actions}, Trigger: {trigger_reason}\n"
+                "Guidelines:\n"
+                "- Select actions that match the current mood (negative mood = more mischievous)\n"
+                "- Respect the intensity level - avoid dangerous or overly disruptive actions\n"
+                "- Return pure JSON only, starting with { and ending with }\n"
+            )
+            
+            user_message = (
+                f"Available actions:\n{available_actions_json}\n\n"
+                "Generate a mischief plan in this EXACT JSON format:\n"
+                '{"actions": [{"action_id": "ActionName", "params": {}}]}\n\n'
+                "Requirements:\n"
+                "- Use ONLY action_id values from the available actions list above\n"
+                "- Include all required parameters in the params object\n"
+                "- Select 1-" + str(max_actions) + " actions total\n"
+                "- Return ONLY the JSON object, no markdown, no code blocks, no explanations\n"
+                "- Start your response immediately with the opening brace {"
+            )
+            
+            # 調用 LLM
+            response = llm_module.generate_mischief_plan(
+                system_prompt=system_prompt,
+                user_message=user_message,
+                temperature=0.9,  # 高溫度以獲得更有創意的行為
+                max_tokens=1000
+            )
+            
+            if response:
+                debug_log(2, f"[StateManager] LLM 返回規劃：{response[:200]}...")
+                return response
+            else:
+                error_log("[StateManager] LLM 未返回有效回應")
+                return None
             
         except Exception as e:
-            debug_log(1, f"[StateManager] 降低系統活動度失敗: {e}")
+            error_log(f"[StateManager] 調用 LLM 規劃失敗: {e}")
+            return None
+    
+    def _adjust_status_after_mischief(
+        self,
+        results: Dict[str, Any],
+        context: Optional[Dict[str, Any]] = None
+    ):
+        """
+        根據 MISCHIEF 執行結果調整系統數值
+        
+        邏輯：
+        - 成功的搗蛋 → 提升 mood，降低 boredom
+        - 失敗過多 → 輕微降低 mood
+        - 執行行為本身 → 小幅提升 pride（嘗試做些事）
+        """
+        try:
+            total = results.get("total", 0)
+            success = results.get("success", 0)
+            failed = results.get("failed", 0)
+            
+            if total == 0:
+                return
+            
+            # 計算成功率
+            success_rate = success / total if total > 0 else 0
+            
+            # 根據成功率調整 mood
+            if success_rate > 0.7:
+                # 大部分成功，心情變好
+                mood_delta = 0.15
+                self.status_manager.update_mood(mood_delta, "mischief_success")
+            elif success_rate > 0.3:
+                # 部分成功
+                mood_delta = 0.08
+                self.status_manager.update_mood(mood_delta, "mischief_partial")
+            else:
+                # 失敗居多，略微失落
+                mood_delta = -0.05
+                self.status_manager.update_mood(mood_delta, "mischief_failed")
+            
+            # 降低無聊感（做了些事情）
+            boredom_delta = -0.20
+            self.status_manager.update_boredom(boredom_delta, "mischief_activity")
+            
+            # 小幅提升 pride（完成了自主活動）
+            if success > 0:
+                pride_delta = 0.10
+                self.status_manager.update_pride(pride_delta, "mischief_completion")
+            
+            info_log(f"[StateManager] MISCHIEF 後數值調整完成 "
+                    f"(成功率={success_rate:.2%}, mood_delta={mood_delta:+.2f})")
+            
+        except Exception as e:
+            error_log(f"[StateManager] 調整 MISCHIEF 後數值失敗: {e}")
     
     def _setup_status_integration(self):
         """設置與 StatusManager 的整合"""
@@ -696,20 +1018,33 @@ class StateManager:
         try:
             if self._state in [UEPState.MISCHIEF, UEPState.SLEEP]:
                 old_state = self._state
-                
+
                 # 恢復系統數值
                 if old_state == UEPState.MISCHIEF:
+                    self._clear_mischief_runtime()
                     self._restore_helpfulness_after_mischief()
                 elif old_state == UEPState.SLEEP:
-                    self._restore_activity_after_sleep()
-                
+                    self._wake_from_sleep(reason)
+
                 # 回到 IDLE 狀態
                 self.set_state(UEPState.IDLE, {"exit_reason": reason})
-                
+
                 debug_log(1, f"[StateManager] 退出 {old_state.name} 狀態: {reason}")
-                
+
         except Exception as e:
             debug_log(1, f"[StateManager] 退出特殊狀態失敗: {e}")
+    
+    def _wake_from_sleep(self, reason: str):
+        """從 SLEEP 狀態喚醒"""
+        try:
+            from core.states.sleep_manager import sleep_manager
+            
+            if sleep_manager.is_sleeping():
+                sleep_manager.wake_up(reason)
+                debug_log(2, f"[StateManager] 系統已喚醒: {reason}")
+            
+        except Exception as e:
+            debug_log(1, f"[StateManager] 喚醒失敗: {e}")
     
     def _restore_helpfulness_after_mischief(self):
         """Mischief 狀態結束後恢復 Helpfulness"""
@@ -729,14 +1064,7 @@ class StateManager:
         except Exception as e:
             debug_log(1, f"[StateManager] 恢復 Mischief 後數值失敗: {e}")
     
-    def _restore_activity_after_sleep(self):
-        """Sleep 狀態結束後恢復系統活動"""
-        try:
-            # TODO: 實作恢復系統活動的邏輯
-            debug_log(2, "[StateManager] 恢復 Sleep 後的系統活動 (待實作)")
-            
-        except Exception as e:
-            debug_log(1, f"[StateManager] 恢復 Sleep 後活動失敗: {e}")
+
 
     def on_event(self, intent: str, result: dict):
         """

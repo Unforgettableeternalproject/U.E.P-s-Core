@@ -2242,3 +2242,255 @@
 
 ---
 
+### Added first-hand sleep state logic, might have some problem exist. 12/3
+
+> Date: Wed, 03 Dec 2025 01:40:48 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `0bf7ce6d6a598b5e494b0e924392f6ba45c1cb4a`
+
+---
+
+### Added corrected status window and fixed even more animation. 12/3
+
+> Date: Wed, 03 Dec 2025 00:00:42 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `c3858ded41d1a81bd4f1824744b52eba36d5327f`
+
+---
+
+### Added corrected status window and fixed even more animation. 12/3
+
+> Date: Wed, 03 Dec 2025 00:00:42 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `a1c0b9876fece87cce778ab69ed97dc0bcd018b1`
+
+---
+
+### Sleep animation worked, but there are some positional issue. 12/4
+
+> Date: Thu, 04 Dec 2025 18:55:27 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `fd4a51cef7635e963c693585c30377322d34743b`
+
+---
+
+### Made some changes to stt, nlp and GS creation and stuff. 12/4
+
+> Date: Thu, 04 Dec 2025 21:53:52 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `8354de6de10ffcd0a9d90a62feb9205b91adc20a`
+
+---
+
+### Removed unnecessary intergration files, and improved LLM-SYS tunnel a little bit more. 12/5
+
+> Date: Fri, 05 Dec 2025 17:30:03 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `3e372851d76133b6a2ba989a07cf4dcf846a5aa6`
+
+---
+
+### Fixed some issues regarding workflow event handling. 12/5
+
+> Date: Fri, 05 Dec 2025 21:19:35 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `c85a34bcc375c90427e8e74dc59b959ed647120c`
+
+---
+
+### Possibly some ground breaking changes about animation. 12/6
+
+> Date: Sat, 06 Dec 2025 02:25:23 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `e336d06d915ac4ca6edf565a72a5492d9980d3be`
+
+---
+
+### There are still times LLM would not call the tools, fixed that (hopefully), and made sleep state animations better. 12/6
+
+> Date: Sat, 06 Dec 2025 16:50:33 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `bd377688770e02bf6be572e70e17a0babfde5602`
+
+---
+
+### Fixed some throw logic, and a few animation frame misplacement. 12/6
+
+> Date: Sat, 06 Dec 2025 19:46:00 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `0e1b56ca20aa8d6dc7deacf3fe285aa405155dca`
+
+---
+
+### Added on call function as the final tool for access widget. 12/7
+
+> Date: Sun, 07 Dec 2025 01:16:15 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `fec4be97e52f7026fc878260fffedbc3f6538b10`
+
+---
+
+### Fixed some on call logic and settings reload. 12/7
+
+> Date: Sun, 07 Dec 2025 18:58:43 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `62d5eb749381fe37b717af918e382aca454afe4e`
+
+---
+
+### Added the first batch of the experimental memory retrieval. 12/8
+
+> Date: Mon, 08 Dec 2025 22:52:27 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/memory_fix`
+
+> Commit: `cb52b240974a78fd4244be82927931c65d7d4e15`
+
+---
+
+### Added a new easter-egg animation, and refined prompt. 12/9
+
+> Date: Tue, 09 Dec 2025 00:10:39 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/memory_fix`
+
+> Commit: `7ad820db9e029b9232043101e83d0d90d0eb4288`
+
+---
+
+### Fixed a certain issue where LLM is provided with chat route tool in work states. 12/9
+
+> Date: Tue, 09 Dec 2025 19:34:20 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/memory_fix`
+
+> Commit: `86a1b5dcfa32090ad20b0f42e560c0b10eaca92c`
+
+---
+
+### Added some mischief infrastructure and actions, and finished memory fix with final touches. 12/9
+
+> Date: Tue, 09 Dec 2025 22:52:01 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/memory_fix`
+
+> Commit: `4e2ada3915e637361c796ba7d3a9fdb290234e12`
+
+---
+
+### Mischief state state queue integration. And a few more additions. 12/10
+
+> Date: Wed, 10 Dec 2025 17:11:06 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `31e97fc11f7c2eaebfe49a61227c6521ed79dd0c`
+
+---
+
+### Some mischief state improvement. 12/10
+
+> Date: Wed, 10 Dec 2025 23:15:09 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `79f5fecb91239ba9c1e6f7715075a5c6b6700d47`
+
+---
+
+### Mischief state tested fine, it's time for actual test. 12/11
+
+> Date: Thu, 11 Dec 2025 02:01:52 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `a1cee394e54c00ee3fb0ea5bfb89b5ddf1d40b7d`
+
+---
+
+### Updated version, fixed some reference issue, and deleted some unnecessary files. 12/11
+
+> Date: Thu, 11 Dec 2025 02:59:51 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `ac40e833e56be41efea7bdf793d593ae6078709e`
+
+---
+
+### Fixed an issues with unreachable code, and user settings ui as well as mischief animation trigger priority. 12/11
+
+> Date: Thu, 11 Dec 2025 03:25:36 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `ffcd7ee13b7d351a156cf472f68b5417e8d852aa`
+
+---
+

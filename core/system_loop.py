@@ -19,7 +19,7 @@ import threading
 from typing import Dict, Any, Optional, Callable
 from enum import Enum
 
-from utils.debug_helper import debug_log, info_log, error_log
+from utils.debug_helper import debug_log, info_log, error_log, OPERATION_LEVEL
 
 
 class LoopStatus(Enum):
@@ -496,11 +496,20 @@ class SystemLoop:
             # 設置停止事件
             self.stop_event.set()
             
-            # 等待循環線程結束
+            # 等待循環線程結束（增加超時時間至 10 秒）
             if self.loop_thread and self.loop_thread.is_alive():
-                self.loop_thread.join(timeout=5.0)
+                debug_log(2, "[SystemLoop] 等待循環線程結束...")
+                self.loop_thread.join(timeout=10.0)
                 if self.loop_thread.is_alive():
-                    error_log("⚠️ 循環線程未能正常結束")
+                    error_log("⚠️ 循環線程未能正常結束，可能還在處理中...")
+                    # 再嘗試一次等待
+                    self.loop_thread.join(timeout=5.0)
+                    if self.loop_thread.is_alive():
+                        error_log("⚠️ 循環線程已放棄等待，強制繼續")
+                    else:
+                        info_log("✅ 循環線程已正常結束")
+                else:
+                    info_log("✅ 循環線程已正常結束")
             
             # ✅ 停止事件總線
             self._stop_event_bus()
@@ -720,6 +729,13 @@ class SystemLoop:
                     debug_log(3, f"[SystemLoop] GC 觸發，回收 {collected} 個物件")
                     self.last_gc_time = current_time
                 
+                # 定期更新 boredom（每60秒檢查一次）
+                if not hasattr(self, 'last_boredom_update_time'):
+                    self.last_boredom_update_time = current_time
+                if current_time - self.last_boredom_update_time >= 60:
+                    self._update_boredom_level()
+                    self.last_boredom_update_time = current_time
+                
                 # 檢查系統狀態變化
                 self._monitor_system_state()
                 
@@ -731,6 +747,21 @@ class SystemLoop:
             self.status = LoopStatus.ERROR
         
         info_log("🔄 主循環線程已結束")
+    
+    def _update_boredom_level(self):
+        """定期更新 boredom 數值"""
+        try:
+            from core.status_manager import status_manager as status_mgr
+            from core.states.state_manager import state_manager, UEPState
+            
+            current_state = state_manager.get_current_state()
+            
+            # 只在 IDLE/CHAT 狀態下更新 boredom（WORK/SLEEP/MISCHIEF 不累積無聊）
+            if current_state in [UEPState.IDLE, UEPState.CHAT]:
+                status_mgr.apply_session_penalties()
+                debug_log(3, f"[SystemLoop] 已更新 boredom 數值")
+        except Exception as e:
+            error_log(f"[SystemLoop] 更新 boredom 失敗: {e}")
     
     def _monitor_system_state(self):
         """監控系統狀態變化和處理週期"""
@@ -1356,15 +1387,19 @@ class SystemLoop:
             if key_path == "advanced.performance.gc_interval":
                 self.gc_interval = value
                 info_log(f"[SystemLoop] GC 間隔已更新: {value}秒")
+                return True
             elif key_path == "interaction.proactivity.allow_system_initiative":
                 self.allow_system_initiative = value
                 info_log(f"[SystemLoop] 系統主動性已更新: {value}")
+                return True
             elif key_path == "interaction.proactivity.initiative_cooldown":
                 self.initiative_cooldown = value
                 info_log(f"[SystemLoop] 主動觸發冷卻時間已更新: {value}秒")
+                return True
             elif key_path == "interaction.proactivity.require_user_input":
                 self.require_user_input = value
                 info_log(f"[SystemLoop] 需要使用者輸入設定已更新: {value}")
+                return True
             elif key_path == "interaction.speech_input.enabled":
                 # 更新輸入模式: True=VAD, False=文字輸入
                 old_mode = self.input_mode
@@ -1374,7 +1409,7 @@ class SystemLoop:
                     info_log(f"[SystemLoop] 輸入模式切換: {old_mode} → {new_mode}")
                     
                     # 立即切換輸入處理（不需要重啟整個循環）
-                    if self._is_running:
+                    if self.status != LoopStatus.STOPPED:
                         info_log("[SystemLoop] 正在切換輸入處理...")
                         
                         # 1. 標記舊模式為非活躍（停止接收新輸入）
@@ -1399,8 +1434,19 @@ class SystemLoop:
                         # 系統未運行，只更新模式
                         self.input_mode = new_mode
                         info_log(f"[SystemLoop] 輸入模式已更新（將在下次啟動時生效）")
+                    
+                    return True
+                else:
+                    debug_log(2, f"[SystemLoop] 輸入模式未改變，已跳過切換: {old_mode}")
+                    return True
+            
+            # 未處理的設定路徑
+            debug_log(OPERATION_LEVEL, f"[SystemLoop] 未知的設定路徑: {key_path}")
+            return True
+            
         except Exception as e:
             error_log(f"[SystemLoop] 熱重載設定失敗: {e}")
+            return False
 
 
 # 全局系統循環實例

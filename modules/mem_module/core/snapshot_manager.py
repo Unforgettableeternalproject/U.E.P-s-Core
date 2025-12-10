@@ -264,7 +264,10 @@ class SnapshotManager:
             return None
     
     def update_snapshot_content(self, snapshot_id: str, new_content: str,
-                              refresh_gsid: bool = True) -> bool:
+                              refresh_gsid: bool = True,
+                              new_summary: Optional[str] = None,
+                              key_topics: Optional[List[str]] = None,
+                              additional_metadata: Optional[Dict[str, Any]] = None) -> bool:
         """
         更新現有快照的內容，並可選擇性刷新 GSID
         
@@ -272,6 +275,9 @@ class SnapshotManager:
             snapshot_id: 快照ID
             new_content: 新的內容
             refresh_gsid: 是否刷新 GSID（延長快照生命週期）
+            new_summary: 選填，新摘要
+            key_topics: 選填，關鍵主題列表
+            additional_metadata: 選填，附加 metadata
             
         Returns:
             更新是否成功
@@ -283,24 +289,33 @@ class SnapshotManager:
                 return False
             
             # 使用 Pydantic model_copy 更新內容
-            update_dict = {
+            update_dict: Dict[str, Any] = {
                 'content': new_content,
                 'updated_at': datetime.now()
             }
+
+            if new_summary is not None:
+                update_dict['summary'] = new_summary
+            if key_topics is not None:
+                update_dict['key_topics'] = key_topics
+            if additional_metadata:
+                merged_meta = {**getattr(snapshot, 'metadata', {})}
+                merged_meta.update(additional_metadata)
+                update_dict['metadata'] = merged_meta
             
             # 刷新 GSID（延長快照生命週期）
             if refresh_gsid:
                 current_gsid = self._get_current_gsid_from_working_context()
                 update_dict['gsid'] = current_gsid
                 debug_log(2, f"[SnapshotManager] 刷新快照 GSID: {snapshot_id} -> {current_gsid}")
-            
+
             # 創建更新後的快照
             updated_snapshot = snapshot.model_copy(update=update_dict, deep=True)
             self._active_snapshots[snapshot_id] = updated_snapshot
-            
+
             debug_log(3, f"[SnapshotManager] 更新快照內容成功: {snapshot_id}")
             return True
-            
+
         except Exception as e:
             error_log(f"[SnapshotManager] 更新快照失敗: {e}")
             return False

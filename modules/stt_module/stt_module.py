@@ -120,6 +120,11 @@ class STTModule(BaseModule):
         enable_continuous = get_user_setting("interaction.speech_input.enable_continuous_mode", False)
         self._current_mode = ActivationMode.CONTINUOUS if enable_continuous else ActivationMode.MANUAL
         self._listening_active = False
+        
+        # VAD 和語音設定（從 user_settings 讀取，供熱重載使用）
+        self.vad_sensitivity = float(get_user_setting("interaction.speech_input.vad_sensitivity", 0.7))
+        self.min_speech_duration = float(get_user_setting("interaction.speech_input.min_speech_duration", 0.3))
+        self.wake_word_confidence = float(get_user_setting("interaction.speech_input.wake_word_confidence", 0.8))
 
         self.is_initialized = False
         

@@ -115,6 +115,49 @@ class LLMModule(BaseModule):
             error_log("[LLM] ❌ API 呼叫已禁用（user_settings: monitoring.network.allow_api_calls = false）")
             return False
         return True
+
+    def generate_mischief_plan(
+        self,
+        system_prompt: str,
+        user_message: str,
+        temperature: float = 0.9,
+        max_tokens: int = 1000
+    ) -> Optional[str]:
+        """
+        Generate a MISCHIEF action plan without creating sessions or user-facing output.
+        
+        Note: temperature and max_tokens are currently ignored as GeminiClient.query()
+        uses values from its configuration. Future enhancement: add config override support.
+        """
+        try:
+            # 使用 mischief mode，強制返回符合 schema 的 JSON
+            response = self.model.query(
+                prompt=user_message,  # 主要內容在 user_message
+                mode="mischief",  # 使用 mischief mode 強制 JSON schema
+                tools=None,
+                system_instruction=system_prompt  # 系統指示說明任務要求
+            )
+
+            if isinstance(response, dict):
+                # mischief mode 返回的結構應該直接包含 actions
+                import json
+                # 如果 response 已經是解析後的 dict，直接轉成 JSON 字串
+                if "actions" in response:
+                    return json.dumps(response)
+                # 否則嘗試從 text 欄位獲取
+                text = response.get("text") or response.get("response") or ""
+            else:
+                text = str(response)
+
+            if not text or not str(text).strip():
+                error_log("[LLM] MISCHIEF plan response is empty")
+                return None
+
+            return str(text)
+
+        except Exception as e:
+            error_log(f"[LLM] Failed to generate MISCHIEF plan: {e}")
+            return None
     
     def _setup_state_listener(self):
         """設定系統狀態監聽器，自動切換協作管道"""
@@ -287,17 +330,22 @@ class LLMModule(BaseModule):
             debug_log(3, f"[LLM] 當前步驟是互動步驟: {current_step_is_interactive}")
             debug_log(3, f"[LLM] 下一步是互動步驟: {next_step_is_interactive}")
             
-            # 🔧 過濾條件：如果不需要審核且工作流未完成
+            # ✅ 檢查是否有錯誤發生
+            has_error = step_result.get('error', False)
+            
+            # 🔧 過濾條件：如果不需要審核且工作流未完成且沒有錯誤
             # ⚠️ 重要：工作流完成時即使不需要審核也要生成最終總結
-            if not requires_review and not is_workflow_complete:
-                debug_log(2, f"[LLM] 步驟不需要審核且工作流未完成")
+            # ⚠️ 重要：有錯誤時必須生成回應通知用戶並結束會話
+            if not requires_review and not is_workflow_complete and not has_error:
+                debug_log(2, f"[LLM] 步驟不需要審核且工作流未完成且無錯誤")
                 return
             
-            # 🔧 實施 3 時刻回應模式：
+            # 🔧 實施 4 時刻回應模式：
             # 1. 工作流觸發 - 由 start_workflow MCP 工具處理（不在這裡）
             # 2. 當前步驟為互動步驟，或下一步為互動步驟 - 需要生成提示給使用者
             # 3. 工作流完成 - 需要生成最終結果
-            should_generate_response = is_workflow_complete or current_step_is_interactive or next_step_is_interactive
+            # 4. ✅ 發生錯誤 - 需要生成錯誤回應並結束會話
+            should_generate_response = is_workflow_complete or current_step_is_interactive or next_step_is_interactive or has_error
             
             if not should_generate_response:
                 debug_log(2, f"[LLM] 步驟完成，下一步非互動步驟，靜默批准並推進")
@@ -325,7 +373,13 @@ class LLMModule(BaseModule):
                 "timestamp": time.time()
             })
             
-            info_log(f"[LLM] 工作流事件已加入隊列: {workflow_type}, is_complete={is_workflow_complete}, current_interactive={current_step_is_interactive}")
+            info_log(f"[LLM] 工作流事件已加入隊列: {workflow_type}, is_complete={is_workflow_complete}, current_interactive={current_step_is_interactive}, has_error={has_error}")
+            
+            # ✅ 優先處理錯誤情況
+            if has_error:
+                error_log(f"[LLM] 工作流執行錯誤: {session_id} - {step_result.get('message', 'Unknown error')}")
+                self._process_workflow_error(session_id, workflow_type, step_result, review_data)
+                return  # ⚠️ 重要：錯誤處理後直接返回
             
             # 🆕 處理需要生成回應的情況
             # 🔧 修正：工作流完成時不檢查互動步驟，直接處理完成邏輯
@@ -869,129 +923,6 @@ class LLMModule(BaseModule):
         )
         debug_log(2, f"[LLM] 已取消工作流: {session_id}")
     
-    def _handle_workflow_completion(self, session_id: str, workflow_type: str, 
-                                    step_result: Dict[str, Any], review_data: Dict[str, Any],
-                                    should_end_session: bool):
-        """
-        🆕 處理工作流完成事件
-        
-        當工作流的最後一步完成時：
-        1. 提取工作流結果數據
-        2. 生成用戶回應（告訴用戶結果）
-        3. 結束會話（如果需要）
-        
-        Args:
-            session_id: 工作流會話 ID
-            workflow_type: 工作流類型
-            step_result: 最後一步的結果
-            review_data: LLM 審核數據（包含檔案內容等）
-            should_end_session: 是否應該結束會話
-        """
-        try:
-            info_log(f"[LLM] 處理工作流完成: {workflow_type} ({session_id})")
-            
-            # 提取檔案信息
-            file_name = review_data.get('file_name', 'unknown file')
-            content = review_data.get('full_content', '')
-            content_length = review_data.get('content_length', 0)
-            
-            # 構建 prompt 讓 LLM 生成用戶回應
-            prompt = (
-                f"A workflow has been completed successfully.\n\n"
-                f"Workflow: {workflow_type}\n"
-                f"File: {file_name}\n"
-                f"Content Length: {content_length} characters\n\n"
-                f"File Content:\n{content[:1000]}{'...' if len(content) > 1000 else ''}\n\n"
-                f"Please generate a friendly response to the user in Traditional Chinese, "
-                f"summarizing what was done and providing key insights from the file content. "
-                f"Keep it concise and helpful."
-            )
-            
-            # 調用 LLM 生成回應
-            # ⚠️ 關鍵：工作流完成回應時不提供 MCP 工具且不使用快取（避免 LLM 從快取中調用 approve_step 等工具）
-            debug_log(2, f"[LLM] 生成工作流完成回應（不提供 MCP 工具，不使用快取）")
-            response = self.model.query(prompt, mode="internal", tools=None, cached_content=None)
-            
-            if "text" in response:
-                user_response = response["text"]
-            else:
-                user_response = f"已成功讀取檔案 {file_name}，內容長度: {content_length} 字符。"
-            
-            info_log(f"[LLM] 工作流完成回應: {user_response[:100]}...")
-            
-            # 🆕 將回應發送到處理層完成事件，觸發 TTS 輸出
-            from core.event_bus import event_bus, SystemEvent
-            import time
-            
-            # 準備 LLM 輸出數據
-            llm_output = {
-                "text": user_response,
-                "sys_action": None,
-                "status_updates": None,
-                "learning_data": None,
-                "conversation_entry": None,
-                "session_state": None,
-                "memory_observation": None,
-                "memory_summary": None,
-                "emotion": "neutral",
-                "confidence": 0.9,
-                "processing_time": 0.0,
-                "success": True,
-                "error": None,
-                "tokens_used": 0,
-                "metadata": {
-                    "mode": "WORK",
-                    "workflow_type": workflow_type,
-                    "workflow_session_id": session_id,
-                    # 🆕 Task 5: 結束會話控制
-                    "session_control": {"action": "end_session"} if should_end_session else None
-                },
-                "mood": "neutral",
-                "status": "ok"
-            }
-            
-            # 發布處理層完成事件，觸發 TTS 輸出
-            event_bus.publish(
-                SystemEvent.PROCESSING_LAYER_COMPLETE,
-                {
-                    "session_id": "workflow_completion",  # 臨時會話 ID
-                    "cycle_index": 0,
-                    "layer": "PROCESSING",
-                    "response": user_response,
-                    "source_module": "llm",
-                    "llm_output": llm_output,
-                    "timestamp": time.time(),
-                    "completion_type": "processing_layer_finished",
-                    "mode": "WORK",
-                    "success": True
-                },
-                source="llm"
-            )
-            
-            info_log(f"[LLM] 已發布工作流完成回應到處理層" + 
-                    (f"，將結束會話" if should_end_session else ""))
-            
-            # ✅ 清除 workflow_processing 標誌，允許下一次輸入層運行
-            from core.working_context import working_context_manager
-            working_context_manager.set_skip_input_layer(False, reason="workflow_completion_processed")
-            debug_log(2, "[LLM] 已清除 workflow_processing 標誌")
-            
-            # 🔧 清理追蹤標記，防止內存洩漏
-            if session_id in self._processed_workflow_completions:
-                self._processed_workflow_completions.discard(session_id)
-                debug_log(2, f"[LLM] 已移除工作流完成追蹤: {session_id}")
-            
-            # 🔧 清理該工作流的所有 LLM_PROCESSING 步驟標記
-            if hasattr(self, '_processed_llm_steps'):
-                steps_to_remove = {key for key in self._processed_llm_steps if key.startswith(f"{session_id}:")}
-                for step_key in steps_to_remove:
-                    self._processed_llm_steps.discard(step_key)
-                if steps_to_remove:
-                    debug_log(2, f"[LLM] 已清理 {len(steps_to_remove)} 個 LLM_PROCESSING 步驟標記")
-            
-        except Exception as e:
-            error_log(f"[LLM] 處理工作流完成失敗: {e}")
-    
     def set_mcp_server(self, mcp_server):
         """
         設置 MCP Server 實例
@@ -1214,6 +1145,8 @@ class LLMModule(BaseModule):
                 result["workflow_decision"] = output.metadata["workflow_decision"]
             
             # ✅ 事件驅動：發布處理層完成事件
+            # 注意：只在有實際回應文字時才發布事件，避免與工作流完成事件產生去重衝突
+            # 工作流自動完成的中間狀態（text=""）不發布，由 _process_workflow_completion 發布最終回應
             if output.success and result.get("text"):
                 self._notify_processing_layer_completion(result)
             
@@ -1296,21 +1229,12 @@ Response requirements:
         debug_log(2, "[LLM] 處理 CHAT 模式")
         
         try:
-            # 1. MEM 協作：檢索相關記憶 (CHAT狀態專用)
-            relevant_memories = []
-            if not llm_input.memory_context:  # 只有在沒有提供記憶上下文時才檢索
-                relevant_memories = self._retrieve_relevant_memory(llm_input.text, max_results=5)
-                if relevant_memories:
-                    debug_log(2, f"[LLM] 整合 {len(relevant_memories)} 條相關記憶到對話上下文")
-                    # 將檢索到的記憶轉換為記憶上下文
-                    llm_input.memory_context = self._format_memories_for_context(relevant_memories)
-            
-            # 2. 檢查 Context Cache (包含動態記憶)
+            # 1. 檢查 Context Cache (記憶改由 LLM 透過工具主動檢索)
             import hashlib
             base = f"{llm_input.mode}|{self.session_info.get('session_id','')}"
             text_sig = hashlib.sha256(llm_input.text.encode("utf-8")).hexdigest()[:16]
             mem_sig  = hashlib.sha256((llm_input.memory_context or "").encode("utf-8")).hexdigest()[:16]
-            cache_key = f"chat:{base}:{text_sig}:{mem_sig}:{len(relevant_memories)}"
+            cache_key = f"chat:{base}:{text_sig}:{mem_sig}"
             cached_response = self.cache_manager.get_cached_response(cache_key)
             
             if cached_response and not llm_input.ignore_cache:
@@ -1324,27 +1248,106 @@ Response requirements:
             elif llm_input.processing_context and isinstance(llm_input.processing_context, dict):
                 intent_metadata = llm_input.processing_context.get('intent_metadata')
             
-            # 3. 構建 CHAT 提示（整合記憶和降級警告）
+            # 2. 構建 CHAT 提示（記憶改由 MCP 工具檢索）
             prompt = self.prompt_manager.build_chat_prompt(
                 user_input=llm_input.text,
                 identity_context=llm_input.identity_context,
                 memory_context=llm_input.memory_context,
                 conversation_history=getattr(llm_input, 'conversation_history', None),
                 is_internal=False,
-                relevant_memories=relevant_memories,  # 新增：傳入檢索到的記憶
-                intent_metadata=intent_metadata  # 新增：傳入 intent metadata
+                intent_metadata=intent_metadata
             )
             
-            # 3. 獲取或創建系統快取
-            cached_content_ids = self._get_system_caches("chat")
+            # 3. 獲取 MCP 工具（CHAT 路徑：記憶檢索工具）
+            mcp_tools = None
+            if self.mcp_client and hasattr(self.mcp_client, 'get_tools_as_gemini_format'):
+                from .mcp_client import PATH_CHAT
+                mcp_tools = self.mcp_client.get_tools_as_gemini_format(path=PATH_CHAT)
+                tool_count = sum(len(t.get('function_declarations', [])) for t in mcp_tools) if mcp_tools else 0
+                debug_log(2, f"[LLM] CHAT 模式 MCP 工具已準備: {tool_count} 個")
             
-            # 4. 呼叫 Gemini API (使用快取)
+            # 4. 獲取或創建系統快取 (包含 PROFILE 記憶)
+            cached_content_ids = self._get_system_caches("chat", llm_input)
+            
+            # 5. 工具調用策略 - 完全由 LLM 自主決定
+            tool_choice_strategy = "AUTO"
+            if mcp_tools and self._should_force_memory_tool_use(llm_input.text):
+                tool_choice_strategy = "ANY"
+                debug_log(2, "[LLM] 記憶意圖強制使用工具 (tool_choice=ANY)")
+            
+            # 6. 呼叫 Gemini API (使用快取 + MCP 工具)
             response_data = self.model.query(
                 prompt, 
                 mode="chat",
-                cached_content=cached_content_ids.get("persona")
+                cached_content=cached_content_ids.get("persona"),
+                tools=mcp_tools,
+                tool_choice=tool_choice_strategy
             )
+            
+            # 7. 處理工具調用（如果有）
+            function_call_result = None
+            function_call_info = None  # 儲存工具調用信息用於事件發布
             response_text = response_data.get("text", "")
+            
+            if "function_call" in response_data and response_data["function_call"]:
+                function_call_info = response_data["function_call"]  # 保存工具調用信息
+                debug_log(2, f"[LLM] CHAT 模式檢測到工具調用: {function_call_info['name']}")
+                
+                # 執行工具調用
+                import asyncio
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                
+                function_call_result = loop.run_until_complete(
+                    self.mcp_client.handle_llm_function_call(function_call_info)
+                )
+                
+                debug_log(2, f"[LLM] 記憶工具執行結果: {function_call_result.get('status')}")
+                
+                # 如果工具結果已提供格式化訊息，直接回覆以降低延遲/成本
+                formatted_message = function_call_result.get("formatted_message")
+                if formatted_message:
+                    response_text = formatted_message
+                    debug_log(2, "[LLM] 使用工具格式化結果直接回應，跳過第二次 LLM 查詢")
+                else:
+                    # Cycle 1: 帶著工具結果再次查詢，生成用戶可見的回應
+                    tool_name = response_data["function_call"].get("name", "unknown")
+                    content = function_call_result.get("content", {})
+                    result_data = content.get("data", {}) if isinstance(content, dict) else {}
+                    result_message = function_call_result.get("formatted_message", "") or content.get("message", "")
+                    
+                    full_result_text = result_message
+                    if result_data:
+                        debug_log(2, f"[LLM] 工具返回數據: {result_data}")
+                        full_result_text += f"\n\n**Data:**\n{json.dumps(result_data, ensure_ascii=False, indent=2)}"
+                    
+                    follow_up_prompt = f"""{prompt}
+
+**Tool Execution Result:**
+Tool: {tool_name}
+Status: {function_call_result.get('status', 'unknown')}
+Result: {full_result_text}
+
+Based on this memory retrieval result, please provide your response to the user.
+Remember to respond in a natural, conversational way using the actual data from the tool result."""
+                    
+                    # 再次查詢，不帶工具（只要文字回應）
+                    follow_up_response = self.model.query(
+                        follow_up_prompt,
+                        mode="chat",
+                        cached_content=cached_content_ids.get("persona"),
+                        tools=None,  # 不再提供工具
+                        tool_choice="NONE"
+                    )
+                    
+                    response_text = follow_up_response.get("text", "")
+                    debug_log(2, f"[LLM] CHAT 模式多輪查詢完成，生成最終回應")
+            else:
+                # 沒有工具調用，直接使用第一輪的文字回應
+                debug_log(2, f"[LLM] CHAT 模式無工具調用，使用直接回應")
             
             # === 詳細回應日誌 ===
             info_log(f"[LLM] 🤖 Gemini回應: {response_text}")
@@ -1459,10 +1462,16 @@ Response requirements:
             self.cache_manager.cache_response(cache_key, output)
             
             # 發布 LLM 回應生成事件
-            self._publish_llm_response_event(output, "CHAT", {
+            event_extra_data = {
                 "memory_context_used": bool(llm_input.memory_context),
-                "relevant_memories_count": len(relevant_memories) if relevant_memories else 0
-            })
+                "profile_cached": "persona" in cached_content_ids
+            }
+            # 如果有工具調用，包含在事件數據中
+            if function_call_info:
+                event_extra_data["function_call"] = function_call_info
+                event_extra_data["tool_executed"] = True
+            
+            self._publish_llm_response_event(output, "CHAT", event_extra_data)
             
             return output
             
@@ -1923,6 +1932,18 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
         debug_log(2, "[LLM] 💬 生成工作流回應")
         
         try:
+            # ✅ 提取 workflow_context（來自 llm_input）
+            pending_workflow = llm_input.workflow_context if hasattr(llm_input, 'workflow_context') else None
+            # 🔧 修復：工作流已完成時不應該當作需要審核的步驟
+            is_workflow_complete = pending_workflow and pending_workflow.get('complete', False) if pending_workflow else False
+            is_reviewing_step = (pending_workflow and 
+                                pending_workflow.get('type') == 'workflow_step_response' and 
+                                not is_workflow_complete) if pending_workflow else False
+            
+            debug_log(2, f"[LLM] pending_workflow: {pending_workflow.get('type') if pending_workflow else None}")
+            debug_log(2, f"[LLM] is_workflow_complete: {is_workflow_complete}")
+            debug_log(2, f"[LLM] is_reviewing_step: {is_reviewing_step}")
+            
             # ✅ 檢查是否為系統報告模式（系統主動通知）
             is_system_report = getattr(llm_input, 'system_report', False)
             if is_system_report:
@@ -1948,32 +1969,10 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                         if has_active_workflow:
                             debug_log(2, f"[LLM] 檢測到活躍的工作流引擎: {session_id}")
                         else:
-                            debug_log(2, f"[LLM] WS 存在但無工作流引擎: {session_id}")
-                            
-                            # ✅ 關鍵修復：WS 存在但無對應工作流引擎，使用 session_control 機制結束會話
-                            # 這種情況通常是因為 NLP 誤判導致進入 WORK 模式但未啟動實際工作流
-                            # 使用正規的 session_control 機制，讓 ModuleCoordinator 處理標記
-                            debug_log(1, f"[LLM] 檢測到無效 WS (無工作流引擎): {session_id}，將結束會話")
-                            
-                            # 返回錯誤回應，帶 session_control 指示結束會話
-                            return LLMOutput(
-                                text="抱歉，系統在處理您的請求時遇到問題。請重新輸入您的問題。",
-                                processing_time=time.time() - start_time,
-                                tokens_used=0,
-                                success=False,
-                                error="WS exists without workflow engine",
-                                confidence=0.0,
-                                metadata={
-                                    "mode": "WORK",
-                                    "error_type": "no_workflow_engine",
-                                    "session_id": session_id,
-                                    "session_control": {
-                                        "should_end_session": True,
-                                        "end_reason": "工作流引擎未初始化，WS無法繼續",
-                                        "confidence": 1.0  # 這是系統檢測到的錯誤，100%確定
-                                    }
-                                }
-                            )
+                            # ✅ WS 存在但沒有工作流引擎
+                            # 這是正常情況：LLM 剛收到 WORK 請求，還沒調用 MCP 工具創建工作流
+                            # 不應該報錯，而是讓 LLM 調用工具
+                            debug_log(2, f"[LLM] WS 存在但尚未啟動工作流引擎: {session_id}，將提供 MCP 工具供 LLM 調用")
                     else:
                         debug_log(2, f"[LLM] 無法訪問 SYS 模組的 workflow_engines")
                 except Exception as e:
@@ -2027,18 +2026,24 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             is_step_response = pending_workflow and pending_workflow.get('type') == 'workflow_step_response'
             mcp_tools = None
             if self.mcp_client and hasattr(self.mcp_client, 'get_tools_as_gemini_format'):
-                mcp_tools = self.mcp_client.get_tools_as_gemini_format()
-                debug_log(2, f"[LLM] MCP 工具已準備: {len(mcp_tools) if mcp_tools else 0} 個")
+                from .mcp_client import PATH_WORK
+                mcp_tools = self.mcp_client.get_tools_as_gemini_format(path=PATH_WORK)
+                # 🔧 修復：正確計數工具數量（mcp_tools 是 [{"function_declarations": [...]}]）
+                tool_count = sum(len(t.get('function_declarations', [])) for t in mcp_tools) if mcp_tools else 0
+                debug_log(2, f"[LLM] MCP 工具已準備: {tool_count} 個")
                 if is_step_response:
                     debug_log(2, "[LLM] 步驟回應模式：提供工具但不強制使用（tool_choice=AUTO）")
             
             # 🔧 決定 tool_choice 模式（在構建 prompt 之前）
+            # 策略：新請求用 ANY 強制調用工具，失敗則降級為 AUTO
             if not has_active_workflow and not is_reviewing_step and mcp_tools:
-                tool_choice = "ANY"  # 強制調用工具（新請求應該啟動工作流） # 考慮切換回全部都用AUTO?
+                tool_choice = "ANY"  # 強制調用工具（新請求應該啟動工作流）
                 force_tool_use = True
+                debug_log(2, "[LLM] 使用 ANY 模式強制工具調用（新請求）")
             else:
                 tool_choice = "AUTO"  # 自動決定（可能需要繼續工作流或只是回應）
                 force_tool_use = False
+                debug_log(2, "[LLM] 使用 AUTO 模式（已有工作流或步驟回應）")
                 
             
             # 構建 WORK 提示
@@ -2075,6 +2080,8 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             # � 處理 MALFORMED_FUNCTION_CALL 錯誤：降級為 AUTO 模式重試
             if response_data.get("error") == "malformed_function_call" and tool_choice == "ANY":
                 error_log(f"[LLM] 檢測到 MALFORMED_FUNCTION_CALL，降級為 AUTO 模式重試")
+                _tool_count = sum(len(t.get('function_declarations', [])) for t in mcp_tools) if mcp_tools else 0
+                error_log(f"[LLM] 診斷 - Prompt: {len(prompt)}字, 工具: {_tool_count}個, 輸入: {llm_input.text[:80]}")
                 debug_log(2, "[LLM] 使用 tool_choice=AUTO 重新調用 Gemini")
                 
                 response_data = self.model.query(
@@ -2446,6 +2453,22 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                         f"Please explain the problem to the user in a friendly way and suggest how they can resolve it.\n"
                         f"IMPORTANT: Respond in English only."
                     )
+                    
+                    # ✅ 工具調用失敗：設置 session_control 結束會話
+                    # 避免系統卡在 WORK 狀態
+                    try:
+                        session_id = pending_workflow.get('session_id') if pending_workflow else None
+                        if session_id:
+                            response_data["session_control"] = {
+                                "should_end_session": True,
+                                "end_reason": f"workflow_error:{tool_name}",
+                                "confidence": 0.95
+                            }
+                            debug_log(1, f"[LLM] ⚠️ 工具調用失敗，已設置 session_control 結束會話: {session_id}")
+                        else:
+                            debug_log(2, "[LLM] ⚠️ 工具調用失敗但無 session_id，無法設置 session_control")
+                    except Exception as e:
+                        error_log(f"[LLM] 設置錯誤處理 session_control 時出錯: {e}")
                 
                 # 檢查是否跳過預設 follow-up（已在特殊處理中完成）
                 if not skip_default_followup:
@@ -2945,6 +2968,34 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             error_log(f"[LLM] 補充系統上下文失敗: {e}")
             return llm_input
     
+
+    def _should_force_memory_tool_use(self, user_text: str) -> bool:
+        """Detect strong memory intent and force tool_choice=ANY so the LLM must call a memory tool."""
+        try:
+            if not user_text:
+                return False
+
+            text = user_text.lower()
+            triggers = [
+                "remember this",
+                "remember that",
+                "remember about me",
+                "what did i tell you",
+                "what did i say",
+                "earlier",
+                "before",
+                "previous",
+                "recall",
+                "memory",
+                "interests",
+                "remind"
+            ]
+            return any(token in text for token in triggers)
+        except Exception as e:
+            error_log(f"[LLM] 檢測記憶意圖失敗: {e}")
+            return False
+
+
     def _process_chat_memory_operations(self, 
                                       llm_input: LLMInput,
                                       response_data: Dict[str, Any], 
@@ -3058,34 +3109,7 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
         except Exception as e:
             error_log(f"[LLM] 發送記憶操作失敗: {e}")
     
-    def _retrieve_relevant_memory(self, user_input: str, max_results: int = 5) -> List[Dict[str, Any]]:
-        """從MEM模組檢索相關記憶 - 通過狀態感知接口"""
-        try:
-            debug_log(2, f"[LLM] 檢索相關記憶: {user_input[:50]}...")
-            
-            # 檢查 CHAT-MEM 協作管道是否啟用
-            if not self.module_interface.is_channel_active(CollaborationChannel.CHAT_MEM):
-                debug_log(2, "[LLM] 記憶檢索失敗: MEM模組只在CHAT狀態下運行")
-                return []
-            
-            # 通過狀態感知接口檢索記憶
-            memories = self.module_interface.get_chat_mem_data(
-                "memory_retrieval",
-                query=user_input,
-                max_results=max_results,
-                memory_types=["conversation", "user_info", "context"]
-            )
-            
-            if memories:
-                debug_log(1, f"[LLM] 檢索到 {len(memories)} 條相關記憶")
-                return memories
-            else:
-                debug_log(2, "[LLM] 未檢索到相關記憶")
-                return []
-            
-        except Exception as e:
-            error_log(f"[LLM] 記憶檢索失敗: {e}")
-            return []
+ 
     
     def _format_memories_for_context(self, memories: List[Any]) -> str:
         """將檢索到的記憶格式化為對話上下文
@@ -3354,17 +3378,29 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
         except Exception as e:
             error_log(f"[LLM] 發送系統動作失敗: {e}")
     
-    def _get_system_caches(self, mode: str) -> Dict[str, str]:
-        """獲取系統快取ID"""
+    def _get_system_caches(self, mode: str, llm_input: Optional['LLMInput'] = None) -> Dict[str, str]:
+        """獲取系統快取ID
+        
+        Args:
+            mode: "chat" 或 "work"
+            llm_input: LLM輸入對象，用於獲取身份和記憶上下文
+        """
         cached_content_ids = {}
         
         try:
             if mode == "chat":
-                # CHAT模式：persona + style_policy + session_anchor
+                # CHAT模式：persona (包含 PROFILE 記憶) + style_policy
+                identity_context = llm_input.identity_context if llm_input else None
+                profile_memories = llm_input.memory_context if llm_input else None
+                
+                # 生成包含用戶資訊的 persona 快取
                 persona_cache = self.cache_manager.get_or_create_cache(
                     name="uep:persona:v1",
                     cache_type=CacheType.PERSONA,
-                    content_builder=lambda: self._build_persona_cache_content()
+                    content_builder=lambda: self._build_persona_cache_content(
+                        identity_context=identity_context,
+                        profile_memories=profile_memories
+                    )
                 )
                 if persona_cache:
                     cached_content_ids["persona"] = persona_cache
@@ -3394,67 +3430,148 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
             error_log(f"[LLM] 系統快取獲取失敗: {e}")
             return {}
     
-    def _build_persona_cache_content(self) -> str:
-        """構建persona快取內容"""
-        return f"""
-你是U.E.P (Unified Experience Partner)，一個智能的統一體驗夥伴。
+    def _get_profile_memories_via_channel(self) -> Optional[str]:
+        """通過 CHAT-MEM 管道檢索 PROFILE 類型記憶用於快取注入
+        
+        Returns:
+            格式化的 profile 記憶字符串，如果沒有則返回 None
+        """
+        try:
+            from .module_interfaces import state_aware_interface
+            from core.working_context import working_context_manager
+            
+            # 獲取當前 memory_token
+            memory_token = working_context_manager.get_memory_token()
+            if not memory_token:
+                debug_log(3, "[LLM] 無 memory_token，跳過 profile 記憶檢索")
+                return None
+            
+            # 通過 CHAT-MEM 管道請求 profile 記憶
+            profile_data = state_aware_interface.get_chat_mem_data(
+                "profile_memories",
+                memory_token=memory_token,
+                max_results=50
+            )
+            
+            if not profile_data:
+                debug_log(3, "[LLM] CHAT-MEM 管道未返回 profile 記憶")
+                return None
+            
+            # profile_data 應該是格式化好的字符串或記憶列表
+            if isinstance(profile_data, str):
+                return profile_data
+            elif isinstance(profile_data, list):
+                # 格式化記憶列表
+                formatted = "## User Profile (Long-term Observations)\n"
+                for idx, mem in enumerate(profile_data, 1):
+                    if isinstance(mem, dict):
+                        content = mem.get("content", "")
+                        timestamp = mem.get("created_at", "")
+                    else:
+                        content = str(mem)
+                        timestamp = ""
+                    
+                    formatted += f"{idx}. {content}"
+                    if timestamp:
+                        formatted += f" (記錄時間: {timestamp})"
+                    formatted += "\n"
+                return formatted
+            else:
+                debug_log(3, f"[LLM] 未知的 profile 記憶格式: {type(profile_data)}")
+                return None
+                
+        except Exception as e:
+            error_log(f"[LLM] 通過 CHAT-MEM 管道檢索 profile 記憶失敗: {e}")
+            import traceback
+            error_log(traceback.format_exc())
+            return None
+    
+    def _build_persona_cache_content(self, identity_context: Optional[Dict] = None, 
+                                     profile_memories: Optional[str] = None) -> str:
+        """構建 persona 快取內容 - 僅包含系統人格 + 輕量身份提示 (PROFILE 轉為工具提示)
+        
+        Args:
+            identity_context: 身份上下文
+            profile_memories: 用戶資訊記憶 (PROFILE 類型) - 現在只用來判斷是否存在
+        """
+        base_content = """You are U.E.P (Unified Experience Partner), an intelligent unified experience partner.
 
-核心特質：
-- 友善、專業、樂於學習和幫助
-- 具有記憶和學習能力，能夠記住用戶偏好
-- 會根據系統狀態調整回應風格和行為
+Core Characteristics:
+- Friendly, professional, eager to learn and help
+- Memory and learning capabilities, able to remember user preferences
+- Adaptive response style and behavior based on system state
 
-當前系統狀態：System operational with mood tracking enabled
+Current System State: System operational with mood tracking enabled
 
-回應語言：Traditional Chinese (zh-TW)
-回應格式：根據模式要求的JSON結構
-"""
+Response Language: English
+Response Format: JSON structure as required by the mode"""
+        
+        # 添加用戶身份資訊
+        if identity_context:
+            identity = identity_context.get("identity", {})
+            name = identity.get("name", "User")
+            base_content += f"\n\nUser Identity: {name}"
+            
+            # UEP 暱稱
+            from configs.user_settings_manager import get_user_setting
+            uep_nickname = get_user_setting("general.identity.uep_nickname", None)
+            if uep_nickname and uep_nickname.strip():
+                base_content += f"\nNote: User has given you a nickname: '{uep_nickname}'"
+        
+        # 不再注入完整 PROFILE 記憶，只提示可透過工具取得
+        if profile_memories:
+            base_content += (
+                "\n\nUser profile data is available. "
+                "Use memory_retrieve_snapshots with memory_types='profile' when you need user facts."
+            )
+        
+        return base_content
     
     def _build_style_policy_cache_content(self) -> str:
         """構建風格策略快取內容"""
         return """
-回應風格調整規則：
-1. Mood值影響語氣：
-   - 高(>0.7): 活潑、熱情、積極
-   - 中(0.3-0.7): 平穩、友善、專業
-   - 低(<0.3): 沉穩、謹慎、溫和
+Response Style Adjustment Rules:
+1. Mood value affects tone:
+   - High (>0.7): Lively, enthusiastic, positive
+   - Medium (0.3-0.7): Stable, friendly, professional
+   - Low (<0.3): Calm, cautious, gentle
 
-2. Pride值影響自信度：
-   - 高(>0.7): 積極主動、自信表達
-   - 中(0.3-0.7): 平衡謙遜、適度自信
-   - 低(<0.3): 謙遜低調、保守表達
+2. Pride value affects confidence:
+   - High (>0.7): Proactive, confident expression
+   - Medium (0.3-0.7): Balanced humility, moderate confidence
+   - Low (<0.3): Humble, conservative expression
 
-3. Boredom值影響主動性：
-   - 高(>0.7): 主動提出建議、探索新話題
-   - 中(0.3-0.7): 回應導向、適度延伸
-   - 低(<0.3): 被動回應、簡潔回答
+3. Boredom value affects proactivity:
+   - High (>0.7): Actively suggest ideas, explore new topics
+   - Medium (0.3-0.7): Response-oriented, moderate extension
+   - Low (<0.3): Passive response, concise answers
 
-JSON回應安全規範：
-- 所有字符串值必須正確轉義
-- 避免使用可能破壞JSON結構的特殊字符
-- 確保數值在有效範圍內
+JSON Response Safety Guidelines:
+- All string values must be properly escaped
+- Avoid special characters that may break JSON structure
+- Ensure numeric values are within valid ranges
 """
     
     def _build_functions_cache_content(self) -> str:
         """構建functions快取內容"""
         return """
-U.E.P 系統可用功能規格：
+U.E.P System Available Functions Specification:
 
-檔案操作功能：
-- file_open: 開啟檔案 (參數: file_path)
-- file_create: 建立檔案 (參數: file_path, content)
-- file_delete: 刪除檔案 (參數: file_path)
-- file_copy: 複製檔案 (參數: source_path, dest_path)
+File Operations:
+- file_open: Open file (params: file_path)
+- file_create: Create file (params: file_path, content)
+- file_delete: Delete file (params: file_path)
+- file_copy: Copy file (params: source_path, dest_path)
 
-系統操作功能：
-- program_launch: 啟動程式 (參數: program_name, arguments)
-- command_execute: 執行指令 (參數: command, working_directory)
-- file_search: 搜尋檔案 (參數: search_pattern, search_path)
-- info_query: 查詢系統資訊 (參數: query_type, parameters)
+System Operations:
+- program_launch: Launch program (params: program_name, arguments)
+- command_execute: Execute command (params: command, working_directory)
+- file_search: Search files (params: search_pattern, search_path)
+- info_query: Query system info (params: query_type, parameters)
 
-記憶管理功能：
-- memory_store: 儲存記憶 (參數: content, memory_type, metadata)
-- memory_retrieve: 檢索記憶 (參數: query, max_results, similarity_threshold)
+Memory Management:
+- memory_store: Store memory (params: content, memory_type, metadata)
+- memory_retrieve: Retrieve memory (params: query, max_results, similarity_threshold)
 """
 
     def _notify_processing_layer_completion(self, result: Dict[str, Any]):
@@ -3464,11 +3581,17 @@ U.E.P 系統可用功能規格：
         
         事件數據包含 session_id 和 cycle_index 用於 flow-based 去重
         這些資訊應該從上游 INPUT_LAYER_COMPLETE 事件傳遞過來
+        
+        🔧 修正：即使 response_text 為空（工作流自動完成的中間狀態），也要發布事件
+        這確保 SystemLoop 可以正確追蹤處理層完成，進而在輸出層完成後發布 CYCLE_COMPLETED
         """
         try:
             response_text = result.get("text", "")
+            
+            # 🔧 只有有實際回應文字時才發布事件
+            # 避免工作流中間狀態（text=""）與工作流完成事件產生去重衝突
             if not response_text:
-                debug_log(2, "[LLM] 無回應文字，跳過處理層完成通知")
+                debug_log(2, "[LLM] 無回應文字，不發布處理層完成事件")
                 return
             
             info_log(f"[LLM] 處理層完成，發布事件: 回應='{response_text[:50]}...'")
@@ -3489,7 +3612,7 @@ U.E.P 系統可用功能規格：
                 "layer": "PROCESSING",
                 
                 # 原有數據
-                "response": response_text,
+                "response": response_text,  # 可能為空字符串，由 SystemLoop 處理
                 "source_module": "llm",
                 "llm_output": result,
                 "timestamp": time.time(),
@@ -3506,10 +3629,133 @@ U.E.P 系統可用功能規格：
                 source="llm"
             )
             
-            debug_log(2, f"[LLM] 處理層完成事件已發布 (session={session_id}, cycle={cycle_index})")
+            debug_log(2, f"[LLM] 處理層完成事件已發布 (session={session_id}, cycle={cycle_index}, has_text={bool(response_text)})")
             
         except Exception as e:
             error_log(f"[LLM] 發布處理層完成事件失敗: {e}")
+    
+    def _process_workflow_error(self, session_id: str, workflow_type: str, 
+                                step_result: dict, review_data: dict):
+        """
+        ✅ 處理工作流執行錯誤，生成錯誤回應並結束會話
+        
+        Args:
+            session_id: 工作流會話 ID
+            workflow_type: 工作流類型
+            step_result: 錯誤步驟的結果
+            review_data: 審核數據
+        """
+        try:
+            error_log(f"[LLM] 處理工作流錯誤: {workflow_type} ({session_id})")
+            
+            # 獲取錯誤訊息
+            error_message = step_result.get('message', 'Unknown error occurred')
+            exception_info = step_result.get('exception', '')
+            
+            # 構建錯誤回應 prompt
+            prompt = (
+                f"The '{workflow_type}' workflow encountered an error and cannot continue.\n\n"
+                f"Error: {error_message}\n"
+            )
+            
+            if exception_info:
+                prompt += f"Technical details: {exception_info}\n\n"
+            
+            prompt += (
+                f"Generate a natural, apologetic response that:\n"
+                f"1. Briefly acknowledges the error occurred during the {workflow_type} task\n"
+                f"2. Explains what went wrong in simple terms (if possible)\n"
+                f"3. Suggests the user try again later or rephrase the request\n"
+                f"4. Keep it brief and friendly (2-3 sentences)\n"
+                f"IMPORTANT: Respond in English only."
+            )
+            
+            debug_log(2, f"[LLM] 生成工作流錯誤回應 prompt: {prompt[:200]}...")
+            
+            # 生成錯誤回應
+            info_log(f"[LLM] 生成工作流錯誤回應...")
+            response = self.model.query(prompt, mode="work", tools=None)
+            llm_response_text = response.get("text", f"Sorry, the {workflow_type} task encountered an error and cannot be completed. Please try again later.")
+            
+            info_log(f"[LLM] 工作流錯誤回應: {llm_response_text[:100]}...")
+            
+            # ✅ 設置 session_control 結束會話
+            response_data = {
+                "text": llm_response_text,
+                "mode": "WORK",
+                "context": {"error": True, "workflow_type": workflow_type},
+                "metadata": {"workflow_error": True},
+                "session_control": {
+                    "should_end_session": True,
+                    "end_reason": f"workflow_error:{workflow_type}",
+                    "confidence": 0.95
+                }
+            }
+            
+            info_log(f"[LLM] ✅ 工作流錯誤回應已生成，已設置 session_control 結束會話: {session_id}")
+            
+            # ✅ 標記工作流會話待結束
+            from core.sessions.session_manager import unified_session_manager
+            unified_session_manager.mark_workflow_session_for_end(
+                session_id, 
+                reason=f"workflow_error:{workflow_type}"
+            )
+            debug_log(1, f"[LLM] 🔚 已標記 WS 待結束: {session_id} (workflow_error:{workflow_type})")
+            
+            # 清理追蹤標記
+            if hasattr(self, '_processed_workflow_completions') and session_id in self._processed_workflow_completions:
+                self._processed_workflow_completions.discard(session_id)
+            
+            if hasattr(self, '_processed_llm_steps'):
+                steps_to_remove = {key for key in self._processed_llm_steps if key.startswith(f"{session_id}:")}
+                for step_key in steps_to_remove:
+                    self._processed_llm_steps.discard(step_key)
+            
+            # 清除 workflow_processing 標誌
+            from core.working_context import working_context_manager
+            working_context_manager.set_skip_input_layer(False, reason="workflow_error_processed")
+            debug_log(2, "[LLM] 已清除 workflow_processing 標誌")
+            
+            # 發布處理層完成事件
+            if self.event_bus:
+                from core.event_bus import SystemEvent
+                
+                self.event_bus.publish(
+                    event_type=SystemEvent.PROCESSING_LAYER_COMPLETE,
+                    data={
+                        "response_data": response_data,
+                        "gs_id": self._get_current_gs_id(),
+                        "cycle_index": self._get_current_cycle_index()
+                    },
+                    source="llm"
+                )
+                
+                debug_log(2, f"[LLM] 工作流錯誤處理完成，處理層事件已發布")
+            
+        except Exception as e:
+            error_log(f"[LLM] 處理工作流錯誤失敗: {e}")
+            # 發布緊急錯誤回應
+            emergency_response = {
+                "text": "Sorry, an unexpected error occurred and I cannot complete this task.",
+                "mode": "WORK",
+                "session_control": {
+                    "should_end_session": True,
+                    "end_reason": "critical_error",
+                    "confidence": 1.0
+                }
+            }
+            
+            if self.event_bus:
+                from core.event_bus import SystemEvent
+                self.event_bus.publish(
+                    event_type=SystemEvent.PROCESSING_LAYER_COMPLETE,
+                    data={
+                        "response_data": emergency_response,
+                        "gs_id": self._get_current_gs_id(),
+                        "cycle_index": self._get_current_cycle_index()
+                    },
+                    source="llm"
+                )
     
     def _process_workflow_completion(self, session_id: str, workflow_type: str, 
                                      step_result: dict, review_data: dict):
@@ -3802,16 +4048,18 @@ U.E.P 系統可用功能規格：
             
             info_log(f"[LLM] 工作流完成回應: {response_text[:100]}...")
             
-            # 觸發 TTS 輸出
-            from core.framework import core_framework
-            tts_module = core_framework.get_module('tts')
-            if tts_module:
-                debug_log(2, f"[LLM] 觸發 TTS 輸出最終總結")
-                tts_module.handle({
-                    "text": response_text,
-                    "session_id": session_id,
-                    "emotion": "neutral"
-                })
+            # ✅ 事件驅動：發布處理層完成事件，由 ModuleCoordinator 統一協調輸出層
+            # 🔧 修正：不再直接調用 TTS，而是通過事件總線發布 PROCESSING_LAYER_COMPLETE
+            # 這確保了 SystemLoop 可以正確追蹤處理層完成，進而在輸出層完成後發布 CYCLE_COMPLETED
+            debug_log(2, f"[LLM] 發布工作流完成的處理層完成事件")
+            result = {
+                "text": response_text,
+                "success": True,
+                "mode": "WORK",
+                "workflow_type": workflow_type,
+                "workflow_session_id": session_id
+            }
+            self._notify_processing_layer_completion(result)
             
             # ✅ 標記工作流會話待結束
             # Controller 會在下一個 CYCLE_COMPLETED 時執行實際結束
@@ -3839,6 +4087,17 @@ U.E.P 系統可用功能規格：
                 for prompt in prompts_to_remove:
                     self._pending_interactive_prompts.remove(prompt)
                     debug_log(2, f"[LLM] 已從隊列移除已完成工作流的互動提示: {prompt.get('workflow_type')}/{prompt.get('next_step_info', {}).get('step_id')}")
+            
+            # 🔧 清除待處理工作流事件隊列中該工作流的所有事件
+            # 防止下次聊天時誤判為工作流模式
+            if hasattr(self, '_pending_workflow_events'):
+                events_to_remove = [
+                    event for event in self._pending_workflow_events
+                    if event.get('session_id') == session_id
+                ]
+                for event in events_to_remove:
+                    self._pending_workflow_events.remove(event)
+                    debug_log(2, f"[LLM] 已從隊列移除已完成工作流的待處理事件: {event.get('workflow_type')}")
             
             # 🔧 清除 workflow_processing 標誌，允許下一次輸入層運行
             from core.working_context import working_context_manager

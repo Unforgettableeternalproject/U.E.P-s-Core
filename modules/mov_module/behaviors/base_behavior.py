@@ -54,6 +54,7 @@ class BehaviorContext:
     
     # 轉場臨時（供 TransitionBehavior 使用）
     transition_start_time: Optional[float] = None
+    transition_animation_finished: bool = False  # 轉場動畫是否完成
     movement_locked_until: float = 0.0
     
     # 狀態追蹤
@@ -95,6 +96,9 @@ class BehaviorFactory:
         if state == BehaviorState.IDLE:
             from .idle_behavior import IdleBehavior
             return IdleBehavior()
+        if state == BehaviorState.SLEEPING:
+            from .sleep_behavior import SleepBehavior
+            return SleepBehavior()
         if state == BehaviorState.SYSTEM_CYCLE:
             # SYSTEM_CYCLE 期間暫停移動，使用專門的系統循環行為
             from .system_cycle_behavior import SystemCycleBehavior

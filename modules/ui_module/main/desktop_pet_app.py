@@ -392,8 +392,16 @@ class DesktopPetApp(QWidget):
                 self.setAcceptDrops(True)
                 debug_log(2, "[DesktopPetApp] 已啟用檔案拖放功能")
                 
-                # 注意：不在這裡設置初始位置，由 MOV 模組的入場動畫控制
-                # self.center_on_screen()  # 已註解，避免覆蓋 MOV 模組的位置設定
+                # 🎯 從 MOV 模組同步初始位置（顯示前必須定位好）
+                if self.mov_module and hasattr(self.mov_module, 'position'):
+                    initial_x = self.mov_module.position.x
+                    initial_y = self.mov_module.position.y
+                    self.move(int(initial_x), int(initial_y))
+                    debug_log(2, f"[DesktopPetApp] 從 MOV 同步初始位置: ({initial_x:.0f}, {initial_y:.0f})")
+                else:
+                    # 備用位置
+                    self.move(100, 100)
+                    debug_log(2, "[DesktopPetApp] 使用備用初始位置: (100, 100)")
             else:
                 # 模擬版本
                 self.setFixedSize(*self.default_size)
@@ -533,22 +541,12 @@ class DesktopPetApp(QWidget):
             old_width, old_height = self.width(), self.height()
             info_log(f"[DesktopPetApp] 📏 執行視窗調整: {old_width}x{old_height} → {target_width}x{target_height} (zoom={zoom_factor:.3f})")
             
-            # 計算當前視窗中心位置
-            current_center_x = self.x() + self.width() // 2
-            current_center_y = self.y() + self.height() // 2
-            
+            # 🔧 移除位置校正邏輯，只改變大小不改變位置（避免影響動畫位置）
             # 調整視窗大小
             self.setFixedSize(target_width, target_height)
             
-            # 計算新的左上角位置，使視窗中心保持不變
-            new_x = current_center_x - target_width // 2
-            new_y = current_center_y - target_height // 2
-            
-            # 確保視窗不會跑到螢幕外（簡單的邊界檢查）
-            new_x = max(0, min(new_x, 1920 - target_width))
-            new_y = max(0, min(new_y, 1080 - target_height))
-            
-            self.move(new_x, new_y)
+            # 保持當前左上角位置不變
+            new_x, new_y = self.x(), self.y()
             self.current_zoom = zoom_factor
             self.pending_resize = None
             
@@ -561,13 +559,14 @@ class DesktopPetApp(QWidget):
     def mousePressEvent(self, event):
         """鼠標按下事件"""
         try:
+            # 搗蛋期間禁止拖曳
+            if getattr(self.mov_module, "mischief_active", False):
+                return
             if Qt and hasattr(event, 'button') and event.button() == Qt.LeftButton:
                 self.is_dragging = True
                 if QPoint and hasattr(event, 'globalPos'):
                     self.drag_position = event.globalPos() - self.frameGeometry().topLeft()
                 
-                # 拖曳時不暫停渲染，讓struggle動畫能正常播放
-                # self.pause_rendering("滑鼠拖拽")  # 註解掉這行
                 
                 # 通知MOV模組拖拽開始
                 if self.mov_module and hasattr(self.mov_module, 'handle_ui_event'):

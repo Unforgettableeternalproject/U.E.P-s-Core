@@ -80,6 +80,12 @@ class UnifiedController:
         self.max_task_history = 100
         self.background_tasks_file = "memory/background_tasks.json"  # 持久化文件路徑
         
+        # GS 生命週期管理 - 標記模式（標註待機）
+        # 設計: STT 標記輸入待機 → NLP 驗證 CALL 意圖 → 若成功則創建實際 GS
+        # 若 NLP 拒絕（沒有 CALL 意圖），標記清除，系統保持 IDLE
+        self._pending_gs = False  # 標記是否有待機的 GS 輸入
+        self._pending_gs_data: Optional[Dict[str, Any]] = None  # 待機 GS 的相關資料
+        
         info_log("[UnifiedController] 系統級控制器初始化")
     
     # ========== 系統啟動和初始化 ==========
@@ -97,6 +103,11 @@ class UnifiedController:
             # ✅ 清空狀態佇列（避免舊狀態殘留）
             self.state_queue_manager.clear_queue()
             info_log("[UnifiedController] 已清空狀態佇列")
+            
+            # ✅ 同時重置 StateManager 到 IDLE 狀態，確保與 StateQueue 同步
+            from core.states.state_manager import UEPState
+            self.state_manager.set_state(UEPState.IDLE)
+            info_log("[UnifiedController] 已重置系統狀態為 IDLE (與狀態佇列同步)")
             
             # 初始化核心框架
             if not self._initialize_framework():
@@ -222,18 +233,17 @@ class UnifiedController:
             
             # 檢查是否需要創建 GS
             if not current_gs:
-                # 如果狀態佇列有項目或系統不在 IDLE 狀態，則需要創建 GS
+                # 🆕 SLEEP 狀態不應該創建 GS（系統休眠中）
+                if current_state == UEPState.SLEEP:
+                    debug_log(2, "[Controller] 系統處於 SLEEP 狀態，不創建 GS")
+                    return
+                
+                # 其他非 IDLE 狀態或佇列有項目時創建 GS
                 if (queue_status.get('queue_length', 0) > 0 or 
                     current_state != UEPState.IDLE):
                     
                     debug_log(2, f"[Controller] 檢測到需要創建 GS：狀態={current_state.value}, 佇列長度={queue_status.get('queue_length', 0)}")
                     self._create_gs_for_processing()
-                    
-                # 系統啟動時預先創建 GS
-                elif not hasattr(self, '_initial_gs_created'):
-                    debug_log(2, "[Controller] 系統啟動，預先創建初始 GS")
-                    self._create_gs_for_processing()
-                    self._initial_gs_created = True
                     
                 return
                 
@@ -464,58 +474,42 @@ class UnifiedController:
     
     def trigger_user_input(self, user_input: str, input_type: str = "text") -> Dict[str, Any]:
         """
-        觸發用戶輸入處理 - 僅負責 GS 生命週期
+        觸發用戶輸入處理 - 標記待機階段 (Mark Phase)
         
-        這是系統的入口點，只負責：
-        1. 創建新的 GS 
-        2. 觸發系統自主處理
-        3. 監控 GS 完成
-        4. 返回基本結果
+        設計: STT 標記輸入待機 → NLP 驗證 CALL 意圖 → 系統進入非 IDLE 狀態時創建實際 GS
+        
+        這個方法只負責：
+        1. 標記 GS 為待機狀態
+        2. 存儲輸入數據
+        3. 觸發 NLP 分析
+        4. 返回基本結果（不保證 GS 已創建）
+        
+        實際 GS 創建由 Controller 或 StateManager 在系統進入非 IDLE 狀態時完成。
         """
         try:
-            info_log(f"[UnifiedController] 觸發用戶輸入處理...")
+            info_log(f"[UnifiedController] 觸發用戶輸入處理（待機標記階段）...")
             
-            # 創建新的 General Session
-            gs_trigger_event = {
+            # 標記 GS 為待機，儲存輸入資料
+            self._pending_gs = True
+            self._pending_gs_data = {
                 "user_input": user_input,
                 "input_type": input_type,
                 "timestamp": time.time()
             }
             
-            # 啟動 GS（由 session_manager 自動處理後續流程）
-            current_gs_id = self.session_manager.start_general_session(
-                input_type + "_input", gs_trigger_event
-            )
+            debug_log(2, f"[UnifiedController] GS 待機標記已設置: input_type={input_type}")
             
-            if current_gs_id:
-                self.total_gs_sessions += 1
-                
-                # 🔧 立即設置到全局上下文，供所有模組訪問
-                # 這確保 NLP/LLM/TTS 等模組在處理時能立即讀取到正確的 GS ID
-                try:
-                    from core.working_context import working_context_manager
-                    working_context_manager.global_context_data['current_gs_id'] = current_gs_id
-                    # 初始化 cycle_index 為 0（每個新 GS 從 cycle 0 開始）
-                    working_context_manager.global_context_data['current_cycle_index'] = 0
-                    debug_log(2, f"[UnifiedController] GS ID 和 cycle_index 已設置到全局上下文: {current_gs_id}, cycle=0")
-                except Exception as e:
-                    error_log(f"[UnifiedController] 設置全局 GS ID 失敗: {e}")
-                
-                info_log(f"[UnifiedController] GS 已創建: {current_gs_id}")
-                
-                return {
-                    "status": "triggered",
-                    "session_id": current_gs_id,
-                    "message": "輸入處理已觸發，系統將自主處理"
-                }
-            else:
-                return {
-                    "status": "error", 
-                    "message": "無法創建 General Session"
-                }
+            # 返回告知調用方輸入已接受（但 GS 尚未創建）
+            return {
+                "status": "pending",
+                "message": "輸入已接受，等待 NLP 驗證和系統狀態變更",
+                "session_id": None
+            }
                 
         except Exception as e:
             error_log(f"[UnifiedController] 輸入觸發失敗: {e}")
+            self._pending_gs = False  # 清除標記
+            self._pending_gs_data = None
             return {
                 "status": "error",
                 "message": str(e)
@@ -549,7 +543,7 @@ class UnifiedController:
     def _on_gs_started(self, event):
         """GS 開始事件處理 - 通知設定管理器"""
         try:
-            session_id = event.get('session_id')
+            session_id = event.data.get('session_id')
             debug_log(2, f"[UnifiedController] GS 開始: {session_id}, 設定 GS 為活躍狀態")
             self.user_settings_manager.set_gs_active(True)
         except Exception as e:
@@ -558,7 +552,7 @@ class UnifiedController:
     def _on_gs_ended(self, event):
         """GS 結束事件處理 - 通知設定管理器並套用待處理變更"""
         try:
-            session_id = event.get('session_id')
+            session_id = event.data.get('session_id')
             info_log(f"[UnifiedController] GS 結束: {session_id}, 準備套用待處理的設定變更")
             
             # 設定 GS 為非活躍，這會自動觸發待處理變更的套用
@@ -1102,10 +1096,15 @@ class UnifiedController:
         try:
             info_log("[UnifiedController] 開始系統關閉...")
             
-            # 停止監控
+            # 停止監控線程
             self.should_stop_monitoring.set()
             if self.monitoring_thread:
-                self.monitoring_thread.join(timeout=5)
+                debug_log(2, "[UnifiedController] 等待監控線程結束...")
+                self.monitoring_thread.join(timeout=10.0)
+                if self.monitoring_thread.is_alive():
+                    error_log("[UnifiedController] ⚠️ 監控線程未能正常結束")
+                else:
+                    info_log("[UnifiedController] ✅ 監控線程已正常結束")
             
             # 結束當前 GS
             current_gs = self.session_manager.get_current_general_session()
@@ -1119,6 +1118,8 @@ class UnifiedController:
             
         except Exception as e:
             error_log(f"[UnifiedController] 系統關閉失敗: {e}")
+    
+    # ========== ON_CALL 管理 ==========
 
 
 # 全局控制器實例

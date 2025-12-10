@@ -2434,3 +2434,15 @@
 
 ---
 
+### Mischief state state queue integration. And a few more additions. 12/10
+
+> Date: Wed, 10 Dec 2025 17:11:06 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `31e97fc11f7c2eaebfe49a61227c6521ed79dd0c`
+
+---
+

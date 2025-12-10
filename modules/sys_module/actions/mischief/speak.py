@@ -19,6 +19,7 @@ class SpeakAction(MischiefAction):
         self.description = "Say something out loud using TTS"
         self.mood_context = MoodContext.ANY
         self.animation_name = "talk_ani_f"
+        self.allowed_intensities = ["low", "medium", "high"]
         self.requires_params = ["text"]  # 需要 LLM 提供要說的話
     
     def execute(self, params: Dict[str, Any]) -> Tuple[bool, str]:

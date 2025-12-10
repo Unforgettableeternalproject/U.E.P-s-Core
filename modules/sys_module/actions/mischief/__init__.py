@@ -40,6 +40,7 @@ class MischiefAction(ABC):
         self.mood_context: MoodContext = MoodContext.ANY
         self.animation_name: Optional[str] = None  # 執行時播放的動畫
         self.requires_params: List[str] = []       # 需要的參數列表
+        self.allowed_intensities: List[str] = ["low", "medium", "high"]  # 可用的搗蛋強度
         
     @abstractmethod
     def execute(self, params: Dict[str, Any]) -> Tuple[bool, str]:
@@ -74,7 +75,8 @@ class MischiefAction(ABC):
             "description": self.description,
             "mood_context": self.mood_context.value,
             "required_params": self.requires_params,
-            "animation": self.animation_name
+            "animation": self.animation_name,
+            "allowed_intensities": self.allowed_intensities
         }
 
 
@@ -98,12 +100,13 @@ class MischiefActionRegistry:
         """根據 ID 獲取行為"""
         return self._actions.get(action_id)
     
-    def get_available_actions(self, mood: float) -> List[Dict[str, Any]]:
+    def get_available_actions(self, mood: float, intensity: str = "medium") -> List[Dict[str, Any]]:
         """
         根據當前情緒獲取可用行為列表
         
         Args:
             mood: 當前 mood 值 (-1.0 ~ 1.0)
+            intensity: 當前搗蛋強度（low/medium/high）
             
         Returns:
             行為資訊列表（供 LLM 參考）
@@ -120,7 +123,8 @@ class MischiefActionRegistry:
         for action in self._actions.values():
             # 檢查行為是否符合當前情境
             if action.mood_context == MoodContext.ANY or action.mood_context == current_context:
-                available.append(action.get_info())
+                if intensity in getattr(action, "allowed_intensities", ["low", "medium", "high"]):
+                    available.append(action.get_info())
         
         debug_log(2, f"[MischiefRegistry] 當前情境 {current_context.value}，"
                      f"可用行為 {len(available)} 個")

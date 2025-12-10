@@ -19,9 +19,10 @@ class MoveMouseAction(MischiefAction):
     def __init__(self):
         super().__init__()
         self.display_name = "Move Mouse"
-        self.description = "Slightly move the mouse cursor"
+        self.description = "Slightly move the mouse cursor if idle"
         self.mood_context = MoodContext.ANY
         self.animation_name = None
+        self.allowed_intensities = ["low", "medium"]
         self.requires_params = []
         
         # 安全區域設置（避免意外點擊重要區域）

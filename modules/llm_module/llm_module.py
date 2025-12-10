@@ -115,6 +115,41 @@ class LLMModule(BaseModule):
             error_log("[LLM] ❌ API 呼叫已禁用（user_settings: monitoring.network.allow_api_calls = false）")
             return False
         return True
+
+    def generate_mischief_plan(
+        self,
+        system_prompt: str,
+        user_message: str,
+        temperature: float = 0.9,
+        max_tokens: int = 1000
+    ) -> Optional[str]:
+        """
+        Generate a MISCHIEF action plan without creating sessions or user-facing output.
+        """
+        try:
+            prompt = f"{system_prompt.strip()}\n\n{user_message.strip()}"
+            response = self.model.query(
+                prompt=prompt,
+                mode="work",  # avoid chat-style fluff
+                tools=None,
+                temperature=temperature,
+                max_tokens=max_tokens
+            )
+
+            if isinstance(response, dict):
+                text = response.get("text") or response.get("response") or ""
+            else:
+                text = str(response)
+
+            if not text or not str(text).strip():
+                error_log("[LLM] MISCHIEF plan response is empty")
+                return None
+
+            return str(text)
+
+        except Exception as e:
+            error_log(f"[LLM] Failed to generate MISCHIEF plan: {e}")
+            return None
     
     def _setup_state_listener(self):
         """設定系統狀態監聽器，自動切換協作管道"""

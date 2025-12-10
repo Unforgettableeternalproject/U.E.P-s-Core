@@ -24,6 +24,7 @@ class ClickShortcutAction(MischiefAction):
         self.description = "Randomly click an application shortcut on the desktop"
         self.mood_context = MoodContext.POSITIVE
         self.animation_name = "click_f"
+        self.allowed_intensities = ["medium", "high"]
         self.requires_params = []
         
         # 黑名單：不應該點擊的捷徑關鍵字

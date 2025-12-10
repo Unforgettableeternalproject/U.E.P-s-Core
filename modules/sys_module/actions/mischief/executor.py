@@ -191,17 +191,18 @@ class MischiefExecutor:
         
         return results
     
-    def get_available_actions_for_llm(self, mood: float) -> str:
+    def get_available_actions_for_llm(self, mood: float, intensity: str = "medium") -> str:
         """
         獲取可用行為列表的 JSON 格式（供 LLM 參考）
         
         Args:
             mood: 當前情緒值
+            intensity: 搗蛋強度
             
         Returns:
             JSON 字串
         """
-        available = mischief_registry.get_available_actions(mood)
+        available = mischief_registry.get_available_actions(mood, intensity)
         
         prompt_data = {
             "available_actions": available,

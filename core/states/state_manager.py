@@ -3,6 +3,7 @@ from enum import Enum, auto
 from typing import Dict, Any, Optional, List, Callable
 import time
 from core.status_manager import status_manager
+from configs import user_settings_manager  # 供測試 mock / 直接存取設定
 from utils.debug_helper import debug_log, info_log, error_log
 from core.working_context import ContextType
 from core.sessions.workflow_session import WSTaskType
@@ -32,6 +33,8 @@ class StateManager:
         self._current_session_id: Optional[str] = None
         self._state_change_callbacks: List[Callable[[UEPState, UEPState], None]] = []
         self.status_manager = status_manager
+        # MISCHIEF 跨循環運行時的計畫與進度
+        self._mischief_runtime: Optional[Dict[str, Any]] = None
         # 與 StatusManager 整合
         self._setup_status_integration()
         # 訂閱會話結束事件
@@ -463,8 +466,9 @@ class StateManager:
             # 取消當前會話（Mischief 不需要會話）
             self._cleanup_sessions()
             
-            # 更新系統數值 - Mischief 狀態時 Helpfulness 為負值
-            self._update_status_for_mischief()
+            # 更新系統數值 - Mischief 狀態時 Helpfulness 為負值（僅第一次進入）
+            if self._mischief_runtime is None:
+                self._update_status_for_mischief()
             
             # 觸發 Mischief 狀態的特殊行為
             self._trigger_mischief_behaviors(context)
@@ -636,93 +640,151 @@ class StateManager:
     
     def _trigger_mischief_behaviors(self, context: Optional[Dict[str, Any]] = None):
         """
-        觸發 Mischief 狀態的特殊行為
+        觸發 Mischief 狀態的特殊行為（跨循環，一次執行一個行為）
         
-        流程：
-        1. 獲取用戶配置（是否啟用、最大行為數）
-        2. 根據當前系統數值決定可用行為
-        3. 調用 LLM 生成行為序列
-        4. 使用 MischiefExecutor 執行
-        5. 根據執行結果調整系統數值
+        返回：
+            True  - 已完成並退出狀態
+            False - 尚有行為待執行，需下一循環
         """
         try:
             from configs.user_settings_manager import user_settings_manager
-            
+
             # 檢查 MISCHIEF 是否啟用
-            mischief_enabled = user_settings_manager.get_setting(
-                "behavior.mischief.enabled", False
-            )
-            
+            mischief_enabled = user_settings_manager.get_setting("behavior.mischief.enabled", False)
             if not mischief_enabled:
                 info_log("[StateManager] MISCHIEF 狀態已觸發，但用戶未啟用此功能")
-                # 直接退出此狀態
+                self._clear_mischief_runtime()
                 self.exit_special_state("mischief_disabled")
-                return
-            
-            # 獲取配置
-            max_actions = user_settings_manager.get_setting(
-                "behavior.mischief.max_actions", 5
-            )
-            intensity = user_settings_manager.get_setting(
-                "behavior.mischief.intensity", "medium"
-            )
-            
-            info_log(f"[StateManager] 開始 MISCHIEF 行為規劃 "
-                    f"(max_actions={max_actions}, intensity={intensity})")
-            
-            # 獲取當前系統數值
-            status_dict = self.status_manager.get_status_dict()
-            mood = status_dict.get("mood", 0.0)
-            boredom = status_dict.get("boredom", 0.0)
-            pride = status_dict.get("pride", 0.0)
-            
-            # 導入 MISCHIEF 執行器
-            from modules.sys_module.actions.mischief.loader import (
-                mischief_executor,
-                mischief_registry
-            )
-            
-            # 獲取可用行為列表
-            available_actions_json = mischief_executor.get_available_actions_for_llm(mood)
-            
-            # 調用 LLM 生成行為規劃
-            action_plan = self._call_llm_for_mischief_planning(
-                available_actions_json,
-                max_actions,
-                mood,
-                boredom,
-                pride,
-                intensity,
-                context
-            )
-            
-            if not action_plan:
-                info_log("[StateManager] LLM 未返回有效的行為規劃")
-                self.exit_special_state("no_plan")
-                return
-            
-            # 解析並執行行為
-            success, actions_list = mischief_executor.parse_llm_response(action_plan)
-            
-            if not success or not actions_list:
-                info_log("[StateManager] 行為規劃解析失敗")
-                self.exit_special_state("parse_failed")
-                return
-            
-            info_log(f"[StateManager] 開始執行 {len(actions_list)} 個 MISCHIEF 行為")
-            
-            # 執行行為序列
-            results = mischief_executor.execute_actions(actions_list)
-            
-            # 根據執行結果調整系統數值
-            self._adjust_status_after_mischief(results, context)
-            
-            # MISCHIEF 完成，退出狀態
-            self.exit_special_state("mischief_completed")
-            
+                return True
+
+            # 規劃：僅在 runtime 尚未建立時執行
+            if self._mischief_runtime is None:
+                max_actions = user_settings_manager.get_setting("behavior.mischief.max_actions", 5)
+                intensity = user_settings_manager.get_setting("behavior.mischief.intensity", "medium")
+
+                info_log(f"[StateManager] 開始 MISCHIEF 行為規劃 (max_actions={max_actions}, intensity={intensity})")
+
+                status_dict = self.status_manager.get_status_dict()
+                mood = status_dict.get("mood", 0.0)
+                boredom = status_dict.get("boredom", 0.0)
+                pride = status_dict.get("pride", 0.0)
+
+                from modules.sys_module.actions.mischief.loader import mischief_executor
+
+                available_actions_json = mischief_executor.get_available_actions_for_llm(mood, intensity)
+
+                action_plan = self._call_llm_for_mischief_planning(
+                    available_actions_json,
+                    max_actions,
+                    mood,
+                    boredom,
+                    pride,
+                    intensity,
+                    context
+                )
+
+                if not action_plan:
+                    info_log("[StateManager] LLM 未返回有效的行為規劃")
+                    self.exit_special_state("no_plan")
+                    return True
+
+                success, actions_list = mischief_executor.parse_llm_response(action_plan)
+                if not success or not actions_list:
+                    info_log("[StateManager] 行為規劃解析失敗")
+                    self.exit_special_state("parse_failed")
+                    return True
+
+                actions_list = actions_list[:max_actions]
+                self._mischief_runtime = {
+                    "actions": actions_list,
+                    "next_index": 0,
+                    "results": {
+                        "total": 0,
+                        "success": 0,
+                        "failed": 0,
+                        "skipped": 0,
+                        "details": [],
+                        "speech_texts": []
+                    },
+                    "intensity": intensity
+                }
+                info_log(f"[StateManager] MISCHIEF 規劃完成，共 {len(actions_list)} 個行為")
+
+            # 執行當前循環的一個行為
+            runtime = self._mischief_runtime or {}
+            actions_list = runtime.get("actions", [])
+            next_index = runtime.get("next_index", 0)
+
+            if next_index >= len(actions_list):
+                self._finalize_mischief(runtime, context)
+                return True
+
+            from modules.sys_module.actions.mischief.loader import mischief_executor
+
+            current_action = actions_list[next_index]
+            info_log(f"[StateManager] MISCHIEF 循環執行行為 {next_index + 1}/{len(actions_list)}: {current_action.get('action_id')}")
+
+            step_results = mischief_executor.execute_actions([current_action])
+
+            agg = runtime["results"]
+            agg["total"] += step_results.get("total", 0)
+            agg["success"] += step_results.get("success", 0)
+            agg["failed"] += step_results.get("failed", 0)
+            agg["skipped"] += step_results.get("skipped", 0)
+            agg["details"].extend(step_results.get("details", []))
+            agg["speech_texts"].extend(step_results.get("speech_texts", []))
+
+            speech_texts = step_results.get("speech_texts", [])
+            if speech_texts:
+                try:
+                    from core.framework import core_framework
+                    tts_module = core_framework.get_module('tts')
+                    if tts_module:
+                        for text in speech_texts:
+                            tts_module.handle({
+                                "text": text,
+                                "session_id": None,
+                                "emotion": "neutral",
+                                "system_initiated": True
+                            })
+                        debug_log(2, f"[StateManager] 已提交 {len(speech_texts)} 條 MISCHIEF 語音文字給 TTS")
+                except Exception as tts_err:
+                    debug_log(1, f"[StateManager] MISCHIEF 語音提交失敗: {tts_err}")
+
+            runtime["next_index"] = next_index + 1
+            self._mischief_runtime = runtime
+
+            if runtime["next_index"] >= len(actions_list):
+                self._finalize_mischief(runtime, context)
+                return True
+
+            return False
+
         except Exception as e:
             error_log(f"[StateManager] 觸發 Mischief 行為失敗: {e}")
             self.exit_special_state("error")
+            self._clear_mischief_runtime()
+            return True
+    
+    def _finalize_mischief(self, runtime: Dict[str, Any], context: Optional[Dict[str, Any]] = None):
+        """完成 MISCHIEF 後的收尾與數值調整"""
+        try:
+            results = runtime.get("results", {})
+            self._adjust_status_after_mischief(results, context)
+        except Exception as e:
+            error_log(f"[StateManager] MISCHIEF 收尾計算失敗: {e}")
+        finally:
+            self._clear_mischief_runtime()
+            self.exit_special_state("mischief_completed")
+
+    def _clear_mischief_runtime(self):
+        """清除 MISCHIEF 跨循環計畫/進度"""
+        self._mischief_runtime = None
+
+    def has_pending_mischief_actions(self) -> bool:
+        """是否仍有 MISCHIEF 行為待執行"""
+        runtime = self._mischief_runtime
+        return bool(runtime) and runtime.get("next_index", 0) < len(runtime.get("actions", []))
     
     def _call_llm_for_mischief_planning(
         self,
@@ -753,28 +815,32 @@ class StateManager:
             trigger_reason = context.get("trigger_reason", "unknown") if context else "unknown"
             
             system_prompt = (
-                "你正處於 MISCHIEF（搗蛋）狀態。\n"
-                "這是系統的自主活動模式，你可以主動進行一些趣味性的互動行為。\n"
-                f"當前系統數值：Mood={mood:.2f}, Boredom={boredom:.2f}, Pride={pride:.2f}\n"
-                f"搗蛋強度：{intensity}\n"
-                f"最大行為數：{max_actions}\n"
-                f"觸發原因：{trigger_reason}\n\n"
-                "請根據當前情緒和可用行為，規劃一個有趣的搗蛋序列。\n"
-                "注意：\n"
-                "- 行為應符合當前情緒（心情好時較溫和，心情差時可能更調皮）\n"
-                "- 搗蛋強度影響行為選擇的激進程度\n"
-                "- 避免過度干擾用戶\n"
+                "You are in MISCHIEF (prank) state. This is a system-initiated, non-chat mode.\n"
+                "Plan playful actions without asking the user and without generating replies.\n"
+                f"Current values: Mood={mood:.2f}, Boredom={boredom:.2f}, Pride={pride:.2f}\n"
+                f"Mischief intensity: {intensity}\n"
+                f"Max actions: {max_actions}\n"
+                f"Trigger reason: {trigger_reason}\n"
+                "Guidelines:\n"
+                "- Actions must fit the current mood (positive = gentle, negative = more mischievous)\n"
+                "- Intensity controls aggressiveness; avoid dangerous or disruptive choices\n"
+                "- No user-facing text; just return the plan JSON\n"
             )
             
             user_message = (
-                f"可用行為列表：\n{available_actions_json}\n\n"
-                "請生成行為規劃（JSON 格式）。"
+                f"Available actions (JSON):\n{available_actions_json}\n\n"
+                "Return ONLY JSON in the following shape:\n"
+                '{\n  "actions": [\n    {"action_id": "...", "params": {...}},\n    ...\n  ]\n}\n'
+                "- Use only listed actions\n"
+                "- Provide all required params (e.g., message/text content up front)\n"
+                "- Pick between 1 and max_actions items\n"
+                "- Do not include explanations or extra keys"
             )
             
             # 調用 LLM
-            response = llm_module.generate_response(
-                user_message=user_message,
+            response = llm_module.generate_mischief_plan(
                 system_prompt=system_prompt,
+                user_message=user_message,
                 temperature=0.9,  # 高溫度以獲得更有創意的行為
                 max_tokens=1000
             )
@@ -948,18 +1014,19 @@ class StateManager:
         try:
             if self._state in [UEPState.MISCHIEF, UEPState.SLEEP]:
                 old_state = self._state
-                
+
                 # 恢復系統數值
                 if old_state == UEPState.MISCHIEF:
+                    self._clear_mischief_runtime()
                     self._restore_helpfulness_after_mischief()
                 elif old_state == UEPState.SLEEP:
                     self._wake_from_sleep(reason)
-                
+
                 # 回到 IDLE 狀態
                 self.set_state(UEPState.IDLE, {"exit_reason": reason})
-                
+
                 debug_log(1, f"[StateManager] 退出 {old_state.name} 狀態: {reason}")
-                
+
         except Exception as e:
             debug_log(1, f"[StateManager] 退出特殊狀態失敗: {e}")
     

@@ -22,9 +22,10 @@ class MoveWindowAction(MischiefAction):
     def __init__(self):
         super().__init__()
         self.display_name = "Move Window"
-        self.description = "Randomly select a visible window and move it to a new position"
+        self.description = "Randomly select a visible window (not maximized/fullscreen) and move it slightly"
         self.mood_context = MoodContext.ANY
         self.animation_name = "push_left"
+        self.allowed_intensities = ["medium", "high"]
         self.requires_params = []
     
     def execute(self, params: Dict[str, Any]) -> Tuple[bool, str]:

@@ -19,9 +19,10 @@ class CreateTextFileAction(MischiefAction):
     def __init__(self):
         super().__init__()
         self.display_name = "Create Text File"
-        self.description = "Create a text file on the desktop with a message"
+        self.description = "Create a text file on the desktop with a UEP message"
         self.mood_context = MoodContext.ANY
         self.animation_name = "data_processing_f"
+        self.allowed_intensities = ["low", "medium"]
         self.requires_params = ["message"]
     
     def execute(self, params: Dict[str, Any]) -> Tuple[bool, str]:

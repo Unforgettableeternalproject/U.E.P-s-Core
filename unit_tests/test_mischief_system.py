@@ -163,7 +163,7 @@ class TestCreateTextFileAction(unittest.TestCase):
     def test_action_properties(self):
         """測試行為屬性"""
         action = self.CreateTextFileAction()
-        self.assertEqual(action.display_name, "創建文字檔")
+        self.assertEqual(action.display_name, "Create Text File")
         self.assertIn("message", action.requires_params)
     
     def test_validate_params_missing(self):

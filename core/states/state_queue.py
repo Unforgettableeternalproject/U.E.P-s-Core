@@ -126,6 +126,10 @@ class StateQueueManager:
         # 註冊 SLEEP 狀態處理器
         self.register_state_handler(UEPState.SLEEP, self._handle_sleep_state)
         self.register_completion_handler(UEPState.SLEEP, self._handle_sleep_completion)
+
+        # 註冊 MISCHIEF 狀態處理器（一次性無會話狀態）
+        self.register_state_handler(UEPState.MISCHIEF, self._handle_mischief_state)
+        self.register_completion_handler(UEPState.MISCHIEF, self._handle_mischief_completion)
     
     def _get_session_manager(self):
         """獲取統一 Session 管理器 (延遲導入)"""
@@ -353,6 +357,51 @@ class StateQueueManager:
             error_log(traceback.format_exc())
             # SLEEP 進入失敗，標記完成並繼續下一個狀態
             self.complete_current_state(success=False, result_data={"error": str(e)})
+
+    def _handle_mischief_state(self, queue_item: StateQueueItem):
+        """處理 MISCHIEF 狀態 - 直接交給 StateManager 執行一次搗蛋流程"""
+        try:
+            from core.states.state_manager import state_manager
+            from core.working_context import working_context_manager
+
+            info_log("[StateQueue] 🐾 開始處理 MISCHIEF 狀態（系統自主搗蛋）")
+            debug_log(2, f"[StateQueue] 觸發原因: {queue_item.trigger_content}")
+            debug_log(3, f"[StateQueue] 元數據: {queue_item.metadata}")
+
+            # 標記跳過輸入層，本循環不啟動 STT/文字輸入
+            working_context_manager.set_skip_input_layer(True, reason="mischief_state")
+
+            # 準備上下文（傳遞觸發原因與測試旗標）
+            mischief_context = {
+                "trigger_reason": queue_item.trigger_content,
+                **queue_item.metadata
+            }
+
+            state_manager.set_state(UEPState.MISCHIEF, mischief_context)
+
+            # 根據剩餘行為決定是否需要下一循環繼續
+            if state_manager.has_pending_mischief_actions():
+                # 重新排入 MISCHIEF 狀態（保持相同優先權）
+                self.add_state(
+                    state=UEPState.MISCHIEF,
+                    trigger_content="mischief_continue",
+                    context_content=queue_item.context_content,
+                    metadata=queue_item.metadata
+                )
+                debug_log(2, "[StateQueue] MISCHIEF 尚有行為待執行，已重新排入下一循環")
+
+            # 標記當前循環完成
+            self.complete_current_state(success=True)
+
+        except Exception as e:
+            error_log(f"[StateQueue] ❌ 處理 MISCHIEF 狀態時發生錯誤: {e}")
+            import traceback
+            error_log(traceback.format_exc())
+            self.complete_current_state(success=False, result_data={"error": str(e)})
+
+    def _handle_mischief_completion(self, queue_item: StateQueueItem, success: bool):
+        """處理 MISCHIEF 完成（目前無額外清理需求）"""
+        debug_log(2, f"[StateQueue] MISCHIEF 狀態完成: {'成功' if success else '失敗'}")
     
     def _handle_sleep_completion(self, queue_item: StateQueueItem, success: bool):
         """處理 SLEEP 狀態完成

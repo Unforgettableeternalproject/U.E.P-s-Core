@@ -559,6 +559,9 @@ class DesktopPetApp(QWidget):
     def mousePressEvent(self, event):
         """鼠標按下事件"""
         try:
+            # 搗蛋期間禁止拖曳
+            if getattr(self.mov_module, "mischief_active", False):
+                return
             if Qt and hasattr(event, 'button') and event.button() == Qt.LeftButton:
                 self.is_dragging = True
                 if QPoint and hasattr(event, 'globalPos'):

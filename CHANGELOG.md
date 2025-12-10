@@ -2446,3 +2446,15 @@
 
 ---
 
+### Some mischief state improvement. 12/10
+
+> Date: Wed, 10 Dec 2025 23:15:09 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `79f5fecb91239ba9c1e6f7715075a5c6b6700d47`
+
+---
+

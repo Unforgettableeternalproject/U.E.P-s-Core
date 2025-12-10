@@ -72,6 +72,9 @@ class CursorTrackingHandler(BaseHandler):
         Note:
             只有在角色處於 IDLE 狀態時才會開始追蹤，避免移動中的干擾
         """
+        # MISCHIEF 期間不進行滑鼠追蹤
+        if getattr(self.coordinator, "mischief_active", False):
+            return
         # 🔧 出入場期間禁止追蹤
         if hasattr(self.coordinator, '_is_entering') and self.coordinator._is_entering:
             return

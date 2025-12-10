@@ -415,6 +415,11 @@ class AnimationQueryHelper:
                 except Exception:
                     # 無法獲取音樂狀態時跳過此動畫（不要在沒有音樂時 chill）
                     pass
+                
+            # playing_f: 無條件可，但是機率極低
+            if self.animation_exists("playing_f"):
+                if random.random() < 0.01:  # 1% 機率觸發
+                    available.append("playing_f")
         
         if available:
             return random.choice(available)

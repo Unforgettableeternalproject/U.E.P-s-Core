@@ -267,6 +267,14 @@ class MOVModule(BaseFrontendModule):
         self.keep_on_screen = True
         self.bounce_off_edges = False
         self._apply_config(self.config)
+
+        # --- MISCHIEF 行為控制 ---
+        self.mischief_active: bool = False
+        self._mischief_pending_target: Optional[Position] = None
+        self._mischief_pending_anim: Optional[str] = None
+        self._mischief_end_at: float = 0.0
+        self._mischief_anim_timeout: float = 1.5
+        self._mischief_info: Dict[str, Any] = {}
         
         # --- 狀態動畫系統 ---
         self._current_layer: Optional[str] = None  # "input", "processing", "output"
@@ -403,6 +411,16 @@ class MOVModule(BaseFrontendModule):
                 return self._api_set_position(data)
             if cmd == "set_velocity":
                 return self._api_set_velocity(data)
+            if cmd == "mischief_action":
+                # 手動觸發 MISCHIEF 行為（測試/除錯用）
+                action_id = data.get("action_id", "unknown")
+                target = data.get("target")
+                animation = data.get("animation")
+                self._start_mischief_action(action_id, target, animation)
+                return {"success": True, "action": action_id, "target": target, "animation": animation}
+            if cmd == "mischief_event":
+                # 從 FrontendBridge/事件直接觸發具體行為（含目標定位）
+                return self._handle_mischief_event(data)
             if cmd == "inject_ani":
                 ani = data.get("ani")
                 if ani is None:
@@ -477,6 +495,10 @@ class MOVModule(BaseFrontendModule):
     # ========= Tick：行為 / 物理 =========
 
     def _tick_behavior(self):
+        # 搗蛋模式：暫停行為機（但允許移動與動畫） 
+        if self.mischief_active:
+            return
+
         # 🌙 睡眠狀態下跳過行為更新
         if self.current_behavior_state == BehaviorState.SLEEPING:
             return
@@ -644,6 +666,29 @@ class MOVModule(BaseFrontendModule):
                 self._behavior_log_counter = 0
 
     def _tick_movement(self):
+        # 搗蛋模式：僅執行目標定位與單次動畫觸發
+        if self.mischief_active:
+            # 直接移動到指定目標（若有）
+            if self._mischief_pending_target:
+                self.position.x = float(self._mischief_pending_target.x)
+                self.position.y = float(self._mischief_pending_target.y)
+                self._emit_position()
+                self._mischief_pending_target = None
+            # 觸發一次動畫（若有）
+            if self._mischief_pending_anim:
+                self._trigger_anim(
+                    self._mischief_pending_anim,
+                    {"loop": False, "priority": AnimationPriority.USER_INTERACTION},
+                    source="mischief"
+                )
+                self._mischief_pending_anim = None
+                # 預留動畫完成時間（可覆寫）
+                self._mischief_end_at = time.time() + self._mischief_anim_timeout
+            # 時間到則結束 mischief 模式
+            if self._mischief_end_at and time.time() >= self._mischief_end_at:
+                self._end_mischief_action()
+            return
+
         # 🌙 睡眠狀態下跳過移動更新（避免 FLOAT/GROUND 邊界檢測干擾睡眠動畫位置）
         # 睡眠動畫有特殊的 offsetY，如果啟用邊界檢測會被誤判為浮空而強制下壓
         if self.current_behavior_state == BehaviorState.SLEEPING:
@@ -887,6 +932,8 @@ class MOVModule(BaseFrontendModule):
         debug_log(1, f"[{self.module_id}] 進入行為: {state.value}（模式: {self.movement_mode.value}）")
 
     def _switch_behavior(self, next_state: BehaviorState):
+        if self.mischief_active:
+            return
         old = self.current_behavior_state
         debug_log(1, f"[{self.module_id}] 行為狀態轉換: {old.value} -> {next_state.value}（{self.movement_mode.value}）")
         # 若需要 on_exit，可在 BaseBehavior 加入，這裡預留呼叫點
@@ -1622,6 +1669,8 @@ class MOVModule(BaseFrontendModule):
             error_log(f"[{self.module_id}] 處理UI事件失敗: {event_type}, 錯誤: {e}")
 
     def _on_drag_start(self, event):
+        if self.mischief_active:
+            return
         # 記錄拖曳前的狀態
         self._drag_start_position = self.position.copy()
         self._drag_start_mode = self.movement_mode  # 記錄拖曳前的模式
@@ -1691,6 +1740,8 @@ class MOVModule(BaseFrontendModule):
 
     def _on_drag_move(self, event):
         """處理拖曳移動事件，直接更新位置跟隨滑鼠"""
+        if self.mischief_active:
+            return
         if not self.is_being_dragged or self._tease_tracker.is_teasing():
             return
         
@@ -1820,6 +1871,8 @@ class MOVModule(BaseFrontendModule):
         
         支持空中接住：在 THROWN 模式下也可以重新拖動
         """
+        if self.mischief_active:
+            return
         # 如果正在播放 tease 動畫，忽略事件
         if self._tease_tracker.is_teasing():
             return
@@ -1928,6 +1981,7 @@ class MOVModule(BaseFrontendModule):
             "velocity": {"x": self.velocity.x, "y": self.velocity.y},
             "mode": self.movement_mode.value,
             "state": self.current_behavior_state.value,
+            "mischief_active": self.mischief_active,
             "target": None if not self.movement_target else {"x": self.movement_target.x, "y": self.movement_target.y},
         }
 
@@ -1962,6 +2016,118 @@ class MOVModule(BaseFrontendModule):
         self.velocity.x = vx
         self.velocity.y = vy
         return {"success": True}
+
+    # ========= MISCHIEF 支援 =========
+    def _start_mischief_action(self, action_id: str, target: Optional[Dict[str, Any]], animation: Optional[str]):
+        """啟動單次 MISCHIEF 前端行為（手動/測試入口）"""
+        self.mischief_active = True
+        if target and "x" in target and "y" in target:
+            self._mischief_pending_target = Position(float(target["x"]), float(target["y"]))
+        else:
+            self._mischief_pending_target = None
+        self._mischief_pending_anim = animation
+        # 禁用跟隨/拖曳
+        self.is_being_dragged = False
+        self._cursor_tracking_enabled = False
+        # 使用漂浮模式，避免地面鎖定
+        self.movement_mode = MovementMode.FLOAT
+        self.movement_paused = False
+        self._mischief_info = {"action": action_id, "target": target, "animation": animation}
+        info_log(f"[{self.module_id}] 🐾 MISCHIEF action started: {action_id}, anim={animation}, target={target}")
+
+    def _end_mischief_action(self):
+        """結束 MISCHIEF 行為，恢復正常行為流程"""
+        self.mischief_active = False
+        self._mischief_pending_target = None
+        self._mischief_pending_anim = None
+        self._mischief_end_at = 0.0
+        # 重置動畫優先度，避免 USER_INTERACTION 卡住
+        if hasattr(self, "_animation_priority"):
+            self._animation_priority.reset()
+        # 恢復滑鼠追蹤設定
+        self._cursor_tracking_enabled = get_user_setting("behavior.movement.enable_cursor_tracking", True)
+        # 切回 IDLE 行為
+        self._switch_behavior(BehaviorState.IDLE)
+        info_log(f"[{self.module_id}] 🐾 MISCHIEF action ended，回到 {self.current_behavior_state.value}")
+        debug_log(2, f"[{self.module_id}] MISCHIEF detail: {self._mischief_info}")
+        self._mischief_info = {}
+
+    def _handle_mischief_event(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        處理來自 FrontendBridge 的 MISCHIEF 行為事件。
+        data:
+          - action_id: MoveWindowAction / ClickShortcutAction / CreateTextFileAction / ...
+          - animation: 對應的動畫名稱
+          - rect: {x, y, width, height} (視窗或捷徑的區域)
+          - edge: up/down/left/right（推窗使用）
+          - anchor: 用於 click 的錨點（例如 top_right）
+        """
+        try:
+            action_id = data.get("action_id", "unknown")
+            animation = data.get("animation")
+            rect = data.get("rect") or {}
+            edge = data.get("edge")
+            anchor = data.get("anchor", "center")
+            label = data.get("label")
+
+            target = None
+            if rect:
+                target = self._calc_mischief_target(rect, edge=edge, anchor=anchor)
+
+            # 可覆寫動畫等待時間
+            if "anim_timeout" in data:
+                try:
+                    self._mischief_anim_timeout = float(data.get("anim_timeout", self._default_anim_timeout))
+                except Exception:
+                    self._mischief_anim_timeout = self._default_anim_timeout
+
+            # 保存額外信息（例如捷徑名稱/視窗標題）
+            if label:
+                self._mischief_info = {"action": action_id, "target": target, "animation": animation, "label": label}
+            else:
+                self._mischief_info = {"action": action_id, "target": target, "animation": animation}
+
+            self._start_mischief_action(action_id, target, animation)
+            debug_log(2, f"[{self.module_id}] MISCHIEF event received: action={action_id}, label={label}, rect={rect}, edge={edge}, anchor={anchor}, target={target}")
+            return {"success": True, "action": action_id, "target": target, "animation": animation, "label": label}
+        except Exception as e:
+            error_log(f"[{self.module_id}] 無法處理 MISCHIEF 事件: {e}")
+            return {"error": str(e)}
+
+    def _calc_mischief_target(self, rect: Dict[str, Any], edge: Optional[str] = None, anchor: str = "center") -> Dict[str, float]:
+        """根據區域和方向計算 MISCHIEF 動畫定位點"""
+        x = float(rect.get("x", 0.0))
+        y = float(rect.get("y", 0.0))
+        w = float(rect.get("width", 0.0))
+        h = float(rect.get("height", 0.0))
+
+        center_x = x + w * 0.5
+        center_y = y + h * 0.5
+
+        if edge:
+            edge = edge.lower()
+            offset = 40  # 離開視窗邊一點，避免遮住標題
+            if edge == "left":
+                return {"x": x - offset, "y": center_y}
+            if edge == "right":
+                return {"x": x + w + offset, "y": center_y}
+            if edge == "up" or edge == "top":
+                return {"x": center_x, "y": y - offset}
+            if edge == "down" or edge == "bottom":
+                return {"x": center_x, "y": y + h + offset}
+
+        # anchor 用於 click 之類的精確定位
+        anchor = (anchor or "center").lower()
+        if anchor == "top_right":
+            return {"x": x + w - 10, "y": y - 20}
+        if anchor == "top_left":
+            return {"x": x + 10, "y": y - 20}
+        if anchor == "bottom_right":
+            return {"x": x + w - 10, "y": y + h + 20}
+        if anchor == "bottom_left":
+            return {"x": x + 10, "y": y + h + 20}
+
+        return {"x": center_x, "y": center_y}
 
     # ========= 輸出 =========
 

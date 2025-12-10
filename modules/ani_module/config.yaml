@@ -154,6 +154,14 @@ resources:
       zoom: 1.0
       offsetX: 0
       offsetY: 0
+    playing_f:
+      prefix: diamond_girl_take_doll_
+      total_frames: 38
+      frame_duration: 0.05
+      loop: false
+      zoom: 1.0
+      offsetX: 0
+      offsetY: 0
     push_down:
       prefix: diamond_girl_push_down_
       total_frames: 38

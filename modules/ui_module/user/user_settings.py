@@ -664,14 +664,9 @@ class UserMainWindow(QMainWindow):
         self.intensity_combo.addItems(["low", "medium", "high"])
         mischief_layout.addRow("行為強度上限:", self.intensity_combo)
         
-        self.tease_frequency_spin = NoWheelDoubleSpinBox()
-        self.tease_frequency_spin.setRange(0.0, 1.0)
-        self.tease_frequency_spin.setSingleStep(0.01)
-        self.tease_frequency_spin.setDecimals(2)
-        mischief_layout.addRow("調皮頻率:", self.tease_frequency_spin)
-        
-        self.easter_egg_enabled_cb = QCheckBox("啟用彩蛋動畫 ⚠️")
-        mischief_layout.addRow("", self.easter_egg_enabled_cb)
+        self.max_actions_spin = NoWheelSpinBox()
+        self.max_actions_spin.setRange(1, 10)
+        mischief_layout.addRow("每次最大動作數:", self.max_actions_spin)
         
         scroll_layout.addWidget(mischief_group)
         
@@ -711,6 +706,9 @@ class UserMainWindow(QMainWindow):
         self.boundary_mode_combo.addItems(["barrier", "wrap"])
         mov_layout.addRow("邊界模式 ⚠️:", self.boundary_mode_combo)
         
+        self.easter_egg_enabled_cb = QCheckBox("啟用彩蛋動畫 ⚠️")
+        mov_layout.addRow("", self.easter_egg_enabled_cb)
+        
         self.enable_throw_behavior_cb = QCheckBox("啟用投擲行為 ⚠️")
         mov_layout.addRow("", self.enable_throw_behavior_cb)
         
@@ -722,6 +720,12 @@ class UserMainWindow(QMainWindow):
         
         self.enable_cursor_tracking_cb = QCheckBox("啟用滑鼠追蹤 ⚠️")
         mov_layout.addRow("", self.enable_cursor_tracking_cb)
+        
+        self.tease_frequency_spin = NoWheelDoubleSpinBox()
+        self.tease_frequency_spin.setRange(0.0, 1.0)
+        self.tease_frequency_spin.setSingleStep(0.01)
+        self.tease_frequency_spin.setDecimals(2)
+        mov_layout.addRow("調皮頻率:", self.tease_frequency_spin)
         
         self.movement_smoothing_cb = QCheckBox("移動平滑化 ⚠️")
         mov_layout.addRow("", self.movement_smoothing_cb)
@@ -833,7 +837,7 @@ class UserMainWindow(QMainWindow):
         
         self.show_logs_cb = QCheckBox("在狀態視窗顯示日誌分頁")
         self.show_logs_cb.setToolTip("啟用後，系統狀態視窗將顯示日誌分頁")
-        self.show_logs_cb.stateChanged.connect(lambda: self._on_show_logs_changed())
+        self.show_logs_cb.stateChanged.connect(self._on_show_logs_changed)
         logging_layout.addRow("", self.show_logs_cb)
         
         self.logging_enabled_cb = QCheckBox("啟用日誌系統 🔒")
@@ -1089,8 +1093,7 @@ class UserMainWindow(QMainWindow):
             if idx >= 0:
                 self.intensity_combo.setCurrentIndex(idx)
             
-            self.tease_frequency_spin.setValue(get_user_setting("behavior.mischief.tease_frequency", 0.03))
-            self.easter_egg_enabled_cb.setChecked(get_user_setting("behavior.mischief.easter_egg_enabled", True))
+            self.max_actions_spin.setValue(get_user_setting("behavior.mischief.max_actions", 5))
             
             # 權限
             self.allow_file_creation_cb.setChecked(get_user_setting("behavior.permissions.allow_file_creation", True))
@@ -1101,14 +1104,16 @@ class UserMainWindow(QMainWindow):
             self.require_confirmation_cb.setChecked(get_user_setting("behavior.permissions.require_confirmation", True))
             
             # MOV
-            boundary = get_user_setting("behavior.movement.boundary_mode", "wrap")
+            boundary = get_user_setting("behavior.movement.boundary_mode", "barrier")
             idx = self.boundary_mode_combo.findText(boundary)
             if idx >= 0:
                 self.boundary_mode_combo.setCurrentIndex(idx)
             
+            self.easter_egg_enabled_cb.setChecked(get_user_setting("behavior.movement.easter_egg_enabled", True))
             self.enable_throw_behavior_cb.setChecked(get_user_setting("behavior.movement.enable_throw_behavior", True))
             self.max_throw_speed_spin.setValue(get_user_setting("behavior.movement.max_throw_speed", 110.0))
             self.enable_cursor_tracking_cb.setChecked(get_user_setting("behavior.movement.enable_cursor_tracking", True))
+            self.tease_frequency_spin.setValue(get_user_setting("behavior.movement.tease_frequency", 0.03))
             self.movement_smoothing_cb.setChecked(get_user_setting("behavior.movement.movement_smoothing", True))
             self.ground_friction_spin.setValue(get_user_setting("behavior.movement.ground_friction", 0.95))
             
@@ -1243,8 +1248,7 @@ class UserMainWindow(QMainWindow):
             # Tab 4: 行為與移動
             set_user_setting("behavior.mischief.enabled", self.mischief_enabled_cb.isChecked())
             set_user_setting("behavior.mischief.intensity", self.intensity_combo.currentText())
-            set_user_setting("behavior.mischief.tease_frequency", self.tease_frequency_spin.value())
-            set_user_setting("behavior.mischief.easter_egg_enabled", self.easter_egg_enabled_cb.isChecked())
+            set_user_setting("behavior.mischief.max_actions", self.max_actions_spin.value())
             
             set_user_setting("behavior.permissions.allow_file_creation", self.allow_file_creation_cb.isChecked())
             set_user_setting("behavior.permissions.allow_file_modification", self.allow_file_modification_cb.isChecked())

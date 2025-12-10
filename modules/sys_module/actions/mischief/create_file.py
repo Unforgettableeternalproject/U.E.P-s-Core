@@ -47,17 +47,17 @@ class CreateTextFileAction(MischiefAction):
             
             # 生成檔名
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"UEP_留言_{timestamp}.txt"
+            filename = f"UEP_comment_{timestamp}.txt"
             filepath = desktop / filename
             
             # 寫入檔案
             with open(filepath, "w", encoding="utf-8") as f:
-                f.write(f"來自 U.E.P 的留言\n")
-                f.write(f"時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Comment from U.E.P\n")
+                f.write(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                 f.write(f"{'-' * 40}\n\n")
                 f.write(message)
                 f.write(f"\n\n{'-' * 40}\n")
-                f.write("（這是系統自主活動的結果）\n")
+                f.write("(This is the result of an autonomous system activity)\n")
             
             debug_log(2, f"[CreateTextFile] 已創建文字檔: {filepath}")
             

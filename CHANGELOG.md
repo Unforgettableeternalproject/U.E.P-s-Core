@@ -2482,3 +2482,15 @@
 
 ---
 
+### Fixed an issues with unreachable code, and user settings ui as well as mischief animation trigger priority. 12/11
+
+> Date: Thu, 11 Dec 2025 03:25:36 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `ffcd7ee13b7d351a156cf472f68b5417e8d852aa`
+
+---
+

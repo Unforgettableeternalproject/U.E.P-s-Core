@@ -264,10 +264,6 @@ class FileDropHandler(InteractionHandler):
             from core.working_context import working_context_manager
             working_context_manager.set_context_data("current_file_path", str(path_obj))
             debug_log(2, f"[FileDropHandler] 檔案路徑已儲存到 WorkingContext: {path_obj}")
-        except Exception as e:
-            error_log(f"[FileDropHandler] 儲存檔案路徑到 WorkingContext 失敗: {e}")
-            self._cleanup_file_interaction()
-            return False
             
             # 📢 發送事件通知其他模組
             if hasattr(self.coordinator, 'event_bus'):
@@ -288,7 +284,6 @@ class FileDropHandler(InteractionHandler):
             # 🔧 檢查是否有活躍的工作流正在等待檔案輸入
             # 如果有，發布 FILE_INPUT_PROVIDED 事件來觸發工作流繼續執行
             try:
-                from core.working_context import working_context_manager
                 workflow_waiting = working_context_manager.get_context_data('workflow_waiting_input')
                 workflow_context = working_context_manager.get_context_data('workflow_input_context')
                 
@@ -314,7 +309,12 @@ class FileDropHandler(InteractionHandler):
                     info_log(f"[FileDropHandler] 檔案已提交到工作流 {workflow_session_id}")
             except Exception as e:
                 error_log(f"[FileDropHandler] 檢查工作流狀態失敗: {e}")
-            
+                
+        except Exception as e:
+            error_log(f"[FileDropHandler] 儲存檔案路徑到 WorkingContext 失敗: {e}")
+            self._cleanup_file_interaction()
+            return False
+        
         return True
     
     def _on_receive_animation_finish(self, animation_name: str):

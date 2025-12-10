@@ -738,7 +738,7 @@ class FrontendBridge:
         """處理對話框取消（異步執行，不阻塞 UI）"""
         try:
             from PyQt5.QtCore import QTimer
-            QTimer.singleShot(0, lambda: self._execute_dialog_cancel())
+            QTimer.singleShot(0, self._execute_dialog_cancel)
         except:
             self._execute_dialog_cancel()
     

@@ -678,8 +678,9 @@ class MOVModule(BaseFrontendModule):
             if self._mischief_pending_anim:
                 self._trigger_anim(
                     self._mischief_pending_anim,
-                    {"loop": False, "priority": AnimationPriority.USER_INTERACTION},
-                    source="mischief"
+                    {"loop": False},
+                    source="mischief",
+                    priority=AnimationPriority.USER_INTERACTION
                 )
                 self._mischief_pending_anim = None
                 # 預留動畫完成時間（可覆寫）

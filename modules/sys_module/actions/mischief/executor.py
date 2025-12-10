@@ -8,11 +8,12 @@ import json
 from typing import Dict, Any, List, Tuple, Optional
 import time
 
-from . import MischiefAction, MischiefActionRegistry
+from . import MischiefAction
 from utils.debug_helper import info_log, debug_log, error_log, SYSTEM_LEVEL, KEY_LEVEL
 
-# 創建全局註冊器實例（會被 loader.py 重新指定）
-mischief_registry = MischiefActionRegistry()
+# 導入全局註冊器實例（在 loader.py 中創建並註冊所有行為）
+# 避免循環導入：延遲導入
+mischief_registry = None
 
 
 class MischiefExecutor:
@@ -28,6 +29,11 @@ class MischiefExecutor:
     
     def __init__(self):
         self.execution_history: List[Dict[str, Any]] = []
+        # 延遲導入 registry 以避免循環導入
+        global mischief_registry
+        if mischief_registry is None:
+            from .loader import mischief_registry as _registry
+            mischief_registry = _registry
         info_log("[MischiefExecutor] 執行引擎初始化")
     
     def parse_llm_response(self, response: str) -> Tuple[bool, List[Dict[str, Any]]]:
@@ -156,6 +162,15 @@ class MischiefExecutor:
                     if action_id == "SpeakAction":
                         results["speech_texts"].append(message)
                         debug_log(SYSTEM_LEVEL, f"[MischiefExecutor] 收集語音文字: {message[:30]}...")
+                    
+                    # 前端事件（若行為提供定位資訊）
+                    frontend_payload = None
+                    if hasattr(action, "get_frontend_payload"):
+                        try:
+                            frontend_payload = action.get_frontend_payload(params)
+                        except Exception as e:
+                            debug_log(2, f"[MischiefExecutor] 取得前端 payload 失敗: {e}")
+                    self._emit_frontend_event(action_id, params, message, frontend_payload)
                 else:
                     results["failed"] += 1
                     results["details"].append({
@@ -207,22 +222,41 @@ class MischiefExecutor:
         prompt_data = {
             "available_actions": available,
             "instructions": (
-                "請根據當前情緒和系統狀態，選擇 1-5 個行為組成搗蛋序列。\n"
-                "回應格式必須是 JSON:\n"
+                "Plan 1-5 MISCHIEF actions based on the current mood and intensity.\n"
+                "Return ONLY JSON in this shape:\n"
                 "{\n"
-                '  "actions": [\n'
-                '    {"action_id": "...", "params": {...}},\n'
+                '  \"actions\": [\n'
+                '    {\"action_id\": \"...\", \"params\": {...}},\n'
                 "    ...\n"
                 "  ]\n"
                 "}\n"
-                "注意：\n"
-                "- 只能使用上述 available_actions 中的行為\n"
-                "- required_params 必須提供\n"
-                "- 行為會依序執行，失敗則跳過"
+                "Rules:\n"
+                "- Use only the actions listed in available_actions\n"
+                "- Provide all required_params (e.g., text/message content)\n"
+                "- Actions execute in order; failures are skipped\n"
+                "- Do not include explanations or extra keys"
             )
         }
         
         return json.dumps(prompt_data, ensure_ascii=False, indent=2)
+
+    def _emit_frontend_event(self, action_id: str, params: Dict[str, Any], message: str, frontend_payload: Optional[Dict[str, Any]] = None):
+        """將 MISCHIEF 行為通知前端（若 FrontendBridge 存在）"""
+        try:
+            from core.framework import core_framework
+            frontend_bridge = getattr(core_framework, "frontend_bridge", None)
+            if frontend_bridge and hasattr(frontend_bridge, "forward_event"):
+                payload = frontend_payload or {}
+                payload.update({
+                    "event": "mischief_action",
+                    "action_id": action_id,
+                    "params": params or {},
+                    "message": message
+                })
+                frontend_bridge.forward_event(payload)
+                debug_log(2, f"[MischiefExecutor] 已通知前端 mischief_action: {action_id}")
+        except Exception as e:
+            debug_log(2, f"[MischiefExecutor] 通知前端失敗: {e}")
 
 
 # 全局執行器實例

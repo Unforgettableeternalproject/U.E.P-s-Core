@@ -1,23 +1,22 @@
 """
-MISCHIEF 行為實現：點擊桌面捷徑
-
-隨機選擇並點擊桌面上的捷徑。
+Mischief action: click a random desktop shortcut.
 """
 
+import ctypes
 import os
-from pathlib import Path
-from typing import Dict, Any, Tuple, List
 import random
-import pyautogui
 import time
+from ctypes import wintypes
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import MischiefAction, MoodContext
-from utils.debug_helper import debug_log, error_log, info_log, SYSTEM_LEVEL
+from utils.debug_helper import debug_log, error_log, info_log
 
 
 class ClickShortcutAction(MischiefAction):
-    """點擊桌面捷徑行為"""
-    
+    """Randomly click a desktop shortcut."""
+
     def __init__(self):
         super().__init__()
         self.display_name = "Click Shortcut"
@@ -26,71 +25,159 @@ class ClickShortcutAction(MischiefAction):
         self.animation_name = "click_f"
         self.allowed_intensities = ["medium", "high"]
         self.requires_params = []
-        
-        # 黑名單：不應該點擊的捷徑關鍵字
-        self.blacklist = [
-            "刪除", "delete", "卸載", "uninstall",
-            "格式化", "format", "清理", "clean",
-            "關機", "shutdown", "重啟", "restart"
-        ]
-    
+        # Basic blacklist to avoid destructive shortcuts.
+        self.blacklist = ["delete", "uninstall", "format", "clean", "shutdown", "restart"]
+
     def execute(self, params: Dict[str, Any]) -> Tuple[bool, str]:
-        """執行捷徑點擊"""
-        
+        """Execute the shortcut click."""
         try:
-            # 獲取桌面路徑
             desktop = Path.home() / "Desktop"
             if not desktop.exists():
-                desktop = Path.home() / "桌面"
-            
+                desktop = Path.home() / "\u684c\u9762"  # Chinese locale fallback
+
             if not desktop.exists():
-                return False, "無法找到桌面路徑"
-            
-            # 獲取所有捷徑
+                return False, "Desktop folder not found"
+
             shortcuts = self._get_shortcuts(desktop)
-            
             if not shortcuts:
-                return False, "桌面上沒有找到安全的捷徑"
-            
-            # 隨機選擇一個
+                return False, "No shortcuts found on desktop"
+
             shortcut = random.choice(shortcuts)
-            
-            info_log(f"[ClickShortcut] 準備點擊: {shortcut.name}")
-            
-            # 使用 os.startfile 啟動
+            params["_shortcut_label"] = shortcut.stem
+            params["_shortcut_rect"] = self._find_desktop_shortcut_rect(shortcut.stem)
+
+            info_log(f"[ClickShortcut] Selected shortcut: {shortcut.name}")
+
             os.startfile(str(shortcut))
-            
-            # 等待一下確保啟動
             time.sleep(0.5)
-            
-            debug_log(2, f"[ClickShortcut] 已點擊捷徑: {shortcut.name}")
-            
-            return True, f"成功點擊捷徑：{shortcut.name}"
-            
+
+            debug_log(2, f"[ClickShortcut] Triggered shortcut {shortcut.name}")
+            return True, f"Clicked shortcut: {shortcut.name}"
+
         except Exception as e:
-            error_log(f"[ClickShortcut] 執行失敗: {e}")
-            return False, f"點擊捷徑時發生錯誤: {str(e)}"
-    
+            error_log(f"[ClickShortcut] Execution failed: {e}")
+            return False, f"Failed to click shortcut: {str(e)}"
+
+    def get_frontend_payload(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Provide frontend with target label/rect for positioning animation."""
+        label = params.get("_shortcut_label")
+        rect = params.get("_shortcut_rect")
+        payload: Dict[str, Any] = {}
+        if label:
+            payload["label"] = label
+        if rect:
+            payload["rect"] = rect
+            payload["anchor"] = "top_right"
+        return payload
+
     def _get_shortcuts(self, desktop: Path) -> List[Path]:
-        """
-        獲取桌面上安全的捷徑
-        
-        Returns:
-            捷徑路徑列表
-        """
-        shortcuts = []
-        
+        """List desktop .lnk files excluding blacklisted names."""
+        shortcuts: List[Path] = []
         try:
-            # 只尋找 .lnk 檔案（Windows 捷徑）
             for item in desktop.glob("*.lnk"):
-                # 檢查是否在黑名單
                 name_lower = item.stem.lower()
                 if any(keyword in name_lower for keyword in self.blacklist):
                     continue
-                
                 shortcuts.append(item)
-        
         except Exception as e:
-            error_log(f"[ClickShortcut] 掃描捷徑失敗: {e}")
-        
+            error_log(f"[ClickShortcut] Failed to enumerate shortcuts: {e}")
         return shortcuts
+
+    def _find_desktop_shortcut_rect(self, label: str) -> Optional[List[int]]:
+        """Best-effort lookup of a desktop shortcut icon rectangle in screen coords."""
+        try:
+            hwnd = self._get_desktop_listview()
+            if not hwnd:
+                debug_log(2, "[ClickShortcut] Desktop list view not found, skip rect lookup")
+                return None
+
+            LVM_GETITEMCOUNT = 0x1004
+            LVM_GETITEMRECT = 0x100E
+            LVM_GETITEMTEXTW = 0x1073
+            LVM_GETITEMPOSITION = 0x1010
+            LVIF_TEXT = 0x0001
+            LVIR_BOUNDS = 0
+
+            user32 = ctypes.windll.user32
+            count = user32.SendMessageW(hwnd, LVM_GETITEMCOUNT, 0, 0)
+            if count <= 0:
+                return None
+
+            class LVITEMW(ctypes.Structure):
+                _fields_ = [
+                    ("mask", wintypes.UINT),
+                    ("iItem", wintypes.INT),
+                    ("iSubItem", wintypes.INT),
+                    ("state", wintypes.UINT),
+                    ("stateMask", wintypes.UINT),
+                    ("pszText", wintypes.LPWSTR),
+                    ("cchTextMax", wintypes.INT),
+                    ("iImage", wintypes.INT),
+                    ("lParam", wintypes.LPARAM),
+                ]
+
+            target = label.lower().replace(".lnk", "")
+            buffer = ctypes.create_unicode_buffer(260)
+            rect = wintypes.RECT()
+
+            for i in range(count):
+                buffer[0] = "\0"
+                item = LVITEMW()
+                item.mask = LVIF_TEXT
+                item.iItem = i
+                item.iSubItem = 0
+                item.pszText = ctypes.cast(buffer, wintypes.LPWSTR)
+                item.cchTextMax = len(buffer)
+                user32.SendMessageW(hwnd, LVM_GETITEMTEXTW, i, ctypes.byref(item))
+                name = buffer.value.strip().lower()
+                if not name:
+                    continue
+                if name == target:
+                    rect.left = LVIR_BOUNDS
+                    rect.top = 0
+                    if user32.SendMessageW(hwnd, LVM_GETITEMRECT, i, ctypes.byref(rect)):
+                        tl = wintypes.POINT(rect.left, rect.top)
+                        br = wintypes.POINT(rect.right, rect.bottom)
+                        user32.ClientToScreen(hwnd, ctypes.byref(tl))
+                        user32.ClientToScreen(hwnd, ctypes.byref(br))
+                        return [tl.x, tl.y, br.x, br.y]
+
+                    pos = wintypes.POINT()
+                    if user32.SendMessageW(hwnd, LVM_GETITEMPOSITION, i, ctypes.byref(pos)):
+                        # Fallback to a rough box around the position.
+                        size = 64
+                        tl = wintypes.POINT(pos.x, pos.y)
+                        br = wintypes.POINT(pos.x + size, pos.y + size)
+                        user32.ClientToScreen(hwnd, ctypes.byref(tl))
+                        user32.ClientToScreen(hwnd, ctypes.byref(br))
+                        return [tl.x, tl.y, br.x, br.y]
+                    break
+
+            debug_log(2, f"[ClickShortcut] No rect resolved for shortcut {label}")
+            return None
+        except Exception as e:
+            debug_log(2, f"[ClickShortcut] Rect lookup failed: {e}")
+            return None
+
+    def _get_desktop_listview(self) -> Optional[int]:
+        """Locate the desktop SysListView32 that hosts shortcut icons."""
+        user32 = ctypes.windll.user32
+
+        progman = user32.FindWindowW("Progman", None)
+        defview = user32.FindWindowExW(progman, None, "SHELLDLL_DefView", None)
+
+        if not defview:
+            worker = user32.FindWindowW("WorkerW", None)
+            last = None
+            while worker and worker != last:
+                defview = user32.FindWindowExW(worker, None, "SHELLDLL_DefView", None)
+                if defview:
+                    break
+                last = worker
+                worker = user32.FindWindowExW(None, worker, "WorkerW", None)
+
+        if not defview:
+            return None
+
+        listview = user32.FindWindowExW(defview, None, "SysListView32", None)
+        return listview if listview else None

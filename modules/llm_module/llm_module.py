@@ -125,18 +125,26 @@ class LLMModule(BaseModule):
     ) -> Optional[str]:
         """
         Generate a MISCHIEF action plan without creating sessions or user-facing output.
+        
+        Note: temperature and max_tokens are currently ignored as GeminiClient.query()
+        uses values from its configuration. Future enhancement: add config override support.
         """
         try:
-            prompt = f"{system_prompt.strip()}\n\n{user_message.strip()}"
+            # 使用 mischief mode，強制返回符合 schema 的 JSON
             response = self.model.query(
-                prompt=prompt,
-                mode="work",  # avoid chat-style fluff
+                prompt=user_message,  # 主要內容在 user_message
+                mode="mischief",  # 使用 mischief mode 強制 JSON schema
                 tools=None,
-                temperature=temperature,
-                max_tokens=max_tokens
+                system_instruction=system_prompt  # 系統指示說明任務要求
             )
 
             if isinstance(response, dict):
+                # mischief mode 返回的結構應該直接包含 actions
+                import json
+                # 如果 response 已經是解析後的 dict，直接轉成 JSON 字串
+                if "actions" in response:
+                    return json.dumps(response)
+                # 否則嘗試從 text 欄位獲取
                 text = response.get("text") or response.get("response") or ""
             else:
                 text = str(response)

@@ -45,6 +45,9 @@ class MoveWindowAction(MischiefAction):
             x, y, right, bottom = rect
             width = right - x
             height = bottom - y
+            # 保存給前端
+            params["_last_window_rect"] = rect
+            params["_last_window_title"] = title
             
             # 獲取螢幕尺寸
             screen_width, screen_height = pyautogui.size()
@@ -74,6 +77,26 @@ class MoveWindowAction(MischiefAction):
         except Exception as e:
             error_log(f"[MoveWindow] 執行失敗: {e}")
             return False, f"移動視窗時發生錯誤: {str(e)}"
+
+    def get_frontend_payload(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """提供前端定位資訊"""
+        try:
+            hwnd_title = params.get("_last_window_title")
+            rect = params.get("_last_window_rect")
+            if hwnd_title and rect:
+                return {
+                    "label": hwnd_title,
+                    "rect": {
+                        "x": rect[0],
+                        "y": rect[1],
+                        "width": rect[2] - rect[0],
+                        "height": rect[3] - rect[1]
+                    },
+                    "edge": params.get("_last_push_edge")
+                }
+        except Exception:
+            pass
+        return {}
     
     def _get_movable_windows(self) -> List[Tuple[int, str]]:
         """

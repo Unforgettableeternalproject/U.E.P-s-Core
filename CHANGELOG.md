@@ -2458,3 +2458,15 @@
 
 ---
 
+### Mischief state tested fine, it's time for actual test. 12/11
+
+> Date: Thu, 11 Dec 2025 02:01:52 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `a1cee394e54c00ee3fb0ea5bfb89b5ddf1d40b7d`
+
+---
+

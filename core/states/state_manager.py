@@ -1,4 +1,4 @@
-﻿# core/state_manager.py
+# core/state_manager.py
 from enum import Enum, auto
 from typing import Dict, Any, Optional, List, Callable
 import time
@@ -462,6 +462,9 @@ class StateManager:
         """
         try:
             debug_log(1, "[StateManager] 進入 Mischief 狀態 - 系統將進行自主活動")
+
+            # 確保存在 GS，便於 MISCHIEF 被佇列處理與結束時同步終結 GS。
+            self._ensure_gs_exists()
             
             # 取消當前會話（Mischief 不需要會話）
             self._cleanup_sessions()
@@ -589,10 +592,10 @@ class StateManager:
                     })
                     return True
             
-            # 檢查 Mischief 狀態條件
-            # TODO: MISCHIEF 狀態尚未完全實作，暫時禁用自動觸發
-            # 避免干擾正常的 CHAT 和 WORK 流程
-            mischief_enabled = False  # 設為 True 以啟用 MISCHIEF 狀態
+            # 檢查 Mischief 狀態條件（遵循 user_settings）
+            mischief_enabled = user_settings_manager.get(
+                "behavior.mischief.enabled", False
+            )
             
             if mischief_enabled:
                 mischief_conditions = [
@@ -650,7 +653,7 @@ class StateManager:
             from configs.user_settings_manager import user_settings_manager
 
             # 檢查 MISCHIEF 是否啟用
-            mischief_enabled = user_settings_manager.get_setting("behavior.mischief.enabled", False)
+            mischief_enabled = user_settings_manager.get("behavior.mischief.enabled", False)
             if not mischief_enabled:
                 info_log("[StateManager] MISCHIEF 狀態已觸發，但用戶未啟用此功能")
                 self._clear_mischief_runtime()
@@ -659,15 +662,16 @@ class StateManager:
 
             # 規劃：僅在 runtime 尚未建立時執行
             if self._mischief_runtime is None:
-                max_actions = user_settings_manager.get_setting("behavior.mischief.max_actions", 5)
-                intensity = user_settings_manager.get_setting("behavior.mischief.intensity", "medium")
+                max_actions = user_settings_manager.get("behavior.mischief.max_actions", 5)
+                intensity = user_settings_manager.get("behavior.mischief.intensity", "medium")
 
                 info_log(f"[StateManager] 開始 MISCHIEF 行為規劃 (max_actions={max_actions}, intensity={intensity})")
 
+                # 優先使用 context 中的數值（用於測試），否則從 status_manager 獲取
                 status_dict = self.status_manager.get_status_dict()
-                mood = status_dict.get("mood", 0.0)
-                boredom = status_dict.get("boredom", 0.0)
-                pride = status_dict.get("pride", 0.0)
+                mood: float = float(context.get("mood", status_dict.get("mood", 0.0))) if context else status_dict.get("mood", 0.0)
+                boredom: float = float(context.get("boredom", status_dict.get("boredom", 0.0))) if context else status_dict.get("boredom", 0.0)
+                pride: float = float(context.get("pride", status_dict.get("pride", 0.0))) if context else status_dict.get("pride", 0.0)
 
                 from modules.sys_module.actions.mischief.loader import mischief_executor
 
@@ -805,7 +809,7 @@ class StateManager:
         try:
             from core.framework import core_framework
             
-            llm_module = core_framework.registry.get_module("llm")
+            llm_module = core_framework.get_module("llm")
             
             if not llm_module:
                 error_log("[StateManager] LLM 模組未找到")
@@ -815,26 +819,26 @@ class StateManager:
             trigger_reason = context.get("trigger_reason", "unknown") if context else "unknown"
             
             system_prompt = (
-                "You are in MISCHIEF (prank) state. This is a system-initiated, non-chat mode.\n"
-                "Plan playful actions without asking the user and without generating replies.\n"
-                f"Current values: Mood={mood:.2f}, Boredom={boredom:.2f}, Pride={pride:.2f}\n"
-                f"Mischief intensity: {intensity}\n"
-                f"Max actions: {max_actions}\n"
-                f"Trigger reason: {trigger_reason}\n"
+                "You are a MISCHIEF action planner. Return ONLY valid JSON, no explanations or extra text.\n"
+                "This is a system-initiated, non-chat mode - do not generate conversational text.\n"
+                f"Current system state: Mood={mood:.2f}, Boredom={boredom:.2f}, Pride={pride:.2f}\n"
+                f"Mischief intensity: {intensity}, Max actions: {max_actions}, Trigger: {trigger_reason}\n"
                 "Guidelines:\n"
-                "- Actions must fit the current mood (positive = gentle, negative = more mischievous)\n"
-                "- Intensity controls aggressiveness; avoid dangerous or disruptive choices\n"
-                "- No user-facing text; just return the plan JSON\n"
+                "- Select actions that match the current mood (negative mood = more mischievous)\n"
+                "- Respect the intensity level - avoid dangerous or overly disruptive actions\n"
+                "- Return pure JSON only, starting with { and ending with }\n"
             )
             
             user_message = (
-                f"Available actions (JSON):\n{available_actions_json}\n\n"
-                "Return ONLY JSON in the following shape:\n"
-                '{\n  "actions": [\n    {"action_id": "...", "params": {...}},\n    ...\n  ]\n}\n'
-                "- Use only listed actions\n"
-                "- Provide all required params (e.g., message/text content up front)\n"
-                "- Pick between 1 and max_actions items\n"
-                "- Do not include explanations or extra keys"
+                f"Available actions:\n{available_actions_json}\n\n"
+                "Generate a mischief plan in this EXACT JSON format:\n"
+                '{"actions": [{"action_id": "ActionName", "params": {}}]}\n\n'
+                "Requirements:\n"
+                "- Use ONLY action_id values from the available actions list above\n"
+                "- Include all required parameters in the params object\n"
+                "- Select 1-" + str(max_actions) + " actions total\n"
+                "- Return ONLY the JSON object, no markdown, no code blocks, no explanations\n"
+                "- Start your response immediately with the opening brace {"
             )
             
             # 調用 LLM

@@ -14,6 +14,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from datetime import datetime
+import yaml
 
 class BuildManager:
     """構建管理器"""
@@ -38,6 +39,50 @@ class BuildManager:
         except Exception as e:
             print(f"⚠️ 無法讀取版本號: {e}")
             return "0.0.0"
+    
+    def backup_and_modify_config(self):
+        """備份並修改配置為生產模式"""
+        import yaml
+        
+        config_path = self.project_root / "configs" / "config.yaml"
+        backup_path = self.project_root / "configs" / "config.yaml.backup"
+        
+        if not config_path.exists():
+            print("⚠️  找不到 config.yaml，跳過配置修改")
+            return
+        
+        # 備份原配置
+        shutil.copy2(config_path, backup_path)
+        print(f"✓ 已備份配置: {backup_path}")
+        
+        # 讀取並修改配置
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+        
+        # 強制設置為生產模式
+        if 'debug' in config:
+            config['debug']['enabled'] = False
+            print("✓ 已將 debug.enabled 設為 False")
+        
+        if 'logging' in config:
+            config['logging']['enable_console_output'] = False
+            print("✓ 已將 logging.enable_console_output 設為 False")
+        
+        # 寫回配置
+        with open(config_path, 'w', encoding='utf-8') as f:
+            yaml.dump(config, f, allow_unicode=True, default_flow_style=False)
+        
+        print("✓ 配置已修改為生產模式\n")
+    
+    def restore_config(self):
+        """還原配置"""
+        config_path = self.project_root / "configs" / "config.yaml"
+        backup_path = self.project_root / "configs" / "config.yaml.backup"
+        
+        if backup_path.exists():
+            shutil.copy2(backup_path, config_path)
+            backup_path.unlink()
+            print("✓ 已還原原始配置")
     
     def clean(self):
         """清理舊的構建文件"""
@@ -328,28 +373,42 @@ if errorlevel 1 (
         print(f"  構建時間: {self.build_time}")
         print("*" * 70)
         
-        # 步驟 1: 清理
-        self.clean()
+        try:
+            # 步驟 1: 清理
+            self.clean()
+            
+            # 步驟 2: 備份並修改配置為生產模式
+            print("\n" + "=" * 70)
+            print("配置生產環境...")
+            print("=" * 70)
+            self.backup_and_modify_config()
+            
+            # 步驟 3: 檢查依賴
+            if not self.check_dependencies():
+                return False
+            
+            # 步驟 4: 檢查 spec 文件
+            if not self.check_spec_file():
+                return False
+            
+            # 步驟 5: 打包
+            if not self.build():
+                return False
+            
+            # 步驟 6: 創建分發包
+            if not self.create_distribution():
+                return False
+            
+            print("\n" + "*" * 70)
+            print("  構建流程完成！")
+            print("*" * 70)
         
-        # 步驟 2: 檢查依賴
-        if not self.check_dependencies():
-            return False
-        
-        # 步驟 3: 檢查 spec 文件
-        if not self.check_spec_file():
-            return False
-        
-        # 步驟 4: 打包
-        if not self.build():
-            return False
-        
-        # 步驟 5: 創建分發包
-        if not self.create_distribution():
-            return False
-        
-        print("\n" + "*" * 70)
-        print("  構建流程完成！")
-        print("*" * 70)
+        finally:
+            # 無論成功失敗都還原配置
+            print("\n" + "=" * 70)
+            print("還原配置...")
+            print("=" * 70)
+            self.restore_config()
         print(f"\n分發包位置: {self.dist_dir}")
         print("\n下一步:")
         print("  1. 測試分發包中的應用程式")

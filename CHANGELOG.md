@@ -2506,3 +2506,15 @@
 
 ---
 
+### Deployments are tested fine, time to go back for more functions implementation. 12/13
+
+> Date: Sat, 13 Dec 2025 01:45:02 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/deployment_test`
+
+> Commit: `05fb9671decd27f22bd3555876bc5157340ebac7`
+
+---
+

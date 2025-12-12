@@ -4,6 +4,8 @@
 
 本文檔說明如何將 U.E.P 專案打包成可部署的應用程式。
 
+> **📦 模型部署說明**: 關於如何為打包後的應用程式配置模型文件，請參閱 [MODELS_DEPLOYMENT.md](MODELS_DEPLOYMENT.md)
+
 ### 挑戰與解決方案
 
 **主要挑戰：**
@@ -13,9 +15,10 @@
 
 **解決方案：**
 - 使用 PyInstaller 打包應用程式核心
-- 大型模型文件（bio_tagger、whisper）獨立管理，不包含在打包結果中
+- 大型模型文件（bio_tagger、whisper）**不包含**在打包結果中
 - TTS checkpoints 隨應用程式一起打包
-- 首次運行時檢查並指引用戶安裝缺失的模型
+- 使用者需手動放置模型文件（詳見 [MODELS_DEPLOYMENT.md](MODELS_DEPLOYMENT.md)）
+- 應用程式會自動從多個位置查找模型文件
 
 ---
 

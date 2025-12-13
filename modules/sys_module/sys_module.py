@@ -94,6 +94,11 @@ class SYSModule(BaseModule):
         # 🔧 獲取權限管理器實例
         self.permission_manager = get_permission_manager()
         
+        # 效能指標追蹤
+        self.command_type_stats = {}
+        self.successful_commands = 0
+        self.failed_commands = 0
+        
         # 🔧 註冊 user_settings 熱重載回調
         from configs.user_settings_manager import user_settings_manager
         user_settings_manager.register_reload_callback("sys_module", self._reload_from_user_settings)
@@ -1847,6 +1852,15 @@ class SYSModule(BaseModule):
                     prompt=result.get("prompt"),
                     session_data=result.get("session_data")  # 傳遞會話數據
                 )
+                
+                # 更新效能指標
+                self.command_type_stats[mode] = self.command_type_stats.get(mode, 0) + 1
+                self.update_custom_metric('command_type', mode)
+                if result.get("status") == "success":
+                    self.successful_commands += 1
+                else:
+                    self.failed_commands += 1
+                
                 return out.dict()
             
             # Standard action handling
@@ -1857,9 +1871,19 @@ class SYSModule(BaseModule):
                 
             result = func(**params)
             info_log(f"[SYS] [{mode}] 執行完成")
+            
+            # 更新效能指標
+            self.command_type_stats[mode] = self.command_type_stats.get(mode, 0) + 1
+            self.update_custom_metric('command_type', mode)
+            self.successful_commands += 1
+            
             return SYSOutput(status="success", data=result).dict()
         except Exception as e:
             error_log(f"[SYS] [{mode}] 執行失敗：{e}")
+            
+            # 更新失敗計數
+            self.failed_commands += 1
+            
             return SYSOutput(status="error", message=str(e)).dict()
     
     def _list_functions(self) -> dict:
@@ -2205,6 +2229,22 @@ class SYSModule(BaseModule):
             else:
                 debug_log(2, f"[SYS] 未處理的設定路徑: {key_path}")
                 return False
+                
+        except Exception as e:
+            error_log(f"[SYS] 使用者設定重載失敗: {e}")
+            return False
+    
+    def get_performance_window(self) -> dict:
+        """獲取效能數據窗口（包含 SYS 特定指標）"""
+        window = super().get_performance_window()
+        window['command_type_distribution'] = self.command_type_stats.copy()
+        window['successful_commands'] = self.successful_commands
+        window['failed_commands'] = self.failed_commands
+        window['command_success_rate'] = (
+            self.successful_commands / (self.successful_commands + self.failed_commands)
+            if (self.successful_commands + self.failed_commands) > 0 else 0.0
+        )
+        return window
             
             return True
             

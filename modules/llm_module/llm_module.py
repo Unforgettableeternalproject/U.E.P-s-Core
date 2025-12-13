@@ -89,6 +89,12 @@ class LLMModule(BaseModule):
         self.allow_api_calls = get_user_setting("monitoring.network.allow_api_calls", True)
         self.network_timeout = get_user_setting("monitoring.network.timeout", 30)
         
+        # 效能指標追蹤
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.cache_hits = 0
+        self.cache_misses = 0
+        
         # 註冊使用者設定熱重載回調
         user_settings_manager.register_reload_callback("llm_module", self._reload_from_user_settings)
 
@@ -1149,6 +1155,19 @@ class LLMModule(BaseModule):
             # 工作流自動完成的中間狀態（text=""）不發布，由 _process_workflow_completion 發布最終回應
             if output.success and result.get("text"):
                 self._notify_processing_layer_completion(result)
+            
+            # 更新效能指標
+            if 'usage' in result and result['usage']:
+                input_tokens = result['usage'].get('input_tokens', 0)
+                output_tokens = result['usage'].get('output_tokens', 0)
+                self.total_input_tokens += input_tokens
+                self.total_output_tokens += output_tokens
+                self.update_custom_metric('input_tokens', input_tokens)
+                self.update_custom_metric('output_tokens', output_tokens)
+                self.update_custom_metric('total_tokens', input_tokens + output_tokens)
+            
+            if result.get('text'):
+                self.update_custom_metric('response_length', len(result['text']))
             
             return result
                 
@@ -4408,6 +4427,24 @@ Memory Management:
             elif key_path == "monitoring.network.timeout":
                 self.network_timeout = int(value)
                 info_log(f"[LLM] 網路逾時: {self.network_timeout}秒")
+    
+    def get_performance_window(self) -> dict:
+        """獲取效能數據窗口（包含 LLM 特定指標）"""
+        window = super().get_performance_window()
+        window['total_input_tokens'] = self.total_input_tokens
+        window['total_output_tokens'] = self.total_output_tokens
+        window['total_tokens'] = self.total_input_tokens + self.total_output_tokens
+        window['avg_tokens_per_request'] = (
+            window['total_tokens'] / window['total_requests']
+            if window['total_requests'] > 0 else 0.0
+        )
+        window['cache_hits'] = self.cache_hits
+        window['cache_misses'] = self.cache_misses
+        total_cache_ops = self.cache_hits + self.cache_misses
+        window['cache_hit_rate'] = (
+            self.cache_hits / total_cache_ops if total_cache_ops > 0 else 0.0
+        )
+        return window
                 
             else:
                 debug_log(2, f"[LLM] 未處理的設定路徑: {key_path}")

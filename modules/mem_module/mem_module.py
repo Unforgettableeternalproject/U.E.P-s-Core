@@ -53,6 +53,12 @@ class MEMModule(BaseModule):
         # 模組狀態
         self.is_initialized = False
         
+        # 效能指標追蹤
+        self.total_memories_stored = 0
+        self.total_memories_retrieved = 0
+        self.memory_type_stats = {'short': 0, 'long': 0, 'episodic': 0}
+        self.search_operations = 0
+        
         # 註冊使用者設定熱重載回調
         user_settings_manager.register_reload_callback("mem_module", self._reload_from_user_settings)
 
@@ -1771,6 +1777,14 @@ class MEMModule(BaseModule):
                 importance=importance,
                 topic=topic
             )
+            
+            # 更新效能指標
+            if result.success:
+                self.total_memories_stored += 1
+                mem_type_key = memory_type.value if hasattr(memory_type, 'value') else str(memory_type)
+                self.memory_type_stats[mem_type_key] = self.memory_type_stats.get(mem_type_key, 0) + 1
+                self.update_custom_metric('memory_type', mem_type_key)
+                self.update_custom_metric('action_type', 'store')
 
             return {
                 'success': result.success,
@@ -1798,6 +1812,14 @@ class MEMModule(BaseModule):
             )
 
             results = self.memory_manager.process_memory_query(query)
+            
+            # 更新效能指標
+            self.total_memories_retrieved += 1
+            self.search_operations += 1
+            self.update_custom_metric('action_type', 'query')
+            if results:
+                items_count = len(results)
+                self.update_custom_metric('items_retrieved', items_count)
 
             return {
                 'success': True,
@@ -2939,3 +2961,16 @@ class MEMModule(BaseModule):
             return ToolResult.error(f"Failed to update snapshot summary: {str(e)}")
             error_log(traceback.format_exc())
             return False
+    
+    def get_performance_window(self) -> dict:
+        """獲取效能數據窗口（包含 MEM 特定指標）"""
+        window = super().get_performance_window()
+        window['total_memories_stored'] = self.total_memories_stored
+        window['total_memories_retrieved'] = self.total_memories_retrieved
+        window['memory_type_distribution'] = self.memory_type_stats.copy()
+        window['search_operations'] = self.search_operations
+        window['store_retrieve_ratio'] = (
+            self.total_memories_stored / self.total_memories_retrieved
+            if self.total_memories_retrieved > 0 else 0.0
+        )
+        return window

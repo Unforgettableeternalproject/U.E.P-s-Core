@@ -86,6 +86,11 @@ class UIModule(BaseFrontendModule):
         # 全局系統設定
         self.system_settings = {}
         
+        # 效能指標追蹤
+        self.event_type_stats = {}
+        self.total_events_processed = 0
+        self.render_count = 0
+        
         info_log(f"[{self.module_id}] UI 中樞模組初始化")
     
     def initialize_frontend(self) -> bool:
@@ -536,6 +541,14 @@ class UIModule(BaseFrontendModule):
         """處理前端請求"""
         try:
             command = data.get('command')
+            
+            # 更新效能指標
+            self.total_events_processed += 1
+            self.event_type_stats[command] = self.event_type_stats.get(command, 0) + 1
+            self.update_custom_metric('event_type', command)
+            
+            if command in ['update_image', 'set_image']:
+                self.render_count += 1
             
             # 介面管理命令
             if command == 'show_interface':
@@ -1044,3 +1057,15 @@ class UIModule(BaseFrontendModule):
                 
         except Exception as e:
             error_log(f"[{self.module_id}] 熱重載設定失敗: {e}")
+    
+    def get_performance_window(self) -> dict:
+        """獲取效能數據窗口（包含 UI 特定指標）"""
+        window = super().get_performance_window()
+        window['event_type_distribution'] = self.event_type_stats.copy()
+        window['total_events_processed'] = self.total_events_processed
+        window['render_count'] = self.render_count
+        window['render_rate'] = (
+            self.render_count / window['total_requests']
+            if window['total_requests'] > 0 else 0.0
+        )
+        return window

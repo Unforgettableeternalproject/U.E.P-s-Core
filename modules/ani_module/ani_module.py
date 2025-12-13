@@ -47,6 +47,12 @@ class ANIModule(BaseFrontendModule):
         self.hardware_acceleration = get_user_setting("advanced.performance.enable_hardware_acceleration", True)
         self.reduce_on_battery = get_user_setting("advanced.performance.reduce_animations_on_battery", True)
         debug_log_e(2, f"[ANI] 效能設定: 硬體加速={self.hardware_acceleration}, 電池省電={self.reduce_on_battery}")
+        
+        # 效能指標追蹤
+        self.total_frames_rendered = 0
+        self.total_animation_duration = 0.0
+        self.animation_type_stats = {}
+        self.current_fps = 0.0
 
         # 依 config.resources 自動建立與註冊 clips
         self._apply_config_for_clips(self.config)
@@ -100,6 +106,12 @@ class ANIModule(BaseFrontendModule):
     
     def handle_frontend_request(self, data: Dict) -> Dict:
         cmd = data.get("command")
+        
+        # 更新效能指標
+        animation_type = data.get("animation_type", "unknown")
+        self.animation_type_stats[animation_type] = self.animation_type_stats.get(animation_type, 0) + 1
+        self.update_custom_metric('animation_type', animation_type)
+        
         if cmd == "play":
             name = data.get("animation_type")
             loop = data.get("loop")
@@ -616,3 +628,16 @@ class ANIModule(BaseFrontendModule):
             error_log(f"[{self.module_id}] 清理信號回調失敗: {e}")
         
         return super().shutdown()
+    
+    def get_performance_window(self) -> dict:
+        """獲取效能數據窗口（包含 ANI 特定指標）"""
+        window = super().get_performance_window()
+        window['total_frames_rendered'] = self.total_frames_rendered
+        window['total_animation_duration'] = self.total_animation_duration
+        window['animation_type_distribution'] = self.animation_type_stats.copy()
+        window['current_fps'] = self.current_fps
+        window['avg_frame_time'] = (
+            self.total_animation_duration / self.total_frames_rendered
+            if self.total_frames_rendered > 0 else 0.0
+        )
+        return window

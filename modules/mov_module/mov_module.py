@@ -137,6 +137,11 @@ class MOVModule(BaseFrontendModule):
         self.boundary_mode = user_boundary_mode if user_boundary_mode is not None else self.config.get("boundary_mode", "barrier")
         debug_log(2, f"[{self.module_id}] 邊界模式: {self.boundary_mode} (來源: {'user_settings' if user_boundary_mode is not None else 'mov_module'})")
 
+        # 效能指標追蹤
+        self.total_distance_moved = 0.0
+        self.total_movements = 0
+        self.movement_type_stats = {}
+
         # --- 控制旗標 ---
         self.is_being_dragged = False
         self.movement_paused = False
@@ -405,6 +410,15 @@ class MOVModule(BaseFrontendModule):
         """對外 API（必要時可擴充）"""
         try:
             cmd = data.get("command")
+            
+            # 更新效能指標
+            movement_type = data.get("action_id") or cmd or "unknown"
+            self.movement_type_stats[movement_type] = self.movement_type_stats.get(movement_type, 0) + 1
+            self.update_custom_metric('movement_type', movement_type)
+            
+            if cmd in ["set_position", "set_velocity", "mischief_action", "play_animation"]:
+                self.total_movements += 1
+            
             if cmd == "get_status":
                 return self._api_get_status()
             if cmd == "set_position":
@@ -3377,5 +3391,17 @@ GS 推進 - 當前 GS 結束，恢復 idle 狀態和移動"""
             
         except Exception as e:
             error_log(f"[{self.module_id}] 結束 ON_CALL 動畫失敗: {e}")
+    
+    def get_performance_window(self) -> dict:
+        """獲取效能數據窗口（包含 MOV 特定指標）"""
+        window = super().get_performance_window()
+        window['total_distance_moved'] = self.total_distance_moved
+        window['total_movements'] = self.total_movements
+        window['movement_type_distribution'] = self.movement_type_stats.copy()
+        window['avg_distance_per_movement'] = (
+            self.total_distance_moved / self.total_movements
+            if self.total_movements > 0 else 0.0
+        )
+        return window
 
 

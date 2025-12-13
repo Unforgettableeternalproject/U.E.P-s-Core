@@ -128,6 +128,11 @@ class STTModule(BaseModule):
 
         self.is_initialized = False
         
+        # 效能指標追蹤
+        self.total_audio_duration = 0.0
+        self.total_recognitions = 0
+        self.vad_triggers = 0
+        
         # 註冊使用者設定熱重載回調（在 initialize 之前註冊，避免循環）
         user_settings_manager.register_reload_callback("stt_module", self._reload_from_user_settings)
         
@@ -265,6 +270,19 @@ class STTModule(BaseModule):
                     stt_output.error = "未識別到有效語音內容"
             else:
                 stt_output.error = None
+            
+            # 更新效能指標
+            self.total_recognitions += 1
+            if stt_output.text and stt_output.text.strip():
+                self.update_custom_metric('recognition_confidence', stt_output.confidence)
+                self.update_custom_metric('speaker_id', stt_output.speaker_id or 'unknown')
+                self.update_custom_metric('text_length', len(stt_output.text))
+            
+            # 如果有音頻時長信息
+            if validated.mode == ActivationMode.MANUAL:
+                audio_duration = validated.duration if hasattr(validated, 'duration') and validated.duration else self.phrase_time_limit
+                self.total_audio_duration += audio_duration
+                self.update_custom_metric('audio_duration', audio_duration)
             
             # 返回字典格式
             return stt_output.model_dump()
@@ -1078,6 +1096,18 @@ class STTModule(BaseModule):
                 self.wake_word_confidence = float(value)
                 info_log(f"[STT] 喚醒詞信心度閾值已更新: {old_confidence:.2f} → {value:.2f}")
                 # 此參數儲存於實例變數，供 NLP 喚醒詞檢測使用
+    
+    def get_performance_window(self) -> dict:
+        """獲取效能數據窗口（包含 STT 特定指標）"""
+        window = super().get_performance_window()
+        window['total_audio_duration'] = self.total_audio_duration
+        window['total_recognitions'] = self.total_recognitions
+        window['vad_triggers'] = self.vad_triggers
+        window['avg_audio_duration'] = (
+            self.total_audio_duration / self.total_recognitions
+            if self.total_recognitions > 0 else 0.0
+        )
+        return window
                 
             else:
                 debug_log(2, f"[STT] 未處理的設定路徑: {key_path}")

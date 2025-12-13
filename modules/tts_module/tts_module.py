@@ -107,6 +107,11 @@ class TTSModule(BaseModule):
         self.user_emotion = get_user_setting("interaction.speech_output.default_emotion", "neutral")  # ✅ 已應用
         self.user_emotion_intensity = get_user_setting("interaction.speech_output.emotion_intensity", 0.5)  # ✅ 已應用
         
+        # 效能指標追蹤
+        self.total_audio_generated = 0.0
+        self.total_text_length = 0
+        self.synthesis_count = 0
+        
         # 註冊熱重載回調
         user_settings_manager.register_reload_callback("tts_module", self._reload_from_user_settings)
         
@@ -398,6 +403,27 @@ class TTSModule(BaseModule):
         
         # TTS 作為輸出層完成後，通知系統進行循環結束檢查
         self._on_output_complete(result)
+        
+        # 更新效能指標
+        self.synthesis_count += 1
+        if text:
+            text_length = len(text)
+            self.total_text_length += text_length
+            self.update_custom_metric('text_length', text_length)
+        
+        if result.get('output_path') and os.path.exists(result['output_path']):
+            try:
+                import wave
+                with wave.open(result['output_path'], 'rb') as wav_file:
+                    frames = wav_file.getnframes()
+                    rate = wav_file.getframerate()
+                    audio_duration = frames / float(rate)
+                    self.total_audio_generated += audio_duration
+                    self.update_custom_metric('audio_duration', audio_duration)
+            except:
+                pass
+        
+        self.update_custom_metric('voice_id', inp.character or self.default_character)
         
         return result
     
@@ -802,4 +828,21 @@ class TTSModule(BaseModule):
             error_log(f"[TTS] 重載使用者設定失敗: {e}")
             import traceback
             error_log(traceback.format_exc())
+            return False
+    
+    def get_performance_window(self) -> dict:
+        """獲取效能數據窗口（包含 TTS 特定指標）"""
+        window = super().get_performance_window()
+        window['total_audio_generated'] = self.total_audio_generated
+        window['total_text_length'] = self.total_text_length
+        window['synthesis_count'] = self.synthesis_count
+        window['avg_audio_duration'] = (
+            self.total_audio_generated / self.synthesis_count
+            if self.synthesis_count > 0 else 0.0
+        )
+        window['avg_text_length'] = (
+            self.total_text_length / self.synthesis_count
+            if self.synthesis_count > 0 else 0.0
+        )
+        return window
             return False

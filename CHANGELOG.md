@@ -2518,3 +2518,15 @@
 
 ---
 
+### Quite a change on many module's performance report and made framework manage better. Not all the modules have been handled with tho. 12/14
+
+> Date: Sun, 14 Dec 2025 00:17:28 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/benchmark_and_healthcheck`
+
+> Commit: `66a6f5e5698374acd954954d5f18e4c0a7b94fbb`
+
+---
+

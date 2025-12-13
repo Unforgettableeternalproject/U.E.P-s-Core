@@ -70,9 +70,10 @@ class UnifiedController:
         self.user_settings_manager = user_settings_manager
         
         # 系統統計
-        self.startup_time = None
+        self.startup_time = None  # 系統啟動時間戳
         self.total_gs_sessions = 0
-        self.system_errors = []
+        self.system_errors = {}  # 改為按模組分類: {module_id: [error_info, ...]}
+        self.module_health_cache = {}  # 模組健康度快取
         
         # 階段五：背景任務監控
         self.background_tasks: Dict[str, Dict[str, Any]] = {}  # task_id -> task_info
@@ -96,7 +97,9 @@ class UnifiedController:
             if self.is_initialized:
                 info_log("[UnifiedController] 系統已初始化")
                 return True
-                
+            
+            # 記錄啟動時間
+            self.startup_time = time.time()
             self.system_status = SystemStatus.INITIALIZING
             info_log("[UnifiedController] 開始系統初始化...")
             
@@ -185,6 +188,9 @@ class UnifiedController:
             
             # ✅ 檢查會話超時 (CS/WS 超時處理)
             self._check_session_timeouts()
+            
+            # ✅ 檢查模組健康度
+            self._check_module_health()
             
             # 記錄系統狀態（簡化版）
             debug_log(3, f"[Monitor] 系統狀態: {current_state.value}, "
@@ -1118,6 +1124,145 @@ class UnifiedController:
             
         except Exception as e:
             error_log(f"[UnifiedController] 系統關閉失敗: {e}")
+    
+    # ========== 模組健康度監控 ==========
+    
+    def _check_module_health(self):
+        """檢查模組健康度並更新快取"""
+        try:
+            from core.framework import core_framework
+            
+            # 獲取所有模組的性能指標
+            all_metrics = core_framework.get_all_module_metrics()
+            current_time = time.time()
+            
+            # 更新模組健康度快取
+            for module_id, metrics in all_metrics.items():
+                health_status = self._evaluate_module_health(metrics, current_time)
+                self.module_health_cache[module_id] = health_status
+                
+                # 如果模組不健康，記錄警告
+                if health_status['status'] in ['degraded', 'failing']:
+                    debug_log(2, f"[Monitor] 模組 {module_id} 狀態: {health_status['status']}")
+                    
+        except Exception as e:
+            debug_log(2, f"[Monitor] 模組健康度檢查失敗: {e}")
+    
+    def _evaluate_module_health(self, metrics, current_time: float) -> Dict[str, Any]:
+        """
+        評估模組健康度
+        
+        返回格式: {
+            'status': 'healthy' | 'degraded' | 'failing',
+            'last_active': float,
+            'inactive_duration': float,
+            'error_rate': float,
+            'details': str
+        }
+        """
+        # 從配置讀取閾值
+        monitoring_config = self.config.get('monitoring', {})
+        inactive_threshold = monitoring_config.get('module_inactive_threshold', 300)
+        failing_threshold = monitoring_config.get('module_failing_threshold', 600)
+        degraded_error_rate = monitoring_config.get('error_rate_degraded_threshold', 0.2)
+        failing_error_rate = monitoring_config.get('error_rate_failing_threshold', 0.5)
+        
+        inactive_duration = current_time - metrics.last_activity
+        error_rate = metrics.error_rate
+        
+        # 健康度判斷邏輯
+        if inactive_duration > failing_threshold:
+            status = 'failing'
+            details = f"模組已 {int(inactive_duration/60)} 分鐘未活動"
+        elif error_rate > failing_error_rate:
+            status = 'failing'
+            details = f"錯誤率過高 ({error_rate*100:.1f}%)"
+        elif error_rate > degraded_error_rate:
+            status = 'degraded'
+            details = f"錯誤率偏高 ({error_rate*100:.1f}%)"
+        elif inactive_duration > inactive_threshold:
+            status = 'degraded'
+            details = f"模組活動較少 ({int(inactive_duration/60)} 分鐘)"
+        else:
+            status = 'healthy'
+            details = "運作正常"
+        
+        return {
+            'status': status,
+            'last_active': metrics.last_activity,
+            'inactive_duration': inactive_duration,
+            'error_rate': error_rate,
+            'total_requests': metrics.total_requests,
+            'success_rate': metrics.success_rate,
+            'avg_processing_time': metrics.average_processing_time,
+            'details': details
+        }
+    
+    def get_module_health_summary(self) -> Dict[str, Any]:
+        """
+        獲取模組健康度摘要（供UI調用）
+        
+        返回格式: {
+            'module_id': {
+                'status': 'healthy' | 'degraded' | 'failing',
+                'metrics': PerformanceMetrics,
+                'health': {...}
+            }
+        }
+        """
+        try:
+            from core.framework import core_framework
+            
+            summary = {}
+            all_metrics = core_framework.get_all_module_metrics()
+            current_time = time.time()
+            
+            for module_id, metrics in all_metrics.items():
+                # 從快取獲取或重新評估
+                if module_id in self.module_health_cache:
+                    health = self.module_health_cache[module_id]
+                else:
+                    health = self._evaluate_module_health(metrics, current_time)
+                
+                summary[module_id] = {
+                    'status': health['status'],
+                    'metrics': metrics,
+                    'health': health
+                }
+            
+            return summary
+            
+        except Exception as e:
+            error_log(f"[Controller] 獲取模組健康度摘要失敗: {e}")
+            return {}
+    
+    def get_system_uptime(self) -> float:
+        """獲取系統運行時間（秒）"""
+        if self.startup_time:
+            return time.time() - self.startup_time
+        return 0.0
+    
+    def record_module_error(self, module_id: str, error_info: Dict[str, Any]):
+        """記錄模組錯誤（按模組分類）"""
+        try:
+            if module_id not in self.system_errors:
+                self.system_errors[module_id] = []
+            
+            self.system_errors[module_id].append({
+                'timestamp': time.time(),
+                'error': error_info
+            })
+            
+            # 從配置讀取最大錯誤記錄數
+            monitoring_config = self.config.get('monitoring', {})
+            max_errors = monitoring_config.get('max_module_errors', 50)
+            
+            # 限制每個模組的錯誤記錄數量
+            if len(self.system_errors[module_id]) > max_errors:
+                self.system_errors[module_id] = self.system_errors[module_id][-max_errors:]
+                
+        except Exception as e:
+            error_log(f"[Controller] 記錄模組錯誤失敗: {e}")
     
     # ========== ON_CALL 管理 ==========
 

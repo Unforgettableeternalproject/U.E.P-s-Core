@@ -239,8 +239,13 @@ class CoreFramework:
         
         # ========== 效能監控系統 ==========
         self.performance_monitoring_enabled = True
+        
+        # 從配置讀取監控參數
+        monitoring_config = self.config.get('monitoring', {})
+        history_size = monitoring_config.get('performance_history_size', 100)
+        
         self.performance_metrics: Dict[str, PerformanceMetrics] = {}
-        self.performance_history: deque = deque(maxlen=100)  # 保留最近100個快照
+        self.performance_history: deque = deque(maxlen=history_size)
         self.metrics_lock = threading.Lock()
         self.modules_lock = threading.Lock()  # 保護 self.modules 字典的執行緒鎖
         self.system_start_time = time.time()

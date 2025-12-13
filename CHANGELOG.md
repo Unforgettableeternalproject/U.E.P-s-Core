@@ -2494,3 +2494,27 @@
 
 ---
 
+### Added the base spec and a build script, we will be testing the deployment soon. 12/11
+
+> Date: Thu, 11 Dec 2025 13:21:52 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/deployment_test`
+
+> Commit: `2f4aa48deab041f97a84761d1ab8c3a2f06cd618`
+
+---
+
+### Deployments are tested fine, time to go back for more functions implementation. 12/13
+
+> Date: Sat, 13 Dec 2025 01:45:02 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/deployment_test`
+
+> Commit: `05fb9671decd27f22bd3555876bc5157340ebac7`
+
+---
+

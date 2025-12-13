@@ -4,13 +4,12 @@ MISCHIEF 行為實現：創建文字檔
 在桌面上創建包含 UEP 訊息的文字檔。
 """
 
-import os
 from pathlib import Path
 from typing import Dict, Any, Tuple
 from datetime import datetime
 
 from . import MischiefAction, MoodContext
-from utils.debug_helper import debug_log, error_log, SYSTEM_LEVEL
+from utils.debug_helper import debug_log, error_log
 
 
 class CreateTextFileAction(MischiefAction):

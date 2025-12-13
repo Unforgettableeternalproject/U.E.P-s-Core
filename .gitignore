@@ -420,6 +420,15 @@ deprecated/*
 *.lib
 *.pyd
 
-#Ignore insiders AI rules
+# Ignore insiders AI rules
 .github/instructions/codacy.instructions.md
 **/.github/prompts/*
+
+# Builds
+build/*
+release/*
+dist/*
+*.toc
+*.spec
+*.exe
+*.zip

@@ -2542,3 +2542,15 @@
 
 ---
 
+### Fixed all problems on metrics for all the modules. 12/15
+
+> Date: Mon, 15 Dec 2025 03:01:22 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/benchmark_and_healthcheck`
+
+> Commit: `8f50b8b3fd0dfedafd2b36aa67611825c72b0452`
+
+---
+

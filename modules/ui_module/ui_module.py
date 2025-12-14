@@ -1059,7 +1059,7 @@ class UIModule(BaseFrontendModule):
             error_log(f"[{self.module_id}] 熱重載設定失敗: {e}")
     
     def get_performance_window(self) -> dict:
-        """獲取效能數據窗口（包含 UI 特定指標）"""
+        """獲取效能數據窗口（包含 UI 特定指標及子模組 ANI/MOV）"""
         window = super().get_performance_window()
         window['event_type_distribution'] = self.event_type_stats.copy()
         window['total_events_processed'] = self.total_events_processed
@@ -1068,4 +1068,29 @@ class UIModule(BaseFrontendModule):
             self.render_count / window['total_requests']
             if window['total_requests'] > 0 else 0.0
         )
+        
+        # 🔧 整合 ANI 和 MOV 子模組的效能數據
+        try:
+            if self.ani_module and hasattr(self.ani_module, 'get_performance_window'):
+                ani_data = self.ani_module.get_performance_window()
+                window['ani_module'] = {
+                    'total_frames': ani_data.get('total_frames_rendered', 0),
+                    'animation_duration': ani_data.get('total_animation_duration', 0.0),
+                    'current_fps': ani_data.get('current_fps', 0.0),
+                    'animation_types': ani_data.get('animation_type_distribution', {})
+                }
+        except Exception as e:
+            error_log(f"[UI] 獲取 ANI 效能數據失敗: {e}")
+            
+        try:
+            if self.mov_module and hasattr(self.mov_module, 'get_performance_window'):
+                mov_data = self.mov_module.get_performance_window()
+                window['mov_module'] = {
+                    'total_distance': mov_data.get('total_distance_moved', 0.0),
+                    'total_movements': mov_data.get('total_movements', 0),
+                    'movement_types': mov_data.get('movement_type_distribution', {})
+                }
+        except Exception as e:
+            error_log(f"[UI] 獲取 MOV 效能數據失敗: {e}")
+        
         return window

@@ -770,7 +770,7 @@ class CoreFramework:
                                   f"{metrics.average_processing_time:.3f}s 平均耗時")
                 
                 except Exception as e:
-                    debug_log(2, f"[CoreFramework] 從模組 {module_id} 拉取效能數據失敗: {e}")
+                    error_log(f"[CoreFramework] 從模組 {module_id} 拉取效能數據失敗: {e}")
             
             debug_log(3, f"[CoreFramework] 已從 {len(modules)} 個模組拉取效能數據")
             

@@ -74,6 +74,8 @@ from .workflows.automation_workflows import (
 
 class SYSModule(BaseModule):
     def __init__(self, config=None):
+        super().__init__()
+        
         self.config = config or load_module_config("sys_module")
         self.enabled_modes = set(self.config.get("modes", []))
         self._function_specs = None
@@ -2245,11 +2247,3 @@ class SYSModule(BaseModule):
             if (self.successful_commands + self.failed_commands) > 0 else 0.0
         )
         return window
-            
-            return True
-            
-        except Exception as e:
-            error_log(f"[SYS] 重載使用者設定失敗: {e}")
-            import traceback
-            error_log(traceback.format_exc())
-            return False

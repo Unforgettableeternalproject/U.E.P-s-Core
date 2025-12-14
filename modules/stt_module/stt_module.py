@@ -66,6 +66,8 @@ def correct_stt(text):
 
 class STTModule(BaseModule):
     def __init__(self, config=None, working_context_manager=None, result_callback=None):
+        super().__init__()
+        
         self.config = config or load_module_config("stt_module")
         
         # 工作上下文管理器
@@ -1096,18 +1098,6 @@ class STTModule(BaseModule):
                 self.wake_word_confidence = float(value)
                 info_log(f"[STT] 喚醒詞信心度閾值已更新: {old_confidence:.2f} → {value:.2f}")
                 # 此參數儲存於實例變數，供 NLP 喚醒詞檢測使用
-    
-    def get_performance_window(self) -> dict:
-        """獲取效能數據窗口（包含 STT 特定指標）"""
-        window = super().get_performance_window()
-        window['total_audio_duration'] = self.total_audio_duration
-        window['total_recognitions'] = self.total_recognitions
-        window['vad_triggers'] = self.vad_triggers
-        window['avg_audio_duration'] = (
-            self.total_audio_duration / self.total_recognitions
-            if self.total_recognitions > 0 else 0.0
-        )
-        return window
                 
             else:
                 debug_log(2, f"[STT] 未處理的設定路徑: {key_path}")
@@ -1120,3 +1110,15 @@ class STTModule(BaseModule):
             import traceback
             error_log(traceback.format_exc())
             return False
+    
+    def get_performance_window(self) -> dict:
+        """獲取效能數據窗口（包含 STT 特定指標）"""
+        window = super().get_performance_window()
+        window['total_audio_duration'] = self.total_audio_duration
+        window['total_recognitions'] = self.total_recognitions
+        window['vad_triggers'] = self.vad_triggers
+        window['avg_audio_duration'] = (
+            self.total_audio_duration / self.total_recognitions
+            if self.total_recognitions > 0 else 0.0
+        )
+        return window

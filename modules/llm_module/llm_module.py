@@ -4427,6 +4427,18 @@ Memory Management:
             elif key_path == "monitoring.network.timeout":
                 self.network_timeout = int(value)
                 info_log(f"[LLM] 網路逾時: {self.network_timeout}秒")
+                
+            else:
+                debug_log(2, f"[LLM] 未處理的設定路徑: {key_path}")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            error_log(f"[LLM] 重載使用者設定失敗: {e}")
+            import traceback
+            error_log(traceback.format_exc())
+            return False
     
     def get_performance_window(self) -> dict:
         """獲取效能數據窗口（包含 LLM 特定指標）"""
@@ -4445,16 +4457,4 @@ Memory Management:
             self.cache_hits / total_cache_ops if total_cache_ops > 0 else 0.0
         )
         return window
-                
-            else:
-                debug_log(2, f"[LLM] 未處理的設定路徑: {key_path}")
-                return False
-            
-            return True
-            
-        except Exception as e:
-            error_log(f"[LLM] 重載使用者設定失敗: {e}")
-            import traceback
-            error_log(traceback.format_exc())
-            return False
 

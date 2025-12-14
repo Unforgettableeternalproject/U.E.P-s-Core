@@ -47,6 +47,8 @@ class TTSModule(BaseModule):
         Args:
             config: 模組配置 (如果為 None 則從 config_tts.yaml 加載)
         """
+        super().__init__()
+        
         self.config = config or load_module_config("tts_module")
         
         # 取得專案根目錄的絕對路徑
@@ -845,4 +847,3 @@ class TTSModule(BaseModule):
             if self.synthesis_count > 0 else 0.0
         )
         return window
-            return False

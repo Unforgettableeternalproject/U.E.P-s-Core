@@ -281,11 +281,12 @@ class LLMModule(BaseModule):
             debug_log(3, f"[LLM] 需要審核: {requires_review}, 結果: {step_result.get('success')}")
             debug_log(2, f"[LLM] 接收到的 review_data keys: {list(review_data.keys()) if review_data else 'None'}")
             
-            # 🔧 檢查是否為 LLM_PROCESSING 請求
-            requires_llm_processing = data.get('requires_llm_processing', False)
+            # 🔧 檢查是否為 LLM_PROCESSING 請求（從 review_data 或 data 中讀取）
+            requires_llm_processing = (review_data and review_data.get('requires_llm_processing', False)) or data.get('requires_llm_processing', False)
             if requires_llm_processing:
                 debug_log(2, f"[LLM] 檢測到 LLM_PROCESSING 請求")
-                llm_request_data = data.get('llm_request_data', {})
+                # 從 review_data 或 data 中獲取請求數據
+                llm_request_data = (review_data.get('request_data') if review_data else None) or data.get('llm_request_data', {})
                 
                 # 🔧 去重檢查：避免重複處理同一個 LLM_PROCESSING 步驟
                 step_id = llm_request_data.get('step_id', '')
@@ -4264,24 +4265,48 @@ Memory Management:
                 else:
                     response_text = "Got it! Please provide the required input to continue."
             
-            # 觸發 TTS 輸出提示
-            from core.framework import core_framework
-            tts_module = core_framework.get_module('tts')
-            if tts_module:
-                debug_log(2, f"[LLM] 觸發 TTS 輸出互動步驟提示")
-                tts_module.handle({
-                    "text": response_text,
-                    "session_id": session_id,
-                    "emotion": "neutral"
-                })
-            
-            # 🔧 修正：不要批准步驟！
-            # 當下一步是互動步驟時，LLM 只是提供提示，不批准當前步驟
-            # 工作流應該停在 INTERACTIVE 步驟，等待用戶輸入
-            # WorkflowEngine 的 _auto_advance 會檢測到 InteractiveStep 並自動發布 workflow_requires_input 事件
-            # 用戶提供輸入後，才會調用 provide_workflow_input 繼續工作流
+            # 🔧 不直接調用 TTS，而是通過事件系統
+            # 避免模組間直接互相調用，保持架構清晰
+            # 發布 PROCESSING_LAYER_COMPLETE 事件後，ModuleCoordinator 會路由到 TTS
             
             debug_log(1, f"[LLM] ✅ 互動步驟提示處理完畢: {session_id}")
+            
+            # ✅ 發布 PROCESSING_LAYER_COMPLETE 事件，確保循環追蹤正確
+            # 雖然這只是提示輸出，但仍然算是完成了處理層的工作
+            try:
+                from core.working_context import working_context_manager
+                gs_id = working_context_manager.get_context_data('current_gs_id')
+                cycle_index = working_context_manager.get_context_data('current_cycle_index', 0)
+                
+                completion_data = {
+                    "session_id": gs_id or session_id,
+                    "cycle_index": cycle_index,
+                    "layer": "PROCESSING",
+                    "response": response_text,
+                    "source_module": "llm",
+                    "llm_output": {
+                        "text": response_text,
+                        "success": True,
+                        "metadata": {
+                            "interactive_prompt": True,
+                            "workflow_session_id": session_id
+                        }
+                    },
+                    "timestamp": time.time(),
+                    "completion_type": "interactive_prompt",
+                    "success": True
+                }
+                
+                from core.event_bus import event_bus, SystemEvent
+                event_bus.publish(
+                    event_type=SystemEvent.PROCESSING_LAYER_COMPLETE,
+                    data=completion_data,
+                    source="llm"
+                )
+                
+                debug_log(2, f"[LLM] 已發布互動步驟提示的 PROCESSING_LAYER_COMPLETE 事件")
+            except Exception as pub_err:
+                error_log(f"[LLM] 發布 PROCESSING_LAYER_COMPLETE 失敗: {pub_err}")
             
         except Exception as e:
             import traceback

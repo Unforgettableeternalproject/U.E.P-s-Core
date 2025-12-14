@@ -2554,3 +2554,15 @@
 
 ---
 
+### Fixed upon some major system issues regarding workflows and GS. 12/15
+
+> Date: Mon, 15 Dec 2025 04:42:39 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/benchmark_and_healthcheck`
+
+> Commit: `2ad439d10eaeed24b7b5f5b78a4452efcfeb3c9a`
+
+---
+

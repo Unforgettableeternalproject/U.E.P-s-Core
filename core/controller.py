@@ -275,31 +275,53 @@ class UnifiedController:
             debug_log(2, "[Controller] 檢查 WS pending_end...")
             self._check_and_end_pending_workflow_sessions()
             
-            # 2. 然後檢查 GS 結束條件
-            current_state = self.state_manager.get_current_state()
+            # 2. 檢查 GS 結束條件
             current_gs = self.session_manager.get_current_general_session()
             
             if not current_gs:
                 return
-                
+            
+            # 檢查是否還有活躍的子會話
+            active_cs = self.session_manager.get_active_chatting_sessions()
+            active_ws = self.session_manager.get_active_workflow_sessions()
+            has_active_subsessions = len(active_cs) > 0 or len(active_ws) > 0
+            
+            # 檢查 StateQueue 狀態
             state_queue = get_state_queue_manager()
             queue_status = state_queue.get_queue_status()
+            queue_state = queue_status.get('current_state', 'unknown')
+            queue_length = queue_status.get('queue_length', 0)
             
             # GS 結束條件：
-            # 1. 當前狀態為 IDLE
-            # 2. 狀態佇列完全清空
-            # 3. 至少進入過一個非 IDLE 狀態（確保有實際處理發生）
-            has_visited_non_idle = current_gs.has_visited_non_idle_state()
+            # 1. StateQueue 當前狀態為 idle（不是 StateManager 的狀態）
+            # 2. 狀態佇列完全清空（沒有待處理的狀態）
+            # 3. 沒有活躍的子會話（CS/WS）
+            # 4. 至少進入過一個非 IDLE 狀態（確保有實際處理發生）- 從 StateQueue 查詢
+            has_visited_non_idle = state_queue.has_visited_non_idle_state()
             
-            if (current_state == UEPState.IDLE and 
-                queue_status.get('queue_length', 0) == 0 and
-                queue_status.get('current_state') == 'idle'):
+            debug_log(2, f"[Controller] GS 結束條件檢查: queue_state={queue_state}, "
+                        f"queue_length={queue_length}, active_cs={len(active_cs)}, "
+                        f"active_ws={len(active_ws)}, visited_non_idle={has_visited_non_idle}")
+            
+            if (queue_state == 'idle' and 
+                queue_length == 0 and
+                not has_active_subsessions and
+                has_visited_non_idle):
                 
-                if has_visited_non_idle:
-                    debug_log(2, f"[Controller] 檢測到 GS 結束條件：狀態佇列已清空且已訪問非 IDLE 狀態，準備結束 GS {current_gs.session_id}")
-                    self._end_current_gs_with_cleanup(current_gs.session_id)
-                else:
-                    debug_log(2, f"[Controller] GS {current_gs.session_id} 尚未訪問非 IDLE 狀態，保持 GS 存在 (visited_states: {current_gs.context.visited_states})")
+                debug_log(2, f"[Controller] ✅ GS 結束條件已滿足，準備結束 GS {current_gs.session_id}")
+                self._end_current_gs_with_cleanup(current_gs.session_id)
+            else:
+                reasons = []
+                if queue_state != 'idle':
+                    reasons.append(f"queue_state={queue_state}")
+                if queue_length > 0:
+                    reasons.append(f"queue_length={queue_length}")
+                if has_active_subsessions:
+                    reasons.append(f"active_subsessions (CS:{len(active_cs)}, WS:{len(active_ws)})")
+                if not has_visited_non_idle:
+                    reasons.append("未訪問非IDLE狀態")
+                
+                debug_log(2, f"[Controller] GS {current_gs.session_id} 不符合結束條件: {', '.join(reasons)}")
                 
         except Exception as e:
             debug_log(2, f"[Controller] GS 結束條件檢查失敗: {e}")
@@ -399,7 +421,12 @@ class UnifiedController:
             })
             
             if result:
-                # 2. 系統級清理：確保 Working Context 完全重置
+                # 2. 清空 StateQueue 的狀態歷史
+                from core.states.state_queue import get_state_queue_manager
+                state_queue = get_state_queue_manager()
+                state_queue.clear_state_history()
+                
+                # 3. 系統級清理：確保 Working Context 完全重置
                 self._perform_system_cleanup_after_gs()
                 
                 info_log(f"[Controller] GS {gs_id} 已成功結束，系統清理完成")

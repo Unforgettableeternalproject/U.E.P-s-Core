@@ -202,14 +202,14 @@ class NLPModule(BaseModule):
             intent_type = final_result.primary_intent.name if hasattr(final_result.primary_intent, 'name') else str(final_result.primary_intent)
             self.intent_distribution[intent_type] = self.intent_distribution.get(intent_type, 0) + 1
             self.update_custom_metric('intent_type', intent_type)
-            self.update_custom_metric('confidence_score', final_result.confidence)
+            self.update_custom_metric('confidence_score', final_result.overall_confidence)
             
             if hasattr(final_result, 'entities') and final_result.entities:
                 entity_count = len(final_result.entities)
                 self.total_entities_found += entity_count
                 self.update_custom_metric('entity_count', entity_count)
             
-            if final_result.confidence < 0.6:
+            if final_result.overall_confidence < 0.6:
                 self.fallback_count += 1
             
             # 在調用Router之前，先執行狀態轉換

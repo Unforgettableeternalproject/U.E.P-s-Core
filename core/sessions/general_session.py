@@ -157,7 +157,7 @@ class GSContext:
     sub_sessions: List[str] = field(default_factory=list)          # CS/WS session IDs
     processing_pipeline: List[str] = field(default_factory=list)   # 處理流程記錄
     outputs: List[Dict[str, Any]] = field(default_factory=list)    # 輸出記錄
-    visited_states: List[str] = field(default_factory=list)        # 訪問過的狀態列表
+    # 狀態訪問記錄已移至 StateQueue 統一管理
 
 
 class GeneralSession:
@@ -305,16 +305,9 @@ class GeneralSession:
         self.context.sub_sessions.append(sub_session_id)
         info_log(f"[GeneralSession] 註冊子會話: {sub_session_id} (類型: {session_type})")
     
-    def record_state_visit(self, state_name: str):
-        """記錄訪問的狀態"""
-        if state_name not in self.context.visited_states:
-            self.context.visited_states.append(state_name)
-            debug_log(2, f"[GeneralSession] GS {self.session_id} 訪問狀態: {state_name} (累計: {len(self.context.visited_states)})")
-    
-    def has_visited_non_idle_state(self) -> bool:
-        """檢查是否訪問過非 IDLE 狀態"""
-        non_idle_states = [s for s in self.context.visited_states if s.lower() != 'idle']
-        return len(non_idle_states) > 0
+    # 狀態訪問記錄已移至 StateQueue 統一管理
+    # record_state_visit() 和 has_visited_non_idle_state() 已移除
+    # 請使用 state_queue.has_visited_non_idle_state() 查詢
     
     def add_output(self, output_data: Dict[str, Any]):
         """添加輸出記錄"""

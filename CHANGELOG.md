@@ -2614,3 +2614,15 @@
 
 ---
 
+### Documentation Changes. 12/16
+
+> Date: Tue, 16 Dec 2025 00:05:54 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `release/v0.9.4-stable`
+
+> Commit: `5112f3738ad97d197e5e206c0e360d2f7d7b9081`
+
+---
+

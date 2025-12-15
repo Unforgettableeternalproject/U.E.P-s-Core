@@ -1613,20 +1613,22 @@ class SystemBackgroundWindow(QMainWindow):
             # 保存音樂資料夾路徑
             self.music_folder = music_folder
             
-            # 初始化播放引擎（無論是否有音樂資料夾都要初始化）
-            from modules.sys_module.actions.automation_helper import media_control
+            # ⚠️ 不要初始化播放器！只檢查現有狀態
+            # 播放器應該只在用戶實際播放音樂時才被創建
+            # 監控視窗只是一個控制面板，不應該創建或停止播放器
+            from modules.sys_module.actions.automation_helper import get_music_player_status
             try:
-                # 使用 stop 動作來初始化播放器（安全且不會播放音樂）
-                # 即使沒有音樂資料夾，也要初始化引擎以顯示正確的狀態
-                media_control(action="stop", music_folder=self.music_folder or "", engine_type=self.playback_engine)
-                debug_log(OPERATION_LEVEL, f"[SystemBackground] 播放引擎已初始化: {self.playback_engine}")
-                
-                # 觸發一次狀態同步以更新 UI
+                # 觸發一次狀態同步以顯示現有播放器狀態（如果有的話）
                 self._sync_playback_status()
-            except Exception as init_error:
-                debug_log(OPERATION_LEVEL, f"[SystemBackground] 播放引擎初始化警告: {init_error}")
+                status = get_music_player_status()
+                if status.get("engine") != "Unknown":
+                    debug_log(OPERATION_LEVEL, f"[SystemBackground] 已連接到現有播放器: {status.get('engine')}")
+                else:
+                    debug_log(OPERATION_LEVEL, f"[SystemBackground] 播放器尚未初始化（將在播放時自動創建）")
+            except Exception as sync_error:
+                debug_log(2, f"[SystemBackground] 狀態同步警告: {sync_error}")
             
-            # 如果沒有音樂資料夾，提前返回（引擎已初始化）
+            # 如果沒有音樂資料夾，提前返回
             if not music_folder or not Path(music_folder).exists():
                 debug_log(OPERATION_LEVEL, f"[SystemBackground] 未設定或找不到預設媒體資料夾: {music_folder}")
                 return

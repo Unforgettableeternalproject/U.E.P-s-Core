@@ -294,9 +294,10 @@ def create_get_world_time_workflow(session: WorkflowSession) -> WorkflowEngine:
     
     workflow_def.set_entry_point("mode_selection")
     workflow_def.add_transition("mode_selection", "timezone_conditional")
-    workflow_def.add_transition("timezone_conditional", "timezone_input")  # 🔧 ConditionalStep 可以跳轉到 timezone_input
-    workflow_def.add_transition("timezone_conditional", "execute_time_query")  # 🔧 或直接到 execute_time_query
-    workflow_def.add_transition("timezone_input", "execute_time_query")  # 🔧 timezone_input 完成後到 execute_time_query
+    # 🔧 分支步驟完成後需要回到 conditional 繼續執行
+    workflow_def.add_transition("timezone_input", "timezone_conditional")
+    # 🔧 conditional 只接到下一個正常步驟
+    workflow_def.add_transition("timezone_conditional", "execute_time_query")
     workflow_def.add_transition("execute_time_query", "END")
     
     return WorkflowEngine(workflow_def, session)

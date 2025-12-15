@@ -749,16 +749,20 @@ class DraggableButton(QPushButton):
             self._dragging = False
             # 恢復 hover 檢測
             self.setAttribute(Qt.WA_UnderMouse, True)
-            # 釋放後刷新按鈕樣式，確保邊框不殘留
+            
+            # 拖曳結束後總是清除所有按鈕的 pressed 狀態和邊框
+            # 不依賴鼠標位置判斷（不準確）
             try:
                 wnd = self.window()
                 if hasattr(wnd, 'mainButton'):
+                    wnd.mainButton.setDown(False)  # 總是清除
                     s = wnd.mainButton.style()
                     s.unpolish(wnd.mainButton)
                     s.polish(wnd.mainButton)
                     wnd.mainButton.update()
                 for b in getattr(wnd, 'options', []):
                     try:
+                        b.setDown(False)  # 總是清除
                         sb = b.style()
                         sb.unpolish(b)
                         sb.polish(b)
@@ -767,6 +771,7 @@ class DraggableButton(QPushButton):
                         pass
                 for tb in getattr(wnd, 'tool_buttons', []):
                     try:
+                        tb.setDown(False)  # 總是清除
                         st = tb.style()
                         st.unpolish(tb)
                         st.polish(tb)
@@ -1414,10 +1419,18 @@ class MainButton(QWidget):
                         self.is_fully_visible = True
                         debug_log(3, f"[AccessWidget] 拖曳到中間區域，不啟用自動隱藏")
                 
-                # 強制刷新主按鈕樣式以清除懸停狀態
+                # 強制刷新主按鈕樣式以清除懸停和按下狀態
+                self.mainButton.setDown(False)  # 清除 pressed 狀態
                 self.mainButton.style().unpolish(self.mainButton)
                 self.mainButton.style().polish(self.mainButton)
                 self.mainButton.update()
+                
+                # 同樣清除所有選項按鈕和工具按鈕的狀態
+                for btn in self.options + self.tool_buttons:
+                    btn.setDown(False)
+                    btn.style().unpolish(btn)
+                    btn.style().polish(btn)
+                    btn.update()
             
             self.dragPos = None
             self.right_click_timer.stop()

@@ -11,6 +11,8 @@ import os
 import warnings
 from typing import Optional, Dict, Any, cast
 warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*forced_decoder_ids.*")
+warnings.filterwarnings("ignore", message=".*past_key_values.*")
 
 # 新的核心依賴
 import torch
@@ -175,6 +177,9 @@ class STTModule(BaseModule):
             )
             self.model.to(self.device)
             
+            # 清除 forced_decoder_ids 以避免與 task="translate" 衝突
+            self.model.config.forced_decoder_ids = None
+            
             # 載入處理器
             info_log("[STT] 載入處理器...")
             if self.use_local_model and os.path.exists(self.whisper_local_path):
@@ -233,6 +238,10 @@ class STTModule(BaseModule):
     def handle(self, data: dict = {}) -> dict:
         """處理 STT 請求"""
         try:
+            # 🔧 文字模式特殊處理（直接調用實現方法）
+            if data.get("mode") == "text" and "text" in data:
+                return self._handle_text_input_impl(data["text"])
+            
             # 直接轉換為模組內部使用的格式
             validated = STTInput(**data)
             debug_log(1, f"[STT] 處理請求: {validated.mode}")
@@ -327,6 +336,18 @@ class STTModule(BaseModule):
             
         Returns:
             dict: 統一格式的輸出結果
+        """
+        # 🔧 通過 handle() 方法以自動記錄效能指標
+        return self.handle({
+            "mode": "text",
+            "text": text
+        })
+    
+    def _handle_text_input_impl(self, text: str) -> dict:
+        """
+        處理文字輸入的實際實現
+        
+        （原 handle_text_input 的邏輯）
         """
         try:
             if not text or text.isspace():

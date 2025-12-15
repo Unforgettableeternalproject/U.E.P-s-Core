@@ -383,6 +383,11 @@ class CoreFramework:
                 error_log(f"[CoreFramework] 載入模組 '{module_name}' 時發生錯誤: {e}")
                 return False
             
+            # 🔧 設置模組 ID（確保效能追蹤使用正確的 module_id）
+            if hasattr(module_instance, 'set_module_id'):
+                module_instance.set_module_id(config["module_id"])
+                debug_log(3, f"[CoreFramework] 已設置模組 ID: {config['module_id']}")
+            
             # 創建模組資訊
             module_info = ModuleInfo(
                 module_id=config["module_id"],

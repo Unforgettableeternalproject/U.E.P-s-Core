@@ -2566,3 +2566,15 @@
 
 ---
 
+### Fixed some more minor stuff, well, big stuffs are left there for a reason. 12/15
+
+> Date: Mon, 15 Dec 2025 21:24:48 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/benchmark_and_healthcheck`
+
+> Commit: `f92a013176cda27394eeccfc307d8ff891e7f2ce`
+
+---
+

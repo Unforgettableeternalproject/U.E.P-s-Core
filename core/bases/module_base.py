@@ -48,6 +48,7 @@ class BaseModule(ABC):
         self.is_initialized = False
         self._module_id = self.__class__.__name__  # 模組ID，子類可覆寫
         self._enable_auto_metrics = True  # 是否啟用自動性能追踪
+        self._in_handle_call = False  # 防止遞迴追蹤
         
         # 本地性能數據追蹤（供快速查詢）
         self._local_metrics = {
@@ -98,57 +99,62 @@ class BaseModule(ABC):
         """處理資料並回傳統一格式"""
         pass
     
-    def handle_with_metrics(self, data: dict) -> dict:
+    def __getattribute__(self, name):
         """
-        包裝 handle 方法，自動追踪性能指標
+        攔截 handle() 調用，自動包裝效能追蹤
         
-        所有對 handle() 的調用應改為調用此方法，或者在子類中覆寫 handle() 並調用此方法
+        當外部調用 handle() 時，自動記錄效能數據
+        使用 __getattribute__ 而不修改子類代碼
         """
-        if not self._enable_auto_metrics:
-            return self.handle(data)
+        attr = object.__getattribute__(self, name)
         
-        start_time = time.time()
-        start_memory = 0
-        memory_tracking = False
-        
-        # 嘗試追踪記憶體（可選功能，失敗不影響主流程）
-        try:
-            if not tracemalloc.is_tracing():
-                tracemalloc.start()
-            start_memory = tracemalloc.get_traced_memory()[0] / (1024 * 1024)  # MB
-            memory_tracking = True
-        except Exception:
-            pass
-        
-        result = None
-        success = False
-        
-        try:
-            result = self.handle(data)
-            success = True
-        except Exception as e:
-            success = False
-            raise
-        finally:
-            # 計算性能指標
-            processing_time = time.time() - start_time
-            memory_usage = 0
-            
-            if memory_tracking:
+        # 只攔截 handle 方法且不在遞迴調用中
+        if name == 'handle' and callable(attr):
+            def handle_with_auto_metrics(data: dict) -> dict:
+                # 檢查是否已在追蹤中（防止遞迴）
+                if object.__getattribute__(self, '_in_handle_call'):
+                    return attr(data)
+                
+                # 檢查是否啟用自動追蹤
+                if not object.__getattribute__(self, '_enable_auto_metrics'):
+                    return attr(data)
+                
+                # 設置追蹤標誌
+                object.__setattr__(self, '_in_handle_call', True)
+                
+                start_time = time.time()
+                result = None
+                success = False
+                
                 try:
-                    current_memory = tracemalloc.get_traced_memory()[0] / (1024 * 1024)  # MB
-                    memory_usage = current_memory - start_memory
-                except Exception:
-                    pass
+                    result = attr(data)
+                    success = True
+                except Exception as e:
+                    success = False
+                    raise
+                finally:
+                    # 重置追蹤標誌
+                    object.__setattr__(self, '_in_handle_call', False)
+                    
+                    # 計算性能指標
+                    processing_time = time.time() - start_time
+                    
+                    # 報告給 Framework
+                    try:
+                        self._report_performance({
+                            'processing_time': processing_time,
+                            'memory_usage': 0,  # 簡化版本不追蹤記憶體
+                            'request_result': 'success' if success else 'failure'
+                        })
+                    except Exception:
+                        # 靜默失敗，不影響主流程
+                        pass
+                
+                return result
             
-            # 報告給 Framework
-            self._report_performance({
-                'processing_time': processing_time,
-                'memory_usage': max(0, memory_usage),
-                'request_result': 'success' if success else 'failure'
-            })
+            return handle_with_auto_metrics
         
-        return result
+        return attr
     
     def _report_performance(self, metrics_data: Dict[str, Any]):
         """報告性能指標給 Framework 並更新本地快取"""

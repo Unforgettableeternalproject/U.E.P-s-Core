@@ -432,8 +432,10 @@ class ModuleHealthWidget(QWidget):
                 if item.widget():
                     item.widget().deleteLater()
             
-            # 為每個模組創建卡片
+            # 為每個模組創建卡片（排除 UI 模組，因為它是持續運行的，請求數指標無意義）
             for module_id, module_data in sorted(health_summary.items()):
+                if module_id.lower() == 'ui':
+                    continue  # 跳過 UI 模組
                 card = self._create_module_card(module_id, module_data)
                 self.modules_layout.addWidget(card)
             
@@ -1014,12 +1016,17 @@ class SystemStatusWindow(QMainWindow):
         header_layout.addStretch()
         
         # 主題切換按鈕
-        self.theme_toggle = QPushButton("🌙")
+        self.theme_toggle = QPushButton()
         self.theme_toggle.setObjectName("themeToggle")
         self.theme_toggle.setFixedSize(48, 48)
         self.theme_toggle.setCursor(Qt.PointingHandCursor)
         btn_font = QFont("Segoe UI Emoji", 18)
         self.theme_toggle.setFont(btn_font)
+        # 根據當前主題設置初始圖示
+        if theme_manager and hasattr(theme_manager, 'theme'):
+            self.theme_toggle.setText("☀️" if theme_manager.theme == Theme.DARK else "🌙")
+        else:
+            self.theme_toggle.setText("🌙")  # 預設亮色主題
         self.theme_toggle.clicked.connect(self.toggle_theme)
         install_theme_hook(self.theme_toggle)
         

@@ -1,6 +1,6 @@
 behavior:
   mischief:
-    enabled: false
+    enabled: true
     intensity: medium
     max_actions: 5
   movement:

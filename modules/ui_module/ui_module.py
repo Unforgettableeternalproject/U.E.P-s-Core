@@ -53,6 +53,9 @@ class UIModule(BaseFrontendModule):
     def __init__(self, config: dict = None):
         super().__init__(FrontendModuleType.UI)
         
+        # 🔧 禁用自動效能追蹤（UI 模組是持續運行的，不適合用請求數衡量）
+        self._enable_auto_metrics = False
+        
         self.config = config or {}
         self.is_initialized = False
         

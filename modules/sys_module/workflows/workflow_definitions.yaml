@@ -229,17 +229,28 @@ workflows:
 
   quick_phrases:
     name: "quick_phrases"
-    description: "Generate text templates using LLM and save as file to desktop (letters, resumes, emails, etc.)"
+    description: "Generate text templates using LLM with flexible output methods: copy to clipboard, save to desktop file, or cancel (letters, resumes, emails, etc.)"
     category: "text"
     work_mode: "direct"
     
     initial_params:
-      template_request:
+      input_template_request:
         type: str
         optional: true
         description: "Description of the template needed (e.g., business email, cover letter, meeting agenda, thank you note)"
         maps_to_step: "input_template_request"
         extraction_hint: "Extract template type/purpose from user input: email, letter, resume, cover letter, meeting agenda, thank you note, apology letter, etc."
+      
+      output_method_selection:
+        type: str
+        optional: true
+        description: "Output method choice: copy (copy to clipboard), save (save to desktop file), cancel (skip output)"
+        maps_to_step: "output_method_selection"
+        extraction_hint: |
+          Extract output method from user input:
+          - 'copy' for: "copy to clipboard", "copy it", "just copy"
+          - 'save' for: "save to desktop", "save as file", "save it"
+          - 'cancel' for: "cancel", "skip", "don't save"
     
     mcp_tool_params:
       command:
@@ -249,7 +260,7 @@ workflows:
       initial_data:
         type: object
         required: false
-        description: "Initial data: template_request (optional, description of template type)"
+        description: "Initial data: input_template_request (optional, description of template type), output_method_selection (optional, copy|save|cancel)"
 
   # ==================== Analysis Workflows ====================
   
@@ -301,7 +312,7 @@ workflows:
   
   play_media:
     name: "play_media"
-    description: "Local music playback with background monitoring. Supports shuffle and smart loop mode (auto-infers single-song loop or playlist loop based on query). Task ends when: 1) Specific song finishes (without loop), 2) Playlist finishes (without loop), 3) User manually stops (with loop enabled)."
+    description: "Local music playback with background monitoring. Supports shuffle and loop modes (off, single-song loop, or playlist loop). Task ends when: 1) Specific song finishes (without loop), 2) Playlist finishes (without loop), 3) User manually stops (with loop enabled)."
     category: "automation"
     work_mode: "background"
     
@@ -338,7 +349,7 @@ workflows:
   
   control_media:
     name: "control_media"
-    description: "Control active local music playback: play, pause, stop, next, previous, search, shuffle on/off, loop on/off (intelligently switches between single-song and playlist loop based on playback type), stop_service"
+    description: "Control active local music playback: play, pause, stop, next, previous, search, shuffle on/off, loop mode (off/one/all - none, single-song, or playlist loop), seek to position (milliseconds), volume adjustment (0-100), stop_service"
     category: "automation"
     work_mode: "direct"
     

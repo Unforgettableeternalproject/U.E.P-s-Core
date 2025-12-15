@@ -41,8 +41,11 @@ class IntentPostProcessor:
         
         debug_log(2, f"[IntentPostProcessor] 開始後處理 {len(raw_segments)} 個分段")
         
+        # Step 0: 特殊處理 U.E.P 名字識別
+        segments = self._handle_uep_name_recognition(raw_segments, original_text)
+        
         # Step 1: 處理短分段（< 3 字元）
-        segments = self._handle_short_segments(raw_segments)
+        segments = self._handle_short_segments(segments)
         
         # Step 2: 合併相鄰分段
         segments = self._merge_segments(segments, original_text)
@@ -51,6 +54,38 @@ class IntentPostProcessor:
         segments = self._apply_call_length_constraint(segments)
         
         debug_log(2, f"[IntentPostProcessor] 後處理完成，剩餘 {len(segments)} 個分段")
+        return segments
+    
+    def _handle_uep_name_recognition(self, segments: List[Dict[str, Any]], original_text: str) -> List[Dict[str, Any]]:
+        """
+        特殊處理 U.E.P 名字識別
+        
+        規則：
+        - 檢測 'U.E.P' / 'UEP' / 'u.e.p' / 'uep' 等變體
+        - 如果整段文本提及名字且包含問句，視為 CHAT
+        - 如果只是單純呼叫名字，視為 CALL
+        """
+        text_lower = original_text.lower()
+        
+        # U.E.P 名字的各種變體
+        uep_patterns = ['u.e.p', 'u e p', 'uep']
+        contains_uep = any(pattern in text_lower for pattern in uep_patterns)
+        
+        if not contains_uep:
+            return segments  # 沒有提及名字，跳過
+        
+        # 檢查是否為問句或詢問相關的內容
+        question_indicators = ['?', 'what', 'who', 'name', 'nickname', 'real name', 'called']
+        is_question = any(indicator in text_lower for indicator in question_indicators)
+        
+        # 如果提及 U.E.P 且是問句，將所有 UNKNOWN 分段改為 CHAT
+        if is_question:
+            for seg in segments:
+                if seg['intent'] == 'unknown':
+                    seg['intent'] = 'chat'
+                    seg['confidence'] = max(seg.get('confidence', 0.7), 0.75)
+                    debug_log(2, f"[IntentPostProcessor] U.E.P 名字識別: '{seg['text']}' → CHAT")
+        
         return segments
     
     def _handle_short_segments(self, segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

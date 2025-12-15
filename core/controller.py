@@ -21,6 +21,7 @@ from core.framework import core_framework
 from core.sessions.session_manager import session_manager
 from core.states.state_manager import state_manager, UEPState
 from configs.config_loader import load_config
+from configs.user_settings_manager import user_settings_manager
 from utils.debug_helper import debug_log, info_log, error_log
 
 
@@ -65,16 +66,26 @@ class UnifiedController:
         from core.states.state_queue import get_state_queue_manager
         self.state_queue_manager = get_state_queue_manager()
         
+        # 使用者設定管理器
+        self.user_settings_manager = user_settings_manager
+        
         # 系統統計
-        self.startup_time = None
+        self.startup_time = None  # 系統啟動時間戳
         self.total_gs_sessions = 0
-        self.system_errors = []
+        self.system_errors = {}  # 改為按模組分類: {module_id: [error_info, ...]}
+        self.module_health_cache = {}  # 模組健康度快取
         
         # 階段五：背景任務監控
         self.background_tasks: Dict[str, Dict[str, Any]] = {}  # task_id -> task_info
         self.background_task_history: List[Dict[str, Any]] = []  # Completed tasks
         self.max_task_history = 100
         self.background_tasks_file = "memory/background_tasks.json"  # 持久化文件路徑
+        
+        # GS 生命週期管理 - 標記模式（標註待機）
+        # 設計: STT 標記輸入待機 → NLP 驗證 CALL 意圖 → 若成功則創建實際 GS
+        # 若 NLP 拒絕（沒有 CALL 意圖），標記清除，系統保持 IDLE
+        self._pending_gs = False  # 標記是否有待機的 GS 輸入
+        self._pending_gs_data: Optional[Dict[str, Any]] = None  # 待機 GS 的相關資料
         
         info_log("[UnifiedController] 系統級控制器初始化")
     
@@ -86,13 +97,20 @@ class UnifiedController:
             if self.is_initialized:
                 info_log("[UnifiedController] 系統已初始化")
                 return True
-                
+            
+            # 記錄啟動時間
+            self.startup_time = time.time()
             self.system_status = SystemStatus.INITIALIZING
             info_log("[UnifiedController] 開始系統初始化...")
             
             # ✅ 清空狀態佇列（避免舊狀態殘留）
             self.state_queue_manager.clear_queue()
             info_log("[UnifiedController] 已清空狀態佇列")
+            
+            # ✅ 同時重置 StateManager 到 IDLE 狀態，確保與 StateQueue 同步
+            from core.states.state_manager import UEPState
+            self.state_manager.set_state(UEPState.IDLE)
+            info_log("[UnifiedController] 已重置系統狀態為 IDLE (與狀態佇列同步)")
             
             # 初始化核心框架
             if not self._initialize_framework():
@@ -171,6 +189,9 @@ class UnifiedController:
             # ✅ 檢查會話超時 (CS/WS 超時處理)
             self._check_session_timeouts()
             
+            # ✅ 檢查模組健康度
+            self._check_module_health()
+            
             # 記錄系統狀態（簡化版）
             debug_log(3, f"[Monitor] 系統狀態: {current_state.value}, "
                         f"當前GS: {current_gs.session_id if current_gs else 'None'}")
@@ -218,18 +239,17 @@ class UnifiedController:
             
             # 檢查是否需要創建 GS
             if not current_gs:
-                # 如果狀態佇列有項目或系統不在 IDLE 狀態，則需要創建 GS
+                # 🆕 SLEEP 狀態不應該創建 GS（系統休眠中）
+                if current_state == UEPState.SLEEP:
+                    debug_log(2, "[Controller] 系統處於 SLEEP 狀態，不創建 GS")
+                    return
+                
+                # 其他非 IDLE 狀態或佇列有項目時創建 GS
                 if (queue_status.get('queue_length', 0) > 0 or 
                     current_state != UEPState.IDLE):
                     
                     debug_log(2, f"[Controller] 檢測到需要創建 GS：狀態={current_state.value}, 佇列長度={queue_status.get('queue_length', 0)}")
                     self._create_gs_for_processing()
-                    
-                # 系統啟動時預先創建 GS
-                elif not hasattr(self, '_initial_gs_created'):
-                    debug_log(2, "[Controller] 系統啟動，預先創建初始 GS")
-                    self._create_gs_for_processing()
-                    self._initial_gs_created = True
                     
                 return
                 
@@ -255,23 +275,53 @@ class UnifiedController:
             debug_log(2, "[Controller] 檢查 WS pending_end...")
             self._check_and_end_pending_workflow_sessions()
             
-            # 2. 然後檢查 GS 結束條件
-            current_state = self.state_manager.get_current_state()
+            # 2. 檢查 GS 結束條件
             current_gs = self.session_manager.get_current_general_session()
             
             if not current_gs:
                 return
-                
+            
+            # 檢查是否還有活躍的子會話
+            active_cs = self.session_manager.get_active_chatting_sessions()
+            active_ws = self.session_manager.get_active_workflow_sessions()
+            has_active_subsessions = len(active_cs) > 0 or len(active_ws) > 0
+            
+            # 檢查 StateQueue 狀態
             state_queue = get_state_queue_manager()
             queue_status = state_queue.get_queue_status()
+            queue_state = queue_status.get('current_state', 'unknown')
+            queue_length = queue_status.get('queue_length', 0)
             
-            # GS 結束條件：狀態佇列完全清空且當前狀態為 IDLE
-            if (current_state == UEPState.IDLE and 
-                queue_status.get('queue_length', 0) == 0 and
-                queue_status.get('current_state') == 'idle'):
+            # GS 結束條件：
+            # 1. StateQueue 當前狀態為 idle（不是 StateManager 的狀態）
+            # 2. 狀態佇列完全清空（沒有待處理的狀態）
+            # 3. 沒有活躍的子會話（CS/WS）
+            # 4. 至少進入過一個非 IDLE 狀態（確保有實際處理發生）- 從 StateQueue 查詢
+            has_visited_non_idle = state_queue.has_visited_non_idle_state()
+            
+            debug_log(2, f"[Controller] GS 結束條件檢查: queue_state={queue_state}, "
+                        f"queue_length={queue_length}, active_cs={len(active_cs)}, "
+                        f"active_ws={len(active_ws)}, visited_non_idle={has_visited_non_idle}")
+            
+            if (queue_state == 'idle' and 
+                queue_length == 0 and
+                not has_active_subsessions and
+                has_visited_non_idle):
                 
-                debug_log(2, f"[Controller] 檢測到 GS 結束條件：狀態佇列已清空，準備結束 GS {current_gs.session_id}")
+                debug_log(2, f"[Controller] ✅ GS 結束條件已滿足，準備結束 GS {current_gs.session_id}")
                 self._end_current_gs_with_cleanup(current_gs.session_id)
+            else:
+                reasons = []
+                if queue_state != 'idle':
+                    reasons.append(f"queue_state={queue_state}")
+                if queue_length > 0:
+                    reasons.append(f"queue_length={queue_length}")
+                if has_active_subsessions:
+                    reasons.append(f"active_subsessions (CS:{len(active_cs)}, WS:{len(active_ws)})")
+                if not has_visited_non_idle:
+                    reasons.append("未訪問非IDLE狀態")
+                
+                debug_log(2, f"[Controller] GS {current_gs.session_id} 不符合結束條件: {', '.join(reasons)}")
                 
         except Exception as e:
             debug_log(2, f"[Controller] GS 結束條件檢查失敗: {e}")
@@ -371,7 +421,12 @@ class UnifiedController:
             })
             
             if result:
-                # 2. 系統級清理：確保 Working Context 完全重置
+                # 2. 清空 StateQueue 的狀態歷史
+                from core.states.state_queue import get_state_queue_manager
+                state_queue = get_state_queue_manager()
+                state_queue.clear_state_history()
+                
+                # 3. 系統級清理：確保 Working Context 完全重置
                 self._perform_system_cleanup_after_gs()
                 
                 info_log(f"[Controller] GS {gs_id} 已成功結束，系統清理完成")
@@ -452,58 +507,42 @@ class UnifiedController:
     
     def trigger_user_input(self, user_input: str, input_type: str = "text") -> Dict[str, Any]:
         """
-        觸發用戶輸入處理 - 僅負責 GS 生命週期
+        觸發用戶輸入處理 - 標記待機階段 (Mark Phase)
         
-        這是系統的入口點，只負責：
-        1. 創建新的 GS 
-        2. 觸發系統自主處理
-        3. 監控 GS 完成
-        4. 返回基本結果
+        設計: STT 標記輸入待機 → NLP 驗證 CALL 意圖 → 系統進入非 IDLE 狀態時創建實際 GS
+        
+        這個方法只負責：
+        1. 標記 GS 為待機狀態
+        2. 存儲輸入數據
+        3. 觸發 NLP 分析
+        4. 返回基本結果（不保證 GS 已創建）
+        
+        實際 GS 創建由 Controller 或 StateManager 在系統進入非 IDLE 狀態時完成。
         """
         try:
-            info_log(f"[UnifiedController] 觸發用戶輸入處理...")
+            info_log(f"[UnifiedController] 觸發用戶輸入處理（待機標記階段）...")
             
-            # 創建新的 General Session
-            gs_trigger_event = {
+            # 標記 GS 為待機，儲存輸入資料
+            self._pending_gs = True
+            self._pending_gs_data = {
                 "user_input": user_input,
                 "input_type": input_type,
                 "timestamp": time.time()
             }
             
-            # 啟動 GS（由 session_manager 自動處理後續流程）
-            current_gs_id = self.session_manager.start_general_session(
-                input_type + "_input", gs_trigger_event
-            )
+            debug_log(2, f"[UnifiedController] GS 待機標記已設置: input_type={input_type}")
             
-            if current_gs_id:
-                self.total_gs_sessions += 1
-                
-                # 🔧 立即設置到全局上下文，供所有模組訪問
-                # 這確保 NLP/LLM/TTS 等模組在處理時能立即讀取到正確的 GS ID
-                try:
-                    from core.working_context import working_context_manager
-                    working_context_manager.global_context_data['current_gs_id'] = current_gs_id
-                    # 初始化 cycle_index 為 0（每個新 GS 從 cycle 0 開始）
-                    working_context_manager.global_context_data['current_cycle_index'] = 0
-                    debug_log(2, f"[UnifiedController] GS ID 和 cycle_index 已設置到全局上下文: {current_gs_id}, cycle=0")
-                except Exception as e:
-                    error_log(f"[UnifiedController] 設置全局 GS ID 失敗: {e}")
-                
-                info_log(f"[UnifiedController] GS 已創建: {current_gs_id}")
-                
-                return {
-                    "status": "triggered",
-                    "session_id": current_gs_id,
-                    "message": "輸入處理已觸發，系統將自主處理"
-                }
-            else:
-                return {
-                    "status": "error", 
-                    "message": "無法創建 General Session"
-                }
+            # 返回告知調用方輸入已接受（但 GS 尚未創建）
+            return {
+                "status": "pending",
+                "message": "輸入已接受，等待 NLP 驗證和系統狀態變更",
+                "session_id": None
+            }
                 
         except Exception as e:
             error_log(f"[UnifiedController] 輸入觸發失敗: {e}")
+            self._pending_gs = False  # 清除標記
+            self._pending_gs_data = None
             return {
                 "status": "error",
                 "message": str(e)
@@ -524,9 +563,42 @@ class UnifiedController:
             event_bus.subscribe(SystemEvent.BACKGROUND_WORKFLOW_CANCELLED,
                                self._handle_background_workflow_cancelled)
             
-            info_log("[UnifiedController] 事件處理器設置完成 (包含背景工作流事件)")
+            # 訂閱 GS 生命週期事件以管理設定熱重載
+            event_bus.subscribe(SystemEvent.SESSION_STARTED,
+                               self._on_gs_started)
+            event_bus.subscribe(SystemEvent.SESSION_ENDED,
+                               self._on_gs_ended)
+            
+            info_log("[UnifiedController] 事件處理器設置完成 (包含背景工作流和 GS 生命週期事件)")
         except Exception as e:
             error_log(f"[UnifiedController] 事件處理器設置失敗: {e}")
+    
+    def _on_gs_started(self, event):
+        """GS 開始事件處理 - 通知設定管理器"""
+        try:
+            session_id = event.data.get('session_id')
+            debug_log(2, f"[UnifiedController] GS 開始: {session_id}, 設定 GS 為活躍狀態")
+            self.user_settings_manager.set_gs_active(True)
+        except Exception as e:
+            error_log(f"[UnifiedController] 處理 GS 開始事件失敗: {e}")
+    
+    def _on_gs_ended(self, event):
+        """GS 結束事件處理 - 通知設定管理器並套用待處理變更"""
+        try:
+            session_id = event.data.get('session_id')
+            info_log(f"[UnifiedController] GS 結束: {session_id}, 準備套用待處理的設定變更")
+            
+            # 設定 GS 為非活躍，這會自動觸發待處理變更的套用
+            self.user_settings_manager.set_gs_active(False)
+            
+            # 檢查是否有變更被套用
+            if self.user_settings_manager.has_pending_changes():
+                info_log("[UnifiedController] 注意: 仍有待處理的設定變更未成功套用")
+            else:
+                debug_log(2, "[UnifiedController] 所有待處理的設定變更已成功套用")
+                
+        except Exception as e:
+            error_log(f"[UnifiedController] 處理 GS 結束事件失敗: {e}")
     
     # ========== 系統狀態報告 ==========
     
@@ -1057,10 +1129,15 @@ class UnifiedController:
         try:
             info_log("[UnifiedController] 開始系統關閉...")
             
-            # 停止監控
+            # 停止監控線程
             self.should_stop_monitoring.set()
             if self.monitoring_thread:
-                self.monitoring_thread.join(timeout=5)
+                debug_log(2, "[UnifiedController] 等待監控線程結束...")
+                self.monitoring_thread.join(timeout=10.0)
+                if self.monitoring_thread.is_alive():
+                    error_log("[UnifiedController] ⚠️ 監控線程未能正常結束")
+                else:
+                    info_log("[UnifiedController] ✅ 監控線程已正常結束")
             
             # 結束當前 GS
             current_gs = self.session_manager.get_current_general_session()
@@ -1074,6 +1151,147 @@ class UnifiedController:
             
         except Exception as e:
             error_log(f"[UnifiedController] 系統關閉失敗: {e}")
+    
+    # ========== 模組健康度監控 ==========
+    
+    def _check_module_health(self):
+        """檢查模組健康度並更新快取"""
+        try:
+            from core.framework import core_framework
+            
+            # 獲取所有模組的性能指標
+            all_metrics = core_framework.get_all_module_metrics()
+            current_time = time.time()
+            
+            # 更新模組健康度快取
+            for module_id, metrics in all_metrics.items():
+                health_status = self._evaluate_module_health(metrics, current_time)
+                self.module_health_cache[module_id] = health_status
+                
+                # 如果模組不健康，記錄警告
+                if health_status['status'] in ['degraded', 'failing']:
+                    debug_log(2, f"[Monitor] 模組 {module_id} 狀態: {health_status['status']}")
+                    
+        except Exception as e:
+            debug_log(2, f"[Monitor] 模組健康度檢查失敗: {e}")
+    
+    def _evaluate_module_health(self, metrics, current_time: float) -> Dict[str, Any]:
+        """
+        評估模組健康度
+        
+        返回格式: {
+            'status': 'healthy' | 'degraded' | 'failing',
+            'last_active': float,
+            'inactive_duration': float,
+            'error_rate': float,
+            'details': str
+        }
+        """
+        # 從配置讀取閾值
+        monitoring_config = self.config.get('monitoring', {})
+        inactive_threshold = monitoring_config.get('module_inactive_threshold', 300)
+        failing_threshold = monitoring_config.get('module_failing_threshold', 600)
+        degraded_error_rate = monitoring_config.get('error_rate_degraded_threshold', 0.2)
+        failing_error_rate = monitoring_config.get('error_rate_failing_threshold', 0.5)
+        
+        inactive_duration = current_time - metrics.last_activity
+        error_rate = metrics.error_rate
+        
+        # 健康度判斷邏輯
+        if inactive_duration > failing_threshold:
+            status = 'failing'
+            details = f"模組已 {int(inactive_duration/60)} 分鐘未活動"
+        elif error_rate > failing_error_rate:
+            status = 'failing'
+            details = f"錯誤率過高 ({error_rate*100:.1f}%)"
+        elif error_rate > degraded_error_rate:
+            status = 'degraded'
+            details = f"錯誤率偏高 ({error_rate*100:.1f}%)"
+        elif inactive_duration > inactive_threshold:
+            status = 'degraded'
+            details = f"模組活動較少 ({int(inactive_duration/60)} 分鐘)"
+        else:
+            status = 'healthy'
+            details = "運作正常"
+        
+        return {
+            'status': status,
+            'last_active': metrics.last_activity,
+            'inactive_duration': inactive_duration,
+            'error_rate': error_rate,
+            'total_requests': metrics.total_requests,
+            'success_rate': metrics.success_rate,
+            'avg_processing_time': metrics.average_processing_time,
+            'details': details
+        }
+    
+    def get_module_health_summary(self) -> Dict[str, Any]:
+        """
+        獲取模組健康度摘要（供UI調用）
+        
+        返回格式: {
+            'module_id': {
+                'status': 'healthy' | 'degraded' | 'failing',
+                'metrics': PerformanceMetrics,
+                'health': {...}
+            }
+        }
+        """
+        try:
+            from core.framework import core_framework
+            
+            summary = {}
+            all_metrics = core_framework.get_all_module_metrics()
+            current_time = time.time()
+            
+            for module_id, metrics in all_metrics.items():
+                # 從快取獲取或重新評估
+                if module_id in self.module_health_cache:
+                    health = self.module_health_cache[module_id]
+                else:
+                    health = self._evaluate_module_health(metrics, current_time)
+                
+                summary[module_id] = {
+                    'status': health['status'],
+                    'metrics': metrics,
+                    'health': health
+                }
+            
+            return summary
+            
+        except Exception as e:
+            error_log(f"[Controller] 獲取模組健康度摘要失敗: {e}")
+            return {}
+    
+    def get_system_uptime(self) -> float:
+        """獲取系統運行時間（秒）"""
+        if self.startup_time:
+            return time.time() - self.startup_time
+        return 0.0
+    
+    def record_module_error(self, module_id: str, error_info: Dict[str, Any]):
+        """記錄模組錯誤（按模組分類）"""
+        try:
+            if module_id not in self.system_errors:
+                self.system_errors[module_id] = []
+            
+            self.system_errors[module_id].append({
+                'timestamp': time.time(),
+                'error': error_info
+            })
+            
+            # 從配置讀取最大錯誤記錄數
+            monitoring_config = self.config.get('monitoring', {})
+            max_errors = monitoring_config.get('max_module_errors', 50)
+            
+            # 限制每個模組的錯誤記錄數量
+            if len(self.system_errors[module_id]) > max_errors:
+                self.system_errors[module_id] = self.system_errors[module_id][-max_errors:]
+                
+        except Exception as e:
+            error_log(f"[Controller] 記錄模組錯誤失敗: {e}")
+    
+    # ========== ON_CALL 管理 ==========
 
 
 # 全局控制器實例

@@ -100,24 +100,25 @@ def _crawl_google_news_homepage(max_items: int = 10) -> dict:
             soup = BeautifulSoup(html, 'html.parser')
             
             # 提取新聞標題
+            # ✅ Google News 2024 版使用 div.IBr9hb 包裝新聞項目
             news_titles = []
-            articles = soup.find_all('article')
+            news_containers = soup.find_all('div', class_='IBr9hb')
             
-            for article in articles[:max_items]:
+            for container in news_containers:
                 try:
-                    # 嘗試多種標題選擇器
-                    title_elem = (
-                        article.find('h3') or
-                        article.find('h4') or
-                        article.find(class_='JtKRv') or
-                        article.find(class_='gPFEn') or
-                        article.find('a')
-                    )
-                    
-                    if title_elem:
-                        title = title_elem.get_text(strip=True)
-                        if title and len(title) > 5:
+                    # 在每個容器中找連結（第二個連結通常是標題）
+                    links = container.find_all('a')
+                    for link in links:
+                        title = link.get_text(strip=True)
+                        # 過濾：標題長度 > 10 且不重複
+                        if title and len(title) > 10 and title not in news_titles:
                             news_titles.append(title)
+                            if len(news_titles) >= max_items:
+                                break
+                    
+                    if len(news_titles) >= max_items:
+                        break
+                        
                 except Exception:
                     continue
             

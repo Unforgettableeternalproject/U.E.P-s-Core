@@ -1,0 +1,35 @@
+# ANI 模組狀態-動畫映射配置
+# 根據系統循環層級自動選擇動畫
+# 層級切換由 event_bus 的層級完成事件（INPUT/PROCESSING/OUTPUT_LAYER_COMPLETE）驅動
+
+# 無會話時的動畫配置（IDLE 狀態）
+IDLE:
+  # 閒置動畫列表（MOV 會從中選擇符合當前模式的動畫）
+  idle_animations:
+    - smile_idle_f      # 微笑閒置（浮空）
+    - curious_idle_f    # 好奇閒置（浮空）
+    - stand_idle_g      # 站立閒置（地面）
+  
+  # 進入/離開動畫
+  transition_in: enter
+  transition_out: leave
+
+# 層級驅動的動畫（系統循環時使用）
+# 層級流程：input (使用者輸入) → processing (系統處理) → output (系統回應)
+LAYERS:
+  # 輸入層：STT 接收語音時
+  input:
+    default: thinking_f         # 等待輸入動畫（會自動根據 movement_mode 切換 _f/_g）
+    file_input: take_file_f     # 檔案輸入動畫（當 WorkingContext 有檔案時）
+  
+  # 處理層：系統思考/處理階段
+  processing:
+    default: data_processing_f  # 處理動畫（會自動根據 movement_mode 切換 _f/_g）
+  
+  # 輸出層：TTS 回應階段
+  output:
+    positive_mood: talk_ani_f   # mood > 0 時的回應動畫
+    negative_mood: talk_ani2_f  # mood <= 0 時的回應動畫
+
+# 動畫別名映射（如果需要重定向到其他動畫名稱）
+fallbacks: {}  # 目前無使用

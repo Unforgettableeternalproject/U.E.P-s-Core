@@ -230,15 +230,24 @@ class CoreFramework:
         
         # Schema 適配器已移除 - 模組使用自己的 Input/Output Schema
         
+        # 前端橋接器（可選，在 debug GUI 或生產模式中初始化）
+        self.frontend_bridge: Optional['FrontendBridge'] = None  # type: ignore
+        
         # 框架狀態
         self.is_initialized = False
         self.initialization_time = None
         
         # ========== 效能監控系統 ==========
         self.performance_monitoring_enabled = True
+        
+        # 從配置讀取監控參數
+        monitoring_config = self.config.get('monitoring', {})
+        history_size = monitoring_config.get('performance_history_size', 100)
+        
         self.performance_metrics: Dict[str, PerformanceMetrics] = {}
-        self.performance_history: deque = deque(maxlen=100)  # 保留最近100個快照
+        self.performance_history: deque = deque(maxlen=history_size)
         self.metrics_lock = threading.Lock()
+        self.modules_lock = threading.Lock()  # 保護 self.modules 字典的執行緒鎖
         self.system_start_time = time.time()
         
         # 監控統計
@@ -250,6 +259,9 @@ class CoreFramework:
         
         # 初始化預定義流程
         self._initialize_system_flows()
+        
+        # 🌙 訂閱 SLEEP 相關事件
+        self._subscribe_sleep_events()
         
         info_log("[CoreFramework] 核心框架初始化完成")
         info_log("[CoreFramework] 效能監控系統已啟用")
@@ -324,6 +336,14 @@ class CoreFramework:
                     "module_type": ModuleType.PROCESSING,
                     "capabilities": ModuleCapabilities.SYS_CAPABILITIES,
                     "priority": 30
+                },
+                # 前端模組 (UI 由 Framework 管理，ANI/MOV 由 UI 內部透過 debug_api 載入)
+                {
+                    "module_id": "ui",
+                    "module_name": "ui_module",
+                    "module_type": ModuleType.OUTPUT,
+                    "capabilities": [],  # UI 模組不需要 capabilities
+                    "priority": 1
                 }
             ]
             
@@ -362,6 +382,11 @@ class CoreFramework:
             except Exception as e:
                 error_log(f"[CoreFramework] 載入模組 '{module_name}' 時發生錯誤: {e}")
                 return False
+            
+            # 🔧 設置模組 ID（確保效能追蹤使用正確的 module_id）
+            if hasattr(module_instance, 'set_module_id'):
+                module_instance.set_module_id(config["module_id"])
+                debug_log(3, f"[CoreFramework] 已設置模組 ID: {config['module_id']}")
             
             # 創建模組資訊
             module_info = ModuleInfo(
@@ -402,19 +427,20 @@ class CoreFramework:
             註冊是否成功
         """
         try:
-            if module_info.module_id in self.modules:
-                debug_log(1, f"[CoreFramework] 模組 {module_info.module_id} 已存在，跳過註冊")
-                return False
-            
-            # 註冊到本地註冊表
-            self.modules[module_info.module_id] = module_info
-            
-            # 註意: registry.py 只提供 get_module() 函數用於載入模組
-            # 它會自動調用模組的 register() 並緩存實例
-            # 不需要手動註冊到 registry,因為模組已經通過 get_module() 載入
-            
-            debug_log(2, f"[CoreFramework] 已註冊模組: {module_info.module_id}")
-            return True
+            with self.modules_lock:
+                if module_info.module_id in self.modules:
+                    debug_log(1, f"[CoreFramework] 模組 {module_info.module_id} 已存在，跳過註冊")
+                    return False
+                
+                # 註冊到本地註冊表
+                self.modules[module_info.module_id] = module_info
+                
+                # 註意: registry.py 只提供 get_module() 函數用於載入模組
+                # 它會自動調用模組的 register() 並緩存實例
+                # 不需要手動註冊到 registry,因為模組已經通過 get_module() 載入
+                
+                debug_log(2, f"[CoreFramework] 已註冊模組: {module_info.module_id}")
+                return True
             
         except Exception as e:
             error_log(f"[CoreFramework] 註冊模組失敗 {module_info.module_id}: {e}")
@@ -423,21 +449,22 @@ class CoreFramework:
     def unregister_module(self, module_id: str) -> bool:
         """註銷模組"""
         try:
-            if module_id not in self.modules:
-                debug_log(1, f"[CoreFramework] 模組 {module_id} 不存在")
-                return False
-            
-            module_info = self.modules[module_id]
-            
-            # 註意: registry.py 的 _loaded_modules 是模組級私有變數
-            # 不提供 unregister 方法,也不應該直接操作
-            # 模組註銷只影響 framework 本地註冊表
-            
-            # 從本地註冊表移除
-            del self.modules[module_id]
-            
-            info_log(f"[CoreFramework] 已註銷模組: {module_id}")
-            return True
+            with self.modules_lock:
+                if module_id not in self.modules:
+                    debug_log(1, f"[CoreFramework] 模組 {module_id} 不存在")
+                    return False
+                
+                module_info = self.modules[module_id]
+                
+                # 註意: registry.py 的 _loaded_modules 是模組級私有變數
+                # 不提供 unregister 方法,也不應該直接操作
+                # 模組註銷只影響 framework 本地註冊表
+                
+                # 從本地註冊表移除
+                del self.modules[module_id]
+                
+                info_log(f"[CoreFramework] 已註銷模組: {module_id}")
+                return True
             
         except Exception as e:
             error_log(f"[CoreFramework] 註銷模組失敗 {module_id}: {e}")
@@ -445,26 +472,44 @@ class CoreFramework:
     
     def get_module(self, module_id: str) -> Optional[Any]:
         """獲取模組實例"""
-        module_info = self.modules.get(module_id)
-        return module_info.module_instance if module_info else None
+        with self.modules_lock:
+            module_info = self.modules.get(module_id)
+            return module_info.module_instance if module_info else None
     
     def get_module_info(self, module_id: str) -> Optional[ModuleInfo]:
         """獲取模組資訊"""
-        return self.modules.get(module_id)
+        with self.modules_lock:
+            return self.modules.get(module_id)
+    
+    def get_all_modules(self) -> Dict[str, Any]:
+        """
+        獲取所有已註冊模組的實例字典
+        
+        Returns:
+            Dict[str, Any]: {module_id: module_instance}
+        """
+        with self.modules_lock:
+            return {
+                module_id: info.module_instance
+                for module_id, info in self.modules.items()
+                if info.module_instance is not None
+            }
     
     def list_modules(self, module_type: Optional[ModuleType] = None) -> List[ModuleInfo]:
         """列出模組"""
-        if module_type is None:
-            return list(self.modules.values())
-        else:
-            return [info for info in self.modules.values() if info.module_type == module_type]
+        with self.modules_lock:
+            if module_type is None:
+                return list(self.modules.values())
+            else:
+                return [info for info in self.modules.values() if info.module_type == module_type]
     
     def get_modules_by_capability(self, capability: str) -> List[ModuleInfo]:
         """根據能力獲取模組"""
-        return [
-            info for info in self.modules.values()
-            if capability in info.capabilities and info.state == ModuleState.AVAILABLE
-        ]
+        with self.modules_lock:
+            return [
+                info for info in self.modules.values()
+                if capability in info.capabilities and info.state == ModuleState.AVAILABLE
+            ]
     
     # ========== 系統流程骨架 ==========
     
@@ -519,31 +564,36 @@ class CoreFramework:
         uptime = time.time() - self.initialization_time if self.initialization_time else 0
         
         module_states = {}
-        for module_id, info in self.modules.items():
-            module_states[module_id] = {
-                "state": info.state.value,
-                "type": info.module_type.value,
-                "capabilities": info.capabilities,
-                "last_active": info.last_active
-            }
+        with self.modules_lock:
+            for module_id, info in self.modules.items():
+                module_states[module_id] = {
+                    "state": info.state.value,
+                    "type": info.module_type.value,
+                    "capabilities": info.capabilities,
+                    "last_active": info.last_active
+                }
+            
+            total_modules = len(self.modules)
+            available_modules = len([m for m in self.modules.values() if m.state == ModuleState.AVAILABLE])
         
         return {
             "is_initialized": self.is_initialized,
             "uptime_seconds": uptime,
-            "total_modules": len(self.modules),
-            "available_modules": len([m for m in self.modules.values() if m.state == ModuleState.AVAILABLE]),
+            "total_modules": total_modules,
+            "available_modules": available_modules,
             "system_flows": list(self.system_flows.keys()),
             "module_states": module_states
         }
     
     def update_module_state(self, module_id: str, new_state: ModuleState):
         """更新模組狀態"""
-        if module_id in self.modules:
-            old_state = self.modules[module_id].state
-            self.modules[module_id].state = new_state
-            self.modules[module_id].last_active = time.time()
-            
-            debug_log(3, f"[CoreFramework] 模組狀態更新 {module_id}: {old_state.value} → {new_state.value}")
+        with self.modules_lock:
+            if module_id in self.modules:
+                old_state = self.modules[module_id].state
+                self.modules[module_id].state = new_state
+                self.modules[module_id].last_active = time.time()
+                
+                debug_log(3, f"[CoreFramework] 模組狀態更新 {module_id}: {old_state.value} → {new_state.value}")
     
     # ========== 系統骨架支援方法 ==========
     
@@ -556,11 +606,12 @@ class CoreFramework:
         missing_modules = []
         available_modules = []
         
-        for module_id in flow.required_modules:
-            if module_id in self.modules and self.modules[module_id].state == ModuleState.AVAILABLE:
-                available_modules.append(module_id)
-            else:
-                missing_modules.append(module_id)
+        with self.modules_lock:
+            for module_id in flow.required_modules:
+                if module_id in self.modules and self.modules[module_id].state == ModuleState.AVAILABLE:
+                    available_modules.append(module_id)
+                else:
+                    missing_modules.append(module_id)
         
         return {
             "valid": len(missing_modules) == 0,
@@ -664,10 +715,84 @@ class CoreFramework:
         with self.metrics_lock:
             return self.performance_metrics.copy()
     
+    def _pull_module_performance_data(self):
+        """
+        主動向各模組拉取最新效能數據（Pull 模式）
+        
+        這個方法會遍歷所有已註冊的模組，調用它們的 get_performance_window() 
+        方法來獲取模組內部收集的數據，然後同步到 Framework 的集中存儲。
+        """
+        if not self.performance_monitoring_enabled:
+            return
+        
+        try:
+            modules = self.get_all_modules()
+            current_time = time.time()
+            
+            for module_id, module_instance in modules.items():
+                try:
+                    # 檢查模組是否提供效能數據接口
+                    if not hasattr(module_instance, 'get_performance_window'):
+                        continue
+                    
+                    # 調用模組的效能窗口方法
+                    window_data = module_instance.get_performance_window()
+                    if not window_data:
+                        continue
+                    
+                    # 同步到 Framework 的 PerformanceMetrics
+                    with self.metrics_lock:
+                        if module_id not in self.performance_metrics:
+                            self.performance_metrics[module_id] = PerformanceMetrics(module_id=module_id)
+                        
+                        metrics = self.performance_metrics[module_id]
+                        
+                        # 更新基本統計
+                        metrics.total_requests = window_data.get('total_requests', 0)
+                        metrics.successful_requests = window_data.get('successful_requests', 0)
+                        metrics.failed_requests = window_data.get('failed_requests', 0)
+                        metrics.error_count = window_data.get('failed_requests', 0)
+                        
+                        # 更新處理時間
+                        metrics.average_processing_time = window_data.get('avg_processing_time', 0.0)
+                        metrics.processing_time = window_data.get('last_processing_time', 0.0)
+                        metrics.peak_processing_time = window_data.get('max_processing_time', 0.0)
+                        
+                        # 更新活動狀態
+                        last_request_time = window_data.get('last_request_time')
+                        if last_request_time:
+                            metrics.last_activity = last_request_time
+                            metrics.is_active = (current_time - last_request_time) < 300  # 5分鐘內有活動
+                        
+                        # 更新自定義指標（如果模組提供）
+                        if 'custom_metrics' in window_data:
+                            metrics.custom_metrics.update(window_data['custom_metrics'])
+                        
+                        metrics.timestamp = current_time
+                        
+                        debug_log(4, f"[CoreFramework] 已拉取 {module_id} 效能數據: "
+                                  f"{metrics.total_requests} 請求, "
+                                  f"{metrics.average_processing_time:.3f}s 平均耗時")
+                
+                except Exception as e:
+                    error_log(f"[CoreFramework] 從模組 {module_id} 拉取效能數據失敗: {e}")
+            
+            debug_log(3, f"[CoreFramework] 已從 {len(modules)} 個模組拉取效能數據")
+            
+        except Exception as e:
+            error_log(f"[CoreFramework] 拉取模組效能數據時發生錯誤: {e}")
+    
     def collect_system_performance_snapshot(self) -> SystemPerformanceSnapshot:
-        """蒐集系統效能快照 - 供 system loop 調用"""
+        """
+        蒐集系統效能快照 - 供 system loop 調用
+        
+        改進：主動向各模組查詢數據（pull 模式），而不只是被動接收
+        """
         try:
             current_time = time.time()
+            
+            # 🔧 主動向各模組收集最新效能數據
+            self._pull_module_performance_data()
             
             with self.metrics_lock:
                 # 統計模組狀態
@@ -764,6 +889,135 @@ class CoreFramework:
                 "monitoring_errors": 0
             }
             info_log("[CoreFramework] 效能指標已重置")
+    
+    # ========== SLEEP 狀態支援 ==========
+    
+    def _subscribe_sleep_events(self):
+        """訂閱 SLEEP 相關事件"""
+        try:
+            from core.event_bus import event_bus, SystemEvent
+            
+            # 訂閱 SLEEP_ENTERED 事件（卸載模組）
+            event_bus.subscribe(
+                SystemEvent.SLEEP_ENTERED,
+                self._on_sleep_entered,
+                handler_name="framework_sleep_entry"
+            )
+            
+            # 訂閱 SLEEP_EXITED 事件（開始重載協調）
+            event_bus.subscribe(
+                SystemEvent.SLEEP_EXITED,
+                self._on_sleep_exited,
+                handler_name="framework_wake"
+            )
+            
+            debug_log(2, "[CoreFramework] 已訂閱 SLEEP_ENTERED/SLEEP_EXITED 事件")
+            
+        except Exception as e:
+            error_log(f"[CoreFramework] 訂閱 SLEEP 事件失敗: {e}")
+    
+    def _on_sleep_entered(self, event):
+        """處理 SLEEP_ENTERED 事件 - 卸載非關鍵模組"""
+        try:
+            sleep_reason = event.data.get('reason', 'unknown')
+            debug_log(2, f"[CoreFramework] 收到 SLEEP_ENTERED 事件 (原因: {sleep_reason})")
+            self._handle_sleep_entry()
+        except Exception as e:
+            error_log(f"[CoreFramework] 處理 SLEEP_ENTERED 事件失敗: {e}")
+    
+    def _handle_sleep_entry(self):
+        """處理進入 SLEEP 狀態 - 卸載非關鍵模組"""
+        try:
+            info_log("[CoreFramework] 🌙 系統進入 SLEEP 狀態，開始卸載非關鍵模組...")
+            
+            # 定義非關鍵模組（可以卸載的模組）- 使用 module_id
+            # UI 模組通常不卸載，因為前端需要顯示睡覺動畫和喚醒按鈕
+            non_critical_module_ids = ["stt", "nlp", "llm", "mem", "tts", "sys"]
+            
+            # 建立 module_id 到 module_name 的映射
+            id_to_name_map = {
+                "stt": "stt_module",
+                "nlp": "nlp_module",
+                "llm": "llm_module",
+                "mem": "mem_module",
+                "tts": "tts_module",
+                "sys": "sys_module"
+            }
+            
+            # 使用 Framework 自己的模組註冊表檢查
+            from core import registry
+            
+            unloaded_count = 0
+            for module_id in non_critical_module_ids:
+                module_name = id_to_name_map[module_id]  # 獲取完整模組名稱（帶 _module 後綴）
+                
+                # 檢查模組是否已載入（Framework 使用 module_id，Registry 使用 module_name）
+                is_in_framework = module_id in self.modules
+                is_in_registry = registry.is_loaded(module_name)
+                debug_log(2, f"[CoreFramework] 檢查模組 {module_id} ({module_name}): framework={is_in_framework}, registry={is_in_registry}")
+                
+                if is_in_framework or is_in_registry:
+                    # 特別處理 sys_module：先調用 shutdown 暫停監控任務
+                    if module_id == "sys":
+                        sys_module = self.get_module(module_id)
+                        if sys_module and hasattr(sys_module, 'shutdown'):
+                            try:
+                                sys_module.shutdown()
+                                info_log("[CoreFramework] ✅ sys_module 監控任務已暫停")
+                            except Exception as e:
+                                error_log(f"[CoreFramework] sys_module shutdown 失敗: {e}")
+                    
+                    debug_log(2, f"[CoreFramework] 開始卸載模組: {module_name}")
+                    success = registry.unload_module(module_name)  # 使用完整模組名稱卸載
+                    if success:
+                        unloaded_count += 1
+                        info_log(f"[CoreFramework] ✅ 已卸載模組: {module_name}")
+                        # 同時從 Framework 註冊表移除（使用 module_id）
+                        with self.modules_lock:
+                            if module_id in self.modules:
+                                del self.modules[module_id]
+                    else:
+                        error_log(f"[CoreFramework] ❌ 卸載模組失敗: {module_name}")
+                else:
+                    debug_log(2, f"[CoreFramework] 模組 {module_name} 未載入，跳過")
+            
+            info_log(f"[CoreFramework] ✅ 已卸載 {unloaded_count} 個非關鍵模組")
+            
+            # 強制垃圾回收，釋放模組佔用的記憶體（特別是 GPU 記憶體）
+            import gc
+            gc.collect()
+            info_log("[CoreFramework] 🗑️ 垃圾回收完成")
+            
+        except Exception as e:
+            error_log(f"[CoreFramework] 處理 SLEEP 進入失敗: {e}")
+            import traceback
+            error_log(traceback.format_exc())
+    
+    def _on_sleep_exited(self, event):
+        """處理 SLEEP_EXITED 事件 - 開始重載協調（但不恢復操作）"""
+        try:
+            wake_reason = event.data.get('wake_reason', 'unknown')
+            info_log(f"[CoreFramework] 🔄 SLEEP 已退出（原因: {wake_reason}），開始準備模組重載...")
+            
+            # 標記系統正在重載中，前端此時應保持睡眠 UI
+            # 實際重載由 wake_api 的 _reload_modules() 處理
+            # Framework 只需準備好接收模組請求
+            
+            debug_log(2, "[CoreFramework] 模組將在需要時通過 registry 自動重載")
+            debug_log(2, "[CoreFramework] 等待 WAKE_READY 事件後系統才會完全恢復")
+            
+        except Exception as e:
+            error_log(f"[CoreFramework] 處理 SLEEP_EXITED 失敗: {e}")
+    
+    def _handle_sleep_exit(self):
+        """處理退出 SLEEP 狀態（從 STATE_CHANGED 觸發）"""
+        try:
+            info_log("[CoreFramework] ⏰ 系統狀態從 SLEEP 變更")
+            # STATE_CHANGED 的 sleep 退出主要用於狀態追蹤
+            # 實際重載由 SLEEP_EXITED 事件處理
+            
+        except Exception as e:
+            error_log(f"[CoreFramework] 處理 SLEEP 狀態退出失敗: {e}")
 
 
 # 全局框架實例

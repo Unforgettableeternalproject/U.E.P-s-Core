@@ -1,4 +1,4 @@
-# U.E.P's Core - v0.7.4 (Phase 2 Complete)
+# U.E.P's Core - v0.9.4-stable (Phase 3 Stable Release)
 
 ### This project provides multilanguage README.md file
 [![Static Badge](https://img.shields.io/badge/lang-en-red)](./README.md) [![Static Badge](https://img.shields.io/badge/lang-zh--tw-yellow)](./README.zh-tw.md)
@@ -14,7 +14,7 @@
 
 ## Project Overview
 
-U.E.P (Unified Experience Partner) is a modular desktop AI assistant with **event-driven architecture**, featuring voice interaction, memory management, intelligent workflows, and desktop companion capabilities. The project has completed **Phase 2 reconstruction** with a sophisticated three-layer processing model and comprehensive module integration.
+U.E.P (Unified Experience Partner) is a modular desktop AI assistant with **event-driven architecture**, featuring voice interaction, memory management, intelligent workflows, and desktop companion capabilities. The project has completed **Phase 2 reconstruction** and released **Phase 3 stable version** (core features 70-75% complete), with fully implemented frontend bridging, special states, intelligent VAD activation, three-panel user gadget, and more. The system is stable and production-ready for core functionalities.
 
 ## Core Features
 
@@ -34,10 +34,21 @@ U.E.P (Unified Experience Partner) is a modular desktop AI assistant with **even
 - 🔹 **TTS** - IndexTTS Lite, emotion mapping, chunked streaming
 - 🔹 **SYS** - Workflow engine with 9 categories, MCP server, background tasks
 
-✯ **Frontend Modules** (Phase 3 Ready):
-- 🔹 **UI** - Desktop overlay with PyQt5, user gadget, settings panel
-- 🔹 **ANI** - Animation controller with emotion-driven expressions
-- 🔹 **MOV** - Desktop behavior engine with movement patterns
+✯ **Frontend Modules** (Phase 3 In Progress - 81% Complete):
+- 🔹 **UI** - Desktop overlay with PyQt5, three-panel user gadget, quick actions, theme system
+- 🔹 **ANI** - Event-driven animation controller with emotion expression mapping
+- 🔹 **MOV** - State-synchronized behavior engine with movement integration
+- 🔹 **Frontend Bridge** - Unified frontend module management and event coordination
+
+✯ **Phase 3 New Features**:
+- 🌉 **Frontend-Backend Integration** - Frontend Bridge for complete coordination and event distribution
+- 🎯 **Special State Mechanics** - MISCHIEF state with 5 behaviors and LLM-driven planning
+- 😴 **Sleep-Wake System** - SLEEP state resource release and fast wake mechanism
+- 🗣️ **Intelligent VAD Activation** - CALL intent-based voice triggering with reduced false positives
+- 🎛️ **User Gadget** - Three-panel interface (status/settings/monitor) with auto-hide
+- ⚡ **Quick Actions** - One-click show/hide, ON_CALL invocation, sleep toggle
+- 🎵 **Complete Media Control** - Background playback monitoring with real-time control
+- 📊 **System Monitoring** - Real-time module health, performance metrics, resource tracking
 
 ## Project Structure
 
@@ -182,16 +193,50 @@ U.E.P-s-Core/
 - ✅ Status Manager with mood/pride/helpfulness tracking
 - ✅ Integration tests for critical paths
 
-### ⏳ Phase 3 - Frontend Integration (Preparing)
-**Objectives** (see `docs/第三階段進度.md`):
-- 🔲 Frontend-backend bridging (UI/MOV/ANI integration)
-- 🔲 MISCHIEF and SLEEP state implementation
-- 🔲 Advanced VAD with intent-based triggering
-- 🔲 Workflow enhancements (sub-workflows, media control)
-- 🔲 System monitoring and performance metrics
-- 🔲 Module structure unification
+### ✅ Phase 3 - Frontend Integration (Stable Release - v0.9.4-stable)
+**Overall Completion**: 70-75% (Core Features Stable)
 
-**Estimated Timeline**: 3-4 months
+**Completed Objectives**:
+- ✅ **Objective 1 - Frontend Integration** (90%)
+  - Frontend Bridge system for complete coordination
+  - Three-panel user gadget: Status/Settings/Monitor (95%)
+  - Quick action buttons: Show/Call/Sleep (90%)
+  - Auto-hide widget implementation
+  - Configuration hot-reload mechanism
+  
+- ✅ **Objective 2 - Special States** (92%)
+  - MISCHIEF state 100% complete: 5 behaviors, LLM planning engine, execution stats
+  - SLEEP state 85% complete: Resource release, wake mechanism, animation integration
+  
+- ✅ **Objective 3 - Advanced VAD** (90%)
+  - CALL intent-based intelligent activation
+  - VAD/text input dual-mode support
+  - State-aware activation control
+  
+- ⚠️ **Objective 4 - Workflow Enhancement** (45%)
+  - ✅ Play Media workflow fully implemented: Background monitoring, real-time control (90%)
+  - ✅ Memory system toolification: Tool-based retrieval (80%)
+  - ❌ Sub-workflow system not yet implemented
+  - ❌ Natural language path resolution pending
+  
+- ✅ **Objective 5 - System Monitoring** (72%)
+  - Module performance metrics auto-collection (85%)
+  - User Gadget & Debug GUI real-time display (90%)
+  - Basic exception logging mechanism (40%)
+  
+- ⚠️ **Objective 6 - Module Structure Unification** (30%)
+  - Partial modules have sub-structures (MEM, SYS, UI, MOV)
+  - Complete unification refactoring in progress
+
+**Key Achievements**:
+- ✅ Frontend Bridge for event-driven frontend-backend coordination
+- ✅ Dual event systems (System Event Bus + Frontend Event Bus)
+- ✅ StatusManager fully integrated with frontend modules
+- ✅ MISCHIEF behavior system with LLM-driven planning
+- ✅ Configuration hot-reload with identity management integration
+- ✅ Performance metrics history tracking (last 10 snapshots)
+
+**Future Plans**: v0.10.0 (Phase 3 Complete) expected in 2026 Q1
 
 ### 📅 Phase 4 - Platform Adaptation (Future)
 - Multi-platform support (Windows/Linux/macOS)

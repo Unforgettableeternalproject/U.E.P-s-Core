@@ -112,6 +112,7 @@ class MCPTool(BaseModel):
     description: str = Field(..., description="工具說明 (Traditional Chinese)")
     parameters: List[ToolParameter] = Field(default_factory=list, description="參數列表")
     handler: Optional[Callable] = Field(default=None, description="處理函數", exclude=True)
+    allowed_paths: List[str] = Field(default_factory=lambda: ["CHAT", "WORK"], description="允許的路徑列表，預設為兩者均可")
     
     class Config:
         arbitrary_types_allowed = True
@@ -146,8 +147,13 @@ class MCPTool(BaseModel):
         required = []
         
         for param in self.parameters:
+            # ✅ 將 "float" 映射為 "number"（Gemini API 要求）
+            param_type = param.type.value
+            if param_type == "float":
+                param_type = "number"
+            
             properties[param.name] = {
-                "type": param.type.value,
+                "type": param_type,
                 "description": param.description,
             }
             if param.enum:
@@ -187,8 +193,33 @@ class MCPTool(BaseModel):
         if self.handler is None:
             return ToolResult.error(f"工具 '{self.name}' 未註冊處理函數")
         
+        # 🔧 記錄 SYS 模組效能（MCP 工具執行）
+        import time
+        from utils.debug_helper import debug_log, error_log
+        
+        start_time = time.time()
+        success = False
+        
         try:
             result = await self.handler(params)
+            success = result.status == "success"
             return result
         except Exception as e:
             return ToolResult.error(f"工具執行失敗", error_detail=str(e))
+        finally:
+            # 報告效能數據給 SYS 模組
+            try:
+                processing_time = time.time() - start_time
+                from core.framework import core_framework
+                
+                debug_log(3, f"[MCPTool] 報告 SYS 效能: 工具={self.name}, 耗時={processing_time:.3f}s, 成功={success}")
+                
+                core_framework.update_module_metrics('sys', {
+                    'processing_time': processing_time,
+                    'memory_usage': 0,
+                    'request_result': 'success' if success else 'failure'
+                })
+                
+                debug_log(3, f"[MCPTool] SYS 效能已報告")
+            except Exception as e:
+                error_log(f"[MCPTool] 報告 SYS 效能失敗: {e}")

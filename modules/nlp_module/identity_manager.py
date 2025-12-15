@@ -123,8 +123,14 @@ class IdentityManager:
         # 決策處理器
         self.decision_handler = IdentityDecisionHandler()
         
+        # 🆕 從 user_settings 讀取身分相關設定
+        self._load_identity_settings()
+        
         # 載入現有身份
         self._load_identities()
+        
+        # 🆕 註冊熱重載回調
+        self._register_reload_callback()
         
         info_log(f"[IdentityManager] 初始化完成，載入 {len(self.identities)} 個身份")
     
@@ -154,9 +160,13 @@ class IdentityManager:
         Returns:
             UserProfile: 創建的身份檔案
         
+        Raises:
+            PermissionError: 當 allow_identity_creation 為 False 且非強制創建時
+        
         注意：
             - 如果 speaker_id 已關聯到現有身份，會返回該身份
             - 如果 display_name 已存在且 force_new=False，會記錄警告但仍創建新身份
+            - 會檢查 user_settings 的 allow_identity_creation 設定
         """
         # 檢查該 speaker_id 是否已經有關聯的身份
         existing_identity = self.get_identity_by_speaker(speaker_id)
@@ -164,12 +174,24 @@ class IdentityManager:
             info_log(f"[IdentityManager] Speaker {speaker_id} 已關聯到身份 {existing_identity.identity_id}")
             return existing_identity
         
+        # 🆕 檢查是否允許創建新身分（除非強制創建）
+        if not force_new and hasattr(self, 'allow_identity_creation') and not self.allow_identity_creation:
+            error_log(f"[IdentityManager] 拒絕創建新身分：user_settings 不允許創建新身分")
+            raise PermissionError("目前設定不允許創建新身分")
+        
         # 檢查 display_name 是否已存在
         if display_name and not force_new:
             existing_by_name = self.get_identity_by_name(display_name)
             if existing_by_name:
                 info_log(f"[IdentityManager] ⚠️  顯示名稱 '{display_name}' 已被 {existing_by_name.identity_id} 使用")
                 info_log(f"[IdentityManager] 建議使用 get_or_create_identity() 或設置 force_new=True")
+        
+        # 🆕 如果未指定 display_name，使用 user_settings 的預設名稱
+        if not display_name:
+            if hasattr(self, 'default_user_name'):
+                display_name = self.default_user_name
+            else:
+                display_name = f"User-{uuid.uuid4().hex[:8]}"
         
         # 使用 UUID 確保唯一性，避免不同 speaker_id 產生相同的 identity_id
         unique_id = uuid.uuid4().hex[:8]
@@ -181,7 +203,7 @@ class IdentityManager:
         profile = UserProfile(
             identity_id=identity_id,
             speaker_id=speaker_id,
-            display_name=display_name or f"User-{identity_id[:8]}",
+            display_name=display_name,  # 已在上方處理預設值
             status=IdentityStatus.CONFIRMED,
             total_interactions=0,
             created_at=datetime.now(),
@@ -679,3 +701,73 @@ class IdentityManager:
                 json.dump(self.speaker_to_identity, f, ensure_ascii=False, indent=2)
         except Exception as e:
             error_log(f"[IdentityManager] 保存映射失敗：{e}")
+    
+    # 🆕 User Settings 整合方法
+    
+    def _load_identity_settings(self):
+        """從 user_settings.yaml 載入身分相關設定"""
+        try:
+            from configs.user_settings_manager import get_user_setting
+            
+            # 讀取基本設定
+            self.default_user_name = get_user_setting("general.identity.user_name", "user")
+            self.default_uep_name = get_user_setting("general.identity.uep_name", "U.E.P")
+            self.allow_identity_creation = get_user_setting("general.identity.allow_identity_creation", True)
+            self.current_identity_id = get_user_setting("general.identity.current_identity_id", None)
+            
+            debug_log(3, f"[IdentityManager] 已載入身分設定: user={self.default_user_name}, "
+                        f"uep={self.default_uep_name}, allow_creation={self.allow_identity_creation}, "
+                        f"current_id={self.current_identity_id}")
+            
+        except Exception as e:
+            error_log(f"[IdentityManager] 載入身分設定失敗: {e}")
+            # 使用預設值
+            self.default_user_name = "user"
+            self.default_uep_name = "U.E.P"
+            self.allow_identity_creation = True
+            self.current_identity_id = None
+    
+    def _register_reload_callback(self):
+        """註冊熱重載回調"""
+        try:
+            from configs.user_settings_manager import user_settings_manager
+            
+            if user_settings_manager:
+                user_settings_manager.register_reload_callback(
+                    "identity_manager",
+                    self._reload_from_user_settings
+                )
+                debug_log(2, "[IdentityManager] 已註冊熱重載回調")
+        except Exception as e:
+            error_log(f"[IdentityManager] 註冊熱重載回調失敗: {e}")
+    
+    def _reload_from_user_settings(self, changed_keys: list):
+        """熱重載回調：當 user_settings 變更時更新設定
+        
+        Args:
+            changed_keys: 變更的設定鍵列表
+        """
+        try:
+            # 檢查是否有身分相關的變更
+            identity_keys = [k for k in changed_keys if k.startswith("general.identity")]
+            
+            if not identity_keys:
+                return
+            
+            debug_log(2, f"[IdentityManager] 偵測到身分設定變更: {identity_keys}")
+            
+            # 重新載入設定
+            self._load_identity_settings()
+            
+            # 如果 current_identity_id 變更，同步到 Working Context
+            if "general.identity.current_identity_id" in changed_keys:
+                if self.current_identity_id:
+                    from core.working_context import working_context_manager
+                    working_context_manager.global_context_data['current_identity_id'] = self.current_identity_id
+                    working_context_manager.global_context_data['declared_identity'] = True
+                    info_log(f"[IdentityManager] 已同步 current_identity_id 到 Working Context: {self.current_identity_id}")
+            
+            info_log(f"[IdentityManager] 身分設定已熱重載")
+            
+        except Exception as e:
+            error_log(f"[IdentityManager] 熱重載失敗: {e}")

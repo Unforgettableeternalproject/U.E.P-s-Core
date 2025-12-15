@@ -34,6 +34,7 @@ def debug_interactive():
             f"{colorful_text('llm - 大型語言模型模組;', mod_list['llm'])}",
             f"{colorful_text('tts - 文字轉語音模組;', mod_list['tts'])}",
             f"{colorful_text('sys - 系統功能模組;', mod_list['sys'])}",
+            f"{colorful_text('ani - 動畫測試器 (推薦);', (True, True))}",
             f"{colorful_text('int - 整合測試套件;', (True, True))}",
             f"{colorful_text('ex - 額外功能測試;', (True, True))}"
         ]
@@ -382,16 +383,46 @@ def debug_interactive():
                     else:
                         print("\033[31m無效的選擇，請再試一次。\033[0m")
                     
-            case "frontend":
-                debug_log(1, "前端整合測試")
-                print("<前端整合測試>\n")
+            case "frontend" | "ani":
+                debug_log(1, "前端測試工具")
+                print("<前端測試工具>\n")
                 
-                # 檢查是否在終端模式（預先載入模式），如果是則提示切換到GUI模式
-                import devtools.debug_api as debug_api
-                if hasattr(debug_api, 'PRELOAD_MODULES') and debug_api.PRELOAD_MODULES is True:
-                    print("⚠️  注意：您目前在終端測試模式中")
-                    print("🖥️  前端模組(UI/ANI/MOV)測試建議在圖形除錯介面中進行")
-                    print("💡 使用 'gui' 命令切換到圖形介面，或重新啟動程式時使用 'python Entry.py --debug-gui'\n")
+                # 前端測試子選單
+                while True:
+                    frontend_choice = input("\n選擇測試工具:\n" +
+                                          "1: 動畫測試器 (Animation Tester)\n" +
+                                          "2: 前端整合測試\n" +
+                                          "3: UI 調試介面\n" +
+                                          "back: 返回上級\n\n> ")
+                    
+                    if frontend_choice == "1":
+                        print("\n🎬 啟動動畫測試器...")
+                        result = controller.launch_animation_tester()
+                        if result.get("success"):
+                            print("✅ 動畫測試器已在新視窗中啟動")
+                        else:
+                            print(f"❌ 啟動失敗: {result.get('error')}")
+                    
+                    elif frontend_choice == "2":
+                        # 檢查是否在終端模式
+                        import devtools.debug_api as debug_api
+                        if hasattr(debug_api, 'PRELOAD_MODULES') and debug_api.PRELOAD_MODULES is True:
+                            print("⚠️  注意：您目前在終端測試模式中")
+                            print("🖥️  前端模組(UI/ANI/MOV)測試建議在圖形除錯介面中進行")
+                            print("💡 使用選項 3 切換到 UI 調試介面\n")
+                        else:
+                            print("🧪 執行前端整合測試...")
+                            # TODO: 添加前端整合測試
+                            print("⚠️  前端整合測試尚未實作")
+                    
+                    elif frontend_choice == "3":
+                        print("\n🖥️ 切換到 UI 調試介面...")
+                        break  # 跳出子選單，讓主選單的 'gui' 命令處理
+                    
+                    elif frontend_choice.lower() in ["exit", "e", "back", "b", "quit", "q"]:
+                        break
+                    else:
+                        print("\033[31m無效的選擇，請再試一次。\033[0m")
             case "ex":
                 debug_log(1, "額外功能測試")
                 print("<額外功能測試>\n")

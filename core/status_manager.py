@@ -291,11 +291,20 @@ class StatusManager:
         else:
             hours_since_last = 0
         
-        # 時間相關的 Boredom 增長
-        if hours_since_last > 0.5:  # 超過30分鐘沒有互動
-            boredom_increase = min(0.1, hours_since_last * 0.02)  # 每小時增加 0.02，最多 0.1
-            self.update_boredom(boredom_increase, f"時間流逝 ({hours_since_last:.1f}小時)")
-            penalties['boredom'] = boredom_increase
+        # 時間相關的 Boredom 增長（階段性增長）
+        if hours_since_last > 0:
+            if hours_since_last <= 0.5:  # 30分鐘內緩慢增長
+                boredom_increase = min(0.003, hours_since_last * 0.05)  # 每小時 +0.005
+            else:  # 超過30分鐘快速增長
+                # 前30分鐘的基礎增長 + 超出部分的快速增長
+                base_increase = 0.5 * 0.025  # 前30分鐘的增長
+                extra_hours = hours_since_last - 0.5
+                rapid_increase = extra_hours * 0.2  # 每小時 +0.1
+                boredom_increase = min(0.5, base_increase + rapid_increase)  # 最多增長到 0.5
+            
+            if boredom_increase > 0.001:  # 只在有明顯增長時更新
+                self.update_boredom(boredom_increase, f"時間流逝 ({hours_since_last:.2f}小時)")
+                penalties['boredom'] = boredom_increase
         
         # Boredom 對其他數值的影響
         if self.status.boredom > 0.7:  # 非常無聊時

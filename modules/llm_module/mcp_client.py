@@ -17,6 +17,11 @@ from modules.sys_module.mcp_server.protocol_handlers import (
 )
 
 
+# 路徑常量
+PATH_CHAT = "CHAT"
+PATH_WORK = "WORK"
+
+
 class MCPClient:
     """
     MCP 客戶端
@@ -107,9 +112,12 @@ class MCPClient:
                 "error": "EXCEPTION"
             }
     
-    def get_tools_for_llm(self) -> List[Dict[str, Any]]:
+    def get_tools_for_llm(self, path: str = PATH_CHAT) -> List[Dict[str, Any]]:
         """
-        取得工具規範供 LLM 使用
+        取得工具規範供 LLM 使用（支援路徑過濾）
+        
+        Args:
+            path: 路徑類型 ("CHAT" 或 "WORK")，預設為 "CHAT"
         
         Returns:
             適合 LLM function calling 的工具規範列表
@@ -119,13 +127,33 @@ class MCPClient:
             return []
         
         try:
-            tools_spec = self.mcp_server.get_tools_spec_for_llm()
-            debug_log(3, f"[MCP Client] 取得 {len(tools_spec)} 個工具規範")
+            # 呼叫 MCP Server 的路徑感知方法
+            tools_spec = self.mcp_server.get_tools_spec_for_llm(path=path)
+            debug_log(3, f"[MCP Client] 取得 {len(tools_spec)} 個工具規範 (路徑: {path})")
             return tools_spec
         
         except Exception as e:
             error_log(f"[MCP Client] 取得工具規範失敗: {e}")
             return []
+    
+    def get_tools_as_gemini_format(self, path: str = PATH_CHAT) -> Optional[List[Dict[str, Any]]]:
+        """
+        取得轉換為 Gemini Function Calling 格式的工具（支援路徑過濾）
+        
+        Args:
+            path: 路徑類型 ("CHAT" 或 "WORK")，預設為 "CHAT"
+        
+        Returns:
+            [{"function_declarations": [...]}] 或 None
+        """
+        tools_spec = self.get_tools_for_llm(path=path)
+        
+        if not tools_spec:
+            return None
+        
+        return [{
+            "function_declarations": tools_spec
+        }]
     
     def parse_llm_tool_call(self, tool_call: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
         """
@@ -142,6 +170,13 @@ class MCPClient:
             (工具名稱, 工具參數)
         """
         tool_name = tool_call.get("name", "")
+        
+        # ✅ 修正 Gemini 錯誤的工具名稱前綴
+        # Gemini 有時會在 ANY 模式下錯誤地添加 "default_api." 前綴
+        if tool_name.startswith("default_api."):
+            original_name = tool_name
+            tool_name = tool_name.replace("default_api.", "", 1)
+            debug_log(2, f"[MCP Client] 修正工具名稱: {original_name} -> {tool_name}")
         
         # ✅ 支持兩種參數格式: "arguments" (標準) 或 "args" (Gemini)
         arguments = tool_call.get("arguments") or tool_call.get("args", {})
@@ -248,6 +283,10 @@ class MCPClient:
         elif tool_name == "cancel_workflow":
             return data.get("message", "工作流已取消")
         
+        # 🔧 記憶檢索工具不應該有 formatted_message，強制第二次 LLM 查詢
+        elif tool_name.startswith("memory_"):
+            return None  # 返回 None 表示需要 LLM 二次查詢理解檢索結果
+        
         else:
             # 通用格式
             message = data.get("message", "")
@@ -324,46 +363,3 @@ class MCPClient:
             "get_workflow_status"
         }
         return tool_name in workflow_tools
-    
-    def get_tools_as_gemini_format(self) -> Optional[List[Dict[str, Any]]]:
-        """
-        取得 Gemini Function Calling 格式的工具規範
-        
-        將 MCP 工具規範轉換為 Gemini API 所需的格式
-        
-        Returns:
-            Gemini tools 格式的列表，或 None 如果無工具可用
-        """
-        if self.mcp_server is None:
-            return None
-        
-        try:
-            mcp_tools = self.mcp_server.get_tools_spec_for_llm()
-            if not mcp_tools:
-                return None
-            
-            # 轉換為 Gemini Function Calling 格式
-            # ✅ Gemini 要求單一 dict 包含所有 function_declarations
-            function_declarations = []
-            for tool in mcp_tools:
-                function_declarations.append({
-                    "name": tool["name"],
-                    "description": tool.get("description", ""),
-                    "parameters": tool.get("parameters", {
-                        "type": "object",
-                        "properties": {}
-                    })
-                })
-            
-            gemini_tools = [{"function_declarations": function_declarations}]
-            debug_log(2, f"[MCP Client] 轉換了 {len(function_declarations)} 個工具為 Gemini 格式")
-            
-            # 🔍 DEBUG: 顯示完整的工具格式
-            import json
-            debug_log(4, f"[MCP Client] Gemini 工具格式:\n{json.dumps(gemini_tools, indent=2, ensure_ascii=False)}")
-            
-            return gemini_tools
-        
-        except Exception as e:
-            error_log(f"[MCP Client] 轉換工具規範為 Gemini 格式失敗: {e}")
-            return None

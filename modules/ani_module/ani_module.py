@@ -2,8 +2,10 @@ from __future__ import annotations
 from typing import Callable, Dict, Optional, List
 import time
 import os, glob
+import yaml
 from utils.debug_helper import debug_log, debug_log_e, info_log, error_log
 from core.bases.frontend_base import BaseFrontendModule, FrontendModuleType  # type: ignore
+from core.states.state_manager import UEPState
 
 try:
     from PyQt5.QtCore import QTimer # type: ignore
@@ -39,6 +41,18 @@ class ANIModule(BaseFrontendModule):
         self._default_frame_duration = float(anim_cfg.get("default_frame_duration", 0.1))
         if "request_cooldown" in anim_cfg:
             self.manager.request_cooldown = float(anim_cfg["request_cooldown"])
+        
+        # 從 user_settings 讀取 performance 設定
+        from configs.user_settings_manager import get_user_setting
+        self.hardware_acceleration = get_user_setting("advanced.performance.enable_hardware_acceleration", True)
+        self.reduce_on_battery = get_user_setting("advanced.performance.reduce_animations_on_battery", True)
+        debug_log_e(2, f"[ANI] 效能設定: 硬體加速={self.hardware_acceleration}, 電池省電={self.reduce_on_battery}")
+        
+        # 效能指標追蹤
+        self.total_frames_rendered = 0
+        self.total_animation_duration = 0.0
+        self.animation_type_stats = {}
+        self.current_fps = 0.0
 
         # 依 config.resources 自動建立與註冊 clips
         self._apply_config_for_clips(self.config)
@@ -56,19 +70,48 @@ class ANIModule(BaseFrontendModule):
     # ===== 前端生命週期 =====
     def initialize_frontend(self) -> bool:
         try:
+            # ✅ 先初始化 signals（確保 QApplication 已建立）
+            self._initialize_signals()
+            
             if PYQT5:
                 self.signals.add_timer_callback("ani_update", self._on_tick)
                 self.timer = QTimer()
                 self.timer.timeout.connect(lambda: self.signals.timer_timeout("ani_update")) # type: ignore
                 self.timer.start(self._tick_interval_ms)
+            
+            # 🔗 註冊到 FrontendBridge（如果存在）
+            try:
+                from core.framework import core_framework
+                if hasattr(core_framework, 'frontend_bridge') and core_framework.frontend_bridge:
+                    frontend_bridge = core_framework.frontend_bridge
+                    frontend_bridge.register_module('ani', self)
+                    from utils.debug_helper import info_log
+                    info_log(f"[{self.module_id}] ✅ ANI 模組已註冊到 FrontendBridge")
+                else:
+                    from utils.debug_helper import debug_log
+                    debug_log(2, f"[{self.module_id}] FrontendBridge 不存在，跳過註冊")
+            except Exception as e:
+                from utils.debug_helper import debug_log
+                debug_log(2, f"[{self.module_id}] 註冊到 FrontendBridge 失敗: {e}")
+            
+            # 註冊 user_settings 熱重載回調
+            from configs.user_settings_manager import user_settings_manager
+            user_settings_manager.register_reload_callback("ani_module", self._reload_from_user_settings)
+            
             return True
         except Exception as e:
             from utils.debug_helper import error_log
             error_log(f"[ANI] 初始化失敗: {e}")
             return False
-
+    
     def handle_frontend_request(self, data: Dict) -> Dict:
         cmd = data.get("command")
+        
+        # 更新效能指標
+        animation_type = data.get("animation_type", "unknown")
+        self.animation_type_stats[animation_type] = self.animation_type_stats.get(animation_type, 0) + 1
+        self.update_custom_metric('animation_type', animation_type)
+        
         if cmd == "play":
             name = data.get("animation_type")
             loop = data.get("loop")
@@ -86,17 +129,36 @@ class ANIModule(BaseFrontendModule):
 
     # ===== 公開 API（給 MOV/UI） =====
     def play(self, name: str, loop: Optional[bool] = None) -> Dict:
+        """播放動畫（純播放器，不做相容性檢查）"""
         if not name:
             debug_log(2, "[ANI] play: 動畫名稱為空")
             return {"error": "animation name required"}
         
-        debug_log(1, f"[ANI] 請求播放動畫: {name}, loop={loop}")
+        # 只在非 coalesced 的情況下記錄（減少日誌洗屏）
         result = self.manager.play(name, loop=loop)
-        debug_log(2, f"[ANI] 播放結果: {result}")
+        if not result.get("coalesced"):
+            debug_log(2, f"[ANI] 播放動畫: {name}, loop={loop}")
         return result
-
+    
     def stop(self):
         self.manager.stop()
+    
+    def set_current_frame(self, frame_index: int) -> Dict:
+        """
+        直接設置當前動畫的幀索引（不重新播放）
+        
+        用於 turn_head 等需要即時響應的動畫
+        
+        Args:
+            frame_index: 目標幀索引
+            
+        Returns:
+            操作結果
+        """
+        result = self.manager.set_frame(frame_index)
+        if result.get("success"):
+            debug_log(3, f"[ANI] 設置幀索引: {frame_index}")
+        return result
 
     def register_clips(self, clips_meta: list[Dict]):
         """clips_meta: [{name,total_frames,fps,default_loop}]"""
@@ -128,13 +190,12 @@ class ANIModule(BaseFrontendModule):
         try:
             st = self.get_current_animation_status()  # 你現有的狀態查詢介面
             if not st or not st.get("name") or not st.get("is_playing"):
-                debug_log(3, f"[ANI] get_current_frame: 沒有活動動畫 - status: {st}")
+                # 移除洗屏日誌 - 這個情況非常常見不需記錄
                 return None
                 
             anim_name = st["name"]
             idx = st.get("frame")
             if idx is None:
-                debug_log(3, f"[ANI] get_current_frame: 幀索引為 None")
                 return None
 
             # 從狀態中獲取變換屬性
@@ -146,7 +207,6 @@ class ANIModule(BaseFrontendModule):
             transform_key = (anim_name, idx, 1.0, offset_x, offset_y)
             pm = self._try_get_transformed_cached_pixmap(transform_key)
             if pm is not None:
-                debug_log(3, f"[ANI] get_current_frame: 使用變換快取 {anim_name}[{idx}]")
                 return pm
 
             # 先獲取原始圖片
@@ -179,14 +239,14 @@ class ANIModule(BaseFrontendModule):
                     
                 # 放到原始圖片快取
                 self._cache_pixmap(anim_name, idx, original_pm)
-                debug_log(3, f"[ANI] get_current_frame: 成功載入 {anim_name}[{idx}] from {frame_path}")
 
             # 應用變換（只處理偏移，縮放交給 UI 層處理）
+            if offset_x != 0 or offset_y != 0:
+                debug_log(3, f"[ANI] 應用 offset 變換: {anim_name} frame={idx}, offset_x={offset_x}, offset_y={offset_y}")
             transformed_pm = self._apply_transform(original_pm, 1.0, offset_x, offset_y)  # zoom 固定為 1.0
             if transformed_pm:
                 # 放到變換快取
                 self._cache_transformed_pixmap(transform_key, transformed_pm)
-                debug_log(3, f"[ANI] get_current_frame: 應用變換 zoom={zoom} offset=({offset_x},{offset_y})")
                 return transformed_pm
             else:
                 return original_pm
@@ -239,13 +299,11 @@ class ANIModule(BaseFrontendModule):
             except Exception: pass
 
     def _emit_start(self, name: str):
-        debug_log(3, f"[ANI] start: {name}")
         for cb in list(self._start_callbacks):
             try: cb(name)
             except Exception as e: error_log(f"[ANI] start-callback error: {e}")
 
     def _emit_finish(self, name: str):
-        debug_log(3, f"[ANI] finish: {name}")
         for cb in list(self._finish_callbacks):
             try: cb(name)
             except Exception as e: error_log(f"[ANI] finish-callback error: {e}")
@@ -297,7 +355,8 @@ class ANIModule(BaseFrontendModule):
                 ))
                 # 可把 prefix/filename_format/index_start 留給 UI 用（ANI 不需）
                 from utils.debug_helper import debug_log
-                debug_log(3, f"[ANI] ✓ 註冊動畫: {name} frames={total_frames} fps={fps:.2f} loop={loop} zoom={zoom} offset=({offset_x},{offset_y})")
+                # 動畫註冊成功（不輸出日誌以減少噪音）
+                pass
             except Exception as e:
                 from utils.debug_helper import error_log
                 error_log(f"[ANI] ✗ 註冊動畫失敗 {name}: {e}")
@@ -377,6 +436,7 @@ class ANIModule(BaseFrontendModule):
         根據實際檔案結構解析動畫幀路徑。
         實際結構：resources/animations/{anim_name}/{prefix}{idx:02d}.png
         支援 alias 動畫解析到原始檔案路徑
+        自動根據幀數選擇正確的格式 (02d 或 03d)
         """
         try:
             # 取得基礎路徑
@@ -415,14 +475,20 @@ class ANIModule(BaseFrontendModule):
             prefix = clip_info.get("prefix", f"{actual_anim_name}_")
             # 注意：不要移除底線，因為實際檔案名是 diamond_girl_angry_idle_00.png
             
-            # 組合路徑：{base_path}/{actual_anim_name}/{prefix}{idx:02d}.png
-            filename = f"{prefix}{idx:02d}.png"
+            # 根據總幀數自動選擇格式
+            total_frames = clip_info.get("total_frames", 100)
+            if total_frames >= 100:
+                # 使用 3 位數格式
+                filename = f"{prefix}{idx:03d}.png"
+            else:
+                # 使用 2 位數格式
+                filename = f"{prefix}{idx:02d}.png"
+            
             full_path = os.path.join(base_animations_path, actual_anim_name, filename)
             
-            # 增加更詳細的偵錯信息
-            debug_log(3, f"[ANI] 解析路徑: {anim_name}[{idx}] -> {actual_anim_name}")
-            debug_log(3, f"[ANI] - full_path: {full_path}")
-            debug_log(3, f"[ANI] - exists: {os.path.exists(full_path)}")
+            # 只在檔案不存在時才記錄錯誤
+            if not os.path.exists(full_path):
+                debug_log(2, f"[ANI] 檔案不存在: {anim_name}[{idx}] -> {full_path}")
             
             return full_path
             
@@ -480,9 +546,12 @@ class ANIModule(BaseFrontendModule):
                 result_pm = QPixmap(canvas_width, canvas_height)
                 result_pm.fill(Qt.transparent)
                 
-                # 計算繪製位置
-                draw_x = max(0, offset_x)
-                draw_y = max(0, offset_y)
+                # 🎯 計算繪製位置（修正邏輯）
+                # offsetY > 0: 圖片向上移動 → 在畫布下方留白 → draw_y = abs(offset_y)
+                # offsetY < 0: 圖片向下移動 → 在畫布上方留白 → draw_y = 0
+                # offsetX 同理
+                draw_x = abs(offset_x) if offset_x < 0 else 0
+                draw_y = abs(offset_y) if offset_y < 0 else 0
                 
                 # 在新畫布上繪製偏移後的圖片
                 painter = QPainter(result_pm)
@@ -497,6 +566,33 @@ class ANIModule(BaseFrontendModule):
         except Exception as e:
             error_log(f"[ANI] 變換失敗: {e}")
             return original_pm
+    
+    # ===== 回調註冊（供外部模組使用）=====
+    
+    def on_module_busy(self, module_name: str):
+        """當其他模組忙碌時顯示處理動畫"""
+        try:
+            debug_log(3, f"[ANI] 模組忙碌: {module_name}")
+            # 可以根據不同模組選擇不同的忙碌動畫
+            self.play("thinking", loop=True)
+        except Exception as e:
+            error_log(f"[ANI] 處理模組忙碌狀態失敗: {e}")
+    
+    # ===== 關閉方法 =====
+    
+    def _reload_from_user_settings(self, key_path: str, value: Any):
+        """處理 user_settings 熱重載"""
+        try:
+            if key_path == "advanced.performance.enable_hardware_acceleration":
+                self.hardware_acceleration = value
+                info_log(f"[ANI] 硬體加速設定已更新: {value}")
+            elif key_path == "advanced.performance.reduce_animations_on_battery":
+                self.reduce_on_battery = value
+                info_log(f"[ANI] 電池省電模式已更新: {value}")
+            elif key_path == "interface.appearance.animation_quality":
+                info_log(f"[ANI] 動畫品質設定已更新: {value} (需重載 ANI 模組生效)")
+        except Exception as e:
+            error_log(f"[ANI] 熱重載設定失敗: {e}")
     
     def shutdown(self):
         """關閉動畫模組，停止所有計時器和清理資源"""
@@ -532,3 +628,16 @@ class ANIModule(BaseFrontendModule):
             error_log(f"[{self.module_id}] 清理信號回調失敗: {e}")
         
         return super().shutdown()
+    
+    def get_performance_window(self) -> dict:
+        """獲取效能數據窗口（包含 ANI 特定指標）"""
+        window = super().get_performance_window()
+        window['total_frames_rendered'] = self.total_frames_rendered
+        window['total_animation_duration'] = self.total_animation_duration
+        window['animation_type_distribution'] = self.animation_type_stats.copy()
+        window['current_fps'] = self.current_fps
+        window['avg_frame_time'] = (
+            self.total_animation_duration / self.total_frames_rendered
+            if self.total_frames_rendered > 0 else 0.0
+        )
+        return window

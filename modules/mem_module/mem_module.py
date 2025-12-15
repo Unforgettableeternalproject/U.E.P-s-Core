@@ -9,6 +9,7 @@ from .schemas import (
 from core.schemas import MEMModuleData
 from core.working_context import working_context_manager
 from configs.config_loader import load_module_config
+from configs.user_settings_manager import user_settings_manager, get_user_setting
 from utils.debug_helper import debug_log, debug_log_e, info_log, error_log
 
 class MEMModule(BaseModule):
@@ -51,6 +52,15 @@ class MEMModule(BaseModule):
         
         # 模組狀態
         self.is_initialized = False
+        
+        # 效能指標追蹤
+        self.total_memories_stored = 0
+        self.total_memories_retrieved = 0
+        self.memory_type_stats = {'short': 0, 'long': 0, 'episodic': 0}
+        self.search_operations = 0
+        
+        # 註冊使用者設定熱重載回調
+        user_settings_manager.register_reload_callback("mem_module", self._reload_from_user_settings)
 
         info_log("[MEM] Phase 2 記憶管理模組初始化完成")
 
@@ -111,6 +121,9 @@ class MEMModule(BaseModule):
             
             # Phase 4: 註冊 GS 推進事件監聽器
             self._register_gs_advanced_listener()
+            
+            # 🔧 註冊會話結束和處理層完成事件監聽器（用於更新快照）
+            self._register_snapshot_update_listeners()
             
             # 啟動會話同步
             self._start_session_sync()
@@ -261,11 +274,56 @@ class MEMModule(BaseModule):
                 debug_log(2, f"[MEM] 對話儲存完成 - 成功: {result}")
                 return result
             
+            # 註冊 Profile 記憶檢索 provider（用於 LLM 快取注入）
+            def profile_memories_provider(**kwargs):
+                from .schemas import MemoryType
+                
+                memory_token = kwargs.get('memory_token')
+                max_results = kwargs.get('max_results', 50)
+                
+                if not memory_token:
+                    memory_token = working_context_manager.get_memory_token()
+                
+                if not memory_token:
+                    debug_log(3, "[MEM] 無 memory_token，無法檢索 profile 記憶")
+                    return []
+                
+                debug_log(2, f"[MEM] Profile 記憶檢索請求 - token: {memory_token}")
+                
+                # 檢索 PROFILE 類型記憶（長期用戶觀察）
+                results = self.memory_manager.retrieve_memories(
+                    query_text="",  # 空查詢檢索所有
+                    memory_token=memory_token,
+                    memory_types=[MemoryType.PROFILE],
+                    max_results=max_results,
+                    similarity_threshold=0.0  # 檢索所有 profile 記憶
+                )
+                
+                debug_log(2, f"[MEM] 檢索到 {len(results)} 條 profile 記憶")
+                
+                # 轉換為簡化格式
+                formatted_results = []
+                for result in results:
+                    memory_entry = result.memory_entry
+                    if isinstance(memory_entry, dict):
+                        formatted_results.append({
+                            "content": memory_entry.get("content", ""),
+                            "created_at": str(memory_entry.get("created_at", ""))
+                        })
+                    else:
+                        formatted_results.append({
+                            "content": getattr(memory_entry, "content", ""),
+                            "created_at": str(getattr(memory_entry, "created_at", ""))
+                        })
+                
+                return formatted_results
+            
             # 註冊到 state_aware_interface
             state_aware_interface.register_chat_mem_provider("memory_retrieval", memory_retrieval_provider)
             state_aware_interface.register_chat_mem_provider("conversation_storage", conversation_storage_provider)
+            state_aware_interface.register_chat_mem_provider("profile_memories", profile_memories_provider)
             
-            info_log("[MEM] CHAT-MEM 協作管道 provider 註冊完成")
+            info_log("[MEM] CHAT-MEM 協作管道 provider 註冊完成（含 profile_memories）")
             
         except Exception as e:
             error_log(f"[MEM] 協作 provider 註冊失敗: {e}")
@@ -345,6 +403,29 @@ class MEMModule(BaseModule):
         except Exception as e:
             error_log(f"[MEM] GS_ADVANCED 事件監聽器註冊失敗: {e}")
     
+    def _register_snapshot_update_listeners(self):
+        """註冊快照更新相關事件監聽器"""
+        try:
+            from core.event_bus import event_bus, SystemEvent
+            
+            # 訂閱處理層完成事件 - 每次循環後更新快照
+            event_bus.subscribe(
+                SystemEvent.PROCESSING_LAYER_COMPLETE,
+                self._on_processing_complete,
+                handler_name="MEM.snapshot_update"
+            )
+            
+            # 訂閱會話結束事件 - CS 結束時完整保存快照
+            event_bus.subscribe(
+                SystemEvent.SESSION_ENDED,
+                self._on_session_ended,
+                handler_name="MEM.session_end"
+            )
+            
+            debug_log(2, "[MEM] 快照更新事件監聽器註冊完成")
+        except Exception as e:
+            error_log(f"[MEM] 快照更新事件監聽器註冊失敗: {e}")
+    
     def _on_gs_advanced(self, event):
         """處理 GS 推進事件 - 清理過期快照"""
         try:
@@ -363,6 +444,118 @@ class MEMModule(BaseModule):
             
         except Exception as e:
             error_log(f"[MEM] 處理 GS 推進事件失敗: {e}")
+    
+    def _on_processing_complete(self, event):
+        """處理處理層完成事件 - 更新快照記錄當前互動"""
+        try:
+            # 只在 CHAT 狀態下處理
+            if not self._is_in_chat_state():
+                return
+            
+            # 獲取處理層輸出（LLM 回應）
+            # LLM 模組在 PROCESSING_LAYER_COMPLETE 事件中使用 "response" 欄位
+            response_text = event.data.get('response', '')
+            if not response_text:
+                debug_log(3, "[MEM] 處理層輸出無文本內容，跳過快照更新")
+                return
+            
+            # 獲取當前 CS 和用戶輸入
+            from core.sessions.session_manager import unified_session_manager
+            active_cs = unified_session_manager.get_active_chatting_session_ids()
+            
+            if not active_cs:
+                debug_log(3, "[MEM] 沒有活躍 CS，跳過快照更新")
+                return
+            
+            cs_id = active_cs[0]
+            
+            # 從 Working Context 獲取用戶輸入
+            from core.working_context import working_context_manager
+            user_input = working_context_manager.get_context_data('last_user_input') or ''
+            
+            # 構建互動記錄
+            message_data = {
+                'user': user_input,
+                'assistant': response_text,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            # 更新快照
+            if self.memory_manager and self.memory_manager.snapshot_manager:
+                success = self.memory_manager.snapshot_manager.add_message_to_snapshot(
+                    session_id=cs_id,
+                    message_data=message_data
+                )
+                if success:
+                    debug_log(2, f"[MEM] 已更新快照 {cs_id} - 記錄當前互動")
+                else:
+                    debug_log(2, f"[MEM] 快照 {cs_id} 更新失敗")
+            
+        except Exception as e:
+            error_log(f"[MEM] 處理處理層完成事件失敗: {e}")
+    
+    def _on_session_ended(self, event):
+        """處理會話結束事件 - 完整保存快照並總結"""
+        try:
+            session_type = event.data.get('session_type')
+            
+            # 只處理 CS 結束
+            if session_type != 'chatting':
+                return
+            
+            cs_id = event.data.get('session_id')
+            if not cs_id:
+                return
+            
+            debug_log(2, f"[MEM] CS {cs_id} 結束，準備完整保存快照")
+            
+            # 獲取 CS 的完整對話記錄
+            from core.sessions.session_manager import unified_session_manager
+            cs = unified_session_manager.get_chatting_session(cs_id)
+            
+            if not cs:
+                debug_log(2, f"[MEM] 找不到 CS {cs_id}，跳過快照保存")
+                return
+            
+            # 獲取所有對話輪次
+            conversation_turns = cs.get_recent_turns(count=None)  # 獲取所有輪次
+            
+            if not conversation_turns:
+                debug_log(2, f"[MEM] CS {cs_id} 沒有對話記錄，跳過快照保存")
+                return
+            
+            # 構建完整的對話摘要
+            messages = []
+            for turn in conversation_turns:
+                if turn.get('user_input'):
+                    messages.append({
+                        'role': 'user',
+                        'content': turn['user_input'].get('text', ''),
+                        'timestamp': turn.get('start_time', '')
+                    })
+                if turn.get('system_response'):
+                    messages.append({
+                        'role': 'assistant',
+                        'content': turn['system_response'].get('content', ''),
+                        'timestamp': turn.get('end_time', '')
+                    })
+            
+            # 更新快照內容
+            if self.memory_manager and self.memory_manager.snapshot_manager:
+                snapshot = self.memory_manager.snapshot_manager.get_snapshot(cs_id)
+                if snapshot:
+                    # 更新快照的完整內容和摘要
+                    self.memory_manager.snapshot_manager.update_snapshot_content(
+                        snapshot_id=cs_id,
+                        new_content=messages,
+                        new_gsids=snapshot.gs_session_ids  # 保持原有的 GSID 列表
+                    )
+                    info_log(f"[MEM] CS {cs_id} 的快照已完整保存 ({len(messages)} 條訊息)")
+                else:
+                    debug_log(2, f"[MEM] 找不到快照 {cs_id}，跳過保存")
+            
+        except Exception as e:
+            error_log(f"[MEM] 處理會話結束事件失敗: {e}")
     
     def _handle_state_change(self, old_state, new_state):
         """處理狀態變化"""
@@ -1584,6 +1777,14 @@ class MEMModule(BaseModule):
                 importance=importance,
                 topic=topic
             )
+            
+            # 更新效能指標
+            if result.success:
+                self.total_memories_stored += 1
+                mem_type_key = memory_type.value if hasattr(memory_type, 'value') else str(memory_type)
+                self.memory_type_stats[mem_type_key] = self.memory_type_stats.get(mem_type_key, 0) + 1
+                self.update_custom_metric('memory_type', mem_type_key)
+                self.update_custom_metric('action_type', 'store')
 
             return {
                 'success': result.success,
@@ -1611,6 +1812,14 @@ class MEMModule(BaseModule):
             )
 
             results = self.memory_manager.process_memory_query(query)
+            
+            # 更新效能指標
+            self.total_memories_retrieved += 1
+            self.search_operations += 1
+            self.update_custom_metric('action_type', 'query')
+            if results:
+                items_count = len(results)
+                self.update_custom_metric('items_retrieved', items_count)
 
             return {
                 'success': True,
@@ -1745,3 +1954,1023 @@ class MEMModule(BaseModule):
         if self.memory_manager:
             # 如果需要，可以在這裡添加記憶管理器的清理邏輯
             pass
+    
+    def _reload_from_user_settings(self, key_path: str, value: Any) -> bool:
+        """
+        從 user_settings.yaml 重載設定
+        
+        Args:
+            key_path: 設定路徑
+            value: 新值
+            
+        Returns:
+            是否成功
+        """
+        try:
+            info_log(f"[MEM] 🔄 重載使用者設定: {key_path} = {value}")
+            
+            if key_path == "interaction.memory.enabled":
+                # MEM 模組開關
+                info_log(f"[MEM] MEM 模組已{'啟用' if value else '禁用'}")
+                # 實際開關控制由外部處理
+                
+
+                
+            else:
+                debug_log(2, f"[MEM] 未處理的設定路徑: {key_path}")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            error_log(f"[MEM] 重載使用者設定失敗: {e}")
+            import traceback
+    
+    # ========== MCP Tools Registration ==========
+    
+    def register_memory_tools_to_mcp(self, mcp_server) -> bool:
+        """
+        向 MCP Server 註冊記憶檢索工具
+        
+        這些工具只在 CHAT 路徑可用，讓 LLM 主動檢索對話歷史快照
+        
+        Args:
+            mcp_server: MCP Server 實例
+            
+        Returns:
+            是否成功註冊
+        """
+        try:
+            from modules.sys_module.mcp_server.tool_definitions import MCPTool, ToolParameter, ToolParameterType
+            
+            info_log("[MEM] 註冊記憶檢索 MCP 工具...")
+            
+            # 1. memory_retrieve_profile - 獲取用戶完整資料（無過濾）
+            mcp_server.register_tool(MCPTool(
+                name="memory_retrieve_profile",
+                description="Get ALL stored facts about the user (interests, preferences, personal info, habits, skills). Returns EVERYTHING - no filtering, no search. Use when you need complete user context or user asks 'what do you know about me'.",
+                parameters=[],  # 無參數，直接全取
+                handler=self._handle_memory_retrieve_profile,
+                allowed_paths=["CHAT"]
+            ))
+            
+            # 2. memory_search_snapshots - 搜索對話歷史（語義搜索）
+            mcp_server.register_tool(MCPTool(
+                name="memory_search_snapshots",
+                description="Search past conversation history using semantic search. Use when user asks 'what did we discuss about X' or you need to recall previous dialogues on a topic. Returns relevant conversation snapshots with similarity scores.",
+                parameters=[
+                    ToolParameter(
+                        name="query",
+                        type=ToolParameterType.STRING,
+                        description="Search query describing the topic or conversation you're looking for (e.g., 'python tutorial', 'project planning', 'yesterday's discussion').",
+                        required=True
+                    ),
+                    ToolParameter(
+                        name="max_results",
+                        type=ToolParameterType.INTEGER,
+                        description="Maximum number of snapshots to return (default: 5)",
+                        required=False
+                    ),
+                    ToolParameter(
+                        name="similarity_threshold",
+                        type=ToolParameterType.FLOAT,
+                        description="Minimum similarity score 0.0-1.0 (default: 0.6). Lower = more results but less relevant.",
+                        required=False
+                    ),
+                ],
+                handler=self._handle_memory_search_snapshots,
+                allowed_paths=["CHAT"]
+            ))
+            
+            # 2b. memory_retrieve_snapshots - 取用 PROFILE + SNAPSHOT 記憶
+            mcp_server.register_tool(MCPTool(
+                name="memory_retrieve_snapshots",
+                description="Retrieve both long-term user profile facts and conversation snapshots in one call. Use when user asks what you know about them or references past discussions. memory_types defaults to 'profile,snapshot'.",
+                parameters=[
+                    ToolParameter(
+                        name="memory_types",
+                        type=ToolParameterType.STRING,
+                        description="Comma-separated memory types: profile, snapshot, long_term, preference (default: profile,snapshot)",
+                        required=False
+                    ),
+                    ToolParameter(
+                        name="query",
+                        type=ToolParameterType.STRING,
+                        description="Topic to search for when retrieving snapshots/long-term memories (optional for profile-only retrieval)",
+                        required=False
+                    ),
+                    ToolParameter(
+                        name="max_results",
+                        type=ToolParameterType.INTEGER,
+                        description="Maximum number of results to return (default: 5)",
+                        required=False
+                    ),
+                    ToolParameter(
+                        name="similarity_threshold",
+                        type=ToolParameterType.FLOAT,
+                        description="Minimum similarity score 0.0-1.0 (default: 0.6, lowered when query is empty)",
+                        required=False
+                    ),
+                ],
+                handler=self._handle_memory_retrieve_snapshots,
+                allowed_paths=["CHAT"]
+            ))
+            
+            # 2. memory_get_snapshot - 獲取完整快照內容
+            mcp_server.register_tool(MCPTool(
+                name="memory_get_snapshot",
+                description="Get full conversation details from a specific snapshot by ID. Returns complete message history.",
+                parameters=[
+                    ToolParameter(
+                        name="snapshot_id",
+                        type=ToolParameterType.STRING,
+                        description="Snapshot memory ID to retrieve",
+                        required=True
+                    ),
+                ],
+                handler=self._handle_memory_get_snapshot,
+                allowed_paths=["CHAT"]
+            ))
+            
+            # 3. memory_search_timeline - 時間範圍檢索
+            mcp_server.register_tool(MCPTool(
+                name="memory_search_timeline",
+                description="Search snapshots within a time range, optionally filtered by topic. Returns chronologically ordered snapshots.",
+                parameters=[
+                    ToolParameter(
+                        name="start_time",
+                        type=ToolParameterType.STRING,
+                        description="Start time in ISO format (e.g., '2025-12-01T00:00:00')",
+                        required=True
+                    ),
+                    ToolParameter(
+                        name="end_time",
+                        type=ToolParameterType.STRING,
+                        description="End time in ISO format (e.g., '2025-12-07T23:59:59')",
+                        required=True
+                    ),
+                    ToolParameter(
+                        name="topic",
+                        type=ToolParameterType.STRING,
+                        description="Optional topic filter to narrow results",
+                        required=False
+                    ),
+                ],
+                handler=self._handle_memory_search_timeline,
+                allowed_paths=["CHAT"]
+            ))
+            
+            # 4. memory_update_profile - 更新用戶檔案記憶
+            mcp_server.register_tool(MCPTool(
+                name="memory_update_profile",
+                description="Store PROFILE memory: long-term facts about the user that persist across ALL future conversations. Use when user shares: interests, preferences, personal info, habits, skills. Example: 'User likes Python' or 'User is a student'. NOT for conversation content - use snapshot for that.",
+                parameters=[
+                    ToolParameter(
+                        name="observation",
+                        type=ToolParameterType.STRING,
+                        description="The observation or information about the user to store",
+                        required=True
+                    ),
+                    ToolParameter(
+                        name="category",
+                        type=ToolParameterType.STRING,
+                        description="Category of the observation (e.g., 'preference', 'personal_info', 'habit', 'skill')",
+                        required=False
+                    ),
+                    ToolParameter(
+                        name="importance",
+                        type=ToolParameterType.STRING,
+                        description="Importance level: 'critical', 'high', 'medium', 'low' (default: 'medium')",
+                        required=False
+                    ),
+                ],
+                handler=self._handle_memory_update_profile,
+                allowed_paths=["CHAT"]
+            ))
+            
+            # 5. memory_store_observation - 儲存一般觀察
+            mcp_server.register_tool(MCPTool(
+                name="memory_store_observation",
+                description="Store user observations as PROFILE memory (alternative to memory_update_profile). Use when learning about the user during conversation (what they like, their background, preferences). Stored facts will be available in ALL future conversations.",
+                parameters=[
+                    ToolParameter(
+                        name="content",
+                        type=ToolParameterType.STRING,
+                        description="The observation content to store",
+                        required=True
+                    ),
+                    ToolParameter(
+                        name="memory_type",
+                        type=ToolParameterType.STRING,
+                        description="Type of memory: 'profile' (user-related) or 'long_term' (general context). Default: 'long_term'",
+                        required=False
+                    ),
+                    ToolParameter(
+                        name="topic",
+                        type=ToolParameterType.STRING,
+                        description="Topic or category of the observation",
+                        required=False
+                    ),
+                    ToolParameter(
+                        name="importance",
+                        type=ToolParameterType.STRING,
+                        description="Importance level: 'critical', 'high', 'medium', 'low' (default: 'medium')",
+                        required=False
+                    ),
+                ],
+                handler=self._handle_memory_store_observation,
+                allowed_paths=["CHAT"]
+            ))
+            
+            # 6. memory_create_snapshot - 創建新快照
+            mcp_server.register_tool(MCPTool(
+                name="memory_create_snapshot",
+                description="Create SNAPSHOT memory: save current conversation for later retrieval. Use at end of topic/discussion to preserve dialogue history. Different from profile - this stores WHAT WAS SAID, not facts about user. User can later ask 'what did we discuss about X' to retrieve this.",
+                parameters=[
+                    ToolParameter(
+                        name="title",
+                        type=ToolParameterType.STRING,
+                        description="Semantic title for the snapshot (e.g., 'Python Programming Discussion', 'Project Planning')",
+                        required=True
+                    ),
+                    ToolParameter(
+                        name="initial_summary",
+                        type=ToolParameterType.STRING,
+                        description="Optional: Initial summary describing the snapshot's purpose",
+                        required=False
+                    ),
+                ],
+                handler=self._handle_memory_create_snapshot,
+                allowed_paths=["CHAT"]
+            ))
+            
+            # 7. memory_add_to_snapshot - 添加消息到當前快照
+            mcp_server.register_tool(MCPTool(
+                name="memory_add_to_snapshot",
+                description="Add a new message to the current active conversation snapshot. Use this to record important dialogue exchanges in real-time.",
+                parameters=[
+                    ToolParameter(
+                        name="speaker",
+                        type=ToolParameterType.STRING,
+                        description="Who is speaking (e.g., 'user', 'assistant', 'system')",
+                        required=True
+                    ),
+                    ToolParameter(
+                        name="content",
+                        type=ToolParameterType.STRING,
+                        description="The message content to add",
+                        required=True
+                    ),
+                    ToolParameter(
+                        name="intent",
+                        type=ToolParameterType.STRING,
+                        description="Optional: The intent or purpose of the message",
+                        required=False
+                    ),
+                ],
+                handler=self._handle_memory_add_to_snapshot,
+                allowed_paths=["CHAT"]
+            ))
+            
+            # 8. memory_update_snapshot_summary - 更新快照摘要
+            mcp_server.register_tool(MCPTool(
+                name="memory_update_snapshot_summary",
+                description="Update the summary or metadata of the current conversation snapshot. Use this to refine understanding of the ongoing conversation.",
+                parameters=[
+                    ToolParameter(
+                        name="summary",
+                        type=ToolParameterType.STRING,
+                        description="Updated summary of the conversation",
+                        required=False
+                    ),
+                    ToolParameter(
+                        name="key_topics",
+                        type=ToolParameterType.STRING,
+                        description="Comma-separated list of key topics discussed",
+                        required=False
+                    ),
+                    ToolParameter(
+                        name="notes",
+                        type=ToolParameterType.STRING,
+                        description="Additional notes or observations about the conversation",
+                        required=False
+                    ),
+                ],
+                handler=self._handle_memory_update_snapshot_summary,
+                allowed_paths=["CHAT"]
+            ))
+            
+            info_log("[MEM] ✅ 成功註冊 10 個記憶管理 MCP 工具 (5 檢索 + 5 寫入，限制於 CHAT 路徑)")
+            return True
+            
+        except Exception as e:
+            error_log(f"[MEM] 註冊 MCP 工具失敗: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    async def _handle_memory_retrieve_profile(self, params: Dict[str, Any]):
+        """處理 memory_retrieve_profile 工具調用 - 獲取用戶完整資料"""
+        from modules.sys_module.mcp_server.tool_definitions import ToolResult
+        
+        try:
+            # 獲取當前 memory_token
+            memory_token = self.memory_manager.identity_manager.get_current_memory_token() if self.memory_manager else None
+            
+            if not memory_token:
+                return ToolResult.error("No active memory token found. User identity may not be set.")
+            
+            debug_log(2, f"[MEM] 檢索 PROFILE 記憶：直接取出全部（無過濾）")
+            
+            # 直接獲取所有 PROFILE 記憶，不做語義搜索過濾
+            profile_results = self.memory_manager.retrieve_memories(
+                query_text="",  # 空查詢，不做語義過濾
+                memory_token=memory_token,
+                memory_types=[MemoryType.PROFILE],
+                max_results=100,  # 取出所有 PROFILE
+                similarity_threshold=0.0  # 不過濾
+            )
+            
+            debug_log(2, f"[MEM] PROFILE 檢索結果: {len(profile_results)} 個")
+            
+            if not profile_results:
+                return ToolResult.success(
+                    message="No user profile data stored yet",
+                    data={
+                        "profiles": [],
+                        "count": 0
+                    }
+                )
+            
+            # 構建結果
+            profiles = []
+            for idx, result in enumerate(profile_results):
+                memory_entry = result.memory_entry
+                if isinstance(memory_entry, dict):
+                    profile_data = memory_entry
+                else:
+                    profile_data = memory_entry.model_dump() if hasattr(memory_entry, 'model_dump') else memory_entry.__dict__
+                
+                content = profile_data.get("content", "")
+                debug_log(2, f"[MEM] PROFILE {idx}: content='{content[:50]}...' (len={len(content)})")
+                
+                profiles.append({
+                    "content": content,
+                    "category": profile_data.get("tags", []),
+                    "importance": profile_data.get("importance", 0.5),
+                    "created_at": str(profile_data.get("created_at", "")),
+                    "memory_id": profile_data.get("memory_id")
+                })
+            
+            return ToolResult.success(
+                message=f"Retrieved {len(profiles)} user profile fact(s)",
+                data={
+                    "profiles": profiles,
+                    "count": len(profiles)
+                }
+            )
+            
+        except Exception as e:
+            error_log(f"[MEM] memory_retrieve_profile 執行失敗: {e}")
+            return ToolResult.error(f"Failed to retrieve user profile: {str(e)}")
+    
+    async def _handle_memory_search_snapshots(self, params: Dict[str, Any]):
+        """處理 memory_search_snapshots 工具調用 - 搜索對話歷史"""
+        from modules.sys_module.mcp_server.tool_definitions import ToolResult
+        
+        try:
+            query = params.get("query", "")
+            max_results = params.get("max_results", 5)
+            similarity_threshold = params.get("similarity_threshold", 0.6)
+            
+            if not query:
+                return ToolResult.error("Query parameter is required for searching conversation snapshots")
+            
+            # 獲取當前 memory_token
+            memory_token = self.memory_manager.identity_manager.get_current_memory_token() if self.memory_manager else None
+            
+            if not memory_token:
+                return ToolResult.error("No active memory token found. User identity may not be set.")
+            
+            debug_log(2, f"[MEM] 搜索 SNAPSHOT：query='{query}', threshold={similarity_threshold}")
+            
+            # 使用語義搜索檢索 SNAPSHOT
+            snapshot_results = self.memory_manager.retrieve_memories(
+                query_text=query,
+                memory_token=memory_token,
+                memory_types=[MemoryType.SNAPSHOT],
+                max_results=max_results,
+                similarity_threshold=similarity_threshold
+            )
+            
+            debug_log(2, f"[MEM] SNAPSHOT 搜索結果: {len(snapshot_results)} 個")
+            
+            if not snapshot_results:
+                return ToolResult.success(
+                    message="No relevant conversation snapshots found",
+                    data={
+                        "snapshots": [],
+                        "count": 0,
+                        "query": query
+                    }
+                )
+            
+            # 構建摘要結果
+            snapshots = []
+            for result in snapshot_results:
+                memory_entry = result.memory_entry
+                if isinstance(memory_entry, dict):
+                    snapshot_data = memory_entry
+                else:
+                    snapshot_data = memory_entry.model_dump() if hasattr(memory_entry, 'model_dump') else memory_entry.__dict__
+                
+                snapshots.append({
+                    "snapshot_id": snapshot_data.get("memory_id"),
+                    "summary": snapshot_data.get("summary", snapshot_data.get("content", "")[:200]),
+                    "topics": snapshot_data.get("key_topics", []),
+                    "created_at": str(snapshot_data.get("created_at", "")),
+                    "message_count": snapshot_data.get("message_count", 0),
+                    "similarity_score": result.similarity_score,
+                    "relevance": result.retrieval_reason
+                })
+            
+            return ToolResult.success(
+                message=f"Found {len(snapshots)} relevant conversation(s)",
+                data={
+                    "snapshots": snapshots,
+                    "count": len(snapshots),
+                    "query": query
+                }
+            )
+            
+        except Exception as e:
+            error_log(f"[MEM] memory_search_snapshots 執行失敗: {e}")
+            return ToolResult.error(f"Failed to search snapshots: {str(e)}")
+
+    async def _handle_memory_retrieve_snapshots(self, params: Dict[str, Any]):
+        """Handle memory_retrieve_snapshots tool - fetch PROFILE + SNAPSHOT memories together."""
+        from modules.sys_module.mcp_server.tool_definitions import ToolResult
+
+        try:
+            query = (params.get("query") or "").strip()
+            memory_types_str = params.get("memory_types") or "profile,snapshot"
+            max_results = params.get("max_results", 5)
+            similarity_threshold = params.get("similarity_threshold", 0.6 if query else 0.0)
+
+            type_mapping = {
+                'profile': MemoryType.PROFILE,
+                'snapshot': MemoryType.SNAPSHOT,
+                'long_term': MemoryType.LONG_TERM,
+                'preference': MemoryType.PREFERENCE
+            }
+
+            requested_types = [t.strip().lower() for t in memory_types_str.split(',')]
+            memory_types = []
+            for type_str in requested_types:
+                if type_str in type_mapping:
+                    memory_types.append(type_mapping[type_str])
+                else:
+                    return ToolResult.error(f"Invalid memory_type: '{type_str}'. Valid types: profile, snapshot, long_term, preference")
+
+            if not memory_types:
+                return ToolResult.error("At least one valid memory_type must be specified")
+
+            memory_token = self.memory_manager.identity_manager.get_current_memory_token() if self.memory_manager else None
+            if not memory_token:
+                return ToolResult.error("No active memory token found. User identity may not be set.")
+
+            has_profile = MemoryType.PROFILE in memory_types
+            has_others = any(t != MemoryType.PROFILE for t in memory_types)
+
+            results = []
+
+            if has_profile:
+                debug_log(2, "[MEM] Retrieving PROFILE memories (full set)")
+                profile_results = self.memory_manager.retrieve_memories(
+                    query_text="",
+                    memory_token=memory_token,
+                    memory_types=[MemoryType.PROFILE],
+                    max_results=100,
+                    similarity_threshold=0.0
+                )
+                results.extend(profile_results)
+                debug_log(2, f"[MEM] PROFILE 檢索結果: {len(profile_results)} 個")
+
+            if has_others:
+                other_types = [t for t in memory_types if t != MemoryType.PROFILE]
+                debug_log(2, f"[MEM] 檢索 {other_types} 記憶：query='{query}', threshold={similarity_threshold}")
+                other_results = self.memory_manager.retrieve_memories(
+                    query_text=query,
+                    memory_token=memory_token,
+                    memory_types=other_types,
+                    max_results=max_results,
+                    similarity_threshold=similarity_threshold
+                )
+                results.extend(other_results)
+                debug_log(2, f"[MEM] 其他類型檢索結果: {len(other_results)} 個")
+
+            if not results:
+                return ToolResult.success(
+                    message="No relevant conversation snapshots found",
+                    data={"snapshots": [], "count": 0, "query": query},
+                )
+
+            snapshots = []
+            for result in results:
+                memory_entry = result.memory_entry
+                if isinstance(memory_entry, dict):
+                    snapshot_data = memory_entry
+                else:
+                    snapshot_data = memory_entry.model_dump() if hasattr(memory_entry, 'model_dump') else memory_entry.__dict__
+
+                snapshots.append({
+                    "snapshot_id": snapshot_data.get("memory_id"),
+                    "summary": snapshot_data.get("summary", ""),
+                    "topics": snapshot_data.get("key_topics", []),
+                    "created_at": str(snapshot_data.get("created_at", "")),
+                    "message_count": snapshot_data.get("message_count", 0),
+                    "similarity_score": result.similarity_score,
+                    "relevance": result.retrieval_reason
+                })
+
+            return ToolResult.success(
+                message=f"Retrieved {len(snapshots)} relevant conversation snapshot(s)",
+                data={"snapshots": snapshots, "count": len(snapshots), "query": query},
+            )
+
+        except Exception as e:
+            error_log(f"[MEM] memory_retrieve_snapshots 執行失敗: {e}")
+            return ToolResult.error(f"Failed to retrieve snapshots: {str(e)}")
+
+
+    async def _handle_memory_get_snapshot(self, params: Dict[str, Any]):
+        """處理 memory_get_snapshot 工具調用"""
+        from modules.sys_module.mcp_server.tool_definitions import ToolResult
+        
+        try:
+            snapshot_id = params.get("snapshot_id", "")
+            
+            if not snapshot_id:
+                return ToolResult.error("snapshot_id parameter is required")
+            
+            # 獲取當前 memory_token
+            memory_token = self.memory_manager.identity_manager.get_current_memory_token() if self.memory_manager else None
+            
+            if not memory_token:
+                return ToolResult.error("No active memory token found")
+            
+            # 從 storage_manager 獲取快照
+            memory_entry = self.memory_manager.storage_manager.get_memory_by_id(snapshot_id, memory_token)
+            
+            if not memory_entry:
+                return ToolResult.error(f"Snapshot not found: {snapshot_id}")
+            
+            # 檢查是否為快照類型
+            if memory_entry.memory_type != MemoryType.SNAPSHOT:
+                return ToolResult.error(f"Memory {snapshot_id} is not a snapshot (type: {memory_entry.memory_type})")
+            
+            # 構建完整快照數據
+            if isinstance(memory_entry, dict):
+                snapshot_data = memory_entry
+            else:
+                snapshot_data = memory_entry.model_dump() if hasattr(memory_entry, 'model_dump') else memory_entry.__dict__
+            
+            return ToolResult.success(
+                message=f"Retrieved snapshot: {snapshot_id}",
+                data={
+                    "snapshot_id": snapshot_data.get("memory_id"),
+                    "summary": snapshot_data.get("summary", ""),
+                    "content": snapshot_data.get("content", ""),
+                    "messages": snapshot_data.get("messages", []),
+                    "topics": snapshot_data.get("key_topics", []),
+                    "created_at": str(snapshot_data.get("created_at", "")),
+                    "message_count": snapshot_data.get("message_count", 0),
+                    "stage_number": snapshot_data.get("stage_number", 0)
+                }
+            )
+            
+        except Exception as e:
+            error_log(f"[MEM] memory_get_snapshot 執行失敗: {e}")
+            return ToolResult.error(f"Failed to retrieve snapshot: {str(e)}")
+    
+    async def _handle_memory_search_timeline(self, params: Dict[str, Any]):
+        """處理 memory_search_timeline 工具調用"""
+        from modules.sys_module.mcp_server.tool_definitions import ToolResult
+        from datetime import datetime
+        
+        try:
+            start_time_str = params.get("start_time", "")
+            end_time_str = params.get("end_time", "")
+            topic = params.get("topic")
+            
+            if not start_time_str or not end_time_str:
+                return ToolResult.error("start_time and end_time parameters are required")
+            
+            # 解析時間
+            try:
+                start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00'))
+                end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00'))
+            except ValueError as e:
+                return ToolResult.error(f"Invalid time format. Use ISO format (e.g., '2025-12-01T00:00:00'): {str(e)}")
+            
+            # 獲取當前 memory_token
+            memory_token = self.memory_manager.identity_manager.get_current_memory_token() if self.memory_manager else None
+            
+            if not memory_token:
+                return ToolResult.error("No active memory token found")
+            
+            # 獲取時間範圍內的所有快照
+            all_snapshots = self.memory_manager.storage_manager.get_memories_by_type(
+                memory_token=memory_token,
+                memory_type=MemoryType.SNAPSHOT
+            )
+            
+            # 過濾時間範圍和主題
+            filtered_snapshots = []
+            for snapshot in all_snapshots:
+                snapshot_time = snapshot.created_at
+                if start_time <= snapshot_time <= end_time:
+                    # 如果有主題過濾，檢查主題
+                    if topic:
+                        if topic.lower() in ' '.join(snapshot.key_topics).lower():
+                            filtered_snapshots.append(snapshot)
+                    else:
+                        filtered_snapshots.append(snapshot)
+            
+            # 按時間排序
+            filtered_snapshots.sort(key=lambda x: x.created_at)
+            
+            # 構建結果
+            snapshots = []
+            for snapshot in filtered_snapshots:
+                snapshot_data = snapshot.model_dump() if hasattr(snapshot, 'model_dump') else snapshot.__dict__
+                snapshots.append({
+                    "snapshot_id": snapshot_data.get("memory_id"),
+                    "summary": snapshot_data.get("summary", ""),
+                    "topics": snapshot_data.get("key_topics", []),
+                    "created_at": str(snapshot_data.get("created_at", "")),
+                    "message_count": snapshot_data.get("message_count", 0)
+                })
+            
+            return ToolResult.success(
+                message=f"Found {len(snapshots)} snapshot(s) in timeline",
+                data={
+                    "snapshots": snapshots,
+                    "count": len(snapshots),
+                    "time_range": {
+                        "start": start_time_str,
+                        "end": end_time_str
+                    },
+                    "topic_filter": topic
+                }
+            )
+            
+        except Exception as e:
+            error_log(f"[MEM] memory_search_timeline 執行失敗: {e}")
+            return ToolResult.error(f"Failed to search timeline: {str(e)}")
+    
+    async def _handle_memory_update_profile(self, params: Dict[str, Any]):
+        """處理 memory_update_profile 工具調用"""
+        from modules.sys_module.mcp_server.tool_definitions import ToolResult
+        
+        try:
+            observation = params.get("observation", "")
+            category = params.get("category", "general")
+            importance_str = params.get("importance", "medium")
+            
+            if not observation:
+                return ToolResult.error("Observation parameter is required")
+            
+            # 轉換重要性等級
+            importance_map = {
+                "critical": MemoryImportance.CRITICAL,
+                "high": MemoryImportance.HIGH,
+                "medium": MemoryImportance.MEDIUM,
+                "low": MemoryImportance.LOW
+            }
+            importance = importance_map.get(importance_str.lower(), MemoryImportance.MEDIUM)
+            
+            # 獲取當前 memory_token
+            memory_token = self.memory_manager.identity_manager.get_current_memory_token() if self.memory_manager else None
+            
+            if not memory_token:
+                return ToolResult.error("No active memory token found")
+            
+            # 獲取當前 session_id
+            session_id = None
+            if self.memory_manager and self.memory_manager.current_context:
+                session_id = self.memory_manager.current_context.current_session_id
+            
+            # 儲存為 PROFILE 類型記憶
+            result = self.memory_manager.store_memory(
+                content=observation,
+                memory_token=memory_token,
+                memory_type=MemoryType.PROFILE,
+                importance=importance,
+                topic=category,
+                metadata={
+                    "category": category,
+                    "source": "llm_observation",
+                    "updated_by_tool": True
+                },
+                session_id=session_id
+            )
+            
+            if result.success:
+                return ToolResult.success(
+                    message=f"Successfully stored user profile observation",
+                    data={
+                        "memory_id": result.memory_id,
+                        "category": category,
+                        "importance": importance_str,
+                        "observation": observation[:100] + "..." if len(observation) > 100 else observation
+                    }
+                )
+            else:
+                return ToolResult.error(f"Failed to store profile: {result.message}")
+            
+        except Exception as e:
+            error_log(f"[MEM] memory_update_profile 執行失敗: {e}")
+            return ToolResult.error(f"Failed to update profile: {str(e)}")
+    
+    async def _handle_memory_store_observation(self, params: Dict[str, Any]):
+        """處理 memory_store_observation 工具調用"""
+        from modules.sys_module.mcp_server.tool_definitions import ToolResult
+        
+        try:
+            content = params.get("content", "")
+            memory_type_str = params.get("memory_type", "long_term")
+            topic = params.get("topic", "general")
+            importance_str = params.get("importance", "medium")
+            
+            if not content:
+                return ToolResult.error("Content parameter is required")
+            
+            # 轉換記憶類型
+            memory_type_map = {
+                "profile": MemoryType.PROFILE,
+                "long_term": MemoryType.LONG_TERM,
+                "preference": MemoryType.PREFERENCE
+            }
+            memory_type = memory_type_map.get(memory_type_str.lower(), MemoryType.LONG_TERM)
+            
+            # 轉換重要性等級
+            importance_map = {
+                "critical": MemoryImportance.CRITICAL,
+                "high": MemoryImportance.HIGH,
+                "medium": MemoryImportance.MEDIUM,
+                "low": MemoryImportance.LOW
+            }
+            importance = importance_map.get(importance_str.lower(), MemoryImportance.MEDIUM)
+            
+            # 獲取當前 memory_token
+            memory_token = self.memory_manager.identity_manager.get_current_memory_token() if self.memory_manager else None
+            
+            if not memory_token:
+                return ToolResult.error("No active memory token found")
+            
+            # 獲取當前 session_id
+            session_id = None
+            if self.memory_manager and self.memory_manager.current_context:
+                session_id = self.memory_manager.current_context.current_session_id
+            
+            # 儲存記憶
+            result = self.memory_manager.store_memory(
+                content=content,
+                memory_token=memory_token,
+                memory_type=memory_type,
+                importance=importance,
+                topic=topic,
+                metadata={
+                    "source": "llm_observation",
+                    "stored_by_tool": True
+                },
+                session_id=session_id
+            )
+            
+            if result.success:
+                return ToolResult.success(
+                    message=f"Successfully stored {memory_type_str} observation",
+                    data={
+                        "memory_id": result.memory_id,
+                        "memory_type": memory_type_str,
+                        "topic": topic,
+                        "importance": importance_str,
+                        "content_preview": content[:100] + "..." if len(content) > 100 else content
+                    }
+                )
+            else:
+                return ToolResult.error(f"Failed to store observation: {result.message}")
+            
+        except Exception as e:
+            error_log(f"[MEM] memory_store_observation 執行失敗: {e}")
+            return ToolResult.error(f"Failed to store observation: {str(e)}")
+    
+    async def _handle_memory_create_snapshot(self, params: Dict[str, Any]):
+        """處理 memory_create_snapshot 工具調用"""
+        from modules.sys_module.mcp_server.tool_definitions import ToolResult
+        
+        try:
+            title = params.get("title", "")
+            initial_summary = params.get("initial_summary", "")
+            
+            if not title:
+                return ToolResult.error("title parameter is required")
+            
+            # 獲取當前 memory_token 和 session_id
+            memory_token = self.memory_manager.identity_manager.get_current_memory_token() if self.memory_manager else None
+            
+            if not memory_token:
+                return ToolResult.error("No active memory token found. User identity may not be set.")
+            
+            # 獲取當前 session_id
+            session_id = None
+            if self.memory_manager and self.memory_manager.current_context:
+                session_id = self.memory_manager.current_context.current_session_id
+            
+            if not session_id:
+                return ToolResult.error("No active conversation session found")
+            
+            # 創建新快照
+            # 先設置快照的語義化標題
+            snapshot_manager = self.memory_manager.snapshot_manager
+            
+            # 開始新的快照會話（如果還沒開始）
+            if session_id not in snapshot_manager._active_snapshots:
+                snapshot_manager.start_snapshot(session_id, memory_token)
+            
+            # 獲取快照並設置標題
+            snapshot = snapshot_manager._active_snapshots.get(session_id)
+            if snapshot:
+                # 更新快照的語義化標題
+                snapshot.semantic_title = title
+                if initial_summary:
+                    snapshot.summary = initial_summary
+                
+                # 註冊到 key_manager 使其可被搜索
+                if hasattr(snapshot_manager, 'key_manager'):
+                    snapshot_manager.key_manager.register_snapshot(
+                        temp_id=f"temp_snapshot_{session_id}",
+                        key_value=title
+                    )
+                
+                info_log(f"[MEM] 創建新快照: {title} (session: {session_id})")
+                
+                return ToolResult.success(
+                    message=f"Successfully created new snapshot: '{title}'",
+                    data={
+                        "session_id": session_id,
+                        "title": title,
+                        "summary": initial_summary,
+                        "memory_token": memory_token
+                    }
+                )
+            else:
+                return ToolResult.error("Failed to access snapshot")
+            
+        except Exception as e:
+            error_log(f"[MEM] memory_create_snapshot 執行失敗: {e}")
+            return ToolResult.error(f"Failed to create snapshot: {str(e)}")
+    
+    async def _handle_memory_add_to_snapshot(self, params: Dict[str, Any]):
+        """處理 memory_add_to_snapshot 工具調用"""
+        from modules.sys_module.mcp_server.tool_definitions import ToolResult
+        
+        try:
+            speaker = params.get("speaker", "")
+            content = params.get("content", "")
+            intent = params.get("intent", "")
+            
+            if not speaker or not content:
+                return ToolResult.error("Both speaker and content parameters are required")
+            
+            # 獲取當前 session_id
+            session_id = None
+            if self.memory_manager and self.memory_manager.current_context:
+                session_id = self.memory_manager.current_context.current_session_id
+            
+            if not session_id:
+                return ToolResult.error("No active conversation session found")
+            
+            # 準備消息數據
+            from datetime import datetime
+            message_data = {
+                "speaker": speaker,
+                "content": content,
+                "timestamp": datetime.now().isoformat(),
+                "intent": [intent] if intent else []
+            }
+            
+            # 添加消息到快照
+            success = self.memory_manager.snapshot_manager.add_message_to_snapshot(
+                session_id=session_id,
+                message_data=message_data
+            )
+            
+            if success:
+                # 獲取更新後的快照信息
+                snapshot = self.memory_manager.snapshot_manager._active_snapshots.get(session_id)
+                message_count = len(snapshot.messages) if snapshot and snapshot.messages else 0
+                
+                return ToolResult.success(
+                    message=f"Successfully added message to snapshot",
+                    data={
+                        "session_id": session_id,
+                        "speaker": speaker,
+                        "message_count": message_count,
+                        "content_preview": content[:100] + "..." if len(content) > 100 else content
+                    }
+                )
+            else:
+                return ToolResult.error("Failed to add message to snapshot")
+            
+        except Exception as e:
+            error_log(f"[MEM] memory_add_to_snapshot 執行失敗: {e}")
+            return ToolResult.error(f"Failed to add message to snapshot: {str(e)}")
+    
+    async def _handle_memory_update_snapshot_summary(self, params: Dict[str, Any]):
+        """處理 memory_update_snapshot_summary 工具調用"""
+        from modules.sys_module.mcp_server.tool_definitions import ToolResult
+        
+        try:
+            summary = params.get("summary")
+            key_topics_str = params.get("key_topics")
+            notes = params.get("notes")
+            
+            if not any([summary, key_topics_str, notes]):
+                return ToolResult.error("At least one of summary, key_topics, or notes must be provided")
+            
+            # 獲取當前 session_id
+            session_id = None
+            if self.memory_manager and self.memory_manager.current_context:
+                session_id = self.memory_manager.current_context.current_session_id
+            
+            if not session_id:
+                return ToolResult.error("No active conversation session found")
+            
+            # 獲取當前快照
+            snapshot = self.memory_manager.snapshot_manager._active_snapshots.get(session_id)
+            
+            if not snapshot:
+                return ToolResult.error(f"No active snapshot found for session {session_id}")
+            
+            # 準備更新內容
+            update_content = {}
+            
+            if summary:
+                update_content["summary"] = summary
+            
+            if key_topics_str:
+                # 解析逗號分隔的主題列表
+                key_topics = [topic.strip() for topic in key_topics_str.split(",") if topic.strip()]
+                update_content["key_topics"] = key_topics
+            
+            if notes:
+                # 將 notes 添加到 metadata
+                if not hasattr(snapshot, 'metadata') or snapshot.metadata is None:
+                    snapshot.metadata = {}
+                update_content["metadata"] = {**snapshot.metadata, "llm_notes": notes}
+            
+            # 更新快照
+            from datetime import datetime
+            update_content["updated_at"] = datetime.now()
+            
+            # 使用 snapshot_manager 的更新方法
+            success = self.memory_manager.snapshot_manager.update_snapshot_content(
+                snapshot_id=session_id,
+                new_content=snapshot.content,  # 保留原始內容
+                new_summary=summary,
+                key_topics=update_content.get("key_topics"),
+                additional_metadata=update_content.get("metadata", {})
+            )
+            
+            if success:
+                return ToolResult.success(
+                    message="Successfully updated snapshot summary",
+                    data={
+                        "session_id": session_id,
+                        "updated_fields": list(update_content.keys()),
+                        "summary_preview": summary[:100] + "..." if summary and len(summary) > 100 else summary
+                    }
+                )
+            else:
+                return ToolResult.error("Failed to update snapshot summary")
+            
+        except Exception as e:
+            error_log(f"[MEM] memory_update_snapshot_summary 執行失敗: {e}")
+            return ToolResult.error(f"Failed to update snapshot summary: {str(e)}")
+            error_log(traceback.format_exc())
+            return False
+    
+    def get_performance_window(self) -> dict:
+        """獲取效能數據窗口（包含 MEM 特定指標）"""
+        window = super().get_performance_window()
+        window['total_memories_stored'] = self.total_memories_stored
+        window['total_memories_retrieved'] = self.total_memories_retrieved
+        window['memory_type_distribution'] = self.memory_type_stats.copy()
+        window['search_operations'] = self.search_operations
+        window['store_retrieve_ratio'] = (
+            self.total_memories_stored / self.total_memories_retrieved
+            if self.total_memories_retrieved > 0 else 0.0
+        )
+        return window

@@ -297,6 +297,33 @@ class GeminiWrapper:
             },
             "required": ["text"]
         }
+    
+    def _create_mischief_schema(self) -> dict:
+        """創建 MISCHIEF 模式的回應 Schema"""
+        return {
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "description": "MISCHIEF 行為序列",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "action_id": {
+                                "type": "string",
+                                "description": "行為 ID（必須來自可用行為列表）"
+                            },
+                            "params": {
+                                "type": "object",
+                                "description": "行為參數"
+                            }
+                        },
+                        "required": ["action_id", "params"]
+                    }
+                }
+            },
+            "required": ["actions"]
+        }
 
 
 
@@ -307,14 +334,18 @@ class GeminiWrapper:
         
         Args:
             prompt: 用戶輸入
-            mode: 模式（chat/work/internal）
+            mode: 模式（chat/work/internal/mischief）
             cached_content: 快取內容 ID
             tools: MCP 工具列表
-            system_instruction: 自定義系統提示詞（用於 internal 模式）
+            system_instruction: 自定義系統提示詞（用於 internal/mischief 模式）
             tool_choice: Function calling 模式 ("ANY" 強制調用 | "AUTO" 自動決定 | "NONE" 不調用)
         """
         contents = [types.Content(role="user", parts=[types.Part(text=prompt)])]
-        schema = self.response_schemas.get(mode, self.response_schemas["chat"])
+        # 支持 mischief 模式
+        if mode == "mischief":
+            schema = self._create_mischief_schema()
+        else:
+            schema = self.response_schemas.get(mode, self.response_schemas["chat"])
 
         config_params = {
             "temperature": self.temperature,

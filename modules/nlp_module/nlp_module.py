@@ -16,6 +16,7 @@ import time
 import threading
 from typing import Dict, Any, Optional, List, Union
 
+from configs.user_settings_manager import get_user_setting
 from core.bases.module_base import BaseModule
 from core.schemas import NLPModuleData
 from core.working_context import working_context_manager, ContextType
@@ -54,6 +55,11 @@ class NLPModule(BaseModule):
         # 模組狀態
         self.is_initialized = False
         
+        # 效能指標追蹤
+        self.intent_distribution = {}
+        self.total_entities_found = 0
+        self.fallback_count = 0
+        
         info_log("[NLP] NLP模組初始化")
     
     def debug(self):
@@ -88,6 +94,21 @@ class NLPModule(BaseModule):
             # 將身份管理器註冊到工作上下文
             working_context_manager.set_context_data("identity_manager", self.identity_manager)
             info_log("[NLP] 身份決策處理器已註冊到Working Context")
+            
+            # 🆕 註冊配置變更回調 - 監聽 STT 模式變更
+            from configs.user_settings_manager import user_settings_manager
+            def on_stt_config_change(key_path: str, value: Any) -> bool:
+                """當 STT 配置變更時的回調"""
+                if key_path == "interaction.speech_input.enabled":
+                    mode = "VAD" if value else "文字輸入"
+                    debug_log(2, f"[NLP] 檢測到 STT 模式變更：現在為 {mode} 模式")
+                    # 清除啟動標記，因為模式改變了
+                    working_context_manager.clear_activation_flag()
+                    debug_log(2, "[NLP] 已清除啟動標記（STT 模式已變更）")
+                return True
+            
+            user_settings_manager.register_reload_callback("nlp", on_stt_config_change)
+            debug_log(2, "[NLP] 已註冊配置變更回調（監聽 STT 模式變更）")
             
             # 初始化意圖分析器 (Stage 3 - deprecated, kept for compatibility)
             try:
@@ -166,12 +187,30 @@ class NLPModule(BaseModule):
             final_result = self._combine_results(validated_input, identity_result, 
                                                intent_result, state_result)
             
-            # 更新使用者互動記錄
-            if identity_result.get("identity"):
-                self._update_interaction_history(identity_result["identity"], final_result)
+            # 🆕 檢查是否為等待啟動狀態 - 不記錄互動
+            if intent_result.get("awaiting_activation"):
+                debug_log(2, "[NLP] 等待啟動中，不記錄互動歷史")
+            else:
+                # 更新使用者互動記錄（僅在實際處理時記錄）
+                if identity_result.get("identity"):
+                    self._update_interaction_history(identity_result["identity"], final_result)
             
             debug_log(1, f"[NLP] 處理完成：主要意圖={final_result.primary_intent}, "
                        f"身份={final_result.identity.identity_id if final_result.identity else 'None'}")
+            
+            # 更新效能指標
+            intent_type = final_result.primary_intent.name if hasattr(final_result.primary_intent, 'name') else str(final_result.primary_intent)
+            self.intent_distribution[intent_type] = self.intent_distribution.get(intent_type, 0) + 1
+            self.update_custom_metric('intent_type', intent_type)
+            self.update_custom_metric('confidence_score', final_result.overall_confidence)
+            
+            if hasattr(final_result, 'entities') and final_result.entities:
+                entity_count = len(final_result.entities)
+                self.total_entities_found += entity_count
+                self.update_custom_metric('entity_count', entity_count)
+            
+            if final_result.overall_confidence < 0.6:
+                self.fallback_count += 1
             
             # 在調用Router之前，先執行狀態轉換
             self._execute_state_transition(final_result, state_result)
@@ -344,19 +383,91 @@ class NLPModule(BaseModule):
             #     corrected_segments.append(corrected_segment)
             # segments = corrected_segments
             
-            # 🆕 CALL 過濾邏輯：如果有 CALL + 其他實質意圖，過濾掉 CALL
-            # CALL 只是過渡狀態，一旦有實質意圖（CHAT/WORK）出現，CALL 就應該被忽略
+            # 🆕 暱稱檢測：如果輸入包含 UEP 暱稱，視為包含 CALL 意圖
+            from configs.user_settings_manager import get_user_setting
+            uep_nickname = get_user_setting("general.identity.uep_nickname", None)
+            has_nickname_call = False
+            
+            if uep_nickname and uep_nickname.strip():
+                # 檢查是否包含暱稱（不區分大小寫）
+                # 🔧 使用完整單詞匹配，避免子字串誤判
+                import re
+                text_lower = input_data.text.lower()
+                nickname_lower = uep_nickname.strip().lower()
+                # 使用單詞邊界 \b 確保完整匹配（支援中文和英文）
+                pattern = r'\b' + re.escape(nickname_lower) + r'\b'
+                if re.search(pattern, text_lower):
+                    has_nickname_call = True
+                    debug_log(2, f"[NLP] 檢測到暱稱 '{uep_nickname}'，視為 CALL 意圖")
+                    
+                    # 如果 segments 中沒有 CALL，添加一個 CALL segment
+                    has_call = any(s.intent_type == IntentType.CALL for s in segments)
+                    if not has_call:
+                        from .intent_types import IntentSegment as NewIntentSegment
+                        nickname_call_seg = NewIntentSegment(
+                            segment_text=uep_nickname,
+                            intent_type=IntentType.CALL,
+                            confidence=0.95,
+                            priority=70
+                        )
+                        segments.insert(0, nickname_call_seg)
+                        debug_log(2, "[NLP] 已添加 CALL segment 至意圖列表")
+            
+            # 🆕 CALL 意圖處理邏輯（新版）
+            # 1. 如果輸入只有 CALL 意圖，設置啟動標記並中斷循環
+            # 2. 如果為複合意圖且包含 CALL，設置啟動標記並正常處理其他意圖
+            # 3. 如果沒有 CALL 且未啟動，忽略輸入（但文字輸入模式除外）
             from .intent_types import IntentSegment as NewIntentSegment
+            from core.working_context import working_context_manager
             
             filtered_segments = segments
-            if NewIntentSegment.is_compound_input(segments):
-                call_segs = [s for s in segments if s.intent_type == IntentType.CALL]
-                non_call_segs = [s for s in segments if s.intent_type != IntentType.CALL and s.intent_type != IntentType.UNKNOWN]
+            has_call = any(s.intent_type == IntentType.CALL for s in segments)
+            non_call_segs = [s for s in segments if s.intent_type != IntentType.CALL and s.intent_type != IntentType.UNKNOWN]
+            
+            # 檢查是否為 VAD 模式（基於使用者設定）
+            speech_input_enabled = get_user_setting("interaction.speech_input.enabled", True)
+            is_vad_mode = speech_input_enabled
+            
+            # 檢查是否已啟動或有活躍會話
+            is_activated = working_context_manager.is_activated()
+            from core.sessions.session_manager import session_manager
+            has_active_session = (len(session_manager.get_active_chatting_sessions()) > 0 or 
+                                len(session_manager.get_active_workflow_sessions()) > 0)
+            
+            if has_call:
+                # 設置啟動標記
+                working_context_manager.set_activation_flag(True)
+                debug_log(2, "[NLP] 檢測到 CALL 意圖，已設置啟動標記")
                 
-                # 如果有 CALL + 其他實質意圖，過濾掉 CALL
-                if call_segs and non_call_segs:
-                    debug_log(2, f"[NLP] COMPOUND with CALL: Filtering out CALL, keeping {len(non_call_segs)} substantial intent(s)")
+                if non_call_segs:
+                    # 複合意圖：過濾掉 CALL，保留其他意圖
+                    debug_log(2, f"[NLP] COMPOUND with CALL: 過濾 CALL，保留 {len(non_call_segs)} 個實質意圖")
                     filtered_segments = non_call_segs
+                else:
+                    # 只有 CALL：保留 CALL segment，但會在後續處理中中斷循環
+                    debug_log(2, "[NLP] 只有 CALL 意圖，保留並等待下次輸入")
+                    filtered_segments = segments
+            else:
+                # 沒有 CALL 意圖
+                # VAD 模式下需要檢查啟動狀態；文字輸入模式則直接處理
+                if is_vad_mode and not is_activated and not has_active_session:
+                    # VAD 模式下未啟動且無活躍會話：返回空 segments，由後續處理設置 skip_input_layer
+                    debug_log(1, "[NLP] VAD 模式下無 CALL 意圖且未啟動，返回空 segments 以中斷循環")
+                    return {
+                        "intent_segments": [],  # 空 segments 會被視為需要跳過
+                        "primary_intent": IntentType.UNKNOWN,
+                        "overall_confidence": 0.0,
+                        "entities": [],
+                        "state_transition": None,
+                        "awaiting_activation": True  # 標記為等待啟動
+                    }
+                else:
+                    # 文字輸入模式、已啟動或有活躍會話：正常處理
+                    if not is_vad_mode:
+                        debug_log(2, "[NLP] 文字輸入模式，繞過啟動檢查，正常處理")
+                    else:
+                        debug_log(2, "[NLP] 已啟動或有活躍會話，正常處理輸入")
+                    filtered_segments = segments
             
             # Determine primary intent (highest priority from filtered segments)
             if NewIntentSegment.is_compound_input(filtered_segments):
@@ -482,6 +593,13 @@ class NLPModule(BaseModule):
         """
         try:
             intent_segments = intent_result.get("intent_segments", [])
+            
+            # 🔧 檢查是否為等待啟動狀態（無 CALL 且未啟動）
+            if not intent_segments and intent_result.get("awaiting_activation"):
+                debug_log(2, "[NLP] Awaiting activation - no segments to process")
+                # ⚠️ 不設置 skip_input_layer，讓下一個循環正常進入輸入層
+                return {"added_states": [], "corrected_segments": []}
+            
             if not intent_segments:
                 debug_log(2, "[NLP] No intent segments to process")
                 return {"added_states": [], "corrected_segments": []}
@@ -1941,3 +2059,49 @@ class NLPModule(BaseModule):
             "capabilities": self.get_capabilities(),
             "description": "自然語言處理模組 - 支援增強型身份管理、記憶令牌、使用者偏好與多模組集成"
         }
+    
+    def _reload_from_user_settings(self, key_path: str, value: Any) -> bool:
+        """處理使用者設定重載回調"""
+        try:
+            from configs.user_settings_manager import get_user_setting
+            
+            if key_path == "general.identity.user_name":
+                # 更新當前 Identity 的 display_name
+                if self.identity_manager:
+                    current_identity_id = get_user_setting("general.identity.current_identity_id", "default")
+                    if current_identity_id and current_identity_id != "default":
+                        identity = self.identity_manager.identities.get(current_identity_id)
+                        if identity:
+                            old_name = identity.display_name
+                            identity.display_name = str(value)
+                            # 保存更新後的 Identity
+                            self.identity_manager._save_identity(identity)
+                            info_log(f"[NLP] Identity {current_identity_id} 名稱已更新: {old_name} → {value}")
+                        else:
+                            debug_log(2, f"[NLP] 未找到 Identity: {current_identity_id}")
+                    else:
+                        debug_log(2, "[NLP] 當前為 default 身份，無需更新")
+                return True
+                
+            elif key_path == "general.identity.uep_nickname":
+                # 更新 UEP 暱稱（即時生效，下次檢測時使用）
+                info_log(f"[NLP] UEP 暱稱已更新為: {value}")
+                return True
+                
+            return True
+            
+        except Exception as e:
+            error_log(f"[NLP] 使用者設定重載失敗: {e}")
+            return False
+    
+    def get_performance_window(self) -> dict:
+        """獲取效能數據窗口（包含 NLP 特定指標）"""
+        window = super().get_performance_window()
+        window['intent_distribution'] = self.intent_distribution.copy()
+        window['total_entities_found'] = self.total_entities_found
+        window['fallback_count'] = self.fallback_count
+        window['fallback_rate'] = (
+            self.fallback_count / window['total_requests']
+            if window['total_requests'] > 0 else 0.0
+        )
+        return window

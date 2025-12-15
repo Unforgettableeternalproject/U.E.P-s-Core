@@ -53,6 +53,9 @@ class UIModule(BaseFrontendModule):
     def __init__(self, config: dict = None):
         super().__init__(FrontendModuleType.UI)
         
+        # 🔧 禁用自動效能追蹤（UI 模組是持續運行的，不適合用請求數衡量）
+        self._enable_auto_metrics = False
+        
         self.config = config or {}
         self.is_initialized = False
         
@@ -70,6 +73,14 @@ class UIModule(BaseFrontendModule):
         # 活躍介面追蹤
         self.active_interfaces = set()
         
+        # 讀取使用者設定
+        from configs.user_settings_manager import get_user_setting, user_settings_manager
+        self.always_on_top_enabled = get_user_setting("interface.main_window.always_on_top", True)
+        self.show_debug_window = get_user_setting("interface.windows.show_debug_window", False)
+        
+        # 註冊熱重載回調
+        user_settings_manager.register_reload_callback("ui_module", self._reload_from_user_settings)
+        
         # 與其他前端模組的連接 - 直接管理
         self.ani_module = None
         self.mov_module = None
@@ -77,6 +88,11 @@ class UIModule(BaseFrontendModule):
         
         # 全局系統設定
         self.system_settings = {}
+        
+        # 效能指標追蹤
+        self.event_type_stats = {}
+        self.total_events_processed = 0
+        self.render_count = 0
         
         info_log(f"[{self.module_id}] UI 中樞模組初始化")
     
@@ -92,6 +108,16 @@ class UIModule(BaseFrontendModule):
                 self.app = QApplication(sys.argv)
             else:
                 self.app = QApplication.instance()
+            
+            # 注意：Qt 事件循環將在主線程運行（app.exec()）
+
+            # 在應用程式建立後立即套用主題（修正首次啟動未載入主題）
+            try:
+                from .user.theme_manager import theme_manager
+                theme_manager.apply_app()
+                info_log(f"[{self.module_id}] 已套用主題樣式：{theme_manager.theme.value}")
+            except Exception as e:
+                error_log(f"[{self.module_id}] 套用主題樣式失敗: {e}")
 
             # 首先初始化 ANI 和 MOV 模組
             if not self._initialize_ani_mov_modules():
@@ -118,20 +144,13 @@ class UIModule(BaseFrontendModule):
             return False
     
     def _initialize_ani_mov_modules(self) -> bool:
-        """初始化 ANI 和 MOV 模組（支援debug_api模組管理）"""
+        """初始化 ANI 和 MOV 模組（由 UI 直接透過 Registry 載入）"""
         try:
             from core.registry import get_module
 
-            # 取得或載入 ANI 模組（支援debug_api模組管理）
-            try:
-                # 首先嘗試使用debug_api的模組管理（如果可用）
-                import devtools.debug_api as debug_api
-                self.ani_module = debug_api.get_or_load_module("ani")
-                info_log(f"[{self.module_id}] 通過debug_api載入ANI模組")
-            except (ImportError, AttributeError):
-                # 回退到原始方式
-                self.ani_module = get_module("ani_module")
-                info_log(f"[{self.module_id}] 通過registry載入ANI模組")
+            # 取得或載入 ANI 模組（直接使用 Registry，確保生產環境與 debug 環境隔離）
+            self.ani_module = get_module("ani_module")
+            info_log(f"[{self.module_id}] 通過registry載入ANI模組")
                 
             if self.ani_module is None:
                 error_log(f"[{self.module_id}] 無法取得 ANI 模組")
@@ -153,16 +172,9 @@ class UIModule(BaseFrontendModule):
                     error_log(f"[{self.module_id}] ANI 模組初始化失敗")
                     return False
 
-            # 取得或載入 MOV 模組（支援debug_api模組管理）
-            try:
-                # 首先嘗試使用debug_api的模組管理（如果可用）
-                import devtools.debug_api as debug_api
-                self.mov_module = debug_api.get_or_load_module("mov")
-                info_log(f"[{self.module_id}] 通過debug_api載入MOV模組")
-            except (ImportError, AttributeError):
-                # 回退到原始方式
-                self.mov_module = get_module("mov_module")
-                info_log(f"[{self.module_id}] 通過registry載入MOV模組")
+            # 取得或載入 MOV 模組（直接使用 Registry，確保生產環境與 debug 環境隔離）
+            self.mov_module = get_module("mov_module")
+            info_log(f"[{self.module_id}] 通過registry載入MOV模組")
                 
             if self.mov_module is None:
                 error_log(f"[{self.module_id}] 無法取得 MOV 模組")
@@ -198,6 +210,30 @@ class UIModule(BaseFrontendModule):
             except Exception as e:
                 error_log(f"[{self.module_id}] 注入 ANI 到 MOV 失敗: {e}")
                 return False
+            
+            # ✅ 初始化 MOV 模組的 Qt 計時器（此時 QApplication 已就緒）
+            try:
+                if hasattr(self.mov_module, "initialize_qt_timers"):
+                    self.mov_module.initialize_qt_timers()
+                    info_log(f"[{self.module_id}] MOV 模組 Qt 計時器已初始化")
+            except Exception as e:
+                error_log(f"[{self.module_id}] 初始化 MOV Qt 計時器失敗: {e}")
+            
+            # 註：MOV 模組的使用者設定回調會在其 initialize_frontend() 中自行註冊
+
+            # 🔗 註冊前端模組到 FrontendBridge（如果存在）
+            try:
+                from core.framework import core_framework
+                if hasattr(core_framework, 'frontend_bridge') and core_framework.frontend_bridge:
+                    frontend_bridge = core_framework.frontend_bridge
+                    frontend_bridge.register_module('ui', self)
+                    frontend_bridge.register_module('ani', self.ani_module)
+                    frontend_bridge.register_module('mov', self.mov_module)
+                    info_log(f"[{self.module_id}] ✅ 前端模組已註冊到 FrontendBridge")
+                else:
+                    debug_log(2, f"[{self.module_id}] FrontendBridge 不存在，跳過註冊")
+            except Exception as e:
+                debug_log(2, f"[{self.module_id}] 註冊到 FrontendBridge 失敗: {e}")
 
             self._modules_initialized = True
             info_log(f"[{self.module_id}] ANI 和 MOV 模組初始化完成")
@@ -229,6 +265,21 @@ class UIModule(BaseFrontendModule):
                     ani_module=self.ani_module, 
                     mov_module=self.mov_module
                 )
+                
+                # 將 pet_app 設置給 MOV 模組，啟用滑鼠追蹤
+                if self.mov_module and hasattr(self.mov_module, 'set_pet_app'):
+                    self.mov_module.set_pet_app(self.interfaces[UIInterfaceType.MAIN_DESKTOP_PET])
+                    debug_log(1, f"[{self.module_id}] 已將 pet_app 設置給 MOV 模組")
+                
+                # 應用 always_on_top 設定到桌面寵物
+                if self.always_on_top_enabled:
+                    pet_window = self.interfaces[UIInterfaceType.MAIN_DESKTOP_PET]
+                    if hasattr(pet_window, 'setWindowFlags'):
+                        from PyQt5.QtCore import Qt
+                        current_flags = pet_window.windowFlags()
+                        pet_window.setWindowFlags(current_flags | Qt.WindowStaysOnTopHint)
+                        info_log(f"[{self.module_id}] 桌面寵物已設置為置頂")
+                
                 info_log(f"[{self.module_id}] 主桌面寵物介面已準備（含 ANI/MOV 模組）")
             except ImportError as e:
                 error_log(f"[{self.module_id}] 無法導入主桌面寵物介面: {e}")
@@ -251,7 +302,7 @@ class UIModule(BaseFrontendModule):
                 error_log(f"[{self.module_id}] 無法導入使用者存取介面: {e}")
             
             try:
-                from .user.user_main_window import UserMainWindow
+                from .user.user_settings import UserMainWindow
                 self.interfaces[UIInterfaceType.USER_MAIN_WINDOW] = UserMainWindow()
                 # 設定視窗預設隱藏，由 access_widget 控制顯示
                 self.interfaces[UIInterfaceType.USER_MAIN_WINDOW].hide()
@@ -288,6 +339,8 @@ class UIModule(BaseFrontendModule):
         self.register_event_handler(UIEventType.DRAG_END, self._on_drag_end)
         
         # 註冊檔案事件
+        self.register_event_handler(UIEventType.FILE_HOVER, self._on_file_hover)
+        self.register_event_handler(UIEventType.FILE_HOVER_LEAVE, self._on_file_hover_leave)
         self.register_event_handler(UIEventType.FILE_DROP, self._on_file_drop)
     
     def _connect_signals(self):
@@ -307,9 +360,62 @@ class UIModule(BaseFrontendModule):
                 info_log(f"[{self.module_id}] 介面 {interface_type.value} 已經可見")
                 return {"success": True, "interface": interface_type.value, "already_visible": True}
             
-            interface.show()
+            # 對於主介面，先準備動畫再顯示窗口
+            if interface_type == UIInterfaceType.MAIN_DESKTOP_PET:
+                # 清理所有可能的殘留狀態
+                if self.mov_module:
+                    # 清理離場動畫狀態
+                    if hasattr(self.mov_module, '_is_leaving') and self.mov_module._is_leaving:
+                        debug_log(1, f"[{self.module_id}] 清理未完成的離場動畫狀態")
+                        self.mov_module._is_leaving = False
+                        self.mov_module.resume_movement("leave_animation")
+                    
+                    # 清理入場動畫狀態
+                    if hasattr(self.mov_module, '_is_entering') and self.mov_module._is_entering:
+                        debug_log(1, f"[{self.module_id}] 清理未完成的入場動畫狀態")
+                        self.mov_module._is_entering = False
+                        self.mov_module.resume_movement("entry_animation")
+                    
+                    # 清理動畫等待狀態
+                    if hasattr(self.mov_module, '_awaiting_anim') and self.mov_module._awaiting_anim:
+                        debug_log(1, f"[{self.module_id}] 清理等待動畫: {self.mov_module._awaiting_anim}")
+                        self.mov_module._awaiting_anim = None
+                        self.mov_module._await_deadline = 0.0
+                        self.mov_module.movement_locked_until = 0.0
+                
+                # 停止 ANI 模組當前播放（清理殘留動畫）
+                if self.ani_module and hasattr(self.ani_module, 'stop'):
+                    self.ani_module.stop()
+                    debug_log(2, f"[{self.module_id}] 已停止 ANI 模組當前動畫")
+                
+                # 先觸發入場動畫（設置起始位置、開始播放動畫）
+                if self.mov_module:
+                    # 檢查入場動畫是否啟用
+                    if self.mov_module._entry_behavior_config.get("enabled", True):
+                        debug_log(1, f"[{self.module_id}] 準備入場動畫")
+                        self.mov_module._play_entry_animation()
+            
+            # 顯示窗口（此時動畫已經開始）
+            # 使用 QMetaObject.invokeMethod 確保在主線程執行
+            from PyQt5.QtCore import QMetaObject, Qt
+            
+            debug_log(1, f"[{self.module_id}] 調用 interface.show() for {interface_type.value}")
+            debug_log(1, f"[{self.module_id}] Interface 類型: {type(interface).__name__}")
+            debug_log(1, f"[{self.module_id}] Interface isVisible 前: {interface.isVisible() if hasattr(interface, 'isVisible') else 'N/A'}")
+            
+            # 線程安全的顯示調用
+            QMetaObject.invokeMethod(interface, "show", Qt.QueuedConnection)
             self.active_interfaces.add(interface_type)
             
+            # 強制處理事件，確保顯示立即生效
+            if self.app:
+                self.app.processEvents()
+            
+            # 再次處理事件以確保 invokeMethod 執行
+            if self.app:
+                self.app.processEvents()
+            
+            debug_log(1, f"[{self.module_id}] Interface isVisible 後: {interface.isVisible() if hasattr(interface, 'isVisible') else 'N/A'}")
             info_log(f"[{self.module_id}] 顯示介面: {interface_type.value}")
             return {"success": True, "interface": interface_type.value}
         except Exception as e:
@@ -319,15 +425,45 @@ class UIModule(BaseFrontendModule):
     def hide_interface(self, interface_type: UIInterfaceType) -> dict:
         """隱藏指定介面"""
         try:
+            from PyQt5.QtCore import QMetaObject, Qt
+            
             interface = self.interfaces.get(interface_type)
             if not interface:
                 return {"error": f"介面 {interface_type.value} 不存在"}
             
-            interface.hide()
-            self.active_interfaces.discard(interface_type)
-            
-            info_log(f"[{self.module_id}] 隱藏介面: {interface_type.value}")
-            return {"success": True, "interface": interface_type.value}
+            # 如果是主介面且 MOV 模組已初始化，先播放離場動畫
+            if (interface_type == UIInterfaceType.MAIN_DESKTOP_PET and 
+                self.mov_module and 
+                hasattr(self.mov_module, '_play_leave_animation')):
+                
+                debug_log(1, f"[{self.module_id}] 播放離場動畫後隱藏介面")
+                
+                # 定義隱藏回調（確保在主線程執行且狀態正確）
+                def _hide_after_animation():
+                    try:
+                        # 確保 _is_leaving 狀態已清理
+                        if hasattr(self.mov_module, '_is_leaving'):
+                            self.mov_module._is_leaving = False
+                        
+                        # 線程安全的隱藏調用
+                        if hasattr(interface, 'isVisible') and interface.isVisible():
+                            QMetaObject.invokeMethod(interface, "hide", Qt.QueuedConnection)
+                            self.active_interfaces.discard(interface_type)
+                            info_log(f"[{self.module_id}] 隱藏介面完成: {interface_type.value}")
+                        else:
+                            debug_log(2, f"[{self.module_id}] 介面已隱藏，跳過")
+                    except Exception as e:
+                        error_log(f"[{self.module_id}] 隱藏介面失敗: {e}")
+                
+                # 播放離場動畫，完成後隱藏
+                self.mov_module._play_leave_animation(_hide_after_animation)
+                return {"success": True, "interface": interface_type.value, "playing_leave_animation": True}
+            else:
+                # 其他介面直接隱藏（線程安全）
+                QMetaObject.invokeMethod(interface, "hide", Qt.QueuedConnection)
+                self.active_interfaces.discard(interface_type)
+                info_log(f"[{self.module_id}] 隱藏介面: {interface_type.value}")
+                return {"success": True, "interface": interface_type.value}
         except Exception as e:
             return {"error": str(e)}
     
@@ -409,6 +545,14 @@ class UIModule(BaseFrontendModule):
         try:
             command = data.get('command')
             
+            # 更新效能指標
+            self.total_events_processed += 1
+            self.event_type_stats[command] = self.event_type_stats.get(command, 0) + 1
+            self.update_custom_metric('event_type', command)
+            
+            if command in ['update_image', 'set_image']:
+                self.render_count += 1
+            
             # 介面管理命令
             if command == 'show_interface':
                 interface_type = data.get('interface')
@@ -429,6 +573,23 @@ class UIModule(BaseFrontendModule):
                 settings = data.get('settings', {})
                 self.update_system_settings(settings)
                 return {"success": True, "updated_settings": list(settings.keys())}
+            
+            elif command == 'move_interface':
+                # 移動介面命令（轉換為 move_window 給主桌寵）
+                interface_name = data.get('interface')
+                if interface_name == 'main_desktop_pet':
+                    interface_type = UIInterfaceType.MAIN_DESKTOP_PET
+                    interface = self.interfaces.get(interface_type)
+                    if interface and hasattr(interface, 'handle_request'):
+                        # 轉換為 move_window 命令
+                        move_data = {
+                            'command': 'move_window',
+                            'x': data.get('x'),
+                            'y': data.get('y')
+                        }
+                        return interface.handle_request(move_data)
+                    return {"error": "主桌寵介面不可用"}
+                return {"error": f"不支援的介面: {interface_name}"}
             
             # 向後相容的舊命令 (主要針對 main desktop pet)
             elif command in ['show_window', 'hide_window']:
@@ -647,6 +808,16 @@ class UIModule(BaseFrontendModule):
         self.is_dragging = False
         debug_log(2, f"[{self.module_id}] 結束拖拽")
 
+    def _on_file_hover(self, event):
+        """檔案懸停事件處理"""
+        debug_log(2, f"[{self.module_id}] 檔案懸停事件")
+        # 目前不需要特別處理，由 MOV 模組負責
+    
+    def _on_file_hover_leave(self, event):
+        """檔案離開事件處理"""
+        debug_log(2, f"[{self.module_id}] 檔案離開事件")
+        # 目前不需要特別處理，由 MOV 模組負責
+    
     def _on_file_drop(self, event):
         """檔案拖放事件處理"""
         files = event.data.get('files', [])
@@ -831,3 +1002,98 @@ class UIModule(BaseFrontendModule):
         
         super().shutdown()
         info_log(f"[{self.module_id}] UI 模組已完全關閉")
+    
+    def _reload_from_user_settings(self, key_path: str, value):
+        """處理 user_settings 熱重載"""
+        try:
+            if key_path == "interface.main_window.always_on_top":
+                old_value = self.always_on_top_enabled
+                self.always_on_top_enabled = bool(value)
+                info_log(f"[{self.module_id}] 視窗置頂: {old_value} → {self.always_on_top_enabled}")
+                # TODO: 應用到主視窗
+                
+            elif key_path == "interface.main_window.show_hitbox":
+                old_value = self.show_hitbox_enabled
+                self.show_hitbox_enabled = bool(value)
+                info_log(f"[{self.module_id}] 顯示碰撞框: {old_value} → {self.show_hitbox_enabled}")
+                # TODO: 應用到桌面寵物
+                
+            elif key_path == "interface.main_window.transparency":
+                old_value = self.transparency_enabled
+                self.transparency_enabled = bool(value)
+                info_log(f"[{self.module_id}] 透明度: {old_value} → {self.transparency_enabled}")
+                # TODO: 應用到主視窗
+                
+            elif key_path == "interface.windows.show_desktop_pet":
+                old_value = self.show_desktop_pet
+                self.show_desktop_pet = bool(value)
+                info_log(f"[{self.module_id}] 顯示桌面寵物: {old_value} → {self.show_desktop_pet}")
+                # 動態顯示/隱藏桌面寵物
+                pet = self.interfaces.get(UIInterfaceType.MAIN_DESKTOP_PET)
+                if pet:
+                    if self.show_desktop_pet:
+                        pet.show()
+                        self.active_interfaces.add(UIInterfaceType.MAIN_DESKTOP_PET)
+                    else:
+                        pet.hide()
+                        self.active_interfaces.discard(UIInterfaceType.MAIN_DESKTOP_PET)
+                        
+            elif key_path == "interface.windows.show_access_widget":
+                old_value = self.show_access_widget
+                self.show_access_widget = bool(value)
+                info_log(f"[{self.module_id}] 顯示存取小工具: {old_value} → {self.show_access_widget}")
+                # 動態顯示/隱藏存取小工具
+                widget = self.interfaces.get(UIInterfaceType.USER_ACCESS_WIDGET)
+                if widget:
+                    if self.show_access_widget:
+                        widget.show()
+                        self.active_interfaces.add(UIInterfaceType.USER_ACCESS_WIDGET)
+                    else:
+                        widget.hide()
+                        self.active_interfaces.discard(UIInterfaceType.USER_ACCESS_WIDGET)
+                        
+            elif key_path == "interface.windows.show_debug_window":
+                old_value = self.show_debug_window
+                self.show_debug_window = bool(value)
+                info_log(f"[{self.module_id}] 顯示除錯視窗: {old_value} → {self.show_debug_window}")
+                # TODO: 實現除錯視窗控制
+                
+        except Exception as e:
+            error_log(f"[{self.module_id}] 熱重載設定失敗: {e}")
+    
+    def get_performance_window(self) -> dict:
+        """獲取效能數據窗口（包含 UI 特定指標及子模組 ANI/MOV）"""
+        window = super().get_performance_window()
+        window['event_type_distribution'] = self.event_type_stats.copy()
+        window['total_events_processed'] = self.total_events_processed
+        window['render_count'] = self.render_count
+        window['render_rate'] = (
+            self.render_count / window['total_requests']
+            if window['total_requests'] > 0 else 0.0
+        )
+        
+        # 🔧 整合 ANI 和 MOV 子模組的效能數據
+        try:
+            if self.ani_module and hasattr(self.ani_module, 'get_performance_window'):
+                ani_data = self.ani_module.get_performance_window()
+                window['ani_module'] = {
+                    'total_frames': ani_data.get('total_frames_rendered', 0),
+                    'animation_duration': ani_data.get('total_animation_duration', 0.0),
+                    'current_fps': ani_data.get('current_fps', 0.0),
+                    'animation_types': ani_data.get('animation_type_distribution', {})
+                }
+        except Exception as e:
+            error_log(f"[UI] 獲取 ANI 效能數據失敗: {e}")
+            
+        try:
+            if self.mov_module and hasattr(self.mov_module, 'get_performance_window'):
+                mov_data = self.mov_module.get_performance_window()
+                window['mov_module'] = {
+                    'total_distance': mov_data.get('total_distance_moved', 0.0),
+                    'total_movements': mov_data.get('total_movements', 0),
+                    'movement_types': mov_data.get('movement_type_distribution', {})
+                }
+        except Exception as e:
+            error_log(f"[UI] 獲取 MOV 效能數據失敗: {e}")
+        
+        return window

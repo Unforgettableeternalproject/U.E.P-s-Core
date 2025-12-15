@@ -21,16 +21,17 @@ from utils.debug_helper import debug_log, info_log, error_log
 class VoiceActivityDetection:
     """語音活動檢測類"""
     
-    def __init__(self, sample_rate: int = 16000):
+    def __init__(self, sample_rate: int = 16000, sensitivity: float = 0.7, min_speech_duration: float = 0.3):
         self.sample_rate = sample_rate
         self.vad_model = None
         
-        # VAD 參數
-        self.energy_threshold = 0.0005  # 進一步降低能量閾值，提高敏感度
-        self.silence_duration_threshold = 0.8  # 降低靜音持續時間閾值（秒）
-        self.speech_duration_threshold = 0.05  # 進一步降低語音持續時間閾值（秒）
+        # VAD 參數（可透過 user_settings 調整）
+        self.sensitivity = sensitivity  # 靈敏度 0.0-1.0
+        self.energy_threshold = 0.0005 * (2.0 - sensitivity)  # 靈敏度越高，閾值越低
+        self.silence_duration_threshold = 0.8  # 靜音持續時間閾值（秒）
+        self.speech_duration_threshold = min_speech_duration  # 最小語音持續時間（秒）
         
-        info_log("[VAD] 語音活動檢測模組初始化")
+        info_log(f"[VAD] 語音活動檢測模組初始化 (靈敏度: {sensitivity:.2f}, 最小語音時長: {min_speech_duration:.2f}s)")
     
     def initialize(self) -> bool:
         """初始化 VAD 模型"""
@@ -109,6 +110,20 @@ class VoiceActivityDetection:
                         })
                     current_state = "silence"
                     current_start_time = time_stamp
+            
+            # 🔧 BUGFIX: 如果音頻末尾還在說話，補充一個 speech_end 事件
+            if current_state == "speech":
+                final_duration = (n_windows * window_size) - current_start_time
+                if final_duration >= self.speech_duration_threshold:
+                    events.append({
+                        'event_type': 'speech_end',
+                        'timestamp': n_windows * window_size,
+                        'confidence': 0.8,
+                        'energy_level': 0.0,
+                        'duration': final_duration,
+                        'is_incomplete': True  # 標記為未完成的語音片段
+                    })
+                    debug_log(3, f"[VAD] 檢測到未完成的語音片段: {final_duration:.3f}s")
             
             debug_log(3, f"[VAD] 檢測到 {len(events)} 個語音事件")
             return events

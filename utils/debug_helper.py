@@ -6,7 +6,9 @@
 """
 
 from configs.config_loader import load_config
-from utils.logger import logger
+# 重要：使用 get_logger() 以確保在首次除錯日誌輸出前即啟用文件日誌 (避免 console 關閉時日誌丟失)
+from utils.logger import get_logger
+logger = get_logger()
 
 # 除錯等級常量定義
 KEY_LEVEL = 1  # 關鍵事件、錯誤和重要狀態變更 (極少)

@@ -211,7 +211,7 @@ class TestContextCaching:
         stats = cache_manager.get_cache_statistics()
         assert isinstance(stats, dict), "統計應該是字典格式"
         # 檢查實際的統計結構
-        expected_keys = ['gemini_caches', 'local_cache', 'overall']
+        expected_keys = ['explicit_cache', 'local_cache', 'overall', 'system']
         for key in expected_keys:
             assert key in stats, f"應該有 {key} 統計"
     
@@ -223,10 +223,16 @@ class TestContextCaching:
         stats = cache_manager.get_cache_statistics()
         
         # 驗證快取統計結構
-        expected_keys = ['gemini_caches', 'local_cache', 'overall']
+        expected_keys = ['explicit_cache', 'local_cache', 'overall', 'system']
         for key in expected_keys:
             assert key in stats, f"應該有 {key} 統計"
-        print(f"✅ 快取統計: {stats}")
+        
+        # 驗證顯性快取統計的內部結構
+        assert 'hit_count' in stats['explicit_cache'], "顯性快取應有命中計數"
+        assert 'miss_count' in stats['explicit_cache'], "顯性快取應有未命中計數"
+        assert 'cache_names' in stats['explicit_cache'], "顯性快取應有快取名稱列表"
+        
+        print(f"✅ 快取統計驗證通過")
     
     def test_prompt_manager_integration(self, llm_module):
         """測試 PromptManager 與 CacheManager 整合"""

@@ -336,9 +336,10 @@ class ModuleInvocationCoordinator:
         """
         循環完成事件處理器
         
-        處理兩個任務：
+        處理三個任務：
         1. 清理去重鍵 - 移除已完成 cycle 的所有 layer 鍵
-        2. 檢查會話結束 - 雙條件終止機制的第二個條件
+        2. 清理待機 GS 標記 - 若無狀態變更，表示 NLP 拒絕輸入
+        3. 檢查會話結束 - 雙條件終止機制的第二個條件
         
         注意: 這裡的 session_id 是 GS (General Session)
         """
@@ -358,7 +359,24 @@ class ModuleInvocationCoordinator:
                 info_log(f"[ModuleCoordinator] 🧹 CYCLE_COMPLETED 清理: 移除 {len(keys_to_remove)} 個去重鍵 (flow={session_id}:{cycle_index})")
                 debug_log(3, f"[ModuleCoordinator] 剩餘去重鍵數量: {len(self._layer_dedupe_keys)}")
             
-            # 任務 2: 檢查會話結束請求（雙條件終止機制）
+            # 任務 2: 清理待機 GS 標記（若有的話）
+            # 邏輯: 若循環完成但系統仍在 IDLE 狀態，表示 NLP 拒絕輸入（沒有 CALL 意圖）
+            # 此時應清除待機 GS 標記，防止系統進入阻滯狀態
+            try:
+                from core.states.state_manager import state_manager, UEPState
+                from core.controller import unified_controller
+                
+                current_state = state_manager.get_current_state()
+                if current_state == UEPState.IDLE and unified_controller and hasattr(unified_controller, '_pending_gs') and unified_controller._pending_gs:
+                    # 系統仍在 IDLE 狀態，表示 NLP 拒絕了待機的輸入
+                    debug_log(2, "[ModuleCoordinator] 🧹 循環完成但系統未進入非 IDLE 狀態，清除待機 GS 標記（NLP 拒絕輸入）")
+                    unified_controller._pending_gs = False
+                    unified_controller._pending_gs_data = None
+                    info_log("[ModuleCoordinator] ✅ 待機 GS 標記已清除（輸入被 NLP 拒絕，無 CALL 意圖）")
+            except Exception as e:
+                debug_log(2, f"[ModuleCoordinator] 清理待機 GS 標記失敗: {e}")
+            
+            # 任務 3: 檢查會話結束請求（雙條件終止機制）
             if self._pending_session_end:
                 pending = self._pending_session_end
                 pending_gs_id = pending.get('gs_id')
@@ -451,6 +469,25 @@ class ModuleInvocationCoordinator:
         try:
             info_log("[ModuleCoordinator] 輸入層 → 處理層轉換")
             
+            # 🔧 檢查是否應該跳過輸入層（例如：未啟動且無 CALL）
+            from core.working_context import working_context_manager
+            should_skip = working_context_manager.should_skip_input_layer()
+            
+            if should_skip:
+                skip_reason = working_context_manager.get_skip_reason() or "等待啟動"
+                info_log(f"[ModuleCoordinator] ⏭️ 跳過處理層 (原因: {skip_reason})，主動完成循環")
+                
+                # 重置跳過標記
+                working_context_manager.set_skip_input_layer(False)
+                
+                # 主動完成循環
+                from core.system_loop import system_loop
+                if system_loop:
+                    system_loop._complete_cycle(publish_event=True)
+                    debug_log(2, "[ModuleCoordinator] 已完成循環並推進 cycle_index")
+                
+                return True
+            
             # 從 NLP 結果獲取主要意圖
             nlp_result = input_data.get('nlp_result', {})
             
@@ -538,6 +575,19 @@ class ModuleInvocationCoordinator:
                 # 準備處理層調用請求（根據當前狀態決定 WORK/CHAT 路徑）
                 requests = self._prepare_processing_requests(current_state.value, input_data)
                 
+                # 🔧 特殊情況：如果沒有模組需要調用（例如 CALL 意圖在 IDLE 狀態）
+                # 需要主動完成循環以推進 cycle_index，避免下次輸入被去重機制擋住
+                if len(requests) == 0:
+                    info_log("[ModuleCoordinator] 無模組需要調用，主動完成循環")
+                    
+                    # 導入 SystemLoop 並完成循環
+                    from core.system_loop import system_loop
+                    if system_loop:
+                        system_loop._complete_cycle(publish_event=True)
+                        debug_log(2, "[ModuleCoordinator] 已完成循環並推進 cycle_index")
+                    
+                    return True  # 返回 True 表示處理完成（雖然沒有調用模組）
+                
                 # 執行處理層調用
                 responses = self.invoke_multiple_modules(requests)
                 
@@ -588,61 +638,78 @@ class ModuleInvocationCoordinator:
                 priority=2
             )
             
-            # 執行輸出層調用
-            response = self.invoke_module(output_request)
+            # 🔧 異步執行輸出層調用，避免阻塞事件分發線程
+            # 這樣 MOV 可以及時收到 PROCESSING_LAYER_COMPLETE 並播放動畫
+            import threading
             
-            success = response.result == InvocationResult.SUCCESS
-            if success:
-                info_log("[ModuleCoordinator] 輸出層完成，三層流程結束")
-                # ✅ TTS 模組已經通過事件總線發布 OUTPUT_LAYER_COMPLETE 事件
-                # ✅ SystemLoop 會自動接收並處理，不需要重複通知
-                debug_log(2, "[ModuleCoordinator] 等待 TTS 發布的 OUTPUT_LAYER_COMPLETE 事件完成循環")
-                
-                # 🆕 Task 5: 檢查會話結束請求（雙條件終止機制）
-                llm_output = processing_data.get('llm_output', {})
-                session_control = llm_output.get('metadata', {}).get('session_control')
-                
-                debug_log(2, f"[ModuleCoordinator] 檢查 session_control: {session_control}")
-                
-                # Support multiple formats:
-                # 1. {'action': 'end_session'}
-                # 2. {'session_ended': True}
-                # 3. {'should_end_session': True} (from system notifications)
-                should_end = (session_control and 
-                             (session_control.get('action') == 'end_session' or 
-                              session_control.get('session_ended') is True or
-                              session_control.get('should_end_session') is True))
-                
-                debug_log(2, f"[ModuleCoordinator] should_end 判定結果: {should_end}")
-                
-                if should_end:
-                    # Try different reason keys for compatibility
-                    reason = (session_control.get('reason') or 
-                             session_control.get('end_reason') or 
-                             'LLM requested')
-                    info_log(f"[ModuleCoordinator] 🔚 LLM 請求結束會話 (原因: {reason})")
+            def _async_invoke_output():
+                """異步執行輸出層調用"""
+                try:
+                    response = self.invoke_module(output_request)
+                    success = response.result == InvocationResult.SUCCESS
                     
-                    # ✅ 標記所有活躍的工作流會話待結束（不是立即結束）
-                    # 會話將在本次循環的 CYCLE_COMPLETED 時由 Controller 結束
-                    from core.sessions.session_manager import unified_session_manager
-                    
-                    active_ws = unified_session_manager.get_active_workflow_session_ids()
-                    for ws_id in active_ws:
-                        unified_session_manager.mark_workflow_session_for_end(ws_id, reason=reason)
-                        debug_log(2, f"[ModuleCoordinator] ✅ 已標記 WS 待結束: {ws_id}")
-                    
-                    # 從 processing_data 頂層獲取 session_id (GS ID)
-                    gs_id = processing_data.get('session_id', 'unknown')
-                    self._pending_session_end = {
-                        'reason': reason,
-                        'session_control': session_control,
-                        'gs_id': gs_id
-                    }
-                    info_log(f"[ModuleCoordinator] ✅ 已標記會話結束請求，等待循環完成 (gs_id={gs_id})")
-            else:
-                error_log(f"[ModuleCoordinator] 輸出層調用失敗: {response.error_message}")
+                    if success:
+                        info_log("[ModuleCoordinator] 輸出層完成，三層流程結束")
+                        # ✅ TTS 模組已經通過事件總線發布 OUTPUT_LAYER_COMPLETE 事件
+                        # ✅ SystemLoop 會自動接收並處理，不需要重複通知
+                        debug_log(2, "[ModuleCoordinator] 等待 TTS 發布的 OUTPUT_LAYER_COMPLETE 事件完成循環")
+                        
+                        # 🆕 Task 5: 檢查會話結束請求（雙條件終止機制）
+                        llm_output = processing_data.get('llm_output', {})
+                        session_control = llm_output.get('metadata', {}).get('session_control')
+                        
+                        debug_log(2, f"[ModuleCoordinator] 檢查 session_control: {session_control}")
+                        
+                        # Support multiple formats:
+                        # 1. {'action': 'end_session'}
+                        # 2. {'session_ended': True}
+                        # 3. {'should_end_session': True} (from system notifications)
+                        should_end = (session_control and 
+                                     (session_control.get('action') == 'end_session' or 
+                                      session_control.get('session_ended') is True or
+                                      session_control.get('should_end_session') is True))
+                        
+                        debug_log(2, f"[ModuleCoordinator] should_end 判定結果: {should_end}")
+                        
+                        if should_end:
+                            # Try different reason keys for compatibility
+                            reason = (session_control.get('reason') or 
+                                     session_control.get('end_reason') or 
+                                     'LLM requested')
+                            info_log(f"[ModuleCoordinator] 🔚 LLM 請求結束會話 (原因: {reason})")
+                            
+                            # ✅ 標記所有活躍的工作流會話待結束（不是立即結束）
+                            # 會話將在本次循環的 CYCLE_COMPLETED 時由 Controller 結束
+                            from core.sessions.session_manager import unified_session_manager
+                            
+                            active_ws = unified_session_manager.get_active_workflow_session_ids()
+                            for ws_id in active_ws:
+                                unified_session_manager.mark_workflow_session_for_end(ws_id, reason=reason)
+                                debug_log(2, f"[ModuleCoordinator] ✅ 已標記 WS 待結束: {ws_id}")
+                            
+                            # 從 processing_data 頂層獲取 session_id (GS ID)
+                            gs_id = processing_data.get('session_id', 'unknown')
+                            self._pending_session_end = {
+                                'reason': reason,
+                                'session_control': session_control,
+                                'gs_id': gs_id
+                            }
+                            info_log(f"[ModuleCoordinator] ✅ 已標記會話結束請求，等待循環完成 (gs_id={gs_id})")
+                    else:
+                        error_log(f"[ModuleCoordinator] 輸出層調用失敗: {response.error_message}")
+                        
+                except Exception as e:
+                    error_log(f"[ModuleCoordinator] 異步輸出層調用失敗: {e}")
+                    import traceback
+                    error_log(traceback.format_exc())
             
-            return success
+            # 啟動異步線程
+            output_thread = threading.Thread(target=_async_invoke_output, daemon=True, name="OutputLayer-TTS")
+            output_thread.start()
+            debug_log(2, "[ModuleCoordinator] 🚀 已異步啟動輸出層調用，事件處理器立即返回")
+            
+            # 立即返回 True，讓事件處理器繼續處理其他訂閱者（如 MOV）
+            return True
             
         except Exception as e:
             error_log(f"[ModuleCoordinator] 處理層 → 輸出層轉換失敗: {e}")
@@ -1005,24 +1072,17 @@ class ModuleInvocationCoordinator:
                     )
                 )
             else:
-                # WORK路徑：LLM + SYS (不需要 MEM)
-                info_log("[ModuleCoordinator] WORK 路徑: LLM + SYS (基於當前狀態)")
+                # WORK路徑：僅 LLM (透過 MCP function calling 直接調用工具)
+                # LLM 會通過 MCP 決定要調用哪個工具，無需 SYS 作為額外模組
+                info_log("[ModuleCoordinator] WORK 路徑: LLM (LLM 透過 MCP 直接調用工具)")
                 requests.extend([
                     ModuleInvocationRequest(
                         target_module="llm",
                         input_data=self._prepare_llm_input(input_data),
                         source_module="input_layer",
-                        reasoning="工作模式任務分析",
+                        reasoning="工作模式任務分析 - LLM 通過 MCP 執行工具",
                         layer=ProcessingLayer.PROCESSING,
                         priority=4
-                    ),
-                    ModuleInvocationRequest(
-                        target_module="sys",
-                        input_data=self._prepare_sys_input(input_data),
-                        source_module="input_layer",
-                        reasoning="系統工作流執行",
-                        layer=ProcessingLayer.PROCESSING,
-                        priority=3
                     )
                 ])
         else:

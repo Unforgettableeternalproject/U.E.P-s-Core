@@ -1,5 +1,5 @@
 metadata:
-  system_version: v0.7.4
+  system_version: v0.9.4
 modules_enabled:
   stt_module: true
   nlp_module: true
@@ -17,23 +17,28 @@ modules_refactored:
   llm_module: true
   tts_module: true
   sys_module: true
-  ui_module: false
-  ani_module: false
-  mov_module: false
+  ui_module: true
+  ani_module: true
+  mov_module: true
 logging:
   enabled: true
   log_level: DEBUG
   log_dir: logs
   enable_split_logs: false
-  enable_console_output: true  # 控制是否將日誌輸出到終端（測試時建議關閉）
+  enable_console_output: false
 debug:
-  enabled: true
-  debug_level: 3
+  enabled: false
+  debug_level: 4
+  enable_frontend: true
 system:
   main_loop_interval: 0.1
   shutdown_timeout: 5.0
-  input_mode:
-    mode: vad # 可選值：vad、text
-    text_input_prompt: '>>> '
-  media:
-    music_folder: "E:\\Music\\My Songs\\Full Playlist"  # null 表示使用系統預設的 ~/Music 資料夾，可設定為自訂路徑
+monitoring:
+  # 性能監控配置
+  metrics_collection_interval: 10  # 秒，系統性能快照收集間隔
+  performance_history_size: 100  # 保留的歷史快照數量
+  module_inactive_threshold: 300  # 秒，模組被視為不活躍的閾值（5分鐘）
+  module_failing_threshold: 600  # 秒，模組被視為故障的閾值（10分鐘）
+  error_rate_degraded_threshold: 0.2  # 錯誤率閾值，超過視為降級（20%）
+  error_rate_failing_threshold: 0.5  # 錯誤率閾值，超過視為故障（50%）
+  max_module_errors: 50  # 每個模組保留的最大錯誤記錄數

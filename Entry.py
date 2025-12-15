@@ -127,12 +127,66 @@ if __name__ == "__main__":
             debug_api.set_loading_mode(preload=False)
             print("✅ 已設定為按需載入模式")
             
+            # 初始化核心管理器（不啟動系統循環，供前端測試使用）
+            print("📦 初始化核心管理器...")
+            try:
+                # 基礎核心管理器
+                from core.status_manager import status_manager
+                print("  ✓ StatusManager 已就緒")
+                
+                from core.working_context import working_context_manager
+                print("  ✓ WorkingContextManager 已就緒")
+                
+                from core.sessions import session_manager
+                print("  ✓ SessionManager 已就緒")
+                
+                # 狀態管理相關
+                from core.states.state_manager import state_manager
+                from core.states.sleep_manager import sleep_manager
+                from core.states.state_queue import get_state_queue_manager
+                from core.event_bus import event_bus
+                
+                # 手動創建 state_queue 實例
+                state_queue = get_state_queue_manager()
+                
+                # 啟動 EventBus 處理線程
+                event_bus.start()
+                
+                print("  ✓ StateManager 已就緒")
+                print("  ✓ SleepManager 已就緒")
+                print("  ✓ StateQueue 已就緒")
+                print("  ✓ EventBus 已就緒")
+                print("💡 所有核心管理器已初始化（無系統循環，僅供前端測試）")
+                
+                # 🔗 初始化 FrontendBridge（協調器模式 - 僅事件轉發，無後端整合）
+                try:
+                    from core.frontend_bridge import FrontendBridge
+                    from core.framework import core_framework
+                    
+                    frontend_bridge = FrontendBridge()
+                    # coordinator_only=True: 僅作為事件協調器，不執行後端整合
+                    if frontend_bridge.initialize(coordinator_only=True):
+                        # 註冊到 core_framework 讓其他模組可以訪問
+                        core_framework.frontend_bridge = frontend_bridge
+                        print("  ✓ FrontendBridge 已就緒（協調器模式）")
+                    else:
+                        print("  ⚠️ FrontendBridge 初始化失敗，前端模組將無法接收系統事件")
+                except Exception as e:
+                    print(f"  ⚠️ FrontendBridge 初始化異常: {e}")
+                    print("     前端模組將無法接收系統事件")
+                    
+            except Exception as e:
+                print(f"⚠️ 核心管理器初始化失敗: {e}")
+                print("   部分後端功能可能無法使用，但前端測試仍可進行")
+            
             # 不預先載入任何模組，直接啟動除錯介面
             # 讓使用者在除錯介面中手動決定載入哪些模組
             from modules.ui_module.debug import launch_debug_interface
             launch_debug_interface(prefer_gui=True, blocking=True)
         except Exception as e:
             print(f"❌ 圖形除錯介面啟動失敗: {e}")
+            import traceback
+            traceback.print_exc()
             sys.exit(1)
         sys.exit(0)
 

@@ -393,6 +393,7 @@ train/**/data
 # Logs and Memories
 logs/*
 memory/*
+clipboard_history.json
 
 # Wheels
 wheel/*
@@ -420,5 +421,15 @@ deprecated/*
 *.lib
 *.pyd
 
-#Ignore insiders AI rules
-.github\instructions\codacy.instructions.md
+# Ignore insiders AI rules
+.github/instructions/codacy.instructions.md
+**/.github/prompts/*
+
+# Builds
+build/*
+release/*
+dist/*
+*.toc
+*.spec
+*.exe
+*.zip

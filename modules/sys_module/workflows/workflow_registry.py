@@ -59,8 +59,10 @@ async def _wrap_workflow_handler(workflow_type: str, params: dict, sys_module) -
     )
     
     # 將字典結果轉換為 ToolResult
-    if result.get("status") == "error":
-        return ToolResult.error(result.get("message", "工作流啟動失敗"))
+    # ✅ 檢查 error 和 failed 狀態
+    status = result.get("status")
+    if status in ("error", "failed"):
+        return ToolResult.error(result.get("message", "工作流執行失敗"))
     else:
         return ToolResult.success(
             message=result.get("message", f"工作流 '{workflow_type}' 已啟動"),
@@ -213,12 +215,13 @@ def register_all_workflows(mcp_server: 'MCPServer', sys_module) -> None:
                 )
             ]
             
-            # 註冊工具
+            # 註冊工具（工作流工具只能在 WORK 路徑使用）
             mcp_server.register_tool(MCPTool(
                 name=workflow_name,
                 description=tool_description,
                 parameters=parameters,
-                handler=lambda params, wf_name=workflow_name: _wrap_workflow_handler(wf_name, params, sys_module)
+                handler=lambda params, wf_name=workflow_name: _wrap_workflow_handler(wf_name, params, sys_module),
+                allowed_paths=["WORK"]  # 工作流工具只在 WORK 路徑允許
             ))
             
             registered_count += 1

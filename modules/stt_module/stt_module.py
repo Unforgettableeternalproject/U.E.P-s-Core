@@ -11,6 +11,8 @@ import os
 import warnings
 from typing import Optional, Dict, Any, cast
 warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*forced_decoder_ids.*")
+warnings.filterwarnings("ignore", message=".*past_key_values.*")
 
 # 新的核心依賴
 import torch
@@ -20,6 +22,7 @@ from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 from core.bases.module_base import BaseModule
 from utils.debug_helper import debug_log, info_log, error_log
 from configs.config_loader import load_module_config
+from configs.user_settings_manager import user_settings_manager, get_user_setting
 from core.schemas import STTModuleData
 from .schemas import STTInput, STTOutput, ActivationMode, SpeakerInfo
 
@@ -65,6 +68,8 @@ def correct_stt(text):
 
 class STTModule(BaseModule):
     def __init__(self, config=None, working_context_manager=None, result_callback=None):
+        super().__init__()
+        
         self.config = config or load_module_config("stt_module")
         
         # 工作上下文管理器
@@ -74,8 +79,11 @@ class STTModule(BaseModule):
         self.result_callback = result_callback
         
         # 基本配置
-        self.device_index = self.config.get("device_index", None)  # 允許自動選擇麥克風
+        # 優先從 user_settings.yaml 讀取麥克風索引
+        user_mic_index = get_user_setting("interaction.speech_input.microphone_device_index", None)
+        self.device_index = user_mic_index if user_mic_index is not None else self.config.get("device_index", None)
         self.phrase_time_limit = self.config.get("phrase_time_limit", 5)
+        debug_log(2, f"[STT] 麥克風裝置索引: {self.device_index} (來源: {'user_settings' if user_mic_index is not None else 'stt_module'})")
         self.sample_rate = 16000  # Whisper 標準採樣率
         
         # Transformers Whisper 模型配置
@@ -112,11 +120,26 @@ class STTModule(BaseModule):
             "frames_per_buffer": 1024,
         }
         
-        # 當前狀態
-        self._current_mode = ActivationMode.MANUAL
+        # 🔧 從 user_settings 讀取啟動模式（預設為 MANUAL）
+        enable_continuous = get_user_setting("interaction.speech_input.enable_continuous_mode", False)
+        self._current_mode = ActivationMode.CONTINUOUS if enable_continuous else ActivationMode.MANUAL
         self._listening_active = False
+        
+        # VAD 和語音設定（從 user_settings 讀取，供熱重載使用）
+        self.vad_sensitivity = float(get_user_setting("interaction.speech_input.vad_sensitivity", 0.7))
+        self.min_speech_duration = float(get_user_setting("interaction.speech_input.min_speech_duration", 0.3))
+        self.wake_word_confidence = float(get_user_setting("interaction.speech_input.wake_word_confidence", 0.8))
 
         self.is_initialized = False
+        
+        # 效能指標追蹤
+        self.total_audio_duration = 0.0
+        self.total_recognitions = 0
+        self.vad_triggers = 0
+        
+        # 註冊使用者設定熱重載回調（在 initialize 之前註冊，避免循環）
+        user_settings_manager.register_reload_callback("stt_module", self._reload_from_user_settings)
+        
         info_log("[STT] Transformers Whisper + pyannote 架構模組初始化完成")
 
     def debug(self):
@@ -153,6 +176,9 @@ class STTModule(BaseModule):
                 use_safetensors=True
             )
             self.model.to(self.device)
+            
+            # 清除 forced_decoder_ids 以避免與 task="translate" 衝突
+            self.model.config.forced_decoder_ids = None
             
             # 載入處理器
             info_log("[STT] 載入處理器...")
@@ -212,6 +238,10 @@ class STTModule(BaseModule):
     def handle(self, data: dict = {}) -> dict:
         """處理 STT 請求"""
         try:
+            # 🔧 文字模式特殊處理（直接調用實現方法）
+            if data.get("mode") == "text" and "text" in data:
+                return self._handle_text_input_impl(data["text"])
+            
             # 直接轉換為模組內部使用的格式
             validated = STTInput(**data)
             debug_log(1, f"[STT] 處理請求: {validated.mode}")
@@ -251,6 +281,19 @@ class STTModule(BaseModule):
                     stt_output.error = "未識別到有效語音內容"
             else:
                 stt_output.error = None
+            
+            # 更新效能指標
+            self.total_recognitions += 1
+            if stt_output.text and stt_output.text.strip():
+                self.update_custom_metric('recognition_confidence', stt_output.confidence)
+                self.update_custom_metric('speaker_id', stt_output.speaker_id or 'unknown')
+                self.update_custom_metric('text_length', len(stt_output.text))
+            
+            # 如果有音頻時長信息
+            if validated.mode == ActivationMode.MANUAL:
+                audio_duration = validated.duration if hasattr(validated, 'duration') and validated.duration else self.phrase_time_limit
+                self.total_audio_duration += audio_duration
+                self.update_custom_metric('audio_duration', audio_duration)
             
             # 返回字典格式
             return stt_output.model_dump()
@@ -294,6 +337,18 @@ class STTModule(BaseModule):
         Returns:
             dict: 統一格式的輸出結果
         """
+        # 🔧 通過 handle() 方法以自動記錄效能指標
+        return self.handle({
+            "mode": "text",
+            "text": text
+        })
+    
+    def _handle_text_input_impl(self, text: str) -> dict:
+        """
+        處理文字輸入的實際實現
+        
+        （原 handle_text_input 的邏輯）
+        """
         try:
             if not text or text.isspace():
                 debug_log(2, "[STT] 文字輸入為空，忽略")
@@ -320,7 +375,7 @@ class STTModule(BaseModule):
                 debug_log(2, f"[STT] 檢測到活躍會話，檢查 cycle tracking")
                 # 有活躍會話，檢查是否有任何 cycle 正在處理
                 if hasattr(system_loop, '_cycle_layer_tracking'):
-                    max_wait_time = 30.0  # 最多等待 30 秒
+                    max_wait_time = 60.0  # 最多等待 60 秒
                     wait_start = time.time()
                     
                     with system_loop._cycle_tracking_lock:
@@ -351,6 +406,21 @@ class STTModule(BaseModule):
                 debug_log(2, f"[STT] 沒有活躍會話，直接接受輸入")
             
             info_log(f"[STT] 文字輸入模式: '{text}'")
+            
+            # 🎤 發布 INTERACTION_STARTED 事件（與 VAD 模式保持一致）
+            try:
+                from core.event_bus import event_bus, SystemEvent
+                event_bus.publish(
+                    SystemEvent.INTERACTION_STARTED,
+                    {
+                        "source": "stt_text_input",
+                        "input_mode": "text"
+                    },
+                    source="stt_module"
+                )
+                debug_log(2, "[STT] 已發布 INTERACTION_STARTED 事件（文字輸入模式）")
+            except Exception as e:
+                debug_log(2, f"[STT] 無法發布 INTERACTION_STARTED 事件: {e}")
             
             # 創建輸出物件 - 不包含說話人資訊
             output = STTOutput(
@@ -743,6 +813,23 @@ class STTModule(BaseModule):
             total_duration = len(merged_audio) / self.sample_rate
             info_log(f"[STT] 合併後音頻長度: {total_duration:.2f} 秒")
             
+            # 發布 INTERACTION_STARTED 事件，通知前端使用者開始互動
+            try:
+                from core.event_bus import event_bus, SystemEvent
+                event_bus.publish(
+                    SystemEvent.INTERACTION_STARTED,
+                    {
+                        "module": "stt",
+                        "input_type": "voice",
+                        "audio_duration": total_duration,
+                        "num_chunks": len(audio_buffer)
+                    },
+                    source="stt_module"
+                )
+                debug_log(2, "[STT] 已發布 INTERACTION_STARTED 事件")
+            except Exception as e:
+                debug_log(2, f"[STT] 無法發布 INTERACTION_STARTED 事件: {e}")
+            
             # 將音頻數據添加到語者上下文
             if context_id and self.working_context_manager:
                 self.working_context_manager.add_data_to_context(
@@ -955,3 +1042,104 @@ class STTModule(BaseModule):
         except Exception as e:
             error_log(f"[STT] 檢查 declared_identity 失敗: {e}")
             return False
+    
+    def _reload_from_user_settings(self, key_path: str, value: Any) -> bool:
+        """
+        從 user_settings.yaml 重載設定
+        
+        Args:
+            key_path: 設定路徑
+            value: 新值
+            
+        Returns:
+            是否成功
+        """
+        try:
+            info_log(f"[STT] 🔄 重載使用者設定: {key_path} = {value}")
+            
+            if key_path == "interaction.speech_input.enabled":
+                # STT 模組開關（需要重啟音頻流）
+                if not value and self._listening_active:
+                    info_log("[STT] STT 已禁用，停止監聽")
+                    self.should_stop_listening = True
+                    if self.audio_stream:
+                        self.audio_stream.stop_stream()
+                        self.audio_stream.close()
+                        self.audio_stream = None
+                elif value and not self._listening_active:
+                    info_log("[STT] STT 已啟用，準備開始監聽")
+                    # 實際啟動由外部控制
+                    
+            elif key_path == "interaction.speech_input.microphone_device_index":
+                # 麥克風裝置索引（需要重新初始化音頻流）
+                old_index = self.device_index
+                self.device_index = int(value) if value is not None else None
+                info_log(f"[STT] 麥克風裝置索引已更新: {old_index} → {self.device_index}")
+                
+                # 如果正在監聽，需要重啟音頻流
+                if self._listening_active and self.audio_stream:
+                    info_log("[STT] 重新初始化音頻流以套用新麥克風")
+                    self.audio_stream.stop_stream()
+                    self.audio_stream.close()
+                    self.audio_stream = None
+                    # 會在下次錄音時自動重新初始化
+                    
+            elif key_path == "interaction.speech_input.vad_sensitivity":
+                # VAD 靈敏度（即時生效）
+                old_sensitivity = self.vad_sensitivity
+                self.vad_sensitivity = float(value)
+                if hasattr(self, 'vad_module') and self.vad_module:
+                    self.vad_module.sensitivity = float(value)
+                    # 重新計算能量閾值
+                    self.vad_module.energy_threshold = 0.0005 * (2.0 - float(value))
+                    info_log(f"[STT] VAD 靈敏度已更新: {old_sensitivity:.2f} → {value:.2f}")
+                    
+            elif key_path == "interaction.speech_input.min_speech_duration":
+                # 最小語音持續時間（即時生效）
+                old_duration = self.min_speech_duration
+                self.min_speech_duration = float(value)
+                if hasattr(self, 'vad_module') and self.vad_module:
+                    self.vad_module.speech_duration_threshold = float(value)
+                    info_log(f"[STT] 最小語音持續時間已更新: {old_duration:.2f}s → {value:.2f}s")
+                
+            elif key_path == "interaction.speech_input.enable_continuous_mode":
+                # 連續模式開關（動態切換監聽模式）
+                new_mode = ActivationMode.CONTINUOUS if value else ActivationMode.MANUAL
+                old_mode = self._current_mode
+                self._current_mode = new_mode
+                info_log(f"[STT] 啟動模式已切換: {old_mode.value} → {new_mode.value}")
+                
+                # 如果正在監聽，發出警告（可能需要重啟監聽）
+                if self._listening_active:
+                    info_log(f"[STT] ⚠️ 模式切換生效，建議重啟監聽以應用新模式")
+                
+            elif key_path == "interaction.speech_input.wake_word_confidence":
+                # 喚醒詞信心度閾值（即時生效）
+                old_confidence = self.wake_word_confidence
+                self.wake_word_confidence = float(value)
+                info_log(f"[STT] 喚醒詞信心度閾值已更新: {old_confidence:.2f} → {value:.2f}")
+                # 此參數儲存於實例變數，供 NLP 喚醒詞檢測使用
+                
+            else:
+                debug_log(2, f"[STT] 未處理的設定路徑: {key_path}")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            error_log(f"[STT] 重載使用者設定失敗: {e}")
+            import traceback
+            error_log(traceback.format_exc())
+            return False
+    
+    def get_performance_window(self) -> dict:
+        """獲取效能數據窗口（包含 STT 特定指標）"""
+        window = super().get_performance_window()
+        window['total_audio_duration'] = self.total_audio_duration
+        window['total_recognitions'] = self.total_recognitions
+        window['vad_triggers'] = self.vad_triggers
+        window['avg_audio_duration'] = (
+            self.total_audio_duration / self.total_recognitions
+            if self.total_recognitions > 0 else 0.0
+        )
+        return window

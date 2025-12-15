@@ -229,7 +229,6 @@ class ModuleManager:
                 "store_memory": debug_api.mem_test_store_memory_wrapper,
                 "memory_query": debug_api.mem_test_memory_query_wrapper,
                 "conversation_snapshot": debug_api.mem_test_conversation_snapshot_wrapper,
-                "identity_manager_stats": debug_api.mem_test_identity_manager_stats_wrapper,
                 "write_then_query": debug_api.mem_test_write_then_query_wrapper,
             }
             
@@ -263,18 +262,22 @@ class ModuleManager:
                 "frontend_test_user_interaction": debug_api.frontend_test_user_interaction_wrapper,
             }
             
-            # SYS 測試函數 - 使用包裝函數
-            self.test_functions["sysmod"] = {
-                "list_functions": debug_api.sys_list_functions_wrapper,
-                "test_functions": debug_api.sys_test_functions_wrapper,
-                "test_workflows": debug_api.sys_test_workflows_wrapper,
-                "command_workflow": debug_api.test_command_workflow_wrapper,
-            }
+            # SYS 測試函數 - 使用單獨的測試函數（SYS 模組尚未完成完整的測試套件）
+            self.test_functions["sysmod"] = {}
+            # 檢查並添加可用的 SYS 測試函數
+            if hasattr(debug_api, 'sys_test_echo_wrapper'):
+                self.test_functions["sysmod"]["echo"] = debug_api.sys_test_echo_wrapper
+            if hasattr(debug_api, 'sys_test_countdown_wrapper'):
+                self.test_functions["sysmod"]["countdown"] = debug_api.sys_test_countdown_wrapper
+            if hasattr(debug_api, 'sys_test_data_collector_wrapper'):
+                self.test_functions["sysmod"]["data_collector"] = debug_api.sys_test_data_collector_wrapper
+            if hasattr(debug_api, 'sys_test_random_fail_wrapper'):
+                self.test_functions["sysmod"]["random_fail"] = debug_api.sys_test_random_fail_wrapper
             
             # 整合測試 - 使用包裝函數
-            self.test_functions["integration"] = {
-                "stt_nlp_test": debug_api.test_stt_nlp_wrapper,
-            }
+            self.test_functions["integration"] = {}
+            if hasattr(debug_api, 'test_stt_nlp_wrapper'):
+                self.test_functions["integration"]["stt_nlp_test"] = debug_api.test_stt_nlp_wrapper
             
             debug_log(SYSTEM_LEVEL, f"[ModuleManager] 測試函數初始化完成，共 {len(self.test_functions)} 個模組")
             

@@ -26,7 +26,10 @@ from utils.debug_helper import debug_log, info_log, error_log
 
 class SystemEvent(Enum):
     """系統事件類型"""
-    # 層級完成事件
+    # 互動層級事件（追蹤使用者互動狀態）
+    INTERACTION_STARTED = "interaction_started"            # 使用者開始互動（STT 開始接收語音）
+    
+    # 層級完成事件（三層架構）
     INPUT_LAYER_COMPLETE = "input_layer_complete"          # 輸入層完成 (NLP)
     PROCESSING_LAYER_COMPLETE = "processing_layer_complete"  # 處理層完成 (LLM/MEM/SYS)
     OUTPUT_LAYER_COMPLETE = "output_layer_complete"        # 輸出層完成 (TTS)
@@ -43,20 +46,21 @@ class SystemEvent(Enum):
     SESSION_STARTED = "session_started"                    # 會話開始
     SESSION_ENDED = "session_ended"                        # 會話結束
     
-    # 循環控制事件
-    CYCLE_STARTED = "cycle_started"                        # 處理循環開始
-    CYCLE_COMPLETED = "cycle_completed"                    # 處理循環完成
+    # 循環控制事件（注意：CYCLE_STARTED ≠ INTERACTION_STARTED）
+    CYCLE_STARTED = "cycle_started"                        # 處理循環開始（系統內部事件）
+    CYCLE_COMPLETED = "cycle_completed"                    # 處理循環完成（包含使用者互動結束）
     
     # 工作流輸入控制事件
     WORKFLOW_REQUIRES_INPUT = "workflow_requires_input"    # 工作流需要使用者輸入
     WORKFLOW_INPUT_COMPLETED = "workflow_input_completed"  # 工作流輸入完成
+    FILE_INPUT_PROVIDED = "file_input_provided"            # 🔧 檔案輸入已提供（透過拖放）
     
     # ✅ 工作流步驟事件（用於 LLM-SYS 協作）
     WORKFLOW_STEP_COMPLETED = "workflow_step_completed"    # 工作流步驟完成，等待 LLM 審核
     WORKFLOW_STEP_APPROVED = "workflow_step_approved"      # 🔧 工作流步驟已批准（LLM 審核完成）
     WORKFLOW_FAILED = "workflow_failed"                    # 工作流執行失敗
     
-    # 階段五：背景工作流事件
+    # 背景工作流事件
     BACKGROUND_WORKFLOW_SUBMITTED = "background_workflow_submitted"    # 背景工作流已提交
     BACKGROUND_WORKFLOW_STARTED = "background_workflow_started"        # 背景工作流開始執行
     BACKGROUND_WORKFLOW_COMPLETED = "background_workflow_completed"    # 背景工作流完成
@@ -86,6 +90,15 @@ class SystemEvent(Enum):
     
     # GS 推進事件（Phase 4）
     GS_ADVANCED = "gs_advanced"                                        # General Session 已推進（GSID 更新）
+    
+    # SLEEP 狀態事件
+    SLEEP_ENTERED = "sleep_entered"                                    # 系統已進入睡眠（觸發前端睡眠動畫）
+    SLEEP_EXITED = "sleep_exited"                                      # 系統離開睡眠（準備喚醒動畫/轉場）
+    WAKE_READY = "wake_ready"                                          # 喚醒完成，模組已重載完畢
+    
+    # ON_CALL 事件（使用者呼叫 UEP）
+    ON_CALL_TRIGGERED = "on_call_triggered"                            # 使用者觸發 on_call（暫停行為/狀態機）
+    ON_CALL_ENDED = "on_call_ended"                                    # 使用者結束 on_call（恢復行為/狀態機）
 
 
 @dataclass
@@ -148,10 +161,18 @@ class EventBus:
         if not self._processing_thread:
             return
         
-        self._stop_event.set()
-        if self._processing_thread.is_alive():
-            self._processing_thread.join(timeout=2.0)
-        info_log("[EventBus] 事件處理線程已停止")
+        try:
+            self._stop_event.set()
+            if self._processing_thread.is_alive():
+                self._processing_thread.join(timeout=5.0)
+                if self._processing_thread.is_alive():
+                    error_log("[EventBus] ⚠️ 事件處理線程未能正常結束")
+                else:
+                    info_log("[EventBus] ✅ 事件處理線程已正常停止")
+            else:
+                info_log("[EventBus] 事件處理線程已停止")
+        except Exception as e:
+            error_log(f"[EventBus] 停止線程失敗: {e}")
     
     def subscribe(self, event_type: SystemEvent, handler: Callable[[Event], None], 
                   handler_name: Optional[str] = None):

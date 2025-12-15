@@ -19,6 +19,9 @@ from .actions.integrations import news_summary, get_weather, get_world_time, cod
 from .actions.automation_helper import media_control, local_calendar
 from .actions.file_interaction import clean_trash_bin
 
+# Import permission manager
+from .permission_manager import get_permission_manager, PermissionType
+
 # Import session management
 from core.sessions.session_manager import session_manager, WorkflowSession, SessionStatus
 from .workflows import (
@@ -71,6 +74,8 @@ from .workflows.automation_workflows import (
 
 class SYSModule(BaseModule):
     def __init__(self, config=None):
+        super().__init__()
+        
         self.config = config or load_module_config("sys_module")
         self.enabled_modes = set(self.config.get("modes", []))
         self._function_specs = None
@@ -87,6 +92,18 @@ class SYSModule(BaseModule):
         # Initialize MCP Server
         self.mcp_server = MCPServer(sys_module=self)
         debug_log(2, "[SYS] MCP Server 已初始化")
+        
+        # 🔧 獲取權限管理器實例
+        self.permission_manager = get_permission_manager()
+        
+        # 效能指標追蹤
+        self.command_type_stats = {}
+        self.successful_commands = 0
+        self.failed_commands = 0
+        
+        # 🔧 註冊 user_settings 熱重載回調
+        from configs.user_settings_manager import user_settings_manager
+        user_settings_manager.register_reload_callback("sys_module", self._reload_from_user_settings)
 
     def initialize(self):
         # 註冊 WORK_SYS 協作管道的資料提供者
@@ -107,6 +124,19 @@ class SYSModule(BaseModule):
         # Register Phase 2 workflows to MCP
         self._register_workflows_to_mcp()
         
+        # Register MEM module memory tools to MCP
+        self._register_memory_tools_to_mcp()
+        
+        # 恢復暫停的監控任務
+        self._restore_monitoring_tasks()
+        
+        # 啟動剪貼簿監控（統一由 MonitoringThreadPool 管理）
+        try:
+            from modules.sys_module.actions.automation_helper import start_clipboard_monitor
+            start_clipboard_monitor()
+        except Exception as e:
+            error_log(f"[SYS] 啟動剪貼簿監控失敗: {e}")
+        
         info_log("[SYS] 初始化完成，啟用模式：" + ", ".join(self.enabled_modes))
         return True
     
@@ -123,6 +153,71 @@ class SYSModule(BaseModule):
                 debug_log(1, f"[SYS] ✅ 已清理 WS {session_id} 的 engine")
         except Exception as e:
             error_log(f"[SYS] 處理 SESSION_ENDED 事件失敗: {e}")
+    
+    def _restore_monitoring_tasks(self):
+        """恢復暫停的背景監控任務"""
+        try:
+            from modules.sys_module.actions.automation_helper import get_monitoring_pool
+            from modules.sys_module.workflows.automation_workflows import get_automation_workflow_creator
+            
+            info_log("[SYS] 正在檢查暫停的背景監控任務...")
+            
+            monitoring_pool = get_monitoring_pool()
+            
+            # 創建監控函數工廠
+            def monitor_factory(workflow_type: str, metadata: dict):
+                """根據工作流類型重新建立監控函數"""
+                try:
+                    # 目前主要支持 MediaPlayback 工作流的監控
+                    if workflow_type == "MediaPlayback":
+                        # 從 metadata 恢復監控邏輯
+                        # 注意：這裡只是示例，實際的監控邏輯需要根據工作流類型實現
+                        info_log(f"[SYS] 恢復 MediaPlayback 監控: {metadata}")
+                        # TODO: 實現具體的監控函數
+                        return None  # 暫時返回 None，表示不支持恢復
+                    else:
+                        debug_log(2, f"[SYS] 不支持恢復的工作流類型: {workflow_type}")
+                        return None
+                except Exception as e:
+                    error_log(f"[SYS] 建立監控函數失敗: {e}")
+                    return None
+            
+            # 調用 restore_monitors
+            report = monitoring_pool.restore_monitors(monitor_factory)
+            
+            if report["restored_count"] > 0:
+                info_log(f"[SYS] ✅ 已恢復 {report['restored_count']} 個監控任務")
+            if report["failed_count"] > 0:
+                info_log(f"[SYS] ⚠️ {report['failed_count']} 個監控任務恢復失敗")
+            
+            if report["restored_count"] == 0 and report["failed_count"] == 0:
+                debug_log(2, "[SYS] 沒有需要恢復的監控任務")
+                
+        except Exception as e:
+            error_log(f"[SYS] 恢復監控任務失敗: {e}")
+    
+    def shutdown(self):
+        """關閉 sys_module，暫停所有監控任務"""
+        try:
+            from modules.sys_module.actions.automation_helper import get_monitoring_pool
+            
+            info_log("[SYS] 正在關閉模組，暫停所有監控任務...")
+            
+            monitoring_pool = get_monitoring_pool()
+            
+            # 停止所有監控任務（會自動標記為 SUSPENDED）
+            active_count = len(monitoring_pool.active_monitors)
+            if active_count > 0:
+                monitoring_pool.stop_all_monitors(timeout=5)
+                info_log(f"[SYS] ✅ 已暫停 {active_count} 個監控任務")
+            
+            # 關閉線程池
+            monitoring_pool.shutdown(wait=False, timeout=5)
+            
+            info_log("[SYS] 模組已關閉")
+            
+        except Exception as e:
+            error_log(f"[SYS] 關閉模組失敗: {e}")
     
     def _apply_parameter_inference(self, initial_params: Dict[str, Any], 
                                    initial_data: Dict[str, Any], 
@@ -178,10 +273,14 @@ class SYSModule(BaseModule):
 
 
     def _load_function_specs(self):
+        """
+        ⚠️ 已棄用：functions.yaml 不再使用
+        現在所有工作流都透過 workflow_definition 經 MCP 註冊成為工具
+        保留此方法以維持向後兼容性，但返回空字典
+        """
         if self._function_specs is None:
-            path = os.path.join(os.path.dirname(__file__), "functions.yaml")
-            with open(path, "r", encoding="utf-8") as f:
-                self._function_specs = yaml.safe_load(f)
+            debug_log(3, "[SYS] functions.yaml 已棄用，返回空規格")
+            self._function_specs = {}
         return self._function_specs
 
     def _register_collaboration_providers(self):
@@ -217,6 +316,22 @@ class SYSModule(BaseModule):
         register_all_workflows(self.mcp_server, self)
         
         info_log("[SYS] ✅ Workflows registered to MCP Server.")
+    
+    def _register_memory_tools_to_mcp(self):
+        """Register MEM module memory tools to MCP Server"""
+        try:
+            from core import registry
+            mem_module = registry.get_loaded('mem_module')
+            
+            if mem_module and hasattr(mem_module, 'register_memory_tools_to_mcp'):
+                info_log("[SYS] Registering memory tools to MCP Server...")
+                mem_module.register_memory_tools_to_mcp(self.mcp_server)
+            else:
+                debug_log(2, "[SYS] ⚠️  MEM 模組不可用或不支援 MCP 工具註冊")
+        except Exception as e:
+            error_log(f"[SYS] 註冊記憶工具失敗: {e}")
+            import traceback
+            traceback.print_exc()
     
     def query_function_info(self, query_text: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """
@@ -385,37 +500,50 @@ class SYSModule(BaseModule):
             }
     
     def _provide_function_registry(self, **kwargs):
-        """提供可用的系統功能列表給 LLM"""
+        """提供可用的系統功能列表給 LLM（從 MCP Server 獲取）"""
         try:
+            if not self.mcp_server:
+                debug_log(2, "[SYS] MCP Server 未初始化，無法提供功能列表")
+                return []
+            
             category = kwargs.get('category', 'all')
             
-            # 從 functions.yaml 讀取可用功能
-            specs = self._load_function_specs()
+            # 從 MCP Server 獲取已註冊的工具
+            functions = []
             
-            if category == 'all':
-                # 返回所有功能
-                functions = []
-                for name, spec in specs.items():
-                    if name in self.enabled_modes:
-                        functions.append({
-                            "name": name,
-                            "category": spec.get('category', 'general'),
-                            "description": spec.get('description', ''),
-                            "params": list(spec.get('params', {}).keys())
-                        })
-                return functions
-            else:
+            # 獲取所有已註冊的工具
+            registered_tools = self.mcp_server.list_tools()
+            
+            for tool in registered_tools:
+                # MCPTool 是 Pydantic 模型，使用屬性訪問
+                tool_name = tool.name if hasattr(tool, 'name') else ''
+                tool_description = tool.description if hasattr(tool, 'description') else ''
+                
+                # 提取參數列表（從 parameters 欄位）
+                params = []
+                if hasattr(tool, 'parameters') and tool.parameters:
+                    params = [param.name for param in tool.parameters]
+                
+                # 簡單的分類邏輯（基於工具名稱前綴）
+                tool_category = 'general'
+                if tool_name.startswith('file_'):
+                    tool_category = 'file_operations'
+                elif tool_name.startswith('workflow_'):
+                    tool_category = 'workflow_management'
+                elif 'step' in tool_name:
+                    tool_category = 'workflow_management'
+                
                 # 根據分類過濾
-                functions = []
-                for name, spec in specs.items():
-                    if name in self.enabled_modes and spec.get('category') == category:
-                        functions.append({
-                            "name": name,
-                            "category": category,
-                            "description": spec.get('description', ''),
-                            "params": list(spec.get('params', {}).keys())
-                        })
-                return functions
+                if category == 'all' or tool_category == category:
+                    functions.append({
+                        "name": tool_name,
+                        "category": tool_category,
+                        "description": tool_description,
+                        "params": params
+                    })
+            
+            debug_log(2, f"[SYS] 提供 {len(functions)} 個功能給 LLM (category={category})")
+            return functions
                 
         except Exception as e:
             error_log(f"[SYS] 提供功能列表失敗: {e}")
@@ -739,11 +867,9 @@ class SYSModule(BaseModule):
                     
                 except Exception as e:
                     error_log(f"[SYS] 提交背景工作流程失敗: {e}")
-                    # 清理會話
-                    self.session_manager.end_session(
-                        session_id,
-                        reason=f"提交背景任務失敗: {e}"
-                    )
+                    # 清理 workflow engine（WS 交給 LLM 標記後由 Controller 結束）
+                    if session_id in self.workflow_engines:
+                        del self.workflow_engines[session_id]
                     return {
                         "status": "error",
                         "message": f"提交背景工作流程失敗: {e}"
@@ -1063,11 +1189,7 @@ class SYSModule(BaseModule):
             
         except Exception as e:
             error_log(f"[SYS] 創建統一工作流程引擎失敗: {e}")
-            self.session_manager.end_session(
-                session_id, 
-                reason=f"無法為 {workflow_type} 創建工作流程: {e}"
-            )
-            # Clean up engine if it was created
+            # 清理 workflow engine（WS 交給 LLM 標記後由 Controller 結束）
             if session_id in self.workflow_engines:
                 del self.workflow_engines[session_id]
             return {
@@ -1205,17 +1327,101 @@ class SYSModule(BaseModule):
                 info_log(f"[SYS] 工作流步驟已完成: {session_id}, 等待 LLM 生成最終回應")
                 
             elif not result.success and not engine.is_awaiting_llm_review():
-                self.session_manager.end_session(session_id, reason=f"failed: {result.message}")
-                if session_id in self.workflow_engines:
-                    del self.workflow_engines[session_id]
+                # ✅ 工作流失敗：發布事件讓 LLM 處理錯誤並通知用戶
                 error_log(f"[SYS] 工作流執行失敗: {session_id} - {result.message}")
+                
+                if self.event_bus:
+                    from core.event_bus import SystemEvent
+                    
+                    # 獲取步驟資訊
+                    session = self.session_manager.get_session(session_id)
+                    step_history = session.get_data("step_history", []) if session else []
+                    executed_step_ids = [step["step_id"] for step in step_history] if step_history else []
+                    final_executed_step_id = executed_step_ids[-1] if executed_step_ids else executed_step_id
+                    
+                    # 發布失敗事件，讓 LLM 生成錯誤回應並結束會話
+                    event_data = {
+                        "session_id": session_id,
+                        "workflow_type": workflow_type,
+                        "step_result": {
+                            "success": False,
+                            "complete": False,
+                            "cancel": False,
+                            "message": result.message,
+                            "data": result.data,
+                            "step_id": final_executed_step_id,
+                            "error": True  # 標記為錯誤
+                        },
+                        "executed_steps": executed_step_ids,
+                        "requires_llm_review": True,  # 需要 LLM 處理錯誤
+                        "llm_review_data": None,
+                        "current_step_info": None,
+                        "next_step_info": None
+                    }
+                    
+                    self.event_bus.publish(
+                        event_type=SystemEvent.WORKFLOW_STEP_COMPLETED,
+                        data=event_data,
+                        source="sys"
+                    )
+                    
+                    debug_log(2, f"[SYS] 已發布工作流失敗事件，等待 LLM 處理: {session_id}")
+                    
+                    # ✅ 清理 workflow engine（但不結束 WS，交給 LLM 標記後由 Controller 結束）
+                    if session_id in self.workflow_engines:
+                        del self.workflow_engines[session_id]
+                        debug_log(2, f"[SYS] 已清理工作流引擎: {session_id}")
+                else:
+                    # 沒有 event_bus 的緊急情況，記錄錯誤
+                    error_log(f"[SYS] ⚠️ 無法發布工作流失敗事件（缺少 event_bus），工作流可能卡住: {session_id}")
+                    # 清理 engine
+                    if session_id in self.workflow_engines:
+                        del self.workflow_engines[session_id]
                 
         except Exception as e:
             error_log(f"[SYS] 背景執行工作流步驟異常: {e}")
-            # Clean up on error
-            if session_id in self.workflow_engines:
-                self.session_manager.end_session(session_id, reason=f"error: {e}")
-                del self.workflow_engines[session_id]
+            
+            # ✅ 異常情況：發布事件讓 LLM 處理異常並通知用戶
+            if self.event_bus and session_id:
+                from core.event_bus import SystemEvent
+                
+                event_data = {
+                    "session_id": session_id,
+                    "workflow_type": workflow_type,
+                    "step_result": {
+                        "success": False,
+                        "complete": False,
+                        "cancel": False,
+                        "message": f"執行異常: {str(e)}",
+                        "data": {},
+                        "step_id": executed_step_id if 'executed_step_id' in locals() else None,
+                        "error": True,
+                        "exception": str(e)
+                    },
+                    "executed_steps": [],
+                    "requires_llm_review": True,
+                    "llm_review_data": None,
+                    "current_step_info": None,
+                    "next_step_info": None
+                }
+                
+                self.event_bus.publish(
+                    event_type=SystemEvent.WORKFLOW_STEP_COMPLETED,
+                    data=event_data,
+                    source="sys"
+                )
+                
+                debug_log(2, f"[SYS] 已發布工作流異常事件，等待 LLM 處理: {session_id}")
+                
+                # ✅ 清理 workflow engine（但不結束 WS，交給 LLM 標記後由 Controller 結束）
+                if session_id in self.workflow_engines:
+                    del self.workflow_engines[session_id]
+                    debug_log(2, f"[SYS] 已清理工作流引擎（異常）: {session_id}")
+            else:
+                # 沒有 event_bus 的緊急情況
+                error_log(f"[SYS] ⚠️ 無法發布工作流異常事件（缺少 event_bus），工作流可能卡住: {session_id}")
+                if session_id in self.workflow_engines:
+                    del self.workflow_engines[session_id]
     
     def _continue_workflow(self, session_id: str, user_input: str):
         """
@@ -1258,11 +1464,7 @@ class SYSModule(BaseModule):
             
             # Handle the result
             if result.cancel:
-                # Workflow was cancelled
-                self.session_manager.end_session(
-                    session_id,
-                    reason=f"cancelled: {result.message}"
-                )
+                # Workflow was cancelled（WS 交給 LLM 標記後由 Controller 結束）
                 # Clean up engine
                 if session_id in self.workflow_engines:
                     del self.workflow_engines[session_id]
@@ -1321,16 +1523,10 @@ class SYSModule(BaseModule):
                 }
                 
             elif not result.success:
-                # 🔧 步驟失敗（failure）：終止工作流並讓 LLM 處理錯誤
+                # 🔧 步驟失敗（failure）：發布事件讓 LLM 處理錯誤並標記 WS 結束
                 debug_log(1, f"[SYS] 工作流步驟失敗 {session_id}: {result.message}")
                 
-                # 結束會話
-                self.session_manager.end_session(
-                    session_id,
-                    reason=f"failed: {result.message}"
-                )
-                
-                # 清理引擎
+                # 清理引擎（WS 交給 LLM 標記後由 Controller 結束）
                 if session_id in self.workflow_engines:
                     del self.workflow_engines[session_id]
                 
@@ -1396,11 +1592,7 @@ class SYSModule(BaseModule):
                     
                     return response
                 else:
-                    # Workflow completed
-                    self.session_manager.end_session(
-                        session_id,
-                        reason=f"completed: {result.message}"
-                    )
+                    # Workflow completed（WS 交給 LLM 標記後由 Controller 結束）
                     # Clean up engine
                     if session_id in self.workflow_engines:
                         del self.workflow_engines[session_id]
@@ -1412,11 +1604,7 @@ class SYSModule(BaseModule):
                     
         except Exception as e:
             error_log(f"[SYS] 工作流程執行錯誤: {e}")
-            self.session_manager.end_session(
-                session_id,
-                reason=f"error: {str(e)}"
-            )
-            # Clean up engine
+            # 清理 workflow engine（WS 交給 LLM 標記後由 Controller 結束）
             if session_id in self.workflow_engines:
                 del self.workflow_engines[session_id]
             return {
@@ -1673,6 +1861,15 @@ class SYSModule(BaseModule):
                     prompt=result.get("prompt"),
                     session_data=result.get("session_data")  # 傳遞會話數據
                 )
+                
+                # 更新效能指標
+                self.command_type_stats[mode] = self.command_type_stats.get(mode, 0) + 1
+                self.update_custom_metric('command_type', mode)
+                if result.get("status") == "success":
+                    self.successful_commands += 1
+                else:
+                    self.failed_commands += 1
+                
                 return out.dict()
             
             # Standard action handling
@@ -1683,9 +1880,19 @@ class SYSModule(BaseModule):
                 
             result = func(**params)
             info_log(f"[SYS] [{mode}] 執行完成")
+            
+            # 更新效能指標
+            self.command_type_stats[mode] = self.command_type_stats.get(mode, 0) + 1
+            self.update_custom_metric('command_type', mode)
+            self.successful_commands += 1
+            
             return SYSOutput(status="success", data=result).dict()
         except Exception as e:
             error_log(f"[SYS] [{mode}] 執行失敗：{e}")
+            
+            # 更新失敗計數
+            self.failed_commands += 1
+            
             return SYSOutput(status="error", message=str(e)).dict()
     
     def _list_functions(self) -> dict:
@@ -2007,3 +2214,43 @@ class SYSModule(BaseModule):
     def get_mcp_server(self):
         """Get the MCP Server instance"""
         return self.mcp_server
+    
+    def _reload_from_user_settings(self, key_path: str, value: Any) -> bool:
+        """
+        從 user_settings 熱重載設定
+        
+        Args:
+            key_path: 設定鍵路徑 (例如 "behavior.permissions.allow_file_creation")
+            value: 新值
+            
+        Returns:
+            是否成功
+        """
+        try:
+            info_log(f"[SYS] 🔄 重載使用者設定: {key_path} = {value}")
+            
+            # 所有 behavior.permissions 的設定都是即時生效
+            if key_path.startswith("behavior.permissions."):
+                permission_name = key_path.split(".")[-1]
+                info_log(f"[SYS] 權限設定已更新: {permission_name} = {value}")
+                return True
+            
+            else:
+                debug_log(2, f"[SYS] 未處理的設定路徑: {key_path}")
+                return False
+                
+        except Exception as e:
+            error_log(f"[SYS] 使用者設定重載失敗: {e}")
+            return False
+    
+    def get_performance_window(self) -> dict:
+        """獲取效能數據窗口（包含 SYS 特定指標）"""
+        window = super().get_performance_window()
+        window['command_type_distribution'] = self.command_type_stats.copy()
+        window['successful_commands'] = self.successful_commands
+        window['failed_commands'] = self.failed_commands
+        window['command_success_rate'] = (
+            self.successful_commands / (self.successful_commands + self.failed_commands)
+            if (self.successful_commands + self.failed_commands) > 0 else 0.0
+        )
+        return window

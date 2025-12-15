@@ -333,7 +333,8 @@ def create_summarize_tag_workflow(session: WorkflowSession) -> WorkflowEngine:
         required_data=["file_path_input"],
         optional=True,
         skip_if_data_exists=True,  # 🔧 如果 initial_data 提供了數據，跳過此步驟
-        description="詢問用戶想要生成多少個標籤，留空使用預設值 3"
+        requires_llm_parsing=True,  # 🔧 需要 LLM 解析：用戶可能說「三個」而非「3」
+        description="詢問用戶想要生成多少個標籤，留空使用預設值 3。需要 LLM 將自然語言數字轉換為阿拉伯數字。"
     )
     
     # 步驟3: 確認摘要操作

@@ -54,11 +54,18 @@ def _execute_play_media(session: WorkflowSession) -> StepResult:
         shuffle = session.get_data("shuffle", False)
         loop = session.get_data("loop", False)
         
-        # 從配置讀取音樂資料夾
-        config = load_config()
-        music_folder = config.get("system", {}).get("media", {}).get("music_folder")
+        # 從 user_settings 讀取音樂資料夾（優先）
+        from configs.user_settings_manager import get_user_setting
+        music_folder = get_user_setting("monitoring.background_tasks.default_media_folder", "")
+        
+        # 如果 user_settings 沒有設定，從 config.yaml 讀取
         if not music_folder:
-            music_folder = str(Path.home() / "Music")  # 預設值
+            config = load_config()
+            music_folder = config.get("system", {}).get("media", {}).get("music_folder")
+        
+        # 最後的預設值
+        if not music_folder:
+            music_folder = str(Path.home() / "Music")
         else:
             music_folder = str(Path(music_folder).expanduser())
         
@@ -234,12 +241,19 @@ def create_play_media_workflow(
             # 定義監控函數（本地播放專用）
             def media_monitor_func(stop_event, check_interval, **kwargs):
                 """本地音樂播放監控函數"""
-                # 從配置讀取音樂資料夾
-                from configs.config_loader import load_config
-                config = load_config()
-                music_folder = config.get("system", {}).get("media", {}).get("music_folder")
+                # 從 user_settings 讀取音樂資料夾（優先）
+                from configs.user_settings_manager import get_user_setting
+                music_folder = get_user_setting("monitoring.background_tasks.default_media_folder", "")
+                
+                # 如果 user_settings 沒有設定，從 config.yaml 讀取
                 if not music_folder:
-                    music_folder = str(Path.home() / "Music")  # 預設值
+                    from configs.config_loader import load_config
+                    config = load_config()
+                    music_folder = config.get("system", {}).get("media", {}).get("music_folder")
+                
+                # 最後的預設值
+                if not music_folder:
+                    music_folder = str(Path.home() / "Music")
                 else:
                     music_folder = str(Path(music_folder).expanduser())
                 
@@ -485,7 +499,9 @@ def _media_control_intervention_processor(
     - play, pause, stop, next, previous
     - search (搜尋並播放歌曲)
     - shuffle (開啟/關閉隨機播放)
-    - loop (開啟/關閉循環播放)
+    - loop (設定循環模式：off/one/all)
+    - seek (跳轉到指定時間位置，毫秒)
+    - volume (調整音量 0-100)
     - stop_service (停止整個監控服務)
     
     注意：背景服務是跨會話的，所有參數通過函數參數傳遞，不依賴 session
@@ -512,6 +528,7 @@ def _media_control_intervention_processor(
         workflow = get_workflow_by_id(task_id)
         if not workflow:
             return StepResult.failure(f"找不到媒體播放任務：{task_id}")
+        
         
         # 特殊處理：停止服務
         if action == "stop_service":
@@ -589,8 +606,13 @@ def create_media_control_intervention_workflow(
     
     Args:
         task_id: 要控制的媒體播放任務 ID（如未提供則自動獲取）
-        control_action: 控制動作（play, pause, stop, next, previous, search, shuffle, loop, stop_service）
-        control_params: 控制參數（如 song_query, shuffle, loop）
+        control_action: 控制動作（play, pause, stop, next, previous, search, shuffle, loop, seek, volume, stop_service）
+        control_params: 控制參數
+            - song_query: 歌曲搜尋關鍵字（search 動作）
+            - shuffle: 布林值（shuffle 動作）
+            - loop_mode: 'off'/'one'/'all'（loop 動作）
+            - seek_position: 毫秒數（seek 動作）
+            - volume: 0-100（volume 動作）
     """
     # 如果未提供 task_id，從資料庫獲取最近的活躍媒體任務
     # 注意：不使用 WorkingContext 因為它會在 GS 結束時清空

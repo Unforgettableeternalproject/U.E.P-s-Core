@@ -2014,3 +2014,615 @@
 
 ---
 
+### Remove unnecessary temp file. 11/24
+
+> Date: Mon, 24 Nov 2025 19:51:59 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `release/v0.7.4`
+
+> Commit: `c709c67514fe5f1e1d5bae310b31d64f13988dd4`
+
+---
+
+### Added an animation tester for correcting clips. 11/25
+
+> Date: Tue, 25 Nov 2025 02:50:51 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `3e44536f85c4fd6aff3f53a651d37029f9ee7110`
+
+---
+
+### MOV module handler base implementation. 11/25
+
+> Date: Tue, 25 Nov 2025 15:29:59 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `38f5514d60786fdf6795656205e327a095af7d54`
+
+---
+
+### Added some more behaviors and animations, as well a full-on handler for varioius actions and stuff. 11/26
+
+> Date: Wed, 26 Nov 2025 02:53:31 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `8b87b52dc3a50e498f3c64ecabb3f476ecb7ddb0`
+
+---
+
+### Added more behaviors and animations, now trying to connect with system loop. 11/26
+
+> Date: Wed, 26 Nov 2025 21:21:24 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `c9e5c5c90be7aad6453ad3b1da0b91083e5912a0`
+
+---
+
+### Frontend integration tests, and we discovered a huge issue. 11/27
+
+> Date: Thu, 27 Nov 2025 01:18:06 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `98fb1056550e9fdbffe3de6aa24374deabe5ba68`
+
+---
+
+### Integrated frontend into system loop, some behaviors left to fix. 11/27
+
+> Date: Thu, 27 Nov 2025 04:24:54 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `ee2e90b9dc700e7b1954e078b74d93556dec04b6`
+
+---
+
+### Added priority checks to animations to avoid conflicts, also slightly altered LLM schema to simplify code. 11/27
+
+> Date: Thu, 27 Nov 2025 17:40:53 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `17106f47fb12c7b129d39845afb4683f0a6ec437`
+
+---
+
+### Fixed some issues regarding MEM and some animation error. 11/27
+
+> Date: Thu, 27 Nov 2025 20:17:37 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `dfbeffdbe9ecd35d9f680a1dc596560bbb5f11d1`
+
+---
+
+### Simply some animation issues, and added throw. 11/28
+
+> Date: Fri, 28 Nov 2025 16:32:39 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `d00684d08ecb97d62891272353eac75bc7315ad8`
+
+---
+
+### User setting window migrated. 11/28
+
+> Date: Fri, 28 Nov 2025 23:35:23 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `1212ae0ed973670d4d75c045da05c012a660c4b2`
+
+---
+
+### Integrated more user settings to map with action system. 11/29
+
+> Date: Sat, 29 Nov 2025 20:08:27 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `fafd0b3ec77c2bb2a0f7f8c8bf80fe4beecaffec`
+
+---
+
+### Integrated user access widget to system main loop, and improved shutdown logic. 11/30
+
+> Date: Sun, 30 Nov 2025 22:58:33 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `550cb366b85c11e35bb5edc9ae9e705d3e648b7b`
+
+---
+
+### Improved access gadget behavior, and fixed some animation related issue. 12/1
+
+> Date: Mon, 01 Dec 2025 09:36:26 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `074821034eae8efe56abb06120e0f0df2cd21319`
+
+---
+
+### Refined animation movement once again, this time added the final two animation, and enhanced priority system. 12/1
+
+> Date: Mon, 01 Dec 2025 11:48:11 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `32b731bf4188cb08c38103f7d0dbeec4e2d44f4b`
+
+---
+
+### Refined animation movement once again, this time added the final two animation, and enhanced priority system. 12/1
+
+> Date: Mon, 01 Dec 2025 11:48:11 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `7bcb2a85f48ba7a013bd54fd6513dfdb56762954`
+
+---
+
+### Check with user settings, and we're moving on to the other two windows. 12/1
+
+> Date: Mon, 01 Dec 2025 20:20:23 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `a2abca050a69d4d08a44faf20e970d28adf2e077`
+
+---
+
+### Fixed a severe issue with qt loop, which requires a qt application to run. 12/2
+
+> Date: Tue, 02 Dec 2025 01:57:49 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `84a709c3d518cc170928bcad66932d75b7c451ad`
+
+---
+
+### Fixed some problem related to bad callback registers. And integrated new audio engine. 12/2
+
+> Date: Tue, 02 Dec 2025 21:20:32 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `1669deca4ace1990dcbd21438f5f93fdbe53ab2e`
+
+---
+
+### Added first-hand sleep state logic, might have some problem exist. 12/3
+
+> Date: Wed, 03 Dec 2025 01:40:48 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `0bf7ce6d6a598b5e494b0e924392f6ba45c1cb4a`
+
+---
+
+### Added corrected status window and fixed even more animation. 12/3
+
+> Date: Wed, 03 Dec 2025 00:00:42 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/frontend_bridge`
+
+> Commit: `c3858ded41d1a81bd4f1824744b52eba36d5327f`
+
+---
+
+### Added corrected status window and fixed even more animation. 12/3
+
+> Date: Wed, 03 Dec 2025 00:00:42 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `a1c0b9876fece87cce778ab69ed97dc0bcd018b1`
+
+---
+
+### Sleep animation worked, but there are some positional issue. 12/4
+
+> Date: Thu, 04 Dec 2025 18:55:27 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `fd4a51cef7635e963c693585c30377322d34743b`
+
+---
+
+### Made some changes to stt, nlp and GS creation and stuff. 12/4
+
+> Date: Thu, 04 Dec 2025 21:53:52 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `8354de6de10ffcd0a9d90a62feb9205b91adc20a`
+
+---
+
+### Removed unnecessary intergration files, and improved LLM-SYS tunnel a little bit more. 12/5
+
+> Date: Fri, 05 Dec 2025 17:30:03 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `3e372851d76133b6a2ba989a07cf4dcf846a5aa6`
+
+---
+
+### Fixed some issues regarding workflow event handling. 12/5
+
+> Date: Fri, 05 Dec 2025 21:19:35 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `c85a34bcc375c90427e8e74dc59b959ed647120c`
+
+---
+
+### Possibly some ground breaking changes about animation. 12/6
+
+> Date: Sat, 06 Dec 2025 02:25:23 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `e336d06d915ac4ca6edf565a72a5492d9980d3be`
+
+---
+
+### There are still times LLM would not call the tools, fixed that (hopefully), and made sleep state animations better. 12/6
+
+> Date: Sat, 06 Dec 2025 16:50:33 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `bd377688770e02bf6be572e70e17a0babfde5602`
+
+---
+
+### Fixed some throw logic, and a few animation frame misplacement. 12/6
+
+> Date: Sat, 06 Dec 2025 19:46:00 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `0e1b56ca20aa8d6dc7deacf3fe285aa405155dca`
+
+---
+
+### Added on call function as the final tool for access widget. 12/7
+
+> Date: Sun, 07 Dec 2025 01:16:15 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `fec4be97e52f7026fc878260fffedbc3f6538b10`
+
+---
+
+### Fixed some on call logic and settings reload. 12/7
+
+> Date: Sun, 07 Dec 2025 18:58:43 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `62d5eb749381fe37b717af918e382aca454afe4e`
+
+---
+
+### Added the first batch of the experimental memory retrieval. 12/8
+
+> Date: Mon, 08 Dec 2025 22:52:27 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/memory_fix`
+
+> Commit: `cb52b240974a78fd4244be82927931c65d7d4e15`
+
+---
+
+### Added a new easter-egg animation, and refined prompt. 12/9
+
+> Date: Tue, 09 Dec 2025 00:10:39 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/memory_fix`
+
+> Commit: `7ad820db9e029b9232043101e83d0d90d0eb4288`
+
+---
+
+### Fixed a certain issue where LLM is provided with chat route tool in work states. 12/9
+
+> Date: Tue, 09 Dec 2025 19:34:20 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/memory_fix`
+
+> Commit: `86a1b5dcfa32090ad20b0f42e560c0b10eaca92c`
+
+---
+
+### Added some mischief infrastructure and actions, and finished memory fix with final touches. 12/9
+
+> Date: Tue, 09 Dec 2025 22:52:01 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/memory_fix`
+
+> Commit: `4e2ada3915e637361c796ba7d3a9fdb290234e12`
+
+---
+
+### Mischief state state queue integration. And a few more additions. 12/10
+
+> Date: Wed, 10 Dec 2025 17:11:06 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `31e97fc11f7c2eaebfe49a61227c6521ed79dd0c`
+
+---
+
+### Some mischief state improvement. 12/10
+
+> Date: Wed, 10 Dec 2025 23:15:09 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `79f5fecb91239ba9c1e6f7715075a5c6b6700d47`
+
+---
+
+### Mischief state tested fine, it's time for actual test. 12/11
+
+> Date: Thu, 11 Dec 2025 02:01:52 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `a1cee394e54c00ee3fb0ea5bfb89b5ddf1d40b7d`
+
+---
+
+### Updated version, fixed some reference issue, and deleted some unnecessary files. 12/11
+
+> Date: Thu, 11 Dec 2025 02:59:51 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `ac40e833e56be41efea7bdf793d593ae6078709e`
+
+---
+
+### Fixed an issues with unreachable code, and user settings ui as well as mischief animation trigger priority. 12/11
+
+> Date: Thu, 11 Dec 2025 03:25:36 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/system_states`
+
+> Commit: `ffcd7ee13b7d351a156cf472f68b5417e8d852aa`
+
+---
+
+### Added the base spec and a build script, we will be testing the deployment soon. 12/11
+
+> Date: Thu, 11 Dec 2025 13:21:52 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/deployment_test`
+
+> Commit: `2f4aa48deab041f97a84761d1ab8c3a2f06cd618`
+
+---
+
+### Deployments are tested fine, time to go back for more functions implementation. 12/13
+
+> Date: Sat, 13 Dec 2025 01:45:02 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/deployment_test`
+
+> Commit: `05fb9671decd27f22bd3555876bc5157340ebac7`
+
+---
+
+### Quite a change on many module's performance report and made framework manage better. Not all the modules have been handled with tho. 12/14
+
+> Date: Sun, 14 Dec 2025 00:17:28 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/benchmark_and_healthcheck`
+
+> Commit: `66a6f5e5698374acd954954d5f18e4c0a7b94fbb`
+
+---
+
+### First handed added the metric fetch to all modules. 12/14
+
+> Date: Sun, 14 Dec 2025 01:30:11 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/benchmark_and_healthcheck`
+
+> Commit: `7e9ab85f9c4b53ff84b99b32a19eb7771e0d27dd`
+
+---
+
+### Fixed all problems on metrics for all the modules. 12/15
+
+> Date: Mon, 15 Dec 2025 03:01:22 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/benchmark_and_healthcheck`
+
+> Commit: `8f50b8b3fd0dfedafd2b36aa67611825c72b0452`
+
+---
+
+### Fixed upon some major system issues regarding workflows and GS. 12/15
+
+> Date: Mon, 15 Dec 2025 04:42:39 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/benchmark_and_healthcheck`
+
+> Commit: `2ad439d10eaeed24b7b5f5b78a4452efcfeb3c9a`
+
+---
+
+### Fixed some more minor stuff, well, big stuffs are left there for a reason. 12/15
+
+> Date: Mon, 15 Dec 2025 21:24:48 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/benchmark_and_healthcheck`
+
+> Commit: `f92a013176cda27394eeccfc307d8ff891e7f2ce`
+
+---
+
+### Fixed an issue with conditional in get world time workflow, as well as the music player initialization problem. 12/15
+
+> Date: Mon, 15 Dec 2025 21:53:17 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/benchmark_and_healthcheck`
+
+> Commit: `02dcc3c5c28afa6f43f91e5245c5f90937dff404`
+
+---
+
+### Revamped two workflows to adapt to new conditional structure. 12/15
+
+> Date: Mon, 15 Dec 2025 23:30:31 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/benchmark_and_healthcheck`
+
+> Commit: `b0ed1f0c479c3e86147af516c8ca5be7cba6e548`
+
+---
+
+### Added some artss and moved the concepts to a dedicated folder. 12/15
+
+> Date: Mon, 15 Dec 2025 23:45:31 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `release/v0.9.4-stable`
+
+> Commit: `746ab6221aa68373b12e56e1ff6284178a159f1b`
+
+---
+
+### Documentation Changes. 12/16
+
+> Date: Tue, 16 Dec 2025 00:05:54 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `release/v0.9.4-stable`
+
+> Commit: `5112f3738ad97d197e5e206c0e360d2f7d7b9081`
+
+---
+

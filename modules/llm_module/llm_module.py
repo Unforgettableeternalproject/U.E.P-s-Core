@@ -2426,8 +2426,9 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                                 f"Prompt: {current_step_prompt}\n\n"
                                 f"Generate a natural response that:\n"
                                 f"1. BRIEFLY confirms the workflow has started (1 sentence)\n"
-                                f"2. Asks the user for the needed input based on the prompt\n"
-                                f"3. Be friendly and conversational (2-3 sentences total)\n"
+                                f"2. **Include the full prompt with all options exactly as shown above** (very important!)\n"
+                                f"3. Asks the user to make their selection\n"
+                                f"4. Be friendly and conversational\n"
                                 f"IMPORTANT: Respond in English only."
                             )
                         elif auto_continue:

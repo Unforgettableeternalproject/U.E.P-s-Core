@@ -2590,3 +2590,15 @@
 
 ---
 
+### Revamped two workflows to adapt to new conditional structure. 12/15
+
+> Date: Mon, 15 Dec 2025 23:30:31 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/benchmark_and_healthcheck`
+
+> Commit: `b0ed1f0c479c3e86147af516c8ca5be7cba6e548`
+
+---
+

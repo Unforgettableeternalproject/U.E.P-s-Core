@@ -130,6 +130,13 @@ class SYSModule(BaseModule):
         # 恢復暫停的監控任務
         self._restore_monitoring_tasks()
         
+        # 啟動剪貼簿監控（統一由 MonitoringThreadPool 管理）
+        try:
+            from modules.sys_module.actions.automation_helper import start_clipboard_monitor
+            start_clipboard_monitor()
+        except Exception as e:
+            error_log(f"[SYS] 啟動剪貼簿監控失敗: {e}")
+        
         info_log("[SYS] 初始化完成，啟用模式：" + ", ".join(self.enabled_modes))
         return True
     

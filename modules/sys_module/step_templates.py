@@ -346,7 +346,7 @@ class StepTemplate:
     def create_selection_step(session: WorkflowSession, step_id: str, prompt: str,
                              options: List[str], labels: Optional[List[str]] = None,
                              required_data: Optional[List[str]] = None,
-                             skip_if_data_exists: bool = False) -> WorkflowStep:
+                             skip_if_data_exists: bool = False, description: Optional[str] = None) -> WorkflowStep:
         """
         創建選擇步驟
         
@@ -368,13 +368,25 @@ class StepTemplate:
                 self.set_id(step_id)
                 self.set_step_type(self.STEP_TYPE_INTERACTIVE)
                 
-                # 🔧 暴露選項信息給外部（LLM 需要知道有哪些選項）
-                self.options = str_options
-                self.labels = labels
+                # 🔧 保存默認選項（用於備份）
+                self._default_options = str_options
+                self._default_labels = labels
                 
                 if required_data:
                     for req in required_data:
                         self.add_requirement(req)
+            
+            @property
+            def options(self):
+                """動態獲取運行時選項"""
+                runtime_options, _ = self._get_runtime_options()
+                return runtime_options
+            
+            @property
+            def labels(self):
+                """動態獲取運行時標籤"""
+                _, runtime_labels = self._get_runtime_options()
+                return runtime_labels
             
             def should_skip(self) -> bool:
                 """檢查是否應該跳過此步驟（因為數據已存在）"""
@@ -393,9 +405,32 @@ class StepTemplate:
                     return True
                 
                 return False
+            
+            def _get_runtime_options(self):
+                """在運行時從 session 獲取動態選項"""
+                # 如果 required_data 中有 selection_values，從 session 讀取
+                runtime_options = str_options
+                runtime_labels = labels
+                
+                if required_data:
+                    # 檢查是否有動態選項數據
+                    if "selection_values" in required_data:
+                        session_options = self.session.get_data("selection_values", None)
+                        if session_options:
+                            runtime_options = [str(opt) for opt in session_options]
+                    
+                    if "selection_labels" in required_data:
+                        session_labels = self.session.get_data("selection_labels", None)
+                        if session_labels:
+                            runtime_labels = session_labels
+                
+                return runtime_options, runtime_labels
                         
             def get_prompt(self) -> str:
-                option_labels = labels or str_options
+                # 🔧 運行時動態獲取選項
+                runtime_options, runtime_labels = self._get_runtime_options()
+                option_labels = runtime_labels or runtime_options
+                
                 prompt_text = prompt + "\n"
                 for i, label in enumerate(option_labels):
                     prompt_text += f"{i + 1}. {label}\n"
@@ -415,6 +450,9 @@ class StepTemplate:
                         {step_id: existing_data}
                     )
                 
+                # 🔧 使用運行時動態選項
+                runtime_options, runtime_labels = self._get_runtime_options()
+                
                 if not user_input:
                     return StepResult.failure("請選擇選項")
                 
@@ -423,9 +461,9 @@ class StepTemplate:
                 # 嘗試按索引選擇
                 try:
                     index = int(user_str) - 1
-                    if 0 <= index < len(str_options):
-                        selected = str_options[index]
-                        label = labels[index] if labels else selected
+                    if 0 <= index < len(runtime_options):
+                        selected = runtime_options[index]
+                        label = runtime_labels[index] if runtime_labels else selected
                         return StepResult.success(
                             f"已選擇: {label}",
                             {step_id: selected}
@@ -434,7 +472,7 @@ class StepTemplate:
                     pass
                 
                 # 1. 嘗試精確匹配選項
-                for option in str_options:
+                for option in runtime_options:
                     if str(option).lower() == user_str:
                         return StepResult.success(
                             f"已選擇: {option}",
@@ -442,17 +480,17 @@ class StepTemplate:
                         )
                 
                 # 2. 嘗試精確匹配標籤
-                if labels:
-                    for i, label in enumerate(labels):
+                if runtime_labels:
+                    for i, label in enumerate(runtime_labels):
                         if str(label).lower() == user_str:
-                            selected = str_options[i]
+                            selected = runtime_options[i]
                             return StepResult.success(
                                 f"已選擇: {label}",
                                 {step_id: selected}
                             )
                 
                 # 3. 嘗試部分匹配選項（選項包含在用戶輸入中）
-                for option in str_options:
+                for option in runtime_options:
                     if str(option).lower() in user_str:
                         return StepResult.success(
                             f"已選擇: {option}",
@@ -460,11 +498,11 @@ class StepTemplate:
                         )
                 
                 # 4. 嘗試部分匹配標籤（標籤包含在用戶輸入中）
-                if labels:
-                    for i, label in enumerate(labels):
+                if runtime_labels:
+                    for i, label in enumerate(runtime_labels):
                         label_lower = str(label).lower()
                         if label_lower in user_str or user_str in label_lower:
-                            selected = str_options[i]
+                            selected = runtime_options[i]
                             return StepResult.success(
                                 f"已選擇: {label}",
                                 {step_id: selected}
@@ -758,7 +796,8 @@ class StepTemplate:
         step_id: str,
         selection_step_id: str,
         branches: Dict[Any, List[WorkflowStep]],
-        description: str = ""
+        description: str = "",
+        is_final_step: bool = False
     ) -> WorkflowStep:
         """
         創建條件步驟（根據 selection 結果執行不同分支）
@@ -889,10 +928,18 @@ class StepTemplate:
                             self.session.add_data(key, value)
                 
                 # 5. 返回統合結果
-                return StepResult.success(
-                    f"分支 {selection_value} 執行完成",
-                    aggregated_data
-                )
+                # 如果這是最後一步，使用 complete_workflow
+                if is_final_step:
+                    debug_log(2, f"[ConditionalStep] {step_id}: 作為最後一步，完成工作流")
+                    return StepResult.complete_workflow(
+                        f"分支 {selection_value} 執行完成",
+                        aggregated_data
+                    )
+                else:
+                    return StepResult.success(
+                        f"分支 {selection_value} 執行完成",
+                        aggregated_data
+                    )
             
             def should_auto_advance(self) -> bool:
                 return True

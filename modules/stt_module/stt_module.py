@@ -375,7 +375,7 @@ class STTModule(BaseModule):
                 debug_log(2, f"[STT] 檢測到活躍會話，檢查 cycle tracking")
                 # 有活躍會話，檢查是否有任何 cycle 正在處理
                 if hasattr(system_loop, '_cycle_layer_tracking'):
-                    max_wait_time = 30.0  # 最多等待 30 秒
+                    max_wait_time = 60.0  # 最多等待 60 秒
                     wait_start = time.time()
                     
                     with system_loop._cycle_tracking_lock:

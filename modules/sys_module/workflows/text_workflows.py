@@ -25,14 +25,18 @@ def create_clipboard_tracker_workflow(session: WorkflowSession) -> WorkflowEngin
     
     步驟：
     1. 輸入搜尋關鍵字（可選，初始參數）
-    2. 執行搜尋（固定5筆，最近期優先）
-    3. LLM 回應搜尋結果
-    4. 使用者選擇要複製的項目（可選）
-    5. 執行複製
+    2. 執行搜尋並生成選項（固定5筆，最近期優先）
+    3. 使用者選擇要複製的項目（selection step，動態選項）
+    4. 執行複製
+    
+    改進：
+    - 移除了不必要的 LLM 回應步驟
+    - 使用 selection step 替代 input step，提供動態選項
+    - 簡化流程，減少步驟轉換
     
     注意：
     - 本工作流依賴背景監控服務追蹤剪貼簿歷史
-    - 如果系統未啟動監控，歷史記錄可能為空
+    - 背景監控執行緒已在 text_processing.py 啟動
     """
     workflow_def = WorkflowDefinition(
         workflow_type="clipboard_tracker",
@@ -53,8 +57,8 @@ def create_clipboard_tracker_workflow(session: WorkflowSession) -> WorkflowEngin
         description="收集搜尋關鍵字（可選）"
     )
     
-    # 步驟 2: 執行搜尋（固定5筆）
-    def search_clipboard(session: WorkflowSession) -> StepResult:
+    # 步驟 2: 執行搜尋並生成選項
+    def search_and_prepare_options(session: WorkflowSession) -> StepResult:
         from modules.sys_module.actions.text_processing import clipboard_tracker
         
         keyword = session.get_data("input_keyword", "").strip()
@@ -76,21 +80,30 @@ def create_clipboard_tracker_workflow(session: WorkflowSession) -> WorkflowEngin
                     "提示：本功能需要系統背景監控服務運行。如果系統剛啟動，歷史記錄可能為空。"
                 )
             
-            # 格式化結果供 LLM 使用
-            formatted_results = []
+            # 為 selection step 生成動態選項
+            selection_values = []  # 選項值列表（用於 create_selection_step）
+            selection_labels = []  # 選項標籤列表（用於顯示）
+            
             for i, item in enumerate(results, 1):
-                preview = item[:80] + "..." if len(item) > 80 else item
-                formatted_results.append(f"{i}. {preview}")
+                # 截取預覽（最多60字元）
+                preview = item[:60] + "..." if len(item) > 60 else item
+                # 選項值為索引（1-based）
+                selection_values.append(str(i))
+                # 🔧 不在標籤內加編號，由 SelectionStep.get_prompt() 統一處理
+                selection_labels.append(preview)
             
-            results_text = "\n".join(formatted_results)
+            # 加入「取消」選項
+            selection_values.append("cancel")
+            selection_labels.append("cancel the operation")
             
-            # 儲存結果供後續使用
+            # 儲存結果和選項
             return StepResult.success(
                 f"找到 {len(results)} 條剪貼簿記錄",
                 {
                     "search_results": results,
                     "result_count": len(results),
-                    "formatted_results": results_text
+                    "selection_values": selection_values,
+                    "selection_labels": selection_labels
                 }
             )
         else:
@@ -99,69 +112,43 @@ def create_clipboard_tracker_workflow(session: WorkflowSession) -> WorkflowEngin
     search_step = StepTemplate.create_processing_step(
         session=session,
         step_id="search_clipboard",
-        processor=search_clipboard,
+        processor=search_and_prepare_options,
         required_data=["input_keyword"],
-        description="執行剪貼簿搜尋（固定5筆）"
+        description="執行剪貼簿搜尋並生成選項"
     )
     
-    # 步驟 3: LLM 回應搜尋結果
-    def build_results_prompt(session: WorkflowSession) -> str:
-        """構建 LLM 提示詞來回應搜尋結果（內部處理，僅需簡單確認）"""
-        keyword = session.get_data("input_keyword", "").strip()
-        formatted_results = session.get_data("formatted_results", "")
-        result_count = session.get_data("result_count", 0)
-        
-        # 簡化 prompt：只需要 LLM 確認處理完成即可
-        # 實際的用戶提示（包含選項列表）會在互動步驟提示中生成
-        if keyword:
-            prompt = f"""You searched clipboard history with keyword: "{keyword}".
-Found {result_count} records. 
-
-Simply acknowledge this result in ONE brief sentence (e.g., "Found X email addresses in your clipboard history")."""
-        else:
-            prompt = f"""You searched clipboard history without a keyword.
-Found {result_count} records.
-
-Simply acknowledge this result in ONE brief sentence (e.g., "Found X items in your clipboard history")."""
-        
-        return prompt
-    
-    llm_response_step = StepTemplate.create_llm_processing_step(
-        session,
-        "llm_respond_results",
-        "Present search results to user",
-        ["search_results", "formatted_results"],
-        "llm_presentation",
-        required_data=["search_results", "formatted_results"],
-        llm_prompt_builder=build_results_prompt,
-        description="LLM 向使用者呈現搜尋結果"
-    )
-    
-    # 步驟 4: 使用者選擇要複製的項目
-    copy_selection_step = StepTemplate.create_input_step(
+    # 步驟 3: 使用者選擇要複製的項目（selection step，動態選項）
+    # 注意：這裡使用佔位符列表，實際選項在搜尋步驟完成後由 session 數據提供
+    selection_step = StepTemplate.create_selection_step(
         session=session,
-        step_id="input_copy_index",
-        prompt="請輸入要複製的項目編號（或按 Enter 跳過）：",
-        optional=True,
-        validator=lambda x: (x.isdigit() and 1 <= int(x) <= 5, "請輸入 1-5 的數字"),
+        step_id="copy_selection",
+        prompt="請選擇要複製的項目：",
+        options=session.get_data("selection_values", ["1", "2", "3", "4", "5", "cancel"]),  # 佔位符
+        labels=session.get_data("selection_labels", ["載入中...", "載入中...", "載入中...", "載入中...", "載入中...", "取消"]),  # 佔位符
+        required_data=["search_results", "selection_values", "selection_labels"],  # 依賴搜尋結果
         description="選擇要複製的項目"
     )
     
-    # 步驟 5: 執行複製
+    # 步驟 4: 執行複製
     def execute_copy(session: WorkflowSession) -> StepResult:
-        copy_index_str = session.get_data("input_copy_index", "").strip()
+        selected_value = session.get_data("copy_selection", "").strip()
         
-        # 如果沒有輸入，跳過複製
-        if not copy_index_str:
-            return StepResult.complete_workflow("搜尋完成（未複製任何內容）")
+        # 如果選擇取消
+        if selected_value == "cancel":
+            return StepResult.complete_workflow("⏭️ 已取消複製操作")
         
         from modules.sys_module.actions.text_processing import clipboard_tracker
         
-        copy_index = int(copy_index_str) - 1  # 轉換為0-based索引
+        # 轉換為0-based索引
+        try:
+            copy_index = int(selected_value) - 1
+        except ValueError:
+            return StepResult.failure("無效的選擇")
+        
         results = session.get_data("search_results", [])
         
         if copy_index < 0 or copy_index >= len(results):
-            return StepResult.failure("編號超出範圍")
+            return StepResult.failure("選擇超出範圍")
         
         # 重新調用 clipboard_tracker 執行複製
         keyword = session.get_data("input_keyword", "")
@@ -181,7 +168,7 @@ Simply acknowledge this result in ONE brief sentence (e.g., "Found X items in yo
         else:
             return StepResult.failure(f"複製失敗：{result.get('message', '未知錯誤')}")
     
-    copy_execution_step = StepTemplate.create_processing_step(
+    copy_step = StepTemplate.create_processing_step(
         session=session,
         step_id="execute_copy",
         processor=execute_copy,
@@ -191,15 +178,13 @@ Simply acknowledge this result in ONE brief sentence (e.g., "Found X items in yo
     # 組裝工作流
     workflow_def.add_step(keyword_step)
     workflow_def.add_step(search_step)
-    workflow_def.add_step(llm_response_step)
-    workflow_def.add_step(copy_selection_step)
-    workflow_def.add_step(copy_execution_step)
+    workflow_def.add_step(selection_step)
+    workflow_def.add_step(copy_step)
     
     workflow_def.set_entry_point("input_keyword")
     workflow_def.add_transition("input_keyword", "search_clipboard")
-    workflow_def.add_transition("search_clipboard", "llm_respond_results")
-    workflow_def.add_transition("llm_respond_results", "input_copy_index")
-    workflow_def.add_transition("input_copy_index", "execute_copy")
+    workflow_def.add_transition("search_clipboard", "copy_selection")
+    workflow_def.add_transition("copy_selection", "execute_copy")
     workflow_def.add_transition("execute_copy", "END")
     
     # 創建引擎並啟用自動推進
@@ -218,9 +203,11 @@ def create_quick_phrases_workflow(session: WorkflowSession) -> WorkflowEngine:
     步驟：
     1. 輸入範本需求（使用者描述想要的範本類型：信件、履歷等）
     2. LLM 處理生成範本
-    3. 選擇輸出方式（複製到剪貼簿 / 儲存為文件）
-    4a. 複製到剪貼簿
-    4b. 儲存為文件到桌面
+    3. 選擇輸出方式（複製到剪貼簿 / 儲存為文件 / 取消）
+    4. Conditional 根據選擇執行相應操作
+       4a. copy → 複製到剪貼簿
+       4b. save → 儲存為文件到桌面
+       4c. cancel/其他 → 直接結束（default 分支）
     """
     workflow_def = WorkflowDefinition(
         workflow_type="quick_phrases",
@@ -271,7 +258,57 @@ Generate the template now:"""
         description="使用 LLM 生成範本內容"
     )
     
-    # 步驟 3: 儲存為文件到桌面
+    # 步驟 3: 選擇輸出方式
+    output_method_selection_step = StepTemplate.create_selection_step(
+        session=session,
+        step_id="output_method_selection",
+        prompt="請選擇輸出方式：",
+        options=["copy", "save", "cancel"],
+        labels=["複製到剪貼簿", "儲存為文件到桌面", "取消"],
+        required_data=["generated_template"],
+        skip_if_data_exists=True
+    )
+    
+    # 步驟 4a: 複製到剪貼簿
+    def copy_to_clipboard(session: WorkflowSession) -> StepResult:
+        content = session.get_data("generated_template", "")
+        template_request = session.get_data("input_template_request", "template")
+        
+        if not content:
+            return StepResult.failure("沒有可複製的內容")
+        
+        try:
+            import pyperclip
+            pyperclip.copy(content)
+            
+            info_log("[Workflow] 範本已複製到剪貼簿")
+            
+            # 顯示預覽
+            preview = content[:200] + "..." if len(content) > 200 else content
+            
+            # 返回成功結果（工作流完成由 conditional 處理）
+            return StepResult.success(
+                f"✅ 已為您生成 '{template_request}' 範本並複製到剪貼簿。\n\n預覽:\n{preview}",
+                {
+                    "output_method": "clipboard",
+                    "template_content": content,
+                    "template_request": template_request
+                }
+            )
+        except Exception as e:
+            error_log(f"[Workflow] 複製失敗：{e}")
+            return StepResult.failure(f"複製失敗：{e}")
+    
+    copy_step = StepTemplate.create_auto_step(
+        session,
+        "copy_to_clipboard",
+        copy_to_clipboard,
+        ["generated_template"],
+        "正在複製到剪貼簿...",
+        description="複製範本到剪貼簿"
+    )
+    
+    # 步驟 4b: 儲存為文件到桌面
     def save_to_file(session: WorkflowSession) -> StepResult:
         import os
         from datetime import datetime
@@ -312,12 +349,15 @@ Generate the template now:"""
             # 顯示預覽
             preview = content[:200] + "..." if len(content) > 200 else content
             
-            return StepResult.complete_workflow(
-                f"✅ 範本已儲存到桌面！\n\n📄 檔案名稱: {filename}\n\n預覽:\n{preview}",
+            # 返回成功結果（工作流完成由 conditional 處理）
+            return StepResult.success(
+                f"✅ 已為您生成 '{template_request}' 範本並儲存到桌面！\n\n📄 檔案名稱: {filename}\n\n預覽:\n{preview}",
                 {
                     "output_method": "file",
                     "file_path": str(file_path),
-                    "template_content": content
+                    "filename": filename,
+                    "template_content": content,
+                    "template_request": template_request
                 }
             )
         except Exception as e:
@@ -333,14 +373,65 @@ Generate the template now:"""
         description="將範本儲存為文件到桌面"
     )
     
-    # 組裝工作流（簡化版：只有三個步驟）
+    # 步驟 4c: 取消操作
+    def cancel_operation(session: WorkflowSession) -> StepResult:
+        """處理取消操作"""
+        template_request = session.get_data("input_template_request", "template")
+        
+        info_log("[Workflow] 使用者取消範本生成")
+        
+        # 返回成功結果（工作流完成由 conditional 處理）
+        return StepResult.success(
+            f"⏭️ 已取消 '{template_request}' 範本生成。如需其他幫助，請隨時告訴我！",
+            {
+                "output_method": "cancel",
+                "template_request": template_request,
+                "cancelled": True
+            }
+        )
+    
+    cancel_step = StepTemplate.create_auto_step(
+        session,
+        "cancel_operation",
+        cancel_operation,
+        [],
+        "正在取消操作...",
+        description="處理取消操作"
+    )
+    
+    # 步驟 4: Conditional 根據選擇執行相應操作（作為最後一步）
+    output_conditional_step = StepTemplate.create_conditional_step(
+        session=session,
+        step_id="output_conditional",
+        selection_step_id="output_method_selection",
+        branches={
+            "copy": [copy_step],  # 複製到剪貼簿
+            "save": [save_step],  # 儲存為文件
+            "cancel": [cancel_step]  # 取消操作
+        },
+        description="根據使用者選擇執行相應的輸出操作",
+        is_final_step=True  # 🔧 標記為最後一步，執行完成後自動完成工作流
+    )
+    
+    # 組裝工作流
     workflow_def.add_step(template_request_step)
     workflow_def.add_step(llm_generate_step)
+    workflow_def.add_step(output_method_selection_step)
+    workflow_def.add_step(copy_step)
     workflow_def.add_step(save_step)
+    workflow_def.add_step(cancel_step)
+    workflow_def.add_step(output_conditional_step)
     
     workflow_def.set_entry_point("input_template_request")
     workflow_def.add_transition("input_template_request", "llm_generate_template")
-    workflow_def.add_transition("llm_generate_template", "save_to_file")
+    workflow_def.add_transition("llm_generate_template", "output_method_selection")
+    workflow_def.add_transition("output_method_selection", "output_conditional")
+    # 🔧 分支步驟完成後需要回到 conditional 繼續執行
+    workflow_def.add_transition("copy_to_clipboard", "output_conditional")
+    workflow_def.add_transition("save_to_file", "output_conditional")
+    workflow_def.add_transition("cancel_operation", "output_conditional")
+    # 🔧 conditional 作為最後一步，直接到 END（分支中的步驟已使用 complete_workflow）
+    workflow_def.add_transition("output_conditional", "END")
     
     # 創建引擎並啟用自動推進
     engine = WorkflowEngine(workflow_def, session)

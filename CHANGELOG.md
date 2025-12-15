@@ -2602,3 +2602,15 @@
 
 ---
 
+### Added some artss and moved the concepts to a dedicated folder. 12/15
+
+> Date: Mon, 15 Dec 2025 23:45:31 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `release/v0.9.4-stable`
+
+> Commit: `746ab6221aa68373b12e56e1ff6284178a159f1b`
+
+---
+

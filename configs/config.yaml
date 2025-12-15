@@ -1,5 +1,5 @@
 metadata:
-  system_version: v0.9.3
+  system_version: v0.9.4
 modules_enabled:
   stt_module: true
   nlp_module: true
@@ -27,7 +27,7 @@ logging:
   enable_split_logs: false
   enable_console_output: false
 debug:
-  enabled: true
+  enabled: false
   debug_level: 4
   enable_frontend: true
 system:

@@ -393,6 +393,7 @@ train/**/data
 # Logs and Memories
 logs/*
 memory/*
+clipboard_history.json
 
 # Wheels
 wheel/*

@@ -2518,3 +2518,87 @@
 
 ---
 
+### Quite a change on many module's performance report and made framework manage better. Not all the modules have been handled with tho. 12/14
+
+> Date: Sun, 14 Dec 2025 00:17:28 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/benchmark_and_healthcheck`
+
+> Commit: `66a6f5e5698374acd954954d5f18e4c0a7b94fbb`
+
+---
+
+### First handed added the metric fetch to all modules. 12/14
+
+> Date: Sun, 14 Dec 2025 01:30:11 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/benchmark_and_healthcheck`
+
+> Commit: `7e9ab85f9c4b53ff84b99b32a19eb7771e0d27dd`
+
+---
+
+### Fixed all problems on metrics for all the modules. 12/15
+
+> Date: Mon, 15 Dec 2025 03:01:22 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/benchmark_and_healthcheck`
+
+> Commit: `8f50b8b3fd0dfedafd2b36aa67611825c72b0452`
+
+---
+
+### Fixed upon some major system issues regarding workflows and GS. 12/15
+
+> Date: Mon, 15 Dec 2025 04:42:39 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/benchmark_and_healthcheck`
+
+> Commit: `2ad439d10eaeed24b7b5f5b78a4452efcfeb3c9a`
+
+---
+
+### Fixed some more minor stuff, well, big stuffs are left there for a reason. 12/15
+
+> Date: Mon, 15 Dec 2025 21:24:48 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/benchmark_and_healthcheck`
+
+> Commit: `f92a013176cda27394eeccfc307d8ff891e7f2ce`
+
+---
+
+### Fixed an issue with conditional in get world time workflow, as well as the music player initialization problem. 12/15
+
+> Date: Mon, 15 Dec 2025 21:53:17 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/benchmark_and_healthcheck`
+
+> Commit: `02dcc3c5c28afa6f43f91e5245c5f90937dff404`
+
+---
+
+### Revamped two workflows to adapt to new conditional structure. 12/15
+
+> Date: Mon, 15 Dec 2025 23:30:31 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/benchmark_and_healthcheck`
+
+> Commit: `b0ed1f0c479c3e86147af516c8ca5be7cba6e548`
+
+---
+

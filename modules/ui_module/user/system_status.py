@@ -114,9 +114,6 @@ class SystemStatusWidget(QWidget):
         # 系統運行時間
         self.uptime_label = QLabel("系統運行時間: 計算中...")
         
-        # 模組狀態
-        self.module_label = QLabel("模組狀態: 正在載入...")
-        
         self.performance_layout.addWidget(self.cpu_label)
         self.performance_layout.addWidget(self.cpu_bar)
         self.performance_layout.addSpacing(10)
@@ -124,7 +121,6 @@ class SystemStatusWidget(QWidget):
         self.performance_layout.addWidget(self.mem_bar)
         self.performance_layout.addSpacing(10)
         self.performance_layout.addWidget(self.uptime_label)
-        self.performance_layout.addWidget(self.module_label)
         
         perf_widget = QWidget()
         install_theme_hook(perf_widget)
@@ -187,9 +183,9 @@ class SystemStatusWidget(QWidget):
             
             # 獲取 UEP 系統運行時間
             try:
-                from core.framework import core_framework
-                if hasattr(core_framework, 'start_time') and core_framework.start_time:
-                    uptime = datetime.now().timestamp() - core_framework.start_time
+                from core.controller import unified_controller
+                uptime = unified_controller.get_system_uptime()
+                if uptime and uptime > 0:
                     hours = int(uptime // 3600)
                     minutes = int((uptime % 3600) // 60)
                     seconds = int(uptime % 60)
@@ -202,20 +198,7 @@ class SystemStatusWidget(QWidget):
                 else:
                     self.uptime_label.setText("系統運行時間: 未啟動")
             except Exception as e:
-                self.uptime_label.setText("系統運行時間: 未啟動")
-            
-            # 獲取模組狀態
-            try:
-                from core.registry import module_manager
-                loaded_modules = [name for name, mod in module_manager.modules.items() if mod is not None]
-                total_modules = len(module_manager.available_modules)
-                loaded_count = len(loaded_modules)
-                if loaded_count > 0:
-                    self.module_label.setText(f"模組狀態: {loaded_count}/{total_modules} 已載入")
-                else:
-                    self.module_label.setText("模組狀態: 延遲載入模式")
-            except Exception:
-                self.module_label.setText("模組狀態: 獲取失敗")
+                self.uptime_label.setText("系統運行時間: 無法獲取")
                 
         except Exception as e:
             error_log(f"[SystemStatus] 更新性能指標失敗: {e}")
@@ -358,6 +341,438 @@ class SystemStatusWidget(QWidget):
         else:
             return "一點也不無聊，正忙著呢"
             
+    def apply_theme(self):
+        """應用主題"""
+        if theme_manager:
+            theme_manager.apply_app()
+        try:
+            self.style().unpolish(self)
+            self.style().polish(self)
+            self.update()
+        except Exception:
+            pass
+
+
+class ModuleHealthWidget(QWidget):
+    """模組健康度顯示組件"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        if not PYQT5_AVAILABLE:
+            return
+            
+        install_theme_hook(self)
+        self._build_ui()
+        self._start_update_timer()
+        
+    def _build_ui(self):
+        """構建UI"""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
+        
+        # 頂部說明
+        desc_label = QLabel("📊 顯示各模組的性能指標與健康狀態")
+        desc_label.setObjectName("subtitle")
+        f = QFont()
+        f.setPointSize(9)
+        desc_label.setFont(f)
+        layout.addWidget(desc_label)
+        
+        # 滾動區域
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setObjectName("scrollArea")
+        install_theme_hook(scroll)
+        
+        # 模組列表容器
+        self.modules_container = QWidget()
+        install_theme_hook(self.modules_container)
+        self.modules_layout = QVBoxLayout(self.modules_container)
+        self.modules_layout.setSpacing(10)
+        self.modules_layout.setContentsMargins(5, 5, 5, 5)
+        
+        scroll.setWidget(self.modules_container)
+        layout.addWidget(scroll)
+        
+        # 初始提示
+        self.no_data_label = QLabel("⏳ 正在收集模組數據...")
+        self.no_data_label.setAlignment(Qt.AlignCenter)
+        self.no_data_label.setObjectName("noDataLabel")
+        f = QFont()
+        f.setPointSize(10)
+        self.no_data_label.setFont(f)
+        self.modules_layout.addWidget(self.no_data_label)
+        self.modules_layout.addStretch()
+        
+    def _start_update_timer(self):
+        """啟動更新定時器"""
+        self.update_timer = QTimer(self)
+        self.update_timer.timeout.connect(self._update_module_health)
+        self.update_timer.start(3000)  # 每3秒更新一次
+        self._update_module_health()  # 立即更新一次
+        
+    def _update_module_health(self):
+        """更新模組健康度顯示"""
+        try:
+            from core.controller import unified_controller
+            
+            # 獲取模組健康度摘要
+            health_summary = unified_controller.get_module_health_summary()
+            
+            if not health_summary:
+                # 沒有數據
+                if self.modules_layout.count() <= 2:  # 只有 no_data_label 和 stretch
+                    self.no_data_label.setText("⏳ 正在收集模組數據...")
+                return
+            
+            # 移除舊的顯示
+            while self.modules_layout.count() > 0:
+                item = self.modules_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            
+            # 為每個模組創建卡片（排除 UI 模組，因為它是持續運行的，請求數指標無意義）
+            for module_id, module_data in sorted(health_summary.items()):
+                if module_id.lower() == 'ui':
+                    continue  # 跳過 UI 模組
+                card = self._create_module_card(module_id, module_data)
+                self.modules_layout.addWidget(card)
+            
+            self.modules_layout.addStretch()
+            
+        except Exception as e:
+            error_log(f"[ModuleHealth] 更新模組健康度失敗: {e}")
+            
+    def _create_module_card(self, module_id: str, module_data: Dict[str, Any]) -> QGroupBox:
+        """創建模組卡片"""
+        status = module_data['status']
+        health = module_data['health']
+        metrics = module_data['metrics']
+        
+        # 狀態顏色和圖標
+        status_icons = {
+            'healthy': '🟢',
+            'degraded': '🟡',
+            'failing': '🔴'
+        }
+        status_colors = {
+            'healthy': '#4CAF50',
+            'degraded': '#FF9800',
+            'failing': '#F44336'
+        }
+        status_texts = {
+            'healthy': '健康',
+            'degraded': '降級',
+            'failing': '故障'
+        }
+        
+        icon = status_icons.get(status, '⚪')
+        color = status_colors.get(status, '#999999')
+        status_text = status_texts.get(status, '未知')
+        
+        # 創建卡片
+        card = QGroupBox(f"{icon} {module_id}")
+        card.setObjectName("moduleHealthCard")
+        install_theme_hook(card)
+        
+        card_layout = QVBoxLayout(card)
+        card_layout.setSpacing(8)
+        card_layout.setContentsMargins(15, 15, 15, 15)
+        
+        # 狀態行
+        status_layout = QHBoxLayout()
+        status_label = QLabel(f"狀態: <b style='color:{color}'>{status_text}</b>")
+        status_label.setTextFormat(Qt.RichText)
+        status_layout.addWidget(status_label)
+        status_layout.addStretch()
+        
+        details_label = QLabel(health['details'])
+        details_label.setObjectName("detailsLabel")
+        status_layout.addWidget(details_label)
+        
+        card_layout.addLayout(status_layout)
+        
+        # 指標網格
+        metrics_grid = QHBoxLayout()
+        metrics_grid.setSpacing(20)
+        
+        # 請求數
+        total_requests = metrics.total_requests
+        req_label = QLabel(f"<b>請求數:</b> {total_requests}")
+        req_label.setTextFormat(Qt.RichText)
+        metrics_grid.addWidget(req_label)
+        
+        # 成功率
+        success_rate = health['success_rate'] * 100
+        success_label = QLabel(f"<b>成功率:</b> {success_rate:.1f}%")
+        success_label.setTextFormat(Qt.RichText)
+        metrics_grid.addWidget(success_label)
+        
+        # 平均耗時
+        avg_time = health['avg_processing_time']
+        if avg_time > 0:
+            if avg_time < 1:
+                time_str = f"{avg_time*1000:.0f}ms"
+            else:
+                time_str = f"{avg_time:.2f}s"
+            time_label = QLabel(f"<b>平均耗時:</b> {time_str}")
+        else:
+            time_label = QLabel(f"<b>平均耗時:</b> N/A")
+        time_label.setTextFormat(Qt.RichText)
+        metrics_grid.addWidget(time_label)
+        
+        metrics_grid.addStretch()
+        card_layout.addLayout(metrics_grid)
+        
+        # 進度條 - 成功率
+        if total_requests > 0:
+            progress_layout = QHBoxLayout()
+            progress_label = QLabel("成功率:")
+            progress_label.setFixedWidth(60)
+            progress_layout.addWidget(progress_label)
+            
+            progress_bar = QProgressBar()
+            progress_bar.setTextVisible(True)
+            progress_bar.setFormat("%p%")
+            progress_bar.setValue(int(success_rate))
+            progress_bar.setMaximumHeight(20)
+            
+            # 根據成功率設置顏色
+            if success_rate >= 80:
+                progress_bar.setStyleSheet("QProgressBar::chunk { background-color: #4CAF50; }")
+            elif success_rate >= 50:
+                progress_bar.setStyleSheet("QProgressBar::chunk { background-color: #FF9800; }")
+            else:
+                progress_bar.setStyleSheet("QProgressBar::chunk { background-color: #F44336; }")
+            
+            progress_layout.addWidget(progress_bar)
+            card_layout.addLayout(progress_layout)
+        
+        return card
+        
+    def apply_theme(self):
+        """應用主題"""
+        if theme_manager:
+            theme_manager.apply_app()
+        try:
+            self.style().unpolish(self)
+            self.style().polish(self)
+            self.update()
+        except Exception:
+            pass
+
+
+class PerformanceMetricsWidget(QWidget):
+    """效能指標顯示組件"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        if not PYQT5_AVAILABLE:
+            return
+            
+        install_theme_hook(self)
+        self._build_ui()
+        self._start_update_timer()
+        
+    def _build_ui(self):
+        """構建UI"""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
+        
+        # 頂部說明
+        desc_label = QLabel("📈 顯示各模組的詳細效能指標與自訂監控數據")
+        desc_label.setObjectName("subtitle")
+        f = QFont()
+        f.setPointSize(9)
+        desc_label.setFont(f)
+        layout.addWidget(desc_label)
+        
+        # 滾動區域
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setObjectName("scrollArea")
+        install_theme_hook(scroll)
+        
+        # 模組列表容器
+        self.metrics_container = QWidget()
+        install_theme_hook(self.metrics_container)
+        self.metrics_layout = QVBoxLayout(self.metrics_container)
+        self.metrics_layout.setSpacing(10)
+        self.metrics_layout.setContentsMargins(5, 5, 5, 5)
+        
+        scroll.setWidget(self.metrics_container)
+        layout.addWidget(scroll)
+        
+        # 初始提示
+        self.no_data_label = QLabel("⏳ 正在收集效能數據...")
+        self.no_data_label.setAlignment(Qt.AlignCenter)
+        self.no_data_label.setObjectName("noDataLabel")
+        f = QFont()
+        f.setPointSize(10)
+        self.no_data_label.setFont(f)
+        self.metrics_layout.addWidget(self.no_data_label)
+        self.metrics_layout.addStretch()
+        
+    def _start_update_timer(self):
+        """啟動更新定時器"""
+        self.update_timer = QTimer(self)
+        self.update_timer.timeout.connect(self._update_performance_metrics)
+        self.update_timer.start(5000)  # 每5秒更新一次
+        self._update_performance_metrics()  # 立即更新一次
+        
+    def _update_performance_metrics(self):
+        """更新效能指標顯示"""
+        try:
+            from core.framework import core_framework
+            
+            # 獲取所有模組的效能窗口
+            if not hasattr(core_framework, 'get_all_modules'):
+                return
+            
+            modules = core_framework.get_all_modules()
+            
+            if not modules:
+                # 沒有數據
+                if self.metrics_layout.count() <= 2:
+                    return
+                return
+            
+            # 移除舊的顯示
+            while self.metrics_layout.count() > 0:
+                item = self.metrics_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            
+            # 為每個模組創建效能卡片
+            for module_id, module in sorted(modules.items()):
+                if hasattr(module, 'get_performance_window'):
+                    try:
+                        window = module.get_performance_window()
+                        card = self._create_performance_card(module_id, window)
+                        self.metrics_layout.addWidget(card)
+                    except Exception as e:
+                        error_log(f"[PerformanceMetrics] 獲取 {module_id} 效能窗口失敗: {e}")
+            
+            self.metrics_layout.addStretch()
+            
+        except Exception as e:
+            error_log(f"[PerformanceMetrics] 更新效能指標失敗: {e}")
+            
+    def _create_performance_card(self, module_id: str, window: Dict[str, Any]) -> QGroupBox:
+        """創建效能指標卡片"""
+        # 創建卡片
+        card = QGroupBox(f"📊 {module_id}")
+        card.setObjectName("performanceCard")
+        install_theme_hook(card)
+        
+        card_layout = QVBoxLayout(card)
+        card_layout.setSpacing(8)
+        card_layout.setContentsMargins(15, 15, 15, 15)
+        
+        # 基本指標
+        basic_metrics = QHBoxLayout()
+        basic_metrics.setSpacing(20)
+        
+        total_requests = window.get('total_requests', 0)
+        successful = window.get('successful_requests', 0)
+        failed = window.get('failed_requests', 0)
+        
+        basic_metrics.addWidget(QLabel(f"<b>總請求:</b> {total_requests}"))
+        basic_metrics.addWidget(QLabel(f"<b>成功:</b> {successful}"))
+        basic_metrics.addWidget(QLabel(f"<b>失敗:</b> {failed}"))
+        
+        if 'avg_processing_time' in window and window['avg_processing_time'] > 0:
+            avg_time = window['avg_processing_time']
+            if avg_time < 1:
+                time_str = f"{avg_time*1000:.0f}ms"
+            else:
+                time_str = f"{avg_time:.2f}s"
+            basic_metrics.addWidget(QLabel(f"<b>平均耗時:</b> {time_str}"))
+        
+        basic_metrics.addStretch()
+        card_layout.addLayout(basic_metrics)
+        
+        # 自訂指標
+        custom_metrics = window.get('custom_metrics', {})
+        if custom_metrics:
+            card_layout.addWidget(self._create_separator())
+            
+            # 自訂指標標題
+            custom_title = QLabel("<b>自訂指標:</b>")
+            custom_title.setObjectName("sectionTitle")
+            card_layout.addWidget(custom_title)
+            
+            # 顯示最近的自訂指標（最多10個）
+            metrics_list = list(custom_metrics.items())[-10:]
+            for metric_name, metric_value in metrics_list:
+                metric_text = f"  • {metric_name}: {self._format_metric_value(metric_value)}"
+                metric_label = QLabel(metric_text)
+                metric_label.setObjectName("metricItem")
+                card_layout.addWidget(metric_label)
+        
+        # 模組特定指標（排除已顯示的基本指標和自訂指標）
+        excluded_keys = {'total_requests', 'successful_requests', 'failed_requests', 
+                        'avg_processing_time', 'custom_metrics', 'last_activity',
+                        'processing_times', 'memory_usage'}
+        
+        module_specific = {k: v for k, v in window.items() if k not in excluded_keys}
+        
+        if module_specific:
+            card_layout.addWidget(self._create_separator())
+            
+            # 模組特定指標標題
+            specific_title = QLabel("<b>模組專屬指標:</b>")
+            specific_title.setObjectName("sectionTitle")
+            card_layout.addWidget(specific_title)
+            
+            for key, value in sorted(module_specific.items()):
+                if isinstance(value, dict):
+                    # 字典類型：顯示為子項目
+                    dict_label = QLabel(f"  • {key}:")
+                    dict_label.setObjectName("metricItem")
+                    card_layout.addWidget(dict_label)
+                    for sub_key, sub_value in list(value.items())[:5]:  # 最多5個子項
+                        sub_text = f"    - {sub_key}: {self._format_metric_value(sub_value)}"
+                        sub_label = QLabel(sub_text)
+                        sub_label.setObjectName("metricSubItem")
+                        card_layout.addWidget(sub_label)
+                else:
+                    # 簡單類型：直接顯示
+                    metric_text = f"  • {key}: {self._format_metric_value(value)}"
+                    metric_label = QLabel(metric_text)
+                    metric_label.setObjectName("metricItem")
+                    card_layout.addWidget(metric_label)
+        
+        return card
+    
+    def _create_separator(self) -> QFrame:
+        """創建分隔線"""
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setFrameShadow(QFrame.Sunken)
+        line.setObjectName("separator")
+        return line
+    
+    def _format_metric_value(self, value) -> str:
+        """格式化指標值"""
+        if isinstance(value, float):
+            if value < 0.01:
+                return f"{value:.4f}"
+            elif value < 1:
+                return f"{value:.3f}"
+            else:
+                return f"{value:.2f}"
+        elif isinstance(value, int):
+            return f"{value:,}"
+        elif isinstance(value, (list, tuple)):
+            return f"[{len(value)} items]"
+        elif isinstance(value, dict):
+            return f"{{{len(value)} keys}}"
+        else:
+            return str(value)
+        
     def apply_theme(self):
         """應用主題"""
         if theme_manager:
@@ -558,6 +973,10 @@ class SystemStatusWindow(QMainWindow):
         self.status_widget = SystemStatusWidget(self.status_manager)
         self.tab_widget.addTab(self.status_widget, "系統狀態")
         
+        # 模組健康度分頁
+        self.module_health_widget = ModuleHealthWidget()
+        self.tab_widget.addTab(self.module_health_widget, "健康指標")
+        
         # 調試日誌分頁（根據 user_settings.yaml 的 monitoring.logs.show_logs 設定）
         self.debug_widget = DebugLogWidget()
         self.debug_tab_index = -1  # 記錄日誌分頁的索引
@@ -597,12 +1016,17 @@ class SystemStatusWindow(QMainWindow):
         header_layout.addStretch()
         
         # 主題切換按鈕
-        self.theme_toggle = QPushButton("🌙")
+        self.theme_toggle = QPushButton()
         self.theme_toggle.setObjectName("themeToggle")
         self.theme_toggle.setFixedSize(48, 48)
         self.theme_toggle.setCursor(Qt.PointingHandCursor)
         btn_font = QFont("Segoe UI Emoji", 18)
         self.theme_toggle.setFont(btn_font)
+        # 根據當前主題設置初始圖示
+        if theme_manager and hasattr(theme_manager, 'theme'):
+            self.theme_toggle.setText("☀️" if theme_manager.theme == Theme.DARK else "🌙")
+        else:
+            self.theme_toggle.setText("🌙")  # 預設亮色主題
         self.theme_toggle.clicked.connect(self.toggle_theme)
         install_theme_hook(self.theme_toggle)
         
@@ -641,8 +1065,47 @@ class SystemStatusWindow(QMainWindow):
             theme_manager.toggle()
             if self.status_widget:
                 self.status_widget.apply_theme()
+            if self.module_health_widget:
+                self.module_health_widget.apply_theme()
+            if self.performance_widget:
+                self.performance_widget.apply_theme()
             if self.debug_widget:
                 self.debug_widget.apply_theme()
+    
+    def _update_performance_tab_visibility(self):
+        """根據設定更新效能分頁可見性"""
+        from configs.user_settings_manager import get_user_setting
+        show_metrics = get_user_setting("monitoring.performance.show_metrics", False)
+        
+        # 檢查效能分頁是否已存在
+        current_index = -1
+        for i in range(self.tab_widget.count()):
+            if self.tab_widget.widget(i) == self.performance_widget:
+                current_index = i
+                break
+        
+        if show_metrics:
+            # 需要顯示效能分頁
+            if current_index == -1:
+                # 分頁不存在，添加
+                self.performance_tab_index = self.tab_widget.addTab(self.performance_widget, "效能指標")
+                debug_log(OPERATION_LEVEL, "[SystemStatus] 效能指標分頁已顯示")
+        else:
+            # 需要隱藏效能分頁
+            if current_index >= 0:
+                # 分頁存在，移除
+                self.tab_widget.removeTab(current_index)
+                self.performance_tab_index = -1
+                debug_log(OPERATION_LEVEL, "[SystemStatus] 效能指標分頁已隱藏")
+    
+    def on_settings_changed(self, key: str, value):
+        """設定變更回調"""
+        if key == "monitoring.performance.show_metrics":
+            debug_log(OPERATION_LEVEL, f"[SystemStatus] 檢測到設定變更: {key} = {value}")
+            self._update_performance_tab_visibility()
+        elif key == "monitoring.logs.show_logs":
+            debug_log(OPERATION_LEVEL, f"[SystemStatus] 檢測到設定變更: {key} = {value}")
+            self._update_log_tab_visibility()
                 
     def _update_log_tab_visibility(self):
         """根據設定更新日誌分頁可見性"""

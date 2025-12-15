@@ -829,8 +829,8 @@ class UserMainWindow(QMainWindow):
         
         scroll_layout.addWidget(performance_group)
         
-        # 3. 日誌設定
-        logging_group = self._make_group("日誌設定")
+        # 3. 日誌與監控設定
+        logging_group = self._make_group("日誌與監控設定")
         logging_layout = QFormLayout(logging_group)
         logging_layout.setSpacing(12)
         logging_layout.setContentsMargins(16, 20, 16, 16)
@@ -839,6 +839,11 @@ class UserMainWindow(QMainWindow):
         self.show_logs_cb.setToolTip("啟用後，系統狀態視窗將顯示日誌分頁")
         self.show_logs_cb.stateChanged.connect(self._on_show_logs_changed)
         logging_layout.addRow("", self.show_logs_cb)
+        
+        self.show_metrics_cb = QCheckBox("在狀態視窗顯示效能指標分頁")
+        self.show_metrics_cb.setToolTip("啟用後，系統狀態視窗將顯示效能指標分頁，可查看各模組的詳細效能數據")
+        self.show_metrics_cb.stateChanged.connect(self._on_show_metrics_changed)
+        logging_layout.addRow("", self.show_metrics_cb)
         
         self.logging_enabled_cb = QCheckBox("啟用日誌系統 🔒")
         self.logging_enabled_cb.setEnabled(False)
@@ -1139,8 +1144,10 @@ class UserMainWindow(QMainWindow):
             self.reduce_animations_on_battery_cb.setChecked(config.get('system', {}).get('reduce_animations_on_battery', True))
             self.gc_interval_spin.setValue(config.get('system', {}).get('gc_interval', 300))
             
-            # 日誌（這些設定現在從全域 config.yaml 讀取，UI 僅供顯示）
+            # 日誌與監控（這些設定現在從 user_settings.yaml 讀取）
             self.show_logs_cb.setChecked(get_user_setting("monitoring.logs.show_logs", False))
+            self.show_metrics_cb.setChecked(get_user_setting("monitoring.performance.show_metrics", False))
+            
             logging_config = config.get('logging', {})
             self.logging_enabled_cb.setChecked(logging_config.get('enabled', True))
             
@@ -1323,6 +1330,17 @@ class UserMainWindow(QMainWindow):
         # 發送設定變更信號
         self.settings_changed.emit("monitoring.logs.show_logs", show_logs)
         debug_log(OPERATION_LEVEL, f"[UserMainWindow] show_logs 設定已變更: {show_logs}")
+    
+    def _on_show_metrics_changed(self):
+        """顯示效能指標分頁選項變更"""
+        show_metrics = self.show_metrics_cb.isChecked()
+        from configs.user_settings_manager import set_user_setting, save_user_settings
+        set_user_setting("monitoring.performance.show_metrics", show_metrics)
+        save_user_settings()
+        
+        # 發送設定變更信號
+        self.settings_changed.emit("monitoring.performance.show_metrics", show_metrics)
+        debug_log(OPERATION_LEVEL, f"[UserMainWindow] show_metrics 設定已變更: {show_metrics}")
     
     def apply_settings(self):
         """套用設定"""

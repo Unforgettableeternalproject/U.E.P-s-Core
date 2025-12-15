@@ -89,6 +89,12 @@ class LLMModule(BaseModule):
         self.allow_api_calls = get_user_setting("monitoring.network.allow_api_calls", True)
         self.network_timeout = get_user_setting("monitoring.network.timeout", 30)
         
+        # 效能指標追蹤
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.cache_hits = 0
+        self.cache_misses = 0
+        
         # 註冊使用者設定熱重載回調
         user_settings_manager.register_reload_callback("llm_module", self._reload_from_user_settings)
 
@@ -275,11 +281,12 @@ class LLMModule(BaseModule):
             debug_log(3, f"[LLM] 需要審核: {requires_review}, 結果: {step_result.get('success')}")
             debug_log(2, f"[LLM] 接收到的 review_data keys: {list(review_data.keys()) if review_data else 'None'}")
             
-            # 🔧 檢查是否為 LLM_PROCESSING 請求
-            requires_llm_processing = data.get('requires_llm_processing', False)
+            # 🔧 檢查是否為 LLM_PROCESSING 請求（從 review_data 或 data 中讀取）
+            requires_llm_processing = (review_data and review_data.get('requires_llm_processing', False)) or data.get('requires_llm_processing', False)
             if requires_llm_processing:
                 debug_log(2, f"[LLM] 檢測到 LLM_PROCESSING 請求")
-                llm_request_data = data.get('llm_request_data', {})
+                # 從 review_data 或 data 中獲取請求數據
+                llm_request_data = (review_data.get('request_data') if review_data else None) or data.get('llm_request_data', {})
                 
                 # 🔧 去重檢查：避免重複處理同一個 LLM_PROCESSING 步驟
                 step_id = llm_request_data.get('step_id', '')
@@ -1149,6 +1156,19 @@ class LLMModule(BaseModule):
             # 工作流自動完成的中間狀態（text=""）不發布，由 _process_workflow_completion 發布最終回應
             if output.success and result.get("text"):
                 self._notify_processing_layer_completion(result)
+            
+            # 更新效能指標
+            if 'usage' in result and result['usage']:
+                input_tokens = result['usage'].get('input_tokens', 0)
+                output_tokens = result['usage'].get('output_tokens', 0)
+                self.total_input_tokens += input_tokens
+                self.total_output_tokens += output_tokens
+                self.update_custom_metric('input_tokens', input_tokens)
+                self.update_custom_metric('output_tokens', output_tokens)
+                self.update_custom_metric('total_tokens', input_tokens + output_tokens)
+            
+            if result.get('text'):
+                self.update_custom_metric('response_length', len(result['text']))
             
             return result
                 
@@ -2406,8 +2426,9 @@ Note: You have access to system functions via MCP tools. The SYS module will exe
                                 f"Prompt: {current_step_prompt}\n\n"
                                 f"Generate a natural response that:\n"
                                 f"1. BRIEFLY confirms the workflow has started (1 sentence)\n"
-                                f"2. Asks the user for the needed input based on the prompt\n"
-                                f"3. Be friendly and conversational (2-3 sentences total)\n"
+                                f"2. **Include the full prompt with all options exactly as shown above** (very important!)\n"
+                                f"3. Asks the user to make their selection\n"
+                                f"4. Be friendly and conversational\n"
                                 f"IMPORTANT: Respond in English only."
                             )
                         elif auto_continue:
@@ -4245,24 +4266,48 @@ Memory Management:
                 else:
                     response_text = "Got it! Please provide the required input to continue."
             
-            # 觸發 TTS 輸出提示
-            from core.framework import core_framework
-            tts_module = core_framework.get_module('tts')
-            if tts_module:
-                debug_log(2, f"[LLM] 觸發 TTS 輸出互動步驟提示")
-                tts_module.handle({
-                    "text": response_text,
-                    "session_id": session_id,
-                    "emotion": "neutral"
-                })
-            
-            # 🔧 修正：不要批准步驟！
-            # 當下一步是互動步驟時，LLM 只是提供提示，不批准當前步驟
-            # 工作流應該停在 INTERACTIVE 步驟，等待用戶輸入
-            # WorkflowEngine 的 _auto_advance 會檢測到 InteractiveStep 並自動發布 workflow_requires_input 事件
-            # 用戶提供輸入後，才會調用 provide_workflow_input 繼續工作流
+            # 🔧 不直接調用 TTS，而是通過事件系統
+            # 避免模組間直接互相調用，保持架構清晰
+            # 發布 PROCESSING_LAYER_COMPLETE 事件後，ModuleCoordinator 會路由到 TTS
             
             debug_log(1, f"[LLM] ✅ 互動步驟提示處理完畢: {session_id}")
+            
+            # ✅ 發布 PROCESSING_LAYER_COMPLETE 事件，確保循環追蹤正確
+            # 雖然這只是提示輸出，但仍然算是完成了處理層的工作
+            try:
+                from core.working_context import working_context_manager
+                gs_id = working_context_manager.get_context_data('current_gs_id')
+                cycle_index = working_context_manager.get_context_data('current_cycle_index', 0)
+                
+                completion_data = {
+                    "session_id": gs_id or session_id,
+                    "cycle_index": cycle_index,
+                    "layer": "PROCESSING",
+                    "response": response_text,
+                    "source_module": "llm",
+                    "llm_output": {
+                        "text": response_text,
+                        "success": True,
+                        "metadata": {
+                            "interactive_prompt": True,
+                            "workflow_session_id": session_id
+                        }
+                    },
+                    "timestamp": time.time(),
+                    "completion_type": "interactive_prompt",
+                    "success": True
+                }
+                
+                from core.event_bus import event_bus, SystemEvent
+                event_bus.publish(
+                    event_type=SystemEvent.PROCESSING_LAYER_COMPLETE,
+                    data=completion_data,
+                    source="llm"
+                )
+                
+                debug_log(2, f"[LLM] 已發布互動步驟提示的 PROCESSING_LAYER_COMPLETE 事件")
+            except Exception as pub_err:
+                error_log(f"[LLM] 發布 PROCESSING_LAYER_COMPLETE 失敗: {pub_err}")
             
         except Exception as e:
             import traceback
@@ -4420,4 +4465,22 @@ Memory Management:
             import traceback
             error_log(traceback.format_exc())
             return False
+    
+    def get_performance_window(self) -> dict:
+        """獲取效能數據窗口（包含 LLM 特定指標）"""
+        window = super().get_performance_window()
+        window['total_input_tokens'] = self.total_input_tokens
+        window['total_output_tokens'] = self.total_output_tokens
+        window['total_tokens'] = self.total_input_tokens + self.total_output_tokens
+        window['avg_tokens_per_request'] = (
+            window['total_tokens'] / window['total_requests']
+            if window['total_requests'] > 0 else 0.0
+        )
+        window['cache_hits'] = self.cache_hits
+        window['cache_misses'] = self.cache_misses
+        total_cache_ops = self.cache_hits + self.cache_misses
+        window['cache_hit_rate'] = (
+            self.cache_hits / total_cache_ops if total_cache_ops > 0 else 0.0
+        )
+        return window
 

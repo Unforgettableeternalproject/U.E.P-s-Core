@@ -99,7 +99,7 @@ class DesktopPetApp(QWidget):
     主要桌面寵物應用程式
     
     特性：
-    - 透明背景 Overlay 窗口
+    - 透明背景 Overlay 視窗
     - 支持拖拽移動
     - 支持動畫顯示
     - 鼠標互動響應

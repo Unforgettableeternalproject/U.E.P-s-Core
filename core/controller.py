@@ -70,9 +70,10 @@ class UnifiedController:
         self.user_settings_manager = user_settings_manager
         
         # 系統統計
-        self.startup_time = None
+        self.startup_time = None  # 系統啟動時間戳
         self.total_gs_sessions = 0
-        self.system_errors = []
+        self.system_errors = {}  # 改為按模組分類: {module_id: [error_info, ...]}
+        self.module_health_cache = {}  # 模組健康度快取
         
         # 階段五：背景任務監控
         self.background_tasks: Dict[str, Dict[str, Any]] = {}  # task_id -> task_info
@@ -96,7 +97,9 @@ class UnifiedController:
             if self.is_initialized:
                 info_log("[UnifiedController] 系統已初始化")
                 return True
-                
+            
+            # 記錄啟動時間
+            self.startup_time = time.time()
             self.system_status = SystemStatus.INITIALIZING
             info_log("[UnifiedController] 開始系統初始化...")
             
@@ -186,6 +189,9 @@ class UnifiedController:
             # ✅ 檢查會話超時 (CS/WS 超時處理)
             self._check_session_timeouts()
             
+            # ✅ 檢查模組健康度
+            self._check_module_health()
+            
             # 記錄系統狀態（簡化版）
             debug_log(3, f"[Monitor] 系統狀態: {current_state.value}, "
                         f"當前GS: {current_gs.session_id if current_gs else 'None'}")
@@ -269,31 +275,53 @@ class UnifiedController:
             debug_log(2, "[Controller] 檢查 WS pending_end...")
             self._check_and_end_pending_workflow_sessions()
             
-            # 2. 然後檢查 GS 結束條件
-            current_state = self.state_manager.get_current_state()
+            # 2. 檢查 GS 結束條件
             current_gs = self.session_manager.get_current_general_session()
             
             if not current_gs:
                 return
-                
+            
+            # 檢查是否還有活躍的子會話
+            active_cs = self.session_manager.get_active_chatting_sessions()
+            active_ws = self.session_manager.get_active_workflow_sessions()
+            has_active_subsessions = len(active_cs) > 0 or len(active_ws) > 0
+            
+            # 檢查 StateQueue 狀態
             state_queue = get_state_queue_manager()
             queue_status = state_queue.get_queue_status()
+            queue_state = queue_status.get('current_state', 'unknown')
+            queue_length = queue_status.get('queue_length', 0)
             
             # GS 結束條件：
-            # 1. 當前狀態為 IDLE
-            # 2. 狀態佇列完全清空
-            # 3. 至少進入過一個非 IDLE 狀態（確保有實際處理發生）
-            has_visited_non_idle = current_gs.has_visited_non_idle_state()
+            # 1. StateQueue 當前狀態為 idle（不是 StateManager 的狀態）
+            # 2. 狀態佇列完全清空（沒有待處理的狀態）
+            # 3. 沒有活躍的子會話（CS/WS）
+            # 4. 至少進入過一個非 IDLE 狀態（確保有實際處理發生）- 從 StateQueue 查詢
+            has_visited_non_idle = state_queue.has_visited_non_idle_state()
             
-            if (current_state == UEPState.IDLE and 
-                queue_status.get('queue_length', 0) == 0 and
-                queue_status.get('current_state') == 'idle'):
+            debug_log(2, f"[Controller] GS 結束條件檢查: queue_state={queue_state}, "
+                        f"queue_length={queue_length}, active_cs={len(active_cs)}, "
+                        f"active_ws={len(active_ws)}, visited_non_idle={has_visited_non_idle}")
+            
+            if (queue_state == 'idle' and 
+                queue_length == 0 and
+                not has_active_subsessions and
+                has_visited_non_idle):
                 
-                if has_visited_non_idle:
-                    debug_log(2, f"[Controller] 檢測到 GS 結束條件：狀態佇列已清空且已訪問非 IDLE 狀態，準備結束 GS {current_gs.session_id}")
-                    self._end_current_gs_with_cleanup(current_gs.session_id)
-                else:
-                    debug_log(2, f"[Controller] GS {current_gs.session_id} 尚未訪問非 IDLE 狀態，保持 GS 存在 (visited_states: {current_gs.context.visited_states})")
+                debug_log(2, f"[Controller] ✅ GS 結束條件已滿足，準備結束 GS {current_gs.session_id}")
+                self._end_current_gs_with_cleanup(current_gs.session_id)
+            else:
+                reasons = []
+                if queue_state != 'idle':
+                    reasons.append(f"queue_state={queue_state}")
+                if queue_length > 0:
+                    reasons.append(f"queue_length={queue_length}")
+                if has_active_subsessions:
+                    reasons.append(f"active_subsessions (CS:{len(active_cs)}, WS:{len(active_ws)})")
+                if not has_visited_non_idle:
+                    reasons.append("未訪問非IDLE狀態")
+                
+                debug_log(2, f"[Controller] GS {current_gs.session_id} 不符合結束條件: {', '.join(reasons)}")
                 
         except Exception as e:
             debug_log(2, f"[Controller] GS 結束條件檢查失敗: {e}")
@@ -393,7 +421,12 @@ class UnifiedController:
             })
             
             if result:
-                # 2. 系統級清理：確保 Working Context 完全重置
+                # 2. 清空 StateQueue 的狀態歷史
+                from core.states.state_queue import get_state_queue_manager
+                state_queue = get_state_queue_manager()
+                state_queue.clear_state_history()
+                
+                # 3. 系統級清理：確保 Working Context 完全重置
                 self._perform_system_cleanup_after_gs()
                 
                 info_log(f"[Controller] GS {gs_id} 已成功結束，系統清理完成")
@@ -1118,6 +1151,145 @@ class UnifiedController:
             
         except Exception as e:
             error_log(f"[UnifiedController] 系統關閉失敗: {e}")
+    
+    # ========== 模組健康度監控 ==========
+    
+    def _check_module_health(self):
+        """檢查模組健康度並更新快取"""
+        try:
+            from core.framework import core_framework
+            
+            # 獲取所有模組的性能指標
+            all_metrics = core_framework.get_all_module_metrics()
+            current_time = time.time()
+            
+            # 更新模組健康度快取
+            for module_id, metrics in all_metrics.items():
+                health_status = self._evaluate_module_health(metrics, current_time)
+                self.module_health_cache[module_id] = health_status
+                
+                # 如果模組不健康，記錄警告
+                if health_status['status'] in ['degraded', 'failing']:
+                    debug_log(2, f"[Monitor] 模組 {module_id} 狀態: {health_status['status']}")
+                    
+        except Exception as e:
+            debug_log(2, f"[Monitor] 模組健康度檢查失敗: {e}")
+    
+    def _evaluate_module_health(self, metrics, current_time: float) -> Dict[str, Any]:
+        """
+        評估模組健康度
+        
+        返回格式: {
+            'status': 'healthy' | 'degraded' | 'failing',
+            'last_active': float,
+            'inactive_duration': float,
+            'error_rate': float,
+            'details': str
+        }
+        """
+        # 從配置讀取閾值
+        monitoring_config = self.config.get('monitoring', {})
+        inactive_threshold = monitoring_config.get('module_inactive_threshold', 300)
+        failing_threshold = monitoring_config.get('module_failing_threshold', 600)
+        degraded_error_rate = monitoring_config.get('error_rate_degraded_threshold', 0.2)
+        failing_error_rate = monitoring_config.get('error_rate_failing_threshold', 0.5)
+        
+        inactive_duration = current_time - metrics.last_activity
+        error_rate = metrics.error_rate
+        
+        # 健康度判斷邏輯
+        if inactive_duration > failing_threshold:
+            status = 'failing'
+            details = f"模組已 {int(inactive_duration/60)} 分鐘未活動"
+        elif error_rate > failing_error_rate:
+            status = 'failing'
+            details = f"錯誤率過高 ({error_rate*100:.1f}%)"
+        elif error_rate > degraded_error_rate:
+            status = 'degraded'
+            details = f"錯誤率偏高 ({error_rate*100:.1f}%)"
+        elif inactive_duration > inactive_threshold:
+            status = 'degraded'
+            details = f"模組活動較少 ({int(inactive_duration/60)} 分鐘)"
+        else:
+            status = 'healthy'
+            details = "運作正常"
+        
+        return {
+            'status': status,
+            'last_active': metrics.last_activity,
+            'inactive_duration': inactive_duration,
+            'error_rate': error_rate,
+            'total_requests': metrics.total_requests,
+            'success_rate': metrics.success_rate,
+            'avg_processing_time': metrics.average_processing_time,
+            'details': details
+        }
+    
+    def get_module_health_summary(self) -> Dict[str, Any]:
+        """
+        獲取模組健康度摘要（供UI調用）
+        
+        返回格式: {
+            'module_id': {
+                'status': 'healthy' | 'degraded' | 'failing',
+                'metrics': PerformanceMetrics,
+                'health': {...}
+            }
+        }
+        """
+        try:
+            from core.framework import core_framework
+            
+            summary = {}
+            all_metrics = core_framework.get_all_module_metrics()
+            current_time = time.time()
+            
+            for module_id, metrics in all_metrics.items():
+                # 從快取獲取或重新評估
+                if module_id in self.module_health_cache:
+                    health = self.module_health_cache[module_id]
+                else:
+                    health = self._evaluate_module_health(metrics, current_time)
+                
+                summary[module_id] = {
+                    'status': health['status'],
+                    'metrics': metrics,
+                    'health': health
+                }
+            
+            return summary
+            
+        except Exception as e:
+            error_log(f"[Controller] 獲取模組健康度摘要失敗: {e}")
+            return {}
+    
+    def get_system_uptime(self) -> float:
+        """獲取系統運行時間（秒）"""
+        if self.startup_time:
+            return time.time() - self.startup_time
+        return 0.0
+    
+    def record_module_error(self, module_id: str, error_info: Dict[str, Any]):
+        """記錄模組錯誤（按模組分類）"""
+        try:
+            if module_id not in self.system_errors:
+                self.system_errors[module_id] = []
+            
+            self.system_errors[module_id].append({
+                'timestamp': time.time(),
+                'error': error_info
+            })
+            
+            # 從配置讀取最大錯誤記錄數
+            monitoring_config = self.config.get('monitoring', {})
+            max_errors = monitoring_config.get('max_module_errors', 50)
+            
+            # 限制每個模組的錯誤記錄數量
+            if len(self.system_errors[module_id]) > max_errors:
+                self.system_errors[module_id] = self.system_errors[module_id][-max_errors:]
+                
+        except Exception as e:
+            error_log(f"[Controller] 記錄模組錯誤失敗: {e}")
     
     # ========== ON_CALL 管理 ==========
 

@@ -1,5 +1,5 @@
 metadata:
-  system_version: v0.8.9
+  system_version: v0.9.3
 modules_enabled:
   stt_module: true
   nlp_module: true
@@ -33,3 +33,12 @@ debug:
 system:
   main_loop_interval: 0.1
   shutdown_timeout: 5.0
+monitoring:
+  # 性能監控配置
+  metrics_collection_interval: 10  # 秒，系統性能快照收集間隔
+  performance_history_size: 100  # 保留的歷史快照數量
+  module_inactive_threshold: 300  # 秒，模組被視為不活躍的閾值（5分鐘）
+  module_failing_threshold: 600  # 秒，模組被視為故障的閾值（10分鐘）
+  error_rate_degraded_threshold: 0.2  # 錯誤率閾值，超過視為降級（20%）
+  error_rate_failing_threshold: 0.5  # 錯誤率閾值，超過視為故障（50%）
+  max_module_errors: 50  # 每個模組保留的最大錯誤記錄數

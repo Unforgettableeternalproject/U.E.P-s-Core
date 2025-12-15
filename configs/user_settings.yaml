@@ -1,6 +1,6 @@
 behavior:
   mischief:
-    enabled: false
+    enabled: true
     intensity: medium
     max_actions: 5
   movement:
@@ -99,6 +99,8 @@ monitoring:
     allow_api_calls: true
     allow_internet_access: true
     timeout: 30
+  performance:
+    show_metrics: true
 privacy:
   data_collection:
     allow_error_reporting: true

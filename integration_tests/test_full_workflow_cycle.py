@@ -860,22 +860,22 @@ class TestFileWorkflowFullCycle:
         測試快速範本工作流 - 完整參數（測試 ConditionalStep）
         
         流程：
-        1. 使用者輸入：「Generate a business email template and save it as a file」
-           （包含 template_request 和 output_mode）
+        1. 使用者輸入：「Generate an apology template and save it as a file」
+           （包含 template_request 和 output_method）
         2. NLP 判斷意圖：text_generation
         3. LLM 通過 MCP 啟動 quick_phrases workflow
-           - LLM 提取參數: {"template_request": "business email template", "output_mode": "file"}
+           - LLM 提取參數: {"input_template_request": "apology template", "output_method_selection": "save"}
         4. 工作流執行：
            - Step 1 (input_template_request): 跳過（數據已存在）
            - Step 2 (llm_generate_template): LLM 生成範本
-           - Step 3 (select_output_method): 跳過（數據已存在，值為 "file"）
-           - Step 4 (output_conditional): ConditionalStep 檢測到 output_mode=file
+           - Step 3 (output_method_selection): 跳過（數據已存在，值為 "save"）
+           - Step 4 (output_conditional): ConditionalStep 檢測到 output_method_selection=save
            - Step 5 (save_to_file): 自動儲存到桌面
         5. 工作流程完成，範本已儲存
         
         測試重點：
-        - LLM 是否正確提取 template_request 和 output_mode 參數
-        - ConditionalStep 是否正確執行分支邏輯（file 分支）
+        - LLM 是否正確提取 input_template_request 和 output_method_selection 參數
+        - ConditionalStep 是否正確執行分支邏輯（save 分支）
         - 所有互動步驟是否被正確跳過
         - 檔案是否成功儲存到桌面
         - WS 是否正確結束
@@ -921,8 +921,12 @@ class TestFileWorkflowFullCycle:
             
             # 驗證檔案是否生成到桌面
             desktop_path = Path(os.path.expanduser("~/Desktop"))
-            # 尋找最近生成的文字檔案（任何 .txt 檔案）
-            template_files = list(desktop_path.glob("*.txt"))
+            # 尋找最近生成的文字檔案（任何 .txt 檔案，包含 "apology" 關鍵字）
+            template_files = list(desktop_path.glob("*apology*.txt"))
+            
+            if not template_files:
+                # 如果沒找到包含 apology 的，找最近的 .txt 檔案
+                template_files = list(desktop_path.glob("*.txt"))
             
             if template_files:
                 # 找到最新的檔案（最近 2 分鐘內生成的）
@@ -1064,27 +1068,32 @@ class TestFileWorkflowFullCycle:
     
     def test_clipboard_tracker_full_cycle(self, system_components, isolated_gs):
         """
-        測試完整的剪貼簿追蹤工作流程循環
+        測試完整的剪貼簿追蹤工作流程循環（重構版 - 使用 Selection Step）
         
         流程：
-        1. Mock 剪貼簿歷史數據（因為背景監控服務未運行）
+        1. Mock 剪貼簿歷史數據（因為背景監控服務在測試環境下已啟動）
         2. 使用者輸入：「Search clipboard for email」
         3. NLP 判斷意圖：text_operation
         4. LLM 通過 MCP 啟動 clipboard_tracker workflow
            - LLM 提取參數: {"keyword": "email"}
         5. 工作流執行：
            - Step 1 (input_keyword): 跳過（數據已存在）
-           - Step 2 (search_clipboard): 搜尋剪貼簿歷史（固定5筆）
-           - Step 3 (llm_respond_results): LLM 呈現搜尋結果
-           - Step 4 (input_copy_index): 使用者選擇要複製的項目
-           - Step 5 (execute_copy): 執行複製
+           - Step 2 (search_clipboard): 搜尋剪貼簿歷史並生成動態選項（固定5筆）
+           - Step 3 (copy_selection): Selection step 顯示搜尋結果供使用者選擇
+           - Step 4 (execute_copy): 執行複製
         6. 工作流程完成，內容已複製到剪貼簿
+        
+        架構改進：
+        - 移除了不必要的 LLM 呈現步驟（llm_respond_results）
+        - 使用 Selection Step 替代 Input Step（動態選項）
+        - requires_llm_review=False（不需要 LLM 介入）
+        - 簡化流程，從 5 步驟減少到 4 步驟
         
         測試重點：
         - Mock 剪貼簿歷史數據
         - LLM 是否正確提取 keyword 參數
-        - LLM 是否正確呈現搜尋結果
-        - 互動步驟是否正常運作
+        - Selection step 是否正確顯示動態選項
+        - 使用者選擇是否正常運作
         - 複製功能是否正常（使用 Mock）
         - WS 是否正確結束
         
@@ -1102,7 +1111,8 @@ class TestFileWorkflowFullCycle:
         event_bus = system_components["event_bus"]
         sys_mod = core_framework.get_module("sys_module")
         
-        # 使用標準的 InteractiveWorkflowMonitor（期待1個互動步驟: input_copy_index）
+        # 使用 InteractiveWorkflowMonitor（期待1個選擇步驟: copy_selection）
+        # Selection step 本質上也是互動步驟，會觸發 WORKFLOW_REQUIRES_INPUT 事件
         monitor = InteractiveWorkflowMonitor(event_bus, sys_module=sys_mod, expected_interactive_steps=1)
         
         # Mock 剪貼簿數據
@@ -1124,7 +1134,7 @@ class TestFileWorkflowFullCycle:
         
         try:
             # 1. 準備測試：Mock 剪貼簿歷史
-            info_log("[Test] 🎯 測試：剪貼簿追蹤完整循環")
+            info_log("[Test] 🎯 測試：剪貼簿追蹤完整循環（Selection Step 架構）")
             
             # Patch 剪貼簿歷史和複製功能
             with patch('modules.sys_module.actions.text_processing._history', mock_history), \
@@ -1138,19 +1148,23 @@ class TestFileWorkflowFullCycle:
                 # 用戶請求搜尋剪貼簿（包含關鍵字）
                 inject_text_to_system("Search clipboard for email addresses")
                 
-                # 2. 等待互動步驟 (input_copy_index)
+                # 2. 等待選擇步驟 (copy_selection)
                 # 注意：input_keyword 會被跳過（因為 LLM 提取了參數）
-                info_log("[Test] ⏳ 等待互動步驟: input_copy_index")
-                if monitor.awaiting_input_event.wait(timeout=90):  # LLM 呈現結果需要時間
+                # 注意：不需要等待 LLM 呈現結果（已移除該步驟）
+                info_log("[Test] ⏳ 等待選擇步驟: copy_selection")
+                if monitor.awaiting_input_event.wait(timeout=60):
                     info_log(f"[Test] 📝 響應步驟: {monitor.current_step}")
-                    time.sleep(2)  # 等待 LLM 生成提示
+                    
+                    # ✅ 等待 TTS 輸出完成（OUTPUT_LAYER_COMPLETE）
+                    # Monitor 的 _on_output_complete 會在 TTS 完成後再次設置 awaiting_input_event
+                    monitor.awaiting_input_event.clear()
                     
                     # 注入選擇輸入（選擇第1個結果）
                     inject_text_to_system("1")
                     monitor.awaiting_input_event.clear()
                 else:
-                    info_log(f"[Test] ❌ 超時！TTS輸出次數: {monitor.tts_output_count}/{monitor.expected_tts_outputs}")
-                    pytest.fail("Timeout waiting for input_copy_index step")
+                    info_log(f"[Test] ❌ 超時！互動步驟數量: {monitor.interactive_step_count}/{monitor.expected_interactive_steps}")
+                    pytest.fail("Timeout waiting for copy_selection step")
                 
                 # 3. 等待工作流程完成
                 info_log("[Test] ⏳ 等待工作流程完成...")
@@ -1165,8 +1179,8 @@ class TestFileWorkflowFullCycle:
                 info_log(f"[Test] 📊 事件數量: {len(result['events'])}")
                 info_log(f"[Test] 🔄 互動步驟數量: {monitor.interactive_step_count}")
                 
-                # 5. 驗證互動步驟（只有 input_copy_index）
-                assert monitor.interactive_step_count == 1, f"Expected 1 interactive step, got {monitor.interactive_step_count}"
+                # 5. 驗證選擇步驟（只有 copy_selection）
+                assert monitor.interactive_step_count == 1, f"Expected 1 selection step, got {monitor.interactive_step_count}"
                 
                 # 6. 驗證複製功能
                 assert copied_content["data"] is not None, "No content was copied"
@@ -1180,7 +1194,7 @@ class TestFileWorkflowFullCycle:
                 assert "step_completed" in event_types, "No step completion events"
                 assert "session_ended" in event_types, "No session end event"
                 
-                info_log("[Test] ✅ 剪貼簿追蹤完整循環測試通過")
+                info_log("[Test] ✅ 剪貼簿追蹤完整循環測試通過（Selection Step 架構）")
             
         finally:
             monitor.cleanup()

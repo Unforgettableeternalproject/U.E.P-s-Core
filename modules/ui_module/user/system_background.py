@@ -24,7 +24,7 @@ try:
                                 QDateTimeEdit)
     from PyQt5.QtCore import (Qt, QTimer, pyqtSignal, QSize, QRect,
                              QPropertyAnimation, QEasingCurve, QThread,
-                             QSettings, QStandardPaths, QDateTime)
+                             QStandardPaths, QDateTime)
     from PyQt5.QtGui import (QIcon, QFont, QPixmap, QPalette, QColor,
                             QPainter, QLinearGradient, QBrush)
     PYQT5_AVAILABLE = True
@@ -46,7 +46,6 @@ class SystemBackgroundWindow(QMainWindow):
             return
 
         self.ui_module = ui_module
-        self.settings = QSettings("UEP", "SystemBackground")
         
         self.is_minimized_to_orb = False
         self.original_geometry = None
@@ -141,17 +140,27 @@ class SystemBackgroundWindow(QMainWindow):
         self.create_status_bar()
 
     def _wire_theme_manager(self):
-        try:
-            theme_manager.apply_app()
+        """連接主題管理器"""
+        if theme_manager:
+            debug_log(3, f"[SystemBackground] _wire_theme_manager 開始: theme={theme_manager.theme}")
+            
+            # 訂閱主題變化事件
             theme_manager.theme_changed.connect(self._on_theme_changed)
-        except Exception as e:
-            debug_log(2, f"[SystemBackground] 無法連接 theme_changed: {e}")
-
-        self._on_theme_changed()
+            
+            # 應用當前主題
+            theme_manager.apply_app()
+            debug_log(3, f"[SystemBackground] apply_app() 後: theme={theme_manager.theme}")
+            
+            # 強制同步按鈕圖示（傳入當前主題值）
+            self._on_theme_changed(theme_manager.theme.value)
+            debug_log(3, f"[SystemBackground] _wire_theme_manager 完成，按鈕圖示已同步")
 
     def _on_theme_changed(self, name: str = None):
+        """主題變化回調"""
         is_dark = self._tm_is_dark(name)
-        self.theme_toggle.setText("☀️" if is_dark else "🌙")
+        icon = "☀️" if is_dark else "🌙"
+        self.theme_toggle.setText(icon)
+        debug_log(3, f"[SystemBackground] _on_theme_changed: name={name}, is_dark={is_dark}, icon={icon}")
 
     def _tm_is_dark(self, name: str = None) -> bool:
         """檢查當前主題是否為深色模式"""
@@ -219,8 +228,15 @@ class SystemBackgroundWindow(QMainWindow):
         self.theme_toggle.setFixedSize(48, 48)
         self.theme_toggle.setCursor(Qt.PointingHandCursor)
         self.theme_toggle.setFont(QFont("Segoe UI Emoji", 18))
-        # 初始文字留空，由 _wire_theme_manager() 中的 _on_theme_changed() 設置
-        self.theme_toggle.setText("🌙")  # 臨時預設值
+        # 立即根據當前主題設置圖示
+        if theme_manager and hasattr(theme_manager, 'theme'):
+            initial_is_dark = theme_manager.theme == Theme.DARK
+            initial_icon = "☀️" if initial_is_dark else "🌙"
+            self.theme_toggle.setText(initial_icon)
+            debug_log(3, f"[SystemBackground] create_header: theme={theme_manager.theme}, is_dark={initial_is_dark}, icon={initial_icon}")
+        else:
+            self.theme_toggle.setText("🌙")  # 預設亮色主題
+            debug_log(3, f"[SystemBackground] create_header: theme_manager 不可用，使用預設圖示")
         self.theme_toggle.clicked.connect(self.toggle_theme)
         header_layout.addWidget(self.theme_toggle)
 
@@ -1543,20 +1559,18 @@ class SystemBackgroundWindow(QMainWindow):
         self.refresh_today_tasks()
 
     def load_settings(self):
-        try:
-            self.dark_mode = self.settings.value("theme/dark_mode", False, type=bool)
-            self.theme_toggle.setText("☀️" if self.dark_mode else "🌙")
-            debug_log(2, "[SystemBackground] 設定載入完成")
-        except Exception as e:
-            debug_log(2, f"[SystemBackground] 載入設定時發生錯誤: {e}")
+        """載入設定（已廢棄，保留空方法以避免破壞現有調用）"""
+        # 所有設定已遷移至 user_settings.yaml 系統
+        # 主題由 theme_manager 統一管理
+        debug_log(2, "[SystemBackground] 設定載入（使用 user_settings.yaml）")
+        pass
 
     def save_settings(self):
-        try:
-            self.settings.setValue("theme/dark_mode", self.dark_mode)
-            self.settings.sync()
-            debug_log(2, "[SystemBackground] 設定儲存完成")
-        except Exception as e:
-            debug_log(2, f"[SystemBackground] 儲存設定時發生錯誤: {e}")
+        """儲存設定（已廢棄，保留空方法以避免破壞現有調用）"""
+        # 所有設定已遷移至 user_settings.yaml 系統
+        # 主題由 theme_manager 統一管理，無需手動保存
+        debug_log(2, "[SystemBackground] 設定儲存（使用 user_settings.yaml）")
+        pass
 
     def showEvent(self, event):
         """視窗顯示時加載最新快照"""
@@ -1599,20 +1613,22 @@ class SystemBackgroundWindow(QMainWindow):
             # 保存音樂資料夾路徑
             self.music_folder = music_folder
             
-            # 初始化播放引擎（無論是否有音樂資料夾都要初始化）
-            from modules.sys_module.actions.automation_helper import media_control
+            # ⚠️ 不要初始化播放器！只檢查現有狀態
+            # 播放器應該只在用戶實際播放音樂時才被創建
+            # 監控視窗只是一個控制面板，不應該創建或停止播放器
+            from modules.sys_module.actions.automation_helper import get_music_player_status
             try:
-                # 使用 stop 動作來初始化播放器（安全且不會播放音樂）
-                # 即使沒有音樂資料夾，也要初始化引擎以顯示正確的狀態
-                media_control(action="stop", music_folder=self.music_folder or "", engine_type=self.playback_engine)
-                debug_log(OPERATION_LEVEL, f"[SystemBackground] 播放引擎已初始化: {self.playback_engine}")
-                
-                # 觸發一次狀態同步以更新 UI
+                # 觸發一次狀態同步以顯示現有播放器狀態（如果有的話）
                 self._sync_playback_status()
-            except Exception as init_error:
-                debug_log(OPERATION_LEVEL, f"[SystemBackground] 播放引擎初始化警告: {init_error}")
+                status = get_music_player_status()
+                if status.get("engine") != "Unknown":
+                    debug_log(OPERATION_LEVEL, f"[SystemBackground] 已連接到現有播放器: {status.get('engine')}")
+                else:
+                    debug_log(OPERATION_LEVEL, f"[SystemBackground] 播放器尚未初始化（將在播放時自動創建）")
+            except Exception as sync_error:
+                debug_log(2, f"[SystemBackground] 狀態同步警告: {sync_error}")
             
-            # 如果沒有音樂資料夾，提前返回（引擎已初始化）
+            # 如果沒有音樂資料夾，提前返回
             if not music_folder or not Path(music_folder).exists():
                 debug_log(OPERATION_LEVEL, f"[SystemBackground] 未設定或找不到預設媒體資料夾: {music_folder}")
                 return

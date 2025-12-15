@@ -11,6 +11,8 @@ import os
 import warnings
 from typing import Optional, Dict, Any, cast
 warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*forced_decoder_ids.*")
+warnings.filterwarnings("ignore", message=".*past_key_values.*")
 
 # 新的核心依賴
 import torch
@@ -66,6 +68,8 @@ def correct_stt(text):
 
 class STTModule(BaseModule):
     def __init__(self, config=None, working_context_manager=None, result_callback=None):
+        super().__init__()
+        
         self.config = config or load_module_config("stt_module")
         
         # 工作上下文管理器
@@ -128,6 +132,11 @@ class STTModule(BaseModule):
 
         self.is_initialized = False
         
+        # 效能指標追蹤
+        self.total_audio_duration = 0.0
+        self.total_recognitions = 0
+        self.vad_triggers = 0
+        
         # 註冊使用者設定熱重載回調（在 initialize 之前註冊，避免循環）
         user_settings_manager.register_reload_callback("stt_module", self._reload_from_user_settings)
         
@@ -167,6 +176,9 @@ class STTModule(BaseModule):
                 use_safetensors=True
             )
             self.model.to(self.device)
+            
+            # 清除 forced_decoder_ids 以避免與 task="translate" 衝突
+            self.model.config.forced_decoder_ids = None
             
             # 載入處理器
             info_log("[STT] 載入處理器...")
@@ -226,6 +238,10 @@ class STTModule(BaseModule):
     def handle(self, data: dict = {}) -> dict:
         """處理 STT 請求"""
         try:
+            # 🔧 文字模式特殊處理（直接調用實現方法）
+            if data.get("mode") == "text" and "text" in data:
+                return self._handle_text_input_impl(data["text"])
+            
             # 直接轉換為模組內部使用的格式
             validated = STTInput(**data)
             debug_log(1, f"[STT] 處理請求: {validated.mode}")
@@ -265,6 +281,19 @@ class STTModule(BaseModule):
                     stt_output.error = "未識別到有效語音內容"
             else:
                 stt_output.error = None
+            
+            # 更新效能指標
+            self.total_recognitions += 1
+            if stt_output.text and stt_output.text.strip():
+                self.update_custom_metric('recognition_confidence', stt_output.confidence)
+                self.update_custom_metric('speaker_id', stt_output.speaker_id or 'unknown')
+                self.update_custom_metric('text_length', len(stt_output.text))
+            
+            # 如果有音頻時長信息
+            if validated.mode == ActivationMode.MANUAL:
+                audio_duration = validated.duration if hasattr(validated, 'duration') and validated.duration else self.phrase_time_limit
+                self.total_audio_duration += audio_duration
+                self.update_custom_metric('audio_duration', audio_duration)
             
             # 返回字典格式
             return stt_output.model_dump()
@@ -308,6 +337,18 @@ class STTModule(BaseModule):
         Returns:
             dict: 統一格式的輸出結果
         """
+        # 🔧 通過 handle() 方法以自動記錄效能指標
+        return self.handle({
+            "mode": "text",
+            "text": text
+        })
+    
+    def _handle_text_input_impl(self, text: str) -> dict:
+        """
+        處理文字輸入的實際實現
+        
+        （原 handle_text_input 的邏輯）
+        """
         try:
             if not text or text.isspace():
                 debug_log(2, "[STT] 文字輸入為空，忽略")
@@ -334,7 +375,7 @@ class STTModule(BaseModule):
                 debug_log(2, f"[STT] 檢測到活躍會話，檢查 cycle tracking")
                 # 有活躍會話，檢查是否有任何 cycle 正在處理
                 if hasattr(system_loop, '_cycle_layer_tracking'):
-                    max_wait_time = 30.0  # 最多等待 30 秒
+                    max_wait_time = 60.0  # 最多等待 60 秒
                     wait_start = time.time()
                     
                     with system_loop._cycle_tracking_lock:
@@ -1090,3 +1131,15 @@ class STTModule(BaseModule):
             import traceback
             error_log(traceback.format_exc())
             return False
+    
+    def get_performance_window(self) -> dict:
+        """獲取效能數據窗口（包含 STT 特定指標）"""
+        window = super().get_performance_window()
+        window['total_audio_duration'] = self.total_audio_duration
+        window['total_recognitions'] = self.total_recognitions
+        window['vad_triggers'] = self.vad_triggers
+        window['avg_audio_duration'] = (
+            self.total_audio_duration / self.total_recognitions
+            if self.total_recognitions > 0 else 0.0
+        )
+        return window

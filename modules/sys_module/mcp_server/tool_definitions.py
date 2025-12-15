@@ -193,8 +193,33 @@ class MCPTool(BaseModel):
         if self.handler is None:
             return ToolResult.error(f"工具 '{self.name}' 未註冊處理函數")
         
+        # 🔧 記錄 SYS 模組效能（MCP 工具執行）
+        import time
+        from utils.debug_helper import debug_log, error_log
+        
+        start_time = time.time()
+        success = False
+        
         try:
             result = await self.handler(params)
+            success = result.status == "success"
             return result
         except Exception as e:
             return ToolResult.error(f"工具執行失敗", error_detail=str(e))
+        finally:
+            # 報告效能數據給 SYS 模組
+            try:
+                processing_time = time.time() - start_time
+                from core.framework import core_framework
+                
+                debug_log(3, f"[MCPTool] 報告 SYS 效能: 工具={self.name}, 耗時={processing_time:.3f}s, 成功={success}")
+                
+                core_framework.update_module_metrics('sys', {
+                    'processing_time': processing_time,
+                    'memory_usage': 0,
+                    'request_result': 'success' if success else 'failure'
+                })
+                
+                debug_log(3, f"[MCPTool] SYS 效能已報告")
+            except Exception as e:
+                error_log(f"[MCPTool] 報告 SYS 效能失敗: {e}")

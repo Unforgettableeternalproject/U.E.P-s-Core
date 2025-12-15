@@ -841,11 +841,22 @@ class WorkflowEngine:
     
     def _process_input_internal(self, user_input: Any = None) -> StepResult:
         """內部處理用戶輸入並執行步驟"""
-        # 檢查是否正在等待 LLM 審核
-        if self.awaiting_llm_review:
-            return StepResult.failure("工作流程正在等待 LLM 審核，請稍候")
-        
         current_step = self.get_current_step()
+        
+        # 🔧 特殊處理：如果正在等待 LLM 審核，但當前步驟是 LLM_PROCESSING 且結果已存在，則清除審核標志
+        if self.awaiting_llm_review:
+            # 檢查是否為 LLM_PROCESSING 步驟且結果已存在
+            if current_step and current_step.step_type == current_step.STEP_TYPE_LLM_PROCESSING:
+                output_key = getattr(current_step, '_output_data_key', None)
+                if output_key and self.session.get_data(output_key) is not None:
+                    debug_log(2, f"[WorkflowEngine] LLM處理結果已存在，清除審核標志並繼續")
+                    self.awaiting_llm_review = False
+                    self.pending_review_result = None
+                else:
+                    return StepResult.failure("工作流程正在等待 LLM 審核，請稍候")
+            else:
+                return StepResult.failure("工作流程正在等待 LLM 審核，請稍候")
+        
         if not current_step:
             # 清理檔案狀態
             try:

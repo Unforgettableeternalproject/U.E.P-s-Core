@@ -482,6 +482,58 @@ def get_monitoring_pool() -> MonitoringThreadPool:
                 _monitoring_pool = MonitoringThreadPool()
     return _monitoring_pool
 
+
+def start_clipboard_monitor() -> bool:
+    """啟動剪貼簿監控（透過 MonitoringThreadPool 管理）
+    
+    Returns:
+        是否成功啟動
+    """
+    try:
+        from modules.sys_module.actions.text_processing import _monitor_loop
+        
+        pool = get_monitoring_pool()
+        
+        # 檢查是否已經在運行
+        if pool.is_monitor_running("clipboard_monitor"):
+            info_log("[CLIP] 剪貼簿監控已在運行")
+            return True
+        
+        # 提交監控任務
+        success = pool.submit_monitor(
+            task_id="clipboard_monitor",
+            monitor_func=_monitor_loop,
+            check_interval=1  # 每秒檢查一次
+        )
+        
+        if success:
+            info_log("[CLIP] 剪貼簿監控已啟動（由 MonitoringThreadPool 管理）")
+        else:
+            error_log("[CLIP] 剪貼簿監控啟動失敗")
+        
+        return success
+        
+    except Exception as e:
+        error_log(f"[CLIP] 啟動剪貼簿監控失敗: {e}")
+        return False
+
+
+def stop_clipboard_monitor(timeout: int = 5) -> bool:
+    """停止剪貼簿監控
+    
+    Args:
+        timeout: 等待停止的超時時間（秒）
+        
+    Returns:
+        是否成功停止
+    """
+    try:
+        pool = get_monitoring_pool()
+        return pool.stop_monitor("clipboard_monitor", timeout=timeout)
+    except Exception as e:
+        error_log(f"[CLIP] 停止剪貼簿監控失敗: {e}")
+        return False
+
 def _init_db():
     conn = sqlite3.connect(_DB)
     c = conn.cursor()

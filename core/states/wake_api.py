@@ -241,6 +241,23 @@ def _reload_modules() -> list:
             except Exception as e:
                 error_log(f"[WakeAPI] 恢復監控任務失敗: {e}")
         
+        # 🔗 重新建立 LLM-SYS MCP 連接
+        if "llm" in available_modules and "sys" in available_modules:
+            try:
+                llm_module = core_framework.get_module("llm")
+                sys_module = core_framework.get_module("sys")
+                
+                if llm_module and sys_module and hasattr(sys_module, 'mcp_server'):
+                    if hasattr(llm_module, 'set_mcp_server'):
+                        llm_module.set_mcp_server(sys_module.mcp_server)
+                        info_log("[WakeAPI] ✅ LLM-SYS MCP 連接已重新建立")
+                    else:
+                        debug_log(2, "[WakeAPI] ⚠️  LLM 模組沒有 set_mcp_server 方法")
+                else:
+                    debug_log(2, "[WakeAPI] ⚠️  無法建立 MCP 連接：模組或 mcp_server 不可用")
+            except Exception as e:
+                error_log(f"[WakeAPI] 重新建立 MCP 連接失敗: {e}")
+        
         return available_modules
         
     except Exception as e:

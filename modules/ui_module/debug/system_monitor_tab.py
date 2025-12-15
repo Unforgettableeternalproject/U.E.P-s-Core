@@ -280,6 +280,29 @@ class SystemMonitorTab(QWidget):
         performance_widget = QWidget()
         layout = QVBoxLayout(performance_widget)
         
+        # 模組健康度概覽 (U.E.P 特定)
+        health_group = QGroupBox("📊 模組健康度概覽")
+        health_layout = QVBoxLayout(health_group)
+        
+        # 模組健康度表格
+        self.health_table = QTableWidget()
+        self.health_table.setColumnCount(5)
+        self.health_table.setHorizontalHeaderLabels(["模組", "狀態", "請求數", "成功率", "平均耗時"])
+        self.health_table.setMaximumHeight(200)
+        
+        if QHeaderView:
+            header = self.health_table.horizontalHeader()
+            header.setStretchLastSection(True)
+        
+        health_layout.addWidget(self.health_table)
+        
+        # 刷新按鈕
+        refresh_health_btn = QPushButton("🔄 刷新健康度")
+        refresh_health_btn.clicked.connect(self.update_module_health)
+        health_layout.addWidget(refresh_health_btn)
+        
+        layout.addWidget(health_group)
+        
         # U.E.P 特定效能指標
         uep_group = QGroupBox("U.E.P 效能指標")
         uep_layout = QGridLayout(uep_group)
@@ -304,7 +327,7 @@ class SystemMonitorTab(QWidget):
         # 前端效能
         uep_layout.addWidget(QLabel("動畫 FPS:"), 0, 2)
         self.animation_fps_label = QLabel("N/A")
-        uep_layout.addWidget(self.animation_fps_label, 0, 2)
+        uep_layout.addWidget(self.animation_fps_label, 0, 3)
         
         uep_layout.addWidget(QLabel("UI 回應時間:"), 1, 2)
         self.ui_response_label = QLabel("N/A")
@@ -497,6 +520,12 @@ class SystemMonitorTab(QWidget):
         self.performance_timer.start(5000)  # 每5秒更新效能指標
         debug_log(KEY_LEVEL, "[SystemMonitorTab] 效能指標定時器已啟動 (5秒間隔)")
         
+        # 模組健康度更新定時器
+        self.health_timer = QTimer()
+        self.health_timer.timeout.connect(self.update_module_health)
+        self.health_timer.start(5000)  # 每5秒更新模組健康度
+        debug_log(KEY_LEVEL, "[SystemMonitorTab] 模組健康度定時器已啟動 (5秒間隔)")
+        
         debug_log(KEY_LEVEL, "[SystemMonitorTab] 所有定時器設置完成")
     
     def refresh_all_info(self):
@@ -508,6 +537,7 @@ class SystemMonitorTab(QWidget):
         self.update_network_status()
         self.update_performance_metrics()
         self.update_log_statistics()
+        self.update_module_health()  # 添加模組健康度更新
     
     def update_system_info(self):
         """更新系統資訊"""
@@ -904,80 +934,162 @@ class SystemMonitorTab(QWidget):
             error_log(f"[SystemMonitorTab] 更新網路狀態失敗: {e}")
     
     def update_performance_metrics(self):
-        """更新效能指標"""
+        """更新各模組的效能指標（從 Controller 健康度數據獲取）"""
         try:
-            # 直接使用模組管理器獲取模組實例
-            from .module_manager import ModuleManager
-            module_manager = ModuleManager()
+            from core.controller import unified_controller
             
-            # 獲取已載入模組的性能指標
-            metrics = {}
-            debug_log(KEY_LEVEL, "[SystemMonitorTab] 開始收集效能指標")
+            # 從 Controller 獲取健康度摘要
+            health_summary = unified_controller.get_module_health_summary()
             
-            # 嘗試從各模組獲取效能指標
-            try:
-                import devtools.debug_api as debug_api
-                
-                # STT 模組
-                stt_module = debug_api.modules.get('stt')
-                if stt_module and hasattr(stt_module, 'get_stats'):
-                    stt_stats = stt_module.get_stats()
-                    metrics['stt_response_time'] = stt_stats.get('avg_response_time', 'N/A')
-                    debug_log(KEY_LEVEL, f"[SystemMonitorTab] STT 回應時間: {metrics['stt_response_time']}")
-                
-                # NLP 模組
-                nlp_module = debug_api.modules.get('nlp')
-                if nlp_module and hasattr(nlp_module, 'get_stats'):
-                    nlp_stats = nlp_module.get_stats()
-                    metrics['nlp_response_time'] = nlp_stats.get('avg_processing_time', 'N/A')
-                
-                # LLM 模組
-                llm_module = debug_api.modules.get('llm')
-                if llm_module and hasattr(llm_module, 'get_stats'):
-                    llm_stats = llm_module.get_stats()
-                    metrics['llm_response_time'] = llm_stats.get('avg_response_time', 'N/A')
-                
-                # TTS 模組
-                tts_module = debug_api.modules.get('tts')
-                if tts_module and hasattr(tts_module, 'get_stats'):
-                    tts_stats = tts_module.get_stats()
-                    metrics['tts_response_time'] = tts_stats.get('avg_response_time', 'N/A')
-                
-                # Animation 模組
-                ani_module = debug_api.modules.get('ani')
-                if ani_module and hasattr(ani_module, 'get_stats'):
-                    ani_stats = ani_module.get_stats()
-                    metrics['animation_fps'] = ani_stats.get('fps', 'N/A')
-                
-                # UI 模組
-                ui_module = debug_api.modules.get('ui')
-                if ui_module and hasattr(ui_module, 'get_stats'):
-                    ui_stats = ui_module.get_stats()
-                    metrics['ui_response_time'] = ui_stats.get('avg_response_time', 'N/A')
-            except Exception as e:
-                error_log(f"[SystemMonitorTab] 獲取模組效能指標失敗: {e}")
-                
-            # 更新界面
-            if hasattr(self, 'stt_response_label'):
-                self.stt_response_label.setText(f"{metrics.get('stt_response_time', 'N/A')} ms")
+            if not health_summary:
+                debug_log(KEY_LEVEL, "[SystemMonitorTab] 無法獲取模組健康度數據")
+                return
             
-            if hasattr(self, 'nlp_response_label'):
-                self.nlp_response_label.setText(f"{metrics.get('nlp_response_time', 'N/A')} ms")
+            # 從健康度數據提取效能指標
+            def format_time(avg_time):
+                """格式化處理時間"""
+                if avg_time <= 0:
+                    return 'N/A'
+                if avg_time < 1:
+                    return f"{avg_time * 1000:.0f}"
+                else:
+                    return f"{avg_time * 1000:.0f}"
             
-            if hasattr(self, 'llm_response_label'):
-                self.llm_response_label.setText(f"{metrics.get('llm_response_time', 'N/A')} ms")
+            # 更新各模組的效能標籤
+            # STT 模組
+            if 'stt' in health_summary and hasattr(self, 'stt_response_label'):
+                stt_health = health_summary['stt']['health']
+                time_ms = format_time(stt_health['avg_processing_time'])
+                self.stt_response_label.setText(f"{time_ms} ms")
+            elif hasattr(self, 'stt_response_label'):
+                self.stt_response_label.setText("N/A ms")
             
-            if hasattr(self, 'tts_response_label'):
-                self.tts_response_label.setText(f"{metrics.get('tts_response_time', 'N/A')} ms")
+            # NLP 模組
+            if 'nlp' in health_summary and hasattr(self, 'nlp_response_label'):
+                nlp_health = health_summary['nlp']['health']
+                time_ms = format_time(nlp_health['avg_processing_time'])
+                self.nlp_response_label.setText(f"{time_ms} ms")
+            elif hasattr(self, 'nlp_response_label'):
+                self.nlp_response_label.setText("N/A ms")
             
-            if hasattr(self, 'animation_fps_label'):
-                self.animation_fps_label.setText(f"{metrics.get('animation_fps', 'N/A')} FPS")
+            # LLM 模組
+            if 'llm' in health_summary and hasattr(self, 'llm_response_label'):
+                llm_health = health_summary['llm']['health']
+                time_ms = format_time(llm_health['avg_processing_time'])
+                self.llm_response_label.setText(f"{time_ms} ms")
+            elif hasattr(self, 'llm_response_label'):
+                self.llm_response_label.setText("N/A ms")
             
-            if hasattr(self, 'ui_response_label'):
-                self.ui_response_label.setText(f"{metrics.get('ui_response_time', 'N/A')} ms")
+            # TTS 模組
+            if 'tts' in health_summary and hasattr(self, 'tts_response_label'):
+                tts_health = health_summary['tts']['health']
+                time_ms = format_time(tts_health['avg_processing_time'])
+                self.tts_response_label.setText(f"{time_ms} ms")
+            elif hasattr(self, 'tts_response_label'):
+                self.tts_response_label.setText("N/A ms")
+            
+            # Animation 模組 (FPS 暫時沒有對應指標，使用處理時間)
+            if 'ani' in health_summary and hasattr(self, 'animation_fps_label'):
+                ani_health = health_summary['ani']['health']
+                time_ms = format_time(ani_health['avg_processing_time'])
+                # 如果有平均處理時間，可以粗略估算 FPS
+                if ani_health['avg_processing_time'] > 0:
+                    estimated_fps = int(1 / ani_health['avg_processing_time'])
+                    self.animation_fps_label.setText(f"{estimated_fps} FPS")
+                else:
+                    self.animation_fps_label.setText("N/A FPS")
+            elif hasattr(self, 'animation_fps_label'):
+                self.animation_fps_label.setText("N/A FPS")
+            
+            # UI 模組
+            if 'ui' in health_summary and hasattr(self, 'ui_response_label'):
+                ui_health = health_summary['ui']['health']
+                time_ms = format_time(ui_health['avg_processing_time'])
+                self.ui_response_label.setText(f"{time_ms} ms")
+            elif hasattr(self, 'ui_response_label'):
+                self.ui_response_label.setText("N/A ms")
                 
         except Exception as e:
             error_log(f"[SystemMonitorTab] 更新效能指標失敗: {e}")
+    
+    def update_module_health(self):
+        """更新模組健康度表格（使用 Controller 的健康指標）"""
+        try:
+            from core.controller import unified_controller
+            
+            # 獲取模組健康度摘要
+            health_summary = unified_controller.get_module_health_summary()
+            
+            if not health_summary:
+                debug_log(KEY_LEVEL, "[SystemMonitorTab] 無模組健康度數據")
+                return
+            
+            # 清空表格
+            if hasattr(self, 'health_table'):
+                self.health_table.clearContents()
+                self.health_table.setRowCount(len(health_summary))
+                
+                # 狀態顏色和圖示
+                status_icons = {
+                    'healthy': '🟢',
+                    'degraded': '🟡',
+                    'failing': '🔴'
+                }
+                
+                for row, (module_id, module_data) in enumerate(sorted(health_summary.items())):
+                    status = module_data['status']
+                    health = module_data['health']
+                    metrics = module_data['metrics']
+                    
+                    # 模組名稱
+                    name_item = QTableWidgetItem(module_id.upper())
+                    name_item.setForeground(QColor(255, 255, 255))
+                    self.health_table.setItem(row, 0, name_item)
+                    
+                    # 狀態
+                    icon = status_icons.get(status, '⚪')
+                    status_item = QTableWidgetItem(f"{icon} {health['details']}")
+                    status_item.setForeground(QColor(255, 255, 255))
+                    
+                    if status == 'healthy':
+                        status_item.setBackground(QColor(40, 167, 69))
+                    elif status == 'degraded':
+                        status_item.setBackground(QColor(255, 152, 0))
+                    else:
+                        status_item.setBackground(QColor(220, 53, 69))
+                    
+                    self.health_table.setItem(row, 1, status_item)
+                    
+                    # 請求數
+                    req_item = QTableWidgetItem(str(health['total_requests']))
+                    req_item.setForeground(QColor(255, 255, 255))
+                    self.health_table.setItem(row, 2, req_item)
+                    
+                    # 成功率
+                    success_rate = health['success_rate'] * 100
+                    success_item = QTableWidgetItem(f"{success_rate:.1f}%")
+                    success_item.setForeground(QColor(255, 255, 255))
+                    self.health_table.setItem(row, 3, success_item)
+                    
+                    # 平均耗時
+                    avg_time = health['avg_processing_time']
+                    if avg_time > 0:
+                        if avg_time < 1:
+                            time_str = f"{avg_time*1000:.0f}ms"
+                        else:
+                            time_str = f"{avg_time:.2f}s"
+                    else:
+                        time_str = "N/A"
+                    time_item = QTableWidgetItem(time_str)
+                    time_item.setForeground(QColor(255, 255, 255))
+                    self.health_table.setItem(row, 4, time_item)
+                
+                # 調整列寬
+                if hasattr(self.health_table, 'resizeColumnsToContents'):
+                    self.health_table.resizeColumnsToContents()
+                    
+        except Exception as e:
+            error_log(f"[SystemMonitorTab] 更新模組健康度失敗: {e}")
     
     def reload_modules(self):
         """重載模組"""

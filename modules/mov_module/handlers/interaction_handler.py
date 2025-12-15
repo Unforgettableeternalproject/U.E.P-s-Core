@@ -55,10 +55,11 @@ class FileDropHandler(InteractionHandler):
         self._is_receiving = False  # 是否正在播放 receive 動畫
         self._hover_animation_name: Optional[str] = None  # 當前 notice 動畫名稱
         
-        # 🔧 從 config 讀取 file_drop 是否啟用
+        # 🔧 從 config 讀取 file_drop 是否啟用（從 handlers.file_drop 讀取）
         self._enabled = False
         if hasattr(coordinator, 'config'):
-            file_drop_config = coordinator.config.get('file_drop', {})
+            handlers_config = coordinator.config.get('handlers', {})
+            file_drop_config = handlers_config.get('file_drop', {})
             self._enabled = file_drop_config.get('enabled', False)
         
         if self._enabled:

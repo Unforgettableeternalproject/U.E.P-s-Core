@@ -55,6 +55,11 @@ class NLPModule(BaseModule):
         # 模組狀態
         self.is_initialized = False
         
+        # 效能指標追蹤
+        self.intent_distribution = {}
+        self.total_entities_found = 0
+        self.fallback_count = 0
+        
         info_log("[NLP] NLP模組初始化")
     
     def debug(self):
@@ -192,6 +197,20 @@ class NLPModule(BaseModule):
             
             debug_log(1, f"[NLP] 處理完成：主要意圖={final_result.primary_intent}, "
                        f"身份={final_result.identity.identity_id if final_result.identity else 'None'}")
+            
+            # 更新效能指標
+            intent_type = final_result.primary_intent.name if hasattr(final_result.primary_intent, 'name') else str(final_result.primary_intent)
+            self.intent_distribution[intent_type] = self.intent_distribution.get(intent_type, 0) + 1
+            self.update_custom_metric('intent_type', intent_type)
+            self.update_custom_metric('confidence_score', final_result.overall_confidence)
+            
+            if hasattr(final_result, 'entities') and final_result.entities:
+                entity_count = len(final_result.entities)
+                self.total_entities_found += entity_count
+                self.update_custom_metric('entity_count', entity_count)
+            
+            if final_result.overall_confidence < 0.6:
+                self.fallback_count += 1
             
             # 在調用Router之前，先執行狀態轉換
             self._execute_state_transition(final_result, state_result)
@@ -2074,3 +2093,15 @@ class NLPModule(BaseModule):
         except Exception as e:
             error_log(f"[NLP] 使用者設定重載失敗: {e}")
             return False
+    
+    def get_performance_window(self) -> dict:
+        """獲取效能數據窗口（包含 NLP 特定指標）"""
+        window = super().get_performance_window()
+        window['intent_distribution'] = self.intent_distribution.copy()
+        window['total_entities_found'] = self.total_entities_found
+        window['fallback_count'] = self.fallback_count
+        window['fallback_rate'] = (
+            self.fallback_count / window['total_requests']
+            if window['total_requests'] > 0 else 0.0
+        )
+        return window

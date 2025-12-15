@@ -106,16 +106,6 @@ class StateManager:
         """獲取當前會話ID"""
         return self._current_session_id
     
-    def _record_state_visit(self, state: UEPState):
-        """記錄當前 GS 訪問的狀態"""
-        try:
-            from core.sessions.session_manager import session_manager
-            current_gs = session_manager.get_current_general_session()
-            if current_gs:
-                current_gs.record_state_visit(state.value)
-        except Exception as e:
-            debug_log(3, f"[StateManager] 記錄狀態訪問失敗: {e}")
-        
     def _on_state_changed(self, old_state: UEPState, new_state: UEPState, context: Optional[Dict[str, Any]] = None):
         """
         處理狀態變化，創建對應的會話
@@ -186,8 +176,7 @@ class StateManager:
             )
             debug_log(2, f"[StateManager] 已發布 STATE_CHANGED 事件: {old_state.name} → {new_state.name}")
             
-            # 記錄狀態訪問到當前 GS
-            self._record_state_visit(new_state)
+            # 狀態訪問記錄現在由 StateQueue 統一管理，此處不再記錄
             
             # 根據新狀態創建對應的會話或執行特殊處理
             if new_state == UEPState.CHAT:

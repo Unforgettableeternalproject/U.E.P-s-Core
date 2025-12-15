@@ -239,8 +239,13 @@ class CoreFramework:
         
         # ========== 效能監控系統 ==========
         self.performance_monitoring_enabled = True
+        
+        # 從配置讀取監控參數
+        monitoring_config = self.config.get('monitoring', {})
+        history_size = monitoring_config.get('performance_history_size', 100)
+        
         self.performance_metrics: Dict[str, PerformanceMetrics] = {}
-        self.performance_history: deque = deque(maxlen=100)  # 保留最近100個快照
+        self.performance_history: deque = deque(maxlen=history_size)
         self.metrics_lock = threading.Lock()
         self.modules_lock = threading.Lock()  # 保護 self.modules 字典的執行緒鎖
         self.system_start_time = time.time()
@@ -378,6 +383,11 @@ class CoreFramework:
                 error_log(f"[CoreFramework] 載入模組 '{module_name}' 時發生錯誤: {e}")
                 return False
             
+            # 🔧 設置模組 ID（確保效能追蹤使用正確的 module_id）
+            if hasattr(module_instance, 'set_module_id'):
+                module_instance.set_module_id(config["module_id"])
+                debug_log(3, f"[CoreFramework] 已設置模組 ID: {config['module_id']}")
+            
             # 創建模組資訊
             module_info = ModuleInfo(
                 module_id=config["module_id"],
@@ -470,6 +480,20 @@ class CoreFramework:
         """獲取模組資訊"""
         with self.modules_lock:
             return self.modules.get(module_id)
+    
+    def get_all_modules(self) -> Dict[str, Any]:
+        """
+        獲取所有已註冊模組的實例字典
+        
+        Returns:
+            Dict[str, Any]: {module_id: module_instance}
+        """
+        with self.modules_lock:
+            return {
+                module_id: info.module_instance
+                for module_id, info in self.modules.items()
+                if info.module_instance is not None
+            }
     
     def list_modules(self, module_type: Optional[ModuleType] = None) -> List[ModuleInfo]:
         """列出模組"""
@@ -691,10 +715,84 @@ class CoreFramework:
         with self.metrics_lock:
             return self.performance_metrics.copy()
     
+    def _pull_module_performance_data(self):
+        """
+        主動向各模組拉取最新效能數據（Pull 模式）
+        
+        這個方法會遍歷所有已註冊的模組，調用它們的 get_performance_window() 
+        方法來獲取模組內部收集的數據，然後同步到 Framework 的集中存儲。
+        """
+        if not self.performance_monitoring_enabled:
+            return
+        
+        try:
+            modules = self.get_all_modules()
+            current_time = time.time()
+            
+            for module_id, module_instance in modules.items():
+                try:
+                    # 檢查模組是否提供效能數據接口
+                    if not hasattr(module_instance, 'get_performance_window'):
+                        continue
+                    
+                    # 調用模組的效能窗口方法
+                    window_data = module_instance.get_performance_window()
+                    if not window_data:
+                        continue
+                    
+                    # 同步到 Framework 的 PerformanceMetrics
+                    with self.metrics_lock:
+                        if module_id not in self.performance_metrics:
+                            self.performance_metrics[module_id] = PerformanceMetrics(module_id=module_id)
+                        
+                        metrics = self.performance_metrics[module_id]
+                        
+                        # 更新基本統計
+                        metrics.total_requests = window_data.get('total_requests', 0)
+                        metrics.successful_requests = window_data.get('successful_requests', 0)
+                        metrics.failed_requests = window_data.get('failed_requests', 0)
+                        metrics.error_count = window_data.get('failed_requests', 0)
+                        
+                        # 更新處理時間
+                        metrics.average_processing_time = window_data.get('avg_processing_time', 0.0)
+                        metrics.processing_time = window_data.get('last_processing_time', 0.0)
+                        metrics.peak_processing_time = window_data.get('max_processing_time', 0.0)
+                        
+                        # 更新活動狀態
+                        last_request_time = window_data.get('last_request_time')
+                        if last_request_time:
+                            metrics.last_activity = last_request_time
+                            metrics.is_active = (current_time - last_request_time) < 300  # 5分鐘內有活動
+                        
+                        # 更新自定義指標（如果模組提供）
+                        if 'custom_metrics' in window_data:
+                            metrics.custom_metrics.update(window_data['custom_metrics'])
+                        
+                        metrics.timestamp = current_time
+                        
+                        debug_log(4, f"[CoreFramework] 已拉取 {module_id} 效能數據: "
+                                  f"{metrics.total_requests} 請求, "
+                                  f"{metrics.average_processing_time:.3f}s 平均耗時")
+                
+                except Exception as e:
+                    error_log(f"[CoreFramework] 從模組 {module_id} 拉取效能數據失敗: {e}")
+            
+            debug_log(3, f"[CoreFramework] 已從 {len(modules)} 個模組拉取效能數據")
+            
+        except Exception as e:
+            error_log(f"[CoreFramework] 拉取模組效能數據時發生錯誤: {e}")
+    
     def collect_system_performance_snapshot(self) -> SystemPerformanceSnapshot:
-        """蒐集系統效能快照 - 供 system loop 調用"""
+        """
+        蒐集系統效能快照 - 供 system loop 調用
+        
+        改進：主動向各模組查詢數據（pull 模式），而不只是被動接收
+        """
         try:
             current_time = time.time()
+            
+            # 🔧 主動向各模組收集最新效能數據
+            self._pull_module_performance_data()
             
             with self.metrics_lock:
                 # 統計模組狀態

@@ -34,21 +34,42 @@ def _get_text():
             time.sleep(0.1)
     raise RuntimeError("無法存取剪貼簿")
 
-def _monitor_loop():
-    prev = _get_text()
-    if prev:
-        _history.append(prev); _save_history()
-    while _monitoring:
-        cur = _get_text()
-        if cur and cur != prev and cur not in _history:
-            _history.append(cur)
+def _monitor_loop(stop_event: threading.Event, check_interval: int = 1, **kwargs):
+    """剪貼簿監控循環（供 MonitoringThreadPool 調用）
+    
+    Args:
+        stop_event: 停止事件，當設置時結束監控
+        check_interval: 檢查間隔（秒），默認 1 秒
+        **kwargs: 額外參數（保持兼容性）
+    """
+    try:
+        prev = _get_text()
+        if prev and prev not in _history:
+            _history.append(prev)
             _save_history()
-            info_log(f"[CLIP] 新增剪貼簿記錄: {cur[:30]}...")
-            prev = cur
-        time.sleep(1)
+            info_log(f"[CLIP] 初始化剪貼簿記錄: {prev[:30]}...")
+    except Exception as e:
+        error_log(f"[CLIP] 初始化失敗: {e}")
+        prev = None
+    
+    while not stop_event.is_set():
+        try:
+            cur = _get_text()
+            if cur and cur != prev and cur not in _history:
+                _history.append(cur)
+                _save_history()
+                info_log(f"[CLIP] 新增剪貼簿記錄: {cur[:30]}...")
+                prev = cur
+        except Exception as e:
+            error_log(f"[CLIP] 監控錯誤: {e}")
+        
+        # 使用配置的檢查間隔
+        stop_event.wait(check_interval)
+    
+    info_log("[CLIP] 監控執行緒已停止")
 
-# 啟動監控
-# threading.Thread(target=_monitor_loop, daemon=True).start()
+# 註：監控由 MonitoringThreadPool 統一管理
+# 在 automation_helper.py 中調用 start_clipboard_monitor() 啟動
 
 def clipboard_tracker(keyword: str = "", max_results: int = 5, copy_index: int = -1) -> dict:
     """搜尋剪貼簿歷史

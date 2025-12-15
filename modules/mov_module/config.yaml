@@ -102,25 +102,6 @@ mood_based_idle:
       mood_min: 0.6
       pride_min: 0.6
 
-interaction:
-  drag_enabled: true
-  throw_enabled: true
-  drag:
-    trigger_threshold: 5  # 開始拖曳的最小移動距離（像素）
-    struggle_animation: struggle
-    struggle_loop: true
-  throw:
-    velocity_threshold: 500.0  # [已棄用] 判定為投擲的速度閾值（像素/秒）
-    max_velocity: 2000.0  # [已棄用] 最大投擲速度限制
-    gravity_multiplier: 1.2  # [已棄用] 投擲時的重力倍數
-  file_drop:
-    enabled: true   # 啟用檔案拖放功能
-    accept_types:
-      - ".txt"
-      - ".md"
-      - ".py"
-      - ".json"
-
 # ==================== 處理器與策略系統 ====================
 handlers:
   layer:
@@ -130,7 +111,7 @@ handlers:
   drag:
     enabled: true
   file_drop:
-    enabled: false
+    enabled: true
 
 # ==================== 動畫優先度系統 ====================
 # 對應 AnimationPriority 枚舉值（數字越大優先度越高）

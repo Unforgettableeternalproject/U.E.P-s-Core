@@ -105,7 +105,7 @@ resources:
       loop: false
       zoom: 1.1
       offsetX: -50
-      offsetY: 0
+      offsetY: 60
     g_to_f:
       prefix: diamond_girl_standing_to_floating_
       total_frames: 38
@@ -113,7 +113,7 @@ resources:
       loop: false
       zoom: 1.1
       offsetX: -50
-      offsetY: 0
+      offsetY: 60
     g_to_l:
       prefix: diamond_girl_standing_to_lying_
       total_frames: 48

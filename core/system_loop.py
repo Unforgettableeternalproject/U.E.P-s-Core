@@ -1075,8 +1075,47 @@ class SystemLoop:
                 if snapshot.system_success_rate < 0.95:  # 成功率低於95%警告
                     debug_log(1, f"[SystemLoop] ⚠️ 系統成功率較低: {snapshot.system_success_rate:.2%}")
             
+            # 額外收集各模組的本地效能窗口（補充數據）
+            self._collect_module_performance_windows()
+            
         except Exception as e:
             debug_log(1, f"[SystemLoop] 效能快照蒐集錯誤: {e}")
+    
+    def _collect_module_performance_windows(self):
+        """
+        從各模組直接收集效能窗口數據
+        
+        這是補充數據收集，提供更即時的模組狀態資訊
+        """
+        try:
+            from core.framework import core_framework
+            
+            # 獲取所有已註冊的模組
+            modules = core_framework.get_all_modules()
+            if not modules:
+                return
+            
+            module_stats = {}
+            for module_id, module_instance in modules.items():
+                try:
+                    # 檢查模組是否有 get_performance_window 方法
+                    if hasattr(module_instance, 'get_performance_window'):
+                        window = module_instance.get_performance_window()
+                        module_stats[module_id] = window
+                        
+                        # 記錄異常模組
+                        if window.get('success_rate', 1.0) < 0.8:
+                            debug_log(1, f"[SystemLoop] ⚠️ 模組 {module_id} 成功率偏低: "
+                                      f"{window['success_rate']:.2%}")
+                except Exception as e:
+                    debug_log(2, f"[SystemLoop] 無法從模組 {module_id} 收集效能窗口: {e}")
+            
+            # 可選：將收集到的數據發送到事件總線或儲存
+            if module_stats:
+                debug_log(3, f"[SystemLoop] 已收集 {len(module_stats)} 個模組的效能窗口")
+                
+        except Exception as e:
+            debug_log(2, f"[SystemLoop] 模組效能窗口收集失敗: {e}")
     
     def get_status(self) -> Dict[str, Any]:
         """獲取循環狀態"""

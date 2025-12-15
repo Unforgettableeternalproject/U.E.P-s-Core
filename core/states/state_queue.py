@@ -88,6 +88,9 @@ class StateQueueManager:
         # 🔧 記錄上次完成狀態的 cycle_index，用於計算下次狀態推進的 cycle
         self.last_completion_cycle: Optional[int] = None
         
+        # 🔧 狀態歷史記錄 (用於 GS 結束條件判定)
+        self.state_history: List[Dict[str, Any]] = []  # [{"state": "work", "timestamp": ..., "cycle": ...}, ...]
+        
         # 狀態處理回調
         self.state_handlers: Dict[UEPState, Callable] = {}
         self.completion_handlers: Dict[UEPState, Callable] = {}
@@ -562,6 +565,9 @@ class StateQueueManager:
             self.current_state = next_item.state
             next_item.started_at = datetime.now()
             
+            # 記錄狀態變化到歷史
+            self._record_state_to_history(next_item.state)
+            
             info_log(f"[StateQueue] 開始處理狀態: {next_item.state.value} (優先級: {next_item.priority})")
             
             # 保存狀態
@@ -879,7 +885,17 @@ class StateQueueManager:
         # 🔧 修復：如果佇列為空，應立即重置為 IDLE，否則 add_state 無法自動處理
         if not self.queue:
             debug_log(2, f"[StateQueue] 佇列已空，重置狀態: {self.current_state.value} -> IDLE")
+            old_state = self.current_state
             self.current_state = UEPState.IDLE
+            
+            # ✅ 通知 StateManager 狀態已轉換到 IDLE
+            if old_state != UEPState.IDLE:
+                try:
+                    from core.states.state_manager import state_manager
+                    state_manager.set_state(UEPState.IDLE, context=None)
+                    debug_log(2, "[StateQueue] 已通知 StateManager 轉換到 IDLE")
+                except Exception as e:
+                    error_log(f"[StateQueue] 通知 StateManager 失敗: {e}")
         # 否則 current_state 保持原樣，等待 SystemLoop 推進
         
         self._save_queue()
@@ -930,6 +946,36 @@ class StateQueueManager:
             debug_log(4, f"[StateQueue] 待處理狀態: {[item.state.value for item in self.queue]}")
         
         return status
+    
+    def _record_state_to_history(self, state: UEPState):
+        """記錄狀態變化到歷史 (用於 GS 結束條件判定)"""
+        try:
+            from core.working_context import working_context_manager
+            current_cycle = working_context_manager.get_context_data('current_cycle_index', 0)
+            
+            record = {
+                "state": state.value,
+                "timestamp": datetime.now().isoformat(),
+                "cycle": current_cycle
+            }
+            self.state_history.append(record)
+            debug_log(3, f"[StateQueue] 記錄狀態到歷史: {state.value} (cycle={current_cycle})")
+        except Exception as e:
+            debug_log(2, f"[StateQueue] 記錄狀態歷史失敗: {e}")
+    
+    def has_visited_non_idle_state(self) -> bool:
+        """檢查是否訪問過非 IDLE 狀態"""
+        non_idle_states = [record for record in self.state_history if record["state"].lower() != "idle"]
+        return len(non_idle_states) > 0
+    
+    def get_state_history_snapshot(self) -> List[Dict[str, Any]]:
+        """獲取狀態歷史的快照 (淺拷貝)"""
+        return self.state_history.copy()
+    
+    def clear_state_history(self):
+        """清空狀態歷史 (在 GS 結束時調用)"""
+        debug_log(2, f"[StateQueue] 清空狀態歷史 ({len(self.state_history)} 條記錄)")
+        self.state_history.clear()
     
     def clear_queue(self):
         """清空佇列並重置狀態檔案"""

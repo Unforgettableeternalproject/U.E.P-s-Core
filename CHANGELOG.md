@@ -2626,3 +2626,15 @@
 
 ---
 
+### Add final testing report for U.E.P v0.9.4-stable and remove frontend chat integration test file. 12/23
+
+> Date: Tue, 23 Dec 2025 00:36:12 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `develop`
+
+> Commit: `4ef97e25f86718c59d0d80fcc7f5c6dadc1ac3a0`
+
+---
+

@@ -9,7 +9,7 @@
 | 專案代號 | UEP-Core |
 | 撰寫日期 | 2025-11-07 |
 | 計畫負責人 | Bernie |
-| 系統版本 | v2.0 (Phase 2 - Event-Driven Architecture) |
+| 系統版本 | v0.9.4 |
 | Python 版本 | Python 3.10+ |
 
 ---
@@ -38,7 +38,8 @@ U.E.P 是一個**模組化 AI 助理系統**，採用**三層事件驅動架構 
 - **[第三章：模組設計 - 輸入層](./SDD/03_模組設計_輸入層.md)** - STT, NLP 模組詳細設計
 - **[第四章：模組設計 - 處理層](./SDD/04_模組設計_處理層.md)** - MEM, LLM, SYS 模組詳細設計
 - **[第五章：模組設計 - 輸出層](./SDD/05_模組設計_輸出層.md)** - TTS, UI, MOV, ANI 模組詳細設計
-- **[第六章：系統流程](./SDD/06_系統流程.md)** - CHAT/WORK 模式完整流程、事件驅動協作、Session 生命週期
+- **[第六章：展示層架構](./SDD/06_展示層架構.md)** - Frontend Bridge、前端事件系統、使用者工具、ON_CALL 機制、前後端協作流程
+- **[第七章：系統流程](./SDD/07_系統流程.md)** - CHAT/WORK 模式完整流程、事件驅動協作、Session 生命週期
 
 ---
 
@@ -60,10 +61,19 @@ U.E.P 是一個**模組化 AI 助理系統**，採用**三層事件驅動架構 
 → 閱讀 [第四章：SYS 模組](./SDD/04_模組設計_處理層.md#43-sys-模組)
 
 ### 想了解完整對話流程？
-→ 閱讀 [第六章：CHAT 模式流程](./SDD/06_系統流程.md#63-chat-模式完整流程-chat-mode-workflow)
+→ 閱讀 [第七章：CHAT 模式流程](./SDD/07_系統流程.md#73-chat-模式完整流程-chat-mode-workflow)
 
 ### 想了解工作流執行流程？
-→ 閱讀 [第六章：WORK 模式流程](./SDD/06_系統流程.md#64-work-模式完整流程-work-mode-workflow)
+→ 閱讀 [第七章：WORK 模式流程](./SDD/07_系統流程.md#74-work-模式完整流程-work-mode-workflow)
+
+### 想了解前後端整合架構？
+→ 閱讀 [第六章：展示層架構](./SDD/06_展示層架構.md)
+
+### 想了解使用者工具系統？
+→ 閱讀 [第六章：使用者工具系統](./SDD/06_展示層架構.md#64-使用者工具系統)
+
+### 想了解 ON_CALL 快速呼叫？
+→ 閱讀 [第六章：ON_CALL 機制](./SDD/06_展示層架構.md#65-on_call-快速呼叫機制)
 
 ---
 
@@ -71,6 +81,7 @@ U.E.P 是一個**模組化 AI 助理系統**，採用**三層事件驅動架構 
 
 | 版本 | 日期 | 作者 | 說明 |
 |:---:|:---:|:---:|:---|
+| 3.0 | 2025-12-20 | Bernie | 添加 Phase 3 相關說明文檔 |
 | 2.0 | 2025-11-07 | Bernie | 重構為事件驅動架構，完成 Phase 2 |
 | 1.0 | 2024 | Bernie | 初始版本 (直接調用架構) |
 
@@ -89,9 +100,4 @@ U.E.P 是一個**模組化 AI 助理系統**，採用**三層事件驅動架構 
 - [Pyannote Audio](https://github.com/pyannote/pyannote-audio)
 - [FAISS Documentation](https://github.com/facebookresearch/faiss)
 - [Google Gemini API](https://ai.google.dev/docs)
-- [Model Context Protocol (MCP)](https://modelcontextprotocol.io/)
-
----
-
-**最後更新**: 2025-11-07  
-**維護者**: Bernie  
+- [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 

@@ -47,6 +47,7 @@ jobs:
       
       - name: Create and push tag
         if: steps.version_check.outputs.version_changed == 'true'
+        id: create_tag
         run: |
           VERSION="${{ steps.version_check.outputs.new_version }}"
           
@@ -66,11 +67,79 @@ jobs:
           # 檢查 tag 是否已存在
           if git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
             echo "🚫 Tag $TAG_NAME 已存在，跳過"
+            echo "tag_created=false" >> $GITHUB_OUTPUT
           else
             # 創建帶註解的標籤
             git tag -a "$TAG_NAME" -m "Auto-tagged version $TAG_NAME from config.yaml change"
             git push origin "$TAG_NAME"
             echo "✅ 成功創建並推送標籤: $TAG_NAME"
+            echo "tag_created=true" >> $GITHUB_OUTPUT
+            echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Update VERSION_HISTORY.md
+        if: steps.create_tag.outputs.tag_created == 'true'
+        run: |
+          TAG_NAME="${{ steps.create_tag.outputs.tag_name }}"
+          TAG_DATE=$(date +%Y-%m-%d)
+          
+          echo "📝 更新 VERSION_HISTORY.md..."
+          
+          # 判斷標籤類型
+          if [[ $TAG_NAME == *-stable ]]; then
+            TAG_TYPE="Stable Release"
+          elif [[ $TAG_NAME == *-patch-* ]]; then
+            TAG_TYPE="Hotfix"
+          else
+            TAG_TYPE="Development"
+          fi
+          
+          # 建立臨時檔案存放新條目
+          cat > /tmp/new_entry.txt << 'ENTRY_EOF'
+          ## ${TAG_NAME} (${TAG_DATE})
+          **類型**: ${TAG_TYPE}
+          
+          ### 變更說明
+          自動從 config.yaml 版本變更產生標籤
+          
+          ---
+          
+          ENTRY_EOF
+          
+          # 替換變數（使用 | 作為分隔符以避免特殊字符衝突）
+          sed -i "s|\${TAG_NAME}|$TAG_NAME|g" /tmp/new_entry.txt
+          sed -i "s|\${TAG_TYPE}|$TAG_TYPE|g" /tmp/new_entry.txt
+          sed -i "s|\${TAG_DATE}|$TAG_DATE|g" /tmp/new_entry.txt
+          
+          # 在第一個 ## v 之前插入新條目
+          awk '
+            /^## v[0-9]/ && !inserted {
+              system("cat /tmp/new_entry.txt")
+              inserted = 1
+            }
+            { print }
+          ' VERSION_HISTORY.md > VERSION_HISTORY.md.tmp
+          
+          mv VERSION_HISTORY.md.tmp VERSION_HISTORY.md
+          
+          # 更新最後更新日期
+          if grep -q "\*最後更新:" VERSION_HISTORY.md; then
+            sed -i "s|\*最後更新: .*\*|\*最後更新: $TAG_DATE\*|" VERSION_HISTORY.md
+          fi
+          
+          echo "✅ VERSION_HISTORY.md 已更新"
+      
+      - name: Commit and push VERSION_HISTORY.md
+        if: steps.create_tag.outputs.tag_created == 'true'
+        run: |
+          git add VERSION_HISTORY.md
+          
+          if git diff --staged --quiet; then
+            echo "⚠️ VERSION_HISTORY.md 沒有變更"
+          else
+            git commit -m "docs: 更新版本歷史 - ${{ steps.create_tag.outputs.tag_name }}"
+            git push origin HEAD
+            echo "✅ 已推送 VERSION_HISTORY.md 更新"
           fi
       
       - name: Comment on commit (optional)

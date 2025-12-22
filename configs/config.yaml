@@ -24,11 +24,11 @@ logging:
   enabled: true
   log_level: DEBUG
   log_dir: logs
-  enable_split_logs: false
+  enable_split_logs: true
   enable_console_output: false
 debug:
-  enabled: false
-  debug_level: 4
+  enabled: true
+  debug_level: 3
   enable_frontend: true
 system:
   main_loop_interval: 0.1

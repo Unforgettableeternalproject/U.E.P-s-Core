@@ -65,11 +65,13 @@ jobs:
           
           ENTRY_EOF
           
-          # 替換變數
-          sed -i "s/\${TAG_NAME}/$TAG_NAME/g" /tmp/new_entry.txt
-          sed -i "s/\${TAG_TYPE}/$TAG_TYPE/g" /tmp/new_entry.txt
-          sed -i "s/\${TAG_MESSAGE}/$TAG_MESSAGE/g" /tmp/new_entry.txt
-          sed -i "s/\${TAG_DATE}/$TAG_DATE/g" /tmp/new_entry.txt
+          # 替換變數（使用 | 作為分隔符以避免路徑中的 / 造成問題）
+          sed -i "s|\${TAG_NAME}|$TAG_NAME|g" /tmp/new_entry.txt
+          sed -i "s|\${TAG_TYPE}|$TAG_TYPE|g" /tmp/new_entry.txt
+          # 對於 TAG_MESSAGE，使用更安全的方式處理特殊字符
+          TAG_MESSAGE_ESCAPED=$(printf '%s\n' "$TAG_MESSAGE" | sed 's/[&/\]/\\&/g')
+          sed -i "s|\${TAG_MESSAGE}|$TAG_MESSAGE_ESCAPED|g" /tmp/new_entry.txt
+          sed -i "s|\${TAG_DATE}|$TAG_DATE|g" /tmp/new_entry.txt
           
           # 在第一個 ## v 之前插入新條目
           awk '
@@ -82,8 +84,8 @@ jobs:
           
           mv VERSION_HISTORY.md.tmp VERSION_HISTORY.md
           
-          # 更新最後更新日期
-          sed -i "s/\*最後更新: .*\*/\*最後更新: $TAG_DATE\*/" VERSION_HISTORY.md
+          # 更新最後更新日期（使用 | 作為分隔符）
+          sed -i "s|\*最後更新: .*\*|\*最後更新: $TAG_DATE\*|" VERSION_HISTORY.md
           
           echo "✅ VERSION_HISTORY.md 已更新"
       

@@ -1,0 +1,226 @@
+"""
+MemoryEngine - 記憶系統主類
+
+統一管理三層記憶的存儲、檢索與鞏固。
+
+Architecture:
+    MemoryEngine
+    ├── EpisodicMemory   (對話事件)
+    ├── SemanticMemory   (抽象知識)
+    ├── WorkingMemory    (短期緩存)
+    ├── EcphoryRetrieval (聯想檢索)
+    └── DreamEngine      (離線鞏固)
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from echo_memory.schemas.memory_context import MemoryContext
+from echo_memory.schemas.episode import Episode
+
+logger = logging.getLogger("echo_memory.engine")
+
+
+class MemoryEngine:
+    """
+    記憶引擎主類 - MVP 骨架
+    
+    Phase 1 實作目標：
+    - 基本存儲功能
+    - 單一情節記憶存取
+    - 簡單的向量檢索
+    
+    後續擴展：
+    - EcphoryRAG 多跳檢索
+    - Dream Engine 鞏固
+    - 神經化學調控
+    """
+    
+    def __init__(
+        self,
+        storage_path: str | Path = "./data",
+        embedding_model: str = "all-MiniLM-L6-v2",
+        device: str = "cpu",
+    ):
+        """
+        初始化記憶引擎。
+        
+        Args:
+            storage_path: 資料存儲路徑
+            embedding_model: 嵌入模型名稱
+            device: 運行設備 (cpu/cuda)
+        """
+        self.storage_path = Path(storage_path)
+        self.storage_path.mkdir(parents=True, exist_ok=True)
+        
+        self.embedding_model = embedding_model
+        self.device = device
+        
+        # 延遲導入以加快啟動速度
+        self._episodic = None
+        self._semantic = None
+        self._working = None
+        self._retrieval = None
+        self._dream_engine = None
+        
+        logger.info(f"[MemoryEngine] 初始化完成 - 存儲路徑: {self.storage_path}")
+    
+    @property
+    def episodic(self):
+        """延遲加載情節記憶模組"""
+        if self._episodic is None:
+            from echo_memory.storage.episodic import EpisodicMemory
+            self._episodic = EpisodicMemory(
+                storage_path=self.storage_path / "episodic",
+                embedding_model=self.embedding_model,
+                device=self.device,
+            )
+        return self._episodic
+    
+    @property
+    def semantic(self):
+        """延遲加載語義記憶模組"""
+        if self._semantic is None:
+            from echo_memory.storage.semantic import SemanticMemory
+            self._semantic = SemanticMemory(
+                storage_path=self.storage_path / "semantic",
+            )
+        return self._semantic
+    
+    @property
+    def working(self):
+        """延遲加載工作記憶模組"""
+        if self._working is None:
+            from echo_memory.storage.working import WorkingMemory
+            self._working = WorkingMemory(ttl_seconds=300)
+        return self._working
+    
+    @property
+    def retrieval(self):
+        """延遲加載檢索引擎"""
+        if self._retrieval is None:
+            from echo_memory.retrieval.ecphory import EcphoryRetrieval
+            self._retrieval = EcphoryRetrieval(
+                episodic=self.episodic,
+                semantic=self.semantic,
+            )
+        return self._retrieval
+    
+    # ─── 核心 API ────────────────────────────────────────────────────────────
+    
+    def store_episode(
+        self,
+        user_input: str,
+        agent_response: str,
+        session_id: str,
+        content_summary: str | None = None,
+        salience: float = 0.5,
+        **metadata: Any,
+    ) -> str:
+        """
+        存儲一個情節記憶。
+        
+        Args:
+            user_input: 用戶輸入
+            agent_response: Agent 回應
+            session_id: 會話 ID
+            content_summary: 對話摘要（若為 None 則自動生成）
+            salience: 顯著性分數 (0-1)
+            **metadata: 額外元數據
+        
+        Returns:
+            episode_id: 新建的情節 ID
+        """
+        if content_summary is None:
+            content_summary = f"{user_input[:50]}..."
+        
+        episode = Episode(
+            user_input=user_input,
+            agent_response=agent_response,
+            session_id=session_id,
+            content_summary=content_summary,
+            salience_score=salience,
+            metadata=metadata,
+        )
+        
+        episode_id = self.episodic.write(episode)
+        logger.info(f"[MemoryEngine] 存儲情節: {episode_id}")
+        
+        return episode_id
+    
+    def retrieve(
+        self,
+        query: str,
+        dopamine: float = 0.5,
+        serotonin: float = 0.5,
+        top_k: int = 10,
+    ) -> MemoryContext:
+        """
+        檢索相關記憶（EcphoryRAG）。
+        
+        Args:
+            query: 查詢文本
+            dopamine: 多巴胺濃度 (0-1)，影響探索廣度
+            serotonin: 血清素濃度 (0-1)，影響謹慎程度
+            top_k: 返回記憶數量
+        
+        Returns:
+            MemoryContext: 檢索到的記憶脈絡
+        """
+        context = self.retrieval.retrieve(
+            query=query,
+            dopamine=dopamine,
+            serotonin=serotonin,
+            top_k=top_k,
+        )
+        
+        logger.info(
+            f"[MemoryEngine] 檢索完成 - "
+            f"Episodes: {len(context.episodes)}, "
+            f"Concepts: {len(context.concepts)}"
+        )
+        
+        return context
+    
+    def dream(self, triggered_by: str = "manual") -> dict[str, Any]:
+        """
+        執行離線記憶鞏固（Dream Engine）。
+        
+        Args:
+            triggered_by: 觸發來源 (manual/sleep/idle/cron)
+        
+        Returns:
+            DreamReport: 鞏固報告
+        """
+        if self._dream_engine is None:
+            from echo_memory.consolidation.dream_engine import DreamEngine
+            self._dream_engine = DreamEngine(
+                episodic=self.episodic,
+                semantic=self.semantic,
+            )
+        
+        report = self._dream_engine.run(triggered_by=triggered_by)
+        logger.info(f"[MemoryEngine] Dream 完成 - {report}")
+        
+        return report
+    
+    # ─── 輔助方法 ────────────────────────────────────────────────────────────
+    
+    def get_stats(self) -> dict[str, int]:
+        """獲取記憶系統統計資訊"""
+        return {
+            "total_episodes": self.episodic.count(),
+            "total_concepts": self.semantic.count(),
+            "working_cache_size": len(self.working._cache),
+        }
+    
+    def clear_all(self):
+        """清空所有記憶（測試用）"""
+        logger.warning("[MemoryEngine] 清空所有記憶")
+        self.episodic.clear()
+        self.semantic.clear()
+        self.working.clear()

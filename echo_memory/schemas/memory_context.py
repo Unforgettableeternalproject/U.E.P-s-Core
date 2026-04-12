@@ -25,6 +25,7 @@ class MemoryContext:
     episodes: list[Episode] = field(default_factory=list)
     concepts: list[Concept] = field(default_factory=list)
     entities: list[dict[str, Any]] = field(default_factory=list)  # 暫時用 dict
+    similarities: dict[str, float] = field(default_factory=dict)  # episode_id -> 相似度分數
     
     def is_empty(self) -> bool:
         """檢查是否為空"""
@@ -59,8 +60,12 @@ class MemoryContext:
                 else:
                     sal_tag = "淡薄記憶"
                 
+                # 相似度分數
+                similarity = self.similarities.get(ep.id, 0.0)
+                sim_tag = f"[匹配度:{similarity:.0%}]" if similarity > 0 else ""
+                
                 parts.append(
-                    f"  - {time_tag}[重要程度:《{sal_tag}》] {ep.content_summary}"
+                    f"  - {time_tag}{sim_tag}[重要程度:《{sal_tag}》] {ep.content_summary}"
                 )
         
         # ─── 語義概念 ────────────────────────────────────────────────────────

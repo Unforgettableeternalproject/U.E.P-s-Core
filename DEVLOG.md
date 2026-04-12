@@ -31,9 +31,30 @@
 #### 5. 測試與示例
 - ✅ 單元測試（`test_episodic.py`, `test_engine.py`）
 - ✅ 最小對話示例（`minimal_chat.py`）
+- ✅ **互動式 CLI**（`Entry.py`）- 類似 U.E.P Core Debugger
+- ✅ **混合檢索測試**（`test_hybrid_retrieval.py`）- 驗證圖譜展開
 - ✅ 快速開始指南（`QUICKSTART.md`）
 
 ### 設計決策
+
+#### 互動式 CLI 設計
+
+延續 U.E.P Core Debugger 的設計理念：
+
+**優點**：
+- 彩色輸出（ANSI 顏色碼）提升可讀性
+- 分層命令結構（主選單 → 子命令）
+- match-case 語法處理命令（Python 3.10+）
+- 錯誤處理與友好提示
+
+**實作亮點**：
+```python
+# 對話模式：整合檢索與存儲
+chat       # 自動檢索相關記憶 → 顯示 → 存儲新對話
+
+# 神經化學參數可調整
+retrieve   # 支援動態調整 dopamine/serotonin
+```
 
 #### 為何選擇 FAISS + NetworkX 而非 FalkorDB？
 

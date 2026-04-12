@@ -158,6 +158,7 @@ class MemoryEngine:
         dopamine: float = 0.5,
         serotonin: float = 0.5,
         top_k: int = 10,
+        min_similarity: float = 0.3,
     ) -> MemoryContext:
         """
         檢索相關記憶（EcphoryRAG）。
@@ -175,8 +176,7 @@ class MemoryEngine:
             query=query,
             dopamine=dopamine,
             serotonin=serotonin,
-            top_k=top_k,
-        )
+            top_k=top_k,            min_similarity=min_similarity,        )
         
         logger.info(
             f"[MemoryEngine] 檢索完成 - "
@@ -188,7 +188,7 @@ class MemoryEngine:
     
     def dream(self, triggered_by: str = "manual") -> dict[str, Any]:
         """
-        執行離線記憶鞏固（Dream Engine）。
+        執行離線記憶鞏固（Dream Engine - 簡化版已實作）。
         
         Args:
             triggered_by: 觸發來源 (manual/sleep/idle/cron)
@@ -197,16 +197,28 @@ class MemoryEngine:
             DreamReport: 鞏固報告
         """
         if self._dream_engine is None:
-            from echo_memory.consolidation.dream_engine import DreamEngine
+            from echo_memory.dream.engine import DreamEngine
+            from echo_memory.config import get_config
+            
+            config = get_config()
             self._dream_engine = DreamEngine(
-                episodic=self.episodic,
-                semantic=self.semantic,
+                graph=self.episodic.graph,
+                idle_minutes=config.dream_idle_minutes,
+                cron_schedule=config.dream_cron,
+                enable_idle=False,  # 手動調用時不啟用自動觸發
+                enable_cron=False,
             )
         
-        report = self._dream_engine.run(triggered_by=triggered_by)
-        logger.info(f"[MemoryEngine] Dream 完成 - {report}")
+        report = self._dream_engine.dream_now(triggered_by=triggered_by)
+        logger.info(f"[MemoryEngine] Dream 完成 - {report.duration_seconds:.1f}s")
         
-        return report
+        return {
+            "triggered_by": report.triggered_by,
+            "duration_seconds": report.duration_seconds,
+            "edges_updated": report.edges_updated,
+            "edges_pruned": report.pruning.edges_pruned if report.pruning else 0,
+            "error": report.error,
+        }
     
     # ─── 輔助方法 ────────────────────────────────────────────────────────────
     

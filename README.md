@@ -120,12 +120,30 @@ python -m venv venv
 # 2. 安裝依賴
 pip install -r requirements.txt
 
-# 3. 配置環境變數
-cp .env.example .env
-# 編輯 .env，填入 GOOGLE_API_KEY 或 ANTHROPIC_API_KEY
+# 3. 配置環境變數（使用 U.E.P Core 相同設定）
+# 編輯 .env，設定 GCP_PROJECT_ID 和 GCP_LOCATION
+# 或設定 GOOGLE_API_KEY（備用）
+
+# 4. 驗證配置
+python verify_config.py
 ```
 
-### 最小示例
+### 互動式 CLI（推薦）
+
+```bash
+# 啟動互動式 CLI
+python Entry.py
+```
+
+進入後可使用以下命令：
+- `store` - 手動存儲對話
+- `retrieve` - 檢索相關記憶
+- `chat` - 對話模式（自動檢索+存儲）
+- `stats` - 查看統計資訊
+- `list` - 列出所有情節
+- `help` - 查看完整說明
+
+### 程式化使用
 
 ```python
 from echo_memory import MemoryEngine

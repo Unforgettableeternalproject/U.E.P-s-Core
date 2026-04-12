@@ -5,9 +5,14 @@
 """
 
 import logging
+import sys
 from pathlib import Path
 
+# 添加專案路徑
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from echo_memory import MemoryEngine
+from echo_memory.config import get_config
 
 # 配置日誌
 logging.basicConfig(
@@ -21,12 +26,24 @@ logger = logging.getLogger("example")
 def main():
     """最小對話循環示例"""
     
+    # 0. 載入配置
+    config = get_config()
+    logger.info("=== 配置摘要 ===")
+    print(config.summary())
+    
+    # 驗證配置
+    is_valid, missing = config.validate()
+    if not is_valid:
+        logger.error(f"配置驗證失敗，缺少: {', '.join(missing)}")
+        logger.error("請先設定 .env 文件（參考 .env.example）")
+        return
+    
     # 1. 初始化記憶引擎
     logger.info("=== 初始化 Echo Memory System ===")
     memory = MemoryEngine(
-        storage_path="./data",
-        embedding_model="all-MiniLM-L6-v2",
-        device="cpu",
+        storage_path=config.memory_storage_path,
+        embedding_model=config.embedding_model,
+        device=config.embedding_device,
     )
     
     # 2. 模擬對話並存儲

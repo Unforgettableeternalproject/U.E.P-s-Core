@@ -29,7 +29,7 @@ TestSeperateMemorySystem/
 │   │
 │   ├── 📁 storage/                # 存儲層
 │   │   ├── __init__.py
-│   │   ├── episodic.py           # 情節記憶（FAISS + JSON）
+│   │   ├── episodic.py           # 情節記憶（NumPy + JSON）
 │   │   ├── semantic.py           # 語義記憶（佔位符）
 │   │   └── working.py            # 工作記憶（TTL 緩存）
 │   │
@@ -73,7 +73,7 @@ TestSeperateMemorySystem/
 | **Episode Schema** | `schemas/episode.py` | 情節記憶節點定義 | ✅ 完成 |
 | **Concept Schema** | `schemas/concept.py` | 語義概念節點定義 | ✅ 完成 |
 | **MemoryContext** | `schemas/memory_context.py` | 檢索結果容器 | ✅ 完成 |
-| **EpisodicMemory** | `storage/episodic.py` | FAISS + JSON 存儲 | ✅ 完成 |
+| **EpisodicMemory** | `storage/episodic.py` | NumPy + JSON 存儲 | ✅ 完成 |
 | **SemanticMemory** | `storage/semantic.py` | 簡化版（dict） | ✅ 骨架 |
 | **WorkingMemory** | `storage/working.py` | TTL 短期緩存 | ✅ 完成 |
 | **EcphoryRetrieval** | `retrieval/ecphory.py` | 向量檢索 | ✅ Phase 1 |
@@ -125,8 +125,7 @@ TestSeperateMemorySystem/
 #### `echo_memory/storage/episodic.py`
 **職責**：情節記憶的 CRUD 與向量檢索  
 **技術棧**：
-- FAISS: 向量相似度檢索
-- NumPy: 向量操作
+- NumPy: 精確餘弦相似度檢索與向量操作
 - Sentence Transformers: 嵌入生成
 
 #### `echo_memory/schemas/memory_context.py`

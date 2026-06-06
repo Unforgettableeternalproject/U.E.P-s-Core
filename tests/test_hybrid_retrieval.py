@@ -1,7 +1,7 @@
 """
 Phase 1.5 混合架構測試
 
-驗證 FAISS 向量檢索 + NetworkX 圖譜展開的效果。
+驗證 NumPy 餘弦相似度檢索 + NetworkX 圖譜展開的效果。
 """
 
 import sys
@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from echo_memory import MemoryEngine
 
 
-def test_hybrid_retrieval():
+def run_hybrid_retrieval_demo():
     """測試混合檢索能力"""
     print("=" * 80)
     print("Phase 1.5 混合架構測試 - 向量檢索 + 圖譜展開")
@@ -21,7 +21,7 @@ def test_hybrid_retrieval():
     # 初始化記憶引擎
     engine = MemoryEngine(storage_path="./test_data")
     
-    print(f"\n📊 初始狀態:")
+    print("\n📊 初始狀態:")
     stats = engine.get_stats()
     print(f"  - 情節數: {stats['total_episodes']}")
     print(f"  - 概念數: {stats['total_concepts']}")
@@ -57,7 +57,7 @@ def test_hybrid_retrieval():
     
     # 顯示圖結構統計
     graph_stats = engine.episodic.graph.get_stats()
-    print(f"\n📈 圖結構統計:")
+    print("\n📈 圖結構統計:")
     print(f"  - 節點數: {graph_stats['nodes']}")
     print(f"  - 邊數: {graph_stats['edges']}")
     print(f"  - 平均度數: {graph_stats['avg_degree']:.2f}")
@@ -163,4 +163,4 @@ def test_hybrid_retrieval():
 
 
 if __name__ == "__main__":
-    test_hybrid_retrieval()
+    run_hybrid_retrieval_demo()

@@ -21,7 +21,7 @@ class EcphoryRetrieval:
     EcphoryRAG 檢索引擎 - 混合架構。
     
     檢索流程：
-      1. FAISS 向量檢索 → 定位種子節點（高相似度）
+      1. NumPy 餘弦相似度檢索 → 定位種子節點（高相似度）
       2. NetworkX 圖譜展開 → 沿 PRECEDES 邊多跳擴展
       3. 動態權重過濾 → 時間衰減 + 頻率 + 顯著性
       4. 整合返回 MemoryContext
@@ -58,7 +58,7 @@ class EcphoryRetrieval:
         Returns:
             MemoryContext 記憶脈絡
         """
-        # Step 1: FAISS 向量檢索（種子節點）
+        # Step 1: NumPy 餘弦相似度檢索（種子節點）
         query_embedding = self.episodic._generate_embedding(query)
         seed_results = self.episodic.search(
             query_embedding,

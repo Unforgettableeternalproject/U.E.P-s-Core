@@ -21,7 +21,7 @@
 - ✅ `MemoryContext` 容器實作
 
 #### 3. 存儲層
-- ✅ `EpisodicMemory` - FAISS + JSON 存儲
+- ✅ `EpisodicMemory` - NumPy + JSON 存儲
 - ✅ `SemanticMemory` - 簡化版（佔位符）
 - ✅ `WorkingMemory` - dict + TTL 短期緩存
 
@@ -56,7 +56,7 @@ chat       # 自動檢索相關記憶 → 顯示 → 存儲新對話
 retrieve   # 支援動態調整 dopamine/serotonin
 ```
 
-#### 為何選擇 FAISS + NetworkX 而非 FalkorDB？
+#### 為何選擇 NumPy + NetworkX 而非 FalkorDB？
 
 **理由**：
 1. **無依賴**：避免 Docker 容器（OpenSoul 需要 FalkorDB Docker）
@@ -73,7 +73,7 @@ retrieve   # 支援動態調整 dopamine/serotonin
 
 **優點**：
 - JSON 可讀性高，便於調試
-- NumPy 向量可直接用於 FAISS
+- NumPy 向量可直接用於精確相似度計算，未來也可遷移至 FAISS
 - 模組化存儲，易於擴展
 
 **缺點**：
@@ -109,20 +109,25 @@ embedding = model.encode("text", convert_to_numpy=True)
 - `convert_to_numpy=True` 避免 Tensor 轉換開銷
 - 384-dim 是 MiniLM-L6 的固定維度
 
-#### FAISS 向量檢索
+#### NumPy 向量檢索
 
 ```python
 import numpy as np
 
-# 餘弦相似度檢索
+# 精確餘弦相似度檢索（NumPy dot product）
 query_vec = query_vec / np.linalg.norm(query_vec)  # 正規化
 similarities = np.dot(embeddings, query_vec)
 top_indices = np.argsort(similarities)[::-1][:k]
 ```
 
 **為何不直接用 FAISS IndexFlatIP？**
-- Phase 1 保持簡單，手動計算餘弦相似度
-- Phase 2 可升級到 FAISS 的高效索引
+- Phase 1 保持簡單，以 L2-normalized vectors 的 NumPy dot product 計算餘弦相似度
+- Phase 2 可視資料規模升級到 FAISS 索引
+
+**既有向量資料遷移**
+- 啟動時會自動檢查 `embeddings.npy`，將舊的非正規化向量逐列 L2-normalize 並原地覆寫
+- zero vector 會保留為 zero vector，搜尋時 zero query 直接返回空結果，避免 NaN
+- 若舊檔不是二維向量矩陣，載入會明確失敗；此時應備份後刪除 `embeddings.npy`，再由原始內容重建 embeddings
 
 ### 待解決問題
 

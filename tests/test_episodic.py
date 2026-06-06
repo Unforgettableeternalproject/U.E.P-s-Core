@@ -2,12 +2,14 @@
 測試 Episodic Memory 基本功能
 """
 
-import pytest
-from pathlib import Path
+import json
 import shutil
 
-from echo_memory.storage.episodic import EpisodicMemory
+import numpy as np
+import pytest
+
 from echo_memory.schemas.episode import Episode
+from echo_memory.storage.episodic import EpisodicMemory
 
 
 @pytest.fixture
@@ -103,7 +105,7 @@ def test_episodic_search(temp_storage):
     # 檢索
     results = memory.search(query_emb, top_k=1)
     assert len(results) > 0
-    assert "天氣" in results[0].content_summary
+    assert "天氣" in results[0][0].content_summary
 
 
 def test_episodic_persistence(temp_storage):
@@ -141,3 +143,86 @@ def test_episodic_count(temp_storage):
     memory.write(ep)
     
     assert memory.count() == 1
+
+
+def test_search_uses_cosine_similarity_for_fixed_vectors(temp_storage):
+    """Fixed vectors verify ranking, scores, thresholding, and zero handling."""
+    memory = EpisodicMemory(storage_path=temp_storage)
+    vectors = {
+        "same": [10.0, 0.0],
+        "orthogonal": [0.0, 3.0],
+        "opposite": [-2.0, 0.0],
+        "zero": [0.0, 0.0],
+    }
+
+    for name, vector in vectors.items():
+        memory.write(
+            Episode(
+                user_input=name,
+                agent_response="response",
+                session_id="vectors",
+                content_summary=name,
+                embedding=vector,
+            )
+        )
+
+    results = memory.search([5.0, 0.0], top_k=4, min_similarity=-1.0)
+    scores = {episode.user_input: score for episode, score in results}
+
+    ranked_names = [episode.user_input for episode, _ in results]
+    assert ranked_names[0] == "same"
+    assert set(ranked_names[1:3]) == {"orthogonal", "zero"}
+    assert ranked_names[3] == "opposite"
+    assert scores["same"] == pytest.approx(1.0)
+    assert scores["orthogonal"] == pytest.approx(0.0)
+    assert scores["opposite"] == pytest.approx(-1.0)
+    assert scores["zero"] == pytest.approx(0.0)
+
+    thresholded = memory.search([1.0, 0.0], top_k=4, min_similarity=0.5)
+    assert [episode.user_input for episode, _ in thresholded] == ["same"]
+    assert memory.search([0.0, 0.0]) == []
+
+
+def test_load_migrates_legacy_unnormalized_embeddings(temp_storage):
+    """Legacy embeddings.npy files are normalized in place when loaded."""
+    episode = Episode(
+        user_input="legacy",
+        agent_response="response",
+        session_id="legacy",
+        content_summary="legacy",
+        embedding=[3.0, 4.0],
+    )
+    with open(temp_storage / "episodes.json", "w", encoding="utf-8") as metadata_file:
+        json.dump([episode.to_dict()], metadata_file)
+    np.save(temp_storage / "embeddings.npy", np.array([[3.0, 4.0]], dtype=np.float32))
+
+    memory = EpisodicMemory(storage_path=temp_storage)
+
+    assert memory.search([3.0, 4.0], min_similarity=0.99)[0][1] == pytest.approx(1.0)
+    assert np.load(temp_storage / "embeddings.npy")[0] == pytest.approx([0.6, 0.8])
+    assert memory.get(episode.id).embedding == pytest.approx([0.6, 0.8])
+
+    with open(temp_storage / "episodes.json", encoding="utf-8") as metadata_file:
+        persisted_episode = json.load(metadata_file)[0]
+    assert persisted_episode["embedding"] == pytest.approx([0.6, 0.8])
+
+
+def test_load_repairs_metadata_after_partial_legacy_migration(temp_storage):
+    """Normalized matrix repairs metadata left stale by an interrupted migration."""
+    episode = Episode(
+        user_input="partial migration",
+        agent_response="response",
+        session_id="legacy",
+        content_summary="legacy",
+        embedding=[3.0, 4.0],
+    )
+    with open(temp_storage / "episodes.json", "w", encoding="utf-8") as metadata_file:
+        json.dump([episode.to_dict()], metadata_file)
+    np.save(temp_storage / "embeddings.npy", np.array([[0.6, 0.8]], dtype=np.float32))
+
+    memory = EpisodicMemory(storage_path=temp_storage)
+
+    assert memory.get(episode.id).embedding == pytest.approx([0.6, 0.8])
+    with open(temp_storage / "episodes.json", encoding="utf-8") as metadata_file:
+        persisted_episode = json.load(metadata_file)[0]
+    assert persisted_episode["embedding"] == pytest.approx([0.6, 0.8])

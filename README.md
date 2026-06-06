@@ -12,7 +12,7 @@
 
 | 維度 | 設計決策 | 實作技術 |
 |------|---------|---------|
-| **Form（形式）** | 三層記憶架構 | FAISS + NetworkX 混合存儲 |
+| **Form（形式）** | 三層記憶架構 | NumPy + NetworkX 混合存儲 |
 | **Function（功能）** | Working/Episodic/Semantic | 短期緩存、對話事件、抽象知識 |
 | **Dynamic（動力）** | 動態邊緣權重 + 離線鞏固 | 時間衰減、頻率強化、顯著性調控 |
 
@@ -57,7 +57,7 @@ TestSeperateMemorySystem/
 │   │   ├── semantic.py        # 語義記憶（抽象知識）
 │   │   ├── working.py         # 工作記憶（短期緩存）
 │   │   ├── graph.py           # 圖譜管理（NetworkX）
-│   │   └── vector.py          # 向量存儲（FAISS）
+│   │   └── vector.py          # 向量存儲（規劃中）
 │   │
 │   ├── retrieval/              # 檢索引擎
 │   │   ├── ecphory.py         # EcphoryRAG 聯想檢索
@@ -101,7 +101,7 @@ TestSeperateMemorySystem/
 │
 └── data/                       # 資料存儲（不提交到 Git）
     ├── graphs/                # NetworkX 圖譜存儲
-    ├── vectors/               # FAISS 索引
+    ├── vectors/               # 向量資料
     └── snapshots/             # 夢境快照
 ```
 
@@ -198,7 +198,7 @@ print(f"Agent: {response}")
 
 ### Phase 1: 基礎記憶存儲（1 週）
 - [x] 專案基建與目錄結構
-- [ ] Episodic Memory 存儲（FAISS 向量 + JSON 元數據）
+- [ ] Episodic Memory 存儲（NumPy 向量 + JSON 元數據）
 - [ ] Semantic Memory 存儲（NetworkX 圖譜）
 - [ ] Working Memory 短期緩存（dict + TTL）
 - [ ] 單元測試覆蓋率 > 80%
@@ -245,7 +245,7 @@ print(f"Agent: {response}")
 | 類別 | 技術選型 | 版本 |
 |------|---------|------|
 | **Python** | CPython | 3.10+ |
-| **向量存儲** | FAISS | 1.9.0 |
+| **向量檢索** | NumPy 精確餘弦相似度 | 1.24+ |
 | **圖譜存儲** | NetworkX | 3.2+ |
 | **嵌入模型** | Sentence Transformers | 2.2+ |
 | **LLM** | Google Gemini / Anthropic Claude | - |

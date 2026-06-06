@@ -1,11 +1,11 @@
 """
 EpisodicMemory - 情節記憶存儲
 
-使用 FAISS 向量索引 + JSON 元數據存儲。
+使用 NumPy 向量矩陣 + JSON 元數據存儲。
 
 Phase 1 實作：
 - 基本 CRUD 操作
-- FAISS 向量檢索
+- NumPy 精確餘弦相似度檢索
 - JSON 元數據持久化
 """
 
@@ -15,7 +15,6 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 
@@ -31,7 +30,7 @@ class EpisodicMemory:
     
     存儲結構：
     - episodes.json: 所有情節的元數據
-    - embeddings.npy: FAISS 索引的向量數據
+    - embeddings.npy: L2-normalized 向量矩陣
     """
     
     def __init__(
@@ -126,9 +125,11 @@ class EpisodicMemory:
         if self._embeddings is None or len(self._episodes) == 0:
             return []
         
-        # 計算餘弦相似度
-        query_vec = np.array(query_embedding, dtype=np.float32)
-        query_vec = query_vec / np.linalg.norm(query_vec)
+        # Stored vectors are normalized on write/load, so the dot product is
+        # cosine similarity. A zero query has no defined direction.
+        query_vec = self._normalize_vector(query_embedding)
+        if not np.any(query_vec):
+            return []
         
         similarities = np.dot(self._embeddings, query_vec)
         top_indices = np.argsort(similarities)[::-1][:top_k]
@@ -189,11 +190,12 @@ class EpisodicMemory:
             )
         
         embedding = self._embedder.encode(text, convert_to_numpy=True)
-        return embedding.tolist()
+        return self._normalize_vector(embedding).tolist()
     
     def _update_embeddings(self, episode: Episode):
         """更新向量索引"""
-        new_vec = np.array(episode.embedding, dtype=np.float32)
+        new_vec = self._normalize_vector(episode.embedding)
+        episode.embedding = new_vec.tolist()
         
         if self._embeddings is None:
             self._embeddings = new_vec.reshape(1, -1)
@@ -202,6 +204,33 @@ class EpisodicMemory:
             idx = len(self._embeddings)
             self._embeddings = np.vstack([self._embeddings, new_vec])
             self._id_to_index[episode.id] = idx
+
+    @staticmethod
+    def _normalize_vector(vector: list[float] | np.ndarray) -> np.ndarray:
+        """Return an L2-normalized float32 vector, preserving zero vectors."""
+        normalized = np.asarray(vector, dtype=np.float32)
+        norm = float(np.linalg.norm(normalized))
+        if norm == 0.0:
+            return np.zeros_like(normalized, dtype=np.float32)
+        return normalized / norm
+
+    @classmethod
+    def _normalize_matrix(cls, matrix: np.ndarray) -> tuple[np.ndarray, bool]:
+        """Normalize persisted rows and report whether migration was needed."""
+        normalized = np.asarray(matrix, dtype=np.float32)
+        if normalized.ndim != 2:
+            raise ValueError("embeddings.npy must contain a 2D matrix")
+
+        norms = np.linalg.norm(normalized, axis=1, keepdims=True)
+        nonzero_rows = norms[:, 0] > 0.0
+        migrated = bool(
+            np.any(nonzero_rows)
+            and not np.allclose(norms[nonzero_rows], 1.0, rtol=1e-5, atol=1e-6)
+        )
+        normalized = normalized.copy()
+        normalized[nonzero_rows] /= norms[nonzero_rows]
+        normalized[~nonzero_rows] = 0.0
+        return normalized, migrated
     
     def _index_to_id(self, index: int) -> str | None:
         """索引 -> Episode ID"""
@@ -220,10 +249,43 @@ class EpisodicMemory:
                     self._episodes[ep.id] = ep
         
         if self.embeddings_file.exists():
-            self._embeddings = np.load(self.embeddings_file)
+            loaded_embeddings = np.load(self.embeddings_file)
+            self._embeddings, migrated = self._normalize_matrix(loaded_embeddings)
+            if migrated:
+                np.save(self.embeddings_file, self._embeddings)
+                logger.info(
+                    "[EpisodicMemory] Migrated embeddings.npy to L2-normalized vectors"
+                )
+
+            metadata_migrated = False
             # 重建索引映射
             for i, ep in enumerate(self._episodes.values()):
                 self._id_to_index[ep.id] = i
+                if i >= len(self._embeddings):
+                    break
+
+                normalized_embedding = self._embeddings[i].tolist()
+                metadata_embedding = np.asarray(ep.embedding, dtype=np.float32)
+                embeddings_match = (
+                    metadata_embedding.shape == self._embeddings[i].shape
+                    and np.allclose(
+                        metadata_embedding,
+                        self._embeddings[i],
+                        rtol=1e-5,
+                        atol=1e-6,
+                    )
+                )
+                if not embeddings_match:
+                    ep.embedding = normalized_embedding
+                    metadata_migrated = True
+
+            if metadata_migrated:
+                with open(self.metadata_file, "w", encoding="utf-8") as f:
+                    data = [ep.to_dict() for ep in self._episodes.values()]
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                logger.info(
+                    "[EpisodicMemory] Migrated episode metadata to L2-normalized vectors"
+                )
     
     def _save(self):
         """持久化到磁盤"""

@@ -43,7 +43,7 @@ pip install -r requirements.txt
 
 # 這將安裝：
 # - sentence-transformers (嵌入模型)
-# - faiss-cpu (向量檢索)
+# - faiss-cpu (保留供未來索引式檢索使用)
 # - pydantic (資料驗證)
 # - python-dotenv (環境變數管理)
 # - 其他核心依賴
@@ -403,7 +403,7 @@ pytest tests/ -v
 
 - [x] 專案基建與目錄結構
 - [x] 配置管理（.env 與環境變數）
-- [x] Episode 存儲（FAISS + JSON）
+- [x] Episode 存儲（NumPy + JSON）
 - [x] 向量檢索基礎功能
 - [x] MemoryContext 文本序列化
 - [x] 單元測試（基礎覆蓋）

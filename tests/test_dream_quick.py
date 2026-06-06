@@ -3,21 +3,21 @@
 快速創建測試數據並測試 Dream Engine
 """
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-import time
+import pytest
+
 from echo_memory import MemoryEngine
 
 
-def create_test_data():
+def create_test_data(engine: MemoryEngine) -> MemoryEngine:
     """創建測試記憶數據"""
     print("=" * 80)
     print("創建測試數據")
     print("=" * 80)
-    
-    engine = MemoryEngine(storage_path="./test_data")
     
     # 測試對話 1: 關於天氣
     print("\n📝 創建測試對話 1: 天氣話題...")
@@ -43,13 +43,13 @@ def create_test_data():
     
     # 顯示統計
     stats = engine.get_stats()
-    print(f"\n✅ 測試數據創建完成!")
+    print("\n✅ 測試數據創建完成!")
     print(f"   - 總情節數: {stats['total_episodes']}")
-    print(f"   - Session 數: 3")
+    print("   - Session 數: 3")
     
     # 顯示圖結構
     graph_stats = engine.episodic.graph.get_stats()
-    print(f"\n📈 圖結構統計:")
+    print("\n📈 圖結構統計:")
     print(f"   - 節點數: {graph_stats['nodes']}")
     print(f"   - 邊數: {graph_stats['edges']}")
     print(f"   - 平均度數: {graph_stats['avg_degree']:.2f}")
@@ -57,15 +57,27 @@ def create_test_data():
     return engine
 
 
-def test_dream_engine(engine):
-    """測試 Dream Engine"""
+@pytest.fixture
+def engine(tmp_path, monkeypatch):
+    """Create an isolated engine without loading an external embedding model."""
+    memory_engine = MemoryEngine(storage_path=tmp_path)
+    monkeypatch.setattr(
+        memory_engine.episodic,
+        "_generate_embedding",
+        lambda text: [1.0, 0.0],
+    )
+    return create_test_data(memory_engine)
+
+
+def run_dream_engine(engine: MemoryEngine) -> tuple[dict, dict, dict]:
+    """Run one Dream cycle and return its report and graph statistics."""
     print("\n" + "=" * 80)
     print("Dream Engine 功能測試")
     print("=" * 80)
     
     # 顯示初始狀態
     graph_stats_before = engine.episodic.graph.get_stats()
-    print(f"\n📊 Dream 執行前:")
+    print("\n📊 Dream 執行前:")
     print(f"   - 節點數: {graph_stats_before['nodes']}")
     print(f"   - 邊數: {graph_stats_before['edges']}")
     print(f"   - 平均邊權重: {graph_stats_before['avg_edge_weight']:.4f}")
@@ -79,23 +91,34 @@ def test_dream_engine(engine):
     duration = time.time() - start_time
     
     # 顯示結果
-    print(f"\n✅ Dream 執行完成!")
+    print("\n✅ Dream 執行完成!")
     print(f"   - 執行時間: {duration:.2f} 秒")
     print(f"   - 觸發方式: {report['triggered_by']}")
     
-    print(f"\n📝 修剪報告:")
+    print("\n📝 修剪報告:")
     print(f"   - 移除邊數: {report.get('edges_pruned', 0)}")
     print(f"   - 更新邊數: {report.get('edges_updated', 0)}")
     print(f"   - 錯誤: {report.get('error', 'None')}")
     
     # 顯示最終狀態
     graph_stats_after = engine.episodic.graph.get_stats()
-    print(f"\n📊 Dream 執行後:")
+    print("\n📊 Dream 執行後:")
     print(f"   - 節點數: {graph_stats_after['nodes']}")
     print(f"   - 邊數: {graph_stats_after['edges']} (變化: {graph_stats_after['edges'] - graph_stats_before['edges']})")
     print(f"   - 平均邊權重: {graph_stats_after['avg_edge_weight']:.4f}")
-    
-    return report
+
+    return report, graph_stats_before, graph_stats_after
+
+
+def test_dream_engine(engine):
+    """Dream runs against isolated data and returns a valid report."""
+    report, graph_stats_before, graph_stats_after = run_dream_engine(engine)
+
+    assert report["triggered_by"] == "manual_test"
+    assert report["error"] is None
+    assert report["edges_updated"] >= 0
+    assert report["edges_pruned"] >= 0
+    assert graph_stats_after["nodes"] == graph_stats_before["nodes"]
 
 
 def main():
@@ -105,10 +128,11 @@ def main():
     
     try:
         # 步驟 1: 創建測試數據
-        engine = create_test_data()
+        engine = MemoryEngine(storage_path="./test_data")
+        create_test_data(engine)
         
         # 步驟 2: 測試 Dream Engine
-        report = test_dream_engine(engine)
+        run_dream_engine(engine)
         
         # 總結
         print("\n" + "=" * 80)

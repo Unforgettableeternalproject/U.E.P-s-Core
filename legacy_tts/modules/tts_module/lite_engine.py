@@ -296,11 +296,17 @@ class IndexTTSLite:
                 )
             except Exception as e:
                 debug_log(1, f"   ⚠️  S2Mel 量化失敗，回退: {e}")
-        # 🚀 精準 torch.compile: 只編譯 CFM estimator (DiT)，比編譯整個 s2mel 更高效
+        # 🚀 精準 torch.compile: 只編譯 CFM estimator (DiT)
+        # S2Mel 佔 12% 時間，compile 可壓 20-30%
+        # 需要 Triton（Windows + 新 GPU 架構可能不相容，自動降級）
         if hasattr(self.s2mel, 'enable_torch_compile'):
             try:
-                debug_log(2, "   ⚡ 對 S2Mel CFM estimator 應用 torch.compile (fullgraph+dynamic)")
-                self.s2mel.enable_torch_compile()
+                import importlib
+                if importlib.util.find_spec("triton") is not None:
+                    debug_log(2, "   ⚡ 對 S2Mel CFM estimator 應用 torch.compile (dynamic)")
+                    self.s2mel.enable_torch_compile()
+                else:
+                    debug_log(2, "   ℹ️  Triton 未安裝，跳過 S2Mel torch.compile")
             except Exception as e:
                 debug_log(1, f"   ⚠️  S2Mel CFM torch.compile 失敗，回退: {e}")
 

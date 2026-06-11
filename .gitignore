@@ -62,3 +62,5 @@ tmp/
 temp/
 *.tmp
 docs/**
+# Claude Code local settings
+.claude/

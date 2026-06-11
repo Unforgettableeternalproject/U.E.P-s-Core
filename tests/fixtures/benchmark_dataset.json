@@ -1,0 +1,461 @@
+{
+  "version": "1.0",
+  "description": "EchoMemory MVP 品質基準資料集（繁體中文）",
+  "vector_design": {
+    "food": "第 1 維為主信號 [0.9x, 0.1x, 0, 0]",
+    "movie": "第 3 維為主信號 [0, 0, 0.9x, 0.1x]",
+    "programming": "第 4 維為主信號 [0, 0, 0.1, 0.9]",
+    "travel": "第 2 維為主信號 [0.1, 0.9, 0, 0]"
+  },
+  "episodes": [
+    {
+      "id": "ep_food_001",
+      "user_input": "我最喜歡吃牛肉麵",
+      "agent_response": "牛肉麵是台灣的經典美食，紅燒和清燉各有風味。",
+      "session_id": "session_food",
+      "content_summary": "使用者偏好牛肉麵，詢問口味推薦",
+      "embedding": [0.9950, 0.0995, 0.0, 0.0],
+      "salience_score": 0.8,
+      "da_weight": 0.7,
+      "ht_weight": 0.5,
+      "is_dreamed": false,
+      "t_offset_seconds": 3600,
+      "metadata": {"category": "food", "topic": "beef_noodle"}
+    },
+    {
+      "id": "ep_food_002",
+      "user_input": "推薦台北好吃的火鍋店",
+      "agent_response": "海底撈和湊湊是台北知名連鎖火鍋，也有很多在地品牌值得一試。",
+      "session_id": "session_food",
+      "content_summary": "台北火鍋店推薦，使用者對火鍋感興趣",
+      "embedding": [0.9806, 0.1961, 0.0, 0.0],
+      "salience_score": 0.6,
+      "da_weight": 0.5,
+      "ht_weight": 0.5,
+      "is_dreamed": false,
+      "t_offset_seconds": 3000,
+      "metadata": {"category": "food", "topic": "hotpot"}
+    },
+    {
+      "id": "ep_food_003",
+      "user_input": "我對蝦子過敏，要注意什麼？",
+      "agent_response": "海鮮過敏需嚴格避免蝦、蟹、貝類，外食時請告知餐廳。",
+      "session_id": "session_food",
+      "content_summary": "使用者有蝦子過敏，詢問飲食注意事項",
+      "embedding": [0.9285, 0.3714, 0.0, 0.0],
+      "salience_score": 0.9,
+      "da_weight": 0.8,
+      "ht_weight": 0.7,
+      "is_dreamed": false,
+      "t_offset_seconds": 2400,
+      "metadata": {"category": "food", "topic": "allergy", "important": true}
+    },
+    {
+      "id": "ep_movie_001",
+      "user_input": "你最推薦什麼科幻電影？",
+      "agent_response": "《星際效應》和《駭客任務》都是科幻經典，各有迷人之處。",
+      "session_id": "session_movie",
+      "content_summary": "使用者詢問科幻電影推薦",
+      "embedding": [0.0, 0.0, 0.9950, 0.0995],
+      "salience_score": 0.6,
+      "da_weight": 0.5,
+      "ht_weight": 0.5,
+      "is_dreamed": false,
+      "t_offset_seconds": 7200,
+      "metadata": {"category": "movie", "genre": "sci-fi"}
+    },
+    {
+      "id": "ep_movie_002",
+      "user_input": "我喜歡諾蘭的電影風格",
+      "agent_response": "克里斯多福·諾蘭以非線性敘事和視覺震撼著稱，代表作有《黑暗騎士》三部曲。",
+      "session_id": "session_movie",
+      "content_summary": "使用者偏好克里斯多福·諾蘭電影風格",
+      "embedding": [0.0, 0.0, 0.9806, 0.1961],
+      "salience_score": 0.7,
+      "da_weight": 0.6,
+      "ht_weight": 0.5,
+      "is_dreamed": false,
+      "t_offset_seconds": 6600,
+      "metadata": {"category": "movie", "director": "nolan"}
+    },
+    {
+      "id": "ep_prog_001",
+      "user_input": "Python 的 GIL 是什麼？",
+      "agent_response": "GIL（全域解釋器鎖）是 CPython 的機制，同一時刻只允許一個執行緒執行 Python bytecode。",
+      "session_id": "session_prog",
+      "content_summary": "使用者詢問 Python GIL 機制說明",
+      "embedding": [0.0, 0.0, 0.1111, 0.9938],
+      "salience_score": 0.7,
+      "da_weight": 0.6,
+      "ht_weight": 0.6,
+      "is_dreamed": false,
+      "t_offset_seconds": 10800,
+      "metadata": {"category": "programming", "language": "python", "topic": "concurrency"}
+    },
+    {
+      "id": "ep_prog_002",
+      "user_input": "如何用 asyncio 做非同步程式設計？",
+      "agent_response": "asyncio 使用 async/await 語法，透過事件迴圈管理協程，適合 I/O 密集型任務。",
+      "session_id": "session_prog",
+      "content_summary": "使用者詢問 Python asyncio 非同步程式設計方法",
+      "embedding": [0.0, 0.0, 0.1111, 0.9938],
+      "salience_score": 0.6,
+      "da_weight": 0.5,
+      "ht_weight": 0.5,
+      "is_dreamed": false,
+      "t_offset_seconds": 10200,
+      "metadata": {"category": "programming", "language": "python", "topic": "async"}
+    },
+    {
+      "id": "ep_travel_001",
+      "user_input": "京都哪些地方值得去？",
+      "agent_response": "伏見稻荷、金閣寺、嵐山竹林是京都必訪景點，建議早上出發避開人潮。",
+      "session_id": "session_travel",
+      "content_summary": "使用者詢問京都旅遊景點推薦",
+      "embedding": [0.1111, 0.9938, 0.0, 0.0],
+      "salience_score": 0.6,
+      "da_weight": 0.5,
+      "ht_weight": 0.5,
+      "is_dreamed": false,
+      "t_offset_seconds": 14400,
+      "metadata": {"category": "travel", "destination": "kyoto"}
+    },
+    {
+      "id": "ep_travel_002",
+      "user_input": "歐洲自助旅行需要辦什麼簽證？",
+      "agent_response": "申根簽證涵蓋大部分歐盟國家，台灣護照可免簽 90 天，英國需另外辦理。",
+      "session_id": "session_travel",
+      "content_summary": "使用者詢問歐洲自助旅行簽證相關資訊",
+      "embedding": [0.1961, 0.9806, 0.0, 0.0],
+      "salience_score": 0.7,
+      "da_weight": 0.6,
+      "ht_weight": 0.6,
+      "is_dreamed": false,
+      "t_offset_seconds": 13800,
+      "metadata": {"category": "travel", "destination": "europe"}
+    },
+    {
+      "id": "ep_graph_A",
+      "user_input": "我今天在想關於記憶和學習的事",
+      "agent_response": "記憶鞏固是學習的關鍵，睡眠和重複練習都能強化記憶痕跡。",
+      "session_id": "session_graph_test",
+      "content_summary": "使用者探討記憶與學習的關聯",
+      "embedding": [0.0, 0.0, 0.5547, 0.8321],
+      "salience_score": 0.5,
+      "da_weight": 0.5,
+      "ht_weight": 0.5,
+      "is_dreamed": false,
+      "t_offset_seconds": 300,
+      "metadata": {"category": "programming", "topic": "memory_learning"}
+    },
+    {
+      "id": "ep_graph_B",
+      "user_input": "那機器學習和記憶有什麼關係？",
+      "agent_response": "機器學習模型也有類似的記憶機制，如 RNN 的隱藏狀態和 Transformer 的注意力機制。",
+      "session_id": "session_graph_test",
+      "content_summary": "使用者詢問機器學習與記憶機制的關係（接續上輪）",
+      "embedding": [0.0, 0.0, 0.5547, 0.8321],
+      "salience_score": 0.6,
+      "da_weight": 0.5,
+      "ht_weight": 0.5,
+      "is_dreamed": false,
+      "t_offset_seconds": 240,
+      "metadata": {"category": "programming", "topic": "ml_memory"}
+    },
+    {
+      "id": "ep_graph_C",
+      "user_input": "訓練資料的多樣性重要嗎？",
+      "agent_response": "訓練資料多樣性直接影響模型泛化能力，偏斜的資料會造成偏見。",
+      "session_id": "session_graph_test",
+      "content_summary": "使用者詢問訓練資料多樣性對模型的影響",
+      "embedding": [0.0, 0.0, 0.1961, 0.9806],
+      "salience_score": 0.5,
+      "da_weight": 0.5,
+      "ht_weight": 0.5,
+      "is_dreamed": false,
+      "t_offset_seconds": 180,
+      "metadata": {"category": "programming", "topic": "data_diversity"}
+    },
+    {
+      "id": "ep_diff_session",
+      "user_input": "機器學習在醫療上的應用",
+      "agent_response": "醫療影像辨識、疾病預測都是 ML 的重要應用場景。",
+      "session_id": "session_other",
+      "content_summary": "使用者詢問機器學習在醫療領域的應用（不同 session）",
+      "embedding": [0.0, 0.0, 0.5547, 0.8321],
+      "salience_score": 0.6,
+      "da_weight": 0.5,
+      "ht_weight": 0.5,
+      "is_dreamed": false,
+      "t_offset_seconds": 120,
+      "metadata": {"category": "programming", "topic": "ml_healthcare", "session_note": "different_session"}
+    },
+    {
+      "id": "ep_high_salience",
+      "user_input": "這是非常重要的偏好設定",
+      "agent_response": "已記錄您的核心偏好設定，未來互動將以此為依據。",
+      "session_id": "session_salience",
+      "content_summary": "使用者設定核心偏好，高顯著性記憶",
+      "embedding": [0.7071, 0.7071, 0.0, 0.0],
+      "salience_score": 0.95,
+      "da_weight": 0.9,
+      "ht_weight": 0.8,
+      "is_dreamed": false,
+      "t_offset_seconds": 60,
+      "metadata": {"category": "preference", "importance": "high"}
+    },
+    {
+      "id": "ep_low_salience",
+      "user_input": "隨便聊聊天氣",
+      "agent_response": "今天天氣不錯呢。",
+      "session_id": "session_salience",
+      "content_summary": "使用者閒聊天氣，低顯著性記憶",
+      "embedding": [0.7071, 0.7071, 0.0, 0.0],
+      "salience_score": 0.1,
+      "da_weight": 0.2,
+      "ht_weight": 0.3,
+      "is_dreamed": false,
+      "t_offset_seconds": 30,
+      "metadata": {"category": "smalltalk", "importance": "low"}
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "SC-01",
+      "name": "偏好記憶直接召回",
+      "description": "查詢「牛肉麵」應能精確召回使用者的飲食偏好記憶",
+      "setup": {
+        "episode_ids": ["ep_food_001", "ep_food_002", "ep_food_003"],
+        "retrieval_params": {
+          "top_k": 3,
+          "min_similarity": 0.3
+        }
+      },
+      "query": {
+        "text": "使用者喜歡吃什麼？",
+        "embedding": [0.9950, 0.0995, 0.0, 0.0]
+      },
+      "expected": {
+        "relevant_ids": ["ep_food_001", "ep_food_002", "ep_food_003"],
+        "irrelevant_ids": [],
+        "empty_result_expected": false,
+        "min_recall_at_3": 0.6,
+        "min_precision_at_3": 0.6
+      }
+    },
+    {
+      "id": "SC-02",
+      "name": "食物類別群集召回",
+      "description": "在混合多類別 episodes 中，食物查詢應以食物類 episodes 為主",
+      "setup": {
+        "episode_ids": ["ep_food_001", "ep_food_002", "ep_food_003", "ep_movie_001", "ep_prog_001", "ep_travel_001"],
+        "retrieval_params": {
+          "top_k": 3,
+          "min_similarity": 0.3
+        }
+      },
+      "query": {
+        "text": "飲食偏好與餐廳推薦",
+        "embedding": [0.9806, 0.1961, 0.0, 0.0]
+      },
+      "expected": {
+        "relevant_ids": ["ep_food_001", "ep_food_002", "ep_food_003"],
+        "irrelevant_ids": ["ep_movie_001", "ep_prog_001", "ep_travel_001"],
+        "empty_result_expected": false,
+        "min_recall_at_3": 0.6,
+        "min_precision_at_3": 0.6
+      }
+    },
+    {
+      "id": "SC-03",
+      "name": "圖譜展開跨輪追問（同 session 連續 episodes）",
+      "description": "同一 session 中連續的 episodes 之間應有 PRECEDES 邊，查詢 ep_graph_A 時應能展開到 ep_graph_B",
+      "setup": {
+        "episode_ids": ["ep_graph_A", "ep_graph_B", "ep_graph_C"],
+        "retrieval_params": {
+          "top_k": 5,
+          "min_similarity": 0.3
+        }
+      },
+      "query": {
+        "text": "記憶與學習的關係",
+        "embedding": [0.0, 0.0, 0.5547, 0.8321]
+      },
+      "expected": {
+        "relevant_ids": ["ep_graph_A", "ep_graph_B"],
+        "irrelevant_ids": [],
+        "empty_result_expected": false,
+        "min_recall_at_3": 0.5,
+        "min_precision_at_3": 0.4
+      }
+    },
+    {
+      "id": "SC-04",
+      "name": "無關查詢空結果（預設閾值）",
+      "description": "用旅遊向量查詢只有程式設計 episodes 的庫，應返回空結果（相似度遠低於閾值）",
+      "setup": {
+        "episode_ids": ["ep_prog_001", "ep_prog_002"],
+        "retrieval_params": {
+          "top_k": 5,
+          "min_similarity": 0.3
+        }
+      },
+      "query": {
+        "text": "旅遊景點推薦",
+        "embedding": [0.1111, 0.9938, 0.0, 0.0]
+      },
+      "expected": {
+        "relevant_ids": [],
+        "irrelevant_ids": ["ep_prog_001", "ep_prog_002"],
+        "empty_result_expected": true,
+        "min_recall_at_3": 1.0,
+        "min_precision_at_3": 0.0
+      }
+    },
+    {
+      "id": "SC-05",
+      "name": "無關查詢空結果（嚴格閾值 0.35）",
+      "description": "提高 min_similarity 到 0.35，用電影向量查詢食物庫，應返回空結果",
+      "setup": {
+        "episode_ids": ["ep_food_001", "ep_food_002"],
+        "retrieval_params": {
+          "top_k": 5,
+          "min_similarity": 0.35
+        }
+      },
+      "query": {
+        "text": "電影推薦",
+        "embedding": [0.0, 0.0, 0.9950, 0.0995]
+      },
+      "expected": {
+        "relevant_ids": [],
+        "irrelevant_ids": ["ep_food_001", "ep_food_002"],
+        "empty_result_expected": true,
+        "min_recall_at_3": 1.0,
+        "min_precision_at_3": 0.0
+      }
+    },
+    {
+      "id": "SC-06",
+      "name": "空庫邊界",
+      "description": "對完全空的資料庫執行查詢，應返回空結果而非錯誤",
+      "setup": {
+        "episode_ids": [],
+        "retrieval_params": {
+          "top_k": 5,
+          "min_similarity": 0.3
+        }
+      },
+      "query": {
+        "text": "任何查詢",
+        "embedding": [0.7071, 0.7071, 0.0, 0.0]
+      },
+      "expected": {
+        "relevant_ids": [],
+        "irrelevant_ids": [],
+        "empty_result_expected": true,
+        "min_recall_at_3": 1.0,
+        "min_precision_at_3": 0.0
+      }
+    },
+    {
+      "id": "SC-07",
+      "name": "單筆不匹配",
+      "description": "資料庫中只有一筆不相關的 episode，查詢應返回空結果",
+      "setup": {
+        "episode_ids": ["ep_travel_001"],
+        "retrieval_params": {
+          "top_k": 5,
+          "min_similarity": 0.3
+        }
+      },
+      "query": {
+        "text": "電影相關",
+        "embedding": [0.0, 0.0, 0.9950, 0.0995]
+      },
+      "expected": {
+        "relevant_ids": [],
+        "irrelevant_ids": ["ep_travel_001"],
+        "empty_result_expected": true,
+        "min_recall_at_3": 1.0,
+        "min_precision_at_3": 0.0
+      }
+    },
+    {
+      "id": "SC-08",
+      "name": "時間戳基準",
+      "description": "注入後所有 episodes 的 timestamp 應在 T0 之前（t_offset_seconds > 0），驗證時間排序正確",
+      "setup": {
+        "episode_ids": ["ep_food_001", "ep_food_002", "ep_food_003"],
+        "retrieval_params": {
+          "top_k": 3,
+          "min_similarity": 0.3
+        }
+      },
+      "query": {
+        "text": "食物相關",
+        "embedding": [0.9950, 0.0995, 0.0, 0.0]
+      },
+      "expected": {
+        "relevant_ids": ["ep_food_001", "ep_food_002", "ep_food_003"],
+        "irrelevant_ids": [],
+        "empty_result_expected": false,
+        "min_recall_at_3": 0.6,
+        "min_precision_at_3": 0.6,
+        "verify_timestamps_before_t0": true
+      }
+    },
+    {
+      "id": "SC-09",
+      "name": "圖譜不跨 session",
+      "description": "不同 session 的 episodes 之間不應有 PRECEDES 邊，圖譜展開不應跨越 session 邊界",
+      "setup": {
+        "episode_ids": ["ep_graph_A", "ep_graph_B", "ep_diff_session"],
+        "retrieval_params": {
+          "top_k": 5,
+          "min_similarity": 0.3
+        }
+      },
+      "query": {
+        "text": "記憶與機器學習",
+        "embedding": [0.0, 0.0, 0.5547, 0.8321]
+      },
+      "expected": {
+        "relevant_ids": ["ep_graph_A", "ep_graph_B", "ep_diff_session"],
+        "irrelevant_ids": [],
+        "empty_result_expected": false,
+        "min_recall_at_3": 0.6,
+        "min_precision_at_3": 0.6,
+        "verify_no_cross_session_edges": true,
+        "same_session_ids": ["ep_graph_A", "ep_graph_B"],
+        "diff_session_id": "ep_diff_session"
+      }
+    },
+    {
+      "id": "SC-10",
+      "name": "高低顯著性基準",
+      "description": "高顯著性 episode 應排在低顯著性 episode 前面（相似向量情況下）",
+      "setup": {
+        "episode_ids": ["ep_high_salience", "ep_low_salience"],
+        "retrieval_params": {
+          "top_k": 3,
+          "min_similarity": 0.3
+        }
+      },
+      "query": {
+        "text": "重要的偏好設定",
+        "embedding": [0.7071, 0.7071, 0.0, 0.0]
+      },
+      "expected": {
+        "relevant_ids": ["ep_high_salience", "ep_low_salience"],
+        "irrelevant_ids": [],
+        "empty_result_expected": false,
+        "min_recall_at_3": 0.5,
+        "min_precision_at_3": 0.5,
+        "verify_high_salience_ranked_first": true,
+        "high_salience_id": "ep_high_salience",
+        "low_salience_id": "ep_low_salience"
+      }
+    }
+  ]
+}

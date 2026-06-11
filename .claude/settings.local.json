@@ -16,7 +16,14 @@
       "Bash(xargs grep -l \"for.*segment\\\\|for.*seg\\\\|concatenate\\\\|np.concatenate\\\\|torch.cat.*audio\")",
       "Bash(xargs grep -l \"split_segments\\\\|infer_v2\")",
       "Bash(git commit -m 'feat: multi-segment synthesis loop with per-segment profiling *)",
-      "Bash(git commit -m 'feat: streaming per-segment playback for say command *)"
+      "Bash(git commit -m 'feat: streaming per-segment playback for say command *)",
+      "mcp__mempal__mempal_status",
+      "mcp__mempal__mempal_search",
+      "mcp__mempal__mempal_peek_partner",
+      "WebSearch",
+      "Bash(head -30 indextts/infer.py)",
+      "Bash(head -30 indextts/__init__.py)",
+      "Bash(git commit -m 'perf: Phase A optimizations from upstream IndexTTS2 *)"
     ]
   }
 }

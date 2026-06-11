@@ -169,3 +169,11 @@ class CFM(BASECFM):
             self.estimator = DiT(args)
         else:
             raise NotImplementedError(f"Unknown diffusion type {args.dit_type}")
+
+    def enable_torch_compile(self):
+        """Enable torch.compile optimization for the estimator (DiT model)."""
+        self.estimator = torch.compile(
+            self.estimator,
+            fullgraph=True,
+            dynamic=True,
+        )

@@ -296,6 +296,14 @@ class IndexTTSLite:
                 )
             except Exception as e:
                 debug_log(1, f"   ⚠️  S2Mel 量化失敗，回退: {e}")
+        # 🚀 精準 torch.compile: 只編譯 CFM estimator (DiT)，比編譯整個 s2mel 更高效
+        if hasattr(self.s2mel, 'enable_torch_compile'):
+            try:
+                debug_log(2, "   ⚡ 對 S2Mel CFM estimator 應用 torch.compile (fullgraph+dynamic)")
+                self.s2mel.enable_torch_compile()
+            except Exception as e:
+                debug_log(1, f"   ⚠️  S2Mel CFM torch.compile 失敗，回退: {e}")
+
         self._init_timings["s2mel_ms"] = (time.perf_counter() - _t0) * 1000
         debug_log(3, f"      ✓ S2Mel 加載完成: {s2mel_path}")
 
@@ -501,6 +509,8 @@ class IndexTTSLite:
         top_k: int = 50,
         verbose: bool = True,
         on_segment_audio=None,
+        max_text_tokens_per_segment: int = 120,
+        quick_streaming_tokens: int = 0,
     ) -> bool:
         """
         合成語音 — 回傳 bool，保持向後相容。
@@ -510,6 +520,9 @@ class IndexTTSLite:
             on_segment_audio: Optional callback(segment_audio_tensor, segment_index, total_segments).
                 Called after each segment's vocoder completes, before concatenation.
                 Use for streaming playback.
+            max_text_tokens_per_segment: Maximum BPE tokens per segment (default 120, matches upstream).
+            quick_streaming_tokens: If > 0, first segment will be at most this many tokens
+                for faster first-audio latency.
         """
         success, _ = self._synthesize_impl(
             text=text, output_path=output_path,
@@ -518,6 +531,8 @@ class IndexTTSLite:
             temperature=temperature, top_p=top_p, top_k=top_k,
             verbose=verbose, collect_timings=False,
             on_segment_audio=on_segment_audio,
+            max_text_tokens_per_segment=max_text_tokens_per_segment,
+            quick_streaming_tokens=quick_streaming_tokens,
         )
         return success
 
@@ -533,7 +548,9 @@ class IndexTTSLite:
         temperature: float = 0.0,
         top_p: float = 1.0,
         top_k: int = 50,
-        verbose: bool = True
+        verbose: bool = True,
+        max_text_tokens_per_segment: int = 120,
+        quick_streaming_tokens: int = 0,
     ) -> tuple:
         """
         合成語音並回傳 (success: bool, timings: dict)。
@@ -545,6 +562,8 @@ class IndexTTSLite:
             language=language, num_beams=num_beams, do_sample=do_sample,
             temperature=temperature, top_p=top_p, top_k=top_k,
             verbose=verbose, collect_timings=True,
+            max_text_tokens_per_segment=max_text_tokens_per_segment,
+            quick_streaming_tokens=quick_streaming_tokens,
         )
 
     def _synthesize_impl(
@@ -562,6 +581,8 @@ class IndexTTSLite:
         verbose: bool = True,
         collect_timings: bool = False,
         on_segment_audio=None,
+        max_text_tokens_per_segment: int = 120,
+        quick_streaming_tokens: int = 0,
     ) -> tuple:
         """
         合成語音的核心實現 (獨立引擎實現,參考 infer_v2.py 邏輯)
@@ -619,10 +640,16 @@ class IndexTTSLite:
                 debug_log(3, "   [1/4] 文本處理...")
 
             text_tokens_list = self.tokenizer.tokenize(text)
-            segments = self.tokenizer.split_segments(text_tokens_list, max_text_tokens_per_segment=150)
+            segments = self.tokenizer.split_segments(
+                text_tokens_list,
+                max_text_tokens_per_segment=max_text_tokens_per_segment,
+                quick_streaming_tokens=quick_streaming_tokens,
+            )
             num_segments = len(segments)
             if num_segments > 1 and verbose:
                 debug_log(2, f"      ℹ️  文本分為 {num_segments} 段處理")
+                if quick_streaming_tokens > 0:
+                    debug_log(2, f"      ⚡ 首段快速串流: ≤{quick_streaming_tokens} tokens")
             _t = _mark("text_norm_ms", _t)
 
             # 3. 情感向量映射 (跨段共用, 只計算一次)
@@ -796,13 +823,21 @@ class IndexTTSLite:
                 if on_segment_audio is not None:
                     on_segment_audio(seg_audio, seg_idx, num_segments)
 
-            # --- 拼接所有段落的音頻 ---
+            # --- 拼接所有段落的音頻（段間插入短靜音）---
             if len(audio_segments) == 1:
                 audio_output = audio_segments[0]
             else:
-                audio_output = torch.cat(audio_segments, dim=-1)
+                # Insert ~9ms silence (200 samples @ 22050Hz) between segments
+                interval_samples = 200
+                silence = torch.zeros(audio_segments[0].shape[0], interval_samples)
+                parts = []
+                for i, seg in enumerate(audio_segments):
+                    parts.append(seg)
+                    if i < len(audio_segments) - 1:
+                        parts.append(silence)
+                audio_output = torch.cat(parts, dim=-1)
                 if verbose:
-                    debug_log(3, f"   ✓ 已拼接 {len(audio_segments)} 段音頻")
+                    debug_log(3, f"   ✓ 已拼接 {len(audio_segments)} 段音頻（含段間靜音）")
 
             # Record accumulated stage timings
             if collect_timings:

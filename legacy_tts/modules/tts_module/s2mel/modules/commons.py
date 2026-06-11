@@ -437,6 +437,10 @@ class MyModel(nn.Module):
         x = self.models['gpt_layer'](x)
         return x
 
+    def enable_torch_compile(self):
+        """Enable torch.compile optimization for CFM estimator."""
+        if 'cfm' in self.models and hasattr(self.models['cfm'], 'enable_torch_compile'):
+            self.models['cfm'].enable_torch_compile()
 
 
 def build_model(args, stage="DiT"):

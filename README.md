@@ -15,3 +15,8 @@ Instrument stage timings for GPT semantic generation, S2Mel, vocoder, first play
 ## Phase 3 Goal
 
 Optimize first-audio latency while preserving emotion-vector control and speaker identity.
+
+## Branching
+
+Use develop for active work. Create future optimization tasks from develop as eature/<short-topic>. See docs/branching_policy.md.
+

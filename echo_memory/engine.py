@@ -63,12 +63,8 @@ class MemoryEngine:
         self.embedding_model = embedding_model
         self.device = device
         self.query_prefix = query_prefix
-
-
-=======
         self.max_episodes = max_episodes
-        
->>>>>>> c479e9d (feat(memory): 新增情節記憶 CRUD 公開 API（Issue #8）)
+
         # 延遲導入以加快啟動速度
         self._episodic = None
         self._semantic = None

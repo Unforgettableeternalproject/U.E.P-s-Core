@@ -171,9 +171,14 @@ class CFM(BASECFM):
             raise NotImplementedError(f"Unknown diffusion type {args.dit_type}")
 
     def enable_torch_compile(self):
-        """Enable torch.compile optimization for the estimator (DiT model)."""
+        """Enable torch.compile optimization for the estimator (DiT model).
+
+        Uses fullgraph=False because the DiT's sequence_mask creates
+        data-dependent tensors (aten._local_scalar_dense) that require
+        graph breaks.
+        """
         self.estimator = torch.compile(
             self.estimator,
-            fullgraph=True,
+            fullgraph=False,
             dynamic=True,
         )

@@ -23,7 +23,8 @@
       "WebSearch",
       "Bash(head -30 indextts/infer.py)",
       "Bash(head -30 indextts/__init__.py)",
-      "Bash(git commit -m 'perf: Phase A optimizations from upstream IndexTTS2 *)"
+      "Bash(git commit -m 'perf: Phase A optimizations from upstream IndexTTS2 *)",
+      "Bash(git commit -m 'fix: S2Mel torch.compile use fullgraph=False for data-dependent ops *)"
     ]
   }
 }

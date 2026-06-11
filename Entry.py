@@ -120,6 +120,7 @@ class EchoMemoryCLI:
                 storage_path=self.config.memory_storage_path,
                 embedding_model=self.config.embedding_model,
                 device=self.config.embedding_device,
+                query_prefix=getattr(self.config, 'embedding_query_prefix', ''),
             )
 
             print_success("記憶引擎初始化成功")

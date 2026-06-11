@@ -43,22 +43,25 @@ class MemoryEngine:
     def __init__(
         self,
         storage_path: str | Path = "./data",
-        embedding_model: str = "all-MiniLM-L6-v2",
+        embedding_model: str = "BAAI/bge-small-zh-v1.5",
         device: str = "cpu",
+        query_prefix: str = "为这个句子生成表示以用于检索相关文章：",
     ):
         """
         初始化記憶引擎。
-        
+
         Args:
             storage_path: 資料存儲路徑
             embedding_model: 嵌入模型名稱
             device: 運行設備 (cpu/cuda)
+            query_prefix: retrieval 查詢時的 prefix（bge 系列模型需要）
         """
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
-        
+
         self.embedding_model = embedding_model
         self.device = device
+        self.query_prefix = query_prefix
         
         # 延遲導入以加快啟動速度
         self._episodic = None
@@ -78,6 +81,7 @@ class MemoryEngine:
                 storage_path=self.storage_path / "episodic",
                 embedding_model=self.embedding_model,
                 device=self.device,
+                query_prefix=self.query_prefix,
             )
         return self._episodic
     

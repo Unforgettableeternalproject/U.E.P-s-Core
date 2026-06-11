@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(pm)",
+      "mcp__open-notebook__list_notebooks",
+      "mcp__open-notebook__create_notebook",
+      "mcp__open-notebook__create_note",
+      "mcp__open-notebook__search",
+      "Read(//c/Users/Bernie/.claude/**)",
+
+      "Edit(**/*.py)",
+      "Edit(**/*.md)",
+      "Edit(**/*.yml)",
+      "Edit(**/*.yaml)",
+      "Edit(**/*.toml)",
+      "Edit(**/*.txt)",
+      "Edit(**/*.cfg)",
+      "Edit(.env.example)",
+      "Write(tests/**)",
+      "Write(.github/**)",
+
+      "Bash(git *)",
+      "Bash(gh *)",
+      "Bash(pytest *)",
+      "Bash(pip *)",
+      "Bash(python *)",
+      "Bash(ruff *)",
+      "Bash(find *)",
+      "Bash(ls *)",
+      "Bash(cat *)",
+      "Bash(cd *)"
+    ]
+  }
+}

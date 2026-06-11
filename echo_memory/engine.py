@@ -45,6 +45,7 @@ class MemoryEngine:
         embedding_model: str = "BAAI/bge-small-zh-v1.5",
         device: str = "cpu",
         query_prefix: str = "为这个句子生成表示以用于检索相关文章：",
+        max_episodes: int | None = None,
     ):
         """
         初始化記憶引擎。
@@ -54,6 +55,7 @@ class MemoryEngine:
             embedding_model: 嵌入模型名稱
             device: 運行設備 (cpu/cuda)
             query_prefix: retrieval 查詢時的 prefix（bge 系列模型需要）
+            max_episodes: 情節記憶上限（None 代表無限制）
         """
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
@@ -62,6 +64,11 @@ class MemoryEngine:
         self.device = device
         self.query_prefix = query_prefix
 
+
+=======
+        self.max_episodes = max_episodes
+        
+>>>>>>> c479e9d (feat(memory): 新增情節記憶 CRUD 公開 API（Issue #8）)
         # 延遲導入以加快啟動速度
         self._episodic = None
         self._semantic = None
@@ -81,6 +88,7 @@ class MemoryEngine:
                 embedding_model=self.embedding_model,
                 device=self.device,
                 query_prefix=self.query_prefix,
+                max_episodes=self.max_episodes,
             )
         return self._episodic
 

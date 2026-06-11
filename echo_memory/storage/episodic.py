@@ -11,6 +11,8 @@ Phase 1 實作：
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import logging
 import os
@@ -27,7 +29,7 @@ logger = logging.getLogger("echo_memory.episodic")
 class EpisodicMemory:
     """
     情節記憶管理器 - MVP 實作。
-    
+
     存儲結構：
     - episodes.json: 所有情節的元數據
     - embeddings.npy: L2-normalized 向量矩陣
@@ -39,6 +41,7 @@ class EpisodicMemory:
         embedding_model: str = "BAAI/bge-small-zh-v1.5",
         device: str = "cpu",
         query_prefix: str = "为这个句子生成表示以用于检索相关文章：",
+        max_episodes: int | None = None,
     ):
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
@@ -46,6 +49,7 @@ class EpisodicMemory:
         self.embedding_model = embedding_model
         self.device = device
         self.query_prefix = query_prefix
+        self.max_episodes = max_episodes  # None 代表無限制
 
         # 數據文件路徑
         self.metadata_file = self.storage_path / "episodes.json"
@@ -65,10 +69,10 @@ class EpisodicMemory:
 
         # 延遲加載 embedding 生成器
         self._embedder = None
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # 公共 API
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # 公共 API
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
         # 載入現有數據
         self._load()
@@ -78,13 +82,19 @@ class EpisodicMemory:
     def write(self, episode: Episode) -> str:
         """
         寫入新的情節記憶。
-        
+
+        容量控制：若設定了 max_episodes 且已達上限，最舊的情節會被移除。
+
         Args:
             episode: Episode 對象
-        
+
         Returns:
             episode_id: 新建的情節 ID
         """
+        # 容量檢查：超過上限時刪除最舊的情節
+        if self.max_episodes is not None and len(self._episodes) >= self.max_episodes:
+            self._evict_oldest()
+
         # 生成嵌入向量（如果未提供）
         if not episode.embedding:
             episode.embedding = self._generate_embedding(episode.content_summary)
@@ -116,12 +126,12 @@ class EpisodicMemory:
     ) -> list[tuple[Episode, float]]:
         """
         向量相似度搜索。
-        
+
         Args:
             query_embedding: 查詢向量
             top_k: 返回數量
             min_similarity: 最小相似度閾值 (0-1)，低於此值的結果會被過濾
-        
+
         Returns:
             (Episode, similarity_score) 元組列表
         """
@@ -174,8 +184,290 @@ class EpisodicMemory:
         self._save()
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 公共 CRUD API（Issue #8）
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    def list_episodes(
+        self,
+        session_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        sort_by: str = "timestamp",
+        ascending: bool = False,
+    ) -> list[Episode]:
+        """
+        列出情節，支援分頁和 session 篩選。
+
+        Args:
+            session_id: 若提供，只返回該 session 的情節
+            limit: 每頁最多返回數量（最大 200）
+            offset: 跳過的筆數（分頁起始）
+            sort_by: 排序欄位，"timestamp" 或 "salience"
+            ascending: 是否升序排列（預設降序，最新/最高先）
+
+        Returns:
+            Episode 列表
+        """
+        limit = min(limit, 200)
+
+        episodes = list(self._episodes.values())
+
+        # session 篩選
+        if session_id is not None:
+            episodes = [ep for ep in episodes if ep.session_id == session_id]
+
+        # 排序
+        if sort_by == "salience":
+            episodes.sort(key=lambda ep: ep.salience_score, reverse=not ascending)
+        else:
+            # 預設以 timestamp 排序
+            episodes.sort(key=lambda ep: ep.timestamp, reverse=not ascending)
+
+        # 分頁
+        return episodes[offset: offset + limit]
+
+    def delete_episode(self, episode_id: str) -> bool:
+        """
+        刪除單一情節，同步更新 vectors/graph/metadata。
+
+        刪除後：
+        - _episodes dict 移除條目
+        - _embeddings ndarray 重建（移除對應行）
+        - _id_to_index mapping 重建
+        - graph 移除節點及其所有邊
+        - _last_episode_id / _last_episode_by_session 回溯
+
+        Args:
+            episode_id: 要刪除的情節 ID
+
+        Returns:
+            True 若刪除成功，False 若情節不存在
+        """
+        if episode_id not in self._episodes:
+            logger.warning(f"[EpisodicMemory] 情節不存在，無法刪除: {episode_id}")
+            return False
+
+        episode = self._episodes[episode_id]
+
+        # 1. 從 _episodes 移除
+        del self._episodes[episode_id]
+
+        # 2. 重建向量索引
+        self._rebuild_embeddings()
+
+        # 3. 從圖移除節點（NetworkX 自動移除相連的邊）
+        if self.graph.has_node(episode_id):
+            self.graph.graph.remove_node(episode_id)
+
+        # 4. 回溯 _last_episode_id
+        if self._last_episode_id == episode_id:
+            self._last_episode_id = self._find_latest_episode_id()
+
+        # 5. 回溯 _last_episode_by_session
+        session_id = episode.session_id
+        if self._last_episode_by_session.get(session_id) == episode_id:
+            latest_in_session = self._find_latest_episode_id(session_id=session_id)
+            if latest_in_session is not None:
+                self._last_episode_by_session[session_id] = latest_in_session
+            else:
+                del self._last_episode_by_session[session_id]
+
+        # 持久化
+        self._save()
+
+        logger.info(f"[EpisodicMemory] 已刪除情節: {episode_id}")
+        return True
+
+    def delete_session(self, session_id: str) -> int:
+        """
+        刪除整個 session 的所有情節，回傳刪除數量。
+
+        Args:
+            session_id: 要刪除的 session ID
+
+        Returns:
+            刪除的情節數量
+        """
+        target_ids = [
+            ep_id
+            for ep_id, ep in self._episodes.items()
+            if ep.session_id == session_id
+        ]
+
+        if not target_ids:
+            logger.info(f"[EpisodicMemory] Session 無情節可刪除: {session_id}")
+            return 0
+
+        # 批次從 _episodes 移除
+        for ep_id in target_ids:
+            del self._episodes[ep_id]
+
+        # 重建向量索引（只做一次，效率更好）
+        self._rebuild_embeddings()
+
+        # 從圖移除所有節點
+        for ep_id in target_ids:
+            if self.graph.has_node(ep_id):
+                self.graph.graph.remove_node(ep_id)
+
+        # 清除 session tracking
+        if self._last_episode_by_session.get(session_id) in target_ids:
+            del self._last_episode_by_session[session_id]
+
+        # 回溯全域 _last_episode_id
+        if self._last_episode_id in target_ids:
+            self._last_episode_id = self._find_latest_episode_id()
+
+        # 持久化
+        self._save()
+
+        logger.info(
+            f"[EpisodicMemory] 已刪除 session {session_id} 的 {len(target_ids)} 個情節"
+        )
+        return len(target_ids)
+
+    def export_episodes(
+        self,
+        session_id: str | None = None,
+        format: str = "json",
+    ) -> str:
+        """
+        匯出情節為字串。
+
+        Args:
+            session_id: 若提供，只匯出該 session 的情節
+            format: "json" 或 "csv"
+
+        Returns:
+            匯出內容字串
+
+        Raises:
+            ValueError: 若 format 不支援
+        """
+        if format not in ("json", "csv"):
+            raise ValueError(f"不支援的匯出格式: {format!r}，請使用 'json' 或 'csv'")
+
+        # 直接從 _episodes 取得全部資料，不走分頁的 list_episodes 避免截斷
+        episodes = list(self._episodes.values())
+        if session_id:
+            episodes = [ep for ep in episodes if ep.session_id == session_id]
+        episodes.sort(key=lambda e: e.timestamp)
+
+        if format == "json":
+            return self._export_json(episodes)
+        else:
+            return self._export_csv(episodes)
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 內部方法
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    def _export_json(self, episodes: list[Episode]) -> str:
+        """匯出為 JSON 字串（不含 embedding 向量，避免過大）"""
+        records = []
+        for ep in episodes:
+            d = ep.to_dict()
+            d.pop("embedding", None)  # 向量太大，匯出時省略
+            records.append(d)
+        return json.dumps(records, ensure_ascii=False, indent=2)
+
+    def _export_csv(self, episodes: list[Episode]) -> str:
+        """匯出為 CSV 字串"""
+        output = io.StringIO()
+        fieldnames = [
+            "id", "session_id", "timestamp", "salience_score",
+            "da_weight", "ht_weight", "is_dreamed",
+            "content_summary", "user_input", "agent_response",
+        ]
+        writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for ep in episodes:
+            d = ep.to_dict()
+            d.pop("embedding", None)
+            d.pop("metadata", None)
+            writer.writerow(d)
+        return output.getvalue()
+
+    def _rebuild_embeddings(self) -> None:
+        """
+        重建 _embeddings 矩陣和 _id_to_index mapping。
+
+        在刪除操作後呼叫。遍歷目前 _episodes 的順序，
+        重新堆疊向量並重建索引。
+        """
+        if not self._episodes:
+            self._embeddings = None
+            self._id_to_index = {}
+            return
+
+        vectors = []
+        new_id_to_index: dict[str, int] = {}
+
+        for idx, (ep_id, ep) in enumerate(self._episodes.items()):
+            if ep.embedding:
+                vec = self._normalize_vector(ep.embedding)
+                vectors.append(vec)
+                new_id_to_index[ep_id] = idx
+            else:
+                # 若某筆沒有 embedding（極少發生），用零向量佔位
+                dim = len(next(iter(self._episodes.values())).embedding) if self._episodes else 384
+                vectors.append(np.zeros(dim, dtype=np.float32))
+                new_id_to_index[ep_id] = idx
+
+        self._embeddings = np.vstack(vectors).astype(np.float32)
+        self._id_to_index = new_id_to_index
+
+    def _evict_oldest(self) -> None:
+        """
+        移除最舊的一筆情節（容量滿時呼叫）。
+        不呼叫 _save()，由上層 write() 統一持久化。
+        """
+        if not self._episodes:
+            return
+
+        oldest_id = min(self._episodes, key=lambda eid: self._episodes[eid].timestamp)
+        oldest_ep = self._episodes[oldest_id]
+
+        del self._episodes[oldest_id]
+        self._rebuild_embeddings()
+
+        if self.graph.has_node(oldest_id):
+            self.graph.graph.remove_node(oldest_id)
+
+        # 回溯追蹤欄位
+        if self._last_episode_id == oldest_id:
+            self._last_episode_id = self._find_latest_episode_id()
+
+        session_id = oldest_ep.session_id
+        if self._last_episode_by_session.get(session_id) == oldest_id:
+            latest_in_session = self._find_latest_episode_id(session_id=session_id)
+            if latest_in_session is not None:
+                self._last_episode_by_session[session_id] = latest_in_session
+            else:
+                self._last_episode_by_session.pop(session_id, None)
+
+        logger.info(f"[EpisodicMemory] 容量已滿，移除最舊情節: {oldest_id}")
+
+    def _find_latest_episode_id(self, session_id: str | None = None) -> str | None:
+        """
+        在目前 _episodes 中尋找 timestamp 最新的那筆 ID。
+
+        Args:
+            session_id: 若提供，只在該 session 內尋找
+
+        Returns:
+            最新 episode ID，若無則 None
+        """
+        candidates = (
+            {eid: ep for eid, ep in self._episodes.items() if ep.session_id == session_id}
+            if session_id is not None
+            else self._episodes
+        )
+
+        if not candidates:
+            return None
+
+        return max(candidates, key=lambda eid: candidates[eid].timestamp)
 
     def _generate_embedding(self, text: str) -> list[float]:
         """生成文本嵌入向量（存儲用，不加 query prefix）"""
@@ -251,7 +543,7 @@ class EpisodicMemory:
     def _load(self):
         """從磁盤載入數據"""
         if self.metadata_file.exists():
-            with open(self.metadata_file, encoding="utf-8") as f:
+            with open(self.metadata_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 for ep_dict in data:
                     ep = Episode.from_dict(ep_dict)
@@ -319,25 +611,44 @@ class EpisodicMemory:
                         "[EpisodicMemory] Migrated episode metadata to L2-normalized vectors"
                     )
 
-        # 重建 per-session 最後 episode 追蹤
-        from collections import defaultdict
-        session_episodes: dict[str, list[Episode]] = defaultdict(list)
-        for ep in self._episodes.values():
-            session_episodes[ep.session_id].append(ep)
-        for session_id, eps in session_episodes.items():
-            eps.sort(key=lambda e: e.timestamp)
-            self._last_episode_by_session[session_id] = eps[-1].id
+        # 重建 _last_episode_by_session（從已載入的情節中推算）
+        self._rebuild_session_tracking()
+
+    def _rebuild_session_tracking(self) -> None:
+        """
+        從 _episodes 重建 _last_episode_by_session 和 _last_episode_id。
+        在 _load() 後呼叫，確保追蹤狀態與磁盤資料一致。
+        """
+        self._last_episode_by_session.clear()
+        self._last_episode_id = None
+
+        if not self._episodes:
+            return
+
+        # 找出每個 session 的最新情節
+        session_latest: dict[str, tuple[str, object]] = {}  # session_id -> (ep_id, timestamp)
+        for ep_id, ep in self._episodes.items():
+            sid = ep.session_id
+            if sid not in session_latest or ep.timestamp > session_latest[sid][1]:
+                session_latest[sid] = (ep_id, ep.timestamp)
+
+        self._last_episode_by_session = {sid: data[0] for sid, data in session_latest.items()}
+
+        # 全域最新
+        self._last_episode_id = self._find_latest_episode_id()
 
     def _save(self):
-        """持久化到磁盤"""
+        """保存元數據、向量和圖到磁盤"""
         # 保存元數據
         with open(self.metadata_file, "w", encoding="utf-8") as f:
             data = [ep.to_dict() for ep in self._episodes.values()]
             json.dump(data, f, ensure_ascii=False, indent=2)
 
-        # 保存向量
+        # 保存向量（若為空則清除殘留檔案）
         if self._embeddings is not None:
             np.save(self.embeddings_file, self._embeddings)
+        elif self.embeddings_file.exists():
+            self.embeddings_file.unlink()
 
         # 保存圖結構
         self.graph.save()
@@ -348,20 +659,20 @@ class EpisodicMemory:
 
         自動維護記憶圖：
         1. 添加節點
-        2. 創建 PRECEDES 邊（只連接同一 session 的前一個 Episode）
+        2. 創建 PRECEDES 邊（與前一個同 session 的 Episode 的時序關係）
         """
         # 添加節點
         if not self.graph.has_node(episode.id):
             self.graph.add_episode_node(episode)
 
-        # 創建 PRECEDES 邊（使用 per-session 追蹤）
-        last_id = self._last_episode_by_session.get(episode.session_id)
-        if last_id is not None:
-            last_ep = self._episodes.get(last_id)
+        # 創建 PRECEDES 邊（與同 session 的前一個 Episode）
+        prev_id = self._last_episode_by_session.get(episode.session_id)
+        if prev_id is not None and prev_id != episode.id:
+            last_ep = self._episodes.get(prev_id)
             if last_ep:
                 time_delta = (episode.timestamp - last_ep.timestamp).total_seconds()
-                self.graph.add_precedes_edge(last_id, episode.id, time_delta)
+                self.graph.add_precedes_edge(prev_id, episode.id, time_delta)
 
-        # 更新此 session 最後一個 Episode
+        # 更新追蹤欄位
         self._last_episode_id = episode.id
         self._last_episode_by_session[episode.session_id] = episode.id

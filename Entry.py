@@ -111,6 +111,7 @@ class EchoMemoryCLI:
                 embedding_model=self.config.embedding_model,
                 device=self.config.embedding_device,
                 query_prefix=getattr(self.config, 'embedding_query_prefix', ''),
+                max_episodes=self.config.memory_max_episodes,
             )
 
             print_success("記憶引擎初始化成功")
@@ -160,7 +161,9 @@ class EchoMemoryCLI:
             ("retrieve", "檢索記憶", Colors.OKGREEN, "✓"),
             ("chat", chat_desc, chat_color, chat_icon),
             ("stats", "查看統計", Colors.OKGREEN, "✓"),
-            ("list", "列出所有情節", Colors.OKGREEN, "✓"),
+            ("list", "列出情節（支援分頁/session 篩選）", Colors.OKGREEN, "✓"),
+            ("delete", "刪除情節或 session", Colors.WARNING, "✗"),
+            ("export", "匯出記憶資料", Colors.OKCYAN, "↓"),
             ("config", "顯示配置", Colors.OKCYAN, "ℹ"),
             ("dream", "執行 Dream Engine", Colors.WARNING, "⚠"),
             ("clear", "清空記憶", Colors.FAIL, "✗"),
@@ -346,19 +349,46 @@ class EchoMemoryCLI:
             print_error(f"獲取統計失敗: {e}")
 
     def cmd_list(self):
-        """列出所有情節"""
-        print_section("所有情節")
+        """列出情節（支援分頁和 session 篩選）"""
+        print_section("列出情節")
+
+        # 詢問篩選條件
+        session_input = input(
+            colored("Session ID 篩選（留空表示全部）: ", Colors.OKCYAN)
+        ).strip() or None
+
+        sort_input = input(
+            colored("排序方式 (timestamp/salience，預設 timestamp): ", Colors.OKCYAN)
+        ).strip()
+        sort_by = sort_input if sort_input in ("timestamp", "salience") else "timestamp"
+
+        page_input = input(colored("頁碼（從 1 開始，預設 1）: ", Colors.OKCYAN)).strip()
+        try:
+            page = max(1, int(page_input)) if page_input else 1
+        except ValueError:
+            page = 1
+
+        limit = 10
+        offset = (page - 1) * limit
 
         try:
-            episodes = list(self.memory_engine.episodic._episodes.values())
+            total = self.memory_engine.episodic.count()
+            episodes = self.memory_engine.episodic.list_episodes(
+                session_id=session_input,
+                limit=limit,
+                offset=offset,
+                sort_by=sort_by,
+                ascending=False,
+            )
 
             if not episodes:
-                print_warning("尚無情節記憶")
+                print_warning("沒有符合條件的情節記憶")
                 return
 
-            print(f"共 {len(episodes)} 個情節:\n")
+            filter_desc = f"session={session_input}" if session_input else "全部"
+            print(f"\n總計 {total} 個情節，篩選條件: {filter_desc}，排序: {sort_by}（第 {page} 頁）\n")
 
-            for i, ep in enumerate(episodes[:10], 1):  # 最多顯示 10 個
+            for i, ep in enumerate(episodes, offset + 1):
                 salience_color = (
                     Colors.OKGREEN
                     if ep.salience_score >= 0.7
@@ -366,17 +396,183 @@ class EchoMemoryCLI:
                 )
 
                 print(
-                    f"{i}. {colored(ep.id[:12], Colors.OKCYAN)} "
-                    f"[顯著性: {colored(f'{ep.salience_score:.2f}', salience_color)}]"
+                    f"{i}. {colored(ep.id[:16], Colors.OKCYAN)} "
+                    f"[顯著性: {colored(f'{ep.salience_score:.2f}', salience_color)}] "
+                    f"[Session: {colored(ep.session_id[:12], Colors.OKBLUE)}] "
+                    f"[{ep.timestamp.strftime('%Y-%m-%d %H:%M')}]"
                 )
                 print(f"   用戶: {ep.user_input[:60]}...")
                 print(f"   Agent: {ep.agent_response[:60]}...\n")
 
-            if len(episodes) > 10:
-                print_info(f"... 還有 {len(episodes) - 10} 個情節未顯示")
+            if offset + len(episodes) < total:
+                remaining = total - offset - len(episodes)
+                print_info(f"還有 {remaining} 個情節，使用下一頁查看更多")
 
         except Exception as e:
             print_error(f"列出情節失敗: {e}")
+
+    def cmd_delete(self):
+        """刪除情節或整個 session"""
+        print_section("刪除記憶")
+
+        print("  1. 刪除單一情節（依 episode ID）")
+        print("  2. 刪除整個 session（依 session ID）")
+        print()
+
+        choice = input(colored("選擇操作 (1/2): ", Colors.WARNING)).strip()
+
+        if choice == "1":
+            self._delete_episode_interactive()
+        elif choice == "2":
+            self._delete_session_interactive()
+        else:
+            print_warning("無效的選擇")
+
+    def _delete_episode_interactive(self):
+        """互動式刪除單一情節"""
+        episode_id = input(colored("輸入 Episode ID（支援前綴，最少 8 個字元）: ", Colors.OKCYAN)).strip()
+
+        if len(episode_id) < 8:
+            print_warning("Episode ID 太短，至少需要 8 個字元")
+            return
+
+        # 支援前綴搜尋
+        matched = [
+            ep for ep_id, ep in self.memory_engine.episodic._episodes.items()
+            if ep_id.startswith(episode_id)
+        ]
+
+        if not matched:
+            print_error(f"找不到符合的情節: {episode_id}")
+            return
+
+        if len(matched) > 1:
+            print_warning(f"找到 {len(matched)} 個符合的情節，請提供更完整的 ID：")
+            for ep in matched:
+                print(f"  {colored(ep.id, Colors.OKCYAN)} | {ep.user_input[:40]}...")
+            return
+
+        ep = matched[0]
+        print()
+        print_warning("即將刪除以下情節：")
+        print(f"  ID:      {colored(ep.id, Colors.OKCYAN)}")
+        print(f"  Session: {ep.session_id}")
+        print(f"  時間:    {ep.timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"  用戶:    {ep.user_input[:60]}...")
+        print(f"  顯著性:  {ep.salience_score:.2f}")
+        print()
+
+        confirm = input(colored("確定刪除? (yes/no): ", Colors.FAIL)).strip().lower()
+        if confirm != "yes":
+            print_info("已取消")
+            return
+
+        try:
+            success = self.memory_engine.episodic.delete_episode(ep.id)
+            if success:
+                print_success(f"已刪除情節: {ep.id}")
+            else:
+                print_error("刪除失敗（情節可能已不存在）")
+        except Exception as e:
+            print_error(f"刪除失敗: {e}")
+            logger.exception("刪除情節錯誤")
+
+    def _delete_session_interactive(self):
+        """互動式刪除整個 session"""
+        session_id = input(colored("輸入 Session ID: ", Colors.OKCYAN)).strip()
+
+        if not session_id:
+            print_warning("Session ID 不能為空")
+            return
+
+        # 預覽受影響的情節
+        preview = self.memory_engine.episodic.list_episodes(
+            session_id=session_id,
+            limit=200,
+            offset=0,
+            sort_by="timestamp",
+            ascending=True,
+        )
+
+        if not preview:
+            print_warning(f"Session '{session_id}' 沒有任何情節")
+            return
+
+        print()
+        print_warning(f"即將刪除 Session '{session_id}' 的 {len(preview)} 個情節：")
+        for ep in preview[:5]:
+            print(
+                f"  {colored(ep.id[:16], Colors.OKCYAN)} "
+                f"[{ep.timestamp.strftime('%Y-%m-%d %H:%M')}] "
+                f"{ep.user_input[:40]}..."
+            )
+        if len(preview) > 5:
+            print_info(f"  ... 還有 {len(preview) - 5} 個情節")
+        print()
+
+        confirm1 = input(colored("確定要刪除整個 session 嗎? (yes/no): ", Colors.FAIL)).strip().lower()
+        if confirm1 != "yes":
+            print_info("已取消")
+            return
+
+        confirm2 = input(colored("再次確認，此操作不可撤銷 (輸入 session ID 確認): ", Colors.FAIL)).strip()
+        if confirm2 != session_id:
+            print_info("確認失敗，已取消")
+            return
+
+        try:
+            count = self.memory_engine.episodic.delete_session(session_id)
+            print_success(f"已刪除 session '{session_id}' 的 {count} 個情節")
+        except Exception as e:
+            print_error(f"刪除失敗: {e}")
+            logger.exception("刪除 session 錯誤")
+
+    def cmd_export(self):
+        """匯出記憶資料"""
+        print_section("匯出記憶")
+
+        session_input = input(
+            colored("Session ID 篩選（留空表示匯出全部）: ", Colors.OKCYAN)
+        ).strip() or None
+
+        format_input = input(
+            colored("匯出格式 (json/csv，預設 json): ", Colors.OKCYAN)
+        ).strip().lower()
+        fmt = format_input if format_input in ("json", "csv") else "json"
+
+        output_path = input(
+            colored("輸出檔案路徑（留空則輸出到螢幕）: ", Colors.OKCYAN)
+        ).strip() or None
+
+        try:
+            content = self.memory_engine.episodic.export_episodes(
+                session_id=session_input,
+                format=fmt,
+            )
+
+            if output_path:
+                path = Path(output_path)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(content)
+                print_success(f"已匯出至: {path.resolve()}")
+                line_count = content.count("\n")
+                print_info(f"內容大小: {len(content):,} 字元，約 {line_count} 行")
+            else:
+                print_section(f"匯出結果（{fmt.upper()}）")
+                # 螢幕輸出限制 50 行，避免刷屏
+                lines = content.splitlines()
+                preview_lines = lines[:50]
+                print("\n".join(preview_lines))
+                if len(lines) > 50:
+                    print_warning(f"\n... 共 {len(lines)} 行，只顯示前 50 行")
+                    print_info("請指定輸出檔案路徑以保存完整內容")
+
+        except ValueError as e:
+            print_error(str(e))
+        except Exception as e:
+            print_error(f"匯出失敗: {e}")
+            logger.exception("匯出記憶錯誤")
 
     def cmd_config(self):
         """顯示配置"""
@@ -454,7 +650,9 @@ class EchoMemoryCLI:
   retrieve   - 檢索相關記憶（會詢問查詢內容和神經化學參數）
   chat       - 進入對話模式（自動檢索記憶 + LLM 生成回應 + 存儲對話）
   stats      - 顯示記憶系統統計資訊
-  list       - 列出所有已存儲的情節（最多顯示 10 個）
+  list       - 列出情節（支援分頁、session 篩選、排序）
+  delete     - 刪除單一情節（依 ID）或整個 session（需二次確認）
+  export     - 匯出記憶資料為 JSON 或 CSV（支援 session 篩選）
   config     - 顯示當前系統配置
   dream      - 手動觸發 Dream Engine（Phase 4 功能）
   clear      - 清空所有記憶（需要二次確認）
@@ -517,6 +715,10 @@ class EchoMemoryCLI:
                         self.cmd_stats()
                     case "list":
                         self.cmd_list()
+                    case "delete":
+                        self.cmd_delete()
+                    case "export":
+                        self.cmd_export()
                     case "config":
                         self.cmd_config()
                     case "dream":

@@ -19,4 +19,12 @@ Optimize first-audio latency while preserving emotion-vector control and speaker
 ## Branching
 
 Use develop for active work. Create future optimization tasks from develop as eature/<short-topic>. See docs/branching_policy.md.
+## Persistent CLI
 
+`Entry.py shell` keeps the copied IndexTTS2 backend alive across multiple commands. This separates cold-start model loading from warm-state synthesis experiments.
+
+Inside the shell:
+
+- `say <text>` generates and plays audio immediately.
+- `save --output <path> <text>` generates an audio file without playback.
+- `status` shows loaded state, playback count, save count, and the last output path.

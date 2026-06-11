@@ -15,12 +15,11 @@ Architecture:
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from echo_memory.schemas.memory_context import MemoryContext
 from echo_memory.schemas.episode import Episode
+from echo_memory.schemas.memory_context import MemoryContext
 
 logger = logging.getLogger("echo_memory.engine")
 
@@ -39,7 +38,7 @@ class MemoryEngine:
     - Dream Engine 鞏固
     - 神經化學調控
     """
-    
+
     def __init__(
         self,
         storage_path: str | Path = "./data",
@@ -62,16 +61,16 @@ class MemoryEngine:
         self.embedding_model = embedding_model
         self.device = device
         self.query_prefix = query_prefix
-        
+
         # 延遲導入以加快啟動速度
         self._episodic = None
         self._semantic = None
         self._working = None
         self._retrieval = None
         self._dream_engine = None
-        
+
         logger.info(f"[MemoryEngine] 初始化完成 - 存儲路徑: {self.storage_path}")
-    
+
     @property
     def episodic(self):
         """延遲加載情節記憶模組"""
@@ -84,7 +83,7 @@ class MemoryEngine:
                 query_prefix=self.query_prefix,
             )
         return self._episodic
-    
+
     @property
     def semantic(self):
         """延遲加載語義記憶模組"""
@@ -94,7 +93,7 @@ class MemoryEngine:
                 storage_path=self.storage_path / "semantic",
             )
         return self._semantic
-    
+
     @property
     def working(self):
         """延遲加載工作記憶模組"""
@@ -102,7 +101,7 @@ class MemoryEngine:
             from echo_memory.storage.working import WorkingMemory
             self._working = WorkingMemory(ttl_seconds=300)
         return self._working
-    
+
     @property
     def retrieval(self):
         """延遲加載檢索引擎"""
@@ -113,9 +112,9 @@ class MemoryEngine:
                 semantic=self.semantic,
             )
         return self._retrieval
-    
+
     # ─── 核心 API ────────────────────────────────────────────────────────────
-    
+
     def store_episode(
         self,
         user_input: str,
@@ -141,7 +140,7 @@ class MemoryEngine:
         """
         if content_summary is None:
             content_summary = f"{user_input[:50]}..."
-        
+
         episode = Episode(
             user_input=user_input,
             agent_response=agent_response,
@@ -150,12 +149,12 @@ class MemoryEngine:
             salience_score=salience,
             metadata=metadata,
         )
-        
+
         episode_id = self.episodic.write(episode)
         logger.info(f"[MemoryEngine] 存儲情節: {episode_id}")
-        
+
         return episode_id
-    
+
     def retrieve(
         self,
         query: str,
@@ -181,15 +180,15 @@ class MemoryEngine:
             dopamine=dopamine,
             serotonin=serotonin,
             top_k=top_k,            min_similarity=min_similarity,        )
-        
+
         logger.info(
             f"[MemoryEngine] 檢索完成 - "
             f"Episodes: {len(context.episodes)}, "
             f"Concepts: {len(context.concepts)}"
         )
-        
+
         return context
-    
+
     def dream(self, triggered_by: str = "manual") -> dict[str, Any]:
         """
         執行離線記憶鞏固（Dream Engine - 簡化版已實作）。
@@ -201,9 +200,9 @@ class MemoryEngine:
             DreamReport: 鞏固報告
         """
         if self._dream_engine is None:
-            from echo_memory.dream.engine import DreamEngine
             from echo_memory.config import get_config
-            
+            from echo_memory.dream.engine import DreamEngine
+
             config = get_config()
             self._dream_engine = DreamEngine(
                 graph=self.episodic.graph,
@@ -212,10 +211,10 @@ class MemoryEngine:
                 enable_idle=False,  # 手動調用時不啟用自動觸發
                 enable_cron=False,
             )
-        
+
         report = self._dream_engine.dream_now(triggered_by=triggered_by)
         logger.info(f"[MemoryEngine] Dream 完成 - {report.duration_seconds:.1f}s")
-        
+
         return {
             "triggered_by": report.triggered_by,
             "duration_seconds": report.duration_seconds,
@@ -223,9 +222,9 @@ class MemoryEngine:
             "edges_pruned": report.pruning.edges_pruned if report.pruning else 0,
             "error": report.error,
         }
-    
+
     # ─── 輔助方法 ────────────────────────────────────────────────────────────
-    
+
     def get_stats(self) -> dict[str, int]:
         """獲取記憶系統統計資訊"""
         return {
@@ -233,7 +232,7 @@ class MemoryEngine:
             "total_concepts": self.semantic.count(),
             "working_cache_size": len(self.working._cache),
         }
-    
+
     def clear_all(self):
         """清空所有記憶（測試用）"""
         logger.warning("[MemoryEngine] 清空所有記憶")

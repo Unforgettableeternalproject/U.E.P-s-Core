@@ -11,11 +11,10 @@ import math
 import sys
 import time
 import types
-from datetime import datetime, timezone
+from datetime import datetime
 from unittest.mock import MagicMock
 
 import pytest
-
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 在任何 echo_memory.dream import 之前注入假 apscheduler，
@@ -55,9 +54,8 @@ def _inject_mock_apscheduler() -> None:
 
 _inject_mock_apscheduler()
 
-from echo_memory.storage.graph import MemoryGraph, _SECONDS_PER_HOUR  # noqa: E402
-from echo_memory.dream.pruning import GraphPruning                     # noqa: E402
-
+from echo_memory.dream.pruning import GraphPruning  # noqa: E402
+from echo_memory.storage.graph import _SECONDS_PER_HOUR, MemoryGraph  # noqa: E402
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Fixtures

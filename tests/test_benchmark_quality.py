@@ -198,7 +198,7 @@ def _load_scenarios() -> list[tuple[str, dict]]:
     """載入所有 scenarios（供 parametrize 使用）"""
     if not _DATASET_PATH.exists():
         return []
-    with open(_DATASET_PATH, "r", encoding="utf-8") as f:
+    with open(_DATASET_PATH, encoding="utf-8") as f:
         dataset = json.load(f)
     return [(sc["id"], sc) for sc in dataset.get("scenarios", [])]
 

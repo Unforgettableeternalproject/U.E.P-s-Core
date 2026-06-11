@@ -27,7 +27,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from echo_memory.schemas.episode import Episode
 from echo_memory.storage.episodic import EpisodicMemory
 
-
 # ─── 輔助函式 ────────────────────────────────────────────────────────────────
 
 def _random_4d_vector() -> list[float]:
@@ -89,7 +88,7 @@ def run_latency_benchmark(
     with tempfile.TemporaryDirectory(prefix="echo_latency_") as tmpdir:
         storage_path = Path(tmpdir) / "episodic"
 
-        print(f"[延遲基準] 初始化 EpisodicMemory...")
+        print("[延遲基準] 初始化 EpisodicMemory...")
         mem = EpisodicMemory(
             storage_path=storage_path,
             embedding_model="all-MiniLM-L6-v2",

@@ -25,19 +25,19 @@ logger = logging.getLogger("example")
 
 def main():
     """最小對話循環示例"""
-    
+
     # 0. 載入配置
     config = get_config()
     logger.info("=== 配置摘要 ===")
     print(config.summary())
-    
+
     # 驗證配置
     is_valid, missing = config.validate()
     if not is_valid:
         logger.error(f"配置驗證失敗，缺少: {', '.join(missing)}")
         logger.error("請先設定 .env 文件（參考 .env.example）")
         return
-    
+
     # 1. 初始化記憶引擎
     logger.info("=== 初始化 Echo Memory System ===")
     memory = MemoryEngine(
@@ -45,7 +45,7 @@ def main():
         embedding_model=config.embedding_model,
         device=config.embedding_device,
     )
-    
+
     # 2. 模擬對話並存儲
     logger.info("\n=== 模擬對話 ===")
     conversations = [
@@ -65,7 +65,7 @@ def main():
             "salience": 0.5,
         },
     ]
-    
+
     for i, conv in enumerate(conversations, 1):
         episode_id = memory.store_episode(
             user_input=conv["user"],
@@ -75,28 +75,28 @@ def main():
             salience=conv["salience"],
         )
         logger.info(f"存儲對話 {i}: {episode_id}")
-    
+
     # 3. 檢索相關記憶
     logger.info("\n=== 檢索記憶 ===")
     query = "我喜歡什麼天氣？"
     logger.info(f"查詢: {query}")
-    
+
     context = memory.retrieve(
         query=query,
         dopamine=0.5,
         serotonin=0.5,
         top_k=3,
     )
-    
+
     logger.info(f"\n檢索結果:\n{context.to_text()}")
-    
+
     # 4. 顯示統計資訊
     stats = memory.get_stats()
-    logger.info(f"\n=== 記憶統計 ===")
+    logger.info("\n=== 記憶統計 ===")
     logger.info(f"總情節數: {stats['total_episodes']}")
     logger.info(f"總概念數: {stats['total_concepts']}")
     logger.info(f"工作記憶緩存: {stats['working_cache_size']}")
-    
+
     # 5. 模擬使用檢索結果構建 LLM Prompt
     logger.info("\n=== 模擬 LLM Prompt 構建 ===")
     prompt = f"""

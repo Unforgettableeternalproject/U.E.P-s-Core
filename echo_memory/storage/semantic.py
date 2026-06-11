@@ -17,15 +17,15 @@ logger = logging.getLogger("echo_memory.semantic")
 
 class SemanticMemory:
     """語義記憶管理器 - MVP 骨架"""
-    
+
     def __init__(self, storage_path: str | Path):
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
-        
+
         self._concepts: dict[str, Concept] = {}
-        
+
         logger.info("[SemanticMemory] 初始化完成（簡化版）")
-    
+
     def upsert_concept(
         self,
         name: str,
@@ -45,18 +45,18 @@ class SemanticMemory:
             )
             self._concepts[name] = concept
             concept_id = concept.id
-        
+
         return concept_id
-    
+
     def get(self, concept_id: str) -> Concept | None:
         """根據 ID 獲取概念"""
         for concept in self._concepts.values():
             if concept.id == concept_id:
                 return concept
         return None
-    
+
     def count(self) -> int:
         return len(self._concepts)
-    
+
     def clear(self):
         self._concepts.clear()

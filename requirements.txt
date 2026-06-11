@@ -1,18 +1,16 @@
+# ============================================================
+# requirements.txt — 由 pyproject.toml 同步生成，勿手動維護
+# Source of truth: pyproject.toml [project.dependencies]
+# ============================================================
+
 # Core Dependencies
 pydantic>=2.5.0
 numpy>=1.24.0
 sentence-transformers>=2.2.0
-faiss-cpu>=1.9.0
 networkx>=3.2
 
 # LLM Providers
 google-generativeai>=0.3.0
-anthropic>=0.18.0
-openai>=1.10.0
-
-# Embedding & NLP
-transformers>=4.35.0
-torch>=2.1.0
 
 # Utilities
 python-dotenv>=1.0.0
@@ -20,7 +18,9 @@ pyyaml>=6.0
 apscheduler>=3.10.0
 rich>=13.7.0
 
-# Development
+# ============================================================
+# Development（對應 pyproject.toml [project.optional-dependencies.dev]）
+# ============================================================
 pytest>=7.4.0
 pytest-asyncio>=0.21.0
 pytest-cov>=4.1.0
@@ -28,5 +28,17 @@ black>=23.12.0
 ruff>=0.1.9
 mypy>=1.8.0
 
-# Optional: Graph Database
+# ============================================================
+# Optional — 安裝時請明確選擇
+# ============================================================
+# FAISS 向量索引加速（規劃中，目前使用 NumPy dot product）：
+#   pip install "echo-memory[faiss]"
+# faiss-cpu>=1.9.0
+
+# Anthropic Claude 支援：
+#   pip install "echo-memory[anthropic]"
+# anthropic>=0.18.0
+
+# FalkorDB 圖資料庫（完整版）：
+#   pip install "echo-memory[full]"
 # falkordb>=1.0.0

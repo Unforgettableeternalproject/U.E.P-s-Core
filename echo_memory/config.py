@@ -17,14 +17,14 @@ except ImportError:
 
 class Config:
     """配置管理器"""
-    
+
     def __init__(self):
         # 載入 .env 文件
         if DOTENV_AVAILABLE:
             env_file = Path(__file__).parent.parent / ".env"
             if env_file.exists():
                 load_dotenv(env_file)
-        
+
         # === LLM Provider 配置 ===
         self.gcp_project_id = os.getenv("GCP_PROJECT_ID", "")
         self.gcp_location = os.getenv("GCP_LOCATION", "asia-east1")
@@ -34,7 +34,7 @@ class Config:
             "SYSTEM_PROMPT",
             "你是一個有記憶的智能助手。請根據提供的記憶脈絡，提供更個性化的回應。"
         )
-        
+
         # === 嵌入模型配置 ===
         self.embedding_model = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")
         self.embedding_device = os.getenv("EMBEDDING_DEVICE", "cpu")
@@ -42,12 +42,12 @@ class Config:
             "EMBEDDING_QUERY_PREFIX",
             "为这个句子生成表示以用于检索相关文章："
         )
-        
+
         # === 記憶系統配置 ===
         self.memory_storage_path = os.getenv("MEMORY_STORAGE_PATH", "./data")
         self.memory_max_episodes = int(os.getenv("MEMORY_MAX_EPISODES", "10000"))
         self.memory_max_concepts = int(os.getenv("MEMORY_MAX_CONCEPTS", "5000"))
-        
+
         # === 檢索參數 ===
         self.retrieval_seed_k = int(os.getenv("RETRIEVAL_SEED_K", "5"))
         self.retrieval_breadth_k = int(os.getenv("RETRIEVAL_BREADTH_K", "12"))
@@ -57,17 +57,17 @@ class Config:
         self.retrieval_weight_threshold = float(
             os.getenv("RETRIEVAL_WEIGHT_THRESHOLD", "0.225")
         )
-        
+
         # === 邊緣權重參數 ===
         self.edge_weight_alpha = float(os.getenv("EDGE_WEIGHT_ALPHA", "0.3"))
         self.edge_weight_beta = float(os.getenv("EDGE_WEIGHT_BETA", "0.4"))
         self.edge_weight_gamma = float(os.getenv("EDGE_WEIGHT_GAMMA", "0.3"))
         self.edge_recency_lambda = float(os.getenv("EDGE_RECENCY_LAMBDA", "0.01"))
-        
+
         # === 圖譜修剪 ===
         self.pruning_min_weight = float(os.getenv("PRUNING_MIN_WEIGHT", "0.05"))
         self.pruning_cold_storage = float(os.getenv("PRUNING_COLD_STORAGE", "0.15"))
-        
+
         # === Dream Engine ===
         self.dream_enabled = os.getenv("DREAM_ENABLED", "true").lower() == "true"  # 默認啟用
         self.dream_idle_minutes = int(os.getenv("DREAM_IDLE_MINUTES", "30"))
@@ -77,23 +77,23 @@ class Config:
         self.dream_replay_da_threshold = float(
             os.getenv("DREAM_REPLAY_DA_THRESHOLD", "0.6")
         )
-        
+
         # === 神經化學 ===
         self.neurochem_dopamine = float(os.getenv("NEUROCHEM_DOPAMINE", "0.5"))
         self.neurochem_serotonin = float(os.getenv("NEUROCHEM_SEROTONIN", "0.5"))
-        
+
         # === 日誌 ===
         self.log_level = os.getenv("LOG_LEVEL", "INFO")
         self.log_file = os.getenv("LOG_FILE", "./data/echo_memory.log")
-        
+
         # === 開發模式 ===
         self.debug = os.getenv("DEBUG", "false").lower() == "true"
         self.verbose = os.getenv("VERBOSE", "false").lower() == "true"
-    
+
     def get(self, key: str, default: Any = None) -> Any:
         """獲取配置值"""
         return getattr(self, key, default)
-    
+
     def validate(self) -> tuple[bool, list[str]]:
         """
         驗證必要配置是否存在。
@@ -102,13 +102,13 @@ class Config:
             (is_valid, missing_keys)
         """
         missing = []
-        
+
         # 檢查 LLM 配置（至少需要一個）
         if not self.gcp_project_id and not self.google_api_key:
             missing.append("GCP_PROJECT_ID 或 GOOGLE_API_KEY")
-        
+
         return (len(missing) == 0, missing)
-    
+
     def summary(self) -> str:
         """配置摘要（用於調試）"""
         return f"""

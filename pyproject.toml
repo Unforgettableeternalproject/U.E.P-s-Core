@@ -7,7 +7,7 @@ authors = [
 ]
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "MIT"}
+license = "MIT"
 
 dependencies = [
     "pydantic>=2.5.0",
@@ -32,11 +32,16 @@ dev = [
     "mypy>=1.8.0",
 ]
 anthropic = ["anthropic>=0.18.0"]
-full = ["falkordb>=1.0.0"]
+faiss = ["faiss-cpu>=1.9.0"]
+full = ["faiss-cpu>=1.9.0", "falkordb>=1.0.0"]
 
+# echo-dream 已移除：examples/dream_demo.py 尚未實作（規劃中）
 [project.scripts]
 echo-chat = "examples.minimal_chat:main"
-echo-dream = "examples.dream_demo:main"
+
+[tool.setuptools.packages.find]
+include = ["echo_memory*", "llm_integration*"]
+exclude = ["tests*", "test_data*", "examples*"]
 
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
@@ -50,6 +55,8 @@ include = '\.pyi?$'
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP"]
 ignore = ["E501"]
 
@@ -66,4 +73,6 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 asyncio_mode = "auto"
-addopts = "--cov=echo_memory --cov-report=html --cov-report=term"
+# test_hybrid_retrieval.py 為互動式手動演示腳本（含 input()），排除於自動化測試之外
+# test_config.py 為診斷腳本（含 exit()），非 pytest 測試
+addopts = "--ignore=tests/test_hybrid_retrieval.py --ignore=tests/test_config.py --cov=echo_memory --cov-report=html --cov-report=term"

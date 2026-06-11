@@ -12,7 +12,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 # ─── 核心指標函式 ────────────────────────────────────────────────────────────
 
 def compute_recall_at_k(retrieved_ids: list[str], relevant_ids: list[str], k: int) -> float:
@@ -105,7 +104,7 @@ def generate_report(scenario_results: list[dict[str, Any]]) -> str:
 
     total = len(scenario_results)
     passed = sum(1 for r in scenario_results if r.get("passed", False))
-    lines.append(f"### 概要")
+    lines.append("### 概要")
     lines.append(f"- 總 scenario 數：{total}")
     lines.append(f"- 通過：{passed}/{total} ({passed/total*100:.1f}%)\n" if total > 0 else "- 通過：0/0\n")
 
@@ -146,7 +145,7 @@ if __name__ == "__main__":
         print(f"[錯誤] 找不到資料集：{dataset_path}", file=sys.stderr)
         sys.exit(1)
 
-    with open(dataset_path, "r", encoding="utf-8") as f:
+    with open(dataset_path, encoding="utf-8") as f:
         dataset = json.load(f)
 
     scenarios = dataset.get("scenarios", [])

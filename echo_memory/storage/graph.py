@@ -16,14 +16,13 @@ import logging
 import math
 import pickle
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import networkx as nx
 
-from echo_memory.schemas.episode import Episode
 from echo_memory.config import get_config
+from echo_memory.schemas.episode import Episode
 
 logger = logging.getLogger("echo_memory.graph")
 

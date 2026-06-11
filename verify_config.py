@@ -15,22 +15,22 @@ from echo_memory.config import get_config
 
 def main():
     """驗證配置"""
-    
+
     config = get_config()
-    
+
     print("=" * 80)
     print("Echo Memory System - 配置驗證")
     print("=" * 80)
-    
+
     # 顯示配置摘要
     print(config.summary())
-    
+
     # 驗證必要配置
     is_valid, missing = config.validate()
-    
+
     print("\n配置驗證結果:")
     print("-" * 80)
-    
+
     if is_valid:
         print("✅ 所有必要配置已設定")
         print("\n可以開始使用 Echo Memory System！")

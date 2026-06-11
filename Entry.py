@@ -14,11 +14,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import logging
-from typing import Optional
 
 from echo_memory import MemoryEngine
 from echo_memory.config import get_config
-from echo_memory.schemas import Episode
 from llm_integration.llm_client import LLMClient
 
 # 配置日誌
@@ -97,8 +95,8 @@ class EchoMemoryCLI:
 
     def __init__(self):
         self.config = get_config()
-        self.memory_engine: Optional[MemoryEngine] = None
-        self.llm_client: Optional[LLMClient] = None
+        self.memory_engine: MemoryEngine | None = None
+        self.llm_client: LLMClient | None = None
         self.session_id = "cli_session"
         self.conversation_count = 0
 
@@ -262,13 +260,13 @@ class EchoMemoryCLI:
     def cmd_chat(self):
         """對話模式（組合存儲+檢索+LLM）"""
         print_section("對話模式")
-        
+
         # 檢查 LLM Client 是否可用
         if self.llm_client is None:
             print_error("LLM 客戶端未初始化，無法使用對話模式")
             print_info("請檢查 GOOGLE_API_KEY 配置")
             return
-        
+
         print_info("輸入 'exit' 退出對話模式\n")
         print_info(f"系統提示詞: {self.config.system_prompt[:60]}...\n")
 
@@ -298,20 +296,20 @@ class EchoMemoryCLI:
 
                 # 2. 調用 LLM 生成回應
                 print(colored("\n⏳ 生成回應中...", Colors.OKCYAN))
-                
+
                 prompt = self.llm_client.build_prompt(
                     user_input=user_input,
                     memory_context=context.to_text() if not context.is_empty() else "",
                     system_instruction=self.config.system_prompt,
                 )
-                
+
                 agent_response = self.llm_client.generate(
                     prompt=prompt,
                     temperature=0.7,
                     max_tokens=1024,
                 )
 
-                print(colored(f"\nAgent: ", Colors.OKCYAN) + agent_response)
+                print(colored("\nAgent: ", Colors.OKCYAN) + agent_response)
 
                 # 3. 存儲本次對話
                 self.conversation_count += 1
@@ -394,23 +392,24 @@ class EchoMemoryCLI:
 
         try:
             print(colored("\n⏳ Dream Engine 執行中...\n", Colors.OKCYAN))
-            
+
             report_dict = self.memory_engine.dream(triggered_by="manual")
-            
+
             if report_dict.get("error"):
                 print_error(f"執行失敗: {report_dict['error']}")
                 return
-            
+
             # 顯示詳細報告
             print_success("Dream 完成！")
             print(f"\n  觸發方式: {colored(report_dict['triggered_by'], Colors.OKCYAN)}")
-            print(f"  執行時長: {colored(f\"{report_dict['duration_seconds']:.1f}s\", Colors.OKGREEN)}")
+            duration_str = f"{report_dict['duration_seconds']:.1f}s"
+            print(f"  執行時長: {colored(duration_str, Colors.OKGREEN)}")
             print(f"  邊權重更新: {colored(str(report_dict['edges_updated']), Colors.OKGREEN)} 條")
             print(f"  弱邊移除: {colored(str(report_dict['edges_pruned']), Colors.OKGREEN)} 條")
-            
+
             # 顯示圖結構統計
             stats = self.memory_engine.episodic.graph.get_stats()
-            print(f"\n  圖結構統計:")
+            print("\n  圖結構統計:")
             print(f"    節點數: {stats['nodes']}")
             print(f"    邊數: {stats['edges']}")
             print(f"    平均權重: {stats['avg_edge_weight']:.3f}")

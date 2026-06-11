@@ -26,22 +26,22 @@ class Concept:
         updated_at: 最後更新時間
         metadata: 額外元數據
     """
-    
+
     name: str
     description: str
     concept_type: str = "entity"  # entity | rule | abstract
-    
+
     id: str = field(default="")
     embedding: list[float] = field(default_factory=list)
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
     metadata: dict[str, Any] = field(default_factory=dict)
-    
+
     def __post_init__(self):
         if not self.id:
             import uuid
             self.id = f"con_{uuid.uuid4().hex[:12]}"
-    
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
@@ -53,7 +53,7 @@ class Concept:
             "updated_at": self.updated_at.isoformat(),
             "metadata": self.metadata,
         }
-    
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Concept:
         data = data.copy()

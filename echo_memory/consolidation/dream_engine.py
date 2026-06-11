@@ -14,12 +14,12 @@ logger = logging.getLogger("echo_memory.dream")
 
 class DreamEngine:
     """Dream Engine - MVP 骨架"""
-    
+
     def __init__(self, episodic: Any, semantic: Any):
         self.episodic = episodic
         self.semantic = semantic
         logger.info("[DreamEngine] 初始化完成（未實作）")
-    
+
     def run(self, triggered_by: str = "manual") -> dict[str, Any]:
         """執行 Dream 週期（佔位符）"""
         logger.warning("[DreamEngine] Dream 功能尚未實作")

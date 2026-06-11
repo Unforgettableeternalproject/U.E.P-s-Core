@@ -30,35 +30,35 @@ class Episode:
         is_dreamed: 是否已在夢境中重播
         metadata: 額外元數據
     """
-    
+
     # 必填欄位
     user_input: str
     agent_response: str
     session_id: str
     content_summary: str
-    
+
     # 自動生成欄位
     id: str = field(default="")
     timestamp: datetime = field(default_factory=datetime.utcnow)
-    
+
     # 向量與權重
     embedding: list[float] = field(default_factory=list)
     salience_score: float = 0.5
     da_weight: float = 0.5
     ht_weight: float = 0.5
-    
+
     # 狀態標記
     is_dreamed: bool = False
-    
+
     # 擴展資訊
     metadata: dict[str, Any] = field(default_factory=dict)
-    
+
     def __post_init__(self):
         """自動生成 ID"""
         if not self.id:
             import uuid
             self.id = f"ep_{uuid.uuid4().hex[:12]}"
-    
+
     def to_dict(self) -> dict[str, Any]:
         """序列化為字典（用於 JSON 存儲）"""
         return {
@@ -75,7 +75,7 @@ class Episode:
             "is_dreamed": self.is_dreamed,
             "metadata": self.metadata,
         }
-    
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Episode:
         """從字典反序列化"""
@@ -83,7 +83,7 @@ class Episode:
         if "timestamp" in data and isinstance(data["timestamp"], str):
             data["timestamp"] = datetime.fromisoformat(data["timestamp"])
         return cls(**data)
-    
+
     @property
     def age_hours(self) -> float:
         """距離創建的小時數"""

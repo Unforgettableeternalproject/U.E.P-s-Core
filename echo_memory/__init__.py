@@ -20,9 +20,9 @@ __version__ = "0.1.0"
 __author__ = "U.E.P Team"
 
 from echo_memory.engine import MemoryEngine
-from echo_memory.schemas.memory_context import MemoryContext
-from echo_memory.schemas.episode import Episode
 from echo_memory.schemas.concept import Concept
+from echo_memory.schemas.episode import Episode
+from echo_memory.schemas.memory_context import MemoryContext
 
 __all__ = [
     "MemoryEngine",

@@ -21,7 +21,6 @@ import logging
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -36,14 +35,14 @@ logger = logging.getLogger("echo_memory.dream")
 @dataclass
 class DreamReport:
     """單次夢境週期的綜合報告"""
-    
+
     started_at: str = ""
     finished_at: str = ""
     triggered_by: str = "manual"  # "idle" | "cron" | "manual"
     pruning: PruningReport | None = None
     edges_updated: int = 0
     error: str | None = None
-    
+
     @property
     def duration_seconds(self) -> float:
         """計算執行時長"""
@@ -53,23 +52,23 @@ class DreamReport:
             return (f - s).total_seconds()
         except Exception:
             return 0.0
-    
+
     def summary(self) -> str:
         """生成摘要報告"""
         lines = [
             f"🌙 夢境週期完成 [{self.triggered_by}]",
             f"  耗時: {self.duration_seconds:.1f}s",
         ]
-        
+
         if self.pruning:
             lines.append(f"  {self.pruning.summary()}")
-        
+
         if self.edges_updated > 0:
             lines.append(f"  權重更新: {self.edges_updated} 條邊")
-        
+
         if self.error:
             lines.append(f"  ⚠️ 錯誤: {self.error}")
-        
+
         return "\n".join(lines)
 
 
@@ -90,7 +89,7 @@ class DreamEngine:
         
         engine.stop()  # 關閉排程器
     """
-    
+
     def __init__(
         self,
         graph: MemoryGraph,
@@ -114,33 +113,33 @@ class DreamEngine:
         self.cron_schedule = cron_schedule
         self.enable_idle = enable_idle
         self.enable_cron = enable_cron
-        
+
         # APScheduler
         self._scheduler = BackgroundScheduler(timezone="UTC")
         self._lock = threading.Lock()
         self._is_dreaming = False
         self._last_interaction: datetime = datetime.now(timezone.utc)
         self._last_dream_report: DreamReport | None = None
-        
+
         # 子模組
         self._pruning = GraphPruning(graph)
-        
+
         logger.info(
             f"[DreamEngine] 初始化完成 - "
             f"閒置觸發: {idle_minutes}min, "
             f"Cron: {cron_schedule}"
         )
-    
+
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 排程控制
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    
+
     def start(self):
         """啟動 APScheduler 排程器"""
         if self._scheduler.running:
             logger.warning("[DreamEngine] 排程器已在運行")
             return
-        
+
         # 閒置檢查（每分鐘檢查一次）
         if self.enable_idle:
             self._scheduler.add_job(
@@ -151,7 +150,7 @@ class DreamEngine:
                 misfire_grace_time=30,
             )
             logger.info(f"[DreamEngine] 已啟用閒置觸發（{self.idle_minutes} 分鐘）")
-        
+
         # Cron 定時觸發
         if self.enable_cron:
             try:
@@ -174,33 +173,33 @@ class DreamEngine:
                     logger.info(f"[DreamEngine] 已啟用 Cron 觸發（{self.cron_schedule}）")
             except Exception as e:
                 logger.error(f"[DreamEngine] Cron 設定失敗: {e}")
-        
+
         self._scheduler.start()
         logger.info("[DreamEngine] 排程器已啟動")
-    
+
     def stop(self):
         """關閉排程器"""
         if self._scheduler.running:
             self._scheduler.shutdown(wait=False)
             logger.info("[DreamEngine] 排程器已關閉")
-    
+
     def notify_interaction(self):
         """通知有新的互動（重置閒置計時器）"""
         self._last_interaction = datetime.now(timezone.utc)
-    
+
     def _idle_check(self):
         """檢查是否達到閒置觸發條件"""
         now = datetime.now(timezone.utc)
         idle_seconds = (now - self._last_interaction).total_seconds()
         idle_threshold = self.idle_minutes * 60
-        
+
         if idle_seconds >= idle_threshold:
             logger.info(
                 f"[DreamEngine] 閒置觸發條件滿足 "
                 f"({idle_seconds / 60:.1f} 分鐘)"
             )
             self._trigger_dream("idle")
-    
+
     def _trigger_dream(self, triggered_by: str):
         """觸發夢境週期（內部調用）"""
         try:
@@ -209,11 +208,11 @@ class DreamEngine:
             logger.info(f"[DreamEngine] {report.summary()}")
         except Exception as e:
             logger.error(f"[DreamEngine] 夢境週期失敗: {e}", exc_info=True)
-    
+
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 夢境執行
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    
+
     def dream_now(self, triggered_by: str = "manual") -> DreamReport:
         """
         立即執行一個完整的夢境週期（簡化版）。
@@ -235,40 +234,40 @@ class DreamEngine:
                 report.error = "夢境週期已在執行中，跳過本次觸發"
                 return report
             self._is_dreaming = True
-        
+
         report = DreamReport(
             started_at=datetime.now(timezone.utc).isoformat(),
             triggered_by=triggered_by,
         )
-        
+
         try:
             logger.info(f"[DreamEngine] 開始夢境週期 [{triggered_by}]")
-            
+
             # ── 階段 1：更新邊權重（簡化版 LiDER）──────────────────────
             report.edges_updated = self._pruning.update_edge_weights()
-            
+
             # ── 階段 2：圖譜修剪 ──────────────────────────────────────
             report.pruning = self._pruning.run()
-            
+
             # 重置閒置計時器（防止立即重複觸發）
             self.notify_interaction()
-            
-            logger.info(f"[DreamEngine] 夢境週期完成")
-            
+
+            logger.info("[DreamEngine] 夢境週期完成")
+
         except Exception as e:
             report.error = str(e)
             logger.error(f"[DreamEngine] 夢境週期失敗: {e}", exc_info=True)
-        
+
         finally:
             report.finished_at = datetime.now(timezone.utc).isoformat()
             self._is_dreaming = False
-        
+
         return report
-    
+
     def get_last_report(self) -> DreamReport | None:
         """獲取最後一次夢境報告"""
         return self._last_dream_report
-    
+
     def is_dreaming(self) -> bool:
         """檢查是否正在執行夢境週期"""
         return self._is_dreaming

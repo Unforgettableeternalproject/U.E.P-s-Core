@@ -46,6 +46,8 @@ def test_session_reuses_loaded_backend_for_multiple_say_calls(tmp_path):
     assert second.output_path.parent == tmp_path
     assert [call[0] for call in backend.generate_calls] == ["hello", "world"]
     assert player.play_calls == [first.output_path, second.output_path]
+    assert not first.output_path.exists()
+    assert not second.output_path.exists()
     assert session.status()["loaded"] is True
     assert session.status()["play_count"] == 2
 

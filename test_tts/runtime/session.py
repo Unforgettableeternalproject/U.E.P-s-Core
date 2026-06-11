@@ -50,6 +50,7 @@ class TTSInteractiveSession:
         self._say_count += 1
         self._play_count += 1
         self._last_output_path = generated
+        self._cleanup_temporary_output(generated)
         return SayResult(text=text, output_path=generated)
 
     def save(self, text: str, output_path: str | Path) -> SayResult:
@@ -94,3 +95,8 @@ class TTSInteractiveSession:
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         index = self._say_count + self._save_count + 1
         return self.output_dir / f"{prefix}-{timestamp}-{index:03d}.wav"
+
+    @staticmethod
+    def _cleanup_temporary_output(output_path: Path) -> None:
+        if output_path.exists():
+            output_path.unlink()

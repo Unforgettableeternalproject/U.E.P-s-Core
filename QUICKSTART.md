@@ -43,6 +43,6 @@ tts> exit
 
 Command semantics:
 
-- `say <text>`: generate a temporary shell output and play it immediately.
+- `say <text>`: generate a temporary shell output, play it immediately, then delete the temporary file.
 - `save --output <path> <text>`: generate a file without playback.
 - `--no-playback`: shell fallback for devices/environments without audio output.

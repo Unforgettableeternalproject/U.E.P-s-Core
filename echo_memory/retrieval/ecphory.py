@@ -59,7 +59,8 @@ class EcphoryRetrieval:
             MemoryContext 記憶脈絡
         """
         # Step 1: NumPy 餘弦相似度檢索（種子節點）
-        query_embedding = self.episodic._generate_embedding(query)
+        # 查詢時加上 retrieval prefix，以符合 bge 系列模型的最佳實踐
+        query_embedding = self.episodic.generate_query_embedding(query)
         seed_results = self.episodic.search(
             query_embedding,
             top_k=max(3, top_k // 2),  # 種子數量為目標的一半

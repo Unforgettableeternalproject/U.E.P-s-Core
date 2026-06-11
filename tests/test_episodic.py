@@ -99,8 +99,8 @@ def test_episodic_search(temp_storage):
     for ep in episodes:
         memory.write(ep)
     
-    # 生成查詢向量
-    query_emb = memory._generate_embedding("天氣怎麼樣？")
+    # 生成查詢向量（retrieval 場景，需加 query prefix）
+    query_emb = memory.generate_query_embedding("天氣怎麼樣？")
     
     # 檢索
     results = memory.search(query_emb, top_k=1)

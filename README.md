@@ -151,9 +151,11 @@ from llm_integration import LLMClient
 from neurochem import NeurochemState
 
 # 初始化記憶引擎
+# 預設模型：BAAI/bge-small-zh-v1.5（中文優化，512 維）
+# 切換模型時請同步刪除 data/embeddings.npy，舊向量與新模型不相容
 memory = MemoryEngine(
     storage_path="./data",
-    embedding_model="all-MiniLM-L6-v2"
+    embedding_model="BAAI/bge-small-zh-v1.5"
 )
 
 # 初始化神經化學狀態
@@ -247,7 +249,7 @@ print(f"Agent: {response}")
 | **Python** | CPython | 3.10+ |
 | **向量檢索** | NumPy 精確餘弦相似度 | 1.24+ |
 | **圖譜存儲** | NetworkX | 3.2+ |
-| **嵌入模型** | Sentence Transformers | 2.2+ |
+| **嵌入模型** | BAAI/bge-small-zh-v1.5（中文優化，512 維，C-MTEB Retrieval 61.77） | sentence-transformers 2.2+ |
 | **LLM** | Google Gemini / Anthropic Claude | - |
 | **排程** | APScheduler | 3.10+ |
 | **序列化** | Pydantic | 2.5+ |
@@ -295,7 +297,7 @@ print(f"Agent: {response}")
    
    memory_v2:
      storage_path: "memory/v2"
-     embedding_model: "all-MiniLM-L6-v2"
+     embedding_model: "BAAI/bge-small-zh-v1.5"
    ```
 
 ---

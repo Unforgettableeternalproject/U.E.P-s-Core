@@ -36,14 +36,16 @@ class EpisodicMemory:
     def __init__(
         self,
         storage_path: str | Path,
-        embedding_model: str = "all-MiniLM-L6-v2",
+        embedding_model: str = "BAAI/bge-small-zh-v1.5",
         device: str = "cpu",
+        query_prefix: str = "为这个句子生成表示以用于检索相关文章：",
     ):
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
         
         self.embedding_model = embedding_model
         self.device = device
+        self.query_prefix = query_prefix
         
         # 數據文件路徑
         self.metadata_file = self.storage_path / "episodes.json"
@@ -174,7 +176,7 @@ class EpisodicMemory:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     
     def _generate_embedding(self, text: str) -> list[float]:
-        """生成文本嵌入向量"""
+        """生成文本嵌入向量（存儲用，不加 query prefix）"""
         if self._embedder is None:
             # 設置 Hugging Face Token（如果存在）
             from dotenv import load_dotenv
@@ -182,15 +184,20 @@ class EpisodicMemory:
             hf_token = os.getenv('HF_TOKEN')
             if hf_token:
                 os.environ['HF_TOKEN'] = hf_token
-            
+
             from sentence_transformers import SentenceTransformer
             self._embedder = SentenceTransformer(
                 self.embedding_model,
                 device=self.device,
             )
-        
+
         embedding = self._embedder.encode(text, convert_to_numpy=True)
         return self._normalize_vector(embedding).tolist()
+
+    def generate_query_embedding(self, text: str) -> list[float]:
+        """生成查詢嵌入向量（加 query prefix，用於 retrieval 場景）"""
+        prefixed_text = self.query_prefix + text if self.query_prefix else text
+        return self._generate_embedding(prefixed_text)
     
     def _update_embeddings(self, episode: Episode):
         """更新向量索引"""
@@ -250,6 +257,26 @@ class EpisodicMemory:
         
         if self.embeddings_file.exists():
             loaded_embeddings = np.load(self.embeddings_file)
+
+            # 維度相容性檢查：若已知模型維度與載入資料不符，清除向量索引
+            _known_dimensions = {
+                "all-MiniLM-L6-v2": 384,
+                "BAAI/bge-small-zh-v1.5": 512,
+            }
+            expected_dim = _known_dimensions.get(self.embedding_model)
+            if (
+                expected_dim is not None
+                and loaded_embeddings.ndim == 2
+                and loaded_embeddings.shape[1] != expected_dim
+            ):
+                logger.warning(
+                    f"[EpisodicMemory] embeddings.npy 維度 {loaded_embeddings.shape[1]} "
+                    f"與目前模型 '{self.embedding_model}' 期望的 {expected_dim} 不符。"
+                    "向量索引已清除，需重新對語料生成嵌入。"
+                )
+                # 清除不相容的向量索引，保留元數據
+                return
+
             self._embeddings, migrated = self._normalize_matrix(loaded_embeddings)
             if migrated:
                 np.save(self.embeddings_file, self._embeddings)

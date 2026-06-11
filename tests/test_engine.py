@@ -22,7 +22,7 @@ def test_memory_engine_init(temp_storage):
     engine = MemoryEngine(storage_path=temp_storage)
     
     assert engine.storage_path == temp_storage
-    assert engine.embedding_model == "all-MiniLM-L6-v2"
+    assert engine.embedding_model == "BAAI/bge-small-zh-v1.5"
 
 
 def test_store_and_retrieve(temp_storage):

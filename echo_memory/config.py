@@ -36,8 +36,12 @@ class Config:
         )
         
         # === 嵌入模型配置 ===
-        self.embedding_model = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+        self.embedding_model = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")
         self.embedding_device = os.getenv("EMBEDDING_DEVICE", "cpu")
+        self.embedding_query_prefix = os.getenv(
+            "EMBEDDING_QUERY_PREFIX",
+            "为这个句子生成表示以用于检索相关文章："
+        )
         
         # === 記憶系統配置 ===
         self.memory_storage_path = os.getenv("MEMORY_STORAGE_PATH", "./data")

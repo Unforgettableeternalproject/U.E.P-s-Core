@@ -96,14 +96,26 @@ class Config:
 
     def validate(self) -> tuple[bool, list[str]]:
         """
-        驗證必要配置是否存在。
-        
+        驗證記憶系統必要配置是否存在。
+
+        記憶系統本身無硬性必要的外部配置（存儲路徑有預設值），
+        因此此方法直接回傳合法狀態。LLM 相關驗證請使用 validate_llm()。
+
+        Returns:
+            (is_valid, missing_keys)
+        """
+        return (True, [])
+
+    def validate_llm(self) -> tuple[bool, list[str]]:
+        """
+        驗證 LLM API 配置是否存在（至少需要一個 provider）。
+
         Returns:
             (is_valid, missing_keys)
         """
         missing = []
 
-        # 檢查 LLM 配置（至少需要一個）
+        # 檢查 LLM 配置（目前 LLMClient 僅支援 Google provider）
         if not self.gcp_project_id and not self.google_api_key:
             missing.append("GCP_PROJECT_ID 或 GOOGLE_API_KEY")
 

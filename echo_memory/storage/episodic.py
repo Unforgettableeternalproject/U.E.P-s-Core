@@ -59,8 +59,9 @@ class EpisodicMemory:
         # 記憶圖（Phase 1.5）
         self.graph = MemoryGraph(storage_path)
 
-        # 追蹤最後一個 Episode（用於 PRECEDES 邊）
+        # 追蹤最後一個 Episode（全域 + 每個 session）
         self._last_episode_id: str | None = None
+        self._last_episode_by_session: dict[str, str] = {}
 
         # 延遲加載 embedding 生成器
         self._embedder = None
@@ -165,6 +166,7 @@ class EpisodicMemory:
         self._embeddings = None
         self._id_to_index.clear()
         self._last_episode_id = None
+        self._last_episode_by_session.clear()
 
         # 清空圖結構
         self.graph.clear()
@@ -317,6 +319,15 @@ class EpisodicMemory:
                         "[EpisodicMemory] Migrated episode metadata to L2-normalized vectors"
                     )
 
+        # 重建 per-session 最後 episode 追蹤
+        from collections import defaultdict
+        session_episodes: dict[str, list[Episode]] = defaultdict(list)
+        for ep in self._episodes.values():
+            session_episodes[ep.session_id].append(ep)
+        for session_id, eps in session_episodes.items():
+            eps.sort(key=lambda e: e.timestamp)
+            self._last_episode_by_session[session_id] = eps[-1].id
+
     def _save(self):
         """持久化到磁盤"""
         # 保存元數據
@@ -334,40 +345,23 @@ class EpisodicMemory:
     def _update_graph(self, episode: Episode):
         """
         更新圖結構(Phase 1.5)。
-        
+
         自動維護記憶圖：
         1. 添加節點
-        2. 創建 PRECEDES 邊(與前一個 Episode 的時序關係)
+        2. 創建 PRECEDES 邊（只連接同一 session 的前一個 Episode）
         """
         # 添加節點
         if not self.graph.has_node(episode.id):
             self.graph.add_episode_node(episode)
 
-        # 創建 PRECEDES 邊(與前一個 Episode)
-        if self._last_episode_id is not None:
-            # 計算時間間隔
-            last_ep = self._episodes.get(self._last_episode_id)
+        # 創建 PRECEDES 邊（使用 per-session 追蹤）
+        last_id = self._last_episode_by_session.get(episode.session_id)
+        if last_id is not None:
+            last_ep = self._episodes.get(last_id)
             if last_ep:
                 time_delta = (episode.timestamp - last_ep.timestamp).total_seconds()
+                self.graph.add_precedes_edge(last_id, episode.id, time_delta)
 
-                # 只為同一 session 的對話創建邊
-                if episode.session_id == last_ep.session_id:
-                    self.graph.add_precedes_edge(
-                        self._last_episode_id,
-                        episode.id,
-                        time_delta,
-                    )
-
-        # 更新最後一個 Episode
+        # 更新此 session 最後一個 Episode
         self._last_episode_id = episode.id
-
-    def _save(self):
-        """保存元數據和向量到磁盤"""
-        # 保存元數據
-        with open(self.metadata_file, "w", encoding="utf-8") as f:
-            data = [ep.to_dict() for ep in self._episodes.values()]
-            json.dump(data, f, ensure_ascii=False, indent=2)
-
-        # 保存向量
-        if self._embeddings is not None:
-            np.save(self.embeddings_file, self._embeddings)
+        self._last_episode_by_session[episode.session_id] = episode.id

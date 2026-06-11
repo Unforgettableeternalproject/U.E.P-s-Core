@@ -104,16 +104,8 @@ class EchoMemoryCLI:
         """初始化記憶引擎"""
         print_section("初始化 Echo Memory System")
 
-        # 驗證配置
-        is_valid, missing = self.config.validate()
-        if not is_valid:
-            print_error(f"配置驗證失敗，缺少: {', '.join(missing)}")
-            print_warning("請編輯 .env 文件並設定必要的環境變數")
-            print_info("提示: 運行 'python verify_config.py' 查看詳細配置")
-            return False
-
         try:
-            # 初始化記憶引擎
+            # 初始化記憶引擎（不需要 LLM API key）
             self.memory_engine = MemoryEngine(
                 storage_path=self.config.memory_storage_path,
                 embedding_model=self.config.embedding_model,
@@ -132,13 +124,20 @@ class EchoMemoryCLI:
                 f"{stats['total_concepts']} 個概念"
             )
 
-            # 初始化 LLM Client（用於對話模式）
-            try:
-                self.llm_client = LLMClient()
-                print_success("LLM 客戶端初始化成功")
-            except Exception as llm_error:
-                print_warning(f"LLM 客戶端初始化失敗: {llm_error}")
-                print_info("對話模式將無法使用，但記憶功能正常")
+            # 初始化 LLM Client（用於對話模式，非必要）
+            is_llm_valid, missing = self.config.validate_llm()
+            if is_llm_valid:
+                try:
+                    self.llm_client = LLMClient()
+                    print_success("LLM 客戶端初始化成功")
+                except Exception as llm_error:
+                    self.llm_client = None
+                    print_warning(f"LLM 客戶端初始化失敗: {llm_error}")
+                    print_info("對話模式將無法使用，但記憶功能正常")
+            else:
+                self.llm_client = None
+                print_warning(f"LLM API 未設定（缺少: {', '.join(missing)}）")
+                print_info("對話模式將無法使用，但記憶的存儲/檢索/統計功能正常")
 
             return True
 
@@ -151,10 +150,15 @@ class EchoMemoryCLI:
         """顯示主選單"""
         print_section("主選單")
 
+        llm_available = self.llm_client is not None
+        chat_color = Colors.OKGREEN if llm_available else Colors.ENDC
+        chat_icon = "✓" if llm_available else "✗"
+        chat_desc = "對話模式（存儲+檢索）" if llm_available else "對話模式（LLM 未設定，無法使用）"
+
         menu_items = [
             ("store", "存儲對話", Colors.OKGREEN, "✓"),
             ("retrieve", "檢索記憶", Colors.OKGREEN, "✓"),
-            ("chat", "對話模式（存儲+檢索）", Colors.OKGREEN, "✓"),
+            ("chat", chat_desc, chat_color, chat_icon),
             ("stats", "查看統計", Colors.OKGREEN, "✓"),
             ("list", "列出所有情節", Colors.OKGREEN, "✓"),
             ("config", "顯示配置", Colors.OKCYAN, "ℹ"),

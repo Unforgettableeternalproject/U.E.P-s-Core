@@ -25,8 +25,8 @@ def main():
     # 顯示配置摘要
     print(config.summary())
 
-    # 驗證必要配置
-    is_valid, missing = config.validate()
+    # 驗證 LLM 配置
+    is_valid, missing = config.validate_llm()
 
     print("\n配置驗證結果:")
     print("-" * 80)
@@ -39,11 +39,12 @@ def main():
         print("  2. 運行示例: python examples/minimal_chat.py")
         return 0
     else:
-        print("❌ 缺少必要配置:")
+        print("⚠️ 缺少 LLM API 配置:")
         for key in missing:
             print(f"   - {key}")
         print("\n請編輯 .env 文件，設定缺少的環境變數。")
         print("參考 .env.example 獲取完整的配置選項。")
+        print("\n注意: 即使未設定 LLM API，記憶 CLI 的存儲/檢索功能仍可正常使用。")
         return 1
 
 

@@ -25,12 +25,26 @@
 
 2. **動態邊緣權重**
    ```
-   W(edge) = 0.3·Recency + 0.4·Frequency + 0.3·Salience
-   
-   Recency   = exp(-0.01·hours_ago)
+   W(edge) = α·Recency + β·Frequency + γ·Salience
+           = 0.3·Recency + 0.4·Frequency + 0.3·Salience
+
+   Recency   = exp(-λ·hours_ago)        # 時間單位：小時
+               λ = EDGE_RECENCY_LAMBDA  # 預設 0.01 /小時
    Frequency = log(1+n) / log(1+n_max)
    Salience  = dopamine × (1 - 0.3×serotonin)
    ```
+
+   **衰減行為（λ=0.01 /小時）：**
+   | 時間 | Recency |
+   |------|---------|
+   | 1 小時後 | ≈ 0.990 |
+   | 24 小時後 | ≈ 0.787 |
+   | 7 天後 | ≈ 0.186 |
+
+   **時間語義說明：**
+   - `time_delta`（建邊時）：兩個 episode 之間的事件間隔，反映記憶距離的遠近
+   - `edge_age`（Dream 更新時）：邊從建立到現在的存活時間，反映連結本身有多老舊
+   - 兩者均以**小時**為單位傳入衰減公式
 
 3. **離線記憶鞏固（Dream Engine）**
    - **LiDER 重播**：高顯著性情節總結經驗

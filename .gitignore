@@ -41,3 +41,6 @@ build/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Hidden
+docs/hidden/

@@ -22,3 +22,27 @@ Large assets are expected at:
 - `legacy_tts/models/tts/uep.pt`
 
 These files are intentionally ignored by Git.
+## Persistent shell
+
+Use the shell when iterating on multiple samples. The model is loaded only after `load`, `say`, or `save`, then reused until `unload` or process exit.
+
+```powershell
+python Entry.py shell
+```
+
+Example session:
+
+```text
+tts> load
+tts> say "Hello from the persistent TTS shell."
+tts> save --output saved.wav "Generate this without playback."
+tts> status
+tts> unload
+tts> exit
+```
+
+Command semantics:
+
+- `say <text>`: generate a temporary shell output, play it immediately, then delete the temporary file.
+- `save --output <path> <text>`: generate a file without playback.
+- `--no-playback`: shell fallback for devices/environments without audio output.

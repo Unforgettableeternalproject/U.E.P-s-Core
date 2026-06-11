@@ -17,8 +17,12 @@ except ModuleNotFoundError:
             print(message)
 
 from test_tts.benchmarks.metrics import LatencySample, summarize_latency
+from test_tts.cli.interactive import InteractiveShell
+from test_tts.runtime.audio import NullAudioPlayer, SimpleAudioPlayer
 from test_tts.runtime.backend_contract import legacy_backend_info
-from test_tts.runtime.legacy_generate import generate_with_legacy_indextts2
+from test_tts.runtime.legacy_backend import LegacyIndexTTS2Backend
+from test_tts.runtime.legacy_generate import default_generation_paths, generate_with_legacy_indextts2
+from test_tts.runtime.session import TTSInteractiveSession
 
 console = Console()
 
@@ -60,6 +64,54 @@ def generate(text: str, output: str, device: str | None, use_fp16: bool, use_cud
     return 0
 
 
+def build_legacy_session(
+    project_root: str | Path | None = None,
+    output_dir: str | Path = "outputs/tts/shell",
+    device: str | None = "cuda",
+    use_fp16: bool = True,
+    use_cuda_kernel: bool = True,
+    playback: bool = True,
+) -> TTSInteractiveSession:
+    root = Path(project_root or Path(__file__).resolve().parent)
+    backend = LegacyIndexTTS2Backend(
+        paths=default_generation_paths(root),
+        device=device,
+        use_fp16=use_fp16,
+        use_cuda_kernel=use_cuda_kernel,
+    )
+    resolved_output = Path(output_dir)
+    if not resolved_output.is_absolute():
+        resolved_output = root / resolved_output
+    player = SimpleAudioPlayer() if playback else NullAudioPlayer()
+    return TTSInteractiveSession(backend=backend, output_dir=resolved_output, player=player)
+
+
+def run_shell(device: str | None, use_fp16: bool, use_cuda_kernel: bool, playback: bool) -> int:
+    session = build_legacy_session(
+        project_root=Path(__file__).resolve().parent,
+        device=device,
+        use_fp16=use_fp16,
+        use_cuda_kernel=use_cuda_kernel,
+        playback=playback,
+    )
+    shell = InteractiveShell(session=session, write=console.print)
+    console.print("TTS shell ready. Commands: load, say <text>, save --output <path> <text>, status, unload, exit")
+    while True:
+        try:
+            command = input("tts> ")
+        except (EOFError, KeyboardInterrupt):
+            console.print("")
+            break
+        try:
+            keep_running = shell.execute(command)
+        except Exception as exc:
+            console.print(f"Error: {exc}")
+            keep_running = True
+        if not keep_running:
+            break
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="TTS latency experiment CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -76,6 +128,12 @@ def main() -> int:
     gen.add_argument("--no-fp16", action="store_true")
     gen.add_argument("--no-cuda-kernel", action="store_true")
 
+    shell_cmd = subparsers.add_parser("shell", help="Start a persistent TTS shell that keeps the model loaded")
+    shell_cmd.add_argument("--device", default="cuda")
+    shell_cmd.add_argument("--no-fp16", action="store_true")
+    shell_cmd.add_argument("--no-cuda-kernel", action="store_true")
+    shell_cmd.add_argument("--no-playback", action="store_true", help="Generate on say without audio playback")
+
     args = parser.parse_args()
     if args.command == "smoke":
         return smoke()
@@ -89,9 +147,15 @@ def main() -> int:
             use_fp16=not args.no_fp16,
             use_cuda_kernel=not args.no_cuda_kernel,
         )
+    if args.command == "shell":
+        return run_shell(
+            device=args.device,
+            use_fp16=not args.no_fp16,
+            use_cuda_kernel=not args.no_cuda_kernel,
+            playback=not args.no_playback,
+        )
     raise ValueError(f"Unknown command: {args.command}")
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

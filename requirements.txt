@@ -1,0 +1,6 @@
+numpy>=1.24.0
+pydantic>=2.5.0
+pyyaml>=6.0
+soundfile>=0.12.1
+rich>=13.7.0
+pytest>=7.4.0

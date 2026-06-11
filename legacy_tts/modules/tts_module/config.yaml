@@ -1,0 +1,60 @@
+# TTS Module Configuration (IndexTTS Lite)
+# 使用 IndexTTS Lite 引擎進行語音合成，支持情感控制
+
+# 模型路徑配置
+model_dir: "modules/tts_module/checkpoints"  # IndexTTS 模型目錄
+character_dir: "models/tts/"  # 角色特徵目錄 (.pt 文件)
+default_character: "uep"  # 預設角色名稱 (會加載 uep.pt)
+
+# 設備配置
+device: "cuda"  # 可選: "cuda", "cpu"
+use_fp16: true  # 是否使用半精度 (FP16)，可節省顯存並加速
+use_bf16: false  # 實驗性: 使用 BF16 (需 Ampere+ GPU, 測試顯示 +4.6% 提速)
+
+# 🚀 進階優化配置（無需額外套件）
+advanced_optimization:
+  # torch.compile (PyTorch 2.0+ 編譯優化 - 內建功能)
+  use_torch_compile: true  # 啟用 torch.compile (GPT/S2Mel/BigVGAN 加速 1.3-1.5x)
+  compile_mode: "reduce-overhead"  # 編譯模式: "default", "reduce-overhead", "max-autotune"
+  
+  # 🔥 模型預熱 (Warmup)
+  enable_warmup: true  # 啟用初始化預熱，提前編譯 torch.compile 和 CUDA kernel
+  warmup_text: "This is a test generation for warmup."  # 預熱文本（簡短即可）
+  warmup_iterations: 1  # 預熱次數（1-2 次即可）
+  
+  # cuDNN 自動調優 (自動選擇最優 kernel)
+  cudnn_benchmark: true  # 啟用 cuDNN benchmark (加速 5-10%)
+  
+  # Memory Efficient Attention (PyTorch 2.0+ SDPA)
+  use_sdpa: true  # 使用 scaled_dot_product_attention (加速 20-40%, 省記憶體)
+  enable_math: true  # 啟用 math kernel (fallback)
+  enable_flash: true  # 啟用 flash attention kernel (最快)
+  enable_mem_efficient: true  # 啟用 memory efficient kernel (省記憶體)
+  
+  # 動態量化 (可選，可能影響音質)
+  use_dynamic_quantization: false  # 啟用 INT8 動態量化 (Linear 層, 加速 1.5-2x, 省 VRAM)
+  quantize_gpt: false  # 量化 GPT 模型
+  quantize_s2mel: false  # 量化 S2Mel 模型
+
+# Chunking 配置 (文本分段)
+chunking:
+  enabled: true  # 是否啟用分段
+  threshold: 100  # 字符數閾值，超過此值將觸發分段 (🚀 已優化: 降低以加快響應)
+  max_tokens: 150  # 每段最大 BPE tokens 數量 (🚀 已優化: 降低以減少 GPT 生成時間)
+
+# 情感配置
+emotion:
+  max_strength: 0.5  # 情感強度上限 (0.0 - 1.0)，0.3 表示保留 70% 原聲
+  default: null  # 預設情感向量 (null = 使用角色原聲，也可設置為 8D 列表)
+  # 例如: default: [0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.2]  # [happy, angry, sad, afraid, disgusted, melancholic, surprised, calm]
+
+# 播放配置
+playback:
+  auto_play: true  # 是否自動播放 (不保存時)
+  cleanup_temp: true  # 播放完畢後是否清理臨時文件
+
+# 日誌配置
+logging:
+  show_synthesis_time: true  # 是否顯示合成時間
+  show_emotion_vector: true  # 是否顯示情感向量詳情
+

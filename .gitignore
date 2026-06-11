@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+env/
+ENV/
+
+# Runtime artifacts and large model assets
+/models/
+/legacy_tts/models/
+/checkpoints/
+/legacy_tts/modules/tts_module/checkpoints/
+/outputs/
+/temp/
+/logs/
+*.wav
+*.mp3
+*.flac
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Test/build
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Environment
+.env
+.env.local
+
+# IDE/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

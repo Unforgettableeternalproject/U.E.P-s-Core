@@ -107,10 +107,13 @@ class InitProfile:
 class SynthesisProfile:
     """Timings captured during a single synthesis call.
 
-    All values are in milliseconds.
+    All values are in milliseconds.  Stage timings (gpt_semantic_ms, etc.)
+    are *accumulated* across all segments when text is split into multiple
+    BPE-token segments.
     """
 
     text_chars: int = 0
+    segment_count: int = 1
     text_norm_ms: float = 0.0
     emotion_ms: float = 0.0
     gpt_semantic_ms: float = 0.0
@@ -120,6 +123,7 @@ class SynthesisProfile:
     wav_save_ms: float = 0.0
     total_wall_ms: float = 0.0
     audio_duration_ms: float = 0.0
+    first_segment_ms: float = 0.0
 
     @property
     def synthesis_ms(self) -> float:
@@ -142,7 +146,14 @@ class SynthesisProfile:
 
     @property
     def first_audio_ms(self) -> float:
-        """Proxy for first-playable-audio latency (everything up to vocoder done)."""
+        """First-playable-audio latency.
+
+        When multi-segment, this is the wall-clock time until the first
+        segment's vocoder output is ready (measured from synthesis start).
+        When single-segment, falls back to the sum of all stages.
+        """
+        if self.first_segment_ms > 0:
+            return self.first_segment_ms
         return (
             self.text_norm_ms
             + self.emotion_ms
@@ -156,6 +167,7 @@ class SynthesisProfile:
     def from_dict(cls, d: dict[str, float]) -> SynthesisProfile:
         return cls(
             text_chars=int(d.get("text_chars", 0)),
+            segment_count=int(d.get("segment_count", 1)),
             text_norm_ms=d.get("text_norm_ms", 0.0),
             emotion_ms=d.get("emotion_ms", 0.0),
             gpt_semantic_ms=d.get("gpt_semantic_ms", 0.0),
@@ -165,6 +177,7 @@ class SynthesisProfile:
             wav_save_ms=d.get("wav_save_ms", 0.0),
             total_wall_ms=d.get("total_wall_ms", 0.0),
             audio_duration_ms=d.get("audio_duration_ms", 0.0),
+            first_segment_ms=d.get("first_segment_ms", 0.0),
         )
 
 
@@ -202,8 +215,9 @@ class ProfileReport:
             lines.append(f"    Total cold start       {i.total_cold_start_ms:>10.1f} ms")
 
         # Synthesis section
+        seg_label = f", {s.segment_count} segments" if s.segment_count > 1 else ""
         lines.append("")
-        lines.append(f"  ◆ Synthesis ({s.text_chars} chars)")
+        lines.append(f"  ◆ Synthesis ({s.text_chars} chars{seg_label})")
         lines.append(f"    Text normalization     {s.text_norm_ms:>10.1f} ms")
         lines.append(f"    Emotion processing     {s.emotion_ms:>10.1f} ms")
         lines.append(f"    GPT semantic gen       {s.gpt_semantic_ms:>10.1f} ms")

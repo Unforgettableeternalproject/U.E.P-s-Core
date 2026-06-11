@@ -70,7 +70,7 @@ def test_synthesis_profile_rtf_zero_duration():
     assert sp.rtf == 0.0
 
 
-def test_synthesis_profile_first_audio_ms():
+def test_synthesis_profile_first_audio_ms_single_segment():
     sp = SynthesisProfile(
         text_norm_ms=5,
         emotion_ms=2,
@@ -80,6 +80,29 @@ def test_synthesis_profile_first_audio_ms():
         vocoder_ms=80,
     )
     assert sp.first_audio_ms == 5 + 2 + 100 + 50 + 200 + 80
+
+
+def test_synthesis_profile_first_audio_ms_multi_segment():
+    """When first_segment_ms is set, it takes priority over summing stages."""
+    sp = SynthesisProfile(
+        segment_count=3,
+        text_norm_ms=5,
+        emotion_ms=2,
+        gpt_semantic_ms=300,  # accumulated across 3 segments
+        gpt_latent_ms=150,
+        s2mel_cfm_ms=600,
+        vocoder_ms=240,
+        first_segment_ms=250.0,  # first segment done at 250ms
+    )
+    assert sp.first_audio_ms == 250.0
+    # synthesis_ms is the total across all segments
+    assert sp.synthesis_ms == 5 + 2 + 300 + 150 + 600 + 240
+
+
+def test_synthesis_profile_segment_count_in_from_dict():
+    d = {"segment_count": 4, "gpt_semantic_ms": 400}
+    sp = SynthesisProfile.from_dict(d)
+    assert sp.segment_count == 4
 
 
 def test_synthesis_profile_synthesis_ms_excludes_wav_save():

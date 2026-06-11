@@ -605,180 +605,203 @@ class IndexTTSLite:
         normalized_emotion = self.normalize_emotion_vector(emotion_vector, max_emotion_strength, verbose)
 
         try:
-            # 2. 文本處理 (參考 infer_v2.py line 487-523)
+            # 2. 文本處理 — tokenize + 分段 (參考 infer_v2.py line 487-523)
             _t = time.perf_counter()
             if verbose:
                 debug_log(3, "   [1/4] 文本處理...")
 
-            # 使用 BPE tokenizer 進行正確的 tokenization
             text_tokens_list = self.tokenizer.tokenize(text)
-            # 簡化版:只取第一個 segment (完整版應該循環處理所有 segments)
             segments = self.tokenizer.split_segments(text_tokens_list, max_text_tokens_per_segment=200)
-            if len(segments) > 1 and verbose:
-                debug_log(2, f"      ⚠️  警告: 文本被分割為 {len(segments)} 段,只處理第一段")
-
-            # 轉換為 token IDs
-            text_tokens = self.tokenizer.convert_tokens_to_ids(segments[0])
-            text_tokens = torch.tensor(text_tokens, dtype=torch.int32, device=self.device).unsqueeze(0)
+            num_segments = len(segments)
+            if num_segments > 1 and verbose:
+                debug_log(2, f"      ℹ️  文本分為 {num_segments} 段處理")
             _t = _mark("text_norm_ms", _t)
 
-            # 3. 處理情感向量映射 (參考 infer_v2.py line 456-462)
-            # 使用預計算的 emo_indices 或動態計算
+            # 3. 情感向量映射 (跨段共用, 只計算一次)
             if 'emo_indices' in self.character_features:
-                # 使用預計算的索引
                 emo_indices = self.character_features['emo_indices']
             else:
-                # 動態計算最相似的索引 (find_most_similar_cosine)
                 style = self.character_features['style']
                 emo_indices = []
                 for spk_mat in self.spk_matrix:
-                    # 計算餘弦相似度
                     query_norm = torch.nn.functional.normalize(style.squeeze(0), p=2, dim=-1)
                     matrix_norm = torch.nn.functional.normalize(spk_mat, p=2, dim=-1)
                     similarities = torch.matmul(query_norm, matrix_norm.T)
                     most_similar_idx = torch.argmax(similarities).item()
                     emo_indices.append(most_similar_idx)
 
-            # 從 emo_matrix 中獲取對應的情感向量並加權
             weight_vector = torch.tensor(normalized_emotion, device=self.device)
             emo_matrix_selected = [emo_mat[idx].unsqueeze(0) for idx, emo_mat in zip(emo_indices, self.emo_matrix)]
-            emo_matrix_cat = torch.cat(emo_matrix_selected, 0)  # [8, hidden_dim]
-            emovec_mat = weight_vector.unsqueeze(1) * emo_matrix_cat  # [8, hidden_dim]
-            emovec_mat = torch.sum(emovec_mat, 0).unsqueeze(0)  # [1, hidden_dim]
+            emo_matrix_cat = torch.cat(emo_matrix_selected, 0)
+            emovec_mat = weight_vector.unsqueeze(1) * emo_matrix_cat
+            emovec_mat = torch.sum(emovec_mat, 0).unsqueeze(0)
 
-            # 確保 dtype 與模型一致
             if self.use_fp16:
                 emovec_mat = emovec_mat.half()
             _t = _mark("emotion_ms", _t)
 
-            # 4. GPT 生成語義 tokens
-            if verbose:
-                debug_log(3, "   [2/4] GPT 生成中...")
+            # Shared conditioning (跨段共用)
+            spk_cond_emb = self.character_features['spk_cond_emb']
+            emo_cond_emb = spk_cond_emb
 
-            with torch.no_grad():
-                # 使用 autocast 處理 FP16 (參考 infer_v2.py line 534)
-                dtype = torch.float16 if self.use_fp16 else None
-                with torch.amp.autocast(self.device.type, enabled=dtype is not None, dtype=dtype):
-                    # 準備 conditioning (參考 infer_v2.py line 419-452)
-                    spk_cond_emb = self.character_features['spk_cond_emb']
-                    # 簡化版:使用 spk_cond_emb 作為 emo_cond_emb (完整版應從情感參考音頻提取)
-                    emo_cond_emb = spk_cond_emb
+            # --- 分段循環：每段獨立走 GPT→S2Mel→BigVGAN 管線 ---
+            audio_segments: list = []
+            seg_gpt_semantic_ms = 0.0
+            seg_gpt_latent_ms = 0.0
+            seg_s2mel_cfm_ms = 0.0
+            seg_vocoder_ms = 0.0
+            first_segment_done_ms: Optional[float] = None
 
-                    # Merge emovec (參考 infer_v2.py line 535-544)
-                    emovec = self.gpt.merge_emovec(
-                        spk_cond_emb,
-                        emo_cond_emb,
-                        torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
-                        torch.tensor([emo_cond_emb.shape[-1]], device=self.device),
-                        alpha=1.0  # emo_alpha
+            for seg_idx, seg_tokens in enumerate(segments):
+                if verbose and num_segments > 1:
+                    debug_log(3, f"   ── 段落 {seg_idx + 1}/{num_segments} ──")
+
+                text_tokens = self.tokenizer.convert_tokens_to_ids(seg_tokens)
+                text_tokens = torch.tensor(text_tokens, dtype=torch.int32, device=self.device).unsqueeze(0)
+
+                # 4. GPT 生成語義 tokens
+                if verbose:
+                    debug_log(3, f"   [2/4] GPT 生成中...")
+
+                _seg_t = time.perf_counter()
+                with torch.no_grad():
+                    dtype = torch.float16 if self.use_fp16 else None
+                    with torch.amp.autocast(self.device.type, enabled=dtype is not None, dtype=dtype):
+                        emovec = self.gpt.merge_emovec(
+                            spk_cond_emb,
+                            emo_cond_emb,
+                            torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
+                            torch.tensor([emo_cond_emb.shape[-1]], device=self.device),
+                            alpha=1.0
+                        )
+
+                        if emovec_mat is not None:
+                            weight_sum = torch.sum(torch.tensor(normalized_emotion, device=self.device))
+                            emovec = emovec_mat + (1 - weight_sum) * emovec
+
+                        codes, speech_conditioning_latent = self.gpt.inference_speech(
+                            spk_cond_emb,
+                            text_tokens,
+                            emo_cond_emb,
+                            cond_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
+                            emo_cond_lengths=torch.tensor([emo_cond_emb.shape[-1]], device=self.device),
+                            emo_vec=emovec,
+                            num_return_sequences=1,
+                            num_beams=num_beams,
+                            do_sample=do_sample,
+                            temperature=temperature,
+                            top_p=top_p,
+                            top_k=top_k,
+                            length_penalty=1.0,
+                            repetition_penalty=1.2,
+                            max_generate_length=self.cfg.gpt.max_mel_tokens
+                        )
+                        seg_gpt_semantic_ms += (time.perf_counter() - _seg_t) * 1000
+                        _seg_t = time.perf_counter()
+
+                        # GPT forward 獲取 latent
+                        use_speed = torch.zeros(1, device=self.device).long()
+                        latent = self.gpt(
+                            speech_conditioning_latent,
+                            text_tokens,
+                            torch.tensor([text_tokens.shape[-1]], device=self.device),
+                            codes,
+                            torch.tensor([codes.shape[-1]], device=self.device),
+                            spk_cond_emb,
+                            cond_mel_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
+                            emo_cond_mel_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
+                            emo_vec=emovec_mat,
+                            use_speed=use_speed
+                        )
+                        seg_gpt_latent_ms += (time.perf_counter() - _seg_t) * 1000
+                        _seg_t = time.perf_counter()
+
+                # 找到實際的 code 長度 (參考 infer_v2.py line 583-591)
+                stop_mel_token = self.cfg.gpt.stop_mel_token
+                code_lens = []
+                for code in codes:
+                    if stop_mel_token not in code:
+                        code_len = len(code)
+                    else:
+                        len_ = (code == stop_mel_token).nonzero(as_tuple=False)[0] + 1
+                        code_len = len_ - 1
+                    code_lens.append(code_len)
+
+                codes = codes[:, :code_len]
+                code_lens = torch.LongTensor(code_lens).to(self.device)
+
+                # 5. S2Mel 生成 Mel 頻譜
+                if verbose:
+                    debug_log(3, f"   [3/4] S2Mel 生成中...")
+
+                with torch.no_grad():
+                    dtype = None
+                    with torch.amp.autocast(self.device.type, enabled=dtype is not None, dtype=dtype):
+                        latent = self.s2mel.models['gpt_layer'](latent)
+                        S_infer = self.semantic_codec.quantizer.vq2emb(codes.unsqueeze(1))
+                        S_infer = S_infer.transpose(1, 2)
+
+                        if latent.shape[1] > S_infer.shape[1]:
+                            latent = latent[:, :S_infer.shape[1], :]
+
+                        S_infer = S_infer + latent
+                        target_lengths = (code_lens * 1.72).long()
+
+                    cond = self.s2mel.models['length_regulator'](
+                        S_infer,
+                        ylens=target_lengths,
+                        n_quantizers=3,
+                        f0=None
+                    )[0]
+
+                    cat_condition = torch.cat([self.character_features['prompt_condition'], cond], dim=1)
+
+                    vc_target = self.s2mel.models['cfm'].inference(
+                        cat_condition,
+                        torch.LongTensor([cat_condition.size(1)]).to(self.device),
+                        self.character_features['ref_mel'],
+                        self.character_features['style'],
+                        None,
+                        n_timesteps=25,
+                        inference_cfg_rate=0.7
                     )
 
-                    # 如果有情感向量,混合 emovec_mat
-                    if emovec_mat is not None:
-                        weight_sum = torch.sum(torch.tensor(normalized_emotion, device=self.device))
-                        emovec = emovec_mat + (1 - weight_sum) * emovec
+                    mel = vc_target[:, :, self.character_features['ref_mel'].size(-1):]
+                seg_s2mel_cfm_ms += (time.perf_counter() - _seg_t) * 1000
+                _seg_t = time.perf_counter()
 
-                    # inference_speech 返回 (codes, speech_conditioning_latent)
-                    codes, speech_conditioning_latent = self.gpt.inference_speech(
-                        spk_cond_emb,
-                        text_tokens,
-                        emo_cond_emb,  # 使用 emo_cond_emb (不是 spk_cond_emb!)
-                        cond_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
-                        emo_cond_lengths=torch.tensor([emo_cond_emb.shape[-1]], device=self.device),
-                        emo_vec=emovec,  # 使用merge後的 emovec
-                        num_return_sequences=1,
-                        num_beams=num_beams,
-                        do_sample=do_sample,
-                        temperature=temperature,
-                        top_p=top_p,
-                        top_k=top_k,
-                        length_penalty=1.0,
-                        repetition_penalty=1.2,
-                        max_generate_length=self.cfg.gpt.max_mel_tokens
-                    )
-                    _t = _mark("gpt_semantic_ms", _t)
+                # 6. BigVGAN 生成波形
+                if verbose:
+                    debug_log(3, f"   [4/4] BigVGAN 生成中...")
 
-                    # GPT forward 獲取 latent
-                    use_speed = torch.zeros(1, device=self.device).long()
-                    latent = self.gpt(
-                        speech_conditioning_latent,
-                        text_tokens,
-                        torch.tensor([text_tokens.shape[-1]], device=self.device),
-                        codes,
-                        torch.tensor([codes.shape[-1]], device=self.device),
-                        spk_cond_emb,
-                        cond_mel_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
-                        emo_cond_mel_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
-                        emo_vec=emovec_mat,
-                        use_speed=use_speed
-                    )
-                    _t = _mark("gpt_latent_ms", _t)
+                with torch.no_grad():
+                    seg_audio = self.bigvgan(mel.float()).squeeze(0).cpu()
+                seg_vocoder_ms += (time.perf_counter() - _seg_t) * 1000
 
-            # 找到實際的 code 長度 (參考 infer_v2.py line 583-591)
-            stop_mel_token = self.cfg.gpt.stop_mel_token
-            code_lens = []
-            for code in codes:
-                if stop_mel_token not in code:
-                    code_len = len(code)
-                else:
-                    len_ = (code == stop_mel_token).nonzero(as_tuple=False)[0] + 1
-                    code_len = len_ - 1
-                code_lens.append(code_len)
+                audio_segments.append(seg_audio)
 
-            codes = codes[:, :code_len]  # 裁剪到實際長度
-            code_lens = torch.LongTensor(code_lens).to(self.device)
+                # Record first-segment completion time
+                if first_segment_done_ms is None:
+                    first_segment_done_ms = (time.perf_counter() - wall_t0) * 1000
 
-            # 5. S2Mel 生成 Mel 頻譜
-            if verbose:
-                debug_log(3, "   [3/4] S2Mel 生成中...")
+            # --- 拼接所有段落的音頻 ---
+            if len(audio_segments) == 1:
+                audio_output = audio_segments[0]
+            else:
+                audio_output = torch.cat(audio_segments, dim=-1)
+                if verbose:
+                    debug_log(3, f"   ✓ 已拼接 {len(audio_segments)} 段音頻")
 
-            with torch.no_grad():
-                # 使用 dtype=None 的 autocast (參考 infer_v2.py line 617)
-                dtype = None
-                with torch.amp.autocast(self.device.type, enabled=dtype is not None, dtype=dtype):
-                    latent = self.s2mel.models['gpt_layer'](latent)
-                    S_infer = self.semantic_codec.quantizer.vq2emb(codes.unsqueeze(1))
-                    S_infer = S_infer.transpose(1, 2)
+            # Record accumulated stage timings
+            if collect_timings:
+                timings["gpt_semantic_ms"] = seg_gpt_semantic_ms
+                timings["gpt_latent_ms"] = seg_gpt_latent_ms
+                timings["s2mel_cfm_ms"] = seg_s2mel_cfm_ms
+                timings["vocoder_ms"] = seg_vocoder_ms
+                timings["segment_count"] = float(num_segments)
+                timings["first_segment_ms"] = first_segment_done_ms or 0.0
 
-                    # 裁剪 latent 以匹配 S_infer 的長度
-                    if latent.shape[1] > S_infer.shape[1]:
-                        latent = latent[:, :S_infer.shape[1], :]
-
-                    S_infer = S_infer + latent
-                    target_lengths = (code_lens * 1.72).long()
-
-                cond = self.s2mel.models['length_regulator'](
-                    S_infer,
-                    ylens=target_lengths,
-                    n_quantizers=3,
-                    f0=None
-                )[0]
-
-                cat_condition = torch.cat([self.character_features['prompt_condition'], cond], dim=1)
-
-                # CFM inference
-                vc_target = self.s2mel.models['cfm'].inference(
-                    cat_condition,
-                    torch.LongTensor([cat_condition.size(1)]).to(self.device),
-                    self.character_features['ref_mel'],
-                    self.character_features['style'],
-                    None,
-                    n_timesteps=25,
-                    inference_cfg_rate=0.7
-                )
-
-                # 移除參考音頻部分
-                mel = vc_target[:, :, self.character_features['ref_mel'].size(-1):]
-            _t = _mark("s2mel_cfm_ms", _t)
-
-            # 6. BigVGAN 生成波形
-            if verbose:
-                debug_log(3, "   [4/4] BigVGAN 生成中...")
-
-            with torch.no_grad():
-                # BigVGAN 需要 Float32 輸入 (參考 infer_v2.py line 641)
-                audio_output = self.bigvgan(mel.float()).squeeze(0).cpu()
-            _t = _mark("vocoder_ms", _t)
+            _t = time.perf_counter()
 
             # 7. 保存音頻
             import torchaudio

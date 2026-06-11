@@ -9,7 +9,13 @@
       "Bash(git merge *)",
       "Bash(\"C:\\\\Users\\\\Bernie\\\\source\\\\repos\\\\Unforgettableeternalproject\\\\U.E.P-s-Core\\\\env\\\\Scripts\\\\python.exe\" -m pytest tests/ -v)",
       "Bash(\"C:\\\\Users\\\\Bernie\\\\source\\\\repos\\\\Unforgettableeternalproject\\\\U.E.P-s-Core\\\\env\\\\Scripts\\\\python.exe\" Entry.py profile --help)",
-      "Bash(\"C:\\\\Users\\\\Bernie\\\\source\\\\repos\\\\Unforgettableeternalproject\\\\U.E.P-s-Core\\\\env\\\\Scripts\\\\python.exe\" Entry.py shell --no-playback --no-cuda-kernel)"
+      "Bash(\"C:\\\\Users\\\\Bernie\\\\source\\\\repos\\\\Unforgettableeternalproject\\\\U.E.P-s-Core\\\\env\\\\Scripts\\\\python.exe\" Entry.py shell --no-playback --no-cuda-kernel)",
+      "Bash(git commit -m 'feat: add stage-level profiling for TTS synthesis pipeline *)",
+      "mcp__open-notebook__create_note",
+      "Bash(xargs grep -l \"split_segments\\\\|def infer\\\\|for.*segment\")",
+      "Bash(xargs grep -l \"for.*segment\\\\|for.*seg\\\\|concatenate\\\\|np.concatenate\\\\|torch.cat.*audio\")",
+      "Bash(xargs grep -l \"split_segments\\\\|infer_v2\")",
+      "Bash(git commit -m 'feat: multi-segment synthesis loop with per-segment profiling *)"
     ]
   }
 }

@@ -274,46 +274,49 @@ class EpisodicMemory:
                     f"與目前模型 '{self.embedding_model}' 期望的 {expected_dim} 不符。"
                     "向量索引已清除，需重新對語料生成嵌入。"
                 )
-                # 清除不相容的向量索引，保留元數據
-                return
-
-            self._embeddings, migrated = self._normalize_matrix(loaded_embeddings)
-            if migrated:
-                np.save(self.embeddings_file, self._embeddings)
-                logger.info(
-                    "[EpisodicMemory] Migrated embeddings.npy to L2-normalized vectors"
-                )
-
-            metadata_migrated = False
-            # 重建索引映射
-            for i, ep in enumerate(self._episodes.values()):
-                self._id_to_index[ep.id] = i
-                if i >= len(self._embeddings):
-                    break
-
-                normalized_embedding = self._embeddings[i].tolist()
-                metadata_embedding = np.asarray(ep.embedding, dtype=np.float32)
-                embeddings_match = (
-                    metadata_embedding.shape == self._embeddings[i].shape
-                    and np.allclose(
-                        metadata_embedding,
-                        self._embeddings[i],
-                        rtol=1e-5,
-                        atol=1e-6,
+                # 清除不相容的向量索引和磁碟檔案，保留元數據
+                self._embeddings = None
+                self._id_to_index.clear()
+                if self.embeddings_file.exists():
+                    self.embeddings_file.unlink()
+            else:
+                self._embeddings, migrated = self._normalize_matrix(loaded_embeddings)
+                if migrated:
+                    np.save(self.embeddings_file, self._embeddings)
+                    logger.info(
+                        "[EpisodicMemory] Migrated embeddings.npy to L2-normalized vectors"
                     )
-                )
-                if not embeddings_match:
-                    ep.embedding = normalized_embedding
-                    metadata_migrated = True
 
-            if metadata_migrated:
-                with open(self.metadata_file, "w", encoding="utf-8") as f:
-                    data = [ep.to_dict() for ep in self._episodes.values()]
-                    json.dump(data, f, ensure_ascii=False, indent=2)
-                logger.info(
-                    "[EpisodicMemory] Migrated episode metadata to L2-normalized vectors"
-                )
-    
+                metadata_migrated = False
+                # 重建索引映射
+                for i, ep in enumerate(self._episodes.values()):
+                    self._id_to_index[ep.id] = i
+                    if i >= len(self._embeddings):
+                        break
+
+                    normalized_embedding = self._embeddings[i].tolist()
+                    metadata_embedding = np.asarray(ep.embedding, dtype=np.float32)
+                    embeddings_match = (
+                        metadata_embedding.shape == self._embeddings[i].shape
+                        and np.allclose(
+                            metadata_embedding,
+                            self._embeddings[i],
+                            rtol=1e-5,
+                            atol=1e-6,
+                        )
+                    )
+                    if not embeddings_match:
+                        ep.embedding = normalized_embedding
+                        metadata_migrated = True
+
+                if metadata_migrated:
+                    with open(self.metadata_file, "w", encoding="utf-8") as f:
+                        data = [ep.to_dict() for ep in self._episodes.values()]
+                        json.dump(data, f, ensure_ascii=False, indent=2)
+                    logger.info(
+                        "[EpisodicMemory] Migrated episode metadata to L2-normalized vectors"
+                    )
+
     def _save(self):
         """持久化到磁盤"""
         # 保存元數據

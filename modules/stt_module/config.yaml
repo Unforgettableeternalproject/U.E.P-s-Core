@@ -11,8 +11,9 @@ whisper_model: "base"      # 預設模型名稱 (用於 openai-whisper)
 whisper_model_path: null   # 本地模型檔案路徑 (用於 openai-whisper)
 
 # Transformers Whisper 配置 (新架構)
-whisper_model_id: "openai/whisper-large-v3"  # Hugging Face 模型 ID
-whisper_local_path: "models/stt/whisper/whisper-large-v3"  # 本地模型目錄
+# 已切換為輕量化模型以減少資源佔用
+whisper_model_id: "openai/whisper-base"  # Hugging Face 模型 ID (輕量化)
+whisper_local_path: "models/stt/whisper/whisper-base"  # 本地模型目錄
 use_local_model: true      # 優先使用本地模型
 use_transformers: true     # 使用 Transformers 架構 (false 則使用 openai-whisper)
 

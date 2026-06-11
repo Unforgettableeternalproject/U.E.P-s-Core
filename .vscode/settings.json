@@ -2,5 +2,12 @@
     "python.analysis.importFormat": "relative",
     "python.analysis.inlayHints.callArgumentNames": "all",
     "python.analysis.languageServerMode": "default",
-    "python.analysis.typeCheckingMode": "standard"
+    "python.analysis.typeCheckingMode": "standard",
+    "python-envs.pythonProjects": [
+        {
+            "path": "",
+            "envManager": "ms-python.python:system",
+            "packageManager": "ms-python.python:pip"
+        }
+    ]
 }

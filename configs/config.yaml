@@ -1,15 +1,19 @@
 metadata:
   system_version: v0.9.4
+  engine_mode: "minimal"  # "full" | "engine-only" | "minimal"
+  description: "最小化引擎模式 - 僅保留系統核心，所有模組暫時停用"
+
+# 模組啟用開關 (minimal 模式下全部停用)
 modules_enabled:
-  stt_module: true
-  nlp_module: true
-  mem_module: true
-  llm_module: true
-  tts_module: true
-  sys_module: true
-  ui_module: true
-  ani_module: true
-  mov_module: true
+  stt_module: true  # 已切換為 whisper-base，但暫時停用
+  nlp_module: false
+  mem_module: false
+  llm_module: false
+  tts_module: false
+  sys_module: false
+  ui_module: false   # 前端已解耦
+  ani_module: false  # 前端已解耦
+  mov_module: false  # 前端已解耦
 modules_refactored:
   stt_module: true
   nlp_module: true
@@ -25,7 +29,7 @@ logging:
   log_level: DEBUG
   log_dir: logs
   enable_split_logs: true
-  enable_console_output: false
+  enable_console_output: true
 debug:
   enabled: true
   debug_level: 3

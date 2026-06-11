@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__open-notebook__list_notebooks",
+      "mcp__open-notebook__create_notebook",
+      "mcp__open-notebook__create_note",
+      "mcp__open-notebook__list_notes",
+      "Bash(cd *)",
+      "Bash(claude mcp *)",
+      "Bash(claude plugin *)",
+      "Bash(claude plugins *)",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(f'Permissions: {len\\(d.get\\(\\\\\"permissions\\\\\",{}\\).get\\(\\\\\"allow\\\\\",[]\\)\\)} rules'\\); hooks=d.get\\('hooks',{}\\); print\\(f'PreToolUse hooks: {len\\(hooks.get\\(\\\\\"PreToolUse\\\\\",[]\\)\\)}'\\); print\\(f'PostToolUse hooks: {len\\(hooks.get\\(\\\\\"PostToolUse\\\\\",[]\\)\\)}'\\)\")",
+      "Bash(gh auth *)",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); mcps=d.get\\('mcpServers',{}\\); print\\('Global MCP servers:'\\); [print\\(f' - {k}'\\) for k in mcps.keys\\(\\)]\")"
+    ]
+  }
+}

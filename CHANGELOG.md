@@ -2638,3 +2638,15 @@
 
 ---
 
+### refactor: integrated some principles from other projects into here, also made some preparations for the refactor. 06/11
+
+> Date: Thu, 11 Jun 2026 11:46:36 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `fea1f9d7a12d6fde118006681e7ffe32c2d52d5d`
+
+---
+

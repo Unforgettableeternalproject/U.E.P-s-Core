@@ -499,11 +499,17 @@ class IndexTTSLite:
         temperature: float = 0.0,
         top_p: float = 1.0,
         top_k: int = 50,
-        verbose: bool = True
+        verbose: bool = True,
+        on_segment_audio=None,
     ) -> bool:
         """
         合成語音 — 回傳 bool，保持向後相容。
         內部委派給 _synthesize_impl()。
+
+        Args:
+            on_segment_audio: Optional callback(segment_audio_tensor, segment_index, total_segments).
+                Called after each segment's vocoder completes, before concatenation.
+                Use for streaming playback.
         """
         success, _ = self._synthesize_impl(
             text=text, output_path=output_path,
@@ -511,6 +517,7 @@ class IndexTTSLite:
             language=language, num_beams=num_beams, do_sample=do_sample,
             temperature=temperature, top_p=top_p, top_k=top_k,
             verbose=verbose, collect_timings=False,
+            on_segment_audio=on_segment_audio,
         )
         return success
 
@@ -554,6 +561,7 @@ class IndexTTSLite:
         top_k: int = 50,
         verbose: bool = True,
         collect_timings: bool = False,
+        on_segment_audio=None,
     ) -> tuple:
         """
         合成語音的核心實現 (獨立引擎實現,參考 infer_v2.py 邏輯)
@@ -611,7 +619,7 @@ class IndexTTSLite:
                 debug_log(3, "   [1/4] 文本處理...")
 
             text_tokens_list = self.tokenizer.tokenize(text)
-            segments = self.tokenizer.split_segments(text_tokens_list, max_text_tokens_per_segment=200)
+            segments = self.tokenizer.split_segments(text_tokens_list, max_text_tokens_per_segment=150)
             num_segments = len(segments)
             if num_segments > 1 and verbose:
                 debug_log(2, f"      ℹ️  文本分為 {num_segments} 段處理")
@@ -783,6 +791,10 @@ class IndexTTSLite:
                 # Record first-segment completion time
                 if first_segment_done_ms is None:
                     first_segment_done_ms = (time.perf_counter() - wall_t0) * 1000
+
+                # Streaming callback: emit segment audio immediately
+                if on_segment_audio is not None:
+                    on_segment_audio(seg_audio, seg_idx, num_segments)
 
             # --- 拼接所有段落的音頻 ---
             if len(audio_segments) == 1:

@@ -53,8 +53,37 @@ class TTSInteractiveSession:
         self._loaded = True
 
     def say(self, text: str) -> SayResult:
-        generated = self._generate(text, self._resolve_auto_output_path(prefix="say"))
-        self.player.play(generated)
+        """Generate and play audio.  Streams per-segment playback when possible."""
+        if not text.strip():
+            raise ValueError("text must not be empty")
+
+        self.load()
+        output_path = self._resolve_auto_output_path(prefix="say")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Build streaming callback: play each segment's audio tensor immediately
+        play_tensor = getattr(self.player, "play_tensor", None)
+        segments_played = 0
+
+        def _on_segment(audio_tensor, seg_idx: int, total: int):
+            nonlocal segments_played
+            if play_tensor is not None:
+                play_tensor(audio_tensor)
+                segments_played += 1
+
+        # Use streaming path if backend supports on_segment_audio
+        if hasattr(self.backend, "generate") and play_tensor is not None:
+            generated = self.backend.generate(
+                text, output_path, on_segment_audio=_on_segment,
+            )
+        else:
+            generated = self.backend.generate(text, output_path)
+
+        # Fallback: if no segments were streamed (single segment or no play_tensor),
+        # play the final concatenated file
+        if segments_played == 0:
+            self.player.play(generated)
+
         self._say_count += 1
         self._play_count += 1
         self._last_output_path = generated

@@ -15,7 +15,8 @@
       "Bash(xargs grep -l \"split_segments\\\\|def infer\\\\|for.*segment\")",
       "Bash(xargs grep -l \"for.*segment\\\\|for.*seg\\\\|concatenate\\\\|np.concatenate\\\\|torch.cat.*audio\")",
       "Bash(xargs grep -l \"split_segments\\\\|infer_v2\")",
-      "Bash(git commit -m 'feat: multi-segment synthesis loop with per-segment profiling *)"
+      "Bash(git commit -m 'feat: multi-segment synthesis loop with per-segment profiling *)",
+      "Bash(git commit -m 'feat: streaming per-segment playback for say command *)"
     ]
   }
 }

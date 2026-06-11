@@ -51,7 +51,7 @@ class LegacyIndexTTS2Backend:
         self.engine.load_character(self.paths.character_path)
         self.loaded = True
 
-    def generate(self, text: str, output_path: str | Path) -> Path:
+    def generate(self, text: str, output_path: str | Path, on_segment_audio=None) -> Path:
         if not text.strip():
             raise ValueError("text must not be empty")
 
@@ -63,6 +63,7 @@ class LegacyIndexTTS2Backend:
             text=text,
             output_path=str(output),
             emotion_vector=self.emotion_vector,
+            on_segment_audio=on_segment_audio,
         )
         if not ok or not output.exists():
             raise RuntimeError("IndexTTS2 generation did not produce an output file")

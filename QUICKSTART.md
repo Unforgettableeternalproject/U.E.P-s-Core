@@ -45,4 +45,24 @@ Command semantics:
 
 - `say <text>`: generate a temporary shell output, play it immediately, then delete the temporary file.
 - `save --output <path> <text>`: generate a file without playback.
+- `profile <text>`: generate with full stage-level timing report.
 - `--no-playback`: shell fallback for devices/environments without audio output.
+
+## Profiling
+
+Run a profiled synthesis from the CLI:
+
+```powershell
+python Entry.py profile --text "Short profiling sentence."
+```
+
+Repeat for averaged timings:
+
+```powershell
+python Entry.py profile --text "Short profiling sentence." --repeat 5
+```
+
+The report includes:
+- Cold start breakdown (model init, character load, warmup)
+- Per-stage synthesis timing (text norm, GPT semantic, GPT latent, S2Mel/CFM, BigVGAN, WAV save)
+- Total wall time, audio duration, RTF, first-audio proxy

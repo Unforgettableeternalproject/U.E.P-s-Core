@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
+from test_tts.benchmarks.metrics import InitProfile, SynthesisProfile, ProfileReport
 from test_tts.runtime.legacy_generate import LegacyGenerationPaths, validate_generation_paths
 
 EngineFactory = Callable[..., Any]
@@ -66,6 +67,36 @@ class LegacyIndexTTS2Backend:
         if not ok or not output.exists():
             raise RuntimeError("IndexTTS2 generation did not produce an output file")
         return output
+
+    def profile_generate(self, text: str, output_path: str | Path) -> tuple[Path, ProfileReport]:
+        """Generate speech and return a full profiling report."""
+        if not text.strip():
+            raise ValueError("text must not be empty")
+
+        self.load()
+        output = Path(output_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+
+        if not hasattr(self.engine, "synthesize_with_profile"):
+            raise NotImplementedError(
+                "Engine does not support synthesize_with_profile. "
+                "Use the instrumented IndexTTSLite engine."
+            )
+
+        ok, timings = self.engine.synthesize_with_profile(
+            text=text,
+            output_path=str(output),
+            emotion_vector=self.emotion_vector,
+        )
+        if not ok or not output.exists():
+            raise RuntimeError("IndexTTS2 generation did not produce an output file")
+
+        # Build init profile from engine's stored init timings
+        init_timings = getattr(self.engine, "_init_timings", {})
+        init_profile = InitProfile.from_dict(init_timings)
+        synth_profile = SynthesisProfile.from_dict(timings)
+
+        return output, ProfileReport(init=init_profile, synthesis=synth_profile, success=ok)
 
     def unload(self) -> None:
         self.engine = None

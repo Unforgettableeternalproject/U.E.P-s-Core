@@ -56,6 +56,14 @@ class TTSInteractiveSession:
         """Return the current emotion vector."""
         return list(self.backend.emotion_vector or [0.0] * 8)
 
+    def set_language(self, language: str) -> None:
+        """Set synthesis language ('en' or 'zh')."""
+        self._language = language
+
+    def get_language(self) -> str:
+        """Return current synthesis language."""
+        return getattr(self, "_language", "en")
+
     def load(self) -> None:
         if self._loaded:
             return
@@ -80,6 +88,8 @@ class TTSInteractiveSession:
         is_streaming = isinstance(self.player, StreamingAudioPlayer)
         segments_played = 0
 
+        lang = self.get_language()
+
         if is_streaming:
             # --- Producer/Consumer path ---
             self.player.start_stream()
@@ -88,7 +98,7 @@ class TTSInteractiveSession:
                 self.player.enqueue_tensor(audio_tensor)
 
             generated = self.backend.generate(
-                text, output_path, on_segment_audio=_on_segment,
+                text, output_path, on_segment_audio=_on_segment, language=lang,
             )
 
             segments_played = self.player.wait_stream()
@@ -105,10 +115,10 @@ class TTSInteractiveSession:
 
             if play_tensor is not None:
                 generated = self.backend.generate(
-                    text, output_path, on_segment_audio=_on_segment,
+                    text, output_path, on_segment_audio=_on_segment, language=lang,
                 )
             else:
-                generated = self.backend.generate(text, output_path)
+                generated = self.backend.generate(text, output_path, language=lang)
 
         # Fallback: if no segments were streamed, play the final file
         if segments_played == 0:

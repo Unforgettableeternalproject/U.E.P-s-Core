@@ -23,6 +23,35 @@ EMOTION_PRESETS: dict[str, list[float]] = {
 
 EMOTION_LABELS = ["happy", "angry", "sad", "afraid", "disgusted", "melancholic", "surprised", "calm"]
 
+# --- Language support ---
+SUPPORTED_LANGUAGES = {"en": "English", "zh": "Chinese"}
+
+
+def _detect_language(text: str) -> str:
+    """Heuristic CJK detection — if >30% of chars are CJK, assume Chinese."""
+    cjk = sum(1 for c in text if '一' <= c <= '鿿' or '㐀' <= c <= '䶿')
+    return "zh" if cjk / max(len(text), 1) > 0.3 else "en"
+
+
+def _translate_text(text: str, target_lang: str) -> str | None:
+    """Translate text using deep_translator (Google free). Returns None on failure."""
+    try:
+        from deep_translator import GoogleTranslator
+        src = "zh-CN" if target_lang == "en" else "en"
+        tgt = "en" if target_lang == "en" else "zh-CN"
+        result = GoogleTranslator(source=src, target=tgt).translate(text)
+        return result
+    except ImportError:
+        try:
+            from googletrans import Translator
+            tgt = "en" if target_lang == "en" else "zh-cn"
+            result = Translator().translate(text, dest=tgt).text
+            return result
+        except ImportError:
+            return None
+    except Exception:
+        return None
+
 
 class InteractiveSession(Protocol):
     def load(self) -> None:
@@ -47,6 +76,12 @@ class InteractiveSession(Protocol):
         ...
 
     def get_emotion(self) -> list[float]:
+        ...
+
+    def set_language(self, language: str) -> None:
+        ...
+
+    def get_language(self) -> str:
         ...
 
 
@@ -77,11 +112,14 @@ class InteractiveShell:
         if verb == "help":
             self.write(
                 "Commands: load, say <text>, save --output <path> <text>, "
-                "profile <text>, emotion [preset|values], status, unload, exit"
+                "profile <text>, emotion [preset|values], language [en|zh], "
+                "status, unload, exit"
             )
             return True
         if verb == "emotion":
             return self._handle_emotion(args)
+        if verb in {"language", "lang"}:
+            return self._handle_language(args)
         if verb == "load":
             self.session.load()
             self.write("loaded")
@@ -95,22 +133,63 @@ class InteractiveShell:
             return True
         if verb == "say":
             text = self._parse_text_args(args, command_name="say")
+            text = self._auto_translate(text)
             result = self.session.say(text)
             self.write(f"played: {result.output_path}")
             return True
         if verb == "save":
             text, output = self._parse_save_args(args)
+            text = self._auto_translate(text)
             result = self.session.save(text, output_path=output)
             self.write(f"saved: {result.output_path}")
             return True
         if verb == "profile":
             text = self._parse_text_args(args, command_name="profile")
+            text = self._auto_translate(text)
             result = self.session.profile(text)
             self.write(result.report.format_report())
             return True
 
         self.write(f"Unknown command: {verb}")
         return True
+
+    def _handle_language(self, args: list[str]) -> bool:
+        """Handle the language command: show or set language."""
+        if not args:
+            current = self.session.get_language()
+            name = SUPPORTED_LANGUAGES.get(current, current)
+            self.write(f"Current language: {current} ({name})")
+            self.write(f"Available: {', '.join(f'{k} ({v})' for k, v in SUPPORTED_LANGUAGES.items())}")
+            self.write("Auto-translate: text in wrong language will be translated before synthesis")
+            return True
+
+        lang = args[0].lower()
+        if lang not in SUPPORTED_LANGUAGES:
+            self.write(f"Unsupported language '{lang}'. Available: {', '.join(SUPPORTED_LANGUAGES.keys())}")
+            return True
+
+        self.session.set_language(lang)
+        name = SUPPORTED_LANGUAGES[lang]
+        self.write(f"Language set to: {lang} ({name})")
+        return True
+
+    def _auto_translate(self, text: str) -> str:
+        """If text language doesn't match session language, attempt translation."""
+        target_lang = self.session.get_language()
+        detected = _detect_language(text)
+
+        if detected == target_lang:
+            return text
+
+        translated = _translate_text(text, target_lang)
+        if translated:
+            src_name = SUPPORTED_LANGUAGES.get(detected, detected)
+            tgt_name = SUPPORTED_LANGUAGES.get(target_lang, target_lang)
+            self.write(f"[Auto-translate {src_name} -> {tgt_name}]: {translated}")
+            return translated
+
+        self.write(f"[Warning] Translation failed, using original text")
+        return text
 
     def _handle_emotion(self, args: list[str]) -> bool:
         """Handle the emotion command: show, set preset, or set raw 8D vector."""

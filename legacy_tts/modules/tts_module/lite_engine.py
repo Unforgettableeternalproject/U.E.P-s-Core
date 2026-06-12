@@ -84,6 +84,88 @@ class IndexTTSLite:
     """精簡版 IndexTTS2 推論引擎"""
 
     @staticmethod
+    def _remove_long_silence(
+        codes: "torch.Tensor",
+        stop_mel_token: int,
+        silent_token: int = 52,
+        max_consecutive: int = 30,
+        keep_consecutive: int = 10,
+    ) -> tuple:
+        """Remove excessively long runs of silent tokens from GPT output codes.
+
+        Ported from upstream IndexTTS2 ``infer_v2.py::remove_long_silence``.
+
+        Parameters
+        ----------
+        codes:
+            Shape ``[B, T]`` — batch of mel token sequences from GPT.
+        stop_mel_token:
+            The stop token ID (e.g. 8193).
+        silent_token:
+            The silence token ID (default 52 per upstream).
+        max_consecutive:
+            If total count of silent_token in the sequence exceeds this,
+            trigger compression.
+        keep_consecutive:
+            Maximum consecutive silent tokens to keep after compression.
+
+        Returns
+        -------
+        (codes, code_lens) where codes may be shortened.
+        """
+        device = codes.device
+        codes_list = []
+        code_lens = []
+        modified = False
+
+        for i in range(codes.shape[0]):
+            code = codes[i]
+
+            # Find effective length (up to stop token)
+            if not torch.any(code == stop_mel_token).item():
+                eff_len = code.size(0)
+            else:
+                stop_idx = (code == stop_mel_token).nonzero(as_tuple=False)
+                eff_len = stop_idx[0].item() if len(stop_idx) > 0 else code.size(0)
+
+            silent_count = torch.sum(code[:eff_len] == silent_token).item()
+
+            if silent_count > max_consecutive:
+                # Compress: keep at most `keep_consecutive` consecutive silent tokens
+                keep_indices = []
+                n_consecutive = 0
+                for k in range(eff_len):
+                    if code[k].item() != silent_token:
+                        keep_indices.append(k)
+                        n_consecutive = 0
+                    elif n_consecutive < keep_consecutive:
+                        keep_indices.append(k)
+                        n_consecutive += 1
+                    # else: skip (too many consecutive silences)
+
+                eff_len = len(keep_indices)
+                codes_list.append(code[keep_indices])
+                modified = True
+            else:
+                codes_list.append(code[:eff_len])
+
+            code_lens.append(eff_len)
+
+        if modified:
+            if len(codes_list) == 1:
+                codes = codes_list[0].unsqueeze(0)
+            else:
+                from torch.nn.utils.rnn import pad_sequence
+                codes = pad_sequence(codes_list, batch_first=True, padding_value=stop_mel_token)
+
+        max_len = max(code_lens) if code_lens else 0
+        if max_len > 0 and max_len < codes.shape[1]:
+            codes = codes[:, :max_len]
+
+        code_lens_tensor = torch.tensor(code_lens, dtype=torch.long, device=device)
+        return codes, code_lens_tensor
+
+    @staticmethod
     def _trim_trailing_silence(
         audio: "torch.Tensor",
         rms_threshold: float = 0.005,
@@ -886,19 +968,12 @@ class IndexTTSLite:
                         seg_gpt_latent_ms += (time.perf_counter() - _seg_t) * 1000
                         _seg_t = time.perf_counter()
 
-                # 找到實際的 code 長度 (參考 infer_v2.py line 583-591)
+                # 找到實際的 code 長度 + 壓縮過長靜音 (參考 infer_v2.py)
                 stop_mel_token = self.cfg.gpt.stop_mel_token
-                code_lens = []
-                for code in codes:
-                    if stop_mel_token not in code:
-                        code_len = len(code)
-                    else:
-                        len_ = (code == stop_mel_token).nonzero(as_tuple=False)[0] + 1
-                        code_len = len_ - 1
-                    code_lens.append(code_len)
-
-                codes = codes[:, :code_len]
-                code_lens = torch.LongTensor(code_lens).to(self.device)
+                codes, code_lens = self._remove_long_silence(
+                    codes, stop_mel_token, silent_token=52,
+                    max_consecutive=30, keep_consecutive=10,
+                )
 
                 # 5. S2Mel 生成 Mel 頻譜
                 if verbose:

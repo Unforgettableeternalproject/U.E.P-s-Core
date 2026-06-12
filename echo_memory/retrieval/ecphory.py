@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 
+from echo_memory.neurochem.state import NeurochemState, RetrievalParams
 from echo_memory.schemas.concept import Concept
 from echo_memory.schemas.memory_context import MemoryContext
 from echo_memory.storage.episodic import EpisodicMemory
@@ -55,29 +56,46 @@ class EcphoryRetrieval:
         enable_semantic: bool = True,
         concept_top_k: int = 5,
         concept_min_similarity: float = 0.3,
+        neurochem: NeurochemState | None = None,
     ) -> MemoryContext:
         """
         執行 EcphoryRAG 檢索。
 
         Args:
             query: 查詢文本
-            dopamine: 多巴胺（影響探索廣度）
-            serotonin: 血清素（影響謹慎程度）
+            dopamine: 多巴胺（影響探索廣度，neurochem=None 時使用）
+            serotonin: 血清素（影響謹慎程度，neurochem=None 時使用）
             top_k: Episode 返回數量
             min_similarity: Episode 最小相似度閾值
             enable_graph_expansion: 是否啟用圖譜展開
             enable_semantic: 是否啟用語義概念檢索
             concept_top_k: Concept 返回數量
             concept_min_similarity: Concept 最小相似度閾值
+            neurochem: NeurochemState 實例（若提供，覆寫 dopamine/serotonin
+                       並用衍生參數驅動檢索行為）
 
         Returns:
             MemoryContext 記憶脈絡（包含 episodes + concepts）
         """
+        # 若有 NeurochemState，用它的衍生參數覆寫預設值
+        if neurochem is not None:
+            params = neurochem.get_retrieval_params()
+            dopamine = neurochem.dopamine
+            serotonin = neurochem.serotonin
+            concept_top_k = params.concept_top_k
+            concept_min_similarity = params.concept_min_similarity
+
         # Step 1: Episode 向量檢索（種子節點）
         query_embedding = self.episodic.generate_query_embedding(query)
+
+        # NeurochemState 影響種子數
+        seed_k = max(3, top_k // 2)
+        if neurochem is not None:
+            seed_k = neurochem.get_retrieval_params().seed_k
+
         seed_results = self.episodic.search(
             query_embedding,
-            top_k=max(3, top_k // 2),
+            top_k=seed_k,
             min_similarity=min_similarity,
         )
 
@@ -100,8 +118,13 @@ class EcphoryRetrieval:
 
         # Step 2: 圖譜多跳展開（Episode PRECEDES 邊）
         if enable_graph_expansion and seed_ids and self.episodic.graph.get_node_count() > 0:
-            max_hops = 2 if serotonin > 0.6 else 1
-            min_weight = max(0.15, 0.35 - dopamine * 0.3)
+            if neurochem is not None:
+                p = neurochem.get_retrieval_params()
+                max_hops = p.max_hops
+                min_weight = p.min_weight
+            else:
+                max_hops = 2 if serotonin > 0.6 else 1
+                min_weight = max(0.15, 0.35 - dopamine * 0.3)
 
             expanded_nodes = self.episodic.graph.expand_neighbors(
                 seed_ids=seed_ids,

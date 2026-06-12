@@ -284,6 +284,21 @@ class InteractiveShell:
                 self.write(f"Error: {e}")
             return True
 
+        # "lora scale 0.85" alias
+        if subcmd == "scale" and len(args) > 1:
+            try:
+                scale = float(args[1])
+                if not status["active"]:
+                    self.session.load_lora(scale=scale)
+                else:
+                    self.session.set_lora_scale(scale)
+                self.write(f"🧬 LoRA ON  scale={scale:.0%}")
+            except ValueError:
+                self.write(f"Invalid scale: {args[1]}")
+            except RuntimeError as e:
+                self.write(f"Error: {e}")
+            return True
+
         # Direct scale value: "lora 0.85"
         try:
             scale = float(subcmd)
@@ -296,7 +311,7 @@ class InteractiveShell:
         except ValueError:
             pass
 
-        self.write("Usage: lora [on [scale]|off|<0.0-1.0>]")
+        self.write("Usage: lora [on|off|scale <0-1>|<0-1>]")
         return True
 
     def _auto_translate(self, text: str) -> str:

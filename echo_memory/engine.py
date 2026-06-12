@@ -200,9 +200,7 @@ class MemoryEngine:
             episode_id: 新建的情節 ID
         """
         if content_summary is None:
-            # 結合 user + agent 的核心內容作為摘要，供向量搜索使用
-            combined = f"{user_input} {agent_response}"
-            content_summary = combined[:150]
+            content_summary = f"{user_input[:50]}..."
 
         episode = Episode(
             user_input=user_input,

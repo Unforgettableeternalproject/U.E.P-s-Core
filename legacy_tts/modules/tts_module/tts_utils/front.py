@@ -488,6 +488,24 @@ class TextTokenizer:
                             break
                         remainder = sub[1]
 
+        # ── Merge undersized segments ──
+        # Segments shorter than min_segment_tokens get merged with a neighbour
+        # to avoid sending a single word/phrase to the TTS engine.
+        min_seg = 15  # minimum tokens per segment
+        if len(result) > 1:
+            merged: List[List[str]] = [result[0]]
+            for seg in result[1:]:
+                if len(merged[-1]) < min_seg:
+                    merged[-1] = merged[-1] + seg
+                elif len(seg) < min_seg:
+                    merged[-1] = merged[-1] + seg
+                else:
+                    merged.append(seg)
+            if len(merged) > 1 and len(merged[-1]) < min_seg:
+                merged[-2] = merged[-2] + merged[-1]
+                merged.pop()
+            result = merged
+
         return result
 
     @staticmethod

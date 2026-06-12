@@ -42,6 +42,9 @@ class Config:
             "EMBEDDING_QUERY_PREFIX",
             ""
         )
+        # Ollama embedding backend (set EMBEDDING_BACKEND=ollama to use)
+        self.embedding_backend = os.getenv("EMBEDDING_BACKEND", "sentence-transformers")
+        self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
         # === 記憶系統配置 ===
         self.memory_storage_path = os.getenv("MEMORY_STORAGE_PATH", "./data")

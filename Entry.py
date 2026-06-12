@@ -1008,6 +1008,8 @@ class EchoMemoryCLI:
                     device=self.config.embedding_device,
                     query_prefix=getattr(self.config, "embedding_query_prefix", ""),
                     max_episodes=self.config.memory_max_episodes,
+                    embedding_backend=getattr(self.config, "embedding_backend", "sentence-transformers"),
+                    ollama_base_url=getattr(self.config, "ollama_base_url", "http://localhost:11434"),
                 )
 
             stats = self.engine.get_stats()

@@ -44,6 +44,8 @@ class EpisodicMemory:
         query_prefix: str = "",
         max_episodes: int | None = None,
         lock_path: str | Path | None = None,
+        embedding_backend: str = "sentence-transformers",
+        ollama_base_url: str = "http://localhost:11434",
     ):
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
@@ -53,6 +55,8 @@ class EpisodicMemory:
         self.query_prefix = query_prefix
         self.max_episodes = max_episodes  # None 代表無限制
         self.lock_path = Path(lock_path) if lock_path is not None else self.storage_path
+        self.embedding_backend = embedding_backend
+        self.ollama_base_url = ollama_base_url
 
         # 數據文件路徑
         self.metadata_file = self.storage_path / "episodes.json"
@@ -572,13 +576,34 @@ class EpisodicMemory:
 
     def _generate_embedding(self, text: str) -> list[float]:
         """生成文本嵌入向量（存儲用，不加 query prefix）"""
+        if self.embedding_backend == "ollama":
+            return self._generate_embedding_ollama(text)
+        return self._generate_embedding_st(text)
+
+    def _generate_embedding_ollama(self, text: str) -> list[float]:
+        """透過 Ollama /api/embed 端點生成嵌入向量"""
+        import requests
+
+        resp = requests.post(
+            f"{self.ollama_base_url}/api/embed",
+            json={"model": self.embedding_model, "input": text},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        embedding = resp.json()["embeddings"][0]
+        return self._normalize_vector(embedding).tolist()
+
+    def _generate_embedding_st(self, text: str) -> list[float]:
+        """透過 sentence-transformers 生成嵌入向量（fallback）"""
         if self._embedder is None:
-            # 設置 Hugging Face Token（如果存在）
-            from dotenv import load_dotenv
-            load_dotenv()
-            hf_token = os.getenv('HF_TOKEN')
-            if hf_token:
-                os.environ['HF_TOKEN'] = hf_token
+            try:
+                from dotenv import load_dotenv
+                load_dotenv()
+                hf_token = os.getenv('HF_TOKEN')
+                if hf_token:
+                    os.environ['HF_TOKEN'] = hf_token
+            except ImportError:
+                pass
 
             from sentence_transformers import SentenceTransformer
             self._embedder = SentenceTransformer(
@@ -667,6 +692,7 @@ class EpisodicMemory:
                 "all-MiniLM-L6-v2": 384,
                 "BAAI/bge-small-zh-v1.5": 512,
                 "BAAI/bge-m3": 1024,
+                "bge-m3": 1024,  # Ollama model name
             }
             expected_dim = expected_dimensions.get(self.embedding_model)
             legacy_compatible = (

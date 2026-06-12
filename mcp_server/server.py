@@ -83,6 +83,8 @@ def _create_engine(namespace_id: str) -> MemoryEngine:
         query_prefix=config.embedding_query_prefix,
         max_episodes=config.memory_max_episodes,
         namespace_id=namespace_id,
+        embedding_backend=config.embedding_backend,
+        ollama_base_url=config.ollama_base_url,
     )
 
 

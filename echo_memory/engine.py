@@ -51,6 +51,8 @@ class MemoryEngine:
         max_episodes: int | None = None,
         llm_fn: Callable[[str], str] | None = None,
         namespace_id: str = "local-default",
+        embedding_backend: str = "sentence-transformers",
+        ollama_base_url: str = "http://localhost:11434",
     ):
         """
         初始化記憶引擎。
@@ -63,6 +65,8 @@ class MemoryEngine:
             max_episodes: 情節記憶上限（None 代表無限制）
             llm_fn: LLM 呼叫函式 (prompt: str) -> str，用於知識蒸餾與反思重播。
                     若為 None，Dream Engine 的蒸餾和重播步驟會優雅跳過。
+            embedding_backend: "ollama" 或 "sentence-transformers"
+            ollama_base_url: Ollama server URL（僅 backend=ollama 時使用）
         """
         self.namespace_id = normalize_namespace_id(namespace_id)
         self.storage_root = Path(storage_path)
@@ -74,6 +78,8 @@ class MemoryEngine:
         self.query_prefix = query_prefix
         self.max_episodes = max_episodes
         self._llm_fn = llm_fn
+        self.embedding_backend = embedding_backend
+        self.ollama_base_url = ollama_base_url
 
         # 延遲導入以加快啟動速度
         self._episodic = None
@@ -99,6 +105,8 @@ class MemoryEngine:
                 query_prefix=self.query_prefix,
                 max_episodes=self.max_episodes,
                 lock_path=self.storage_path,
+                embedding_backend=self.embedding_backend,
+                ollama_base_url=self.ollama_base_url,
             )
         return self._episodic
 

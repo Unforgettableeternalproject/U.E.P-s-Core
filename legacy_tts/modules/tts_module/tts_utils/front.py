@@ -457,6 +457,16 @@ class TextTokenizer:
             if tok in boundary:
                 boundary_set.add(i)
 
+        # DEBUG: show boundary info (temporary — remove after debugging)
+        import os
+        _debug_rebalance = os.environ.get("TTS_DEBUG_REBALANCE", "")
+        if _debug_rebalance:
+            print(f"[rebalance] total tokens: {len(flat)}, boundary count: {len(boundary_set)}")
+            if boundary_set:
+                sorted_b = sorted(boundary_set)[:20]
+                for b in sorted_b:
+                    print(f"  boundary @{b}: {repr(flat[b])}")
+
         # Walk through flat tokens, accumulating until target is reached
         min_seg = 15
         result: List[List[str]] = []
@@ -472,6 +482,8 @@ class TextTokenizer:
 
             # If remaining tokens fit in the target (or close enough), take them all
             if remaining <= target + grace_window:
+                if _debug_rebalance:
+                    print(f"[rebalance] seg {seg_index}: remaining {remaining} <= target {target}+grace {grace_window} → take all")
                 result.append(flat[seg_start:])
                 break
 
@@ -492,6 +504,9 @@ class TextTokenizer:
                     if k in boundary_set:
                         best = k + 1
                         break
+
+            if _debug_rebalance:
+                print(f"[rebalance] seg {seg_index}: start={seg_start} target={target} scan=[{seg_start+min_seg}..{scan_end}] best={best}")
 
             # 3. No boundary found → take up to target (hard break as last resort)
             if best <= seg_start:

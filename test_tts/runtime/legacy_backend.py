@@ -22,6 +22,7 @@ class LegacyIndexTTS2Backend:
         use_cuda_kernel: bool = True,
         use_accel: bool = False,
         emotion_vector: Sequence[float] | None = None,
+        quick_streaming_tokens: int = 50,
     ):
         self.paths = paths
         self.engine_factory = engine_factory
@@ -30,6 +31,7 @@ class LegacyIndexTTS2Backend:
         self.use_cuda_kernel = use_cuda_kernel
         self.use_accel = use_accel
         self.emotion_vector = list(emotion_vector) if emotion_vector else None
+        self.quick_streaming_tokens = quick_streaming_tokens
         self.engine: Any | None = None
         self.loaded = False
 
@@ -67,6 +69,7 @@ class LegacyIndexTTS2Backend:
             output_path=str(output),
             emotion_vector=self.emotion_vector,
             on_segment_audio=on_segment_audio,
+            quick_streaming_tokens=self.quick_streaming_tokens,
         )
         if not ok or not output.exists():
             raise RuntimeError("IndexTTS2 generation did not produce an output file")

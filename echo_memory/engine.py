@@ -21,6 +21,7 @@ from typing import Any
 
 from echo_memory.schemas.episode import Episode
 from echo_memory.schemas.memory_context import MemoryContext
+from echo_memory.namespace import normalize_namespace_id, resolve_namespace_path
 
 logger = logging.getLogger("echo_memory.engine")
 
@@ -48,6 +49,7 @@ class MemoryEngine:
         query_prefix: str = "为这个句子生成表示以用于检索相关文章：",
         max_episodes: int | None = None,
         llm_fn: Callable[[str], str] | None = None,
+        namespace_id: str = "local-default",
     ):
         """
         初始化記憶引擎。
@@ -61,7 +63,9 @@ class MemoryEngine:
             llm_fn: LLM 呼叫函式 (prompt: str) -> str，用於知識蒸餾與反思重播。
                     若為 None，Dream Engine 的蒸餾和重播步驟會優雅跳過。
         """
-        self.storage_path = Path(storage_path)
+        self.namespace_id = normalize_namespace_id(namespace_id)
+        self.storage_root = Path(storage_path)
+        self.storage_path = resolve_namespace_path(self.storage_root, self.namespace_id)
         self.storage_path.mkdir(parents=True, exist_ok=True)
 
         self.embedding_model = embedding_model

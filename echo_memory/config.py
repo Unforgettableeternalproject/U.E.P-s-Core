@@ -45,6 +45,7 @@ class Config:
 
         # === 記憶系統配置 ===
         self.memory_storage_path = os.getenv("MEMORY_STORAGE_PATH", "./data")
+        self.memory_namespace_id = os.getenv("MEMORY_NAMESPACE_ID", "local-default")
         self.memory_max_episodes = int(os.getenv("MEMORY_MAX_EPISODES", "10000"))
         self.memory_max_concepts = int(os.getenv("MEMORY_MAX_CONCEPTS", "5000"))
 

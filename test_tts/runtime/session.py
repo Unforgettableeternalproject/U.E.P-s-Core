@@ -46,6 +46,16 @@ class TTSInteractiveSession:
         self._play_count = 0
         self._last_output_path: Path | None = None
 
+    def set_emotion(self, emotion_vector: list[float]) -> None:
+        """Dynamically change the emotion vector for subsequent say/save/profile calls."""
+        if len(emotion_vector) != 8:
+            raise ValueError("emotion_vector must have exactly 8 dimensions")
+        self.backend.emotion_vector = list(emotion_vector)
+
+    def get_emotion(self) -> list[float]:
+        """Return the current emotion vector."""
+        return list(self.backend.emotion_vector or [0.0] * 8)
+
     def load(self) -> None:
         if self._loaded:
             return

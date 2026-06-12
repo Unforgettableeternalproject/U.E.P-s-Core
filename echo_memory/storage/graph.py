@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import math
 import pickle
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,7 @@ import networkx as nx
 
 from echo_memory.config import get_config
 from echo_memory.schemas.episode import Episode
+from echo_memory.storage.locking import temporary_sibling
 
 logger = logging.getLogger("echo_memory.graph")
 
@@ -766,10 +768,14 @@ class MemoryGraph:
 
     def save(self) -> None:
         """保存圖到磁盤"""
+        tmp_file = temporary_sibling(self.graph_file)
         try:
             self.storage_path.mkdir(parents=True, exist_ok=True)
-            with open(self.graph_file, 'wb') as f:
+            with open(tmp_file, 'wb') as f:
                 pickle.dump(self.graph, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_file, self.graph_file)
             logger.debug(
                 f"[MemoryGraph] 保存圖完成 - "
                 f"{self.graph.number_of_nodes()} 節點, "
@@ -777,6 +783,13 @@ class MemoryGraph:
             )
         except Exception as e:
             logger.error(f"[MemoryGraph] 保存圖失敗: {e}")
+            if tmp_file.exists():
+                tmp_file.unlink()
+
+    def reload(self) -> None:
+        """重新載入目前磁碟上的圖快照。"""
+        self.graph = nx.DiGraph()
+        self._load()
 
     def clear(self) -> None:
         """清空圖（測試用）"""

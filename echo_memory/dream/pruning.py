@@ -192,6 +192,8 @@ class GraphPruning:
         current_time = time.time()
 
         for u, v, data in self.graph.graph.edges(data=True):
+            if data.get("edge_type") != "PRECEDES":
+                continue
             # 計算邊的存活時間（秒 → 小時）
             # 語義：edge_age 衡量「這條邊已存在多久」，用於 Dream 週期性衰減更新
             created_at = data.get("created_at", current_time)

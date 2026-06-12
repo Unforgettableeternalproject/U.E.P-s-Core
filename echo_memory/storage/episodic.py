@@ -22,6 +22,7 @@ import numpy as np
 
 from echo_memory.schemas.episode import Episode
 from echo_memory.storage.graph import MemoryGraph
+from echo_memory.storage.locking import storage_lock, temporary_sibling
 
 logger = logging.getLogger("echo_memory.episodic")
 
@@ -54,6 +55,7 @@ class EpisodicMemory:
         # 數據文件路徑
         self.metadata_file = self.storage_path / "episodes.json"
         self.embeddings_file = self.storage_path / "embeddings.npy"
+        self.index_manifest_file = self.storage_path / "embedding_index.json"
 
         # 內存緩存
         self._episodes: dict[str, Episode] = {}
@@ -69,6 +71,7 @@ class EpisodicMemory:
 
         # 延遲加載 embedding 生成器
         self._embedder = None
+        self._index_rebuild_required = False
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 公共 API
@@ -91,25 +94,29 @@ class EpisodicMemory:
         Returns:
             episode_id: 新建的情節 ID
         """
-        # 容量檢查：超過上限時刪除最舊的情節
-        if self.max_episodes is not None and len(self._episodes) >= self.max_episodes:
-            self._evict_oldest()
+        with storage_lock(self.storage_path):
+            self._load(reset=True)
+            self._reindex_if_required()
 
-        # 生成嵌入向量（如果未提供）
-        if not episode.embedding:
-            episode.embedding = self._generate_embedding(episode.content_summary)
+            # 容量檢查：超過上限時刪除最舊的情節
+            if self.max_episodes is not None and len(self._episodes) >= self.max_episodes:
+                self._evict_oldest()
 
-        # 存儲到內存
-        self._episodes[episode.id] = episode
+            # 生成嵌入向量（如果未提供）
+            if not episode.embedding:
+                episode.embedding = self._generate_embedding(episode.content_summary)
 
-        # 更新向量索引
-        self._update_embeddings(episode)
+            # 存儲到內存
+            self._episodes[episode.id] = episode
 
-        # 更新圖結構
-        self._update_graph(episode)
+            # 更新向量索引
+            self._update_embeddings(episode)
 
-        # 持久化
-        self._save()
+            # 更新圖結構
+            self._update_graph(episode)
+
+            # 持久化
+            self._save_unlocked()
 
         logger.debug(f"[EpisodicMemory] 寫入情節: {episode.id}")
         return episode.id
@@ -135,6 +142,7 @@ class EpisodicMemory:
         Returns:
             (Episode, similarity_score) 元組列表
         """
+        self._ensure_index_ready()
         if self._embeddings is None or len(self._episodes) == 0:
             return []
 
@@ -597,8 +605,15 @@ class EpisodicMemory:
                 return ep_id
         return None
 
-    def _load(self):
+    def _load(self, reset: bool = False):
         """從磁盤載入數據"""
+        if reset:
+            self._episodes.clear()
+            self._embeddings = None
+            self._id_to_index.clear()
+            self._index_rebuild_required = False
+            self.graph.reload()
+
         if self.metadata_file.exists():
             with open(self.metadata_file, encoding="utf-8") as f:
                 data = json.load(f)
@@ -609,64 +624,18 @@ class EpisodicMemory:
         if self.embeddings_file.exists():
             loaded_embeddings = np.load(self.embeddings_file)
 
-            # 維度相容性檢查：若已知模型維度與載入資料不符，清除向量索引
-            _known_dimensions = {
-                "all-MiniLM-L6-v2": 384,
-                "BAAI/bge-small-zh-v1.5": 512,
-            }
-            expected_dim = _known_dimensions.get(self.embedding_model)
-            if (
-                expected_dim is not None
-                and loaded_embeddings.ndim == 2
-                and loaded_embeddings.shape[1] != expected_dim
-            ):
-                logger.warning(
-                    f"[EpisodicMemory] embeddings.npy 維度 {loaded_embeddings.shape[1]} "
-                    f"與目前模型 '{self.embedding_model}' 期望的 {expected_dim} 不符。"
-                    "向量索引已清除，需重新對語料生成嵌入。"
-                )
-                # 清除不相容的向量索引和磁碟檔案，保留元數據
-                self._embeddings = None
-                self._id_to_index.clear()
-                if self.embeddings_file.exists():
-                    self.embeddings_file.unlink()
-            else:
-                self._embeddings, migrated = self._normalize_matrix(loaded_embeddings)
-                if migrated:
-                    np.save(self.embeddings_file, self._embeddings)
-                    logger.info(
-                        "[EpisodicMemory] Migrated embeddings.npy to L2-normalized vectors"
-                    )
+            self._embeddings, migrated = self._normalize_matrix(loaded_embeddings)
+            if migrated:
+                self._index_rebuild_required = True
 
-                metadata_migrated = False
-                # 重建索引映射
-                for i, ep in enumerate(self._episodes.values()):
-                    self._id_to_index[ep.id] = i
-                    if i >= len(self._embeddings):
-                        break
+            for i, ep in enumerate(self._episodes.values()):
+                if i >= len(self._embeddings):
+                    break
+                self._id_to_index[ep.id] = i
 
-                    normalized_embedding = self._embeddings[i].tolist()
-                    metadata_embedding = np.asarray(ep.embedding, dtype=np.float32)
-                    embeddings_match = (
-                        metadata_embedding.shape == self._embeddings[i].shape
-                        and np.allclose(
-                            metadata_embedding,
-                            self._embeddings[i],
-                            rtol=1e-5,
-                            atol=1e-6,
-                        )
-                    )
-                    if not embeddings_match:
-                        ep.embedding = normalized_embedding
-                        metadata_migrated = True
-
-                if metadata_migrated:
-                    with open(self.metadata_file, "w", encoding="utf-8") as f:
-                        data = [ep.to_dict() for ep in self._episodes.values()]
-                        json.dump(data, f, ensure_ascii=False, indent=2)
-                    logger.info(
-                        "[EpisodicMemory] Migrated episode metadata to L2-normalized vectors"
-                    )
+        self._index_rebuild_required = (
+            self._index_rebuild_required or not self._manifest_matches_current_index()
+        )
 
         # 重建 _last_episode_by_session（從已載入的情節中推算）
         self._rebuild_session_tracking()
@@ -696,19 +665,97 @@ class EpisodicMemory:
 
     def _save(self):
         """保存元數據、向量和圖到磁盤"""
-        # 保存元數據
-        with open(self.metadata_file, "w", encoding="utf-8") as f:
-            data = [ep.to_dict() for ep in self._episodes.values()]
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        with storage_lock(self.storage_path):
+            self._save_unlocked()
 
-        # 保存向量（若為空則清除殘留檔案）
+    def _save_unlocked(self) -> None:
+        """在持有 namespace storage lock 時發布完整快照。"""
+        self.storage_path.mkdir(parents=True, exist_ok=True)
+        data = [ep.to_dict() for ep in self._episodes.values()]
+
+        metadata_tmp = temporary_sibling(self.metadata_file)
+        with open(metadata_tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(metadata_tmp, self.metadata_file)
+
         if self._embeddings is not None:
-            np.save(self.embeddings_file, self._embeddings)
+            embeddings_tmp = temporary_sibling(self.embeddings_file)
+            with open(embeddings_tmp, "wb") as f:
+                np.save(f, self._embeddings)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(embeddings_tmp, self.embeddings_file)
         elif self.embeddings_file.exists():
             self.embeddings_file.unlink()
 
-        # 保存圖結構
         self.graph.save()
+        self._write_manifest()
+
+    def _manifest_matches_current_index(self) -> bool:
+        if not self._episodes:
+            return True
+        if self._embeddings is None or self._embeddings.ndim != 2:
+            return False
+        ordered_ids = list(self._episodes)
+        if len(self._embeddings) != len(ordered_ids):
+            return False
+        try:
+            manifest = json.loads(self.index_manifest_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            # Legacy snapshots can be trusted only when every metadata vector
+            # still agrees with the persisted matrix row.
+            return all(
+                len(ep.embedding) == self._embeddings.shape[1]
+                and np.allclose(ep.embedding, self._embeddings[index])
+                for index, ep in enumerate(self._episodes.values())
+            )
+        return (
+            manifest.get("version") == 1
+            and manifest.get("model") == self.embedding_model
+            and manifest.get("dimension") == self._embeddings.shape[1]
+            and manifest.get("ordered_ids") == ordered_ids
+        )
+
+    def _write_manifest(self) -> None:
+        if self._embeddings is None:
+            if self.index_manifest_file.exists():
+                self.index_manifest_file.unlink()
+            return
+        manifest = {
+            "version": 1,
+            "model": self.embedding_model,
+            "dimension": int(self._embeddings.shape[1]),
+            "ordered_ids": list(self._episodes),
+        }
+        manifest_tmp = temporary_sibling(self.index_manifest_file)
+        with open(manifest_tmp, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(manifest_tmp, self.index_manifest_file)
+        self._index_rebuild_required = False
+
+    def _reindex_if_required(self) -> None:
+        if not self._index_rebuild_required:
+            return
+        vectors = []
+        self._id_to_index.clear()
+        for index, (episode_id, episode) in enumerate(self._episodes.items()):
+            episode.embedding = self._generate_embedding(episode.content_summary)
+            vectors.append(self._normalize_vector(episode.embedding))
+            self._id_to_index[episode_id] = index
+        self._embeddings = np.vstack(vectors) if vectors else None
+        self._index_rebuild_required = False
+
+    def _ensure_index_ready(self) -> None:
+        if not self._index_rebuild_required:
+            return
+        with storage_lock(self.storage_path):
+            self._load(reset=True)
+            self._reindex_if_required()
+            self._save_unlocked()
 
     def _update_graph(self, episode: Episode):
         """

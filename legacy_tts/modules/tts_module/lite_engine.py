@@ -69,6 +69,7 @@ try:
     from .tts_utils.custom_vocab import apply_custom_vocab
     from .tts_utils.segment_guard import check_segment_anomaly, get_retry_params, SegmentGuardStats
     from .emotion_dynamics import EmotionDynamics, create_emotion_dynamics
+    from .emotion_text_markers import EmotionTextMarkers, create_emotion_text_markers
     from .s2mel.modules.commons import load_checkpoint2, MyModel
     from .s2mel.modules.bigvgan import bigvgan
 except ImportError:
@@ -82,6 +83,7 @@ except ImportError:
     from tts_utils.custom_vocab import apply_custom_vocab
     from tts_utils.segment_guard import check_segment_anomaly, get_retry_params, SegmentGuardStats
     from emotion_dynamics import EmotionDynamics, create_emotion_dynamics
+    from emotion_text_markers import EmotionTextMarkers, create_emotion_text_markers
     from s2mel.modules.commons import load_checkpoint2, MyModel
     from s2mel.modules.bigvgan import bigvgan
 
@@ -323,6 +325,11 @@ class IndexTTSLite:
         self.s2mel_stretch_ratio = float(_synth_cfg.get('s2mel_stretch_ratio', 1.72))
         self.cfm_n_timesteps = int(_synth_cfg.get('cfm_n_timesteps', 25))
         self.cfm_inference_cfg_rate = float(_synth_cfg.get('cfm_inference_cfg_rate', 0.7))
+
+        # ── 文本層情緒標記（第二層）──
+        self.emotion_text_markers = create_emotion_text_markers(
+            OmegaConf.to_container(self.cfg, resolve=True) if hasattr(self.cfg, '_metadata') else dict(self.cfg)
+        )
 
         # ── 情緒動態調控（第三層）──
         self.emotion_dynamics = create_emotion_dynamics(
@@ -912,6 +919,12 @@ class IndexTTSLite:
             # Custom vocabulary replacements (before segmentation and BPE)
             _vocab_cfg = self.cfg.get('text_processing', {}).get('custom_vocab', {})
             text = apply_custom_vocab(text, _vocab_cfg)
+
+            # 第二層：文本層情緒標記（在 tokenize 前修改文本）
+            original_text = text
+            text = self.emotion_text_markers.apply(text, normalized_emotion, language=language)
+            if verbose and text != original_text:
+                debug_log(3, f"      🎭 情緒文本標記: \"{original_text}\" → \"{text}\"")
 
             # Language-aware semantic pre-segmentation (before BPE tokenization)
             if language == 'zh':

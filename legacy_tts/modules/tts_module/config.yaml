@@ -73,6 +73,14 @@ synthesis:
   cfm_n_timesteps: 25          # CFM 推論步數 (越多品質越好但越慢)
   cfm_inference_cfg_rate: 0.7  # CFM style conditioning 強度 (0.5~0.9)
 
+# 文本層情緒標記 (第二層：修改輸入文本增強情緒)
+emotion_text_markers:
+  enabled: true                  # 啟用文本層情緒標記
+  activation_threshold: 0.10     # 主導情緒低於此值時不修改文本
+  prefix_probability: 0.7        # 插入句首語氣詞的機率
+  mid_probability: 0.3           # 插入句中停頓/語氣詞的機率
+  suffix_probability: 0.5        # 插入句末語氣詞的機率
+
 # 情緒動態調控 (第三層：推論參數隨情緒自動變化)
 emotion_dynamics:
   enabled: true                  # 啟用情緒驅動的參數動態調控

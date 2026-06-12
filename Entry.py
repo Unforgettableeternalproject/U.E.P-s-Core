@@ -275,16 +275,57 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
         # ── 3. 存儲情節 ──
         try:
             turn += 1
+            salience = _estimate_salience(user_input, response)
             episode_id = engine.store_episode(
                 user_input=user_input,
                 agent_response=response,
                 session_id=session_id,
-                salience=0.5,
+                salience=salience,
             )
-            console.print(f"  [dim]💾 Stored: {episode_id[:12]}… (turn {turn})[/]")
+            sal_indicator = "🔴" if salience >= 0.75 else "🟡" if salience >= 0.5 else "⚪"
+            console.print(f"  [dim]💾 Stored: {episode_id[:12]}… (turn {turn}) {sal_indicator} {salience:.2f}[/]")
 
         except Exception as e:
             logger.warning(f"Store error: {e}")
+
+
+def _estimate_salience(user_input: str, agent_response: str) -> float:
+    """
+    啟發式估算對話的顯著性分數。
+
+    基於對話特徵自動評分，避免所有 episode 都是 0.5。
+    """
+    score = 0.35  # 基準分（一般閒聊）
+    text = (user_input + " " + agent_response).lower()
+
+    # 個人資訊（名字、身份、偏好）→ 高顯著性
+    personal_signals = [
+        "my name", "i am", "i'm", "我叫", "我是", "remember",
+        "don't forget", "important", "記住", "別忘",
+    ]
+    if any(sig in text for sig in personal_signals):
+        score += 0.25
+
+    # 情感/深度對話 → 中高
+    emotional_signals = [
+        "feel", "love", "hate", "worry", "afraid", "happy", "sad",
+        "thank", "sorry", "miss", "dream", "hope", "wish",
+        "喜歡", "討厭", "擔心", "開心", "難過", "謝謝",
+    ]
+    if any(sig in text for sig in emotional_signals):
+        score += 0.15
+
+    # 提問/知識交換 → 中
+    if "?" in user_input or "？" in user_input:
+        score += 0.1
+
+    # 長對話通常更有內容
+    if len(user_input) > 100:
+        score += 0.1
+    if len(agent_response) > 200:
+        score += 0.05
+
+    return min(1.0, round(score, 2))
 
 
 def _show_tool_usage_hint(llm: LLMClient):
@@ -547,8 +588,8 @@ def _cmd_inspect(engine: MemoryEngine):
     # 圖譜連結
     try:
         graph = engine.episodic.graph
-        neighbors = list(graph._graph.neighbors(eid)) if graph._graph.has_node(eid) else []
-        predecessors = list(graph._graph.predecessors(eid)) if graph._graph.has_node(eid) else []
+        neighbors = list(graph.graph.neighbors(eid)) if graph.graph.has_node(eid) else []
+        predecessors = list(graph.graph.predecessors(eid)) if graph.graph.has_node(eid) else []
 
         if neighbors or predecessors:
             edges_table = Table(box=box.SIMPLE, show_lines=False)
@@ -558,14 +599,14 @@ def _cmd_inspect(engine: MemoryEngine):
             edges_table.add_column("Weight", width=8)
 
             for n in predecessors:
-                edge_data = graph._graph.edges[n, eid]
+                edge_data = graph.graph.edges[n, eid]
                 edges_table.add_row(
                     "←", n[:16] + "…",
                     edge_data.get("edge_type", "?"),
                     f"{edge_data.get('weight', 0):.3f}",
                 )
             for n in neighbors:
-                edge_data = graph._graph.edges[eid, n]
+                edge_data = graph.graph.edges[eid, n]
                 edges_table.add_row(
                     "→", n[:16] + "…",
                     edge_data.get("edge_type", "?"),
@@ -744,7 +785,7 @@ def _cmd_graph(engine: MemoryEngine):
 
     # 邊類型分布
     edge_types: dict[str, int] = {}
-    for u, v, data in graph._graph.edges(data=True):
+    for u, v, data in graph.graph.edges(data=True):
         et = data.get("edge_type", "unknown")
         edge_types[et] = edge_types.get(et, 0) + 1
 
@@ -755,8 +796,8 @@ def _cmd_graph(engine: MemoryEngine):
             table.add_row(f"  {et}", str(count))
 
     # 孤立節點
-    isolated = list(graph._graph.nodes() - set(
-        n for e in graph._graph.edges() for n in e
+    isolated = list(graph.graph.nodes() - set(
+        n for e in graph.graph.edges() for n in e
     ))
     table.add_row("", "")
     table.add_row("Isolated Nodes", str(len(isolated)))

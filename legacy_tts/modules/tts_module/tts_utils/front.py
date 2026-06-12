@@ -123,11 +123,32 @@ class TextNormalizer:
         }
         self.enable_glossary = enable_glossary
         self.term_glossary = dict()
+        self._t2s = None  # opencc Traditional -> Simplified converter (lazy init)
 
     def match_email(self, email):
         # 正则表达式匹配邮箱格式：数字英文@数字英文.英文
         pattern = r"^[a-zA-Z0-9]+@[a-zA-Z0-9]+\.[a-zA-Z]+$"
         return re.match(pattern, email) is not None
+
+    def _load_t2s(self):
+        """Lazy-init opencc Traditional -> Simplified converter."""
+        if self._t2s is not None:
+            return
+        try:
+            from opencc import OpenCC
+            self._t2s = OpenCC('t2s')
+        except ImportError:
+            # opencc not installed — skip conversion
+            self._t2s = False  # sentinel: tried but unavailable
+
+    def trad_to_simp(self, text):
+        """Convert Traditional Chinese to Simplified Chinese.
+        Returns text unchanged if opencc is not available."""
+        if self._t2s is None:
+            self._load_t2s()
+        if self._t2s is False:
+            return text
+        return self._t2s.convert(text)
 
     PINYIN_TONE_PATTERN = r"(?<![a-z])((?:[bpmfdtnlgkhjqxzcsryw]|[zcs]h)?(?:[aeiouüv]|[ae]i|u[aio]|ao|ou|i[aue]|[uüv]e|[uvü]ang?|uai|[aeiuv]n|[aeio]ng|ia[no]|i[ao]ng)|ng|er)([1-5])"
     """
@@ -171,11 +192,13 @@ class TextNormalizer:
                 self.zh_normalizer = Normalizer(remove_erhua=False, lang="zh", operator="tn")
                 self.en_normalizer = Normalizer(lang="en", operator="tn")
                 print("[TTS] 使用 wetext Normalizer")
+                self._load_t2s()
             except ImportError as e:
                 print(f"[TTS] wetext 導入失敗 ({e}),使用簡化標準化器")
                 # 使用簡化的備用標準化器
                 self.zh_normalizer = self._create_fallback_normalizer("zh")
                 self.en_normalizer = self._create_fallback_normalizer("en")
+                self._load_t2s()
         else:
             from tn.chinese.normalizer import Normalizer as NormalizerZh
             from tn.english.normalizer import Normalizer as NormalizerEn
@@ -189,6 +212,7 @@ class TextNormalizer:
                 cache_dir=cache_dir, remove_interjections=False, remove_erhua=False, overwrite_cache=False
             )
             self.en_normalizer = NormalizerEn(overwrite_cache=False)
+            self._load_t2s()
     
     def _create_fallback_normalizer(self, lang: str):
         """創建簡化的備用標準化器(當 wetext 無法使用時)"""
@@ -213,6 +237,7 @@ class TextNormalizer:
         if not self.zh_normalizer or not self.en_normalizer:
             print("Error, text normalizer is not initialized !!!")
             return ""
+        text = self.trad_to_simp(text)
         if self.use_chinese(text):
             text = re.sub(TextNormalizer.ENGLISH_CONTRACTION_PATTERN, r"\1 is", text, flags=re.IGNORECASE)
             if self.enable_glossary:

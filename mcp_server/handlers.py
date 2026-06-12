@@ -35,6 +35,18 @@ _last_dream_time: float = 0.0
 _DREAM_TIMEOUT_SECONDS = 30.0
 
 
+def _namespace_schema() -> dict[str, Any]:
+    return {
+        "type": "string",
+        "description": "隔離記憶資料的 namespace（可選，預設伺服器設定）",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+    }
+
+
+def _get_engine(get_engine: Callable, args: dict[str, Any]):
+    return get_engine(args.get("namespace_id"))
+
+
 def register_tools(server: Server, get_engine: Callable) -> None:
     """
     向 MCP Server 註冊所有工具。
@@ -57,6 +69,7 @@ def register_tools(server: Server, get_engine: Callable) -> None:
                 inputSchema={
                     "type": "object",
                     "properties": {
+                        "namespace_id": _namespace_schema(),
                         "user_input": {
                             "type": "string",
                             "description": "用戶的輸入文字",
@@ -88,6 +101,7 @@ def register_tools(server: Server, get_engine: Callable) -> None:
                 inputSchema={
                     "type": "object",
                     "properties": {
+                        "namespace_id": _namespace_schema(),
                         "query": {
                             "type": "string",
                             "description": "查詢文字",
@@ -129,6 +143,7 @@ def register_tools(server: Server, get_engine: Callable) -> None:
                 inputSchema={
                     "type": "object",
                     "properties": {
+                        "namespace_id": _namespace_schema(),
                         "query": {
                             "type": "string",
                             "description": "搜尋關鍵字或描述",
@@ -151,7 +166,7 @@ def register_tools(server: Server, get_engine: Callable) -> None:
                 ),
                 inputSchema={
                     "type": "object",
-                    "properties": {},
+                    "properties": {"namespace_id": _namespace_schema()},
                     "required": [],
                 },
             ),
@@ -165,6 +180,7 @@ def register_tools(server: Server, get_engine: Callable) -> None:
                 inputSchema={
                     "type": "object",
                     "properties": {
+                        "namespace_id": _namespace_schema(),
                         "triggered_by": {
                             "type": "string",
                             "description": "觸發來源標記（可選，預設 'mcp'）",
@@ -182,6 +198,7 @@ def register_tools(server: Server, get_engine: Callable) -> None:
                 inputSchema={
                     "type": "object",
                     "properties": {
+                        "namespace_id": _namespace_schema(),
                         "session_id": {
                             "type": "string",
                             "description": "過濾特定 session 的情節（可選）",
@@ -210,6 +227,7 @@ def register_tools(server: Server, get_engine: Callable) -> None:
                 inputSchema={
                     "type": "object",
                     "properties": {
+                        "namespace_id": _namespace_schema(),
                         "content": {
                             "type": "string",
                             "description": "觀察或事實的內容",
@@ -247,7 +265,7 @@ def register_tools(server: Server, get_engine: Callable) -> None:
             elif name == "search_concepts":
                 result = await _handle_search_concepts(get_engine, args)
             elif name == "get_memory_stats":
-                result = await _handle_get_memory_stats(get_engine)
+                result = await _handle_get_memory_stats(get_engine, args)
             elif name == "trigger_dream":
                 result = await _handle_trigger_dream(get_engine, args)
             elif name == "list_episodes":
@@ -283,7 +301,7 @@ async def _handle_store_episode(
     salience: float = float(args.get("salience", 0.5))
 
     def _sync_store() -> str:
-        engine = get_engine()
+        engine = _get_engine(get_engine, args)
         return engine.store_episode(
             user_input=user_input,
             agent_response=agent_response,
@@ -310,7 +328,7 @@ async def _handle_retrieve_memories(
     serotonin: float = float(args.get("serotonin", 0.5))
 
     def _sync_retrieve() -> str:
-        engine = get_engine()
+        engine = _get_engine(get_engine, args)
         context = engine.retrieve(
             query=query,
             dopamine=dopamine,
@@ -340,7 +358,7 @@ async def _handle_search_concepts(
     top_k: int = int(args.get("top_k", 5))
 
     def _sync_search() -> list[tuple[str, str]]:
-        engine = get_engine()
+        engine = _get_engine(get_engine, args)
         concepts = engine.semantic._concepts
 
         if not concepts:
@@ -383,12 +401,12 @@ async def _handle_search_concepts(
     return "\n".join(lines)
 
 
-async def _handle_get_memory_stats(get_engine: Callable) -> str:
+async def _handle_get_memory_stats(get_engine: Callable, args: dict[str, Any]) -> str:
     """
     取得記憶系統統計資訊。
     """
     def _sync_stats() -> dict[str, Any]:
-        engine = get_engine()
+        engine = _get_engine(get_engine, args)
         stats = engine.get_stats()
 
         # 加入圖結構統計
@@ -435,7 +453,7 @@ async def _handle_trigger_dream(
         return f"Dream Engine 冷卻中，請等待 {remaining} 秒後再試。"
 
     def _sync_dream() -> dict[str, Any]:
-        engine = get_engine()
+        engine = _get_engine(get_engine, args)
         return engine.dream(triggered_by=triggered_by)
 
     try:
@@ -502,7 +520,7 @@ async def _handle_list_episodes(
     sort_by: str = args.get("sort_by", "timestamp")
 
     def _sync_list() -> list[dict[str, Any]]:
-        engine = get_engine()
+        engine = _get_engine(get_engine, args)
         episodic = engine.episodic
 
         # 使用 list_episodes 方法（若存在），否則手動從 _episodes 讀取
@@ -571,7 +589,7 @@ async def _handle_store_observation(
     importance: float = float(args.get("importance", 0.85))
 
     def _sync_store() -> str:
-        engine = get_engine()
+        engine = _get_engine(get_engine, args)
         return engine.store_episode(
             user_input="[觀察記錄]",
             agent_response=content,

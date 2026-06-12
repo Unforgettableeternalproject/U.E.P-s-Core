@@ -50,6 +50,7 @@ from mcp.server.stdio import stdio_server
 # ─── 導入 Echo Memory ─────────────────────────────────────────────────────────
 from echo_memory import MemoryEngine
 from echo_memory.config import get_config
+from echo_memory.namespace import NamespaceEngineRegistry
 
 # ─── 導入 handlers 和 resources ───────────────────────────────────────────────
 from mcp_server.handlers import register_tools
@@ -66,33 +67,38 @@ logger = logging.getLogger("echo_memory.mcp")
 # ─── 全域 Server 實例（handlers 和 resources 需要共享）────────────────────────
 server = Server("echo-memory")
 
-# ─── 全域 MemoryEngine 實例（延遲初始化）──────────────────────────────────────
-_engine: MemoryEngine | None = None
+# ─── 每個 namespace 一個 MemoryEngine（延遲初始化）───────────────────────────
 
 
-def get_engine() -> MemoryEngine:
+def _create_engine(namespace_id: str) -> MemoryEngine:
+    config = get_config()
+    logger.info(
+        f"[MCP Server] 初始化 MemoryEngine - namespace={namespace_id}, "
+        f"存儲根路徑: {config.memory_storage_path}"
+    )
+    return MemoryEngine(
+        storage_path=config.memory_storage_path,
+        embedding_model=config.embedding_model,
+        device=config.embedding_device,
+        query_prefix=config.embedding_query_prefix,
+        max_episodes=config.memory_max_episodes,
+        namespace_id=namespace_id,
+    )
+
+
+_engines = NamespaceEngineRegistry(_create_engine)
+
+
+def get_engine(namespace_id: str | None = None) -> MemoryEngine:
     """
     取得全域 MemoryEngine 實例（Singleton）。
 
     首次呼叫時初始化，後續呼叫直接返回已有實例。
     讀取 config 中的 memory_storage_path 和 embedding_model。
     """
-    global _engine
-    if _engine is None:
-        config = get_config()
-        storage_path = config.memory_storage_path
-
-        logger.info(f"[MCP Server] 初始化 MemoryEngine - 存儲路徑: {storage_path}")
-
-        _engine = MemoryEngine(
-            storage_path=storage_path,
-            embedding_model=config.embedding_model,
-            device=config.embedding_device,
-            query_prefix=config.embedding_query_prefix,
-        )
-        logger.info("[MCP Server] MemoryEngine 初始化完成")
-
-    return _engine
+    if namespace_id is None:
+        namespace_id = get_config().memory_namespace_id
+    return _engines.get(namespace_id)
 
 
 def main() -> None:

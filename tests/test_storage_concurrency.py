@@ -26,3 +26,17 @@ def test_independent_instances_do_not_lose_updates(tmp_path):
     reloaded = EpisodicMemory(tmp_path, embedding_model="custom")
     assert {ep.session_id for ep in reloaded.list_episodes()} == {"first", "second"}
 
+
+def test_stale_mutation_does_not_resurrect_deleted_episode(tmp_path):
+    writer = EpisodicMemory(tmp_path, embedding_model="custom")
+    writer._generate_embedding = lambda text: [1.0, 0.0]
+    deleted_id = writer.write(_episode("deleted"))
+    kept_id = writer.write(_episode("kept"))
+
+    stale = EpisodicMemory(tmp_path, embedding_model="custom")
+    assert writer.delete_episode(deleted_id)
+    assert stale.update_salience(kept_id, 0.9)
+
+    reloaded = EpisodicMemory(tmp_path, embedding_model="custom")
+    assert reloaded.get(deleted_id) is None
+    assert reloaded.get(kept_id).salience_score == 0.9

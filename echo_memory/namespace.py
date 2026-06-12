@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import re
+import threading
+from collections.abc import Callable
 from pathlib import Path
+from typing import Generic, TypeVar
 
 DEFAULT_NAMESPACE_ID = "local-default"
 _NAMESPACE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+T = TypeVar("T")
 
 
 def normalize_namespace_id(namespace_id: str | None) -> str:
@@ -23,3 +27,22 @@ def resolve_namespace_path(storage_root: str | Path, namespace_id: str | None) -
         return root
     return root / "namespaces" / normalized
 
+
+class NamespaceEngineRegistry(Generic[T]):
+    def __init__(self, factory: Callable[[str], T]):
+        self._factory = factory
+        self._instances: dict[str, T] = {}
+        self._lock = threading.Lock()
+
+    def get(self, namespace_id: str | None = None) -> T:
+        normalized = normalize_namespace_id(namespace_id)
+        with self._lock:
+            instance = self._instances.get(normalized)
+            if instance is None:
+                instance = self._factory(normalized)
+                self._instances[normalized] = instance
+            return instance
+
+    def clear(self) -> None:
+        with self._lock:
+            self._instances.clear()

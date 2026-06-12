@@ -212,31 +212,25 @@ class InteractiveShell:
         return True
 
     def _auto_translate(self, text: str) -> str:
-        """If text language doesn't match session language, attempt translation.
+        """Auto-detect language and route accordingly.
 
         Language routing rules:
-        - Supported language (zh/en) matching session -> pass through
-        - Supported language not matching -> translate to session language
+        - Supported language (zh/en) -> auto-set session language, pass through
+          (normalizer handles mixed zh+en and trad->simp internally)
         - Unsupported language ('other') -> translate to session language
-        - Mixed text with supported languages -> pass through (normalizer handles it)
         """
-        target_lang = self.session.get_language()
         detected = _detect_language(text)
 
-        if detected == target_lang:
-            return text
+        # Supported language: auto-follow detection, no translation needed
+        if detected in ("zh", "en"):
+            current = self.session.get_language()
+            if detected != current:
+                self.session.set_language(detected)
+                det_name = SUPPORTED_LANGUAGES.get(detected, detected)
+                self.write(f"[Auto-language: {det_name}]")
+            return text  # normalizer handles trad->simp and mixed language
 
-        # Mixed zh+en text: let the normalizer handle it
-        if detected in SUPPORTED_LANGUAGES and detected != "other":
-            # e.g. session=zh but text has English — normalizer handles mixed
-            # Only translate if it's PURE wrong language
-            # Recheck: if text has ANY CJK and target is zh, skip translation
-            if target_lang == "zh" and any('一' <= c <= '鿿' for c in text):
-                return text  # mixed text, normalizer will handle
-            if target_lang == "en" and not any('一' <= c <= '鿿' for c in text):
-                return text  # pure English, matches intent
-
-        # Translate: unsupported language or wrong supported language
+        # Unsupported language: translate to session language
         source_hint = detected if detected in ("zh", "en") else "auto"
         translated = _translate_text(text, target_lang, source_lang=source_hint)
         if translated:

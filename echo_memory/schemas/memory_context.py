@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from echo_memory.schemas.concept import Concept
 from echo_memory.schemas.entity import Entity
 from echo_memory.schemas.episode import Episode
+from echo_memory.schemas.procedure import Procedure
 
 
 @dataclass
@@ -24,12 +25,13 @@ class MemoryContext:
     episodes: list[Episode] = field(default_factory=list)
     concepts: list[Concept] = field(default_factory=list)
     entities: list[Entity] = field(default_factory=list)
+    procedures: list[Procedure] = field(default_factory=list)
     similarities: dict[str, float] = field(default_factory=dict)  # episode_id -> 相似度分數
     concept_similarities: dict[str, float] = field(default_factory=dict)  # concept_id -> 相似度分數
 
     def is_empty(self) -> bool:
         """檢查是否為空"""
-        return not (self.episodes or self.concepts or self.entities)
+        return not (self.episodes or self.concepts or self.entities or self.procedures)
 
     def to_text(self) -> str:
         """
@@ -84,6 +86,19 @@ class MemoryContext:
                 name = e.name
                 desc = e.description
                 parts.append(f"  - [{etype}] {name}: {desc}")
+
+        # ─── 程序記憶 ────────────────────────────────────────────────────────
+        if self.procedures:
+            parts.append("\n【相關程序/SOP】")
+            for p in self.procedures[:3]:
+                steps_preview = " → ".join(p.steps[:3])
+                if len(p.steps) > 3:
+                    steps_preview += " → ..."
+                rate_tag = f"[成功率:{p.success_rate:.0%}]" if p.total_uses > 0 else ""
+                parts.append(
+                    f"  - {rate_tag}{p.name}: {p.description}\n"
+                    f"    步驟: {steps_preview}"
+                )
 
         return "\n".join(parts) if parts else "（無相關記憶）"
 

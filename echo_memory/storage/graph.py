@@ -490,6 +490,66 @@ class MemoryGraph:
         results.sort(key=lambda x: x[1], reverse=True)
         return results
 
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 邊管理 - Procedure 相關（Phase 2 Branch 7）
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    def add_procedure_node(
+        self,
+        procedure_id: str,
+        name: str,
+        domain: str = "general",
+    ) -> None:
+        """
+        添加程序節點。
+
+        Args:
+            procedure_id: Procedure ID (proc_xxx)
+            name: 程序名稱
+            domain: 領域標籤
+        """
+        self.graph.add_node(
+            procedure_id,
+            node_type="Procedure",
+            name=name,
+            domain=domain,
+        )
+        logger.debug(f"[MemoryGraph] 添加程序節點: {procedure_id} ({name})")
+
+    def add_applies_to_edge(
+        self,
+        procedure_id: str,
+        concept_id: str,
+        weight: float = 0.7,
+    ) -> None:
+        """
+        添加 APPLIES_TO 邊（Procedure → Concept 領域關聯）。
+
+        Args:
+            procedure_id: 程序 ID
+            concept_id: 概念 ID
+            weight: 關聯強度 (0-1)
+        """
+        if not self.graph.has_node(procedure_id) or not self.graph.has_node(concept_id):
+            logger.warning(
+                f"[MemoryGraph] 節點不存在，無法添加 APPLIES_TO 邊: "
+                f"{procedure_id} -> {concept_id}"
+            )
+            return
+
+        if not self.graph.has_edge(procedure_id, concept_id):
+            self.graph.add_edge(
+                procedure_id,
+                concept_id,
+                edge_type="APPLIES_TO",
+                weight=min(1.0, max(0.0, weight)),
+                created_at=time.time(),
+            )
+            logger.debug(
+                f"[MemoryGraph] 添加 APPLIES_TO 邊: "
+                f"{procedure_id[:12]} -> {concept_id[:12]}"
+            )
+
     def remove_concept_node(self, concept_id: str) -> None:
         """
         移除概念節點及其所有邊。

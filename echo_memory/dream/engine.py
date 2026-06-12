@@ -34,6 +34,9 @@ from echo_memory.storage.episodic import EpisodicMemory
 from echo_memory.storage.graph import MemoryGraph
 from echo_memory.storage.semantic import SemanticMemory
 
+# 延遲導入型別（避免循環依賴）
+from typing import Any
+
 logger = logging.getLogger("echo_memory.dream")
 
 
@@ -47,6 +50,7 @@ class DreamReport:
     pruning: PruningReport | None = None
     replay: ReplayReport | None = None
     distillation: DistillationReport | None = None
+    procedure_extraction: Any | None = None  # ProcedureExtractionReport
     edges_updated: int = 0
     error: str | None = None
 
@@ -108,6 +112,7 @@ class DreamEngine:
         graph: MemoryGraph,
         episodic: EpisodicMemory | None = None,
         semantic: SemanticMemory | None = None,
+        procedural: Any | None = None,  # ProceduralMemory（延遲導入避免循環）
         llm_fn: Callable[[str], str] | None = None,
         idle_minutes: int = 30,
         cron_schedule: str = "0 3 * * *",  # 每日凌晨 3 點
@@ -140,6 +145,9 @@ class DreamEngine:
         self._last_interaction: datetime = datetime.now(timezone.utc)
         self._last_dream_report: DreamReport | None = None
 
+        # 保留 episodic 引用（給 stage 5 程序提取用）
+        self._episodic_ref = episodic
+
         # 子模組
         self._pruning = GraphPruning(graph)
 
@@ -158,6 +166,20 @@ class DreamEngine:
             try:
                 from echo_memory.dream.contradiction import ContradictionDetector
                 contradiction_detector = ContradictionDetector(
+                    semantic=semantic,
+                    graph=graph,
+                    llm_fn=llm_fn,
+                )
+            except ImportError:
+                pass
+
+        # 程序提取（需要 procedural + episodic）
+        self._procedure_extractor = None
+        if procedural is not None and episodic is not None:
+            try:
+                from echo_memory.dream.procedure_extractor import ProcedureExtractor
+                self._procedure_extractor = ProcedureExtractor(
+                    procedural=procedural,
                     semantic=semantic,
                     graph=graph,
                     llm_fn=llm_fn,
@@ -312,6 +334,17 @@ class DreamEngine:
                 # 蒸餾會在 MemoryGraph 新增 Concept 節點和 DERIVED_FROM 邊，
                 # 需要持久化以免重啟後遺失（造成 SemanticMemory 和 Graph 不一致）
                 self.graph.save()
+
+            # ── 階段 5：程序提取（若有 ProceduralMemory + LLM）────────
+            if self._procedure_extractor is not None and self._episodic_ref is not None:
+                try:
+                    candidates = self._episodic_ref.list_episodes(
+                        limit=10, sort_by="salience", ascending=False,
+                    )
+                    if candidates:
+                        report.procedure_extraction = self._procedure_extractor.run(candidates)
+                except Exception as e:
+                    logger.warning(f"[DreamEngine] 程序提取失敗（不影響夢境週期）: {e}")
 
             # 重置閒置計時器（防止立即重複觸發）
             self.notify_interaction()

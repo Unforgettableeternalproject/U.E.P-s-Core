@@ -73,6 +73,7 @@ class MemoryEngine:
         self._episodic = None
         self._semantic = None
         self._working = None
+        self._procedural = None
         self._retrieval = None
         self._dream_engine = None
         self._entity_store = None
@@ -120,14 +121,30 @@ class MemoryEngine:
         return self._working
 
     @property
+    def procedural(self):
+        """延遲加載程序記憶模組（共享 EpisodicMemory 的 embedding 模型）"""
+        if self._procedural is None:
+            from echo_memory.storage.procedural import ProceduralMemory
+
+            def _shared_embed_fn(text: str) -> list[float]:
+                return self.episodic._generate_embedding(text)
+
+            self._procedural = ProceduralMemory(
+                storage_path=self.storage_path / "procedural",
+                embed_fn=_shared_embed_fn,
+            )
+        return self._procedural
+
+    @property
     def retrieval(self):
-        """延遲加載檢索引擎（含查詢向量快取）"""
+        """延遲加載檢索引擎（含查詢向量快取 + 程序搜索）"""
         if self._retrieval is None:
             from echo_memory.retrieval.ecphory import EcphoryRetrieval
             self._retrieval = EcphoryRetrieval(
                 episodic=self.episodic,
                 semantic=self.semantic,
                 working=self.working,
+                procedural=self.procedural,
             )
         return self._retrieval
 
@@ -274,6 +291,7 @@ class MemoryEngine:
                 graph=self.episodic.graph,
                 episodic=self.episodic,
                 semantic=self.semantic,
+                procedural=self.procedural,
                 llm_fn=self._llm_fn,
                 idle_minutes=config.dream_idle_minutes,
                 cron_schedule=config.dream_cron,
@@ -318,11 +336,20 @@ class MemoryEngine:
 
     # ─── 輔助方法 ────────────────────────────────────────────────────────────
 
+    def record_procedure_success(self, procedure_id: str) -> bool:
+        """記錄程序執行成功"""
+        return self.procedural.record_success(procedure_id)
+
+    def record_procedure_failure(self, procedure_id: str) -> bool:
+        """記錄程序執行失敗"""
+        return self.procedural.record_failure(procedure_id)
+
     def get_stats(self) -> dict[str, int]:
         """獲取記憶系統統計資訊"""
         return {
             "total_episodes": self.episodic.count(),
             "total_concepts": self.semantic.count(),
+            "total_procedures": self.procedural.count(),
             "working_cache_size": len(self.working._cache),
         }
 
@@ -331,4 +358,5 @@ class MemoryEngine:
         logger.warning("[MemoryEngine] 清空所有記憶")
         self.episodic.clear()
         self.semantic.clear()
+        self.procedural.clear()
         self.working.clear()

@@ -14,6 +14,7 @@ Phase 2: 整合 SemanticMemory 概念檢索 + RELATES_TO 展開 + CONTRADICTS pe
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from echo_memory.neurochem.state import NeurochemState, RetrievalParams
 from echo_memory.schemas.concept import Concept
@@ -46,10 +47,12 @@ class EcphoryRetrieval:
         episodic: EpisodicMemory,
         semantic: SemanticMemory,
         working: WorkingMemory | None = None,
+        procedural: Any | None = None,  # ProceduralMemory（延遲導入）
     ):
         self.episodic = episodic
         self.semantic = semantic
         self.working = working  # 若提供，啟用查詢向量快取
+        self.procedural = procedural  # 若提供，檢索時一併搜索程序
 
     def retrieve(
         self,
@@ -181,7 +184,25 @@ class EcphoryRetrieval:
                 f"找到 {len(concepts)} 個概念"
             )
 
-        # Step 4: 排序 + 截斷
+        # Step 4: 程序記憶搜索（若有 ProceduralMemory）
+        procedures = []
+        if self.procedural is not None and self.procedural.count() > 0:
+            try:
+                proc_results = self.procedural.search_by_vector(
+                    query_embedding=query_embedding,
+                    top_k=3,
+                    min_similarity=0.3,
+                )
+                procedures = [proc for proc, _ in proc_results]
+                if procedures:
+                    logger.debug(
+                        f"[EcphoryRetrieval] 程序搜索完成 - "
+                        f"找到 {len(procedures)} 個相關程序"
+                    )
+            except Exception as e:
+                logger.warning(f"[EcphoryRetrieval] 程序搜索失敗（不影響檢索）: {e}")
+
+        # Step 5: 排序 + 截斷
         episodes.sort(key=lambda ep: similarities.get(ep.id, 0.0), reverse=True)
         final_episodes = episodes[:top_k]
 
@@ -189,13 +210,15 @@ class EcphoryRetrieval:
         context = MemoryContext(
             episodes=final_episodes,
             concepts=concepts,
+            procedures=procedures,
             similarities=similarities,
             concept_similarities=concept_similarities,
         )
 
         logger.debug(
             f"[EcphoryRetrieval] 檢索完成 - "
-            f"Episodes: {len(final_episodes)}, Concepts: {len(concepts)}"
+            f"Episodes: {len(final_episodes)}, Concepts: {len(concepts)}, "
+            f"Procedures: {len(procedures)}"
         )
 
         return context

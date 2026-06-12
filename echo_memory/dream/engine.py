@@ -152,7 +152,20 @@ class DreamEngine:
                 llm_fn=llm_fn,
             )
 
-        # 知識蒸餾（需要 episodic + semantic + llm_fn，任一缺失則降級跳過）
+        # 矛盾偵測器（需要 semantic + llm_fn）
+        contradiction_detector = None
+        if semantic is not None:
+            try:
+                from echo_memory.dream.contradiction import ContradictionDetector
+                contradiction_detector = ContradictionDetector(
+                    semantic=semantic,
+                    graph=graph,
+                    llm_fn=llm_fn,
+                )
+            except ImportError:
+                pass
+
+        # 知識蒸餾（需要 episodic + semantic，任一缺失則降級跳過）
         self._distillation: KnowledgeDistillation | None = None
         if episodic is not None and semantic is not None:
             self._distillation = KnowledgeDistillation(
@@ -160,6 +173,7 @@ class DreamEngine:
                 semantic=semantic,
                 graph=graph,
                 llm_fn=llm_fn,
+                contradiction_detector=contradiction_detector,
             )
 
         logger.info(

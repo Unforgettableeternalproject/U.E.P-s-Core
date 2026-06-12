@@ -73,6 +73,7 @@ class DistillationReport:
     concepts_created: int = 0
     concepts_updated: int = 0
     edges_created: int = 0
+    contradicts_edges_created: int = 0
     skipped_reason: str | None = None  # "no_llm" | "no_episodes" | "llm_error"
     llm_raw_output: str | None = None
     errors: list[str] = field(default_factory=list)
@@ -110,6 +111,7 @@ class KnowledgeDistillation:
         semantic: SemanticMemory,
         graph: MemoryGraph,
         llm_fn: Callable[[str], str] | None = None,
+        contradiction_detector: Any | None = None,
     ):
         """
         Args:
@@ -118,11 +120,14 @@ class KnowledgeDistillation:
             graph: MemoryGraph 實例（共用的圖）
             llm_fn: LLM 呼叫函式 (prompt: str) -> str
                     若為 None，蒸餾會優雅跳過。
+            contradiction_detector: ContradictionDetector 實例（可選）。
+                    若提供，每次 ingest concept 後自動偵測矛盾。
         """
         self.episodic = episodic
         self.semantic = semantic
         self.graph = graph
         self.llm_fn = llm_fn
+        self._contradiction_detector = contradiction_detector
 
     def run(
         self,
@@ -181,15 +186,16 @@ class KnowledgeDistillation:
             logger.error(f"[KnowledgeDistillation] 解析失敗: {e}")
             return report
 
-        # 寫入 SemanticMemory + 建圖
+        # 寫入 SemanticMemory + 建圖 + 矛盾偵測
         for concept_data in extracted:
             try:
-                created, edges = self._ingest_concept(concept_data, candidates)
+                created, edges, contradicts = self._ingest_concept(concept_data, candidates)
                 if created:
                     report.concepts_created += 1
                 else:
                     report.concepts_updated += 1
                 report.edges_created += edges
+                report.contradicts_edges_created += contradicts
             except Exception as e:
                 report.errors.append(f"概念寫入失敗: {concept_data.get('name', '?')}: {e}")
                 logger.error(f"[KnowledgeDistillation] 概念寫入失敗: {e}")
@@ -291,7 +297,7 @@ class KnowledgeDistillation:
         self,
         concept_data: dict[str, Any],
         source_episodes: list[Episode],
-    ) -> tuple[bool, int]:
+    ) -> tuple[bool, int, int]:
         """
         將蒸餾出的概念寫入 SemanticMemory 和 MemoryGraph。
 
@@ -300,7 +306,7 @@ class KnowledgeDistillation:
             source_episodes: 來源 Episode 列表
 
         Returns:
-            (is_new, edges_created)
+            (is_new, edges_created, contradicts_created)
         """
         name = concept_data["name"]
         description = concept_data["description"]
@@ -349,7 +355,20 @@ class KnowledgeDistillation:
                 self.graph.add_derived_from_edge(concept_id, ep.id)
                 edges_created += 1
 
-        return is_new, edges_created
+        # 矛盾偵測（若有 detector）
+        contradicts_created = 0
+        if self._contradiction_detector is not None and concept_id is not None:
+            concept = self.semantic.get(concept_id)
+            if concept is not None:
+                try:
+                    edges = self._contradiction_detector.detect_and_register(concept)
+                    contradicts_created = len(edges)
+                except Exception as e:
+                    logger.warning(
+                        f"[KnowledgeDistillation] 矛盾偵測失敗（不影響蒸餾）: {e}"
+                    )
+
+        return is_new, edges_created, contradicts_created
 
     def _mark_episodes_dreamed(self, episodes: list[Episode]) -> None:
         """將已蒸餾的 Episode 標記為 is_dreamed=True。"""

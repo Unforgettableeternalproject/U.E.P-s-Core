@@ -249,6 +249,10 @@ class MemoryGraph:
             concept_b: 概念 B 的 ID
             weight: 矛盾強度 (0-1)
         """
+        if concept_a == concept_b:
+            logger.debug(f"[MemoryGraph] 自我矛盾邊被忽略: {concept_a}")
+            return
+
         if not self.graph.has_node(concept_a) or not self.graph.has_node(concept_b):
             logger.warning(
                 f"[MemoryGraph] 節點不存在，無法添加 CONTRADICTS 邊: "
@@ -271,6 +275,23 @@ class MemoryGraph:
             f"[MemoryGraph] 添加 CONTRADICTS 邊: "
             f"{concept_a[:12]} <-> {concept_b[:12]} (weight={weight:.3f})"
         )
+
+    def has_contradicts_edge(self, concept_a: str, concept_b: str) -> bool:
+        """
+        檢查兩個概念之間是否已有 CONTRADICTS 邊。
+
+        Args:
+            concept_a: 概念 A 的節點 ID
+            concept_b: 概念 B 的節點 ID
+
+        Returns:
+            True 若已存在矛盾邊（任一方向）
+        """
+        for src, dst in [(concept_a, concept_b), (concept_b, concept_a)]:
+            if self.graph.has_edge(src, dst):
+                if self.graph[src][dst].get("edge_type") == "CONTRADICTS":
+                    return True
+        return False
 
     def add_derived_from_edge(
         self,

@@ -56,7 +56,19 @@
       "WebFetch(domain:github.com)",
       "WebFetch(domain:pypi.org)",
       "WebFetch(domain:spacy.io)",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Skill(pm)",
+      "Bash(/c/Users/Bernie/source/repos/Unforgettableeternalproject/U.E.P-s-Core/env/Scripts/python.exe *)",
+      "Bash(/c/Users/Bernie/source/repos/Unforgettableeternalproject/U.E.P-s-Core/env/Scripts/pip.exe install *)",
+      "Bash(/c/Users/Bernie/source/repos/Unforgettableeternalproject/U.E.P-s-Core/env/Scripts/pip.exe show *)",
+      "mcp__open-notebook__get_note",
+      "Bash(python -m pytest tests/ -x -q)",
+      "Bash(python -m pytest tests/ -x -q --ignore=tests/test_chinese_segmentation.py)",
+      "Bash(python -m pytest tests/ -q -k \"not chinese_segmentation and not custom_vocab\")",
+      "Bash(where python *)",
+      "Bash(conda info *)",
+      "Bash(./env/Scripts/python.exe -c \"import torch; print\\('torch OK', torch.__version__\\)\")",
+      "Bash(C:/Users/Bernie/AppData/Local/Programs/Python/Python310/python.exe *)"
     ]
   }
 }

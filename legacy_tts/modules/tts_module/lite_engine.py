@@ -66,6 +66,7 @@ try:
     from .tts_utils.gpt_length import calc_dynamic_max_generate_length
     from .tts_utils.chinese_segmenter import pre_segment_chinese
     from .tts_utils.english_segmenter import pre_segment_english
+    from .tts_utils.custom_vocab import apply_custom_vocab
     from .tts_utils.segment_guard import check_segment_anomaly, get_retry_params, SegmentGuardStats
     from .s2mel.modules.commons import load_checkpoint2, MyModel
     from .s2mel.modules.bigvgan import bigvgan
@@ -77,6 +78,7 @@ except ImportError:
     from tts_utils.gpt_length import calc_dynamic_max_generate_length
     from tts_utils.chinese_segmenter import pre_segment_chinese
     from tts_utils.english_segmenter import pre_segment_english
+    from tts_utils.custom_vocab import apply_custom_vocab
     from tts_utils.segment_guard import check_segment_anomaly, get_retry_params, SegmentGuardStats
     from s2mel.modules.commons import load_checkpoint2, MyModel
     from s2mel.modules.bigvgan import bigvgan
@@ -795,6 +797,10 @@ class IndexTTSLite:
             _t = time.perf_counter()
             if verbose:
                 debug_log(3, "   [1/4] 文本處理...")
+
+            # Custom vocabulary replacements (before segmentation and BPE)
+            _vocab_cfg = self.cfg.get('text_processing', {}).get('custom_vocab', {})
+            text = apply_custom_vocab(text, _vocab_cfg)
 
             # Language-aware semantic pre-segmentation (before BPE tokenization)
             if language == 'zh':

@@ -368,6 +368,62 @@ class TextTokenizer:
         decoded = self.sp_model.Decode(ids, out_type=kwargs.pop("out_type", str), **kwargs)
         return de_tokenized_by_CJK_char(decoded, do_lower_case=do_lower_case)
 
+    # Tokens that count as "safe" split points for quick-streaming first-chunk
+    _quick_boundary_tokens = {".", "!", "?", "▁.", "▁?", "▁...",
+                              ",", "▁,", "-"}
+
+    # How many extra tokens beyond quick_streaming_tokens we're willing to
+    # scan forward to find a boundary, so we never cut mid-sentence.
+    _quick_stream_grace_window = 30
+
+    @staticmethod
+    def _split_first_segment_for_quick_stream(
+        segments: List[List[str]],
+        quick_streaming_tokens: int,
+        grace_window: int = 30,
+    ) -> List[List[str]]:
+        """Post-process: ensure the first segment is close to quick_streaming_tokens.
+
+        Strategy (never cut mid-sentence):
+          1. Scan backwards from ``quick_streaming_tokens`` for the nearest
+             boundary token (comma, period, dash).  If found, split there.
+          2. If nothing found backwards, scan *forward* up to
+             ``quick_streaming_tokens + grace_window`` for the next boundary.
+          3. If still nothing, leave the first segment as-is (don't force-cut).
+
+        This gives the "prefer ≤ limit, tolerate slightly over, never break
+        mid-clause" behaviour.
+        """
+        if not segments or quick_streaming_tokens <= 0:
+            return segments
+        first = segments[0]
+        if len(first) <= quick_streaming_tokens:
+            return segments  # already small enough
+
+        boundary = TextTokenizer._quick_boundary_tokens
+        best = -1
+
+        # 1. Scan backwards from limit
+        for k in range(min(quick_streaming_tokens, len(first)) - 1, 1, -1):
+            if first[k] in boundary:
+                best = k + 1  # include the boundary token in the first chunk
+                break
+
+        # 2. If nothing backwards, scan forward within grace window
+        if best < 0:
+            upper = min(quick_streaming_tokens + grace_window, len(first))
+            for k in range(quick_streaming_tokens, upper):
+                if first[k] in boundary:
+                    best = k + 1
+                    break
+
+        # 3. If still nothing, don't cut — better to have a long first segment
+        #    than to break mid-sentence
+        if best <= 0 or best >= len(first):
+            return segments
+
+        return [first[:best], first[best:]] + segments[1:]
+
     @staticmethod
     def split_segments_by_token(
         tokenized_str: List[str],
@@ -377,6 +433,11 @@ class TextTokenizer:
     ) -> List[List[str]]:
         """
         将tokenize后的结果按特定token进一步分割
+
+        When quick_streaming_tokens > 0, a post-processing step ensures the
+        first segment is close to that limit by splitting at the nearest
+        secondary boundary (comma, dash), with a grace window to avoid
+        cutting mid-sentence.
         """
         # 处理特殊情况
         if len(tokenized_str) == 0:
@@ -388,15 +449,17 @@ class TextTokenizer:
             token = tokenized_str[i]
             current_segment.append(token)
             current_segment_tokens_len += 1
-            if not  ("," in split_tokens or "▁," in split_tokens ) and ("," in current_segment or "▁," in current_segment): 
+            if not  ("," in split_tokens or "▁," in split_tokens ) and ("," in current_segment or "▁," in current_segment):
                 # 如果当前tokens中有,，则按,分割
+                # Note: quick_streaming_tokens is NOT passed to recursive calls —
+                # the first-chunk logic runs only at the outermost level after merge.
                 sub_segments = TextTokenizer.split_segments_by_token(
-                    current_segment, [",", "▁,"], max_text_tokens_per_segment=max_text_tokens_per_segment, quick_streaming_tokens = quick_streaming_tokens
+                    current_segment, [",", "▁,"], max_text_tokens_per_segment=max_text_tokens_per_segment
                 )
             elif "-" not in split_tokens and "-" in current_segment:
                 # 没有,，则按-分割
                 sub_segments = TextTokenizer.split_segments_by_token(
-                    current_segment, ["-"], max_text_tokens_per_segment=max_text_tokens_per_segment, quick_streaming_tokens = quick_streaming_tokens
+                    current_segment, ["-"], max_text_tokens_per_segment=max_text_tokens_per_segment
                 )
             elif current_segment_tokens_len <= max_text_tokens_per_segment:
                 if token in split_tokens and current_segment_tokens_len > 2:
@@ -430,7 +493,8 @@ class TextTokenizer:
         if current_segment_tokens_len > 0:
             assert current_segment_tokens_len <= max_text_tokens_per_segment
             segments.append(current_segment)
-        # 如果相邻的句子加起来长度小于最大限制，且此前token总数超过quick_streaming_tokens，则合并
+
+        # ── Merge adjacent small segments ──
         merged_segments = []
         total_token = 0
         for segment in segments:
@@ -439,13 +503,26 @@ class TextTokenizer:
                 continue
             if len(merged_segments) == 0:
                 merged_segments.append(segment)
-            elif len(merged_segments[-1]) + len(segment) <= max_text_tokens_per_segment and total_token > quick_streaming_tokens:
+            elif quick_streaming_tokens > 0 and total_token <= quick_streaming_tokens:
+                # Before the quick-streaming threshold: don't merge,
+                # keep segments small for fast first audio
+                merged_segments.append(segment)
+            elif len(merged_segments[-1]) + len(segment) <= max_text_tokens_per_segment:
                 merged_segments[-1] = merged_segments[-1] + segment
-            # 或小于最大长度限制的一半，则合并
             elif len(merged_segments[-1]) + len(segment) <= max_text_tokens_per_segment / 2:
                 merged_segments[-1] = merged_segments[-1] + segment
             else:
                 merged_segments.append(segment)
+
+        # ── Quick-streaming: trim the first segment (after merge) ──
+        # This runs on the final merged result so that boundary tokens
+        # (commas, periods) are guaranteed to be present in the segments.
+        if quick_streaming_tokens > 0:
+            merged_segments = TextTokenizer._split_first_segment_for_quick_stream(
+                merged_segments, quick_streaming_tokens,
+                grace_window=TextTokenizer._quick_stream_grace_window,
+            )
+
         return merged_segments
 
     punctuation_marks_tokens = [

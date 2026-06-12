@@ -424,87 +424,87 @@ class TextTokenizer:
         grace_window: int = 30,
         step: int = 25,
     ) -> List[List[str]]:
-        """Post-process: graduated segment sizes for smooth streaming.
+        """Re-segment tokens with graduated size targets for smooth streaming.
 
-        Instead of only constraining the first segment, applies progressive
-        targets so segment sizes ramp up gradually::
+        Flattens all tokens, identifies valid boundary positions, then walks
+        through the flat list accumulating tokens until the graduated target
+        is reached — splitting at the nearest boundary.
+
+        Graduated targets::
 
             seg 0: target = quick_streaming_tokens        (e.g. 50)
             seg 1: target = quick_streaming_tokens + step (e.g. 75)
             seg 2: target = quick_streaming_tokens + 2*step (e.g. 100)
             seg N: target = max_text_tokens_per_segment   (cap, e.g. 120)
 
-        This prevents the pattern where a tiny first segment (23 tokens)
-        finishes playing long before the next large segment (117 tokens)
-        is done generating.
+        Minimum segment size: 15 tokens (tiny segments are absorbed).
         """
         if not segments or quick_streaming_tokens <= 0:
             return segments
 
+        # Flatten all tokens
+        flat: List[str] = []
+        for seg in segments:
+            flat.extend(seg)
+
+        if not flat:
+            return segments
+
+        # Identify valid boundary positions (indices where a boundary token sits)
+        boundary = TextTokenizer._quick_boundary_tokens
+        boundary_set = set()
+        for i, tok in enumerate(flat):
+            if tok in boundary:
+                boundary_set.add(i)
+
+        # Walk through flat tokens, accumulating until target is reached
+        min_seg = 15
         result: List[List[str]] = []
+        seg_start = 0
         seg_index = 0
 
-        for seg in segments:
+        while seg_start < len(flat):
             target = min(
                 quick_streaming_tokens + seg_index * step,
                 max_text_tokens_per_segment,
             )
+            remaining = len(flat) - seg_start
 
-            if len(seg) <= target:
-                # Segment already fits the graduated target
-                result.append(seg)
-                seg_index += 1
-            else:
-                # Try to split this segment at the graduated target
-                parts = TextTokenizer._try_split_segment_at_target(
-                    seg, target, grace_window,
-                )
-                if len(parts) == 1:
-                    # Couldn't split → accept as-is
-                    result.append(seg)
-                    seg_index += 1
-                else:
-                    # Successfully split — the left part goes out, the right
-                    # part gets re-examined with the next graduated target
-                    result.append(parts[0])
-                    seg_index += 1
-                    # Feed the remainder back (may need further splitting)
-                    remainder = parts[1]
-                    while len(remainder) > 0:
-                        next_target = min(
-                            quick_streaming_tokens + seg_index * step,
-                            max_text_tokens_per_segment,
-                        )
-                        if len(remainder) <= next_target:
-                            result.append(remainder)
-                            seg_index += 1
-                            break
-                        sub = TextTokenizer._try_split_segment_at_target(
-                            remainder, next_target, grace_window,
-                        )
-                        result.append(sub[0])
-                        seg_index += 1
-                        if len(sub) == 1:
-                            break
-                        remainder = sub[1]
+            # If remaining tokens fit in the target (or close enough), take them all
+            if remaining <= target + grace_window:
+                result.append(flat[seg_start:])
+                break
 
-        # ── Merge undersized segments ──
-        # Segments shorter than min_segment_tokens get merged with a neighbour
-        # to avoid sending a single word/phrase to the TTS engine.
-        min_seg = 15  # minimum tokens per segment
-        if len(result) > 1:
-            merged: List[List[str]] = [result[0]]
-            for seg in result[1:]:
-                if len(merged[-1]) < min_seg:
-                    merged[-1] = merged[-1] + seg
-                elif len(seg) < min_seg:
-                    merged[-1] = merged[-1] + seg
-                else:
-                    merged.append(seg)
-            if len(merged) > 1 and len(merged[-1]) < min_seg:
-                merged[-2] = merged[-2] + merged[-1]
-                merged.pop()
-            result = merged
+            # Find the best boundary near the target
+            best = -1
+
+            # 1. Scan backwards from target
+            scan_end = min(seg_start + target, len(flat))
+            for k in range(scan_end - 1, seg_start + min_seg - 1, -1):
+                if k in boundary_set:
+                    best = k + 1  # include boundary token
+                    break
+
+            # 2. If nothing backwards, scan forward within grace window
+            if best < 0:
+                upper = min(seg_start + target + grace_window, len(flat))
+                for k in range(seg_start + target, upper):
+                    if k in boundary_set:
+                        best = k + 1
+                        break
+
+            # 3. No boundary found → take up to target (hard break as last resort)
+            if best <= seg_start:
+                best = min(seg_start + target, len(flat))
+
+            result.append(flat[seg_start:best])
+            seg_start = best
+            seg_index += 1
+
+        # Merge undersized trailing segment
+        if len(result) > 1 and len(result[-1]) < min_seg:
+            result[-2] = result[-2] + result[-1]
+            result.pop()
 
         return result
 

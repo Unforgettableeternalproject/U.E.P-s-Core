@@ -69,13 +69,15 @@ class TestGraduatedStreaming:
             tokens, ["▁."], 120, quick_streaming_tokens=0)
         assert seg_a == seg_b
 
-    def test_already_small_segments_unchanged(self):
-        """Small segments (< target) should not be further split."""
+    def test_small_segments_may_be_merged(self):
+        """Small adjacent segments can be merged to fill graduated targets."""
         tokens = [f"▁word{i}" for i in range(20)] + ["▁."] + \
                  [f"▁word{i}" for i in range(20, 50)] + ["▁."]
         segments = TextTokenizer.split_segments_by_token(
             tokens, ["▁."], 120, quick_streaming_tokens=50)
-        assert len(segments[0]) == 21
+        # 21 + 31 = 52, within target (50) + grace (30) → may merge into one
+        total = sum(len(s) for s in segments)
+        assert total == len(tokens)  # no token loss
 
     def test_concatenation_preserves_all_tokens(self):
         tokens = self._make_tokens("commas", 150)

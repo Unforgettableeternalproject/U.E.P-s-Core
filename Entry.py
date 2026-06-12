@@ -18,7 +18,7 @@ except ModuleNotFoundError:
 
 from test_tts.benchmarks.metrics import LatencySample, summarize_latency, summarize_profiles
 from test_tts.cli.interactive import InteractiveShell
-from test_tts.runtime.audio import NullAudioPlayer, SimpleAudioPlayer
+from test_tts.runtime.audio import NullAudioPlayer, SimpleAudioPlayer, StreamingAudioPlayer
 from test_tts.runtime.backend_contract import legacy_backend_info
 from test_tts.runtime.legacy_backend import LegacyIndexTTS2Backend
 from test_tts.runtime.legacy_generate import default_generation_paths, generate_with_legacy_indextts2
@@ -71,6 +71,7 @@ def build_legacy_session(
     use_fp16: bool = True,
     use_cuda_kernel: bool = True,
     use_accel: bool = False,
+    emotion_vector: list[float] | None = None,
     playback: bool = True,
 ) -> TTSInteractiveSession:
     root = Path(project_root or Path(__file__).resolve().parent)
@@ -80,27 +81,34 @@ def build_legacy_session(
         use_fp16=use_fp16,
         use_cuda_kernel=use_cuda_kernel,
         use_accel=use_accel,
+        emotion_vector=emotion_vector,
     )
     resolved_output = Path(output_dir)
     if not resolved_output.is_absolute():
         resolved_output = root / resolved_output
-    player = SimpleAudioPlayer() if playback else NullAudioPlayer()
+    player = StreamingAudioPlayer() if playback else NullAudioPlayer()
     return TTSInteractiveSession(backend=backend, output_dir=resolved_output, player=player)
 
 
-def run_shell(device: str | None, use_fp16: bool, use_cuda_kernel: bool, use_accel: bool, playback: bool) -> int:
+def run_shell(device: str | None, use_fp16: bool, use_cuda_kernel: bool, use_accel: bool, emotion_vector: list[float] | None, playback: bool) -> int:
     session = build_legacy_session(
         project_root=Path(__file__).resolve().parent,
         device=device,
         use_fp16=use_fp16,
         use_cuda_kernel=use_cuda_kernel,
         use_accel=use_accel,
+        emotion_vector=emotion_vector,
         playback=playback,
     )
     shell = InteractiveShell(session=session, write=console.print)
     console.print(
-        "TTS shell ready. Commands: load, say <text>, save --output <path> <text>, "
-        "profile <text>, status, unload, exit"
+        "TTS shell ready. Commands:\n"
+        "  say <text>              — generate and play\n"
+        "  save --output <path> <text>\n"
+        "  profile <text>          — synthesis with timing report\n"
+        "  emotion [preset|H A S F D M U C]\n"
+        "  language [en|zh]        — auto-translates mismatched input\n"
+        "  load / unload / status / help / exit"
     )
     while True:
         try:
@@ -118,13 +126,14 @@ def run_shell(device: str | None, use_fp16: bool, use_cuda_kernel: bool, use_acc
     return 0
 
 
-def run_profile(text: str, device: str | None, use_fp16: bool, use_cuda_kernel: bool, use_accel: bool, repeat: int) -> int:
+def run_profile(text: str, device: str | None, use_fp16: bool, use_cuda_kernel: bool, use_accel: bool, emotion_vector: list[float] | None, repeat: int) -> int:
     session = build_legacy_session(
         project_root=Path(__file__).resolve().parent,
         device=device,
         use_fp16=use_fp16,
         use_cuda_kernel=use_cuda_kernel,
         use_accel=use_accel,
+        emotion_vector=emotion_vector,
         playback=False,
     )
 
@@ -174,6 +183,8 @@ def main() -> int:
     shell_cmd.add_argument("--no-cuda-kernel", action="store_true")
     shell_cmd.add_argument("--no-playback", action="store_true", help="Generate on say without audio playback")
     shell_cmd.add_argument("--accel", action="store_true", help="Enable AccelInferenceEngine (CUDA Graph + Flash Attention)")
+    shell_cmd.add_argument("--emotion", type=float, nargs=8, metavar=("H", "A", "S", "F", "D", "M", "U", "C"),
+                           help="8D emotion vector: Happy Angry Sad aFraid Disgusted Melancholic sUrprised Calm (0.0-1.0 each)")
 
     profile_cmd = subparsers.add_parser("profile", help="Run profiled synthesis with stage-level timing")
     profile_cmd.add_argument("--text", required=True, help="Text to synthesize")
@@ -181,6 +192,8 @@ def main() -> int:
     profile_cmd.add_argument("--no-fp16", action="store_true")
     profile_cmd.add_argument("--no-cuda-kernel", action="store_true")
     profile_cmd.add_argument("--accel", action="store_true", help="Enable AccelInferenceEngine (CUDA Graph + Flash Attention)")
+    profile_cmd.add_argument("--emotion", type=float, nargs=8, metavar=("H", "A", "S", "F", "D", "M", "U", "C"),
+                           help="8D emotion vector: Happy Angry Sad aFraid Disgusted Melancholic sUrprised Calm (0.0-1.0 each)")
     profile_cmd.add_argument("--repeat", type=int, default=1, help="Number of synthesis runs (for averaging)")
 
     args = parser.parse_args()
@@ -202,6 +215,7 @@ def main() -> int:
             use_fp16=not args.no_fp16,
             use_cuda_kernel=not args.no_cuda_kernel,
             use_accel=args.accel,
+            emotion_vector=args.emotion,
             playback=not args.no_playback,
         )
     if args.command == "profile":
@@ -211,6 +225,7 @@ def main() -> int:
             use_fp16=not args.no_fp16,
             use_cuda_kernel=not args.no_cuda_kernel,
             use_accel=args.accel,
+            emotion_vector=args.emotion,
             repeat=args.repeat,
         )
     raise ValueError(f"Unknown command: {args.command}")

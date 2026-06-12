@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Protocol
 
 from test_tts.benchmarks.metrics import ProfileReport
-from test_tts.runtime.audio import AudioPlayer, NullAudioPlayer
+from test_tts.runtime.audio import AudioPlayer, NullAudioPlayer, StreamingAudioPlayer
 
 
 class PersistentTTSBackend(Protocol):
@@ -46,6 +46,24 @@ class TTSInteractiveSession:
         self._play_count = 0
         self._last_output_path: Path | None = None
 
+    def set_emotion(self, emotion_vector: list[float]) -> None:
+        """Dynamically change the emotion vector for subsequent say/save/profile calls."""
+        if len(emotion_vector) != 8:
+            raise ValueError("emotion_vector must have exactly 8 dimensions")
+        self.backend.emotion_vector = list(emotion_vector)
+
+    def get_emotion(self) -> list[float]:
+        """Return the current emotion vector."""
+        return list(self.backend.emotion_vector or [0.0] * 8)
+
+    def set_language(self, language: str) -> None:
+        """Set synthesis language ('en' or 'zh')."""
+        self._language = language
+
+    def get_language(self) -> str:
+        """Return current synthesis language."""
+        return getattr(self, "_language", "en")
+
     def load(self) -> None:
         if self._loaded:
             return
@@ -53,7 +71,13 @@ class TTSInteractiveSession:
         self._loaded = True
 
     def say(self, text: str) -> SayResult:
-        """Generate and play audio.  Streams per-segment playback when possible."""
+        """Generate and play audio.  Streams per-segment playback when possible.
+
+        If the player is a ``StreamingAudioPlayer``, segments are enqueued
+        non-blockingly so the engine can keep generating while the previous
+        segment is still playing (true Producer/Consumer parallelism).
+        Otherwise falls back to synchronous blocking playback per segment.
+        """
         if not text.strip():
             raise ValueError("text must not be empty")
 
@@ -61,26 +85,42 @@ class TTSInteractiveSession:
         output_path = self._resolve_auto_output_path(prefix="say")
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Build streaming callback: play each segment's audio tensor immediately
-        play_tensor = getattr(self.player, "play_tensor", None)
+        is_streaming = isinstance(self.player, StreamingAudioPlayer)
         segments_played = 0
 
-        def _on_segment(audio_tensor, seg_idx: int, total: int):
-            nonlocal segments_played
-            if play_tensor is not None:
-                play_tensor(audio_tensor)
-                segments_played += 1
+        lang = self.get_language()
 
-        # Use streaming path if backend supports on_segment_audio
-        if hasattr(self.backend, "generate") and play_tensor is not None:
+        if is_streaming:
+            # --- Producer/Consumer path ---
+            self.player.start_stream()
+
+            def _on_segment(audio_tensor, seg_idx: int, total: int):
+                self.player.enqueue_tensor(audio_tensor)
+
             generated = self.backend.generate(
-                text, output_path, on_segment_audio=_on_segment,
+                text, output_path, on_segment_audio=_on_segment, language=lang,
             )
-        else:
-            generated = self.backend.generate(text, output_path)
 
-        # Fallback: if no segments were streamed (single segment or no play_tensor),
-        # play the final concatenated file
+            segments_played = self.player.wait_stream()
+
+        else:
+            # --- Synchronous fallback path ---
+            play_tensor = getattr(self.player, "play_tensor", None)
+
+            def _on_segment(audio_tensor, seg_idx: int, total: int):
+                nonlocal segments_played
+                if play_tensor is not None:
+                    play_tensor(audio_tensor)
+                    segments_played += 1
+
+            if play_tensor is not None:
+                generated = self.backend.generate(
+                    text, output_path, on_segment_audio=_on_segment, language=lang,
+                )
+            else:
+                generated = self.backend.generate(text, output_path, language=lang)
+
+        # Fallback: if no segments were streamed, play the final file
         if segments_played == 0:
             self.player.play(generated)
 

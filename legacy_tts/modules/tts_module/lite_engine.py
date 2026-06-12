@@ -76,7 +76,62 @@ except ImportError:
 
 class IndexTTSLite:
     """精簡版 IndexTTS2 推論引擎"""
-    
+
+    @staticmethod
+    def _trim_trailing_silence(
+        audio: "torch.Tensor",
+        rms_threshold: float = 0.005,
+        window_ms: int = 50,
+        min_silence_ms: int = 300,
+        keep_tail_ms: int = 80,
+        sample_rate: int = 22050,
+    ) -> "torch.Tensor":
+        """Trim trailing silence from a segment's audio tensor.
+
+        Uses windowed RMS to detect silence (robust against BigVGAN's
+        low-level noise floor).  Scans backwards from the end; if trailing
+        silence exceeds *min_silence_ms*, trims to last voiced window plus
+        *keep_tail_ms* of fade-out.
+
+        Works on shapes ``[samples]`` or ``[channels, samples]``.
+        """
+        if audio.numel() == 0:
+            return audio
+
+        # Flatten to 1-D for analysis
+        flat = audio.view(-1) if audio.dim() == 1 else audio[0]
+        n_samples = flat.shape[0]
+
+        window_size = int(sample_rate * window_ms / 1000)
+        min_silence_samples = int(sample_rate * min_silence_ms / 1000)
+        keep_samples = int(sample_rate * keep_tail_ms / 1000)
+
+        if n_samples < window_size:
+            return audio
+
+        # Compute RMS per window from the end backwards
+        n_windows = n_samples // window_size
+        last_voiced_sample = n_samples  # default: no trim
+
+        for i in range(n_windows - 1, -1, -1):
+            start = i * window_size
+            end = start + window_size
+            window_rms = (flat[start:end].float() ** 2).mean().sqrt().item()
+            if window_rms > rms_threshold:
+                last_voiced_sample = end
+                break
+        else:
+            # All windows below threshold — keep minimal audio
+            return audio[..., :keep_samples] if n_samples > keep_samples else audio
+
+        trailing_silence = n_samples - last_voiced_sample
+
+        if trailing_silence > min_silence_samples:
+            trim_to = min(last_voiced_sample + keep_samples, n_samples)
+            return audio[..., :trim_to]
+
+        return audio
+
     def __init__(
         self,
         cfg_path: str = "checkpoints/config.yaml",
@@ -699,6 +754,24 @@ class IndexTTSLite:
             seg_vocoder_ms = 0.0
             first_segment_done_ms: Optional[float] = None
 
+            # --- Adaptive Segment Emotion (實驗性) ---
+            # 為多段文本的每段生成微幅不同的情緒偏移，提升段落間的語調連續性。
+            # 策略：以 base emovec_mat 為中心，沿段落位置施加平滑的 cosine 弧線偏移。
+            # 單段文本不受影響。
+            adaptive_emotion = (num_segments > 1)
+            if adaptive_emotion:
+                # 預生成每段的情緒偏移因子（cosine arc: 中間段稍高能量，首尾段回歸基調）
+                import math
+                segment_emotion_scales = []
+                for i in range(num_segments):
+                    # Cosine arc: 0 → π 映射，中間段 scale 最大
+                    t = i / max(num_segments - 1, 1)
+                    # 微幅 arc：基礎 1.0 ± 0.05 的 cosine 波動
+                    arc_scale = 1.0 + 0.05 * math.sin(math.pi * t)
+                    segment_emotion_scales.append(arc_scale)
+                if verbose:
+                    debug_log(2, f"      🎭 自適應語感: {num_segments} 段, 偏移範圍 ±5%")
+
             for seg_idx, seg_tokens in enumerate(segments):
                 if verbose and num_segments > 1:
                     debug_log(3, f"   ── 段落 {seg_idx + 1}/{num_segments} ──")
@@ -722,9 +795,15 @@ class IndexTTSLite:
                             alpha=1.0
                         )
 
-                        if emovec_mat is not None:
+                        # 套用 per-segment 情緒偏移
+                        seg_emovec_mat = emovec_mat
+                        if adaptive_emotion and emovec_mat is not None:
+                            scale = segment_emotion_scales[seg_idx]
+                            seg_emovec_mat = emovec_mat * scale
+
+                        if seg_emovec_mat is not None:
                             weight_sum = torch.sum(torch.tensor(normalized_emotion, device=self.device))
-                            emovec = emovec_mat + (1 - weight_sum) * emovec
+                            emovec = seg_emovec_mat + (1 - weight_sum) * emovec
 
                         codes, speech_conditioning_latent = self.gpt.inference_speech(
                             spk_cond_emb,
@@ -757,7 +836,7 @@ class IndexTTSLite:
                             spk_cond_emb,
                             cond_mel_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
                             emo_cond_mel_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
-                            emo_vec=emovec_mat,
+                            emo_vec=seg_emovec_mat if adaptive_emotion else emovec_mat,
                             use_speed=use_speed
                         )
                         seg_gpt_latent_ms += (time.perf_counter() - _seg_t) * 1000
@@ -826,6 +905,10 @@ class IndexTTSLite:
                     seg_audio_gpu = self.bigvgan(mel.float()).squeeze(0)
                 seg_vocoder_ms += (time.perf_counter() - _seg_t) * 1000
                 seg_audio = seg_audio_gpu.cpu()  # D2H transfer 不計入 vocoder 時間
+
+                # Trim trailing silence from segment (GPT sometimes generates
+                # long silence runs before the stop token)
+                seg_audio = self._trim_trailing_silence(seg_audio)
 
                 audio_segments.append(seg_audio)
 

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -115,7 +115,7 @@ class SemanticMemory:
             concept = self._concepts[name]
             concept.description = description
             concept.concept_type = concept_type
-            concept.updated_at = datetime.utcnow()
+            concept.updated_at = datetime.now(timezone.utc)
             if metadata:
                 concept.metadata.update(metadata)
         else:

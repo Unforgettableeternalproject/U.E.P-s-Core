@@ -9,7 +9,7 @@ Phase 2: 擴展 schema，加入 source_episode_ids、confidence、向量索引�
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -41,8 +41,8 @@ class Concept:
     source_episode_ids: list[str] = field(default_factory=list)
     confidence: float = 0.5
     access_count: int = 0
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -58,7 +58,7 @@ class Concept:
             # confidence = 1 - 1/(1+n)  → n=1: 0.5, n=3: 0.75, n=10: 0.91
             n = len(self.source_episode_ids)
             self.confidence = 1.0 - 1.0 / (1.0 + n)
-            self.updated_at = datetime.utcnow()
+            self.updated_at = datetime.now(timezone.utc)
 
     def to_dict(self) -> dict[str, Any]:
         return {

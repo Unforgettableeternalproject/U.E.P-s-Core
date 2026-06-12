@@ -6,7 +6,8 @@ Echo Memory System - 自主記憶子系統
 核心模組：
 - storage: 三層記憶（Episodic/Semantic/Working）
 - retrieval: EcphoryRAG 聯想檢索
-- consolidation: Dream Engine 離線鞏固
+- dream: Dream Engine 離線鞏固（蒸餾/重播/修剪）
+- neurochem: 神經化學狀態機
 - schemas: 資料結構定義
 
 Example:

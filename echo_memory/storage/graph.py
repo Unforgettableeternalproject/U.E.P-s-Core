@@ -36,13 +36,15 @@ class MemoryGraph:
 
     節點類型：
       - Episode: 對話情節
-      - Concept: 抽象概念（Phase 2）
+      - Concept: 抽象概念
       - Entity: 實體（Phase 3）
 
     邊類型：
       - PRECEDES: 時序關係（A 發生在 B 之前）
-      - CO_OCCURS: 共現關係（Phase 2）
-      - RELATES_TO: 語義關聯（Phase 2）
+      - RELATES_TO: 語義關聯（Concept ↔ Concept）
+      - CONTRADICTS: 矛盾關係（Concept ↔ Concept，帶 penalty）
+      - DERIVED_FROM: 蒸餾溯源（Concept → Episode）
+      - CO_OCCURS: 共現關係（Phase 3）
 
     時間單位約定：
       - time_delta_hours：兩個 episode 之間的事件間隔（小時），用於建邊時的初始 recency 計算
@@ -165,6 +167,193 @@ class MemoryGraph:
             f"(time_delta={time_delta_hours:.2f}hr, recency={recency_score:.3f}, weight={weight:.3f})"
         )
 
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 邊管理 - Concept 相關邊（Phase 2）
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    def add_concept_node(self, concept_id: str, name: str, concept_type: str = "entity") -> None:
+        """
+        添加概念節點。
+
+        Args:
+            concept_id: Concept ID (con_xxx)
+            name: 概念名稱
+            concept_type: 概念類型
+        """
+        self.graph.add_node(
+            concept_id,
+            node_type="Concept",
+            name=name,
+            concept_type=concept_type,
+        )
+        logger.debug(f"[MemoryGraph] 添加概念節點: {concept_id} ({name})")
+
+    def add_relates_to_edge(
+        self,
+        concept_a: str,
+        concept_b: str,
+        weight: float = 0.5,
+    ) -> None:
+        """
+        添加 RELATES_TO 邊（語義關聯，無向語義用雙向邊模擬）。
+
+        Args:
+            concept_a: 概念 A 的 ID
+            concept_b: 概念 B 的 ID
+            weight: 關聯強度 (0-1)
+        """
+        if not self.graph.has_node(concept_a) or not self.graph.has_node(concept_b):
+            logger.warning(
+                f"[MemoryGraph] 節點不存在，無法添加 RELATES_TO 邊: "
+                f"{concept_a} <-> {concept_b}"
+            )
+            return
+
+        weight = min(1.0, max(0.0, weight))
+
+        # 雙向邊（語義關聯是對稱的）
+        for src, dst in [(concept_a, concept_b), (concept_b, concept_a)]:
+            if self.graph.has_edge(src, dst):
+                # 已存在 → 強化權重
+                existing = self.graph[src][dst]
+                existing["frequency"] = existing.get("frequency", 1) + 1
+                existing["weight"] = min(1.0, (existing["weight"] + weight) / 2)
+            else:
+                self.graph.add_edge(
+                    src, dst,
+                    edge_type="RELATES_TO",
+                    weight=weight,
+                    frequency=1,
+                    created_at=time.time(),
+                )
+
+        logger.debug(
+            f"[MemoryGraph] 添加 RELATES_TO 邊: "
+            f"{concept_a[:12]} <-> {concept_b[:12]} (weight={weight:.3f})"
+        )
+
+    def add_contradicts_edge(
+        self,
+        concept_a: str,
+        concept_b: str,
+        weight: float = 0.5,
+    ) -> None:
+        """
+        添加 CONTRADICTS 邊（矛盾關係）。
+
+        用於 EcphoryRetrieval 的矛盾 penalty：
+        如果查詢命中 A，且 A→B 有 CONTRADICTS 邊，B 的分數會被降低。
+
+        Args:
+            concept_a: 概念 A 的 ID
+            concept_b: 概念 B 的 ID
+            weight: 矛盾強度 (0-1)
+        """
+        if not self.graph.has_node(concept_a) or not self.graph.has_node(concept_b):
+            logger.warning(
+                f"[MemoryGraph] 節點不存在，無法添加 CONTRADICTS 邊: "
+                f"{concept_a} <-> {concept_b}"
+            )
+            return
+
+        weight = min(1.0, max(0.0, weight))
+
+        for src, dst in [(concept_a, concept_b), (concept_b, concept_a)]:
+            if not self.graph.has_edge(src, dst):
+                self.graph.add_edge(
+                    src, dst,
+                    edge_type="CONTRADICTS",
+                    weight=weight,
+                    created_at=time.time(),
+                )
+
+        logger.debug(
+            f"[MemoryGraph] 添加 CONTRADICTS 邊: "
+            f"{concept_a[:12]} <-> {concept_b[:12]} (weight={weight:.3f})"
+        )
+
+    def add_derived_from_edge(
+        self,
+        concept_id: str,
+        episode_id: str,
+        weight: float = 0.7,
+    ) -> None:
+        """
+        添加 DERIVED_FROM 邊（蒸餾溯源：Concept → Episode）。
+
+        保留知識蒸餾的溯源鏈，讓 Concept 可追溯至原始 Episode。
+
+        Args:
+            concept_id: 概念 ID
+            episode_id: 來源 Episode ID
+            weight: 溯源強度 (0-1)
+        """
+        if not self.graph.has_node(concept_id) or not self.graph.has_node(episode_id):
+            logger.warning(
+                f"[MemoryGraph] 節點不存在，無法添加 DERIVED_FROM 邊: "
+                f"{concept_id} -> {episode_id}"
+            )
+            return
+
+        if not self.graph.has_edge(concept_id, episode_id):
+            self.graph.add_edge(
+                concept_id,
+                episode_id,
+                edge_type="DERIVED_FROM",
+                weight=min(1.0, max(0.0, weight)),
+                created_at=time.time(),
+            )
+            logger.debug(
+                f"[MemoryGraph] 添加 DERIVED_FROM 邊: "
+                f"{concept_id[:12]} -> {episode_id[:12]}"
+            )
+
+    def get_concept_relations(
+        self,
+        concept_id: str,
+        edge_type: str | None = None,
+    ) -> list[tuple[str, str, float]]:
+        """
+        獲取概念的所有關聯。
+
+        Args:
+            concept_id: 概念 ID
+            edge_type: 過濾邊類型（None = 全部）
+
+        Returns:
+            [(neighbor_id, edge_type, weight), ...]
+        """
+        if not self.graph.has_node(concept_id):
+            return []
+
+        results = []
+        # 前向邊
+        for neighbor in self.graph.successors(concept_id):
+            data = self.graph[concept_id][neighbor]
+            et = data.get("edge_type", "")
+            if edge_type is None or et == edge_type:
+                results.append((neighbor, et, data.get("weight", 0.0)))
+
+        # 後向邊
+        for neighbor in self.graph.predecessors(concept_id):
+            data = self.graph[neighbor][concept_id]
+            et = data.get("edge_type", "")
+            if edge_type is None or et == edge_type:
+                results.append((neighbor, et, data.get("weight", 0.0)))
+
+        return results
+
+    def remove_concept_node(self, concept_id: str) -> None:
+        """
+        移除概念節點及其所有邊。
+
+        Args:
+            concept_id: 概念 ID
+        """
+        if self.graph.has_node(concept_id):
+            self.graph.remove_node(concept_id)
+            logger.debug(f"[MemoryGraph] 移除概念節點: {concept_id}")
+
     def update_precedes_edge(self, from_id: str, to_id: str) -> None:
         """
         更新 PRECEDES 邊（增加頻率）。
@@ -258,21 +447,28 @@ class MemoryGraph:
         max_hops: int = 2,
         min_weight: float = 0.15,
         max_results: int = 20,
+        exclude_edge_types: set[str] | None = None,
     ) -> list[tuple[str, float, int]]:
         """
         從種子節點多跳展開，獲取相關節點。
+
+        CONTRADICTS 邊預設不展開（矛盾節點不該被當作「相關」推薦）。
 
         Args:
             seed_ids: 種子節點 ID 列表
             max_hops: 最大跳數
             min_weight: 最小邊權重閾值
             max_results: 最大返回數量
+            exclude_edge_types: 展開時排除的邊類型（預設排除 CONTRADICTS）
 
         Returns:
             [(node_id, avg_weight, hop_distance), ...] 按權重降序
         """
         if not seed_ids:
             return []
+
+        if exclude_edge_types is None:
+            exclude_edge_types = {"CONTRADICTS"}
 
         visited = set(seed_ids)
         current_layer = seed_ids
@@ -285,7 +481,7 @@ class MemoryGraph:
                 if not self.graph.has_node(node_id):
                     continue
 
-                # 前向和後向鄰居（PRECEDES 是有向邊）
+                # 前向和後向鄰居
                 neighbors = list(self.graph.successors(node_id)) + \
                            list(self.graph.predecessors(node_id))
 
@@ -293,13 +489,20 @@ class MemoryGraph:
                     if neighbor in visited:
                         continue
 
-                    # 獲取邊權重
+                    # 獲取邊權重和類型
                     if self.graph.has_edge(node_id, neighbor):
-                        weight = self.graph[node_id][neighbor].get("weight", 0.0)
+                        edge_data = self.graph[node_id][neighbor]
                     elif self.graph.has_edge(neighbor, node_id):
-                        weight = self.graph[neighbor][node_id].get("weight", 0.0)
+                        edge_data = self.graph[neighbor][node_id]
                     else:
-                        weight = 0.0
+                        continue
+
+                    edge_type = edge_data.get("edge_type", "")
+                    weight = edge_data.get("weight", 0.0)
+
+                    # 排除指定邊類型
+                    if edge_type in exclude_edge_types:
+                        continue
 
                     # 過濾低權重邊
                     if weight < min_weight:

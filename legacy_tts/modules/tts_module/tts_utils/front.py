@@ -487,26 +487,30 @@ class TextTokenizer:
                 result.append(flat[seg_start:])
                 break
 
-            # Find the best boundary near the target
+            # Find the best boundary near the target.
+            # Strategy: prefer the LAST boundary AT OR BEFORE target (keeps
+            # segments within target). Only look beyond target if nothing found.
             best = -1
+            target_pos = seg_start + target
+            lo = seg_start + min_seg  # don't create segments shorter than min_seg
 
-            # 1. Scan backwards from target
-            scan_end = min(seg_start + target, len(flat))
-            for k in range(scan_end - 1, seg_start + min_seg - 1, -1):
+            # 1. Scan backwards from target — find the closest boundary ≤ target
+            for k in range(min(target_pos, len(flat)) - 1, lo - 1, -1):
                 if k in boundary_set:
-                    best = k + 1  # include boundary token
+                    best = k + 1
                     break
 
-            # 2. If nothing backwards, scan forward within grace window
+            # 2. If nothing found before target, scan forward within grace window
             if best < 0:
-                upper = min(seg_start + target + grace_window, len(flat))
-                for k in range(seg_start + target, upper):
+                hi = min(target_pos + grace_window, len(flat))
+                for k in range(target_pos, hi):
                     if k in boundary_set:
                         best = k + 1
                         break
 
             if _debug_rebalance:
-                print(f"[rebalance] seg {seg_index}: start={seg_start} target={target} scan=[{seg_start+min_seg}..{scan_end}] best={best}")
+                _hi = min(target_pos + grace_window, len(flat))
+                print(f"[rebalance] seg {seg_index}: start={seg_start} target_pos={target_pos} scan=[{lo}..{_hi}] best={best}")
 
             # 3. No boundary found → take up to target (hard break as last resort)
             if best <= seg_start:

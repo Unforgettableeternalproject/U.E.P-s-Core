@@ -43,6 +43,23 @@ def test_stale_mutation_does_not_resurrect_deleted_episode(tmp_path):
     assert reloaded.get(kept_id).salience_score == 0.9
 
 
+def test_summary_update_reloads_snapshot_and_rebuilds_embedding(tmp_path):
+    writer = EpisodicMemory(tmp_path, embedding_model="custom")
+    writer._generate_embedding = lambda text: [1.0, 0.0]
+    deleted_id = writer.write(_episode("deleted"))
+    kept_id = writer.write(_episode("kept"))
+
+    stale = EpisodicMemory(tmp_path, embedding_model="custom")
+    stale._generate_embedding = lambda text: [0.0, 1.0]
+    assert writer.delete_episode(deleted_id)
+    assert stale.update_summary(kept_id, "updated")
+
+    reloaded = EpisodicMemory(tmp_path, embedding_model="custom")
+    assert reloaded.get(deleted_id) is None
+    assert reloaded.get(kept_id).content_summary == "updated"
+    assert reloaded.get(kept_id).embedding == [0.0, 1.0]
+
+
 def test_namespace_lock_is_reentrant_in_same_thread(tmp_path):
     with storage_lock(tmp_path, timeout=0.2):
         with storage_lock(tmp_path, timeout=0.2):

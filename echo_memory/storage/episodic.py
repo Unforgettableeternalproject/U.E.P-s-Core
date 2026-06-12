@@ -237,6 +237,21 @@ class EpisodicMemory:
             self._save_unlocked()
             return True
 
+    def update_summary(self, episode_id: str, new_summary: str) -> bool:
+        """Update an episode summary and its embedding against the latest snapshot."""
+        with storage_lock(self.lock_path):
+            self._load(reset=True)
+            self._reindex_if_required()
+            ep = self._episodes.get(episode_id)
+            if ep is None:
+                return False
+
+            ep.content_summary = new_summary
+            ep.embedding = self._generate_embedding(new_summary)
+            self._rebuild_embeddings()
+            self._save_unlocked()
+            return True
+
     def clear(self):
         """清空所有情節記憶（測試用）"""
         with storage_lock(self.lock_path):

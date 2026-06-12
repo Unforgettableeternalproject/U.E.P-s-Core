@@ -63,6 +63,7 @@ try:
     from .gpt.model_v2 import UnifiedVoice
     from .tts_utils.maskgct_utils import build_semantic_model, build_semantic_codec
     from .tts_utils.front import TextNormalizer, TextTokenizer
+    from .tts_utils.gpt_length import calc_dynamic_max_generate_length
     from .s2mel.modules.commons import load_checkpoint2, MyModel
     from .s2mel.modules.bigvgan import bigvgan
 except ImportError:
@@ -70,6 +71,7 @@ except ImportError:
     from gpt.model_v2 import UnifiedVoice
     from tts_utils.maskgct_utils import build_semantic_model, build_semantic_codec
     from tts_utils.front import TextNormalizer, TextTokenizer
+    from tts_utils.gpt_length import calc_dynamic_max_generate_length
     from s2mel.modules.commons import load_checkpoint2, MyModel
     from s2mel.modules.bigvgan import bigvgan
 
@@ -772,12 +774,29 @@ class IndexTTSLite:
                 if verbose:
                     debug_log(2, f"      🎭 自適應語感: {num_segments} 段, 偏移範圍 ±5%")
 
+            # Dynamic length config (from config.yaml → gpt.dynamic_length.*)
+            _dyn_cfg = self.cfg.get('gpt', {}).get('dynamic_length', {})
+            _mel_per_token_ratio = float(_dyn_cfg.get('mel_per_token_ratio', 10.0))
+            _safety_margin = int(_dyn_cfg.get('safety_margin', 150))
+            _min_gen_len = int(_dyn_cfg.get('min_generate_length', 300))
+
             for seg_idx, seg_tokens in enumerate(segments):
                 if verbose and num_segments > 1:
                     debug_log(3, f"   ── 段落 {seg_idx + 1}/{num_segments} ──")
 
                 text_tokens = self.tokenizer.convert_tokens_to_ids(seg_tokens)
                 text_tokens = torch.tensor(text_tokens, dtype=torch.int32, device=self.device).unsqueeze(0)
+
+                # 計算動態 max_generate_length（基於本段 text token 數）
+                seg_max_gen_len = calc_dynamic_max_generate_length(
+                    num_text_tokens=len(seg_tokens),
+                    cfg_max_mel_tokens=self.cfg.gpt.max_mel_tokens,
+                    mel_per_token_ratio=_mel_per_token_ratio,
+                    safety_margin=_safety_margin,
+                    min_generate_length=_min_gen_len,
+                )
+                if verbose:
+                    debug_log(3, f"      📏 動態長度上限: {seg_max_gen_len} mel tokens (text tokens: {len(seg_tokens)})")
 
                 # 4. GPT 生成語義 tokens
                 if verbose:
@@ -820,7 +839,7 @@ class IndexTTSLite:
                             top_k=top_k,
                             length_penalty=1.0,
                             repetition_penalty=1.2,
-                            max_generate_length=self.cfg.gpt.max_mel_tokens
+                            max_generate_length=seg_max_gen_len,
                         )
                         seg_gpt_semantic_ms += (time.perf_counter() - _seg_t) * 1000
                         _seg_t = time.perf_counter()

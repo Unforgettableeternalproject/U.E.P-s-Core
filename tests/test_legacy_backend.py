@@ -24,13 +24,13 @@ class FakeEngine:
         self.loaded_character = Path(character_path)
         return True
 
-    def synthesize(self, text, output_path, emotion_vector=None, on_segment_audio=None):
+    def synthesize(self, text, output_path, emotion_vector=None, on_segment_audio=None, **kwargs):
         self.synthesize_calls.append((text, Path(output_path), emotion_vector))
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(output_path).write_bytes(b"fake wav")
         return True
 
-    def synthesize_with_profile(self, text, output_path, emotion_vector=None):
+    def synthesize_with_profile(self, text, output_path, emotion_vector=None, **kwargs):
         self.synthesize_calls.append((text, Path(output_path), emotion_vector))
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(output_path).write_bytes(b"fake wav")

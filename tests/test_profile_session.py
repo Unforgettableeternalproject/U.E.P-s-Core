@@ -15,7 +15,7 @@ class FakeBackendWithProfile:
         self.load_calls += 1
         self.loaded = True
 
-    def generate(self, text, output_path, on_segment_audio=None):
+    def generate(self, text, output_path, on_segment_audio=None, **kwargs):
         if not self.loaded:
             raise RuntimeError("not loaded")
         self.generate_calls.append((text, output_path))
@@ -53,7 +53,7 @@ class FakeBackendWithoutProfile:
     def load(self):
         self.loaded = True
 
-    def generate(self, text, output_path, on_segment_audio=None):
+    def generate(self, text, output_path, on_segment_audio=None, **kwargs):
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(output_path).write_bytes(b"fake wav")
         return Path(output_path)

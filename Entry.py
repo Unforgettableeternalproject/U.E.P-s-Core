@@ -161,16 +161,19 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
     gemini_tools = to_gemini_tools() if tools_enabled else None
     executor = ToolExecutor(engine=engine, session_id=session_id) if tools_enabled else None
 
-    tools_status = "[green]on[/]" if tools_enabled else "[dim]off[/]"
-    console.print(Panel(
-        "[bold cyan]Echo Memory Chat[/]\n"
-        f"Session: [dim]{session_id}[/]\n"
-        f"Model: [dim]{llm.model_name}[/]\n"
-        f"Tools: {tools_status}\n\n"
-        "Commands: [dim]/quit  /stats  /dream  /clear  /history  /tools[/]",
-        border_style="cyan",
-        width=70,
-    ))
+    def _show_session_banner():
+        tools_status = "[green]on[/]" if tools_enabled else "[dim]off[/]"
+        console.print(Panel(
+            "[bold cyan]Echo Memory Chat[/]\n"
+            f"Session: [dim]{session_id}[/]\n"
+            f"Model: [dim]{llm.model_name}[/]\n"
+            f"Tools: {tools_status}\n\n"
+            "Commands: [dim]/quit /stats /dream /clear /history /tools /session[/]",
+            border_style="cyan",
+            width=70,
+        ))
+
+    _show_session_banner()
 
     while True:
         console.print()
@@ -212,6 +215,100 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                 executor = None
                 console.print("[yellow]Tools disabled.[/]")
             continue
+        elif cmd.startswith("/session"):
+            parts_cmd = user_input.strip().split(maxsplit=1)
+            sub = parts_cmd[1].strip().lower() if len(parts_cmd) > 1 else ""
+
+            if sub == "" or sub == "info":
+                # 顯示當前 session
+                console.print(f"  Current: [cyan]{session_id}[/] ({turn} turns, {llm.turn_count} in LLM history)")
+                continue
+
+            elif sub == "list":
+                # 列出所有 sessions
+                all_eps = engine.episodic.list_episodes(
+                    limit=9999, offset=0, sort_by="timestamp", ascending=True
+                )
+                sessions_map: dict[str, list] = {}
+                for ep in all_eps:
+                    sessions_map.setdefault(ep.session_id, []).append(ep)
+
+                if not sessions_map:
+                    console.print("[yellow]No sessions found.[/]")
+                    continue
+
+                s_table = Table(box=box.SIMPLE, show_lines=False)
+                s_table.add_column("#", style="dim", width=3)
+                s_table.add_column("Session ID", style="cyan", ratio=1)
+                s_table.add_column("Episodes", width=8, justify="right")
+                s_table.add_column("Last", width=16)
+
+                active_marker = " [green]◀ current[/]"
+                for i, (sid, eps) in enumerate(
+                    sorted(sessions_map.items(), key=lambda x: x[1][-1].timestamp, reverse=True), 1
+                ):
+                    marker = active_marker if sid == session_id else ""
+                    s_table.add_row(
+                        str(i), sid + marker, str(len(eps)),
+                        eps[-1].timestamp.strftime("%m-%d %H:%M"),
+                    )
+
+                console.print(s_table)
+                continue
+
+            elif sub == "new":
+                # 建立新 session
+                session_id = f"chat_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+                turn = 0
+                llm.clear_history()
+                if executor:
+                    executor = ToolExecutor(engine=engine, session_id=session_id)
+                console.print(f"[green]✓ New session: {session_id}[/]")
+                continue
+
+            else:
+                # 嘗試切換到指定 session
+                target_sid = sub
+                # 前綴匹配
+                all_eps = engine.episodic.list_episodes(
+                    limit=9999, offset=0, sort_by="timestamp", ascending=True
+                )
+                sessions_map = {}
+                for ep in all_eps:
+                    sessions_map.setdefault(ep.session_id, []).append(ep)
+
+                matched_sids = [s for s in sessions_map if s.startswith(target_sid) or target_sid in s]
+
+                if not matched_sids:
+                    console.print(f"[yellow]No session matching '{target_sid}'[/]")
+                    continue
+                if len(matched_sids) > 1:
+                    console.print(f"[yellow]Ambiguous — {len(matched_sids)} matches:[/]")
+                    for s in matched_sids[:5]:
+                        console.print(f"  [dim]{s}[/]")
+                    continue
+
+                target_sid = matched_sids[0]
+                target_eps = sessions_map[target_sid]
+
+                # 載入歷史到 LLM
+                llm.clear_history()
+                from google.genai import types as _types
+                for ep in target_eps:
+                    llm._history.append(_types.Content(
+                        role="user", parts=[_types.Part(text=ep.user_input)]
+                    ))
+                    llm._history.append(_types.Content(
+                        role="model", parts=[_types.Part(text=ep.agent_response)]
+                    ))
+
+                session_id = target_sid
+                turn = len(target_eps)
+                if executor:
+                    executor = ToolExecutor(engine=engine, session_id=session_id)
+
+                console.print(f"[green]✓ Switched to: {session_id} ({len(target_eps)} episodes loaded)[/]")
+                continue
 
         # ── 1. 檢索記憶 ──
         try:

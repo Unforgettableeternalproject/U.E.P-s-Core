@@ -505,8 +505,22 @@ class IndexTTSLite:
         debug_log(2, "   [6/6] 加載文本處理...")
         _t0 = time.perf_counter()
         bpe_path = os.path.join(self.model_dir, self.cfg.dataset["bpe_model"])
-        self.text_normalizer = TextNormalizer()
+        # Glossary: 從 config 讀取是否啟用、以及 glossary 檔案路徑
+        _text_cfg = self.cfg.get('text_processing', {})
+        _enable_glossary = _text_cfg.get('enable_glossary', False)
+        _glossary_path = _text_cfg.get('glossary_path', '')
+
+        self.text_normalizer = TextNormalizer(enable_glossary=_enable_glossary)
         self.text_normalizer.load()
+
+        # 載入術語詞彙表（若有指定路徑）
+        if _enable_glossary and _glossary_path:
+            abs_glossary = os.path.join(self.model_dir, _glossary_path) if not os.path.isabs(_glossary_path) else _glossary_path
+            if self.text_normalizer.load_glossary_from_yaml(abs_glossary):
+                debug_log(3, f"      ✓ 術語詞彙表已載入: {abs_glossary}")
+            else:
+                debug_log(3, f"      ⚠️  術語詞彙表未找到: {abs_glossary}")
+
         self.tokenizer = TextTokenizer(bpe_path, self.text_normalizer)
         self._init_timings["text_processor_ms"] = (time.perf_counter() - _t0) * 1000
         debug_log(3, f"      ✓ 文本處理器和 BPE 模型加載完成: {bpe_path}")
@@ -824,6 +838,10 @@ class IndexTTSLite:
                 max_text_tokens_per_segment=max_text_tokens_per_segment,
                 quick_streaming_tokens=quick_streaming_tokens,
             )
+
+            # UNK token 防線：移除 BPE 詞彙表中不存在的 tokens，防止 GPT 產生亂音
+            segments = self.tokenizer.sanitize_unk_tokens(segments, verbose=verbose)
+
             num_segments = len(segments)
             if num_segments > 1 and verbose:
                 debug_log(2, f"      ℹ️  文本分為 {num_segments} 段處理")

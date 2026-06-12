@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from functools import lru_cache
 import os
 import traceback
 import re
@@ -9,7 +10,7 @@ from sentencepiece import SentencePieceProcessor
 
 
 class TextNormalizer:
-    def __init__(self):
+    def __init__(self, enable_glossary=False):
         self.zh_normalizer = None
         self.en_normalizer = None
         self.char_rep_map = {
@@ -48,11 +49,80 @@ class TextNormalizer:
             "「": "'",
             "」": "'",
             ":": ",",
+            # -- Missing brackets/quotes (all BPE UNK) --
+            "『": "'",
+            "』": "'",
+            "〈": "'",
+            "〉": "'",
+            "〔": "'",
+            "〕": "'",
+            "｛": "'",
+            "｝": "'",
+            "{": "'",
+            "}": "'",
+            "＜": "'",
+            "＞": "'",
+            # -- Separators -> comma --
+            "/": ",",
+            "|": ",",
+            "＆": ",",
+            "&": ",",
+            # -- Math/symbols -> space (BPE UNK cleanup) --
+            "\\": " ",
+            "#": " ",
+            "＃": " ",
+            "@": " ",
+            "＠": " ",
+            "*": " ",
+            "＊": " ",
+            "^": " ",
+            "=": " ",
+            "＝": " ",
+            "+": " ",
+            "＋": " ",
+            "<": " ",
+            ">": " ",
+            "%": " ",
+            # -- Currency/units (fallback if wetext did not handle) --
+            "¥": " ",
+            "€": " ",
+            "£": " ",
+            "₩": " ",
+            "°": " ",
+            # -- Arrows/shapes -> space --
+            "→": ",",
+            "←": ",",
+            "↑": " ",
+            "↓": " ",
+            "■": " ",
+            "□": " ",
+            "●": " ",
+            "○": " ",
+            "◆": " ",
+            "◇": " ",
+            "△": " ",
+            "▽": " ",
+            "✓": " ",
+            "✗": " ",
+            # -- Circled numbers / combined units --
+            "①": " ",
+            "②": " ",
+            "③": " ",
+            "④": " ",
+            "⑤": " ",
+            "⑥": " ",
+            "⑦": " ",
+            "⑧": " ",
+            "⑨": " ",
+            "⑩": " ",
+            "℃": " ",
         }
         self.zh_char_rep_map = {
             "$": ".",
             **self.char_rep_map,
         }
+        self.enable_glossary = enable_glossary
+        self.term_glossary = dict()
 
     def match_email(self, email):
         # 正则表达式匹配邮箱格式：数字英文@数字英文.英文
@@ -70,6 +140,8 @@ class TextNormalizer:
     匹配人名，格式：中文·中文，中文·中文-中文
     例如：克里斯托弗·诺兰，约瑟夫·高登-莱维特
     """
+
+    TECH_TERM_PATTERN = r"[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+"
 
     # 匹配常见英语缩写 's，仅用于替换为 is，不匹配所有 's
     ENGLISH_CONTRACTION_PATTERN = r"(what|where|who|which|how|t?here|it|s?he|that|this)'s"
@@ -143,8 +215,11 @@ class TextNormalizer:
             return ""
         if self.use_chinese(text):
             text = re.sub(TextNormalizer.ENGLISH_CONTRACTION_PATTERN, r"\1 is", text, flags=re.IGNORECASE)
-            replaced_text, pinyin_list = self.save_pinyin_tones(text.rstrip())
-            
+            if self.enable_glossary:
+                text = self.apply_glossary_terms(text, lang="zh")
+            replaced_text, tech_list = self.save_tech_terms(text.rstrip())
+            replaced_text, pinyin_list = self.save_pinyin_tones(replaced_text)
+
             replaced_text, original_name_list = self.save_names(replaced_text)
             try:
                 result = self.zh_normalizer.normalize(replaced_text)
@@ -155,12 +230,17 @@ class TextNormalizer:
             result = self.restore_names(result, original_name_list)
             # 恢复拼音声调
             result = self.restore_pinyin_tones(result, pinyin_list)
+            result = self.restore_tech_terms(result, tech_list)
             pattern = re.compile("|".join(re.escape(p) for p in self.zh_char_rep_map.keys()))
             result = pattern.sub(lambda x: self.zh_char_rep_map[x.group()], result)
         else:
             try:
                 text = re.sub(TextNormalizer.ENGLISH_CONTRACTION_PATTERN, r"\1 is", text, flags=re.IGNORECASE)
-                result = self.en_normalizer.normalize(text)
+                if self.enable_glossary:
+                    text = self.apply_glossary_terms(text, lang="en")
+                replaced_text, tech_list = self.save_tech_terms(text)
+                result = self.en_normalizer.normalize(replaced_text)
+                result = self.restore_tech_terms(result, tech_list)
             except Exception:
                 result = text
                 print(traceback.format_exc())
@@ -254,6 +334,61 @@ class TextNormalizer:
         # print("transformed_text: ", transformed_text)
         return transformed_text
 
+    def save_tech_terms(self, original_text):
+        tech_pattern = re.compile(TextNormalizer.TECH_TERM_PATTERN)
+        original_tech_list = tech_pattern.findall(original_text)
+        if len(original_tech_list) == 0:
+            return (original_text, None)
+        original_tech_list = sorted(set(original_tech_list), key=len, reverse=True)
+        transformed_text = original_text
+        for term in original_tech_list:
+            protected_term = term.replace("-", "<H>")
+            transformed_text = transformed_text.replace(term, protected_term)
+        return transformed_text, original_tech_list
+
+    def restore_tech_terms(self, normalized_text, original_tech_list):
+        if not original_tech_list or len(original_tech_list) == 0:
+            return normalized_text
+        transformed_text = re.sub(r'\s*<H>\s*', '-', normalized_text)
+        return transformed_text
+
+    def apply_glossary_terms(self, text, lang="zh"):
+        if not self.term_glossary:
+            return text
+        sorted_terms = sorted(self.term_glossary.keys(), key=len, reverse=True)
+        @lru_cache(maxsize=42)
+        def get_term_pattern(term):
+            return re.compile(re.escape(term), re.IGNORECASE)
+        transformed_text = text
+        for term in sorted_terms:
+            term_value = self.term_glossary[term]
+            if isinstance(term_value, dict):
+                replacement = term_value.get(lang, term_value.get(lang, term))
+            else:
+                replacement = term_value
+            pattern = get_term_pattern(term)
+            transformed_text = pattern.sub(replacement, transformed_text)
+        return transformed_text
+
+    def load_glossary(self, glossary_dict):
+        if glossary_dict and isinstance(glossary_dict, dict):
+            self.term_glossary.update(glossary_dict)
+
+    def load_glossary_from_yaml(self, glossary_path):
+        if glossary_path and os.path.exists(glossary_path):
+            import yaml
+            with open(glossary_path, 'r', encoding='utf-8') as f:
+                external_glossary = yaml.safe_load(f)
+                if external_glossary and isinstance(external_glossary, dict):
+                    self.term_glossary = external_glossary
+                    return True
+        return False
+
+    def save_glossary_to_yaml(self, glossary_path):
+        import yaml
+        with open(glossary_path, 'w', encoding='utf-8') as f:
+            yaml.dump(self.term_glossary, f, allow_unicode=True, default_flow_style=False)
+
 
 class TextTokenizer:
     def __init__(self, vocab_file: str, normalizer: TextNormalizer = None):
@@ -336,6 +471,27 @@ class TextTokenizer:
         if isinstance(tokens, str):
             tokens = [tokens]
         return [self.sp_model.PieceToId(token) for token in tokens]
+
+    def sanitize_unk_tokens(self, segments, verbose=False):
+        unk_id = self.unk_token_id
+        cleaned = []
+        total_removed = 0
+        removed_tokens = []
+        for seg in segments:
+            clean_seg = []
+            for tok in seg:
+                tok_id = self.sp_model.PieceToId(tok)
+                if tok_id == unk_id:
+                    total_removed += 1
+                    removed_tokens.append(tok)
+                else:
+                    clean_seg.append(tok)
+            if clean_seg:
+                cleaned.append(clean_seg)
+        if total_removed > 0 and verbose:
+            unique_removed = list(set(removed_tokens))
+            print(f"  \u26a0\ufe0f  removed {total_removed} unknown token(s): {unique_removed}")
+        return cleaned if cleaned else segments
 
     def tokenize(self, text: str) -> List[str]:
         return self.encode(text, out_type=str)

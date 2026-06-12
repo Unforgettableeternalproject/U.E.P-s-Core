@@ -108,6 +108,7 @@ def run_shell(device: str | None, use_fp16: bool, use_cuda_kernel: bool, use_acc
         "  profile <text>          — synthesis with timing report\n"
         "  emotion [preset|H A S F D M U C]\n"
         "  language [en|zh]        — auto-translates mismatched input\n"
+        "  lora [on|off|<scale>]   — toggle 台灣腔 LoRA\n"
         "  load / unload / status / help / exit"
     )
     while True:

@@ -13,6 +13,10 @@ EngineFactory = Callable[..., Any]
 class LegacyIndexTTS2Backend:
     """Persistent backend wrapper around the copied IndexTTS2 Lite engine."""
 
+    # Default LoRA checkpoint path (relative to project root)
+    DEFAULT_LORA_CHECKPOINT = "experiments/index-tts-lora/finetune_models/checkpoints/gpt_best_v2_merged.pth"
+    DEFAULT_LORA_SCALE = 0.85
+
     def __init__(
         self,
         paths: LegacyGenerationPaths,
@@ -23,6 +27,7 @@ class LegacyIndexTTS2Backend:
         use_accel: bool = False,
         emotion_vector: Sequence[float] | None = None,
         quick_streaming_tokens: int = 50,
+        lora_checkpoint: str | None = None,
     ):
         self.paths = paths
         self.engine_factory = engine_factory
@@ -34,6 +39,7 @@ class LegacyIndexTTS2Backend:
         self.quick_streaming_tokens = quick_streaming_tokens
         self.engine: Any | None = None
         self.loaded = False
+        self._lora_checkpoint = lora_checkpoint
 
     def load(self) -> None:
         if self.loaded:
@@ -105,6 +111,50 @@ class LegacyIndexTTS2Backend:
         synth_profile = SynthesisProfile.from_dict(timings)
 
         return output, ProfileReport(init=init_profile, synthesis=synth_profile, success=ok)
+
+    # ── LoRA 動態混合 ──
+
+    def load_lora(self, checkpoint_path: str | None = None, scale: float | None = None) -> None:
+        """載入 LoRA checkpoint 到引擎（需要先 load engine）。
+
+        Args:
+            checkpoint_path: 已合併的 checkpoint 路徑，None 則使用預設路徑。
+            scale: 混合比例，None 則使用預設值 (0.85)。
+        """
+        self.load()
+        path = checkpoint_path or self._lora_checkpoint or self._resolve_default_lora()
+        s = scale if scale is not None else self.DEFAULT_LORA_SCALE
+        self.engine.load_lora(path, scale=s)
+
+    def _resolve_default_lora(self) -> str:
+        """Resolve the default LoRA checkpoint path relative to project root."""
+        import os
+        # paths.legacy_root 是 legacy_tts/，往上一層就是專案根目錄
+        project_root = str(Path(self.paths.legacy_root).parent)
+        candidate = os.path.join(project_root, self.DEFAULT_LORA_CHECKPOINT)
+        if os.path.isfile(candidate):
+            return candidate
+        raise FileNotFoundError(
+            f"找不到預設 LoRA checkpoint: {candidate}\n"
+            f"請用 lora load <path> 指定路徑，或確認 checkpoint 存在。"
+        )
+
+    def set_lora_scale(self, scale: float) -> None:
+        """調整 LoRA 混合比例。"""
+        if not self.loaded or self.engine is None:
+            raise RuntimeError("Engine not loaded")
+        self.engine.set_lora_scale(scale)
+
+    def unload_lora(self) -> None:
+        """移除 LoRA，還原原始權重。"""
+        if self.engine is not None:
+            self.engine.unload_lora()
+
+    def get_lora_status(self) -> dict:
+        """回傳 LoRA 狀態。"""
+        if self.engine is None:
+            return {"active": False, "scale": 0.0, "path": None, "delta_keys": 0}
+        return self.engine.get_lora_status()
 
     def unload(self) -> None:
         self.engine = None

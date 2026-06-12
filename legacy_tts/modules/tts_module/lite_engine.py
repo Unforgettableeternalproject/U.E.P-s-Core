@@ -340,6 +340,12 @@ class IndexTTSLite:
         self.current_character = None
         self.character_features = None
 
+        # ── LoRA 動態混合 ──
+        self._lora_original_state: dict[str, torch.Tensor] | None = None
+        self._lora_delta: dict[str, torch.Tensor] | None = None
+        self._lora_scale: float = 0.0
+        self._lora_path: str | None = None
+
         # Profiling: init timings (populated by _init_models / load_character / warmup)
         self._init_timings: dict[str, float] = {}
 
@@ -649,6 +655,98 @@ class IndexTTSLite:
             traceback.print_exc()
             return False
     
+    # ── LoRA 動態混合 API ──
+
+    def load_lora(self, checkpoint_path: str, scale: float = 1.0) -> None:
+        """載入 LoRA 已合併 checkpoint 並計算 delta。
+
+        Args:
+            checkpoint_path: 已 merge 的 GPT checkpoint 路徑 (.pth)
+            scale: 初始混合比例 (0.0 = 原始, 1.0 = 完全 LoRA)
+        """
+        import copy
+
+        checkpoint_path = str(checkpoint_path)
+        if not os.path.isfile(checkpoint_path):
+            raise FileNotFoundError(f"LoRA checkpoint 不存在: {checkpoint_path}")
+
+        info_log(f"🧬 [LoRA] 載入 checkpoint: {os.path.basename(checkpoint_path)}")
+
+        # 1. 載入合併後的 state_dict
+        merged_state = torch.load(checkpoint_path, map_location=self.device, weights_only=True)
+        # 如果是 trainer 格式 {'model': ..., 'speakers': ...}
+        if isinstance(merged_state, dict) and 'model' in merged_state:
+            merged_state = merged_state['model']
+
+        # 2. 快照原始權重（只需做一次）
+        if self._lora_original_state is None:
+            info_log("   📸 快照原始 GPT 權重...")
+            self._lora_original_state = {
+                k: v.clone() for k, v in self.gpt.state_dict().items()
+            }
+
+        # 3. 計算 delta: keys 必須同時存在且 shape 相同
+        original = self._lora_original_state
+        delta: dict[str, torch.Tensor] = {}
+        matched = 0
+        for key in original:
+            if key in merged_state and original[key].shape == merged_state[key].shape:
+                diff = merged_state[key].to(original[key].dtype) - original[key]
+                if diff.abs().max().item() > 1e-8:  # 只保留有變化的
+                    delta[key] = diff
+                    matched += 1
+
+        if not delta:
+            raise ValueError("LoRA checkpoint 與原始 GPT 無差異，可能不是 LoRA 合併後的 checkpoint")
+
+        self._lora_delta = delta
+        self._lora_path = checkpoint_path
+        info_log(f"   ✓ 計算 delta 完成: {matched} 個 keys 有差異")
+
+        # 4. 套用初始 scale
+        self.set_lora_scale(scale)
+
+    def set_lora_scale(self, scale: float) -> None:
+        """動態調整 LoRA 混合比例。
+
+        Args:
+            scale: 0.0 = 純原始權重, 1.0 = 完全 LoRA
+        """
+        if self._lora_original_state is None or self._lora_delta is None:
+            raise RuntimeError("尚未載入 LoRA，請先呼叫 load_lora()")
+
+        scale = max(0.0, min(1.0, scale))
+        self._lora_scale = scale
+
+        # 混合: new_weight = original + scale * delta
+        new_state = dict(self._lora_original_state)  # shallow copy (values are tensors)
+        for key, diff in self._lora_delta.items():
+            new_state[key] = self._lora_original_state[key] + scale * diff
+
+        self.gpt.load_state_dict(new_state, strict=True)
+        info_log(f"   🧬 [LoRA] scale = {scale:.0%} ({len(self._lora_delta)} keys blended)")
+
+    def unload_lora(self) -> None:
+        """還原到原始 GPT 權重並釋放 LoRA 記憶體。"""
+        if self._lora_original_state is not None:
+            self.gpt.load_state_dict(self._lora_original_state, strict=True)
+            info_log("   🧬 [LoRA] 已還原原始權重")
+
+        self._lora_original_state = None
+        self._lora_delta = None
+        self._lora_scale = 0.0
+        self._lora_path = None
+        torch.cuda.empty_cache()
+
+    def get_lora_status(self) -> dict:
+        """回傳 LoRA 狀態。"""
+        return {
+            "active": self._lora_delta is not None,
+            "scale": self._lora_scale,
+            "path": self._lora_path,
+            "delta_keys": len(self._lora_delta) if self._lora_delta else 0,
+        }
+
     def normalize_emotion_vector(
         self,
         emotion_vector: List[float],

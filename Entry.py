@@ -458,6 +458,362 @@ def _cmd_dream(engine: MemoryEngine, llm: LLMClient | None = None):
     console.print(Panel(table, title="[bold]Dream Report[/]", border_style="yellow"))
 
 
+def _cmd_sessions(engine: MemoryEngine):
+    """列出所有 session"""
+    try:
+        all_episodes = engine.episodic.list_episodes(
+            limit=9999, offset=0, sort_by="timestamp", ascending=True
+        )
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/]")
+        return
+
+    if not all_episodes:
+        console.print("[yellow]No episodes.[/]")
+        return
+
+    # 按 session 分組
+    sessions: dict[str, list] = {}
+    for ep in all_episodes:
+        sessions.setdefault(ep.session_id, []).append(ep)
+
+    table = Table(title=f"Sessions ({len(sessions)} total)", box=box.ROUNDED)
+    table.add_column("Session ID", style="cyan", ratio=1)
+    table.add_column("Episodes", style="bold", width=8, justify="right")
+    table.add_column("First", width=16)
+    table.add_column("Last", width=16)
+
+    for sid, eps in sorted(sessions.items(), key=lambda x: x[1][-1].timestamp, reverse=True):
+        table.add_row(
+            sid,
+            str(len(eps)),
+            eps[0].timestamp.strftime("%m-%d %H:%M"),
+            eps[-1].timestamp.strftime("%m-%d %H:%M"),
+        )
+
+    console.print(table)
+
+
+def _cmd_inspect(engine: MemoryEngine):
+    """檢視單一 episode 完整內容"""
+    ep_id = Prompt.ask("[cyan]Episode ID (prefix OK, min 6 chars)[/]")
+    if not ep_id or len(ep_id) < 6:
+        console.print("[yellow]ID too short.[/]")
+        return
+
+    # 前綴搜尋
+    matched = [
+        (eid, ep) for eid, ep in engine.episodic._episodes.items()
+        if eid.startswith(ep_id)
+    ]
+
+    if not matched:
+        console.print(f"[yellow]No episode matching '{ep_id}'[/]")
+        return
+    if len(matched) > 1:
+        console.print(f"[yellow]Ambiguous — {len(matched)} matches. Provide more chars.[/]")
+        for eid, ep in matched[:5]:
+            console.print(f"  [dim]{eid}[/]")
+        return
+
+    eid, ep = matched[0]
+
+    # 基本資訊
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("key", style="dim", width=16)
+    table.add_column("value", ratio=1)
+
+    table.add_row("ID", f"[cyan]{eid}[/]")
+    table.add_row("Session", ep.session_id)
+    table.add_row("Timestamp", str(ep.timestamp))
+    table.add_row("Salience", f"[yellow]{ep.salience_score:.3f}[/]")
+    table.add_row("Summary", ep.content_summary or "—")
+    table.add_row("Dreamed", str(getattr(ep, "is_dreamed", False)))
+
+    # Metadata
+    meta = getattr(ep, "metadata", {})
+    if meta:
+        table.add_row("Metadata", str(meta))
+
+    console.print(Panel(table, title="[bold]Episode Info[/]", border_style="cyan"))
+
+    # 對話內容
+    console.print(Panel(
+        f"[green bold]User:[/]\n{ep.user_input}\n\n[cyan bold]Agent:[/]\n{ep.agent_response}",
+        title="[bold]Conversation[/]",
+        border_style="blue",
+    ))
+
+    # 圖譜連結
+    try:
+        graph = engine.episodic.graph
+        neighbors = list(graph._graph.neighbors(eid)) if graph._graph.has_node(eid) else []
+        predecessors = list(graph._graph.predecessors(eid)) if graph._graph.has_node(eid) else []
+
+        if neighbors or predecessors:
+            edges_table = Table(box=box.SIMPLE, show_lines=False)
+            edges_table.add_column("Direction", width=4)
+            edges_table.add_column("Target", style="cyan", ratio=1)
+            edges_table.add_column("Type", style="magenta", width=16)
+            edges_table.add_column("Weight", width=8)
+
+            for n in predecessors:
+                edge_data = graph._graph.edges[n, eid]
+                edges_table.add_row(
+                    "←", n[:16] + "…",
+                    edge_data.get("edge_type", "?"),
+                    f"{edge_data.get('weight', 0):.3f}",
+                )
+            for n in neighbors:
+                edge_data = graph._graph.edges[eid, n]
+                edges_table.add_row(
+                    "→", n[:16] + "…",
+                    edge_data.get("edge_type", "?"),
+                    f"{edge_data.get('weight', 0):.3f}",
+                )
+
+            console.print(Panel(edges_table, title="[bold]Graph Edges[/]", border_style="magenta"))
+        else:
+            console.print("[dim]No graph edges for this episode.[/]")
+    except Exception:
+        pass
+
+
+def _cmd_search(engine: MemoryEngine, config):
+    """搜尋記憶（語義 + 文字）"""
+    query = Prompt.ask("[cyan]Search query[/]")
+    if not query:
+        return
+
+    mode = Prompt.ask("[cyan]Mode[/]", choices=["semantic", "text", "both"], default="semantic")
+    results = []
+
+    # 語義搜尋
+    if mode in ("semantic", "both"):
+        context = engine.retrieve(
+            query=query, dopamine=0.6, serotonin=0.4,
+            top_k=10, min_similarity=0.2,
+        )
+        if not context.is_empty():
+            for i, ep in enumerate(context.episodes):
+                sim = context.episode_similarities[i] if i < len(context.episode_similarities) else 0
+                results.append(("semantic", ep, sim))
+
+    # 文字搜尋（簡單 substring match）
+    if mode in ("text", "both"):
+        q_lower = query.lower()
+        for eid, ep in engine.episodic._episodes.items():
+            if q_lower in ep.user_input.lower() or q_lower in ep.agent_response.lower():
+                # 避免重複
+                if not any(r[1].id == ep.id for r in results):
+                    results.append(("text", ep, 0.0))
+
+    if not results:
+        console.print("[yellow]No results found.[/]")
+        return
+
+    table = Table(title=f"Search Results ({len(results)})", box=box.ROUNDED)
+    table.add_column("#", style="dim", width=3)
+    table.add_column("Mode", width=8)
+    table.add_column("ID", style="cyan", width=14)
+    table.add_column("Sim.", width=6)
+    table.add_column("User", ratio=1)
+    table.add_column("Sal.", style="yellow", width=5)
+
+    for i, (src, ep, sim) in enumerate(results[:15], 1):
+        mode_style = "green" if src == "semantic" else "blue"
+        table.add_row(
+            str(i),
+            Text(src, style=mode_style),
+            ep.id[:12] + "…",
+            f"{sim:.2f}" if sim > 0 else "—",
+            ep.user_input[:45] + ("…" if len(ep.user_input) > 45 else ""),
+            f"{ep.salience_score:.2f}",
+        )
+
+    console.print(table)
+
+
+def _cmd_edit(engine: MemoryEngine):
+    """修改 episode 資訊"""
+    ep_id = Prompt.ask("[cyan]Episode ID (prefix OK)[/]")
+    if not ep_id or len(ep_id) < 6:
+        console.print("[yellow]ID too short.[/]")
+        return
+
+    matched = [
+        (eid, ep) for eid, ep in engine.episodic._episodes.items()
+        if eid.startswith(ep_id)
+    ]
+
+    if not matched:
+        console.print(f"[yellow]No episode matching '{ep_id}'[/]")
+        return
+    if len(matched) > 1:
+        console.print(f"[yellow]Ambiguous — {len(matched)} matches.[/]")
+        return
+
+    eid, ep = matched[0]
+    console.print(f"[cyan]Editing: {eid}[/]")
+    console.print(f"  User: {ep.user_input[:60]}…")
+    console.print(f"  Current salience: [yellow]{ep.salience_score:.3f}[/]")
+    console.print()
+
+    field = Prompt.ask("[cyan]What to edit[/]", choices=["salience", "summary", "cancel"], default="salience")
+
+    if field == "cancel":
+        return
+    elif field == "salience":
+        new_val = Prompt.ask("[cyan]New salience (0-1)[/]", default=str(ep.salience_score))
+        try:
+            new_salience = max(0.0, min(1.0, float(new_val)))
+            engine.episodic.update_salience(eid, new_salience)
+            console.print(f"[green]✓ Salience updated: {ep.salience_score:.3f} → {new_salience:.3f}[/]")
+        except Exception as e:
+            console.print(f"[red]Failed: {e}[/]")
+    elif field == "summary":
+        new_summary = Prompt.ask("[cyan]New summary[/]", default=ep.content_summary or "")
+        if new_summary:
+            ep.content_summary = new_summary
+            engine.episodic._save()
+            console.print(f"[green]✓ Summary updated.[/]")
+
+
+def _cmd_delete(engine: MemoryEngine):
+    """刪除 episode 或整個 session"""
+    mode = Prompt.ask("[cyan]Delete[/]", choices=["episode", "session", "cancel"], default="episode")
+
+    if mode == "cancel":
+        return
+    elif mode == "episode":
+        ep_id = Prompt.ask("[cyan]Episode ID (prefix OK)[/]")
+        if not ep_id or len(ep_id) < 6:
+            return
+
+        matched = [
+            (eid, ep) for eid, ep in engine.episodic._episodes.items()
+            if eid.startswith(ep_id)
+        ]
+
+        if not matched:
+            console.print(f"[yellow]No match for '{ep_id}'[/]")
+            return
+        if len(matched) > 1:
+            console.print(f"[yellow]Ambiguous — {len(matched)} matches.[/]")
+            return
+
+        eid, ep = matched[0]
+        console.print(f"  [dim]{eid} | {ep.user_input[:50]}…[/]")
+        if Confirm.ask("[red]Delete?[/]", default=False):
+            engine.episodic.delete_episode(eid)
+            console.print(f"[green]✓ Deleted.[/]")
+
+    elif mode == "session":
+        sid = Prompt.ask("[cyan]Session ID[/]")
+        if not sid:
+            return
+
+        eps = engine.episodic.list_episodes(session_id=sid, limit=999, offset=0, sort_by="timestamp", ascending=True)
+        if not eps:
+            console.print(f"[yellow]No episodes in session '{sid}'[/]")
+            return
+
+        console.print(f"[yellow]Will delete {len(eps)} episodes from session '{sid}'[/]")
+        if Confirm.ask("[red]Confirm?[/]", default=False):
+            count = engine.episodic.delete_session(sid)
+            console.print(f"[green]✓ Deleted {count} episodes.[/]")
+
+
+def _cmd_graph(engine: MemoryEngine):
+    """顯示圖結構詳細資訊"""
+    try:
+        graph = engine.episodic.graph
+        stats = graph.get_stats()
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/]")
+        return
+
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("key", style="dim")
+    table.add_column("value", style="bold cyan")
+
+    table.add_row("Nodes", str(stats.get("nodes", 0)))
+    table.add_row("Edges", str(stats.get("edges", 0)))
+    avg_w = stats.get("avg_edge_weight", 0)
+    table.add_row("Avg Weight", f"{avg_w:.4f}" if avg_w else "—")
+
+    # 邊類型分布
+    edge_types: dict[str, int] = {}
+    for u, v, data in graph._graph.edges(data=True):
+        et = data.get("edge_type", "unknown")
+        edge_types[et] = edge_types.get(et, 0) + 1
+
+    if edge_types:
+        table.add_row("", "")
+        table.add_row("[bold]Edge Types[/]", "")
+        for et, count in sorted(edge_types.items(), key=lambda x: -x[1]):
+            table.add_row(f"  {et}", str(count))
+
+    # 孤立節點
+    isolated = list(graph._graph.nodes() - set(
+        n for e in graph._graph.edges() for n in e
+    ))
+    table.add_row("", "")
+    table.add_row("Isolated Nodes", str(len(isolated)))
+
+    console.print(Panel(table, title="[bold]Memory Graph[/]", border_style="magenta"))
+
+
+def _cmd_concepts(engine: MemoryEngine):
+    """列出和檢視概念"""
+    try:
+        concepts = engine.semantic.list_concepts()
+    except Exception:
+        console.print("[dim]Semantic layer not initialized or empty.[/]")
+        return
+
+    if not concepts:
+        console.print("[yellow]No concepts yet. Run Dream Engine to distill episodes into concepts.[/]")
+        return
+
+    table = Table(title=f"Concepts ({len(concepts)})", box=box.ROUNDED)
+    table.add_column("#", style="dim", width=3)
+    table.add_column("ID", style="cyan", width=14)
+    table.add_column("Name", style="magenta", ratio=1)
+    table.add_column("Conf.", width=6)
+    table.add_column("Sources", width=7)
+    table.add_column("Access", width=6)
+
+    for i, c in enumerate(concepts, 1):
+        table.add_row(
+            str(i),
+            c.id[:12] + "…",
+            c.name,
+            f"{c.confidence:.2f}",
+            str(len(c.source_episode_ids)),
+            str(c.access_count),
+        )
+
+    console.print(table)
+
+
+def _cmd_reset(engine: MemoryEngine):
+    """重置所有記憶資料（保留設定）"""
+    stats = engine.get_stats()
+    console.print(f"[yellow]Current data: {stats['total_episodes']} episodes, "
+                  f"{stats['total_concepts']} concepts[/]")
+
+    if not Confirm.ask("[red]Reset ALL memory data?[/]", default=False):
+        return
+    confirm = Prompt.ask("[red]Type RESET to confirm[/]")
+    if confirm != "RESET":
+        console.print("[dim]Cancelled.[/]")
+        return
+
+    engine.clear_all()
+    console.print("[green]✓ All memory data reset. Fresh start.[/]")
+
+
 def _cmd_export(engine: MemoryEngine):
     """匯出記憶"""
     fmt = Prompt.ask("[cyan]Format[/]", choices=["json", "csv"], default="json")
@@ -541,12 +897,23 @@ class EchoMemoryCLI:
         commands = [
             ("chat", "💬 Chat with memory", "green" if self.llm else "dim"),
             ("dashboard", "📊 Memory dashboard", "cyan"),
-            ("store", "📝 Store episode", "blue"),
-            ("retrieve", "🔍 Retrieve memories", "blue"),
+            ("", "", ""),
+            ("search", "🔍 Search memories (semantic + text)", "blue"),
+            ("retrieve", "🔎 Retrieve with neurochem params", "blue"),
+            ("inspect", "🔬 Inspect episode details + graph", "blue"),
+            ("", "", ""),
+            ("store", "📝 Store episode manually", "blue"),
+            ("edit", "✏️  Edit episode (salience, summary)", "blue"),
+            ("delete", "🗑  Delete episode or session", "red"),
+            ("", "", ""),
             ("list", "📋 List episodes", "blue"),
+            ("sessions", "📂 List all sessions", "blue"),
+            ("concepts", "💡 List concepts", "magenta"),
+            ("graph", "🕸  Graph structure info", "magenta"),
+            ("", "", ""),
             ("dream", "🌙 Run Dream Engine", "yellow"),
             ("export", "📦 Export data", "blue"),
-            ("clear", "🗑  Clear all", "red"),
+            ("reset", "⚠️  Reset all memory", "red"),
             ("exit", "👋 Exit", "dim"),
         ]
 
@@ -555,7 +922,10 @@ class EchoMemoryCLI:
         grid.add_column(ratio=1)
 
         for cmd, desc, style in commands:
-            grid.add_row(f"[bold {style}]{cmd}[/]", f"[{style}]{desc}[/]")
+            if not cmd:  # separator
+                grid.add_row("", "")
+            else:
+                grid.add_row(f"[bold {style}]{cmd}[/]", f"[{style}]{desc}[/]")
 
         console.print()
         console.print(grid)
@@ -587,22 +957,32 @@ class EchoMemoryCLI:
                             console.print("[red]LLM not available. Configure API keys in .env[/]")
                     case "dashboard" | "d":
                         show_dashboard(self.engine)
-                    case "store" | "s":
-                        _cmd_store(self.engine, self.session_id)
+                    case "search":
+                        _cmd_search(self.engine, self.config)
                     case "retrieve" | "r":
                         _cmd_retrieve(self.engine, self.config)
+                    case "inspect" | "i":
+                        _cmd_inspect(self.engine)
+                    case "store" | "s":
+                        _cmd_store(self.engine, self.session_id)
+                    case "edit" | "e":
+                        _cmd_edit(self.engine)
+                    case "delete" | "del":
+                        _cmd_delete(self.engine)
                     case "list" | "l":
                         _cmd_list(self.engine)
+                    case "sessions":
+                        _cmd_sessions(self.engine)
+                    case "concepts":
+                        _cmd_concepts(self.engine)
+                    case "graph" | "g":
+                        _cmd_graph(self.engine)
                     case "dream":
                         _cmd_dream(self.engine, self.llm)
                     case "export":
                         _cmd_export(self.engine)
-                    case "clear":
-                        if Confirm.ask("[red]Delete ALL memory data?[/]", default=False):
-                            confirm = Prompt.ask("[red]Type DELETE to confirm[/]")
-                            if confirm == "DELETE":
-                                self.engine.clear_all()
-                                console.print("[green]✓ All memory cleared.[/]")
+                    case "reset":
+                        _cmd_reset(self.engine)
                     case "stats":
                         show_dashboard(self.engine)
                     case "exit" | "quit" | "q":

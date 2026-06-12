@@ -327,15 +327,20 @@ class MemoryGraph:
             return []
 
         results = []
+        seen: set[str] = set()  # 避免雙向邊重複回傳同一鄰居
+
         # 前向邊
         for neighbor in self.graph.successors(concept_id):
             data = self.graph[concept_id][neighbor]
             et = data.get("edge_type", "")
             if edge_type is None or et == edge_type:
                 results.append((neighbor, et, data.get("weight", 0.0)))
+                seen.add(neighbor)
 
-        # 後向邊
+        # 後向邊（跳過已出現的鄰居，避免雙向邊重複）
         for neighbor in self.graph.predecessors(concept_id):
+            if neighbor in seen:
+                continue
             data = self.graph[neighbor][concept_id]
             et = data.get("edge_type", "")
             if edge_type is None or et == edge_type:

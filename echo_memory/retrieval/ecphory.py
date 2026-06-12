@@ -83,17 +83,18 @@ class EcphoryRetrieval:
         Returns:
             MemoryContext 記憶脈絡（包含 episodes + concepts）
         """
-        # 若有 NeurochemState，用它的衍生參數覆寫預設值
+        # 若有 NeurochemState，用它的衍生參數覆寫預設值（只呼叫一次，快取結果）
+        _ncparams: RetrievalParams | None = None
         if neurochem is not None:
-            params = neurochem.get_retrieval_params()
+            _ncparams = neurochem.get_retrieval_params()
             dopamine = neurochem.dopamine
             serotonin = neurochem.serotonin
-            concept_top_k = params.concept_top_k
-            concept_min_similarity = params.concept_min_similarity
+            concept_top_k = _ncparams.concept_top_k
+            concept_min_similarity = _ncparams.concept_min_similarity
 
         # Step 1: Episode 向量檢索（種子節點）
         # 查詢向量快取：相同查詢不重複生成 embedding（省 ~50ms）
-        cache_key = f"{self._CACHE_PREFIX}{query}"
+        cache_key = f"{self._CACHE_PREFIX}{query.strip()}"
         query_embedding = None
 
         if self.working is not None:
@@ -109,8 +110,8 @@ class EcphoryRetrieval:
 
         # NeurochemState 影響種子數
         seed_k = max(3, top_k // 2)
-        if neurochem is not None:
-            seed_k = neurochem.get_retrieval_params().seed_k
+        if _ncparams is not None:
+            seed_k = _ncparams.seed_k
 
         seed_results = self.episodic.search(
             query_embedding,
@@ -137,10 +138,9 @@ class EcphoryRetrieval:
 
         # Step 2: 圖譜多跳展開（Episode PRECEDES 邊）
         if enable_graph_expansion and seed_ids and self.episodic.graph.get_node_count() > 0:
-            if neurochem is not None:
-                p = neurochem.get_retrieval_params()
-                max_hops = p.max_hops
-                min_weight = p.min_weight
+            if _ncparams is not None:
+                max_hops = _ncparams.max_hops
+                min_weight = _ncparams.min_weight
             else:
                 max_hops = 2 if serotonin > 0.6 else 1
                 min_weight = max(0.15, 0.35 - dopamine * 0.3)

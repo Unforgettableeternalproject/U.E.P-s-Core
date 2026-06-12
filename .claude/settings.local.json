@@ -7,7 +7,6 @@
       "mcp__open-notebook__create_note",
       "mcp__open-notebook__search",
       "Read(//c/Users/Bernie/.claude/**)",
-
       "Edit(**/*.py)",
       "Edit(**/*.md)",
       "Edit(**/*.yml)",
@@ -18,7 +17,6 @@
       "Edit(.env.example)",
       "Write(tests/**)",
       "Write(.github/**)",
-
       "Bash(git *)",
       "Bash(gh *)",
       "Bash(pytest *)",
@@ -28,7 +26,8 @@
       "Bash(find *)",
       "Bash(ls *)",
       "Bash(cat *)",
-      "Bash(cd *)"
+      "Bash(cd *)",
+      "mcp__open-notebook__update_note"
     ]
   }
 }

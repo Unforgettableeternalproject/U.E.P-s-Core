@@ -182,18 +182,12 @@ class SemanticMemory:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def get(self, concept_id: str) -> Concept | None:
-        """根據 ID 獲取概念"""
-        concept = self._concepts_by_id.get(concept_id)
-        if concept:
-            concept.access_count += 1
-        return concept
+        """根據 ID 獲取概念（不遞增 access_count，純查詢用）。"""
+        return self._concepts_by_id.get(concept_id)
 
     def get_by_name(self, name: str) -> Concept | None:
-        """根據名稱獲取概念"""
-        concept = self._concepts.get(name)
-        if concept:
-            concept.access_count += 1
-        return concept
+        """根據名稱獲取概念（不遞增 access_count，純查詢/存在性檢查用）。"""
+        return self._concepts.get(name)
 
     def search_by_vector(
         self,

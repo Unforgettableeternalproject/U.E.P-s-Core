@@ -148,8 +148,8 @@ class KnowledgeDistillation:
             return report
 
         # 收集候選 Episode
-        threshold = min_salience or self.MIN_SALIENCE_THRESHOLD
-        batch_size = max_episodes or self.MAX_EPISODES_PER_BATCH
+        threshold = min_salience if min_salience is not None else self.MIN_SALIENCE_THRESHOLD
+        batch_size = max_episodes if max_episodes is not None else self.MAX_EPISODES_PER_BATCH
 
         candidates = self._collect_candidates(threshold, batch_size)
         report.episodes_scanned = len(candidates)

@@ -19,7 +19,6 @@ NeurochemState — 神經化學狀態機
 from __future__ import annotations
 
 import logging
-import math
 from dataclasses import dataclass, field
 from enum import Enum
 

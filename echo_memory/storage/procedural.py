@@ -17,9 +17,10 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 
@@ -104,7 +105,8 @@ class ProceduralMemory:
             proc = procedure
 
         # 生成/更新 embedding
-        if not proc.embedding and self._embed_fn is not None:
+        # Major #4 修復：更新時也要重算 embedding（內容變了向量要跟上）
+        if self._embed_fn is not None and (is_update or not proc.embedding):
             text = f"{proc.name}: {proc.description}. 步驟: {'; '.join(proc.steps)}"
             vec = self._embed_fn(text)
             proc.embedding = self._normalize_vector(vec).tolist()
@@ -368,7 +370,7 @@ class ProceduralMemory:
     def _load(self) -> None:
         if self.metadata_file.exists():
             try:
-                with open(self.metadata_file, "r", encoding="utf-8") as f:
+                with open(self.metadata_file, encoding="utf-8") as f:
                     data = json.load(f)
                 for p_dict in data:
                     proc = Procedure.from_dict(p_dict)

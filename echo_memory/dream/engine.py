@@ -19,9 +19,12 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Callable
+
+# 延遲導入型別（避免循環依賴）
+from typing import Any
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -33,9 +36,6 @@ from echo_memory.dream.replay import LiDERReplay, ReplayReport
 from echo_memory.storage.episodic import EpisodicMemory
 from echo_memory.storage.graph import MemoryGraph
 from echo_memory.storage.semantic import SemanticMemory
-
-# 延遲導入型別（避免循環依賴）
-from typing import Any
 
 logger = logging.getLogger("echo_memory.dream")
 
@@ -92,18 +92,18 @@ class DreamReport:
 class DreamEngine:
     """
     Echo Memory Dream Engine - 簡化版。
-    
+
     設計為單例模式，使用 APScheduler BackgroundScheduler，
     不佔用主執行緒，對即時對話完全透明。
-    
+
     Usage:
         engine = DreamEngine(graph)
         engine.start()  # 啟動排程器
-        
+
         # 手動觸發（測試用）
         report = engine.dream_now(triggered_by="manual")
         print(report.summary())
-        
+
         engine.stop()  # 關閉排程器
     """
 
@@ -291,14 +291,14 @@ class DreamEngine:
     def dream_now(self, triggered_by: str = "manual") -> DreamReport:
         """
         立即執行一個完整的夢境週期（簡化版）。
-        
+
         流程：
           1. 更新邊權重（時間衰減）
           2. 圖譜修剪（移除低權重邊）
-        
+
         Args:
             triggered_by: 觸發來源標籤（"manual" / "idle" / "cron"）
-        
+
         Returns:
             DreamReport: 執行報告
         """
@@ -345,6 +345,25 @@ class DreamEngine:
                         report.procedure_extraction = self._procedure_extractor.run(candidates)
                 except Exception as e:
                     logger.warning(f"[DreamEngine] 程序提取失敗（不影響夢境週期）: {e}")
+
+            # ── 圖譜持久化（階段 5 的 Procedure 節點 + APPLIES_TO 邊）────
+            # Critical #2 修復：Stage 5 建立的圖譜關聯也需要 save
+            self.graph.save()
+
+            # ── 統一標記 is_dreamed（所有階段結束後）──────────────────
+            # Critical #1 修復：不再由 Replay/Distillation 各自標記，
+            # 避免 Replay 先標記導致同一週期蒸餾拿不到 Episode
+            dreamed_ids: set[str] = set()
+            if report.replay and report.replay._replayed_episode_ids:
+                dreamed_ids.update(report.replay._replayed_episode_ids)
+            if report.distillation and report.distillation._distilled_episode_ids:
+                dreamed_ids.update(report.distillation._distilled_episode_ids)
+
+            if dreamed_ids and self._episodic_ref is not None:
+                self._episodic_ref.mark_as_dreamed(list(dreamed_ids))
+                logger.info(
+                    f"[DreamEngine] 統一標記 {len(dreamed_ids)} 個 Episode 為 is_dreamed"
+                )
 
             # 重置閒置計時器（防止立即重複觸發）
             self.notify_interaction()

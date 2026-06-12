@@ -21,10 +21,10 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
-from echo_memory.schemas.concept import Concept
 from echo_memory.schemas.episode import Episode
 from echo_memory.storage.episodic import EpisodicMemory
 from echo_memory.storage.graph import MemoryGraph
@@ -77,6 +77,8 @@ class DistillationReport:
     skipped_reason: str | None = None  # "no_llm" | "no_episodes" | "llm_error"
     llm_raw_output: str | None = None
     errors: list[str] = field(default_factory=list)
+    # 內部追蹤：被蒸餾的 Episode ID，供 DreamEngine 統一標記 is_dreamed
+    _distilled_episode_ids: list[str] = field(default_factory=list, repr=False)
 
     def summary(self) -> str:
         if self.skipped_reason:
@@ -200,8 +202,10 @@ class KnowledgeDistillation:
                 report.errors.append(f"概念寫入失敗: {concept_data.get('name', '?')}: {e}")
                 logger.error(f"[KnowledgeDistillation] 概念寫入失敗: {e}")
 
-        # 標記已蒸餾的 Episode
-        self._mark_episodes_dreamed(candidates)
+        # 只在有實際產出時才記錄 Episode ID（供 DreamEngine 統一標記）
+        # Major #3 修復：空結果或全部失敗時不標記，允許後續重試
+        if report.concepts_created > 0 or report.concepts_updated > 0:
+            report._distilled_episode_ids = [ep.id for ep in candidates]
 
         logger.info(f"[KnowledgeDistillation] {report.summary()}")
         return report

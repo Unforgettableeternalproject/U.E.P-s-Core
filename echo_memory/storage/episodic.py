@@ -592,7 +592,7 @@ class EpisodicMemory:
     def _load(self):
         """從磁盤載入數據"""
         if self.metadata_file.exists():
-            with open(self.metadata_file, "r", encoding="utf-8") as f:
+            with open(self.metadata_file, encoding="utf-8") as f:
                 data = json.load(f)
                 for ep_dict in data:
                     ep = Episode.from_dict(ep_dict)

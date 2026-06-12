@@ -443,7 +443,7 @@ class TestExportEpisodes:
 
 class TestMaxEpisodes:
     def test_evicts_oldest_when_capacity_full(self, temp_storage):
-        from datetime import datetime, timedelta
+        from datetime import datetime
 
         memory = EpisodicMemory(storage_path=temp_storage, max_episodes=3)
 

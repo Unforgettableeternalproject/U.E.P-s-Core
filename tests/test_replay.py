@@ -13,14 +13,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 from echo_memory.dream.replay import LiDERReplay, ReplayReport
 from echo_memory.schemas.episode import Episode
 from echo_memory.storage.episodic import EpisodicMemory
-from echo_memory.storage.graph import MemoryGraph
-
 
 MOCK_DIM = 512
 
@@ -85,7 +82,8 @@ def _store_episodes(episodic: EpisodicMemory) -> list[Episode]:
 class TestReplayCore:
     """核心重播功能。"""
 
-    def test_replay_marks_dreamed(self, storage):
+    def test_replay_records_episode_ids(self, storage):
+        """Replay 記錄被重播的 Episode ID（不再自己標 is_dreamed）。"""
         episodic, graph = storage
         episodes = _store_episodes(episodic)
 
@@ -94,15 +92,17 @@ class TestReplayCore:
 
         assert report.skipped_reason is None
         assert report.episodes_replayed == 3
-
+        # 記錄了被重播的 ID（供 DreamEngine 統一標記）
+        assert len(report._replayed_episode_ids) == 3
+        # 但 Replay 自己不標記 is_dreamed
         for ep in episodes:
             loaded = episodic.get(ep.id)
-            assert loaded.is_dreamed is True
+            assert loaded.is_dreamed is False
 
     def test_replay_adjusts_salience(self, storage):
         episodic, graph = storage
         episodes = _store_episodes(episodic)
-        original_sal = [ep.salience_score for ep in episodes]
+        [ep.salience_score for ep in episodes]
 
         replayer = LiDERReplay(episodic, graph, llm_fn=_mock_llm_replay)
         replayer.run()
@@ -121,7 +121,7 @@ class TestReplayCore:
 
     def test_replay_creates_or_strengthens_edges(self, storage):
         episodic, graph = storage
-        episodes = _store_episodes(episodic)
+        _store_episodes(episodic)
 
         replayer = LiDERReplay(episodic, graph, llm_fn=_mock_llm_replay)
         report = replayer.run()
@@ -131,15 +131,16 @@ class TestReplayCore:
         assert total_edge_changes > 0
 
     def test_replay_skips_already_dreamed(self, storage):
+        """手動標記 is_dreamed 後，Replay 跳過。"""
         episodic, graph = storage
-        _store_episodes(episodic)
+        episodes = _store_episodes(episodic)
+
+        # 手動標記（模擬 DreamEngine 統一標記）
+        episodic.mark_as_dreamed([ep.id for ep in episodes])
 
         replayer = LiDERReplay(episodic, graph, llm_fn=_mock_llm_replay)
-        report1 = replayer.run()
-        assert report1.episodes_replayed == 3
-
-        report2 = replayer.run()
-        assert report2.skipped_reason == "no_episodes"
+        report = replayer.run()
+        assert report.skipped_reason == "no_episodes"
 
     def test_replay_report_avg_importance(self, storage):
         episodic, graph = storage

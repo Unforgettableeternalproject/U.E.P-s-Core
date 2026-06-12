@@ -21,7 +21,6 @@ from echo_memory.schemas.concept import Concept
 from echo_memory.storage.graph import MemoryGraph
 from echo_memory.storage.semantic import SemanticMemory
 
-
 # ─── Fixtures ───────────────────────────────────────────────────────
 
 FAKE_DIM = 8  # 測試用小維度，加速
@@ -206,7 +205,7 @@ class TestSemanticPersistence:
         sem.upsert_concept("Test", "測試概念", concept_type="abstract")
 
         # concepts.json 是合法 JSON
-        with open(storage_dir / "concepts.json", "r", encoding="utf-8") as f:
+        with open(storage_dir / "concepts.json", encoding="utf-8") as f:
             data = json.load(f)
         assert isinstance(data, list)
         assert len(data) == 1

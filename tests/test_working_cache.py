@@ -11,7 +11,6 @@ WorkingMemory 查詢快取測試 — Phase 2 Branch 6 驗收
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -21,12 +20,13 @@ from echo_memory.storage.episodic import EpisodicMemory
 from echo_memory.storage.semantic import SemanticMemory
 from echo_memory.storage.working import WorkingMemory
 
-
 MOCK_DIM = 512
 
 
 def _mock_embed_fn(text: str) -> list[float]:
-    rng = np.random.RandomState(hash(text) & 0xFFFFFFFF)
+    import hashlib
+    seed = int.from_bytes(hashlib.sha256(text.encode()).digest()[:4], "little")
+    rng = np.random.RandomState(seed)
     vec = rng.randn(MOCK_DIM).astype(np.float32)
     norm = float(np.linalg.norm(vec))
     if norm > 0:

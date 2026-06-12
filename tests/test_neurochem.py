@@ -13,8 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from echo_memory.neurochem.state import NeurochemMode, NeurochemState, RetrievalParams
-
+from echo_memory.neurochem.state import NeurochemMode, NeurochemState
 
 # ─── 模式判定 ──────────────────────────────────────────────────────
 

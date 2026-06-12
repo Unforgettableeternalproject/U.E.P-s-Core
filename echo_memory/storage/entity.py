@@ -172,7 +172,7 @@ class EntityStore:
             return
 
         try:
-            with open(self.entities_file, "r", encoding="utf-8") as f:
+            with open(self.entities_file, encoding="utf-8") as f:
                 data: list[dict[str, Any]] = json.load(f)
 
             for item in data:

@@ -24,8 +24,9 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 from echo_memory.schemas.episode import Episode
 from echo_memory.storage.episodic import EpisodicMemory
@@ -76,6 +77,8 @@ class ReplayReport:
     avg_importance: float = 0.0
     skipped_reason: str | None = None
     errors: list[str] = field(default_factory=list)
+    # 內部追蹤：被重播的 Episode ID，供 DreamEngine 統一標記 is_dreamed
+    _replayed_episode_ids: list[str] = field(default_factory=list, repr=False)
 
     def summary(self) -> str:
         if self.skipped_reason:
@@ -215,8 +218,11 @@ class LiDERReplay:
             sum(importances) / len(importances) if importances else 0.0
         )
 
-        # 標記已重播
-        self._mark_episodes_dreamed(candidates)
+        # 注意：不在此處標記 is_dreamed。
+        # DreamEngine 會在所有階段（重播+蒸餾）結束後統一標記，
+        # 避免 Replay 先標記導致同一週期的蒸餾拿不到這些 Episode。
+        # 但仍記錄哪些 Episode 被重播過，供 DreamEngine 收集。
+        report._replayed_episode_ids = [ep.id for ep in candidates]
 
         # 持久化圖
         self.graph.save()

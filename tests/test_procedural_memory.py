@@ -12,21 +12,18 @@ tests/test_procedural_memory.py - 程序記憶測試套件
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
-from echo_memory.schemas.procedure import Procedure
-from echo_memory.storage.procedural import ProceduralMemory
-from echo_memory.storage.graph import MemoryGraph
-from echo_memory.storage.semantic import SemanticMemory
-from echo_memory.dream.procedure_extractor import ProcedureExtractor, ProcedureExtractionReport
+from echo_memory.dream.procedure_extractor import ProcedureExtractor
 from echo_memory.schemas.episode import Episode
 from echo_memory.schemas.memory_context import MemoryContext
-
+from echo_memory.schemas.procedure import Procedure
+from echo_memory.storage.graph import MemoryGraph
+from echo_memory.storage.procedural import ProceduralMemory
 
 # ─── 測試用 embed_fn ────────────────────────────────────────────────────
 

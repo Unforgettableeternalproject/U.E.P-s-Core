@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+
 from echo_memory.schemas.concept import Concept
 from echo_memory.schemas.entity import Entity
 from echo_memory.schemas.episode import Episode
@@ -36,7 +37,7 @@ class MemoryContext:
     def to_text(self) -> str:
         """
         序列化為 LLM 可讀的文本格式。
-        
+
         包含：
         - 相對時間標記（幾分鐘前/幾小時前/N天前）
         - 重要程度標記（核心/重要/一般/淡薄）

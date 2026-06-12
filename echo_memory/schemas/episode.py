@@ -15,7 +15,7 @@ from typing import Any
 class Episode:
     """
     情節記憶節點（Engram）。
-    
+
     Attributes:
         id: 唯一標識符（自動生成）
         user_input: 用戶原始輸入

@@ -15,13 +15,11 @@ import json
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from echo_memory.schemas.entity import Entity
 from echo_memory.schemas.memory_context import MemoryContext
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Fixtures
@@ -254,7 +252,7 @@ class TestEntityStorePersistence:
         entities_file = temp_dir / "entities" / "entities.json"
         assert entities_file.exists()
 
-        with open(entities_file, "r", encoding="utf-8") as f:
+        with open(entities_file, encoding="utf-8") as f:
             data = json.load(f)
 
         assert isinstance(data, list)
@@ -450,7 +448,10 @@ class TestEntityExtractorWithMockLLM:
         result = extractor.extract(sample_episode)
 
         assert len(result) == 1
-        assert sample_episode.id in result[0].source_episode_ids
+        # Major #5 修復：Extractor 不再預填 source_episode_ids，
+        # 由 MemoryEngine.store_episode → increment_mention 負責
+        assert result[0].source_episode_ids == []
+        assert result[0].mention_count == 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────

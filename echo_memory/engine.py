@@ -15,8 +15,9 @@ Architecture:
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from echo_memory.schemas.episode import Episode
 from echo_memory.schemas.memory_context import MemoryContext
@@ -27,12 +28,12 @@ logger = logging.getLogger("echo_memory.engine")
 class MemoryEngine:
     """
     記憶引擎主類 - MVP 骨架
-    
+
     Phase 1 實作目標：
     - 基本存儲功能
     - 單一情節記憶存取
     - 簡單的向量檢索
-    
+
     後續擴展：
     - EcphoryRAG 多跳檢索
     - Dream Engine 鞏固
@@ -179,7 +180,7 @@ class MemoryEngine:
     ) -> str:
         """
         存儲一個情節記憶。
-        
+
         Args:
             user_input: 用戶輸入
             agent_response: Agent 回應
@@ -187,7 +188,7 @@ class MemoryEngine:
             content_summary: 對話摘要（若為 None 則自動生成）
             salience: 顯著性分數 (0-1)
             **metadata: 額外元數據
-        
+
         Returns:
             episode_id: 新建的情節 ID
         """
@@ -248,13 +249,13 @@ class MemoryEngine:
     ) -> MemoryContext:
         """
         檢索相關記憶（EcphoryRAG）。
-        
+
         Args:
             query: 查詢文本
             dopamine: 多巴胺濃度 (0-1)，影響探索廣度
             serotonin: 血清素濃度 (0-1)，影響謹慎程度
             top_k: 返回記憶數量
-        
+
         Returns:
             MemoryContext: 檢索到的記憶脈絡
         """
@@ -275,10 +276,10 @@ class MemoryEngine:
     def dream(self, triggered_by: str = "manual") -> dict[str, Any]:
         """
         執行離線記憶鞏固（Dream Engine - 簡化版已實作）。
-        
+
         Args:
             triggered_by: 觸發來源 (manual/sleep/idle/cron)
-        
+
         Returns:
             DreamReport: 鞏固報告
         """

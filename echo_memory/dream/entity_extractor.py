@@ -10,8 +10,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Callable
 
 from echo_memory.schemas.entity import Entity
 from echo_memory.schemas.episode import Episode
@@ -158,8 +158,8 @@ class EntityExtractor:
                 name=name,
                 entity_type=entity_type,
                 description=description,
-                mention_count=1,
-                source_episode_ids=[episode_id],
+                mention_count=0,  # Major #5 修復：由 increment_mention 負責加 1
+                source_episode_ids=[],  # 同上，由 increment_mention 加入
                 first_seen=now,
                 last_seen=now,
             )

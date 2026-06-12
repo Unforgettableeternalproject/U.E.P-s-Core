@@ -22,6 +22,7 @@ from typing import Any
 from echo_memory.schemas.episode import Episode
 from echo_memory.schemas.memory_context import MemoryContext
 from echo_memory.namespace import normalize_namespace_id, resolve_namespace_path
+from echo_memory.storage.locking import storage_lock
 
 logger = logging.getLogger("echo_memory.engine")
 
@@ -97,6 +98,7 @@ class MemoryEngine:
                 device=self.device,
                 query_prefix=self.query_prefix,
                 max_episodes=self.max_episodes,
+                lock_path=self.storage_path,
             )
         return self._episodic
 
@@ -198,7 +200,9 @@ class MemoryEngine:
             episode_id: 新建的情節 ID
         """
         if content_summary is None:
-            content_summary = f"{user_input[:50]}..."
+            # 結合 user + agent 的核心內容作為摘要，供向量搜索使用
+            combined = f"{user_input} {agent_response}"
+            content_summary = combined[:150]
 
         episode = Episode(
             user_input=user_input,
@@ -209,38 +213,39 @@ class MemoryEngine:
             metadata=metadata,
         )
 
-        episode_id = self.episodic.write(episode)
-        logger.info(f"[MemoryEngine] 存儲情節: {episode_id}")
+        with storage_lock(self.storage_path):
+            episode_id = self.episodic.write(episode)
+            logger.info(f"[MemoryEngine] 存儲情節: {episode_id}")
 
-        # ── 實體提取（非關鍵路徑，失敗不影響主寫入）──────────────────────
-        try:
-            entities = self.entity_extractor.extract(episode)
-            graph = self.episodic.graph
+            # ── 實體提取（非關鍵路徑，失敗不影響主寫入）──────────────────
+            try:
+                entities = self.entity_extractor.extract(episode)
+                graph = self.episodic.graph
 
-            for ent in entities:
-                # 插入或更新 EntityStore
-                ent_id = self.entity_store.upsert(ent)
-                self.entity_store.increment_mention(ent_id, episode_id)
+                for ent in entities:
+                    # 插入或更新 EntityStore
+                    ent_id = self.entity_store.upsert(ent)
+                    self.entity_store.increment_mention(ent_id, episode_id)
 
-                # 在記憶圖中維護 Entity 節點與 MENTIONS 邊
-                actual_ent = self.entity_store.get(ent_id)
-                if actual_ent is not None:
-                    if not graph.has_node(ent_id):
-                        graph.add_entity_node(
-                            ent_id,
-                            name=actual_ent.name,
-                            entity_type=actual_ent.entity_type,
-                        )
-                    graph.add_mentions_edge(episode_id, ent_id)
+                    # 在記憶圖中維護 Entity 節點與 MENTIONS 邊
+                    actual_ent = self.entity_store.get(ent_id)
+                    if actual_ent is not None:
+                        if not graph.has_node(ent_id):
+                            graph.add_entity_node(
+                                ent_id,
+                                name=actual_ent.name,
+                                entity_type=actual_ent.entity_type,
+                            )
+                        graph.add_mentions_edge(episode_id, ent_id)
 
-            if entities:
-                graph.save()
-                logger.debug(
-                    f"[MemoryEngine] 實體提取完成: "
-                    f"{len(entities)} 個實體 (episode={episode_id[:8]}...)"
-                )
-        except Exception as exc:
-            logger.warning(f"[MemoryEngine] 實體提取失敗（不影響主寫入）: {exc}")
+                if entities:
+                    graph.save()
+                    logger.debug(
+                        f"[MemoryEngine] 實體提取完成: "
+                        f"{len(entities)} 個實體 (episode={episode_id[:8]}...)"
+                    )
+            except Exception as exc:
+                logger.warning(f"[MemoryEngine] 實體提取失敗（不影響主寫入）: {exc}")
 
         return episode_id
 
@@ -305,7 +310,8 @@ class MemoryEngine:
                 enable_cron=False,
             )
 
-        report = self._dream_engine.dream_now(triggered_by=triggered_by)
+        with storage_lock(self.storage_path):
+            report = self._dream_engine.dream_now(triggered_by=triggered_by)
         logger.info(f"[MemoryEngine] Dream 完成 - {report.duration_seconds:.1f}s")
 
         result = {

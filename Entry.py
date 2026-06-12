@@ -102,8 +102,13 @@ def run_shell(device: str | None, use_fp16: bool, use_cuda_kernel: bool, use_acc
     )
     shell = InteractiveShell(session=session, write=console.print)
     console.print(
-        "TTS shell ready. Commands: load, say <text>, save --output <path> <text>, "
-        "profile <text>, status, unload, exit"
+        "TTS shell ready. Commands:\n"
+        "  say <text>              — generate and play\n"
+        "  save --output <path> <text>\n"
+        "  profile <text>          — synthesis with timing report\n"
+        "  emotion [preset|H A S F D M U C]\n"
+        "  language [en|zh]        — auto-translates mismatched input\n"
+        "  load / unload / status / help / exit"
     )
     while True:
         try:

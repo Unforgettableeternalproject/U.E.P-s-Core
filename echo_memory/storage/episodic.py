@@ -516,7 +516,15 @@ class EpisodicMemory:
         if not candidates:
             return None
 
-        return max(candidates, key=lambda eid: candidates[eid].timestamp)
+        def _aware_ts(eid):
+            """確保 timestamp 是 aware datetime（相容舊資料）"""
+            ts = candidates[eid].timestamp
+            if ts.tzinfo is None:
+                from datetime import timezone
+                ts = ts.replace(tzinfo=timezone.utc)
+            return ts
+
+        return max(candidates, key=_aware_ts)
 
     def _generate_embedding(self, text: str) -> list[float]:
         """生成文本嵌入向量（存儲用，不加 query prefix）"""

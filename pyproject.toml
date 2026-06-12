@@ -34,13 +34,15 @@ dev = [
 anthropic = ["anthropic>=0.18.0"]
 faiss = ["faiss-cpu>=1.9.0"]
 full = ["faiss-cpu>=1.9.0", "falkordb>=1.0.0"]
+mcp = ["mcp[cli]>=1.0.0"]
 
 # echo-dream 已移除：examples/dream_demo.py 尚未實作（規劃中）
 [project.scripts]
 echo-chat = "examples.minimal_chat:main"
+echo-mcp = "mcp_server.server:main"
 
 [tool.setuptools.packages.find]
-include = ["echo_memory*", "llm_integration*"]
+include = ["echo_memory*", "llm_integration*", "mcp_server*"]
 exclude = ["tests*", "test_data*", "examples*"]
 
 [build-system]

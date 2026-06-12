@@ -28,6 +28,8 @@ from rich import box
 from echo_memory import MemoryEngine
 from echo_memory.config import get_config
 from llm_integration.llm_client import LLMClient
+from llm_integration.tools import to_gemini_tools
+from llm_integration.tools.executor import ToolExecutor
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 設定
@@ -151,16 +153,21 @@ def show_dashboard(engine: MemoryEngine):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
-def run_chat(engine: MemoryEngine, llm: LLMClient, config):
+def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool = True):
     """互動式對話模式"""
     session_id = f"chat_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
     turn = 0
 
+    gemini_tools = to_gemini_tools() if tools_enabled else None
+    executor = ToolExecutor(engine=engine, session_id=session_id) if tools_enabled else None
+
+    tools_status = "[green]on[/]" if tools_enabled else "[dim]off[/]"
     console.print(Panel(
         "[bold cyan]Echo Memory Chat[/]\n"
         f"Session: [dim]{session_id}[/]\n"
-        f"Model: [dim]{llm.model_name}[/]\n\n"
-        "Commands: [dim]/quit  /stats  /dream  /clear  /history[/]",
+        f"Model: [dim]{llm.model_name}[/]\n"
+        f"Tools: {tools_status}\n\n"
+        "Commands: [dim]/quit  /stats  /dream  /clear  /history  /tools[/]",
         border_style="cyan",
         width=70,
     ))
@@ -193,6 +200,17 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config):
             continue
         elif cmd == "/history":
             _show_history(llm)
+            continue
+        elif cmd == "/tools":
+            tools_enabled = not tools_enabled
+            if tools_enabled:
+                gemini_tools = to_gemini_tools()
+                executor = ToolExecutor(engine=engine, session_id=session_id)
+                console.print("[green]Tools enabled.[/]")
+            else:
+                gemini_tools = None
+                executor = None
+                console.print("[yellow]Tools disabled.[/]")
             continue
 
         # ── 1. 檢索記憶 ──
@@ -227,13 +245,25 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config):
             logger.warning(f"Retrieval error: {e}")
             memory_text = ""
 
-        # ── 2. LLM 生成 ──
+        # ── 2. LLM 生成（含可能的 tool-use loop）──
         try:
+            if executor:
+                executor.update_context_whitelist(
+                    [ep.id for ep in context.episodes] if not context.is_empty() else []
+                )
+                executor.increment_turn()
+
             with console.status("[cyan]Thinking...[/]", spinner="dots"):
                 response = llm.chat(
                     message=user_input,
                     memory_context=memory_text,
+                    tools=gemini_tools,
+                    tool_executor=executor,
                 )
+
+            # 顯示工具呼叫提示（如果有的話）
+            if tools_enabled:
+                _show_tool_usage_hint(llm)
 
             console.print(f"[bold cyan]U[/]  {response}")
 
@@ -255,6 +285,30 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config):
 
         except Exception as e:
             logger.warning(f"Store error: {e}")
+
+
+def _show_tool_usage_hint(llm: LLMClient):
+    """顯示最近一輪的工具呼叫提示（簡潔版）"""
+    history = llm.get_history()
+    if not history:
+        return
+
+    # 從歷史末尾往回掃，找到最後一個 user 文字訊息後的所有工具條目
+    last_user_idx = -1
+    for i in range(len(history) - 1, -1, -1):
+        item = history[i]
+        if item["role"] == "user" and not item["text"].startswith("[tool"):
+            last_user_idx = i
+            break
+
+    if last_user_idx < 0:
+        return
+
+    for item in history[last_user_idx + 1:]:
+        if item["text"].startswith("[tool_call]"):
+            tool_part = item["text"][len("[tool_call] "):]
+            tool_name = tool_part.split("(")[0]
+            console.print(f"  [dim]🔧 Tool: {tool_name}[/]")
 
 
 def _show_history(llm: LLMClient):
@@ -437,6 +491,7 @@ class EchoMemoryCLI:
         self.engine: MemoryEngine | None = None
         self.llm: LLMClient | None = None
         self.session_id = f"cli_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+        self.tools_enabled: bool = True
 
     def initialize(self) -> bool:
         """初始化記憶引擎"""
@@ -527,7 +582,7 @@ class EchoMemoryCLI:
                 match command:
                     case "chat" | "c":
                         if self.llm:
-                            run_chat(self.engine, self.llm, self.config)
+                            run_chat(self.engine, self.llm, self.config, self.tools_enabled)
                         else:
                             console.print("[red]LLM not available. Configure API keys in .env[/]")
                     case "dashboard" | "d":
@@ -577,7 +632,7 @@ def main():
         cli.run()
     elif args[0] in ("chat", "c"):
         if cli.initialize() and cli.llm:
-            run_chat(cli.engine, cli.llm, cli.config)
+            run_chat(cli.engine, cli.llm, cli.config, cli.tools_enabled)
         else:
             console.print("[red]Cannot start chat mode.[/]")
     elif args[0] in ("dashboard", "d"):

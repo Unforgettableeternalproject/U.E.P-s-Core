@@ -65,6 +65,7 @@ try:
     from .tts_utils.front import TextNormalizer, TextTokenizer
     from .tts_utils.gpt_length import calc_dynamic_max_generate_length
     from .tts_utils.chinese_segmenter import pre_segment_chinese
+    from .tts_utils.english_segmenter import pre_segment_english
     from .tts_utils.segment_guard import check_segment_anomaly, get_retry_params, SegmentGuardStats
     from .s2mel.modules.commons import load_checkpoint2, MyModel
     from .s2mel.modules.bigvgan import bigvgan
@@ -75,6 +76,7 @@ except ImportError:
     from tts_utils.front import TextNormalizer, TextTokenizer
     from tts_utils.gpt_length import calc_dynamic_max_generate_length
     from tts_utils.chinese_segmenter import pre_segment_chinese
+    from tts_utils.english_segmenter import pre_segment_english
     from tts_utils.segment_guard import check_segment_anomaly, get_retry_params, SegmentGuardStats
     from s2mel.modules.commons import load_checkpoint2, MyModel
     from s2mel.modules.bigvgan import bigvgan
@@ -794,14 +796,17 @@ class IndexTTSLite:
             if verbose:
                 debug_log(3, "   [1/4] 文本處理...")
 
-            # Chinese semantic pre-segmentation (jieba) — only when language is Chinese
-            _jieba_cfg = self.cfg.get('chunking', {}).get('jieba_segmentation', {})
+            # Language-aware semantic pre-segmentation (before BPE tokenization)
             if language == 'zh':
+                _jieba_cfg = self.cfg.get('chunking', {}).get('jieba_segmentation', {})
                 sub_texts = pre_segment_chinese(text, _jieba_cfg)
                 if len(sub_texts) > 1 and verbose:
                     debug_log(2, f"      🈶 jieba 語義預切分: {len(sub_texts)} 段")
             else:
-                sub_texts = [text]
+                _en_cfg = self.cfg.get('chunking', {}).get('english_segmentation', {})
+                sub_texts = pre_segment_english(text, _en_cfg)
+                if len(sub_texts) > 1 and verbose:
+                    debug_log(2, f"      🔤 pySBD 句子預切分: {len(sub_texts)} 段")
 
             # Tokenize each sub-text independently, then split into segments
             all_tokens: list = []

@@ -150,6 +150,125 @@ class TextNormalizer:
             return text
         return self._t2s.convert(text)
 
+    # ── CJK Unicode ranges for language detection ──
+    _CJK_RANGES = (
+        '一-鿿'      # CJK Unified Ideographs
+        '㐀-䶿'      # CJK Unified Ideographs Extension A
+        '豈-﫿'      # CJK Compatibility Ideographs
+        '\U00020000-\U0002a6df'  # CJK Extension B
+        '\U0002a700-\U0002b73f'  # CJK Extension C
+    )
+    _CJK_RE = re.compile('[' + _CJK_RANGES + ']')
+    _PLACEHOLDER_RE = re.compile(r'<[A-Za-z_]+(?:_[a-z])?>')
+
+    @staticmethod
+    def _split_by_language(text):
+        """Split text into alternating (segment, language) runs.
+
+        Called AFTER all save_xxx() so placeholders are already in place.
+
+        Rules:
+        - CJK characters -> 'zh'
+        - ASCII letter sequences > 3 chars -> 'en'
+        - Short ASCII (<=3 chars like AI, IT) near CJK -> 'zh'
+        - Digits, punctuation, spaces inherit from neighbors
+        - Placeholders (<H>, <n_a>) inherit from neighbors
+        """
+        if not text:
+            return []
+
+        cjk_re = TextNormalizer._CJK_RE
+        ph_re = TextNormalizer._PLACEHOLDER_RE
+
+        # Tokenize into typed chunks
+        chunks = []  # list of (text, type)
+        i = 0
+        while i < len(text):
+            m = ph_re.match(text, i)
+            if m:
+                chunks.append((m.group(), 'ph'))
+                i = m.end()
+                continue
+            ch = text[i]
+            if cjk_re.match(ch):
+                j = i + 1
+                while j < len(text) and cjk_re.match(text[j]):
+                    j += 1
+                chunks.append((text[i:j], 'cjk'))
+                i = j
+            elif ch.isascii() and ch.isalpha():
+                j = i + 1
+                while j < len(text) and text[j].isascii() and text[j].isalpha():
+                    j += 1
+                chunks.append((text[i:j], 'alpha'))
+                i = j
+            elif ch.isdigit():
+                j = i + 1
+                while j < len(text) and text[j].isdigit():
+                    j += 1
+                chunks.append((text[i:j], 'digit'))
+                i = j
+            elif ch in ' \t':
+                j = i + 1
+                while j < len(text) and text[j] in ' \t':
+                    j += 1
+                chunks.append((text[i:j], 'ws'))
+                i = j
+            else:
+                chunks.append((ch, 'other'))
+                i += 1
+
+        if not chunks:
+            return [(text, 'zh')]
+
+        # Assign language tags
+        def _neighbor_type(idx, direction):
+            k = idx + direction
+            while 0 <= k < len(chunks):
+                if chunks[k][1] in ('cjk', 'alpha'):
+                    return chunks[k][1]
+                k += direction
+            return None
+
+        tags = []
+        for idx, (ctxt, ctype) in enumerate(chunks):
+            if ctype == 'cjk':
+                tags.append('zh')
+            elif ctype == 'alpha':
+                if len(ctxt) <= 3:
+                    # Short: keep with CJK if any CJK neighbor
+                    prev = _neighbor_type(idx, -1)
+                    nxt = _neighbor_type(idx, 1)
+                    tags.append('zh' if prev == 'cjk' or nxt == 'cjk' else 'en')
+                else:
+                    tags.append('en')
+            else:
+                tags.append(None)  # inherit
+
+        # Fill None tags: forward then backward
+        for i in range(len(tags)):
+            if tags[i] is None and i > 0:
+                tags[i] = tags[i - 1]
+        for i in range(len(tags) - 2, -1, -1):
+            if tags[i] is None:
+                tags[i] = tags[i + 1]
+        tags = [t or 'zh' for t in tags]
+
+        # Merge consecutive same-language chunks
+        runs = []
+        cur_parts = [chunks[0][0]]
+        cur_lang = tags[0]
+        for i in range(1, len(chunks)):
+            if tags[i] == cur_lang:
+                cur_parts.append(chunks[i][0])
+            else:
+                runs.append((''.join(cur_parts), cur_lang))
+                cur_parts = [chunks[i][0]]
+                cur_lang = tags[i]
+        runs.append((''.join(cur_parts), cur_lang))
+
+        return runs
+
     PINYIN_TONE_PATTERN = r"(?<![a-z])((?:[bpmfdtnlgkhjqxzcsryw]|[zcs]h)?(?:[aeiouüv]|[ae]i|u[aio]|ao|ou|i[aue]|[uüv]e|[uvü]ang?|uai|[aeiuv]n|[aeio]ng|ia[no]|i[ao]ng)|ng|er)([1-5])"
     """
     匹配拼音声调格式：pinyin+数字，声调1-5，5表示轻声
@@ -237,40 +356,56 @@ class TextNormalizer:
         if not self.zh_normalizer or not self.en_normalizer:
             print("Error, text normalizer is not initialized !!!")
             return ""
-        text = self.trad_to_simp(text)
-        if self.use_chinese(text):
-            text = re.sub(TextNormalizer.ENGLISH_CONTRACTION_PATTERN, r"\1 is", text, flags=re.IGNORECASE)
-            if self.enable_glossary:
-                text = self.apply_glossary_terms(text, lang="zh")
-            replaced_text, tech_list = self.save_tech_terms(text.rstrip())
-            replaced_text, pinyin_list = self.save_pinyin_tones(replaced_text)
 
-            replaced_text, original_name_list = self.save_names(replaced_text)
-            try:
-                result = self.zh_normalizer.normalize(replaced_text)
-            except Exception:
-                result = ""
-                print(traceback.format_exc())
-            # 恢复人名
-            result = self.restore_names(result, original_name_list)
-            # 恢复拼音声调
-            result = self.restore_pinyin_tones(result, pinyin_list)
-            result = self.restore_tech_terms(result, tech_list)
-            pattern = re.compile("|".join(re.escape(p) for p in self.zh_char_rep_map.keys()))
-            result = pattern.sub(lambda x: self.zh_char_rep_map[x.group()], result)
+        # Step 0: Traditional -> Simplified
+        text = self.trad_to_simp(text)
+
+        # Step 1: Global preprocessing (language-independent)
+        text = re.sub(TextNormalizer.ENGLISH_CONTRACTION_PATTERN, r"\1 is", text, flags=re.IGNORECASE)
+
+        is_mixed_or_chinese = self.use_chinese(text)
+        dominant_lang = "zh" if is_mixed_or_chinese else "en"
+
+        if self.enable_glossary:
+            text = self.apply_glossary_terms(text, lang=dominant_lang)
+
+        # Step 2: Save placeholders (global, before language split)
+        text, tech_list = self.save_tech_terms(text.rstrip())
+        text, pinyin_list = self.save_pinyin_tones(text)
+        text, name_list = self.save_names(text)
+
+        # Step 3: Per-language normalization
+        if is_mixed_or_chinese:
+            runs = self._split_by_language(text)
+            result_parts = []
+            for run_text, run_lang in runs:
+                try:
+                    if run_lang == 'en':
+                        normalized = self.en_normalizer.normalize(run_text)
+                    else:
+                        normalized = self.zh_normalizer.normalize(run_text)
+                except Exception:
+                    normalized = run_text
+                    print(traceback.format_exc())
+                result_parts.append(normalized)
+            result = ''.join(result_parts)
         else:
             try:
-                text = re.sub(TextNormalizer.ENGLISH_CONTRACTION_PATTERN, r"\1 is", text, flags=re.IGNORECASE)
-                if self.enable_glossary:
-                    text = self.apply_glossary_terms(text, lang="en")
-                replaced_text, tech_list = self.save_tech_terms(text)
-                result = self.en_normalizer.normalize(replaced_text)
-                result = self.restore_tech_terms(result, tech_list)
+                result = self.en_normalizer.normalize(text)
             except Exception:
                 result = text
                 print(traceback.format_exc())
-            pattern = re.compile("|".join(re.escape(p) for p in self.char_rep_map.keys()))
-            result = pattern.sub(lambda x: self.char_rep_map[x.group()], result)
+
+        # Step 4: Restore placeholders (global)
+        result = self.restore_names(result, name_list)
+        result = self.restore_pinyin_tones(result, pinyin_list)
+        result = self.restore_tech_terms(result, tech_list)
+
+        # Step 5: char_rep_map cleanup
+        rep_map = self.zh_char_rep_map if is_mixed_or_chinese else self.char_rep_map
+        pattern = re.compile("|".join(re.escape(p) for p in rep_map.keys()))
+        result = pattern.sub(lambda x: rep_map[x.group()], result)
+
         return result
 
     def correct_pinyin(self, pinyin: str):

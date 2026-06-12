@@ -176,7 +176,13 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
     _show_session_banner()
 
     while True:
-        console.print()
+        # 緊湊狀態列
+        tools_tag = "[green]tools[/]" if tools_enabled else "[dim]no-tools[/]"
+        stats_line = engine.get_stats()
+        ep_count = stats_line.get("total_episodes", 0)
+        console.print(
+            f"\n[dim]──── {session_id} │ turn {turn} │ {ep_count} eps │ {tools_tag} ────[/]"
+        )
         try:
             user_input = Prompt.ask("[bold green]You[/]")
         except (EOFError, KeyboardInterrupt):
@@ -1136,6 +1142,12 @@ class EchoMemoryCLI:
             except Exception as e:
                 console.print(f"[red]Error: {e}[/]")
                 logger.exception("Command error")
+
+            # 指令結束後重新顯示選單
+            if command not in ("exit", "quit", "q", "help", "?", "menu", ""):
+                console.print()
+                console.rule("[dim]─[/]", style="dim")
+                self.show_menu()
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from test_tts.benchmarks.metrics import ProfileReport, SynthesisProfile
 from test_tts.cli.interactive import InteractiveShell
 
 
@@ -8,6 +9,7 @@ class FakeSession:
         self.load_calls = 0
         self.say_calls = []
         self.save_calls = []
+        self.profile_calls = []
         self.unload_calls = 0
 
     def load(self):
@@ -27,6 +29,25 @@ class FakeSession:
             pass
         result = Result()
         result.output_path = Path(output_path)
+        return result
+
+    def profile(self, text):
+        self.profile_calls.append(text)
+        class Result:
+            pass
+        result = Result()
+        result.output_path = Path("profiled.wav")
+        result.report = ProfileReport(
+            synthesis=SynthesisProfile(
+                text_chars=len(text),
+                gpt_semantic_ms=100.0,
+                gpt_latent_ms=50.0,
+                s2mel_cfm_ms=200.0,
+                vocoder_ms=80.0,
+                total_wall_ms=500.0,
+                audio_duration_ms=2000.0,
+            )
+        )
         return result
 
     def unload(self):
@@ -58,3 +79,26 @@ def test_shell_exit_returns_false():
     shell = InteractiveShell(session=FakeSession(), write=lambda message: None)
 
     assert shell.execute("exit") is False
+
+
+def test_shell_profile_command_dispatches_and_outputs_report():
+    session = FakeSession()
+    messages = []
+    shell = InteractiveShell(session=session, write=messages.append)
+
+    assert shell.execute('profile "hello from profiler"') is True
+
+    assert session.profile_calls == ["hello from profiler"]
+    output = "\n".join(messages)
+    assert "RTF" in output
+    assert "GPT semantic" in output
+    assert "BigVGAN" in output
+
+
+def test_shell_help_includes_profile():
+    messages = []
+    shell = InteractiveShell(session=FakeSession(), write=messages.append)
+
+    shell.execute("help")
+
+    assert any("profile" in m for m in messages)

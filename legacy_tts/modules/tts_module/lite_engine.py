@@ -29,6 +29,7 @@ IndexTTS2 Lite Engine - 精簡推論引擎
 """
 
 import os
+import time
 import torch
 import warnings
 from pathlib import Path
@@ -82,21 +83,24 @@ class IndexTTSLite:
         model_dir: str = "checkpoints",
         use_fp16: bool = True,
         device: Optional[str] = None,
-        use_cuda_kernel: bool = False
+        use_cuda_kernel: bool = False,
+        use_accel: bool = False,
     ):
         """
         初始化精簡推論引擎
-        
+
         Args:
             cfg_path: 配置文件路徑
             model_dir: 模型目錄
             use_fp16: 是否使用半精度
             device: 設備 (None=自動檢測)
             use_cuda_kernel: 是否使用 CUDA kernel (需要 CUDA Toolkit)
+            use_accel: 是否啟用加速引擎 (CUDA Graph + Flash Attention + Paged KV Cache)
         """
         self.model_dir = model_dir
         self.use_fp16 = use_fp16
         self.use_cuda_kernel = use_cuda_kernel
+        self.use_accel = use_accel
         
         # 設置設備
         if device is None:
@@ -148,7 +152,10 @@ class IndexTTSLite:
         # 當前加載的角色特徵
         self.current_character = None
         self.character_features = None
-        
+
+        # Profiling: init timings (populated by _init_models / load_character / warmup)
+        self._init_timings: dict[str, float] = {}
+
         # 初始化模型
         self._init_models()
         
@@ -203,6 +210,7 @@ class IndexTTSLite:
                 debug_log(1, f"   [預熱] 刪除臨時檔案失敗: {e}")
             
             elapsed = time.time() - start_time
+            self._init_timings["warmup_ms"] = elapsed * 1000
             info_log(f"✅ [預熱] 完成! 耗時: {elapsed:.2f}秒")
             info_log(f"   ✓ torch.compile 已編譯")
             info_log(f"   ✓ CUDA kernel 已編譯")
@@ -217,48 +225,55 @@ class IndexTTSLite:
     def _init_models(self):
         """初始化必要的模型組件"""
         debug_log(2, "🚀 初始化模型...")
-        
+
         # 1. GPT 模型
         debug_log(2, "   [1/4] 加載 GPT 模型...")
+        _t0 = time.perf_counter()
         gpt_path = os.path.join(self.model_dir, self.cfg.gpt_checkpoint)
         # 使用字典展開來傳遞所有 GPT 配置參數(包括嵌套的 condition_module 等)
-        self.gpt = UnifiedVoice(**self.cfg.gpt).to(self.device)
-        
+        gpt_kwargs = dict(self.cfg.gpt)
+        gpt_kwargs['use_accel'] = self.use_accel
+        self.gpt = UnifiedVoice(**gpt_kwargs).to(self.device)
+
         self.gpt.load_state_dict(torch.load(gpt_path, map_location=self.device, weights_only=True))
-        
+
         if self.use_fp16:
             self.gpt.eval().half()
         else:
             self.gpt.eval()
-        
+
         # 初始化 GPT inference model
         self.gpt.post_init_gpt2_config(use_deepspeed=False, kv_cache=True, half=self.use_fp16)
-        
+
         # 🚀 應用 torch.compile 優化 GPT（如果配置啟用）
         if self.use_torch_compile and hasattr(torch, 'compile'):
             try:
                 debug_log(2, f"   ⚡ 對 GPT 應用 torch.compile (mode={self.compile_mode})")
                 # 編譯 inference_model 而非整個 gpt
                 self.gpt.inference_model = torch.compile(
-                    self.gpt.inference_model, 
+                    self.gpt.inference_model,
                     mode=self.compile_mode,
                     fullgraph=False  # 允許部分圖編譯
                 )
             except Exception as e:
                 debug_log(1, f"   ⚠️  torch.compile GPT 失敗，回退: {e}")
+        self._init_timings["gpt_ms"] = (time.perf_counter() - _t0) * 1000
         debug_log(3, f"      ✓ GPT 加載完成: {gpt_path}")
-        
+
         # 2. Semantic Codec (用於 GPT 輸出解碼)
         debug_log(2, "   [2/4] 加載 Semantic Codec...")
+        _t0 = time.perf_counter()
         semantic_codec = build_semantic_codec(self.cfg.semantic_codec)
         semantic_code_ckpt = hf_hub_download("amphion/MaskGCT", filename="semantic_codec/model.safetensors")
         safetensors.torch.load_model(semantic_codec, semantic_code_ckpt)
         self.semantic_codec = semantic_codec.to(self.device)
         self.semantic_codec.eval()
+        self._init_timings["semantic_codec_ms"] = (time.perf_counter() - _t0) * 1000
         debug_log(3, f"      ✓ Semantic Codec 加載完成")
-        
+
         # 3. S2Mel 模型
         debug_log(2, "   [3/4] 加載 S2Mel 模型...")
+        _t0 = time.perf_counter()
         s2mel_path = os.path.join(self.model_dir, self.cfg.s2mel_checkpoint)
         s2mel = MyModel(self.cfg.s2mel, use_gpt_latent=True)
         s2mel, _, _, _ = load_checkpoint2(s2mel, None, s2mel_path)
@@ -266,7 +281,7 @@ class IndexTTSLite:
         # 初始化 GPT-Fast cache (參考 infer_v2.py line 139)
         self.s2mel.models['cfm'].estimator.setup_caches(max_batch_size=1, max_seq_length=8192)
         self.s2mel.eval()
-        
+
         # 🚀 應用 torch.compile 優化 (如果配置啟用)
         if self.use_torch_compile and hasattr(torch, 'compile'):
             try:
@@ -274,29 +289,45 @@ class IndexTTSLite:
                 self.s2mel = torch.compile(self.s2mel, mode=self.compile_mode)
             except Exception as e:
                 debug_log(1, f"   ⚠️  torch.compile S2Mel 失敗，回退: {e}")
-        
+
         # 🚀 可選: 應用動態量化 (INT8)
         if self.use_dynamic_quantization and self.quantize_s2mel:
             try:
                 debug_log(2, "   ⚡ 對 S2Mel 應用動態量化 (INT8)")
                 self.s2mel = torch.quantization.quantize_dynamic(
-                    self.s2mel, 
-                    {torch.nn.Linear}, 
+                    self.s2mel,
+                    {torch.nn.Linear},
                     dtype=torch.qint8
                 )
             except Exception as e:
                 debug_log(1, f"   ⚠️  S2Mel 量化失敗，回退: {e}")
-        
+        # S2Mel torch.compile: 在 sm_120 (RTX 50 系列) + triton-windows 上
+        # inductor 會產生錯誤結果 (dynamic=True) 或大幅變慢 (static/reduce-overhead)。
+        # S2Mel 僅佔 12% 時間，compile 收益不足以抵消風險，預設關閉。
+        # 若日後 triton-windows 修正 sm_120 支援，可透過 config.yaml 啟用：
+        #   advanced_optimization.compile_s2mel: true
+        if self.cfg.get('advanced_optimization', {}).get('compile_s2mel', False):
+            if hasattr(self.s2mel, 'enable_torch_compile'):
+                try:
+                    debug_log(2, "   ⚡ 對 S2Mel CFM estimator 應用 torch.compile")
+                    self.s2mel.enable_torch_compile()
+                except Exception as e:
+                    debug_log(1, f"   ⚠️  S2Mel CFM torch.compile 失敗，回退: {e}")
+        else:
+            debug_log(2, "   ℹ️  S2Mel torch.compile 已停用 (sm_120 相容性)")
+
+        self._init_timings["s2mel_ms"] = (time.perf_counter() - _t0) * 1000
         debug_log(3, f"      ✓ S2Mel 加載完成: {s2mel_path}")
-        
+
         # 4. BigVGAN Vocoder
         debug_log(2, "   [4/4] 加載 BigVGAN Vocoder...")
+        _t0 = time.perf_counter()
         bigvgan_name = self.cfg.vocoder.name
         self.bigvgan = bigvgan.BigVGAN.from_pretrained(bigvgan_name, use_cuda_kernel=self.use_cuda_kernel)
         self.bigvgan = self.bigvgan.to(self.device)
         self.bigvgan.remove_weight_norm()
         self.bigvgan.eval()
-        
+
         # 🚀 應用 torch.compile 優化 (如果配置啟用)
         if self.use_torch_compile and hasattr(torch, 'compile'):
             try:
@@ -304,28 +335,33 @@ class IndexTTSLite:
                 self.bigvgan = torch.compile(self.bigvgan, mode=self.compile_mode)
             except Exception as e:
                 debug_log(1, f"   ⚠️  torch.compile BigVGAN 失敗，回退: {e}")
+        self._init_timings["bigvgan_ms"] = (time.perf_counter() - _t0) * 1000
         debug_log(3, f"      ✓ BigVGAN 加載完成: {bigvgan_name}")
-        
+
         # 5. 情感和說話人矩陣 (用於 emo_vector 映射)
         debug_log(2, "   [5/6] 加載情感和說話人矩陣...")
+        _t0 = time.perf_counter()
         emo_matrix = torch.load(os.path.join(self.model_dir, self.cfg.emo_matrix), map_location=self.device, weights_only=True)
         spk_matrix = torch.load(os.path.join(self.model_dir, self.cfg.spk_matrix), map_location=self.device, weights_only=True)
-        
+
         self.emo_matrix = emo_matrix.to(self.device)
         self.spk_matrix = spk_matrix.to(self.device)
         self.emo_num = list(self.cfg.emo_num)
-        
+
         # Split 矩陣 (用於按情感類別索引)
         self.emo_matrix = torch.split(self.emo_matrix, self.emo_num)
         self.spk_matrix = torch.split(self.spk_matrix, self.emo_num)
+        self._init_timings["emo_matrix_ms"] = (time.perf_counter() - _t0) * 1000
         debug_log(3, f"      ✓ 矩陣加載完成: {self.cfg.emo_matrix}, {self.cfg.spk_matrix}")
-        
+
         # 6. 文本標準化器和 BPE Tokenizer (參考 infer_v2.py line 159-162)
         debug_log(2, "   [6/6] 加載文本處理...")
+        _t0 = time.perf_counter()
         bpe_path = os.path.join(self.model_dir, self.cfg.dataset["bpe_model"])
         self.text_normalizer = TextNormalizer()
         self.text_normalizer.load()
         self.tokenizer = TextTokenizer(bpe_path, self.text_normalizer)
+        self._init_timings["text_processor_ms"] = (time.perf_counter() - _t0) * 1000
         debug_log(3, f"      ✓ 文本處理器和 BPE 模型加載完成: {bpe_path}")
     
     def load_character(self, character_path: Union[str, Path], verbose: bool = True):
@@ -340,13 +376,14 @@ class IndexTTSLite:
             bool: 是否加載成功
         """
         character_path = Path(character_path)
-        
+        _char_t0 = time.perf_counter()
+
         if not character_path.exists():
             raise FileNotFoundError(f"角色文件不存在: {character_path}")
-        
+
         if verbose:
             debug_log(2, f"📂 加載角色: {character_path.name}")
-        
+
         try:
             # 加載特徵
             features = torch.load(character_path, map_location=self.device, weights_only=False)
@@ -390,6 +427,8 @@ class IndexTTSLite:
                     if 'emo_indices' in metadata:
                         debug_log(3, f"   📋 情感索引: {metadata['emo_indices']}")
             
+            self._init_timings["char_load_ms"] = (time.perf_counter() - _char_t0) * 1000
+
             # 🔥 角色加載成功後，執行預熱（如果這是首次加載且已配置）
             if hasattr(self, '_warmup_config') and self._warmup_config.get('enable', False):
                 # 執行一次預熱後就移除配置，避免重複預熱
@@ -475,221 +514,356 @@ class IndexTTSLite:
         emotion_vector: Optional[List[float]] = None,
         max_emotion_strength: float = 0.5,
         language: str = 'en',
-        # GPT 優化參數 (🚀 已優化: 關閉隨機採樣以加速)
         num_beams: int = 1,
-        do_sample: bool = False,  # 🚀 關閉採樣，加速 5-8%
-        temperature: float = 0.0,  # 確定性輸出
+        do_sample: bool = False,
+        temperature: float = 0.0,
         top_p: float = 1.0,
         top_k: int = 50,
-        verbose: bool = True
+        verbose: bool = True,
+        on_segment_audio=None,
+        max_text_tokens_per_segment: int = 120,
+        quick_streaming_tokens: int = 0,
     ) -> bool:
         """
-        合成語音 (獨立引擎實現,參考 infer_v2.py 邏輯)
-        
+        合成語音 — 回傳 bool，保持向後相容。
+        內部委派給 _synthesize_impl()。
+
+        Args:
+            on_segment_audio: Optional callback(segment_audio_tensor, segment_index, total_segments).
+                Called after each segment's vocoder completes, before concatenation.
+                Use for streaming playback.
+            max_text_tokens_per_segment: Maximum BPE tokens per segment (default 120, matches upstream).
+            quick_streaming_tokens: If > 0, first segment will be at most this many tokens
+                for faster first-audio latency.
+        """
+        success, _ = self._synthesize_impl(
+            text=text, output_path=output_path,
+            emotion_vector=emotion_vector, max_emotion_strength=max_emotion_strength,
+            language=language, num_beams=num_beams, do_sample=do_sample,
+            temperature=temperature, top_p=top_p, top_k=top_k,
+            verbose=verbose, collect_timings=False,
+            on_segment_audio=on_segment_audio,
+            max_text_tokens_per_segment=max_text_tokens_per_segment,
+            quick_streaming_tokens=quick_streaming_tokens,
+        )
+        return success
+
+    def synthesize_with_profile(
+        self,
+        text: str,
+        output_path: str,
+        emotion_vector: Optional[List[float]] = None,
+        max_emotion_strength: float = 0.5,
+        language: str = 'en',
+        num_beams: int = 1,
+        do_sample: bool = False,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
+        top_k: int = 50,
+        verbose: bool = True,
+        max_text_tokens_per_segment: int = 120,
+        quick_streaming_tokens: int = 0,
+    ) -> tuple:
+        """
+        合成語音並回傳 (success: bool, timings: dict)。
+        timings 包含各階段的毫秒計時。
+        """
+        return self._synthesize_impl(
+            text=text, output_path=output_path,
+            emotion_vector=emotion_vector, max_emotion_strength=max_emotion_strength,
+            language=language, num_beams=num_beams, do_sample=do_sample,
+            temperature=temperature, top_p=top_p, top_k=top_k,
+            verbose=verbose, collect_timings=True,
+            max_text_tokens_per_segment=max_text_tokens_per_segment,
+            quick_streaming_tokens=quick_streaming_tokens,
+        )
+
+    def _synthesize_impl(
+        self,
+        text: str,
+        output_path: str,
+        emotion_vector: Optional[List[float]] = None,
+        max_emotion_strength: float = 0.5,
+        language: str = 'en',
+        num_beams: int = 1,
+        do_sample: bool = False,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
+        top_k: int = 50,
+        verbose: bool = True,
+        collect_timings: bool = False,
+        on_segment_audio=None,
+        max_text_tokens_per_segment: int = 120,
+        quick_streaming_tokens: int = 0,
+    ) -> tuple:
+        """
+        合成語音的核心實現 (獨立引擎實現,參考 infer_v2.py 邏輯)
+
         Args:
             text: 要合成的文本
             output_path: 輸出音頻路徑
-            emotion_vector: 8維情感向量 [happy, angry, sad, afraid, disgusted, melancholic, surprised, calm]
-            max_emotion_strength: 最大情感強度 (0.5=保留50%原聲)
+            emotion_vector: 8維情感向量
+            max_emotion_strength: 最大情感強度
             language: 語言 ('en' 或 'zh')
-            num_beams: GPT beam search 大小 (1=最快)
+            num_beams: GPT beam search 大小
             do_sample: 是否採樣
             temperature: 採樣溫度
             top_p: Nucleus 採樣
             top_k: Top-K 採樣
             verbose: 是否打印詳細信息
-            
+            collect_timings: 是否收集各階段計時
+
         Returns:
-            bool: 是否成功
+            (success: bool, timings: dict) — timings 為空 dict 若 collect_timings=False
         """
+        timings: dict[str, float] = {}
+
+        def _mark(key: str, t0: float) -> float:
+            now = time.perf_counter()
+            if collect_timings:
+                timings[key] = (now - t0) * 1000
+            return now
+
         if self.character_features is None:
             raise RuntimeError("請先使用 load_character() 加載角色!")
-        
+
+        wall_t0 = time.perf_counter()
+
         if verbose:
             debug_log(2, f"🎙️  合成語音...")
             debug_log(3, f"   角色: {self.current_character}")
             debug_log(3, f"   文本: {text}")
             debug_log(3, f"   文本長度: {len(text)} 字符")
-        
+
         # 1. 情感向量處理
         if emotion_vector is None:
             emotion_vector = [0.0] * 8  # 中性
-        
+
         if len(emotion_vector) != 8:
             raise ValueError("情感向量必須是 8 維")
-        
+
         # 歸一化情感向量
         normalized_emotion = self.normalize_emotion_vector(emotion_vector, max_emotion_strength, verbose)
-        
+
         try:
-            # 2. 文本處理 (參考 infer_v2.py line 487-523)
+            # 2. 文本處理 — tokenize + 分段 (參考 infer_v2.py line 487-523)
+            _t = time.perf_counter()
             if verbose:
                 debug_log(3, "   [1/4] 文本處理...")
-            
-            # 使用 BPE tokenizer 進行正確的 tokenization
+
             text_tokens_list = self.tokenizer.tokenize(text)
-            # 簡化版:只取第一個 segment (完整版應該循環處理所有 segments)
-            segments = self.tokenizer.split_segments(text_tokens_list, max_text_tokens_per_segment=200)
-            if len(segments) > 1 and verbose:
-                debug_log(2, f"      ⚠️  警告: 文本被分割為 {len(segments)} 段,只處理第一段")
-            
-            # 轉換為 token IDs
-            text_tokens = self.tokenizer.convert_tokens_to_ids(segments[0])
-            text_tokens = torch.tensor(text_tokens, dtype=torch.int32, device=self.device).unsqueeze(0)
-            
-            # 3. 處理情感向量映射 (參考 infer_v2.py line 456-462)
-            # 使用預計算的 emo_indices 或動態計算
+            segments = self.tokenizer.split_segments(
+                text_tokens_list,
+                max_text_tokens_per_segment=max_text_tokens_per_segment,
+                quick_streaming_tokens=quick_streaming_tokens,
+            )
+            num_segments = len(segments)
+            if num_segments > 1 and verbose:
+                debug_log(2, f"      ℹ️  文本分為 {num_segments} 段處理")
+                if quick_streaming_tokens > 0:
+                    debug_log(2, f"      ⚡ 首段快速串流: ≤{quick_streaming_tokens} tokens")
+            _t = _mark("text_norm_ms", _t)
+
+            # 3. 情感向量映射 (跨段共用, 只計算一次)
             if 'emo_indices' in self.character_features:
-                # 使用預計算的索引
                 emo_indices = self.character_features['emo_indices']
             else:
-                # 動態計算最相似的索引 (find_most_similar_cosine)
                 style = self.character_features['style']
                 emo_indices = []
                 for spk_mat in self.spk_matrix:
-                    # 計算餘弦相似度
                     query_norm = torch.nn.functional.normalize(style.squeeze(0), p=2, dim=-1)
                     matrix_norm = torch.nn.functional.normalize(spk_mat, p=2, dim=-1)
                     similarities = torch.matmul(query_norm, matrix_norm.T)
                     most_similar_idx = torch.argmax(similarities).item()
                     emo_indices.append(most_similar_idx)
-            
-            # 從 emo_matrix 中獲取對應的情感向量並加權
+
             weight_vector = torch.tensor(normalized_emotion, device=self.device)
             emo_matrix_selected = [emo_mat[idx].unsqueeze(0) for idx, emo_mat in zip(emo_indices, self.emo_matrix)]
-            emo_matrix_cat = torch.cat(emo_matrix_selected, 0)  # [8, hidden_dim]
-            emovec_mat = weight_vector.unsqueeze(1) * emo_matrix_cat  # [8, hidden_dim]
-            emovec_mat = torch.sum(emovec_mat, 0).unsqueeze(0)  # [1, hidden_dim]
-            
-            # 確保 dtype 與模型一致
+            emo_matrix_cat = torch.cat(emo_matrix_selected, 0)
+            emovec_mat = weight_vector.unsqueeze(1) * emo_matrix_cat
+            emovec_mat = torch.sum(emovec_mat, 0).unsqueeze(0)
+
             if self.use_fp16:
                 emovec_mat = emovec_mat.half()
-            
-            # 4. GPT 生成語義 tokens
-            if verbose:
-                debug_log(3, "   [2/4] GPT 生成中...")
-            
-            with torch.no_grad():
-                # 使用 autocast 處理 FP16 (參考 infer_v2.py line 534)
-                dtype = torch.float16 if self.use_fp16 else None
-                with torch.amp.autocast(self.device.type, enabled=dtype is not None, dtype=dtype):
-                    # 準備 conditioning (參考 infer_v2.py line 419-452)
-                    spk_cond_emb = self.character_features['spk_cond_emb']
-                    # 簡化版:使用 spk_cond_emb 作為 emo_cond_emb (完整版應從情感參考音頻提取)
-                    emo_cond_emb = spk_cond_emb
-                    
-                    # Merge emovec (參考 infer_v2.py line 535-544)
-                    emovec = self.gpt.merge_emovec(
-                        spk_cond_emb,
-                        emo_cond_emb,
-                        torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
-                        torch.tensor([emo_cond_emb.shape[-1]], device=self.device),
-                        alpha=1.0  # emo_alpha
+            _t = _mark("emotion_ms", _t)
+
+            # Shared conditioning (跨段共用)
+            spk_cond_emb = self.character_features['spk_cond_emb']
+            emo_cond_emb = spk_cond_emb
+
+            # --- 分段循環：每段獨立走 GPT→S2Mel→BigVGAN 管線 ---
+            audio_segments: list = []
+            seg_gpt_semantic_ms = 0.0
+            seg_gpt_latent_ms = 0.0
+            seg_s2mel_cfm_ms = 0.0
+            seg_vocoder_ms = 0.0
+            first_segment_done_ms: Optional[float] = None
+
+            for seg_idx, seg_tokens in enumerate(segments):
+                if verbose and num_segments > 1:
+                    debug_log(3, f"   ── 段落 {seg_idx + 1}/{num_segments} ──")
+
+                text_tokens = self.tokenizer.convert_tokens_to_ids(seg_tokens)
+                text_tokens = torch.tensor(text_tokens, dtype=torch.int32, device=self.device).unsqueeze(0)
+
+                # 4. GPT 生成語義 tokens
+                if verbose:
+                    debug_log(3, f"   [2/4] GPT 生成中...")
+
+                _seg_t = time.perf_counter()
+                with torch.no_grad():
+                    dtype = torch.float16 if self.use_fp16 else None
+                    with torch.amp.autocast(self.device.type, enabled=dtype is not None, dtype=dtype):
+                        emovec = self.gpt.merge_emovec(
+                            spk_cond_emb,
+                            emo_cond_emb,
+                            torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
+                            torch.tensor([emo_cond_emb.shape[-1]], device=self.device),
+                            alpha=1.0
+                        )
+
+                        if emovec_mat is not None:
+                            weight_sum = torch.sum(torch.tensor(normalized_emotion, device=self.device))
+                            emovec = emovec_mat + (1 - weight_sum) * emovec
+
+                        codes, speech_conditioning_latent = self.gpt.inference_speech(
+                            spk_cond_emb,
+                            text_tokens,
+                            emo_cond_emb,
+                            cond_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
+                            emo_cond_lengths=torch.tensor([emo_cond_emb.shape[-1]], device=self.device),
+                            emo_vec=emovec,
+                            num_return_sequences=1,
+                            num_beams=num_beams,
+                            do_sample=do_sample,
+                            temperature=temperature,
+                            top_p=top_p,
+                            top_k=top_k,
+                            length_penalty=1.0,
+                            repetition_penalty=1.2,
+                            max_generate_length=self.cfg.gpt.max_mel_tokens
+                        )
+                        seg_gpt_semantic_ms += (time.perf_counter() - _seg_t) * 1000
+                        _seg_t = time.perf_counter()
+
+                        # GPT forward 獲取 latent
+                        use_speed = torch.zeros(1, device=self.device).long()
+                        latent = self.gpt(
+                            speech_conditioning_latent,
+                            text_tokens,
+                            torch.tensor([text_tokens.shape[-1]], device=self.device),
+                            codes,
+                            torch.tensor([codes.shape[-1]], device=self.device),
+                            spk_cond_emb,
+                            cond_mel_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
+                            emo_cond_mel_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
+                            emo_vec=emovec_mat,
+                            use_speed=use_speed
+                        )
+                        seg_gpt_latent_ms += (time.perf_counter() - _seg_t) * 1000
+                        _seg_t = time.perf_counter()
+
+                # 找到實際的 code 長度 (參考 infer_v2.py line 583-591)
+                stop_mel_token = self.cfg.gpt.stop_mel_token
+                code_lens = []
+                for code in codes:
+                    if stop_mel_token not in code:
+                        code_len = len(code)
+                    else:
+                        len_ = (code == stop_mel_token).nonzero(as_tuple=False)[0] + 1
+                        code_len = len_ - 1
+                    code_lens.append(code_len)
+
+                codes = codes[:, :code_len]
+                code_lens = torch.LongTensor(code_lens).to(self.device)
+
+                # 5. S2Mel 生成 Mel 頻譜
+                if verbose:
+                    debug_log(3, f"   [3/4] S2Mel 生成中...")
+
+                with torch.no_grad():
+                    dtype = None
+                    with torch.amp.autocast(self.device.type, enabled=dtype is not None, dtype=dtype):
+                        latent = self.s2mel.models['gpt_layer'](latent)
+                        S_infer = self.semantic_codec.quantizer.vq2emb(codes.unsqueeze(1))
+                        S_infer = S_infer.transpose(1, 2)
+
+                        if latent.shape[1] > S_infer.shape[1]:
+                            latent = latent[:, :S_infer.shape[1], :]
+
+                        S_infer = S_infer + latent
+                        target_lengths = (code_lens * 1.72).long()
+
+                    cond = self.s2mel.models['length_regulator'](
+                        S_infer,
+                        ylens=target_lengths,
+                        n_quantizers=3,
+                        f0=None
+                    )[0]
+
+                    cat_condition = torch.cat([self.character_features['prompt_condition'], cond], dim=1)
+
+                    vc_target = self.s2mel.models['cfm'].inference(
+                        cat_condition,
+                        torch.LongTensor([cat_condition.size(1)]).to(self.device),
+                        self.character_features['ref_mel'],
+                        self.character_features['style'],
+                        None,
+                        n_timesteps=25,
+                        inference_cfg_rate=0.7
                     )
-                    
-                    # 如果有情感向量,混合 emovec_mat
-                    if emovec_mat is not None:
-                        weight_sum = torch.sum(torch.tensor(normalized_emotion, device=self.device))
-                        emovec = emovec_mat + (1 - weight_sum) * emovec
-                    
-                    # inference_speech 返回 (codes, speech_conditioning_latent)
-                    codes, speech_conditioning_latent = self.gpt.inference_speech(
-                        spk_cond_emb,
-                        text_tokens,
-                        emo_cond_emb,  # 使用 emo_cond_emb (不是 spk_cond_emb!)
-                        cond_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
-                        emo_cond_lengths=torch.tensor([emo_cond_emb.shape[-1]], device=self.device),
-                        emo_vec=emovec,  # 使用merge後的 emovec
-                        num_return_sequences=1,
-                        num_beams=num_beams,
-                        do_sample=do_sample,
-                        temperature=temperature,
-                        top_p=top_p,
-                        top_k=top_k,
-                        length_penalty=1.0,
-                        repetition_penalty=1.2,
-                        max_generate_length=self.cfg.gpt.max_mel_tokens
-                    )
-                    
-                    # GPT forward 獲取 latent
-                    use_speed = torch.zeros(1, device=self.device).long()
-                    latent = self.gpt(
-                        speech_conditioning_latent,
-                        text_tokens,
-                        torch.tensor([text_tokens.shape[-1]], device=self.device),
-                        codes,
-                        torch.tensor([codes.shape[-1]], device=self.device),
-                        spk_cond_emb,
-                        cond_mel_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
-                        emo_cond_mel_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
-                        emo_vec=emovec_mat,
-                        use_speed=use_speed
-                    )
-            
-            # 找到實際的 code 長度 (參考 infer_v2.py line 583-591)
-            stop_mel_token = self.cfg.gpt.stop_mel_token
-            code_lens = []
-            for code in codes:
-                if stop_mel_token not in code:
-                    code_len = len(code)
-                else:
-                    len_ = (code == stop_mel_token).nonzero(as_tuple=False)[0] + 1
-                    code_len = len_ - 1
-                code_lens.append(code_len)
-            
-            codes = codes[:, :code_len]  # 裁剪到實際長度
-            code_lens = torch.LongTensor(code_lens).to(self.device)
-            
-            # 5. S2Mel 生成 Mel 頻譜
-            if verbose:
-                debug_log(3, "   [3/4] S2Mel 生成中...")
-            
-            with torch.no_grad():
-                # 使用 dtype=None 的 autocast (參考 infer_v2.py line 617)
-                dtype = None
-                with torch.amp.autocast(self.device.type, enabled=dtype is not None, dtype=dtype):
-                    latent = self.s2mel.models['gpt_layer'](latent)
-                    S_infer = self.semantic_codec.quantizer.vq2emb(codes.unsqueeze(1))
-                    S_infer = S_infer.transpose(1, 2)
-                    
-                    # 裁剪 latent 以匹配 S_infer 的長度
-                    if latent.shape[1] > S_infer.shape[1]:
-                        latent = latent[:, :S_infer.shape[1], :]
-                    
-                    S_infer = S_infer + latent
-                    target_lengths = (code_lens * 1.72).long()
-                
-                cond = self.s2mel.models['length_regulator'](
-                    S_infer,
-                    ylens=target_lengths,
-                    n_quantizers=3,
-                    f0=None
-                )[0]
-                
-                cat_condition = torch.cat([self.character_features['prompt_condition'], cond], dim=1)
-                
-                # CFM inference
-                vc_target = self.s2mel.models['cfm'].inference(
-                    cat_condition,
-                    torch.LongTensor([cat_condition.size(1)]).to(self.device),
-                    self.character_features['ref_mel'],
-                    self.character_features['style'],
-                    None,
-                    n_timesteps=25,
-                    inference_cfg_rate=0.7
-                )
-                
-                # 移除參考音頻部分
-                mel = vc_target[:, :, self.character_features['ref_mel'].size(-1):]
-            
-            # 6. BigVGAN 生成波形
-            if verbose:
-                debug_log(3, "   [4/4] BigVGAN 生成中...")
-            
-            with torch.no_grad():
-                # BigVGAN 需要 Float32 輸入 (參考 infer_v2.py line 641)
-                audio_output = self.bigvgan(mel.float()).squeeze(0).cpu()
-            
+
+                    mel = vc_target[:, :, self.character_features['ref_mel'].size(-1):]
+                seg_s2mel_cfm_ms += (time.perf_counter() - _seg_t) * 1000
+                _seg_t = time.perf_counter()
+
+                # 6. BigVGAN 生成波形
+                if verbose:
+                    debug_log(3, f"   [4/4] BigVGAN 生成中...")
+                _seg_t = time.perf_counter()  # 重設起點，排除 verbose log 開銷
+
+                with torch.no_grad():
+                    seg_audio_gpu = self.bigvgan(mel.float()).squeeze(0)
+                seg_vocoder_ms += (time.perf_counter() - _seg_t) * 1000
+                seg_audio = seg_audio_gpu.cpu()  # D2H transfer 不計入 vocoder 時間
+
+                audio_segments.append(seg_audio)
+
+                # Record first-segment completion time
+                if first_segment_done_ms is None:
+                    first_segment_done_ms = (time.perf_counter() - wall_t0) * 1000
+
+                # Streaming callback: emit segment audio immediately
+                if on_segment_audio is not None:
+                    on_segment_audio(seg_audio, seg_idx, num_segments)
+
+            # --- 拼接所有段落的音頻（段間插入短靜音）---
+            if len(audio_segments) == 1:
+                audio_output = audio_segments[0]
+            else:
+                # Insert ~9ms silence (200 samples @ 22050Hz) between segments
+                interval_samples = 200
+                silence = torch.zeros(audio_segments[0].shape[0], interval_samples)
+                parts = []
+                for i, seg in enumerate(audio_segments):
+                    parts.append(seg)
+                    if i < len(audio_segments) - 1:
+                        parts.append(silence)
+                audio_output = torch.cat(parts, dim=-1)
+                if verbose:
+                    debug_log(3, f"   ✓ 已拼接 {len(audio_segments)} 段音頻（含段間靜音）")
+
+            # Record accumulated stage timings
+            if collect_timings:
+                timings["gpt_semantic_ms"] = seg_gpt_semantic_ms
+                timings["gpt_latent_ms"] = seg_gpt_latent_ms
+                timings["s2mel_cfm_ms"] = seg_s2mel_cfm_ms
+                timings["vocoder_ms"] = seg_vocoder_ms
+                timings["segment_count"] = float(num_segments)
+                timings["first_segment_ms"] = first_segment_done_ms or 0.0
+
+            _t = time.perf_counter()
+
             # 7. 保存音頻
             import torchaudio
             torchaudio.save(
@@ -699,20 +873,30 @@ class IndexTTSLite:
                 encoding="PCM_S",
                 bits_per_sample=16
             )
-            
+            _t = _mark("wav_save_ms", _t)
+
             if verbose:
                 duration = audio_output.shape[-1] / 22050
                 debug_log(2, f"   ✓ 合成完成!")
                 debug_log(3, f"   📁 保存至: {output_path}")
                 debug_log(3, f"   ⏱️  音頻時長: {duration:.2f}秒")
-            
-            return True
-            
+
+            # Finalize timings
+            if collect_timings:
+                timings["text_chars"] = float(len(text))
+                audio_duration_s = audio_output.shape[-1] / 22050
+                timings["audio_duration_ms"] = audio_duration_s * 1000
+                timings["total_wall_ms"] = (time.perf_counter() - wall_t0) * 1000
+
+            return True, timings
+
         except Exception as e:
             error_log(f"❌ 合成失敗: {e}")
             import traceback
             traceback.print_exc()
-            return False
+            if collect_timings:
+                timings["total_wall_ms"] = (time.perf_counter() - wall_t0) * 1000
+            return False, timings
     
     def get_current_character(self) -> Optional[str]:
         """獲取當前加載的角色名稱"""

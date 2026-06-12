@@ -18,5 +18,5 @@ def legacy_backend_info(project_root: str | Path | None = None) -> BackendInfo:
         name="legacy_indextts2",
         source_path=root / "legacy_tts" / "modules" / "tts_module",
         supports_emotion_vector=True,
-        supports_stage_profiling=False,
+        supports_stage_profiling=True,
     )

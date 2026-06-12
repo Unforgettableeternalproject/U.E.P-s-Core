@@ -14,6 +14,9 @@ class InteractiveSession(Protocol):
     def save(self, text: str, output_path: str):
         ...
 
+    def profile(self, text: str):
+        ...
+
     def unload(self) -> None:
         ...
 
@@ -46,7 +49,10 @@ class InteractiveShell:
         if verb in {"exit", "quit"}:
             return False
         if verb == "help":
-            self.write("Commands: load, say <text>, save --output <path> <text>, status, unload, exit")
+            self.write(
+                "Commands: load, say <text>, save --output <path> <text>, "
+                "profile <text>, status, unload, exit"
+            )
             return True
         if verb == "load":
             self.session.load()
@@ -68,6 +74,11 @@ class InteractiveShell:
             text, output = self._parse_save_args(args)
             result = self.session.save(text, output_path=output)
             self.write(f"saved: {result.output_path}")
+            return True
+        if verb == "profile":
+            text = self._parse_text_args(args, command_name="profile")
+            result = self.session.profile(text)
+            self.write(result.report.format_report())
             return True
 
         self.write(f"Unknown command: {verb}")

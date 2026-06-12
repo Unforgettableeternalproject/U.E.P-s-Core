@@ -73,6 +73,12 @@ synthesis:
   cfm_n_timesteps: 25          # CFM 推論步數 (越多品質越好但越慢)
   cfm_inference_cfg_rate: 0.7  # CFM style conditioning 強度 (0.5~0.9)
 
+# 情緒動態調控 (第三層：推論參數隨情緒自動變化)
+emotion_dynamics:
+  enabled: true                  # 啟用情緒驅動的參數動態調控
+  activation_threshold: 0.05     # 情緒總強度低於此值時不調控
+  intensity_scale: 1.0           # 全局調控強度 (>1 加強效果, <1 減弱)
+
 # 播放配置
 playback:
   auto_play: true  # 是否自動播放 (不保存時)

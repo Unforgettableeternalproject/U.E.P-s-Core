@@ -68,6 +68,7 @@ try:
     from .tts_utils.english_segmenter import pre_segment_english
     from .tts_utils.custom_vocab import apply_custom_vocab
     from .tts_utils.segment_guard import check_segment_anomaly, get_retry_params, SegmentGuardStats
+    from .emotion_dynamics import EmotionDynamics, create_emotion_dynamics
     from .s2mel.modules.commons import load_checkpoint2, MyModel
     from .s2mel.modules.bigvgan import bigvgan
 except ImportError:
@@ -80,6 +81,7 @@ except ImportError:
     from tts_utils.english_segmenter import pre_segment_english
     from tts_utils.custom_vocab import apply_custom_vocab
     from tts_utils.segment_guard import check_segment_anomaly, get_retry_params, SegmentGuardStats
+    from emotion_dynamics import EmotionDynamics, create_emotion_dynamics
     from s2mel.modules.commons import load_checkpoint2, MyModel
     from s2mel.modules.bigvgan import bigvgan
 
@@ -321,6 +323,11 @@ class IndexTTSLite:
         self.s2mel_stretch_ratio = float(_synth_cfg.get('s2mel_stretch_ratio', 1.72))
         self.cfm_n_timesteps = int(_synth_cfg.get('cfm_n_timesteps', 25))
         self.cfm_inference_cfg_rate = float(_synth_cfg.get('cfm_inference_cfg_rate', 0.7))
+
+        # ── 情緒動態調控（第三層）──
+        self.emotion_dynamics = create_emotion_dynamics(
+            OmegaConf.to_container(self.cfg, resolve=True) if hasattr(self.cfg, '_metadata') else dict(self.cfg)
+        )
 
         # 當前加載的角色特徵
         self.current_character = None
@@ -875,6 +882,27 @@ class IndexTTSLite:
         # 歸一化情感向量
         normalized_emotion = self.normalize_emotion_vector(emotion_vector, max_emotion_strength, verbose)
 
+        # ── 情緒動態調控（第三層）──
+        # 根據情緒向量動態調整 temperature、段間靜音、語速、cfg_rate
+        dyn = self.emotion_dynamics.compute(
+            normalized_emotion,
+            base_temperature=temperature,
+            base_silence_ms=self.interval_silence_ms,
+            base_stretch_ratio=self.s2mel_stretch_ratio,
+            base_cfg_rate=self.cfm_inference_cfg_rate,
+        )
+        if dyn.temperature is not None:
+            temperature = dyn.temperature
+        # interval_silence / stretch_ratio / cfg_rate 在使用處讀取
+        _dyn_silence_ms = dyn.interval_silence_ms if dyn.interval_silence_ms is not None else self.interval_silence_ms
+        _dyn_stretch_ratio = dyn.s2mel_stretch_ratio if dyn.s2mel_stretch_ratio is not None else self.s2mel_stretch_ratio
+        _dyn_cfg_rate = dyn.cfm_inference_cfg_rate if dyn.cfm_inference_cfg_rate is not None else self.cfm_inference_cfg_rate
+
+        if verbose and dyn.emotion_intensity > 0:
+            debug_log(3, f"   🎛️  情緒動態: {dyn.dominant_emotion} (intensity={dyn.emotion_intensity:.3f})")
+            debug_log(3, f"      T={temperature:.3f}, silence={_dyn_silence_ms:.0f}ms, "
+                        f"stretch={_dyn_stretch_ratio:.3f}, cfg_rate={_dyn_cfg_rate:.3f}")
+
         try:
             # 2. 文本處理 — tokenize + 分段 (參考 infer_v2.py line 487-523)
             _t = time.perf_counter()
@@ -1097,7 +1125,7 @@ class IndexTTSLite:
                             latent = latent[:, :S_infer.shape[1], :]
 
                         S_infer = S_infer + latent
-                        target_lengths = (code_lens * self.s2mel_stretch_ratio).long()
+                        target_lengths = (code_lens * _dyn_stretch_ratio).long()
 
                     cond = self.s2mel.models['length_regulator'](
                         S_infer,
@@ -1115,7 +1143,7 @@ class IndexTTSLite:
                         self.character_features['style'],
                         None,
                         n_timesteps=self.cfm_n_timesteps,
-                        inference_cfg_rate=self.cfm_inference_cfg_rate
+                        inference_cfg_rate=_dyn_cfg_rate
                     )
 
                     mel = vc_target[:, :, self.character_features['ref_mel'].size(-1):]
@@ -1168,7 +1196,7 @@ class IndexTTSLite:
                 audio_output = audio_segments[0]
             else:
                 # Insert configurable silence between segments (default 200ms, upstream alignment)
-                interval_samples = int(self.interval_silence_ms * 22050 / 1000)
+                interval_samples = int(_dyn_silence_ms * 22050 / 1000)
                 silence = torch.zeros(audio_segments[0].shape[0], interval_samples)
                 parts = []
                 for i, seg in enumerate(audio_segments):

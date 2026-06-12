@@ -296,6 +296,32 @@ class IndexTTSLite:
             except Exception as e:
                 debug_log(1, f"   ⚠️  SDPA 配置失敗: {e}")
         
+        # ── 情緒推論配置（從 tts_module/config.yaml 讀取）──
+        _emo_cfg = self.cfg.get('emotion', {})
+        self.emo_max_strength = float(_emo_cfg.get('max_strength', 0.8))
+        self.emo_bias = _emo_cfg.get('emo_bias', None)
+        if self.emo_bias is not None:
+            self.emo_bias = [float(x) for x in self.emo_bias]
+        self.emo_bias_cap = float(_emo_cfg.get('emo_bias_cap', 0.8))
+        self.merge_alpha = float(_emo_cfg.get('merge_alpha', 1.0))
+
+        # ── GPT 採樣預設值 ──
+        _samp_cfg = self.cfg.get('gpt_sampling', {})
+        self.default_do_sample = bool(_samp_cfg.get('do_sample', True))
+        self.default_temperature = float(_samp_cfg.get('temperature', 0.8))
+        self.default_top_p = float(_samp_cfg.get('top_p', 1.0))
+        self.default_top_k = int(_samp_cfg.get('top_k', 50))
+        self.default_num_beams = int(_samp_cfg.get('num_beams', 1))
+        self.default_repetition_penalty = float(_samp_cfg.get('repetition_penalty', 10.0))
+        self.default_length_penalty = float(_samp_cfg.get('length_penalty', 1.0))
+
+        # ── 合成管線配置 ──
+        _synth_cfg = self.cfg.get('synthesis', {})
+        self.interval_silence_ms = float(_synth_cfg.get('interval_silence_ms', 200))
+        self.s2mel_stretch_ratio = float(_synth_cfg.get('s2mel_stretch_ratio', 1.72))
+        self.cfm_n_timesteps = int(_synth_cfg.get('cfm_n_timesteps', 25))
+        self.cfm_inference_cfg_rate = float(_synth_cfg.get('cfm_inference_cfg_rate', 0.7))
+
         # 當前加載的角色特徵
         self.current_character = None
         self.character_features = None
@@ -673,13 +699,15 @@ class IndexTTSLite:
         text: str,
         output_path: str,
         emotion_vector: Optional[List[float]] = None,
-        max_emotion_strength: float = 0.5,
+        max_emotion_strength: Optional[float] = None,
         language: str = 'en',
-        num_beams: int = 1,
-        do_sample: bool = False,
-        temperature: float = 0.0,
-        top_p: float = 1.0,
-        top_k: int = 50,
+        num_beams: Optional[int] = None,
+        do_sample: Optional[bool] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repetition_penalty: Optional[float] = None,
+        length_penalty: Optional[float] = None,
         verbose: bool = True,
         on_segment_audio=None,
         max_text_tokens_per_segment: int = 120,
@@ -688,6 +716,7 @@ class IndexTTSLite:
         """
         合成語音 — 回傳 bool，保持向後相容。
         內部委派給 _synthesize_impl()。
+        所有採樣參數預設為 None → 從 config.yaml (gpt_sampling) 讀取。
 
         Args:
             on_segment_audio: Optional callback(segment_audio_tensor, segment_index, total_segments).
@@ -702,6 +731,7 @@ class IndexTTSLite:
             emotion_vector=emotion_vector, max_emotion_strength=max_emotion_strength,
             language=language, num_beams=num_beams, do_sample=do_sample,
             temperature=temperature, top_p=top_p, top_k=top_k,
+            repetition_penalty=repetition_penalty, length_penalty=length_penalty,
             verbose=verbose, collect_timings=False,
             on_segment_audio=on_segment_audio,
             max_text_tokens_per_segment=max_text_tokens_per_segment,
@@ -714,13 +744,15 @@ class IndexTTSLite:
         text: str,
         output_path: str,
         emotion_vector: Optional[List[float]] = None,
-        max_emotion_strength: float = 0.5,
+        max_emotion_strength: Optional[float] = None,
         language: str = 'en',
-        num_beams: int = 1,
-        do_sample: bool = False,
-        temperature: float = 0.0,
-        top_p: float = 1.0,
-        top_k: int = 50,
+        num_beams: Optional[int] = None,
+        do_sample: Optional[bool] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repetition_penalty: Optional[float] = None,
+        length_penalty: Optional[float] = None,
         verbose: bool = True,
         max_text_tokens_per_segment: int = 120,
         quick_streaming_tokens: int = 0,
@@ -734,6 +766,7 @@ class IndexTTSLite:
             emotion_vector=emotion_vector, max_emotion_strength=max_emotion_strength,
             language=language, num_beams=num_beams, do_sample=do_sample,
             temperature=temperature, top_p=top_p, top_k=top_k,
+            repetition_penalty=repetition_penalty, length_penalty=length_penalty,
             verbose=verbose, collect_timings=True,
             max_text_tokens_per_segment=max_text_tokens_per_segment,
             quick_streaming_tokens=quick_streaming_tokens,
@@ -744,13 +777,15 @@ class IndexTTSLite:
         text: str,
         output_path: str,
         emotion_vector: Optional[List[float]] = None,
-        max_emotion_strength: float = 0.5,
+        max_emotion_strength: Optional[float] = None,
         language: str = 'en',
-        num_beams: int = 1,
-        do_sample: bool = False,
-        temperature: float = 0.0,
-        top_p: float = 1.0,
-        top_k: int = 50,
+        num_beams: Optional[int] = None,
+        do_sample: Optional[bool] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repetition_penalty: Optional[float] = None,
+        length_penalty: Optional[float] = None,
         verbose: bool = True,
         collect_timings: bool = False,
         on_segment_audio=None,
@@ -760,23 +795,45 @@ class IndexTTSLite:
         """
         合成語音的核心實現 (獨立引擎實現,參考 infer_v2.py 邏輯)
 
+        所有 Optional 參數為 None 時自動從 config.yaml 讀取預設值。
+
         Args:
             text: 要合成的文本
             output_path: 輸出音頻路徑
             emotion_vector: 8維情感向量
-            max_emotion_strength: 最大情感強度
+            max_emotion_strength: 最大情感強度 (None → config emotion.max_strength)
             language: 語言 ('en' 或 'zh')
             num_beams: GPT beam search 大小
-            do_sample: 是否採樣
-            temperature: 採樣溫度
+            do_sample: 是否採樣 (None → config gpt_sampling.do_sample)
+            temperature: 採樣溫度 (None → config gpt_sampling.temperature)
             top_p: Nucleus 採樣
             top_k: Top-K 採樣
+            repetition_penalty: 重複懲罰 (None → config gpt_sampling.repetition_penalty)
+            length_penalty: 長度懲罰 (None → config gpt_sampling.length_penalty)
             verbose: 是否打印詳細信息
             collect_timings: 是否收集各階段計時
 
         Returns:
             (success: bool, timings: dict) — timings 為空 dict 若 collect_timings=False
         """
+        # ── 參數 fallback：None → config 預設值 ──
+        if max_emotion_strength is None:
+            max_emotion_strength = self.emo_max_strength
+        if do_sample is None:
+            do_sample = self.default_do_sample
+        if temperature is None:
+            temperature = self.default_temperature
+        if top_p is None:
+            top_p = self.default_top_p
+        if top_k is None:
+            top_k = self.default_top_k
+        if num_beams is None:
+            num_beams = self.default_num_beams
+        if repetition_penalty is None:
+            repetition_penalty = self.default_repetition_penalty
+        if length_penalty is None:
+            length_penalty = self.default_length_penalty
+
         timings: dict[str, float] = {}
 
         def _mark(key: str, t0: float) -> float:
@@ -795,6 +852,7 @@ class IndexTTSLite:
             debug_log(3, f"   角色: {self.current_character}")
             debug_log(3, f"   文本: {text}")
             debug_log(3, f"   文本長度: {len(text)} 字符")
+            debug_log(3, f"   採樣: do_sample={do_sample}, T={temperature}, rep_penalty={repetition_penalty}")
 
         # 1. 情感向量處理
         if emotion_vector is None:
@@ -802,6 +860,17 @@ class IndexTTSLite:
 
         if len(emotion_vector) != 8:
             raise ValueError("情感向量必須是 8 維")
+
+        # 套用 emo_bias（上游情緒偏差：壓制容易出怪聲的情緒維度）
+        if self.emo_bias is not None and any(v > 0 for v in emotion_vector):
+            biased = [v * b for v, b in zip(emotion_vector, self.emo_bias)]
+            biased_sum = sum(biased)
+            if biased_sum > self.emo_bias_cap:
+                scale = self.emo_bias_cap / biased_sum
+                biased = [v * scale for v in biased]
+            emotion_vector = biased
+            if verbose:
+                debug_log(3, f"   🎭 emo_bias 套用後: {[f'{v:.3f}' for v in emotion_vector]}, sum={sum(emotion_vector):.3f}")
 
         # 歸一化情感向量
         normalized_emotion = self.normalize_emotion_vector(emotion_vector, max_emotion_strength, verbose)
@@ -956,7 +1025,7 @@ class IndexTTSLite:
                             emo_cond_emb,
                             torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
                             torch.tensor([emo_cond_emb.shape[-1]], device=self.device),
-                            alpha=1.0
+                            alpha=self.merge_alpha
                         )
 
                         # 套用 per-segment 情緒偏移
@@ -982,8 +1051,8 @@ class IndexTTSLite:
                             temperature=temperature,
                             top_p=top_p,
                             top_k=top_k,
-                            length_penalty=1.0,
-                            repetition_penalty=1.2,
+                            length_penalty=length_penalty,
+                            repetition_penalty=repetition_penalty,
                             max_generate_length=seg_max_gen_len,
                         )
                         seg_gpt_semantic_ms += (time.perf_counter() - _seg_t) * 1000
@@ -1028,7 +1097,7 @@ class IndexTTSLite:
                             latent = latent[:, :S_infer.shape[1], :]
 
                         S_infer = S_infer + latent
-                        target_lengths = (code_lens * 1.72).long()
+                        target_lengths = (code_lens * self.s2mel_stretch_ratio).long()
 
                     cond = self.s2mel.models['length_regulator'](
                         S_infer,
@@ -1045,8 +1114,8 @@ class IndexTTSLite:
                         self.character_features['ref_mel'],
                         self.character_features['style'],
                         None,
-                        n_timesteps=25,
-                        inference_cfg_rate=0.7
+                        n_timesteps=self.cfm_n_timesteps,
+                        inference_cfg_rate=self.cfm_inference_cfg_rate
                     )
 
                     mel = vc_target[:, :, self.character_features['ref_mel'].size(-1):]
@@ -1098,8 +1167,8 @@ class IndexTTSLite:
             if len(audio_segments) == 1:
                 audio_output = audio_segments[0]
             else:
-                # Insert ~9ms silence (200 samples @ 22050Hz) between segments
-                interval_samples = 200
+                # Insert configurable silence between segments (default 200ms, upstream alignment)
+                interval_samples = int(self.interval_silence_ms * 22050 / 1000)
                 silence = torch.zeros(audio_segments[0].shape[0], interval_samples)
                 parts = []
                 for i, seg in enumerate(audio_segments):

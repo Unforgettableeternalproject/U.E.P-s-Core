@@ -44,9 +44,34 @@ chunking:
 
 # 情感配置
 emotion:
-  max_strength: 0.5  # 情感強度上限 (0.0 - 1.0)，0.3 表示保留 70% 原聲
+  max_strength: 0.8  # 情感強度上限 (0.0 - 1.0)，上游建議 ≤0.8
   default: null  # 預設情感向量 (null = 使用角色原聲，也可設置為 8D 列表)
   # 例如: default: [0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.2]  # [happy, angry, sad, afraid, disgusted, melancholic, surprised, calm]
+
+  # 上游情緒偏差 (emo_bias)：壓制容易出怪聲的情緒維度
+  # [happy, angry, sad, afraid, disgusted, melancholic, surprised, calm]
+  emo_bias: [0.9375, 0.875, 1.0, 1.0, 0.9375, 0.9375, 0.6875, 0.5625]
+  emo_bias_cap: 0.8  # 當 sum(emotion * emo_bias) > cap 時，整體等比縮放
+
+  # merge_emovec 融合強度 (alpha=1.0 = 完全使用情緒條件)
+  merge_alpha: 1.0
+
+# GPT 採樣配置 (修正上游對齊)
+gpt_sampling:
+  do_sample: true          # 啟用隨機採樣 (上游 infer_v2 = True)
+  temperature: 0.8         # 採樣溫度 (上游 = 0.8; 0.0 = greedy 會壓死情緒)
+  top_p: 1.0              # Nucleus 採樣閾值
+  top_k: 50               # Top-K 採樣
+  num_beams: 1            # Beam search 數量 (1 = 不使用)
+  repetition_penalty: 10.0  # 重複懲罰 (上游 = 10.0; 之前硬編碼 1.2 太低)
+  length_penalty: 1.0      # 長度懲罰
+
+# 合成管線配置
+synthesis:
+  interval_silence_ms: 200     # 段間靜音 (毫秒)，上游 = 200ms，之前 ≈9ms 太短
+  s2mel_stretch_ratio: 1.72    # S2Mel 長度調節倍率 (可用於語速控制)
+  cfm_n_timesteps: 25          # CFM 推論步數 (越多品質越好但越慢)
+  cfm_inference_cfg_rate: 0.7  # CFM style conditioning 強度 (0.5~0.9)
 
 # 播放配置
 playback:

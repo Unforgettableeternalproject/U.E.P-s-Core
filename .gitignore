@@ -46,4 +46,16 @@ Thumbs.db
 docs/hidden/
 
 # Local
-.claude\settings.local.json
+.claude\settings.local.json.
+*.npy
+
+# Experiments - large/generated data
+experiments/breezyvoice_test/.venv/
+experiments/breezyvoice_test/BreezyVoice/
+experiments/breezyvoice_test/G2PWModel/
+experiments/breezyvoice_test/*.wav
+experiments/lora_training_data/
+experiments/index-tts-lora/.git/
+experiments/index-tts-lora/finetune_models/checkpoints/
+experiments/index-tts-lora/finetune_models/gpt.pth
+experiments/index-tts-lora/finetune_models/bpe.model

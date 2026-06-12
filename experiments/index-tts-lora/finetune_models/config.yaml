@@ -1,0 +1,81 @@
+bigvgan_checkpoint: bigvgan_generator.pth
+dataset:
+  bpe_model: bpe.model
+  mel:
+    hop_length: 256
+    mel_fmin: 0
+    n_fft: 1024
+    n_mels: 100
+    normalize: false
+    sample_rate: 24000
+    win_length: 1024
+  sample_rate: 24000
+  squeeze: false
+dvae_checkpoint: dvae.pth
+gpt:
+  condition_module:
+    attention_heads: 8
+    input_layer: conv2d2
+    linear_units: 2048
+    num_blocks: 6
+    output_size: 512
+    perceiver_mult: 2
+  condition_type: conformer_perceiver
+  emo_condition_module:
+    attention_heads: 4
+    input_layer: conv2d2
+    linear_units: 1024
+    num_blocks: 4
+    output_size: 512
+    perceiver_mult: 2
+  heads: 20
+  layers: 24
+  max_mel_tokens: 1815
+  max_text_tokens: 600
+  mel_length_compression: 1024
+  model_dim: 1280
+  number_mel_codes: 8194
+  number_text_tokens: 12000
+  start_mel_token: 8192
+  start_text_token: 0
+  stop_mel_token: 8193
+  stop_text_token: 1
+  train_solo_embeddings: false
+  use_mel_codes_as_input: true
+gpt_checkpoint: C:/Users/Bernie/source/repos/Unforgettableeternalproject/TestSeparateTTSSystem/legacy_tts/modules/tts_module/checkpoints/gpt.pth
+train:
+  data_path: C:\Users\Bernie\source\repos\Unforgettableeternalproject\TestSeparateTTSSystem\experiments\lora_training_data\processed_data
+  early_stopping_patience: 1
+  epochs: 15
+  finetune_model_dir: finetune_models
+  gradient_accumulation_steps: 4
+  lora:
+    lora_alpha: 32
+    lora_dropout: 0.1
+    r: 16
+    target_modules:
+    - attn.c_attn
+    - attn.c_proj
+    - mlp.c_fc
+    - mlp.c_proj
+  max_grad_norm: 1.0
+  max_steps_per_epoch: 150
+  optimizer:
+    learning_rate: 5.0e-05
+    loraplus_lr_ratio: 8.0
+    warmup_ratio: 0.1
+    weight_decay: 0.01
+  seed: 91
+  text_weight: 0.1
+version: '2.0'
+vqvae:
+  channels: 100
+  codebook_dim: 512
+  hidden_dim: 512
+  kernel_size: 3
+  num_layers: 2
+  num_resnet_blocks: 3
+  num_tokens: 8192
+  positional_dims: 1
+  smooth_l1_loss: true
+  use_transposed_convs: false

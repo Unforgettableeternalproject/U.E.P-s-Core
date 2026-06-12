@@ -376,53 +376,119 @@ class TextTokenizer:
     # scan forward to find a boundary, so we never cut mid-sentence.
     _quick_stream_grace_window = 30
 
+    # Step size for graduated segment targets (tokens per step)
+    _quick_stream_step = 25
+
     @staticmethod
-    def _split_first_segment_for_quick_stream(
-        segments: List[List[str]],
-        quick_streaming_tokens: int,
-        grace_window: int = 30,
+    def _try_split_segment_at_target(
+        seg: List[str],
+        target: int,
+        grace_window: int,
     ) -> List[List[str]]:
-        """Post-process: ensure the first segment is close to quick_streaming_tokens.
+        """Try to split a segment near *target* tokens at a boundary.
 
-        Strategy (never cut mid-sentence):
-          1. Scan backwards from ``quick_streaming_tokens`` for the nearest
-             boundary token (comma, period, dash).  If found, split there.
-          2. If nothing found backwards, scan *forward* up to
-             ``quick_streaming_tokens + grace_window`` for the next boundary.
-          3. If still nothing, leave the first segment as-is (don't force-cut).
-
-        This gives the "prefer ≤ limit, tolerate slightly over, never break
-        mid-clause" behaviour.
+        Returns [seg] unchanged if no suitable boundary is found, or
+        [left, right] if successfully split.  Never cuts mid-sentence.
         """
-        if not segments or quick_streaming_tokens <= 0:
-            return segments
-        first = segments[0]
-        if len(first) <= quick_streaming_tokens:
-            return segments  # already small enough
+        if len(seg) <= target:
+            return [seg]
 
         boundary = TextTokenizer._quick_boundary_tokens
         best = -1
 
-        # 1. Scan backwards from limit
-        for k in range(min(quick_streaming_tokens, len(first)) - 1, 1, -1):
-            if first[k] in boundary:
-                best = k + 1  # include the boundary token in the first chunk
+        # 1. Scan backwards from target
+        for k in range(min(target, len(seg)) - 1, 1, -1):
+            if seg[k] in boundary:
+                best = k + 1
                 break
 
-        # 2. If nothing backwards, scan forward within grace window
+        # 2. Scan forward within grace window
         if best < 0:
-            upper = min(quick_streaming_tokens + grace_window, len(first))
-            for k in range(quick_streaming_tokens, upper):
-                if first[k] in boundary:
+            upper = min(target + grace_window, len(seg))
+            for k in range(target, upper):
+                if seg[k] in boundary:
                     best = k + 1
                     break
 
-        # 3. If still nothing, don't cut — better to have a long first segment
-        #    than to break mid-sentence
-        if best <= 0 or best >= len(first):
+        # 3. No boundary found → don't force-cut
+        if best <= 0 or best >= len(seg):
+            return [seg]
+
+        return [seg[:best], seg[best:]]
+
+    @staticmethod
+    def _rebalance_segments_for_streaming(
+        segments: List[List[str]],
+        quick_streaming_tokens: int,
+        max_text_tokens_per_segment: int,
+        grace_window: int = 30,
+        step: int = 25,
+    ) -> List[List[str]]:
+        """Post-process: graduated segment sizes for smooth streaming.
+
+        Instead of only constraining the first segment, applies progressive
+        targets so segment sizes ramp up gradually::
+
+            seg 0: target = quick_streaming_tokens        (e.g. 50)
+            seg 1: target = quick_streaming_tokens + step (e.g. 75)
+            seg 2: target = quick_streaming_tokens + 2*step (e.g. 100)
+            seg N: target = max_text_tokens_per_segment   (cap, e.g. 120)
+
+        This prevents the pattern where a tiny first segment (23 tokens)
+        finishes playing long before the next large segment (117 tokens)
+        is done generating.
+        """
+        if not segments or quick_streaming_tokens <= 0:
             return segments
 
-        return [first[:best], first[best:]] + segments[1:]
+        result: List[List[str]] = []
+        seg_index = 0
+
+        for seg in segments:
+            target = min(
+                quick_streaming_tokens + seg_index * step,
+                max_text_tokens_per_segment,
+            )
+
+            if len(seg) <= target:
+                # Segment already fits the graduated target
+                result.append(seg)
+                seg_index += 1
+            else:
+                # Try to split this segment at the graduated target
+                parts = TextTokenizer._try_split_segment_at_target(
+                    seg, target, grace_window,
+                )
+                if len(parts) == 1:
+                    # Couldn't split → accept as-is
+                    result.append(seg)
+                    seg_index += 1
+                else:
+                    # Successfully split — the left part goes out, the right
+                    # part gets re-examined with the next graduated target
+                    result.append(parts[0])
+                    seg_index += 1
+                    # Feed the remainder back (may need further splitting)
+                    remainder = parts[1]
+                    while len(remainder) > 0:
+                        next_target = min(
+                            quick_streaming_tokens + seg_index * step,
+                            max_text_tokens_per_segment,
+                        )
+                        if len(remainder) <= next_target:
+                            result.append(remainder)
+                            seg_index += 1
+                            break
+                        sub = TextTokenizer._try_split_segment_at_target(
+                            remainder, next_target, grace_window,
+                        )
+                        result.append(sub[0])
+                        seg_index += 1
+                        if len(sub) == 1:
+                            break
+                        remainder = sub[1]
+
+        return result
 
     @staticmethod
     def split_segments_by_token(
@@ -518,9 +584,11 @@ class TextTokenizer:
         # This runs on the final merged result so that boundary tokens
         # (commas, periods) are guaranteed to be present in the segments.
         if quick_streaming_tokens > 0:
-            merged_segments = TextTokenizer._split_first_segment_for_quick_stream(
+            merged_segments = TextTokenizer._rebalance_segments_for_streaming(
                 merged_segments, quick_streaming_tokens,
+                max_text_tokens_per_segment=max_text_tokens_per_segment,
                 grace_window=TextTokenizer._quick_stream_grace_window,
+                step=TextTokenizer._quick_stream_step,
             )
 
         return merged_segments

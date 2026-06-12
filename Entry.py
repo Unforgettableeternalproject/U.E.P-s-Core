@@ -818,9 +818,10 @@ def _cmd_edit(engine: MemoryEngine):
     elif field == "summary":
         new_summary = Prompt.ask("[cyan]New summary[/]", default=ep.content_summary or "")
         if new_summary:
-            ep.content_summary = new_summary
-            engine.episodic._save()
-            console.print(f"[green]✓ Summary updated.[/]")
+            if engine.episodic.update_summary(eid, new_summary):
+                console.print(f"[green]✓ Summary updated.[/]")
+            else:
+                console.print("[red]Episode no longer exists.[/]")
 
 
 def _cmd_delete(engine: MemoryEngine):

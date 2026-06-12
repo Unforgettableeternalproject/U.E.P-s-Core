@@ -353,12 +353,9 @@ class KnowledgeDistillation:
 
     def _mark_episodes_dreamed(self, episodes: list[Episode]) -> None:
         """將已蒸餾的 Episode 標記為 is_dreamed=True。"""
-        for ep in episodes:
-            ep.is_dreamed = True
-
-        # 持久化（透過 episodic 的 _save）
-        self.episodic._save()
+        episode_ids = [ep.id for ep in episodes]
+        marked = self.episodic.mark_as_dreamed(episode_ids)
 
         logger.debug(
-            f"[KnowledgeDistillation] 標記 {len(episodes)} 個 Episode 為 is_dreamed"
+            f"[KnowledgeDistillation] 標記 {marked}/{len(episodes)} 個 Episode 為 is_dreamed"
         )

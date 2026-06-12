@@ -143,7 +143,7 @@ class DreamEngine:
         # 子模組
         self._pruning = GraphPruning(graph)
 
-        # LiDER 反思重播（需要 episodic + llm_fn）
+        # LiDER 反思重播（需要 episodic，llm_fn=None 時自動跳過）
         self._replay: LiDERReplay | None = None
         if episodic is not None:
             self._replay = LiDERReplay(
@@ -295,6 +295,9 @@ class DreamEngine:
             # ── 階段 4：知識蒸餾（若有 LLM）─────────────────────────
             if self._distillation is not None:
                 report.distillation = self._distillation.run()
+                # 蒸餾會在 MemoryGraph 新增 Concept 節點和 DERIVED_FROM 邊，
+                # 需要持久化以免重啟後遺失（造成 SemanticMemory 和 Graph 不一致）
+                self.graph.save()
 
             # 重置閒置計時器（防止立即重複觸發）
             self.notify_interaction()

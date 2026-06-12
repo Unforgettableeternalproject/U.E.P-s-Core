@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from echo_memory.schemas.episode import Episode
 from echo_memory.schemas.memory_context import MemoryContext
@@ -46,7 +46,7 @@ class MemoryEngine:
         device: str = "cpu",
         query_prefix: str = "为这个句子生成表示以用于检索相关文章：",
         max_episodes: int | None = None,
-        llm_fn: Any | None = None,
+        llm_fn: Callable[[str], str] | None = None,
     ):
         """
         初始化記憶引擎。
@@ -57,8 +57,8 @@ class MemoryEngine:
             device: 運行設備 (cpu/cuda)
             query_prefix: retrieval 查詢時的 prefix（bge 系列模型需要）
             max_episodes: 情節記憶上限（None 代表無限制）
-            llm_fn: LLM 呼叫函式 (prompt: str) -> str，用於知識蒸餾。
-                    若為 None，Dream Engine 的蒸餾步驟會優雅跳過。
+            llm_fn: LLM 呼叫函式 (prompt: str) -> str，用於知識蒸餾與反思重播。
+                    若為 None，Dream Engine 的蒸餾和重播步驟會優雅跳過。
         """
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)

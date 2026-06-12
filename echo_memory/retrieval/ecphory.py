@@ -190,6 +190,7 @@ class EcphoryRetrieval:
             episodes=final_episodes,
             concepts=concepts,
             similarities=similarities,
+            concept_similarities=concept_similarities,
         )
 
         logger.debug(

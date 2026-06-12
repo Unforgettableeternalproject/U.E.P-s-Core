@@ -170,6 +170,55 @@ class EpisodicMemory:
         """返回情節總數"""
         return len(self._episodes)
 
+    def mark_as_dreamed(self, episode_ids: list[str]) -> int:
+        """
+        將指定的 Episode 標記為已處理（is_dreamed=True）並持久化。
+
+        供 KnowledgeDistillation / LiDERReplay 等外部模組呼叫，
+        取代直接存取 _save() 私有方法。
+
+        Args:
+            episode_ids: 要標記的 Episode ID 列表
+
+        Returns:
+            實際標記的數量（排除不存在的 ID）
+        """
+        marked = 0
+        for ep_id in episode_ids:
+            ep = self._episodes.get(ep_id)
+            if ep is not None and not ep.is_dreamed:
+                ep.is_dreamed = True
+                marked += 1
+
+        if marked > 0:
+            self._save()
+            logger.debug(
+                f"[EpisodicMemory] 標記 {marked}/{len(episode_ids)} 個 Episode 為 is_dreamed"
+            )
+
+        return marked
+
+    def update_salience(self, episode_id: str, new_salience: float) -> bool:
+        """
+        更新指定 Episode 的顯著性分數並持久化。
+
+        供 LiDERReplay 等外部模組呼叫，取代直接修改物件屬性。
+
+        Args:
+            episode_id: Episode ID
+            new_salience: 新的顯著性分數 (0-1)
+
+        Returns:
+            True 若成功更新，False 若 Episode 不存在
+        """
+        ep = self._episodes.get(episode_id)
+        if ep is None:
+            return False
+
+        ep.salience_score = min(1.0, max(0.0, new_salience))
+        self._save()
+        return True
+
     def clear(self):
         """清空所有情節記憶（測試用）"""
         self._episodes.clear()

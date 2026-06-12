@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -162,7 +163,8 @@ class LiDERReplay:
             ep = candidates[idx]
 
             # 更新 Episode 的顯著性（反思後可能調高或調低）
-            ep.salience_score = (ep.salience_score + importance) / 2
+            new_salience = (ep.salience_score + importance) / 2
+            self.episodic.update_salience(ep.id, new_salience)
 
             # 建立/強化相關 Episode 之間的邊
             for rel_idx in related_indices:
@@ -197,12 +199,11 @@ class LiDERReplay:
                     )
                     report.edges_strengthened += 1
                 else:
-                    # 新建反思邊（用 PRECEDES 類型，因為反思發現的關聯也是時序性的）
-                    import time
+                    # 新建反思邊（語義關聯，非時序關係）
                     self.graph.graph.add_edge(
                         ep.id,
                         rel_ep.id,
-                        edge_type="PRECEDES",
+                        edge_type="REPLAY_RELATED",
                         weight=importance * 0.6,
                         frequency=1,
                         created_at=time.time(),
@@ -276,6 +277,5 @@ class LiDERReplay:
         return data.get("reflections", [])
 
     def _mark_episodes_dreamed(self, episodes: list[Episode]) -> None:
-        for ep in episodes:
-            ep.is_dreamed = True
-        self.episodic._save()
+        episode_ids = [ep.id for ep in episodes]
+        self.episodic.mark_as_dreamed(episode_ids)

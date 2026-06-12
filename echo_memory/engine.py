@@ -138,7 +138,7 @@ class MemoryEngine:
 
     @property
     def retrieval(self):
-        """延遲加載檢索引擎（含查詢向量快取 + 程序搜索）"""
+        """延遲加載檢索引擎（含查詢向量快取 + 程序搜索 + Entity 收集）"""
         if self._retrieval is None:
             from echo_memory.retrieval.ecphory import EcphoryRetrieval
             self._retrieval = EcphoryRetrieval(
@@ -146,6 +146,7 @@ class MemoryEngine:
                 semantic=self.semantic,
                 working=self.working,
                 procedural=self.procedural,
+                entity_store=self.entity_store,
             )
         return self._retrieval
 

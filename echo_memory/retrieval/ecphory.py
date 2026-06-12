@@ -48,11 +48,13 @@ class EcphoryRetrieval:
         semantic: SemanticMemory,
         working: WorkingMemory | None = None,
         procedural: Any | None = None,  # ProceduralMemory（延遲導入）
+        entity_store: Any | None = None,  # EntityStore（延遲導入）
     ):
         self.episodic = episodic
         self.semantic = semantic
         self.working = working  # 若提供，啟用查詢向量快取
         self.procedural = procedural  # 若提供，檢索時一併搜索程序
+        self.entity_store = entity_store  # 若提供，沿 MENTIONS 邊收集 Entity
 
     def retrieve(
         self,
@@ -206,10 +208,16 @@ class EcphoryRetrieval:
         episodes.sort(key=lambda ep: similarities.get(ep.id, 0.0), reverse=True)
         final_episodes = episodes[:top_k]
 
+        # Step 6: 沿 MENTIONS 邊收集 Entity（若有 EntityStore）
+        entities = []
+        if self.entity_store is not None:
+            entities = self._collect_entities(final_episodes)
+
         # 構建 MemoryContext
         context = MemoryContext(
             episodes=final_episodes,
             concepts=concepts,
+            entities=entities,
             procedures=procedures,
             similarities=similarities,
             concept_similarities=concept_similarities,
@@ -218,10 +226,42 @@ class EcphoryRetrieval:
         logger.debug(
             f"[EcphoryRetrieval] 檢索完成 - "
             f"Episodes: {len(final_episodes)}, Concepts: {len(concepts)}, "
-            f"Procedures: {len(procedures)}"
+            f"Entities: {len(entities)}, Procedures: {len(procedures)}"
         )
 
         return context
+
+    def _collect_entities(self, episodes: list) -> list:
+        """
+        從檢索到的 Episode 沿 MENTIONS 邊收集關聯的 Entity。
+
+        去重：同一 Entity 被多個 Episode 提及時只出現一次。
+
+        Returns:
+            Entity 列表（按 mention_count 降序）
+        """
+        graph = self.episodic.graph
+        seen_ids: set[str] = set()
+        entities = []
+
+        for ep in episodes:
+            try:
+                mentioned = graph.get_episode_entities(ep.id)
+            except Exception:
+                continue
+
+            for ent_id, _weight in mentioned:
+                if ent_id in seen_ids:
+                    continue
+                seen_ids.add(ent_id)
+
+                ent = self.entity_store.get(ent_id)
+                if ent is not None:
+                    entities.append(ent)
+
+        # 按 mention_count 降序（最常被提及的排前面）
+        entities.sort(key=lambda e: e.mention_count, reverse=True)
+        return entities[:10]  # 上限 10 個，避免噪音過多
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 語義概念檢索

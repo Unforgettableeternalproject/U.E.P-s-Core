@@ -27,7 +27,12 @@
       "Bash(ls *)",
       "Bash(cat *)",
       "Bash(cd *)",
-      "mcp__open-notebook__update_note"
+      "mcp__mempal__mempal_status",
+      "mcp__mempal__mempal_search",
+      "Bash(PYTHONHASHSEED=1 python -m pytest tests/ --ignore=tests/benchmark -q --tb=line)",
+      "Bash(PYTHONHASHSEED=9 python -m pytest tests/ --ignore=tests/benchmark -q --tb=line)",
+      "Bash(PYTHONHASHSEED=1 python -m pytest tests/ --ignore=tests/benchmark -q --no-header)",
+      "Bash(PYTHONHASHSEED=9 python -m pytest tests/ --ignore=tests/benchmark -q --no-header)"
     ]
   }
 }

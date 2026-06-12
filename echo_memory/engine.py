@@ -242,6 +242,17 @@ class MemoryEngine:
             "error": report.error,
         }
 
+        # 重播報告
+        if report.replay:
+            r = report.replay
+            result["replay"] = {
+                "episodes_replayed": r.episodes_replayed,
+                "edges_strengthened": r.edges_strengthened,
+                "edges_created": r.edges_created,
+                "avg_importance": r.avg_importance,
+                "skipped_reason": r.skipped_reason,
+            }
+
         # 蒸餾報告
         if report.distillation:
             d = report.distillation

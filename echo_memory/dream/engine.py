@@ -29,6 +29,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from echo_memory.dream.distillation import DistillationReport, KnowledgeDistillation
 from echo_memory.dream.pruning import GraphPruning, PruningReport
+from echo_memory.dream.replay import LiDERReplay, ReplayReport
 from echo_memory.storage.episodic import EpisodicMemory
 from echo_memory.storage.graph import MemoryGraph
 from echo_memory.storage.semantic import SemanticMemory
@@ -44,6 +45,7 @@ class DreamReport:
     finished_at: str = ""
     triggered_by: str = "manual"  # "idle" | "cron" | "manual"
     pruning: PruningReport | None = None
+    replay: ReplayReport | None = None
     distillation: DistillationReport | None = None
     edges_updated: int = 0
     error: str | None = None
@@ -67,6 +69,9 @@ class DreamReport:
 
         if self.pruning:
             lines.append(f"  {self.pruning.summary()}")
+
+        if self.replay:
+            lines.append(f"  {self.replay.summary()}")
 
         if self.distillation:
             lines.append(f"  {self.distillation.summary()}")
@@ -137,6 +142,15 @@ class DreamEngine:
 
         # 子模組
         self._pruning = GraphPruning(graph)
+
+        # LiDER 反思重播（需要 episodic + llm_fn）
+        self._replay: LiDERReplay | None = None
+        if episodic is not None:
+            self._replay = LiDERReplay(
+                episodic=episodic,
+                graph=graph,
+                llm_fn=llm_fn,
+            )
 
         # 知識蒸餾（需要 episodic + semantic + llm_fn，任一缺失則降級跳過）
         self._distillation: KnowledgeDistillation | None = None
@@ -274,7 +288,11 @@ class DreamEngine:
             # ── 階段 2：圖譜修剪 ──────────────────────────────────────
             report.pruning = self._pruning.run()
 
-            # ── 階段 3：知識蒸餾（若有 LLM）─────────────────────────
+            # ── 階段 3：LiDER 反思重播（若有 LLM）──────────────────
+            if self._replay is not None:
+                report.replay = self._replay.run()
+
+            # ── 階段 4：知識蒸餾（若有 LLM）─────────────────────────
             if self._distillation is not None:
                 report.distillation = self._distillation.run()
 

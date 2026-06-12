@@ -14,7 +14,8 @@ KnowledgeDistillation - 知識蒸餾管線
   - LLM 透過 Callable 注入（不綁死特定 provider）
   - 蒸餾 prompt 輸出 JSON，結構化解析
   - 單次蒸餾上限：MAX_EPISODES_PER_BATCH（避免 token 爆炸）
-  - 已蒸餾的 Episode 會被標記 is_dreamed=True（避免重複處理）
+  - 蒸餾成功時記錄處理過的 Episode ID（由 DreamEngine 統一標記 is_dreamed）
+  - 空結果/全失敗時不記錄，允許下一輪重試
 """
 
 from __future__ import annotations

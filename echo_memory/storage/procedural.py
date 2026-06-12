@@ -98,6 +98,10 @@ class ProceduralMemory:
             existing.last_used = datetime.now(timezone.utc)
             if procedure.metadata:
                 existing.metadata.update(procedure.metadata)
+            # Major #3：合併新來源 Episode
+            for ep_id in procedure.source_episode_ids:
+                if ep_id not in existing.source_episode_ids:
+                    existing.source_episode_ids.append(ep_id)
             proc = existing
         else:
             self._procedures[procedure.name] = procedure

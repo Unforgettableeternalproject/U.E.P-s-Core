@@ -223,8 +223,8 @@ class EntityExtractor:
                 name=name,
                 entity_type="other",  # 規則提取無法判斷類型
                 description="",
-                mention_count=1,
-                source_episode_ids=[episode_id] if episode_id else [],
+                mention_count=0,  # Major #2：由 increment_mention 統一負責
+                source_episode_ids=[],  # 同上
                 first_seen=now,
                 last_seen=now,
             )

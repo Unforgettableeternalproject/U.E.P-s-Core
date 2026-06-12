@@ -7,7 +7,7 @@ LiDER Full Replay — LLM 驅動的反思重播
   1. 取高顯著性未重播 Episode
   2. LLM 反思：生成摘要 + 識別與其他 Episode 的關聯
   3. 更新圖譜邊權重（反思後的邊更強）
-  4. 標記 is_dreamed=True
+  4. 記錄處理過的 Episode ID（由 DreamEngine 統一標記 is_dreamed）
   5. 無 LLM 時優雅降級
 
 Dream 完整週期（整合後）：

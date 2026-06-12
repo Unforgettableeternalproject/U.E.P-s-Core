@@ -351,13 +351,32 @@ class DreamEngine:
             self.graph.save()
 
             # ── 統一標記 is_dreamed（所有階段結束後）──────────────────
-            # Critical #1 修復：不再由 Replay/Distillation 各自標記，
-            # 避免 Replay 先標記導致同一週期蒸餾拿不到 Episode
+            #
+            # 標記策略（防止 Replay 成功但蒸餾空結果時永久鎖死 Episode）：
+            #
+            #   1. 蒸餾有產出 → 標記蒸餾處理過的 + Replay 處理過的
+            #   2. 蒸餾未啟用（self._distillation is None）→ 標記 Replay 的
+            #   3. 蒸餾啟用但空結果 → **都不標記**，下一輪 Replay+蒸餾都會重試
+            #
             dreamed_ids: set[str] = set()
-            if report.replay and report.replay._replayed_episode_ids:
-                dreamed_ids.update(report.replay._replayed_episode_ids)
-            if report.distillation and report.distillation._distilled_episode_ids:
-                dreamed_ids.update(report.distillation._distilled_episode_ids)
+
+            distillation_produced = (
+                report.distillation is not None
+                and (report.distillation.concepts_created > 0
+                     or report.distillation.concepts_updated > 0)
+            )
+
+            if distillation_produced:
+                # 蒸餾成功 → 標記蒸餾和重播處理過的 Episode
+                if report.distillation and report.distillation._distilled_episode_ids:
+                    dreamed_ids.update(report.distillation._distilled_episode_ids)
+                if report.replay and report.replay._replayed_episode_ids:
+                    dreamed_ids.update(report.replay._replayed_episode_ids)
+            elif self._distillation is None:
+                # 蒸餾不適用（沒有 distillation 子模組）→ Replay 可以標記
+                if report.replay and report.replay._replayed_episode_ids:
+                    dreamed_ids.update(report.replay._replayed_episode_ids)
+            # else: 蒸餾啟用但空結果 → 不標記，下一輪重試
 
             if dreamed_ids and self._episodic_ref is not None:
                 self._episodic_ref.mark_as_dreamed(list(dreamed_ids))

@@ -46,6 +46,7 @@ class MemoryEngine:
         device: str = "cpu",
         query_prefix: str = "为这个句子生成表示以用于检索相关文章：",
         max_episodes: int | None = None,
+        llm_fn: Any | None = None,
     ):
         """
         初始化記憶引擎。
@@ -56,6 +57,8 @@ class MemoryEngine:
             device: 運行設備 (cpu/cuda)
             query_prefix: retrieval 查詢時的 prefix（bge 系列模型需要）
             max_episodes: 情節記憶上限（None 代表無限制）
+            llm_fn: LLM 呼叫函式 (prompt: str) -> str，用於知識蒸餾。
+                    若為 None，Dream Engine 的蒸餾步驟會優雅跳過。
         """
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
@@ -64,6 +67,7 @@ class MemoryEngine:
         self.device = device
         self.query_prefix = query_prefix
         self.max_episodes = max_episodes
+        self._llm_fn = llm_fn
 
         # 延遲導入以加快啟動速度
         self._episodic = None
@@ -217,6 +221,9 @@ class MemoryEngine:
             config = get_config()
             self._dream_engine = DreamEngine(
                 graph=self.episodic.graph,
+                episodic=self.episodic,
+                semantic=self.semantic,
+                llm_fn=self._llm_fn,
                 idle_minutes=config.dream_idle_minutes,
                 cron_schedule=config.dream_cron,
                 enable_idle=False,  # 手動調用時不啟用自動觸發
@@ -226,13 +233,26 @@ class MemoryEngine:
         report = self._dream_engine.dream_now(triggered_by=triggered_by)
         logger.info(f"[MemoryEngine] Dream 完成 - {report.duration_seconds:.1f}s")
 
-        return {
+        result = {
             "triggered_by": report.triggered_by,
             "duration_seconds": report.duration_seconds,
             "edges_updated": report.edges_updated,
             "edges_pruned": report.pruning.edges_pruned if report.pruning else 0,
             "error": report.error,
         }
+
+        # 蒸餾報告
+        if report.distillation:
+            d = report.distillation
+            result["distillation"] = {
+                "episodes_scanned": d.episodes_scanned,
+                "concepts_created": d.concepts_created,
+                "concepts_updated": d.concepts_updated,
+                "edges_created": d.edges_created,
+                "skipped_reason": d.skipped_reason,
+            }
+
+        return result
 
     # ─── 輔助方法 ────────────────────────────────────────────────────────────
 

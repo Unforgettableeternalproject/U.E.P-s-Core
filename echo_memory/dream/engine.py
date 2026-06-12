@@ -21,13 +21,17 @@ import logging
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Callable
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
+from echo_memory.dream.distillation import DistillationReport, KnowledgeDistillation
 from echo_memory.dream.pruning import GraphPruning, PruningReport
+from echo_memory.storage.episodic import EpisodicMemory
 from echo_memory.storage.graph import MemoryGraph
+from echo_memory.storage.semantic import SemanticMemory
 
 logger = logging.getLogger("echo_memory.dream")
 
@@ -40,6 +44,7 @@ class DreamReport:
     finished_at: str = ""
     triggered_by: str = "manual"  # "idle" | "cron" | "manual"
     pruning: PruningReport | None = None
+    distillation: DistillationReport | None = None
     edges_updated: int = 0
     error: str | None = None
 
@@ -62,6 +67,9 @@ class DreamReport:
 
         if self.pruning:
             lines.append(f"  {self.pruning.summary()}")
+
+        if self.distillation:
+            lines.append(f"  {self.distillation.summary()}")
 
         if self.edges_updated > 0:
             lines.append(f"  權重更新: {self.edges_updated} 條邊")
@@ -93,6 +101,9 @@ class DreamEngine:
     def __init__(
         self,
         graph: MemoryGraph,
+        episodic: EpisodicMemory | None = None,
+        semantic: SemanticMemory | None = None,
+        llm_fn: Callable[[str], str] | None = None,
         idle_minutes: int = 30,
         cron_schedule: str = "0 3 * * *",  # 每日凌晨 3 點
         enable_idle: bool = True,
@@ -100,9 +111,12 @@ class DreamEngine:
     ):
         """
         初始化 Dream Engine。
-        
+
         Args:
             graph: MemoryGraph 實例
+            episodic: EpisodicMemory 實例（蒸餾需要）
+            semantic: SemanticMemory 實例（蒸餾需要）
+            llm_fn: LLM 呼叫函式（蒸餾需要，None 則跳過蒸餾）
             idle_minutes: 閒置觸發時間（分鐘）
             cron_schedule: Cron 表達式（分 時 日 月 週）
             enable_idle: 是否啟用閒置觸發
@@ -124,10 +138,21 @@ class DreamEngine:
         # 子模組
         self._pruning = GraphPruning(graph)
 
+        # 知識蒸餾（需要 episodic + semantic + llm_fn，任一缺失則降級跳過）
+        self._distillation: KnowledgeDistillation | None = None
+        if episodic is not None and semantic is not None:
+            self._distillation = KnowledgeDistillation(
+                episodic=episodic,
+                semantic=semantic,
+                graph=graph,
+                llm_fn=llm_fn,
+            )
+
         logger.info(
             f"[DreamEngine] 初始化完成 - "
             f"閒置觸發: {idle_minutes}min, "
-            f"Cron: {cron_schedule}"
+            f"Cron: {cron_schedule}, "
+            f"蒸餾: {'✓' if self._distillation else '✗'}"
         )
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -248,6 +273,10 @@ class DreamEngine:
 
             # ── 階段 2：圖譜修剪 ──────────────────────────────────────
             report.pruning = self._pruning.run()
+
+            # ── 階段 3：知識蒸餾（若有 LLM）─────────────────────────
+            if self._distillation is not None:
+                report.distillation = self._distillation.run()
 
             # 重置閒置計時器（防止立即重複觸發）
             self.notify_interaction()

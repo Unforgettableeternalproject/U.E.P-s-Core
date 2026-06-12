@@ -901,6 +901,11 @@ class IndexTTSLite:
             for seg_idx, seg_tokens in enumerate(segments):
                 if verbose and num_segments > 1:
                     debug_log(3, f"   ── 段落 {seg_idx + 1}/{num_segments} ──")
+                    # Show decoded segment text for debugging
+                    seg_preview = "".join(seg_tokens).replace("▁", " ").strip()
+                    if len(seg_preview) > 80:
+                        seg_preview = seg_preview[:77] + "..."
+                    debug_log(3, f"      📝 \"{seg_preview}\"")
 
                 text_tokens = self.tokenizer.convert_tokens_to_ids(seg_tokens)
                 text_tokens = torch.tensor(text_tokens, dtype=torch.int32, device=self.device).unsqueeze(0)

@@ -352,6 +352,7 @@ class MemoryEngine:
             "total_episodes": self.episodic.count(),
             "total_concepts": self.semantic.count(),
             "total_procedures": self.procedural.count(),
+            "total_entities": self.entity_store.count(),
             "working_cache_size": len(self.working._cache),
         }
 
@@ -361,4 +362,5 @@ class MemoryEngine:
         self.episodic.clear()
         self.semantic.clear()
         self.procedural.clear()
+        self.entity_store.clear()
         self.working.clear()

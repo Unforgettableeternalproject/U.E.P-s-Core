@@ -7,6 +7,7 @@ import shutil
 import pytest
 
 from echo_memory import MemoryEngine
+from echo_memory.schemas.entity import Entity
 
 
 @pytest.fixture
@@ -85,6 +86,7 @@ def test_stats(temp_storage):
 
     stats = engine.get_stats()
     assert stats["total_episodes"] == 0
+    assert stats["total_entities"] == 0
 
     engine.store_episode(
         user_input="test",
@@ -94,3 +96,14 @@ def test_stats(temp_storage):
 
     stats = engine.get_stats()
     assert stats["total_episodes"] == 1
+
+
+def test_clear_all_clears_entities(temp_storage):
+    """clear_all 應清除實體記憶及其持久化資料。"""
+    engine = MemoryEngine(storage_path=temp_storage)
+    engine.entity_store.upsert(Entity(name="Bernie", entity_type="person"))
+
+    engine.clear_all()
+
+    assert engine.entity_store.count() == 0
+    assert not (temp_storage / "entities" / "entities.json").exists()

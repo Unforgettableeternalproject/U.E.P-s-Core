@@ -7,6 +7,7 @@
       "mcp__open-notebook__create_note",
       "mcp__open-notebook__search",
       "Read(//c/Users/Bernie/.claude/**)",
+
       "Edit(**/*.py)",
       "Edit(**/*.md)",
       "Edit(**/*.yml)",
@@ -17,6 +18,7 @@
       "Edit(.env.example)",
       "Write(tests/**)",
       "Write(.github/**)",
+
       "Bash(git *)",
       "Bash(gh *)",
       "Bash(pytest *)",
@@ -26,13 +28,7 @@
       "Bash(find *)",
       "Bash(ls *)",
       "Bash(cat *)",
-      "Bash(cd *)",
-      "mcp__mempal__mempal_status",
-      "mcp__mempal__mempal_search",
-      "Bash(PYTHONHASHSEED=1 python -m pytest tests/ --ignore=tests/benchmark -q --tb=line)",
-      "Bash(PYTHONHASHSEED=9 python -m pytest tests/ --ignore=tests/benchmark -q --tb=line)",
-      "Bash(PYTHONHASHSEED=1 python -m pytest tests/ --ignore=tests/benchmark -q --no-header)",
-      "Bash(PYTHONHASHSEED=9 python -m pytest tests/ --ignore=tests/benchmark -q --no-header)"
+      "Bash(cd *)"
     ]
   }
 }

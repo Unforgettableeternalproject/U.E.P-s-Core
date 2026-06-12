@@ -51,7 +51,12 @@
       "Bash(pip install *)",
       "Bash(pip list *)",
       "Bash(C:/Users/Bernie/source/repos/Unforgettableeternalproject/U.E.P-s-Core/env/Scripts/pip.exe list *)",
-      "Bash(chmod +w legacy_tts/modules/tts_module/checkpoints/config.yaml)"
+      "Bash(chmod +w legacy_tts/modules/tts_module/checkpoints/config.yaml)",
+      "Bash(git log *)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:pypi.org)",
+      "WebFetch(domain:spacy.io)",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   }
 }

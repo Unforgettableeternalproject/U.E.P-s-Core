@@ -70,6 +70,7 @@ def build_legacy_session(
     device: str | None = "cuda",
     use_fp16: bool = True,
     use_cuda_kernel: bool = True,
+    use_accel: bool = False,
     playback: bool = True,
 ) -> TTSInteractiveSession:
     root = Path(project_root or Path(__file__).resolve().parent)
@@ -78,6 +79,7 @@ def build_legacy_session(
         device=device,
         use_fp16=use_fp16,
         use_cuda_kernel=use_cuda_kernel,
+        use_accel=use_accel,
     )
     resolved_output = Path(output_dir)
     if not resolved_output.is_absolute():
@@ -86,12 +88,13 @@ def build_legacy_session(
     return TTSInteractiveSession(backend=backend, output_dir=resolved_output, player=player)
 
 
-def run_shell(device: str | None, use_fp16: bool, use_cuda_kernel: bool, playback: bool) -> int:
+def run_shell(device: str | None, use_fp16: bool, use_cuda_kernel: bool, use_accel: bool, playback: bool) -> int:
     session = build_legacy_session(
         project_root=Path(__file__).resolve().parent,
         device=device,
         use_fp16=use_fp16,
         use_cuda_kernel=use_cuda_kernel,
+        use_accel=use_accel,
         playback=playback,
     )
     shell = InteractiveShell(session=session, write=console.print)
@@ -115,12 +118,13 @@ def run_shell(device: str | None, use_fp16: bool, use_cuda_kernel: bool, playbac
     return 0
 
 
-def run_profile(text: str, device: str | None, use_fp16: bool, use_cuda_kernel: bool, repeat: int) -> int:
+def run_profile(text: str, device: str | None, use_fp16: bool, use_cuda_kernel: bool, use_accel: bool, repeat: int) -> int:
     session = build_legacy_session(
         project_root=Path(__file__).resolve().parent,
         device=device,
         use_fp16=use_fp16,
         use_cuda_kernel=use_cuda_kernel,
+        use_accel=use_accel,
         playback=False,
     )
 
@@ -169,12 +173,14 @@ def main() -> int:
     shell_cmd.add_argument("--no-fp16", action="store_true")
     shell_cmd.add_argument("--no-cuda-kernel", action="store_true")
     shell_cmd.add_argument("--no-playback", action="store_true", help="Generate on say without audio playback")
+    shell_cmd.add_argument("--accel", action="store_true", help="Enable AccelInferenceEngine (CUDA Graph + Flash Attention)")
 
     profile_cmd = subparsers.add_parser("profile", help="Run profiled synthesis with stage-level timing")
     profile_cmd.add_argument("--text", required=True, help="Text to synthesize")
     profile_cmd.add_argument("--device", default="cuda")
     profile_cmd.add_argument("--no-fp16", action="store_true")
     profile_cmd.add_argument("--no-cuda-kernel", action="store_true")
+    profile_cmd.add_argument("--accel", action="store_true", help="Enable AccelInferenceEngine (CUDA Graph + Flash Attention)")
     profile_cmd.add_argument("--repeat", type=int, default=1, help="Number of synthesis runs (for averaging)")
 
     args = parser.parse_args()
@@ -195,6 +201,7 @@ def main() -> int:
             device=args.device,
             use_fp16=not args.no_fp16,
             use_cuda_kernel=not args.no_cuda_kernel,
+            use_accel=args.accel,
             playback=not args.no_playback,
         )
     if args.command == "profile":
@@ -203,6 +210,7 @@ def main() -> int:
             device=args.device,
             use_fp16=not args.no_fp16,
             use_cuda_kernel=not args.no_cuda_kernel,
+            use_accel=args.accel,
             repeat=args.repeat,
         )
     raise ValueError(f"Unknown command: {args.command}")

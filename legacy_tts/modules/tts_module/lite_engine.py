@@ -83,21 +83,24 @@ class IndexTTSLite:
         model_dir: str = "checkpoints",
         use_fp16: bool = True,
         device: Optional[str] = None,
-        use_cuda_kernel: bool = False
+        use_cuda_kernel: bool = False,
+        use_accel: bool = False,
     ):
         """
         初始化精簡推論引擎
-        
+
         Args:
             cfg_path: 配置文件路徑
             model_dir: 模型目錄
             use_fp16: 是否使用半精度
             device: 設備 (None=自動檢測)
             use_cuda_kernel: 是否使用 CUDA kernel (需要 CUDA Toolkit)
+            use_accel: 是否啟用加速引擎 (CUDA Graph + Flash Attention + Paged KV Cache)
         """
         self.model_dir = model_dir
         self.use_fp16 = use_fp16
         self.use_cuda_kernel = use_cuda_kernel
+        self.use_accel = use_accel
         
         # 設置設備
         if device is None:
@@ -228,7 +231,9 @@ class IndexTTSLite:
         _t0 = time.perf_counter()
         gpt_path = os.path.join(self.model_dir, self.cfg.gpt_checkpoint)
         # 使用字典展開來傳遞所有 GPT 配置參數(包括嵌套的 condition_module 等)
-        self.gpt = UnifiedVoice(**self.cfg.gpt).to(self.device)
+        gpt_kwargs = dict(self.cfg.gpt)
+        gpt_kwargs['use_accel'] = self.use_accel
+        self.gpt = UnifiedVoice(**gpt_kwargs).to(self.device)
 
         self.gpt.load_state_dict(torch.load(gpt_path, map_location=self.device, weights_only=True))
 
@@ -296,19 +301,20 @@ class IndexTTSLite:
                 )
             except Exception as e:
                 debug_log(1, f"   ⚠️  S2Mel 量化失敗，回退: {e}")
-        # 🚀 精準 torch.compile: 只編譯 CFM estimator (DiT)
-        # S2Mel 佔 12% 時間，compile 可壓 20-30%
-        # 需要 Triton（Windows + 新 GPU 架構可能不相容，自動降級）
-        if hasattr(self.s2mel, 'enable_torch_compile'):
-            try:
-                import importlib
-                if importlib.util.find_spec("triton") is not None:
-                    debug_log(2, "   ⚡ 對 S2Mel CFM estimator 應用 torch.compile (dynamic)")
+        # S2Mel torch.compile: 在 sm_120 (RTX 50 系列) + triton-windows 上
+        # inductor 會產生錯誤結果 (dynamic=True) 或大幅變慢 (static/reduce-overhead)。
+        # S2Mel 僅佔 12% 時間，compile 收益不足以抵消風險，預設關閉。
+        # 若日後 triton-windows 修正 sm_120 支援，可透過 config.yaml 啟用：
+        #   advanced_optimization.compile_s2mel: true
+        if self.cfg.get('advanced_optimization', {}).get('compile_s2mel', False):
+            if hasattr(self.s2mel, 'enable_torch_compile'):
+                try:
+                    debug_log(2, "   ⚡ 對 S2Mel CFM estimator 應用 torch.compile")
                     self.s2mel.enable_torch_compile()
-                else:
-                    debug_log(2, "   ℹ️  Triton 未安裝，跳過 S2Mel torch.compile")
-            except Exception as e:
-                debug_log(1, f"   ⚠️  S2Mel CFM torch.compile 失敗，回退: {e}")
+                except Exception as e:
+                    debug_log(1, f"   ⚠️  S2Mel CFM torch.compile 失敗，回退: {e}")
+        else:
+            debug_log(2, "   ℹ️  S2Mel torch.compile 已停用 (sm_120 相容性)")
 
         self._init_timings["s2mel_ms"] = (time.perf_counter() - _t0) * 1000
         debug_log(3, f"      ✓ S2Mel 加載完成: {s2mel_path}")
@@ -814,10 +820,12 @@ class IndexTTSLite:
                 # 6. BigVGAN 生成波形
                 if verbose:
                     debug_log(3, f"   [4/4] BigVGAN 生成中...")
+                _seg_t = time.perf_counter()  # 重設起點，排除 verbose log 開銷
 
                 with torch.no_grad():
-                    seg_audio = self.bigvgan(mel.float()).squeeze(0).cpu()
+                    seg_audio_gpu = self.bigvgan(mel.float()).squeeze(0)
                 seg_vocoder_ms += (time.perf_counter() - _seg_t) * 1000
+                seg_audio = seg_audio_gpu.cpu()  # D2H transfer 不計入 vocoder 時間
 
                 audio_segments.append(seg_audio)
 

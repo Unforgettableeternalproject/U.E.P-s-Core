@@ -20,6 +20,7 @@ class LegacyIndexTTS2Backend:
         device: str | None = "cuda",
         use_fp16: bool = True,
         use_cuda_kernel: bool = True,
+        use_accel: bool = False,
         emotion_vector: Sequence[float] | None = None,
     ):
         self.paths = paths
@@ -27,6 +28,7 @@ class LegacyIndexTTS2Backend:
         self.device = device
         self.use_fp16 = use_fp16
         self.use_cuda_kernel = use_cuda_kernel
+        self.use_accel = use_accel
         self.emotion_vector = list(emotion_vector) if emotion_vector else None
         self.engine: Any | None = None
         self.loaded = False
@@ -47,6 +49,7 @@ class LegacyIndexTTS2Backend:
             use_fp16=self.use_fp16,
             device=self.device,
             use_cuda_kernel=self.use_cuda_kernel,
+            use_accel=self.use_accel,
         )
         self.engine.load_character(self.paths.character_path)
         self.loaded = True

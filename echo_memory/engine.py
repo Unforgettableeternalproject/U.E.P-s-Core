@@ -119,12 +119,13 @@ class MemoryEngine:
 
     @property
     def retrieval(self):
-        """延遲加載檢索引擎"""
+        """延遲加載檢索引擎（含查詢向量快取）"""
         if self._retrieval is None:
             from echo_memory.retrieval.ecphory import EcphoryRetrieval
             self._retrieval = EcphoryRetrieval(
                 episodic=self.episodic,
                 semantic=self.semantic,
+                working=self.working,
             )
         return self._retrieval
 

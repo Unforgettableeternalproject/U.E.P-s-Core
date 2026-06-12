@@ -739,8 +739,8 @@ def _cmd_search(engine: MemoryEngine, config):
             top_k=10, min_similarity=0.2,
         )
         if not context.is_empty():
-            for i, ep in enumerate(context.episodes):
-                sim = context.episode_similarities[i] if i < len(context.episode_similarities) else 0
+            for ep in context.episodes:
+                sim = context.similarities.get(ep.id, 0.0)
                 results.append(("semantic", ep, sim))
 
     # 文字搜尋（簡單 substring match）

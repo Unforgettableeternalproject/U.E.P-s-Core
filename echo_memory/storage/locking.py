@@ -10,6 +10,7 @@ from typing import BinaryIO, Iterator
 
 _LOCKS_GUARD = threading.Lock()
 _THREAD_LOCKS: dict[str, threading.RLock] = {}
+_LOCK_STATE = threading.local()
 
 
 def _thread_lock(path: Path) -> threading.RLock:
@@ -57,8 +58,21 @@ def storage_lock(storage_path: str | Path, timeout: float = 30.0) -> Iterator[No
     storage.mkdir(parents=True, exist_ok=True)
     lock_path = storage / ".echo-memory.lock"
     lock = _thread_lock(lock_path)
+    key = str(lock_path.resolve()).casefold()
 
     with lock:
+        depths = getattr(_LOCK_STATE, "depths", None)
+        if depths is None:
+            depths = {}
+            _LOCK_STATE.depths = depths
+        if depths.get(key, 0) > 0:
+            depths[key] += 1
+            try:
+                yield
+            finally:
+                depths[key] -= 1
+            return
+
         with open(lock_path, "a+b") as handle:
             if handle.tell() == 0:
                 handle.write(b"0")
@@ -69,11 +83,12 @@ def storage_lock(storage_path: str | Path, timeout: float = 30.0) -> Iterator[No
                     raise TimeoutError(f"Timed out waiting for storage lock: {lock_path}")
                 time.sleep(0.05)
             try:
+                depths[key] = 1
                 yield
             finally:
+                depths.pop(key, None)
                 _unlock(handle)
 
 
 def temporary_sibling(path: Path) -> Path:
     return path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-

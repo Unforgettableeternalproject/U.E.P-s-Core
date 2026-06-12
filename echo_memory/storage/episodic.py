@@ -43,6 +43,7 @@ class EpisodicMemory:
         device: str = "cpu",
         query_prefix: str = "为这个句子生成表示以用于检索相关文章：",
         max_episodes: int | None = None,
+        lock_path: str | Path | None = None,
     ):
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
@@ -51,6 +52,7 @@ class EpisodicMemory:
         self.device = device
         self.query_prefix = query_prefix
         self.max_episodes = max_episodes  # None 代表無限制
+        self.lock_path = Path(lock_path) if lock_path is not None else self.storage_path
 
         # 數據文件路徑
         self.metadata_file = self.storage_path / "episodes.json"
@@ -79,7 +81,7 @@ class EpisodicMemory:
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
         # 載入現有數據
-        with storage_lock(self.storage_path):
+        with storage_lock(self.lock_path):
             self._load(reset=True)
             if self._snapshot_upgrade_required:
                 self._save_unlocked()
@@ -98,7 +100,7 @@ class EpisodicMemory:
         Returns:
             episode_id: 新建的情節 ID
         """
-        with storage_lock(self.storage_path):
+        with storage_lock(self.lock_path):
             self._load(reset=True)
             self._reindex_if_required()
 
@@ -195,7 +197,7 @@ class EpisodicMemory:
         Returns:
             實際標記的數量（排除不存在的 ID）
         """
-        with storage_lock(self.storage_path):
+        with storage_lock(self.lock_path):
             self._load(reset=True)
             marked = 0
             for ep_id in episode_ids:
@@ -225,7 +227,7 @@ class EpisodicMemory:
         Returns:
             True 若成功更新，False 若 Episode 不存在
         """
-        with storage_lock(self.storage_path):
+        with storage_lock(self.lock_path):
             self._load(reset=True)
             ep = self._episodes.get(episode_id)
             if ep is None:
@@ -237,7 +239,7 @@ class EpisodicMemory:
 
     def clear(self):
         """清空所有情節記憶（測試用）"""
-        with storage_lock(self.storage_path):
+        with storage_lock(self.lock_path):
             self._episodes.clear()
             self._embeddings = None
             self._id_to_index.clear()
@@ -309,7 +311,7 @@ class EpisodicMemory:
         Returns:
             True 若刪除成功，False 若情節不存在
         """
-        with storage_lock(self.storage_path):
+        with storage_lock(self.lock_path):
             self._load(reset=True)
             return self._delete_episode_unlocked(episode_id)
 
@@ -359,7 +361,7 @@ class EpisodicMemory:
         Returns:
             刪除的情節數量
         """
-        with storage_lock(self.storage_path):
+        with storage_lock(self.lock_path):
             self._load(reset=True)
             return self._delete_session_unlocked(session_id)
 
@@ -707,7 +709,7 @@ class EpisodicMemory:
 
     def _save(self):
         """保存元數據、向量和圖到磁盤"""
-        with storage_lock(self.storage_path):
+        with storage_lock(self.lock_path):
             self._save_unlocked()
 
     def _save_unlocked(self) -> None:
@@ -794,7 +796,7 @@ class EpisodicMemory:
     def _ensure_index_ready(self) -> None:
         if not self._index_rebuild_required:
             return
-        with storage_lock(self.storage_path):
+        with storage_lock(self.lock_path):
             self._load(reset=True)
             self._reindex_if_required()
             self._save_unlocked()

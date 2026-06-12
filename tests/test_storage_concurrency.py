@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from echo_memory.schemas.episode import Episode
 from echo_memory.storage.episodic import EpisodicMemory
+from echo_memory.storage.locking import storage_lock
 
 
 def _episode(label: str) -> Episode:
@@ -40,3 +41,9 @@ def test_stale_mutation_does_not_resurrect_deleted_episode(tmp_path):
     reloaded = EpisodicMemory(tmp_path, embedding_model="custom")
     assert reloaded.get(deleted_id) is None
     assert reloaded.get(kept_id).salience_score == 0.9
+
+
+def test_namespace_lock_is_reentrant_in_same_thread(tmp_path):
+    with storage_lock(tmp_path, timeout=0.2):
+        with storage_lock(tmp_path, timeout=0.2):
+            pass

@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from functools import lru_cache
 import os
 import traceback
 import re
@@ -9,7 +10,7 @@ from sentencepiece import SentencePieceProcessor
 
 
 class TextNormalizer:
-    def __init__(self):
+    def __init__(self, enable_glossary=False):
         self.zh_normalizer = None
         self.en_normalizer = None
         self.char_rep_map = {
@@ -48,16 +49,225 @@ class TextNormalizer:
             "「": "'",
             "」": "'",
             ":": ",",
+            # -- Missing brackets/quotes (all BPE UNK) --
+            "『": "'",
+            "』": "'",
+            "〈": "'",
+            "〉": "'",
+            "〔": "'",
+            "〕": "'",
+            "｛": "'",
+            "｝": "'",
+            "{": "'",
+            "}": "'",
+            "＜": "'",
+            "＞": "'",
+            # -- Separators -> comma --
+            "/": ",",
+            "|": ",",
+            "＆": ",",
+            "&": ",",
+            # -- Math/symbols -> space (BPE UNK cleanup) --
+            "\\": " ",
+            "#": " ",
+            "＃": " ",
+            "@": " ",
+            "＠": " ",
+            "*": " ",
+            "＊": " ",
+            "^": " ",
+            "=": " ",
+            "＝": " ",
+            "+": " ",
+            "＋": " ",
+            "<": " ",
+            ">": " ",
+            "%": " ",
+            # -- Currency/units (fallback if wetext did not handle) --
+            "¥": " ",
+            "€": " ",
+            "£": " ",
+            "₩": " ",
+            "°": " ",
+            # -- Arrows/shapes -> space --
+            "→": ",",
+            "←": ",",
+            "↑": " ",
+            "↓": " ",
+            "■": " ",
+            "□": " ",
+            "●": " ",
+            "○": " ",
+            "◆": " ",
+            "◇": " ",
+            "△": " ",
+            "▽": " ",
+            "✓": " ",
+            "✗": " ",
+            # -- Circled numbers / combined units --
+            "①": " ",
+            "②": " ",
+            "③": " ",
+            "④": " ",
+            "⑤": " ",
+            "⑥": " ",
+            "⑦": " ",
+            "⑧": " ",
+            "⑨": " ",
+            "⑩": " ",
+            "℃": " ",
         }
         self.zh_char_rep_map = {
             "$": ".",
             **self.char_rep_map,
         }
+        self.enable_glossary = enable_glossary
+        self.term_glossary = dict()
+        self._t2s = None  # opencc Traditional -> Simplified converter (lazy init)
 
     def match_email(self, email):
         # 正则表达式匹配邮箱格式：数字英文@数字英文.英文
         pattern = r"^[a-zA-Z0-9]+@[a-zA-Z0-9]+\.[a-zA-Z]+$"
         return re.match(pattern, email) is not None
+
+    def _load_t2s(self):
+        """Lazy-init opencc Traditional -> Simplified converter."""
+        if self._t2s is not None:
+            return
+        try:
+            from opencc import OpenCC
+            self._t2s = OpenCC('t2s')
+        except ImportError:
+            # opencc not installed — skip conversion
+            self._t2s = False  # sentinel: tried but unavailable
+
+    def trad_to_simp(self, text):
+        """Convert Traditional Chinese to Simplified Chinese.
+        Returns text unchanged if opencc is not available."""
+        if self._t2s is None:
+            self._load_t2s()
+        if self._t2s is False:
+            return text
+        return self._t2s.convert(text)
+
+    # ── CJK Unicode ranges for language detection ──
+    _CJK_RANGES = (
+        '一-鿿'      # CJK Unified Ideographs
+        '㐀-䶿'      # CJK Unified Ideographs Extension A
+        '豈-﫿'      # CJK Compatibility Ideographs
+        '\U00020000-\U0002a6df'  # CJK Extension B
+        '\U0002a700-\U0002b73f'  # CJK Extension C
+    )
+    _CJK_RE = re.compile('[' + _CJK_RANGES + ']')
+    _PLACEHOLDER_RE = re.compile(r'<[A-Za-z_]+(?:_[a-z])?>')
+
+    @staticmethod
+    def _split_by_language(text):
+        """Split text into alternating (segment, language) runs.
+
+        Called AFTER all save_xxx() so placeholders are already in place.
+
+        Rules:
+        - CJK characters -> 'zh'
+        - ASCII letter sequences > 3 chars -> 'en'
+        - Short ASCII (<=3 chars like AI, IT) near CJK -> 'zh'
+        - Digits, punctuation, spaces inherit from neighbors
+        - Placeholders (<H>, <n_a>) inherit from neighbors
+        """
+        if not text:
+            return []
+
+        cjk_re = TextNormalizer._CJK_RE
+        ph_re = TextNormalizer._PLACEHOLDER_RE
+
+        # Tokenize into typed chunks
+        chunks = []  # list of (text, type)
+        i = 0
+        while i < len(text):
+            m = ph_re.match(text, i)
+            if m:
+                chunks.append((m.group(), 'ph'))
+                i = m.end()
+                continue
+            ch = text[i]
+            if cjk_re.match(ch):
+                j = i + 1
+                while j < len(text) and cjk_re.match(text[j]):
+                    j += 1
+                chunks.append((text[i:j], 'cjk'))
+                i = j
+            elif ch.isascii() and ch.isalpha():
+                j = i + 1
+                while j < len(text) and text[j].isascii() and text[j].isalpha():
+                    j += 1
+                chunks.append((text[i:j], 'alpha'))
+                i = j
+            elif ch.isdigit():
+                j = i + 1
+                while j < len(text) and text[j].isdigit():
+                    j += 1
+                chunks.append((text[i:j], 'digit'))
+                i = j
+            elif ch in ' \t':
+                j = i + 1
+                while j < len(text) and text[j] in ' \t':
+                    j += 1
+                chunks.append((text[i:j], 'ws'))
+                i = j
+            else:
+                chunks.append((ch, 'other'))
+                i += 1
+
+        if not chunks:
+            return [(text, 'zh')]
+
+        # Assign language tags
+        def _neighbor_type(idx, direction):
+            k = idx + direction
+            while 0 <= k < len(chunks):
+                if chunks[k][1] in ('cjk', 'alpha'):
+                    return chunks[k][1]
+                k += direction
+            return None
+
+        tags = []
+        for idx, (ctxt, ctype) in enumerate(chunks):
+            if ctype == 'cjk':
+                tags.append('zh')
+            elif ctype == 'alpha':
+                if len(ctxt) <= 3:
+                    # Short: keep with CJK if any CJK neighbor
+                    prev = _neighbor_type(idx, -1)
+                    nxt = _neighbor_type(idx, 1)
+                    tags.append('zh' if prev == 'cjk' or nxt == 'cjk' else 'en')
+                else:
+                    tags.append('en')
+            else:
+                tags.append(None)  # inherit
+
+        # Fill None tags: forward then backward
+        for i in range(len(tags)):
+            if tags[i] is None and i > 0:
+                tags[i] = tags[i - 1]
+        for i in range(len(tags) - 2, -1, -1):
+            if tags[i] is None:
+                tags[i] = tags[i + 1]
+        tags = [t or 'zh' for t in tags]
+
+        # Merge consecutive same-language chunks
+        runs = []
+        cur_parts = [chunks[0][0]]
+        cur_lang = tags[0]
+        for i in range(1, len(chunks)):
+            if tags[i] == cur_lang:
+                cur_parts.append(chunks[i][0])
+            else:
+                runs.append((''.join(cur_parts), cur_lang))
+                cur_parts = [chunks[i][0]]
+                cur_lang = tags[i]
+        runs.append((''.join(cur_parts), cur_lang))
+
+        return runs
 
     PINYIN_TONE_PATTERN = r"(?<![a-z])((?:[bpmfdtnlgkhjqxzcsryw]|[zcs]h)?(?:[aeiouüv]|[ae]i|u[aio]|ao|ou|i[aue]|[uüv]e|[uvü]ang?|uai|[aeiuv]n|[aeio]ng|ia[no]|i[ao]ng)|ng|er)([1-5])"
     """
@@ -70,6 +280,8 @@ class TextNormalizer:
     匹配人名，格式：中文·中文，中文·中文-中文
     例如：克里斯托弗·诺兰，约瑟夫·高登-莱维特
     """
+
+    TECH_TERM_PATTERN = r"[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+"
 
     # 匹配常见英语缩写 's，仅用于替换为 is，不匹配所有 's
     ENGLISH_CONTRACTION_PATTERN = r"(what|where|who|which|how|t?here|it|s?he|that|this)'s"
@@ -99,11 +311,13 @@ class TextNormalizer:
                 self.zh_normalizer = Normalizer(remove_erhua=False, lang="zh", operator="tn")
                 self.en_normalizer = Normalizer(lang="en", operator="tn")
                 print("[TTS] 使用 wetext Normalizer")
+                self._load_t2s()
             except ImportError as e:
                 print(f"[TTS] wetext 導入失敗 ({e}),使用簡化標準化器")
                 # 使用簡化的備用標準化器
                 self.zh_normalizer = self._create_fallback_normalizer("zh")
                 self.en_normalizer = self._create_fallback_normalizer("en")
+                self._load_t2s()
         else:
             from tn.chinese.normalizer import Normalizer as NormalizerZh
             from tn.english.normalizer import Normalizer as NormalizerEn
@@ -117,6 +331,7 @@ class TextNormalizer:
                 cache_dir=cache_dir, remove_interjections=False, remove_erhua=False, overwrite_cache=False
             )
             self.en_normalizer = NormalizerEn(overwrite_cache=False)
+            self._load_t2s()
     
     def _create_fallback_normalizer(self, lang: str):
         """創建簡化的備用標準化器(當 wetext 無法使用時)"""
@@ -141,31 +356,56 @@ class TextNormalizer:
         if not self.zh_normalizer or not self.en_normalizer:
             print("Error, text normalizer is not initialized !!!")
             return ""
-        if self.use_chinese(text):
-            text = re.sub(TextNormalizer.ENGLISH_CONTRACTION_PATTERN, r"\1 is", text, flags=re.IGNORECASE)
-            replaced_text, pinyin_list = self.save_pinyin_tones(text.rstrip())
-            
-            replaced_text, original_name_list = self.save_names(replaced_text)
-            try:
-                result = self.zh_normalizer.normalize(replaced_text)
-            except Exception:
-                result = ""
-                print(traceback.format_exc())
-            # 恢复人名
-            result = self.restore_names(result, original_name_list)
-            # 恢复拼音声调
-            result = self.restore_pinyin_tones(result, pinyin_list)
-            pattern = re.compile("|".join(re.escape(p) for p in self.zh_char_rep_map.keys()))
-            result = pattern.sub(lambda x: self.zh_char_rep_map[x.group()], result)
+
+        # Step 0: Traditional -> Simplified
+        text = self.trad_to_simp(text)
+
+        # Step 1: Global preprocessing (language-independent)
+        text = re.sub(TextNormalizer.ENGLISH_CONTRACTION_PATTERN, r"\1 is", text, flags=re.IGNORECASE)
+
+        is_mixed_or_chinese = self.use_chinese(text)
+        dominant_lang = "zh" if is_mixed_or_chinese else "en"
+
+        if self.enable_glossary:
+            text = self.apply_glossary_terms(text, lang=dominant_lang)
+
+        # Step 2: Save placeholders (global, before language split)
+        text, tech_list = self.save_tech_terms(text.rstrip())
+        text, pinyin_list = self.save_pinyin_tones(text)
+        text, name_list = self.save_names(text)
+
+        # Step 3: Per-language normalization
+        if is_mixed_or_chinese:
+            runs = self._split_by_language(text)
+            result_parts = []
+            for run_text, run_lang in runs:
+                try:
+                    if run_lang == 'en':
+                        normalized = self.en_normalizer.normalize(run_text)
+                    else:
+                        normalized = self.zh_normalizer.normalize(run_text)
+                except Exception:
+                    normalized = run_text
+                    print(traceback.format_exc())
+                result_parts.append(normalized)
+            result = ''.join(result_parts)
         else:
             try:
-                text = re.sub(TextNormalizer.ENGLISH_CONTRACTION_PATTERN, r"\1 is", text, flags=re.IGNORECASE)
                 result = self.en_normalizer.normalize(text)
             except Exception:
                 result = text
                 print(traceback.format_exc())
-            pattern = re.compile("|".join(re.escape(p) for p in self.char_rep_map.keys()))
-            result = pattern.sub(lambda x: self.char_rep_map[x.group()], result)
+
+        # Step 4: Restore placeholders (global)
+        result = self.restore_names(result, name_list)
+        result = self.restore_pinyin_tones(result, pinyin_list)
+        result = self.restore_tech_terms(result, tech_list)
+
+        # Step 5: char_rep_map cleanup
+        rep_map = self.zh_char_rep_map if is_mixed_or_chinese else self.char_rep_map
+        pattern = re.compile("|".join(re.escape(p) for p in rep_map.keys()))
+        result = pattern.sub(lambda x: rep_map[x.group()], result)
+
         return result
 
     def correct_pinyin(self, pinyin: str):
@@ -254,6 +494,61 @@ class TextNormalizer:
         # print("transformed_text: ", transformed_text)
         return transformed_text
 
+    def save_tech_terms(self, original_text):
+        tech_pattern = re.compile(TextNormalizer.TECH_TERM_PATTERN)
+        original_tech_list = tech_pattern.findall(original_text)
+        if len(original_tech_list) == 0:
+            return (original_text, None)
+        original_tech_list = sorted(set(original_tech_list), key=len, reverse=True)
+        transformed_text = original_text
+        for term in original_tech_list:
+            protected_term = term.replace("-", "<H>")
+            transformed_text = transformed_text.replace(term, protected_term)
+        return transformed_text, original_tech_list
+
+    def restore_tech_terms(self, normalized_text, original_tech_list):
+        if not original_tech_list or len(original_tech_list) == 0:
+            return normalized_text
+        transformed_text = re.sub(r'\s*<H>\s*', '-', normalized_text)
+        return transformed_text
+
+    def apply_glossary_terms(self, text, lang="zh"):
+        if not self.term_glossary:
+            return text
+        sorted_terms = sorted(self.term_glossary.keys(), key=len, reverse=True)
+        @lru_cache(maxsize=42)
+        def get_term_pattern(term):
+            return re.compile(re.escape(term), re.IGNORECASE)
+        transformed_text = text
+        for term in sorted_terms:
+            term_value = self.term_glossary[term]
+            if isinstance(term_value, dict):
+                replacement = term_value.get(lang, term_value.get(lang, term))
+            else:
+                replacement = term_value
+            pattern = get_term_pattern(term)
+            transformed_text = pattern.sub(replacement, transformed_text)
+        return transformed_text
+
+    def load_glossary(self, glossary_dict):
+        if glossary_dict and isinstance(glossary_dict, dict):
+            self.term_glossary.update(glossary_dict)
+
+    def load_glossary_from_yaml(self, glossary_path):
+        if glossary_path and os.path.exists(glossary_path):
+            import yaml
+            with open(glossary_path, 'r', encoding='utf-8') as f:
+                external_glossary = yaml.safe_load(f)
+                if external_glossary and isinstance(external_glossary, dict):
+                    self.term_glossary = external_glossary
+                    return True
+        return False
+
+    def save_glossary_to_yaml(self, glossary_path):
+        import yaml
+        with open(glossary_path, 'w', encoding='utf-8') as f:
+            yaml.dump(self.term_glossary, f, allow_unicode=True, default_flow_style=False)
+
 
 class TextTokenizer:
     def __init__(self, vocab_file: str, normalizer: TextNormalizer = None):
@@ -336,6 +631,27 @@ class TextTokenizer:
         if isinstance(tokens, str):
             tokens = [tokens]
         return [self.sp_model.PieceToId(token) for token in tokens]
+
+    def sanitize_unk_tokens(self, segments, verbose=False):
+        unk_id = self.unk_token_id
+        cleaned = []
+        total_removed = 0
+        removed_tokens = []
+        for seg in segments:
+            clean_seg = []
+            for tok in seg:
+                tok_id = self.sp_model.PieceToId(tok)
+                if tok_id == unk_id:
+                    total_removed += 1
+                    removed_tokens.append(tok)
+                else:
+                    clean_seg.append(tok)
+            if clean_seg:
+                cleaned.append(clean_seg)
+        if total_removed > 0 and verbose:
+            unique_removed = list(set(removed_tokens))
+            print(f"  \u26a0\ufe0f  removed {total_removed} unknown token(s): {unique_removed}")
+        return cleaned if cleaned else segments
 
     def tokenize(self, text: str) -> List[str]:
         return self.encode(text, out_type=str)

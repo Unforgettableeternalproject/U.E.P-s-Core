@@ -28,18 +28,56 @@ SUPPORTED_LANGUAGES = {"en": "English", "zh": "Chinese"}
 
 
 def _detect_language(text: str) -> str:
-    """Heuristic CJK detection — if >30% of chars are CJK, assume Chinese."""
+    """Detect text language: 'zh', 'en', or 'other'.
+
+    Heuristic rules:
+    - CJK chars (Unified Ideographs) > 30% -> 'zh'
+    - Japanese kana / Korean detected -> 'other'
+    - Latin alphabet dominant -> 'en'
+    - Non-Latin scripts (Cyrillic, Arabic, Thai, etc.) -> 'other'
+    """
+    if not text or not text.strip():
+        return "en"
+    total = max(len(text.strip()), 1)
     cjk = sum(1 for c in text if '一' <= c <= '鿿' or '㐀' <= c <= '䶿')
-    return "zh" if cjk / max(len(text), 1) > 0.3 else "en"
+    if cjk / total > 0.3:
+        return "zh"
+    # Check for Japanese kana
+    kana = sum(1 for c in text if '぀' <= c <= 'ヿ' or 'ㇰ' <= c <= 'ㇿ')
+    if kana / total > 0.1:
+        return "other"
+    # Check for Korean
+    hangul = sum(1 for c in text if '가' <= c <= '힯' or 'ᄀ' <= c <= 'ᇿ')
+    if hangul / total > 0.1:
+        return "other"
+    # Check for non-Latin scripts (Cyrillic, Arabic, Thai, Devanagari, etc.)
+    non_latin = sum(1 for c in text if ord(c) > 0x024f and not ('一' <= c <= '鿿'))
+    if non_latin / total > 0.2:
+        return "other"
+    return "en"
 
 
-def _translate_text(text: str, target_lang: str) -> str | None:
-    """Translate text using deep_translator (Google free). Returns None on failure."""
+def _translate_text(text: str, target_lang: str, source_lang: str = "auto") -> str | None:
+    """Translate text using deep_translator (Google free). Returns None on failure.
+
+    Args:
+        text: Text to translate
+        target_lang: Target language code ('en' or 'zh')
+        source_lang: Source language code, or 'auto' for auto-detect
+    """
+    tgt_code = "en" if target_lang == "en" else "zh-CN"
+    if source_lang == "auto":
+        src_code = "auto"
+    elif source_lang == "zh":
+        src_code = "zh-CN"
+    elif source_lang == "en":
+        src_code = "en"
+    else:
+        src_code = "auto"  # unknown source -> let Google detect
+
     try:
         from deep_translator import GoogleTranslator
-        src = "zh-CN" if target_lang == "en" else "en"
-        tgt = "en" if target_lang == "en" else "zh-CN"
-        result = GoogleTranslator(source=src, target=tgt).translate(text)
+        result = GoogleTranslator(source=src_code, target=tgt_code).translate(text)
         return result
     except ImportError:
         try:
@@ -174,16 +212,35 @@ class InteractiveShell:
         return True
 
     def _auto_translate(self, text: str) -> str:
-        """If text language doesn't match session language, attempt translation."""
+        """If text language doesn't match session language, attempt translation.
+
+        Language routing rules:
+        - Supported language (zh/en) matching session -> pass through
+        - Supported language not matching -> translate to session language
+        - Unsupported language ('other') -> translate to session language
+        - Mixed text with supported languages -> pass through (normalizer handles it)
+        """
         target_lang = self.session.get_language()
         detected = _detect_language(text)
 
         if detected == target_lang:
             return text
 
-        translated = _translate_text(text, target_lang)
+        # Mixed zh+en text: let the normalizer handle it
+        if detected in SUPPORTED_LANGUAGES and detected != "other":
+            # e.g. session=zh but text has English — normalizer handles mixed
+            # Only translate if it's PURE wrong language
+            # Recheck: if text has ANY CJK and target is zh, skip translation
+            if target_lang == "zh" and any('一' <= c <= '鿿' for c in text):
+                return text  # mixed text, normalizer will handle
+            if target_lang == "en" and not any('一' <= c <= '鿿' for c in text):
+                return text  # pure English, matches intent
+
+        # Translate: unsupported language or wrong supported language
+        source_hint = detected if detected in ("zh", "en") else "auto"
+        translated = _translate_text(text, target_lang, source_lang=source_hint)
         if translated:
-            src_name = SUPPORTED_LANGUAGES.get(detected, detected)
+            src_name = SUPPORTED_LANGUAGES.get(detected, f"other ({detected})")
             tgt_name = SUPPORTED_LANGUAGES.get(target_lang, target_lang)
             self.write(f"[Auto-translate {src_name} -> {tgt_name}]: {translated}")
             return translated

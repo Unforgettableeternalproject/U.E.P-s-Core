@@ -18,7 +18,7 @@ except ModuleNotFoundError:
 
 from test_tts.benchmarks.metrics import LatencySample, summarize_latency, summarize_profiles
 from test_tts.cli.interactive import InteractiveShell
-from test_tts.runtime.audio import NullAudioPlayer, SimpleAudioPlayer
+from test_tts.runtime.audio import NullAudioPlayer, SimpleAudioPlayer, StreamingAudioPlayer
 from test_tts.runtime.backend_contract import legacy_backend_info
 from test_tts.runtime.legacy_backend import LegacyIndexTTS2Backend
 from test_tts.runtime.legacy_generate import default_generation_paths, generate_with_legacy_indextts2
@@ -84,7 +84,7 @@ def build_legacy_session(
     resolved_output = Path(output_dir)
     if not resolved_output.is_absolute():
         resolved_output = root / resolved_output
-    player = SimpleAudioPlayer() if playback else NullAudioPlayer()
+    player = StreamingAudioPlayer() if playback else NullAudioPlayer()
     return TTSInteractiveSession(backend=backend, output_dir=resolved_output, player=player)
 
 

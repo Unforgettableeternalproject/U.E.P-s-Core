@@ -44,3 +44,6 @@ Thumbs.db
 
 # Hidden
 docs/hidden/
+
+# Local
+.claude\settings.local.json

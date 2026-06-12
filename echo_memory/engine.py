@@ -75,6 +75,8 @@ class MemoryEngine:
         self._working = None
         self._retrieval = None
         self._dream_engine = None
+        self._entity_store = None
+        self._entity_extractor = None
 
         logger.info(f"[MemoryEngine] 初始化完成 - 存儲路徑: {self.storage_path}")
 
@@ -129,6 +131,24 @@ class MemoryEngine:
             )
         return self._retrieval
 
+    @property
+    def entity_store(self):
+        """延遲加載實體存儲模組"""
+        if self._entity_store is None:
+            from echo_memory.storage.entity import EntityStore
+            self._entity_store = EntityStore(
+                storage_path=self.storage_path / "entities",
+            )
+        return self._entity_store
+
+    @property
+    def entity_extractor(self):
+        """延遲加載實體提取器"""
+        if self._entity_extractor is None:
+            from echo_memory.dream.entity_extractor import EntityExtractor
+            self._entity_extractor = EntityExtractor(llm_fn=self._llm_fn)
+        return self._entity_extractor
+
     # ─── 核心 API ────────────────────────────────────────────────────────────
 
     def store_episode(
@@ -168,6 +188,36 @@ class MemoryEngine:
 
         episode_id = self.episodic.write(episode)
         logger.info(f"[MemoryEngine] 存儲情節: {episode_id}")
+
+        # ── 實體提取（非關鍵路徑，失敗不影響主寫入）──────────────────────
+        try:
+            entities = self.entity_extractor.extract(episode)
+            graph = self.episodic.graph
+
+            for ent in entities:
+                # 插入或更新 EntityStore
+                ent_id = self.entity_store.upsert(ent)
+                self.entity_store.increment_mention(ent_id, episode_id)
+
+                # 在記憶圖中維護 Entity 節點與 MENTIONS 邊
+                actual_ent = self.entity_store.get(ent_id)
+                if actual_ent is not None:
+                    if not graph.has_node(ent_id):
+                        graph.add_entity_node(
+                            ent_id,
+                            name=actual_ent.name,
+                            entity_type=actual_ent.entity_type,
+                        )
+                    graph.add_mentions_edge(episode_id, ent_id)
+
+            if entities:
+                graph.save()
+                logger.debug(
+                    f"[MemoryEngine] 實體提取完成: "
+                    f"{len(entities)} 個實體 (episode={episode_id[:8]}...)"
+                )
+        except Exception as exc:
+            logger.warning(f"[MemoryEngine] 實體提取失敗（不影響主寫入）: {exc}")
 
         return episode_id
 

@@ -348,6 +348,127 @@ class MemoryGraph:
 
         return results
 
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 邊管理 - Entity 相關邊（Branch 8）
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    def add_entity_node(
+        self,
+        entity_id: str,
+        name: str,
+        entity_type: str = "other",
+    ) -> None:
+        """
+        添加實體節點。
+
+        Args:
+            entity_id: Entity ID (ent_xxx)
+            name: 實體名稱
+            entity_type: 實體類型（person/place/concept/product/event/other）
+        """
+        self.graph.add_node(
+            entity_id,
+            node_type="Entity",
+            name=name,
+            entity_type=entity_type,
+        )
+        logger.debug(f"[MemoryGraph] 添加實體節點: {entity_id} ({name})")
+
+    def add_mentions_edge(
+        self,
+        episode_id: str,
+        entity_id: str,
+        weight: float = 1.0,
+    ) -> None:
+        """
+        添加 MENTIONS 邊（Episode → Entity）。
+
+        表示某個情節中提及了某個實體。若邊已存在則累加權重（強化提及關係）。
+
+        Args:
+            episode_id: Episode ID
+            entity_id: Entity ID
+            weight: 初始邊權重，預設 1.0
+        """
+        if not self.graph.has_node(episode_id) or not self.graph.has_node(entity_id):
+            logger.warning(
+                f"[MemoryGraph] 節點不存在，無法添加 MENTIONS 邊: "
+                f"{episode_id} -> {entity_id}"
+            )
+            return
+
+        weight = min(1.0, max(0.0, weight))
+
+        if self.graph.has_edge(episode_id, entity_id):
+            # 已存在 → 累加提及次數，強化權重
+            edge_data = self.graph[episode_id][entity_id]
+            edge_data["frequency"] = edge_data.get("frequency", 1) + 1
+            edge_data["weight"] = min(1.0, edge_data["weight"] + 0.1)
+        else:
+            self.graph.add_edge(
+                episode_id,
+                entity_id,
+                edge_type="MENTIONS",
+                weight=weight,
+                frequency=1,
+                created_at=time.time(),
+            )
+
+        logger.debug(
+            f"[MemoryGraph] 添加 MENTIONS 邊: "
+            f"{episode_id[:12]} -> {entity_id[:12]} (weight={weight:.3f})"
+        )
+
+    def get_episode_entities(
+        self,
+        episode_id: str,
+    ) -> list[tuple[str, float]]:
+        """
+        取得某個 Episode 所提及的所有 Entity。
+
+        Args:
+            episode_id: Episode ID
+
+        Returns:
+            [(entity_id, weight), ...] 按權重降序
+        """
+        if not self.graph.has_node(episode_id):
+            return []
+
+        results = []
+        for neighbor in self.graph.successors(episode_id):
+            edge_data = self.graph[episode_id][neighbor]
+            if edge_data.get("edge_type") == "MENTIONS":
+                results.append((neighbor, edge_data.get("weight", 0.0)))
+
+        results.sort(key=lambda x: x[1], reverse=True)
+        return results
+
+    def get_entity_episodes(
+        self,
+        entity_id: str,
+    ) -> list[tuple[str, float]]:
+        """
+        取得提及某個 Entity 的所有 Episode。
+
+        Args:
+            entity_id: Entity ID
+
+        Returns:
+            [(episode_id, weight), ...] 按權重降序
+        """
+        if not self.graph.has_node(entity_id):
+            return []
+
+        results = []
+        for predecessor in self.graph.predecessors(entity_id):
+            edge_data = self.graph[predecessor][entity_id]
+            if edge_data.get("edge_type") == "MENTIONS":
+                results.append((predecessor, edge_data.get("weight", 0.0)))
+
+        results.sort(key=lambda x: x[1], reverse=True)
+        return results
+
     def remove_concept_node(self, concept_id: str) -> None:
         """
         移除概念節點及其所有邊。

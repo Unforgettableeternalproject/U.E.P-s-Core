@@ -8,9 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
-
 from echo_memory.schemas.concept import Concept
+from echo_memory.schemas.entity import Entity
 from echo_memory.schemas.episode import Episode
 
 
@@ -18,13 +17,13 @@ from echo_memory.schemas.episode import Episode
 class MemoryContext:
     """
     記憶脈絡容器。
-    
+
     包含檢索到的所有相關記憶節點，可序列化為 LLM 可讀的文本格式。
     """
 
     episodes: list[Episode] = field(default_factory=list)
     concepts: list[Concept] = field(default_factory=list)
-    entities: list[dict[str, Any]] = field(default_factory=list)  # 暫時用 dict
+    entities: list[Entity] = field(default_factory=list)
     similarities: dict[str, float] = field(default_factory=dict)  # episode_id -> 相似度分數
     concept_similarities: dict[str, float] = field(default_factory=dict)  # concept_id -> 相似度分數
 
@@ -81,9 +80,9 @@ class MemoryContext:
         if self.entities:
             parts.append("\n【提及的實體】")
             for e in self.entities[:5]:
-                etype = e.get("type", "未知")
-                name = e.get("name", "")
-                desc = e.get("description", "")
+                etype = e.entity_type or "未知"
+                name = e.name
+                desc = e.description
                 parts.append(f"  - [{etype}] {name}: {desc}")
 
         return "\n".join(parts) if parts else "（無相關記憶）"

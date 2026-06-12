@@ -151,10 +151,11 @@ from echo_memory import MemoryEngine
 
 # 初始化記憶引擎（不需要 API key）
 # 預設模型：BAAI/bge-small-zh-v1.5（中文優化，512 維）
-# 切換模型時請同步刪除 data/embeddings.npy，舊向量與新模型不相容
+# 切換模型時會依 manifest 自動完整重建 embedding 索引
 memory = MemoryEngine(
     storage_path="./data",
-    embedding_model="BAAI/bge-small-zh-v1.5"
+    embedding_model="BAAI/bge-small-zh-v1.5",
+    namespace_id="local-default",
 )
 
 # 存儲對話
@@ -174,6 +175,15 @@ context = memory.retrieve(
 
 print(context.to_text())
 ```
+
+### Namespace 與資料安全
+
+- `local-default` 直接沿用既有 `storage_path`，保持舊資料相容；其他 namespace 存放於 `<storage_path>/namespaces/<namespace_id>`。
+- 同一 namespace 的寫入與 Dream 操作使用跨程序檔案鎖序列化，避免多實例覆蓋最新快照；不同 namespace 可獨立運作。
+- 目前仍是單機 JSON/NumPy 快照後端，優先保證正確性，不定位為高吞吐分散式資料庫。
+- `embedding_index.json` 記錄模型、維度與 episode 順序；模型或索引不一致時會自動完整重建。
+- 檢索內容以 `UNTRUSTED_MEMORY_DATA` JSON envelope 注入 prompt，LLM 必須把它視為資料而非指令。
+- Dream 圖譜衰減只處理時間序列 `PRECEDES` 邊，不會誤改語義或實體關係邊。
 
 ---
 

@@ -113,6 +113,8 @@ echo-mcp
 | `list_episodes` | 列出情節記憶 | （無） |
 | `store_observation` | 存儲重要觀察（高顯著性） | `content` |
 
+所有工具都接受可選的 `namespace_id`。未提供時使用 `MEMORY_NAMESPACE_ID`（預設 `local-default`）。
+
 ### 工具參數詳情
 
 #### store_episode
@@ -121,7 +123,8 @@ echo-mcp
   "user_input": "用戶輸入的文字",
   "agent_response": "Agent 的回應",
   "session_id": "會話ID（可選，預設 mcp-default）",
-  "salience": 0.5
+  "salience": 0.5,
+  "namespace_id": "team-alpha"
 }
 ```
 
@@ -180,6 +183,8 @@ echo-mcp
 | `memory://concepts` | 所有概念列表 | `application/json` |
 | `memory://graph/summary` | 記憶圖結構摘要 | `application/json` |
 
+Resources 固定讀取 Server 設定的預設 namespace；需要指定 namespace 時請使用 Tools。
+
 ### 資源回應範例
 
 #### memory://stats
@@ -209,9 +214,12 @@ MCP Server 從 `.env` 檔案（專案根目錄 `TestSeperateMemorySystem/.env`�
 | 變數 | 說明 | 預設值 |
 |-----|------|--------|
 | `MEMORY_STORAGE_PATH` | 記憶資料存儲路徑 | `./data` |
+| `MEMORY_NAMESPACE_ID` | MCP Tools 未指定 namespace 時使用的預設隔離空間 | `local-default` |
 | `EMBEDDING_MODEL` | 嵌入模型名稱 | `BAAI/bge-small-zh-v1.5` |
 | `EMBEDDING_DEVICE` | 運行設備 | `cpu` |
 | `GOOGLE_API_KEY` | Google API 金鑰（Dream Engine 知識蒸餾需要） | — |
+
+同一 namespace 的存儲與 Dream 寫入會以跨程序鎖序列化。這個後端適合單機多 client 的正確性需求，不是高吞吐分散式儲存。
 
 ---
 

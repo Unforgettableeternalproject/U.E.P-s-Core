@@ -20,6 +20,7 @@ from echo_memory.schemas.concept import Concept
 from echo_memory.schemas.memory_context import MemoryContext
 from echo_memory.storage.episodic import EpisodicMemory
 from echo_memory.storage.semantic import SemanticMemory
+from echo_memory.storage.working import WorkingMemory
 
 logger = logging.getLogger("echo_memory.retrieval")
 
@@ -37,13 +38,18 @@ class EcphoryRetrieval:
     # CONTRADICTS penalty 係數：命中矛盾邊時，相似度乘以此值
     CONTRADICTS_PENALTY = 0.3
 
+    # 查詢向量快取的 key prefix
+    _CACHE_PREFIX = "qemb:"
+
     def __init__(
         self,
         episodic: EpisodicMemory,
         semantic: SemanticMemory,
+        working: WorkingMemory | None = None,
     ):
         self.episodic = episodic
         self.semantic = semantic
+        self.working = working  # 若提供，啟用查詢向量快取
 
     def retrieve(
         self,
@@ -86,7 +92,20 @@ class EcphoryRetrieval:
             concept_min_similarity = params.concept_min_similarity
 
         # Step 1: Episode 向量檢索（種子節點）
-        query_embedding = self.episodic.generate_query_embedding(query)
+        # 查詢向量快取：相同查詢不重複生成 embedding（省 ~50ms）
+        cache_key = f"{self._CACHE_PREFIX}{query}"
+        query_embedding = None
+
+        if self.working is not None:
+            cached = self.working.get(cache_key)
+            if cached is not None:
+                query_embedding = cached
+                logger.debug("[EcphoryRetrieval] 查詢向量快取命中")
+
+        if query_embedding is None:
+            query_embedding = self.episodic.generate_query_embedding(query)
+            if self.working is not None:
+                self.working.set(cache_key, query_embedding)
 
         # NeurochemState 影響種子數
         seed_k = max(3, top_k // 2)

@@ -13,7 +13,7 @@ class FakeBackend:
         self.load_calls += 1
         self.loaded = True
 
-    def generate(self, text: str, output_path: Path, on_segment_audio=None) -> Path:
+    def generate(self, text: str, output_path: Path, on_segment_audio=None, **kwargs) -> Path:
         if not self.loaded:
             raise RuntimeError("backend must be loaded before generate")
         self.generate_calls.append((text, output_path))
@@ -80,7 +80,7 @@ class StreamingFakeBackend:
         self.load_calls += 1
         self.loaded = True
 
-    def generate(self, text, output_path, on_segment_audio=None):
+    def generate(self, text, output_path, on_segment_audio=None, **kwargs):
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"fake wav")

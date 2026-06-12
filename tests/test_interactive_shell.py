@@ -53,6 +53,18 @@ class FakeSession:
     def unload(self):
         self.unload_calls += 1
 
+    def get_language(self) -> str:
+        return "en"
+
+    def set_language(self, language: str) -> None:
+        pass
+
+    def get_emotion(self) -> list:
+        return [0.0] * 8
+
+    def set_emotion(self, emotion_vector: list) -> None:
+        pass
+
     def status(self):
         return {"loaded": True, "say_count": len(self.say_calls), "save_count": len(self.save_calls)}
 

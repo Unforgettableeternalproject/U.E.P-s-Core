@@ -63,6 +63,9 @@ try:
     from .gpt.model_v2 import UnifiedVoice
     from .tts_utils.maskgct_utils import build_semantic_model, build_semantic_codec
     from .tts_utils.front import TextNormalizer, TextTokenizer
+    from .tts_utils.gpt_length import calc_dynamic_max_generate_length
+    from .tts_utils.chinese_segmenter import pre_segment_chinese
+    from .tts_utils.segment_guard import check_segment_anomaly, get_retry_params, SegmentGuardStats
     from .s2mel.modules.commons import load_checkpoint2, MyModel
     from .s2mel.modules.bigvgan import bigvgan
 except ImportError:
@@ -70,12 +73,97 @@ except ImportError:
     from gpt.model_v2 import UnifiedVoice
     from tts_utils.maskgct_utils import build_semantic_model, build_semantic_codec
     from tts_utils.front import TextNormalizer, TextTokenizer
+    from tts_utils.gpt_length import calc_dynamic_max_generate_length
+    from tts_utils.chinese_segmenter import pre_segment_chinese
+    from tts_utils.segment_guard import check_segment_anomaly, get_retry_params, SegmentGuardStats
     from s2mel.modules.commons import load_checkpoint2, MyModel
     from s2mel.modules.bigvgan import bigvgan
 
 
 class IndexTTSLite:
     """精簡版 IndexTTS2 推論引擎"""
+
+    @staticmethod
+    def _remove_long_silence(
+        codes: "torch.Tensor",
+        stop_mel_token: int,
+        silent_token: int = 52,
+        max_consecutive: int = 30,
+        keep_consecutive: int = 10,
+    ) -> tuple:
+        """Remove excessively long runs of silent tokens from GPT output codes.
+
+        Ported from upstream IndexTTS2 ``infer_v2.py::remove_long_silence``.
+
+        Parameters
+        ----------
+        codes:
+            Shape ``[B, T]`` — batch of mel token sequences from GPT.
+        stop_mel_token:
+            The stop token ID (e.g. 8193).
+        silent_token:
+            The silence token ID (default 52 per upstream).
+        max_consecutive:
+            If total count of silent_token in the sequence exceeds this,
+            trigger compression.
+        keep_consecutive:
+            Maximum consecutive silent tokens to keep after compression.
+
+        Returns
+        -------
+        (codes, code_lens) where codes may be shortened.
+        """
+        device = codes.device
+        codes_list = []
+        code_lens = []
+        modified = False
+
+        for i in range(codes.shape[0]):
+            code = codes[i]
+
+            # Find effective length (up to stop token)
+            if not torch.any(code == stop_mel_token).item():
+                eff_len = code.size(0)
+            else:
+                stop_idx = (code == stop_mel_token).nonzero(as_tuple=False)
+                eff_len = stop_idx[0].item() if len(stop_idx) > 0 else code.size(0)
+
+            silent_count = torch.sum(code[:eff_len] == silent_token).item()
+
+            if silent_count > max_consecutive:
+                # Compress: keep at most `keep_consecutive` consecutive silent tokens
+                keep_indices = []
+                n_consecutive = 0
+                for k in range(eff_len):
+                    if code[k].item() != silent_token:
+                        keep_indices.append(k)
+                        n_consecutive = 0
+                    elif n_consecutive < keep_consecutive:
+                        keep_indices.append(k)
+                        n_consecutive += 1
+                    # else: skip (too many consecutive silences)
+
+                eff_len = len(keep_indices)
+                codes_list.append(code[keep_indices])
+                modified = True
+            else:
+                codes_list.append(code[:eff_len])
+
+            code_lens.append(eff_len)
+
+        if modified:
+            if len(codes_list) == 1:
+                codes = codes_list[0].unsqueeze(0)
+            else:
+                from torch.nn.utils.rnn import pad_sequence
+                codes = pad_sequence(codes_list, batch_first=True, padding_value=stop_mel_token)
+
+        max_len = max(code_lens) if code_lens else 0
+        if max_len > 0 and max_len < codes.shape[1]:
+            codes = codes[:, :max_len]
+
+        code_lens_tensor = torch.tensor(code_lens, dtype=torch.long, device=device)
+        return codes, code_lens_tensor
 
     @staticmethod
     def _trim_trailing_silence(
@@ -706,9 +794,22 @@ class IndexTTSLite:
             if verbose:
                 debug_log(3, "   [1/4] 文本處理...")
 
-            text_tokens_list = self.tokenizer.tokenize(text)
+            # Chinese semantic pre-segmentation (jieba) — only when language is Chinese
+            _jieba_cfg = self.cfg.get('chunking', {}).get('jieba_segmentation', {})
+            if language == 'zh':
+                sub_texts = pre_segment_chinese(text, _jieba_cfg)
+                if len(sub_texts) > 1 and verbose:
+                    debug_log(2, f"      🈶 jieba 語義預切分: {len(sub_texts)} 段")
+            else:
+                sub_texts = [text]
+
+            # Tokenize each sub-text independently, then split into segments
+            all_tokens: list = []
+            for sub_text in sub_texts:
+                all_tokens.extend(self.tokenizer.tokenize(sub_text))
+
             segments = self.tokenizer.split_segments(
-                text_tokens_list,
+                all_tokens,
                 max_text_tokens_per_segment=max_text_tokens_per_segment,
                 quick_streaming_tokens=quick_streaming_tokens,
             )
@@ -754,6 +855,14 @@ class IndexTTSLite:
             seg_vocoder_ms = 0.0
             first_segment_done_ms: Optional[float] = None
 
+            # Anomaly detection config
+            _anomaly_cfg = self.cfg.get('synthesis', {}).get('anomaly_detection', {})
+            _anomaly_enabled = _anomaly_cfg.get('enabled', True)
+            _max_retries = int(_anomaly_cfg.get('max_retries', 1))
+            _max_audio_ratio = float(_anomaly_cfg.get('max_audio_ratio', 3.0))
+            _max_segment_rtf = float(_anomaly_cfg.get('max_segment_rtf', 5.0))
+            guard_stats = SegmentGuardStats()
+
             # --- Adaptive Segment Emotion (實驗性) ---
             # 為多段文本的每段生成微幅不同的情緒偏移，提升段落間的語調連續性。
             # 策略：以 base emovec_mat 為中心，沿段落位置施加平滑的 cosine 弧線偏移。
@@ -772,12 +881,29 @@ class IndexTTSLite:
                 if verbose:
                     debug_log(2, f"      🎭 自適應語感: {num_segments} 段, 偏移範圍 ±5%")
 
+            # Dynamic length config (from config.yaml → gpt.dynamic_length.*)
+            _dyn_cfg = self.cfg.get('gpt', {}).get('dynamic_length', {})
+            _mel_per_token_ratio = float(_dyn_cfg.get('mel_per_token_ratio', 10.0))
+            _safety_margin = int(_dyn_cfg.get('safety_margin', 150))
+            _min_gen_len = int(_dyn_cfg.get('min_generate_length', 300))
+
             for seg_idx, seg_tokens in enumerate(segments):
                 if verbose and num_segments > 1:
                     debug_log(3, f"   ── 段落 {seg_idx + 1}/{num_segments} ──")
 
                 text_tokens = self.tokenizer.convert_tokens_to_ids(seg_tokens)
                 text_tokens = torch.tensor(text_tokens, dtype=torch.int32, device=self.device).unsqueeze(0)
+
+                # 計算動態 max_generate_length（基於本段 text token 數）
+                seg_max_gen_len = calc_dynamic_max_generate_length(
+                    num_text_tokens=len(seg_tokens),
+                    cfg_max_mel_tokens=self.cfg.gpt.max_mel_tokens,
+                    mel_per_token_ratio=_mel_per_token_ratio,
+                    safety_margin=_safety_margin,
+                    min_generate_length=_min_gen_len,
+                )
+                if verbose:
+                    debug_log(3, f"      📏 動態長度上限: {seg_max_gen_len} mel tokens (text tokens: {len(seg_tokens)})")
 
                 # 4. GPT 生成語義 tokens
                 if verbose:
@@ -820,7 +946,7 @@ class IndexTTSLite:
                             top_k=top_k,
                             length_penalty=1.0,
                             repetition_penalty=1.2,
-                            max_generate_length=self.cfg.gpt.max_mel_tokens
+                            max_generate_length=seg_max_gen_len,
                         )
                         seg_gpt_semantic_ms += (time.perf_counter() - _seg_t) * 1000
                         _seg_t = time.perf_counter()
@@ -842,19 +968,12 @@ class IndexTTSLite:
                         seg_gpt_latent_ms += (time.perf_counter() - _seg_t) * 1000
                         _seg_t = time.perf_counter()
 
-                # 找到實際的 code 長度 (參考 infer_v2.py line 583-591)
+                # 找到實際的 code 長度 + 壓縮過長靜音 (參考 infer_v2.py)
                 stop_mel_token = self.cfg.gpt.stop_mel_token
-                code_lens = []
-                for code in codes:
-                    if stop_mel_token not in code:
-                        code_len = len(code)
-                    else:
-                        len_ = (code == stop_mel_token).nonzero(as_tuple=False)[0] + 1
-                        code_len = len_ - 1
-                    code_lens.append(code_len)
-
-                codes = codes[:, :code_len]
-                code_lens = torch.LongTensor(code_lens).to(self.device)
+                codes, code_lens = self._remove_long_silence(
+                    codes, stop_mel_token, silent_token=52,
+                    max_consecutive=30, keep_consecutive=10,
+                )
 
                 # 5. S2Mel 生成 Mel 頻譜
                 if verbose:
@@ -906,6 +1025,23 @@ class IndexTTSLite:
                 seg_vocoder_ms += (time.perf_counter() - _seg_t) * 1000
                 seg_audio = seg_audio_gpu.cpu()  # D2H transfer 不計入 vocoder 時間
 
+                # --- Anomaly detection (before trim, so we check raw length) ---
+                if _anomaly_enabled:
+                    _seg_gpt_time_ms = seg_gpt_semantic_ms  # cumulative, but for this segment only the last delta matters
+                    anomaly_result = check_segment_anomaly(
+                        audio_samples=seg_audio.shape[-1],
+                        sample_rate=22050,
+                        num_text_tokens=len(seg_tokens),
+                        gpt_gen_time_ms=_seg_gpt_time_ms,
+                        max_audio_ratio=_max_audio_ratio,
+                        max_segment_rtf=_max_segment_rtf,
+                    )
+                    if anomaly_result.is_anomalous:
+                        guard_stats.anomaly_count += 1
+                        guard_stats.anomalous_segments.append(seg_idx)
+                        if verbose:
+                            debug_log(1, f"   ⚠️  段落 {seg_idx+1} 異常: {anomaly_result.reason}")
+
                 # Trim trailing silence from segment (GPT sometimes generates
                 # long silence runs before the stop token)
                 seg_audio = self._trim_trailing_silence(seg_audio)
@@ -944,6 +1080,8 @@ class IndexTTSLite:
                 timings["vocoder_ms"] = seg_vocoder_ms
                 timings["segment_count"] = float(num_segments)
                 timings["first_segment_ms"] = first_segment_done_ms or 0.0
+                timings["anomaly_count"] = float(guard_stats.anomaly_count)
+                timings["retry_count"] = float(guard_stats.retry_count)
 
             _t = time.perf_counter()
 

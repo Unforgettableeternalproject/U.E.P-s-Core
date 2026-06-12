@@ -136,6 +136,18 @@ class TTSInteractiveSession:
         self._last_output_path = generated
         return SayResult(text=text, output_path=generated)
 
+    def save_auto(self, text: str) -> SayResult:
+        """Generate and save with auto-generated filename (not cleaned up)."""
+        if not text.strip():
+            raise ValueError("text must not be empty")
+        self.load()
+        output_path = self._resolve_auto_output_path(prefix="save")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        generated = self.backend.generate(text, output_path, language=self.get_language())
+        self._save_count += 1
+        self._last_output_path = generated
+        return SayResult(text=text, output_path=generated)
+
     def profile(self, text: str) -> ProfileResult:
         """Generate speech with full stage profiling.  Temporary file is cleaned up."""
         if not text.strip():

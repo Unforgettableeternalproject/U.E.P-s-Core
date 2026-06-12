@@ -101,6 +101,9 @@ class InteractiveSession(Protocol):
     def save(self, text: str, output_path: str):
         ...
 
+    def save_auto(self, text: str):
+        ...
+
     def profile(self, text: str):
         ...
 
@@ -178,7 +181,11 @@ class InteractiveShell:
         if verb == "save":
             text, output = self._parse_save_args(args)
             text = self._auto_translate(text)
-            result = self.session.save(text, output_path=output)
+            if output is not None:
+                result = self.session.save(text, output_path=output)
+            else:
+                # Auto-generate filename like say does, but keep the file
+                result = self.session.save_auto(text)
             self.write(f"saved: {result.output_path}")
             return True
         if verb == "profile":
@@ -284,7 +291,7 @@ class InteractiveShell:
         return text
 
     @staticmethod
-    def _parse_save_args(args: list[str]) -> tuple[str, str]:
+    def _parse_save_args(args: list[str]) -> tuple[str, str | None]:
         output: str | None = None
         text_parts: list[str] = []
         index = 0
@@ -299,9 +306,15 @@ class InteractiveShell:
             text_parts.append(arg)
             index += 1
 
-        if not output:
-            raise ValueError("save requires --output <path>")
         text = " ".join(text_parts).strip()
         if not text:
             raise ValueError("save requires text")
+
+        # Auto-append .wav if output path has no audio extension
+        if output is not None:
+            from pathlib import Path
+            p = Path(output)
+            if p.suffix.lower() not in ('.wav', '.mp3', '.flac', '.ogg'):
+                output = str(p.with_suffix('.wav'))
+
         return text, output

@@ -17,12 +17,10 @@ import numpy as np
 import pytest
 
 from echo_memory.retrieval.ecphory import EcphoryRetrieval
-from echo_memory.schemas.concept import Concept
 from echo_memory.schemas.episode import Episode
 from echo_memory.storage.episodic import EpisodicMemory
 from echo_memory.storage.graph import MemoryGraph
 from echo_memory.storage.semantic import SemanticMemory
-
 
 # ─── Fixtures ───────────────────────────────────────────────────────
 
@@ -30,8 +28,10 @@ MOCK_DIM = 512  # 要跟 conftest 的 _MOCK_DIM 一致
 
 
 def _mock_embed_fn(text: str) -> list[float]:
-    """確定性的假 embedding，維度 512（跟 conftest mock 一致）。"""
-    rng = np.random.RandomState(hash(text) & 0xFFFFFFFF)
+    """確定性的假 embedding，維度 512。用 hashlib 取代 hash() 避免 PYTHONHASHSEED 影響。"""
+    import hashlib
+    seed = int.from_bytes(hashlib.sha256(text.encode()).digest()[:4], "little")
+    rng = np.random.RandomState(seed)
     vec = rng.randn(MOCK_DIM).astype(np.float32)
     norm = float(np.linalg.norm(vec))
     if norm > 0:
@@ -122,7 +122,7 @@ class TestConceptRetrieval:
         """有 Concept 時，retrieve 的 context.concepts 不應為空。"""
         episodic, semantic, retrieval = storage
         _store_episodes(episodic)
-        concept_ids = _store_concepts(semantic, episodic.graph)
+        _store_concepts(semantic, episodic.graph)
 
         # mock 向量是隨機的，放寬閾值確保能命中
         context = retrieval.retrieve(
@@ -163,7 +163,7 @@ class TestRelatesExpansion:
         """透過 RELATES_TO 邊找到間接相關的概念。"""
         episodic, semantic, retrieval = storage
         _store_episodes(episodic)
-        concept_ids = _store_concepts(semantic, episodic.graph)
+        _store_concepts(semantic, episodic.graph)
 
         # 搜索「壽司」→ 應該透過 RELATES_TO 展開到「日本料理」和「生魚片」
         context = retrieval.retrieve(
@@ -172,7 +172,7 @@ class TestRelatesExpansion:
             concept_min_similarity=0.0,
         )
 
-        concept_names = {c.name for c in context.concepts}
+        {c.name for c in context.concepts}
         # 向量搜索直接命中 + RELATES_TO 展開
         # 不強制要求全部命中（取決於假向量的分佈），但至少有結果
         assert len(context.concepts) > 0
@@ -270,7 +270,7 @@ class TestBackwardCompatibility:
     def test_no_concepts_returns_episodes_only(self, storage):
         """SemanticMemory 為空時，retrieve 仍正常返回 Episodes。"""
         episodic, semantic, retrieval = storage
-        episodes = _store_episodes(episodic)
+        _store_episodes(episodic)
 
         # semantic 是空的
         assert semantic.count() == 0
@@ -330,8 +330,8 @@ class TestEcphorySemanticIntegration:
         context = retrieval.retrieve(
             "壽司料理",
             top_k=5,
-            min_similarity=0.0,
-            concept_min_similarity=0.0,
+            min_similarity=-1.0,  # 隨機向量可能為負，必須允許
+            concept_min_similarity=-1.0,
         )
 
         # 兩層都應有結果

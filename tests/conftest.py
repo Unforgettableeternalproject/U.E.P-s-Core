@@ -22,7 +22,9 @@ _MOCK_DIM = 512  # 匹配 BAAI/bge-small-zh-v1.5 輸出維度
 
 def _deterministic_embedding(text: str) -> list[float]:
     """根據文字 hash 產生確定性的 512 維 L2-normalized 向量。"""
-    rng = np.random.RandomState(hash(text) & 0xFFFFFFFF)
+    import hashlib
+    seed = int.from_bytes(hashlib.sha256(text.encode()).digest()[:4], "little")
+    rng = np.random.RandomState(seed)
     vec = rng.randn(_MOCK_DIM).astype(np.float32)
     norm = float(np.linalg.norm(vec))
     if norm > 0:

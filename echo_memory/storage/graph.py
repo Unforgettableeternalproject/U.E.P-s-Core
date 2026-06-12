@@ -249,6 +249,10 @@ class MemoryGraph:
             concept_b: 概念 B 的 ID
             weight: 矛盾強度 (0-1)
         """
+        if concept_a == concept_b:
+            logger.debug(f"[MemoryGraph] 自我矛盾邊被忽略: {concept_a}")
+            return
+
         if not self.graph.has_node(concept_a) or not self.graph.has_node(concept_b):
             logger.warning(
                 f"[MemoryGraph] 節點不存在，無法添加 CONTRADICTS 邊: "
@@ -271,6 +275,23 @@ class MemoryGraph:
             f"[MemoryGraph] 添加 CONTRADICTS 邊: "
             f"{concept_a[:12]} <-> {concept_b[:12]} (weight={weight:.3f})"
         )
+
+    def has_contradicts_edge(self, concept_a: str, concept_b: str) -> bool:
+        """
+        檢查兩個概念之間是否已有 CONTRADICTS 邊。
+
+        Args:
+            concept_a: 概念 A 的節點 ID
+            concept_b: 概念 B 的節點 ID
+
+        Returns:
+            True 若已存在矛盾邊（任一方向）
+        """
+        for src, dst in [(concept_a, concept_b), (concept_b, concept_a)]:
+            if self.graph.has_edge(src, dst):
+                if self.graph[src][dst].get("edge_type") == "CONTRADICTS":
+                    return True
+        return False
 
     def add_derived_from_edge(
         self,
@@ -327,21 +348,207 @@ class MemoryGraph:
             return []
 
         results = []
+        seen: set[str] = set()  # 避免雙向邊重複回傳同一鄰居
+
         # 前向邊
         for neighbor in self.graph.successors(concept_id):
             data = self.graph[concept_id][neighbor]
             et = data.get("edge_type", "")
             if edge_type is None or et == edge_type:
                 results.append((neighbor, et, data.get("weight", 0.0)))
+                seen.add(neighbor)
 
-        # 後向邊
+        # 後向邊（跳過已出現的鄰居，避免雙向邊重複）
         for neighbor in self.graph.predecessors(concept_id):
+            if neighbor in seen:
+                continue
             data = self.graph[neighbor][concept_id]
             et = data.get("edge_type", "")
             if edge_type is None or et == edge_type:
                 results.append((neighbor, et, data.get("weight", 0.0)))
 
         return results
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 邊管理 - Entity 相關邊（Branch 8）
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    def add_entity_node(
+        self,
+        entity_id: str,
+        name: str,
+        entity_type: str = "other",
+    ) -> None:
+        """
+        添加實體節點。
+
+        Args:
+            entity_id: Entity ID (ent_xxx)
+            name: 實體名稱
+            entity_type: 實體類型（person/place/concept/product/event/other）
+        """
+        self.graph.add_node(
+            entity_id,
+            node_type="Entity",
+            name=name,
+            entity_type=entity_type,
+        )
+        logger.debug(f"[MemoryGraph] 添加實體節點: {entity_id} ({name})")
+
+    def add_mentions_edge(
+        self,
+        episode_id: str,
+        entity_id: str,
+        weight: float = 1.0,
+    ) -> None:
+        """
+        添加 MENTIONS 邊（Episode → Entity）。
+
+        表示某個情節中提及了某個實體。若邊已存在則累加權重（強化提及關係）。
+
+        Args:
+            episode_id: Episode ID
+            entity_id: Entity ID
+            weight: 初始邊權重，預設 1.0
+        """
+        if not self.graph.has_node(episode_id) or not self.graph.has_node(entity_id):
+            logger.warning(
+                f"[MemoryGraph] 節點不存在，無法添加 MENTIONS 邊: "
+                f"{episode_id} -> {entity_id}"
+            )
+            return
+
+        weight = min(1.0, max(0.0, weight))
+
+        if self.graph.has_edge(episode_id, entity_id):
+            # 已存在 → 累加提及次數，強化權重
+            edge_data = self.graph[episode_id][entity_id]
+            edge_data["frequency"] = edge_data.get("frequency", 1) + 1
+            edge_data["weight"] = min(1.0, edge_data["weight"] + 0.1)
+        else:
+            self.graph.add_edge(
+                episode_id,
+                entity_id,
+                edge_type="MENTIONS",
+                weight=weight,
+                frequency=1,
+                created_at=time.time(),
+            )
+
+        logger.debug(
+            f"[MemoryGraph] 添加 MENTIONS 邊: "
+            f"{episode_id[:12]} -> {entity_id[:12]} (weight={weight:.3f})"
+        )
+
+    def get_episode_entities(
+        self,
+        episode_id: str,
+    ) -> list[tuple[str, float]]:
+        """
+        取得某個 Episode 所提及的所有 Entity。
+
+        Args:
+            episode_id: Episode ID
+
+        Returns:
+            [(entity_id, weight), ...] 按權重降序
+        """
+        if not self.graph.has_node(episode_id):
+            return []
+
+        results = []
+        for neighbor in self.graph.successors(episode_id):
+            edge_data = self.graph[episode_id][neighbor]
+            if edge_data.get("edge_type") == "MENTIONS":
+                results.append((neighbor, edge_data.get("weight", 0.0)))
+
+        results.sort(key=lambda x: x[1], reverse=True)
+        return results
+
+    def get_entity_episodes(
+        self,
+        entity_id: str,
+    ) -> list[tuple[str, float]]:
+        """
+        取得提及某個 Entity 的所有 Episode。
+
+        Args:
+            entity_id: Entity ID
+
+        Returns:
+            [(episode_id, weight), ...] 按權重降序
+        """
+        if not self.graph.has_node(entity_id):
+            return []
+
+        results = []
+        for predecessor in self.graph.predecessors(entity_id):
+            edge_data = self.graph[predecessor][entity_id]
+            if edge_data.get("edge_type") == "MENTIONS":
+                results.append((predecessor, edge_data.get("weight", 0.0)))
+
+        results.sort(key=lambda x: x[1], reverse=True)
+        return results
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 邊管理 - Procedure 相關（Phase 2 Branch 7）
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    def add_procedure_node(
+        self,
+        procedure_id: str,
+        name: str,
+        domain: str = "general",
+    ) -> None:
+        """
+        添加程序節點。
+
+        Args:
+            procedure_id: Procedure ID (proc_xxx)
+            name: 程序名稱
+            domain: 領域標籤
+        """
+        self.graph.add_node(
+            procedure_id,
+            node_type="Procedure",
+            name=name,
+            domain=domain,
+        )
+        logger.debug(f"[MemoryGraph] 添加程序節點: {procedure_id} ({name})")
+
+    def add_applies_to_edge(
+        self,
+        procedure_id: str,
+        concept_id: str,
+        weight: float = 0.7,
+    ) -> None:
+        """
+        添加 APPLIES_TO 邊（Procedure → Concept 領域關聯）。
+
+        Args:
+            procedure_id: 程序 ID
+            concept_id: 概念 ID
+            weight: 關聯強度 (0-1)
+        """
+        if not self.graph.has_node(procedure_id) or not self.graph.has_node(concept_id):
+            logger.warning(
+                f"[MemoryGraph] 節點不存在，無法添加 APPLIES_TO 邊: "
+                f"{procedure_id} -> {concept_id}"
+            )
+            return
+
+        if not self.graph.has_edge(procedure_id, concept_id):
+            self.graph.add_edge(
+                procedure_id,
+                concept_id,
+                edge_type="APPLIES_TO",
+                weight=min(1.0, max(0.0, weight)),
+                created_at=time.time(),
+            )
+            logger.debug(
+                f"[MemoryGraph] 添加 APPLIES_TO 邊: "
+                f"{procedure_id[:12]} -> {concept_id[:12]}"
+            )
 
     def remove_concept_node(self, concept_id: str) -> None:
         """

@@ -8,33 +8,36 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
 
 from echo_memory.schemas.concept import Concept
+from echo_memory.schemas.entity import Entity
 from echo_memory.schemas.episode import Episode
+from echo_memory.schemas.procedure import Procedure
 
 
 @dataclass
 class MemoryContext:
     """
     記憶脈絡容器。
-    
+
     包含檢索到的所有相關記憶節點，可序列化為 LLM 可讀的文本格式。
     """
 
     episodes: list[Episode] = field(default_factory=list)
     concepts: list[Concept] = field(default_factory=list)
-    entities: list[dict[str, Any]] = field(default_factory=list)  # 暫時用 dict
+    entities: list[Entity] = field(default_factory=list)
+    procedures: list[Procedure] = field(default_factory=list)
     similarities: dict[str, float] = field(default_factory=dict)  # episode_id -> 相似度分數
+    concept_similarities: dict[str, float] = field(default_factory=dict)  # concept_id -> 相似度分數
 
     def is_empty(self) -> bool:
         """檢查是否為空"""
-        return not (self.episodes or self.concepts or self.entities)
+        return not (self.episodes or self.concepts or self.entities or self.procedures)
 
     def to_text(self) -> str:
         """
         序列化為 LLM 可讀的文本格式。
-        
+
         包含：
         - 相對時間標記（幾分鐘前/幾小時前/N天前）
         - 重要程度標記（核心/重要/一般/淡薄）
@@ -72,16 +75,31 @@ class MemoryContext:
         if self.concepts:
             parts.append("\n【相關語義概念】")
             for c in self.concepts[:5]:
-                parts.append(f"  - {c.name}: {c.description}")
+                sim = self.concept_similarities.get(c.id, 0.0)
+                sim_tag = f"[匹配度:{sim:.0%}]" if sim > 0 else ""
+                parts.append(f"  - {sim_tag}{c.name}: {c.description}")
 
         # ─── 實體 ────────────────────────────────────────────────────────────
         if self.entities:
             parts.append("\n【提及的實體】")
             for e in self.entities[:5]:
-                etype = e.get("type", "未知")
-                name = e.get("name", "")
-                desc = e.get("description", "")
+                etype = e.entity_type or "未知"
+                name = e.name
+                desc = e.description
                 parts.append(f"  - [{etype}] {name}: {desc}")
+
+        # ─── 程序記憶 ────────────────────────────────────────────────────────
+        if self.procedures:
+            parts.append("\n【相關程序/SOP】")
+            for p in self.procedures[:3]:
+                steps_preview = " → ".join(p.steps[:3])
+                if len(p.steps) > 3:
+                    steps_preview += " → ..."
+                rate_tag = f"[成功率:{p.success_rate:.0%}]" if p.total_uses > 0 else ""
+                parts.append(
+                    f"  - {rate_tag}{p.name}: {p.description}\n"
+                    f"    步驟: {steps_preview}"
+                )
 
         return "\n".join(parts) if parts else "（無相關記憶）"
 

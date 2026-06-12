@@ -13,8 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from echo_memory.neurochem.state import NeurochemMode, NeurochemState, RetrievalParams
-
+from echo_memory.neurochem.state import NeurochemMode, NeurochemState
 
 # ─── 模式判定 ──────────────────────────────────────────────────────
 
@@ -178,10 +177,10 @@ class TestRetrievalParams:
             for ht in [0.0, 0.3, 0.5, 0.7, 1.0]:
                 s = NeurochemState(dopamine=da, serotonin=ht)
                 p = s.get_retrieval_params()
-                assert 1 <= p.seed_k <= 10
+                assert 3 <= p.seed_k <= 8      # int(3 + 5 * da), da ∈ [0,1]
                 assert 1 <= p.max_hops <= 3
-                assert 0.0 <= p.min_weight <= 0.5
-                assert 1 <= p.concept_top_k <= 10
+                assert 0.0 <= p.min_weight <= 0.35
+                assert 3 <= p.concept_top_k <= 8  # int(3 + 5 * da)
                 assert 0.0 <= p.concept_min_similarity <= 1.0
 
 

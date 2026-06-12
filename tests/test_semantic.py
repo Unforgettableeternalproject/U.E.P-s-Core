@@ -21,7 +21,6 @@ from echo_memory.schemas.concept import Concept
 from echo_memory.storage.graph import MemoryGraph
 from echo_memory.storage.semantic import SemanticMemory
 
-
 # ─── Fixtures ───────────────────────────────────────────────────────
 
 FAKE_DIM = 8  # 測試用小維度，加速
@@ -206,7 +205,7 @@ class TestSemanticPersistence:
         sem.upsert_concept("Test", "測試概念", concept_type="abstract")
 
         # concepts.json 是合法 JSON
-        with open(storage_dir / "concepts.json", "r", encoding="utf-8") as f:
+        with open(storage_dir / "concepts.json", encoding="utf-8") as f:
             data = json.load(f)
         assert isinstance(data, list)
         assert len(data) == 1
@@ -394,9 +393,9 @@ class TestGraphNewEdgeTypes:
         graph.add_relates_to_edge("con_a", "con_b", weight=0.6)
         graph.add_contradicts_edge("con_a", "con_c", weight=0.8)
 
-        # 全部關聯
+        # 全部關聯（去重後每個鄰居只出現一次）
         all_rels = graph.get_concept_relations("con_a")
-        assert len(all_rels) >= 3  # a→b, b→a, a→c, c→a 的部分
+        assert len(all_rels) == 2  # con_b (RELATES_TO) + con_c (CONTRADICTS)
 
         # 只看 RELATES_TO
         relates = graph.get_concept_relations("con_a", edge_type="RELATES_TO")

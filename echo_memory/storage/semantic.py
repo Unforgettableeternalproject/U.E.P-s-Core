@@ -18,9 +18,10 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 
@@ -66,7 +67,8 @@ class SemanticMemory:
         self._concepts: dict[str, Concept] = {}       # name → Concept
         self._concepts_by_id: dict[str, Concept] = {}  # id → Concept
         self._embeddings: np.ndarray | None = None
-        self._id_to_index: dict[str, int] = {}
+        self._id_to_index: dict[str, int] = {}   # concept_id → row index
+        self._idx_to_id: dict[int, str] = {}     # row index → concept_id（反向查詢，O(1)）
 
         # 載入已存在的資料
         self._load()
@@ -114,7 +116,7 @@ class SemanticMemory:
             concept = self._concepts[name]
             concept.description = description
             concept.concept_type = concept_type
-            concept.updated_at = datetime.utcnow()
+            concept.updated_at = datetime.now(timezone.utc)
             if metadata:
                 concept.metadata.update(metadata)
         else:
@@ -181,18 +183,12 @@ class SemanticMemory:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def get(self, concept_id: str) -> Concept | None:
-        """根據 ID 獲取概念"""
-        concept = self._concepts_by_id.get(concept_id)
-        if concept:
-            concept.access_count += 1
-        return concept
+        """根據 ID 獲取概念（不遞增 access_count，純查詢用）。"""
+        return self._concepts_by_id.get(concept_id)
 
     def get_by_name(self, name: str) -> Concept | None:
-        """根據名稱獲取概念"""
-        concept = self._concepts.get(name)
-        if concept:
-            concept.access_count += 1
-        return concept
+        """根據名稱獲取概念（不遞增 access_count，純查詢/存在性檢查用）。"""
+        return self._concepts.get(name)
 
     def search_by_vector(
         self,
@@ -282,6 +278,7 @@ class SemanticMemory:
         self._concepts_by_id.clear()
         self._embeddings = None
         self._id_to_index.clear()
+        self._idx_to_id.clear()
         self._save()
         logger.info("[SemanticMemory] 已清空所有概念")
 
@@ -305,25 +302,31 @@ class SemanticMemory:
             if self._embeddings is None:
                 self._embeddings = new_vec.reshape(1, -1)
                 self._id_to_index[concept.id] = 0
+                self._idx_to_id[0] = concept.id
             else:
                 idx = len(self._embeddings)
                 self._embeddings = np.vstack([self._embeddings, new_vec])
                 self._id_to_index[concept.id] = idx
+                self._idx_to_id[idx] = concept.id
 
     def _rebuild_embeddings(self) -> None:
         """重建向量索引（刪除操作後呼叫）。"""
         if not self._concepts_by_id:
             self._embeddings = None
             self._id_to_index = {}
+            self._idx_to_id = {}
             return
 
         vectors = []
         new_id_to_index: dict[str, int] = {}
+        new_idx_to_id: dict[int, str] = {}
 
         for concept in self._concepts.values():
             if concept.embedding:
                 vec = np.asarray(concept.embedding, dtype=np.float32)
-                new_id_to_index[concept.id] = len(vectors)
+                idx = len(vectors)
+                new_id_to_index[concept.id] = idx
+                new_idx_to_id[idx] = concept.id
                 vectors.append(vec)
 
         if vectors:
@@ -331,13 +334,11 @@ class SemanticMemory:
         else:
             self._embeddings = None
         self._id_to_index = new_id_to_index
+        self._idx_to_id = new_idx_to_id
 
     def _index_to_id(self, index: int) -> str | None:
-        """索引 → Concept ID"""
-        for cid, idx in self._id_to_index.items():
-            if idx == index:
-                return cid
-        return None
+        """索引 → Concept ID（O(1) 反向查詢）"""
+        return self._idx_to_id.get(index)
 
     @staticmethod
     def _normalize_vector(vector: list[float] | np.ndarray) -> np.ndarray:
@@ -357,7 +358,7 @@ class SemanticMemory:
         # 載入元數據
         if self.metadata_file.exists():
             try:
-                with open(self.metadata_file, "r", encoding="utf-8") as f:
+                with open(self.metadata_file, encoding="utf-8") as f:
                     data = json.load(f)
                 for c_dict in data:
                     concept = Concept.from_dict(c_dict)
@@ -383,11 +384,14 @@ class SemanticMemory:
                 )
                 self._embeddings = None
 
-        # 重建 id_to_index（根據 concepts 順序對齊 embeddings 的行）
+        # 重建 id_to_index 和 idx_to_id（根據 concepts 順序對齊 embeddings 的行）
+        # 假設：_concepts 中的第 i 個概念對應 .npy 的第 i 行。
+        # 當所有概念都有 embedding 時成立；不一致時觸發 _rebuild_embeddings 修復。
         if self._embeddings is not None:
             for i, concept in enumerate(self._concepts.values()):
                 if i < len(self._embeddings):
                     self._id_to_index[concept.id] = i
+                    self._idx_to_id[i] = concept.id
                 else:
                     break
 
@@ -400,27 +404,43 @@ class SemanticMemory:
                 self._rebuild_embeddings()
 
     def _save(self) -> None:
-        """保存概念元數據和向量到磁盤。"""
-        # 保存元數據（embedding 欄位排除，因為有獨立的 .npy）
+        """
+        保存概念元數據和向量到磁盤。
+
+        使用 temp file + rename 原子替換模式，避免寫入中斷導致資料損毀。
+
+        embedding 同時存在 JSON 和 .npy 中：
+          - .npy 是主要的向量存儲（NumPy 高效載入）
+          - JSON 裡的 embedding 作為 fallback，在 .npy 損毀時可透過
+            _rebuild_embeddings 從 JSON 重建
+        """
+        # 保存元數據（原子寫入：先寫 temp 檔再 rename）
+        tmp_json = self.metadata_file.with_suffix(".json.tmp")
         try:
-            with open(self.metadata_file, "w", encoding="utf-8") as f:
-                data = [c.to_dict() for c in self._concepts.values()]
-                # 不排除 embedding —— 保留在 JSON 裡讓 from_dict 載入時能對齊
-                # 但 .npy 是主要的向量存儲（效率更高）
+            data = [c.to_dict() for c in self._concepts.values()]
+            with open(tmp_json, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+            tmp_json.replace(self.metadata_file)
         except Exception as e:
             logger.error(f"[SemanticMemory] 保存 concepts.json 失敗: {e}")
+            if tmp_json.exists():
+                tmp_json.unlink()
 
-        # 保存向量
+        # 保存向量（原子寫入）
+        # np.save 會自動加 .npy 副檔名，所以 temp 檔名必須以 .npy 結尾
+        tmp_npy = self.storage_path / "concept_embeddings_tmp.npy"
         try:
             if self._embeddings is not None:
-                np.save(self.embeddings_file, self._embeddings)
+                np.save(tmp_npy, self._embeddings)
+                tmp_npy.replace(self.embeddings_file)
             elif self.embeddings_file.exists():
                 self.embeddings_file.unlink()
         except Exception as e:
             logger.error(
                 f"[SemanticMemory] 保存 concept_embeddings.npy 失敗: {e}"
             )
+            if tmp_npy.exists():
+                tmp_npy.unlink()
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 統計

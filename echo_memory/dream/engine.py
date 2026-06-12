@@ -19,9 +19,12 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Callable
+
+# 延遲導入型別（避免循環依賴）
+from typing import Any
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -29,6 +32,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from echo_memory.dream.distillation import DistillationReport, KnowledgeDistillation
 from echo_memory.dream.pruning import GraphPruning, PruningReport
+from echo_memory.dream.replay import LiDERReplay, ReplayReport
 from echo_memory.storage.episodic import EpisodicMemory
 from echo_memory.storage.graph import MemoryGraph
 from echo_memory.storage.semantic import SemanticMemory
@@ -44,7 +48,9 @@ class DreamReport:
     finished_at: str = ""
     triggered_by: str = "manual"  # "idle" | "cron" | "manual"
     pruning: PruningReport | None = None
+    replay: ReplayReport | None = None
     distillation: DistillationReport | None = None
+    procedure_extraction: Any | None = None  # ProcedureExtractionReport
     edges_updated: int = 0
     error: str | None = None
 
@@ -68,6 +74,9 @@ class DreamReport:
         if self.pruning:
             lines.append(f"  {self.pruning.summary()}")
 
+        if self.replay:
+            lines.append(f"  {self.replay.summary()}")
+
         if self.distillation:
             lines.append(f"  {self.distillation.summary()}")
 
@@ -83,18 +92,18 @@ class DreamReport:
 class DreamEngine:
     """
     Echo Memory Dream Engine - 簡化版。
-    
+
     設計為單例模式，使用 APScheduler BackgroundScheduler，
     不佔用主執行緒，對即時對話完全透明。
-    
+
     Usage:
         engine = DreamEngine(graph)
         engine.start()  # 啟動排程器
-        
+
         # 手動觸發（測試用）
         report = engine.dream_now(triggered_by="manual")
         print(report.summary())
-        
+
         engine.stop()  # 關閉排程器
     """
 
@@ -103,6 +112,7 @@ class DreamEngine:
         graph: MemoryGraph,
         episodic: EpisodicMemory | None = None,
         semantic: SemanticMemory | None = None,
+        procedural: Any | None = None,  # ProceduralMemory（延遲導入避免循環）
         llm_fn: Callable[[str], str] | None = None,
         idle_minutes: int = 30,
         cron_schedule: str = "0 3 * * *",  # 每日凌晨 3 點
@@ -135,10 +145,49 @@ class DreamEngine:
         self._last_interaction: datetime = datetime.now(timezone.utc)
         self._last_dream_report: DreamReport | None = None
 
+        # 保留 episodic 引用（給 stage 5 程序提取用）
+        self._episodic_ref = episodic
+
         # 子模組
         self._pruning = GraphPruning(graph)
 
-        # 知識蒸餾（需要 episodic + semantic + llm_fn，任一缺失則降級跳過）
+        # LiDER 反思重播（需要 episodic，llm_fn=None 時自動跳過）
+        self._replay: LiDERReplay | None = None
+        if episodic is not None:
+            self._replay = LiDERReplay(
+                episodic=episodic,
+                graph=graph,
+                llm_fn=llm_fn,
+            )
+
+        # 矛盾偵測器（需要 semantic + llm_fn）
+        contradiction_detector = None
+        if semantic is not None:
+            try:
+                from echo_memory.dream.contradiction import ContradictionDetector
+                contradiction_detector = ContradictionDetector(
+                    semantic=semantic,
+                    graph=graph,
+                    llm_fn=llm_fn,
+                )
+            except ImportError:
+                pass
+
+        # 程序提取（需要 procedural + episodic）
+        self._procedure_extractor = None
+        if procedural is not None and episodic is not None:
+            try:
+                from echo_memory.dream.procedure_extractor import ProcedureExtractor
+                self._procedure_extractor = ProcedureExtractor(
+                    procedural=procedural,
+                    semantic=semantic,
+                    graph=graph,
+                    llm_fn=llm_fn,
+                )
+            except ImportError:
+                pass
+
+        # 知識蒸餾（需要 episodic + semantic，任一缺失則降級跳過）
         self._distillation: KnowledgeDistillation | None = None
         if episodic is not None and semantic is not None:
             self._distillation = KnowledgeDistillation(
@@ -146,6 +195,7 @@ class DreamEngine:
                 semantic=semantic,
                 graph=graph,
                 llm_fn=llm_fn,
+                contradiction_detector=contradiction_detector,
             )
 
         logger.info(
@@ -241,14 +291,14 @@ class DreamEngine:
     def dream_now(self, triggered_by: str = "manual") -> DreamReport:
         """
         立即執行一個完整的夢境週期（簡化版）。
-        
+
         流程：
           1. 更新邊權重（時間衰減）
           2. 圖譜修剪（移除低權重邊）
-        
+
         Args:
             triggered_by: 觸發來源標籤（"manual" / "idle" / "cron"）
-        
+
         Returns:
             DreamReport: 執行報告
         """
@@ -274,9 +324,65 @@ class DreamEngine:
             # ── 階段 2：圖譜修剪 ──────────────────────────────────────
             report.pruning = self._pruning.run()
 
-            # ── 階段 3：知識蒸餾（若有 LLM）─────────────────────────
+            # ── 階段 3：LiDER 反思重播（若有 LLM）──────────────────
+            if self._replay is not None:
+                report.replay = self._replay.run()
+
+            # ── 階段 4：知識蒸餾（若有 LLM）─────────────────────────
             if self._distillation is not None:
                 report.distillation = self._distillation.run()
+                # 蒸餾會在 MemoryGraph 新增 Concept 節點和 DERIVED_FROM 邊，
+                # 需要持久化以免重啟後遺失（造成 SemanticMemory 和 Graph 不一致）
+                self.graph.save()
+
+            # ── 階段 5：程序提取（若有 ProceduralMemory + LLM）────────
+            if self._procedure_extractor is not None and self._episodic_ref is not None:
+                try:
+                    candidates = self._episodic_ref.list_episodes(
+                        limit=10, sort_by="salience", ascending=False,
+                    )
+                    if candidates:
+                        report.procedure_extraction = self._procedure_extractor.run(candidates)
+                except Exception as e:
+                    logger.warning(f"[DreamEngine] 程序提取失敗（不影響夢境週期）: {e}")
+
+            # ── 圖譜持久化（階段 5 的 Procedure 節點 + APPLIES_TO 邊）────
+            # Critical #2 修復：Stage 5 建立的圖譜關聯也需要 save
+            self.graph.save()
+
+            # ── 統一標記 is_dreamed（所有階段結束後）──────────────────
+            #
+            # 標記策略（防止 Replay 成功但蒸餾空結果時永久鎖死 Episode）：
+            #
+            #   1. 蒸餾有產出 → 標記蒸餾處理過的 + Replay 處理過的
+            #   2. 蒸餾未啟用（self._distillation is None）→ 標記 Replay 的
+            #   3. 蒸餾啟用但空結果 → **都不標記**，下一輪 Replay+蒸餾都會重試
+            #
+            dreamed_ids: set[str] = set()
+
+            distillation_produced = (
+                report.distillation is not None
+                and (report.distillation.concepts_created > 0
+                     or report.distillation.concepts_updated > 0)
+            )
+
+            if distillation_produced:
+                # 蒸餾成功 → 標記蒸餾和重播處理過的 Episode
+                if report.distillation and report.distillation._distilled_episode_ids:
+                    dreamed_ids.update(report.distillation._distilled_episode_ids)
+                if report.replay and report.replay._replayed_episode_ids:
+                    dreamed_ids.update(report.replay._replayed_episode_ids)
+            elif self._distillation is None:
+                # 蒸餾不適用（沒有 distillation 子模組）→ Replay 可以標記
+                if report.replay and report.replay._replayed_episode_ids:
+                    dreamed_ids.update(report.replay._replayed_episode_ids)
+            # else: 蒸餾啟用但空結果 → 不標記，下一輪重試
+
+            if dreamed_ids and self._episodic_ref is not None:
+                self._episodic_ref.mark_as_dreamed(list(dreamed_ids))
+                logger.info(
+                    f"[DreamEngine] 統一標記 {len(dreamed_ids)} 個 Episode 為 is_dreamed"
+                )
 
             # 重置閒置計時器（防止立即重複觸發）
             self.notify_interaction()

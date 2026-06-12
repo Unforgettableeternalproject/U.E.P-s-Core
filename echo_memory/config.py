@@ -131,12 +131,12 @@ LLM Provider:
   - GCP Location: {self.gcp_location}
   - Gemini API: {'✓' if self.google_api_key else '✗'}
   - System Prompt: {self.system_prompt[:50]}...
-  
+
 Memory System:
   - Storage Path: {self.memory_storage_path}
   - Max Episodes: {self.memory_max_episodes:,}
   - Max Concepts: {self.memory_max_concepts:,}
-  
+
 Retrieval:
   - Seed K: {self.retrieval_seed_k}
   - Breadth K: {self.retrieval_breadth_k}

@@ -14,6 +14,7 @@ Phase 2: 整合 SemanticMemory 概念檢索 + RELATES_TO 展開 + CONTRADICTS pe
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from echo_memory.neurochem.state import NeurochemState, RetrievalParams
 from echo_memory.schemas.concept import Concept
@@ -46,10 +47,14 @@ class EcphoryRetrieval:
         episodic: EpisodicMemory,
         semantic: SemanticMemory,
         working: WorkingMemory | None = None,
+        procedural: Any | None = None,  # ProceduralMemory（延遲導入）
+        entity_store: Any | None = None,  # EntityStore（延遲導入）
     ):
         self.episodic = episodic
         self.semantic = semantic
         self.working = working  # 若提供，啟用查詢向量快取
+        self.procedural = procedural  # 若提供，檢索時一併搜索程序
+        self.entity_store = entity_store  # 若提供，沿 MENTIONS 邊收集 Entity
 
     def retrieve(
         self,
@@ -83,17 +88,18 @@ class EcphoryRetrieval:
         Returns:
             MemoryContext 記憶脈絡（包含 episodes + concepts）
         """
-        # 若有 NeurochemState，用它的衍生參數覆寫預設值
+        # 若有 NeurochemState，用它的衍生參數覆寫預設值（只呼叫一次，快取結果）
+        _ncparams: RetrievalParams | None = None
         if neurochem is not None:
-            params = neurochem.get_retrieval_params()
+            _ncparams = neurochem.get_retrieval_params()
             dopamine = neurochem.dopamine
             serotonin = neurochem.serotonin
-            concept_top_k = params.concept_top_k
-            concept_min_similarity = params.concept_min_similarity
+            concept_top_k = _ncparams.concept_top_k
+            concept_min_similarity = _ncparams.concept_min_similarity
 
         # Step 1: Episode 向量檢索（種子節點）
         # 查詢向量快取：相同查詢不重複生成 embedding（省 ~50ms）
-        cache_key = f"{self._CACHE_PREFIX}{query}"
+        cache_key = f"{self._CACHE_PREFIX}{query.strip()}"
         query_embedding = None
 
         if self.working is not None:
@@ -109,8 +115,8 @@ class EcphoryRetrieval:
 
         # NeurochemState 影響種子數
         seed_k = max(3, top_k // 2)
-        if neurochem is not None:
-            seed_k = neurochem.get_retrieval_params().seed_k
+        if _ncparams is not None:
+            seed_k = _ncparams.seed_k
 
         seed_results = self.episodic.search(
             query_embedding,
@@ -137,10 +143,9 @@ class EcphoryRetrieval:
 
         # Step 2: 圖譜多跳展開（Episode PRECEDES 邊）
         if enable_graph_expansion and seed_ids and self.episodic.graph.get_node_count() > 0:
-            if neurochem is not None:
-                p = neurochem.get_retrieval_params()
-                max_hops = p.max_hops
-                min_weight = p.min_weight
+            if _ncparams is not None:
+                max_hops = _ncparams.max_hops
+                min_weight = _ncparams.min_weight
             else:
                 max_hops = 2 if serotonin > 0.6 else 1
                 min_weight = max(0.15, 0.35 - dopamine * 0.3)
@@ -181,23 +186,82 @@ class EcphoryRetrieval:
                 f"找到 {len(concepts)} 個概念"
             )
 
-        # Step 4: 排序 + 截斷
+        # Step 4: 程序記憶搜索（若有 ProceduralMemory）
+        procedures = []
+        if self.procedural is not None and self.procedural.count() > 0:
+            try:
+                proc_results = self.procedural.search_by_vector(
+                    query_embedding=query_embedding,
+                    top_k=3,
+                    min_similarity=0.3,
+                )
+                procedures = [proc for proc, _ in proc_results]
+                if procedures:
+                    logger.debug(
+                        f"[EcphoryRetrieval] 程序搜索完成 - "
+                        f"找到 {len(procedures)} 個相關程序"
+                    )
+            except Exception as e:
+                logger.warning(f"[EcphoryRetrieval] 程序搜索失敗（不影響檢索）: {e}")
+
+        # Step 5: 排序 + 截斷
         episodes.sort(key=lambda ep: similarities.get(ep.id, 0.0), reverse=True)
         final_episodes = episodes[:top_k]
+
+        # Step 6: 沿 MENTIONS 邊收集 Entity（若有 EntityStore）
+        entities = []
+        if self.entity_store is not None:
+            entities = self._collect_entities(final_episodes)
 
         # 構建 MemoryContext
         context = MemoryContext(
             episodes=final_episodes,
             concepts=concepts,
+            entities=entities,
+            procedures=procedures,
             similarities=similarities,
+            concept_similarities=concept_similarities,
         )
 
         logger.debug(
             f"[EcphoryRetrieval] 檢索完成 - "
-            f"Episodes: {len(final_episodes)}, Concepts: {len(concepts)}"
+            f"Episodes: {len(final_episodes)}, Concepts: {len(concepts)}, "
+            f"Entities: {len(entities)}, Procedures: {len(procedures)}"
         )
 
         return context
+
+    def _collect_entities(self, episodes: list) -> list:
+        """
+        從檢索到的 Episode 沿 MENTIONS 邊收集關聯的 Entity。
+
+        去重：同一 Entity 被多個 Episode 提及時只出現一次。
+
+        Returns:
+            Entity 列表（按 mention_count 降序）
+        """
+        graph = self.episodic.graph
+        seen_ids: set[str] = set()
+        entities = []
+
+        for ep in episodes:
+            try:
+                mentioned = graph.get_episode_entities(ep.id)
+            except Exception:
+                continue
+
+            for ent_id, _weight in mentioned:
+                if ent_id in seen_ids:
+                    continue
+                seen_ids.add(ent_id)
+
+                ent = self.entity_store.get(ent_id)
+                if ent is not None:
+                    entities.append(ent)
+
+        # 按 mention_count 降序（最常被提及的排前面）
+        entities.sort(key=lambda e: e.mention_count, reverse=True)
+        return entities[:10]  # 上限 10 個，避免噪音過多
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 語義概念檢索

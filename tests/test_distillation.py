@@ -17,12 +17,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from echo_memory.dream.distillation import KnowledgeDistillation, DistillationReport
+from echo_memory.dream.distillation import DistillationReport, KnowledgeDistillation
 from echo_memory.schemas.episode import Episode
 from echo_memory.storage.episodic import EpisodicMemory
-from echo_memory.storage.graph import MemoryGraph
 from echo_memory.storage.semantic import SemanticMemory
-
 
 # ─── Fixtures ───────────────────────────────────────────────────────
 
@@ -30,7 +28,9 @@ MOCK_DIM = 512
 
 
 def _mock_embed_fn(text: str) -> list[float]:
-    rng = np.random.RandomState(hash(text) & 0xFFFFFFFF)
+    import hashlib
+    seed = int.from_bytes(hashlib.sha256(text.encode()).digest()[:4], "little")
+    rng = np.random.RandomState(seed)
     vec = rng.randn(MOCK_DIM).astype(np.float32)
     norm = float(np.linalg.norm(vec))
     if norm > 0:
@@ -158,7 +158,7 @@ class TestDistillationCore:
     def test_distillation_creates_derived_from_edges(self, storage):
         """蒸餾後應建立 DERIVED_FROM 邊。"""
         episodic, semantic, graph = storage
-        episodes = _store_high_salience_episodes(episodic)
+        _store_high_salience_episodes(episodic)
 
         distiller = KnowledgeDistillation(
             episodic=episodic,
@@ -190,18 +190,23 @@ class TestDistillationCore:
             llm_fn=_mock_llm_fn_good,
         )
 
-        distiller.run()
+        report = distiller.run()
 
-        # 所有候選 Episode 都應被標記
+        # 蒸餾不再自己標記 is_dreamed（由 DreamEngine 統一負責）
+        # 但會記錄被蒸餾的 Episode ID
+        assert len(report._distilled_episode_ids) == 3
         for ep in episodes:
             loaded = episodic.get(ep.id)
             assert loaded is not None
-            assert loaded.is_dreamed is True
+            assert loaded.is_dreamed is False  # 蒸餾自己不標記
 
     def test_distillation_skips_already_dreamed(self, storage):
-        """已蒸餾的 Episode 不會被重複處理。"""
+        """手動標記 is_dreamed 後，蒸餾跳過。"""
         episodic, semantic, graph = storage
-        _store_high_salience_episodes(episodic)
+        episodes = _store_high_salience_episodes(episodic)
+
+        # 手動標記（模擬 DreamEngine 統一標記）
+        episodic.mark_as_dreamed([ep.id for ep in episodes])
 
         distiller = KnowledgeDistillation(
             episodic=episodic,
@@ -210,14 +215,9 @@ class TestDistillationCore:
             llm_fn=_mock_llm_fn_good,
         )
 
-        # 第一次蒸餾
-        report1 = distiller.run()
-        assert report1.episodes_scanned == 3
-
-        # 第二次蒸餾 — 全部已 dreamed，應跳過
-        report2 = distiller.run()
-        assert report2.skipped_reason == "no_episodes"
-        assert report2.episodes_scanned == 0
+        report = distiller.run()
+        assert report.skipped_reason == "no_episodes"
+        assert report.episodes_scanned == 0
 
     def test_distillation_updates_existing_concept(self, storage):
         """同名概念應更新而非重複建立。"""
@@ -374,7 +374,7 @@ class TestLLMOutputParsing:
             llm_fn=_mock_llm_fn_bad_json,
         )
 
-        report = distiller.run()
+        distiller.run()
         # 解析失敗但不應崩潰
         assert semantic.count() == 0
 

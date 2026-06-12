@@ -7,7 +7,7 @@ Episode Schema - 情節記憶節點
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -15,7 +15,7 @@ from typing import Any
 class Episode:
     """
     情節記憶節點（Engram）。
-    
+
     Attributes:
         id: 唯一標識符（自動生成）
         user_input: 用戶原始輸入
@@ -39,7 +39,7 @@ class Episode:
 
     # 自動生成欄位
     id: str = field(default="")
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     # 向量與權重
     embedding: list[float] = field(default_factory=list)
@@ -87,5 +87,7 @@ class Episode:
     @property
     def age_hours(self) -> float:
         """距離創建的小時數"""
-        delta = datetime.utcnow() - self.timestamp
+        now = datetime.now(timezone.utc)
+        ts = self.timestamp if self.timestamp.tzinfo else self.timestamp.replace(tzinfo=timezone.utc)
+        delta = now - ts
         return delta.total_seconds() / 3600

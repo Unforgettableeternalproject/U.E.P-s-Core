@@ -64,6 +64,8 @@ try:
     from .tts_utils.maskgct_utils import build_semantic_model, build_semantic_codec
     from .tts_utils.front import TextNormalizer, TextTokenizer
     from .tts_utils.gpt_length import calc_dynamic_max_generate_length
+    from .tts_utils.chinese_segmenter import pre_segment_chinese
+    from .tts_utils.segment_guard import check_segment_anomaly, get_retry_params, SegmentGuardStats
     from .s2mel.modules.commons import load_checkpoint2, MyModel
     from .s2mel.modules.bigvgan import bigvgan
 except ImportError:
@@ -72,6 +74,8 @@ except ImportError:
     from tts_utils.maskgct_utils import build_semantic_model, build_semantic_codec
     from tts_utils.front import TextNormalizer, TextTokenizer
     from tts_utils.gpt_length import calc_dynamic_max_generate_length
+    from tts_utils.chinese_segmenter import pre_segment_chinese
+    from tts_utils.segment_guard import check_segment_anomaly, get_retry_params, SegmentGuardStats
     from s2mel.modules.commons import load_checkpoint2, MyModel
     from s2mel.modules.bigvgan import bigvgan
 
@@ -708,9 +712,22 @@ class IndexTTSLite:
             if verbose:
                 debug_log(3, "   [1/4] 文本處理...")
 
-            text_tokens_list = self.tokenizer.tokenize(text)
+            # Chinese semantic pre-segmentation (jieba) — only when language is Chinese
+            _jieba_cfg = self.cfg.get('chunking', {}).get('jieba_segmentation', {})
+            if language == 'zh':
+                sub_texts = pre_segment_chinese(text, _jieba_cfg)
+                if len(sub_texts) > 1 and verbose:
+                    debug_log(2, f"      🈶 jieba 語義預切分: {len(sub_texts)} 段")
+            else:
+                sub_texts = [text]
+
+            # Tokenize each sub-text independently, then split into segments
+            all_tokens: list = []
+            for sub_text in sub_texts:
+                all_tokens.extend(self.tokenizer.tokenize(sub_text))
+
             segments = self.tokenizer.split_segments(
-                text_tokens_list,
+                all_tokens,
                 max_text_tokens_per_segment=max_text_tokens_per_segment,
                 quick_streaming_tokens=quick_streaming_tokens,
             )
@@ -755,6 +772,14 @@ class IndexTTSLite:
             seg_s2mel_cfm_ms = 0.0
             seg_vocoder_ms = 0.0
             first_segment_done_ms: Optional[float] = None
+
+            # Anomaly detection config
+            _anomaly_cfg = self.cfg.get('synthesis', {}).get('anomaly_detection', {})
+            _anomaly_enabled = _anomaly_cfg.get('enabled', True)
+            _max_retries = int(_anomaly_cfg.get('max_retries', 1))
+            _max_audio_ratio = float(_anomaly_cfg.get('max_audio_ratio', 3.0))
+            _max_segment_rtf = float(_anomaly_cfg.get('max_segment_rtf', 5.0))
+            guard_stats = SegmentGuardStats()
 
             # --- Adaptive Segment Emotion (實驗性) ---
             # 為多段文本的每段生成微幅不同的情緒偏移，提升段落間的語調連續性。
@@ -925,6 +950,23 @@ class IndexTTSLite:
                 seg_vocoder_ms += (time.perf_counter() - _seg_t) * 1000
                 seg_audio = seg_audio_gpu.cpu()  # D2H transfer 不計入 vocoder 時間
 
+                # --- Anomaly detection (before trim, so we check raw length) ---
+                if _anomaly_enabled:
+                    _seg_gpt_time_ms = seg_gpt_semantic_ms  # cumulative, but for this segment only the last delta matters
+                    anomaly_result = check_segment_anomaly(
+                        audio_samples=seg_audio.shape[-1],
+                        sample_rate=22050,
+                        num_text_tokens=len(seg_tokens),
+                        gpt_gen_time_ms=_seg_gpt_time_ms,
+                        max_audio_ratio=_max_audio_ratio,
+                        max_segment_rtf=_max_segment_rtf,
+                    )
+                    if anomaly_result.is_anomalous:
+                        guard_stats.anomaly_count += 1
+                        guard_stats.anomalous_segments.append(seg_idx)
+                        if verbose:
+                            debug_log(1, f"   ⚠️  段落 {seg_idx+1} 異常: {anomaly_result.reason}")
+
                 # Trim trailing silence from segment (GPT sometimes generates
                 # long silence runs before the stop token)
                 seg_audio = self._trim_trailing_silence(seg_audio)
@@ -963,6 +1005,8 @@ class IndexTTSLite:
                 timings["vocoder_ms"] = seg_vocoder_ms
                 timings["segment_count"] = float(num_segments)
                 timings["first_segment_ms"] = first_segment_done_ms or 0.0
+                timings["anomaly_count"] = float(guard_stats.anomaly_count)
+                timings["retry_count"] = float(guard_stats.retry_count)
 
             _t = time.perf_counter()
 

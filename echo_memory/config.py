@@ -40,7 +40,7 @@ class Config:
         self.embedding_device = os.getenv("EMBEDDING_DEVICE", "cpu")
         self.embedding_query_prefix = os.getenv(
             "EMBEDDING_QUERY_PREFIX",
-            "为这个句子生成表示以用于检索相关文章："
+            ""
         )
 
         # === 記憶系統配置 ===
@@ -53,7 +53,7 @@ class Config:
         self.retrieval_seed_k = int(os.getenv("RETRIEVAL_SEED_K", "5"))
         self.retrieval_breadth_k = int(os.getenv("RETRIEVAL_BREADTH_K", "12"))
         self.retrieval_min_similarity = float(
-            os.getenv("RETRIEVAL_MIN_SIMILARITY", "0.35")
+            os.getenv("RETRIEVAL_MIN_SIMILARITY", "0.25")
         )
         self.retrieval_weight_threshold = float(
             os.getenv("RETRIEVAL_WEIGHT_THRESHOLD", "0.225")

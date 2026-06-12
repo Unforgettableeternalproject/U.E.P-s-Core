@@ -121,11 +121,14 @@ class ToolExecutor:
             return {"success": False, "result": "content is required"}
 
         # 以「LLM 主動標記重要資訊」的格式存入情節記憶
+        # content_summary 使用乾淨的原文，不帶 [force_remember] 前綴，
+        # 確保向量搜索的語義準確度
         episode_id = self.engine.store_episode(
             user_input=f"[force_remember] {content}",
             agent_response=f"Stored because: {reason}",
             session_id=self.session_id,
             salience=salience,
+            content_summary=content[:100],
         )
 
         logger.info(f"[ToolExecutor] force_remember 儲存成功: {episode_id}")

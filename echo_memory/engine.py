@@ -47,7 +47,7 @@ class MemoryEngine:
         storage_path: str | Path = "./data",
         embedding_model: str = "BAAI/bge-small-zh-v1.5",
         device: str = "cpu",
-        query_prefix: str = "为这个句子生成表示以用于检索相关文章：",
+        query_prefix: str = "",
         max_episodes: int | None = None,
         llm_fn: Callable[[str], str] | None = None,
         namespace_id: str = "local-default",
@@ -59,7 +59,7 @@ class MemoryEngine:
             storage_path: 資料存儲路徑
             embedding_model: 嵌入模型名稱
             device: 運行設備 (cpu/cuda)
-            query_prefix: retrieval 查詢時的 prefix（bge 系列模型需要）
+            query_prefix: retrieval 查詢時的 prefix（大多數模型不需要，留空即可）
             max_episodes: 情節記憶上限（None 代表無限制）
             llm_fn: LLM 呼叫函式 (prompt: str) -> str，用於知識蒸餾與反思重播。
                     若為 None，Dream Engine 的蒸餾和重播步驟會優雅跳過。
@@ -174,6 +174,12 @@ class MemoryEngine:
             self._entity_extractor = EntityExtractor(llm_fn=self._llm_fn)
         return self._entity_extractor
 
+    def set_llm_fn(self, llm_fn: Callable[[str], str] | None) -> None:
+        """Update the optional LLM callback used by lazy and loaded components."""
+        self._llm_fn = llm_fn
+        if self._entity_extractor is not None:
+            self._entity_extractor._llm_fn = llm_fn
+
     # ─── 核心 API ────────────────────────────────────────────────────────────
 
     def store_episode(
@@ -200,7 +206,9 @@ class MemoryEngine:
             episode_id: 新建的情節 ID
         """
         if content_summary is None:
-            content_summary = f"{user_input[:50]}..."
+            # 結合 user + agent 的核心內容作為摘要，供向量搜索使用
+            combined = f"{user_input} {agent_response}"
+            content_summary = combined[:150]
 
         episode = Episode(
             user_input=user_input,

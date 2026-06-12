@@ -41,7 +41,7 @@ class EpisodicMemory:
         storage_path: str | Path,
         embedding_model: str = "BAAI/bge-small-zh-v1.5",
         device: str = "cpu",
-        query_prefix: str = "为这个句子生成表示以用于检索相关文章：",
+        query_prefix: str = "",
         max_episodes: int | None = None,
         lock_path: str | Path | None = None,
     ):
@@ -666,6 +666,7 @@ class EpisodicMemory:
             expected_dimensions = {
                 "all-MiniLM-L6-v2": 384,
                 "BAAI/bge-small-zh-v1.5": 512,
+                "BAAI/bge-m3": 1024,
             }
             expected_dim = expected_dimensions.get(self.embedding_model)
             legacy_compatible = (

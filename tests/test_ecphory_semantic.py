@@ -128,7 +128,7 @@ class TestConceptRetrieval:
         context = retrieval.retrieve(
             "壽司料理",
             top_k=5,
-            min_similarity=0.0,
+            min_similarity=-1.0,
             concept_min_similarity=0.0,
         )
 
@@ -275,9 +275,9 @@ class TestBackwardCompatibility:
         # semantic 是空的
         assert semantic.count() == 0
 
-        context = retrieval.retrieve("壽司", top_k=5, min_similarity=0.0)
+        context = retrieval.retrieve("壽司", top_k=5, min_similarity=-1.0)
 
-        # Episode 檢索應正常工作（mock 向量用 min_similarity=0.0）
+        # Episode 檢索應正常工作（mock 向量 cosine 可能為負，用 -1.0 確保不被過濾）
         assert len(context.episodes) > 0
         assert len(context.concepts) == 0
 
@@ -291,12 +291,12 @@ class TestBackwardCompatibility:
             "壽司",
             enable_semantic=False,
             top_k=5,
-            min_similarity=0.0,
+            min_similarity=-1.0,
         )
 
         # 概念檢索被跳過
         assert len(context.concepts) == 0
-        # Episode 檢索仍正常
+        # Episode 檢索仍正常（mock 向量 cosine 可能為負，用 -1.0）
         assert len(context.episodes) > 0
 
     def test_no_episodes_but_has_concepts(self, storage):

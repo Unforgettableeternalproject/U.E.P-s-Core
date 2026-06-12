@@ -568,11 +568,9 @@ def _cmd_dream(engine: MemoryEngine, llm: LLMClient | None = None):
         return
 
     with console.status("[cyan]Dreaming...[/]", spinner="moon"):
-        llm_fn = llm.as_llm_fn() if llm else None
-
-        # 如果 engine 還沒有 llm_fn 就嘗試注入
-        if llm_fn and not getattr(engine, '_llm_fn', None):
-            engine._llm_fn = llm_fn
+        # 保底注入：若 engine 在 init 時沒拿到 llm_fn（例如 LLM 後來才可用）
+        if llm and not engine._llm_fn:
+            engine.set_llm_fn(llm.as_llm_fn())
 
         report = engine.dream(triggered_by="manual")
 
@@ -1029,6 +1027,10 @@ class EchoMemoryCLI:
             try:
                 self.llm = LLMClient()
                 console.print(f"[green]✓[/] LLM ready — {self.llm.model_name}")
+
+                # 注入 llm_fn 到 MemoryEngine，啟用 LLM 級 entity extraction / dream
+                self.engine.set_llm_fn(self.llm.as_llm_fn())
+
             except Exception as e:
                 console.print(f"[yellow]⚠ LLM init failed: {e}[/]")
                 console.print("[dim]  Chat mode unavailable, memory ops still work.[/]")

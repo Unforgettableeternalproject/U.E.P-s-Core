@@ -90,11 +90,18 @@ class MemoryEngine:
 
     @property
     def semantic(self):
-        """延遲加載語義記憶模組"""
+        """延遲加載語義記憶模組（共享 EpisodicMemory 的 embedding 模型）"""
         if self._semantic is None:
             from echo_memory.storage.semantic import SemanticMemory
+
+            # 用 episodic 的 _generate_embedding 作為 embed_fn，
+            # 這樣兩層記憶共用同一個 SentenceTransformer 實例
+            def _shared_embed_fn(text: str) -> list[float]:
+                return self.episodic._generate_embedding(text)
+
             self._semantic = SemanticMemory(
                 storage_path=self.storage_path / "semantic",
+                embed_fn=_shared_embed_fn,
             )
         return self._semantic
 

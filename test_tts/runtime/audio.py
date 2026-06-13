@@ -185,9 +185,8 @@ class StreamingAudioPlayer:
                     sample_rate=sample_rate,
                 )
                 play_obj.wait_done()
-                # Small buffer after each segment to prevent audio driver
-                # from cutting off the tail (simpleaudio sometimes returns
-                # from wait_done slightly before playback fully completes)
+                # Small buffer to prevent audio driver from cutting off
+                # the tail (simpleaudio sometimes returns early)
                 time.sleep(0.05)
                 self._segments_played += 1
 

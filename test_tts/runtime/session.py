@@ -118,8 +118,20 @@ class TTSInteractiveSession:
             # --- Producer/Consumer path ---
             self.player.start_stream()
 
+            # Pre-generate a short silence tensor for inter-segment gaps.
+            # The saved WAV file has interval_silence baked into the
+            # concatenation step, but streaming plays segments independently
+            # so we need to insert silence explicitly.
+            import torch as _torch
+            _interval_ms = 200  # matches default synthesis.interval_silence_ms
+            _interval_samples = int(_interval_ms * 22050 / 1000)
+            _interval_silence = _torch.zeros(1, _interval_samples)
+
             def _on_segment(audio_tensor, seg_idx: int, total: int):
                 self.player.enqueue_tensor(audio_tensor)
+                # Insert inter-segment silence (except after the last segment)
+                if seg_idx < total - 1:
+                    self.player.enqueue_tensor(_interval_silence)
 
             generated = self.backend.generate(
                 text, output_path, on_segment_audio=_on_segment, language=lang,
@@ -214,7 +226,7 @@ class TTSInteractiveSession:
 
         self.load()
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        return self.backend.generate(text, output_path)
+        return self.backend.generate(text, output_path, language=self.get_language())
 
     def _resolve_output_path(self, output_path: str | Path) -> Path:
         path = Path(output_path)

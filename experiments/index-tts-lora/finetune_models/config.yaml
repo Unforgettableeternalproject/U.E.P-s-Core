@@ -44,15 +44,15 @@ gpt:
   use_mel_codes_as_input: true
 gpt_checkpoint: C:/Users/Bernie/source/repos/Unforgettableeternalproject/TestSeparateTTSSystem/legacy_tts/modules/tts_module/checkpoints/gpt.pth
 train:
-  data_path: C:\Users\Bernie\source\repos\Unforgettableeternalproject\TestSeparateTTSSystem\experiments\lora_training_data\processed_data
+  data_path: C:\Users\Bernie\source\repos\Unforgettableeternalproject\TestSeparateTTSSystem\experiments\lora_training_data\processed_data\audio_list_20260613_141513
   early_stopping_patience: 1
   epochs: 15
   finetune_model_dir: finetune_models
   gradient_accumulation_steps: 4
   lora:
-    lora_alpha: 32
+    lora_alpha: 16
     lora_dropout: 0.1
-    r: 16
+    r: 8
     target_modules:
     - attn.c_attn
     - attn.c_proj

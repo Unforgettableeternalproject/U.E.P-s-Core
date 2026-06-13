@@ -129,7 +129,8 @@
       "Bash(.venv/Scripts/python.exe batch_generate.py --start 100 --end 105 --dry-run)",
       "Bash(.venv/Scripts/python.exe *)",
       "Bash(PYTHONUTF8=1 .venv/Scripts/python.exe batch_generate.py --start 100 --end 103)",
-      "Bash(PYTHONUTF8=1 .venv/Scripts/python.exe *)"
+      "Bash(PYTHONUTF8=1 .venv/Scripts/python.exe *)",
+      "Bash(PYTHONUTF8=1 /c/Users/Bernie/source/repos/Unforgettableeternalproject/U.E.P-s-Core/env/Scripts/python.exe *)"
     ]
   }
 }

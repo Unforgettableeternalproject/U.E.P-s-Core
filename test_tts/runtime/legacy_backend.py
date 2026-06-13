@@ -13,8 +13,9 @@ EngineFactory = Callable[..., Any]
 class LegacyIndexTTS2Backend:
     """Persistent backend wrapper around the copied IndexTTS2 Lite engine."""
 
-    # Default LoRA checkpoint path (relative to project root)
-    DEFAULT_LORA_CHECKPOINT = "experiments/index-tts-lora/finetune_models/checkpoints/gpt_best_v2_merged.pth"
+    # Default LoRA adapter path (relative to project root)
+    # 支援 adapter 目錄（PEFT 格式）或舊版 .pth checkpoint（向後相容）
+    DEFAULT_LORA_CHECKPOINT = "experiments/index-tts-lora/finetune_models/checkpoints/gpt_best"
     DEFAULT_LORA_SCALE = 0.85
 
     def __init__(
@@ -127,16 +128,24 @@ class LegacyIndexTTS2Backend:
         self.engine.load_lora(path, scale=s)
 
     def _resolve_default_lora(self) -> str:
-        """Resolve the default LoRA checkpoint path relative to project root."""
+        """Resolve the default LoRA adapter/checkpoint path relative to project root."""
         import os
-        # paths.legacy_root 是 legacy_tts/，往上一層就是專案根目錄
         project_root = str(Path(self.paths.legacy_root).parent)
         candidate = os.path.join(project_root, self.DEFAULT_LORA_CHECKPOINT)
-        if os.path.isfile(candidate):
+        # 優先找 adapter 目錄（PEFT 格式）
+        if os.path.isdir(candidate):
             return candidate
+        # 向後相容：找 .pth 檔案
+        pth_candidate = candidate + ".pth"
+        if os.path.isfile(pth_candidate):
+            return pth_candidate
+        # 再找舊版 merged checkpoint
+        legacy = os.path.join(project_root, "experiments/index-tts-lora/finetune_models/checkpoints/gpt_best_v2_merged.pth")
+        if os.path.isfile(legacy):
+            return legacy
         raise FileNotFoundError(
-            f"找不到預設 LoRA checkpoint: {candidate}\n"
-            f"請用 lora load <path> 指定路徑，或確認 checkpoint 存在。"
+            f"找不到 LoRA adapter 或 checkpoint: {candidate}\n"
+            f"請用 lora load <path> 指定路徑，或確認 adapter 存在。"
         )
 
     def set_lora_scale(self, scale: float) -> None:

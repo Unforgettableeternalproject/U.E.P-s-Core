@@ -563,54 +563,32 @@ class Trainer:
         
         return avg_text_loss, avg_mel_loss, acc_1, acc_10, acc_20
 
-    def _save_checkpoint(self, file_name: str, merge_lora: bool, unload_after_merge: bool):
-        """保存模型检查点，包含说话人信息。"""
-        checkpoint_path = os.path.join(self.checkpoint_dir, file_name)
-        
+    def _save_checkpoint(self, file_name: str, merge_lora: bool = False, unload_after_merge: bool = False):
+        """保存 LoRA adapter 權重（輕量格式）。
+
+        只存 adapter 的 A/B 矩陣，不做 merge。推論端用 PEFT load_adapter 載入。
+        舊的 merge_lora / unload_after_merge 參數保留相容但已忽略。
+        """
+        # adapter 目錄名 = file_name 去掉 .pth
+        adapter_name = file_name.replace(".pth", "")
+        adapter_dir = os.path.join(self.checkpoint_dir, adapter_name)
+
         self.model.eval()
-        
-        model_to_save = self.model
-        
-        if merge_lora:
-            logger.info("Merging LoRA weights into the model for saving...")
-            if unload_after_merge:
-                # 为了在不影响继续训练的情况下保存完全融合的模型，我们创建一个深拷贝
-                # 注意：这可能会消耗较多内存和时间
-                logger.info("Creating a deep copy of the model for a clean merge. This may take a moment...")
-                model_to_save = copy.deepcopy(self.model)
-                
-                # 在深拷贝上进行融合与卸载
-                fused_inference_model = model_to_save.inference_model.merge_and_unload()
-                model_to_save.inference_model = fused_inference_model
-                logger.info("LoRA weights merged and unloaded in the copied model.")
-            else:
-                # 如果只是临时融合，直接在原模型上操作，后续再unmerge
-                self.model.inference_model.merge_adapter()
-    
-        # 保存模型状态和说话人信息
-        state_dict = model_to_save.state_dict()
-        checkpoint_data = {
-            'model': state_dict,
-            'speakers': self.speaker_list,  # 保存说话人列表
-            'speaker_conditions': {speaker_id: param.detach().cpu().numpy() 
-                                 for speaker_id, param in self.speaker_mean_conditions.items()}
+
+        # 存 PEFT adapter（只有 A/B 矩陣 + adapter_config.json）
+        self.model.inference_model.save_pretrained(adapter_dir)
+        logger.info(f"LoRA adapter saved to: {adapter_dir}")
+
+        # 額外存 speaker 資訊（放在 adapter 目錄內）
+        speaker_data = {
+            'speakers': self.speaker_list,
+            'speaker_conditions': {sid: param.detach().cpu().numpy()
+                                   for sid, param in self.speaker_mean_conditions.items()}
         }
-        
-        torch.save(checkpoint_data, checkpoint_path)
-        logger.info(f"Checkpoint saved to: {checkpoint_path}")
-        logger.info(f"Saved conditions for speakers: {self.speaker_list}")
-    
-        # 如果创建了深拷贝，清理它
-        if merge_lora and unload_after_merge:
-            del model_to_save
-            clear_torch_cache()
-            logger.info("Cleaned up the temporary merged model.")
-        
-        # 如果是临时融合，恢复模型状态以便继续训练
-        if merge_lora and not unload_after_merge:
-            logger.info("Unmerging LoRA weights to continue training...")
-            self.model.inference_model.unmerge_adapter()
-                
+        speaker_path = os.path.join(adapter_dir, "speaker_info.pt")
+        torch.save(speaker_data, speaker_path)
+        logger.info(f"Speaker info saved to: {speaker_path}")
+
         self.model.train()
 
     def train(self, train_ds: Dataset, valid_ds: Dataset):

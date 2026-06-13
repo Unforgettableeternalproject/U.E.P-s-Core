@@ -13,7 +13,7 @@ class PoiseLevel(IntEnum):
     對敘事的影響越大、持續時間越長。
     """
     SILENCE = 0       # 純靜音 200-800ms
-    BREATH = 1        # 呼吸音效（吸氣/呼氣）
+    BREATH = 1        # TTS 合成嘆氣（"......" + melancholic emotion）
     FILLER_LIGHT = 2  # 輕量銜接詞（「嗯...」「umm...」）
     FILLER_HEAVY = 3  # 有敘事影響的插入語（「等一下喔...」「let me think...」）
     ACTION = 4        # 完整動作描述（「抱歉讓我喝口水」+ 音效 placeholder）
@@ -21,12 +21,12 @@ class PoiseLevel(IntEnum):
     @property
     def requires_tts(self) -> bool:
         """Whether this level needs TTS synthesis (vs. silence/sfx insertion)."""
-        return self >= PoiseLevel.FILLER_LIGHT
+        return self >= PoiseLevel.BREATH
 
     @property
     def requires_sfx(self) -> bool:
         """Whether this level uses sound effect assets."""
-        return self == PoiseLevel.BREATH or self == PoiseLevel.ACTION
+        return self == PoiseLevel.ACTION  # Only ACTION may use SFX in the future
 
     @property
     def label(self) -> str:

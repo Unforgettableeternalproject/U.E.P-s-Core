@@ -15,8 +15,13 @@ from .level import PoiseLevel
 
 
 # 8D emotion dimensions (matches emotion_dynamics.py)
+# [happy, angry, sad, afraid, disgusted, melancholic, surprised, calm]
 NEUTRAL_VECTOR = [0.0] * 8
 NUM_EMOTION_DIMS = 8
+
+# Breath-sigh emotion: soft melancholic + calm blend for "......" synthesis
+# This produces the sigh-like quality the user discovered works well
+BREATH_SIGH_VECTOR = [0.0, 0.0, 0.15, 0.0, 0.0, 0.25, 0.0, 0.1]
 
 
 class EmotionCorrector:
@@ -26,10 +31,11 @@ class EmotionCorrector:
     """
 
     # Correction strength per level:
-    # How much to lerp toward neutral (0.0 = keep original, 1.0 = fully neutral)
+    # How much to lerp toward the target vector (0.0 = keep original, 1.0 = fully target)
+    # BREATH uses BREATH_SIGH_VECTOR as target; others use NEUTRAL_VECTOR.
     DEFAULT_CORRECTION_STRENGTH = {
         PoiseLevel.SILENCE: 0.0,       # No TTS, no emotion needed
-        PoiseLevel.BREATH: 0.0,        # No TTS, SFX only
+        PoiseLevel.BREATH: 1.0,        # Full sigh emotion (melancholic + calm)
         PoiseLevel.FILLER_LIGHT: 0.7,  # Mostly neutral, 30% original tone
         PoiseLevel.FILLER_HEAVY: 0.9,  # Almost neutral
         PoiseLevel.ACTION: 1.0,        # Fully neutral (character is "out of narration")
@@ -38,7 +44,7 @@ class EmotionCorrector:
     # Post-rest arc_scale: slightly emphasize to smooth the re-entry
     DEFAULT_RESUME_ARC_SCALE = {
         PoiseLevel.SILENCE: 1.0,
-        PoiseLevel.BREATH: 1.0,
+        PoiseLevel.BREATH: 1.02,       # Gentle re-entry after sigh
         PoiseLevel.FILLER_LIGHT: 1.03,   # Gentle re-entry
         PoiseLevel.FILLER_HEAVY: 1.05,   # Noticeable re-entry
         PoiseLevel.ACTION: 1.08,          # Strong re-entry after full break
@@ -57,8 +63,8 @@ class EmotionCorrector:
         """
         Compute the emotion vector for a poise rest segment.
 
-        Returns None if the level doesn't require TTS (SILENCE, BREATH),
-        since those don't go through the synthesis pipeline.
+        Returns None only for SILENCE level. BREATH level now uses TTS
+        synthesis with a melancholic/calm sigh emotion.
 
         Args:
             original_emotion: The base 8D emotion vector (before any arc offset).
@@ -67,16 +73,22 @@ class EmotionCorrector:
         Returns:
             Corrected 8D emotion vector, or None if not applicable.
         """
-        if not self.enabled or not level.requires_tts:
+        if not self.enabled or level == PoiseLevel.SILENCE:
             return None
 
         strength = self.correction_strength.get(level, 0.0)
         if strength == 0.0:
             return list(original_emotion)
 
-        # Linear interpolation toward neutral
+        # Choose target vector based on level
+        if level == PoiseLevel.BREATH:
+            target = BREATH_SIGH_VECTOR
+        else:
+            target = NEUTRAL_VECTOR
+
+        # Linear interpolation toward target
         corrected = [
-            original_emotion[i] * (1.0 - strength) + NEUTRAL_VECTOR[i] * strength
+            original_emotion[i] * (1.0 - strength) + target[i] * strength
             for i in range(min(len(original_emotion), NUM_EMOTION_DIMS))
         ]
         return corrected

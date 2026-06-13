@@ -211,24 +211,8 @@ class PoisePlanner:
                 poise_silence_ms=duration_ms,
             )
 
-        if level == PoiseLevel.BREATH:
-            # Try to load a breath SFX; fallback to silence
-            sfx = self.sfx_loader.get_breath()
-            if sfx is not None:
-                return SegmentPlan(
-                    type='poise_audio',
-                    poise_level=level,
-                    poise_sfx_name='breath',
-                )
-            else:
-                # Fallback: longer silence to represent breathing pause
-                return SegmentPlan(
-                    type='poise_silence',
-                    poise_level=level,
-                    poise_silence_ms=random.uniform(400, 1000),
-                )
-
-        # FILLER_LIGHT, FILLER_HEAVY, ACTION → TTS synthesis
+        # BREATH, FILLER_LIGHT, FILLER_HEAVY, ACTION → TTS synthesis
+        # BREATH uses "......" with melancholic emotion to produce a sigh
         filler_text = self.filler_lib.get_filler(level, language)
         if filler_text is None:
             # Fallback to silence if no filler available

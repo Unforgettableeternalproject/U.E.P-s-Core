@@ -14,6 +14,11 @@ from .level import PoiseLevel
 
 # ── 中文 Filler 庫 ──
 ZH_FILLERS: Dict[PoiseLevel, List[str]] = {
+    PoiseLevel.BREATH: [
+        "......",
+        "............",
+        "——......",
+    ],
     PoiseLevel.FILLER_LIGHT: [
         "嗯...",
         "唔...",
@@ -40,6 +45,11 @@ ZH_FILLERS: Dict[PoiseLevel, List[str]] = {
 
 # ── 英文 Filler 庫 ──
 EN_FILLERS: Dict[PoiseLevel, List[str]] = {
+    PoiseLevel.BREATH: [
+        "......",
+        "............",
+        "—......",
+    ],
     PoiseLevel.FILLER_LIGHT: [
         "Umm...",
         "Uh...",
@@ -95,16 +105,17 @@ class FillerLibrary:
         """
         Get a filler text for the given level and language.
 
-        Returns None if the level doesn't use fillers (SILENCE, BREATH).
+        Returns None only for SILENCE level. BREATH level now uses
+        TTS-synthesized ellipsis (e.g., "......") instead of external SFX.
 
         Args:
-            level: The poise level (FILLER_LIGHT, FILLER_HEAVY, or ACTION).
+            level: The poise level (BREATH, FILLER_LIGHT, FILLER_HEAVY, or ACTION).
             language: Language code ("zh" or "en").
 
         Returns:
             Filler text string, or None.
         """
-        if not level.requires_tts:
+        if level == PoiseLevel.SILENCE:
             return None
 
         pool = self._zh if language == "zh" else self._en
@@ -133,4 +144,4 @@ class FillerLibrary:
     @property
     def supported_levels(self) -> List[PoiseLevel]:
         """Levels that have filler content available."""
-        return [PoiseLevel.FILLER_LIGHT, PoiseLevel.FILLER_HEAVY, PoiseLevel.ACTION]
+        return [PoiseLevel.BREATH, PoiseLevel.FILLER_LIGHT, PoiseLevel.FILLER_HEAVY, PoiseLevel.ACTION]

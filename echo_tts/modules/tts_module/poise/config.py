@@ -50,11 +50,24 @@ class PoiseConfig:
 
     @property
     def sfx_path(self) -> Optional[Path]:
-        """Resolve sfx_dir to a Path, if set."""
+        """Resolve sfx_dir to a Path, if set.
+
+        Tries multiple resolution strategies:
+        1. Absolute path as-is
+        2. Relative to cwd
+        3. Relative to this module's parent (echo_tts/)
+        """
         if self.sfx_dir is None:
             return None
         p = Path(self.sfx_dir)
-        return p if p.exists() else None
+        if p.exists():
+            return p
+        # Try relative to echo_tts/ root
+        module_root = Path(__file__).resolve().parent.parent.parent.parent
+        p2 = module_root / self.sfx_dir
+        if p2.exists():
+            return p2
+        return None
 
     def with_override(self, **kwargs) -> "PoiseConfig":
         """

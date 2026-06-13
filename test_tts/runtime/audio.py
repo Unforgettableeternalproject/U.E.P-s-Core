@@ -153,6 +153,7 @@ class StreamingAudioPlayer:
     # -- internals ------------------------------------------------------------
 
     def _consumer_loop(self) -> None:
+        import time
         import numpy as np
         import simpleaudio as sa
 
@@ -184,6 +185,10 @@ class StreamingAudioPlayer:
                     sample_rate=sample_rate,
                 )
                 play_obj.wait_done()
+                # Small buffer after each segment to prevent audio driver
+                # from cutting off the tail (simpleaudio sometimes returns
+                # from wait_done slightly before playback fully completes)
+                time.sleep(0.05)
                 self._segments_played += 1
 
         except Exception as exc:

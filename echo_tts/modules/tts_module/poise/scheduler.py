@@ -6,13 +6,34 @@ PoiseScheduler — 觸發時機決策器
 - 總段數 ≤ min_segments_to_trigger 時不觸發
 - 首段和最後段不觸發
 - 兩次休息之間至少累積 min_accumulation 段
+- 優先在句子結束點（句號、問號、驚嘆號）觸發
 """
 
 import random
-from typing import Optional
+from typing import List, Optional
 
 from .config import PoiseConfig
 from .state import PoiseState
+
+
+# Sentence-ending punctuation (both CJK and ASCII)
+_SENTENCE_ENDINGS = set("。！？.!?")
+
+# Maximum number of segments to look ahead for a sentence boundary
+_MAX_LOOKAHEAD = 3
+
+
+def is_sentence_boundary(seg_tokens: list) -> bool:
+    """Check if a segment's tokens end at a sentence boundary.
+
+    Looks at the last few tokens for sentence-ending punctuation.
+    """
+    if not seg_tokens:
+        return False
+    # Check last 3 tokens (punctuation might be a separate token)
+    tail = seg_tokens[-3:] if len(seg_tokens) >= 3 else seg_tokens
+    text = "".join(tail).replace("▁", " ").strip()
+    return any(text.endswith(ch) for ch in _SENTENCE_ENDINGS)
 
 
 class PoiseScheduler:
@@ -21,17 +42,12 @@ class PoiseScheduler:
 
     Uses a frequency-based model (count) with jitter, respecting
     hard constraints on minimum accumulation and boundary protection.
+    Prefers sentence boundaries over mid-sentence positions.
     """
 
     def __init__(self, config: PoiseConfig, seed: Optional[int] = None):
-        """
-        Args:
-            config: Poise configuration.
-            seed: Optional random seed for reproducible scheduling (testing).
-        """
         self.config = config
         self._rng = random.Random(seed)
-        # Pre-compute the next trigger point
         self._next_trigger_at: Optional[float] = None
         self._schedule_next_trigger(start_from=0)
 
@@ -50,13 +66,8 @@ class PoiseScheduler:
         """
         Decide whether to insert a rest AFTER segment seg_idx.
 
-        Args:
-            seg_idx: Current segment index (0-based).
-            total_segments: Total number of content segments.
-            state: Current poise state (accumulation counters).
-
-        Returns:
-            True if a rest should be inserted after this segment.
+        This is the basic check without sentence-boundary awareness.
+        Use plan_with_boundaries() for sentence-aware scheduling.
         """
         # Hard constraint: system disabled
         if not self.config.enabled:
@@ -70,8 +81,7 @@ class PoiseScheduler:
         if seg_idx == 0:
             return False
 
-        # Hard constraint: protect the tail — don't rest if fewer than 2
-        # content segments remain after this one
+        # Hard constraint: protect the tail
         remaining = total_segments - 1 - seg_idx
         if remaining < 2:
             return False
@@ -82,11 +92,52 @@ class PoiseScheduler:
 
         # Soft trigger: have we passed the scheduled trigger point?
         if self._next_trigger_at is not None and seg_idx >= self._next_trigger_at:
-            # Schedule the next trigger from after this rest
             self._schedule_next_trigger(start_from=seg_idx + 1)
             return True
 
         return False
+
+    def find_best_trigger(
+        self,
+        seg_idx: int,
+        total_segments: int,
+        state: PoiseState,
+        segments: List[list],
+    ) -> int:
+        """
+        Find the best segment index to trigger a rest, preferring sentence
+        boundaries. Returns -1 if no suitable position found.
+
+        When the scheduler wants to trigger at seg_idx, this method checks:
+        1. Is seg_idx itself a sentence boundary? → use it
+        2. Look ahead up to _MAX_LOOKAHEAD segments for a boundary
+        3. If no boundary found, use the original seg_idx (fallback)
+
+        Args:
+            seg_idx: The segment where the scheduler first wants to trigger.
+            total_segments: Total content segment count.
+            state: Current poise state.
+            segments: The actual token lists for content segments.
+
+        Returns:
+            The adjusted segment index, or -1 if trigger should be skipped.
+        """
+        # Check current position first
+        if seg_idx < len(segments) and is_sentence_boundary(segments[seg_idx]):
+            return seg_idx
+
+        # Look ahead for a sentence boundary
+        for offset in range(1, _MAX_LOOKAHEAD + 1):
+            candidate = seg_idx + offset
+            # Safety checks
+            remaining = total_segments - 1 - candidate
+            if candidate >= total_segments or remaining < 2:
+                break
+            if candidate < len(segments) and is_sentence_boundary(segments[candidate]):
+                return candidate
+
+        # Fallback: use original position (still better than skipping entirely)
+        return seg_idx
 
     def reset(self, seed: Optional[int] = None) -> None:
         """Reset scheduler state for a new synthesis run."""
@@ -96,15 +147,7 @@ class PoiseScheduler:
         self._schedule_next_trigger(start_from=0)
 
     def preview_triggers(self, total_segments: int) -> list[int]:
-        """
-        Dry-run the scheduler to preview where triggers would fire.
-
-        Useful for debugging and testing. Does not modify internal state.
-
-        Returns:
-            List of segment indices after which a rest would be inserted.
-        """
-        # Save and restore state
+        """Dry-run the scheduler to preview where triggers would fire."""
         saved_trigger = self._next_trigger_at
         saved_rng_state = self._rng.getstate()
 
@@ -118,7 +161,6 @@ class PoiseScheduler:
                 triggers.append(seg_idx)
                 state.mark_rest(seg_idx)
 
-        # Restore
         self._next_trigger_at = saved_trigger
         self._rng.setstate(saved_rng_state)
         return triggers

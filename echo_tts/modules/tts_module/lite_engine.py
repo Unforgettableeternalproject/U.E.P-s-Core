@@ -230,6 +230,35 @@ class IndexTTSLite:
 
         return audio
 
+    @staticmethod
+    def _apply_fade(
+        audio: "torch.Tensor",
+        fade_in_ms: float = 0,
+        fade_out_ms: float = 0,
+        sample_rate: int = 22050,
+    ) -> "torch.Tensor":
+        """Apply fade-in and/or fade-out to an audio tensor.
+
+        Works on shapes [samples] or [channels, samples].
+        Uses a linear ramp (simple but effective for short fades).
+        """
+        if audio.numel() == 0:
+            return audio
+
+        n_samples = audio.shape[-1]
+
+        if fade_in_ms > 0:
+            fade_in_samples = min(int(sample_rate * fade_in_ms / 1000), n_samples)
+            ramp = torch.linspace(0.0, 1.0, fade_in_samples, device=audio.device)
+            audio[..., :fade_in_samples] = audio[..., :fade_in_samples] * ramp
+
+        if fade_out_ms > 0:
+            fade_out_samples = min(int(sample_rate * fade_out_ms / 1000), n_samples)
+            ramp = torch.linspace(1.0, 0.0, fade_out_samples, device=audio.device)
+            audio[..., -fade_out_samples:] = audio[..., -fade_out_samples:] * ramp
+
+        return audio
+
     def __init__(
         self,
         cfg_path: str = "checkpoints/config.yaml",
@@ -1127,6 +1156,7 @@ class IndexTTSLite:
                 total_segments=num_segments,
                 language=language,
                 original_emotion=normalized_emotion,
+                segments=segments,  # Pass tokens for sentence-boundary detection
             )
             poise_active = self.poise_config.enabled and len(poise_plan) > num_segments
             if poise_active and verbose:
@@ -1330,6 +1360,16 @@ class IndexTTSLite:
                     else:
                         continue  # Unknown poise type, skip
 
+                    # Apply fade-in to poise audio for smooth transition
+                    poise_audio = self._apply_fade(poise_audio, fade_in_ms=80, fade_out_ms=80)
+
+                    # Also apply fade-out to the PREVIOUS normal segment
+                    # for a smoother exit into the rest
+                    if len(audio_segments) > 0:
+                        audio_segments[-1] = self._apply_fade(
+                            audio_segments[-1], fade_out_ms=150,
+                        )
+
                     audio_segments.append(poise_audio)
 
                     # Streaming callback for poise segment
@@ -1341,6 +1381,9 @@ class IndexTTSLite:
                 # ── Normal segment processing ──
                 seg_idx = plan_item.original_seg_idx
                 seg_tokens = segments[seg_idx]
+
+                # If this is a resume segment (right after a rest), apply fade-in
+                _is_resume = poise_active and plan_item.resume_arc_scale != 1.0
 
                 if verbose and num_segments > 1:
                     debug_log(3, f"   ── 段落 {seg_idx + 1}/{num_segments} ──")
@@ -1511,6 +1554,10 @@ class IndexTTSLite:
                 # Trim trailing silence from segment (GPT sometimes generates
                 # long silence runs before the stop token)
                 seg_audio = self._trim_trailing_silence(seg_audio)
+
+                # Apply fade-in on resume segments (re-entering after poise rest)
+                if _is_resume:
+                    seg_audio = self._apply_fade(seg_audio, fade_in_ms=120)
 
                 audio_segments.append(seg_audio)
 

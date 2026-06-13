@@ -105,6 +105,7 @@ class PoisePlanner:
         total_segments: int,
         language: str = "zh",
         original_emotion: Optional[List[float]] = None,
+        segments: Optional[List[list]] = None,
     ) -> List[SegmentPlan]:
         """
         Pre-plan the entire synthesis sequence.
@@ -116,6 +117,8 @@ class PoisePlanner:
             total_segments: Number of content segments from split_segments.
             language: Language code for filler selection ("zh" or "en").
             original_emotion: Base 8D emotion vector (before any arc offset).
+            segments: Optional actual token lists — used for sentence-boundary
+                      detection. If None, scheduler falls back to position-only.
 
         Returns:
             Ordered list of SegmentPlan items. Normal segments reference
@@ -133,6 +136,8 @@ class PoisePlanner:
 
         plan: List[SegmentPlan] = []
         pending_resume_scale = 1.0  # Will be set after a rest
+        # Track which segments are deferred triggers (sentence-boundary shifted)
+        _deferred_trigger_at: Optional[int] = None
 
         for seg_idx in range(total_segments):
             # Add the normal segment
@@ -147,8 +152,28 @@ class PoisePlanner:
             # Update accumulation
             self._state.accumulate()
 
-            # Check if we should rest after this segment
-            if self.scheduler.should_trigger(seg_idx, total_segments, self._state):
+            # Check for deferred trigger (shifted to sentence boundary)
+            should_rest = False
+            if _deferred_trigger_at is not None and seg_idx >= _deferred_trigger_at:
+                should_rest = True
+                _deferred_trigger_at = None
+
+            # Check if scheduler wants to trigger here
+            if not should_rest and self.scheduler.should_trigger(seg_idx, total_segments, self._state):
+                if segments is not None:
+                    # Find best position (prefer sentence boundary)
+                    best = self.scheduler.find_best_trigger(
+                        seg_idx, total_segments, self._state, segments,
+                    )
+                    if best == seg_idx:
+                        should_rest = True
+                    else:
+                        # Defer to a later segment (sentence boundary)
+                        _deferred_trigger_at = best
+                else:
+                    should_rest = True
+
+            if should_rest:
                 # Determine rest level
                 level = self.level_selector.select(self._state)
 

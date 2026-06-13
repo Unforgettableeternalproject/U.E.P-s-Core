@@ -407,8 +407,10 @@ def _estimate_salience(user_input: str, agent_response: str) -> float:
 
     # 個人資訊（名字、身份、偏好）→ 高顯著性
     personal_signals = [
-        "my name", "i am", "i'm", "我叫", "我是", "remember",
-        "don't forget", "important", "記住", "別忘",
+        "my name", "i am", "i'm", "remember", "don't forget", "important",
+        "i like", "i prefer", "i hate", "i need", "i want", "i work",
+        "我叫", "我是", "記住", "別忘", "我喜歡", "我偏好", "我討厭",
+        "我需要", "我想要", "告訴你", "我的名字", "叫我",
     ]
     if any(sig in text for sig in personal_signals):
         score += 0.25
@@ -418,6 +420,8 @@ def _estimate_salience(user_input: str, agent_response: str) -> float:
         "feel", "love", "hate", "worry", "afraid", "happy", "sad",
         "thank", "sorry", "miss", "dream", "hope", "wish",
         "喜歡", "討厭", "擔心", "開心", "難過", "謝謝",
+        "害怕", "感謝", "思念", "希望", "抱歉", "對不起",
+        "高興", "生氣", "煩惱", "興奮", "感動",
     ]
     if any(sig in text for sig in emotional_signals):
         score += 0.15

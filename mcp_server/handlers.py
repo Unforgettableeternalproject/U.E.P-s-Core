@@ -130,6 +130,10 @@ def register_tools(server: Server, get_engine: Callable) -> None:
                             "minimum": 0.0,
                             "maximum": 1.0,
                         },
+                        "exclude_session_id": {
+                            "type": "string",
+                            "description": "排除指定 session 的記憶（避免與當前對話重複，可選）",
+                        },
                     },
                     "required": ["query"],
                 },
@@ -327,6 +331,8 @@ async def _handle_retrieve_memories(
     dopamine: float = float(args.get("dopamine", 0.5))
     serotonin: float = float(args.get("serotonin", 0.5))
 
+    exclude_session_id: str | None = args.get("exclude_session_id")
+
     def _sync_retrieve() -> str:
         engine = _get_engine(get_engine, args)
         context = engine.retrieve(
@@ -335,6 +341,7 @@ async def _handle_retrieve_memories(
             serotonin=serotonin,
             top_k=top_k,
             min_similarity=min_similarity,
+            exclude_session_id=exclude_session_id,
         )
         return context.to_text()
 

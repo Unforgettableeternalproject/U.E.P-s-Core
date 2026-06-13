@@ -87,6 +87,18 @@ emotion_dynamics:
   activation_threshold: 0.05     # 情緒總強度低於此值時不調控
   intensity_scale: 1.0           # 全局調控強度 (>1 加強效果, <1 減弱)
 
+# 呼吸法 Poise (長文自然度增強)
+poise:
+  enabled: false                 # 預設關閉，避免意外影響現有行為
+  potency: 0.3                   # 強度 0.0-1.0 (越高 → 越可能出現銜接詞/插入語)
+  count: 8.0                     # 基礎觸發間隔 (每 N 段觸發一次休息)
+  count_jitter: 0.3              # 觸發間隔隨機抖動 (0.0-1.0)
+  min_segments_to_trigger: 3     # 段落總數 ≤ 此值時不觸發
+  min_accumulation: 3            # 兩次休息之間最少累積段數
+  potency_jitter: 0.3            # 層級選擇的隨機抖動
+  emotion_correction_enabled: true  # 休息段執行情緒向量校正
+  sfx_dir: null                  # 音效素材目錄 (null = fallback 到靜音)
+
 # 播放配置
 playback:
   auto_play: true  # 是否自動播放 (不保存時)

@@ -133,7 +133,11 @@
       "Bash(PYTHONUTF8=1 /c/Users/Bernie/source/repos/Unforgettableeternalproject/U.E.P-s-Core/env/Scripts/python.exe *)",
       "Bash(git branch *)",
       "Bash(git mv *)",
-      "Bash(python *)"
+      "Bash(python *)",
+      "Bash(git rm *)",
+      "Bash(\"C:\\\\Users\\\\Bernie\\\\source\\\\repos\\\\Unforgettableeternalproject\\\\U.E.P-s-Core\\\\env\\\\Scripts\\\\python.exe\" -m pytest tests/ -x -q --tb=short)",
+      "Bash(\"C:\\\\Users\\\\Bernie\\\\source\\\\repos\\\\Unforgettableeternalproject\\\\U.E.P-s-Core\\\\env\\\\Scripts\\\\python.exe\" -m pytest tests/ -x -q)",
+      "Bash(\"C:\\\\Users\\\\Bernie\\\\source\\\\repos\\\\Unforgettableeternalproject\\\\U.E.P-s-Core\\\\env\\\\Scripts\\\\python.exe\" -m pytest tests/ -x)"
     ]
   }
 }

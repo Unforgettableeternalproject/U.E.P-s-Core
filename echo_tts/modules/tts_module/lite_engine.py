@@ -70,6 +70,7 @@ try:
     from .tts_utils.segment_guard import check_segment_anomaly, get_retry_params, SegmentGuardStats
     from .emotion_dynamics import EmotionDynamics, create_emotion_dynamics
     from .emotion_text_markers import EmotionTextMarkers, create_emotion_text_markers
+    from .poise import PoisePlanner, PoiseConfig, PoiseLevel, create_poise_config
     from .s2mel.modules.commons import load_checkpoint2, MyModel
     from .s2mel.modules.bigvgan import bigvgan
 except ImportError:
@@ -84,6 +85,7 @@ except ImportError:
     from tts_utils.segment_guard import check_segment_anomaly, get_retry_params, SegmentGuardStats
     from emotion_dynamics import EmotionDynamics, create_emotion_dynamics
     from emotion_text_markers import EmotionTextMarkers, create_emotion_text_markers
+    from poise import PoisePlanner, PoiseConfig, PoiseLevel, create_poise_config
     from s2mel.modules.commons import load_checkpoint2, MyModel
     from s2mel.modules.bigvgan import bigvgan
 
@@ -335,6 +337,10 @@ class IndexTTSLite:
         self.emotion_dynamics = create_emotion_dynamics(
             OmegaConf.to_container(self.cfg, resolve=True) if hasattr(self.cfg, '_metadata') else dict(self.cfg)
         )
+
+        # ── Poise 呼吸法系統 ──
+        _cfg_dict = OmegaConf.to_container(self.cfg, resolve=True) if hasattr(self.cfg, '_metadata') else dict(self.cfg)
+        self.poise_config = create_poise_config(_cfg_dict)
 
         # 當前加載的角色特徵
         self.current_character = None
@@ -1114,6 +1120,18 @@ class IndexTTSLite:
                 debug_log(2, f"      ℹ️  文本分為 {num_segments} 段處理")
                 if quick_streaming_tokens > 0:
                     debug_log(2, f"      ⚡ 首段快速串流: ≤{quick_streaming_tokens} tokens")
+
+            # ── Poise 呼吸法：預規劃休息段 ──
+            poise_planner = PoisePlanner(self.poise_config)
+            poise_plan = poise_planner.plan(
+                total_segments=num_segments,
+                language=language,
+                original_emotion=normalized_emotion,
+            )
+            poise_active = self.poise_config.enabled and len(poise_plan) > num_segments
+            if poise_active and verbose:
+                debug_log(2, f"      🫁 {PoisePlanner.format_plan_summary(poise_plan)}")
+
             _t = _mark("text_norm_ms", _t)
 
             # 3. 情感向量映射 (跨段共用, 只計算一次)
@@ -1163,6 +1181,7 @@ class IndexTTSLite:
             # 為多段文本的每段生成微幅不同的情緒偏移，提升段落間的語調連續性。
             # 策略：以 base emovec_mat 為中心，沿段落位置施加平滑的 cosine 弧線偏移。
             # 單段文本不受影響。
+            # Poise 呼吸法：休息段後的復歸段會覆寫 arc_scale。
             adaptive_emotion = (num_segments > 1)
             if adaptive_emotion:
                 # 預生成每段的情緒偏移因子（cosine arc: 中間段稍高能量，首尾段回歸基調）
@@ -1183,7 +1202,146 @@ class IndexTTSLite:
             _safety_margin = int(_dyn_cfg.get('safety_margin', 150))
             _min_gen_len = int(_dyn_cfg.get('min_generate_length', 300))
 
-            for seg_idx, seg_tokens in enumerate(segments):
+            total_plan_items = len(poise_plan)
+            for plan_idx, plan_item in enumerate(poise_plan):
+
+                # ── Poise: 處理休息段 ──
+                if plan_item.type != 'normal':
+                    level_label = plan_item.poise_level.label if plan_item.poise_level else "?"
+                    if verbose:
+                        debug_log(3, f"   ── 🫁 休息段 ({level_label}) ──")
+
+                    if plan_item.type == 'poise_silence':
+                        # 純靜音：直接生成零填充
+                        silence_samples = int(plan_item.poise_silence_ms * 22050 / 1000)
+                        poise_audio = torch.zeros(1, silence_samples)
+                        if verbose:
+                            debug_log(3, f"      ⏸️  靜音 {plan_item.poise_silence_ms:.0f}ms")
+
+                    elif plan_item.type == 'poise_audio':
+                        # 音效素材（目前 fallback 到靜音）
+                        sfx = poise_planner.sfx_loader.get_breath()
+                        if sfx is not None:
+                            poise_audio = sfx
+                            if verbose:
+                                dur_ms = sfx.shape[-1] / 22050 * 1000
+                                debug_log(3, f"      🎵 音效 {dur_ms:.0f}ms")
+                        else:
+                            poise_audio = torch.zeros(1, int(0.5 * 22050))
+                            if verbose:
+                                debug_log(3, f"      ⏸️  音效 fallback → 靜音 500ms")
+
+                    elif plan_item.type == 'poise_tts':
+                        # 銜接詞/插入語：走完整 TTS pipeline
+                        if verbose:
+                            debug_log(3, f"      💬 \"{plan_item.poise_text}\"")
+
+                        # Tokenize the filler text
+                        poise_tokens = self.tokenizer.tokenize(plan_item.poise_text)
+                        poise_token_ids = self.tokenizer.convert_tokens_to_ids(poise_tokens)
+                        poise_text_tensor = torch.tensor(poise_token_ids, dtype=torch.int32, device=self.device).unsqueeze(0)
+
+                        # Compute emovec_mat for poise emotion (corrected toward neutral)
+                        if plan_item.poise_emotion is not None:
+                            poise_weight = torch.tensor(plan_item.poise_emotion, device=self.device)
+                            poise_emo_mat = poise_weight.unsqueeze(1) * emo_matrix_cat
+                            poise_emo_mat = torch.sum(poise_emo_mat, 0).unsqueeze(0)
+                            if self.use_fp16:
+                                poise_emo_mat = poise_emo_mat.half()
+                        else:
+                            poise_emo_mat = emovec_mat
+
+                        # Run GPT → S2Mel → BigVGAN for the filler
+                        with torch.no_grad():
+                            dtype = torch.float16 if self.use_fp16 else None
+                            with torch.amp.autocast(self.device.type, enabled=dtype is not None, dtype=dtype):
+                                poise_emovec = self.gpt.merge_emovec(
+                                    spk_cond_emb, emo_cond_emb,
+                                    torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
+                                    torch.tensor([emo_cond_emb.shape[-1]], device=self.device),
+                                    alpha=self.merge_alpha
+                                )
+                                if poise_emo_mat is not None:
+                                    pw_sum = torch.sum(torch.tensor(plan_item.poise_emotion or normalized_emotion, device=self.device))
+                                    poise_emovec = poise_emo_mat + (1 - pw_sum) * poise_emovec
+
+                                poise_codes, poise_scl = self.gpt.inference_speech(
+                                    spk_cond_emb, poise_text_tensor, emo_cond_emb,
+                                    cond_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
+                                    emo_cond_lengths=torch.tensor([emo_cond_emb.shape[-1]], device=self.device),
+                                    emo_vec=poise_emovec,
+                                    num_return_sequences=1, num_beams=num_beams,
+                                    do_sample=do_sample, temperature=temperature,
+                                    top_p=top_p, top_k=top_k,
+                                    length_penalty=length_penalty, repetition_penalty=repetition_penalty,
+                                    max_generate_length=300,  # Fillers are short
+                                )
+
+                                use_speed = torch.zeros(1, device=self.device).long()
+                                poise_latent = self.gpt(
+                                    poise_scl, poise_text_tensor,
+                                    torch.tensor([poise_text_tensor.shape[-1]], device=self.device),
+                                    poise_codes,
+                                    torch.tensor([poise_codes.shape[-1]], device=self.device),
+                                    spk_cond_emb,
+                                    cond_mel_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
+                                    emo_cond_mel_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
+                                    emo_vec=poise_emo_mat,
+                                    use_speed=use_speed
+                                )
+
+                        # Remove long silence from poise codes
+                        stop_mel_token = self.cfg.gpt.stop_mel_token
+                        poise_codes, poise_code_lens = self._remove_long_silence(
+                            poise_codes, stop_mel_token, silent_token=52,
+                            max_consecutive=30, keep_consecutive=10,
+                        )
+
+                        # S2Mel
+                        with torch.no_grad():
+                            dtype = None
+                            with torch.amp.autocast(self.device.type, enabled=dtype is not None, dtype=dtype):
+                                poise_latent = self.s2mel.models['gpt_layer'](poise_latent)
+                                poise_S = self.semantic_codec.quantizer.vq2emb(poise_codes.unsqueeze(1)).transpose(1, 2)
+                                if poise_latent.shape[1] > poise_S.shape[1]:
+                                    poise_latent = poise_latent[:, :poise_S.shape[1], :]
+                                poise_S = poise_S + poise_latent
+                                poise_tgt_len = (poise_code_lens * _dyn_stretch_ratio).long()
+
+                            poise_cond = self.s2mel.models['length_regulator'](
+                                poise_S, ylens=poise_tgt_len, n_quantizers=3, f0=None
+                            )[0]
+                            cat_cond = torch.cat([self.character_features['prompt_condition'], poise_cond], dim=1)
+                            poise_vc = self.s2mel.models['cfm'].inference(
+                                cat_cond,
+                                torch.LongTensor([cat_cond.size(1)]).to(self.device),
+                                self.character_features['ref_mel'],
+                                self.character_features['style'], None,
+                                n_timesteps=self.cfm_n_timesteps,
+                                inference_cfg_rate=_dyn_cfg_rate
+                            )
+                            poise_mel = poise_vc[:, :, self.character_features['ref_mel'].size(-1):]
+
+                        # BigVGAN
+                        with torch.no_grad():
+                            poise_audio = self.bigvgan(poise_mel.float()).squeeze(0).cpu()
+                        # NOTE: do NOT trim trailing silence on poise segments
+
+                    else:
+                        continue  # Unknown poise type, skip
+
+                    audio_segments.append(poise_audio)
+
+                    # Streaming callback for poise segment
+                    if on_segment_audio is not None:
+                        on_segment_audio(poise_audio, plan_idx, total_plan_items)
+
+                    continue  # Skip to next plan item
+
+                # ── Normal segment processing ──
+                seg_idx = plan_item.original_seg_idx
+                seg_tokens = segments[seg_idx]
+
                 if verbose and num_segments > 1:
                     debug_log(3, f"   ── 段落 {seg_idx + 1}/{num_segments} ──")
                     # Show decoded segment text for debugging (decode back to readable text)
@@ -1227,9 +1385,12 @@ class IndexTTSLite:
                         )
 
                         # 套用 per-segment 情緒偏移
+                        # Poise: 休息段後的復歸段使用 resume_arc_scale 覆寫
                         seg_emovec_mat = emovec_mat
                         if adaptive_emotion and emovec_mat is not None:
                             scale = segment_emotion_scales[seg_idx]
+                            if poise_active and plan_item.resume_arc_scale != 1.0:
+                                scale = plan_item.resume_arc_scale
                             seg_emovec_mat = emovec_mat * scale
 
                         if seg_emovec_mat is not None:
@@ -1359,7 +1520,7 @@ class IndexTTSLite:
 
                 # Streaming callback: emit segment audio immediately
                 if on_segment_audio is not None:
-                    on_segment_audio(seg_audio, seg_idx, num_segments)
+                    on_segment_audio(seg_audio, plan_idx, total_plan_items)
 
             # --- 拼接所有段落的音頻（段間插入短靜音）---
             if len(audio_segments) == 1:
@@ -1387,6 +1548,11 @@ class IndexTTSLite:
                 timings["first_segment_ms"] = first_segment_done_ms or 0.0
                 timings["anomaly_count"] = float(guard_stats.anomaly_count)
                 timings["retry_count"] = float(guard_stats.retry_count)
+                # Poise metrics
+                if poise_active:
+                    poise_state = poise_planner.get_state()
+                    timings["poise_rest_count"] = float(poise_state.total_rests)
+                    timings["poise_plan_items"] = float(total_plan_items)
 
             _t = time.perf_counter()
 

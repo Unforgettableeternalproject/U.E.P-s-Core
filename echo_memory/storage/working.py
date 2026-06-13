@@ -37,7 +37,7 @@ class WorkingMemory:
             return None
 
         value, expire_at = self._cache[key]
-        if time.time() > expire_at:
+        if time.time() >= expire_at:
             del self._cache[key]
             return None
 

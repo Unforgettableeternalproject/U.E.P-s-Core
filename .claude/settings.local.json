@@ -51,7 +51,7 @@
       "Bash(pip install *)",
       "Bash(pip list *)",
       "Bash(C:/Users/Bernie/source/repos/Unforgettableeternalproject/U.E.P-s-Core/env/Scripts/pip.exe list *)",
-      "Bash(chmod +w legacy_tts/modules/tts_module/checkpoints/config.yaml)",
+      "Bash(chmod +w echo_tts/modules/tts_module/checkpoints/config.yaml)",
       "Bash(git log *)",
       "WebFetch(domain:github.com)",
       "WebFetch(domain:pypi.org)",
@@ -130,7 +130,10 @@
       "Bash(.venv/Scripts/python.exe *)",
       "Bash(PYTHONUTF8=1 .venv/Scripts/python.exe batch_generate.py --start 100 --end 103)",
       "Bash(PYTHONUTF8=1 .venv/Scripts/python.exe *)",
-      "Bash(PYTHONUTF8=1 /c/Users/Bernie/source/repos/Unforgettableeternalproject/U.E.P-s-Core/env/Scripts/python.exe *)"
+      "Bash(PYTHONUTF8=1 /c/Users/Bernie/source/repos/Unforgettableeternalproject/U.E.P-s-Core/env/Scripts/python.exe *)",
+      "Bash(git branch *)",
+      "Bash(git mv *)",
+      "Bash(python *)"
     ]
   }
 }

@@ -8,7 +8,7 @@ The quick_streaming_tokens parameter should:
 
 import pytest
 
-from legacy_tts.modules.tts_module.tts_utils.front import TextTokenizer
+from echo_tts.modules.tts_module.tts_utils.front import TextTokenizer
 
 GRACE = TextTokenizer._quick_stream_grace_window
 STEP = TextTokenizer._quick_stream_step

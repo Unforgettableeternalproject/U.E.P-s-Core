@@ -16,7 +16,7 @@ import torch
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
-CHECKPOINT_DIR = os.path.join(PROJECT_ROOT, "legacy_tts", "modules", "tts_module", "checkpoints")
+CHECKPOINT_DIR = os.path.join(PROJECT_ROOT, "echo_tts", "modules", "tts_module", "checkpoints")
 LORA_REPO = os.path.join(PROJECT_ROOT, "experiments", "index-tts-lora")
 FINETUNE_DIR = os.path.join(LORA_REPO, "finetune_models")
 PROCESSED_BASE = os.path.join(PROJECT_ROOT, "experiments", "lora_training_data", "processed_data")

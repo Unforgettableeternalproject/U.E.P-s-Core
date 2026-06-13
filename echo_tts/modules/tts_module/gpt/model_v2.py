@@ -443,7 +443,7 @@ class UnifiedVoice(nn.Module):
                     "Install from: https://huggingface.co/marcorez8/flash-attn-windows-blackwell"
                 )
 
-            from legacy_tts.modules.tts_module.accel import GPT2AccelModel, AccelInferenceEngine
+            from echo_tts.modules.tts_module.accel import GPT2AccelModel, AccelInferenceEngine
 
             accel_gpt = GPT2AccelModel(gpt_config)
             accel_gpt.load_state_dict(self.gpt.state_dict(), strict=False)

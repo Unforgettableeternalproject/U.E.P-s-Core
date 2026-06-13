@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 # Add tts_module to path for direct import (avoids __init__.py torch dependency)
-_tts_module = Path(__file__).resolve().parent.parent / "legacy_tts" / "modules" / "tts_module"
+_tts_module = Path(__file__).resolve().parent.parent / "echo_tts" / "modules" / "tts_module"
 sys.path.insert(0, str(_tts_module))
 
 from emotion_dynamics import (

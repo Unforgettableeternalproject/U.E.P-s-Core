@@ -2,7 +2,7 @@
 
 import pytest
 
-from legacy_tts.modules.tts_module.tts_utils.segment_guard import (
+from echo_tts.modules.tts_module.tts_utils.segment_guard import (
     check_segment_anomaly,
     get_retry_params,
     AnomalyCheckResult,

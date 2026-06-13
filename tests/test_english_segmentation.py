@@ -2,7 +2,7 @@
 
 import pytest
 
-from legacy_tts.modules.tts_module.tts_utils.english_segmenter import (
+from echo_tts.modules.tts_module.tts_utils.english_segmenter import (
     pre_segment_english,
     PYSBD_AVAILABLE,
 )

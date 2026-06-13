@@ -17,7 +17,7 @@ class LegacyGenerationPaths:
 
 def default_generation_paths(project_root: str | Path | None = None) -> LegacyGenerationPaths:
     root = Path(project_root or Path.cwd()).resolve()
-    legacy_root = root / "legacy_tts"
+    legacy_root = root / "echo_tts"
     model_dir = legacy_root / "modules" / "tts_module" / "checkpoints"
     return LegacyGenerationPaths(
         project_root=root,

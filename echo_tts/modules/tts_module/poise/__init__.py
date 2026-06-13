@@ -14,7 +14,7 @@ TTS 長文生成的自然度增強機制：在段落之間插入緩衝段落
 - Count（頻率）：決定休息插入頻率，帶 jitter 隨機抖動
 
 使用方式：
-    from legacy_tts.modules.tts_module.poise import PoisePlanner, PoiseConfig
+    from echo_tts.modules.tts_module.poise import PoisePlanner, PoiseConfig
 
     config = PoiseConfig(enabled=True, potency=0.3, count=8.0)
     planner = PoisePlanner(config)

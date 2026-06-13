@@ -2,7 +2,7 @@
 
 import pytest
 
-from legacy_tts.modules.tts_module.tts_utils.gpt_length import (
+from echo_tts.modules.tts_module.tts_utils.gpt_length import (
     calc_dynamic_max_generate_length,
     DEFAULT_MEL_PER_TOKEN_RATIO,
     DEFAULT_SAFETY_MARGIN,

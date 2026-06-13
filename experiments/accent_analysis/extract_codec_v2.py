@@ -35,13 +35,13 @@ from tqdm import tqdm
 # ── 路徑設定 ──
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
-LEGACY_TTS = os.path.join(PROJECT_ROOT, "legacy_tts", "modules", "tts_module")
+LEGACY_TTS = os.path.join(PROJECT_ROOT, "echo_tts", "modules", "tts_module")
 CHECKPOINT_DIR = os.path.join(LEGACY_TTS, "checkpoints")
 
 # 正確設定 package import 路徑：
-# legacy_tts/modules/ 是 package root，讓 tts_module.tts_utils.maskgct_utils 的
+# echo_tts/modules/ 是 package root，讓 tts_module.tts_utils.maskgct_utils 的
 # 相對 import (.maskgct.models...) 能正確解析
-sys.path.insert(0, os.path.join(PROJECT_ROOT, "legacy_tts", "modules"))
+sys.path.insert(0, os.path.join(PROJECT_ROOT, "echo_tts", "modules"))
 
 # ── 常量 ──
 DEFAULT_OUTPUT_DIR = os.path.join(PROJECT_ROOT, "experiments", "lora_training_data", "processed_data")

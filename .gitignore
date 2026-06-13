@@ -10,9 +10,9 @@ ENV/
 
 # Runtime artifacts and large model assets
 /models/
-/legacy_tts/models/
+/echo_tts/models/
 /checkpoints/
-/legacy_tts/modules/tts_module/checkpoints/
+/echo_tts/modules/tts_module/checkpoints/
 /outputs/
 /temp/
 /logs/

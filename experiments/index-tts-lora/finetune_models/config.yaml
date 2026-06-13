@@ -42,7 +42,7 @@ gpt:
   stop_text_token: 1
   train_solo_embeddings: false
   use_mel_codes_as_input: true
-gpt_checkpoint: C:/Users/Bernie/source/repos/Unforgettableeternalproject/TestSeparateTTSSystem/legacy_tts/modules/tts_module/checkpoints/gpt.pth
+gpt_checkpoint: C:/Users/Bernie/source/repos/Unforgettableeternalproject/TestSeparateTTSSystem/echo_tts/modules/tts_module/checkpoints/gpt.pth
 train:
   data_path: C:\Users\Bernie\source\repos\Unforgettableeternalproject\TestSeparateTTSSystem\experiments\lora_training_data\processed_data\audio_list_20260613_141513
   early_stopping_patience: 1

@@ -3,7 +3,7 @@
 import torch
 import pytest
 
-from legacy_tts.modules.tts_module.lite_engine import IndexTTSLite
+from echo_tts.modules.tts_module.lite_engine import IndexTTSLite
 
 
 class TestRemoveLongSilence:

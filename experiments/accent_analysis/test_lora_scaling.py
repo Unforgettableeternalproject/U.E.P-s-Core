@@ -6,7 +6,7 @@ import os, sys, shutil, gc
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, PROJECT_ROOT)
 
-CHECKPOINT_DIR = os.path.join(PROJECT_ROOT, "legacy_tts", "modules", "tts_module", "checkpoints")
+CHECKPOINT_DIR = os.path.join(PROJECT_ROOT, "echo_tts", "modules", "tts_module", "checkpoints")
 ORIGINAL_GPT = os.path.join(CHECKPOINT_DIR, "gpt.pth")
 CKPT_DIR = os.path.join(PROJECT_ROOT, "experiments", "index-tts-lora", "finetune_models", "checkpoints")
 OUTPUT_DIR = os.path.join(PROJECT_ROOT, "outputs", "comparison", "lora_scaling")

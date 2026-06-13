@@ -18,8 +18,8 @@ python Entry.py generate --text "Hello, this is U.E.P TTS running from the separ
 
 Large assets are expected at:
 
-- `legacy_tts/modules/tts_module/checkpoints/`
-- `legacy_tts/models/tts/uep.pt`
+- `echo_tts/modules/tts_module/checkpoints/`
+- `echo_tts/models/tts/uep.pt`
 
 These files are intentionally ignored by Git.
 ## Persistent shell

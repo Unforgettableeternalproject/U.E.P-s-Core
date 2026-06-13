@@ -2,7 +2,7 @@
 
 import pytest
 
-from legacy_tts.modules.tts_module.tts_utils.custom_vocab import apply_custom_vocab
+from echo_tts.modules.tts_module.tts_utils.custom_vocab import apply_custom_vocab
 
 
 class TestApplyCustomVocab:

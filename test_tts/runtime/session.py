@@ -64,6 +64,30 @@ class TTSInteractiveSession:
         """Return current synthesis language."""
         return getattr(self, "_language", "en")
 
+    # ── LoRA 動態混合 ──
+
+    def load_lora(self, checkpoint_path: str | None = None, scale: float = 1.0) -> None:
+        """載入 LoRA checkpoint（自動確保 engine 已載入）。
+
+        Args:
+            checkpoint_path: 已合併的 checkpoint 路徑，None 則使用 backend 的預設路徑。
+            scale: 混合比例 (0.0 ~ 1.0)
+        """
+        self.load()
+        self.backend.load_lora(checkpoint_path, scale=scale)
+
+    def set_lora_scale(self, scale: float) -> None:
+        """調整 LoRA 混合比例。"""
+        self.backend.set_lora_scale(scale)
+
+    def unload_lora(self) -> None:
+        """移除 LoRA，還原原始權重。"""
+        self.backend.unload_lora()
+
+    def get_lora_status(self) -> dict:
+        """回傳 LoRA 狀態。"""
+        return self.backend.get_lora_status()
+
     def load(self) -> None:
         if self._loaded:
             return

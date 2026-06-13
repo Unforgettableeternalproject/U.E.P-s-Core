@@ -340,6 +340,12 @@ class IndexTTSLite:
         self.current_character = None
         self.character_features = None
 
+        # ── LoRA adapter ──
+        self._lora_active: bool = False
+        self._lora_scale: float = 0.0
+        self._lora_path: str | None = None
+        self._lora_original_inference_model = None  # 保存未掛 adapter 的原始 model
+
         # Profiling: init timings (populated by _init_models / load_character / warmup)
         self._init_timings: dict[str, float] = {}
 
@@ -649,6 +655,157 @@ class IndexTTSLite:
             traceback.print_exc()
             return False
     
+    # ── LoRA Adapter API ──
+
+    def load_lora(self, adapter_path: str, scale: float = 1.0) -> None:
+        """載入 PEFT LoRA adapter。
+
+        Args:
+            adapter_path: adapter 目錄路徑（含 adapter_config.json + adapter_model.*）
+                          也支援舊版 merged checkpoint (.pth) 的向後相容。
+            scale: adapter 強度 (0.0 ~ 1.0)，透過 PEFT scaling 控制。
+        """
+        adapter_path = str(adapter_path)
+
+        # 向後相容：如果是 .pth 檔案，走舊的 delta blending 路徑
+        if adapter_path.endswith('.pth') and os.path.isfile(adapter_path):
+            return self._load_lora_legacy(adapter_path, scale)
+
+        # PEFT adapter 目錄
+        if not os.path.isdir(adapter_path):
+            raise FileNotFoundError(f"LoRA adapter 目錄不存在: {adapter_path}")
+
+        info_log(f"🧬 [LoRA] 載入 adapter: {os.path.basename(adapter_path)}")
+
+        try:
+            from peft import PeftModel
+        except ImportError:
+            raise ImportError("需要安裝 peft: pip install peft")
+
+        # 保存原始 inference_model（用於 unload）
+        if self._lora_original_inference_model is None:
+            self._lora_original_inference_model = self.gpt.inference_model
+
+        # 掛載 adapter
+        self.gpt.inference_model = PeftModel.from_pretrained(
+            self._lora_original_inference_model,
+            adapter_path,
+            is_trainable=False,
+        )
+        self.gpt.inference_model.eval()
+        if self.use_fp16:
+            self.gpt.inference_model.half()
+
+        self._lora_active = True
+        self._lora_path = adapter_path
+
+        # 設定 scale
+        self.set_lora_scale(scale)
+
+        info_log(f"   ✓ adapter 載入完成")
+
+    def _load_lora_legacy(self, checkpoint_path: str, scale: float = 1.0) -> None:
+        """向後相容：載入舊版 merged checkpoint，用 delta blending。"""
+        info_log(f"🧬 [LoRA] 載入 legacy checkpoint: {os.path.basename(checkpoint_path)}")
+
+        merged_state = torch.load(checkpoint_path, map_location=self.device, weights_only=True)
+        if isinstance(merged_state, dict) and 'model' in merged_state:
+            merged_state = merged_state['model']
+
+        if not hasattr(self, '_lora_original_state') or self._lora_original_state is None:
+            self._lora_original_state = {
+                k: v.clone() for k, v in self.gpt.state_dict().items()
+            }
+
+        delta: dict[str, torch.Tensor] = {}
+        for key in self._lora_original_state:
+            if key in merged_state and self._lora_original_state[key].shape == merged_state[key].shape:
+                diff = merged_state[key].to(self._lora_original_state[key].dtype) - self._lora_original_state[key]
+                if diff.abs().max().item() > 1e-8:
+                    delta[key] = diff
+
+        if not delta:
+            raise ValueError("Checkpoint 與原始 GPT 無差異")
+
+        self._lora_delta = delta
+        self._lora_path = checkpoint_path
+        self._lora_active = True
+        info_log(f"   ✓ delta 計算完成: {len(delta)} keys")
+
+        # 套用 scale
+        s = max(0.0, min(1.0, scale))
+        self._lora_scale = s
+        new_state = dict(self._lora_original_state)
+        for key, diff in self._lora_delta.items():
+            new_state[key] = self._lora_original_state[key] + s * diff
+        self.gpt.load_state_dict(new_state, strict=True)
+        info_log(f"   🧬 [LoRA] scale = {s:.0%} ({len(delta)} keys blended)")
+
+    def set_lora_scale(self, scale: float) -> None:
+        """動態調整 LoRA 強度。
+
+        PEFT adapter 模式：修改每個 LoRA 層的 scaling 係數。
+        Legacy 模式：重新 blend state_dict。
+        """
+        scale = max(0.0, min(1.0, scale))
+        self._lora_scale = scale
+
+        # Legacy delta blending 路徑
+        if hasattr(self, '_lora_delta') and self._lora_delta is not None:
+            if not hasattr(self, '_lora_original_state') or self._lora_original_state is None:
+                raise RuntimeError("Legacy LoRA: 原始權重不存在")
+            new_state = dict(self._lora_original_state)
+            for key, diff in self._lora_delta.items():
+                new_state[key] = self._lora_original_state[key] + scale * diff
+            self.gpt.load_state_dict(new_state, strict=True)
+            info_log(f"   🧬 [LoRA] scale = {scale:.0%} ({len(self._lora_delta)} keys blended)")
+            return
+
+        # PEFT adapter 路徑：修改 scaling 係數
+        # PEFT 的 scaling = lora_alpha / r，我們用 user_scale 乘上去
+        model = self.gpt.inference_model
+        if not hasattr(model, 'peft_config'):
+            raise RuntimeError("尚未載入 LoRA adapter")
+
+        adapter_name = list(model.peft_config.keys())[0]
+        base_scaling = model.peft_config[adapter_name].lora_alpha / model.peft_config[adapter_name].r
+
+        count = 0
+        for name, module in model.named_modules():
+            if hasattr(module, 'scaling') and isinstance(module.scaling, dict):
+                module.scaling[adapter_name] = base_scaling * scale
+                count += 1
+
+        info_log(f"   🧬 [LoRA] scale = {scale:.0%} ({count} layers)")
+
+    def unload_lora(self) -> None:
+        """移除 LoRA adapter，還原原始模型。"""
+        # PEFT adapter 路徑
+        if self._lora_original_inference_model is not None:
+            self.gpt.inference_model = self._lora_original_inference_model
+            self._lora_original_inference_model = None
+            info_log("   🧬 [LoRA] adapter 已移除")
+
+        # Legacy delta 路徑
+        if hasattr(self, '_lora_original_state') and self._lora_original_state is not None:
+            self.gpt.load_state_dict(self._lora_original_state, strict=True)
+            self._lora_original_state = None
+            self._lora_delta = None
+            info_log("   🧬 [LoRA] 已還原原始權重")
+
+        self._lora_active = False
+        self._lora_scale = 0.0
+        self._lora_path = None
+        torch.cuda.empty_cache()
+
+    def get_lora_status(self) -> dict:
+        """回傳 LoRA 狀態。"""
+        return {
+            "active": self._lora_active,
+            "scale": self._lora_scale,
+            "path": self._lora_path,
+        }
+
     def normalize_emotion_vector(
         self,
         emotion_vector: List[float],

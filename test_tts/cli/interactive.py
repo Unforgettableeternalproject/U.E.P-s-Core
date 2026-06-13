@@ -125,6 +125,18 @@ class InteractiveSession(Protocol):
     def get_language(self) -> str:
         ...
 
+    def load_lora(self, checkpoint_path: str, scale: float = 1.0) -> None:
+        ...
+
+    def set_lora_scale(self, scale: float) -> None:
+        ...
+
+    def unload_lora(self) -> None:
+        ...
+
+    def get_lora_status(self) -> dict:
+        ...
+
 
 class InteractiveShell:
     def __init__(self, session: InteractiveSession, write: Callable[[str], None] = print):
@@ -154,6 +166,7 @@ class InteractiveShell:
             self.write(
                 "Commands: load, say <text>, save --output <path> <text>, "
                 "profile <text>, emotion [preset|values], language [en|zh], "
+                "lora [on|off|<scale>], "
                 "status, unload, exit"
             )
             return True
@@ -161,6 +174,8 @@ class InteractiveShell:
             return self._handle_emotion(args)
         if verb in {"language", "lang"}:
             return self._handle_language(args)
+        if verb == "lora":
+            return self._handle_lora(args)
         if verb == "load":
             self.session.load()
             self.write("loaded")
@@ -216,6 +231,87 @@ class InteractiveShell:
         self.session.set_language(lang)
         name = SUPPORTED_LANGUAGES[lang]
         self.write(f"Language set to: {lang} ({name})")
+        return True
+
+    def _handle_lora(self, args: list[str]) -> bool:
+        """Handle the lora command: toggle on/off, or adjust scale.
+
+        Usage:
+            lora            — toggle on/off
+            lora <0.0-1.0>  — turn on (or adjust) with specific scale
+            lora on         — turn on at default scale
+            lora off        — turn off
+        """
+        status = self.session.get_lora_status()
+
+        if not args:
+            # Toggle
+            if status["active"]:
+                try:
+                    self.session.unload_lora()
+                    self.write("🧬 LoRA OFF — 原始權重已還原")
+                except Exception as e:
+                    self.write(f"Error: {e}")
+            else:
+                try:
+                    self.session.load_lora()
+                    new = self.session.get_lora_status()
+                    self.write(f"🧬 LoRA ON  scale={new['scale']:.0%}")
+                except Exception as e:
+                    self.write(f"LoRA load failed: {e}")
+            return True
+
+        subcmd = args[0].lower()
+
+        if subcmd == "on":
+            scale = float(args[1]) if len(args) > 1 else None
+            try:
+                if scale is not None:
+                    self.session.load_lora(scale=scale)
+                else:
+                    self.session.load_lora()
+                new = self.session.get_lora_status()
+                self.write(f"🧬 LoRA ON  scale={new['scale']:.0%}")
+            except Exception as e:
+                self.write(f"LoRA load failed: {e}")
+            return True
+
+        if subcmd == "off":
+            try:
+                self.session.unload_lora()
+                self.write("🧬 LoRA OFF — 原始權重已還原")
+            except Exception as e:
+                self.write(f"Error: {e}")
+            return True
+
+        # "lora scale 0.85" alias
+        if subcmd == "scale" and len(args) > 1:
+            try:
+                scale = float(args[1])
+                if not status["active"]:
+                    self.session.load_lora(scale=scale)
+                else:
+                    self.session.set_lora_scale(scale)
+                self.write(f"🧬 LoRA ON  scale={scale:.0%}")
+            except ValueError:
+                self.write(f"Invalid scale: {args[1]}")
+            except RuntimeError as e:
+                self.write(f"Error: {e}")
+            return True
+
+        # Direct scale value: "lora 0.85"
+        try:
+            scale = float(subcmd)
+            if not status["active"]:
+                self.session.load_lora(scale=scale)
+            else:
+                self.session.set_lora_scale(scale)
+            self.write(f"🧬 LoRA ON  scale={scale:.0%}")
+            return True
+        except ValueError:
+            pass
+
+        self.write("Usage: lora [on|off|scale <0-1>|<0-1>]")
         return True
 
     def _auto_translate(self, text: str) -> str:

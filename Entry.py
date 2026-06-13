@@ -322,8 +322,9 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                 query=user_input,
                 dopamine=0.5,
                 serotonin=0.5,
-                top_k=5,
+                top_k=10,
                 min_similarity=config.retrieval_min_similarity,
+                exclude_session_id=session_id,
             )
             memory_text = "" if context.is_empty() else context.to_text()
 

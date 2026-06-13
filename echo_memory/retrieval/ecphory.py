@@ -68,6 +68,7 @@ class EcphoryRetrieval:
         concept_top_k: int = 5,
         concept_min_similarity: float = 0.3,
         neurochem: NeurochemState | None = None,
+        exclude_session_id: str | None = None,
     ) -> MemoryContext:
         """
         執行 EcphoryRAG 檢索。
@@ -84,6 +85,8 @@ class EcphoryRetrieval:
             concept_min_similarity: Concept 最小相似度閾值
             neurochem: NeurochemState 實例（若提供，覆寫 dopamine/serotonin
                        並用衍生參數驅動檢索行為）
+            exclude_session_id: 排除指定 session 的 Episodes（避免與 LLM
+                                in-context history 重複）
 
         Returns:
             MemoryContext 記憶脈絡（包含 episodes + concepts）
@@ -118,11 +121,20 @@ class EcphoryRetrieval:
         if _ncparams is not None:
             seed_k = _ncparams.seed_k
 
+        # 排除當前 session 時多撈一些，過濾後再截斷
+        search_k = seed_k * 3 if exclude_session_id else seed_k
         seed_results = self.episodic.search(
             query_embedding,
-            top_k=seed_k,
+            top_k=search_k,
             min_similarity=min_similarity,
         )
+
+        # 過濾當前 session 的 episodes（它們已在 LLM 的 in-context history 中）
+        if exclude_session_id:
+            seed_results = [
+                (ep, score) for ep, score in seed_results
+                if ep.session_id != exclude_session_id
+            ][:seed_k]
 
         if not seed_results:
             # 沒有 Episode 種子，但仍可能有 Concept 命中

@@ -270,6 +270,7 @@ class MemoryEngine:
         serotonin: float = 0.5,
         top_k: int = 10,
         min_similarity: float = 0.3,
+        exclude_session_id: str | None = None,
     ) -> MemoryContext:
         """
         檢索相關記憶（EcphoryRAG）。
@@ -279,6 +280,7 @@ class MemoryEngine:
             dopamine: 多巴胺濃度 (0-1)，影響探索廣度
             serotonin: 血清素濃度 (0-1)，影響謹慎程度
             top_k: 返回記憶數量
+            exclude_session_id: 排除指定 session（避免與 LLM history 重複）
 
         Returns:
             MemoryContext: 檢索到的記憶脈絡
@@ -287,7 +289,10 @@ class MemoryEngine:
             query=query,
             dopamine=dopamine,
             serotonin=serotonin,
-            top_k=top_k,            min_similarity=min_similarity,        )
+            top_k=top_k,
+            min_similarity=min_similarity,
+            exclude_session_id=exclude_session_id,
+        )
 
         logger.info(
             f"[MemoryEngine] 檢索完成 - "

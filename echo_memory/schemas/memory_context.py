@@ -53,7 +53,7 @@ class MemoryContext:
 
         # ─── 情節記憶 ────────────────────────────────────────────────────────
         if self.episodes:
-            for ep in self.episodes[:5]:  # 最多顯示 5 個
+            for ep in self.episodes[:10]:  # 最多顯示 10 個
                 rel_time = self._relative_time(ep.timestamp)
                 time_tag = f"（{rel_time}）" if rel_time else ""
 

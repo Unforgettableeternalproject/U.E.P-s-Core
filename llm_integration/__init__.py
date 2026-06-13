@@ -1,3 +1,5 @@
-"""LLM Integration module exports"""
+"""LLM Integration — Gemini 客戶端封裝"""
 
-__all__ = []  # Phase 3 實作
+from llm_integration.llm_client import LLMClient
+
+__all__ = ["LLMClient"]

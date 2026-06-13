@@ -40,11 +40,15 @@ class Config:
         self.embedding_device = os.getenv("EMBEDDING_DEVICE", "cpu")
         self.embedding_query_prefix = os.getenv(
             "EMBEDDING_QUERY_PREFIX",
-            "为这个句子生成表示以用于检索相关文章："
+            ""
         )
+        # Ollama embedding backend (set EMBEDDING_BACKEND=ollama to use)
+        self.embedding_backend = os.getenv("EMBEDDING_BACKEND", "sentence-transformers")
+        self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
         # === 記憶系統配置 ===
         self.memory_storage_path = os.getenv("MEMORY_STORAGE_PATH", "./data")
+        self.memory_namespace_id = os.getenv("MEMORY_NAMESPACE_ID", "local-default")
         self.memory_max_episodes = int(os.getenv("MEMORY_MAX_EPISODES", "10000"))
         self.memory_max_concepts = int(os.getenv("MEMORY_MAX_CONCEPTS", "5000"))
 
@@ -52,7 +56,7 @@ class Config:
         self.retrieval_seed_k = int(os.getenv("RETRIEVAL_SEED_K", "5"))
         self.retrieval_breadth_k = int(os.getenv("RETRIEVAL_BREADTH_K", "12"))
         self.retrieval_min_similarity = float(
-            os.getenv("RETRIEVAL_MIN_SIMILARITY", "0.35")
+            os.getenv("RETRIEVAL_MIN_SIMILARITY", "0.25")
         )
         self.retrieval_weight_threshold = float(
             os.getenv("RETRIEVAL_WEIGHT_THRESHOLD", "0.225")

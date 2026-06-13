@@ -53,6 +53,29 @@ def test_store_and_retrieve(temp_storage):
     assert context.episodes[0].session_id == "test_session"
 
 
+def test_default_summary_combines_user_and_agent_text(temp_storage):
+    engine = MemoryEngine(storage_path=temp_storage)
+
+    episode_id = engine.store_episode(
+        user_input="user detail",
+        agent_response="agent detail",
+        session_id="summary-test",
+    )
+
+    assert engine.episodic.get(episode_id).content_summary == "user detail agent detail"
+
+
+def test_set_llm_fn_updates_existing_entity_extractor(temp_storage):
+    engine = MemoryEngine(storage_path=temp_storage)
+    extractor = engine.entity_extractor
+    llm_fn = lambda prompt: "[]"
+
+    engine.set_llm_fn(llm_fn)
+
+    assert engine._llm_fn is llm_fn
+    assert extractor._llm_fn is llm_fn
+
+
 def test_memory_context_to_text(temp_storage):
     """測試 MemoryContext 文本序列化"""
     engine = MemoryEngine(storage_path=temp_storage)

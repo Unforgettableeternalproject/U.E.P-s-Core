@@ -26,9 +26,16 @@ from datetime import datetime, timezone
 # 延遲導入型別（避免循環依賴）
 from typing import Any
 
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
-from apscheduler.triggers.interval import IntervalTrigger
+try:
+    from apscheduler.schedulers.background import BackgroundScheduler
+    from apscheduler.triggers.cron import CronTrigger
+    from apscheduler.triggers.interval import IntervalTrigger
+    HAS_APSCHEDULER = True
+except ImportError:
+    BackgroundScheduler = None  # type: ignore
+    CronTrigger = None  # type: ignore
+    IntervalTrigger = None  # type: ignore
+    HAS_APSCHEDULER = False
 
 from echo_memory.dream.distillation import DistillationReport, KnowledgeDistillation
 from echo_memory.dream.pruning import GraphPruning, PruningReport
@@ -138,8 +145,8 @@ class DreamEngine:
         self.enable_idle = enable_idle
         self.enable_cron = enable_cron
 
-        # APScheduler
-        self._scheduler = BackgroundScheduler(timezone="UTC")
+        # APScheduler（可選，缺少時排程功能停用，手動觸發仍可用）
+        self._scheduler = BackgroundScheduler(timezone="UTC") if HAS_APSCHEDULER else None
         self._lock = threading.Lock()
         self._is_dreaming = False
         self._last_interaction: datetime = datetime.now(timezone.utc)
@@ -211,6 +218,9 @@ class DreamEngine:
 
     def start(self):
         """啟動 APScheduler 排程器"""
+        if self._scheduler is None:
+            logger.warning("[DreamEngine] apscheduler 未安裝，排程功能停用（手動觸發仍可用）")
+            return
         if self._scheduler.running:
             logger.warning("[DreamEngine] 排程器已在運行")
             return
@@ -254,7 +264,7 @@ class DreamEngine:
 
     def stop(self):
         """關閉排程器"""
-        if self._scheduler.running:
+        if self._scheduler is not None and self._scheduler.running:
             self._scheduler.shutdown(wait=False)
             logger.info("[DreamEngine] 排程器已關閉")
 

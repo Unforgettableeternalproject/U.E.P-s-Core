@@ -21,6 +21,8 @@ from typing import Any
 
 from echo_memory.schemas.episode import Episode
 from echo_memory.schemas.memory_context import MemoryContext
+from echo_memory.namespace import normalize_namespace_id, resolve_namespace_path
+from echo_memory.storage.locking import storage_lock
 
 logger = logging.getLogger("echo_memory.engine")
 
@@ -45,9 +47,12 @@ class MemoryEngine:
         storage_path: str | Path = "./data",
         embedding_model: str = "BAAI/bge-small-zh-v1.5",
         device: str = "cpu",
-        query_prefix: str = "为这个句子生成表示以用于检索相关文章：",
+        query_prefix: str = "",
         max_episodes: int | None = None,
         llm_fn: Callable[[str], str] | None = None,
+        namespace_id: str = "local-default",
+        embedding_backend: str = "sentence-transformers",
+        ollama_base_url: str = "http://localhost:11434",
     ):
         """
         初始化記憶引擎。
@@ -56,12 +61,16 @@ class MemoryEngine:
             storage_path: 資料存儲路徑
             embedding_model: 嵌入模型名稱
             device: 運行設備 (cpu/cuda)
-            query_prefix: retrieval 查詢時的 prefix（bge 系列模型需要）
+            query_prefix: retrieval 查詢時的 prefix（大多數模型不需要，留空即可）
             max_episodes: 情節記憶上限（None 代表無限制）
             llm_fn: LLM 呼叫函式 (prompt: str) -> str，用於知識蒸餾與反思重播。
                     若為 None，Dream Engine 的蒸餾和重播步驟會優雅跳過。
+            embedding_backend: "ollama" 或 "sentence-transformers"
+            ollama_base_url: Ollama server URL（僅 backend=ollama 時使用）
         """
-        self.storage_path = Path(storage_path)
+        self.namespace_id = normalize_namespace_id(namespace_id)
+        self.storage_root = Path(storage_path)
+        self.storage_path = resolve_namespace_path(self.storage_root, self.namespace_id)
         self.storage_path.mkdir(parents=True, exist_ok=True)
 
         self.embedding_model = embedding_model
@@ -69,6 +78,8 @@ class MemoryEngine:
         self.query_prefix = query_prefix
         self.max_episodes = max_episodes
         self._llm_fn = llm_fn
+        self.embedding_backend = embedding_backend
+        self.ollama_base_url = ollama_base_url
 
         # 延遲導入以加快啟動速度
         self._episodic = None
@@ -93,6 +104,9 @@ class MemoryEngine:
                 device=self.device,
                 query_prefix=self.query_prefix,
                 max_episodes=self.max_episodes,
+                lock_path=self.storage_path,
+                embedding_backend=self.embedding_backend,
+                ollama_base_url=self.ollama_base_url,
             )
         return self._episodic
 
@@ -168,6 +182,12 @@ class MemoryEngine:
             self._entity_extractor = EntityExtractor(llm_fn=self._llm_fn)
         return self._entity_extractor
 
+    def set_llm_fn(self, llm_fn: Callable[[str], str] | None) -> None:
+        """Update the optional LLM callback used by lazy and loaded components."""
+        self._llm_fn = llm_fn
+        if self._entity_extractor is not None:
+            self._entity_extractor._llm_fn = llm_fn
+
     # ─── 核心 API ────────────────────────────────────────────────────────────
 
     def store_episode(
@@ -194,7 +214,9 @@ class MemoryEngine:
             episode_id: 新建的情節 ID
         """
         if content_summary is None:
-            content_summary = f"{user_input[:50]}..."
+            # 結合 user + agent 的核心內容作為摘要，供向量搜索使用
+            combined = f"{user_input} {agent_response}"
+            content_summary = combined[:150]
 
         episode = Episode(
             user_input=user_input,
@@ -205,38 +227,39 @@ class MemoryEngine:
             metadata=metadata,
         )
 
-        episode_id = self.episodic.write(episode)
-        logger.info(f"[MemoryEngine] 存儲情節: {episode_id}")
+        with storage_lock(self.storage_path):
+            episode_id = self.episodic.write(episode)
+            logger.info(f"[MemoryEngine] 存儲情節: {episode_id}")
 
-        # ── 實體提取（非關鍵路徑，失敗不影響主寫入）──────────────────────
-        try:
-            entities = self.entity_extractor.extract(episode)
-            graph = self.episodic.graph
+            # ── 實體提取（非關鍵路徑，失敗不影響主寫入）──────────────────
+            try:
+                entities = self.entity_extractor.extract(episode)
+                graph = self.episodic.graph
 
-            for ent in entities:
-                # 插入或更新 EntityStore
-                ent_id = self.entity_store.upsert(ent)
-                self.entity_store.increment_mention(ent_id, episode_id)
+                for ent in entities:
+                    # 插入或更新 EntityStore
+                    ent_id = self.entity_store.upsert(ent)
+                    self.entity_store.increment_mention(ent_id, episode_id)
 
-                # 在記憶圖中維護 Entity 節點與 MENTIONS 邊
-                actual_ent = self.entity_store.get(ent_id)
-                if actual_ent is not None:
-                    if not graph.has_node(ent_id):
-                        graph.add_entity_node(
-                            ent_id,
-                            name=actual_ent.name,
-                            entity_type=actual_ent.entity_type,
-                        )
-                    graph.add_mentions_edge(episode_id, ent_id)
+                    # 在記憶圖中維護 Entity 節點與 MENTIONS 邊
+                    actual_ent = self.entity_store.get(ent_id)
+                    if actual_ent is not None:
+                        if not graph.has_node(ent_id):
+                            graph.add_entity_node(
+                                ent_id,
+                                name=actual_ent.name,
+                                entity_type=actual_ent.entity_type,
+                            )
+                        graph.add_mentions_edge(episode_id, ent_id)
 
-            if entities:
-                graph.save()
-                logger.debug(
-                    f"[MemoryEngine] 實體提取完成: "
-                    f"{len(entities)} 個實體 (episode={episode_id[:8]}...)"
-                )
-        except Exception as exc:
-            logger.warning(f"[MemoryEngine] 實體提取失敗（不影響主寫入）: {exc}")
+                if entities:
+                    graph.save()
+                    logger.debug(
+                        f"[MemoryEngine] 實體提取完成: "
+                        f"{len(entities)} 個實體 (episode={episode_id[:8]}...)"
+                    )
+            except Exception as exc:
+                logger.warning(f"[MemoryEngine] 實體提取失敗（不影響主寫入）: {exc}")
 
         return episode_id
 
@@ -247,6 +270,7 @@ class MemoryEngine:
         serotonin: float = 0.5,
         top_k: int = 10,
         min_similarity: float = 0.3,
+        exclude_session_id: str | None = None,
     ) -> MemoryContext:
         """
         檢索相關記憶（EcphoryRAG）。
@@ -256,6 +280,7 @@ class MemoryEngine:
             dopamine: 多巴胺濃度 (0-1)，影響探索廣度
             serotonin: 血清素濃度 (0-1)，影響謹慎程度
             top_k: 返回記憶數量
+            exclude_session_id: 排除指定 session（避免與 LLM history 重複）
 
         Returns:
             MemoryContext: 檢索到的記憶脈絡
@@ -264,7 +289,10 @@ class MemoryEngine:
             query=query,
             dopamine=dopamine,
             serotonin=serotonin,
-            top_k=top_k,            min_similarity=min_similarity,        )
+            top_k=top_k,
+            min_similarity=min_similarity,
+            exclude_session_id=exclude_session_id,
+        )
 
         logger.info(
             f"[MemoryEngine] 檢索完成 - "
@@ -301,7 +329,8 @@ class MemoryEngine:
                 enable_cron=False,
             )
 
-        report = self._dream_engine.dream_now(triggered_by=triggered_by)
+        with storage_lock(self.storage_path):
+            report = self._dream_engine.dream_now(triggered_by=triggered_by)
         logger.info(f"[MemoryEngine] Dream 完成 - {report.duration_seconds:.1f}s")
 
         result = {

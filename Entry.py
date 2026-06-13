@@ -1,92 +1,992 @@
 """
-Echo Memory System - 互動式 CLI 入口
+Echo Memory System — 互動式 CLI + 記憶儀表板
 
-提供類似 U.E.P Core Debugger 的互動式測試介面。
-
-使用方式:
-    python Entry.py
+Usage:
+    python Entry.py              # 互動式 CLI
+    python Entry.py chat         # 直接進入對話模式
+    python Entry.py dashboard    # 顯示記憶儀表板
 """
 
 import sys
+import uuid
+import logging
 from pathlib import Path
+from datetime import datetime, timezone
 
 # 添加專案路徑
 sys.path.insert(0, str(Path(__file__).parent))
 
-import logging
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.columns import Columns
+from rich.text import Text
+from rich.prompt import Prompt, Confirm
+from rich.markdown import Markdown
+from rich import box
 
 from echo_memory import MemoryEngine
 from echo_memory.config import get_config
+from echo_memory.schemas.memory_context import MemoryContext
 from llm_integration.llm_client import LLMClient
+from llm_integration.tools import to_gemini_tools
+from llm_integration.tools.executor import ToolExecutor
 
-# 配置日誌
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 設定
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-
 logger = logging.getLogger("entry")
 
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 彩色輸出工具
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-
-class Colors:
-    """ANSI 顏色碼"""
-
-    HEADER = "\033[95m"
-    OKBLUE = "\033[94m"
-    OKCYAN = "\033[96m"
-    OKGREEN = "\033[92m"
-    WARNING = "\033[93m"
-    FAIL = "\033[91m"
-    ENDC = "\033[0m"
-    BOLD = "\033[1m"
-    UNDERLINE = "\033[4m"
-
-
-def colored(text: str, color: str) -> str:
-    """返回帶顏色的文字"""
-    return f"{color}{text}{Colors.ENDC}"
-
-
-def print_header(text: str):
-    """打印標題"""
-    print(f"\n{colored('=' * 80, Colors.HEADER)}")
-    print(colored(text.center(80), Colors.HEADER))
-    print(f"{colored('=' * 80, Colors.HEADER)}\n")
-
-
-def print_section(text: str):
-    """打印章節標題"""
-    print(f"\n{colored(text, Colors.OKCYAN)}")
-    print(colored("-" * len(text), Colors.OKCYAN))
-
-
-def print_success(text: str):
-    """打印成功訊息"""
-    print(colored(f"✓ {text}", Colors.OKGREEN))
-
-
-def print_warning(text: str):
-    """打印警告訊息"""
-    print(colored(f"⚠ {text}", Colors.WARNING))
-
-
-def print_error(text: str):
-    """打印錯誤訊息"""
-    print(colored(f"✗ {text}", Colors.FAIL))
-
-
-def print_info(text: str):
-    """打印資訊"""
-    print(colored(f"ℹ {text}", Colors.OKBLUE))
+console = Console()
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 核心類別
+# 記憶儀表板
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def render_stats_panel(engine: MemoryEngine) -> Panel:
+    """渲染記憶統計面板"""
+    stats = engine.get_stats()
+
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("key", style="dim")
+    table.add_column("value", style="bold cyan")
+
+    table.add_row("Episodes", str(stats.get("total_episodes", 0)))
+    table.add_row("Concepts", str(stats.get("total_concepts", 0)))
+    table.add_row("Procedures", str(stats.get("total_procedures", 0)))
+    table.add_row("Entities", str(stats.get("total_entities", 0)))
+    table.add_row("Working Cache", str(stats.get("working_cache_size", 0)))
+
+    # 圖譜統計
+    try:
+        graph_stats = engine.episodic.graph.get_stats()
+        table.add_row("Graph Nodes", str(graph_stats.get("nodes", 0)))
+        table.add_row("Graph Edges", str(graph_stats.get("edges", 0)))
+        avg_w = graph_stats.get("avg_edge_weight", 0)
+        table.add_row("Avg Weight", f"{avg_w:.3f}" if avg_w else "—")
+    except Exception:
+        pass
+
+    return Panel(table, title="[bold]Memory Stats[/]", border_style="cyan", width=36)
+
+
+def render_recent_episodes(engine: MemoryEngine, limit: int = 5) -> Panel:
+    """渲染最近情節面板"""
+    table = Table(box=box.SIMPLE_HEAVY, show_lines=False, padding=(0, 1))
+    table.add_column("#", style="dim", width=3)
+    table.add_column("Time", style="cyan", width=16)
+    table.add_column("User", style="white", ratio=1)
+    table.add_column("Sal.", style="yellow", width=5, justify="right")
+
+    try:
+        episodes = engine.episodic.list_episodes(
+            limit=limit, offset=0, sort_by="timestamp", ascending=False
+        )
+        for i, ep in enumerate(episodes, 1):
+            ts = ep.timestamp.strftime("%m-%d %H:%M")
+            user_text = ep.user_input[:50] + ("…" if len(ep.user_input) > 50 else "")
+            sal_style = (
+                "green" if ep.salience_score >= 0.7
+                else "yellow" if ep.salience_score >= 0.4
+                else "dim"
+            )
+            table.add_row(
+                str(i), ts, user_text,
+                Text(f"{ep.salience_score:.2f}", style=sal_style),
+            )
+
+        if not episodes:
+            table.add_row("—", "—", "[dim]No episodes yet[/]", "—")
+    except Exception as e:
+        table.add_row("!", "—", f"[red]Error: {e}[/]", "—")
+
+    return Panel(table, title="[bold]Recent Episodes[/]", border_style="blue")
+
+
+def render_concepts(engine: MemoryEngine, limit: int = 8) -> Panel:
+    """渲染概念面板"""
+    table = Table(box=box.SIMPLE, show_lines=False, padding=(0, 1))
+    table.add_column("Concept", style="magenta", ratio=1)
+    table.add_column("Conf.", style="cyan", width=5, justify="right")
+    table.add_column("Sources", style="dim", width=7, justify="right")
+
+    try:
+        concepts = engine.semantic.list_concepts()
+        for concept in concepts[:limit]:
+            table.add_row(
+                concept.name[:40],
+                f"{concept.confidence:.2f}",
+                str(len(concept.source_episode_ids)),
+            )
+        if not concepts:
+            table.add_row("[dim]No concepts yet[/]", "—", "—")
+        elif len(concepts) > limit:
+            table.add_row(f"[dim]... +{len(concepts) - limit} more[/]", "", "")
+    except Exception:
+        table.add_row("[dim]Semantic layer empty[/]", "—", "—")
+
+    return Panel(table, title="[bold]Concepts[/]", border_style="magenta")
+
+
+def show_dashboard(engine: MemoryEngine):
+    """顯示完整記憶儀表板"""
+    console.print()
+
+    # 第一行：統計 + 最近情節
+    stats_panel = render_stats_panel(engine)
+    episodes_panel = render_recent_episodes(engine, limit=6)
+    console.print(Columns([stats_panel, episodes_panel], expand=True))
+
+    # 第二行：概念
+    concepts_panel = render_concepts(engine, limit=10)
+    console.print(concepts_panel)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 對話模式
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool = True):
+    """互動式對話模式"""
+    session_id = f"chat_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    turn = 0
+
+    gemini_tools = to_gemini_tools() if tools_enabled else None
+    executor = ToolExecutor(engine=engine, session_id=session_id) if tools_enabled else None
+
+    def _show_session_banner():
+        tools_status = "[green]on[/]" if tools_enabled else "[dim]off[/]"
+        console.print(Panel(
+            "[bold cyan]Echo Memory Chat[/]\n"
+            f"Session: [dim]{session_id}[/]\n"
+            f"Model: [dim]{llm.model_name}[/]\n"
+            f"Tools: {tools_status}\n\n"
+            "Commands: [dim]/quit /stats /dream /clear /history /tools /session[/]",
+            border_style="cyan",
+            width=70,
+        ))
+
+    _show_session_banner()
+
+    while True:
+        # 緊湊狀態列
+        tools_tag = "[green]tools[/]" if tools_enabled else "[dim]no-tools[/]"
+        stats_line = engine.get_stats()
+        ep_count = stats_line.get("total_episodes", 0)
+        console.print(
+            f"\n[dim]──── {session_id} │ turn {turn} │ {ep_count} eps │ {tools_tag} ────[/]"
+        )
+        try:
+            user_input = Prompt.ask("[bold green]You[/]")
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[dim]Bye![/]")
+            break
+
+        if not user_input.strip():
+            continue
+
+        # ── 斜線命令 ──
+        cmd = user_input.strip().lower()
+        if cmd in ("/quit", "/exit", "/q"):
+            console.print("[dim]Session ended.[/]")
+            break
+        elif cmd == "/stats":
+            show_dashboard(engine)
+            continue
+        elif cmd == "/dream":
+            _cmd_dream(engine, llm)
+            continue
+        elif cmd == "/clear":
+            llm.clear_history()
+            console.print("[yellow]Conversation history cleared.[/]")
+            continue
+        elif cmd == "/history":
+            _show_history(llm)
+            continue
+        elif cmd == "/tools":
+            tools_enabled = not tools_enabled
+            if tools_enabled:
+                gemini_tools = to_gemini_tools()
+                executor = ToolExecutor(engine=engine, session_id=session_id)
+                console.print("[green]Tools enabled.[/]")
+            else:
+                gemini_tools = None
+                executor = None
+                console.print("[yellow]Tools disabled.[/]")
+            continue
+        elif cmd.startswith("/session"):
+            parts_cmd = user_input.strip().split(maxsplit=1)
+            sub = parts_cmd[1].strip().lower() if len(parts_cmd) > 1 else ""
+
+            if sub == "" or sub == "info":
+                # 顯示當前 session
+                console.print(f"  Current: [cyan]{session_id}[/] ({turn} turns, {llm.turn_count} in LLM history)")
+                continue
+
+            elif sub == "list":
+                # 列出所有 sessions
+                all_eps = engine.episodic.list_episodes(
+                    limit=9999, offset=0, sort_by="timestamp", ascending=True
+                )
+                sessions_map: dict[str, list] = {}
+                for ep in all_eps:
+                    sessions_map.setdefault(ep.session_id, []).append(ep)
+
+                if not sessions_map:
+                    console.print("[yellow]No sessions found.[/]")
+                    continue
+
+                s_table = Table(box=box.SIMPLE, show_lines=False)
+                s_table.add_column("#", style="dim", width=3)
+                s_table.add_column("Session ID", style="cyan", ratio=1)
+                s_table.add_column("Episodes", width=8, justify="right")
+                s_table.add_column("Last", width=16)
+
+                active_marker = " [green]◀ current[/]"
+                for i, (sid, eps) in enumerate(
+                    sorted(sessions_map.items(), key=lambda x: x[1][-1].timestamp, reverse=True), 1
+                ):
+                    marker = active_marker if sid == session_id else ""
+                    s_table.add_row(
+                        str(i), sid + marker, str(len(eps)),
+                        eps[-1].timestamp.strftime("%m-%d %H:%M"),
+                    )
+
+                console.print(s_table)
+                continue
+
+            elif sub == "new":
+                # 建立新 session
+                session_id = f"chat_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+                turn = 0
+                llm.clear_history()
+                engine.working.clear()  # 清除查詢向量快取，確保 session 邊界乾淨
+                if executor:
+                    executor = ToolExecutor(engine=engine, session_id=session_id)
+                console.print(f"[green]✓ New session: {session_id}[/]")
+                continue
+
+            else:
+                # 嘗試切換到指定 session
+                target_sid = sub
+                # 前綴匹配
+                all_eps = engine.episodic.list_episodes(
+                    limit=9999, offset=0, sort_by="timestamp", ascending=True
+                )
+                sessions_map = {}
+                for ep in all_eps:
+                    sessions_map.setdefault(ep.session_id, []).append(ep)
+
+                matched_sids = [s for s in sessions_map if s.startswith(target_sid) or target_sid in s]
+
+                if not matched_sids:
+                    console.print(f"[yellow]No session matching '{target_sid}'[/]")
+                    continue
+                if len(matched_sids) > 1:
+                    console.print(f"[yellow]Ambiguous — {len(matched_sids)} matches:[/]")
+                    for s in matched_sids[:5]:
+                        console.print(f"  [dim]{s}[/]")
+                    continue
+
+                target_sid = matched_sids[0]
+                target_eps = sessions_map[target_sid]
+
+                # 載入歷史到 LLM
+                llm.clear_history()
+                from google.genai import types as _types
+                for ep in target_eps:
+                    llm._history.append(_types.Content(
+                        role="user", parts=[_types.Part(text=ep.user_input)]
+                    ))
+                    llm._history.append(_types.Content(
+                        role="model", parts=[_types.Part(text=ep.agent_response)]
+                    ))
+
+                session_id = target_sid
+                turn = len(target_eps)
+                if executor:
+                    executor = ToolExecutor(engine=engine, session_id=session_id)
+
+                console.print(f"[green]✓ Switched to: {session_id} ({len(target_eps)} episodes loaded)[/]")
+                continue
+
+        # ── 1. 檢索記憶 ──
+        context = MemoryContext()  # 預設空 context，避免 retrieve 失敗時 UnboundLocalError
+        try:
+            context = engine.retrieve(
+                query=user_input,
+                dopamine=0.5,
+                serotonin=0.5,
+                top_k=10,
+                min_similarity=config.retrieval_min_similarity,
+                exclude_session_id=session_id,
+            )
+            memory_text = "" if context.is_empty() else context.to_text()
+
+            if not context.is_empty():
+                ep_count = len(context.episodes)
+                concept_count = len(context.concepts) if hasattr(context, "concepts") else 0
+                proc_count = len(context.procedures) if hasattr(context, "procedures") else 0
+
+                parts = []
+                if ep_count:
+                    parts.append(f"{ep_count} episodes")
+                if concept_count:
+                    parts.append(f"{concept_count} concepts")
+                if proc_count:
+                    parts.append(f"{proc_count} procedures")
+
+                console.print(
+                    f"  [dim]📡 Retrieved: {', '.join(parts)}[/]"
+                )
+
+        except Exception as e:
+            logger.warning(f"Retrieval error: {e}")
+            memory_text = ""
+
+        # ── 2. LLM 生成（含可能的 tool-use loop）──
+        try:
+            if executor:
+                executor.update_context_whitelist(
+                    [ep.id for ep in context.episodes] if not context.is_empty() else []
+                )
+                executor.increment_turn()
+
+            with console.status("[cyan]Thinking...[/]", spinner="dots"):
+                response = llm.chat(
+                    message=user_input,
+                    memory_context=memory_text,
+                    tools=gemini_tools,
+                    tool_executor=executor,
+                )
+
+            # 顯示工具呼叫提示（如果有的話）
+            if tools_enabled:
+                _show_tool_usage_hint(llm)
+
+            console.print(f"[bold cyan]U[/]  {response}")
+
+        except Exception as e:
+            console.print(f"[red]LLM Error: {e}[/]")
+            logger.exception("LLM generation failed")
+            continue
+
+        # ── 3. 存儲情節 ──
+        try:
+            turn += 1
+            salience = _estimate_salience(user_input, response)
+            episode_id = engine.store_episode(
+                user_input=user_input,
+                agent_response=response,
+                session_id=session_id,
+                salience=salience,
+            )
+            sal_indicator = "🔴" if salience >= 0.75 else "🟡" if salience >= 0.5 else "⚪"
+            console.print(f"  [dim]💾 Stored: {episode_id[:12]}… (turn {turn}) {sal_indicator} {salience:.2f}[/]")
+
+        except Exception as e:
+            logger.warning(f"Store error: {e}")
+
+
+def _estimate_salience(user_input: str, agent_response: str) -> float:
+    """
+    啟發式估算對話的顯著性分數。
+
+    基於對話特徵自動評分，避免所有 episode 都是 0.5。
+    """
+    score = 0.35  # 基準分（一般閒聊）
+    text = (user_input + " " + agent_response).lower()
+
+    # 個人資訊（名字、身份、偏好）→ 高顯著性
+    personal_signals = [
+        "my name", "i am", "i'm", "remember", "don't forget", "important",
+        "i like", "i prefer", "i hate", "i need", "i want", "i work",
+        "我叫", "我是", "記住", "別忘", "我喜歡", "我偏好", "我討厭",
+        "我需要", "我想要", "告訴你", "我的名字", "叫我",
+    ]
+    if any(sig in text for sig in personal_signals):
+        score += 0.25
+
+    # 情感/深度對話 → 中高
+    emotional_signals = [
+        "feel", "love", "hate", "worry", "afraid", "happy", "sad",
+        "thank", "sorry", "miss", "dream", "hope", "wish",
+        "喜歡", "討厭", "擔心", "開心", "難過", "謝謝",
+        "害怕", "感謝", "思念", "希望", "抱歉", "對不起",
+        "高興", "生氣", "煩惱", "興奮", "感動",
+    ]
+    if any(sig in text for sig in emotional_signals):
+        score += 0.15
+
+    # 提問/知識交換 → 中
+    if "?" in user_input or "？" in user_input:
+        score += 0.1
+
+    # 長對話通常更有內容
+    if len(user_input) > 100:
+        score += 0.1
+    if len(agent_response) > 200:
+        score += 0.05
+
+    return min(1.0, round(score, 2))
+
+
+def _show_tool_usage_hint(llm: LLMClient):
+    """顯示最近一輪的工具呼叫提示（簡潔版）"""
+    history = llm.get_history()
+    if not history:
+        return
+
+    # 從歷史末尾往回掃，找到最後一個 user 文字訊息後的所有工具條目
+    last_user_idx = -1
+    for i in range(len(history) - 1, -1, -1):
+        item = history[i]
+        if item["role"] == "user" and not item["text"].startswith("[tool"):
+            last_user_idx = i
+            break
+
+    if last_user_idx < 0:
+        return
+
+    for item in history[last_user_idx + 1:]:
+        if item["text"].startswith("[tool_call]"):
+            tool_part = item["text"][len("[tool_call] "):]
+            tool_name = tool_part.split("(")[0]
+            console.print(f"  [dim]🔧 Tool: {tool_name}[/]")
+
+
+def _show_history(llm: LLMClient):
+    """顯示對話歷史"""
+    history = llm.get_history()
+    if not history:
+        console.print("[dim]No conversation history.[/]")
+        return
+
+    table = Table(box=box.ROUNDED, show_lines=True, padding=(0, 1))
+    table.add_column("Role", style="bold", width=6)
+    table.add_column("Message", ratio=1)
+
+    for turn in history:
+        role = turn["role"]
+        style = "green" if role == "user" else "cyan"
+        text = turn["text"]
+        if len(text) > 200:
+            text = text[:200] + "…"
+        table.add_row(Text(role, style=style), text)
+
+    console.print(Panel(table, title=f"[bold]Conversation ({llm.turn_count} turns)[/]"))
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 指令處理
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def _cmd_store(engine: MemoryEngine, session_id: str):
+    """手動存儲對話"""
+    user_input = Prompt.ask("[cyan]User input[/]")
+    if not user_input:
+        return
+    agent_response = Prompt.ask("[cyan]Agent response[/]")
+    if not agent_response:
+        return
+    salience = float(Prompt.ask("[cyan]Salience (0-1)[/]", default="0.5"))
+    salience = max(0.0, min(1.0, salience))
+
+    episode_id = engine.store_episode(
+        user_input=user_input,
+        agent_response=agent_response,
+        session_id=session_id,
+        salience=salience,
+    )
+    console.print(f"[green]✓ Stored: {episode_id}[/]")
+
+
+def _cmd_retrieve(engine: MemoryEngine, config):
+    """檢索記憶"""
+    query = Prompt.ask("[cyan]Query[/]")
+    if not query:
+        return
+
+    context = engine.retrieve(
+        query=query,
+        dopamine=0.5,
+        serotonin=0.5,
+        top_k=5,
+        min_similarity=config.retrieval_min_similarity,
+    )
+
+    if context.is_empty():
+        console.print("[yellow]No relevant memories found.[/]")
+    else:
+        console.print(Panel(
+            context.to_text(),
+            title="[bold]Retrieved Memories[/]",
+            border_style="blue",
+        ))
+
+
+def _cmd_list(engine: MemoryEngine):
+    """列出情節"""
+    page = int(Prompt.ask("[cyan]Page[/]", default="1"))
+    limit = 10
+    offset = (max(1, page) - 1) * limit
+
+    total = engine.episodic.count()
+    episodes = engine.episodic.list_episodes(
+        limit=limit, offset=offset, sort_by="timestamp", ascending=False
+    )
+
+    if not episodes:
+        console.print("[yellow]No episodes found.[/]")
+        return
+
+    table = Table(title=f"Episodes (page {page}, total {total})", box=box.ROUNDED)
+    table.add_column("#", style="dim", width=4)
+    table.add_column("ID", style="cyan", width=14)
+    table.add_column("Time", width=16)
+    table.add_column("User", ratio=1)
+    table.add_column("Agent", ratio=1)
+    table.add_column("Sal.", style="yellow", width=5)
+
+    for i, ep in enumerate(episodes, offset + 1):
+        table.add_row(
+            str(i),
+            ep.id[:12] + "…",
+            ep.timestamp.strftime("%m-%d %H:%M"),
+            ep.user_input[:40] + ("…" if len(ep.user_input) > 40 else ""),
+            ep.agent_response[:40] + ("…" if len(ep.agent_response) > 40 else ""),
+            f"{ep.salience_score:.2f}",
+        )
+
+    console.print(table)
+
+
+def _cmd_dream(engine: MemoryEngine, llm: LLMClient | None = None):
+    """執行 Dream Engine"""
+    if not Confirm.ask("[yellow]Run Dream Engine?[/]", default=False):
+        return
+
+    with console.status("[cyan]Dreaming...[/]", spinner="moon"):
+        # 保底注入：若 engine 在 init 時沒拿到 llm_fn（例如 LLM 後來才可用）
+        if llm and not engine._llm_fn:
+            engine.set_llm_fn(llm.as_llm_fn())
+
+        report = engine.dream(triggered_by="manual")
+
+    if report.get("error"):
+        console.print(f"[red]Dream failed: {report['error']}[/]")
+        return
+
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("key", style="dim")
+    table.add_column("value", style="bold green")
+
+    table.add_row("Duration", f"{report.get('duration_seconds', 0):.1f}s")
+    table.add_row("Edges Updated", str(report.get("edges_updated", 0)))
+    table.add_row("Edges Pruned", str(report.get("edges_pruned", 0)))
+
+    # 蒸餾報告
+    distill = report.get("distillation", {})
+    if distill:
+        table.add_row("Concepts Created", str(distill.get("concepts_created", 0)))
+        table.add_row("Episodes Scanned", str(distill.get("episodes_scanned", 0)))
+
+    # 重播報告
+    replay = report.get("replay", {})
+    if replay:
+        table.add_row("Replayed", str(replay.get("episodes_replayed", 0)))
+
+    console.print(Panel(table, title="[bold]Dream Report[/]", border_style="yellow"))
+
+
+def _cmd_sessions(engine: MemoryEngine):
+    """列出所有 session"""
+    try:
+        all_episodes = engine.episodic.list_episodes(
+            limit=9999, offset=0, sort_by="timestamp", ascending=True
+        )
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/]")
+        return
+
+    if not all_episodes:
+        console.print("[yellow]No episodes.[/]")
+        return
+
+    # 按 session 分組
+    sessions: dict[str, list] = {}
+    for ep in all_episodes:
+        sessions.setdefault(ep.session_id, []).append(ep)
+
+    table = Table(title=f"Sessions ({len(sessions)} total)", box=box.ROUNDED)
+    table.add_column("Session ID", style="cyan", ratio=1)
+    table.add_column("Episodes", style="bold", width=8, justify="right")
+    table.add_column("First", width=16)
+    table.add_column("Last", width=16)
+
+    for sid, eps in sorted(sessions.items(), key=lambda x: x[1][-1].timestamp, reverse=True):
+        table.add_row(
+            sid,
+            str(len(eps)),
+            eps[0].timestamp.strftime("%m-%d %H:%M"),
+            eps[-1].timestamp.strftime("%m-%d %H:%M"),
+        )
+
+    console.print(table)
+
+
+def _cmd_inspect(engine: MemoryEngine):
+    """檢視單一 episode 完整內容"""
+    ep_id = Prompt.ask("[cyan]Episode ID (prefix OK, min 6 chars)[/]")
+    if not ep_id or len(ep_id) < 6:
+        console.print("[yellow]ID too short.[/]")
+        return
+
+    # 前綴搜尋
+    matched = [
+        (eid, ep) for eid, ep in engine.episodic._episodes.items()
+        if eid.startswith(ep_id)
+    ]
+
+    if not matched:
+        console.print(f"[yellow]No episode matching '{ep_id}'[/]")
+        return
+    if len(matched) > 1:
+        console.print(f"[yellow]Ambiguous — {len(matched)} matches. Provide more chars.[/]")
+        for eid, ep in matched[:5]:
+            console.print(f"  [dim]{eid}[/]")
+        return
+
+    eid, ep = matched[0]
+
+    # 基本資訊
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("key", style="dim", width=16)
+    table.add_column("value", ratio=1)
+
+    table.add_row("ID", f"[cyan]{eid}[/]")
+    table.add_row("Session", ep.session_id)
+    table.add_row("Timestamp", str(ep.timestamp))
+    table.add_row("Salience", f"[yellow]{ep.salience_score:.3f}[/]")
+    table.add_row("Summary", ep.content_summary or "—")
+    table.add_row("Dreamed", str(getattr(ep, "is_dreamed", False)))
+
+    # Metadata
+    meta = getattr(ep, "metadata", {})
+    if meta:
+        table.add_row("Metadata", str(meta))
+
+    console.print(Panel(table, title="[bold]Episode Info[/]", border_style="cyan"))
+
+    # 對話內容
+    console.print(Panel(
+        f"[green bold]User:[/]\n{ep.user_input}\n\n[cyan bold]Agent:[/]\n{ep.agent_response}",
+        title="[bold]Conversation[/]",
+        border_style="blue",
+    ))
+
+    # 圖譜連結
+    try:
+        graph = engine.episodic.graph
+        neighbors = list(graph.graph.neighbors(eid)) if graph.graph.has_node(eid) else []
+        predecessors = list(graph.graph.predecessors(eid)) if graph.graph.has_node(eid) else []
+
+        if neighbors or predecessors:
+            edges_table = Table(box=box.SIMPLE, show_lines=False)
+            edges_table.add_column("Direction", width=4)
+            edges_table.add_column("Target", style="cyan", ratio=1)
+            edges_table.add_column("Type", style="magenta", width=16)
+            edges_table.add_column("Weight", width=8)
+
+            for n in predecessors:
+                edge_data = graph.graph.edges[n, eid]
+                edges_table.add_row(
+                    "←", n[:16] + "…",
+                    edge_data.get("edge_type", "?"),
+                    f"{edge_data.get('weight', 0):.3f}",
+                )
+            for n in neighbors:
+                edge_data = graph.graph.edges[eid, n]
+                edges_table.add_row(
+                    "→", n[:16] + "…",
+                    edge_data.get("edge_type", "?"),
+                    f"{edge_data.get('weight', 0):.3f}",
+                )
+
+            console.print(Panel(edges_table, title="[bold]Graph Edges[/]", border_style="magenta"))
+        else:
+            console.print("[dim]No graph edges for this episode.[/]")
+    except Exception:
+        pass
+
+
+def _cmd_search(engine: MemoryEngine, config):
+    """搜尋記憶（語義 + 文字）"""
+    query = Prompt.ask("[cyan]Search query[/]")
+    if not query:
+        return
+
+    mode = Prompt.ask("[cyan]Mode[/]", choices=["semantic", "text", "both"], default="semantic")
+    results = []
+
+    # 語義搜尋
+    if mode in ("semantic", "both"):
+        context = engine.retrieve(
+            query=query, dopamine=0.6, serotonin=0.4,
+            top_k=10, min_similarity=0.2,
+        )
+        if not context.is_empty():
+            for ep in context.episodes:
+                sim = context.similarities.get(ep.id, 0.0)
+                results.append(("semantic", ep, sim))
+
+    # 文字搜尋（簡單 substring match）
+    if mode in ("text", "both"):
+        q_lower = query.lower()
+        for eid, ep in engine.episodic._episodes.items():
+            if q_lower in ep.user_input.lower() or q_lower in ep.agent_response.lower():
+                # 避免重複
+                if not any(r[1].id == ep.id for r in results):
+                    results.append(("text", ep, 0.0))
+
+    if not results:
+        console.print("[yellow]No results found.[/]")
+        return
+
+    table = Table(title=f"Search Results ({len(results)})", box=box.ROUNDED)
+    table.add_column("#", style="dim", width=3)
+    table.add_column("Mode", width=8)
+    table.add_column("ID", style="cyan", width=14)
+    table.add_column("Sim.", width=6)
+    table.add_column("User", ratio=1)
+    table.add_column("Sal.", style="yellow", width=5)
+
+    for i, (src, ep, sim) in enumerate(results[:15], 1):
+        mode_style = "green" if src == "semantic" else "blue"
+        table.add_row(
+            str(i),
+            Text(src, style=mode_style),
+            ep.id[:12] + "…",
+            f"{sim:.2f}" if sim > 0 else "—",
+            ep.user_input[:45] + ("…" if len(ep.user_input) > 45 else ""),
+            f"{ep.salience_score:.2f}",
+        )
+
+    console.print(table)
+
+
+def _cmd_edit(engine: MemoryEngine):
+    """修改 episode 資訊"""
+    ep_id = Prompt.ask("[cyan]Episode ID (prefix OK)[/]")
+    if not ep_id or len(ep_id) < 6:
+        console.print("[yellow]ID too short.[/]")
+        return
+
+    matched = [
+        (eid, ep) for eid, ep in engine.episodic._episodes.items()
+        if eid.startswith(ep_id)
+    ]
+
+    if not matched:
+        console.print(f"[yellow]No episode matching '{ep_id}'[/]")
+        return
+    if len(matched) > 1:
+        console.print(f"[yellow]Ambiguous — {len(matched)} matches.[/]")
+        return
+
+    eid, ep = matched[0]
+    console.print(f"[cyan]Editing: {eid}[/]")
+    console.print(f"  User: {ep.user_input[:60]}…")
+    console.print(f"  Current salience: [yellow]{ep.salience_score:.3f}[/]")
+    console.print()
+
+    field = Prompt.ask("[cyan]What to edit[/]", choices=["salience", "summary", "cancel"], default="salience")
+
+    if field == "cancel":
+        return
+    elif field == "salience":
+        new_val = Prompt.ask("[cyan]New salience (0-1)[/]", default=str(ep.salience_score))
+        try:
+            new_salience = max(0.0, min(1.0, float(new_val)))
+            engine.episodic.update_salience(eid, new_salience)
+            console.print(f"[green]✓ Salience updated: {ep.salience_score:.3f} → {new_salience:.3f}[/]")
+        except Exception as e:
+            console.print(f"[red]Failed: {e}[/]")
+    elif field == "summary":
+        new_summary = Prompt.ask("[cyan]New summary[/]", default=ep.content_summary or "")
+        if new_summary:
+            if engine.episodic.update_summary(eid, new_summary):
+                console.print(f"[green]✓ Summary updated.[/]")
+            else:
+                console.print("[red]Episode no longer exists.[/]")
+
+
+def _cmd_delete(engine: MemoryEngine):
+    """刪除 episode 或整個 session"""
+    mode = Prompt.ask("[cyan]Delete[/]", choices=["episode", "session", "cancel"], default="episode")
+
+    if mode == "cancel":
+        return
+    elif mode == "episode":
+        ep_id = Prompt.ask("[cyan]Episode ID (prefix OK)[/]")
+        if not ep_id or len(ep_id) < 6:
+            return
+
+        matched = [
+            (eid, ep) for eid, ep in engine.episodic._episodes.items()
+            if eid.startswith(ep_id)
+        ]
+
+        if not matched:
+            console.print(f"[yellow]No match for '{ep_id}'[/]")
+            return
+        if len(matched) > 1:
+            console.print(f"[yellow]Ambiguous — {len(matched)} matches.[/]")
+            return
+
+        eid, ep = matched[0]
+        console.print(f"  [dim]{eid} | {ep.user_input[:50]}…[/]")
+        if Confirm.ask("[red]Delete?[/]", default=False):
+            engine.episodic.delete_episode(eid)
+            console.print(f"[green]✓ Deleted.[/]")
+
+    elif mode == "session":
+        sid = Prompt.ask("[cyan]Session ID[/]")
+        if not sid:
+            return
+
+        eps = engine.episodic.list_episodes(session_id=sid, limit=999, offset=0, sort_by="timestamp", ascending=True)
+        if not eps:
+            console.print(f"[yellow]No episodes in session '{sid}'[/]")
+            return
+
+        console.print(f"[yellow]Will delete {len(eps)} episodes from session '{sid}'[/]")
+        if Confirm.ask("[red]Confirm?[/]", default=False):
+            count = engine.episodic.delete_session(sid)
+            console.print(f"[green]✓ Deleted {count} episodes.[/]")
+
+
+def _cmd_graph(engine: MemoryEngine):
+    """顯示圖結構詳細資訊"""
+    try:
+        graph = engine.episodic.graph
+        stats = graph.get_stats()
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/]")
+        return
+
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("key", style="dim")
+    table.add_column("value", style="bold cyan")
+
+    table.add_row("Nodes", str(stats.get("nodes", 0)))
+    table.add_row("Edges", str(stats.get("edges", 0)))
+    avg_w = stats.get("avg_edge_weight", 0)
+    table.add_row("Avg Weight", f"{avg_w:.4f}" if avg_w else "—")
+
+    # 邊類型分布
+    edge_types: dict[str, int] = {}
+    for u, v, data in graph.graph.edges(data=True):
+        et = data.get("edge_type", "unknown")
+        edge_types[et] = edge_types.get(et, 0) + 1
+
+    if edge_types:
+        table.add_row("", "")
+        table.add_row("[bold]Edge Types[/]", "")
+        for et, count in sorted(edge_types.items(), key=lambda x: -x[1]):
+            table.add_row(f"  {et}", str(count))
+
+    # 孤立節點
+    isolated = list(graph.graph.nodes() - set(
+        n for e in graph.graph.edges() for n in e
+    ))
+    table.add_row("", "")
+    table.add_row("Isolated Nodes", str(len(isolated)))
+
+    console.print(Panel(table, title="[bold]Memory Graph[/]", border_style="magenta"))
+
+
+def _cmd_concepts(engine: MemoryEngine):
+    """列出和檢視概念"""
+    try:
+        concepts = engine.semantic.list_concepts()
+    except Exception:
+        console.print("[dim]Semantic layer not initialized or empty.[/]")
+        return
+
+    if not concepts:
+        console.print("[yellow]No concepts yet. Run Dream Engine to distill episodes into concepts.[/]")
+        return
+
+    table = Table(title=f"Concepts ({len(concepts)})", box=box.ROUNDED)
+    table.add_column("#", style="dim", width=3)
+    table.add_column("ID", style="cyan", width=14)
+    table.add_column("Name", style="magenta", ratio=1)
+    table.add_column("Conf.", width=6)
+    table.add_column("Sources", width=7)
+    table.add_column("Access", width=6)
+
+    for i, c in enumerate(concepts, 1):
+        table.add_row(
+            str(i),
+            c.id[:12] + "…",
+            c.name,
+            f"{c.confidence:.2f}",
+            str(len(c.source_episode_ids)),
+            str(c.access_count),
+        )
+
+    console.print(table)
+
+
+def _cmd_reset(engine: MemoryEngine):
+    """重置所有記憶資料（保留設定）"""
+    stats = engine.get_stats()
+    console.print(f"[yellow]Current data: {stats['total_episodes']} episodes, "
+                  f"{stats['total_concepts']} concepts[/]")
+
+    if not Confirm.ask("[red]Reset ALL memory data?[/]", default=False):
+        return
+    confirm = Prompt.ask("[red]Type RESET to confirm[/]")
+    if confirm != "RESET":
+        console.print("[dim]Cancelled.[/]")
+        return
+
+    engine.clear_all()
+    console.print("[green]✓ All memory data reset. Fresh start.[/]")
+
+
+def _cmd_export(engine: MemoryEngine):
+    """匯出記憶"""
+    fmt = Prompt.ask("[cyan]Format[/]", choices=["json", "csv"], default="json")
+    path = Prompt.ask("[cyan]Output path (empty = screen)[/]", default="")
+
+    content = engine.episodic.export_episodes(format=fmt)
+
+    if path:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+        console.print(f"[green]✓ Exported to {p.resolve()}[/]")
+    else:
+        lines = content.splitlines()
+        preview = "\n".join(lines[:40])
+        if len(lines) > 40:
+            preview += f"\n\n[dim]... {len(lines) - 40} more lines[/]"
+        console.print(Panel(preview, title=f"Export ({fmt.upper()})"))
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 主程式
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
@@ -95,662 +995,194 @@ class EchoMemoryCLI:
 
     def __init__(self):
         self.config = get_config()
-        self.memory_engine: MemoryEngine | None = None
-        self.llm_client: LLMClient | None = None
-        self.session_id = "cli_session"
-        self.conversation_count = 0
+        self.engine: MemoryEngine | None = None
+        self.llm: LLMClient | None = None
+        self.session_id = f"cli_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+        self.tools_enabled: bool = True
 
-    def initialize(self):
+    def initialize(self) -> bool:
         """初始化記憶引擎"""
-        print_section("初始化 Echo Memory System")
+        console.print(Panel(
+            "[bold cyan]Echo Memory System[/]\n"
+            "[dim]Autonomous memory subsystem — inspired by OpenSoul[/]",
+            border_style="cyan",
+        ))
 
         try:
-            # 初始化記憶引擎（不需要 LLM API key）
-            self.memory_engine = MemoryEngine(
-                storage_path=self.config.memory_storage_path,
-                embedding_model=self.config.embedding_model,
-                device=self.config.embedding_device,
-                query_prefix=getattr(self.config, 'embedding_query_prefix', ''),
-                max_episodes=self.config.memory_max_episodes,
+            with console.status("[cyan]Loading memory engine...[/]"):
+                self.engine = MemoryEngine(
+                    storage_path=self.config.memory_storage_path,
+                    embedding_model=self.config.embedding_model,
+                    device=self.config.embedding_device,
+                    query_prefix=getattr(self.config, "embedding_query_prefix", ""),
+                    max_episodes=self.config.memory_max_episodes,
+                    embedding_backend=getattr(self.config, "embedding_backend", "sentence-transformers"),
+                    ollama_base_url=getattr(self.config, "ollama_base_url", "http://localhost:11434"),
+                )
+
+            stats = self.engine.get_stats()
+            console.print(
+                f"[green]✓[/] Engine ready — "
+                f"{stats['total_episodes']} episodes, "
+                f"{stats['total_concepts']} concepts"
             )
-
-            print_success("記憶引擎初始化成功")
-            print_info(f"存儲路徑: {self.config.memory_storage_path}")
-            print_info(f"嵌入模型: {self.config.embedding_model}")
-
-            # 顯示統計資訊
-            stats = self.memory_engine.get_stats()
-            print_info(
-                f"已載入 {stats['total_episodes']} 個情節, "
-                f"{stats['total_concepts']} 個概念"
-            )
-
-            # 初始化 LLM Client（用於對話模式，非必要）
-            is_llm_valid, missing = self.config.validate_llm()
-            if is_llm_valid:
-                try:
-                    self.llm_client = LLMClient()
-                    print_success("LLM 客戶端初始化成功")
-                except Exception as llm_error:
-                    self.llm_client = None
-                    print_warning(f"LLM 客戶端初始化失敗: {llm_error}")
-                    print_info("對話模式將無法使用，但記憶功能正常")
-            else:
-                self.llm_client = None
-                print_warning(f"LLM API 未設定（缺少: {', '.join(missing)}）")
-                print_info("對話模式將無法使用，但記憶的存儲/檢索/統計功能正常")
-
-            return True
 
         except Exception as e:
-            print_error(f"初始化失敗: {e}")
-            logger.exception("初始化記憶引擎時發生錯誤")
+            console.print(f"[red]✗ Engine init failed: {e}[/]")
             return False
+
+        # LLM（非必要）
+        is_valid, missing = self.config.validate_llm()
+        if is_valid:
+            try:
+                self.llm = LLMClient()
+                console.print(f"[green]✓[/] LLM ready — {self.llm.model_name}")
+
+                # 注入 llm_fn 到 MemoryEngine，啟用 LLM 級 entity extraction / dream
+                self.engine.set_llm_fn(self.llm.as_llm_fn())
+
+            except Exception as e:
+                console.print(f"[yellow]⚠ LLM init failed: {e}[/]")
+                console.print("[dim]  Chat mode unavailable, memory ops still work.[/]")
+        else:
+            console.print(f"[yellow]⚠ LLM not configured (missing: {', '.join(missing)})[/]")
+
+        return True
 
     def show_menu(self):
         """顯示主選單"""
-        print_section("主選單")
-
-        llm_available = self.llm_client is not None
-        chat_color = Colors.OKGREEN if llm_available else Colors.ENDC
-        chat_icon = "✓" if llm_available else "✗"
-        chat_desc = "對話模式（存儲+檢索）" if llm_available else "對話模式（LLM 未設定，無法使用）"
-
-        menu_items = [
-            ("store", "存儲對話", Colors.OKGREEN, "✓"),
-            ("retrieve", "檢索記憶", Colors.OKGREEN, "✓"),
-            ("chat", chat_desc, chat_color, chat_icon),
-            ("stats", "查看統計", Colors.OKGREEN, "✓"),
-            ("list", "列出情節（支援分頁/session 篩選）", Colors.OKGREEN, "✓"),
-            ("delete", "刪除情節或 session", Colors.WARNING, "✗"),
-            ("export", "匯出記憶資料", Colors.OKCYAN, "↓"),
-            ("config", "顯示配置", Colors.OKCYAN, "ℹ"),
-            ("dream", "執行 Dream Engine", Colors.WARNING, "⚠"),
-            ("clear", "清空記憶", Colors.FAIL, "✗"),
-            ("help", "顯示幫助", Colors.OKBLUE, "?"),
-            ("exit", "退出", Colors.ENDC, "←"),
+        commands = [
+            ("chat", "💬 Chat with memory", "green" if self.llm else "dim"),
+            ("dashboard", "📊 Memory dashboard", "cyan"),
+            ("", "", ""),
+            ("search", "🔍 Search memories (semantic + text)", "blue"),
+            ("retrieve", "🔎 Retrieve with neurochem params", "blue"),
+            ("inspect", "🔬 Inspect episode details + graph", "blue"),
+            ("", "", ""),
+            ("store", "📝 Store episode manually", "blue"),
+            ("edit", "✏️  Edit episode (salience, summary)", "blue"),
+            ("delete", "🗑  Delete episode or session", "red"),
+            ("", "", ""),
+            ("list", "📋 List episodes", "blue"),
+            ("sessions", "📂 List all sessions", "blue"),
+            ("concepts", "💡 List concepts", "magenta"),
+            ("graph", "🕸  Graph structure info", "magenta"),
+            ("", "", ""),
+            ("dream", "🌙 Run Dream Engine", "yellow"),
+            ("export", "📦 Export data", "blue"),
+            ("reset", "⚠️  Reset all memory", "red"),
+            ("exit", "👋 Exit", "dim"),
         ]
 
-        for cmd, desc, color, icon in menu_items:
-            print(f"  {colored(icon, color)} {colored(cmd.ljust(10), color)} - {desc}")
+        grid = Table(show_header=False, box=None, padding=(0, 2), show_edge=False)
+        grid.add_column(width=12)
+        grid.add_column(ratio=1)
 
-        print()
-
-    def cmd_store(self):
-        """存儲對話命令"""
-        print_section("存儲對話")
-
-        user_input = input(colored("用戶輸入: ", Colors.OKCYAN)).strip()
-        if not user_input:
-            print_warning("用戶輸入不能為空")
-            return
-
-        agent_response = input(colored("Agent 回應: ", Colors.OKCYAN)).strip()
-        if not agent_response:
-            print_warning("Agent 回應不能為空")
-            return
-
-        # 詢問顯著性分數
-        salience_input = input(
-            colored("顯著性分數 (0-1, 默認 0.5): ", Colors.OKCYAN)
-        ).strip()
-        try:
-            salience = float(salience_input) if salience_input else 0.5
-            salience = max(0.0, min(1.0, salience))
-        except ValueError:
-            print_warning("無效的分數，使用默認值 0.5")
-            salience = 0.5
-
-        try:
-            self.conversation_count += 1
-            episode_id = self.memory_engine.store_episode(
-                user_input=user_input,
-                agent_response=agent_response,
-                session_id=self.session_id,
-                content_summary=user_input[:50] + "...",
-                salience=salience,
-            )
-
-            print_success(f"已存儲情節: {episode_id}")
-            print_info(f"會話計數: {self.conversation_count}")
-
-        except Exception as e:
-            print_error(f"存儲失敗: {e}")
-            logger.exception("存儲情節時發生錯誤")
-
-    def cmd_retrieve(self):
-        """檢索記憶命令"""
-        print_section("檢索記憶")
-
-        query = input(colored("查詢內容: ", Colors.OKCYAN)).strip()
-        if not query:
-            print_warning("查詢內容不能為空")
-            return
-
-        # 詢問神經化學參數（可選）
-        dopamine_input = input(
-            colored("多巴胺濃度 (0-1, 默認 0.5): ", Colors.OKCYAN)
-        ).strip()
-        serotonin_input = input(
-            colored("血清素濃度 (0-1, 默認 0.5): ", Colors.OKCYAN)
-        ).strip()
-
-        try:
-            dopamine = float(dopamine_input) if dopamine_input else 0.5
-            serotonin = float(serotonin_input) if serotonin_input else 0.5
-        except ValueError:
-            print_warning("無效的參數，使用默認值")
-            dopamine = 0.5
-            serotonin = 0.5
-
-        try:
-            context = self.memory_engine.retrieve(
-                query=query,
-                dopamine=dopamine,
-                serotonin=serotonin,
-                top_k=5,
-                min_similarity=self.config.retrieval_min_similarity,
-            )
-
-            print_section("檢索結果")
-            print(context.to_text())
-
-            if context.is_empty():
-                print_warning("未找到相關記憶")
+        for cmd, desc, style in commands:
+            if not cmd:  # separator
+                grid.add_row("", "")
             else:
-                print_success(f"找到 {len(context.episodes)} 個相關情節")
+                grid.add_row(f"[bold {style}]{cmd}[/]", f"[{style}]{desc}[/]")
 
-        except Exception as e:
-            print_error(f"檢索失敗: {e}")
-            logger.exception("檢索記憶時發生錯誤")
+        console.print()
+        console.print(grid)
+        console.print()
 
-    def cmd_chat(self):
-        """對話模式（組合存儲+檢索+LLM）"""
-        print_section("對話模式")
-
-        # 檢查 LLM Client 是否可用
-        if self.llm_client is None:
-            print_error("LLM 客戶端未初始化，無法使用對話模式")
-            print_info("請檢查 GOOGLE_API_KEY 配置")
+    def run(self):
+        """主迴圈"""
+        if not self.initialize():
             return
 
-        print_info("輸入 'exit' 退出對話模式\n")
-        print_info(f"系統提示詞: {self.config.system_prompt[:60]}...\n")
+        self.show_menu()
 
         while True:
-            user_input = input(colored("你: ", Colors.OKGREEN)).strip()
-
-            if user_input.lower() in ["exit", "quit", "q"]:
-                print_info("退出對話模式")
+            try:
+                command = Prompt.ask("[bold]echo[/]").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                console.print("\n[dim]Bye![/]")
                 break
 
-            if not user_input:
+            if not command:
                 continue
 
             try:
-                # 1. 檢索相關記憶
-                context = self.memory_engine.retrieve(
-                    query=user_input,
-                    dopamine=0.5,
-                    serotonin=0.5,
-                    top_k=3,
-                    min_similarity=self.config.retrieval_min_similarity,
-                )
-
-                if not context.is_empty():
-                    print_section("相關記憶")
-                    print(colored(context.to_text(), Colors.WARNING))
-
-                # 2. 調用 LLM 生成回應
-                print(colored("\n⏳ 生成回應中...", Colors.OKCYAN))
-
-                prompt = self.llm_client.build_prompt(
-                    user_input=user_input,
-                    memory_context=context.to_text() if not context.is_empty() else "",
-                    system_instruction=self.config.system_prompt,
-                )
-
-                agent_response = self.llm_client.generate(
-                    prompt=prompt,
-                    temperature=0.7,
-                    max_tokens=1024,
-                )
-
-                print(colored("\nAgent: ", Colors.OKCYAN) + agent_response)
-
-                # 3. 存儲本次對話
-                self.conversation_count += 1
-                episode_id = self.memory_engine.store_episode(
-                    user_input=user_input,
-                    agent_response=agent_response,
-                    session_id=self.session_id,
-                    salience=0.6,  # 對話模式默認中等重要性
-                )
-
-                print(colored(f"\n✓ 已存儲 (ID: {episode_id[:8]}...)\n", Colors.OKGREEN))
-
-            except Exception as e:
-                print_error(f"處理失敗: {e}")
-                logger.exception("對話模式錯誤")
-
-    def cmd_stats(self):
-        """查看統計命令"""
-        print_section("記憶統計")
-
-        try:
-            stats = self.memory_engine.get_stats()
-
-            print(f"  總情節數:     {colored(str(stats['total_episodes']), Colors.OKGREEN)}")
-            print(f"  總概念數:     {colored(str(stats['total_concepts']), Colors.OKGREEN)}")
-            print(f"  工作記憶緩存: {colored(str(stats['working_cache_size']), Colors.OKCYAN)}")
-            print(f"  當前會話計數: {colored(str(self.conversation_count), Colors.OKCYAN)}")
-
-        except Exception as e:
-            print_error(f"獲取統計失敗: {e}")
-
-    def cmd_list(self):
-        """列出情節（支援分頁和 session 篩選）"""
-        print_section("列出情節")
-
-        # 詢問篩選條件
-        session_input = input(
-            colored("Session ID 篩選（留空表示全部）: ", Colors.OKCYAN)
-        ).strip() or None
-
-        sort_input = input(
-            colored("排序方式 (timestamp/salience，預設 timestamp): ", Colors.OKCYAN)
-        ).strip()
-        sort_by = sort_input if sort_input in ("timestamp", "salience") else "timestamp"
-
-        page_input = input(colored("頁碼（從 1 開始，預設 1）: ", Colors.OKCYAN)).strip()
-        try:
-            page = max(1, int(page_input)) if page_input else 1
-        except ValueError:
-            page = 1
-
-        limit = 10
-        offset = (page - 1) * limit
-
-        try:
-            total = self.memory_engine.episodic.count()
-            episodes = self.memory_engine.episodic.list_episodes(
-                session_id=session_input,
-                limit=limit,
-                offset=offset,
-                sort_by=sort_by,
-                ascending=False,
-            )
-
-            if not episodes:
-                print_warning("沒有符合條件的情節記憶")
-                return
-
-            filter_desc = f"session={session_input}" if session_input else "全部"
-            print(f"\n總計 {total} 個情節，篩選條件: {filter_desc}，排序: {sort_by}（第 {page} 頁）\n")
-
-            for i, ep in enumerate(episodes, offset + 1):
-                salience_color = (
-                    Colors.OKGREEN
-                    if ep.salience_score >= 0.7
-                    else Colors.WARNING if ep.salience_score >= 0.4 else Colors.ENDC
-                )
-
-                print(
-                    f"{i}. {colored(ep.id[:16], Colors.OKCYAN)} "
-                    f"[顯著性: {colored(f'{ep.salience_score:.2f}', salience_color)}] "
-                    f"[Session: {colored(ep.session_id[:12], Colors.OKBLUE)}] "
-                    f"[{ep.timestamp.strftime('%Y-%m-%d %H:%M')}]"
-                )
-                print(f"   用戶: {ep.user_input[:60]}...")
-                print(f"   Agent: {ep.agent_response[:60]}...\n")
-
-            if offset + len(episodes) < total:
-                remaining = total - offset - len(episodes)
-                print_info(f"還有 {remaining} 個情節，使用下一頁查看更多")
-
-        except Exception as e:
-            print_error(f"列出情節失敗: {e}")
-
-    def cmd_delete(self):
-        """刪除情節或整個 session"""
-        print_section("刪除記憶")
-
-        print("  1. 刪除單一情節（依 episode ID）")
-        print("  2. 刪除整個 session（依 session ID）")
-        print()
-
-        choice = input(colored("選擇操作 (1/2): ", Colors.WARNING)).strip()
-
-        if choice == "1":
-            self._delete_episode_interactive()
-        elif choice == "2":
-            self._delete_session_interactive()
-        else:
-            print_warning("無效的選擇")
-
-    def _delete_episode_interactive(self):
-        """互動式刪除單一情節"""
-        episode_id = input(colored("輸入 Episode ID（支援前綴，最少 8 個字元）: ", Colors.OKCYAN)).strip()
-
-        if len(episode_id) < 8:
-            print_warning("Episode ID 太短，至少需要 8 個字元")
-            return
-
-        # 支援前綴搜尋
-        matched = [
-            ep for ep_id, ep in self.memory_engine.episodic._episodes.items()
-            if ep_id.startswith(episode_id)
-        ]
-
-        if not matched:
-            print_error(f"找不到符合的情節: {episode_id}")
-            return
-
-        if len(matched) > 1:
-            print_warning(f"找到 {len(matched)} 個符合的情節，請提供更完整的 ID：")
-            for ep in matched:
-                print(f"  {colored(ep.id, Colors.OKCYAN)} | {ep.user_input[:40]}...")
-            return
-
-        ep = matched[0]
-        print()
-        print_warning("即將刪除以下情節：")
-        print(f"  ID:      {colored(ep.id, Colors.OKCYAN)}")
-        print(f"  Session: {ep.session_id}")
-        print(f"  時間:    {ep.timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"  用戶:    {ep.user_input[:60]}...")
-        print(f"  顯著性:  {ep.salience_score:.2f}")
-        print()
-
-        confirm = input(colored("確定刪除? (yes/no): ", Colors.FAIL)).strip().lower()
-        if confirm != "yes":
-            print_info("已取消")
-            return
-
-        try:
-            success = self.memory_engine.episodic.delete_episode(ep.id)
-            if success:
-                print_success(f"已刪除情節: {ep.id}")
-            else:
-                print_error("刪除失敗（情節可能已不存在）")
-        except Exception as e:
-            print_error(f"刪除失敗: {e}")
-            logger.exception("刪除情節錯誤")
-
-    def _delete_session_interactive(self):
-        """互動式刪除整個 session"""
-        session_id = input(colored("輸入 Session ID: ", Colors.OKCYAN)).strip()
-
-        if not session_id:
-            print_warning("Session ID 不能為空")
-            return
-
-        # 預覽受影響的情節
-        preview = self.memory_engine.episodic.list_episodes(
-            session_id=session_id,
-            limit=200,
-            offset=0,
-            sort_by="timestamp",
-            ascending=True,
-        )
-
-        if not preview:
-            print_warning(f"Session '{session_id}' 沒有任何情節")
-            return
-
-        print()
-        print_warning(f"即將刪除 Session '{session_id}' 的 {len(preview)} 個情節：")
-        for ep in preview[:5]:
-            print(
-                f"  {colored(ep.id[:16], Colors.OKCYAN)} "
-                f"[{ep.timestamp.strftime('%Y-%m-%d %H:%M')}] "
-                f"{ep.user_input[:40]}..."
-            )
-        if len(preview) > 5:
-            print_info(f"  ... 還有 {len(preview) - 5} 個情節")
-        print()
-
-        confirm1 = input(colored("確定要刪除整個 session 嗎? (yes/no): ", Colors.FAIL)).strip().lower()
-        if confirm1 != "yes":
-            print_info("已取消")
-            return
-
-        confirm2 = input(colored("再次確認，此操作不可撤銷 (輸入 session ID 確認): ", Colors.FAIL)).strip()
-        if confirm2 != session_id:
-            print_info("確認失敗，已取消")
-            return
-
-        try:
-            count = self.memory_engine.episodic.delete_session(session_id)
-            print_success(f"已刪除 session '{session_id}' 的 {count} 個情節")
-        except Exception as e:
-            print_error(f"刪除失敗: {e}")
-            logger.exception("刪除 session 錯誤")
-
-    def cmd_export(self):
-        """匯出記憶資料"""
-        print_section("匯出記憶")
-
-        session_input = input(
-            colored("Session ID 篩選（留空表示匯出全部）: ", Colors.OKCYAN)
-        ).strip() or None
-
-        format_input = input(
-            colored("匯出格式 (json/csv，預設 json): ", Colors.OKCYAN)
-        ).strip().lower()
-        fmt = format_input if format_input in ("json", "csv") else "json"
-
-        output_path = input(
-            colored("輸出檔案路徑（留空則輸出到螢幕）: ", Colors.OKCYAN)
-        ).strip() or None
-
-        try:
-            content = self.memory_engine.episodic.export_episodes(
-                session_id=session_input,
-                format=fmt,
-            )
-
-            if output_path:
-                path = Path(output_path)
-                path.parent.mkdir(parents=True, exist_ok=True)
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write(content)
-                print_success(f"已匯出至: {path.resolve()}")
-                line_count = content.count("\n")
-                print_info(f"內容大小: {len(content):,} 字元，約 {line_count} 行")
-            else:
-                print_section(f"匯出結果（{fmt.upper()}）")
-                # 螢幕輸出限制 50 行，避免刷屏
-                lines = content.splitlines()
-                preview_lines = lines[:50]
-                print("\n".join(preview_lines))
-                if len(lines) > 50:
-                    print_warning(f"\n... 共 {len(lines)} 行，只顯示前 50 行")
-                    print_info("請指定輸出檔案路徑以保存完整內容")
-
-        except ValueError as e:
-            print_error(str(e))
-        except Exception as e:
-            print_error(f"匯出失敗: {e}")
-            logger.exception("匯出記憶錯誤")
-
-    def cmd_config(self):
-        """顯示配置"""
-        print_section("當前配置")
-        print(self.config.summary())
-
-    def cmd_dream(self):
-        """執行 Dream Engine"""
-        print_section("Dream Engine")
-        print_info("簡化版離線記憶鞏固（已實作 ✅）")
-        print_info("功能: 圖譜修剪 + 邊權重更新\n")
-
-        confirm = input(colored("確定要執行嗎? (y/n): ", Colors.WARNING)).lower()
-        if confirm != "y":
-            print_info("已取消")
-            return
-
-        try:
-            print(colored("\n⏳ Dream Engine 執行中...\n", Colors.OKCYAN))
-
-            report_dict = self.memory_engine.dream(triggered_by="manual")
-
-            if report_dict.get("error"):
-                print_error(f"執行失敗: {report_dict['error']}")
-                return
-
-            # 顯示詳細報告
-            print_success("Dream 完成！")
-            print(f"\n  觸發方式: {colored(report_dict['triggered_by'], Colors.OKCYAN)}")
-            duration_str = f"{report_dict['duration_seconds']:.1f}s"
-            print(f"  執行時長: {colored(duration_str, Colors.OKGREEN)}")
-            print(f"  邊權重更新: {colored(str(report_dict['edges_updated']), Colors.OKGREEN)} 條")
-            print(f"  弱邊移除: {colored(str(report_dict['edges_pruned']), Colors.OKGREEN)} 條")
-
-            # 顯示圖結構統計
-            stats = self.memory_engine.episodic.graph.get_stats()
-            print("\n  圖結構統計:")
-            print(f"    節點數: {stats['nodes']}")
-            print(f"    邊數: {stats['edges']}")
-            print(f"    平均權重: {stats['avg_edge_weight']:.3f}")
-
-        except Exception as e:
-            print_error(f"Dream 執行失敗: {e}")
-            logger.exception("Dream Engine 錯誤")
-
-    def cmd_clear(self):
-        """清空記憶"""
-        print_section("清空記憶")
-        print_error("⚠️ 警告：此操作將刪除所有記憶，無法恢復！")
-
-        confirm1 = input(colored("確定要清空所有記憶嗎? (yes/no): ", Colors.FAIL)).lower()
-        if confirm1 != "yes":
-            print_info("已取消")
-            return
-
-        confirm2 = input(colored("再次確認 (輸入 'DELETE'): ", Colors.FAIL))
-        if confirm2 != "DELETE":
-            print_info("已取消")
-            return
-
-        try:
-            self.memory_engine.clear_all()
-            self.conversation_count = 0
-            print_success("已清空所有記憶")
-
-        except Exception as e:
-            print_error(f"清空失敗: {e}")
-
-    def cmd_help(self):
-        """顯示幫助"""
-        print_section("命令說明")
-
-        help_text = """
-  store      - 手動存儲一次對話（會詢問用戶輸入、Agent 回應、顯著性）
-  retrieve   - 檢索相關記憶（會詢問查詢內容和神經化學參數）
-  chat       - 進入對話模式（自動檢索記憶 + LLM 生成回應 + 存儲對話）
-  stats      - 顯示記憶系統統計資訊
-  list       - 列出情節（支援分頁、session 篩選、排序）
-  delete     - 刪除單一情節（依 ID）或整個 session（需二次確認）
-  export     - 匯出記憶資料為 JSON 或 CSV（支援 session 篩選）
-  config     - 顯示當前系統配置
-  dream      - 手動觸發 Dream Engine（Phase 4 功能）
-  clear      - 清空所有記憶（需要二次確認）
-  help       - 顯示此幫助訊息
-  exit       - 退出 CLI
-
-對話模式 (chat) 流程：
-  1. 輸入用戶訊息
-  2. 混合檢索相關記憶（向量檢索 + 圖譜展開）
-     - NumPy 餘弦相似度檢索定位高相似度種子
-     - NetworkX 圖譜沿 PRECEDES 邊多跳展開
-     - 動態權重過濾（時間衰減 + 頻率 + 顯著性）
-  3. LLM 根據記憶脈絡 + 系統提示詞生成回應
-  4. 自動存儲本次對話並更新圖結構
-
-神經化學參數說明：
-  - 多巴胺 (dopamine): 影響檢索的探索廣度，值越高越傾向探索新記憶
-  - 血清素 (serotonin): 影響檢索的謹慎程度，值越高越嚴格篩選結果
-
-顯著性分數 (salience):
-  - 0.0-0.25: 淡薄記憶（不太重要）
-  - 0.25-0.5: 一般記憶
-  - 0.5-0.75: 重要記憶
-  - 0.75-1.0: 核心記憶（非常重要）
-
-系統提示詞配置：
-  - 在 .env 文件中設定 SYSTEM_PROMPT
-  - 用於指導 LLM 如何回應（例如角色設定、語氣風格）
-"""
-        print(help_text)
-
-    def run(self):
-        """運行主循環"""
-        print_header("Echo Memory System - 互動式 CLI")
-
-        # 初始化
-        if not self.initialize():
-            print_error("初始化失敗，無法繼續")
-            return
-
-        print_success("系統就緒！輸入 'help' 查看可用命令\n")
-
-        # 主循環
-        while True:
-            try:
-                self.show_menu()
-                command = input(colored("echo> ", Colors.BOLD)).strip().lower()
-
-                if not command:
-                    continue
-
                 match command:
-                    case "store":
-                        self.cmd_store()
-                    case "retrieve":
-                        self.cmd_retrieve()
-                    case "chat":
-                        self.cmd_chat()
-                    case "stats":
-                        self.cmd_stats()
-                    case "list":
-                        self.cmd_list()
-                    case "delete":
-                        self.cmd_delete()
-                    case "export":
-                        self.cmd_export()
-                    case "config":
-                        self.cmd_config()
+                    case "chat" | "c":
+                        if self.llm:
+                            run_chat(self.engine, self.llm, self.config, self.tools_enabled)
+                        else:
+                            console.print("[red]LLM not available. Configure API keys in .env[/]")
+                    case "dashboard" | "d":
+                        show_dashboard(self.engine)
+                    case "search":
+                        _cmd_search(self.engine, self.config)
+                    case "retrieve" | "r":
+                        _cmd_retrieve(self.engine, self.config)
+                    case "inspect" | "i":
+                        _cmd_inspect(self.engine)
+                    case "store" | "s":
+                        _cmd_store(self.engine, self.session_id)
+                    case "edit" | "e":
+                        _cmd_edit(self.engine)
+                    case "delete" | "del":
+                        _cmd_delete(self.engine)
+                    case "list" | "l":
+                        _cmd_list(self.engine)
+                    case "sessions":
+                        _cmd_sessions(self.engine)
+                    case "concepts":
+                        _cmd_concepts(self.engine)
+                    case "graph" | "g":
+                        _cmd_graph(self.engine)
                     case "dream":
-                        self.cmd_dream()
-                    case "clear":
-                        self.cmd_clear()
-                    case "help" | "?":
-                        self.cmd_help()
+                        _cmd_dream(self.engine, self.llm)
+                    case "export":
+                        _cmd_export(self.engine)
+                    case "reset":
+                        _cmd_reset(self.engine)
+                    case "stats":
+                        show_dashboard(self.engine)
                     case "exit" | "quit" | "q":
-                        print_info("感謝使用 Echo Memory System！")
+                        console.print("[dim]Bye![/]")
                         break
+                    case "help" | "?" | "menu":
+                        self.show_menu()
                     case _:
-                        print_error(f"未知命令: {command}")
-                        print_info("輸入 'help' 查看可用命令")
+                        console.print(f"[dim]Unknown: {command}. Type 'help' for commands.[/]")
 
             except KeyboardInterrupt:
-                print("\n")
-                print_warning("檢測到 Ctrl+C，輸入 'exit' 退出")
+                console.print("\n[yellow]Interrupted. Type 'exit' to quit.[/]")
             except Exception as e:
-                print_error(f"發生錯誤: {e}")
-                logger.exception("主循環錯誤")
+                console.print(f"[red]Error: {e}[/]")
+                logger.exception("Command error")
+
+            # 指令結束後重新顯示選單
+            if command not in ("exit", "quit", "q", "help", "?", "menu", ""):
+                console.print()
+                console.rule("[dim]─[/]", style="dim")
+                self.show_menu()
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 主程式
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
 
 def main():
     """主程式入口"""
+    args = sys.argv[1:]
+
     cli = EchoMemoryCLI()
-    cli.run()
+
+    if not args:
+        cli.run()
+    elif args[0] in ("chat", "c"):
+        if cli.initialize() and cli.llm:
+            run_chat(cli.engine, cli.llm, cli.config, cli.tools_enabled)
+        else:
+            console.print("[red]Cannot start chat mode.[/]")
+    elif args[0] in ("dashboard", "d"):
+        if cli.initialize():
+            show_dashboard(cli.engine)
+    else:
+        console.print(f"[dim]Unknown arg: {args[0]}. Usage: python Entry.py [chat|dashboard][/]")
 
 
 if __name__ == "__main__":

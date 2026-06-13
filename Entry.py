@@ -27,6 +27,7 @@ from rich import box
 
 from echo_memory import MemoryEngine
 from echo_memory.config import get_config
+from echo_memory.schemas.memory_context import MemoryContext
 from llm_integration.llm_client import LLMClient
 from llm_integration.tools import to_gemini_tools
 from llm_integration.tools.executor import ToolExecutor
@@ -267,6 +268,7 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                 session_id = f"chat_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
                 turn = 0
                 llm.clear_history()
+                engine.working.clear()  # 清除查詢向量快取，確保 session 邊界乾淨
                 if executor:
                     executor = ToolExecutor(engine=engine, session_id=session_id)
                 console.print(f"[green]✓ New session: {session_id}[/]")
@@ -317,6 +319,7 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                 continue
 
         # ── 1. 檢索記憶 ──
+        context = MemoryContext()  # 預設空 context，避免 retrieve 失敗時 UnboundLocalError
         try:
             context = engine.retrieve(
                 query=user_input,
@@ -591,7 +594,7 @@ def _cmd_dream(engine: MemoryEngine, llm: LLMClient | None = None):
     distill = report.get("distillation", {})
     if distill:
         table.add_row("Concepts Created", str(distill.get("concepts_created", 0)))
-        table.add_row("Episodes Processed", str(distill.get("episodes_processed", 0)))
+        table.add_row("Episodes Scanned", str(distill.get("episodes_scanned", 0)))
 
     # 重播報告
     replay = report.get("replay", {})

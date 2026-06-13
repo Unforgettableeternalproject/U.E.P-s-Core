@@ -178,6 +178,9 @@ class EcphoryRetrieval:
                 if node_id not in similarities:
                     ep = self.episodic.get(node_id)
                     if ep:
+                        # graph expansion 也要排除當前 session 的 episodes
+                        if exclude_session_id and ep.session_id == exclude_session_id:
+                            continue
                         episodes.append(ep)
                         similarities[node_id] = weight * 0.8
 

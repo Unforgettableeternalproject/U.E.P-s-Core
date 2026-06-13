@@ -160,6 +160,7 @@ class ToolExecutor:
             serotonin=0.5,
             top_k=top_k,
             min_similarity=0.2,  # 較低閾值，deep recall 允許模糊匹配
+            exclude_session_id=self.session_id,
         )
 
         if context.is_empty():

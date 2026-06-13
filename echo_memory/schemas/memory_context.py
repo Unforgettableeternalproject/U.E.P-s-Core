@@ -72,13 +72,17 @@ class MemoryContext:
                 similarity = self.similarities.get(ep.id, 0.0)
                 sim_tag = f"[匹配度:{similarity:.0%}]" if similarity > 0 else ""
 
-                # 顯示對話原文（user + agent），讓 LLM 有完整語境
+                # 顯示對話原文，截斷過長內容以控制 token 預算
+                agent_resp = ep.agent_response
+                if len(agent_resp) > 300:
+                    agent_resp = agent_resp[:300] + "..."
+
                 payload["相關對話記憶"].append({
                     "time": time_tag.strip("（）"),
                     "match": sim_tag.strip("[]"),
                     "importance": sal_tag,
-                    "user_input": ep.user_input,
-                    "agent_response": ep.agent_response,
+                    "user_input": ep.user_input[:200],
+                    "agent_response": agent_resp,
                 })
 
         # ─── 語義概念 ────────────────────────────────────────────────────────

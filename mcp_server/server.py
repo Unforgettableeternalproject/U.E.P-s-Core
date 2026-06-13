@@ -33,13 +33,17 @@ try:
         load_dotenv(_ENV_FILE)
         logging.getLogger(__name__).debug(f"[MCP Server] 已載入 .env: {_ENV_FILE}")
     else:
-        # 也嘗試從主專案路徑載入（worktree 情境）
-        _MAIN_ENV = Path(
-            "C:/Users/Bernie/source/repos/Unforgettableeternalproject/"
-            "TestSeperateMemorySystem/.env"
-        )
-        if _MAIN_ENV.exists():
-            load_dotenv(_MAIN_ENV)
+        # Worktree 情境：沿目錄樹向上尋找 .env
+        _search = _PROJECT_ROOT.parent
+        for _ in range(5):
+            _candidate = _search / ".env"
+            if _candidate.exists():
+                load_dotenv(_candidate)
+                logging.getLogger(__name__).debug(
+                    f"[MCP Server] Worktree fallback .env: {_candidate}"
+                )
+                break
+            _search = _search.parent
 except ImportError:
     pass  # python-dotenv 未安裝時優雅跳過
 

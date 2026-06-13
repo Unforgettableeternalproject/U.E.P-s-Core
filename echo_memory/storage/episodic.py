@@ -584,14 +584,28 @@ class EpisodicMemory:
         """透過 Ollama /api/embed 端點生成嵌入向量"""
         import requests
 
-        resp = requests.post(
-            f"{self.ollama_base_url}/api/embed",
-            json={"model": self.embedding_model, "input": text},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        embedding = resp.json()["embeddings"][0]
-        return self._normalize_vector(embedding).tolist()
+        try:
+            resp = requests.post(
+                f"{self.ollama_base_url}/api/embed",
+                json={"model": self.embedding_model, "input": text},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            embedding = resp.json()["embeddings"][0]
+            return self._normalize_vector(embedding).tolist()
+        except requests.exceptions.ConnectionError:
+            raise RuntimeError(
+                f"無法連線 Ollama ({self.ollama_base_url})。"
+                f"請確認 Ollama 已啟動，或將 EMBEDDING_BACKEND 改為 sentence-transformers。"
+            )
+        except requests.exceptions.Timeout:
+            raise RuntimeError(
+                f"Ollama 嵌入請求超時 (model={self.embedding_model})。"
+            )
+        except (requests.exceptions.HTTPError, KeyError) as e:
+            raise RuntimeError(
+                f"Ollama 嵌入失敗 (model={self.embedding_model}): {e}"
+            )
 
     def _generate_embedding_st(self, text: str) -> list[float]:
         """透過 sentence-transformers 生成嵌入向量（fallback）"""

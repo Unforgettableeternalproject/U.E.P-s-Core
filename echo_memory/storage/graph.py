@@ -657,6 +657,7 @@ class MemoryGraph:
         min_weight: float = 0.15,
         max_results: int = 20,
         exclude_edge_types: set[str] | None = None,
+        node_types: set[str] | None = None,
     ) -> list[tuple[str, float, int]]:
         """
         從種子節點多跳展開，獲取相關節點。
@@ -669,6 +670,7 @@ class MemoryGraph:
             min_weight: 最小邊權重閾值
             max_results: 最大返回數量
             exclude_edge_types: 展開時排除的邊類型（預設排除 CONTRADICTS）
+            node_types: 只保留指定類型的節點（如 {"Episode"}），None 表示不過濾
 
         Returns:
             [(node_id, avg_weight, hop_distance), ...] 按權重降序
@@ -697,6 +699,12 @@ class MemoryGraph:
                 for neighbor in neighbors:
                     if neighbor in visited:
                         continue
+
+                    # 過濾非目標類型的節點
+                    if node_types is not None:
+                        neighbor_type = self.graph.nodes[neighbor].get("node_type", "")
+                        if neighbor_type not in node_types:
+                            continue
 
                     # 獲取邊權重和類型
                     if self.graph.has_edge(node_id, neighbor):

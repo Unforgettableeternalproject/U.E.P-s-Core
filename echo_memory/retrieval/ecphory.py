@@ -167,6 +167,7 @@ class EcphoryRetrieval:
                 max_hops=max_hops,
                 min_weight=min_weight,
                 max_results=top_k * 2,
+                node_types={"Episode"},  # 只展開 Episode 節點，跳過 Entity/Concept/Procedure
             )
 
             logger.debug(

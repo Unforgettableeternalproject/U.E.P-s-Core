@@ -70,7 +70,7 @@ def build_legacy_session(
     device: str | None = "cuda",
     use_fp16: bool = True,
     use_cuda_kernel: bool = True,
-    use_accel: bool = False,
+    use_accel: bool = True,
     emotion_vector: list[float] | None = None,
     playback: bool = True,
 ) -> TTSInteractiveSession:
@@ -100,6 +100,16 @@ def run_shell(device: str | None, use_fp16: bool, use_cuda_kernel: bool, use_acc
         emotion_vector=emotion_vector,
         playback=playback,
     )
+
+    # Auto-load LoRA on startup (if adapter exists)
+    try:
+        session.load()  # Ensure engine is loaded first
+        session.load_lora()
+        lora_status = session.get_lora_status()
+        lora_msg = f"🧬 LoRA auto-loaded (scale={lora_status['scale']:.0%})"
+    except Exception:
+        lora_msg = "🧬 LoRA: not available (adapter not found)"
+
     shell = InteractiveShell(session=session, write=console.print)
     console.print(
         "TTS shell ready. Commands:\n"
@@ -109,7 +119,8 @@ def run_shell(device: str | None, use_fp16: bool, use_cuda_kernel: bool, use_acc
         "  emotion [preset|H A S F D M U C]\n"
         "  language [en|zh]        — auto-translates mismatched input\n"
         "  lora [on|off|<scale>]   — toggle 台灣腔 LoRA\n"
-        "  load / unload / status / help / exit"
+        "  load / unload / status / help / exit\n"
+        f"  {lora_msg}"
     )
     while True:
         try:
@@ -183,7 +194,7 @@ def main() -> int:
     shell_cmd.add_argument("--no-fp16", action="store_true")
     shell_cmd.add_argument("--no-cuda-kernel", action="store_true")
     shell_cmd.add_argument("--no-playback", action="store_true", help="Generate on say without audio playback")
-    shell_cmd.add_argument("--accel", action="store_true", help="Enable AccelInferenceEngine (CUDA Graph + Flash Attention)")
+    shell_cmd.add_argument("--no-accel", action="store_true", help="Disable AccelInferenceEngine (CUDA Graph + Flash Attention)")
     shell_cmd.add_argument("--emotion", type=float, nargs=8, metavar=("H", "A", "S", "F", "D", "M", "U", "C"),
                            help="8D emotion vector: Happy Angry Sad aFraid Disgusted Melancholic sUrprised Calm (0.0-1.0 each)")
 
@@ -192,7 +203,7 @@ def main() -> int:
     profile_cmd.add_argument("--device", default="cuda")
     profile_cmd.add_argument("--no-fp16", action="store_true")
     profile_cmd.add_argument("--no-cuda-kernel", action="store_true")
-    profile_cmd.add_argument("--accel", action="store_true", help="Enable AccelInferenceEngine (CUDA Graph + Flash Attention)")
+    profile_cmd.add_argument("--no-accel", action="store_true", help="Disable AccelInferenceEngine (CUDA Graph + Flash Attention)")
     profile_cmd.add_argument("--emotion", type=float, nargs=8, metavar=("H", "A", "S", "F", "D", "M", "U", "C"),
                            help="8D emotion vector: Happy Angry Sad aFraid Disgusted Melancholic sUrprised Calm (0.0-1.0 each)")
     profile_cmd.add_argument("--repeat", type=int, default=1, help="Number of synthesis runs (for averaging)")
@@ -215,7 +226,7 @@ def main() -> int:
             device=args.device,
             use_fp16=not args.no_fp16,
             use_cuda_kernel=not args.no_cuda_kernel,
-            use_accel=args.accel,
+            use_accel=not args.no_accel,
             emotion_vector=args.emotion,
             playback=not args.no_playback,
         )
@@ -225,7 +236,7 @@ def main() -> int:
             device=args.device,
             use_fp16=not args.no_fp16,
             use_cuda_kernel=not args.no_cuda_kernel,
-            use_accel=args.accel,
+            use_accel=not args.no_accel,
             emotion_vector=args.emotion,
             repeat=args.repeat,
         )

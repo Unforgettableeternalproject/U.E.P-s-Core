@@ -39,9 +39,10 @@ _PLACEHOLDER_TOKEN_ESTIMATE = 12
 class MicroPruner:
     """Layer 1 微清理器"""
 
-    def __init__(self, use_llmlingua: bool = False):
+    def __init__(self, use_llmlingua: bool = False, llmlingua_config=None):
         self.use_llmlingua = use_llmlingua
         self._llmlingua_compressor = None
+        self._llmlingua_config = llmlingua_config
 
     def prune(
         self,
@@ -111,6 +112,20 @@ class MicroPruner:
                 logger.debug("MicroPruner.prune: 合併短確認訊息 at index %d", i)
                 continue
 
+            # 規則 3：LLMLingua-2 對長訊息做 token 級刪減
+            if (
+                self.use_llmlingua
+                and msg.role in ("user", "assistant")
+                and msg.token_count
+                and msg.token_count >= 2000
+                and not msg.is_compressed
+                and not msg.metadata.get("llmlingua_compressed", False)
+            ):
+                compressed_msg, saved = self._apply_llmlingua(msg)
+                result.append(compressed_msg)
+                tokens_saved += saved
+                continue
+
             result.append(msg)
 
         return result, tokens_saved
@@ -152,6 +167,59 @@ class MicroPruner:
 
         # 所有訊息都在保護範圍內
         return 0
+
+    def _get_llmlingua(self):
+        """Lazy init LLMLinguaCompressor"""
+        if self._llmlingua_compressor is None:
+            from echo_thought_core.compression.llmlingua import (
+                LLMLinguaCompressor,
+                LLMLinguaConfig,
+            )
+
+            config = self._llmlingua_config or LLMLinguaConfig()
+            self._llmlingua_compressor = LLMLinguaCompressor(config=config)
+
+        return self._llmlingua_compressor
+
+    def _apply_llmlingua(self, msg: Message) -> Tuple[Message, int]:
+        """對單一長訊息做 LLMLingua-2 壓縮
+
+        Returns:
+            (壓縮後的 Message, 節省的 token 數)
+        """
+        compressor = self._get_llmlingua()
+        compressed_text, stats = compressor.compress(msg.content)
+
+        if stats.get("skipped", True):
+            return msg, 0
+
+        saving = stats.get("saving", 0)
+
+        compressed_msg = Message(
+            role=msg.role,
+            content=compressed_text,
+            timestamp=msg.timestamp,
+            token_count=stats.get("compressed_tokens"),
+            tool_call_id=msg.tool_call_id,
+            tool_name=msg.tool_name,
+            is_reproducible=msg.is_reproducible,
+            metadata={
+                **msg.metadata,
+                "llmlingua_compressed": True,
+                "llmlingua_original_tokens": stats.get("original_tokens"),
+                "llmlingua_ratio": stats.get("ratio"),
+            },
+        )
+
+        logger.info(
+            "MicroPruner: LLMLingua 壓縮 %s 訊息，%d → %d tokens (節省 %d)",
+            msg.role,
+            stats.get("original_tokens", 0),
+            stats.get("compressed_tokens", 0),
+            saving,
+        )
+
+        return compressed_msg, saving
 
     def _prune_tool_result(
         self,

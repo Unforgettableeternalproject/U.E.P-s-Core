@@ -19,7 +19,14 @@
       "Bash(git commit -m 'feat: Rich CLI interactive test interface \\(Entry.py\\) *)",
       "mcp__open-notebook__update_note",
       "Bash(git mv *)",
-      "Bash(git rm *)"
+      "Bash(git rm *)",
+      "Bash(git commit -m 'refactor: rename session_control → echo_thought_core + cleanup *)",
+      "Bash(.venv/Scripts/pip.exe list *)",
+      "Bash(\"C:/Users/Bernie/source/repos/Unforgettableeternalproject/U.E.P-s-Core/env/Scripts/pip.exe\" list *)",
+      "Bash(PYTHONIOENCODING=utf-8 C:/Users/Bernie/source/repos/Unforgettableeternalproject/U.E.P-s-Core/env/Scripts/python.exe -c ' *)",
+      "Bash(git commit -m 'chore: add run.bat and test.bat launchers \\(uses U.E.P Core env\\) *)",
+      "Bash(\"C:/Users/Bernie/source/repos/Unforgettableeternalproject/U.E.P-s-Core/env/Scripts/pip.exe\" install *)",
+      "Bash(git commit -m 'feat: LLMLingua-2 integration for Layer 1 token-level compression *)"
     ]
   }
 }

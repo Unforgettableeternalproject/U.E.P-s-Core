@@ -181,6 +181,38 @@ def render_poise_panel(session: TTSInteractiveSession) -> Panel:
     return Panel(table, title="[bold]🫁 Poise (Breathing)[/]", border_style="green", width=50)
 
 
+def render_speed_panel(session: TTSInteractiveSession) -> Panel:
+    """渲染語速控制面板"""
+    info = session.get_speed_info()
+    speed = info["speed"]
+    stretch = info["stretch_ratio"]
+    config_stretch = info["config_stretch_ratio"]
+
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("key", style="dim")
+    table.add_column("value", style="bold")
+
+    # 速度指示
+    if abs(speed) < 0.01:
+        speed_label = Text("Default", style="cyan")
+    elif speed > 0:
+        speed_label = Text(f"+{speed:.2f} (faster)", style="green")
+    else:
+        speed_label = Text(f"{speed:.2f} (slower)", style="yellow")
+
+    table.add_row("Speed", speed_label)
+    table.add_row("Stretch Ratio", f"[cyan]{stretch:.3f}[/]")
+    table.add_row("Config Default", f"[dim]{config_stretch:.3f}[/]")
+
+    # 視覺化 bar
+    bar_pos = int((speed + 1.0) * 10)  # 0~20 range
+    bar = "░" * bar_pos + "█" + "░" * (20 - bar_pos)
+    bar_text = f"[dim]-1.0[/] {bar} [dim]+1.0[/]"
+    table.add_row("", Text.from_markup(bar_text))
+
+    return Panel(table, title="[bold]🎚️ Speed[/]", border_style="blue", width=50)
+
+
 def render_profile_panel(report: ProfileReport) -> Panel:
     """將 ProfileReport 渲染為 Rich 面板"""
     s = report.synthesis
@@ -485,6 +517,54 @@ def _cmd_poise(session: TTSInteractiveSession, args: list[str]) -> None:
     )
 
 
+def _cmd_speed(session: TTSInteractiveSession, args: list[str]) -> None:
+    """語速控制"""
+    if not args:
+        # 無參數：顯示狀態
+        console.print(render_speed_panel(session))
+        return
+
+    subcmd = args[0].lower()
+
+    if subcmd == "status":
+        console.print(render_speed_panel(session))
+        return
+
+    if subcmd == "reset":
+        result = session.set_speed(0.0)
+        console.print(f"  [green]✓[/] 🎚️ Speed reset → [cyan]{result:+.1f}[/]")
+        return
+
+    if subcmd == "set" and len(args) > 1:
+        try:
+            value = float(args[1])
+            result = session.set_speed(value)
+            info = session.get_speed_info()
+            console.print(f"  [green]✓[/] 🎚️ Speed set to [cyan]{result:+.2f}[/]  (stretch={info['stretch_ratio']:.3f})")
+        except ValueError:
+            console.print(f"  [yellow]Invalid value: {args[1]}[/]")
+        return
+
+    # 嘗試解析為微調值：speed +0.3 / speed -0.2
+    try:
+        delta = float(subcmd)
+        result = session.adjust_speed(delta)
+        info = session.get_speed_info()
+        console.print(f"  [green]✓[/] 🎚️ Speed adjusted to [cyan]{result:+.2f}[/]  (stretch={info['stretch_ratio']:.3f})")
+        return
+    except ValueError:
+        pass
+
+    console.print(
+        "  [dim]Usage: speed [+/-N | set <N> | reset | status][/]\n"
+        "  [dim]  speed +0.3    — 基於目前加快 0.3[/]\n"
+        "  [dim]  speed -0.2    — 基於目前減慢 0.2[/]\n"
+        "  [dim]  speed set 0.5 — 設定為 0.5[/]\n"
+        "  [dim]  speed reset   — 回到預設 (0)[/]\n"
+        "  [dim]  Range: [-1.0, +1.0]  正=快 負=慢[/]"
+    )
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 解析工具
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -605,6 +685,7 @@ class EchoTTSCLI:
             ("emotion", "🎭 Show/set emotion preset or 8D vector", "magenta"),
             ("language", "🌐 Show/set synthesis language", "blue"),
             ("lora", "🧬 Toggle/configure LoRA adapter", "yellow"),
+            ("speed", "🎚️ Adjust speech speed (+fast / -slow)", "blue"),
             ("poise", "🫁 Poise breathing system control", "green"),
             ("", "", ""),
             ("status", "📊 Engine status dashboard", "cyan"),
@@ -643,9 +724,10 @@ class EchoTTSCLI:
         lang_panel = render_language_panel(self.session)
         console.print(Columns([lora_panel, lang_panel], expand=True))
 
-        # 第三行：Poise
+        # 第三行：Speed + Poise
+        speed_panel = render_speed_panel(self.session)
         poise_panel = render_poise_panel(self.session)
-        console.print(poise_panel)
+        console.print(Columns([speed_panel, poise_panel], expand=True))
 
     def run(self):
         """主迴圈"""
@@ -719,6 +801,9 @@ class EchoTTSCLI:
 
                     case "lora":
                         _cmd_lora(self.session, args)
+
+                    case "speed":
+                        _cmd_speed(self.session, args)
 
                     case "poise":
                         _cmd_poise(self.session, args)

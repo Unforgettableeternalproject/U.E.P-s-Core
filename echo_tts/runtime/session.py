@@ -88,6 +88,26 @@ class TTSInteractiveSession:
         """回傳 LoRA 狀態。"""
         return self.backend.get_lora_status()
 
+    # ── Speed (語速) 控制 ──
+
+    def set_speed(self, value: float) -> float:
+        """設定語速偏移（絕對值）。[-1.0, +1.0]，正=快，負=慢，0=預設。"""
+        self.load()
+        return self.backend.set_speed(value)
+
+    def adjust_speed(self, delta: float) -> float:
+        """基於目前值微調語速。"""
+        self.load()
+        return self.backend.adjust_speed(delta)
+
+    def get_speed(self) -> float:
+        """取得目前語速偏移值。"""
+        return self.backend.get_speed()
+
+    def get_speed_info(self) -> dict:
+        """取得語速完整資訊。"""
+        return self.backend.get_speed_info()
+
     # ── Poise 呼吸法控制 ──
 
     def get_poise_config(self) -> dict:

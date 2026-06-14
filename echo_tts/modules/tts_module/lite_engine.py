@@ -367,7 +367,9 @@ class IndexTTSLite:
         # ── 合成管線配置 ──
         _synth_cfg = self.cfg.get('synthesis', {})
         self.interval_silence_ms = float(_synth_cfg.get('interval_silence_ms', 200))
-        self.s2mel_stretch_ratio = float(_synth_cfg.get('s2mel_stretch_ratio', 1.72))
+        self._config_stretch_ratio = float(_synth_cfg.get('s2mel_stretch_ratio', 1.72))
+        self._speed_value = 0.0  # 使用者語速偏移，[-1.0, +1.0]，正=快 負=慢
+        self.s2mel_stretch_ratio = self._config_stretch_ratio  # 有效值（config - speed×0.5）
         self.cfm_n_timesteps = int(_synth_cfg.get('cfm_n_timesteps', 25))
         self.cfm_inference_cfg_rate = float(_synth_cfg.get('cfm_inference_cfg_rate', 0.7))
 
@@ -853,6 +855,44 @@ class IndexTTSLite:
             "active": self._lora_active,
             "scale": self._lora_scale,
             "path": self._lora_path,
+        }
+
+    # ── Speed (語速) API ──
+
+    def set_speed(self, value: float) -> float:
+        """設定語速偏移（絕對值）。
+
+        Args:
+            value: [-1.0, +1.0]，正值=加快，負值=放慢，0=預設
+
+        Returns:
+            設定後的語速值
+        """
+        self._speed_value = max(-1.0, min(1.0, value))
+        self.s2mel_stretch_ratio = self._config_stretch_ratio - (self._speed_value * 0.5)
+        return self._speed_value
+
+    def adjust_speed(self, delta: float) -> float:
+        """基於目前值調整語速。
+
+        Args:
+            delta: 調整量，例如 +0.3 或 -0.2
+
+        Returns:
+            調整後的語速值
+        """
+        return self.set_speed(self._speed_value + delta)
+
+    def get_speed(self) -> float:
+        """取得目前語速偏移值。"""
+        return self._speed_value
+
+    def get_speed_info(self) -> dict:
+        """取得語速完整資訊。"""
+        return {
+            "speed": self._speed_value,
+            "stretch_ratio": self.s2mel_stretch_ratio,
+            "config_stretch_ratio": self._config_stretch_ratio,
         }
 
     def normalize_emotion_vector(

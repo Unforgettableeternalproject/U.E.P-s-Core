@@ -190,6 +190,30 @@ class LegacyIndexTTS2Backend:
         self.load()
         self.engine.poise_config.count = max(2.0, count)
 
+    # ── Speed (語速) 控制 ──
+
+    def set_speed(self, value: float) -> float:
+        """設定語速（絕對值）。"""
+        self.load()
+        return self.engine.set_speed(value)
+
+    def adjust_speed(self, delta: float) -> float:
+        """基於目前值調整語速。"""
+        self.load()
+        return self.engine.adjust_speed(delta)
+
+    def get_speed(self) -> float:
+        """取得目前語速偏移值。"""
+        if self.engine is None:
+            return 0.0
+        return self.engine.get_speed()
+
+    def get_speed_info(self) -> dict:
+        """取得語速完整資訊。"""
+        if self.engine is None:
+            return {"speed": 0.0, "stretch_ratio": 1.7, "config_stretch_ratio": 1.7}
+        return self.engine.get_speed_info()
+
     def unload(self) -> None:
         self.engine = None
         self.loaded = False

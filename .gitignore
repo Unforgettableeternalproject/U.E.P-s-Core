@@ -45,8 +45,9 @@ Thumbs.db
 # Hidden
 docs/hidden/
 
-# Local
-.claude\settings.local.json.
+# Claude Code local settings
+.claude/settings.local.json
+.claude/worktrees/
 *.npy
 
 # Experiments - large/generated data

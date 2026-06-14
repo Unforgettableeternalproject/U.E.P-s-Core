@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__open-notebook__list_notebooks",
+      "mcp__open-notebook__search",
+      "mcp__open-notebook__list_notes",
+      "mcp__open-notebook__get_note",
+      "Bash(.venv/Scripts/python -m pytest tests/ --collect-only -q)",
+      "Bash(.venv/Scripts/python -m pytest tests/ -q)",
+      "Bash(git checkout *)",
+      "Bash(python -m pytest tests/ -x -q --no-header --tb=short)",
+      "Bash(python -m pytest tests/test_wiring.py -x -v --no-header --tb=short)",
+      "Bash(C:/Users/Bernie/source/repos/Unforgettableeternalproject/U.E.P-s-Core/env/Scripts/python.exe *)",
+      "Bash(git add *)"
+    ]
+  }
+}

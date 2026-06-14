@@ -117,7 +117,7 @@ class CacheManager:
     - 全域單例移除，實例生命週期由外部管理
     """
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, config: Optional[Dict[str, Any]] = None, client=None):
         """
         初始化 CacheManager
 
@@ -131,32 +131,41 @@ class CacheManager:
                 - usage_frequency_threshold (int): 建立顯性快取的頻率下限（次/小時），預設 10
                 - test_mode (bool): 禁用顯性快取（測試/除錯用），預設 False
                 - debug (dict): 含 enabled/debug_level 的全域除錯設定
+            client: 外部注入的 Gemini/Vertex AI client（可選）。
+                    若提供，直接使用此 client 而不自建連線。
+                    可與 GeminiBackend 共享同一個 client，避免重複建立。
         """
         # 從外部接收 config，不再讀取全域 config_loader
         self.config: Dict[str, Any] = config or {}
 
-        # ── Vertex AI 客戶端初始化（仍使用環境變數）──
-        project_id = os.getenv("GCP_PROJECT_ID")
-        location = os.getenv("GCP_LOCATION")
-
-        if not project_id:
-            logger.error("[CacheManager] GCP_PROJECT_ID 環境變數未設定，顯性快取功能將受限")
-            self.client = None
+        # ── Vertex AI 客戶端初始化 ──
+        if client is not None:
+            # 使用外部注入的 client（與 GeminiBackend 共享）
+            self.client = client
+            logger.info("[CacheManager] 使用外部注入的 Gemini client")
         else:
-            try:
-                from google import genai  # type: ignore
-                self.client = genai.Client(
-                    vertexai=True,
-                    project=project_id,
-                    location=location,
-                )
-                logger.info(
-                    "[CacheManager] Vertex AI 客戶端初始化成功 (專案: %s, 區域: %s)",
-                    project_id, location,
-                )
-            except Exception as exc:
-                logger.error("[CacheManager] Vertex AI 客戶端初始化失敗: %s", exc)
+            # 自建 Vertex AI client（原有邏輯）
+            project_id = os.getenv("GCP_PROJECT_ID")
+            location = os.getenv("GCP_LOCATION")
+
+            if not project_id:
+                logger.error("[CacheManager] GCP_PROJECT_ID 環境變數未設定，顯性快取功能將受限")
                 self.client = None
+            else:
+                try:
+                    from google import genai  # type: ignore
+                    self.client = genai.Client(
+                        vertexai=True,
+                        project=project_id,
+                        location=location,
+                    )
+                    logger.info(
+                        "[CacheManager] Vertex AI 客戶端初始化成功 (專案: %s, 區域: %s)",
+                        project_id, location,
+                    )
+                except Exception as exc:
+                    logger.error("[CacheManager] Vertex AI 客戶端初始化失敗: %s", exc)
+                    self.client = None
 
         # 使用支援快取的模型
         self.model_name: str = self.config.get("model_name", "gemini-2.5-flash-lite")

@@ -26,7 +26,10 @@ from session_control.accounting.counter import TokenCounter
 from session_control.accounting.budget import TokenBudget
 from session_control.compression.sacred import SacredManager
 from session_control.compression.micro_pruning import MicroPruner
+from session_control.compression.rolling_summary import RollingSummarizer
+from session_control.compression.full_compaction import FullCompactor
 from session_control.compression.emergency import EmergencyCompactor
+from session_control.backends.base import AbstractBackend
 
 
 class ContextManager:
@@ -36,6 +39,7 @@ class ContextManager:
         self,
         config: Optional[CompactionConfig] = None,
         persona: Optional[PersonaContext] = None,
+        backend: Optional[AbstractBackend] = None,
     ):
         self.config = config or CompactionConfig()
         self.persona = persona
@@ -45,6 +49,9 @@ class ContextManager:
             session_id=str(uuid.uuid4())[:8],
             max_tokens=self.config.context_window_size,
         )
+
+        # 後端（可選，Layer 2/3 需要）
+        self._backend = backend
 
         # 子系統
         self.counter = TokenCounter(
@@ -57,6 +64,8 @@ class ContextManager:
         )
         self.sacred = SacredManager(persona=persona)
         self.pruner = MicroPruner(use_llmlingua=self.config.use_llmlingua)
+        self.summarizer = RollingSummarizer(backend=backend)
+        self.compactor = FullCompactor(backend=backend)
         self.emergency = EmergencyCompactor(
             max_keep=self.config.max_emergency_messages,
         )
@@ -193,24 +202,113 @@ class ContextManager:
         return None
 
     async def _apply_layer2(self) -> Optional[CompactionResult]:
-        """執行 Layer 2 增量摘要（placeholder — 需要 backend）"""
-        # TODO: 實作 Layer 2（需要 SummaryBackend）
-        # 暫時降級為 Layer 1
+        """執行 Layer 2 增量摘要"""
+        if not self._backend:
+            # 無後端，降級為 Layer 1
+            return self._apply_layer1()
+
+        start = time.time()
+        try:
+            updated, summary_text, saved = await self.summarizer.summarize_oldest(
+                self.history.messages, n_turns=10
+            )
+
+            if saved > 0:
+                self.history.messages = updated
+                self.history.total_tokens -= saved
+                self.history.compression_count += 1
+                self.budget.update(history=self.history.total_tokens)
+                self.state.current_tokens = self.budget.total_tokens
+                self.state.compression_count += 1
+                self.state.last_compaction_at = time.time()
+                self._last_compaction_time = time.time()
+
+                result = CompactionResult(
+                    tier=CompressionTier.TIER_2_ROLLING_SUMMARY,
+                    tokens_before=self.history.total_tokens + saved,
+                    tokens_after=self.history.total_tokens,
+                    tokens_saved=saved,
+                    compression_ratio=saved / (self.history.total_tokens + saved),
+                    summary_text=summary_text,
+                    duration_ms=(time.time() - start) * 1000,
+                )
+
+                # 通知回調（Echo Memory 整合點）
+                for cb in self._on_compaction_callbacks:
+                    await cb(result)
+
+                return result
+
+        except Exception:
+            # 摘要失敗，降級為 Layer 1
+            pass
+
         return self._apply_layer1()
 
     async def _apply_layer3(self, instructions: Optional[str] = None) -> CompactionResult:
-        """執行 Layer 3 完整壓縮（placeholder — 需要 backend）"""
-        # TODO: 實作 Layer 3（需要 CompactionBackend）
-        # 暫時降級為 Layer 1
-        result = self._apply_layer1()
-        if result:
+        """執行 Layer 3 完整壓縮"""
+        if not self._backend:
+            # 無後端，降級為 Layer 1
+            result = self._apply_layer1()
+            if result:
+                return result
+            return CompactionResult(
+                tier=CompressionTier.TIER_3_FULL_COMPACTION,
+                tokens_before=self.history.total_tokens,
+                tokens_after=self.history.total_tokens,
+                tokens_saved=0,
+            )
+
+        start = time.time()
+        sacred = self.sacred.get_sacred_content()
+        tokens_before = self.history.total_tokens
+
+        try:
+            compacted, summary_text, saved = await self.compactor.compact(
+                self.history.messages, sacred, instructions
+            )
+
+            self.history.messages = compacted
+            self.history.total_tokens = sum(m.token_count or 0 for m in compacted)
+            # 重新計算壓縮後訊息的 token
+            for m in compacted:
+                if m.token_count is None:
+                    self.counter.count_message(m)
+            self.history.total_tokens = sum(m.token_count or 0 for m in compacted)
+            self.history.compression_count += 1
+            self.budget.update(history=self.history.total_tokens)
+            self.state.current_tokens = self.budget.total_tokens
+            self.state.compression_count += 1
+            self.state.last_compaction_at = time.time()
+            self._last_compaction_time = time.time()
+
+            result = CompactionResult(
+                tier=CompressionTier.TIER_3_FULL_COMPACTION,
+                tokens_before=tokens_before,
+                tokens_after=self.history.total_tokens,
+                tokens_saved=max(0, tokens_before - self.history.total_tokens),
+                compression_ratio=(tokens_before - self.history.total_tokens) / tokens_before if tokens_before else 0,
+                summary_text=summary_text,
+                duration_ms=(time.time() - start) * 1000,
+            )
+
+            # 通知回調（Echo Memory 整合點）
+            for cb in self._on_compaction_callbacks:
+                await cb(result)
+
             return result
-        return CompactionResult(
-            tier=CompressionTier.TIER_3_FULL_COMPACTION,
-            tokens_before=self.history.total_tokens,
-            tokens_after=self.history.total_tokens,
-            tokens_saved=0,
-        )
+
+        except Exception:
+            # 壓縮失敗，降級為 Layer 1
+            result = self._apply_layer1()
+            if result:
+                return result
+            return CompactionResult(
+                tier=CompressionTier.TIER_3_FULL_COMPACTION,
+                tokens_before=tokens_before,
+                tokens_after=self.history.total_tokens,
+                tokens_saved=0,
+            )
 
     def _apply_layer4(self) -> CompactionResult:
         """執行 Layer 4 緊急截斷"""

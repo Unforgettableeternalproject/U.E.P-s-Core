@@ -43,19 +43,19 @@ except ModuleNotFoundError:
             return contextlib.nullcontext()
 
 # ── Project imports（always available） ──
-from test_tts.benchmarks.metrics import LatencySample, ProfileReport, summarize_latency, summarize_profiles
-from test_tts.cli.interactive import (
+from echo_tts.benchmarks.metrics import LatencySample, ProfileReport, summarize_latency, summarize_profiles
+from echo_tts.cli.interactive import (
     EMOTION_LABELS,
     EMOTION_PRESETS,
     SUPPORTED_LANGUAGES,
     _detect_language,
     _translate_text,
 )
-from test_tts.runtime.audio import NullAudioPlayer, StreamingAudioPlayer
-from test_tts.runtime.backend_contract import legacy_backend_info
-from test_tts.runtime.legacy_backend import LegacyIndexTTS2Backend
-from test_tts.runtime.legacy_generate import default_generation_paths, generate_with_legacy_indextts2
-from test_tts.runtime.session import TTSInteractiveSession
+from echo_tts.runtime.audio import NullAudioPlayer, StreamingAudioPlayer
+from echo_tts.runtime.backend_contract import legacy_backend_info
+from echo_tts.runtime.legacy_backend import LegacyIndexTTS2Backend
+from echo_tts.runtime.legacy_generate import default_generation_paths, generate_with_legacy_indextts2
+from echo_tts.runtime.session import TTSInteractiveSession
 
 console = _RichConsole()
 

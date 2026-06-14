@@ -1,4 +1,4 @@
-from test_tts.benchmarks.metrics import (
+from echo_tts.benchmarks.metrics import (
     LatencySample,
     summarize_latency,
     InitProfile,

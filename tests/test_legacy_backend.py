@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from test_tts.benchmarks.metrics import InitProfile, ProfileReport
-from test_tts.runtime.legacy_backend import LegacyIndexTTS2Backend
-from test_tts.runtime.legacy_generate import default_generation_paths
+from echo_tts.benchmarks.metrics import InitProfile, ProfileReport
+from echo_tts.runtime.legacy_backend import LegacyIndexTTS2Backend
+from echo_tts.runtime.legacy_generate import default_generation_paths
 
 
 class FakeEngine:

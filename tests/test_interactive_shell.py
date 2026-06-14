@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from test_tts.benchmarks.metrics import ProfileReport, SynthesisProfile
-from test_tts.cli.interactive import InteractiveShell
+from echo_tts.benchmarks.metrics import ProfileReport, SynthesisProfile
+from echo_tts.cli.interactive import InteractiveShell
 
 
 class FakeSession:

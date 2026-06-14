@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from test_tts.runtime.legacy_generate import default_generation_paths, validate_generation_paths
+from echo_tts.runtime.legacy_generate import default_generation_paths, validate_generation_paths
 
 
 def test_default_generation_paths_point_to_copied_assets():

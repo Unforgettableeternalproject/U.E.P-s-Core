@@ -5,8 +5,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from test_tts.benchmarks.metrics import ProfileReport
-from test_tts.runtime.audio import AudioPlayer, NullAudioPlayer, StreamingAudioPlayer
+from echo_tts.benchmarks.metrics import ProfileReport
+from echo_tts.runtime.audio import AudioPlayer, NullAudioPlayer, StreamingAudioPlayer
 
 
 class PersistentTTSBackend(Protocol):

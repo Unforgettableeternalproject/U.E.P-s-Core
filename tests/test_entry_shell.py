@@ -1,5 +1,5 @@
 from Entry import build_legacy_session
-from test_tts.runtime.session import TTSInteractiveSession
+from echo_tts.runtime.session import TTSInteractiveSession
 
 
 def test_build_legacy_session_does_not_load_model(tmp_path):

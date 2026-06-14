@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from test_tts.benchmarks.metrics import ProfileReport, SynthesisProfile, InitProfile
-from test_tts.runtime.session import TTSInteractiveSession, ProfileResult
+from echo_tts.benchmarks.metrics import ProfileReport, SynthesisProfile, InitProfile
+from echo_tts.runtime.session import TTSInteractiveSession, ProfileResult
 
 
 class FakeBackendWithProfile:

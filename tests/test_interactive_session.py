@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from test_tts.runtime.session import TTSInteractiveSession
+from echo_tts.runtime.session import TTSInteractiveSession
 
 
 class FakeBackend:

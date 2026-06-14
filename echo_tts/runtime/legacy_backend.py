@@ -4,8 +4,8 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from test_tts.benchmarks.metrics import InitProfile, SynthesisProfile, ProfileReport
-from test_tts.runtime.legacy_generate import LegacyGenerationPaths, validate_generation_paths
+from echo_tts.benchmarks.metrics import InitProfile, SynthesisProfile, ProfileReport
+from echo_tts.runtime.legacy_generate import LegacyGenerationPaths, validate_generation_paths
 
 EngineFactory = Callable[..., Any]
 

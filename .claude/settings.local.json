@@ -139,7 +139,12 @@
       "Bash(\"C:\\\\Users\\\\Bernie\\\\source\\\\repos\\\\Unforgettableeternalproject\\\\U.E.P-s-Core\\\\env\\\\Scripts\\\\python.exe\" -m pytest tests/ -x -q)",
       "Bash(\"C:\\\\Users\\\\Bernie\\\\source\\\\repos\\\\Unforgettableeternalproject\\\\U.E.P-s-Core\\\\env\\\\Scripts\\\\python.exe\" -m pytest tests/ -x)",
       "Bash(python3 *)",
-      "Bash('C:\\\\Users\\\\Bernie\\\\source\\\\repos\\\\Unforgettableeternalproject\\\\U.E.P-s-Core\\\\env\\\\Scripts\\\\python.exe' -c ' *)"
+      "Bash('C:\\\\Users\\\\Bernie\\\\source\\\\repos\\\\Unforgettableeternalproject\\\\U.E.P-s-Core\\\\env\\\\Scripts\\\\python.exe' -c ' *)",
+      "mcp__open-notebook__create_notebook",
+      "Bash(find /c/Users/Bernie/source/repos/Unforgettableeternalproject/TestSeparateTTSSystem -maxdepth 3 -not -path */.claude/* -not -path */.git/* -not -path */legacy_tts/modules/* -type f)",
+      "Bash(find /c/Users/Bernie/source/repos/Unforgettableeternalproject/TestSeparateTTSSystem/test_tts /c/Users/Bernie/source/repos/Unforgettableeternalproject/TestSeparateTTSSystem/echo_tts /c/Users/Bernie/source/repos/Unforgettableeternalproject/TestSeparateTTSSystem/tests -not -path */__pycache__/* -not -path */.git/* -type f)",
+      "Bash(find /c/Users/Bernie/source/repos/Unforgettableeternalproject/TestSeparateTTSSystem/test_tts -not -path */__pycache__/* -type f)",
+      "Bash(grep test_tts /c/Users/Bernie/source/repos/Unforgettableeternalproject/TestSeparateTTSSystem/__TRACKED_VAR__)"
     ]
   }
 }

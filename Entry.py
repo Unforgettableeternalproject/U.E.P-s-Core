@@ -654,11 +654,32 @@ class EchoTTSCLI:
 
         self.show_menu()
 
+        try:
+            self._main_loop()
+        finally:
+            self._cleanup()
+
+    def _cleanup(self):
+        """釋放引擎資源"""
+        if self.session is not None:
+            try:
+                status = self.session.status()
+                if status.get("loaded"):
+                    with console.status("[dim]Releasing engine...[/]", spinner="dots"):
+                        self.session.unload()
+                    console.print("[dim]Engine unloaded. Bye![/]")
+                else:
+                    console.print("[dim]Bye![/]")
+            except Exception:
+                console.print("[dim]Bye![/]")
+
+    def _main_loop(self):
+        """主迴圈（由 run() 呼叫）"""
         while True:
             try:
                 command = Prompt.ask("\n[bold cyan]tts[/]")
             except (EOFError, KeyboardInterrupt):
-                console.print("\n[dim]Bye![/]")
+                console.print()
                 break
 
             command = command.strip()
@@ -718,7 +739,6 @@ class EchoTTSCLI:
                         self.show_menu()
 
                     case "exit" | "quit" | "q":
-                        console.print("[dim]Bye![/]")
                         break
 
                     case _:

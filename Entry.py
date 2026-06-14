@@ -120,7 +120,20 @@ def render_emotion_panel(session: TTSInteractiveSession) -> Panel:
     if matched_preset:
         title += f"  [dim]({matched_preset})[/]"
 
-    return Panel(table, title=title, border_style="magenta", width=50)
+    # 可用預設列表
+    preset_names = list(EMOTION_PRESETS.keys())
+    preset_line = Text()
+    for i, name in enumerate(preset_names):
+        style = "bold magenta" if name == matched_preset else "dim"
+        preset_line.append(name, style=style)
+        if i < len(preset_names) - 1:
+            preset_line.append("  ", style="dim")
+
+    from rich.console import Group
+    return Panel(
+        Group(table, Text(""), Text.assemble(("Presets: ", "dim"), preset_line)),
+        title=title, border_style="magenta", width=50,
+    )
 
 
 def render_lora_panel(session: TTSInteractiveSession) -> Panel:

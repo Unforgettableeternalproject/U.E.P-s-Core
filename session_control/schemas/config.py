@@ -1,9 +1,16 @@
 """
 Config Schema — 設定的 Pydantic 模型
+
+v2 合併自 llm_module/schemas.py：
+- 新增 LLMModuleData 模型（統一模組數據格式）
+- 新增 create_llm_data() 便利函數
 """
 
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field
+
+
+# ── 壓縮設定 ──────────────────────────────────────────────────────────────────
 
 
 class CompactionConfig(BaseModel):
@@ -44,6 +51,9 @@ class CompactionConfig(BaseModel):
     )
 
 
+# ── 人設上下文 ────────────────────────────────────────────────────────────────
+
+
 class PersonaContext(BaseModel):
     """人設上下文 — 神聖段落的核心"""
 
@@ -71,3 +81,50 @@ class PersonaContext(BaseModel):
         if self.custom_instructions:
             parts.append(f"Instructions: {self.custom_instructions}")
         return "\n".join(parts)
+
+
+# ── LLM 模組數據格式 ──────────────────────────────────────────────────────────
+
+
+class LLMModuleData(BaseModel):
+    """統一模組數據格式 — 模組間傳遞的標準容器"""
+
+    # 核心數據
+    text: Optional[str] = Field(None, description="主要文本內容")
+    mode: Optional[str] = Field("chat", description="處理模式")
+
+    # 上下文
+    context: Optional[Dict[str, Any]] = Field(default_factory=dict, description="上下文信息")
+
+    # 執行控制
+    execution_mode: str = Field("sequential", description="執行模式")
+    priority: int = Field(5, description="優先級（數字越小優先級越高）")
+    timeout: Optional[float] = Field(None, description="超時時間（秒）")
+
+    # 模組間傳遞的附加數據
+    metadata: Optional[Dict[str, Any]] = Field(default_factory=dict, description="元數據")
+
+
+# ── 便利函數 ──────────────────────────────────────────────────────────────────
+
+
+def create_llm_data(text: str, mode: str = "chat", **kwargs) -> LLMModuleData:
+    """建立 LLM 模組數據的便利函數
+
+    Args:
+        text: 主要文本內容
+        mode: 處理模式，預設 "chat"
+        **kwargs: 其餘欄位（context、execution_mode、priority、timeout）
+
+    Returns:
+        LLMModuleData 實例，kwargs 中未識別的鍵會存入 metadata
+    """
+    return LLMModuleData(
+        text=text,
+        mode=mode,
+        context=kwargs.get("context", {}),
+        execution_mode=kwargs.get("execution_mode", "sequential"),
+        priority=kwargs.get("priority", 5),
+        timeout=kwargs.get("timeout"),
+        metadata=kwargs,
+    )

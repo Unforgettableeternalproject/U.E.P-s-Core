@@ -3,10 +3,18 @@
 
 # ─── Whisper 模型 ──────────────────────────────────────────
 whisper:
-  model_id: "openai/whisper-base"       # Hugging Face 模型 ID
+  # faster-whisper (CTranslate2) 設定
+  backend: "faster-whisper"              # faster-whisper / transformers
+  model_size: "base"                     # tiny / base / small / medium / large-v3 等
+  compute_type: "float16"                # float16 / int8 / int8_float16 / float32
+  device: "auto"                         # auto / cuda / cpu
+  num_workers: 1                         # CTranslate2 並行 worker 數（多通道基礎）
+  download_root: null                    # 模型下載目錄（null = HF 快取預設）
+
+  # transformers fallback（backend: transformers 時使用）
+  model_id: "openai/whisper-base"        # Hugging Face 模型 ID
   local_path: "models/stt/whisper/whisper-base"  # 本地模型目錄
   use_local_model: true                  # 優先使用本地模型
-  device: "auto"                         # auto / cuda / cpu
   torch_dtype: "auto"                    # auto / float16 / float32
 
 # ─── 音訊輸入 ──────────────────────────────────────────────

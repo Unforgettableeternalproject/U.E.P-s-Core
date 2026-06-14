@@ -10,16 +10,20 @@ Gemini Backend — Google Gemini / Vertex AI 實作
 - Layer 2/3 摘要與完整壓縮
 """
 
+import asyncio
 import json
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from google import genai
 from google.genai import types
 
 from session_control.backends.base import AbstractBackend
+
+if TYPE_CHECKING:
+    from session_control.cache.local_cache import CacheManager
 from session_control.compression.full_compaction import COMPACTION_PROMPT
 from session_control.compression.rolling_summary import SUMMARY_PROMPT
 from session_control.schemas.message import Message
@@ -41,7 +45,7 @@ class GeminiBackend(AbstractBackend):
         "gemini-2.5-pro": 1048576,
     }
 
-    def __init__(self, config: Optional[dict] = None):
+    def __init__(self, config: Optional[dict] = None, cache_manager: Optional["CacheManager"] = None):
         """初始化 GeminiBackend
 
         Args:
@@ -55,6 +59,8 @@ class GeminiBackend(AbstractBackend):
                 - api_key: API Key 認證（選填，優先使用 Vertex AI）
                 - project_id: GCP 專案 ID（選填，覆蓋環境變數）
                 - location: GCP 位置（預設 "us-central1"）
+            cache_manager: 外部注入的 CacheManager 實例（可選）。
+                           提供時，query() 會自動查詢顯性快取。
         """
         cfg = config or {}
 
@@ -102,6 +108,9 @@ class GeminiBackend(AbstractBackend):
 
         # Context Caching 支援
         self.cache_enabled = cfg.get("cache_enabled", True)
+
+        # CacheManager 整合（可選）
+        self._cache_manager = cache_manager
 
         # 根據處理模式動態生成回應 schema
         self.response_schemas = self._create_response_schemas()
@@ -156,12 +165,13 @@ class GeminiBackend(AbstractBackend):
         """Layer 2 滾動摘要
 
         將訊息列表摘要為文本，使用 SUMMARY_PROMPT 作為預設指令。
+        透過 asyncio.to_thread() 包裝同步 API 呼叫，避免阻塞 event loop。
         """
         prompt_text = instructions or SUMMARY_PROMPT
         conversation_text = self._format_for_summary(messages)
         full_prompt = f"{prompt_text}\n\n---\n\n{conversation_text}"
 
-        result = self.query(prompt=full_prompt, mode="direct")
+        result = await asyncio.to_thread(self.query, prompt=full_prompt, mode="direct")
         return result.get("text", "")
 
     async def compact(
@@ -173,6 +183,7 @@ class GeminiBackend(AbstractBackend):
         """Layer 3 完整壓縮
 
         將完整對話壓縮為結構化摘要，保留神聖內容。
+        透過 asyncio.to_thread() 包裝同步 API 呼叫，避免阻塞 event loop。
         """
         sacred_text = sacred.total_content
         prompt_template = instructions or COMPACTION_PROMPT
@@ -182,7 +193,7 @@ class GeminiBackend(AbstractBackend):
             f"{prompt_text}\n\n---\nCONVERSATION TO COMPRESS:\n---\n\n{conversation_text}"
         )
 
-        result = self.query(prompt=full_prompt, mode="direct")
+        result = await asyncio.to_thread(self.query, prompt=full_prompt, mode="direct")
         raw = result.get("text", "")
         return self._extract_summary(raw)
 
@@ -520,6 +531,15 @@ class GeminiBackend(AbstractBackend):
             dict，至少包含 "text" 鍵；若有工具調用則包含 "function_call" 鍵；
             總是包含 "_meta" 鍵（cached/total token 數）。
         """
+        # CacheManager 自動查詢：若外部未傳 cached_content，嘗試從 CacheManager 取得
+        if cached_content is None and self._cache_manager is not None:
+            try:
+                cached_content = self._cache_manager.get_cached_content_for_generation(
+                    list(self._cache_manager.caches.keys())
+                )
+            except Exception:
+                logger.debug("[Gemini] CacheManager 查詢失敗，繼續無快取模式")
+
         client = self._get_client()
 
         contents = [types.Content(role="user", parts=[types.Part(text=prompt)])]

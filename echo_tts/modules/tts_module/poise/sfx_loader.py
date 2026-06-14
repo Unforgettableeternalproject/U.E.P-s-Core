@@ -13,9 +13,7 @@ SfxLoader — 音效素材載入器
 """
 
 from pathlib import Path
-from typing import Dict, List, Optional
-
-import torch
+from typing import Any, Dict, List, Optional
 
 
 # Target sample rate for all TTS output
@@ -27,13 +25,14 @@ class SfxLoader:
     Audio effect loader with caching and automatic resampling.
 
     Falls back gracefully when no assets are available.
+    torch is imported lazily to avoid pulling heavy dependencies at module level.
     """
 
     def __init__(self, sfx_dir: Optional[Path] = None):
         self._sfx_dir = sfx_dir
-        self._cache: Dict[str, torch.Tensor] = {}
+        self._cache: Dict[str, Any] = {}  # torch.Tensor values, Any to avoid top-level import
 
-    def load(self, name: str) -> Optional[torch.Tensor]:
+    def load(self, name: str) -> Optional[Any]:
         """
         Load a sound effect by name.
 
@@ -112,7 +111,7 @@ class SfxLoader:
             if p.suffix.lower() in ('.wav', '.mp3', '.flac', '.ogg')
         ]
 
-    def get_breath(self) -> Optional[torch.Tensor]:
+    def get_breath(self) -> Optional[Any]:
         """
         Load a random breath sound effect.
 

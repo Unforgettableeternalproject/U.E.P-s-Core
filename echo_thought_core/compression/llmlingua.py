@@ -149,7 +149,7 @@ class LLMLinguaCompressor:
                 "reason": "model_unavailable",
             }
 
-        target_rate = rate or self.config.rate
+        target_rate = rate if rate is not None else self.config.rate
 
         try:
             result = self._compressor.compress_prompt(

@@ -134,9 +134,14 @@ class GeminiBackend(AbstractBackend):
                         self._project_id,
                         self._location,
                     )
-                else:
+                elif self._api_key:
                     self._client = genai.Client(api_key=self._api_key)
                     logger.info("[Gemini] 使用 API Key 認證")
+                else:
+                    raise ValueError(
+                        "Gemini 認證未設定。請提供 GCP_PROJECT_ID（Vertex AI）"
+                        "或 api_key（Gemini API）。"
+                    )
             except ImportError:
                 raise ImportError(
                     "google-genai package required. Install with: pip install google-genai"
@@ -675,20 +680,14 @@ class GeminiBackend(AbstractBackend):
         elif hasattr(part, "text") and part.text:
             # 當使用 tools 時，Gemini 可能返回純文本而非 JSON
             if tools:
-                # 修復：Gemini 在 function calling 模式下可能返回雙重編碼的 JSON
+                # Gemini 在 function calling 模式下可能返回 JSON 包裝的文本
                 try:
                     parsed = json.loads(part.text)
                     if isinstance(parsed, dict) and "text" in parsed:
-                        # 解碼內層的 Unicode 轉義序列
-                        decoded_text = parsed["text"].encode().decode("unicode_escape")
-                        payload = {"text": decoded_text}
-                        # 保留其他字段
-                        for key, value in parsed.items():
-                            if key != "text":
-                                payload[key] = value
+                        payload = parsed  # 直接使用解析後的 dict
                     else:
                         payload = {"text": part.text}
-                except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
+                except (json.JSONDecodeError, AttributeError):
                     # Fallback：當作純文本處理
                     payload = {"text": part.text}
             else:

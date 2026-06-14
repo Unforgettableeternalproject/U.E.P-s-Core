@@ -11,6 +11,7 @@ Usage:
     usage = manager.get_usage()
 """
 
+import logging
 import time
 import uuid
 from typing import List, Optional, Dict, Any, Callable, Awaitable
@@ -30,6 +31,9 @@ from echo_thought_core.compression.rolling_summary import RollingSummarizer
 from echo_thought_core.compression.full_compaction import FullCompactor
 from echo_thought_core.compression.emergency import EmergencyCompactor
 from echo_thought_core.backends.base import AbstractBackend
+
+
+logger = logging.getLogger(__name__)
 
 
 class ContextManager:
@@ -239,9 +243,13 @@ class ContextManager:
 
                 return result
 
-        except Exception:
+        except Exception as exc:
             # 摘要失敗，降級為 Layer 1
-            pass
+            logger.warning(
+                "[ContextManager] Layer 2 摘要失敗，降級為 Layer 1: %s",
+                exc,
+                exc_info=True,
+            )
 
         return self._apply_layer1()
 
@@ -298,8 +306,13 @@ class ContextManager:
 
             return result
 
-        except Exception:
+        except Exception as exc:
             # 壓縮失敗，降級為 Layer 1
+            logger.warning(
+                "[ContextManager] Layer 3 壓縮失敗，降級為 Layer 1: %s",
+                exc,
+                exc_info=True,
+            )
             result = self._apply_layer1()
             if result:
                 return result

@@ -436,6 +436,10 @@ class CacheManager:
 
     def _create_cached_content(self, content: str, display_name: str, ttl_seconds: int):
         """在 Gemini（Vertex AI）上建立顯性快取，回傳 cache 物件或 None"""
+        if not self.client:
+            logger.warning("[CacheManager] client 未初始化，無法建立顯性快取")
+            return None
+
         try:
             from google.genai import types  # type: ignore
 
@@ -460,6 +464,10 @@ class CacheManager:
 
     def update_ttl(self, name: str, ttl_seconds: int) -> bool:
         """更新指定快取的 TTL"""
+        if not self.client:
+            logger.warning("[CacheManager] client 未初始化，無法更新 TTL")
+            return False
+
         try:
             if name not in self.caches:
                 return False
@@ -489,7 +497,7 @@ class CacheManager:
 
             cache_info = self.caches[name]
 
-            if cache_info.cached_content_id:
+            if cache_info.cached_content_id and self.client:
                 self.client.caches.delete(name=cache_info.cached_content_id)  # type: ignore
 
             del self.caches[name]

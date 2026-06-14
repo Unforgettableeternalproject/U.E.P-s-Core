@@ -6,8 +6,11 @@ Backend Factory — 根據設定建立對應的後端實例，或一次建立完
 - create_context_manager(): 高層級，一次建立帶有 Backend + CacheManager 的完整 ContextManager
 """
 
+import logging
 from typing import Optional, Dict, Any
 from echo_thought_core.backends.base import AbstractBackend
+
+logger = logging.getLogger(__name__)
 
 
 def create_backend(
@@ -85,15 +88,21 @@ def create_context_manager(
         backend = GeminiBackend(config=backend_config)
 
         # Step 2: 建立 CacheManager（可選），共享 Backend 的 Gemini client
+        # 注意：這裡存取 GeminiBackend 的內部方法是刻意為之——
+        # CacheManager 共享 client 是 Gemini 專屬的優化，不適用於其他後端。
         if cache_config is not None:
             from echo_thought_core.cache.local_cache import CacheManager
 
-            # 共享 Gemini client，避免重複建立連線
             shared_client = backend._get_client()
             cache_mgr = CacheManager(config=cache_config, client=shared_client)
             backend._cache_manager = cache_mgr
     else:
         backend = create_backend(backend_type, backend_config)
+        if cache_config is not None:
+            logger.warning(
+                "[Factory] cache_config 僅支援 gemini 後端，%s 後端的 cache_config 被忽略",
+                backend_type,
+            )
 
     # Step 3: 建立 ContextManager，注入 Backend
     config = compaction_config or CompactionConfig(

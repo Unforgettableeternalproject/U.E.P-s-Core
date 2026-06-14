@@ -1151,10 +1151,14 @@ class IndexTTSLite:
         _dyn_stretch_ratio = dyn.s2mel_stretch_ratio if dyn.s2mel_stretch_ratio is not None else self.s2mel_stretch_ratio
         _dyn_cfg_rate = dyn.cfm_inference_cfg_rate if dyn.cfm_inference_cfg_rate is not None else self.cfm_inference_cfg_rate
 
+        # 保留 dyn 物件供段落級變化使用
+        _dyn_overrides = dyn
+
         if verbose and dyn.emotion_intensity > 0:
             debug_log(3, f"   🎛️  情緒動態: {dyn.dominant_emotion} (intensity={dyn.emotion_intensity:.3f})")
+            variation_str = f", variation=±{dyn.speed_variation:.3f}" if dyn.speed_variation > 0.001 else ""
             debug_log(3, f"      T={temperature:.3f}, silence={_dyn_silence_ms:.0f}ms, "
-                        f"stretch={_dyn_stretch_ratio:.3f}, cfg_rate={_dyn_cfg_rate:.3f}")
+                        f"stretch={_dyn_stretch_ratio:.3f}{variation_str}, cfg_rate={_dyn_cfg_rate:.3f}")
 
         try:
             # 2. 文本處理 — tokenize + 分段 (參考 infer_v2.py line 487-523)
@@ -1390,7 +1394,8 @@ class IndexTTSLite:
                                 if poise_latent.shape[1] > poise_S.shape[1]:
                                     poise_latent = poise_latent[:, :poise_S.shape[1], :]
                                 poise_S = poise_S + poise_latent
-                                poise_tgt_len = (poise_code_lens * _dyn_stretch_ratio).long()
+                                _poise_stretch = _dyn_overrides.segment_stretch(plan_idx)
+                                poise_tgt_len = (poise_code_lens * _poise_stretch).long()
 
                             poise_cond = self.s2mel.models['length_regulator'](
                                 poise_S, ylens=poise_tgt_len, n_quantizers=3, f0=None
@@ -1553,7 +1558,8 @@ class IndexTTSLite:
                             latent = latent[:, :S_infer.shape[1], :]
 
                         S_infer = S_infer + latent
-                        target_lengths = (code_lens * _dyn_stretch_ratio).long()
+                        _seg_stretch = _dyn_overrides.segment_stretch(seg_idx)
+                        target_lengths = (code_lens * _seg_stretch).long()
 
                     cond = self.s2mel.models['length_regulator'](
                         S_infer,

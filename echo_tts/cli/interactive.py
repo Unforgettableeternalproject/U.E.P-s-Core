@@ -19,6 +19,13 @@ EMOTION_PRESETS: dict[str, list[float]] = {
     "gentle":      [0.1,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.2],
     "stern":       [0.0,  0.15, 0.0,  0.0,  0.05, 0.0,  0.0,  0.1],
     "wistful":     [0.05, 0.0,  0.1,  0.0,  0.0,  0.15, 0.0,  0.1],
+    # ── 複合情緒預設 ──
+    # flustered（慌張）：緊張+驚訝+些許怕，語速不穩定
+    "flustered":   [0.05, 0.0,  0.0,  0.15, 0.0,  0.0,  0.15, 0.0],
+    # tsundere（傲嬌）：表面惱怒+掩藏的在意+刻意冷靜
+    "tsundere":    [0.05, 0.15, 0.0,  0.0,  0.05, 0.0,  0.0,  0.1],
+    # anticipated（期待）：興奮+些許驚喜+底層沉著
+    "anticipated": [0.15, 0.0,  0.0,  0.0,  0.0,  0.0,  0.1,  0.05],
 }
 
 EMOTION_LABELS = ["happy", "angry", "sad", "afraid", "disgusted", "melancholic", "surprised", "calm"]

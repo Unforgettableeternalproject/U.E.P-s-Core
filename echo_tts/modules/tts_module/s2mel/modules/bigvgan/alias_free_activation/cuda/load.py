@@ -1,6 +1,7 @@
 # Copyright (c) 2024 NVIDIA CORPORATION.
 #   Licensed under the MIT license.
 
+import hashlib
 import os
 import pathlib
 import subprocess
@@ -8,10 +9,26 @@ import subprocess
 from torch.utils import cpp_extension
 
 """
-Setting this param to a list has a problem of generating different compilation commands (with diferent order of architectures) and leading to recompilation of fused kernels. 
+Setting this param to a list has a problem of generating different compilation commands (with diferent order of architectures) and leading to recompilation of fused kernels.
 Set it to empty stringo avoid recompilation and assign arch flags explicity in extra_cuda_cflags below
 """
 os.environ["TORCH_CUDA_ARCH_LIST"] = ""
+
+
+def _stable_build_dir(srcpath: pathlib.Path) -> pathlib.Path:
+    """Build directory 放在使用者快取中，不受 git 操作影響。
+
+    路徑格式: ~/.cache/torch_extensions/bigvgan_aa_{hash8}
+    hash 來自 source 目錄的絕對路徑，確保不同 repo 不衝突。
+    """
+    path_hash = hashlib.md5(str(srcpath).encode()).hexdigest()[:8]
+    cache_root = pathlib.Path(os.environ.get(
+        "TORCH_EXTENSIONS_DIR",
+        pathlib.Path.home() / ".cache" / "torch_extensions"
+    ))
+    buildpath = cache_root / f"bigvgan_aa_{path_hash}"
+    buildpath.mkdir(parents=True, exist_ok=True)
+    return buildpath
 
 
 def load():
@@ -22,10 +39,9 @@ def load():
         cc_flag.append("-gencode")
         cc_flag.append("arch=compute_80,code=sm_80")
 
-    # Build path
+    # Build path — 使用穩定的外部快取，不受 git checkout/merge 影響
     srcpath = pathlib.Path(__file__).parent.absolute()
-    buildpath = srcpath / "build"
-    _create_build_dir(buildpath)
+    buildpath = _stable_build_dir(srcpath)
 
     # Helper function to build the kernels.
     def _cpp_extention_load_helper(name, sources, extra_cuda_flags):
@@ -76,11 +92,3 @@ def _get_cuda_bare_metal_version(cuda_dir):
     bare_metal_minor = release[1][0]
 
     return raw_output, bare_metal_major, bare_metal_minor
-
-
-def _create_build_dir(buildpath):
-    try:
-        os.mkdir(buildpath)
-    except OSError:
-        if not os.path.isdir(buildpath):
-            print(f"Creation of the build directory {buildpath} failed")

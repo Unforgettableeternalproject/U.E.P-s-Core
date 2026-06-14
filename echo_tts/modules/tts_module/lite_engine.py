@@ -300,8 +300,22 @@ class IndexTTSLite:
         
         # 🚀 進階優化配置（輕量方案，無需額外依賴）
         adv_opt = self.cfg.get('advanced_optimization', {})
-        self.use_torch_compile = adv_opt.get('use_torch_compile', False)
         self.compile_mode = adv_opt.get('compile_mode', 'reduce-overhead')
+
+        # sm_120 (RTX 50 系列 Blackwell) torch.compile 相容性檢查：
+        # inductor 在 sm_120 上對 S2Mel 產生錯誤結果、對 BigVGAN 大幅變慢。
+        # 僅允許 GPT inference_model 使用 torch.compile（AccelEngine 已驗證可用）。
+        _raw_use_compile = adv_opt.get('use_torch_compile', False)
+        self._sm_120 = False
+        if torch.cuda.is_available():
+            try:
+                cap = torch.cuda.get_device_capability()
+                self._sm_120 = cap[0] >= 12
+            except Exception:
+                pass
+        if self._sm_120 and _raw_use_compile:
+            debug_log(1, "   ⚠️  偵測到 sm_120 (Blackwell) — torch.compile 僅對 GPT 啟用，S2Mel/BigVGAN 跳過")
+        self.use_torch_compile = _raw_use_compile
         self.cudnn_benchmark = adv_opt.get('cudnn_benchmark', True)
         
         # SDPA (Scaled Dot Product Attention) 配置
@@ -510,13 +524,15 @@ class IndexTTSLite:
         self.s2mel.models['cfm'].estimator.setup_caches(max_batch_size=1, max_seq_length=8192)
         self.s2mel.eval()
 
-        # 🚀 應用 torch.compile 優化 (如果配置啟用)
-        if self.use_torch_compile and hasattr(torch, 'compile'):
+        # 🚀 應用 torch.compile 優化 (如果配置啟用，sm_120 除外)
+        if self.use_torch_compile and not self._sm_120 and hasattr(torch, 'compile'):
             try:
                 debug_log(2, f"   ⚡ 對 S2Mel 應用 torch.compile (mode={self.compile_mode})")
                 self.s2mel = torch.compile(self.s2mel, mode=self.compile_mode)
             except Exception as e:
                 debug_log(1, f"   ⚠️  torch.compile S2Mel 失敗，回退: {e}")
+        elif self._sm_120:
+            debug_log(2, "   ℹ️  S2Mel torch.compile 跳過 (sm_120 相容性)")
 
         # 🚀 可選: 應用動態量化 (INT8)
         if self.use_dynamic_quantization and self.quantize_s2mel:
@@ -529,20 +545,16 @@ class IndexTTSLite:
                 )
             except Exception as e:
                 debug_log(1, f"   ⚠️  S2Mel 量化失敗，回退: {e}")
-        # S2Mel torch.compile: 在 sm_120 (RTX 50 系列) + triton-windows 上
-        # inductor 會產生錯誤結果 (dynamic=True) 或大幅變慢 (static/reduce-overhead)。
-        # S2Mel 僅佔 12% 時間，compile 收益不足以抵消風險，預設關閉。
+        # S2Mel CFM estimator 獨立 compile（進階選項，非 sm_120 才允許）
         # 若日後 triton-windows 修正 sm_120 支援，可透過 config.yaml 啟用：
         #   advanced_optimization.compile_s2mel: true
-        if self.cfg.get('advanced_optimization', {}).get('compile_s2mel', False):
+        if not self._sm_120 and self.cfg.get('advanced_optimization', {}).get('compile_s2mel', False):
             if hasattr(self.s2mel, 'enable_torch_compile'):
                 try:
                     debug_log(2, "   ⚡ 對 S2Mel CFM estimator 應用 torch.compile")
                     self.s2mel.enable_torch_compile()
                 except Exception as e:
                     debug_log(1, f"   ⚠️  S2Mel CFM torch.compile 失敗，回退: {e}")
-        else:
-            debug_log(2, "   ℹ️  S2Mel torch.compile 已停用 (sm_120 相容性)")
 
         self._init_timings["s2mel_ms"] = (time.perf_counter() - _t0) * 1000
         debug_log(3, f"      ✓ S2Mel 加載完成: {s2mel_path}")
@@ -556,13 +568,15 @@ class IndexTTSLite:
         self.bigvgan.remove_weight_norm()
         self.bigvgan.eval()
 
-        # 🚀 應用 torch.compile 優化 (如果配置啟用)
-        if self.use_torch_compile and hasattr(torch, 'compile'):
+        # 🚀 應用 torch.compile 優化 (如果配置啟用，sm_120 除外)
+        if self.use_torch_compile and not self._sm_120 and hasattr(torch, 'compile'):
             try:
                 debug_log(2, f"   ⚡ 對 BigVGAN 應用 torch.compile (mode={self.compile_mode})")
                 self.bigvgan = torch.compile(self.bigvgan, mode=self.compile_mode)
             except Exception as e:
                 debug_log(1, f"   ⚠️  torch.compile BigVGAN 失敗，回退: {e}")
+        elif self._sm_120:
+            debug_log(2, "   ℹ️  BigVGAN torch.compile 跳過 (sm_120 相容性)")
         self._init_timings["bigvgan_ms"] = (time.perf_counter() - _t0) * 1000
         debug_log(3, f"      ✓ BigVGAN 加載完成: {bigvgan_name}")
 

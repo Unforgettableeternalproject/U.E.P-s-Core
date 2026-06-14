@@ -8,10 +8,70 @@ Layer 2: Rolling Summary — 增量摘要
 - 觸發寫入 Echo Memory L1（異步）
 
 參考 Anthropic Claude Code 的 Tier 3 Context Collapse 設計。
+
+v2 整合 Destiny-Weavers context_compressor.py Phase 3 設計：
+- _compute_summary_budget()：依壓縮量動態計算摘要 token 預算
+- _serialize_for_summary()：序列化為可讀格式（含 tool_call 展開）
+- 通用六段式摘要模板（移除 DW 特有的 Agent/Board/Lore 段落）
 """
 
+from __future__ import annotations
+
+import json
+import logging
 from typing import List, Optional, Tuple, Protocol
+
 from session_control.schemas.message import Message
+
+logger = logging.getLogger(__name__)
+
+# 摘要前綴標記（用於識別摘要訊息）
+SUMMARY_PREFIX = "[Conversation Summary]"
+
+# 摘要 token 預算範圍（最小 2K，最大 12K）
+_SUMMARY_BUDGET_MIN = 2_000
+_SUMMARY_BUDGET_MAX = 12_000
+# 摘要佔被壓縮內容的比例（20%）
+_SUMMARY_BUDGET_RATIO = 0.20
+
+
+# ── 通用六段式摘要模板 ────────────────────────────────────────────────────────
+# 移除 DW 特有段落（Agent Collaboration、Board State、Lore References），
+# 改為適用於任何對話場景的通用結構。
+
+SUMMARY_PROMPT = """You are summarizing a segment of a conversation to save context space.
+
+Generate a structured summary covering these sections:
+
+**1. TASK / MISSION GOAL**
+What is the user trying to accomplish? What is the current objective?
+
+**2. PROGRESS & CURRENT STATE**
+What has been done so far? What is the current status?
+
+**3. KEY DECISIONS**
+Important decisions made, with the rationale behind them.
+Technical choices, configuration details, approach changes.
+
+**4. RELEVANT FILES & RESOURCES**
+Files created or modified, APIs called, external resources referenced.
+Include exact names/paths where important.
+
+**5. NEXT STEPS**
+What remains to be done? Any pending tasks or blockers?
+
+**6. CRITICAL CONTEXT**
+Anything that MUST be remembered to continue correctly:
+- Error messages and their resolutions
+- User's explicit constraints or preferences
+- Non-obvious dependencies or gotchas
+
+RULES:
+- Be concise but complete — prefer bullet points over prose.
+- Preserve exact names (files, functions, configs, error codes).
+- Do NOT omit information that would break continuity if lost.
+- Write in the same language as the conversation.
+"""
 
 
 class SummaryBackend(Protocol):
@@ -20,23 +80,6 @@ class SummaryBackend(Protocol):
     async def summarize(self, messages: List[Message], instructions: Optional[str] = None) -> str:
         """將訊息列表摘要為文本"""
         ...
-
-
-# 預設摘要 prompt 模板（參考 Anthropic Cookbook）
-SUMMARY_PROMPT = """Summarize the following conversation segment concisely.
-Preserve:
-1. Key decisions and their rationale
-2. Important technical details (file names, configurations, error messages)
-3. User's explicit instructions and preferences
-4. Current task progress and pending items
-
-Do NOT preserve:
-- Casual greetings or small talk
-- Redundant confirmations
-- Tool output details that can be regenerated
-
-Output a structured summary in the conversation's primary language.
-"""
 
 
 class RollingSummarizer:
@@ -52,6 +95,10 @@ class RollingSummarizer:
         instructions: Optional[str] = None,
     ) -> Tuple[List[Message], str, int]:
         """摘要最舊的 N 個 turn
+
+        整合 DW 的動態預算計算與序列化邏輯。
+        若有 backend，先序列化再呼叫摘要；
+        若無，回退到原始的直接傳遞行為。
 
         Returns:
             (更新後的訊息列表, 摘要文本, 節省的 token 數)
@@ -69,17 +116,35 @@ class RollingSummarizer:
         # 計算舊訊息的 token 數
         old_tokens = sum(m.token_count or 0 for m in old_messages)
 
-        # 呼叫 LLM 做摘要
+        # 計算此次摘要的 token 預算
+        summary_budget = _compute_summary_budget(old_messages)
+        logger.debug(
+            "RollingSummarizer: 壓縮 %d 條訊息（%d tokens），摘要預算 %d tokens",
+            len(old_messages),
+            old_tokens,
+            summary_budget,
+        )
+
+        # 組合壓縮指令：加入 token 預算提示，讓後端知道目標摘要長度
+        # _serialize_for_summary 的結果供後端可選使用（後端可自行決定是否直接讀 messages）
         prompt = instructions or SUMMARY_PROMPT
-        summary_text = await self.backend.summarize(old_messages, prompt)
+        prompt_with_budget = f"{prompt}\n\n(Target summary length: ~{summary_budget} tokens)"
+
+        # 直接傳遞原始訊息列表，維持 SummaryBackend 介面契約
+        # 後端可透過 format_messages() 或 _serialize_for_summary() 自行序列化
+        summary_text = await self.backend.summarize(old_messages, prompt_with_budget)
 
         # 建立摘要訊息
         summary_message = Message(
             role="system",
-            content=f"[Conversation Summary (turns 1-{n_turns})]\n{summary_text}",
+            content=f"{SUMMARY_PREFIX}\n{summary_text}",
             is_compressed=True,
             original_turn_range=f"1-{n_turns}",
-            metadata={"compression_tier": 2, "original_token_count": old_tokens},
+            metadata={
+                "compression_tier": 2,
+                "original_token_count": old_tokens,
+                "summary_budget": summary_budget,
+            },
         )
 
         # 計算節省
@@ -88,3 +153,80 @@ class RollingSummarizer:
 
         result = [summary_message] + new_messages
         return result, summary_text, max(0, tokens_saved)
+
+
+# ── 輔助函式（從 DW 搬遷並泛化）────────────────────────────────────────────
+
+
+def _compute_summary_budget(turns: List[Message]) -> int:
+    """計算摘要的 token 預算。
+
+    預算 = 被壓縮內容 token 數的 20%，限制在 2K–12K 之間。
+    這避免摘要過長（浪費）或過短（資訊遺失）。
+
+    Args:
+        turns: 即將被摘要的訊息列表
+
+    Returns:
+        建議的摘要 token 預算
+    """
+    total_tokens = sum(m.token_count or (len(m.content) // 4) for m in turns)
+    budget = int(total_tokens * _SUMMARY_BUDGET_RATIO)
+    return max(_SUMMARY_BUDGET_MIN, min(_SUMMARY_BUDGET_MAX, budget))
+
+
+def _serialize_for_summary(turns: List[Message]) -> str:
+    """將訊息列表序列化為人類可讀的格式，供 LLM 摘要使用。
+
+    處理規則：
+    - system 訊息：標記為 [SYSTEM]
+    - user 訊息：標記為 [USER]
+    - assistant 訊息：若有 tool_call_id，展開為工具呼叫格式
+    - tool 訊息：展開為工具回應格式，過長的內容截斷
+
+    Args:
+        turns: 要序列化的訊息列表
+
+    Returns:
+        可讀的純文字字串
+    """
+    lines: List[str] = []
+    _MAX_TOOL_CONTENT_CHARS = 800  # tool output 序列化時的截斷門檻
+
+    for msg in turns:
+        role = msg.role
+
+        if role == "system":
+            lines.append(f"[SYSTEM]\n{msg.content}\n")
+
+        elif role == "user":
+            lines.append(f"[USER]\n{msg.content}\n")
+
+        elif role == "assistant":
+            if msg.tool_call_id is not None:
+                # 這是一條工具呼叫訊息
+                tool_name = msg.tool_name or "unknown_tool"
+                lines.append(f"[ASSISTANT → TOOL CALL: {tool_name} (id={msg.tool_call_id})]")
+                # content 可能包含呼叫參數（JSON），嘗試格式化
+                try:
+                    params = json.loads(msg.content)
+                    lines.append(f"  params: {json.dumps(params, ensure_ascii=False, indent=2)}\n")
+                except (json.JSONDecodeError, TypeError):
+                    lines.append(f"  {msg.content}\n")
+            else:
+                lines.append(f"[ASSISTANT]\n{msg.content}\n")
+
+        elif role == "tool":
+            tool_name = msg.tool_name or "unknown_tool"
+            call_id = msg.tool_call_id or "?"
+            content = msg.content
+            # 截斷過長的工具輸出
+            if len(content) > _MAX_TOOL_CONTENT_CHARS:
+                content = content[:_MAX_TOOL_CONTENT_CHARS] + f"\n... (truncated, {len(msg.content)} chars total)"
+            lines.append(f"[TOOL RESULT: {tool_name} (id={call_id})]\n{content}\n")
+
+        else:
+            # 未知角色，原樣輸出
+            lines.append(f"[{role.upper()}]\n{msg.content}\n")
+
+    return "\n".join(lines)

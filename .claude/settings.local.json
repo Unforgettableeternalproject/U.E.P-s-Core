@@ -11,7 +11,12 @@
       "Bash(python -m pytest tests/ -x -q --no-header --tb=short)",
       "Bash(python -m pytest tests/test_wiring.py -x -v --no-header --tb=short)",
       "Bash(C:/Users/Bernie/source/repos/Unforgettableeternalproject/U.E.P-s-Core/env/Scripts/python.exe *)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git commit -m 'feat: wire up GeminiBackend ↔ ContextManager ↔ CacheManager + persona loader *)",
+      "mcp__open-notebook__create_note",
+      "Bash(git merge *)",
+      "Bash(git stash *)",
+      "Bash(git commit -m 'feat: Rich CLI interactive test interface \\(Entry.py\\) *)"
     ]
   }
 }

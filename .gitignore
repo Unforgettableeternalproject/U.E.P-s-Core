@@ -10,9 +10,9 @@ ENV/
 
 # Runtime artifacts and large model assets
 /models/
-/legacy_tts/models/
+/echo_tts/models/
 /checkpoints/
-/legacy_tts/modules/tts_module/checkpoints/
+/echo_tts/modules/tts_module/checkpoints/
 /outputs/
 /temp/
 /logs/
@@ -41,3 +41,19 @@ build/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Hidden
+docs/hidden/
+
+# Local
+.claude\settings.local.json.
+*.npy
+
+# Experiments - large/generated data
+experiments/breezyvoice_test/.venv/
+experiments/breezyvoice_test/BreezyVoice/
+experiments/breezyvoice_test/G2PWModel/
+experiments/breezyvoice_test/*.wav
+experiments/lora_training_data/
+# index-tts-lora: local-only training, not published
+experiments/index-tts-lora/

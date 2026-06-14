@@ -10,9 +10,9 @@ C:\Users\Bernie\source\repos\Unforgettableeternalproject\U.E.P-s-Core\env\Script
 
 Result:
 
-- Loaded copied GPT checkpoint from `legacy_tts/modules/tts_module/checkpoints/gpt.pth`.
-- Loaded copied S2Mel checkpoint from `legacy_tts/modules/tts_module/checkpoints/s2mel.pth`.
-- Loaded copied U.E.P voice asset from `legacy_tts/models/tts/uep.pt`.
+- Loaded copied GPT checkpoint from `echo_tts/modules/tts_module/checkpoints/gpt.pth`.
+- Loaded copied S2Mel checkpoint from `echo_tts/modules/tts_module/checkpoints/s2mel.pth`.
+- Loaded copied U.E.P voice asset from `echo_tts/models/tts/uep.pt`.
 - Generated `outputs/tts/phase1_smoke.wav`.
 - Reported generated audio duration: 4.70 seconds.
 

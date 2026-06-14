@@ -1,0 +1,19 @@
+# BreezyVoice minimal deps for Windows inference test
+# Skips: deepspeed (Linux), onnxruntime-gpu (Linux), ttsfrd (Linux), gradio, tensorboard
+conformer==0.3.2
+diffusers==0.32.0
+HyperPyYAML==1.2.2
+inflect==7.3.1
+librosa==0.10.2
+lightning==2.2.4
+matplotlib==3.7.5
+omegaconf==2.3.0
+onnxruntime
+protobuf==4.25
+rich==13.7.1
+soundfile==0.12.1
+WeTextProcessing==1.0.3
+opencc-python-reimplemented
+g2pw
+pyarrow
+datasets

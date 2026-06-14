@@ -157,8 +157,23 @@ class GeminiBackend(AbstractBackend):
         return self.CONTEXT_WINDOWS.get(self.model_name, 1048576)
 
     def count_tokens(self, text: str) -> int:
-        """Gemini 的 token 計數 — 無本地 tokenizer，使用字元估算"""
-        cjk_count = sum(1 for c in text if "一" <= c <= "鿿")
+        """Gemini 的 token 計數 — 無本地 tokenizer，使用字元估算
+
+        覆蓋範圍：CJK Unified Ideographs (U+4E00-9FFF)、
+        CJK Extension A (U+3400-4DBF)、CJK 相容 (U+F900-FAFF)、
+        日文假名 (U+3040-30FF)、韓文 (U+AC00-D7AF)、
+        注音/部首 (U+3100-312F, U+2F00-2FDF)。
+        """
+        cjk_count = sum(
+            1 for c in text
+            if ("一" <= c <= "鿿"       # CJK Unified Ideographs
+                or "㐀" <= c <= "䶿"    # CJK Extension A
+                or "豈" <= c <= "﫿"    # CJK Compatibility Ideographs
+                or "぀" <= c <= "ヿ"    # Hiragana + Katakana
+                or "가" <= c <= "힯"    # Hangul Syllables
+                or "㄀" <= c <= "ㄯ"    # Bopomofo
+                or "⼀" <= c <= "⿟")   # Kangxi Radicals
+        )
         ascii_count = len(text) - cjk_count
         return (ascii_count // 4) + (cjk_count * 2 // 3) + 1
 
@@ -213,6 +228,7 @@ class GeminiBackend(AbstractBackend):
             "work": self._create_work_schema(),
             "direct": self._create_direct_schema(),
             "internal": self._create_internal_schema(),
+            "mischief": self._create_mischief_schema(),
         }
 
     def _create_chat_schema(self) -> dict:
@@ -550,10 +566,7 @@ class GeminiBackend(AbstractBackend):
         contents = [types.Content(role="user", parts=[types.Part(text=prompt)])]
 
         # 選擇回應 schema
-        if mode == "mischief":
-            schema = self._create_mischief_schema()
-        else:
-            schema = self.response_schemas.get(mode, self.response_schemas["chat"])
+        schema = self.response_schemas.get(mode, self.response_schemas["chat"])
 
         config_params: Dict[str, Any] = {
             "temperature": self.temperature,

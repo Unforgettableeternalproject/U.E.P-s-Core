@@ -19,6 +19,22 @@ import sys
 import time
 from typing import Optional
 
+
+def _run_async(coro):
+    """安全執行 async coroutine（相容已存在 event loop 的上下文）"""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        # 已有 event loop（例如在 pytest-asyncio 或整合層中）
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            return pool.submit(asyncio.run, coro).result()
+    else:
+        return asyncio.run(coro)
+
 try:
     from rich.columns import Columns
     from rich.console import Console
@@ -329,6 +345,7 @@ class SessionControlCLI:
         if not self.initialize():
             return
 
+        assert self.mgr is not None, "initialize() succeeded but mgr is None"
         self.show_menu()
 
         while True:
@@ -453,7 +470,7 @@ class SessionControlCLI:
                 )
                 with self.console.status("[yellow]Compressing..."):
                     try:
-                        result = asyncio.run(self.mgr.get_messages_async())
+                        result = _run_async(self.mgr.get_messages_async())
                         self.console.print(
                             f"[green]✓ Compressed. "
                             f"Tokens: {self.mgr.state.current_tokens:,}[/]"
@@ -501,7 +518,7 @@ class SessionControlCLI:
         before = self.mgr.state.current_tokens
         with self.console.status("[yellow]Compacting (Layer 3)..."):
             try:
-                result = asyncio.run(self.mgr.compact())
+                result = _run_async(self.mgr.compact())
             except Exception as e:
                 self.console.print(f"[red]Compaction failed: {e}[/]")
                 return

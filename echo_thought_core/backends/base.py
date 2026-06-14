@@ -2,7 +2,7 @@
 Abstract Backend — 多後端的統一介面
 
 所有 LLM 後端必須實作此介面。
-提供 token 計數、摘要、完整壓縮三大功能。
+提供 token 計數、查詢、摘要、完整壓縮四大功能。
 """
 
 from abc import ABC, abstractmethod
@@ -22,6 +22,27 @@ class AbstractBackend(ABC):
     @abstractmethod
     def count_tokens(self, text: str) -> int:
         """精確計算 token 數量"""
+        ...
+
+    @abstractmethod
+    def query(
+        self,
+        prompt: str,
+        mode: str = "chat",
+        system_instruction: Optional[str] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """查詢 LLM API
+
+        Args:
+            prompt: 用戶輸入文字
+            mode: 回應模式（chat / work / direct 等）
+            system_instruction: 自定義系統提示詞
+            **kwargs: 後端特定參數（cached_content, tools, tool_choice 等）
+
+        Returns:
+            dict，至少包含 "text" 鍵
+        """
         ...
 
     @abstractmethod
@@ -47,7 +68,7 @@ class AbstractBackend(ABC):
         """將統一 Message 格式轉為後端 API 格式
 
         子類可覆寫以適配特定 API 格式。
-        預設輸出 OpenAI/Anthropic 相容的 dict 格式。
+        預設輸出通用的 dict 格式。
         """
         return [
             {"role": msg.role, "content": msg.content}

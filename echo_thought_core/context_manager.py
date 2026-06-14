@@ -185,6 +185,7 @@ class ContextManager:
     def _apply_layer1(self) -> Optional[CompactionResult]:
         """執行 Layer 1 微清理"""
         start = time.time()
+        tokens_before = self.history.total_tokens  # 快照：修改前
         pruned, saved = self.pruner.prune(self.history.messages)
 
         if saved > 0:
@@ -197,10 +198,10 @@ class ContextManager:
 
             return CompactionResult(
                 tier=CompressionTier.TIER_1_MICRO_PRUNE,
-                tokens_before=self.history.total_tokens + saved,
+                tokens_before=tokens_before,
                 tokens_after=self.history.total_tokens,
                 tokens_saved=saved,
-                compression_ratio=saved / (self.history.total_tokens + saved) if saved else 0,
+                compression_ratio=saved / tokens_before if tokens_before else 0,
                 duration_ms=(time.time() - start) * 1000,
             )
         return None
@@ -212,6 +213,7 @@ class ContextManager:
             return self._apply_layer1()
 
         start = time.time()
+        tokens_before = self.history.total_tokens  # 快照：修改前
         try:
             updated, summary_text, saved = await self.summarizer.summarize_oldest(
                 self.history.messages, n_turns=10
@@ -229,10 +231,10 @@ class ContextManager:
 
                 result = CompactionResult(
                     tier=CompressionTier.TIER_2_ROLLING_SUMMARY,
-                    tokens_before=self.history.total_tokens + saved,
+                    tokens_before=tokens_before,
                     tokens_after=self.history.total_tokens,
                     tokens_saved=saved,
-                    compression_ratio=saved / (self.history.total_tokens + saved),
+                    compression_ratio=saved / tokens_before if tokens_before else 0,
                     summary_text=summary_text,
                     duration_ms=(time.time() - start) * 1000,
                 )

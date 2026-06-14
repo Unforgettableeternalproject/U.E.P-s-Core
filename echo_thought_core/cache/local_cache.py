@@ -607,6 +607,7 @@ class CacheManager:
         if entry.is_expired(self.local_ttl_seconds):
             del self.local_cache[cache_key]
             self.stats.local_miss_count += 1
+            self.stats.local_total_entries = max(0, self.stats.local_total_entries - 1)
             logger.debug("[CacheManager] 本地快取過期: %s...", cache_key[:8])
             return None
 
@@ -650,6 +651,7 @@ class CacheManager:
         )
         del self.local_cache[oldest_key]
         self.stats.local_evictions += 1
+        self.stats.local_total_entries = max(0, self.stats.local_total_entries - 1)
 
         logger.debug("[CacheManager] 淘汰本地快取條目: %s...", oldest_key[:8])
 
@@ -744,6 +746,9 @@ class CacheManager:
             del self.local_cache[key]
 
         if expired_keys:
+            self.stats.local_total_entries = max(
+                0, self.stats.local_total_entries - len(expired_keys)
+            )
             logger.debug(
                 "[CacheManager] 清理本地快取: %d 個過期條目", len(expired_keys)
             )

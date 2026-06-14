@@ -27,7 +27,8 @@
       "Bash(git commit -m 'chore: add run.bat and test.bat launchers \\(uses U.E.P Core env\\) *)",
       "Bash(\"C:/Users/Bernie/source/repos/Unforgettableeternalproject/U.E.P-s-Core/env/Scripts/pip.exe\" install *)",
       "Bash(git commit -m 'feat: LLMLingua-2 integration for Layer 1 token-level compression *)",
-      "Bash(git commit -m 'fix: address review findings — defensive checks + logging *)"
+      "Bash(git commit -m 'fix: address review findings — defensive checks + logging *)",
+      "Bash(git commit -m 'fix: address remaining review findings \\(#7-#14\\) *)"
     ]
   }
 }

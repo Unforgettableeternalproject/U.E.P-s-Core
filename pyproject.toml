@@ -39,6 +39,7 @@ full = [
 ]
 
 [project.scripts]
+session-cli = "Entry:main"
 session-demo = "examples.minimal_session:main"
 
 [tool.setuptools.packages.find]

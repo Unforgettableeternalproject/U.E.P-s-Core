@@ -21,7 +21,7 @@ import json
 import logging
 from typing import List, Optional, Tuple, Protocol
 
-from session_control.schemas.message import Message
+from echo_thought_core.schemas.message import Message
 
 logger = logging.getLogger(__name__)
 

@@ -1,18 +1,19 @@
 """
-Session Control — LLM 會話控制子系統
+Echo Thought Core — LLM 會話控制子系統
 
+U.E.P 回聲系統的思考核心，與 Echo Memory（記憶核心）互補。
 Prompt / Token / Context 三大指標優化引擎。
-四層漸進式壓縮架構，支援多 LLM 後端。
+四層漸進式壓縮架構，以 Gemini / Vertex AI 為主要後端。
 
 Usage (低層級):
-    from session_control import ContextManager, CompactionConfig, PersonaContext
+    from echo_thought_core import ContextManager, CompactionConfig, PersonaContext
 
     config = CompactionConfig(backend="gemini", model="gemini-2.5-flash-lite")
     persona = PersonaContext(name="U.E.P", traits=["friendly", "curious"])
     manager = ContextManager(config=config, persona=persona)
 
 Usage (推薦 — 高層級 factory):
-    from session_control import create_context_manager, load_llm_config
+    from echo_thought_core import create_context_manager, load_llm_config
 
     config = load_llm_config()
     manager = create_context_manager(
@@ -21,12 +22,12 @@ Usage (推薦 — 高層級 factory):
     )
 """
 
-from session_control.context_manager import ContextManager
-from session_control.schemas.config import CompactionConfig, PersonaContext
-from session_control.schemas.session import SessionState, CompactionResult
-from session_control.schemas.message import Message, ConversationEntry
-from session_control.backends.factory import create_backend, create_context_manager
-from session_control.persona import load_llm_config
+from echo_thought_core.context_manager import ContextManager
+from echo_thought_core.schemas.config import CompactionConfig, PersonaContext
+from echo_thought_core.schemas.session import SessionState, CompactionResult
+from echo_thought_core.schemas.message import Message, ConversationEntry
+from echo_thought_core.backends.factory import create_backend, create_context_manager
+from echo_thought_core.persona import load_llm_config
 
 __version__ = "0.1.0"
 

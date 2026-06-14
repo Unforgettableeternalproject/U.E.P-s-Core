@@ -1,7 +1,7 @@
 [project]
-name = "session-control"
+name = "echo-thought-core"
 version = "0.1.0"
-description = "LLM 會話控制子系統 — Prompt/Token/Context 三大指標優化引擎"
+description = "Echo Thought Core — LLM 會話控制子系統 (Prompt/Token/Context 優化引擎)"
 authors = [
     {name = "U.E.P Team", email = "ptyc4076@gmail.com"}
 ]
@@ -26,24 +26,18 @@ dev = [
     "ruff>=0.1.9",
     "mypy>=1.8.0",
 ]
-anthropic = ["anthropic>=0.18.0"]
-openai = ["openai>=1.12.0"]
 gemini = ["google-genai>=1.0.0"]
-local = ["transformers>=4.38.0"]
 llmlingua = ["llmlingua>=0.2.0"]
 full = [
-    "anthropic>=0.18.0",
-    "openai>=1.12.0",
     "google-genai>=1.0.0",
     "llmlingua>=0.2.0",
 ]
 
 [project.scripts]
-session-cli = "Entry:main"
-session-demo = "examples.minimal_session:main"
+echo-thought = "Entry:main"
 
 [tool.setuptools.packages.find]
-include = ["session_control*"]
+include = ["echo_thought_core*"]
 exclude = ["tests*", "examples*", "docs*"]
 
 [build-system]
@@ -76,4 +70,4 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 asyncio_mode = "auto"
-addopts = "--cov=session_control --cov-report=html --cov-report=term"
+addopts = "--cov=echo_thought_core --cov-report=html --cov-report=term"

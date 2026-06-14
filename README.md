@@ -35,7 +35,7 @@ pytest -v
 
 # 使用範例
 python -c "
-from session_control import ContextManager, CompactionConfig, PersonaContext
+from echo_thought_core import ContextManager, CompactionConfig, PersonaContext
 
 config = CompactionConfig(backend='anthropic', context_window_size=200000)
 persona = PersonaContext(name='U.E.P', traits=['friendly', 'professional'])
@@ -85,7 +85,7 @@ print(manager.get_usage())
 
 ## 與 U.E.P Core 的整合
 
-完成 MVP 後，將作為 `session_control` 模組併入 U.E.P Core：
+完成 MVP 後，將作為 `echo_thought_core` 模組併入 U.E.P Core：
 - 替換現有 `llm_module` 中的 `cache_manager.py` 和部分 `prompt_manager.py` 功能
 - 透過 Event Bus 注入壓縮事件
 - 與 Echo Memory 的 MCP Server 協作做記憶持久化

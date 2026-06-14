@@ -20,14 +20,14 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from google import genai
 from google.genai import types
 
-from session_control.backends.base import AbstractBackend
+from echo_thought_core.backends.base import AbstractBackend
 
 if TYPE_CHECKING:
-    from session_control.cache.local_cache import CacheManager
-from session_control.compression.full_compaction import COMPACTION_PROMPT
-from session_control.compression.rolling_summary import SUMMARY_PROMPT
-from session_control.schemas.message import Message
-from session_control.schemas.session import SacredContent
+    from echo_thought_core.cache.local_cache import CacheManager
+from echo_thought_core.compression.full_compaction import COMPACTION_PROMPT
+from echo_thought_core.compression.rolling_summary import SUMMARY_PROMPT
+from echo_thought_core.schemas.message import Message
+from echo_thought_core.schemas.session import SacredContent
 
 logger = logging.getLogger(__name__)
 
@@ -291,7 +291,7 @@ class GeminiBackend(AbstractBackend):
                     },
                     "description": "用戶偏好學習信號，累積多次後形成用戶畫像",
                 },
-                "session_control": {
+                "echo_thought_core": {
                     "type": "object",
                     "nullable": True,
                     "properties": {
@@ -411,7 +411,7 @@ class GeminiBackend(AbstractBackend):
                     },
                     "description": "基於任務執行狀況的狀態更新",
                 },
-                "session_control": {
+                "echo_thought_core": {
                     "type": "object",
                     "nullable": True,
                     "properties": {

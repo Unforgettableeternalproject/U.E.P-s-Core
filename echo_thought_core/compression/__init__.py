@@ -10,12 +10,12 @@ Layer 4: EmergencyCompactor — 緊急截斷（只保留最後 N 條 + 神聖段
 - sacred      — 神聖段落管理
 """
 
-from session_control.compression.micro_pruning import MicroPruner
-from session_control.compression.rolling_summary import RollingSummarizer, SUMMARY_PREFIX
-from session_control.compression.full_compaction import FullCompactor, COMPACTION_PROMPT
-from session_control.compression.emergency import EmergencyCompactor
-from session_control.compression.sacred import SacredManager
-from session_control.compression.tool_pairs import (
+from echo_thought_core.compression.micro_pruning import MicroPruner
+from echo_thought_core.compression.rolling_summary import RollingSummarizer, SUMMARY_PREFIX
+from echo_thought_core.compression.full_compaction import FullCompactor, COMPACTION_PROMPT
+from echo_thought_core.compression.emergency import EmergencyCompactor
+from echo_thought_core.compression.sacred import SacredManager
+from echo_thought_core.compression.tool_pairs import (
     PRUNED_TOOL_PLACEHOLDER,
     align_boundary_forward,
     align_boundary_backward,

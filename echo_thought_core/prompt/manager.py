@@ -12,8 +12,8 @@ Prompt Manager — 提示詞管理
 import logging
 from typing import Dict, Any, Optional, List
 
-from session_control.schemas.message import Message
-from session_control.schemas.config import PersonaContext
+from echo_thought_core.schemas.message import Message
+from echo_thought_core.schemas.config import PersonaContext
 
 logger = logging.getLogger(__name__)
 
@@ -601,7 +601,7 @@ class PromptManager:
 
             context_parts.append("\nThen call approve_step() to wrap things up.")
             if should_end_session:
-                context_parts.append("Also set session_control={'action': 'end_session'} in metadata.")
+                context_parts.append("Also set echo_thought_core={'action': 'end_session'} in metadata.")
 
         elif next_step_is_interactive:
             context_parts.append("\n⏭️ The next step requires USER INPUT.")

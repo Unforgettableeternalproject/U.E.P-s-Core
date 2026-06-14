@@ -17,10 +17,10 @@ class CompactionConfig(BaseModel):
     """壓縮設定"""
 
     # 後端設定
-    backend: str = Field("anthropic", description="LLM 後端: anthropic/openai/gemini/local")
-    model: str = Field("claude-sonnet-4-6", description="主要模型")
+    backend: str = Field("gemini", description="LLM 後端: gemini/local")
+    model: str = Field("gemini-2.5-flash-lite", description="主要模型")
     compaction_model: Optional[str] = Field(
-        "claude-haiku-4-5", description="用於摘要的較便宜模型（可選）"
+        None, description="用於摘要的較便宜模型（可選，None 表示使用主模型）"
     )
 
     # Context window

@@ -32,18 +32,18 @@ try:
 except ImportError:
     _HAS_RICH = False
 
-from session_control import (
+from echo_thought_core import (
     CompactionConfig,
     ContextManager,
     PersonaContext,
     create_context_manager,
 )
-from session_control.persona import (
+from echo_thought_core.persona import (
     build_persona_from_config,
     build_system_instruction,
     load_llm_config,
 )
-from session_control.schemas.session import CompressionTier
+from echo_thought_core.schemas.session import CompressionTier
 
 logger = logging.getLogger(__name__)
 

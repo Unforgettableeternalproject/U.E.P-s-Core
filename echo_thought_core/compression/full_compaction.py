@@ -21,9 +21,9 @@ from __future__ import annotations
 import logging
 from typing import List, Optional, Tuple, Protocol
 
-from session_control.schemas.message import Message
-from session_control.schemas.session import SacredContent
-from session_control.compression.tool_pairs import (
+from echo_thought_core.schemas.message import Message
+from echo_thought_core.schemas.session import SacredContent
+from echo_thought_core.compression.tool_pairs import (
     align_boundary_forward,
     align_boundary_backward,
     sanitize_tool_pairs,

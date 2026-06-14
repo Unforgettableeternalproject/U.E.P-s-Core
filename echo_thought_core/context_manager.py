@@ -15,21 +15,21 @@ import time
 import uuid
 from typing import List, Optional, Dict, Any, Callable, Awaitable
 
-from session_control.schemas.config import CompactionConfig, PersonaContext
-from session_control.schemas.message import Message, ConversationHistory
-from session_control.schemas.session import (
+from echo_thought_core.schemas.config import CompactionConfig, PersonaContext
+from echo_thought_core.schemas.message import Message, ConversationHistory
+from echo_thought_core.schemas.session import (
     SessionState,
     CompactionResult,
     CompressionTier,
 )
-from session_control.accounting.counter import TokenCounter
-from session_control.accounting.budget import TokenBudget
-from session_control.compression.sacred import SacredManager
-from session_control.compression.micro_pruning import MicroPruner
-from session_control.compression.rolling_summary import RollingSummarizer
-from session_control.compression.full_compaction import FullCompactor
-from session_control.compression.emergency import EmergencyCompactor
-from session_control.backends.base import AbstractBackend
+from echo_thought_core.accounting.counter import TokenCounter
+from echo_thought_core.accounting.budget import TokenBudget
+from echo_thought_core.compression.sacred import SacredManager
+from echo_thought_core.compression.micro_pruning import MicroPruner
+from echo_thought_core.compression.rolling_summary import RollingSummarizer
+from echo_thought_core.compression.full_compaction import FullCompactor
+from echo_thought_core.compression.emergency import EmergencyCompactor
+from echo_thought_core.backends.base import AbstractBackend
 
 
 class ContextManager:

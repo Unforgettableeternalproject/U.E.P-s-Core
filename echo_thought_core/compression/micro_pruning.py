@@ -20,8 +20,8 @@ from __future__ import annotations
 import logging
 from typing import List, Tuple, Optional
 
-from session_control.schemas.message import Message
-from session_control.compression.tool_pairs import PRUNED_TOOL_PLACEHOLDER
+from echo_thought_core.schemas.message import Message
+from echo_thought_core.compression.tool_pairs import PRUNED_TOOL_PLACEHOLDER
 
 logger = logging.getLogger(__name__)
 

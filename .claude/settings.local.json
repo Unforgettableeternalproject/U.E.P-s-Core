@@ -16,7 +16,10 @@
       "mcp__open-notebook__create_note",
       "Bash(git merge *)",
       "Bash(git stash *)",
-      "Bash(git commit -m 'feat: Rich CLI interactive test interface \\(Entry.py\\) *)"
+      "Bash(git commit -m 'feat: Rich CLI interactive test interface \\(Entry.py\\) *)",
+      "mcp__open-notebook__update_note",
+      "Bash(git mv *)",
+      "Bash(git rm *)"
     ]
   }
 }

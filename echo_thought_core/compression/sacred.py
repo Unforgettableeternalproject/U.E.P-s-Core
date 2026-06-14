@@ -13,9 +13,9 @@ Sacred Content Manager — 神聖段落保護
 """
 
 from typing import List, Optional
-from session_control.schemas.session import SacredContent
-from session_control.schemas.config import PersonaContext
-from session_control.schemas.message import Message
+from echo_thought_core.schemas.session import SacredContent
+from echo_thought_core.schemas.config import PersonaContext
+from echo_thought_core.schemas.message import Message
 
 
 class SacredManager:

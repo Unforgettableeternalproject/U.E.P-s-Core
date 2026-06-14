@@ -10,8 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from session_control import CompactionConfig, ContextManager, PersonaContext
-from session_control.schemas.session import CompressionTier
+from echo_thought_core import CompactionConfig, ContextManager, PersonaContext
+from echo_thought_core.schemas.session import CompressionTier
 
 # 避免 Entry.py 在 import 時因為 Rich 不在 test 環境而失敗
 # U.E.P Core 環境有 Rich，這裡只做防禦性處理

@@ -7,17 +7,17 @@ Backend Factory — 根據設定建立對應的後端實例，或一次建立完
 """
 
 from typing import Optional, Dict, Any
-from session_control.backends.base import AbstractBackend
+from echo_thought_core.backends.base import AbstractBackend
 
 
 def create_backend(
-    backend_type: str = "anthropic",
+    backend_type: str = "gemini",
     config: Optional[Dict[str, Any]] = None,
 ) -> AbstractBackend:
     """根據後端類型建立對應的實例
 
     Args:
-        backend_type: "anthropic" | "openai" | "gemini" | "local"
+        backend_type: "gemini" | "local"
         config: 後端特定設定
 
     Returns:
@@ -25,27 +25,8 @@ def create_backend(
     """
     config = config or {}
 
-    if backend_type == "anthropic":
-        from session_control.backends.anthropic import AnthropicBackend
-
-        return AnthropicBackend(
-            api_key=config.get("api_key"),
-            model=config.get("model", "claude-sonnet-4-6"),
-            compaction_model=config.get("compaction_model", "claude-haiku-4-5"),
-            server_side_compaction=config.get("compaction_enabled", False),
-        )
-
-    elif backend_type == "openai":
-        from session_control.backends.openai import OpenAIBackend
-
-        return OpenAIBackend(
-            api_key=config.get("api_key"),
-            model=config.get("model", "gpt-4o"),
-            summary_model=config.get("summary_model", "gpt-4o-mini"),
-        )
-
-    elif backend_type == "gemini":
-        from session_control.backends.gemini import GeminiBackend
+    if backend_type == "gemini":
+        from echo_thought_core.backends.gemini import GeminiBackend
 
         return GeminiBackend(config=config)
 
@@ -84,28 +65,28 @@ def create_context_manager(
         完整串接的 ContextManager 實例
 
     Example:
-        >>> from session_control.backends.factory import create_context_manager
+        >>> from echo_thought_core.backends.factory import create_context_manager
         >>> manager = create_context_manager(
         ...     backend_config={"model": "gemini-2.5-flash-lite"},
         ...     persona=PersonaContext(name="U.E.P"),
         ... )
         >>> manager.add_message("user", "Hello!")
     """
-    from session_control.context_manager import ContextManager
-    from session_control.schemas.config import CompactionConfig, PersonaContext
+    from echo_thought_core.context_manager import ContextManager
+    from echo_thought_core.schemas.config import CompactionConfig, PersonaContext
 
     backend_config = backend_config or {}
 
     # Step 1: 建立 Backend
     if backend_type == "gemini":
-        from session_control.backends.gemini import GeminiBackend
+        from echo_thought_core.backends.gemini import GeminiBackend
 
         # 先建立不帶 CacheManager 的 Backend（需要先取得 client）
         backend = GeminiBackend(config=backend_config)
 
         # Step 2: 建立 CacheManager（可選），共享 Backend 的 Gemini client
         if cache_config is not None:
-            from session_control.cache.local_cache import CacheManager
+            from echo_thought_core.cache.local_cache import CacheManager
 
             # 共享 Gemini client，避免重複建立連線
             shared_client = backend._get_client()

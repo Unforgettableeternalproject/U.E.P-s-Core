@@ -1,17 +1,17 @@
 """
-Test fixtures for Session Control
+Test fixtures for Echo Thought Core
 """
 
 import pytest
-from session_control import ContextManager, CompactionConfig, PersonaContext
+from echo_thought_core import ContextManager, CompactionConfig, PersonaContext
 
 
 @pytest.fixture
 def config():
     """基本測試設定"""
     return CompactionConfig(
-        backend="anthropic",
-        model="claude-sonnet-4-6",
+        backend="gemini",
+        model="gemini-2.5-flash-lite",
         context_window_size=10000,  # 小 window 方便測試
         thresholds={
             "micro_prune": 0.60,

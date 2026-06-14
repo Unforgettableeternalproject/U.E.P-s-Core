@@ -15,7 +15,7 @@ from typing import Any, Dict, Optional
 
 import yaml
 
-from session_control.schemas.config import PersonaContext
+from echo_thought_core.schemas.config import PersonaContext
 
 logger = logging.getLogger(__name__)
 

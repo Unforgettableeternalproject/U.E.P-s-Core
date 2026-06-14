@@ -12,8 +12,8 @@ Layer 4: Emergency — 緊急截斷
 """
 
 from typing import List, Tuple, Optional
-from session_control.schemas.message import Message
-from session_control.schemas.session import SacredContent
+from echo_thought_core.schemas.message import Message
+from echo_thought_core.schemas.session import SacredContent
 
 
 class EmergencyCompactor:

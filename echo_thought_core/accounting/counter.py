@@ -10,7 +10,7 @@ from enum import Enum
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 
-from session_control.schemas.message import Message
+from echo_thought_core.schemas.message import Message
 
 logger = logging.getLogger(__name__)
 

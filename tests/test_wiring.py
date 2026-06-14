@@ -15,23 +15,23 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from session_control import (
+from echo_thought_core import (
     CompactionConfig,
     ContextManager,
     Message,
     PersonaContext,
 )
-from session_control.backends.base import AbstractBackend
-from session_control.backends.factory import create_backend, create_context_manager
-from session_control.cache.local_cache import CacheManager
-from session_control.compression.rolling_summary import RollingSummarizer
-from session_control.compression.full_compaction import FullCompactor
-from session_control.persona import (
+from echo_thought_core.backends.base import AbstractBackend
+from echo_thought_core.backends.factory import create_backend, create_context_manager
+from echo_thought_core.cache.local_cache import CacheManager
+from echo_thought_core.compression.rolling_summary import RollingSummarizer
+from echo_thought_core.compression.full_compaction import FullCompactor
+from echo_thought_core.persona import (
     build_persona_from_config,
     build_system_instruction,
     load_llm_config,
 )
-from session_control.schemas.session import CompressionTier, SacredContent
+from echo_thought_core.schemas.session import CompressionTier, SacredContent
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -42,7 +42,7 @@ from session_control.schemas.session import CompressionTier, SacredContent
 class TestBackendFactory:
     """BackendFactory 的 GeminiBackend 構造修復"""
 
-    @patch("session_control.backends.gemini.genai")
+    @patch("echo_thought_core.backends.gemini.genai")
     def test_create_gemini_backend_no_type_error(self, mock_genai):
         """T-01: create_backend("gemini") 不再拋 TypeError"""
         backend = create_backend("gemini", {"model": "gemini-2.5-flash-lite"})
@@ -52,7 +52,7 @@ class TestBackendFactory:
         assert hasattr(backend, "compact")
         assert backend.model_name == "gemini-2.5-flash-lite"
 
-    @patch("session_control.backends.gemini.genai")
+    @patch("echo_thought_core.backends.gemini.genai")
     def test_create_gemini_backend_with_config(self, mock_genai):
         """create_backend 正確傳遞 config dict"""
         backend = create_backend("gemini", {
@@ -99,10 +99,10 @@ class TestCacheManagerClientInjection:
 class TestGeminiCacheIntegration:
     """GeminiBackend 自動查詢 CacheManager"""
 
-    @patch("session_control.backends.gemini.genai")
+    @patch("echo_thought_core.backends.gemini.genai")
     def test_query_auto_cache_lookup(self, mock_genai):
         """T-05: query() 在有 CacheManager 時自動查詢快取"""
-        from session_control.backends.gemini import GeminiBackend
+        from echo_thought_core.backends.gemini import GeminiBackend
 
         mock_cm = MagicMock(spec=CacheManager)
         mock_cm.caches = {"uep:persona:v1": MagicMock()}
@@ -114,10 +114,10 @@ class TestGeminiCacheIntegration:
         )
         assert backend._cache_manager is mock_cm
 
-    @patch("session_control.backends.gemini.genai")
+    @patch("echo_thought_core.backends.gemini.genai")
     def test_query_without_cache_manager(self, mock_genai):
         """不傳 CacheManager 時行為不變"""
-        from session_control.backends.gemini import GeminiBackend
+        from echo_thought_core.backends.gemini import GeminiBackend
 
         backend = GeminiBackend(config={"model": "gemini-2.5-flash-lite"})
         assert backend._cache_manager is None
@@ -131,7 +131,7 @@ class TestGeminiCacheIntegration:
 class TestCreateContextManager:
     """高層級 factory：create_context_manager()"""
 
-    @patch("session_control.backends.gemini.genai")
+    @patch("echo_thought_core.backends.gemini.genai")
     def test_basic_creation(self, mock_genai):
         """T-03: 基本建立帶 backend 的 ContextManager"""
         mgr = create_context_manager(
@@ -141,7 +141,7 @@ class TestCreateContextManager:
         assert mgr._backend is not None
         assert mgr._backend.model_name == "gemini-2.5-flash-lite"
 
-    @patch("session_control.backends.gemini.genai")
+    @patch("echo_thought_core.backends.gemini.genai")
     def test_with_persona(self, mock_genai):
         """帶 persona 建立"""
         persona = PersonaContext(
@@ -155,7 +155,7 @@ class TestCreateContextManager:
         assert mgr.persona is not None
         assert mgr.persona.name == "U.E.P"
 
-    @patch("session_control.backends.gemini.genai")
+    @patch("echo_thought_core.backends.gemini.genai")
     def test_with_cache_manager(self, mock_genai):
         """T-06: 帶 CacheManager 建立，共享 client"""
         mock_genai.Client.return_value = MagicMock()
@@ -169,7 +169,7 @@ class TestCreateContextManager:
         # 驗證共享 client
         assert mgr._backend._cache_manager.client is mgr._backend._get_client()
 
-    @patch("session_control.backends.gemini.genai")
+    @patch("echo_thought_core.backends.gemini.genai")
     def test_with_compaction_config(self, mock_genai):
         """自訂壓縮設定"""
         custom_config = CompactionConfig(
@@ -350,7 +350,7 @@ class TestPromptCachingScope:
 
         此測試僅作為文件說明存在，確認模組可正常 import。
         """
-        from session_control.prompt.caching import (
+        from echo_thought_core.prompt.caching import (
             PromptCacheConfig,
             add_cache_control,
             mark_cacheable_messages,

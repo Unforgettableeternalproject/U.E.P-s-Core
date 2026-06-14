@@ -2,7 +2,7 @@
 Schema 定義 — 統一匯出入口
 
 使用方式：
-    from session_control.schemas import Message, LLMInput, SessionState, CompactionConfig
+    from echo_thought_core.schemas import Message, LLMInput, SessionState, CompactionConfig
 """
 
 # 訊息相關

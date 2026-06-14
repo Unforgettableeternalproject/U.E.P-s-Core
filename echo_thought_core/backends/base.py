@@ -7,8 +7,8 @@ Abstract Backend — 多後端的統一介面
 
 from abc import ABC, abstractmethod
 from typing import List, Optional, Dict, Any
-from session_control.schemas.message import Message
-from session_control.schemas.session import SacredContent
+from echo_thought_core.schemas.message import Message
+from echo_thought_core.schemas.session import SacredContent
 
 
 class AbstractBackend(ABC):

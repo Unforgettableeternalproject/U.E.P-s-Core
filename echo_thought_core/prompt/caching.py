@@ -7,7 +7,7 @@ cache_control 標記，大幅降低重複 token 的 API 費用。
 
 從 Destiny-Weavers (DW) 的 prompt_caching.py 遷入並改造：
 - CacheConfig → PromptCacheConfig（避免與 cache/local_cache.py 混淆）
-- 支援 session_control.schemas.message.Message 型別與 raw dict 雙路徑
+- 支援 echo_thought_core.schemas.message.Message 型別與 raw dict 雙路徑
 - 使用標準 logging 模組
 - 更新至 2025/2026 年最新 Claude 定價
 
@@ -23,7 +23,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 
-from session_control.schemas.message import Message
+from echo_thought_core.schemas.message import Message
 
 logger = logging.getLogger(__name__)
 

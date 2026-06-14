@@ -8,7 +8,7 @@ Token Budget — 預算管理與閾值判斷
 import logging
 from typing import Dict, Optional, Tuple
 
-from session_control.schemas.session import CompressionTier
+from echo_thought_core.schemas.session import CompressionTier
 
 logger = logging.getLogger(__name__)
 

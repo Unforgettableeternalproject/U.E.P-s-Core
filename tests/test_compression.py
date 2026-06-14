@@ -8,21 +8,21 @@
 from __future__ import annotations
 
 import pytest
-from session_control.schemas.message import Message
-from session_control.compression.tool_pairs import (
+from echo_thought_core.schemas.message import Message
+from echo_thought_core.compression.tool_pairs import (
     PRUNED_TOOL_PLACEHOLDER,
     align_boundary_forward,
     align_boundary_backward,
     sanitize_tool_pairs,
     find_last_complete_tool_group_end,
 )
-from session_control.compression.micro_pruning import MicroPruner
-from session_control.compression.rolling_summary import (
+from echo_thought_core.compression.micro_pruning import MicroPruner
+from echo_thought_core.compression.rolling_summary import (
     SUMMARY_PROMPT,
     _compute_summary_budget,
     _serialize_for_summary,
 )
-from session_control.compression.full_compaction import (
+from echo_thought_core.compression.full_compaction import (
     COMPACTION_PROMPT,
     _find_tail_cut_by_tokens,
 )

@@ -9,8 +9,8 @@ add_tools_cache_control、estimate_cache_savings、CacheStats。
 from __future__ import annotations
 
 import pytest
-from session_control.schemas.message import Message
-from session_control.prompt.caching import (
+from echo_thought_core.schemas.message import Message
+from echo_thought_core.prompt.caching import (
     PromptCacheConfig,
     add_cache_control,
     add_tools_cache_control,

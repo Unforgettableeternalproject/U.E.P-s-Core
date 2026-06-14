@@ -3,10 +3,10 @@ Token Accounting 測試
 """
 
 import pytest
-from session_control.accounting.counter import TokenCounter
-from session_control.accounting.budget import TokenBudget
-from session_control.schemas.message import Message
-from session_control.schemas.session import CompressionTier
+from echo_thought_core.accounting.counter import TokenCounter
+from echo_thought_core.accounting.budget import TokenBudget
+from echo_thought_core.schemas.message import Message
+from echo_thought_core.schemas.session import CompressionTier
 
 
 class TestTokenCounter:
@@ -90,7 +90,7 @@ class TestTokenBudget:
 # 以下為新增測試（針對 counter.py 與 budget.py 的新增功能）
 # ─────────────────────────────────────────────────────────────────────────────
 
-from session_control.accounting.counter import (
+from echo_thought_core.accounting.counter import (
     ModelFamily,
     ModelInfo,
     MODEL_DATABASE,
@@ -103,7 +103,7 @@ from session_control.accounting.counter import (
     MESSAGE_OVERHEAD_TOKENS,
     CONVERSATION_BASE_TOKENS,
 )
-from session_control.accounting.budget import (
+from echo_thought_core.accounting.budget import (
     calculate_context_threshold,
     calculate_tail_budget,
     calculate_summary_budget,

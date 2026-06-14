@@ -28,8 +28,8 @@ from enum import Enum
 
 if TYPE_CHECKING:
     # LLMOutput 在本模組中僅用於型別標注
-    # 若 session_control 日後有對應 schema，請在此替換導入路徑
-    # from session_control.schemas.session import LLMOutput
+    # 若 echo_thought_core 日後有對應 schema，請在此替換導入路徑
+    # from echo_thought_core.schemas.session import LLMOutput
     pass
 
 logger = logging.getLogger(__name__)

@@ -88,6 +88,24 @@ class TTSInteractiveSession:
         """回傳 LoRA 狀態。"""
         return self.backend.get_lora_status()
 
+    # ── Poise 呼吸法控制 ──
+
+    def get_poise_config(self) -> dict:
+        """回傳 Poise 設定。"""
+        return self.backend.get_poise_config()
+
+    def set_poise_enabled(self, enabled: bool) -> None:
+        """啟用/停用 Poise 系統。"""
+        self.backend.set_poise_enabled(enabled)
+
+    def set_poise_potency(self, potency: float) -> None:
+        """設定 Poise 強度 (0.0–1.0)。"""
+        self.backend.set_poise_potency(potency)
+
+    def set_poise_count(self, count: float) -> None:
+        """設定 Poise 觸發頻率。"""
+        self.backend.set_poise_count(count)
+
     def load(self) -> None:
         if self._loaded:
             return

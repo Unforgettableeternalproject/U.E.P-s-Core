@@ -162,6 +162,25 @@ def render_language_panel(session: TTSInteractiveSession) -> Panel:
     return Panel(table, title="[bold]🌐 Language[/]", border_style="blue", width=50)
 
 
+def render_poise_panel(session: TTSInteractiveSession) -> Panel:
+    """渲染 Poise 呼吸法面板"""
+    cfg = session.get_poise_config()
+
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("key", style="dim")
+    table.add_column("value", style="bold")
+
+    enabled = cfg.get("enabled", False)
+    table.add_row("Enabled", Text("ON" if enabled else "OFF", style="green" if enabled else "dim"))
+    table.add_row("Potency", f"[cyan]{cfg.get('potency', 0):.2f}[/]")
+    table.add_row("Count", f"[cyan]{cfg.get('count', 0):.1f}[/] [dim](every N segments)[/]")
+    table.add_row("Count Jitter", f"[dim]{cfg.get('count_jitter', 0):.2f}[/]")
+    table.add_row("Min Segments", f"[dim]{cfg.get('min_segments_to_trigger', 3)}[/]")
+    table.add_row("Emotion Correction", "[green]on[/]" if cfg.get("emotion_correction_enabled", True) else "[dim]off[/]")
+
+    return Panel(table, title="[bold]🫁 Poise (Breathing)[/]", border_style="green", width=50)
+
+
 def render_profile_panel(report: ProfileReport) -> Panel:
     """將 ProfileReport 渲染為 Rich 面板"""
     s = report.synthesis
@@ -418,6 +437,54 @@ def _cmd_lora(session: TTSInteractiveSession, args: list[str]) -> None:
     console.print("  [dim]Usage: lora [on|off|status|scale <0-1>|<0-1>][/]")
 
 
+def _cmd_poise(session: TTSInteractiveSession, args: list[str]) -> None:
+    """Poise 呼吸法控制"""
+    if not args:
+        # 無參數：顯示狀態
+        console.print(render_poise_panel(session))
+        return
+
+    subcmd = args[0].lower()
+
+    if subcmd == "status":
+        console.print(render_poise_panel(session))
+        return
+
+    if subcmd == "on":
+        session.set_poise_enabled(True)
+        console.print("  [green]✓[/] 🫁 Poise [green]ON[/]")
+        return
+
+    if subcmd == "off":
+        session.set_poise_enabled(False)
+        console.print("  [green]✓[/] 🫁 Poise [dim]OFF[/]")
+        return
+
+    if subcmd in ("potency", "pot", "p") and len(args) > 1:
+        try:
+            value = float(args[1])
+            session.set_poise_potency(value)
+            console.print(f"  [green]✓[/] 🫁 Potency set to [cyan]{value:.2f}[/]")
+        except ValueError:
+            console.print(f"  [yellow]Invalid potency: {args[1]}[/]")
+        return
+
+    if subcmd in ("count", "cnt", "c") and len(args) > 1:
+        try:
+            value = float(args[1])
+            session.set_poise_count(value)
+            console.print(f"  [green]✓[/] 🫁 Count set to [cyan]{value:.1f}[/]")
+        except ValueError:
+            console.print(f"  [yellow]Invalid count: {args[1]}[/]")
+        return
+
+    console.print(
+        "  [dim]Usage: poise [on|off|status|potency <0-1>|count <N>][/]\n"
+        "  [dim]  potency — rest intensity (0=silence only, 1=full action)[/]\n"
+        "  [dim]  count   — trigger every N segments (min 2)[/]"
+    )
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 解析工具
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -532,12 +599,13 @@ class EchoTTSCLI:
         """顯示主選單"""
         commands = [
             ("say <text>", "🔊 Generate and play (streaming)", "green"),
-            ("save <text>", "💾 Generate and save to file", "green"),
+            ("save [--output f] <text>", "💾 Generate and save (auto-name or specified)", "green"),
             ("profile <text>", "⏱  Synthesis with timing report", "green"),
             ("", "", ""),
             ("emotion", "🎭 Show/set emotion preset or 8D vector", "magenta"),
             ("language", "🌐 Show/set synthesis language", "blue"),
             ("lora", "🧬 Toggle/configure LoRA adapter", "yellow"),
+            ("poise", "🫁 Poise breathing system control", "green"),
             ("", "", ""),
             ("status", "📊 Engine status dashboard", "cyan"),
             ("load", "🔧 Load TTS engine", "blue"),
@@ -574,6 +642,10 @@ class EchoTTSCLI:
         lora_panel = render_lora_panel(self.session)
         lang_panel = render_language_panel(self.session)
         console.print(Columns([lora_panel, lang_panel], expand=True))
+
+        # 第三行：Poise
+        poise_panel = render_poise_panel(self.session)
+        console.print(poise_panel)
 
     def run(self):
         """主迴圈"""
@@ -626,6 +698,9 @@ class EchoTTSCLI:
 
                     case "lora":
                         _cmd_lora(self.session, args)
+
+                    case "poise":
+                        _cmd_poise(self.session, args)
 
                     case "status" | "dashboard" | "d":
                         self.show_dashboard()

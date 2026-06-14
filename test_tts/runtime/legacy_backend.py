@@ -165,6 +165,31 @@ class LegacyIndexTTS2Backend:
             return {"active": False, "scale": 0.0, "path": None, "delta_keys": 0}
         return self.engine.get_lora_status()
 
+    # ── Poise 呼吸法控制 ──
+
+    def get_poise_config(self) -> dict:
+        """回傳 Poise 設定（dict 格式）。"""
+        if self.engine is None:
+            return {"enabled": False, "potency": 0.0, "count": 0.0}
+        cfg = self.engine.poise_config
+        import dataclasses
+        return dataclasses.asdict(cfg)
+
+    def set_poise_enabled(self, enabled: bool) -> None:
+        """啟用/停用 Poise 系統。"""
+        self.load()
+        self.engine.poise_config.enabled = enabled
+
+    def set_poise_potency(self, potency: float) -> None:
+        """設定 Poise 強度 (0.0–1.0)。"""
+        self.load()
+        self.engine.poise_config.potency = max(0.0, min(1.0, potency))
+
+    def set_poise_count(self, count: float) -> None:
+        """設定 Poise 觸發頻率（每 N 段觸發一次）。"""
+        self.load()
+        self.engine.poise_config.count = max(2.0, count)
+
     def unload(self) -> None:
         self.engine = None
         self.loaded = False

@@ -42,6 +42,7 @@ class GateDecision:
 
 # REVISE 前綴（對齊 OpenSoul）
 _REVISE_PREFIX = "⚠️ *（以下回覆信心略低，請自行判斷）*\n\n"
+_SUPPRESS_FALLBACK = "抱歉，我目前無法產生足夠可靠的回覆，請稍後再試。"
 
 
 class SubconsciousInhibitor:
@@ -124,10 +125,10 @@ class SubconsciousInhibitor:
 
             return GateDecision(
                 action=InhibitionAction.SUPPRESS,
-                text=response_text,
+                text=response_text if should_retry else _SUPPRESS_FALLBACK,
                 reason=(
                     f"品質嚴重不足 ({score:.2f} < {revise_threshold:.2f})，"
-                    f"{'觸發重試' if should_retry else '重試次數耗盡，強制輸出'}"
+                    f"{'觸發重試' if should_retry else '重試次數耗盡，抑制原始回覆'}"
                 ),
                 should_retry=should_retry,
             )

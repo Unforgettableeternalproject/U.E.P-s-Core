@@ -100,6 +100,10 @@ class ResponseVerifier:
         # 動態門檻
         threshold = self._neurochem.verification_threshold
 
+        # 空回覆不能靠其他維度的預設分數通過品質閘門。
+        if quality == 0.0:
+            score = min(score, max(0.0, threshold - 0.01))
+
         result = VerificationResult(
             score=score,
             threshold=threshold,

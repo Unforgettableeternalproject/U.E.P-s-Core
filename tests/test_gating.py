@@ -17,7 +17,6 @@ from echo_memory.affect.verifier import ResponseVerifier, VerificationResult
 from echo_memory.affect.inhibitor import (
     SubconsciousInhibitor,
     InhibitionAction,
-    GateDecision,
 )
 from echo_memory.affect.judge import JudgeAgent
 from echo_memory.neurochem.state import NeurochemState
@@ -38,11 +37,9 @@ class TestResponseVerifier:
         nc = NeurochemState(serotonin=0.5)
         v = ResponseVerifier(nc)
         result = v.verify("")
-        # quality=0 但其他維度仍有分（consistency=0.7, rules=1.0, knowledge=1.0）
-        # 重點是 quality 維度為 0，整體分數比正常回覆低
         assert result.details["quality"] == 0.0
-        normal = v.verify("這是一個正常的完整回覆。")
-        assert result.score < normal.score
+        assert result.passed is False
+        assert result.score < result.threshold
 
     def test_short_response_low_quality(self):
         nc = NeurochemState(serotonin=0.5)
@@ -164,6 +161,8 @@ class TestSubconsciousInhibitor:
         decision = inhibitor.gate("差回覆", vr, attempt=1)
         assert decision.action == InhibitionAction.SUPPRESS
         assert decision.should_retry is False  # 已達重試上限
+        assert decision.text != "差回覆"
+        assert "無法產生足夠可靠" in decision.text
 
     def test_suppress_neurochem_penalty(self):
         nc = NeurochemState(dopamine=0.6, serotonin=0.4)

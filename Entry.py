@@ -28,6 +28,12 @@ from rich import box
 from echo_memory import MemoryEngine
 from echo_memory.config import get_config
 from echo_memory.schemas.memory_context import MemoryContext
+from echo_memory.affect.signals import SalienceSignals, SubconsciousAssessment
+from echo_memory.affect.salience import SalienceEvaluator
+from echo_memory.affect.subconscious import SubconsciousAssessor
+from echo_memory.affect.verifier import ResponseVerifier
+from echo_memory.affect.inhibitor import SubconsciousInhibitor, InhibitionAction
+from echo_memory.affect.judge import JudgeAgent
 from llm_integration.llm_client import LLMClient
 from llm_integration.tools import to_gemini_tools
 from llm_integration.tools.executor import ToolExecutor
@@ -318,13 +324,11 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                 console.print(f"[green]✓ Switched to: {session_id} ({len(target_eps)} episodes loaded)[/]")
                 continue
 
-        # ── 1. 檢索記憶 ──
+        # ── 1. 檢索記憶（使用 neurochem 動態參數）──
         context = MemoryContext()  # 預設空 context，避免 retrieve 失敗時 UnboundLocalError
         try:
             context = engine.retrieve(
                 query=user_input,
-                dopamine=0.5,
-                serotonin=0.5,
                 top_k=10,
                 min_similarity=config.retrieval_min_similarity,
                 exclude_session_id=session_id,
@@ -344,15 +348,37 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                 if proc_count:
                     parts.append(f"{proc_count} procedures")
 
+                nc = engine.neurochem
                 console.print(
-                    f"  [dim]📡 Retrieved: {', '.join(parts)}[/]"
+                    f"  [dim]📡 Retrieved: {', '.join(parts)} "
+                    f"│ DA={nc.dopamine:.2f} 5-HT={nc.serotonin:.2f} [{nc.mode.value}][/]"
                 )
 
         except Exception as e:
             logger.warning(f"Retrieval error: {e}")
             memory_text = ""
 
-        # ── 2. LLM 生成（含可能的 tool-use loop）──
+        # ── 1.5 並行：潛意識評估 + 工具過濾 ──
+        subconscious_assessor = SubconsciousAssessor(llm_fn=engine._llm_fn)
+        judge = JudgeAgent()
+
+        # 潛意識評估（啟發式模式下很快，LLM 模式下可能需要時間）
+        assessment = subconscious_assessor.assess(
+            user_input=user_input,
+            memory_ctx=context if not context.is_empty() else None,
+        )
+
+        # 工具過濾
+        filtered_tools = gemini_tools
+        if tools_enabled and gemini_tools:
+            total_eps = engine.get_stats().get("total_episodes", 0)
+            filtered_tools = judge.filter_tools(
+                context if not context.is_empty() else None,
+                gemini_tools,
+                total_episodes=total_eps,
+            )
+
+        # ── 2. LLM 生成（含品質閘門 + 可能的重試）──
         try:
             if executor:
                 executor.update_context_whitelist(
@@ -360,17 +386,52 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                 )
                 executor.increment_turn()
 
-            with console.status("[cyan]Thinking...[/]", spinner="dots"):
-                response = llm.chat(
-                    message=user_input,
-                    memory_context=memory_text,
-                    tools=gemini_tools,
-                    tool_executor=executor,
-                )
+            # 構建 neurochem 注入段落
+            nc = engine.neurochem
+            neurochem_prompt = (
+                f"\n## Internal State\n"
+                f"Dopamine: {nc.dopamine:.2f} | Serotonin: {nc.serotonin:.2f} | "
+                f"Mode: {nc.mode.value}\n"
+            )
+
+            response = None
+            gate_action = InhibitionAction.PASS
+
+            verifier = ResponseVerifier(nc)
+            inhibitor = SubconsciousInhibitor(nc, max_retries=1)
+
+            for attempt in range(2):  # 最多嘗試 2 次（首次 + 1 重試）
+                with console.status("[cyan]Thinking...[/]", spinner="dots"):
+                    raw_response = llm.chat(
+                        message=user_input,
+                        memory_context=(memory_text + neurochem_prompt) if memory_text else neurochem_prompt,
+                        tools=filtered_tools,
+                        tool_executor=executor,
+                    )
+
+                # 品質閘門
+                verify_result = verifier.verify(raw_response, context if not context.is_empty() else None)
+                gate_decision = inhibitor.gate(raw_response, verify_result, attempt=attempt)
+                gate_action = gate_decision.action
+
+                if gate_decision.should_retry:
+                    console.print(f"  [dim yellow]⚡ {gate_decision.reason}[/]")
+                    continue
+
+                response = gate_decision.text
+                break
+
+            if response is None:
+                response = raw_response  # 防禦性：所有重試都失敗時使用最後一次回覆
 
             # 顯示工具呼叫提示（如果有的話）
             if tools_enabled:
                 _show_tool_usage_hint(llm)
+
+            # 顯示閘門狀態
+            gate_icon = {"pass": "✅", "revise": "⚠️", "suppress": "🚫"}.get(gate_action.value, "")
+            console.print(f"  [dim]{gate_icon} Gate: {gate_action.value.upper()} "
+                         f"(score={verify_result.score:.2f}/{verify_result.threshold:.2f})[/]")
 
             console.print(f"[bold cyan]U[/]  {response}")
 
@@ -379,18 +440,39 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
             logger.exception("LLM generation failed")
             continue
 
-        # ── 3. 存儲情節 ──
+        # ── 3. 存儲情節（使用 SalienceEvaluator 三值輸出）──
         try:
             turn += 1
-            salience = _estimate_salience(user_input, response)
+
+            # 從 SubconsciousAssessment 建立 SalienceSignals
+            signals = SalienceSignals.from_subconscious(
+                assessment,
+                verification_score=verify_result.score if 'verify_result' in dir() else 1.0,
+                error_occurred=gate_action == InhibitionAction.SUPPRESS,
+            )
+
+            # SalienceEvaluator 三值計算
+            evaluator = SalienceEvaluator(engine.neurochem)
+            salience, da_weight, ht_weight = evaluator.evaluate(
+                signals, user_input=user_input, agent_response=response,
+            )
+
+            # 更新 neurochem（基於本輪信號）
+            evaluator.update_neurochem(signals)
+
             episode_id = engine.store_episode(
                 user_input=user_input,
                 agent_response=response,
                 session_id=session_id,
                 salience=salience,
+                da_weight=da_weight,
+                ht_weight=ht_weight,
             )
             sal_indicator = "🔴" if salience >= 0.75 else "🟡" if salience >= 0.5 else "⚪"
-            console.print(f"  [dim]💾 Stored: {episode_id[:12]}… (turn {turn}) {sal_indicator} {salience:.2f}[/]")
+            console.print(
+                f"  [dim]💾 Stored: {episode_id[:12]}… (turn {turn}) "
+                f"{sal_indicator} sal={salience:.2f} da={da_weight:.2f} ht={ht_weight:.2f}[/]"
+            )
 
         except Exception as e:
             logger.warning(f"Store error: {e}")
@@ -518,8 +600,6 @@ def _cmd_retrieve(engine: MemoryEngine, config):
 
     context = engine.retrieve(
         query=query,
-        dopamine=0.5,
-        serotonin=0.5,
         top_k=5,
         min_similarity=config.retrieval_min_similarity,
     )

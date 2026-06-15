@@ -106,6 +106,75 @@ class TestResponseVerifier:
         result = v.verify("正常回覆。")
         assert result.margin == pytest.approx(result.score - result.threshold)
 
+    # ─── Grounded Verification（向量語意比對）───────────────────
+
+    def test_grounded_no_embed_fn_neutral(self):
+        """embed_fn 為 None 時，一致性給中性分數。"""
+        nc = NeurochemState(serotonin=0.5)
+        v = ResponseVerifier(nc, embed_fn=None)
+        from echo_memory.schemas.episode import Episode
+        ctx = MemoryContext(episodes=[Episode(
+            user_input="量子計算", agent_response="量子計算是一種新型計算範式",
+            session_id="s1", content_summary="量子計算",
+        )])
+        result = v.verify("量子計算利用量子位元進行運算", memory_ctx=ctx)
+        assert result.details["consistency"] == 0.7
+
+    def test_grounded_high_similarity(self):
+        """回覆與記憶高度相似時，一致性分數接近 1.0。"""
+        # 使用固定向量模擬高相似度
+        call_count = {"n": 0}
+        def mock_embed(text):
+            call_count["n"] += 1
+            # 所有文本回傳相似向量
+            return [1.0, 0.0, 0.0, 0.0]
+
+        nc = NeurochemState(serotonin=0.5)
+        v = ResponseVerifier(nc, embed_fn=mock_embed)
+        from echo_memory.schemas.episode import Episode
+        ctx = MemoryContext(episodes=[Episode(
+            user_input="測試", agent_response="相關回覆",
+            session_id="s1", content_summary="測試",
+        )])
+        result = v.verify("相關回覆內容", memory_ctx=ctx)
+        # 相同向量 → cosine sim = 1.0 → consistency = 1.0
+        assert result.details["consistency"] == 1.0
+
+    def test_grounded_low_similarity(self):
+        """回覆與記憶低相似度時，一致性分數較低但不嚴重懲罰。"""
+        call_count = {"n": 0}
+        def mock_embed(text):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return [1.0, 0.0, 0.0, 0.0]  # 回覆向量
+            return [0.0, 1.0, 0.0, 0.0]  # 記憶向量（正交）
+
+        nc = NeurochemState(serotonin=0.5)
+        v = ResponseVerifier(nc, embed_fn=mock_embed)
+        from echo_memory.schemas.episode import Episode
+        ctx = MemoryContext(episodes=[Episode(
+            user_input="測試", agent_response="完全不同的內容",
+            session_id="s1", content_summary="測試",
+        )])
+        result = v.verify("毫不相關的回覆", memory_ctx=ctx)
+        # 正交向量 → cosine sim ≈ 0 → consistency ≈ 0.5
+        assert result.details["consistency"] < 0.7
+
+    def test_grounded_embed_failure_degrades(self):
+        """embed_fn 拋異常時降級為中性分數。"""
+        def broken_embed(text):
+            raise RuntimeError("embedding 服務掛了")
+
+        nc = NeurochemState(serotonin=0.5)
+        v = ResponseVerifier(nc, embed_fn=broken_embed)
+        from echo_memory.schemas.episode import Episode
+        ctx = MemoryContext(episodes=[Episode(
+            user_input="測試", agent_response="回覆",
+            session_id="s1", content_summary="測試",
+        )])
+        result = v.verify("某個回覆", memory_ctx=ctx)
+        assert result.details["consistency"] == 0.7
+
 
 # ─── SubconsciousInhibitor ─────────────────────────────────────────
 

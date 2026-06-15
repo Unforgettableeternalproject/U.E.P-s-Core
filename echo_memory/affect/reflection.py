@@ -20,29 +20,47 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from echo_memory.affect.soul_note import SoulNote, SoulNoteManager, DailyReflection
 
 logger = logging.getLogger("echo_memory.affect.reflection")
 
-_REFLECT_PROMPT = """你是一個記憶系統的反思模組。審視以下最近的對話記錄，選擇一個動作。
+_REFLECT_PROMPT = """你是一個記憶系統的反思模組。審視以下最近的對話記錄，選擇一個主動行為，並可選地提出記憶操作。
 
 最近對話：
 {recent_episodes}
 
+已知概念（最多 5 個）：
+{known_concepts}
+
 神經化學狀態：DA={dopamine:.2f}, 5-HT={serotonin:.2f}, 模式={mode}
 
-請以純 JSON 格式回覆：
+請以純 JSON 格式回覆（不要包含 markdown 標記）：
 {{
-  "action": "question" | "browse" | "optimize",
-  "content": "具體內容",
-  "reasoning": "選擇這個動作的原因"
+  "action": "question" | "browse" | "optimize" | "none",
+  "content": "具體內容（若 none 則留空）",
+  "reasoning": "選擇這個動作的原因",
+  "memory_ops": []
 }}
 
-動作說明：
+主動行為說明：
 - question：提出一個基於對話脈絡的深度問題（推動使用者思考）
 - browse：指出需要補充的知識缺口（什麼主題需要更多資訊）
-- optimize：識別重複或可合併的概念（提升記憶品質）"""
+- optimize：識別重複或可合併的概念（提升記憶品質）
+- none：目前不需要任何主動行為
+
+memory_ops 格式（最多 3 個，可為空陣列）：
+[{{"op": "操作類型", "target": "目標 ID 或名稱", "params": {{}}, "reason": "理由"}}]
+
+可用操作：
+- adjust_salience：調整 episode 重要性。target=episode_id, params={{"new_salience": 0.0-1.0}}
+- tag_concept：為概念追加標籤。target=概念名稱, params={{"tags": ["標籤"]}}
+- add_note：寫一則潛意識筆記。target 留空, params={{"content": "筆記內容"}}
+- merge_concepts：合併重複概念。target=主概念名稱, params={{"merge_with": "次概念名稱"}}
+- archive_episode：歸檔不重要的 episode。target=episode_id, params={{}}
+- create_concept：提議新概念。target=概念名稱, params={{"description": "概念描述"}}
+
+注意：不確定時寧可不操作（memory_ops 留空陣列），不要過度干預。"""
 
 _DAILY_SUMMARY_PROMPT = """你是一個潛意識日記系統。以下是今日的記憶片段，請用第一人稱寫一段深度反思（300-600 字）。
 
@@ -59,9 +77,10 @@ _DAILY_SUMMARY_PROMPT = """你是一個潛意識日記系統。以下是今日�
 class ReflectionOutput:
     """反思輸出。"""
 
-    action: str = "question"  # question | browse | optimize
+    action: str = "question"  # question | browse | optimize | none
     content: str = ""
     reasoning: str = ""
+    memory_ops: list[dict] = field(default_factory=list)
 
 
 class ReflectionModule:
@@ -104,6 +123,7 @@ class ReflectionModule:
         dopamine: float = 0.5,
         serotonin: float = 0.5,
         mode: str = "balanced",
+        known_concepts: list[str] | None = None,
     ) -> ReflectionOutput:
         """
         執行反思。
@@ -113,6 +133,7 @@ class ReflectionModule:
             dopamine: 當前 DA
             serotonin: 當前 5-HT
             mode: 當前 neurochem mode
+            known_concepts: 現有概念名稱列表（供 LLM 參考）
 
         Returns:
             ReflectionOutput
@@ -121,7 +142,10 @@ class ReflectionModule:
             return self._heuristic_reflect(recent_summaries)
 
         try:
-            return self._llm_reflect(recent_summaries, dopamine, serotonin, mode)
+            return self._llm_reflect(
+                recent_summaries, dopamine, serotonin, mode,
+                known_concepts or [],
+            )
         except Exception as e:
             logger.warning(f"[ReflectionModule] LLM 反思失敗: {e}")
             return self._heuristic_reflect(recent_summaries)
@@ -132,12 +156,18 @@ class ReflectionModule:
         dopamine: float,
         serotonin: float,
         mode: str,
+        known_concepts: list[str] | None = None,
     ) -> ReflectionOutput:
         """LLM 驅動的反思。"""
         episodes_text = "\n".join(f"- {s[:100]}" for s in summaries[:5])
+        concepts_text = (
+            "\n".join(f"- {c}" for c in (known_concepts or [])[:5])
+            if known_concepts else "（尚無已知概念）"
+        )
 
         prompt = _REFLECT_PROMPT.format(
             recent_episodes=episodes_text,
+            known_concepts=concepts_text,
             dopamine=dopamine,
             serotonin=serotonin,
             mode=mode,
@@ -148,10 +178,15 @@ class ReflectionModule:
 
         try:
             data = json.loads(raw.strip())
+            # 解析 memory_ops（容錯：非 list 時 fallback 為空）
+            raw_ops = data.get("memory_ops", [])
+            memory_ops = raw_ops if isinstance(raw_ops, list) else []
+
             output = ReflectionOutput(
                 action=data.get("action", "question"),
                 content=data.get("content", ""),
                 reasoning=data.get("reasoning", ""),
+                memory_ops=memory_ops,
             )
         except (json.JSONDecodeError, TypeError):
             output = ReflectionOutput(

@@ -18,7 +18,7 @@ from echo_memory.affect.inhibitor import (
     SubconsciousInhibitor,
     InhibitionAction,
 )
-from echo_memory.affect.judge import JudgeAgent
+from echo_memory.affect.judge import JudgeAgent, JudgeRecommendation
 from echo_memory.neurochem.state import NeurochemState
 from echo_memory.schemas.memory_context import MemoryContext
 
@@ -232,3 +232,61 @@ class TestJudgeAgent:
         result = judge.filter_tools(None, self._make_tools(), total_episodes=0)
         names = [t["name"] for t in result]
         assert "force_remember" in names
+
+    # ─── Hybrid LLM 推薦測試 ────────────────────────────────────
+
+    def test_recommend_no_llm_returns_rules(self):
+        """llm_fn 為 None 時，recommend_tool 回退為規則結果。"""
+        judge = JudgeAgent(llm_fn=None)
+        rec = judge.recommend_tool("測試", None, self._make_tools())
+        assert rec.source == "rules"
+        assert rec.recommended_tool == "none"
+        assert rec.confidence == 0.0
+
+    def test_recommend_llm_success(self):
+        """LLM 回傳有效 JSON 時，正確解析推薦。"""
+        def mock_llm(prompt):
+            return '{"recommended_tool": "deep_recall", "reasoning": "需要搜尋", "confidence": 0.8}'
+
+        judge = JudgeAgent(llm_fn=mock_llm)
+        rec = judge.recommend_tool("幫我找之前的對話", None, self._make_tools())
+        assert rec.source == "llm"
+        assert rec.recommended_tool == "deep_recall"
+        assert rec.confidence == 0.8
+
+    def test_recommend_llm_low_confidence(self):
+        """LLM 信心不足時，推薦結果為 none。"""
+        def mock_llm(prompt):
+            return '{"recommended_tool": "deep_recall", "reasoning": "不太確定", "confidence": 0.3}'
+
+        judge = JudgeAgent(llm_fn=mock_llm)
+        rec = judge.recommend_tool("隨便聊聊", None, self._make_tools())
+        assert rec.recommended_tool == "none"
+        assert rec.confidence == 0.3
+
+    def test_recommend_llm_failure_degrades(self):
+        """LLM 呼叫拋異常時，降級為規則結果。"""
+        def mock_llm(prompt):
+            raise RuntimeError("LLM 掛了")
+
+        judge = JudgeAgent(llm_fn=mock_llm)
+        rec = judge.recommend_tool("測試", None, self._make_tools())
+        assert rec.source == "rules"
+        assert rec.recommended_tool == "none"
+
+    def test_recommend_llm_bad_json_degrades(self):
+        """LLM 回傳無效格式時，降級為規則結果。"""
+        def mock_llm(prompt):
+            return "我不知道該怎麼回答"
+
+        judge = JudgeAgent(llm_fn=mock_llm)
+        rec = judge.recommend_tool("測試", None, self._make_tools())
+        assert rec.source == "rules"
+        assert rec.recommended_tool == "none"
+
+    def test_recommend_empty_tools(self):
+        """無可用工具時回傳 none。"""
+        judge = JudgeAgent(llm_fn=lambda p: "不應該被呼叫")
+        rec = judge.recommend_tool("測試", None, [])
+        assert rec.recommended_tool == "none"
+        assert rec.source == "rules"

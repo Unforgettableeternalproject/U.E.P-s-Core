@@ -354,47 +354,23 @@ async def _handle_search_concepts(
     get_engine: Callable,
     args: dict[str, Any],
 ) -> str:
-    """
-    搜尋語義概念。
-
-    使用 episodic 的 embedding 生成查詢向量，再直接搜尋 semantic._concepts。
-    因為 feat/llm-chat-tui 分支的 SemanticMemory 尚未實作向量搜索，
-    此處使用簡單的名稱/描述關鍵字匹配作為回退方案。
-    """
+    """搜尋語義概念（向量搜索）。"""
     query: str = args["query"]
     top_k: int = int(args.get("top_k", 5))
 
     def _sync_search() -> list[tuple[str, str]]:
         engine = _get_engine(get_engine, args)
-        concepts = engine.semantic._concepts
 
-        if not concepts:
+        if engine.semantic.count() == 0:
             return []
 
-        # 嘗試向量搜索（若 semantic 支援的話）
-        if hasattr(engine.semantic, "search_by_vector"):
-            query_embedding = engine.episodic.generate_query_embedding(query)
-            results = engine.semantic.search_by_vector(
-                query_embedding=query_embedding,
-                top_k=top_k,
-                min_similarity=0.2,
-            )
-            return [(c.name, f"{sim:.1%}") for c, sim in results]
-
-        # 回退：關鍵字匹配（大小寫不敏感）
-        query_lower = query.lower()
-        matched = []
-        for name, concept in concepts.items():
-            score = 0
-            if query_lower in name.lower():
-                score += 2
-            if query_lower in concept.description.lower():
-                score += 1
-            if score > 0:
-                matched.append((name, concept.description, score))
-
-        matched.sort(key=lambda x: x[2], reverse=True)
-        return [(name, "關鍵字匹配") for name, _, _ in matched[:top_k]]
+        query_embedding = engine.episodic.generate_query_embedding(query)
+        results = engine.semantic.search_by_vector(
+            query_embedding=query_embedding,
+            top_k=top_k,
+            min_similarity=0.2,
+        )
+        return [(c.name, f"{sim:.1%}") for c, sim in results]
 
     concept_list = await asyncio.to_thread(_sync_search)
     logger.info(f"[MCP Handler] search_concepts 完成，找到 {len(concept_list)} 個概念")

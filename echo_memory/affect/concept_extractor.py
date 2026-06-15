@@ -151,7 +151,12 @@ class ConceptExtractor:
                 )
 
         except Exception as e:
-            logger.debug(f"[ConceptExtractor] 背景提取失敗: {e}")
+            logger.warning(
+                "[ConceptExtractor] 背景提取失敗 (episode=%s): %s",
+                episode.id[:8],
+                e,
+                exc_info=True,
+            )
 
     def _llm_extract(self, episode: Episode) -> list[dict[str, str]]:
         """透過 LLM 提取概念列表。"""
@@ -181,6 +186,10 @@ class ConceptExtractor:
             except json.JSONDecodeError:
                 pass
 
+        logger.warning(
+            "[ConceptExtractor] LLM 回應無法解析為 JSON: %s",
+            raw[:200],
+        )
         return []
 
     def _upsert_with_similarity(

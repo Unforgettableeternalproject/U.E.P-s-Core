@@ -654,9 +654,9 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
             except Exception as e:
                 logger.debug(f"Concept extraction launch error: {e}")
 
-            # 注：entity_triggers 目前不額外動作——entity extraction
-            # 已在 engine.store_episode() 中每輪自動執行。
-            # entity_triggers 的值記錄在 ep_metadata 中供未來使用。
+            # entity_triggers 透過 ep_metadata 傳入 store_episode()，
+            # engine 內部在 salience < 0.4 時跳過 entity extraction，
+            # 但 entity_triggers=True 會強制執行。
 
             # ── 5. 潛意識日記（Soul Note）──
             try:

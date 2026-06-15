@@ -1,0 +1,26 @@
+[
+  {
+    "id": "con_ed822a63a560",
+    "name": "偏好",
+    "description": "舊描述",
+    "concept_type": "entity",
+    "embedding": [
+      1.0,
+      0.0
+    ],
+    "source_episode_ids": [],
+    "confidence": 0.5,
+    "status": "active",
+    "access_count": 0,
+    "created_at": "2026-06-15T08:22:20.691275+00:00",
+    "updated_at": "2026-06-15T08:22:20.695934+00:00",
+    "metadata": {
+      "facts": [],
+      "patch_history": []
+    },
+    "mutation_count": 1,
+    "conflict_count": 0,
+    "last_verified_at": null,
+    "source_diversity": 0
+  }
+]

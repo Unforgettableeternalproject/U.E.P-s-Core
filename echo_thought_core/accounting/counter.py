@@ -430,12 +430,11 @@ class TokenCounter:
                 encoding_name = "cl100k_base"
                 self._tokenizer = tiktoken.get_encoding(encoding_name)
             elif self.backend == "local":
-                # 本地模型使用 transformers tokenizer
-                # 延遲到實際使用時載入
-                pass
+                # Phase 3 計畫：本地模型使用 transformers tokenizer
+                logger.debug("[TokenCounter] local backend：使用 fallback 估算")
             else:
-                # Gemini 等其他後端使用 fallback 估算
-                pass
+                # Gemini 等其他後端無專用 tokenizer
+                logger.debug("[TokenCounter] %s backend：使用 fallback 估算", self.backend)
         except ImportError:
             self._tokenizer = None
 

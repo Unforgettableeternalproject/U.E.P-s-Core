@@ -288,8 +288,8 @@ class GeminiBackend(AbstractBackend):
                 cached_content = self._cache_manager.get_cached_content_for_generation(
                     list(self._cache_manager.caches.keys())
                 )
-            except Exception:
-                logger.debug("[Gemini] CacheManager 查詢失敗，繼續無快取模式")
+            except Exception as e:
+                logger.warning("[Gemini] CacheManager 查詢失敗，繼續無快取模式: %s", e)
 
         client = self._get_client()
 

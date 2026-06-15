@@ -61,7 +61,7 @@ def build_persona_from_config(config: Optional[Dict[str, Any]] = None) -> Person
         name="U.E.P",
         traits=["cheerful", "optimistic", "sociable", "curious", "mischievous"],
         speaking_style="casual, friendly, like a human friend — no emojis, prefers kaomojis",
-        user_preferences={"language": "en"},
+        user_preferences={"language": "zh-TW"},
         custom_instructions=character,
     )
 

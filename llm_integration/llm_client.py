@@ -383,6 +383,57 @@ class LLMClient:
         """清空對話歷史"""
         self._history.clear()
 
+    def undo_last_exchange(self) -> int:
+        """
+        移除最後一輪對話（user prompt + model + 中間 tool calls/responses）。
+
+        用於 SUPPRESS retry：被抑制的回覆不應留在歷史中，
+        否則重試時 LLM 會看到重複的 user message 和髒回覆。
+
+        注意：function response 的 role 也是 "user"，需要區分
+        原始 user text prompt 和 function_response。
+
+        Returns:
+            移除的條目數量
+        """
+        if not self._history:
+            return 0
+
+        # 從末尾往前找到最後一個「真正的 user text prompt」位置
+        # function_response 的 role 也是 "user"，但 parts 裡包含
+        # function_response 物件而非 text
+        last_user_idx = -1
+        for i in range(len(self._history) - 1, -1, -1):
+            content = self._history[i]
+            if getattr(content, "role", "") != "user":
+                continue
+            # 檢查是否為真正的 text user prompt（非 function_response）。
+            # 注意：Google Part 的 function_response 屬性永遠存在（None），
+            # 所以必須檢查值，不能用 hasattr。
+            parts = getattr(content, "parts", [])
+            has_text = any(
+                getattr(p, "text", None) is not None
+                for p in parts
+            ) if parts else False
+            has_fn_response = any(
+                getattr(p, "function_response", None) is not None
+                for p in parts
+            ) if parts else False
+            if has_text and not has_fn_response:
+                last_user_idx = i
+                break
+
+        if last_user_idx < 0:
+            return 0
+
+        # 移除 last_user_idx 及之後的所有條目
+        removed = len(self._history) - last_user_idx
+        del self._history[last_user_idx:]
+        logger.debug(
+            f"[LLM] undo_last_exchange: 移除 {removed} 條歷史"
+        )
+        return removed
+
     def get_history(self) -> list[dict]:
         """
         取得對話歷史副本（轉換為簡化格式供顯示用）。

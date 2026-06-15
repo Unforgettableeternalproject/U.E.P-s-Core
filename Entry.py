@@ -30,9 +30,11 @@ from echo_memory.schemas.memory_context import MemoryContext
 from echo_memory.affect.signals import SalienceSignals, SubconsciousAssessment
 from echo_memory.affect.salience import SalienceEvaluator
 from echo_memory.affect.subconscious import SubconsciousAssessor
+from echo_memory.affect.concept_verifier import ConceptVerifier
+from echo_memory.affect.concept_inhibitor import ConceptInhibitor
 from echo_memory.affect.verifier import ResponseVerifier
-from echo_memory.affect.inhibitor import SubconsciousInhibitor, InhibitionAction
-from echo_memory.affect.judge import JudgeAgent
+from echo_memory.affect.inhibitor import ResponseInhibitor, InhibitionAction
+from echo_memory.affect.judge import StorageJudge
 from echo_memory.affect.concept_extractor import ConceptExtractor
 from echo_memory.affect.soul_note import SoulNote, SoulNoteManager
 from echo_memory.affect.reflection import ReflectionModule
@@ -183,8 +185,16 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
     engine.set_llm_fn(eval_fn)
 
     # ── 情感/潛意識模組初始化（session 級別，複用整個對話）──
+    concept_verifier = ConceptVerifier(
+        llm_fn=eval_fn,
+        embed_fn=engine.episodic.generate_query_embedding,
+    )
+    concept_inhibitor = ConceptInhibitor(
+        semantic=engine.semantic,
+        llm_fn=eval_fn,
+    )
     subconscious_assessor = SubconsciousAssessor(llm_fn=eval_fn)
-    judge = JudgeAgent(llm_fn=eval_fn)
+    judge = StorageJudge(llm_fn=eval_fn)
     soul_notes = SoulNoteManager(engine.storage_path)
     reflection_module = ReflectionModule(
         llm_fn=eval_fn,
@@ -398,8 +408,20 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
             logger.warning(f"Retrieval error: {e}")
             memory_text = ""
 
-        # ── 1.5 並行：潛意識評估 + 工具過濾 ──
-        # （assessor 和 judge 在 run_chat 初始化時已建立，session 級複用）
+        # ── 1.5 概念前驗證 + 潛意識評估 + 工具過濾 ──
+
+        # 概念前驗證：檢查檢索到的概念是否需要 expand/modify/deprecate
+        concept_verification = concept_verifier.verify(
+            user_input=user_input,
+            memory_ctx=context if not context.is_empty() else None,
+        )
+        # 持久化 Concept Health 更新（record_verification 在 verify 內呼叫）
+        if context and context.concepts:
+            engine.semantic._save()
+        if concept_verification.has_changes:
+            console.print(
+                f"  [dim]🔍 {concept_verification.summary()}[/]"
+            )
 
         # 潛意識評估（啟發式模式下很快，LLM 模式下可能需要時間）
         assessment = subconscious_assessor.assess(
@@ -407,7 +429,7 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
             memory_ctx=context if not context.is_empty() else None,
         )
 
-        # 工具過濾
+        # 工具過濾 + 推薦
         filtered_tools = gemini_tools
         if tools_enabled and gemini_tools:
             total_eps = engine.get_stats().get("total_episodes", 0)
@@ -417,6 +439,24 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                 total_episodes=total_eps,
             )
 
+            # StorageJudge 工具推薦（LLM 語意排序）
+            recommendation = judge.recommend_tool(
+                user_input,
+                context if not context.is_empty() else None,
+                filtered_tools,
+            )
+            if recommendation.recommended_tool != "none":
+                # 將推薦工具排到最前面，讓 LLM 更容易看到
+                rec_name = recommendation.recommended_tool
+                filtered_tools = sorted(
+                    filtered_tools,
+                    key=lambda t: t.get("name") != rec_name,
+                )
+                console.print(
+                    f"  [dim]🎯 Tool hint: {rec_name} "
+                    f"({recommendation.confidence:.0%})[/]"
+                )
+
         # ── 2. LLM 生成（含品質閘門 + 可能的重試）──
         try:
             if executor:
@@ -425,21 +465,25 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                 )
                 executor.increment_turn()
 
-            # 構建 neurochem 注入段落
+            # 構建 neurochem + 概念驗證注入段落
             nc = engine.neurochem
             neurochem_prompt = (
                 f"\n## Internal State\n"
                 f"Dopamine: {nc.dopamine:.2f} | Serotonin: {nc.serotonin:.2f} | "
                 f"Mode: {nc.mode.value}\n"
             )
+            # 若有概念變更，注入提示讓 LLM 注意
+            concept_hint = concept_verification.to_context_text()
+            if concept_hint:
+                neurochem_prompt += f"\n{concept_hint}\n"
 
             response = None
             gate_action = InhibitionAction.PASS
 
             # 注入 embed_fn 啟用 Grounded Verification（語意一致性比對）
             embed_fn = engine.episodic.generate_query_embedding
-            verifier = ResponseVerifier(nc, embed_fn=embed_fn)
-            inhibitor = SubconsciousInhibitor(nc, max_retries=1)
+            verifier = ResponseVerifier(nc, embed_fn=embed_fn, llm_fn=eval_fn)
+            inhibitor = ResponseInhibitor(nc, max_retries=1)
 
             for attempt in range(2):  # 最多嘗試 2 次（首次 + 1 重試）
                 with console.status("[cyan]Thinking...[/]", spinner="dots"):
@@ -459,6 +503,8 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                 gate_action = gate_decision.action
 
                 if gate_decision.should_retry:
+                    # SUPPRESS retry：移除被抑制的回覆，避免歷史污染
+                    llm.undo_last_exchange()
                     console.print(f"  [dim yellow]⚡ {gate_decision.reason}[/]")
                     continue
 
@@ -496,14 +542,40 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                 error_occurred=gate_action == InhibitionAction.SUPPRESS,
             )
 
-            # SalienceEvaluator 三值計算
+            # SalienceEvaluator 三值計算（baseline）
             evaluator = SalienceEvaluator(engine.neurochem)
-            salience, da_weight, ht_weight = evaluator.evaluate(
+            baseline_salience, da_weight, ht_weight = evaluator.evaluate(
                 signals, user_input=user_input, agent_response=response,
             )
 
             # 更新 neurochem（基於本輪信號）
             evaluator.update_neurochem(signals)
+
+            # ── 3.2 StorageJudge 存儲決策（後處理）──
+            # Judge 決定「怎麼記住」：salience 微調、concept seeds、
+            # entity/reflection triggers、metadata tags
+            storage_dec = judge.storage_decision(
+                user_input=user_input,
+                agent_response=response,
+                baseline_salience=baseline_salience,
+                assessment=assessment,
+                context=context if not context.is_empty() else None,
+                concept_verification=concept_verification,
+            )
+
+            # 合併 baseline + judge delta → final salience
+            salience = max(0.0, min(1.0, baseline_salience + storage_dec.salience_delta))
+
+            # 收集 episode metadata（包含 judge 決策）
+            ep_metadata: dict = {}
+            if storage_dec.metadata_tags:
+                ep_metadata["judge_tags"] = storage_dec.metadata_tags
+            if storage_dec.force_remember:
+                ep_metadata["force_remember"] = True
+            if storage_dec.entity_triggers:
+                ep_metadata["entity_triggers"] = True
+            if storage_dec.source != "baseline":
+                ep_metadata["judge_source"] = storage_dec.source
 
             episode_id = engine.store_episode(
                 user_input=user_input,
@@ -512,20 +584,79 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                 salience=salience,
                 da_weight=da_weight,
                 ht_weight=ht_weight,
+                **ep_metadata,
             )
+
+            # 顯示存儲資訊
             sal_indicator = "🔴" if salience >= 0.75 else "🟡" if salience >= 0.5 else "⚪"
+            delta_str = ""
+            if storage_dec.salience_delta != 0.0:
+                sign = "+" if storage_dec.salience_delta > 0 else ""
+                delta_str = f" Δ{sign}{storage_dec.salience_delta:.2f}"
             console.print(
                 f"  [dim]💾 Stored: {episode_id[:12]}… (turn {turn}) "
-                f"{sal_indicator} sal={salience:.2f} da={da_weight:.2f} ht={ht_weight:.2f}[/]"
+                f"{sal_indicator} sal={salience:.2f}{delta_str} "
+                f"da={da_weight:.2f} ht={ht_weight:.2f}[/]"
             )
+
+            # 顯示 StorageJudge 語意增補（僅在有增補時）
+            if storage_dec.has_semantic_enrichment:
+                parts = []
+                if storage_dec.concept_seeds:
+                    parts.append(f"{len(storage_dec.concept_seeds)} seeds")
+                if storage_dec.metadata_tags:
+                    parts.append(f"tags={storage_dec.metadata_tags}")
+                if storage_dec.force_remember:
+                    parts.append("force_remember")
+                console.print(
+                    f"  [dim]⚖️ Judge [{storage_dec.source}]: "
+                    f"{', '.join(parts)}[/]"
+                )
+
+            # ── 3.5 概念 Patch 閘門（Inhibitor）──
+            # 根據 Verifier 判定 + LLM 回覆，決定是否對 SemanticMemory 提交變更
+            if concept_verification.has_changes:
+                try:
+                    patch_tx = concept_inhibitor.process(
+                        verification=concept_verification,
+                        user_input=user_input,
+                        llm_response=response,
+                        session_id=session_id,
+                        turn_id=episode_id,
+                    )
+                    applied = len(patch_tx.applied_patches)
+                    held = len(patch_tx.held_patches)
+                    if applied > 0 or held > 0:
+                        parts = []
+                        if applied:
+                            parts.append(f"{applied} applied")
+                        if held:
+                            parts.append(f"{held} held")
+                        console.print(
+                            f"  [dim]🔧 Concept patches: {', '.join(parts)}[/]"
+                        )
+                except Exception as e:
+                    logger.warning(f"Concept inhibitor error: {e}")
 
             # ── 4. 背景概念提取（daemon Thread，不阻塞）──
             try:
                 stored_ep = engine.episodic._episodes.get(episode_id)
                 if stored_ep:
-                    concept_extractor.extract_in_background(stored_ep, salience)
+                    # 傳入 StorageJudge 的 concept_seeds 作為優先提取建議
+                    concept_extractor.extract_in_background(
+                        stored_ep,
+                        salience,
+                        concept_seeds=(
+                            storage_dec.concept_seeds
+                            if storage_dec.concept_seeds else None
+                        ),
+                    )
             except Exception as e:
                 logger.debug(f"Concept extraction launch error: {e}")
+
+            # entity_triggers 透過 ep_metadata 傳入 store_episode()，
+            # engine 內部在 salience < 0.4 時跳過 entity extraction，
+            # 但 entity_triggers=True 會強制執行。
 
             # ── 5. 潛意識日記（Soul Note）──
             try:
@@ -543,8 +674,12 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
             except Exception as e:
                 logger.debug(f"Soul note error: {e}")
 
-            # ── 6. 定時反思（每 N 輪觸發）──
-            if reflection_module.should_reflect(uncertainty=assessment.uncertainty):
+            # ── 6. 定時反思（每 N 輪觸發，或 Judge 強制）──
+            should_reflect = (
+                reflection_module.should_reflect(uncertainty=assessment.uncertainty)
+                or storage_dec.reflection_trigger
+            )
+            if should_reflect:
                 try:
                     recent = engine.episodic.list_episodes(
                         limit=5, offset=0, sort_by="timestamp", ascending=False
@@ -1170,12 +1305,12 @@ class EchoMemoryCLI:
                 # 透過 LLMRouter 注入 llm_fn（EVAL 角色，用於所有記憶系統內部模組）
                 try:
                     self.router = LLMRouter()
-                    engine.set_llm_fn(self.router.get_llm_fn(LLMRole.EVAL))
+                    self.engine.set_llm_fn(self.router.get_llm_fn(LLMRole.EVAL))
                     eval_cfg = self.router.get_role_config(LLMRole.EVAL)
                     console.print(f"[green]✓[/] LLM Router ready — EVAL: {eval_cfg.model}")
                 except Exception as e:
                     # Router 初始化失敗時回退到 LLMClient
-                    engine.set_llm_fn(self.llm.as_llm_fn())
+                    self.engine.set_llm_fn(self.llm.as_llm_fn())
                     console.print(f"[yellow]⚠ Router fallback: {e}[/]")
 
             except Exception as e:

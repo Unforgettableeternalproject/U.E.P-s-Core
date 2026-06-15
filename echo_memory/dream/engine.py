@@ -167,15 +167,23 @@ class DreamEngine:
                 llm_fn=llm_fn,
             )
 
-        # 矛盾偵測器（需要 semantic + llm_fn）
+        # 矛盾偵測器（需要 semantic + llm_fn）+ ConflictLedger
         contradiction_detector = None
         if semantic is not None:
             try:
                 from echo_memory.dream.contradiction import ContradictionDetector
+                from echo_memory.storage.conflict_ledger import ConflictLedger
+
+                # ConflictLedger 與 SemanticMemory 同層持久化
+                conflict_ledger = None
+                if graph and hasattr(graph, 'storage_path') and graph.storage_path:
+                    conflict_ledger = ConflictLedger(graph.storage_path)
+
                 contradiction_detector = ContradictionDetector(
                     semantic=semantic,
                     graph=graph,
                     llm_fn=llm_fn,
+                    conflict_ledger=conflict_ledger,
                 )
             except ImportError:
                 pass

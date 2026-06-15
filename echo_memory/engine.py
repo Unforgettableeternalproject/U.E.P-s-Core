@@ -255,34 +255,41 @@ class MemoryEngine:
             logger.info(f"[MemoryEngine] 存儲情節: {episode_id}")
 
             # ── 實體提取（非關鍵路徑，失敗不影響主寫入）──────────────────
-            try:
-                entities = self.entity_extractor.extract(episode)
-                graph = self.episodic.graph
+            # 低 salience 時跳過以節省資源，除非 entity_triggers=True 強制執行
+            entity_triggers = metadata.get("entity_triggers", False)
+            should_extract = salience >= 0.4 or entity_triggers
+            if should_extract:
+                try:
+                    entities = self.entity_extractor.extract(episode)
+                    graph = self.episodic.graph
 
-                for ent in entities:
-                    # 插入或更新 EntityStore
-                    ent_id = self.entity_store.upsert(ent)
-                    self.entity_store.increment_mention(ent_id, episode_id)
+                    for ent in entities:
+                        ent_id = self.entity_store.upsert(ent)
+                        self.entity_store.increment_mention(ent_id, episode_id)
 
-                    # 在記憶圖中維護 Entity 節點與 MENTIONS 邊
-                    actual_ent = self.entity_store.get(ent_id)
-                    if actual_ent is not None:
-                        if not graph.has_node(ent_id):
-                            graph.add_entity_node(
-                                ent_id,
-                                name=actual_ent.name,
-                                entity_type=actual_ent.entity_type,
-                            )
-                        graph.add_mentions_edge(episode_id, ent_id)
+                        actual_ent = self.entity_store.get(ent_id)
+                        if actual_ent is not None:
+                            if not graph.has_node(ent_id):
+                                graph.add_entity_node(
+                                    ent_id,
+                                    name=actual_ent.name,
+                                    entity_type=actual_ent.entity_type,
+                                )
+                            graph.add_mentions_edge(episode_id, ent_id)
 
-                if entities:
-                    graph.save()
-                    logger.debug(
-                        f"[MemoryEngine] 實體提取完成: "
-                        f"{len(entities)} 個實體 (episode={episode_id[:8]}...)"
-                    )
-            except Exception as exc:
-                logger.warning(f"[MemoryEngine] 實體提取失敗（不影響主寫入）: {exc}")
+                    if entities:
+                        graph.save()
+                        logger.debug(
+                            f"[MemoryEngine] 實體提取完成: "
+                            f"{len(entities)} 個實體 (episode={episode_id[:8]}...)"
+                        )
+                except Exception as exc:
+                    logger.warning(f"[MemoryEngine] 實體提取失敗（不影響主寫入）: {exc}")
+            else:
+                logger.debug(
+                    "[MemoryEngine] 跳過實體提取（salience=%.2f, "
+                    "entity_triggers=%s）", salience, entity_triggers,
+                )
 
         # ── 神經化學衰減 + 持久化 ───────────────────────────────────
         self._neurochem.tick()

@@ -92,7 +92,13 @@ class LLMClient:
     # ──────────────────────────────────────────────
 
     def _ensure_client(self):
-        """延遲初始化 genai.Client"""
+        """
+        延遲初始化 genai.Client。
+
+        認證優先順序：API Key > Vertex AI (Agent Platform)。
+        Gemini 3.x 模型在 Gemini API (AI Studio) 直接可用，
+        Vertex AI / Agent Platform 需要 global endpoint 或額外設定。
+        """
         if self._initialized:
             return
         self._initialized = True
@@ -101,29 +107,28 @@ class LLMClient:
             from google import genai  # noqa: F811
         except ImportError:
             raise ImportError(
-                "google-genai 未安裝。請執行: pip install google-genai\n"
-                "或使用主專案的 Python 環境。"
+                "google-genai 未安裝。請使用主專案 U.E.P-s-Core 的 Python 環境。"
             )
 
+        api_key = os.getenv("GOOGLE_API_KEY")
         gcp_project = os.getenv("GCP_PROJECT_ID")
         gcp_location = os.getenv("GCP_LOCATION", "us-central1")
-        api_key = os.getenv("GOOGLE_API_KEY")
 
-        if gcp_project:
-            # Vertex AI 模式
+        if api_key:
+            # API Key 優先：3.x 模型在 Gemini API (AI Studio) 可用
+            self._client = genai.Client(api_key=api_key)
+            logger.info("[LLM] API Key 模式（Gemini API / AI Studio）")
+        elif gcp_project:
+            # Vertex AI / Agent Platform 備援
             self._client = genai.Client(
                 vertexai=True,
                 project=gcp_project,
                 location=gcp_location,
             )
             logger.info(f"[LLM] Vertex AI 模式 — project={gcp_project}, location={gcp_location}")
-        elif api_key:
-            # API Key 模式
-            self._client = genai.Client(api_key=api_key)
-            logger.info("[LLM] API Key 模式")
         else:
             raise ValueError(
-                "需要設定 GCP_PROJECT_ID（Vertex AI）或 GOOGLE_API_KEY（Gemini API）。"
+                "需要設定 GOOGLE_API_KEY（Gemini API）或 GCP_PROJECT_ID（Vertex AI）。"
                 "請在 .env 檔案中設定。"
             )
 

@@ -14,6 +14,8 @@ Phase 2: 整合 SemanticMemory 概念檢索 + RELATES_TO 展開 + CONTRADICTS pe
 from __future__ import annotations
 
 import logging
+import math
+import time
 from typing import Any
 
 from echo_memory.neurochem.state import NeurochemState, RetrievalParams
@@ -182,8 +184,16 @@ class EcphoryRetrieval:
                         # graph expansion 也要排除當前 session 的 episodes
                         if exclude_session_id and ep.session_id == exclude_session_id:
                             continue
+                        # 圖譜展開的候選也要做語意相似度驗證，
+                        # 避免不相關的 episode 僅靠 PRECEDES 邊被拉入。
+                        ep_sim = self.episodic.similarity_to_query(
+                            query_embedding, ep.id
+                        )
+                        if ep_sim is not None and ep_sim < min_similarity:
+                            continue
                         episodes.append(ep)
-                        similarities[node_id] = weight * 0.8
+                        sim_val = ep_sim if ep_sim is not None else 0.0
+                        similarities[node_id] = max(sim_val, weight * 0.8)
 
         # Step 3: 語義概念檢索
         concepts: list[Concept] = []
@@ -220,8 +230,43 @@ class EcphoryRetrieval:
             except Exception as e:
                 logger.warning(f"[EcphoryRetrieval] 程序搜索失敗（不影響檢索）: {e}")
 
-        # Step 5: 排序 + 截斷
-        episodes.sort(key=lambda ep: similarities.get(ep.id, 0.0), reverse=True)
+        # Step 5: 融合排序 + 截斷
+        # 融合四分量：語意相似度 + 時間衰減 + 顯著性 + 頻率
+        # 權重對齊 OpenSoul 邊緣公式 W = α·Recency + β·Frequency + γ·Salience
+        # 並額外加入向量相似度作為第四分量（OpenSoul 缺少這個）
+        _SIM_WEIGHT = 0.35     # 向量相似度
+        _RECENCY_WEIGHT = 0.25  # 時間衰減
+        _SALIENCE_WEIGHT = 0.25  # 顯著性
+        _FREQ_WEIGHT = 0.15     # 存取頻率
+
+        now_ts = time.time()
+
+        def _fusion_score(ep) -> float:
+            sim = similarities.get(ep.id, 0.0)
+
+            # Recency = exp(-0.01 * hours_ago)（對齊 OpenSoul 公式）
+            hours_ago = (now_ts - ep.timestamp.timestamp()) / 3600.0
+            recency = math.exp(-0.01 * max(0.0, hours_ago))
+
+            salience = getattr(ep, "salience", 0.5)
+
+            # Frequency = log1p(access_count) / log1p(max_reasonable)
+            access = getattr(ep, "access_count", 0)
+            frequency = math.log1p(access) / math.log1p(50)
+
+            return (
+                _SIM_WEIGHT * sim
+                + _RECENCY_WEIGHT * recency
+                + _SALIENCE_WEIGHT * salience
+                + _FREQ_WEIGHT * frequency
+            )
+
+        episodes.sort(key=_fusion_score, reverse=True)
+
+        # similarities dict 保留原始 cosine sim，不被融合分數覆寫。
+        # MemoryContext 消費者（如 Verifier）需要原始語意相似度做判斷，
+        # 若需要融合分數，可在外部自行計算。
+
         final_episodes = episodes[:top_k]
 
         # Step 6: 沿 MENTIONS 邊收集 Entity（若有 EntityStore）

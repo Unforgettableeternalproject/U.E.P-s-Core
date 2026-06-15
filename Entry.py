@@ -22,13 +22,23 @@ from rich.table import Table
 from rich.columns import Columns
 from rich.text import Text
 from rich.prompt import Prompt, Confirm
-from rich.markdown import Markdown
 from rich import box
 
 from echo_memory import MemoryEngine
 from echo_memory.config import get_config
 from echo_memory.schemas.memory_context import MemoryContext
+from echo_memory.affect.signals import SalienceSignals, SubconsciousAssessment
+from echo_memory.affect.salience import SalienceEvaluator
+from echo_memory.affect.subconscious import SubconsciousAssessor
+from echo_memory.affect.verifier import ResponseVerifier
+from echo_memory.affect.inhibitor import SubconsciousInhibitor, InhibitionAction
+from echo_memory.affect.judge import JudgeAgent
+from echo_memory.affect.concept_extractor import ConceptExtractor
+from echo_memory.affect.soul_note import SoulNote, SoulNoteManager
+from echo_memory.affect.reflection import ReflectionModule
+from echo_memory.utils.sanitizer import sanitize_llm_output
 from llm_integration.llm_client import LLMClient
+from llm_integration.router import LLMRouter, LLMRole
 from llm_integration.tools import to_gemini_tools
 from llm_integration.tools.executor import ToolExecutor
 
@@ -162,12 +172,40 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
     gemini_tools = to_gemini_tools() if tools_enabled else None
     executor = ToolExecutor(engine=engine, session_id=session_id) if tools_enabled else None
 
+    # ── LLMRouter 初始化 ──
+    # 本專案只使用 CHAT（LLMClient）和 EVAL（Router）兩個角色。
+    # WORK 角色保留給未來 U.E.P 回聲系統整合，目前不使用。
+    # 詳見 docs/design/llm-client-vs-router.md
+    router = LLMRouter()
+    eval_fn = router.get_llm_fn(LLMRole.EVAL)
+
+    # 同步更新 MemoryEngine 的 llm_fn（Dream Engine 等子模組使用）
+    engine.set_llm_fn(eval_fn)
+
+    # ── 情感/潛意識模組初始化（session 級別，複用整個對話）──
+    subconscious_assessor = SubconsciousAssessor(llm_fn=eval_fn)
+    judge = JudgeAgent(llm_fn=eval_fn)
+    soul_notes = SoulNoteManager(engine.storage_path)
+    reflection_module = ReflectionModule(
+        llm_fn=eval_fn,
+        soul_notes=soul_notes,
+        reflect_interval=10,
+    )
+    concept_extractor = ConceptExtractor(
+        llm_fn=eval_fn,
+        semantic=engine.semantic,
+        graph=engine.episodic.graph,
+        embed_fn=lambda text: engine.episodic._generate_embedding(text),
+    )
+
     def _show_session_banner():
         tools_status = "[green]on[/]" if tools_enabled else "[dim]off[/]"
+        eval_cfg = router.get_role_config(LLMRole.EVAL)
         console.print(Panel(
             "[bold cyan]Echo Memory Chat[/]\n"
             f"Session: [dim]{session_id}[/]\n"
-            f"Model: [dim]{llm.model_name}[/]\n"
+            f"Chat: [dim]{llm.model_name}[/]  "
+            f"Eval: [dim]{eval_cfg.model}[/]\n"
             f"Tools: {tools_status}\n\n"
             "Commands: [dim]/quit /stats /dream /clear /history /tools /session[/]",
             border_style="cyan",
@@ -318,13 +356,19 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                 console.print(f"[green]✓ Switched to: {session_id} ({len(target_eps)} episodes loaded)[/]")
                 continue
 
-        # ── 1. 檢索記憶 ──
+        # ── 防禦性預設值（避免 LLM 錯誤路徑中變數未定義）──
+        from echo_memory.affect.verifier import VerificationResult
+        verify_result = VerificationResult(
+            score=1.0, threshold=0.7, passed=True, details={}
+        )
+        gate_action = InhibitionAction.PASS
+        assessment = SubconsciousAssessment()  # 預設五維度
+
+        # ── 1. 檢索記憶（使用 neurochem 動態參數）──
         context = MemoryContext()  # 預設空 context，避免 retrieve 失敗時 UnboundLocalError
         try:
             context = engine.retrieve(
                 query=user_input,
-                dopamine=0.5,
-                serotonin=0.5,
                 top_k=10,
                 min_similarity=config.retrieval_min_similarity,
                 exclude_session_id=session_id,
@@ -344,15 +388,36 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                 if proc_count:
                     parts.append(f"{proc_count} procedures")
 
+                nc = engine.neurochem
                 console.print(
-                    f"  [dim]📡 Retrieved: {', '.join(parts)}[/]"
+                    f"  [dim]📡 Retrieved: {', '.join(parts)} "
+                    f"│ DA={nc.dopamine:.2f} 5-HT={nc.serotonin:.2f} [{nc.mode.value}][/]"
                 )
 
         except Exception as e:
             logger.warning(f"Retrieval error: {e}")
             memory_text = ""
 
-        # ── 2. LLM 生成（含可能的 tool-use loop）──
+        # ── 1.5 並行：潛意識評估 + 工具過濾 ──
+        # （assessor 和 judge 在 run_chat 初始化時已建立，session 級複用）
+
+        # 潛意識評估（啟發式模式下很快，LLM 模式下可能需要時間）
+        assessment = subconscious_assessor.assess(
+            user_input=user_input,
+            memory_ctx=context if not context.is_empty() else None,
+        )
+
+        # 工具過濾
+        filtered_tools = gemini_tools
+        if tools_enabled and gemini_tools:
+            total_eps = engine.get_stats().get("total_episodes", 0)
+            filtered_tools = judge.filter_tools(
+                context if not context.is_empty() else None,
+                gemini_tools,
+                total_episodes=total_eps,
+            )
+
+        # ── 2. LLM 生成（含品質閘門 + 可能的重試）──
         try:
             if executor:
                 executor.update_context_whitelist(
@@ -360,17 +425,57 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                 )
                 executor.increment_turn()
 
-            with console.status("[cyan]Thinking...[/]", spinner="dots"):
-                response = llm.chat(
-                    message=user_input,
-                    memory_context=memory_text,
-                    tools=gemini_tools,
-                    tool_executor=executor,
-                )
+            # 構建 neurochem 注入段落
+            nc = engine.neurochem
+            neurochem_prompt = (
+                f"\n## Internal State\n"
+                f"Dopamine: {nc.dopamine:.2f} | Serotonin: {nc.serotonin:.2f} | "
+                f"Mode: {nc.mode.value}\n"
+            )
+
+            response = None
+            gate_action = InhibitionAction.PASS
+
+            # 注入 embed_fn 啟用 Grounded Verification（語意一致性比對）
+            embed_fn = engine.episodic.generate_query_embedding
+            verifier = ResponseVerifier(nc, embed_fn=embed_fn)
+            inhibitor = SubconsciousInhibitor(nc, max_retries=1)
+
+            for attempt in range(2):  # 最多嘗試 2 次（首次 + 1 重試）
+                with console.status("[cyan]Thinking...[/]", spinner="dots"):
+                    raw_response = llm.chat(
+                        message=user_input,
+                        memory_context=(memory_text + neurochem_prompt) if memory_text else neurochem_prompt,
+                        tools=filtered_tools,
+                        tool_executor=executor,
+                    )
+
+                # 內容消殺（清除偽造工具標記）
+                raw_response = sanitize_llm_output(raw_response)
+
+                # 品質閘門
+                verify_result = verifier.verify(raw_response, context if not context.is_empty() else None)
+                gate_decision = inhibitor.gate(raw_response, verify_result, attempt=attempt)
+                gate_action = gate_decision.action
+
+                if gate_decision.should_retry:
+                    console.print(f"  [dim yellow]⚡ {gate_decision.reason}[/]")
+                    continue
+
+                response = gate_decision.text
+                break
+
+            if response is None:
+                response = raw_response  # 防禦性：所有重試都失敗時使用最後一次回覆
 
             # 顯示工具呼叫提示（如果有的話）
             if tools_enabled:
                 _show_tool_usage_hint(llm)
+
+            # 顯示閘門狀態
+            gate_icon = {"pass": "✅", "revise": "⚠️", "suppress": "🚫"}.get(gate_action.value, "")
+            console.print(f"  [dim]{gate_icon} Gate: {gate_action.value.upper()} "
+                         f"(score={verify_result.score:.2f}/{verify_result.threshold:.2f})[/]")
 
             console.print(f"[bold cyan]U[/]  {response}")
 
@@ -379,64 +484,85 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
             logger.exception("LLM generation failed")
             continue
 
-        # ── 3. 存儲情節 ──
+        # ── 3. 存儲情節（使用 SalienceEvaluator 三值輸出）──
         try:
             turn += 1
-            salience = _estimate_salience(user_input, response)
+
+            # 從 SubconsciousAssessment 建立 SalienceSignals
+            # verify_result 和 gate_action 在迴圈開頭已設定預設值
+            signals = SalienceSignals.from_subconscious(
+                assessment,
+                verification_score=verify_result.score,
+                error_occurred=gate_action == InhibitionAction.SUPPRESS,
+            )
+
+            # SalienceEvaluator 三值計算
+            evaluator = SalienceEvaluator(engine.neurochem)
+            salience, da_weight, ht_weight = evaluator.evaluate(
+                signals, user_input=user_input, agent_response=response,
+            )
+
+            # 更新 neurochem（基於本輪信號）
+            evaluator.update_neurochem(signals)
+
             episode_id = engine.store_episode(
                 user_input=user_input,
                 agent_response=response,
                 session_id=session_id,
                 salience=salience,
+                da_weight=da_weight,
+                ht_weight=ht_weight,
             )
             sal_indicator = "🔴" if salience >= 0.75 else "🟡" if salience >= 0.5 else "⚪"
-            console.print(f"  [dim]💾 Stored: {episode_id[:12]}… (turn {turn}) {sal_indicator} {salience:.2f}[/]")
+            console.print(
+                f"  [dim]💾 Stored: {episode_id[:12]}… (turn {turn}) "
+                f"{sal_indicator} sal={salience:.2f} da={da_weight:.2f} ht={ht_weight:.2f}[/]"
+            )
+
+            # ── 4. 背景概念提取（daemon Thread，不阻塞）──
+            try:
+                stored_ep = engine.episodic._episodes.get(episode_id)
+                if stored_ep:
+                    concept_extractor.extract_in_background(stored_ep, salience)
+            except Exception as e:
+                logger.debug(f"Concept extraction launch error: {e}")
+
+            # ── 5. 潛意識日記（Soul Note）──
+            try:
+                soul_notes.add_note(SoulNote(
+                    category="reflection",
+                    content=(
+                        f"[tone={assessment.emotional_tone:.2f}] "
+                        f"[novelty={assessment.novelty:.2f}] "
+                        f"[complexity={assessment.complexity:.2f}] "
+                        f"{user_input[:60]}"
+                    ),
+                    metadata={"episode_id": episode_id, "salience": salience},
+                    tags=["auto", "dialogue"],
+                ))
+            except Exception as e:
+                logger.debug(f"Soul note error: {e}")
+
+            # ── 6. 定時反思（每 N 輪觸發）──
+            if reflection_module.should_reflect(uncertainty=assessment.uncertainty):
+                try:
+                    recent = engine.episodic.list_episodes(
+                        limit=5, offset=0, sort_by="timestamp", ascending=False
+                    )
+                    summaries = [ep.content_summary for ep in recent if ep.content_summary]
+                    nc = engine.neurochem
+                    reflection = reflection_module.reflect(
+                        summaries, nc.dopamine, nc.serotonin, nc.mode.value
+                    )
+                    console.print(
+                        f"  [dim magenta]💭 反思 [{reflection.action}]: "
+                        f"{reflection.content[:60]}…[/]"
+                    )
+                except Exception as e:
+                    logger.debug(f"Reflection error: {e}")
 
         except Exception as e:
             logger.warning(f"Store error: {e}")
-
-
-def _estimate_salience(user_input: str, agent_response: str) -> float:
-    """
-    啟發式估算對話的顯著性分數。
-
-    基於對話特徵自動評分，避免所有 episode 都是 0.5。
-    """
-    score = 0.35  # 基準分（一般閒聊）
-    text = (user_input + " " + agent_response).lower()
-
-    # 個人資訊（名字、身份、偏好）→ 高顯著性
-    personal_signals = [
-        "my name", "i am", "i'm", "remember", "don't forget", "important",
-        "i like", "i prefer", "i hate", "i need", "i want", "i work",
-        "我叫", "我是", "記住", "別忘", "我喜歡", "我偏好", "我討厭",
-        "我需要", "我想要", "告訴你", "我的名字", "叫我",
-    ]
-    if any(sig in text for sig in personal_signals):
-        score += 0.25
-
-    # 情感/深度對話 → 中高
-    emotional_signals = [
-        "feel", "love", "hate", "worry", "afraid", "happy", "sad",
-        "thank", "sorry", "miss", "dream", "hope", "wish",
-        "喜歡", "討厭", "擔心", "開心", "難過", "謝謝",
-        "害怕", "感謝", "思念", "希望", "抱歉", "對不起",
-        "高興", "生氣", "煩惱", "興奮", "感動",
-    ]
-    if any(sig in text for sig in emotional_signals):
-        score += 0.15
-
-    # 提問/知識交換 → 中
-    if "?" in user_input or "？" in user_input:
-        score += 0.1
-
-    # 長對話通常更有內容
-    if len(user_input) > 100:
-        score += 0.1
-    if len(agent_response) > 200:
-        score += 0.05
-
-    return min(1.0, round(score, 2))
 
 
 def _show_tool_usage_hint(llm: LLMClient):
@@ -518,8 +644,6 @@ def _cmd_retrieve(engine: MemoryEngine, config):
 
     context = engine.retrieve(
         query=query,
-        dopamine=0.5,
-        serotonin=0.5,
         top_k=5,
         min_similarity=config.retrieval_min_similarity,
     )
@@ -577,8 +701,13 @@ def _cmd_dream(engine: MemoryEngine, llm: LLMClient | None = None):
 
     with console.status("[cyan]Dreaming...[/]", spinner="moon"):
         # 保底注入：若 engine 在 init 時沒拿到 llm_fn（例如 LLM 後來才可用）
-        if llm and not engine._llm_fn:
-            engine.set_llm_fn(llm.as_llm_fn())
+        if not engine._llm_fn:
+            try:
+                router = LLMRouter()
+                engine.set_llm_fn(router.get_llm_fn(LLMRole.EVAL))
+            except Exception:
+                if llm:
+                    engine.set_llm_fn(llm.as_llm_fn())
 
         report = engine.dream(triggered_by="manual")
 
@@ -742,7 +871,7 @@ def _cmd_search(engine: MemoryEngine, config):
     if mode in ("semantic", "both"):
         context = engine.retrieve(
             query=query, dopamine=0.6, serotonin=0.4,
-            top_k=10, min_similarity=0.2,
+            top_k=10, min_similarity=config.retrieval_min_similarity,
         )
         if not context.is_empty():
             for ep in context.episodes:
@@ -825,7 +954,7 @@ def _cmd_edit(engine: MemoryEngine):
         new_summary = Prompt.ask("[cyan]New summary[/]", default=ep.content_summary or "")
         if new_summary:
             if engine.episodic.update_summary(eid, new_summary):
-                console.print(f"[green]✓ Summary updated.[/]")
+                console.print("[green]✓ Summary updated.[/]")
             else:
                 console.print("[red]Episode no longer exists.[/]")
 
@@ -857,7 +986,7 @@ def _cmd_delete(engine: MemoryEngine):
         console.print(f"  [dim]{eid} | {ep.user_input[:50]}…[/]")
         if Confirm.ask("[red]Delete?[/]", default=False):
             engine.episodic.delete_episode(eid)
-            console.print(f"[green]✓ Deleted.[/]")
+            console.print("[green]✓ Deleted.[/]")
 
     elif mode == "session":
         sid = Prompt.ask("[cyan]Session ID[/]")
@@ -1038,8 +1167,16 @@ class EchoMemoryCLI:
                 self.llm = LLMClient()
                 console.print(f"[green]✓[/] LLM ready — {self.llm.model_name}")
 
-                # 注入 llm_fn 到 MemoryEngine，啟用 LLM 級 entity extraction / dream
-                self.engine.set_llm_fn(self.llm.as_llm_fn())
+                # 透過 LLMRouter 注入 llm_fn（EVAL 角色，用於所有記憶系統內部模組）
+                try:
+                    self.router = LLMRouter()
+                    engine.set_llm_fn(self.router.get_llm_fn(LLMRole.EVAL))
+                    eval_cfg = self.router.get_role_config(LLMRole.EVAL)
+                    console.print(f"[green]✓[/] LLM Router ready — EVAL: {eval_cfg.model}")
+                except Exception as e:
+                    # Router 初始化失敗時回退到 LLMClient
+                    engine.set_llm_fn(self.llm.as_llm_fn())
+                    console.print(f"[yellow]⚠ Router fallback: {e}[/]")
 
             except Exception as e:
                 console.print(f"[yellow]⚠ LLM init failed: {e}[/]")

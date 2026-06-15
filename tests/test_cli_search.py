@@ -21,5 +21,5 @@ def test_cmd_search_uses_similarity_mapping(monkeypatch):
     monkeypatch.setattr(Entry.Prompt, "ask", lambda *args, **kwargs: next(answers))
     monkeypatch.setattr(Entry.console, "print", lambda *args, **kwargs: None)
 
-    Entry._cmd_search(engine, SimpleNamespace())
+    Entry._cmd_search(engine, SimpleNamespace(retrieval_min_similarity=0.35))
 

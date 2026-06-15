@@ -74,6 +74,10 @@ class MemoryGraph:
         self.gamma = _cfg.edge_weight_gamma   # Salience 權重
         self.decay_lambda = _cfg.edge_recency_lambda  # 時間衰減率（每小時）
 
+        # max_frequency 動態正規化基準（對齊 OpenSoul）
+        # 用 log1p(freq) / log1p(max_freq) 而非固定 log(11)
+        self._max_frequency: int = 10  # 預設值，Dream 週期或邊更新時動態更新
+
         # 載入已存在的圖
         self._load()
 
@@ -195,14 +199,19 @@ class MemoryGraph:
         concept_a: str,
         concept_b: str,
         weight: float = 0.5,
+        salience: float = 0.5,
     ) -> None:
         """
         添加 RELATES_TO 邊（語義關聯，無向語義用雙向邊模擬）。
 
+        已存在的邊會透過完整公式重算權重（對齊 OpenSoul）：
+        W = α·Recency + β·log1p(Freq)/log1p(max_freq) + γ·Salience
+
         Args:
             concept_a: 概念 A 的 ID
             concept_b: 概念 B 的 ID
-            weight: 關聯強度 (0-1)
+            weight: 初始關聯強度 (0-1)，僅用於新邊
+            salience: 顯著性分數 (0-1)，影響邊的動態權重
         """
         if not self.graph.has_node(concept_a) or not self.graph.has_node(concept_b):
             logger.warning(
@@ -212,26 +221,43 @@ class MemoryGraph:
             return
 
         weight = min(1.0, max(0.0, weight))
+        salience = min(1.0, max(0.0, salience))
 
         # 雙向邊（語義關聯是對稱的）
         for src, dst in [(concept_a, concept_b), (concept_b, concept_a)]:
             if self.graph.has_edge(src, dst):
-                # 已存在 → 強化權重
+                # 已存在 → 頻率+1，用完整公式重算權重
                 existing = self.graph[src][dst]
                 existing["frequency"] = existing.get("frequency", 1) + 1
-                existing["weight"] = min(1.0, (existing["weight"] + weight) / 2)
+
+                # 計算 recency（邊從建立到現在的小時數）
+                created_at = existing.get("created_at", time.time())
+                edge_age_hours = (time.time() - created_at) / _SECONDS_PER_HOUR
+                recency = self._compute_recency(edge_age_hours)
+
+                # 更新 salience（取最大值，重要的連結不該被稀釋）
+                existing["avg_salience"] = max(
+                    existing.get("avg_salience", salience), salience
+                )
+
+                # 用完整公式重算
+                existing["weight"] = self._compute_edge_weight(
+                    recency, existing["frequency"], existing["avg_salience"]
+                )
             else:
                 self.graph.add_edge(
                     src, dst,
                     edge_type="RELATES_TO",
                     weight=weight,
                     frequency=1,
+                    avg_salience=salience,
                     created_at=time.time(),
                 )
 
         logger.debug(
             f"[MemoryGraph] 添加 RELATES_TO 邊: "
-            f"{concept_a[:12]} <-> {concept_b[:12]} (weight={weight:.3f})"
+            f"{concept_a[:12]} <-> {concept_b[:12]} (weight={weight:.3f}, "
+            f"salience={salience:.3f})"
         )
 
     def add_contradicts_edge(
@@ -621,9 +647,12 @@ class MemoryGraph:
         salience: float,
     ) -> float:
         """
-        計算動態邊緣權重。
+        計算動態邊緣權重（對齊 OpenSoul 公式）。
 
-        公式：W = α·Recency + β·log(1+Frequency) + γ·Salience
+        公式：W = α·Recency + β·log1p(Frequency)/log1p(max_freq) + γ·Salience
+
+        OpenSoul 使用 max_frequency 動態正規化，而非固定分母。
+        max_frequency 在 Dream 週期結束時由 _recalc_max_frequency() 更新。
 
         Args:
             recency: 時間衰減分數 [0, 1]
@@ -633,8 +662,9 @@ class MemoryGraph:
         Returns:
             權重分數 [0, 1]
         """
-        # 頻率對數化（避免過度增長）
-        freq_score = math.log(1 + frequency) / math.log(11)  # 歸一化到 [0, 1]
+        # 頻率對數化 + 動態正規化（對齊 OpenSoul）
+        max_freq = max(1, self._max_frequency)
+        freq_score = math.log1p(frequency) / math.log1p(max_freq)
         freq_score = min(1.0, freq_score)
 
         # 加權求和
@@ -645,6 +675,25 @@ class MemoryGraph:
         )
 
         return min(1.0, max(0.0, weight))
+
+    def recalc_max_frequency(self) -> int:
+        """
+        重新計算所有 RELATES_TO 邊的最大頻率（對齊 OpenSoul _update_max_frequency）。
+
+        在 Dream 週期結束時呼叫，更新正規化基準。
+
+        Returns:
+            當前最大頻率
+        """
+        max_freq = 1
+        for _, _, data in self.graph.edges(data=True):
+            if data.get("edge_type") in ("RELATES_TO", "PRECEDES"):
+                freq = data.get("frequency", 1)
+                if freq > max_freq:
+                    max_freq = freq
+        self._max_frequency = max_freq
+        logger.debug(f"[MemoryGraph] max_frequency 更新為 {max_freq}")
+        return max_freq
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 多跳檢索

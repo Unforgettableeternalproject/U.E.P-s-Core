@@ -5,15 +5,10 @@
 
 ---
 
-## 安裝
+## 執行環境
 
-```bash
-# 安裝 mcp 可選依賴
-pip install ".[mcp]"
-
-# 或直接安裝 mcp SDK
-pip install "mcp[cli]>=1.0.0"
-```
+本 repo 不建立獨立虛擬環境。MCP SDK 與其他依賴都安裝在
+`U.E.P-s-Core\env`；若主環境尚未安裝 MCP，再由主專案維護者安裝。
 
 ---
 
@@ -21,19 +16,10 @@ pip install "mcp[cli]>=1.0.0"
 
 ### 方式一：模組執行（開發用）
 
-```bash
+```powershell
 # 在專案根目錄執行
-PYTHONIOENCODING=utf-8 python -m mcp_server
-```
-
-### 方式二：安裝後使用腳本（生產用）
-
-```bash
-# 安裝套件後
-pip install -e .
-
-# 執行 MCP Server
-echo-mcp
+$env:PYTHONIOENCODING = "utf-8"
+..\U.E.P-s-Core\env\Scripts\python.exe -m mcp_server
 ```
 
 > **注意**：MCP Server 使用 stdio 通訊，直接執行時不會有可見的輸出。
@@ -52,52 +38,22 @@ echo-mcp
 {
   "mcpServers": {
     "echo-memory": {
-      "command": "python",
+      "command": "<UEP_CORE_ENV>/Scripts/python.exe",
       "args": [
         "-m",
         "mcp_server"
       ],
-      "cwd": "C:/Users/Bernie/source/repos/Unforgettableeternalproject/TestSeperateMemorySystem",
+      "cwd": "<REPO_ROOT>/TestSeperateMemorySystem",
       "env": {
         "PYTHONIOENCODING": "utf-8",
-        "PYTHONPATH": "C:/Users/Bernie/source/repos/Unforgettableeternalproject/TestSeperateMemorySystem"
+        "PYTHONPATH": "<REPO_ROOT>/TestSeperateMemorySystem"
       }
     }
   }
 }
 ```
 
-或使用 echo-mcp 腳本（需先 `pip install -e .`）：
-
-```json
-{
-  "mcpServers": {
-    "echo-memory": {
-      "command": "echo-mcp",
-      "env": {
-        "PYTHONIOENCODING": "utf-8"
-      }
-    }
-  }
-}
-```
-
-若使用專案內建虛擬環境：
-
-```json
-{
-  "mcpServers": {
-    "echo-memory": {
-      "command": "C:/Users/Bernie/source/repos/Unforgettableeternalproject/U.E.P-s-Core/env/Scripts/python.exe",
-      "args": ["-m", "mcp_server"],
-      "cwd": "C:/Users/Bernie/source/repos/Unforgettableeternalproject/TestSeperateMemorySystem",
-      "env": {
-        "PYTHONIOENCODING": "utf-8"
-      }
-    }
-  }
-}
-```
+> 將 `<UEP_CORE_ENV>` 替換為 `U.E.P-s-Core/env` 的絕對路徑，`<REPO_ROOT>` 替換為你的 repo 根目錄。
 
 ---
 
@@ -133,7 +89,7 @@ echo-mcp
 {
   "query": "查詢文字",
   "top_k": 5,
-  "min_similarity": 0.3,
+  "min_similarity": 0.35,
   "dopamine": 0.5,
   "serotonin": 0.5
 }
@@ -215,7 +171,10 @@ MCP Server 從 `.env` 檔案（專案根目錄 `TestSeperateMemorySystem/.env`�
 |-----|------|--------|
 | `MEMORY_STORAGE_PATH` | 記憶資料存儲路徑 | `./data` |
 | `MEMORY_NAMESPACE_ID` | MCP Tools 未指定 namespace 時使用的預設隔離空間 | `local-default` |
-| `EMBEDDING_MODEL` | 嵌入模型名稱 | `BAAI/bge-small-zh-v1.5` |
+| `EMBEDDING_MODEL` | Ollama 嵌入模型名稱 | `bge-m3` |
+| `EMBEDDING_BACKEND` | 嵌入後端 | `ollama` |
+| `EMBEDDING_QUERY_PREFIX` | bge-m3 查詢前綴 | 空字串 |
+| `OLLAMA_BASE_URL` | Ollama API 位址 | `http://localhost:11434` |
 | `EMBEDDING_DEVICE` | 運行設備 | `cpu` |
 | `GOOGLE_API_KEY` | Google API 金鑰（Dream Engine 知識蒸餾需要） | — |
 
@@ -252,6 +211,6 @@ echo_memory/
 - MCP Server 使用 **stdio** 通訊，所有日誌輸出到 `stderr`，不影響 MCP 協議
 - MemoryEngine 的 API 是同步的，透過 `asyncio.to_thread()` 包裝為 async
 - `trigger_dream` 有 **60 秒冷卻時間**，且執行超時設定為 30 秒
-- 首次使用時，Embedding 模型需要下載（約 100-500 MB），請確保網絡暢通
+- 啟動前請確認 Ollama 正在執行，且 `ollama list` 可看到 `bge-m3`
 - Dream Engine 的知識蒸餾功能需要設定 LLM API 金鑰（`GOOGLE_API_KEY`）
-- `search_concepts` 在當前分支使用關鍵字匹配（Phase 2 完成後升級為向量搜索）
+- `search_concepts` 使用 SemanticMemory 的向量搜索；不得以關鍵字掃描私有儲存欄位作為替代路徑

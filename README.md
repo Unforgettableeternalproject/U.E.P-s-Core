@@ -113,27 +113,30 @@ TestSeperateMemorySystem/
 
 ### 環境準備
 
-```bash
-# 1. 創建虛擬環境
-python -m venv venv
-.\venv\Scripts\activate  # Windows
-# source venv/bin/activate  # Linux/macOS
+本專案刻意不維護獨立虛擬環境，統一使用同層主專案 `U.E.P-s-Core\env`。
+正式 embedding 基準為主環境提供的 Ollama `bge-m3`，不是 repo 自行下載的 Sentence Transformers 模型。
 
-# 2. 安裝套件（開發模式）
-pip install -e ".[dev]"
+```powershell
+$UEP_PYTHON = "..\U.E.P-s-Core\env\Scripts\python.exe"
 
-# 3. 配置環境變數
-cp .env.example .env
+# 1. 配置環境變數
+Copy-Item .env.example .env
 # 編輯 .env，設定 GOOGLE_API_KEY 或 GCP_PROJECT_ID
 
-# 4. 驗證配置
-python verify_config.py
+# 2. 驗證配置
+& $UEP_PYTHON verify_config.py
+
+# 3. 確認 Ollama embedding 模型
+ollama list
+
+# 4. 執行核心測試
+& $UEP_PYTHON -m pytest -q
 ```
 
 ### 互動式 CLI（推薦）
 
-```bash
-python Entry.py
+```powershell
+.\run.bat
 ```
 
 進入後可使用以下命令：
@@ -149,12 +152,14 @@ python Entry.py
 ```python
 from echo_memory import MemoryEngine
 
-# 初始化記憶引擎（不需要 API key）
-# 預設模型：BAAI/bge-small-zh-v1.5（中文優化，512 維）
-# 切換模型時會依 manifest 自動完整重建 embedding 索引
+# 程式化建立引擎時必須明確沿用正式 Ollama 設定。
+# bge-m3 是 1024 維多語言 embedding，query prefix 應保持空白。
 memory = MemoryEngine(
     storage_path="./data",
-    embedding_model="BAAI/bge-small-zh-v1.5",
+    embedding_model="bge-m3",
+    embedding_backend="ollama",
+    ollama_base_url="http://localhost:11434",
+    query_prefix="",
     namespace_id="local-default",
 )
 
@@ -226,7 +231,8 @@ print(context.to_text())
 | **向量檢索** | NumPy 精確餘弦相似度 | 1.24+ | 已用 |
 | **向量索引加速** | FAISS | 1.9+ | [Planned] |
 | **圖譜存儲** | NetworkX | 3.2+ | 已用 |
-| **嵌入模型** | Sentence Transformers | 2.2+ | 已用 |
+| **嵌入模型** | Ollama `bge-m3` | 1024 維、多語言 | 正式基準 |
+| **嵌入備援** | Sentence Transformers | 2.3+ | 開發備援 |
 | **LLM** | Google Gemini / Anthropic Claude | - | 已用 |
 | **排程** | APScheduler | 3.10+ | 已用 |
 | **序列化** | Pydantic | 2.5+ | 已用 |
@@ -270,7 +276,9 @@ print(context.to_text())
    
    memory_v2:
      storage_path: "memory/v2"
-     embedding_model: "BAAI/bge-small-zh-v1.5"
+     embedding_model: "bge-m3"
+     embedding_backend: "ollama"
+     ollama_base_url: "http://localhost:11434"
    ```
 
 ---

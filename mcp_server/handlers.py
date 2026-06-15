@@ -327,7 +327,8 @@ async def _handle_retrieve_memories(
     """
     query: str = args["query"]
     top_k: int = int(args.get("top_k", 5))
-    min_similarity: float = float(args.get("min_similarity", 0.3))
+    # 預設閾值不硬編碼，由 engine.retrieve() 讀取 config（0.35）
+    min_similarity: float = float(args.get("min_similarity", 0.35))
     dopamine: float = float(args.get("dopamine", 0.5))
     serotonin: float = float(args.get("serotonin", 0.5))
 
@@ -354,47 +355,23 @@ async def _handle_search_concepts(
     get_engine: Callable,
     args: dict[str, Any],
 ) -> str:
-    """
-    搜尋語義概念。
-
-    使用 episodic 的 embedding 生成查詢向量，再直接搜尋 semantic._concepts。
-    因為 feat/llm-chat-tui 分支的 SemanticMemory 尚未實作向量搜索，
-    此處使用簡單的名稱/描述關鍵字匹配作為回退方案。
-    """
+    """搜尋語義概念（向量搜索）。"""
     query: str = args["query"]
     top_k: int = int(args.get("top_k", 5))
 
     def _sync_search() -> list[tuple[str, str]]:
         engine = _get_engine(get_engine, args)
-        concepts = engine.semantic._concepts
 
-        if not concepts:
+        if engine.semantic.count() == 0:
             return []
 
-        # 嘗試向量搜索（若 semantic 支援的話）
-        if hasattr(engine.semantic, "search_by_vector"):
-            query_embedding = engine.episodic.generate_query_embedding(query)
-            results = engine.semantic.search_by_vector(
-                query_embedding=query_embedding,
-                top_k=top_k,
-                min_similarity=0.2,
-            )
-            return [(c.name, f"{sim:.1%}") for c, sim in results]
-
-        # 回退：關鍵字匹配（大小寫不敏感）
-        query_lower = query.lower()
-        matched = []
-        for name, concept in concepts.items():
-            score = 0
-            if query_lower in name.lower():
-                score += 2
-            if query_lower in concept.description.lower():
-                score += 1
-            if score > 0:
-                matched.append((name, concept.description, score))
-
-        matched.sort(key=lambda x: x[2], reverse=True)
-        return [(name, "關鍵字匹配") for name, _, _ in matched[:top_k]]
+        query_embedding = engine.episodic.generate_query_embedding(query)
+        results = engine.semantic.search_by_vector(
+            query_embedding=query_embedding,
+            top_k=top_k,
+            min_similarity=0.35,
+        )
+        return [(c.name, f"{sim:.1%}") for c, sim in results]
 
     concept_list = await asyncio.to_thread(_sync_search)
     logger.info(f"[MCP Handler] search_concepts 完成，找到 {len(concept_list)} 個概念")
@@ -516,41 +493,19 @@ async def _handle_list_episodes(
     get_engine: Callable,
     args: dict[str, Any],
 ) -> str:
-    """
-    列出情節記憶，返回格式化的摘要列表。
-
-    由於 feat/llm-chat-tui 分支的 EpisodicMemory 尚未實作 list_episodes()，
-    此處直接操作 _episodes dict 並手動排序。
-    """
+    """列出情節記憶，返回格式化的摘要列表。"""
     session_id: str | None = args.get("session_id")
     limit: int = min(int(args.get("limit", 10)), 50)
     sort_by: str = args.get("sort_by", "timestamp")
 
     def _sync_list() -> list[dict[str, Any]]:
         engine = _get_engine(get_engine, args)
-        episodic = engine.episodic
-
-        # 使用 list_episodes 方法（若存在），否則手動從 _episodes 讀取
-        if hasattr(episodic, "list_episodes"):
-            episodes_objs = episodic.list_episodes(
-                session_id=session_id,
-                limit=limit,
-                sort_by=sort_by,
-                ascending=False,
-            )
-        else:
-            # 手動取出並排序（相容舊版 EpisodicMemory）
-            episodes_objs = list(episodic._episodes.values())
-
-            if session_id:
-                episodes_objs = [ep for ep in episodes_objs if ep.session_id == session_id]
-
-            if sort_by == "salience":
-                episodes_objs.sort(key=lambda ep: ep.salience_score, reverse=True)
-            else:
-                episodes_objs.sort(key=lambda ep: ep.timestamp, reverse=True)
-
-            episodes_objs = episodes_objs[:limit]
+        episodes_objs = engine.episodic.list_episodes(
+            session_id=session_id,
+            limit=limit,
+            sort_by=sort_by,
+            ascending=False,
+        )
 
         result = []
         for ep in episodes_objs:

@@ -19,20 +19,26 @@ NeurochemState — 神經化學狀態機
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 
 logger = logging.getLogger("echo_memory.neurochem")
 
 
 class NeurochemMode(Enum):
-    """神經化學模式 — 根據 DA/5-HT 水位自動判定。"""
+    """
+    神經化學模式 — 根據 DA/5-HT 水位自動判定。
 
-    BALANCED = "balanced"       # DA ≈ 5-HT ≈ 0.5（預設）
-    HIGH_DA = "high_da"         # DA > 0.7 → 探索模式（廣搜索、低閾值）
-    HIGH_5HT = "high_5ht"      # 5-HT > 0.7 → 深度模式（多跳、高精度）
-    EXCITED = "excited"         # DA > 0.7 且 5-HT > 0.7 → 全開模式
-    CAUTIOUS = "cautious"       # DA < 0.3 且 5-HT < 0.3 → 保守模式
+    語義對齊 OpenSoul：
+      EXCITED = DA 高 + 5-HT 低 → 高度興奮但低穩定性（衝動探索）
+      CAUTIOUS = DA 低 + 5-HT 高 → 低動力但高謹慎（保守深思）
+    """
+
+    BALANCED = "balanced"           # DA ≈ 5-HT ≈ 中間值（預設）
+    HIGH_DA = "high_dopamine"       # DA ≥ 0.65 → 探索模式（廣搜索、低閾值）
+    HIGH_5HT = "high_serotonin"     # 5-HT ≥ 0.65 → 深度模式（多跳、高精度）
+    EXCITED = "excited"             # DA ≥ 0.75 且 5-HT < 0.4 → 衝動探索模式
+    CAUTIOUS = "cautious"           # DA < 0.35 且 5-HT ≥ 0.65 → 保守深思模式
 
 
 @dataclass
@@ -70,9 +76,12 @@ class NeurochemState:
     approach_rate: float = 0.3   # 每次刺激接近目標值的 30%
     decay_rate: float = 0.05     # 每次 tick 回落基線的 5%
 
-    # 模式判定閾值
-    _high_threshold: float = field(default=0.7, repr=False)
-    _low_threshold: float = field(default=0.3, repr=False)
+    # OpenSoul 對齊：刺激速率與上限
+    da_update_rate: float = 0.08
+    ht_update_rate: float = 0.06
+    da_max_per_cycle: float = 0.15
+    ht_max_per_cycle: float = 0.12
+    decay_per_hour: float = 0.05
 
     def stimulate(
         self,
@@ -104,6 +113,82 @@ class NeurochemState:
             f"5-HT={self.serotonin:.3f}, mode={self.mode.value}"
         )
 
+    # ── OpenSoul 事件驅動方法 ────────────────────────────────────────
+
+    def on_success(self, reward: float = 0.3) -> None:
+        """
+        正向回饋 / 任務成功。
+
+        DA 朝向高獎勵目標漸進，5-HT 輕微下降（可承擔更多風險）。
+        對應 OpenSoul: neurochem.on_success(reward)
+        """
+        da_target = self._clamp(0.5 + reward * 0.4)
+        self.dopamine += self.da_update_rate * (da_target - self.dopamine)
+        # 輕微降低血清素（成功後更願意冒險）
+        ht_target = self._clamp(self.serotonin - reward * 0.05)
+        self.serotonin += self.ht_update_rate * (ht_target - self.serotonin)
+        self.dopamine = self._clamp(self.dopamine)
+        self.serotonin = self._clamp(self.serotonin)
+        logger.debug(f"[NeurochemState] on_success(reward={reward:.2f}): "
+                     f"DA={self.dopamine:.3f}, 5-HT={self.serotonin:.3f}")
+
+    def on_failure(self, penalty: float = 0.2) -> None:
+        """
+        驗證失敗 / 負向回饋。
+
+        DA 下降（動力降低），5-HT 上升（進入謹慎模式）。
+        對應 OpenSoul: neurochem.on_failure(penalty)
+        """
+        da_target = self._clamp(max(0.2, 0.5 - penalty * 0.3))
+        self.dopamine += self.da_update_rate * (da_target - self.dopamine)
+        ht_target = self._clamp(self.serotonin + penalty * 0.15)
+        self.serotonin += self.ht_update_rate * (ht_target - self.serotonin)
+        self.dopamine = self._clamp(self.dopamine)
+        self.serotonin = self._clamp(self.serotonin)
+        logger.debug(f"[NeurochemState] on_failure(penalty={penalty:.2f}): "
+                     f"DA={self.dopamine:.3f}, 5-HT={self.serotonin:.3f}")
+
+    def on_uncertainty(self, level: float = 0.2) -> None:
+        """
+        高不確定性。
+
+        DA 輕微下降，5-HT 朝向謹慎端漸進。
+        對應 OpenSoul: neurochem.on_uncertainty(level)
+        """
+        self.dopamine += self.da_update_rate * (-level * 0.1)
+        ht_target = self._clamp(0.5 + level * 0.3)
+        self.serotonin += self.ht_update_rate * (ht_target - self.serotonin)
+        self.dopamine = self._clamp(self.dopamine)
+        self.serotonin = self._clamp(self.serotonin)
+        logger.debug(f"[NeurochemState] on_uncertainty(level={level:.2f}): "
+                     f"DA={self.dopamine:.3f}, 5-HT={self.serotonin:.3f}")
+
+    def on_discovery(self, novelty: float = 0.4) -> None:
+        """
+        新知識連結 / 夢境共鳴。
+
+        DA 朝向高點漸進，5-HT 不變。
+        對應 OpenSoul: neurochem.on_discovery(novelty)
+        """
+        da_target = self._clamp(min(0.85, 0.5 + novelty * 0.35))
+        self.dopamine += self.da_update_rate * (da_target - self.dopamine)
+        self.dopamine = self._clamp(self.dopamine)
+        logger.debug(f"[NeurochemState] on_discovery(novelty={novelty:.2f}): "
+                     f"DA={self.dopamine:.3f}, 5-HT={self.serotonin:.3f}")
+
+    def natural_decay(self, hours: float = 1.0) -> None:
+        """
+        時間流逝引起的自然衰減。
+
+        DA 和 5-HT 都趨向 baseline，衰減量與時間成正比。
+        對應 OpenSoul: neurochem.natural_decay(hours)
+        """
+        decay_factor = max(0.8, 1.0 - self.decay_per_hour * hours)
+        self.dopamine = self.baseline_da + decay_factor * (self.dopamine - self.baseline_da)
+        self.serotonin = self.baseline_5ht + decay_factor * (self.serotonin - self.baseline_5ht)
+        self.dopamine = self._clamp(self.dopamine)
+        self.serotonin = self._clamp(self.serotonin)
+
     def tick(self) -> None:
         """
         自然衰減（每次互動後呼叫）。
@@ -116,22 +201,48 @@ class NeurochemState:
         self.dopamine = self._clamp(self.dopamine)
         self.serotonin = self._clamp(self.serotonin)
 
+    # ── 衍生屬性（OpenSoul 對齊）────────────────────────────────────
+
+    @property
+    def verification_threshold(self) -> float:
+        """品質閘門動態門檻：5-HT 越高，驗證越嚴。"""
+        return 0.5 + self.serotonin * 0.4
+
+    @property
+    def search_breadth(self) -> int:
+        """EcphoryRAG BFS 搜尋廣度：5-HT 越高，搜索越廣。"""
+        return int(5 + self.serotonin * 15)
+
+    @property
+    def learning_rate(self) -> float:
+        """語意記憶邊緣更新速率：DA 越高，學習越快。"""
+        return 0.1 + self.dopamine * 0.9
+
+    @property
+    def salience_boost(self) -> float:
+        """新記憶顯著性加乘：DA 越高，新記憶越突出。"""
+        return 1.0 + self.dopamine * 0.5
+
     @property
     def mode(self) -> NeurochemMode:
-        """根據當前 DA/5-HT 水位判定模式。"""
-        high_da = self.dopamine >= self._high_threshold
-        high_5ht = self.serotonin >= self._high_threshold
-        low_da = self.dopamine <= self._low_threshold
-        low_5ht = self.serotonin <= self._low_threshold
+        """
+        根據當前 DA/5-HT 水位判定模式。
 
-        if high_da and high_5ht:
+        語義對齊 OpenSoul：
+          EXCITED = DA ≥ 0.75 且 5-HT < 0.4（衝動探索）
+          CAUTIOUS = DA < 0.35 且 5-HT ≥ 0.65（保守深思）
+        """
+        da = self.dopamine
+        ht = self.serotonin
+
+        if da >= 0.75 and ht < 0.4:
             return NeurochemMode.EXCITED
-        elif high_da:
-            return NeurochemMode.HIGH_DA
-        elif high_5ht:
-            return NeurochemMode.HIGH_5HT
-        elif low_da and low_5ht:
+        elif da < 0.35 and ht >= 0.65:
             return NeurochemMode.CAUTIOUS
+        elif da >= 0.65:
+            return NeurochemMode.HIGH_DA
+        elif ht >= 0.65:
+            return NeurochemMode.HIGH_5HT
         else:
             return NeurochemMode.BALANCED
 
@@ -180,13 +291,17 @@ class NeurochemState:
         )
 
     def to_dict(self) -> dict:
-        """序列化。"""
+        """序列化（含衍生屬性供診斷）。"""
         return {
-            "dopamine": self.dopamine,
-            "serotonin": self.serotonin,
+            "dopamine": round(self.dopamine, 4),
+            "serotonin": round(self.serotonin, 4),
             "mode": self.mode.value,
             "baseline_da": self.baseline_da,
             "baseline_5ht": self.baseline_5ht,
+            "verification_threshold": round(self.verification_threshold, 4),
+            "search_breadth": self.search_breadth,
+            "learning_rate": round(self.learning_rate, 4),
+            "salience_boost": round(self.salience_boost, 4),
         }
 
     @classmethod

@@ -68,7 +68,8 @@ def test_default_summary_combines_user_and_agent_text(temp_storage):
 def test_set_llm_fn_updates_existing_entity_extractor(temp_storage):
     engine = MemoryEngine(storage_path=temp_storage)
     extractor = engine.entity_extractor
-    llm_fn = lambda prompt: "[]"
+    def llm_fn(prompt):
+        return "[]"
 
     engine.set_llm_fn(llm_fn)
 

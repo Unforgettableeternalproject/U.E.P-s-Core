@@ -162,20 +162,12 @@ async def _read_recent_episodes(get_engine: Callable) -> str:
         engine = get_engine()
         episodic = engine.episodic
 
-        # 使用 list_episodes 方法（若存在），否則手動從 _episodes 讀取
-        if hasattr(episodic, "list_episodes"):
-            episodes_objs = episodic.list_episodes(
-                session_id=None,
-                limit=10,
-                sort_by="timestamp",
-                ascending=False,
-            )
-        else:
-            episodes_objs = sorted(
-                episodic._episodes.values(),
-                key=lambda ep: ep.timestamp,
-                reverse=True,
-            )[:10]
+        episodes_objs = episodic.list_episodes(
+            session_id=None,
+            limit=10,
+            sort_by="timestamp",
+            ascending=False,
+        )
 
         result = []
         for ep in episodes_objs:
@@ -210,14 +202,10 @@ async def _read_concepts(get_engine: Callable) -> str:
     def _sync_list() -> list[dict]:
         engine = get_engine()
 
-        # 使用 list_concepts 方法（若存在），否則直接讀取 _concepts dict
-        if hasattr(engine.semantic, "list_concepts"):
-            concepts_objs = engine.semantic.list_concepts(
-                limit=200,
-                sort_by="updated_at",
-            )
-        else:
-            concepts_objs = list(engine.semantic._concepts.values())
+        concepts_objs = engine.semantic.list_concepts(
+            limit=200,
+            sort_by="updated_at",
+        )
 
         result = []
         for c in concepts_objs:

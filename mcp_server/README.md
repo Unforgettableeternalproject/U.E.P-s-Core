@@ -89,7 +89,7 @@ $env:PYTHONIOENCODING = "utf-8"
 {
   "query": "查詢文字",
   "top_k": 5,
-  "min_similarity": 0.3,
+  "min_similarity": 0.35,
   "dopamine": 0.5,
   "serotonin": 0.5
 }

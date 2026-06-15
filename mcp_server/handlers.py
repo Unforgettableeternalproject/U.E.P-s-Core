@@ -327,7 +327,8 @@ async def _handle_retrieve_memories(
     """
     query: str = args["query"]
     top_k: int = int(args.get("top_k", 5))
-    min_similarity: float = float(args.get("min_similarity", 0.3))
+    # 預設閾值不硬編碼，由 engine.retrieve() 讀取 config（0.35）
+    min_similarity: float = float(args.get("min_similarity", 0.35))
     dopamine: float = float(args.get("dopamine", 0.5))
     serotonin: float = float(args.get("serotonin", 0.5))
 
@@ -368,7 +369,7 @@ async def _handle_search_concepts(
         results = engine.semantic.search_by_vector(
             query_embedding=query_embedding,
             top_k=top_k,
-            min_similarity=0.2,
+            min_similarity=0.35,
         )
         return [(c.name, f"{sim:.1%}") for c, sim in results]
 

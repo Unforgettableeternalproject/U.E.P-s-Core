@@ -155,8 +155,8 @@ class DreamEngine:
         # 保留 episodic 引用（給 stage 5 程序提取用）
         self._episodic_ref = episodic
 
-        # 子模組
-        self._pruning = GraphPruning(graph)
+        # 子模組（傳入 semantic 供 LATENT_BRIDGE 使用）
+        self._pruning = GraphPruning(graph, semantic=semantic)
 
         # LiDER 反思重播（需要 episodic，llm_fn=None 時自動跳過）
         self._replay: LiDERReplay | None = None

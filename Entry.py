@@ -736,6 +736,8 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                             source="reflection",
                         )
                         action.pre_state = pre_state
+                        # 更新 audit snapshot（確保 pre_state 被持久化）
+                        action_queue.persist_action(action)
 
                     # ── 6.2 自動執行 AUTO 行動 ──
                     executed = action_queue.process_auto_actions(executor_fn)

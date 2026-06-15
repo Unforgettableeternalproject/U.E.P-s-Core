@@ -364,6 +364,15 @@ class ReflectionActionQueue:
         """取得歷史行動記錄。"""
         return list(self._history)
 
+    def persist_action(self, action: ReflectionAction) -> None:
+        """
+        將行動的當前狀態追加寫入 audit log。
+
+        用於在 enqueue 後更新 pre_state 等欄位時，
+        確保最新快照被持久化，供 restart 時恢復。
+        """
+        self._audit(action)
+
     def _audit(self, action: ReflectionAction) -> None:
         """寫入稽核日誌。"""
         if self._audit_path is None:

@@ -401,6 +401,10 @@ class ReflectionExecutor:
             primary.source_episode_ids + secondary.source_episode_ids
         ))
 
+        # 保留 primary 原始狀態供失敗時還原
+        original_desc = primary.description
+        original_meta = dict(primary.metadata)
+
         # 更新主概念
         self._engine.semantic.upsert_concept(
             name=primary.name,
@@ -409,12 +413,23 @@ class ReflectionExecutor:
             metadata=merged_meta,
         )
 
-        # 移除次概念（失敗時拋出例外，讓 ActionQueue 標記 FAILED）
+        # 移除次概念（失敗時還原 primary 再拋出例外）
         removed = self._engine.semantic.remove_concept(merge_with)
         if not removed:
+            # 還原 primary 到合併前狀態
+            logger.warning(
+                "[ReflectionExecutor] merge remove 失敗，還原 primary: %s",
+                primary.name,
+            )
+            self._engine.semantic.upsert_concept(
+                name=primary.name,
+                description=original_desc,
+                concept_type=primary.concept_type,
+                metadata=original_meta,
+            )
             raise RuntimeError(
-                f"merge_concepts 半合併：主概念已更新但次概念移除失敗: "
-                f"{merge_with}（需手動檢查）"
+                f"merge_concepts 失敗：次概念移除失敗 ({merge_with})，"
+                f"主概念已還原"
             )
 
         return {

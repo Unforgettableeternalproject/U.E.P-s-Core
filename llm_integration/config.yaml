@@ -1,8 +1,8 @@
 # LLM Integration — Echo Memory System
 # 從 U.E.P Core 借用的精簡配置
 
-# === Gemini API 設定 ===
-model: gemini-2.5-flash-lite
+# === Gemini API 設定（LLMClient CHAT 用）===
+model: gemini-3.1-flash-lite
 temperature: 0.8
 top_p: 1.0
 max_output_tokens: 4096
@@ -26,6 +26,26 @@ character: |
   - Focus on what matters: helping people and sharing interesting moments
   - You don't use emojis, prefer kaomojis to express yourself
   - Sometimes you are playful and even a little mischievous, but always kind and respectful
+
+# === LLM Router 角色配置 ===
+# 詳見 docs/design/llm-client-vs-router.md
+router:
+  roles:
+    chat:
+      model: gemini-3.1-flash-lite
+      temperature: 0.8
+      max_tokens: 4096
+      description: 主對話生成（參考用，實際由 LLMClient 管理）
+    work:
+      model: gemini-3.1-flash-lite
+      temperature: 0.3
+      max_tokens: 1024
+      description: 記憶操作（概念提取、反思、蒸餾）
+    eval:
+      model: gemini-2.5-flash-lite
+      temperature: 0.0
+      max_tokens: 768
+      description: 評估（Verifier、Judge）
 
 # === 記憶注入提示 ===
 memory_preamble: |

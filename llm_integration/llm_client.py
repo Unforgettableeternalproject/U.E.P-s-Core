@@ -407,19 +407,19 @@ class LLMClient:
             content = self._history[i]
             if getattr(content, "role", "") != "user":
                 continue
-            # 檢查是否為真正的 text user prompt（非 function_response）
+            # 檢查是否為真正的 text user prompt（非 function_response）。
+            # 注意：Google Part 的 function_response 屬性永遠存在（None），
+            # 所以必須檢查值，不能用 hasattr。
             parts = getattr(content, "parts", [])
-            is_text_user = any(
-                hasattr(p, "text") and p.text is not None
-                and not hasattr(p, "function_response")
+            has_text = any(
+                getattr(p, "text", None) is not None
                 for p in parts
             ) if parts else False
-            # 也接受沒有 function_response 的 user content
             has_fn_response = any(
-                hasattr(p, "function_response") and p.function_response
+                getattr(p, "function_response", None) is not None
                 for p in parts
             ) if parts else False
-            if is_text_user and not has_fn_response:
+            if has_text and not has_fn_response:
                 last_user_idx = i
                 break
 

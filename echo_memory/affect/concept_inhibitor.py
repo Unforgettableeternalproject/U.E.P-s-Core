@@ -653,6 +653,9 @@ class ConceptInhibitor:
                 facts = concept.metadata.get("facts", [])
                 if facts and facts[-1] == patch.new_value:
                     facts.pop()
+                # 還原 confidence
+                if patch.old_confidence is not None:
+                    concept.confidence = patch.old_confidence
             elif patch.action == "modify":
                 # 還原 description
                 if patch.old_value is not None:

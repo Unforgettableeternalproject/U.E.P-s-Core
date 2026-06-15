@@ -5,8 +5,7 @@ Test Rich CLI — Entry.py 的單元測試
 不測試真實 LLM 呼叫（mock backend）。
 """
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 

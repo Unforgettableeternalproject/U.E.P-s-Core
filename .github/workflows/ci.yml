@@ -89,9 +89,11 @@ jobs:
       - name: 驗證核心模組可匯入
         run: |
           python -c "
-          from echo_thought_core import ContextManager
-          from echo_thought_core.config import get_config
-          from echo_thought_core.schemas.message import Message, ConversationEntry
+          from echo_thought_core import ContextManager, CompactionConfig, PersonaContext
+          from echo_thought_core import SessionState, CompactionResult, Message
+          from echo_thought_core import create_backend, create_context_manager
+          from echo_thought_core import load_llm_config, build_persona_from_config, build_system_instruction
+          from echo_thought_core.schemas.message import Message
           from echo_thought_core.schemas.session import SessionState, CompactionResult
           from echo_thought_core.accounting.counter import TokenCounter
           from echo_thought_core.accounting.budget import TokenBudget

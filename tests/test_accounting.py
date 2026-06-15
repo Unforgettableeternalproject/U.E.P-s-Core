@@ -2,7 +2,6 @@
 Token Accounting 測試
 """
 
-import pytest
 from echo_thought_core.accounting.counter import TokenCounter
 from echo_thought_core.accounting.budget import TokenBudget
 from echo_thought_core.schemas.message import Message
@@ -38,7 +37,7 @@ class TestTokenCounter:
         """中文字符應該有更高的 token 權重"""
         counter = TokenCounter(backend="unknown_backend")
         counter._tokenizer = None
-        ascii_count = counter.count("hello world")
+        _ = counter.count("hello world")
         cjk_count = counter.count("你好世界測試")
         # 中文通常每字佔更多 tokens
         assert cjk_count > 0
@@ -92,7 +91,6 @@ class TestTokenBudget:
 
 from echo_thought_core.accounting.counter import (
     ModelFamily,
-    ModelInfo,
     MODEL_DATABASE,
     get_model_info,
     get_model_context_length,

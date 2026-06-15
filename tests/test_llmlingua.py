@@ -7,7 +7,6 @@ Test LLMLingua-2 整合
 
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from echo_thought_core.compression.llmlingua import (
     LLMLinguaCompressor,

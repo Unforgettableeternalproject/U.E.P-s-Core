@@ -6,10 +6,16 @@ Backend Factory — 根據設定建立對應的後端實例，或一次建立完
 - create_context_manager(): 高層級，一次建立帶有 Backend + CacheManager 的完整 ContextManager
 """
 
+from __future__ import annotations
+
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, TYPE_CHECKING
 from echo_thought_core.backends.base import AbstractBackend
 from echo_thought_core.defaults import DEFAULT_MODEL
+
+if TYPE_CHECKING:
+    from echo_thought_core.context_manager import ContextManager
+    from echo_thought_core.schemas.config import CompactionConfig, PersonaContext
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +83,7 @@ def create_context_manager(
         >>> manager.add_message("user", "Hello!")
     """
     from echo_thought_core.context_manager import ContextManager
-    from echo_thought_core.schemas.config import CompactionConfig, PersonaContext
+    from echo_thought_core.schemas.config import CompactionConfig
 
     backend_config = backend_config or {}
 

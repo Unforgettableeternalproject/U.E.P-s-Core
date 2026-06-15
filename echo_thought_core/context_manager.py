@@ -173,6 +173,31 @@ class ContextManager:
         """註冊壓縮事件回調（供 Echo Memory 整合）"""
         self._on_compaction_callbacks.append(callback)
 
+    def reset_session(self) -> None:
+        """完全重置會話（對應 /clear 命令）"""
+        # 清空歷史
+        self.history.messages.clear()
+        self.history.total_tokens = 0
+        self.history.compression_count = 0
+
+        # 重置預算
+        self.budget.update(history=0)
+
+        # 重置 session state
+        self.state.session_id = str(uuid.uuid4())[:8]
+        self.state.current_tokens = 0
+        self.state.message_count = 0
+        self.state.compression_count = 0
+        self.state.current_tier = CompressionTier.TIER_0_NORMAL
+        self.state.last_compaction_at = None
+        self.state.created_at = time.time()
+
+        # 重置 emergency 斷路器
+        self.emergency.reset()
+
+        # 重置壓縮冷卻
+        self._last_compaction_time = 0.0
+
     # === 私有方法 ===
 
     def _can_compact(self) -> bool:

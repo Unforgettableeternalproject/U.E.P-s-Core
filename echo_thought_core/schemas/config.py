@@ -1,7 +1,7 @@
 """Config Schema — 設定的 Pydantic 模型"""
 
 from typing import Optional, Dict, Any, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from echo_thought_core.defaults import (
     DEFAULT_MODEL,
@@ -49,6 +49,48 @@ class CompactionConfig(BaseModel):
     compaction_cooldown_seconds: float = Field(
         60.0, description="兩次壓縮之間的最小間隔"
     )
+
+    @field_validator("context_window_size")
+    @classmethod
+    def validate_context_window(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("context_window_size 必須為正整數")
+        return v
+
+    @field_validator("max_emergency_messages")
+    @classmethod
+    def validate_max_emergency(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("max_emergency_messages 必須為正整數")
+        return v
+
+    @field_validator("compaction_cooldown_seconds")
+    @classmethod
+    def validate_cooldown(cls, v: float) -> float:
+        if v < 0:
+            raise ValueError("compaction_cooldown_seconds 不可為負數")
+        return v
+
+    @model_validator(mode="after")
+    def validate_thresholds(self) -> "CompactionConfig":
+        t = self.thresholds
+        for key, val in t.items():
+            if not (0 < val < 1):
+                raise ValueError(
+                    f"threshold '{key}' 必須介於 0 到 1 之間（不含），但得到 {val}"
+                )
+
+        # 確保閾值嚴格遞增
+        keys_order = ["micro_prune", "rolling_summary", "full_compact"]
+        present = [k for k in keys_order if k in t]
+        for i in range(1, len(present)):
+            if t[present[i]] <= t[present[i - 1]]:
+                raise ValueError(
+                    f"threshold 必須嚴格遞增: "
+                    f"{present[i-1]}={t[present[i-1]]} 不應 >= {present[i]}={t[present[i]]}"
+                )
+
+        return self
 
 
 # ── 人設上下文 ────────────────────────────────────────────────────────────────

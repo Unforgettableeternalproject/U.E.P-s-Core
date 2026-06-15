@@ -14,7 +14,7 @@ Tool Pair Integrity — 工具呼叫完整性保護
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
+from typing import List
 
 from echo_thought_core.schemas.message import Message
 

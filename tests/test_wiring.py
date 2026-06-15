@@ -18,20 +18,17 @@ import pytest
 from echo_thought_core import (
     CompactionConfig,
     ContextManager,
-    Message,
     PersonaContext,
 )
 from echo_thought_core.backends.base import AbstractBackend
 from echo_thought_core.backends.factory import create_backend, create_context_manager
 from echo_thought_core.cache.local_cache import CacheManager
-from echo_thought_core.compression.rolling_summary import RollingSummarizer
-from echo_thought_core.compression.full_compaction import FullCompactor
 from echo_thought_core.persona import (
     build_persona_from_config,
     build_system_instruction,
     load_llm_config,
 )
-from echo_thought_core.schemas.session import CompressionTier, SacredContent
+from echo_thought_core.schemas.session import CompressionTier
 
 
 # ═══════════════════════════════════════════════════════════════════════════

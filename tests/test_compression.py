@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-import pytest
 from echo_thought_core.schemas.message import Message
 from echo_thought_core.compression.tool_pairs import (
     PRUNED_TOOL_PLACEHOLDER,

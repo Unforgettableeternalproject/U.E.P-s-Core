@@ -58,7 +58,6 @@ except ImportError:
 from echo_thought_core import (
     CompactionConfig,
     ContextManager,
-    PersonaContext,
     create_context_manager,
 )
 from echo_thought_core.persona import (
@@ -101,7 +100,6 @@ def _usage_color(pct: float) -> str:
 def render_status_panel(mgr: ContextManager) -> Panel:
     """Token 使用率 + 壓縮狀態面板"""
     state = mgr.state
-    usage = mgr.get_usage()
     pct = state.usage_percentage
     color = _usage_color(pct)
 
@@ -522,7 +520,6 @@ class SessionControlCLI:
             self.console.print("[yellow]Nothing to compact (no messages).[/]")
             return
 
-        before = self.mgr.state.current_tokens
         with self.console.status("[yellow]Compacting (Layer 3)..."):
             try:
                 result = _run_async(self.mgr.compact())
@@ -530,7 +527,6 @@ class SessionControlCLI:
                 self.console.print(f"[red]Compaction failed: {e}[/]")
                 return
 
-        after = self.mgr.state.current_tokens
         saved = result.tokens_saved
 
         table = Table(show_header=False, box=None, padding=(0, 1))

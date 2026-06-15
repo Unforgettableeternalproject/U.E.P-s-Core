@@ -12,6 +12,7 @@ import uuid
 import logging
 from pathlib import Path
 from datetime import datetime, timezone
+from typing import Any
 
 # 添加專案路徑
 sys.path.insert(0, str(Path(__file__).parent))
@@ -38,6 +39,8 @@ from echo_memory.affect.judge import StorageJudge
 from echo_memory.affect.concept_extractor import ConceptExtractor
 from echo_memory.affect.soul_note import SoulNote, SoulNoteManager
 from echo_memory.affect.reflection import ReflectionModule
+from echo_memory.affect.reflection_executor import ReflectionExecutor, parse_reflection_to_actions
+from echo_memory.affect.action_queue import ReflectionActionQueue
 from echo_memory.utils.sanitizer import sanitize_llm_output
 from llm_integration.llm_client import LLMClient
 from llm_integration.router import LLMRouter, LLMRole
@@ -201,6 +204,14 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
         soul_notes=soul_notes,
         reflect_interval=10,
     )
+    action_queue = ReflectionActionQueue(
+        audit_path=engine.storage_path / "reflection_audit.jsonl",
+    )
+    reflection_executor = ReflectionExecutor(
+        engine=engine,
+        soul_notes=soul_notes,
+    )
+    executor_fn = reflection_executor.build_executor_fn()
     concept_extractor = ConceptExtractor(
         llm_fn=eval_fn,
         semantic=engine.semantic,
@@ -217,7 +228,7 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
             f"Chat: [dim]{llm.model_name}[/]  "
             f"Eval: [dim]{eval_cfg.model}[/]\n"
             f"Tools: {tools_status}\n\n"
-            "Commands: [dim]/quit /stats /dream /clear /history /tools /session[/]",
+            "Commands: [dim]/quit /stats /dream /clear /history /tools /session /review-actions[/]",
             border_style="cyan",
             width=70,
         ))
@@ -269,6 +280,9 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                 gemini_tools = None
                 executor = None
                 console.print("[yellow]Tools disabled.[/]")
+            continue
+        elif cmd == "/review-actions":
+            _cmd_review_actions(action_queue, executor_fn, console)
             continue
         elif cmd.startswith("/session"):
             parts_cmd = user_input.strip().split(maxsplit=1)
@@ -674,7 +688,7 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
             except Exception as e:
                 logger.debug(f"Soul note error: {e}")
 
-            # ── 6. 定時反思（每 N 輪觸發，或 Judge 強制）──
+            # ── 6. 定時反思 + 行動閉環 ──
             should_reflect = (
                 reflection_module.should_reflect(uncertainty=assessment.uncertainty)
                 or storage_dec.reflection_trigger
@@ -686,13 +700,55 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                     )
                     summaries = [ep.content_summary for ep in recent if ep.content_summary]
                     nc = engine.neurochem
+
+                    # 收集已知概念名稱供反思參考
+                    known_concepts = [
+                        c.name for c in engine.semantic.list_concepts(limit=10)
+                    ]
+
                     reflection = reflection_module.reflect(
-                        summaries, nc.dopamine, nc.serotonin, nc.mode.value
+                        summaries, nc.dopamine, nc.serotonin, nc.mode.value,
+                        known_concepts=known_concepts,
                     )
                     console.print(
                         f"  [dim magenta]💭 反思 [{reflection.action}]: "
                         f"{reflection.content[:60]}…[/]"
                     )
+
+                    # ── 6.1 解析 memory_ops → ActionQueue ──
+                    ops = parse_reflection_to_actions(reflection)
+                    for op_dict in ops:
+                        # 捕捉 pre_state
+                        pre_state = reflection_executor.capture_pre_state(
+                            op_dict["action_type"],
+                            op_dict["target_id"],
+                            op_dict["params"],
+                        )
+                        action = action_queue.enqueue(
+                            action_type=op_dict["action_type"],
+                            target_id=op_dict["target_id"],
+                            params=op_dict["params"],
+                            reasoning=op_dict["reasoning"],
+                            source="reflection",
+                        )
+                        action.pre_state = pre_state
+
+                    # ── 6.2 自動執行 AUTO 行動 ──
+                    executed = action_queue.process_auto_actions(executor_fn)
+                    for act in executed:
+                        console.print(
+                            f"  [dim green]  ⚡ 自動執行: "
+                            f"{act.action_type} on {act.target_id}[/]"
+                        )
+
+                    # ── 6.3 顯示待確認行動（不阻塞）──
+                    pending_confirms = action_queue.get_confirm_actions()
+                    if pending_confirms:
+                        console.print(
+                            f"  [dim yellow]  📋 {len(pending_confirms)} 個行動"
+                            f"待確認（使用 /review-actions 查看）[/]"
+                        )
+
                 except Exception as e:
                     logger.debug(f"Reflection error: {e}")
 
@@ -827,6 +883,47 @@ def _cmd_list(engine: MemoryEngine):
         )
 
     console.print(table)
+
+
+def _cmd_review_actions(
+    queue: ReflectionActionQueue,
+    exec_fn: Any,
+    con: Console,
+) -> None:
+    """審閱並處理待確認的反思行動。"""
+    pending = queue.get_confirm_actions()
+    if not pending:
+        con.print("[dim]沒有待確認的行動。[/]")
+        return
+
+    con.print(Panel(
+        f"[bold yellow]📋 待確認行動 ({len(pending)} 個)[/]",
+        border_style="yellow",
+    ))
+
+    for action in pending:
+        con.print(
+            f"\n  [bold]{action.action_type}[/] on [cyan]{action.target_id}[/]\n"
+            f"  理由: {action.reasoning}\n"
+            f"  參數: {action.params}"
+        )
+        choice = Prompt.ask(
+            "  [yellow]確認執行？[/]",
+            choices=["y", "n", "skip"],
+            default="n",
+        )
+        if choice == "y":
+            queue.confirm(action.id)
+            ok = queue.execute(action, executor_fn=exec_fn)
+            if ok:
+                con.print(f"  [green]✅ 已執行: {action.action_type}[/]")
+            else:
+                con.print(f"  [red]❌ 執行失敗: {action.error}[/]")
+        elif choice == "n":
+            queue.reject(action.id)
+            con.print(f"  [dim]已拒絕: {action.id}[/]")
+        else:
+            con.print(f"  [dim]跳過（保留待處理）[/]")
 
 
 def _cmd_dream(engine: MemoryEngine, llm: LLMClient | None = None):

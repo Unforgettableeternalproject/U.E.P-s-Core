@@ -21,6 +21,8 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
+from echo_thought_core.defaults import LLMLINGUA_MIN_TOKEN_THRESHOLD
+
 logger = logging.getLogger(__name__)
 
 # 嘗試 import llmlingua，失敗時 graceful fallback
@@ -41,7 +43,7 @@ class LLMLinguaConfig:
     rate: float = 0.5
 
     # 最小 token 門檻：低於此值不壓縮
-    min_token_threshold: int = 2000
+    min_token_threshold: int = LLMLINGUA_MIN_TOKEN_THRESHOLD
 
     # 模型名稱（LLMLingua-2 推薦的 XLM-RoBERTa 模型）
     model_name: str = "microsoft/llmlingua-2-xlm-roberta-large-meetingbank"

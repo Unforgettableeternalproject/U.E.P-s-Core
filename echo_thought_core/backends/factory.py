@@ -9,6 +9,7 @@ Backend Factory — 根據設定建立對應的後端實例，或一次建立完
 import logging
 from typing import Optional, Dict, Any
 from echo_thought_core.backends.base import AbstractBackend
+from echo_thought_core.defaults import DEFAULT_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +108,7 @@ def create_context_manager(
     # Step 3: 建立 ContextManager，注入 Backend
     config = compaction_config or CompactionConfig(
         backend=backend_type,
-        model=backend_config.get("model", "gemini-2.5-flash-lite"),
+        model=backend_config.get("model", DEFAULT_MODEL),
     )
 
     return ContextManager(

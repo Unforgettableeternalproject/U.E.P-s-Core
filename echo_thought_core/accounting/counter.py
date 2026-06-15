@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 
 from echo_thought_core.schemas.message import Message
+from echo_thought_core.defaults import IMAGE_TOKEN_ESTIMATE
 
 logger = logging.getLogger(__name__)
 
@@ -348,7 +349,7 @@ def estimate_message_tokens(message: Dict[str, Any]) -> int:
                 total += estimate_tokens(block_text)
                 # 圖片塊的固定開銷（粗估）
                 if block.get("type") == "image":
-                    total += 1000
+                    total += IMAGE_TOKEN_ESTIMATE
 
     # tool_calls（工具呼叫的 JSON 本身也佔 tokens）
     tool_calls = message.get("tool_calls") or []

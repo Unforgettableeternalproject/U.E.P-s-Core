@@ -3,6 +3,12 @@
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field
 
+from echo_thought_core.defaults import (
+    DEFAULT_MODEL,
+    DEFAULT_CONTEXT_WINDOW,
+    DEFAULT_EMERGENCY_KEEP,
+)
+
 
 # ── 壓縮設定 ──────────────────────────────────────────────────────────────────
 
@@ -12,13 +18,13 @@ class CompactionConfig(BaseModel):
 
     # 後端設定
     backend: str = Field("gemini", description="LLM 後端: gemini/local")
-    model: str = Field("gemini-2.5-flash-lite", description="主要模型")
+    model: str = Field(DEFAULT_MODEL, description="主要模型")
     compaction_model: Optional[str] = Field(
         None, description="用於摘要的較便宜模型（可選，None 表示使用主模型）"
     )
 
     # Context window
-    context_window_size: int = Field(200000, description="Context window 大小")
+    context_window_size: int = Field(DEFAULT_CONTEXT_WINDOW, description="Context window 大小")
 
     # 壓縮閾值（佔 context window 的百分比）
     thresholds: Dict[str, float] = Field(
@@ -38,7 +44,7 @@ class CompactionConfig(BaseModel):
 
     # 進階設定
     max_emergency_messages: int = Field(
-        4, description="Layer 4 緊急模式保留的最後幾則訊息"
+        DEFAULT_EMERGENCY_KEEP, description="Layer 4 緊急模式保留的最後幾則訊息"
     )
     compaction_cooldown_seconds: float = Field(
         60.0, description="兩次壓縮之間的最小間隔"

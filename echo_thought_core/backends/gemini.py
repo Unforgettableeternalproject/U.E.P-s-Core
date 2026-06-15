@@ -28,6 +28,12 @@ except ImportError:
     _HAS_GENAI = False
 
 from echo_thought_core.backends.base import AbstractBackend
+from echo_thought_core.defaults import (
+    DEFAULT_MODEL,
+    DEFAULT_TEMPERATURE,
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    DEFAULT_GCP_LOCATION,
+)
 
 if TYPE_CHECKING:
     from echo_thought_core.cache.local_cache import CacheManager
@@ -71,10 +77,10 @@ class GeminiBackend(AbstractBackend):
         """
         cfg = config or {}
 
-        self.model_name = cfg.get("model", "gemini-2.5-flash-lite")
-        self.temperature = cfg.get("temperature", 0.8)
+        self.model_name = cfg.get("model", DEFAULT_MODEL)
+        self.temperature = cfg.get("temperature", DEFAULT_TEMPERATURE)
         self.top_p = cfg.get("top_p", 0.95)
-        self.max_tokens = cfg.get("max_output_tokens", 8192)
+        self.max_tokens = cfg.get("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS)
 
         # 安全設定，預設為低風險攔截
         self.safety_settings = [
@@ -108,7 +114,7 @@ class GeminiBackend(AbstractBackend):
         # Vertex AI 或 API Key 認證參數
         self._api_key = cfg.get("api_key")
         self._project_id = cfg.get("project_id") or os.getenv("GCP_PROJECT_ID")
-        self._location = cfg.get("location", os.getenv("GCP_LOCATION", "us-central1"))
+        self._location = cfg.get("location", os.getenv("GCP_LOCATION", DEFAULT_GCP_LOCATION))
 
         # 延遲初始化 client
         self._client = None

@@ -22,6 +22,8 @@ from typing import Dict, Any, Optional, List, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 
+from echo_thought_core.defaults import DEFAULT_MODEL
+
 logger = logging.getLogger(__name__)
 
 
@@ -158,7 +160,7 @@ class CacheManager:
                     self.client = None
 
         # 使用支援快取的模型
-        self.model_name: str = self.config.get("model_name", "gemini-2.5-flash-lite")
+        self.model_name: str = self.config.get("model_name", DEFAULT_MODEL)
 
         # ── Gemini 顯性快取管理 ──
         self.caches: Dict[str, CacheInfo] = {}

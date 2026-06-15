@@ -22,6 +22,7 @@ from typing import List, Tuple, Optional
 
 from echo_thought_core.schemas.message import Message
 from echo_thought_core.compression.tool_pairs import PRUNED_TOOL_PLACEHOLDER
+from echo_thought_core.defaults import LLMLINGUA_MIN_TOKEN_THRESHOLD
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +118,7 @@ class MicroPruner:
                 self.use_llmlingua
                 and msg.role in ("user", "assistant")
                 and msg.token_count
-                and msg.token_count >= 2000
+                and msg.token_count >= LLMLINGUA_MIN_TOKEN_THRESHOLD
                 and not msg.is_compressed
                 and not msg.metadata.get("llmlingua_compressed", False)
             ):

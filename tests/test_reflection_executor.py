@@ -48,7 +48,7 @@ class FakeConcept:
     name: str = "測試概念"
     description: str = "這是測試概念"
     concept_type: str = "entity"
-    source_episodes: list = field(default_factory=list)
+    source_episode_ids: list = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
 
 
@@ -240,12 +240,12 @@ class TestExecutorActions:
         primary = FakeConcept(
             name="主概念",
             description="主描述",
-            source_episodes=["ep_1"],
+            source_episode_ids=["ep_1"],
         )
         secondary = FakeConcept(
             name="次概念",
             description="次描述",
-            source_episodes=["ep_2"],
+            source_episode_ids=["ep_2"],
         )
         mock_engine.semantic.get_by_name.side_effect = lambda n: (
             primary if n == "主概念" else secondary if n == "次概念" else None
@@ -266,17 +266,15 @@ class TestExecutorActions:
             fn("merge_concepts", "主概念", {})
 
     def test_archive_episode(self, executor, mock_engine):
-        """archive_episode 降低 salience 並標記 metadata。"""
+        """archive_episode 使用原子性 archive_episode 方法。"""
+        mock_engine.episodic.archive_episode.return_value = True
         fn = executor.build_executor_fn()
         result = fn("archive_episode", "ep_test123", {})
 
         assert result["old_salience"] == 0.5
         assert result["new_salience"] == 0.05
         assert result["archived"] is True
-        mock_engine.episodic.update_salience.assert_called_once_with(
-            "ep_test123", 0.05
-        )
-        mock_engine.episodic.update_episode_metadata.assert_called_once()
+        mock_engine.episodic.archive_episode.assert_called_once_with("ep_test123")
 
     def test_create_concept(self, executor, mock_engine):
         """create_concept 建立新概念。"""
@@ -400,8 +398,15 @@ class TestActionQueueIntegration:
         assert len(executed) == 1
         assert executed[0].status == ActionStatus.EXECUTED
 
-    def test_confirm_action_requires_confirmation(self, executor):
+    def test_confirm_action_requires_confirmation(self, executor, mock_engine):
         """CONFIRM 行動需要先確認才能執行。"""
+        # 設定正確的 mock 數據：不同名稱回傳不同 concept
+        primary = FakeConcept(name="主概念", description="主描述")
+        secondary = FakeConcept(name="次概念", description="次描述")
+        mock_engine.semantic.get_by_name.side_effect = lambda n: (
+            primary if n == "主概念" else secondary if n == "次概念" else None
+        )
+
         queue = ReflectionActionQueue()
         fn = executor.build_executor_fn()
 
@@ -420,6 +425,7 @@ class TestActionQueueIntegration:
         # 確認後才能執行
         queue.confirm(action.id)
         assert queue.execute(action, executor_fn=fn) is True
+        mock_engine.semantic.remove_concept.assert_called_once_with("次概念")
 
     def test_deny_action_rejected(self, executor):
         """DENY 行動在 enqueue 時即被拒絕。"""

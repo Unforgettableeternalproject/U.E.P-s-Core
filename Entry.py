@@ -750,7 +750,7 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                         )
 
                 except Exception as e:
-                    logger.debug(f"Reflection error: {e}")
+                    logger.warning(f"Reflection error: {e}", exc_info=True)
 
         except Exception as e:
             logger.warning(f"Store error: {e}")

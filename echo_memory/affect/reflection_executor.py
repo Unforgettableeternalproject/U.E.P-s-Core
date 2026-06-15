@@ -238,13 +238,13 @@ class ReflectionExecutor:
         existing_tags = list(concept.metadata.get("tags", []))
         merged_tags = list(set(existing_tags + new_tags))
 
-        # 更新 metadata 中的 tags
+        # 更新 metadata 中的 tags（upsert 會觸發 embedding 重算，
+        # 但 description 未變，結果一致，僅有效能開銷）
         concept.metadata["tags"] = merged_tags
         self._engine.semantic.upsert_concept(
             name=concept.name,
             description=concept.description,
             concept_type=concept.concept_type,
-            source_episodes=concept.source_episodes,
             metadata=concept.metadata,
         )
 
@@ -294,25 +294,23 @@ class ReflectionExecutor:
             f"（合併自「{secondary.name}」）{secondary.description}"
         )
 
-        # 合併 source_episodes
-        merged_episodes = list(set(
-            primary.source_episodes + secondary.source_episodes
-        ))
-
-        # 合併 metadata（保留主概念的，追加次概念的 facts）
+        # 合併 metadata（保留主概念的，追加次概念的 facts + source episodes）
         merged_meta = dict(primary.metadata)
         secondary_facts = secondary.metadata.get("facts", [])
         if secondary_facts:
             existing_facts = merged_meta.get("facts", [])
             merged_meta["facts"] = existing_facts + secondary_facts
         merged_meta["merged_from"] = merge_with
+        # 合併 source_episode_ids 到 metadata 保存
+        merged_meta["merged_source_episodes"] = list(set(
+            primary.source_episode_ids + secondary.source_episode_ids
+        ))
 
         # 更新主概念
         self._engine.semantic.upsert_concept(
             name=primary.name,
             description=merged_desc,
             concept_type=primary.concept_type,
-            source_episodes=merged_episodes,
             metadata=merged_meta,
         )
 
@@ -328,19 +326,17 @@ class ReflectionExecutor:
     def _exec_archive_episode(
         self, target_id: str, _params: dict[str, Any]
     ) -> dict[str, Any]:
-        """歸檔 episode（降低 salience + 標記 metadata）。"""
+        """歸檔 episode（原子性：一次 lock 內完成 salience 降低 + metadata 標記）。"""
         ep = self._engine.episodic.get(target_id)
         if ep is None:
             raise ValueError(f"Episode 不存在: {target_id}")
 
         old_salience = ep.salience_score
 
-        # 降低 salience 到極低值
-        self._engine.episodic.update_salience(target_id, 0.05)
-        # 標記 archived metadata
-        self._engine.episodic.update_episode_metadata(
-            target_id, {"archived": True, "archived_by": "reflection"}
-        )
+        # 原子操作：一次 lock 內完成 salience + metadata 更新
+        ok = self._engine.episodic.archive_episode(target_id)
+        if not ok:
+            raise RuntimeError(f"archive_episode 失敗: {target_id}")
 
         return {
             "old_salience": old_salience,
@@ -360,7 +356,6 @@ class ReflectionExecutor:
             name=target_id,
             description=description,
             concept_type=params.get("concept_type", "reflection"),
-            source_episodes=[],
             metadata={"created_by": "reflection_executor"},
         )
 

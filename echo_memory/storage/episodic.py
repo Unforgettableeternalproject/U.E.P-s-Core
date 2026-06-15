@@ -313,6 +313,33 @@ class EpisodicMemory:
             self._save_unlocked()
             return True
 
+    def archive_episode(
+        self, episode_id: str, archive_salience: float = 0.05
+    ) -> bool:
+        """
+        原子性歸檔 episode：降低 salience + 標記 metadata。
+
+        在單一 storage_lock 內完成，避免 race condition。
+
+        Args:
+            episode_id: Episode ID
+            archive_salience: 歸檔後的 salience（預設 0.05）
+
+        Returns:
+            True 若成功，False 若 Episode 不存在
+        """
+        with storage_lock(self.lock_path):
+            self._load(reset=True)
+            ep = self._episodes.get(episode_id)
+            if ep is None:
+                return False
+
+            ep.salience_score = min(1.0, max(0.0, archive_salience))
+            ep.metadata["archived"] = True
+            ep.metadata["archived_by"] = "reflection"
+            self._save_unlocked()
+            return True
+
     def clear(self):
         """清空所有情節記憶（測試用）"""
         with storage_lock(self.lock_path):

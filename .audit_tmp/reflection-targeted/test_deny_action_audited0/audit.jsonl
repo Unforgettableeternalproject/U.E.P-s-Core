@@ -1,0 +1,1 @@
+{"id": "act_0001_1781522859", "action_type": "delete_episode", "source": "reflection", "target_id": "ep_001", "params": {}, "reasoning": "", "permission": "deny", "status": "rejected", "pre_state": {}, "post_state": {}, "error": "", "created_at": 1781522859.6444724, "executed_at": 0.0}

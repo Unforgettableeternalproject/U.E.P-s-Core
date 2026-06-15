@@ -28,6 +28,16 @@ logger = logging.getLogger("echo_memory.affect.reflection_executor")
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
+# 允許的操作類型白名單
+_ALLOWED_OPS = frozenset({
+    "adjust_salience", "tag_concept", "add_note",
+    "merge_concepts", "archive_episode", "create_concept",
+})
+
+# 單次反思最多允許的操作數量
+_MAX_OPS = 3
+
+
 def parse_reflection_to_actions(
     reflection: ReflectionOutput,
 ) -> list[dict[str, Any]]:
@@ -40,7 +50,10 @@ def parse_reflection_to_actions(
       - params: dict
       - reasoning: str
 
-    無效的 op（缺少 op 欄位）會被跳過並記 warning。
+    安全限制：
+      - 最多 _MAX_OPS（3）個操作，超過的截斷並記 warning
+      - op_type 必須在 _ALLOWED_OPS 白名單中
+      - 無效的 op（缺少 op 欄位 / 不在白名單）被跳過
 
     Args:
         reflection: 反思模組的輸出
@@ -48,9 +61,17 @@ def parse_reflection_to_actions(
     Returns:
         轉換後的行動參數列表
     """
+    raw_ops = reflection.memory_ops
+    if len(raw_ops) > _MAX_OPS:
+        logger.warning(
+            "[ReflectionExecutor] memory_ops 超過上限（%d > %d），截斷",
+            len(raw_ops), _MAX_OPS,
+        )
+        raw_ops = raw_ops[:_MAX_OPS]
+
     actions: list[dict[str, Any]] = []
 
-    for i, op in enumerate(reflection.memory_ops):
+    for i, op in enumerate(raw_ops):
         if not isinstance(op, dict):
             logger.warning(
                 "[ReflectionExecutor] memory_ops[%d] 不是 dict，跳過: %s",
@@ -63,6 +84,13 @@ def parse_reflection_to_actions(
             logger.warning(
                 "[ReflectionExecutor] memory_ops[%d] 缺少 'op' 欄位，跳過",
                 i,
+            )
+            continue
+
+        if op_type not in _ALLOWED_OPS:
+            logger.warning(
+                "[ReflectionExecutor] memory_ops[%d] 未知操作 '%s'，跳過",
+                i, op_type,
             )
             continue
 
@@ -129,6 +157,68 @@ class ReflectionExecutor:
             return handler(target_id, params)
 
         return executor_fn
+
+    def build_rollback_fn(self):
+        """
+        回傳可傳入 ActionQueue.rollback() 的回調函式。
+
+        根據 pre_state 還原目標物件到執行前狀態。
+        簽章：(action_type: str, target_id: str, pre_state: dict) → None
+        """
+        def rollback_fn(
+            action_type: str, target_id: str, pre_state: dict[str, Any]
+        ) -> None:
+            if action_type == "adjust_salience":
+                old = pre_state.get("salience_score")
+                if old is not None:
+                    self._engine.episodic.update_salience(target_id, old)
+
+            elif action_type == "tag_concept":
+                old_tags = pre_state.get("tags")
+                if old_tags is not None:
+                    concept = self._engine.semantic.get_by_name(target_id)
+                    if concept:
+                        concept.metadata["tags"] = old_tags
+                        self._engine.semantic.upsert_concept(
+                            name=concept.name,
+                            description=concept.description,
+                            concept_type=concept.concept_type,
+                            metadata=concept.metadata,
+                        )
+
+            elif action_type == "archive_episode":
+                old_salience = pre_state.get("salience_score")
+                if old_salience is not None:
+                    self._engine.episodic.update_salience(target_id, old_salience)
+                self._engine.episodic.update_episode_metadata(
+                    target_id, {"archived": False, "archived_by": None}
+                )
+
+            elif action_type == "create_concept":
+                if not pre_state.get("already_exists"):
+                    self._engine.semantic.remove_concept(target_id)
+
+            elif action_type == "add_note":
+                # SoulNote 不支援刪除，rollback 無法還原
+                logger.warning(
+                    "[ReflectionExecutor] add_note 不支援 rollback"
+                )
+
+            elif action_type == "merge_concepts":
+                # merge 的 rollback 需要完整的 secondary 資料，
+                # 目前 pre_state 只保留 name/description，無法完整還原。
+                logger.warning(
+                    "[ReflectionExecutor] merge_concepts rollback 尚不完整，"
+                    "僅記錄狀態"
+                )
+
+            else:
+                logger.warning(
+                    "[ReflectionExecutor] 未知 action_type 的 rollback: %s",
+                    action_type,
+                )
+
+        return rollback_fn
 
     def capture_pre_state(
         self, action_type: str, target_id: str, params: dict[str, Any]
@@ -280,6 +370,11 @@ class ReflectionExecutor:
         if not merge_with:
             raise ValueError("merge_concepts 缺少 merge_with 參數")
 
+        if target_id == merge_with:
+            raise ValueError(
+                f"merge_concepts 不允許自我合併: {target_id}"
+            )
+
         primary = self._engine.semantic.get_by_name(target_id)
         if primary is None:
             raise ValueError(f"主概念不存在: {target_id}")
@@ -314,8 +409,13 @@ class ReflectionExecutor:
             metadata=merged_meta,
         )
 
-        # 移除次概念
-        self._engine.semantic.remove_concept(merge_with)
+        # 移除次概念（檢查回傳值避免半合併）
+        removed = self._engine.semantic.remove_concept(merge_with)
+        if not removed:
+            logger.warning(
+                "[ReflectionExecutor] merge_concepts: 主概念已更新但"
+                "次概念移除失敗: %s", merge_with,
+            )
 
         return {
             "primary": target_id,
@@ -347,10 +447,17 @@ class ReflectionExecutor:
     def _exec_create_concept(
         self, target_id: str, params: dict[str, Any]
     ) -> dict[str, Any]:
-        """建立新概念。"""
+        """建立新概念（若同名概念已存在則拒絕）。"""
         description = str(params.get("description", ""))
         if not description:
             raise ValueError("create_concept 缺少 description 參數")
+
+        existing = self._engine.semantic.get_by_name(target_id)
+        if existing is not None:
+            raise ValueError(
+                f"create_concept 拒絕：同名概念「{target_id}」已存在，"
+                f"不允許覆寫（使用 tag_concept 或 merge_concepts 修改既有概念）"
+            )
 
         concept_id = self._engine.semantic.upsert_concept(
             name=target_id,

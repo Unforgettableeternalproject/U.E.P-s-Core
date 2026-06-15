@@ -146,17 +146,35 @@ class TestParseReflectionToActions:
         assert actions[0]["params"] == {}
 
     def test_mixed_valid_and_invalid(self):
-        """混合有效和無效 ops，只保留有效的。"""
+        """混合有效和無效 ops，只保留有效的（白名單過濾 + 截斷）。"""
         r = ReflectionOutput(memory_ops=[
             {"op": "add_note", "params": {"content": "ok"}},
             {"target": "no_op"},
-            "bad",
             {"op": "tag_concept", "target": "概念A"},
         ])
         actions = parse_reflection_to_actions(r)
         assert len(actions) == 2
         assert actions[0]["action_type"] == "add_note"
         assert actions[1]["action_type"] == "tag_concept"
+
+    def test_max_ops_truncation(self):
+        """超過 3 個 ops 時截斷。"""
+        r = ReflectionOutput(memory_ops=[
+            {"op": "add_note", "params": {"content": "1"}},
+            {"op": "add_note", "params": {"content": "2"}},
+            {"op": "add_note", "params": {"content": "3"}},
+            {"op": "add_note", "params": {"content": "4"}},
+        ])
+        actions = parse_reflection_to_actions(r)
+        assert len(actions) == 3
+
+    def test_unknown_op_rejected(self):
+        """不在白名單的 op 被跳過。"""
+        r = ReflectionOutput(memory_ops=[
+            {"op": "destroy_world", "target": "x"},
+        ])
+        actions = parse_reflection_to_actions(r)
+        assert len(actions) == 0
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -259,6 +277,12 @@ class TestExecutorActions:
         mock_engine.semantic.upsert_concept.assert_called_once()
         mock_engine.semantic.remove_concept.assert_called_once_with("次概念")
 
+    def test_merge_concepts_self_merge_rejected(self, executor):
+        """自我合併（target == merge_with）被拒絕。"""
+        fn = executor.build_executor_fn()
+        with pytest.raises(ValueError, match="不允許自我合併"):
+            fn("merge_concepts", "Python", {"merge_with": "Python"})
+
     def test_merge_concepts_missing_merge_with(self, executor):
         """merge_concepts 缺少 merge_with 拋出 ValueError。"""
         fn = executor.build_executor_fn()
@@ -277,7 +301,9 @@ class TestExecutorActions:
         mock_engine.episodic.archive_episode.assert_called_once_with("ep_test123")
 
     def test_create_concept(self, executor, mock_engine):
-        """create_concept 建立新概念。"""
+        """create_concept 建立新概念（目標不存在時）。"""
+        # get_by_name 回傳 None 表示概念不存在
+        mock_engine.semantic.get_by_name.return_value = None
         fn = executor.build_executor_fn()
         result = fn("create_concept", "新概念", {"description": "新描述"})
 
@@ -285,8 +311,16 @@ class TestExecutorActions:
         assert result["name"] == "新概念"
         mock_engine.semantic.upsert_concept.assert_called_once()
 
-    def test_create_concept_no_description(self, executor):
+    def test_create_concept_already_exists(self, executor, mock_engine):
+        """create_concept 同名概念已存在時拒絕。"""
+        # mock 預設回傳 FakeConcept（表示已存在）
+        fn = executor.build_executor_fn()
+        with pytest.raises(ValueError, match="已存在"):
+            fn("create_concept", "測試概念", {"description": "覆寫"})
+
+    def test_create_concept_no_description(self, executor, mock_engine):
         """create_concept 缺少 description 拋出 ValueError。"""
+        mock_engine.semantic.get_by_name.return_value = None
         fn = executor.build_executor_fn()
         with pytest.raises(ValueError, match="缺少 description"):
             fn("create_concept", "新概念", {})

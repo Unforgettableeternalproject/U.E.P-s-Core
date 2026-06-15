@@ -177,6 +177,8 @@ class ReflectionActionQueue:
             return action
 
         self._pending.append(action)
+        # 所有入隊行動都寫入 audit（包括 CONFIRM），確保持久化可追蹤
+        self._audit(action)
         logger.debug(
             "[ActionQueue] 行動入隊: %s on %s (permission=%s)",
             action_type,
@@ -317,20 +319,38 @@ class ReflectionActionQueue:
                 executed.append(action)
         return executed
 
-    def rollback(self, action_id: str) -> bool:
+    def rollback(
+        self,
+        action_id: str,
+        rollback_fn: Any = None,
+    ) -> bool:
         """
         回滾一個已執行的行動。
 
-        只標記狀態，實際回滾由外部根據 pre_state 執行。
+        若提供 rollback_fn，會使用 pre_state 執行實際還原；
+        否則僅標記狀態（向下相容）。
 
         Args:
             action_id: 行動 ID
+            rollback_fn: 回滾函式，接收 (action_type, target_id, pre_state) → None
+                         若為 None，僅標記狀態不做實際還原。
 
         Returns:
-            是否成功標記為回滾
+            是否成功回滾
         """
         for a in self._history:
             if a.id == action_id and a.status == ActionStatus.EXECUTED:
+                if rollback_fn is not None and a.pre_state:
+                    try:
+                        rollback_fn(a.action_type, a.target_id, a.pre_state)
+                    except Exception as e:
+                        logger.error(
+                            "[ActionQueue] 回滾執行失敗: %s — %s",
+                            action_id, e,
+                        )
+                        a.error = f"rollback failed: {e}"
+                        self._audit(a)
+                        return False
                 a.status = ActionStatus.ROLLED_BACK
                 self._audit(a)
                 logger.info("[ActionQueue] 行動已回滾: %s", action_id)

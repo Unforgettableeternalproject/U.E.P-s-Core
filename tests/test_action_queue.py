@@ -159,7 +159,7 @@ class TestAuditLog:
     """稽核日誌測試。"""
 
     def test_audit_log_written(self, tmp_path):
-        """稽核日誌在行動完成後寫入。"""
+        """稽核日誌在 enqueue + execute 後各寫入一筆。"""
         audit_file = tmp_path / "audit.jsonl"
         q = ReflectionActionQueue(audit_path=audit_file)
 
@@ -168,12 +168,16 @@ class TestAuditLog:
 
         assert audit_file.exists()
         lines = audit_file.read_text(encoding="utf-8").strip().split("\n")
-        assert len(lines) == 1
+        assert len(lines) == 2  # enqueue (pending) + execute (executed)
 
-        record = json.loads(lines[0])
-        assert record["action_type"] == "adjust_salience"
-        assert record["status"] == "executed"
-        assert record["target_id"] == "ep_001"
+        # 第一筆是 enqueue 時的 pending 記錄
+        record0 = json.loads(lines[0])
+        assert record0["status"] == "pending"
+        # 第二筆是 execute 後的 executed 記錄
+        record1 = json.loads(lines[1])
+        assert record1["action_type"] == "adjust_salience"
+        assert record1["status"] == "executed"
+        assert record1["target_id"] == "ep_001"
 
     def test_deny_action_audited(self, tmp_path):
         """DENY 行動也要寫入稽核日誌。"""

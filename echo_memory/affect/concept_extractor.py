@@ -84,6 +84,7 @@ class ConceptExtractor:
         self,
         episode: Episode,
         salience: float = 0.5,
+        concept_seeds: list | None = None,
     ) -> threading.Thread | None:
         """
         在背景 Thread 中執行概念提取。
@@ -91,6 +92,8 @@ class ConceptExtractor:
         Args:
             episode: 剛存儲的 Episode
             salience: 當前顯著性
+            concept_seeds: StorageJudge 提議的優先概念候選（可選）。
+                          不為 None 時，LLM prompt 中優先考慮這些概念。
 
         Returns:
             啟動的 Thread（None 表示跳過）
@@ -100,7 +103,7 @@ class ConceptExtractor:
 
         t = threading.Thread(
             target=self._extract_concepts_bg,
-            args=(episode, salience),
+            args=(episode, salience, concept_seeds),
             daemon=True,
             name=f"concept-extract-{episode.id[:8]}",
         )
@@ -111,11 +114,12 @@ class ConceptExtractor:
         self,
         episode: Episode,
         salience: float,
+        concept_seeds: list | None = None,
     ) -> None:
         """背景執行的概念提取流程。"""
         try:
-            # Step 1: LLM 提取概念
-            concepts = self._llm_extract(episode)
+            # Step 1: LLM 提取概念（若有 seeds 則優先考慮）
+            concepts = self._llm_extract(episode, concept_seeds=concept_seeds)
             if not concepts:
                 return
 
@@ -158,12 +162,29 @@ class ConceptExtractor:
                 exc_info=True,
             )
 
-    def _llm_extract(self, episode: Episode) -> list[dict[str, str]]:
+    def _llm_extract(
+        self,
+        episode: Episode,
+        concept_seeds: list | None = None,
+    ) -> list[dict[str, str]]:
         """透過 LLM 提取概念列表。"""
         prompt = _CONCEPT_PROMPT.format(
             user_input=episode.user_input[:300],
             agent_response=episode.agent_response[:300],
         )
+
+        # 若有 StorageJudge 的 concept_seeds，注入優先提取提示
+        if concept_seeds:
+            seed_names = []
+            for s in concept_seeds:
+                name = s.name if hasattr(s, "name") else str(s.get("name", ""))
+                if name:
+                    seed_names.append(name)
+            if seed_names:
+                prompt += (
+                    f"\n\n提示：優先考慮以下概念（若與對話相關）："
+                    f"{', '.join(seed_names)}"
+                )
 
         assert self._llm_fn is not None
         raw = self._llm_fn(prompt)

@@ -53,15 +53,19 @@ class ResponseVerifier:
         self,
         neurochem: NeurochemState,
         embed_fn: Callable[[str], list[float]] | None = None,
+        llm_fn: Callable[[str], str] | None = None,
     ):
         """
         Args:
             neurochem: 當前神經化學狀態（用於動態門檻計算）
             embed_fn: 文本嵌入函式（用於語意一致性比對）。
                       為 None 時一致性評分使用中性預設值。
+            llm_fn: LLM 呼叫函式（用於 Layer 2 語意矛盾偵測）。
+                    為 None 時只做 Layer 1 embedding 比對。
         """
         self._neurochem = neurochem
         self._embed_fn = embed_fn
+        self._llm_fn = llm_fn
 
     def verify(
         self,
@@ -214,24 +218,109 @@ class ResponseVerifier:
                 sim = float(np.dot(response_vec, ref_vec) / (resp_norm * ref_norm))
                 best_sim = max(best_sim, sim)
 
-            # 映射 cosine sim 到一致性分數
+            # ── Layer 1 結果：映射 cosine sim 到一致性分數 ──
             # sim >= 0.7 → 1.0（高度相關）
             # sim ~= 0.3 → 0.7（中性）
             # sim < 0.1 → 0.5（略低但不嚴重懲罰）
             if best_sim >= 0.7:
-                return 1.0
+                layer1_score = 1.0
             elif best_sim >= 0.3:
-                # 線性插值：0.3→0.7, 0.7→1.0
-                return 0.7 + (best_sim - 0.3) * (0.3 / 0.4)
+                layer1_score = 0.7 + (best_sim - 0.3) * (0.3 / 0.4)
             else:
-                # 線性插值：0.0→0.5, 0.3→0.7
-                return 0.5 + best_sim * (0.2 / 0.3)
+                layer1_score = 0.5 + best_sim * (0.2 / 0.3)
+
+            # ── Layer 2：LLM 矛盾偵測 ──
+            # 只在 Layer 1 通過（高相關 sim >= 0.5）且 LLM 可用時觸發。
+            # cosine 高只表示主題相關，不表示沒矛盾：
+            # 「蝦過敏」和「推薦吃蝦」的 embedding 非常相似但邏輯矛盾。
+            if (
+                best_sim >= 0.5
+                and self._llm_fn is not None
+                and layer1_score >= 0.7
+            ):
+                contradiction = self._llm_contradiction_check(
+                    text, memory_ctx
+                )
+                if contradiction:
+                    logger.info(
+                        "[ResponseVerifier] Layer 2 偵測到矛盾，"
+                        "一致性分數降至 0.2"
+                    )
+                    return 0.2  # 嚴重懲罰
+
+            return layer1_score
 
         except Exception as e:
             logger.warning(
                 "[ResponseVerifier] 語意一致性計算失敗，使用中性預設值: %s", e
             )
             return 0.7  # 失敗降級
+
+    def _llm_contradiction_check(
+        self,
+        response_text: str,
+        memory_ctx: MemoryContext,
+    ) -> bool:
+        """
+        Layer 2：LLM 矛盾偵測。
+
+        只在 Layer 1 通過且 LLM 可用時呼叫。
+        判斷回覆是否與已知記憶有邏輯矛盾。
+
+        Returns:
+            True = 偵測到矛盾，False = 無矛盾或無法判斷
+        """
+        # 收集記憶摘要（限制長度）
+        memory_lines = []
+        for ep in memory_ctx.episodes[:5]:
+            summary = ep.content_summary or ep.user_input[:100]
+            memory_lines.append(f"- {summary}")
+        memories_text = "\n".join(memory_lines)
+
+        prompt = (
+            "你是記憶一致性驗證器。判斷以下回覆是否與已知記憶有邏輯矛盾。\n\n"
+            f"已知記憶：\n{memories_text}\n\n"
+            f"待驗證回覆：\n{response_text[:300]}\n\n"
+            '請以純 JSON 格式回覆：\n'
+            '{"has_contradiction": true/false, "reason": "簡短說明"}\n\n'
+            "規則：\n"
+            "- 只判斷邏輯矛盾，不判斷風格或語氣差異\n"
+            "- 「記憶說 A 過敏，回覆卻推薦 A」= 矛盾\n"
+            "- 「記憶沒提到 B，回覆提到 B」= 不算矛盾（新知識）\n"
+            "- 不確定時回 false"
+        )
+
+        try:
+            import json
+            raw = self._llm_fn(prompt)  # type: ignore[misc]
+            # 嘗試解析
+            parsed = None
+            try:
+                parsed = json.loads(raw.strip())
+            except json.JSONDecodeError:
+                import re
+                match = re.search(r"\{.*?\}", raw, re.DOTALL)
+                if match:
+                    try:
+                        parsed = json.loads(match.group(0))
+                    except json.JSONDecodeError:
+                        pass
+
+            if parsed and isinstance(parsed, dict):
+                result = bool(parsed.get("has_contradiction", False))
+                if result:
+                    reason = parsed.get("reason", "")
+                    logger.info(
+                        "[ResponseVerifier] LLM 矛盾偵測: %s", reason
+                    )
+                return result
+
+        except Exception as e:
+            logger.warning(
+                "[ResponseVerifier] LLM 矛盾偵測失敗: %s", e
+            )
+
+        return False  # 不確定時不懲罰
 
     def _score_rules(self, text: str) -> float:
         """

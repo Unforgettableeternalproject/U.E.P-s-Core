@@ -383,6 +383,37 @@ class LLMClient:
         """清空對話歷史"""
         self._history.clear()
 
+    def undo_last_exchange(self) -> int:
+        """
+        移除最後一輪對話（user + model + 中間的 tool calls）。
+
+        用於 SUPPRESS retry：被抑制的回覆不應留在歷史中，
+        否則重試時 LLM 會看到重複的 user message 和髒回覆。
+
+        Returns:
+            移除的條目數量
+        """
+        if not self._history:
+            return 0
+
+        # 從末尾往前找到最後一個 user 訊息的位置
+        last_user_idx = -1
+        for i in range(len(self._history) - 1, -1, -1):
+            if getattr(self._history[i], "role", "") == "user":
+                last_user_idx = i
+                break
+
+        if last_user_idx < 0:
+            return 0
+
+        # 移除 last_user_idx 及之後的所有條目
+        removed = len(self._history) - last_user_idx
+        del self._history[last_user_idx:]
+        logger.debug(
+            f"[LLM] undo_last_exchange: 移除 {removed} 條歷史"
+        )
+        return removed
+
     def get_history(self) -> list[dict]:
         """
         取得對話歷史副本（轉換為簡化格式供顯示用）。

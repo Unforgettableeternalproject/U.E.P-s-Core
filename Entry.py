@@ -426,7 +426,7 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
             memory_ctx=context if not context.is_empty() else None,
         )
 
-        # 工具過濾
+        # 工具過濾 + 推薦
         filtered_tools = gemini_tools
         if tools_enabled and gemini_tools:
             total_eps = engine.get_stats().get("total_episodes", 0)
@@ -435,6 +435,24 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                 gemini_tools,
                 total_episodes=total_eps,
             )
+
+            # StorageJudge 工具推薦（LLM 語意排序）
+            recommendation = judge.recommend_tool(
+                user_input,
+                context if not context.is_empty() else None,
+                filtered_tools,
+            )
+            if recommendation.recommended_tool != "none":
+                # 將推薦工具排到最前面，讓 LLM 更容易看到
+                rec_name = recommendation.recommended_tool
+                filtered_tools = sorted(
+                    filtered_tools,
+                    key=lambda t: t.get("name") != rec_name,
+                )
+                console.print(
+                    f"  [dim]🎯 Tool hint: {rec_name} "
+                    f"({recommendation.confidence:.0%})[/]"
+                )
 
         # ── 2. LLM 生成（含品質閘門 + 可能的重試）──
         try:
@@ -461,7 +479,7 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
 
             # 注入 embed_fn 啟用 Grounded Verification（語意一致性比對）
             embed_fn = engine.episodic.generate_query_embedding
-            verifier = ResponseVerifier(nc, embed_fn=embed_fn)
+            verifier = ResponseVerifier(nc, embed_fn=embed_fn, llm_fn=eval_fn)
             inhibitor = ResponseInhibitor(nc, max_retries=1)
 
             for attempt in range(2):  # 最多嘗試 2 次（首次 + 1 重試）
@@ -482,6 +500,8 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                 gate_action = gate_decision.action
 
                 if gate_decision.should_retry:
+                    # SUPPRESS retry：移除被抑制的回覆，避免歷史污染
+                    llm.undo_last_exchange()
                     console.print(f"  [dim yellow]⚡ {gate_decision.reason}[/]")
                     continue
 
@@ -549,6 +569,8 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                 ep_metadata["judge_tags"] = storage_dec.metadata_tags
             if storage_dec.force_remember:
                 ep_metadata["force_remember"] = True
+            if storage_dec.entity_triggers:
+                ep_metadata["entity_triggers"] = True
             if storage_dec.source != "baseline":
                 ep_metadata["judge_source"] = storage_dec.source
 
@@ -617,9 +639,21 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
             try:
                 stored_ep = engine.episodic._episodes.get(episode_id)
                 if stored_ep:
-                    concept_extractor.extract_in_background(stored_ep, salience)
+                    # 傳入 StorageJudge 的 concept_seeds 作為優先提取建議
+                    concept_extractor.extract_in_background(
+                        stored_ep,
+                        salience,
+                        concept_seeds=(
+                            storage_dec.concept_seeds
+                            if storage_dec.concept_seeds else None
+                        ),
+                    )
             except Exception as e:
                 logger.debug(f"Concept extraction launch error: {e}")
+
+            # 注：entity_triggers 目前不額外動作——entity extraction
+            # 已在 engine.store_episode() 中每輪自動執行。
+            # entity_triggers 的值記錄在 ep_metadata 中供未來使用。
 
             # ── 5. 潛意識日記（Soul Note）──
             try:

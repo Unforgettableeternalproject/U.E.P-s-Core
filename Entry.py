@@ -31,6 +31,7 @@ from echo_memory.affect.signals import SalienceSignals, SubconsciousAssessment
 from echo_memory.affect.salience import SalienceEvaluator
 from echo_memory.affect.subconscious import SubconsciousAssessor
 from echo_memory.affect.concept_verifier import ConceptVerifier
+from echo_memory.affect.concept_inhibitor import ConceptInhibitor
 from echo_memory.affect.verifier import ResponseVerifier
 from echo_memory.affect.inhibitor import SubconsciousInhibitor, InhibitionAction
 from echo_memory.affect.judge import JudgeAgent
@@ -187,6 +188,10 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
     concept_verifier = ConceptVerifier(
         llm_fn=eval_fn,
         embed_fn=engine.episodic.generate_query_embedding,
+    )
+    concept_inhibitor = ConceptInhibitor(
+        semantic=engine.semantic,
+        llm_fn=eval_fn,
     )
     subconscious_assessor = SubconsciousAssessor(llm_fn=eval_fn)
     judge = JudgeAgent(llm_fn=eval_fn)
@@ -536,6 +541,31 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                 f"  [dim]💾 Stored: {episode_id[:12]}… (turn {turn}) "
                 f"{sal_indicator} sal={salience:.2f} da={da_weight:.2f} ht={ht_weight:.2f}[/]"
             )
+
+            # ── 3.5 概念 Patch 閘門（Inhibitor）──
+            # 根據 Verifier 判定 + LLM 回覆，決定是否對 SemanticMemory 提交變更
+            if concept_verification.has_changes:
+                try:
+                    patch_tx = concept_inhibitor.process(
+                        verification=concept_verification,
+                        user_input=user_input,
+                        llm_response=response,
+                        session_id=session_id,
+                        turn_id=episode_id,
+                    )
+                    applied = len(patch_tx.applied_patches)
+                    held = len(patch_tx.held_patches)
+                    if applied > 0 or held > 0:
+                        parts = []
+                        if applied:
+                            parts.append(f"{applied} applied")
+                        if held:
+                            parts.append(f"{held} held")
+                        console.print(
+                            f"  [dim]🔧 Concept patches: {', '.join(parts)}[/]"
+                        )
+                except Exception as e:
+                    logger.warning(f"Concept inhibitor error: {e}")
 
             # ── 4. 背景概念提取（daemon Thread，不阻塞）──
             try:

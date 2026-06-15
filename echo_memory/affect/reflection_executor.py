@@ -1,0 +1,367 @@
+"""
+ReflectionExecutor — 反思行動閉環的執行器
+
+將 ReflectionModule 輸出的結構化 memory_ops 映射到 MemoryEngine API。
+搭配 ReflectionActionQueue 使用，提供：
+  - executor_fn：傳入 ActionQueue.execute() 的回調
+  - capture_pre_state()：在 enqueue 前捕捉目標物件的快照
+  - parse_reflection_to_actions()：將 ReflectionOutput.memory_ops 轉為 enqueue 參數
+
+設計原則：
+  - Executor 只做映射，不做決策（決策已由 LLM + ActionQueue 權限完成）
+  - 目標不存在時拋出 ValueError（讓 ActionQueue 標記 FAILED）
+  - 所有寫入走 MemoryEngine 公開 API，不繞過 storage_lock
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from echo_memory.affect.reflection import ReflectionOutput
+
+logger = logging.getLogger("echo_memory.affect.reflection_executor")
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# parse_reflection_to_actions
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def parse_reflection_to_actions(
+    reflection: ReflectionOutput,
+) -> list[dict[str, Any]]:
+    """
+    將 ReflectionOutput.memory_ops 轉為 ActionQueue 可接受的 enqueue 參數列表。
+
+    每個返回項目包含：
+      - action_type: str
+      - target_id: str
+      - params: dict
+      - reasoning: str
+
+    無效的 op（缺少 op 欄位）會被跳過並記 warning。
+
+    Args:
+        reflection: 反思模組的輸出
+
+    Returns:
+        轉換後的行動參數列表
+    """
+    actions: list[dict[str, Any]] = []
+
+    for i, op in enumerate(reflection.memory_ops):
+        if not isinstance(op, dict):
+            logger.warning(
+                "[ReflectionExecutor] memory_ops[%d] 不是 dict，跳過: %s",
+                i, type(op).__name__,
+            )
+            continue
+
+        op_type = op.get("op", "")
+        if not op_type:
+            logger.warning(
+                "[ReflectionExecutor] memory_ops[%d] 缺少 'op' 欄位，跳過",
+                i,
+            )
+            continue
+
+        actions.append({
+            "action_type": str(op_type),
+            "target_id": str(op.get("target", "")),
+            "params": op.get("params", {}) if isinstance(op.get("params"), dict) else {},
+            "reasoning": str(op.get("reason", "")),
+        })
+
+    return actions
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ReflectionExecutor
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+class ReflectionExecutor:
+    """
+    反思行動的執行層——將 action_type 映射到 MemoryEngine API。
+
+    Usage:
+        executor = ReflectionExecutor(engine=engine, soul_notes=soul_notes)
+        fn = executor.build_executor_fn()
+        action_queue.execute(action, executor_fn=fn)
+    """
+
+    def __init__(
+        self,
+        engine: Any,
+        soul_notes: Any | None = None,
+    ):
+        """
+        Args:
+            engine: MemoryEngine 實例
+            soul_notes: SoulNoteManager 實例（用於 add_note 操作）
+        """
+        self._engine = engine
+        self._soul_notes = soul_notes
+
+        # action_type → 執行方法映射
+        self._dispatch: dict[str, Any] = {
+            "adjust_salience": self._exec_adjust_salience,
+            "tag_concept": self._exec_tag_concept,
+            "add_note": self._exec_add_note,
+            "merge_concepts": self._exec_merge_concepts,
+            "archive_episode": self._exec_archive_episode,
+            "create_concept": self._exec_create_concept,
+        }
+
+    def build_executor_fn(self):
+        """
+        回傳可傳入 ActionQueue.execute() 的回調函式。
+
+        簽章：(action_type: str, target_id: str, params: dict) → dict
+        """
+        def executor_fn(
+            action_type: str, target_id: str, params: dict[str, Any]
+        ) -> dict[str, Any]:
+            handler = self._dispatch.get(action_type)
+            if handler is None:
+                raise ValueError(f"未知的 action_type: {action_type}")
+            return handler(target_id, params)
+
+        return executor_fn
+
+    def capture_pre_state(
+        self, action_type: str, target_id: str, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """
+        在執行前捕捉目標物件的快照，供 rollback 使用。
+
+        Args:
+            action_type: 行動類型
+            target_id: 目標 ID
+            params: 行動參數
+
+        Returns:
+            pre_state dict（目標不存在時回傳空 dict）
+        """
+        try:
+            if action_type == "adjust_salience":
+                ep = self._engine.episodic.get(target_id)
+                if ep:
+                    return {"salience_score": ep.salience_score}
+
+            elif action_type == "tag_concept":
+                concept = self._engine.semantic.get_by_name(target_id)
+                if concept:
+                    return {
+                        "tags": list(concept.metadata.get("tags", [])),
+                    }
+
+            elif action_type == "merge_concepts":
+                primary = self._engine.semantic.get_by_name(target_id)
+                merge_with = params.get("merge_with", "")
+                secondary = (
+                    self._engine.semantic.get_by_name(merge_with)
+                    if merge_with else None
+                )
+                state: dict[str, Any] = {}
+                if primary:
+                    state["primary"] = {
+                        "name": primary.name,
+                        "description": primary.description,
+                    }
+                if secondary:
+                    state["secondary"] = {
+                        "name": secondary.name,
+                        "description": secondary.description,
+                    }
+                return state
+
+            elif action_type == "archive_episode":
+                ep = self._engine.episodic.get(target_id)
+                if ep:
+                    return {
+                        "salience_score": ep.salience_score,
+                        "archived": ep.metadata.get("archived", False),
+                    }
+
+            elif action_type == "create_concept":
+                existing = self._engine.semantic.get_by_name(target_id)
+                if existing:
+                    return {
+                        "already_exists": True,
+                        "description": existing.description,
+                    }
+
+        except Exception as e:
+            logger.debug(
+                "[ReflectionExecutor] pre_state 捕捉失敗 (%s on %s): %s",
+                action_type, target_id, e,
+            )
+
+        return {}
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 各行動的具體實作
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    def _exec_adjust_salience(
+        self, target_id: str, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """調整 episode 的顯著性分數。"""
+        new_salience = float(params.get("new_salience", 0.5))
+        new_salience = min(1.0, max(0.0, new_salience))
+
+        ep = self._engine.episodic.get(target_id)
+        if ep is None:
+            raise ValueError(f"Episode 不存在: {target_id}")
+
+        old_salience = ep.salience_score
+        ok = self._engine.episodic.update_salience(target_id, new_salience)
+        if not ok:
+            raise RuntimeError(f"update_salience 失敗: {target_id}")
+
+        return {"old_salience": old_salience, "new_salience": new_salience}
+
+    def _exec_tag_concept(
+        self, target_id: str, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """為概念追加標籤。"""
+        concept = self._engine.semantic.get_by_name(target_id)
+        if concept is None:
+            raise ValueError(f"概念不存在: {target_id}")
+
+        new_tags = params.get("tags", [])
+        if not isinstance(new_tags, list):
+            new_tags = [str(new_tags)]
+
+        existing_tags = list(concept.metadata.get("tags", []))
+        merged_tags = list(set(existing_tags + new_tags))
+
+        # 更新 metadata 中的 tags
+        concept.metadata["tags"] = merged_tags
+        self._engine.semantic.upsert_concept(
+            name=concept.name,
+            description=concept.description,
+            concept_type=concept.concept_type,
+            source_episodes=concept.source_episodes,
+            metadata=concept.metadata,
+        )
+
+        return {"old_tags": existing_tags, "new_tags": merged_tags}
+
+    def _exec_add_note(
+        self, _target_id: str, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """寫入一則潛意識筆記。"""
+        if self._soul_notes is None:
+            raise RuntimeError("SoulNoteManager 未配置，無法寫入 note")
+
+        from echo_memory.affect.soul_note import SoulNote
+
+        content = str(params.get("content", ""))
+        if not content:
+            raise ValueError("add_note 缺少 content 參數")
+
+        self._soul_notes.add_note(SoulNote(
+            category="reflection_action",
+            content=content,
+            metadata={"source": "reflection_executor"},
+            tags=["reflection", "auto"],
+        ))
+
+        return {"written": True, "content_length": len(content)}
+
+    def _exec_merge_concepts(
+        self, target_id: str, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """合併兩個概念（主概念吸收次概念）。"""
+        merge_with = str(params.get("merge_with", ""))
+        if not merge_with:
+            raise ValueError("merge_concepts 缺少 merge_with 參數")
+
+        primary = self._engine.semantic.get_by_name(target_id)
+        if primary is None:
+            raise ValueError(f"主概念不存在: {target_id}")
+
+        secondary = self._engine.semantic.get_by_name(merge_with)
+        if secondary is None:
+            raise ValueError(f"次概念不存在: {merge_with}")
+
+        # 合併策略：主概念描述 + 次概念精華
+        merged_desc = (
+            f"{primary.description}\n\n"
+            f"（合併自「{secondary.name}」）{secondary.description}"
+        )
+
+        # 合併 source_episodes
+        merged_episodes = list(set(
+            primary.source_episodes + secondary.source_episodes
+        ))
+
+        # 合併 metadata（保留主概念的，追加次概念的 facts）
+        merged_meta = dict(primary.metadata)
+        secondary_facts = secondary.metadata.get("facts", [])
+        if secondary_facts:
+            existing_facts = merged_meta.get("facts", [])
+            merged_meta["facts"] = existing_facts + secondary_facts
+        merged_meta["merged_from"] = merge_with
+
+        # 更新主概念
+        self._engine.semantic.upsert_concept(
+            name=primary.name,
+            description=merged_desc,
+            concept_type=primary.concept_type,
+            source_episodes=merged_episodes,
+            metadata=merged_meta,
+        )
+
+        # 移除次概念
+        self._engine.semantic.remove_concept(merge_with)
+
+        return {
+            "primary": target_id,
+            "secondary_removed": merge_with,
+            "merged_description_length": len(merged_desc),
+        }
+
+    def _exec_archive_episode(
+        self, target_id: str, _params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """歸檔 episode（降低 salience + 標記 metadata）。"""
+        ep = self._engine.episodic.get(target_id)
+        if ep is None:
+            raise ValueError(f"Episode 不存在: {target_id}")
+
+        old_salience = ep.salience_score
+
+        # 降低 salience 到極低值
+        self._engine.episodic.update_salience(target_id, 0.05)
+        # 標記 archived metadata
+        self._engine.episodic.update_episode_metadata(
+            target_id, {"archived": True, "archived_by": "reflection"}
+        )
+
+        return {
+            "old_salience": old_salience,
+            "new_salience": 0.05,
+            "archived": True,
+        }
+
+    def _exec_create_concept(
+        self, target_id: str, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """建立新概念。"""
+        description = str(params.get("description", ""))
+        if not description:
+            raise ValueError("create_concept 缺少 description 參數")
+
+        concept_id = self._engine.semantic.upsert_concept(
+            name=target_id,
+            description=description,
+            concept_type=params.get("concept_type", "reflection"),
+            source_episodes=[],
+            metadata={"created_by": "reflection_executor"},
+        )
+
+        return {"concept_id": concept_id, "name": target_id}

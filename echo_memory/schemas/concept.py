@@ -52,6 +52,16 @@ class Concept:
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    # ── Concept Health 指標（GPT 建議 #10）──────────────────────────
+    # 這些指標讓檢索時不只看 cosine，也能評估「這個概念健康嗎」。
+    # 高相似度 + 高 health → 可放心餵給 LLM
+    # 高相似度 + 低 health → 餵給 Verifier，不直接餵給 LLM
+    # 高相似度 + deprecated → 只在歷史/矛盾情境使用
+    mutation_count: int = 0           # 被修改的總次數（expand/modify/deprecate）
+    conflict_count: int = 0           # 有多少未解矛盾（CONTRADICTS 邊數）
+    last_verified_at: datetime | None = None  # 最後一次被 Verifier 驗證的時間
+    source_diversity: int = 0         # 來源 session 數量（不同 session 的 episode 數）
+
     def __post_init__(self):
         if not self.id:
             import uuid
@@ -66,6 +76,51 @@ class Concept:
             n = len(self.source_episode_ids)
             self.confidence = 1.0 - 1.0 / (1.0 + n)
             self.updated_at = datetime.now(timezone.utc)
+
+    @property
+    def evidence_count(self) -> int:
+        """有多少 episode/fact 支撐此概念。"""
+        return len(self.source_episode_ids) + len(self.facts)
+
+    @property
+    def stability_hours(self) -> float:
+        """距離最後一次修改的小時數。越大越穩定。"""
+        now = datetime.now(timezone.utc)
+        ts = self.updated_at
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return (now - ts).total_seconds() / 3600
+
+    @property
+    def health_score(self) -> float:
+        """
+        綜合健康度分數 [0, 1]。
+
+        公式：
+          health = confidence × stability_factor × evidence_factor
+                   - conflict_penalty
+
+        各分量：
+          - confidence: 已有的可信度（隨來源數漸增）
+          - stability_factor: 穩定度（最近沒被修改 → 高）
+          - evidence_factor: 證據充分度（多來源 → 高）
+          - conflict_penalty: 未解矛盾的懲罰
+        """
+        import math
+
+        # stability: 超過 24h 未修改 → 1.0, 剛修改 → 0.5
+        hours = self.stability_hours
+        stability = min(1.0, 0.5 + 0.5 * (1.0 - math.exp(-hours / 24.0)))
+
+        # evidence: 至少有 3 個來源 → 1.0
+        ev = self.evidence_count
+        evidence = min(1.0, ev / 3.0) if ev > 0 else 0.3
+
+        # conflict penalty: 每個未解矛盾 -0.15，上限 -0.6
+        penalty = min(0.6, self.conflict_count * 0.15)
+
+        score = self.confidence * stability * evidence - penalty
+        return max(0.0, min(1.0, score))
 
     @property
     def facts(self) -> list[dict[str, Any]]:
@@ -97,6 +152,20 @@ class Concept:
         else:  # archived
             return 0.03
 
+    def record_mutation(self) -> None:
+        """記錄一次概念變更（expand/modify/deprecate），更新 health 相關指標。"""
+        self.mutation_count += 1
+        self.updated_at = datetime.now(timezone.utc)
+
+    def record_verification(self) -> None:
+        """記錄一次 Verifier 驗證。"""
+        self.last_verified_at = datetime.now(timezone.utc)
+
+    def update_source_diversity(self, session_ids: set[str] | None = None) -> None:
+        """根據 source_episode_ids 計算來源多樣性（不同 session 數）。"""
+        if session_ids is not None:
+            self.source_diversity = len(session_ids)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
@@ -111,12 +180,22 @@ class Concept:
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
             "metadata": self.metadata,
+            "mutation_count": self.mutation_count,
+            "conflict_count": self.conflict_count,
+            "last_verified_at": (
+                self.last_verified_at.isoformat()
+                if self.last_verified_at else None
+            ),
+            "source_diversity": self.source_diversity,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Concept:
         data = data.copy()
-        for key in ["created_at", "updated_at"]:
+        for key in ["created_at", "updated_at", "last_verified_at"]:
             if key in data and isinstance(data[key], str):
                 data[key] = datetime.fromisoformat(data[key])
+        # 向後相容：舊資料可能沒有 health 欄位
+        valid_fields = {f.name for f in cls.__dataclass_fields__.values()}
+        data = {k: v for k, v in data.items() if k in valid_fields}
         return cls(**data)

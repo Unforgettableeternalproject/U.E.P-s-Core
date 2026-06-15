@@ -95,3 +95,66 @@ class TestContextManager:
         # 第二次 413 應該觸發斷路器
         with pytest.raises(RuntimeError, match="Emergency compaction already attempted"):
             manager.handle_api_error(413)
+
+    def test_layer4_token_recount(self):
+        """Layer 4 emergency compaction 必須重算所有 token_count=None 的訊息
+
+        回歸測試：emergency 新建的 sacred Message 的 token_count=None，
+        若不重算會被當成 0，導致 total_tokens 嚴重低報。
+        """
+        from echo_thought_core.schemas.config import PersonaContext
+
+        persona = PersonaContext(
+            name="TestBot",
+            traits=["friendly"],
+            custom_instructions="This is a test persona with some meaningful content.",
+        )
+        config = CompactionConfig(
+            context_window_size=100000,
+            max_emergency_messages=2,
+        )
+        mgr = ContextManager(config=config, persona=persona, backend=None)
+
+        # 加入足夠多的訊息
+        for i in range(20):
+            mgr.add_message("user", f"Message {i}: " + "test content " * 20)
+            mgr.add_message("assistant", f"Reply {i}: " + "response data " * 20)
+
+        tokens_before = mgr.history.total_tokens
+        assert tokens_before > 0
+
+        result = mgr.handle_api_error(413)
+        assert result is not None
+        assert result.tier == CompressionTier.TIER_4_EMERGENCY
+
+        # 驗證重算：history.total_tokens 必須等於逐一加總（無 None 被當 0）
+        actual_recount = sum(m.token_count for m in mgr.history.messages)
+        assert mgr.history.total_tokens == actual_recount
+        assert mgr.history.total_tokens > 0
+
+        # 確認沒有任何訊息的 token_count 仍為 None
+        for m in mgr.history.messages:
+            assert m.token_count is not None, (
+                f"Message '{m.content[:30]}...' still has token_count=None after Layer 4"
+            )
+
+        # tokens_after 與 result 一致
+        assert result.tokens_after == mgr.history.total_tokens
+        assert result.tokens_saved == tokens_before - mgr.history.total_tokens
+
+    def test_reset_session(self, manager):
+        """reset_session() 完全重置所有狀態"""
+        # 累積一些狀態
+        for i in range(5):
+            manager.add_message("user", f"Message {i}")
+        old_session_id = manager.state.session_id
+
+        manager.reset_session()
+
+        assert manager.state.current_tokens == 0
+        assert manager.state.message_count == 0
+        assert manager.state.compression_count == 0
+        assert manager.state.current_tier == CompressionTier.TIER_0_NORMAL
+        assert len(manager.history.messages) == 0
+        assert manager.history.total_tokens == 0
+        assert manager.state.session_id != old_session_id

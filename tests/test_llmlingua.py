@@ -7,7 +7,6 @@ Test LLMLingua-2 整合
 
 from unittest.mock import MagicMock, patch
 
-
 from echo_thought_core.compression.llmlingua import (
     LLMLinguaCompressor,
     LLMLinguaConfig,
@@ -15,6 +14,9 @@ from echo_thought_core.compression.llmlingua import (
 )
 from echo_thought_core.compression.micro_pruning import MicroPruner
 from echo_thought_core.schemas.message import Message
+
+# Helper: 讓需要 mock PromptCompressor 的測試在無 llmlingua 時也能正常運行
+_patch_available = patch("echo_thought_core.compression.llmlingua._HAS_LLMLINGUA", True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -56,6 +58,7 @@ class TestLLMLinguaCompressor:
         assert stats["skipped"] is True
         assert stats["reason"] == "below_threshold"
 
+    @patch("echo_thought_core.compression.llmlingua._HAS_LLMLINGUA", True)
     @patch("echo_thought_core.compression.llmlingua.PromptCompressor")
     def test_compress_long_text(self, mock_compressor_cls):
         """超過門檻的文本觸發壓縮"""
@@ -78,6 +81,7 @@ class TestLLMLinguaCompressor:
         assert stats["compressed_tokens"] == 1500
         assert stats["saving"] == 1500
 
+    @patch("echo_thought_core.compression.llmlingua._HAS_LLMLINGUA", True)
     @patch("echo_thought_core.compression.llmlingua.PromptCompressor")
     def test_compress_with_custom_rate(self, mock_compressor_cls):
         """可以覆蓋壓縮率"""
@@ -110,6 +114,7 @@ class TestLLMLinguaCompressor:
         assert "model_name" in stats
         assert "default_rate" in stats
 
+    @patch("echo_thought_core.compression.llmlingua._HAS_LLMLINGUA", True)
     @patch("echo_thought_core.compression.llmlingua.PromptCompressor")
     def test_compress_error_fallback(self, mock_compressor_cls):
         """壓縮失敗時回傳原文"""

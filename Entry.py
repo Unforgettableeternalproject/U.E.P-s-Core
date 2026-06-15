@@ -34,6 +34,10 @@ from echo_memory.affect.subconscious import SubconsciousAssessor
 from echo_memory.affect.verifier import ResponseVerifier
 from echo_memory.affect.inhibitor import SubconsciousInhibitor, InhibitionAction
 from echo_memory.affect.judge import JudgeAgent
+from echo_memory.affect.concept_extractor import ConceptExtractor
+from echo_memory.affect.soul_note import SoulNote, SoulNoteManager
+from echo_memory.affect.reflection import ReflectionModule
+from echo_memory.utils.sanitizer import sanitize_llm_output
 from llm_integration.llm_client import LLMClient
 from llm_integration.tools import to_gemini_tools
 from llm_integration.tools.executor import ToolExecutor
@@ -167,6 +171,20 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
 
     gemini_tools = to_gemini_tools() if tools_enabled else None
     executor = ToolExecutor(engine=engine, session_id=session_id) if tools_enabled else None
+
+    # ── Phase F 模組初始化 ──
+    soul_notes = SoulNoteManager(engine.storage_path)
+    reflection_module = ReflectionModule(
+        llm_fn=engine._llm_fn,
+        soul_notes=soul_notes,
+        reflect_interval=10,
+    )
+    concept_extractor = ConceptExtractor(
+        llm_fn=engine._llm_fn,
+        semantic=engine.semantic,
+        graph=engine.episodic.graph,
+        embed_fn=lambda text: engine.episodic._generate_embedding(text),
+    )
 
     def _show_session_banner():
         tools_status = "[green]on[/]" if tools_enabled else "[dim]off[/]"
@@ -409,6 +427,9 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                         tool_executor=executor,
                     )
 
+                # 內容消殺（清除偽造工具標記）
+                raw_response = sanitize_llm_output(raw_response)
+
                 # 品質閘門
                 verify_result = verifier.verify(raw_response, context if not context.is_empty() else None)
                 gate_decision = inhibitor.gate(raw_response, verify_result, attempt=attempt)
@@ -473,6 +494,48 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                 f"  [dim]💾 Stored: {episode_id[:12]}… (turn {turn}) "
                 f"{sal_indicator} sal={salience:.2f} da={da_weight:.2f} ht={ht_weight:.2f}[/]"
             )
+
+            # ── 4. 背景概念提取（daemon Thread，不阻塞）──
+            try:
+                stored_ep = engine.episodic._episodes.get(episode_id)
+                if stored_ep:
+                    concept_extractor.extract_in_background(stored_ep, salience)
+            except Exception as e:
+                logger.debug(f"Concept extraction launch error: {e}")
+
+            # ── 5. 潛意識日記（Soul Note）──
+            try:
+                soul_notes.add_note(SoulNote(
+                    category="reflection",
+                    content=(
+                        f"[tone={assessment.emotional_tone:.2f}] "
+                        f"[novelty={assessment.novelty:.2f}] "
+                        f"[complexity={assessment.complexity:.2f}] "
+                        f"{user_input[:60]}"
+                    ),
+                    metadata={"episode_id": episode_id, "salience": salience},
+                    tags=["auto", "dialogue"],
+                ))
+            except Exception as e:
+                logger.debug(f"Soul note error: {e}")
+
+            # ── 6. 定時反思（每 N 輪觸發）──
+            if reflection_module.should_reflect(uncertainty=assessment.uncertainty):
+                try:
+                    recent = engine.episodic.list_episodes(
+                        limit=5, offset=0, sort_by="timestamp", ascending=False
+                    )
+                    summaries = [ep.content_summary for ep in recent if ep.content_summary]
+                    nc = engine.neurochem
+                    reflection = reflection_module.reflect(
+                        summaries, nc.dopamine, nc.serotonin, nc.mode.value
+                    )
+                    console.print(
+                        f"  [dim magenta]💭 反思 [{reflection.action}]: "
+                        f"{reflection.content[:60]}…[/]"
+                    )
+                except Exception as e:
+                    logger.debug(f"Reflection error: {e}")
 
         except Exception as e:
             logger.warning(f"Store error: {e}")

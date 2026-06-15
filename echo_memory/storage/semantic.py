@@ -227,8 +227,19 @@ class SemanticMemory:
             concept_id = self._index_to_id(idx)
             if concept_id and concept_id in self._concepts_by_id:
                 concept = self._concepts_by_id[concept_id]
+
+                # 按生命週期狀態加權（deprecated ×0.15, archived ×0.03）
+                weighted_sim = sim * concept.retrieval_weight
+
+                # 加權後低於閾值則跳過
+                if weighted_sim < min_similarity:
+                    continue
+
                 concept.access_count += 1
-                results.append((concept, sim))
+                results.append((concept, weighted_sim))
+
+        # 重新按加權分數排序
+        results.sort(key=lambda x: x[1], reverse=True)
 
         logger.debug(
             f"[SemanticMemory] 向量搜索完成 — "

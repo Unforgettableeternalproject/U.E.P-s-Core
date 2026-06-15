@@ -210,7 +210,7 @@ class ConceptExtractor:
             return self._semantic.upsert_concept(
                 name=noun,
                 description=desc,
-                source_episode_ids=[episode_id],
+                source_episode_id=episode_id,
             )
 
         try:
@@ -219,7 +219,7 @@ class ConceptExtractor:
             return self._semantic.upsert_concept(
                 name=noun,
                 description=desc,
-                source_episode_ids=[episode_id],
+                source_episode_id=episode_id,
             )
 
         # 找最近鄰
@@ -233,7 +233,7 @@ class ConceptExtractor:
             return self._semantic.upsert_concept(
                 name=noun,
                 description=desc,
-                source_episode_ids=[episode_id],
+                source_episode_id=episode_id,
             )
 
         for concept in existing_concepts:
@@ -254,7 +254,7 @@ class ConceptExtractor:
             concept_id = self._semantic.upsert_concept(
                 name=noun,
                 description=desc,
-                source_episode_ids=[episode_id],
+                source_episode_id=episode_id,
                 embedding=embedding,
             )
             # 建立 DERIVED_FROM 邊
@@ -274,7 +274,7 @@ class ConceptExtractor:
             if episode_id not in best_match.source_episode_ids:
                 best_match.source_episode_ids.append(episode_id)
                 best_match.access_count += 1
-                self._semantic.save()
+                self._semantic._save()
             return best_match.id
 
         else:
@@ -286,7 +286,7 @@ class ConceptExtractor:
             concept_id = self._semantic.upsert_concept(
                 name=noun,
                 description=desc,
-                source_episode_ids=[episode_id],
+                source_episode_id=episode_id,
                 embedding=embedding,
             )
             if concept_id and best_match.id:

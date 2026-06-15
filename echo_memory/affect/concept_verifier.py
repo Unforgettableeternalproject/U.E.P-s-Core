@@ -242,8 +242,7 @@ class ConceptVerifier:
 
         # ── 第二層：LLM 狀態判斷 ──
         if relevant and self._llm_fn is not None:
-            llm_assessments = self._llm_verify(user_input, relevant)
-            used_llm = True
+            llm_assessments, used_llm = self._llm_verify(user_input, relevant)
         else:
             # 降級：所有相關概念標記 valid
             llm_assessments = [
@@ -261,6 +260,10 @@ class ConceptVerifier:
 
         # 合併結果
         all_assessments = llm_assessments + irrelevant_assessments
+
+        # 更新 Concept Health：記錄所有被驗證概念的 last_verified_at
+        for concept, _rel in relevant:
+            concept.record_verification()
 
         verification = ConceptVerification(
             assessments=all_assessments,
@@ -336,11 +339,14 @@ class ConceptVerifier:
         self,
         user_input: str,
         relevant_concepts: list[tuple[Concept, float]],
-    ) -> list[ConceptAssessment]:
+    ) -> tuple[list[ConceptAssessment], bool]:
         """
         使用 LLM 判斷概念狀態。
 
-        失敗時降級為全部 valid。
+        失敗時降級為全部 valid，並回傳 used_llm=False。
+
+        Returns:
+            (assessments, used_llm) — used_llm 為 False 表示 LLM 呼叫失敗已降級
         """
         assert self._llm_fn is not None
 
@@ -364,7 +370,7 @@ class ConceptVerifier:
 
         try:
             raw = self._llm_fn(prompt)
-            return self._parse_llm_response(raw, relevant_concepts)
+            return self._parse_llm_response(raw, relevant_concepts), True
         except Exception as e:
             logger.warning(
                 "[ConceptVerifier] LLM 驗證失敗，降級為全部 valid: %s", e
@@ -378,7 +384,7 @@ class ConceptVerifier:
                     relevance=rel,
                 )
                 for c, rel in relevant_concepts
-            ]
+            ], False
 
     def _parse_llm_response(
         self,

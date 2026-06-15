@@ -1268,12 +1268,12 @@ class EchoMemoryCLI:
                 # 透過 LLMRouter 注入 llm_fn（EVAL 角色，用於所有記憶系統內部模組）
                 try:
                     self.router = LLMRouter()
-                    engine.set_llm_fn(self.router.get_llm_fn(LLMRole.EVAL))
+                    self.engine.set_llm_fn(self.router.get_llm_fn(LLMRole.EVAL))
                     eval_cfg = self.router.get_role_config(LLMRole.EVAL)
                     console.print(f"[green]✓[/] LLM Router ready — EVAL: {eval_cfg.model}")
                 except Exception as e:
                     # Router 初始化失敗時回退到 LLMClient
-                    engine.set_llm_fn(self.llm.as_llm_fn())
+                    self.engine.set_llm_fn(self.llm.as_llm_fn())
                     console.print(f"[yellow]⚠ Router fallback: {e}[/]")
 
             except Exception as e:

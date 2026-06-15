@@ -169,7 +169,9 @@ class ConceptInhibitor:
             self._evaluate_patch(patch, user_input, llm_response)
 
         # 3. 提交 approved patches
+        approved_count = sum(1 for p in tx.patches if p.status == "approved")
         applied_count = 0
+        failed_count = 0
         for patch in tx.patches:
             if patch.status == "approved":
                 success = self._apply_patch(patch)
@@ -179,14 +181,18 @@ class ConceptInhibitor:
                 else:
                     patch.status = "rejected"
                     patch.rejection_reason = "SemanticMemory apply 失敗"
+                    failed_count += 1
 
         # 4. 更新 transaction 狀態
-        if applied_count == 0:
-            tx.status = "committed"  # 沒有 approved 的，也算完成
-        elif applied_count == len([p for p in tx.patches if p.status != "rejected"]):
+        if approved_count == 0:
+            # 沒有任何 approved 的 patch（全 rejected 或全 held）
             tx.status = "committed"
-        else:
+        elif failed_count > 0:
+            # 有 approved 但部分失敗 → partially_applied
             tx.status = "partially_applied"
+        else:
+            # 所有 approved 都成功 apply
+            tx.status = "committed"
 
         # 5. 寫入 audit log
         self._write_audit(tx)
@@ -510,23 +516,29 @@ class ConceptInhibitor:
     # ──────────────────────────────────────────────
 
     def _apply_patch(self, patch: ConceptPatch) -> bool:
-        """執行單一 patch 到 SemanticMemory。"""
+        """執行單一 patch 到 SemanticMemory。成功時更新 Concept Health 指標。"""
         concept = self._semantic.get(patch.concept_id or "")
         if concept is None:
             return False
 
         try:
             if patch.action == "expand":
-                return self._apply_expand(concept, patch)
+                success = self._apply_expand(concept, patch)
             elif patch.action == "modify":
-                return self._apply_modify(concept, patch)
+                success = self._apply_modify(concept, patch)
             elif patch.action == "deprecate":
-                return self._apply_deprecate(concept, patch)
+                success = self._apply_deprecate(concept, patch)
             else:
                 logger.warning(
                     "[ConceptInhibitor] 不支援的 action: %s", patch.action
                 )
                 return False
+
+            # 成功 apply → 更新 Concept Health 指標
+            if success:
+                concept.record_mutation()
+
+            return success
         except Exception as e:
             logger.error(
                 "[ConceptInhibitor] apply patch 失敗 (%s): %s",

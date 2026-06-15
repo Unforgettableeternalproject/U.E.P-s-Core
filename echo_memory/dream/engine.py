@@ -167,15 +167,29 @@ class DreamEngine:
                 llm_fn=llm_fn,
             )
 
-        # 矛盾偵測器（需要 semantic + llm_fn）
+        # 矛盾偵測器（需要 semantic + llm_fn）+ ConflictLedger
         contradiction_detector = None
         if semantic is not None:
             try:
                 from echo_memory.dream.contradiction import ContradictionDetector
+                from echo_memory.storage.conflict_ledger import ConflictLedger
+
+                # ConflictLedger 與 SemanticMemory 同層持久化
+                conflict_ledger = None
+                if hasattr(self, '_storage_path') and self._storage_path:
+                    conflict_ledger = ConflictLedger(self._storage_path)
+                elif graph and hasattr(graph, '_path'):
+                    # 嘗試從 graph 推斷存儲路徑
+                    from pathlib import Path
+                    graph_dir = Path(graph._path).parent if hasattr(graph, '_path') else None
+                    if graph_dir and graph_dir.exists():
+                        conflict_ledger = ConflictLedger(graph_dir)
+
                 contradiction_detector = ContradictionDetector(
                     semantic=semantic,
                     graph=graph,
                     llm_fn=llm_fn,
+                    conflict_ledger=conflict_ledger,
                 )
             except ImportError:
                 pass

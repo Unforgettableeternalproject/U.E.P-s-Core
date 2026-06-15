@@ -184,8 +184,16 @@ class EcphoryRetrieval:
                         # graph expansion 也要排除當前 session 的 episodes
                         if exclude_session_id and ep.session_id == exclude_session_id:
                             continue
+                        # 圖譜展開的候選也要做語意相似度驗證，
+                        # 避免不相關的 episode 僅靠 PRECEDES 邊被拉入。
+                        ep_sim = self.episodic.similarity_to_query(
+                            query_embedding, ep.id
+                        )
+                        if ep_sim is not None and ep_sim < min_similarity:
+                            continue
                         episodes.append(ep)
-                        similarities[node_id] = weight * 0.8
+                        sim_val = ep_sim if ep_sim is not None else 0.0
+                        similarities[node_id] = max(sim_val, weight * 0.8)
 
         # Step 3: 語義概念檢索
         concepts: list[Concept] = []
@@ -255,9 +263,9 @@ class EcphoryRetrieval:
 
         episodes.sort(key=_fusion_score, reverse=True)
 
-        # 更新 similarities dict 為融合分數（供 MemoryContext 消費者使用）
-        for ep in episodes:
-            similarities[ep.id] = _fusion_score(ep)
+        # similarities dict 保留原始 cosine sim，不被融合分數覆寫。
+        # MemoryContext 消費者（如 Verifier）需要原始語意相似度做判斷，
+        # 若需要融合分數，可在外部自行計算。
 
         final_episodes = episodes[:top_k]
 

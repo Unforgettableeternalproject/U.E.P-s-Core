@@ -184,6 +184,37 @@ class EpisodicMemory:
         )
         return results
 
+    def similarity_to_query(
+        self,
+        query_embedding: list[float],
+        episode_id: str,
+    ) -> float | None:
+        """
+        計算單一 episode 與查詢向量的 cosine similarity。
+
+        用於圖譜展開時驗證候選 episode 的語意相關度。
+
+        Args:
+            query_embedding: 查詢向量
+            episode_id: 目標 episode ID
+
+        Returns:
+            cosine similarity (0-1)，找不到 episode 時回傳 None
+        """
+        self._ensure_index_ready()
+        if self._embeddings is None or episode_id not in self._episodes:
+            return None
+
+        idx = self._id_to_index.get(episode_id)
+        if idx is None:
+            return None
+
+        query_vec = self._normalize_vector(query_embedding)
+        if not np.any(query_vec):
+            return None
+
+        return float(np.dot(self._embeddings[idx], query_vec))
+
     def count(self) -> int:
         """返回情節總數"""
         return len(self._episodes)

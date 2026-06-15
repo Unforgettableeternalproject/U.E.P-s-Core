@@ -267,7 +267,7 @@ def main() -> int:
             ctx = engine.retrieve(
                 query=sc.query,
                 top_k=5,
-                min_similarity=0.25,
+                min_similarity=0.35,
             )
             latency = time.time() - t0
             total_latency += latency

@@ -55,8 +55,10 @@ class Config:
         # === 檢索參數 ===
         self.retrieval_seed_k = int(os.getenv("RETRIEVAL_SEED_K", "5"))
         self.retrieval_breadth_k = int(os.getenv("RETRIEVAL_BREADTH_K", "12"))
+        # bge-m3 的 cosine sim 分布偏高（無關文本也可能 0.25-0.30），
+        # 預設閾值需要 0.35 才能有效過濾無關結果。
         self.retrieval_min_similarity = float(
-            os.getenv("RETRIEVAL_MIN_SIMILARITY", "0.25")
+            os.getenv("RETRIEVAL_MIN_SIMILARITY", "0.35")
         )
         self.retrieval_weight_threshold = float(
             os.getenv("RETRIEVAL_WEIGHT_THRESHOLD", "0.225")

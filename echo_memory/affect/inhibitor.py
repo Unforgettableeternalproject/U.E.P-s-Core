@@ -1,5 +1,10 @@
 """
-SubconsciousInhibitor — 品質閘門決策器
+ResponseInhibitor — 回覆品質閘門決策器
+
+前身為 SubconsciousInhibitor，改名以與 ConceptInhibitor / StorageJudge 對齊：
+  - ResponseInhibitor: 管 LLM 回覆能不能輸出（本模組）
+  - ConceptInhibitor: 管 SemanticMemory patch 能不能提交
+  - StorageJudge: 管 episode salience / concept seed / entity trigger
 
 對應 OpenSoul soul/gating/inhibitor.py。
 根據 ResponseVerifier 的分數做三態決策：PASS / REVISE / SUPPRESS。
@@ -45,12 +50,17 @@ _REVISE_PREFIX = "⚠️ *（以下回覆信心略低，請自行判斷）*\n\n"
 _SUPPRESS_FALLBACK = "抱歉，我目前無法產生足夠可靠的回覆，請稍後再試。"
 
 
-class SubconsciousInhibitor:
+class ResponseInhibitor:
     """
-    品質閘門決策器。
+    回覆品質閘門決策器。
 
     在 ResponseVerifier 打分後，根據分數和門檻做三態決策。
     SUPPRESS 會觸發 neurochem.on_failure() 懲罰多巴胺。
+
+    命名對齊 GPT 建議 #7：
+      ResponseInhibitor — 管 LLM 回覆品質
+      ConceptInhibitor  — 管 SemanticMemory patch 提交
+      StorageJudge      — 管 episode 存儲決策
     """
 
     def __init__(
@@ -132,3 +142,7 @@ class SubconsciousInhibitor:
                 ),
                 should_retry=should_retry,
             )
+
+
+# 向後相容 alias
+SubconsciousInhibitor = ResponseInhibitor

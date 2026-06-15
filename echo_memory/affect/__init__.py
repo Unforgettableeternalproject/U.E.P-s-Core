@@ -9,7 +9,8 @@ from echo_memory.affect.signals import SalienceSignals, SubconsciousAssessment
 from echo_memory.affect.salience import SalienceEvaluator
 from echo_memory.affect.verifier import ResponseVerifier, VerificationResult
 from echo_memory.affect.inhibitor import (
-    SubconsciousInhibitor,
+    ResponseInhibitor,
+    SubconsciousInhibitor,  # backward-compatible alias
     InhibitionAction,
     GateDecision,
 )
@@ -28,6 +29,7 @@ __all__ = [
     "SalienceEvaluator",
     "ResponseVerifier",
     "VerificationResult",
+    "ResponseInhibitor",
     "SubconsciousInhibitor",
     "InhibitionAction",
     "GateDecision",

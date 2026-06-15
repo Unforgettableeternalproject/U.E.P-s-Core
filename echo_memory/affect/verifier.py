@@ -46,7 +46,7 @@ class ResponseVerifier:
     回覆品質驗證器。
 
     在 LLM 生成回覆後、發送前執行驗證。
-    結果交給 SubconsciousInhibitor 做 PASS/REVISE/SUPPRESS 決策。
+    結果交給 ResponseInhibitor 做 PASS/REVISE/SUPPRESS 決策。
     """
 
     def __init__(

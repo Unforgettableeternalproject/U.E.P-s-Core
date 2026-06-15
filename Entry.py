@@ -33,7 +33,7 @@ from echo_memory.affect.subconscious import SubconsciousAssessor
 from echo_memory.affect.concept_verifier import ConceptVerifier
 from echo_memory.affect.concept_inhibitor import ConceptInhibitor
 from echo_memory.affect.verifier import ResponseVerifier
-from echo_memory.affect.inhibitor import SubconsciousInhibitor, InhibitionAction
+from echo_memory.affect.inhibitor import ResponseInhibitor, InhibitionAction
 from echo_memory.affect.judge import StorageJudge
 from echo_memory.affect.concept_extractor import ConceptExtractor
 from echo_memory.affect.soul_note import SoulNote, SoulNoteManager
@@ -462,7 +462,7 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
             # 注入 embed_fn 啟用 Grounded Verification（語意一致性比對）
             embed_fn = engine.episodic.generate_query_embedding
             verifier = ResponseVerifier(nc, embed_fn=embed_fn)
-            inhibitor = SubconsciousInhibitor(nc, max_retries=1)
+            inhibitor = ResponseInhibitor(nc, max_retries=1)
 
             for attempt in range(2):  # 最多嘗試 2 次（首次 + 1 重試）
                 with console.status("[cyan]Thinking...[/]", spinner="dots"):

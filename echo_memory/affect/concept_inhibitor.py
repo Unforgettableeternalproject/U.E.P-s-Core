@@ -584,7 +584,10 @@ class ConceptInhibitor:
             concept.confidence = patch.new_confidence
 
         # 需要重新生成 embedding（description 變了）
+        # 先保存舊 embedding 供 rollback 用
         if self._semantic._embed_fn is not None:
+            patch.rollback_payload = patch.rollback_payload or {}
+            patch.rollback_payload["old_embedding"] = list(concept.embedding)
             new_vec = self._semantic._embed_fn(
                 f"{concept.name}: {concept.description}"
             )
@@ -662,6 +665,13 @@ class ConceptInhibitor:
                     concept.description = str(patch.old_value)
                 if patch.old_confidence is not None:
                     concept.confidence = patch.old_confidence
+                # 還原 embedding（從 rollback_payload）
+                old_emb = (patch.rollback_payload or {}).get("old_embedding")
+                if old_emb is not None:
+                    concept.embedding = old_emb
+                    self._semantic._update_embedding_index(
+                        concept, is_update=True
+                    )
             elif patch.action == "deprecate":
                 # 還原為 active
                 concept.status = "active"

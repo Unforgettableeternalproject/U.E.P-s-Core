@@ -30,6 +30,7 @@ htmlcov/
 *.cover
 .tox/
 .hypothesis/
+test_data/
 
 # 環境變數（敏感資訊）
 .env

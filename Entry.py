@@ -48,6 +48,13 @@ try:
 except ImportError:
     _HAS_RICH = False
 
+    # 定義佔位類別，讓函數簽名不報 NameError（實際呼叫時 CLI 入口會檢查 _HAS_RICH）
+    class _Stub:
+        def __init__(self, *a, **kw): pass
+        def __call__(self, *a, **kw): return self
+        def __getattr__(self, _): return self
+    Console = Panel = Table = Text = ProgressBar = Columns = Confirm = Prompt = _Stub  # type: ignore[misc,assignment]
+
 from echo_thought_core import (
     CompactionConfig,
     ContextManager,

@@ -17,7 +17,6 @@ v2 整合 Destiny-Weavers context_compressor.py Phase 3 設計：
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import List, Optional, Tuple, Protocol
 
@@ -175,58 +174,3 @@ def _compute_summary_budget(turns: List[Message]) -> int:
     return max(_SUMMARY_BUDGET_MIN, min(_SUMMARY_BUDGET_MAX, budget))
 
 
-def _serialize_for_summary(turns: List[Message]) -> str:
-    """將訊息列表序列化為人類可讀的格式，供 LLM 摘要使用。
-
-    處理規則：
-    - system 訊息：標記為 [SYSTEM]
-    - user 訊息：標記為 [USER]
-    - assistant 訊息：若有 tool_call_id，展開為工具呼叫格式
-    - tool 訊息：展開為工具回應格式，過長的內容截斷
-
-    Args:
-        turns: 要序列化的訊息列表
-
-    Returns:
-        可讀的純文字字串
-    """
-    lines: List[str] = []
-    _MAX_TOOL_CONTENT_CHARS = 800  # tool output 序列化時的截斷門檻
-
-    for msg in turns:
-        role = msg.role
-
-        if role == "system":
-            lines.append(f"[SYSTEM]\n{msg.content}\n")
-
-        elif role == "user":
-            lines.append(f"[USER]\n{msg.content}\n")
-
-        elif role == "assistant":
-            if msg.tool_call_id is not None:
-                # 這是一條工具呼叫訊息
-                tool_name = msg.tool_name or "unknown_tool"
-                lines.append(f"[ASSISTANT → TOOL CALL: {tool_name} (id={msg.tool_call_id})]")
-                # content 可能包含呼叫參數（JSON），嘗試格式化
-                try:
-                    params = json.loads(msg.content)
-                    lines.append(f"  params: {json.dumps(params, ensure_ascii=False, indent=2)}\n")
-                except (json.JSONDecodeError, TypeError):
-                    lines.append(f"  {msg.content}\n")
-            else:
-                lines.append(f"[ASSISTANT]\n{msg.content}\n")
-
-        elif role == "tool":
-            tool_name = msg.tool_name or "unknown_tool"
-            call_id = msg.tool_call_id or "?"
-            content = msg.content
-            # 截斷過長的工具輸出
-            if len(content) > _MAX_TOOL_CONTENT_CHARS:
-                content = content[:_MAX_TOOL_CONTENT_CHARS] + f"\n... (truncated, {len(msg.content)} chars total)"
-            lines.append(f"[TOOL RESULT: {tool_name} (id={call_id})]\n{content}\n")
-
-        else:
-            # 未知角色，原樣輸出
-            lines.append(f"[{role.upper()}]\n{msg.content}\n")
-
-    return "\n".join(lines)

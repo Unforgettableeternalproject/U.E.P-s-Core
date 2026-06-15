@@ -35,5 +35,9 @@ Thumbs.db
 # Data
 data/
 
-# Claude Code worktrees
-.claude/worktrees/
+# Claude Code
+.claude/
+
+# Type checking
+.mypy_cache/
+.ruff_cache/

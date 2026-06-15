@@ -20,7 +20,6 @@ from echo_thought_core.compression.micro_pruning import MicroPruner
 from echo_thought_core.compression.rolling_summary import (
     SUMMARY_PROMPT,
     _compute_summary_budget,
-    _serialize_for_summary,
 )
 from echo_thought_core.compression.full_compaction import (
     COMPACTION_PROMPT,
@@ -354,48 +353,6 @@ class TestComputeSummaryBudget:
         budget = _compute_summary_budget(msgs)
         # 400//4=100 tokens → 20%=20，clamp 到 2000
         assert budget == 2_000
-
-
-class TestSerializeForSummary:
-    def test_system_role_prefix(self):
-        msgs = [_system("sys prompt")]
-        output = _serialize_for_summary(msgs)
-        assert "[SYSTEM]" in output
-        assert "sys prompt" in output
-
-    def test_user_role_prefix(self):
-        msgs = [_user("hello world")]
-        output = _serialize_for_summary(msgs)
-        assert "[USER]" in output
-        assert "hello world" in output
-
-    def test_assistant_role_prefix(self):
-        msgs = [_assistant("response text")]
-        output = _serialize_for_summary(msgs)
-        assert "[ASSISTANT]" in output
-        assert "response text" in output
-
-    def test_assistant_tool_call_format(self):
-        msg = _assistant('{"key": "value"}', tool_call_id="call-42")
-        msg = msg.model_copy(update={"tool_name": "search_tool"})
-        output = _serialize_for_summary([msg])
-        assert "TOOL CALL" in output
-        assert "search_tool" in output
-        assert "call-42" in output
-
-    def test_tool_result_format(self):
-        msgs = [_tool("file contents here", "call-1", tool_name="read_file")]
-        output = _serialize_for_summary(msgs)
-        assert "TOOL RESULT" in output
-        assert "read_file" in output
-        assert "file contents here" in output
-
-    def test_tool_result_truncation(self):
-        # 超過 800 chars 應被截斷
-        long_content = "A" * 1000
-        msgs = [_tool(long_content, "call-1")]
-        output = _serialize_for_summary(msgs)
-        assert "truncated" in output.lower() or "..." in output
 
 
 class TestSummaryPrompt:

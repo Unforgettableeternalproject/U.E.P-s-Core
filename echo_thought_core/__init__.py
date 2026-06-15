@@ -25,7 +25,7 @@ Usage (推薦 — 高層級 factory):
 from echo_thought_core.context_manager import ContextManager
 from echo_thought_core.schemas.config import CompactionConfig, PersonaContext
 from echo_thought_core.schemas.session import SessionState, CompactionResult
-from echo_thought_core.schemas.message import Message, ConversationEntry
+from echo_thought_core.schemas.message import Message
 from echo_thought_core.backends.factory import create_backend, create_context_manager
 from echo_thought_core.persona import (
     load_llm_config,
@@ -43,7 +43,6 @@ __all__ = [
     "SessionState",
     "CompactionResult",
     "Message",
-    "ConversationEntry",
     # Factory
     "create_backend",
     "create_context_manager",

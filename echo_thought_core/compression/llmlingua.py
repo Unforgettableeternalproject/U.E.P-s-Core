@@ -29,6 +29,7 @@ try:
 
     _HAS_LLMLINGUA = True
 except ImportError:
+    PromptCompressor = None  # type: ignore[misc,assignment]
     _HAS_LLMLINGUA = False
 
 

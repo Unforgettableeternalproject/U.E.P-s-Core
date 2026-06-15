@@ -17,8 +17,15 @@ import os
 import re
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from google import genai
-from google.genai import types
+try:
+    from google import genai
+    from google.genai import types
+
+    _HAS_GENAI = True
+except ImportError:
+    genai = None  # type: ignore[assignment]
+    types = None  # type: ignore[assignment]
+    _HAS_GENAI = False
 
 from echo_thought_core.backends.base import AbstractBackend
 
@@ -222,304 +229,27 @@ class GeminiBackend(AbstractBackend):
     # -------------------------------------------------------------------------
 
     def _create_response_schemas(self) -> dict:
-        """創建不同模式的回應 Schema"""
+        """創建回應 Schema — 所有模式均使用純文本 schema"""
+        schema = self._create_direct_schema()
         return {
-            "chat": self._create_chat_schema(),
-            "work": self._create_work_schema(),
-            "direct": self._create_direct_schema(),
-            "internal": self._create_internal_schema(),
-            "mischief": self._create_mischief_schema(),
-        }
-
-    def _create_chat_schema(self) -> dict:
-        """創建 CHAT 模式的回應 Schema — 與 MEM 協作"""
-        return {
-            "type": "object",
-            "properties": {
-                "text": {
-                    "type": "string",
-                    "description": "自然的對話回應文字",
-                },
-                "confidence": {
-                    "type": "number",
-                    "description": "回應信心度 (0.0-1.0)",
-                    "minimum": 0.0,
-                    "maximum": 1.0,
-                },
-                "status_updates": {
-                    "type": "object",
-                    "nullable": True,
-                    "properties": {
-                        "mood_delta": {
-                            "type": "number",
-                            "description": "情緒變化量 (-1.0 到 +1.0)",
-                            "minimum": -1.0,
-                            "maximum": 1.0,
-                        },
-                        "pride_delta": {
-                            "type": "number",
-                            "description": "自尊變化量 (-1.0 到 +1.0)",
-                            "minimum": -1.0,
-                            "maximum": 1.0,
-                        },
-                        "helpfulness_delta": {
-                            "type": "number",
-                            "description": "助人意願變化量 (-1.0 到 +1.0)",
-                            "minimum": -1.0,
-                            "maximum": 1.0,
-                        },
-                        "boredom_delta": {
-                            "type": "number",
-                            "description": "無聊程度變化量 (-1.0 到 +1.0)",
-                            "minimum": -1.0,
-                            "maximum": 1.0,
-                        },
-                    },
-                    "description": "根據對話內容建議的系統狀態更新",
-                },
-                "memory_observation": {
-                    "type": "string",
-                    "description": "對話觀察摘要，用於記憶處理",
-                },
-                "learning_signals": {
-                    "type": "object",
-                    "nullable": True,
-                    "properties": {
-                        "formality_signal": {
-                            "type": "number",
-                            "description": "正式程度信號 (-1.0=非正式, 0=中性, 1.0=正式)",
-                            "minimum": -1.0,
-                            "maximum": 1.0,
-                        },
-                        "detail_signal": {
-                            "type": "number",
-                            "description": "詳細程度信號 (-1.0=簡潔, 0=適中, 1.0=詳細)",
-                            "minimum": -1.0,
-                            "maximum": 1.0,
-                        },
-                        "technical_signal": {
-                            "type": "number",
-                            "description": "技術程度信號 (-1.0=通俗, 0=適中, 1.0=專業)",
-                            "minimum": -1.0,
-                            "maximum": 1.0,
-                        },
-                        "interaction_signal": {
-                            "type": "number",
-                            "description": "互動偏好信號 (-1.0=獨立, 0=適中, 1.0=互動)",
-                            "minimum": -1.0,
-                            "maximum": 1.0,
-                        },
-                    },
-                    "description": "用戶偏好學習信號，累積多次後形成用戶畫像",
-                },
-                "echo_thought_core": {
-                    "type": "object",
-                    "nullable": True,
-                    "properties": {
-                        "should_end_session": {
-                            "type": "boolean",
-                            "description": "是否應該結束當前對話會話",
-                        },
-                        "end_reason": {
-                            "type": "string",
-                            "enum": [
-                                "natural_conclusion",
-                                "user_goodbye",
-                                "task_completed",
-                                "no_further_input",
-                            ],
-                            "description": "建議結束會話的原因",
-                        },
-                        "confidence": {
-                            "type": "number",
-                            "description": "結束會話建議的信心度",
-                            "minimum": 0.0,
-                            "maximum": 1.0,
-                        },
-                    },
-                    "description": "會話控制建議，由 LLM 判斷對話是否應該結束",
-                },
-            },
-            "required": ["text", "confidence"],
-        }
-
-    def _create_work_schema(self) -> dict:
-        """創建 WORK 模式的回應 Schema — 與 SYS 協作"""
-        return {
-            "type": "object",
-            "properties": {
-                "text": {
-                    "type": "string",
-                    "description": "任務導向的回應文字",
-                },
-                "confidence": {
-                    "type": "number",
-                    "description": "任務執行信心度 (0.0-1.0)",
-                    "minimum": 0.0,
-                    "maximum": 1.0,
-                },
-                "sys_action": {
-                    "type": "object",
-                    "nullable": False,
-                    "properties": {
-                        "action": {
-                            "type": "string",
-                            "enum": [
-                                "start_workflow",
-                                "execute_function",
-                                "provide_options",
-                            ],
-                            "description": "系統動作類型",
-                        },
-                        "target": {
-                            "type": "string",
-                            "description": "動作目標（工作流名稱或功能名稱）",
-                        },
-                        "parameters": {
-                            "type": "object",
-                            "description": "動作參數",
-                        },
-                        "confidence": {
-                            "type": "number",
-                            "description": "動作建議的信心度",
-                            "minimum": 0.0,
-                            "maximum": 1.0,
-                        },
-                        "requires_confirmation": {
-                            "type": "boolean",
-                            "description": "是否需要用戶確認",
-                        },
-                        "reason": {
-                            "type": "string",
-                            "description": "選擇此動作的詳細理由",
-                        },
-                    },
-                    "required": ["action", "target", "reason"],
-                    "description": "建議的系統動作",
-                },
-                "status_updates": {
-                    "type": "object",
-                    "nullable": True,
-                    "properties": {
-                        "helpfulness_delta": {
-                            "type": "number",
-                            "description": "完成任務後的助人意願變化",
-                            "minimum": -1.0,
-                            "maximum": 1.0,
-                        },
-                        "pride_delta": {
-                            "type": "number",
-                            "description": "任務成功/失敗對自尊的影響",
-                            "minimum": -1.0,
-                            "maximum": 1.0,
-                        },
-                        "mood_delta": {
-                            "type": "number",
-                            "description": "工作完成狀況對情緒的影響",
-                            "minimum": -1.0,
-                            "maximum": 1.0,
-                        },
-                        "boredom_delta": {
-                            "type": "number",
-                            "description": "任務複雜度對無聊程度的影響",
-                            "minimum": -1.0,
-                            "maximum": 1.0,
-                        },
-                        "reason": {
-                            "type": "string",
-                            "description": "狀態變化原因",
-                        },
-                    },
-                    "description": "基於任務執行狀況的狀態更新",
-                },
-                "echo_thought_core": {
-                    "type": "object",
-                    "nullable": True,
-                    "properties": {
-                        "should_end_session": {
-                            "type": "boolean",
-                            "description": "是否應該結束當前工作會話",
-                        },
-                        "end_reason": {
-                            "type": "string",
-                            "enum": [
-                                "task_completed",
-                                "workflow_finished",
-                                "user_satisfied",
-                                "cannot_proceed",
-                            ],
-                            "description": "建議結束會話的原因",
-                        },
-                        "confidence": {
-                            "type": "number",
-                            "description": "結束會話建議的信心度",
-                            "minimum": 0.0,
-                            "maximum": 1.0,
-                        },
-                    },
-                    "description": "會話控制建議，由 LLM 判斷工作是否應該結束",
-                },
-            },
-            "required": ["text", "confidence"],
+            "chat": schema,
+            "work": schema,
+            "direct": schema,
+            "internal": schema,
+            "mischief": schema,
         }
 
     def _create_direct_schema(self) -> dict:
-        """創建 DIRECT 模式的回應 Schema（純文本，無結構）"""
+        """回應 Schema — 純文本，無結構"""
         return {
             "type": "object",
             "properties": {
                 "text": {
                     "type": "string",
-                    "description": "直接回應文字",
+                    "description": "回應文字",
                 }
             },
             "required": ["text"],
-        }
-
-    def _create_internal_schema(self) -> dict:
-        """創建 INTERNAL 模式的回應 Schema"""
-        return {
-            "type": "object",
-            "properties": {
-                "text": {
-                    "type": "string",
-                    "description": "內部系統回應",
-                },
-                "confidence": {
-                    "type": "number",
-                    "description": "內部處理信心度",
-                    "minimum": 0.0,
-                    "maximum": 1.0,
-                },
-            },
-            "required": ["text"],
-        }
-
-    def _create_mischief_schema(self) -> dict:
-        """創建 MISCHIEF 模式的回應 Schema"""
-        return {
-            "type": "object",
-            "properties": {
-                "actions": {
-                    "type": "array",
-                    "description": "MISCHIEF 行為序列",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "action_id": {
-                                "type": "string",
-                                "description": "行為 ID（必須來自可用行為列表）",
-                            },
-                            "params": {
-                                "type": "object",
-                                "description": "行為參數",
-                            },
-                        },
-                        "required": ["action_id", "params"],
-                    },
-                }
-            },
-            "required": ["actions"],
         }
 
     # -------------------------------------------------------------------------

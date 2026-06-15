@@ -463,16 +463,3 @@ class TokenCounter:
         message.token_count = total
         return total
 
-    def count_messages(self, messages: List[Message]) -> int:
-        """計算多則訊息的總 token 數量"""
-        return sum(self.count_message(m) for m in messages)
-
-    def estimate_overhead(self, tool_count: int = 0) -> int:
-        """估算固定開銷（系統提示、工具定義等）"""
-        # 基礎系統開銷
-        base_overhead = 500
-
-        # 每個工具定義約 200-500 tokens
-        tool_overhead = tool_count * 350
-
-        return base_overhead + tool_overhead

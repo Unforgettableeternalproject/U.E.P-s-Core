@@ -333,31 +333,3 @@ class TestPersonaLoader:
         assert "cats" in instruction
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# PromptCaching 定位標註
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-class TestPromptCachingScope:
-    """prompt/caching.py 的定位說明（非功能測試，已有 test_prompt_caching.py）"""
-
-    def test_anthropic_only_note(self):
-        """
-        prompt/caching.py 為 Anthropic 專用的 cache_control 標記邏輯。
-
-        Gemini 的顯性快取透過 cached_content ID 傳遞（CacheManager 管理），
-        不使用 message-level cache_control 標記。
-
-        此測試僅作為文件說明存在，確認模組可正常 import。
-        """
-        from echo_thought_core.prompt.caching import (
-            PromptCacheConfig,
-            add_cache_control,
-            mark_cacheable_messages,
-            CacheStats,
-        )
-        # 模組可正常 import
-        assert PromptCacheConfig is not None
-        assert callable(add_cache_control)
-        assert callable(mark_cacheable_messages)
-        assert CacheStats is not None

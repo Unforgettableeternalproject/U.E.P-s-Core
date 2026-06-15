@@ -1,11 +1,4 @@
-"""
-Session Schema — 會話狀態與壓縮結果的資料結構
-
-v2 合併自 llm_module/schemas.py：
-- 新增 SystemState 枚舉（idle/chat/work/sleep/mischief）
-- 新增 SystemAction 模型
-- 新增 ContextCacheConfig 模型
-"""
+"""Session Schema — 會話狀態與壓縮結果的資料結構"""
 
 import time
 from typing import Optional, Dict, Any, List
@@ -24,43 +17,6 @@ class CompressionTier(int, Enum):
     TIER_2_ROLLING_SUMMARY = 2
     TIER_3_FULL_COMPACTION = 3
     TIER_4_EMERGENCY = 4
-
-
-class SystemState(str, Enum):
-    """系統整體狀態 — 控制 LLM 路由與行為模式"""
-
-    IDLE = "idle"           # 閒置中
-    CHAT = "chat"           # 對話中
-    WORK = "work"           # 工作中（執行任務）
-    SLEEP = "sleep"         # 休眠
-    MISCHIEF = "mischief"   # 惡作劇模式
-
-
-# ── 快取配置 ──────────────────────────────────────────────────────────────────
-
-
-class ContextCacheConfig(BaseModel):
-    """上下文快取配置 — 控制哪些部分納入 Anthropic prompt caching"""
-
-    enabled: bool = Field(True, description="是否啟用上下文快取")
-    max_history_length: int = Field(10, description="快取的最大歷史長度")
-    cache_system_prompt: bool = Field(True, description="是否快取系統提示")
-    cache_identity_info: bool = Field(True, description="是否快取身份資訊")
-    cache_memory_context: bool = Field(True, description="是否快取記憶上下文")
-
-
-# ── 系統動作 ──────────────────────────────────────────────────────────────────
-
-
-class SystemAction(BaseModel):
-    """系統動作定義 — LLM 決策後觸發的系統層操作"""
-
-    action: str = Field(..., description="動作類型")
-    workflow_type: Optional[str] = Field(None, description="工作流程類型")
-    function_name: Optional[str] = Field(None, description="具體功能名稱")
-    params: Optional[Dict[str, Any]] = Field(default_factory=dict, description="參數")
-    reason: Optional[str] = Field(None, description="選擇此動作的原因")
-    confidence: Optional[float] = Field(1.0, description="信心度")
 
 
 # ── 會話狀態 ──────────────────────────────────────────────────────────────────

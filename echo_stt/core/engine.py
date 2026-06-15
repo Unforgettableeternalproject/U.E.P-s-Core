@@ -35,9 +35,14 @@ from echo_stt.keyword.detector import SmartKeywordDetector
 
 logger = logging.getLogger(__name__)
 
-# CTranslate2 CPU 支援的 compute_type
-_CT2_CPU_TYPES = {"float32", "int16", "int8", "int8_float16", "int8_float32"}
-_CT2_CPU_DEFAULT = "int8_float16"
+# CTranslate2 CPU 支援的 compute_type — 動態查詢優先
+try:
+    import ctranslate2 as _ct2
+    _CT2_CPU_TYPES = set(_ct2.get_supported_compute_types("cpu"))
+except Exception:
+    # int8_float16 在多數 CPU 不被支援，不列入靜態 fallback
+    _CT2_CPU_TYPES = {"float32", "int16", "int8", "int8_float32"}
+_CT2_CPU_DEFAULT = "int8"
 
 
 def correct_stt(text: str) -> str:
@@ -259,7 +264,6 @@ class STTEngine:
                 self._fw_model_size, self._fw_compute_type, self.device, self._fw_num_workers,
             )
 
-            # Audit fix: 嘗試 local_files_only 如果有快取
             fw_kwargs: Dict[str, Any] = {
                 "device": self.device,
                 "compute_type": self._fw_compute_type,
@@ -267,19 +271,18 @@ class STTEngine:
                 "download_root": self._fw_download_root,
             }
 
-            if self._try_offline:
-                fw_kwargs["local_files_only"] = True
-                logger.info("[STT] faster-whisper 使用離線模式 (local_files_only)")
-
+            # Audit fix: cache-first 策略 — 始終先嘗試本地快取，避免不必要的網路請求
             try:
-                self._fw_model = WhisperModel(self._fw_model_size, **fw_kwargs)
-            except Exception as offline_err:
-                if self._try_offline and "local_files_only" in fw_kwargs:
-                    logger.warning("[STT] 離線載入失敗，嘗試線上下載: %s", offline_err)
-                    fw_kwargs.pop("local_files_only", None)
-                    self._fw_model = WhisperModel(self._fw_model_size, **fw_kwargs)
-                else:
+                self._fw_model = WhisperModel(
+                    self._fw_model_size, local_files_only=True, **fw_kwargs,
+                )
+                logger.info("[STT] faster-whisper 從本地快取載入成功")
+            except Exception as cache_err:
+                if self._try_offline:
+                    # 明確離線模式 — 不 fallback 到線上
                     raise
+                logger.info("[STT] 本地快取不可用 (%s)，嘗試線上下載...", cache_err)
+                self._fw_model = WhisperModel(self._fw_model_size, **fw_kwargs)
 
             # 更新顯示用的 model ID
             self.whisper_model_id = f"faster-whisper/{self._fw_model_size} ({self._fw_compute_type})"
@@ -338,21 +341,27 @@ class STTEngine:
     #  核心辨識方法（雙後端）
     # ──────────────────────────────────────────────
 
-    def _transcribe(self, audio_float: np.ndarray) -> Dict[str, Any]:
+    def _transcribe(
+        self, audio_float: np.ndarray, language: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """統一辨識介面 — 根據後端路由到不同實現。
 
         Args:
             audio_float: float32 音訊 [-1, 1]
+            language: 每次請求的語言覆寫（ISO 639-1），None 時使用引擎預設
 
         Returns:
             {"text": str, "confidence": float, "language": str | None, "segments": list}
         """
+        effective_language = language if language is not None else self._language
         if self._backend_type == "faster-whisper":
-            return self._transcribe_faster_whisper(audio_float)
+            return self._transcribe_faster_whisper(audio_float, language=effective_language)
         else:
-            return self._transcribe_transformers(audio_float)
+            return self._transcribe_transformers(audio_float, language=effective_language)
 
-    def _transcribe_faster_whisper(self, audio_float: np.ndarray) -> Dict[str, Any]:
+    def _transcribe_faster_whisper(
+        self, audio_float: np.ndarray, language: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """faster-whisper 辨識"""
         # Audit fix: 從 config 讀取 VAD 參數，不再硬編碼
         vad_min_speech_ms = int(get("vad.min_speech_duration", 0.3, config=self.config) * 1000)
@@ -361,7 +370,7 @@ class STTEngine:
         segments_iter, info = self._fw_model.transcribe(
             audio_float,
             task=self._recognition_task,
-            language=self._language,
+            language=language,
             beam_size=get("recognition.beam_size", 5, config=self.config),
             best_of=get("recognition.best_of", 5, config=self.config),
             compression_ratio_threshold=get("recognition.compression_ratio_threshold", 1.35, config=self.config),
@@ -409,7 +418,9 @@ class STTEngine:
             "segments": segments,
         }
 
-    def _transcribe_transformers(self, audio_float: np.ndarray) -> Dict[str, Any]:
+    def _transcribe_transformers(
+        self, audio_float: np.ndarray, language: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """transformers pipeline 辨識"""
         generate_kwargs = {
             "max_new_tokens": get("recognition.max_new_tokens", 128, config=self.config),
@@ -422,6 +433,8 @@ class STTEngine:
             "return_timestamps": True,
             "task": self._recognition_task,
         }
+        if language:
+            generate_kwargs["language"] = language
 
         if self.pipe is None:
             return {"text": "", "confidence": 0.0, "language": None, "segments": []}
@@ -473,7 +486,8 @@ class STTEngine:
             is_listening_completed = stt_output.activation_reason == "continuous_listening_completed"
             if not stt_output.text or not stt_output.text.strip():
                 if is_listening_completed:
-                    stt_output.error = None
+                    # Audit fix: 保留 _continuous_recognition 設定的錯誤，不覆蓋
+                    pass
                 else:
                     logger.info("[STT] 🔇 未識別到有效語音內容")
                     stt_output.error = "未識別到有效語音內容"
@@ -491,6 +505,21 @@ class STTEngine:
                     ]
                     stt_output.metadata["activation_reason_detail"] = \
                         self.keyword_detector.get_activation_reason(matches)
+
+            # Audit fix: callback 在 keyword 判斷之後發送，確保 should_activate 正確
+            if validated.mode == ActivationMode.MANUAL and stt_output.text and stt_output.text.strip():
+                unified_data = stt_output.to_unified_format()
+                unified_data.metadata["input_mode"] = "manual"
+                audio_duration = (
+                    validated.duration if validated.duration is not None
+                    else self.phrase_time_limit
+                )
+                unified_data.metadata["audio_duration"] = audio_duration
+                if self.result_callback:
+                    try:
+                        self.result_callback(unified_data)
+                    except Exception as cb_err:
+                        logger.error("[STT] 發送手動辨識結果失敗: %s", cb_err)
 
             self.total_recognitions += 1
             if stt_output.text and stt_output.text.strip():
@@ -537,6 +566,18 @@ class STTEngine:
                 text=text.strip(), confidence=1.0, speaker_info=None,
                 activation_reason="text_input", error=None,
             )
+
+            # Audit fix: text 輸入也要經過 keyword 判斷
+            if self.keyword_detector is not None:
+                activate, matches = self.keyword_detector.should_activate(text.strip())
+                output.should_activate = activate
+                if matches:
+                    output.metadata["keyword_matches"] = [
+                        {"keyword": m.keyword, "confidence": m.confidence, "type": m.match_type}
+                        for m in matches
+                    ]
+                    output.metadata["activation_reason_detail"] = \
+                        self.keyword_detector.get_activation_reason(matches)
 
             unified_data = output.to_unified_format()
             unified_data.metadata["input_mode"] = "text"
@@ -591,8 +632,8 @@ class STTEngine:
                     "audio_duration": duration,
                 })
 
-            # 統一辨識介面
-            result = self._transcribe(audio_float)
+            # Audit fix: 傳入 per-request language（若有）
+            result = self._transcribe(audio_float, language=input_data.language)
             text = correct_stt(result["text"])
             confidence = result["confidence"]
 
@@ -624,17 +665,7 @@ class STTEngine:
                 output.metadata["detected_language"] = detected_lang
                 output.metadata["language_probability"] = lang_prob
 
-            # Audit fix: manual 也呼叫 result_callback（統一契約）
-            unified_data = output.to_unified_format()
-            unified_data.metadata["input_mode"] = "manual"
-            unified_data.metadata["audio_duration"] = duration
-
-            if self.result_callback:
-                try:
-                    self.result_callback(unified_data)
-                except Exception as cb_err:
-                    logger.error("[STT] 發送手動識別結果失敗: %s", cb_err)
-
+            # NOTE: callback 已移至 handle() 的 keyword 判斷之後統一發送
             return output.model_dump()
 
         except Exception as e:
@@ -686,7 +717,10 @@ class STTEngine:
                     last_speech_time = current_time
 
                     if current_time - speech_start_time > max_speech_duration:
-                        if self._process_audio_buffer(audio_buffer, input_data.enable_speaker_id):
+                        if self._process_audio_buffer(
+                            audio_buffer, input_data.enable_speaker_id,
+                            language=input_data.language,
+                        ):
                             successful_segments += 1
                         else:
                             failed_segments += 1
@@ -697,7 +731,10 @@ class STTEngine:
                     if audio_buffer:
                         silence_duration = current_time - last_speech_time if last_speech_time else 0
                         if silence_duration >= silence_threshold:
-                            if self._process_audio_buffer(audio_buffer, input_data.enable_speaker_id):
+                            if self._process_audio_buffer(
+                                audio_buffer, input_data.enable_speaker_id,
+                                language=input_data.language,
+                            ):
                                 successful_segments += 1
                             else:
                                 failed_segments += 1
@@ -708,7 +745,10 @@ class STTEngine:
                 time.sleep(0.05)
 
             if audio_buffer:
-                if self._process_audio_buffer(audio_buffer, input_data.enable_speaker_id):
+                if self._process_audio_buffer(
+                    audio_buffer, input_data.enable_speaker_id,
+                    language=input_data.language,
+                ):
                     successful_segments += 1
                 else:
                     failed_segments += 1
@@ -737,10 +777,14 @@ class STTEngine:
                 activation_reason="continuous_listening_failed",
             ).model_dump()
 
-    def _process_audio_buffer(self, audio_buffer: list, enable_speaker_id: bool) -> bool:
+    def _process_audio_buffer(
+        self, audio_buffer: list, enable_speaker_id: bool,
+        language: Optional[str] = None,
+    ) -> bool:
         """處理音訊緩衝區。
 
         Audit fix: 回傳 bool 表示是否成功，不再靜默吞掉錯誤。
+        Audit fix: 加入 per-request language 傳入 + keyword 判斷。
 
         Returns:
             True 如果成功辨識到文字，False 如果失敗或無結果。
@@ -762,8 +806,8 @@ class STTEngine:
 
             audio_float = merged_audio.astype(np.float32) / 32768.0
 
-            # 統一辨識介面
-            result = self._transcribe(audio_float)
+            # Audit fix: 傳入 per-request language
+            result = self._transcribe(audio_float, language=language)
             text = correct_stt(result["text"])
             confidence = result["confidence"]
 
@@ -786,6 +830,16 @@ class STTEngine:
             detected_lang = result.get("language")
             if detected_lang:
                 output.metadata["detected_language"] = detected_lang
+
+            # Audit fix: continuous 每段也經過 keyword 判斷
+            if self.keyword_detector is not None:
+                activate, matches = self.keyword_detector.should_activate(text)
+                output.should_activate = activate
+                if matches:
+                    output.metadata["keyword_matches"] = [
+                        {"keyword": m.keyword, "confidence": m.confidence, "type": m.match_type}
+                        for m in matches
+                    ]
 
             unified_data = output.to_unified_format()
             unified_data.metadata["audio_duration"] = total_duration

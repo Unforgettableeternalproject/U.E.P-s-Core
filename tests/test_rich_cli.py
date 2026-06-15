@@ -23,9 +23,10 @@ try:
         render_sawtooth_panel,
         show_dashboard,
         _usage_color,
+        _HAS_RICH,
         TIER_STYLES,
     )
-    _HAS_ENTRY = True
+    _HAS_ENTRY = _HAS_RICH  # Entry imports OK 但 Rich 可能是 stub
 except ImportError:
     _HAS_ENTRY = False
 

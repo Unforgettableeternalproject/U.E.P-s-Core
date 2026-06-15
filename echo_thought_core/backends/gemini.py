@@ -83,33 +83,36 @@ class GeminiBackend(AbstractBackend):
         self.max_tokens = cfg.get("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS)
 
         # 安全設定，預設為低風險攔截
-        self.safety_settings = [
-            types.SafetySetting(
-                category=str(item["category"]),
-                threshold=str(item["threshold"]),
-            )  # type: ignore
-            for item in cfg.get(
-                "safety_settings",
-                [
-                    {
-                        "category": "HARM_CATEGORY_HATE_SPEECH",
-                        "threshold": "BLOCK_LOW_AND_ABOVE",
-                    },
-                    {
-                        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-                        "threshold": "BLOCK_LOW_AND_ABOVE",
-                    },
-                    {
-                        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                        "threshold": "BLOCK_LOW_AND_ABOVE",
-                    },
-                    {
-                        "category": "HARM_CATEGORY_HARASSMENT",
-                        "threshold": "BLOCK_LOW_AND_ABOVE",
-                    },
-                ],
-            )
+        _default_safety = [
+            {
+                "category": "HARM_CATEGORY_HATE_SPEECH",
+                "threshold": "BLOCK_LOW_AND_ABOVE",
+            },
+            {
+                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                "threshold": "BLOCK_LOW_AND_ABOVE",
+            },
+            {
+                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                "threshold": "BLOCK_LOW_AND_ABOVE",
+            },
+            {
+                "category": "HARM_CATEGORY_HARASSMENT",
+                "threshold": "BLOCK_LOW_AND_ABOVE",
+            },
         ]
+        raw_settings = cfg.get("safety_settings", _default_safety)
+        if types is not None:
+            self.safety_settings = [
+                types.SafetySetting(
+                    category=str(item["category"]),
+                    threshold=str(item["threshold"]),
+                )  # type: ignore
+                for item in raw_settings
+            ]
+        else:
+            # google-genai 未安裝：保留原始 dict，query() 時會因無 genai 而報錯
+            self.safety_settings = raw_settings  # type: ignore[assignment]
 
         # Vertex AI 或 API Key 認證參數
         self._api_key = cfg.get("api_key")

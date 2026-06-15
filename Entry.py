@@ -340,6 +340,7 @@ class SessionControlCLI:
         table.add_row("compact", "Force full compaction (Layer 3)")
         table.add_row("history", "Browse message history")
         table.add_row("usage", "Show token usage report")
+        table.add_row("clear", "Reset session (clear all history)")
         table.add_row("help", "Show this menu")
         table.add_row("exit", "Exit")
 
@@ -378,6 +379,8 @@ class SessionControlCLI:
                 self.console.print(render_history_panel(self.mgr, last_n=20))
             elif cmd == "usage":
                 self._cmd_usage()
+            elif cmd == "clear":
+                self._cmd_clear()
             else:
                 self.console.print(f"[red]Unknown command: {cmd}[/]")
 
@@ -394,7 +397,7 @@ class SessionControlCLI:
             "[bold cyan]Session Control Chat[/]\n"
             f"[dim]Session: {self.mgr.state.session_id} | "
             f"Model: {self.mgr.config.model} | "
-            f"Commands: /quit /status /compact /history[/]",
+            f"Commands: /quit /status /compact /history /clear[/]",
             border_style="cyan", width=70,
         ))
 
@@ -437,6 +440,9 @@ class SessionControlCLI:
                     continue
                 elif cmd == "usage":
                     self._cmd_usage()
+                    continue
+                elif cmd == "clear":
+                    self._cmd_clear()
                     continue
                 else:
                     self.console.print(f"[red]Unknown command: /{cmd}[/]")
@@ -546,6 +552,18 @@ class SessionControlCLI:
             table.add_row("Summary", f"[dim]{preview}[/dim]")
 
         self.console.print(Panel(table, title="[bold yellow]Compaction Result[/]", border_style="yellow"))
+
+    def _cmd_clear(self) -> None:
+        """重置 session（清除所有歷史與狀態）"""
+        confirm = Confirm.ask("[yellow]Clear all history and reset session?[/]", default=False)
+        if not confirm:
+            self.console.print("[dim]Cancelled.[/dim]")
+            return
+
+        self.mgr.reset_session()
+        self.console.print(
+            f"[green]✓ Session reset.[/] New session: [bold]{self.mgr.state.session_id}[/]"
+        )
 
     def _cmd_usage(self) -> None:
         """顯示 token 用量報告"""

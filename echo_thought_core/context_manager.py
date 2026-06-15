@@ -360,18 +360,27 @@ class ContextManager:
 
         tokens_before = self.history.total_tokens
         self.history.messages = truncated
+
+        # 重新計算所有 token_count=None 的訊息（emergency 新建的 sacred Message）
+        for m in truncated:
+            if m.token_count is None:
+                self.counter.count_message(m)
         self.history.total_tokens = sum(m.token_count or 0 for m in truncated)
+
         self.budget.update(history=self.history.total_tokens)
         self.state.current_tokens = self.budget.total_tokens
         self.state.compression_count += 1
         self.state.last_compaction_at = time.time()
         self._last_compaction_time = time.time()
 
+        # 用實際 recount 後的數字重算 saved
+        actual_saved = max(0, tokens_before - self.history.total_tokens)
+
         return CompactionResult(
             tier=CompressionTier.TIER_4_EMERGENCY,
             tokens_before=tokens_before,
             tokens_after=self.history.total_tokens,
-            tokens_saved=saved,
-            compression_ratio=saved / tokens_before if tokens_before else 0,
+            tokens_saved=actual_saved,
+            compression_ratio=actual_saved / tokens_before if tokens_before else 0,
             duration_ms=(time.time() - start) * 1000,
         )

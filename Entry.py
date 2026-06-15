@@ -172,7 +172,9 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
     gemini_tools = to_gemini_tools() if tools_enabled else None
     executor = ToolExecutor(engine=engine, session_id=session_id) if tools_enabled else None
 
-    # ── Phase F 模組初始化 ──
+    # ── 情感/潛意識模組初始化（session 級別，複用整個對話）──
+    subconscious_assessor = SubconsciousAssessor(llm_fn=engine._llm_fn)
+    judge = JudgeAgent()
     soul_notes = SoulNoteManager(engine.storage_path)
     reflection_module = ReflectionModule(
         llm_fn=engine._llm_fn,
@@ -342,6 +344,14 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                 console.print(f"[green]✓ Switched to: {session_id} ({len(target_eps)} episodes loaded)[/]")
                 continue
 
+        # ── 防禦性預設值（避免 LLM 錯誤路徑中變數未定義）──
+        from echo_memory.affect.verifier import VerificationResult
+        verify_result = VerificationResult(
+            score=1.0, threshold=0.7, passed=True, details={}
+        )
+        gate_action = InhibitionAction.PASS
+        assessment = SubconsciousAssessment()  # 預設五維度
+
         # ── 1. 檢索記憶（使用 neurochem 動態參數）──
         context = MemoryContext()  # 預設空 context，避免 retrieve 失敗時 UnboundLocalError
         try:
@@ -377,8 +387,7 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
             memory_text = ""
 
         # ── 1.5 並行：潛意識評估 + 工具過濾 ──
-        subconscious_assessor = SubconsciousAssessor(llm_fn=engine._llm_fn)
-        judge = JudgeAgent()
+        # （assessor 和 judge 在 run_chat 初始化時已建立，session 級複用）
 
         # 潛意識評估（啟發式模式下很快，LLM 模式下可能需要時間）
         assessment = subconscious_assessor.assess(
@@ -466,9 +475,10 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
             turn += 1
 
             # 從 SubconsciousAssessment 建立 SalienceSignals
+            # verify_result 和 gate_action 在迴圈開頭已設定預設值
             signals = SalienceSignals.from_subconscious(
                 assessment,
-                verification_score=verify_result.score if 'verify_result' in dir() else 1.0,
+                verification_score=verify_result.score,
                 error_occurred=gate_action == InhibitionAction.SUPPRESS,
             )
 
@@ -539,49 +549,6 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
 
         except Exception as e:
             logger.warning(f"Store error: {e}")
-
-
-def _estimate_salience(user_input: str, agent_response: str) -> float:
-    """
-    啟發式估算對話的顯著性分數。
-
-    基於對話特徵自動評分，避免所有 episode 都是 0.5。
-    """
-    score = 0.35  # 基準分（一般閒聊）
-    text = (user_input + " " + agent_response).lower()
-
-    # 個人資訊（名字、身份、偏好）→ 高顯著性
-    personal_signals = [
-        "my name", "i am", "i'm", "remember", "don't forget", "important",
-        "i like", "i prefer", "i hate", "i need", "i want", "i work",
-        "我叫", "我是", "記住", "別忘", "我喜歡", "我偏好", "我討厭",
-        "我需要", "我想要", "告訴你", "我的名字", "叫我",
-    ]
-    if any(sig in text for sig in personal_signals):
-        score += 0.25
-
-    # 情感/深度對話 → 中高
-    emotional_signals = [
-        "feel", "love", "hate", "worry", "afraid", "happy", "sad",
-        "thank", "sorry", "miss", "dream", "hope", "wish",
-        "喜歡", "討厭", "擔心", "開心", "難過", "謝謝",
-        "害怕", "感謝", "思念", "希望", "抱歉", "對不起",
-        "高興", "生氣", "煩惱", "興奮", "感動",
-    ]
-    if any(sig in text for sig in emotional_signals):
-        score += 0.15
-
-    # 提問/知識交換 → 中
-    if "?" in user_input or "？" in user_input:
-        score += 0.1
-
-    # 長對話通常更有內容
-    if len(user_input) > 100:
-        score += 0.1
-    if len(agent_response) > 200:
-        score += 0.05
-
-    return min(1.0, round(score, 2))
 
 
 def _show_tool_usage_hint(llm: LLMClient):

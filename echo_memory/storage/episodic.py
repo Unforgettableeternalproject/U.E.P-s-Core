@@ -869,13 +869,18 @@ class EpisodicMemory:
         if not self.graph.has_node(episode.id):
             self.graph.add_episode_node(episode)
 
-        # 創建 PRECEDES 邊（與同 session 的前一個 Episode）
+        # 創建或強化 PRECEDES 邊（與同 session 的前一個 Episode）
         prev_id = self._last_episode_by_session.get(episode.session_id)
         if prev_id is not None and prev_id != episode.id:
             last_ep = self._episodes.get(prev_id)
             if last_ep:
-                time_delta = (episode.timestamp - last_ep.timestamp).total_seconds()
-                self.graph.add_precedes_edge(prev_id, episode.id, time_delta)
+                if self.graph.graph.has_edge(prev_id, episode.id):
+                    # 邊已存在（如跨 session 重啟恢復）→ 強化頻率
+                    self.graph.update_precedes_edge(prev_id, episode.id)
+                else:
+                    # 新邊
+                    time_delta = (episode.timestamp - last_ep.timestamp).total_seconds()
+                    self.graph.add_precedes_edge(prev_id, episode.id, time_delta)
 
         # 更新追蹤欄位
         self._last_episode_id = episode.id

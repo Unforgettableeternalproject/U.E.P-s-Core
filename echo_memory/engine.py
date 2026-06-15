@@ -358,9 +358,21 @@ class MemoryEngine:
                 llm_fn=self._llm_fn,
                 idle_minutes=config.dream_idle_minutes,
                 cron_schedule=config.dream_cron,
-                enable_idle=False,  # 手動調用時不啟用自動觸發
-                enable_cron=False,
+                enable_idle=config.dream_enable_idle,
+                enable_cron=config.dream_enable_cron,
             )
+
+            # 啟動自動觸發排程器（閒置 + cron）
+            if config.dream_enable_idle or config.dream_enable_cron:
+                try:
+                    self._dream_engine.start()
+                    logger.info(
+                        f"[MemoryEngine] Dream 排程器已啟動 "
+                        f"(idle={config.dream_enable_idle}, "
+                        f"cron={config.dream_enable_cron})"
+                    )
+                except Exception as e:
+                    logger.warning(f"[MemoryEngine] Dream 排程器啟動失敗: {e}")
 
         with storage_lock(self.storage_path):
             report = self._dream_engine.dream_now(triggered_by=triggered_by)

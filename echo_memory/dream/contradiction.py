@@ -16,6 +16,7 @@ import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
@@ -66,6 +67,7 @@ class ContradictionDetector:
         graph: MemoryGraph,
         similarity_threshold: float = 0.82,
         llm_fn: Callable[[str], str] | None = None,
+        conflict_ledger: Any | None = None,
     ):
         """
         初始化矛盾偵測器。
@@ -76,11 +78,14 @@ class ContradictionDetector:
             similarity_threshold: 向量相似度門檻，高於此值才進入 LLM 確認階段
             llm_fn: LLM 呼叫函式 Callable[[prompt_str], response_str]；
                     為 None 時降級跳過矛盾偵測
+            conflict_ledger: ConflictLedger 實例（可選）。
+                    不為 None 時，每次建立 CONTRADICTS 邊會同步登記帳本。
         """
         self.semantic = semantic
         self.graph = graph
         self.similarity_threshold = similarity_threshold
         self.llm_fn = llm_fn
+        self._conflict_ledger = conflict_ledger
 
         logger.info(
             f"[ContradictionDetector] 初始化完成 - "
@@ -302,7 +307,7 @@ class ContradictionDetector:
 
     def _register_edge(self, result: ContradictionResult) -> None:
         """
-        在圖中建立 CONTRADICTS 邊。
+        在圖中建立 CONTRADICTS 邊 + 更新 Concept Health + 登記 Conflict Ledger。
 
         Args:
             result: ContradictionResult 結果物件
@@ -316,6 +321,27 @@ class ContradictionDetector:
             concept_b=result.concept_b_id,
             weight=result.strength,
         )
+
+        # 更新兩邊概念的 conflict_count 和 has_contradiction 標記
+        for cid in (result.concept_a_id, result.concept_b_id):
+            concept = self.semantic.get(cid)
+            if concept:
+                concept.conflict_count += 1
+                concept.metadata["has_contradiction"] = True
+        self.semantic._save()
+
+        # 若有 ConflictLedger，登記矛盾帳本
+        if self._conflict_ledger is not None:
+            concept_a = self.semantic.get(result.concept_a_id)
+            concept_b = self.semantic.get(result.concept_b_id)
+            self._conflict_ledger.register(
+                concept_a_id=result.concept_a_id,
+                concept_b_id=result.concept_b_id,
+                strength=result.strength,
+                concept_a_name=concept_a.name if concept_a else "",
+                concept_b_name=concept_b.name if concept_b else "",
+                reason=result.reason,
+            )
 
         logger.info(
             f"[ContradictionDetector] 建立矛盾邊: "

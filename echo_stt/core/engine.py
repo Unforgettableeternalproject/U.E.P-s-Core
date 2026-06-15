@@ -6,6 +6,7 @@ echo_stt 核心 STT 引擎
 - transformers — fallback
 
 Bug #2 修復：duration=0.0 使用 is not None 判定
+Audit 2026-06-15：修復 15 項 deep audit 問題
 """
 
 import re
@@ -33,6 +34,10 @@ from echo_stt.speaker.identification import SpeakerIdentification
 from echo_stt.keyword.detector import SmartKeywordDetector
 
 logger = logging.getLogger(__name__)
+
+# CTranslate2 CPU 支援的 compute_type
+_CT2_CPU_TYPES = {"float32", "int16", "int8", "int8_float16", "int8_float32"}
+_CT2_CPU_DEFAULT = "int8_float16"
 
 
 def correct_stt(text: str) -> str:
@@ -94,6 +99,14 @@ class STTEngine:
         else:
             self.device = device_pref
 
+        # Audit fix: compute_type 正規化 — CPU 不支援 float16
+        if self.device == "cpu" and self._fw_compute_type not in _CT2_CPU_TYPES:
+            logger.warning(
+                "[STT] compute_type '%s' 不被 CPU 支援，自動降級為 '%s'",
+                self._fw_compute_type, _CT2_CPU_DEFAULT,
+            )
+            self._fw_compute_type = _CT2_CPU_DEFAULT
+
         dtype_pref = get("whisper.torch_dtype", "auto", config=self.config)
         if dtype_pref == "auto":
             self.torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
@@ -117,16 +130,28 @@ class STTEngine:
         vad_min_speech = get("vad.min_speech_duration", 0.3, config=self.config)
         self.vad_module = VoiceActivityDetection(self.sample_rate, vad_sensitivity, vad_min_speech)
 
+        # Audit fix: 尊重 speaker.enabled — disabled 時不建立模組
+        self._speaker_enabled: bool = get("speaker.enabled", False, config=self.config)
         speaker_config = self.config.get("speaker", {})
-        self.speaker_module = SpeakerIdentification(
-            config={"speaker_recognition": speaker_config} if speaker_config else None,
-            context_manager=context_manager,
-        )
+        if self._speaker_enabled:
+            self.speaker_module: Optional[SpeakerIdentification] = SpeakerIdentification(
+                config={"speaker_recognition": speaker_config} if speaker_config else None,
+                context_manager=context_manager,
+            )
+        else:
+            self.speaker_module = None
+            logger.info("[STT] 語者識別已停用 (speaker.enabled=false)")
 
+        # Audit fix: 尊重 keyword.enabled
+        self._keyword_enabled: bool = get("keyword.enabled", True, config=self.config)
         keyword_config = self.config.get("keyword", {})
-        self.keyword_detector = SmartKeywordDetector(
-            config={"smart_activation": keyword_config} if keyword_config else None,
-        )
+        if self._keyword_enabled:
+            self.keyword_detector: Optional[SmartKeywordDetector] = SmartKeywordDetector(
+                config={"smart_activation": keyword_config} if keyword_config else None,
+            )
+        else:
+            self.keyword_detector = None
+            logger.info("[STT] 智能喚醒已停用 (keyword.enabled=false)")
 
         # 監聽控制
         self.should_stop_listening = False
@@ -140,11 +165,6 @@ class STTEngine:
             "rate": self.sample_rate,
             "frames_per_buffer": get("audio.frames_per_buffer", 1024, config=self.config),
         }
-
-        # 模式
-        default_mode = get("recognition.default_mode", "manual", config=self.config)
-        self._current_mode = ActivationMode.CONTINUOUS if default_mode == "continuous" else ActivationMode.MANUAL
-        self._listening_active = False
 
         self.is_initialized = False
 
@@ -183,6 +203,14 @@ class STTEngine:
         logger.debug("[STT] 初始化中... (backend: %s)", self._backend_type)
 
         try:
+            # Audit fix: offline 策略 — 檢測 HF_HUB_OFFLINE 或設定
+            if os.environ.get("HF_HUB_OFFLINE") != "1":
+                # 檢查是否有本地快取可用，若有則自動設為 offline 嘗試
+                self._try_offline = get("whisper.prefer_offline", False, config=self.config)
+            else:
+                self._try_offline = True
+                logger.info("[STT] 偵測到 HF_HUB_OFFLINE=1，使用離線模式")
+
             if self._backend_type == "faster-whisper":
                 success = self._init_faster_whisper()
             else:
@@ -199,10 +227,12 @@ class STTEngine:
             if not self.vad_module.initialize():
                 logger.error("[STT] VAD 模組初始化失敗")
 
-            if not self.speaker_module.initialize():
-                logger.info("[STT] 說話人識別模組使用 fallback 模式")
-            else:
-                logger.info("[STT] 說話人識別模組初始化成功")
+            # Audit fix: speaker.enabled=false 時跳過初始化
+            if self.speaker_module is not None:
+                if not self.speaker_module.initialize():
+                    logger.info("[STT] 說話人識別模組使用 fallback 模式")
+                else:
+                    logger.info("[STT] 說話人識別模組初始化成功")
 
             # 列出音頻設備
             if self.pyaudio_instance:
@@ -229,13 +259,27 @@ class STTEngine:
                 self._fw_model_size, self._fw_compute_type, self.device, self._fw_num_workers,
             )
 
-            self._fw_model = WhisperModel(
-                self._fw_model_size,
-                device=self.device,
-                compute_type=self._fw_compute_type,
-                num_workers=self._fw_num_workers,
-                download_root=self._fw_download_root,
-            )
+            # Audit fix: 嘗試 local_files_only 如果有快取
+            fw_kwargs: Dict[str, Any] = {
+                "device": self.device,
+                "compute_type": self._fw_compute_type,
+                "num_workers": self._fw_num_workers,
+                "download_root": self._fw_download_root,
+            }
+
+            if self._try_offline:
+                fw_kwargs["local_files_only"] = True
+                logger.info("[STT] faster-whisper 使用離線模式 (local_files_only)")
+
+            try:
+                self._fw_model = WhisperModel(self._fw_model_size, **fw_kwargs)
+            except Exception as offline_err:
+                if self._try_offline and "local_files_only" in fw_kwargs:
+                    logger.warning("[STT] 離線載入失敗，嘗試線上下載: %s", offline_err)
+                    fw_kwargs.pop("local_files_only", None)
+                    self._fw_model = WhisperModel(self._fw_model_size, **fw_kwargs)
+                else:
+                    raise
 
             # 更新顯示用的 model ID
             self.whisper_model_id = f"faster-whisper/{self._fw_model_size} ({self._fw_compute_type})"
@@ -310,16 +354,22 @@ class STTEngine:
 
     def _transcribe_faster_whisper(self, audio_float: np.ndarray) -> Dict[str, Any]:
         """faster-whisper 辨識"""
+        # Audit fix: 從 config 讀取 VAD 參數，不再硬編碼
+        vad_min_speech_ms = int(get("vad.min_speech_duration", 0.3, config=self.config) * 1000)
+        vad_min_silence_ms = int(get("continuous.silence_threshold", 1.5, config=self.config) * 1000)
+
         segments_iter, info = self._fw_model.transcribe(
             audio_float,
             task=self._recognition_task,
             language=self._language,
             beam_size=get("recognition.beam_size", 5, config=self.config),
             best_of=get("recognition.best_of", 5, config=self.config),
+            compression_ratio_threshold=get("recognition.compression_ratio_threshold", 1.35, config=self.config),
+            no_speech_threshold=get("recognition.no_speech_threshold", 0.4, config=self.config),
             vad_filter=True,
             vad_parameters=dict(
-                min_speech_duration_ms=300,
-                min_silence_duration_ms=500,
+                min_speech_duration_ms=vad_min_speech_ms,
+                min_silence_duration_ms=min(vad_min_silence_ms, 500),
             ),
         )
 
@@ -430,6 +480,18 @@ class STTEngine:
             else:
                 stt_output.error = None
 
+            # Audit fix: 接入 keyword_detector 的 should_activate 判斷
+            if stt_output.text and stt_output.text.strip() and self.keyword_detector is not None:
+                activate, matches = self.keyword_detector.should_activate(stt_output.text)
+                stt_output.should_activate = activate
+                if matches:
+                    stt_output.metadata["keyword_matches"] = [
+                        {"keyword": m.keyword, "confidence": m.confidence, "type": m.match_type}
+                        for m in matches
+                    ]
+                    stt_output.metadata["activation_reason_detail"] = \
+                        self.keyword_detector.get_activation_reason(matches)
+
             self.total_recognitions += 1
             if stt_output.text and stt_output.text.strip():
                 self.update_custom_metric('recognition_confidence', stt_output.confidence)
@@ -513,10 +575,21 @@ class STTEngine:
 
             logger.info("[STT] 進行語音識別 (backend: %s)...", self._backend_type)
 
-            if not self.vad_module.has_sufficient_speech(audio_data):
+            has_speech = self.vad_module.has_sufficient_speech(audio_data)
+            if has_speech:
+                self.vad_triggers += 1  # Audit fix: 遞增 vad_triggers
+            else:
                 logger.info("[STT] VAD：未檢測到足夠語音，但仍嘗試識別")
 
             audio_float = audio_data.astype(np.float32) / 32768.0
+
+            # Audit fix: 統一呼叫 on_interaction_start（manual 也要呼叫）
+            if self.on_interaction_start:
+                self.on_interaction_start({
+                    "module": "stt", "input_type": "voice",
+                    "input_mode": "manual",
+                    "audio_duration": duration,
+                })
 
             # 統一辨識介面
             result = self._transcribe(audio_float)
@@ -537,7 +610,7 @@ class STTEngine:
                 logger.info("[STT] 偵測語言: %s (%.1f%%)", detected_lang, (lang_prob or 0) * 100)
 
             speaker_info = None
-            if input_data.enable_speaker_id:
+            if input_data.enable_speaker_id and self.speaker_module is not None:
                 speaker_info = self.speaker_module.identify_speaker(audio_data)
 
             logger.info("[STT] 識別結果: '%s' (信心度: %.2f)", text, confidence)
@@ -550,6 +623,17 @@ class STTEngine:
             if detected_lang:
                 output.metadata["detected_language"] = detected_lang
                 output.metadata["language_probability"] = lang_prob
+
+            # Audit fix: manual 也呼叫 result_callback（統一契約）
+            unified_data = output.to_unified_format()
+            unified_data.metadata["input_mode"] = "manual"
+            unified_data.metadata["audio_duration"] = duration
+
+            if self.result_callback:
+                try:
+                    self.result_callback(unified_data)
+                except Exception as cb_err:
+                    logger.error("[STT] 發送手動識別結果失敗: %s", cb_err)
 
             return output.model_dump()
 
@@ -579,6 +663,10 @@ class STTEngine:
             last_speech_time: Optional[float] = None
             speech_start_time: Optional[float] = None
 
+            # Audit fix: 追蹤 continuous 結果與錯誤
+            successful_segments = 0
+            failed_segments = 0
+
             while time.time() - start_time < duration and not self.should_stop_listening:
                 current_time = time.time()
                 audio_chunk = self._record_audio(chunk_duration)
@@ -589,6 +677,7 @@ class STTEngine:
                 has_speech = self.vad_module.has_sufficient_speech(audio_chunk, min_duration=0.05)
 
                 if has_speech:
+                    self.vad_triggers += 1  # Audit fix: 遞增 vad_triggers
                     if speech_start_time is None:
                         speech_start_time = current_time
                         logger.info("[STT] 🎤 語音開始...")
@@ -597,7 +686,10 @@ class STTEngine:
                     last_speech_time = current_time
 
                     if current_time - speech_start_time > max_speech_duration:
-                        self._process_audio_buffer(audio_buffer, input_data.enable_speaker_id)
+                        if self._process_audio_buffer(audio_buffer, input_data.enable_speaker_id):
+                            successful_segments += 1
+                        else:
+                            failed_segments += 1
                         audio_buffer = []
                         last_speech_time = None
                         speech_start_time = None
@@ -605,7 +697,10 @@ class STTEngine:
                     if audio_buffer:
                         silence_duration = current_time - last_speech_time if last_speech_time else 0
                         if silence_duration >= silence_threshold:
-                            self._process_audio_buffer(audio_buffer, input_data.enable_speaker_id)
+                            if self._process_audio_buffer(audio_buffer, input_data.enable_speaker_id):
+                                successful_segments += 1
+                            else:
+                                failed_segments += 1
                             audio_buffer = []
                             last_speech_time = None
                             speech_start_time = None
@@ -613,26 +708,46 @@ class STTEngine:
                 time.sleep(0.05)
 
             if audio_buffer:
-                self._process_audio_buffer(audio_buffer, input_data.enable_speaker_id)
+                if self._process_audio_buffer(audio_buffer, input_data.enable_speaker_id):
+                    successful_segments += 1
+                else:
+                    failed_segments += 1
 
-            logger.info("[STT] 持續監聽模式正常結束")
-            return STTOutput(
-                text="", confidence=1.0, speaker_info=None,
-                activation_reason="continuous_listening_completed", error=None,
-            ).model_dump()
+            logger.info(
+                "[STT] 持續監聽模式正常結束 (成功: %d, 失敗: %d)",
+                successful_segments, failed_segments,
+            )
+
+            # Audit fix: 回報真實的完成狀態
+            output = STTOutput(
+                text="", confidence=1.0 if failed_segments == 0 else 0.5,
+                speaker_info=None,
+                activation_reason="continuous_listening_completed",
+                error=f"{failed_segments} 個片段辨識失敗" if failed_segments > 0 else None,
+            )
+            output.metadata["successful_segments"] = successful_segments
+            output.metadata["failed_segments"] = failed_segments
+            return output.model_dump()
 
         except Exception as e:
             logger.error("[STT] 持續監聽失敗: %s", e)
             return STTOutput(
                 text="", confidence=0.0,
-                error=f"持續監聽失敗: {e}",
+                error=f"持續監聯失敗: {e}",
                 activation_reason="continuous_listening_failed",
             ).model_dump()
 
-    def _process_audio_buffer(self, audio_buffer: list, enable_speaker_id: bool) -> None:
+    def _process_audio_buffer(self, audio_buffer: list, enable_speaker_id: bool) -> bool:
+        """處理音訊緩衝區。
+
+        Audit fix: 回傳 bool 表示是否成功，不再靜默吞掉錯誤。
+
+        Returns:
+            True 如果成功辨識到文字，False 如果失敗或無結果。
+        """
         try:
             if not audio_buffer:
-                return
+                return False
 
             merged_audio = np.concatenate(audio_buffer)
             total_duration = len(merged_audio) / self.sample_rate
@@ -641,6 +756,7 @@ class STTEngine:
             if self.on_interaction_start:
                 self.on_interaction_start({
                     "module": "stt", "input_type": "voice",
+                    "input_mode": "continuous",
                     "audio_duration": total_duration,
                 })
 
@@ -652,12 +768,13 @@ class STTEngine:
             confidence = result["confidence"]
 
             if not text or text.isspace():
-                return
+                return False
 
             logger.info("[STT] ✅ '%s' (信心度: %.2f)", text, confidence)
 
             speaker_info = None
-            if enable_speaker_id:
+            # Audit fix: speaker_module 可能為 None
+            if enable_speaker_id and self.speaker_module is not None:
                 speaker_info = self.speaker_module.identify_speaker(merged_audio)
 
             output = STTOutput(
@@ -685,14 +802,18 @@ class STTEngine:
             if confidence < 0.7:
                 print(f"   ⚠️  低置信度: {confidence:.2f}")
 
+            return True
+
         except Exception as e:
             logger.error("[STT] 處理音頻緩衝區失敗: %s", e)
+            return False
 
     # ──────────────────────────────────────────────
     #  音訊錄製
     # ──────────────────────────────────────────────
 
     def _record_audio(self, duration: float) -> np.ndarray:
+        stream = None
         try:
             stream_params: Dict[str, Any] = {
                 "format": self.pa_config["format"],
@@ -719,9 +840,6 @@ class STTEngine:
                 data = stream.read(self.pa_config["frames_per_buffer"])
                 frames.append(data)
 
-            stream.stop_stream()
-            stream.close()
-
             audio_data = b''.join(frames)
             audio_array = np.frombuffer(audio_data, dtype=np.int16)
 
@@ -735,6 +853,14 @@ class STTEngine:
         except Exception as e:
             logger.error("[STT] 錄音失敗: %s", e)
             return np.array([])
+        finally:
+            # Audit fix: 確保 stream 在任何情況下都被關閉（包括 KeyboardInterrupt）
+            if stream is not None:
+                try:
+                    stream.stop_stream()
+                    stream.close()
+                except Exception:
+                    pass
 
     # ──────────────────────────────────────────────
     #  輔助（transformers fallback 用）
@@ -779,7 +905,7 @@ class STTEngine:
 
         if hasattr(self, 'vad_module'):
             self.vad_module.shutdown()
-        if hasattr(self, 'speaker_module'):
+        if hasattr(self, 'speaker_module') and self.speaker_module is not None:
             self.speaker_module.shutdown()
 
         logger.info("[STT] 引擎已關閉")

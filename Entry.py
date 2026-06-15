@@ -175,8 +175,23 @@ class EchoSTTCLI:
             if self.args.device is not None:
                 config.setdefault("audio", {})["device_index"] = self.args.device
             if self.args.model:
-                config.setdefault("whisper", {})["model_id"] = self.args.model
-                config.setdefault("whisper", {})["use_local_model"] = False
+                whisper_cfg = config.setdefault("whisper", {})
+                whisper_cfg["model_id"] = self.args.model
+                whisper_cfg["use_local_model"] = False
+                # Audit fix: CLI --model 同時更新 faster-whisper 的 model_size
+                # 支援格式: "base", "large-v3", "openai/whisper-base" 等
+                model_arg = self.args.model
+                if "/" in model_arg:
+                    # 從 HF ID 擷取 model_size (e.g. "openai/whisper-base" → "base")
+                    name_part = model_arg.split("/")[-1]
+                    if name_part.startswith("whisper-"):
+                        whisper_cfg["model_size"] = name_part[len("whisper-"):]
+                    elif name_part.startswith("faster-whisper-"):
+                        whisper_cfg["model_size"] = name_part[len("faster-whisper-"):]
+                    else:
+                        whisper_cfg["model_size"] = name_part
+                else:
+                    whisper_cfg["model_size"] = model_arg
             if self.args.task:
                 config.setdefault("recognition", {})["task"] = self.args.task
 

@@ -57,6 +57,10 @@ Thumbs.db
 .dmypy.json
 dmypy.json
 
+# Claude Code（本地 agent 設定，不提交）
+CLAUDE.md
+.claude/
+
 # 臨時文件
 tmp/
 temp/

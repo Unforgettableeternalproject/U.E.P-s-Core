@@ -353,8 +353,10 @@ class TestGraphNewEdgeTypes:
 
         edge = graph.graph["con_a"]["con_b"]
         assert edge["frequency"] == 2
-        # 權重是 (0.5 + 0.8) / 2 = 0.65
-        assert edge["weight"] == pytest.approx(0.65)
+        # 重複添加後頻率增加，權重用完整公式重算
+        # W = α·Recency + β·log1p(freq)/log1p(max_freq) + γ·Salience
+        assert edge["weight"] > 0.5  # 強化後應大於初始值
+        assert edge["weight"] <= 1.0
 
     def test_contradicts_edge(self, graph_dir: Path):
         graph = MemoryGraph(graph_dir)

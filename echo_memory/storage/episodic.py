@@ -17,6 +17,7 @@ import json
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -284,6 +285,31 @@ class EpisodicMemory:
             ep.content_summary = new_summary
             ep.embedding = self._generate_embedding(new_summary)
             self._rebuild_embeddings()
+            self._save_unlocked()
+            return True
+
+    def update_episode_metadata(
+        self, episode_id: str, updates: dict[str, Any]
+    ) -> bool:
+        """
+        合併更新指定 Episode 的 metadata 並持久化。
+
+        不影響 embedding 和索引，僅更新 metadata dict。
+
+        Args:
+            episode_id: Episode ID
+            updates: 要合併進 metadata 的 key-value 對
+
+        Returns:
+            True 若成功更新，False 若 Episode 不存在
+        """
+        with storage_lock(self.lock_path):
+            self._load(reset=True)
+            ep = self._episodes.get(episode_id)
+            if ep is None:
+                return False
+
+            ep.metadata.update(updates)
             self._save_unlocked()
             return True
 

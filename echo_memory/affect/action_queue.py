@@ -123,6 +123,9 @@ class ReflectionActionQueue:
         self._audit_path = audit_path
         self._action_counter = 0
 
+        # 從 audit log 重建未處理的 PENDING/CONFIRMED 行動
+        self._restore_pending_from_audit()
+
     def enqueue(
         self,
         action_type: str,
@@ -177,6 +180,8 @@ class ReflectionActionQueue:
             return action
 
         self._pending.append(action)
+        # 所有入隊行動都寫入 audit（包括 CONFIRM），確保持久化可追蹤
+        self._audit(action)
         logger.debug(
             "[ActionQueue] 行動入隊: %s on %s (permission=%s)",
             action_type,
@@ -317,20 +322,38 @@ class ReflectionActionQueue:
                 executed.append(action)
         return executed
 
-    def rollback(self, action_id: str) -> bool:
+    def rollback(
+        self,
+        action_id: str,
+        rollback_fn: Any = None,
+    ) -> bool:
         """
         回滾一個已執行的行動。
 
-        只標記狀態，實際回滾由外部根據 pre_state 執行。
+        若提供 rollback_fn，會使用 pre_state 執行實際還原；
+        否則僅標記狀態（向下相容）。
 
         Args:
             action_id: 行動 ID
+            rollback_fn: 回滾函式，接收 (action_type, target_id, pre_state) → None
+                         若為 None，僅標記狀態不做實際還原。
 
         Returns:
-            是否成功標記為回滾
+            是否成功回滾
         """
         for a in self._history:
             if a.id == action_id and a.status == ActionStatus.EXECUTED:
+                if rollback_fn is not None and a.pre_state:
+                    try:
+                        rollback_fn(a.action_type, a.target_id, a.pre_state)
+                    except Exception as e:
+                        logger.error(
+                            "[ActionQueue] 回滾執行失敗: %s — %s",
+                            action_id, e,
+                        )
+                        a.error = f"rollback failed: {e}"
+                        self._audit(a)
+                        return False
                 a.status = ActionStatus.ROLLED_BACK
                 self._audit(a)
                 logger.info("[ActionQueue] 行動已回滾: %s", action_id)
@@ -340,6 +363,15 @@ class ReflectionActionQueue:
     def get_history(self) -> list[ReflectionAction]:
         """取得歷史行動記錄。"""
         return list(self._history)
+
+    def persist_action(self, action: ReflectionAction) -> None:
+        """
+        將行動的當前狀態追加寫入 audit log。
+
+        用於在 enqueue 後更新 pre_state 等欄位時，
+        確保最新快照被持久化，供 restart 時恢復。
+        """
+        self._audit(action)
 
     def _audit(self, action: ReflectionAction) -> None:
         """寫入稽核日誌。"""
@@ -352,3 +384,76 @@ class ReflectionActionQueue:
                 f.write(json.dumps(action.to_dict(), ensure_ascii=False) + "\n")
         except Exception as e:
             logger.warning("[ActionQueue] 稽核日誌寫入失敗: %s", e)
+
+    def _restore_pending_from_audit(self) -> None:
+        """
+        從 audit log 重建未處理的 PENDING/CONFIRMED 行動。
+
+        讀取 JSONL，追蹤每個 action_id 的最新狀態，
+        將仍處於 pending/confirmed 的行動加回 _pending deque。
+        """
+        if self._audit_path is None or not self._audit_path.exists():
+            return
+
+        try:
+            # 讀取所有記錄，追蹤每個 action 的最終狀態
+            latest_state: dict[str, dict[str, Any]] = {}
+            with open(self._audit_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                        aid = record.get("id", "")
+                        if aid:
+                            latest_state[aid] = record
+                    except json.JSONDecodeError:
+                        continue
+
+            # 從最終狀態中篩選出 pending/confirmed 的行動
+            restored = 0
+            for aid, record in latest_state.items():
+                status = record.get("status", "")
+                if status not in ("pending", "confirmed"):
+                    continue
+
+                action = ReflectionAction(
+                    id=aid,
+                    action_type=record.get("action_type", ""),
+                    source=record.get("source", "reflection"),
+                    target_id=record.get("target_id", ""),
+                    params=record.get("params", {}),
+                    reasoning=record.get("reasoning", ""),
+                    permission=ActionPermission(
+                        record.get("permission", "confirm")
+                    ),
+                    status=ActionStatus(status),
+                    pre_state=record.get("pre_state", {}),
+                    created_at=record.get("created_at", time.time()),
+                )
+                self._pending.append(action)
+                restored += 1
+
+            # 更新 counter 避免 ID 衝突
+            if latest_state:
+                max_counter = 0
+                for aid in latest_state:
+                    parts = aid.split("_")
+                    if len(parts) >= 2:
+                        try:
+                            max_counter = max(max_counter, int(parts[1]))
+                        except ValueError:
+                            pass
+                self._action_counter = max_counter
+
+            if restored > 0:
+                logger.info(
+                    "[ActionQueue] 從 audit log 恢復 %d 個待處理行動",
+                    restored,
+                )
+
+        except Exception as e:
+            logger.warning(
+                "[ActionQueue] audit log 恢復失敗（不影響新行動）: %s", e,
+            )

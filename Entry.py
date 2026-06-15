@@ -212,6 +212,7 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
         soul_notes=soul_notes,
     )
     executor_fn = reflection_executor.build_executor_fn()
+    rollback_fn = reflection_executor.build_rollback_fn()
     concept_extractor = ConceptExtractor(
         llm_fn=eval_fn,
         semantic=engine.semantic,
@@ -228,7 +229,7 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
             f"Chat: [dim]{llm.model_name}[/]  "
             f"Eval: [dim]{eval_cfg.model}[/]\n"
             f"Tools: {tools_status}\n\n"
-            "Commands: [dim]/quit /stats /dream /clear /history /tools /session /review-actions[/]",
+            "Commands: [dim]/quit /stats /dream /clear /history /tools /session /review-actions /rollback[/]",
             border_style="cyan",
             width=70,
         ))
@@ -283,6 +284,9 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
             continue
         elif cmd == "/review-actions":
             _cmd_review_actions(action_queue, executor_fn, console)
+            continue
+        elif cmd.startswith("/rollback"):
+            _cmd_rollback(action_queue, rollback_fn, console)
             continue
         elif cmd.startswith("/session"):
             parts_cmd = user_input.strip().split(maxsplit=1)
@@ -924,6 +928,45 @@ def _cmd_review_actions(
             con.print(f"  [dim]已拒絕: {action.id}[/]")
         else:
             con.print(f"  [dim]跳過（保留待處理）[/]")
+
+
+def _cmd_rollback(
+    queue: ReflectionActionQueue,
+    rb_fn: Any,
+    con: Console,
+) -> None:
+    """回滾最近執行的反思行動。"""
+    history = queue.get_history()
+    executed = [a for a in history if a.status.value == "executed"]
+    if not executed:
+        con.print("[dim]沒有可回滾的已執行行動。[/]")
+        return
+
+    # 顯示最近 5 個已執行行動
+    recent = executed[-5:]
+    con.print(Panel(
+        f"[bold yellow]⏪ 最近已執行行動 ({len(recent)} 個)[/]",
+        border_style="yellow",
+    ))
+
+    for i, action in enumerate(recent):
+        has_pre = "有" if action.pre_state else "無"
+        con.print(
+            f"\n  [{i}] [bold]{action.action_type}[/] on "
+            f"[cyan]{action.target_id}[/]  "
+            f"(pre_state: {has_pre})\n"
+            f"      ID: {action.id}"
+        )
+
+    target_id = Prompt.ask("  輸入要回滾的行動 ID（或 cancel 取消）")
+    if target_id.lower() == "cancel":
+        return
+
+    ok = queue.rollback(target_id, rollback_fn=rb_fn)
+    if ok:
+        con.print(f"  [green]✅ 已回滾: {target_id}[/]")
+    else:
+        con.print(f"  [red]❌ 回滾失敗（行動不存在或未處於 EXECUTED 狀態）[/]")
 
 
 def _cmd_dream(engine: MemoryEngine, llm: LLMClient | None = None):

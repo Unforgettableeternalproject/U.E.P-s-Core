@@ -409,12 +409,12 @@ class ReflectionExecutor:
             metadata=merged_meta,
         )
 
-        # 移除次概念（檢查回傳值避免半合併）
+        # 移除次概念（失敗時拋出例外，讓 ActionQueue 標記 FAILED）
         removed = self._engine.semantic.remove_concept(merge_with)
         if not removed:
-            logger.warning(
-                "[ReflectionExecutor] merge_concepts: 主概念已更新但"
-                "次概念移除失敗: %s", merge_with,
+            raise RuntimeError(
+                f"merge_concepts 半合併：主概念已更新但次概念移除失敗: "
+                f"{merge_with}（需手動檢查）"
             )
 
         return {

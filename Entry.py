@@ -218,6 +218,7 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
         semantic=engine.semantic,
         graph=engine.episodic.graph,
         embed_fn=lambda text: engine.episodic._generate_embedding(text),
+        inhibitor=concept_inhibitor,
     )
 
     def _show_session_banner():

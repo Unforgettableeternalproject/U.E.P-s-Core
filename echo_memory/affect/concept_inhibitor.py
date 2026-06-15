@@ -215,6 +215,215 @@ class ConceptInhibitor:
         return tx
 
     # ──────────────────────────────────────────────
+    # Extractor Pipeline 入口
+    # ──────────────────────────────────────────────
+
+    def process_extractor_patch(
+        self,
+        noun: str,
+        desc: str,
+        episode_id: str,
+        evidence_kind: str,
+        similarity_score: float = 0.0,
+        existing_concept_id: str | None = None,
+        embedding: list[float] | None = None,
+    ) -> tuple[str | None, PatchTransaction]:
+        """
+        處理來自 ConceptExtractor 的概念寫入請求。
+
+        ConceptExtractor 不再直接呼叫 SemanticMemory，而是透過此方法
+        產生 ConceptPatch → 規則決策 → apply → audit。
+
+        Extractor 來源的 patch 不走 LLM corroboration（可信度足夠），
+        規則層直接 approve。
+
+        Args:
+            noun: 概念名稱
+            desc: 概念描述
+            episode_id: 來源 episode ID
+            evidence_kind: 證據類型（extractor_new_concept / extractor_synonym_merge / extractor_polysemy / extractor_fallback）
+            similarity_score: 與最近鄰的相似度（用於 merge/polysemy 路徑）
+            existing_concept_id: 現有概念 ID（用於 merge 路徑）
+            embedding: 概念嵌入向量（用於 create 路徑）
+
+        Returns:
+            (concept_id | None, PatchTransaction)
+        """
+        tx = PatchTransaction(
+            patches=[],
+            user_input=f"[extractor] {noun}: {desc}",
+            llm_response="",
+            session_id="extractor-bg",
+            turn_id=episode_id,
+            triggered_by="extractor",
+        )
+
+        evidence = PatchEvidence(
+            evidence_kind=evidence_kind,
+            evidence_strength=0.7,  # extractor 來源的基礎可信度
+            verifier_status="valid",
+            verifier_reason=f"ConceptExtractor 背景提取 (sim={similarity_score:.3f})",
+            source_episode_ids=[episode_id],
+        )
+
+        concept_id: str | None = None
+
+        if evidence_kind == "extractor_synonym_merge":
+            # 同義詞合併 → expand (ADD_FACT: 新增 source_episode_id)
+            if existing_concept_id is None:
+                tx.status = "failed"
+                self._write_audit(tx)
+                return None, tx
+
+            concept = self._semantic.get(existing_concept_id)
+            if concept is None:
+                tx.status = "failed"
+                self._write_audit(tx)
+                return None, tx
+
+            patch = ConceptPatch(
+                transaction_id=tx.transaction_id,
+                concept_id=existing_concept_id,
+                concept_name=concept.name,
+                action="expand",
+                expand_mode=ExpandMode.ADD_FACT,
+                target_path="source_episode_ids",
+                old_value=list(concept.source_episode_ids),
+                new_value=episode_id,
+                old_confidence=concept.confidence,
+                new_confidence=concept.confidence,
+                patch_confidence=0.8,
+                evidence=evidence,
+                risk_level="low",
+                rollback_payload={
+                    "old_source_episode_ids": list(concept.source_episode_ids),
+                },
+            )
+            tx.patches.append(patch)
+            concept_id = existing_concept_id
+
+        else:
+            # 全新概念 / 多義詞 / fallback → create
+            patch = ConceptPatch(
+                transaction_id=tx.transaction_id,
+                concept_name=noun,
+                action="create",
+                target_path="*",
+                new_value={"name": noun, "description": desc, "episode_id": episode_id},
+                patch_confidence=0.7,
+                evidence=evidence,
+                risk_level="low",
+                rollback_payload={"embedding": embedding},
+            )
+            tx.patches.append(patch)
+
+        # Extractor 來源 → 規則層直接 approve（不走 LLM corroboration）
+        for patch in tx.patches:
+            patch.status = "approved"
+
+        # Apply
+        applied_patches: list[ConceptPatch] = []
+        failed = False
+        for patch in tx.patches:
+            if patch.action == "create":
+                success, new_id = self._apply_create(patch, embedding)
+                if success:
+                    patch.status = "applied"
+                    patch.concept_id = new_id
+                    concept_id = new_id
+                    applied_patches.append(patch)
+                else:
+                    patch.status = "rejected"
+                    patch.rejection_reason = "SemanticMemory create 失敗"
+                    failed = True
+            elif patch.action == "expand":
+                success = self._apply_expand_source(patch)
+                if success:
+                    patch.status = "applied"
+                    applied_patches.append(patch)
+                else:
+                    patch.status = "rejected"
+                    patch.rejection_reason = "SemanticMemory expand 失敗"
+                    failed = True
+
+        # Rollback（若有任何失敗）
+        if failed and applied_patches:
+            for p in reversed(applied_patches):
+                self._rollback_patch(p)
+                p.status = "rolled_back"
+            applied_patches.clear()
+            concept_id = None
+
+        tx.status = "committed" if not failed else "failed"
+        self._write_audit(tx)
+
+        if applied_patches:
+            logger.info(
+                "[ConceptInhibitor] extractor patch: %s — %d applied",
+                tx.summary(), len(applied_patches),
+            )
+
+        return concept_id, tx
+
+    def _apply_create(
+        self,
+        patch: ConceptPatch,
+        embedding: list[float] | None = None,
+    ) -> tuple[bool, str | None]:
+        """
+        執行 create patch — 新建概念到 SemanticMemory。
+
+        Returns:
+            (success, concept_id)
+        """
+        try:
+            payload = patch.new_value or {}
+            concept_id = self._semantic.upsert_concept(
+                name=payload.get("name", patch.concept_name),
+                description=payload.get("description", ""),
+                source_episode_id=payload.get("episode_id"),
+                embedding=embedding,
+            )
+            if concept_id:
+                # 設定 rollback payload
+                patch.rollback_payload = patch.rollback_payload or {}
+                patch.rollback_payload["created_concept_name"] = patch.concept_name
+                return True, concept_id
+            return False, None
+        except Exception as e:
+            logger.error(
+                "[ConceptInhibitor] _apply_create 失敗 (%s): %s",
+                patch.concept_name, e,
+            )
+            return False, None
+
+    def _apply_expand_source(self, patch: ConceptPatch) -> bool:
+        """
+        執行 expand/source_episode_ids — 同義詞合併，
+        新增 episode_id 到現有概念的 source_episode_ids。
+        """
+        concept = self._semantic.get(patch.concept_id or "")
+        if concept is None:
+            return False
+
+        try:
+            new_episode_id = patch.new_value
+            if isinstance(new_episode_id, str):
+                if new_episode_id not in concept.source_episode_ids:
+                    concept.source_episode_ids.append(new_episode_id)
+                    concept.access_count += 1
+                    concept.record_mutation()
+                    self._semantic._save()
+                    self._add_history_entry(concept, patch)
+            return True
+        except Exception as e:
+            logger.error(
+                "[ConceptInhibitor] _apply_expand_source 失敗 (%s): %s",
+                patch.patch_id, e,
+            )
+            return False
+
+    # ──────────────────────────────────────────────
     # Patch 建立
     # ──────────────────────────────────────────────
 
@@ -651,11 +860,27 @@ class ConceptInhibitor:
             return
 
         try:
-            if patch.action == "expand":
+            if patch.action == "create":
+                # create rollback → 移除概念（最終一致性：graph 殘留由 Dream 清理）
+                name = (patch.rollback_payload or {}).get(
+                    "created_concept_name", patch.concept_name
+                )
+                self._semantic.remove_concept(name)
+                logger.info(
+                    "[ConceptInhibitor] rollback create: 移除 %s", name,
+                )
+                return  # create rollback 不需要後續的 history/save 操作
+            elif patch.action == "expand":
                 # 移除最後加入的 fact
                 facts = concept.metadata.get("facts", [])
                 if facts and facts[-1] == patch.new_value:
                     facts.pop()
+                # expand/source_episode_ids rollback
+                old_sources = (patch.rollback_payload or {}).get(
+                    "old_source_episode_ids"
+                )
+                if old_sources is not None:
+                    concept.source_episode_ids = old_sources
                 # 還原 confidence
                 if patch.old_confidence is not None:
                     concept.confidence = patch.old_confidence

@@ -59,6 +59,9 @@ class ConceptExtractor:
 
     設計為在 daemon Thread 中運行。
     失敗時靜默記錄日誌，不拋異常。
+
+    若提供 inhibitor，所有 SemanticMemory 寫入走 patch pipeline（GPT #3）。
+    否則退回舊路徑（向下相容，但記錄警告）。
     """
 
     def __init__(
@@ -67,6 +70,7 @@ class ConceptExtractor:
         semantic,       # SemanticMemory
         graph,          # MemoryGraph
         embed_fn: Callable[[str], list[float]] | None = None,
+        inhibitor=None,  # ConceptInhibitor | None（避免循環 import）
     ):
         """
         Args:
@@ -74,11 +78,17 @@ class ConceptExtractor:
             semantic: SemanticMemory 實例
             graph: MemoryGraph 實例
             embed_fn: 文本嵌入函式（用於同義詞比對）
+            inhibitor: ConceptInhibitor 實例。提供時走 patch pipeline。
         """
         self._llm_fn = llm_fn
         self._semantic = semantic
         self._graph = graph
         self._embed_fn = embed_fn
+        self._inhibitor = inhibitor
+        if inhibitor is None:
+            logger.warning(
+                "[ConceptExtractor] 未注入 inhibitor，使用舊路徑直接寫入"
+            )
 
     def extract_in_background(
         self,
@@ -222,53 +232,140 @@ class ConceptExtractor:
         """
         根據同義詞/多義詞閾值決定：合併、建邊、或建新概念。
 
+        若有 inhibitor，走 patch pipeline；否則退回舊路徑。
+
         Returns:
             concept_id（合併或新建的 ID）
         """
         # 生成 embedding
-        if self._embed_fn is None:
-            # 無 embed_fn，直接 upsert 新概念
-            return self._semantic.upsert_concept(
-                name=noun,
-                description=desc,
-                source_episode_id=episode_id,
-            )
-
-        try:
-            embedding = self._embed_fn(noun + " " + desc)
-        except Exception:
-            return self._semantic.upsert_concept(
-                name=noun,
-                description=desc,
-                source_episode_id=episode_id,
-            )
+        embedding: list[float] | None = None
+        if self._embed_fn is not None:
+            try:
+                embedding = self._embed_fn(noun + " " + desc)
+                vec = np.array(embedding, dtype=np.float32)
+                if np.linalg.norm(vec) == 0:
+                    embedding = None
+            except Exception:
+                embedding = None
 
         # 找最近鄰
-        existing_concepts = self._semantic.list_concepts()
         best_match = None
         best_sim = 0.0
 
-        vec = np.array(embedding, dtype=np.float32)
-        norm = np.linalg.norm(vec)
-        if norm == 0:
+        if embedding is not None:
+            existing_concepts = self._semantic.list_concepts()
+            vec = np.array(embedding, dtype=np.float32)
+            norm = float(np.linalg.norm(vec))
+
+            for concept in existing_concepts:
+                if not concept.embedding or len(concept.embedding) == 0:
+                    continue
+                c_vec = np.array(concept.embedding, dtype=np.float32)
+                c_norm = float(np.linalg.norm(c_vec))
+                if c_norm == 0:
+                    continue
+                sim = float(np.dot(vec, c_vec) / (norm * c_norm))
+                if sim > best_sim:
+                    best_sim = sim
+                    best_match = concept
+
+        # ── 走 Patch Pipeline（有 inhibitor）──
+        if self._inhibitor is not None:
+            return self._upsert_via_pipeline(
+                noun, desc, episode_id, embedding, best_match, best_sim,
+            )
+
+        # ── 舊路徑（無 inhibitor，向下相容）──
+        return self._upsert_legacy(
+            noun, desc, episode_id, embedding, best_match, best_sim,
+        )
+
+    def _upsert_via_pipeline(
+        self,
+        noun: str,
+        desc: str,
+        episode_id: str,
+        embedding: list[float] | None,
+        best_match,
+        best_sim: float,
+    ) -> str | None:
+        """透過 ConceptInhibitor patch pipeline 寫入。"""
+        if best_match is None or best_sim < _POLYSEMY_THRESHOLD:
+            # < 0.85 → 全新概念
+            evidence_kind = (
+                "extractor_fallback" if embedding is None
+                else "extractor_new_concept"
+            )
+            concept_id, _tx = self._inhibitor.process_extractor_patch(
+                noun=noun,
+                desc=desc,
+                episode_id=episode_id,
+                evidence_kind=evidence_kind,
+                similarity_score=best_sim,
+                embedding=embedding,
+            )
+            # Graph 邊由 extractor 自己管（inhibitor 不管 graph）
+            if concept_id and embedding is not None:
+                if self._graph.has_node(episode_id):
+                    if not self._graph.has_node(concept_id):
+                        self._graph.add_concept_node(concept_id, noun)
+                    self._graph.add_derived_from_edge(concept_id, episode_id)
+            return concept_id
+
+        elif best_sim >= _SYNONYM_THRESHOLD:
+            # >= 0.92 → 同義詞合併
+            logger.debug(
+                f"[ConceptExtractor] 同義詞合併: '{noun}' → '{best_match.name}' "
+                f"(sim={best_sim:.3f})"
+            )
+            concept_id, _tx = self._inhibitor.process_extractor_patch(
+                noun=noun,
+                desc=desc,
+                episode_id=episode_id,
+                evidence_kind="extractor_synonym_merge",
+                similarity_score=best_sim,
+                existing_concept_id=best_match.id,
+            )
+            return concept_id
+
+        else:
+            # 0.85 ~ 0.92 → 多義詞
+            logger.debug(
+                f"[ConceptExtractor] 多義詞關聯: '{noun}' ~ '{best_match.name}' "
+                f"(sim={best_sim:.3f})"
+            )
+            concept_id, _tx = self._inhibitor.process_extractor_patch(
+                noun=noun,
+                desc=desc,
+                episode_id=episode_id,
+                evidence_kind="extractor_polysemy",
+                similarity_score=best_sim,
+                embedding=embedding,
+            )
+            if concept_id and best_match.id:
+                self._graph.add_relates_to_edge(
+                    concept_id, best_match.id,
+                    weight=best_sim,
+                    salience=0.6,
+                )
+            return concept_id
+
+    def _upsert_legacy(
+        self,
+        noun: str,
+        desc: str,
+        episode_id: str,
+        embedding: list[float] | None,
+        best_match,
+        best_sim: float,
+    ) -> str | None:
+        """舊路徑：直接寫入 SemanticMemory（向下相容）。"""
+        if embedding is None:
             return self._semantic.upsert_concept(
                 name=noun,
                 description=desc,
                 source_episode_id=episode_id,
             )
-
-        for concept in existing_concepts:
-            if not concept.embedding or len(concept.embedding) == 0:
-                continue
-            c_vec = np.array(concept.embedding, dtype=np.float32)
-            c_norm = np.linalg.norm(c_vec)
-            if c_norm == 0:
-                continue
-
-            sim = float(np.dot(vec, c_vec) / (norm * c_norm))
-            if sim > best_sim:
-                best_sim = sim
-                best_match = concept
 
         if best_match is None or best_sim < _POLYSEMY_THRESHOLD:
             # < 0.85 → 全新概念
@@ -278,7 +375,6 @@ class ConceptExtractor:
                 source_episode_id=episode_id,
                 embedding=embedding,
             )
-            # 建立 DERIVED_FROM 邊
             if concept_id and self._graph.has_node(episode_id):
                 if not self._graph.has_node(concept_id):
                     self._graph.add_concept_node(concept_id, noun)
@@ -286,12 +382,11 @@ class ConceptExtractor:
             return concept_id
 
         elif best_sim >= _SYNONYM_THRESHOLD:
-            # >= 0.92 → 同義詞（合併到現有概念）
+            # >= 0.92 → 同義詞合併
             logger.debug(
-                f"[ConceptExtractor] 同義詞合併: '{noun}' → '{best_match.name}' "
-                f"(sim={best_sim:.3f})"
+                f"[ConceptExtractor] 同義詞合併(legacy): '{noun}' → "
+                f"'{best_match.name}' (sim={best_sim:.3f})"
             )
-            # 更新現有概念的 source_episode_ids
             if episode_id not in best_match.source_episode_ids:
                 best_match.source_episode_ids.append(episode_id)
                 best_match.access_count += 1
@@ -299,10 +394,10 @@ class ConceptExtractor:
             return best_match.id
 
         else:
-            # 0.85 ~ 0.92 → 多義詞（建新概念 + RELATES_TO 邊）
+            # 0.85 ~ 0.92 → 多義詞
             logger.debug(
-                f"[ConceptExtractor] 多義詞關聯: '{noun}' ~ '{best_match.name}' "
-                f"(sim={best_sim:.3f})"
+                f"[ConceptExtractor] 多義詞關聯(legacy): '{noun}' ~ "
+                f"'{best_match.name}' (sim={best_sim:.3f})"
             )
             concept_id = self._semantic.upsert_concept(
                 name=noun,

@@ -34,7 +34,7 @@ from echo_memory.affect.concept_verifier import ConceptVerifier
 from echo_memory.affect.concept_inhibitor import ConceptInhibitor
 from echo_memory.affect.verifier import ResponseVerifier
 from echo_memory.affect.inhibitor import SubconsciousInhibitor, InhibitionAction
-from echo_memory.affect.judge import JudgeAgent
+from echo_memory.affect.judge import StorageJudge
 from echo_memory.affect.concept_extractor import ConceptExtractor
 from echo_memory.affect.soul_note import SoulNote, SoulNoteManager
 from echo_memory.affect.reflection import ReflectionModule
@@ -194,7 +194,7 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
         llm_fn=eval_fn,
     )
     subconscious_assessor = SubconsciousAssessor(llm_fn=eval_fn)
-    judge = JudgeAgent(llm_fn=eval_fn)
+    judge = StorageJudge(llm_fn=eval_fn)
     soul_notes = SoulNoteManager(engine.storage_path)
     reflection_module = ReflectionModule(
         llm_fn=eval_fn,
@@ -519,14 +519,38 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                 error_occurred=gate_action == InhibitionAction.SUPPRESS,
             )
 
-            # SalienceEvaluator 三值計算
+            # SalienceEvaluator 三值計算（baseline）
             evaluator = SalienceEvaluator(engine.neurochem)
-            salience, da_weight, ht_weight = evaluator.evaluate(
+            baseline_salience, da_weight, ht_weight = evaluator.evaluate(
                 signals, user_input=user_input, agent_response=response,
             )
 
             # 更新 neurochem（基於本輪信號）
             evaluator.update_neurochem(signals)
+
+            # ── 3.2 StorageJudge 存儲決策（後處理）──
+            # Judge 決定「怎麼記住」：salience 微調、concept seeds、
+            # entity/reflection triggers、metadata tags
+            storage_dec = judge.storage_decision(
+                user_input=user_input,
+                agent_response=response,
+                baseline_salience=baseline_salience,
+                assessment=assessment,
+                context=context if not context.is_empty() else None,
+                concept_verification=concept_verification,
+            )
+
+            # 合併 baseline + judge delta → final salience
+            salience = max(0.0, min(1.0, baseline_salience + storage_dec.salience_delta))
+
+            # 收集 episode metadata（包含 judge 決策）
+            ep_metadata: dict = {}
+            if storage_dec.metadata_tags:
+                ep_metadata["judge_tags"] = storage_dec.metadata_tags
+            if storage_dec.force_remember:
+                ep_metadata["force_remember"] = True
+            if storage_dec.source != "baseline":
+                ep_metadata["judge_source"] = storage_dec.source
 
             episode_id = engine.store_episode(
                 user_input=user_input,
@@ -535,12 +559,34 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                 salience=salience,
                 da_weight=da_weight,
                 ht_weight=ht_weight,
+                **ep_metadata,
             )
+
+            # 顯示存儲資訊
             sal_indicator = "🔴" if salience >= 0.75 else "🟡" if salience >= 0.5 else "⚪"
+            delta_str = ""
+            if storage_dec.salience_delta != 0.0:
+                sign = "+" if storage_dec.salience_delta > 0 else ""
+                delta_str = f" Δ{sign}{storage_dec.salience_delta:.2f}"
             console.print(
                 f"  [dim]💾 Stored: {episode_id[:12]}… (turn {turn}) "
-                f"{sal_indicator} sal={salience:.2f} da={da_weight:.2f} ht={ht_weight:.2f}[/]"
+                f"{sal_indicator} sal={salience:.2f}{delta_str} "
+                f"da={da_weight:.2f} ht={ht_weight:.2f}[/]"
             )
+
+            # 顯示 StorageJudge 語意增補（僅在有增補時）
+            if storage_dec.has_semantic_enrichment:
+                parts = []
+                if storage_dec.concept_seeds:
+                    parts.append(f"{len(storage_dec.concept_seeds)} seeds")
+                if storage_dec.metadata_tags:
+                    parts.append(f"tags={storage_dec.metadata_tags}")
+                if storage_dec.force_remember:
+                    parts.append("force_remember")
+                console.print(
+                    f"  [dim]⚖️ Judge [{storage_dec.source}]: "
+                    f"{', '.join(parts)}[/]"
+                )
 
             # ── 3.5 概念 Patch 閘門（Inhibitor）──
             # 根據 Verifier 判定 + LLM 回覆，決定是否對 SemanticMemory 提交變更
@@ -591,8 +637,12 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
             except Exception as e:
                 logger.debug(f"Soul note error: {e}")
 
-            # ── 6. 定時反思（每 N 輪觸發）──
-            if reflection_module.should_reflect(uncertainty=assessment.uncertainty):
+            # ── 6. 定時反思（每 N 輪觸發，或 Judge 強制）──
+            should_reflect = (
+                reflection_module.should_reflect(uncertainty=assessment.uncertainty)
+                or storage_dec.reflection_trigger
+            )
+            if should_reflect:
                 try:
                     recent = engine.episodic.list_episodes(
                         limit=5, offset=0, sort_by="timestamp", ascending=False

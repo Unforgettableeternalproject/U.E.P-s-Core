@@ -13,7 +13,14 @@ from echo_memory.affect.inhibitor import (
     InhibitionAction,
     GateDecision,
 )
-from echo_memory.affect.judge import JudgeAgent
+from echo_memory.affect.judge import (
+    StorageJudge,
+    JudgeAgent,  # backward-compatible alias
+    StorageDecision,
+    ConceptSeed,
+    JudgeGateResult,
+    JudgeRecommendation,
+)
 
 __all__ = [
     "SalienceSignals",
@@ -24,5 +31,10 @@ __all__ = [
     "SubconsciousInhibitor",
     "InhibitionAction",
     "GateDecision",
+    "StorageJudge",
     "JudgeAgent",
+    "StorageDecision",
+    "ConceptSeed",
+    "JudgeGateResult",
+    "JudgeRecommendation",
 ]

@@ -332,7 +332,7 @@ class LLMRouter:
         取得特定角色的 ``(str) -> str`` callable。
 
         這是各模組的主要介面。回傳的 callable 符合既有的 ``llm_fn`` 契約，
-        可直接傳入 SubconsciousAssessor、JudgeAgent、ConceptExtractor、
+        可直接傳入 SubconsciousAssessor、StorageJudge、ConceptExtractor、
         ReflectionModule、DreamEngine 等模組。
 
         Args:

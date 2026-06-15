@@ -30,6 +30,7 @@ from echo_memory.schemas.memory_context import MemoryContext
 from echo_memory.affect.signals import SalienceSignals, SubconsciousAssessment
 from echo_memory.affect.salience import SalienceEvaluator
 from echo_memory.affect.subconscious import SubconsciousAssessor
+from echo_memory.affect.concept_verifier import ConceptVerifier
 from echo_memory.affect.verifier import ResponseVerifier
 from echo_memory.affect.inhibitor import SubconsciousInhibitor, InhibitionAction
 from echo_memory.affect.judge import JudgeAgent
@@ -183,6 +184,10 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
     engine.set_llm_fn(eval_fn)
 
     # ── 情感/潛意識模組初始化（session 級別，複用整個對話）──
+    concept_verifier = ConceptVerifier(
+        llm_fn=eval_fn,
+        embed_fn=engine.episodic.generate_query_embedding,
+    )
     subconscious_assessor = SubconsciousAssessor(llm_fn=eval_fn)
     judge = JudgeAgent(llm_fn=eval_fn)
     soul_notes = SoulNoteManager(engine.storage_path)
@@ -398,8 +403,17 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
             logger.warning(f"Retrieval error: {e}")
             memory_text = ""
 
-        # ── 1.5 並行：潛意識評估 + 工具過濾 ──
-        # （assessor 和 judge 在 run_chat 初始化時已建立，session 級複用）
+        # ── 1.5 概念前驗證 + 潛意識評估 + 工具過濾 ──
+
+        # 概念前驗證：檢查檢索到的概念是否需要 expand/modify/deprecate
+        concept_verification = concept_verifier.verify(
+            user_input=user_input,
+            memory_ctx=context if not context.is_empty() else None,
+        )
+        if concept_verification.has_changes:
+            console.print(
+                f"  [dim]🔍 {concept_verification.summary()}[/]"
+            )
 
         # 潛意識評估（啟發式模式下很快，LLM 模式下可能需要時間）
         assessment = subconscious_assessor.assess(
@@ -425,13 +439,17 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                 )
                 executor.increment_turn()
 
-            # 構建 neurochem 注入段落
+            # 構建 neurochem + 概念驗證注入段落
             nc = engine.neurochem
             neurochem_prompt = (
                 f"\n## Internal State\n"
                 f"Dopamine: {nc.dopamine:.2f} | Serotonin: {nc.serotonin:.2f} | "
                 f"Mode: {nc.mode.value}\n"
             )
+            # 若有概念變更，注入提示讓 LLM 注意
+            concept_hint = concept_verification.to_context_text()
+            if concept_hint:
+                neurochem_prompt += f"\n{concept_hint}\n"
 
             response = None
             gate_action = InhibitionAction.PASS

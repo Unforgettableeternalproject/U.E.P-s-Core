@@ -260,12 +260,13 @@ class ConceptInhibitor:
             triggered_by=triggered_by,
         )
 
+        all_evidence_sources = source_episode_ids if source_episode_ids else [episode_id]
         evidence = PatchEvidence(
             evidence_kind=evidence_kind,
             evidence_strength=0.7,  # extractor 來源的基礎可信度
             verifier_status="valid",
             verifier_reason=f"ConceptExtractor 背景提取 (sim={similarity_score:.3f})",
-            source_episode_ids=[episode_id],
+            source_episode_ids=list(all_evidence_sources),
         )
 
         concept_id: str | None = None

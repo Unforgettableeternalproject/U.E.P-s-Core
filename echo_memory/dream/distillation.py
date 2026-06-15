@@ -396,23 +396,30 @@ class KnowledgeDistillation:
                     self.graph.add_derived_from_edge(concept_id, ep.id)
                     edges_created += 1
 
-        # 矛盾偵測（若有 detector）— 加 audit
+        # 矛盾偵測（若有 detector）— audit-before-mutate
         contradicts_created = 0
         if self._contradiction_detector is not None and concept_id is not None:
-            concept = self.semantic.get(concept_id)
-            if concept is not None:
-                try:
-                    edges = self._contradiction_detector.detect_and_register(concept)
-                    contradicts_created = len(edges)
-                    # Audit 矛盾偵測結果
-                    if contradicts_created and self._patch_coordinator is not None:
-                        self._patch_coordinator.audit_contradiction_detection(
-                            concept_id, contradicts_created,
+            # audit-before-mutate：先取得 audit 許可再偵測
+            can_detect = True
+            if self._patch_coordinator is not None:
+                can_detect = self._patch_coordinator.audit_contradiction_detection(
+                    concept_id, -1,  # -1 表示預 audit（數量未知）
+                )
+            if can_detect:
+                concept = self.semantic.get(concept_id)
+                if concept is not None:
+                    try:
+                        edges = self._contradiction_detector.detect_and_register(concept)
+                        contradicts_created = len(edges)
+                    except Exception as e:
+                        logger.warning(
+                            f"[KnowledgeDistillation] 矛盾偵測失敗（不影響蒸餾）: {e}"
                         )
-                except Exception as e:
-                    logger.warning(
-                        f"[KnowledgeDistillation] 矛盾偵測失敗（不影響蒸餾）: {e}"
-                    )
+            else:
+                logger.warning(
+                    "[KnowledgeDistillation] audit 失敗，跳過矛盾偵測 (%s)",
+                    concept_id[:12],
+                )
 
         return is_new, edges_created, contradicts_created
 

@@ -378,20 +378,20 @@ class DreamEngine:
             # ── 階段 5：程序提取（若有 ProceduralMemory + LLM）────────
             if self._procedure_extractor is not None and self._episodic_ref is not None:
                 try:
-                    candidates = self._episodic_ref.list_episodes(
-                        limit=10, sort_by="salience", ascending=False,
-                    )
-                    if candidates:
-                        report.procedure_extraction = self._procedure_extractor.run(candidates)
-                        # Audit 程序提取結果
-                        if self._patch_coordinator is not None and report.procedure_extraction:
-                            pr = report.procedure_extraction
-                            created = getattr(pr, 'procedures_created', 0)
-                            updated = getattr(pr, 'procedures_updated', 0)
-                            if created or updated:
-                                self._patch_coordinator.audit_procedure_extraction(
-                                    created, updated,
-                                )
+                    # audit-before-mutate：先取得 audit 許可
+                    can_extract = True
+                    if self._patch_coordinator is not None:
+                        can_extract = self._patch_coordinator.audit_procedure_extraction(
+                            0, 0,  # 預 audit（數量未知）
+                        )
+                    if can_extract:
+                        candidates = self._episodic_ref.list_episodes(
+                            limit=10, sort_by="salience", ascending=False,
+                        )
+                        if candidates:
+                            report.procedure_extraction = self._procedure_extractor.run(candidates)
+                    else:
+                        logger.warning("[DreamEngine] audit 失敗，跳過程序提取")
                 except Exception as e:
                     logger.warning(f"[DreamEngine] 程序提取失敗（不影響夢境週期）: {e}")
 

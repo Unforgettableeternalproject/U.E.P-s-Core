@@ -98,8 +98,7 @@ class GraphPruning:
 
         # 1. 移除低權重邊
         weak_edges = self._find_weak_edges()
-        self._remove_edges(weak_edges)
-        report.weak_edges_removed = len(weak_edges)
+        report.weak_edges_removed = self._remove_edges(weak_edges)
 
         # 2. 歸檔低價值節點（對齊 OpenSoul _archive_stale_nodes）
         report.nodes_archived = self._archive_stale_nodes()
@@ -149,25 +148,29 @@ class GraphPruning:
 
         return weak_edges
 
-    def _remove_edges(self, edges: list[tuple[str, str]]):
+    def _remove_edges(self, edges: list[tuple[str, str]]) -> int:
         """
         批量移除邊。
 
         Args:
             edges: 要移除的邊列表
+
+        Returns:
+            實際移除的邊數（audit 失敗時為 0）
         """
         if not edges:
-            return
+            return 0
 
         # Audit-before-mutate：audit 失敗則阻止移除
         if self._patch_coordinator is not None:
             if not self._patch_coordinator.audit_graph_edge_removal(edges, reason="weak_edge_pruning"):
                 logger.warning("[GraphPruning] audit 失敗，跳過邊移除 (%d 條)", len(edges))
-                return
+                return 0
 
         self.graph.graph.remove_edges_from(edges)
 
         logger.debug(f"[GraphPruning] 已移除 {len(edges)} 條邊")
+        return len(edges)
 
     def _find_isolated_nodes(self) -> list[str]:
         """
@@ -297,10 +300,13 @@ class GraphPruning:
         if len(concepts_with_emb) < 2:
             return 0
 
-        bridges_created = 0
+        # ── 階段 1：收集候選橋接 ──
+        import time
+        candidates: list[tuple[str, str, str, str, float]] = []
+        # (id_a, id_b, name_a, name_b, similarity)
 
         for i in range(len(concepts_with_emb)):
-            if bridges_created >= self._MAX_BRIDGES_PER_RUN:
+            if len(candidates) >= self._MAX_BRIDGES_PER_RUN:
                 break
 
             id_a, name_a, emb_a = concepts_with_emb[i]
@@ -310,7 +316,7 @@ class GraphPruning:
                 continue
 
             for j in range(i + 1, len(concepts_with_emb)):
-                if bridges_created >= self._MAX_BRIDGES_PER_RUN:
+                if len(candidates) >= self._MAX_BRIDGES_PER_RUN:
                     break
 
                 id_b, name_b, emb_b = concepts_with_emb[j]
@@ -319,9 +325,7 @@ class GraphPruning:
                 if norm_b == 0:
                     continue
 
-                # Cosine similarity
                 similarity = float(np.dot(vec_a, vec_b) / (norm_a * norm_b))
-
                 if similarity < self._BRIDGE_SIMILARITY_THRESHOLD:
                     continue
 
@@ -336,32 +340,41 @@ class GraphPruning:
                     if et in ("RELATES_TO", "LATENT_BRIDGE"):
                         has_existing = True
 
-                if has_existing:
-                    continue
+                if not has_existing:
+                    candidates.append((id_a, id_b, name_a, name_b, similarity))
 
-                # 建立 LATENT_BRIDGE（雙向）
-                import time
-                reason = f"夢境橋接：{name_a} ↔ {name_b}（相似度 {similarity:.3f}）"
-                for src, dst in [(id_a, id_b), (id_b, id_a)]:
-                    self.graph.graph.add_edge(
-                        src, dst,
-                        edge_type="LATENT_BRIDGE",
-                        weight=similarity,
-                        similarity=similarity,
-                        reason=reason,
-                        created_at=time.time(),
-                    )
+        if not candidates:
+            return 0
 
-                bridges_created += 1
-                logger.debug(
-                    f"[GraphPruning] LATENT_BRIDGE: {name_a} ↔ {name_b} "
-                    f"(sim={similarity:.3f})"
+        # ── 階段 2：audit-before-mutate ──
+        if self._patch_coordinator is not None:
+            if not self._patch_coordinator.audit_graph_latent_bridge(len(candidates)):
+                logger.warning(
+                    "[GraphPruning] audit 失敗，跳過 LATENT_BRIDGE 建立 (%d 條)",
+                    len(candidates),
                 )
+                return 0
+
+        # ── 階段 3：批量建邊 ──
+        bridges_created = 0
+        for id_a, id_b, name_a, name_b, similarity in candidates:
+            reason = f"夢境橋接：{name_a} ↔ {name_b}（相似度 {similarity:.3f}）"
+            for src, dst in [(id_a, id_b), (id_b, id_a)]:
+                self.graph.graph.add_edge(
+                    src, dst,
+                    edge_type="LATENT_BRIDGE",
+                    weight=similarity,
+                    similarity=similarity,
+                    reason=reason,
+                    created_at=time.time(),
+                )
+            bridges_created += 1
+            logger.debug(
+                f"[GraphPruning] LATENT_BRIDGE: {name_a} ↔ {name_b} "
+                f"(sim={similarity:.3f})"
+            )
 
         if bridges_created:
-            # Audit（LATENT_BRIDGE 已建立，audit 失敗時記 error 但不回滾已建的橋）
-            if self._patch_coordinator is not None:
-                self._patch_coordinator.audit_graph_latent_bridge(bridges_created)
             logger.info(
                 f"[GraphPruning] 建立 {bridges_created} 條 LATENT_BRIDGE"
             )

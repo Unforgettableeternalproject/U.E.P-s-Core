@@ -1,8 +1,0 @@
-{
-  "version": 1,
-  "model": "BAAI/bge-small-zh-v1.5",
-  "dimension": 512,
-  "ordered_ids": [
-    "ep_3ba7d44aa20e"
-  ]
-}

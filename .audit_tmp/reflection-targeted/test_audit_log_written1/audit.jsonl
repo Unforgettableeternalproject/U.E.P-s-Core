@@ -1,1 +1,0 @@
-{"id": "act_0001_1781522859", "action_type": "adjust_salience", "source": "reflection", "target_id": "ep_001", "params": {}, "reasoning": "測試稽核", "permission": "auto", "status": "executed", "pre_state": {}, "post_state": {"result": "ok"}, "error": "", "created_at": 1781522859.6355093, "executed_at": 1781522859.6355093}

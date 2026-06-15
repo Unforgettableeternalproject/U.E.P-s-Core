@@ -68,4 +68,4 @@ temp/
 docs/**
 # Claude Code local settings
 .claude/
-.claude/settings.local.json
+.claude/settings.local.json.audit_tmp/

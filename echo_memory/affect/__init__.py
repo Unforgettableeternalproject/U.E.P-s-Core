@@ -7,9 +7,22 @@ affect — 情感與潛意識評估模組
 
 from echo_memory.affect.signals import SalienceSignals, SubconsciousAssessment
 from echo_memory.affect.salience import SalienceEvaluator
+from echo_memory.affect.verifier import ResponseVerifier, VerificationResult
+from echo_memory.affect.inhibitor import (
+    SubconsciousInhibitor,
+    InhibitionAction,
+    GateDecision,
+)
+from echo_memory.affect.judge import JudgeAgent
 
 __all__ = [
     "SalienceSignals",
     "SubconsciousAssessment",
     "SalienceEvaluator",
+    "ResponseVerifier",
+    "VerificationResult",
+    "SubconsciousInhibitor",
+    "InhibitionAction",
+    "GateDecision",
+    "JudgeAgent",
 ]

@@ -7,6 +7,9 @@
 import sys
 from pathlib import Path
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
 # 添加專案路徑
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -35,8 +38,8 @@ def main():
         print("✅ 所有必要配置已設定")
         print("\n可以開始使用 Echo Memory System！")
         print("\n下一步:")
-        print("  1. 運行測試: pytest tests/ -v")
-        print("  2. 運行示例: python examples/minimal_chat.py")
+        print(r"  1. 運行測試: ..\U.E.P-s-Core\env\Scripts\python.exe -m pytest -v")
+        print(r"  2. 啟動 CLI: .\run.bat")
         return 0
     else:
         print("⚠️ 缺少 LLM API 配置:")

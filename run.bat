@@ -7,7 +7,7 @@ set PYTHONIOENCODING=utf-8
 
 if not exist "%UEP_PYTHON%" (
     echo [ERROR] U.E.P Core Python not found at: %UEP_PYTHON%
-    echo Please check the path or use: .venv\Scripts\python Entry.py
+    echo Please check the shared U.E.P Core environment path.
     pause
     exit /b 1
 )

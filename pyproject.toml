@@ -7,13 +7,12 @@ authors = [
 ]
 readme = "README.md"
 requires-python = ">=3.10"
-license = "MIT"
+license = {text = "MIT"}
 
 dependencies = [
     "pydantic>=2.5.0",
     "numpy>=1.24.0",
     "sentence-transformers>=2.3.0",
-    "faiss-cpu>=1.9.0",
     "networkx>=3.2",
     "google-genai>=1.0.0",
     "python-dotenv>=1.0.0",
@@ -75,6 +74,8 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 # test_hybrid_retrieval.py 為互動式手動演示腳本（含 input()），排除於自動化測試之外
 # test_config.py 為診斷腳本（含 exit()），非 pytest 測試
-addopts = "--ignore=tests/test_hybrid_retrieval.py --ignore=tests/test_config.py --cov=echo_memory --cov-report=html --cov-report=term"
+# coverage 由 CI pipeline 單獨呼叫，不預設掛在 addopts
+addopts = "--ignore=tests/test_hybrid_retrieval.py --ignore=tests/test_config.py"

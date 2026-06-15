@@ -21,8 +21,6 @@ import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal
-
 from echo_memory.affect.soul_note import SoulNote, SoulNoteManager, DailyReflection
 
 logger = logging.getLogger("echo_memory.affect.reflection")

@@ -13,8 +13,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from echo_memory.utils.sanitizer import sanitize_llm_output, has_fake_tool_markers
 from echo_memory.affect.soul_note import SoulNote, SoulNoteManager, DailyReflection
 from echo_memory.affect.reflection import ReflectionModule, ReflectionOutput
@@ -178,7 +176,7 @@ class TestReflectionModule:
             llm_fn=lambda _: mock_response,
             soul_notes=mgr,
         )
-        output = module.reflect(["summary"])
+        module.reflect(["summary"])
 
         # 確認反思結果被寫入 SoulNote
         notes = mgr.get_notes_today()

@@ -22,7 +22,6 @@ from rich.table import Table
 from rich.columns import Columns
 from rich.text import Text
 from rich.prompt import Prompt, Confirm
-from rich.markdown import Markdown
 from rich import box
 
 from echo_memory import MemoryEngine
@@ -935,7 +934,7 @@ def _cmd_edit(engine: MemoryEngine):
         new_summary = Prompt.ask("[cyan]New summary[/]", default=ep.content_summary or "")
         if new_summary:
             if engine.episodic.update_summary(eid, new_summary):
-                console.print(f"[green]✓ Summary updated.[/]")
+                console.print("[green]✓ Summary updated.[/]")
             else:
                 console.print("[red]Episode no longer exists.[/]")
 
@@ -967,7 +966,7 @@ def _cmd_delete(engine: MemoryEngine):
         console.print(f"  [dim]{eid} | {ep.user_input[:50]}…[/]")
         if Confirm.ask("[red]Delete?[/]", default=False):
             engine.episodic.delete_episode(eid)
-            console.print(f"[green]✓ Deleted.[/]")
+            console.print("[green]✓ Deleted.[/]")
 
     elif mode == "session":
         sid = Prompt.ask("[cyan]Session ID[/]")

@@ -201,10 +201,7 @@ class GraphPruning:
         Returns:
             歸檔的節點數
         """
-        import time
-
         archived_count = 0
-        current_time = time.time()
         min_age_seconds = self._ARCHIVE_MIN_AGE_DAYS * 24 * _SECONDS_PER_HOUR
 
         for node_id, data in self.graph.graph.nodes(data=True):

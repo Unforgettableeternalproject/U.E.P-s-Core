@@ -210,7 +210,7 @@ class SubconsciousAssessor:
             except (json.JSONDecodeError, TypeError, ValueError):
                 pass
 
-        logger.warning(f"[SubconsciousAssessor] JSON 解析失敗，使用預設值")
+        logger.warning("[SubconsciousAssessor] JSON 解析失敗，使用預設值")
         return SubconsciousAssessment()
 
 

@@ -21,8 +21,6 @@ import logging
 import re
 import threading
 from collections.abc import Callable
-from typing import Any
-
 import numpy as np
 
 from echo_memory.schemas.episode import Episode

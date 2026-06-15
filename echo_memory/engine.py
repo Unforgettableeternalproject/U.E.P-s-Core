@@ -89,6 +89,7 @@ class MemoryEngine:
         self._procedural = None
         self._retrieval = None
         self._dream_engine = None
+        self._concept_inhibitor = None  # 由外部注入（Entry.py），供 DreamEngine 使用
         self._entity_store = None
         self._entity_extractor = None
 
@@ -365,6 +366,7 @@ class MemoryEngine:
                 semantic=self.semantic,
                 procedural=self.procedural,
                 llm_fn=self._llm_fn,
+                concept_inhibitor=self._concept_inhibitor,
                 idle_minutes=config.dream_idle_minutes,
                 cron_schedule=config.dream_cron,
                 enable_idle=config.dream_enable_idle,

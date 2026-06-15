@@ -115,6 +115,7 @@ class KnowledgeDistillation:
         graph: MemoryGraph,
         llm_fn: Callable[[str], str] | None = None,
         contradiction_detector: Any | None = None,
+        patch_coordinator: Any | None = None,
     ):
         """
         Args:
@@ -125,12 +126,19 @@ class KnowledgeDistillation:
                     若為 None，蒸餾會優雅跳過。
             contradiction_detector: ContradictionDetector 實例（可選）。
                     若提供，每次 ingest concept 後自動偵測矛盾。
+            patch_coordinator: DreamPatchCoordinator 實例（可選）。
+                    若提供，SemanticMemory 寫入走 patch pipeline。
         """
         self.episodic = episodic
         self.semantic = semantic
         self.graph = graph
         self.llm_fn = llm_fn
         self._contradiction_detector = contradiction_detector
+        self._patch_coordinator = patch_coordinator
+        if patch_coordinator is None:
+            logger.warning(
+                "[KnowledgeDistillation] 未注入 patch_coordinator，使用舊路徑直接寫入"
+            )
 
     def run(
         self,
@@ -332,15 +340,36 @@ class KnowledgeDistillation:
         existing = self.semantic.get_by_name(name)
         is_new = existing is None
 
-        # upsert 到 SemanticMemory（第一個 source 先寫入）
+        source_ep_ids = [ep.id for ep in source_eps]
+
+        # ── SemanticMemory 寫入：走 patch pipeline 或舊路徑 ──
         concept_id = None
-        for ep in source_eps:
-            concept_id = self.semantic.upsert_concept(
+        if self._patch_coordinator is not None:
+            # GPT #4: 走 DreamPatchCoordinator → ConceptInhibitor
+            concept_id, _tx = self._patch_coordinator.submit_distillation_concept(
                 name=name,
                 description=description,
                 concept_type=concept_type,
-                source_episode_id=ep.id,
+                source_episode_ids=source_ep_ids,
             )
+            # 若 coordinator 無 inhibitor，退回直接寫入
+            if concept_id is None and _tx is None:
+                for ep in source_eps:
+                    concept_id = self.semantic.upsert_concept(
+                        name=name,
+                        description=description,
+                        concept_type=concept_type,
+                        source_episode_id=ep.id,
+                    )
+        else:
+            # 舊路徑：直接 upsert
+            for ep in source_eps:
+                concept_id = self.semantic.upsert_concept(
+                    name=name,
+                    description=description,
+                    concept_type=concept_type,
+                    source_episode_id=ep.id,
+                )
 
         if concept_id is None:
             return is_new, 0

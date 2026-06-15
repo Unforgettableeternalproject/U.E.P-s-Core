@@ -65,16 +65,18 @@ class GraphPruning:
     _ARCHIVE_SALIENCE_THRESHOLD = 0.2
     _ARCHIVE_MIN_AGE_DAYS = 30
 
-    def __init__(self, graph: MemoryGraph, semantic=None):
+    def __init__(self, graph: MemoryGraph, semantic=None, patch_coordinator=None):
         """
         初始化修剪器。
 
         Args:
             graph: MemoryGraph 實例
             semantic: SemanticMemory 實例（用於 LATENT_BRIDGE，可選）
+            patch_coordinator: DreamPatchCoordinator 實例（審計用，可選）
         """
         self.graph = graph
         self._semantic = semantic
+        self._patch_coordinator = patch_coordinator
         self.min_weight_threshold = 0.05  # 最低權重閾值（低於此值的邊將被刪除）
         self.isolated_node_grace_days = 7  # 孤立節點保留天數
 
@@ -157,6 +159,10 @@ class GraphPruning:
         if not edges:
             return
 
+        # Audit（在實際移除前記錄）
+        if self._patch_coordinator is not None:
+            self._patch_coordinator.audit_graph_edge_removal(edges, reason="weak_edge_pruning")
+
         self.graph.graph.remove_edges_from(edges)
 
         logger.debug(f"[GraphPruning] 已移除 {len(edges)} 條邊")
@@ -202,6 +208,7 @@ class GraphPruning:
             歸檔的節點數
         """
         archived_count = 0
+        archived_node_ids: list[str] = []
         min_age_seconds = self._ARCHIVE_MIN_AGE_DAYS * 24 * _SECONDS_PER_HOUR
 
         for node_id, data in self.graph.graph.nodes(data=True):
@@ -240,8 +247,12 @@ class GraphPruning:
             # 標記歸檔
             data["archived"] = True
             archived_count += 1
+            archived_node_ids.append(node_id)
 
         if archived_count:
+            # Audit
+            if self._patch_coordinator is not None:
+                self._patch_coordinator.audit_graph_node_archive(archived_node_ids)
             logger.info(f"[GraphPruning] 歸檔 {archived_count} 個低價值節點")
 
         return archived_count
@@ -340,6 +351,9 @@ class GraphPruning:
                 )
 
         if bridges_created:
+            # Audit
+            if self._patch_coordinator is not None:
+                self._patch_coordinator.audit_graph_latent_bridge(bridges_created)
             logger.info(
                 f"[GraphPruning] 建立 {bridges_created} 條 LATENT_BRIDGE"
             )
@@ -393,6 +407,10 @@ class GraphPruning:
             data["weight"] = new_weight
 
             updated_count += 1
+
+        # Batch audit（摘要級，不逐條記錄）
+        if updated_count and self._patch_coordinator is not None:
+            self._patch_coordinator.audit_batch_weight_update(updated_count)
 
         logger.info(f"[GraphPruning] 更新 {updated_count} 條邊的權重")
 

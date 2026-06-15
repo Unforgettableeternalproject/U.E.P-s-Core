@@ -121,6 +121,7 @@ class DreamEngine:
         semantic: SemanticMemory | None = None,
         procedural: Any | None = None,  # ProceduralMemory（延遲導入避免循環）
         llm_fn: Callable[[str], str] | None = None,
+        concept_inhibitor: Any | None = None,  # ConceptInhibitor（GPT #4 patch pipeline）
         idle_minutes: int = 30,
         cron_schedule: str = "0 3 * * *",  # 每日凌晨 3 點
         enable_idle: bool = True,
@@ -155,8 +156,23 @@ class DreamEngine:
         # 保留 episodic 引用（給 stage 5 程序提取用）
         self._episodic_ref = episodic
 
+        # DreamPatchCoordinator（GPT #4: 統一 audit pipeline）
+        self._patch_coordinator = None
+        if concept_inhibitor is not None or semantic is not None:
+            from echo_memory.dream.patch_coordinator import DreamPatchCoordinator
+            audit_path = None
+            if semantic is not None and hasattr(semantic, 'storage_path'):
+                audit_path = semantic.storage_path / "dream_audit_log.jsonl"
+            self._patch_coordinator = DreamPatchCoordinator(
+                inhibitor=concept_inhibitor,
+                audit_log_path=audit_path,
+            )
+
         # 子模組（傳入 semantic 供 LATENT_BRIDGE 使用）
-        self._pruning = GraphPruning(graph, semantic=semantic)
+        self._pruning = GraphPruning(
+            graph, semantic=semantic,
+            patch_coordinator=self._patch_coordinator,
+        )
 
         # LiDER 反思重播（需要 episodic，llm_fn=None 時自動跳過）
         self._replay: LiDERReplay | None = None
@@ -165,6 +181,7 @@ class DreamEngine:
                 episodic=episodic,
                 graph=graph,
                 llm_fn=llm_fn,
+                patch_coordinator=self._patch_coordinator,
             )
 
         # 矛盾偵測器（需要 semantic + llm_fn）+ ConflictLedger
@@ -211,6 +228,7 @@ class DreamEngine:
                 graph=graph,
                 llm_fn=llm_fn,
                 contradiction_detector=contradiction_detector,
+                patch_coordinator=self._patch_coordinator,
             )
 
         logger.info(
@@ -335,6 +353,10 @@ class DreamEngine:
 
         try:
             logger.info(f"[DreamEngine] 開始夢境週期 [{triggered_by}]")
+
+            # 通知 DreamPatchCoordinator 開始新週期
+            if self._patch_coordinator is not None:
+                self._patch_coordinator.begin_cycle(triggered_by)
 
             # ── 階段 1：更新邊權重（簡化版 LiDER）──────────────────────
             report.edges_updated = self._pruning.update_edge_weights()

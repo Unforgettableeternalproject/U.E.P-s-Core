@@ -227,6 +227,7 @@ class ConceptInhibitor:
         similarity_score: float = 0.0,
         existing_concept_id: str | None = None,
         embedding: list[float] | None = None,
+        triggered_by: str = "extractor",
     ) -> tuple[str | None, PatchTransaction]:
         """
         處理來自 ConceptExtractor 的概念寫入請求。
@@ -255,7 +256,7 @@ class ConceptInhibitor:
             llm_response="",
             session_id="extractor-bg",
             turn_id=episode_id,
-            triggered_by="extractor",
+            triggered_by=triggered_by,
         )
 
         evidence = PatchEvidence(

@@ -34,21 +34,33 @@ class TestNeurochemMode:
         assert s.mode == NeurochemMode.HIGH_5HT
 
     def test_excited(self):
-        s = NeurochemState(dopamine=0.8, serotonin=0.8)
+        """EXCITED = DA 高 + 5-HT 低（衝動探索，對齊 OpenSoul）。"""
+        s = NeurochemState(dopamine=0.8, serotonin=0.3)
         assert s.mode == NeurochemMode.EXCITED
 
     def test_cautious(self):
-        s = NeurochemState(dopamine=0.2, serotonin=0.2)
+        """CAUTIOUS = DA 低 + 5-HT 高（保守深思，對齊 OpenSoul）。"""
+        s = NeurochemState(dopamine=0.2, serotonin=0.7)
         assert s.mode == NeurochemMode.CAUTIOUS
 
-    def test_boundary_high(self):
-        """剛好在閾值上。"""
-        s = NeurochemState(dopamine=0.7, serotonin=0.7)
+    def test_both_high_is_high_da(self):
+        """DA 和 5-HT 都高時，EXCITED 不觸發（5-HT >= 0.4），走 HIGH_DA。"""
+        s = NeurochemState(dopamine=0.8, serotonin=0.8)
+        assert s.mode == NeurochemMode.HIGH_DA
+
+    def test_both_low_is_balanced(self):
+        """DA 和 5-HT 都低但未到各自閾值時，走 BALANCED。"""
+        s = NeurochemState(dopamine=0.4, serotonin=0.4)
+        assert s.mode == NeurochemMode.BALANCED
+
+    def test_boundary_excited(self):
+        """剛好在 EXCITED 邊界：DA=0.75, 5-HT=0.39。"""
+        s = NeurochemState(dopamine=0.75, serotonin=0.39)
         assert s.mode == NeurochemMode.EXCITED
 
-    def test_boundary_low(self):
-        """剛好在低閾值上。"""
-        s = NeurochemState(dopamine=0.3, serotonin=0.3)
+    def test_boundary_cautious(self):
+        """剛好在 CAUTIOUS 邊界：DA=0.34, 5-HT=0.65。"""
+        s = NeurochemState(dopamine=0.34, serotonin=0.65)
         assert s.mode == NeurochemMode.CAUTIOUS
 
 
@@ -162,10 +174,19 @@ class TestRetrievalParams:
         assert p.max_hops == 1
         assert p.min_weight > 0.2
 
-    def test_excited_maximum_search(self):
-        """EXCITED 模式 → 最大搜索範圍。"""
-        excited = NeurochemState(dopamine=0.9, serotonin=0.9)
+    def test_excited_wide_search(self):
+        """EXCITED 模式（DA 高 + 5-HT 低）→ 廣但淺的搜索。"""
+        excited = NeurochemState(dopamine=0.9, serotonin=0.2)
         p = excited.get_retrieval_params()
+
+        assert p.seed_k >= 7         # DA 高 → 種子多
+        assert p.max_hops == 1       # 5-HT 低 → 跳數淺
+        assert p.min_weight < 0.1    # DA 高 → 閾值低
+
+    def test_both_high_maximum_search(self):
+        """DA 和 5-HT 都高 → 最大搜索範圍（種子多 + 跳數深）。"""
+        both_high = NeurochemState(dopamine=0.9, serotonin=0.9)
+        p = both_high.get_retrieval_params()
 
         assert p.seed_k >= 7
         assert p.max_hops == 3
@@ -197,9 +218,71 @@ class TestSerialization:
         assert s2.mode == s.mode
 
     def test_to_dict_includes_mode(self):
-        s = NeurochemState(dopamine=0.8, serotonin=0.8)
+        s = NeurochemState(dopamine=0.8, serotonin=0.3)
         d = s.to_dict()
         assert d["mode"] == "excited"
+
+    def test_to_dict_includes_derived_properties(self):
+        """序列化包含衍生屬性（verification_threshold 等）。"""
+        s = NeurochemState(dopamine=0.7, serotonin=0.6)
+        d = s.to_dict()
+        assert "verification_threshold" in d
+        assert "search_breadth" in d
+        assert "learning_rate" in d
+        assert "salience_boost" in d
+
+
+# ─── 事件驅動方法（OpenSoul 對齊）─────────────────────────────────
+
+
+class TestEventDrivenMethods:
+    """OpenSoul 事件驅動方法的行為驗證。"""
+
+    def test_on_success_increases_da(self):
+        s = NeurochemState(dopamine=0.5, serotonin=0.5)
+        s.on_success(reward=0.3)
+        assert s.dopamine > 0.5
+
+    def test_on_failure_decreases_da_increases_ht(self):
+        s = NeurochemState(dopamine=0.5, serotonin=0.5)
+        s.on_failure(penalty=0.2)
+        assert s.dopamine < 0.5
+        assert s.serotonin > 0.5
+
+    def test_on_uncertainty_increases_ht(self):
+        s = NeurochemState(dopamine=0.5, serotonin=0.5)
+        s.on_uncertainty(level=0.5)
+        assert s.serotonin > 0.5
+
+    def test_on_discovery_increases_da(self):
+        s = NeurochemState(dopamine=0.5, serotonin=0.5)
+        s.on_discovery(novelty=0.6)
+        assert s.dopamine > 0.5
+        # 5-HT 不變
+        assert s.serotonin == pytest.approx(0.5)
+
+    def test_natural_decay_towards_baseline(self):
+        s = NeurochemState(dopamine=0.9, serotonin=0.1,
+                           baseline_da=0.5, baseline_5ht=0.5)
+        s.natural_decay(hours=10.0)
+        assert s.dopamine < 0.9
+        assert s.serotonin > 0.1
+
+    def test_natural_decay_clamped(self):
+        s = NeurochemState(dopamine=0.9, serotonin=0.1)
+        s.natural_decay(hours=1000.0)
+        assert 0.0 <= s.dopamine <= 1.0
+        assert 0.0 <= s.serotonin <= 1.0
+
+    def test_verification_threshold_rises_with_serotonin(self):
+        low = NeurochemState(serotonin=0.1)
+        high = NeurochemState(serotonin=0.9)
+        assert high.verification_threshold > low.verification_threshold
+
+    def test_salience_boost_rises_with_dopamine(self):
+        low = NeurochemState(dopamine=0.1)
+        high = NeurochemState(dopamine=0.9)
+        assert high.salience_boost > low.salience_boost
 
 
 # ─── EcphoryRetrieval 整合 ──────────────────────────────────────────

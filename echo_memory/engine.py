@@ -22,6 +22,7 @@ from typing import Any
 from echo_memory.schemas.episode import Episode
 from echo_memory.schemas.memory_context import MemoryContext
 from echo_memory.namespace import normalize_namespace_id, resolve_namespace_path
+from echo_memory.neurochem.state import NeurochemState
 from echo_memory.storage.locking import storage_lock
 
 logger = logging.getLogger("echo_memory.engine")
@@ -91,7 +92,12 @@ class MemoryEngine:
         self._entity_store = None
         self._entity_extractor = None
 
-        logger.info(f"[MemoryEngine] 初始化完成 - 存儲路徑: {self.storage_path}")
+        # ── 神經化學狀態（session 級別，跨對話持久化）──────────────────
+        self._neurochem: NeurochemState = self._load_neurochem()
+
+        logger.info(f"[MemoryEngine] 初始化完成 - 存儲路徑: {self.storage_path}, "
+                    f"neurochem: DA={self._neurochem.dopamine:.3f}, "
+                    f"5-HT={self._neurochem.serotonin:.3f}")
 
     @property
     def episodic(self):
@@ -182,6 +188,11 @@ class MemoryEngine:
             self._entity_extractor = EntityExtractor(llm_fn=self._llm_fn)
         return self._entity_extractor
 
+    @property
+    def neurochem(self) -> NeurochemState:
+        """取得當前神經化學狀態。"""
+        return self._neurochem
+
     def set_llm_fn(self, llm_fn: Callable[[str], str] | None) -> None:
         """Update the optional LLM callback used by lazy and loaded components."""
         self._llm_fn = llm_fn
@@ -197,6 +208,8 @@ class MemoryEngine:
         session_id: str,
         content_summary: str | None = None,
         salience: float = 0.5,
+        da_weight: float | None = None,
+        ht_weight: float | None = None,
         **metadata: Any,
     ) -> str:
         """
@@ -208,6 +221,8 @@ class MemoryEngine:
             session_id: 會話 ID
             content_summary: 對話摘要（若為 None 則自動生成）
             salience: 顯著性分數 (0-1)
+            da_weight: 多巴胺烙印強度（None 則繼承當前 neurochem.dopamine）
+            ht_weight: 血清素穩定性標記（None 則繼承當前 neurochem.serotonin）
             **metadata: 額外元數據
 
         Returns:
@@ -218,12 +233,20 @@ class MemoryEngine:
             combined = f"{user_input} {agent_response}"
             content_summary = combined[:150]
 
+        # 若未明確指定 da/ht，繼承當前神經化學狀態
+        if da_weight is None:
+            da_weight = self._neurochem.dopamine
+        if ht_weight is None:
+            ht_weight = self._neurochem.serotonin
+
         episode = Episode(
             user_input=user_input,
             agent_response=agent_response,
             session_id=session_id,
             content_summary=content_summary,
             salience_score=salience,
+            da_weight=da_weight,
+            ht_weight=ht_weight,
             metadata=metadata,
         )
 
@@ -261,13 +284,17 @@ class MemoryEngine:
             except Exception as exc:
                 logger.warning(f"[MemoryEngine] 實體提取失敗（不影響主寫入）: {exc}")
 
+        # ── 神經化學衰減 + 持久化 ───────────────────────────────────
+        self._neurochem.tick()
+        self._save_neurochem()
+
         return episode_id
 
     def retrieve(
         self,
         query: str,
-        dopamine: float = 0.5,
-        serotonin: float = 0.5,
+        dopamine: float | None = None,
+        serotonin: float | None = None,
         top_k: int = 10,
         min_similarity: float = 0.3,
         exclude_session_id: str | None = None,
@@ -277,14 +304,20 @@ class MemoryEngine:
 
         Args:
             query: 查詢文本
-            dopamine: 多巴胺濃度 (0-1)，影響探索廣度
-            serotonin: 血清素濃度 (0-1)，影響謹慎程度
+            dopamine: 多巴胺濃度 (0-1)，None 則從 neurochem 取值
+            serotonin: 血清素濃度 (0-1)，None 則從 neurochem 取值
             top_k: 返回記憶數量
             exclude_session_id: 排除指定 session（避免與 LLM history 重複）
 
         Returns:
             MemoryContext: 檢索到的記憶脈絡
         """
+        # 使用 neurochem 狀態作為預設值（取代硬編碼 0.5）
+        if dopamine is None:
+            dopamine = self._neurochem.dopamine
+        if serotonin is None:
+            serotonin = self._neurochem.serotonin
+
         context = self.retrieval.retrieve(
             query=query,
             dopamine=dopamine,
@@ -393,3 +426,83 @@ class MemoryEngine:
         self.procedural.clear()
         self.entity_store.clear()
         self.working.clear()
+        # 重置 neurochem 到預設值
+        self._neurochem = NeurochemState()
+        self._save_neurochem()
+
+    # ─── 神經化學持久化 ─────────────────────────────────────────────
+
+    def _neurochem_file(self) -> Path:
+        """Neurochem 狀態檔案路徑。"""
+        return self.storage_path / "neurochem_state.json"
+
+    def _load_neurochem(self) -> NeurochemState:
+        """
+        從磁碟載入神經化學狀態。
+
+        若檔案不存在或損壞，回傳預設狀態。
+        載入後自動套用時間衰減（根據上次存檔距今的小時數）。
+        """
+        import json
+
+        nc_file = self._neurochem_file()
+        if not nc_file.exists():
+            logger.info("[MemoryEngine] 未找到 neurochem 狀態檔，使用預設值")
+            return NeurochemState()
+
+        try:
+            with open(nc_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            state = NeurochemState.from_dict(data)
+
+            # 根據上次存檔時間套用自然衰減
+            saved_at = data.get("saved_at")
+            if saved_at:
+                from datetime import datetime, timezone
+                try:
+                    last_save = datetime.fromisoformat(saved_at)
+                    now = datetime.now(timezone.utc)
+                    if last_save.tzinfo is None:
+                        last_save = last_save.replace(tzinfo=timezone.utc)
+                    elapsed_hours = (now - last_save).total_seconds() / 3600.0
+                    if elapsed_hours > 0.1:  # 超過 6 分鐘才衰減
+                        state.natural_decay(hours=elapsed_hours)
+                        logger.info(
+                            f"[MemoryEngine] 載入 neurochem，"
+                            f"距上次 {elapsed_hours:.1f}hr，"
+                            f"衰減後: DA={state.dopamine:.3f}, 5-HT={state.serotonin:.3f}"
+                        )
+                except (ValueError, TypeError):
+                    pass
+
+            return state
+        except Exception as e:
+            logger.warning(f"[MemoryEngine] 載入 neurochem 狀態失敗: {e}，使用預設值")
+            return NeurochemState()
+
+    def _save_neurochem(self) -> None:
+        """
+        將神經化學狀態寫入磁碟（原子寫入）。
+        """
+        import json
+        import os
+        from datetime import datetime, timezone
+        from echo_memory.storage.locking import temporary_sibling
+
+        nc_file = self._neurochem_file()
+        nc_file.parent.mkdir(parents=True, exist_ok=True)
+
+        data = self._neurochem.to_dict()
+        data["saved_at"] = datetime.now(timezone.utc).isoformat()
+
+        tmp_file = temporary_sibling(nc_file)
+        try:
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_file, nc_file)
+        except Exception as e:
+            logger.error(f"[MemoryEngine] 保存 neurochem 狀態失敗: {e}")
+            if tmp_file.exists():
+                tmp_file.unlink()

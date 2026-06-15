@@ -172,26 +172,27 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
     gemini_tools = to_gemini_tools() if tools_enabled else None
     executor = ToolExecutor(engine=engine, session_id=session_id) if tools_enabled else None
 
-    # ── LLMRouter 初始化（按角色路由到不同模型）──
+    # ── LLMRouter 初始化 ──
+    # 本專案只使用 CHAT（LLMClient）和 EVAL（Router）兩個角色。
+    # WORK 角色保留給未來 U.E.P 回聲系統整合，目前不使用。
     # 詳見 docs/design/llm-client-vs-router.md
     router = LLMRouter()
-    work_fn = router.get_llm_fn(LLMRole.WORK)   # 概念提取、反思、蒸餾
-    eval_fn = router.get_llm_fn(LLMRole.EVAL)   # Verifier、Judge
+    eval_fn = router.get_llm_fn(LLMRole.EVAL)
 
     # 同步更新 MemoryEngine 的 llm_fn（Dream Engine 等子模組使用）
-    engine.set_llm_fn(work_fn)
+    engine.set_llm_fn(eval_fn)
 
     # ── 情感/潛意識模組初始化（session 級別，複用整個對話）──
     subconscious_assessor = SubconsciousAssessor(llm_fn=eval_fn)
     judge = JudgeAgent(llm_fn=eval_fn)
     soul_notes = SoulNoteManager(engine.storage_path)
     reflection_module = ReflectionModule(
-        llm_fn=work_fn,
+        llm_fn=eval_fn,
         soul_notes=soul_notes,
         reflect_interval=10,
     )
     concept_extractor = ConceptExtractor(
-        llm_fn=work_fn,
+        llm_fn=eval_fn,
         semantic=engine.semantic,
         graph=engine.episodic.graph,
         embed_fn=lambda text: engine.episodic._generate_embedding(text),
@@ -199,13 +200,11 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
 
     def _show_session_banner():
         tools_status = "[green]on[/]" if tools_enabled else "[dim]off[/]"
-        work_cfg = router.get_role_config(LLMRole.WORK)
         eval_cfg = router.get_role_config(LLMRole.EVAL)
         console.print(Panel(
             "[bold cyan]Echo Memory Chat[/]\n"
             f"Session: [dim]{session_id}[/]\n"
-            f"Chat:  [dim]{llm.model_name}[/]\n"
-            f"Work:  [dim]{work_cfg.model}[/]  "
+            f"Chat: [dim]{llm.model_name}[/]  "
             f"Eval: [dim]{eval_cfg.model}[/]\n"
             f"Tools: {tools_status}\n\n"
             "Commands: [dim]/quit /stats /dream /clear /history /tools /session[/]",
@@ -705,7 +704,7 @@ def _cmd_dream(engine: MemoryEngine, llm: LLMClient | None = None):
         if not engine._llm_fn:
             try:
                 router = LLMRouter()
-                engine.set_llm_fn(router.get_llm_fn(LLMRole.WORK))
+                engine.set_llm_fn(router.get_llm_fn(LLMRole.EVAL))
             except Exception:
                 if llm:
                     engine.set_llm_fn(llm.as_llm_fn())
@@ -1168,11 +1167,12 @@ class EchoMemoryCLI:
                 self.llm = LLMClient()
                 console.print(f"[green]✓[/] LLM ready — {self.llm.model_name}")
 
-                # 透過 LLMRouter 注入 llm_fn（WORK 角色，用於 Dream/Entity extraction）
+                # 透過 LLMRouter 注入 llm_fn（EVAL 角色，用於所有記憶系統內部模組）
                 try:
                     self.router = LLMRouter()
-                    engine.set_llm_fn(self.router.get_llm_fn(LLMRole.WORK))
-                    console.print(f"[green]✓[/] LLM Router ready — WORK/EVAL 分流")
+                    engine.set_llm_fn(self.router.get_llm_fn(LLMRole.EVAL))
+                    eval_cfg = self.router.get_role_config(LLMRole.EVAL)
+                    console.print(f"[green]✓[/] LLM Router ready — EVAL: {eval_cfg.model}")
                 except Exception as e:
                     # Router 初始化失敗時回退到 LLMClient
                     engine.set_llm_fn(self.llm.as_llm_fn())

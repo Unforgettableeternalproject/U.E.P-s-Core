@@ -96,6 +96,7 @@ class DreamPatchCoordinator:
             evidence_kind="distillation",
             embedding=embedding,
             triggered_by="dream",
+            concept_type=concept_type,
         )
 
         return concept_id, tx

@@ -228,6 +228,7 @@ class ConceptInhibitor:
         existing_concept_id: str | None = None,
         embedding: list[float] | None = None,
         triggered_by: str = "extractor",
+        concept_type: str = "entity",
     ) -> tuple[str | None, PatchTransaction]:
         """
         處理來自 ConceptExtractor 的概念寫入請求。
@@ -310,7 +311,7 @@ class ConceptInhibitor:
                 concept_name=noun,
                 action="create",
                 target_path="*",
-                new_value={"name": noun, "description": desc, "episode_id": episode_id},
+                new_value={"name": noun, "description": desc, "episode_id": episode_id, "concept_type": concept_type},
                 patch_confidence=0.7,
                 evidence=evidence,
                 risk_level="low",
@@ -382,6 +383,7 @@ class ConceptInhibitor:
             concept_id = self._semantic.upsert_concept(
                 name=payload.get("name", patch.concept_name),
                 description=payload.get("description", ""),
+                concept_type=payload.get("concept_type", "entity"),
                 source_episode_id=payload.get("episode_id"),
                 embedding=embedding,
             )
@@ -768,7 +770,10 @@ class ConceptInhibitor:
             return False
 
     def _apply_expand(self, concept: Concept, patch: ConceptPatch) -> bool:
-        """執行 expand/ADD_FACT — 新增 fact 到 metadata["facts"]。"""
+        """執行 expand/ADD_FACT — 新增 fact 到 metadata["facts"]。
+
+        注意：不呼叫 _save()。由外層 _apply_patch 統一持久化一次。
+        """
         if "facts" not in concept.metadata:
             concept.metadata["facts"] = []
 
@@ -782,11 +787,13 @@ class ConceptInhibitor:
         self._add_history_entry(concept, patch)
 
         concept.updated_at = datetime.now(timezone.utc)
-        self._semantic._save()
         return True
 
     def _apply_modify(self, concept: Concept, patch: ConceptPatch) -> bool:
-        """執行 modify — 更新 description + confidence。"""
+        """執行 modify — 更新 description + confidence。
+
+        注意：不呼叫 _save()。由外層 _apply_patch 統一持久化一次。
+        """
         if isinstance(patch.new_value, str):
             concept.description = patch.new_value
 
@@ -807,11 +814,13 @@ class ConceptInhibitor:
         self._add_history_entry(concept, patch)
 
         concept.updated_at = datetime.now(timezone.utc)
-        self._semantic._save()
         return True
 
     def _apply_deprecate(self, concept: Concept, patch: ConceptPatch) -> bool:
-        """執行 deprecate — 標記狀態 + 降權。"""
+        """執行 deprecate — 標記狀態 + 降權。
+
+        注意：不呼叫 _save()。由外層 _apply_patch 統一持久化一次。
+        """
         state_dict = patch.new_value
         if isinstance(state_dict, dict):
             concept.status = "deprecated"
@@ -827,7 +836,6 @@ class ConceptInhibitor:
         self._add_history_entry(concept, patch)
 
         concept.updated_at = datetime.now(timezone.utc)
-        self._semantic._save()
         return True
 
     def _add_history_entry(self, concept: Concept, patch: ConceptPatch) -> None:

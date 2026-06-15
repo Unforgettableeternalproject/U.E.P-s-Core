@@ -159,9 +159,11 @@ class GraphPruning:
         if not edges:
             return
 
-        # Audit（在實際移除前記錄）
+        # Audit-before-mutate：audit 失敗則阻止移除
         if self._patch_coordinator is not None:
-            self._patch_coordinator.audit_graph_edge_removal(edges, reason="weak_edge_pruning")
+            if not self._patch_coordinator.audit_graph_edge_removal(edges, reason="weak_edge_pruning"):
+                logger.warning("[GraphPruning] audit 失敗，跳過邊移除 (%d 條)", len(edges))
+                return
 
         self.graph.graph.remove_edges_from(edges)
 
@@ -250,9 +252,15 @@ class GraphPruning:
             archived_node_ids.append(node_id)
 
         if archived_count:
-            # Audit
+            # Audit-before-mutate：已標記但 audit 失敗時還原
             if self._patch_coordinator is not None:
-                self._patch_coordinator.audit_graph_node_archive(archived_node_ids)
+                if not self._patch_coordinator.audit_graph_node_archive(archived_node_ids):
+                    # 還原歸檔標記
+                    for node_id in archived_node_ids:
+                        if self.graph.graph.has_node(node_id):
+                            self.graph.graph.nodes[node_id]["archived"] = False
+                    logger.warning("[GraphPruning] audit 失敗，還原 %d 個節點歸檔", archived_count)
+                    return 0
             logger.info(f"[GraphPruning] 歸檔 {archived_count} 個低價值節點")
 
         return archived_count
@@ -351,7 +359,7 @@ class GraphPruning:
                 )
 
         if bridges_created:
-            # Audit
+            # Audit（LATENT_BRIDGE 已建立，audit 失敗時記 error 但不回滾已建的橋）
             if self._patch_coordinator is not None:
                 self._patch_coordinator.audit_graph_latent_bridge(bridges_created)
             logger.info(
@@ -380,6 +388,16 @@ class GraphPruning:
         updated_count = 0
         current_time = time.time()
 
+        # 預計算要更新的邊數（用於 audit-before-mutate）
+        precedes_count = sum(
+            1 for _, _, d in self.graph.graph.edges(data=True)
+            if d.get("edge_type") == "PRECEDES"
+        )
+        if precedes_count and self._patch_coordinator is not None:
+            if not self._patch_coordinator.audit_batch_weight_update(precedes_count):
+                logger.warning("[GraphPruning] audit 失敗，跳過權重更新 (%d 條)", precedes_count)
+                return 0
+
         for u, v, data in self.graph.graph.edges(data=True):
             if data.get("edge_type") != "PRECEDES":
                 continue
@@ -407,10 +425,6 @@ class GraphPruning:
             data["weight"] = new_weight
 
             updated_count += 1
-
-        # Batch audit（摘要級，不逐條記錄）
-        if updated_count and self._patch_coordinator is not None:
-            self._patch_coordinator.audit_batch_weight_update(updated_count)
 
         logger.info(f"[GraphPruning] 更新 {updated_count} 條邊的權重")
 

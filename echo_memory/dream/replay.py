@@ -226,13 +226,16 @@ class LiDERReplay:
         # 但仍記錄哪些 Episode 被重播過，供 DreamEngine 收集。
         report._replayed_episode_ids = [ep.id for ep in candidates]
 
-        # Batch audit（摘要級）
+        # Batch audit（摘要級）— 紀錄已執行的 mutation
         if self._patch_coordinator is not None:
-            self._patch_coordinator.audit_replay_batch(
+            if not self._patch_coordinator.audit_replay_batch(
                 edges_reinforced=report.edges_strengthened,
                 edges_created=report.edges_created,
                 salience_updates=len(importances),
-            )
+            ):
+                logger.error(
+                    "[LiDERReplay] audit 寫入失敗，但 replay mutation 已執行完畢"
+                )
 
         # 持久化圖
         self.graph.save()

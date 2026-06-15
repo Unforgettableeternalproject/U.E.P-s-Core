@@ -13,13 +13,10 @@ from pathlib import Path
 import pytest
 
 from echo_memory.affect.concept_inhibitor import ConceptInhibitor
-from echo_memory.affect.concept_patch import PatchTransaction
 from echo_memory.dream.patch_coordinator import DreamPatchCoordinator
 from echo_memory.dream.pruning import GraphPruning
 from echo_memory.dream.replay import LiDERReplay
 from echo_memory.dream.distillation import KnowledgeDistillation
-from echo_memory.schemas.concept import Concept
-from echo_memory.schemas.episode import Episode
 from echo_memory.storage.episodic import EpisodicMemory
 from echo_memory.storage.graph import MemoryGraph
 from echo_memory.storage.semantic import SemanticMemory

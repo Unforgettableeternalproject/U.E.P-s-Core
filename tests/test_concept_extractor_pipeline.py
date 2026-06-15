@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import threading
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -18,7 +17,6 @@ import pytest
 from echo_memory.affect.concept_extractor import ConceptExtractor
 from echo_memory.affect.concept_inhibitor import ConceptInhibitor
 from echo_memory.affect.concept_patch import PatchTransaction
-from echo_memory.schemas.concept import Concept
 from echo_memory.schemas.episode import Episode
 from echo_memory.storage.graph import MemoryGraph
 from echo_memory.storage.semantic import SemanticMemory

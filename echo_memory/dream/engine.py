@@ -383,6 +383,15 @@ class DreamEngine:
                     )
                     if candidates:
                         report.procedure_extraction = self._procedure_extractor.run(candidates)
+                        # Audit 程序提取結果
+                        if self._patch_coordinator is not None and report.procedure_extraction:
+                            pr = report.procedure_extraction
+                            created = getattr(pr, 'procedures_created', 0)
+                            updated = getattr(pr, 'procedures_updated', 0)
+                            if created or updated:
+                                self._patch_coordinator.audit_procedure_extraction(
+                                    created, updated,
+                                )
                 except Exception as e:
                     logger.warning(f"[DreamEngine] 程序提取失敗（不影響夢境週期）: {e}")
 

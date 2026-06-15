@@ -31,7 +31,6 @@ from echo_memory.affect.concept_patch import (
 )
 from echo_memory.affect.concept_verifier import ConceptAssessment, ConceptVerification
 from echo_memory.schemas.concept import Concept
-from echo_memory.schemas.memory_context import MemoryContext
 from echo_memory.storage.semantic import SemanticMemory
 
 logger = logging.getLogger("echo_memory.affect.concept_inhibitor")
@@ -229,6 +228,7 @@ class ConceptInhibitor:
         embedding: list[float] | None = None,
         triggered_by: str = "extractor",
         concept_type: str = "entity",
+        source_episode_ids: list[str] | None = None,
     ) -> tuple[str | None, PatchTransaction]:
         """
         處理來自 ConceptExtractor 的概念寫入請求。
@@ -306,12 +306,19 @@ class ConceptInhibitor:
 
         else:
             # 全新概念 / 多義詞 / fallback → create
+            all_source_ids = source_episode_ids if source_episode_ids else [episode_id]
             patch = ConceptPatch(
                 transaction_id=tx.transaction_id,
                 concept_name=noun,
                 action="create",
                 target_path="*",
-                new_value={"name": noun, "description": desc, "episode_id": episode_id, "concept_type": concept_type},
+                new_value={
+                    "name": noun,
+                    "description": desc,
+                    "episode_id": all_source_ids[0],
+                    "concept_type": concept_type,
+                    "extra_source_episode_ids": all_source_ids[1:],
+                },
                 patch_confidence=0.7,
                 evidence=evidence,
                 risk_level="low",
@@ -388,6 +395,15 @@ class ConceptInhibitor:
                 embedding=embedding,
             )
             if concept_id:
+                # 補入剩餘的 source_episode_ids（#1 provenance 修復）
+                extra_sources = payload.get("extra_source_episode_ids", [])
+                if extra_sources:
+                    concept = self._semantic.get(concept_id)
+                    if concept is not None:
+                        for ep_id in extra_sources:
+                            if ep_id not in concept.source_episode_ids:
+                                concept.source_episode_ids.append(ep_id)
+                        self._semantic._save()
                 # 設定 rollback payload
                 patch.rollback_payload = patch.rollback_payload or {}
                 patch.rollback_payload["created_concept_name"] = patch.concept_name

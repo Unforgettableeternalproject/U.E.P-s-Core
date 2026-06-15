@@ -97,6 +97,7 @@ class DreamPatchCoordinator:
             embedding=embedding,
             triggered_by="dream",
             concept_type=concept_type,
+            source_episode_ids=source_episode_ids,
         )
 
         return concept_id, tx
@@ -109,9 +110,9 @@ class DreamPatchCoordinator:
         self,
         edges: list[tuple[str, str]],
         reason: str = "pruning",
-    ) -> None:
-        """記錄 graph 邊移除的 audit。"""
-        self._write_dream_audit({
+    ) -> bool:
+        """記錄 graph 邊移除的 audit。回傳 False 時呼叫方應阻止 mutation。"""
+        return self._write_dream_audit({
             "operation": "remove_edges",
             "count": len(edges),
             "reason": reason,
@@ -124,9 +125,9 @@ class DreamPatchCoordinator:
         self,
         node_ids: list[str],
         reason: str = "stale_node_archive",
-    ) -> None:
-        """記錄 graph 節點歸檔的 audit。"""
-        self._write_dream_audit({
+    ) -> bool:
+        """記錄 graph 節點歸檔的 audit。回傳 False 時呼叫方應阻止 mutation。"""
+        return self._write_dream_audit({
             "operation": "archive_nodes",
             "count": len(node_ids),
             "reason": reason,
@@ -137,9 +138,9 @@ class DreamPatchCoordinator:
         self,
         bridges_created: int,
         sample_bridges: list[dict[str, str]] | None = None,
-    ) -> None:
-        """記錄 LATENT_BRIDGE 建立的 audit。"""
-        self._write_dream_audit({
+    ) -> bool:
+        """記錄 LATENT_BRIDGE 建立的 audit。回傳 False 時呼叫方應阻止 mutation。"""
+        return self._write_dream_audit({
             "operation": "create_latent_bridges",
             "count": bridges_created,
             "sample_bridges": sample_bridges or [],
@@ -148,9 +149,9 @@ class DreamPatchCoordinator:
     def audit_batch_weight_update(
         self,
         edges_updated: int,
-    ) -> None:
-        """記錄 batch edge weight 更新的 audit（摘要級）。"""
-        self._write_dream_audit({
+    ) -> bool:
+        """記錄 batch edge weight 更新的 audit（摘要級）。回傳 False 時呼叫方應阻止 mutation。"""
+        return self._write_dream_audit({
             "operation": "batch_weight_update",
             "count": edges_updated,
         })
@@ -162,9 +163,9 @@ class DreamPatchCoordinator:
         to_id: str,
         edge_type: str = "",
         weight_delta: float = 0.0,
-    ) -> None:
-        """記錄 replay 的單條邊變更 audit。"""
-        self._write_dream_audit({
+    ) -> bool:
+        """記錄 replay 的單條邊變更 audit。回傳 False 時呼叫方應阻止 mutation。"""
+        return self._write_dream_audit({
             "operation": f"replay_{operation}",
             "from": from_id[:12],
             "to": to_id[:12],
@@ -177,13 +178,49 @@ class DreamPatchCoordinator:
         edges_reinforced: int,
         edges_created: int,
         salience_updates: int,
-    ) -> None:
-        """記錄 replay 的 batch 摘要 audit。"""
-        self._write_dream_audit({
+    ) -> bool:
+        """記錄 replay 的 batch 摘要 audit。回傳 False 時呼叫方應阻止 mutation。"""
+        return self._write_dream_audit({
             "operation": "replay_batch_summary",
             "edges_reinforced": edges_reinforced,
             "edges_created": edges_created,
             "salience_updates": salience_updates,
+        })
+
+    def audit_graph_derived_from(
+        self,
+        concept_id: str,
+        episode_ids: list[str],
+    ) -> bool:
+        """記錄 DERIVED_FROM 邊建立的 audit。"""
+        return self._write_dream_audit({
+            "operation": "add_derived_from_edges",
+            "concept_id": concept_id[:12],
+            "episode_count": len(episode_ids),
+        })
+
+    def audit_contradiction_detection(
+        self,
+        concept_id: str,
+        contradicts_count: int,
+    ) -> bool:
+        """記錄矛盾偵測結果的 audit。"""
+        return self._write_dream_audit({
+            "operation": "contradiction_detection",
+            "concept_id": concept_id[:12],
+            "contradicts_created": contradicts_count,
+        })
+
+    def audit_procedure_extraction(
+        self,
+        procedures_created: int,
+        procedures_updated: int,
+    ) -> bool:
+        """記錄程序提取結果的 audit。"""
+        return self._write_dream_audit({
+            "operation": "procedure_extraction",
+            "procedures_created": procedures_created,
+            "procedures_updated": procedures_updated,
         })
 
     # ──────────────────────────────────────────────
@@ -202,8 +239,14 @@ class DreamPatchCoordinator:
         # Fallback
         return Path("dream_audit_log.jsonl")
 
-    def _write_dream_audit(self, entry: dict[str, Any]) -> None:
-        """寫入 dream audit log（JSONL）。"""
+    def _write_dream_audit(self, entry: dict[str, Any]) -> bool:
+        """
+        寫入 dream audit log（JSONL）。
+
+        Returns:
+            True 寫入成功，False 失敗。
+            失敗時呼叫方應阻止對應的 mutation（audit-before-mutate 契約）。
+        """
         entry["timestamp"] = datetime.now(timezone.utc).isoformat()
         entry["cycle_id"] = self._cycle_id
 
@@ -212,5 +255,9 @@ class DreamPatchCoordinator:
             log_path.parent.mkdir(parents=True, exist_ok=True)
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            return True
         except Exception as e:
-            logger.warning("[DreamPatchCoordinator] audit log 寫入失敗: %s", e)
+            logger.error(
+                "[DreamPatchCoordinator] audit log 寫入失敗，阻止對應 mutation: %s", e,
+            )
+            return False

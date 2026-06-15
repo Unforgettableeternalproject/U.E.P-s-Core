@@ -378,18 +378,25 @@ class KnowledgeDistillation:
         if not self.graph.has_node(concept_id):
             self.graph.add_concept_node(concept_id, name, concept_type)
 
-        # 建立 DERIVED_FROM 邊（Concept → Episode）
+        # 建立 DERIVED_FROM 邊（Concept → Episode）— 加 audit
         edges_created = 0
-        for ep in source_eps:
-            # 確保 Episode 節點存在
-            if not self.graph.has_node(ep.id):
-                self.graph.add_episode_node(ep)
+        ep_ids_for_edge = [ep.id for ep in source_eps if not self.graph.graph.has_edge(concept_id, ep.id)]
+        # Audit-before-mutate
+        can_create_edges = True
+        if ep_ids_for_edge and self._patch_coordinator is not None:
+            can_create_edges = self._patch_coordinator.audit_graph_derived_from(
+                concept_id, ep_ids_for_edge,
+            )
 
-            if not self.graph.graph.has_edge(concept_id, ep.id):
-                self.graph.add_derived_from_edge(concept_id, ep.id)
-                edges_created += 1
+        if can_create_edges:
+            for ep in source_eps:
+                if not self.graph.has_node(ep.id):
+                    self.graph.add_episode_node(ep)
+                if not self.graph.graph.has_edge(concept_id, ep.id):
+                    self.graph.add_derived_from_edge(concept_id, ep.id)
+                    edges_created += 1
 
-        # 矛盾偵測（若有 detector）
+        # 矛盾偵測（若有 detector）— 加 audit
         contradicts_created = 0
         if self._contradiction_detector is not None and concept_id is not None:
             concept = self.semantic.get(concept_id)
@@ -397,6 +404,11 @@ class KnowledgeDistillation:
                 try:
                     edges = self._contradiction_detector.detect_and_register(concept)
                     contradicts_created = len(edges)
+                    # Audit 矛盾偵測結果
+                    if contradicts_created and self._patch_coordinator is not None:
+                        self._patch_coordinator.audit_contradiction_detection(
+                            concept_id, contradicts_created,
+                        )
                 except Exception as e:
                     logger.warning(
                         f"[KnowledgeDistillation] 矛盾偵測失敗（不影響蒸餾）: {e}"

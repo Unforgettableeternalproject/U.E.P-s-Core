@@ -30,7 +30,7 @@ EMBEDDING_BACKEND=ollama
 EMBEDDING_MODEL=bge-m3
 EMBEDDING_QUERY_PREFIX=
 OLLAMA_BASE_URL=http://localhost:11434
-RETRIEVAL_MIN_SIMILARITY=0.25
+RETRIEVAL_MIN_SIMILARITY=0.35
 ```
 
 `bge-m3` 是 1024 維多語言 embedding，不需要 query prefix。切換模型或向量維度時，

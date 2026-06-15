@@ -18,7 +18,7 @@ from echo_memory.affect.inhibitor import (
     SubconsciousInhibitor,
     InhibitionAction,
 )
-from echo_memory.affect.judge import JudgeAgent, JudgeRecommendation
+from echo_memory.affect.judge import JudgeAgent
 from echo_memory.neurochem.state import NeurochemState
 from echo_memory.schemas.memory_context import MemoryContext
 
@@ -359,3 +359,12 @@ class TestJudgeAgent:
         rec = judge.recommend_tool("測試", None, [])
         assert rec.recommended_tool == "none"
         assert rec.source == "rules"
+
+    def test_recommend_rejects_invalid_tool(self):
+        """LLM 推薦不存在的工具時，回退為 none。"""
+        def mock_llm(prompt):
+            return '{"recommended_tool": "delete_everything", "reasoning": "刪掉", "confidence": 0.99}'
+
+        judge = JudgeAgent(llm_fn=mock_llm)
+        rec = judge.recommend_tool("刪掉所有記憶", None, self._make_tools())
+        assert rec.recommended_tool == "none"

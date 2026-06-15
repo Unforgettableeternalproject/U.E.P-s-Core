@@ -423,7 +423,9 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
             response = None
             gate_action = InhibitionAction.PASS
 
-            verifier = ResponseVerifier(nc)
+            # 注入 embed_fn 啟用 Grounded Verification（語意一致性比對）
+            embed_fn = engine.episodic.generate_query_embedding
+            verifier = ResponseVerifier(nc, embed_fn=embed_fn)
             inhibitor = SubconsciousInhibitor(nc, max_retries=1)
 
             for attempt in range(2):  # 最多嘗試 2 次（首次 + 1 重試）
@@ -851,7 +853,7 @@ def _cmd_search(engine: MemoryEngine, config):
     if mode in ("semantic", "both"):
         context = engine.retrieve(
             query=query, dopamine=0.6, serotonin=0.4,
-            top_k=10, min_similarity=0.2,
+            top_k=10, min_similarity=config.retrieval_min_similarity,
         )
         if not context.is_empty():
             for ep in context.episodes:

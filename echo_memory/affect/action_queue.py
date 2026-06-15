@@ -240,11 +240,15 @@ class ReflectionActionQueue:
             action: 要執行的行動
             executor_fn: 執行函式，接收 (action_type, target_id, params) → dict
                          回傳 dict 作為 post_state。
-                         為 None 時行動標記為 executed 但不實際操作。
+                         為 None 時拒絕執行（必須有實際 executor）。
 
         Returns:
             是否成功執行
         """
+        if executor_fn is None:
+            logger.warning("[ActionQueue] 缺少 executor_fn，無法執行: %s", action.id)
+            return False
+
         # 權限檢查
         if action.permission == ActionPermission.DENY:
             logger.warning("[ActionQueue] 嘗試執行被禁止的行動: %s", action.id)

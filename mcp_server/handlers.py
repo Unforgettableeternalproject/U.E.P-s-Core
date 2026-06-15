@@ -492,41 +492,19 @@ async def _handle_list_episodes(
     get_engine: Callable,
     args: dict[str, Any],
 ) -> str:
-    """
-    列出情節記憶，返回格式化的摘要列表。
-
-    由於 feat/llm-chat-tui 分支的 EpisodicMemory 尚未實作 list_episodes()，
-    此處直接操作 _episodes dict 並手動排序。
-    """
+    """列出情節記憶，返回格式化的摘要列表。"""
     session_id: str | None = args.get("session_id")
     limit: int = min(int(args.get("limit", 10)), 50)
     sort_by: str = args.get("sort_by", "timestamp")
 
     def _sync_list() -> list[dict[str, Any]]:
         engine = _get_engine(get_engine, args)
-        episodic = engine.episodic
-
-        # 使用 list_episodes 方法（若存在），否則手動從 _episodes 讀取
-        if hasattr(episodic, "list_episodes"):
-            episodes_objs = episodic.list_episodes(
-                session_id=session_id,
-                limit=limit,
-                sort_by=sort_by,
-                ascending=False,
-            )
-        else:
-            # 手動取出並排序（相容舊版 EpisodicMemory）
-            episodes_objs = list(episodic._episodes.values())
-
-            if session_id:
-                episodes_objs = [ep for ep in episodes_objs if ep.session_id == session_id]
-
-            if sort_by == "salience":
-                episodes_objs.sort(key=lambda ep: ep.salience_score, reverse=True)
-            else:
-                episodes_objs.sort(key=lambda ep: ep.timestamp, reverse=True)
-
-            episodes_objs = episodes_objs[:limit]
+        episodes_objs = engine.episodic.list_episodes(
+            session_id=session_id,
+            limit=limit,
+            sort_by=sort_by,
+            ascending=False,
+        )
 
         result = []
         for ep in episodes_objs:

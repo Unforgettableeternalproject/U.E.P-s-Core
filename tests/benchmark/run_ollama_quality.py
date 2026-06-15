@@ -322,7 +322,7 @@ def main() -> int:
             })
 
         # 4. 彙總報告
-        print(f"\n[4/4] 彙總報告")
+        print("\n[4/4] 彙總報告")
         print("-" * 70)
 
         non_empty = [r for r in results if not r["empty_expected"]]

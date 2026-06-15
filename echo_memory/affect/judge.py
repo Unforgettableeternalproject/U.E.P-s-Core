@@ -182,10 +182,13 @@ class JudgeAgent:
             context_summary=ctx_summary,
         )
 
+        # 建立合法候選集（用於驗證 LLM 輸出）
+        valid_names = {t.get("name", "") for t in available_tools}
+
         # LLM 呼叫（失敗時降級）
         try:
             raw = self._llm_fn(prompt)
-            return self._parse_recommendation(raw)
+            return self._parse_recommendation(raw, valid_names)
         except Exception as e:
             logger.warning("[JudgeAgent] LLM 推薦失敗，降級為規則結果: %s", e)
             return JudgeRecommendation(
@@ -195,7 +198,11 @@ class JudgeAgent:
                 source="rules",
             )
 
-    def _parse_recommendation(self, raw: str) -> JudgeRecommendation:
+    def _parse_recommendation(
+        self,
+        raw: str,
+        valid_names: set[str] | None = None,
+    ) -> JudgeRecommendation:
         """解析 LLM 推薦結果。"""
         # 嘗試直接解析
         parsed = None
@@ -226,6 +233,14 @@ class JudgeAgent:
         # 信心不足時回退
         if confidence < _MIN_CONFIDENCE:
             tool = "none"
+
+        # 驗證推薦工具是否在合法候選集內
+        if tool != "none" and valid_names and tool not in valid_names:
+            logger.warning(
+                "[JudgeAgent] LLM 推薦了不存在的工具 '%s'，回退為 none", tool
+            )
+            tool = "none"
+            reasoning = f"LLM 推薦的 '{tool}' 不在合法候選集中"
 
         return JudgeRecommendation(
             recommended_tool=tool,

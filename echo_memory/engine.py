@@ -296,7 +296,7 @@ class MemoryEngine:
         dopamine: float | None = None,
         serotonin: float | None = None,
         top_k: int = 10,
-        min_similarity: float = 0.3,
+        min_similarity: float | None = None,
         exclude_session_id: str | None = None,
     ) -> MemoryContext:
         """
@@ -317,6 +317,8 @@ class MemoryEngine:
             dopamine = self._neurochem.dopamine
         if serotonin is None:
             serotonin = self._neurochem.serotonin
+        if min_similarity is None:
+            min_similarity = self._config.retrieval_min_similarity
 
         context = self.retrieval.retrieve(
             query=query,

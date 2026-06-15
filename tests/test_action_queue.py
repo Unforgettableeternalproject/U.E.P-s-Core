@@ -15,12 +15,10 @@ ReflectionActionQueue 測試
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from echo_memory.affect.action_queue import (
     ActionPermission,
     ActionStatus,
-    ReflectionAction,
     ReflectionActionQueue,
 )
 
@@ -88,12 +86,12 @@ class TestAutoExecution:
         assert len(results) == 2  # 只有 2 個 AUTO 被執行
         assert len(q.get_pending()) == 1  # CONFIRM 仍在佇列
 
-    def test_execute_no_executor_fn(self):
-        """executor_fn 為 None 時，行動標記為 executed 但不實際操作。"""
+    def test_execute_no_executor_fn_rejected(self):
+        """executor_fn 為 None 時，拒絕執行。"""
         q = ReflectionActionQueue()
         a = q.enqueue("add_note", target_id="n_001")
-        assert q.execute(a, executor_fn=None)
-        assert a.status == ActionStatus.EXECUTED
+        assert not q.execute(a, executor_fn=None)
+        assert a.status == ActionStatus.PENDING  # 仍在佇列中
 
 
 class TestConfirmExecution:

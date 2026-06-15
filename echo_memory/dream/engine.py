@@ -176,14 +176,8 @@ class DreamEngine:
 
                 # ConflictLedger 與 SemanticMemory 同層持久化
                 conflict_ledger = None
-                if hasattr(self, '_storage_path') and self._storage_path:
-                    conflict_ledger = ConflictLedger(self._storage_path)
-                elif graph and hasattr(graph, '_path'):
-                    # 嘗試從 graph 推斷存儲路徑
-                    from pathlib import Path
-                    graph_dir = Path(graph._path).parent if hasattr(graph, '_path') else None
-                    if graph_dir and graph_dir.exists():
-                        conflict_ledger = ConflictLedger(graph_dir)
+                if graph and hasattr(graph, 'storage_path') and graph.storage_path:
+                    conflict_ledger = ConflictLedger(graph.storage_path)
 
                 contradiction_detector = ContradictionDetector(
                     semantic=semantic,

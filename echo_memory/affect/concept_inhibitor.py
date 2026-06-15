@@ -168,39 +168,48 @@ class ConceptInhibitor:
         for patch in tx.patches:
             self._evaluate_patch(patch, user_input, llm_response)
 
-        # 3. 提交 approved patches
+        # 3. 提交 approved patches（原子性：任一失敗 → rollback 全部已 applied）
         approved_count = sum(1 for p in tx.patches if p.status == "approved")
-        applied_count = 0
-        failed_count = 0
+        applied_patches: list[ConceptPatch] = []
+        failed = False
         for patch in tx.patches:
             if patch.status == "approved":
                 success = self._apply_patch(patch)
                 if success:
                     patch.status = "applied"
-                    applied_count += 1
+                    applied_patches.append(patch)
                 else:
                     patch.status = "rejected"
                     patch.rejection_reason = "SemanticMemory apply 失敗"
-                    failed_count += 1
+                    failed = True
+                    break  # 停止後續 apply
+
+        # 原子性保證：有 patch 失敗 → rollback 所有已 applied
+        if failed and applied_patches:
+            logger.warning(
+                "[ConceptInhibitor] Patch 失敗，rollback %d 個已 applied patches",
+                len(applied_patches),
+            )
+            for p in reversed(applied_patches):
+                self._rollback_patch(p)
+                p.status = "rolled_back"
+            applied_patches.clear()
 
         # 4. 更新 transaction 狀態
         if approved_count == 0:
-            # 沒有任何 approved 的 patch（全 rejected 或全 held）
             tx.status = "committed"
-        elif failed_count > 0:
-            # 有 approved 但部分失敗 → partially_applied
-            tx.status = "partially_applied"
+        elif failed:
+            tx.status = "failed"
         else:
-            # 所有 approved 都成功 apply
             tx.status = "committed"
 
         # 5. 寫入 audit log
         self._write_audit(tx)
 
-        if applied_count > 0:
+        if applied_patches:
             logger.info(
                 "[ConceptInhibitor] %s — applied %d/%d patches",
-                tx.summary(), applied_count, len(tx.patches),
+                tx.summary(), len(applied_patches), len(tx.patches),
             )
 
         return tx
@@ -534,9 +543,11 @@ class ConceptInhibitor:
                 )
                 return False
 
-            # 成功 apply → 更新 Concept Health 指標
+            # 成功 apply → 更新 Concept Health 指標 + 再次持久化
+            # record_mutation 必須在 _save 之前呼叫，確保寫入磁碟
             if success:
                 concept.record_mutation()
+                self._semantic._save()
 
             return success
         except Exception as e:
@@ -620,6 +631,57 @@ class ConceptInhibitor:
             new_confidence=patch.new_confidence,
         )
         concept.metadata["patch_history"].append(entry.to_dict())
+
+    def _rollback_patch(self, patch: ConceptPatch) -> None:
+        """
+        回滾一個已 apply 的 patch。
+
+        使用 patch.old_value 還原概念狀態。
+        如果 old_value 不可用，記錄警告但不崩潰。
+        """
+        concept = self._semantic.get(patch.concept_id or "")
+        if concept is None:
+            logger.warning(
+                "[ConceptInhibitor] rollback 找不到概念 %s",
+                patch.concept_id,
+            )
+            return
+
+        try:
+            if patch.action == "expand":
+                # 移除最後加入的 fact
+                facts = concept.metadata.get("facts", [])
+                if facts and facts[-1] == patch.new_value:
+                    facts.pop()
+            elif patch.action == "modify":
+                # 還原 description
+                if patch.old_value is not None:
+                    concept.description = str(patch.old_value)
+                if patch.old_confidence is not None:
+                    concept.confidence = patch.old_confidence
+            elif patch.action == "deprecate":
+                # 還原為 active
+                concept.status = "active"
+                concept.metadata.pop("deprecated_at", None)
+                concept.metadata.pop("deprecated_reason", None)
+                concept.metadata.pop("replaced_by", None)
+
+            # 移除最後的 patch_history 條目
+            history = concept.metadata.get("patch_history", [])
+            if history:
+                history.pop()
+
+            # mutation_count 不回滾——rollback 本身也是一次 mutation
+            self._semantic._save()
+            logger.info(
+                "[ConceptInhibitor] rollback 完成: %s (%s)",
+                patch.patch_id, patch.action,
+            )
+        except Exception as e:
+            logger.error(
+                "[ConceptInhibitor] rollback 失敗 (%s): %s",
+                patch.patch_id, e,
+            )
 
     # ──────────────────────────────────────────────
     # Audit Log

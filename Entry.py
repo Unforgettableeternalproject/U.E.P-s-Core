@@ -415,6 +415,9 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
             user_input=user_input,
             memory_ctx=context if not context.is_empty() else None,
         )
+        # 持久化 Concept Health 更新（record_verification 在 verify 內呼叫）
+        if context and context.concepts:
+            engine.semantic._save()
         if concept_verification.has_changes:
             console.print(
                 f"  [dim]🔍 {concept_verification.summary()}[/]"

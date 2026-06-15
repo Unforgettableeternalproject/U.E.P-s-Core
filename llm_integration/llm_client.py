@@ -385,10 +385,13 @@ class LLMClient:
 
     def undo_last_exchange(self) -> int:
         """
-        移除最後一輪對話（user + model + 中間的 tool calls）。
+        移除最後一輪對話（user prompt + model + 中間 tool calls/responses）。
 
         用於 SUPPRESS retry：被抑制的回覆不應留在歷史中，
         否則重試時 LLM 會看到重複的 user message 和髒回覆。
+
+        注意：function response 的 role 也是 "user"，需要區分
+        原始 user text prompt 和 function_response。
 
         Returns:
             移除的條目數量
@@ -396,10 +399,27 @@ class LLMClient:
         if not self._history:
             return 0
 
-        # 從末尾往前找到最後一個 user 訊息的位置
+        # 從末尾往前找到最後一個「真正的 user text prompt」位置
+        # function_response 的 role 也是 "user"，但 parts 裡包含
+        # function_response 物件而非 text
         last_user_idx = -1
         for i in range(len(self._history) - 1, -1, -1):
-            if getattr(self._history[i], "role", "") == "user":
+            content = self._history[i]
+            if getattr(content, "role", "") != "user":
+                continue
+            # 檢查是否為真正的 text user prompt（非 function_response）
+            parts = getattr(content, "parts", [])
+            is_text_user = any(
+                hasattr(p, "text") and p.text is not None
+                and not hasattr(p, "function_response")
+                for p in parts
+            ) if parts else False
+            # 也接受沒有 function_response 的 user content
+            has_fn_response = any(
+                hasattr(p, "function_response") and p.function_response
+                for p in parts
+            ) if parts else False
+            if is_text_user and not has_fn_response:
                 last_user_idx = i
                 break
 

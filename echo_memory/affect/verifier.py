@@ -121,6 +121,11 @@ class ResponseVerifier:
         if quality == 0.0:
             score = min(score, max(0.0, threshold - 0.01))
 
+        # 矛盾偵測觸發時（consistency <= 0.2），強制不通過。
+        # 即使其他維度很高，語意矛盾是致命問題。
+        if consistency <= 0.2:
+            score = min(score, max(0.0, threshold - 0.01))
+
         result = VerificationResult(
             score=score,
             threshold=threshold,

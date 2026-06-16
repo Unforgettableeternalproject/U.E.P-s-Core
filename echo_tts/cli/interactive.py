@@ -171,10 +171,17 @@ class InteractiveShell:
             return False
         if verb == "help":
             self.write(
-                "Commands: load, say <text>, save --output <path> <text>, "
-                "profile <text>, emotion [preset|values], language [en|zh], "
-                "lora [on|off|<scale>], status, unload, exit\n"
-                "Flags: --batch (say/save) generate all emotion presets"
+                "Commands:\n"
+                "  say <text>                   Generate and play\n"
+                "  save <text>                  Save with auto timestamp filename\n"
+                "  save --output <path> <text>  Save to specific path (no overwrite)\n"
+                "  profile <text>               Generate with stage profiling\n"
+                "  emotion [preset|values]      Show/set emotion\n"
+                "  language [en|zh]             Show/set language\n"
+                "  lora [on|off|<scale>]        LoRA control\n"
+                "  load / unload / status / exit\n"
+                "Flags:\n"
+                "  --batch  (say/save) generate all emotion presets"
             )
             return True
         if verb == "emotion":

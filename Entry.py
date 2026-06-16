@@ -58,6 +58,7 @@ except ImportError:
 from echo_thought_core import (
     CompactionConfig,
     ContextManager,
+    LLMClient,
     create_context_manager,
 )
 from echo_thought_core.persona import (
@@ -269,11 +270,12 @@ class SessionControlCLI:
         self.console = Console()
         self.args = args
         self.mgr: Optional[ContextManager] = None
+        self.llm: Optional[LLMClient] = None
         self.llm_config: dict = {}
         self._start_time = time.time()
 
     def initialize(self) -> bool:
-        """初始化 ContextManager + Backend"""
+        """初始化 LLMClient + ContextManager"""
         self.console.print(Panel(
             "[bold cyan]Session Control System[/]\n"
             "[dim]LLM 會話控制子系統 — Prompt / Token / Context 優化引擎[/]",
@@ -300,29 +302,36 @@ class SessionControlCLI:
             compaction_cooldown_seconds=0,  # 測試用：無冷卻
         )
 
-        with self.console.status("[cyan]Initializing ContextManager..."):
+        with self.console.status("[cyan]Initializing LLMClient + ContextManager..."):
             try:
-                self.mgr = create_context_manager(
-                    backend_config={
-                        "model": model,
-                        "temperature": self.llm_config.get("temperature", 0.8),
+                # LLMClient 同時作為對話前台和壓縮後端
+                self.llm = LLMClient(
+                    model=model,
+                    temperature=self.llm_config.get("temperature", 0.8),
+                    max_tokens=self.llm_config.get("max_output_tokens", 4096),
+                    character=self.llm_config.get("character", ""),
+                    config={
                         "top_p": self.llm_config.get("top_p", 1.0),
-                        "max_output_tokens": self.llm_config.get("max_output_tokens", 4096),
                     },
-                    compaction_config=config,
+                )
+                # ContextManager 注入同一個 LLMClient 做壓縮
+                self.mgr = ContextManager(
+                    config=config,
                     persona=persona,
+                    backend=self.llm,
                 )
             except Exception as e:
-                # Backend 初始化失敗（無 API key 等），降級為無 backend 模式
-                self.console.print(f"[yellow]⚠ Backend init failed: {e}[/]")
+                # LLMClient 初始化失敗（無 API key 等），降級為無 backend 模式
+                self.console.print(f"[yellow]⚠ LLMClient init failed: {e}[/]")
                 self.console.print("[yellow]  Running in offline mode (Layer 1/4 only)[/]")
+                self.llm = None
                 self.mgr = ContextManager(config=config, persona=persona, backend=None)
 
         self.console.print(f"[green]✓[/] Model: [bold]{model}[/]")
         self.console.print(f"[green]✓[/] Context Window: [bold]{context_window:,}[/]")
         self.console.print(
-            f"[green]✓[/] Backend: "
-            f"[bold]{'Connected' if self.mgr._backend else 'Offline'}[/]"
+            f"[green]✓[/] LLM: "
+            f"[bold]{'Connected' if self.llm else 'Offline'}[/]"
         )
         self.console.print()
 
@@ -451,21 +460,15 @@ class SessionControlCLI:
             # 加入使用者訊息
             self.mgr.add_message("user", user_input)
 
-            # 嘗試用 backend 生成回覆
-            if self.mgr._backend:
+            # 嘗試用 LLMClient 生成回覆
+            if self.llm:
                 with self.console.status("[cyan]Thinking..."):
                     try:
-                        system_instruction = build_system_instruction(self.llm_config)
-                        result = self.mgr._backend.query(
-                            prompt=user_input,
-                            mode="chat",
-                            system_instruction=system_instruction,
-                        )
-                        response = result.get("text", "(no response)")
+                        response = self.llm.chat(user_input)
                     except Exception as e:
-                        response = f"[Backend error: {e}]"
+                        response = f"[LLM error: {e}]"
             else:
-                response = "[dim](Offline mode — no LLM backend connected)[/dim]"
+                response = "[dim](Offline mode — no LLM connected)[/dim]"
 
             # 加入助理回應
             self.mgr.add_message("assistant", response)

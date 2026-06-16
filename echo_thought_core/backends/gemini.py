@@ -1,13 +1,12 @@
 """
-Gemini Backend — Google Gemini / Vertex AI 實作
+Gemini Backend — DEPRECATED
 
-從 U.E.P Core 的 gemini_client.py 遷出並改造。
-解耦：移除 U.E.P 的 debug_helper，改用標準 logging。
-支援：
-- Vertex AI 和 API Key 兩種認證
-- Context caching（顯性 + 隱性）
-- Function calling / JSON schema 模式
-- Layer 2/3 摘要與完整壓縮
+已被 echo_thought_core.llm_client.LLMClient 取代。
+LLMClient 合併了此模組的所有功能（壓縮引擎後端）
+以及上游 Echo Memory 的多輪對話能力。
+
+此檔案保留供舊測試參考，未來版本將移除。
+請改用 ``from echo_thought_core import LLMClient``。
 """
 
 import asyncio

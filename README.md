@@ -1,111 +1,55 @@
-# Echo Memory System - MVP
+# Echo Memory System
 
-> 受 OpenSoul 啟發的自主記憶子系統原型
+> 受 OpenSoul 啟發的自主記憶子系統 — 從 U.E.P Core `mem_module` 獨立遷出
 >
-> 目標：將記憶系統從被動 RAG 工具轉變為主動、動態的認知子系統
+> 將記憶系統從被動 RAG 工具轉變為主動、動態的認知子系統
 
 ---
 
-## 設計理念
+## 專案狀態
 
-### Form-Function-Dynamic 模型
-
-| 維度 | 設計決策 | 實作技術 |
-|------|---------|---------|
-| **Form（形式）** | 三層記憶架構 | NumPy + NetworkX 混合存儲 |
-| **Function（功能）** | Working/Episodic/Semantic | 短期緩存、對話事件、抽象知識 |
-| **Dynamic（動力）** | 動態邊緣權重 + 離線鞏固 | 時間衰減、頻率強化、顯著性調控 |
-
-### 核心創新點
-
-1. **EcphoryRAG 聯想檢索**
-   - 向量相似度定位種子節點（NumPy 餘弦相似度）
-   - 圖譜多跳關聯展開
-   - 神經化學狀態調控檢索參數
-
-   > **注意**：向量檢索目前使用 **NumPy dot product（精確餘弦相似度）** 實作。
-   > FAISS ANN 索引為規劃功能（Planned），尚未整合。
-
-2. **動態邊緣權重**
-   ```
-   W(edge) = α·Recency + β·Frequency + γ·Salience
-           = 0.3·Recency + 0.4·Frequency + 0.3·Salience
-
-   Recency   = exp(-λ·hours_ago)        # 時間單位：小時
-               λ = EDGE_RECENCY_LAMBDA  # 預設 0.01 /小時
-   Frequency = log(1+n) / log(1+n_max)
-   Salience  = dopamine × (1 - 0.3×serotonin)
-   ```
-
-   **衰減行為（λ=0.01 /小時）：**
-   | 時間 | Recency |
-   |------|---------|
-   | 1 小時後 | ≈ 0.990 |
-   | 24 小時後 | ≈ 0.787 |
-   | 7 天後 | ≈ 0.186 |
-
-   **時間語義說明：**
-   - `time_delta`（建邊時）：兩個 episode 之間的事件間隔，反映記憶距離的遠近
-   - `edge_age`（Dream 更新時）：邊從建立到現在的存活時間，反映連結本身有多老舊
-   - 兩者均以**小時**為單位傳入衰減公式
-
-3. **離線記憶鞏固（Dream Engine）**
-   - **LiDER 重播**：高顯著性情節總結經驗
-   - **知識蒸餾**：從具體對話抽取抽象規則
-   - **圖譜修剪**：刪除低權重邊緣，建立潛意識捷徑
+| 里程碑 | 狀態 |
+|--------|------|
+| Phase 1：基礎記憶存儲 | ✅ 完成 |
+| Phase 2：EcphoryRAG 檢索 | ✅ 完成 |
+| Phase 3：LLM 整合 + 工具 | ✅ 完成 |
+| Phase 4：Dream Engine | ✅ 完成 |
+| OpenSoul 完整遷移 | ✅ 完成（2026-06-15） |
+| 端到端驗證 | ✅ 25 輪 Probe + 12 Integration Tests |
+| 測試覆蓋 | ✅ 608 單元測試 + 12 整合測試 |
+| 下一步 | Discord Bot 多用戶驗證 |
 
 ---
 
-## 專案結構
+## 核心特性
 
-```
-TestSeperateMemorySystem/
-├── README.md                    # 本文件
-├── requirements.txt             # Python 依賴
-├── pyproject.toml               # 專案配置（setuptools）
-├── .env.example                 # 環境變數模板
-│
-├── echo_memory/                 # 核心記憶引擎
-│   ├── __init__.py
-│   ├── config.py                # 配置管理
-│   ├── engine.py                # MemoryEngine 主類
-│   │
-│   ├── storage/                 # 存儲層
-│   │   ├── episodic.py         # 情節記憶（NumPy + JSON）
-│   │   ├── semantic.py         # 語義記憶（簡化版 dict）
-│   │   ├── working.py          # 工作記憶（TTL 緩存）
-│   │   └── graph.py            # 圖譜管理（NetworkX）
-│   │
-│   ├── retrieval/               # 檢索引擎
-│   │   └── ecphory.py          # EcphoryRAG 聯想檢索
-│   │
-│   ├── consolidation/           # 離線鞏固
-│   │   ├── dream_engine.py     # Dream Engine 協調器
-│   │   └── pruning.py          # 圖譜修剪
-│   │
-│   └── schemas/                 # 資料結構
-│       ├── episode.py          # Episode 節點
-│       ├── concept.py          # Concept 節點
-│       └── memory_context.py   # 檢索結果容器
-│
-├── llm_integration/             # LLM 整合層
-│   ├── __init__.py
-│   └── llm_client.py           # LLM 調用封裝（Gemini/Claude）
-│
-├── neurochem/                   # [Planned] 神經化學模擬（目錄尚未建立）
-│   └── （Phase 2+ 規劃中）
-│
-├── tests/                       # 單元測試
-│   ├── test_config.py
-│   ├── test_engine.py
-│   ├── test_episodic.py
-│   ├── test_dream_engine.py
-│   ├── test_dream_quick.py
-│   └── test_hybrid_retrieval.py
-│
-└── examples/                    # 示例
-    └── minimal_chat.py          # 最小對話示例
-```
+- **四層記憶架構**：Working / Episodic / Semantic / Procedural，各層職責明確分離
+- **EcphoryRAG 五步聯想檢索**：向量種子 → 圖譜展開 → 語義概念 → 矛盾偵測 → 融合排序
+- **神經化學雙軸調控**：DA/5-HT 驅動 5 種認知模式，動態影響檢索廣度與閾值
+- **OpenSoul 完整情感管線**：SubconsciousAssessor（五維評估）→ SalienceEvaluator（三值輸出）→ ResponseVerifier（四維品質打分）→ SubconsciousInhibitor（PASS/REVISE/SUPPRESS）
+- **概念管理三層分流**：ConceptExtractor（daemon Thread 即時提取）→ 同義詞歸一 / 多義詞分裂 / 新概念建立
+- **StorageJudge**：Hybrid 規則 + LLM 存儲決策，取代硬編碼 keyword matching
+- **Dream Engine**：Graph Pruning + LATENT_BRIDGE + LiDER Replay + Knowledge Distillation + Procedure Extraction，閒置/Cron 雙模式觸發
+- **反思行動閉環**：ReflectionModule（定時反思）→ ActionQueue → ReflectionExecutor（含 rollback 機制）
+- **LLM 自主記憶工具**：`force_remember` / `deep_recall` / `adjust_importance` / `trigger_dream`，由對話 LLM 主動調用
+- **MCP Server**：7 個標準工具 + 多租戶 namespace 隔離，支援外部系統整合
+
+---
+
+## 技術棧
+
+| 類別 | 技術 | 說明 |
+|------|------|------|
+| Python | 3.10+ | 型別標注 + Google-style docstring |
+| 向量 | NumPy | 稠密向量 + 精確餘弦相似度 |
+| 圖譜 | NetworkX 3.2+ | 輕量替代 FalkorDB |
+| Embedding | Ollama bge-m3 | 1024 維多語言（正式基準） |
+| LLM | Google Gemini | gemini-3.1-flash-lite（Chat）+ gemini-2.5-flash-lite（Eval） |
+| 排程 | APScheduler | Dream 閒置/Cron 觸發 |
+| CLI | Rich | 互動式終端 UI |
+| MCP | FastMCP | 外部整合介面 |
+| 序列化 | Pydantic | 資料驗證與模式定義 |
+| 測試 | pytest | 單元測試 + 整合測試 |
 
 ---
 
@@ -114,46 +58,48 @@ TestSeperateMemorySystem/
 ### 環境準備
 
 本專案刻意不維護獨立虛擬環境，統一使用同層主專案 `U.E.P-s-Core\env`。
-正式 embedding 基準為主環境提供的 Ollama `bge-m3`，不是 repo 自行下載的 Sentence Transformers 模型。
+正式 embedding 基準為 Ollama `bge-m3`（1024 維多語言）。
 
 ```powershell
 $UEP_PYTHON = "..\U.E.P-s-Core\env\Scripts\python.exe"
 
 # 1. 配置環境變數
 Copy-Item .env.example .env
-# 編輯 .env，設定 GOOGLE_API_KEY 或 GCP_PROJECT_ID
+# 編輯 .env，必填項目：
+#   GOOGLE_API_KEY=<your_key>
+#   EMBEDDING_BACKEND=ollama
+#   EMBEDDING_MODEL=bge-m3
 
-# 2. 驗證配置
-& $UEP_PYTHON verify_config.py
+# 2. 確認 Ollama 服務與模型
+ollama list   # 應看到 bge-m3
 
-# 3. 確認 Ollama embedding 模型
-ollama list
-
-# 4. 執行核心測試
-& $UEP_PYTHON -m pytest -q
+# 3. 執行測試套件
+& $UEP_PYTHON -m pytest tests/ -x -q
 ```
 
-### 互動式 CLI（推薦）
+### 互動式 CLI
 
 ```powershell
 .\run.bat
 ```
 
-進入後可使用以下命令：
-- `store` - 手動存儲對話
-- `retrieve` - 檢索相關記憶
-- `chat` - 對話模式（自動檢索+存儲）
-- `stats` - 查看統計資訊
-- `list` - 列出所有情節
-- `help` - 查看完整說明
+進入後可使用以下指令：
+
+| 指令 | 說明 |
+|------|------|
+| `chat` | 對話模式（自動檢索 + 存儲 + 神經化學調控） |
+| `store` | 手動存儲對話片段 |
+| `retrieve` | 手動檢索相關記憶 |
+| `stats` | 查看記憶統計與神經化學狀態 |
+| `list` | 列出所有情節記憶 |
+| `dream` | 手動觸發 Dream Engine |
+| `help` | 查看完整說明 |
 
 ### 程式化使用
 
 ```python
 from echo_memory import MemoryEngine
 
-# 程式化建立引擎時必須明確沿用正式 Ollama 設定。
-# bge-m3 是 1024 維多語言 embedding，query prefix 應保持空白。
 memory = MemoryEngine(
     storage_path="./data",
     embedding_model="bge-m3",
@@ -163,15 +109,14 @@ memory = MemoryEngine(
     namespace_id="local-default",
 )
 
-# 存儲對話
+# 存儲對話（每一輪均存儲，salience 作為屬性而非門閥）
 memory.store_episode(
     user_input="今天天氣如何？",
     agent_response="台北晴朗，25°C。",
     session_id="demo_001",
-    salience=0.7,
 )
 
-# 檢索記憶
+# 檢索記憶（神經化學參數動態影響檢索廣度）
 context = memory.retrieve(
     query="天氣怎麼樣？",
     dopamine=0.5,
@@ -183,66 +128,188 @@ print(context.to_text())
 
 ### Namespace 與資料安全
 
-- `local-default` 直接沿用既有 `storage_path`，保持舊資料相容；其他 namespace 存放於 `<storage_path>/namespaces/<namespace_id>`。
-- 同一 namespace 的寫入與 Dream 操作使用跨程序檔案鎖序列化，避免多實例覆蓋最新快照；不同 namespace 可獨立運作。
-- 目前仍是單機 JSON/NumPy 快照後端，優先保證正確性，不定位為高吞吐分散式資料庫。
-- `embedding_index.json` 記錄模型、維度與 episode 順序；模型或索引不一致時會自動完整重建。
-- 檢索內容以 `UNTRUSTED_MEMORY_DATA` JSON envelope 注入 prompt，LLM 必須把它視為資料而非指令。
-- Dream 圖譜衰減只處理時間序列 `PRECEDES` 邊，不會誤改語義或實體關係邊。
+- `local-default` 沿用既有 `storage_path`，其他 namespace 存放於 `<storage_path>/namespaces/<namespace_id>`
+- 同一 namespace 的寫入與 Dream 操作透過跨程序檔案鎖序列化，防止多實例資料衝突
+- `embedding_index.json` 記錄模型、維度與 episode 順序；模型或索引不一致時自動完整重建
+- 檢索內容以 `UNTRUSTED_MEMORY_DATA` JSON envelope 注入 prompt，防範 prompt injection
 
 ---
 
-## MVP 驗證目標
+## 專案結構
 
-### Phase 1: 基礎記憶存儲（已完成）
-- [x] 專案基建與目錄結構
-- [x] Episodic Memory 存儲（NumPy 向量 + JSON 元數據）
-- [x] Semantic Memory 存儲（NetworkX 圖譜骨架）
-- [x] Working Memory 短期緩存（dict + TTL）
-
-### Phase 2: EcphoryRAG 檢索（進行中）
-- [x] 向量相似度種子節點定位（NumPy 餘弦相似度）
-- [ ] 圖譜多跳關聯展開（BFS/DFS）
-- [ ] 神經化學參數調控（seed_k, breadth_k, threshold）
-- [ ] MemoryContext 文本序列化
-
-### Phase 3: LLM 整合（規劃中）
-- [ ] Gemini API 調用封裝
-- [ ] 系統提示詞構建（含記憶注入）
-
-### Phase 4: Dream Engine（規劃中）
-- [ ] LiDER 重播基礎框架
-- [ ] 知識蒸餾（情節 -> 規則）
-- [ ] 圖譜修剪（低權重邊緣刪除）
-- [ ] 定時觸發器（APScheduler）
-
-### Phase 5: 神經化學模擬（Planned）
-- [ ] NeurochemState（多巴胺/血清素）
-- [ ] 狀態動力學更新
-- [ ] 與 EcphoryRAG 整合
+```
+TestSeperateMemorySystem/
+├── Entry.py                     # 互動式 CLI（對話、記憶管理、除錯）
+├── run.bat                      # 啟動腳本
+├── requirements.txt             # Python 依賴
+├── pyproject.toml               # 專案配置（setuptools）
+├── .env.example                 # 環境變數模板
+│
+├── echo_memory/                 # 核心記憶引擎
+│   ├── engine.py                # MemoryEngine 主類
+│   ├── config.py                # 配置管理
+│   ├── namespace.py             # 命名空間隔離
+│   │
+│   ├── schemas/                 # 資料結構定義
+│   │   ├── episode.py           # Episode（情節記憶）
+│   │   ├── concept.py           # Concept（語義概念）
+│   │   ├── entity.py            # Entity（實體）
+│   │   ├── procedure.py         # Procedure（程序記憶）
+│   │   └── memory_context.py    # MemoryContext（檢索結果容器）
+│   │
+│   ├── storage/                 # 存儲層
+│   │   ├── episodic.py          # 情節記憶（NumPy 向量 + JSON）
+│   │   ├── semantic.py          # 語義記憶
+│   │   ├── working.py           # 工作記憶（TTL 短期快取）
+│   │   ├── procedural.py        # 程序記憶
+│   │   ├── graph.py             # NetworkX 記憶圖譜
+│   │   ├── entity.py            # 實體存儲
+│   │   └── locking.py           # 檔案鎖
+│   │
+│   ├── retrieval/               # 檢索層
+│   │   └── ecphory.py           # EcphoryRAG 聯想檢索
+│   │
+│   ├── neurochem/               # 神經化學調控
+│   │   └── state.py             # NeurochemState（DA/5-HT + 事件驅動 + 持久化）
+│   │
+│   ├── affect/                  # 情感與潛意識評估（OpenSoul 遷移）
+│   │   ├── signals.py           # SalienceSignals + SubconsciousAssessment
+│   │   ├── salience.py          # SalienceEvaluator（三值輸出）
+│   │   ├── subconscious.py      # SubconsciousAssessor（LLM 五維度）
+│   │   ├── concept_verifier.py  # ConceptVerifier（概念前驗證）
+│   │   ├── concept_inhibitor.py # ConceptInhibitor（概念 Patch 閘門）
+│   │   ├── verifier.py          # ResponseVerifier（四維品質打分）
+│   │   ├── inhibitor.py         # SubconsciousInhibitor（PASS/REVISE/SUPPRESS）
+│   │   ├── judge.py             # StorageJudge（Hybrid 工具預過濾 + 存儲決策）
+│   │   ├── concept_extractor.py # 即時概念提取（ThreadPoolExecutor）
+│   │   ├── soul_note.py         # Soul Note 潛意識日記
+│   │   ├── reflection.py        # ReflectionModule（定時反思）
+│   │   ├── reflection_executor.py # ReflectionExecutor（反思行動執行器）
+│   │   └── action_queue.py      # ReflectionActionQueue（行動排隊 + audit）
+│   │
+│   ├── utils/                   # 通用工具
+│   │   └── sanitizer.py         # 內容消殺（偽造工具標記清理）
+│   │
+│   └── dream/                   # Dream Engine（離線鞏固）
+│       ├── engine.py            # DreamEngine 主協調器
+│       ├── replay.py            # LiDER 記憶重播
+│       ├── distillation.py      # 知識蒸餾
+│       ├── pruning.py           # 圖譜修剪 + LATENT_BRIDGE + 歸檔
+│       ├── entity_extractor.py  # 實體提取
+│       ├── procedure_extractor.py # 程序 SOP 提取
+│       └── contradiction.py     # 矛盾偵測 + ConflictLedger
+│
+├── llm_integration/             # LLM 整合層
+│   ├── llm_client.py            # Gemini LLM 客戶端
+│   ├── config.yaml              # LLM 配置（角色、prompt）
+│   └── tools/                   # Function Calling 工具
+│       ├── definitions.py       # 工具定義 Schema
+│       └── executor.py          # 工具執行器
+│
+├── mcp_server/                  # MCP Server（外部整合）
+│   ├── server.py                # FastMCP 伺服器
+│   ├── handlers.py              # 工具處理器
+│   └── resources.py             # 資源暴露
+│
+├── scripts/                     # 端到端驗證腳本
+│   ├── probe_pipeline.py        # 25 輪自動劇本 + Rich 推理地圖
+│   └── dialogue_script.py       # 對話場景腳本
+│
+├── tests/                       # 測試套件
+│   ├── *.py                     # 608 個單元測試
+│   └── integration/             # 12 個整合測試
+│
+└── examples/                    # 使用範例
+    └── minimal_chat.py          # 最小對話範例
+```
 
 ---
 
-## 技術棧
+## 完整對話處理流程
 
-| 類別 | 技術選型 | 版本 | 狀態 |
-|------|---------|------|------|
-| **Python** | CPython | 3.10+ | 已用 |
-| **向量檢索** | NumPy 精確餘弦相似度 | 1.24+ | 已用 |
-| **向量索引加速** | FAISS | 1.9+ | [Planned] |
-| **圖譜存儲** | NetworkX | 3.2+ | 已用 |
-| **嵌入模型** | Ollama `bge-m3` | 1024 維、多語言 | 正式基準 |
-| **嵌入備援** | Sentence Transformers | 2.3+ | 開發備援 |
-| **LLM** | Google Gemini / Anthropic Claude | - | 已用 |
-| **排程** | APScheduler | 3.10+ | 已用 |
-| **序列化** | Pydantic | 2.5+ | 已用 |
-| **測試** | pytest | 7.4+ | 已用 |
+```
+用戶輸入
+  │
+  ├─ [Step 1]   EcphoryRAG 五步聯想檢索
+  │              向量種子 → 圖譜展開 → 語義概念 → 矛盾偵測 → 融合排序
+  │              （DA/5-HT 動態調控 seed_k / breadth_k / threshold）
+  │
+  ├─ [Step 1.5] SubconsciousAssessor 五維評估（情緒/新穎/相關/緊迫/衝突）
+  │              + JudgeAgent 工具預過濾
+  │
+  ├─ [Step 2]   LLM 生成回覆
+  │              → 內容消殺（sanitizer 清除偽造工具標記）
+  │              → ResponseVerifier 四維品質打分
+  │              → SubconsciousInhibitor 閘門（PASS / REVISE / SUPPRESS）
+  │
+  ├─ [Step 3]   SalienceEvaluator 三值計算（HIGH / MEDIUM / LOW）
+  │              → 存儲 Episode（salience / da / ht 作為屬性，不作為門閥）
+  │
+  ├─ [Step 4]   背景概念提取（daemon Thread）
+  │              同義詞歸一 / 多義詞分裂 / 新概念建立
+  │
+  ├─ [Step 5]   Soul Note 潛意識日記寫入
+  │
+  ├─ [Step 6]   ReflectionModule 定時反思
+  │              每 10 輪或 uncertainty > 0.7 觸發
+  │              → ActionQueue → ReflectionExecutor（含 rollback）
+  │
+  ├─ [Step 7]   Entity 提取（salience >= 門檻時）
+  │
+  └─ [Step 8]   NeurochemState tick() + 持久化
+```
+
+### 動態邊緣權重公式
+
+```
+W(edge) = α·Recency + β·Frequency + γ·Salience
+        = 0.3·Recency + 0.4·Frequency + 0.3·Salience
+
+Recency   = exp(-λ·hours_ago)       # λ = 0.01 /小時
+Frequency = log(1+n) / log(1+n_max)
+Salience  = dopamine × (1 - 0.3×serotonin)
+```
+
+---
+
+## 端到端驗證
+
+### 驗證工具
+
+| 工具 | 說明 |
+|------|------|
+| `scripts/probe_pipeline.py` | 25 輪自動劇本，Rich 推理地圖視覺化，覆蓋記憶跨輪喚起與矛盾偵測 |
+| `scripts/dialogue_script.py` | 多場景對話腳本，涵蓋情感轉折、概念演化、神經化學切換 |
+| `tests/integration/` | 12 個整合測試，覆蓋完整 pipeline 端到端行為 |
+
+### 驗證結果
+
+- 2 個 Procedure 在 Dream Engine 蒸餾後被後續對話成功重用
+- EcphoryRAG 跨輪喚起率符合預期閾值
+- 神經化學狀態在連續高壓對話後正確觸發 CALM 模式切換
+
+---
+
+## 架構設計原則
+
+### Salience 是權重，不是門閥
+
+每一輪對話都存儲為 Episode，沒有例外。Salience 分數影響：
+- 檢索排序（高 salience → 更容易被召回）
+- 邊緣權重計算
+- Dream Engine 修剪決策（低 salience → 更容易隨時間衰減）
+
+低 salience 的記憶不被丟棄，而是自然衰減——這才是正確的遺忘機制。
+
+### 禁止 Keyword Matching
+
+記憶的重要性判斷由對話 LLM 透過工具主動介入，以及 `SalienceEvaluator` 和 `SubconsciousAssessor` 提供基礎權重。系統中不存在任何 keyword 清單或正則規則用於記憶決策。
 
 ---
 
 ## 與 U.E.P Core 整合計畫
 
-### 遷移策略（Phase 6）
+### 遷移策略
 
 1. **模組包裝**
    ```python
@@ -273,7 +340,7 @@ print(context.to_text())
    # configs/config.yaml
    modules_enabled:
      mem_module_v2: true
-   
+
    memory_v2:
      storage_path: "memory/v2"
      embedding_model: "bge-m3"
@@ -286,12 +353,14 @@ print(context.to_text())
 ## 參考資料
 
 ### 理論基礎
-- **Ecphory**: Tulving, E., & Thomson, D. M. (1973). *Encoding specificity and retrieval processes in episodic memory.*
-- **Memory Consolidation**: Stickgold, R. (2005). *Sleep-dependent memory consolidation.*
 
-### 技術參考
-- **OpenSoul**: 架構設計參考
-- **U.E.P SDD**: 系統設計文檔
+- **Ecphory**：Tulving, E., & Thomson, D. M. (1973). *Encoding specificity and retrieval processes in episodic memory.*
+- **Memory Consolidation**：Stickgold, R. (2005). *Sleep-dependent memory consolidation.*
+
+### 架構參考
+
+- **OpenSoul**：`C:\Users\Bernie\source\repos\Other\OpenSoul`（情感管線、記憶架構設計來源）
+- **U.E.P SDD**：系統設計文檔
 
 ---
 

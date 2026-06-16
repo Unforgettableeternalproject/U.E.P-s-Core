@@ -406,6 +406,7 @@ class MemoryEngine:
                 "edges_created": r.edges_created,
                 "avg_importance": r.avg_importance,
                 "skipped_reason": r.skipped_reason,
+                "errors": r.errors if r.errors else None,
             }
 
         # 蒸餾報告

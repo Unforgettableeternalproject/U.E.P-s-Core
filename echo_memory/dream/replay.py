@@ -146,12 +146,17 @@ class LiDERReplay:
             report.errors.append(f"LLM 呼叫失敗: {e}")
             return report
 
-        # 解析反思結果
+        # 解析反思結果（內建多層容錯，不應再拋例外）
         try:
             reflections = self._parse_llm_output(raw_output)
         except Exception as e:
-            report.skipped_reason = "llm_error"
+            report.skipped_reason = "parse_error"
             report.errors.append(f"解析失敗: {e}")
+            return report
+
+        if not reflections:
+            report.skipped_reason = "parse_empty"
+            report.errors.append("LLM 回傳的 JSON 無法解析出任何 reflection")
             return report
 
         # ── 預掃描：計算預期 mutation 規模（供 audit-before-mutate）──
@@ -288,7 +293,15 @@ class LiDERReplay:
         return _REPLAY_PROMPT.format(episodes_text="\n\n".join(lines))
 
     def _parse_llm_output(self, raw: str) -> list[dict[str, Any]]:
-        """解析 LLM 反思輸出。"""
+        """
+        解析 LLM 反思輸出。
+
+        容錯策略：
+        1. 去除 markdown code fences
+        2. 嘗試完整 JSON parse
+        3. 若失敗（常見於 max_tokens 截斷），嘗試修復截斷的 JSON
+        4. 若仍失敗，嘗試逐行提取完整的 reflection 物件
+        """
         text = raw.strip()
 
         # 去除 markdown fences
@@ -307,8 +320,82 @@ class LiDERReplay:
         if start == -1 or end == -1:
             return []
 
-        data = json.loads(text[start:end + 1])
-        return data.get("reflections", [])
+        json_text = text[start:end + 1]
+
+        # 嘗試 1：完整 parse
+        try:
+            data = json.loads(json_text)
+            return data.get("reflections", [])
+        except json.JSONDecodeError:
+            pass
+
+        # 嘗試 2：截斷修復 — 在最後一個完整的 } 後補上 ]}
+        # LLM 常因 max_tokens 在 reflections 陣列中間截斷
+        logger.debug("[LiDERReplay] JSON 完整 parse 失敗，嘗試截斷修復")
+        for suffix in ["]}", "]}}", "]\n}}"]:
+            # 找到最後一個完整的 reflection 物件結尾
+            last_obj_end = json_text.rfind("}")
+            if last_obj_end == -1:
+                continue
+            # 往前找倒數第二個 }（最後一個完整 reflection 的結尾）
+            second_last = json_text.rfind("}", 0, last_obj_end)
+            if second_last == -1:
+                continue
+            truncated = json_text[:second_last + 1] + suffix
+            try:
+                data = json.loads(truncated)
+                reflections = data.get("reflections", [])
+                if reflections:
+                    logger.info(
+                        f"[LiDERReplay] 截斷修復成功，恢復 {len(reflections)} 個 reflection"
+                    )
+                    return reflections
+            except json.JSONDecodeError:
+                continue
+
+        # 嘗試 3：逐個提取 reflection 物件
+        logger.debug("[LiDERReplay] 截斷修復失敗，嘗試逐個提取")
+        reflections = []
+        search_start = 0
+        while True:
+            # 找到 "index" 關鍵字的位置
+            idx_pos = json_text.find('"index"', search_start)
+            if idx_pos == -1:
+                break
+            # 往前找 {
+            obj_start = json_text.rfind("{", search_start, idx_pos)
+            if obj_start == -1:
+                search_start = idx_pos + 1
+                continue
+            # 往後找配對的 }
+            depth = 0
+            obj_end = -1
+            for i in range(obj_start, len(json_text)):
+                if json_text[i] == "{":
+                    depth += 1
+                elif json_text[i] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        obj_end = i
+                        break
+            if obj_end == -1:
+                break
+            try:
+                obj = json.loads(json_text[obj_start:obj_end + 1])
+                if "index" in obj:
+                    reflections.append(obj)
+            except json.JSONDecodeError:
+                pass
+            search_start = obj_end + 1
+
+        if reflections:
+            logger.info(
+                f"[LiDERReplay] 逐個提取成功，恢復 {len(reflections)} 個 reflection"
+            )
+        else:
+            logger.warning("[LiDERReplay] 所有 JSON 解析策略均失敗")
+
+        return reflections
 
     def _mark_episodes_dreamed(self, episodes: list[Episode]) -> None:
         episode_ids = [ep.id for ep in episodes]

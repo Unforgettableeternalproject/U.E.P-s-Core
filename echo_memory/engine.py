@@ -419,6 +419,15 @@ class MemoryEngine:
                 "skipped_reason": d.skipped_reason,
             }
 
+        # 程序提取報告
+        if report.procedure_extraction:
+            p = report.procedure_extraction
+            result["procedure_extraction"] = {
+                "procedures_created": getattr(p, "procedures_created", 0),
+                "procedures_updated": getattr(p, "procedures_updated", 0),
+                "skipped_reason": getattr(p, "skipped_reason", None),
+            }
+
         return result
 
     # ─── 輔助方法 ────────────────────────────────────────────────────────────

@@ -403,6 +403,11 @@ class ConceptExtractor:
                 embedding=embedding,
             )
             if concept_id and best_match.id:
+                # 確保新概念的 graph node 存在再建邊
+                if not self._graph.has_node(concept_id):
+                    self._graph.add_concept_node(concept_id, noun)
+                if not self._graph.has_node(best_match.id):
+                    self._graph.add_concept_node(best_match.id, best_match.name)
                 self._graph.add_relates_to_edge(
                     concept_id, best_match.id,
                     weight=best_sim,
@@ -466,6 +471,11 @@ class ConceptExtractor:
                 embedding=embedding,
             )
             if concept_id and best_match.id:
+                # 確保雙方 graph node 存在再建邊
+                if not self._graph.has_node(concept_id):
+                    self._graph.add_concept_node(concept_id, noun)
+                if not self._graph.has_node(best_match.id):
+                    self._graph.add_concept_node(best_match.id, best_match.name)
                 self._graph.add_relates_to_edge(
                     concept_id, best_match.id,
                     weight=best_sim,

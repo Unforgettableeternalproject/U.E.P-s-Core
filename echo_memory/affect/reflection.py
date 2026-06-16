@@ -176,8 +176,19 @@ class ReflectionModule:
         assert self._llm_fn is not None
         raw = self._llm_fn(prompt)
 
+        # 清除 LLM 常見的 markdown code fence（```json ... ```）
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            # 移除開頭的 ```json 或 ```
+            first_newline = cleaned.find("\n")
+            if first_newline != -1:
+                cleaned = cleaned[first_newline + 1:]
+            # 移除結尾的 ```
+            if cleaned.rstrip().endswith("```"):
+                cleaned = cleaned.rstrip()[:-3].rstrip()
+
         try:
-            data = json.loads(raw.strip())
+            data = json.loads(cleaned)
             # 解析 memory_ops（容錯：非 list 時 fallback 為空）
             raw_ops = data.get("memory_ops", [])
             memory_ops = raw_ops if isinstance(raw_ops, list) else []

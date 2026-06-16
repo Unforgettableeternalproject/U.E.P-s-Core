@@ -212,6 +212,7 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
     reflection_executor = ReflectionExecutor(
         engine=engine,
         soul_notes=soul_notes,
+        concept_inhibitor=concept_inhibitor,
     )
     executor_fn = reflection_executor.build_executor_fn()
     rollback_fn = reflection_executor.build_rollback_fn()
@@ -764,6 +765,15 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
         except Exception as e:
             logger.warning(f"Store error: {e}")
 
+    # ── 清理：等待背景概念提取完成並關閉執行緒池 ──
+    try:
+        flushed = concept_extractor.flush(timeout=15)
+        if flushed:
+            logger.info(f"[run_chat] 等待 {flushed} 個背景概念提取完成")
+        concept_extractor.shutdown(wait=False)
+    except Exception as e:
+        logger.debug(f"[run_chat] ConceptExtractor cleanup: {e}")
+
 
 def _show_tool_usage_hint(llm: LLMClient):
     """顯示最近一輪的工具呼叫提示（簡潔版）"""
@@ -932,7 +942,7 @@ def _cmd_review_actions(
             queue.reject(action.id)
             con.print(f"  [dim]已拒絕: {action.id}[/]")
         else:
-            con.print(f"  [dim]跳過（保留待處理）[/]")
+            con.print("  [dim]跳過（保留待處理）[/]")
 
 
 def _cmd_rollback(
@@ -971,7 +981,7 @@ def _cmd_rollback(
     if ok:
         con.print(f"  [green]✅ 已回滾: {target_id}[/]")
     else:
-        con.print(f"  [red]❌ 回滾失敗（行動不存在或未處於 EXECUTED 狀態）[/]")
+        con.print("  [red]❌ 回滾失敗（行動不存在或未處於 EXECUTED 狀態）[/]")
 
 
 def _cmd_dream(engine: MemoryEngine, llm: LLMClient | None = None):

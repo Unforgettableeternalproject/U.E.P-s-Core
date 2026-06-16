@@ -110,6 +110,10 @@ class PatchEvidence:
         "replay_reinforcement",
         "graph_pruning",
         "distillation",
+        # ReflectionExecutor 來源
+        "reflection_create",
+        "reflection_tag",
+        "reflection_merge",
     ]
     evidence_strength: float  # [0, 1]
 
@@ -274,9 +278,9 @@ class PatchTransaction:
         "rolled_back", "failed",
     ] = "pending"
 
-    # 觸發來源：區分對話即時 / 背景提取 / Dream 離線
+    # 觸發來源：區分對話即時 / 背景提取 / Dream 離線 / 反思行動
     triggered_by: Literal[
-        "conversation", "extractor", "dream",
+        "conversation", "extractor", "dream", "reflection",
     ] = "conversation"
 
     audit_path: str | None = None

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -70,6 +71,9 @@ class SemanticMemory:
         self._id_to_index: dict[str, int] = {}   # concept_id → row index
         self._idx_to_id: dict[int, str] = {}     # row index → concept_id（反向查詢，O(1)）
 
+        # 執行緒鎖（RLock：upsert_concept 內部呼叫 _save()，需要可重入）
+        self._lock = threading.RLock()
+
         # 載入已存在的資料
         self._load()
 
@@ -93,6 +97,7 @@ class SemanticMemory:
     ) -> str:
         """
         插入或更新概念。
+        thread-safe: 由 self._lock（RLock）保護。
 
         若同名概念已存在：
           - 更新 description（取較新的）
@@ -110,51 +115,53 @@ class SemanticMemory:
         Returns:
             concept_id
         """
-        is_update = name in self._concepts
+        with self._lock:
+            is_update = name in self._concepts
 
-        if is_update:
-            concept = self._concepts[name]
-            concept.description = description
-            concept.concept_type = concept_type
-            concept.updated_at = datetime.now(timezone.utc)
-            if metadata:
-                concept.metadata.update(metadata)
-        else:
-            concept = Concept(
-                name=name,
-                description=description,
-                concept_type=concept_type,
-                metadata=metadata or {},
+            if is_update:
+                concept = self._concepts[name]
+                concept.description = description
+                concept.concept_type = concept_type
+                concept.updated_at = datetime.now(timezone.utc)
+                if metadata:
+                    concept.metadata.update(metadata)
+            else:
+                concept = Concept(
+                    name=name,
+                    description=description,
+                    concept_type=concept_type,
+                    metadata=metadata or {},
+                )
+                self._concepts[name] = concept
+                self._concepts_by_id[concept.id] = concept
+
+            # 追加來源 Episode
+            if source_episode_id:
+                concept.add_source_episode(source_episode_id)
+
+            # 生成/更新 embedding
+            vec = embedding
+            if vec is None and self._embed_fn is not None:
+                vec = self._embed_fn(f"{name}: {description}")
+
+            if vec is not None:
+                concept.embedding = self._normalize_vector(vec).tolist()
+                self._update_embedding_index(concept, is_update=is_update)
+
+            # 持久化（RLock 可重入，此處遞迴呼叫 _save 不會死鎖）
+            self._save()
+
+            action = "更新" if is_update else "新增"
+            logger.debug(
+                f"[SemanticMemory] {action}概念: {name} "
+                f"(id={concept.id}, sources={len(concept.source_episode_ids)})"
             )
-            self._concepts[name] = concept
-            self._concepts_by_id[concept.id] = concept
-
-        # 追加來源 Episode
-        if source_episode_id:
-            concept.add_source_episode(source_episode_id)
-
-        # 生成/更新 embedding
-        vec = embedding
-        if vec is None and self._embed_fn is not None:
-            vec = self._embed_fn(f"{name}: {description}")
-
-        if vec is not None:
-            concept.embedding = self._normalize_vector(vec).tolist()
-            self._update_embedding_index(concept, is_update=is_update)
-
-        # 持久化
-        self._save()
-
-        action = "更新" if is_update else "新增"
-        logger.debug(
-            f"[SemanticMemory] {action}概念: {name} "
-            f"(id={concept.id}, sources={len(concept.source_episode_ids)})"
-        )
-        return concept.id
+            return concept.id
 
     def remove_concept(self, name: str) -> bool:
         """
         移除概念。
+        thread-safe: 由 self._lock（RLock）保護。
 
         Args:
             name: 概念名稱
@@ -162,21 +169,22 @@ class SemanticMemory:
         Returns:
             True 若成功移除，False 若不存在
         """
-        if name not in self._concepts:
-            return False
+        with self._lock:
+            if name not in self._concepts:
+                return False
 
-        concept = self._concepts[name]
-        del self._concepts[name]
-        del self._concepts_by_id[concept.id]
+            concept = self._concepts[name]
+            del self._concepts[name]
+            del self._concepts_by_id[concept.id]
 
-        # 重建向量索引
-        self._rebuild_embeddings()
+            # 重建向量索引
+            self._rebuild_embeddings()
 
-        # 持久化
-        self._save()
+            # 持久化
+            self._save()
 
-        logger.debug(f"[SemanticMemory] 移除概念: {name} (id={concept.id})")
-        return True
+            logger.debug(f"[SemanticMemory] 移除概念: {name} (id={concept.id})")
+            return True
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 查詢 API
@@ -284,14 +292,15 @@ class SemanticMemory:
         return len(self._concepts)
 
     def clear(self):
-        """清空所有語義記憶"""
-        self._concepts.clear()
-        self._concepts_by_id.clear()
-        self._embeddings = None
-        self._id_to_index.clear()
-        self._idx_to_id.clear()
-        self._save()
-        logger.info("[SemanticMemory] 已清空所有概念")
+        """清空所有語義記憶。thread-safe: 由 self._lock（RLock）保護。"""
+        with self._lock:
+            self._concepts.clear()
+            self._concepts_by_id.clear()
+            self._embeddings = None
+            self._id_to_index.clear()
+            self._idx_to_id.clear()
+            self._save()
+            logger.info("[SemanticMemory] 已清空所有概念")
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 內部：向量索引管理
@@ -417,6 +426,7 @@ class SemanticMemory:
     def _save(self) -> None:
         """
         保存概念元數據和向量到磁盤。
+        thread-safe: 由 self._lock（RLock）保護（呼叫端持有鎖，RLock 允許同執行緒重入）。
 
         使用 temp file + rename 原子替換模式，避免寫入中斷導致資料損毀。
 
@@ -425,33 +435,34 @@ class SemanticMemory:
           - JSON 裡的 embedding 作為 fallback，在 .npy 損毀時可透過
             _rebuild_embeddings 從 JSON 重建
         """
-        # 保存元數據（原子寫入：先寫 temp 檔再 rename）
-        tmp_json = self.metadata_file.with_suffix(".json.tmp")
-        try:
-            data = [c.to_dict() for c in self._concepts.values()]
-            with open(tmp_json, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            tmp_json.replace(self.metadata_file)
-        except Exception as e:
-            logger.error(f"[SemanticMemory] 保存 concepts.json 失敗: {e}")
-            if tmp_json.exists():
-                tmp_json.unlink()
+        with self._lock:
+            # 保存元數據（原子寫入：先寫 temp 檔再 rename）
+            tmp_json = self.metadata_file.with_suffix(".json.tmp")
+            try:
+                data = [c.to_dict() for c in self._concepts.values()]
+                with open(tmp_json, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                tmp_json.replace(self.metadata_file)
+            except Exception as e:
+                logger.error(f"[SemanticMemory] 保存 concepts.json 失敗: {e}")
+                if tmp_json.exists():
+                    tmp_json.unlink()
 
-        # 保存向量（原子寫入）
-        # np.save 會自動加 .npy 副檔名，所以 temp 檔名必須以 .npy 結尾
-        tmp_npy = self.storage_path / "concept_embeddings_tmp.npy"
-        try:
-            if self._embeddings is not None:
-                np.save(tmp_npy, self._embeddings)
-                tmp_npy.replace(self.embeddings_file)
-            elif self.embeddings_file.exists():
-                self.embeddings_file.unlink()
-        except Exception as e:
-            logger.error(
-                f"[SemanticMemory] 保存 concept_embeddings.npy 失敗: {e}"
-            )
-            if tmp_npy.exists():
-                tmp_npy.unlink()
+            # 保存向量（原子寫入）
+            # np.save 會自動加 .npy 副檔名，所以 temp 檔名必須以 .npy 結尾
+            tmp_npy = self.storage_path / "concept_embeddings_tmp.npy"
+            try:
+                if self._embeddings is not None:
+                    np.save(tmp_npy, self._embeddings)
+                    tmp_npy.replace(self.embeddings_file)
+                elif self.embeddings_file.exists():
+                    self.embeddings_file.unlink()
+            except Exception as e:
+                logger.error(
+                    f"[SemanticMemory] 保存 concept_embeddings.npy 失敗: {e}"
+                )
+                if tmp_npy.exists():
+                    tmp_npy.unlink()
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 統計

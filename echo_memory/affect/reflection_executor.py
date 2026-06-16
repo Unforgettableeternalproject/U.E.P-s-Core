@@ -113,8 +113,16 @@ class ReflectionExecutor:
     """
     反思行動的執行層——將 action_type 映射到 MemoryEngine API。
 
+    概念相關操作（create_concept / tag_concept / merge_concepts）優先走
+    ConceptInhibitor patch pipeline，確保所有 SemanticMemory 變更都經過
+    audit trail。inhibitor=None 時退回直接寫入（向下相容）。
+
     Usage:
-        executor = ReflectionExecutor(engine=engine, soul_notes=soul_notes)
+        executor = ReflectionExecutor(
+            engine=engine,
+            soul_notes=soul_notes,
+            concept_inhibitor=inhibitor,
+        )
         fn = executor.build_executor_fn()
         action_queue.execute(action, executor_fn=fn)
     """
@@ -123,14 +131,17 @@ class ReflectionExecutor:
         self,
         engine: Any,
         soul_notes: Any | None = None,
+        concept_inhibitor: Any | None = None,
     ):
         """
         Args:
             engine: MemoryEngine 實例
             soul_notes: SoulNoteManager 實例（用於 add_note 操作）
+            concept_inhibitor: ConceptInhibitor 實例（可選，用於概念變更 audit）
         """
         self._engine = engine
         self._soul_notes = soul_notes
+        self._inhibitor = concept_inhibitor
 
         # action_type → 執行方法映射
         self._dispatch: dict[str, Any] = {
@@ -316,7 +327,7 @@ class ReflectionExecutor:
     def _exec_tag_concept(
         self, target_id: str, params: dict[str, Any]
     ) -> dict[str, Any]:
-        """為概念追加標籤。"""
+        """為概念追加標籤。優先走 ConceptInhibitor patch pipeline。"""
         concept = self._engine.semantic.get_by_name(target_id)
         if concept is None:
             raise ValueError(f"概念不存在: {target_id}")
@@ -325,11 +336,23 @@ class ReflectionExecutor:
         if not isinstance(new_tags, list):
             new_tags = [str(new_tags)]
 
+        # 走 ConceptInhibitor patch pipeline（有 audit trail）
+        if self._inhibitor is not None:
+            success, result = self._inhibitor.process_reflection_patch(
+                operation="tag",
+                target_name=target_id,
+                params={"tags": new_tags},
+                reasoning="ReflectionExecutor tag_concept",
+            )
+            if not success:
+                raise RuntimeError(
+                    f"ConceptInhibitor tag 失敗: {result.get('error', '未知')}"
+                )
+            return result
+
+        # fallback: 直接寫入（inhibitor=None 時向下相容）
         existing_tags = list(concept.metadata.get("tags", []))
         merged_tags = list(set(existing_tags + new_tags))
-
-        # 更新 metadata 中的 tags（upsert 會觸發 embedding 重算，
-        # 但 description 未變，結果一致，僅有效能開銷）
         concept.metadata["tags"] = merged_tags
         self._engine.semantic.upsert_concept(
             name=concept.name,
@@ -365,7 +388,7 @@ class ReflectionExecutor:
     def _exec_merge_concepts(
         self, target_id: str, params: dict[str, Any]
     ) -> dict[str, Any]:
-        """合併兩個概念（主概念吸收次概念）。"""
+        """合併兩個概念（主概念吸收次概念）。優先走 ConceptInhibitor patch pipeline。"""
         merge_with = str(params.get("merge_with", ""))
         if not merge_with:
             raise ValueError("merge_concepts 缺少 merge_with 參數")
@@ -383,29 +406,38 @@ class ReflectionExecutor:
         if secondary is None:
             raise ValueError(f"次概念不存在: {merge_with}")
 
-        # 合併策略：主概念描述 + 次概念精華
+        # 走 ConceptInhibitor patch pipeline（有 audit trail）
+        if self._inhibitor is not None:
+            success, result = self._inhibitor.process_reflection_patch(
+                operation="merge",
+                target_name=target_id,
+                params={"merge_with": merge_with},
+                reasoning="ReflectionExecutor merge_concepts",
+            )
+            if not success:
+                raise RuntimeError(
+                    f"ConceptInhibitor merge 失敗: {result.get('error', '未知')}"
+                )
+            return result
+
+        # fallback: 直接寫入（inhibitor=None 時向下相容）
         merged_desc = (
             f"{primary.description}\n\n"
             f"（合併自「{secondary.name}」）{secondary.description}"
         )
-
-        # 合併 metadata（保留主概念的，追加次概念的 facts + source episodes）
         merged_meta = dict(primary.metadata)
         secondary_facts = secondary.metadata.get("facts", [])
         if secondary_facts:
             existing_facts = merged_meta.get("facts", [])
             merged_meta["facts"] = existing_facts + secondary_facts
         merged_meta["merged_from"] = merge_with
-        # 合併 source_episode_ids 到 metadata 保存
         merged_meta["merged_source_episodes"] = list(set(
             primary.source_episode_ids + secondary.source_episode_ids
         ))
 
-        # 保留 primary 原始狀態供失敗時還原
         original_desc = primary.description
         original_meta = dict(primary.metadata)
 
-        # 更新主概念
         self._engine.semantic.upsert_concept(
             name=primary.name,
             description=merged_desc,
@@ -413,10 +445,8 @@ class ReflectionExecutor:
             metadata=merged_meta,
         )
 
-        # 移除次概念（失敗時還原 primary 再拋出例外）
         removed = self._engine.semantic.remove_concept(merge_with)
         if not removed:
-            # 還原 primary 到合併前狀態
             logger.warning(
                 "[ReflectionExecutor] merge remove 失敗，還原 primary: %s",
                 primary.name,
@@ -462,7 +492,7 @@ class ReflectionExecutor:
     def _exec_create_concept(
         self, target_id: str, params: dict[str, Any]
     ) -> dict[str, Any]:
-        """建立新概念（若同名概念已存在則拒絕）。"""
+        """建立新概念（若同名概念已存在則拒絕）。優先走 ConceptInhibitor patch pipeline。"""
         description = str(params.get("description", ""))
         if not description:
             raise ValueError("create_concept 缺少 description 參數")
@@ -474,6 +504,24 @@ class ReflectionExecutor:
                 f"不允許覆寫（使用 tag_concept 或 merge_concepts 修改既有概念）"
             )
 
+        # 走 ConceptInhibitor patch pipeline（有 audit trail）
+        if self._inhibitor is not None:
+            success, result = self._inhibitor.process_reflection_patch(
+                operation="create",
+                target_name=target_id,
+                params={
+                    "description": description,
+                    "concept_type": params.get("concept_type", "reflection"),
+                },
+                reasoning="ReflectionExecutor create_concept",
+            )
+            if not success:
+                raise RuntimeError(
+                    f"ConceptInhibitor create 失敗: {result.get('error', '未知')}"
+                )
+            return result
+
+        # fallback: 直接寫入（inhibitor=None 時向下相容）
         concept_id = self._engine.semantic.upsert_concept(
             name=target_id,
             description=description,

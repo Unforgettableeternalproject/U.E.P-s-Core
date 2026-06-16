@@ -399,12 +399,13 @@ class ConceptInhibitor:
                 # 補入剩餘的 source_episode_ids（#1 provenance 修復）
                 extra_sources = payload.get("extra_source_episode_ids", [])
                 if extra_sources:
-                    concept = self._semantic.get(concept_id)
-                    if concept is not None:
-                        for ep_id in extra_sources:
-                            if ep_id not in concept.source_episode_ids:
-                                concept.source_episode_ids.append(ep_id)
-                        self._semantic._save()
+                    with self._semantic._lock:
+                        concept = self._semantic.get(concept_id)
+                        if concept is not None:
+                            for ep_id in extra_sources:
+                                if ep_id not in concept.source_episode_ids:
+                                    concept.source_episode_ids.append(ep_id)
+                            self._semantic._save()
                 # 設定 rollback payload
                 patch.rollback_payload = patch.rollback_payload or {}
                 patch.rollback_payload["created_concept_name"] = patch.concept_name
@@ -421,6 +422,8 @@ class ConceptInhibitor:
         """
         執行 expand/source_episode_ids — 同義詞合併，
         新增 episode_id 到現有概念的 source_episode_ids。
+
+        讀取 + 檢查 + 寫入在同一個 critical section，避免 TOCTOU。
         """
         concept = self._semantic.get(patch.concept_id or "")
         if concept is None:
@@ -429,12 +432,13 @@ class ConceptInhibitor:
         try:
             new_episode_id = patch.new_value
             if isinstance(new_episode_id, str):
-                if new_episode_id not in concept.source_episode_ids:
-                    concept.source_episode_ids.append(new_episode_id)
-                    concept.access_count += 1
-                    concept.record_mutation()
-                    self._semantic._save()
-                    self._add_history_entry(concept, patch)
+                with self._semantic._lock:
+                    if new_episode_id not in concept.source_episode_ids:
+                        concept.source_episode_ids.append(new_episode_id)
+                        concept.access_count += 1
+                        concept.record_mutation()
+                        self._semantic._save()
+                        self._add_history_entry(concept, patch)
             return True
         except Exception as e:
             logger.error(
@@ -442,6 +446,341 @@ class ConceptInhibitor:
                 patch.patch_id, e,
             )
             return False
+
+    # ──────────────────────────────────────────────
+    # Reflection Pipeline 入口
+    # ──────────────────────────────────────────────
+
+    def process_reflection_patch(
+        self,
+        operation: str,
+        target_name: str,
+        params: dict[str, Any],
+        reasoning: str = "",
+    ) -> tuple[bool, dict[str, Any]]:
+        """
+        處理來自 ReflectionExecutor 的概念變更請求。
+
+        Reflection 來源的 patch 已經過 LLM 反思決策，自動 approve。
+        主要目的是確保所有 SemanticMemory 變更都經過 audit pipeline，
+        不再直接呼叫 SemanticMemory 公開 API。
+
+        支援的 operation:
+          - create: 建立新概念
+          - tag: 追加標籤到概念 metadata
+          - merge: 合併兩個概念（主概念吸收次概念）
+
+        Args:
+            operation: 操作類型 ("create" | "tag" | "merge")
+            target_name: 目標概念名稱
+            params: 操作參數（各 operation 不同）
+            reasoning: 反思理由（寫入 audit）
+
+        Returns:
+            (success, result_dict)
+        """
+        tx = PatchTransaction(
+            patches=[],
+            user_input=f"[reflection] {operation}: {target_name}",
+            llm_response="",
+            session_id="reflection",
+            turn_id="",
+            triggered_by="reflection",
+        )
+
+        try:
+            if operation == "create":
+                success, result = self._reflection_create(tx, target_name, params, reasoning)
+            elif operation == "tag":
+                success, result = self._reflection_tag(tx, target_name, params, reasoning)
+            elif operation == "merge":
+                success, result = self._reflection_merge(tx, target_name, params, reasoning)
+            else:
+                raise ValueError(f"未知的 reflection operation: {operation}")
+
+            tx.status = "committed" if success else "failed"
+        except Exception as e:
+            tx.status = "failed"
+            success = False
+            result = {"error": str(e)}
+            logger.error("[ConceptInhibitor] reflection patch 失敗: %s", e)
+
+        self._write_audit(tx)
+
+        if success:
+            logger.info(
+                "[ConceptInhibitor] reflection %s: %s — %d patches applied",
+                operation, target_name, len(tx.applied_patches),
+            )
+
+        return success, result
+
+    def _reflection_create(
+        self,
+        tx: PatchTransaction,
+        target_name: str,
+        params: dict[str, Any],
+        reasoning: str,
+    ) -> tuple[bool, dict[str, Any]]:
+        """Reflection create — 建立新概念並走 patch audit。"""
+        description = str(params.get("description", ""))
+        concept_type = str(params.get("concept_type", "reflection"))
+
+        evidence = PatchEvidence(
+            evidence_kind="reflection_create",
+            evidence_strength=0.8,
+            verifier_status="valid",
+            verifier_reason=reasoning or "ReflectionExecutor create_concept",
+        )
+
+        patch = ConceptPatch(
+            transaction_id=tx.transaction_id,
+            concept_name=target_name,
+            action="create",
+            target_path="*",
+            new_value={
+                "name": target_name,
+                "description": description,
+                "concept_type": concept_type,
+            },
+            patch_confidence=0.8,
+            evidence=evidence,
+            risk_level="low",
+            rollback_payload={},
+        )
+        patch.status = "approved"
+        tx.patches.append(patch)
+
+        # 執行 create
+        success, concept_id = self._apply_create(patch, embedding=None)
+        if success:
+            patch.status = "applied"
+            return True, {"concept_id": concept_id, "name": target_name}
+        else:
+            patch.status = "rejected"
+            patch.rejection_reason = "SemanticMemory create 失敗"
+            return False, {"error": f"create 失敗: {target_name}"}
+
+    def _reflection_tag(
+        self,
+        tx: PatchTransaction,
+        target_name: str,
+        params: dict[str, Any],
+        reasoning: str,
+    ) -> tuple[bool, dict[str, Any]]:
+        """Reflection tag — 追加標籤到概念 metadata 並走 patch audit。
+
+        讀取現有 tags → 計算合併 → 建 patch → mutation → save
+        全部在同一個 critical section 內，避免併發 lost update。
+        """
+        new_tags = params.get("tags", [])
+        if not isinstance(new_tags, list):
+            new_tags = [str(new_tags)]
+
+        with self._semantic._lock:
+            concept = self._semantic.get_by_name(target_name)
+            if concept is None:
+                return False, {"error": f"概念不存在: {target_name}"}
+
+            # 在 lock 內讀取現有 tags 並計算合併結果
+            existing_tags = list(concept.metadata.get("tags", []))
+            merged_tags = list(set(existing_tags + new_tags))
+
+            evidence = PatchEvidence(
+                evidence_kind="reflection_tag",
+                evidence_strength=0.8,
+                verifier_status="valid",
+                verifier_reason=reasoning or "ReflectionExecutor tag_concept",
+                retrieved_concept_ids=[concept.id],
+            )
+
+            patch = ConceptPatch(
+                transaction_id=tx.transaction_id,
+                concept_id=concept.id,
+                concept_name=target_name,
+                action="expand",
+                expand_mode=ExpandMode.ADD_FACT,
+                target_path="metadata.tags",
+                old_value=existing_tags,
+                new_value=merged_tags,
+                old_confidence=concept.confidence,
+                new_confidence=concept.confidence,
+                patch_confidence=0.8,
+                evidence=evidence,
+                risk_level="low",
+                rollback_payload={"old_tags": existing_tags},
+            )
+            patch.status = "approved"
+            tx.patches.append(patch)
+
+            # 執行 tag 更新
+            try:
+                concept.metadata["tags"] = merged_tags
+                concept.updated_at = datetime.now(timezone.utc)
+                self._add_history_entry(concept, patch)
+                concept.record_mutation()
+                self._semantic._save()
+                patch.status = "applied"
+                return True, {"old_tags": existing_tags, "new_tags": merged_tags}
+            except Exception as e:
+                patch.status = "rejected"
+                patch.rejection_reason = str(e)
+                concept.metadata["tags"] = existing_tags
+                return False, {"error": str(e)}
+
+    def _reflection_merge(
+        self,
+        tx: PatchTransaction,
+        target_name: str,
+        params: dict[str, Any],
+        reasoning: str,
+    ) -> tuple[bool, dict[str, Any]]:
+        """Reflection merge — 合併兩個概念並走 patch audit。
+
+        讀取 primary/secondary → 計算合併後狀態 → 建 patch → mutation → save
+        → remove secondary 全部在同一個 critical section 內。
+        RLock 允許 remove_concept 內部的重入加鎖。
+        """
+        merge_with = str(params.get("merge_with", ""))
+        if not merge_with:
+            return False, {"error": "merge_concepts 缺少 merge_with 參數"}
+
+        if target_name == merge_with:
+            return False, {"error": f"merge_concepts 不允許自我合併: {target_name}"}
+
+        with self._semantic._lock:
+            primary = self._semantic.get_by_name(target_name)
+            if primary is None:
+                return False, {"error": f"主概念不存在: {target_name}"}
+
+            secondary = self._semantic.get_by_name(merge_with)
+            if secondary is None:
+                return False, {"error": f"次概念不存在: {merge_with}"}
+
+            evidence = PatchEvidence(
+                evidence_kind="reflection_merge",
+                evidence_strength=0.8,
+                verifier_status="valid",
+                verifier_reason=reasoning or "ReflectionExecutor merge_concepts",
+                retrieved_concept_ids=[primary.id, secondary.id],
+            )
+
+            # 在 lock 內讀取並計算合併後的資料
+            merged_desc = (
+                f"{primary.description}\n\n"
+                f"（合併自「{secondary.name}」）{secondary.description}"
+            )
+            merged_meta = dict(primary.metadata)
+            secondary_facts = secondary.metadata.get("facts", [])
+            if secondary_facts:
+                existing_facts = merged_meta.get("facts", [])
+                merged_meta["facts"] = existing_facts + secondary_facts
+            merged_meta["merged_from"] = merge_with
+            merged_meta["merged_source_episodes"] = list(set(
+                primary.source_episode_ids + secondary.source_episode_ids
+            ))
+
+            # Patch 1: modify primary（用 lock 內讀到的最新狀態建 patch）
+            modify_patch = ConceptPatch(
+                transaction_id=tx.transaction_id,
+                concept_id=primary.id,
+                concept_name=target_name,
+                action="modify",
+                target_path="description",
+                old_value=primary.description,
+                new_value=merged_desc,
+                old_confidence=primary.confidence,
+                new_confidence=primary.confidence,
+                patch_confidence=0.8,
+                evidence=evidence,
+                risk_level="high",
+                rollback_payload={
+                    "old_description": primary.description,
+                    "old_confidence": primary.confidence,
+                    "old_metadata": dict(primary.metadata),
+                },
+            )
+            modify_patch.status = "approved"
+            tx.patches.append(modify_patch)
+
+            # Patch 2: merge (remove secondary)
+            merge_patch = ConceptPatch(
+                transaction_id=tx.transaction_id,
+                concept_id=secondary.id,
+                concept_name=merge_with,
+                action="merge",
+                target_path="*",
+                old_value={
+                    "name": secondary.name,
+                    "description": secondary.description,
+                },
+                merge_target_id=primary.id,
+                patch_confidence=0.8,
+                evidence=evidence,
+                risk_level="high",
+                rollback_payload={
+                    "secondary_name": secondary.name,
+                    "secondary_description": secondary.description,
+                    "secondary_concept_type": secondary.concept_type,
+                    "secondary_metadata": dict(secondary.metadata),
+                    "secondary_source_episode_ids": list(secondary.source_episode_ids),
+                },
+            )
+            merge_patch.status = "approved"
+            tx.patches.append(merge_patch)
+
+            # 保存 primary 原始狀態供失敗時還原
+            original_desc = primary.description
+            original_meta = dict(primary.metadata)
+
+            # 執行 Step 1: 更新 primary
+            try:
+                primary.description = merged_desc
+                primary.metadata = merged_meta
+                primary.updated_at = datetime.now(timezone.utc)
+                if self._semantic._embed_fn is not None:
+                    modify_patch.rollback_payload = modify_patch.rollback_payload or {}
+                    modify_patch.rollback_payload["old_embedding"] = list(primary.embedding)
+                    new_vec = self._semantic._embed_fn(
+                        f"{primary.name}: {primary.description}"
+                    )
+                    primary.embedding = self._semantic._normalize_vector(new_vec).tolist()
+                    self._semantic._update_embedding_index(primary, is_update=True)
+                self._add_history_entry(primary, modify_patch)
+                primary.record_mutation()
+                self._semantic._save()
+                modify_patch.status = "applied"
+            except Exception as e:
+                modify_patch.status = "rejected"
+                modify_patch.rejection_reason = str(e)
+                return False, {"error": f"merge modify 失敗: {e}"}
+
+            # 執行 Step 2: 移除 secondary（RLock 允許重入）
+            removed = self._semantic.remove_concept(merge_with)
+            if not removed:
+                # 還原 primary 到合併前狀態
+                logger.warning(
+                    "[ConceptInhibitor] reflection merge remove 失敗，還原 primary: %s",
+                    primary.name,
+                )
+                primary.description = original_desc
+                primary.metadata = original_meta
+                old_emb = (modify_patch.rollback_payload or {}).get("old_embedding")
+                if old_emb is not None:
+                    primary.embedding = old_emb
+                    self._semantic._update_embedding_index(primary, is_update=True)
+                self._semantic._save()
+                modify_patch.status = "rolled_back"
+                merge_patch.status = "rejected"
+                merge_patch.rejection_reason = "次概念移除失敗"
+                return False, {"error": f"merge remove 失敗: {merge_with}，已還原 primary"}
+
+            merge_patch.status = "applied"
+            return True, {
+                "primary": target_name,
+                "secondary_removed": merge_with,
+                "merged_description_length": len(merged_desc),
+            }
 
     # ──────────────────────────────────────────────
     # Patch 建立
@@ -754,29 +1093,33 @@ class ConceptInhibitor:
     # ──────────────────────────────────────────────
 
     def _apply_patch(self, patch: ConceptPatch) -> bool:
-        """執行單一 patch 到 SemanticMemory。成功時更新 Concept Health 指標。"""
+        """執行單一 patch 到 SemanticMemory。成功時更新 Concept Health 指標。
+
+        mutation+save 在 SemanticMemory._lock 內完成，確保原子性。
+        """
         concept = self._semantic.get(patch.concept_id or "")
         if concept is None:
             return False
 
         try:
-            if patch.action == "expand":
-                success = self._apply_expand(concept, patch)
-            elif patch.action == "modify":
-                success = self._apply_modify(concept, patch)
-            elif patch.action == "deprecate":
-                success = self._apply_deprecate(concept, patch)
-            else:
-                logger.warning(
-                    "[ConceptInhibitor] 不支援的 action: %s", patch.action
-                )
-                return False
+            with self._semantic._lock:
+                if patch.action == "expand":
+                    success = self._apply_expand(concept, patch)
+                elif patch.action == "modify":
+                    success = self._apply_modify(concept, patch)
+                elif patch.action == "deprecate":
+                    success = self._apply_deprecate(concept, patch)
+                else:
+                    logger.warning(
+                        "[ConceptInhibitor] 不支援的 action: %s", patch.action
+                    )
+                    return False
 
-            # 成功 apply → 更新 Concept Health 指標 + 再次持久化
-            # record_mutation 必須在 _save 之前呼叫，確保寫入磁碟
-            if success:
-                concept.record_mutation()
-                self._semantic._save()
+                # 成功 apply → 更新 Concept Health 指標 + 再次持久化
+                # record_mutation 必須在 _save 之前呼叫，確保寫入磁碟
+                if success:
+                    concept.record_mutation()
+                    self._semantic._save()
 
             return success
         except Exception as e:
@@ -876,6 +1219,7 @@ class ConceptInhibitor:
 
         使用 patch.old_value 還原概念狀態。
         如果 old_value 不可用，記錄警告但不崩潰。
+        mutation+save 在 SemanticMemory._lock 內完成。
         """
         concept = self._semantic.get(patch.concept_id or "")
         if concept is None:
@@ -887,7 +1231,7 @@ class ConceptInhibitor:
 
         try:
             if patch.action == "create":
-                # create rollback → 移除概念（最終一致性：graph 殘留由 Dream 清理）
+                # create rollback → 移除概念（remove_concept 自帶 lock）
                 name = (patch.rollback_payload or {}).get(
                     "created_concept_name", patch.concept_name
                 )
@@ -896,47 +1240,50 @@ class ConceptInhibitor:
                     "[ConceptInhibitor] rollback create: 移除 %s", name,
                 )
                 return  # create rollback 不需要後續的 history/save 操作
-            elif patch.action == "expand":
-                # 移除最後加入的 fact
-                facts = concept.metadata.get("facts", [])
-                if facts and facts[-1] == patch.new_value:
-                    facts.pop()
-                # expand/source_episode_ids rollback
-                old_sources = (patch.rollback_payload or {}).get(
-                    "old_source_episode_ids"
-                )
-                if old_sources is not None:
-                    concept.source_episode_ids = old_sources
-                # 還原 confidence
-                if patch.old_confidence is not None:
-                    concept.confidence = patch.old_confidence
-            elif patch.action == "modify":
-                # 還原 description
-                if patch.old_value is not None:
-                    concept.description = str(patch.old_value)
-                if patch.old_confidence is not None:
-                    concept.confidence = patch.old_confidence
-                # 還原 embedding（從 rollback_payload）
-                old_emb = (patch.rollback_payload or {}).get("old_embedding")
-                if old_emb is not None:
-                    concept.embedding = old_emb
-                    self._semantic._update_embedding_index(
-                        concept, is_update=True
+
+            with self._semantic._lock:
+                if patch.action == "expand":
+                    # 移除最後加入的 fact
+                    facts = concept.metadata.get("facts", [])
+                    if facts and facts[-1] == patch.new_value:
+                        facts.pop()
+                    # expand/source_episode_ids rollback
+                    old_sources = (patch.rollback_payload or {}).get(
+                        "old_source_episode_ids"
                     )
-            elif patch.action == "deprecate":
-                # 還原為 active
-                concept.status = "active"
-                concept.metadata.pop("deprecated_at", None)
-                concept.metadata.pop("deprecated_reason", None)
-                concept.metadata.pop("replaced_by", None)
+                    if old_sources is not None:
+                        concept.source_episode_ids = old_sources
+                    # 還原 confidence
+                    if patch.old_confidence is not None:
+                        concept.confidence = patch.old_confidence
+                elif patch.action == "modify":
+                    # 還原 description
+                    if patch.old_value is not None:
+                        concept.description = str(patch.old_value)
+                    if patch.old_confidence is not None:
+                        concept.confidence = patch.old_confidence
+                    # 還原 embedding（從 rollback_payload）
+                    old_emb = (patch.rollback_payload or {}).get("old_embedding")
+                    if old_emb is not None:
+                        concept.embedding = old_emb
+                        self._semantic._update_embedding_index(
+                            concept, is_update=True
+                        )
+                elif patch.action == "deprecate":
+                    # 還原為 active
+                    concept.status = "active"
+                    concept.metadata.pop("deprecated_at", None)
+                    concept.metadata.pop("deprecated_reason", None)
+                    concept.metadata.pop("replaced_by", None)
 
-            # 移除最後的 patch_history 條目
-            history = concept.metadata.get("patch_history", [])
-            if history:
-                history.pop()
+                # 移除最後的 patch_history 條目
+                history = concept.metadata.get("patch_history", [])
+                if history:
+                    history.pop()
 
-            # mutation_count 不回滾——rollback 本身也是一次 mutation
-            self._semantic._save()
+                # mutation_count 不回滾——rollback 本身也是一次 mutation
+                self._semantic._save()
+
             logger.info(
                 "[ConceptInhibitor] rollback 完成: %s (%s)",
                 patch.patch_id, patch.action,

@@ -1,17 +1,18 @@
 """
-ConceptExtractor — 即時概念提取（對話後背景 Thread）
+ConceptExtractor — 即時概念提取（對話後背景執行緒池）
 
 對應 OpenSoul soul/core/agent.py::_extract_concepts_bg()。
 
-在 store_episode() 後以 daemon Thread 執行：
+在 store_episode() 後以 ThreadPoolExecutor 背景執行：
   1. LLM 提取 3-5 個關鍵概念（名詞 + 描述）
   2. 同義詞/多義詞判斷（三層閾值分流）
   3. 建立 Concept 節點 + RELATES_TO 邊 + DERIVED_FROM 邊
 
 設計原則：
-  - 非阻塞（daemon Thread，失敗不影響主流程）
+  - 非阻塞（ThreadPoolExecutor，有界並發，失敗不影響主流程）
   - llm_fn 為 None 時靜默跳過
   - 同義詞閾值對齊 OpenSoul：>=0.92 同義, 0.85-0.92 多義, <0.85 新概念
+  - 提供 flush()（等待所有待處理任務）和 shutdown()（關閉執行緒池）
 """
 
 from __future__ import annotations
@@ -19,8 +20,8 @@ from __future__ import annotations
 import json
 import logging
 import re
-import threading
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 import numpy as np
 
 from echo_memory.schemas.episode import Episode
@@ -57,12 +58,19 @@ class ConceptExtractor:
     """
     即時概念提取器。
 
-    設計為在 daemon Thread 中運行。
+    使用 ThreadPoolExecutor 在背景執行緒池中運行，提供：
+      - 有界並發（max_workers=2，I/O-bound LLM 呼叫）
+      - flush()：等待所有待處理任務完成
+      - shutdown()：關閉執行緒池（應在程式結束前呼叫）
+
     失敗時靜默記錄日誌，不拋異常。
 
     若提供 inhibitor，所有 SemanticMemory 寫入走 patch pipeline（GPT #3）。
     否則退回舊路徑（向下相容，但記錄警告）。
     """
+
+    # 執行緒池預設配置
+    _DEFAULT_MAX_WORKERS = 2
 
     def __init__(
         self,
@@ -71,6 +79,7 @@ class ConceptExtractor:
         graph,          # MemoryGraph
         embed_fn: Callable[[str], list[float]] | None = None,
         inhibitor=None,  # ConceptInhibitor | None（避免循環 import）
+        max_workers: int | None = None,
     ):
         """
         Args:
@@ -79,6 +88,7 @@ class ConceptExtractor:
             graph: MemoryGraph 實例
             embed_fn: 文本嵌入函式（用於同義詞比對）
             inhibitor: ConceptInhibitor 實例。提供時走 patch pipeline。
+            max_workers: 執行緒池最大工作者數量（預設 2）
         """
         self._llm_fn = llm_fn
         self._semantic = semantic
@@ -90,14 +100,23 @@ class ConceptExtractor:
                 "[ConceptExtractor] 未注入 inhibitor，使用舊路徑直接寫入"
             )
 
+        # ThreadPoolExecutor（有界並發 + 可控生命週期）
+        self._max_workers = max_workers or self._DEFAULT_MAX_WORKERS
+        self._executor = ThreadPoolExecutor(
+            max_workers=self._max_workers,
+            thread_name_prefix="concept-extract",
+        )
+        self._pending: list[Future] = []
+        self._shutdown = False
+
     def extract_in_background(
         self,
         episode: Episode,
         salience: float = 0.5,
         concept_seeds: list | None = None,
-    ) -> threading.Thread | None:
+    ) -> Future | None:
         """
-        在背景 Thread 中執行概念提取。
+        在背景執行緒池中執行概念提取。
 
         Args:
             episode: 剛存儲的 Episode
@@ -106,19 +125,60 @@ class ConceptExtractor:
                           不為 None 時，LLM prompt 中優先考慮這些概念。
 
         Returns:
-            啟動的 Thread（None 表示跳過）
+            Future（None 表示跳過）
         """
         if self._llm_fn is None:
             return None
+        if self._shutdown:
+            logger.warning("[ConceptExtractor] 已關閉，跳過提取")
+            return None
 
-        t = threading.Thread(
-            target=self._extract_concepts_bg,
-            args=(episode, salience, concept_seeds),
-            daemon=True,
-            name=f"concept-extract-{episode.id[:8]}",
+        future = self._executor.submit(
+            self._extract_concepts_bg,
+            episode, salience, concept_seeds,
         )
-        t.start()
-        return t
+        # 清理已完成的 futures（避免記憶體洩漏）
+        self._pending = [f for f in self._pending if not f.done()]
+        self._pending.append(future)
+        return future
+
+    def flush(self, timeout: float | None = None) -> int:
+        """
+        等待所有待處理的概念提取任務完成。
+
+        適用於 session 結束前確保所有背景提取完成，
+        或測試中需要同步等待結果。
+
+        Args:
+            timeout: 每個 future 的最大等待秒數。None 表示無限等待。
+
+        Returns:
+            成功完成的任務數
+        """
+        completed = 0
+        for f in self._pending:
+            try:
+                f.result(timeout=timeout)
+                completed += 1
+            except Exception as e:
+                logger.warning(
+                    "[ConceptExtractor] flush 時任務失敗: %s", e,
+                )
+        self._pending.clear()
+        return completed
+
+    def shutdown(self, wait: bool = True) -> None:
+        """
+        關閉執行緒池。
+
+        應在程式結束前呼叫。wait=True 會等待所有進行中的任務完成。
+
+        Args:
+            wait: 是否等待現有任務完成（預設 True）
+        """
+        self._shutdown = True
+        self._executor.shutdown(wait=wait)
+        logger.info("[ConceptExtractor] 執行緒池已關閉")
 
     def _extract_concepts_bg(
         self,

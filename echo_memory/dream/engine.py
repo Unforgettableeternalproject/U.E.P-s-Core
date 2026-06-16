@@ -191,7 +191,7 @@ class DreamEngine:
                 from echo_memory.dream.contradiction import ContradictionDetector
                 from echo_memory.storage.conflict_ledger import ConflictLedger
 
-                # ConflictLedger 與 SemanticMemory 同層持久化
+                # ConflictLedger 使用 graph.storage_path（圖譜根目錄），與圖譜同層，非 SemanticMemory 子目錄
                 conflict_ledger = None
                 if graph and hasattr(graph, 'storage_path') and graph.storage_path:
                     conflict_ledger = ConflictLedger(graph.storage_path)

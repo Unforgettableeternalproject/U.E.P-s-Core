@@ -229,6 +229,13 @@ class MemoryEngine:
         Returns:
             episode_id: 新建的情節 ID
         """
+        # 空白輸入防護：純空白的 user_input 不應產生 episode
+        if not user_input or not user_input.strip():
+            logger.warning(
+                "[MemoryEngine] 拒絕存儲空白 user_input，跳過 store_episode"
+            )
+            return ""
+
         if content_summary is None:
             # 結合 user + agent 的核心內容作為摘要，供向量搜索使用
             combined = f"{user_input} {agent_response}"

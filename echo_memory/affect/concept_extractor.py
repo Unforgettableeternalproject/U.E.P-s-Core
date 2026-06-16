@@ -356,7 +356,7 @@ class ConceptExtractor:
         best_sim = 0.0
 
         if embedding is not None:
-            existing_concepts = self._semantic.list_concepts()
+            existing_concepts = self._semantic.list_concepts(limit=None)
             vec = np.array(embedding, dtype=np.float32)
             norm = float(np.linalg.norm(vec))
 

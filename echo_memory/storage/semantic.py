@@ -258,7 +258,7 @@ class SemanticMemory:
     def list_concepts(
         self,
         concept_type: str | None = None,
-        limit: int = 50,
+        limit: int | None = 50,
         offset: int = 0,
         sort_by: str = "updated_at",
     ) -> list[Concept]:
@@ -267,7 +267,7 @@ class SemanticMemory:
 
         Args:
             concept_type: 若提供，只返回該類型的概念
-            limit: 每頁最多返回數量
+            limit: 每頁最多返回數量。None 表示不限制（回傳全部）。
             offset: 跳過的筆數
             sort_by: 排序欄位 ("updated_at" / "confidence" / "access_count")
 
@@ -286,6 +286,8 @@ class SemanticMemory:
         else:
             concepts.sort(key=lambda c: c.updated_at, reverse=True)
 
+        if limit is None:
+            return concepts[offset:]
         return concepts[offset: offset + limit]
 
     def count(self) -> int:

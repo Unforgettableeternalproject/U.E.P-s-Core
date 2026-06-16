@@ -186,6 +186,26 @@ def run_single_turn(
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
+    # ── 空白輸入防護：不觸發 LLM，不存儲 episode ──
+    if not user_input or not user_input.strip():
+        trace["skipped"] = "empty_input"
+        trace["step1"] = {"episodes_retrieved": 0, "concepts_retrieved": 0, "procedures_retrieved": 0, "is_empty": True, "da": 0, "ht": 0, "mode": "balanced"}
+        trace["step2"] = {"attempts": [], "final_gate": "skip", "response_preview": None}
+        trace["step3"] = {"episode_id": None, "skipped_reason": "empty_input"}
+        trace["stats"] = {
+            "total_episodes": engine.get_stats().get("total_episodes", 0),
+            "total_concepts": engine.get_stats().get("total_concepts", 0),
+            "total_entities": engine.get_stats().get("total_entities", 0),
+            "total_procedures": engine.get_stats().get("total_procedures", 0),
+        }
+        trace["neurochem"] = {
+            "dopamine": round(engine.neurochem.dopamine, 4),
+            "serotonin": round(engine.neurochem.serotonin, 4),
+            "mode": engine.neurochem.mode.value,
+        }
+        trace["procedures_retrieved"] = 0
+        return trace
+
     # ── 防禦性預設值 ──
     from echo_memory.affect.verifier import VerificationResult
     verify_result = VerificationResult(score=1.0, threshold=0.7, passed=True, details={})
@@ -400,10 +420,10 @@ def run_single_turn(
         except Exception as e:
             trace["step4_flush_error"] = str(e)
 
-    concepts_after = engine.semantic.list_concepts()
+    concepts_after = engine.semantic.list_concepts(limit=10)
     trace["step4"] = {
-        "total_concepts": len(concepts_after),
-        "concept_names": [c.name for c in concepts_after[:10]],
+        "total_concepts": engine.semantic.count(),
+        "concept_names": [c.name for c in concepts_after],
     }
 
     # ── Step 5: Soul Note ──

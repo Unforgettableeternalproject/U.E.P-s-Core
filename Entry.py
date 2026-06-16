@@ -133,8 +133,9 @@ def render_concepts(engine: MemoryEngine, limit: int = 8) -> Panel:
     table.add_column("Sources", style="dim", width=7, justify="right")
 
     try:
-        concepts = engine.semantic.list_concepts()
-        for concept in concepts[:limit]:
+        concepts = engine.semantic.list_concepts(limit=limit)
+        total_count = engine.semantic.count()
+        for concept in concepts:
             table.add_row(
                 concept.name[:40],
                 f"{concept.confidence:.2f}",
@@ -142,8 +143,8 @@ def render_concepts(engine: MemoryEngine, limit: int = 8) -> Panel:
             )
         if not concepts:
             table.add_row("[dim]No concepts yet[/]", "—", "—")
-        elif len(concepts) > limit:
-            table.add_row(f"[dim]... +{len(concepts) - limit} more[/]", "", "")
+        elif total_count > limit:
+            table.add_row(f"[dim]... +{total_count - limit} more[/]", "", "")
     except Exception:
         table.add_row("[dim]Semantic layer empty[/]", "—", "—")
 
@@ -1369,7 +1370,7 @@ def _cmd_graph(engine: MemoryEngine):
 def _cmd_concepts(engine: MemoryEngine):
     """列出和檢視概念"""
     try:
-        concepts = engine.semantic.list_concepts()
+        concepts = engine.semantic.list_concepts(limit=None)
     except Exception:
         console.print("[dim]Semantic layer not initialized or empty.[/]")
         return

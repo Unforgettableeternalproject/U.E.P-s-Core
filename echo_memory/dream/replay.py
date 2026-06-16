@@ -107,10 +107,12 @@ class LiDERReplay:
         episodic: EpisodicMemory,
         graph: MemoryGraph,
         llm_fn: Callable[[str], str] | None = None,
+        patch_coordinator=None,
     ):
         self.episodic = episodic
         self.graph = graph
         self.llm_fn = llm_fn
+        self._patch_coordinator = patch_coordinator
 
     def run(
         self,
@@ -152,8 +154,37 @@ class LiDERReplay:
             report.errors.append(f"解析失敗: {e}")
             return report
 
-        # 應用反思：更新圖譜
+        # ── 預掃描：計算預期 mutation 規模（供 audit-before-mutate）──
+        expected_salience_updates = 0
+        expected_edges = 0
         importances = []
+        for ref in reflections:
+            idx = ref.get("index", -1)
+            if not isinstance(idx, int) or idx < 0 or idx >= len(candidates):
+                continue
+            importance = min(1.0, max(0.0, ref.get("importance", 0.5)))
+            importances.append(importance)
+            expected_salience_updates += 1
+            for rel_idx in ref.get("related_indices", []):
+                if isinstance(rel_idx, int) and 0 <= rel_idx < len(candidates) and rel_idx != idx:
+                    expected_edges += 1
+
+        # ── audit-before-mutate ──
+        if self._patch_coordinator is not None and (expected_salience_updates or expected_edges):
+            if not self._patch_coordinator.audit_replay_batch(
+                edges_reinforced=0,  # 預估值，強化 vs 新建比例未知
+                edges_created=expected_edges,
+                salience_updates=expected_salience_updates,
+            ):
+                logger.warning(
+                    "[LiDERReplay] audit 失敗，跳過 replay mutation"
+                )
+                report.skipped_reason = "audit_failure"
+                report._replayed_episode_ids = [ep.id for ep in candidates]
+                return report
+
+        # ── 應用反思：更新圖譜 ──
+        importances.clear()
         for ref in reflections:
             idx = ref.get("index", -1)
             if not isinstance(idx, int) or idx < 0 or idx >= len(candidates):
@@ -219,9 +250,6 @@ class LiDERReplay:
         )
 
         # 注意：不在此處標記 is_dreamed。
-        # DreamEngine 會在所有階段（重播+蒸餾）結束後統一標記，
-        # 避免 Replay 先標記導致同一週期的蒸餾拿不到這些 Episode。
-        # 但仍記錄哪些 Episode 被重播過，供 DreamEngine 收集。
         report._replayed_episode_ids = [ep.id for ep in candidates]
 
         # 持久化圖

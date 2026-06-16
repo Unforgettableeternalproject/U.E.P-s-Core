@@ -101,6 +101,15 @@ class PatchEvidence:
         "semantic_conflict",
         "llm_inference",
         "dream_consolidation",
+        # ConceptExtractor 背景提取來源
+        "extractor_new_concept",
+        "extractor_synonym_merge",
+        "extractor_polysemy",
+        "extractor_fallback",
+        # Dream Engine 各階段來源
+        "replay_reinforcement",
+        "graph_pruning",
+        "distillation",
     ]
     evidence_strength: float  # [0, 1]
 
@@ -265,6 +274,11 @@ class PatchTransaction:
         "rolled_back", "failed",
     ] = "pending"
 
+    # 觸發來源：區分對話即時 / 背景提取 / Dream 離線
+    triggered_by: Literal[
+        "conversation", "extractor", "dream",
+    ] = "conversation"
+
     audit_path: str | None = None
 
     def __post_init__(self) -> None:
@@ -310,6 +324,7 @@ class PatchTransaction:
             "turn_id": self.turn_id,
             "timestamp": self.timestamp.isoformat(),
             "status": self.status,
+            "triggered_by": self.triggered_by,
             "audit_path": self.audit_path,
         }
 

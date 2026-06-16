@@ -115,6 +115,7 @@ class KnowledgeDistillation:
         graph: MemoryGraph,
         llm_fn: Callable[[str], str] | None = None,
         contradiction_detector: Any | None = None,
+        patch_coordinator: Any | None = None,
     ):
         """
         Args:
@@ -125,12 +126,19 @@ class KnowledgeDistillation:
                     若為 None，蒸餾會優雅跳過。
             contradiction_detector: ContradictionDetector 實例（可選）。
                     若提供，每次 ingest concept 後自動偵測矛盾。
+            patch_coordinator: DreamPatchCoordinator 實例（可選）。
+                    若提供，SemanticMemory 寫入走 patch pipeline。
         """
         self.episodic = episodic
         self.semantic = semantic
         self.graph = graph
         self.llm_fn = llm_fn
         self._contradiction_detector = contradiction_detector
+        self._patch_coordinator = patch_coordinator
+        if patch_coordinator is None:
+            logger.warning(
+                "[KnowledgeDistillation] 未注入 patch_coordinator，使用舊路徑直接寫入"
+            )
 
     def run(
         self,
@@ -332,15 +340,36 @@ class KnowledgeDistillation:
         existing = self.semantic.get_by_name(name)
         is_new = existing is None
 
-        # upsert 到 SemanticMemory（第一個 source 先寫入）
+        source_ep_ids = [ep.id for ep in source_eps]
+
+        # ── SemanticMemory 寫入：走 patch pipeline 或舊路徑 ──
         concept_id = None
-        for ep in source_eps:
-            concept_id = self.semantic.upsert_concept(
+        if self._patch_coordinator is not None:
+            # GPT #4: 走 DreamPatchCoordinator → ConceptInhibitor
+            concept_id, _tx = self._patch_coordinator.submit_distillation_concept(
                 name=name,
                 description=description,
                 concept_type=concept_type,
-                source_episode_id=ep.id,
+                source_episode_ids=source_ep_ids,
             )
+            # 若 coordinator 無 inhibitor，退回直接寫入
+            if concept_id is None and _tx is None:
+                for ep in source_eps:
+                    concept_id = self.semantic.upsert_concept(
+                        name=name,
+                        description=description,
+                        concept_type=concept_type,
+                        source_episode_id=ep.id,
+                    )
+        else:
+            # 舊路徑：直接 upsert
+            for ep in source_eps:
+                concept_id = self.semantic.upsert_concept(
+                    name=name,
+                    description=description,
+                    concept_type=concept_type,
+                    source_episode_id=ep.id,
+                )
 
         if concept_id is None:
             return is_new, 0
@@ -349,29 +378,48 @@ class KnowledgeDistillation:
         if not self.graph.has_node(concept_id):
             self.graph.add_concept_node(concept_id, name, concept_type)
 
-        # 建立 DERIVED_FROM 邊（Concept → Episode）
+        # 建立 DERIVED_FROM 邊（Concept → Episode）— 加 audit
         edges_created = 0
-        for ep in source_eps:
-            # 確保 Episode 節點存在
-            if not self.graph.has_node(ep.id):
-                self.graph.add_episode_node(ep)
+        ep_ids_for_edge = [ep.id for ep in source_eps if not self.graph.graph.has_edge(concept_id, ep.id)]
+        # Audit-before-mutate
+        can_create_edges = True
+        if ep_ids_for_edge and self._patch_coordinator is not None:
+            can_create_edges = self._patch_coordinator.audit_graph_derived_from(
+                concept_id, ep_ids_for_edge,
+            )
 
-            if not self.graph.graph.has_edge(concept_id, ep.id):
-                self.graph.add_derived_from_edge(concept_id, ep.id)
-                edges_created += 1
+        if can_create_edges:
+            for ep in source_eps:
+                if not self.graph.has_node(ep.id):
+                    self.graph.add_episode_node(ep)
+                if not self.graph.graph.has_edge(concept_id, ep.id):
+                    self.graph.add_derived_from_edge(concept_id, ep.id)
+                    edges_created += 1
 
-        # 矛盾偵測（若有 detector）
+        # 矛盾偵測（若有 detector）— audit-before-mutate
         contradicts_created = 0
         if self._contradiction_detector is not None and concept_id is not None:
-            concept = self.semantic.get(concept_id)
-            if concept is not None:
-                try:
-                    edges = self._contradiction_detector.detect_and_register(concept)
-                    contradicts_created = len(edges)
-                except Exception as e:
-                    logger.warning(
-                        f"[KnowledgeDistillation] 矛盾偵測失敗（不影響蒸餾）: {e}"
-                    )
+            # audit-before-mutate：先取得 audit 許可再偵測
+            can_detect = True
+            if self._patch_coordinator is not None:
+                can_detect = self._patch_coordinator.audit_contradiction_detection(
+                    concept_id, -1,  # -1 表示預 audit（數量未知）
+                )
+            if can_detect:
+                concept = self.semantic.get(concept_id)
+                if concept is not None:
+                    try:
+                        edges = self._contradiction_detector.detect_and_register(concept)
+                        contradicts_created = len(edges)
+                    except Exception as e:
+                        logger.warning(
+                            f"[KnowledgeDistillation] 矛盾偵測失敗（不影響蒸餾）: {e}"
+                        )
+            else:
+                logger.warning(
+                    "[KnowledgeDistillation] audit 失敗，跳過矛盾偵測 (%s)",
+                    concept_id[:12],
+                )
 
         return is_new, edges_created, contradicts_created
 

@@ -65,16 +65,18 @@ class GraphPruning:
     _ARCHIVE_SALIENCE_THRESHOLD = 0.2
     _ARCHIVE_MIN_AGE_DAYS = 30
 
-    def __init__(self, graph: MemoryGraph, semantic=None):
+    def __init__(self, graph: MemoryGraph, semantic=None, patch_coordinator=None):
         """
         初始化修剪器。
 
         Args:
             graph: MemoryGraph 實例
             semantic: SemanticMemory 實例（用於 LATENT_BRIDGE，可選）
+            patch_coordinator: DreamPatchCoordinator 實例（審計用，可選）
         """
         self.graph = graph
         self._semantic = semantic
+        self._patch_coordinator = patch_coordinator
         self.min_weight_threshold = 0.05  # 最低權重閾值（低於此值的邊將被刪除）
         self.isolated_node_grace_days = 7  # 孤立節點保留天數
 
@@ -96,8 +98,7 @@ class GraphPruning:
 
         # 1. 移除低權重邊
         weak_edges = self._find_weak_edges()
-        self._remove_edges(weak_edges)
-        report.weak_edges_removed = len(weak_edges)
+        report.weak_edges_removed = self._remove_edges(weak_edges)
 
         # 2. 歸檔低價值節點（對齊 OpenSoul _archive_stale_nodes）
         report.nodes_archived = self._archive_stale_nodes()
@@ -147,19 +148,29 @@ class GraphPruning:
 
         return weak_edges
 
-    def _remove_edges(self, edges: list[tuple[str, str]]):
+    def _remove_edges(self, edges: list[tuple[str, str]]) -> int:
         """
         批量移除邊。
 
         Args:
             edges: 要移除的邊列表
+
+        Returns:
+            實際移除的邊數（audit 失敗時為 0）
         """
         if not edges:
-            return
+            return 0
+
+        # Audit-before-mutate：audit 失敗則阻止移除
+        if self._patch_coordinator is not None:
+            if not self._patch_coordinator.audit_graph_edge_removal(edges, reason="weak_edge_pruning"):
+                logger.warning("[GraphPruning] audit 失敗，跳過邊移除 (%d 條)", len(edges))
+                return 0
 
         self.graph.graph.remove_edges_from(edges)
 
         logger.debug(f"[GraphPruning] 已移除 {len(edges)} 條邊")
+        return len(edges)
 
     def _find_isolated_nodes(self) -> list[str]:
         """
@@ -202,6 +213,7 @@ class GraphPruning:
             歸檔的節點數
         """
         archived_count = 0
+        archived_node_ids: list[str] = []
         min_age_seconds = self._ARCHIVE_MIN_AGE_DAYS * 24 * _SECONDS_PER_HOUR
 
         for node_id, data in self.graph.graph.nodes(data=True):
@@ -240,8 +252,18 @@ class GraphPruning:
             # 標記歸檔
             data["archived"] = True
             archived_count += 1
+            archived_node_ids.append(node_id)
 
         if archived_count:
+            # Audit-before-mutate：已標記但 audit 失敗時還原
+            if self._patch_coordinator is not None:
+                if not self._patch_coordinator.audit_graph_node_archive(archived_node_ids):
+                    # 還原歸檔標記
+                    for node_id in archived_node_ids:
+                        if self.graph.graph.has_node(node_id):
+                            self.graph.graph.nodes[node_id]["archived"] = False
+                    logger.warning("[GraphPruning] audit 失敗，還原 %d 個節點歸檔", archived_count)
+                    return 0
             logger.info(f"[GraphPruning] 歸檔 {archived_count} 個低價值節點")
 
         return archived_count
@@ -278,10 +300,13 @@ class GraphPruning:
         if len(concepts_with_emb) < 2:
             return 0
 
-        bridges_created = 0
+        # ── 階段 1：收集候選橋接 ──
+        import time
+        candidates: list[tuple[str, str, str, str, float]] = []
+        # (id_a, id_b, name_a, name_b, similarity)
 
         for i in range(len(concepts_with_emb)):
-            if bridges_created >= self._MAX_BRIDGES_PER_RUN:
+            if len(candidates) >= self._MAX_BRIDGES_PER_RUN:
                 break
 
             id_a, name_a, emb_a = concepts_with_emb[i]
@@ -291,7 +316,7 @@ class GraphPruning:
                 continue
 
             for j in range(i + 1, len(concepts_with_emb)):
-                if bridges_created >= self._MAX_BRIDGES_PER_RUN:
+                if len(candidates) >= self._MAX_BRIDGES_PER_RUN:
                     break
 
                 id_b, name_b, emb_b = concepts_with_emb[j]
@@ -300,9 +325,7 @@ class GraphPruning:
                 if norm_b == 0:
                     continue
 
-                # Cosine similarity
                 similarity = float(np.dot(vec_a, vec_b) / (norm_a * norm_b))
-
                 if similarity < self._BRIDGE_SIMILARITY_THRESHOLD:
                     continue
 
@@ -317,27 +340,39 @@ class GraphPruning:
                     if et in ("RELATES_TO", "LATENT_BRIDGE"):
                         has_existing = True
 
-                if has_existing:
-                    continue
+                if not has_existing:
+                    candidates.append((id_a, id_b, name_a, name_b, similarity))
 
-                # 建立 LATENT_BRIDGE（雙向）
-                import time
-                reason = f"夢境橋接：{name_a} ↔ {name_b}（相似度 {similarity:.3f}）"
-                for src, dst in [(id_a, id_b), (id_b, id_a)]:
-                    self.graph.graph.add_edge(
-                        src, dst,
-                        edge_type="LATENT_BRIDGE",
-                        weight=similarity,
-                        similarity=similarity,
-                        reason=reason,
-                        created_at=time.time(),
-                    )
+        if not candidates:
+            return 0
 
-                bridges_created += 1
-                logger.debug(
-                    f"[GraphPruning] LATENT_BRIDGE: {name_a} ↔ {name_b} "
-                    f"(sim={similarity:.3f})"
+        # ── 階段 2：audit-before-mutate ──
+        if self._patch_coordinator is not None:
+            if not self._patch_coordinator.audit_graph_latent_bridge(len(candidates)):
+                logger.warning(
+                    "[GraphPruning] audit 失敗，跳過 LATENT_BRIDGE 建立 (%d 條)",
+                    len(candidates),
                 )
+                return 0
+
+        # ── 階段 3：批量建邊 ──
+        bridges_created = 0
+        for id_a, id_b, name_a, name_b, similarity in candidates:
+            reason = f"夢境橋接：{name_a} ↔ {name_b}（相似度 {similarity:.3f}）"
+            for src, dst in [(id_a, id_b), (id_b, id_a)]:
+                self.graph.graph.add_edge(
+                    src, dst,
+                    edge_type="LATENT_BRIDGE",
+                    weight=similarity,
+                    similarity=similarity,
+                    reason=reason,
+                    created_at=time.time(),
+                )
+            bridges_created += 1
+            logger.debug(
+                f"[GraphPruning] LATENT_BRIDGE: {name_a} ↔ {name_b} "
+                f"(sim={similarity:.3f})"
+            )
 
         if bridges_created:
             logger.info(
@@ -365,6 +400,16 @@ class GraphPruning:
 
         updated_count = 0
         current_time = time.time()
+
+        # 預計算要更新的邊數（用於 audit-before-mutate）
+        precedes_count = sum(
+            1 for _, _, d in self.graph.graph.edges(data=True)
+            if d.get("edge_type") == "PRECEDES"
+        )
+        if precedes_count and self._patch_coordinator is not None:
+            if not self._patch_coordinator.audit_batch_weight_update(precedes_count):
+                logger.warning("[GraphPruning] audit 失敗，跳過權重更新 (%d 條)", precedes_count)
+                return 0
 
         for u, v, data in self.graph.graph.edges(data=True):
             if data.get("edge_type") != "PRECEDES":

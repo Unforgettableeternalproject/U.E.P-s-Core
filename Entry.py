@@ -196,6 +196,8 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
         semantic=engine.semantic,
         llm_fn=eval_fn,
     )
+    # 注入 ConceptInhibitor 到 MemoryEngine，供 DreamEngine 使用
+    engine._concept_inhibitor = concept_inhibitor
     subconscious_assessor = SubconsciousAssessor(llm_fn=eval_fn)
     judge = StorageJudge(llm_fn=eval_fn)
     soul_notes = SoulNoteManager(engine.storage_path)
@@ -218,6 +220,7 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
         semantic=engine.semantic,
         graph=engine.episodic.graph,
         embed_fn=lambda text: engine.episodic._generate_embedding(text),
+        inhibitor=concept_inhibitor,
     )
 
     def _show_session_banner():

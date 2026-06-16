@@ -173,8 +173,8 @@ class InteractiveShell:
             self.write(
                 "Commands: load, say <text>, save --output <path> <text>, "
                 "profile <text>, emotion [preset|values], language [en|zh], "
-                "lora [on|off|<scale>], "
-                "status, unload, exit"
+                "lora [on|off|<scale>], status, unload, exit\n"
+                "Flags: --batch (say/save) generate all emotion presets"
             )
             return True
         if verb == "emotion":
@@ -195,20 +195,27 @@ class InteractiveShell:
             self.write(str(self.session.status()))
             return True
         if verb == "say":
-            text = self._parse_text_args(args, command_name="say")
+            batch, remaining = self._extract_batch_flag(args)
+            text = self._parse_text_args(remaining, command_name="say")
             text = self._auto_translate(text)
-            result = self.session.say(text)
-            self.write(f"played: {result.output_path}")
+            if batch:
+                self._run_emotion_batch(text, mode="say")
+            else:
+                result = self.session.say(text)
+                self.write(f"played: {result.output_path}")
             return True
         if verb == "save":
-            text, output = self._parse_save_args(args)
+            batch, remaining = self._extract_batch_flag(args)
+            text, output = self._parse_save_args(remaining)
             text = self._auto_translate(text)
-            if output is not None:
-                result = self.session.save(text, output_path=output)
+            if batch:
+                self._run_emotion_batch(text, mode="save", output_stem=output)
             else:
-                # Auto-generate filename like say does, but keep the file
-                result = self.session.save_auto(text)
-            self.write(f"saved: {result.output_path}")
+                if output is not None:
+                    result = self.session.save(text, output_path=output)
+                else:
+                    result = self.session.save_auto(text)
+                self.write(f"saved: {result.output_path}")
             return True
         if verb == "profile":
             text = self._parse_text_args(args, command_name="profile")
@@ -385,6 +392,73 @@ class InteractiveShell:
             self.write(f"Unknown preset '{name}'. Available: {', '.join(EMOTION_PRESETS.keys())}")
 
         return True
+
+    @staticmethod
+    def _extract_batch_flag(args: list[str]) -> tuple[bool, list[str]]:
+        """Extract ``--batch`` flag from args, return (is_batch, remaining_args)."""
+        if "--batch" in args:
+            remaining = [a for a in args if a != "--batch"]
+            return True, remaining
+        return False, args
+
+    def _run_emotion_batch(
+        self,
+        text: str,
+        mode: str = "save",
+        output_stem: str | None = None,
+    ) -> None:
+        """Generate the same text with every emotion preset.
+
+        Args:
+            text: the text to synthesize.
+            mode: ``"save"`` to save files, ``"say"`` to save + play each.
+            output_stem: base filename for save (e.g. ``"test"`` → ``test_happy.wav``).
+                If None, auto-generates based on timestamp.
+        """
+        from pathlib import Path
+
+        original_emotion = self.session.get_emotion()
+        presets = list(EMOTION_PRESETS.items())
+        total = len(presets)
+
+        self.write(f"[batch] Generating {total} emotion variants...")
+
+        # Determine output directory and stem
+        if output_stem is not None:
+            p = Path(output_stem)
+            stem = p.stem
+            suffix = p.suffix if p.suffix.lower() in ('.wav', '.mp3', '.flac', '.ogg') else '.wav'
+            out_dir = self.session._resolve_output_path(p).parent
+        else:
+            from datetime import datetime
+            stem = f"batch-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            suffix = ".wav"
+            out_dir = self.session.output_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        results = []
+        for i, (preset_name, emo_vector) in enumerate(presets):
+            self.session.set_emotion(emo_vector)
+            out_path = out_dir / f"{stem}_{preset_name}{suffix}"
+            self.write(f"  [{i + 1}/{total}] {preset_name}...")
+
+            try:
+                if mode == "say":
+                    # Save then play
+                    result = self.session.save(text, output_path=out_path)
+                    self.session.player.play(result.output_path)
+                else:
+                    result = self.session.save(text, output_path=out_path)
+                results.append((preset_name, result.output_path))
+            except Exception as exc:
+                self.write(f"    ⚠ {preset_name} failed: {exc}")
+
+        # Restore original emotion
+        self.session.set_emotion(original_emotion)
+
+        self.write(f"[batch] Done — {len(results)}/{total} files:")
+        for name, path in results:
+            self.write(f"  {name}: {path}")
 
     @staticmethod
     def _parse_text_args(args: list[str], command_name: str) -> str:

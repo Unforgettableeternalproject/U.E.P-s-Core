@@ -78,4 +78,9 @@ asyncio_default_fixture_loop_scope = "function"
 # test_hybrid_retrieval.py 為互動式手動演示腳本（含 input()），排除於自動化測試之外
 # test_config.py 為診斷腳本（含 exit()），非 pytest 測試
 # coverage 由 CI pipeline 單獨呼叫，不預設掛在 addopts
-addopts = "--ignore=tests/test_hybrid_retrieval.py --ignore=tests/test_config.py"
+# -m "not live_api and not slow"：平常跑測試不觸發需要真實 API 或耗時的整合測試
+addopts = "--ignore=tests/test_hybrid_retrieval.py --ignore=tests/test_config.py -m \"not live_api and not slow\""
+markers = [
+    "live_api: 需要真實 Gemini API（設定 GOOGLE_API_KEY 或 GCP_PROJECT_ID）",
+    "slow: 執行時間較長的測試",
+]

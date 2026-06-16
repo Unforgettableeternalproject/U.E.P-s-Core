@@ -48,6 +48,27 @@ _CONCEPT_PROMPT = """分析以下對話，提取 3-5 個關鍵概念。
 - 不要提取過於泛化的概念（如「問題」「回答」）"""
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 結構化輸出 Schema（供 structured_llm_fn 使用）
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+CONCEPT_EXTRACT_ITEM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "noun": {"type": "string"},
+        "desc": {"type": "string"},
+    },
+    "required": ["noun", "desc"],
+}
+
+# concept_extractor 的 LLM 回傳陣列，每個元素代表一個提取到的概念
+CONCEPT_EXTRACT_RESPONSE_SCHEMA = {
+    "type": "array",
+    "items": CONCEPT_EXTRACT_ITEM_SCHEMA,
+    "minItems": 1,
+    "maxItems": 5,
+}
+
 # 同義詞/多義詞閾值（對齊 OpenSoul）
 _SYNONYM_THRESHOLD = 0.92   # >= 0.92 → 同義詞（合併）
 _POLYSEMY_THRESHOLD = 0.85  # >= 0.85 → 多義詞（建 RELATES_TO）
@@ -80,17 +101,23 @@ class ConceptExtractor:
         embed_fn: Callable[[str], list[float]] | None = None,
         inhibitor=None,  # ConceptInhibitor | None（避免循環 import）
         max_workers: int | None = None,
+        structured_llm_fn: Callable[[str], dict] | None = None,
     ):
         """
         Args:
-            llm_fn: LLM 呼叫函式
+            llm_fn: LLM 呼叫函式，回傳原始文字字串
             semantic: SemanticMemory 實例
             graph: MemoryGraph 實例
             embed_fn: 文本嵌入函式（用於同義詞比對）
             inhibitor: ConceptInhibitor 實例。提供時走 patch pipeline。
             max_workers: 執行緒池最大工作者數量（預設 2）
+            structured_llm_fn: 結構化 LLM 呼叫函式，直接回傳 dict（省去 JSON parse）。
+                               存在時優先於 llm_fn 使用；不存在時 fallback 至 llm_fn + JSON parse。
+                               注意：LLM 回傳陣列，structured_llm_fn 應回傳包含
+                               "items" 鍵的 dict，items 值為概念 list。
         """
         self._llm_fn = llm_fn
+        self._structured_llm_fn = structured_llm_fn
         self._semantic = semantic
         self._graph = graph
         self._embed_fn = embed_fn
@@ -127,7 +154,8 @@ class ConceptExtractor:
         Returns:
             Future（None 表示跳過）
         """
-        if self._llm_fn is None:
+        # llm_fn 和 structured_llm_fn 都沒有時靜默跳過
+        if self._llm_fn is None and self._structured_llm_fn is None:
             return None
         if self._shutdown:
             logger.warning("[ConceptExtractor] 已關閉，跳過提取")
@@ -237,7 +265,7 @@ class ConceptExtractor:
         episode: Episode,
         concept_seeds: list | None = None,
     ) -> list[dict[str, str]]:
-        """透過 LLM 提取概念列表。"""
+        """透過 LLM 提取概念列表。優先使用 structured_llm_fn，fallback 至 llm_fn + JSON parse。"""
         prompt = _CONCEPT_PROMPT.format(
             user_input=episode.user_input[:300],
             agent_response=episode.agent_response[:300],
@@ -256,6 +284,21 @@ class ConceptExtractor:
                     f"{', '.join(seed_names)}"
                 )
 
+        # ── 結構化路徑：直接拿到 dict，省去 JSON parse ──
+        # structured_llm_fn 應回傳包含 "items" 鍵的 dict，
+        # items 的值為符合 CONCEPT_EXTRACT_RESPONSE_SCHEMA 的概念 list
+        if self._structured_llm_fn is not None:
+            data = self._structured_llm_fn(prompt)
+            items = data.get("items", data) if isinstance(data, dict) else data
+            if isinstance(items, list):
+                return items[:5]
+            logger.warning(
+                "[ConceptExtractor] structured_llm_fn 回傳格式非預期: %s",
+                type(items),
+            )
+            return []
+
+        # ── Fallback 路徑：llm_fn + 手動 JSON parse ──
         assert self._llm_fn is not None
         raw = self._llm_fn(prompt)
 

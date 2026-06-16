@@ -130,6 +130,27 @@ class ConceptVerification:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 結構化輸出 Schema（供 structured_llm_fn 使用）
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# concept_verifier 的 LLM 回傳陣列，每個元素對應一個概念的狀態判定
+CONCEPT_VERIFY_ITEM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "concept": {"type": "string"},
+        "status": {"type": "string", "enum": ["valid", "expand", "modify", "deprecate"]},
+        "reason": {"type": "string"},
+        "update": {"type": ["string", "null"]},
+    },
+    "required": ["concept", "status", "reason"],
+}
+
+CONCEPT_VERIFY_RESPONSE_SCHEMA = {
+    "type": "array",
+    "items": CONCEPT_VERIFY_ITEM_SCHEMA,
+}
+
 # embedding 相關性閾值：低於此值的概念不送 LLM 驗證
 _RELEVANCE_THRESHOLD = 0.3
 
@@ -184,6 +205,7 @@ class ConceptVerifier:
         embed_fn: Callable[[str], list[float]] | None = None,
         relevance_threshold: float = _RELEVANCE_THRESHOLD,
         max_concepts: int = _MAX_CONCEPTS_TO_LLM,
+        structured_llm_fn: Callable[[str], dict] | None = None,
     ):
         """
         Args:
@@ -191,8 +213,13 @@ class ConceptVerifier:
             embed_fn: 文本嵌入函式。None 時跳過相關性過濾。
             relevance_threshold: embedding cosine sim 閾值，低於此值不送 LLM。
             max_concepts: 最多送幾個概念給 LLM。
+            structured_llm_fn: 結構化 LLM 呼叫函式，直接回傳 dict（省去 JSON parse）。
+                               存在時優先於 llm_fn 使用；不存在時 fallback 至 llm_fn + JSON parse。
+                               注意：此模組 LLM 回傳的是 JSON 陣列，structured_llm_fn
+                               應回傳包含 "items" 鍵的 dict，或 callable 內部處理包裝。
         """
         self._llm_fn = llm_fn
+        self._structured_llm_fn = structured_llm_fn
         self._embed_fn = embed_fn
         self._relevance_threshold = relevance_threshold
         self._max_concepts = max_concepts
@@ -241,16 +268,20 @@ class ConceptVerifier:
         relevant = relevant[:self._max_concepts]
 
         # ── 第二層：LLM 狀態判斷 ──
-        if relevant and self._llm_fn is not None:
+        has_any_llm = self._llm_fn is not None or self._structured_llm_fn is not None
+        if relevant and has_any_llm:
             llm_assessments, used_llm = self._llm_verify(user_input, relevant)
         else:
             # 降級：所有相關概念標記 valid
+            no_llm_available = (
+                self._llm_fn is None and self._structured_llm_fn is None
+            )
             llm_assessments = [
                 ConceptAssessment(
                     concept_id=c.id,
                     concept_name=c.name,
                     status="valid",
-                    reason="LLM 不可用，預設為 valid" if self._llm_fn is None
+                    reason="LLM 不可用，預設為 valid" if no_llm_available
                            else "語意相關但無需 LLM 驗證",
                     relevance=rel,
                 )
@@ -341,15 +372,13 @@ class ConceptVerifier:
         relevant_concepts: list[tuple[Concept, float]],
     ) -> tuple[list[ConceptAssessment], bool]:
         """
-        使用 LLM 判斷概念狀態。
+        使用 LLM 判斷概念狀態。優先使用 structured_llm_fn，fallback 至 llm_fn + JSON parse。
 
         失敗時降級為全部 valid，並回傳 used_llm=False。
 
         Returns:
             (assessments, used_llm) — used_llm 為 False 表示 LLM 呼叫失敗已降級
         """
-        assert self._llm_fn is not None
-
         # 組裝概念區塊
         concept_lines = []
         for concept, _rel in relevant_concepts:
@@ -369,6 +398,18 @@ class ConceptVerifier:
         )
 
         try:
+            # ── 結構化路徑：直接拿到 dict，省去 JSON parse ──
+            # structured_llm_fn 應回傳包含 "items" 鍵的 dict，
+            # items 的值為與 CONCEPT_VERIFY_RESPONSE_SCHEMA 對應的 list
+            if self._structured_llm_fn is not None:
+                data = self._structured_llm_fn(prompt)
+                items = data.get("items", data) if isinstance(data, dict) else data
+                if not isinstance(items, list):
+                    items = []
+                return self._parse_llm_items(items, relevant_concepts), True
+
+            # ── Fallback 路徑：llm_fn + 手動 JSON parse ──
+            assert self._llm_fn is not None
             raw = self._llm_fn(prompt)
             return self._parse_llm_response(raw, relevant_concepts), True
         except Exception as e:
@@ -392,7 +433,7 @@ class ConceptVerifier:
         relevant_concepts: list[tuple[Concept, float]],
     ) -> list[ConceptAssessment]:
         """
-        解析 LLM 的 JSON 回應。
+        解析 LLM 的原始文字回應（llm_fn 路徑使用）。
 
         對解析失敗或缺少的概念，降級為 valid。
         """
@@ -426,6 +467,19 @@ class ConceptVerifier:
         if not isinstance(items, list):
             items = [items]
 
+        return self._parse_llm_items(items, relevant_concepts)
+
+    def _parse_llm_items(
+        self,
+        items: list,
+        relevant_concepts: list[tuple[Concept, float]],
+    ) -> list[ConceptAssessment]:
+        """
+        從已解析的 list 組裝 ConceptAssessment（兩條路徑共用）。
+
+        structured_llm_fn 路徑直接傳入已解析的 list；
+        llm_fn 路徑由 _parse_llm_response 解析後再呼叫本方法。
+        """
         # 建立名稱 → (concept, relevance) 的查詢表
         name_map = {c.name: (c, rel) for c, rel in relevant_concepts}
 

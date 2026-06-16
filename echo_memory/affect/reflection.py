@@ -25,6 +25,32 @@ from echo_memory.affect.soul_note import SoulNote, SoulNoteManager, DailyReflect
 
 logger = logging.getLogger("echo_memory.affect.reflection")
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 結構化輸出 Schema（供 structured_llm_fn 使用）
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+REFLECTION_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {"type": "string", "enum": ["question", "browse", "optimize", "none"]},
+        "content": {"type": "string"},
+        "reasoning": {"type": "string"},
+        "memory_ops": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "op": {"type": "string"},
+                    "target": {"type": "string"},
+                    "params": {"type": "object"},
+                    "reason": {"type": "string"},
+                },
+            },
+        },
+    },
+    "required": ["action", "content", "reasoning"],
+}
+
 _REFLECT_PROMPT = """你是一個記憶系統的反思模組。審視以下最近的對話記錄，選擇一個主動行為，並可選地提出記憶操作。
 
 最近對話：
@@ -96,14 +122,18 @@ class ReflectionModule:
         llm_fn: Callable[[str], str] | None = None,
         soul_notes: SoulNoteManager | None = None,
         reflect_interval: int = 10,
+        structured_llm_fn: Callable[[str], dict] | None = None,
     ):
         """
         Args:
-            llm_fn: LLM 呼叫函式
+            llm_fn: LLM 呼叫函式，回傳原始文字字串
             soul_notes: SoulNoteManager 實例
             reflect_interval: 每隔幾輪觸發一次反思
+            structured_llm_fn: 結構化 LLM 呼叫函式，直接回傳 dict（省去 JSON parse）。
+                               存在時優先於 llm_fn 使用；不存在時 fallback 至 llm_fn + JSON parse。
         """
         self._llm_fn = llm_fn
+        self._structured_llm_fn = structured_llm_fn
         self._soul_notes = soul_notes
         self._interval = reflect_interval
         self._turn_counter = 0
@@ -138,7 +168,8 @@ class ReflectionModule:
         Returns:
             ReflectionOutput
         """
-        if self._llm_fn is None:
+        # 無任何 LLM 可用時直接降級
+        if self._llm_fn is None and self._structured_llm_fn is None:
             return self._heuristic_reflect(recent_summaries)
 
         try:
@@ -158,7 +189,7 @@ class ReflectionModule:
         mode: str,
         known_concepts: list[str] | None = None,
     ) -> ReflectionOutput:
-        """LLM 驅動的反思。"""
+        """LLM 驅動的反思。優先使用 structured_llm_fn，fallback 至 llm_fn + JSON parse。"""
         episodes_text = "\n".join(f"- {s[:100]}" for s in summaries[:5])
         concepts_text = (
             "\n".join(f"- {c}" for c in (known_concepts or [])[:5])
@@ -173,38 +204,51 @@ class ReflectionModule:
             mode=mode,
         )
 
-        assert self._llm_fn is not None
-        raw = self._llm_fn(prompt)
-
-        # 清除 LLM 常見的 markdown code fence（```json ... ```）
-        cleaned = raw.strip()
-        if cleaned.startswith("```"):
-            # 移除開頭的 ```json 或 ```
-            first_newline = cleaned.find("\n")
-            if first_newline != -1:
-                cleaned = cleaned[first_newline + 1:]
-            # 移除結尾的 ```
-            if cleaned.rstrip().endswith("```"):
-                cleaned = cleaned.rstrip()[:-3].rstrip()
-
-        try:
-            data = json.loads(cleaned)
-            # 解析 memory_ops（容錯：非 list 時 fallback 為空）
+        # ── 結構化路徑：直接拿到 dict，省去 JSON parse ──
+        if self._structured_llm_fn is not None:
+            data = self._structured_llm_fn(prompt)
             raw_ops = data.get("memory_ops", [])
             memory_ops = raw_ops if isinstance(raw_ops, list) else []
-
             output = ReflectionOutput(
                 action=data.get("action", "question"),
                 content=data.get("content", ""),
                 reasoning=data.get("reasoning", ""),
                 memory_ops=memory_ops,
             )
-        except (json.JSONDecodeError, TypeError):
-            output = ReflectionOutput(
-                action="question",
-                content=raw[:200],
-                reasoning="JSON 解析失敗，使用原始文本",
-            )
+        else:
+            # ── Fallback 路徑：llm_fn + 手動 JSON parse ──
+            assert self._llm_fn is not None
+            raw = self._llm_fn(prompt)
+
+            # 清除 LLM 常見的 markdown code fence（```json ... ```）
+            cleaned = raw.strip()
+            if cleaned.startswith("```"):
+                # 移除開頭的 ```json 或 ```
+                first_newline = cleaned.find("\n")
+                if first_newline != -1:
+                    cleaned = cleaned[first_newline + 1:]
+                # 移除結尾的 ```
+                if cleaned.rstrip().endswith("```"):
+                    cleaned = cleaned.rstrip()[:-3].rstrip()
+
+            try:
+                data = json.loads(cleaned)
+                # 解析 memory_ops（容錯：非 list 時 fallback 為空）
+                raw_ops = data.get("memory_ops", [])
+                memory_ops = raw_ops if isinstance(raw_ops, list) else []
+
+                output = ReflectionOutput(
+                    action=data.get("action", "question"),
+                    content=data.get("content", ""),
+                    reasoning=data.get("reasoning", ""),
+                    memory_ops=memory_ops,
+                )
+            except (json.JSONDecodeError, TypeError):
+                output = ReflectionOutput(
+                    action="question",
+                    content=raw[:200],
+                    reasoning="JSON 解析失敗，使用原始文本",
+                )
 
         # 寫入 SoulNote
         if self._soul_notes:

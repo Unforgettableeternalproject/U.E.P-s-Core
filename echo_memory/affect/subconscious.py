@@ -22,6 +22,22 @@ from echo_memory.schemas.memory_context import MemoryContext
 
 logger = logging.getLogger("echo_memory.affect.subconscious")
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 結構化輸出 Schema（供 structured_llm_fn 使用）
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ASSESSMENT_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "emotional_tone": {"type": "number", "minimum": -1.0, "maximum": 1.0},
+        "novelty": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "complexity": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "uncertainty": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "dream_resonance": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+    },
+    "required": ["emotional_tone", "novelty", "complexity", "uncertainty", "dream_resonance"],
+}
+
 # 潛意識評估 prompt
 _SUBCONSCIOUS_PROMPT = """你是一個潛意識評估系統。分析以下對話片段的心理維度。
 
@@ -57,12 +73,19 @@ class SubconsciousAssessor:
     llm_fn 為 None 時降級回傳預設值。
     """
 
-    def __init__(self, llm_fn: Callable[[str], str] | None = None):
+    def __init__(
+        self,
+        llm_fn: Callable[[str], str] | None = None,
+        structured_llm_fn: Callable[[str], dict] | None = None,
+    ):
         """
         Args:
-            llm_fn: LLM 呼叫函式 (prompt: str) -> str
+            llm_fn: LLM 呼叫函式 (prompt: str) -> str，回傳原始文字字串
+            structured_llm_fn: 結構化 LLM 呼叫函式，直接回傳 dict（省去 JSON parse）。
+                               存在時優先於 llm_fn 使用；不存在時 fallback 至 llm_fn + JSON parse。
         """
         self._llm_fn = llm_fn
+        self._structured_llm_fn = structured_llm_fn
 
     def assess(
         self,
@@ -81,7 +104,8 @@ class SubconsciousAssessor:
         Returns:
             SubconsciousAssessment 包含 5 個維度分數
         """
-        if self._llm_fn is None:
+        # 無任何 LLM 可用時直接降級
+        if self._llm_fn is None and self._structured_llm_fn is None:
             logger.debug("[SubconsciousAssessor] 無 LLM，使用啟發式降級")
             return self._heuristic_assess(user_input, memory_ctx)
 
@@ -96,7 +120,7 @@ class SubconsciousAssessor:
         user_input: str,
         memory_ctx: MemoryContext | None,
     ) -> SubconsciousAssessment:
-        """透過 LLM 執行評估。"""
+        """透過 LLM 執行評估。優先使用 structured_llm_fn，fallback 至 llm_fn + JSON parse。"""
         # 構建記憶脈絡段落
         memory_section = ""
         dreamed_topics: list[str] = []
@@ -115,9 +139,22 @@ class SubconsciousAssessor:
             memory_section=memory_section or "（無相關記憶）",
         )
 
-        assert self._llm_fn is not None
-        raw_response = self._llm_fn(prompt)
-        result = self._parse_response(raw_response)
+        # ── 結構化路徑：直接拿到 dict，省去 JSON parse ──
+        if self._structured_llm_fn is not None:
+            data = self._structured_llm_fn(prompt)
+            result = SubconsciousAssessment(
+                emotional_tone=_safe_float(data.get("emotional_tone"), -1.0, 1.0, 0.0),
+                novelty=_safe_float(data.get("novelty"), 0.0, 1.0, 0.5),
+                complexity=_safe_float(data.get("complexity"), 0.0, 1.0, 0.5),
+                uncertainty=_safe_float(data.get("uncertainty"), 0.0, 1.0, 0.0),
+                dream_resonance=_safe_float(data.get("dream_resonance"), 0.0, 1.0, 0.0),
+            )
+        else:
+            # ── Fallback 路徑：llm_fn + 手動 JSON parse ──
+            assert self._llm_fn is not None
+            raw_response = self._llm_fn(prompt)
+            result = self._parse_response(raw_response)
+
         result.dreamed_topics = dreamed_topics
 
         logger.debug(

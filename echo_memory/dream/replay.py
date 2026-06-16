@@ -17,6 +17,7 @@ Dream 完整週期（整合後）：
   - 重播和蒸餾是獨立的：重播強化既有連結，蒸餾提取新概念
   - 重播在蒸餾之前執行（先強化再提取更合理）
   - LLM 輸出 JSON：reflection + related_indices + importance_adjustment
+  - 支援結構化 LLM 呼叫（structured_llm_fn）以保證合法 JSON 回傳
 """
 
 from __future__ import annotations
@@ -33,6 +34,30 @@ from echo_memory.storage.episodic import EpisodicMemory
 from echo_memory.storage.graph import MemoryGraph
 
 logger = logging.getLogger("echo_memory.dream.replay")
+
+# 結構化 LLM 呼叫的 JSON Schema，用於 Entry.py 建立 structured_llm_fn 時傳入
+REPLAY_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "reflections": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "index": {"type": "integer"},
+                    "reflection": {"type": "string"},
+                    "importance": {"type": "number"},
+                    "related_indices": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                    },
+                },
+                "required": ["index", "reflection", "importance"],
+            },
+        },
+    },
+    "required": ["reflections"],
+}
 
 _REPLAY_PROMPT = """\
 你是一個記憶反思專家。回顧以下對話記錄，進行反思性分析。
@@ -108,11 +133,25 @@ class LiDERReplay:
         graph: MemoryGraph,
         llm_fn: Callable[[str], str] | None = None,
         patch_coordinator=None,
+        structured_llm_fn: Callable[[str], dict] | None = None,
     ):
+        """
+        Args:
+            episodic: EpisodicMemory 實例
+            graph: MemoryGraph 實例
+            llm_fn: 文字 LLM 呼叫函式 (prompt: str) -> str。
+                    無 structured_llm_fn 時作為主路徑，有時作為 fallback。
+            patch_coordinator: DreamPatchCoordinator 實例（可選）。
+            structured_llm_fn: 結構化 LLM 呼叫函式 (prompt: str) -> dict。
+                    由 LLMRouter.get_structured_llm_fn(REPLAY_RESPONSE_SCHEMA) 產生，
+                    保證回傳合法 JSON dict，不需要手動 parse。
+                    若提供，優先使用；若呼叫失敗，不會再 fallback 到 llm_fn。
+        """
         self.episodic = episodic
         self.graph = graph
         self.llm_fn = llm_fn
         self._patch_coordinator = patch_coordinator
+        self._structured_llm_fn = structured_llm_fn
 
     def run(
         self,
@@ -122,7 +161,7 @@ class LiDERReplay:
         """執行一次反思重播。"""
         report = ReplayReport()
 
-        if self.llm_fn is None:
+        if self.llm_fn is None and self._structured_llm_fn is None:
             report.skipped_reason = "no_llm"
             logger.info("[LiDERReplay] 無 LLM 函式，跳過重播")
             return report
@@ -139,20 +178,32 @@ class LiDERReplay:
 
         # 建構 prompt + 呼叫 LLM
         prompt = self._build_prompt(candidates)
-        try:
-            raw_output = self.llm_fn(prompt)
-        except Exception as e:
-            report.skipped_reason = "llm_error"
-            report.errors.append(f"LLM 呼叫失敗: {e}")
-            return report
 
-        # 解析反思結果（內建多層容錯，不應再拋例外）
-        try:
-            reflections = self._parse_llm_output(raw_output)
-        except Exception as e:
-            report.skipped_reason = "parse_error"
-            report.errors.append(f"解析失敗: {e}")
-            return report
+        if self._structured_llm_fn is not None:
+            # 結構化路徑：直接回傳 dict，不需要手動 parse
+            try:
+                data = self._structured_llm_fn(prompt)
+                reflections = data.get("reflections", [])
+            except Exception as e:
+                report.skipped_reason = "llm_error"
+                report.errors.append(f"結構化 LLM 呼叫失敗: {e}")
+                return report
+        else:
+            # 文字路徑（fallback）：呼叫 llm_fn 後再解析
+            try:
+                raw_output = self.llm_fn(prompt)
+            except Exception as e:
+                report.skipped_reason = "llm_error"
+                report.errors.append(f"LLM 呼叫失敗: {e}")
+                return report
+
+            # 解析反思結果（內建多層容錯，不應再拋例外）
+            try:
+                reflections = self._parse_llm_output(raw_output)
+            except Exception as e:
+                report.skipped_reason = "parse_error"
+                report.errors.append(f"解析失敗: {e}")
+                return report
 
         if not reflections:
             report.skipped_reason = "parse_empty"

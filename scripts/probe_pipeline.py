@@ -54,7 +54,7 @@ from echo_memory.utils.sanitizer import sanitize_llm_output
 from llm_integration.llm_client import LLMClient
 from llm_integration.router import LLMRouter, LLMRole
 
-from scripts.dialogue_script import DIALOGUE_SCRIPT, DialogueTurn
+from scripts.dialogue_script import DIALOGUE_SCRIPT, DREAM_TRIGGERS, DialogueTurn
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 設定
@@ -489,7 +489,14 @@ def run_single_turn(
         "total_episodes": stats.get("total_episodes", 0),
         "total_concepts": stats.get("total_concepts", 0),
         "total_entities": stats.get("total_entities", 0),
+        "total_procedures": stats.get("total_procedures", 0),
     }
+
+    # ── Procedure 檢索追蹤 ──
+    proc_retrieved = len(context.procedures) if hasattr(context, "procedures") and context.procedures else 0
+    trace["procedures_retrieved"] = proc_retrieved
+    if proc_retrieved > 0:
+        trace["procedure_names"] = [p.name for p in context.procedures]
 
     return trace
 
@@ -612,11 +619,21 @@ def render_trace_panel(trace: dict) -> Panel:
     )
 
     # Stats
+    # Procedures retrieved
+    proc_retrieved = trace.get("procedures_retrieved", 0)
+    if proc_retrieved > 0:
+        proc_names = trace.get("procedure_names", [])
+        lines.append(
+            f"[cyan][PROC][/]  [bold magenta]{proc_retrieved} procedures retrieved: "
+            f"{', '.join(proc_names)}[/]"
+        )
+
     st = trace.get("stats", {})
     lines.append(
         f"[cyan][STATS][/]  episodes={st.get('total_episodes', 0)} "
         f"concepts={st.get('total_concepts', 0)} "
-        f"entities={st.get('total_entities', 0)}"
+        f"entities={st.get('total_entities', 0)} "
+        f"procedures={st.get('total_procedures', 0)}"
     )
 
     body = "\n".join(lines)
@@ -692,9 +709,13 @@ def main():
     if args.turns:
         script = script[:args.turns]
 
+    # 建立 Dream 觸發點查表
+    dream_after_turns = {d.after_turn: d for d in DREAM_TRIGGERS}
+
     console.print(Panel(
-        f"[bold cyan]Echo Memory Pipeline Probe[/]\n"
+        f"[bold cyan]Echo Memory Pipeline Probe v2[/]\n"
         f"對話劇本：{len(script)} 輪\n"
+        f"Dream 觸發：{len(DREAM_TRIGGERS)} 次（after turns {', '.join(str(d.after_turn) for d in DREAM_TRIGGERS)}）\n"
         f"模式：{'互動' if args.interactive else '自動'}\n"
         f"存儲路徑：{PROBE_STORAGE}\n"
         f"輸出檔案：{PROBE_OUTPUT}",
@@ -707,17 +728,66 @@ def main():
     engine = pipeline["engine"]
     concept_extractor = pipeline["concept_extractor"]
 
-    console.print(f"[green]✓[/] Pipeline ready — session: {pipeline['session_id']}")
+    console.print(f"[green]✓[/] Pipeline ready -- session: {pipeline['session_id']}")
     console.print(f"[green]✓[/] LLM: {pipeline['llm'].model_name}")
 
     # 開啟 JSONL 輸出
     jsonl_file = open(PROBE_OUTPUT, "w", encoding="utf-8")
+    dream_count = 0
+
+    def _write_jsonl(data: dict):
+        line = json.dumps(data, ensure_ascii=False, default=str)
+        jsonl_file.write(line + "\n")
+        jsonl_file.flush()
+
+    def _do_dream(label: str):
+        nonlocal dream_count
+        dream_count += 1
+        console.print(f"\n[bold magenta]{'═' * 80}[/]")
+        console.print(f"[bold magenta]>>> {label}[/]")
+
+        # 先 flush 概念提取，確保所有概念已寫入
+        try:
+            flushed = concept_extractor.flush(timeout=30)
+            if flushed:
+                console.print(f"[dim]  Flushed {flushed} pending concept extractions[/]")
+        except Exception:
+            pass
+
+        dream_report = run_dream(engine)
+        dream_panel = render_dream_panel(dream_report)
+        console.print(dream_panel)
+
+        # Procedure 狀態
+        proc_stats = engine.get_stats()
+        proc_count = proc_stats.get("total_procedures", 0)
+        console.print(
+            f"[bold magenta]  Procedures after dream: {proc_count}[/]"
+        )
+        if proc_count > 0:
+            try:
+                procs = engine.procedural.list_procedures()
+                for p in procs:
+                    console.print(
+                        f"    [magenta]- {p.name}[/] ({p.domain}) "
+                        f"[dim]{len(p.steps)} steps, v{p.version}[/]"
+                    )
+            except Exception:
+                pass
+
+        _write_jsonl({
+            "turn": f"dream_{dream_count}",
+            "scenario": label,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "dream_report": dream_report,
+            "procedures_total": proc_count,
+        })
 
     try:
         for i, turn_def in enumerate(script):
             console.print(f"\n[bold]{'═' * 80}[/]")
-            console.print(f"[bold green]Turn {turn_def.turn}[/] │ {turn_def.scenario}")
-            console.print(f"[dim]User:[/] {turn_def.user_input}")
+            console.print(f"[bold green]Turn {turn_def.turn}[/] | {turn_def.scenario}")
+            console.print(f"[dim]User:[/] {turn_def.user_input[:120]}{'...' if len(turn_def.user_input) > 120 else ''}")
             console.print()
 
             # 執行單輪
@@ -728,45 +798,59 @@ def main():
             console.print(panel)
 
             # 寫 JSONL
-            json_line = json.dumps(trace, ensure_ascii=False, default=str)
-            jsonl_file.write(json_line + "\n")
-            jsonl_file.flush()
+            _write_jsonl(trace)
 
             # 互動模式暫停
             if args.interactive and i < len(script) - 1:
-                input("\n[按 Enter 繼續下一輪...]")
+                input("\n[Press Enter to continue...]")
 
             # API rate limit 退避
             time.sleep(1)
 
-        # ── Dream Engine ──
-        if not args.no_dream:
-            dream_report = run_dream(engine)
-            dream_panel = render_dream_panel(dream_report)
-            console.print(dream_panel)
+            # ── 檢查是否需要觸發 Dream ──
+            if not args.no_dream and turn_def.turn in dream_after_turns:
+                trigger = dream_after_turns[turn_def.turn]
+                _do_dream(trigger.label)
+                time.sleep(2)  # Dream 後多等一下
 
-            # 寫入 JSONL
-            dream_trace = {
-                "turn": "dream",
-                "scenario": "Dream Engine",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "dream_report": dream_report,
-            }
-            json_line = json.dumps(dream_trace, ensure_ascii=False, default=str)
-            jsonl_file.write(json_line + "\n")
-            jsonl_file.flush()
+        # ── 最終 Dream（如果最後一輪沒有觸發 Dream）──
+        last_turn = script[-1].turn if script else 0
+        if not args.no_dream and last_turn not in dream_after_turns:
+            _do_dream("Final Dream")
 
         # ── 最終統計 ──
         stats = engine.get_stats()
+        proc_count = stats.get("total_procedures", 0)
         console.print(Panel(
             f"Episodes: {stats.get('total_episodes', 0)}\n"
             f"Concepts: {stats.get('total_concepts', 0)}\n"
             f"Entities: {stats.get('total_entities', 0)}\n"
+            f"[bold]Procedures: {proc_count}[/]\n"
             f"Graph nodes: {engine.episodic.graph.get_stats().get('nodes', 0)}\n"
-            f"Graph edges: {engine.episodic.graph.get_stats().get('edges', 0)}",
+            f"Graph edges: {engine.episodic.graph.get_stats().get('edges', 0)}\n"
+            f"Dreams triggered: {dream_count}",
             title="[bold]Final Stats[/]",
             border_style="green",
         ))
+
+        # 列出所有 Procedure
+        if proc_count > 0:
+            try:
+                procs = engine.procedural.list_procedures()
+                proc_table = []
+                for p in procs:
+                    proc_table.append(
+                        f"  [magenta]{p.name}[/] ({p.domain}) -- "
+                        f"{len(p.steps)} steps, v{p.version}, "
+                        f"sources={len(p.source_episode_ids)}"
+                    )
+                console.print(Panel(
+                    "\n".join(proc_table),
+                    title="[bold magenta]Procedures[/]",
+                    border_style="magenta",
+                ))
+            except Exception:
+                pass
 
     finally:
         # 清理
@@ -779,7 +863,7 @@ def main():
             pass
 
         jsonl_file.close()
-        console.print(f"\n[green]✓[/] 輸出已寫入 {PROBE_OUTPUT}")
+        console.print(f"\n[green]✓[/] Output: {PROBE_OUTPUT}")
 
 
 if __name__ == "__main__":

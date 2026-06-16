@@ -811,6 +811,25 @@ def main():
             if not args.no_dream and turn_def.turn in dream_after_turns:
                 trigger = dream_after_turns[turn_def.turn]
                 _do_dream(trigger.label)
+
+                # ── Session 切換（跨 session episode 檢索驗證）──
+                if trigger.switch_session:
+                    old_sid = pipeline["session_id"]
+                    new_sid = f"probe_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+                    pipeline["session_id"] = new_sid
+                    # 清除 LLM chat history（新 session 不帶舊對話）
+                    pipeline["llm"].clear_history()
+                    console.print(
+                        f"\n[bold yellow]>>> Session switch: {old_sid[:20]}… → {new_sid[:20]}…[/]"
+                    )
+                    _write_jsonl({
+                        "turn": "session_switch",
+                        "scenario": f"Session switch after {trigger.label}",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "old_session": old_sid,
+                        "new_session": new_sid,
+                    })
+
                 time.sleep(2)  # Dream 後多等一下
 
         # ── 最終 Dream（如果最後一輪沒有觸發 Dream）──

@@ -45,6 +45,7 @@ class DreamTrigger:
     after_turn: int
     label: str
     notes: str = ""
+    switch_session: bool = False
 
 
 # fmt: off
@@ -370,6 +371,7 @@ DREAM_TRIGGERS: list[DreamTrigger] = [
         after_turn=15,
         label="Dream 1: SOP 蒸餾",
         notes="預期蒸餾出：部署流程(Turn 9)、回滾流程(Turn 10)、環境設定(Turn 11)",
+        switch_session=True,  # Phase A → Phase B：切換 session 讓 Phase B 能檢索 Phase A 的 episode
     ),
     DreamTrigger(
         after_turn=22,

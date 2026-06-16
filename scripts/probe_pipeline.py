@@ -66,7 +66,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("probe")
 
-console = Console()
+console = Console(force_terminal=True)
 
 # Probe 專用存儲路徑（隔離於正式資料）
 PROBE_STORAGE = PROJECT_ROOT / "probe_data"

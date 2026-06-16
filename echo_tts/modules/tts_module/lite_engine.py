@@ -90,6 +90,256 @@ except ImportError:
     from s2mel.modules.bigvgan import bigvgan
 
 
+# ── Mixed-language segment splitting ──────────────────────────────
+#
+# When a majority-Chinese text contains English phrases (or vice-versa),
+# the GPT autoregressive model tends to pronounce the minority language
+# with the majority language's accent because surrounding tokens bias
+# the hidden state.
+#
+# Solution: detect language boundaries within each BPE-token segment and
+# split at those boundaries so each language runs through GPT without
+# cross-language context contamination.
+#
+# Threshold: a minority-language run must contain >= `min_words`
+# *words* (not characters) to justify an independent GPT segment.
+# Short insertions (1-2 words like "meeting" or "OK") stay with
+# the surrounding majority language — splitting them individually
+# produces unstable audio.
+# ──────────────────────────────────────────────────────────────────
+
+import re as _re
+_CJK_LANG_SPLIT_RE = _re.compile(r'[一-鿿㐀-䶿\U00020000-\U0002a6df]')
+
+
+def _classify_tokens(tokens: list) -> list:
+    """Classify each BPE token as ``'cjk'``, ``'alpha'``, or ``'neutral'``.
+
+    - ``'cjk'``:     contains CJK Unified Ideographs
+    - ``'alpha'``:   pure ASCII alphabetical (English word / subword)
+    - ``'neutral'``: punctuation, digits, whitespace, etc.
+    """
+    types = []
+    for tok in tokens:
+        raw = tok.lstrip('▁')
+        if not raw:
+            types.append('neutral')
+        elif _CJK_LANG_SPLIT_RE.search(raw):
+            types.append('cjk')
+        elif raw.isascii() and raw.isalpha():
+            types.append('alpha')
+        else:
+            types.append('neutral')
+    return types
+
+
+def _count_words_in_alpha_run(tokens: list, start: int, end: int) -> int:
+    """Count the number of distinct English words in a BPE alpha-token run.
+
+    SentencePiece convention: ``▁`` prefix marks the start of a new word.
+    Subword continuations (no ``▁``) belong to the previous word.
+
+    Example: ``['▁machine', '▁learn', 'ing', '▁model']`` → 3 words.
+    """
+    word_count = 0
+    for i in range(start, end):
+        tok = tokens[i]
+        if tok.startswith('▁') or i == start:
+            word_count += 1
+    return word_count
+
+
+def _count_cjk_chars_in_run(tokens: list, start: int, end: int) -> int:
+    """Count CJK characters in a token run.
+
+    Each CJK token typically holds exactly one character (because of
+    ``tokenize_by_CJK_char``), so this is roughly the character count.
+    """
+    count = 0
+    for i in range(start, end):
+        raw = tokens[i].lstrip('▁')
+        count += sum(1 for c in raw if _CJK_LANG_SPLIT_RE.search(c))
+    return count
+
+
+def _tag_tokens_by_language(
+    tokens: list,
+    dominant_lang: str = 'zh',
+    min_en_words: int = 3,
+    min_zh_chars: int = 3,
+) -> list:
+    """Tag each BPE token as ``'zh'`` or ``'en'``.
+
+    The algorithm detects runs of the *minority* language inside the
+    *dominant* language and only promotes them to a separate language tag
+    if they meet the minimum threshold:
+
+    - In Chinese-dominant text: English runs need ``>= min_en_words``
+      consecutive English words to be tagged ``'en'``.
+    - In English-dominant text: CJK runs need ``>= min_zh_chars``
+      consecutive CJK characters to be tagged ``'zh'``.
+
+    Sub-threshold runs are absorbed into the dominant language.
+
+    Args:
+        tokens: flat list of BPE token strings.
+        dominant_lang: ``'zh'`` or ``'en'`` — the majority language of
+            the current synthesis context.
+        min_en_words: minimum consecutive English *words* (not chars/tokens)
+            for an English run to be split out.  Default 3.
+        min_zh_chars: minimum consecutive CJK *characters* for a Chinese
+            run to be split out from English-dominant text.  Default 3.
+
+    Returns:
+        list of ``'zh'`` / ``'en'`` strings, same length as *tokens*.
+    """
+    if not tokens:
+        return []
+
+    types = _classify_tokens(tokens)
+    tags: list = [None] * len(tokens)
+
+    if dominant_lang == 'zh':
+        # ── Chinese dominant: tag qualifying English runs ──
+        # CJK → zh immediately
+        for i, t in enumerate(types):
+            if t == 'cjk':
+                tags[i] = 'zh'
+
+        # Find alpha runs and check word count
+        i = 0
+        while i < len(tokens):
+            if types[i] == 'alpha':
+                j = i
+                while j < len(tokens) and types[j] == 'alpha':
+                    j += 1
+                word_count = _count_words_in_alpha_run(tokens, i, j)
+                if word_count >= min_en_words:
+                    for k in range(i, j):
+                        tags[k] = 'en'
+                # else: leave None → will inherit 'zh' from neighbors
+                i = j
+            else:
+                i += 1
+
+    else:
+        # ── English dominant: tag qualifying CJK runs ──
+        # Alpha → en immediately
+        for i, t in enumerate(types):
+            if t == 'alpha':
+                tags[i] = 'en'
+
+        # Find CJK runs and check character count
+        i = 0
+        while i < len(tokens):
+            if types[i] == 'cjk':
+                j = i
+                while j < len(tokens) and types[j] == 'cjk':
+                    j += 1
+                char_count = _count_cjk_chars_in_run(tokens, i, j)
+                if char_count >= min_zh_chars:
+                    for k in range(i, j):
+                        tags[k] = 'zh'
+                # else: leave None → will inherit 'en' from neighbors
+                i = j
+            else:
+                i += 1
+
+    # Fill None from neighbors (forward → backward → fallback to dominant)
+    for i in range(len(tags)):
+        if tags[i] is None and i > 0:
+            tags[i] = tags[i - 1]
+    for i in range(len(tags) - 2, -1, -1):
+        if tags[i] is None:
+            tags[i] = tags[i + 1]
+
+    return [t or dominant_lang for t in tags]
+
+
+def _split_segment_by_language(
+    seg_tokens: list,
+    dominant_lang: str = 'zh',
+    min_en_words: int = 3,
+    min_zh_chars: int = 3,
+) -> list:
+    """Split one segment's token list at language boundaries.
+
+    Returns a list of token-lists.  If the segment is monolingual the
+    returned list contains the original segment unchanged.
+    """
+    if not seg_tokens:
+        return [seg_tokens]
+
+    tags = _tag_tokens_by_language(
+        seg_tokens,
+        dominant_lang=dominant_lang,
+        min_en_words=min_en_words,
+        min_zh_chars=min_zh_chars,
+    )
+
+    # Fast path: monolingual
+    if len(set(tags)) <= 1:
+        return [seg_tokens]
+
+    # Split at language transitions
+    runs: list = []
+    cur = [seg_tokens[0]]
+    cur_lang = tags[0]
+    for i in range(1, len(tags)):
+        if tags[i] == cur_lang:
+            cur.append(seg_tokens[i])
+        else:
+            runs.append(cur)
+            cur = [seg_tokens[i]]
+            cur_lang = tags[i]
+    runs.append(cur)
+
+    return runs
+
+
+def _apply_language_splitting(
+    segments: list,
+    dominant_lang: str = 'zh',
+    min_en_words: int = 3,
+    min_zh_chars: int = 3,
+    verbose: bool = False,
+) -> list:
+    """Post-process segments: split any mixed-language segment at boundaries.
+
+    Only minority-language runs that meet the word/char threshold are
+    split into independent segments; shorter insertions stay with the
+    majority language.
+
+    Args:
+        segments: list of token-lists (output of ``split_segments``).
+        dominant_lang: ``'zh'`` or ``'en'``.
+        min_en_words: minimum English word count to split (default 3).
+        min_zh_chars: minimum CJK character count to split (default 3).
+        verbose: whether to log when splitting occurs.
+
+    Returns:
+        New segment list where each segment is (approximately) monolingual.
+    """
+    result: list = []
+    split_count = 0
+    for seg in segments:
+        sub_segs = _split_segment_by_language(
+            seg,
+            dominant_lang=dominant_lang,
+            min_en_words=min_en_words,
+            min_zh_chars=min_zh_chars,
+        )
+        if len(sub_segs) > 1:
+            split_count += 1
+        result.extend(sub_segs)
+
+    if verbose and split_count > 0:
+        debug_log(2, f"      🌐 混合語言段落拆分: {len(segments)} → {len(result)} 段 "
+                      f"({split_count} 段包含中英混合)")
+
+    return result
+
+
 class IndexTTSLite:
     """精簡版 IndexTTS2 推論引擎"""
 
@@ -718,9 +968,9 @@ class IndexTTSLite:
         """
         adapter_path = str(adapter_path)
 
-        # 向後相容：如果是 .pth 檔案，走舊的 delta blending 路徑
+        # 向後相容：如果是 .pth 檔案，走舊格式 checkpoint 的 delta blending 路徑
         if adapter_path.endswith('.pth') and os.path.isfile(adapter_path):
-            return self._load_lora_legacy(adapter_path, scale)
+            return self._load_lora_pth(adapter_path, scale)
 
         # PEFT adapter 目錄
         if not os.path.isdir(adapter_path):
@@ -755,9 +1005,9 @@ class IndexTTSLite:
 
         info_log(f"   ✓ adapter 載入完成")
 
-    def _load_lora_legacy(self, checkpoint_path: str, scale: float = 1.0) -> None:
-        """向後相容：載入舊版 merged checkpoint，用 delta blending。"""
-        info_log(f"🧬 [LoRA] 載入 legacy checkpoint: {os.path.basename(checkpoint_path)}")
+    def _load_lora_pth(self, checkpoint_path: str, scale: float = 1.0) -> None:
+        """載入舊格式 .pth merged checkpoint，用 delta blending 混合權重。"""
+        info_log(f"🧬 [LoRA] 載入 .pth checkpoint: {os.path.basename(checkpoint_path)}")
 
         merged_state = torch.load(checkpoint_path, map_location=self.device, weights_only=True)
         if isinstance(merged_state, dict) and 'model' in merged_state:
@@ -796,15 +1046,15 @@ class IndexTTSLite:
         """動態調整 LoRA 強度。
 
         PEFT adapter 模式：修改每個 LoRA 層的 scaling 係數。
-        Legacy 模式：重新 blend state_dict。
+        .pth checkpoint 模式：重新 blend state_dict。
         """
         scale = max(0.0, min(1.0, scale))
         self._lora_scale = scale
 
-        # Legacy delta blending 路徑
+        # .pth delta blending 路徑
         if hasattr(self, '_lora_delta') and self._lora_delta is not None:
             if not hasattr(self, '_lora_original_state') or self._lora_original_state is None:
-                raise RuntimeError("Legacy LoRA: 原始權重不存在")
+                raise RuntimeError(".pth LoRA: 原始權重不存在")
             new_state = dict(self._lora_original_state)
             for key, diff in self._lora_delta.items():
                 new_state[key] = self._lora_original_state[key] + scale * diff
@@ -837,7 +1087,7 @@ class IndexTTSLite:
             self._lora_original_inference_model = None
             info_log("   🧬 [LoRA] adapter 已移除")
 
-        # Legacy delta 路徑
+        # .pth delta 路徑
         if hasattr(self, '_lora_original_state') and self._lora_original_state is not None:
             self.gpt.load_state_dict(self._lora_original_state, strict=True)
             self._lora_original_state = None
@@ -1197,6 +1447,20 @@ class IndexTTSLite:
                 all_tokens,
                 max_text_tokens_per_segment=max_text_tokens_per_segment,
                 quick_streaming_tokens=quick_streaming_tokens,
+            )
+
+            # ── 混合語言段落拆分 ──
+            # Split segments at language boundaries so minority-language
+            # portions run through GPT independently, preventing accent
+            # contamination from the majority language's context.
+            # Threshold: >= 3 consecutive English words (in zh-dominant),
+            #            >= 3 consecutive CJK chars (in en-dominant).
+            segments = _apply_language_splitting(
+                segments,
+                dominant_lang=language,
+                min_en_words=3,
+                min_zh_chars=3,
+                verbose=verbose,
             )
 
             # UNK token 防線：移除 BPE 詞彙表中不存在的 tokens，防止 GPT 產生亂音

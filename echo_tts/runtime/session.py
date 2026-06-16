@@ -271,7 +271,25 @@ class TTSInteractiveSession:
         if not path.is_absolute():
             path = self.output_dir / path
         path.parent.mkdir(parents=True, exist_ok=True)
-        return path
+        return self._avoid_overwrite(path)
+
+    @staticmethod
+    def _avoid_overwrite(path: Path) -> Path:
+        """If *path* already exists, append a numeric suffix to avoid overwriting.
+
+        Example: ``hello.wav`` → ``hello_2.wav`` → ``hello_3.wav`` → ...
+        """
+        if not path.exists():
+            return path
+        stem = path.stem
+        suffix = path.suffix
+        parent = path.parent
+        counter = 2
+        while True:
+            candidate = parent / f"{stem}_{counter}{suffix}"
+            if not candidate.exists():
+                return candidate
+            counter += 1
 
     def _resolve_auto_output_path(self, prefix: str) -> Path:
         self.output_dir.mkdir(parents=True, exist_ok=True)

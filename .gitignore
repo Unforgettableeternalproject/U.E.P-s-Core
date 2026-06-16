@@ -62,6 +62,10 @@ dmypy.json
 CLAUDE.md
 .claude/
 
+# Probe 執行產物（不追蹤）
+probe_data/
+probe_output.jsonl
+
 # 臨時文件
 tmp/
 temp/

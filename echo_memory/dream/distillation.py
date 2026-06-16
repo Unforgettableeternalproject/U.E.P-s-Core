@@ -16,6 +16,7 @@ KnowledgeDistillation - 知識蒸餾管線
   - 單次蒸餾上限：MAX_EPISODES_PER_BATCH（避免 token 爆炸）
   - 蒸餾成功時記錄處理過的 Episode ID（由 DreamEngine 統一標記 is_dreamed）
   - 空結果/全失敗時不記錄，允許下一輪重試
+  - 支援結構化 LLM 呼叫（structured_llm_fn）以保證合法 JSON 回傳
 """
 
 from __future__ import annotations
@@ -32,6 +33,34 @@ from echo_memory.storage.graph import MemoryGraph
 from echo_memory.storage.semantic import SemanticMemory
 
 logger = logging.getLogger("echo_memory.dream.distillation")
+
+# 結構化 LLM 呼叫的 JSON Schema，用於 Entry.py 建立 structured_llm_fn 時傳入
+# 對應 _DISTILLATION_PROMPT 期望的 JSON 陣列結構（包裝成物件以符合 structured output 規範）
+DISTILLATION_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "concepts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "concept_type": {
+                        "type": "string",
+                        "enum": ["entity", "rule", "abstract", "pattern"],
+                    },
+                    "source_indices": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                    },
+                },
+                "required": ["name", "description"],
+            },
+        },
+    },
+    "required": ["concepts"],
+}
 
 # 蒸餾 prompt 模板
 _DISTILLATION_PROMPT = """\
@@ -116,18 +145,23 @@ class KnowledgeDistillation:
         llm_fn: Callable[[str], str] | None = None,
         contradiction_detector: Any | None = None,
         patch_coordinator: Any | None = None,
+        structured_llm_fn: Callable[[str], dict] | None = None,
     ):
         """
         Args:
             episodic: EpisodicMemory 實例
             semantic: SemanticMemory 實例
             graph: MemoryGraph 實例（共用的圖）
-            llm_fn: LLM 呼叫函式 (prompt: str) -> str
-                    若為 None，蒸餾會優雅跳過。
+            llm_fn: 文字 LLM 呼叫函式 (prompt: str) -> str。
+                    若為 None 且無 structured_llm_fn，蒸餾會優雅跳過。
             contradiction_detector: ContradictionDetector 實例（可選）。
                     若提供，每次 ingest concept 後自動偵測矛盾。
             patch_coordinator: DreamPatchCoordinator 實例（可選）。
                     若提供，SemanticMemory 寫入走 patch pipeline。
+            structured_llm_fn: 結構化 LLM 呼叫函式 (prompt: str) -> dict。
+                    由 LLMRouter.get_structured_llm_fn(DISTILLATION_RESPONSE_SCHEMA) 產生，
+                    保證回傳合法 JSON dict，回傳結構為 {"concepts": [...]}。
+                    若提供，優先使用；若呼叫失敗，不會再 fallback 到 llm_fn。
         """
         self.episodic = episodic
         self.semantic = semantic
@@ -135,6 +169,7 @@ class KnowledgeDistillation:
         self.llm_fn = llm_fn
         self._contradiction_detector = contradiction_detector
         self._patch_coordinator = patch_coordinator
+        self._structured_llm_fn = structured_llm_fn
         if patch_coordinator is None:
             logger.warning(
                 "[KnowledgeDistillation] 未注入 patch_coordinator，使用舊路徑直接寫入"
@@ -158,7 +193,7 @@ class KnowledgeDistillation:
         report = DistillationReport()
 
         # 無 LLM → 優雅降級
-        if self.llm_fn is None:
+        if self.llm_fn is None and self._structured_llm_fn is None:
             report.skipped_reason = "no_llm"
             logger.info("[KnowledgeDistillation] 無 LLM 函式，跳過蒸餾")
             return report
@@ -178,24 +213,42 @@ class KnowledgeDistillation:
         # 建構 prompt
         prompt = self._build_prompt(candidates)
 
-        # 呼叫 LLM
-        try:
-            raw_output = self.llm_fn(prompt)
-            report.llm_raw_output = raw_output
-        except Exception as e:
-            report.skipped_reason = "llm_error"
-            report.errors.append(f"LLM 呼叫失敗: {e}")
-            logger.error(f"[KnowledgeDistillation] LLM 呼叫失敗: {e}")
-            return report
+        if self._structured_llm_fn is not None:
+            # 結構化路徑：直接回傳 dict，不需要手動 parse
+            # 回傳格式為 {"concepts": [...]}
+            try:
+                data = self._structured_llm_fn(prompt)
+                extracted = data.get("concepts", [])
+                # 驗證必要欄位，過濾無效項目
+                extracted = [
+                    item for item in extracted
+                    if isinstance(item, dict) and "name" in item and "description" in item
+                ][:5]  # 最多 5 個，與文字路徑一致
+                report.llm_raw_output = None  # 結構化路徑無 raw 文字
+            except Exception as e:
+                report.skipped_reason = "llm_error"
+                report.errors.append(f"結構化 LLM 呼叫失敗: {e}")
+                logger.error(f"[KnowledgeDistillation] 結構化 LLM 呼叫失敗: {e}")
+                return report
+        else:
+            # 文字路徑（fallback）：呼叫 llm_fn 後再解析
+            try:
+                raw_output = self.llm_fn(prompt)
+                report.llm_raw_output = raw_output
+            except Exception as e:
+                report.skipped_reason = "llm_error"
+                report.errors.append(f"LLM 呼叫失敗: {e}")
+                logger.error(f"[KnowledgeDistillation] LLM 呼叫失敗: {e}")
+                return report
 
-        # 解析 LLM 輸出
-        try:
-            extracted = self._parse_llm_output(raw_output)
-        except Exception as e:
-            report.skipped_reason = "llm_error"
-            report.errors.append(f"LLM 輸出解析失敗: {e}")
-            logger.error(f"[KnowledgeDistillation] 解析失敗: {e}")
-            return report
+            # 解析 LLM 輸出
+            try:
+                extracted = self._parse_llm_output(raw_output)
+            except Exception as e:
+                report.skipped_reason = "llm_error"
+                report.errors.append(f"LLM 輸出解析失敗: {e}")
+                logger.error(f"[KnowledgeDistillation] 解析失敗: {e}")
+                return report
 
         # 寫入 SemanticMemory + 建圖 + 矛盾偵測
         for concept_data in extracted:

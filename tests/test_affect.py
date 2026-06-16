@@ -44,7 +44,8 @@ class TestSalienceSignals:
         signals = SalienceSignals.from_subconscious(
             assessment, verification_score=0.9, error_occurred=True
         )
-        assert signals.user_feedback == 0.7
+        # user_feedback 不再映射 emotional_tone（避免正面情緒閒聊產生高 salience）
+        assert signals.user_feedback == 0.0
         assert signals.task_complexity == 0.6
         assert signals.novelty_score == 0.8
         assert signals.error_occurred is True

@@ -8,6 +8,7 @@ ProcedureExtractor - 從 Episode 蒸餾可複用的程序/SOP
   2. 呼叫 LLM 辨識可複用的操作步驟或決策流程
   3. 寫入 ProceduralMemory + 建立 APPLIES_TO 邊
   4. 無 LLM 時優雅降級（跳過提取）
+  5. 支援結構化 LLM 呼叫（structured_llm_fn）以保證合法 JSON 回傳
 """
 
 from __future__ import annotations
@@ -25,6 +26,24 @@ from echo_memory.storage.procedural import ProceduralMemory
 from echo_memory.storage.semantic import SemanticMemory
 
 logger = logging.getLogger("echo_memory.dream.procedure_extractor")
+
+# 結構化 LLM 呼叫的 JSON Schema，用於 Entry.py 建立 structured_llm_fn 時傳入
+PROCEDURE_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "found": {"type": "boolean"},
+        "name": {"type": "string"},
+        "description": {"type": "string"},
+        "domain": {
+            "type": "string",
+            "enum": ["coding", "analysis", "planning", "general"],
+        },
+        "steps": {"type": "array", "items": {"type": "string"}},
+        "trigger_patterns": {"type": "array", "items": {"type": "string"}},
+        "source_indices": {"type": "array", "items": {"type": "integer"}},
+    },
+    "required": ["found"],
+}
 
 _EXTRACT_PROMPT = """\
 你是一個 SOP 提取專家。分析以下對話，判斷是否有可複用的操作步驟或決策流程。
@@ -102,11 +121,25 @@ class ProcedureExtractor:
         semantic: SemanticMemory | None = None,
         graph: MemoryGraph | None = None,
         llm_fn: Callable[[str], str] | None = None,
+        structured_llm_fn: Callable[[str], dict] | None = None,
     ):
+        """
+        Args:
+            procedural: ProceduralMemory 實例
+            semantic: SemanticMemory 實例（可選，用於建立 APPLIES_TO 邊）
+            graph: MemoryGraph 實例（可選，用於建立 APPLIES_TO 邊）
+            llm_fn: 文字 LLM 呼叫函式 (prompt: str) -> str。
+                    若為 None 且無 structured_llm_fn，程序提取會優雅跳過。
+            structured_llm_fn: 結構化 LLM 呼叫函式 (prompt: str) -> dict。
+                    由 LLMRouter.get_structured_llm_fn(PROCEDURE_RESPONSE_SCHEMA) 產生，
+                    保證回傳合法 JSON dict，不需要手動 parse。
+                    若提供，優先使用；若呼叫失敗，不會再 fallback 到 llm_fn。
+        """
         self.procedural = procedural
         self.semantic = semantic
         self.graph = graph
         self.llm_fn = llm_fn
+        self._structured_llm_fn = structured_llm_fn
 
     def run(self, episodes: list[Episode]) -> ProcedureExtractionReport:
         """
@@ -120,7 +153,7 @@ class ProcedureExtractor:
         """
         report = ProcedureExtractionReport()
 
-        if self.llm_fn is None:
+        if self.llm_fn is None and self._structured_llm_fn is None:
             report.skipped_reason = "no_llm"
             return report
 
@@ -133,21 +166,39 @@ class ProcedureExtractor:
         # 建構 prompt
         prompt = self._build_prompt(episodes)
 
-        # 呼叫 LLM
-        try:
-            raw_output = self.llm_fn(prompt)
-        except Exception as e:
-            report.skipped_reason = "llm_error"
-            report.errors.append(f"LLM 呼叫失敗: {e}")
-            return report
+        if self._structured_llm_fn is not None:
+            # 結構化路徑：直接回傳 dict，不需要手動 parse
+            try:
+                data = self._structured_llm_fn(prompt)
+                # 驗證 found 欄位：若無程序則 data 中 found=False 或缺少必要欄位
+                if not data.get("found", False):
+                    result = None
+                elif not data.get("name") or not data.get("steps"):
+                    result = None
+                elif len(data.get("steps", [])) < 2:
+                    result = None
+                else:
+                    result = data
+            except Exception as e:
+                report.skipped_reason = "llm_error"
+                report.errors.append(f"結構化 LLM 呼叫失敗: {e}")
+                return report
+        else:
+            # 文字路徑（fallback）：呼叫 llm_fn 後再解析
+            try:
+                raw_output = self.llm_fn(prompt)
+            except Exception as e:
+                report.skipped_reason = "llm_error"
+                report.errors.append(f"LLM 呼叫失敗: {e}")
+                return report
 
-        # 解析
-        try:
-            result = self._parse_llm_output(raw_output)
-        except Exception as e:
-            report.skipped_reason = "llm_error"
-            report.errors.append(f"解析失敗: {e}")
-            return report
+            # 解析（保留原有 _parse_llm_output 三層容錯邏輯）
+            try:
+                result = self._parse_llm_output(raw_output)
+            except Exception as e:
+                report.skipped_reason = "llm_error"
+                report.errors.append(f"解析失敗: {e}")
+                return report
 
         if result is None:
             # LLM 判斷無可複用程序

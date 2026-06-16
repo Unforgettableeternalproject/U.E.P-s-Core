@@ -187,10 +187,34 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
     # 同步更新 MemoryEngine 的 llm_fn（Dream Engine 等子模組使用）
     engine.set_llm_fn(eval_fn)
 
+    # ── 結構化 LLM 函式（Gemini response_schema 保證合法 JSON）──
+    from echo_memory.affect.subconscious import ASSESSMENT_RESPONSE_SCHEMA
+    from echo_memory.affect.judge import STORAGE_DECISION_SCHEMA, TOOL_RECOMMEND_SCHEMA
+    from echo_memory.affect.reflection import REFLECTION_RESPONSE_SCHEMA
+    from echo_memory.affect.concept_verifier import CONCEPT_VERIFY_RESPONSE_SCHEMA
+    from echo_memory.affect.concept_extractor import CONCEPT_EXTRACT_RESPONSE_SCHEMA
+
+    structured_assessment_fn = router.get_structured_llm_fn(
+        LLMRole.EVAL, response_schema=ASSESSMENT_RESPONSE_SCHEMA,
+    )
+    structured_reflection_fn = router.get_structured_llm_fn(
+        LLMRole.EVAL, response_schema=REFLECTION_RESPONSE_SCHEMA,
+    )
+    structured_judge_storage_fn = router.get_structured_llm_fn(
+        LLMRole.EVAL, response_schema=STORAGE_DECISION_SCHEMA,
+    )
+    structured_concept_verify_fn = router.get_structured_llm_fn(
+        LLMRole.EVAL, response_schema=CONCEPT_VERIFY_RESPONSE_SCHEMA,
+    )
+    structured_concept_extract_fn = router.get_structured_llm_fn(
+        LLMRole.EVAL, response_schema=CONCEPT_EXTRACT_RESPONSE_SCHEMA,
+    )
+
     # ── 情感/潛意識模組初始化（session 級別，複用整個對話）──
     concept_verifier = ConceptVerifier(
         llm_fn=eval_fn,
         embed_fn=engine.episodic.generate_query_embedding,
+        structured_llm_fn=structured_concept_verify_fn,
     )
     concept_inhibitor = ConceptInhibitor(
         semantic=engine.semantic,
@@ -198,13 +222,20 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
     )
     # 注入 ConceptInhibitor 到 MemoryEngine，供 DreamEngine 使用
     engine._concept_inhibitor = concept_inhibitor
-    subconscious_assessor = SubconsciousAssessor(llm_fn=eval_fn)
-    judge = StorageJudge(llm_fn=eval_fn)
+    subconscious_assessor = SubconsciousAssessor(
+        llm_fn=eval_fn,
+        structured_llm_fn=structured_assessment_fn,
+    )
+    judge = StorageJudge(
+        llm_fn=eval_fn,
+        structured_llm_fn=structured_judge_storage_fn,
+    )
     soul_notes = SoulNoteManager(engine.storage_path)
     reflection_module = ReflectionModule(
         llm_fn=eval_fn,
         soul_notes=soul_notes,
         reflect_interval=10,
+        structured_llm_fn=structured_reflection_fn,
     )
     action_queue = ReflectionActionQueue(
         audit_path=engine.storage_path / "reflection_audit.jsonl",
@@ -222,6 +253,7 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
         graph=engine.episodic.graph,
         embed_fn=lambda text: engine.episodic._generate_embedding(text),
         inhibitor=concept_inhibitor,
+        structured_llm_fn=structured_concept_extract_fn,
     )
 
     def _show_session_banner():

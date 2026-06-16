@@ -80,9 +80,16 @@ class SalienceSignals:
         verification_score: float = 1.0,
         error_occurred: bool = False,
     ) -> SalienceSignals:
-        """從 SubconsciousAssessment 快速建立。"""
+        """從 SubconsciousAssessment 快速建立。
+
+        注意：user_feedback 預設為 0.0（中立），因為 emotional_tone 測量的是
+        「使用者輸入的情感基調」而非「使用者對 AI 的滿意度回饋」。
+        將 emotional_tone 直接當作 user_feedback 會導致正面閒聊（如「天氣不錯」）
+        產生不合理的高 salience。user_feedback 應由明確的使用者行為（如
+        force_remember、correction）觸發，而非被動推測。
+        """
         return cls(
-            user_feedback=assessment.emotional_tone,
+            user_feedback=0.0,
             task_complexity=assessment.complexity,
             novelty_score=assessment.novelty,
             error_occurred=error_occurred,

@@ -213,6 +213,47 @@ _STORAGE_DECISION_PROMPT = (
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 結構化輸出 Schema（供 structured_llm_fn 使用）
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# 工具推薦的結構化回應 schema
+TOOL_RECOMMEND_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "recommended_tool": {"type": "string"},
+        "reasoning": {"type": "string"},
+        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+    },
+    "required": ["recommended_tool", "reasoning", "confidence"],
+}
+
+# 存儲決策的結構化回應 schema
+STORAGE_DECISION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "salience_delta": {"type": "number", "minimum": -0.3, "maximum": 0.3},
+        "concept_seeds": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "evidence": {"type": "string"},
+                },
+                "required": ["name"],
+            },
+        },
+        "force_remember": {"type": "boolean"},
+        "entity_triggers": {"type": "boolean"},
+        "reflection_trigger": {"type": "boolean"},
+        "metadata_tags": {"type": "array", "items": {"type": "string"}},
+        "reasoning": {"type": "string"},
+    },
+    "required": ["salience_delta", "reasoning"],
+}
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Gate 閾值配置
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -262,12 +303,20 @@ class StorageJudge:
     - Episode 永遠存儲——StorageJudge 決定「怎麼記住」，不是「要不要記住」
     """
 
-    def __init__(self, llm_fn: Callable[[str], str] | None = None):
+    def __init__(
+        self,
+        llm_fn: Callable[[str], str] | None = None,
+        structured_llm_fn: Callable[[str], dict] | None = None,
+    ):
         """
         Args:
             llm_fn: LLM 呼叫函式。為 None 時所有功能降級為規則/啟發式。
+            structured_llm_fn: 結構化 LLM 呼叫函式，直接回傳 dict（省去 JSON parse）。
+                               存在時優先於 llm_fn 使用；不存在時 fallback 至 llm_fn + JSON parse。
+                               對工具推薦和存儲決策兩個呼叫點均適用。
         """
         self._llm_fn = llm_fn
+        self._structured_llm_fn = structured_llm_fn
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 工具過濾（前處理，保留原有功能）
@@ -350,8 +399,10 @@ class StorageJudge:
         Returns:
             推薦結果
         """
-        # 沒有工具或沒有 LLM → 規則降級
-        if not available_tools or self._llm_fn is None:
+        # 沒有工具或沒有任何 LLM → 規則降級
+        if not available_tools or (
+            self._llm_fn is None and self._structured_llm_fn is None
+        ):
             return JudgeRecommendation(
                 recommended_tool="none",
                 reasoning="無可用工具或 LLM 未配置",
@@ -385,6 +436,13 @@ class StorageJudge:
         valid_names = {t.get("name", "") for t in available_tools}
 
         try:
+            # ── 結構化路徑：直接拿到 dict，省去 JSON parse ──
+            if self._structured_llm_fn is not None:
+                data = self._structured_llm_fn(prompt)
+                return self._parse_recommendation_dict(data, valid_names)
+
+            # ── Fallback 路徑：llm_fn + 手動 JSON parse ──
+            assert self._llm_fn is not None
             raw = self._llm_fn(prompt)
             return self._parse_recommendation(raw, valid_names)
         except Exception as e:
@@ -446,8 +504,8 @@ class StorageJudge:
                 gate_result=gate,
             )
 
-        # Step 3: Gate 開但無 LLM → 啟發式決策
-        if self._llm_fn is None:
+        # Step 3: Gate 開但無任何 LLM → 啟發式決策
+        if self._llm_fn is None and self._structured_llm_fn is None:
             return self._heuristic_decision(
                 assessment=assessment,
                 concept_verification=concept_verification,
@@ -658,6 +716,12 @@ class StorageJudge:
             baseline_salience=baseline_salience,
         )
 
+        # ── 結構化路徑：直接拿到 dict，省去 JSON parse ──
+        if self._structured_llm_fn is not None:
+            data = self._structured_llm_fn(prompt)
+            return self._parse_storage_decision_dict(data, gate)
+
+        # ── Fallback 路徑：llm_fn + 手動 JSON parse ──
         raw = self._llm_fn(prompt)  # type: ignore[misc]
         return self._parse_storage_decision(raw, gate)
 
@@ -710,6 +774,78 @@ class StorageJudge:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 內部工具方法
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    def _parse_recommendation_dict(
+        self,
+        data: dict[str, Any],
+        valid_names: set[str] | None = None,
+    ) -> JudgeRecommendation:
+        """
+        從結構化 dict 組裝工具推薦結果（structured_llm_fn 路徑使用）。
+
+        邏輯與 _parse_recommendation 一致，省去 JSON parse 步驟。
+        """
+        tool = str(data.get("recommended_tool", "none"))
+        reasoning = str(data.get("reasoning", ""))
+        confidence = float(data.get("confidence", 0.0))
+
+        # 信心不足時回退
+        if confidence < _MIN_RECOMMEND_CONFIDENCE:
+            tool = "none"
+
+        # 驗證推薦工具是否在合法候選集內
+        if tool != "none" and valid_names and tool not in valid_names:
+            logger.warning(
+                "[StorageJudge] structured LLM 推薦了不存在的工具 '%s'，回退為 none",
+                tool,
+            )
+            tool = "none"
+            reasoning = "LLM 推薦的工具不在合法候選集中"
+
+        return JudgeRecommendation(
+            recommended_tool=tool,
+            reasoning=reasoning,
+            confidence=confidence,
+            source="llm",
+        )
+
+    def _parse_storage_decision_dict(
+        self,
+        data: dict[str, Any],
+        gate: JudgeGateResult,
+    ) -> StorageDecision:
+        """
+        從結構化 dict 組裝存儲決策結果（structured_llm_fn 路徑使用）。
+
+        邏輯與 _parse_storage_decision 一致，省去 JSON parse 步驟。
+        每個欄位獨立解析，任一欄位異常使用預設值。
+        """
+        salience_delta = 0.0
+        try:
+            salience_delta = float(data.get("salience_delta", 0.0))
+        except (TypeError, ValueError):
+            pass
+
+        seeds = self._parse_concept_seeds(data.get("concept_seeds", []))
+
+        raw_tags = data.get("metadata_tags", [])
+        tags = (
+            [str(t) for t in raw_tags if str(t) in _ALLOWED_TAGS]
+            if isinstance(raw_tags, list)
+            else []
+        )
+
+        return StorageDecision(
+            salience_delta=salience_delta,
+            concept_seeds=seeds,
+            entity_triggers=bool(data.get("entity_triggers", False)),
+            reflection_trigger=bool(data.get("reflection_trigger", False)),
+            force_remember=bool(data.get("force_remember", False)),
+            metadata_tags=tags,
+            reasoning=str(data.get("reasoning", "")),
+            source="llm",
+            gate_result=gate,
+        )
 
     def _parse_recommendation(
         self,

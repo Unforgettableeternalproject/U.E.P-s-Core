@@ -384,12 +384,14 @@ class TestStats:
         assert s.failures == 0
 
     def test_stats_failures_on_error(self, router_default: LLMRouter):
-        """generate 失敗時 failures 應遞增"""
+        """generate 主模型 + fallback 均失敗時 failures 應遞增"""
         mock_client = MagicMock()
         mock_client.models.generate_content.side_effect = RuntimeError("API down")
 
         router_default._client = mock_client
         router_default._initialized = True
+        # 停用 Ollama fallback，確保測試行為確定性
+        router_default._OLLAMA_FALLBACK_ENABLED = False
 
         with pytest.raises(RuntimeError):
             router_default.generate("test", role=LLMRole.WORK)
@@ -397,6 +399,27 @@ class TestStats:
         s = router_default.stats
         assert s.total_calls == 1
         assert s.failures == 1
+
+    def test_stats_fallback_used_on_primary_error(self, router_default: LLMRouter):
+        """主模型失敗但 Ollama fallback 成功時，fallback_used 應遞增且不 raise"""
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = RuntimeError("API down")
+
+        router_default._client = mock_client
+        router_default._initialized = True
+        router_default._OLLAMA_FALLBACK_ENABLED = True
+
+        # Mock Ollama fallback 回傳成功
+        with patch.object(
+            router_default, "_try_ollama_fallback", return_value="fallback response"
+        ):
+            result = router_default.generate("test", role=LLMRole.WORK)
+
+        assert result == "fallback response"
+        s = router_default.stats
+        assert s.total_calls == 1
+        assert s.failures == 0  # fallback 成功，不計為最終失敗
+        assert s.fallback_used == 1
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

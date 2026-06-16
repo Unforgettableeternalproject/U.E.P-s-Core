@@ -406,6 +406,7 @@ class MemoryEngine:
                 "edges_created": r.edges_created,
                 "avg_importance": r.avg_importance,
                 "skipped_reason": r.skipped_reason,
+                "errors": r.errors if r.errors else None,
             }
 
         # 蒸餾報告
@@ -417,6 +418,15 @@ class MemoryEngine:
                 "concepts_updated": d.concepts_updated,
                 "edges_created": d.edges_created,
                 "skipped_reason": d.skipped_reason,
+            }
+
+        # 程序提取報告
+        if report.procedure_extraction:
+            p = report.procedure_extraction
+            result["procedure_extraction"] = {
+                "procedures_created": getattr(p, "procedures_created", 0),
+                "procedures_updated": getattr(p, "procedures_updated", 0),
+                "skipped_reason": getattr(p, "skipped_reason", None),
             }
 
         return result

@@ -1,6 +1,6 @@
 # Echo Memory System — 系統技術參考文件
 
-> **版本**：截至 2026-06-15 的完整實作狀態
+> **版本**：截至 2026-06-16 的完整實作狀態（含端到端驗證修復）
 > **作者**：命運織者（Fate Weavers）技術文件
 > **專案來源**：從 U.E.P's Core `mem_module` 獨立遷出的記憶子系統實驗
 
@@ -119,12 +119,16 @@ TestSeperateMemorySystem/
 │   │   ├── signals.py           # SalienceSignals + SubconsciousAssessment
 │   │   ├── salience.py          # SalienceEvaluator（三值輸出）
 │   │   ├── subconscious.py      # SubconsciousAssessor（LLM 五維度）
+│   │   ├── concept_verifier.py  # ConceptVerifier（概念前驗證）
+│   │   ├── concept_inhibitor.py # ConceptInhibitor（概念 Patch 閘門）
 │   │   ├── verifier.py          # ResponseVerifier（四維品質打分）
 │   │   ├── inhibitor.py         # SubconsciousInhibitor（PASS/REVISE/SUPPRESS）
-│   │   ├── judge.py             # JudgeAgent（Hybrid 工具預過濾）
-│   │   ├── concept_extractor.py # 即時概念提取（daemon Thread）
+│   │   ├── judge.py             # StorageJudge（Hybrid 工具預過濾 + 存儲決策）
+│   │   ├── concept_extractor.py # 即時概念提取（ThreadPoolExecutor）
 │   │   ├── soul_note.py         # Soul Note 潛意識日記
-│   │   └── reflection.py        # ReflectionModule（定時反思）
+│   │   ├── reflection.py        # ReflectionModule（定時反思 + 行動閉環）
+│   │   ├── reflection_executor.py # ReflectionExecutor（反思行動執行器）
+│   │   └── action_queue.py      # ReflectionActionQueue（行動排隊 + audit）
 │   ├── utils/
 │   │   └── sanitizer.py         # 內容消殺（偽造工具標記清理）
 │   └── dream/                   # Dream Engine（離線鞏固）
@@ -132,7 +136,9 @@ TestSeperateMemorySystem/
 │       ├── replay.py            # LiDER 記憶重播
 │       ├── distillation.py      # 知識蒸餾
 │       ├── pruning.py           # 圖譜修剪 + LATENT_BRIDGE + 歸檔
-│       └── entity_extractor.py  # 實體提取
+│       ├── entity_extractor.py  # 實體提取
+│       ├── procedure_extractor.py # 程序 SOP 提取
+│       └── contradiction.py     # 矛盾偵測 + ConflictLedger
 ├── llm_integration/             # LLM 整合層
 │   ├── llm_client.py            # LLMClient（CHAT 角色，多輪對話管理）
 │   ├── router.py                # LLMRouter（EVAL/WORK 角色路由）
@@ -144,7 +150,14 @@ TestSeperateMemorySystem/
 │   ├── server.py                # FastMCP 伺服器
 │   ├── handlers.py              # 工具處理器
 │   └── resources.py             # 資源暴露
-└── tests/                       # 測試套件（353+ 通過，82% 覆蓋率）
+├── tests/                       # 測試套件（608+ 單元 + 12 整合測試）
+│   ├── integration/             # 端到端整合測試（live_api / slow markers）
+│   │   ├── conftest.py          # require_live_api fixture
+│   │   ├── test_pipeline.py     # Pipeline 7 tests（Episode/Salience/Concept/Neurochem/SoulNote/Reflection）
+│   │   └── test_dream.py        # Dream 5 tests（Pruning/Distillation/Replay/Scheduler/Structure）
+├── scripts/                     # 診斷與驗證腳本
+│   ├── dialogue_script.py       # 端到端對話劇本（25 輪 + 2 Dream 觸發）
+│   └── probe_pipeline.py        # Pipeline Probe（Rich 推理地圖 + JSONL 輸出）
 ```
 
 ---
@@ -392,10 +405,12 @@ NeurochemState 以 JSON 格式持久化到 `<namespace>/neurochem_state.json`，
 **公式**：
 ```
 salience = complexity×0.4 + novelty×0.4 + |feedback|×0.5 + sentiment×0.1 + error_bonus
-da_weight = clamp(dopamine + feedback×0.3, 0, 1)     # 正面時 +0.3
+da_weight = clamp(dopamine + feedback×0.3, 0, 1)     # 正面回饋時 +0.3
 da_weight = clamp(dopamine - 0.2, 0, 1)               # 錯誤時 -0.2
 ht_weight = serotonin×0.7 + verification_score×0.3
 ```
+
+**注意**：`user_feedback` 不再自動映射 `emotional_tone`。`SalienceSignals.from_subconscious()` 將 `user_feedback` 設為 0.0（中立），因為 emotional_tone 是「使用者輸入的情感基調」而非「使用者對 AI 的滿意度回饋」。user_feedback 只有在明確的使用者行為（如 `force_remember`、correction）時才為非零。
 
 ### 8.2 SubconsciousAssessor（LLM 五維度潛意識評估）
 
@@ -426,6 +441,7 @@ class SalienceSignals:
     text_sentiment: float = 0.0   # 文本情感估算
     is_error: bool = False
     verification_score: float = 0.5
+    # from_subconscious() 將 user_feedback 設為 0.0（不映射 emotional_tone）
 
 @dataclass
 class SubconsciousAssessment:
@@ -500,7 +516,7 @@ Step 3: 降級
 
 **檔案**：`echo_memory/affect/concept_extractor.py`
 
-在 `store_episode()` 後以 **daemon Thread** 背景執行，不阻塞主流程。
+在 `store_episode()` 後以 **ThreadPoolExecutor** 背景執行，不阻塞主流程。
 
 ### 流程
 
@@ -515,6 +531,12 @@ Step 3: 降級
 ```
 
 **降級**：`llm_fn=None` 時靜默跳過，不影響記憶存儲。
+
+**flush / shutdown**：
+```python
+concept_extractor.flush(timeout=30)   # 等待所有背景提取完成
+concept_extractor.shutdown(wait=False) # 關閉執行緒池
+```
 
 ---
 
@@ -575,6 +597,8 @@ class DreamReport:
     distillation: DistillationReport  # 蒸餾統計
     procedure_extraction: Any   # 程序提取統計
 ```
+
+注意：`engine.dream()` 回傳的是精簡 dict，包含 `procedure_extraction` 欄位（procedures_created / procedures_updated / skipped_reason）。完整 DreamReport 物件可透過 `engine._dream_engine.dream_now()` 取得。
 
 ---
 
@@ -907,7 +931,7 @@ Echo Memory 參考 OpenSoul 的完整設計，但做了**基礎設施適配**而
 
 ### Echo 獨有優勢
 
-- 353+ 測試 / 82% 覆蓋率（vs OpenSoul ~80 測試）
+- 608+ 單元測試 + 12 整合測試（vs OpenSoul ~80 測試）
 - Namespace/租戶隔離 + 路徑遍歷防護
 - 原子寫入 + 跨程序鎖 + Embedding Manifest
 - Prompt injection 防護（UNTRUSTED_MEMORY_DATA 信封）
@@ -921,9 +945,8 @@ Echo Memory 參考 OpenSoul 的完整設計，但做了**基礎設施適配**而
 
 1. **bge-m3 問句結構泛化**：中文「X 是什麼」句式的底線 cosine ~0.39，可能產生 false positive
 2. **單機後端**：JSON + NumPy snapshot，不適合高吞吐分散式寫入
-3. **Reflection 無行動閉環**：產生反思結果但不執行具體操作（OpenSoul 可執行瀏覽+身份更新）
-4. **MCP Resources 無參數面**：固定讀取預設 namespace，指定 namespace 需透過 tools
-5. **無 Reranker**：單純 dense embedding 檢索，缺少二次精排
+3. **MCP Resources 無參數面**：固定讀取預設 namespace，指定 namespace 需透過 tools
+4. **無 Reranker**：單純 dense embedding 檢索，缺少二次精排
 
 ### 未來方向（已規劃）
 
@@ -932,8 +955,9 @@ Echo Memory 參考 OpenSoul 的完整設計，但做了**基礎設施適配**而
 | P1 | Verifier 概念驗證重構 | 前處理：驗證概念擴展/變更/廢除 | ✅ 完成（ConceptVerifier + ConceptInhibitor） |
 | P1 | Judge 存儲決策接入 | 後處理：交叉比對後決定記憶存儲 | ✅ 完成（StorageJudge + JudgeGate） |
 | P1 | LLMRouter Phase 2-3 | Verifier + Judge 接入 EVAL 模型 | ✅ 完成（全模組 eval_fn 注入） |
-| P2 | Reflection 行動閉環 | 反思 → 結構化操作 → executor → audit | 待做 |
-| P2 | Discord Bot 驗證 | 多用戶、不同態度、並發處理 | 待做 |
+| P2 | Reflection 行動閉環 | 反思 → 結構化操作 → executor → audit | ✅ 完成（ReflectionExecutor + ActionQueue + rollback） |
+| P2 | 端到端驗證 | 25 輪 Probe + Integration Tests（608+ 單元 + 12 整合） | ✅ 完成 |
+| P2 | Discord Bot 驗證 | 多用戶、不同態度、並發處理（前置條件已全部完成） | 待做 |
 | P3 | Reranker 二次精排 | bge-reranker-v2 區分句式 vs 語意 | 待做 |
 | P3 | U.E.P Core 整合 | 合併回主專案 + WORK 角色啟用 | 待做 |
 
@@ -966,12 +990,13 @@ Echo Memory 參考 OpenSoul 的完整設計，但做了**基礎設施適配**而
 # 執行測試（使用共用環境）
 ..\U.E.P-s-Core\env\Scripts\python.exe -m pytest tests/ -x -q
 
-# 最新結果：353 passed, 82% coverage
+# 最新結果：608 passed（單元）+ 12 integration tests（需 -m slow 或 -m live_api）
 # Lint
 .venv\Scripts\python.exe -m ruff check . --select E,F --ignore E501,E402
 ```
 
 ---
 
-*文件產生日期：2026-06-15*
-*最後審核：諾薇亞（Novia），命運織者主要程式碼執行者*
+*文件更新日期：2026-06-16*
+*更新者：諾薇亞（Novia），命運織者主要程式碼執行者*
+*端到端驗證修復：salience 公式 / Graph 時序 / Reflection JSON / Procedure 回報*

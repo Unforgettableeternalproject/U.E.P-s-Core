@@ -11,6 +11,7 @@ LLM Router — 模組級無狀態任務路由器
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from dataclasses import dataclass, field
@@ -317,10 +318,102 @@ class LLMRouter:
                 config=config,
             )
             return self._extract_text(result)
-        except Exception as e:
+        except Exception as primary_error:
+            logger.warning(
+                f"[Router] {role.value} 主模型失敗 ({cfg.model}): {primary_error}"
+            )
+
+            # ── Ollama fallback：僅重試失敗的這一次 ──
+            fallback_result = self._try_ollama_fallback(prompt, role, cfg)
+            if fallback_result is not None:
+                self._stats.fallback_used += 1
+                logger.info(
+                    f"[Router] {role.value} Ollama fallback 成功"
+                )
+                return fallback_result
+
+            # fallback 也失敗（或不可用），計為最終失敗
             self._stats.failures += 1
-            logger.error(f"[Router] {role.value} 生成失敗 ({cfg.model}): {e}")
+            logger.error(
+                f"[Router] {role.value} 主模型 + fallback 均失敗: {primary_error}"
+            )
+            raise primary_error
+
+    def generate_structured(
+        self,
+        prompt: str,
+        role: LLMRole = LLMRole.WORK,
+        *,
+        response_schema: dict | Any = None,
+        system_instruction: str = "",
+    ) -> dict:
+        """
+        結構化 JSON 輸出。Gemini API 層級保證回傳合法 JSON。
+
+        Args:
+            prompt: 輸入提示詞
+            role: LLM 角色
+            response_schema: JSON Schema dict 或 Pydantic model class
+            system_instruction: 系統指示（可選）
+
+        Returns:
+            解析後的 dict
+        """
+        self._ensure_client()
+        from google.genai import types
+
+        cfg = self._configs.get(role)
+        if cfg is None:
+            raise ValueError(f"未知角色: {role}")
+
+        self._stats.total_calls += 1
+        self._stats.calls_by_role[role.value] = (
+            self._stats.calls_by_role.get(role.value, 0) + 1
+        )
+
+        contents = [types.Content(role="user", parts=[types.Part(text=prompt)])]
+
+        config_params: dict = {
+            "temperature": cfg.temperature,
+            "max_output_tokens": cfg.max_tokens,
+            "response_mime_type": "application/json",
+        }
+        if response_schema is not None:
+            config_params["response_schema"] = response_schema
+        if system_instruction:
+            config_params["system_instruction"] = system_instruction
+
+        config = types.GenerateContentConfig(**config_params)
+
+        try:
+            result = self._client.models.generate_content(
+                model=cfg.model,
+                contents=contents,
+                config=config,
+            )
+            text = self._extract_text(result)
+            return json.loads(text)
+        except json.JSONDecodeError as je:
+            logger.warning(
+                f"[Router] {role.value} 結構化輸出 JSON 解析失敗: {je}"
+            )
+            # Gemini 回傳了非法 JSON（不應發生，但防禦性處理）
             raise
+        except Exception as primary_error:
+            logger.warning(
+                f"[Router] {role.value} 結構化呼叫失敗 ({cfg.model}): {primary_error}"
+            )
+
+            # Ollama fallback（結構化版本）
+            fallback_result = self._try_ollama_fallback_structured(
+                prompt, role, cfg, response_schema
+            )
+            if fallback_result is not None:
+                self._stats.fallback_used += 1
+                return fallback_result
+
+            self._stats.failures += 1
+            raise primary_error
 
     def get_llm_fn(
         self,
@@ -346,6 +439,36 @@ class LLMRouter:
             return self.generate(
                 prompt,
                 role=role,
+                system_instruction=system_instruction,
+            )
+        return _fn
+
+    def get_structured_llm_fn(
+        self,
+        role: LLMRole = LLMRole.WORK,
+        *,
+        response_schema: dict | Any = None,
+        system_instruction: str = "",
+    ) -> Callable[[str], dict]:
+        """
+        取得結構化 JSON 輸出的 ``(str) -> dict`` callable。
+
+        用於需要 JSON 回覆的模組（Replay、Distillation、Reflection 等）。
+        Gemini API 層級保證回傳合法 JSON，消除手動 parse 的不穩定性。
+
+        Args:
+            role: LLM 角色
+            response_schema: JSON Schema（嵌入 closure 中）
+            system_instruction: 系統指示
+
+        Returns:
+            Callable[[str], dict]
+        """
+        def _fn(prompt: str) -> dict:
+            return self.generate_structured(
+                prompt,
+                role=role,
+                response_schema=response_schema,
                 system_instruction=system_instruction,
             )
         return _fn
@@ -385,14 +508,126 @@ class LLMRouter:
                 f"(temp={cfg.temperature}, max={cfg.max_tokens})"
                 f" — {cfg.description}"
             )
+        # Ollama fallback 狀態
+        fb_status = "enabled" if self._OLLAMA_FALLBACK_ENABLED else "disabled"
+        lines.append(f"  fallback: Ollama {self._OLLAMA_FALLBACK_MODEL} ({fb_status})")
+
         if self._stats.total_calls > 0:
             lines.append(
                 f"\n統計：{self._stats.total_calls} calls, "
-                f"{self._stats.failures} failures"
+                f"{self._stats.failures} failures, "
+                f"{self._stats.fallback_used} fallback"
             )
             for role_name, count in sorted(self._stats.calls_by_role.items()):
                 lines.append(f"  {role_name}: {count}")
         return "\n".join(lines)
+
+    # ──────────────────────────────────────────────
+    # Ollama Fallback
+    # ──────────────────────────────────────────────
+
+    # Ollama fallback 配置（從 .env 或環境變數讀取）
+    _OLLAMA_FALLBACK_MODEL = os.getenv("OLLAMA_FALLBACK_MODEL", "gemma4:e4b-it-q4_K_M")
+    _OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    _OLLAMA_FALLBACK_ENABLED = os.getenv("OLLAMA_FALLBACK_ENABLED", "true").lower() == "true"
+
+    def _try_ollama_fallback(
+        self,
+        prompt: str,
+        role: LLMRole,
+        cfg: RoleConfig,
+    ) -> str | None:
+        """
+        嘗試用 Ollama 本地模型重試失敗的 LLM 呼叫。
+
+        僅在主模型失敗時呼叫，只重試這一次。
+        成功回傳生成文字，失敗回傳 None。
+
+        Args:
+            prompt: 原始提示詞
+            role: 角色（用於日誌）
+            cfg: 原角色配置（用於 temperature 等參數參考）
+        """
+        if not self._OLLAMA_FALLBACK_ENABLED:
+            return None
+
+        try:
+            import httpx
+        except ImportError:
+            logger.debug("[Router] httpx 未安裝，無法使用 Ollama fallback")
+            return None
+
+        url = f"{self._OLLAMA_BASE_URL}/api/generate"
+
+        try:
+            response = httpx.post(
+                url,
+                json={
+                    "model": self._OLLAMA_FALLBACK_MODEL,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": cfg.temperature,
+                        "num_predict": cfg.max_tokens,
+                    },
+                },
+                timeout=120.0,  # 本地模型推理可能較慢
+            )
+            response.raise_for_status()
+            data = response.json()
+            text = data.get("response", "").strip()
+            if text:
+                return text
+            logger.warning("[Router] Ollama fallback 回傳空文字")
+            return None
+        except Exception as e:
+            logger.warning(f"[Router] Ollama fallback 失敗: {e}")
+            return None
+
+    def _try_ollama_fallback_structured(
+        self,
+        prompt: str,
+        role: LLMRole,
+        cfg: RoleConfig,
+        response_schema: dict | Any = None,
+    ) -> dict | None:
+        """Ollama 結構化 fallback。Ollama 支援 format 參數指定 JSON schema。"""
+        if not self._OLLAMA_FALLBACK_ENABLED:
+            return None
+
+        try:
+            import httpx
+        except ImportError:
+            return None
+
+        url = f"{self._OLLAMA_BASE_URL}/api/generate"
+
+        request_body: dict = {
+            "model": self._OLLAMA_FALLBACK_MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "temperature": cfg.temperature,
+                "num_predict": cfg.max_tokens,
+            },
+        }
+        # Ollama 的 format 參數支援 "json" 或完整 JSON schema
+        if response_schema is not None:
+            request_body["format"] = response_schema
+        else:
+            request_body["format"] = "json"
+
+        try:
+            response = httpx.post(url, json=request_body, timeout=120.0)
+            response.raise_for_status()
+            data = response.json()
+            text = data.get("response", "").strip()
+            if text:
+                return json.loads(text)
+            return None
+        except Exception as e:
+            logger.warning(f"[Router] Ollama structured fallback 失敗: {e}")
+            return None
 
     # ──────────────────────────────────────────────
     # 內部方法

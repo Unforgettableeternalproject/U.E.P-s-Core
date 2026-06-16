@@ -46,12 +46,10 @@ class TextNormalizer:
             "—": "-",
             "～": "-",
             "~": "-",
-            "「": "'",
-            "」": "'",
             ":": ",",
             # -- Missing brackets/quotes (all BPE UNK) --
-            "『": "'",
-            "』": "'",
+            # Note: 「」『』 are handled by _emphasis_quotes_to_pauses()
+            # in Step 1 of normalize(), converting them to comma pauses.
             "〈": "'",
             "〉": "'",
             "〔": "'",
@@ -269,6 +267,66 @@ class TextNormalizer:
 
         return runs
 
+    # ── Emphasis quote markers (「」『』) ──
+    # These quotation marks imply vocal emphasis — the reader should pause
+    # briefly before and after the quoted term.  We convert them to commas
+    # (which the TTS model renders as natural pauses) instead of silent
+    # single-quotes.  Adjacent punctuation is handled to avoid double commas.
+    #
+    # Regex: matches 「...」 or 『...』 (non-greedy, up to 20 chars inside).
+    _EMPHASIS_QUOTE_RE = re.compile(r'([「『])(.{1,20}?)([」』])')
+
+    # Punctuation characters that already provide a pause — no extra comma
+    # needed if one of these immediately precedes/follows the quote.
+    _PAUSE_PUNCT = set('，。！？,!?.…、；;：:')
+
+    @staticmethod
+    def _emphasis_quotes_to_pauses(text: str) -> str:
+        """Convert emphasis quotes 「」『』 to comma-delimited pauses.
+
+        Examples::
+
+            自稱為「神」的男人     →  自稱為,神,的男人
+            ，「使命」，           →  ，使命，   (no extra commas)
+            「使命」               →  ,使命,
+            說了一句「你好嗎」之後 →  說了一句,你好嗎,之後
+        """
+        if '「' not in text and '『' not in text:
+            return text
+
+        pause_chars = TextNormalizer._PAUSE_PUNCT
+        result = []
+        last_end = 0
+
+        for m in TextNormalizer._EMPHASIS_QUOTE_RE.finditer(text):
+            start, end = m.start(), m.end()
+            inner = m.group(2)
+
+            # Append text before the match
+            result.append(text[last_end:start])
+
+            # Decide whether to add a comma before the quoted term
+            char_before = text[start - 1] if start > 0 else ''
+            if char_before and char_before in pause_chars:
+                # Already has pause punctuation — no extra comma
+                pass
+            else:
+                result.append(',')
+
+            result.append(inner)
+
+            # Decide whether to add a comma after the quoted term
+            char_after = text[end] if end < len(text) else ''
+            if char_after and char_after in pause_chars:
+                pass
+            else:
+                result.append(',')
+
+            last_end = end
+
+        result.append(text[last_end:])
+        return ''.join(result)
+
     PINYIN_TONE_PATTERN = r"(?<![a-z])((?:[bpmfdtnlgkhjqxzcsryw]|[zcs]h)?(?:[aeiouüv]|[ae]i|u[aio]|ao|ou|i[aue]|[uüv]e|[uvü]ang?|uai|[aeiuv]n|[aeio]ng|ia[no]|i[ao]ng)|ng|er)([1-5])"
     """
     匹配拼音声调格式：pinyin+数字，声调1-5，5表示轻声
@@ -361,6 +419,7 @@ class TextNormalizer:
         text = self.trad_to_simp(text)
 
         # Step 1: Global preprocessing (language-independent)
+        text = self._emphasis_quotes_to_pauses(text)
         text = re.sub(TextNormalizer.ENGLISH_CONTRACTION_PATTERN, r"\1 is", text, flags=re.IGNORECASE)
 
         is_mixed_or_chinese = self.use_chinese(text)

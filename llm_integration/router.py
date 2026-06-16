@@ -317,10 +317,26 @@ class LLMRouter:
                 config=config,
             )
             return self._extract_text(result)
-        except Exception as e:
+        except Exception as primary_error:
+            logger.warning(
+                f"[Router] {role.value} 主模型失敗 ({cfg.model}): {primary_error}"
+            )
+
+            # ── Ollama fallback：僅重試失敗的這一次 ──
+            fallback_result = self._try_ollama_fallback(prompt, role, cfg)
+            if fallback_result is not None:
+                self._stats.fallback_used += 1
+                logger.info(
+                    f"[Router] {role.value} Ollama fallback 成功"
+                )
+                return fallback_result
+
+            # fallback 也失敗（或不可用），計為最終失敗
             self._stats.failures += 1
-            logger.error(f"[Router] {role.value} 生成失敗 ({cfg.model}): {e}")
-            raise
+            logger.error(
+                f"[Router] {role.value} 主模型 + fallback 均失敗: {primary_error}"
+            )
+            raise primary_error
 
     def get_llm_fn(
         self,
@@ -385,14 +401,81 @@ class LLMRouter:
                 f"(temp={cfg.temperature}, max={cfg.max_tokens})"
                 f" — {cfg.description}"
             )
+        # Ollama fallback 狀態
+        fb_status = "enabled" if self._OLLAMA_FALLBACK_ENABLED else "disabled"
+        lines.append(f"  fallback: Ollama {self._OLLAMA_FALLBACK_MODEL} ({fb_status})")
+
         if self._stats.total_calls > 0:
             lines.append(
                 f"\n統計：{self._stats.total_calls} calls, "
-                f"{self._stats.failures} failures"
+                f"{self._stats.failures} failures, "
+                f"{self._stats.fallback_used} fallback"
             )
             for role_name, count in sorted(self._stats.calls_by_role.items()):
                 lines.append(f"  {role_name}: {count}")
         return "\n".join(lines)
+
+    # ──────────────────────────────────────────────
+    # Ollama Fallback
+    # ──────────────────────────────────────────────
+
+    # Ollama fallback 配置（從 .env 或環境變數讀取）
+    _OLLAMA_FALLBACK_MODEL = os.getenv("OLLAMA_FALLBACK_MODEL", "gemma4:e4b-it-q4_K_M")
+    _OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    _OLLAMA_FALLBACK_ENABLED = os.getenv("OLLAMA_FALLBACK_ENABLED", "true").lower() == "true"
+
+    def _try_ollama_fallback(
+        self,
+        prompt: str,
+        role: LLMRole,
+        cfg: RoleConfig,
+    ) -> str | None:
+        """
+        嘗試用 Ollama 本地模型重試失敗的 LLM 呼叫。
+
+        僅在主模型失敗時呼叫，只重試這一次。
+        成功回傳生成文字，失敗回傳 None。
+
+        Args:
+            prompt: 原始提示詞
+            role: 角色（用於日誌）
+            cfg: 原角色配置（用於 temperature 等參數參考）
+        """
+        if not self._OLLAMA_FALLBACK_ENABLED:
+            return None
+
+        try:
+            import httpx
+        except ImportError:
+            logger.debug("[Router] httpx 未安裝，無法使用 Ollama fallback")
+            return None
+
+        url = f"{self._OLLAMA_BASE_URL}/api/generate"
+
+        try:
+            response = httpx.post(
+                url,
+                json={
+                    "model": self._OLLAMA_FALLBACK_MODEL,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": cfg.temperature,
+                        "num_predict": cfg.max_tokens,
+                    },
+                },
+                timeout=120.0,  # 本地模型推理可能較慢
+            )
+            response.raise_for_status()
+            data = response.json()
+            text = data.get("response", "").strip()
+            if text:
+                return text
+            logger.warning("[Router] Ollama fallback 回傳空文字")
+            return None
+        except Exception as e:
+            logger.warning(f"[Router] Ollama fallback 失敗: {e}")
+            return None
 
     # ──────────────────────────────────────────────
     # 內部方法

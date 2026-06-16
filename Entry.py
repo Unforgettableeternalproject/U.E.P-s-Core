@@ -52,9 +52,9 @@ from echo_tts.cli.interactive import (
     _translate_text,
 )
 from echo_tts.runtime.audio import NullAudioPlayer, StreamingAudioPlayer
-from echo_tts.runtime.backend_contract import legacy_backend_info
-from echo_tts.runtime.legacy_backend import LegacyIndexTTS2Backend
-from echo_tts.runtime.legacy_generate import default_generation_paths, generate_with_legacy_indextts2
+from echo_tts.runtime.backend_contract import indextts_backend_info
+from echo_tts.runtime.indextts_backend import IndexTTS2Backend
+from echo_tts.runtime.indextts_generate import default_generation_paths, generate_with_indextts2
 from echo_tts.runtime.session import TTSInteractiveSession
 
 console = _RichConsole()
@@ -653,7 +653,7 @@ class EchoTTSCLI:
 
         try:
             with console.status("[cyan]Building session...[/]", spinner="dots"):
-                self.session = build_legacy_session(
+                self.session = build_session(
                     project_root=Path(__file__).resolve().parent,
                     device=self.device,
                     use_fp16=self.use_fp16,
@@ -854,7 +854,7 @@ class EchoTTSCLI:
 
 
 def smoke() -> int:
-    info = legacy_backend_info(Path(__file__).resolve().parent)
+    info = indextts_backend_info(Path(__file__).resolve().parent)
 
     if _HAS_RICH:
         table = Table(show_header=False, box=None, padding=(0, 2))
@@ -862,14 +862,14 @@ def smoke() -> int:
         table.add_column("value", style="bold cyan")
 
         table.add_row("Backend", info.name)
-        table.add_row("Legacy source", str(info.source_path))
+        table.add_row("Engine source", str(info.source_path))
         table.add_row("Emotion vectors", "[green]yes[/]" if info.supports_emotion_vector else "[dim]no[/]")
 
         console.print(Panel(table, title="[bold]TTS Scaffold[/]", border_style="green"))
     else:
         console.print("TTS experiment scaffold is available.")
         console.print(f"Backend: {info.name}")
-        console.print(f"Legacy source: {info.source_path}")
+        console.print(f"Engine source: {info.source_path}")
         console.print(f"Emotion vectors: {info.supports_emotion_vector}")
     return 0
 
@@ -904,7 +904,7 @@ def benchmark(text: str) -> int:
 
 def generate(text: str, output: str, device: str | None, use_fp16: bool, use_cuda_kernel: bool) -> int:
     with console.status("[cyan]Generating speech...[/]", spinner="dots"):
-        output_path = generate_with_legacy_indextts2(
+        output_path = generate_with_indextts2(
             text=text,
             output_path=output,
             project_root=Path(__file__).resolve().parent,
@@ -916,7 +916,7 @@ def generate(text: str, output: str, device: str | None, use_fp16: bool, use_cud
     return 0
 
 
-def build_legacy_session(
+def build_session(
     project_root: str | Path | None = None,
     output_dir: str | Path = "outputs/tts/shell",
     device: str | None = "cuda",
@@ -927,7 +927,7 @@ def build_legacy_session(
     playback: bool = True,
 ) -> TTSInteractiveSession:
     root = Path(project_root or Path(__file__).resolve().parent)
-    backend = LegacyIndexTTS2Backend(
+    backend = IndexTTS2Backend(
         paths=default_generation_paths(root),
         device=device,
         use_fp16=use_fp16,
@@ -942,8 +942,12 @@ def build_legacy_session(
     return TTSInteractiveSession(backend=backend, output_dir=resolved_output, player=player)
 
 
+# 向後相容別名
+build_legacy_session = build_session  # noqa: N816
+
+
 def run_profile(text: str, device: str | None, use_fp16: bool, use_cuda_kernel: bool, use_accel: bool, emotion_vector: list[float] | None, repeat: int) -> int:
-    session = build_legacy_session(
+    session = build_session(
         project_root=Path(__file__).resolve().parent,
         device=device,
         use_fp16=use_fp16,
@@ -993,12 +997,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Echo TTS System — Interactive Rich CLI + tools")
     subparsers = parser.add_subparsers(dest="command")
 
-    subparsers.add_parser("smoke", help="Verify scaffold and copied legacy source paths")
+    subparsers.add_parser("smoke", help="Verify scaffold and engine source paths")
 
     bench = subparsers.add_parser("benchmark", help="Run a placeholder benchmark")
     bench.add_argument("--text", default="Hello from the TTS experiment project.")
 
-    gen = subparsers.add_parser("generate", help="Generate speech through copied legacy IndexTTS2")
+    gen = subparsers.add_parser("generate", help="Generate speech through IndexTTS2 engine")
     gen.add_argument("--text", required=True)
     gen.add_argument("--output", default="outputs/tts/generated.wav")
     gen.add_argument("--device", default="cuda")

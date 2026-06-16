@@ -6,7 +6,7 @@ import yaml
 
 
 DEFAULT_CONFIG = {
-    "backend": "legacy_indextts2",
+    "backend": "indextts2",
     "target_first_audio_ms": 1000,
     "chunking": {
         "first_chunk_chars": 40,

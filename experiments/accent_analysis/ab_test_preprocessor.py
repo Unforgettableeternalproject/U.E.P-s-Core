@@ -91,9 +91,9 @@ def main():
     print("🔧 載入 IndexTTS2 模型...")
     t0 = time.perf_counter()
 
-    from Entry import build_legacy_session
+    from Entry import build_session
 
-    session = build_legacy_session(
+    session = build_session(
         project_root=PROJECT_ROOT,
         output_dir=OUTPUT_DIR,
         device=args.device,

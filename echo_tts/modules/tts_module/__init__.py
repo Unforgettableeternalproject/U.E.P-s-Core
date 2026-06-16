@@ -1,4 +1,4 @@
-"""Standalone legacy IndexTTS2 package snapshot.
+"""IndexTTS2 engine package (snapshot from upstream).
 
 This test project imports `IndexTTSLite` directly for generation parity. The
 full U.E.P `TTSModule` wrapper depends on main-core services and is intentionally

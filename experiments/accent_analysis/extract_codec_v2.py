@@ -35,8 +35,8 @@ from tqdm import tqdm
 # ── 路徑設定 ──
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
-LEGACY_TTS = os.path.join(PROJECT_ROOT, "echo_tts", "modules", "tts_module")
-CHECKPOINT_DIR = os.path.join(LEGACY_TTS, "checkpoints")
+ENGINE_ROOT = os.path.join(PROJECT_ROOT, "echo_tts", "modules", "tts_module")
+CHECKPOINT_DIR = os.path.join(ENGINE_ROOT, "checkpoints")
 
 # 正確設定 package import 路徑：
 # echo_tts/modules/ 是 package root，讓 tts_module.tts_utils.maskgct_utils 的

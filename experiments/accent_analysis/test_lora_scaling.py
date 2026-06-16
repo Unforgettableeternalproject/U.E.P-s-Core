@@ -26,7 +26,7 @@ TEST_SENTENCES = [
 def main():
     import torch
     from pathlib import Path
-    from Entry import build_legacy_session
+    from Entry import build_session
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     backup = ORIGINAL_GPT + ".backup"
@@ -45,7 +45,7 @@ def main():
                 os.remove(ORIGINAL_GPT)
             shutil.copy2(ckpt_path, ORIGINAL_GPT)
 
-            session = build_legacy_session(
+            session = build_session(
                 project_root=PROJECT_ROOT, output_dir=OUTPUT_DIR,
                 device="cuda", playback=False,
             )

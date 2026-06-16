@@ -31,7 +31,7 @@ TEST_SENTENCES = [
 
 def main():
     from pathlib import Path
-    from Entry import build_legacy_session
+    from Entry import build_session
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -41,7 +41,7 @@ def main():
 
     # ── Phase A: 原始模型 ──
     print("\n[Phase A] 用原始 GPT 生成...")
-    session = build_legacy_session(
+    session = build_session(
         project_root=PROJECT_ROOT,
         output_dir=OUTPUT_DIR,
         device="cuda",
@@ -72,7 +72,7 @@ def main():
     try:
         # ── Phase B: LoRA 模型 ──
         print("\n[Phase B] 用 LoRA GPT 生成...")
-        session = build_legacy_session(
+        session = build_session(
             project_root=PROJECT_ROOT,
             output_dir=OUTPUT_DIR,
             device="cuda",

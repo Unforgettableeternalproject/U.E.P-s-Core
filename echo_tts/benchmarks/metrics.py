@@ -6,12 +6,12 @@ from typing import Iterable
 
 
 # ---------------------------------------------------------------------------
-# Legacy LatencySample — kept for backward compatibility
+# Backward-compatible alias: LatencySample
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class LatencySample:
-    """One measured TTS synthesis sample (legacy placeholder).
+    """One measured TTS synthesis sample (backward-compatible placeholder).
 
     Durations are stored in milliseconds. `audio_duration_ms` is the generated
     waveform length, not wall-clock synthesis time.

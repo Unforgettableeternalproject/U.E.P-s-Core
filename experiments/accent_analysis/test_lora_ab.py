@@ -31,7 +31,7 @@ SCALES = [0.0, 0.5, 0.85, 1.0]
 
 def main():
     import torch
-    from Entry import build_legacy_session
+    from Entry import build_session
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -42,7 +42,7 @@ def main():
     print()
 
     # Build session
-    session = build_legacy_session(
+    session = build_session(
         project_root=PROJECT_ROOT,
         output_dir=OUTPUT_DIR,
         device="cuda",

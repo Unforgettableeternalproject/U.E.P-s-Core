@@ -1,8 +1,8 @@
 from pathlib import Path
 
 from echo_tts.benchmarks.metrics import InitProfile, ProfileReport
-from echo_tts.runtime.legacy_backend import LegacyIndexTTS2Backend
-from echo_tts.runtime.legacy_generate import default_generation_paths
+from echo_tts.runtime.indextts_backend import IndexTTS2Backend
+from echo_tts.runtime.indextts_generate import default_generation_paths
 
 
 class FakeEngine:
@@ -49,7 +49,7 @@ class FakeEngine:
         return True, timings
 
 
-def test_legacy_backend_loads_engine_once_and_reuses_it(tmp_path):
+def test_indextts2_backend_loads_engine_once_and_reuses_it(tmp_path):
     calls = []
 
     def factory(**kwargs):
@@ -57,7 +57,7 @@ def test_legacy_backend_loads_engine_once_and_reuses_it(tmp_path):
         return FakeEngine()
 
     paths = default_generation_paths(Path.cwd())
-    backend = LegacyIndexTTS2Backend(paths=paths, engine_factory=factory)
+    backend = IndexTTS2Backend(paths=paths, engine_factory=factory)
 
     backend.load()
     first = backend.generate("hello", tmp_path / "one.wav")
@@ -72,14 +72,14 @@ def test_legacy_backend_loads_engine_once_and_reuses_it(tmp_path):
     assert backend.engine.loaded_character == paths.character_path
 
 
-def test_legacy_backend_generate_auto_loads(tmp_path):
+def test_indextts2_backend_generate_auto_loads(tmp_path):
     calls = []
 
     def factory(**kwargs):
         calls.append(kwargs)
         return FakeEngine()
 
-    backend = LegacyIndexTTS2Backend(paths=default_generation_paths(Path.cwd()), engine_factory=factory)
+    backend = IndexTTS2Backend(paths=default_generation_paths(Path.cwd()), engine_factory=factory)
 
     output = backend.generate("hello", tmp_path / "auto.wav")
 
@@ -88,12 +88,12 @@ def test_legacy_backend_generate_auto_loads(tmp_path):
     assert backend.loaded is True
 
 
-def test_legacy_backend_profile_generate_returns_report(tmp_path):
+def test_indextts2_backend_profile_generate_returns_report(tmp_path):
     def factory(**kwargs):
         return FakeEngine()
 
     paths = default_generation_paths(Path.cwd())
-    backend = LegacyIndexTTS2Backend(paths=paths, engine_factory=factory)
+    backend = IndexTTS2Backend(paths=paths, engine_factory=factory)
 
     output, report = backend.profile_generate("hello profiler", tmp_path / "profiled.wav")
 

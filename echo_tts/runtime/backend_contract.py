@@ -12,11 +12,15 @@ class BackendInfo:
     supports_stage_profiling: bool
 
 
-def legacy_backend_info(project_root: str | Path | None = None) -> BackendInfo:
+def indextts_backend_info(project_root: str | Path | None = None) -> BackendInfo:
     root = Path(project_root or Path.cwd())
     return BackendInfo(
-        name="legacy_indextts2",
+        name="indextts2",
         source_path=root / "echo_tts" / "modules" / "tts_module",
         supports_emotion_vector=True,
         supports_stage_profiling=True,
     )
+
+
+# 向後相容別名
+legacy_backend_info = indextts_backend_info  # noqa: N816

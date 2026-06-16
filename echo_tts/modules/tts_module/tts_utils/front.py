@@ -28,12 +28,11 @@ class TextNormalizer:
             ",,,": "…",
             "，，，": "…",
             "……": "…",
-            "“": "'",
-            "”": "'",
-            '"': "'",
+            # Note: curly double quotes and straight double quotes are
+            # handled by _emphasis_quotes_to_pauses() in Step 1 of normalize().
             "‘": "'",
             "’": "'",
-            "（": "'",
+            "（": "’",
             "）": "'",
             "(": "'",
             ")": "'",
@@ -267,59 +266,89 @@ class TextNormalizer:
 
         return runs
 
-    # ── Emphasis quote markers (「」『』) ──
-    # These quotation marks imply vocal emphasis — the reader should pause
+    # ── Emphasis quote markers ──
+    # Quotation marks imply vocal emphasis — the reader should pause
     # briefly before and after the quoted term.  We convert them to commas
     # (which the TTS model renders as natural pauses) instead of silent
     # single-quotes.  Adjacent punctuation is handled to avoid double commas.
     #
-    # Regex: matches 「...」 or 『...』 (non-greedy, up to 20 chars inside).
-    _EMPHASIS_QUOTE_RE = re.compile(r'([「『])(.{1,20}?)([」』])')
+    # Supported quote types:
+    #   Chinese:  「...」  『...』
+    #   English:  "..."   "..."  (curly and straight double quotes)
+    _EMPHASIS_QUOTE_RE = re.compile(
+        r'([「『“])(.{1,30}?)([」』”])'
+    )
+    _EMPHASIS_STRAIGHT_QUOTE_RE = re.compile(
+        r'"(.{1,30}?)"'
+    )
 
     # Punctuation characters that already provide a pause — no extra comma
     # needed if one of these immediately precedes/follows the quote.
     _PAUSE_PUNCT = set('，。！？,!?.…、；;：:')
 
-    @staticmethod
-    def _emphasis_quotes_to_pauses(text: str) -> str:
-        """Convert emphasis quotes 「」『』 to comma-delimited pauses.
+    @classmethod
+    def _emphasis_quotes_to_pauses(cls, text: str) -> str:
+        """Convert emphasis quotes to comma-delimited pauses.
+
+        Handles Chinese quotes (「」『』), curly English quotes (“”),
+        and straight double quotes ("...").
 
         Examples::
 
-            自稱為「神」的男人     →  自稱為,神,的男人
-            ，「使命」，           →  ，使命，   (no extra commas)
-            「使命」               →  ,使命,
-            說了一句「你好嗎」之後 →  說了一句,你好嗎,之後
+            自稱為「神」的男人      →  自稱為,神,的男人
+            ，「使命」，            →  ，使命，   (no extra commas)
+            He said "hello" today  →  He said ,hello, today
+            the "mission" begins.  →  the ,mission, begins.
         """
-        if '「' not in text and '『' not in text:
-            return text
+        # Pass 1: paired quotes with distinct open/close characters
+        has_paired = any(c in text for c in '「『“')
+        if has_paired:
+            text = cls._replace_quotes(text, cls._EMPHASIS_QUOTE_RE)
 
-        pause_chars = TextNormalizer._PAUSE_PUNCT
+        # Pass 2: straight double quotes "..."
+        if '"' in text:
+            text = cls._replace_quotes(text, cls._EMPHASIS_STRAIGHT_QUOTE_RE, inner_group=1)
+
+        return text
+
+    @classmethod
+    def _has_nearby_pause(cls, text: str, pos: int, direction: int) -> bool:
+        """Check if there's a pause character near *pos* in the given direction.
+
+        Skips over whitespace to find the actual neighbor character.
+        ``direction``: -1 = look left, +1 = look right.
+        """
+        pause_chars = cls._PAUSE_PUNCT
+        k = pos + direction
+        while 0 <= k < len(text):
+            ch = text[k]
+            if ch in (' ', '\t'):
+                k += direction
+                continue
+            return ch in pause_chars
+        return False
+
+    @classmethod
+    def _replace_quotes(cls, text: str, pattern, inner_group: int = 2) -> str:
+        """Replace quote matches with comma pauses, avoiding double punctuation."""
         result = []
         last_end = 0
 
-        for m in TextNormalizer._EMPHASIS_QUOTE_RE.finditer(text):
+        for m in pattern.finditer(text):
             start, end = m.start(), m.end()
-            inner = m.group(2)
+            inner = m.group(inner_group)
 
             # Append text before the match
             result.append(text[last_end:start])
 
             # Decide whether to add a comma before the quoted term
-            char_before = text[start - 1] if start > 0 else ''
-            if char_before and char_before in pause_chars:
-                # Already has pause punctuation — no extra comma
-                pass
-            else:
+            if not cls._has_nearby_pause(text, start, -1):
                 result.append(',')
 
             result.append(inner)
 
             # Decide whether to add a comma after the quoted term
-            char_after = text[end] if end < len(text) else ''
-            if char_after and char_after in pause_chars:
-                pass
-            else:
+            if not cls._has_nearby_pause(text, end - 1, +1):
                 result.append(',')
 
             last_end = end

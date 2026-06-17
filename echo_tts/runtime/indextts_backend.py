@@ -63,7 +63,14 @@ class IndexTTS2Backend:
         self.engine.load_character(self.paths.character_path)
         self.loaded = True
 
-    def generate(self, text: str, output_path: str | Path, on_segment_audio=None, language: str = "en") -> Path:
+    def generate(
+        self,
+        text: str,
+        output_path: str | Path,
+        on_segment_audio=None,
+        language: str = "en",
+        emotion_overrides: dict | None = None,
+    ) -> Path:
         if not text.strip():
             raise ValueError("text must not be empty")
 
@@ -78,12 +85,15 @@ class IndexTTS2Backend:
             on_segment_audio=on_segment_audio,
             quick_streaming_tokens=self.quick_streaming_tokens,
             language=language,
+            preset_overrides=emotion_overrides,
         )
         if not ok or not output.exists():
             raise RuntimeError("IndexTTS2 generation did not produce an output file")
         return output
 
-    def profile_generate(self, text: str, output_path: str | Path) -> tuple[Path, ProfileReport]:
+    def profile_generate(
+        self, text: str, output_path: str | Path, emotion_overrides: dict | None = None,
+    ) -> tuple[Path, ProfileReport]:
         """Generate speech and return a full profiling report."""
         if not text.strip():
             raise ValueError("text must not be empty")
@@ -102,6 +112,7 @@ class IndexTTS2Backend:
             text=text,
             output_path=str(output),
             emotion_vector=self.emotion_vector,
+            preset_overrides=emotion_overrides,
         )
         if not ok or not output.exists():
             raise RuntimeError("IndexTTS2 generation did not produce an output file")

@@ -51,6 +51,7 @@ from echo_tts.cli.interactive import (
     _detect_language,
     _translate_text,
 )
+from echo_tts.config.emotion_presets import get_preset_overrides, get_preset_vector
 from echo_tts.runtime.audio import NullAudioPlayer, StreamingAudioPlayer
 from echo_tts.runtime.backend_contract import indextts_backend_info
 from echo_tts.runtime.indextts_backend import IndexTTS2Backend
@@ -111,7 +112,8 @@ def render_emotion_panel(session: TTSInteractiveSession) -> Panel:
 
     # 偵測是否匹配某個 preset
     matched_preset = None
-    for name, vec in EMOTION_PRESETS.items():
+    for name, entry in EMOTION_PRESETS.items():
+        vec = get_preset_vector(entry)
         if all(abs(a - b) < 0.001 for a, b in zip(current, vec)):
             matched_preset = name
             break
@@ -370,10 +372,14 @@ def _cmd_emotion(session: TTSInteractiveSession, args: list[str]) -> None:
 
     name = args[0].lower()
     if name in EMOTION_PRESETS:
-        vec = EMOTION_PRESETS[name]
+        entry = EMOTION_PRESETS[name]
+        vec = get_preset_vector(entry)
+        overrides = get_preset_overrides(entry)
         session.set_emotion(list(vec))
+        session.set_emotion_overrides(overrides)
         pairs = [f"{l}={v:.2f}" for l, v in zip(EMOTION_LABELS, vec)]
-        console.print(f"  [green]✓[/] Emotion set to [magenta]{name}[/]: [{', '.join(pairs)}]")
+        override_info = f"  [dim](overrides: {overrides})[/]" if overrides else ""
+        console.print(f"  [green]✓[/] Emotion set to [magenta]{name}[/]: [{', '.join(pairs)}]{override_info}")
         return
 
     # 嘗試 8 個浮點數
@@ -383,6 +389,7 @@ def _cmd_emotion(session: TTSInteractiveSession, args: list[str]) -> None:
             console.print(f"  [yellow]Expected 8 values, got {len(values)}. Use: emotion <preset> or emotion H A S F D M U C[/]")
             return
         session.set_emotion(values)
+        session.set_emotion_overrides(None)  # 手動向量清除 overrides
         pairs = [f"{l}={v:.2f}" for l, v in zip(EMOTION_LABELS, values)]
         console.print(f"  [green]✓[/] Emotion set: [{', '.join(pairs)}]")
     except ValueError:
@@ -583,6 +590,74 @@ def _cmd_speed(session: TTSInteractiveSession, args: list[str]) -> None:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
+def _extract_batch_flag(args: list[str]) -> tuple[bool, list[str]]:
+    """Extract ``--batch`` flag from args, return (is_batch, remaining_args)."""
+    if "--batch" in args:
+        remaining = [a for a in args if a != "--batch"]
+        return True, remaining
+    return False, args
+
+
+def _cmd_emotion_batch(
+    session: TTSInteractiveSession,
+    text: str,
+    mode: str = "save",
+    output_stem: str | None = None,
+) -> None:
+    """Generate the same text with every emotion preset (Rich version)."""
+    from datetime import datetime
+
+    original_emotion = session.get_emotion()
+    original_overrides = session.get_emotion_overrides()
+    presets = list(EMOTION_PRESETS.items())
+    total = len(presets)
+
+    console.print(f"\n  [cyan]⏳[/] Generating [bold]{total}[/] emotion variants...")
+
+    # Determine output directory and stem
+    if output_stem is not None:
+        p = Path(output_stem)
+        stem = p.stem
+        suffix = p.suffix if p.suffix.lower() in (".wav", ".mp3", ".flac", ".ogg") else ".wav"
+        out_dir = p.parent if p.is_absolute() else session.output_dir / p.parent
+    else:
+        stem = f"batch-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        suffix = ".wav"
+        out_dir = session.output_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    results: list[tuple[str, Path]] = []
+    for i, (preset_name, entry) in enumerate(presets):
+        vec = get_preset_vector(entry)
+        overrides = get_preset_overrides(entry)
+        session.set_emotion(vec)
+        session.set_emotion_overrides(overrides)
+        out_path = out_dir / f"{stem}_{preset_name}{suffix}"
+
+        try:
+            with console.status(f"  [cyan][{i + 1}/{total}] {preset_name}...[/]", spinner="dots"):
+                result = session.save(text, output_path=out_path)
+            if mode == "say":
+                session.player.play(result.output_path)
+            results.append((preset_name, result.output_path))
+            console.print(f"  [green]✓[/] [{i + 1}/{total}] [magenta]{preset_name}[/] → [dim]{result.output_path}[/]")
+        except Exception as exc:
+            console.print(f"  [red]✗[/] [{i + 1}/{total}] [magenta]{preset_name}[/] — {exc}")
+
+    # Restore original emotion + overrides
+    session.set_emotion(original_emotion)
+    session.set_emotion_overrides(original_overrides)
+
+    console.print(f"\n  [green]✓[/] Batch done — [bold]{len(results)}/{total}[/] files generated")
+    if _HAS_RICH:
+        result_table = Table(show_header=False, box=None, padding=(0, 2))
+        result_table.add_column("preset", style="magenta", width=14)
+        result_table.add_column("path", style="dim")
+        for name, path in results:
+            result_table.add_row(name, str(path))
+        console.print(result_table)
+
+
 def _parse_text_args(args: list[str], command_name: str) -> str:
     text = " ".join(args).strip()
     if not text:
@@ -693,6 +768,7 @@ class EchoTTSCLI:
         commands = [
             ("say <text>", "🔊 Generate and play (streaming)", "green"),
             ("save [--output f] <text>", "💾 Generate and save (auto-name or specified)", "green"),
+            ("say/save --batch <text>", "🎭 Generate all emotion presets at once", "green"),
             ("profile <text>", "⏱  Synthesis with timing report", "green"),
             ("", "", ""),
             ("emotion", "🎭 Show/set emotion preset or 8D vector", "magenta"),
@@ -796,11 +872,22 @@ class EchoTTSCLI:
             try:
                 match verb:
                     case "say" | "s":
-                        text = _parse_text_args(args, command_name="say")
-                        _cmd_say(self.session, text)
+                        batch, remaining = _extract_batch_flag(args)
+                        text = _parse_text_args(remaining, command_name="say")
+                        if batch:
+                            text = auto_translate(text, self.session)
+                            _cmd_emotion_batch(self.session, text, mode="say")
+                        else:
+                            _cmd_say(self.session, text)
 
                     case "save":
-                        _cmd_save(self.session, args)
+                        batch, remaining = _extract_batch_flag(args)
+                        if batch:
+                            text, output = _parse_save_args(remaining)
+                            text = auto_translate(text, self.session)
+                            _cmd_emotion_batch(self.session, text, mode="save", output_stem=output)
+                        else:
+                            _cmd_save(self.session, remaining)
 
                     case "profile" | "p":
                         text = _parse_text_args(args, command_name="profile")

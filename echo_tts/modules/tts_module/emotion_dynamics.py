@@ -213,6 +213,7 @@ class EmotionDynamics:
         base_silence_ms: float = 200,
         base_stretch_ratio: float = 1.72,
         base_cfg_rate: float = 0.7,
+        preset_overrides: Optional[Dict[str, float]] = None,
     ) -> DynamicsOverrides:
         """
         根據情緒向量計算推論參數覆寫。
@@ -271,6 +272,19 @@ class EmotionDynamics:
             base_cfg_rate + cfg_offset,
             self.cfg_rate_range[0], self.cfg_rate_range[1]
         )
+
+        # ── Preset overrides：覆寫加權計算的結果 ──
+        if preset_overrides:
+            if "temperature" in preset_overrides:
+                temperature = self._clamp(preset_overrides["temperature"], *self.temperature_range)
+            if "interval_silence_ms" in preset_overrides:
+                silence_ms = self._clamp(preset_overrides["interval_silence_ms"], *self.silence_ms_range)
+            if "s2mel_stretch_ratio" in preset_overrides:
+                stretch_ratio = self._clamp(preset_overrides["s2mel_stretch_ratio"], *self.stretch_ratio_range)
+            if "speed_variation" in preset_overrides:
+                variation_sum = preset_overrides["speed_variation"]
+            if "cfm_inference_cfg_rate" in preset_overrides:
+                cfg_rate = self._clamp(preset_overrides["cfm_inference_cfg_rate"], *self.cfg_rate_range)
 
         return DynamicsOverrides(
             temperature=temperature,

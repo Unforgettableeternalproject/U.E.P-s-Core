@@ -215,3 +215,53 @@ class TestEmotionDynamicsMixed:
         result = dyn.compute([0.02, 0.01, 0.01, 0.0, 0.0, 0.0, 0.0, 0.0])
         assert result.dominant_emotion == "neutral"
         assert result.temperature is None
+
+
+class TestPresetOverrides:
+    """Preset-level dynamics overrides 測試"""
+
+    def test_speed_variation_override(self):
+        """preset_overrides 應覆寫加權計算的 speed_variation"""
+        dyn = EmotionDynamics()
+        # flustered-like: afraid + surprised
+        vec = [0.05, 0.0, 0.0, 0.15, 0.0, 0.0, 0.15, 0.0]
+
+        # 不帶 override
+        result_default = dyn.compute(vec)
+        assert result_default.speed_variation > 0
+
+        # 帶 override
+        result_override = dyn.compute(vec, preset_overrides={"speed_variation": 0.50})
+        assert result_override.speed_variation == 0.50
+        assert result_override.speed_variation != result_default.speed_variation
+
+    def test_temperature_override_is_clamped(self):
+        """preset_overrides 的 temperature 應被 clamp 到安全範圍"""
+        dyn = EmotionDynamics(temperature_range=(0.5, 1.2))
+        vec = [0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        result = dyn.compute(vec, preset_overrides={"temperature": 99.0})
+        assert result.temperature == 1.2  # clamped to max
+
+    def test_no_override_preserves_computed(self):
+        """preset_overrides=None 時行為不變"""
+        dyn = EmotionDynamics()
+        vec = [0.0, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        result_a = dyn.compute(vec, preset_overrides=None)
+        result_b = dyn.compute(vec)
+        assert result_a.temperature == result_b.temperature
+        assert result_a.speed_variation == result_b.speed_variation
+
+    def test_partial_override(self):
+        """只覆寫部分欄位，其餘保持加權計算值"""
+        dyn = EmotionDynamics()
+        vec = [0.0, 0.0, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0]  # sad
+        base_t = 0.8
+        result = dyn.compute(
+            vec, base_temperature=base_t,
+            preset_overrides={"speed_variation": 0.20},
+        )
+        # speed_variation 被覆寫
+        assert result.speed_variation == 0.20
+        # temperature 仍然是加權計算的（sad → 低於 base）
+        assert result.temperature is not None
+        assert result.temperature < base_t

@@ -1,0 +1,123 @@
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Emotion Presets — 情緒預設定義
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#
+# 每個 preset 可以是：
+#   1. 簡單格式：只有 vector（8D 情緒向量）
+#   2. 完整格式：vector + overrides（dynamics / text_markers 覆寫）
+#
+# 8D 向量順序：
+#   [happy, angry, sad, afraid, disgusted, melancholic, surprised, calm]
+#
+# overrides 可用欄位：
+#   speed_variation       — 段落間語速擺幅（數字越大越不穩定）
+#   s2mel_stretch_ratio   — 基礎語速（正=慢，負=快）
+#   temperature           — GPT 採樣溫度
+#   interval_silence_ms   — 段間靜音毫秒
+#   cfm_inference_cfg_rate — style conditioning 強度
+#   text_markers          — 自訂情緒文本標記（取代基於 dominant emotion 的查表）
+#
+# text_markers 格式：
+#   text_markers:
+#     zh:
+#       prefix_particles: [...]    # 句首語氣詞
+#       mid_particles: [...]       # 句中語氣詞
+#       suffix_particles: [...]    # 句末語氣詞
+#       pause_markers: [...]       # 停頓標記
+#       prefer_short_sentences: true/false
+#     en:
+#       prefix_particles: [...]
+#       ...
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# ── 基礎情緒預設 ──
+# 這些 preset 各自只啟動單一情緒維度（或少量混合），
+# 文本標記使用 emotion_text_markers.py 的內建規則即可。
+
+neutral:
+  vector: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+calm:
+  vector: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.3]
+
+happy:
+  vector: [0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.05, 0.0]
+
+angry:
+  vector: [0.0, 0.3, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0]
+
+sad:
+  vector: [0.0, 0.0, 0.3, 0.0, 0.0, 0.1, 0.0, 0.0]
+
+afraid:
+  vector: [0.0, 0.0, 0.05, 0.3, 0.0, 0.0, 0.05, 0.0]
+
+disgusted:
+  vector: [0.0, 0.05, 0.0, 0.0, 0.3, 0.0, 0.0, 0.0]
+
+melancholic:
+  vector: [0.0, 0.0, 0.1, 0.0, 0.0, 0.3, 0.0, 0.05]
+
+surprised:
+  vector: [0.05, 0.0, 0.0, 0.05, 0.0, 0.0, 0.3, 0.0]
+
+gentle:
+  vector: [0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.2]
+
+stern:
+  vector: [0.0, 0.15, 0.0, 0.0, 0.05, 0.0, 0.02, 0.1]
+
+wistful:
+  vector: [0.05, 0.0, 0.15, 0.0, 0.0, 0.15, 0.0, 0.1]
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 複合情緒預設（帶 dynamics + text_markers overrides）
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# flustered（慌張）：緊張+驚訝+些許怕，語速不穩定
+flustered:
+  vector: [0.05, 0.0, 0.0, 0.15, 0.0, 0.0, 0.15, 0.0]
+  overrides:
+    speed_variation: 0.12
+    text_markers:
+      zh:
+        prefix_particles: ["欸？那、那個……", "什……什麼，"]
+        mid_particles: ["……欸……", "——那個，"]
+        suffix_particles: ["……！？", "……欸？"]
+        prefer_short_sentences: true
+      en:
+        prefix_particles: ["W-wait, what— ", "H-huh? "]
+        mid_particles: ["— wait, ", "... uh, "]
+        suffix_particles: ["...?!", "— huh?!"]
+        prefer_short_sentences: true
+
+# tsundere（傲嬌）：表面惱怒+掩藏的在意+刻意冷靜
+tsundere:
+  vector: [0.05, 0.2, 0.0, 0.0, 0.05, 0.0, 0.0, 0.1]
+  overrides:
+    speed_variation: 0.06
+    text_markers:
+      zh:
+        prefix_particles: ["哼，", "才、才不是，"]
+        mid_particles: ["——哼，"]
+        suffix_particles: ["……才怪", "，哼！"]
+        prefer_short_sentences: true
+      en:
+        prefix_particles: ["Hmph, ", "I-It's not like "]
+        mid_particles: ["— hmph, "]
+        suffix_particles: ["... or anything!", ", hmph!"]
+        prefer_short_sentences: true
+
+# anticipated（期待）：興奮+些許驚喜+底層沉著
+anticipated:
+  vector: [0.15, 0.0, 0.0, 0.05, 0.0, 0.0, 0.1, 0.05]
+  overrides:
+    speed_variation: 0.05
+    text_markers:
+      zh:
+        prefix_particles: ["嘿，", "欸欸，"]
+        suffix_particles: ["呢！", "吧！"]
+      en:
+        prefix_particles: ["Oh, ", "Hey, "]
+        suffix_particles: ["!", ", right?!"]

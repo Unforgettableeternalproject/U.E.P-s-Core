@@ -3,32 +3,15 @@ from __future__ import annotations
 import shlex
 from typing import Callable, Protocol
 
+# ── Emotion presets & helpers: loaded from echo_tts/config/emotion_presets.yaml ──
+from echo_tts.config.emotion_presets import (
+    EMOTION_LABELS,
+    load_presets,
+    get_preset_vector,
+    get_preset_overrides,
+)
 
-# --- Emotion presets (name → 8D vector) ---
-# Order: happy, angry, sad, afraid, disgusted, melancholic, surprised, calm
-EMOTION_PRESETS: dict[str, list[float]] = {
-    "neutral":     [0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0],
-    "calm":        [0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.3],
-    "happy":       [0.3,  0.0,  0.0,  0.0,  0.0,  0.0,  0.05, 0.0],
-    "angry":       [0.0,  0.3,  0.0,  0.0,  0.05, 0.0,  0.0,  0.0],
-    "sad":         [0.0,  0.0,  0.3,  0.0,  0.0,  0.1,  0.0,  0.0],
-    "afraid":      [0.0,  0.0,  0.05, 0.3,  0.0,  0.0,  0.05, 0.0],
-    "disgusted":   [0.0,  0.05, 0.0,  0.0,  0.3,  0.0,  0.0,  0.0],
-    "melancholic": [0.0,  0.0,  0.1,  0.0,  0.0,  0.3,  0.0,  0.05],
-    "surprised":   [0.05, 0.0,  0.0,  0.05, 0.0,  0.0,  0.3,  0.0],
-    "gentle":      [0.1,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.2],
-    "stern":       [0.0,  0.15, 0.0,  0.0,  0.05, 0.0,  0.0,  0.1],
-    "wistful":     [0.05, 0.0,  0.1,  0.0,  0.0,  0.15, 0.0,  0.1],
-    # ── 複合情緒預設 ──
-    # flustered（慌張）：緊張+驚訝+些許怕，語速不穩定
-    "flustered":   [0.05, 0.0,  0.0,  0.15, 0.0,  0.0,  0.15, 0.0],
-    # tsundere（傲嬌）：表面惱怒+掩藏的在意+刻意冷靜
-    "tsundere":    [0.05, 0.15, 0.0,  0.0,  0.05, 0.0,  0.0,  0.1],
-    # anticipated（期待）：興奮+些許驚喜+底層沉著
-    "anticipated": [0.15, 0.0,  0.0,  0.0,  0.0,  0.0,  0.1,  0.05],
-}
-
-EMOTION_LABELS = ["happy", "angry", "sad", "afraid", "disgusted", "melancholic", "surprised", "calm"]
+EMOTION_PRESETS = load_presets()
 
 # --- Language support ---
 SUPPORTED_LANGUAGES = {"en": "English", "zh": "Chinese"}
@@ -124,6 +107,12 @@ class InteractiveSession(Protocol):
         ...
 
     def get_emotion(self) -> list[float]:
+        ...
+
+    def set_emotion_overrides(self, overrides: dict | None) -> None:
+        ...
+
+    def get_emotion_overrides(self) -> dict | None:
         ...
 
     def set_language(self, language: str) -> None:
@@ -380,8 +369,11 @@ class InteractiveShell:
         # Try as preset name
         name = args[0].lower()
         if name in EMOTION_PRESETS:
-            vec = EMOTION_PRESETS[name]
+            entry = EMOTION_PRESETS[name]
+            vec = get_preset_vector(entry)
+            overrides = get_preset_overrides(entry)
             self.session.set_emotion(list(vec))
+            self.session.set_emotion_overrides(overrides)
             pairs = [f"{l}={v:.2f}" for l, v in zip(EMOTION_LABELS, vec)]
             self.write(f"Emotion set to '{name}': [{', '.join(pairs)}]")
             return True
@@ -443,9 +435,14 @@ class InteractiveShell:
             out_dir = self.session.output_dir
         out_dir.mkdir(parents=True, exist_ok=True)
 
+        original_overrides = self.session.get_emotion_overrides()
+
         results = []
-        for i, (preset_name, emo_vector) in enumerate(presets):
-            self.session.set_emotion(emo_vector)
+        for i, (preset_name, entry) in enumerate(presets):
+            vec = get_preset_vector(entry)
+            overrides = get_preset_overrides(entry)
+            self.session.set_emotion(vec)
+            self.session.set_emotion_overrides(overrides)
             out_path = out_dir / f"{stem}_{preset_name}{suffix}"
             self.write(f"  [{i + 1}/{total}] {preset_name}...")
 
@@ -460,8 +457,9 @@ class InteractiveShell:
             except Exception as exc:
                 self.write(f"    ⚠ {preset_name} failed: {exc}")
 
-        # Restore original emotion
+        # Restore original emotion + overrides
         self.session.set_emotion(original_emotion)
+        self.session.set_emotion_overrides(original_overrides)
 
         self.write(f"[batch] Done — {len(results)}/{total} files:")
         for name, path in results:

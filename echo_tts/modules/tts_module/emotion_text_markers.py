@@ -176,6 +176,7 @@ class EmotionTextMarkers:
         text: str,
         emotion_vector: List[float],
         language: str = "zh",
+        preset_overrides: Optional[Dict] = None,
     ) -> str:
         """
         根據情緒向量修改文本。
@@ -184,6 +185,8 @@ class EmotionTextMarkers:
             text: 原始文本
             emotion_vector: 8D 情緒向量（emo_bias + normalize 後）
             language: 語言 ("zh" 或 "en")
+            preset_overrides: 可選的 preset overrides dict，
+                若含有 "text_markers" key 則直接使用自訂規則
 
         Returns:
             修改後的文本（情緒太弱時回傳原文）
@@ -199,9 +202,26 @@ class EmotionTextMarkers:
         if max_val < self.activation_threshold:
             return text
 
-        dominant_idx = emotion_vector.index(max_val)
-        rules = self.zh_rules if language == "zh" else self.en_rules
-        rule = rules.get(dominant_idx)
+        # 決定使用的規則：preset override > dominant emotion lookup
+        rule = None
+        if preset_overrides and "text_markers" in preset_overrides:
+            marker_cfg = preset_overrides["text_markers"]
+            lang_cfg = marker_cfg.get(language) or marker_cfg.get("zh" if language == "zh" else "en")
+            if lang_cfg:
+                rule = EmotionMarkupRule(
+                    prefix_particles=lang_cfg.get("prefix_particles", []),
+                    mid_particles=lang_cfg.get("mid_particles", []),
+                    suffix_particles=lang_cfg.get("suffix_particles", []),
+                    pause_markers=lang_cfg.get("pause_markers", []),
+                    prefer_short_sentences=lang_cfg.get("prefer_short_sentences", False),
+                    end_punctuation=lang_cfg.get("end_punctuation"),
+                )
+
+        if rule is None:
+            # Fallback：基於 dominant emotion 查表
+            dominant_idx = emotion_vector.index(max_val)
+            rules = self.zh_rules if language == "zh" else self.en_rules
+            rule = rules.get(dominant_idx)
 
         if rule is None:
             return text

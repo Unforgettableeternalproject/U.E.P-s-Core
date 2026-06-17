@@ -65,6 +65,12 @@ class FakeSession:
     def set_emotion(self, emotion_vector: list) -> None:
         pass
 
+    def set_emotion_overrides(self, overrides: dict | None) -> None:
+        pass
+
+    def get_emotion_overrides(self) -> dict | None:
+        return None
+
     def status(self):
         return {"loaded": True, "say_count": len(self.say_calls), "save_count": len(self.save_calls)}
 

@@ -23,7 +23,7 @@ class FakeBackendWithProfile:
         Path(output_path).write_bytes(b"fake wav")
         return Path(output_path)
 
-    def profile_generate(self, text, output_path):
+    def profile_generate(self, text, output_path, **kwargs):
         if not self.loaded:
             raise RuntimeError("not loaded")
         self.profile_calls.append((text, output_path))

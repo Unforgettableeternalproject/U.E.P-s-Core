@@ -33,7 +33,7 @@ import time
 import torch
 import warnings
 from pathlib import Path
-from typing import Optional, List, Union
+from typing import Dict, Optional, List, Union
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -1222,6 +1222,7 @@ class IndexTTSLite:
         on_segment_audio=None,
         max_text_tokens_per_segment: int = 120,
         quick_streaming_tokens: int = 0,
+        preset_overrides: Optional[Dict] = None,
     ) -> bool:
         """
         合成語音 — 回傳 bool，保持向後相容。
@@ -1235,6 +1236,7 @@ class IndexTTSLite:
             max_text_tokens_per_segment: Maximum BPE tokens per segment (default 120, matches upstream).
             quick_streaming_tokens: If > 0, first segment will be at most this many tokens
                 for faster first-audio latency.
+            preset_overrides: Optional dict of dynamics overrides from emotion preset.
         """
         success, _ = self._synthesize_impl(
             text=text, output_path=output_path,
@@ -1246,6 +1248,7 @@ class IndexTTSLite:
             on_segment_audio=on_segment_audio,
             max_text_tokens_per_segment=max_text_tokens_per_segment,
             quick_streaming_tokens=quick_streaming_tokens,
+            preset_overrides=preset_overrides,
         )
         return success
 
@@ -1266,6 +1269,7 @@ class IndexTTSLite:
         verbose: bool = True,
         max_text_tokens_per_segment: int = 120,
         quick_streaming_tokens: int = 0,
+        preset_overrides: Optional[Dict] = None,
     ) -> tuple:
         """
         合成語音並回傳 (success: bool, timings: dict)。
@@ -1280,6 +1284,7 @@ class IndexTTSLite:
             verbose=verbose, collect_timings=True,
             max_text_tokens_per_segment=max_text_tokens_per_segment,
             quick_streaming_tokens=quick_streaming_tokens,
+            preset_overrides=preset_overrides,
         )
 
     def _synthesize_impl(
@@ -1301,6 +1306,7 @@ class IndexTTSLite:
         on_segment_audio=None,
         max_text_tokens_per_segment: int = 120,
         quick_streaming_tokens: int = 0,
+        preset_overrides: Optional[Dict] = None,
     ) -> tuple:
         """
         合成語音的核心實現 (獨立引擎實現,參考 infer_v2.py 邏輯)
@@ -1393,6 +1399,7 @@ class IndexTTSLite:
             base_silence_ms=self.interval_silence_ms,
             base_stretch_ratio=self.s2mel_stretch_ratio,
             base_cfg_rate=self.cfm_inference_cfg_rate,
+            preset_overrides=preset_overrides,
         )
         if dyn.temperature is not None:
             temperature = dyn.temperature
@@ -1422,7 +1429,10 @@ class IndexTTSLite:
 
             # 第二層：文本層情緒標記（在 tokenize 前修改文本）
             original_text = text
-            text = self.emotion_text_markers.apply(text, normalized_emotion, language=language)
+            text = self.emotion_text_markers.apply(
+                text, normalized_emotion, language=language,
+                preset_overrides=preset_overrides,
+            )
             if verbose and text != original_text:
                 debug_log(3, f"      🎭 情緒文本標記: \"{original_text}\" → \"{text}\"")
 

@@ -56,6 +56,14 @@ class TTSInteractiveSession:
         """Return the current emotion vector."""
         return list(self.backend.emotion_vector or [0.0] * 8)
 
+    def set_emotion_overrides(self, overrides: dict | None) -> None:
+        """Set preset-level dynamics overrides (speed_variation, etc.)."""
+        self._emotion_overrides = overrides
+
+    def get_emotion_overrides(self) -> dict | None:
+        """Return current preset-level dynamics overrides."""
+        return getattr(self, "_emotion_overrides", None)
+
     def set_language(self, language: str) -> None:
         """Set synthesis language ('en' or 'zh')."""
         self._language = language
@@ -173,6 +181,7 @@ class TTSInteractiveSession:
 
             generated = self.backend.generate(
                 text, output_path, on_segment_audio=_on_segment, language=lang,
+                emotion_overrides=self.get_emotion_overrides(),
             )
 
             segments_played = self.player.wait_stream()
@@ -187,12 +196,17 @@ class TTSInteractiveSession:
                     play_tensor(audio_tensor)
                     segments_played += 1
 
+            _emo_overrides = self.get_emotion_overrides()
             if play_tensor is not None:
                 generated = self.backend.generate(
                     text, output_path, on_segment_audio=_on_segment, language=lang,
+                    emotion_overrides=_emo_overrides,
                 )
             else:
-                generated = self.backend.generate(text, output_path, language=lang)
+                generated = self.backend.generate(
+                    text, output_path, language=lang,
+                    emotion_overrides=_emo_overrides,
+                )
 
         # Fallback: if no segments were streamed, play the final file
         if segments_played == 0:
@@ -217,7 +231,10 @@ class TTSInteractiveSession:
         self.load()
         output_path = self._resolve_auto_output_path(prefix="save")
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        generated = self.backend.generate(text, output_path, language=self.get_language())
+        generated = self.backend.generate(
+            text, output_path, language=self.get_language(),
+            emotion_overrides=self.get_emotion_overrides(),
+        )
         self._save_count += 1
         self._last_output_path = generated
         return SayResult(text=text, output_path=generated)
@@ -232,7 +249,9 @@ class TTSInteractiveSession:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         if hasattr(self.backend, "profile_generate"):
-            generated, report = self.backend.profile_generate(text, output_path)
+            generated, report = self.backend.profile_generate(
+                text, output_path, emotion_overrides=self.get_emotion_overrides(),
+            )
         else:
             # Fallback: generate without profiling data
             generated = self.backend.generate(text, output_path)
@@ -264,7 +283,10 @@ class TTSInteractiveSession:
 
         self.load()
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        return self.backend.generate(text, output_path, language=self.get_language())
+        return self.backend.generate(
+            text, output_path, language=self.get_language(),
+            emotion_overrides=self.get_emotion_overrides(),
+        )
 
     def _resolve_output_path(self, output_path: str | Path) -> Path:
         path = Path(output_path)

@@ -175,7 +175,7 @@ def render_vad_panel(engine: STTEngine) -> Panel:
     vad = engine.vad_module
     table.add_row("Energy VAD", Text("active", style="green"))
     table.add_row("  Sensitivity", f"[cyan]{vad.sensitivity:.2f}[/]")
-    table.add_row("  Min Speech", f"[cyan]{vad.min_speech_duration:.2f}s[/]")
+    table.add_row("  Min Speech", f"[cyan]{vad.speech_duration_threshold:.2f}s[/]")
     table.add_row("Speaker Module", Text("loaded", style="green") if engine.speaker_module else Text("disabled", style="dim"))
     table.add_row("Keyword Detector", Text("loaded", style="green") if engine.keyword_detector else Text("disabled", style="dim"))
 

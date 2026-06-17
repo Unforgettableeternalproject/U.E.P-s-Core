@@ -34,9 +34,15 @@ class SileroVAD:
     使用 torch.hub 載入 snakers4/silero-vad 模型。
     比 energy-based VAD 準確得多，特別是在噪音環境中。
 
+    注意：Silero 嚴格要求 16kHz 下每次 exactly 512 samples。
+    本包裝器內部做 rebuffering，接受任意大小的 chunk。
+
     如果 Silero 不可用（沒裝 torch 或下載失敗），
     自動 fallback 到 energy-based。
     """
+
+    # Silero 在 16kHz 下要求 exactly 512 samples per call
+    WINDOW_SIZE_16K = 512
 
     def __init__(
         self,
@@ -47,6 +53,7 @@ class SileroVAD:
         self.sampling_rate = sampling_rate
         self._model = None
         self._available = False
+        self._buffer = np.array([], dtype=np.float32)  # rebuffer 用
 
     def initialize(self) -> bool:
         """載入 Silero VAD 模型。"""
@@ -75,6 +82,9 @@ class SileroVAD:
     def is_speech(self, audio_chunk: np.ndarray) -> Tuple[bool, float]:
         """判斷音訊 chunk 是否包含語音。
 
+        接受任意大小的 chunk，內部 rebuffer 成 512-sample 批次
+        送入 Silero 模型。取所有批次的最大機率作為結果。
+
         Args:
             audio_chunk: float32 array，16kHz mono
 
@@ -90,11 +100,24 @@ class SileroVAD:
             if audio_chunk.dtype != np.float32:
                 audio_chunk = audio_chunk.astype(np.float32)
 
-            # Silero VAD 期望 float32 tensor
-            tensor = torch.from_numpy(audio_chunk)
-            confidence = self._model(tensor, self.sampling_rate).item()
-            is_speech = confidence >= self.threshold
-            return is_speech, float(confidence)
+            # 加入 rebuffer
+            self._buffer = np.concatenate([self._buffer, audio_chunk])
+
+            ws = self.WINDOW_SIZE_16K
+            max_confidence = 0.0
+
+            # 每次取 512 samples 送入模型
+            while len(self._buffer) >= ws:
+                window = self._buffer[:ws]
+                self._buffer = self._buffer[ws:]
+
+                tensor = torch.from_numpy(window)
+                prob = self._model(tensor, self.sampling_rate).item()
+                if prob > max_confidence:
+                    max_confidence = prob
+
+            is_speech = max_confidence >= self.threshold
+            return is_speech, float(max_confidence)
 
         except Exception as e:
             logger.debug("[SileroVAD] 推論失敗: %s", e)
@@ -104,6 +127,7 @@ class SileroVAD:
         """重置模型內部狀態（切換通道時需要）。"""
         if self._model is not None and hasattr(self._model, "reset_states"):
             self._model.reset_states()
+        self._buffer = np.array([], dtype=np.float32)
 
 
 # ──────────────────────────────────────────────────────────────

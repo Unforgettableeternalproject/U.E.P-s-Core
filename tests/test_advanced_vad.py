@@ -496,14 +496,16 @@ class TestAdvancedVAD:
 
 
 def _can_load_silero() -> bool:
-    """檢查 Silero VAD 是否可用（用於 skip 標記）"""
+    """檢查 Silero VAD 是否可用（用於 skip 標記）。
+    只檢查 torch 是否可 import，不實際載入模型（避免 hang）。
+    """
     try:
-        import torch
-        torch.hub.load(
-            "snakers4/silero-vad", "silero_vad",
-            force_reload=False, trust_repo=True,
-        )
-        return True
+        import torch  # noqa: F401
+        import os
+        # 只檢查快取是否存在，不走 torch.hub.load
+        hub_dir = torch.hub.get_dir()
+        silero_dir = os.path.join(hub_dir, "snakers4_silero-vad_master")
+        return os.path.exists(silero_dir)
     except Exception:
         return False
 

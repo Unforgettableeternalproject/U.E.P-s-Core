@@ -341,6 +341,62 @@ def _cmd_devices(engine: STTEngine) -> None:
     console.print(Panel(table, title="[bold]🎧 Audio Input Devices[/]", border_style="cyan"))
 
 
+def _cmd_device(engine: STTEngine, args: list[str]) -> None:
+    """顯示或切換音訊輸入設備"""
+    import pyaudio
+
+    if not args:
+        # 無參數：顯示目前設備
+        current = engine.device_index
+        if current is None:
+            console.print("  🎧 Current device: [cyan][auto] (system default)[/]")
+        else:
+            pa = pyaudio.PyAudio()
+            try:
+                info = pa.get_device_info_by_index(current)
+                name = info.get("name", "Unknown")
+                console.print(f"  🎧 Current device: [cyan][{current}] {name}[/]")
+            finally:
+                pa.terminate()
+        return
+
+    sub = args[0].lower()
+
+    if sub == "auto":
+        engine.device_index = None
+        # 重建 PyAudio config
+        engine.pa_config["input_device_index"] = None
+        console.print("  [green]✓[/] 🎧 Switched to [cyan][auto] (system default)[/]")
+        return
+
+    # 數字 → 切換到指定設備
+    try:
+        idx = int(sub)
+    except ValueError:
+        console.print("  [dim]Usage: device [index | auto][/]")
+        return
+
+    # 驗證設備存在且有輸入通道
+    pa = pyaudio.PyAudio()
+    try:
+        if idx < 0 or idx >= pa.get_device_count():
+            console.print(f"  [red]Device index {idx} out of range (0-{pa.get_device_count()-1})[/]")
+            return
+
+        info = pa.get_device_info_by_index(idx)
+        max_input = info.get("maxInputChannels", 0)
+        if not isinstance(max_input, int) or max_input <= 0:
+            console.print(f"  [red]Device {idx} has no input channels[/]")
+            return
+
+        name = info.get("name", "Unknown")
+    finally:
+        pa.terminate()
+
+    engine.device_index = idx
+    console.print(f"  [green]✓[/] 🎧 Switched to [cyan][{idx}] {name}[/]")
+
+
 def _cmd_config(config: dict, args: list[str]) -> dict:
     """Config 管理（show / set / reload）"""
     if not args:
@@ -605,7 +661,8 @@ class EchoSTTCLI:
             ("dashboard / d",       "📊 Engine status & stats",                 "cyan"),
             ("history / h",         "📜 Recognition history",                   "cyan"),
             ("vad",                 "🔊 VAD & module status",                   "cyan"),
-            ("devices",             "🎧 Audio input devices",                   "cyan"),
+            ("devices",             "🎧 List audio input devices",              "cyan"),
+            ("device [idx|auto]",   "🎧 Show/switch input device",             "cyan"),
             ("", "", ""),
             ("config",              "⚙️  Show/set config (set/reload)",          "yellow"),
             ("", "", ""),
@@ -715,6 +772,9 @@ class EchoSTTCLI:
 
                     case "devices":
                         _cmd_devices(self.engine)
+
+                    case "device" | "dev":
+                        _cmd_device(self.engine, args)
 
                     case "config":
                         self.config = _cmd_config(self.config, args)

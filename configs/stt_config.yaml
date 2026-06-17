@@ -75,6 +75,39 @@ keyword:
   activation_threshold: 0.6             # ✅ 啟動閾值
   wake_confidence_threshold: 0.8        # ✅ 喚醒信心度閾值
 
+# ─── 多通道引擎 ───────────────────────────────────────────
+multi_channel:
+  enabled: false                           # 多通道功能開關（false = 不初始化）
+
+  # Worker 池設定
+  num_workers: 2                           # 辨識 worker 數量（共用 WhisperModel）
+  queue_max_size: 50                       # 佇列上限（滿了丟棄新 segment）
+
+  # 通道限制
+  max_channels: 8                          # 最大通道數
+
+  # VAD 設定（每個通道獨立實例）
+  vad_config:
+    sample_rate: 16000
+    sensitivity: 0.7
+    min_speech_duration: 0.3
+    use_silero: true
+    silero_threshold: 0.5
+    trailing_silence_ms: 600
+    max_segment_ms: 30000
+    min_speech_ms: 200
+    adaptive_threshold: true
+
+  # 預設語言（null = 自動偵測）
+  default_language: null
+
+  # 降噪前處理
+  noise_filter_enabled: false
+
+  # Timeout 設定
+  drain_timeout_s: 5.0                     # stop() 時等佇列排空的上限
+  direct_transcribe_timeout_s: 10.0        # transcribe_segment() 同步阻塞上限
+
 # ─── 後處理 (TODO: 尚未實作) ──────────────────────────────
 # post_processing:
 #   text_correction: true

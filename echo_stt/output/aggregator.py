@@ -104,6 +104,15 @@ class TranscriptAggregator:
                     "[Aggregator] Session auto-started: %s (base_ts=%.1f)",
                     self._session.session_id, entry.start_ts,
                 )
+            elif entry.start_ts < self._session.started_at:
+                # 多 worker 競爭下，較晚完成的 entry 可能有更早的時間戳。
+                # 回溯更新 session 基準，確保所有相對時間正確。
+                old = self._session.started_at
+                self._session.started_at = entry.start_ts
+                logger.debug(
+                    "[Aggregator] Session base_ts 回溯: %.3f → %.3f (Δ%.3fs)",
+                    old, entry.start_ts, old - entry.start_ts,
+                )
             self._session.add_entry(entry)
 
         # 即時 callback

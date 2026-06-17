@@ -37,6 +37,7 @@ from echo_stt.core.multi_channel_schemas import (
 )
 from echo_stt.channel.manager import ChannelManager
 from echo_stt.output.aggregator import TranscriptAggregator
+from echo_stt.pipeline.post_process import PostProcessor
 from echo_stt.pipeline.worker import STTWorkerPool
 from echo_stt.vad.noise_filter import NoiseFilter
 
@@ -174,6 +175,14 @@ class MultiChannelSTTEngine:
             if self._noise_filter_enabled:
                 noise_filter = NoiseFilter()
 
+            # 3.5 建立後處理管線（hallucination 過濾 + 繁簡轉換）
+            post_processor = PostProcessor.from_config(self.config)
+            logger.info(
+                "[MCEngine] 後處理: hallu_filter=%s, chinese_conv=%s",
+                post_processor._hallu_filter is not None,
+                post_processor.chinese_converter_available,
+            )
+
             # 4. 建立 TranscriptAggregator
             self._aggregator = TranscriptAggregator(
                 on_entry=self._on_entry_internal,
@@ -189,6 +198,7 @@ class MultiChannelSTTEngine:
                 num_workers=effective_workers,
                 max_queue_size=self._queue_max_size,
                 noise_filter=noise_filter,
+                post_processor=post_processor,
                 default_language=self._default_language,
             )
 

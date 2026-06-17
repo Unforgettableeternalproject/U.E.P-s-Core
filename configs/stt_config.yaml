@@ -108,11 +108,17 @@ multi_channel:
   drain_timeout_s: 5.0                     # stop() 時等佇列排空的上限
   direct_transcribe_timeout_s: 10.0        # transcribe_segment() 同步阻塞上限
 
-# ─── 後處理 (TODO: 尚未實作) ──────────────────────────────
-# post_processing:
-#   text_correction: true
-#   remove_filler_words: true
-#   normalize_punctuation: true
+# ─── 後處理 ───────────────────────────────────────────────
+post_processing:
+  # Hallucination 過濾（偵測 Whisper 重複輸出）
+  hallucination_filter: true              # ✅ 啟用重複偵測
+  max_repeat_ratio: 0.4                   # ✅ 單一 token 佔比超過此值即判定重複
+  max_repeat_count: 5                     # ✅ 同一 token 連續出現超過此次數即判定
+  min_confidence: 0.05                    # ✅ 低於此信心度直接丟棄
+
+  # 繁簡轉換（基於 OpenCC）
+  chinese_convert: "s2twp"                # ✅ 簡體→繁體台灣用詞 (null = 不轉換)
+  # 可用方案: s2twp (推薦), s2t, t2s, s2hk
 
 # ─── 效能 (TODO: 尚未實作) ────────────────────────────────
 # performance:

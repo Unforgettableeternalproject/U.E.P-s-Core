@@ -94,10 +94,28 @@ multi_channel:
     min_speech_duration: 0.3
     use_silero: true
     silero_threshold: 0.5
-    trailing_silence_ms: 600
-    max_segment_ms: 30000
-    min_speech_ms: 200
-    adaptive_threshold: true
+    trailing_silence_ms: 600               # 固定模式下的 trailing silence（自適應開啟時作為 fallback）
+    max_segment_ms: 30000                  # 強制截斷上限
+    min_speech_ms: 200                     # 最短段落（低於此忽略）
+    adaptive_threshold: true               # 自適應背景噪音閾值
+
+    # ── 自適應 trailing silence ──────────
+    # 根據已累積語音長度動態調整 trailing silence，
+    # 解決固定閾值的「斷太早」和「斷太晚」問題
+    adaptive_trailing: true                # 啟用自適應（false = 用固定 trailing_silence_ms）
+    soft_max_segment_ms: 9000              # 軟性切割點（超過後降至 long 級閾值）
+    pre_speech_padding_chunks: 3           # 語音前保留的 chunk 數（捕捉起始輔音）
+
+    # 段落長度區間閾值（ms）
+    short_seg_threshold_ms: 3000           # < 3s = 短段落
+    medium_seg_threshold_ms: 10000         # 3-10s = 中段落
+    long_seg_threshold_ms: 20000           # 10-20s = 長段落，> 20s = 超長
+
+    # 各區間的 trailing silence（ms）
+    short_trailing_ms: 1100                # 短段落：等久一點（說話者可能在想）
+    medium_trailing_ms: 650                # 中段落：正常節奏
+    long_trailing_ms: 450                  # 長段落：積極切割
+    very_long_trailing_ms: 300             # 超長段落：趁停頓就切
 
   # 預設語言（null = 自動偵測）
   default_language: null

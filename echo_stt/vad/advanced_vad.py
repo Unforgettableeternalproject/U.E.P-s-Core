@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
@@ -21,6 +22,43 @@ from echo_stt.core.multi_channel_schemas import AudioSegment, ChannelType
 from echo_stt.vad.energy_vad import VoiceActivityDetection
 
 logger = logging.getLogger(__name__)
+
+
+# ──────────────────────────────────────────────────────────────
+#  AdaptiveTrailingSilenceConfig — 自適應 trailing silence 配置
+# ──────────────────────────────────────────────────────────────
+
+
+@dataclass
+class AdaptiveTrailingSilenceConfig:
+    """自適應 trailing silence 配置。
+
+    根據已累積的語音長度動態調整 trailing silence 閾值：
+    - 短段落（< short_seg_threshold_s）：更有耐心，等更久
+    - 中段落：正常判斷
+    - 長段落：積極切割
+    - 超長段落（> long_seg_threshold_s）：趁下一個停頓就切
+
+    區間之間使用線性插值，避免閾值突變。
+    超過 soft_max_segment_s 後，trailing silence 直接降至 long_trailing_s。
+    """
+
+    # ── 段落長度閾值 ──
+    short_seg_threshold_s: float = 3.0    # 短段落上限（秒）
+    medium_seg_threshold_s: float = 10.0  # 中段落上限（秒）
+    long_seg_threshold_s: float = 20.0    # 長段落上限（秒）
+
+    # ── 各區間的 trailing silence ──
+    short_trailing_s: float = 1.1    # 短段落：等 1.1s 再切（給思考空間）
+    medium_trailing_s: float = 0.65  # 中段落：正常節奏
+    long_trailing_s: float = 0.45    # 長段落：積極一點
+    very_long_trailing_s: float = 0.3  # 超長段落：趁停頓就切
+
+    # ── 軟性切割點 ──
+    soft_max_segment_s: float = 9.0  # 超過此長度後，trailing 降至 long 級
+
+    # ── Pre-speech 墊片 ──
+    pre_speech_padding_chunks: int = 3  # SILENCE 時保留的前置 chunk 數
 
 
 # ──────────────────────────────────────────────────────────────
@@ -214,13 +252,20 @@ class VadMuzzle:
         SILENCE → (偵測到語音) → SPEECH
         SPEECH → (靜音開始) → TRAILING_SILENCE
         TRAILING_SILENCE → (語音恢復) → SPEECH （續講）
-        TRAILING_SILENCE → (靜音持續超過 trailing_silence_ms) → SILENCE （段落結束，emit）
+        TRAILING_SILENCE → (靜音持續超過閾值) → SILENCE （段落結束，emit）
         SPEECH → (超過 max_segment_ms) → SILENCE （強制截斷，emit）
 
+    自適應模式（adaptive_config 不為 None 時）：
+        - trailing silence 閾值根據已累積語音長度動態調整
+        - 短段落更有耐心（避免句中切斷）
+        - 長段落更積極（避免黏在一起）
+        - Pre-speech padding 保留語音起始前的音訊
+
     Args:
-        trailing_silence_ms: 語音結束後等多久確認結束（預設 600ms）
+        trailing_silence_ms: 語音結束後等多久確認結束（預設 600ms，自適應模式下作為 fallback）
         max_segment_ms: 單段最大長度，超過強制截斷（預設 30s）
         min_speech_ms: 最短語音長度，低於此忽略（預設 200ms）
+        adaptive_config: 自適應配置（None = 使用固定閾值，向後相容）
     """
 
     def __init__(
@@ -228,15 +273,25 @@ class VadMuzzle:
         trailing_silence_ms: int = 600,
         max_segment_ms: int = 30000,
         min_speech_ms: int = 200,
+        adaptive_config: Optional[AdaptiveTrailingSilenceConfig] = None,
     ):
         self.trailing_silence_s = trailing_silence_ms / 1000.0
         self.max_segment_s = max_segment_ms / 1000.0
         self.min_speech_s = min_speech_ms / 1000.0
+        self._adaptive_config = adaptive_config
 
         self._state = MuzzleState.SILENCE
         self._speech_start: Optional[float] = None
         self._silence_start: Optional[float] = None
         self._audio_buffer: List[np.ndarray] = []
+
+        # Pre-speech ring buffer（自適應模式下保留語音起始前的音訊）
+        self._pre_speech_max = (
+            adaptive_config.pre_speech_padding_chunks
+            if adaptive_config is not None
+            else 0
+        )
+        self._pre_speech_ring: List[np.ndarray] = []
 
     @property
     def state(self) -> MuzzleState:
@@ -253,6 +308,47 @@ class VadMuzzle:
         if self._speech_start is None:
             return 0.0
         return time.time() - self._speech_start
+
+    def _compute_trailing_silence(self, speech_duration_s: float) -> float:
+        """根據已累積語音長度計算動態 trailing silence 閾值。
+
+        使用線性插值在各區間之間平滑過渡，避免閾值突變。
+        超過 soft_max_segment_s 後，直接降至 long_trailing_s。
+
+        Args:
+            speech_duration_s: 當前段落的語音持續時間（秒）
+
+        Returns:
+            trailing silence 閾值（秒）
+        """
+        cfg = self._adaptive_config
+        if cfg is None:
+            return self.trailing_silence_s
+
+        # 軟性切割點：超過後直接用長段落級別的閾值
+        if speech_duration_s >= cfg.soft_max_segment_s:
+            if speech_duration_s >= cfg.long_seg_threshold_s:
+                return cfg.very_long_trailing_s
+            return cfg.long_trailing_s
+
+        if speech_duration_s < cfg.short_seg_threshold_s:
+            return cfg.short_trailing_s
+
+        if speech_duration_s < cfg.medium_seg_threshold_s:
+            # 短 → 中：線性插值
+            t = (speech_duration_s - cfg.short_seg_threshold_s) / (
+                cfg.medium_seg_threshold_s - cfg.short_seg_threshold_s
+            )
+            return cfg.short_trailing_s + t * (cfg.medium_trailing_s - cfg.short_trailing_s)
+
+        if speech_duration_s < cfg.long_seg_threshold_s:
+            # 中 → 長：線性插值
+            t = (speech_duration_s - cfg.medium_seg_threshold_s) / (
+                cfg.long_seg_threshold_s - cfg.medium_seg_threshold_s
+            )
+            return cfg.medium_trailing_s + t * (cfg.long_trailing_s - cfg.medium_trailing_s)
+
+        return cfg.very_long_trailing_s
 
     def push(
         self,
@@ -278,9 +374,17 @@ class VadMuzzle:
                 self._state = MuzzleState.SPEECH
                 self._speech_start = timestamp
                 self._silence_start = None
-                self._audio_buffer = []
+                # 前置 ring buffer 內容（捕捉語音起始的輔音）
+                self._audio_buffer = list(self._pre_speech_ring)
+                self._pre_speech_ring = []
                 if audio_chunk is not None:
                     self._audio_buffer.append(audio_chunk)
+            else:
+                # 維護 pre-speech ring buffer（只在靜音時收集）
+                if audio_chunk is not None and self._pre_speech_max > 0:
+                    self._pre_speech_ring.append(audio_chunk)
+                    if len(self._pre_speech_ring) > self._pre_speech_max:
+                        self._pre_speech_ring.pop(0)
 
         elif self._state == MuzzleState.SPEECH:
             if audio_chunk is not None:
@@ -303,7 +407,14 @@ class VadMuzzle:
                 self._silence_start = None
             else:
                 silence_duration = timestamp - self._silence_start
-                if silence_duration >= self.trailing_silence_s:
+                # 自適應或固定 trailing silence
+                if self._adaptive_config is not None:
+                    current_speech_duration = self._silence_start - self._speech_start
+                    threshold = self._compute_trailing_silence(current_speech_duration)
+                else:
+                    threshold = self.trailing_silence_s
+
+                if silence_duration >= threshold:
                     # 確認段落結束
                     result = self._emit(self._silence_start)
 
@@ -343,6 +454,7 @@ class VadMuzzle:
         self._speech_start = None
         self._silence_start = None
         self._audio_buffer = []
+        self._pre_speech_ring = []
 
 
 # ──────────────────────────────────────────────────────────────
@@ -355,6 +467,10 @@ class AdvancedVAD(VoiceActivityDetection):
 
     後端優先用 SileroVAD，fallback 到 energy-based。
     新增 process_streaming_chunk() 方法供多通道管線使用。
+
+    自適應 trailing silence（adaptive_trailing=True 時）：
+        根據已累積語音長度動態調整 trailing silence 閾值，
+        解決固定閾值導致的「斷太早」和「斷太晚」問題。
     """
 
     def __init__(
@@ -368,16 +484,50 @@ class AdvancedVAD(VoiceActivityDetection):
         max_segment_ms: int = 30000,
         min_speech_ms: int = 200,
         adaptive_threshold: bool = True,
+        # ── 自適應 trailing silence ──
+        adaptive_trailing: bool = False,
+        soft_max_segment_ms: int = 9000,
+        pre_speech_padding_chunks: int = 3,
+        short_seg_threshold_ms: int = 3000,
+        medium_seg_threshold_ms: int = 10000,
+        long_seg_threshold_ms: int = 20000,
+        short_trailing_ms: int = 1100,
+        medium_trailing_ms: int = 650,
+        long_trailing_ms: int = 450,
+        very_long_trailing_ms: int = 300,
     ):
         super().__init__(sample_rate, sensitivity, min_speech_duration)
 
         self.use_silero = use_silero
         self._silero: Optional[SileroVAD] = None
         self._adaptive: Optional[AdaptiveThreshold] = None
+
+        # 建立自適應配置（若啟用）
+        adaptive_config: Optional[AdaptiveTrailingSilenceConfig] = None
+        if adaptive_trailing:
+            adaptive_config = AdaptiveTrailingSilenceConfig(
+                short_seg_threshold_s=short_seg_threshold_ms / 1000.0,
+                medium_seg_threshold_s=medium_seg_threshold_ms / 1000.0,
+                long_seg_threshold_s=long_seg_threshold_ms / 1000.0,
+                short_trailing_s=short_trailing_ms / 1000.0,
+                medium_trailing_s=medium_trailing_ms / 1000.0,
+                long_trailing_s=long_trailing_ms / 1000.0,
+                very_long_trailing_s=very_long_trailing_ms / 1000.0,
+                soft_max_segment_s=soft_max_segment_ms / 1000.0,
+                pre_speech_padding_chunks=pre_speech_padding_chunks,
+            )
+            logger.info(
+                "[AdvancedVAD] 自適應 trailing silence 已啟用 "
+                "(short=%.0fms, medium=%.0fms, long=%.0fms, soft_max=%.1fs)",
+                short_trailing_ms, medium_trailing_ms, long_trailing_ms,
+                soft_max_segment_ms / 1000.0,
+            )
+
         self._muzzle = VadMuzzle(
             trailing_silence_ms=trailing_silence_ms,
             max_segment_ms=max_segment_ms,
             min_speech_ms=min_speech_ms,
+            adaptive_config=adaptive_config,
         )
 
         if use_silero:

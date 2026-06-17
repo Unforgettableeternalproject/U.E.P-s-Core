@@ -77,6 +77,17 @@ class ChannelManager:
             max_segment_ms=self.vad_config.get("max_segment_ms", 30000),
             min_speech_ms=self.vad_config.get("min_speech_ms", 200),
             adaptive_threshold=self.vad_config.get("adaptive_threshold", True),
+            # 自適應 trailing silence
+            adaptive_trailing=self.vad_config.get("adaptive_trailing", False),
+            soft_max_segment_ms=self.vad_config.get("soft_max_segment_ms", 9000),
+            pre_speech_padding_chunks=self.vad_config.get("pre_speech_padding_chunks", 3),
+            short_seg_threshold_ms=self.vad_config.get("short_seg_threshold_ms", 3000),
+            medium_seg_threshold_ms=self.vad_config.get("medium_seg_threshold_ms", 10000),
+            long_seg_threshold_ms=self.vad_config.get("long_seg_threshold_ms", 20000),
+            short_trailing_ms=self.vad_config.get("short_trailing_ms", 1100),
+            medium_trailing_ms=self.vad_config.get("medium_trailing_ms", 650),
+            long_trailing_ms=self.vad_config.get("long_trailing_ms", 450),
+            very_long_trailing_ms=self.vad_config.get("very_long_trailing_ms", 300),
         )
         vad.initialize()
         return vad

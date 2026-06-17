@@ -6,8 +6,9 @@
 whisper:
   # faster-whisper (CTranslate2) 設定
   backend: "faster-whisper"              # ✅ faster-whisper / transformers
-  model_size: "base"                     # ✅ tiny / base / small / medium / large-v3 等
-  compute_type: "float16"                # ✅ float16 / int8 / int8_float16 / float32 (CPU 會自動降級)
+  model_size: "large-v3-turbo"            # ✅ 推薦 large-v3-turbo (1.5GB, 快速, 高品質)
+                                         #    可選: base (141MB, 快但品質差), large-v3 (3GB, 最高品質但慢)
+  compute_type: "int8"                   # ✅ int8 (推薦, VRAM 低) / float16 / float32 (CPU 自動降級)
   device: "auto"                         # ✅ auto / cuda / cpu
   num_workers: 1                         # ✅ CTranslate2 並行 worker 數
   download_root: null                    # ✅ 模型下載目錄（null = HF 快取預設）

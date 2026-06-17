@@ -50,10 +50,15 @@ class SpeakerInfo(BaseModel):
 
 
 class STTInput(BaseModel):
-    """STT 模組輸入 (模組內部使用)"""
+    """STT 模組輸入 (模組內部使用)
+
+    Audit fix: language 改為 Optional[str]，預設 None（自動偵測）。
+    faster-whisper 使用 ISO 639-1 代碼 (e.g. "en", "zh")，
+    不是 BCP 47 (e.g. "en-US")。
+    """
     mode: ActivationMode = ActivationMode.CONTINUOUS
     duration: Optional[float] = None
-    language: str = "en-US"
+    language: Optional[str] = None
     enable_speaker_id: bool = True
     context: Optional[str] = None
 

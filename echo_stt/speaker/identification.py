@@ -110,6 +110,13 @@ class SpeakerIdentification:
         # 從配置中讀取設置
         if config:
             speaker_config = config.get('speaker_recognition', config.get('speaker', {}))
+
+            # Audit fix: 套用 model_name、embedding_model、database_path、similarity_threshold
+            self.model_name = speaker_config.get('model', self.model_name)
+            self._embedding_model_name = speaker_config.get('embedding_model', 'pyannote/embedding')
+            self.database_path = speaker_config.get('database_path', self.database_path)
+            self.similarity_threshold = speaker_config.get('similarity_threshold', self.similarity_threshold)
+
             self.use_multi_distance = speaker_config.get('use_multi_distance', self.use_multi_distance)
             self.use_enhanced_features = speaker_config.get('use_enhanced_features', self.use_enhanced_features)
             self.use_magnitude_difference = speaker_config.get('use_magnitude_difference', self.use_magnitude_difference)
@@ -128,6 +135,8 @@ class SpeakerIdentification:
             self.confidence_max_cap = speaker_config.get('confidence_max_cap', self.confidence_max_cap)
             self.context_sample_threshold = speaker_config.get('context_sample_threshold', self.context_sample_threshold)
             self.min_samples_for_recognition = speaker_config.get('min_samples_for_recognition', self.min_samples_for_recognition)
+        else:
+            self._embedding_model_name = 'pyannote/embedding'
 
         logger.info("[Speaker] 說話人識別模組初始化 (已整合高相似度辨識功能)")
 
@@ -155,10 +164,12 @@ class SpeakerIdentification:
             )
 
             try:
+                # Audit fix: 使用 config 中的 embedding_model_name
+                emb_model_name = getattr(self, '_embedding_model_name', 'pyannote/embedding')
                 self.embedding_model = Model.from_pretrained(  # type: ignore
-                    "pyannote/embedding", use_auth_token=self.hf_token,
+                    emb_model_name, use_auth_token=self.hf_token,
                 )
-                logger.info("[Speaker] 嵌入模型載入成功")
+                logger.info("[Speaker] 嵌入模型載入成功: %s", emb_model_name)
             except Exception as e:
                 logger.error("[Speaker] 嵌入模型載入失敗: %s", e)
                 self.embedding_model = None
@@ -908,14 +919,31 @@ class SpeakerIdentification:
             self.speaker_counter = 0
 
     def _save_speaker_database(self):
+        """Audit fix: atomic save — 先寫 temp 檔再 rename，避免中斷損毀"""
         try:
-            os.makedirs(os.path.dirname(self.database_path), exist_ok=True)
+            db_dir = os.path.dirname(self.database_path)
+            if db_dir:
+                os.makedirs(db_dir, exist_ok=True)
             data = {'database': self.speaker_database, 'counter': self.speaker_counter}
-            with open(self.database_path, 'wb') as f:
+
+            # 寫入臨時檔案
+            tmp_path = self.database_path + ".tmp"
+            with open(tmp_path, 'wb') as f:
                 pickle.dump(data, f)
+
+            # atomic replace (Windows: os.replace 也是 atomic)
+            os.replace(tmp_path, self.database_path)
+
             logger.debug("[Speaker] 儲存說話人資料庫: %d 位說話人", len(self.speaker_database))
         except Exception as e:
             logger.error("[Speaker] 儲存資料庫失敗: %s", e)
+            # 清理 temp 檔
+            tmp_path = self.database_path + ".tmp"
+            if os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
 
     def get_speaker_info(self, speaker_id: str) -> Optional[Dict]:
         return self.speaker_database.get(speaker_id)

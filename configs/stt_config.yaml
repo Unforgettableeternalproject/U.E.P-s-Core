@@ -1,77 +1,88 @@
 # TestSeparateSTTSystem Configuration
 # 從 U.E.P Core stt_module/config.yaml 遷出並清理
+# Audit 2026-06-15: 標記各欄位生效狀態
 
 # ─── Whisper 模型 ──────────────────────────────────────────
 whisper:
-  model_id: "openai/whisper-base"       # Hugging Face 模型 ID
-  local_path: "models/stt/whisper/whisper-base"  # 本地模型目錄
-  use_local_model: true                  # 優先使用本地模型
-  device: "auto"                         # auto / cuda / cpu
-  torch_dtype: "auto"                    # auto / float16 / float32
+  # faster-whisper (CTranslate2) 設定
+  backend: "faster-whisper"              # ✅ faster-whisper / transformers
+  model_size: "base"                     # ✅ tiny / base / small / medium / large-v3 等
+  compute_type: "float16"                # ✅ float16 / int8 / int8_float16 / float32 (CPU 會自動降級)
+  device: "auto"                         # ✅ auto / cuda / cpu
+  num_workers: 1                         # ✅ CTranslate2 並行 worker 數
+  download_root: null                    # ✅ 模型下載目錄（null = HF 快取預設）
+  prefer_offline: false                  # ✅ 優先嘗試離線載入（HF_HUB_OFFLINE=1 時自動啟用）
+
+  # transformers fallback（backend: transformers 時使用）
+  model_id: "openai/whisper-base"        # ✅ Hugging Face 模型 ID
+  local_path: "models/stt/whisper/whisper-base"  # ✅ 本地模型目錄
+  use_local_model: true                  # ✅ 優先使用本地模型
+  torch_dtype: "auto"                    # ✅ auto / float16 / float32
 
 # ─── 音訊輸入 ──────────────────────────────────────────────
 audio:
-  sample_rate: 16000                     # Whisper 標準採樣率
-  device_index: null                     # 麥克風裝置索引 (null = 系統預設)
-  phrase_time_limit: 5                   # 單句錄音最大長度 (秒)
-  format: "int16"                        # 音訊格式
-  channels: 1                            # 通道數
-  frames_per_buffer: 1024                # 緩衝區大小
+  sample_rate: 16000                     # ✅ Whisper 標準採樣率
+  device_index: null                     # ✅ 麥克風裝置索引 (null = 系統預設)
+  phrase_time_limit: 5                   # ✅ 單句錄音最大長度 (秒)
+  channels: 1                            # ✅ 通道數
+  frames_per_buffer: 1024                # ✅ 緩衝區大小
+  # format: "int16"                      # ❌ 已移除 — 固定使用 paInt16，不可配置
 
 # ─── 辨識模式 ──────────────────────────────────────────────
 recognition:
-  default_mode: "manual"                 # manual / continuous
-  max_new_tokens: 128                    # 生成最大 token 數
-  task: "transcribe"                     # transcribe / translate
-  language: null                         # null = 自動偵測, "zh" / "en" 等
-  no_speech_threshold: 0.4              # 無語音判定閾值
-  compression_ratio_threshold: 1.35     # 壓縮比閾值
+  max_new_tokens: 128                    # ⚠️ 僅 transformers 後端生效
+  task: "transcribe"                     # ✅ transcribe / translate
+  language: null                         # ✅ null = 自動偵測, "zh" / "en" 等 (ISO 639-1)
+  no_speech_threshold: 0.4               # ✅ 無語音判定閾值（兩後端皆生效）
+  compression_ratio_threshold: 1.35      # ✅ 壓縮比閾值（兩後端皆生效）
+  # beam_size: 5                         # ✅ 可選，預設 5
+  # best_of: 5                           # ✅ 可選，預設 5
 
 # ─── 持續監聽 ──────────────────────────────────────────────
 continuous:
-  chunk_duration: 2.0                    # 每次錄音片段長度 (秒)
-  silence_threshold: 1.5                 # 靜音持續時間閾值 (秒)
-  max_speech_duration: 30.0              # 單次語音最大長度 (秒)
-  total_duration: 30.0                   # 總監聽時長 (秒)
+  chunk_duration: 2.0                    # ✅ 每次錄音片段長度 (秒)
+  silence_threshold: 1.5                 # ✅ 靜音持續時間閾值 (秒)
+  max_speech_duration: 30.0              # ✅ 單次語音最大長度 (秒)
+  total_duration: 30.0                   # ✅ 總監聽時長 (秒)
 
 # ─── VAD (語音活動偵測) ────────────────────────────────────
 vad:
-  sensitivity: 0.7                       # 靈敏度 (0.0-1.0)
-  min_speech_duration: 0.3               # 最小語音持續時間 (秒)
-  energy_threshold_base: 0.0005          # 基礎能量閾值
-  silence_duration_threshold: 0.8        # 靜音判定閾值 (秒)
-  window_size: 0.025                     # 分析窗口大小 (秒)
+  sensitivity: 0.7                       # ✅ 靈敏度 (0.0-1.0)
+  min_speech_duration: 0.3               # ✅ 最小語音持續時間 (秒)，同時用於 faster-whisper VAD
+  # energy_threshold_base: 0.0005        # ❌ 已移除 — EnergyVAD 未使用此欄位
+  # silence_duration_threshold: 0.8      # ❌ 已移除 — 使用 continuous.silence_threshold
+  # window_size: 0.025                   # ❌ 已移除 — EnergyVAD 未使用此欄位
 
 # ─── 語者識別 ──────────────────────────────────────────────
 speaker:
-  enabled: false                         # 是否啟用語者識別
-  model: "pyannote/speaker-diarization-3.1"
-  embedding_model: "pyannote/embedding"
-  database_path: "memory/speaker_models.pkl"
-  similarity_threshold: 0.999995
-  min_samples_for_recognition: 15
-  use_multi_distance: true
-  distance_weights:
+  enabled: false                         # ✅ 是否啟用語者識別（false = 完全不初始化）
+  model: "pyannote/speaker-diarization-3.1"  # ✅ 語者分離模型
+  embedding_model: "pyannote/embedding"  # ✅ 嵌入模型
+  database_path: "memory/speaker_models.pkl"  # ✅ 資料庫儲存路徑
+  similarity_threshold: 0.999995         # ✅ 相似度閾值
+  min_samples_for_recognition: 15        # ✅ 最低辨識樣本數
+  use_multi_distance: true               # ✅ 多距離匹配
+  distance_weights:                      # ✅ 距離權重
     cosine: 0.3
     euclidean: 0.3
     magnitude: 0.2
     correlation: 0.2
-  confidence_max_cap: 0.98
+  confidence_max_cap: 0.98               # ✅ 置信度上限
 
 # ─── 智能喚醒 ──────────────────────────────────────────────
 keyword:
-  enabled: true
-  activation_threshold: 0.6
-  wake_confidence_threshold: 0.8
+  enabled: true                          # ✅ 是否啟用智能喚醒（false = should_activate 永遠 True）
+  activation_threshold: 0.6             # ✅ 啟動閾值
+  wake_confidence_threshold: 0.8        # ✅ 喚醒信心度閾值
 
-# ─── 後處理 ────────────────────────────────────────────────
-post_processing:
-  text_correction: true
-  remove_filler_words: true
-  normalize_punctuation: true
+# ─── 後處理 (TODO: 尚未實作) ──────────────────────────────
+# post_processing:
+#   text_correction: true
+#   remove_filler_words: true
+#   normalize_punctuation: true
 
-# ─── 效能 ──────────────────────────────────────────────────
-performance:
-  use_fp16: true
-  batch_size: 1
-  chunk_length: 30
+# ─── 效能 (TODO: 尚未實作) ────────────────────────────────
+# performance:
+#   use_fp16: true
+#   batch_size: 1
+#   chunk_length: 30

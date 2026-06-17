@@ -170,7 +170,7 @@ class TestSTTWorker:
             worker_id="w0",
             transcribe_fn=mock_transcribe,
             queue=q,
-            result_callback=lambda entry: results.append(entry),
+            result_callback=lambda entry, seg: results.append(entry),
         )
 
         q.put(make_segment())
@@ -196,7 +196,7 @@ class TestSTTWorker:
             worker_id="w0",
             transcribe_fn=empty_transcribe,
             queue=q,
-            result_callback=lambda entry: results.append(entry),
+            result_callback=lambda entry, seg: results.append(entry),
         )
 
         q.put(make_segment())
@@ -215,7 +215,7 @@ class TestSTTWorker:
             worker_id="w0",
             transcribe_fn=mock_transcribe,
             queue=q,
-            result_callback=lambda entry: results.append(entry),
+            result_callback=lambda entry, seg: results.append(entry),
         )
 
         seg = make_segment(channel_id="mic_alice", start_ts=200.0)
@@ -242,7 +242,7 @@ class TestSTTWorkerPool:
         results = []
         pool = STTWorkerPool(
             transcribe_fn=mock_transcribe,
-            result_callback=lambda entry: results.append(entry),
+            result_callback=lambda entry, seg: results.append(entry),
             num_workers=2,
         )
         pool.start()
@@ -260,7 +260,7 @@ class TestSTTWorkerPool:
         results = []
         pool = STTWorkerPool(
             transcribe_fn=mock_transcribe,
-            result_callback=lambda entry: results.append(entry),
+            result_callback=lambda entry, seg: results.append(entry),
             num_workers=1,
         )
         pool.start()
@@ -279,7 +279,7 @@ class TestSTTWorkerPool:
     def test_get_metrics(self):
         pool = STTWorkerPool(
             transcribe_fn=mock_transcribe,
-            result_callback=lambda entry: None,
+            result_callback=lambda entry, seg: None,
             num_workers=2,
             max_queue_size=20,
         )
@@ -299,7 +299,7 @@ class TestSTTWorkerPool:
     def test_submit_when_full(self):
         pool = STTWorkerPool(
             transcribe_fn=slow_mock_transcribe,
-            result_callback=lambda entry: None,
+            result_callback=lambda entry, seg: None,
             num_workers=1,
             max_queue_size=2,
         )
@@ -313,7 +313,7 @@ class TestSTTWorkerPool:
         results = []
         pool = STTWorkerPool(
             transcribe_fn=mock_transcribe,
-            result_callback=lambda entry: results.append(entry),
+            result_callback=lambda entry, seg: results.append(entry),
             num_workers=2,
         )
         pool.start()

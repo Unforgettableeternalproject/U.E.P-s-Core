@@ -52,12 +52,32 @@ class TranscriptAggregator:
         self._session: Optional[TranscriptSession] = None
         self._lock = threading.Lock()
 
-    def start_session(self, session_id: Optional[str] = None) -> TranscriptSession:
-        """開始新的 session。"""
+    def _create_session(
+        self,
+        session_id: Optional[str] = None,
+        started_at: Optional[float] = None,
+    ) -> TranscriptSession:
+        """建立 TranscriptSession（不取鎖，供內部已持鎖路徑使用）。"""
+        kwargs: dict = {}
+        if session_id:
+            kwargs["session_id"] = session_id
+        if started_at is not None:
+            kwargs["started_at"] = started_at
+        return TranscriptSession(**kwargs)
+
+    def start_session(
+        self,
+        session_id: Optional[str] = None,
+        started_at: Optional[float] = None,
+    ) -> TranscriptSession:
+        """開始新的 session。
+
+        Args:
+            session_id: 自訂 session ID（可選）
+            started_at: 自訂起始時間戳（可選，預設 time.time()）
+        """
         with self._lock:
-            self._session = TranscriptSession(
-                **({"session_id": session_id} if session_id else {}),
-            )
+            self._session = self._create_session(session_id, started_at)
         logger.info("[Aggregator] Session started: %s", self._session.session_id)
         return self._session
 
@@ -78,7 +98,21 @@ class TranscriptAggregator:
 
         with self._lock:
             if self._session is None:
-                self.start_session()
+                # Auto-start：用 entry 的起始時間作為 session 基準
+                self._session = self._create_session(started_at=entry.start_ts)
+                logger.info(
+                    "[Aggregator] Session auto-started: %s (base_ts=%.1f)",
+                    self._session.session_id, entry.start_ts,
+                )
+            elif entry.start_ts < self._session.started_at:
+                # 多 worker 競爭下，較晚完成的 entry 可能有更早的時間戳。
+                # 回溯更新 session 基準，確保所有相對時間正確。
+                old = self._session.started_at
+                self._session.started_at = entry.start_ts
+                logger.debug(
+                    "[Aggregator] Session base_ts 回溯: %.3f → %.3f (Δ%.3fs)",
+                    old, entry.start_ts, old - entry.start_ts,
+                )
             self._session.add_entry(entry)
 
         # 即時 callback

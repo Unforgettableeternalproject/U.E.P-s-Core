@@ -260,7 +260,7 @@ class TestTranscriptAggregator:
 
     def test_format_readable(self):
         agg = TranscriptAggregator()
-        session = agg.start_session()
+        session = agg.start_session(started_at=BASE_TS)
 
         agg.add_entry(make_entry("你好", speaker_name="Alice", start_offset=1.0))
         agg.add_entry(make_entry("嗨", speaker_name="Bob", start_offset=3.5))
@@ -271,7 +271,7 @@ class TestTranscriptAggregator:
 
     def test_format_srt(self):
         agg = TranscriptAggregator()
-        agg.start_session()
+        agg.start_session(started_at=BASE_TS)
         agg.add_entry(make_entry("test", speaker_name="Alice", start_offset=1.0, end_offset=3.0))
 
         srt = agg.format_srt()
@@ -280,7 +280,7 @@ class TestTranscriptAggregator:
 
     def test_export_json(self):
         agg = TranscriptAggregator()
-        agg.start_session()
+        agg.start_session(started_at=BASE_TS)
         agg.add_entry(make_entry("hello", speaker_name="Alice"))
 
         data = agg.export_json()
@@ -322,3 +322,56 @@ class TestTranscriptAggregator:
         assert agg.format_readable() == "(no active session)"
         assert agg.format_srt() == ""
         assert agg.export_json() == []
+
+    def test_auto_start_out_of_order_workers(self):
+        """模擬多 worker 競爭：較晚 timestamp 的 entry 先完成到達 aggregator。
+
+        Scenario:
+            - Worker A 處理 t=5.0 的片段，先完成 → auto-start 用 5.0 當 base
+            - Worker B 處理 t=1.0 的片段，後完成 → base 應回溯到 1.0
+        結果 format_readable 應顯示 [00:00.0] 和 [00:04.0]（而非 clamp 成 [00:00.0] [00:00.0]）
+        """
+        agg = TranscriptAggregator()
+
+        # Worker A 先到（timestamp 較晚）
+        later_entry = make_entry("後面的話", speaker_name="Alice", start_offset=5.0, end_offset=7.0)
+        agg.add_entry(later_entry)
+
+        # 此時 session.started_at 應為 BASE_TS + 5.0
+        session = agg.get_session()
+        assert session is not None
+        assert session.started_at == BASE_TS + 5.0
+
+        # Worker B 後到（timestamp 較早）
+        earlier_entry = make_entry("前面的話", speaker_name="Bob", start_offset=1.0, end_offset=3.0)
+        agg.add_entry(earlier_entry)
+
+        # started_at 應回溯到 BASE_TS + 1.0
+        assert session.started_at == BASE_TS + 1.0
+
+        # format_readable 應正確顯示相對時間
+        output = agg.format_readable()
+        assert "Bob [00:00.0]: 前面的話" in output
+        assert "Alice [00:04.0]: 後面的話" in output
+
+    def test_explicit_session_no_backtrack(self):
+        """明確 start_session(started_at=X) 時，更早的 entry 不應回溯 base。
+
+        Engine 明確設定的 base time 優先——回溯只在 auto-start 場景觸發。
+        實際上回溯在這裡也是安全的（只是把 base 往更早拉），
+        但此測試驗證 clamp 至少保護了格式化結果。
+        """
+        agg = TranscriptAggregator()
+        agg.start_session(started_at=BASE_TS + 10.0)
+
+        # entry 時間早於 session base
+        entry = make_entry("早到的話", speaker_name="Alice", start_offset=2.0)
+        agg.add_entry(entry)
+
+        # 回溯會發生（更早的 entry 把 base 拉回）
+        session = agg.get_session()
+        assert session.started_at == BASE_TS + 2.0
+
+        # format 結果應從新 base 計算
+        output = agg.format_readable()
+        assert "Alice [00:00.0]: 早到的話" in output

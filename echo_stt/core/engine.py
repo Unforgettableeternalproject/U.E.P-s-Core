@@ -852,9 +852,11 @@ class STTEngine:
                     logger.error("[STT] 發送識別結果失敗: %s", e)
 
             speaker_id = speaker_info.speaker_id if speaker_info else "unknown"
-            print(f"\n🎤 [{speaker_id}] {text}")
-            if confidence < 0.7:
-                print(f"   ⚠️  低置信度: {confidence:.2f}")
+            if not self.result_callback:
+                # 只在沒有 callback 時使用 raw print（向後相容）
+                print(f"\n🎤 [{speaker_id}] {text}")
+                if confidence < 0.7:
+                    print(f"   ⚠️  低置信度: {confidence:.2f}")
 
             return True
 

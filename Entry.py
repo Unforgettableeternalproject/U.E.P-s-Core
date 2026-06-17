@@ -303,8 +303,47 @@ class EchoSTTCLI:
         self._display_result(result)
         self.history.append(result)
 
+    def _on_realtime_result(self, result) -> None:
+        """即時辨識結果 callback — 每辨識出一段就立即顯示"""
+        # result 是 STTModuleData (unified format)
+        text = result.text if hasattr(result, "text") else result.get("text", "")
+        if not text or not text.strip():
+            return
+
+        confidence = (
+            result.confidence if hasattr(result, "confidence")
+            else result.get("confidence", 0.0)
+        )
+        speaker = "unknown"
+        metadata = result.metadata if hasattr(result, "metadata") else result.get("metadata", {})
+        if hasattr(metadata, "get"):
+            speaker = metadata.get("speaker_id", "unknown")
+
+        # 信心度顏色
+        conf_color = "green" if confidence >= 0.8 else "yellow" if confidence >= 0.5 else "red"
+
+        timestamp = time.time() - self._listen_start_time if hasattr(self, "_listen_start_time") else 0
+        minutes = int(timestamp // 60)
+        seconds = timestamp % 60
+
+        self.console.print(
+            f"  [{conf_color}]●[/{conf_color}] "
+            f"[dim][{minutes:02d}:{seconds:04.1f}][/dim] "
+            f"[bold]{speaker}[/]: {text}"
+        )
+
+        # 加入歷史
+        entry = {
+            "text": text,
+            "confidence": confidence,
+            "speaker": speaker,
+            "timestamp": timestamp,
+            "processing_time": metadata.get("processing_time", 0) if hasattr(metadata, "get") else 0,
+        }
+        self.history.append(entry)
+
     def _cmd_listen(self, cmd: str) -> None:
-        """持續監聽模式"""
+        """持續監聽模式 — 即時顯示每段辨識結果"""
         parts = cmd.split()
         duration = 30.0
         if len(parts) > 1:
@@ -319,6 +358,10 @@ class EchoSTTCLI:
             "[dim]Press Ctrl+C to stop early[/]\n"
         )
 
+        # 設定即時 callback
+        self._listen_start_time = time.time()
+        original_callback = self.engine.result_callback
+        self.engine.result_callback = self._on_realtime_result
         self.engine.should_stop_listening = False
 
         try:
@@ -327,11 +370,21 @@ class EchoSTTCLI:
                 "duration": duration,
                 "enable_speaker_id": False,
             })
-            self.history.append(result)
-            self.console.print("[green]✓ Listening completed.[/]")
+
+            # 顯示統計
+            metadata = result.get("metadata", {})
+            success = metadata.get("successful_segments", 0)
+            failed = metadata.get("failed_segments", 0)
+            self.console.print(
+                f"\n[green]✓ Listening completed.[/] "
+                f"[dim]({success} segments, {failed} failed)[/dim]"
+            )
         except KeyboardInterrupt:
             self.engine.stop_listening()
             self.console.print("\n[yellow]⏹ Listening stopped.[/]")
+        finally:
+            # 還原 callback
+            self.engine.result_callback = original_callback
 
     def _cmd_text(self, text: str) -> None:
         """文字輸入模式"""

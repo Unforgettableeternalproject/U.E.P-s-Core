@@ -260,7 +260,7 @@ class TestTranscriptAggregator:
 
     def test_format_readable(self):
         agg = TranscriptAggregator()
-        session = agg.start_session()
+        session = agg.start_session(started_at=BASE_TS)
 
         agg.add_entry(make_entry("你好", speaker_name="Alice", start_offset=1.0))
         agg.add_entry(make_entry("嗨", speaker_name="Bob", start_offset=3.5))
@@ -271,7 +271,7 @@ class TestTranscriptAggregator:
 
     def test_format_srt(self):
         agg = TranscriptAggregator()
-        agg.start_session()
+        agg.start_session(started_at=BASE_TS)
         agg.add_entry(make_entry("test", speaker_name="Alice", start_offset=1.0, end_offset=3.0))
 
         srt = agg.format_srt()
@@ -280,7 +280,7 @@ class TestTranscriptAggregator:
 
     def test_export_json(self):
         agg = TranscriptAggregator()
-        agg.start_session()
+        agg.start_session(started_at=BASE_TS)
         agg.add_entry(make_entry("hello", speaker_name="Alice"))
 
         data = agg.export_json()

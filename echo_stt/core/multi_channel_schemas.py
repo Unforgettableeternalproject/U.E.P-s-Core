@@ -252,7 +252,7 @@ class TranscriptSession(BaseModel):
         for entry in self.entries:
             ts = entry.start_ts
             if use_relative_time:
-                ts = ts - self.started_at
+                ts = max(0.0, ts - self.started_at)
 
             minutes = int(ts // 60)
             seconds = ts % 60
@@ -270,8 +270,8 @@ class TranscriptSession(BaseModel):
 
         lines = []
         for i, entry in enumerate(self.entries, 1):
-            rel_start = entry.start_ts - self.started_at
-            rel_end = entry.end_ts - self.started_at
+            rel_start = max(0.0, entry.start_ts - self.started_at)
+            rel_end = max(0.0, entry.end_ts - self.started_at)
 
             def _srt_time(t: float) -> str:
                 h = int(t // 3600)
@@ -293,8 +293,8 @@ class TranscriptSession(BaseModel):
         return [
             {
                 "speaker": e.speaker_name or e.speaker_label,
-                "start": round(e.start_ts - self.started_at, 2),
-                "end": round(e.end_ts - self.started_at, 2),
+                "start": round(max(0.0, e.start_ts - self.started_at), 2),
+                "end": round(max(0.0, e.end_ts - self.started_at), 2),
                 "text": e.text,
                 "confidence": round(e.confidence, 3),
                 "language": e.language,

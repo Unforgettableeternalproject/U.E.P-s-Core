@@ -38,7 +38,7 @@ class STTWorker:
         worker_id: str,
         transcribe_fn: Callable[[np.ndarray, Optional[str]], Dict[str, Any]],
         queue: TranscriptionQueue,
-        result_callback: Callable[[TranscriptEntry], None],
+        result_callback: Callable[[TranscriptEntry, AudioSegment], None],
         noise_filter: Optional[NoiseFilter] = None,
         default_language: Optional[str] = None,
     ):
@@ -47,7 +47,7 @@ class STTWorker:
             worker_id: worker 識別碼
             transcribe_fn: 辨識函式，簽名 (audio_f32, language) -> {text, language, confidence, ...}
             queue: 共用的 TranscriptionQueue
-            result_callback: 辨識結果的 callback
+            result_callback: 辨識結果的 callback，簽名 (entry, segment) -> None
             noise_filter: 可選的前處理濾波器
             default_language: 預設語言（None = 自動偵測）
         """
@@ -92,7 +92,7 @@ class STTWorker:
             try:
                 entry = self._process_segment(segment)
                 if entry is not None:
-                    self.result_callback(entry)
+                    self.result_callback(entry, segment)
             except Exception as e:
                 logger.error(
                     "[Worker:%s] 處理 segment %s 失敗: %s",
@@ -169,7 +169,7 @@ class STTWorkerPool:
     def __init__(
         self,
         transcribe_fn: Callable[[np.ndarray, Optional[str]], Dict[str, Any]],
-        result_callback: Callable[[TranscriptEntry], None],
+        result_callback: Callable[[TranscriptEntry, AudioSegment], None],
         num_workers: int = 2,
         max_queue_size: int = 50,
         noise_filter: Optional[NoiseFilter] = None,

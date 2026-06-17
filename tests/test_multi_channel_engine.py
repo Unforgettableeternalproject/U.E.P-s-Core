@@ -435,6 +435,51 @@ class TestEdgeCases:
 
         engine.shutdown()
 
+    def test_stop_start_preserves_session(self):
+        """stop → start 不應覆蓋既有 session (Codex finding #1)"""
+        engine = inject_mock(MultiChannelSTTEngine(config=make_config()))
+        engine.initialize()
+        engine.start()
+
+        # 直接辨識產生 entry
+        audio = np.random.randn(16000).astype(np.float32) * 0.5
+        engine.transcribe_segment(audio)
+
+        # stop 後 session 仍可讀
+        engine.stop()
+        assert engine._aggregator.entry_count == 1
+        transcript_before = engine.get_transcript("readable")
+        assert "mock" in transcript_before
+
+        # 再次 start — session 應保留
+        engine.start()
+        assert engine._aggregator.entry_count == 1
+        transcript_after = engine.get_transcript("readable")
+        assert transcript_after == transcript_before
+
+        engine.shutdown()
+
+    def test_transcribe_segment_timeout(self):
+        """transcribe_segment 應在 timeout 後回傳 None (Codex finding #2)"""
+        cfg = make_config(direct_transcribe_timeout_s=0.3)
+        engine = inject_mock(MultiChannelSTTEngine(config=cfg))
+
+        # 讓 mock _transcribe 慢到超過 timeout
+        def slow_transcribe(audio, lang=None):
+            time.sleep(1.0)
+            return {"text": "should not reach", "confidence": 0.9, "language": "zh", "segments": []}
+
+        engine._stt_engine._transcribe = slow_transcribe
+        engine.initialize()
+
+        audio = np.random.randn(16000).astype(np.float32) * 0.5
+        result = engine.transcribe_segment(audio)
+
+        # 應 timeout 回傳 None
+        assert result is None
+
+        engine.shutdown()
+
     def test_transformers_backend_forces_single_worker(self):
         """transformers 後端 + num_workers>1 → 自動降為 1"""
         cfg = make_config(num_workers=4)

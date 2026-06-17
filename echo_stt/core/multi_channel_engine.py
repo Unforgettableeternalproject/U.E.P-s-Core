@@ -229,8 +229,11 @@ class MultiChannelSTTEngine:
         # 啟動所有已註冊的 channel
         self._channel_manager.start_all()
 
-        # 建立 session（使用啟動時間作為 base）
-        self._aggregator.start_session(started_at=self._started_at)
+        # Session 處理：
+        # - 首次 start（INITIALIZED）→ 建立新 session
+        # - 重啟（STOPPED → start）→ 保留既有 session，不覆蓋
+        if self._aggregator.get_session() is None:
+            self._aggregator.start_session(started_at=self._started_at)
 
         self._state = EngineState.RUNNING
         logger.info("[MCEngine] 引擎已啟動")
@@ -459,10 +462,21 @@ class MultiChannelSTTEngine:
         if self._stt_engine is None:
             return None
 
-        # 直接呼叫底層辨識（同步，不走佇列）
+        # 直接呼叫底層辨識（同步，帶 timeout）
         effective_lang = language or self._default_language
+        import concurrent.futures
+
         try:
-            result = self._stt_engine._transcribe(audio_float, effective_lang)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    self._stt_engine._transcribe, audio_float, effective_lang,
+                )
+                result = future.result(timeout=self._direct_timeout)
+        except concurrent.futures.TimeoutError:
+            logger.error(
+                "[MCEngine] transcribe_segment timeout (%.1fs)", self._direct_timeout,
+            )
+            return None
         except Exception as e:
             logger.error("[MCEngine] transcribe_segment 失敗: %s", e)
             return None

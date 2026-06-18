@@ -48,6 +48,7 @@ if TYPE_CHECKING:
     from echo_thought_core.compression.rolling_summary import RollingSummarizer
     from echo_thought_core.compression.sacred import SacredManager
     from echo_thought_core.memory_bridge import MemoryBridge
+    from echo_thought_core.prompt.builder import PromptBuilder
 
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,7 @@ class ContextManager:
         backend: AbstractBackend | None = None,
         engine: ContextEngine | None = None,
         memory_bridge: Optional["MemoryBridge"] = None,
+        prompt_builder: Optional["PromptBuilder"] = None,
     ):
         self.config = config or CompactionConfig()
         self.persona = persona
@@ -88,6 +90,13 @@ class ContextManager:
                 backend=backend,
                 memory_bridge=memory_bridge,
             )
+
+        # 🔌 INTEGRATION POINT: Prompt 管理
+        # 注入 PromptBuilder 供未來 Router → LLM 管道使用
+        self._prompt_builder = prompt_builder
+
+        # Auto Session Rotate 結果（供呼叫方選擇性讀取）
+        self._last_rotate_result: CompactionResult | None = None
 
         # 對話歷史
         self.history = ConversationHistory()
@@ -147,10 +156,25 @@ class ContextManager:
         ]
 
     async def get_messages_async(self) -> list[dict[str, str]]:
-        """取得供 API 使用的訊息列表（異步版本，支援 Layer 2/3）"""
+        """取得供 API 使用的訊息列表（異步版本，支援 Layer 2/3）。
+
+        當 token 使用率達到 Layer 3 閾值（92%）時，自動觸發
+        session rotate（壓縮 + 開新 session），對話不中斷。
+        rotate 結果可透過 ``last_rotate_result`` 屬性讀取。
+        """
         self._strip_old_images_if_needed()
 
         tier = self._engine.should_compress(self.history.messages)
+
+        if tier >= CompressionTier.TIER_3_FULL_COMPACTION:
+            # 達到 Full Compaction 閾值 → 自動 rotate session
+            result = await self.auto_rotate_session()
+            if result:
+                self._last_rotate_result = result
+                return [
+                    {"role": m.role, "content": m.content}
+                    for m in self.history.messages
+                ]
 
         if tier >= CompressionTier.TIER_1_MICRO_PRUNE:
             result = await self._engine.compress_async(
@@ -403,6 +427,135 @@ class ContextManager:
             elapsed_seconds=elapsed_seconds,
             **signals,
         )
+
+    # -- Auto Session Rotate ------------------------------------------------
+
+    async def auto_rotate_session(
+        self,
+        instructions: str | None = None,
+    ) -> CompactionResult | None:
+        """自動壓縮並開啟新 session（無縫銜接）。
+
+        觸發時機：token 使用率達到 Layer 3 閾值（92%）。
+        流程：
+          1. Layer 3 Full Compaction
+          2. 通知 MemoryBridge on_session_end（舊 session）
+          3. 內部重置狀態（不呼叫 reset_session 避免雙重通知）
+          4. 將壓縮摘要注入為新 session 的首條 system message
+          5. 通知 MemoryBridge on_session_start（新 session）
+          6. 同步 backend 歷史
+
+        使用者不需要感知 session 切換。結果可透過
+        ``last_rotate_result`` 屬性讀取。
+
+        Args:
+            instructions: 可選的自訂壓縮指令
+
+        Returns:
+            帶有 session_rotated=True 的 CompactionResult，
+            壓縮失敗時回傳 None
+        """
+        old_session_id = self.state.session_id
+
+        # Step 1: Layer 3 Full Compaction
+        result = await self._engine.compress_async(
+            self.history.messages,
+            CompressionTier.TIER_3_FULL_COMPACTION,
+            instructions=instructions,
+        )
+        if not result or result.tokens_saved == 0:
+            logger.warning(
+                "[ContextManager] auto_rotate: 壓縮無效，跳過 rotate"
+            )
+            return None
+
+        # Step 2: 通知 MemoryBridge 舊 session 結束
+        self._engine.on_session_end(old_session_id, self.history.messages)
+
+        # Step 3: 保留壓縮後的訊息（summary message），重置其餘狀態
+        # ⚠ 不呼叫 reset_session()，手動控制避免 MemoryBridge 雙重通知
+        compressed_messages = list(self.history.messages)
+
+        new_session_id = str(uuid.uuid4())[:8]
+
+        # 重置 history
+        self.history.messages.clear()
+        self.history.total_tokens = 0
+        self.history.compression_count = 0
+
+        # 重置 session state
+        self.state.session_id = new_session_id
+        self.state.current_tokens = 0
+        self.state.message_count = 0
+        self.state.compression_count = 0
+        self.state.current_tier = CompressionTier.TIER_0_NORMAL
+        self.state.last_compaction_at = None
+        self.state.created_at = time.time()
+
+        # 重置引擎內部狀態（冷卻、反抖動等）
+        self._engine.on_session_reset()
+
+        # Step 4: 將壓縮後的訊息注入新 session
+        for msg in compressed_messages:
+            self.history.add(msg)
+            # 重新計算 token（壓縮後的 message 可能已有 token_count）
+            if msg.token_count is None:
+                self._engine.counter.count_message(msg)
+
+        # 同步 state
+        self._sync_state()
+
+        # Step 5: 通知 MemoryBridge 新 session 開始
+        self._engine.on_session_start(new_session_id)
+
+        # Step 6: 同步到 backend
+        if self._backend is not None and hasattr(self._backend, "sync_history_from_messages"):
+            sync_messages = [
+                {"role": m.role, "content": m.content}
+                for m in self.history.messages
+            ]
+            self._backend.sync_history_from_messages(sync_messages)
+
+        # 標記結果
+        result.session_rotated = True
+        result.previous_session_id = old_session_id
+        result.new_session_id = new_session_id
+
+        logger.info(
+            "[ContextManager] auto_rotate: %s → %s "
+            "(saved %d tokens, %d msgs → %d msgs)",
+            old_session_id, new_session_id,
+            result.tokens_saved,
+            result.metadata.get("original_message_count", "?"),
+            len(self.history.messages),
+        )
+
+        return result
+
+    @property
+    def last_rotate_result(self) -> CompactionResult | None:
+        """最近一次 auto-rotate 的結果（讀取後自動清空）。
+
+        供 CLI 等呼叫方檢測是否發生了 session 輪換。
+        讀取後 _last_rotate_result 會被重置為 None。
+        """
+        result = self._last_rotate_result
+        self._last_rotate_result = None
+        return result
+
+    @property
+    def prompt_builder(self) -> "PromptBuilder | None":
+        """PromptBuilder 實例（可選）。
+
+        🔌 INTEGRATION POINT: Prompt 管理
+        未來由 U.E.P Core 的 Router 注入具體實作，
+        讓系統決策層告訴 LLM 當前狀態和回應模式。
+        """
+        return self._prompt_builder
+
+    @prompt_builder.setter
+    def prompt_builder(self, builder: "PromptBuilder | None") -> None:
+        self._prompt_builder = builder
 
     # -- 便利屬性（供 CLI 等存取引擎子系統）---------------------------------
 

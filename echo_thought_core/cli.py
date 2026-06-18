@@ -559,6 +559,16 @@ class SessionControlCLI:
                     except Exception as e:
                         self.console.print(f"[red]Compression failed: {e}[/]")
 
+                # 檢查是否發生了 auto session rotate
+                rotate_result = self.mgr.last_rotate_result
+                if rotate_result and rotate_result.session_rotated:
+                    self.console.print(
+                        f"[dim]↻ session rotated: "
+                        f"{rotate_result.previous_session_id} → "
+                        f"{rotate_result.new_session_id} "
+                        f"(saved {rotate_result.tokens_saved:,} tokens)[/dim]"
+                    )
+
     # ── 指令處理 ──────────────────────────────────────────────────────────
 
     def _cmd_fill(self, cmd: str) -> None:

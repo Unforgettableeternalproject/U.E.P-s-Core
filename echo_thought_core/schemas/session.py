@@ -62,6 +62,20 @@ class CompactionResult(BaseModel):
     duration_ms: float = Field(0.0, description="壓縮耗時（毫秒）")
     metadata: dict[str, Any] = Field(default_factory=dict, description="額外元資料")
 
+    # Auto Session Rotate 相關
+    session_rotated: bool = Field(
+        False,
+        description="此次壓縮是否觸發了 session 自動輪換",
+    )
+    previous_session_id: str | None = Field(
+        None,
+        description="輪換前的舊 session ID（僅 session_rotated=True 時有值）",
+    )
+    new_session_id: str | None = Field(
+        None,
+        description="輪換後的新 session ID（僅 session_rotated=True 時有值）",
+    )
+
     @property
     def savings_percentage(self) -> float:
         """節省百分比"""

@@ -27,6 +27,7 @@ from echo_thought_core.schemas.config import CompactionConfig, PersonaContext
 from echo_thought_core.schemas.session import SessionState, CompactionResult
 from echo_thought_core.schemas.message import Message
 from echo_thought_core.backends.factory import create_backend, create_context_manager
+from echo_thought_core.llm_client import LLMClient
 from echo_thought_core.persona import (
     load_llm_config,
     build_persona_from_config,
@@ -43,6 +44,8 @@ __all__ = [
     "SessionState",
     "CompactionResult",
     "Message",
+    # LLM
+    "LLMClient",
     # Factory
     "create_backend",
     "create_context_manager",

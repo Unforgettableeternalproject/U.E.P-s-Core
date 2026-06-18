@@ -147,10 +147,10 @@ class TestCLIInit:
         assert cli.mgr is None
         assert cli.console is not None
 
-    @patch("Entry.create_context_manager")
-    def test_initialize_offline_mode(self, mock_create):
-        """Backend 初始化失敗時降級為 offline 模式"""
-        mock_create.side_effect = Exception("No API key")
+    @patch("Entry.LLMClient")
+    def test_initialize_offline_mode(self, mock_llm_cls):
+        """LLMClient 初始化失敗時降級為 offline 模式"""
+        mock_llm_cls.side_effect = Exception("No API key")
 
         cli = SessionControlCLI()
         cli.console = MagicMock()
@@ -158,6 +158,7 @@ class TestCLIInit:
 
         assert result is True
         assert cli.mgr is not None
+        assert cli.llm is None
         assert cli.mgr._backend is None
 
 

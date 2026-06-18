@@ -35,11 +35,14 @@ pytest -v
 
 # 使用範例
 python -c "
-from echo_thought_core import ContextManager, CompactionConfig, PersonaContext
+from echo_thought_core import PersonaContext, create_context_manager
 
-config = CompactionConfig(backend='anthropic', context_window_size=200000)
 persona = PersonaContext(name='U.E.P', traits=['friendly', 'professional'])
-manager = ContextManager(config=config, persona=persona)
+manager = create_context_manager(
+    backend_type='gemini',
+    backend_config={'model': 'gemini-2.5-flash-lite'},
+    persona=persona,
+)
 
 manager.add_message(role='user', content='Hello!')
 manager.add_message(role='assistant', content='Hi there!')
@@ -51,9 +54,9 @@ print(manager.get_usage())
 
 | 後端 | 狀態 | 說明 |
 |------|------|------|
-| Anthropic Claude | 🔲 開發中 | 含 server-side compaction (Beta) |
-| OpenAI | 🔲 計畫中 | GPT-4o / GPT-4o-mini |
-| Google Gemini | 🔲 計畫中 | Vertex AI + context caching |
+| Google Gemini | ✅ 目前主要支援 | Gemini API / Vertex AI，含 ContextManager 壓縮後端與顯性快取串接 |
+| Anthropic Claude | 🔲 未實作 | 原研究方向保留，不是目前整合目標 |
+| OpenAI | 🔲 未實作 | 原研究方向保留，不是目前整合目標 |
 | 本地模型 | 🔲 計畫中 | Qwen2.5 via llama.cpp / vLLM |
 
 ## 技術棧
@@ -67,15 +70,16 @@ print(manager.get_usage())
 
 ### MVP（Phase 1）
 - [x] 專案骨架與 CI
-- [ ] Token Accounting（精確計數 + 預算管理）
-- [ ] Layer 1 Micro-Pruning（規則式清理）
-- [ ] Layer 3 Full Compaction（LLM 摘要）
-- [ ] Layer 4 Emergency（截斷 + 斷路器）
+- [x] Token Accounting（精確計數 + 預算管理）
+- [x] Layer 1 Micro-Pruning（規則式清理）
+- [x] Layer 3 Full Compaction（LLM 摘要）
+- [x] Layer 4 Emergency（截斷 + 斷路器）
 
 ### Phase 2
-- [ ] Layer 2 Rolling Summary + Echo Memory L1 整合
-- [ ] LLMLingua-2 整合（Layer 1 增強）
-- [ ] 人設保護機制
+- [x] Layer 2 Rolling Summary（ContextManager 壓縮管線）
+- [x] LLMLingua 整合（Layer 1 增強，可選依賴）
+- [x] 人設保護機制
+- [ ] Echo Memory 壓縮事件持久化整合
 - [ ] 多後端 Compaction Provider 抽象
 
 ### Phase 3

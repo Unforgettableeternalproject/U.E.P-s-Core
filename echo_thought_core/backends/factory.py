@@ -54,6 +54,7 @@ def create_context_manager(
     compaction_config: Optional["CompactionConfig"] = None,
     persona: Optional["PersonaContext"] = None,
     cache_config: Optional[Dict[str, Any]] = None,
+    memory_bridge: Optional[Any] = None,
 ) -> "ContextManager":
     """一次建立帶有 LLMClient + CacheManager 的完整 ContextManager
 
@@ -119,4 +120,5 @@ def create_context_manager(
         config=config,
         persona=persona,
         backend=backend,
+        memory_bridge=memory_bridge,
     )

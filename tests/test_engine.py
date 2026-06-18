@@ -15,27 +15,26 @@ from unittest.mock import MagicMock
 import pytest
 
 from echo_thought_core import (
-    ContextManager,
-    ContextEngine,
-    EchoCompressor,
     CompactionConfig,
-    NullMemoryBridge,
+    ContextEngine,
+    ContextManager,
+    EchoCompressor,
     MemoryBridge,
+    NullMemoryBridge,
 )
-from echo_thought_core.schemas.session import CompressionTier, CompactionResult
-from echo_thought_core.schemas.message import Message
-from echo_thought_core.compression.tool_summarizer import ToolSummarizer, get_tool_summarizer
 from echo_thought_core.compression.multimodal import (
-    estimate_image_tokens,
-    strip_old_images,
-    measure_content_length,
     IMAGE_TOKEN_ESTIMATE,
+    estimate_image_tokens,
+    measure_content_length,
+    strip_old_images,
 )
 from echo_thought_core.compression.rolling_summary import (
-    SUMMARY_PREFIX,
     SUMMARY_END_MARKER,
+    SUMMARY_PREFIX,
 )
-
+from echo_thought_core.compression.tool_summarizer import ToolSummarizer, get_tool_summarizer
+from echo_thought_core.schemas.message import Message
+from echo_thought_core.schemas.session import CompactionResult, CompressionTier
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ContextEngine ABC
@@ -544,6 +543,7 @@ class TestHistorySync:
     def test_offline_compression_no_api_key_required(self):
         """離線壓縮（無 API key）不應拋錯 — P1 回歸測試"""
         from unittest.mock import patch as _patch
+
         from echo_thought_core.llm_client import LLMClient
 
         # 模擬無 API key 環境

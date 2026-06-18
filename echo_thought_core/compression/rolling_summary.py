@@ -18,7 +18,7 @@ v2 整合 Destiny-Weavers context_compressor.py Phase 3 設計：
 from __future__ import annotations
 
 import logging
-from typing import List, Optional, Tuple, Protocol
+from typing import Protocol
 
 from echo_thought_core.schemas.message import Message
 
@@ -90,7 +90,7 @@ RULES:
 class SummaryBackend(Protocol):
     """摘要後端介面"""
 
-    async def summarize(self, messages: List[Message], instructions: Optional[str] = None) -> str:
+    async def summarize(self, messages: list[Message], instructions: str | None = None) -> str:
         """將訊息列表摘要為文本"""
         ...
 
@@ -98,15 +98,15 @@ class SummaryBackend(Protocol):
 class RollingSummarizer:
     """Layer 2 增量摘要器"""
 
-    def __init__(self, backend: Optional[SummaryBackend] = None):
+    def __init__(self, backend: SummaryBackend | None = None):
         self.backend = backend
 
     async def summarize_oldest(
         self,
-        messages: List[Message],
+        messages: list[Message],
         n_turns: int = 10,
-        instructions: Optional[str] = None,
-    ) -> Tuple[List[Message], str, int]:
+        instructions: str | None = None,
+    ) -> tuple[list[Message], str, int]:
         """摘要最舊的 N 個 turn
 
         整合 DW 的動態預算計算與序列化邏輯。
@@ -171,7 +171,7 @@ class RollingSummarizer:
 # ── 輔助函式（從 DW 搬遷並泛化）────────────────────────────────────────────
 
 
-def _compute_summary_budget(turns: List[Message]) -> int:
+def _compute_summary_budget(turns: list[Message]) -> int:
     """計算摘要的 token 預算。
 
     預算 = 被壓縮內容 token 數的 20%，限制在 2K–12K 之間。

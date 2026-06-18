@@ -24,7 +24,7 @@ Usage:
 from __future__ import annotations
 
 import logging
-from typing import List, runtime_checkable, TYPE_CHECKING
+from typing import TYPE_CHECKING, runtime_checkable
 
 try:
     from typing import Protocol
@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 class MemoryBridge(Protocol):
     """Echo Memory 整合協定"""
 
-    def on_pre_compress(self, messages: List["Message"]) -> str:
+    def on_pre_compress(self, messages: list[Message]) -> str:
         """壓縮前呼叫 — 提取需保留在摘要中的記憶上下文。
 
         回傳的字串會被注入摘要提示，讓 LLM 知道哪些事實必須保留。
@@ -50,7 +50,7 @@ class MemoryBridge(Protocol):
         """
         ...
 
-    def on_post_compress(self, result: "CompactionResult") -> None:
+    def on_post_compress(self, result: CompactionResult) -> None:
         """壓縮後呼叫 — 通知記憶系統壓縮結果。
 
         可用於將壓縮摘要持久化到 Echo Memory。
@@ -62,7 +62,7 @@ class MemoryBridge(Protocol):
         ...
 
     def on_session_end(
-        self, session_id: str, messages: List["Message"]
+        self, session_id: str, messages: list[Message]
     ) -> None:
         """會話結束時呼叫 — 可做事實提取、記憶鞏固等。"""
         ...
@@ -82,17 +82,17 @@ class NullMemoryBridge:
     所有方法都是 no-op，用於測試和無記憶模式。
     """
 
-    def on_pre_compress(self, messages: List["Message"]) -> str:
+    def on_pre_compress(self, messages: list[Message]) -> str:
         return ""
 
-    def on_post_compress(self, result: "CompactionResult") -> None:
+    def on_post_compress(self, result: CompactionResult) -> None:
         pass
 
     def on_session_start(self, session_id: str) -> None:
         pass
 
     def on_session_end(
-        self, session_id: str, messages: List["Message"]
+        self, session_id: str, messages: list[Message]
     ) -> None:
         pass
 

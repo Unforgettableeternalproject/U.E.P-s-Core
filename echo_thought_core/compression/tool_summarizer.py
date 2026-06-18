@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Callable, Dict, Optional
+from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ class ToolSummarizer:
     """
 
     def __init__(self) -> None:
-        self._formatters: Dict[str, Callable[[str, str, dict], str]] = {}
+        self._formatters: dict[str, Callable[[str, str, dict], str]] = {}
         # 註冊內建格式化器
         self._register_builtins()
 
@@ -115,9 +115,9 @@ class ToolSummarizer:
 
     def summarize(
         self,
-        tool_name: Optional[str],
+        tool_name: str | None,
         content: str,
-        metadata: Optional[dict] = None,
+        metadata: dict | None = None,
     ) -> str:
         """產生工具輸出的結構化摘要。
 
@@ -156,7 +156,7 @@ class ToolSummarizer:
 
 
 # 全域單例
-_default_summarizer: Optional[ToolSummarizer] = None
+_default_summarizer: ToolSummarizer | None = None
 
 
 def get_tool_summarizer() -> ToolSummarizer:

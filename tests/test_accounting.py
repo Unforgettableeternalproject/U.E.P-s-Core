@@ -2,8 +2,8 @@
 Token Accounting 測試
 """
 
-from echo_thought_core.accounting.counter import TokenCounter
 from echo_thought_core.accounting.budget import TokenBudget
+from echo_thought_core.accounting.counter import TokenCounter
 from echo_thought_core.schemas.message import Message
 from echo_thought_core.schemas.session import CompressionTier
 
@@ -89,19 +89,18 @@ class TestTokenBudget:
 # 以下為新增測試（針對 counter.py 與 budget.py 的新增功能）
 # ─────────────────────────────────────────────────────────────────────────────
 
-from echo_thought_core.accounting.counter import (
-    ModelFamily,
+from echo_thought_core.accounting.counter import (  # noqa: E402
+    CONVERSATION_BASE_TOKENS,
+    MESSAGE_OVERHEAD_TOKENS,
     MODEL_DATABASE,
-    get_model_info,
-    get_model_context_length,
-    estimate_tokens,
+    ModelFamily,
+    count_tokens_in_tail,
     estimate_message_tokens,
     estimate_messages_tokens,
-    count_tokens_in_tail,
-    MESSAGE_OVERHEAD_TOKENS,
-    CONVERSATION_BASE_TOKENS,
+    estimate_tokens,
+    get_model_context_length,
+    get_model_info,
 )
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TestModelDatabase — MODEL_DATABASE 與枚舉基本屬性

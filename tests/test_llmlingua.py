@@ -8,9 +8,9 @@ Test LLMLingua-2 整合
 from unittest.mock import MagicMock, patch
 
 from echo_thought_core.compression.llmlingua import (
+    _HAS_LLMLINGUA,
     LLMLinguaCompressor,
     LLMLinguaConfig,
-    _HAS_LLMLINGUA,
 )
 from echo_thought_core.compression.micro_pruning import MicroPruner
 from echo_thought_core.schemas.message import Message

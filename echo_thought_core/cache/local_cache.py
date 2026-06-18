@@ -14,13 +14,13 @@ Cache Manager — 基於 Gemini 2.5 Flash-Lite 的顯性/隱性快取管理
 4. 成本優化和命中率統計
 """
 
-import time
-import os
 import hashlib
 import logging
-from typing import Dict, Any, Optional, List
+import os
+import time
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 from echo_thought_core.defaults import DEFAULT_MODEL
 
@@ -50,8 +50,8 @@ class CacheInfo:
     ttl_seconds: int
     content_hash: str
     usage_count: int = 0
-    last_used: Optional[float] = None
-    cached_content_id: Optional[str] = None
+    last_used: float | None = None
+    cached_content_id: str | None = None
 
 
 @dataclass
@@ -61,7 +61,7 @@ class LocalCacheEntry:
     timestamp: float
     hit_count: int = 0
     last_access: float = field(default_factory=time.time)
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def is_expired(self, ttl_seconds: int) -> bool:
         """檢查是否已超過 TTL"""
@@ -109,7 +109,7 @@ class CacheManager:
     - 全域單例移除，實例生命週期由外部管理
     """
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None, client=None):
+    def __init__(self, config: dict[str, Any] | None = None, client=None):
         """
         初始化 CacheManager
 
@@ -128,7 +128,7 @@ class CacheManager:
                     可與 GeminiBackend 共享同一個 client，避免重複建立。
         """
         # 從外部接收 config，不再讀取全域 config_loader
-        self.config: Dict[str, Any] = config or {}
+        self.config: dict[str, Any] = config or {}
 
         # ── Vertex AI 客戶端初始化 ──
         if client is not None:
@@ -163,16 +163,16 @@ class CacheManager:
         self.model_name: str = self.config.get("model_name", DEFAULT_MODEL)
 
         # ── Gemini 顯性快取管理 ──
-        self.caches: Dict[str, CacheInfo] = {}
+        self.caches: dict[str, CacheInfo] = {}
         self.stats = CacheStats()
 
         # ── 本地快取管理 ──
-        self.local_cache: Dict[str, LocalCacheEntry] = {}
+        self.local_cache: dict[str, LocalCacheEntry] = {}
         self.max_local_entries: int = self.config.get("max_local_entries", 100)
         self.local_ttl_seconds: int = self.config.get("local_ttl_seconds", 1800)  # 30 分鐘
 
         # ── 各類型預設 TTL（秒）──
-        self.default_ttl: Dict[CacheType, int] = {
+        self.default_ttl: dict[CacheType, int] = {
             CacheType.PERSONA:        30 * 60,  # 30 分鐘（頻繁使用的基礎人格）
             CacheType.FUNCTIONS:      30 * 60,  # 30 分鐘（系統功能規格）
             CacheType.STYLE_POLICY:   30 * 60,  # 30 分鐘（風格策略）
@@ -204,7 +204,7 @@ class CacheManager:
 
         # ── 使用頻率追蹤 ──
         # 結構：{content_hash: {"count": int, "last_hour": int, "timestamps": [float]}}
-        self.usage_tracker: Dict[str, Dict[str, Any]] = {}
+        self.usage_tracker: dict[str, dict[str, Any]] = {}
 
         logger.debug("[CacheManager] 初始化完成")
 
@@ -291,7 +291,7 @@ class CacheManager:
     # Gemini 顯性快取管理
     # ─────────────────────────────────────────
 
-    def get_cached_content_for_generation(self, cache_names: List[str]) -> Optional[str]:
+    def get_cached_content_for_generation(self, cache_names: list[str]) -> str | None:
         """
         從已知快取名稱清單中，取出可用於生成請求的 cached_content_id
 
@@ -370,7 +370,7 @@ class CacheManager:
             key_parts.append(f"{key}:{value}")
         return hashlib.md5("|".join(key_parts).encode("utf-8")).hexdigest()
 
-    def get_local_cache(self, cache_key: str) -> Optional[Any]:
+    def get_local_cache(self, cache_key: str) -> Any | None:
         """從本地快取取得內容；過期或不存在時回傳 None"""
         if cache_key not in self.local_cache:
             self.stats.local_miss_count += 1
@@ -399,7 +399,7 @@ class CacheManager:
         self,
         cache_key: str,
         content: Any,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         """存入本地快取；容量滿時以 LRU 策略淘汰舊條目"""
         if len(self.local_cache) >= self.max_local_entries:

@@ -27,9 +27,11 @@ dev = [
     "mypy>=1.8.0",
 ]
 gemini = ["google-genai>=1.0.0"]
+ollama = ["requests>=2.31.0"]
 llmlingua = ["llmlingua>=0.2.0"]
 full = [
     "google-genai>=1.0.0",
+    "requests>=2.31.0",
     "llmlingua>=0.2.0",
 ]
 
@@ -76,4 +78,7 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 asyncio_mode = "auto"
-addopts = "--cov=echo_thought_core --cov-report=html --cov-report=term"
+addopts = "--cov=echo_thought_core --cov-report=html --cov-report=term -m 'not e2e'"
+markers = [
+    "e2e: End-to-end integration tests (require live LLM services, run with: pytest -m e2e)",
+]

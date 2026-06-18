@@ -16,15 +16,15 @@ from echo_thought_core.schemas.session import CompressionTier
 # U.E.P Core 環境有 Rich，這裡只做防禦性處理
 try:
     from Entry import (
-        SessionControlCLI,
-        render_status_panel,
-        render_model_panel,
-        render_history_panel,
-        render_sawtooth_panel,
-        show_dashboard,
-        _usage_color,
         _HAS_RICH,
         TIER_STYLES,
+        SessionControlCLI,
+        _usage_color,
+        render_history_panel,
+        render_model_panel,
+        render_sawtooth_panel,
+        render_status_panel,
+        show_dashboard,
     )
     _HAS_ENTRY = _HAS_RICH  # Entry imports OK 但 Rich 可能是 stub
 except ImportError:

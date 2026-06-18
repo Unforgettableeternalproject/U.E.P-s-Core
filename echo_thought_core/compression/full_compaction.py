@@ -19,19 +19,19 @@ v2 整合 Destiny-Weavers context_compressor.py Phase 2 設計：
 from __future__ import annotations
 
 import logging
-from typing import List, Optional, Tuple, Protocol
+from typing import Protocol
 
-from echo_thought_core.schemas.message import Message
-from echo_thought_core.schemas.session import SacredContent
+from echo_thought_core.compression.rolling_summary import (
+    SUMMARY_END_MARKER,
+    SUMMARY_PREFIX,
+)
 from echo_thought_core.compression.tool_pairs import (
-    align_boundary_forward,
     align_boundary_backward,
+    align_boundary_forward,
     sanitize_tool_pairs,
 )
-from echo_thought_core.compression.rolling_summary import (
-    SUMMARY_PREFIX,
-    SUMMARY_END_MARKER,
-)
+from echo_thought_core.schemas.message import Message
+from echo_thought_core.schemas.session import SacredContent
 
 logger = logging.getLogger(__name__)
 
@@ -103,9 +103,9 @@ class CompactionBackend(Protocol):
 
     async def compact(
         self,
-        messages: List[Message],
+        messages: list[Message],
         sacred: SacredContent,
-        instructions: Optional[str] = None,
+        instructions: str | None = None,
     ) -> str:
         """將完整對話壓縮為結構化摘要"""
         ...
@@ -114,16 +114,16 @@ class CompactionBackend(Protocol):
 class FullCompactor:
     """Layer 3 完整壓縮器"""
 
-    def __init__(self, backend: Optional[CompactionBackend] = None):
+    def __init__(self, backend: CompactionBackend | None = None):
         self.backend = backend
 
     async def compact(
         self,
-        messages: List[Message],
+        messages: list[Message],
         sacred: SacredContent,
-        instructions: Optional[str] = None,
-        tail_token_budget: Optional[int] = None,
-    ) -> Tuple[List[Message], str, int]:
+        instructions: str | None = None,
+        tail_token_budget: int | None = None,
+    ) -> tuple[list[Message], str, int]:
         """執行完整壓縮
 
         整合 DW 的 _find_tail_cut_by_tokens() 邊界計算邏輯：
@@ -163,11 +163,11 @@ class FullCompactor:
 
     async def _compact_all(
         self,
-        messages: List[Message],
+        messages: list[Message],
         sacred: SacredContent,
-        instructions: Optional[str],
+        instructions: str | None,
         total_before: int,
-    ) -> Tuple[List[Message], str, int]:
+    ) -> tuple[list[Message], str, int]:
         """傳統模式：壓縮全部訊息為單一結構化摘要。"""
         summary_text = await self.backend.compact(messages, sacred, instructions)
 
@@ -190,12 +190,12 @@ class FullCompactor:
 
     async def _compact_with_boundary(
         self,
-        messages: List[Message],
+        messages: list[Message],
         sacred: SacredContent,
-        instructions: Optional[str],
+        instructions: str | None,
         tail_token_budget: int,
         total_before: int,
-    ) -> Tuple[List[Message], str, int]:
+    ) -> tuple[list[Message], str, int]:
         """邊界模式：保留 tail，只摘要 head 部分。"""
         # Step 1: 找出 tail 起始索引（head_end = tail 起點）
         head_end = _find_tail_cut_by_tokens(messages, tail_token_budget)
@@ -249,7 +249,7 @@ class FullCompactor:
 
 
 def _find_tail_cut_by_tokens(
-    messages: List[Message],
+    messages: list[Message],
     tail_token_budget: int,
     head_end_hint: int = 0,
 ) -> int:

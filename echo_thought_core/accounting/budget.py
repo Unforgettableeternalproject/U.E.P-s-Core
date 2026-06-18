@@ -5,7 +5,6 @@ Token Budget — 預算管理與閾值判斷
 """
 
 import logging
-from typing import Dict, Optional
 
 from echo_thought_core.schemas.session import CompressionTier
 
@@ -28,7 +27,7 @@ class TokenBudget:
     def __init__(
         self,
         context_window: int = 200_000,
-        thresholds: Optional[Dict[str, float]] = None,
+        thresholds: dict[str, float] | None = None,
         reserve_for_output: int = 4_096,
     ):
         self.context_window = context_window
@@ -104,10 +103,10 @@ class TokenBudget:
 
     def update(
         self,
-        system: Optional[int] = None,
-        history: Optional[int] = None,
-        tools: Optional[int] = None,
-        sacred: Optional[int] = None,
+        system: int | None = None,
+        history: int | None = None,
+        tools: int | None = None,
+        sacred: int | None = None,
     ) -> None:
         """更新各部分的 token 數"""
         if system is not None:
@@ -145,13 +144,13 @@ class TokenBudget:
         self.cache_read_tokens = cache_read_tokens
         self.cache_write_tokens = cache_write_tokens
 
-    def get_usage_report(self) -> Dict[str, object]:
+    def get_usage_report(self) -> dict[str, object]:
         """取得使用量報告"""
         has_api_data = (
             self._input_tokens_used > 0 or self._output_tokens_used > 0
         )
 
-        report: Dict[str, object] = {
+        report: dict[str, object] = {
             "total_tokens": self.total_tokens,
             "context_window": self.context_window,
             "usage_percentage": round(self.usage_percentage, 4),

@@ -12,15 +12,15 @@ Sacred Content Manager — 神聖段落保護
 我們增加第 10 段「Character & Persona」作為 U.E.P 特有的神聖段落。
 """
 
-from typing import Optional
-from echo_thought_core.schemas.session import SacredContent
+
 from echo_thought_core.schemas.config import PersonaContext
+from echo_thought_core.schemas.session import SacredContent
 
 
 class SacredManager:
     """神聖段落管理器"""
 
-    def __init__(self, persona: Optional[PersonaContext] = None):
+    def __init__(self, persona: PersonaContext | None = None):
         self._sacred = SacredContent()
         if persona:
             self._sacred.persona_context = persona.to_sacred_text()

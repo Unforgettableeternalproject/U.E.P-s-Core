@@ -3,7 +3,7 @@ Echo Thought Core — LLM 會話控制子系統
 
 U.E.P 回聲系統的思考核心，與 Echo Memory（記憶核心）互補。
 Prompt / Token / Context 三大指標優化引擎。
-四層漸進式壓縮架構，以 Gemini / Vertex AI 為主要後端。
+四層漸進式壓縮架構，支援多 LLM 後端（Gemini / Ollama / 自訂）。
 
 Usage (低層級):
     from echo_thought_core import ContextManager, CompactionConfig, PersonaContext
@@ -16,25 +16,34 @@ Usage (推薦 — 高層級 factory):
     from echo_thought_core import create_context_manager
 
     manager = create_context_manager(
-        backend_config={"model": "gemini-2.5-flash-lite"},
+        backend_type="ollama",
+        backend_config={"model": "gemma4:e4b-it-q4_K_M"},
         persona=PersonaContext(name="U.E.P"),
     )
 """
 
-from echo_thought_core.context_manager import ContextManager
-from echo_thought_core.engine_base import ContextEngine
-from echo_thought_core.echo_compressor import EchoCompressor
-from echo_thought_core.memory_bridge import MemoryBridge, NullMemoryBridge
-from echo_thought_core.schemas.config import CompactionConfig, PersonaContext
-from echo_thought_core.schemas.session import SessionState, CompactionResult
-from echo_thought_core.schemas.message import Message
+from echo_thought_core.backends.base import AbstractBackend
 from echo_thought_core.backends.factory import create_backend, create_context_manager
+from echo_thought_core.backends.registry import BackendRegistry
+from echo_thought_core.context_manager import ContextManager
+from echo_thought_core.echo_compressor import EchoCompressor
+from echo_thought_core.engine_base import ContextEngine
 from echo_thought_core.llm_client import LLMClient
+from echo_thought_core.memory_bridge import MemoryBridge, NullMemoryBridge
 from echo_thought_core.persona import (
-    load_llm_config,
     build_persona_from_config,
     build_system_instruction,
+    load_llm_config,
 )
+from echo_thought_core.schemas.config import CompactionConfig, PersonaContext
+from echo_thought_core.schemas.message import Message
+from echo_thought_core.schemas.session import CompactionResult, SessionState
+
+
+# 延遲匯入（可選依賴）
+def _lazy_ollama():
+    from echo_thought_core.backends.ollama import OllamaBackend
+    return OllamaBackend
 
 __version__ = "0.2.0-dev"
 
@@ -51,7 +60,9 @@ __all__ = [
     # 記憶整合
     "MemoryBridge",
     "NullMemoryBridge",
-    # LLM
+    # 後端
+    "AbstractBackend",
+    "BackendRegistry",
     "LLMClient",
     # Factory
     "create_backend",

@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from echo_thought_core.schemas.message import Message
@@ -46,7 +46,7 @@ class ContextEngine(ABC):
     # -- 核心壓縮介面 -------------------------------------------------------
 
     @abstractmethod
-    def should_compress(self, messages: List["Message"]) -> "CompressionTier":
+    def should_compress(self, messages: list[Message]) -> CompressionTier:
         """判斷當前訊息列表需要的壓縮層級。
 
         回傳 TIER_0_NORMAL 表示不需要壓縮。
@@ -54,8 +54,8 @@ class ContextEngine(ABC):
 
     @abstractmethod
     def compress(
-        self, messages: List["Message"], tier: "CompressionTier"
-    ) -> Optional["CompactionResult"]:
+        self, messages: list[Message], tier: CompressionTier
+    ) -> CompactionResult | None:
         """同步壓縮（僅支援不需要 LLM 的層級，如 Layer 1）。
 
         回傳 None 表示無法在同步模式下壓縮此層級。
@@ -64,15 +64,15 @@ class ContextEngine(ABC):
     @abstractmethod
     async def compress_async(
         self,
-        messages: List["Message"],
-        tier: "CompressionTier",
-        instructions: Optional[str] = None,
-    ) -> Optional["CompactionResult"]:
+        messages: list[Message],
+        tier: CompressionTier,
+        instructions: str | None = None,
+    ) -> CompactionResult | None:
         """異步壓縮（支援所有層級，含 LLM 呼叫）。"""
 
     # -- Token 追蹤 ---------------------------------------------------------
 
-    def update_from_response(self, usage: Dict[str, Any]) -> None:
+    def update_from_response(self, usage: dict[str, Any]) -> None:
         """從 API 回應更新 token 使用量。
 
         usage dict 可包含：input_tokens, output_tokens,
@@ -89,7 +89,7 @@ class ContextEngine(ABC):
         """
 
     def on_session_end(
-        self, session_id: str, messages: List["Message"]
+        self, session_id: str, messages: list[Message]
     ) -> None:
         """會話結束時呼叫。
 
@@ -107,7 +107,7 @@ class ContextEngine(ABC):
 
     def should_end_session(
         self,
-        messages: List["Message"],
+        messages: list[Message],
         elapsed_seconds: float = 0.0,
         **signals: Any,
     ) -> bool:
@@ -122,7 +122,7 @@ class ContextEngine(ABC):
 
     # -- 狀態報告 -----------------------------------------------------------
 
-    def get_status(self) -> Dict[str, Any]:
+    def get_status(self) -> dict[str, Any]:
         """回傳引擎狀態（供 CLI 儀表板顯示）。
 
         預設回傳基本資訊，子類應覆寫加入更多細節。
@@ -130,6 +130,19 @@ class ContextEngine(ABC):
         return {
             "engine": self.name,
         }
+
+    # -- 後端切換 -----------------------------------------------------------
+
+    def swap_backend(self, new_backend: Any) -> None:
+        """切換底層 LLM 後端（runtime hot-swap）。
+
+        引擎應更新所有持有後端引用的子系統
+        （如 RollingSummarizer、FullCompactor）。
+        預設不做任何事——需要後端的引擎應覆寫此方法。
+
+        Args:
+            new_backend: 新的 AbstractBackend 實例
+        """
 
     # -- 模型切換 -----------------------------------------------------------
 

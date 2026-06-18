@@ -2,8 +2,29 @@
 Test fixtures for Echo Thought Core
 """
 
+import os
+
 import pytest
-from echo_thought_core import ContextManager, CompactionConfig, PersonaContext
+
+from echo_thought_core import CompactionConfig, ContextManager, PersonaContext
+
+# ── E2E pytest options（必須在 conftest.py 定義才能被 pytest 解析）──────────
+
+
+def pytest_addoption(parser):
+    """註冊 E2E 專用的 CLI 選項"""
+    parser.addoption(
+        "--e2e-backend",
+        action="store",
+        default=os.getenv("E2E_BACKEND", "ollama"),
+        help="E2E backend: ollama or gemini (default: ollama)",
+    )
+    parser.addoption(
+        "--e2e-model",
+        action="store",
+        default=os.getenv("E2E_MODEL", ""),
+        help="Override model name for E2E tests",
+    )
 
 
 @pytest.fixture

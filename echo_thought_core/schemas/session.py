@@ -1,10 +1,10 @@
 """Session Schema — 會話狀態與壓縮結果的資料結構"""
 
 import time
-from typing import Optional, Dict, Any, List
 from enum import Enum
-from pydantic import BaseModel, Field
+from typing import Any
 
+from pydantic import BaseModel, Field
 
 # ── 枚舉 ──────────────────────────────────────────────────────────────────────
 
@@ -34,7 +34,7 @@ class SessionState(BaseModel):
     compression_count: int = Field(0, description="累計壓縮次數")
     message_count: int = Field(0, description="總訊息數")
     created_at: float = Field(default_factory=time.time, description="建立時間")
-    last_compaction_at: Optional[float] = Field(None, description="最後一次壓縮時間")
+    last_compaction_at: float | None = Field(None, description="最後一次壓縮時間")
 
     @property
     def usage_percentage(self) -> float:
@@ -57,10 +57,10 @@ class CompactionResult(BaseModel):
     tokens_after: int = Field(..., description="壓縮後 token 數")
     tokens_saved: int = Field(0, description="節省的 token 數")
     compression_ratio: float = Field(0.0, description="壓縮比")
-    summary_text: Optional[str] = Field(None, description="產生的摘要文本")
+    summary_text: str | None = Field(None, description="產生的摘要文本")
     sacred_preserved: bool = Field(True, description="神聖段落是否完整保留")
     duration_ms: float = Field(0.0, description="壓縮耗時（毫秒）")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="額外元資料")
+    metadata: dict[str, Any] = Field(default_factory=dict, description="額外元資料")
 
     @property
     def savings_percentage(self) -> float:
@@ -76,12 +76,12 @@ class CompactionResult(BaseModel):
 class SacredContent(BaseModel):
     """神聖段落 — 任何壓縮層級都不會移除的內容"""
 
-    persona_context: Optional[str] = Field(None, description="人設上下文")
-    user_instructions: List[str] = Field(
+    persona_context: str | None = Field(None, description="人設上下文")
+    user_instructions: list[str] = Field(
         default_factory=list, description="使用者明確指令（原文保留）"
     )
-    current_task: Optional[str] = Field(None, description="當前任務目標")
-    custom_sacred: Dict[str, str] = Field(
+    current_task: str | None = Field(None, description="當前任務目標")
+    custom_sacred: dict[str, str] = Field(
         default_factory=dict, description="自定義神聖段落"
     )
 

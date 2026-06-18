@@ -19,6 +19,7 @@ from echo_stt.core.multi_channel_schemas import (
     TranscriptEntry,
 )
 from echo_stt.pipeline.queue import TranscriptionQueue
+from echo_stt.pipeline.post_process import PostProcessor
 from echo_stt.vad.noise_filter import NoiseFilter
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ class STTWorker:
         queue: TranscriptionQueue,
         result_callback: Callable[[TranscriptEntry, AudioSegment], None],
         noise_filter: Optional[NoiseFilter] = None,
+        post_processor: Optional[PostProcessor] = None,
         default_language: Optional[str] = None,
     ):
         """
@@ -49,6 +51,7 @@ class STTWorker:
             queue: 共用的 TranscriptionQueue
             result_callback: 辨識結果的 callback，簽名 (entry, segment) -> None
             noise_filter: 可選的前處理濾波器
+            post_processor: 可選的後處理管線（hallucination 過濾 + 繁簡轉換）
             default_language: 預設語言（None = 自動偵測）
         """
         self.worker_id = worker_id
@@ -56,6 +59,7 @@ class STTWorker:
         self.queue = queue
         self.result_callback = result_callback
         self.noise_filter = noise_filter
+        self.post_processor = post_processor
         self.default_language = default_language
 
         self._thread: Optional[threading.Thread] = None
@@ -126,6 +130,13 @@ class STTWorker:
         if not text:
             return None
 
+        # 後處理（hallucination 過濾 + 繁簡轉換）
+        confidence = result.get("confidence", 0.0)
+        if self.post_processor is not None:
+            text = self.post_processor.process(text, confidence=confidence)
+            if text is None:
+                return None
+
         return TranscriptEntry(
             segment_id=segment.segment_id,
             text=text,
@@ -173,15 +184,21 @@ class STTWorkerPool:
         num_workers: int = 2,
         max_queue_size: int = 50,
         noise_filter: Optional[NoiseFilter] = None,
+        post_processor: Optional[PostProcessor] = None,
         default_language: Optional[str] = None,
+        overflow_policy: str = "drop_oldest",
     ):
         self.transcribe_fn = transcribe_fn
         self.result_callback = result_callback
         self.num_workers = num_workers
         self.noise_filter = noise_filter
+        self.post_processor = post_processor
         self.default_language = default_language
 
-        self.queue = TranscriptionQueue(max_size=max_queue_size)
+        self.queue = TranscriptionQueue(
+            max_size=max_queue_size,
+            overflow_policy=overflow_policy,
+        )
         self._workers: List[STTWorker] = []
         self._running = False
 
@@ -197,6 +214,7 @@ class STTWorkerPool:
                 queue=self.queue,
                 result_callback=self.result_callback,
                 noise_filter=self.noise_filter,
+                post_processor=self.post_processor,
                 default_language=self.default_language,
             )
             for i in range(self.num_workers)

@@ -37,6 +37,7 @@ from echo_stt.core.multi_channel_schemas import (
 )
 from echo_stt.channel.manager import ChannelManager
 from echo_stt.output.aggregator import TranscriptAggregator
+from echo_stt.pipeline.post_process import PostProcessor
 from echo_stt.pipeline.worker import STTWorkerPool
 from echo_stt.vad.noise_filter import NoiseFilter
 
@@ -100,12 +101,14 @@ class MultiChannelSTTEngine:
         self._default_language: Optional[str] = mc.get("default_language", None)
         self._noise_filter_enabled: bool = mc.get("noise_filter_enabled", False)
         self._vad_config: dict = mc.get("vad_config", {})
+        self._overflow_policy: str = mc.get("queue_overflow_policy", "drop_oldest")
 
         # 子元件（initialize() 時建立）
         self._stt_engine: Optional[Any] = None  # STTEngine (lazy import)
         self._worker_pool: Optional[STTWorkerPool] = None
         self._channel_manager: Optional[ChannelManager] = None
         self._aggregator: Optional[TranscriptAggregator] = None
+        self._post_processor: Optional[PostProcessor] = None
 
         # 狀態
         self._state = EngineState.CREATED
@@ -174,6 +177,15 @@ class MultiChannelSTTEngine:
             if self._noise_filter_enabled:
                 noise_filter = NoiseFilter()
 
+            # 3.5 建立後處理管線（hallucination 過濾 + 繁簡轉換）
+            post_processor = PostProcessor.from_config(self.config)
+            self._post_processor = post_processor  # direct path 也用
+            logger.info(
+                "[MCEngine] 後處理: hallu_filter=%s, chinese_conv=%s",
+                post_processor._hallu_filter is not None,
+                post_processor.chinese_converter_available,
+            )
+
             # 4. 建立 TranscriptAggregator
             self._aggregator = TranscriptAggregator(
                 on_entry=self._on_entry_internal,
@@ -189,7 +201,9 @@ class MultiChannelSTTEngine:
                 num_workers=effective_workers,
                 max_queue_size=self._queue_max_size,
                 noise_filter=noise_filter,
+                post_processor=post_processor,
                 default_language=self._default_language,
+                overflow_policy=self._overflow_policy,
             )
 
             # 6. 建立 ChannelManager
@@ -482,6 +496,15 @@ class MultiChannelSTTEngine:
             return None
 
         text = result.get("text", "").strip()
+        confidence = result.get("confidence", 0.0)
+
+        # 後處理管線（hallucination 過濾 + 繁簡轉換），與 worker path 一致
+        if self._post_processor is not None:
+            text = self._post_processor.process(text, confidence=confidence)
+            if text is None:
+                logger.debug("[MCEngine] transcribe_segment: 後處理過濾掉了結果")
+                return None
+
         if not text:
             return None
 
@@ -492,7 +515,7 @@ class MultiChannelSTTEngine:
             segment_id=f"direct_{int(now * 1000)}",
             text=text,
             language=result.get("language"),
-            confidence=result.get("confidence", 0.0),
+            confidence=confidence,
             channel_id=channel_id,
             channel_type=ChannelType.FILE,
             speaker_label=speaker_label,

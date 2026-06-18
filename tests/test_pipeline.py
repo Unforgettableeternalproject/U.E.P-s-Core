@@ -96,16 +96,48 @@ class TestTranscriptionQueue:
         assert s2.start_timestamp == 102.0
         assert s3.start_timestamp == 103.0
 
-    def test_max_size_drops(self):
-        q = TranscriptionQueue(max_size=2)
+    def test_drop_oldest_evicts_oldest(self):
+        """drop_oldest（預設）：佇列滿時逐出最舊的，放入新的。"""
+        q = TranscriptionQueue(max_size=2, overflow_policy="drop_oldest")
+
+        q.put(make_segment(start_ts=100.0, sequence=0))
+        q.put(make_segment(start_ts=101.0, sequence=1))
+
+        # 佇列滿——放入 ts=102.0 應逐出 ts=100.0
+        assert q.put(make_segment(start_ts=102.0, sequence=2)) is True
+        assert q.qsize() == 2
+
+        metrics = q.get_metrics()
+        assert metrics.total_dropped == 1
+        assert metrics.total_enqueued == 3  # 三個都成功放入
+
+        # 取出：應是 ts=101.0 和 ts=102.0（100.0 被逐出了）
+        s1 = q.get(timeout=1.0)
+        s2 = q.get(timeout=1.0)
+        assert s1.start_timestamp == 101.0
+        assert s2.start_timestamp == 102.0
+
+    def test_drop_newest_rejects_new(self):
+        """drop_newest：佇列滿時拒收新 segment。"""
+        q = TranscriptionQueue(max_size=2, overflow_policy="drop_newest")
 
         assert q.put(make_segment(sequence=0)) is True
         assert q.put(make_segment(sequence=1)) is True
-        assert q.put(make_segment(sequence=2)) is False  # 佇列滿
+        assert q.put(make_segment(sequence=2)) is False  # 佇列滿，拒收
 
         metrics = q.get_metrics()
         assert metrics.total_dropped == 1
         assert metrics.total_enqueued == 2
+
+    def test_default_policy_is_drop_oldest(self):
+        """預設策略應為 drop_oldest。"""
+        q = TranscriptionQueue(max_size=5)
+        assert q.overflow_policy == "drop_oldest"
+
+    def test_invalid_policy_raises(self):
+        """不合法的 overflow_policy 應 raise ValueError。"""
+        with pytest.raises(ValueError, match="overflow_policy"):
+            TranscriptionQueue(overflow_policy="invalid")
 
     def test_get_timeout(self):
         q = TranscriptionQueue()
@@ -296,17 +328,34 @@ class TestSTTWorkerPool:
         pool.stop()
         assert not pool.is_running
 
-    def test_submit_when_full(self):
+    def test_submit_when_full_drop_oldest(self):
+        """預設 drop_oldest：佇列滿時逐出最舊，新的仍成功放入。"""
         pool = STTWorkerPool(
             transcribe_fn=slow_mock_transcribe,
             result_callback=lambda entry, seg: None,
             num_workers=1,
             max_queue_size=2,
+            overflow_policy="drop_oldest",
         )
         # 不啟動 worker（佇列不會被消費）
         assert pool.submit(make_segment(sequence=0)) is True
         assert pool.submit(make_segment(sequence=1)) is True
-        assert pool.submit(make_segment(sequence=2)) is False  # 佇列滿
+        assert pool.submit(make_segment(sequence=2)) is True  # 逐出最舊，放入新的
+        assert pool.queue.qsize() == 2
+
+    def test_submit_when_full_drop_newest(self):
+        """drop_newest：佇列滿時拒收新 segment。"""
+        pool = STTWorkerPool(
+            transcribe_fn=slow_mock_transcribe,
+            result_callback=lambda entry, seg: None,
+            num_workers=1,
+            max_queue_size=2,
+            overflow_policy="drop_newest",
+        )
+        # 不啟動 worker（佇列不會被消費）
+        assert pool.submit(make_segment(sequence=0)) is True
+        assert pool.submit(make_segment(sequence=1)) is True
+        assert pool.submit(make_segment(sequence=2)) is False  # 佇列滿，拒收
 
     def test_multiple_channels_interleaved(self):
         """多通道的 segment 混合提交，應全部被處理"""

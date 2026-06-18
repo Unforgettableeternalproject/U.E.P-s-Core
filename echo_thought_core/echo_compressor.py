@@ -178,7 +178,11 @@ class EchoCompressor(ContextEngine):
 
             tier = self.should_compress(messages)
             if tier == CompressionTier.TIER_0_NORMAL:
-                # 反抖動可能阻擋了，強制 Layer 1
+                # 可能被冷卻或反抖動阻擋；僅在反抖動情況下強制 Layer 1
+                if not self._can_compact():
+                    logger.info("[EchoCompressor] Preflight skipped: cooldown active")
+                    break
+                # 反抖動阻擋——preflight 仍嘗試 Layer 1
                 tier = CompressionTier.TIER_1_MICRO_PRUNE
 
             logger.info(
@@ -291,12 +295,17 @@ class EchoCompressor(ContextEngine):
         start = time.time()
         tokens_before = sum(m.token_count or 0 for m in messages)
 
-        # MemoryBridge: 壓縮前提取記憶
+        # MemoryBridge: 壓縮前提取記憶上下文，注入摘要提示
         memory_context = self._memory_bridge.on_pre_compress(messages)
+        extra_instructions = (
+            f"\n\nIMPORTANT — preserve these facts from memory:\n{memory_context}"
+            if memory_context
+            else None
+        )
 
         try:
             updated, summary_text, saved = await self.summarizer.summarize_oldest(
-                messages, n_turns=10
+                messages, n_turns=10, instructions=extra_instructions,
             )
 
             if saved > 0:
@@ -351,12 +360,17 @@ class EchoCompressor(ContextEngine):
         sacred = self.sacred.get_sacred_content()
         tokens_before = sum(m.token_count or 0 for m in messages)
 
-        # MemoryBridge: 壓縮前提取記憶
+        # MemoryBridge: 壓縮前提取記憶上下文，注入壓縮提示
         memory_context = self._memory_bridge.on_pre_compress(messages)
+        effective_instructions = instructions or ""
+        if memory_context:
+            effective_instructions += (
+                f"\n\nIMPORTANT — preserve these facts from memory:\n{memory_context}"
+            )
 
         try:
             compacted, summary_text, saved = await self.compactor.compact(
-                messages, sacred, instructions
+                messages, sacred, effective_instructions or None,
             )
 
             messages[:] = compacted

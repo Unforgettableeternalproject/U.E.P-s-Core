@@ -130,8 +130,11 @@ class ToolSummarizer:
         if formatter:
             try:
                 return formatter(name, content, meta)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "[ToolSummarizer] formatter '%s' raised: %s",
+                    name, exc, exc_info=True,
+                )
 
         # 通用 fallback
         return self._generic_summary(name, content)

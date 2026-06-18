@@ -17,7 +17,7 @@ Usage:
 import logging
 import time
 import uuid
-from typing import Any, Callable, Awaitable, Dict, List, Optional
+from typing import Any, Callable, Awaitable, Dict, List, Optional, TYPE_CHECKING
 
 from echo_thought_core.schemas.config import CompactionConfig, PersonaContext
 from echo_thought_core.schemas.message import Message, ConversationHistory
@@ -28,6 +28,16 @@ from echo_thought_core.schemas.session import (
 )
 from echo_thought_core.engine_base import ContextEngine
 from echo_thought_core.backends.base import AbstractBackend
+
+if TYPE_CHECKING:
+    from echo_thought_core.memory_bridge import MemoryBridge
+    from echo_thought_core.accounting.counter import TokenCounter
+    from echo_thought_core.accounting.budget import TokenBudget
+    from echo_thought_core.compression.sacred import SacredManager
+    from echo_thought_core.compression.micro_pruning import MicroPruner
+    from echo_thought_core.compression.rolling_summary import RollingSummarizer
+    from echo_thought_core.compression.full_compaction import FullCompactor
+    from echo_thought_core.compression.emergency import EmergencyCompactor
 
 
 logger = logging.getLogger(__name__)
@@ -42,7 +52,7 @@ class ContextManager:
         persona: Optional[PersonaContext] = None,
         backend: Optional[AbstractBackend] = None,
         engine: Optional[ContextEngine] = None,
-        memory_bridge: Optional[Any] = None,
+        memory_bridge: Optional["MemoryBridge"] = None,
     ):
         self.config = config or CompactionConfig()
         self.persona = persona
@@ -203,37 +213,37 @@ class ContextManager:
     # -- 便利屬性（供 CLI 等存取引擎子系統）---------------------------------
 
     @property
-    def counter(self) -> Any:
+    def counter(self) -> "TokenCounter":
         """TokenCounter（供外部存取）"""
         return self._engine.counter
 
     @property
-    def budget(self) -> Any:
+    def budget(self) -> "TokenBudget":
         """TokenBudget（供外部存取）"""
         return self._engine.budget
 
     @property
-    def sacred(self) -> Any:
+    def sacred(self) -> "SacredManager":
         """SacredManager（供外部存取）"""
         return self._engine.sacred
 
     @property
-    def pruner(self) -> Any:
+    def pruner(self) -> "MicroPruner":
         """MicroPruner（供外部存取）"""
         return self._engine.pruner
 
     @property
-    def summarizer(self) -> Any:
+    def summarizer(self) -> "RollingSummarizer":
         """RollingSummarizer（供外部存取）"""
         return self._engine.summarizer
 
     @property
-    def compactor(self) -> Any:
+    def compactor(self) -> "FullCompactor":
         """FullCompactor（供外部存取）"""
         return self._engine.compactor
 
     @property
-    def emergency(self) -> Any:
+    def emergency(self) -> "EmergencyCompactor":
         """EmergencyCompactor（供外部存取）"""
         return self._engine.emergency
 

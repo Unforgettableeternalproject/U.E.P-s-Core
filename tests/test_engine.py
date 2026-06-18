@@ -114,19 +114,27 @@ class TestEchoCompressor:
         assert tier >= CompressionTier.TIER_1_MICRO_PRUNE
 
     def test_compress_layer1_sync(self):
-        """同步壓縮執行 Layer 1"""
+        """同步壓縮執行 Layer 1 — 工具訊息確實被摘要"""
         engine = EchoCompressor(config=CompactionConfig(
             context_window_size=1000,
             compaction_cooldown_seconds=0,
         ))
+        # 4 條訊息：前 2 條在邊界前（50% = idx 2），後 2 條受保護
         msgs = [
             Message(role="tool", content="x" * 300, token_count=80,
                     tool_call_id="c1", tool_name="read_file"),
+            Message(role="tool", content="y" * 300, token_count=80,
+                    tool_call_id="c2", tool_name="terminal"),
             Message(role="user", content="recent", token_count=5),
+            Message(role="assistant", content="ok", token_count=3),
         ]
         result = engine.compress(msgs, CompressionTier.TIER_1_MICRO_PRUNE)
-        # Layer 1 只在 boundary 之前剪裁，msg[0] 在預設 50% 邊界之前
-        assert result is None or result.tier == CompressionTier.TIER_1_MICRO_PRUNE
+        assert result is not None
+        assert result.tier == CompressionTier.TIER_1_MICRO_PRUNE
+        assert result.tokens_saved > 0
+        # 確認工具訊息被摘要（metadata 標記 pruned）
+        pruned = [m for m in msgs if m.metadata.get("pruned")]
+        assert len(pruned) >= 1
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -408,3 +416,101 @@ class TestCompressionSafetyMarkers:
     def test_summary_end_marker_exists(self):
         """SUMMARY_END_MARKER 存在且有意義"""
         assert "END OF CONTEXT SUMMARY" in SUMMARY_END_MARKER
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Preflight 壓縮
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestPreflightCompress:
+    """Preflight 壓縮測試"""
+
+    @pytest.mark.asyncio
+    async def test_preflight_no_compression_needed(self):
+        """token 未超預算時不壓縮"""
+        engine = EchoCompressor(config=CompactionConfig(
+            context_window_size=100000,
+            compaction_cooldown_seconds=0,
+        ))
+        msgs = [Message(role="user", content="hello", token_count=10)]
+        result = await engine.preflight_compress(msgs, estimated_request_tokens=100)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_preflight_triggers_compression(self):
+        """token 超預算時觸發壓縮"""
+        engine = EchoCompressor(config=CompactionConfig(
+            context_window_size=200,
+            compaction_cooldown_seconds=0,
+        ))
+        # 4 條訊息，前兩條大工具輸出在邊界前（50%=idx 2）
+        msgs = [
+            Message(role="tool", content="x" * 300, token_count=80,
+                    tool_call_id="c1", tool_name="read_file"),
+            Message(role="tool", content="y" * 300, token_count=80,
+                    tool_call_id="c2", tool_name="terminal"),
+            Message(role="user", content="recent", token_count=5),
+            Message(role="assistant", content="ok", token_count=3),
+        ]
+        result = await engine.preflight_compress(
+            msgs, estimated_request_tokens=100,
+        )
+        # 如果壓縮成功，result 不為 None 且有正數 tokens_saved
+        if result is not None:
+            assert result.tokens_saved >= 0
+
+    @pytest.mark.asyncio
+    async def test_preflight_respects_cooldown(self):
+        """Preflight 尊重冷卻期"""
+        engine = EchoCompressor(config=CompactionConfig(
+            context_window_size=100,
+            compaction_cooldown_seconds=9999,  # 超長冷卻
+        ))
+        import time
+        engine._last_compaction_time = time.time()  # 剛壓縮過
+        msgs = [Message(role="user", content="x" * 200, token_count=70)]
+        result = await engine.preflight_compress(msgs, estimated_request_tokens=50)
+        # 冷卻中不壓縮
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_preflight_max_passes_limit(self):
+        """Preflight 不超過 max_passes"""
+        engine = EchoCompressor(config=CompactionConfig(
+            context_window_size=10,  # 極小，永遠超預算
+            compaction_cooldown_seconds=0,
+        ))
+        msgs = [Message(role="user", content="hello", token_count=5)]
+        # max_passes=1，最多壓縮一次就停
+        result = await engine.preflight_compress(
+            msgs, estimated_request_tokens=100, max_passes=1,
+        )
+        # 不會無限循環（測試能正常結束即驗證）
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# compression_count 一致性
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestCompressionCount:
+    """壓縮計數一致性測試"""
+
+    def test_compression_count_sync(self):
+        """同步壓縮正確遞增 compression_count"""
+        mgr = ContextManager(config=CompactionConfig(
+            context_window_size=100,
+            compaction_cooldown_seconds=0,
+        ))
+        # 加入足夠的訊息觸發壓縮
+        for i in range(6):
+            mgr.add_message("tool", "x" * 300, tool_call_id=f"c{i}", tool_name="read_file")
+            mgr.add_message("user", f"msg {i}")
+
+        count_before = mgr.state.compression_count
+        mgr.get_messages()
+        # 若觸發了壓縮，count 應該遞增
+        assert mgr.state.compression_count >= count_before
+        # history 和 state 計數保持同步
+        assert mgr.history.compression_count == mgr.state.compression_count

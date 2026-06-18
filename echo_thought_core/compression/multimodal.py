@@ -28,10 +28,9 @@ IMAGE_TOKEN_ESTIMATE = 1600
 IMAGE_PLACEHOLDER = "[image removed to save context space]"
 IMAGE_PLACEHOLDER_TOKENS = 10
 
-# base64 圖片的正則匹配
+# base64 圖片的正則匹配（允許折行的 base64 字串）
 _BASE64_IMAGE_RE = re.compile(
-    r"data:image/[a-zA-Z]+;base64,[A-Za-z0-9+/=]{100,}",
-    re.DOTALL,
+    r"data:image/[a-zA-Z]+;base64,[A-Za-z0-9+/=\s]{100,}",
 )
 
 

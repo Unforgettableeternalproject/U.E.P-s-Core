@@ -41,9 +41,6 @@ SUMMARY_END_MARKER = (
     "respond to the message below, not the summary above ---"
 )
 
-# 舊版前綴（向後相容識別）
-LEGACY_SUMMARY_PREFIX = "[Conversation Summary]"
-
 # 摘要 token 預算範圍（最小 2K，最大 12K）
 _SUMMARY_BUDGET_MIN = 2_000
 _SUMMARY_BUDGET_MAX = 12_000

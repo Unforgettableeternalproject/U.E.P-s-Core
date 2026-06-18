@@ -107,6 +107,7 @@ class MultiChannelSTTEngine:
         self._worker_pool: Optional[STTWorkerPool] = None
         self._channel_manager: Optional[ChannelManager] = None
         self._aggregator: Optional[TranscriptAggregator] = None
+        self._post_processor: Optional[PostProcessor] = None
 
         # 狀態
         self._state = EngineState.CREATED
@@ -177,6 +178,7 @@ class MultiChannelSTTEngine:
 
             # 3.5 建立後處理管線（hallucination 過濾 + 繁簡轉換）
             post_processor = PostProcessor.from_config(self.config)
+            self._post_processor = post_processor  # direct path 也用
             logger.info(
                 "[MCEngine] 後處理: hallu_filter=%s, chinese_conv=%s",
                 post_processor._hallu_filter is not None,
@@ -492,6 +494,15 @@ class MultiChannelSTTEngine:
             return None
 
         text = result.get("text", "").strip()
+        confidence = result.get("confidence", 0.0)
+
+        # 後處理管線（hallucination 過濾 + 繁簡轉換），與 worker path 一致
+        if self._post_processor is not None:
+            text = self._post_processor.process(text, confidence=confidence)
+            if text is None:
+                logger.debug("[MCEngine] transcribe_segment: 後處理過濾掉了結果")
+                return None
+
         if not text:
             return None
 
@@ -502,7 +513,7 @@ class MultiChannelSTTEngine:
             segment_id=f"direct_{int(now * 1000)}",
             text=text,
             language=result.get("language"),
-            confidence=result.get("confidence", 0.0),
+            confidence=confidence,
             channel_id=channel_id,
             channel_type=ChannelType.FILE,
             speaker_label=speaker_label,

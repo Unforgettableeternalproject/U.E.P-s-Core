@@ -33,27 +33,8 @@ from echo_thought_core.schemas.message import Message
 from echo_thought_core.schemas.session import CompactionResult, CompressionTier
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Pytest 設定
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def pytest_addoption(parser):
-    """註冊 E2E 專用的 CLI 選項"""
-    parser.addoption(
-        "--e2e-backend",
-        action="store",
-        default=os.getenv("E2E_BACKEND", "ollama"),
-        help="E2E backend: ollama or gemini (default: ollama)",
-    )
-    parser.addoption(
-        "--e2e-model",
-        action="store",
-        default=os.getenv("E2E_MODEL", ""),
-        help="Override model name for E2E tests",
-    )
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
 # Fixtures
+# （pytest_addoption 已移至 conftest.py，這樣 pytest CLI 解析時就能認得）
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @pytest.fixture(scope="session")

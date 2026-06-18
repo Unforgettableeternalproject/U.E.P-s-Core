@@ -70,11 +70,11 @@ logger = logging.getLogger(__name__)
 # ── 壓縮層級配色 ────────────────────────────────────────────────────────────
 
 TIER_STYLES = {
-    CompressionTier.TIER_0_NORMAL: ("●", "green", "Normal"),
-    CompressionTier.TIER_1_MICRO_PRUNE: ("●", "yellow", "Micro-Prune"),
-    CompressionTier.TIER_2_ROLLING_SUMMARY: ("●", "dark_orange", "Rolling Summary"),
-    CompressionTier.TIER_3_FULL_COMPACTION: ("●", "red", "Full Compaction"),
-    CompressionTier.TIER_4_EMERGENCY: ("●", "bold red", "EMERGENCY"),
+    CompressionTier.TIER_0_NORMAL: ("*", "green", "Normal"),
+    CompressionTier.TIER_1_MICRO_PRUNE: ("*", "yellow", "Micro-Prune"),
+    CompressionTier.TIER_2_ROLLING_SUMMARY: ("*", "dark_orange", "Rolling Summary"),
+    CompressionTier.TIER_3_FULL_COMPACTION: ("*", "red", "Full Compaction"),
+    CompressionTier.TIER_4_EMERGENCY: ("*", "bold red", "EMERGENCY"),
 }
 
 # ── 使用率進度條配色 ────────────────────────────────────────────────────────
@@ -152,8 +152,8 @@ def render_model_panel(mgr: ContextManager) -> Panel:
 
     # 功能
     table.add_row("", "")
-    table.add_row("LLMLingua", "✓" if config.use_llmlingua else "✗")
-    table.add_row("Echo Memory", "✓" if config.echo_memory_enabled else "✗")
+    table.add_row("LLMLingua", "Y" if config.use_llmlingua else "N")
+    table.add_row("Echo Memory", "Y" if config.echo_memory_enabled else "N")
     has_backend = mgr._backend is not None
     table.add_row("LLM Backend", "[green]Connected[/]" if has_backend else "[red]None[/]")
 
@@ -190,7 +190,7 @@ def render_history_panel(mgr: ContextManager, last_n: int = 8) -> Panel:
 
         # 壓縮訊息標記
         if msg.is_compressed:
-            content = f"[yellow]◆ COMPRESSED[/] {content}"
+            content = f"[yellow][COMPRESSED][/] {content}"
 
         tokens = str(msg.token_count or "?")
         table.add_row(str(idx), f"[{role_style}]{msg.role}[/{role_style}]", content, tokens)
@@ -282,14 +282,22 @@ class SessionControlCLI:
         with self.console.status("[cyan]Loading LLM config..."):
             self.llm_config = load_llm_config()
 
-        model = self.llm_config.get("model", "gemini-2.5-flash-lite")
-        if self.args and self.args.model:
-            model = self.args.model
-
-        # 後端選擇
+        # 後端選擇（先決定 backend，再決定 model 預設值）
         backend_type = "gemini"
         if self.args and self.args.backend:
             backend_type = self.args.backend
+
+        # Model: CLI 明確指定 > llm_config.yaml > 按 backend 預設
+        backend_defaults = {
+            "gemini": "gemini-2.5-flash-lite",
+            "ollama": "gemma4",
+        }
+        if self.args and self.args.model:
+            model = self.args.model
+        elif backend_type == "gemini":
+            model = self.llm_config.get("model", backend_defaults["gemini"])
+        else:
+            model = backend_defaults.get(backend_type, "default")
 
         persona = build_persona_from_config(self.llm_config)
 
@@ -343,16 +351,16 @@ class SessionControlCLI:
                 )
             except Exception as e:
                 # Backend 初始化失敗，降級為無 backend 模式
-                self.console.print(f"[yellow]⚠ Backend ({backend_type}) init failed: {e}[/]")
+                self.console.print(f"[yellow]! Backend ({backend_type}) init failed: {e}[/]")
                 self.console.print("[yellow]  Running in offline mode (Layer 1/4 only)[/]")
                 self.llm = None
                 self.mgr = ContextManager(config=config, persona=persona, backend=None)
 
-        self.console.print(f"[green]✓[/] Backend: [bold]{backend_type}[/]")
-        self.console.print(f"[green]✓[/] Model: [bold]{model}[/]")
-        self.console.print(f"[green]✓[/] Context Window: [bold]{context_window:,}[/]")
+        self.console.print(f"[green]OK[/] Backend: [bold]{backend_type}[/]")
+        self.console.print(f"[green]OK[/] Model: [bold]{model}[/]")
+        self.console.print(f"[green]OK[/] Context Window: [bold]{context_window:,}[/]")
         self.console.print(
-            f"[green]✓[/] LLM: "
+            f"[green]OK[/] LLM: "
             f"[bold]{'Connected' if self.llm else 'Offline'}[/]"
         )
         self.console.print()
@@ -502,13 +510,13 @@ class SessionControlCLI:
             tier = self.mgr.budget.check_tier()
             if tier >= CompressionTier.TIER_2_ROLLING_SUMMARY:
                 self.console.print(
-                    f"[yellow]⚠ Compression triggered: {TIER_STYLES[tier][2]}[/]"
+                    f"[yellow]! Compression triggered: {TIER_STYLES[tier][2]}[/]"
                 )
                 with self.console.status("[yellow]Compressing..."):
                     try:
                         _run_async(self.mgr.get_messages_async())
                         self.console.print(
-                            f"[green]✓ Compressed. "
+                            f"[green]OK Compressed. "
                             f"Tokens: {self.mgr.state.current_tokens:,}[/]"
                         )
                     except Exception as e:
@@ -534,7 +542,7 @@ class SessionControlCLI:
 
         pct = self.mgr.state.usage_percentage
         self.console.print(
-            f"[green]✓ Added {n * 2} messages. "
+            f"[green]OK Added {n * 2} messages. "
             f"Token usage: {pct:.1%} ({self.mgr.state.current_tokens:,})[/]"
         )
 
@@ -587,7 +595,7 @@ class SessionControlCLI:
 
         self.mgr.reset_session()
         self.console.print(
-            f"[green]✓ Session reset.[/] New session: [bold]{self.mgr.state.session_id}[/]"
+            f"[green]OK Session reset.[/] New session: [bold]{self.mgr.state.session_id}[/]"
         )
 
     def _cmd_usage(self) -> None:

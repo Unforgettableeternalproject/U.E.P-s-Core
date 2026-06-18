@@ -13,16 +13,18 @@ Usage (低層級):
     manager = ContextManager(config=config, persona=persona)
 
 Usage (推薦 — 高層級 factory):
-    from echo_thought_core import create_context_manager, load_llm_config
+    from echo_thought_core import create_context_manager
 
-    config = load_llm_config()
     manager = create_context_manager(
-        backend_config={"model": config["model"]},
+        backend_config={"model": "gemini-2.5-flash-lite"},
         persona=PersonaContext(name="U.E.P"),
     )
 """
 
 from echo_thought_core.context_manager import ContextManager
+from echo_thought_core.engine_base import ContextEngine
+from echo_thought_core.echo_compressor import EchoCompressor
+from echo_thought_core.memory_bridge import MemoryBridge, NullMemoryBridge
 from echo_thought_core.schemas.config import CompactionConfig, PersonaContext
 from echo_thought_core.schemas.session import SessionState, CompactionResult
 from echo_thought_core.schemas.message import Message
@@ -34,16 +36,21 @@ from echo_thought_core.persona import (
     build_system_instruction,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0-dev"
 
 __all__ = [
     # 核心
     "ContextManager",
+    "ContextEngine",
+    "EchoCompressor",
     "CompactionConfig",
     "PersonaContext",
     "SessionState",
     "CompactionResult",
     "Message",
+    # 記憶整合
+    "MemoryBridge",
+    "NullMemoryBridge",
     # LLM
     "LLMClient",
     # Factory

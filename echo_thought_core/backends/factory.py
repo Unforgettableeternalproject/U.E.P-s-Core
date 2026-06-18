@@ -41,13 +41,11 @@ def create_backend(
 
         return LLMClient(config=config)
 
-    elif backend_type == "local":
-        raise NotImplementedError(
-            "Local model backend (Qwen2.5) is planned for Phase 3"
-        )
-
     else:
-        raise ValueError(f"Unknown backend type: {backend_type}")
+        raise ValueError(
+            f"Unknown backend type: {backend_type!r}. "
+            f"Currently supported: 'gemini'"
+        )
 
 
 def create_context_manager(
@@ -56,6 +54,7 @@ def create_context_manager(
     compaction_config: Optional["CompactionConfig"] = None,
     persona: Optional["PersonaContext"] = None,
     cache_config: Optional[Dict[str, Any]] = None,
+    memory_bridge: Optional[Any] = None,
 ) -> "ContextManager":
     """一次建立帶有 LLMClient + CacheManager 的完整 ContextManager
 
@@ -121,4 +120,5 @@ def create_context_manager(
         config=config,
         persona=persona,
         backend=backend,
+        memory_bridge=memory_bridge,
     )

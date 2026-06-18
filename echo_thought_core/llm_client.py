@@ -194,6 +194,10 @@ class LLMClient(AbstractBackend):
         # ── 對話歷史 — 存儲 google.genai.types.Content 物件 ──
         self._history: list = []
 
+        # ── 外部歷史管理模式 ──
+        # 當 True 時，chat() 不再維護 _history，而是接受外部提供的 messages
+        self._external_history_mode: bool = False
+
         # ── 延遲初始化 ──
         self._client = None
         self._initialized = False
@@ -257,6 +261,48 @@ class LLMClient(AbstractBackend):
         """
         self._ensure_client()
         return self._client
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # 歷史同步（供 ContextManager 壓縮後同步 LLM 歷史）
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def sync_history_from_messages(self, messages: list[dict[str, str]]) -> None:
+        """用 ContextManager 壓縮後的 messages 取代 _history。
+
+        ContextManager 是唯一的歷史來源。壓縮發生後，
+        呼叫此方法將壓縮後的 messages 同步到 LLMClient，
+        確保下一次 API 呼叫使用壓縮後的歷史。
+
+        不要求 Gemini client 已初始化——離線壓縮（Layer 1/4）
+        也需要同步歷史。Content 物件會在下次 API 呼叫前用
+        _ensure_client() 時建立。
+
+        Args:
+            messages: ContextManager.get_messages() 的結果
+                      (list of {"role": ..., "content": ...})
+        """
+        if not _HAS_GENAI:
+            # google-genai 未安裝，只清空歷史（離線模式）
+            self._history.clear()
+            return
+
+        from google.genai import types as _types
+
+        self._history.clear()
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            # Gemini API 的 role 映射
+            gemini_role = "model" if role == "assistant" else "user"
+            if role == "system":
+                # system 訊息（如壓縮摘要）作為 user role 注入
+                gemini_role = "user"
+            self._history.append(
+                _types.Content(
+                    role=gemini_role,
+                    parts=[_types.Part(text=content)],
+                )
+            )
 
     # ═══════════════════════════════════════════════════════════════════════
     # 多輪對話（來自上游 Echo Memory LLMClient）

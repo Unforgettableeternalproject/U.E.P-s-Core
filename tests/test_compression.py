@@ -259,9 +259,11 @@ class TestMicroPrunerPrune:
         # protect_tail_tokens=9999 → 邊界在 0，同上
         # 要觸發剪裁需讓邊界 > 0；用 protect_tail_tokens=5 讓後 1 條進入保護
         result, saved = pruner.prune(msgs, protect_tail_tokens=5)
-        pruned = [m for m in result if m.role == "tool" and m.content == PRUNED_TOOL_PLACEHOLDER]
+        pruned = [m for m in result if m.role == "tool" and m.metadata.get("pruned")]
         assert len(pruned) == 1
         assert saved > 0
+        # ToolSummarizer 會產生結構化摘要而非簡單佔位字串
+        assert pruned[0].content != big_content
 
     def test_does_not_prune_tool_output_after_boundary(self):
         pruner = MicroPruner()

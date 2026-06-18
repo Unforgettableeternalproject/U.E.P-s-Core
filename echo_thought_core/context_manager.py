@@ -1,8 +1,20 @@
 """
 Context Manager — 會話控制主入口
 
-統合 Token Accounting、四層壓縮引擎、Backend 抽象、神聖段落保護。
+統合 ContextEngine、Token Accounting、對話歷史管理。
 提供簡單的 API 介面供外部使用。
+
+內部委託 EchoCompressor（或任意 ContextEngine 實作）執行壓縮。
+公開 API 保持向後相容。
+
+整合點標記（🔌 INTEGRATION POINT）：
+  標記為 🔌 的位置是設計給其他子系統整合的介面。
+  目前有獨立可用的預設實作，未來接入外部模組時替換。
+  - MemoryBridge → Echo Memory 系統（跨會話記憶持久化）
+  - update_from_response → LLM API 回應後精確 token 追蹤
+  - preflight_compress → API 呼叫前自動壓縮
+  - update_model → 動態模型切換
+  - should_end_session → 動態會話邊界判斷
 
 Usage:
     manager = ContextManager(config=config, persona=persona)
@@ -14,7 +26,7 @@ Usage:
 import logging
 import time
 import uuid
-from typing import List, Optional, Dict, Any, Callable, Awaitable
+from typing import Any, Callable, Awaitable, Dict, List, Optional, TYPE_CHECKING
 
 from echo_thought_core.schemas.config import CompactionConfig, PersonaContext
 from echo_thought_core.schemas.message import Message, ConversationHistory
@@ -23,27 +35,33 @@ from echo_thought_core.schemas.session import (
     CompactionResult,
     CompressionTier,
 )
-from echo_thought_core.accounting.counter import TokenCounter
-from echo_thought_core.accounting.budget import TokenBudget
-from echo_thought_core.compression.sacred import SacredManager
-from echo_thought_core.compression.micro_pruning import MicroPruner
-from echo_thought_core.compression.rolling_summary import RollingSummarizer
-from echo_thought_core.compression.full_compaction import FullCompactor
-from echo_thought_core.compression.emergency import EmergencyCompactor
+from echo_thought_core.engine_base import ContextEngine
 from echo_thought_core.backends.base import AbstractBackend
+
+if TYPE_CHECKING:
+    from echo_thought_core.memory_bridge import MemoryBridge
+    from echo_thought_core.accounting.counter import TokenCounter
+    from echo_thought_core.accounting.budget import TokenBudget
+    from echo_thought_core.compression.sacred import SacredManager
+    from echo_thought_core.compression.micro_pruning import MicroPruner
+    from echo_thought_core.compression.rolling_summary import RollingSummarizer
+    from echo_thought_core.compression.full_compaction import FullCompactor
+    from echo_thought_core.compression.emergency import EmergencyCompactor
 
 
 logger = logging.getLogger(__name__)
 
 
 class ContextManager:
-    """會話控制主入口"""
+    """會話控制主入口 — 委託 ContextEngine 執行壓縮"""
 
     def __init__(
         self,
         config: Optional[CompactionConfig] = None,
         persona: Optional[PersonaContext] = None,
         backend: Optional[AbstractBackend] = None,
+        engine: Optional[ContextEngine] = None,
+        memory_bridge: Optional["MemoryBridge"] = None,
     ):
         self.config = config or CompactionConfig()
         self.persona = persona
@@ -54,34 +72,30 @@ class ContextManager:
             max_tokens=self.config.context_window_size,
         )
 
-        # 後端（可選，Layer 2/3 需要）
+        # 後端引用（供外部存取，如 CLI）
         self._backend = backend
 
-        # 子系統
-        self.counter = TokenCounter(
-            backend=self.config.backend,
-            model=self.config.model,
-        )
-        self.budget = TokenBudget(
-            context_window=self.config.context_window_size,
-            thresholds=self.config.thresholds,
-        )
-        self.sacred = SacredManager(persona=persona)
-        self.pruner = MicroPruner(use_llmlingua=self.config.use_llmlingua)
-        self.summarizer = RollingSummarizer(backend=backend)
-        self.compactor = FullCompactor(backend=backend)
-        self.emergency = EmergencyCompactor(
-            max_keep=self.config.max_emergency_messages,
-        )
+        # 壓縮引擎（預設為 EchoCompressor）
+        if engine is not None:
+            self._engine = engine
+        else:
+            from echo_thought_core.echo_compressor import EchoCompressor
+
+            self._engine = EchoCompressor(
+                config=self.config,
+                persona=persona,
+                backend=backend,
+                memory_bridge=memory_bridge,
+            )
 
         # 對話歷史
         self.history = ConversationHistory()
 
-        # 壓縮事件回調
-        self._on_compaction_callbacks: List[Callable[[CompactionResult], Awaitable[None]]] = []
+        # 🔌 INTEGRATION POINT: Session lifecycle — on_session_start
+        # 通知引擎（及 MemoryBridge）會話已開始
+        self._engine.on_session_start(self.state.session_id)
 
-        # 壓縮冷卻
-        self._last_compaction_time: float = 0.0
+    # -- 公開 API（向後相容）------------------------------------------------
 
     def add_message(
         self,
@@ -103,30 +117,28 @@ class ContextManager:
         )
 
         # 計算 token 數
-        self.counter.count_message(msg)
+        self._engine.counter.count_message(msg)
 
         # 加入歷史
         self.history.add(msg)
 
-        # 更新預算
-        self.budget.update(history=self.history.total_tokens)
-
         # 更新狀態
-        self.state.current_tokens = self.budget.total_tokens
-        self.state.message_count = len(self.history.messages)
-        self.state.current_tier = self.budget.check_tier()
+        self._sync_state()
 
         return msg
 
     def get_messages(self) -> List[Dict[str, str]]:
-        """取得供 API 使用的訊息列表
+        """取得供 API 使用的訊息列表（同步版本只做 Layer 1）"""
+        # 🔌 INTEGRATION POINT: multimodal 圖片清理
+        # strip_old_images 在壓縮判斷前執行，防止圖片累積
+        self._strip_old_images_if_needed()
 
-        自動檢查是否需要觸發壓縮（同步版本只做 Layer 1）。
-        """
-        tier = self.budget.check_tier()
+        tier = self._engine.should_compress(self.history.messages)
 
-        if tier >= CompressionTier.TIER_1_MICRO_PRUNE and self._can_compact():
-            self._apply_layer1()
+        if tier >= CompressionTier.TIER_1_MICRO_PRUNE:
+            result = self._engine.compress(self.history.messages, tier)
+            if result:
+                self._after_compression(result)
 
         return [
             {"role": m.role, "content": m.content}
@@ -135,53 +147,81 @@ class ContextManager:
 
     async def get_messages_async(self) -> List[Dict[str, str]]:
         """取得供 API 使用的訊息列表（異步版本，支援 Layer 2/3）"""
-        tier = self.budget.check_tier()
+        self._strip_old_images_if_needed()
 
-        if tier >= CompressionTier.TIER_1_MICRO_PRUNE and self._can_compact():
-            if tier >= CompressionTier.TIER_3_FULL_COMPACTION:
-                await self._apply_layer3()
-            elif tier >= CompressionTier.TIER_2_ROLLING_SUMMARY:
-                await self._apply_layer2()
-            else:
-                self._apply_layer1()
+        tier = self._engine.should_compress(self.history.messages)
+
+        if tier >= CompressionTier.TIER_1_MICRO_PRUNE:
+            result = await self._engine.compress_async(
+                self.history.messages, tier
+            )
+            if result:
+                self._after_compression(result)
 
         return [
             {"role": m.role, "content": m.content}
             for m in self.history.messages
         ]
 
-    async def compact(self, instructions: Optional[str] = None) -> CompactionResult:
+    async def compact(
+        self, instructions: Optional[str] = None
+    ) -> CompactionResult:
         """手動觸發壓縮（對應 /compact 命令）"""
-        # 強制執行 Layer 3
-        return await self._apply_layer3(instructions=instructions)
+        result = await self._engine.compress_async(
+            self.history.messages,
+            CompressionTier.TIER_3_FULL_COMPACTION,
+            instructions=instructions,
+        )
+        if result:
+            self._after_compression(result)
+            return result
+
+        tokens = self.history.total_tokens
+        return CompactionResult(
+            tier=CompressionTier.TIER_3_FULL_COMPACTION,
+            tokens_before=tokens,
+            tokens_after=tokens,
+            tokens_saved=0,
+        )
 
     def handle_api_error(self, error_code: int) -> Optional[CompactionResult]:
         """處理 API 錯誤（413 等）觸發 Layer 4"""
         if error_code == 413:
-            return self._apply_layer4()
+            result = self._engine.compress(
+                self.history.messages,
+                CompressionTier.TIER_4_EMERGENCY,
+            )
+            if result:
+                self._after_compression(result)
+            return result
         return None
 
     def get_usage(self) -> Dict[str, object]:
         """取得 token 使用量報告"""
-        report = self.budget.get_usage_report()
+        report = self._engine.get_status()
         report["session_id"] = self.state.session_id
         report["message_count"] = self.state.message_count
         report["compression_count"] = self.state.compression_count
         return report
 
-    def on_compaction(self, callback: Callable[[CompactionResult], Awaitable[None]]) -> None:
-        """註冊壓縮事件回調（供 Echo Memory 整合）"""
-        self._on_compaction_callbacks.append(callback)
+    def on_compaction(
+        self, callback: Callable[[CompactionResult], Awaitable[None]]
+    ) -> None:
+        """註冊壓縮事件回調（deprecated: 請改用 MemoryBridge）"""
+        self._engine.on_compaction(callback)
 
     def reset_session(self) -> None:
         """完全重置會話（對應 /clear 命令）"""
+        old_session_id = self.state.session_id
+
+        # 🔌 INTEGRATION POINT: Session lifecycle — on_session_end
+        # 通知引擎（及 MemoryBridge）舊會話結束
+        self._engine.on_session_end(old_session_id, self.history.messages)
+
         # 清空歷史
         self.history.messages.clear()
         self.history.total_tokens = 0
         self.history.compression_count = 0
-
-        # 重置預算
-        self.budget.update(history=0)
 
         # 重置 session state
         self.state.session_id = str(uuid.uuid4())[:8]
@@ -192,195 +232,191 @@ class ContextManager:
         self.state.last_compaction_at = None
         self.state.created_at = time.time()
 
-        # 重置 emergency 斷路器
-        self.emergency.reset()
+        # 重置引擎
+        self._engine.on_session_reset()
 
-        # 重置壓縮冷卻
-        self._last_compaction_time = 0.0
+        # 同步清空 LLMClient 歷史
+        if self._backend is not None and hasattr(self._backend, "clear_history"):
+            self._backend.clear_history()
 
-    # === 私有方法 ===
+        # 🔌 INTEGRATION POINT: Session lifecycle — on_session_start (new session)
+        self._engine.on_session_start(self.state.session_id)
 
-    def _can_compact(self) -> bool:
-        """檢查壓縮冷卻"""
-        now = time.time()
-        if now - self._last_compaction_time < self.config.compaction_cooldown_seconds:
-            return False
-        return True
+    # -- 🔌 INTEGRATION POINT: 新增 API（供外部整合使用）---------------------
 
-    def _apply_layer1(self) -> Optional[CompactionResult]:
-        """執行 Layer 1 微清理"""
-        start = time.time()
-        tokens_before = self.history.total_tokens  # 快照：修改前
-        pruned, saved = self.pruner.prune(self.history.messages)
+    def update_from_response(self, usage: Dict[str, Any]) -> None:
+        """從 API 回應更新實際 token 使用量。
 
-        if saved > 0:
-            self.history.messages = pruned
-            self.history.total_tokens -= saved
-            self.budget.update(history=self.history.total_tokens)
-            self.state.current_tokens = self.budget.total_tokens
-            self.state.compression_count += 1
-            self._last_compaction_time = time.time()
+        🔌 INTEGRATION POINT: LLM API 回應後精確追蹤
+        整合方式：在每次 LLM API 呼叫後，將 usage dict 傳入。
+        未來接入 U.E.P Core 的 LLM Module 時，由 event bus 觸發。
 
-            return CompactionResult(
-                tier=CompressionTier.TIER_1_MICRO_PRUNE,
-                tokens_before=tokens_before,
-                tokens_after=self.history.total_tokens,
-                tokens_saved=saved,
-                compression_ratio=saved / tokens_before if tokens_before else 0,
-                duration_ms=(time.time() - start) * 1000,
-            )
-        return None
+        Args:
+            usage: API 回應的 usage 資訊，可包含：
+                   input_tokens, output_tokens,
+                   cache_read_tokens, cache_write_tokens
+        """
+        self._engine.update_from_response(usage)
 
-    async def _apply_layer2(self) -> Optional[CompactionResult]:
-        """執行 Layer 2 增量摘要"""
-        if not self._backend:
-            # 無後端，降級為 Layer 1
-            return self._apply_layer1()
+    async def preflight_compress(
+        self,
+        estimated_request_tokens: int = 0,
+        max_passes: int = 3,
+    ) -> Optional[CompactionResult]:
+        """在 API 呼叫前執行預防性壓縮。
 
-        start = time.time()
-        tokens_before = self.history.total_tokens  # 快照：修改前
-        try:
-            updated, summary_text, saved = await self.summarizer.summarize_oldest(
-                self.history.messages, n_turns=10
-            )
+        🔌 INTEGRATION POINT: API 呼叫前自動壓縮
+        整合方式：在送出 API 請求前呼叫，傳入預估的
+        system prompt + tools schema token 數。
 
-            if saved > 0:
-                self.history.messages = updated
-                self.history.total_tokens -= saved
-                self.history.compression_count += 1
-                self.budget.update(history=self.history.total_tokens)
-                self.state.current_tokens = self.budget.total_tokens
-                self.state.compression_count += 1
-                self.state.last_compaction_at = time.time()
-                self._last_compaction_time = time.time()
+        Args:
+            estimated_request_tokens: 預估的固定開銷 token 數
+            max_passes: 最多壓縮幾次（預設 3）
 
-                result = CompactionResult(
-                    tier=CompressionTier.TIER_2_ROLLING_SUMMARY,
-                    tokens_before=tokens_before,
-                    tokens_after=self.history.total_tokens,
-                    tokens_saved=saved,
-                    compression_ratio=saved / tokens_before if tokens_before else 0,
-                    summary_text=summary_text,
-                    duration_ms=(time.time() - start) * 1000,
-                )
+        Returns:
+            最後一次壓縮的結果，或 None（不需要壓縮）
+        """
+        result = await self._engine.preflight_compress(
+            self.history.messages,
+            estimated_request_tokens=estimated_request_tokens,
+            max_passes=max_passes,
+        )
+        if result:
+            self._after_compression(result)
+        return result
 
-                # 通知回調（Echo Memory 整合點）
-                for cb in self._on_compaction_callbacks:
-                    await cb(result)
+    def update_model(self, model: str, context_length: int = 0) -> None:
+        """動態切換模型，重新計算壓縮閾值。
 
-                return result
+        🔌 INTEGRATION POINT: 動態模型切換
+        整合方式：當使用者或系統切換 LLM 模型時呼叫。
 
-        except Exception as exc:
-            # 摘要失敗，降級為 Layer 1
-            logger.warning(
-                "[ContextManager] Layer 2 摘要失敗，降級為 Layer 1: %s",
-                exc,
-                exc_info=True,
-            )
+        Args:
+            model: 新模型名稱
+            context_length: 新模型的 context window 大小（0 = 不變）
+        """
+        self._engine.update_model(model, context_length)
+        if context_length > 0:
+            self.config.context_window_size = context_length
+            self.state.max_tokens = context_length
 
-        return self._apply_layer1()
+    def prefetch_memory(self, query: str) -> str:
+        """預抓取記憶上下文。
 
-    async def _apply_layer3(self, instructions: Optional[str] = None) -> CompactionResult:
-        """執行 Layer 3 完整壓縮"""
-        if not self._backend:
-            # 無後端，降級為 Layer 1
-            result = self._apply_layer1()
-            if result:
-                return result
-            return CompactionResult(
-                tier=CompressionTier.TIER_3_FULL_COMPACTION,
-                tokens_before=self.history.total_tokens,
-                tokens_after=self.history.total_tokens,
-                tokens_saved=0,
-            )
+        🔌 INTEGRATION POINT: Echo Memory 每輪預抓取
+        整合方式：在每輪對話前呼叫，傳入使用者訊息。
+        回傳的字串可注入 system prompt 或 user context。
+        需要實作 MemoryBridge 的 prefetch() 方法。
 
-        start = time.time()
-        sacred = self.sacred.get_sacred_content()
-        tokens_before = self.history.total_tokens
+        Args:
+            query: 使用者訊息或搜尋關鍵字
 
-        try:
-            compacted, summary_text, saved = await self.compactor.compact(
-                self.history.messages, sacred, instructions
-            )
+        Returns:
+            記憶上下文字串（空字串表示無相關記憶）
+        """
+        return self._engine._memory_bridge.prefetch(query)
 
-            self.history.messages = compacted
-            self.history.total_tokens = sum(m.token_count or 0 for m in compacted)
-            # 重新計算壓縮後訊息的 token
-            for m in compacted:
-                if m.token_count is None:
-                    self.counter.count_message(m)
-            self.history.total_tokens = sum(m.token_count or 0 for m in compacted)
-            self.history.compression_count += 1
-            self.budget.update(history=self.history.total_tokens)
-            self.state.current_tokens = self.budget.total_tokens
-            self.state.compression_count += 1
-            self.state.last_compaction_at = time.time()
-            self._last_compaction_time = time.time()
+    def should_end_session(self, elapsed_seconds: float = 0.0, **signals: Any) -> bool:
+        """詢問引擎是否應結束當前 session。
 
-            result = CompactionResult(
-                tier=CompressionTier.TIER_3_FULL_COMPACTION,
-                tokens_before=tokens_before,
-                tokens_after=self.history.total_tokens,
-                tokens_saved=max(0, tokens_before - self.history.total_tokens),
-                compression_ratio=(tokens_before - self.history.total_tokens) / tokens_before if tokens_before else 0,
-                summary_text=summary_text,
-                duration_ms=(time.time() - start) * 1000,
-            )
+        🔌 INTEGRATION POINT: 動態會話邊界判斷
+        整合方式：由 DC bot 或 U.E.P Core 定期呼叫。
+        需要子類覆寫 ContextEngine.should_end_session()。
+        目前預設回傳 False（外部控制邊界）。
 
-            # 通知回調（Echo Memory 整合點）
-            for cb in self._on_compaction_callbacks:
-                await cb(result)
+        Args:
+            elapsed_seconds: 當前 session 已持續的秒數
+            **signals: 額外信號（topic_drift_score, emotional_shift 等）
 
-            return result
-
-        except Exception as exc:
-            # 壓縮失敗，降級為 Layer 1
-            logger.warning(
-                "[ContextManager] Layer 3 壓縮失敗，降級為 Layer 1: %s",
-                exc,
-                exc_info=True,
-            )
-            result = self._apply_layer1()
-            if result:
-                return result
-            return CompactionResult(
-                tier=CompressionTier.TIER_3_FULL_COMPACTION,
-                tokens_before=tokens_before,
-                tokens_after=self.history.total_tokens,
-                tokens_saved=0,
-            )
-
-    def _apply_layer4(self) -> CompactionResult:
-        """執行 Layer 4 緊急截斷"""
-        start = time.time()
-        sacred = self.sacred.get_sacred_content()
-        truncated, saved = self.emergency.compact(
-            self.history.messages, sacred
+        Returns:
+            True 表示系統建議結束當前 session
+        """
+        return self._engine.should_end_session(
+            self.history.messages,
+            elapsed_seconds=elapsed_seconds,
+            **signals,
         )
 
-        tokens_before = self.history.total_tokens
-        self.history.messages = truncated
+    # -- 便利屬性（供 CLI 等存取引擎子系統）---------------------------------
 
-        # 重新計算所有 token_count=None 的訊息（emergency 新建的 sacred Message）
-        for m in truncated:
-            if m.token_count is None:
-                self.counter.count_message(m)
-        self.history.total_tokens = sum(m.token_count or 0 for m in truncated)
+    @property
+    def counter(self) -> "TokenCounter":
+        """TokenCounter（供外部存取）"""
+        return self._engine.counter
 
-        self.budget.update(history=self.history.total_tokens)
-        self.state.current_tokens = self.budget.total_tokens
+    @property
+    def budget(self) -> "TokenBudget":
+        """TokenBudget（供外部存取）"""
+        return self._engine.budget
+
+    @property
+    def sacred(self) -> "SacredManager":
+        """SacredManager（供外部存取）"""
+        return self._engine.sacred
+
+    @property
+    def pruner(self) -> "MicroPruner":
+        """MicroPruner（供外部存取）"""
+        return self._engine.pruner
+
+    @property
+    def summarizer(self) -> "RollingSummarizer":
+        """RollingSummarizer（供外部存取）"""
+        return self._engine.summarizer
+
+    @property
+    def compactor(self) -> "FullCompactor":
+        """FullCompactor（供外部存取）"""
+        return self._engine.compactor
+
+    @property
+    def emergency(self) -> "EmergencyCompactor":
+        """EmergencyCompactor（供外部存取）"""
+        return self._engine.emergency
+
+    # -- 私有方法 -----------------------------------------------------------
+
+    def _sync_state(self) -> None:
+        """同步引擎 budget 與 session state"""
+        total = sum(m.token_count or 0 for m in self.history.messages)
+        self.history.total_tokens = total
+        self._engine.budget.update(history=total)
+        self.state.current_tokens = self._engine.budget.total_tokens
+        self.state.message_count = len(self.history.messages)
+        self.state.current_tier = self._engine.budget.check_tier()
+
+    def _after_compression(self, result: CompactionResult) -> None:
+        """壓縮完成後同步所有狀態（含 LLMClient 歷史同步）"""
+        total = sum(m.token_count or 0 for m in self.history.messages)
+        self.history.total_tokens = total
+        self.history.compression_count += 1
+        self._engine.budget.update(history=total)
+        self.state.current_tokens = self._engine.budget.total_tokens
+        self.state.message_count = len(self.history.messages)
         self.state.compression_count += 1
         self.state.last_compaction_at = time.time()
-        self._last_compaction_time = time.time()
+        self.state.current_tier = self._engine.budget.check_tier()
 
-        # 用實際 recount 後的數字重算 saved
-        actual_saved = max(0, tokens_before - self.history.total_tokens)
+        # 同步壓縮後的歷史到 LLMClient
+        if self._backend is not None and hasattr(self._backend, "sync_history_from_messages"):
+            compressed_messages = [
+                {"role": m.role, "content": m.content}
+                for m in self.history.messages
+            ]
+            self._backend.sync_history_from_messages(compressed_messages)
 
-        return CompactionResult(
-            tier=CompressionTier.TIER_4_EMERGENCY,
-            tokens_before=tokens_before,
-            tokens_after=self.history.total_tokens,
-            tokens_saved=actual_saved,
-            compression_ratio=actual_saved / tokens_before if tokens_before else 0,
-            duration_ms=(time.time() - start) * 1000,
-        )
+    def _strip_old_images_if_needed(self) -> None:
+        """在壓縮判斷前清理舊的 base64 圖片。
+
+        🔌 INTEGRATION POINT: multimodal 圖片管理
+        在 get_messages() 前自動執行，防止圖片佔用 context window。
+        """
+        from echo_thought_core.compression.multimodal import strip_old_images
+
+        updated, saved = strip_old_images(self.history.messages, keep_last_n=3)
+        if saved > 0:
+            self.history.messages = updated
+            self._sync_state()
+            logger.info(
+                "[ContextManager] 清理舊圖片，節省 ~%d tokens", saved,
+            )

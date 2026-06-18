@@ -1,6 +1,6 @@
 [project]
 name = "echo-thought-core"
-version = "0.1.0"
+version = "0.2.0-dev"
 description = "Echo Thought Core — LLM 會話控制子系統 (Prompt/Token/Context 優化引擎)"
 authors = [
     {name = "U.E.P Team", email = "ptyc4076@gmail.com"}
@@ -34,17 +34,17 @@ full = [
 ]
 
 [project.scripts]
-echo-thought = "Entry:main"
+echo-thought = "echo_thought_core.cli:main"
 
 [tool.setuptools]
-py-modules = ["Entry"]
+py-modules = ["Entry"]  # 保留向後相容入口
 
 [tool.setuptools.packages.find]
 include = ["echo_thought_core*"]
 exclude = ["tests*", "examples*", "docs*"]
 
 [tool.setuptools.package-data]
-echo_thought_core = ["*.yaml"]
+echo_thought_core = ["*.yaml", "py.typed"]
 
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]

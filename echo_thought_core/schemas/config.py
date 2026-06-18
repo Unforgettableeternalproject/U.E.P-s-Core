@@ -1,6 +1,6 @@
 """Config Schema — 設定的 Pydantic 模型"""
 
-from typing import Optional, Dict, Any, List
+from typing import Literal, Optional, Dict, Any, List
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from echo_thought_core.defaults import (
@@ -48,6 +48,13 @@ class CompactionConfig(BaseModel):
     )
     compaction_cooldown_seconds: float = Field(
         60.0, description="兩次壓縮之間的最小間隔"
+    )
+
+    # 動態 session 邊界策略（預留，目前僅支援 "none"）
+    session_boundary_strategy: Literal["none"] = Field(
+        "none",
+        description="Session 邊界判斷策略: 'none'=外部控制。"
+        "未來擴展: 'time', 'topic', 'auto'",
     )
 
     @field_validator("context_window_size")

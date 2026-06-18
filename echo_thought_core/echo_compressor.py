@@ -149,6 +149,51 @@ class EchoCompressor(ContextEngine):
             return await self._apply_layer2(messages)
         return self._apply_layer1(messages)
 
+    # -- Preflight 壓縮 ----------------------------------------------------
+
+    async def preflight_compress(
+        self,
+        messages: List["Message"],
+        estimated_request_tokens: int = 0,
+        max_passes: int = 3,
+    ) -> Optional[CompactionResult]:
+        """在 API 呼叫前執行預防性壓縮。
+
+        估算 total + estimated_request_tokens 是否超過 max_input_tokens，
+        若超過則自動觸發壓縮。最多執行 max_passes 次。
+
+        Args:
+            messages: 當前訊息列表
+            estimated_request_tokens: 預估的系統提示 + 工具 schema token 數
+            max_passes: 最多壓縮幾次
+
+        Returns:
+            最後一次壓縮的結果，或 None（不需要壓縮）
+        """
+        last_result = None
+        for pass_num in range(max_passes):
+            total = sum(m.token_count or 0 for m in messages) + estimated_request_tokens
+            if total <= self.budget.max_input_tokens:
+                break
+
+            tier = self.should_compress(messages)
+            if tier == CompressionTier.TIER_0_NORMAL:
+                # 反抖動可能阻擋了，強制 Layer 1
+                tier = CompressionTier.TIER_1_MICRO_PRUNE
+
+            logger.info(
+                "[EchoCompressor] Preflight pass %d: ~%d tokens > %d budget, tier=%s",
+                pass_num + 1, total, self.budget.max_input_tokens, tier.name,
+            )
+
+            result = await self.compress_async(messages, tier)
+            if result:
+                last_result = result
+            else:
+                break  # 無法進一步壓縮
+
+        return last_result
+
     # -- Session 生命週期 ---------------------------------------------------
 
     def on_session_reset(self) -> None:

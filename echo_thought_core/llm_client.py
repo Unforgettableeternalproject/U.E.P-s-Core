@@ -24,7 +24,7 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
@@ -74,7 +74,7 @@ def _load_llm_config() -> dict:
     """載入 LLM 配置檔（llm_config.yaml）"""
     config_path = Path(__file__).parent / "llm_config.yaml"
     if config_path.exists():
-        with open(config_path, "r", encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
     return {}
 
@@ -119,7 +119,7 @@ class LLMClient(AbstractBackend):
         character: str | None = None,
         *,
         config: dict | None = None,
-        cache_manager: Optional["CacheManager"] = None,
+        cache_manager: CacheManager | None = None,
     ):
         """初始化 LLMClient。
 
@@ -189,7 +189,7 @@ class LLMClient(AbstractBackend):
 
         # ── Context Caching ──
         self.cache_enabled: bool = cfg.get("cache_enabled", True)
-        self._cache_manager: Optional["CacheManager"] = cache_manager
+        self._cache_manager: CacheManager | None = cache_manager
 
         # ── 對話歷史 — 存儲 google.genai.types.Content 物件 ──
         self._history: list = []
@@ -562,9 +562,9 @@ class LLMClient(AbstractBackend):
         self,
         prompt: str,
         mode: str = "chat",
-        system_instruction: Optional[str] = None,
+        system_instruction: str | None = None,
         **kwargs,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """查詢 Gemini API（低層級，JSON schema 模式）。
 
         這是 AbstractBackend 的核心介面方法，供壓縮引擎使用。
@@ -605,7 +605,7 @@ class LLMClient(AbstractBackend):
 
         schema = self._response_schemas.get(mode, self._response_schemas["chat"])
 
-        config_params: Dict[str, Any] = {
+        config_params: dict[str, Any] = {
             "temperature": self.temperature,
             "top_p": self.top_p,
             "max_output_tokens": self.max_tokens,
@@ -642,8 +642,8 @@ class LLMClient(AbstractBackend):
 
     async def summarize(
         self,
-        messages: List[Message],
-        instructions: Optional[str] = None,
+        messages: list[Message],
+        instructions: str | None = None,
     ) -> str:
         """Layer 2 滾動摘要。
 
@@ -659,9 +659,9 @@ class LLMClient(AbstractBackend):
 
     async def compact(
         self,
-        messages: List[Message],
+        messages: list[Message],
         sacred: SacredContent,
-        instructions: Optional[str] = None,
+        instructions: str | None = None,
     ) -> str:
         """Layer 3 完整壓縮。
 
@@ -680,7 +680,7 @@ class LLMClient(AbstractBackend):
         raw = result.get("text", "")
         return self._extract_summary_tag(raw)
 
-    def format_messages(self, messages: List[Message]) -> List[Dict[str, Any]]:
+    def format_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
         """轉為 Gemini API 格式。
 
         Gemini 只接受 "user" / "model" 兩種 role，
@@ -838,7 +838,7 @@ class LLMClient(AbstractBackend):
 
     def _parse_query_result(
         self, result, *, tools=None
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """解析 query() 的 API 回應為 dict。"""
         if result is None:
             logger.error("[LLM] API 返回 None")
@@ -881,7 +881,7 @@ class LLMClient(AbstractBackend):
             return {"text": "(Empty response)"}
 
         part = candidate.content.parts[0]
-        payload: Dict[str, Any] = {}
+        payload: dict[str, Any] = {}
 
         if hasattr(part, "function_call") and part.function_call:
             args_dict = {}
@@ -920,7 +920,7 @@ class LLMClient(AbstractBackend):
         }
         return payload
 
-    def _format_for_summary(self, messages: List[Message]) -> str:
+    def _format_for_summary(self, messages: list[Message]) -> str:
         """將訊息列表格式化為純文本，供摘要使用"""
         label_map = {
             "user": "User",

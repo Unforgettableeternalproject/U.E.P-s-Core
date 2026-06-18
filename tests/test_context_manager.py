@@ -3,7 +3,8 @@ ContextManager 整合測試
 """
 
 import pytest
-from echo_thought_core import ContextManager, CompactionConfig
+
+from echo_thought_core import CompactionConfig, ContextManager
 from echo_thought_core.schemas.session import CompressionTier
 
 

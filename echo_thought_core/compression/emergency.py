@@ -11,7 +11,7 @@ Layer 4: Emergency — 緊急截斷
 單次嘗試守衛，防止重試迴圈。
 """
 
-from typing import List, Tuple, Optional
+
 from echo_thought_core.schemas.message import Message
 from echo_thought_core.schemas.session import SacredContent
 
@@ -25,10 +25,10 @@ class EmergencyCompactor:
 
     def compact(
         self,
-        messages: List[Message],
+        messages: list[Message],
         sacred: SacredContent,
-        recovery_context: Optional[str] = None,
-    ) -> Tuple[List[Message], int]:
+        recovery_context: str | None = None,
+    ) -> tuple[list[Message], int]:
         """緊急截斷
 
         Args:
@@ -51,7 +51,7 @@ class EmergencyCompactor:
         # 計算截斷前的 token 數
         total_before = sum(m.token_count or 0 for m in messages)
 
-        result: List[Message] = []
+        result: list[Message] = []
 
         # 1. 重注入神聖段落（人設上下文）
         sacred_text = sacred.total_content

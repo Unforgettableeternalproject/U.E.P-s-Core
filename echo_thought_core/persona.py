@@ -11,7 +11,7 @@ Persona & LLM Config Loader — 人設與 LLM 設定載入
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 import yaml
 
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_CONFIG_PATH = Path(__file__).parent / "llm_config.yaml"
 
 
-def load_llm_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
+def load_llm_config(config_path: Path | None = None) -> dict[str, Any]:
     """載入 LLM 設定檔
 
     Args:
@@ -34,7 +34,7 @@ def load_llm_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
     """
     path = config_path or _DEFAULT_CONFIG_PATH
     if path.exists():
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             config = yaml.safe_load(f) or {}
         logger.debug("[Persona] 載入設定檔: %s", path)
         return config
@@ -43,7 +43,7 @@ def load_llm_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
     return {}
 
 
-def build_persona_from_config(config: Optional[Dict[str, Any]] = None) -> PersonaContext:
+def build_persona_from_config(config: dict[str, Any] | None = None) -> PersonaContext:
     """從 LLM config 建立 PersonaContext
 
     Args:
@@ -67,8 +67,8 @@ def build_persona_from_config(config: Optional[Dict[str, Any]] = None) -> Person
 
 
 def build_system_instruction(
-    config: Optional[Dict[str, Any]] = None,
-    extra_context: Optional[str] = None,
+    config: dict[str, Any] | None = None,
+    extra_context: str | None = None,
 ) -> str:
     """組裝系統指令（仿 TestMemory 的 15 行拼接）
 

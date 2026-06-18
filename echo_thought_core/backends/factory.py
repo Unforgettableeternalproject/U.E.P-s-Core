@@ -1,15 +1,19 @@
 """
-Backend Factory — 根據設定建立 LLMClient 或完整的 ContextManager
+Backend Factory — 根據設定建立 LLM 後端或完整的 ContextManager
 
 提供兩個層級的 API：
-- create_backend(): 低層級，建立 LLMClient（實作 AbstractBackend）
-- create_context_manager(): 高層級，一次建立帶有 LLMClient + CacheManager 的完整 ContextManager
+- create_backend(): 低層級，建立 AbstractBackend 實例
+- create_context_manager(): 高層級，一次建立帶有 Backend + CacheManager 的完整 ContextManager
+
+支援的後端：
+- "gemini": Google Gemini / Vertex AI（需要 google-genai）
+- "ollama": 本地 Ollama 服務（需要 requests + 本地 Ollama 執行中）
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from echo_thought_core.backends.base import AbstractBackend
 from echo_thought_core.defaults import DEFAULT_MODEL
@@ -20,19 +24,22 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# 已註冊的後端類型
+SUPPORTED_BACKENDS = ("gemini", "ollama")
+
 
 def create_backend(
     backend_type: str = "gemini",
-    config: Optional[Dict[str, Any]] = None,
+    config: dict[str, Any] | None = None,
 ) -> AbstractBackend:
     """根據後端類型建立對應的實例
 
     Args:
-        backend_type: "gemini" | "local"
+        backend_type: "gemini" | "ollama"
         config: 後端特定設定
 
     Returns:
-        AbstractBackend 實例（目前為 LLMClient）
+        AbstractBackend 實例
     """
     config = config or {}
 
@@ -41,21 +48,27 @@ def create_backend(
 
         return LLMClient(config=config)
 
+    elif backend_type == "ollama":
+        from echo_thought_core.backends.ollama import OllamaBackend
+
+        return OllamaBackend(config=config)
+
     else:
+        supported = ", ".join(f"'{b}'" for b in SUPPORTED_BACKENDS)
         raise ValueError(
             f"Unknown backend type: {backend_type!r}. "
-            f"Currently supported: 'gemini'"
+            f"Supported backends: {supported}"
         )
 
 
 def create_context_manager(
     backend_type: str = "gemini",
-    backend_config: Optional[Dict[str, Any]] = None,
-    compaction_config: Optional["CompactionConfig"] = None,
-    persona: Optional["PersonaContext"] = None,
-    cache_config: Optional[Dict[str, Any]] = None,
-    memory_bridge: Optional[Any] = None,
-) -> "ContextManager":
+    backend_config: dict[str, Any] | None = None,
+    compaction_config: CompactionConfig | None = None,
+    persona: PersonaContext | None = None,
+    cache_config: dict[str, Any] | None = None,
+    memory_bridge: Any | None = None,
+) -> ContextManager:
     """一次建立帶有 LLMClient + CacheManager 的完整 ContextManager
 
     這是推薦的高層級 API。內部處理所有串接邏輯：
@@ -87,7 +100,7 @@ def create_context_manager(
 
     backend_config = backend_config or {}
 
-    # Step 1: 建立 LLMClient
+    # Step 1: 建立 Backend
     if backend_type == "gemini":
         from echo_thought_core.llm_client import LLMClient
 
@@ -102,6 +115,14 @@ def create_context_manager(
             client._cache_manager = cache_mgr
 
         backend: AbstractBackend = client
+    elif backend_type == "ollama":
+        from echo_thought_core.backends.ollama import OllamaBackend
+
+        backend = OllamaBackend(config=backend_config)
+        if cache_config is not None:
+            logger.warning(
+                "[Factory] cache_config 僅支援 gemini 後端，ollama 後端的 cache_config 被忽略",
+            )
     else:
         backend = create_backend(backend_type, backend_config)
         if cache_config is not None:

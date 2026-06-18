@@ -6,7 +6,8 @@ Abstract Backend — 多後端的統一介面
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Optional, Dict, Any
+from typing import Any
+
 from echo_thought_core.schemas.message import Message
 from echo_thought_core.schemas.session import SacredContent
 
@@ -29,9 +30,9 @@ class AbstractBackend(ABC):
         self,
         prompt: str,
         mode: str = "chat",
-        system_instruction: Optional[str] = None,
+        system_instruction: str | None = None,
         **kwargs,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """查詢 LLM API
 
         Args:
@@ -48,8 +49,8 @@ class AbstractBackend(ABC):
     @abstractmethod
     async def summarize(
         self,
-        messages: List[Message],
-        instructions: Optional[str] = None,
+        messages: list[Message],
+        instructions: str | None = None,
     ) -> str:
         """將訊息列表摘要為文本（Layer 2 使用）"""
         ...
@@ -57,14 +58,14 @@ class AbstractBackend(ABC):
     @abstractmethod
     async def compact(
         self,
-        messages: List[Message],
+        messages: list[Message],
         sacred: SacredContent,
-        instructions: Optional[str] = None,
+        instructions: str | None = None,
     ) -> str:
         """將完整對話壓縮為結構化摘要（Layer 3 使用）"""
         ...
 
-    def format_messages(self, messages: List[Message]) -> List[Dict[str, Any]]:
+    def format_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
         """將統一 Message 格式轉為後端 API 格式
 
         子類可覆寫以適配特定 API 格式。

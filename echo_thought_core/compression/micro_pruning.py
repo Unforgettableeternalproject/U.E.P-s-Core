@@ -18,12 +18,11 @@ v2 整合 Destiny-Weavers context_compressor.py Phase 1 設計：
 from __future__ import annotations
 
 import logging
-from typing import List, Tuple, Optional
 
-from echo_thought_core.schemas.message import Message
 from echo_thought_core.compression.tool_pairs import PRUNED_TOOL_PLACEHOLDER
 from echo_thought_core.compression.tool_summarizer import get_tool_summarizer
 from echo_thought_core.defaults import LLMLINGUA_MIN_TOKEN_THRESHOLD
+from echo_thought_core.schemas.message import Message
 
 logger = logging.getLogger(__name__)
 
@@ -48,9 +47,9 @@ class MicroPruner:
 
     def prune(
         self,
-        messages: List[Message],
-        protect_tail_tokens: Optional[int] = None,
-    ) -> Tuple[List[Message], int]:
+        messages: list[Message],
+        protect_tail_tokens: int | None = None,
+    ) -> tuple[list[Message], int]:
         """執行微清理
 
         整合 DW Phase 1 的 boundary-aware 剪裁邏輯：
@@ -67,7 +66,7 @@ class MicroPruner:
             (清理後的訊息列表, 節省的 token 數)
         """
         tokens_saved = 0
-        result: List[Message] = []
+        result: list[Message] = []
 
         # 計算保護邊界索引（boundary_idx 及之後的訊息不做 tool output 剪裁）
         boundary_idx = self._compute_protect_boundary(messages, protect_tail_tokens)
@@ -136,8 +135,8 @@ class MicroPruner:
 
     def _compute_protect_boundary(
         self,
-        messages: List[Message],
-        protect_tail_tokens: Optional[int],
+        messages: list[Message],
+        protect_tail_tokens: int | None,
     ) -> int:
         """計算保護邊界的索引位置。
 
@@ -183,7 +182,7 @@ class MicroPruner:
 
         return self._llmlingua_compressor
 
-    def _apply_llmlingua(self, msg: Message) -> Tuple[Message, int]:
+    def _apply_llmlingua(self, msg: Message) -> tuple[Message, int]:
         """對單一長訊息做 LLMLingua-2 壓縮
 
         Returns:
@@ -226,7 +225,7 @@ class MicroPruner:
     def _prune_tool_result(
         self,
         msg: Message,
-        result: List[Message],
+        result: list[Message],
     ) -> int:
         """將一條工具輸出替換為結構化摘要，回傳節省的 token 數。
 

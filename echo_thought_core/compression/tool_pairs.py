@@ -14,7 +14,6 @@ Tool Pair Integrity — 工具呼叫完整性保護
 from __future__ import annotations
 
 import logging
-from typing import List
 
 from echo_thought_core.schemas.message import Message
 
@@ -30,7 +29,7 @@ _ORPHAN_STUB_CONTENT = "[Tool result unavailable — was compressed out of conte
 # ── 邊界對齊 ──────────────────────────────────────────────────────────────────
 
 
-def align_boundary_forward(messages: List[Message], idx: int) -> int:
+def align_boundary_forward(messages: list[Message], idx: int) -> int:
     """向前推移邊界，越過索引處開頭的孤立 tool_result。
 
     若邊界恰好落在一個或多個 tool_result 訊息的起始位置，
@@ -51,7 +50,7 @@ def align_boundary_forward(messages: List[Message], idx: int) -> int:
     return idx
 
 
-def align_boundary_backward(messages: List[Message], idx: int) -> int:
+def align_boundary_backward(messages: list[Message], idx: int) -> int:
     """向後拉回邊界，避免把 tool_call 和其對應 result 分割在兩側。
 
     若邊界前一條訊息是 assistant 且含有 tool_call，
@@ -87,7 +86,7 @@ def align_boundary_backward(messages: List[Message], idx: int) -> int:
 # ── 孤立修復 ──────────────────────────────────────────────────────────────────
 
 
-def sanitize_tool_pairs(messages: List[Message]) -> List[Message]:
+def sanitize_tool_pairs(messages: list[Message]) -> list[Message]:
     """修復訊息列表中孤立的 tool_call 或 tool_result。
 
     壓縮完成後，head+summary+tail 拼接可能產生：
@@ -100,7 +99,7 @@ def sanitize_tool_pairs(messages: List[Message]) -> List[Message]:
     Returns:
         修復後的訊息列表
     """
-    result: List[Message] = []
+    result: list[Message] = []
     # 追蹤尚未配對的 tool_call_id（assistant 已發出但尚未看到 result 的）
     pending_call_ids: set[str] = set()
 
@@ -131,7 +130,7 @@ def sanitize_tool_pairs(messages: List[Message]) -> List[Message]:
 
     # 為所有仍在等待的孤立 tool_call 插入 stub result
     if pending_call_ids:
-        stub_messages: List[Message] = []
+        stub_messages: list[Message] = []
         for call_id in pending_call_ids:
             logger.warning(
                 "sanitize_tool_pairs: 為孤立 tool_call 插入 stub result，tool_call_id=%s",
@@ -157,7 +156,7 @@ def sanitize_tool_pairs(messages: List[Message]) -> List[Message]:
 # ── 輔助：找出最後一條 tool_call 的索引 ──────────────────────────────────────
 
 
-def find_last_complete_tool_group_end(messages: List[Message], before: int) -> int:
+def find_last_complete_tool_group_end(messages: list[Message], before: int) -> int:
     """在 before 索引之前，找到最後一個完整 tool 組的結尾索引。
 
     「完整 tool 組」= 一條 assistant tool_call 訊息 + 緊接的一條 tool_result 訊息。

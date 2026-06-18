@@ -32,7 +32,6 @@ from echo_thought_core.persona import (
 )
 from echo_thought_core.schemas.session import CompressionTier
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 # LLMClient 基本建構 (T-01)
 # ═══════════════════════════════════════════════════════════════════════════

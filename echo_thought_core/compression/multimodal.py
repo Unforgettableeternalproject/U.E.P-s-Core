@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import List, Tuple
 
 from echo_thought_core.schemas.message import Message
 
@@ -45,9 +44,9 @@ def estimate_image_tokens(content: str) -> int:
 
 
 def strip_old_images(
-    messages: List[Message],
+    messages: list[Message],
     keep_last_n: int = 3,
-) -> Tuple[List[Message], int]:
+) -> tuple[list[Message], int]:
     """清理舊的 base64 圖片，保留最近 N 張。
 
     從尾部往前數，保留最後 keep_last_n 個含圖片的訊息，

@@ -17,23 +17,24 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Callable, Awaitable, Dict, List, Optional, TYPE_CHECKING
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any
 
-from echo_thought_core.engine_base import ContextEngine
-from echo_thought_core.schemas.session import CompactionResult, CompressionTier
-from echo_thought_core.accounting.counter import TokenCounter
 from echo_thought_core.accounting.budget import TokenBudget
-from echo_thought_core.compression.sacred import SacredManager
+from echo_thought_core.accounting.counter import TokenCounter
+from echo_thought_core.compression.emergency import EmergencyCompactor
+from echo_thought_core.compression.full_compaction import FullCompactor
 from echo_thought_core.compression.micro_pruning import MicroPruner
 from echo_thought_core.compression.rolling_summary import RollingSummarizer
-from echo_thought_core.compression.full_compaction import FullCompactor
-from echo_thought_core.compression.emergency import EmergencyCompactor
+from echo_thought_core.compression.sacred import SacredManager
+from echo_thought_core.engine_base import ContextEngine
+from echo_thought_core.schemas.session import CompactionResult, CompressionTier
 
 if TYPE_CHECKING:
-    from echo_thought_core.schemas.config import CompactionConfig, PersonaContext
-    from echo_thought_core.schemas.message import Message
     from echo_thought_core.backends.base import AbstractBackend
     from echo_thought_core.memory_bridge import MemoryBridge
+    from echo_thought_core.schemas.config import CompactionConfig, PersonaContext
+    from echo_thought_core.schemas.message import Message
 
 logger = logging.getLogger(__name__)
 
@@ -47,10 +48,10 @@ class EchoCompressor(ContextEngine):
 
     def __init__(
         self,
-        config: Optional["CompactionConfig"] = None,
-        persona: Optional["PersonaContext"] = None,
-        backend: Optional["AbstractBackend"] = None,
-        memory_bridge: Optional["MemoryBridge"] = None,
+        config: CompactionConfig | None = None,
+        persona: PersonaContext | None = None,
+        backend: AbstractBackend | None = None,
+        memory_bridge: MemoryBridge | None = None,
     ):
         from echo_thought_core.schemas.config import CompactionConfig
 
@@ -90,13 +91,13 @@ class EchoCompressor(ContextEngine):
         self._ineffective_compression_count: int = 0
 
         # 壓縮事件回調（deprecated，用 MemoryBridge 替代）
-        self._on_compaction_callbacks: List[
+        self._on_compaction_callbacks: list[
             Callable[[CompactionResult], Awaitable[None]]
         ] = []
 
     # -- ContextEngine 核心介面 ---------------------------------------------
 
-    def should_compress(self, messages: List["Message"]) -> CompressionTier:
+    def should_compress(self, messages: list[Message]) -> CompressionTier:
         """根據 token 預算判斷需要的壓縮層級"""
         # 更新 budget
         total = sum(m.token_count or 0 for m in messages)
@@ -122,8 +123,8 @@ class EchoCompressor(ContextEngine):
         return tier
 
     def compress(
-        self, messages: List["Message"], tier: CompressionTier
-    ) -> Optional[CompactionResult]:
+        self, messages: list[Message], tier: CompressionTier
+    ) -> CompactionResult | None:
         """同步壓縮（僅支援 Layer 1）"""
         if tier == CompressionTier.TIER_0_NORMAL:
             return None
@@ -136,10 +137,10 @@ class EchoCompressor(ContextEngine):
 
     async def compress_async(
         self,
-        messages: List["Message"],
+        messages: list[Message],
         tier: CompressionTier,
-        instructions: Optional[str] = None,
-    ) -> Optional[CompactionResult]:
+        instructions: str | None = None,
+    ) -> CompactionResult | None:
         """異步壓縮（支援所有層級）"""
         if tier == CompressionTier.TIER_0_NORMAL:
             return None
@@ -153,10 +154,10 @@ class EchoCompressor(ContextEngine):
 
     async def preflight_compress(
         self,
-        messages: List["Message"],
+        messages: list[Message],
         estimated_request_tokens: int = 0,
         max_passes: int = 3,
-    ) -> Optional[CompactionResult]:
+    ) -> CompactionResult | None:
         """在 API 呼叫前執行預防性壓縮。
 
         估算 total + estimated_request_tokens 是否超過 max_input_tokens，
@@ -211,7 +212,7 @@ class EchoCompressor(ContextEngine):
         self._memory_bridge.on_session_start(session_id)
 
     def on_session_end(
-        self, session_id: str, messages: List["Message"]
+        self, session_id: str, messages: list[Message]
     ) -> None:
         self._memory_bridge.on_session_end(session_id, messages)
 
@@ -227,7 +228,7 @@ class EchoCompressor(ContextEngine):
             model, context_length,
         )
 
-    def update_from_response(self, usage: Dict[str, Any]) -> None:
+    def update_from_response(self, usage: dict[str, Any]) -> None:
         """從 API 回應更新 token 使用量"""
         self.budget.update_api_usage(
             input_tokens=usage.get("input_tokens", 0),
@@ -238,7 +239,7 @@ class EchoCompressor(ContextEngine):
 
     # -- 狀態報告 -----------------------------------------------------------
 
-    def get_status(self) -> Dict[str, Any]:
+    def get_status(self) -> dict[str, Any]:
         report = self.budget.get_usage_report()
         report["engine"] = self.name
         report["anti_thrashing"] = {
@@ -275,7 +276,7 @@ class EchoCompressor(ContextEngine):
         else:
             self._ineffective_compression_count = 0
 
-    def _apply_layer1(self, messages: List["Message"]) -> Optional[CompactionResult]:
+    def _apply_layer1(self, messages: list[Message]) -> CompactionResult | None:
         """執行 Layer 1 微清理"""
         start = time.time()
         tokens_before = sum(m.token_count or 0 for m in messages)
@@ -298,8 +299,8 @@ class EchoCompressor(ContextEngine):
         return None
 
     async def _apply_layer2(
-        self, messages: List["Message"]
-    ) -> Optional[CompactionResult]:
+        self, messages: list[Message]
+    ) -> CompactionResult | None:
         """執行 Layer 2 增量摘要"""
         if not self._backend:
             return self._apply_layer1(messages)
@@ -352,8 +353,8 @@ class EchoCompressor(ContextEngine):
 
     async def _apply_layer3(
         self,
-        messages: List["Message"],
-        instructions: Optional[str] = None,
+        messages: list[Message],
+        instructions: str | None = None,
     ) -> CompactionResult:
         """執行 Layer 3 完整壓縮"""
         if not self._backend:
@@ -427,7 +428,7 @@ class EchoCompressor(ContextEngine):
                 tokens_saved=0,
             )
 
-    def _apply_layer4(self, messages: List["Message"]) -> CompactionResult:
+    def _apply_layer4(self, messages: list[Message]) -> CompactionResult:
         """執行 Layer 4 緊急截斷"""
         start = time.time()
         sacred = self.sacred.get_sacred_content()

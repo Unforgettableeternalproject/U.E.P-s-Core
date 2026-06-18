@@ -1,14 +1,14 @@
 """Config Schema — 設定的 Pydantic 模型"""
 
-from typing import Literal, Optional, Dict, Any, List
+from typing import Any, Literal
+
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from echo_thought_core.defaults import (
-    DEFAULT_MODEL,
     DEFAULT_CONTEXT_WINDOW,
     DEFAULT_EMERGENCY_KEEP,
+    DEFAULT_MODEL,
 )
-
 
 # ── 壓縮設定 ──────────────────────────────────────────────────────────────────
 
@@ -19,7 +19,7 @@ class CompactionConfig(BaseModel):
     # 後端設定
     backend: str = Field("gemini", description="LLM 後端: gemini/local")
     model: str = Field(DEFAULT_MODEL, description="主要模型")
-    compaction_model: Optional[str] = Field(
+    compaction_model: str | None = Field(
         None, description="用於摘要的較便宜模型（可選，None 表示使用主模型）"
     )
 
@@ -27,7 +27,7 @@ class CompactionConfig(BaseModel):
     context_window_size: int = Field(DEFAULT_CONTEXT_WINDOW, description="Context window 大小")
 
     # 壓縮閾值（佔 context window 的百分比）
-    thresholds: Dict[str, float] = Field(
+    thresholds: dict[str, float] = Field(
         default_factory=lambda: {
             "micro_prune": 0.60,
             "rolling_summary": 0.80,
@@ -107,13 +107,13 @@ class PersonaContext(BaseModel):
     """人設上下文 — 神聖段落的核心"""
 
     name: str = Field(..., description="角色名稱")
-    traits: List[str] = Field(default_factory=list, description="人格特徵")
-    speaking_style: Optional[str] = Field(None, description="說話風格描述")
-    user_preferences: Dict[str, Any] = Field(
+    traits: list[str] = Field(default_factory=list, description="人格特徵")
+    speaking_style: str | None = Field(None, description="說話風格描述")
+    user_preferences: dict[str, Any] = Field(
         default_factory=lambda: {"language": "zh-TW"},
         description="使用者偏好",
     )
-    custom_instructions: Optional[str] = Field(
+    custom_instructions: str | None = Field(
         None, description="額外的角色指令"
     )
 

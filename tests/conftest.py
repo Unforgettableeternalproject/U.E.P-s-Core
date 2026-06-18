@@ -3,7 +3,8 @@ Test fixtures for Echo Thought Core
 """
 
 import pytest
-from echo_thought_core import ContextManager, CompactionConfig, PersonaContext
+
+from echo_thought_core import CompactionConfig, ContextManager, PersonaContext
 
 
 @pytest.fixture

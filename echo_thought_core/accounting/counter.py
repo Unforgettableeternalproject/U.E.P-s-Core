@@ -6,12 +6,12 @@ Token Counter — 多後端精確 token 計數
 """
 
 import logging
-from enum import Enum
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any
+from enum import Enum
+from typing import Any
 
-from echo_thought_core.schemas.message import Message
 from echo_thought_core.defaults import IMAGE_TOKEN_ESTIMATE
+from echo_thought_core.schemas.message import Message
 
 logger = logging.getLogger(__name__)
 
@@ -55,14 +55,14 @@ class ModelInfo:
     input_cost_per_1m: float      # 每百萬輸入 token 的美元成本
     output_cost_per_1m: float     # 每百萬輸出 token 的美元成本
     encoding: str = "cl100k_base" # tiktoken 編碼名稱
-    aliases: List[str] = field(default_factory=list)  # 模糊匹配用的別名
+    aliases: list[str] = field(default_factory=list)  # 模糊匹配用的別名
 
 
 # ──────────────────────────────────────────────
 # MODEL_DATABASE — 模型定價與規格資料庫
 # ──────────────────────────────────────────────
 
-MODEL_DATABASE: Dict[str, ModelInfo] = {
+MODEL_DATABASE: dict[str, ModelInfo] = {
     # ── Anthropic Claude ──────────────────────
     "claude-opus-4-5": ModelInfo(
         name="claude-opus-4-5",
@@ -247,7 +247,7 @@ MODEL_DATABASE: Dict[str, ModelInfo] = {
 # get_model_info — 模糊匹配查詢
 # ──────────────────────────────────────────────
 
-def get_model_info(model_name: str) -> Optional[ModelInfo]:
+def get_model_info(model_name: str) -> ModelInfo | None:
     """
     依模型名稱查詢 ModelInfo，支援模糊匹配（別名、部分名稱）。
 
@@ -284,7 +284,7 @@ def get_model_info(model_name: str) -> Optional[ModelInfo]:
 # get_model_context_length — 模型 context 長度查詢
 # ──────────────────────────────────────────────
 
-def get_model_context_length(model: str, provider: Optional[str] = None) -> int:
+def get_model_context_length(model: str, provider: str | None = None) -> int:
     """
     查詢模型的 context window 長度。
 
@@ -329,7 +329,7 @@ def estimate_tokens(text: str) -> int:
     return (ascii_count // 4) + (cjk_count * 2 // 3) + 1
 
 
-def estimate_message_tokens(message: Dict[str, Any]) -> int:
+def estimate_message_tokens(message: dict[str, Any]) -> int:
     """
     估算單則訊息的 token 數（含固定 overhead、tool_calls、reasoning）。
 
@@ -366,7 +366,7 @@ def estimate_message_tokens(message: Dict[str, Any]) -> int:
     return total
 
 
-def estimate_messages_tokens(messages: List[Dict[str, Any]]) -> int:
+def estimate_messages_tokens(messages: list[dict[str, Any]]) -> int:
     """
     估算整段對話的 token 數（含對話固定起始開銷）。
     """
@@ -383,7 +383,7 @@ def estimate_messages_tokens(messages: List[Dict[str, Any]]) -> int:
 # ──────────────────────────────────────────────
 
 def count_tokens_in_tail(
-    messages: List[Dict[str, Any]],
+    messages: list[dict[str, Any]],
     token_budget: int,
 ) -> int:
     """
@@ -415,7 +415,7 @@ def count_tokens_in_tail(
 class TokenCounter:
     """精確 token 計數器 — 後端感知"""
 
-    def __init__(self, backend: str = "anthropic", model: Optional[str] = None):
+    def __init__(self, backend: str = "anthropic", model: str | None = None):
         self.backend = backend
         self.model = model
         self._tokenizer = None

@@ -7,24 +7,23 @@
 
 from __future__ import annotations
 
-from echo_thought_core.schemas.message import Message
-from echo_thought_core.compression.tool_pairs import (
-    PRUNED_TOOL_PLACEHOLDER,
-    align_boundary_forward,
-    align_boundary_backward,
-    sanitize_tool_pairs,
-    find_last_complete_tool_group_end,
+from echo_thought_core.compression.full_compaction import (
+    COMPACTION_PROMPT,
+    _find_tail_cut_by_tokens,
 )
 from echo_thought_core.compression.micro_pruning import MicroPruner
 from echo_thought_core.compression.rolling_summary import (
     SUMMARY_PROMPT,
     _compute_summary_budget,
 )
-from echo_thought_core.compression.full_compaction import (
-    COMPACTION_PROMPT,
-    _find_tail_cut_by_tokens,
+from echo_thought_core.compression.tool_pairs import (
+    PRUNED_TOOL_PLACEHOLDER,
+    align_boundary_backward,
+    align_boundary_forward,
+    find_last_complete_tool_group_end,
+    sanitize_tool_pairs,
 )
-
+from echo_thought_core.schemas.message import Message
 
 # ── 輔助工廠函式 ──────────────────────────────────────────────────────────────
 

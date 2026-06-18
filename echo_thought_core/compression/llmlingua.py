@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Optional
 
 from echo_thought_core.defaults import LLMLINGUA_MIN_TOKEN_THRESHOLD
 
@@ -62,9 +61,9 @@ class LLMLinguaCompressor:
     若 llmlingua 未安裝，所有呼叫都回傳原文。
     """
 
-    def __init__(self, config: Optional[LLMLinguaConfig] = None):
+    def __init__(self, config: LLMLinguaConfig | None = None):
         self.config = config or LLMLinguaConfig()
-        self._compressor: Optional[PromptCompressor] = None
+        self._compressor: PromptCompressor | None = None
         self._initialized = False
         self._available = _HAS_LLMLINGUA
 
@@ -109,8 +108,8 @@ class LLMLinguaCompressor:
     def compress(
         self,
         text: str,
-        rate: Optional[float] = None,
-        force_context_ids: Optional[list] = None,
+        rate: float | None = None,
+        force_context_ids: list | None = None,
     ) -> tuple[str, dict]:
         """壓縮文本
 

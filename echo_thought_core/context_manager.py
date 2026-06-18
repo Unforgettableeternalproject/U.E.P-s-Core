@@ -26,27 +26,28 @@ Usage:
 import logging
 import time
 import uuid
-from typing import Any, Callable, Awaitable, Dict, List, Optional, TYPE_CHECKING
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Optional
 
+from echo_thought_core.backends.base import AbstractBackend
+from echo_thought_core.engine_base import ContextEngine
 from echo_thought_core.schemas.config import CompactionConfig, PersonaContext
-from echo_thought_core.schemas.message import Message, ConversationHistory
+from echo_thought_core.schemas.message import ConversationHistory, Message
 from echo_thought_core.schemas.session import (
-    SessionState,
     CompactionResult,
     CompressionTier,
+    SessionState,
 )
-from echo_thought_core.engine_base import ContextEngine
-from echo_thought_core.backends.base import AbstractBackend
 
 if TYPE_CHECKING:
-    from echo_thought_core.memory_bridge import MemoryBridge
-    from echo_thought_core.accounting.counter import TokenCounter
     from echo_thought_core.accounting.budget import TokenBudget
-    from echo_thought_core.compression.sacred import SacredManager
+    from echo_thought_core.accounting.counter import TokenCounter
+    from echo_thought_core.compression.emergency import EmergencyCompactor
+    from echo_thought_core.compression.full_compaction import FullCompactor
     from echo_thought_core.compression.micro_pruning import MicroPruner
     from echo_thought_core.compression.rolling_summary import RollingSummarizer
-    from echo_thought_core.compression.full_compaction import FullCompactor
-    from echo_thought_core.compression.emergency import EmergencyCompactor
+    from echo_thought_core.compression.sacred import SacredManager
+    from echo_thought_core.memory_bridge import MemoryBridge
 
 
 logger = logging.getLogger(__name__)
@@ -57,10 +58,10 @@ class ContextManager:
 
     def __init__(
         self,
-        config: Optional[CompactionConfig] = None,
-        persona: Optional[PersonaContext] = None,
-        backend: Optional[AbstractBackend] = None,
-        engine: Optional[ContextEngine] = None,
+        config: CompactionConfig | None = None,
+        persona: PersonaContext | None = None,
+        backend: AbstractBackend | None = None,
+        engine: ContextEngine | None = None,
         memory_bridge: Optional["MemoryBridge"] = None,
     ):
         self.config = config or CompactionConfig()
@@ -101,10 +102,10 @@ class ContextManager:
         self,
         role: str,
         content: str,
-        tool_call_id: Optional[str] = None,
-        tool_name: Optional[str] = None,
+        tool_call_id: str | None = None,
+        tool_name: str | None = None,
         is_reproducible: bool = True,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
     ) -> Message:
         """新增訊息到對話歷史"""
         msg = Message(
@@ -127,7 +128,7 @@ class ContextManager:
 
         return msg
 
-    def get_messages(self) -> List[Dict[str, str]]:
+    def get_messages(self) -> list[dict[str, str]]:
         """取得供 API 使用的訊息列表（同步版本只做 Layer 1）"""
         # 🔌 INTEGRATION POINT: multimodal 圖片清理
         # strip_old_images 在壓縮判斷前執行，防止圖片累積
@@ -145,7 +146,7 @@ class ContextManager:
             for m in self.history.messages
         ]
 
-    async def get_messages_async(self) -> List[Dict[str, str]]:
+    async def get_messages_async(self) -> list[dict[str, str]]:
         """取得供 API 使用的訊息列表（異步版本，支援 Layer 2/3）"""
         self._strip_old_images_if_needed()
 
@@ -164,7 +165,7 @@ class ContextManager:
         ]
 
     async def compact(
-        self, instructions: Optional[str] = None
+        self, instructions: str | None = None
     ) -> CompactionResult:
         """手動觸發壓縮（對應 /compact 命令）"""
         result = await self._engine.compress_async(
@@ -184,7 +185,7 @@ class ContextManager:
             tokens_saved=0,
         )
 
-    def handle_api_error(self, error_code: int) -> Optional[CompactionResult]:
+    def handle_api_error(self, error_code: int) -> CompactionResult | None:
         """處理 API 錯誤（413 等）觸發 Layer 4"""
         if error_code == 413:
             result = self._engine.compress(
@@ -196,7 +197,7 @@ class ContextManager:
             return result
         return None
 
-    def get_usage(self) -> Dict[str, object]:
+    def get_usage(self) -> dict[str, object]:
         """取得 token 使用量報告"""
         report = self._engine.get_status()
         report["session_id"] = self.state.session_id
@@ -244,7 +245,7 @@ class ContextManager:
 
     # -- 🔌 INTEGRATION POINT: 新增 API（供外部整合使用）---------------------
 
-    def update_from_response(self, usage: Dict[str, Any]) -> None:
+    def update_from_response(self, usage: dict[str, Any]) -> None:
         """從 API 回應更新實際 token 使用量。
 
         🔌 INTEGRATION POINT: LLM API 回應後精確追蹤
@@ -262,7 +263,7 @@ class ContextManager:
         self,
         estimated_request_tokens: int = 0,
         max_passes: int = 3,
-    ) -> Optional[CompactionResult]:
+    ) -> CompactionResult | None:
         """在 API 呼叫前執行預防性壓縮。
 
         🔌 INTEGRATION POINT: API 呼叫前自動壓縮

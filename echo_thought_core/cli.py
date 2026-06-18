@@ -17,7 +17,6 @@ import asyncio
 import logging
 import sys
 import time
-from typing import Optional
 
 
 def _run_async(coro):
@@ -55,16 +54,16 @@ except ImportError:
         def __getattr__(self, _): return self
     Console = Panel = Table = Text = ProgressBar = Columns = Confirm = Prompt = _Stub  # type: ignore[misc,assignment]
 
-from echo_thought_core import (
+from echo_thought_core import (  # noqa: E402
     CompactionConfig,
     ContextManager,
     LLMClient,
 )
-from echo_thought_core.persona import (
+from echo_thought_core.persona import (  # noqa: E402
     build_persona_from_config,
     load_llm_config,
 )
-from echo_thought_core.schemas.session import CompressionTier
+from echo_thought_core.schemas.session import CompressionTier  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -264,16 +263,16 @@ def show_dashboard(mgr: ContextManager, console: Console) -> None:
 class SessionControlCLI:
     """Session Control Rich CLI — 互動式壓縮測試介面"""
 
-    def __init__(self, args: Optional[argparse.Namespace] = None):
+    def __init__(self, args: argparse.Namespace | None = None):
         self.console = Console()
         self.args = args
-        self.mgr: Optional[ContextManager] = None
-        self.llm: Optional[LLMClient] = None
+        self.mgr: ContextManager | None = None
+        self.llm: LLMClient | None = None
         self.llm_config: dict = {}
         self._start_time = time.time()
 
     def initialize(self) -> bool:
-        """初始化 LLMClient + ContextManager"""
+        """初始化 LLM Backend + ContextManager"""
         self.console.print(Panel(
             "[bold cyan]Session Control System[/]\n"
             "[dim]LLM 會話控制子系統 — Prompt / Token / Context 優化引擎[/]",
@@ -287,6 +286,11 @@ class SessionControlCLI:
         if self.args and self.args.model:
             model = self.args.model
 
+        # 後端選擇
+        backend_type = "gemini"
+        if self.args and self.args.backend:
+            backend_type = self.args.backend
+
         persona = build_persona_from_config(self.llm_config)
 
         context_window = 200_000
@@ -294,37 +298,57 @@ class SessionControlCLI:
             context_window = self.args.window
 
         config = CompactionConfig(
-            backend="gemini",
+            backend=backend_type,
             model=model,
             context_window_size=context_window,
             compaction_cooldown_seconds=0,  # 測試用：無冷卻
         )
 
-        with self.console.status("[cyan]Initializing LLMClient + ContextManager..."):
+        with self.console.status(f"[cyan]Initializing {backend_type} backend + ContextManager..."):
             try:
-                # LLMClient 同時作為對話前台和壓縮後端
-                self.llm = LLMClient(
-                    model=model,
-                    temperature=self.llm_config.get("temperature", 0.8),
-                    max_tokens=self.llm_config.get("max_output_tokens", 4096),
-                    character=self.llm_config.get("character", ""),
-                    config={
-                        "top_p": self.llm_config.get("top_p", 1.0),
-                    },
-                )
-                # ContextManager 注入同一個 LLMClient 做壓縮
+                if backend_type == "ollama":
+                    from echo_thought_core.backends.ollama import OllamaBackend
+
+                    self.llm = OllamaBackend(
+                        model=model,
+                        temperature=self.llm_config.get("temperature", 0.8),
+                        max_tokens=self.llm_config.get("max_output_tokens", 4096),
+                        character=self.llm_config.get("character", ""),
+                        config={
+                            "base_url": (
+                                self.args.ollama_url
+                                if self.args and hasattr(self.args, "ollama_url") and self.args.ollama_url
+                                else "http://localhost:11434"
+                            ),
+                        },
+                    )
+                    # 立即驗證連線（fail-fast）
+                    self.llm._ensure_connection()
+                else:
+                    # Gemini（預設）
+                    self.llm = LLMClient(
+                        model=model,
+                        temperature=self.llm_config.get("temperature", 0.8),
+                        max_tokens=self.llm_config.get("max_output_tokens", 4096),
+                        character=self.llm_config.get("character", ""),
+                        config={
+                            "top_p": self.llm_config.get("top_p", 1.0),
+                        },
+                    )
+                # ContextManager 注入 Backend 做壓縮
                 self.mgr = ContextManager(
                     config=config,
                     persona=persona,
                     backend=self.llm,
                 )
             except Exception as e:
-                # LLMClient 初始化失敗（無 API key 等），降級為無 backend 模式
-                self.console.print(f"[yellow]⚠ LLMClient init failed: {e}[/]")
+                # Backend 初始化失敗，降級為無 backend 模式
+                self.console.print(f"[yellow]⚠ Backend ({backend_type}) init failed: {e}[/]")
                 self.console.print("[yellow]  Running in offline mode (Layer 1/4 only)[/]")
                 self.llm = None
                 self.mgr = ContextManager(config=config, persona=persona, backend=None)
 
+        self.console.print(f"[green]✓[/] Backend: [bold]{backend_type}[/]")
         self.console.print(f"[green]✓[/] Model: [bold]{model}[/]")
         self.console.print(f"[green]✓[/] Context Window: [bold]{context_window:,}[/]")
         self.console.print(
@@ -596,6 +620,19 @@ def main():
     parser = argparse.ArgumentParser(description="Session Control — Rich CLI")
     parser.add_argument("--model", type=str, help="Override model name")
     parser.add_argument("--window", type=int, help="Override context window size")
+    parser.add_argument(
+        "--backend",
+        type=str,
+        choices=["gemini", "ollama"],
+        default="gemini",
+        help="LLM backend to use (default: gemini)",
+    )
+    parser.add_argument(
+        "--ollama-url",
+        type=str,
+        default="http://localhost:11434",
+        help="Ollama service URL (default: http://localhost:11434)",
+    )
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     args = parser.parse_args()
 

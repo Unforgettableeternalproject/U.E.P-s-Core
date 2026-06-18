@@ -6,23 +6,22 @@ Schema 定義 — 統一匯出入口
 """
 
 # 訊息相關
-from .message import (
-    Message,
-    ConversationHistory,
-)
-
-# 會話狀態相關
-from .session import (
-    CompressionTier,
-    SessionState,
-    CompactionResult,
-    SacredContent,
-)
-
 # 設定相關
 from .config import (
     CompactionConfig,
     PersonaContext,
+)
+from .message import (
+    ConversationHistory,
+    Message,
+)
+
+# 會話狀態相關
+from .session import (
+    CompactionResult,
+    CompressionTier,
+    SacredContent,
+    SessionState,
 )
 
 __all__ = [

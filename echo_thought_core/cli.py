@@ -70,11 +70,11 @@ logger = logging.getLogger(__name__)
 # ── 壓縮層級配色 ────────────────────────────────────────────────────────────
 
 TIER_STYLES = {
-    CompressionTier.TIER_0_NORMAL: ("*", "green", "Normal"),
-    CompressionTier.TIER_1_MICRO_PRUNE: ("*", "yellow", "Micro-Prune"),
-    CompressionTier.TIER_2_ROLLING_SUMMARY: ("*", "dark_orange", "Rolling Summary"),
-    CompressionTier.TIER_3_FULL_COMPACTION: ("*", "red", "Full Compaction"),
-    CompressionTier.TIER_4_EMERGENCY: ("*", "bold red", "EMERGENCY"),
+    CompressionTier.TIER_0_NORMAL: ("●", "green", "Normal"),
+    CompressionTier.TIER_1_MICRO_PRUNE: ("●", "yellow", "Micro-Prune"),
+    CompressionTier.TIER_2_ROLLING_SUMMARY: ("●", "dark_orange", "Rolling Summary"),
+    CompressionTier.TIER_3_FULL_COMPACTION: ("●", "red", "Full Compaction"),
+    CompressionTier.TIER_4_EMERGENCY: ("●", "bold red", "EMERGENCY"),
 }
 
 # ── 使用率進度條配色 ────────────────────────────────────────────────────────
@@ -152,8 +152,8 @@ def render_model_panel(mgr: ContextManager) -> Panel:
 
     # 功能
     table.add_row("", "")
-    table.add_row("LLMLingua", "Y" if config.use_llmlingua else "N")
-    table.add_row("Echo Memory", "Y" if config.echo_memory_enabled else "N")
+    table.add_row("LLMLingua", "✓" if config.use_llmlingua else "✗")
+    table.add_row("Echo Memory", "✓" if config.echo_memory_enabled else "✗")
     has_backend = mgr._backend is not None
     table.add_row("LLM Backend", "[green]Connected[/]" if has_backend else "[red]None[/]")
 
@@ -190,7 +190,7 @@ def render_history_panel(mgr: ContextManager, last_n: int = 8) -> Panel:
 
         # 壓縮訊息標記
         if msg.is_compressed:
-            content = f"[yellow][COMPRESSED][/] {content}"
+            content = f"[yellow]◆ COMPRESSED[/] {content}"
 
         tokens = str(msg.token_count or "?")
         table.add_row(str(idx), f"[{role_style}]{msg.role}[/{role_style}]", content, tokens)
@@ -351,16 +351,16 @@ class SessionControlCLI:
                 )
             except Exception as e:
                 # Backend 初始化失敗，降級為無 backend 模式
-                self.console.print(f"[yellow]! Backend ({backend_type}) init failed: {e}[/]")
+                self.console.print(f"[yellow]⚠ Backend ({backend_type}) init failed: {e}[/]")
                 self.console.print("[yellow]  Running in offline mode (Layer 1/4 only)[/]")
                 self.llm = None
                 self.mgr = ContextManager(config=config, persona=persona, backend=None)
 
-        self.console.print(f"[green]OK[/] Backend: [bold]{backend_type}[/]")
-        self.console.print(f"[green]OK[/] Model: [bold]{model}[/]")
-        self.console.print(f"[green]OK[/] Context Window: [bold]{context_window:,}[/]")
+        self.console.print(f"[green]✓[/] Backend: [bold]{backend_type}[/]")
+        self.console.print(f"[green]✓[/] Model: [bold]{model}[/]")
+        self.console.print(f"[green]✓[/] Context Window: [bold]{context_window:,}[/]")
         self.console.print(
-            f"[green]OK[/] LLM: "
+            f"[green]✓[/] LLM: "
             f"[bold]{'Connected' if self.llm else 'Offline'}[/]"
         )
         self.console.print()
@@ -369,21 +369,33 @@ class SessionControlCLI:
 
     def show_menu(self) -> None:
         """顯示選單"""
-        table = Table(show_header=False, box=None, padding=(0, 2))
-        table.add_column("Cmd", style="bold cyan", width=12)
-        table.add_column("Description")
+        commands = [
+            ("chat", "💬 Interactive chat (with compression)", "green"),
+            ("dashboard", "📊 Full status dashboard", "cyan"),
+            ("", "", ""),
+            ("fill <N>", "🧪 Fill N dummy messages (stress test)", "blue"),
+            ("compact", "🗜  Force full compaction (Layer 3)", "yellow"),
+            ("history", "📜 Browse message history", "blue"),
+            ("usage", "📈 Token usage report", "blue"),
+            ("", "", ""),
+            ("clear", "⚠️  Reset session (clear all history)", "red"),
+            ("help", "📋 Show this menu", "dim"),
+            ("exit", "👋 Exit", "dim"),
+        ]
 
-        table.add_row("chat", "Start interactive chat (with compression)")
-        table.add_row("dashboard", "Show full status dashboard")
-        table.add_row("fill <N>", "Fill N dummy messages (stress test)")
-        table.add_row("compact", "Force full compaction (Layer 3)")
-        table.add_row("history", "Browse message history")
-        table.add_row("usage", "Show token usage report")
-        table.add_row("clear", "Reset session (clear all history)")
-        table.add_row("help", "Show this menu")
-        table.add_row("exit", "Exit")
+        grid = Table(show_header=False, box=None, padding=(0, 2), show_edge=False)
+        grid.add_column(width=14)
+        grid.add_column(ratio=1)
 
-        self.console.print(Panel(table, title="[bold]Commands[/]", border_style="dim"))
+        for cmd, desc, style in commands:
+            if not cmd:
+                grid.add_row("", "")
+            else:
+                grid.add_row(f"[bold {style}]{cmd}[/]", f"[{style}]{desc}[/]")
+
+        self.console.print()
+        self.console.print(grid)
+        self.console.print()
 
     def run(self) -> None:
         """主迴圈"""
@@ -423,7 +435,7 @@ class SessionControlCLI:
             else:
                 self.console.print(f"[red]Unknown command: {cmd}[/]")
 
-            self.console.rule()
+            self.console.rule("[dim]─[/]", style="dim")
             self.show_menu()
 
         self.console.print("[dim]Session ended.[/]")
@@ -492,7 +504,7 @@ class SessionControlCLI:
 
             # 嘗試用 LLMClient 生成回覆
             if self.llm:
-                with self.console.status("[cyan]Thinking..."):
+                with self.console.status("[cyan]Thinking...", spinner="dots"):
                     try:
                         response = self.llm.chat(user_input)
                     except Exception as e:
@@ -510,13 +522,13 @@ class SessionControlCLI:
             tier = self.mgr.budget.check_tier()
             if tier >= CompressionTier.TIER_2_ROLLING_SUMMARY:
                 self.console.print(
-                    f"[yellow]! Compression triggered: {TIER_STYLES[tier][2]}[/]"
+                    f"[yellow]⚠ Compression triggered: {TIER_STYLES[tier][2]}[/]"
                 )
                 with self.console.status("[yellow]Compressing..."):
                     try:
                         _run_async(self.mgr.get_messages_async())
                         self.console.print(
-                            f"[green]OK Compressed. "
+                            f"[green]✓ Compressed. "
                             f"Tokens: {self.mgr.state.current_tokens:,}[/]"
                         )
                     except Exception as e:
@@ -542,7 +554,7 @@ class SessionControlCLI:
 
         pct = self.mgr.state.usage_percentage
         self.console.print(
-            f"[green]OK Added {n * 2} messages. "
+            f"[green]✓ Added {n * 2} messages. "
             f"Token usage: {pct:.1%} ({self.mgr.state.current_tokens:,})[/]"
         )
 
@@ -595,7 +607,7 @@ class SessionControlCLI:
 
         self.mgr.reset_session()
         self.console.print(
-            f"[green]OK Session reset.[/] New session: [bold]{self.mgr.state.session_id}[/]"
+            f"[green]✓ Session reset.[/] New session: [bold]{self.mgr.state.session_id}[/]"
         )
 
     def _cmd_usage(self) -> None:

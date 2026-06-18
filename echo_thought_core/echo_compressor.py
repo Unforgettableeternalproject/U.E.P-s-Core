@@ -215,6 +215,18 @@ class EchoCompressor(ContextEngine):
     ) -> None:
         self._memory_bridge.on_session_end(session_id, messages)
 
+    def update_model(self, model: str, context_length: int = 0) -> None:
+        """模型切換後重新計算壓縮閾值"""
+        if context_length > 0:
+            self.budget.context_window = context_length
+            # 重新計算各層閾值
+            self.config.context_window_size = context_length
+        self.counter.model = model
+        logger.info(
+            "[EchoCompressor] 模型切換: %s, context_length=%d",
+            model, context_length,
+        )
+
     def update_from_response(self, usage: Dict[str, Any]) -> None:
         """從 API 回應更新 token 使用量"""
         self.budget.update_api_usage(

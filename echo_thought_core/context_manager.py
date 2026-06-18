@@ -7,6 +7,15 @@ Context Manager — 會話控制主入口
 內部委託 EchoCompressor（或任意 ContextEngine 實作）執行壓縮。
 公開 API 保持向後相容。
 
+整合點標記（🔌 INTEGRATION POINT）：
+  標記為 🔌 的位置是設計給其他子系統整合的介面。
+  目前有獨立可用的預設實作，未來接入外部模組時替換。
+  - MemoryBridge → Echo Memory 系統（跨會話記憶持久化）
+  - update_from_response → LLM API 回應後精確 token 追蹤
+  - preflight_compress → API 呼叫前自動壓縮
+  - update_model → 動態模型切換
+  - should_end_session → 動態會話邊界判斷
+
 Usage:
     manager = ContextManager(config=config, persona=persona)
     manager.add_message(role="user", content="Hello!")
@@ -82,6 +91,10 @@ class ContextManager:
         # 對話歷史
         self.history = ConversationHistory()
 
+        # 🔌 INTEGRATION POINT: Session lifecycle — on_session_start
+        # 通知引擎（及 MemoryBridge）會話已開始
+        self._engine.on_session_start(self.state.session_id)
+
     # -- 公開 API（向後相容）------------------------------------------------
 
     def add_message(
@@ -116,6 +129,10 @@ class ContextManager:
 
     def get_messages(self) -> List[Dict[str, str]]:
         """取得供 API 使用的訊息列表（同步版本只做 Layer 1）"""
+        # 🔌 INTEGRATION POINT: multimodal 圖片清理
+        # strip_old_images 在壓縮判斷前執行，防止圖片累積
+        self._strip_old_images_if_needed()
+
         tier = self._engine.should_compress(self.history.messages)
 
         if tier >= CompressionTier.TIER_1_MICRO_PRUNE:
@@ -130,6 +147,8 @@ class ContextManager:
 
     async def get_messages_async(self) -> List[Dict[str, str]]:
         """取得供 API 使用的訊息列表（異步版本，支援 Layer 2/3）"""
+        self._strip_old_images_if_needed()
+
         tier = self._engine.should_compress(self.history.messages)
 
         if tier >= CompressionTier.TIER_1_MICRO_PRUNE:
@@ -193,6 +212,12 @@ class ContextManager:
 
     def reset_session(self) -> None:
         """完全重置會話（對應 /clear 命令）"""
+        old_session_id = self.state.session_id
+
+        # 🔌 INTEGRATION POINT: Session lifecycle — on_session_end
+        # 通知引擎（及 MemoryBridge）舊會話結束
+        self._engine.on_session_end(old_session_id, self.history.messages)
+
         # 清空歷史
         self.history.messages.clear()
         self.history.total_tokens = 0
@@ -213,6 +238,104 @@ class ContextManager:
         # 同步清空 LLMClient 歷史
         if self._backend is not None and hasattr(self._backend, "clear_history"):
             self._backend.clear_history()
+
+        # 🔌 INTEGRATION POINT: Session lifecycle — on_session_start (new session)
+        self._engine.on_session_start(self.state.session_id)
+
+    # -- 🔌 INTEGRATION POINT: 新增 API（供外部整合使用）---------------------
+
+    def update_from_response(self, usage: Dict[str, Any]) -> None:
+        """從 API 回應更新實際 token 使用量。
+
+        🔌 INTEGRATION POINT: LLM API 回應後精確追蹤
+        整合方式：在每次 LLM API 呼叫後，將 usage dict 傳入。
+        未來接入 U.E.P Core 的 LLM Module 時，由 event bus 觸發。
+
+        Args:
+            usage: API 回應的 usage 資訊，可包含：
+                   input_tokens, output_tokens,
+                   cache_read_tokens, cache_write_tokens
+        """
+        self._engine.update_from_response(usage)
+
+    async def preflight_compress(
+        self,
+        estimated_request_tokens: int = 0,
+        max_passes: int = 3,
+    ) -> Optional[CompactionResult]:
+        """在 API 呼叫前執行預防性壓縮。
+
+        🔌 INTEGRATION POINT: API 呼叫前自動壓縮
+        整合方式：在送出 API 請求前呼叫，傳入預估的
+        system prompt + tools schema token 數。
+
+        Args:
+            estimated_request_tokens: 預估的固定開銷 token 數
+            max_passes: 最多壓縮幾次（預設 3）
+
+        Returns:
+            最後一次壓縮的結果，或 None（不需要壓縮）
+        """
+        result = await self._engine.preflight_compress(
+            self.history.messages,
+            estimated_request_tokens=estimated_request_tokens,
+            max_passes=max_passes,
+        )
+        if result:
+            self._after_compression(result)
+        return result
+
+    def update_model(self, model: str, context_length: int = 0) -> None:
+        """動態切換模型，重新計算壓縮閾值。
+
+        🔌 INTEGRATION POINT: 動態模型切換
+        整合方式：當使用者或系統切換 LLM 模型時呼叫。
+
+        Args:
+            model: 新模型名稱
+            context_length: 新模型的 context window 大小（0 = 不變）
+        """
+        self._engine.update_model(model, context_length)
+        if context_length > 0:
+            self.config.context_window_size = context_length
+            self.state.max_tokens = context_length
+
+    def prefetch_memory(self, query: str) -> str:
+        """預抓取記憶上下文。
+
+        🔌 INTEGRATION POINT: Echo Memory 每輪預抓取
+        整合方式：在每輪對話前呼叫，傳入使用者訊息。
+        回傳的字串可注入 system prompt 或 user context。
+        需要實作 MemoryBridge 的 prefetch() 方法。
+
+        Args:
+            query: 使用者訊息或搜尋關鍵字
+
+        Returns:
+            記憶上下文字串（空字串表示無相關記憶）
+        """
+        return self._engine._memory_bridge.prefetch(query)
+
+    def should_end_session(self, elapsed_seconds: float = 0.0, **signals: Any) -> bool:
+        """詢問引擎是否應結束當前 session。
+
+        🔌 INTEGRATION POINT: 動態會話邊界判斷
+        整合方式：由 DC bot 或 U.E.P Core 定期呼叫。
+        需要子類覆寫 ContextEngine.should_end_session()。
+        目前預設回傳 False（外部控制邊界）。
+
+        Args:
+            elapsed_seconds: 當前 session 已持續的秒數
+            **signals: 額外信號（topic_drift_score, emotional_shift 等）
+
+        Returns:
+            True 表示系統建議結束當前 session
+        """
+        return self._engine.should_end_session(
+            self.history.messages,
+            elapsed_seconds=elapsed_seconds,
+            **signals,
+        )
 
     # -- 便利屬性（供 CLI 等存取引擎子系統）---------------------------------
 
@@ -264,7 +387,6 @@ class ContextManager:
 
     def _after_compression(self, result: CompactionResult) -> None:
         """壓縮完成後同步所有狀態（含 LLMClient 歷史同步）"""
-        # 重新計算 token（messages 已被引擎原地修改）
         total = sum(m.token_count or 0 for m in self.history.messages)
         self.history.total_tokens = total
         self.history.compression_count += 1
@@ -275,11 +397,26 @@ class ContextManager:
         self.state.last_compaction_at = time.time()
         self.state.current_tier = self._engine.budget.check_tier()
 
-        # P0 修復：同步壓縮後的歷史到 LLMClient
-        # ContextManager 是唯一的歷史來源，壓縮後必須同步到 LLM 傳輸層
+        # 同步壓縮後的歷史到 LLMClient
         if self._backend is not None and hasattr(self._backend, "sync_history_from_messages"):
             compressed_messages = [
                 {"role": m.role, "content": m.content}
                 for m in self.history.messages
             ]
             self._backend.sync_history_from_messages(compressed_messages)
+
+    def _strip_old_images_if_needed(self) -> None:
+        """在壓縮判斷前清理舊的 base64 圖片。
+
+        🔌 INTEGRATION POINT: multimodal 圖片管理
+        在 get_messages() 前自動執行，防止圖片佔用 context window。
+        """
+        from echo_thought_core.compression.multimodal import strip_old_images
+
+        updated, saved = strip_old_images(self.history.messages, keep_last_n=3)
+        if saved > 0:
+            self.history.messages = updated
+            self._sync_state()
+            logger.info(
+                "[ContextManager] 清理舊圖片，節省 ~%d tokens", saved,
+            )

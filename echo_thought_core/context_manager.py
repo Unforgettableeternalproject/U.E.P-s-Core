@@ -286,6 +286,64 @@ class ContextManager:
             self._after_compression(result)
         return result
 
+    def switch_backend(
+        self,
+        backend_type: str,
+        config: dict[str, Any] | None = None,
+    ) -> None:
+        """Runtime 切換 LLM 後端（provider hot-swap）。
+
+        🔌 INTEGRATION POINT: 動態後端切換
+        整合方式：當使用者或系統需要切換 LLM 服務時呼叫。
+
+        切換流程：
+        1. 從 BackendRegistry 建立新後端實例
+        2. 將當前對話歷史同步到新後端
+        3. 更新引擎所有子系統的後端引用
+        4. 更新 config 中的 backend/model 設定
+        5. 若新後端有不同的 context_window，更新預算
+
+        Args:
+            backend_type: 新後端名稱（如 "ollama", "gemini"）
+            config:       後端設定 dict
+        """
+        from echo_thought_core.backends.registry import BackendRegistry
+
+        registry = BackendRegistry.default()
+        new_backend = registry.create(backend_type, config or {})
+
+        old_backend_name = self.config.backend
+        new_model = getattr(new_backend, "model_name", "unknown")
+
+        # Step 1: 同步歷史到新後端
+        if self.history.messages:
+            messages_for_sync = [
+                {"role": m.role, "content": m.content}
+                for m in self.history.messages
+            ]
+            if hasattr(new_backend, "sync_history_from_messages"):
+                new_backend.sync_history_from_messages(messages_for_sync)
+
+        # Step 2: 更新引擎的所有後端引用
+        self._engine.swap_backend(new_backend)
+        self._backend = new_backend
+
+        # Step 3: 更新 config
+        self.config.backend = backend_type
+        self.config.model = new_model
+
+        # Step 4: 若 context_window 不同，更新預算
+        new_ctx = new_backend.get_context_window_size()
+        if new_ctx != self.config.context_window_size:
+            self._engine.update_model(new_model, new_ctx)
+            self.config.context_window_size = new_ctx
+            self.state.max_tokens = new_ctx
+
+        logger.info(
+            "[ContextManager] 後端切換: %s → %s (model=%s, ctx=%d)",
+            old_backend_name, backend_type, new_model, new_ctx,
+        )
+
     def update_model(self, model: str, context_length: int = 0) -> None:
         """動態切換模型，重新計算壓縮閾值。
 

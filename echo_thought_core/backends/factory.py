@@ -5,9 +5,8 @@ Backend Factory — 根據設定建立 LLM 後端或完整的 ContextManager
 - create_backend(): 低層級，建立 AbstractBackend 實例
 - create_context_manager(): 高層級，一次建立帶有 Backend + CacheManager 的完整 ContextManager
 
-支援的後端：
-- "gemini": Google Gemini / Vertex AI（需要 google-genai）
-- "ollama": 本地 Ollama 服務（需要 requests + 本地 Ollama 執行中）
+內部委託 BackendRegistry 管理後端提供者。
+內建後端：gemini, ollama。可透過 BackendRegistry.register() 擴充。
 """
 
 from __future__ import annotations
@@ -16,6 +15,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from echo_thought_core.backends.base import AbstractBackend
+from echo_thought_core.backends.registry import BackendRegistry
 from echo_thought_core.defaults import DEFAULT_MODEL
 
 if TYPE_CHECKING:
@@ -23,9 +23,6 @@ if TYPE_CHECKING:
     from echo_thought_core.schemas.config import CompactionConfig, PersonaContext
 
 logger = logging.getLogger(__name__)
-
-# 已註冊的後端類型
-SUPPORTED_BACKENDS = ("gemini", "ollama")
 
 
 def create_backend(
@@ -35,30 +32,13 @@ def create_backend(
     """根據後端類型建立對應的實例
 
     Args:
-        backend_type: "gemini" | "ollama"
+        backend_type: 已註冊的後端名稱（如 "gemini", "ollama"）
         config: 後端特定設定
 
     Returns:
         AbstractBackend 實例
     """
-    config = config or {}
-
-    if backend_type == "gemini":
-        from echo_thought_core.llm_client import LLMClient
-
-        return LLMClient(config=config)
-
-    elif backend_type == "ollama":
-        from echo_thought_core.backends.ollama import OllamaBackend
-
-        return OllamaBackend(config=config)
-
-    else:
-        supported = ", ".join(f"'{b}'" for b in SUPPORTED_BACKENDS)
-        raise ValueError(
-            f"Unknown backend type: {backend_type!r}. "
-            f"Supported backends: {supported}"
-        )
+    return BackendRegistry.default().create(backend_type, config or {})
 
 
 def create_context_manager(
@@ -100,36 +80,21 @@ def create_context_manager(
 
     backend_config = backend_config or {}
 
-    # Step 1: 建立 Backend
-    if backend_type == "gemini":
-        from echo_thought_core.llm_client import LLMClient
+    # Step 1: 建立 Backend（透過 Registry）
+    backend: AbstractBackend = create_backend(backend_type, backend_config)
 
-        client = LLMClient(config=backend_config)
+    # Step 2: Gemini 專屬 — CacheManager 整合
+    if backend_type == "gemini" and cache_config is not None:
+        from echo_thought_core.cache.local_cache import CacheManager
 
-        # Step 2: 建立 CacheManager（可選），共享 LLMClient 的 Gemini client
-        if cache_config is not None:
-            from echo_thought_core.cache.local_cache import CacheManager
-
-            shared_client = client._get_client()
-            cache_mgr = CacheManager(config=cache_config, client=shared_client)
-            client._cache_manager = cache_mgr
-
-        backend: AbstractBackend = client
-    elif backend_type == "ollama":
-        from echo_thought_core.backends.ollama import OllamaBackend
-
-        backend = OllamaBackend(config=backend_config)
-        if cache_config is not None:
-            logger.warning(
-                "[Factory] cache_config 僅支援 gemini 後端，ollama 後端的 cache_config 被忽略",
-            )
-    else:
-        backend = create_backend(backend_type, backend_config)
-        if cache_config is not None:
-            logger.warning(
-                "[Factory] cache_config 僅支援 gemini 後端，%s 後端的 cache_config 被忽略",
-                backend_type,
-            )
+        shared_client = backend._get_client()  # type: ignore[attr-defined]
+        cache_mgr = CacheManager(config=cache_config, client=shared_client)
+        backend._cache_manager = cache_mgr  # type: ignore[attr-defined]
+    elif cache_config is not None:
+        logger.warning(
+            "[Factory] cache_config 僅支援 gemini 後端，%s 後端的 cache_config 被忽略",
+            backend_type,
+        )
 
     # Step 3: 建立 ContextManager，注入 Backend
     config = compaction_config or CompactionConfig(

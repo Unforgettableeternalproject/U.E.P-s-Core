@@ -24,6 +24,7 @@ Usage (推薦 — 高層級 factory):
 
 from echo_thought_core.backends.base import AbstractBackend
 from echo_thought_core.backends.factory import create_backend, create_context_manager
+from echo_thought_core.backends.registry import BackendRegistry
 from echo_thought_core.context_manager import ContextManager
 from echo_thought_core.echo_compressor import EchoCompressor
 from echo_thought_core.engine_base import ContextEngine
@@ -61,6 +62,7 @@ __all__ = [
     "NullMemoryBridge",
     # 後端
     "AbstractBackend",
+    "BackendRegistry",
     "LLMClient",
     # Factory
     "create_backend",

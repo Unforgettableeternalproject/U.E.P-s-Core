@@ -216,6 +216,31 @@ class EchoCompressor(ContextEngine):
     ) -> None:
         self._memory_bridge.on_session_end(session_id, messages)
 
+    def swap_backend(self, new_backend: AbstractBackend | None) -> None:
+        """切換底層 LLM 後端，更新所有子系統的引用。
+
+        更新點：
+        - self._backend
+        - self.summarizer.backend (RollingSummarizer)
+        - self.compactor.backend (FullCompactor)
+
+        不重置壓縮狀態（反抖動、冷卻等保持不變）。
+
+        Args:
+            new_backend: 新的 AbstractBackend 實例（None = 離線模式）
+        """
+        old_name = getattr(self._backend, "model_name", "None")
+        new_name = getattr(new_backend, "model_name", "None")
+
+        self._backend = new_backend
+        self.summarizer.backend = new_backend
+        self.compactor.backend = new_backend
+
+        logger.info(
+            "[EchoCompressor] 後端切換: %s → %s",
+            old_name, new_name,
+        )
+
     def update_model(self, model: str, context_length: int = 0) -> None:
         """模型切換後重新計算壓縮閾值"""
         if context_length > 0:

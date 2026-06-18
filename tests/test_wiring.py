@@ -134,7 +134,7 @@ class TestBackendFactory:
 
     def test_create_backend_unknown_type(self):
         """未知後端類型應拋 ValueError"""
-        with pytest.raises(ValueError, match="Unknown backend type"):
+        with pytest.raises(ValueError, match="Unknown backend provider"):
             create_backend("unknown_backend")
 
 

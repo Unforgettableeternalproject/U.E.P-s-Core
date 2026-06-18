@@ -131,6 +131,19 @@ class ContextEngine(ABC):
             "engine": self.name,
         }
 
+    # -- 後端切換 -----------------------------------------------------------
+
+    def swap_backend(self, new_backend: Any) -> None:
+        """切換底層 LLM 後端（runtime hot-swap）。
+
+        引擎應更新所有持有後端引用的子系統
+        （如 RollingSummarizer、FullCompactor）。
+        預設不做任何事——需要後端的引擎應覆寫此方法。
+
+        Args:
+            new_backend: 新的 AbstractBackend 實例
+        """
+
     # -- 模型切換 -----------------------------------------------------------
 
     def update_model(self, model: str, context_length: int = 0) -> None:

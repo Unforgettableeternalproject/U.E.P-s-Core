@@ -369,6 +369,10 @@ class SessionControlCLI:
 
     def show_menu(self) -> None:
         """顯示選單"""
+        # 動態顯示當前 backend
+        cur_backend = self.mgr.config.backend if self.mgr else "?"
+        cur_model = self.mgr.config.model if self.mgr else "?"
+
         commands = [
             ("chat", "💬 Interactive chat (with compression)", "green"),
             ("dashboard", "📊 Full status dashboard", "cyan"),
@@ -378,6 +382,7 @@ class SessionControlCLI:
             ("history", "📜 Browse message history", "blue"),
             ("usage", "📈 Token usage report", "blue"),
             ("", "", ""),
+            ("backend", f"🔄 Switch LLM backend [dim](now: {cur_backend}/{cur_model})[/dim]", "magenta"),
             ("clear", "⚠️  Reset session (clear all history)", "red"),
             ("help", "📋 Show this menu", "dim"),
             ("exit", "👋 Exit", "dim"),
@@ -430,6 +435,8 @@ class SessionControlCLI:
                 self.console.print(render_history_panel(self.mgr, last_n=20))
             elif cmd == "usage":
                 self._cmd_usage()
+            elif cmd == "backend" or cmd.startswith("backend "):
+                self._cmd_backend(cmd)
             elif cmd == "clear":
                 self._cmd_clear()
             else:
@@ -448,7 +455,7 @@ class SessionControlCLI:
             "[bold cyan]Session Control Chat[/]\n"
             f"[dim]Session: {self.mgr.state.session_id} | "
             f"Model: {self.mgr.config.model} | "
-            f"Commands: /quit /status /compact /history /clear[/]",
+            f"Commands: /quit /status /compact /backend /history /clear[/]",
             border_style="cyan", width=70,
         ))
 
@@ -485,6 +492,9 @@ class SessionControlCLI:
                     continue
                 elif cmd == "compact":
                     self._cmd_compact()
+                    continue
+                elif cmd.startswith("backend"):
+                    self._cmd_backend(cmd)
                     continue
                 elif cmd == "history":
                     self.console.print(render_history_panel(self.mgr, last_n=20))
@@ -597,6 +607,83 @@ class SessionControlCLI:
             table.add_row("Summary", f"[dim]{preview}[/dim]")
 
         self.console.print(Panel(table, title="[bold yellow]Compaction Result[/]", border_style="yellow"))
+
+    def _cmd_backend(self, cmd: str) -> None:
+        """切換 LLM 後端（runtime hot-swap）"""
+        from echo_thought_core.backends.registry import BackendRegistry
+
+        registry = BackendRegistry.default()
+        providers = registry.list_providers()
+
+        parts = cmd.split()
+
+        # backend（無參數）：顯示當前狀態 + 可用列表
+        if len(parts) == 1:
+            table = Table(show_header=False, box=None, padding=(0, 1))
+            table.add_column("Key", style="dim", width=16)
+            table.add_column("Value")
+
+            table.add_row("Current Backend", f"[bold]{self.mgr.config.backend}[/]")
+            table.add_row("Current Model", f"[bold]{self.mgr.config.model}[/]")
+            table.add_row("Context Window", f"{self.mgr.config.context_window_size:,}")
+            table.add_row("", "")
+            table.add_row("Available", ", ".join(
+                f"[bold green]{p}[/]" if p == self.mgr.config.backend else p
+                for p in providers
+            ))
+            table.add_row("", "")
+            table.add_row("[dim]Usage[/]", "[dim]backend <name> [model][/]")
+            table.add_row("", "[dim]e.g. backend ollama gemma4[/]")
+
+            self.console.print(Panel(table, title="[bold magenta]Backend[/]", border_style="magenta"))
+            return
+
+        # backend <type> [model]
+        new_type = parts[1]
+        new_model = parts[2] if len(parts) > 2 else None
+
+        if not registry.has(new_type):
+            self.console.print(
+                f"[red]Unknown backend: {new_type!r}. "
+                f"Available: {', '.join(providers)}[/]"
+            )
+            return
+
+        # 組裝 config
+        config = {}
+        if new_model:
+            config["model"] = new_model
+
+        old_backend = self.mgr.config.backend
+        old_model = self.mgr.config.model
+        msg_count = self.mgr.state.message_count
+
+        with self.console.status(f"[cyan]Switching to {new_type}...", spinner="dots"):
+            try:
+                self.mgr.switch_backend(new_type, config)
+                self.llm = self.mgr._backend
+
+                # Ollama 需要立即驗證連線
+                if new_type == "ollama" and hasattr(self.llm, "_ensure_connection"):
+                    self.llm._ensure_connection()
+
+            except Exception as e:
+                self.console.print(f"[red]✗ Switch failed: {e}[/]")
+                return
+
+        new_model_name = self.mgr.config.model
+        self.console.print(
+            f"[green]✓[/] Backend switched: "
+            f"[dim]{old_backend}/{old_model}[/] → "
+            f"[bold]{new_type}/{new_model_name}[/]"
+        )
+        if msg_count > 0:
+            self.console.print(
+                f"[dim]  {msg_count} messages synced to new backend[/]"
+            )
+        self.console.print(
+            f"[dim]  Context window: {self.mgr.config.context_window_size:,}[/]"
+        )
 
     def _cmd_clear(self) -> None:
         """重置 session（清除所有歷史與狀態）"""

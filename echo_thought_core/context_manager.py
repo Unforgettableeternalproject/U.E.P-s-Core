@@ -210,6 +210,10 @@ class ContextManager:
         # 重置引擎
         self._engine.on_session_reset()
 
+        # 同步清空 LLMClient 歷史
+        if self._backend is not None and hasattr(self._backend, "clear_history"):
+            self._backend.clear_history()
+
     # -- 便利屬性（供 CLI 等存取引擎子系統）---------------------------------
 
     @property
@@ -259,7 +263,7 @@ class ContextManager:
         self.state.current_tier = self._engine.budget.check_tier()
 
     def _after_compression(self, result: CompactionResult) -> None:
-        """壓縮完成後同步所有狀態"""
+        """壓縮完成後同步所有狀態（含 LLMClient 歷史同步）"""
         # 重新計算 token（messages 已被引擎原地修改）
         total = sum(m.token_count or 0 for m in self.history.messages)
         self.history.total_tokens = total
@@ -270,3 +274,12 @@ class ContextManager:
         self.state.compression_count += 1
         self.state.last_compaction_at = time.time()
         self.state.current_tier = self._engine.budget.check_tier()
+
+        # P0 修復：同步壓縮後的歷史到 LLMClient
+        # ContextManager 是唯一的歷史來源，壓縮後必須同步到 LLM 傳輸層
+        if self._backend is not None and hasattr(self._backend, "sync_history_from_messages"):
+            compressed_messages = [
+                {"role": m.role, "content": m.content}
+                for m in self.history.messages
+            ]
+            self._backend.sync_history_from_messages(compressed_messages)

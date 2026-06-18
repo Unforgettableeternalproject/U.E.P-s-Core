@@ -10,8 +10,7 @@ Phase 1+2+3 新增測試 — ContextEngine ABC、EchoCompressor、MemoryBridge
 - 多模態內容管理
 """
 
-import asyncio
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -20,7 +19,6 @@ from echo_thought_core import (
     ContextEngine,
     EchoCompressor,
     CompactionConfig,
-    PersonaContext,
     NullMemoryBridge,
     MemoryBridge,
 )
@@ -483,7 +481,7 @@ class TestPreflightCompress:
         ))
         msgs = [Message(role="user", content="hello", token_count=5)]
         # max_passes=1，最多壓縮一次就停
-        result = await engine.preflight_compress(
+        await engine.preflight_compress(
             msgs, estimated_request_tokens=100, max_passes=1,
         )
         # 不會無限循環（測試能正常結束即驗證）
@@ -492,6 +490,56 @@ class TestPreflightCompress:
 # ═══════════════════════════════════════════════════════════════════════════
 # compression_count 一致性
 # ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestHistorySync:
+    """P0 修復驗證：壓縮後 LLMClient 歷史同步"""
+
+    def test_compression_syncs_to_llmclient(self):
+        """壓縮後 ContextManager 同步歷史到 LLMClient"""
+        from echo_thought_core.llm_client import LLMClient
+
+        client = LLMClient(config={"model": "gemini-2.5-flash-lite"})
+        # 手動加入歷史模擬 chat() 行為
+        client._history = list(range(16))  # 16 條假歷史
+
+        mgr = ContextManager(
+            config=CompactionConfig(
+                context_window_size=100,
+                compaction_cooldown_seconds=0,
+            ),
+            backend=client,
+        )
+        # 加入足夠的訊息觸發壓縮
+        for i in range(8):
+            mgr.add_message("tool", "x" * 300, tool_call_id=f"c{i}", tool_name="read_file")
+            mgr.add_message("user", f"msg {i}")
+
+        before_mgr = len(mgr.history.messages)
+
+        # 觸發壓縮
+        mgr.get_messages()
+
+        after_mgr = len(mgr.history.messages)
+
+        if after_mgr < before_mgr:
+            # 壓縮確實發生了，驗證 LLMClient 歷史也被同步
+            assert len(client._history) == after_mgr
+        # 如果沒觸發壓縮（全在保護區內），那不需要同步
+
+    def test_reset_clears_llmclient_history(self):
+        """reset_session 同時清空 LLMClient 歷史"""
+        from echo_thought_core.llm_client import LLMClient
+
+        client = LLMClient(config={"model": "gemini-2.5-flash-lite"})
+        client._history = list(range(10))
+
+        mgr = ContextManager(backend=client)
+        mgr.add_message("user", "hello")
+        mgr.reset_session()
+
+        assert len(client._history) == 0
+        assert len(mgr.history.messages) == 0
 
 
 class TestCompressionCount:

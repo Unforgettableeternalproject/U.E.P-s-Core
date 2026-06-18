@@ -24,7 +24,7 @@ Usage:
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, runtime_checkable, TYPE_CHECKING
+from typing import List, runtime_checkable, TYPE_CHECKING
 
 try:
     from typing import Protocol

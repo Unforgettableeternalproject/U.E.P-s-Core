@@ -1,6 +1,6 @@
 [project]
 name = "echo-thought-core"
-version = "0.1.0"
+version = "0.2.0-dev"
 description = "Echo Thought Core — LLM 會話控制子系統 (Prompt/Token/Context 優化引擎)"
 authors = [
     {name = "U.E.P Team", email = "ptyc4076@gmail.com"}

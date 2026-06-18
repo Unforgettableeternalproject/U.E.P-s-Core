@@ -122,6 +122,9 @@ class OllamaBackend(AbstractBackend):
         # 對話歷史 — Ollama 格式 [{"role": ..., "content": ...}]
         self._history: list[dict[str, str]] = []
 
+        # 最近一次 API 呼叫的 token 計數（由 Ollama 回傳）
+        self._last_usage: dict[str, int] = {}
+
         # Context window（由 /api/show 動態探測，或 fallback 靜態估算）
         self._context_window: int = _resolve_context_window(self.model_name)
 
@@ -279,6 +282,12 @@ class OllamaBackend(AbstractBackend):
             self._history.append(user_msg)
             self._history.append({"role": "assistant", "content": response_text})
 
+            # 保存 API 回傳的精確 token 計數（供外部校正用）
+            self._last_usage = {
+                "prompt_eval_count": data.get("prompt_eval_count", 0),
+                "eval_count": data.get("eval_count", 0),
+            }
+
             return response_text
 
         except Exception as e:
@@ -324,7 +333,15 @@ class OllamaBackend(AbstractBackend):
             timeout=self.timeout,
         )
         r.raise_for_status()
-        return r.json().get("response", "")
+        data = r.json()
+
+        # 保存 API 回傳的精確 token 計數
+        self._last_usage = {
+            "prompt_eval_count": data.get("prompt_eval_count", 0),
+            "eval_count": data.get("eval_count", 0),
+        }
+
+        return data.get("response", "")
 
     # ═══════════════════════════════════════════════════════════════════════
     # AbstractBackend 介面實作

@@ -310,7 +310,15 @@ class ContextManager:
         from echo_thought_core.backends.registry import BackendRegistry
 
         registry = BackendRegistry.default()
-        new_backend = registry.create(backend_type, config or {})
+
+        # 繼承舊 backend 的 character（若 config 未指定）
+        effective_config = dict(config or {})
+        if "character" not in effective_config and self._backend is not None:
+            old_char = getattr(self._backend, "character", "")
+            if old_char:
+                effective_config["character"] = old_char
+
+        new_backend = registry.create(backend_type, effective_config)
 
         old_backend_name = self.config.backend
         new_model = getattr(new_backend, "model_name", "unknown")

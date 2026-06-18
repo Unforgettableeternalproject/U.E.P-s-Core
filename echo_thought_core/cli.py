@@ -349,6 +349,13 @@ class SessionControlCLI:
                     persona=persona,
                     backend=self.llm,
                 )
+
+                # 用 backend 的真實 context window 校正
+                real_ctx = self.llm.get_context_window_size()
+                if real_ctx != context_window:
+                    self.mgr.update_model(model, real_ctx)
+                    context_window = real_ctx
+
             except Exception as e:
                 # Backend 初始化失敗，降級為無 backend 模式
                 self.console.print(f"[yellow]⚠ Backend ({backend_type}) init failed: {e}[/]")
@@ -512,13 +519,21 @@ class SessionControlCLI:
             # 加入使用者訊息
             self.mgr.add_message("user", user_input)
 
-            # 嘗試用 LLMClient 生成回覆
+            # 嘗試用 LLM Backend 生成回覆
             if self.llm:
                 with self.console.status("[cyan]Thinking...", spinner="dots"):
                     try:
                         response = self.llm.chat(user_input)
                     except Exception as e:
                         response = f"[LLM error: {e}]"
+
+                # 用 API 回傳的精確 token 數校正
+                api_usage = getattr(self.llm, "_last_usage", {})
+                if api_usage:
+                    self.mgr.update_from_response({
+                        "input_tokens": api_usage.get("prompt_eval_count", 0),
+                        "output_tokens": api_usage.get("eval_count", 0),
+                    })
             else:
                 response = "[dim](Offline mode — no LLM connected)[/dim]"
 
@@ -649,10 +664,16 @@ class SessionControlCLI:
             )
             return
 
-        # 組裝 config
+        # 組裝 config（保留當前 character/persona）
         config = {}
         if new_model:
             config["model"] = new_model
+        # 從當前 backend 繼承 character
+        current_char = getattr(self.llm, "character", "") if self.llm else ""
+        if not current_char:
+            current_char = self.llm_config.get("character", "")
+        if current_char:
+            config["character"] = current_char
 
         old_backend = self.mgr.config.backend
         old_model = self.mgr.config.model

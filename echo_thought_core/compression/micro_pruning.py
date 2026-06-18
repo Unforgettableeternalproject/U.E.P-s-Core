@@ -22,6 +22,7 @@ from typing import List, Tuple, Optional
 
 from echo_thought_core.schemas.message import Message
 from echo_thought_core.compression.tool_pairs import PRUNED_TOOL_PLACEHOLDER
+from echo_thought_core.compression.tool_summarizer import get_tool_summarizer
 from echo_thought_core.defaults import LLMLINGUA_MIN_TOKEN_THRESHOLD
 
 logger = logging.getLogger(__name__)
@@ -227,17 +228,31 @@ class MicroPruner:
         msg: Message,
         result: List[Message],
     ) -> int:
-        """將一條工具輸出替換為佔位字串，回傳節省的 token 數。
+        """將一條工具輸出替換為結構化摘要，回傳節省的 token 數。
+
+        使用 ToolSummarizer 產生有資訊量的單行摘要，
+        而非簡單的佔位字串。
 
         優先使用 token_count（精確），回退到 len(content)//4（粗估）。
         """
         original_tokens = msg.token_count or (len(msg.content) // 4)
 
+        # 使用 ToolSummarizer 產生結構化摘要
+        summarizer = get_tool_summarizer()
+        summary = summarizer.summarize(
+            tool_name=msg.tool_name,
+            content=msg.content,
+            metadata=msg.metadata,
+        )
+
+        # 估算摘要的 token 數
+        summary_tokens = max(_PLACEHOLDER_TOKEN_ESTIMATE, len(summary) // 4)
+
         placeholder_msg = Message(
             role=msg.role,
-            content=_PRUNED_TOOL_PLACEHOLDER,
+            content=summary,
             timestamp=msg.timestamp,
-            token_count=_PLACEHOLDER_TOKEN_ESTIMATE,
+            token_count=summary_tokens,
             tool_call_id=msg.tool_call_id,
             tool_name=msg.tool_name,
             is_reproducible=msg.is_reproducible,
@@ -250,7 +265,7 @@ class MicroPruner:
         )
         result.append(placeholder_msg)
 
-        saved = max(0, original_tokens - _PLACEHOLDER_TOKEN_ESTIMATE)
+        saved = max(0, original_tokens - summary_tokens)
         logger.debug(
             "MicroPruner: 剪裁 tool_result (tool=%s)，節省約 %d tokens",
             msg.tool_name or "unknown",

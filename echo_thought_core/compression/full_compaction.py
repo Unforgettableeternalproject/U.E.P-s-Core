@@ -28,6 +28,10 @@ from echo_thought_core.compression.tool_pairs import (
     align_boundary_backward,
     sanitize_tool_pairs,
 )
+from echo_thought_core.compression.rolling_summary import (
+    SUMMARY_PREFIX,
+    SUMMARY_END_MARKER,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +173,7 @@ class FullCompactor:
 
         compacted_message = Message(
             role="system",
-            content=f"[Full Session Compaction]\n{summary_text}",
+            content=f"{SUMMARY_PREFIX}\n\n{summary_text}\n\n{SUMMARY_END_MARKER}",
             is_compressed=True,
             original_turn_range=f"1-{len(messages)}",
             metadata={
@@ -221,7 +225,7 @@ class FullCompactor:
 
         summary_message = Message(
             role="system",
-            content=f"[Full Session Compaction — turns 1–{head_end}]\n{summary_text}",
+            content=f"{SUMMARY_PREFIX}\n\n{summary_text}\n\n{SUMMARY_END_MARKER}",
             is_compressed=True,
             original_turn_range=f"1-{head_end}",
             metadata={

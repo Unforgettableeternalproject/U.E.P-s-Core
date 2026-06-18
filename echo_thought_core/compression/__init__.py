@@ -11,7 +11,11 @@ Layer 4: EmergencyCompactor — 緊急截斷（只保留最後 N 條 + 神聖段
 """
 
 from echo_thought_core.compression.micro_pruning import MicroPruner
-from echo_thought_core.compression.rolling_summary import RollingSummarizer, SUMMARY_PREFIX
+from echo_thought_core.compression.rolling_summary import (
+    RollingSummarizer,
+    SUMMARY_PREFIX,
+    SUMMARY_END_MARKER,
+)
 from echo_thought_core.compression.full_compaction import FullCompactor, COMPACTION_PROMPT
 from echo_thought_core.compression.emergency import EmergencyCompactor
 from echo_thought_core.compression.sacred import SacredManager
@@ -22,6 +26,7 @@ from echo_thought_core.compression.tool_pairs import (
     sanitize_tool_pairs,
     find_last_complete_tool_group_end,
 )
+from echo_thought_core.compression.tool_summarizer import ToolSummarizer, get_tool_summarizer
 
 __all__ = [
     # 壓縮層
@@ -30,6 +35,9 @@ __all__ = [
     "FullCompactor",
     "EmergencyCompactor",
     "SacredManager",
+    # 工具摘要
+    "ToolSummarizer",
+    "get_tool_summarizer",
     # 工具配對保護
     "align_boundary_forward",
     "align_boundary_backward",
@@ -38,5 +46,6 @@ __all__ = [
     # 常數
     "PRUNED_TOOL_PLACEHOLDER",
     "SUMMARY_PREFIX",
+    "SUMMARY_END_MARKER",
     "COMPACTION_PROMPT",
 ]

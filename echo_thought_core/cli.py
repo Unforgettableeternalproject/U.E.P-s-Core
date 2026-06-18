@@ -579,8 +579,8 @@ class SessionControlCLI:
                 # 檢查是否發生了 auto session rotate
                 rotate_result = self.mgr.last_rotate_result
                 if rotate_result and rotate_result.session_rotated:
-                    # 儲存舊 session
-                    self._auto_save_session(rotate_result.previous_session_id)
+                    # 儲存舊 session（使用壓縮前的完整快照）
+                    self._auto_save_session(rotate_result)
                     self.console.print(
                         f"[dim]↻ session rotated: "
                         f"{rotate_result.previous_session_id} → "
@@ -1013,20 +1013,24 @@ class SessionControlCLI:
             },
         )
 
-    def _auto_save_session(self, session_id: str) -> None:
-        """auto-rotate 時自動儲存舊 session（用壓縮前的快照）"""
-        # auto-rotate 發生時，壓縮已完成，舊訊息已丟失
-        # 只能儲存一個 marker，記錄這個 session 曾經存在
+    def _auto_save_session(self, rotate_result) -> None:
+        """auto-rotate 時自動儲存舊 session（用壓縮前的快照）。
+
+        ContextManager.auto_rotate_session() 在壓縮前已快照完整訊息，
+        存在 result.metadata["pre_rotate_snapshot"] 中。
+        """
+        snapshot = rotate_result.metadata.get("pre_rotate_snapshot", [])
+        pre_tokens = rotate_result.metadata.get("pre_rotate_tokens", 0)
+        pre_compressions = rotate_result.metadata.get("pre_rotate_compression_count", 0)
+
         self.session_store.save(
-            session_id=session_id,
-            messages=[{
-                "role": "system",
-                "content": "[This session was auto-rotated. Messages were compressed into the next session.]",
-                "is_compressed": True,
-            }],
+            session_id=rotate_result.previous_session_id,
+            messages=snapshot,
             metadata={
+                "total_tokens": pre_tokens,
+                "compression_count": pre_compressions,
                 "auto_rotated": True,
-                "rotated_to": self.mgr.state.session_id,
+                "rotated_to": rotate_result.new_session_id,
                 "model": self.mgr.config.model,
                 "backend": self.mgr.config.backend,
             },

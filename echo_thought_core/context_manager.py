@@ -457,6 +457,21 @@ class ContextManager:
         """
         old_session_id = self.state.session_id
 
+        # Step 0: 快照舊 session 的完整訊息（壓縮前），供 CLI 持久化
+        pre_rotate_snapshot = [
+            {
+                "role": m.role,
+                "content": m.content,
+                "token_count": m.token_count,
+                "is_compressed": m.is_compressed,
+                "original_turn_range": m.original_turn_range,
+                "metadata": dict(m.metadata),
+            }
+            for m in self.history.messages
+        ]
+        pre_rotate_tokens = self.history.total_tokens
+        pre_rotate_compression_count = self.history.compression_count
+
         # Step 1: Layer 3 Full Compaction
         result = await self._engine.compress_async(
             self.history.messages,
@@ -520,6 +535,11 @@ class ContextManager:
         result.session_rotated = True
         result.previous_session_id = old_session_id
         result.new_session_id = new_session_id
+
+        # 附帶舊 session 快照，讓 CLI/整合層可以持久化完整的壓縮前訊息
+        result.metadata["pre_rotate_snapshot"] = pre_rotate_snapshot
+        result.metadata["pre_rotate_tokens"] = pre_rotate_tokens
+        result.metadata["pre_rotate_compression_count"] = pre_rotate_compression_count
 
         logger.info(
             "[ContextManager] auto_rotate: %s → %s "

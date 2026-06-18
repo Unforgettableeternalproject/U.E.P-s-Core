@@ -11,9 +11,7 @@ Cache Provider 測試
 
 from __future__ import annotations
 
-import sys
 
-import pytest
 
 from echo_thought_core.cache.providers import (
     ExplicitCacheProvider,

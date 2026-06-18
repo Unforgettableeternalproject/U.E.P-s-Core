@@ -12,12 +12,11 @@ Auto Session Rotate 測試
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import MagicMock
 
 import pytest
 
 from echo_thought_core import CompactionConfig, ContextManager
-from echo_thought_core.echo_compressor import EchoCompressor
 from echo_thought_core.memory_bridge import NullMemoryBridge
 from echo_thought_core.schemas.message import Message
 from echo_thought_core.schemas.session import CompactionResult, CompressionTier

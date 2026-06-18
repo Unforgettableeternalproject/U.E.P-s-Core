@@ -11,7 +11,6 @@ Prompt 介面測試
 
 from __future__ import annotations
 
-import pytest
 
 from echo_thought_core import CompactionConfig, ContextManager
 from echo_thought_core.prompt import (

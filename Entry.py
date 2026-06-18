@@ -59,11 +59,9 @@ from echo_thought_core import (
     CompactionConfig,
     ContextManager,
     LLMClient,
-    create_context_manager,
 )
 from echo_thought_core.persona import (
     build_persona_from_config,
-    build_system_instruction,
     load_llm_config,
 )
 from echo_thought_core.schemas.session import CompressionTier
@@ -484,7 +482,7 @@ class SessionControlCLI:
                 )
                 with self.console.status("[yellow]Compressing..."):
                     try:
-                        result = _run_async(self.mgr.get_messages_async())
+                        _run_async(self.mgr.get_messages_async())
                         self.console.print(
                             f"[green]✓ Compressed. "
                             f"Tokens: {self.mgr.state.current_tokens:,}[/]"

@@ -94,6 +94,29 @@ class TestLLMClientConstruction:
         # CJK 每字 2/3 token，ASCII 每 4 字元 1 token
         assert cjk_count > ascii_count
 
+    def test_client_init_failure_remains_retryable(self):
+        """初始化失敗後不可標記完成，後續補憑證要能重試。"""
+        with patch.dict("os.environ", {}, clear=True), patch(
+            "echo_thought_core.llm_client._HAS_GENAI", True
+        ), patch("echo_thought_core.llm_client.genai") as mock_genai:
+            client = LLMClient(config={"model": "gemini-2.5-flash-lite"})
+
+            with pytest.raises(ValueError, match="GOOGLE_API_KEY"):
+                client._ensure_client()
+
+            assert client._initialized is False
+            assert client._client is None
+            mock_genai.Client.assert_not_called()
+
+            sentinel_client = object()
+            mock_genai.Client.return_value = sentinel_client
+            with patch.dict("os.environ", {"GOOGLE_API_KEY": "test-key"}, clear=True):
+                client._ensure_client()
+
+            assert client._initialized is True
+            assert client._client is sentinel_client
+            mock_genai.Client.assert_called_once_with(api_key="test-key")
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # BackendFactory 修復驗證 (T-01b)
@@ -195,6 +218,7 @@ class TestCreateContextManager:
         assert mgr.persona is not None
         assert mgr.persona.name == "U.E.P"
 
+    @patch("echo_thought_core.llm_client._HAS_GENAI", True)
     @patch("echo_thought_core.llm_client.genai")
     def test_with_cache_manager(self, mock_genai):
         """T-06: 帶 CacheManager 建立，共享 client"""

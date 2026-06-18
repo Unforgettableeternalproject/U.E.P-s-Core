@@ -215,7 +215,6 @@ class LLMClient(AbstractBackend):
         """
         if self._initialized:
             return
-        self._initialized = True
 
         if not _HAS_GENAI:
             raise ImportError(
@@ -248,6 +247,7 @@ class LLMClient(AbstractBackend):
                 "請在 .env 檔案中設定。"
             )
 
+        self._initialized = True
         logger.info("[LLM] Model: %s, Temperature: %s", self.model_name, self.temperature)
 
     def _get_client(self):

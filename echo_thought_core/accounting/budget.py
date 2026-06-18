@@ -46,11 +46,12 @@ class TokenBudget:
         self._tool_tokens: int = 0
         self._sacred_tokens: int = 0
 
-        # ── 實際 API 使用量追蹤（新增）───────────────
+        # ── 實際 API 使用量追蹤 ────────────────────────
+        # 由外部（如 Preflight 壓縮或 LLMClient 回調）寫入
         self._input_tokens_used: int = 0
         self._output_tokens_used: int = 0
-        self.cache_read_tokens: int = 0    # 從快取讀取的 tokens
-        self.cache_write_tokens: int = 0   # 寫入快取的 tokens
+        self.cache_read_tokens: int = 0
+        self.cache_write_tokens: int = 0
 
     # ──────────────────────────────────────────
     # 原有 properties
@@ -131,9 +132,26 @@ class TokenBudget:
         else:
             return CompressionTier.TIER_0_NORMAL
 
+    def update_api_usage(
+        self,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+    ) -> None:
+        """更新 API 實際使用量（由 LLMClient 或 Preflight 呼叫）"""
+        self._input_tokens_used = input_tokens
+        self._output_tokens_used = output_tokens
+        self.cache_read_tokens = cache_read_tokens
+        self.cache_write_tokens = cache_write_tokens
+
     def get_usage_report(self) -> Dict[str, object]:
-        """取得使用量報告（含新增的 API 使用量與快取資訊）"""
-        return {
+        """取得使用量報告"""
+        has_api_data = (
+            self._input_tokens_used > 0 or self._output_tokens_used > 0
+        )
+
+        report: Dict[str, object] = {
             "total_tokens": self.total_tokens,
             "context_window": self.context_window,
             "usage_percentage": round(self.usage_percentage, 4),
@@ -145,18 +163,22 @@ class TokenBudget:
                 "tools": self._tool_tokens,
                 "sacred": self._sacred_tokens,
             },
-            # 新增欄位
             "budget": {
                 "max_input_tokens": self.max_input_tokens,
                 "remaining_input": self.remaining_input_budget,
                 "remaining_output": self.remaining_output_budget,
                 "reserve_for_output": self.reserve_for_output,
             },
-            "api_usage": {
+        }
+
+        # 僅在有實際 API 數據時才回傳 api_usage，避免誤導
+        if has_api_data:
+            report["api_usage"] = {
                 "input_tokens": self._input_tokens_used,
                 "output_tokens": self._output_tokens_used,
                 "cache_read_tokens": self.cache_read_tokens,
                 "cache_write_tokens": self.cache_write_tokens,
-            },
-        }
+            }
+
+        return report
 

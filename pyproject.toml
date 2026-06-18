@@ -34,17 +34,17 @@ full = [
 ]
 
 [project.scripts]
-echo-thought = "Entry:main"
+echo-thought = "echo_thought_core.cli:main"
 
 [tool.setuptools]
-py-modules = ["Entry"]
+py-modules = ["Entry"]  # 保留向後相容入口
 
 [tool.setuptools.packages.find]
 include = ["echo_thought_core*"]
 exclude = ["tests*", "examples*", "docs*"]
 
 [tool.setuptools.package-data]
-echo_thought_core = ["*.yaml"]
+echo_thought_core = ["*.yaml", "py.typed"]
 
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]

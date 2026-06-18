@@ -41,13 +41,11 @@ def create_backend(
 
         return LLMClient(config=config)
 
-    elif backend_type == "local":
-        raise NotImplementedError(
-            "Local model backend (Qwen2.5) is planned for Phase 3"
-        )
-
     else:
-        raise ValueError(f"Unknown backend type: {backend_type}")
+        raise ValueError(
+            f"Unknown backend type: {backend_type!r}. "
+            f"Currently supported: 'gemini'"
+        )
 
 
 def create_context_manager(

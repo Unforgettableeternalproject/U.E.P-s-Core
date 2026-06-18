@@ -82,7 +82,10 @@ multi_channel:
 
   # Worker 池設定
   num_workers: 2                           # 辨識 worker 數量（共用 WhisperModel）
-  queue_max_size: 50                       # 佇列上限（滿了丟棄新 segment）
+  queue_max_size: 50                       # 佇列上限
+  queue_overflow_policy: "drop_oldest"     # 佇列滿時策略：
+                                           #   drop_oldest — 丟棄最舊 segment（即時場景，WebRTC 標準）
+                                           #   drop_newest — 拒收新 segment（離線分析，不遺失資料）
 
   # 通道限制
   max_channels: 8                          # 最大通道數

@@ -186,6 +186,7 @@ class STTWorkerPool:
         noise_filter: Optional[NoiseFilter] = None,
         post_processor: Optional[PostProcessor] = None,
         default_language: Optional[str] = None,
+        overflow_policy: str = "drop_oldest",
     ):
         self.transcribe_fn = transcribe_fn
         self.result_callback = result_callback
@@ -194,7 +195,10 @@ class STTWorkerPool:
         self.post_processor = post_processor
         self.default_language = default_language
 
-        self.queue = TranscriptionQueue(max_size=max_queue_size)
+        self.queue = TranscriptionQueue(
+            max_size=max_queue_size,
+            overflow_policy=overflow_policy,
+        )
         self._workers: List[STTWorker] = []
         self._running = False
 

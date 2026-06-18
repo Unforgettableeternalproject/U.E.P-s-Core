@@ -101,6 +101,7 @@ class MultiChannelSTTEngine:
         self._default_language: Optional[str] = mc.get("default_language", None)
         self._noise_filter_enabled: bool = mc.get("noise_filter_enabled", False)
         self._vad_config: dict = mc.get("vad_config", {})
+        self._overflow_policy: str = mc.get("queue_overflow_policy", "drop_oldest")
 
         # 子元件（initialize() 時建立）
         self._stt_engine: Optional[Any] = None  # STTEngine (lazy import)
@@ -202,6 +203,7 @@ class MultiChannelSTTEngine:
                 noise_filter=noise_filter,
                 post_processor=post_processor,
                 default_language=self._default_language,
+                overflow_policy=self._overflow_policy,
             )
 
             # 6. 建立 ChannelManager

@@ -271,6 +271,11 @@ class SessionControlCLI:
         self.llm_config: dict = {}
         self._start_time = time.time()
 
+        # Session 持久化
+        from echo_thought_core.session_store import SessionStore
+        data_dir = args.data_dir if args and hasattr(args, "data_dir") and args.data_dir else "data"
+        self.session_store = SessionStore(data_dir=data_dir)
+
     def initialize(self) -> bool:
         """初始化 LLM Backend + ContextManager"""
         self.console.print(Panel(
@@ -386,9 +391,11 @@ class SessionControlCLI:
             ("", "", ""),
             ("fill <N>", "🧪 Fill N dummy messages (stress test)", "blue"),
             ("compact", "🗜  Force full compaction (Layer 3)", "yellow"),
+            ("rotate", "↻  Force auto-rotate (compress + new session)", "yellow"),
             ("history", "📜 Browse message history", "blue"),
             ("usage", "📈 Token usage report", "blue"),
             ("", "", ""),
+            ("sessions", "📋 List all sessions", "cyan"),
             ("backend", f"🔄 Switch LLM backend [dim](now: {cur_backend}/{cur_model})[/dim]", "magenta"),
             ("clear", "⚠️  Reset session (clear all history)", "red"),
             ("help", "📋 Show this menu", "dim"),
@@ -438,10 +445,14 @@ class SessionControlCLI:
                 self._cmd_fill(cmd)
             elif cmd == "compact":
                 self._cmd_compact()
+            elif cmd == "rotate":
+                self._cmd_rotate()
             elif cmd == "history":
                 self.console.print(render_history_panel(self.mgr, last_n=20))
             elif cmd == "usage":
                 self._cmd_usage()
+            elif cmd == "sessions" or cmd.startswith("session"):
+                self._cmd_session(cmd.replace("sessions", "session list", 1) if cmd == "sessions" else cmd)
             elif cmd == "backend" or cmd.startswith("backend "):
                 self._cmd_backend(cmd)
             elif cmd == "clear":
@@ -461,8 +472,8 @@ class SessionControlCLI:
         self.console.print(Panel(
             "[bold cyan]Session Control Chat[/]\n"
             f"[dim]Session: {self.mgr.state.session_id} | "
-            f"Model: {self.mgr.config.model} | "
-            f"Commands: /quit /status /compact /backend /history /clear[/]",
+            f"Model: {self.mgr.config.model}[/]\n"
+            "[dim]Commands: /quit /status /compact /session /rotate /backend /history /clear[/]",
             border_style="cyan", width=70,
         ))
 
@@ -512,6 +523,12 @@ class SessionControlCLI:
                 elif cmd == "clear":
                     self._cmd_clear()
                     continue
+                elif cmd.startswith("session"):
+                    self._cmd_session(cmd)
+                    continue
+                elif cmd == "rotate":
+                    self._cmd_rotate()
+                    continue
                 else:
                     self.console.print(f"[red]Unknown command: /{cmd}[/]")
                     continue
@@ -558,6 +575,18 @@ class SessionControlCLI:
                         )
                     except Exception as e:
                         self.console.print(f"[red]Compression failed: {e}[/]")
+
+                # 檢查是否發生了 auto session rotate
+                rotate_result = self.mgr.last_rotate_result
+                if rotate_result and rotate_result.session_rotated:
+                    # 儲存舊 session（使用壓縮前的完整快照）
+                    self._auto_save_session(rotate_result)
+                    self.console.print(
+                        f"[dim]↻ session rotated: "
+                        f"{rotate_result.previous_session_id} → "
+                        f"{rotate_result.new_session_id} "
+                        f"(saved {rotate_result.tokens_saved:,} tokens)[/dim]"
+                    )
 
     # ── 指令處理 ──────────────────────────────────────────────────────────
 
@@ -713,9 +742,298 @@ class SessionControlCLI:
             self.console.print("[dim]Cancelled.[/dim]")
             return
 
+        # 儲存當前 session 再清除
+        self._save_current_session()
+
         self.mgr.reset_session()
         self.console.print(
             f"[green]✓ Session reset.[/] New session: [bold]{self.mgr.state.session_id}[/]"
+        )
+
+    # ── Session 管理 ────────────────────────────────────────────────────
+
+    def _cmd_session(self, cmd: str) -> None:
+        """Session 管理指令
+
+        /session           — 顯示當前 session 資訊
+        /session list      — 列出所有歷史 session
+        /session new       — 儲存當前 + 建新 session
+        /session <keyword> — 切換到指定 session
+        """
+        parts = cmd.split(maxsplit=1)
+        sub = parts[1].strip() if len(parts) > 1 else ""
+
+        if not sub or sub == "info":
+            self._session_info()
+        elif sub == "list":
+            self._session_list()
+        elif sub == "new":
+            self._session_new()
+        else:
+            self._session_switch(sub)
+
+    def _session_info(self) -> None:
+        """顯示當前 session 資訊"""
+        state = self.mgr.state
+        table = Table(show_header=False, box=None, padding=(0, 1))
+        table.add_column("Key", style="dim", width=18)
+        table.add_column("Value")
+
+        table.add_row("Session ID", f"[bold]{state.session_id}[/]")
+        table.add_row("Messages", str(state.message_count))
+        table.add_row("Tokens", f"{state.current_tokens:,} / {state.max_tokens:,}")
+        table.add_row("Usage", f"{state.usage_percentage:.1%}")
+        table.add_row("Compressions", str(state.compression_count))
+        table.add_row("Backend", f"{self.mgr.config.backend}/{self.mgr.config.model}")
+
+        saved = self.session_store.exists(state.session_id)
+        table.add_row("Saved", "[green]✓[/]" if saved else "[dim]not yet[/]")
+
+        # 歷史 session 數
+        all_sessions = self.session_store.list_sessions()
+        table.add_row("Total Sessions", str(len(all_sessions) + (0 if saved else 1)))
+
+        self.console.print(Panel(
+            table, title="[bold cyan]Current Session[/]", border_style="cyan",
+        ))
+
+    def _session_list(self) -> None:
+        """列出所有歷史 session"""
+        sessions = self.session_store.list_sessions()
+        current_id = self.mgr.state.session_id
+
+        if not sessions and self.mgr.state.message_count == 0:
+            self.console.print("[dim]No sessions yet.[/dim]")
+            return
+
+        table = Table(show_header=True, box=None, padding=(0, 1))
+        table.add_column("", width=2)
+        table.add_column("Session ID", width=12)
+        table.add_column("Messages", justify="right", width=8)
+        table.add_column("Tokens", justify="right", width=10)
+        table.add_column("Model", width=20)
+        table.add_column("Saved At", width=18)
+
+        # 目前 session（未儲存的）
+        if not self.session_store.exists(current_id):
+            table.add_row(
+                "[bold green]▶[/]",
+                f"[bold green]{current_id}[/]",
+                str(self.mgr.state.message_count),
+                f"{self.mgr.state.current_tokens:,}",
+                self.mgr.config.model,
+                "[dim]active[/]",
+            )
+
+        for s in sessions:
+            is_current = s["session_id"] == current_id
+            marker = "[bold green]▶[/]" if is_current else ""
+            style = "bold green" if is_current else ""
+
+            # 格式化時間
+            import datetime
+            saved_at = s.get("saved_at", 0)
+            ts = datetime.datetime.fromtimestamp(saved_at).strftime("%m/%d %H:%M") if saved_at else "?"
+
+            sid = s["session_id"]
+            if style:
+                sid = f"[{style}]{sid}[/{style}]"
+
+            table.add_row(
+                marker,
+                sid,
+                str(s.get("message_count", 0)),
+                f"{s.get('total_tokens', 0):,}",
+                s.get("model", ""),
+                ts,
+            )
+
+        self.console.print(Panel(
+            table, title="[bold]Sessions[/]", border_style="white",
+        ))
+        self.console.print("[dim]  Use /session <id> to switch[/]")
+
+    def _session_new(self) -> None:
+        """儲存當前 session + 建新 session"""
+        if self.mgr.state.message_count > 0:
+            self._save_current_session()
+            self.console.print(
+                f"[dim]  Saved session {self.mgr.state.session_id}[/]"
+            )
+
+        self.mgr.reset_session()
+        if self.llm and hasattr(self.llm, "clear_history"):
+            self.llm.clear_history()
+
+        self.console.print(
+            f"[green]✓ New session:[/] [bold]{self.mgr.state.session_id}[/]"
+        )
+
+    def _session_switch(self, keyword: str) -> None:
+        """切換到指定 session"""
+        matches = self.session_store.find(keyword)
+
+        if not matches:
+            self.console.print(f"[red]No session matching '{keyword}'[/]")
+            return
+
+        if len(matches) > 1:
+            self.console.print(f"[yellow]Ambiguous — {len(matches)} matches:[/]")
+            for m in matches:
+                self.console.print(f"  [dim]{m['session_id']}[/]")
+            return
+
+        target = matches[0]
+        target_id = target["session_id"]
+
+        if target_id == self.mgr.state.session_id:
+            self.console.print("[dim]Already on this session.[/]")
+            return
+
+        # 儲存當前 session
+        if self.mgr.state.message_count > 0:
+            self._save_current_session()
+
+        # 載入目標 session
+        try:
+            messages, metadata = self.session_store.load(target_id)
+        except FileNotFoundError:
+            self.console.print(f"[red]Session data not found: {target_id}[/]")
+            return
+
+        # 重置 ContextManager（不觸發 MemoryBridge）
+        self.mgr.history.messages.clear()
+        self.mgr.history.total_tokens = 0
+        self.mgr.history.compression_count = 0
+        self.mgr.state.session_id = target_id
+        self.mgr.state.current_tokens = 0
+        self.mgr.state.message_count = 0
+        self.mgr.state.compression_count = metadata.get("compression_count", 0)
+        self.mgr.state.created_at = metadata.get("created_at", time.time())
+        self.mgr._engine.on_session_reset()
+
+        # 重建歷史
+        from echo_thought_core.schemas.message import Message
+
+        for msg_data in messages:
+            msg = Message(
+                role=msg_data.get("role", "user"),
+                content=msg_data.get("content", ""),
+                token_count=msg_data.get("token_count"),
+                is_compressed=msg_data.get("is_compressed", False),
+                original_turn_range=msg_data.get("original_turn_range"),
+                metadata=msg_data.get("metadata", {}),
+            )
+            if msg.token_count is None:
+                self.mgr.counter.count_message(msg)
+            self.mgr.history.add(msg)
+
+        self.mgr._sync_state()
+
+        # 同步到 LLM backend
+        if self.llm and hasattr(self.llm, "sync_history_from_messages"):
+            sync_msgs = [
+                {"role": m.role, "content": m.content}
+                for m in self.mgr.history.messages
+            ]
+            self.llm.sync_history_from_messages(sync_msgs)
+
+        self.console.print(
+            f"[green]✓ Switched to session:[/] [bold]{target_id}[/] "
+            f"({len(messages)} msgs, {self.mgr.state.current_tokens:,} tokens)"
+        )
+
+    def _cmd_rotate(self) -> None:
+        """手動強制 auto-rotate（測試用）"""
+        if self.mgr.state.message_count == 0:
+            self.console.print("[yellow]Nothing to rotate (no messages).[/]")
+            return
+
+        self.console.print("[yellow]⚠ Forcing auto-rotate...[/]")
+
+        # 儲存當前 session
+        old_id = self.mgr.state.session_id
+        self._save_current_session()
+
+        with self.console.status("[yellow]Compressing + rotating..."):
+            try:
+                result = _run_async(self.mgr.auto_rotate_session())
+            except Exception as e:
+                self.console.print(f"[red]Rotate failed: {e}[/]")
+                return
+
+        if result is None:
+            self.console.print("[yellow]Rotate skipped (compression ineffective).[/]")
+            return
+
+        table = Table(show_header=False, box=None, padding=(0, 1))
+        table.add_column("Key", style="dim", width=16)
+        table.add_column("Value")
+
+        table.add_row("Old Session", f"[dim]{old_id}[/]")
+        table.add_row("New Session", f"[bold]{result.new_session_id}[/]")
+        table.add_row("Before", f"{result.tokens_before:,} tokens")
+        table.add_row("After", f"{result.tokens_after:,} tokens")
+        table.add_row("Saved", f"[green]{result.tokens_saved:,} tokens ({result.savings_percentage:.1%})[/]")
+        table.add_row("Messages", f"{len(self.mgr.history.messages)}")
+        if result.duration_ms:
+            table.add_row("Duration", f"{result.duration_ms:.0f} ms")
+
+        self.console.print(Panel(
+            table, title="[bold yellow]Session Rotated[/]", border_style="yellow",
+        ))
+
+    # ── Session 持久化輔助 ──────────────────────────────────────────────
+
+    def _save_current_session(self) -> None:
+        """儲存當前 session 到 SessionStore"""
+        if self.mgr.state.message_count == 0:
+            return
+
+        messages = []
+        for m in self.mgr.history.messages:
+            messages.append({
+                "role": m.role,
+                "content": m.content,
+                "token_count": m.token_count,
+                "is_compressed": m.is_compressed,
+                "original_turn_range": m.original_turn_range,
+                "metadata": m.metadata,
+            })
+
+        self.session_store.save(
+            session_id=self.mgr.state.session_id,
+            messages=messages,
+            metadata={
+                "total_tokens": self.mgr.state.current_tokens,
+                "compression_count": self.mgr.state.compression_count,
+                "created_at": self.mgr.state.created_at,
+                "model": self.mgr.config.model,
+                "backend": self.mgr.config.backend,
+            },
+        )
+
+    def _auto_save_session(self, rotate_result) -> None:
+        """auto-rotate 時自動儲存舊 session（用壓縮前的快照）。
+
+        ContextManager.auto_rotate_session() 在壓縮前已快照完整訊息，
+        存在 result.metadata["pre_rotate_snapshot"] 中。
+        """
+        snapshot = rotate_result.metadata.get("pre_rotate_snapshot", [])
+        pre_tokens = rotate_result.metadata.get("pre_rotate_tokens", 0)
+        pre_compressions = rotate_result.metadata.get("pre_rotate_compression_count", 0)
+
+        self.session_store.save(
+            session_id=rotate_result.previous_session_id,
+            messages=snapshot,
+            metadata={
+                "total_tokens": pre_tokens,
+                "compression_count": pre_compressions,
+                "auto_rotated": True,
+                "rotated_to": rotate_result.new_session_id,
+                "model": self.mgr.config.model,
+                "backend": self.mgr.config.backend,
+            },
         )
 
     def _cmd_usage(self) -> None:
@@ -760,6 +1078,12 @@ def main():
         type=str,
         default="http://localhost:11434",
         help="Ollama service URL (default: http://localhost:11434)",
+    )
+    parser.add_argument(
+        "--data-dir",
+        type=str,
+        default="data",
+        help="Data directory for session persistence (default: data)",
     )
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     args = parser.parse_args()

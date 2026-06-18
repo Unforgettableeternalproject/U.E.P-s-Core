@@ -109,7 +109,12 @@ class CacheManager:
     - 全域單例移除，實例生命週期由外部管理
     """
 
-    def __init__(self, config: dict[str, Any] | None = None, client=None):
+    def __init__(
+        self,
+        config: dict[str, Any] | None = None,
+        client=None,
+        explicit_provider: Any | None = None,
+    ):
         """
         初始化 CacheManager
 
@@ -123,41 +128,36 @@ class CacheManager:
                 - usage_frequency_threshold (int): 建立顯性快取的頻率下限（次/小時），預設 10
                 - test_mode (bool): 禁用顯性快取（測試/除錯用），預設 False
                 - debug (dict): 含 enabled/debug_level 的全域除錯設定
-            client: 外部注入的 Gemini/Vertex AI client（可選）。
+            client: 外部注入的 Gemini/Vertex AI client（可選，向後相容）。
                     若提供，直接使用此 client 而不自建連線。
-                    可與 GeminiBackend 共享同一個 client，避免重複建立。
+                    ⚠ 已 deprecated — 請改用 explicit_provider。
+            explicit_provider: ExplicitCacheProvider 實例（可選）。
+                    控制顯性快取的建立/讀取行為。
+                    - None + client=None → 嘗試自建 GeminiCacheProvider（向後相容）
+                    - NullCacheProvider → 停用顯性快取（Ollama 等後端）
+                    - GeminiCacheProvider → Gemini/Vertex AI 顯性快取
         """
         # 從外部接收 config，不再讀取全域 config_loader
         self.config: dict[str, Any] = config or {}
 
-        # ── Vertex AI 客戶端初始化 ──
-        if client is not None:
-            # 使用外部注入的 client（與 GeminiBackend 共享）
+        # ── 顯性快取 Provider 初始化 ──
+        if explicit_provider is not None:
+            # 使用外部注入的 Provider
+            self._explicit_provider = explicit_provider
+            self.client = getattr(explicit_provider, "_client", None)
+            logger.info(
+                "[CacheManager] 使用外部 Provider: %s",
+                type(explicit_provider).__name__,
+            )
+        elif client is not None:
+            # 向後相容：使用外部注入的 client
             self.client = client
-            logger.info("[CacheManager] 使用外部注入的 Gemini client")
+            self._explicit_provider = self._wrap_legacy_client(client)
+            logger.info("[CacheManager] 使用外部注入的 Gemini client（向後相容）")
         else:
-            # 自建 Vertex AI client（原有邏輯）
-            project_id = os.getenv("GCP_PROJECT_ID")
-            location = os.getenv("GCP_LOCATION")
-
-            if not project_id:
-                logger.error("[CacheManager] GCP_PROJECT_ID 環境變數未設定，顯性快取功能將受限")
-                self.client = None
-            else:
-                try:
-                    from google import genai  # type: ignore
-                    self.client = genai.Client(
-                        vertexai=True,
-                        project=project_id,
-                        location=location,
-                    )
-                    logger.info(
-                        "[CacheManager] Vertex AI 客戶端初始化成功 (專案: %s, 區域: %s)",
-                        project_id, location,
-                    )
-                except Exception as exc:
-                    logger.error("[CacheManager] Vertex AI 客戶端初始化失敗: %s", exc)
-                    self.client = None
+            # 自建 GeminiCacheProvider（原有向後相容行為）
+            self.client = None
+            self._explicit_provider = self._create_default_provider()
 
         # 使用支援快取的模型
         self.model_name: str = self.config.get("model_name", DEFAULT_MODEL)
@@ -332,32 +332,47 @@ class CacheManager:
             return None
 
     def _create_cached_content(self, content: str, display_name: str, ttl_seconds: int):
-        """在 Gemini（Vertex AI）上建立顯性快取，回傳 cache 物件或 None"""
-        if not self.client:
-            logger.warning("[CacheManager] client 未初始化，無法建立顯性快取")
+        """在遠端建立顯性快取，回傳 cache ID 或 None。
+
+        委託 ExplicitCacheProvider 執行實際 API 呼叫。
+        """
+        if not self._explicit_provider or not self._explicit_provider.is_available():
+            logger.debug("[CacheManager] 顯性快取 Provider 不可用，跳過")
             return None
 
+        return self._explicit_provider.create_cache(
+            content=content,
+            display_name=display_name,
+            ttl_seconds=ttl_seconds,
+            model=self.model_name,
+        )
+
+    # ── Provider 輔助方法 ──
+
+    def _create_default_provider(self):
+        """嘗試建立預設的 GeminiCacheProvider（向後相容）。"""
         try:
-            from google.genai import types  # type: ignore
-
-            cache = self.client.caches.create(  # type: ignore
-                model=self.model_name,
-                config=types.CreateCachedContentConfig(
-                    display_name=display_name,
-                    system_instruction=content,  # 主要快取內容
-                    contents=[],                 # 保留欄位（未來擴展用）
-                    ttl=f"{ttl_seconds}s",
-                ),
-            )
-
-            logger.debug(
-                "[CacheManager] Gemini 快取建立: %s (TTL: %ds)", cache.name, ttl_seconds
-            )
-            return cache
-
+            from echo_thought_core.cache.providers import GeminiCacheProvider
+            provider = GeminiCacheProvider(model=self.model_name)
+            if provider.is_available():
+                self.client = provider._client
+                logger.info("[CacheManager] 自建 GeminiCacheProvider 成功")
+            else:
+                logger.info("[CacheManager] GeminiCacheProvider 不可用，降級為無顯性快取")
+            return provider
         except Exception as exc:
-            logger.error("[CacheManager] Gemini 快取建立失敗: %s", exc)
-            return None
+            logger.warning("[CacheManager] 建立 GeminiCacheProvider 失敗: %s", exc)
+            from echo_thought_core.cache.providers import NullCacheProvider
+            return NullCacheProvider()
+
+    def _wrap_legacy_client(self, client):
+        """將舊式 client 包裝為 GeminiCacheProvider（向後相容）。"""
+        try:
+            from echo_thought_core.cache.providers import GeminiCacheProvider
+            return GeminiCacheProvider(client=client, model=self.model_name)
+        except Exception:
+            from echo_thought_core.cache.providers import NullCacheProvider
+            return NullCacheProvider()
 
     # ─────────────────────────────────────────
     # 本地 LRU 快取

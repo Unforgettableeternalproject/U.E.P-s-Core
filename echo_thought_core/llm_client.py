@@ -273,11 +273,19 @@ class LLMClient(AbstractBackend):
         呼叫此方法將壓縮後的 messages 同步到 LLMClient，
         確保下一次 API 呼叫使用壓縮後的歷史。
 
+        不要求 Gemini client 已初始化——離線壓縮（Layer 1/4）
+        也需要同步歷史。Content 物件會在下次 API 呼叫前用
+        _ensure_client() 時建立。
+
         Args:
             messages: ContextManager.get_messages() 的結果
                       (list of {"role": ..., "content": ...})
         """
-        self._ensure_client()
+        if not _HAS_GENAI:
+            # google-genai 未安裝，只清空歷史（離線模式）
+            self._history.clear()
+            return
+
         from google.genai import types as _types
 
         self._history.clear()

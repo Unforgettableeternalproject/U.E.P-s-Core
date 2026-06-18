@@ -541,6 +541,30 @@ class TestHistorySync:
         assert len(client._history) == 0
         assert len(mgr.history.messages) == 0
 
+    def test_offline_compression_no_api_key_required(self):
+        """離線壓縮（無 API key）不應拋錯 — P1 回歸測試"""
+        from unittest.mock import patch as _patch
+        from echo_thought_core.llm_client import LLMClient
+
+        # 模擬無 API key 環境
+        with _patch.dict("os.environ", {}, clear=True):
+            client = LLMClient(config={"model": "gemini-2.5-flash-lite"})
+
+        mgr = ContextManager(
+            config=CompactionConfig(
+                context_window_size=100,
+                compaction_cooldown_seconds=0,
+            ),
+            backend=client,
+        )
+        for i in range(8):
+            mgr.add_message("tool", "x" * 300, tool_call_id=f"c{i}", tool_name="read_file")
+            mgr.add_message("user", f"msg {i}")
+
+        # 不應因缺少 API key 而拋 ValueError
+        messages = mgr.get_messages()
+        assert isinstance(messages, list)
+
 
 class TestCompressionCount:
     """壓縮計數一致性測試"""

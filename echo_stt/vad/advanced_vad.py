@@ -650,9 +650,18 @@ class AdvancedVAD(VoiceActivityDetection):
         channel_id: str,
         channel_type: ChannelType = ChannelType.LOCAL_MIC,
         speaker_label: Optional[str] = None,
+        audio_timestamp: Optional[float] = None,
     ) -> Optional[AudioSegment]:
-        """強制清空 muzzle buffer（session 結束時呼叫）。"""
-        result = self._muzzle.flush(time.time())
+        """強制清空 muzzle buffer（session 結束時呼叫）。
+
+        Args:
+            audio_timestamp: 音訊位置時間戳。對 FileChannel 等非即時場景，
+                應傳入最後一個 chunk 的 audio 時間而非 wall clock，
+                避免 flush 段落的 end_timestamp 與前面的 audio 時間戳脫鉤。
+                若未傳入則 fallback 到 time.time()。
+        """
+        flush_ts = audio_timestamp if audio_timestamp is not None else time.time()
+        result = self._muzzle.flush(flush_ts)
         if result is not None:
             start_ts, end_ts, merged_audio = result
             if merged_audio is not None and len(merged_audio) > 0:

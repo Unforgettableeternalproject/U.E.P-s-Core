@@ -163,7 +163,8 @@ class MultiChannelSTTEngine:
                 return False
 
             # 2. 偵測後端——transformers 非執行緒安全，強制 1 worker
-            backend = get("whisper.backend", "faster-whisper", config=self.config)
+            #    使用 engine 初始化後的實際 backend（可能因 fallback 與 config 不同）
+            backend = getattr(self._stt_engine, "_backend_type", "faster-whisper")
             effective_workers = self._num_workers
             if backend != "faster-whisper" and effective_workers > 1:
                 logger.warning(
@@ -480,20 +481,25 @@ class MultiChannelSTTEngine:
         effective_lang = language or self._default_language
         import concurrent.futures
 
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(
-                    self._stt_engine._transcribe, audio_float, effective_lang,
-                )
-                result = future.result(timeout=self._direct_timeout)
+            future = executor.submit(
+                self._stt_engine._transcribe, audio_float, effective_lang,
+            )
+            result = future.result(timeout=self._direct_timeout)
         except concurrent.futures.TimeoutError:
             logger.error(
                 "[MCEngine] transcribe_segment timeout (%.1fs)", self._direct_timeout,
             )
+            # wait=False + cancel_futures=True 避免因 shutdown(wait=True) 繼續 block
+            executor.shutdown(wait=False, cancel_futures=True)
             return None
         except Exception as e:
             logger.error("[MCEngine] transcribe_segment 失敗: %s", e)
+            executor.shutdown(wait=False)
             return None
+        else:
+            executor.shutdown(wait=False)
 
         text = result.get("text", "").strip()
         confidence = result.get("confidence", 0.0)

@@ -130,10 +130,13 @@ class AudioChannel(ABC):
 
     def flush(self) -> None:
         """強制 flush VAD 殘留 buffer（通道停止時呼叫）。"""
+        # 傳入最後一次 push_audio 的 audio 時間戳，讓 flush 段落的 end_timestamp
+        # 與 audio 時間軸一致（非即時場景如 FileChannel 尤其重要）。
         segment = self.vad.flush_streaming(
             channel_id=self.channel_id,
             channel_type=self.channel_type,
             speaker_label=self.speaker_label,
+            audio_timestamp=self._last_speech_at,
         )
         if segment is not None:
             segment.speaker_name = self.speaker_name

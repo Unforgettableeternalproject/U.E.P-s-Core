@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any
 from echo_thought_core.accounting.budget import TokenBudget
 from echo_thought_core.accounting.counter import TokenCounter
 from echo_thought_core.compression.emergency import EmergencyCompactor
-from echo_thought_core.compression.full_compaction import FullCompactor
+from echo_thought_core.compression.full_compaction import COMPACTION_PROMPT, FullCompactor
 from echo_thought_core.compression.micro_pruning import MicroPruner
 from echo_thought_core.compression.rolling_summary import RollingSummarizer
 from echo_thought_core.compression.sacred import SacredManager
@@ -400,7 +400,13 @@ class EchoCompressor(ContextEngine):
 
         # MemoryBridge: 壓縮前提取記憶上下文，注入壓縮提示
         memory_context = self._memory_bridge.on_pre_compress(messages)
-        effective_instructions = instructions or ""
+        # Issue 3 fix: 若呼叫方沒有提供 instructions，必須以 COMPACTION_PROMPT
+        # 作為 base prompt，再追加 memory context。
+        # 先前寫法 `effective_instructions = instructions or ""` 導致當
+        # instructions 為 None 但 memory_context 有值時，effective_instructions
+        # 只含 memory note，傳入 FullCompactor 後 backend 會以 `instructions or
+        # COMPACTION_PROMPT` 的邏輯把 COMPACTION_PROMPT 完全替換掉。
+        effective_instructions = instructions if instructions is not None else COMPACTION_PROMPT
         if memory_context:
             effective_instructions += (
                 f"\n\nIMPORTANT — preserve these facts from memory:\n{memory_context}"

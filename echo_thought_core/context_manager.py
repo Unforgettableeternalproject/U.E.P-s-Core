@@ -145,8 +145,11 @@ class ContextManager:
 
         tier = self._engine.should_compress(self.history.messages)
 
+        # Issue 4 fix: 同步路徑只支援 Layer 1/Emergency（L2/L3 需要 async LLM）。
+        # should_compress 可能回傳 L2/L3；cap 在 L1 避免 compress() 靜默回傳 None。
         if tier >= CompressionTier.TIER_1_MICRO_PRUNE:
-            result = self._engine.compress(self.history.messages, tier)
+            effective_tier = min(tier, CompressionTier.TIER_1_MICRO_PRUNE)
+            result = self._engine.compress(self.history.messages, effective_tier)
             if result:
                 self._after_compression(result)
 
@@ -457,18 +460,13 @@ class ContextManager:
         """
         old_session_id = self.state.session_id
 
-        # Step 0: 快照舊 session 的完整訊息（壓縮前），供 CLI 持久化
-        pre_rotate_snapshot = [
-            {
-                "role": m.role,
-                "content": m.content,
-                "token_count": m.token_count,
-                "is_compressed": m.is_compressed,
-                "original_turn_range": m.original_turn_range,
-                "metadata": dict(m.metadata),
-            }
-            for m in self.history.messages
-        ]
+        # Step 0: 快照舊 session 的完整 Message 物件（壓縮前）。
+        # Issue 1 fix: compress_async 直接 mutate self.history.messages（in-place
+        # messages[:] = compacted），失敗時需要能完整恢復。此處保留 Message
+        # 物件的深拷貝，而非僅存 dict，以便直接還原。
+        # Issue 2 fix: on_session_end hook 應接收壓縮前的完整舊 session messages，
+        # 因此這份快照也作為 hook 的參數。
+        pre_rotate_messages: list[Message] = [m.model_copy(deep=True) for m in self.history.messages]
         pre_rotate_tokens = self.history.total_tokens
         pre_rotate_compression_count = self.history.compression_count
 
@@ -482,10 +480,18 @@ class ContextManager:
             logger.warning(
                 "[ContextManager] auto_rotate: 壓縮無效，跳過 rotate"
             )
+            # Issue 1 fix: compress_async 可能已部分 mutate messages；
+            # 用快照完整還原，同時恢復 total_tokens 和 compression_count。
+            self.history.messages[:] = pre_rotate_messages
+            self.history.total_tokens = pre_rotate_tokens
+            self.history.compression_count = pre_rotate_compression_count
             return None
 
         # Step 2: 通知 MemoryBridge 舊 session 結束
-        self._engine.on_session_end(old_session_id, self.history.messages)
+        # Issue 2 fix: 傳入壓縮前的完整 messages（pre_rotate_messages），
+        # 而非已被壓縮過的 self.history.messages，讓 on_session_end hook
+        # 能存取舊 session 的完整對話內容。
+        self._engine.on_session_end(old_session_id, pre_rotate_messages)
 
         # Step 3: 保留壓縮後的訊息（summary message），重置其餘狀態
         # ⚠ 不呼叫 reset_session()，手動控制避免 MemoryBridge 雙重通知
@@ -537,7 +543,19 @@ class ContextManager:
         result.new_session_id = new_session_id
 
         # 附帶舊 session 快照，讓 CLI/整合層可以持久化完整的壓縮前訊息
-        result.metadata["pre_rotate_snapshot"] = pre_rotate_snapshot
+        # Issue 1 fix: pre_rotate_snapshot 已重命名為 pre_rotate_messages（Message
+        # 物件的 deep copy），此處序列化為 dict list 維持 metadata 格式不變。
+        result.metadata["pre_rotate_snapshot"] = [
+            {
+                "role": m.role,
+                "content": m.content,
+                "token_count": m.token_count,
+                "is_compressed": m.is_compressed,
+                "original_turn_range": m.original_turn_range,
+                "metadata": dict(m.metadata),
+            }
+            for m in pre_rotate_messages
+        ]
         result.metadata["pre_rotate_tokens"] = pre_rotate_tokens
         result.metadata["pre_rotate_compression_count"] = pre_rotate_compression_count
 

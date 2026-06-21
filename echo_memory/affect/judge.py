@@ -881,7 +881,7 @@ class StorageJudge:
                 tool,
             )
             tool = "none"
-            reasoning = f"LLM 推薦的工具不在合法候選集中"
+            reasoning = "LLM 推薦的工具不在合法候選集中"
 
         return JudgeRecommendation(
             recommended_tool=tool,

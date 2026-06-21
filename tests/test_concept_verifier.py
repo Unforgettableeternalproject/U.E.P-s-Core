@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 
 import numpy as np
-import pytest
 
 from echo_memory.affect.concept_verifier import (
     ConceptAssessment,

@@ -10,10 +10,8 @@
 
 import json
 import pytest
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from dataclasses import dataclass, field
-from typing import Any
 
 from echo_memory.affect.reflection import ReflectionModule, ReflectionOutput
 from echo_memory.affect.reflection_executor import (

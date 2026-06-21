@@ -274,7 +274,7 @@ class TestExpandApproval:
             ),
         ])
 
-        tx = inhibitor.process(v, "test", "ok", "s1", "t1")
+        inhibitor.process(v, "test", "ok", "s1", "t1")
 
         cat = semantic.get_by_name("貓")
         assert len(cat.patch_history) == 1

@@ -98,7 +98,6 @@ def test_pruning_after_5_episodes(tmp_path):
         ep_ids = _store_episodes(engine, 6, salience=0.5)
 
         # 確認 episode 節點已建立在圖譜中（episodic.write 會自動加節點）
-        graph = engine.episodic.graph
         # 手動建立一些邊讓 pruning 有東西可操作
         _add_graph_edges(engine, ep_ids)
 
@@ -301,7 +300,7 @@ def test_scheduler_not_started(tmp_path):
 
         # 若 APScheduler 可用，確認排程器未在運行
         try:
-            from apscheduler.schedulers.background import BackgroundScheduler
+            from apscheduler.schedulers.background import BackgroundScheduler  # noqa: F401
             HAS_APSCHEDULER = True
         except ImportError:
             HAS_APSCHEDULER = False

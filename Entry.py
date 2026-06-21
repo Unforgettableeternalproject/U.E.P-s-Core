@@ -190,7 +190,7 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
 
     # ── 結構化 LLM 函式（Gemini response_schema 保證合法 JSON）──
     from echo_memory.affect.subconscious import ASSESSMENT_RESPONSE_SCHEMA
-    from echo_memory.affect.judge import STORAGE_DECISION_SCHEMA, TOOL_RECOMMEND_SCHEMA
+    from echo_memory.affect.judge import STORAGE_DECISION_SCHEMA
     from echo_memory.affect.reflection import REFLECTION_RESPONSE_SCHEMA
     from echo_memory.affect.concept_verifier import CONCEPT_VERIFY_RESPONSE_SCHEMA
     from echo_memory.affect.concept_extractor import CONCEPT_EXTRACT_RESPONSE_SCHEMA

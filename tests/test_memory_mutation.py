@@ -12,16 +12,12 @@ Memory Mutation Tests — 記憶變更行為測試（GPT 建議 #9）
   6. Concept Health：健康度計算正確
 """
 
-import json
 from datetime import datetime, timezone, timedelta
 
-import pytest
 
 from echo_memory.schemas.concept import Concept
-from echo_memory.schemas.episode import Episode
 from echo_memory.storage.conflict_ledger import (
     ConflictLedger,
-    ConflictRecord,
 )
 
 
@@ -193,7 +189,7 @@ class TestFalseContradiction:
         """已解決的矛盾不應計入 unresolved_count。"""
         ledger = ConflictLedger(tmp_path)
         r1 = ledger.register("a", "b", 0.5)
-        r2 = ledger.register("c", "d", 0.5)
+        ledger.register("c", "d", 0.5)
 
         assert ledger.unresolved_count == 2
 

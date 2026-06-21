@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from llm_integration.router import LLMRole, LLMRouter, RoleConfig, RouterStats
+from llm_integration.router import LLMRole, LLMRouter, RoleConfig
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

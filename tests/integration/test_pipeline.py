@@ -327,7 +327,7 @@ def test_concept_extractor_creates_concept(tmp_path, require_live_api):
     )
 
     # 在背景提取概念
-    future = extractor.extract_in_background(
+    extractor.extract_in_background(
         episode=ep,
         salience=0.9,
         concept_seeds=None,

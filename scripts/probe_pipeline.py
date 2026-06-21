@@ -31,8 +31,6 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from rich.console import Console
 from rich.panel import Panel
-from rich.table import Table
-from rich import box
 
 from echo_memory import MemoryEngine
 from echo_memory.config import get_config
@@ -250,7 +248,7 @@ def run_single_turn(
     )
 
     # StorageJudge 工具推薦（無 tools 模式，只要 assessment）
-    total_eps = engine.get_stats().get("total_episodes", 0)
+    engine.get_stats().get("total_episodes", 0)
 
     trace["step1_5"] = {
         "concept_verification_has_changes": concept_verification.has_changes,
@@ -628,7 +626,7 @@ def render_trace_panel(trace: dict) -> Panel:
         if s6.get("auto_executed", 0) > 0:
             lines.append(f"           Auto-executed: {s6['auto_executed']} actions")
     else:
-        lines.append(f"[cyan][STEP 6][/] Reflection: not triggered")
+        lines.append("[cyan][STEP 6][/] Reflection: not triggered")
 
     # Neurochem
     nc = trace.get("neurochem", {})

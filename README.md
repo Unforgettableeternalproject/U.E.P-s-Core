@@ -1,101 +1,154 @@
 # Echo Memory System
 
-> 受 OpenSoul 啟發的自主記憶子系統 — 從 U.E.P Core `mem_module` 獨立遷出
->
-> 將記憶系統從被動 RAG 工具轉變為主動、動態的認知子系統
+> An autonomous memory subsystem inspired by OpenSoul — extracted from U.E.P Core `mem_module`, transforming passive RAG into an active, dynamic cognitive subsystem.
 
----
+## Project Overview
 
-## 專案狀態
+Echo Memory System (`echo_memory`) is a standalone cognitive memory subsystem spun out of the U.E.P-s-Core project. Rather than treating memory as a passive retrieval index, it models memory as a living cognitive process: storing, consolidating, and actively surfacing the right context at the right time.
 
-| 里程碑 | 狀態 |
-|--------|------|
-| Phase 1：基礎記憶存儲 | ✅ 完成 |
-| Phase 2：EcphoryRAG 檢索 | ✅ 完成 |
-| Phase 3：LLM 整合 + 工具 | ✅ 完成 |
-| Phase 4：Dream Engine | ✅ 完成 |
-| OpenSoul 完整遷移 | ✅ 完成（2026-06-15） |
-| 端到端驗證 | ✅ 25 輪 Probe + 12 Integration Tests |
-| 測試覆蓋 | ✅ 608 單元測試 + 12 整合測試 |
-| 下一步 | Discord Bot 多用戶驗證 |
+The system implements a four-layer memory architecture (Working / Episodic / Semantic / Procedural) unified under a single `MemoryEngine` interface. Retrieval is handled by EcphoryRAG — a five-step associative pipeline that expands beyond surface similarity into concept-graph traversal, contradiction detection, and neurochemically-weighted fusion ranking.
 
----
+All storage and retrieval decisions flow through the OpenSoul affective pipeline, replacing hard-coded keyword rules with LLM-driven salience evaluation and hybrid StorageJudge logic. The system is designed to integrate back into U.E.P-s-Core as `mem_module_v2` once multi-user Discord validation is complete.
 
-## 核心特性
+## Core Features
 
-- **四層記憶架構**：Working / Episodic / Semantic / Procedural，各層職責明確分離
-- **EcphoryRAG 五步聯想檢索**：向量種子 → 圖譜展開 → 語義概念 → 矛盾偵測 → 融合排序
-- **神經化學雙軸調控**：DA/5-HT 驅動 5 種認知模式，動態影響檢索廣度與閾值
-- **OpenSoul 完整情感管線**：SubconsciousAssessor（五維評估）→ SalienceEvaluator（三值輸出）→ ResponseVerifier（四維品質打分）→ SubconsciousInhibitor（PASS/REVISE/SUPPRESS）
-- **概念管理三層分流**：ConceptExtractor（daemon Thread 即時提取）→ 同義詞歸一 / 多義詞分裂 / 新概念建立
-- **StorageJudge**：Hybrid 規則 + LLM 存儲決策，取代硬編碼 keyword matching
-- **Dream Engine**：Graph Pruning + LATENT_BRIDGE + LiDER Replay + Knowledge Distillation + Procedure Extraction，閒置/Cron 雙模式觸發
-- **反思行動閉環**：ReflectionModule（定時反思）→ ActionQueue → ReflectionExecutor（含 rollback 機制）
-- **LLM 自主記憶工具**：`force_remember` / `deep_recall` / `adjust_importance` / `trigger_dream`，由對話 LLM 主動調用
-- **MCP Server**：7 個標準工具 + 多租戶 namespace 隔離，支援外部系統整合
+✯ **Four-Layer Memory Architecture**
+- 🔹 Working Memory — TTL-based short-term cache for active context
+- 🔹 Episodic Memory — NumPy vector + JSON episode storage with cosine retrieval
+- 🔹 Semantic Memory — Concept graph with NetworkX for relational knowledge
+- 🔹 Procedural Memory — SOP extraction from recurring experience patterns
 
----
+✯ **EcphoryRAG Associative Retrieval**
+- 🔹 Five-step pipeline: Vector Seed → Graph Expansion → Semantic Concept → Contradiction Detection → Fusion Ranking
+- 🔹 Dynamic retrieval breadth controlled by neurochemical state (DA/5-HT modulates `seed_k`, `breadth_k`, `threshold`)
 
-## 技術棧
+✯ **Neurochemical Dual-Axis Regulation**
+- 🔹 DA/5-HT driven cognitive mode switching across 5 modes
+- 🔹 Dynamic threshold adjustment for retrieval breadth and salience weighting
+- 🔹 Event-driven state transitions with APScheduler-backed persistence
 
-| 類別 | 技術 | 說明 |
-|------|------|------|
-| Python | 3.10+ | 型別標注 + Google-style docstring |
-| 向量 | NumPy | 稠密向量 + 精確餘弦相似度 |
-| 圖譜 | NetworkX 3.2+ | 輕量替代 FalkorDB |
-| Embedding | Ollama bge-m3 | 1024 維多語言（正式基準） |
-| LLM | Google Gemini | gemini-3.1-flash-lite（Chat）+ gemini-2.5-flash-lite（Eval） |
-| 排程 | APScheduler | Dream 閒置/Cron 觸發 |
-| CLI | Rich | 互動式終端 UI |
-| MCP | FastMCP | 外部整合介面 |
-| 序列化 | Pydantic | 資料驗證與模式定義 |
-| 測試 | pytest | 單元測試 + 整合測試 |
+✯ **OpenSoul Affective Pipeline**
+- 🔹 SubconsciousAssessor — 5-dimension evaluation (emotion / novelty / relevance / urgency / conflict)
+- 🔹 SalienceEvaluator — 3-value output (HIGH / MEDIUM / LOW)
+- 🔹 ResponseVerifier — 4-dimension quality scoring
+- 🔹 SubconsciousInhibitor — PASS / REVISE / SUPPRESS gate
+- 🔹 StorageJudge — Hybrid rule + LLM storage decision (no keyword matching)
 
----
+✯ **Concept Management**
+- 🔹 ConceptExtractor — daemon thread real-time extraction via ThreadPoolExecutor
+- 🔹 Synonym unification / polysemy splitting / new concept creation
+- 🔹 ConceptVerifier + ConceptInhibitor gate for quality control
 
-## 快速開始
+✯ **Dream Engine (Offline Consolidation)**
+- 🔹 Graph Pruning + LATENT_BRIDGE for structural cleanup
+- 🔹 LiDER Replay — memory replay for consolidation
+- 🔹 Knowledge Distillation across episodes
+- 🔹 Procedure Extraction from recurring dialogue patterns
+- 🔹 Contradiction detection + ConflictLedger; idle/Cron dual-trigger modes
 
-### 環境準備
+✯ **LLM Autonomous Tools**
+- 🔹 `force_remember` / `deep_recall` / `adjust_importance` / `trigger_dream`
+- 🔹 Called proactively by the conversation LLM via Function Calling
 
-本專案刻意不維護獨立虛擬環境，統一使用同層主專案 `U.E.P-s-Core\env`。
-正式 embedding 基準為 Ollama `bge-m3`（1024 維多語言）。
+✯ **MCP Server**
+- 🔹 7 standard tools exposed via FastMCP
+- 🔹 Multi-tenant namespace isolation for external system integration
+
+✯ **Reflection-Action Loop**
+- 🔹 ReflectionModule — periodic reflection (every 10 turns or uncertainty > 0.7)
+- 🔹 ActionQueue → ReflectionExecutor with rollback support
+- 🔹 Soul Note — subconscious diary written each turn
+
+## Project Structure
+
+```
+TestSeperateMemorySystem/
+├── Entry.py                     # Interactive CLI (chat, memory management, debug)
+├── run.bat                      # Launch script
+├── requirements.txt             # Python dependencies
+├── pyproject.toml               # Project config (setuptools)
+├── .env.example                 # Environment variable template
+│
+├── echo_memory/                 # Core memory engine
+│   ├── engine.py                # MemoryEngine main class
+│   ├── config.py                # Configuration management
+│   ├── namespace.py             # Namespace isolation
+│   ├── schemas/                 # Data structure definitions
+│   ├── storage/                 # Storage layer (episodic/semantic/working/procedural/graph/entity)
+│   ├── retrieval/               # EcphoryRAG associative retrieval
+│   ├── neurochem/               # Neurochemical regulation (DA/5-HT)
+│   ├── affect/                  # Affective & subconscious pipeline (OpenSoul)
+│   ├── utils/                   # Shared utilities
+│   └── dream/                   # Dream Engine (offline consolidation)
+│
+├── llm_integration/             # LLM integration layer
+│   ├── llm_client.py            # Gemini LLM client
+│   ├── config.yaml              # LLM config (roles, prompts)
+│   └── tools/                   # Function Calling tools
+│       ├── definitions.py       # Tool definition schemas
+│       └── executor.py          # Tool executor
+│
+├── mcp_server/                  # MCP Server (external integration)
+│   ├── server.py                # FastMCP server
+│   ├── handlers.py              # Tool handlers
+│   └── resources.py             # Resource exposure
+│
+├── scripts/                     # End-to-end validation scripts
+│   ├── probe_pipeline.py        # 25-round auto-script + Rich reasoning map
+│   └── dialogue_script.py       # Dialogue scenario scripts
+│
+├── tests/                       # Test suite
+│   ├── *.py                     # 608 unit tests
+│   └── integration/             # 12 integration tests
+│
+└── examples/                    # Usage examples
+    └── minimal_chat.py          # Minimal chat example
+```
+
+## Quick Start
+
+### Prerequisites
+
+This project intentionally shares the virtual environment from the sibling `U.E.P-s-Core` project rather than maintaining its own. The canonical embedding backend is Ollama `bge-m3` (1024-dim multilingual).
+
+- Python 3.10+ (via `U.E.P-s-Core\env`)
+- Ollama running locally with `bge-m3` pulled
+- Google API key for Gemini
 
 ```powershell
 $UEP_PYTHON = "..\U.E.P-s-Core\env\Scripts\python.exe"
 
-# 1. 配置環境變數
+# 1. Configure environment variables
 Copy-Item .env.example .env
-# 編輯 .env，必填項目：
+# Edit .env — required fields:
 #   GOOGLE_API_KEY=<your_key>
 #   EMBEDDING_BACKEND=ollama
 #   EMBEDDING_MODEL=bge-m3
 
-# 2. 確認 Ollama 服務與模型
-ollama list   # 應看到 bge-m3
+# 2. Verify Ollama service and model
+ollama list   # should show bge-m3
 
-# 3. 執行測試套件
+# 3. Run the test suite
 & $UEP_PYTHON -m pytest tests/ -x -q
 ```
 
-### 互動式 CLI
+### Interactive CLI
 
 ```powershell
 .\run.bat
 ```
 
-進入後可使用以下指令：
+| Command | Description |
+|---------|-------------|
+| `chat` | Dialogue mode (auto retrieval + storage + neurochemical control) |
+| `store` | Manually store a conversation fragment |
+| `retrieve` | Manually retrieve relevant memories |
+| `stats` | View memory statistics and neurochemical state |
+| `list` | List all episodic memories |
+| `dream` | Manually trigger Dream Engine consolidation |
+| `help` | Show full command reference |
 
-| 指令 | 說明 |
-|------|------|
-| `chat` | 對話模式（自動檢索 + 存儲 + 神經化學調控） |
-| `store` | 手動存儲對話片段 |
-| `retrieve` | 手動檢索相關記憶 |
-| `stats` | 查看記憶統計與神經化學狀態 |
-| `list` | 列出所有情節記憶 |
-| `dream` | 手動觸發 Dream Engine |
-| `help` | 查看完整說明 |
-
-### 程式化使用
+### Programmatic Usage
 
 ```python
 from echo_memory import MemoryEngine
@@ -109,16 +162,16 @@ memory = MemoryEngine(
     namespace_id="local-default",
 )
 
-# 存儲對話（每一輪均存儲，salience 作為屬性而非門閥）
+# Store a conversation turn (every turn is stored; salience is an attribute, not a gate)
 memory.store_episode(
-    user_input="今天天氣如何？",
-    agent_response="台北晴朗，25°C。",
+    user_input="How is the weather today?",
+    agent_response="Sunny in Taipei, 25 degrees.",
     session_id="demo_001",
 )
 
-# 檢索記憶（神經化學參數動態影響檢索廣度）
+# Retrieve memories (neurochemical parameters dynamically affect retrieval breadth)
 context = memory.retrieve(
-    query="天氣怎麼樣？",
+    query="What was the weather like?",
     dopamine=0.5,
     serotonin=0.5,
 )
@@ -126,244 +179,151 @@ context = memory.retrieve(
 print(context.to_text())
 ```
 
-### Namespace 與資料安全
+### Namespace Safety
 
-- `local-default` 沿用既有 `storage_path`，其他 namespace 存放於 `<storage_path>/namespaces/<namespace_id>`
-- 同一 namespace 的寫入與 Dream 操作透過跨程序檔案鎖序列化，防止多實例資料衝突
-- `embedding_index.json` 記錄模型、維度與 episode 順序；模型或索引不一致時自動完整重建
-- 檢索內容以 `UNTRUSTED_MEMORY_DATA` JSON envelope 注入 prompt，防範 prompt injection
+- `local-default` uses the existing `storage_path` directly; other namespaces reside under `<storage_path>/namespaces/<namespace_id>`
+- Write and Dream operations within the same namespace are serialized via cross-process file locks to prevent multi-instance data conflicts
+- `embedding_index.json` records model, dimension, and episode order; mismatches trigger automatic full rebuild
+- Retrieved content is injected into prompts inside an `UNTRUSTED_MEMORY_DATA` JSON envelope to prevent prompt injection
 
----
+## Technical Stack
 
-## 專案結構
+| Category | Technology | Notes |
+|----------|------------|-------|
+| Language | Python 3.10+ | Type annotations + Google-style docstrings |
+| Vectors | NumPy | Dense vectors + exact cosine similarity |
+| Graph | NetworkX 3.2+ | Lightweight replacement for FalkorDB |
+| Embedding | Ollama bge-m3 | 1024-dim multilingual (canonical baseline) |
+| LLM (Chat) | Google Gemini | gemini-3.1-flash-lite |
+| LLM (Eval) | Google Gemini | gemini-2.5-flash-lite |
+| Scheduling | APScheduler | Dream idle/Cron dual-trigger |
+| CLI | Rich | Interactive terminal UI |
+| MCP | FastMCP | External integration interface |
+| Serialization | Pydantic | Data validation and schema definition |
+| Testing | pytest | 608 unit tests + 12 integration tests |
 
-```
-TestSeperateMemorySystem/
-├── Entry.py                     # 互動式 CLI（對話、記憶管理、除錯）
-├── run.bat                      # 啟動腳本
-├── requirements.txt             # Python 依賴
-├── pyproject.toml               # 專案配置（setuptools）
-├── .env.example                 # 環境變數模板
-│
-├── echo_memory/                 # 核心記憶引擎
-│   ├── engine.py                # MemoryEngine 主類
-│   ├── config.py                # 配置管理
-│   ├── namespace.py             # 命名空間隔離
-│   │
-│   ├── schemas/                 # 資料結構定義
-│   │   ├── episode.py           # Episode（情節記憶）
-│   │   ├── concept.py           # Concept（語義概念）
-│   │   ├── entity.py            # Entity（實體）
-│   │   ├── procedure.py         # Procedure（程序記憶）
-│   │   └── memory_context.py    # MemoryContext（檢索結果容器）
-│   │
-│   ├── storage/                 # 存儲層
-│   │   ├── episodic.py          # 情節記憶（NumPy 向量 + JSON）
-│   │   ├── semantic.py          # 語義記憶
-│   │   ├── working.py           # 工作記憶（TTL 短期快取）
-│   │   ├── procedural.py        # 程序記憶
-│   │   ├── graph.py             # NetworkX 記憶圖譜
-│   │   ├── entity.py            # 實體存儲
-│   │   └── locking.py           # 檔案鎖
-│   │
-│   ├── retrieval/               # 檢索層
-│   │   └── ecphory.py           # EcphoryRAG 聯想檢索
-│   │
-│   ├── neurochem/               # 神經化學調控
-│   │   └── state.py             # NeurochemState（DA/5-HT + 事件驅動 + 持久化）
-│   │
-│   ├── affect/                  # 情感與潛意識評估（OpenSoul 遷移）
-│   │   ├── signals.py           # SalienceSignals + SubconsciousAssessment
-│   │   ├── salience.py          # SalienceEvaluator（三值輸出）
-│   │   ├── subconscious.py      # SubconsciousAssessor（LLM 五維度）
-│   │   ├── concept_verifier.py  # ConceptVerifier（概念前驗證）
-│   │   ├── concept_inhibitor.py # ConceptInhibitor（概念 Patch 閘門）
-│   │   ├── verifier.py          # ResponseVerifier（四維品質打分）
-│   │   ├── inhibitor.py         # SubconsciousInhibitor（PASS/REVISE/SUPPRESS）
-│   │   ├── judge.py             # StorageJudge（Hybrid 工具預過濾 + 存儲決策）
-│   │   ├── concept_extractor.py # 即時概念提取（ThreadPoolExecutor）
-│   │   ├── soul_note.py         # Soul Note 潛意識日記
-│   │   ├── reflection.py        # ReflectionModule（定時反思）
-│   │   ├── reflection_executor.py # ReflectionExecutor（反思行動執行器）
-│   │   └── action_queue.py      # ReflectionActionQueue（行動排隊 + audit）
-│   │
-│   ├── utils/                   # 通用工具
-│   │   └── sanitizer.py         # 內容消殺（偽造工具標記清理）
-│   │
-│   └── dream/                   # Dream Engine（離線鞏固）
-│       ├── engine.py            # DreamEngine 主協調器
-│       ├── replay.py            # LiDER 記憶重播
-│       ├── distillation.py      # 知識蒸餾
-│       ├── pruning.py           # 圖譜修剪 + LATENT_BRIDGE + 歸檔
-│       ├── entity_extractor.py  # 實體提取
-│       ├── procedure_extractor.py # 程序 SOP 提取
-│       └── contradiction.py     # 矛盾偵測 + ConflictLedger
-│
-├── llm_integration/             # LLM 整合層
-│   ├── llm_client.py            # Gemini LLM 客戶端
-│   ├── config.yaml              # LLM 配置（角色、prompt）
-│   └── tools/                   # Function Calling 工具
-│       ├── definitions.py       # 工具定義 Schema
-│       └── executor.py          # 工具執行器
-│
-├── mcp_server/                  # MCP Server（外部整合）
-│   ├── server.py                # FastMCP 伺服器
-│   ├── handlers.py              # 工具處理器
-│   └── resources.py             # 資源暴露
-│
-├── scripts/                     # 端到端驗證腳本
-│   ├── probe_pipeline.py        # 25 輪自動劇本 + Rich 推理地圖
-│   └── dialogue_script.py       # 對話場景腳本
-│
-├── tests/                       # 測試套件
-│   ├── *.py                     # 608 個單元測試
-│   └── integration/             # 12 個整合測試
-│
-└── examples/                    # 使用範例
-    └── minimal_chat.py          # 最小對話範例
-```
+## Development Status
 
----
+### ✅ Phase 1 — Basic Memory Storage (Completed)
+- Working / Episodic / Semantic 三層存儲
+- 基礎 embedding + cosine retrieval
 
-## 完整對話處理流程
+### ✅ Phase 2 — EcphoryRAG + Neurochem (Completed)
+- 五步聯想檢索管線
+- 神經化學雙軸調控（DA/5-HT）
+- Dream Engine 離線鞏固
+
+### ✅ Phase 3 — LLM Integration + Tools (Completed)
+- Function Calling 工具定義
+- 全模組結構化 LLM 輸出遷移（Gemini `response_schema`）
+- LLMRouter Ollama fallback
+
+### ✅ Phase 4 — OpenSoul Full Migration (Completed)
+- 情感管線完整遷移（SubconsciousAssessor / SalienceEvaluator / ResponseVerifier / SubconsciousInhibitor）
+- StorageJudge hybrid 決策取代硬編碼 keyword matching
+- Reflection-Action 閉環（ActionQueue + ReflectionExecutor + rollback）
+- Soul Note 潛意識日記
+
+### ✅ Phase 5 — E2E Verification (Completed)
+- 25 輪 Probe Pipeline + Rich 推理地圖視覺化
+- 12 整合測試（覆蓋完整 pipeline 端到端行為）
+- 608 單元測試
+- Robustness cleanup（Discord Bot 前置準備）
+
+### 📋 Next — Discord Integration
+- 多用戶驗證（namespace 隔離 per user）
+- 記憶跨 session 持久化驗證
+
+## Complete Conversation Processing Flow
 
 ```
-用戶輸入
+User Input
   │
-  ├─ [Step 1]   EcphoryRAG 五步聯想檢索
-  │              向量種子 → 圖譜展開 → 語義概念 → 矛盾偵測 → 融合排序
-  │              （DA/5-HT 動態調控 seed_k / breadth_k / threshold）
+  ├─ [Step 1]   EcphoryRAG Five-Step Associative Retrieval
+  │              Vector Seed → Graph Expansion → Semantic Concept
+  │              → Contradiction Detection → Fusion Ranking
+  │              (DA/5-HT dynamically controls seed_k / breadth_k / threshold)
   │
-  ├─ [Step 1.5] SubconsciousAssessor 五維評估（情緒/新穎/相關/緊迫/衝突）
-  │              + JudgeAgent 工具預過濾
+  ├─ [Step 1.5] SubconsciousAssessor 5-dimension evaluation
+  │              + JudgeAgent tool pre-filtering
   │
-  ├─ [Step 2]   LLM 生成回覆
-  │              → 內容消殺（sanitizer 清除偽造工具標記）
-  │              → ResponseVerifier 四維品質打分
-  │              → SubconsciousInhibitor 閘門（PASS / REVISE / SUPPRESS）
+  ├─ [Step 2]   LLM generates response
+  │              → Content sanitization (clears forged tool markers)
+  │              → ResponseVerifier 4-dimension quality scoring
+  │              → SubconsciousInhibitor gate (PASS / REVISE / SUPPRESS)
   │
-  ├─ [Step 3]   SalienceEvaluator 三值計算（HIGH / MEDIUM / LOW）
-  │              → 存儲 Episode（salience / da / ht 作為屬性，不作為門閥）
+  ├─ [Step 3]   SalienceEvaluator 3-value output (HIGH / MEDIUM / LOW)
+  │              → Store Episode (salience as attribute, not gate)
   │
-  ├─ [Step 4]   背景概念提取（daemon Thread）
-  │              同義詞歸一 / 多義詞分裂 / 新概念建立
+  ├─ [Step 4]   Background concept extraction (daemon thread)
+  │              Synonym unification / polysemy splitting / new concept creation
   │
-  ├─ [Step 5]   Soul Note 潛意識日記寫入
+  ├─ [Step 5]   Soul Note subconscious diary write
   │
-  ├─ [Step 6]   ReflectionModule 定時反思
-  │              每 10 輪或 uncertainty > 0.7 觸發
-  │              → ActionQueue → ReflectionExecutor（含 rollback）
+  ├─ [Step 6]   ReflectionModule periodic reflection
+  │              → ActionQueue → ReflectionExecutor (with rollback)
   │
-  ├─ [Step 7]   Entity 提取（salience >= 門檻時）
+  ├─ [Step 7]   Entity extraction (when salience >= threshold)
   │
-  └─ [Step 8]   NeurochemState tick() + 持久化
+  └─ [Step 8]   NeurochemState tick() + persistence
 ```
 
-### 動態邊緣權重公式
+### Dynamic Edge Weight Formula
 
 ```
-W(edge) = α·Recency + β·Frequency + γ·Salience
-        = 0.3·Recency + 0.4·Frequency + 0.3·Salience
+W(edge) = 0.3 * Recency + 0.4 * Frequency + 0.3 * Salience
 
-Recency   = exp(-λ·hours_ago)       # λ = 0.01 /小時
-Frequency = log(1+n) / log(1+n_max)
-Salience  = dopamine × (1 - 0.3×serotonin)
+Recency   = exp(-0.01 * hours_ago)
+Frequency = log(1 + n) / log(1 + n_max)
+Salience  = dopamine * (1 - 0.3 * serotonin)
 ```
 
----
+## Architecture Design Notes
 
-## 端到端驗證
+**Salience is a weight, not a gate.** Every conversation turn is stored as an Episode without exception. Salience scores influence retrieval ranking, edge weight calculation, and Dream Engine pruning decisions — low-salience memories decay naturally rather than being discarded outright.
 
-### 驗證工具
+**No keyword matching.** Memory importance is determined by the conversation LLM via autonomous tool calls and by `SalienceEvaluator` + `SubconsciousAssessor` providing semantic weights. No keyword lists or regex rules exist anywhere in the memory decision path.
 
-| 工具 | 說明 |
-|------|------|
-| `scripts/probe_pipeline.py` | 25 輪自動劇本，Rich 推理地圖視覺化，覆蓋記憶跨輪喚起與矛盾偵測 |
-| `scripts/dialogue_script.py` | 多場景對話腳本，涵蓋情感轉折、概念演化、神經化學切換 |
-| `tests/integration/` | 12 個整合測試，覆蓋完整 pipeline 端到端行為 |
+## U.E.P Core Integration Plan
 
-### 驗證結果
+The planned migration path back into `U.E.P-s-Core` as `mem_module_v2`:
 
-- 2 個 Procedure 在 Dream Engine 蒸餾後被後續對話成功重用
-- EcphoryRAG 跨輪喚起率符合預期閾值
-- 神經化學狀態在連續高壓對話後正確觸發 CALM 模式切換
+```python
+# modules/mem_module_v2/__init__.py
+from echo_memory import MemoryEngine
 
----
+def register(event_bus, debug_api):
+    return MemModuleV2(MemoryEngine(...))
+```
 
-## 架構設計原則
+```python
+# Collaboration channel replacement
+memory_context = mem_engine_v2.retrieve(user_text)
+working_context.set_channel_data("CHAT_MEM", {
+    "memory_text": memory_context.to_text()
+})
+```
 
-### Salience 是權重，不是門閥
+```python
+# SLEEP event integration
+async def _handle_sleep_started(self):
+    dream_report = await mem_engine_v2.dream_now("sleep")
+    logger.info(dream_report.summary())
+```
 
-每一輪對話都存儲為 Episode，沒有例外。Salience 分數影響：
-- 檢索排序（高 salience → 更容易被召回）
-- 邊緣權重計算
-- Dream Engine 修剪決策（低 salience → 更容易隨時間衰減）
+## Related Projects
 
-低 salience 的記憶不被丟棄，而是自然衰減——這才是正確的遺忘機制。
+- [U.E.P-s-Core](https://github.com/Unforgettableeternalproject/U.E.P-s-Core) — Parent project; `echo_memory` will be reintegrated as `mem_module_v2`
+- [TestSeparateTTSSystem](https://github.com/Unforgettableeternalproject/TestSeparateTTSSystem) — TTS speech synthesis
+- [TestSeparateSTTSystem](https://github.com/Unforgettableeternalproject/TestSeparateSTTSystem) — STT speech recognition
+- [TestSeparateSessionControl](https://github.com/Unforgettableeternalproject/TestSeparateSessionControl) — Session Control (complementary: within-session context)
 
-### 禁止 Keyword Matching
+## References
 
-記憶的重要性判斷由對話 LLM 透過工具主動介入，以及 `SalienceEvaluator` 和 `SubconsciousAssessor` 提供基礎權重。系統中不存在任何 keyword 清單或正則規則用於記憶決策。
+- Tulving, E., & Thomson, D. M. (1973). *Encoding specificity and retrieval processes in episodic memory.* — Ecphory basis
+- Stickgold, R. (2005). *Sleep-dependent memory consolidation.* — Dream Engine design basis
+- [OpenSoul](https://github.com/opensouls/soul-engine) — Affective pipeline architecture reference
 
----
+## License
 
-## 與 U.E.P Core 整合計畫
-
-### 遷移策略
-
-1. **模組包裝**
-   ```python
-   # modules/mem_module_v2/__init__.py
-   from echo_memory import MemoryEngine
-
-   def register(event_bus, debug_api):
-       return MemModuleV2(MemoryEngine(...))
-   ```
-
-2. **協作通道替換**
-   ```python
-   memory_context = mem_engine_v2.retrieve(user_text)
-   working_context.set_channel_data("CHAT_MEM", {
-       "memory_text": memory_context.to_text()
-   })
-   ```
-
-3. **SLEEP 整合**
-   ```python
-   async def _handle_sleep_started(self):
-       dream_report = await mem_engine_v2.dream_now("sleep")
-       logger.info(dream_report.summary())
-   ```
-
-4. **配置統一**
-   ```yaml
-   # configs/config.yaml
-   modules_enabled:
-     mem_module_v2: true
-
-   memory_v2:
-     storage_path: "memory/v2"
-     embedding_model: "bge-m3"
-     embedding_backend: "ollama"
-     ollama_base_url: "http://localhost:11434"
-   ```
-
----
-
-## 參考資料
-
-### 理論基礎
-
-- **Ecphory**：Tulving, E., & Thomson, D. M. (1973). *Encoding specificity and retrieval processes in episodic memory.*
-- **Memory Consolidation**：Stickgold, R. (2005). *Sleep-dependent memory consolidation.*
-
-### 架構參考
-
-- **OpenSoul**：`C:\Users\Bernie\source\repos\Other\OpenSoul`（情感管線、記憶架構設計來源）
-- **U.E.P SDD**：系統設計文檔
-
----
-
-## 授權
-
-本專案為 U.E.P 重構實驗性模組，採用 MIT License。
+MIT License

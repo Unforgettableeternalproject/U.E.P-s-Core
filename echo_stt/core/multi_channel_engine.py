@@ -36,6 +36,7 @@ from echo_stt.core.multi_channel_schemas import (
     TranscriptSession,
 )
 from echo_stt.channel.manager import ChannelManager
+from echo_stt.channel.discord_channel import DiscordChannel
 from echo_stt.output.aggregator import TranscriptAggregator
 from echo_stt.pipeline.post_process import PostProcessor
 from echo_stt.pipeline.worker import STTWorkerPool
@@ -410,16 +411,40 @@ class MultiChannelSTTEngine:
         user_id: str,
         username: Optional[str] = None,
         auto_start: bool = True,
-    ) -> str:
-        """新增 Discord 語音通道（預留介面）。
+    ) -> DiscordChannel:
+        """新增 Discord 語音通道。
+
+        建立並（可選地）啟動一個 DiscordChannel，用於接收 Discord
+        voice sink 推送的 48kHz/stereo PCM。
+
+        Args:
+            channel_id: 通道唯一 ID（作為 dict key，建議與 user_id 相同）
+            user_id: Discord 使用者 ID（作為 speaker_label）
+            username: Discord 使用者名稱（作為 speaker_name）
+            auto_start: 若為 True 且引擎正在運行，立即啟動通道
+
+        Returns:
+            DiscordChannel 實例（呼叫端可透過 channel.receive_audio() 推送音訊）
 
         Raises:
-            NotImplementedError: 此功能將在獨立的 Discord 整合專案中實作。
+            RuntimeError: 若引擎尚未初始化
         """
-        raise NotImplementedError(
-            "Discord channel support is reserved for future implementation. "
-            "See: feature/discord-sink (separate project)"
+        self._require_initialized()
+
+        # 將 user_id 作為 speaker_label，channel_id 作為 dict key
+        self._channel_manager.add_discord_channel(
+            channel_id=channel_id,
+            speaker_label=user_id,
+            speaker_name=username,
         )
+        self._total_channels_ever += 1
+
+        if auto_start and self._state == EngineState.RUNNING:
+            self._channel_manager.start_channel(channel_id)
+
+        # 取得並回傳 DiscordChannel 實例，讓呼叫端可以呼叫 receive_audio()
+        channel = self._channel_manager.get_channel(channel_id)
+        return channel
 
     def remove_channel(
         self,

@@ -22,6 +22,7 @@ from echo_stt.core.multi_channel_schemas import (
 )
 from echo_stt.channel.base import AudioChannel, FileChannel
 from echo_stt.channel.local_mic import LocalMicChannel
+from echo_stt.channel.discord_channel import DiscordChannel
 from echo_stt.vad.advanced_vad import AdvancedVAD
 
 logger = logging.getLogger(__name__)
@@ -171,6 +172,49 @@ class ChannelManager:
             )
             self._channels[channel_id] = channel
             logger.info("[ChannelManager] 新增 FileChannel: %s", channel_id)
+            return channel_id
+
+    def add_discord_channel(
+        self,
+        channel_id: str,
+        speaker_label: Optional[str] = None,
+        speaker_name: Optional[str] = None,
+    ) -> str:
+        """新增 Discord 語音通道。
+
+        建立一個 DiscordChannel，接收 Discord voice sink 推送的
+        48kHz/stereo PCM，內部自動轉換為 16kHz/mono 後餵入 VAD pipeline。
+
+        Args:
+            channel_id: 通道唯一 ID（建議使用 Discord user_id）
+            speaker_label: 說話人唯一標籤（通常是 Discord user_id）
+            speaker_name: 說話人人類可讀名稱（通常是 Discord username）
+
+        Returns:
+            channel_id
+
+        Raises:
+            ValueError: 若 channel_id 已存在
+            RuntimeError: 若已達到最大通道數
+        """
+        with self._lock:
+            if channel_id in self._channels:
+                raise ValueError(f"Channel '{channel_id}' already exists")
+            if len(self._channels) >= self.max_channels:
+                raise RuntimeError(
+                    f"Max channels ({self.max_channels}) reached"
+                )
+
+            vad = self._create_vad()
+            channel = DiscordChannel(
+                channel_id=channel_id,
+                vad=vad,
+                segment_callback=self._on_segment,
+                speaker_label=speaker_label,
+                speaker_name=speaker_name,
+            )
+            self._channels[channel_id] = channel
+            logger.info("[ChannelManager] 新增 DiscordChannel: %s", channel_id)
             return channel_id
 
     def remove_channel(self, channel_id: str) -> bool:

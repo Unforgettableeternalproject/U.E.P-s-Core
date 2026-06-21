@@ -368,12 +368,34 @@ class TestContextManager:
 
 class TestEdgeCases:
 
-    def test_discord_channel_not_implemented(self):
-        """add_discord_channel 應 raise NotImplementedError"""
+    def test_discord_channel_add_and_receive(self):
+        """add_discord_channel 應建立 DiscordChannel 並可透過 receive_audio() 推送音訊"""
+        from echo_stt.channel.discord_channel import DiscordChannel
+
         engine = inject_mock(MultiChannelSTTEngine(config=make_config()))
         engine.initialize()
-        with pytest.raises(NotImplementedError, match="Discord"):
-            engine.add_discord_channel("dc_1", user_id="user_123")
+        engine.start()
+
+        # 新增 Discord 通道
+        channel = engine.add_discord_channel(
+            "dc_1",
+            user_id="user_123",
+            username="Bernie",
+        )
+
+        # 應回傳 DiscordChannel 實例
+        assert isinstance(channel, DiscordChannel)
+        assert channel.channel_id == "dc_1"
+        assert channel.speaker_label == "user_123"
+        assert channel.speaker_name == "Bernie"
+
+        # 通道已加入 manager
+        assert engine.channel_count == 1
+
+        # 可以推送 Discord 格式的 PCM（48kHz、stereo、20ms 封包 = 3840 bytes）
+        pcm_silence = b"\x00" * 3840
+        channel.receive_audio(pcm_silence)  # 靜音不應 crash
+
         engine.shutdown()
 
     def test_invalid_format_raises(self):

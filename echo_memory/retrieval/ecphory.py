@@ -248,7 +248,7 @@ class EcphoryRetrieval:
             hours_ago = (now_ts - ep.timestamp.timestamp()) / 3600.0
             recency = math.exp(-0.01 * max(0.0, hours_ago))
 
-            salience = getattr(ep, "salience", 0.5)
+            salience = getattr(ep, "salience_score", 0.5)
 
             # Frequency = log1p(access_count) / log1p(max_reasonable)
             access = getattr(ep, "access_count", 0)

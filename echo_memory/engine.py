@@ -333,7 +333,8 @@ class MemoryEngine:
         if serotonin is None:
             serotonin = self._neurochem.serotonin
         if min_similarity is None:
-            min_similarity = self._config.retrieval_min_similarity
+            from echo_memory.config import get_config
+            min_similarity = get_config().retrieval_min_similarity
 
         context = self.retrieval.retrieve(
             query=query,

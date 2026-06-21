@@ -291,7 +291,10 @@ class MemoryGraph:
         weight = min(1.0, max(0.0, weight))
 
         for src, dst in [(concept_a, concept_b), (concept_b, concept_a)]:
-            if not self.graph.has_edge(src, dst):
+            if not (
+                self.graph.has_edge(src, dst)
+                and self.graph[src][dst].get("edge_type") == "CONTRADICTS"
+            ):
                 self.graph.add_edge(
                     src, dst,
                     edge_type="CONTRADICTS",

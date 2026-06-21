@@ -144,7 +144,19 @@
       "Bash(find /c/Users/Bernie/source/repos/Unforgettableeternalproject/TestSeparateTTSSystem -maxdepth 3 -not -path */.claude/* -not -path */.git/* -not -path */legacy_tts/modules/* -type f)",
       "Bash(find /c/Users/Bernie/source/repos/Unforgettableeternalproject/TestSeparateTTSSystem/test_tts /c/Users/Bernie/source/repos/Unforgettableeternalproject/TestSeparateTTSSystem/echo_tts /c/Users/Bernie/source/repos/Unforgettableeternalproject/TestSeparateTTSSystem/tests -not -path */__pycache__/* -not -path */.git/* -type f)",
       "Bash(find /c/Users/Bernie/source/repos/Unforgettableeternalproject/TestSeparateTTSSystem/test_tts -not -path */__pycache__/* -type f)",
-      "Bash(grep test_tts /c/Users/Bernie/source/repos/Unforgettableeternalproject/TestSeparateTTSSystem/__TRACKED_VAR__)"
+      "Bash(grep test_tts /c/Users/Bernie/source/repos/Unforgettableeternalproject/TestSeparateTTSSystem/__TRACKED_VAR__)",
+      "Bash(printf *)",
+      "Bash(command -v unix2dos)",
+      "Bash(unix2dos run.bat)",
+      "Bash(sed -i 's/$/\\\\r/' run.bat)",
+      "Bash(unix2dos test.bat)",
+      "Bash(gh --version)",
+      "Bash(gh pr *)",
+      "Bash(gh api *)",
+      "Bash(git -c commit.gpgsign=false commit -m \"fix: address Codex P2 review findings on STT PR\")"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\Bernie\\source\\repos\\Unforgettableeternalproject\\U.E.P's Mind Reflourished"
     ]
   }
 }

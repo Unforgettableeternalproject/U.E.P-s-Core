@@ -58,7 +58,7 @@ class DynamicsOverrides:
     # ── 安全範圍（由 EmotionDynamics 設定）──
     _stretch_range: tuple = (1.2, 2.2)
 
-    def segment_stretch(self, seg_idx: int) -> float:
+    def segment_stretch(self, seg_idx: int, baseline: Optional[float] = None) -> float:
         """取得帶段落變化的 stretch_ratio。
 
         每個段落根據 seg_idx 和 speed_variation 產生穩定的隨機偏移，
@@ -66,11 +66,20 @@ class DynamicsOverrides:
 
         Args:
             seg_idx: 段落索引（用作 seed 的一部分）
+            baseline: 中性/低強度情緒時的 fallback baseline（應傳入
+                engine 的 s2mel_stretch_ratio，即 config baseline 減去
+                speed offset 後的有效值）。若未提供則使用 s2mel_stretch_ratio，
+                若仍為 None 則維持安全預設值 1.72。
 
         Returns:
             該段落的 stretch_ratio（已 clamp 到安全範圍）
         """
-        base = self.s2mel_stretch_ratio if self.s2mel_stretch_ratio is not None else 1.7
+        if self.s2mel_stretch_ratio is not None:
+            base = self.s2mel_stretch_ratio
+        elif baseline is not None:
+            base = baseline
+        else:
+            base = 1.72  # 與 EmotionDynamics.compute() 的 base_stretch_ratio 預設值一致
         if self.speed_variation <= 0.001:
             return base
 

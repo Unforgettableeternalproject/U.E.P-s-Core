@@ -1668,7 +1668,7 @@ class IndexTTSLite:
                                 if poise_latent.shape[1] > poise_S.shape[1]:
                                     poise_latent = poise_latent[:, :poise_S.shape[1], :]
                                 poise_S = poise_S + poise_latent
-                                _poise_stretch = _dyn_overrides.segment_stretch(plan_idx)
+                                _poise_stretch = _dyn_overrides.segment_stretch(plan_idx, baseline=_dyn_stretch_ratio)
                                 poise_tgt_len = (poise_code_lens * _poise_stretch).long()
 
                             poise_cond = self.s2mel.models['length_regulator'](
@@ -1832,7 +1832,7 @@ class IndexTTSLite:
                             latent = latent[:, :S_infer.shape[1], :]
 
                         S_infer = S_infer + latent
-                        _seg_stretch = _dyn_overrides.segment_stretch(seg_idx)
+                        _seg_stretch = _dyn_overrides.segment_stretch(seg_idx, baseline=_dyn_stretch_ratio)
                         target_lengths = (code_lens * _seg_stretch).long()
 
                     cond = self.s2mel.models['length_regulator'](

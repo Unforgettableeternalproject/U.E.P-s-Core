@@ -385,6 +385,7 @@ class InteractiveShell:
                 self.write(f"Expected 8 values, got {len(values)}. Use: emotion <preset> or emotion H A S F D M U C")
                 return True
             self.session.set_emotion(values)
+            self.session.set_emotion_overrides(None)
             pairs = [f"{l}={v:.2f}" for l, v in zip(EMOTION_LABELS, values)]
             self.write(f"Emotion set: [{', '.join(pairs)}]")
         except ValueError:

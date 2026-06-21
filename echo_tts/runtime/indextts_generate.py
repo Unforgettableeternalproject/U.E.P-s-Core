@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -13,6 +14,21 @@ class GenerationPaths:
     model_dir: Path
     cfg_path: Path
     character_path: Path
+
+    @property
+    def legacy_root(self) -> Path:
+        """向後相容屬性。
+
+        原 LegacyGenerationPaths 有 legacy_root 欄位（指向 legacy_tts/）；
+        遷移後對應的路徑為 engine_root（echo_tts/）。
+        存取此屬性會觸發 DeprecationWarning。
+        """
+        warnings.warn(
+            "GenerationPaths.legacy_root 已廢棄，請改用 engine_root。",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.engine_root
 
 
 def default_generation_paths(project_root: str | Path | None = None) -> GenerationPaths:

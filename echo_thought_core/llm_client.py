@@ -120,6 +120,7 @@ class LLMClient(AbstractBackend):
         *,
         config: dict | None = None,
         cache_manager: CacheManager | None = None,
+        client=None,
     ):
         """初始化 LLMClient。
 
@@ -132,6 +133,8 @@ class LLMClient(AbstractBackend):
             character:     角色人格指令（覆蓋 config）
             config:        額外設定 dict（top_p, safety_settings, api_key 等）
             cache_manager: 外部注入的 CacheManager 實例（可選）
+            client:        外部注入的 genai.Client 實例（可選）；
+                           提供時跳過延遲初始化，直接使用此 client
         """
         yaml_config = _load_llm_config()
         cfg = config or {}
@@ -198,9 +201,9 @@ class LLMClient(AbstractBackend):
         # 當 True 時，chat() 不再維護 _history，而是接受外部提供的 messages
         self._external_history_mode: bool = False
 
-        # ── 延遲初始化 ──
-        self._client = None
-        self._initialized = False
+        # ── 延遲初始化（若有外部注入 client 則直接標記完成）──
+        self._client = client
+        self._initialized = client is not None
 
         # ── Response schemas（壓縮引擎用）──
         self._response_schemas = self._create_response_schemas()

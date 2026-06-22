@@ -130,7 +130,7 @@ class LLMRouter:
         ),
     }
 
-    def __init__(self, config_path: str | Path | None = None):
+    def __init__(self, config_path: str | Path | None = None, client=None):
         """
         初始化 LLMRouter。
 
@@ -143,9 +143,9 @@ class LLMRouter:
 
         self._stats = RouterStats()
 
-        # google-genai Client（延遲初始化）
-        self._client: Any = None
-        self._initialized = False
+        # google-genai Client（延遲初始化；外部注入 client 時跳過 _ensure_client）
+        self._client: Any = client
+        self._initialized = client is not None
 
     # ──────────────────────────────────────────────
     # 配置載入

@@ -71,6 +71,7 @@ class EcphoryRetrieval:
         concept_min_similarity: float = 0.3,
         neurochem: NeurochemState | None = None,
         exclude_session_id: str | None = None,
+        exclude_episode_ids: set[str] | None = None,
     ) -> MemoryContext:
         """
         執行 EcphoryRAG 檢索。
@@ -87,8 +88,11 @@ class EcphoryRetrieval:
             concept_min_similarity: Concept 最小相似度閾值
             neurochem: NeurochemState 實例（若提供，覆寫 dopamine/serotonin
                        並用衍生參數驅動檢索行為）
-            exclude_session_id: 排除指定 session 的 Episodes（避免與 LLM
-                                in-context history 重複）
+            exclude_session_id: 排除指定 session 的全部 Episodes（舊方式，
+                                向後相容）
+            exclude_episode_ids: 排除指定 ID 的 Episodes（精準排除，
+                                 用於三層混合策略：只排除 chat history
+                                 中仍活著的 episodes）
 
         Returns:
             MemoryContext 記憶脈絡（包含 episodes + concepts）
@@ -123,20 +127,27 @@ class EcphoryRetrieval:
         if _ncparams is not None:
             seed_k = _ncparams.seed_k
 
-        # 排除當前 session 時多撈一些，過濾後再截斷
-        search_k = seed_k * 3 if exclude_session_id else seed_k
+        # 排除時多撈一些，過濾後再截斷
+        has_exclusion = exclude_session_id or exclude_episode_ids
+        search_k = seed_k * 3 if has_exclusion else seed_k
         seed_results = self.episodic.search(
             query_embedding,
             top_k=search_k,
             min_similarity=min_similarity,
         )
 
-        # 過濾當前 session 的 episodes（它們已在 LLM 的 in-context history 中）
-        if exclude_session_id:
-            seed_results = [
-                (ep, score) for ep, score in seed_results
-                if ep.session_id != exclude_session_id
-            ][:seed_k]
+        # 過濾排除的 episodes（避免與 LLM 的 in-context history 重複）
+        if has_exclusion:
+            filtered = []
+            for ep, score in seed_results:
+                # exclude_episode_ids 精準排除（三層混合策略）
+                if exclude_episode_ids and ep.id in exclude_episode_ids:
+                    continue
+                # exclude_session_id 全 session 排除（向後相容）
+                if exclude_session_id and ep.session_id == exclude_session_id:
+                    continue
+                filtered.append((ep, score))
+            seed_results = filtered[:seed_k]
 
         if not seed_results:
             # 沒有 Episode 種子，但仍可能有 Concept 命中
@@ -181,7 +192,9 @@ class EcphoryRetrieval:
                 if node_id not in similarities:
                     ep = self.episodic.get(node_id)
                     if ep:
-                        # graph expansion 也要排除當前 session 的 episodes
+                        # graph expansion 也要排除（與 seed 過濾相同邏輯）
+                        if exclude_episode_ids and ep.id in exclude_episode_ids:
+                            continue
                         if exclude_session_id and ep.session_id == exclude_session_id:
                             continue
                         # 圖譜展開的候選也要做語意相似度驗證，

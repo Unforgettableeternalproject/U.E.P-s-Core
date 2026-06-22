@@ -69,6 +69,7 @@ class LLMClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         character: str | None = None,
+        client=None,
     ):
         config = _load_llm_config()
 
@@ -83,9 +84,9 @@ class LLMClient:
         # 使用 list（型別為 Any，避免未初始化前就 import google.genai）
         self._history: list = []
 
-        # 延遲初始化
-        self._client = None
-        self._initialized = False
+        # 延遲初始化（外部注入 client 時跳過 _ensure_client）
+        self._client = client
+        self._initialized = client is not None
 
     # ──────────────────────────────────────────────
     # 初始化

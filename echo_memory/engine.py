@@ -313,6 +313,7 @@ class MemoryEngine:
         top_k: int = 10,
         min_similarity: float | None = None,
         exclude_session_id: str | None = None,
+        exclude_episode_ids: set[str] | None = None,
     ) -> MemoryContext:
         """
         檢索相關記憶（EcphoryRAG）。
@@ -322,7 +323,9 @@ class MemoryEngine:
             dopamine: 多巴胺濃度 (0-1)，None 則從 neurochem 取值
             serotonin: 血清素濃度 (0-1)，None 則從 neurochem 取值
             top_k: 返回記憶數量
-            exclude_session_id: 排除指定 session（避免與 LLM history 重複）
+            exclude_session_id: 排除指定 session 的全部 Episodes（向後相容）
+            exclude_episode_ids: 排除指定 ID 的 Episodes（精準排除，
+                                 三層混合策略用）
 
         Returns:
             MemoryContext: 檢索到的記憶脈絡
@@ -343,6 +346,7 @@ class MemoryEngine:
             top_k=top_k,
             min_similarity=min_similarity,
             exclude_session_id=exclude_session_id,
+            exclude_episode_ids=exclude_episode_ids,
         )
 
         logger.info(

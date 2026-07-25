@@ -26,6 +26,12 @@ from typing import Any, Iterator
 # 這輪內容的來源。**區分 human 與其他來源是必要的**：
 # 背景 agent 完成時會以 user 記錄的形式送進 task-notification（實測有一筆 3402 字元），
 # 若當成使用者指示存進記憶，等於把 agent 自己的輸出偽裝成使用者的要求。
+# 產生記憶的 harness。Codex 的 rollout jsonl 有同構的問題——
+# 實測一份 session：event_msg.payload.type=="user_message" 有 5 筆，
+# 但 response_item.role=="user" 有 6 筆，多的那筆是系統注入的 environment_context。
+# 也就是說 Codex 的 role 欄位一樣不可信，可信訊號是 event_msg.user_message。
+AGENT_CLAUDE_CODE = "claude-code"
+
 ORIGIN_HUMAN = "human"
 ORIGIN_TASK_NOTIFICATION = "task-notification"
 ORIGIN_SYSTEM = "system"
@@ -257,6 +263,12 @@ def build_episode(prompt_id: str, records: list[dict[str, Any]]) -> dict[str, An
     return {
         "prompt_id": prompt_id,
         "session_id": session_id,
+        # 產生這筆記憶的 harness。現在只有一個值，但先佔位——
+        # Codex 的 hooks schema 幾乎照搬 Claude Code，接同一套記憶是可行的，
+        # 屆時沒有這個欄位就無法分辨記憶來自哪個 agent，而那是必要的：
+        # 不同模型的知識邊界不同，同一條記憶對它們的價值也不同。
+        # 現在加成本為零，等資料累積起來再加就要 migrate。
+        "agent": AGENT_CLAUDE_CODE,
         "origin": origin,
         "started_at": timestamps[0] if timestamps else None,
         "ended_at": timestamps[-1] if timestamps else None,

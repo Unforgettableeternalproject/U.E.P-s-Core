@@ -184,8 +184,126 @@ def repair(transcript: Path, episode_dir: Path, session_id: str) -> tuple[int, i
     return len(episodes), fixed
 
 
+def find_transcript(session_id: str) -> Path | None:
+    """在 ~/.claude/projects 底下找對應的 transcript。檔名就是 session id。"""
+    root = Path.home() / ".claude" / "projects"
+    if not root.exists():
+        return None
+    for candidate in root.glob(f"*/{session_id}.jsonl"):
+        return candidate
+    return None
+
+
+def doctor(episode_dir: Path) -> int:
+    """唯讀健檢：比對存檔與 transcript，並報告語料覆蓋度。
+
+    存在的理由：兩天內抓到兩個「靜默寫錯資料」的 bug（截斷七成、repo 標成子目錄名），
+    兩個都不會報錯，都要拿存檔跟來源逐筆比對才看得出來。
+    hook 的失敗路徑一律 exit 0 不阻斷 session，代價就是壞掉不會有人通知你。
+    """
+    files = sorted(episode_dir.glob("*.jsonl")) if episode_dir.exists() else []
+    if not files:
+        print("[doctor] 沒有任何 episode 檔", file=sys.stderr)
+        return 0
+
+    problems: list[str] = []
+    total = 0
+    repos: dict[str, int] = {}
+    origins: dict[str, int] = {}
+    agents: dict[str, int] = {}
+    no_transcript = 0
+    pending = 0
+
+    for fp in files:
+        session_id = fp.stem
+        try:
+            stored = [json.loads(x) for x in fp.read_text(encoding="utf-8").splitlines() if x.strip()]
+        except (OSError, json.JSONDecodeError) as exc:
+            problems.append(f"{session_id[:8]}: 讀取失敗 {exc}")
+            continue
+
+        total += len(stored)
+        for rec in stored:
+            repos[rec.get("repo") or "?"] = repos.get(rec.get("repo") or "?", 0) + 1
+            origins[rec.get("origin") or "?"] = origins.get(rec.get("origin") or "?", 0) + 1
+            agents[rec.get("agent") or "(未標記)"] = agents.get(rec.get("agent") or "(未標記)", 0) + 1
+
+        transcript = find_transcript(session_id)
+        if transcript is None:
+            # transcript 可能已被 cleanupPeriodDays 清掉，不算錯誤
+            no_transcript += 1
+            continue
+
+        live = {e["prompt_id"]: e for e in completed_episodes(transcript)}
+        seen = set()
+        for rec in stored:
+            pid = rec.get("prompt_id")
+            if pid in seen:
+                problems.append(f"{session_id[:8]}: prompt_id 重複 {str(pid)[:8]}")
+            seen.add(pid)
+            ref = live.get(pid)
+            if ref is None:
+                continue
+            if len(rec.get("assistant_text", "")) != len(ref["assistant_text"]):
+                problems.append(
+                    f"{session_id[:8]}: {str(pid)[:8]} assistant_text "
+                    f"{len(rec.get('assistant_text',''))} != {len(ref['assistant_text'])}"
+                )
+            if rec.get("tool_calls_total") != ref["tool_calls_total"]:
+                problems.append(
+                    f"{session_id[:8]}: {str(pid)[:8]} tool_calls "
+                    f"{rec.get('tool_calls_total')} != {ref['tool_calls_total']}"
+                )
+            if rec.get("repo") != ref["repo"]:
+                problems.append(f"{session_id[:8]}: {str(pid)[:8]} repo {rec.get('repo')} != {ref['repo']}")
+        # 尾端的缺漏是設計的必然落後，不是故障：最新一輪一律排除，
+        # 而它的前一輪要等下一次 Stop hook 觸發才補得進來。
+        # 缺在中間才代表真的漏了——那是 hook 沒跑成功或寫入失敗。
+        order = [e["prompt_id"] for e in completed_episodes(transcript)]
+        missing_idx = [i for i, pid in enumerate(order) if pid not in seen]
+        if missing_idx:
+            trailing = len(order) - missing_idx[0] == len(missing_idx)
+            if trailing and len(missing_idx) <= 2:
+                pending += len(missing_idx)
+            else:
+                problems.append(
+                    f"{session_id[:8]}: {len(missing_idx)} 輪未記錄"
+                    f"{'（尾端待補）' if trailing else '（缺在中間，可能是 hook 未執行）'}"
+                )
+
+    out = sys.stderr
+    print(f"[doctor] {len(files)} 個 session、{total} 輪", file=out)
+    print(f"  repo    : {repos}", file=out)
+    print(f"  origin  : {origins}", file=out)
+    print(f"  agent   : {agents}", file=out)
+    if no_transcript:
+        print(f"  （{no_transcript} 個 session 的 transcript 已不存在，略過比對）", file=out)
+    if pending:
+        print(f"  （{pending} 輪在尾端待補，下次 Stop hook 觸發時寫入——這是正常的）", file=out)
+
+    # 覆蓋度：Phase 0 顯示有價值的記憶需要跨多個 repo 的真實開發
+    human = origins.get(ORIGIN_HUMAN, 0)
+    real_repos = [r for r in repos if r not in ("?", None)]
+    print(f"\n  覆蓋度：{len(real_repos)} 個 repo、{human} 輪 human 輸入", file=out)
+    if len(real_repos) < 3:
+        print("  → repo 數偏少，跨專案價值還測不出來", file=out)
+
+    if problems:
+        print(f"\n[doctor] 發現 {len(problems)} 個問題：", file=out)
+        for p in problems[:20]:
+            print(f"  - {p}", file=out)
+        if len(problems) > 20:
+            print(f"  ...另外 {len(problems)-20} 個", file=out)
+        print("\n  修復：對受影響的 session 跑 --repair <transcript_path>", file=out)
+        return 1
+
+    print("\n[doctor] 未發現不一致", file=out)
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Phase 1 Stop hook")
+    parser.add_argument("--doctor", action="store_true", help="唯讀健檢：比對存檔與 transcript")
     parser.add_argument("--sync", type=Path, help="手動同步指定的 transcript")
     parser.add_argument("--repair", type=Path, help="全量重建，修復殘缺紀錄")
     parser.add_argument("--episode-dir", type=Path, default=DEFAULT_EPISODE_DIR)
@@ -203,6 +321,9 @@ def main() -> int:
         if args.session_id:
             return args.session_id
         return transcript.stem  # transcript 檔名就是 session id
+
+    if args.doctor:
+        return doctor(args.episode_dir)
 
     if args.repair:
         total, fixed = repair(args.repair, args.episode_dir, resolve_session(args.repair))

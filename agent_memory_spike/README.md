@@ -131,7 +131,10 @@ echo '{"session_id":"...","transcript_path":"..."}' | python hook_stop.py
 # 手動同步一份 transcript
 python hook_stop.py --sync <transcript_path>
 
-# 全量重建，修復殘缺紀錄（也可當健檢用，會報告修正筆數）
+# 健檢：比對所有存檔與來源 transcript，並報告覆蓋度（唯讀，不修改）
+python hook_stop.py --doctor
+
+# 全量重建，修復殘缺紀錄
 python hook_stop.py --repair <transcript_path>
 
 # 只解析不寫入

@@ -11,6 +11,9 @@ ENV/
 
 # 資料存儲（不提交）
 data/
+# 例外：spike 的黃金資料是實驗素材（人工萃取），不是執行期產生的記憶資料
+!agent_memory_spike/data/
+!agent_memory_spike/data/*.json
 *.faiss
 *.pkl
 *.db

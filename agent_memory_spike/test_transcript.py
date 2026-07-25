@@ -15,7 +15,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from hook_stop import episode_path, recorded_prompt_ids  # noqa: E402
+from hook_stop import (  # noqa: E402
+    completed_episodes,
+    episode_path,
+    recorded_prompt_ids,
+    repair,
+    sync,
+)
 from transcript import (  # noqa: E402
     ORIGIN_HUMAN,
     ORIGIN_META,
@@ -232,3 +238,75 @@ def test_episode_path_rejects_traversal(tmp_path):
     p = episode_path(tmp_path, "../../etc/passwd")
     assert p.parent == tmp_path
     assert ".." not in p.name
+
+
+# --- 完整性：不可寫入尚未結束的輪次 -----------------------------------------
+# 迴歸測試：初版用 Stop hook payload 的 prompt_id 定位「當前輪」並寫入，
+# 但該輪在 hook 觸發時未必已完整落盤。實測某輪存進去只有 670 字元 / 5 次 tool call，
+# 實際是 2225 字元 / 14 次——少七成，且因去重邏輯永遠不會被更新，也無任何殘缺標記。
+
+def _write_transcript(tmp_path, n_turns, last_turn_tools=1):
+    records = []
+    for i in range(1, n_turns + 1):
+        records.append(_user(f"p{i}", text=f"問題{i}", origin={"kind": "human"}))
+        tools = ["Bash"] * (last_turn_tools if i == n_turns else 3)
+        records.append(_assistant(text=f"回答{i}", tools=tools))
+    p = tmp_path / "t.jsonl"
+    p.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    return p
+
+
+def test_latest_turn_is_excluded(tmp_path):
+    """最新一輪可能還在進行中，一律不寫。"""
+    t = _write_transcript(tmp_path, 3)
+    eps = completed_episodes(t)
+    assert [e["prompt_id"] for e in eps] == ["p1", "p2"]
+
+
+def test_single_turn_yields_nothing(tmp_path):
+    """只有一輪時無法確認它結束了，什麼都不該寫。"""
+    t = _write_transcript(tmp_path, 1)
+    assert completed_episodes(t) == []
+
+
+def test_sync_never_writes_in_progress_turn(tmp_path):
+    t = _write_transcript(tmp_path, 2)
+    ep_dir = tmp_path / "eps"
+    written, _ = sync(t, ep_dir, "sess")
+    assert written == 1
+    assert recorded_prompt_ids(episode_path(ep_dir, "sess")) == {"p1"}
+
+
+def test_sync_is_incremental_across_calls(tmp_path):
+    """後續輪次要能被自動補上，不必依賴 hook 每次都成功。"""
+    ep_dir = tmp_path / "eps"
+    sync(_write_transcript(tmp_path, 2), ep_dir, "sess")
+    written, skipped = sync(_write_transcript(tmp_path, 4), ep_dir, "sess")
+    assert written == 2 and skipped == 1
+    assert recorded_prompt_ids(episode_path(ep_dir, "sess")) == {"p1", "p2", "p3"}
+
+
+def test_sync_is_idempotent(tmp_path):
+    t = _write_transcript(tmp_path, 3)
+    ep_dir = tmp_path / "eps"
+    sync(t, ep_dir, "sess")
+    written, skipped = sync(t, ep_dir, "sess")
+    assert written == 0 and skipped == 2
+
+
+def test_repair_fixes_truncated_record(tmp_path):
+    """修復早期版本寫入的殘缺紀錄。"""
+    ep_dir = tmp_path / "eps"
+    path = episode_path(ep_dir, "sess")
+    path.parent.mkdir(parents=True)
+    # 模擬一筆截斷的紀錄：只抓到 1 次 tool call，實際是 3 次
+    path.write_text(
+        json.dumps({"prompt_id": "p1", "assistant_text": "回", "tool_calls_total": 1},
+                   ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    total, fixed = repair(_write_transcript(tmp_path, 3), ep_dir, "sess")
+    assert total == 2 and fixed == 1
+    recs = [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()]
+    assert recs[0]["tool_calls_total"] == 3
+    assert recs[0]["assistant_text"] == "回答1"

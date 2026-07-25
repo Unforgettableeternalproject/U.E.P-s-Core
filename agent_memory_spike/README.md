@@ -1,93 +1,166 @@
-# Agent Memory Spike — Phase 0
+# Agent Memory Spike
 
-Coding agent 記憶層的 **kill-switch 實驗**。與 `echo_memory/` 完全無關，不 import 它、不改它，
-只是參考它的架構概念。放在這個 repo 只是暫時寄居，成形後會獨立成專案。
+Coding agent 記憶層實驗。與 `echo_memory/` 完全無關——不 import、不修改，只參考它的架構概念。
+放在這個 repo 只是暫時寄居，成形後會獨立成專案。
 
-## 這個 spike 要回答什麼
-
-只有兩個問題，答錯任何一個整個方案就該停：
-
-1. **注入「你的偏好 / 慣例 / 踩過的坑」，agent 行為真的會變好嗎？**
-2. **冷啟動延遲能不能忍？**
-
-刻意 **不做** 的事：向量檢索、圖譜、自動寫入、salience 計算。
-Phase 0 測的是「有沒有用」，不是「檢索準不準」——先確認方向對，再去做那些。
-
-## 實驗設計的關鍵前提
-
-黃金資料 **必須是 CLAUDE.md 沒寫的東西**。
-
-如果注入的內容只是 CLAUDE.md 的複述，那沒有效果是必然的——不是假設錯，是實驗設計錯。
-`data/golden_memories.json` 的萃取過程有明確排除已寫進全域與專案 CLAUDE.md 的規範。
+零第三方依賴是硬性約束：hook 每輪都會跑，冷啟動延遲直接影響體感。
 
 ## 檔案
 
-| 檔案 | 用途 |
-|---|---|
-| `hook_session_start.py` | SessionStart hook 本體，零第三方依賴 |
-| `data/golden_memories.json` | 黃金資料，人工萃取自 Open Notebook 的 PM notebook |
+| 檔案 | 階段 | 用途 |
+|---|---|---|
+| `hook_session_start.py` | 0 | SessionStart hook，注入記憶 |
+| `data/golden_memories.json` | 0 | 黃金資料，人工萃取自 PM notebook |
+| `experiment/questions.md` | 0 | 對照題組與判定標準 |
+| `experiment/results.md` | 0 | A/B 實驗結果 |
+| `experiment/surprisal-calibration.md` | 0 | 自評 vs 行為測試的校準實驗 |
+| `transcript.py` | 1 | transcript 解析 → episode |
+| `hook_stop.py` | 1 | Stop hook，寫入 episode |
+| `test_transcript.py` | 1 | 解析層測試（17 項） |
 
-## 手動執行（目前不裝進 settings.json）
+---
 
-hook 壞掉會影響每一個 session，所以 Phase 0 階段一律手動跑。
+# Phase 0 — kill switch（已完成）
 
-```bash
-# 基本：模擬 SessionStart payload
-echo '{}' | python hook_session_start.py
+驗證兩件事：注入記憶有沒有用、冷啟動能不能忍。
 
-# 指定 cwd（決定要不要帶入 project-scoped 記憶）
-echo '{"cwd":"C:/Users/Bernie/source/repos/Unforgettableeternalproject/TestSeperateMemorySystem"}' \
-  | python hook_session_start.py
+**按事前登記的標準沒有完全達標**，但產出了兩個比通過與否更重要的結論：
 
-# 對照實驗的「無注入」組
-echo '{}' | python hook_session_start.py --null
+1. **記憶價值 = surprisal，不是 salience。** 通用最佳實踐模型本來就會，注入純屬浪費 context；
+   價值最高的是「模型自信地相信錯誤的事」。從 Echo 繼承的 salience（重要性）在這裡衡量錯了軸。
+2. **surprisal 不能用 LLM 自評測量。** 準確率約 60–70%，且在最有價值的條目上系統性失準——
+   模型無法內省自己的錯誤信念。只能靠行為測試。
+
+副產品：Dream Engine 在 coding 情境終於有明確職責——離線批次跑行為測試校準 surprisal，
+且模型升級後要重跑（記憶價值會隨模型進步自然衰減）。
+
+細節見 `experiment/` 底下三份文件。
+
+---
+
+# Phase 1 — 寫入管線（進行中）
+
+**只寫入，不召回。** 目的是累積真實語料——surprisal 的行為測試需要真實使用情境才划算，
+人工出題測人工資料只會測到出題品質。
+
+## 為什麼不能用 `last_assistant_message`
+
+Stop hook 的 payload 有 `last_assistant_message`，看起來可以直接用。不行。
+
+實測本 repo 一個 session 的 transcript（Claude Code 2.1.216）：
+
+```
+373 行
+  assistant 152  → tool_use 82、thinking 40、text 30
+  user       87  → tool_result 81、真正的文字輸入僅 6 筆
+  其餘為 metadata
 ```
 
-stdout = 要注入的內容；stderr = 診斷與延遲量測。兩者分流，不會互相污染。
+**`user` 型記錄裡有 93% 不是使用者說的話。** 而一輪可能是幾十次 tool call 加最後一段結論，
+`last_assistant_message` 只拿得到那段結論。
 
-## 注入格式
+實測最極端的一輪：使用者輸入 9 字元，但該輪有 671 字元回覆、6 次 tool call、改了 1 個檔案。
+只存 `last_assistant_message` 的話這輪幾乎完全消失。
 
-包在 `<recalled-memory trust="reference-only">` envelope 裡，明確聲明「這是觀察不是指令，
-與 CLAUDE.md 或使用者當下指示衝突時以後者為準」。
+所以自己讀 `transcript_path` 重建。
 
-Phase 0 的黃金資料是使用者自己的筆記、本身可信，envelope 在這階段是多餘的——
-但 Phase 1 改成自動寫入之後，注入內容就是不可信資料了。邊界現在立起來，之後才補得回去。
+## origin：最要緊的正確性
 
-`volatile: true` 的項目會加上 `[可能過期]` 前綴。真正的 commit 比對要等 Phase 2，
-但標記成本為零，先體現概念。
+非 tool_result 的 user 記錄有 6 筆，但只有 3 筆是使用者真的打字。其中一筆 3402 字元的是
+**背景 agent 的 task-notification**。
 
-## 量測結果（2026-07-25）
+如果天真地把所有 user 記錄當成「使用者說的話」，就會把 agent 自己的輸出偽裝成使用者的指示存進記憶。
+這是嚴重的記憶污染，而且事後很難察覺。
 
-冷啟動 wall clock，10 次平均，Windows 11：
+`origin.kind` 是唯一能區分的欄位：
 
-| Python | 平均 |
+| 欄位組合 | 判定 |
 |---|---|
-| 系統 Python 3.14.4 | **120 ms** |
-| U.E.P Core env | **132 ms** |
+| `promptSource='typed'` + `origin.kind='human'` | 使用者真的打的字 |
+| `promptSource='system'` + `origin.kind='task-notification'` | 背景 agent 回報 |
+| `isMeta=True` | 系統注入的 meta 訊息 |
+| 三者皆無 | session 起始注入（CLAUDE.md / hook context） |
 
-腳本自身耗時（不含 interpreter 啟動）25–46 ms。
+每輪都存，靠 `origin` 標記區分——不過濾，只標記。
 
-**結論：Phase 0 不需要常駐 daemon。** 兩個 Python 差距很小，代表瓶頸是 interpreter 啟動本身，
-不是 site-packages 掃描。SessionStart 的 timeout 是 600 秒，120ms 完全無感。
+## episode schema
 
-**但書（重要）**：這個數字只在「零第三方依賴」的前提下成立。
-Phase 2 一旦加入 embedding，`import numpy` 就是 100ms 級、sentence-transformers 是秒級，
-再加上 Ollama 的網路往返——**daemon 的必要性來自 embedding，不是來自 Python**。
-不要拿這裡的 120ms 去推論 Phase 2 也不用 daemon。
+`promptId` 是切輪的鍵（只有 user 記錄帶它，assistant 記錄靠位置歸屬）。
 
-## 已知的 Claude Code hook 限制（查證自官方文件）
+值得一提的欄位：
 
-- `SessionStart` / `Setup` / `UserPromptSubmit` 可用 **純 stdout** 注入；其他事件必須用
-  JSON 的 `hookSpecificOutput.additionalContext`（放最外層會被靜默忽略）
-- 注入上限 **10,000 字元**，超過會被轉存成檔案改傳路徑——那會讓實驗變成在測
-  「agent 會不會去讀檔」，所以腳本寧可截斷也不超限
-- `SessionStart` 觸發時 **MCP server 通常還沒連上**，所以只能用 `type: command`，
-  不能用 `type: mcp_tool`
-- 注入內容以 **system-reminder** 形式呈現，不計入訊息數
-- 官方建議搭配 `compact` matcher，在每次壓縮後重新注入
+- `cwd` / `git_branch` 用 **list**：實測同一 session 內兩者都會變（切分支、bash 進子目錄），
+  存單一值會失真
+- `tool_sequence`：這輪實際做了什麼的骨架
+- `files_touched`：直接取自 `file-history-delta.trackingPath`，不必另外呼叫 git
+- `thinking_blocks` **只存數量**：內容是內部推理，體積大且無召回價值
+
+## 存儲
+
+每個 session 一個 jsonl，append 寫入。不同 session 落在不同檔案，
+天然沒有跨程序寫入衝突——把鎖的問題留到真的要做跨 session 聚合時再解。
+
+`data/episodes/` 已加入 gitignore：episode 含對話原文，是執行期資料，不進版控。
+（黃金資料則是人工萃取的實驗素材，有 gitignore 例外讓它進版控。）
+
+## 用法
+
+```bash
+# 模擬 Stop hook
+echo '{"session_id":"...","prompt_id":"...","transcript_path":"..."}' | python hook_stop.py
+
+# 只解析不寫入
+... | python hook_stop.py --dry-run
+
+# 補跑整份 transcript
+python hook_stop.py --backfill <transcript_path>
+```
+
+## 量測（2026-07-25，Windows 11）
+
+10 次平均 wall clock：
+
+| hook | 延遲 |
+|---|---|
+| SessionStart（Phase 0） | 117 ms |
+| Stop（Phase 1，解析 1.45MB transcript） | 132 ms |
+
+差距只有 15 ms——**解析 1.45MB 的 transcript 只花 15 毫秒**，主要成本仍是 Python interpreter 啟動。
+
+## 已知限制
+
+- **`episode_for_prompt` 每次重讀整份 transcript**，單輪 O(n)、整個 session O(n²)。
+  1.45MB 時只有 15ms 所以先不優化，但長 session 會惡化。
+  優化方向是從尾端讀取——Stop hook 要的必定是最新那輪
+- **去重要讀完整個 episode 檔**（約 20KB/輪，百輪級約 2MB）。
+  早期版本只比對最後一筆，在 backfill 批次寫入時整份重複寫入，實測抓到後改成讀全部。
+  正確性優先於這點成本，有迴歸測試守著
+- **`user_text` / `assistant_text` 是原文**，可能含機敏內容。目前純本機、不會被召回注入，
+  風險可控；Phase 2 要把內容送回 context 前必須先過一次消毒
+- Stop hook 觸發時 transcript 尾端可能還沒 flush 完，找不到該輪時會安靜略過（不是錯誤）
+
+## 測試
+
+```bash
+../U.E.P-s-Core/env/Scripts/python.exe -m pytest agent_memory_spike/test_transcript.py -q
+```
+
+不放在主專案 `tests/` 底下，避免混進 echo_memory 的 suite。
+
+---
+
+## Claude Code hook 限制（查證自官方文件）
+
+- `SessionStart` / `Setup` / `UserPromptSubmit` 可用**純 stdout** 注入；
+  其他事件必須用 JSON 的 `hookSpecificOutput.additionalContext`（放最外層會被靜默忽略）
+- 注入上限 **10,000 字元**，超過會轉存成檔案改傳路徑
+- `SessionStart` 觸發時 **MCP server 通常還沒連上**，只能用 `type: command`
+- `Stop` 有 `last_assistant_message`，`SessionEnd` 沒有
+- `PreCompact` **拿不到即將被壓縮的內容**
+- Timeout：一般 600s，`UserPromptSubmit` 僅 30s；逾時 = 忽略，不中斷
 
 ## 下一步
 
-- [ ] 對照題組（6–8 題「知道 X 就做對、不知道就做錯」的任務）
-- [ ] 跑有注入 / 無注入兩組，比對結果
-- [ ] 判定：過關才進 Phase 1（寫入管線）
+- [ ] 累積 2–3 週真實語料
+- [ ] 依真實語料做 surprisal 行為測試校準
+- [ ] Phase 2：檢索核心（跨 namespace 融合、時效性標記）

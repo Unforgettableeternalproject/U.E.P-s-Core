@@ -100,8 +100,14 @@ Stop hook 的 payload 有 `last_assistant_message`，看起來可以直接用。
 每個 session 一個 jsonl，append 寫入。不同 session 落在不同檔案，
 天然沒有跨程序寫入衝突——把鎖的問題留到真的要做跨 session 聚合時再解。
 
-`data/episodes/` 已加入 gitignore：episode 含對話原文，是執行期資料，不進版控。
-（黃金資料則是人工萃取的實驗素材，有 gitignore 例外讓它進版控。）
+存放位置：`~/.claude/agent-memory-spike/episodes/`，**刻意放在 repo 外面**。
+
+這個 hook 是全域掛載的，會收到所有專案的對話原文，包含商業專案。
+放在 repo 內就算有 gitignore，仍有 `git add -f` 或規則變動而外洩的風險；
+放在 `~/.claude` 底下則從根本上不可能被誤 commit。
+跨專案集中存放是刻意的——Phase 2 要驗證的正是跨專案一致性。
+
+（黃金資料則相反：它是人工萃取的實驗素材，有 gitignore 例外讓它留在版控裡。）
 
 ## 用法
 

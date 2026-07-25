@@ -109,17 +109,33 @@ Stop hook 的 payload 有 `last_assistant_message`，看起來可以直接用。
 
 （黃金資料則相反：它是人工萃取的實驗素材，有 gitignore 例外讓它留在版控裡。）
 
+## 絕不寫入尚未結束的輪次
+
+初版用 Stop hook payload 的 `prompt_id` 定位「當前輪」並寫入。**這是錯的**：
+Stop hook 觸發時，該輪的記錄不保證已經完整寫進 transcript。
+
+實測抓到的後果——某輪存進去時 `assistant_text` 只有 670 字元、5 次 tool call，
+而該輪真正的內容是 2225 字元、14 次。少了七成，且因為「prompt_id 已記錄就跳過」
+的去重邏輯，這筆殘缺資料**永遠不會被更新，也沒有任何欄位標示它不完整**。
+
+所以改成：**每次觸發做一次增量同步，並排除最新的一輪**。
+有下一輪開始 = 前一輪必定已結束，這個不變式保證每筆寫入都是完整的。
+副作用是自我修復——某次 hook 失敗或撞上寫入中的 transcript，下次會自動補上。
+
 ## 用法
 
 ```bash
-# 模擬 Stop hook
-echo '{"session_id":"...","prompt_id":"...","transcript_path":"..."}' | python hook_stop.py
+# 模擬 Stop hook（不需要 prompt_id）
+echo '{"session_id":"...","transcript_path":"..."}' | python hook_stop.py
+
+# 手動同步一份 transcript
+python hook_stop.py --sync <transcript_path>
+
+# 全量重建，修復殘缺紀錄（也可當健檢用，會報告修正筆數）
+python hook_stop.py --repair <transcript_path>
 
 # 只解析不寫入
-... | python hook_stop.py --dry-run
-
-# 補跑整份 transcript
-python hook_stop.py --backfill <transcript_path>
+python hook_stop.py --sync <transcript_path> --dry-run
 ```
 
 ## 量測（2026-07-25，Windows 11）
@@ -135,15 +151,16 @@ python hook_stop.py --backfill <transcript_path>
 
 ## 已知限制
 
-- **`episode_for_prompt` 每次重讀整份 transcript**，單輪 O(n)、整個 session O(n²)。
-  1.45MB 時只有 15ms 所以先不優化，但長 session 會惡化。
-  優化方向是從尾端讀取——Stop hook 要的必定是最新那輪
+- **episode 永遠落後一輪**，且 session 的最後一輪要等下次 resume 才補得到。
+  這是排除最新輪的必然代價。若缺漏累積太多，可考慮加掛 SessionEnd hook 補收尾
+- **每次觸發都重讀整份 transcript**，單次 O(n)、整個 session O(n²)。
+  1.45MB 時只有 15ms 所以先不優化，但長 session 會惡化
 - **去重要讀完整個 episode 檔**（約 20KB/輪，百輪級約 2MB）。
-  早期版本只比對最後一筆，在 backfill 批次寫入時整份重複寫入，實測抓到後改成讀全部。
-  正確性優先於這點成本，有迴歸測試守著
+  早期版本只比對最後一筆，批次寫入時整份重複寫入，實測抓到後改成讀全部
 - **`user_text` / `assistant_text` 是原文**，可能含機敏內容。目前純本機、不會被召回注入，
   風險可控；Phase 2 要把內容送回 context 前必須先過一次消毒
-- Stop hook 觸發時 transcript 尾端可能還沒 flush 完，找不到該輪時會安靜略過（不是錯誤）
+- **失敗全部是靜默的**（一律 exit 0，不阻斷 session）。這是刻意的，
+  但代價是壞掉不會有人通知你——累積期間要定期跑 `--repair` 當健檢
 
 ## 測試
 

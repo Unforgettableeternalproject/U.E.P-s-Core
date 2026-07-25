@@ -33,6 +33,35 @@ ORIGIN_META = "meta"
 ORIGIN_UNKNOWN = "unknown"
 
 
+_repo_root_cache: dict[str, str | None] = {}
+
+
+def repo_root_name(cwd: str) -> str | None:
+    """從 cwd 往上找 ``.git``，回傳 repo 根目錄名。
+
+    不能直接用 ``Path(cwd).name``：bash 進入子目錄後 cwd 就是子目錄。
+    實測把 Eternity 的 episode 標成 ``islands`` 和 ``pages``——那是元件目錄，
+    不是 repo。聚合時會把同一個 repo 拆成好幾個，而且看起來完全像正常資料。
+
+    有 cache 是因為同一個 session 內 cwd 高度重複，而這裡會碰檔案系統。
+    """
+    if cwd in _repo_root_cache:
+        return _repo_root_cache[cwd]
+
+    result: str | None = None
+    try:
+        current = Path(cwd).resolve()
+        for candidate in (current, *current.parents):
+            if (candidate / ".git").exists():
+                result = candidate.name
+                break
+    except OSError:
+        pass
+
+    _repo_root_cache[cwd] = result
+    return result
+
+
 def load_records(path: Path) -> list[dict[str, Any]]:
     """讀 jsonl。
 
@@ -215,6 +244,16 @@ def build_episode(prompt_id: str, records: list[dict[str, Any]]) -> dict[str, An
             if text.strip():
                 assistant_texts.append(text)
 
+    # 逐一嘗試，取第一個解析得出 repo 根的 cwd——
+    # 同一輪的 cwd 若都在同一個 repo 內，結果一致；解析不出來才退回目錄名
+    repo: str | None = None
+    for candidate in cwds:
+        repo = repo_root_name(candidate)
+        if repo:
+            break
+    if repo is None and cwds:
+        repo = Path(cwds[0]).name
+
     return {
         "prompt_id": prompt_id,
         "session_id": session_id,
@@ -222,7 +261,7 @@ def build_episode(prompt_id: str, records: list[dict[str, Any]]) -> dict[str, An
         "started_at": timestamps[0] if timestamps else None,
         "ended_at": timestamps[-1] if timestamps else None,
         "cwd": cwds,
-        "repo": Path(cwds[0]).name if cwds else None,
+        "repo": repo,
         "git_branch": branches,
         "cc_version": cc_version,
         "user_text": "\n\n".join(user_texts),

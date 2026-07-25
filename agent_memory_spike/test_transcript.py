@@ -144,6 +144,32 @@ def test_tool_result_does_not_become_user_text():
     assert ep["user_text"] == "真的問題"
 
 
+def test_repo_resolves_to_git_root_not_subdirectory(tmp_path):
+    """迴歸測試：bash 進子目錄後 cwd 是子目錄，直接取 name 會標錯 repo。
+
+    實測把 Eternity 的 episode 標成 'islands'（元件目錄），
+    聚合時會把同一個 repo 拆成好幾個，且看起來完全像正常資料。
+    """
+    repo_root = tmp_path / "MyRepo"
+    (repo_root / ".git").mkdir(parents=True)
+    deep = repo_root / "apps" / "web" / "src" / "islands"
+    deep.mkdir(parents=True)
+
+    records = [
+        _user("p1", origin={"kind": "human"}, cwd=str(deep)),
+        _assistant(tools=["Bash"], cwd=str(deep)),
+    ]
+    ep = build_episode("p1", records)
+    assert ep["repo"] == "MyRepo"
+
+
+def test_repo_falls_back_when_no_git_root(tmp_path):
+    plain = tmp_path / "not-a-repo"
+    plain.mkdir()
+    ep = build_episode("p1", [_user("p1", origin={"kind": "human"}, cwd=str(plain))])
+    assert ep["repo"] == "not-a-repo"
+
+
 def test_cwd_and_branch_collect_all_values():
     """同一輪內切分支或進子目錄都會發生，存單一值會失真。"""
     records = [

@@ -62,8 +62,10 @@ def _assistant(*, text=None, tools=(), thinking=0, cwd="C:/repo/proj", branch="m
     content = []
     for _ in range(thinking):
         content.append({"type": "thinking", "thinking": "internal"})
-    for name in tools:
-        content.append({"type": "tool_use", "name": name, "input": {}})
+    for entry in tools:
+        # 元素可以是工具名，或 (工具名, input) — 後者用來測路徑參數的抽取
+        name, payload = entry if isinstance(entry, tuple) else (entry, {})
+        content.append({"type": "tool_use", "name": name, "input": payload})
     if text:
         content.append({"type": "text", "text": text})
     rec = {
@@ -191,7 +193,7 @@ def test_thinking_content_is_counted_not_stored():
     assert "internal" not in json.dumps(ep, ensure_ascii=False)
 
 
-def test_files_touched_from_file_history_delta():
+def test_files_edited_from_file_history_delta():
     records = [
         _user("p1", origin={"kind": "human"}),
         {"type": "file-history-delta", "trackingPath": "C:/repo/proj/a.py",
@@ -200,7 +202,48 @@ def test_files_touched_from_file_history_delta():
          "timestamp": "2026-07-25T00:00:03.000Z"},
     ]
     ep = build_episode("p1", records)
-    assert ep["files_touched"] == ["C:/repo/proj/a.py"]  # 去重
+    assert ep["files_edited"] == ["C:/repo/proj/a.py"]  # 去重
+
+
+def test_files_edited_from_tool_use_params():
+    """file-history-delta 只涵蓋一部分編輯，tool_use 的參數才是完整來源。
+
+    真實語料裡 Edit 出現 5996 次，但只有 409/1372 輪有 delta 記錄。
+    """
+    records = [
+        _user("p1", origin={"kind": "human"}),
+        _assistant(tools=[
+            ("Edit", {"file_path": "C:/repo/proj/a.py"}),
+            ("Write", {"file_path": "C:/repo/proj/b.py"}),
+            ("NotebookEdit", {"notebook_path": "C:/repo/proj/n.ipynb"}),
+            ("Read", {"file_path": "C:/repo/proj/c.py"}),
+            ("Bash", {"command": "ls"}),
+        ]),
+    ]
+    ep = build_episode("p1", records)
+    assert ep["files_edited"] == ["C:/repo/proj/a.py", "C:/repo/proj/b.py",
+                                  "C:/repo/proj/n.ipynb"]
+    # 讀取不算修改：搜尋、確認、瀏覽都會讀，混進去就把訊號淹掉了
+    assert ep["files_read"] == ["C:/repo/proj/c.py"]
+
+
+def test_edited_paths_are_normalized_against_repo_root(tmp_path):
+    """兩個來源的路徑形狀不同，不正規化的話同一個檔案會有兩種表示。
+
+    delta 的 trackingPath 是 repo 相對，Edit 的 file_path 是絕對路徑——
+    任何「同一檔案被反覆修改」的比對都會因此失效。
+    """
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "src").mkdir()
+    records = [
+        _user("p1", origin={"kind": "human"}, cwd=str(tmp_path)),
+        {"type": "file-history-delta", "trackingPath": "src\\a.py",
+         "timestamp": "2026-07-25T00:00:02.000Z"},
+        _assistant(tools=[("Edit", {"file_path": str(tmp_path / "src" / "a.py")})],
+                   cwd=str(tmp_path)),
+    ]
+    ep = build_episode("p1", records)
+    assert ep["files_edited"] == ["src/a.py"]  # 兩個來源收斂成同一筆
 
 
 def test_mcp_tools_and_skills_collected():

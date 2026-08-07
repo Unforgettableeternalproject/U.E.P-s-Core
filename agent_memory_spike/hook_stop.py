@@ -181,8 +181,9 @@ def repair(transcript: Path, episode_dir: Path, session_id: str) -> tuple[int, i
         old = existing.get(_key(ep))
         if old is None:
             continue
-        if (len(old.get("assistant_text", "")) != len(ep["assistant_text"])
-                or old.get("tool_calls_total") != ep["tool_calls_total"]):
+        # 比對所有欄位而非只看文字長度與工具數：schema 擴充（例如補 files_edited）
+        # 造成的差異也算修正，否則 repair 會回報 0 而看起來像沒事發生
+        if old != ep:
             fixed += 1
 
     rewrite_episodes(path, episodes)
@@ -231,6 +232,40 @@ def sync_all(episode_dir: Path) -> int:
         f"補上 {total_written} 輪（{touched} 個 session）",
         file=sys.stderr,
     )
+    return 0
+
+
+def repair_all(episode_dir: Path) -> int:
+    """對每個已存在的 episode 檔重跑 repair。
+
+    ``--sync-all`` 只補「還沒記錄過」的輪次，對已寫入的紀錄完全不動——
+    schema 一改（例如補上 files_edited/files_read），既有語料就永遠停在舊格式，
+    而且沒有任何欄位標示它是舊的。這支負責從 transcript 全量重建。
+
+    transcript 已被 cleanupPeriodDays 清掉的 session 只能維持原狀，會列在結尾。
+    """
+    files = sorted(episode_dir.glob("*.jsonl")) if episode_dir.exists() else []
+    if not files:
+        print("[repair-all] 沒有任何 episode 檔", file=sys.stderr)
+        return 0
+
+    rebuilt = fixed_total = skipped = 0
+    for fp in files:
+        transcript = find_transcript(fp.stem)
+        if transcript is None:
+            skipped += 1
+            continue
+        total, fixed = repair(transcript, episode_dir, fp.stem)
+        rebuilt += total
+        fixed_total += fixed
+
+    print(
+        f"[repair-all] 重建 {rebuilt} 輪（{len(files) - skipped} 個 session），"
+        f"其中 {fixed_total} 輪內容有變動",
+        file=sys.stderr,
+    )
+    if skipped:
+        print(f"  {skipped} 個 session 的 transcript 已不存在，維持原狀", file=sys.stderr)
     return 0
 
 
@@ -326,6 +361,14 @@ def doctor(episode_dir: Path) -> int:
                 )
             if rec.get("repo") != ref["repo"]:
                 problems.append(f"{session_id[:8]}: {pid[0][:8]}#{pid[1]} repo {rec.get('repo')} != {ref['repo']}")
+            # 檔案欄位一度只取自 file-history-delta，漏掉大半編輯而毫無徵兆——
+            # doctor 當時不比對這個欄位，所以完全看不見。現在比對。
+            for field in ("files_edited", "files_read"):
+                if rec.get(field) != ref[field]:
+                    problems.append(
+                        f"{session_id[:8]}: {pid[0][:8]}#{pid[1]} {field} "
+                        f"{len(rec.get(field) or [])} != {len(ref[field])}"
+                    )
         # 尾端的缺漏是設計的必然落後，不是故障：最新一輪一律排除，
         # 而它的前一輪要等下一次 Stop hook 觸發才補得進來。
         # 缺在中間才代表真的漏了——那是 hook 沒跑成功或寫入失敗。
@@ -385,6 +428,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Phase 1 Stop hook")
     parser.add_argument("--doctor", action="store_true", help="唯讀健檢：比對存檔與 transcript")
     parser.add_argument("--sync-all", action="store_true", help="掃過所有 transcript 補齊遺漏")
+    parser.add_argument("--repair-all", action="store_true", help="對所有既有 session 全量重建（schema 變更後使用）")
     parser.add_argument("--sync", type=Path, help="手動同步指定的 transcript")
     parser.add_argument("--repair", type=Path, help="全量重建，修復殘缺紀錄")
     parser.add_argument("--episode-dir", type=Path, default=DEFAULT_EPISODE_DIR)
@@ -405,6 +449,9 @@ def main() -> int:
 
     if args.sync_all:
         return sync_all(args.episode_dir)
+
+    if args.repair_all:
+        return repair_all(args.episode_dir)
 
     if args.doctor:
         return doctor(args.episode_dir)

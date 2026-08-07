@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections import Counter
 from pathlib import Path
 from typing import Any, Iterator
@@ -39,11 +40,24 @@ ORIGIN_META = "meta"
 ORIGIN_UNKNOWN = "unknown"
 
 
-_repo_root_cache: dict[str, str | None] = {}
+_repo_root_cache: dict[str, Path | None] = {}
+
+# 帶檔案路徑的工具，以及路徑放在哪個參數裡。
+# 分成「改」與「讀」兩組是刻意的：結構訊號要找的是反覆**修改**同一個檔案，
+# 讀取沒有這個意涵——搜尋、確認、瀏覽都會讀，混在一起就淹掉了。
+EDIT_TOOL_PATH_KEYS = {
+    "Edit": "file_path",
+    "Write": "file_path",
+    "MultiEdit": "file_path",
+    "NotebookEdit": "notebook_path",
+}
+READ_TOOL_PATH_KEYS = {
+    "Read": "file_path",
+}
 
 
-def repo_root_name(cwd: str) -> str | None:
-    """從 cwd 往上找 ``.git``，回傳 repo 根目錄名。
+def repo_root(cwd: str) -> Path | None:
+    """從 cwd 往上找 ``.git``，回傳 repo 根目錄的路徑。
 
     不能直接用 ``Path(cwd).name``：bash 進入子目錄後 cwd 就是子目錄。
     實測把 Eternity 的 episode 標成 ``islands`` 和 ``pages``——那是元件目錄，
@@ -54,18 +68,48 @@ def repo_root_name(cwd: str) -> str | None:
     if cwd in _repo_root_cache:
         return _repo_root_cache[cwd]
 
-    result: str | None = None
+    result: Path | None = None
     try:
         current = Path(cwd).resolve()
         for candidate in (current, *current.parents):
             if (candidate / ".git").exists():
-                result = candidate.name
+                result = candidate
                 break
     except OSError:
         pass
 
     _repo_root_cache[cwd] = result
     return result
+
+
+def repo_root_name(cwd: str) -> str | None:
+    """repo 根目錄名。"""
+    root = repo_root(cwd)
+    return root.name if root is not None else None
+
+
+def normalize_path(raw: str, root: Path | None) -> str:
+    """把檔案路徑正規化成 repo 相對、正斜線的形式。
+
+    **兩個來源的路徑形狀不同**：``file-history-delta.trackingPath`` 已經是 repo 相對
+    （``apps\\uep\\src\\...``），而 ``Edit.file_path`` 是絕對路徑
+    （``C:\\Users\\...\\Eternity\\apps\\uep\\src\\...``）。不統一的話同一個檔案會有
+    兩種表示，任何「同一檔案被反覆修改」的比對都必然失效——而那正是要找的訊號。
+
+    刻意不用 ``resolve()``：那會碰檔案系統，``--sync-all`` 掃數百份 transcript 時
+    成本可觀，而且檔案早已刪除時行為不一致。純字串比對就夠了。
+    """
+    if not raw:
+        return ""
+    if root is not None:
+        try:
+            normalized_root = os.path.normcase(os.path.normpath(str(root)))
+            absolute = os.path.normpath(raw)
+            if os.path.normcase(absolute).startswith(normalized_root + os.sep):
+                return absolute[len(normalized_root) + 1:].replace("\\", "/")
+        except (OSError, ValueError):
+            pass
+    return raw.replace("\\", "/")
 
 
 def load_records(path: Path) -> list[dict[str, Any]]:
@@ -176,7 +220,8 @@ def build_episode(prompt_id: str, records: list[dict[str, Any]], turn_index: int
     - ``cwd`` / ``git_branch`` 用 list：實測同一 session 內兩者都會變（切分支、bash 進子目錄），
       存單一值會失真
     - ``tool_sequence``：這輪實際做了什麼的骨架，``last_assistant_message`` 完全拿不到
-    - ``files_touched``：直接取自 ``file-history-delta.trackingPath``，不必另外呼叫 git
+    - ``files_edited`` / ``files_read``：從 ``tool_use`` 的路徑參數取，
+      並補上 ``file-history-delta.trackingPath``（見下方註解，只靠後者會漏掉大半）
     - ``thinking_blocks`` 只存數量：內容是內部推理，體積大且無召回價值
     """
     user_texts: list[str] = []
@@ -184,7 +229,9 @@ def build_episode(prompt_id: str, records: list[dict[str, Any]], turn_index: int
     tools: Counter[str] = Counter()
     mcp_tools: set[str] = set()
     skills: set[str] = set()
-    files: list[str] = []
+    # 先收原始路徑，等 cwds 收集完、repo root 確定後才正規化
+    raw_edited: list[str] = []
+    raw_read: list[str] = []
     cwds: list[str] = []
     branches: list[str] = []
     thinking_count = 0
@@ -210,8 +257,8 @@ def build_episode(prompt_id: str, records: list[dict[str, Any]], turn_index: int
 
         if rtype == "file-history-delta":
             path = record.get("trackingPath")
-            if isinstance(path, str) and path not in files:
-                files.append(path)
+            if isinstance(path, str):
+                raw_edited.append(path)
             continue
 
         if rtype == "user":
@@ -244,6 +291,22 @@ def build_episode(prompt_id: str, records: list[dict[str, Any]], turn_index: int
                         name = block.get("name")
                         if isinstance(name, str):
                             tools[name] += 1
+                            # file-history-delta 只涵蓋一部分編輯：實測抽樣 6 份 transcript
+                            # 有 279 次 Edit/Write 卻只有 62 筆 delta 記錄，
+                            # 1372 輪語料中僅 409 輪有檔案資料，而 Edit 共出現 5996 次。
+                            # 少掉的部分不會報錯，只會讓「同一檔案被反覆修改」這類訊號
+                            # 量出接近零的結果（實測相鄰輪重疊檔案只有 1 筆）。
+                            # tool_use 的參數才是完整來源。
+                            payload = block.get("input")
+                            if isinstance(payload, dict):
+                                for keys, bucket in (
+                                    (EDIT_TOOL_PATH_KEYS, raw_edited),
+                                    (READ_TOOL_PATH_KEYS, raw_read),
+                                ):
+                                    key = keys.get(name)
+                                    value = payload.get(key) if key else None
+                                    if isinstance(value, str) and value:
+                                        bucket.append(value)
                     elif btype == "thinking":
                         thinking_count += 1
             text = _text_from_content(content)
@@ -252,13 +315,26 @@ def build_episode(prompt_id: str, records: list[dict[str, Any]], turn_index: int
 
     # 逐一嘗試，取第一個解析得出 repo 根的 cwd——
     # 同一輪的 cwd 若都在同一個 repo 內，結果一致；解析不出來才退回目錄名
-    repo: str | None = None
+    root: Path | None = None
     for candidate in cwds:
-        repo = repo_root_name(candidate)
-        if repo:
+        root = repo_root(candidate)
+        if root is not None:
             break
-    if repo is None and cwds:
-        repo = Path(cwds[0]).name
+    repo: str | None = root.name if root is not None else (Path(cwds[0]).name if cwds else None)
+
+    def _dedup(paths: list[str]) -> list[str]:
+        # 順序有意義（同一輪內的編輯順序），所以不能直接用 set
+        seen: set[str] = set()
+        result: list[str] = []
+        for raw in paths:
+            normalized = normalize_path(raw, root)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                result.append(normalized)
+        return result
+
+    files_edited = _dedup(raw_edited)
+    files_read = _dedup(raw_read)
 
     return {
         "prompt_id": prompt_id,
@@ -287,7 +363,8 @@ def build_episode(prompt_id: str, records: list[dict[str, Any]], turn_index: int
         "tool_calls_total": sum(tools.values()),
         "mcp_tools": sorted(mcp_tools),
         "skills": sorted(skills),
-        "files_touched": files,
+        "files_edited": files_edited,
+        "files_read": files_read,
         "thinking_blocks": thinking_count,
     }
 

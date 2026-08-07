@@ -41,6 +41,7 @@ Stop hook 觸發時，該輪的記錄**不保證已經完整寫進 transcript**�
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -67,10 +68,13 @@ def episode_path(episode_dir: Path, session_id: str) -> Path:
 
 
 def _key(rec: dict[str, Any]) -> tuple[str, int]:
-    """episode 的唯一鍵。
+    """episode 在**單一 session 檔內**的唯一鍵。
 
     只用 prompt_id 不夠：session 起始的 meta 注入在每次 resume 會重新出現且沿用同一個
-    promptId。加上 turn_index 才唯一，而 resume 的完整複本序號一致，跨 session 去重仍有效。
+    promptId。加上 turn_index 才唯一——同一個檔案內序號不會位移，這裡是安全的。
+
+    **跨 session 的去重不能用這把鍵**（見 ``load_deduped``）：
+    resume 產生的複本在另一個檔案裡序號會位移，比對必然失效。
     """
     return (str(rec.get("prompt_id")), int(rec.get("turn_index") or 0))
 
@@ -279,7 +283,10 @@ def load_deduped(episode_dir: Path) -> tuple[list[dict[str, Any]], int]:
     重複的副本內容實測完全一致，但仍取最完整的一份，
     以防某次寫入剛好撞上 transcript 尚未寫完。
     """
-    best: dict[tuple[str, int], dict[str, Any]] = {}
+    # 先按 (prompt_id, user_text 指紋) 分桶。**不能用 turn_index**：
+    # 實測同一輪在兩個 session 檔裡分別是 turn_index 2 和 3，序號會位移，
+    # 原本的複合鍵因此完全擋不住跨 session 重複（實測 32 組、64 輪進了語料）。
+    buckets: dict[tuple[str, str], list[dict[str, Any]]] = {}
     total = 0
     for fp in sorted(episode_dir.glob("*.jsonl")) if episode_dir.exists() else []:
         try:
@@ -288,15 +295,35 @@ def load_deduped(episode_dir: Path) -> tuple[list[dict[str, Any]], int]:
                     continue
                 rec = json.loads(line)
                 total += 1
-                pid = _key(rec)
-                prev = best.get(pid)
-                if prev is None or (
-                    len(rec.get("assistant_text", "")), rec.get("tool_calls_total", 0)
-                ) > (len(prev.get("assistant_text", "")), prev.get("tool_calls_total", 0)):
-                    best[pid] = rec
+                digest = hashlib.sha1((rec.get("user_text") or "").encode("utf-8")).hexdigest()[:16]
+                buckets.setdefault((str(rec.get("prompt_id")), digest), []).append(rec)
         except (OSError, json.JSONDecodeError):
             continue
-    return list(best.values()), total - len(best)
+
+    # 桶內未必是同一輪：同一個 promptId 配同一句話，也可能真的是分開的兩輪
+    # （meta 注入每次 resume 都重現，實測某個 id 在 7/30 與 8/02 各出現一次）。
+    # 區分的依據是 assistant_text 的**前綴關係**——殘缺的副本必然是完整版的前綴，
+    # 而真正不同的兩輪，回覆內容從頭就不一樣。
+    deduped: list[dict[str, Any]] = []
+    for records in buckets.values():
+        records.sort(key=lambda r: len(r.get("assistant_text") or ""))
+        survivors: list[dict[str, Any]] = []
+        for rec in records:
+            text = rec.get("assistant_text") or ""
+            for i, kept in enumerate(survivors):
+                kept_text = kept.get("assistant_text") or ""
+                if text.startswith(kept_text) or kept_text.startswith(text):
+                    # 同一輪的兩份，取較完整的那份（自我修復：某次寫入撞上
+                    # transcript 尚未寫完時，下次讀取會自動被完整版取代）
+                    if (len(text), rec.get("tool_calls_total", 0)) > (
+                        len(kept_text), kept.get("tool_calls_total", 0)
+                    ):
+                        survivors[i] = rec
+                    break
+            else:
+                survivors.append(rec)
+        deduped.extend(survivors)
+    return deduped, total - len(deduped)
 
 
 def doctor(episode_dir: Path) -> int:

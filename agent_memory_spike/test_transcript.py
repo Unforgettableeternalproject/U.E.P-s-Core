@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from hook_stop import (  # noqa: E402
     completed_episodes,
     episode_path,
+    load_deduped,
     recorded_prompt_ids,
     repair,
     sync,
@@ -425,3 +426,59 @@ def test_repeated_prompt_id_is_not_deduped_away(tmp_path):
     written, _ = sync(t, ep_dir, "sess")
     assert written == 3
     assert recorded_prompt_ids(episode_path(ep_dir, "sess")) == {("start", 0), ("mid", 1), ("start", 2)}
+
+
+def _episode(prompt_id, turn_index, user_text, assistant_text, tool_calls=0):
+    return {
+        "prompt_id": prompt_id,
+        "turn_index": turn_index,
+        "user_text": user_text,
+        "assistant_text": assistant_text,
+        "tool_calls_total": tool_calls,
+    }
+
+
+def test_dedup_survives_turn_index_drift_across_sessions(tmp_path):
+    """resume 讓同一輪落進另一個 session 檔時，序號會位移，仍須去重。
+
+    這是實測抓到的漏洞：原本的鍵是 (prompt_id, turn_index)，
+    理由是「resume 的完整複本序號一致」——那個假設是錯的。
+    32 組、64 輪就這樣重複進了語料。
+    """
+    (tmp_path / "a.jsonl").write_text(
+        json.dumps(_episode("p1", 2, "改一下這裡", "好的，我改了")) + "\n", encoding="utf-8")
+    (tmp_path / "b.jsonl").write_text(
+        json.dumps(_episode("p1", 3, "改一下這裡", "好的，我改了")) + "\n", encoding="utf-8")
+
+    episodes, duplicates = load_deduped(tmp_path)
+    assert len(episodes) == 1
+    assert duplicates == 1
+
+
+def test_dedup_keeps_distinct_turns_that_share_a_prompt_id(tmp_path):
+    """同一個 promptId 配同一句話，仍可能是真的兩輪——回覆完全不同就不能合併。
+
+    meta 注入每次 resume 都重現且沿用同一個 promptId，
+    實測某個 id 在 7/30 與 8/02 各出現一次。
+    """
+    (tmp_path / "a.jsonl").write_text(
+        "\n".join([
+            json.dumps(_episode("p1", 0, "繼續", "第一次的回覆內容")),
+            json.dumps(_episode("p1", 5, "繼續", "完全不同的第二次回覆")),
+        ]) + "\n", encoding="utf-8")
+
+    episodes, _ = load_deduped(tmp_path)
+    assert len(episodes) == 2
+
+
+def test_dedup_prefers_the_more_complete_copy(tmp_path):
+    """殘缺的副本是完整版的前綴，要被完整版取代——這是防殘缺寫入的唯一防線。"""
+    (tmp_path / "a.jsonl").write_text(
+        json.dumps(_episode("p1", 0, "做這件事", "我開始", tool_calls=5)) + "\n", encoding="utf-8")
+    (tmp_path / "b.jsonl").write_text(
+        json.dumps(_episode("p1", 0, "做這件事", "我開始做，然後完成了整件事", tool_calls=14)) + "\n",
+        encoding="utf-8")
+
+    episodes, _ = load_deduped(tmp_path)
+    assert len(episodes) == 1
+    assert episodes[0]["tool_calls_total"] == 14

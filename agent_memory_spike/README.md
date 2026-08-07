@@ -23,7 +23,12 @@ Coding agent 記憶層實驗。與 `echo_memory/` 完全無關——不 import�
 | `experiment/phase15-evaluation.md` | 1.5 | 完備性與可利用性驗收 |
 | `retrieve.py` | 2 | 檢索（BM25 + ollama 向量 + 檔案／符號訊號） |
 | `experiment/phase2-retrieval.md` | 2 | 檢索驗證結果 |
-| `consolidate.py` | 2.5 | 池子收斂（語意去重 + 矛盾偵測） |
+| `consolidate.py` | 2.5 | 池子收斂（語意去重 + 矛盾偵測 + 關係閉包） |
+| `hook_pretooluse.py` | 3 | PreToolUse hook，編輯前注入相關記憶（**尚未掛載**） |
+| `pipeline.py` | 3 | 自動化管線（收料 → 蒸餾 → 收斂 → 校準） |
+| `test_consolidate.py` | 2.8 | 關係閉包測試（4 項） |
+| `test_inject.py` | 3 | 注入 hook 測試（10 項） |
+| `test_pipeline.py` | 3 | 管線機制測試（11 項） |
 
 資料一律放在 repo 外的 `~/.claude/agent-memory-spike/`——hook 全域掛載，
 會收到所有專案的對話原文，包含商業專案。
@@ -665,3 +670,55 @@ Write 的 `content` 都在裡面。並且要**跨同一輪的多次呼叫累積*
   比指紋精確——指紋要求兩邊對 `user_text` 的組法完全一致，而那沒有保證）
 - payload **沒有** prompt 文字
 - 預設 timeout 600 秒（`UserPromptSubmit` 才是 30 秒）
+
+## C：自動化管線（已實作，尚未排程）
+
+`pipeline.py`。把「收料 → 健檢 → 蒸餾 → 收斂 → 校準」串成一條可排程的管線，
+裁決走 headless `claude -p`——與手動派 subagent 等價（同一個模型、同一組工具、
+同一份訂閱額度），不額外花錢。
+
+```bash
+python pipeline.py --status                    # 看上次跑到哪
+python pipeline.py --run --dry-run             # 印出要做什麼
+python pipeline.py --run --max-groups 40       # 實跑，成本封頂
+python pipeline.py --run --stage calibrate     # 只跑一個階段
+```
+
+三道安全閥：**lockfile**（疊跑會重複寫入，因為 watermark 是跑完才寫的）、
+**每次上限**、**前一階段失敗就停**（語料壞掉時蒸餾只會蒸出錯的記憶）。
+
+### headless 不是「subagent 的另一個名字」——四個實測差異
+
+一路撞出來的，每一個都會讓整條管線靜默失效：
+
+1. **它會吃全域 `CLAUDE.md` 與 SessionStart 注入**，於是進入對話模式——
+   前兩次實跑它先去查專案記憶、然後回問「要我從哪一項開工」，一個指令都沒執行。
+   要用 `--append-system-prompt` 明確聲明非互動才會照做
+2. **寫不進 `~/.claude/` 底下**（算敏感路徑，要互動批准，而 headless 沒有互動）。
+   所以裁決者**只回 JSON、不寫檔**，由管線負責落地——這反而更好，
+   寫入範圍被程式限死，裁決者也就不需要超過讀取的權限
+3. **指令必須用相對路徑的直譯器**（`../U.E.P-s-Core/env/Scripts/python.exe`）。
+   換成 `sys.executable` 的絕對路徑，裁決者的 Bash 一律被擋下——
+   allowlist 認的是字面，不是解析後的路徑
+4. **prompt 要走 stdin**。接在 `--append-system-prompt` 後面當位置參數時，
+   實測它收不到任務內容（回「Could you send the task content?」）；
+   而且 Windows 命令列有 32K 上限，判卷材料很容易撞到
+
+### 抽不出 JSON 就算失敗，不寫空檔案
+
+裁決者的回覆用 ```json 柵欄抽取，失敗時**不落地**。
+寫一個空檔案的話，下游的 `--ingest` 會收到「零筆結果」而看起來像正常跑完——
+那正是這個專案反覆踩到的靜默失敗。
+
+退路的括號順序也有講究：回覆是陣列時先找 `{` 會抽到陣列裡的**第一個物件**，
+`json.loads` 照樣成功，於是靜默地只收到一筆。要先試開始得早、涵蓋得長的那個。
+
+### 端到端實測
+
+`--stage calibrate --max-groups 3`：107 秒跑完，含兩次裁決（受測 + 判卷）與收回，
+已校準 217 → 220。11 個管線機制測試（鎖、JSON 抽取、階段編排）。
+
+**排程尚未掛上。** 掛的話是 Windows 工作排程器每日凌晨，
+指令為 `pipeline.py --run --max-groups N`——不掛 `SessionEnd` hook：
+蒸餾要跑幾分鐘，hook 得 detach 才不會卡住結束流程，detach 之後失敗是靜默的、難追，
+而且剛結束工作時機器最忙。

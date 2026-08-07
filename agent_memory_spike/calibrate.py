@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -104,6 +105,37 @@ def load_concepts(path: Path) -> list[dict[str, Any]]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+# 物件邊界靠後面的 `}` + `,{` 或 `]` 錨定，這樣即使值裡有裸雙引號也切得開
+_LENIENT_ITEM = re.compile(
+    r'\{\s*"id"\s*:\s*"([^"]+)"\s*,\s*(.*?)\s*\}\s*(?=,\s*\{|\s*\]|\s*$)', re.S
+)
+_LENIENT_FIELD = re.compile(r'"(\w+)"\s*:\s*"(.*?)"\s*(?=,\s*"\w+"\s*:|$)', re.S)
+
+
+def load_agent_json(path: Path) -> list[dict[str, Any]]:
+    """讀 agent 寫的 JSON，格式壞掉時退回寬鬆解析。
+
+    實測必要：受測 agent 在回答裡寫了 ``role="dialog"``，裸雙引號沒跳脫，
+    整份檔案 json.loads 直接失敗。提示裡要求跳脫只能降低機率，不能根除——
+    讓一次 LLM 手誤丟掉整批結果不划算，而這些內容本來就只是純文字。
+    """
+    text = path.read_text(encoding="utf-8")
+    try:
+        payload = json.loads(text)
+        return payload if isinstance(payload, list) else payload.get("results", [])
+    except json.JSONDecodeError:
+        pass
+
+    items: list[dict[str, Any]] = []
+    for item_id, body in _LENIENT_ITEM.findall(text):
+        record: dict[str, Any] = {"id": item_id}
+        for key, value in _LENIENT_FIELD.findall(body):
+            record[key] = value.replace('\\"', '"').replace("\\n", "\n")
+        items.append(record)
+    print(f"[calibrate] {path.name} JSON 損壞，寬鬆解析救回 {len(items)} 筆", file=sys.stderr)
+    return items
+
+
 def emit(concept_path: Path, probe_path: Path) -> int:
     concepts = load_concepts(concept_path)
     pending = [c for c in concepts if c.get("probe") and c.get("surprisal") is None]
@@ -144,7 +176,7 @@ def show_judge(probe_path: Path, answer_path: Path, spec: str) -> int:
     payload = json.loads(probe_path.read_text(encoding="utf-8"))
     answers: dict[str, str] = {}
     for source in sorted(answer_path.glob("*.json")) if answer_path.is_dir() else [answer_path]:
-        for item in json.loads(source.read_text(encoding="utf-8")):
+        for item in load_agent_json(source):
             answers[item["id"]] = item.get("answer") or ""
 
     start, _, end = spec.partition("-")
@@ -168,8 +200,14 @@ def ingest(verdict_path: Path, concept_path: Path) -> int:
     判定結果連同證據一起存：Dream Engine 之後要重跑校準時（模型升級後
     原本不知道的事可能就知道了），需要看得出上一次是憑什麼判的。
     """
-    verdicts = json.loads(verdict_path.read_text(encoding="utf-8"))
-    by_id = {v["id"]: v for v in (verdicts if isinstance(verdicts, list) else verdicts.get("verdicts", []))}
+    # 判卷同樣是分批平行跑的，結果散在多個檔案裡。
+    # glob 限定 verdicts-*：判卷結果與 concepts.json / probe_tasks.json 放在同一層，
+    # 用 *.json 會把它們一起吃進來。目前靠欄位不符擋得住，但那是碰運氣不是設計。
+    sources = sorted(verdict_path.glob("verdicts-*.json")) if verdict_path.is_dir() else [verdict_path]
+    by_id: dict[str, dict[str, Any]] = {}
+    for source in sources:
+        for verdict in load_agent_json(source):
+            by_id[verdict["id"]] = verdict
 
     concepts = load_concepts(concept_path)
     updated = 0

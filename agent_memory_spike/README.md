@@ -92,7 +92,11 @@ Stop hook 的 payload 有 `last_assistant_message`，看起來可以直接用。
 - `cwd` / `git_branch` 用 **list**：實測同一 session 內兩者都會變（切分支、bash 進子目錄），
   存單一值會失真
 - `tool_sequence`：這輪實際做了什麼的骨架
-- `files_touched`：直接取自 `file-history-delta.trackingPath`，不必另外呼叫 git
+- `files_edited` / `files_read`：取自 `tool_use` 的路徑參數，並補上
+  `file-history-delta.trackingPath`。**兩個來源缺一不可**——delta 只涵蓋一部分編輯
+  （語料裡 Edit 出現 5996 次，卻只有 409/1372 輪有 delta 記錄），
+  而且它是 repo 相對路徑、`tool_use` 是絕對路徑，兩者都要正規化到 repo 相對才比對得起來。
+  讀與改分開存：搜尋、確認、瀏覽都會讀檔，混進去會把「同一檔案被反覆修改」的訊號淹掉。
 - `thinking_blocks` **只存數量**：內容是內部推理，體積大且無召回價值
 
 ## 存儲
@@ -137,9 +141,19 @@ python hook_stop.py --doctor
 # 全量重建，修復殘缺紀錄
 python hook_stop.py --repair <transcript_path>
 
+# 掃過所有 transcript 補齊遺漏（session 中斷時尾端會漏，這支收尾）
+python hook_stop.py --sync-all
+
+# 對所有既有 session 全量重建 —— schema 變更後必跑
+# --sync-all 只補「沒記錄過」的輪次，對既有紀錄完全不動，
+# 所以欄位一改，舊語料會永遠停在舊格式且沒有任何標示
+python hook_stop.py --repair-all
+
 # 只解析不寫入
 python hook_stop.py --sync <transcript_path> --dry-run
 ```
+
+動語料前先備份 `~/.claude/agent-memory-spike/episodes/`——`--repair-all` 是不可逆的。
 
 ## 量測（2026-07-25，Windows 11）
 

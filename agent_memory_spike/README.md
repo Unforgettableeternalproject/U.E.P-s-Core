@@ -619,3 +619,49 @@ hook 遲遲不掛的唯一理由是「注入之後語料就變成已被記憶影
 
 另一個訊號：project-fact 的 PARTIAL 佔 48%，遠高於整體的 29%。
 陳述仍偏複合，或者模型對這類「知道一半」。這是下一輪蒸餾指示可以再收緊的地方。
+
+**艾斯維爾裁決：跳過全跑，直接進 B/C。** 附帶更正一個先前的說法——
+這 388 條**之後仍然測得準**：校準用的是乾淨受測 agent 加上已經固定的 statement，
+掛 hook 不會改變任何一個。被污染的是**未來新蒸餾出來的 concept 分布**
+（agent 事先知道了某個坑就不會再踩，belief-correction 這類會自然變少）。
+
+## B：PreToolUse 注入 hook（已實作，尚未掛載）
+
+`hook_pretooluse.py`。走 PreToolUse 而不是 UserPromptSubmit，因為**只有檔案訊號量過
+precision**；另一個理由是 query 品質——human 輪次的 `user_text` 中位數只有 58 字元，
+大量是「繼續」「可以」。
+
+三道閘門：只注入 `surprisal >= 0.8` 的條目、`overlap >= 2`、同一 session 同一條只注入一次。
+
+### 🚨 A1 的門檻差點被錯誤地搬過來
+
+`MIN_FILE_OVERLAP = 2` 在 A1 那邊是「記憶的錨點 ∩ 那一輪編輯的**檔案與符號**」，
+初版 hook 卻拿它去比對**單次呼叫的單一檔案**——那樣 overlap 最高就是 1，
+等於永遠不注入。兩個 overlap 名字一樣，不是同一個量。
+
+真實語料上的觸發率（671 個有編輯的輪次）：
+
+| 比對內容 | 池子 | overlap≥1 | overlap≥2 |
+|---|---|---|---|
+| 只有檔案 | 通過的 88 條 | 3.1% | **0.0%** |
+| 只有檔案 | 全池 605 條 | 22.2% | 5.2% |
+| 檔案 + 符號 | 通過的 88 條 | 70.8% | **39.9%** |
+| 檔案 + 符號 | 全池 605 條 | 94.0% | 74.8% |
+
+原因是 **252/343 條有檔案錨點的記憶只有一個檔案錨點**，兩個檔案重疊湊不出來。
+符號補上這一項，門檻才有意義。
+
+符號拿得到是因為 `tool_input` 就是完整的工具參數——Edit 的 `old_string`/`new_string`、
+Write 的 `content` 都在裡面。並且要**跨同一輪的多次呼叫累積**（換 `prompt_id` 就重置），
+才對得上 A1 的「一輪碰過什麼」。
+
+定案：**39.9% 的編輯輪次會注入，平均 1.52 條**。
+
+### 查證過的 hook 行為
+
+- `PreToolUse` 支援 `hookSpecificOutput.additionalContext`，以 system-reminder 形式
+  插在**工具結果旁邊**，模型看得到
+- payload 有 `prompt_id`（所以 `injections.jsonl` 的鍵從 prompt 指紋改成 `prompt_id`，
+  比指紋精確——指紋要求兩邊對 `user_text` 的組法完全一致，而那沒有保證）
+- payload **沒有** prompt 文字
+- 預設 timeout 600 秒（`UserPromptSubmit` 才是 30 秒）

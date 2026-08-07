@@ -51,16 +51,23 @@ INJECTION_LOG = Path.home() / ".claude" / "agent-memory-spike" / "injections.jso
 
 
 def prompt_fingerprint(text: str) -> str:
-    """使用者輸入的指紋，注入紀錄與語料靠它對上。
+    """使用者輸入的指紋。
 
-    存指紋不存原文：這份檔案的用途只是比對，而 prompt 內容已經在 episode 裡了，
-    再存一份等於多一個外洩面。
+    **不再是注入紀錄的鍵**——查證後 PreToolUse 的 payload 直接帶 ``prompt_id``，
+    那比指紋精確：指紋要求兩邊對 ``user_text`` 的組法完全一致，
+    而 episode 的 user_text 是一輪內多筆 user 記錄 join 起來的，hook 看到的未必相同。
+    留著這個函式是因為別的地方（跨 session 去重）也在用同樣的手法。
     """
     return hashlib.sha1((text or "").encode("utf-8")).hexdigest()[:16]
 
 
 def load_injections(path: Path = INJECTION_LOG) -> dict[tuple[str, str], list[str]]:
-    """讀注入紀錄，鍵是 (session_id, prompt 指紋)。
+    """讀注入紀錄，鍵是 (session_id, prompt_id)。
+
+    同一個 promptId 在一份 transcript 裡可能出現兩次（session 起始的 meta 注入
+    每次 resume 重現且沿用同一個 id），所以這把鍵會讓那種情況多標記一輪。
+    那是保守的方向——寧可多標記幾輪為「可能被影響」，也不要漏標而把
+    被污染的輪次當成乾淨語料。
 
     **為什麼需要這個欄位**：注入記憶之後，語料就變成「已被記憶影響過的行為」，
     再拿它校準 surprisal 會有系統性偏誤——這是 hook 遲遲不掛的唯一理由。
@@ -80,8 +87,13 @@ def load_injections(path: Path = INJECTION_LOG) -> dict[tuple[str, str], list[st
                     record = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                key = (str(record.get("session_id")), str(record.get("prompt_fingerprint")))
-                found[key] = list(record.get("injected") or [])
+                key = (str(record.get("session_id")), str(record.get("prompt_id")))
+                # 同一輪可能被注入多次（一輪會改好幾個檔案，每次 PreToolUse 都召回一批），
+                # 累積而不是覆蓋——漏掉任何一條都會讓「這輪看過什麼」失真
+                merged = found.setdefault(key, [])
+                for concept_id in record.get("injected") or []:
+                    if concept_id not in merged:
+                        merged.append(concept_id)
     except OSError:
         return {}
     return found
@@ -484,9 +496,7 @@ def build_episode(prompt_id: str, records: list[dict[str, Any]], turn_index: int
     user_text = "\n\n".join(user_texts)
     # 空 list 與缺欄位要分得開：前者是「這輪沒被注入」，後者是「這筆語料早於這個 schema」。
     # 舊語料停在舊格式而沒有任何標示，是先前踩過的坑
-    injected = (injections or {}).get(
-        (str(session_id), prompt_fingerprint(user_text)), []
-    )
+    injected = (injections or {}).get((str(session_id), str(prompt_id)), [])
 
     return {
         "prompt_id": prompt_id,

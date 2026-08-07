@@ -547,32 +547,30 @@ def test_doctor_accepts_empty_assistant_text_when_there_was_no_response(tmp_path
     assert doctor(episode_dir) == 0
 
 
-def test_injected_marks_which_turns_saw_memory(tmp_path, monkeypatch):
-    """注入紀錄靠 (session_id, prompt 指紋) 對回語料。
+def test_injected_marks_which_turns_saw_memory(tmp_path):
+    """注入紀錄靠 (session_id, prompt_id) 對回語料。
 
     這個欄位是「哪些輪次被記憶影響過」的唯一依據——對不上的話，
-    被污染的輪次會被當成乾淨語料拿去校準 surprisal，量出系統性偏低的結果。
+    被污染的輪次會被當成乾淨語料拿去校準 surprisal。
     """
-    from transcript import prompt_fingerprint
+    from transcript import load_injections
 
     log = tmp_path / "injections.jsonl"
-    log.write_text(json.dumps({
-        "session_id": "sess-1",
-        "prompt_fingerprint": prompt_fingerprint("改一下這裡"),
-        "injected": ["c-001", "c-002"],
-    }) + "\n", encoding="utf-8")
+    log.write_text("\n".join(json.dumps(x) for x in [
+        {"session_id": "sess-1", "prompt_id": "p1", "injected": ["c-001", "c-002"]},
+        # 同一輪的第二次注入：一輪會改好幾個檔案，每次 PreToolUse 都召回一批
+        {"session_id": "sess-1", "prompt_id": "p1", "injected": ["c-002", "c-003"]},
+    ]) + "\n", encoding="utf-8")
 
-    records = [
-        _user("p1", text="改一下這裡", origin={"kind": "human"}),
-        _assistant(text="好的"),
-    ]
-    from transcript import load_injections
-    ep = build_episode("p1", records, injections=load_injections(log))
-    assert ep["injected"] == ["c-001", "c-002"]
+    injections = load_injections(log)
+    ep = build_episode("p1", [_user("p1", text="改一下這裡", origin={"kind": "human"}),
+                              _assistant(text="好的")], injections=injections)
+    # 累積而不是覆蓋，且不重複
+    assert ep["injected"] == ["c-001", "c-002", "c-003"]
 
     # 沒有對應紀錄的輪次是空 list，不是缺欄位——兩者代表的意思不同
-    other = build_episode("p1", [_user("p1", text="別的話", origin={"kind": "human"})],
-                          injections=load_injections(log))
+    other = build_episode("p9", [_user("p9", text="別的話", origin={"kind": "human"})],
+                          injections=injections)
     assert other["injected"] == []
 
 

@@ -105,6 +105,43 @@ def load_concepts(path: Path) -> list[dict[str, Any]]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+# 注入實驗的指示。與 probe 組共用同一批題目，差別只在多了一段記憶——
+# 那批題目的無注入結果就是現成的對照組，所以這裡只需要跑實驗組。
+INJECTION_INSTRUCTIONS = """\
+以下是幾個開發上的問題。每題前面附了一段「可能相關的記憶」，那是過去在這些專案裡
+累積下來的筆記；其中**有些與當前問題無關**，請自行判斷哪些用得上。
+
+這些專案不在你手上，你也拿不到原始碼，所以請依記憶內容加上你既有的知識回答——
+**不要去讀檔案、grep、搜尋或查任何資料**。
+
+就照你平常回答同事的方式回答：你會怎麼做、其中有什麼要留意的地方。
+不要條列說明你用了哪幾條記憶，直接把結論寫成正常的回答。
+"""
+
+INJECTION_JUDGE_INSTRUCTIONS = """\
+你在評估一個 agent 有沒有**實際運用**注入給它的記憶。
+
+你會看到：一條「目標記憶」、一個「題目」、agent 在**沒有**記憶時的舊回答、
+以及它在**拿到一批記憶（含無關干擾項）之後**的新回答。
+
+判斷新回答與目標記憶的關係，四選一：
+
+- `APPLIED`：把目標記憶用在該用的地方，結論因此正確。**光是複述記憶內容不算**——
+  要看得出它把那條知識轉成了對這一題的具體判斷或做法
+- `RECITED`：有提到記憶的內容，但只是照抄或貼在旁邊，沒有真的影響回答的結論
+- `IGNORED`：完全沒用上，新舊回答實質相同
+- `MISAPPLIED`：用錯了——套用到不該套用的地方，或誤用了那些無關的干擾記憶
+
+嚴格判定。`APPLIED` 與 `RECITED` 的界線是**結論有沒有因此改變**。
+
+只輸出 JSON：
+
+```json
+{"verdict": "APPLIED", "evidence": "新回答裡最能支持判定的一小段引文", "note": "一句話說明"}
+```
+"""
+
+
 # 物件邊界靠後面的 `}` + `,{` 或 `]` 錨定，這樣即使值裡有裸雙引號也切得開
 _LENIENT_ITEM = re.compile(
     r'\{\s*"id"\s*:\s*"([^"]+)"\s*,\s*(.*?)\s*\}\s*(?=,\s*\{|\s*\]|\s*$)', re.S
@@ -194,6 +231,136 @@ def show_judge(probe_path: Path, answer_path: Path, spec: str) -> int:
     return 0
 
 
+DEFAULT_INJECTION_PATH = WORK_DIR / "injection_tasks.json"
+PASS_THRESHOLD = 0.8
+DISTRACTOR_COUNT = 4
+
+
+def emit_injection(concept_path: Path, injection_path: Path, seed: int = 20260807) -> int:
+    """產出注入實驗：每題一條目標記憶 + 數條干擾記憶。
+
+    **為什麼要有干擾項**：只注入一條答案再問同一題，測到的是複述能力，不是利用能力。
+    真實情境下召回會一次給好幾條，agent 必須自己判斷哪條相關——那才是要驗證的能力。
+
+    干擾項同時充當安慰劑控制：如果行為改變只是因為「有東西被注入」而不是
+    「注入了對的東西」，會表現成拿無關記憶亂套（判定 MISAPPLIED）。
+
+    干擾項優先取不同 scope 的：同一個 repo 的記憶容易碰巧相關，
+    那樣就分不清 agent 是挑對了還是全都拿來用。
+    """
+    import random
+
+    concepts = load_concepts(concept_path)
+    targets = [c for c in concepts if (c.get("surprisal") or 0) >= PASS_THRESHOLD]
+    rng = random.Random(seed)
+
+    tasks = []
+    for target in targets:
+        others = [c for c in concepts if c["id"] != target["id"]]
+        different_scope = [c for c in others if c.get("scope") != target.get("scope")]
+        pool = different_scope if len(different_scope) >= DISTRACTOR_COUNT else others
+        distractors = rng.sample(pool, min(DISTRACTOR_COUNT, len(pool)))
+
+        memories = [{"id": c["id"], "statement": c["statement"]} for c in [target, *distractors]]
+        rng.shuffle(memories)  # 目標記憶不能總是排第一，否則位置本身就是提示
+        tasks.append({
+            "id": target["id"],
+            "probe": target["probe"],
+            "memories": memories,
+            "target_statement": target["statement"],
+            "baseline_verdict": (target.get("probe_result") or {}).get("verdict"),
+        })
+
+    payload = {
+        "injection_instructions": INJECTION_INSTRUCTIONS,
+        "judge_instructions": INJECTION_JUDGE_INSTRUCTIONS,
+        "count": len(tasks),
+        "tasks": tasks,
+    }
+    injection_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"[calibrate] {len(tasks)} 題注入實驗（每題 {DISTRACTOR_COUNT} 條干擾）→ {injection_path}",
+          file=sys.stderr)
+    return 0
+
+
+def show_injection(injection_path: Path, spec: str) -> int:
+    """印出注入題目。目標記憶混在干擾項裡，**不標示哪條是目標**。"""
+    payload = json.loads(injection_path.read_text(encoding="utf-8"))
+    start, _, end = spec.partition("-")
+    tasks = payload["tasks"][int(start):int(end or start) + 1]
+
+    print(payload["injection_instructions"])
+    print(f"\n{'=' * 70}\n以下 {len(tasks)} 題彼此無關，逐題獨立回答。\n{'=' * 70}")
+    for task in tasks:
+        print(f"\n### {task['id']}")
+        print("\n<可能相關的記憶>")
+        for i, memory in enumerate(task["memories"], 1):
+            print(f"{i}. {memory['statement']}")
+        print("</可能相關的記憶>")
+        print(f"\n問題：{task['probe']}")
+    return 0
+
+
+def show_injection_judge(injection_path: Path, answer_path: Path, probe_path: Path, spec: str) -> int:
+    """印出判卷材料：目標記憶、題目、無注入的舊回答、注入後的新回答。"""
+    payload = json.loads(injection_path.read_text(encoding="utf-8"))
+
+    def collect(path: Path) -> dict[str, str]:
+        found: dict[str, str] = {}
+        for source in sorted(path.glob("*.json")) if path.is_dir() else [path]:
+            for item in load_agent_json(source):
+                found[item["id"]] = item.get("answer") or ""
+        return found
+
+    baseline = collect(probe_path)
+    injected = collect(answer_path)
+
+    start, _, end = spec.partition("-")
+    tasks = payload["tasks"][int(start):int(end or start) + 1]
+
+    print(payload["judge_instructions"])
+    for task in tasks:
+        new_answer = injected.get(task["id"])
+        if new_answer is None:
+            continue
+        print(f"\n{'=' * 70}\n### {task['id']}")
+        print(f"\n[目標記憶]\n{task['target_statement']}")
+        print(f"\n[題目]\n{task['probe']}")
+        print(f"\n[無記憶時的舊回答]\n{baseline.get(task['id'], '(缺)')}")
+        print(f"\n[拿到記憶後的新回答]\n{new_answer}")
+    return 0
+
+
+def ingest_injection(verdict_path: Path, concept_path: Path) -> int:
+    """收回注入實驗的判定，寫進 concept 的 usability 欄位。"""
+    sources = sorted(verdict_path.glob("injection-*.json")) if verdict_path.is_dir() else [verdict_path]
+    by_id: dict[str, dict[str, Any]] = {}
+    for source in sources:
+        for verdict in load_agent_json(source):
+            by_id[verdict["id"]] = verdict
+
+    concepts = load_concepts(concept_path)
+    counts: dict[str, int] = {}
+    for concept in concepts:
+        verdict = by_id.get(concept["id"])
+        if verdict is None:
+            continue
+        concept["usability"] = {
+            "verdict": verdict.get("verdict"),
+            "evidence": verdict.get("evidence"),
+            "note": verdict.get("note"),
+        }
+        counts[verdict.get("verdict") or "?"] = counts.get(verdict.get("verdict") or "?", 0) + 1
+
+    concept_path.write_text(json.dumps(concepts, ensure_ascii=False, indent=2), encoding="utf-8")
+    total = sum(counts.values())
+    applied = counts.get("APPLIED", 0)
+    print(f"[calibrate] 注入實驗 {total} 題：{counts}", file=sys.stderr)
+    if total:
+        print(f"  實際被運用（APPLIED）: {applied}/{total} = {applied / total * 100:.0f}%", file=sys.stderr)
+    return 0
+
+
 def ingest(verdict_path: Path, concept_path: Path) -> int:
     """收回判定，填 surprisal。
 
@@ -263,6 +430,12 @@ def main() -> int:
     parser.add_argument("--show-probes", type=str, help="印出指定範圍的題目（不含答案），例如 0-3")
     parser.add_argument("--show-judge", type=str, help="印出指定範圍的判卷材料，例如 0-3")
     parser.add_argument("--answer-path", type=Path, default=WORK_DIR / "probe_out")
+    parser.add_argument("--emit-injection", action="store_true", help="產出注入實驗（可利用性驗證）")
+    parser.add_argument("--show-injection", type=str, help="印出注入題目，例如 0-3")
+    parser.add_argument("--show-injection-judge", type=str, help="印出注入判卷材料，例如 0-3")
+    parser.add_argument("--ingest-injection", type=Path, help="收回注入實驗判定")
+    parser.add_argument("--injection-path", type=Path, default=DEFAULT_INJECTION_PATH)
+    parser.add_argument("--injection-answer-path", type=Path, default=WORK_DIR / "injection_out")
     parser.add_argument("--concept-path", type=Path, default=DEFAULT_CONCEPT_PATH)
     parser.add_argument("--probe-path", type=Path, default=DEFAULT_PROBE_PATH)
     args = parser.parse_args()
@@ -273,6 +446,15 @@ def main() -> int:
         except (AttributeError, OSError):
             pass
 
+    if args.ingest_injection:
+        return ingest_injection(args.ingest_injection, args.concept_path)
+    if args.emit_injection:
+        return emit_injection(args.concept_path, args.injection_path)
+    if args.show_injection:
+        return show_injection(args.injection_path, args.show_injection)
+    if args.show_injection_judge:
+        return show_injection_judge(args.injection_path, args.injection_answer_path,
+                                    args.answer_path, args.show_injection_judge)
     if args.ingest:
         return ingest(args.ingest, args.concept_path)
     if args.emit:

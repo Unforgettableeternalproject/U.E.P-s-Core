@@ -100,6 +100,48 @@ def find_candidates(episodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return candidates
 
 
+def find_control_pairs(episodes: list[dict[str, Any]], sample_size: int, seed: int) -> list[dict[str, Any]]:
+    """對照組：相鄰的 human 輪對，但**沒有**檔案重疊。
+
+    存在的理由是量粗篩訊號的召回率。目前只知道 78 組候選裡蒸餾出 55 條，
+    但不知道剩下的一千多輪裡漏掉多少——**精確率有數字，召回率完全未知**。
+
+    如果對照組的產出率跟候選組差不多，那這個訊號等於隨機抽樣，
+    整個粗篩步驟只是在省 token，沒有在做篩選。
+
+    固定 seed 是為了可重現：這個數字會被拿來做決策，換一次抽樣就變一次結論不行。
+    """
+    import random
+
+    by_session: dict[str, list[dict[str, Any]]] = {}
+    for episode in episodes:
+        by_session.setdefault(episode.get("session_id") or "", []).append(episode)
+
+    pool: list[dict[str, Any]] = []
+    for session_id, sequence in by_session.items():
+        human_turns = [e for e in sequence if e.get("origin") == ORIGIN_HUMAN]
+        for index in range(1, len(human_turns)):
+            previous, current = human_turns[index - 1], human_turns[index]
+            if set(previous.get("files_edited") or []) & set(current.get("files_edited") or []):
+                continue  # 這是候選，不是對照
+            # 兩輪都毫無內容的話連人也蒸餾不出東西，放進對照組只會虛低產出率，
+            # 讓訊號看起來比實際更有鑑別力
+            if not (current.get("assistant_text") or previous.get("assistant_text")):
+                continue
+            pool.append({
+                "session_id": session_id,
+                "repo": current.get("repo"),
+                "overlap_files": [],
+                "short_followup": len(current.get("user_text") or "") < SHORT_INPUT_CHARS,
+                "turns": [previous, current],
+            })
+
+    random.Random(seed).shuffle(pool)
+    print(f"[distill] 對照組母體 {len(pool)} 組，抽樣 {min(sample_size, len(pool))} 組",
+          file=sys.stderr)
+    return pool[:sample_size]
+
+
 def _turn_key(episode: dict[str, Any]) -> list[Any]:
     return [episode.get("prompt_id"), episode.get("turn_index")]
 
@@ -191,8 +233,11 @@ DISTILL_INSTRUCTIONS = """\
 """
 
 
-def emit(episodes: list[dict[str, Any]], task_path: Path) -> int:
-    candidates = find_candidates(episodes)
+def emit(episodes: list[dict[str, Any]], task_path: Path, *, control: int = 0, seed: int = 20260807) -> int:
+    if control:
+        candidates = find_control_pairs(episodes, control, seed)
+    else:
+        candidates = find_candidates(episodes)
     tasks = [build_task(c, i) for i, c in enumerate(candidates)]
     payload = {
         "instructions": DISTILL_INSTRUCTIONS,
@@ -303,6 +348,9 @@ def main() -> int:
     parser.add_argument("--emit", action="store_true", help="產出蒸餾任務檔")
     parser.add_argument("--ingest", type=Path, help="收回蒸餾結果（JSON）")
     parser.add_argument("--show", type=str, help="印出指定範圍的任務，例如 0-12")
+    parser.add_argument("--control", type=int, default=0,
+                        help="改抽 N 組『無檔案重疊』的對照輪對，用來量粗篩訊號的召回率")
+    parser.add_argument("--seed", type=int, default=20260807, help="對照組抽樣種子（可重現）")
     parser.add_argument("--episode-dir", type=Path, default=DEFAULT_EPISODE_DIR)
     parser.add_argument("--task-path", type=Path, default=DEFAULT_TASK_PATH)
     parser.add_argument("--concept-path", type=Path, default=DEFAULT_CONCEPT_PATH)
@@ -322,7 +370,7 @@ def main() -> int:
 
     episodes = load_episodes(args.episode_dir)
     if args.emit:
-        return emit(episodes, args.task_path)
+        return emit(episodes, args.task_path, control=args.control, seed=args.seed)
     return stats(episodes)
 
 

@@ -42,7 +42,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
 from hook_stop import DEFAULT_EPISODE_DIR, load_deduped  # noqa: E402
-from transcript import ORIGIN_HUMAN  # noqa: E402
+from transcript import ORIGIN_HUMAN, file_key, file_keys  # noqa: E402
 
 WORK_DIR = DEFAULT_EPISODE_DIR.parent
 DEFAULT_TASK_PATH = WORK_DIR / "distill_tasks.json"
@@ -87,9 +87,13 @@ def find_candidates(episodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
         human_turns = [e for e in sequence if e.get("origin") == ORIGIN_HUMAN]
         for index in range(1, len(human_turns)):
             previous, current = human_turns[index - 1], human_turns[index]
-            overlap = set(previous.get("files_edited") or []) & set(current.get("files_edited") or [])
-            if not overlap:
+            # 比對走 file_key 而不是原始路徑：nested git repo + 浮動 cwd 會讓
+            # 同一個檔案有三種寫法，直接比字串必然漏判（見 transcript.file_key）
+            overlap_keys = file_keys(previous.get("files_edited")) & file_keys(current.get("files_edited"))
+            if not overlap_keys:
                 continue
+            # 回報時仍給原始路徑（人要看得懂），只是挑出鍵有命中的那些
+            overlap = {f for f in (current.get("files_edited") or []) if file_key(f) in overlap_keys}
             candidates.append({
                 "session_id": session_id,
                 "repo": current.get("repo"),
@@ -122,7 +126,7 @@ def find_control_pairs(episodes: list[dict[str, Any]], sample_size: int, seed: i
         human_turns = [e for e in sequence if e.get("origin") == ORIGIN_HUMAN]
         for index in range(1, len(human_turns)):
             previous, current = human_turns[index - 1], human_turns[index]
-            if set(previous.get("files_edited") or []) & set(current.get("files_edited") or []):
+            if file_keys(previous.get("files_edited")) & file_keys(current.get("files_edited")):
                 continue  # 這是候選，不是對照
             # 兩輪都毫無內容的話連人也蒸餾不出東西，放進對照組只會虛低產出率，
             # 讓訊號看起來比實際更有鑑別力
@@ -140,6 +144,28 @@ def find_control_pairs(episodes: list[dict[str, Any]], sample_size: int, seed: i
     print(f"[distill] 對照組母體 {len(pool)} 組，抽樣 {min(sample_size, len(pool))} 組",
           file=sys.stderr)
     return pool[:sample_size]
+
+
+def find_all_pairs(episodes: list[dict[str, Any]], seed: int) -> list[dict[str, Any]]:
+    """全語料：所有相鄰 human 輪對，不論檔案有沒有重疊。
+
+    存在的理由是粗篩訊號**實測沒有鑑別力**（候選組 0.705 條/組 vs 隨機對照 0.692），
+    而它只涵蓋約 16% 的語料。篩選既然無效，剩下的選擇就只有全跑或接受低覆蓋——
+    艾斯維爾裁決全跑。
+
+    候選排在前面（``cand-000`` 起算，順序與 ``find_candidates`` 一致），
+    對照接在後面。這樣事後可以直接切開兩段比產出率，
+    **用全量數據把粗篩鑑別力的問題一次回答掉**，不必再另外抽樣。
+    """
+    candidates = find_candidates(episodes)
+    # 沿用對照組的建構邏輯（含「兩輪都無內容就跳過」的排除），取全部而非抽樣。
+    # sample_size 給一個大於母體的數，等於不截斷。
+    rest = find_control_pairs(episodes, len(episodes) + 1, seed)
+    for pair in candidates:
+        pair["from_signal"] = True
+    for pair in rest:
+        pair["from_signal"] = False
+    return candidates + rest
 
 
 def _turn_key(episode: dict[str, Any]) -> list[Any]:
@@ -167,6 +193,9 @@ def build_task(candidate: dict[str, Any], index: int) -> dict[str, Any]:
     return {
         "id": f"cand-{index:03d}",
         "repo": candidate["repo"],
+        # 這組是粗篩訊號撈到的，還是全語料才涵蓋到的。
+        # 全跑時靠它切開兩段比產出率，量粗篩訊號到底有沒有鑑別力
+        "from_signal": candidate.get("from_signal", True),
         "overlap_files": candidate["overlap_files"],
         "source_turns": [_turn_key(previous), _turn_key(current)],
         "before": {
@@ -187,8 +216,12 @@ def build_task(candidate: dict[str, Any], index: int) -> dict[str, Any]:
 DISTILL_INSTRUCTIONS = """\
 你在為 coding agent 的記憶層做知識蒸餾。
 
-輸入是一組「同一個檔案在相鄰兩輪被重複修改」的對話片段。這個結構通常代表
-第一次沒做對、第二次被修正——但**不一定**，也可能只是使用者同意繼續做下一項。
+輸入是一組相鄰兩輪的對話片段。
+
+有些組別會標記「同一個檔案被重複修改」——那個結構通常代表第一次沒做對、
+第二次被修正，但**不一定**，也可能只是使用者同意繼續做下一項。
+沒有標記的組別一樣要認真看：實測這個結構訊號沒有鑑別力，
+**有沒有價值跟有沒有重疊檔案無關**，判準完全以下面那條為準。
 
 ## 你要判斷的唯一問題
 
@@ -267,8 +300,11 @@ DISTILL_INSTRUCTIONS = """\
 """
 
 
-def emit(episodes: list[dict[str, Any]], task_path: Path, *, control: int = 0, seed: int = 20260807) -> int:
-    if control:
+def emit(episodes: list[dict[str, Any]], task_path: Path, *, control: int = 0,
+         all_pairs: bool = False, seed: int = 20260807) -> int:
+    if all_pairs:
+        candidates = find_all_pairs(episodes, seed)
+    elif control:
         candidates = find_control_pairs(episodes, control, seed)
     else:
         candidates = find_candidates(episodes)
@@ -326,6 +362,8 @@ def ingest(result_path: Path, concept_path: Path, task_path: Path) -> int:
                 "why": concept.get("why"),
                 # 溯源：Phase 2 要靠它判斷記憶是否已經失效
                 "source_candidate": task["id"],
+                # 這條是粗篩訊號撈到的、還是全跑才涵蓋到的——切開比產出率用
+                "from_signal": task.get("from_signal", True),
                 "source_turns": task["source_turns"],
                 # source_files 是「產生這條記憶那一輪碰過的檔案」，屬於溯源資訊。
                 # **不要拿它當檢索錨點**——那些檔案多半只是順手碰到的，
@@ -362,11 +400,14 @@ def show(task_path: Path, spec: str) -> int:
     print(f"\n{'=' * 70}\n以下是 {len(tasks)} 組候選。\n{'=' * 70}")
     for task in tasks:
         print(f"\n{'=' * 70}\nID: {task['id']} | repo: {task['repo']}")
-        print(f"重疊檔案: {', '.join(task['overlap_files'])}")
+        if task.get("overlap_files"):
+            print(f"重疊檔案（同一檔案被連續兩輪修改）: {', '.join(task['overlap_files'])}")
         for phase in ("before", "after"):
             block = task[phase]
             print(f"\n--- {phase.upper()} 使用者 ---\n{block['user']}")
             print(f"\n--- {phase.upper()} 助手 ---\n{block['assistant']}")
+            if block.get("files_edited"):
+                print(f"\n--- {phase.upper()} 改動檔案 ---\n{', '.join(block['files_edited'])}")
     return 0
 
 
@@ -389,6 +430,8 @@ def main() -> int:
     parser.add_argument("--emit", action="store_true", help="產出蒸餾任務檔")
     parser.add_argument("--ingest", type=Path, help="收回蒸餾結果（JSON）")
     parser.add_argument("--show", type=str, help="印出指定範圍的任務，例如 0-12")
+    parser.add_argument("--all", dest="all_pairs", action="store_true",
+                        help="全語料：所有相鄰 human 輪對，不只粗篩候選")
     parser.add_argument("--control", type=int, default=0,
                         help="改抽 N 組『無檔案重疊』的對照輪對，用來量粗篩訊號的召回率")
     parser.add_argument("--seed", type=int, default=20260807, help="對照組抽樣種子（可重現）")
@@ -411,7 +454,8 @@ def main() -> int:
 
     episodes = load_episodes(args.episode_dir)
     if args.emit:
-        return emit(episodes, args.task_path, control=args.control, seed=args.seed)
+        return emit(episodes, args.task_path, control=args.control,
+                    all_pairs=args.all_pairs, seed=args.seed)
     return stats(episodes)
 
 

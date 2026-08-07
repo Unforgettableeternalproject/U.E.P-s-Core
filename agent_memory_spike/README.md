@@ -222,11 +222,22 @@ python hook_stop.py --sync <transcript_path> --dry-run
 
 # Phase 1.5 — concept 蒸餾與 surprisal 校準（已完成）
 
-1372 輪語料 → 粗篩 78 組 → 蒸餾 55 條 concept → 全數行為校準，22 條通過門檻。
+第一輪：1372 輪語料 → 粗篩 78 組 → 蒸餾 55 條 concept → 全數行為校準，22 條通過門檻。
+
+第二輪（全語料）：1411 輪 → **561 組相鄰 human 輪對** → 780 條 → 去重 **775 條**（尚未校準）。
+
+改跑全語料的理由是粗篩訊號實測**沒有鑑別力**（候選組 0.705 條/組 vs 隨機對照 0.692），
+而它只涵蓋約 16% 的語料。篩選既然無效，剩下的選擇就只有全跑或接受低覆蓋。
+
+全跑最大的收穫不是條數，是**解鎖了粗篩在結構上就撈不到的類型**：
+`user-stance` 從 1 條變成 41 條。原因很直接——**表達立場的輪次通常沒有檔案被改**，
+「同一檔案被連續修改」是技術除錯的結構特徵，不是意見分歧的。
+而按 Phase 0 的結論，user-stance 恰恰是價值最高的一類。
 
 ```bash
 python distill.py --stats            # 看粗篩分布
-python distill.py --emit             # 產蒸餾任務
+python distill.py --emit             # 產蒸餾任務（只跑粗篩候選）
+python distill.py --emit --all       # 產蒸餾任務（全語料，561 組）
 python distill.py --show 0-12        # 取一批任務（給 subagent）
 python distill.py --ingest <dir>     # 收回蒸餾結果
 
@@ -267,3 +278,59 @@ ollama 常駐 → 一次往返 371 ms，**也就不需要自己做 daemon**。
 記憶靠 cue 被喚起，不是靠內容被搜到。
 
 詳見 `experiment/phase2-retrieval.md`。
+
+## 第二輪：775 條池子上的複驗
+
+`cue` 正式驗證通過（先前是借 `probe` 當代理）。recall@5：
+
+| 設定 | 無 cue | 有 cue |
+|---|---|---|
+| BM25 + scope | 22.9% | **28.8%** |
+| 向量 + scope | 23.4% | 25.6% |
+| Hybrid + scope | 26.7% | **31.9%** |
+
+「換演算法沒用」再次重現：BM25 18.1% vs 向量 18.7%（差 0.6pp），
+而換索引內容差 5.2pp。
+
+**絕對數字從 69.4% 掉到 31.9%，那是預期的**：池子從 73 條變 793 條、
+query 從 62 個變 659 個，兩者不可比。上輪已知限制第一條寫的
+「73 條是樂觀估計」現在量到了，31.9% 才接近真實部署規模。
+
+**`anchors` 仍未驗證，因為測法不成立**：ground truth 用 `source_files` 定義、
+檢索用 `anchors`，兩邊脫鉤；更根本的是 anchors 現在含函式名與欄位名，
+而 episode **只存了檔案路徑**——符號類錨點在集合交集下永遠不可能命中。
+要求蒸餾者把粒度做細，卻沒同步改比對的另一邊，細粒度在這個測法下純扣分。
+要真正驗證它，得先讓 `transcript.py` 存下 Edit 的內容片段（PreToolUse
+實際拿得到 `old_string`/`new_string`，語料裡卻沒有），那需要改 schema + `--repair-all`。
+
+## 路徑正規化的基準點會浮動（已修）
+
+`normalize_path` 切掉的是「往上最近的 `.git`」，但實測 AI-Website 是 **nested git repos**，
+加上 bash 會切目錄，於是**同一個檔案有三種表示**：
+
+```
+cwd=mind-door/AI-Website   → AI-Website-API/src/routes/compliance-v2/types.ts
+cwd=.../AI-Website-Web     → C:/Users/.../AI-Website-API/src/...（完全沒切）
+cwd=.../AI-Website-API     → src/routes/compliance-v2/types.ts
+```
+
+`files_edited` 有 **11.8% 是未能正規化的絕對路徑**，波及 183/1411 輪。
+而「同一檔案被反覆修改」是粗篩訊號與檔案訊號**共同的基礎**。
+
+修法是 `transcript.file_key()`：取路徑末 3 段小寫當比對鍵，**只在比對時收斂、不寫回語料**
+（schema 一動就要 `--repair-all`，而 `repo`/`scope` 從同一個 root 推導，
+動了它們，既有 concept 的 scope 會整批對不上）。
+
+效果：粗篩候選 80 → 91 組，檔案情境 case 554 → 684，檔案訊號 recall@5 12.5% → 14.6%。
+**但影響比預期小**——候選只多 11 組，不足以推翻「粗篩訊號無鑑別力」的結論。
+
+## 已知待處理
+
+- **記憶會被後續語料推翻**：四批蒸餾者各自撞到「這條事實在後面幾輪就被改掉了」。
+  能自救的都是因為衝突剛好落在同一批，**跨批的一律漏網**。去重只比字串，抓不到矛盾
+- **字串去重幾乎無效**：780 → 775 只掉 5 條，語意重複仍大量存在
+- **蒸餾判準的評審間變異 2.2 倍**：各批產出密度 0.83 ~ 1.96 條/組
+- **語料可能有重複**：cand-341 與 cand-353 內容完全相同且相隔 12 組，
+  不是滑動窗口造成。若 resume 讓同一輪換了新 `prompt_id`，
+  `(prompt_id, turn_index)` 去重就擋不住
+- **空 `assistant_text` 的輪次**：多批回報撞到，`--doctor` 尚未把它列為檢查項

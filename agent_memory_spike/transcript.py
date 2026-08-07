@@ -112,6 +112,42 @@ def normalize_path(raw: str, root: Path | None) -> str:
     return raw.replace("\\", "/")
 
 
+# 比對鍵取路徑的最後幾段。3 段夠獨特（單靠檔名的話 `types.ts`、`index.ts`
+# 會把不相干的檔案黏在一起），又短到不受前綴差異影響
+FILE_KEY_SEGMENTS = 3
+
+
+def file_key(path: str, segments: int = FILE_KEY_SEGMENTS) -> str:
+    """把任意形式的檔案路徑收斂成一個穩定的比對鍵。
+
+    **存在的理由是 `normalize_path` 的基準點會浮動。** 它切掉的是「往上最近的 `.git`」，
+    但實測 AI-Website 是 nested git repos（父層與子層都有 `.git`），
+    加上 bash 會切目錄，於是**同一個檔案在不同輪次被切成三種字串**：
+
+        cwd=mind-door/AI-Website        → AI-Website-API/src/routes/compliance-v2/types.ts
+        cwd=.../AI-Website-Web          → C:/Users/.../AI-Website-API/src/routes/compliance-v2/types.ts
+        cwd=.../AI-Website-API          → src/routes/compliance-v2/types.ts
+
+    而「同一檔案被反覆修改」是粗篩訊號與檔案訊號**共同的基礎**，
+    路徑對不起來，那個比對就必然漏判。
+
+    刻意只用於比對、不寫回語料：改 schema 就得 `--repair-all` 重建全部語料，
+    而 `repo` / `scope` 是從同一個 root 推導的，動了它們，
+    既有 concept 的 scope 會整批對不上。比對鍵是可以隨時重算的衍生值，
+    語料裡的原始路徑保留溯源價值。
+    """
+    cleaned = (path or "").replace("\\", "/").strip("/")
+    if not cleaned:
+        return ""
+    parts = [p for p in cleaned.split("/") if p and p != "."]
+    return "/".join(parts[-segments:]).lower()
+
+
+def file_keys(paths: list[str] | None) -> set[str]:
+    """一組路徑的比對鍵集合。"""
+    return {key for key in (file_key(p) for p in (paths or [])) if key}
+
+
 def load_records(path: Path) -> list[dict[str, Any]]:
     """讀 jsonl。
 

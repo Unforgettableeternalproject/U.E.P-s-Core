@@ -45,7 +45,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
 from hook_stop import DEFAULT_EPISODE_DIR, load_deduped  # noqa: E402
-from transcript import ORIGIN_HUMAN  # noqa: E402
+from transcript import ORIGIN_HUMAN, file_keys  # noqa: E402
 
 WORK_DIR = DEFAULT_EPISODE_DIR.parent
 DEFAULT_CONCEPT_PATH = WORK_DIR / "concepts.json"
@@ -121,6 +121,10 @@ class BM25:
 
 OLLAMA_URL = "http://localhost:11434/api/embed"
 OLLAMA_MODEL = "bge-m3"  # 多語言，適合這份中英混合語料
+# 單次請求的 payload 上限（bytes）。**限制的是總大小，不是條數**——
+# 實測純英數 400 條可過，但中文 256 條（約 230 KB）就噴 HTTP 400，
+# 而同一批資料切成 32 條一段卻全部通過。用條數當界只是換個地方壞，所以按位元組切。
+EMBED_BATCH_BYTES = 32 * 1024
 
 
 def ollama_embed(texts: list[str], model: str = OLLAMA_MODEL, timeout: float = 120.0) -> list[list[float]]:
@@ -132,18 +136,48 @@ def ollama_embed(texts: list[str], model: str = OLLAMA_MODEL, timeout: float = 1
     模型留在它的記憶體裡，這邊只是一次 HTTP 往返，也**不需要自己做 daemon**。
 
     只用標準庫，spike 的零依賴前提保住了（hook 跑在系統 Python，不保證有 numpy）。
+
+    **分批送是必要的，不是優化。** 初版一次把整池丟給 ollama，池子 73 條時沒事；
+    全語料蒸餾後池子長到 775 條，同一支指令直接噴 HTTP 400——實測上限落在
+    400 與 793 之間。這種「資料一多就整個壞掉」的失敗只會在規模長上來時出現，
+    而那正是它最不該壞的時候。
     """
     import urllib.error
     import urllib.request
 
-    payload = json.dumps({"model": model, "input": texts}).encode("utf-8")
-    request = urllib.request.Request(OLLAMA_URL, data=payload,
-                                     headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))["embeddings"]
-    except (urllib.error.URLError, KeyError, TimeoutError) as exc:
-        raise RuntimeError(f"ollama 呼叫失敗（{model}）: {exc}") from exc
+    # 按累積位元組切批。單條就超過上限的情況也要能送出去（自己一批），
+    # 否則會切出空批次，靜默少掉一條 embedding 而讓後續索引整個錯位
+    chunks: list[list[str]] = []
+    current: list[str] = []
+    size = 0
+    for text in texts:
+        cost = len(text.encode("utf-8")) + 8  # 8 是 JSON 引號與逗號的粗估開銷
+        if current and size + cost > EMBED_BATCH_BYTES:
+            chunks.append(current)
+            current, size = [], 0
+        current.append(text)
+        size += cost
+    if current:
+        chunks.append(current)
+
+    embeddings: list[list[float]] = []
+    start = 0
+    for chunk in chunks:
+        payload = json.dumps({"model": model, "input": chunk}).encode("utf-8")
+        request = urllib.request.Request(OLLAMA_URL, data=payload,
+                                         headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                embeddings.extend(json.loads(response.read().decode("utf-8"))["embeddings"])
+        except (urllib.error.URLError, KeyError, TimeoutError) as exc:
+            raise RuntimeError(f"ollama 呼叫失敗（{model}, 第 {start}~{start + len(chunk)} 條）: {exc}") from exc
+        start += len(chunk)
+
+    # 少一條就會讓 pool 與 matrix 錯位，而錯位是靜默的——排序照樣算得出來，
+    # 只是每條記憶配到別人的向量。寧可在這裡炸掉
+    if len(embeddings) != len(texts):
+        raise RuntimeError(f"ollama 回傳 {len(embeddings)} 條 embedding，與輸入的 {len(texts)} 條不符")
+    return embeddings
 
 
 def _normalize(vector: list[float]) -> list[float]:
@@ -291,7 +325,9 @@ def build_file_cases(pool: list[dict[str, Any]], episodes: list[dict[str, Any]])
     """
     cases: list[dict[str, Any]] = []
     for index, concept in enumerate(pool):
-        source_files = set(concept.get("source_files") or [])
+        # 比對走 file_key：原始路徑因 nested git repo + 浮動 cwd 而有多種寫法，
+        # 直接比字串會讓大量真實的「同檔案再編輯」case 建不出來
+        source_files = file_keys(concept.get("source_files"))
         if not source_files:
             continue
         source_keys = {(t[0], t[1] if len(t) > 1 else 0) for t in (concept.get("source_turns") or [])}
@@ -301,7 +337,7 @@ def build_file_cases(pool: list[dict[str, Any]], episodes: list[dict[str, Any]])
                 continue
             if (episode.get("prompt_id"), episode.get("turn_index")) in source_keys:
                 continue
-            if not (source_files & set(episode.get("files_edited") or [])):
+            if not (source_files & file_keys(episode.get("files_edited"))):
                 continue
             query = (episode.get("user_text") or "").strip()
             if len(query) < MIN_QUERY_CHARS:
@@ -376,11 +412,16 @@ def file_overlap_ranker(pool: list[dict[str, Any]], case: dict[str, Any]) -> lis
     抓到的常是「同一個檔案裡另一段邏輯的舊筆記」。
     真正有用的召回，共同特徵是錨點與當下要改的東西同名同源。
     """
-    touched = set(case.get("files_edited") or [])
+    touched = file_keys(case.get("files_edited"))
     scored = []
     for i, concept in enumerate(pool):
         anchors = concept.get("anchors") or concept.get("source_files") or []
-        scored.append((i, float(len(set(anchors) & touched))))
+        # anchors 現在混著檔案路徑與符號名（函式、欄位、CSS 變數）。
+        # 符號名產生的鍵不可能與檔案鍵相交，所以不會誤命中，只是不貢獻分數——
+        # **符號級錨點在這個測法下等於被浪費掉**，因為 episode 只存了檔案路徑，
+        # 沒存工具參數的內容，語料裡沒有可以拿來比對符號的東西。
+        # 要讓細粒度錨點真正發揮，得先讓 transcript 存下 Edit 的內容片段。
+        scored.append((i, float(len(file_keys(anchors) & touched))))
     return sorted(scored, key=lambda pair: -pair[1])
 
 

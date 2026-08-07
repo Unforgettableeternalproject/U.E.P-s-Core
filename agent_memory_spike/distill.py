@@ -35,6 +35,7 @@ spike 維持零第三方依賴。蒸餾用 ``--emit`` 產出任務檔、``--inge
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -47,6 +48,8 @@ from transcript import ORIGIN_HUMAN, file_key, file_keys  # noqa: E402
 WORK_DIR = DEFAULT_EPISODE_DIR.parent
 DEFAULT_TASK_PATH = WORK_DIR / "distill_tasks.json"
 DEFAULT_CONCEPT_PATH = WORK_DIR / "concepts.json"
+# 已蒸餾過的 task id。增量蒸餾靠它跳過重複工作，所以它必須用穩定 id 當鍵
+DEFAULT_WATERMARK_PATH = WORK_DIR / "distilled.json"
 
 # 一輪使用者輸入超過這個長度就不算「短」。
 # 語料實測 human 輪的 user_text 中位數只有 58 字元、p75 是 150——
@@ -172,6 +175,21 @@ def _turn_key(episode: dict[str, Any]) -> list[Any]:
     return [episode.get("prompt_id"), episode.get("turn_index")]
 
 
+def stable_task_id(candidate: dict[str, Any]) -> str:
+    """由來源輪次派生的穩定 id。
+
+    **原本是按位置編號的 ``cand-000``，那在增量蒸餾下必定出錯。**
+    語料每長一輪，同一組候選的序號就可能位移，而 ``--ingest`` 靠 id 對回 task
+    拿溯源——位移之後就會把 A 組的 concept 掛到 B 組的來源輪次上，
+    而且完全靜默：欄位都在、格式都對，只是溯源全錯。
+
+    一次性全量跑碰不到這個問題（task 檔固定），所以先前沒暴露出來。
+    但定期自動蒸餾必然是增量的，這是接自動化前必須先擋掉的坑。
+    """
+    payload = json.dumps([_turn_key(t) for t in candidate["turns"]], sort_keys=True)
+    return "c-" + hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
+
+
 def _trim(text: str | None, limit: int) -> str:
     text = (text or "").strip()
     if len(text) <= limit:
@@ -179,7 +197,27 @@ def _trim(text: str | None, limit: int) -> str:
     return text[:limit] + f"\n…（截斷，原長 {len(text)} 字元）"
 
 
-def build_task(candidate: dict[str, Any], index: int) -> dict[str, Any]:
+def load_watermark(path: Path) -> set[str]:
+    """讀出已經蒸餾過的 task id。
+
+    **含空手的組**：那些也花過一次判斷成本，重跑只會再得到一次空手。
+    只記「有產出的」等於每次增量都把所有空手組重跑一遍，
+    而空手率實測 19%，那是白付的成本。
+    """
+    if not path.exists():
+        return set()
+    try:
+        return set(json.loads(path.read_text(encoding="utf-8")).get("task_ids") or [])
+    except (OSError, json.JSONDecodeError):
+        return set()
+
+
+def save_watermark(path: Path, task_ids: set[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"task_ids": sorted(task_ids)}, indent=2), encoding="utf-8")
+
+
+def build_task(candidate: dict[str, Any]) -> dict[str, Any]:
     """把一組候選整理成蒸餾任務。
 
     **assistant_text 給的額度比 user_text 大。** 初版反過來，理由是「使用者說的話
@@ -191,7 +229,7 @@ def build_task(candidate: dict[str, Any], index: int) -> dict[str, Any]:
     """
     previous, current = candidate["turns"]
     return {
-        "id": f"cand-{index:03d}",
+        "id": stable_task_id(candidate),
         "repo": candidate["repo"],
         # 這組是粗篩訊號撈到的，還是全語料才涵蓋到的。
         # 全跑時靠它切開兩段比產出率，量粗篩訊號到底有沒有鑑別力
@@ -301,14 +339,23 @@ DISTILL_INSTRUCTIONS = """\
 
 
 def emit(episodes: list[dict[str, Any]], task_path: Path, *, control: int = 0,
-         all_pairs: bool = False, seed: int = 20260807) -> int:
+         all_pairs: bool = False, incremental: bool = False,
+         watermark_path: Path | None = None, seed: int = 20260807) -> int:
     if all_pairs:
         candidates = find_all_pairs(episodes, seed)
     elif control:
         candidates = find_control_pairs(episodes, control, seed)
     else:
         candidates = find_candidates(episodes)
-    tasks = [build_task(c, i) for i, c in enumerate(candidates)]
+    tasks = [build_task(c) for c in candidates]
+
+    if incremental:
+        done = load_watermark(watermark_path or DEFAULT_WATERMARK_PATH)
+        before = len(tasks)
+        tasks = [t for t in tasks if t["id"] not in done]
+        print(f"[distill] 增量：{before} 組候選中 {before - len(tasks)} 組已蒸餾過，跳過",
+              file=sys.stderr)
+
     payload = {
         "instructions": DISTILL_INSTRUCTIONS,
         "task_count": len(tasks),
@@ -321,7 +368,8 @@ def emit(episodes: list[dict[str, Any]], task_path: Path, *, control: int = 0,
     return 0
 
 
-def ingest(result_path: Path, concept_path: Path, task_path: Path) -> int:
+def ingest(result_path: Path, concept_path: Path, task_path: Path,
+           watermark_path: Path | None = None, *, append: bool = False) -> int:
     """收回蒸餾結果，加上溯源後存檔。
 
     溯源（哪些輪次生出這條）對應 Echo 的 DERIVED_FROM 邊。這裡不建圖，
@@ -339,10 +387,26 @@ def ingest(result_path: Path, concept_path: Path, task_path: Path) -> int:
 
     concepts: list[dict[str, Any]] = []
     seen_statements: set[str] = set()
+    # 已處理過的 task id，含空手的組——它們也花過判斷成本，不該被重跑
+    processed: set[str] = set()
+    unmatched = 0
+
+    if append and concept_path.exists():
+        # 增量收回：接在既有 concept 之後，並把既有的陳述納入去重比對，
+        # 否則同一件事會在每次增量各進一條
+        concepts = json.loads(concept_path.read_text(encoding="utf-8"))
+        seen_statements = {" ".join((c.get("statement") or "").split()).lower() for c in concepts}
+        print(f"[distill] 增量模式：既有 {len(concepts)} 條", file=sys.stderr)
+
     for entry in entries:
         task = tasks.get(entry.get("id"))
         if task is None:
+            # 對不上多半代表結果檔與 tasks 檔不同批（例如 tasks 重新 emit 過）。
+            # 原本這裡靜默 continue，整批對不上時只會看到「收回 0 條」，
+            # 看起來像蒸餾者什麼都沒找到——而不是資料配錯了
+            unmatched += 1
             continue
+        processed.add(entry["id"])
         for concept in entry.get("concepts") or []:
             statement = (concept.get("statement") or "").strip()
             # 去重比對正規化過的陳述——同一件事會從多組候選被抽出來
@@ -378,11 +442,19 @@ def ingest(result_path: Path, concept_path: Path, task_path: Path) -> int:
             })
 
     concept_path.write_text(json.dumps(concepts, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    watermark = watermark_path or DEFAULT_WATERMARK_PATH
+    save_watermark(watermark, load_watermark(watermark) | processed)
+
     kinds: dict[str, int] = {}
     for c in concepts:
         kinds[c.get("kind") or "?"] = kinds.get(c.get("kind") or "?", 0) + 1
     print(f"[distill] 收回 {len(concepts)} 條 concept（去重後）→ {concept_path}", file=sys.stderr)
     print(f"  kind 分布: {kinds}", file=sys.stderr)
+    print(f"  已蒸餾組數 {len(processed)} 寫入 watermark → {watermark}", file=sys.stderr)
+    if unmatched:
+        print(f"  ⚠ {unmatched} 組結果在 tasks 檔裡找不到對應的 id——"
+              f"結果檔與 tasks 檔可能不同批", file=sys.stderr)
     return 0
 
 
@@ -432,6 +504,9 @@ def main() -> int:
     parser.add_argument("--show", type=str, help="印出指定範圍的任務，例如 0-12")
     parser.add_argument("--all", dest="all_pairs", action="store_true",
                         help="全語料：所有相鄰 human 輪對，不只粗篩候選")
+    parser.add_argument("--incremental", action="store_true",
+                        help="emit 時跳過已蒸餾過的組；ingest 時接在既有 concept 之後")
+    parser.add_argument("--watermark-path", type=Path, default=DEFAULT_WATERMARK_PATH)
     parser.add_argument("--control", type=int, default=0,
                         help="改抽 N 組『無檔案重疊』的對照輪對，用來量粗篩訊號的召回率")
     parser.add_argument("--seed", type=int, default=20260807, help="對照組抽樣種子（可重現）")
@@ -447,7 +522,8 @@ def main() -> int:
             pass
 
     if args.ingest:
-        return ingest(args.ingest, args.concept_path, args.task_path)
+        return ingest(args.ingest, args.concept_path, args.task_path,
+                      args.watermark_path, append=args.incremental)
 
     if args.show:
         return show(args.task_path, args.show)
@@ -455,7 +531,8 @@ def main() -> int:
     episodes = load_episodes(args.episode_dir)
     if args.emit:
         return emit(episodes, args.task_path, control=args.control,
-                    all_pairs=args.all_pairs, seed=args.seed)
+                    all_pairs=args.all_pairs, incremental=args.incremental,
+                    watermark_path=args.watermark_path, seed=args.seed)
     return stats(episodes)
 
 

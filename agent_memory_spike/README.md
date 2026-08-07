@@ -403,7 +403,8 @@ python distill.py --ingest <dir> --incremental # 接在既有 concept 之後
 
 - **矛盾的傳遞性**（見上）——單輪配對抓不完
 - **蒸餾判準的評審間變異 2.2 倍**：各批產出密度 0.83 ~ 1.96 條/組
-- **612 條尚未校準**：surprisal 只能靠行為測試，成本大且模型升級後要重跑
+- ~~**612 條尚未校準**~~：高價值的 158 條已校準（見 Phase 2.7），
+  `project-fact` 那 454 條仍未測
 - ~~**空 `assistant_text` 的輪次**~~：已查根因並補進 `--doctor`，見下節
 - **自動化尚未接上**：穩定 id 與增量都到位了，但排程入口、lockfile、
   每次上限、以及「蒸餾 → 校準 → 入池」整條 pipeline 還沒串
@@ -436,3 +437,52 @@ dict 後寫者贏，於是拿 turn 0 的空 meta 輪去對照 turn 33 的 human 
 順帶：原本每個 session 會重建三次 transcript，現在一次。
 
 `--doctor` 現在會印出空 `assistant_text` 的分類統計，只有「殘留」那類算問題。
+
+---
+
+# Phase 2.7 — 高價值子集校準（已完成）
+
+612 條全跑的成本是一次蒸餾的量級以上，所以先跑
+`user-stance` + `belief-correction` 共 158 條（`--kinds` 新增於此）：
+
+```bash
+python calibrate.py --emit --kinds user-stance,belief-correction --probe-path <path>
+python calibrate.py --show-probes 0-12 --probe-path <path>   # 受測（13 個乾淨 agent）
+python calibrate.py --show-judge 0-25 --answer-path <dir>    # 判卷（8 個 agent）
+python calibrate.py --ingest <verdicts_dir>
+```
+
+| kind | 條數 | VOLUNTEER | PARTIAL | SILENT | CONTRARY | 通過 |
+|---|---|---|---|---|---|---|
+| belief-correction | 121 | 42 | 28 | 27 | 24 | 51（42.1%） |
+| user-stance | 37 | 11 | 7 | 7 | 12 | **19（51.4%）** |
+| 合計 | 158 | 53 | 35 | 34 | 36 | 70（44.3%） |
+
+## user-stance 的高價值第一次拿到實測支持
+
+Phase 0 憑黃金資料判斷 user-stance 最有價值，那批是人工挑的。
+這次在真實語料上量到同一個結果：通過率 51.4% > 42.1%，
+而**最高價值的 CONTRARY 佔比 32% vs 20%**——模型不只是不知道使用者的立場，
+是會主動提出相反的做法。
+
+這也回頭確認了全語料蒸餾的價值不在條數：粗篩訊號按定義漏掉 user-stance
+（表達立場的輪次通常沒有檔案被改），而那正是密度最高的一類。
+
+## 原子化見效：PARTIAL 從 42% 降到 22%
+
+Phase 1.5 有 42% 的判定落在 PARTIAL——一條 statement 綁了兩件事，
+一件模型知道、一件不知道，收斂成無法決策的中間值。
+蒸餾指示加了原子性要求之後，這輪是 22%（35/158）。
+
+## `scope=TestSeperateMemorySystem` 的污染不再是「疑慮」
+
+那批 6 條通過 1 條，VOLUNTEER 5 條——通過率 17%，遠低於其他 scope 的 38–67%。
+受測 agent 在本 repo 目錄下跑會自動吃到 `CLAUDE.md`，
+所以它「本來就知道」。**這批條目的判定不可信，之後要換乾淨目錄重測。**
+
+## 已知限制
+
+- **454 條 `project-fact` 仍未校準**。「它們的 surprisal 多半較低」是猜測，
+  沒有數據——未校準的那批只能當「還沒測」，不能當「已知低價值」
+- 判卷仍是單一評審，跨評審一致性未量
+- 這輪沒跑注入實驗（可利用性）；Phase 1.5 的 22/22 APPLIED 是在 55 條的池子上測的

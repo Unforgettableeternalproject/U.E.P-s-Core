@@ -21,8 +21,9 @@ Coding agent 記憶層實驗。與 `echo_memory/` 完全無關——不 import�
 | `calibrate.py` | 1.5 | surprisal 行為校準 + 注入實驗 |
 | `experiment/phase15-results.md` | 1.5 | 蒸餾與校準結果 |
 | `experiment/phase15-evaluation.md` | 1.5 | 完備性與可利用性驗收 |
-| `retrieve.py` | 2 | 檢索（BM25 + ollama 向量 + 檔案訊號） |
+| `retrieve.py` | 2 | 檢索（BM25 + ollama 向量 + 檔案／符號訊號） |
 | `experiment/phase2-retrieval.md` | 2 | 檢索驗證結果 |
+| `consolidate.py` | 2.5 | 池子收斂（語意去重 + 矛盾偵測） |
 
 資料一律放在 repo 外的 `~/.claude/agent-memory-spike/`——hook 全域掛載，
 會收到所有專案的對話原文，包含商業專案。
@@ -324,13 +325,86 @@ cwd=.../AI-Website-API     → src/routes/compliance-v2/types.ts
 效果：粗篩候選 80 → 91 組，檔案情境 case 554 → 684，檔案訊號 recall@5 12.5% → 14.6%。
 **但影響比預期小**——候選只多 11 組，不足以推翻「粗篩訊號無鑑別力」的結論。
 
+---
+
+# Phase 2.5 — 池子收斂與符號級錨點（已完成）
+
+```bash
+python consolidate.py --pairs        # 算相似對（同 scope 內，餘弦 ≥ 0.80）
+python consolidate.py --show 0-39    # 取一批配對（給判定者）
+python consolidate.py --ingest <dir> # 收回判定並套用
+```
+
+## 語意去重 + 矛盾偵測
+
+兩件事的第一步相同（找語意相近的 concept 對），所以合成一支工具，
+只在 LLM 判斷時問不同的問題。實測 775 條 → 237 組配對：
+
+```
+DUPLICATE      178 組     移除 156 條
+CONTRADICTION    8 組     移除   7 條
+DISTINCT        51 組
+                          775 → 612 條
+```
+
+**8 組真矛盾**證實「記憶被後續語料推翻」不是理論擔憂。最清楚的一組：
+`compliance-v2` 的 `tracking.ts` 早期完全信任前端傳的 `user_departments`，
+後來改成後端用 JWT 自己查——**舊那條留著被召回，會讓人以為後端沒驗證**。
+
+池子縮了 21%，檢索反而變好（recall@5 31.9% → 33.1%，MRR 0.211 → 0.236）：
+移除的確實是雜訊——重複條目互相稀釋排名，過期條目佔位。
+
+⚠️ **矛盾有傳遞性，單輪配對處理不完**：實測 `c-138`/`c-617` 被判與 `c-711` 重複，
+而 `c-711` 又被 `c-238` 推翻——那兩條其實也過期了，卻因為沒被直接配對到而逃過。
+需要多輪迭代或叢集處理。
+
+## 符號級錨點
+
+`anchors` 的粒度做到了函式名與欄位名，但 episode 只存檔案路徑，
+比對是集合交集——**符號級錨點永遠不可能命中**。
+現在從 `Edit`/`Write`/`MultiEdit` 的參數抽識別符存進 `symbols_edited`
+（只存符號不存原文：內容體積大且含機敏資訊，而比對只需要符號）。
+
+同池同 case 對照（623 個 case、630 條池）：
+
+| 錨點 | recall@1 | recall@5 | MRR |
+|---|---|---|---|
+| 只用檔案 | **12.2%** | 16.9% | 0.143 |
+| 檔案 + 符號 | 8.5% | **23.6%** | **0.152** |
+
+符號把更多正確答案帶進 top-5，但會擠掉一部分第一名。MRR 淨上升。
+
+**權重是實測選的**：給 2 時 MRR 只有 0.114，自作聰明加「罕見符號權重更高」的
+稀有度衰減是 0.136，最單純的等權 0.152 最好。假設被推翻就不留那段複雜度。
+
+## 跨 session 去重的鍵原本是錯的
+
+原本用 `(prompt_id, turn_index)`，理由是「resume 的完整複本序號一致」——
+**那個假設是錯的**，實測同一輪在兩個 session 檔裡分別是 `turn_index` 2 和 3，
+32 組、64 輪（4.5%）就這樣重複進了語料。
+
+改成先按 `(prompt_id, user_text 指紋)` 分桶，桶內再用 `assistant_text` 的
+**前綴關係**判斷是否同一輪：殘缺的副本必然是完整版的前綴，
+真正不同的兩輪則從頭就不一樣。寫入端的鍵維持不變（單一檔內序號不會位移）。
+
+## 增量蒸餾
+
+```bash
+python distill.py --emit --all --incremental   # 跳過已蒸餾過的組
+python distill.py --ingest <dir> --incremental # 接在既有 concept 之後
+```
+
+`cand-NNN` 是按位置編號的，語料一長就位移，而 `--ingest` 靠 id 對回 task 拿溯源——
+位移後會把 A 組的 concept 掛到 B 組的來源輪次上，**且完全靜默**。
+改由 `source_turns` 派生 sha1，配上 `distilled.json` watermark。
+這是接定期自動蒸餾的先決條件。
+
 ## 已知待處理
 
-- **記憶會被後續語料推翻**：四批蒸餾者各自撞到「這條事實在後面幾輪就被改掉了」。
-  能自救的都是因為衝突剛好落在同一批，**跨批的一律漏網**。去重只比字串，抓不到矛盾
-- **字串去重幾乎無效**：780 → 775 只掉 5 條，語意重複仍大量存在
+- **矛盾的傳遞性**（見上）——單輪配對抓不完
 - **蒸餾判準的評審間變異 2.2 倍**：各批產出密度 0.83 ~ 1.96 條/組
-- **語料可能有重複**：cand-341 與 cand-353 內容完全相同且相隔 12 組，
-  不是滑動窗口造成。若 resume 讓同一輪換了新 `prompt_id`，
-  `(prompt_id, turn_index)` 去重就擋不住
-- **空 `assistant_text` 的輪次**：多批回報撞到，`--doctor` 尚未把它列為檢查項
+- **612 條尚未校準**：surprisal 只能靠行為測試，成本大且模型升級後要重跑
+- **空 `assistant_text` 的輪次**：162 輪（11.5%），其中 35 輪是 human 輪。
+  `--doctor` 尚未把它列為檢查項——按「doctor 沒比對的欄位等於沒有保護」的教訓，該補
+- **自動化尚未接上**：穩定 id 與增量都到位了，但排程入口、lockfile、
+  每次上限、以及「蒸餾 → 校準 → 入池」整條 pipeline 還沒串

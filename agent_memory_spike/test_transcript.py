@@ -439,8 +439,9 @@ def _episode(prompt_id, turn_index, user_text, assistant_text, tool_calls=0, rep
         "tool_calls_total": tool_calls,
     }
     if repo is not None:
-        # doctor 會比對 repo / files_edited / files_read，只給文字欄位會被誤報成不一致
-        episode.update({"repo": repo, "files_edited": [], "files_read": []})
+        # doctor 會比對 repo / files_edited / files_read，只給文字欄位會被誤報成不一致；
+        # injected 缺欄位會被判成舊 schema（那是刻意的，見 doctor 的 legacy_schema）
+        episode.update({"repo": repo, "files_edited": [], "files_read": [], "injected": []})
     return episode
 
 
@@ -544,6 +545,35 @@ def test_doctor_accepts_empty_assistant_text_when_there_was_no_response(tmp_path
     _stub_find_transcript(monkeypatch, {"sess-1": transcript})
 
     assert doctor(episode_dir) == 0
+
+
+def test_injected_marks_which_turns_saw_memory(tmp_path, monkeypatch):
+    """注入紀錄靠 (session_id, prompt 指紋) 對回語料。
+
+    這個欄位是「哪些輪次被記憶影響過」的唯一依據——對不上的話，
+    被污染的輪次會被當成乾淨語料拿去校準 surprisal，量出系統性偏低的結果。
+    """
+    from transcript import prompt_fingerprint
+
+    log = tmp_path / "injections.jsonl"
+    log.write_text(json.dumps({
+        "session_id": "sess-1",
+        "prompt_fingerprint": prompt_fingerprint("改一下這裡"),
+        "injected": ["c-001", "c-002"],
+    }) + "\n", encoding="utf-8")
+
+    records = [
+        _user("p1", text="改一下這裡", origin={"kind": "human"}),
+        _assistant(text="好的"),
+    ]
+    from transcript import load_injections
+    ep = build_episode("p1", records, injections=load_injections(log))
+    assert ep["injected"] == ["c-001", "c-002"]
+
+    # 沒有對應紀錄的輪次是空 list，不是缺欄位——兩者代表的意思不同
+    other = build_episode("p1", [_user("p1", text="別的話", origin={"kind": "human"})],
+                          injections=load_injections(log))
+    assert other["injected"] == []
 
 
 def test_doctor_accepts_empty_assistant_text_when_interrupted_mid_tool(tmp_path, monkeypatch):

@@ -355,6 +355,44 @@ def build_file_cases(pool: list[dict[str, Any]], episodes: list[dict[str, Any]])
     return cases
 
 
+# 注入時的檔案訊號設定。**這兩個數字是實測選的**，50 個情境、236 條判定：
+#
+#   設定                  注入條數  precision  情境命中率  平均條/次
+#   top-3 / overlap>=1       144      38.2%       66%       2.88
+#   top-3 / overlap>=2       115      43.5%       62%       2.30   ← 採用
+#   top-3 / overlap>=3        53      49.1%       32%       1.06
+#   top-5 / overlap>=2       175      38.3%       68%       3.50
+#
+# 只重疊一項的召回 RELEVANT 只有 8.2%、IRRELEVANT 77%——那是「剛好碰到同一個檔案」，
+# 濾掉它換來 5.3pp 的 precision，只損失 4pp 的命中率。
+# 再往上收到 3 就崩了：命中率腰斬到 32%，因為多數真正有用的召回本來就只重疊兩項。
+MIN_FILE_OVERLAP = 2
+INJECT_TOP_K = 3
+
+PRECISION_JUDGE_INSTRUCTIONS = """\
+你在評估一個 coding agent 的記憶召回**準不準**。
+
+每一題會給你：那一輪使用者說的話、助手實際做了什麼、改了哪些檔案，
+以及系統在那個當下召回的幾條記憶。逐條判斷這條記憶對**當下這輪**有沒有用。
+
+- `RELEVANT`：這條記憶講的正是這輪要處理的東西，事先看到它會讓這輪做得更對或更快
+- `MARGINAL`：沾得上邊（同一個檔案、同一個模組），但跟這輪真正在做的事沒有交集
+- `IRRELEVANT`：完全用不上
+
+**判斷紀律**：召回到「同一個檔案的另一段邏輯的舊筆記」算 `MARGINAL`，不算 `RELEVANT`——
+共用一個檔案不代表相關。要判 `RELEVANT`，得說得出這條記憶會影響這輪的哪個決定。
+
+只輸出 JSON：
+
+```json
+{"verdicts": [
+  {"task_id": "prec-000", "concept_id": "c-019", "verdict": "MARGINAL",
+   "reason": "一句話說明"}
+]}
+```
+"""
+
+
 def dump_precision_tasks(pool: list[dict[str, Any]], episodes: list[dict[str, Any]],
                          path: Path, sample_size: int, seed: int, top_k: int) -> int:
     """產出 precision 評估任務：每個情境配上檔案訊號召回的 top-k。
@@ -395,11 +433,80 @@ def dump_precision_tasks(pool: list[dict[str, Any]], episodes: list[dict[str, An
             "retrieved": retrieved,
         })
 
-    path.write_text(json.dumps({"count": len(tasks), "tasks": tasks},
+    path.write_text(json.dumps({"instructions": PRECISION_JUDGE_INSTRUCTIONS,
+                                "count": len(tasks), "tasks": tasks},
                                ensure_ascii=False, indent=2), encoding="utf-8")
     total = sum(len(t["retrieved"]) for t in tasks)
     print(f"[retrieve] {len(tasks)} 個情境（去重自 {len(cases)} 個 case），"
           f"共召回 {total} 條，平均 {total / len(tasks):.2f} 條/次 → {path}", file=sys.stderr)
+    return 0
+
+
+def show_precision(path: Path, spec: str) -> int:
+    """印出指定範圍的 precision 判定材料。
+
+    跟其他工具同一個介面（``--show`` 取一批、agent 判、``--ingest`` 收回），
+    因為 C 階段要把這條串進自動化，一次性的手工分析串不進去。
+    """
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    start, _, end = spec.partition("-")
+    tasks = payload["tasks"][int(start):int(end or start) + 1]
+
+    print(payload.get("instructions", PRECISION_JUDGE_INSTRUCTIONS))
+    for task in tasks:
+        if not task["retrieved"]:
+            continue
+        print(f"\n{'=' * 70}\n### {task['id']}  (repo: {task['repo']})")
+        print(f"\n[改到的檔案]\n{', '.join(task['files_edited']) or '（無）'}")
+        print(f"\n[使用者說的話]\n{task['user_text']}")
+        print(f"\n[助手實際做了什麼]\n{task['assistant_text']}")
+        print("\n[當下召回的記憶]")
+        for item in task["retrieved"]:
+            print(f"  - {item['id']}（重疊 {item['overlap']}）：{item['statement']}")
+    return 0
+
+
+def ingest_precision(task_path: Path, verdict_path: Path) -> int:
+    """收回判定並算數字。
+
+    報兩個指標，因為它們回答不同的問題：
+
+    - **逐條 precision**：召回的東西裡有多少是有用的，決定注入會不會稀釋 context
+    - **情境命中率**：有多少次召回裡「至少有一條 RELEVANT」，
+      這才是決定 ``PreToolUse`` 值不值得掛的指標——只要有一條真的有用，
+      這次召回就賺到了，旁邊幾條無關的代價只是多佔一點篇幅
+    """
+    payload = json.loads(task_path.read_text(encoding="utf-8"))
+    tasks = {t["id"]: t for t in payload["tasks"]}
+
+    sources = sorted(verdict_path.glob("*.json")) if verdict_path.is_dir() else [verdict_path]
+    verdicts: list[dict[str, Any]] = []
+    for source in sources:
+        data = json.loads(source.read_text(encoding="utf-8"))
+        verdicts.extend(data if isinstance(data, list) else data.get("verdicts", []))
+
+    counts: dict[str, int] = {}
+    by_task: dict[str, list[str]] = {}
+    for verdict in verdicts:
+        label = verdict.get("verdict") or "?"
+        counts[label] = counts.get(label, 0) + 1
+        by_task.setdefault(verdict.get("task_id"), []).append(label)
+
+    total = sum(counts.values())
+    relevant = counts.get("RELEVANT", 0)
+    marginal = counts.get("MARGINAL", 0)
+    judged_tasks = [t for t in tasks.values() if t["retrieved"] and t["id"] in by_task]
+    hit = sum(1 for t in judged_tasks if "RELEVANT" in by_task[t["id"]])
+
+    out = sys.stderr
+    print(f"[precision] {len(judged_tasks)} 個有召回的情境、{total} 條判定: {counts}", file=out)
+    if total:
+        print(f"  逐條 precision（嚴格）: {relevant}/{total} = {relevant / total * 100:.1f}%", file=out)
+        print(f"  逐條 precision（含 MARGINAL）: {(relevant + marginal)}/{total} "
+              f"= {(relevant + marginal) / total * 100:.1f}%", file=out)
+    if judged_tasks:
+        print(f"  情境命中率（至少一條 RELEVANT）: {hit}/{len(judged_tasks)} "
+              f"= {hit / len(judged_tasks) * 100:.1f}%", file=out)
     return 0
 
 
@@ -433,6 +540,10 @@ def file_overlap_ranker(pool: list[dict[str, Any]], case: dict[str, Any], *,
     裡面多半是順手碰到的，用它做召回的 precision 只有 30%——
     抓到的常是「同一個檔案裡另一段邏輯的舊筆記」。
     真正有用的召回，共同特徵是錨點與當下要改的東西同名同源。
+
+    **只重疊一項的召回幾乎全是雜訊**（實測 RELEVANT 8.2%、IRRELEVANT 77%），
+    所以要注入時應該用 ``MIN_FILE_OVERLAP`` 過濾——見那個常數的說明。
+    評測時不過濾：門檻要能被量測，寫死在 ranker 裡就比較不出來了。
     """
     touched_files = file_keys(case.get("files_edited"))
     # use_symbols=False 是對照組：同一個池子、同一批 case，只差有沒有用符號級錨點。
@@ -645,6 +756,9 @@ def main() -> int:
     parser.add_argument("--eval", action="store_true", help="量 recall@k 與 MRR")
     parser.add_argument("--eval-files", action="store_true", help="在「同檔案再次編輯」情境下比較檔案訊號")
     parser.add_argument("--dump-precision", type=Path, help="產出檔案訊號的 precision 評估任務")
+    parser.add_argument("--show-precision", type=str, help="印出 precision 判定材料，例如 0-9")
+    parser.add_argument("--ingest-precision", type=Path, help="收回 precision 判定並算數字")
+    parser.add_argument("--precision-path", type=Path, default=WORK_DIR / "precision_tasks.json")
     parser.add_argument("--sample", type=int, default=30, help="precision 抽樣情境數")
     parser.add_argument("--seed", type=int, default=20260807)
     parser.add_argument("--query", type=str, help="手動查一筆")
@@ -665,6 +779,11 @@ def main() -> int:
     if not pool:
         print("[retrieve] 檢索池是空的", file=sys.stderr)
         return 1
+
+    if args.show_precision:
+        return show_precision(args.precision_path, args.show_precision)
+    if args.ingest_precision:
+        return ingest_precision(args.precision_path, args.ingest_precision)
 
     if args.query:
         return query_once(pool, args.query, args.top_k)

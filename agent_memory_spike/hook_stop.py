@@ -58,7 +58,7 @@ _T0 = time.perf_counter()
 DEFAULT_EPISODE_DIR = Path.home() / ".claude" / "agent-memory-spike" / "episodes"
 
 sys.path.insert(0, str(Path(__file__).parent))
-from transcript import ORIGIN_HUMAN, episodes_from_transcript  # noqa: E402
+from transcript import ORIGIN_HUMAN, episodes_from_transcript, load_injections  # noqa: E402
 
 
 def episode_path(episode_dir: Path, session_id: str) -> Path:
@@ -104,13 +104,15 @@ def recorded_prompt_ids(path: Path) -> set[tuple[str, int]]:
     return ids
 
 
-def completed_episodes(transcript: Path) -> list[dict[str, Any]]:
+def completed_episodes(transcript: Path,
+                       injections: dict[tuple[str, str], list[str]] | None = None
+                       ) -> list[dict[str, Any]]:
     """只回傳可以確定已經結束的輪次。
 
     最新的一輪被排除：Stop hook 觸發時它可能只寫了一半，
     此時寫入會留下永久殘缺的紀錄。有後續輪次存在就代表前一輪確實結束了。
     """
-    episodes = episodes_from_transcript(transcript)
+    episodes = episodes_from_transcript(transcript, injections)
     return episodes[:-1] if episodes else []
 
 
@@ -135,9 +137,10 @@ def rewrite_episodes(path: Path, episodes: list[dict[str, Any]]) -> None:
     os.replace(tmp, path)
 
 
-def sync(transcript: Path, episode_dir: Path, session_id: str, *, dry_run: bool = False) -> tuple[int, int]:
+def sync(transcript: Path, episode_dir: Path, session_id: str, *, dry_run: bool = False,
+         injections: dict[tuple[str, str], list[str]] | None = None) -> tuple[int, int]:
     """增量同步：寫入所有已完成但尚未記錄的輪次。回傳 (寫入數, 跳過數)。"""
-    episodes = completed_episodes(transcript)
+    episodes = completed_episodes(transcript, injections)
     if not episodes:
         return 0, 0
 
@@ -156,12 +159,13 @@ def sync(transcript: Path, episode_dir: Path, session_id: str, *, dry_run: bool 
     return written, skipped
 
 
-def repair(transcript: Path, episode_dir: Path, session_id: str) -> tuple[int, int]:
+def repair(transcript: Path, episode_dir: Path, session_id: str,
+           injections: dict[tuple[str, str], list[str]] | None = None) -> tuple[int, int]:
     """從 transcript 全量重建，修掉殘缺的紀錄。回傳 (重建後筆數, 修正筆數)。
 
     需要這個是因為早期版本會寫入進行中的輪次，留下永久截斷的資料。
     """
-    episodes = completed_episodes(transcript)
+    episodes = completed_episodes(transcript, injections)
     path = episode_path(episode_dir, session_id)
 
     existing = {}
@@ -224,10 +228,12 @@ def sync_all(episode_dir: Path) -> int:
         print("[sync-all] 找不到任何 transcript", file=sys.stderr)
         return 0
 
+    # 一次載入，數百份 transcript 共用——否則每份都重讀一次 side-car
+    injections = load_injections()
     total_written = 0
     touched = 0
     for tp in transcripts:
-        written, _ = sync(tp, episode_dir, tp.stem)
+        written, _ = sync(tp, episode_dir, tp.stem, injections=injections)
         if written:
             touched += 1
             total_written += written
@@ -253,13 +259,14 @@ def repair_all(episode_dir: Path) -> int:
         print("[repair-all] 沒有任何 episode 檔", file=sys.stderr)
         return 0
 
+    injections = load_injections()
     rebuilt = fixed_total = skipped = 0
     for fp in files:
         transcript = find_transcript(fp.stem)
         if transcript is None:
             skipped += 1
             continue
-        total, fixed = repair(transcript, episode_dir, fp.stem)
+        total, fixed = repair(transcript, episode_dir, fp.stem, injections)
         rebuilt += total
         fixed_total += fixed
 
@@ -350,6 +357,13 @@ def doctor(episode_dir: Path) -> int:
     # 「真的沒有回應」與「有回應卻存成空」兩類，只有後者是故障。
     empty_kinds: dict[str, int] = {}
     empty_human = 0
+    # 注入紀錄與語料的對帳。注入 hook 寫 side-car、語料靠 (session_id, prompt 指紋)
+    # 對回來，比對規則錯了就會靜默地整批對不上——而那正是「哪些輪次被記憶影響過」
+    # 這件事的唯一依據，錯了會讓之後的校準失去意義
+    injections = load_injections()
+    injected_turns = 0
+    legacy_schema = 0
+    legacy_unfixable = 0
 
     for fp in files:
         session_id = fp.stem
@@ -360,14 +374,22 @@ def doctor(episode_dir: Path) -> int:
             continue
 
         total += len(stored)
+        legacy_here = 0
         for rec in stored:
+            if "injected" not in rec:
+                legacy_here += 1
+            elif rec.get("injected"):
+                injected_turns += 1
             repos[rec.get("repo") or "?"] = repos.get(rec.get("repo") or "?", 0) + 1
             origins[rec.get("origin") or "?"] = origins.get(rec.get("origin") or "?", 0) + 1
             agents[rec.get("agent") or "(未標記)"] = agents.get(rec.get("agent") or "(未標記)", 0) + 1
 
         transcript = find_transcript(session_id)
         if transcript is None:
-            # transcript 可能已被 cleanupPeriodDays 清掉，不算錯誤
+            # transcript 可能已被 cleanupPeriodDays 清掉，不算錯誤。
+            # 舊 schema 也一樣——沒有來源就重建不了，報成問題只會讓 doctor 永遠是紅的，
+            # 真正的故障反而淹在裡面
+            legacy_unfixable += legacy_here
             no_transcript += 1
             for rec in stored:
                 if not (rec.get("assistant_text") or "").strip():
@@ -379,13 +401,14 @@ def doctor(episode_dir: Path) -> int:
 
         # 解析一次就好。原本 completed_episodes 在這個迴圈裡被呼叫三次，
         # 每次都重讀並重建整份 transcript。
-        all_episodes = episodes_from_transcript(transcript)
+        all_episodes = episodes_from_transcript(transcript, injections)
         completed = all_episodes[:-1] if all_episodes else []
         live = {_key(e): e for e in completed}
         # 空 assistant_text 的比對要用**含最新輪**的版本：那 2 筆殘留正是
         # 落在「transcript 只有它自己一輪」的 session 裡，completed 把它排除掉，
         # 於是 ref is None → 靜默略過。這就是先前 doctor 全綠卻仍有殘留的原因。
         live_all = {_key(e): e for e in all_episodes}
+        legacy_schema += legacy_here
 
         seen = set()
         for rec in stored:
@@ -462,6 +485,20 @@ def doctor(episode_dir: Path) -> int:
         print(f"  （{no_transcript} 個 session 的 transcript 已不存在，略過比對）", file=out)
     if pending:
         print(f"  （{pending} 輪在尾端待補，下次 Stop hook 觸發時寫入——這是正常的）", file=out)
+
+    if legacy_unfixable:
+        print(f"  （{legacy_unfixable} 輪停在舊 schema 且來源已消失，重建不了）", file=out)
+    if legacy_schema:
+        problems.append(
+            f"{legacy_schema} 輪沒有 injected 欄位（早於這個 schema）——跑 --repair-all 補上"
+        )
+    if injections:
+        print(f"\n  注入紀錄 {len(injections)} 筆，語料裡對上 {injected_turns} 輪", file=out)
+        if injected_turns < len(injections):
+            problems.append(
+                f"注入紀錄有 {len(injections)} 筆，語料只對上 {injected_turns} 輪——"
+                f"指紋比對可能失效，被影響過的輪次會被當成乾淨語料"
+            )
 
     empty_total = sum(empty_kinds.values())
     if empty_total:

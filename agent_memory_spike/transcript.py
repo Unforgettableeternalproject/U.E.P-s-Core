@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -42,6 +43,48 @@ ORIGIN_UNKNOWN = "unknown"
 
 
 _repo_root_cache: dict[str, Path | None] = {}
+
+# 注入紀錄的 side-car。**注入 hook 自己寫，不從 transcript 反推**——
+# additionalContext 在 transcript 裡的形狀沒有保證，靠猜會得到一個
+# 「看起來正常但其實對不上」的欄位，那正是這個專案反覆踩到的坑。
+INJECTION_LOG = Path.home() / ".claude" / "agent-memory-spike" / "injections.jsonl"
+
+
+def prompt_fingerprint(text: str) -> str:
+    """使用者輸入的指紋，注入紀錄與語料靠它對上。
+
+    存指紋不存原文：這份檔案的用途只是比對，而 prompt 內容已經在 episode 裡了，
+    再存一份等於多一個外洩面。
+    """
+    return hashlib.sha1((text or "").encode("utf-8")).hexdigest()[:16]
+
+
+def load_injections(path: Path = INJECTION_LOG) -> dict[tuple[str, str], list[str]]:
+    """讀注入紀錄，鍵是 (session_id, prompt 指紋)。
+
+    **為什麼需要這個欄位**：注入記憶之後，語料就變成「已被記憶影響過的行為」，
+    再拿它校準 surprisal 會有系統性偏誤——這是 hook 遲遲不掛的唯一理由。
+    但問題不在注入本身，在於**分不出哪些輪次被影響過**。
+    標記起來，校準時就能排除，同時這還是比實驗室注入實驗更真實的線上效果資料。
+    """
+    if not path.exists():
+        return {}
+    found: dict[tuple[str, str], list[str]] = {}
+    try:
+        with path.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                key = (str(record.get("session_id")), str(record.get("prompt_fingerprint")))
+                found[key] = list(record.get("injected") or [])
+    except OSError:
+        return {}
+    return found
 
 # 帶檔案路徑的工具，以及路徑放在哪個參數裡。
 # 分成「改」與「讀」兩組是刻意的：結構訊號要找的是反覆**修改**同一個檔案，
@@ -296,7 +339,8 @@ def iter_prompt_groups(records: list[dict[str, Any]]) -> Iterator[tuple[str, lis
         yield current_id, current
 
 
-def build_episode(prompt_id: str, records: list[dict[str, Any]], turn_index: int = 0) -> dict[str, Any]:
+def build_episode(prompt_id: str, records: list[dict[str, Any]], turn_index: int = 0,
+                  injections: dict[tuple[str, str], list[str]] | None = None) -> dict[str, Any]:
     """把一輪的記錄組裝成 episode。
 
     刻意記錄的東西與理由：
@@ -437,6 +481,13 @@ def build_episode(prompt_id: str, records: list[dict[str, Any]], turn_index: int
     files_edited = _dedup(raw_edited)
     files_read = _dedup(raw_read)
 
+    user_text = "\n\n".join(user_texts)
+    # 空 list 與缺欄位要分得開：前者是「這輪沒被注入」，後者是「這筆語料早於這個 schema」。
+    # 舊語料停在舊格式而沒有任何標示，是先前踩過的坑
+    injected = (injections or {}).get(
+        (str(session_id), prompt_fingerprint(user_text)), []
+    )
+
     return {
         "prompt_id": prompt_id,
         # promptId 不足以當唯一鍵：session 起始的 meta 注入在每次 resume 時會重新出現，
@@ -458,8 +509,11 @@ def build_episode(prompt_id: str, records: list[dict[str, Any]], turn_index: int
         "repo": repo,
         "git_branch": branches,
         "cc_version": cc_version,
-        "user_text": "\n\n".join(user_texts),
+        "user_text": user_text,
         "assistant_text": "\n\n".join(assistant_texts),
+        # 這輪開始前注入了哪幾條記憶。校準時要排除非空的輪次——
+        # 它們是「已被記憶影響過的行為」，拿來量 surprisal 會系統性偏低
+        "injected": injected,
         "tool_sequence": [{"name": n, "count": c} for n, c in tools.most_common()],
         "tool_calls_total": sum(tools.values()),
         "mcp_tools": sorted(mcp_tools),
@@ -473,11 +527,19 @@ def build_episode(prompt_id: str, records: list[dict[str, Any]], turn_index: int
     }
 
 
-def episodes_from_transcript(path: Path) -> list[dict[str, Any]]:
-    """讀整份 transcript，回傳所有 episode。"""
+def episodes_from_transcript(path: Path,
+                             injections: dict[tuple[str, str], list[str]] | None = None
+                             ) -> list[dict[str, Any]]:
+    """讀整份 transcript，回傳所有 episode。
+
+    ``injections`` 傳 None 時自己載入。呼叫端要跑幾百份 transcript 時
+    （``--sync-all`` / ``--repair-all`` / ``--doctor``）該自己載入一次傳進來。
+    """
+    if injections is None:
+        injections = load_injections()
     records = load_records(path)
     return [
-        build_episode(pid, group, turn_index=i)
+        build_episode(pid, group, turn_index=i, injections=injections)
         for i, (pid, group) in enumerate(iter_prompt_groups(records))
     ]
 

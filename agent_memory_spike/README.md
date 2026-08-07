@@ -539,3 +539,65 @@ Phase 2.5 舉的那個例子（`c-138`/`c-617` ≡ `c-711`，而 `c-711` 被 `c-
 **除非只針對矛盾**——那才是值得降門檻的部分。
 
 池子：612 → 610（閉包）→ 605（仲裁定案）。校準通過數不變（70 條）。
+
+---
+
+# Phase 3 — 接入前的驗證（進行中）
+
+## A1：檔案訊號的 precision（已完成）
+
+從 Phase 2 欠到現在的那一項。**recall 決定召不召得到，precision 決定召到的東西會不會誤導**，
+而後者才是 `PreToolUse` 能不能掛的關鍵。
+
+```bash
+python retrieve.py --dump-precision <path> --sample 50 --top-k 5
+python retrieve.py --show-precision 0-12 --precision-path <path>   # 給判定者
+python retrieve.py --ingest-precision <dir> --precision-path <path>
+```
+
+50 個情境、236 條召回判定（605 條池子、anchors + 符號級錨點）：
+
+```
+逐條 precision（嚴格）    72/236 = 30.5%
+逐條 precision（含 MARGINAL） 136/236 = 57.6%
+情境命中率（至少一條 RELEVANT） 36/50 = 72.0%
+```
+
+### 🔑 只重疊一項的召回幾乎全是雜訊
+
+| 重疊數 | 條數 | RELEVANT | IRRELEVANT |
+|---|---|---|---|
+| 1 | 61 | **8.2%** | **77.0%** |
+| 2 | 114 | 36.0% | 35.1% |
+| 3 | 54 | 42.6% | 22.2% |
+| 4 | 7 | 42.9% | 14.3% |
+
+「剛好碰到同一個檔案」不構成相關。設定因此定為 **top-3 + overlap ≥ 2**
+（`INJECT_TOP_K` / `MIN_FILE_OVERLAP`）：
+
+| 設定 | precision | 情境命中率 | 平均條/次 |
+|---|---|---|---|
+| top-3 / overlap≥1 | 38.2% | 66% | 2.88 |
+| **top-3 / overlap≥2** | **43.5%** | **62%** | **2.30** |
+| top-3 / overlap≥3 | 49.1% | 32% | 1.06 |
+| top-5 / overlap≥2 | 38.3% | 68% | 3.50 |
+
+門檻收到 3 就崩了——命中率腰斬，因為多數真正有用的召回本來就只重疊兩項。
+
+**評測時不套門檻**，只在注入時套：寫死在 ranker 裡，門檻本身就量不出來了。
+
+## A2：`injected` 欄位（已完成）
+
+hook 遲遲不掛的唯一理由是「注入之後語料就變成已被記憶影響過的行為」。
+但**問題不在注入，在於分不出哪些輪次被影響過**——標記起來就解開了，
+而且這比實驗室注入實驗更接近真實效果。
+
+- 注入 hook 自己寫 side-car `injections.jsonl`（`{session_id, prompt_fingerprint, injected}`），
+  **不從 transcript 反推** `additionalContext` 的形狀——那沒有保證，靠猜會得到一個
+  看起來正常但對不上的欄位
+- 只存 prompt 指紋不存原文：這份檔案只用來比對，原文已經在 episode 裡了
+- 空 list 與缺欄位分得開：前者是「這輪沒被注入」，後者是「早於這個 schema」
+- `--doctor` 對帳：注入紀錄 N 筆但語料只對上 M 輪 → 報問題（指紋比對失效的話，
+  被污染的輪次會被當成乾淨語料）。來源已消失而補不了的舊 schema 只統計不報錯
+
+已跑 `--repair-all`：1374 輪重建，105 輪因 transcript 已被 cleanup 而停在舊格式。

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Any, Iterator
@@ -54,6 +55,54 @@ EDIT_TOOL_PATH_KEYS = {
 READ_TOOL_PATH_KEYS = {
     "Read": "file_path",
 }
+
+# 從編輯內容裡抽識別符：一般程式碼識別符，加上 CSS 自訂屬性（--uep-island-z 那種）。
+# 3 字元起跳是為了濾掉 `id`、`fn` 這類短到無法辨識來源的東西。
+_IDENTIFIER_RE = re.compile(r"--[A-Za-z][\w-]{2,}|[A-Za-z_][A-Za-z0-9_]{2,}")
+
+# 每輪存的識別符上限。一次大改可以動到上千個符號，全存會讓 episode 檔膨脹，
+# 而排在後面的多半是同一段程式碼的重複用字，資訊量遞減
+MAX_SYMBOLS_PER_TURN = 300
+
+
+def extract_symbols(payload: dict[str, Any]) -> list[str]:
+    """從一次編輯的參數裡抽出被碰到的識別符。
+
+    **為什麼要存這個**：`anchors` 現在的粒度到函式名與欄位名
+    （`hasSufficientCache`、`--uep-island-z`），但 episode 原本只存檔案路徑，
+    比對是集合交集，於是**符號級錨點永遠不可能命中**——
+    要求蒸餾者把粒度做細，卻沒有同步改比對的另一邊。
+
+    **只存符號、不存原文**是刻意的：編輯內容體積大，而且會含機敏資訊
+    （語料涵蓋商業專案），而比對只需要符號本身。
+
+    不過濾常見關鍵字（`return`、`const`）：那會變成一份硬編碼清單，
+    而比對的另一邊是 `anchors`——蒸餾者不會把 `return` 當錨點，
+    所以雜訊符號單純不會被查詢到，不需要在寫入端處理。
+    """
+    chunks: list[str] = []
+    for key in ("old_string", "new_string", "content", "new_source"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            chunks.append(value)
+    # MultiEdit 的編輯放在陣列裡，形狀跟單次 Edit 不同
+    for edit in payload.get("edits") or []:
+        if isinstance(edit, dict):
+            for key in ("old_string", "new_string"):
+                value = edit.get(key)
+                if isinstance(value, str):
+                    chunks.append(value)
+
+    symbols: list[str] = []
+    seen: set[str] = set()
+    for chunk in chunks:
+        for match in _IDENTIFIER_RE.findall(chunk):
+            if match not in seen:
+                seen.add(match)
+                symbols.append(match)
+                if len(symbols) >= MAX_SYMBOLS_PER_TURN:
+                    return symbols
+    return symbols
 
 
 def repo_root(cwd: str) -> Path | None:
@@ -267,6 +316,7 @@ def build_episode(prompt_id: str, records: list[dict[str, Any]], turn_index: int
     skills: set[str] = set()
     # 先收原始路徑，等 cwds 收集完、repo root 確定後才正規化
     raw_edited: list[str] = []
+    raw_symbols: list[str] = []
     raw_read: list[str] = []
     cwds: list[str] = []
     branches: list[str] = []
@@ -343,6 +393,10 @@ def build_episode(prompt_id: str, records: list[dict[str, Any]], turn_index: int
                                     value = payload.get(key) if key else None
                                     if isinstance(value, str) and value:
                                         bucket.append(value)
+                                if name in EDIT_TOOL_PATH_KEYS:
+                                    # 符號級錨點要比對的另一邊。只在編輯工具上抽，
+                                    # 讀取不算——理由同 files_read 的分流
+                                    raw_symbols.extend(extract_symbols(payload))
                     elif btype == "thinking":
                         thinking_count += 1
             text = _text_from_content(content)
@@ -367,6 +421,17 @@ def build_episode(prompt_id: str, records: list[dict[str, Any]], turn_index: int
             if normalized and normalized not in seen:
                 seen.add(normalized)
                 result.append(normalized)
+        return result
+
+    def _dedup_symbols(symbols: list[str]) -> list[str]:
+        seen: set[str] = set()
+        result: list[str] = []
+        for symbol in symbols:
+            if symbol not in seen:
+                seen.add(symbol)
+                result.append(symbol)
+                if len(result) >= MAX_SYMBOLS_PER_TURN:
+                    break
         return result
 
     files_edited = _dedup(raw_edited)
@@ -401,6 +466,9 @@ def build_episode(prompt_id: str, records: list[dict[str, Any]], turn_index: int
         "skills": sorted(skills),
         "files_edited": files_edited,
         "files_read": files_read,
+        # 這輪碰過的識別符。存在的理由是 anchors 的粒度到函式名與欄位名，
+        # 而檔案路徑比對不到那一層——見 extract_symbols
+        "symbols_edited": _dedup_symbols(raw_symbols),
         "thinking_blocks": thinking_count,
     }
 

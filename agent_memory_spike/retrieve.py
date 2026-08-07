@@ -349,6 +349,7 @@ def build_file_cases(pool: list[dict[str, Any]], episodes: list[dict[str, Any]])
                 "query": query,
                 "statement": concept.get("statement"),
                 "files_edited": episode.get("files_edited") or [],
+                "symbols_edited": episode.get("symbols_edited") or [],
                 "assistant_text": episode.get("assistant_text") or "",
             })
     return cases
@@ -402,7 +403,28 @@ def dump_precision_tasks(pool: list[dict[str, Any]], episodes: list[dict[str, An
     return 0
 
 
-def file_overlap_ranker(pool: list[dict[str, Any]], case: dict[str, Any]) -> list[tuple[int, float]]:
+def split_anchors(anchors: list[str]) -> tuple[list[str], list[str]]:
+    """把錨點分成檔案類與符號類。
+
+    兩者要比對的東西不同：檔案類對 ``files_edited``、符號類對 ``symbols_edited``。
+    混在一起用集合交集的話，符號永遠不可能命中檔案路徑——
+    這正是先前「anchors 粒度做細反而扣分」的原因。
+
+    判斷依據是路徑分隔符與副檔名。CSS 自訂屬性（``--uep-island-z``）
+    帶連字號但不帶點，會落在符號側，那是對的。
+    """
+    files: list[str] = []
+    symbols: list[str] = []
+    for anchor in anchors:
+        if "/" in anchor or "\\" in anchor or ("." in anchor and not anchor.startswith("--")):
+            files.append(anchor)
+        else:
+            symbols.append(anchor)
+    return files, symbols
+
+
+def file_overlap_ranker(pool: list[dict[str, Any]], case: dict[str, Any], *,
+                        use_symbols: bool = True) -> list[tuple[int, float]]:
     """檔案訊號：重疊的檔案數就是分數。
 
     優先用 ``anchors``（這條記憶真正談論的對象），沒有才退回 ``source_files``。
@@ -412,16 +434,25 @@ def file_overlap_ranker(pool: list[dict[str, Any]], case: dict[str, Any]) -> lis
     抓到的常是「同一個檔案裡另一段邏輯的舊筆記」。
     真正有用的召回，共同特徵是錨點與當下要改的東西同名同源。
     """
-    touched = file_keys(case.get("files_edited"))
+    touched_files = file_keys(case.get("files_edited"))
+    # use_symbols=False 是對照組：同一個池子、同一批 case，只差有沒有用符號級錨點。
+    # 沒有這個對照就只能拿「改版前的數字」比，而那跨了池子與 case 的變動，說明不了什麼
+    touched_symbols = ({s.lower() for s in (case.get("symbols_edited") or [])}
+                       if use_symbols else set())
+
     scored = []
     for i, concept in enumerate(pool):
         anchors = concept.get("anchors") or concept.get("source_files") or []
-        # anchors 現在混著檔案路徑與符號名（函式、欄位、CSS 變數）。
-        # 符號名產生的鍵不可能與檔案鍵相交，所以不會誤命中，只是不貢獻分數——
-        # **符號級錨點在這個測法下等於被浪費掉**，因為 episode 只存了檔案路徑，
-        # 沒存工具參數的內容，語料裡沒有可以拿來比對符號的東西。
-        # 要讓細粒度錨點真正發揮，得先讓 transcript 存下 Edit 的內容片段。
-        scored.append((i, float(len(file_keys(anchors) & touched))))
+        files, symbols = split_anchors(anchors)
+        file_hits = len(file_keys(files) & touched_files)
+
+        # 符號與檔案**等權**。這個權重是實測選出來的，不是拍腦袋：
+        #   權重 2      → recall@1 5.1% / recall@5 19.7% / MRR 0.114
+        #   等權（1）   → recall@1 8.5% / recall@5 23.6% / MRR 0.152  ← 最好
+        #   稀有度加權  → recall@1 7.7% / recall@5 21.5% / MRR 0.136
+        # 「罕見符號應該更有鑑別力」聽起來很合理，實測反而更差，所以不留那段複雜度。
+        symbol_hits = len({s.lower() for s in symbols} & touched_symbols)
+        scored.append((i, float(file_hits + symbol_hits)))
     return sorted(scored, key=lambda pair: -pair[1])
 
 
@@ -576,13 +607,18 @@ def evaluate_files(pool: list[dict[str, Any]], episodes: list[dict[str, Any]],
         return file_overlap_ranker(pool, case)
     by_files.needs_case = True
 
+    def by_files_only(case: dict[str, Any]) -> list[tuple[int, float]]:
+        return file_overlap_ranker(pool, case, use_symbols=False)
+    by_files_only.needs_case = True
+
     def by_files_and_text(case: dict[str, Any]) -> list[tuple[int, float]]:
         return reciprocal_rank_fusion([file_overlap_ranker(pool, case), bm25_cue.rank(case["query"])])
     by_files_and_text.needs_case = True
 
     variants = [
         ("文字（BM25+cue）", bm25_cue.rank, True),
-        ("檔案重疊", by_files, True),
+        ("錨點：只用檔案", by_files_only, True),
+        ("錨點：檔案 + 符號", by_files, True),
         ("檔案 + 文字（RRF）", by_files_and_text, True),
     ]
 

@@ -15,8 +15,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+import hook_stop  # noqa: E402
 from hook_stop import (  # noqa: E402
     completed_episodes,
+    doctor,
     episode_path,
     load_deduped,
     recorded_prompt_ids,
@@ -428,14 +430,18 @@ def test_repeated_prompt_id_is_not_deduped_away(tmp_path):
     assert recorded_prompt_ids(episode_path(ep_dir, "sess")) == {("start", 0), ("mid", 1), ("start", 2)}
 
 
-def _episode(prompt_id, turn_index, user_text, assistant_text, tool_calls=0):
-    return {
+def _episode(prompt_id, turn_index, user_text, assistant_text, tool_calls=0, repo=None):
+    episode = {
         "prompt_id": prompt_id,
         "turn_index": turn_index,
         "user_text": user_text,
         "assistant_text": assistant_text,
         "tool_calls_total": tool_calls,
     }
+    if repo is not None:
+        # doctor 會比對 repo / files_edited / files_read，只給文字欄位會被誤報成不一致
+        episode.update({"repo": repo, "files_edited": [], "files_read": []})
+    return episode
 
 
 def test_dedup_survives_turn_index_drift_across_sessions(tmp_path):
@@ -482,3 +488,75 @@ def test_dedup_prefers_the_more_complete_copy(tmp_path):
     episodes, _ = load_deduped(tmp_path)
     assert len(episodes) == 1
     assert episodes[0]["tool_calls_total"] == 14
+
+
+# --- doctor 的空 assistant_text 檢查 ---------------------------------------
+# 語料裡 11.4% 的輪次 assistant_text 是空的，而 doctor 一度完全不看這個欄位。
+# 按「doctor 沒比對的欄位等於沒有保護」的教訓補上，難的地方在於
+# **空不等於故障**：使用者送出後立刻中斷，agent 本來就沒有回應。
+
+def _write_raw_transcript(tmp_path, session_id, records):
+    path = tmp_path / f"{session_id}.transcript.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    return path
+
+
+def _stub_find_transcript(monkeypatch, mapping):
+    monkeypatch.setattr(hook_stop, "find_transcript", lambda sid: mapping.get(sid))
+
+
+def test_doctor_flags_empty_assistant_text_that_has_a_source(tmp_path, monkeypatch):
+    """來源有回應、存檔卻是空的——這是唯一算故障的一類。
+
+    **而且它落在舊 doctor 的盲點裡**：比對用的是排除最新一輪的 completed_episodes，
+    所以 transcript 只有這一輪時 ref 是 None，整筆被靜默略過。
+    """
+    episode_dir = tmp_path / "episodes"
+    episode_dir.mkdir()
+    (episode_dir / "sess-1.jsonl").write_text(
+        json.dumps(_episode("p1", 0, "做這件事", "")) + "\n", encoding="utf-8")
+
+    transcript = _write_raw_transcript(tmp_path, "sess-1", [
+        _user("p1", text="做這件事", origin={"kind": "human"}),
+        _assistant(text="我做完了"),
+    ])
+    _stub_find_transcript(monkeypatch, {"sess-1": transcript})
+
+    assert doctor(episode_dir) == 1
+
+
+def test_doctor_accepts_empty_assistant_text_when_there_was_no_response(tmp_path, monkeypatch):
+    """使用者送出後立刻中斷，transcript 裡那輪根本沒有 assistant 記錄。
+
+    實測 135 輪屬於這類。把它報成問題的話 doctor 永遠是紅的，
+    真正的故障就淹在裡面了。
+    """
+    episode_dir = tmp_path / "episodes"
+    episode_dir.mkdir()
+    (episode_dir / "sess-1.jsonl").write_text(
+        json.dumps(_episode("p1", 0, "先等一下", "", repo="proj")) + "\n", encoding="utf-8")
+
+    transcript = _write_raw_transcript(tmp_path, "sess-1", [
+        _user("p1", text="先等一下", origin={"kind": "human"}),
+        _user("p2", text="改成這樣", origin={"kind": "human"}),
+        _assistant(text="好的"),
+    ])
+    _stub_find_transcript(monkeypatch, {"sess-1": transcript})
+
+    assert doctor(episode_dir) == 0
+
+
+def test_doctor_accepts_empty_assistant_text_when_interrupted_mid_tool(tmp_path, monkeypatch):
+    """做了事但沒有文字結論——中斷發生在工具執行途中，同樣不是故障。"""
+    episode_dir = tmp_path / "episodes"
+    episode_dir.mkdir()
+    (episode_dir / "sess-1.jsonl").write_text(
+        json.dumps(_episode("p1", 0, "查一下", "", tool_calls=2, repo="proj")) + "\n", encoding="utf-8")
+
+    transcript = _write_raw_transcript(tmp_path, "sess-1", [
+        _user("p1", text="查一下", origin={"kind": "human"}),
+        _assistant(tools=("Read", "Grep")),
+    ])
+    _stub_find_transcript(monkeypatch, {"sess-1": transcript})
+
+    assert doctor(episode_dir) == 0

@@ -345,6 +345,11 @@ def doctor(episode_dir: Path) -> int:
     agents: dict[str, int] = {}
     no_transcript = 0
     pending = 0
+    # 空 assistant_text 的分流。實測 11.4% 的輪次是空的，先前 doctor 完全不看這個欄位——
+    # 按「doctor 沒比對的欄位等於沒有保護」的教訓，這裡把它拆成
+    # 「真的沒有回應」與「有回應卻存成空」兩類，只有後者是故障。
+    empty_kinds: dict[str, int] = {}
+    empty_human = 0
 
     for fp in files:
         session_id = fp.stem
@@ -364,15 +369,52 @@ def doctor(episode_dir: Path) -> int:
         if transcript is None:
             # transcript 可能已被 cleanupPeriodDays 清掉，不算錯誤
             no_transcript += 1
+            for rec in stored:
+                if not (rec.get("assistant_text") or "").strip():
+                    empty_kinds["無法驗證（transcript 已清）"] = (
+                        empty_kinds.get("無法驗證（transcript 已清）", 0) + 1
+                    )
+                    empty_human += rec.get("origin") == ORIGIN_HUMAN
             continue
 
-        live = {_key(e): e for e in completed_episodes(transcript)}
+        # 解析一次就好。原本 completed_episodes 在這個迴圈裡被呼叫三次，
+        # 每次都重讀並重建整份 transcript。
+        all_episodes = episodes_from_transcript(transcript)
+        completed = all_episodes[:-1] if all_episodes else []
+        live = {_key(e): e for e in completed}
+        # 空 assistant_text 的比對要用**含最新輪**的版本：那 2 筆殘留正是
+        # 落在「transcript 只有它自己一輪」的 session 裡，completed 把它排除掉，
+        # 於是 ref is None → 靜默略過。這就是先前 doctor 全綠卻仍有殘留的原因。
+        live_all = {_key(e): e for e in all_episodes}
+
         seen = set()
         for rec in stored:
             pid = _key(rec)
             if pid in seen:
                 problems.append(f"{session_id[:8]}: 重複 {pid[0][:8]}#{pid[1]}")
             seen.add(pid)
+
+            if not (rec.get("assistant_text") or "").strip():
+                empty_human += rec.get("origin") == ORIGIN_HUMAN
+                source = live_all.get(pid)
+                if source is None:
+                    empty_kinds["無法驗證（transcript 無此輪）"] = (
+                        empty_kinds.get("無法驗證（transcript 無此輪）", 0) + 1
+                    )
+                elif (source.get("assistant_text") or "").strip():
+                    # 唯一算故障的一類：來源有回應，存檔卻是空的
+                    empty_kinds["殘留（來源有回應）"] = empty_kinds.get("殘留（來源有回應）", 0) + 1
+                    problems.append(
+                        f"{session_id[:8]}: {pid[0][:8]}#{pid[1]} assistant_text 空，"
+                        f"但 transcript 有 {len(source['assistant_text'])} 字元"
+                    )
+                elif source.get("tool_calls_total"):
+                    # 做了事但沒有文字結論——中斷發生在工具執行途中
+                    empty_kinds["中斷於工具執行中"] = empty_kinds.get("中斷於工具執行中", 0) + 1
+                else:
+                    # 送出後立刻被中斷或訊息排隊，agent 根本沒回應。真實情況，不是故障
+                    empty_kinds["無回應（中斷／排隊）"] = empty_kinds.get("無回應（中斷／排隊）", 0) + 1
+
             ref = live.get(pid)
             if ref is None:
                 continue
@@ -399,7 +441,7 @@ def doctor(episode_dir: Path) -> int:
         # 尾端的缺漏是設計的必然落後，不是故障：最新一輪一律排除，
         # 而它的前一輪要等下一次 Stop hook 觸發才補得進來。
         # 缺在中間才代表真的漏了——那是 hook 沒跑成功或寫入失敗。
-        order = [_key(e) for e in completed_episodes(transcript)]
+        order = [_key(e) for e in completed]
         missing_idx = [i for i, pid in enumerate(order) if pid not in seen]
         if missing_idx:
             trailing = len(order) - missing_idx[0] == len(missing_idx)
@@ -420,6 +462,16 @@ def doctor(episode_dir: Path) -> int:
         print(f"  （{no_transcript} 個 session 的 transcript 已不存在，略過比對）", file=out)
     if pending:
         print(f"  （{pending} 輪在尾端待補，下次 Stop hook 觸發時寫入——這是正常的）", file=out)
+
+    empty_total = sum(empty_kinds.values())
+    if empty_total:
+        print(
+            f"\n  空 assistant_text：{empty_total} 輪（{empty_total / total * 100:.1f}%），"
+            f"其中 human 輪 {empty_human}",
+            file=out,
+        )
+        for kind, count in sorted(empty_kinds.items(), key=lambda kv: -kv[1]):
+            print(f"    {kind}: {count}", file=out)
 
     # resume/fork 會讓同一批輪次落進多個 session 檔，膨脹要從語料量裡扣掉
     deduped, dupes = load_deduped(episode_dir)

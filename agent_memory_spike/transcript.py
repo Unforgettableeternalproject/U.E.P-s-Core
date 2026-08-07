@@ -167,7 +167,7 @@ def iter_prompt_groups(records: list[dict[str, Any]]) -> Iterator[tuple[str, lis
         yield current_id, current
 
 
-def build_episode(prompt_id: str, records: list[dict[str, Any]]) -> dict[str, Any]:
+def build_episode(prompt_id: str, records: list[dict[str, Any]], turn_index: int = 0) -> dict[str, Any]:
     """把一輪的記錄組裝成 episode。
 
     刻意記錄的東西與理由：
@@ -262,6 +262,11 @@ def build_episode(prompt_id: str, records: list[dict[str, Any]]) -> dict[str, An
 
     return {
         "prompt_id": prompt_id,
+        # promptId 不足以當唯一鍵：session 起始的 meta 注入在每次 resume 時會重新出現，
+        # 且沿用同一個 promptId——實測某個 id 在 7/30 和 8/02 各出現一次，內容不同。
+        # 加上這輪在 session 內的序號才構成唯一鍵，
+        # 而 resume 產生的完整複本序號一致，所以跨 session 去重仍然有效。
+        "turn_index": turn_index,
         "session_id": session_id,
         # 產生這筆記憶的 harness。現在只有一個值，但先佔位——
         # Codex 的 hooks schema 幾乎照搬 Claude Code，接同一套記憶是可行的，
@@ -290,7 +295,10 @@ def build_episode(prompt_id: str, records: list[dict[str, Any]]) -> dict[str, An
 def episodes_from_transcript(path: Path) -> list[dict[str, Any]]:
     """讀整份 transcript，回傳所有 episode。"""
     records = load_records(path)
-    return [build_episode(pid, group) for pid, group in iter_prompt_groups(records)]
+    return [
+        build_episode(pid, group, turn_index=i)
+        for i, (pid, group) in enumerate(iter_prompt_groups(records))
+    ]
 
 
 def episode_for_prompt(path: Path, prompt_id: str) -> dict[str, Any] | None:

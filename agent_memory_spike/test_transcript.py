@@ -240,19 +240,22 @@ def test_missing_file_returns_empty(tmp_path):
 def test_recorded_prompt_ids_reads_all_not_just_last(tmp_path):
     p = tmp_path / "s.jsonl"
     p.write_text(
-        "\n".join(json.dumps({"prompt_id": f"p{i}"}) for i in range(1, 6)) + "\n",
+        "\n".join(json.dumps({"prompt_id": f"p{i}", "turn_index": i - 1}) for i in range(1, 6)) + "\n",
         encoding="utf-8",
     )
     ids = recorded_prompt_ids(p)
-    assert ids == {"p1", "p2", "p3", "p4", "p5"}
+    assert ids == {("p1", 0), ("p2", 1), ("p3", 2), ("p4", 3), ("p5", 4)}
     # 關鍵：第一筆也要被認出來，不能只看最後一筆
-    assert "p1" in ids
+    assert ("p1", 0) in ids
 
 
 def test_recorded_prompt_ids_tolerates_garbage(tmp_path):
     p = tmp_path / "s.jsonl"
-    p.write_text('{"prompt_id": "p1"}\nnot json\n{"prompt_id": "p2"}\n', encoding="utf-8")
-    assert recorded_prompt_ids(p) == {"p1", "p2"}
+    p.write_text(
+        '{"prompt_id": "p1", "turn_index": 0}\nnot json\n{"prompt_id": "p2", "turn_index": 1}\n',
+        encoding="utf-8",
+    )
+    assert recorded_prompt_ids(p) == {("p1", 0), ("p2", 1)}
 
 
 def test_recorded_prompt_ids_missing_file(tmp_path):
@@ -300,7 +303,7 @@ def test_sync_never_writes_in_progress_turn(tmp_path):
     ep_dir = tmp_path / "eps"
     written, _ = sync(t, ep_dir, "sess")
     assert written == 1
-    assert recorded_prompt_ids(episode_path(ep_dir, "sess")) == {"p1"}
+    assert recorded_prompt_ids(episode_path(ep_dir, "sess")) == {("p1", 0)}
 
 
 def test_sync_is_incremental_across_calls(tmp_path):
@@ -309,7 +312,7 @@ def test_sync_is_incremental_across_calls(tmp_path):
     sync(_write_transcript(tmp_path, 2), ep_dir, "sess")
     written, skipped = sync(_write_transcript(tmp_path, 4), ep_dir, "sess")
     assert written == 2 and skipped == 1
-    assert recorded_prompt_ids(episode_path(ep_dir, "sess")) == {"p1", "p2", "p3"}
+    assert recorded_prompt_ids(episode_path(ep_dir, "sess")) == {("p1", 0), ("p2", 1), ("p3", 2)}
 
 
 def test_sync_is_idempotent(tmp_path):
@@ -336,3 +339,46 @@ def test_repair_fixes_truncated_record(tmp_path):
     recs = [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()]
     assert recs[0]["tool_calls_total"] == 3
     assert recs[0]["assistant_text"] == "回答1"
+
+
+# --- promptId 不唯一 --------------------------------------------------------
+# 迴歸測試：session 起始的 meta 注入在每次 resume 會重新出現且沿用同一個 promptId。
+# 實測某個 id 在 7/30 與 8/02 各出現一次、內容不同，只用 prompt_id 當鍵會誤判成重複。
+
+def test_same_prompt_id_in_separate_runs_are_distinct_turns(tmp_path):
+    records = [
+        _user("start", text="第一次注入", origin={"kind": "human"}),
+        _assistant(text="A"),
+        _user("mid", text="中間", origin={"kind": "human"}),
+        _assistant(text="B"),
+        _user("start", text="resume 後又注入一次", origin={"kind": "human"}),
+        _assistant(text="C"),
+        _user("tail", text="尾", origin={"kind": "human"}),
+    ]
+    t = tmp_path / "t.jsonl"
+    t.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    eps = episodes_from_transcript(t)
+    assert [(e["prompt_id"], e["turn_index"]) for e in eps] == [
+        ("start", 0), ("mid", 1), ("start", 2), ("tail", 3)
+    ]
+    # 兩次 start 是不同的輪次，內容不同
+    assert eps[0]["assistant_text"] == "A"
+    assert eps[2]["assistant_text"] == "C"
+
+
+def test_repeated_prompt_id_is_not_deduped_away(tmp_path):
+    """兩次出現都要各自寫入，不能被當成同一輪跳過。"""
+    records = [
+        _user("start", origin={"kind": "human"}), _assistant(text="A"),
+        _user("mid", origin={"kind": "human"}), _assistant(text="B"),
+        _user("start", origin={"kind": "human"}), _assistant(text="C"),
+        _user("tail", origin={"kind": "human"}),
+    ]
+    t = tmp_path / "t.jsonl"
+    t.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    ep_dir = tmp_path / "eps"
+    written, _ = sync(t, ep_dir, "sess")
+    assert written == 3
+    assert recorded_prompt_ids(episode_path(ep_dir, "sess")) == {("start", 0), ("mid", 1), ("start", 2)}

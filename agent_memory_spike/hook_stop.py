@@ -66,7 +66,16 @@ def episode_path(episode_dir: Path, session_id: str) -> Path:
     return episode_dir / f"{safe or 'unknown'}.jsonl"
 
 
-def recorded_prompt_ids(path: Path) -> set[str]:
+def _key(rec: dict[str, Any]) -> tuple[str, int]:
+    """episode 的唯一鍵。
+
+    只用 prompt_id 不夠：session 起始的 meta 注入在每次 resume 會重新出現且沿用同一個
+    promptId。加上 turn_index 才唯一，而 resume 的完整複本序號一致，跨 session 去重仍有效。
+    """
+    return (str(rec.get("prompt_id")), int(rec.get("turn_index") or 0))
+
+
+def recorded_prompt_ids(path: Path) -> set[tuple[str, int]]:
     """讀出檔案裡已記錄的所有 prompt_id。
 
     早期版本只比對最後一筆，因為當時假設 hook 每次只寫最新的一輪。
@@ -75,7 +84,7 @@ def recorded_prompt_ids(path: Path) -> set[str]:
     """
     if not path.exists():
         return set()
-    ids: set[str] = set()
+    ids: set[tuple[str, int]] = set()
     try:
         with path.open(encoding="utf-8") as f:
             for line in f:
@@ -83,11 +92,9 @@ def recorded_prompt_ids(path: Path) -> set[str]:
                 if not line:
                     continue
                 try:
-                    pid = json.loads(line).get("prompt_id")
+                    ids.add(_key(json.loads(line)))
                 except json.JSONDecodeError:
                     continue
-                if isinstance(pid, str):
-                    ids.add(pid)
     except OSError:
         return set()
     return ids
@@ -135,12 +142,12 @@ def sync(transcript: Path, episode_dir: Path, session_id: str, *, dry_run: bool 
 
     written = skipped = 0
     for ep in episodes:
-        if ep["prompt_id"] in recorded:
+        if _key(ep) in recorded:
             skipped += 1
             continue
         if not dry_run:
             append_episode(path, ep)
-            recorded.add(ep["prompt_id"])
+            recorded.add(_key(ep))
         written += 1
     return written, skipped
 
@@ -165,15 +172,13 @@ def repair(transcript: Path, episode_dir: Path, session_id: str) -> tuple[int, i
                         rec = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    pid = rec.get("prompt_id")
-                    if isinstance(pid, str):
-                        existing[pid] = rec
+                    existing[_key(rec)] = rec
         except OSError:
             pass
 
     fixed = 0
     for ep in episodes:
-        old = existing.get(ep["prompt_id"])
+        old = existing.get(_key(ep))
         if old is None:
             continue
         if (len(old.get("assistant_text", "")) != len(ep["assistant_text"])
@@ -192,6 +197,71 @@ def find_transcript(session_id: str) -> Path | None:
     for candidate in root.glob(f"*/{session_id}.jsonl"):
         return candidate
     return None
+
+
+def iter_all_transcripts() -> list[Path]:
+    root = Path.home() / ".claude" / "projects"
+    return sorted(root.glob("*/*.jsonl")) if root.exists() else []
+
+
+def sync_all(episode_dir: Path) -> int:
+    """掃過所有 transcript 補齊。
+
+    Stop hook 只會補到「有下一輪」的輪次，所以 session 一旦結束，
+    最後一到兩輪就永遠等不到下一次觸發。實測有個 session 尾端積了 7 輪未記錄——
+    session 被中斷時遺失的不只一輪。
+
+    這支拿來定期收尾，比為此再掛一個 SessionEnd hook 簡單，
+    而且能一併回填 hook 裝設之前就存在的 session。
+    """
+    transcripts = iter_all_transcripts()
+    if not transcripts:
+        print("[sync-all] 找不到任何 transcript", file=sys.stderr)
+        return 0
+
+    total_written = 0
+    touched = 0
+    for tp in transcripts:
+        written, _ = sync(tp, episode_dir, tp.stem)
+        if written:
+            touched += 1
+            total_written += written
+    print(
+        f"[sync-all] 掃過 {len(transcripts)} 份 transcript，"
+        f"補上 {total_written} 輪（{touched} 個 session）",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def load_deduped(episode_dir: Path) -> tuple[list[dict[str, Any]], int]:
+    """讀出全部 episode 並去重，回傳 (去重後清單, 重複筆數)。
+
+    prompt_id 是全域唯一的，但 resume/fork 會讓同一批輪次落進多個 session 檔——
+    實測一條三代 resume 鏈造成 10.3% 的膨脹。
+
+    寫入端仍維持每 session 一檔（併發簡單），去重放在讀取端。
+    重複的副本內容實測完全一致，但仍取最完整的一份，
+    以防某次寫入剛好撞上 transcript 尚未寫完。
+    """
+    best: dict[tuple[str, int], dict[str, Any]] = {}
+    total = 0
+    for fp in sorted(episode_dir.glob("*.jsonl")) if episode_dir.exists() else []:
+        try:
+            for line in fp.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                rec = json.loads(line)
+                total += 1
+                pid = _key(rec)
+                prev = best.get(pid)
+                if prev is None or (
+                    len(rec.get("assistant_text", "")), rec.get("tool_calls_total", 0)
+                ) > (len(prev.get("assistant_text", "")), prev.get("tool_calls_total", 0)):
+                    best[pid] = rec
+        except (OSError, json.JSONDecodeError):
+            continue
+    return list(best.values()), total - len(best)
 
 
 def doctor(episode_dir: Path) -> int:
@@ -234,32 +304,32 @@ def doctor(episode_dir: Path) -> int:
             no_transcript += 1
             continue
 
-        live = {e["prompt_id"]: e for e in completed_episodes(transcript)}
+        live = {_key(e): e for e in completed_episodes(transcript)}
         seen = set()
         for rec in stored:
-            pid = rec.get("prompt_id")
+            pid = _key(rec)
             if pid in seen:
-                problems.append(f"{session_id[:8]}: prompt_id 重複 {str(pid)[:8]}")
+                problems.append(f"{session_id[:8]}: 重複 {pid[0][:8]}#{pid[1]}")
             seen.add(pid)
             ref = live.get(pid)
             if ref is None:
                 continue
             if len(rec.get("assistant_text", "")) != len(ref["assistant_text"]):
                 problems.append(
-                    f"{session_id[:8]}: {str(pid)[:8]} assistant_text "
+                    f"{session_id[:8]}: {pid[0][:8]}#{pid[1]} assistant_text "
                     f"{len(rec.get('assistant_text',''))} != {len(ref['assistant_text'])}"
                 )
             if rec.get("tool_calls_total") != ref["tool_calls_total"]:
                 problems.append(
-                    f"{session_id[:8]}: {str(pid)[:8]} tool_calls "
+                    f"{session_id[:8]}: {pid[0][:8]}#{pid[1]} tool_calls "
                     f"{rec.get('tool_calls_total')} != {ref['tool_calls_total']}"
                 )
             if rec.get("repo") != ref["repo"]:
-                problems.append(f"{session_id[:8]}: {str(pid)[:8]} repo {rec.get('repo')} != {ref['repo']}")
+                problems.append(f"{session_id[:8]}: {pid[0][:8]}#{pid[1]} repo {rec.get('repo')} != {ref['repo']}")
         # 尾端的缺漏是設計的必然落後，不是故障：最新一輪一律排除，
         # 而它的前一輪要等下一次 Stop hook 觸發才補得進來。
         # 缺在中間才代表真的漏了——那是 hook 沒跑成功或寫入失敗。
-        order = [e["prompt_id"] for e in completed_episodes(transcript)]
+        order = [_key(e) for e in completed_episodes(transcript)]
         missing_idx = [i for i, pid in enumerate(order) if pid not in seen]
         if missing_idx:
             trailing = len(order) - missing_idx[0] == len(missing_idx)
@@ -281,10 +351,20 @@ def doctor(episode_dir: Path) -> int:
     if pending:
         print(f"  （{pending} 輪在尾端待補，下次 Stop hook 觸發時寫入——這是正常的）", file=out)
 
+    # resume/fork 會讓同一批輪次落進多個 session 檔，膨脹要從語料量裡扣掉
+    deduped, dupes = load_deduped(episode_dir)
+    if dupes:
+        print(f"\n  重複 {dupes} 筆（{dupes/total*100:.1f}%），來自 session resume/fork", file=out)
+
     # 覆蓋度：Phase 0 顯示有價值的記憶需要跨多個 repo 的真實開發
-    human = origins.get(ORIGIN_HUMAN, 0)
-    real_repos = [r for r in repos if r not in ("?", None)]
-    print(f"\n  覆蓋度：{len(real_repos)} 個 repo、{human} 輪 human 輸入", file=out)
+    dedup_origins: dict[str, int] = {}
+    dedup_repos: dict[str, int] = {}
+    for rec in deduped:
+        dedup_origins[rec.get("origin") or "?"] = dedup_origins.get(rec.get("origin") or "?", 0) + 1
+        dedup_repos[rec.get("repo") or "?"] = dedup_repos.get(rec.get("repo") or "?", 0) + 1
+    human = dedup_origins.get(ORIGIN_HUMAN, 0)
+    real_repos = [r for r in dedup_repos if r not in ("?", None)]
+    print(f"\n  去重後：{len(deduped)} 輪、{len(real_repos)} 個 repo、{human} 輪 human 輸入", file=out)
     if len(real_repos) < 3:
         print("  → repo 數偏少，跨專案價值還測不出來", file=out)
 
@@ -304,6 +384,7 @@ def doctor(episode_dir: Path) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Phase 1 Stop hook")
     parser.add_argument("--doctor", action="store_true", help="唯讀健檢：比對存檔與 transcript")
+    parser.add_argument("--sync-all", action="store_true", help="掃過所有 transcript 補齊遺漏")
     parser.add_argument("--sync", type=Path, help="手動同步指定的 transcript")
     parser.add_argument("--repair", type=Path, help="全量重建，修復殘缺紀錄")
     parser.add_argument("--episode-dir", type=Path, default=DEFAULT_EPISODE_DIR)
@@ -321,6 +402,9 @@ def main() -> int:
         if args.session_id:
             return args.session_id
         return transcript.stem  # transcript 檔名就是 session id
+
+    if args.sync_all:
+        return sync_all(args.episode_dir)
 
     if args.doctor:
         return doctor(args.episode_dir)

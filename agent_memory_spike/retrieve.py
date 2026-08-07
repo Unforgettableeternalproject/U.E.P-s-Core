@@ -275,6 +275,57 @@ def reciprocal_rank_fusion(rankings: list[list[tuple[int, float]]], k: int = 60)
     return sorted(fused.items(), key=lambda pair: -pair[1])
 
 
+def build_file_cases(pool: list[dict[str, Any]], episodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """另一種 ground truth：**同一個檔案後來又被編輯**的輪次。
+
+    前一種 ground truth 問的是「同樣的任務再來一次」，query 是使用者的話。
+    這一種問的是「再次碰到這個檔案時，關於它的記憶會不會浮出來」——
+    也就是 `PreToolUse` 觸發的場景，而那是 coding agent 特有的、對話系統沒有的訊號。
+
+    刻意**排除該 concept 自己的來源輪次**：那些輪次的檔案必然重疊（concept 就是從那裡抽的），
+    算進去等於拿答案當題目。
+
+    假設的邊界：「編輯同一個檔案 → 該召回關於那個檔案的記憶」在大檔案上不一定成立，
+    改的可能是完全不相干的區塊。所以這組 case 的上限也不是 100%。
+    """
+    cases: list[dict[str, Any]] = []
+    for index, concept in enumerate(pool):
+        source_files = set(concept.get("source_files") or [])
+        if not source_files:
+            continue
+        source_keys = {(t[0], t[1] if len(t) > 1 else 0) for t in (concept.get("source_turns") or [])}
+
+        for episode in episodes:
+            if episode.get("origin") != ORIGIN_HUMAN:
+                continue
+            if (episode.get("prompt_id"), episode.get("turn_index")) in source_keys:
+                continue
+            if not (source_files & set(episode.get("files_edited") or [])):
+                continue
+            query = (episode.get("user_text") or "").strip()
+            if len(query) < MIN_QUERY_CHARS:
+                continue
+            cases.append({
+                "concept_index": index,
+                "concept_id": concept.get("id"),
+                "scope": concept.get("scope"),
+                "query": query,
+                "statement": concept.get("statement"),
+                "files_edited": episode.get("files_edited") or [],
+            })
+    return cases
+
+
+def file_overlap_ranker(pool: list[dict[str, Any]], case: dict[str, Any]) -> list[tuple[int, float]]:
+    """純檔案訊號：重疊的檔案數就是分數。"""
+    touched = set(case.get("files_edited") or [])
+    scored = [
+        (i, float(len(set(c.get("source_files") or []) & touched)))
+        for i, c in enumerate(pool)
+    ]
+    return sorted(scored, key=lambda pair: -pair[1])
+
+
 def evaluate_variant(
     pool: list[dict[str, Any]],
     cases: list[dict[str, Any]],
@@ -293,7 +344,8 @@ def evaluate_variant(
     pool_sizes: list[int] = []
 
     for case in cases:
-        ranked = ranker(case["query"])
+        # 檔案訊號需要整個 case（要看這輪碰了哪些檔案），文字檢索只需要 query
+        ranked = ranker(case) if getattr(ranker, "needs_case", False) else ranker(case["query"])
         if scope_filter:
             # 同 repo，或標為跨專案通用（scope 為空）的才留下
             ranked = [
@@ -328,7 +380,7 @@ def _report(name: str, ranks: list[int], cases: int, ks: tuple[int, ...], avg_po
 
 
 def evaluate(pool: list[dict[str, Any]], cases: list[dict[str, Any]], ks: tuple[int, ...],
-             *, use_vector: bool = True) -> int:
+             *, use_vector: bool = True, dump_misses: Path | None = None) -> int:
     import time
 
     out = sys.stderr
@@ -383,6 +435,16 @@ def evaluate(pool: list[dict[str, Any]], cases: list[dict[str, Any]], ks: tuple[
         for case in misses[:5]:
             print(f"    - [{case['scope']}] query: {case['query'][:70]}", file=out)
             print(f"      應召回: {case['statement'][:70]}", file=out)
+
+    if dump_misses is not None:
+        # 給診斷用：目前無法區分「檢索沒抓到」與「本來就沒有可辨識的關聯」，
+        # 而這個比例決定了 recall 的天花板在哪、還值不值得繼續調
+        dump_misses.write_text(
+            json.dumps({"setting": best, "count": len(misses), "cases": misses},
+                       ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(f"\n  未命中案例已寫出 → {dump_misses}", file=out)
     return 0
 
 
@@ -396,12 +458,61 @@ def query_once(pool: list[dict[str, Any]], text: str, top_k: int) -> int:
     return 0
 
 
+def evaluate_files(pool: list[dict[str, Any]], episodes: list[dict[str, Any]],
+                   ks: tuple[int, ...], *, use_vector: bool = True) -> int:
+    """在「同檔案再次被編輯」的情境下，比較文字訊號與檔案訊號。"""
+    out = sys.stderr
+    cases = build_file_cases(pool, episodes)
+    if not cases:
+        print("[retrieve] 建不出檔案情境的 case", file=out)
+        return 1
+
+    concepts_covered = len({c["concept_id"] for c in cases})
+    print(f"[retrieve] 檔案情境：{len(cases)} 個 case，涵蓋 {concepts_covered}/{len(pool)} 條 concept",
+          file=out)
+
+    bm25_cue = build_index(pool, with_cue=True)
+
+    def by_files(case: dict[str, Any]) -> list[tuple[int, float]]:
+        return file_overlap_ranker(pool, case)
+    by_files.needs_case = True
+
+    def by_files_and_text(case: dict[str, Any]) -> list[tuple[int, float]]:
+        return reciprocal_rank_fusion([file_overlap_ranker(pool, case), bm25_cue.rank(case["query"])])
+    by_files_and_text.needs_case = True
+
+    variants = [
+        ("文字（BM25+cue）", bm25_cue.rank, True),
+        ("檔案重疊", by_files, True),
+        ("檔案 + 文字（RRF）", by_files_and_text, True),
+    ]
+
+    if use_vector:
+        vector_cue = VectorIndex([document_text(c, with_cue=True) for c in pool])
+
+        def full(case: dict[str, Any]) -> list[tuple[int, float]]:
+            return reciprocal_rank_fusion([
+                file_overlap_ranker(pool, case),
+                bm25_cue.rank(case["query"]),
+                vector_cue.rank(case["query"]),
+            ])
+        full.needs_case = True
+        variants.append(("檔案 + 文字 + 向量（RRF）", full, True))
+
+    for name, ranker, scoped in variants:
+        ranks, avg_pool = evaluate_variant(pool, cases, ks, ranker=ranker, scope_filter=scoped)
+        _report(name, ranks, len(cases), ks, avg_pool)
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Phase 2 檢索驗證")
     parser.add_argument("--eval", action="store_true", help="量 recall@k 與 MRR")
+    parser.add_argument("--eval-files", action="store_true", help="在「同檔案再次編輯」情境下比較檔案訊號")
     parser.add_argument("--query", type=str, help="手動查一筆")
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--no-vector", action="store_true", help="只跑 BM25，不呼叫 ollama")
+    parser.add_argument("--dump-misses", type=Path, help="把最佳設定的未命中案例寫成 JSON，供診斷")
     parser.add_argument("--episode-dir", type=Path, default=DEFAULT_EPISODE_DIR)
     parser.add_argument("--concept-path", type=Path, default=DEFAULT_CONCEPT_PATH)
     args = parser.parse_args()
@@ -421,11 +532,15 @@ def main() -> int:
         return query_once(pool, args.query, args.top_k)
 
     episodes, _ = load_deduped(args.episode_dir)
+    if args.eval_files:
+        return evaluate_files(pool, episodes, ks=(1, 3, 5, 10), use_vector=not args.no_vector)
+
     cases = build_ground_truth(pool, episodes)
     if not cases:
         print("[retrieve] 建不出 ground truth", file=sys.stderr)
         return 1
-    return evaluate(pool, cases, ks=(1, 3, 5, 10), use_vector=not args.no_vector)
+    return evaluate(pool, cases, ks=(1, 3, 5, 10), use_vector=not args.no_vector,
+                    dump_misses=args.dump_misses)
 
 
 if __name__ == "__main__":

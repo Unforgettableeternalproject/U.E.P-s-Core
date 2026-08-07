@@ -213,15 +213,49 @@ DISTILL_INSTRUCTIONS = """\
 {
   "concepts": [
     {
-      "statement": "一句話陳述這件事。必須具體到可以被驗證對錯。",
+      "statement": "一句話陳述這件事。必須具體到可以被驗證對錯，而且只講一件事。",
       "kind": "project-fact | belief-correction | user-stance",
       "scope": "repo 名稱，跨專案通用則填 null",
+      "anchors": ["這條記憶真正關於的具體對象：檔案路徑、函式名、欄位名。沒有就給空陣列"],
+      "cue": "什麼情況下該想起這條——用觸發情境的措辭，不是答案的措辭",
       "probe": "一個開發問題，用來測試模型會不會主動講出這一點",
       "why": "為什麼你認為模型不會知道這件事"
     }
   ]
 }
 ```
+
+`statement` 必須**原子化：一條只講一件事**。把「A 成立，而且還要注意 B」拆成兩條。
+複合陳述在驗證時會得到一個既不能保留也不能剔除的中間值（實測 42% 落在這個灰帶），
+因為模型往往知道其中一半、不知道另一半。
+
+`cue` 是檢索用的提取線索，**這條寫得好不好直接決定這條記憶會不會被想起**。
+實測索引 cue 比索引 statement 讓召回率高 8–10 個百分點，比換檢索演算法有效得多。
+原因是 `statement` 是**答案**的措辭，而檢索時手上只有**問題**的措辭：
+
+- statement：「反查 users 要一併帶 companyid 過濾」（答案）
+- 實際情境：「建立者顯示的是 ID，我想看到操作者名稱」（問題）
+
+兩者語意重心不同，直接比對會落榜。所以 cue 要寫成**觸發情境**：
+
+- ✅「要在後端依 userid 反查使用者名稱、或做任何跨集合查詢的時候」
+- ❌「多租戶查詢必須帶 companyid」（這是答案，不是線索）
+
+寫 cue 的規則：
+- 用「當你正在做 X 的時候」的形式描述**情境**，不要寫結論
+- 帶上會實際出現在需求或程式碼裡的具體詞彙：檔案名、函式名、功能名詞
+- 想像的是「一個人**還沒犯這個錯之前**在做什麼」，不是「犯錯之後學到什麼」
+
+`anchors` 決定這條記憶會在**碰到什麼東西時**被喚起，所以要**盡可能具體**。
+
+只寫檔案路徑是不夠的：同一個檔案往往承載多個彼此無關的功能區塊，
+只靠檔案比對，實測有 70% 的召回是雜訊——抓到的是「同檔案裡另一段邏輯的舊筆記」。
+真正有用的召回，共同特徵是**函式名、欄位名跟當下要改的東西同名同源**。
+
+- ✅ `["apps/uep/src/islands/DraggableIsland.tsx", "z-index", "--uep-island-z"]`
+- ❌ `["apps/uep"]`（整個目錄，等於沒有錨點）
+
+**只寫這條記憶真正談論的對象**，不要把這一輪順手碰過的檔案都列上去。
 
 `probe` 是關鍵，出題規則：
 - 問的是**開發任務**，不是問「你知不知道 X」——後者會觸發後見之明，模型看到
@@ -285,12 +319,19 @@ def ingest(result_path: Path, concept_path: Path, task_path: Path) -> int:
                 "statement": statement,
                 "kind": concept.get("kind"),
                 "scope": concept.get("scope") or task.get("repo"),
+                # 檢索索引的是 cue 不是 statement——見 experiment/phase2-retrieval.md。
+                # 舊語料沒有這個欄位，退回 probe（形狀相近，是當初驗證這個方向時用的代理）
+                "cue": concept.get("cue") or concept.get("probe"),
                 "probe": concept.get("probe"),
                 "why": concept.get("why"),
                 # 溯源：Phase 2 要靠它判斷記憶是否已經失效
                 "source_candidate": task["id"],
                 "source_turns": task["source_turns"],
+                # source_files 是「產生這條記憶那一輪碰過的檔案」，屬於溯源資訊。
+                # **不要拿它當檢索錨點**——那些檔案多半只是順手碰到的，
+                # 實測用它做檔案召回的 precision 只有 30%。錨點要用 anchors。
                 "source_files": task["overlap_files"],
+                "anchors": concept.get("anchors") or [],
                 # 行為測試填這兩欄，蒸餾階段一律留空。
                 # LLM 自評不可靠（實測準確率 60-70%，且在最有價值的條目上系統性失準），
                 # 所以這裡沒有任何自評欄位可以先填。

@@ -215,16 +215,17 @@ def document_text(concept: dict[str, Any], *, with_cue: bool) -> str:
     這正是 Echo Memory 那個名字的意思：**Ecphory 是提取線索**。
     記憶靠 cue 被喚起，不是靠內容本身被搜到。
 
-    這裡先用 ``probe`` 當 cue 的代理來驗證方向。probe 是蒸餾階段為了測試而寫的
-    「什麼開發情境會需要這條知識」，形狀正確但目的不同——
-    方向對的話，蒸餾階段應該正式產一個 ``cue`` 欄位，而不是借用 probe。
+    方向驗證過之後，蒸餾階段已改為正式產出 ``cue`` 欄位。
+    舊語料沒有 cue，退回 ``probe``——那是當初驗證這個方向時用的代理，
+    形狀相近（同樣是「什麼情境會需要這條知識」），但它是為**測試**而寫的，
+    專為**觸發**而寫的 cue 應該更好。
 
     注意這**不是**拿 probe 當 query 作弊：query 一律來自真實語料，
-    probe 只出現在索引側。
+    cue/probe 只出現在索引側。
     """
     parts = [concept.get("statement", ""), concept.get("scope") or ""]
     if with_cue:
-        parts.append(concept.get("probe") or "")
+        parts.append(concept.get("cue") or concept.get("probe") or "")
     return " ".join(p for p in parts if p)
 
 
@@ -312,17 +313,74 @@ def build_file_cases(pool: list[dict[str, Any]], episodes: list[dict[str, Any]])
                 "query": query,
                 "statement": concept.get("statement"),
                 "files_edited": episode.get("files_edited") or [],
+                "assistant_text": episode.get("assistant_text") or "",
             })
     return cases
 
 
+def dump_precision_tasks(pool: list[dict[str, Any]], episodes: list[dict[str, Any]],
+                         path: Path, sample_size: int, seed: int, top_k: int) -> int:
+    """產出 precision 評估任務：每個情境配上檔案訊號召回的 top-k。
+
+    recall 已經測過了（而且那個 ground truth 對檔案訊號有利）。**precision 才是
+    還沒被驗證、也是決定 `PreToolUse` 能不能用的那一面**：碰到某個檔案時召回了幾條、
+    其中幾條跟當下這輪真的在做的事有關。
+
+    以「情境」而非「case」抽樣：同一輪會為多條 concept 各產生一個 case，
+    照 case 抽會讓關聯多的輪次被重複抽到，precision 也就失真。
+    """
+    import random
+
+    cases = build_file_cases(pool, episodes)
+    # 同一輪（同一批 files_edited + 同一句 query）只留一個代表
+    scenarios: dict[tuple[str, str], dict[str, Any]] = {}
+    for case in cases:
+        scenarios.setdefault((case["query"], "|".join(sorted(case["files_edited"]))), case)
+
+    picked = list(scenarios.values())
+    random.Random(seed).shuffle(picked)
+    picked = picked[:sample_size]
+
+    tasks = []
+    for i, case in enumerate(picked):
+        ranked = file_overlap_ranker(pool, case)
+        retrieved = [
+            {"id": pool[idx].get("id"), "statement": pool[idx].get("statement"),
+             "overlap": int(score)}
+            for idx, score in ranked[:top_k] if score > 0
+        ]
+        tasks.append({
+            "id": f"prec-{i:03d}",
+            "repo": case.get("scope"),
+            "files_edited": case["files_edited"],
+            "user_text": case["query"][:800],
+            "assistant_text": case["assistant_text"][:1500],
+            "retrieved": retrieved,
+        })
+
+    path.write_text(json.dumps({"count": len(tasks), "tasks": tasks},
+                               ensure_ascii=False, indent=2), encoding="utf-8")
+    total = sum(len(t["retrieved"]) for t in tasks)
+    print(f"[retrieve] {len(tasks)} 個情境（去重自 {len(cases)} 個 case），"
+          f"共召回 {total} 條，平均 {total / len(tasks):.2f} 條/次 → {path}", file=sys.stderr)
+    return 0
+
+
 def file_overlap_ranker(pool: list[dict[str, Any]], case: dict[str, Any]) -> list[tuple[int, float]]:
-    """純檔案訊號：重疊的檔案數就是分數。"""
+    """檔案訊號：重疊的檔案數就是分數。
+
+    優先用 ``anchors``（這條記憶真正談論的對象），沒有才退回 ``source_files``。
+
+    兩者的差別實測很大：``source_files`` 是「產生這條記憶那一輪碰過的所有檔案」，
+    裡面多半是順手碰到的，用它做召回的 precision 只有 30%——
+    抓到的常是「同一個檔案裡另一段邏輯的舊筆記」。
+    真正有用的召回，共同特徵是錨點與當下要改的東西同名同源。
+    """
     touched = set(case.get("files_edited") or [])
-    scored = [
-        (i, float(len(set(c.get("source_files") or []) & touched)))
-        for i, c in enumerate(pool)
-    ]
+    scored = []
+    for i, concept in enumerate(pool):
+        anchors = concept.get("anchors") or concept.get("source_files") or []
+        scored.append((i, float(len(set(anchors) & touched))))
     return sorted(scored, key=lambda pair: -pair[1])
 
 
@@ -509,6 +567,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Phase 2 檢索驗證")
     parser.add_argument("--eval", action="store_true", help="量 recall@k 與 MRR")
     parser.add_argument("--eval-files", action="store_true", help="在「同檔案再次編輯」情境下比較檔案訊號")
+    parser.add_argument("--dump-precision", type=Path, help="產出檔案訊號的 precision 評估任務")
+    parser.add_argument("--sample", type=int, default=30, help="precision 抽樣情境數")
+    parser.add_argument("--seed", type=int, default=20260807)
     parser.add_argument("--query", type=str, help="手動查一筆")
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--no-vector", action="store_true", help="只跑 BM25，不呼叫 ollama")
@@ -532,6 +593,10 @@ def main() -> int:
         return query_once(pool, args.query, args.top_k)
 
     episodes, _ = load_deduped(args.episode_dir)
+    if args.dump_precision:
+        return dump_precision_tasks(pool, episodes, args.dump_precision,
+                                    args.sample, args.seed, args.top_k)
+
     if args.eval_files:
         return evaluate_files(pool, episodes, ks=(1, 3, 5, 10), use_vector=not args.no_vector)
 

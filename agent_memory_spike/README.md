@@ -16,7 +16,16 @@ Coding agent 記憶層實驗。與 `echo_memory/` 完全無關——不 import�
 | `experiment/surprisal-calibration.md` | 0 | 自評 vs 行為測試的校準實驗 |
 | `transcript.py` | 1 | transcript 解析 → episode |
 | `hook_stop.py` | 1 | Stop hook，寫入 episode |
-| `test_transcript.py` | 1 | 解析層測試（17 項） |
+| `test_transcript.py` | 1 | 解析層測試（29 項） |
+| `distill.py` | 1.5 | 語料 → concept 候選 → 蒸餾 |
+| `calibrate.py` | 1.5 | surprisal 行為校準 + 注入實驗 |
+| `experiment/phase15-results.md` | 1.5 | 蒸餾與校準結果 |
+| `experiment/phase15-evaluation.md` | 1.5 | 完備性與可利用性驗收 |
+| `retrieve.py` | 2 | 檢索（BM25 + ollama 向量 + 檔案訊號） |
+| `experiment/phase2-retrieval.md` | 2 | 檢索驗證結果 |
+
+資料一律放在 repo 外的 `~/.claude/agent-memory-spike/`——hook 全域掛載，
+會收到所有專案的對話原文，包含商業專案。
 
 ---
 
@@ -38,7 +47,7 @@ Coding agent 記憶層實驗。與 `echo_memory/` 完全無關——不 import�
 
 ---
 
-# Phase 1 — 寫入管線（進行中）
+# Phase 1 — 寫入管線（已完成）
 
 **只寫入，不召回。** 目的是累積真實語料——surprisal 的行為測試需要真實使用情境才划算，
 人工出題測人工資料只會測到出題品質。
@@ -199,8 +208,62 @@ python hook_stop.py --sync <transcript_path> --dry-run
 - `PreCompact` **拿不到即將被壓縮的內容**
 - Timeout：一般 600s，`UserPromptSubmit` 僅 30s；逾時 = 忽略，不中斷
 
-## 下一步
+## Phase 1 的下一步（已完成）
 
-- [ ] 累積 2–3 週真實語料
-- [ ] 依真實語料做 surprisal 行為測試校準
-- [ ] Phase 2：檢索核心（跨 namespace 融合、時效性標記）
+- [x] 累積 2–3 週真實語料（1372 輪 / 7 repo）
+- [x] 依真實語料做 surprisal 行為測試校準（見 Phase 1.5）
+- [x] Phase 2：檢索核心（見下）
+
+⚠️ **`hook_session_start.py` 至今刻意未掛載。** 現在注入記憶的話，
+之後收到的語料會是「已被記憶影響過的行為」，校準就會有系統性偏誤。
+真正要接上去之前不要掛。
+
+---
+
+# Phase 1.5 — concept 蒸餾與 surprisal 校準（已完成）
+
+1372 輪語料 → 粗篩 78 組 → 蒸餾 55 條 concept → 全數行為校準，22 條通過門檻。
+
+```bash
+python distill.py --stats            # 看粗篩分布
+python distill.py --emit             # 產蒸餾任務
+python distill.py --show 0-12        # 取一批任務（給 subagent）
+python distill.py --ingest <dir>     # 收回蒸餾結果
+
+python calibrate.py --emit           # 產行為測試題目
+python calibrate.py --show-probes 0-5    # 取題（**只給題目，不含答案**）
+python calibrate.py --ingest <dir>   # 收回判定，計算 surprisal
+python calibrate.py --emit-injection # 注入實驗（可利用性驗證）
+```
+
+**方法上的三條紅線**（違反任何一條，測出來的數字就沒有意義）：
+
+- 受測者**絕不能看到 statement**——看到就退化成自評，而自評準確率只有 60–70%，
+  且在最有價值的條目上系統性失準
+- probe 的框架要偽裝成**正常開發諮詢**，不能明說是測驗——講明了模型會進入應試狀態，
+  把所有想得到的注意事項列一遍，人為抬高 VOLUNTEER 率
+- 受測用的模型要與**實際會用的模型一致**（目前 opus）；別的模型測出的先驗代表不了它
+
+驗收結論見 `experiment/phase15-evaluation.md`：
+可利用性過關（注入後 22/22 APPLIED、零誤用），但**粗篩訊號無鑑別力**
+（對照隨機抽樣：0.705 vs 0.692 條/組），語料覆蓋率僅約 16%。
+
+# Phase 2 — 檢索（進行中）
+
+```bash
+python retrieve.py --eval              # recall@k / MRR，比較 8 種設定
+python retrieve.py --eval-files        # 「同檔案再次編輯」情境下的檔案訊號
+python retrieve.py --query "..."       # 手動查一筆
+python retrieve.py --no-vector         # 不呼叫 ollama，只跑 BM25
+```
+
+embedding 走 **ollama HTTP**（`bge-m3`，與 PM 同一個模型），不自載模型：
+`UserPromptSubmit` 只有 30 秒 timeout 且每次新程序，自載等於每輪付一次冷啟動。
+ollama 常駐 → 一次往返 371 ms，**也就不需要自己做 daemon**。
+只用標準庫 urllib，零依賴前提保住。
+
+**核心結論**：索引「提取線索」比換檢索演算法有效得多
+（換向量 ±0.0pp，換索引內容 +8~10pp）。這正是 Ecphory 的意思——
+記憶靠 cue 被喚起，不是靠內容被搜到。
+
+詳見 `experiment/phase2-retrieval.md`。

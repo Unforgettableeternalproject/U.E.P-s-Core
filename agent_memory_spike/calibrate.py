@@ -173,12 +173,24 @@ def load_agent_json(path: Path) -> list[dict[str, Any]]:
     return items
 
 
-def emit(concept_path: Path, probe_path: Path) -> int:
+def emit(concept_path: Path, probe_path: Path, kinds: list[str] | None = None) -> int:
+    """產出行為測試題目。
+
+    ``kinds`` 用來只跑某幾類。612 條全跑的成本是一次蒸餾的量級以上，
+    而 Phase 0 的結論指出價值集中在 ``user-stance`` 與 ``belief-correction``——
+    ``project-fact`` 的 surprisal 多半較低。**「多半較低」目前是猜測，沒有數據**，
+    所以未校準的那批不能當成「已知低價值」看待，只能當成「還沒測」。
+    """
     concepts = load_concepts(concept_path)
     pending = [c for c in concepts if c.get("probe") and c.get("surprisal") is None]
+    if kinds:
+        pending = [c for c in pending if c.get("kind") in kinds]
     payload = {
         "probe_instructions": PROBE_INSTRUCTIONS,
         "judge_instructions": JUDGE_INSTRUCTIONS,
+        # 記下這批限定了哪幾類，否則之後看到 probe_tasks.json 無從得知
+        # 「沒出現在裡面」是因為已校準還是因為被篩掉
+        "kinds": kinds or None,
         "count": len(pending),
         "probes": [
             {"id": c["id"], "probe": c["probe"], "statement": c["statement"], "scope": c.get("scope")}
@@ -425,6 +437,8 @@ def report(concept_path: Path) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Phase 1.5 surprisal 行為測試校準")
     parser.add_argument("--emit", action="store_true", help="產出行為測試題目")
+    parser.add_argument("--kinds", type=str,
+                        help="只跑指定的 kind，逗號分隔（例如 user-stance,belief-correction）")
     parser.add_argument("--ingest", type=Path, help="收回判定結果")
     parser.add_argument("--report", action="store_true", help="看校準後的分布")
     parser.add_argument("--show-probes", type=str, help="印出指定範圍的題目（不含答案），例如 0-3")
@@ -458,7 +472,8 @@ def main() -> int:
     if args.ingest:
         return ingest(args.ingest, args.concept_path)
     if args.emit:
-        return emit(args.concept_path, args.probe_path)
+        kinds = [k.strip() for k in args.kinds.split(",") if k.strip()] if args.kinds else None
+        return emit(args.concept_path, args.probe_path, kinds)
     if args.show_probes:
         return show_probes(args.probe_path, args.show_probes)
     if args.show_judge:

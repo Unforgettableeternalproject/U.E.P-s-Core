@@ -404,7 +404,35 @@ python distill.py --ingest <dir> --incremental # 接在既有 concept 之後
 - **矛盾的傳遞性**（見上）——單輪配對抓不完
 - **蒸餾判準的評審間變異 2.2 倍**：各批產出密度 0.83 ~ 1.96 條/組
 - **612 條尚未校準**：surprisal 只能靠行為測試，成本大且模型升級後要重跑
-- **空 `assistant_text` 的輪次**：162 輪（11.5%），其中 35 輪是 human 輪。
-  `--doctor` 尚未把它列為檢查項——按「doctor 沒比對的欄位等於沒有保護」的教訓，該補
+- ~~**空 `assistant_text` 的輪次**~~：已查根因並補進 `--doctor`，見下節
 - **自動化尚未接上**：穩定 id 與增量都到位了，但排程入口、lockfile、
   每次上限、以及「蒸餾 → 校準 → 入池」整條 pipeline 還沒串
+
+---
+
+# Phase 2.6 — 空 `assistant_text` 的根因與 doctor 補強（已完成）
+
+語料裡 11.4% 的輪次 `assistant_text` 是空的，而 `--doctor` 完全不看這個欄位。
+逐筆回對 transcript 之後，成因分成四類：
+
+| 類別 | 輪數 | 是不是故障 |
+|---|---|---|
+| 無回應（送出後立刻中斷／訊息排隊） | 135 | 否，agent 本來就沒回應 |
+| 無法驗證（transcript 已被 cleanup 清掉） | 25 | 未知 |
+| 中斷於工具執行中（有 tool_use、無文字結論） | 8 | 否 |
+| **殘留（來源有回應、存檔卻是空的）** | **0** | **是** |
+
+**沒有解析漏抓**。一度以為有 2 筆，那是分析腳本用 `{promptId: group}` 建索引造成的假象——
+**同一個 promptId 在一份 transcript 裡會出現兩次**（session 起始的 meta 注入沿用同一個 id），
+dict 後寫者贏，於是拿 turn 0 的空 meta 輪去對照 turn 33 的 human 輪。
+語料的鍵本來就是 `(prompt_id, turn_index)`，沒有問題；出錯的是臨時腳本。
+
+## 修掉的盲點比補的檢查更重要
+
+比對用的 `live` 來自 `completed_episodes`（排除最新一輪），
+所以**transcript 只有這一輪時 `ref` 是 `None`，整筆被靜默略過**。
+空 `assistant_text` 的檢查改成對照含最新輪的完整清單，這類輪次才進得了視野。
+
+順帶：原本每個 session 會重建三次 transcript，現在一次。
+
+`--doctor` 現在會印出空 `assistant_text` 的分類統計，只有「殘留」那類算問題。

@@ -173,7 +173,8 @@ def load_agent_json(path: Path) -> list[dict[str, Any]]:
     return items
 
 
-def emit(concept_path: Path, probe_path: Path, kinds: list[str] | None = None) -> int:
+def emit(concept_path: Path, probe_path: Path, kinds: list[str] | None = None,
+         sample: int = 0, seed: int = 20260808) -> int:
     """產出行為測試題目。
 
     ``kinds`` 用來只跑某幾類。612 條全跑的成本是一次蒸餾的量級以上，
@@ -185,6 +186,13 @@ def emit(concept_path: Path, probe_path: Path, kinds: list[str] | None = None) -
     pending = [c for c in concepts if c.get("probe") and c.get("surprisal") is None]
     if kinds:
         pending = [c for c in pending if c.get("kind") in kinds]
+    if sample and sample < len(pending):
+        # 先抽樣估通過率再決定要不要全跑。448 條 project-fact 全跑要幾十個 agent，
+        # 而「它們的 surprisal 多半較低」至今只是猜測——
+        # 花 1/7 的成本把猜測換成數據，比賭一把或擱著不測都划算
+        import random
+
+        pending = random.Random(seed).sample(pending, sample)
     payload = {
         "probe_instructions": PROBE_INSTRUCTIONS,
         "judge_instructions": JUDGE_INSTRUCTIONS,
@@ -437,6 +445,8 @@ def report(concept_path: Path) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Phase 1.5 surprisal 行為測試校準")
     parser.add_argument("--emit", action="store_true", help="產出行為測試題目")
+    parser.add_argument("--sample", type=int, default=0,
+                        help="只抽樣 N 條（先估通過率，再決定要不要全跑）")
     parser.add_argument("--kinds", type=str,
                         help="只跑指定的 kind，逗號分隔（例如 user-stance,belief-correction）")
     parser.add_argument("--ingest", type=Path, help="收回判定結果")
@@ -473,7 +483,7 @@ def main() -> int:
         return ingest(args.ingest, args.concept_path)
     if args.emit:
         kinds = [k.strip() for k in args.kinds.split(",") if k.strip()] if args.kinds else None
-        return emit(args.concept_path, args.probe_path, kinds)
+        return emit(args.concept_path, args.probe_path, kinds, args.sample)
     if args.show_probes:
         return show_probes(args.probe_path, args.show_probes)
     if args.show_judge:

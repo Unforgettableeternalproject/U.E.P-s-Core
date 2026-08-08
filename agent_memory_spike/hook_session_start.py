@@ -69,6 +69,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from hook_pretooluse import (  # noqa: E402
     CONCEPT_PATH,
     PASS_THRESHOLD,
+    is_global,
     load_pool,
     load_state,
     save_state,
@@ -83,11 +84,6 @@ MAX_INJECT_CHARS = 10_000
 # PreToolUse 的 top-3 有 precision 數據撐著（43.5%），而這裡連相關性訊號都沒有，
 # 不該比它更寬。寧可少注入幾條真的有用的，也不要塞滿整個 session 的 context。
 SESSION_TOP_K = 5
-
-# 跨專案記憶的 scope 值。目前池子裡一條都沒有——蒸餾階段沒有產出這個分類，
-# 於是像「git check-ignore 的 exit code 不代表檔案會被忽略」這種明顯通用的知識
-# 也被鎖在單一 repo 裡。先把讀取端支援起來，蒸餾端補上時不用再改這裡。
-GLOBAL_SCOPES = {"global", "*"}
 
 
 def select(pool: list[dict[str, Any]], scope: str | None,
@@ -108,7 +104,7 @@ def select(pool: list[dict[str, Any]], scope: str | None,
         if concept.get("id") in already:
             continue
         concept_scope = concept.get("scope")
-        if concept_scope in GLOBAL_SCOPES or not concept_scope:
+        if is_global(concept_scope):
             candidates.append(concept)
         elif scope and concept_scope == scope:
             candidates.append(concept)
@@ -200,11 +196,16 @@ def stats() -> int:
         total = 0
     print(f"[inject] 池子 {total} 條，校準通過（surprisal >= {PASS_THRESHOLD}）{len(pool)} 條",
           file=sys.stderr)
-    by_scope = collections.Counter(str(c.get("scope") or "(無 scope)") for c in pool)
+    by_scope = collections.Counter(
+        "(global)" if is_global(c.get("scope")) else str(c.get("scope")) for c in pool)
     for name, count in by_scope.most_common():
-        capped = min(count, SESSION_TOP_K)
-        print(f"  {count:4d} 條  {name}  → 每 session 實際注入 {capped} 條", file=sys.stderr)
-    if not any(s in GLOBAL_SCOPES for s in by_scope):
+        # 可注入數要用 select 實算，不能用 min(count, TOP_K)：
+        # 一個 repo 的候選是「該 repo 專屬 + 全部 global」合併後才取 top-k，
+        # 分開算會把 global 的貢獻藏起來（回填後本 repo 專屬只剩 1 條，
+        # 但實際可注入是 7 條）
+        pickable = len(select(pool, None if name == "(global)" else name, set()))
+        print(f"  {count:4d} 條  {name}  → 每 session 實際注入 {pickable} 條", file=sys.stderr)
+    if not any(is_global(c.get("scope")) for c in pool):
         print("  ⚠️  池子裡沒有 global scope 的記憶：跨專案通用知識目前不會流動",
               file=sys.stderr)
     return 0

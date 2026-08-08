@@ -111,6 +111,20 @@ def test_scope_keeps_other_repos_out(tmp_path, monkeypatch):
     assert select(pool, {"src/api/tracking.ts"}, {"fetchtracking"}, "proj", set()) == []
 
 
+def test_global_memories_reach_every_repo(tmp_path, monkeypatch):
+    """跨專案通用的記憶（`scope=None`）在任何 repo 都要放行。
+
+    通用知識被鎖在單一 repo 是整個 scope 修復的起點，三條路都要有這道測試——
+    只在 SessionStart 測過的話，另外兩條分岔了也看不見。
+    """
+    _isolate(tmp_path, monkeypatch, [])
+    anchors = ["src/api/tracking.ts", "fetchTracking"]
+    for scope_value in (None, "global", "*"):
+        pool = [_concept("c-1", anchors, scope=scope_value)]
+        picked = select(pool, {"src/api/tracking.ts"}, {"fetchtracking"}, "proj", set())
+        assert [c["id"] for c in picked] == ["c-1"], scope_value
+
+
 def test_top_k_caps_what_goes_into_context(tmp_path, monkeypatch):
     _isolate(tmp_path, monkeypatch, [])
     pool = [_concept(f"c-{i}", ["src/api/tracking.ts", "fetchTracking"]) for i in range(6)]

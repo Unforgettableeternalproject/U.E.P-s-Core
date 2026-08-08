@@ -70,6 +70,21 @@ INJECT_TOP_K = 3
 EDIT_TOOLS = {"Edit": "file_path", "Write": "file_path", "MultiEdit": "file_path",
               "NotebookEdit": "notebook_path"}
 
+# 跨專案記憶的正典表示法是 **scope=None**（蒸餾指示要求「跨專案通用則填 null」）。
+# 這組字串是為了容忍蒸餾者寫成字面值，收料端會正規化掉，池子裡不該出現
+GLOBAL_SCOPES = {"global", "*"}
+
+
+def is_global(scope: Any) -> bool:
+    """這條記憶是不是跨專案通用。
+
+    三條注入路徑共用這一份判斷。先前各自寫各自的，`hook_session_start.stats`
+    只比對 GLOBAL_SCOPES 字串而不認 None，於是通用記憶回填後注入已經生效、
+    `--stats` 卻還在印「池子裡沒有 global scope 的記憶」。
+    分岔的判斷不會報錯，它會讓驗證步驟說謊。
+    """
+    return not scope or scope in GLOBAL_SCOPES
+
 
 def load_pool(path: Path = CONCEPT_PATH) -> list[dict[str, Any]]:
     """只載入校準通過的記憶。
@@ -119,7 +134,7 @@ def select(pool: list[dict[str, Any]], touched: set[str], symbols: set[str],
     for concept in pool:
         if concept.get("id") in already:
             continue
-        if scope and concept.get("scope") and concept.get("scope") != scope:
+        if scope and not is_global(concept.get("scope")) and concept.get("scope") != scope:
             continue
         anchors = concept.get("anchors") or concept.get("source_files") or []
         anchor_files, anchor_symbols = split_anchors(anchors)

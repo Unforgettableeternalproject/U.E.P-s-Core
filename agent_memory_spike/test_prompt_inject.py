@@ -66,6 +66,13 @@ def test_other_repos_stay_out():
     assert select(pool, QUERY, "proj", set()) == []
 
 
+def test_global_memories_reach_every_repo():
+    """跨專案通用的記憶在任何 repo 都要放行，三條路的判斷共用同一份實作。"""
+    for scope_value in (None, "global", "*"):
+        pool = [_concept("c-1", scope=scope_value)]
+        assert [c["id"] for c in select(pool, QUERY, "proj", set())] == ["c-1"], scope_value
+
+
 def test_the_threshold_is_scale_free_across_pool_sizes():
     """**這是實作時真的踩到的坑。**
 

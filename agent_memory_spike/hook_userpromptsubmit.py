@@ -86,6 +86,7 @@ _T0 = time.perf_counter()
 sys.path.insert(0, str(Path(__file__).parent))
 from hook_pretooluse import (  # noqa: E402
     CONCEPT_PATH,
+    is_global,
     load_pool,
     load_state,
     save_state,
@@ -139,7 +140,7 @@ def select(pool: list[dict[str, Any]], query: str, scope: str | None,
     candidates = [
         c for c in pool
         if c.get("id") not in already
-        and (not c.get("scope") or c.get("scope") == scope)
+        and (is_global(c.get("scope")) or c.get("scope") == scope)
     ]
     if not candidates:
         return []

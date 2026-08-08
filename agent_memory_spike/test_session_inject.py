@@ -69,11 +69,40 @@ def test_only_calibrated_memories_are_injected(tmp_path, monkeypatch):
     assert "statement c-2" not in run(_payload(), dry_run=True)
 
 
+def test_stats_agrees_with_select_about_what_global_means(tmp_path, monkeypatch, capsys):
+    """`--stats` 的判斷必須與 `select` 同一份，否則驗證步驟會說謊。
+
+    實際發生過：回填把通用記憶改回 `scope=None` 之後注入已經生效，
+    但 stats 只比對 GLOBAL_SCOPES 字串、不認 None，於是照舊印出
+    「池子裡沒有 global scope 的記憶」——看起來像回填沒生效。
+    """
+    _isolate(tmp_path, monkeypatch, [_concept("c-none", scope=None)])
+    hook_session_start.stats()
+    err = capsys.readouterr().err
+    assert "沒有 global scope 的記憶" not in err
+    # 分組顯示也要認 None，不能落到「(無 scope)」那種看不出是通用的標籤
+    assert "(global)" in err
+
+
+def test_stats_counts_global_into_each_repo(tmp_path, monkeypatch, capsys):
+    """可注入數要用 select 實算——一個 repo 拿得到的是「專屬 + global」。
+
+    先前用 `min(該 scope 條數, TOP_K)` 分開算，本 repo 專屬只剩 1 條時
+    就印「實際注入 1 條」，把 global 的貢獻整個藏起來。
+    """
+    _isolate(tmp_path, monkeypatch,
+             [_concept("c-mine", scope="proj")]
+             + [_concept(f"c-g{i}", scope=None) for i in range(3)])
+    hook_session_start.stats()
+    err = capsys.readouterr().err
+    assert "1 條  proj  → 每 session 實際注入 4 條" in err
+
+
 def test_other_repos_stay_out_but_global_memories_travel(tmp_path, monkeypatch):
     """scope 過濾是這條路唯一的相關性依據。
 
-    global 那半目前池子裡一條都沒有（蒸餾端還沒產出這個分類），
-    但讀取端要先支援——不然通用知識會被永久鎖在單一 repo 裡。
+    `scope=None` 是通用的正典表示法（蒸餾指示要求「跨專案通用則填 null」）；
+    GLOBAL_SCOPES 的字串只是容忍蒸餾者寫成字面值，收料端會正規化掉。
     """
     pool = [_concept("c-mine", scope="proj"),
             _concept("c-other", scope="another-repo"),

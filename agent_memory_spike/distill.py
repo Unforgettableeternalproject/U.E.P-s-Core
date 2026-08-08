@@ -368,6 +368,101 @@ def emit(episodes: list[dict[str, Any]], task_path: Path, *, control: int = 0,
     return 0
 
 
+# 蒸餾者用來表達「跨專案通用」的字面值。收料端一律正規化成 None——
+# 三條注入路徑裡只有 hook_session_start 認得 "global"/"*" 字串，
+# 另外兩條判斷的是 falsy，留著字串會讓同一條記憶在不同路徑有不同行為
+GLOBAL_LITERALS = {"null", "none", "global", "*"}
+
+
+def resolve_scope(concept: dict[str, Any], task: dict[str, Any]) -> str | None:
+    """決定一條 concept 的 scope，區分「填了 null」與「沒有這個鍵」。
+
+    蒸餾指示要求「跨專案通用則填 null」，所以 `scope: null` 是**明確表態**，
+    而缺這個鍵才是「沒說」。原本這裡是 `concept.get("scope") or task.get("repo")`，
+    `None` 是假值 → 每一條通用知識都被靜默改標成當時觀察到的那個 repo
+    （實測 780 條原始輸出裡 47 條中招，池子裡 global 的數量因此是精確的零）。
+    """
+    if "scope" not in concept:
+        # 沒說 → 退回觀察到它的 repo。這是保守的一邊：標窄了只是召不到，
+        # 標成 global 則會把單一專案的事實散播到所有專案
+        return task.get("repo")
+    scope = concept.get("scope")
+    if not isinstance(scope, str):
+        # 明確的 null（或任何非字串）→ 跨專案通用
+        return None
+    scope = scope.strip()
+    if not scope:
+        # 空字串不是表態，是填壞了——當成沒說
+        return task.get("repo")
+    if scope.lower() in GLOBAL_LITERALS:
+        return None
+    return scope
+
+
+def statement_key(statement: str | None) -> str:
+    """concept 的比對鍵。與 ingest 的去重鍵是同一個定義，兩邊不可分岔。"""
+    return " ".join((statement or "").split()).lower()
+
+
+def backfill_scope(result_path: Path, concept_path: Path, *, apply_changes: bool = False) -> int:
+    """把被 `or` 錯貼成單一 repo 的通用記憶改回 scope=None。
+
+    只回填**蒸餾原始輸出裡明確表態為通用**的條目，比對鍵是正規化過的 statement
+    （與 ingest 的去重鍵同一定義）。修好收料端不會追溯既有資料，所以要跑這一次。
+
+    讀取端三條路對 `scope=None` 的處理已經一致（都放行），所以設回 None 就會生效，
+    不需要引入 "global" 字串。
+    """
+    sources = sorted(result_path.glob("*.json")) if result_path.is_dir() else [result_path]
+    # 同一條記憶會從多組候選被抽出來，所以一個 statement 可能有多筆表態。
+    # 用集合收齊再判斷，不要用 dict 讓後寫者贏——那會讓結果取決於檔案順序
+    declared: dict[str, set[str | None]] = {}
+    for source in sources:
+        payload = json.loads(source.read_text(encoding="utf-8"))
+        entries = payload if isinstance(payload, list) else payload.get("results", [])
+        for entry in entries:
+            for concept in entry.get("concepts") or []:
+                key = statement_key(concept.get("statement"))
+                if not key:
+                    continue
+                # 這裡只問「表態是不是通用」，所以 task 給空的就夠——
+                # 缺鍵與空字串都會落到 None 以外的分支
+                declared.setdefault(key, set()).add(resolve_scope(concept, {}))
+
+    global_keys = {k for k, tags in declared.items() if None in tags}
+    conflicts = {k for k, tags in declared.items() if None in tags and len(tags) > 1}
+
+    concepts = json.loads(concept_path.read_text(encoding="utf-8"))
+    changed = [c for c in concepts
+               if statement_key(c.get("statement")) in global_keys and c.get("scope") is not None]
+
+    out = sys.stderr
+    print(f"[backfill] 蒸餾輸出 {len(declared)} 個 statement，表態為通用 {len(global_keys)}", file=out)
+    if conflicts:
+        # 同一條記憶在不同批被標成通用又標成某 repo。沒有客觀依據選邊，
+        # 現行做法是通用優先（漏標 repo 只是多注入，漏標通用是完全召不到）
+        print(f"  ⚠ {len(conflicts)} 個 statement 的表態互相衝突，一律採通用", file=out)
+    print(f"[backfill] 池子 {len(concepts)} 條，需要改回 None 的 {len(changed)}", file=out)
+    for concept in changed:
+        surprisal = concept.get("surprisal")
+        flag = " ✅通過門檻" if (surprisal or 0) >= 0.8 else ""
+        print(f"    {concept['id']} [{concept.get('scope')} → None]{flag} "
+              f"{concept['statement'][:60]}", file=out)
+
+    if not changed:
+        print("[backfill] 沒有需要處理的條目", file=out)
+        return 0
+    if not apply_changes:
+        print(f"\n[backfill] 共 {len(changed)} 條可回填。加 --apply 才會寫入。", file=out)
+        return 0
+
+    for concept in changed:
+        concept["scope"] = None
+    concept_path.write_text(json.dumps(concepts, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"\n[backfill] {len(changed)} 條已改回 scope=None → {concept_path}", file=out)
+    return 0
+
+
 def ingest(result_path: Path, concept_path: Path, task_path: Path,
            watermark_path: Path | None = None, *, append: bool = False) -> int:
     """收回蒸餾結果，加上溯源後存檔。
@@ -395,7 +490,7 @@ def ingest(result_path: Path, concept_path: Path, task_path: Path,
         # 增量收回：接在既有 concept 之後，並把既有的陳述納入去重比對，
         # 否則同一件事會在每次增量各進一條
         concepts = json.loads(concept_path.read_text(encoding="utf-8"))
-        seen_statements = {" ".join((c.get("statement") or "").split()).lower() for c in concepts}
+        seen_statements = {statement_key(c.get("statement")) for c in concepts}
         print(f"[distill] 增量模式：既有 {len(concepts)} 條", file=sys.stderr)
 
     for entry in entries:
@@ -410,7 +505,7 @@ def ingest(result_path: Path, concept_path: Path, task_path: Path,
         for concept in entry.get("concepts") or []:
             statement = (concept.get("statement") or "").strip()
             # 去重比對正規化過的陳述——同一件事會從多組候選被抽出來
-            key = " ".join(statement.split()).lower()
+            key = statement_key(statement)
             if not statement or key in seen_statements:
                 continue
             seen_statements.add(key)
@@ -418,7 +513,9 @@ def ingest(result_path: Path, concept_path: Path, task_path: Path,
                 "id": f"c-{len(concepts):03d}",
                 "statement": statement,
                 "kind": concept.get("kind"),
-                "scope": concept.get("scope") or task.get("repo"),
+                # None 代表跨專案通用，三條注入路徑都會放行。
+                # 不可寫成 `concept.get("scope") or task.get("repo")`——見 resolve_scope
+                "scope": resolve_scope(concept, task),
                 # 檢索索引的是 cue 不是 statement——見 experiment/phase2-retrieval.md。
                 # 舊語料沒有這個欄位，退回 probe（形狀相近，是當初驗證這個方向時用的代理）
                 "cue": concept.get("cue") or concept.get("probe"),
@@ -502,6 +599,9 @@ def main() -> int:
     parser.add_argument("--emit", action="store_true", help="產出蒸餾任務檔")
     parser.add_argument("--ingest", type=Path, help="收回蒸餾結果（JSON）")
     parser.add_argument("--show", type=str, help="印出指定範圍的任務，例如 0-12")
+    parser.add_argument("--backfill-scope", type=Path, metavar="RESULT_DIR",
+                        help="用蒸餾原始輸出把被錯貼 repo 的通用記憶改回 scope=None（預設 dry-run）")
+    parser.add_argument("--apply", action="store_true", help="backfill 時實際寫入")
     parser.add_argument("--all", dest="all_pairs", action="store_true",
                         help="全語料：所有相鄰 human 輪對，不只粗篩候選")
     parser.add_argument("--incremental", action="store_true",
@@ -520,6 +620,10 @@ def main() -> int:
             stream.reconfigure(encoding="utf-8")
         except (AttributeError, OSError):
             pass
+
+    if args.backfill_scope:
+        return backfill_scope(args.backfill_scope, args.concept_path,
+                              apply_changes=args.apply)
 
     if args.ingest:
         return ingest(args.ingest, args.concept_path, args.task_path,

@@ -7,15 +7,29 @@
 （39 條手挑資料，事後確認約一半是模型本來就會的雜訊），scope 過濾之外沒有任何篩選。
 現在改讀 ``concepts.json`` 的**已校準池**，只放行 ``surprisal >= 0.8`` 的條目。
 
-## ⚠️ 這條路沒有相關性訊號，precision 未測
+## 🚨 實測結論：不要掛載這條路
 
 SessionStart 在第一輪之前就跑完：**沒有 user prompt、沒有碰過的檔案**。
-唯一能用的訊號是 repo，所以這裡做的是「篩選 + 排序」，**不是檢索**——
-別把它跟 PreToolUse 那條混為一談，後者有實測過的 precision（43.5%），這裡沒有。
+唯一能用的訊號是 repo，所以這裡做的是「篩選 + 排序」，**不是檢索**。
 
-它的價值假設是：「這個 repo 裡 surprisal 最高的幾條，不論這次要做什麼都值得先知道」。
-這個假設**還沒被驗證**。條數因此壓得比 PreToolUse 更保守——
-無差別注入的東西留在整個 session 的 context 裡，錯了的成本是一路付到底。
+它的價值假設是「這個 repo 裡 surprisal 最高的幾條，不論這次要做什麼都值得先知道」。
+**30 個真實 session、139 條判定，這個假設不成立：**
+
+    嚴格 precision  6.5%（RELEVANT 9 條）
+    IRRELEVANT     77.7%（108 條）
+    session 命中率 23.3%（7/30 至少有一條 RELEVANT），40% 的 session 全部無關
+
+    對照 PreToolUse：嚴格 precision 43.5%、情境命中率 62%
+
+**93.5% 的注入內容是雜訊，而且它佔著整個 session 的 context。**
+這不是門檻沒調好——這條路沒有相關性訊號可調，天花板就在這裡。
+
+程式碼保留是因為它是三條路的對照組（量得出「沒有訊號會有多差」，
+而那正是 PreToolUse 那 43.5% 的意義所在），以及蒸餾端補上 global scope 之後
+值得用同一套量法重測一次。**但現狀不該掛。**
+
+樣本限制：30 個 session，分 repo 後 n 只有 2–18，幅度不可信；
+40% 全無關與 6.5% 的量級足以支撐「不要掛」這個結論。
 
 ## 與 PreToolUse 的分工
 
@@ -196,9 +210,143 @@ def stats() -> int:
     return 0
 
 
+PRECISION_JUDGE_INSTRUCTIONS = """\
+你在評估一個 coding agent 的記憶召回**準不準**。
+
+這些記憶是在 **session 剛開始、使用者還沒開口** 的時候注入的——
+系統當下唯一知道的事情是「在哪個 repo」，沒有任何主題訊號。
+每一題會給你那個 session 後來實際做了什麼（使用者各輪的話），
+以及 session 開始時注入的幾條記憶。逐條判斷這條記憶對**這個 session** 有沒有用。
+
+- `RELEVANT`：這個 session 確實碰到了這條記憶講的東西，事先看到它會讓工作做得更對或更快
+- `MARGINAL`：沾得上邊（同一個模組、相近的主題），但這個 session 真正在做的事沒有交集
+- `IRRELEVANT`：完全用不上
+
+**判斷紀律**：
+- 這條路沒有相關性訊號，所以會有大量單純「這個 repo 最高價值的記憶」被注入而
+  跟本次工作無關的情況。**那就該判 `IRRELEVANT`**，不要因為它本身是好知識就放寬。
+- 判 `RELEVANT` 要說得出它會影響這個 session 的哪個決定。
+- 記憶是在第一輪之前就進 context 的，所以它對 session 裡**任何一輪**有用都算——
+  不必限於第一輪。
+
+只輸出 JSON：
+
+```json
+{"verdicts": [
+  {"task_id": "sess-000", "concept_id": "c-019", "verdict": "IRRELEVANT",
+   "reason": "一句話說明"}
+]}
+```
+"""
+
+
+def dump_precision_tasks(path: Path, sample_size: int, seed: int) -> int:
+    """產出 precision 評估任務：每個 session 配上開場會注入的那幾條。
+
+    這條路的 precision 沒有可用的既有量法——PreToolUse 是「錨點 ∩ 這一輪碰的東西」，
+    而這裡在 t=0 什麼都不知道。所以定義成「**在 t=0 注入的幾條，
+    對這個 session 後來實際做的事有幾條真的有用**」。
+
+    這個定義有兩面偏差，兩邊都要記著：對記憶**寬鬆**（它對 session 裡任何一輪
+    有用都算），但對系統**嚴苛**（一次押 5 條，而多數 session 主題很窄）。
+    """
+    import collections
+    import random
+
+    from hook_stop import DEFAULT_EPISODE_DIR, load_deduped
+    from transcript import ORIGIN_HUMAN
+
+    pool = load_pool(CONCEPT_PATH)
+    episodes, _ = load_deduped(DEFAULT_EPISODE_DIR)
+
+    sessions: dict[str, list[dict[str, Any]]] = collections.defaultdict(list)
+    for episode in episodes:
+        sessions[str(episode.get("session_id"))].append(episode)
+
+    cases = []
+    for session_id, turns in sessions.items():
+        turns.sort(key=lambda e: e.get("turn_index") or 0)
+        human = [t for t in turns if t.get("origin") == ORIGIN_HUMAN
+                 and (t.get("user_text") or "").strip()]
+        # 太短的 session 判不出東西：使用者還沒表達出這次要做什麼
+        if len(human) < 3:
+            continue
+        scope = next((t.get("repo") for t in turns if t.get("repo")), None)
+        picked = select(pool, scope, set())
+        if picked:
+            cases.append((session_id, scope, human, picked))
+
+    random.Random(seed).shuffle(cases)
+    cases = cases[:sample_size]
+
+    tasks = []
+    for i, (session_id, scope, human, picked) in enumerate(cases):
+        # 各輪只取開頭：判斷這個 session 在做什麼不需要全文，而全文會塞爆判卷材料
+        outline = "\n".join(f"- {(t.get('user_text') or '').strip()[:220]}"
+                            for t in human[:12])
+        tasks.append({
+            "id": f"sess-{i:03d}",
+            "session_id": session_id,
+            "repo": scope,
+            "turns": len(human),
+            "outline": outline,
+            "retrieved": [{"id": c.get("id"), "statement": c.get("statement")}
+                          for c in picked],
+        })
+
+    path.write_text(json.dumps({"instructions": PRECISION_JUDGE_INSTRUCTIONS,
+                                "top_k": SESSION_TOP_K,
+                                "count": len(tasks), "tasks": tasks},
+                               ensure_ascii=False, indent=2), encoding="utf-8")
+    total = sum(len(t["retrieved"]) for t in tasks)
+    print(f"[precision] {len(tasks)} 個 session、共注入 {total} 條 "
+          f"（平均 {total / max(len(tasks), 1):.2f} 條/session）→ {path}", file=sys.stderr)
+    return 0
+
+
+def format_task(task: dict[str, Any]) -> str:
+    return "\n".join([
+        f"### {task['id']}  (repo: {task['repo']}，{task['turns']} 輪使用者輸入)",
+        f"\n[這個 session 實際在做什麼]\n{task['outline']}",
+        "\n[session 開始時注入的記憶]",
+        *(f"  - {item['id']}：{item['statement']}" for item in task["retrieved"]),
+    ])
+
+
+def judge_precision(task_path: Path, out_dir: Path, batch_size: int) -> int:
+    """分批交給 headless `claude -p` 判卷。與 UserPromptSubmit 那條同一套流程。"""
+    from pipeline import adjudicate_to_file
+
+    payload = json.loads(task_path.read_text(encoding="utf-8"))
+    tasks = payload["tasks"]
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    failures = 0
+    for start in range(0, len(tasks), batch_size):
+        batch = tasks[start:start + batch_size]
+        target = out_dir / f"verdicts-{start // batch_size:02d}.json"
+        if target.exists():
+            print(f"  [{target.name}] 已存在，略過", file=sys.stderr)
+            continue
+        prompt = (payload.get("instructions", PRECISION_JUDGE_INSTRUCTIONS)
+                  + "\n\n" + "\n\n".join(format_task(t) for t in batch))
+        ok, summary = adjudicate_to_file(prompt, target)
+        print(f"  [{target.name}] {'OK' if ok else '失敗'}: {summary}", file=sys.stderr)
+        failures += 0 if ok else 1
+    return 1 if failures else 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="SessionStart 注入 hook")
     parser.add_argument("--stats", action="store_true", help="看各 repo 有多少條可注入")
+    parser.add_argument("--dump-precision", type=int, metavar="N",
+                       help="抽 N 個 session 產出 precision 評測任務")
+    parser.add_argument("--judge", action="store_true", help="分批交給 headless claude 判卷")
+    parser.add_argument("--ingest", action="store_true", help="收回判定並算 precision")
+    parser.add_argument("--tasks", type=Path, default=None, help="評測任務檔路徑")
+    parser.add_argument("--verdicts", type=Path, default=None, help="判定輸出目錄")
+    parser.add_argument("--batch-size", type=int, default=10, help="每批幾題")
+    parser.add_argument("--seed", type=int, default=20260808, help="抽樣種子")
     parser.add_argument("--dry-run", action="store_true", help="算出要注入什麼但不寫紀錄")
     parser.add_argument("--null", action="store_true", help="對照組：完全不注入")
     parser.add_argument("--cwd", type=str, default=None, help="覆寫 cwd（測試用）")
@@ -211,8 +359,19 @@ def main() -> int:
         except (AttributeError, OSError):
             pass
 
+    task_path = args.tasks or (INJECTION_LOG.parent / "sess_precision_tasks.json")
+    verdict_dir = args.verdicts or (INJECTION_LOG.parent / "sess_precision_verdicts")
+
     if args.stats:
         return stats()
+    if args.dump_precision:
+        return dump_precision_tasks(task_path, args.dump_precision, args.seed)
+    if args.judge:
+        return judge_precision(task_path, verdict_dir, args.batch_size)
+    if args.ingest:
+        # 收回與算分兩條路完全一樣，共用一份實作
+        from hook_userpromptsubmit import ingest_precision
+        return ingest_precision(task_path, verdict_dir)
 
     # 失敗一律靜默且 exit 0：hook 壞掉不該擋住使用者開 session
     try:

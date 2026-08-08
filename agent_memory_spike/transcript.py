@@ -49,6 +49,14 @@ _repo_root_cache: dict[str, Path | None] = {}
 # 「看起來正常但其實對不上」的欄位，那正是這個專案反覆踩到的坑。
 INJECTION_LOG = Path.home() / ".claude" / "agent-memory-spike" / "injections.jsonl"
 
+# SessionStart 注入用的哨兵 prompt_id。那個觸發點在第一輪之前就跑完，
+# payload 裡根本沒有 prompt_id，而它的影響及於整個 session 而非某一輪。
+# 刻意選一個真實 UUID 不可能長成的樣子，避免與正常的 promptId 相撞。
+SESSION_WIDE_PROMPT_ID = "__session__"
+
+# 以指紋歸屬時的鍵前綴，同樣是為了不與真實 promptId 相撞。
+FINGERPRINT_KEY_PREFIX = "__fp__:"
+
 
 def prompt_fingerprint(text: str) -> str:
     """使用者輸入的指紋。
@@ -87,7 +95,19 @@ def load_injections(path: Path = INJECTION_LOG) -> dict[tuple[str, str], list[st
                     record = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                key = (str(record.get("session_id")), str(record.get("prompt_id")))
+                # UserPromptSubmit 的 payload 不保證帶 prompt_id（PreToolUse 帶，
+                # 那是查證過的；這個沒有）。沒有 prompt_id 就無法歸屬到某一輪，
+                # 而「注入了卻標記不到」正是這整套追蹤要防的事，所以退回指紋。
+                # 指紋的已知弱點是兩邊對 user_text 的組法必須一致——
+                # 寧可用比較弱的鍵，也不要沒有鍵。
+                raw_prompt_id = record.get("prompt_id")
+                if raw_prompt_id:
+                    key = (str(record.get("session_id")), str(raw_prompt_id))
+                elif record.get("prompt_fingerprint"):
+                    key = (str(record.get("session_id")),
+                           FINGERPRINT_KEY_PREFIX + str(record["prompt_fingerprint"]))
+                else:
+                    continue
                 # 同一輪可能被注入多次（一輪會改好幾個檔案，每次 PreToolUse 都召回一批），
                 # 累積而不是覆蓋——漏掉任何一條都會讓「這輪看過什麼」失真
                 merged = found.setdefault(key, [])
@@ -496,7 +516,20 @@ def build_episode(prompt_id: str, records: list[dict[str, Any]], turn_index: int
     user_text = "\n\n".join(user_texts)
     # 空 list 與缺欄位要分得開：前者是「這輪沒被注入」，後者是「這筆語料早於這個 schema」。
     # 舊語料停在舊格式而沒有任何標示，是先前踩過的坑
-    injected = (injections or {}).get((str(session_id), str(prompt_id)), [])
+    injected = list((injections or {}).get((str(session_id), str(prompt_id)), []))
+    # SessionStart 的注入沒有 prompt_id——它在第一輪之前就發生，影響的是整個 session。
+    # 用哨兵鍵記錄，這裡展開到該 session 的每一輪：注入的記憶留在 context 裡，
+    # 第五輪跟第一輪一樣看得到它。少標記任何一輪，那輪就會被當成乾淨語料拿去校準。
+    for concept_id in (injections or {}).get((str(session_id), SESSION_WIDE_PROMPT_ID), []):
+        if concept_id not in injected:
+            injected.append(concept_id)
+    # 沒有 prompt_id 的注入來源（UserPromptSubmit）改以使用者輸入的指紋歸屬。
+    # 這裡的 user_text 是一輪內多筆 user 記錄 join 起來的，而 hook 只看得到
+    # 當下那一筆——兩者不一致時就對不上，是這把鍵已知且未解的弱點。
+    fingerprint_key = (str(session_id), FINGERPRINT_KEY_PREFIX + prompt_fingerprint(user_text))
+    for concept_id in (injections or {}).get(fingerprint_key, []):
+        if concept_id not in injected:
+            injected.append(concept_id)
 
     return {
         "prompt_id": prompt_id,

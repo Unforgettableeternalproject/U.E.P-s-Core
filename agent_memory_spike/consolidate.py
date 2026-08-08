@@ -32,6 +32,14 @@
     python consolidate.py --pairs          # 算相似對，寫出候選配對
     python consolidate.py --show 0-19      # 取一批配對（給判定者）
     python consolidate.py --ingest <dir>   # 收回判定並套用
+
+雙評審（見 ``panel``）：
+
+    python consolidate.py --pairs --mode contradiction --floor 0.72
+    python consolidate.py --show 0-39                      # 兩位評審各跑一次
+    python consolidate.py --panel <dirA> <dirB>            # 合議 → 共識 + 爭議
+    python consolidate.py --show 0-9 --pair-path <爭議檔>   # 仲裁
+    python consolidate.py --panel <dirA> <dirB> <dirC>     # 三票多數決 → 最終判定
 """
 
 from __future__ import annotations
@@ -39,6 +47,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -100,6 +109,116 @@ JUDGE_INSTRUCTIONS = """\
 - `CONTRADICTION`：留**來源輪次較晚**的那條（每組配對都附了時序），
   因為後來的改動推翻了先前的事實
 """
+
+
+# 矛盾專用準則。**與 ``JUDGE_INSTRUCTIONS`` 的差別是刻意的，不是措辭變體。**
+#
+# Phase 2.8 量到評審間一致性 81%，而 6 組不一致**全部同方向**
+# （第一輪 DISTINCT → 第二輪 DUPLICATE/CONTRADICTION，反方向 0 組）。
+# 根因是上面那份準則寫「不確定就給 DISTINCT」——對重複來說那是對的
+# （多留一條重複只浪費 context），但套到矛盾上就變成系統性低估：
+# **漏掉一條過期記憶的代價遠大於多留一條重複**，它會被檢索命中並讓人相信錯的事。
+#
+# 所以這份準則做三件事：
+# 1. 只問矛盾，不問重複——這條通道跑在 0.72 的低門檻上，
+#    該區間的重複收益低（實測命中率 6.7%），而矛盾值得撈
+# 2. 把問題換成可判定的形式：「兩條能否同時為真」，而不是「它們關係特殊嗎」
+# 3. 不給任何一邊當安全答案，改為要求說出理由——雙評審才有分歧可比對
+CONTRADICTION_INSTRUCTIONS = """\
+你在檢查一個 coding agent 的記憶池有沒有**已經過期的記憶**。
+輸入是兩條談論同一個對象的記憶，只回答一個問題：
+
+> **這兩條能不能同時為真？**
+
+## 兩種答案
+
+- `CONTRADICTION`：**不能同時為真**。典型長相是同一個對象的兩個對立結論
+  （「X 欄位可以信」vs「X 欄位不可信」、「用 A 做法」vs「A 做法已被改掉」），
+  通常是後來的改動推翻了先前的事實。
+- `DISTINCT`：**可以同時為真**。包含「都對，只是主題相近」
+  （一條講欄位語意、一條講呼叫慣例）、以及「講的根本是同一件事」——
+  這條通道不處理重複，措辭不同但意思一樣的一律給 DISTINCT。
+
+## 判斷紀律
+
+**這裡沒有安全答案。** 兩個方向都是實質的損失：
+
+- 漏掉一組真矛盾 → 一條**錯的**記憶留在池子裡。它曾經是對的，所以寫得具體、
+  有說服力、檢索時容易命中——**錯得理直氣壯**，比沒有記憶更糟。
+- 誤判成矛盾 → 一條仍然成立的事實被刪掉，不可逆。
+
+所以不要用「不確定就選某一邊」來省事。**逐條問自己：如果這兩句話同時貼在
+同一份文件上，讀的人會不會被誤導？** 會 → CONTRADICTION，不會 → DISTINCT。
+
+版本演進不算矛盾：「舊版用 A」與「現在用 B」如果兩條都明確標示了時期，
+讀的人不會被誤導。**沒有標示時期、寫得像現行狀態的那種才算。**
+
+## 輸出格式
+
+只輸出 JSON，不要其他文字：
+
+```json
+{
+  "verdicts": [
+    {
+      "pair_id": "配對的 id，原樣抄回",
+      "relation": "CONTRADICTION | DISTINCT",
+      "keep": "CONTRADICTION 時填要保留的那條的 concept id；DISTINCT 填 null",
+      "why": "一句話說明依據——**每一組都要填**，包括 DISTINCT"
+    }
+  ]
+}
+```
+
+`keep` 一律選**來源輪次較晚**的那條（每組配對都附了時序），
+因為後來的改動推翻了先前的事實。
+"""
+
+# 仲裁準則。只在兩位評審分歧時用，所以它看得到雙方的判定與理由——
+# 那是單獨判一次拿不到的資訊，也是仲裁唯一的優勢。
+ARBITRATION_INSTRUCTIONS = """\
+你在仲裁兩位評審對記憶池配對的分歧。每一組都附了雙方的判定與理由。
+
+## 你的任務
+
+判斷哪一方是對的，或者兩方都錯。問題與評審看到的相同：
+**這兩條記憶能不能同時為真？**
+
+- `CONTRADICTION`：不能同時為真，後來的改動推翻了先前的事實
+- `DUPLICATE`：講的是同一件事，只是措辭不同
+- `DISTINCT`：都成立，只是主題相近
+
+## 仲裁紀律
+
+**不要預設「兩票裡比較保守的那個」是對的。** 已知的偏誤方向正好相反：
+單獨判定時 DISTINCT 是省事的答案，於是重複與過期被系統性低估
+（實測 6 組不一致全部同方向）。分歧本身就是訊號——
+有一位評審看出了什麼，你的工作是判斷那個東西是不是真的。
+
+但也不要因此一律採信非 DISTINCT 的那票。**逐條讀理由**：
+它指出的衝突點在陳述裡真的存在嗎？還是它把「主題相同」誤讀成「結論對立」？
+
+## 輸出格式
+
+只輸出 JSON：
+
+```json
+{
+  "verdicts": [
+    {
+      "pair_id": "原樣抄回",
+      "relation": "CONTRADICTION | DUPLICATE | DISTINCT",
+      "keep": "非 DISTINCT 時填要保留的 concept id；DISTINCT 填 null",
+      "why": "一句話說明你採信哪一方、依據是什麼"
+    }
+  ]
+}
+"""
+
+INSTRUCTION_MODES = {
+    "relation": JUDGE_INSTRUCTIONS,
+    "contradiction": CONTRADICTION_INSTRUCTIONS,
+}
 
 
 def load_concepts(path: Path) -> list[dict[str, Any]]:
@@ -175,12 +294,28 @@ def build_pairs(concepts: list[dict[str, Any]], floor: float,
     return pairs
 
 
-def emit_pairs(concept_path: Path, pair_path: Path, floor: float, max_per: int) -> int:
+def emit_pairs(concept_path: Path, pair_path: Path, floor: float, max_per: int,
+               mode: str = "relation", skip_paths: list[Path] | None = None) -> int:
     concepts = load_concepts(concept_path)
     pairs = build_pairs(concepts, floor, max_per)
+
+    if skip_paths:
+        # 已經判過的組不必再花一次判定成本。比對用 concept id 的無序對，
+        # 不用 pair_id——pair_id 按位置編號，重算配對後會整批位移
+        judged = _judged_key_set(skip_paths)
+        before = len(pairs)
+        pairs = [p for p in pairs
+                 if frozenset((p["left"]["id"], p["right"]["id"])) not in judged]
+        # 重編號：pair_id 必須與檔案裡的順序一致，否則 --show 取出來的
+        # 那一批與判定者抄回的 id 對不上
+        for position, pair in enumerate(pairs):
+            pair["pair_id"] = f"p-{position:04d}"
+        print(f"[consolidate] 略過 {before - len(pairs)} 組已判定過的配對", file=sys.stderr)
+
     pair_path.parent.mkdir(parents=True, exist_ok=True)
     pair_path.write_text(json.dumps({
-        "instructions": JUDGE_INSTRUCTIONS,
+        "instructions": INSTRUCTION_MODES[mode],
+        "mode": mode,
         "pair_count": len(pairs),
         "pairs": pairs,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -205,6 +340,12 @@ def show(pair_path: Path, spec: str) -> int:
             print(f"陳述: {block['statement']}")
             print(f"錨點: {', '.join(block['anchors'] or []) or '（無）'}")
             print(f"來源輪次: {block['source_turns']}")
+        # 仲裁用的配對帶著雙方的票。沒有這段，仲裁者看到的東西與評審完全一樣，
+        # 那就只是再擲一次骰子而不是仲裁
+        for vote in pair.get("votes") or []:
+            print(f"\n--- 評審 {vote['judge']} 判 {vote['relation']}"
+                  f"{'（保留 ' + vote['keep'] + '）' if vote.get('keep') else ''} ---")
+            print(f"理由: {vote.get('why') or '（未填）'}")
     return 0
 
 
@@ -299,6 +440,251 @@ def _load_verdicts(result_path: Path, pair_path: Path) -> tuple[list[dict[str, A
         verdicts.extend(payload if isinstance(payload, list) else payload.get("verdicts", []))
     pairs = {p["pair_id"]: p for p in json.loads(pair_path.read_text(encoding="utf-8"))["pairs"]}
     return verdicts, pairs
+
+
+def run_judges(pair_path: Path, out_root: Path, judge_count: int, batch_size: int,
+               concurrency: int) -> int:
+    """把整份配對檔交給 N 位獨立評審，各自分批判定。
+
+    **每位評審是一次獨立的 headless 呼叫，彼此看不到對方的判定。**
+    這是雙評審唯一有意義的前提——共用上下文的兩次判定不是兩票，
+    是同一票講了兩次。
+
+    分批是必要的：一次塞 284 組進去，判定品質會隨長度衰減，
+    而且中途失敗就整批重來。批次大小訂在 40 是沿用管線既有的成本封頂。
+    """
+    from pipeline import AUTO_PREAMBLE, TOOL_PYTHON, adjudicate_to_file  # noqa: PLC0415
+
+    payload = json.loads(pair_path.read_text(encoding="utf-8"))
+    total = len(payload["pairs"])
+    if total == 0:
+        print("[judges] 沒有待判定的配對", file=sys.stderr)
+        return 0
+
+    jobs: list[tuple[int, int, int, int]] = []  # (評審, 批次, 起, 迄)
+    for judge in range(judge_count):
+        for batch, start in enumerate(range(0, total, batch_size)):
+            jobs.append((judge, batch, start, min(start + batch_size, total) - 1))
+
+    print(f"[judges] {total} 組 × {judge_count} 位評審 = {len(jobs)} 次裁決"
+          f"（併發 {concurrency}）", file=sys.stderr)
+
+    def run(job: tuple[int, int, int, int]) -> tuple[tuple[int, int], bool, str]:
+        judge, batch, start, end = job
+        out_path = out_root / f"judge{judge}" / f"batch-{batch:02d}.json"
+        if out_path.exists():
+            # 續跑：整批重來很貴，而且已經落地的判定沒有理由丟掉
+            return (judge, batch), True, f"已存在，略過 {out_path.name}"
+        prompt = (
+            AUTO_PREAMBLE + "記憶池的配對判定。在這個 repo 底下執行：\n\n"
+            f'"{TOOL_PYTHON}" agent_memory_spike/consolidate.py --show {start}-{end} '
+            f'--pair-path "{pair_path}"\n\n'
+            "輸出開頭是判定準則，照著做。除了那個指令之外不需要讀取其他檔案。\n"
+            "**不要寫任何檔案**——把結果直接以一個 ```json 區塊回覆給我即可。"
+        )
+        ok, detail = adjudicate_to_file(prompt, out_path)
+        return (judge, batch), ok, detail
+
+    results: list[tuple[tuple[int, int], bool, str]] = []
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        for result in pool.map(run, jobs):
+            (judge, batch), ok, detail = result
+            print(f"  {'OK  ' if ok else 'FAIL'} judge{judge}/batch-{batch:02d}: {detail}",
+                  file=sys.stderr)
+            results.append(result)
+
+    failed = [r for r in results if not r[1]]
+    print(f"[judges] {len(results) - len(failed)}/{len(results)} 成功", file=sys.stderr)
+    if failed:
+        # 失敗的批次沒有落地檔案，重跑同一個指令只會補上缺的那幾批
+        print("  ⚠ 失敗的批次沒有寫檔，重跑同一個指令即可補齊", file=sys.stderr)
+    return 1 if failed else 0
+
+
+def _judged_key_set(specs: list[Path]) -> set[frozenset[str]]:
+    """歷史上**真的被判定過**的配對，以 concept id 的無序對表示。
+
+    每個 spec 的形式是 ``<配對檔>::<判定目錄>``，兩邊都要給。
+    **不能只看配對檔**：實測 `consolidate_pairs_band.json` 裡有數百組配對，
+    而 `consolidate_out_band/` 只判了其中 30 組——拿整份配對檔當「判過」，
+    會把從未判過的組一起略過，而且是靜默的（少判的組不會有任何訊號）。
+    """
+    judged: set[frozenset[str]] = set()
+    for spec in specs:
+        text = str(spec)
+        pair_part, sep, result_part = text.partition("::")
+        if not sep:
+            raise SystemExit(
+                f"--skip-judged 要寫成 <配對檔>::<判定目錄>，收到 {text!r}"
+            )
+        pair_path, result_path = Path(pair_part), Path(result_part)
+        if not pair_path.exists() or not result_path.exists():
+            print(f"[consolidate] ⚠ {text} 有一邊不存在，略過", file=sys.stderr)
+            continue
+        pairs = {p["pair_id"]: p
+                 for p in json.loads(pair_path.read_text(encoding="utf-8")).get("pairs", [])}
+        decided = _collect_by_pair(result_path)
+        hits = 0
+        for pair_id in decided:
+            pair = pairs.get(pair_id)
+            if pair is None:
+                continue
+            judged.add(frozenset((pair["left"]["id"], pair["right"]["id"])))
+            hits += 1
+        print(f"[consolidate] {pair_path.name}: {len(pairs)} 組配對、"
+              f"{len(decided)} 筆判定 → 認列 {hits} 組", file=sys.stderr)
+    return judged
+
+
+def _collect_by_pair(result_path: Path) -> dict[str, dict[str, Any]]:
+    """一位評審的全部判定，按 pair_id 索引。
+
+    同一個 pair_id 在一位評審的輸出裡出現兩次時**保留先出現的那筆**。
+    重複多半是分批時邊界重疊，而 `dict[k] = v` 讓後寫者贏是隱形的資料遺失
+    ——這個專案已經因為同一個形狀踩過兩次（bridge 的條文索引、空欄位分析腳本）。
+    """
+    sources = sorted(result_path.glob("*.json")) if result_path.is_dir() else [result_path]
+    by_pair: dict[str, dict[str, Any]] = {}
+    duplicates = 0
+    for source in sources:
+        payload = json.loads(source.read_text(encoding="utf-8"))
+        rows = payload if isinstance(payload, list) else payload.get("verdicts", [])
+        for row in rows:
+            pair_id = row.get("pair_id")
+            if pair_id is None:
+                continue
+            if pair_id in by_pair:
+                duplicates += 1
+                continue
+            by_pair[pair_id] = row
+    if duplicates:
+        print(f"  ⚠ {result_path.name}: {duplicates} 筆重複 pair_id，保留先出現的",
+              file=sys.stderr)
+    return by_pair
+
+
+def _relation_of(row: dict[str, Any] | None) -> str:
+    return (row or {}).get("relation") or "MISSING"
+
+
+def panel(result_paths: list[Path], pair_path: Path, out_dir: Path) -> int:
+    """把多位評審的判定合議成一份最終判定。
+
+    ## 為什麼要雙評審
+
+    Phase 2.8 重判 32 組量到評審間一致性只有 **81%**，而 6 組不一致
+    **全部同方向**（DISTINCT → DUPLICATE/CONTRADICTION，反方向 0 組）。
+    單評審不是隨機噪音，是**系統性低估**：判定準則寫「不確定就給 DISTINCT」，
+    於是 DISTINCT 成了省事的答案，重複與過期一起被漏掉。
+
+    多跑幾輪關係閉包救不了這個——閉包只能傳播已經判出來的關係，
+    判漏的那組它看不見。要提高收斂品質，投資點在這裡。
+
+    ## 合議規則
+
+    - **兩票（含以上）一致**：直接採用。都判 DISTINCT 也算共識，配對就此結案
+    - **一致但 keep 不同**：算爭議。刪哪一條是不可逆的，兩位評審選了不同的存活者
+      時，沒有理由相信其中任何一個
+    - **不一致**：算爭議，送仲裁
+    - **三票以上**：多數決（同 relation 且同 keep 才算同一票）。
+      **三票全異就給 DISTINCT**——那代表沒有任何兩個人看到同一件事，
+      此時不刪是唯一不會造成不可逆損失的選擇
+
+    輸出兩份檔案：共識的判定（可直接 ``--ingest``）與爭議組
+    （格式與配對檔相同，可直接 ``--show`` 給仲裁者，且附上雙方的票）。
+    """
+    payload = json.loads(pair_path.read_text(encoding="utf-8"))
+    pairs = {p["pair_id"]: p for p in payload["pairs"]}
+    panels = [(path.name, _collect_by_pair(path)) for path in result_paths]
+
+    consensus: list[dict[str, Any]] = []
+    disputed: list[dict[str, Any]] = []
+    counts = {"共識": 0, "爭議": 0, "未判": 0}
+    # 分歧方向：(較保守的一方, 較積極的一方) → 次數。用來複驗 Phase 2.8 的
+    # 「不一致全部同方向」是不是仍然成立
+    directions: dict[tuple[str, str], int] = {}
+
+    for pair_id, pair in pairs.items():
+        votes = []
+        for judge, by_pair in panels:
+            row = by_pair.get(pair_id)
+            if row is not None:
+                votes.append({"judge": judge, "relation": _relation_of(row),
+                              "keep": row.get("keep"), "why": row.get("why")})
+        if len(votes) < len(panels):
+            counts["未判"] += 1
+            continue
+
+        # 同 relation 且同 keep 才算同一票——DISTINCT 的 keep 一律視為 None，
+        # 免得判定者填了 null 與空字串被算成兩種不同的票
+        def _key(vote: dict[str, Any]) -> tuple[str, str | None]:
+            relation = vote["relation"]
+            return (relation, None if relation == "DISTINCT" else vote.get("keep"))
+
+        tally: dict[tuple[str, str | None], int] = {}
+        for vote in votes:
+            tally[_key(vote)] = tally.get(_key(vote), 0) + 1
+        best, best_count = max(tally.items(), key=lambda item: item[1])
+
+        if best_count > len(votes) / 2:
+            counts["共識"] += 1
+            relation, keep = best
+            consensus.append({
+                "pair_id": pair_id, "relation": relation, "keep": keep,
+                "why": next(v.get("why") for v in votes if _key(v) == best),
+                "votes": [v["relation"] for v in votes],
+            })
+            continue
+
+        # 三票全異：沒有任何兩個人看到同一件事，不刪是唯一不會造成不可逆損失的選擇
+        if len(votes) >= 3 and best_count == 1:
+            counts["共識"] += 1
+            consensus.append({
+                "pair_id": pair_id, "relation": "DISTINCT", "keep": None,
+                "why": "三票全異，保守處理：不刪",
+                "votes": [v["relation"] for v in votes],
+            })
+            continue
+
+        counts["爭議"] += 1
+        relations = sorted({v["relation"] for v in votes})
+        if len(relations) == 2:
+            conservative = "DISTINCT" if "DISTINCT" in relations else relations[0]
+            other = next(r for r in relations if r != conservative)
+            directions[(conservative, other)] = directions.get((conservative, other), 0) + 1
+        disputed.append({**pair, "votes": votes})
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    consensus_path = out_dir / "consensus.json"
+    consensus_path.write_text(json.dumps({"verdicts": consensus}, ensure_ascii=False,
+                                         indent=2), encoding="utf-8")
+    # 爭議組**保留原本的 pair_id**，不重新編號：仲裁結果要對回同一份配對檔，
+    # 而 --ingest 是按 pair_id 查的
+    disputed_path = out_dir / "disputed_pairs.json"
+    disputed_path.write_text(json.dumps({
+        "instructions": ARBITRATION_INSTRUCTIONS,
+        "mode": "arbitration",
+        "pair_count": len(disputed),
+        "pairs": disputed,
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    out = sys.stderr
+    print(f"\n[panel] {len(panels)} 位評審 × {len(pairs)} 組配對", file=out)
+    print(f"  共識 {counts['共識']}、爭議 {counts['爭議']}、未判 {counts['未判']}", file=out)
+    decided = counts["共識"] + counts["爭議"]
+    if decided:
+        print(f"  評審間一致率 {counts['共識'] / decided:.1%}", file=out)
+    actionable = [v for v in consensus if v["relation"] != "DISTINCT"]
+    print(f"  共識中要處理的（非 DISTINCT）: {len(actionable)}", file=out)
+    if directions:
+        print("  分歧方向（保守 → 積極）:", file=out)
+        for (conservative, other), n in sorted(directions.items(), key=lambda i: -i[1]):
+            print(f"    {conservative} vs {other}: {n} 組", file=out)
+    print(f"\n  共識 → {consensus_path}", file=out)
+    print(f"  爭議 → {disputed_path}", file=out)
+    if disputed:
+        print(f"  仲裁: --show 0-{len(disputed) - 1} --pair-path {disputed_path}", file=out)
+    return 0
 
 
 def transitive(result_path: Path, concept_path: Path, pair_path: Path,
@@ -405,6 +791,19 @@ def main() -> int:
     parser.add_argument("--transitive", type=Path,
                         help="對既有判定補上關係閉包（等價類 + 矛盾傳播），預設只報告")
     parser.add_argument("--apply", action="store_true", help="搭配 --transitive 才真的寫入")
+    parser.add_argument("--run-judges", type=int, metavar="N",
+                        help="用 headless claude -p 跑 N 位獨立評審")
+    parser.add_argument("--judge-out", type=Path, help="搭配 --run-judges，評審輸出根目錄")
+    parser.add_argument("--batch-size", type=int, default=40, help="每位評審每批判幾組")
+    parser.add_argument("--concurrency", type=int, default=4, help="同時跑幾次裁決")
+    parser.add_argument("--panel", type=Path, nargs="+",
+                        help="合議多位評審的判定目錄 → 共識 + 爭議組")
+    parser.add_argument("--panel-out", type=Path,
+                        help="搭配 --panel，輸出目錄（預設 <pair-path 同層>/panel）")
+    parser.add_argument("--mode", choices=sorted(INSTRUCTION_MODES), default="relation",
+                        help="配對要問什麼：relation（重複+矛盾）或 contradiction（只問矛盾）")
+    parser.add_argument("--skip-judged", type=Path, nargs="*", metavar="配對檔::判定目錄",
+                        help="搭配 --pairs，略過已經判定過的組（兩邊都要給，只給配對檔會連沒判的一起略過）")
     parser.add_argument("--floor", type=float, default=SIMILARITY_FLOOR)
     parser.add_argument("--max-per", type=int, default=MAX_PAIRS_PER_CONCEPT)
     parser.add_argument("--concept-path", type=Path, default=DEFAULT_CONCEPT_PATH)
@@ -417,6 +816,13 @@ def main() -> int:
         except (AttributeError, OSError):
             pass
 
+    if args.run_judges:
+        out_root = args.judge_out or args.pair_path.parent / "judges"
+        return run_judges(args.pair_path, out_root, args.run_judges,
+                          args.batch_size, args.concurrency)
+    if args.panel:
+        out_dir = args.panel_out or args.pair_path.parent / "panel"
+        return panel(args.panel, args.pair_path, out_dir)
     if args.transitive:
         return transitive(args.transitive, args.concept_path, args.pair_path, args.apply)
     if args.ingest:
@@ -424,7 +830,8 @@ def main() -> int:
     if args.show:
         return show(args.pair_path, args.show)
     if args.pairs:
-        return emit_pairs(args.concept_path, args.pair_path, args.floor, args.max_per)
+        return emit_pairs(args.concept_path, args.pair_path, args.floor, args.max_per,
+                          mode=args.mode, skip_paths=args.skip_judged)
     parser.print_help()
     return 1
 

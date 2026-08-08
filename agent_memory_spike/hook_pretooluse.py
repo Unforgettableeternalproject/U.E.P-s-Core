@@ -50,6 +50,8 @@ from transcript import (  # noqa: E402
     extract_symbols,
     file_key,
     file_keys,
+    normalize_path,
+    repo_root,
     repo_root_name,
 )
 
@@ -209,7 +211,16 @@ def run(payload: dict[str, Any], *, dry_run: bool = False) -> dict[str, Any] | N
     touched = set(state.get("touched") or []) if same_turn else set()
     symbols = set(state.get("symbols") or []) if same_turn else set()
 
-    key = file_key(target)
+    # **先正規化成 repo 相對路徑再取比對鍵。** `tool_input.file_path` 是絕對路徑，
+    # 而 `anchors` 是蒸餾者寫的 repo 相對路徑，兩者的段數不同：
+    #
+    #     絕對路徑 → testseperatememorysystem/agent_memory_spike/retrieve.py
+    #     錨點     →                          agent_memory_spike/retrieve.py
+    #
+    # `file_key` 取末 3 段，於是兩邊永遠不相等——**hook 裡的檔案錨點完全失效**，
+    # 只剩符號在起作用。A1 量觸發率時比對的兩邊都是語料裡的相對路徑，
+    # 所以那組數字看不到這件事（同一型的錯：同名的量不一定是同一個量）。
+    key = file_key(normalize_path(target, repo_root(str(payload.get("cwd") or ""))))
     if key:
         touched.add(key)
     symbols.update(s.lower() for s in extract_symbols(payload.get("tool_input") or {}))

@@ -74,6 +74,37 @@ def test_symbols_are_what_make_the_threshold_reachable(tmp_path, monkeypatch):
     assert [c["id"] for c in picked] == ["c-1"]
 
 
+def test_absolute_tool_paths_match_repo_relative_anchors(tmp_path, monkeypatch):
+    """`tool_input.file_path` 是絕對路徑，`anchors` 是 repo 相對路徑。
+
+    實測抓到的形狀：`file_key` 取末 3 段，於是
+
+        絕對路徑 → testseperatememorysystem/agent_memory_spike/retrieve.py
+        錨點     →                          agent_memory_spike/retrieve.py
+
+    兩邊永遠不相等，**hook 裡的檔案錨點完全失效**，只剩符號在起作用。
+    上面那些測試都直接餵 `select()` 的集合，所以繞過了這一段看不到。
+
+    A1 量觸發率時比對的兩邊都是語料裡的相對路徑，那組數字同樣看不到——
+    與「`overlap>=2` 搬進 hook 就歸零」是同一型的錯：同名的量不一定是同一個量。
+    """
+    repo = tmp_path / "proj"
+    (repo / ".git").mkdir(parents=True)
+    target = repo / "agent_memory_spike" / "retrieve.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("x", encoding="utf-8")
+
+    _isolate(tmp_path, monkeypatch, [
+        _concept("c-1", ["agent_memory_spike/retrieve.py", "cue"]),
+    ])
+    result = run(_payload(
+        cwd=str(repo),
+        tool_input={"file_path": str(target), "new_string": "with_cue and cue"},
+    ), dry_run=True)
+    assert result is not None
+    assert "statement c-1" in result["hookSpecificOutput"]["additionalContext"]
+
+
 def test_scope_keeps_other_repos_out(tmp_path, monkeypatch):
     _isolate(tmp_path, monkeypatch, [])
     pool = [_concept("c-1", ["src/api/tracking.ts", "fetchTracking"], scope="other")]

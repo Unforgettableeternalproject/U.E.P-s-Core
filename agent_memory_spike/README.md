@@ -668,6 +668,28 @@ Write 的 `content` 都在裡面。並且要**跨同一輪的多次呼叫累積*
 
 定案：**39.9% 的編輯輪次會注入，平均 1.52 條**。
 
+### 🚨 掛上去才發現：檔案錨點在 hook 裡本來完全失效
+
+`tool_input.file_path` 是**絕對路徑**，而 `anchors` 是蒸餾者寫的 **repo 相對路徑**。
+`file_key` 取末 3 段，於是：
+
+```
+絕對路徑 → testseperatememorysystem/agent_memory_spike/retrieve.py
+錨點     →                          agent_memory_spike/retrieve.py
+```
+
+兩邊永遠不相等，**檔案錨點一項都不會命中，只剩符號在起作用**。
+修法是先 `normalize_path(target, repo_root(cwd))` 再取比對鍵。
+
+**上面那組觸發率數字（overlap>=1 為 70.8%、>=2 為 39.9%）是修正後才成立的**——
+量測時比對的兩邊都是語料裡的相對路徑，所以量測看不到這個落差，
+而修正前 hook 的實際觸發率比它低。
+
+與「`overlap>=2` 搬進 hook 就歸零」是同一型的錯：**同名的量不一定是同一個量**，
+而且兩次都是靜默的——不會報錯，只是少召回。
+`test_inject.py` 原本 10 項測試全部直接餵 `select()` 的集合，繞過了這一段，
+所以補了一項走完整 `run()` 的測試。
+
 ### 查證過的 hook 行為
 
 - `PreToolUse` 支援 `hookSpecificOutput.additionalContext`，以 system-reminder 形式

@@ -466,6 +466,50 @@ def show_precision(path: Path, spec: str) -> int:
     return 0
 
 
+def format_precision_task(task: dict[str, Any]) -> str:
+    """判卷者看到的單一情境。與 ``--show-precision`` 的排版刻意一致：
+    人工判與 headless 判必須看到同一份材料，否則兩者的數字不可比。
+    """
+    lines = [f"### {task['id']}  (repo: {task['repo']})",
+             f"\n[改到的檔案]\n{', '.join(task['files_edited']) or '（無）'}",
+             f"\n[使用者說的話]\n{task['user_text']}",
+             f"\n[助手實際做了什麼]\n{task['assistant_text']}",
+             "\n[當下召回的記憶]"]
+    for item in task["retrieved"]:
+        lines.append(f"  - {item['id']}（重疊 {item['overlap']}）：{item['statement']}")
+    return "\n".join(lines)
+
+
+def judge_precision(task_path: Path, out_dir: Path, batch_size: int) -> int:
+    """分批交給 headless `claude -p` 判卷。
+
+    先前只有 `--show-precision`（人工判），於是三條注入路徑裡唯一掛載的這條
+    反而是唯一不能重跑量測的。與另外兩條同一個介面、同一個判卷後端。
+    """
+    from pipeline import adjudicate_to_file
+
+    payload = json.loads(task_path.read_text(encoding="utf-8"))
+    tasks = [t for t in payload["tasks"] if t["retrieved"]]
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    failures = 0
+    for start in range(0, len(tasks), batch_size):
+        batch = tasks[start:start + batch_size]
+        target = out_dir / f"verdicts-{start // batch_size:02d}.json"
+        if target.exists():
+            print(f"  [{target.name}] 已存在，略過", file=sys.stderr)
+            continue
+        prompt = (payload.get("instructions", PRECISION_JUDGE_INSTRUCTIONS)
+                  + "\n\n" + "\n\n".join(format_precision_task(t) for t in batch))
+        ok, summary = adjudicate_to_file(prompt, target)
+        print(f"  [{target.name}] {'OK' if ok else '失敗'}: {summary}", file=sys.stderr)
+        failures += 0 if ok else 1
+    if failures:
+        print(f"[precision] {failures} 批失敗，重跑同一個指令會續判（已完成的會略過）",
+              file=sys.stderr)
+    return 1 if failures else 0
+
+
 def ingest_precision(task_path: Path, verdict_path: Path) -> int:
     """收回判定並算數字。
 
@@ -757,7 +801,10 @@ def main() -> int:
     parser.add_argument("--eval-files", action="store_true", help="在「同檔案再次編輯」情境下比較檔案訊號")
     parser.add_argument("--dump-precision", type=Path, help="產出檔案訊號的 precision 評估任務")
     parser.add_argument("--show-precision", type=str, help="印出 precision 判定材料，例如 0-9")
+    parser.add_argument("--judge-precision", type=Path, metavar="OUT_DIR",
+                        help="分批交給 headless claude 判卷（與另外兩條注入路徑同一個介面）")
     parser.add_argument("--ingest-precision", type=Path, help="收回 precision 判定並算數字")
+    parser.add_argument("--batch-size", type=int, default=10, help="判卷每批幾題")
     parser.add_argument("--precision-path", type=Path, default=WORK_DIR / "precision_tasks.json")
     parser.add_argument("--sample", type=int, default=30, help="precision 抽樣情境數")
     parser.add_argument("--seed", type=int, default=20260807)
@@ -782,6 +829,8 @@ def main() -> int:
 
     if args.show_precision:
         return show_precision(args.precision_path, args.show_precision)
+    if args.judge_precision:
+        return judge_precision(args.precision_path, args.judge_precision, args.batch_size)
     if args.ingest_precision:
         return ingest_precision(args.precision_path, args.ingest_precision)
 

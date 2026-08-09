@@ -49,6 +49,17 @@ _repo_root_cache: dict[str, Path | None] = {}
 # 「看起來正常但其實對不上」的欄位，那正是這個專案反覆踩到的坑。
 INJECTION_LOG = Path.home() / ".claude" / "agent-memory-spike" / "injections.jsonl"
 
+# 注入 hook 每次看到一個編輯目標就記一行。**這是「hook 有沒有漏看」的唯一依據。**
+#
+# 實測發生過一次：一個 Write 沒被記進 `inject_state` 的 touched，
+# 隔離環境重跑三次都正常，複現不出、根因不明。`inject_state` 只保留當前輪
+# （換 prompt_id 就重置），所以事後完全無從對帳——那次遺漏是靠人眼看出來的。
+#
+# 這份 append-only 的紀錄讓 doctor 能比對「語料說這輪改了哪些檔案」與
+# 「hook 說它看到了哪些」。抓不到根因至少要抓得到症狀，
+# 不然掛上全域之後同型的遺漏只會安靜地累積。
+TOUCH_LOG = Path.home() / ".claude" / "agent-memory-spike" / "touches.jsonl"
+
 # SessionStart 注入用的哨兵 prompt_id。那個觸發點在第一輪之前就跑完，
 # payload 裡根本沒有 prompt_id，而它的影響及於整個 session 而非某一輪。
 # 刻意選一個真實 UUID 不可能長成的樣子，避免與正常的 promptId 相撞。
@@ -117,6 +128,38 @@ def load_injections(path: Path = INJECTION_LOG) -> dict[tuple[str, str], list[st
     except OSError:
         return {}
     return found
+
+
+def load_touches(path: Path = TOUCH_LOG) -> dict[tuple[str, str], set[str]]:
+    """讀 hook 的觀察紀錄，鍵是 (session_id, prompt_id)，值是 file_key 集合。
+
+    值存的是 **file_key（末幾段）而不是完整路徑**：hook 拿到的是絕對路徑、
+    語料存的是 repo 相對路徑，兩邊唯一能對齊的就是這個鍵。
+    這正是先前檔案錨點完全失效的那個坑——同名的量不一定是同一個量。
+    """
+    if not path.exists():
+        return {}
+    found: dict[tuple[str, str], set[str]] = {}
+    try:
+        with path.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                session_id = record.get("session_id")
+                prompt_id = record.get("prompt_id")
+                key = record.get("file_key")
+                if not session_id or not prompt_id or not key:
+                    continue
+                found.setdefault((str(session_id), str(prompt_id)), set()).add(str(key))
+    except OSError:
+        return {}
+    return found
+
 
 # 帶檔案路徑的工具，以及路徑放在哪個參數裡。
 # 分成「改」與「讀」兩組是刻意的：結構訊號要找的是反覆**修改**同一個檔案，

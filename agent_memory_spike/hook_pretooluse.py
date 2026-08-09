@@ -47,6 +47,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).parent))
 from transcript import (  # noqa: E402
     INJECTION_LOG,
+    TOUCH_LOG,
     extract_symbols,
     file_key,
     file_keys,
@@ -176,6 +177,24 @@ def save_state(session_id: str, state: dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
+def record_touch(session_id: str, prompt_id: str, key: str) -> None:
+    """記下「hook 看到了這個編輯目標」。
+
+    與注入紀錄分開，而且**不論有沒有注入都要寫**——要抓的遺漏，
+    症狀正是「該累積進 touched 的檔案沒有累積到」，那種輪次多半根本沒注入，
+    只看注入紀錄就永遠看不見它。
+    """
+    TOUCH_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with TOUCH_LOG.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "session_id": session_id,
+            "prompt_id": prompt_id,
+            "file_key": key,
+        }, ensure_ascii=False) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
 def record_injection(session_id: str, prompt_id: str, concept_ids: list[str]) -> None:
     """把這次注入寫進 side-car。
 
@@ -238,6 +257,8 @@ def run(payload: dict[str, Any], *, dry_run: bool = False) -> dict[str, Any] | N
     key = file_key(normalize_path(target, repo_root(str(payload.get("cwd") or ""))))
     if key:
         touched.add(key)
+        if not dry_run:
+            record_touch(session_id, prompt_id, key)
     symbols.update(s.lower() for s in extract_symbols(payload.get("tool_input") or {}))
 
     already = set(state.get("injected") or [])

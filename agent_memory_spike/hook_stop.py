@@ -58,7 +58,13 @@ _T0 = time.perf_counter()
 DEFAULT_EPISODE_DIR = Path.home() / ".claude" / "agent-memory-spike" / "episodes"
 
 sys.path.insert(0, str(Path(__file__).parent))
-from transcript import ORIGIN_HUMAN, episodes_from_transcript, load_injections  # noqa: E402
+from transcript import (  # noqa: E402
+    ORIGIN_HUMAN,
+    episodes_from_transcript,
+    file_keys,
+    load_injections,
+    load_touches,
+)
 
 
 def episode_path(episode_dir: Path, session_id: str) -> Path:
@@ -514,6 +520,41 @@ def doctor(episode_dir: Path) -> int:
     deduped, dupes = load_deduped(episode_dir)
     if dupes:
         print(f"\n  重複 {dupes} 筆（{dupes/total*100:.1f}%），來自 session resume/fork", file=out)
+
+    # 注入 hook 的觀察 vs 語料實際改到的檔案。
+    # **doctor 沒比對的欄位等於沒有保護**——這是這個專案自己記過的教訓，
+    # 而 hook 的 touched 累積先前正是沒被比對的那一項：實測發生過一次 Write
+    # 沒被記進 touched，複現不出，而且事後完全無從查證有沒有第二次。
+    touches = load_touches()
+    if touches:
+        by_turn = {(str(rec.get("session_id")), str(rec.get("prompt_id"))): rec
+                   for rec in deduped}
+        checked = missed_turns = 0
+        samples: list[str] = []
+        for key, seen_keys in sorted(touches.items()):
+            rec = by_turn.get(key)
+            if rec is None:
+                # hook 跑過但語料沒有這一輪：多半是尾端待補或 transcript 已清。
+                # 那不是遺漏，所以不計入分母——把它算進去會讓比率永遠難看，
+                # 真正的故障就淹在裡面了
+                continue
+            checked += 1
+            # 只問一個方向：語料說這輪改了、hook 卻沒看到。
+            # 反方向（hook 看到、語料沒有）是工具被擋或編輯失敗，不是遺漏
+            unseen = file_keys(rec.get("files_edited")) - seen_keys
+            if unseen:
+                missed_turns += 1
+                if len(samples) < 5:
+                    samples.append(f"{key[1][:8]}… 漏看 {sorted(unseen)}")
+        print(f"\n  hook 觀察紀錄 {len(touches)} 輪，可對帳 {checked} 輪、"
+              f"漏看 {missed_turns} 輪", file=out)
+        for sample in samples:
+            print(f"    {sample}", file=out)
+        if missed_turns:
+            problems.append(
+                f"{missed_turns}/{checked} 輪有編輯是 hook 沒看到的——"
+                f"overlap 會算在偏少的檔案集上，等於門檻被悄悄調高"
+            )
 
     # 覆蓋度：Phase 0 顯示有價值的記憶需要跨多個 repo 的真實開發
     dedup_origins: dict[str, int] = {}

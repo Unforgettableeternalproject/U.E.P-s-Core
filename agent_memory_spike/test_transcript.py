@@ -588,3 +588,76 @@ def test_doctor_accepts_empty_assistant_text_when_interrupted_mid_tool(tmp_path,
     _stub_find_transcript(monkeypatch, {"sess-1": transcript})
 
     assert doctor(episode_dir) == 0
+
+
+# --- doctor 的 hook 觀察對帳 -------------------------------------------------
+# 實測發生過一次 Write 沒被記進 `inject_state` 的 touched，隔離環境重跑三次都正常，
+# 複現不出。`inject_state` 只保留當前輪，所以事後無從查證有沒有第二次——
+# 這組測試鎖住的是「下次發生時看得見」，不是「不會再發生」。
+
+def _touch_setup(tmp_path, monkeypatch, episode, touch_rows):
+    episode_dir = tmp_path / "episodes"
+    episode_dir.mkdir()
+    (episode_dir / "sess-1.jsonl").write_text(json.dumps(episode) + "\n", encoding="utf-8")
+
+    log = tmp_path / "touches.jsonl"
+    log.write_text("".join(json.dumps(r) + "\n" for r in touch_rows), encoding="utf-8")
+    monkeypatch.setattr(hook_stop, "load_touches", lambda: __import__(
+        "transcript").load_touches(log))
+    _stub_find_transcript(monkeypatch, {})
+    return episode_dir
+
+
+def _touched_episode(files_edited):
+    episode = _episode("p1", 0, "改一下", "改好了", repo="proj")
+    episode.update({"session_id": "sess-1", "files_edited": files_edited})
+    return episode
+
+
+def test_doctor_flags_edits_the_hook_never_saw(tmp_path, monkeypatch):
+    """語料說這輪改了兩個檔案，hook 只看到一個 = 遺漏。
+
+    後果不是報錯，是 overlap 算在偏少的檔案集上——門檻等於被悄悄調高，
+    而注入率下降看起來就只是「這輪沒有相關記憶」。
+    """
+    episode_dir = _touch_setup(
+        tmp_path, monkeypatch,
+        _touched_episode(["src/a.ts", "src/b.ts"]),
+        [{"session_id": "sess-1", "prompt_id": "p1", "file_key": "src/a.ts"}],
+    )
+    assert doctor(episode_dir) == 1
+
+
+def test_doctor_is_quiet_when_the_hook_saw_everything(tmp_path, monkeypatch):
+    episode_dir = _touch_setup(
+        tmp_path, monkeypatch,
+        _touched_episode(["src/a.ts", "src/b.ts"]),
+        [{"session_id": "sess-1", "prompt_id": "p1", "file_key": "src/a.ts"},
+         {"session_id": "sess-1", "prompt_id": "p1", "file_key": "src/b.ts"}],
+    )
+    assert doctor(episode_dir) == 0
+
+
+def test_doctor_ignores_hook_observations_with_no_edit_in_the_corpus(tmp_path, monkeypatch):
+    """反方向不是遺漏：hook 跑在編輯**之前**，工具被擋或失敗都會留下觀察卻沒有編輯。"""
+    episode_dir = _touch_setup(
+        tmp_path, monkeypatch,
+        _touched_episode([]),
+        [{"session_id": "sess-1", "prompt_id": "p1", "file_key": "src/a.ts"}],
+    )
+    assert doctor(episode_dir) == 0
+
+
+def test_doctor_does_not_count_turns_the_corpus_has_not_caught_up_with(tmp_path, monkeypatch):
+    """尾端待補的輪次語料裡還沒有，不能算進分母。
+
+    算進去的話比率永遠難看，真正的故障就淹在裡面了——與空 assistant_text
+    那條的取捨一致。
+    """
+    episode_dir = _touch_setup(
+        tmp_path, monkeypatch,
+        _touched_episode(["src/a.ts"]),
+        [{"session_id": "sess-1", "prompt_id": "p1", "file_key": "src/a.ts"},
+         {"session_id": "sess-1", "prompt_id": "p-later", "file_key": "src/z.ts"}],
+    )
+    assert doctor(episode_dir) == 0

@@ -53,6 +53,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
 from distill import DEFAULT_CONCEPT_PATH, WORK_DIR  # noqa: E402
+from hook_pretooluse import is_global  # noqa: E402
 from retrieve import VectorIndex, document_text  # noqa: E402
 
 DEFAULT_PAIR_PATH = WORK_DIR / "consolidate_pairs.json"
@@ -105,7 +106,20 @@ JUDGE_INSTRUCTIONS = """\
 ```
 
 `keep` 的選法：
-- `DUPLICATE`：留**寫得更具體、錨點更完整**的那條，不是更長的那條
+
+- `DUPLICATE`，依序問這兩個問題：
+  1. **一條是跨專案通用的陳述，另一條把同一件事綁在某個專案上嗎？**
+     （`scope` 為 null 的那條是通用的；「Eternity 的 .ssp-body 不能用 CSS 多欄」
+     這種把通用機制寫成專案實例的也算窄）
+     是的話**留通用那條**——除非專案那條帶著通用那條沒有的、可驗證的具體事實。
+     窄的那條只能在一個 repo 被想起，留它等於自願放棄其餘所有專案的召回；
+     而通用陳述丟掉的通常只是一個專案的例子。
+  2. 兩條廣度相同時，才留**寫得更具體、錨點更完整**的那條，不是更長的那條。
+
+  ⚠️ **不要把「提到了專案名稱」當成寫得更具體**。實測有兩組通用知識
+  （CSS 多欄在捲動容器裡的行為、CDP 量不到跨域資源大小）就是這樣被合併進
+  專案特有的措辭，從此鎖在單一 repo 裡。
+
 - `CONTRADICTION`：留**來源輪次較晚**的那條（每組配對都附了時序），
   因為後來的改動推翻了先前的事實
 """
@@ -198,6 +212,13 @@ ARBITRATION_INSTRUCTIONS = """\
 但也不要因此一律採信非 DISTINCT 的那票。**逐條讀理由**：
 它指出的衝突點在陳述裡真的存在嗎？還是它把「主題相同」誤讀成「結論對立」？
 
+## `keep` 的選法
+
+- `CONTRADICTION`：留**來源輪次較晚**的那條
+- `DUPLICATE`：一條通用、一條把同一件事綁在某個專案上時，**留通用那條**
+  （除非專案那條帶著通用那條沒有的具體事實）。窄的那條只能在一個 repo 被想起。
+  廣度相同時才比具體程度。**「提到了專案名稱」不算比較具體。**
+
 ## 輸出格式
 
 只輸出 JSON：
@@ -235,16 +256,44 @@ def _latest_turn(concept: dict[str, Any]) -> str:
     return str(turns[-1][0]) if turns else ""
 
 
+# global 條目自成一組時的組名。不能用 str(None)——那是先前把通用條目
+# 關進自己那一組的寫法，讀起來也看不出是「跨專案」
+GLOBAL_GROUP = "(global)"
+
+
+def _pair_side(concept: dict[str, Any]) -> dict[str, Any]:
+    """送給判卷者看的單邊摘要。"""
+    return {
+        "id": concept.get("id"),
+        "statement": concept.get("statement"),
+        # null 代表跨專案通用。判卷者靠這個欄位執行「留通用那條」的準則
+        "scope": concept.get("scope"),
+        "anchors": concept.get("anchors"),
+        "source_turns": concept.get("source_turns"),
+    }
+
+
 def build_pairs(concepts: list[dict[str, Any]], floor: float,
                 max_per: int) -> list[dict[str, Any]]:
     """找出值得送去判定的相似對。
 
-    **只在同一個 scope 內配對**：跨 repo 的兩條記憶不可能是重複或矛盾，
+    **同一個 scope 內配對**：兩個不同 repo 的記憶不可能是重複或矛盾，
     而全量兩兩比對是 O(n²)，775 條就有 30 萬對。
+
+    但 **global 條目要併進每一個 repo 的組**：它們會與該 repo 的記憶一起被注入
+    同一個 session，「一條通用、一條綁專案，講的是同一件事」正是要收斂掉的形狀。
+    先前用 `str(scope)` 分組，`None` 自成一組，這種配對永遠產生不出來——
+    而那正是 scope 修復之後最需要判的一類。
     """
+    global_indices = [i for i, c in enumerate(concepts) if is_global(c.get("scope"))]
     by_scope: dict[str, list[int]] = {}
     for index, concept in enumerate(concepts):
+        if index in set(global_indices):
+            continue
         by_scope.setdefault(str(concept.get("scope")), []).append(index)
+    # global 自己內部也要收斂
+    if global_indices:
+        by_scope[GLOBAL_GROUP] = list(global_indices)
 
     texts = [document_text(c, with_cue=False) for c in concepts]
     print(f"[consolidate] 取 {len(texts)} 條的向量……", file=sys.stderr)
@@ -252,7 +301,12 @@ def build_pairs(concepts: list[dict[str, Any]], floor: float,
 
     pairs: list[dict[str, Any]] = []
     seen: set[tuple[int, int]] = set()
+    # max_per 的計數要跨組共享：一條 global 會出現在每個 repo 的組裡，
+    # 每組各自計數的話它能被配 組數 × max_per 次
+    used: dict[int, int] = {}
     for scope, indices in sorted(by_scope.items()):
+        if scope != GLOBAL_GROUP:
+            indices = sorted(set(indices) | set(global_indices))
         if len(indices) < 2:
             continue
         scored: list[tuple[float, int, int]] = []
@@ -263,7 +317,6 @@ def build_pairs(concepts: list[dict[str, Any]], floor: float,
                     scored.append((similarity, i, j))
         scored.sort(key=lambda row: -row[0])
 
-        used: dict[int, int] = {}
         for similarity, i, j in scored:
             if used.get(i, 0) >= max_per or used.get(j, 0) >= max_per:
                 continue
@@ -277,18 +330,10 @@ def build_pairs(concepts: list[dict[str, Any]], floor: float,
                 "pair_id": f"p-{len(pairs):04d}",
                 "scope": scope,
                 "similarity": round(similarity, 4),
-                "left": {
-                    "id": left.get("id"),
-                    "statement": left.get("statement"),
-                    "anchors": left.get("anchors"),
-                    "source_turns": left.get("source_turns"),
-                },
-                "right": {
-                    "id": right.get("id"),
-                    "statement": right.get("statement"),
-                    "anchors": right.get("anchors"),
-                    "source_turns": right.get("source_turns"),
-                },
+                # 每條的 scope 要送到判卷者眼前：DUPLICATE 的 keep 準則要求
+                # 「一條通用、一條綁專案時留通用那條」，看不到 scope 就執行不了
+                "left": _pair_side(left),
+                "right": _pair_side(right),
             })
         print(f"  {scope}: {len(indices)} 條 → {len(scored)} 對超過門檻", file=sys.stderr)
     return pairs

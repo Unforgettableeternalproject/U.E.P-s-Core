@@ -223,3 +223,67 @@ def test_contradiction_inside_one_class_is_left_alone(tmp_path):
     transitive(result_dir, concept_path, pair_path, apply_changes=True)
     # 等價類收斂仍會發生（A、B 確實被判過重複），但矛盾不會再多刪一條
     assert len(_ids(concept_path)) == 1
+
+
+# --- 配對分組 ---------------------------------------------------------------
+
+class _FakeIndex:
+    """所有向量相同 → 相似度恆為 1.0。分組行為與相似度無關，這裡只測分組。"""
+
+    def __init__(self, texts):
+        self.matrix = [[1.0, 0.0] for _ in texts]
+
+
+def _pairs_of(monkeypatch, concepts, max_per=5):
+    import consolidate
+    monkeypatch.setattr(consolidate, "VectorIndex", _FakeIndex)
+    pairs = consolidate.build_pairs(concepts, floor=0.5, max_per=max_per)
+    return {frozenset((p["left"]["id"], p["right"]["id"])) for p in pairs}
+
+
+def _c(cid, scope):
+    return {"id": cid, "statement": f"statement {cid}", "scope": scope, "anchors": []}
+
+
+def test_global_concepts_pair_against_every_repo(monkeypatch):
+    """**這是 scope 修好之後最需要判的一類配對。**
+
+    一條通用、一條把同一件事綁在某個 repo 上——先前用 `str(scope)` 分組，
+    `None` 自成一組，這種配對永遠產生不出來。而 global 條目會與該 repo 的記憶
+    一起被注入同一個 session，重複的代價是真的。
+    """
+    got = _pairs_of(monkeypatch, [
+        _c("g-1", None), _c("a-1", "repo-a"), _c("b-1", "repo-b"),
+    ])
+    assert frozenset(("g-1", "a-1")) in got
+    assert frozenset(("g-1", "b-1")) in got
+    # 兩個不同 repo 的記憶仍然不配對——那是原本的分組理由，沒有變
+    assert frozenset(("a-1", "b-1")) not in got
+
+
+def test_global_concepts_still_pair_among_themselves(monkeypatch):
+    got = _pairs_of(monkeypatch, [_c("g-1", None), _c("g-2", None)])
+    assert got == {frozenset(("g-1", "g-2"))}
+
+
+def test_a_global_concept_is_not_paired_once_per_repo_group(monkeypatch):
+    """`max_per` 要跨組共享。
+
+    一條 global 會出現在每一個 repo 的組裡，各組自己計數的話它能被配
+    「組數 × max_per」次——判定成本按組數線性膨脹，而且完全靜默。
+    """
+    concepts = [_c("g-1", None)] + [_c(f"r-{i}", f"repo-{i}") for i in range(4)]
+    got = _pairs_of(monkeypatch, concepts, max_per=1)
+    assert sum(1 for pair in got if "g-1" in pair) == 1
+
+
+def test_pair_sides_carry_scope(monkeypatch):
+    """判卷者要看得到 scope，否則「留通用那條」的準則執行不了。"""
+    import consolidate
+    monkeypatch.setattr(consolidate, "VectorIndex", _FakeIndex)
+    pairs = consolidate.build_pairs(
+        [_c("g-1", None), _c("a-1", "repo-a")], floor=0.5, max_per=5)
+    sides = {pairs[0]["left"]["id"]: pairs[0]["left"],
+             pairs[0]["right"]["id"]: pairs[0]["right"]}
+    assert sides["g-1"]["scope"] is None
+    assert sides["a-1"]["scope"] == "repo-a"

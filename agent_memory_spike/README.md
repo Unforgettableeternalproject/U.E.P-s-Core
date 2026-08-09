@@ -24,7 +24,7 @@ Coding agent 記憶層實驗。與 `echo_memory/` 完全無關——不 import�
 | `retrieve.py` | 2 | 檢索（BM25 + ollama 向量 + 檔案／符號訊號） |
 | `experiment/phase2-retrieval.md` | 2 | 檢索驗證結果 |
 | `consolidate.py` | 2.5 | 池子收斂（語意去重 + 矛盾偵測 + 關係閉包 + 雙評審合議） |
-| `hook_pretooluse.py` | 3 | PreToolUse hook，編輯前注入相關記憶（**尚未掛載**） |
+| `hook_pretooluse.py` | 3 | PreToolUse hook，編輯前注入相關記憶（**已全域掛載**） |
 | `pipeline.py` | 3 | 自動化管線（收料 → 蒸餾 → 收斂 → 校準） |
 | `test_consolidate.py` | 2.8 | 關係閉包與雙評審合議測試（11 項） |
 | `test_inject.py` | 3 | 注入 hook 測試（10 項） |
@@ -961,3 +961,53 @@ global 條目的錨點通常是概念名（`columns`、`rm -rf`、`Timing-Allow-
 `retrieve.py --judge-precision` 補上，三條路現在同一個介面
 （`--dump-precision` / `--judge` / `--ingest`）、同一個判卷後端。
 先前唯一掛載的這條反而是唯一只能人工判卷的。
+
+# Phase 4 — PreToolUse 全域掛載（2026-08-10）
+
+**掛載的只有兩條**：`hook_stop.py`（收料）與 `hook_pretooluse.py`（注入），
+都在 `~/.claude/settings.json`。`hook_session_start.py` 與 `hook_userpromptsubmit.py`
+留著當對照組——它們量出「沒有相關性訊號會有多差」（6.5% / 12.7%），
+那正是 58.4% 的參照點——**但不掛**。
+
+## 掛之前補的：hook 觀察對帳
+
+見 `transcript.py` 的 `TOUCH_LOG`。觸發量放大好幾倍之前，
+要先讓「hook 漏看編輯」這型遺漏看得見——它不會報錯。
+
+## 決策時的數字
+
+**延遲**（每次編輯都付，timeout 10 秒）
+
+```
+本 repo      中位數  90 ms   p90  98
+Eternity     中位數  97 ms   p90 100
+AI-Website   中位數  88 ms   p90  94
+```
+
+跨 repo 一致。**首次冷啟動約 700 ms**（檔案系統快取未熱），仍差兩個數量級。
+
+**觸發率極度不均**（語料 697 個編輯輪次模擬）
+
+```
+AI-Website-API             237 輪 → 73.0%     TestSeperateMemorySystem  31 輪 →  6.5%
+AI-Website                 129 輪 → 40.3%     AI-Website-Web            92 輪 →  1.1%
+Eternity                   195 輪 → 20.0%     JSAI-Main-Website / Functions →  0.0%
+────────────────────────────────────────────────────────────────
+合計                       697 輪 → 38.3%     平均注入 1.3~1.6 條
+```
+
+**掛全域實際只有兩個 repo 會有感**，原因單純是池子分布
+（85 條通過門檻裡 AI-Website-API 佔 31、Eternity 22、AI-Website 17）。
+
+⚠️ **38.3% 是上界，不是預期值**：模擬用的語料**正是這些記憶的來源**，
+真實新工作的觸發率必然更低。掛上去之後的實測才是真數字。
+
+**成本**：statement 中位數 107 字元，每次注入約 441 字元。
+語料 37 天／210 session，推估每天約 7 次注入、3.2k 字元。
+
+## 操作上唯一的坑：不要兩邊都掛
+
+專案的 `.claude/settings.local.json` 與全域 `~/.claude/settings.json`
+同時掛的話，本 repo 每次編輯會跑兩次——`already` 節流讓第二次跳過已注入的，
+然後**挑別的條目補上**，於是一輪注入 6 條而不是 3 條，touch 紀錄也會重複。
+移到全域時專案端那段必須一併移除。

@@ -1,4 +1,4 @@
-# 排程入口：每日凌晨跑記憶管線。
+﻿# 排程入口：每日凌晨跑記憶管線。
 #
 # Phase 3 定案：走 Windows 工作排程器，不掛 SessionEnd hook——
 # 蒸餾要幾分鐘，hook 得 detach、失敗靜默難追，而且剛結束工作時機器最忙。
@@ -7,13 +7,19 @@
 #   schtasks /create /tn "AgentMemoryPipeline" /sc daily /st 03:30 ^
 #     /tr "powershell -NoProfile -ExecutionPolicy Bypass -File <本檔絕對路徑>"
 #
-# 路徑全部從 $PSScriptRoot 推導，換機器只要 repo 相對位置不變就能跑。
+# 兩個實測逼出來的細節：
+# 1. 本檔必須存成 UTF-8 **含 BOM**——Windows PowerShell 5.1 讀無 BOM 的
+#    UTF-8 會當成 ANSI，中文註解的位元組會吃掉後面的程式碼行
+#    （實測 $log 整行被吞成 Null，錯誤只在排程的黑箱裡發生）
+# 2. Python 的輸出用 cmd /c 原生重導，不用 PowerShell 的 *>>——
+#    後者把 stderr 每一行包成 NativeCommandError 紀錄，log 全是包裝噪音
 
 $ErrorActionPreference = "Continue"
 $env:PYTHONIOENCODING = "utf-8"
 
 $repo = Split-Path -Parent $PSScriptRoot
 $python = Join-Path (Split-Path -Parent $repo) "U.E.P-s-Core\env\Scripts\python.exe"
+$script = Join-Path $PSScriptRoot "pipeline.py"
 $logDir = Join-Path $env:USERPROFILE ".claude\agent-memory-spike\logs"
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
@@ -21,7 +27,7 @@ New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $log = Join-Path $logDir ("pipeline-{0}.log" -f (Get-Date -Format "yyyyMMdd"))
 
 "=== pipeline start $(Get-Date -Format o) ===" | Out-File -FilePath $log -Append -Encoding utf8
-& $python (Join-Path $PSScriptRoot "pipeline.py") --run *>> $log
+& cmd /c "`"$python`" `"$script`" --run >> `"$log`" 2>&1"
 $code = $LASTEXITCODE
 "=== pipeline exit $code $(Get-Date -Format o) ===" | Out-File -FilePath $log -Append -Encoding utf8
 exit $code

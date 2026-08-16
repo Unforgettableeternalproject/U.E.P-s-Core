@@ -153,3 +153,16 @@ def test_only_runs_the_requested_stage(tmp_path, monkeypatch):
     ])
     run_pipeline(dry_run=False, max_groups=1, only="b")
     assert ran == ["b"]
+
+
+def test_credited_reads_the_actual_ledger_line():
+    """管線層要自己驗收「這一輪真的進帳幾筆」。
+
+    第一次自動實跑，蒸餾與判卷的回覆信封都與收回端不符，兩邊各收 0 筆，
+    而 exit code 與摘要行都看起來像正常跑完。零筆進帳必須算失敗。
+    """
+    assert pipeline._credited("[distill] 已蒸餾組數 24 寫入 watermark") == 24
+    assert pipeline._credited("[distill] 已蒸餾組數 0 寫入 watermark") == 0
+    assert pipeline._credited("[calibrate] 更新 12 條 → x", r"更新 (\d+) 條") == 12
+    # 找不到那行 = 版本不合，寧可誤報失敗也不靜默放行
+    assert pipeline._credited("完全無關的輸出") == -1

@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -290,20 +291,33 @@ def stage_distill(ctx: dict[str, Any]) -> tuple[bool, str]:
         return True, "沒有新的候選組"
 
     batch = min(pending, limit)
+    # 回覆的信封格式必須在這裡釘死。`--show` 印的判準只定義**單組**的
+    # 輸出（`{"concepts": [...]}`），手動時代的每組 id 信封是派工 prompt 給的。
+    # 第一次自動實跑漏了這段，裁決者把 24 組融成一包沒有 id 的 concepts，
+    # ingest 對不上任何 task → 收回 0 條、watermark 不進帳，而階段照樣報 OK
     prompt = (
         AUTO_PREAMBLE + "記憶蒸餾任務。在這個 repo 底下執行：\n\n"
         f'"{TOOL_PYTHON}" agent_memory_spike/distill.py --show 0-{batch - 1}\n\n'
         "輸出開頭是蒸餾準則，照著做。除了那個指令之外不需要讀取其他檔案。\n"
-        "**不要寫任何檔案**——把結果直接以一個 ```json 區塊回覆給我即可。"
+        "**不要寫任何檔案**——把結果直接以一個 ```json 區塊回覆給我。\n"
+        "回覆格式是一個 JSON 陣列，**每一組候選一個元素、id 原樣照抄**，"
+        "空手的組也要列出（concepts 給空陣列）：\n"
+        '[{"id": "cand-000", "concepts": [...]}, {"id": "cand-001", "concepts": []}, ...]'
     )
-    ok, reply = adjudicate_to_file(prompt, WORK_DIR / "distill_out" / "auto-00.json")
+    # 落地到專用目錄，**不能與手動批次共用 distill_out**：那裡躺著舊 emit
+    # 的結果檔，跟著一起 ingest 只會整批對不上 id、把警告淹掉
+    ok, reply = adjudicate_to_file(prompt, WORK_DIR / "distill_out_auto" / "auto-00.json")
     if not ok:
         return False, f"裁決失敗: {reply}"
 
     ok, out = run_tool([
         "agent_memory_spike/distill.py", "--ingest",
-        str(WORK_DIR / "distill_out"), "--incremental",
+        str(WORK_DIR / "distill_out_auto" / "auto-00.json"), "--incremental",
     ])
+    if ok and _credited(out) <= 0:
+        # 蒸餾花了幾分鐘的裁決，一組都沒被記進 watermark = 收回端沒吃到，
+        # 下次還會重蒸同一批。這是失敗，不是「沒有新東西」
+        return False, f"裁決結果一組都沒對上 tasks: {pick_summary(out, '⚠', '組')}"
     return ok, pick_summary(out, "concept", "distill")
 
 
@@ -384,12 +398,18 @@ def stage_calibrate(ctx: dict[str, Any]) -> tuple[bool, str]:
     if not ok:
         return False, f"受測失敗: {reply}"
 
+    # 信封格式同樣要釘死（理由見 stage_distill）：第一次自動實跑判卷者
+    # 回了 {"c-689": {...}} 這種以 id 為鍵的 dict，ingest 期望的是
+    # [{"id": ..., "verdict": ...}]，更新 0 條而摘要被 report 的
+    # 「已校準 214」蓋住，看起來像正常跑完
     judge_prompt = (
         AUTO_PREAMBLE + "判卷任務。在這個 repo 底下執行：\n\n"
         f'"{TOOL_PYTHON}" agent_memory_spike/calibrate.py '
         f"--show-judge 0-{pending - 1} --answer-path {answer_dir}\n\n"
         "輸出開頭是判卷準則，逐題照著判，判定要嚴格。\n"
-        "**不要寫任何檔案**——把結果直接以一個 ```json 區塊回覆給我即可。"
+        "**不要寫任何檔案**——把結果直接以一個 ```json 區塊回覆給我。\n"
+        "回覆格式是一個 JSON 陣列，每題一個元素、id 原樣照抄：\n"
+        '[{"id": "c-000", "verdict": "...", "evidence": "...", "note": "..."}, ...]'
     )
     ok, reply = adjudicate_to_file(judge_prompt, WORK_DIR / "verdicts_auto" / "verdicts-00.json")
     if not ok:
@@ -398,7 +418,11 @@ def stage_calibrate(ctx: dict[str, Any]) -> tuple[bool, str]:
     ok, out = run_tool([
         "agent_memory_spike/calibrate.py", "--ingest", str(WORK_DIR / "verdicts_auto"),
     ])
-    return ok, pick_summary(out, "已校準", "更新")
+    if ok and _credited(out, r"更新 (\d+) 條") <= 0:
+        # 判卷跑完卻一條都沒更新 = 收回端沒吃到判定，
+        # 「已校準 N」那行是既有存量，不能拿來當這一輪的成功證據
+        return False, "判卷結果一條都沒對上 concepts"
+    return ok, pick_summary(out, "更新", "已校準")
 
 
 def pick_summary(output: str, *keywords: str) -> str:
@@ -413,6 +437,18 @@ def pick_summary(output: str, *keywords: str) -> str:
             if keyword in line:
                 return line
     return lines[-1] if lines else "（無輸出）"
+
+
+def _credited(output: str, pattern: str = r"已蒸餾組數 (\d+)") -> int:
+    """從收回端的輸出裡讀出「這一輪真的被記帳的筆數」。
+
+    收回端的 ingest 對「格式不符」的容錯是靜默跳過（那是為了單筆髒資料
+    不毀整批），所以**零筆成功也會 exit 0**。管線層必須自己驗收：
+    裁決花了幾分鐘，一筆都沒進帳就是失敗，不是「沒有新東西」。
+    找不到那行輸出時回 -1——版本不合時寧可誤報失敗，也不要靜默放行。
+    """
+    match = re.search(pattern, output)
+    return int(match.group(1)) if match else -1
 
 
 def _pending_count(path: Path, key: str) -> int:

@@ -26,8 +26,10 @@ New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 # 一天一檔。管線本身有 lockfile，重複觸發不會疊跑，log 用 append 也不會互相蓋掉
 $log = Join-Path $logDir ("pipeline-{0}.log" -f (Get-Date -Format "yyyyMMdd"))
 
+# --max-groups 24 對齊手動時代的單批大小：實測 20 組單次裁決要 ~13 分鐘，
+# 40 組會頂到逾時；24 是歷史上驗證過的評審批次
 "=== pipeline start $(Get-Date -Format o) ===" | Out-File -FilePath $log -Append -Encoding utf8
-& cmd /c "`"$python`" `"$script`" --run >> `"$log`" 2>&1"
+& cmd /c "`"$python`" `"$script`" --run --max-groups 24 >> `"$log`" 2>&1"
 $code = $LASTEXITCODE
 "=== pipeline exit $code $(Get-Date -Format o) ===" | Out-File -FilePath $log -Append -Encoding utf8
 exit $code

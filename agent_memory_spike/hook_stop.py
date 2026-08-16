@@ -352,6 +352,9 @@ def doctor(episode_dir: Path) -> int:
         return 0
 
     problems: list[str] = []
+    # 警示與問題分開：問題代表語料不可信、要擋下蒸餾（exit 1），
+    # 警示是「該看但不該擋」——例如 hook 的觀察缺口，傷的是注入效率不是語料
+    warnings: list[str] = []
     total = 0
     repos: dict[str, int] = {}
     origins: dict[str, int] = {}
@@ -367,7 +370,12 @@ def doctor(episode_dir: Path) -> int:
     # 對回來，比對規則錯了就會靜默地整批對不上——而那正是「哪些輪次被記憶影響過」
     # 這件事的唯一依據，錯了會讓之後的校準失去意義
     injections = load_injections()
-    injected_turns = 0
+    # 對帳用 (session_id, prompt_id) 配對而不是數輪數：同一配對可能對到多輪
+    # （resume 讓 promptId 重現），數輪數會讓兩邊的分母對不齊
+    stored_injected: set[tuple[str, str]] = set()
+    # 在 transcript 裡標記得到、但還沒入料的配對——多半是「最新一輪不寫」的
+    # 設計性落後。指紋沒有失效：等下一輪出現，它入料時就會帶著 injected 標記
+    transcript_injected: set[tuple[str, str]] = set()
     legacy_schema = 0
     legacy_unfixable = 0
 
@@ -385,7 +393,7 @@ def doctor(episode_dir: Path) -> int:
             if "injected" not in rec:
                 legacy_here += 1
             elif rec.get("injected"):
-                injected_turns += 1
+                stored_injected.add((str(rec.get("session_id")), str(rec.get("prompt_id"))))
             repos[rec.get("repo") or "?"] = repos.get(rec.get("repo") or "?", 0) + 1
             origins[rec.get("origin") or "?"] = origins.get(rec.get("origin") or "?", 0) + 1
             agents[rec.get("agent") or "(未標記)"] = agents.get(rec.get("agent") or "(未標記)", 0) + 1
@@ -415,6 +423,9 @@ def doctor(episode_dir: Path) -> int:
         # 於是 ref is None → 靜默略過。這就是先前 doctor 全綠卻仍有殘留的原因。
         live_all = {_key(e): e for e in all_episodes}
         legacy_schema += legacy_here
+        for ep in all_episodes:
+            if ep.get("injected"):
+                transcript_injected.add((str(ep.get("session_id")), str(ep.get("prompt_id"))))
 
         seen = set()
         for rec in stored:
@@ -499,11 +510,29 @@ def doctor(episode_dir: Path) -> int:
             f"{legacy_schema} 輪沒有 injected 欄位（早於這個 schema）——跑 --repair-all 補上"
         )
     if injections:
-        print(f"\n  注入紀錄 {len(injections)} 筆，語料裡對上 {injected_turns} 輪", file=out)
-        if injected_turns < len(injections):
+        matched = {pair for pair in injections if pair in stored_injected}
+        pending_inject = {pair for pair in injections
+                          if pair not in matched and pair in transcript_injected}
+        lost = set(injections) - matched - pending_inject
+        # 被注入的 session 可能連 episode 檔都還沒有（Stop hook 沒跑到），
+        # 上面的迴圈只掃 episode 檔，這種 session 的 transcript 沒被看過。
+        # 直接去 transcript 驗證：標記得到就是待補，不是指紋失效
+        for pair in sorted(lost):
+            transcript = find_transcript(pair[0])
+            if transcript is None:
+                continue
+            for ep in episodes_from_transcript(transcript, injections):
+                if ep.get("injected") and (str(ep.get("session_id")), str(ep.get("prompt_id"))) == pair:
+                    pending_inject.add(pair)
+                    break
+        lost -= pending_inject
+        print(f"\n  注入紀錄 {len(injections)} 筆，語料裡對上 {len(matched)} 筆"
+              + (f"、尾端待補 {len(pending_inject)} 筆" if pending_inject else ""), file=out)
+        if lost:
             problems.append(
-                f"注入紀錄有 {len(injections)} 筆，語料只對上 {injected_turns} 輪——"
-                f"指紋比對可能失效，被影響過的輪次會被當成乾淨語料"
+                f"注入紀錄有 {len(lost)} 筆在 transcript 裡完全標記不到——"
+                f"指紋比對失效，被影響過的輪次會被當成乾淨語料: "
+                + ", ".join(f"{s[:8]}/{p[:8]}" for s, p in sorted(lost))
             )
 
     empty_total = sum(empty_kinds.values())
@@ -531,6 +560,19 @@ def doctor(episode_dir: Path) -> int:
                    for rec in deduped}
         checked = missed_turns = 0
         samples: list[str] = []
+
+        def covered(seen_keys: set[str], key: str) -> bool:
+            """hook 的 key 與語料的 key 是不是同一個檔案。
+
+            不能只用相等：兩邊的正規化基準可能不同（nested repos + bash 切目錄，
+            hook 曾以絕對路徑末 3 段記下 `mind-door/ai-website/append-2199-scss.js`，
+            語料端是 `append-2199-scss.js`）。兩個 key 都收斂到同一個檔案結尾，
+            所以「一方是另一方的尾段」就足以認定同一檔——比純檔名比對嚴，
+            又吸收得掉基準差異。
+            """
+            return any(s == key or s.endswith("/" + key) or key.endswith("/" + s)
+                       for s in seen_keys)
+
         for key, seen_keys in sorted(touches.items()):
             rec = by_turn.get(key)
             if rec is None:
@@ -541,7 +583,8 @@ def doctor(episode_dir: Path) -> int:
             checked += 1
             # 只問一個方向：語料說這輪改了、hook 卻沒看到。
             # 反方向（hook 看到、語料沒有）是工具被擋或編輯失敗，不是遺漏
-            unseen = file_keys(rec.get("files_edited")) - seen_keys
+            unseen = {k for k in file_keys(rec.get("files_edited"))
+                      if not covered(seen_keys, k)}
             if unseen:
                 missed_turns += 1
                 if len(samples) < 5:
@@ -551,7 +594,10 @@ def doctor(episode_dir: Path) -> int:
         for sample in samples:
             print(f"    {sample}", file=out)
         if missed_turns:
-            problems.append(
+            # 警示而不是問題：漏看傷的是注入效率（overlap 算在偏少的檔案集上，
+            # 門檻被悄悄調高），語料本身沒有壞——不該為此擋下整條蒸餾管線。
+            # 歷史紀錄裡也確實留著幾筆複現不出的遺漏，當問題會讓 doctor 永遠是紅的
+            warnings.append(
                 f"{missed_turns}/{checked} 輪有編輯是 hook 沒看到的——"
                 f"overlap 會算在偏少的檔案集上，等於門檻被悄悄調高"
             )
@@ -567,6 +613,11 @@ def doctor(episode_dir: Path) -> int:
     print(f"\n  去重後：{len(deduped)} 輪、{len(real_repos)} 個 repo、{human} 輪 human 輸入", file=out)
     if len(real_repos) < 3:
         print("  → repo 數偏少，跨專案價值還測不出來", file=out)
+
+    if warnings:
+        print(f"\n[doctor] {len(warnings)} 個警示（不影響語料可信度，不擋管線）：", file=out)
+        for w in warnings:
+            print(f"  ⚠ {w}", file=out)
 
     if problems:
         print(f"\n[doctor] 發現 {len(problems)} 個問題：", file=out)

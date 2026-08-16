@@ -41,6 +41,9 @@ def _isolate(tmp_path, monkeypatch, concepts):
     monkeypatch.setattr(hook_pretooluse, "CONCEPT_PATH", concept_path)
     monkeypatch.setattr(hook_pretooluse, "STATE_DIR", tmp_path / "state")
     monkeypatch.setattr(hook_pretooluse, "INJECTION_LOG", tmp_path / "injections.jsonl")
+    # TOUCH_LOG 一度沒隔離：跑 dry_run=False 的測試往真實的 touches.jsonl
+    # 寫了 21 筆 session_id=s1 的假觀察。測試沒隔離的全域狀態等於沒測
+    monkeypatch.setattr(hook_pretooluse, "TOUCH_LOG", tmp_path / "touches.jsonl")
     return concept_path
 
 
@@ -100,6 +103,37 @@ def test_absolute_tool_paths_match_repo_relative_anchors(tmp_path, monkeypatch):
     result = run(_payload(
         cwd=str(repo),
         tool_input={"file_path": str(target), "new_string": "with_cue and cue"},
+    ), dry_run=True)
+    assert result is not None
+    assert "statement c-1" in result["hookSpecificOutput"]["additionalContext"]
+
+
+def test_normalization_base_comes_from_the_target_not_cwd(tmp_path, monkeypatch):
+    """cwd 在別的 repo 時，正規化基準要從目標檔案往上找。
+
+    實測抓到的形狀：bash `cd` 進 nested 子 repo 後，對父 repo 根目錄檔案的
+    Write 不在 `repo_root(cwd)` 底下，正規化整個不動作，key 變成絕對路徑的
+    末 3 段（`mind-door/ai-website/append-2199-scss.js`），與語料端的
+    `append-2199-scss.js` 永遠對不上——doctor 對帳時 18/81 輪「漏看」，
+    多數是這個基準漂移，不是 hook 真的沒看到。
+    """
+    outer = tmp_path / "outer"
+    (outer / ".git").mkdir(parents=True)
+    inner = outer / "inner"
+    (inner / ".git").mkdir(parents=True)
+    target = outer / "append-cards.js"
+    target.write_text("x", encoding="utf-8")
+
+    # scope 用 None（跨專案）：scope 閘門比對的是 cwd 推出的 repo 名，
+    # 這個測試的重點是路徑基準，不是 scope
+    _isolate(tmp_path, monkeypatch, [
+        _concept("c-1", ["append-cards.js", "cue"], scope=None),
+    ])
+    # cwd 在 inner，目標在 outer 根目錄——舊實作用 repo_root(cwd)=inner 當基準，
+    # 目標不在底下，key 會是絕對路徑末 3 段
+    result = run(_payload(
+        cwd=str(inner),
+        tool_input={"file_path": str(target), "new_string": "with cue"},
     ), dry_run=True)
     assert result is not None
     assert "statement c-1" in result["hookSpecificOutput"]["additionalContext"]

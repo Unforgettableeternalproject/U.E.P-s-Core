@@ -504,6 +504,10 @@ def _write_raw_transcript(tmp_path, session_id, records):
 
 def _stub_find_transcript(monkeypatch, mapping):
     monkeypatch.setattr(hook_stop, "find_transcript", lambda sid: mapping.get(sid))
+    # 一併隔離注入紀錄：doctor 預設讀真實的 ~/.claude/.../injections.jsonl，
+    # PreToolUse 上線前那個檔是空的、測試剛好綠；上線後開始有紀錄，
+    # 這批測試就整批靜默失敗——測試沒隔離的全域狀態等於沒測
+    monkeypatch.setattr(hook_stop, "load_injections", lambda: {})
 
 
 def test_doctor_flags_empty_assistant_text_that_has_a_source(tmp_path, monkeypatch):
@@ -614,18 +618,78 @@ def _touched_episode(files_edited):
     return episode
 
 
-def test_doctor_flags_edits_the_hook_never_saw(tmp_path, monkeypatch):
-    """語料說這輪改了兩個檔案，hook 只看到一個 = 遺漏。
+def test_doctor_flags_edits_the_hook_never_saw(tmp_path, monkeypatch, capsys):
+    """語料說這輪改了兩個檔案，hook 只看到一個 = 遺漏，要看得見。
 
-    後果不是報錯，是 overlap 算在偏少的檔案集上——門檻等於被悄悄調高，
-    而注入率下降看起來就只是「這輪沒有相關記憶」。
+    但它是**警示不是問題**：漏看傷的是注入效率（overlap 算在偏少的檔案集上，
+    門檻被悄悄調高），語料本身沒有壞——不該為此擋下整條蒸餾管線。
     """
     episode_dir = _touch_setup(
         tmp_path, monkeypatch,
         _touched_episode(["src/a.ts", "src/b.ts"]),
         [{"session_id": "sess-1", "prompt_id": "p1", "file_key": "src/a.ts"}],
     )
+    assert doctor(episode_dir) == 0
+    assert "漏看 1 輪" in capsys.readouterr().err
+
+
+def test_doctor_accepts_injections_still_waiting_in_the_tail(tmp_path, monkeypatch):
+    """注入落在 session 的最後一輪時，語料裡還沒有它——那是設計性落後。
+
+    「最新一輪不寫」是收料的鐵律（防半截資料），所以被注入的輪次
+    永遠比注入紀錄晚一步入料。指紋沒有失效：transcript 裡標記得到，
+    等下一輪出現它就會帶著 injected 標記進語料。報成問題會讓
+    doctor 在每次注入後都紅一陣子。
+    """
+    episode_dir = tmp_path / "episodes"
+    episode_dir.mkdir()
+    (episode_dir / "sess-1.jsonl").write_text("", encoding="utf-8")
+    transcript = _write_raw_transcript(tmp_path, "sess-1", [
+        _user("p1", text="改一下", origin={"kind": "human"}),
+        _assistant(text="好"),
+    ])
+    _stub_find_transcript(monkeypatch, {"sess-1": transcript})
+    monkeypatch.setattr(hook_stop, "load_injections",
+                        lambda: {("sess-1", "p1"): ["c-1"]})
+    assert doctor(episode_dir) == 0
+
+
+def test_doctor_flags_injections_no_turn_can_account_for(tmp_path, monkeypatch):
+    """注入紀錄在 transcript 裡完全標記不到 = 指紋失效，這才是問題。
+
+    被影響過的輪次會被當成乾淨語料，之後的校準有系統性偏誤——
+    這是注入對帳存在的唯一理由。
+    """
+    episode_dir = tmp_path / "episodes"
+    episode_dir.mkdir()
+    (episode_dir / "sess-1.jsonl").write_text(
+        json.dumps(_episode("p1", 0, "改一下", "好", repo="proj")) + "\n", encoding="utf-8")
+    transcript = _write_raw_transcript(tmp_path, "sess-1", [
+        _user("p1", text="改一下", origin={"kind": "human"}),
+        _assistant(text="好"),
+    ])
+    _stub_find_transcript(monkeypatch, {"sess-1": transcript})
+    monkeypatch.setattr(hook_stop, "load_injections",
+                        lambda: {("sess-1", "p-gone"): ["c-1"]})
     assert doctor(episode_dir) == 1
+
+
+def test_doctor_tolerates_key_base_drift_between_hook_and_corpus(tmp_path, monkeypatch, capsys):
+    """兩邊 key 的正規化基準不同時，尾段吻合就算看到了。
+
+    實測形狀：hook 曾以絕對路徑末 3 段記下
+    `mind-door/ai-website/append-cards.js`，語料端是 `append-cards.js`。
+    hook 明明看到了那次編輯，純相等比對卻把它報成遺漏——歷史紀錄裡
+    這種 key 永遠修不回來，不吸收掉的話 doctor 永遠是紅的。
+    """
+    episode_dir = _touch_setup(
+        tmp_path, monkeypatch,
+        _touched_episode(["append-cards.js"]),
+        [{"session_id": "sess-1", "prompt_id": "p1",
+          "file_key": "mind-door/ai-website/append-cards.js"}],
+    )
+    assert doctor(episode_dir) == 0
+    assert "漏看 0 輪" in capsys.readouterr().err
 
 
 def test_doctor_is_quiet_when_the_hook_saw_everything(tmp_path, monkeypatch):

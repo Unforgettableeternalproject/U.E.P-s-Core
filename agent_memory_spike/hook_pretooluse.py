@@ -254,7 +254,19 @@ def run(payload: dict[str, Any], *, dry_run: bool = False) -> dict[str, Any] | N
     # `file_key` 取末 3 段，於是兩邊永遠不相等——**hook 裡的檔案錨點完全失效**，
     # 只剩符號在起作用。A1 量觸發率時比對的兩邊都是語料裡的相對路徑，
     # 所以那組數字看不到這件事（同一型的錯：同名的量不一定是同一個量）。
-    key = file_key(normalize_path(target, repo_root(str(payload.get("cwd") or ""))))
+    #
+    # 基準要從**目標檔案本身**往上找，不能用 cwd：bash 會切目錄，實測某輪
+    # cwd 在 nested 子 repo 裡、目標卻在父 repo 的根目錄——目標不在
+    # `repo_root(cwd)` 底下，正規化整個不動作，key 變成絕對路徑的末 3 段
+    # （`mind-door/ai-website/append-2199-scss.js`），與語料端
+    # （`append-2199-scss.js`）永遠對不上。從目標往上找保證基準是它的祖先。
+    base = None
+    target_dir = os.path.dirname(target)
+    if target_dir:
+        base = repo_root(target_dir)
+    if base is None and payload.get("cwd"):
+        base = repo_root(str(payload.get("cwd")))
+    key = file_key(normalize_path(target, base))
     if key:
         touched.add(key)
         if not dry_run:

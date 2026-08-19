@@ -2,9 +2,13 @@
 # 使用 IndexTTS Lite 引擎進行語音合成，支持情感控制
 
 # 模型路徑配置
-model_dir: "modules/tts_module/checkpoints"  # IndexTTS 模型目錄
+# ⚠️ 這三個鍵目前「不會被讀取」——實際路徑由 runtime 決定：
+#    echo_tts/runtime/indextts_generate.py::default_generation_paths()
+#    model_dir → checkpoints_v25、character → models/tts/uep_v25.pt
+#    保留僅為相容舊呼叫端（直接 new IndexTTSLite 且不傳 model_dir 者）。
+model_dir: "modules/tts_module/checkpoints_v25"  # IndexTTS 模型目錄（2.5）
 character_dir: "models/tts/"  # 角色特徵目錄 (.pt 文件)
-default_character: "uep"  # 預設角色名稱 (會加載 uep.pt)
+default_character: "uep_v25"  # 預設角色名稱 (會加載 uep_v25.pt)
 
 # 設備配置
 device: "cuda"  # 可選: "cuda", "cpu"
@@ -43,9 +47,12 @@ chunking:
   max_tokens: 150  # 每段最大 BPE tokens 數量 (🚀 已優化: 降低以減少 GPT 生成時間)
 
 # 情感配置
-# ⚠️ 以下數值由 IndexTTS 2.5 聽感測試定案（艾斯維爾 2026-08-19，
-#    experiments/v25_emotion_combos.py，參考音 slice_04）。2.0 引擎的染色特性
-#    比 2.5 敏感（2.0 時代邊界是 0.3），套用後若音色被蓋掉屬預期，往下調 max_strength 即可。
+# ⚠️⚠️ 本檔「不是」lite_engine 實際讀取的設定檔！
+#      runtime 走 checkpoints_v25/config.yaml（見 indextts_generate.py:43
+#      cfg_path = model_dir / "config.yaml"）。改這裡不會生效，
+#      要同步改 checkpoints_v25/config.yaml 的同名區段。
+# 數值由 IndexTTS 2.5 聽感測試定案（艾斯維爾 2026-08-19，
+#    experiments/v25_emotion_combos.py，參考音 slice_04）。
 emotion:
   max_strength: 0.65  # 情感向量總和目標。0.65 為聽感甜蜜點，可用區間 0.57 ~ 0.73
   default: null  # 預設情感向量 (null = 使用角色原聲，也可設置為 8D 列表)
@@ -80,14 +87,7 @@ synthesis:
   cfm_inference_cfg_rate: 0.7  # CFM style conditioning 強度 (0.5~0.9)
 
 # 文本層情緒標記 (第二層：修改輸入文本增強情緒)
-emotion_text_markers:
-  enabled: true                  # 啟用文本層情緒標記
-  activation_threshold: 0.10     # 主導情緒低於此值時不修改文本
-  prefix_probability: 0.7        # 插入句首語氣詞的機率
-  mid_probability: 0.3           # 插入句中停頓/語氣詞的機率
-  suffix_probability: 0.5        # 插入句末語氣詞的機率
-
-# 情緒動態調控 (第三層：推論參數隨情緒自動變化)
+# 情緒動態調控 (推論參數隨情緒自動變化)
 emotion_dynamics:
   enabled: true                  # 啟用情緒驅動的參數動態調控
   activation_threshold: 0.05     # 情緒總強度低於此值時不調控
@@ -95,8 +95,13 @@ emotion_dynamics:
 
 # 呼吸法 Poise (長文自然度增強)
 poise:
-  enabled: true                  # 預設關閉，避免意外影響現有行為
-  potency: 0.3                   # 強度 0.0-1.0 (越高 → 越可能出現銜接詞/插入語)
+  enabled: true                  # 啟用呼吸法
+  max_level: 1                   # 休息層級上限：0=靜音 1=呼吸「......」
+                                 # 2=輕量銜接詞 3=敘事插入 4=動作描述
+                                 # 2026-08-19 定案：封在 1，不插入任何銜接詞
+                                 # （2.5 的模型原生副語言表現已足夠，「嗯...」
+                                 #   「等一下喔...」這類短文字反而出戲）
+  potency: 0.3                   # 強度 0.0-1.0 (在 max_level 之下決定層級與時長)
   count: 6.0                     # 基礎觸發間隔 (每 N 段觸發一次休息)
   count_jitter: 0.3              # 觸發間隔隨機抖動 (0.0-1.0)
   min_segments_to_trigger: 3     # 段落總數 ≤ 此值時不觸發

@@ -28,6 +28,11 @@ class PoiseConfig:
         potency_jitter: 層級選擇的隨機抖動（±1 層的機率權重）
         emotion_correction_enabled: 是否在休息段執行情緒向量校正
         sfx_dir: 音效素材目錄路徑（None = 跳過音效，fallback 到靜音）
+        max_level: 允許的最高休息層級（整數，見 PoiseLevel）。
+                   預設 1 = BREATH，即只用靜音與「......」嘆氣，
+                   不插入任何銜接詞（艾斯維爾 2026-08-19：2.5 下這些
+                   短文字沒有實益，模型原生副語言表現已足夠）。
+                   要恢復銜接詞把它設成 4（ACTION）。
     """
     enabled: bool = False
     potency: float = 0.3
@@ -38,6 +43,7 @@ class PoiseConfig:
     potency_jitter: float = 0.3
     emotion_correction_enabled: bool = True
     sfx_dir: Optional[str] = None
+    max_level: int = 1  # PoiseLevel.BREATH
 
     def __post_init__(self):
         """Validate and clamp values."""
@@ -47,6 +53,7 @@ class PoiseConfig:
         self.min_segments_to_trigger = max(3, self.min_segments_to_trigger)
         self.min_accumulation = max(2, self.min_accumulation)
         self.potency_jitter = max(0.0, min(1.0, self.potency_jitter))
+        self.max_level = max(0, min(4, int(self.max_level)))
 
     @property
     def sfx_path(self) -> Optional[Path]:
@@ -109,4 +116,5 @@ def create_poise_config(config: dict) -> PoiseConfig:
         potency_jitter=float(cfg.get('potency_jitter', 0.3)),
         emotion_correction_enabled=cfg.get('emotion_correction_enabled', True),
         sfx_dir=cfg.get('sfx_dir', None),
+        max_level=int(cfg.get('max_level', 1)),
     )

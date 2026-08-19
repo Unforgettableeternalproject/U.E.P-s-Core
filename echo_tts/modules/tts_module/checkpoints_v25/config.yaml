@@ -116,9 +116,34 @@ vocoder:
     type: "bigvgan"
     name: "nvidia/bigvgan_v2_22khz_80band_256x"
 
+# ─── 情感控制（echo_tts 自訂區段）───
+# ⚠️ lite_engine 讀的是本檔。modules/tts_module/config.yaml 的同名區段
+#    不會生效，改那邊沒有用——兩邊要同步。
+# 數值由 2.5 聽感盲測定案（艾斯維爾 2026-08-19）：
+#   甜蜜點 0.65，可用區間 0.57 ~ 0.73
+emotion:
+  max_strength: 0.65   # 情感向量總和目標
+  default: null        # 預設情感向量 (null = 角色原聲)
+
+  # 只保留 calm 一項 bias。上游原值為
+  # [0.9375, 0.875, 1.0, 1.0, 0.9375, 0.9375, 0.6875, 0.5625]，
+  # 但實測其餘七維在同總和下齊平即可，套 bias 反而讓強度分級對不齊。
+  # [happy, angry, sad, afraid, disgusted, melancholic, surprised, calm]
+  emo_bias: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.5625]
+  emo_bias_cap: 0.65
+
+  merge_alpha: 1.0     # merge_emovec 融合強度
+
+  # 語言別情感增益。2.5 定案後日文不再需要 1.3x 補償
+  # （0.65 是「最終總和」定義，日文梯度 0.57/0.65/0.73 與中英同值即通過）。
+  lang_gain: {}
+
 # ─── Poise breathing system（echo_tts 自訂區段，同 2.0 設定）───
 poise:
   enabled: true
+  max_level: 1                   # 休息層級上限：0=靜音 1=呼吸「......」
+                                 # 2=輕量銜接詞 3=敘事插入 4=動作描述
+                                 # 2026-08-19 定案：封在 1，不插入任何銜接詞
   potency: 0.45
   count: 5.0
   count_jitter: 0.3

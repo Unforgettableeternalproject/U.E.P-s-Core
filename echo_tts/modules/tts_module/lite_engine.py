@@ -901,7 +901,9 @@ class IndexTTSLite:
                 debug_log(3, f"      ⚠️  術語詞彙表未找到: {abs_glossary}")
 
         self.tokenizer = get_tokenizer(multilingual=True, model_dir=self.model_dir)
-        self.ja_text_process = JapaneseG2PProcessor(g2p_ratio=0)
+        # 日語 G2P 惰性初始化：僅在 language='ja' 時載入，
+        # 避免中英合成因缺 fugashi/MeCab 而無法啟動
+        self._ja_text_process = None
         self._init_timings["text_processor_ms"] = (time.perf_counter() - _t0) * 1000
         debug_log(3, f"      ✓ 文本處理器和 tiktoken 多語言模型加載完成")
     
@@ -1421,7 +1423,10 @@ class IndexTTSLite:
             if verbose:
                 debug_log(3, f"   🎭 emo_bias 套用後: {[f'{v:.3f}' for v in emotion_vector]}, sum={sum(emotion_vector):.3f}")
 
-        # 語言別情感增益（2.5：訓練語料日文佔比低，情感表演幅度偏弱，盲測定案 ja=1.3）
+        # 語言別情感增益（2.5：訓練語料日文佔比低，情感表演幅度偏弱）
+        # 契約：lang_gain 縮放「使用者要求的原始強度」，emo_bias / max_strength
+        # 仍在其後作為全域護欄套用。盲測校準 0.5→0.65 是在無 bias 的上游路徑量測，
+        # 本管線的有效值為 0.5 × bias × 1.3（例：bias 0.9375 時 ≈ 0.609），屬可接受近似。
         _lang_gain_cfg = self.cfg.get('emotion', {}).get('lang_gain', {}) or {}
         _lang_gain = float(_lang_gain_cfg.get(language, 1.0)) if _lang_gain_cfg else (1.3 if language == 'ja' else 1.0)
         if _lang_gain != 1.0 and any(v > 0 for v in emotion_vector):
@@ -1493,7 +1498,9 @@ class IndexTTSLite:
             text = apply_lang_case_rules(text, _lang_code)
             text = apply_pronunciation_annotations(text)
             if _lang_code == 'JA':
-                text = self.ja_text_process.process_ja_text(text)
+                if self._ja_text_process is None:
+                    self._ja_text_process = JapaneseG2PProcessor(g2p_ratio=0)
+                text = self._ja_text_process.process_ja_text(text)
 
             # Language-aware semantic pre-segmentation (before token packing)
             if language == 'zh':

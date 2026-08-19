@@ -9,7 +9,7 @@
   "emotion_baseline": {
     "max_reference": "happy 0.5 / emo_alpha 1.0",
     "ja_emotion_scale": 1.3,
-    "note": "日文情感向量需乘 1.3 增益（0.5→0.65），盲測驗證無負評；LoRA（gpt_best）留用，lora 9 勝 / base 4 勝 / 5 平"
+    "note": "日文情感向量乘 1.3 增益，盲測校準 0.5→0.65 為無 bias 的上游路徑量測值；lite_engine 內 emo_bias 仍會套用，有效值 ≈ 0.609，屬可接受近似（契約見 lite_engine 語言增益註解）。LoRA（gpt_best）留用，lora 9 勝 / base 4 勝 / 5 平"
   },
   "notes": "上游 infer_v2_5 只取參考音前 15 秒；本資產已預先裁切完成。原 2.0 資產 sample_prompt.wav 佚失之教訓：來源與裁切位置必須記錄於此檔。"
 }

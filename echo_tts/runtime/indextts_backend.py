@@ -15,7 +15,8 @@ class IndexTTS2Backend:
 
     # Default LoRA adapter path (relative to project root)
     # 支援 adapter 目錄（PEFT 格式）或舊版 .pth checkpoint（向後相容）
-    DEFAULT_LORA_CHECKPOINT = "experiments/index-tts-lora/finetune_models/checkpoints/gpt_best"
+    # 2026-08-19: adapter 自 experiments/index-tts-lora 搬遷至 echo_tts/models/lora
+    DEFAULT_LORA_CHECKPOINT = "echo_tts/models/lora/gpt_best"
     DEFAULT_LORA_SCALE = 0.85
 
     def __init__(
@@ -68,11 +69,14 @@ class IndexTTS2Backend:
         text: str,
         output_path: str | Path,
         on_segment_audio=None,
-        language: str = "en",
+        language: str | None = None,
         emotion_overrides: dict | None = None,
     ) -> Path:
         if not text.strip():
             raise ValueError("text must not be empty")
+        if language is None:
+            from echo_tts.runtime.indextts_generate import detect_language
+            language = detect_language(text)
 
         self.load()
         output = Path(output_path)

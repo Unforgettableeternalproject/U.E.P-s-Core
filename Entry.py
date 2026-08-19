@@ -305,12 +305,12 @@ def render_profile_panel(report: ProfileReport) -> Panel:
 def auto_translate(text: str, session: TTSInteractiveSession) -> str:
     """自動偵測語言並路由。
 
-    - 支援語言 (zh/en) → 自動切換 session language，原文直接通過
+    - 支援語言（SUPPORTED_LANGUAGES：zh/en/ja）→ 自動切換 session language，原文直接通過
     - 不支援語言 → 翻譯成當前 session language
     """
     detected = _detect_language(text)
 
-    if detected in ("zh", "en"):
+    if detected in SUPPORTED_LANGUAGES:
         current = session.get_language()
         if detected != current:
             session.set_language(detected)

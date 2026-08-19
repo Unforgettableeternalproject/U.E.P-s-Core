@@ -14,28 +14,34 @@ from echo_tts.config.emotion_presets import (
 EMOTION_PRESETS = load_presets()
 
 # --- Language support ---
-SUPPORTED_LANGUAGES = {"en": "English", "zh": "Chinese"}
+# IndexTTS 2.5 原生支援日語（lang embedding + fugashi G2P），shell 直通不翻譯
+SUPPORTED_LANGUAGES = {"en": "English", "zh": "Chinese", "ja": "Japanese"}
 
 
 def _detect_language(text: str) -> str:
-    """Detect text language: 'zh', 'en', or 'other'.
+    """Detect text language: 'zh', 'en', 'ja', or 'other'.
 
     Heuristic rules:
+    - Japanese kana > 10% -> 'ja' (must check BEFORE CJK ratio:
+      Japanese text mixes kanji, kanji-ratio alone would misdetect 'zh')
     - CJK chars (Unified Ideographs) > 30% -> 'zh'
-    - Japanese kana / Korean detected -> 'other'
+    - Korean detected -> 'other'
     - Latin alphabet dominant -> 'en'
     - Non-Latin scripts (Cyrillic, Arabic, Thai, etc.) -> 'other'
+
+    Note: pure-kanji Japanese (no kana) is indistinguishable from Chinese
+    by this heuristic and will detect as 'zh'.
     """
     if not text or not text.strip():
         return "en"
     total = max(len(text.strip()), 1)
+    # Check for Japanese kana FIRST — kanji-heavy Japanese would trip the CJK check
+    kana = sum(1 for c in text if '぀' <= c <= 'ヿ' or 'ㇰ' <= c <= 'ㇿ')
+    if kana / total > 0.1:
+        return "ja"
     cjk = sum(1 for c in text if '一' <= c <= '鿿' or '㐀' <= c <= '䶿')
     if cjk / total > 0.3:
         return "zh"
-    # Check for Japanese kana
-    kana = sum(1 for c in text if '぀' <= c <= 'ヿ' or 'ㇰ' <= c <= 'ㇿ')
-    if kana / total > 0.1:
-        return "other"
     # Check for Korean
     hangul = sum(1 for c in text if '가' <= c <= '힯' or 'ᄀ' <= c <= 'ᇿ')
     if hangul / total > 0.1:
@@ -52,18 +58,12 @@ def _translate_text(text: str, target_lang: str, source_lang: str = "auto") -> s
 
     Args:
         text: Text to translate
-        target_lang: Target language code ('en' or 'zh')
+        target_lang: Target language code ('en', 'zh', or 'ja')
         source_lang: Source language code, or 'auto' for auto-detect
     """
-    tgt_code = "en" if target_lang == "en" else "zh-CN"
-    if source_lang == "auto":
-        src_code = "auto"
-    elif source_lang == "zh":
-        src_code = "zh-CN"
-    elif source_lang == "en":
-        src_code = "en"
-    else:
-        src_code = "auto"  # unknown source -> let Google detect
+    _code_map = {"en": "en", "zh": "zh-CN", "ja": "ja"}
+    tgt_code = _code_map.get(target_lang, "zh-CN")
+    src_code = _code_map.get(source_lang, "auto")
 
     try:
         from deep_translator import GoogleTranslator
@@ -72,7 +72,7 @@ def _translate_text(text: str, target_lang: str, source_lang: str = "auto") -> s
     except ImportError:
         try:
             from googletrans import Translator
-            tgt = "en" if target_lang == "en" else "zh-cn"
+            tgt = {"en": "en", "ja": "ja"}.get(target_lang, "zh-cn")
             result = Translator().translate(text, dest=tgt).text
             return result
         except ImportError:

@@ -63,3 +63,22 @@ def test_backend_respects_explicit_language(tmp_path):
 
     call = captured["engine"].synthesize_calls[0]
     assert call["language"] == "ja"
+
+
+def test_cli_detect_language_japanese():
+    """Shell 層語言偵測：假名優先於 CJK 比例，日文不再被判成 other/zh。
+
+    2.5 原生支援日語——shell 偵測到 ja 應直通合成，而非機器翻譯。
+    """
+    from echo_tts.cli.interactive import _detect_language, SUPPORTED_LANGUAGES
+
+    assert "ja" in SUPPORTED_LANGUAGES
+    # 假名為主的句子
+    assert _detect_language("ほら、やっぱり成功したじゃない！") == "ja"
+    # 漢字+假名混合（假名 > 10% 即應判 ja，不被 CJK 比例搶走）
+    assert _detect_language("信じてくれなかったくせに、もう！") == "ja"
+    # 純中文與英文不受影響
+    assert _detect_language("今天的天氣真的很不錯。") == "zh"
+    assert _detect_language("The weather is nice today.") == "en"
+    # 韓文仍為 other（引擎不支援）
+    assert _detect_language("안녕하세요 오늘 날씨가 좋네요") == "other"

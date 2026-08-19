@@ -1499,7 +1499,12 @@ class IndexTTSLite:
                 # 我們的 normalize 一條龍：t2s / 引號停頓 / glossary / 數字正規化
                 text = self.text_normalizer.normalize(text)
             else:
-                # ja/es 走上游 NeMo 正規化，避免 OpenCC t2s 誤傷日文漢字
+                # ja/es 走上游 NeMo 正規化，避免 OpenCC t2s 誤傷日文漢字。
+                # 標點西化必須先做（上游 infer_v2_5 在進語言分支前套 char_rep_map）：
+                # 模型以西式標點訓練，日文標點（。、）對 GPT 是罕見 token，
+                # 實測會被模型唸成無意義音節（Whisper 轉寫證實：雪エク/シンジュウ），
+                # 且 codes 膨脹 40-60%（2026-08-19 上游比對定案）
+                text = self.text_normalizer.apply_char_rep_map(text)
                 text = nemo_text_normalize(text, _lang_code.lower())
 
             text = apply_lang_case_rules(text, _lang_code)

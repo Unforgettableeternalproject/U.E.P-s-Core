@@ -57,4 +57,5 @@ experiments/breezyvoice_test/G2PWModel/
 experiments/breezyvoice_test/*.wav
 experiments/lora_training_data/
 # index-tts-lora: local-only training, not published
-experiments/index-tts-lora/
+experiments/index-tts-lora//echo_tts/modules/tts_module/checkpoints_v25/
+!/echo_tts/assets/reference/*.wav

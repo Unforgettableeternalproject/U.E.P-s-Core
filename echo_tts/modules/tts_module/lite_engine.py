@@ -39,8 +39,11 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
 from omegaconf import OmegaConf
-from huggingface_hub import hf_hub_download
-import safetensors
+
+# transformers 4.48+ 已移除此符號，vendored GPT2 程式碼仍會 import（2.5 遷移規格）
+import transformers.pytorch_utils as _pu
+if not hasattr(_pu, "is_torch_greater_or_equal_than_1_13"):
+    _pu.is_torch_greater_or_equal_than_1_13 = True
 
 # 導入系統日誌工具
 try:
@@ -61,8 +64,14 @@ if __name__ == "__main__":
 try:
     # 嘗試相對導入
     from .gpt.model_v2 import UnifiedVoice
-    from .tts_utils.maskgct_utils import build_semantic_model, build_semantic_codec
-    from .tts_utils.front import TextNormalizer, TextTokenizer
+    from .codec.models import EnhancedCodec
+    from .tts_utils.front import TextNormalizer
+    from .tts_utils.tokenizer_v25 import get_tokenizer, lang_to_token
+    from .tts_utils.text_v25 import (
+        apply_pronunciation_annotations, apply_lang_case_rules, split_text_by_token_budget,
+    )
+    from .tts_utils.ja_g2p import JapaneseG2PProcessor
+    from .tts_utils.nemo_tn import normalize_text as nemo_text_normalize
     from .tts_utils.gpt_length import calc_dynamic_max_generate_length
     from .tts_utils.chinese_segmenter import pre_segment_chinese
     from .tts_utils.english_segmenter import pre_segment_english
@@ -76,8 +85,14 @@ try:
 except ImportError:
     # 回退到絕對導入
     from gpt.model_v2 import UnifiedVoice
-    from tts_utils.maskgct_utils import build_semantic_model, build_semantic_codec
-    from tts_utils.front import TextNormalizer, TextTokenizer
+    from codec.models import EnhancedCodec
+    from tts_utils.front import TextNormalizer
+    from tts_utils.tokenizer_v25 import get_tokenizer, lang_to_token
+    from tts_utils.text_v25 import (
+        apply_pronunciation_annotations, apply_lang_case_rules, split_text_by_token_budget,
+    )
+    from tts_utils.ja_g2p import JapaneseG2PProcessor
+    from tts_utils.nemo_tn import normalize_text as nemo_text_normalize
     from tts_utils.gpt_length import calc_dynamic_max_generate_length
     from tts_utils.chinese_segmenter import pre_segment_chinese
     from tts_utils.english_segmenter import pre_segment_english
@@ -727,6 +742,8 @@ class IndexTTSLite:
         # 使用字典展開來傳遞所有 GPT 配置參數(包括嵌套的 condition_module 等)
         gpt_kwargs = dict(self.cfg.gpt)
         gpt_kwargs['use_accel'] = self.use_accel
+        # 2.5 架構：speaker conditioning 改用 CAMPPlus embedding
+        gpt_kwargs['spk_cond_mode'] = 'campplus'
         self.gpt = UnifiedVoice(**gpt_kwargs).to(self.device)
 
         self.gpt.load_state_dict(torch.load(gpt_path, map_location=self.device, weights_only=True))
@@ -754,12 +771,23 @@ class IndexTTSLite:
         self._init_timings["gpt_ms"] = (time.perf_counter() - _t0) * 1000
         debug_log(3, f"      ✓ GPT 加載完成: {gpt_path}")
 
-        # 2. Semantic Codec (用於 GPT 輸出解碼)
-        debug_log(2, "   [2/4] 加載 Semantic Codec...")
+        # 2. Semantic Codec — 2.5 EnhancedCodec（25Hz，checkpoint 隨模型發布）
+        debug_log(2, "   [2/4] 加載 Semantic Codec (EnhancedCodec)...")
         _t0 = time.perf_counter()
-        semantic_codec = build_semantic_codec(self.cfg.semantic_codec)
-        semantic_code_ckpt = hf_hub_download("amphion/MaskGCT", filename="semantic_codec/model.safetensors")
-        safetensors.torch.load_model(semantic_codec, semantic_code_ckpt)
+        # 注意：omegaconf 2.0.x 對缺失鍵回傳 None 而非 raise，
+        # 不可傳 cfg= 讓 EnhancedCodec 自行 hasattr 探測，改為明確參數展開
+        _codec_cfg = dict(self.cfg.semantic_codec)
+        semantic_codec = EnhancedCodec(
+            codebook_size=int(_codec_cfg.get('codebook_size', 8192)),
+            hidden_size=int(_codec_cfg.get('hidden_size', 1024)),
+            codebook_dim=int(_codec_cfg.get('codebook_dim', 8)),
+            vocos_dim=int(_codec_cfg.get('vocos_dim', 384)),
+            vocos_intermediate_dim=int(_codec_cfg.get('vocos_intermediate_dim', 2048)),
+            vocos_num_layers=int(_codec_cfg.get('vocos_num_layers', 12)),
+            num_quantizers=int(_codec_cfg.get('num_quantizers') or 1),
+            downsample_scale=int(_codec_cfg.get('downsample_scale') or 2),
+        )
+        semantic_codec.load_checkpoint(os.path.join(self.model_dir, "codec.pth"))
         self.semantic_codec = semantic_codec.to(self.device)
         self.semantic_codec.eval()
         self._init_timings["semantic_codec_ms"] = (time.perf_counter() - _t0) * 1000
@@ -769,8 +797,9 @@ class IndexTTSLite:
         debug_log(2, "   [3/4] 加載 S2Mel 模型...")
         _t0 = time.perf_counter()
         s2mel_path = os.path.join(self.model_dir, self.cfg.s2mel_checkpoint)
-        s2mel = MyModel(self.cfg.s2mel, use_gpt_latent=True)
-        s2mel, _, _, _ = load_checkpoint2(s2mel, None, s2mel_path)
+        # 2.5 架構：S2Mel 不再使用 GPT latent（新 checkpoint 無 gpt_layer 權重）
+        s2mel = MyModel(self.cfg.s2mel)
+        s2mel, _, _, _ = load_checkpoint2(s2mel, None, s2mel_path, load_only_params=True)
         self.s2mel = s2mel.to(self.device)
         # 初始化 GPT-Fast cache (參考 infer_v2.py line 139)
         self.s2mel.models['cfm'].estimator.setup_caches(max_batch_size=1, max_seq_length=8192)
@@ -815,6 +844,10 @@ class IndexTTSLite:
         debug_log(2, "   [4/4] 加載 BigVGAN Vocoder...")
         _t0 = time.perf_counter()
         bigvgan_name = self.cfg.vocoder.name
+        # 優先使用模型目錄內的本地 cache（上游 2.5 佈局），避免重複下載
+        _local_bigvgan = os.path.join(self.model_dir, "hf_cache", "bigvgan")
+        if os.path.isdir(_local_bigvgan):
+            bigvgan_name = _local_bigvgan
         self.bigvgan = bigvgan.BigVGAN.from_pretrained(bigvgan_name, use_cuda_kernel=self.use_cuda_kernel)
         self.bigvgan = self.bigvgan.to(self.device)
         self.bigvgan.remove_weight_norm()
@@ -848,10 +881,9 @@ class IndexTTSLite:
         self._init_timings["emo_matrix_ms"] = (time.perf_counter() - _t0) * 1000
         debug_log(3, f"      ✓ 矩陣加載完成: {self.cfg.emo_matrix}, {self.cfg.spk_matrix}")
 
-        # 6. 文本標準化器和 BPE Tokenizer (參考 infer_v2.py line 159-162)
+        # 6. 文本標準化器 + 2.5 tiktoken 多語言 Tokenizer (參考 infer_v2_5.py)
         debug_log(2, "   [6/6] 加載文本處理...")
         _t0 = time.perf_counter()
-        bpe_path = os.path.join(self.model_dir, self.cfg.dataset["bpe_model"])
         # Glossary: 從 config 讀取是否啟用、以及 glossary 檔案路徑
         _text_cfg = self.cfg.get('text_processing', {})
         _enable_glossary = _text_cfg.get('enable_glossary', False)
@@ -868,9 +900,10 @@ class IndexTTSLite:
             else:
                 debug_log(3, f"      ⚠️  術語詞彙表未找到: {abs_glossary}")
 
-        self.tokenizer = TextTokenizer(bpe_path, self.text_normalizer)
+        self.tokenizer = get_tokenizer(multilingual=True, model_dir=self.model_dir)
+        self.ja_text_process = JapaneseG2PProcessor(g2p_ratio=0)
         self._init_timings["text_processor_ms"] = (time.perf_counter() - _t0) * 1000
-        debug_log(3, f"      ✓ 文本處理器和 BPE 模型加載完成: {bpe_path}")
+        debug_log(3, f"      ✓ 文本處理器和 tiktoken 多語言模型加載完成")
     
     def load_character(self, character_path: Union[str, Path], verbose: bool = True):
         """
@@ -1388,7 +1421,15 @@ class IndexTTSLite:
             if verbose:
                 debug_log(3, f"   🎭 emo_bias 套用後: {[f'{v:.3f}' for v in emotion_vector]}, sum={sum(emotion_vector):.3f}")
 
-        # 歸一化情感向量
+        # 語言別情感增益（2.5：訓練語料日文佔比低，情感表演幅度偏弱，盲測定案 ja=1.3）
+        _lang_gain_cfg = self.cfg.get('emotion', {}).get('lang_gain', {}) or {}
+        _lang_gain = float(_lang_gain_cfg.get(language, 1.0)) if _lang_gain_cfg else (1.3 if language == 'ja' else 1.0)
+        if _lang_gain != 1.0 and any(v > 0 for v in emotion_vector):
+            emotion_vector = [v * _lang_gain for v in emotion_vector]
+            if verbose:
+                debug_log(3, f"   🌐 語言情感增益 ({language}): ×{_lang_gain}")
+
+        # 歸一化情感向量（增益後仍受 max_strength 邊界保護）
         normalized_emotion = self.normalize_emotion_vector(emotion_vector, max_emotion_strength, verbose)
 
         # ── 情緒動態調控（第三層）──
@@ -1436,7 +1477,25 @@ class IndexTTSLite:
             if verbose and text != original_text:
                 debug_log(3, f"      🎭 情緒文本標記: \"{original_text}\" → \"{text}\"")
 
-            # Language-aware semantic pre-segmentation (before BPE tokenization)
+            # ── 2.5 語言解析與語言別正規化 ──
+            # engine language ('zh'/'en'/'ja'/...) → 上游 lang 代碼；lang prefix 佔用 token 預算
+            _lang_code = {'zh': 'ZH', 'en': 'EN', 'ja': 'JA', 'es': 'ES', 'ar': 'AR'}.get(language, 'ZH')
+            _lang_prefix = f'<|{_lang_code.lower()}|> '
+            self._active_lang_code = _lang_code  # 供 GPT 呼叫處建立 lang tensor
+
+            if _lang_code in ('ZH', 'EN'):
+                # 我們的 normalize 一條龍：t2s / 引號停頓 / glossary / 數字正規化
+                text = self.text_normalizer.normalize(text)
+            else:
+                # ja/es 走上游 NeMo 正規化，避免 OpenCC t2s 誤傷日文漢字
+                text = nemo_text_normalize(text, _lang_code.lower())
+
+            text = apply_lang_case_rules(text, _lang_code)
+            text = apply_pronunciation_annotations(text)
+            if _lang_code == 'JA':
+                text = self.ja_text_process.process_ja_text(text)
+
+            # Language-aware semantic pre-segmentation (before token packing)
             if language == 'zh':
                 _jieba_cfg = self.cfg.get('chunking', {}).get('jieba_segmentation', {})
                 sub_texts = pre_segment_chinese(text, _jieba_cfg)
@@ -1448,33 +1507,23 @@ class IndexTTSLite:
                 if len(sub_texts) > 1 and verbose:
                     debug_log(2, f"      🔤 pySBD 句子預切分: {len(sub_texts)} 段")
 
-            # Tokenize each sub-text independently, then split into segments
-            all_tokens: list = []
+            # ── 2.5 token 預算分段：segments 為文本字串，GPT 呼叫處再 encode ──
+            _capacity = self.gpt.text_pos_embedding.emb.num_embeddings
+            _tok_len = lambda t: len(self.tokenizer.encode(t, allowed_special='all'))
+            segments: list = []
             for sub_text in sub_texts:
-                all_tokens.extend(self.tokenizer.tokenize(sub_text))
+                segments.extend(split_text_by_token_budget(
+                    sub_text, _tok_len, max_text_tokens_per_segment, _capacity, _lang_prefix,
+                ))
 
-            segments = self.tokenizer.split_segments(
-                all_tokens,
-                max_text_tokens_per_segment=max_text_tokens_per_segment,
-                quick_streaming_tokens=quick_streaming_tokens,
-            )
-
-            # ── 混合語言段落拆分 ──
-            # Split segments at language boundaries so minority-language
-            # portions run through GPT independently, preventing accent
-            # contamination from the majority language's context.
-            # Threshold: >= 3 consecutive English words (in zh-dominant),
-            #            >= 3 consecutive CJK chars (in en-dominant).
-            segments = _apply_language_splitting(
-                segments,
-                dominant_lang=language,
-                min_en_words=3,
-                min_zh_chars=3,
-                verbose=verbose,
-            )
-
-            # UNK token 防線：移除 BPE 詞彙表中不存在的 tokens，防止 GPT 產生亂音
-            segments = self.tokenizer.sanitize_unk_tokens(segments, verbose=verbose)
+            # 首段快速串流：以較小預算重切首段，降低 first-audio latency
+            if quick_streaming_tokens > 0 and segments:
+                _quick = split_text_by_token_budget(
+                    segments[0], _tok_len, quick_streaming_tokens, _capacity, _lang_prefix,
+                )
+                segments = _quick + segments[1:]
+            # 2.5 tokenizer 為 tiktoken byte-level，無 UNK；混合語言由多語言詞表原生支援，
+            # 故移除 2.0 的 _apply_language_splitting 與 sanitize_unk_tokens 防線。
 
             num_segments = len(segments)
             if num_segments > 1 and verbose:
@@ -1598,10 +1647,12 @@ class IndexTTSLite:
                         if verbose:
                             debug_log(3, f"      💬 \"{plan_item.poise_text}\"")
 
-                        # Tokenize the filler text
-                        poise_tokens = self.tokenizer.tokenize(plan_item.poise_text)
-                        poise_token_ids = self.tokenizer.convert_tokens_to_ids(poise_tokens)
+                        # Tokenize the filler text（2.5：tiktoken + 語言前綴 + stop token）
+                        poise_token_ids = self.tokenizer.encode(
+                            _lang_prefix + plan_item.poise_text, allowed_special='all',
+                        )
                         poise_text_tensor = torch.tensor(poise_token_ids, dtype=torch.int32, device=self.device).unsqueeze(0)
+                        poise_text_tensor = torch.nn.functional.pad(poise_text_tensor, (0, 1), value=1)
 
                         # Compute emovec_mat for poise emotion (corrected toward neutral)
                         if plan_item.poise_emotion is not None:
@@ -1627,35 +1678,26 @@ class IndexTTSLite:
                                     pw_sum = torch.sum(torch.tensor(plan_item.poise_emotion or normalized_emotion, device=self.device))
                                     poise_emovec = poise_emo_mat + (1 - pw_sum) * poise_emovec
 
-                                poise_codes, poise_scl = self.gpt.inference_speech(
-                                    spk_cond_emb, poise_text_tensor, emo_cond_emb,
+                                poise_codes, _ = self.gpt.inference_speech(
+                                    spk_cond_emb, poise_text_tensor,
+                                    torch.LongTensor([lang_to_token(self._active_lang_code)]).to(self.device),
+                                    emo_cond_emb,
                                     cond_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
                                     emo_cond_lengths=torch.tensor([emo_cond_emb.shape[-1]], device=self.device),
                                     emo_vec=poise_emovec,
+                                    campplus_embedding=self.character_features['style'],
                                     num_return_sequences=1, num_beams=num_beams,
                                     do_sample=do_sample, temperature=temperature,
                                     top_p=top_p, top_k=top_k,
                                     length_penalty=length_penalty, repetition_penalty=repetition_penalty,
                                     max_generate_length=300,  # Fillers are short
                                 )
+                                # 2.5 架構：無 GPT latent forward 階段
 
-                                use_speed = torch.zeros(1, device=self.device).long()
-                                poise_latent = self.gpt(
-                                    poise_scl, poise_text_tensor,
-                                    torch.tensor([poise_text_tensor.shape[-1]], device=self.device),
-                                    poise_codes,
-                                    torch.tensor([poise_codes.shape[-1]], device=self.device),
-                                    spk_cond_emb,
-                                    cond_mel_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
-                                    emo_cond_mel_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
-                                    emo_vec=poise_emo_mat,
-                                    use_speed=use_speed
-                                )
-
-                        # Remove long silence from poise codes
+                        # 截斷 stop token（2.5 不做靜音 token 壓縮）
                         stop_mel_token = self.cfg.gpt.stop_mel_token
                         poise_codes, poise_code_lens = self._remove_long_silence(
-                            poise_codes, stop_mel_token, silent_token=52,
+                            poise_codes, stop_mel_token, silent_token=-1,
                             max_consecutive=30, keep_consecutive=10,
                         )
 
@@ -1663,13 +1705,11 @@ class IndexTTSLite:
                         with torch.no_grad():
                             dtype = None
                             with torch.amp.autocast(self.device.type, enabled=dtype is not None, dtype=dtype):
-                                poise_latent = self.s2mel.models['gpt_layer'](poise_latent)
-                                poise_S = self.semantic_codec.quantizer.vq2emb(poise_codes.unsqueeze(1)).transpose(1, 2)
-                                if poise_latent.shape[1] > poise_S.shape[1]:
-                                    poise_latent = poise_latent[:, :poise_S.shape[1], :]
-                                poise_S = poise_S + poise_latent
+                                poise_S = self.semantic_codec.decode(poise_codes)
                                 _poise_stretch = _dyn_overrides.segment_stretch(plan_idx, baseline=_dyn_stretch_ratio)
-                                poise_tgt_len = (poise_code_lens * _poise_stretch).long()
+                                poise_tgt_len = torch.LongTensor(
+                                    [int(poise_S.shape[1] * _poise_stretch)]
+                                ).to(self.device)
 
                             poise_cond = self.s2mel.models['length_regulator'](
                                 poise_S, ylens=poise_tgt_len, n_quantizers=3, f0=None
@@ -1720,29 +1760,25 @@ class IndexTTSLite:
 
                 if verbose and num_segments > 1:
                     debug_log(3, f"   ── 段落 {seg_idx + 1}/{num_segments} ──")
-                    # Show decoded segment text for debugging (decode back to readable text)
-                    try:
-                        seg_ids = self.tokenizer.convert_tokens_to_ids(seg_tokens)
-                        seg_preview = self.tokenizer.decode(seg_ids, do_lower_case=True)
-                    except Exception:
-                        seg_preview = "".join(seg_tokens).replace("▁", " ").strip()
-                    if len(seg_preview) > 100:
-                        seg_preview = seg_preview[:97] + "..."
+                    seg_preview = seg_tokens if len(seg_tokens) <= 100 else seg_tokens[:97] + "..."
                     debug_log(3, f"      📝 \"{seg_preview}\"")
 
-                text_tokens = self.tokenizer.convert_tokens_to_ids(seg_tokens)
-                text_tokens = torch.tensor(text_tokens, dtype=torch.int32, device=self.device).unsqueeze(0)
+                # 2.5：tiktoken encode（含語言前綴），尾端補 stop_text_token=1
+                _seg_ids = self.tokenizer.encode(_lang_prefix + seg_tokens, allowed_special='all')
+                text_tokens = torch.tensor(_seg_ids, dtype=torch.int32, device=self.device).unsqueeze(0)
+                text_tokens = torch.nn.functional.pad(text_tokens, (0, 1), value=1)
+                _seg_token_count = text_tokens.shape[-1]
 
                 # 計算動態 max_generate_length（基於本段 text token 數）
                 seg_max_gen_len = calc_dynamic_max_generate_length(
-                    num_text_tokens=len(seg_tokens),
+                    num_text_tokens=_seg_token_count,
                     cfg_max_mel_tokens=self.cfg.gpt.max_mel_tokens,
                     mel_per_token_ratio=_mel_per_token_ratio,
                     safety_margin=_safety_margin,
                     min_generate_length=_min_gen_len,
                 )
                 if verbose:
-                    debug_log(3, f"      📏 動態長度上限: {seg_max_gen_len} mel tokens (text tokens: {len(seg_tokens)})")
+                    debug_log(3, f"      📏 動態長度上限: {seg_max_gen_len} mel tokens (text tokens: {_seg_token_count})")
 
                 # 4. GPT 生成語義 tokens
                 if verbose:
@@ -1776,10 +1812,12 @@ class IndexTTSLite:
                         codes, speech_conditioning_latent = self.gpt.inference_speech(
                             spk_cond_emb,
                             text_tokens,
+                            torch.LongTensor([lang_to_token(self._active_lang_code)]).to(self.device),
                             emo_cond_emb,
                             cond_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
                             emo_cond_lengths=torch.tensor([emo_cond_emb.shape[-1]], device=self.device),
                             emo_vec=emovec,
+                            campplus_embedding=self.character_features['style'],
                             num_return_sequences=1,
                             num_beams=num_beams,
                             do_sample=do_sample,
@@ -1792,28 +1830,13 @@ class IndexTTSLite:
                         )
                         seg_gpt_semantic_ms += (time.perf_counter() - _seg_t) * 1000
                         _seg_t = time.perf_counter()
+                        # 2.5 架構：S2Mel 不再使用 GPT latent，移除 gpt forward 階段
 
-                        # GPT forward 獲取 latent
-                        use_speed = torch.zeros(1, device=self.device).long()
-                        latent = self.gpt(
-                            speech_conditioning_latent,
-                            text_tokens,
-                            torch.tensor([text_tokens.shape[-1]], device=self.device),
-                            codes,
-                            torch.tensor([codes.shape[-1]], device=self.device),
-                            spk_cond_emb,
-                            cond_mel_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
-                            emo_cond_mel_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
-                            emo_vec=seg_emovec_mat if adaptive_emotion else emovec_mat,
-                            use_speed=use_speed
-                        )
-                        seg_gpt_latent_ms += (time.perf_counter() - _seg_t) * 1000
-                        _seg_t = time.perf_counter()
-
-                # 找到實際的 code 長度 + 壓縮過長靜音 (參考 infer_v2.py)
+                # 截斷 stop token 之後的 codes（silent_token=-1 → 不做靜音壓縮，
+                # 2.5 codec 詞表不同，舊 silent_token=52 已無意義；上游 2.5 亦未壓縮）
                 stop_mel_token = self.cfg.gpt.stop_mel_token
                 codes, code_lens = self._remove_long_silence(
-                    codes, stop_mel_token, silent_token=52,
+                    codes, stop_mel_token, silent_token=-1,
                     max_consecutive=30, keep_consecutive=10,
                 )
 
@@ -1824,16 +1847,12 @@ class IndexTTSLite:
                 with torch.no_grad():
                     dtype = None
                     with torch.amp.autocast(self.device.type, enabled=dtype is not None, dtype=dtype):
-                        latent = self.s2mel.models['gpt_layer'](latent)
-                        S_infer = self.semantic_codec.quantizer.vq2emb(codes.unsqueeze(1))
-                        S_infer = S_infer.transpose(1, 2)
-
-                        if latent.shape[1] > S_infer.shape[1]:
-                            latent = latent[:, :S_infer.shape[1], :]
-
-                        S_infer = S_infer + latent
+                        # 2.5：EnhancedCodec.decode 內含升採樣（25Hz codes → 50Hz 等效特徵）
+                        S_infer = self.semantic_codec.decode(codes)
                         _seg_stretch = _dyn_overrides.segment_stretch(seg_idx, baseline=_dyn_stretch_ratio)
-                        target_lengths = (code_lens * _seg_stretch).long()
+                        target_lengths = torch.LongTensor(
+                            [int(S_infer.shape[1] * _seg_stretch)]
+                        ).to(self.device)
 
                     cond = self.s2mel.models['length_regulator'](
                         S_infer,
@@ -1874,7 +1893,7 @@ class IndexTTSLite:
                     anomaly_result = check_segment_anomaly(
                         audio_samples=seg_audio.shape[-1],
                         sample_rate=22050,
-                        num_text_tokens=len(seg_tokens),
+                        num_text_tokens=_seg_token_count,
                         gpt_gen_time_ms=_seg_gpt_time_ms,
                         max_audio_ratio=_max_audio_ratio,
                         max_segment_rtf=_max_segment_rtf,

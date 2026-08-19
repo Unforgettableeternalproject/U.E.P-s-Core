@@ -34,13 +34,14 @@ class GenerationPaths:
 def default_generation_paths(project_root: str | Path | None = None) -> GenerationPaths:
     root = Path(project_root or Path.cwd()).resolve()
     engine_root = root / "echo_tts"
-    model_dir = engine_root / "modules" / "tts_module" / "checkpoints"
+    # IndexTTS 2.5 遷移（2026-08-19）：模型目錄與角色特徵切換至 v25
+    model_dir = engine_root / "modules" / "tts_module" / "checkpoints_v25"
     return GenerationPaths(
         project_root=root,
         engine_root=engine_root,
         model_dir=model_dir,
         cfg_path=model_dir / "config.yaml",
-        character_path=engine_root / "models" / "tts" / "uep.pt",
+        character_path=engine_root / "models" / "tts" / "uep_v25.pt",
     )
 
 

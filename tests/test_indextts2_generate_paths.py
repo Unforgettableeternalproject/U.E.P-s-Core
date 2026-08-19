@@ -8,5 +8,7 @@ def test_default_generation_paths_point_to_copied_assets():
     paths = default_generation_paths(root)
 
     assert paths.cfg_path.name == "config.yaml"
-    assert paths.character_path.name == "uep.pt"
+    # IndexTTS 2.5 遷移後的預設資產
+    assert paths.model_dir.name == "checkpoints_v25"
+    assert paths.character_path.name == "uep_v25.pt"
     validate_generation_paths(paths)

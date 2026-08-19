@@ -598,6 +598,75 @@ def _extract_batch_flag(args: list[str]) -> tuple[bool, list[str]]:
     return False, args
 
 
+def _collect_multiline(delimiter: str = "EOF") -> str:
+    """在互動 shell 中收集多行輸入，直到遇到 delimiter 行。"""
+    lines: list[str] = []
+    console.print(f"  [dim]（多行輸入模式 — 輸入 '{delimiter}' 結束）[/]")
+    while True:
+        try:
+            line = input()
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n  [yellow]⚠ 輸入中斷[/]")
+            break
+        if line.strip() == delimiter:
+            break
+        lines.append(line)
+    text = "\n".join(lines)
+    if text:
+        console.print(f"  [dim]📝 已讀取 {len(lines)} 行，{len(text)} 字元[/]")
+    return text
+
+
+def _read_text_file(path: str) -> str:
+    """讀取文字檔內容。"""
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"找不到檔案: {path}")
+    if not p.is_file():
+        raise ValueError(f"不是檔案: {path}")
+    text = p.read_text(encoding="utf-8").strip()
+    if not text:
+        raise ValueError(f"檔案為空: {path}")
+    line_count = text.count("\n") + 1
+    console.print(f"  [dim]📄 已讀取 {p.name}（{line_count} 行，{len(text)} 字元）[/]")
+    return text
+
+
+def _resolve_text_input(args: list[str]) -> list[str]:
+    """處理 --file 和 <<DELIMITER 語法，回傳替換後的 args。
+
+    --file <path>  → 讀取檔案內容取代這兩個 token
+    <<DELIMITER    → 進入多行輸入模式，收集到 DELIMITER 為止
+    <<             → 同上，DELIMITER 預設為 EOF
+    """
+    resolved: list[str] = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+
+        if arg == "--file":
+            if i + 1 >= len(args):
+                raise ValueError("--file 需要指定檔案路徑")
+            text = _read_text_file(args[i + 1])
+            resolved.append(text)
+            i += 2
+            continue
+
+        if arg.startswith("<<"):
+            delimiter = arg[2:].strip() or "EOF"
+            text = _collect_multiline(delimiter)
+            if not text:
+                raise ValueError("多行輸入為空")
+            resolved.append(text)
+            i += 1
+            continue
+
+        resolved.append(arg)
+        i += 1
+
+    return resolved
+
+
 def _cmd_emotion_batch(
     session: TTSInteractiveSession,
     text: str,
@@ -769,6 +838,8 @@ class EchoTTSCLI:
             ("say <text>", "🔊 Generate and play (streaming)", "green"),
             ("save [--output f] <text>", "💾 Generate and save (auto-name or specified)", "green"),
             ("say/save --batch <text>", "🎭 Generate all emotion presets at once", "green"),
+            ("say/save --file <path>", "📄 Read text from file", "green"),
+            ("say/save <<[MARKER]", "📝 Multiline input (default: EOF)", "green"),
             ("profile <text>", "⏱  Synthesis with timing report", "green"),
             ("", "", ""),
             ("emotion", "🎭 Show/set emotion preset or 8D vector", "magenta"),
@@ -872,6 +943,7 @@ class EchoTTSCLI:
             try:
                 match verb:
                     case "say" | "s":
+                        args = _resolve_text_input(args)
                         batch, remaining = _extract_batch_flag(args)
                         text = _parse_text_args(remaining, command_name="say")
                         if batch:
@@ -881,6 +953,7 @@ class EchoTTSCLI:
                             _cmd_say(self.session, text)
 
                     case "save":
+                        args = _resolve_text_input(args)
                         batch, remaining = _extract_batch_flag(args)
                         if batch:
                             text, output = _parse_save_args(remaining)
@@ -890,6 +963,7 @@ class EchoTTSCLI:
                             _cmd_save(self.session, remaining)
 
                     case "profile" | "p":
+                        args = _resolve_text_input(args)
                         text = _parse_text_args(args, command_name="profile")
                         _cmd_profile(self.session, text)
 
@@ -1090,7 +1164,9 @@ def main() -> int:
     bench.add_argument("--text", default="Hello from the TTS experiment project.")
 
     gen = subparsers.add_parser("generate", help="Generate speech through IndexTTS2 engine")
-    gen.add_argument("--text", required=True)
+    gen_text = gen.add_mutually_exclusive_group(required=True)
+    gen_text.add_argument("--text", help="Text to synthesize")
+    gen_text.add_argument("--file", help="Read text from .txt file")
     gen.add_argument("--output", default="outputs/tts/generated.wav")
     gen.add_argument("--device", default="cuda")
     gen.add_argument("--no-fp16", action="store_true")
@@ -1106,7 +1182,9 @@ def main() -> int:
                            help="8D emotion vector (0.0-1.0 each)")
 
     profile_cmd = subparsers.add_parser("profile", help="Run profiled synthesis with stage-level timing")
-    profile_cmd.add_argument("--text", required=True, help="Text to synthesize")
+    prof_text = profile_cmd.add_mutually_exclusive_group(required=True)
+    prof_text.add_argument("--text", help="Text to synthesize")
+    prof_text.add_argument("--file", help="Read text from .txt file")
     profile_cmd.add_argument("--device", default="cuda")
     profile_cmd.add_argument("--no-fp16", action="store_true")
     profile_cmd.add_argument("--no-cuda-kernel", action="store_true")
@@ -1143,16 +1221,18 @@ def main() -> int:
     if args.command == "benchmark":
         return benchmark(args.text)
     if args.command == "generate":
+        text = args.text if args.text else _read_text_file(args.file)
         return generate(
-            text=args.text,
+            text=text,
             output=args.output,
             device=args.device,
             use_fp16=not args.no_fp16,
             use_cuda_kernel=not args.no_cuda_kernel,
         )
     if args.command == "profile":
+        text = args.text if args.text else _read_text_file(args.file)
         return run_profile(
-            text=args.text,
+            text=text,
             device=args.device,
             use_fp16=not args.no_fp16,
             use_cuda_kernel=not args.no_cuda_kernel,

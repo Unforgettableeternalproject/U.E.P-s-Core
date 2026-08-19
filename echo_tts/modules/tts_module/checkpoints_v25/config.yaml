@@ -141,5 +141,8 @@ advanced_optimization:
   enable_warmup: true
   warmup_text: "你好，這是預熱測試。"
   warmup_iterations: 1
+  # cuDNN benchmark 逐 shape 搜尋演算法（每個新 mel 長度 ~1-1.3s），
+  # TTS 段落長度永遠不同 → 每段都在付搜尋稅（BigVGAN 曾因此 4.0s → 關閉後 0.25s）
+  cudnn_benchmark: false
 
 version: 2.5

@@ -581,7 +581,10 @@ class IndexTTSLite:
         if self._sm_120 and _raw_use_compile:
             debug_log(1, "   ⚠️  偵測到 sm_120 (Blackwell) — torch.compile 僅對 GPT 啟用，S2Mel/BigVGAN 跳過")
         self.use_torch_compile = _raw_use_compile
-        self.cudnn_benchmark = adv_opt.get('cudnn_benchmark', True)
+        # cudnn.benchmark 對每個新 conv shape 做演算法搜尋（實測 RTX 5070 Ti 每個
+        # 新 mel 長度 ~1-1.3s）。TTS 每段 mel 長度都不同、搜尋結果永遠用不到第二次，
+        # 此工作負載下是純負資產（2026-08-19 實測：BigVGAN 4.0s → 0.25s）。預設關閉。
+        self.cudnn_benchmark = adv_opt.get('cudnn_benchmark', False)
         
         # SDPA (Scaled Dot Product Attention) 配置
         self.use_sdpa = adv_opt.get('use_sdpa', True)
@@ -1582,6 +1585,10 @@ class IndexTTSLite:
             emo_cond_emb = spk_cond_emb
 
             # --- 分段循環：每段獨立走 GPT→S2Mel→BigVGAN 管線 ---
+            # CUDA kernel 是非同步執行的：不在階段邊界 synchronize 的話，
+            # 計時器量到的是 kernel 排隊時間，前一階段的執行會溢進下一階段
+            # （2026-08-19 實測：BigVGAN 純運算 ~0.2s 卻被記 ~4s）。
+            _cuda_sync = torch.cuda.synchronize if self.device.type == 'cuda' else (lambda: None)
             audio_segments: list = []
             seg_gpt_semantic_ms = 0.0
             seg_gpt_latent_ms = 0.0
@@ -1793,6 +1800,7 @@ class IndexTTSLite:
                 if verbose:
                     debug_log(3, f"   [2/4] GPT 生成中...")
 
+                _cuda_sync()  # 結清前置工作（conditioning 準備等），GPT 計時從乾淨佇列開始
                 _seg_t = time.perf_counter()
                 with torch.no_grad():
                     dtype = torch.float16 if self.use_fp16 else None
@@ -1837,6 +1845,7 @@ class IndexTTSLite:
                             repetition_penalty=repetition_penalty,
                             max_generate_length=seg_max_gen_len,
                         )
+                        _cuda_sync()
                         seg_gpt_semantic_ms += (time.perf_counter() - _seg_t) * 1000
                         _seg_t = time.perf_counter()
                         # 2.5 架構：S2Mel 不再使用 GPT latent，移除 gpt forward 階段
@@ -1883,6 +1892,7 @@ class IndexTTSLite:
                     )
 
                     mel = vc_target[:, :, self.character_features['ref_mel'].size(-1):]
+                _cuda_sync()
                 seg_s2mel_cfm_ms += (time.perf_counter() - _seg_t) * 1000
                 _seg_t = time.perf_counter()
 
@@ -1893,6 +1903,7 @@ class IndexTTSLite:
 
                 with torch.no_grad():
                     seg_audio_gpu = self.bigvgan(mel.float()).squeeze(0)
+                _cuda_sync()
                 seg_vocoder_ms += (time.perf_counter() - _seg_t) * 1000
                 seg_audio = seg_audio_gpu.cpu()  # D2H transfer 不計入 vocoder 時間
 

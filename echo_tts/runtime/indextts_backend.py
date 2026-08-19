@@ -97,10 +97,17 @@ class IndexTTS2Backend:
 
     def profile_generate(
         self, text: str, output_path: str | Path, emotion_overrides: dict | None = None,
+        language: str | None = None,
     ) -> tuple[Path, ProfileReport]:
         """Generate speech and return a full profiling report."""
         if not text.strip():
             raise ValueError("text must not be empty")
+        # 與 generate() 同步：language 未指定時自動偵測。
+        # 引擎預設 'en'，中文文本若不轉發會吃錯誤 lang embedding + pySBD 誤切，
+        # profiling 的分段行為與 shell 實際狀況脫節。
+        if language is None:
+            from echo_tts.runtime.indextts_generate import detect_language
+            language = detect_language(text)
 
         self.load()
         output = Path(output_path)
@@ -117,6 +124,7 @@ class IndexTTS2Backend:
             output_path=str(output),
             emotion_vector=self.emotion_vector,
             preset_overrides=emotion_overrides,
+            language=language,
         )
         if not ok or not output.exists():
             raise RuntimeError("IndexTTS2 generation did not produce an output file")

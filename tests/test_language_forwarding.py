@@ -19,6 +19,8 @@ def test_detect_language():
 class _StubEngine:
     def __init__(self, **kwargs):
         self.synthesize_calls = []
+        self.profile_calls = []
+        self._init_timings = {}
 
     def load_character(self, path, verbose=True):
         return True
@@ -27,6 +29,11 @@ class _StubEngine:
         self.synthesize_calls.append(kwargs)
         Path(kwargs["output_path"]).write_bytes(b"RIFF")
         return True
+
+    def synthesize_with_profile(self, **kwargs):
+        self.profile_calls.append(kwargs)
+        Path(kwargs["output_path"]).write_bytes(b"RIFF")
+        return True, {}
 
 
 def test_backend_auto_detects_chinese(tmp_path):
@@ -63,6 +70,30 @@ def test_backend_respects_explicit_language(tmp_path):
 
     call = captured["engine"].synthesize_calls[0]
     assert call["language"] == "ja"
+
+
+def test_profile_generate_forwards_language(tmp_path):
+    """profile_generate 必須與 generate 同樣轉發 language。
+
+    引擎 synthesize_with_profile 預設 'en'——不轉發時中文 profiling 會吃
+    錯誤 lang embedding + 英文分段器，分段行為與 shell 實際狀況脫節。
+    """
+    root = Path(__file__).resolve().parents[1]
+    paths = default_generation_paths(root)
+
+    captured = {}
+
+    def factory(**kwargs):
+        engine = _StubEngine(**kwargs)
+        captured["engine"] = engine
+        return engine
+
+    backend = IndexTTS2Backend(paths, engine_factory=factory)
+    backend.profile_generate("今天的天氣不錯，測試 profiling 語言轉發。", tmp_path / "p.wav")
+    assert captured["engine"].profile_calls[0]["language"] == "zh"
+
+    backend.profile_generate("Hello world", tmp_path / "p2.wav", language="ja")
+    assert captured["engine"].profile_calls[1]["language"] == "ja"
 
 
 def test_cli_detect_language_japanese():

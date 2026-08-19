@@ -266,6 +266,7 @@ class TTSInteractiveSession:
         if hasattr(self.backend, "profile_generate"):
             generated, report = self.backend.profile_generate(
                 text, output_path, emotion_overrides=self.get_emotion_overrides(),
+                language=self.get_language(),
             )
         else:
             # Fallback: generate without profiling data

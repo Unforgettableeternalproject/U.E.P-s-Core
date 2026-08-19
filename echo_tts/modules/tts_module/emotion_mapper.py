@@ -14,7 +14,12 @@ Status Manager (Plutchik's Wheel) → IndexTTS 8D Vector
 """
 
 from typing import List, Dict, Optional
-from utils.debug_helper import debug_log
+
+try:
+    from utils.debug_helper import debug_log
+except ImportError:  # 獨立測試專案沒有主專案的 utils，退化成 no-op
+    def debug_log(level: int, message: str) -> None:
+        pass
 
 
 class EmotionMapper:
@@ -43,12 +48,13 @@ class EmotionMapper:
         "calm": [("trust", 0.6), ("joy", 0.2), ("anger", -0.3), ("fear", -0.3)]  # 高信任、低喚醒
     }
     
-    def __init__(self, max_strength: float = 0.3, default_neutral: bool = True):
+    def __init__(self, max_strength: float = 0.65, default_neutral: bool = True):
         """
         初始化 Emotion Mapper
         
         Args:
-            max_strength: 情感向量的最大總和 (保留原始聲音特徵)
+            max_strength: 情感向量的最大總和 (保留原始聲音特徵)。
+                      0.65 為 2.5 聽感定案值，可用區間 0.57 ~ 0.73
             default_neutral: 當輸入為空時是否使用中性向量
         """
         self.max_strength = max_strength
@@ -304,7 +310,7 @@ class EmotionMapper:
         """返回中性情感向量 (全零)"""
         return [0.0] * 8
     
-    def get_preset_emotion(self, emotion_name: str, strength: float = 0.3) -> List[float]:
+    def get_preset_emotion(self, emotion_name: str, strength: float = 0.65) -> List[float]:
         """
         獲取預設情感向量
         
@@ -325,10 +331,46 @@ class EmotionMapper:
             "surprised": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
             "calm": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
             "neutral": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            # 混合預設
-            "excited": [0.6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.4, 0.0],
-            "worried": [0.0, 0.0, 0.3, 0.7, 0.0, 0.0, 0.0, 0.0],
-            "content": [0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.7],
+
+            # ── 混合預設（主 0.7 / 副 0.3）──
+            # 由 experiments/v25_emotion_combos.py 的兩兩組合掃描聽感篩選而來，
+            # 方向依台詞語意判定（同兩個情緒換主副是兩種情緒，故部分成對出現）。
+            # 這裡寫的是相對比例，normalize_vector 會縮到 max_strength。
+            # [happy, angry, sad, afraid, disgusted, melancholic, surprised, calm]
+            "smug":              [0.7, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # 得意的嗔怪
+            "bittersweet":       [0.7, 0.0, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0],  # 笑中帶淚
+            "tearful_relief":    [0.3, 0.0, 0.7, 0.0, 0.0, 0.0, 0.0, 0.0],  # 淚中帶笑
+            "nervous_excited":   [0.7, 0.0, 0.0, 0.3, 0.0, 0.0, 0.0, 0.0],  # 興奮中的不安
+            "amused_disgust":    [0.7, 0.0, 0.0, 0.0, 0.3, 0.0, 0.0, 0.0],  # 嫌棄的笑
+            "nostalgic":         [0.3, 0.0, 0.0, 0.0, 0.0, 0.7, 0.0, 0.0],  # 懷念的微笑
+            "delighted_surprise": [0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.7, 0.0],  # 驚喜
+            "content":           [0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.7],  # 溫和的滿足
+            "hurt_anger":        [0.0, 0.7, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0],  # 帶委屈的怒
+            "resentful":         [0.0, 0.3, 0.7, 0.0, 0.0, 0.0, 0.0, 0.0],  # 委屈到發火
+            "panicked":          [0.0, 0.3, 0.0, 0.7, 0.0, 0.0, 0.0, 0.0],  # 恐懼驅動的怒吼
+            "contempt":          [0.0, 0.7, 0.0, 0.0, 0.3, 0.0, 0.0, 0.0],  # 厭惡的斥責
+            "weary_anger":       [0.0, 0.3, 0.0, 0.0, 0.0, 0.7, 0.0, 0.0],  # 疲憊的怒意
+            "outraged":          [0.0, 0.3, 0.0, 0.0, 0.0, 0.0, 0.7, 0.0],  # 錯愕的怒
+            "cold_anger":        [0.0, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.7],  # 冷怒
+            "helpless":          [0.0, 0.0, 0.7, 0.3, 0.0, 0.0, 0.0, 0.0],  # 無助
+            "self_loathing":     [0.0, 0.0, 0.7, 0.0, 0.3, 0.0, 0.0, 0.0],  # 自我厭惡
+            "sorrow":            [0.0, 0.0, 0.3, 0.0, 0.0, 0.7, 0.0, 0.0],  # 深沉的哀傷
+            "shocked_grief":     [0.0, 0.0, 0.3, 0.0, 0.0, 0.0, 0.7, 0.0],  # 震驚的悲傷
+            "resigned":          [0.0, 0.0, 0.3, 0.0, 0.0, 0.0, 0.0, 0.7],  # 釋然的悲傷
+            "repulsed":          [0.0, 0.0, 0.0, 0.7, 0.3, 0.0, 0.0, 0.0],  # 恐懼的排斥
+            "anxious_gloom":     [0.0, 0.0, 0.0, 0.3, 0.0, 0.7, 0.0, 0.0],  # 不安的憂鬱
+            "startled":          [0.0, 0.0, 0.0, 0.3, 0.0, 0.0, 0.7, 0.0],  # 驚嚇
+            "composed_fear":     [0.0, 0.0, 0.0, 0.3, 0.0, 0.0, 0.0, 0.7],  # 強作鎮定
+            "jaded":             [0.0, 0.0, 0.0, 0.0, 0.3, 0.7, 0.0, 0.0],  # 厭倦
+            "appalled":          [0.0, 0.0, 0.0, 0.0, 0.3, 0.0, 0.7, 0.0],  # 驚訝的嫌惡
+            "dismissive":        [0.0, 0.0, 0.0, 0.0, 0.3, 0.0, 0.0, 0.7],  # 冷淡的拒絕
+            "wistful":           [0.0, 0.0, 0.0, 0.0, 0.0, 0.7, 0.3, 0.0],  # 恍然的惆悵
+            "reminiscent":       [0.0, 0.0, 0.0, 0.0, 0.0, 0.7, 0.0, 0.3],  # 靜謐的懷想
+            "mild_surprise":     [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.3, 0.7],  # 平靜的訝異
+
+            # 舊有別名（保留相容，比例已對齊 70:30）
+            "excited":           [0.7, 0.0, 0.0, 0.0, 0.0, 0.0, 0.3, 0.0],
+            "worried":           [0.0, 0.0, 0.3, 0.7, 0.0, 0.0, 0.0, 0.0],
         }
         
         if emotion_name.lower() not in presets:

@@ -43,15 +43,21 @@ chunking:
   max_tokens: 150  # 每段最大 BPE tokens 數量 (🚀 已優化: 降低以減少 GPT 生成時間)
 
 # 情感配置
+# ⚠️ 以下數值由 IndexTTS 2.5 聽感測試定案（艾斯維爾 2026-08-19，
+#    experiments/v25_emotion_combos.py，參考音 slice_04）。2.0 引擎的染色特性
+#    比 2.5 敏感（2.0 時代邊界是 0.3），套用後若音色被蓋掉屬預期，往下調 max_strength 即可。
 emotion:
-  max_strength: 0.8  # 情感強度上限 (0.0 - 1.0)，上游建議 ≤0.8
+  max_strength: 0.65  # 情感向量總和目標。0.65 為聽感甜蜜點，可用區間 0.57 ~ 0.73
   default: null  # 預設情感向量 (null = 使用角色原聲，也可設置為 8D 列表)
   # 例如: default: [0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.2]  # [happy, angry, sad, afraid, disgusted, melancholic, surprised, calm]
 
-  # 上游情緒偏差 (emo_bias)：壓制容易出怪聲的情緒維度
+  # 情緒偏差 (emo_bias)：只保留 calm 一項。
+  # 上游原值為 [0.9375, 0.875, 1.0, 1.0, 0.9375, 0.9375, 0.6875, 0.5625]，
+  # 但實測其餘七個維度在總和 0.65 下齊平即可，套 bias 反而讓「強度分級」對不齊
+  # （同樣下 0.65，各情緒實際值會散在 0.45~0.65）；只有 calm 需要壓回去。
   # [happy, angry, sad, afraid, disgusted, melancholic, surprised, calm]
-  emo_bias: [0.9375, 0.875, 1.0, 1.0, 0.9375, 0.9375, 0.6875, 0.5625]
-  emo_bias_cap: 0.8  # 當 sum(emotion * emo_bias) > cap 時，整體等比縮放
+  emo_bias: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.5625]
+  emo_bias_cap: 0.65  # 當 sum(emotion * emo_bias) > cap 時，整體等比縮放
 
   # merge_emovec 融合強度 (alpha=1.0 = 完全使用情緒條件)
   merge_alpha: 1.0

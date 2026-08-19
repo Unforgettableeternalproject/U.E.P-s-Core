@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>U.E.P 語音盲測</title>
+<style>
+  :root{
+    --bg:#0b0d12; --panel:#141821; --panel-2:#1b2028; --line:#262d38;
+    --fg:#e8ecf3; --muted:#8b95a6; --accent:#7dd3c0; --accent-2:#a78bfa;
+    --warn:#f0b866;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:radial-gradient(1100px 600px at 50% -10%,#18202e 0%,var(--bg) 62%);
+    color:var(--fg); min-height:100vh;
+    font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,-apple-system,sans-serif;
+    line-height:1.65; -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:780px;margin:0 auto;padding:32px 20px 96px}
+
+  header{text-align:center;margin-bottom:28px}
+  .kicker{font-size:12px;letter-spacing:.28em;color:var(--accent);text-transform:uppercase}
+  h1{font-size:26px;margin:10px 0 6px;font-weight:600;letter-spacing:.02em}
+  .sub{color:var(--muted);font-size:14px;margin:0}
+
+  .card{
+    background:linear-gradient(180deg,var(--panel) 0%,var(--panel-2) 100%);
+    border:1px solid var(--line); border-radius:16px;
+    padding:20px; margin-bottom:16px;
+  }
+  .card h2{font-size:16px;margin:0 0 10px;font-weight:600}
+  .card p{margin:0 0 10px;color:var(--muted);font-size:14px}
+  .card ul{margin:0;padding-left:18px;color:var(--muted);font-size:14px}
+  .card li{margin-bottom:4px}
+
+  input[type=text],textarea{
+    width:100%; background:#0e1219; color:var(--fg);
+    border:1px solid var(--line); border-radius:10px;
+    padding:11px 13px; font:inherit; font-size:14px; outline:none;
+  }
+  input[type=text]:focus,textarea:focus{border-color:var(--accent)}
+  textarea{resize:vertical;min-height:88px}
+  label.fld{display:block;font-size:13px;color:var(--muted);margin:0 0 6px}
+
+  .btn{
+    display:inline-flex;align-items:center;justify-content:center;gap:8px;
+    background:var(--accent); color:#08201c; border:none; border-radius:11px;
+    padding:13px 22px; font:inherit; font-weight:700; font-size:15px; cursor:pointer;
+    transition:filter .15s, transform .1s;
+  }
+  .btn:hover{filter:brightness(1.08)}
+  .btn:active{transform:translateY(1px)}
+  .btn[disabled]{opacity:.4;cursor:not-allowed}
+  .btn.ghost{background:transparent;color:var(--muted);border:1px solid var(--line);font-weight:500}
+  .btn.wide{width:100%}
+
+  /* 進度 */
+  .progress{position:sticky;top:0;z-index:20;background:rgba(11,13,18,.92);
+    backdrop-filter:blur(10px);margin:0 -20px 18px;padding:12px 20px;
+    border-bottom:1px solid var(--line)}
+  .pbar{height:5px;background:#1e2531;border-radius:99px;overflow:hidden}
+  .pfill{height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--accent-2));
+    border-radius:99px;transition:width .35s ease}
+  .pmeta{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:7px}
+
+  /* 題目 */
+  .tags{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:12px}
+  .tag{font-size:11px;letter-spacing:.06em;padding:3px 9px;border-radius:99px;
+    background:#212936;color:var(--muted);border:1px solid var(--line)}
+  .tag.lang{color:var(--accent);border-color:#2c4a45}
+  .tag.emo{color:var(--accent-2);border-color:#3a3350}
+
+  .script{
+    background:#0e1219;border:1px solid var(--line);border-left:3px solid var(--accent);
+    border-radius:0 10px 10px 0;padding:11px 14px;margin-bottom:16px;
+    font-size:14px;color:#c9d3e2;
+  }
+  .repeat{font-size:12px;color:var(--warn);margin:-8px 0 16px;min-height:16px}
+
+  .pair{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px}
+  @media(max-width:560px){.pair{grid-template-columns:1fr}}
+
+  .player{
+    background:#0e1219;border:1px solid var(--line);border-radius:13px;
+    padding:14px;text-align:center;cursor:pointer;
+    transition:border-color .15s,background .15s;
+  }
+  .player:hover{border-color:#3a4657}
+  .player.playing{border-color:var(--accent);background:#0f1b1a}
+  .player.played .name::after{content:" ✓";color:var(--accent)}
+  .name{font-size:13px;color:var(--muted);margin-bottom:9px;font-weight:600;letter-spacing:.05em}
+  .disc{width:44px;height:44px;margin:0 auto 9px;border-radius:50%;
+    background:#1b2431;border:1px solid var(--line);
+    display:flex;align-items:center;justify-content:center;font-size:16px;color:var(--accent)}
+  .player.playing .disc{background:#12302b;border-color:var(--accent)}
+  .seek{height:3px;background:#1e2531;border-radius:99px;overflow:hidden}
+  .seek i{display:block;height:100%;width:0;background:var(--accent)}
+
+  .choices{display:grid;grid-template-columns:1fr auto 1fr;gap:8px;margin-bottom:12px}
+  @media(max-width:560px){.choices{grid-template-columns:1fr}}
+  .choice{
+    background:#0e1219;border:1px solid var(--line);color:var(--fg);
+    border-radius:11px;padding:11px 10px;font:inherit;font-size:14px;cursor:pointer;
+    transition:all .15s;
+  }
+  .choice:hover{border-color:#3a4657}
+  .choice.sel{background:#12302b;border-color:var(--accent);color:var(--accent);font-weight:700}
+  .choice.mid{color:var(--muted);padding-left:16px;padding-right:16px}
+
+  .navrow{display:flex;gap:10px;align-items:center;margin-top:18px}
+  .navrow .btn{flex:1}
+  .hint{font-size:12px;color:var(--warn);text-align:center;margin-top:10px;min-height:16px}
+
+  .done{text-align:center;padding:26px 10px}
+  .done .big{font-size:44px;margin-bottom:8px}
+  .hidden{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="kicker">U.E.P Voice Lab</div>
+  <h1>語音盲測比對</h1>
+  <p class="sub">聽兩段、選一段。全程約 6 分鐘，戴耳機效果最好。</p>
+</header>
+
+<!-- 步驟 0：說明 -->
+<section id="intro">
+  <div class="card">
+    <h2>這是在測什麼</h2>
+    <p>同一個角色的語音合成，用了兩種不同設定。我們想知道<strong>哪一種聽起來更像同一個人、更自然</strong>。</p>
+    <ul>
+      <li>每題有兩段音檔，內容<strong>完全相同</strong>，只有合成設定不同</li>
+      <li>左右順序每題都是隨機的，你不會知道哪個是哪個</li>
+      <li><strong>同一句台詞會重複出現好幾次</strong>——那不是題目跑掉，是同一句在比不同的設定組合，請每次都當作新的一題重新聽</li>
+      <li>請聽<strong>音色像不像同一個人、語氣自不自然、有沒有機械感</strong></li>
+      <li>真的分不出來就選「差不多」，不用勉強</li>
+      <li>拜託不要跟我抱怨有太多提要測QQ 我需要的是數據ㄚㄚㄚ</li>
+    </ul>
+  </div>
+  <div class="card">
+    <label class="fld">你的暱稱（結果回報用，隨便填）</label>
+    <input type="text" id="nickname" placeholder="例如：小明" maxlength="32" autocomplete="off">
+  </div>
+  <button class="btn wide" id="startBtn">開始盲測</button>
+  <div class="hint" id="introHint"></div>
+</section>
+
+<!-- 步驟 1：測驗 -->
+<section id="quiz" class="hidden">
+  <div class="progress">
+    <div class="pmeta"><span id="pLabel">第 1 題</span><span id="pCount">1 / 18</span></div>
+    <div class="pbar"><div class="pfill" id="pFill"></div></div>
+  </div>
+
+  <div class="card">
+    <div class="tags" id="qTags"></div>
+    <div class="script" id="qScript"></div>
+    <div class="repeat" id="qRepeat"></div>
+
+    <div class="pair">
+      <div class="player" id="pL">
+        <div class="disc">▶</div>
+        <div class="name">音檔 1</div>
+        <div class="seek"><i></i></div>
+      </div>
+      <div class="player" id="pR">
+        <div class="disc">▶</div>
+        <div class="name">音檔 2</div>
+        <div class="seek"><i></i></div>
+      </div>
+    </div>
+
+    <div class="choices">
+      <button class="choice" data-v="left">音檔 1 比較好</button>
+      <button class="choice mid" data-v="tie">差不多</button>
+      <button class="choice" data-v="right">音檔 2 比較好</button>
+    </div>
+
+    <label class="fld">補充說明（可略過）</label>
+    <textarea id="qNote" placeholder="例如：音檔 2 尾音比較硬 / 音檔 1 聽起來像機器人" style="min-height:60px"></textarea>
+  </div>
+
+  <div class="navrow">
+    <button class="btn ghost" id="prevBtn" style="flex:0 0 auto">← 上一題</button>
+    <button class="btn" id="nextBtn">下一題 →</button>
+  </div>
+  <div class="hint" id="quizHint"></div>
+</section>
+
+<!-- 步驟 2：總結 -->
+<section id="final" class="hidden">
+  <div class="card">
+    <h2>最後一題，關於整體</h2>
+    <p>撇開單題比較，這個聲音整體給你的感覺如何？哪裡最出戲？</p>
+    <textarea id="overall" placeholder="例如：中文最自然，日文情緒偏平；難過的語氣普遍不夠有起伏……"></textarea>
+  </div>
+  <button class="btn wide" id="submitBtn">送出評測</button>
+  <div class="hint" id="finalHint"></div>
+</section>
+
+<!-- 步驟 3：完成 -->
+<section id="thanks" class="hidden">
+  <div class="card done">
+    <div class="big">✓</div>
+    <h2>收到了，感謝你</h2>
+    <p id="thanksMsg">你的評測已經送回去了。</p>
+  </div>
+</section>
+
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  // ---- 題庫定義 ----
+  const TEXTS = {
+    zh_neutral:"今天的天气不错，我把桌面上的工作都整理完了，接下来要做什么呢？",
+    zh_happy:"哈哈，你猜怎么着？新模型的测试一次就通过了！我们赶快把它装上去试试吧！",
+    zh_sad:"我...对不起……我把之前的存档弄丢了，明明答应过你要好好保管的……",
+    en_neutral:"The weather is nice today. I finished organizing everything on my desk. What should we do next?",
+    en_happy:"Haha! Guess what? The new model passed every single test on the first try! Let's get it running right now!",
+    en_sad:"I...I'm sorry... I lost the backup files. I promised I would keep them safe, and I let you down...",
+    ja_neutral:"今日はいい天気ですね。机の上の仕事を全部片付けました。次は何をしましょうか？",
+    ja_happy:"ねえねえ、聞いて！新しいモデルのテスト、一発で全部合格したんだよ！すごくない？",
+    ja_sad:"あ...ごめんなさい……大事なデータを失くしちゃった……ちゃんと守るって約束したのに……"
+  };
+
+  // 變體 → 語言 / 情緒 / 文本
+  const V = {
+    zh:              ["中文","中性","zh_neutral"],
+    zh_happy05:      ["中文","開心","zh_happy"],
+    zh_sad05:        ["中文","難過","zh_sad"],
+    zh_LORA:         ["中文","中性","zh_neutral"],
+    zh_LORA_happy05: ["中文","開心","zh_happy"],
+    zh_LORA_sad05:   ["中文","難過","zh_sad"],
+    en:              ["英文","中性","en_neutral"],
+    en_happy05:      ["英文","開心","en_happy"],
+    en_sad05:        ["英文","難過","en_sad"],
+    ja:              ["日文","中性","ja_neutral"],
+    ja_happy065:     ["日文","開心","ja_happy"],
+    ja_sad065:       ["日文","難過","ja_sad"]
+  };
+
+  // 對決一：A 組參考音 vs B 組參考音（12 題）
+  const REF_PAIRS = Object.keys(V).map(v => ({
+    kind:"reference", variant:v,
+    a:{file:`A_${v}.wav`, id:"A"},
+    b:{file:`B_${v}.wav`, id:"B"}
+  }));
+
+  // 對決二：LoRA vs 無 LoRA（同組同文本，6 題）
+  const LORA_PAIRS = [];
+  ["A","B"].forEach(g => {
+    [["zh","zh_LORA"],["zh_happy05","zh_LORA_happy05"],["zh_sad05","zh_LORA_sad05"]]
+      .forEach(([base,lora]) => LORA_PAIRS.push({
+        kind:"lora", variant:base, group:g,
+        a:{file:`${g}_${base}.wav`, id:"base"},
+        b:{file:`${g}_${lora}.wav`, id:"lora"}
+      }));
+  });
+
+  function shuffle(arr){
+    const a = arr.slice();
+    for(let i=a.length-1;i>0;i--){
+      const j = Math.floor(Math.random()*(i+1));
+      [a[i],a[j]] = [a[j],a[i]];
+    }
+    return a;
+  }
+
+  // 同一句台詞最多出現 4 次，若隨機到連續相鄰會像「題目跳針」。
+  // 洗牌後貪婪重排：撞到跟前一題同句時，往後找第一個不同句的換上來。
+  function spread(arr){
+    const a = arr.slice();
+    for(let i=1;i<a.length;i++){
+      if(V[a[i].variant][2] !== V[a[i-1].variant][2]) continue;
+      for(let j=i+1;j<a.length;j++){
+        if(V[a[j].variant][2] !== V[a[i-1].variant][2]){
+          [a[i],a[j]] = [a[j],a[i]];
+          break;
+        }
+      }
+    }
+    return a;
+  }
+
+  // 題目順序打散，每題左右也隨機
+  const QUESTIONS = spread(shuffle(REF_PAIRS.concat(LORA_PAIRS))).map((q,i) => {
+    const flip = Math.random() < 0.5;
+    return {
+      index:i, kind:q.kind, variant:q.variant, group:q.group || null,
+      left:  flip ? q.b : q.a,
+      right: flip ? q.a : q.b
+    };
+  });
+
+  // 同一句台詞會在多題出現（比不同設定組合）。算出「第 k 次 / 共 n 次」
+  // 讓測試者知道那是刻意的，不是題目跳針——但不揭露差在哪，維持盲測。
+  const textTotal = {}, textSeen = {};
+  QUESTIONS.forEach(q => {
+    const k = V[q.variant][2];
+    textTotal[k] = (textTotal[k] || 0) + 1;
+  });
+  QUESTIONS.forEach(q => {
+    const k = V[q.variant][2];
+    textSeen[k] = (textSeen[k] || 0) + 1;
+    q.repeatLabel = textTotal[k] > 1 ? `本句第 ${textSeen[k]} 次 / 共 ${textTotal[k]} 次（每次比的設定不同）` : "";
+  });
+
+  const answers = QUESTIONS.map(() => ({choice:null, note:"", playedL:false, playedR:false}));
+  let cur = 0;
+  const startedAt = new Date().toISOString();
+
+  // ---- DOM ----
+  const $ = id => document.getElementById(id);
+  const audio = new Audio();
+  let playingSide = null;
+
+  function stopAudio(){
+    audio.pause();
+    if(playingSide){
+      playingSide.el.classList.remove("playing");
+      playingSide.el.querySelector(".disc").textContent = "▶";
+      playingSide.el.querySelector(".seek i").style.width = "0";
+      playingSide = null;
+    }
+  }
+
+  function play(el, file, side){
+    if(playingSide && playingSide.el === el){ stopAudio(); return; }
+    stopAudio();
+    audio.src = "/audio/" + file;
+    audio.currentTime = 0;
+    audio.play().catch(() => { $("quizHint").textContent = "音檔載不動，重新整理看看？"; });
+    el.classList.add("playing","played");
+    el.querySelector(".disc").textContent = "❚❚";
+    playingSide = {el, side};
+    answers[cur][side === "left" ? "playedL" : "playedR"] = true;
+  }
+
+  audio.addEventListener("timeupdate", () => {
+    if(!playingSide || !audio.duration) return;
+    playingSide.el.querySelector(".seek i").style.width =
+      (audio.currentTime / audio.duration * 100) + "%";
+  });
+  audio.addEventListener("ended", stopAudio);
+
+  $("pL").addEventListener("click", () => play($("pL"), QUESTIONS[cur].left.file, "left"));
+  $("pR").addEventListener("click", () => play($("pR"), QUESTIONS[cur].right.file, "right"));
+
+  document.querySelectorAll(".choice").forEach(btn => {
+    btn.addEventListener("click", () => {
+      answers[cur].choice = btn.dataset.v;
+      renderChoices();
+      $("quizHint").textContent = "";
+    });
+  });
+
+  function renderChoices(){
+    document.querySelectorAll(".choice").forEach(b =>
+      b.classList.toggle("sel", b.dataset.v === answers[cur].choice));
+  }
+
+  function render(){
+    const q = QUESTIONS[cur];
+    const [lang, emo, textKey] = V[q.variant];
+
+    $("qTags").innerHTML =
+      `<span class="tag lang">${lang}</span><span class="tag emo">${emo}</span>` +
+      `<span class="tag">配對 #${cur+1}</span>`;
+    $("qScript").textContent = TEXTS[textKey];
+    $("qRepeat").textContent = q.repeatLabel;
+
+    ["pL","pR"].forEach(id => $(id).classList.remove("played","playing"));
+    if(answers[cur].playedL) $("pL").classList.add("played");
+    if(answers[cur].playedR) $("pR").classList.add("played");
+    stopAudio();
+
+    $("qNote").value = answers[cur].note;
+    renderChoices();
+
+    $("pLabel").textContent = `第 ${cur+1} 題`;
+    $("pCount").textContent = `${cur+1} / ${QUESTIONS.length}`;
+    $("pFill").style.width = ((cur) / QUESTIONS.length * 100) + "%";
+    $("prevBtn").disabled = cur === 0;
+    $("nextBtn").textContent = cur === QUESTIONS.length - 1 ? "完成比較 →" : "下一題 →";
+    $("quizHint").textContent = "";
+    window.scrollTo({top:0, behavior:"smooth"});
+  }
+
+  $("qNote").addEventListener("input", e => { answers[cur].note = e.target.value; });
+
+  $("prevBtn").addEventListener("click", () => {
+    if(cur > 0){ cur--; render(); }
+  });
+
+  $("nextBtn").addEventListener("click", () => {
+    if(!answers[cur].choice){
+      $("quizHint").textContent = "先選一個吧——真的聽不出差別就按「差不多」。";
+      return;
+    }
+    if(cur < QUESTIONS.length - 1){ cur++; render(); }
+    else {
+      stopAudio();
+      $("quiz").classList.add("hidden");
+      $("final").classList.remove("hidden");
+      window.scrollTo({top:0});
+    }
+  });
+
+  $("startBtn").addEventListener("click", () => {
+    const nick = $("nickname").value.trim();
+    if(!nick){ $("introHint").textContent = "填個暱稱，才知道是誰的回饋。"; return; }
+    $("intro").classList.add("hidden");
+    $("quiz").classList.remove("hidden");
+    render();
+  });
+
+  $("submitBtn").addEventListener("click", async () => {
+    const btn = $("submitBtn");
+    btn.disabled = true;
+    $("finalHint").textContent = "送出中……";
+
+    const payload = {
+      nickname: $("nickname").value.trim(),
+      started_at: startedAt,
+      overall: $("overall").value.trim(),
+      user_agent: navigator.userAgent,
+      results: QUESTIONS.map((q,i) => {
+        const a = answers[i];
+        // 把「左/右」還原成真實的組別，方便後續統計
+        let winner = "tie";
+        if(a.choice === "left")  winner = q.left.id;
+        if(a.choice === "right") winner = q.right.id;
+        return {
+          order:i+1, kind:q.kind, variant:q.variant, group:q.group,
+          left:q.left.file, right:q.right.file,
+          choice:a.choice, winner, note:a.note,
+          played_both: a.playedL && a.playedR
+        };
+      })
+    };
+
+    try{
+      const res = await fetch("/api/submit", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify(payload)
+      });
+      if(!res.ok) throw new Error("HTTP " + res.status);
+      $("final").classList.add("hidden");
+      $("thanks").classList.remove("hidden");
+      window.scrollTo({top:0});
+    }catch(err){
+      btn.disabled = false;
+      $("finalHint").textContent = "送出失敗（" + err.message + "），再按一次試試。";
+    }
+  });
+})();
+</script>
+</body>
+</html>

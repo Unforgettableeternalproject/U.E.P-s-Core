@@ -78,7 +78,6 @@ try:
     from .tts_utils.custom_vocab import apply_custom_vocab
     from .tts_utils.segment_guard import check_segment_anomaly, get_retry_params, SegmentGuardStats
     from .emotion_dynamics import EmotionDynamics, create_emotion_dynamics
-    from .emotion_text_markers import EmotionTextMarkers, create_emotion_text_markers
     from .poise import PoisePlanner, PoiseConfig, PoiseLevel, create_poise_config
     from .s2mel.modules.commons import load_checkpoint2, MyModel
     from .s2mel.modules.bigvgan import bigvgan
@@ -99,7 +98,6 @@ except ImportError:
     from tts_utils.custom_vocab import apply_custom_vocab
     from tts_utils.segment_guard import check_segment_anomaly, get_retry_params, SegmentGuardStats
     from emotion_dynamics import EmotionDynamics, create_emotion_dynamics
-    from emotion_text_markers import EmotionTextMarkers, create_emotion_text_markers
     from poise import PoisePlanner, PoiseConfig, PoiseLevel, create_poise_config
     from s2mel.modules.commons import load_checkpoint2, MyModel
     from s2mel.modules.bigvgan import bigvgan
@@ -124,7 +122,18 @@ except ImportError:
 # ──────────────────────────────────────────────────────────────────
 
 import re as _re
-_CJK_LANG_SPLIT_RE = _re.compile(r'[一-鿿㐀-䶿\U00020000-\U0002a6df]')
+# CJK 漢字 + 日文假名。
+# 假名（平假名 3040-309F / 片假名 30A0-30FF / 半形片假名 FF66-FF9F）必須納入：
+# 否則「今日はいい天気ですね」只有漢字被認成 cjk，假名全掉進 neutral，
+# 日文會被當成「漢字夾雜中性符號」而在假名處被切碎。
+# 註：這條路徑（_apply_language_splitting）在 2.5 已停用——2.5 的 tiktoken 是
+# byte-level 無 UNK，混合語言由多語言詞表原生支援。這裡補上是為了日後若重新
+# 啟用語言分割時不會踩到同一個坑。
+_CJK_LANG_SPLIT_RE = _re.compile(
+    r'[一-鿿㐀-䶿\U00020000-\U0002a6df'      # CJK 統一漢字（含擴充 A、B）
+    r'぀-ゟ゠-ヿ'                              # 平假名、片假名
+    r'ｦ-ﾟ]'                                    # 半形片假名
+)
 
 
 def _classify_tokens(tokens: list) -> list:
@@ -641,12 +650,7 @@ class IndexTTSLite:
         self.cfm_n_timesteps = int(_synth_cfg.get('cfm_n_timesteps', 25))
         self.cfm_inference_cfg_rate = float(_synth_cfg.get('cfm_inference_cfg_rate', 0.7))
 
-        # ── 文本層情緒標記（第二層）──
-        self.emotion_text_markers = create_emotion_text_markers(
-            OmegaConf.to_container(self.cfg, resolve=True) if hasattr(self.cfg, '_metadata') else dict(self.cfg)
-        )
-
-        # ── 情緒動態調控（第三層）──
+        # ── 情緒動態調控 ──
         self.emotion_dynamics = create_emotion_dynamics(
             OmegaConf.to_container(self.cfg, resolve=True) if hasattr(self.cfg, '_metadata') else dict(self.cfg)
         )
@@ -1417,7 +1421,26 @@ class IndexTTSLite:
         if len(emotion_vector) != 8:
             raise ValueError("情感向量必須是 8 維")
 
-        # 套用 emo_bias（上游情緒偏差：壓制容易出怪聲的情緒維度）
+        # 語言別情感增益（保留機制，預設不啟用）
+        # 2.5 盲測定案（2026-08-19）：0.65 是以「最終送進模型的總和」定義，
+        # 日文梯度 0.57/0.65/0.73 與中英同值即通過聽感，不再需要 1.3x 補償。
+        # 且增益若在 normalize 之前套，等分量情況下會被 normalize 完全抵銷。
+        # 要重新啟用請在 config.yaml 的 emotion.lang_gain 明寫（如 ja: 1.2）。
+        _lang_gain_cfg = self.cfg.get('emotion', {}).get('lang_gain', {}) or {}
+        _lang_gain = float(_lang_gain_cfg.get(language, 1.0))
+        if _lang_gain != 1.0 and any(v > 0 for v in emotion_vector):
+            emotion_vector = [v * _lang_gain for v in emotion_vector]
+            if verbose:
+                debug_log(3, f"   🌐 語言情感增益 ({language}): ×{_lang_gain}")
+
+        # ① 先歸一化到目標強度：preset 定義的是「情緒配方」（比例），
+        #    實際強度由 max_strength 決定（定案 0.65，可用區間 0.57~0.73）
+        emotion_vector = self.normalize_emotion_vector(emotion_vector, max_emotion_strength, verbose)
+
+        # ② 再套 emo_bias（壓制容易出怪聲的維度，目前只有 calm 0.5625）
+        # ⚠️ 順序關鍵：bias 必須在 normalize 之後。套在之前會被 normalize
+        #    等比拉回目標總和，壓制效果完全消失（calm 會拿到 0.65 而非 0.366）。
+        #    代價是含 calm 的向量總和低於 max_strength，這正是想要的。
         if self.emo_bias is not None and any(v > 0 for v in emotion_vector):
             biased = [v * b for v, b in zip(emotion_vector, self.emo_bias)]
             biased_sum = sum(biased)
@@ -1428,19 +1451,7 @@ class IndexTTSLite:
             if verbose:
                 debug_log(3, f"   🎭 emo_bias 套用後: {[f'{v:.3f}' for v in emotion_vector]}, sum={sum(emotion_vector):.3f}")
 
-        # 語言別情感增益（2.5：訓練語料日文佔比低，情感表演幅度偏弱）
-        # 契約：lang_gain 縮放「使用者要求的原始強度」，emo_bias / max_strength
-        # 仍在其後作為全域護欄套用。盲測校準 0.5→0.65 是在無 bias 的上游路徑量測，
-        # 本管線的有效值為 0.5 × bias × 1.3（例：bias 0.9375 時 ≈ 0.609），屬可接受近似。
-        _lang_gain_cfg = self.cfg.get('emotion', {}).get('lang_gain', {}) or {}
-        _lang_gain = float(_lang_gain_cfg.get(language, 1.0)) if _lang_gain_cfg else (1.3 if language == 'ja' else 1.0)
-        if _lang_gain != 1.0 and any(v > 0 for v in emotion_vector):
-            emotion_vector = [v * _lang_gain for v in emotion_vector]
-            if verbose:
-                debug_log(3, f"   🌐 語言情感增益 ({language}): ×{_lang_gain}")
-
-        # 歸一化情感向量（增益後仍受 max_strength 邊界保護）
-        normalized_emotion = self.normalize_emotion_vector(emotion_vector, max_emotion_strength, verbose)
+        normalized_emotion = emotion_vector
 
         # ── 情緒動態調控（第三層）──
         # 根據情緒向量動態調整 temperature、段間靜音、語速、cfg_rate
@@ -1478,15 +1489,6 @@ class IndexTTSLite:
             _vocab_cfg = self.cfg.get('text_processing', {}).get('custom_vocab', {})
             text = apply_custom_vocab(text, _vocab_cfg)
 
-            # 第二層：文本層情緒標記（在 tokenize 前修改文本）
-            original_text = text
-            text = self.emotion_text_markers.apply(
-                text, normalized_emotion, language=language,
-                preset_overrides=preset_overrides,
-            )
-            if verbose and text != original_text:
-                debug_log(3, f"      🎭 情緒文本標記: \"{original_text}\" → \"{text}\"")
-
             # ── 2.5 語言解析與語言別正規化 ──
             # engine language ('zh'/'en'/'ja'/...) → 上游 lang 代碼；lang prefix 佔用 token 預算
             _lang_code = {'zh': 'ZH', 'en': 'EN', 'ja': 'JA', 'es': 'ES', 'ar': 'AR'}.get(language, 'ZH')
@@ -1513,6 +1515,14 @@ class IndexTTSLite:
                 sub_texts = pre_segment_chinese(text, _jieba_cfg)
                 if len(sub_texts) > 1 and verbose:
                     debug_log(2, f"      🈶 jieba 語義預切分: {len(sub_texts)} 段")
+            elif language == 'ja':
+                # 日文不做句子級預切分。pySBD 是英文規則（靠 . ! ? + 空格 判句尾），
+                # 套在無空格的日文上會把每個「。」都當切點——實測 112 token 的日文
+                # 被切成 5 段（11/16/11/47/27），而同長度中文維持 1 段。分段過碎會
+                # 讓段間停頓變多、韻律斷裂，且每段都要跑一次 GPT。
+                # split_text_by_token_budget 的 _SENTENCE_BOUNDARY 已含日文標點
+                # （。、！？），會在超出預算時才於標點處切，行為與中文一致。
+                sub_texts = [text]
             else:
                 _en_cfg = self.cfg.get('chunking', {}).get('english_segmentation', {})
                 sub_texts = pre_segment_english(text, _en_cfg)

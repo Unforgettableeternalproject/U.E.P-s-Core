@@ -128,4 +128,18 @@ poise:
   emotion_correction_enabled: true
   sfx_dir: modules/tts_module/sfx
 
+# ─── 進階優化（echo_tts 自訂區段；lite_engine 讀取的是本檔，不是 modules/tts_module/config.yaml）───
+advanced_optimization:
+  # S2Mel CFM estimator torch.compile：sm_120 (RTX 5070 Ti) 於 2026-08-19 實測「能跑」
+  # （同 shape warm 1.44x、音訊健全），但變動文本長度會觸發 dynamo stride 重編譯，
+  # 每次 15-40s（實測 3 輪內兩度重編）——互動式使用體驗不可接受，預設關閉。
+  # 僅建議固定文本的批次工作負載手動開啟。
+  compile_s2mel: false
+  # use_torch_compile（GPT/S2Mel/BigVGAN 全模型 compile）維持關閉：
+  # GPT 走 AccelInferenceEngine 時不生效，S2Mel/BigVGAN 在 sm_120 未驗證
+  use_torch_compile: false
+  enable_warmup: true
+  warmup_text: "你好，這是預熱測試。"
+  warmup_iterations: 1
+
 version: 2.5

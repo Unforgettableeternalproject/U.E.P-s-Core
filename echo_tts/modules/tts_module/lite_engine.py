@@ -826,10 +826,12 @@ class IndexTTSLite:
                 )
             except Exception as e:
                 debug_log(1, f"   ⚠️  S2Mel 量化失敗，回退: {e}")
-        # S2Mel CFM estimator 獨立 compile（進階選項，非 sm_120 才允許）
-        # 若日後 triton-windows 修正 sm_120 支援，可透過 config.yaml 啟用：
-        #   advanced_optimization.compile_s2mel: true
-        if not self._sm_120 and self.cfg.get('advanced_optimization', {}).get('compile_s2mel', False):
+        # S2Mel CFM estimator 獨立 compile（進階選項，config.yaml 啟用：
+        #   advanced_optimization.compile_s2mel: true）
+        # sm_120 已於 2026-08-19 實測解封（torch 2.7.0+cu128 + triton-windows
+        # 3.3.1.post21）：S2Mel warm 1.44x、音訊健全；首次編譯 ~48s 由 warmup 吸收。
+        # 全模型 compile（use_torch_compile 的 S2Mel/BigVGAN 分支）在 sm_120 仍未驗證，防護照舊。
+        if self.cfg.get('advanced_optimization', {}).get('compile_s2mel', False):
             if hasattr(self.s2mel, 'enable_torch_compile'):
                 try:
                     debug_log(2, "   ⚡ 對 S2Mel CFM estimator 應用 torch.compile")

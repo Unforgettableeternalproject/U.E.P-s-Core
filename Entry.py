@@ -51,7 +51,13 @@ from echo_tts.cli.interactive import (
     _detect_language,
     _translate_text,
 )
-from echo_tts.config.emotion_presets import get_preset_overrides, get_preset_vector
+from echo_tts.config.emotion_presets import (
+    USER_STRENGTH_DEFAULT,
+    get_preset_overrides,
+    get_preset_vector,
+    scale_to_user_strength,
+    user_to_strength,
+)
 from echo_tts.runtime.audio import NullAudioPlayer, StreamingAudioPlayer
 from echo_tts.runtime.backend_contract import indextts_backend_info
 from echo_tts.runtime.indextts_backend import IndexTTS2Backend
@@ -365,35 +371,68 @@ def _cmd_profile(session: TTSInteractiveSession, text: str) -> None:
 
 
 def _cmd_emotion(session: TTSInteractiveSession, args: list[str]) -> None:
-    """顯示或設定情緒"""
+    """顯示或設定情緒。
+
+    Preset 與手動向量都只定義「情緒配方」（比例），強度用直覺的 0~1 刻度，
+    內部線性映射到定案區間 [0.57, 0.73]（0.5 → 甜蜜點 0.65）：
+        emotion sad                  → 0.5（預設，= 0.65）
+        emotion sad 0                → 最弱（= 0.57）
+        emotion sad 1                → 最強（= 0.73）
+        emotion 0 0 1 0 0 0 0 0 0.8  → 手動向量 + 強度 0.8
+    """
     if not args:
         console.print(render_emotion_panel(session))
         return
 
     name = args[0].lower()
     if name in EMOTION_PRESETS:
+        user_strength = USER_STRENGTH_DEFAULT
+        if len(args) > 2:
+            console.print(f"  [yellow]Too many arguments. Use: emotion <preset> [strength 0~1][/]")
+            return
+        if len(args) == 2:
+            try:
+                user_strength = float(args[1])
+            except ValueError:
+                console.print(f"  [yellow]Invalid strength '{args[1]}'. Expected a number in 0~1.[/]")
+                return
+
         entry = EMOTION_PRESETS[name]
-        vec = get_preset_vector(entry)
         overrides = get_preset_overrides(entry)
-        session.set_emotion(list(vec))
+        vec = scale_to_user_strength(list(get_preset_vector(entry)), user_strength)
+        session.set_emotion(vec)
+        session.set_emotion_strength(user_to_strength(user_strength))
         session.set_emotion_overrides(overrides)
         pairs = [f"{l}={v:.2f}" for l, v in zip(EMOTION_LABELS, vec)]
         override_info = f"  [dim](overrides: {overrides})[/]" if overrides else ""
-        console.print(f"  [green]✓[/] Emotion set to [magenta]{name}[/]: [{', '.join(pairs)}]{override_info}")
+        console.print(f"  [green]✓[/] Emotion set to [magenta]{name}[/] "
+                      f"@ {max(0.0, min(1.0, user_strength)):.2f} "
+                      f"[dim](→ {user_to_strength(user_strength):.3f})[/]: "
+                      f"[{', '.join(pairs)}]{override_info}")
         return
 
-    # 嘗試 8 個浮點數
+    # 嘗試 8 個浮點數（可再帶第 9 個當強度）
     try:
         values = [float(a) for a in args]
-        if len(values) != 8:
-            console.print(f"  [yellow]Expected 8 values, got {len(values)}. Use: emotion <preset> or emotion H A S F D M U C[/]")
-            return
-        session.set_emotion(values)
-        session.set_emotion_overrides(None)  # 手動向量清除 overrides
-        pairs = [f"{l}={v:.2f}" for l, v in zip(EMOTION_LABELS, values)]
-        console.print(f"  [green]✓[/] Emotion set: [{', '.join(pairs)}]")
     except ValueError:
         console.print(f"  [yellow]Unknown preset '{name}'. Available: {', '.join(EMOTION_PRESETS.keys())}[/]")
+        return
+
+    user_strength = USER_STRENGTH_DEFAULT
+    if len(values) == 9:
+        values, user_strength = values[:8], values[8]
+    if len(values) != 8:
+        console.print(f"  [yellow]Expected 8 values, got {len(values)}. "
+                      f"Use: emotion <preset> [strength 0~1] or emotion H A S F D M U C [strength 0~1][/]")
+        return
+
+    vec = scale_to_user_strength(values, user_strength)
+    session.set_emotion(vec)
+    session.set_emotion_strength(user_to_strength(user_strength))
+    session.set_emotion_overrides(None)  # 手動向量清除 overrides
+    pairs = [f"{l}={v:.2f}" for l, v in zip(EMOTION_LABELS, vec)]
+    console.print(f"  [green]✓[/] Emotion set @ {max(0.0, min(1.0, user_strength)):.2f} "
+                  f"[dim](→ {user_to_strength(user_strength):.3f})[/]: [{', '.join(pairs)}]")
 
 
 def _cmd_language(session: TTSInteractiveSession, args: list[str]) -> None:
@@ -842,8 +881,8 @@ class EchoTTSCLI:
             ("say/save <<[MARKER]", "📝 Multiline input (default: EOF)", "green"),
             ("profile <text>", "⏱  Synthesis with timing report", "green"),
             ("", "", ""),
-            ("emotion", "🎭 Show/set emotion preset or 8D vector", "magenta"),
-            ("language", "🌐 Show/set synthesis language", "blue"),
+            ("emotion [name] [0-1]", "🎭 Show/set emotion preset or 8D vector (strength 0~1, default 0.5)", "magenta"),
+            ("language [zh|en|ja]", "🌐 Show/set synthesis language", "blue"),
             ("lora", "🧬 Toggle/configure LoRA adapter", "yellow"),
             ("speed", "🎚️ Adjust speech speed (+fast / -slow)", "blue"),
             ("poise", "🫁 Poise breathing system control", "green"),

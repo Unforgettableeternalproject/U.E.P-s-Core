@@ -1,8 +1,18 @@
 # 串流管線整合專案設計（Echo Stream）
 
-> 狀態：草案，待艾斯維爾裁決
+> ⚠️ **本文件已移轉，此處保留為歷史紀錄，不再更新。**
+>
+> 現行版本：`Echo-Stream/docs/design/echo-stream-design.md`
+>
+> 移轉時（2026-08-20）的主要修訂：
+> - §5 延遲預算：STT 從 400ms 上修為 700ms（400ms 是雲端專用串流 ASR 的量級）
+> - §7.4 收斂：late-context 注入不可行（LLM 串流中無法改 context），
+>   改為「首句用固定 filler」從源頭排除矛盾
+> - §7.5 收斂：TurnDetector 與 InterruptionDetector 分離為兩個 Protocol
+> - §9 待研究已完成：SentenceSplitter 確認是正解；Discord 不需要 AEC
+>
+> 原始狀態：草案，待艾斯維爾裁決
 > 日期：2026-08-20
-> 寫在 TTS 專案的 docs 下只是暫時的，定案後整份移到新 repo。
 
 ---
 

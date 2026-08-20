@@ -26,8 +26,10 @@ def _detect_language(text: str) -> str:
     """Detect text language: 'zh', 'en', 'ja', or 'other'.
 
     Heuristic rules:
-    - Japanese kana > 10% -> 'ja' (must check BEFORE CJK ratio:
-      Japanese text mixes kanji, kanji-ratio alone would misdetect 'zh')
+    - Any Japanese kana present -> 'ja' (must check BEFORE CJK ratio:
+      Japanese text mixes kanji, kanji-ratio alone would misdetect 'zh';
+      Chinese never contains kana, so a ratio threshold only loses —
+      kanji-heavy or punctuation-diluted Japanese would slip under it)
     - CJK chars (Unified Ideographs) > 30% -> 'zh'
     - Korean detected -> 'other'
     - Latin alphabet dominant -> 'en'
@@ -40,8 +42,7 @@ def _detect_language(text: str) -> str:
         return "en"
     total = max(len(text.strip()), 1)
     # Check for Japanese kana FIRST — kanji-heavy Japanese would trip the CJK check
-    kana = sum(1 for c in text if '぀' <= c <= 'ヿ' or 'ㇰ' <= c <= 'ㇿ')
-    if kana / total > 0.1:
+    if any('぀' <= c <= 'ヿ' or 'ㇰ' <= c <= 'ㇿ' for c in text):
         return "ja"
     cjk = sum(1 for c in text if '一' <= c <= '鿿' or '㐀' <= c <= '䶿')
     if cjk / total > 0.3:

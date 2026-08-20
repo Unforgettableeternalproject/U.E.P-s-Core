@@ -106,8 +106,13 @@ def test_cli_detect_language_japanese():
     assert "ja" in SUPPORTED_LANGUAGES
     # 假名為主的句子
     assert _detect_language("ほら、やっぱり成功したじゃない！") == "ja"
-    # 漢字+假名混合（假名 > 10% 即應判 ja，不被 CJK 比例搶走）
+    # 漢字+假名混合（假名優先，不被 CJK 比例搶走）
     assert _detect_language("信じてくれなかったくせに、もう！") == "ja"
+    # 漢字密集、假名極少（舊 10% 門檻會漏判成 zh）
+    assert _detect_language("本日午後三時、新宿駅集合の予定。") == "ja"
+    assert _detect_language("東京大学入学試験問題集を購入。") == "ja"
+    # 長文中假名被標點/數字稀釋（比例式門檻的另一個漏洞）
+    assert _detect_language("「二〇二六年八月二十日、午前十時三十分——第三會議室。」と書かれた。") == "ja"
     # 純中文與英文不受影響
     assert _detect_language("今天的天氣真的很不錯。") == "zh"
     assert _detect_language("The weather is nice today.") == "en"

@@ -304,8 +304,73 @@ def test_未知模型退回保守值():
 
 
 def test_config_可覆寫_context_window():
-    backend = OpenAIBackend(config={"model": "gpt-5.6-luna", "context_window": 400_000})
+    backend = OpenAIBackend(
+        config={
+            "model": "gpt-5.6-luna",
+            "context_window": 400_000,
+            "use_cost_threshold": False,
+        }
+    )
     assert backend.get_context_window_size() == 400_000
+
+
+# ── 價格門檻 ──────────────────────────────────────────────────────────────
+
+
+def test_luna_的_context_window():
+    """官方值：1,050,000（max input 922,000 / max output 128,000）。"""
+    backend = OpenAIBackend(model="gpt-5.6-luna", use_cost_threshold=False)
+    assert backend.get_context_window_size() == 1_050_000
+
+
+def test_有效上限預設卡在價格門檻():
+    """>272K input 會讓**整個請求** 2x input / 1.5x output。
+
+    老實回傳 1.05M 會讓壓縮永遠不觸發，然後每次請求都吃 2x 價格。
+    """
+    backend = OpenAIBackend(model="gpt-5.6-luna")
+    assert backend.get_context_window_size() == 272_000
+    assert backend.get_max_context_window() == 1_050_000
+
+
+def test_可以關掉價格門檻用滿長_context():
+    backend = OpenAIBackend(model="gpt-5.6-luna", use_cost_threshold=False)
+    assert backend.get_context_window_size() == 1_050_000
+
+
+def test_沒有價格跳階的模型不受影響():
+    backend = OpenAIBackend(model="gpt-4o")
+    assert backend.get_context_window_size() == 128_000
+
+
+# ── reasoning effort ──────────────────────────────────────────────────────
+
+
+async def test_預設帶_high_reasoning_effort():
+    """艾斯維爾定的基準。⚠️ 這直接影響首字延遲。"""
+    client = FakeAsyncClient(["x"])
+    backend = OpenAIBackend(api_key="test", async_client=client)
+
+    _ = [p async for p in backend.stream_query([Message(role="user", content="嗨")])]
+    assert client.completions.last_params["reasoning_effort"] == "high"
+
+
+async def test_可以調低_effort_換首字延遲():
+    client = FakeAsyncClient(["x"])
+    backend = OpenAIBackend(api_key="test", async_client=client, reasoning_effort="low")
+
+    _ = [p async for p in backend.stream_query([Message(role="user", content="嗨")])]
+    assert client.completions.last_params["reasoning_effort"] == "low"
+
+
+async def test_effort_設_None_就不傳():
+    """給不支援這個參數的模型用。"""
+    client = FakeAsyncClient(["x"])
+    backend = OpenAIBackend(api_key="test", async_client=client, reasoning_effort=None)
+    backend.reasoning_effort = None
+
+    _ = [p async for p in backend.stream_query([Message(role="user", content="嗨")])]
+    assert "reasoning_effort" not in client.completions.last_params
 
 
 def test_tiktoken_不認識模型時不會爆():

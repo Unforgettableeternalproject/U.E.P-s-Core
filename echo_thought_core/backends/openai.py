@@ -48,6 +48,7 @@ logger = logging.getLogger(__name__)
 #    要精確值請在 config 明確指定 context_window。
 
 OPENAI_CONTEXT_WINDOWS: dict[str, int] = {
+    "gpt-5.6-luna": 1_050_000,
     "gpt-4o": 128_000,
     "gpt-4o-mini": 128_000,
     "gpt-4-turbo": 128_000,
@@ -55,20 +56,49 @@ OPENAI_CONTEXT_WINDOWS: dict[str, int] = {
     "gpt-3.5-turbo": 16_385,
 }
 
+COST_THRESHOLDS: dict[str, int] = {
+    "gpt-5.6-luna": 272_000,
+}
+"""價格跳階的 input token 數。
+
+GPT-5.6 系列：**超過 272K input tokens 的請求，整個請求**按 2x input /
+1.5x output 計價（不是只有超出的部分）。
+
+這對壓縮策略是關鍵：如果 :meth:`OpenAIBackend.get_context_window_size`
+老實回傳 1,050,000，ContextManager 會覺得「空間還很多」而永遠不觸發壓縮，
+然後每一次請求都吃 2x 價格。所以預設用這個門檻當**有效工作上限**。
+"""
+
 DEFAULT_CONTEXT_WINDOW = 128_000
 """未知模型的保守估計。新模型通常更大，估小只是浪費空間，估大會出事。"""
+
+DEFAULT_REASONING_EFFORT = "high"
+"""預設推理強度（艾斯維爾 2026-08-20 定為基準）。
+
+⚠️ **這個參數直接影響首字延遲。** 推理強度越高，模型在吐出第一個 token
+之前思考得越久——對串流語音管線來說，那段思考時間全部計入 TTFA。
+要壓低 TTFA 就得往 ``low`` / ``none`` 調，這是品質與延遲的直接取捨。
+gpt-5.6-luna 支援 none / low / medium / high / xhigh / max。
+"""
 
 DEFAULT_ENCODING = "o200k_base"
 """新模型（GPT-4o 之後）的 tokenizer。tiktoken 不認識模型名稱時的退路。"""
 
 
-def _resolve_context_window(model: str) -> int:
-    """模糊匹配 context window — 依序嘗試精確、前綴。"""
-    if model in OPENAI_CONTEXT_WINDOWS:
-        return OPENAI_CONTEXT_WINDOWS[model]
-    for key in sorted(OPENAI_CONTEXT_WINDOWS, key=len, reverse=True):
+def _lookup(table: dict[str, int], model: str) -> int | None:
+    """模糊匹配 — 依序嘗試精確、前綴（長的優先）。"""
+    if model in table:
+        return table[model]
+    for key in sorted(table, key=len, reverse=True):
         if model.startswith(key):
-            return OPENAI_CONTEXT_WINDOWS[key]
+            return table[key]
+    return None
+
+
+def _resolve_context_window(model: str) -> int:
+    value = _lookup(OPENAI_CONTEXT_WINDOWS, model)
+    if value is not None:
+        return value
     logger.warning(
         "[OpenAI] 未知模型 %r 的 context window，退回保守值 %d。"
         "請在 config 指定 context_window 以取得精確值。",
@@ -76,6 +106,11 @@ def _resolve_context_window(model: str) -> int:
         DEFAULT_CONTEXT_WINDOW,
     )
     return DEFAULT_CONTEXT_WINDOW
+
+
+def _resolve_cost_threshold(model: str) -> int | None:
+    """取得價格跳階門檻。沒有跳階的模型回 None。"""
+    return _lookup(COST_THRESHOLDS, model)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -100,6 +135,8 @@ class OpenAIBackend(AbstractBackend):
         character: str = "",
         timeout: int = 120,
         api: str = "chat",
+        reasoning_effort: str | None = None,
+        use_cost_threshold: bool = True,
         client: Any = None,
         async_client: Any = None,
     ):
@@ -108,6 +145,13 @@ class OpenAIBackend(AbstractBackend):
         self.model_name: str = cfg.get("model", model)
         self.api: str = cfg.get("api", api)
         """``chat`` 或 ``responses``。"""
+
+        self.reasoning_effort: str | None = cfg.get(
+            "reasoning_effort", reasoning_effort or DEFAULT_REASONING_EFFORT
+        )
+        """推理強度。⚠️ **直接影響首字延遲**——強度越高，吐出第一個 token
+        前思考得越久，那段時間全部計入串流管線的 TTFA。
+        設為 None 表示不傳這個參數（給不支援的模型用）。"""
 
         self.character: str = cfg.get("character", character)
         self.timeout: int = cfg.get("timeout", timeout)
@@ -138,6 +182,10 @@ class OpenAIBackend(AbstractBackend):
 
         self._context_window: int = cfg.get("context_window") or _resolve_context_window(
             self.model_name
+        )
+        self._use_cost_threshold: bool = cfg.get("use_cost_threshold", use_cost_threshold)
+        self._cost_threshold: int | None = cfg.get(
+            "cost_threshold", _resolve_cost_threshold(self.model_name)
         )
         self._encoder = None
         self._last_usage: dict[str, int] = {}
@@ -199,6 +247,23 @@ class OpenAIBackend(AbstractBackend):
     # ── AbstractBackend 介面 ──────────────────────────────────────────────────
 
     def get_context_window_size(self) -> int:
+        """回傳**有效工作上限**，不一定是模型的理論上限。
+
+        GPT-5.6 系列的 context window 是 1,050,000，但超過 272K input tokens
+        的請求會**整個請求**按 2x input / 1.5x output 計價。老實回傳 1.05M
+        會讓 ContextManager 覺得空間還很多而永遠不觸發壓縮，
+        然後每次請求都吃 2x 價格。
+
+        所以預設取 ``min(context_window, cost_threshold)``，讓壓縮在跳階前
+        就開始工作。不在乎成本、要用滿長 context 的話，
+        設 ``use_cost_threshold=False``。
+        """
+        if self._use_cost_threshold and self._cost_threshold:
+            return min(self._context_window, self._cost_threshold)
+        return self._context_window
+
+    def get_max_context_window(self) -> int:
+        """模型的理論上限，不考慮價格跳階。"""
         return self._context_window
 
     def count_tokens(self, text: str) -> int:
@@ -318,6 +383,8 @@ class OpenAIBackend(AbstractBackend):
             params["instructions"] = instructions
         if self.temperature is not None:
             params["temperature"] = self.temperature
+        if self.reasoning_effort:
+            params["reasoning"] = {"effort": self.reasoning_effort}
 
         if use_previous_response and self._last_response_id:
             params["previous_response_id"] = self._last_response_id
@@ -414,6 +481,8 @@ class OpenAIBackend(AbstractBackend):
         }
         if self.temperature is not None:
             params["temperature"] = self.temperature
+        if self.reasoning_effort:
+            params["reasoning_effort"] = self.reasoning_effort
         kwargs.pop("mode", None)
         params.update(kwargs)
         return params

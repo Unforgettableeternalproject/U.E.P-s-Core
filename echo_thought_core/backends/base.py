@@ -2,10 +2,11 @@
 Abstract Backend — 多後端的統一介面
 
 所有 LLM 後端必須實作此介面。
-提供 token 計數、查詢、摘要、完整壓縮四大功能。
+提供 token 計數、查詢、串流查詢、摘要、完整壓縮五大功能。
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from typing import Any
 
 from echo_thought_core.schemas.message import Message
@@ -45,6 +46,57 @@ class AbstractBackend(ABC):
             dict，至少包含 "text" 鍵
         """
         ...
+
+    async def stream_query(
+        self,
+        messages: list[Message],
+        system_instruction: str | None = None,
+        **kwargs,
+    ) -> AsyncIterator[str]:
+        """串流查詢 LLM API — 逐段吐出文字片段。
+
+        為什麼是「片段」而不是「完整回應」：
+            串流語音管線（Echo Stream）要在句子邊界就把文字送去 TTS 合成，
+            讓 LLM 生成下一句的時間被 TTS 合成上一句的時間吃掉。等整段
+            生成完才回傳，這個重疊就沒了，各層耗時直接相加。
+
+        **這不是 @abstractmethod。** 預設實作退回 :meth:`query`，
+        把完整回應一次吐出——這樣既有後端（gemini / ollama）不必改就能用，
+        只是拿不到串流的延遲好處。真正在意首字延遲的後端應該覆寫它。
+
+        Args:
+            messages: 對話訊息列表（含歷史）
+            system_instruction: 系統提示詞
+            **kwargs: 後端特定參數
+
+        Yields:
+            文字片段。串接起來等於完整回應。
+        """
+        prompt = ""
+        for msg in reversed(messages):
+            if msg.role == "user":
+                prompt = msg.content
+                break
+
+        result = self.query(
+            prompt,
+            mode=kwargs.pop("mode", "chat"),
+            system_instruction=system_instruction,
+            **kwargs,
+        )
+        text = result.get("text", "") if isinstance(result, dict) else str(result)
+        if text:
+            yield text
+
+    @property
+    def supports_streaming(self) -> bool:
+        """是否為真串流。
+
+        預設 False——:meth:`stream_query` 的退回實作雖然能跑，
+        但拿不到延遲好處。呼叫端可據此警告使用者，
+        而不是讓人以為串流生效了卻量到爛數字。
+        """
+        return False
 
     @abstractmethod
     async def summarize(

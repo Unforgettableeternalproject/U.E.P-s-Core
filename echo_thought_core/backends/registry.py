@@ -170,5 +170,10 @@ class BackendRegistry:
             from echo_thought_core.backends.ollama import OllamaBackend
             return OllamaBackend(config=config)
 
+        def _openai_factory(config: dict) -> AbstractBackend:
+            from echo_thought_core.backends.openai import OpenAIBackend
+            return OpenAIBackend(config=config)
+
         self.register("gemini", _gemini_factory)
         self.register("ollama", _ollama_factory)
+        self.register("openai", _openai_factory)

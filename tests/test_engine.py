@@ -131,3 +131,24 @@ def test_clear_all_clears_entities(temp_storage):
 
     assert engine.entity_store.count() == 0
     assert not (temp_storage / "entities" / "entities.json").exists()
+
+
+def test_get_profile_lists_user_concepts_only(temp_storage):
+    """profile = subject=user 的 active concept 全列，不靠相似度。"""
+    engine = MemoryEngine(storage_path=temp_storage)
+    assert engine.get_profile() == ""
+    sem = engine.semantic
+    u = sem.upsert_concept(name="妹妹", description="使用者的妹妹即將就讀筑波大學")
+    sem.set_subject(u, "user")
+    sem.get(u).confidence = 0.9
+    u2 = sem.upsert_concept(name="討厭被糾正", description="使用者不希望每次都被糾正英文")
+    sem.set_subject(u2, "user")
+    sem.get(u2).confidence = 0.6
+    a = sem.upsert_concept(name="先肯定再建議", description="agent 回覆風格")
+    sem.set_subject(a, "agent")
+    text = engine.get_profile()
+    assert text.startswith("- 妹妹：使用者的妹妹即將就讀筑波大學"), "confidence 高的在前"
+    assert "討厭被糾正" in text
+    assert "先肯定再建議" not in text
+    short = engine.get_profile(max_chars=10)
+    assert len(short) <= 11 and short.endswith("…")

@@ -23,6 +23,10 @@ class Concept:
         name: 概念名稱（唯一鍵）
         description: 概念描述（canonical summary，應保持精簡）
         concept_type: 類型 (entity/rule/abstract/pattern)
+        subject: 這個概念是「關於誰」的 — user（使用者本人的事實/偏好，
+            構成 profile）/ agent（agent 自己的風格或規則）/ world（其他知識）。
+            與 concept_type 正交：「使用者討厭香菜」是 rule+user，
+            「回覆先肯定再建議」是 pattern+agent。
         embedding: 向量嵌入（與 EpisodicMemory 共用相同模型維度）
         source_episode_ids: 蒸餾來源的 Episode ID 列表（溯源用）
         confidence: 概念可信度 (0-1)，越多來源越高
@@ -41,6 +45,7 @@ class Concept:
     name: str
     description: str
     concept_type: str = "entity"  # entity | rule | abstract | pattern
+    subject: str = "world"  # user | agent | world
 
     id: str = field(default="")
     embedding: list[float] = field(default_factory=list)
@@ -172,6 +177,7 @@ class Concept:
             "name": self.name,
             "description": self.description,
             "concept_type": self.concept_type,
+            "subject": self.subject,
             "embedding": self.embedding,
             "source_episode_ids": self.source_episode_ids,
             "confidence": self.confidence,

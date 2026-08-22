@@ -50,6 +50,10 @@ DISTILLATION_RESPONSE_SCHEMA = {
                         "type": "string",
                         "enum": ["entity", "rule", "abstract", "pattern"],
                     },
+                    "subject": {
+                        "type": "string",
+                        "enum": ["user", "agent", "world"],
+                    },
                     "source_indices": {
                         "type": "array",
                         "items": {"type": "integer"},
@@ -64,7 +68,12 @@ DISTILLATION_RESPONSE_SCHEMA = {
 
 # 蒸餾 prompt 模板
 _DISTILLATION_PROMPT = """\
-你是一個知識蒸餾專家。分析以下對話記錄，從中提取可複用的抽象概念或模式。
+你是一個知識蒸餾專家。分析以下對話記錄，從中提取值得長期記住的知識。
+
+你是一個陪伴型 agent 的長期記憶。**最重要的是認識使用者**：他們的事實
+（家人、寵物、工作、計畫）、偏好（喜歡/討厭什麼）、以及對你提出的要求或修正
+（例如「不要每次糾正我的英文」）。這些構成使用者的 profile，優先提取。
+關於你自己回覆風格的歸納次要，沒有明確規律時不要硬湊。
 
 ## 對話記錄
 
@@ -80,6 +89,7 @@ _DISTILLATION_PROMPT = """\
     "name": "概念名稱（簡短、唯一）",
     "description": "概念描述（1-2句話）",
     "concept_type": "entity | rule | abstract | pattern",
+    "subject": "user | agent | world",
     "source_indices": [0, 2]
   }}
 ]
@@ -89,6 +99,9 @@ _DISTILLATION_PROMPT = """\
 - 只提取跨多個對話出現的模式或可泛化的知識
 - 不要重複原始對話內容，要「抽象」和「歸納」
 - concept_type 選擇：entity（人/地/物）、rule（規則/偏好）、abstract（抽象概念）、pattern（行為模式）
+- subject 選擇：user（關於使用者本人——事實、偏好、對你的要求）、agent（關於你自己的行為規則）、world（其他知識）
+- 使用者說過一次的具體事實（「我妹妹要去筑波大學」）就值得提取為 subject=user 的 entity，不必等重複出現
+- description 用第三人稱陳述使用者（「使用者的妹妹即將就讀筑波大學」），不要寫「我」
 - source_indices 是上面對話記錄的索引（從 0 開始）
 - 最多輸出 5 個概念
 - 如果沒有值得提取的概念，輸出空陣列 []
@@ -384,6 +397,9 @@ class KnowledgeDistillation:
         name = concept_data["name"]
         description = concept_data["description"]
         concept_type = concept_data.get("concept_type", "abstract")
+        subject = concept_data.get("subject") or "world"
+        if subject not in ("user", "agent", "world"):
+            subject = "world"
         source_indices = concept_data.get("source_indices", [])
 
         # 確定來源 Episode
@@ -434,6 +450,9 @@ class KnowledgeDistillation:
         if concept_id is None:
             # Inhibitor 拒絕——不是錯誤，也不算 created/updated
             return None
+
+        # subject 不穿 patch pipeline，寫入後補標
+        self.semantic.set_subject(concept_id, subject)
 
         # 在 MemoryGraph 中註冊概念節點（若不存在）
         if not self.graph.has_node(concept_id):

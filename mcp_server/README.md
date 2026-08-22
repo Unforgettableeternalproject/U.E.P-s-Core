@@ -65,6 +65,7 @@ $env:PYTHONIOENCODING = "utf-8"
 | `retrieve_memories` | 檢索相關記憶，返回格式化文字 | `query` |
 | `search_concepts` | 搜尋語義概念 | `query` |
 | `get_memory_stats` | 取得系統統計資訊 | （無） |
+| `get_profile` | 使用者 profile：subject=user 的長期記憶全列（不靠相似度） | （無） |
 | `trigger_dream` | 觸發 Dream Engine 記憶鞏固 | （無） |
 | `list_episodes` | 列出情節記憶 | （無） |
 | `store_observation` | 存儲重要觀察（高顯著性） | `content` |

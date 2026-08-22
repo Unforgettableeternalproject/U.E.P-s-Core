@@ -443,3 +443,43 @@ class TestSemanticStats:
         assert stats["type_distribution"]["entity"] == 1
         assert stats["type_distribution"]["rule"] == 1
         assert stats["concepts_with_embeddings"] == 2
+
+
+# ─── subject（使用者 profile 的基礎）──────────────────────────────────
+class TestSubject:
+    def test_default_subject_is_world(self, sem: SemanticMemory):
+        cid = sem.upsert_concept(name="量子力學", description="物理")
+        assert sem.get(cid).subject == "world"
+
+    def test_set_subject_persists(self, storage_dir: Path, sem: SemanticMemory):
+        cid = sem.upsert_concept(name="妹妹", description="使用者的妹妹即將就讀筑波大學")
+        assert sem.set_subject(cid, "user") is True
+        reloaded = SemanticMemory(storage_path=storage_dir, embed_fn=_fake_embed_fn)
+        assert reloaded.get(cid).subject == "user"
+
+    def test_set_subject_rejects_unknown(self, sem: SemanticMemory):
+        cid = sem.upsert_concept(name="x", description="y")
+        with pytest.raises(ValueError):
+            sem.set_subject(cid, "alien")
+        assert sem.set_subject("concept_nope", "user") is False
+
+    def test_list_concepts_filters_subject_and_status(self, sem: SemanticMemory):
+        u1 = sem.upsert_concept(name="討厭香菜", description="使用者不吃香菜")
+        u2 = sem.upsert_concept(name="養烏龜", description="使用者養了一隻澤龜")
+        a1 = sem.upsert_concept(name="先肯定再建議", description="agent 回覆風格")
+        sem.set_subject(u1, "user")
+        sem.set_subject(u2, "user")
+        sem.set_subject(a1, "agent")
+        sem.get(u2).status = "deprecated"
+        names = {c.name for c in sem.list_concepts(subject="user")}
+        assert names == {"討厭香菜", "養烏龜"}
+        names = {c.name for c in sem.list_concepts(subject="user", status="active")}
+        assert names == {"討厭香菜"}
+        assert [c.name for c in sem.list_concepts(subject="agent")] == ["先肯定再建議"]
+
+    def test_old_data_without_subject_loads(self, sem: SemanticMemory):
+        """向後相容：舊 concepts.json 沒有 subject 欄位。"""
+        from echo_memory.schemas.concept import Concept
+
+        c = Concept.from_dict({"name": "舊概念", "description": "d", "concept_type": "rule"})
+        assert c.subject == "world"

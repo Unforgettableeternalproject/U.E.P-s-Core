@@ -175,6 +175,25 @@ def register_tools(server: Server, get_engine: Callable) -> None:
                 },
             ),
             Tool(
+                name="get_profile",
+                description=(
+                    "取得使用者 profile：Dream 蒸餾出的、關於使用者本人的長期記憶"
+                    "（事實、偏好、對 agent 的要求）。不靠相似度、全部列出，"
+                    "適合「你記得我什麼」這類開放式回顧，或在對話開頭建立脈絡。"
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "namespace_id": _namespace_schema(),
+                        "max_chars": {
+                            "type": "integer",
+                            "description": "輸出字元上限（預設 800）",
+                        },
+                    },
+                    "required": [],
+                },
+            ),
+            Tool(
                 name="trigger_dream",
                 description=(
                     "觸發 Dream Engine 執行離線記憶鞏固。"
@@ -270,6 +289,8 @@ def register_tools(server: Server, get_engine: Callable) -> None:
                 result = await _handle_search_concepts(get_engine, args)
             elif name == "get_memory_stats":
                 result = await _handle_get_memory_stats(get_engine, args)
+            elif name == "get_profile":
+                result = await _handle_get_profile(get_engine, args)
             elif name == "trigger_dream":
                 result = await _handle_trigger_dream(get_engine, args)
             elif name == "list_episodes":
@@ -383,6 +404,18 @@ async def _handle_search_concepts(
     for i, (name, confidence) in enumerate(concept_list, 1):
         lines.append(f"  {i}. {name}（信心度: {confidence}）")
     return "\n".join(lines)
+
+
+async def _handle_get_profile(get_engine: Callable, args: dict[str, Any]) -> str:
+    """使用者 profile（subject=user 的 concept 全列）。"""
+    max_chars = int(args.get("max_chars") or 800)
+
+    def _sync() -> str:
+        return _get_engine(get_engine, args).get_profile(max_chars=max_chars)
+
+    text = await asyncio.to_thread(_sync)
+    logger.info("[MCP Handler] get_profile 完成（%d 字元）", len(text))
+    return text or "（尚無關於使用者的長期記憶——Dream 蒸餾後才會出現）"
 
 
 async def _handle_get_memory_stats(get_engine: Callable, args: dict[str, Any]) -> str:

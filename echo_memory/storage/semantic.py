@@ -255,18 +255,39 @@ class SemanticMemory:
         )
         return results
 
+    def set_subject(self, concept_id: str, subject: str) -> bool:
+        """標記概念的主體（user / agent / world）並持久化。
+
+        蒸餾寫入走 patch pipeline（coordinator → inhibitor → payload），
+        subject 不穿那四層，寫入後在這裡補一次。
+        """
+        if subject not in ("user", "agent", "world"):
+            raise ValueError(f"subject 必須是 user/agent/world，不是 {subject!r}")
+        with self._lock:
+            concept = self._concepts_by_id.get(concept_id)
+            if concept is None:
+                return False
+            if concept.subject != subject:
+                concept.subject = subject
+                self._save()
+            return True
+
     def list_concepts(
         self,
         concept_type: str | None = None,
         limit: int | None = 50,
         offset: int = 0,
         sort_by: str = "updated_at",
+        subject: str | None = None,
+        status: str | None = None,
     ) -> list[Concept]:
         """
         列出概念，支援篩選和分頁。
 
         Args:
             concept_type: 若提供，只返回該類型的概念
+            subject: 若提供，只返回該主體的概念（user / agent / world）
+            status: 若提供，只返回該狀態的概念（active / deprecated / archived）
             limit: 每頁最多返回數量。None 表示不限制（回傳全部）。
             offset: 跳過的筆數
             sort_by: 排序欄位 ("updated_at" / "confidence" / "access_count")
@@ -278,6 +299,10 @@ class SemanticMemory:
 
         if concept_type is not None:
             concepts = [c for c in concepts if c.concept_type == concept_type]
+        if subject is not None:
+            concepts = [c for c in concepts if c.subject == subject]
+        if status is not None:
+            concepts = [c for c in concepts if c.status == status]
 
         if sort_by == "confidence":
             concepts.sort(key=lambda c: c.confidence, reverse=True)

@@ -423,3 +423,36 @@ def test_inhibitor_rejection_is_not_an_error(storage):
     assert report.concepts_created == 0 and report.concepts_updated == 0
     assert report._distilled_episode_ids == [], "全被拒絕不該標 dreamed"
     assert "拒絕 2" in report.summary()
+
+
+# ─── subject 流入蒸餾 ─────────────────────────────────────────────────
+def _mock_llm_fn_with_subject(prompt: str) -> str:
+    return json.dumps([
+        {"name": "壽司偏好", "description": "使用者喜歡壽司", "concept_type": "rule",
+         "subject": "user", "source_indices": [0, 1]},
+        {"name": "天氣寒暄", "description": "agent 會順著天氣接話", "concept_type": "pattern",
+         "subject": "agent", "source_indices": [2]},
+        {"name": "怪主體", "description": "x", "concept_type": "abstract",
+         "subject": "martian", "source_indices": [2]},
+    ], ensure_ascii=False)
+
+
+def test_distillation_sets_subject_and_profile(storage):
+    episodic, semantic, graph = storage
+    _store_high_salience_episodes(episodic)
+    distiller = KnowledgeDistillation(
+        episodic=episodic, semantic=semantic, graph=graph, llm_fn=_mock_llm_fn_with_subject,
+    )
+    report = distiller.run()
+    assert report.concepts_created == 3
+    assert semantic.get_by_name("壽司偏好").subject == "user"
+    assert semantic.get_by_name("天氣寒暄").subject == "agent"
+    assert semantic.get_by_name("怪主體").subject == "world", "不認得的 subject 退回 world"
+    assert [c.name for c in semantic.list_concepts(subject="user")] == ["壽司偏好"]
+
+
+def test_prompt_mentions_subject_and_user_priority():
+    from echo_memory.dream.distillation import _DISTILLATION_PROMPT
+
+    assert '"subject"' in _DISTILLATION_PROMPT
+    assert "認識使用者" in _DISTILLATION_PROMPT

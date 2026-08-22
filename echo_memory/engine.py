@@ -454,6 +454,28 @@ class MemoryEngine:
         """記錄程序執行失敗"""
         return self.procedural.record_failure(procedure_id)
 
+    def get_profile(self, max_chars: int = 800, limit: int = 30) -> str:
+        """使用者 profile：所有 subject=user 的 active concept，不靠相似度。
+
+        對應 U.E.P Core mem_module 的 profile_memories_provider
+        （similarity_threshold=0、全撈）——profile 是常駐脈絡，不是檢索結果。
+        「你還記得我什麼」這種開放式問題向量檢索答不了，靠這個。
+        按 confidence 排，截到 max_chars。沒有就回空字串。
+        """
+        concepts = self.semantic.list_concepts(
+            subject="user", status="active", limit=limit, sort_by="confidence",
+        )
+        if not concepts:
+            return ""
+        lines = []
+        for c in concepts:
+            desc = (c.description or "").strip().replace("\n", " ")
+            lines.append(f"- {c.name}：{desc}" if desc else f"- {c.name}")
+        text = "\n".join(lines)
+        if len(text) > max_chars:
+            text = text[:max_chars].rstrip() + "…"
+        return text
+
     def get_stats(self) -> dict[str, int]:
         """獲取記憶系統統計資訊"""
         return {

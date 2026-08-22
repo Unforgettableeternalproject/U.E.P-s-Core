@@ -17,7 +17,7 @@ from echo_thought_core.backends.openai import (
     _resolve_context_window,
 )
 from echo_thought_core.backends.registry import BackendRegistry
-from echo_thought_core.schemas.message import Message
+from echo_thought_core.schemas.message import Message, ToolCall
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -44,19 +44,38 @@ class LegacyBackend(AbstractBackend):
         return "壓縮"
 
 
+class _Fn:
+    def __init__(self, name: str | None, arguments: str | None) -> None:
+        self.name = name
+        self.arguments = arguments
+
+
+class _ToolDelta:
+    def __init__(self, index: int, id: str | None, name: str | None, arguments: str | None):
+        self.index = index
+        self.id = id
+        self.function = _Fn(name, arguments)
+
+
 class _Delta:
-    def __init__(self, content: str | None) -> None:
+    def __init__(self, content: str | None, tool_calls: list | None = None) -> None:
         self.content = content
+        self.tool_calls = tool_calls
 
 
 class _Choice:
-    def __init__(self, content: str | None) -> None:
-        self.delta = _Delta(content)
+    def __init__(self, content: str | None, tool_calls: list | None = None) -> None:
+        self.delta = _Delta(content, tool_calls)
 
 
 class _Chunk:
-    def __init__(self, content: str | None, empty: bool = False) -> None:
-        self.choices = [] if empty else [_Choice(content)]
+    def __init__(self, content, empty: bool = False) -> None:
+        if empty:
+            self.choices = []
+        elif isinstance(content, list):  # tool_call 分塊
+            self.choices = [_Choice(None, content)]
+        else:
+            self.choices = [_Choice(content)]
 
 
 class _FakeStream:
@@ -257,6 +276,56 @@ async def test_tool_訊息不會被送進_chat():
 
     roles = [m["role"] for m in client.completions.last_params["messages"]]
     assert "tool" not in roles
+
+
+# ── 工具呼叫 ──────────────────────────────────────────────────────────────
+
+
+async def test_tool_calls_分塊累積後整包_yield():
+    """id/name 在第一塊、arguments 分散在後續塊；文字片段照舊先吐。"""
+    client = FakeAsyncClient([
+        "好",
+        [_ToolDelta(0, "call_1", "deep_recall", '{"qu')],
+        [_ToolDelta(0, None, None, 'ery": "貓"}')],
+    ])
+    backend = OpenAIBackend(api_key="test", async_client=client)
+
+    out = [p async for p in backend.stream_query(
+        [Message(role="user", content="x")], tools=[{"type": "function"}]
+    )]
+
+    assert out[0] == "好"
+    assert isinstance(out[1], ToolCall)
+    assert out[1].id == "call_1"
+    assert out[1].name == "deep_recall"
+    assert out[1].arguments == '{"query": "貓"}'
+    assert client.completions.last_params["tools"] == [{"type": "function"}]
+
+
+async def test_沒傳_tools_輸出只有字串():
+    client = FakeAsyncClient(["a", "b"])
+    backend = OpenAIBackend(api_key="test", async_client=client)
+    out = [p async for p in backend.stream_query([Message(role="user", content="x")])]
+    assert all(isinstance(p, str) for p in out)
+
+
+async def test_工具結果與發出呼叫的_assistant_訊息會送回_api():
+    client = FakeAsyncClient(["續寫"])
+    backend = OpenAIBackend(api_key="test", async_client=client)
+    call = ToolCall(id="call_1", name="deep_recall", arguments='{"query": "貓"}')
+    messages = [
+        Message(role="user", content="問題"),
+        Message(role="assistant", content="", metadata={"tool_calls": [call]}),
+        Message(role="tool", content="找到三筆", tool_call_id="call_1", tool_name="deep_recall"),
+    ]
+    _ = [p async for p in backend.stream_query(messages)]
+
+    sent = client.completions.last_params["messages"]
+    assert sent[1]["role"] == "assistant"
+    assert sent[1]["content"] is None
+    assert sent[1]["tool_calls"][0]["id"] == "call_1"
+    assert sent[1]["tool_calls"][0]["function"]["name"] == "deep_recall"
+    assert sent[2] == {"role": "tool", "tool_call_id": "call_1", "content": "找到三筆"}
 
 
 # ── 認證 ──────────────────────────────────────────────────────────────────

@@ -63,3 +63,31 @@ class ConversationHistory(BaseModel):
     def turn_count(self) -> int:
         """使用者訊息數量"""
         return sum(1 for m in self.messages if m.role == "user")
+
+
+# ── 工具呼叫 ──────────────────────────────────────────────────────────────────
+
+
+class ToolCall(BaseModel):
+    """LLM 在串流中提出的一次工具呼叫。
+
+    ``stream_query(tools=[...])`` 時，後端把 ``delta.tool_calls`` 逐塊累積，
+    在該輪串流結束時以這個物件 yield 出來（夾在文字片段之間，消費端用
+    ``isinstance`` 區分）。沒傳 ``tools`` 的呼叫永遠不會看到它，
+    既有的純文字消費端不受影響。
+
+    ``arguments`` 保留 API 給的原始 JSON 字串——解析交給消費端，
+    後端不該替它決定「壞 JSON 要怎麼辦」。
+    """
+
+    id: str = Field(..., description="provider 給的 call id，回傳結果時要帶回")
+    name: str = Field(..., description="工具名稱")
+    arguments: str = Field("", description="原始 JSON 字串的參數")
+
+    def to_openai(self) -> dict[str, Any]:
+        """組成 assistant message 裡 ``tool_calls`` 陣列的元素。"""
+        return {
+            "id": self.id,
+            "type": "function",
+            "function": {"name": self.name, "arguments": self.arguments or "{}"},
+        }

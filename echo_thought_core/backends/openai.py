@@ -337,12 +337,15 @@ class OpenAIBackend(AbstractBackend):
           代價是**壓縮機制失去對 context 的控制權**。
           要啟用得明確傳 ``use_previous_response=True``。
 
-        工具呼叫（只有 ``chat`` 路徑支援）：傳 ``tools=[...]``（OpenAI function
-        schema）後，模型若決定呼叫工具，會在文字片段之後 yield
+        工具呼叫（兩條路徑都支援）：傳 ``tools=[...]``（chat 格式的 function
+        schema，responses 路徑會自動攤平）後，模型若決定呼叫工具，會在文字片段之後 yield
         :class:`~echo_thought_core.schemas.message.ToolCall`。呼叫端執行完工具，
         把「發出呼叫的 assistant message（metadata.tool_calls）」與
         「role=tool 的結果訊息（tool_call_id）」接回 messages 再呼叫一次即可。
         沒傳 ``tools`` 時輸出只有 str，既有消費端不受影響。
+
+        ⚠️ gpt-5.6-luna 的 chat 路徑不接受 tools + reasoning_effort，會被降成
+        ``none``；要工具又要推理，用 ``api="responses"``。
         """
         if self.api == "responses":
             async for piece in self._stream_responses(
@@ -364,6 +367,15 @@ class OpenAIBackend(AbstractBackend):
             stream=True,
             **kwargs,
         )
+        if params.get("tools") and params.get("reasoning_effort") not in (None, "none"):
+            # gpt-5.6-luna 在 /v1/chat/completions 不接受「function tools + reasoning_effort」
+            # （400：要嘛走 /v1/responses，要嘛 effort=none）。這裡選後者保住工具；
+            # 要保留推理請用 api="responses"。
+            logger.warning(
+                "chat completions 帶 tools 時 reasoning_effort=%r 不被接受，本次改為 none",
+                params["reasoning_effort"],
+            )
+            params["reasoning_effort"] = "none"
         stream = await self.async_client.chat.completions.create(**params)
         # tool_calls 是分塊送來的：第一塊帶 id/name，後續塊只帶 arguments 片段，
         # 用 index 對回同一次呼叫。串流結束才整包 yield——半截 JSON 沒人能用。
@@ -419,12 +431,16 @@ class OpenAIBackend(AbstractBackend):
             )
             params["input"] = latest
         else:
-            params["input"] = [
-                {"role": m.role, "content": m.content}
-                for m in messages
-                if m.role in ("user", "assistant", "system")
-            ]
+            params["input"] = self._build_responses_input(messages)
 
+        tools = kwargs.pop("tools", None)
+        if tools:
+            # Responses API 的 tool schema 是平的（name/description/parameters 直接在
+            # 頂層），chat 那種 {"type":"function","function":{...}} 要攤開
+            params["tools"] = [
+                {"type": "function", **t["function"]} if "function" in t else t
+                for t in tools
+            ]
         params.update(kwargs)
 
         stream = await self.async_client.responses.create(**params)
@@ -434,6 +450,13 @@ class OpenAIBackend(AbstractBackend):
                 delta = getattr(event, "delta", "")
                 if delta:
                     yield delta
+            elif event_type == "response.output_item.done":
+                # function_call item 在 done 時 arguments 已經完整，不必自己拼 delta
+                item = getattr(event, "item", None)
+                if getattr(item, "type", "") == "function_call":
+                    yield ToolCall(
+                        id=item.call_id, name=item.name, arguments=item.arguments or ""
+                    )
             elif event_type == "response.completed":
                 response = getattr(event, "response", None)
                 if response is not None:
@@ -476,6 +499,41 @@ class OpenAIBackend(AbstractBackend):
     def _system_text(self, system_instruction: str | None) -> str:
         parts = [p for p in (self.character, system_instruction) if p]
         return "\n\n".join(parts)
+
+    def _build_responses_input(self, messages: list[Message]) -> list[dict[str, Any]]:
+        """Responses API 的 input items。
+
+        工具往返的表示法與 chat 不同：發出呼叫 = ``function_call`` item
+        （不是 assistant message 的欄位）、結果 = ``function_call_output`` item。
+        """
+        items: list[dict[str, Any]] = []
+        for m in messages:
+            if m.role == "tool":
+                if m.tool_call_id:
+                    items.append(
+                        {
+                            "type": "function_call_output",
+                            "call_id": m.tool_call_id,
+                            "output": m.content,
+                        }
+                    )
+                continue
+            if m.role not in ("user", "assistant", "system"):
+                continue
+            calls = m.metadata.get("tool_calls") if m.role == "assistant" else None
+            if m.content:
+                items.append({"role": m.role, "content": m.content})
+            for c in calls or []:
+                c = c.to_openai() if isinstance(c, ToolCall) else c
+                items.append(
+                    {
+                        "type": "function_call",
+                        "call_id": c["id"],
+                        "name": c["function"]["name"],
+                        "arguments": c["function"]["arguments"] or "{}",
+                    }
+                )
+        return items
 
     def _build_chat_messages(
         self, messages: list[Message], system_instruction: str | None

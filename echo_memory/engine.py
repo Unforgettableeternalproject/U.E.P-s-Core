@@ -428,6 +428,7 @@ class MemoryEngine:
                 "episodes_scanned": d.episodes_scanned,
                 "concepts_created": d.concepts_created,
                 "concepts_updated": d.concepts_updated,
+                "concepts_rejected": d.concepts_rejected,
                 "edges_created": d.edges_created,
                 "skipped_reason": d.skipped_reason,
             }

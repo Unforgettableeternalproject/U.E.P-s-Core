@@ -399,3 +399,27 @@ class TestDistillationReport:
     def test_report_summary_skipped(self):
         report = DistillationReport(skipped_reason="no_llm")
         assert "no_llm" in report.summary()
+
+
+# ─── 回歸：Inhibitor 拒絕不是錯誤 ─────────────────────────────────
+class _RejectingCoordinator:
+    """模擬 DreamPatchCoordinator 有 inhibitor、但把每個 concept 都擋下來。"""
+
+    def submit_distillation_concept(self, **kw):
+        return None, object()  # (concept_id=None, tx 非 None) = 被拒絕
+
+
+def test_inhibitor_rejection_is_not_an_error(storage):
+    """拒絕要計入 concepts_rejected，不是 errors（舊版回 2-tuple 炸 ValueError）。"""
+    episodic, semantic, graph = storage
+    _store_high_salience_episodes(episodic)
+    distiller = KnowledgeDistillation(
+        episodic=episodic, semantic=semantic, graph=graph, llm_fn=_mock_llm_fn_good,
+    )
+    distiller._patch_coordinator = _RejectingCoordinator()
+    report = distiller.run()
+    assert report.errors == []
+    assert report.concepts_rejected == 2
+    assert report.concepts_created == 0 and report.concepts_updated == 0
+    assert report._distilled_episode_ids == [], "全被拒絕不該標 dreamed"
+    assert "拒絕 2" in report.summary()

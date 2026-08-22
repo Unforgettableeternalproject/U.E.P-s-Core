@@ -102,6 +102,7 @@ class DistillationReport:
     episodes_scanned: int = 0
     concepts_created: int = 0
     concepts_updated: int = 0
+    concepts_rejected: int = 0  # 被 ConceptInhibitor 擋下的
     edges_created: int = 0
     contradicts_edges_created: int = 0
     skipped_reason: str | None = None  # "no_llm" | "no_episodes" | "llm_error"
@@ -115,7 +116,8 @@ class DistillationReport:
             return f"蒸餾跳過: {self.skipped_reason}"
         return (
             f"蒸餾完成: 掃描 {self.episodes_scanned} 個 Episode, "
-            f"新增 {self.concepts_created} / 更新 {self.concepts_updated} 個 Concept, "
+            f"新增 {self.concepts_created} / 更新 {self.concepts_updated}"
+            f"{f' / 拒絕 {self.concepts_rejected}' if self.concepts_rejected else ''} 個 Concept, "
             f"建立 {self.edges_created} 條 DERIVED_FROM 邊"
         )
 
@@ -253,7 +255,11 @@ class KnowledgeDistillation:
         # 寫入 SemanticMemory + 建圖 + 矛盾偵測
         for concept_data in extracted:
             try:
-                created, edges, contradicts = self._ingest_concept(concept_data, candidates)
+                ingested = self._ingest_concept(concept_data, candidates)
+                if ingested is None:
+                    report.concepts_rejected += 1
+                    continue
+                created, edges, contradicts = ingested
                 if created:
                     report.concepts_created += 1
                 else:
@@ -363,9 +369,10 @@ class KnowledgeDistillation:
         self,
         concept_data: dict[str, Any],
         source_episodes: list[Episode],
-    ) -> tuple[bool, int, int]:
+    ) -> tuple[bool, int, int] | None:
         """
         將蒸餾出的概念寫入 SemanticMemory 和 MemoryGraph。
+        Inhibitor 拒絕時回傳 None（不算 created/updated、也不算錯誤）。
 
         Args:
             concept_data: LLM 輸出的概念字典
@@ -425,7 +432,8 @@ class KnowledgeDistillation:
                 )
 
         if concept_id is None:
-            return is_new, 0
+            # Inhibitor 拒絕——不是錯誤，也不算 created/updated
+            return None
 
         # 在 MemoryGraph 中註冊概念節點（若不存在）
         if not self.graph.has_node(concept_id):

@@ -22,6 +22,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 from collections import Counter
 from pathlib import Path
 from typing import Any, Iterator
@@ -221,6 +222,25 @@ def extract_symbols(payload: dict[str, Any]) -> list[str]:
                 if len(symbols) >= MAX_SYMBOLS_PER_TURN:
                     return symbols
     return symbols
+
+
+def configure_streams() -> None:
+    """把 stdout/stderr 釘成 UTF-8。每支 hook 的 main 開頭都要呼叫。
+
+    🚨 **不做這件事的話，hook 只在「輸出的內容剛好含罕見字元」時炸。**
+    Windows 的預設編碼是 cp950（pipe 也一樣），編不出 `≈`、emoji 這類字元，
+    而注入的內容是 LLM 寫的——實測記憶池 803 條裡有 4 條含 cp950 編不出的字，
+    其中任何一條進了可注入池，PreToolUse 就會拋 UnicodeEncodeError。
+    目前通過池剛好 0 條，所以這是定時炸彈而不是已發生的故障。
+
+    `errors="replace"` 是第二層保險：寧可某個字變成 `?`，
+    也不要讓一個字元弄垮整個 hook。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError, ValueError):
+            pass
 
 
 def repo_root(cwd: str) -> Path | None:

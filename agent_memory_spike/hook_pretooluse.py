@@ -53,6 +53,7 @@ from transcript import (  # noqa: E402
     file_keys,
     normalize_path,
     canonical_repo,
+    configure_streams,
     repo_root,
     repo_root_name,
 )
@@ -329,6 +330,7 @@ def stats() -> int:
 
 
 def main() -> int:
+    configure_streams()
     parser = argparse.ArgumentParser(description="Phase 3 PreToolUse 注入 hook")
     parser.add_argument("--stats", action="store_true", help="看池子裡有多少條可注入")
     parser.add_argument("--dry-run", action="store_true", help="算出要注入什麼但不寫紀錄")

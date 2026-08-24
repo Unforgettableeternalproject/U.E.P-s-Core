@@ -62,6 +62,7 @@ from transcript import (  # noqa: E402
     ORIGIN_HUMAN,
     episodes_from_transcript,
     file_keys,
+    configure_streams,
     load_injections,
     load_touches,
 )
@@ -734,6 +735,7 @@ def doctor(episode_dir: Path) -> int:
 
 
 def main() -> int:
+    configure_streams()
     parser = argparse.ArgumentParser(description="Phase 1 Stop hook")
     parser.add_argument("--doctor", action="store_true", help="唯讀健檢：比對存檔與 transcript")
     parser.add_argument("--sync-all", action="store_true", help="掃過所有 transcript 補齊遺漏")

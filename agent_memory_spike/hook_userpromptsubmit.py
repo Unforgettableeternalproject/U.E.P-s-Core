@@ -96,6 +96,7 @@ from transcript import (  # noqa: E402
     INJECTION_LOG,
     prompt_fingerprint,
     repo_root_name,
+    configure_streams,
 )
 
 # 短於這個長度就不查。「繼續」「可以」本來就不該召回任何東西，
@@ -422,6 +423,7 @@ def ingest_precision(task_path: Path, verdict_dir: Path) -> int:
 
 
 def main() -> int:
+    configure_streams()
     parser = argparse.ArgumentParser(description="UserPromptSubmit 注入 hook")
     parser.add_argument("--eval", action="store_true", help="看各門檻下的觸發率")
     parser.add_argument("--dump-precision", type=int, metavar="N",

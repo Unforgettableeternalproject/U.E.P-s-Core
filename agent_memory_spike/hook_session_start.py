@@ -70,6 +70,7 @@ from hook_pretooluse import (  # noqa: E402
     CONCEPT_PATH,
     PASS_THRESHOLD,
     is_global,
+    configure_streams,
     scope_matches,
     load_pool,
     load_state,
@@ -336,6 +337,7 @@ def judge_precision(task_path: Path, out_dir: Path, batch_size: int) -> int:
 
 
 def main() -> int:
+    configure_streams()
     parser = argparse.ArgumentParser(description="SessionStart 注入 hook")
     parser.add_argument("--stats", action="store_true", help="看各 repo 有多少條可注入")
     parser.add_argument("--dump-precision", type=int, metavar="N",

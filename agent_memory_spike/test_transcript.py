@@ -725,3 +725,87 @@ def test_doctor_does_not_count_turns_the_corpus_has_not_caught_up_with(tmp_path,
          {"session_id": "sess-1", "prompt_id": "p-later", "file_key": "src/z.ts"}],
     )
     assert doctor(episode_dir) == 0
+
+
+# --- repo 歸屬凍結 ---------------------------------------------------------
+# 2026-08-22 實際事故：AI-Website-API / AI-Website-Web 被改名，舊語料的 cwd 目錄
+# 不存在了，`repo_root()` 往上找就撞到父層的 .git——739 輪的 repo 與檔案路徑基準
+# 集體漂移，doctor 報 888 個誤報、夜間管線的 health 閘門連停三天。
+# 這組測試走完整的 sync → 改名 → repair 路徑，不從中間切進去：
+# 上一次的教訓正是「測試繞過路徑正規化那一段，前半段就沒有保護」。
+
+def _repo_transcript(tmp_path: Path, repo: Path, turns: int = 3) -> Path:
+    records = []
+    for i in range(turns):
+        pid = f"p{i}"
+        records.append(_user(pid, origin={"kind": "human"}, cwd=str(repo)))
+        records.append(_assistant(
+            tools=[("Edit", {"file_path": str(repo / "src" / "a.py")})], cwd=str(repo)))
+    t = tmp_path / "t.jsonl"
+    t.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    return t
+
+
+def test_repo_root_is_recorded(tmp_path):
+    """寫入當下就把基準存成欄位，之後不必再靠檔案系統推。"""
+    repo = tmp_path / "parent" / "OldName"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "src").mkdir()
+    ep_dir = tmp_path / "eps"
+    sync(_repo_transcript(tmp_path, repo), ep_dir, "sess")
+    rec = json.loads(episode_path(ep_dir, "sess").read_text(encoding="utf-8").splitlines()[0])
+    assert rec["repo"] == "OldName"
+    assert Path(rec["repo_root"]) == repo
+    assert rec["files_edited"] == ["src/a.py"]
+
+
+def test_repo_rename_does_not_rewrite_history(tmp_path):
+    """repo 改名後重建，repo 與檔案路徑都不能跟著漂。
+
+    父目錄也放 .git：改名後 `repo_root(cwd)` 會往上撞到它，
+    那正是事故當時把 AI-Website-API 全部標成 AI-Website 的機制。
+    """
+    parent = tmp_path / "parent"
+    (parent / ".git").mkdir(parents=True)
+    repo = parent / "OldName"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "src").mkdir()
+
+    ep_dir = tmp_path / "eps"
+    transcript = _repo_transcript(tmp_path, repo)
+    sync(transcript, ep_dir, "sess")
+
+    (repo / ".git").rmdir()
+    repo.rename(parent / "NewName")  # 改名：舊 cwd 從此不存在
+    # 🚨 一定要清 cache，否則這個測試會說謊：`repo_root` 有 process 級 cache，
+    # 同一支 process 裡 sync 已經算過這個 cwd，rename 後拿到的是快取的舊答案，
+    # 於是**拿掉 pin 也照樣綠**（實測過）。真實事故發生在跨 process，沒有這層遮蔽。
+    import transcript as _t
+    _t._repo_root_cache.clear()
+
+    total, fixed = repair(transcript, ep_dir, "sess")
+    assert fixed == 0, "改名不該讓既有語料被判定成需要修正"
+    rec = json.loads(episode_path(ep_dir, "sess").read_text(encoding="utf-8").splitlines()[0])
+    assert rec["repo"] == "OldName"
+    assert rec["files_edited"] == ["src/a.py"]
+
+
+def test_backfill_infers_root_from_repo_and_cwd(tmp_path):
+    """舊語料沒有這個欄位，從 repo + cwd 純字串推導——刻意不碰檔案系統。"""
+    rec = {"prompt_id": "p1", "turn_index": 0, "repo": "OldName",
+           "cwd": ["C:\\src\\parent\\OldName\\sub"],
+           "files_edited": ["src/a.py"], "files_read": []}
+    assert Path(hook_stop.infer_repo_root(rec)) == Path("C:/src/parent/OldName")
+
+
+def test_backfill_skips_turns_that_had_no_root(tmp_path):
+    """`repo` 也可能是「解析不出 root 時」退回的目錄名，那種輪次當時沒有基準。
+
+    分辨方式純看資料：存檔裡還留著以推導 root 為前綴的絕對路徑，
+    就證明當時沒有正規化過。硬補一個基準會讓重建把路徑改寫成相對——
+    比存檔「更正確」，但那是改寫歷史，而且 doctor 會逐輪報不一致。
+    """
+    rec = {"prompt_id": "p1", "turn_index": 0, "repo": "Notes",
+           "cwd": ["E:\\Documents\\Notes"],
+           "files_edited": ["E:/Documents/Notes/INDEX.md"], "files_read": []}
+    assert hook_stop.infer_repo_root(rec) is None

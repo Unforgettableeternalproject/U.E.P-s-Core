@@ -70,6 +70,7 @@ from hook_pretooluse import (  # noqa: E402
     CONCEPT_PATH,
     PASS_THRESHOLD,
     is_global,
+    scope_matches,
     load_pool,
     load_state,
     save_state,
@@ -103,10 +104,7 @@ def select(pool: list[dict[str, Any]], scope: str | None,
     for concept in pool:
         if concept.get("id") in already:
             continue
-        concept_scope = concept.get("scope")
-        if is_global(concept_scope):
-            candidates.append(concept)
-        elif scope and concept_scope == scope:
+        if scope_matches(concept.get("scope"), scope):
             candidates.append(concept)
 
     candidates.sort(key=lambda c: (-(c.get("surprisal") or 0), str(c.get("id"))))

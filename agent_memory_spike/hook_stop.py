@@ -110,15 +110,112 @@ def recorded_prompt_ids(path: Path) -> set[tuple[str, int]]:
     return ids
 
 
+def pinned_roots(records: list[dict[str, Any]]) -> dict[tuple[str, int], str]:
+    """從存檔取出每一輪的 repo 根基準，給重建時沿用。
+
+    重建既有輪次一定要帶這個。不帶的話 `repo_root()` 會用**當下的**檔案系統重算，
+    而 repo 一改名，舊 cwd 就不存在了、往上找會撞到父層的 .git——
+    2026-08-22 實際發生：739 輪的 repo 與檔案路徑基準集體漂移，doctor 報 888 個誤報。
+    """
+    out: dict[tuple[str, int], str] = {}
+    for rec in records:
+        root = rec.get("repo_root")
+        if root:
+            out[_key(rec)] = str(root)
+    return out
+
+
+def infer_repo_root(rec: dict[str, Any]) -> str | None:
+    """替 `repo_root` 欄位問世之前的語料推導基準。
+
+    純字串推導，**刻意不碰檔案系統**——會需要回填正是因為當下的檔案系統
+    已經不是寫入當時的樣子了。從 cwd 裡找出等於 `repo` 的那一段，
+    取到該段為止即是當時的 root。同名段取最右邊那個：巢狀 repo
+    （AI-Website/AI-Website-API）要的是內層。
+    """
+    repo = rec.get("repo")
+    if not repo:
+        return None
+    candidate = None
+    for cwd in rec.get("cwd") or []:
+        parts = str(cwd).replace("\\", "/").split("/")
+        for i in range(len(parts) - 1, -1, -1):
+            if parts[i] == repo:
+                candidate = str(Path("/".join(parts[: i + 1])))
+                break
+        if candidate:
+            break
+    if candidate is None:
+        return None
+
+    # 🚨 `repo` 欄位有兩個來源，而欄位本身分不出是哪一個：git 根目錄名，
+    # 或**解析不出 root 時**退回的 cwd 目錄名。後者當時的 root 是 None，
+    # 檔案路徑因此沒有被正規化、原樣存成絕對路徑。
+    # 對這種輪次推導出一個 root，會讓重建把路徑正規化成相對——比存檔「更正確」，
+    # 但那是在改寫歷史，而且 doctor 會逐輪報不一致（實測 4 筆，全在 E:\ 的非 git 目錄）。
+    # 判準純看資料：存檔裡還留著以這個 root 為前綴的絕對路徑，就證明當時沒有 root。
+    prefix = candidate.replace("\\", "/").rstrip("/") + "/"
+    for field in ("files_edited", "files_read"):
+        for raw in rec.get(field) or []:
+            if str(raw).replace("\\", "/").startswith(prefix):
+                return None
+    return candidate
+
+
+def backfill_repo_root(episode_dir: Path, *, dry_run: bool = False) -> int:
+    """一次性回填：把 repo 根基準寫進既有語料。
+
+    這批語料的 repo 歸屬只存在於 `repo` + `cwd` 的組合裡，而那個組合會隨
+    repo 改名失效。回填之後歸屬就凍結成欄位，不再依賴檔案系統的現況。
+    """
+    files = sorted(episode_dir.glob("*.jsonl")) if episode_dir.exists() else []
+    if not files:
+        print("[backfill] 沒有任何 episode 檔", file=sys.stderr)
+        return 0
+
+    filled = already = failed = 0
+    for fp in files:
+        try:
+            records = [json.loads(x) for x in fp.read_text(encoding="utf-8").splitlines() if x.strip()]
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"[backfill] {fp.stem[:8]} 讀取失敗 {exc}", file=sys.stderr)
+            continue
+        changed = False
+        for rec in records:
+            # 推導是純字串運算、與檔案系統現況無關，所以無條件重算是冪等的，
+            # 而且判準修正後重跑就能自我修復——不必從備份還原
+            root = infer_repo_root(rec)
+            if root is None:
+                # 推不出來就留空：寧可讓 doctor 說「這輪沒有基準」，
+                # 也不要塞一個猜的路徑進去——那會變成看起來正常的錯資料
+                if rec.pop("repo_root", None) is not None:
+                    changed = True
+                failed += 1
+                continue
+            if rec.get("repo_root") == root:
+                already += 1
+                continue
+            rec["repo_root"] = root
+            filled += 1
+            changed = True
+        if changed and not dry_run:
+            rewrite_episodes(fp, records)
+
+    print(f"[backfill] 寫入 {filled} 輪、已是最新 {already} 輪、推導不出 {failed} 輪"
+          + ("（dry-run，未寫入）" if dry_run else ""), file=sys.stderr)
+    return 0
+
+
 def completed_episodes(transcript: Path,
-                       injections: dict[tuple[str, str], list[str]] | None = None
+                       injections: dict[tuple[str, str], list[str]] | None = None,
+                       pinned: dict[tuple[str, int], str] | None = None
                        ) -> list[dict[str, Any]]:
     """只回傳可以確定已經結束的輪次。
 
     最新的一輪被排除：Stop hook 觸發時它可能只寫了一半，
     此時寫入會留下永久殘缺的紀錄。有後續輪次存在就代表前一輪確實結束了。
     """
-    episodes = episodes_from_transcript(transcript, injections)
+    episodes = episodes_from_transcript(transcript, injections, pinned)
     return episodes[:-1] if episodes else []
 
 
@@ -171,7 +268,6 @@ def repair(transcript: Path, episode_dir: Path, session_id: str,
 
     需要這個是因為早期版本會寫入進行中的輪次，留下永久截斷的資料。
     """
-    episodes = completed_episodes(transcript, injections)
     path = episode_path(episode_dir, session_id)
 
     existing = {}
@@ -189,6 +285,11 @@ def repair(transcript: Path, episode_dir: Path, session_id: str,
                     existing[_key(rec)] = rec
         except OSError:
             pass
+
+    # 存檔要先讀完才能重建：repo 根基準沿用存檔的，不重算。
+    # 順序反過來的話 --repair 會把 repo 改名前的語料「修」成新 repo 名，
+    # 那是把歷史事實改掉，不是修復
+    episodes = completed_episodes(transcript, injections, pinned_roots(list(existing.values())))
 
     fixed = 0
     for ep in episodes:
@@ -415,7 +516,7 @@ def doctor(episode_dir: Path) -> int:
 
         # 解析一次就好。原本 completed_episodes 在這個迴圈裡被呼叫三次，
         # 每次都重讀並重建整份 transcript。
-        all_episodes = episodes_from_transcript(transcript, injections)
+        all_episodes = episodes_from_transcript(transcript, injections, pinned_roots(stored))
         completed = all_episodes[:-1] if all_episodes else []
         live = {_key(e): e for e in completed}
         # 空 assistant_text 的比對要用**含最新輪**的版本：那 2 筆殘留正是
@@ -637,6 +738,8 @@ def main() -> int:
     parser.add_argument("--doctor", action="store_true", help="唯讀健檢：比對存檔與 transcript")
     parser.add_argument("--sync-all", action="store_true", help="掃過所有 transcript 補齊遺漏")
     parser.add_argument("--repair-all", action="store_true", help="對所有既有 session 全量重建（schema 變更後使用）")
+    parser.add_argument("--backfill-repo-root", action="store_true",
+                        help="一次性回填 repo_root 欄位（從 repo + cwd 推導，不碰檔案系統）")
     parser.add_argument("--sync", type=Path, help="手動同步指定的 transcript")
     parser.add_argument("--repair", type=Path, help="全量重建，修復殘缺紀錄")
     parser.add_argument("--episode-dir", type=Path, default=DEFAULT_EPISODE_DIR)
@@ -660,6 +763,9 @@ def main() -> int:
 
     if args.repair_all:
         return repair_all(args.episode_dir)
+
+    if args.backfill_repo_root:
+        return backfill_repo_root(args.episode_dir, dry_run=args.dry_run)
 
     if args.doctor:
         return doctor(args.episode_dir)

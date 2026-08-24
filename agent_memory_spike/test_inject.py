@@ -240,3 +240,21 @@ def test_non_edit_tools_are_ignored(tmp_path, monkeypatch):
         _concept("c-1", ["src/api/tracking.ts", "fetchTracking"]),
     ])
     assert run(_payload(tool_name="Bash", tool_input={"command": "ls"})) is None
+
+
+# --- repo 改名 -------------------------------------------------------------
+
+def test_scope_matches_across_repo_rename(monkeypatch):
+    """記憶的 scope 是蒸餾當下的 repo 名，改名後不該就此失聯。
+
+    2026-08-22 實測：309 條記憶（池子的 38%）的 scope 指向已改名的 repo，
+    注入率因此掉到零，而且完全沒有錯誤訊息。
+    """
+    import transcript
+    monkeypatch.setitem(transcript.REPO_ALIASES, "OldRepo", "NewRepo")
+    assert hook_pretooluse.scope_matches("OldRepo", "NewRepo")
+    assert hook_pretooluse.scope_matches("NewRepo", "NewRepo")
+    assert not hook_pretooluse.scope_matches("OtherRepo", "NewRepo")
+    # global 不受影響，沒有 scope 的情境也不能誤放行
+    assert hook_pretooluse.scope_matches(None, "NewRepo")
+    assert not hook_pretooluse.scope_matches("OldRepo", None)

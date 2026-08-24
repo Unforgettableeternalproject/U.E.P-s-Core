@@ -52,6 +52,7 @@ from transcript import (  # noqa: E402
     file_key,
     file_keys,
     normalize_path,
+    canonical_repo,
     repo_root,
     repo_root_name,
 )
@@ -85,6 +86,23 @@ def is_global(scope: Any) -> bool:
     分岔的判斷不會報錯，它會讓驗證步驟說謊。
     """
     return not scope or scope in GLOBAL_SCOPES
+
+
+def scope_matches(concept_scope: Any, current_scope: str | None) -> bool:
+    """這條記憶能不能在當前 repo 注入。三條注入路徑共用這一份判斷。
+
+    兩邊都先過 ``canonical_repo``：concept 的 scope 是**蒸餾當下**的 repo 名，
+    repo 一改名（AI-Website-API → JSAI-API）就跟現在的 repo 名對不上，
+    而失效的形狀是「注入率安靜地掉到零」，不會有任何錯誤訊息。
+
+    共用而不是各寫各的，理由同 ``is_global``：分岔的判斷不會報錯，
+    它會讓其中一條路徑悄悄停止工作，而驗證步驟看起來一切正常。
+    """
+    if is_global(concept_scope):
+        return True
+    if not current_scope:
+        return False
+    return canonical_repo(concept_scope) == canonical_repo(current_scope)
 
 
 def load_pool(path: Path = CONCEPT_PATH) -> list[dict[str, Any]]:
@@ -135,7 +153,7 @@ def select(pool: list[dict[str, Any]], touched: set[str], symbols: set[str],
     for concept in pool:
         if concept.get("id") in already:
             continue
-        if scope and not is_global(concept.get("scope")) and concept.get("scope") != scope:
+        if scope and not scope_matches(concept.get("scope"), scope):
             continue
         anchors = concept.get("anchors") or concept.get("source_files") or []
         anchor_files, anchor_symbols = split_anchors(anchors)

@@ -252,7 +252,31 @@ def repo_root(cwd: str) -> Path | None:
 def repo_root_name(cwd: str) -> str | None:
     """repo 根目錄名。"""
     root = repo_root(cwd)
-    return root.name if root is not None else None
+    return canonical_repo(root.name) if root is not None else None
+
+
+# repo 改名對照（舊名 → 現名）。**只影響比對，不改寫任何既有語料**：
+# episode 的 `repo` 與 concept 的 `scope` 都維持寫入當下的名字，
+# 由這張表在讀取端把兩個世代接起來。
+#
+# 2026-08-22 實際踩到：AI-Website-API / AI-Website-Web 被改名成 JSAI-API / JSAI-Web，
+# 記憶池裡 309 條（38%）的 scope 從此對不上任何現存 repo——記憶還在，但永遠召不回來。
+# 這種漂移不會報錯，只會讓注入率安靜地掉到零。
+#
+# ⚠️ 改名是人做的事，這張表也只能人來維護。新增前先確認是**改名**而非拆分或合併：
+# 拆分的話兩個新 repo 共用一份舊記憶，scope 過濾就失去意義了。
+REPO_ALIASES: dict[str, str] = {
+    "AI-Website-API": "JSAI-API",
+    "AI-Website-Web": "JSAI-Web",
+    "AI-Website-Functions": "JSAI-Functions",
+}
+
+
+def canonical_repo(name: str | None) -> str | None:
+    """把 repo 名正規化到現行名稱。未登記的名字原樣回傳。"""
+    if not name:
+        return name
+    return REPO_ALIASES.get(name, name)
 
 
 def normalize_path(raw: str, root: Path | None) -> str:
@@ -415,7 +439,8 @@ def iter_prompt_groups(records: list[dict[str, Any]]) -> Iterator[tuple[str, lis
 
 
 def build_episode(prompt_id: str, records: list[dict[str, Any]], turn_index: int = 0,
-                  injections: dict[tuple[str, str], list[str]] | None = None) -> dict[str, Any]:
+                  injections: dict[tuple[str, str], list[str]] | None = None,
+                  pinned_root: str | None = None) -> dict[str, Any]:
     """把一輪的記錄組裝成 episode。
 
     刻意記錄的東西與理由：
@@ -522,13 +547,20 @@ def build_episode(prompt_id: str, records: list[dict[str, Any]], turn_index: int
             if text.strip():
                 assistant_texts.append(text)
 
+    # **repo 歸屬是寫入當下的歷史事實，不重算。**
+    # `repo_root()` 碰的是當下的檔案系統：2026-08-22 AI-Website-API / AI-Website-Web
+    # 被改名後，舊語料的 cwd 目錄不存在了，往上找就撞到父層 AI-Website 的 .git——
+    # 739 輪的 repo 與檔案路徑基準集體漂移，doctor 報 888 個問題（全是誤報），
+    # 而 health 是硬閘門，夜間管線連停三天。存檔記過 root 就沿用，只有第一次寫入才現算。
+    #
     # 逐一嘗試，取第一個解析得出 repo 根的 cwd——
     # 同一輪的 cwd 若都在同一個 repo 內，結果一致；解析不出來才退回目錄名
-    root: Path | None = None
-    for candidate in cwds:
-        root = repo_root(candidate)
-        if root is not None:
-            break
+    root: Path | None = Path(pinned_root) if pinned_root else None
+    if root is None:
+        for candidate in cwds:
+            root = repo_root(candidate)
+            if root is not None:
+                break
     repo: str | None = root.name if root is not None else (Path(cwds[0]).name if cwds else None)
 
     def _dedup(paths: list[str]) -> list[str]:
@@ -593,6 +625,10 @@ def build_episode(prompt_id: str, records: list[dict[str, Any]], turn_index: int
         "ended_at": timestamps[-1] if timestamps else None,
         "cwd": cwds,
         "repo": repo,
+        # 正規化檔案路徑時用的基準，絕對路徑。存下來是為了讓之後的重建
+        # （doctor 比對、--repair）能沿用同一個基準，而不是拿當下的檔案系統重算——
+        # repo 一改名，重算的結果就跟存檔對不上，且完全不會報錯
+        "repo_root": str(root) if root is not None else None,
         "git_branch": branches,
         "cc_version": cc_version,
         "user_text": user_text,
@@ -614,18 +650,25 @@ def build_episode(prompt_id: str, records: list[dict[str, Any]], turn_index: int
 
 
 def episodes_from_transcript(path: Path,
-                             injections: dict[tuple[str, str], list[str]] | None = None
+                             injections: dict[tuple[str, str], list[str]] | None = None,
+                             pinned_roots: dict[tuple[str, int], str] | None = None
                              ) -> list[dict[str, Any]]:
     """讀整份 transcript，回傳所有 episode。
 
     ``injections`` 傳 None 時自己載入。呼叫端要跑幾百份 transcript 時
     （``--sync-all`` / ``--repair-all`` / ``--doctor``）該自己載入一次傳進來。
+
+    ``pinned_roots`` 是 ``{(prompt_id, turn_index): repo 根絕對路徑}``，
+    由存檔提供。重建既有輪次時一定要傳——否則 repo 與檔案路徑會用當下的
+    檔案系統重算，repo 改名後就跟存檔對不上（見 ``build_episode``）。
     """
     if injections is None:
         injections = load_injections()
+    pinned = pinned_roots or {}
     records = load_records(path)
     return [
-        build_episode(pid, group, turn_index=i, injections=injections)
+        build_episode(pid, group, turn_index=i, injections=injections,
+                      pinned_root=pinned.get((str(pid), i)))
         for i, (pid, group) in enumerate(iter_prompt_groups(records))
     ]
 

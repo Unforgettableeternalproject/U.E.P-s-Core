@@ -50,6 +50,7 @@ from transcript import (  # noqa: E402
     TOUCH_LOG,
     extract_symbols,
     file_key,
+    file_key_overlap,
     file_keys,
     normalize_path,
     canonical_repo,
@@ -158,8 +159,10 @@ def select(pool: list[dict[str, Any]], touched: set[str], symbols: set[str],
             continue
         anchors = concept.get("anchors") or concept.get("source_files") or []
         anchor_files, anchor_symbols = split_anchors(anchors)
-        # 檔案與符號等權——實測選出來的，見 retrieve.file_overlap_ranker
-        overlap = (len(file_keys(anchor_files) & touched)
+        # 檔案與符號等權——實測選出來的，見 retrieve.file_overlap_ranker。
+        # 檔案比對走段界尾段吻合（file_key_overlap）：裸檔名錨點對 3 段 touch 鍵
+        # 全等永遠比不中，這條路曾因此整個靜默停工
+        overlap = (file_key_overlap(file_keys(anchor_files), touched)
                    + len({s.lower() for s in anchor_symbols} & symbols))
         if overlap >= MIN_FILE_OVERLAP:
             scored.append((overlap, concept))

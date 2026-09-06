@@ -45,7 +45,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
 from hook_stop import DEFAULT_EPISODE_DIR, load_deduped  # noqa: E402
-from transcript import ORIGIN_HUMAN, file_keys  # noqa: E402
+from transcript import ORIGIN_HUMAN, file_key_overlap, file_keys  # noqa: E402
 
 WORK_DIR = DEFAULT_EPISODE_DIR.parent
 DEFAULT_CONCEPT_PATH = WORK_DIR / "concepts.json"
@@ -599,7 +599,9 @@ def file_overlap_ranker(pool: list[dict[str, Any]], case: dict[str, Any], *,
     for i, concept in enumerate(pool):
         anchors = concept.get("anchors") or concept.get("source_files") or []
         files, symbols = split_anchors(anchors)
-        file_hits = len(file_keys(files) & touched_files)
+        # 段界尾段吻合，與 hook_pretooluse.select 共用同一個函式——
+        # 裸檔名錨點在全等比對下永遠比不中，兩邊必須一起換，不能分岔
+        file_hits = file_key_overlap(file_keys(files), touched_files)
 
         # 符號與檔案**等權**。這個權重是實測選出來的，不是拍腦袋：
         #   權重 2      → recall@1 5.1% / recall@5 19.7% / MRR 0.114

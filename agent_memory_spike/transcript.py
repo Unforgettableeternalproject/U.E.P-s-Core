@@ -359,6 +359,32 @@ def file_keys(paths: list[str] | None) -> set[str]:
     return {key for key in (file_key(p) for p in (paths or [])) if key}
 
 
+def file_key_overlap(anchor_keys: set[str], touched_keys: set[str]) -> int:
+    """兩組比對鍵的重疊檔案數，以**段界尾段吻合**判定同一檔案。
+
+    存在的理由：蒸餾出的錨點常常是裸檔名（`lite_engine.py`，1 段），
+    而 touch 鍵固定收斂成最後 3 段（`modules/tts_module/lite_engine.py`）。
+    全等比對下 1 段對 3 段**永遠比不中**——檔案訊號對這批錨點整個死掉，
+    且不報錯（2026-09-06 盲測實證：c-1326 該注入而沒注入，就是這裡吃掉的）。
+
+    這與 doctor 在 repo 改名事故後改用的「尾段吻合」是同一個修法；
+    hook 與 A1 ranker 都必須走這一個函式——比對邏輯分岔不會報錯，
+    它會讓其中一邊悄悄停工而驗證看起來一切正常。
+
+    代價是裸檔名錨點會匹配到 scope 內任何同名檔（`types.ts` 這類菜市場名
+    可能誤中），但 overlap 門檻仍然要 >= 2，單一誤中不足以觸發注入。
+    """
+    count = 0
+    for anchor in anchor_keys:
+        for touched in touched_keys:
+            if (anchor == touched
+                    or touched.endswith("/" + anchor)
+                    or anchor.endswith("/" + touched)):
+                count += 1
+                break
+    return count
+
+
 def load_records(path: Path) -> list[dict[str, Any]]:
     """讀 jsonl。
 

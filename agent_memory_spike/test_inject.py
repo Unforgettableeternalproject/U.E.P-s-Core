@@ -77,6 +77,34 @@ def test_symbols_are_what_make_the_threshold_reachable(tmp_path, monkeypatch):
     assert [c["id"] for c in picked] == ["c-1"]
 
 
+def test_bare_filename_anchor_matches_deeper_touch_key(tmp_path, monkeypatch):
+    """裸檔名錨點必須比得中 3 段 touch 鍵——2026-09-06 盲測抓到的靜默失效。
+
+    蒸餾出的錨點常常只有檔名（`lite_engine.py`），而 touch 鍵固定收斂成
+    最後 3 段（`modules/tts_module/lite_engine.py`）。全等比對下這批錨點的
+    檔案訊號整個死掉且不報錯：實測 c-1326 在符號命中 1（emo_bias）、
+    檔案也確實碰到的情況下 overlap 只算到 1，該注入而沒注入。
+    """
+    _isolate(tmp_path, monkeypatch, [])
+    pool = [_concept("c-1326", ["lite_engine.py", "normalize_vector", "emo_bias"])]
+    touched = {"modules/tts_module/lite_engine.py"}
+
+    picked = select(pool, touched, {"emo_bias"}, "proj", set())
+    assert [c["id"] for c in picked] == ["c-1326"]
+    # 反向也要通：錨點帶路徑、touch 鍵只剩檔名（淺層檔案）
+    pool2 = [_concept("c-x", ["src/api/tracking.ts", "fetchTracking"])]
+    picked2 = select(pool2, {"tracking.ts"}, {"fetchtracking"}, "proj", set())
+    assert [c["id"] for c in picked2] == ["c-x"]
+
+
+def test_suffix_match_requires_segment_boundary(tmp_path, monkeypatch):
+    """尾段吻合要以段界為準——`engine.py` 不可以比中 `lite_engine.py`。"""
+    _isolate(tmp_path, monkeypatch, [])
+    pool = [_concept("c-1", ["engine.py", "spin"])]
+    picked = select(pool, {"modules/tts_module/lite_engine.py"}, {"spin"}, "proj", set())
+    assert picked == []
+
+
 def test_absolute_tool_paths_match_repo_relative_anchors(tmp_path, monkeypatch):
     """`tool_input.file_path` 是絕對路徑，`anchors` 是 repo 相對路徑。
 

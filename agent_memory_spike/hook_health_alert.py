@@ -114,15 +114,36 @@ def format_alert(alerts: list[str]) -> str:
     return "\n".join(lines)
 
 
+def format_user_summary(alerts: list[str], limit: int = 80) -> str:
+    """給使用者看的一行摘要（頂層 `systemMessage`）。
+
+    additionalContext 只進模型的 context——9/13 起管線停了 13 晚，告警發了
+    約 60 個 session，模型都當背景資訊略過，使用者一次也沒看到。
+    所以要另外直接顯示給人看；細節仍留在 additionalContext。
+    """
+    first = alerts[0].replace("**", "").strip()
+    if len(first) > limit:
+        first = first[:limit].rstrip() + "…"
+    more = f"（共 {len(alerts)} 項）" if len(alerts) > 1 else ""
+    return (f"⚠️ coding agent 記憶層異常：{first}{more}"
+            "——詳情：`python agent_memory_spike/hook_health_alert.py --check`")
+
+
 def run() -> dict[str, Any] | None:
     alerts = collect_alerts()
     if not alerts:
         return None
+    return build_output(alerts)
+
+
+def build_output(alerts: list[str]) -> dict[str, Any]:
+    """hook 的 stdout JSON：systemMessage 給人看，additionalContext 給模型看。"""
     return {
+        "systemMessage": format_user_summary(alerts),
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
             "additionalContext": format_alert(alerts),
-        }
+        },
     }
 
 
@@ -171,12 +192,7 @@ def main() -> int:
         return 0
 
     if alerts:
-        print(json.dumps({
-            "hookSpecificOutput": {
-                "hookEventName": "SessionStart",
-                "additionalContext": format_alert(alerts),
-            }
-        }, ensure_ascii=False))
+        print(json.dumps(build_output(alerts), ensure_ascii=False))
         print(f"[health] {len(alerts)} 項異常已告警", file=sys.stderr)
     return 0
 

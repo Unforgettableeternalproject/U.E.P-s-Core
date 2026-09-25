@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import sys
@@ -106,8 +107,47 @@ def test_output_shape_is_session_start_context(work):
         {"stage": "distill", "ok": False, "summary": "零筆進帳"},
     ]}}), encoding="utf-8")
     out = health.run()
+    assert "distill" in out["systemMessage"]
     assert out["hookSpecificOutput"]["hookEventName"] == "SessionStart"
     assert "distill" in out["hookSpecificOutput"]["additionalContext"]
+
+
+def _run_main(monkeypatch, capsys) -> tuple[str, str]:
+    """以 hook 模式跑 main()：stdin 餵 payload、無參數，回傳 (stdout, stderr)。"""
+    monkeypatch.setattr(sys, "argv", ["hook_health_alert.py"])
+    monkeypatch.setattr(sys, "stdin", io.StringIO('{"hook_event_name": "SessionStart"}'))
+    assert health.main() == 0
+    captured = capsys.readouterr()
+    return captured.out, captured.err
+
+
+def test_main_is_silent_when_everything_is_fine(work, monkeypatch, capsys):
+    """沒異常時 stdout 必須完全空白——連空 JSON 都不行。"""
+    out, _ = _run_main(monkeypatch, capsys)
+    assert out == ""
+
+
+def test_main_alert_has_user_visible_system_message(work, monkeypatch, capsys):
+    """additionalContext 只給模型看，被略過了 13 晚；必須另有 systemMessage 給人看。"""
+    (work / "pipeline_state.json").write_text(json.dumps({"last_run": {"results": [
+        {"stage": "health", "ok": False, "summary": "[doctor] 發現 888 個問題："},
+    ]}}), encoding="utf-8")
+    _aged(work / "episodes", health.STALE_EPISODE_DAYS + 1)
+    out, _ = _run_main(monkeypatch, capsys)
+    payload = json.loads(out)
+    msg = payload["systemMessage"]
+    assert msg.startswith("⚠️ coding agent 記憶層異常：")
+    assert "health" in msg and "（共 2 項）" in msg
+    assert "**" not in msg and "\n" not in msg
+    # 模型那份細節仍要保留
+    ctx = payload["hookSpecificOutput"]["additionalContext"]
+    assert payload["hookSpecificOutput"]["hookEventName"] == "SessionStart"
+    assert "888" in ctx and "Stop hook" in ctx
+
+
+def test_user_summary_truncates_long_first_alert():
+    msg = health.format_user_summary(["很長" * 100])
+    assert "…" in msg and "共" not in msg
 
 
 # ⚠️ `--check` 必須跳過 stdin：實測手動執行時沒有人會關 stdin，`read()` 直接卡死

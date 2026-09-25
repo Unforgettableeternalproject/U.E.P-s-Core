@@ -674,6 +674,52 @@ def test_doctor_flags_injections_no_turn_can_account_for(tmp_path, monkeypatch):
     assert doctor(episode_dir) == 1
 
 
+def _cleaned_transcript_setup(tmp_path, monkeypatch, stored_episodes):
+    """transcript 已被清掉的 session：語料只剩存檔，find_transcript 找不到。
+
+    load_touches 一併隔離——它預設讀真實的 TOUCH_LOG，只影響警示，
+    但這組測試要斷言警示區的內容，不能讓真實紀錄混進來。
+    """
+    episode_dir = tmp_path / "episodes"
+    episode_dir.mkdir()
+    (episode_dir / "sess-1.jsonl").write_text(
+        "".join(json.dumps(ep) + "\n" for ep in stored_episodes), encoding="utf-8")
+    _stub_find_transcript(monkeypatch, {})
+    monkeypatch.setattr(hook_stop, "load_touches", lambda: {})
+    monkeypatch.setattr(hook_stop, "load_injections",
+                        lambda: {("sess-1", "p-last"): ["c-1"]})
+    return episode_dir
+
+
+def test_doctor_warns_when_injected_turn_never_entered_corpus_and_transcript_is_gone(
+        tmp_path, monkeypatch, capsys):
+    """transcript 已清、被注入的那輪也從未入料 = 永遠驗證不了，但沒有污染。
+
+    2026-09 實際事故：被注入的是 session 最後一輪，「最新一輪不寫」讓它
+    永遠等不到入料，接著 transcript 被 30 天清理刪掉。沒有任何輪次被當成
+    乾淨語料，報成指紋失效只會讓夜間管線每晚卡在 health。
+    """
+    first = _episode("p1", 0, "先看一下", "好", repo="proj")
+    first["session_id"] = "sess-1"
+    episode_dir = _cleaned_transcript_setup(tmp_path, monkeypatch, [first])
+    assert doctor(episode_dir) == 0
+    err = capsys.readouterr().err
+    warn_block = err.split("個警示", 1)[1]
+    assert "無法驗證（transcript 已清、該輪未入料）" in warn_block
+    assert "sess-1/p-last" in warn_block
+    assert "完全標記不到" not in err
+
+
+def test_doctor_still_flags_uninjected_corpus_turn_when_transcript_is_gone(
+        tmp_path, monkeypatch, capsys):
+    """transcript 已清，但語料**有**那輪且沒標 injected = 真污染，維持硬錯誤。"""
+    last = _episode("p-last", 0, "改一下", "好", repo="proj")
+    last["session_id"] = "sess-1"
+    episode_dir = _cleaned_transcript_setup(tmp_path, monkeypatch, [last])
+    assert doctor(episode_dir) == 1
+    assert "完全標記不到" in capsys.readouterr().err
+
+
 def test_doctor_tolerates_key_base_drift_between_hook_and_corpus(tmp_path, monkeypatch, capsys):
     """兩邊 key 的正規化基準不同時，尾段吻合就算看到了。
 

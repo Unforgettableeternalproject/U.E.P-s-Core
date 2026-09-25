@@ -478,6 +478,9 @@ def doctor(episode_dir: Path) -> int:
     # 在 transcript 裡標記得到、但還沒入料的配對——多半是「最新一輪不寫」的
     # 設計性落後。指紋沒有失效：等下一輪出現，它入料時就會帶著 injected 標記
     transcript_injected: set[tuple[str, str]] = set()
+    # 語料裡出現過的所有配對（不論有沒有 injected）。transcript 已清時，
+    # 只能靠它分辨「該輪根本沒入料」與「入料了卻沒帶標記」
+    stored_pairs: set[tuple[str, str]] = set()
     legacy_schema = 0
     legacy_unfixable = 0
 
@@ -492,6 +495,7 @@ def doctor(episode_dir: Path) -> int:
         total += len(stored)
         legacy_here = 0
         for rec in stored:
+            stored_pairs.add((str(rec.get("session_id") or session_id), str(rec.get("prompt_id"))))
             if "injected" not in rec:
                 legacy_here += 1
             elif rec.get("injected"):
@@ -619,15 +623,24 @@ def doctor(episode_dir: Path) -> int:
         # 被注入的 session 可能連 episode 檔都還沒有（Stop hook 沒跑到），
         # 上面的迴圈只掃 episode 檔，這種 session 的 transcript 沒被看過。
         # 直接去 transcript 驗證：標記得到就是待補，不是指紋失效
+        unverifiable: set[tuple[str, str]] = set()
         for pair in sorted(lost):
             transcript = find_transcript(pair[0])
             if transcript is None:
+                # transcript 已被 cleanupPeriodDays 清掉，且那一輪從未入料
+                # （多半是 session 最後一輪，「最新一輪不寫」讓它永遠等不到下一輪）——
+                # 沒有被當成乾淨語料的輪次，談不上污染，只是永遠驗證不了。
+                # 比照空 assistant_text 的「無法驗證（transcript 已清）」。
+                # 語料**有**那輪卻沒標 injected 才是真污染，留在 lost 裡當問題
+                if pair not in stored_pairs:
+                    unverifiable.add(pair)
                 continue
             for ep in episodes_from_transcript(transcript, injections):
                 if ep.get("injected") and (str(ep.get("session_id")), str(ep.get("prompt_id"))) == pair:
                     pending_inject.add(pair)
                     break
         lost -= pending_inject
+        lost -= unverifiable
         print(f"\n  注入紀錄 {len(injections)} 筆，語料裡對上 {len(matched)} 筆"
               + (f"、尾端待補 {len(pending_inject)} 筆" if pending_inject else ""), file=out)
         if lost:
@@ -635,6 +648,11 @@ def doctor(episode_dir: Path) -> int:
                 f"注入紀錄有 {len(lost)} 筆在 transcript 裡完全標記不到——"
                 f"指紋比對失效，被影響過的輪次會被當成乾淨語料: "
                 + ", ".join(f"{s[:8]}/{p[:8]}" for s, p in sorted(lost))
+            )
+        if unverifiable:
+            warnings.append(
+                f"注入紀錄有 {len(unverifiable)} 筆無法驗證（transcript 已清、該輪未入料）: "
+                + ", ".join(f"{s[:8]}/{p[:8]}" for s, p in sorted(unverifiable))
             )
 
     empty_total = sum(empty_kinds.values())

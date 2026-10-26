@@ -2686,3 +2686,15 @@
 
 ---
 
+### [docs]: 新增重構 Index／Tracking 與一致性檢查腳本. 10/26
+
+> Date: Mon, 26 Oct 2026 13:35:45 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `94552716d42ca6228710bc6112729b0ebf8625c5`
+
+---
+

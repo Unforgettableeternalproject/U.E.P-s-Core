@@ -83,7 +83,7 @@ class EndpointService:
     def _op_acquire(self, endpoint_id: str, args: dict[str, Any]) -> dict[str, Any]:
         outcome = self._manager.acquire(endpoint_id, str(args["location"]))
         if outcome.grant is None:
-            return acquire_to_wire(AcquireReply(outcome.result))
+            return acquire_to_wire(AcquireReply(outcome.result, reason=outcome.reason))
         with self._lock:
             self._grants[outcome.grant.lease_id] = endpoint_id
             if len(self._grants) > _GRANT_LIMIT:

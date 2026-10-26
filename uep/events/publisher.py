@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from uep.events import journal, outbox
 from uep.events.bus import EventBus
 from uep.events.envelope import EventDraft, TrustedContext, UEPEvent, build_event
+from uep.events.payload_hash import PayloadHasher
 from uep.events.registry import DEFAULT_REGISTRY, DeliveryClass, EventRegistry
 
 _JOURNALED = {DeliveryClass.DURABLE, DeliveryClass.INTERACTION}
@@ -37,10 +38,13 @@ class EventPublisher:
         session_factory: sessionmaker[Session],
         bus: EventBus,
         registry: EventRegistry = DEFAULT_REGISTRY,
+        hasher: PayloadHasher | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._bus = bus
         self._registry = registry
+        # None 時於寫入 blob 當下讀設定的 UEP_PAYLOAD_HASH_KEY；沒有密鑰則拒絕寫入（D42）
+        self._hasher = hasher
 
     def record(
         self,
@@ -56,7 +60,7 @@ class EventPublisher:
             raise UnsupportedDeliveryClass(
                 f"{event.event_type} 為 {event.delivery_class.value}，不走 journal 發布路徑"
             )
-        result = journal.append(session, event, draft.payload_blob)
+        result = journal.append(session, event, draft.payload_blob, self._hasher)
         if not result.duplicate:
             for target in outbox_targets:
                 outbox.enqueue(session, result.event.event_id, target)

@@ -37,7 +37,7 @@ def kwargs(session_factory, tmp_path, **over):
         "executors": {"fake": FakeToolExecutor()},
         "turn_generation_source": ALLOW_ALL, "presence_audience": ALLOW_ALL, "allow_gate_bypass": True,
         "epoch_store": HostEpochStore(tmp_path / "host_epoch.json"), "clock": FakeClock(),
-        "stop_token": SecretStr(TOKEN),
+        "stop_token": SecretStr(TOKEN), "maintenance_interval": None,  # 測試以手動 tick，不起背景線程
     }
     base.update(over)
     if base.get("publisher") is None and "publisher" not in over:

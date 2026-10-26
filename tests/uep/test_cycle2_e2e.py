@@ -116,7 +116,7 @@ def _build_core(session_factory, adapter, executor, clock) -> CoreAssembly:
         session_factory, bus=bus, publisher=EventPublisher(session_factory, bus), control=InProcessControlChannel(),
         adapter=adapter, executors={"fake": executor},
         turn_generation_source=lambda turn_id: TURN_GEN, presence_audience=lambda: "scope_private_owner",
-        epoch_store=HostEpochStore(), clock=clock, stop_token=SecretStr(STOP_TOKEN),
+        epoch_store=HostEpochStore(), clock=clock, stop_token=SecretStr(STOP_TOKEN), maintenance_interval=None,
         stop_api_port=0, endpoint_socket_port=0,  # secrets 取自 UEP_ENDPOINT_SECRETS；epoch 檔取自 UEP_HOST_EPOCH_FILE
     )
 

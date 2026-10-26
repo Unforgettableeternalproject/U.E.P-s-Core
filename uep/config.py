@@ -26,6 +26,8 @@ class UepSettings(BaseSettings):
     host_epoch_file: Path | None = Field(default=None, validation_alias="UEP_HOST_EPOCH_FILE")
     # 全域停止入口的 token（D36）；未設定時入口一律拒絕（fail-closed），不使用預設值
     stop_token: SecretStr | None = Field(default=None, validation_alias="UEP_STOP_TOKEN")
+    # payload_hash 的 per-install HMAC 密鑰（D42）；未設定時寫入私人 payload 一律拒絕（fail-closed）
+    payload_hash_key: SecretStr | None = Field(default=None, validation_alias="UEP_PAYLOAD_HASH_KEY")
 
 
 @lru_cache(maxsize=1)

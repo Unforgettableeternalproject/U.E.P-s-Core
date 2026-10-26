@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from uep.contracts.presence import (
+    AcquireDenyReason,
     AcquireResult,
     AuthorizationTuple,
     ConfirmResult,
@@ -32,6 +33,7 @@ class AcquireReply:
     result: AcquireResult
     auth: AuthorizationTuple | None = None
     ttl_seconds: float | None = None
+    reason: AcquireDenyReason | None = None  # DENIED 的原因碼（T-23）
 
 
 @dataclass(frozen=True)
@@ -81,13 +83,21 @@ def _auth_to_wire(auth: AuthorizationTuple | None) -> dict[str, Any] | None:
 
 
 def acquire_to_wire(reply: AcquireReply) -> dict[str, Any]:
-    return {"result": reply.result.value, "auth": _auth_to_wire(reply.auth), "ttl_seconds": reply.ttl_seconds}
+    return {
+        "result": reply.result.value, "auth": _auth_to_wire(reply.auth), "ttl_seconds": reply.ttl_seconds,
+        "reason": reply.reason.value if reply.reason is not None else None,
+    }
 
 
 def acquire_from_wire(data: Mapping[str, Any]) -> AcquireReply:
     raw = data.get("auth")
     auth = AuthorizationTuple(**raw) if raw else None
-    return AcquireReply(AcquireResult(data["result"]), auth, data.get("ttl_seconds"))
+    raw_reason = data.get("reason")
+    try:
+        reason = AcquireDenyReason(raw_reason) if raw_reason else None
+    except ValueError:  # 較新的 Core 帶了未知原因碼：視為無原因，結果碼仍照處理
+        reason = None
+    return AcquireReply(AcquireResult(data["result"]), auth, data.get("ttl_seconds"), reason)
 
 
 def snapshot_to_wire(snap: PresenceSnapshot) -> dict[str, Any]:

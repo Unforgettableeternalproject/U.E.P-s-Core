@@ -12,8 +12,10 @@
 1. ``presence.start()``：Host epoch +1、舊 Lease 進 RECOVERING；完成前 Output Gate 一律拒絕。
    它失敗（例如 Host epoch 檔落後 DB）時其後任何元件都不啟動。
 2. Bus 啟動、Runtime 軸 STARTING、Presence 初始投影、presence_bound Task 補暫停（reconcile）。
-3. 其後才啟動 relay（``relay_starters``，例如 outbox relay）與全域停止本機 API。
-4. Runtime 軸 READY。
+3. 維護迴圈（``maintenance_interval`` 不為 None 時）：定期 ``presence.expire_due()`` 與 ``bridge.reconcile()``，
+   讓到期與橋接失敗不依賴外部觸發而補上（T-23）。
+4. 其後才啟動 relay（``relay_starters``，例如 outbox relay）與全域停止本機 API。
+5. Runtime 軸 READY。
 
 ``DeliveryManager`` 與 relay 在步驟 1 完成前不會被啟動；即使有人提前呼叫 delivery，Gate 也因 epoch
 未就緒而拒絕（REJECT_NO_PRESENCE）。
@@ -30,6 +32,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from uep.adapters.output import OutputAdapter
 from uep.adapters.tool import ToolExecutor
+from uep.config import get_settings
 from uep.contracts.presence import PresenceStatus
 from uep.control.channel import (
     ControlChannel,
@@ -41,6 +44,7 @@ from uep.control.socket_transport import SocketControlServer
 from uep.endpoint.auth import RequestVerifier, load_secrets_from_env
 from uep.endpoint.service import EndpointService
 from uep.events.bus import EventBus
+from uep.events.payload_hash import MIN_KEY_BYTES
 from uep.events.publisher import EventPublisher
 from uep.output.manager import DeliveryManager
 from uep.presence.epoch import HostEpochStore
@@ -55,7 +59,11 @@ from uep.state.coordinator import Axis, RuntimeState, StateCoordinator
 from uep.stop.api import LocalStopServer
 from uep.stop.service import GlobalStop, make_flag_blocker
 from uep.tasks.manager import IllegalTransition, TaskManager, TransitionRequest
-from uep.tasks.presence_bridge import PresenceTaskBridge
+from uep.tasks.presence_bridge import (
+    DEFAULT_MAINTENANCE_INTERVAL,
+    PresenceMaintenance,
+    PresenceTaskBridge,
+)
 from uep.tasks.states import RunStatus
 
 logger = logging.getLogger("uep.assembly")
@@ -120,6 +128,7 @@ class CoreAssembly:
     state: StateCoordinator
     stop: GlobalStop
     bridge: PresenceTaskBridge
+    maintenance: PresenceMaintenance | None
     stop_api: LocalStopServer | None
     endpoint_server: SocketControlServer | None
     relay_starters: tuple[Callable[[], None], ...]
@@ -152,6 +161,9 @@ class CoreAssembly:
         self.bridge.start()
         self.bridge.reconcile()  # presence.start() 的 recovering 事件早於訂閱，這裡補暫停
         self.start_log.append("bridge.reconcile")
+        if self.maintenance is not None:
+            self.maintenance.start()
+            self.start_log.append("maintenance.start")
         for starter in self.relay_starters:
             starter()  # 此時 presence 已啟動：relay 送出的輸出才會受 Gate 判定
         if self.relay_starters:
@@ -169,6 +181,8 @@ class CoreAssembly:
             self.stop_api.stop()
         if self.endpoint_server is not None:
             self.endpoint_server.close()
+        if self.maintenance is not None:
+            self.maintenance.stop()
         self.bridge.stop()
         self.bus.stop()
 
@@ -195,6 +209,15 @@ def _assert_wired(tasks: TaskManager, delivery: DeliveryManager) -> None:
         raise AssemblyError("TaskManager 未接上 action_guard（T-10）")
 
 
+def _probe_payload_hash_key() -> None:
+    """啟動探測 payload_hash 密鑰：缺失或過短只告警，不阻擋（寫入私人 payload 時另有 fail-closed）。"""
+    key = get_settings().payload_hash_key
+    if key is None or not key.get_secret_value():
+        logger.warning("未設定 UEP_PAYLOAD_HASH_KEY：寫入私人 payload 會被拒絕（D42 fail-closed）")
+    elif len(key.get_secret_value().encode()) < MIN_KEY_BYTES:
+        logger.warning("UEP_PAYLOAD_HASH_KEY 少於 %d 位元組：寫入私人 payload 會被拒絕", MIN_KEY_BYTES)
+
+
 def assemble_core(
     session_factory: sessionmaker[Session],
     *,
@@ -215,13 +238,16 @@ def assemble_core(
     endpoint_socket_port: int | None = None,
     endpoint_secrets: Mapping[str, bytes] | None = None,
     authorized_proposers: Mapping[Axis, frozenset[str]] | None = None,
+    maintenance_interval: float | None = DEFAULT_MAINTENANCE_INTERVAL,
 ) -> CoreAssembly:
     """組裝 Core。缺必填前提即 ``AssemblyError``；不啟動任何東西（``start`` 才啟動）。
 
     ``stop_api_port`` 為 None 時不建立本機 HTTP API；給 0 由系統配置埠。
+    ``maintenance_interval`` 為維護迴圈的間隔秒數，None 則不建立迴圈（測試或由外部排程時）。
     ``endpoint_socket_port`` 為 None 時不起端點 socket；給值時，``endpoint_secrets``（預設讀
     ``UEP_ENDPOINT_SECRETS``）為空仍不起 socket（沒有可驗證的端點身分就不開口）。
     """
+    _probe_payload_hash_key()
     missing = [
         name for name, value in (
             ("bus", bus), ("publisher", publisher), ("control", control), ("adapter", adapter),
@@ -279,6 +305,18 @@ def assemble_core(
     stop = GlobalStop(session_factory, presence, control, publisher=publisher, token=stop_token, **clock_kw)
     bridge = PresenceTaskBridge(bus, tasks, lambda: presence.current().status, persona_id=persona_id)
 
+    def reproject_presence() -> bool:
+        """以 Presence 權威狀態補投影 State 的 Presence 軸（Bus 丟事件時的補償；source_version 去重）。"""
+        view = presence.current()
+        return state.project(Axis.PRESENCE, view.status.value, source_version=view.row_version)
+
+    maintenance = (
+        PresenceMaintenance(
+            presence.expire_due, bridge.reconcile, project=reproject_presence, interval=maintenance_interval
+        )
+        if maintenance_interval is not None else None
+    )
+
     for event_type in _PRESENCE_PROJECTED + ("core.component_health_changed",):
         bus.subscribe(event_type, state.project_event)
     api = LocalStopServer(stop, port=stop_api_port) if stop_api_port is not None else None
@@ -296,6 +334,7 @@ def assemble_core(
         raise
     return CoreAssembly(
         persona_id=persona_id, bus=bus, publisher=publisher, control=control, presence=presence, gate=gate,
-        delivery=delivery, tasks=tasks, state=state, stop=stop, bridge=bridge, stop_api=api,
+        delivery=delivery, tasks=tasks, state=state, stop=stop, bridge=bridge, maintenance=maintenance,
+        stop_api=api,
         endpoint_server=endpoint_server, relay_starters=tuple(relay_starters),
     )

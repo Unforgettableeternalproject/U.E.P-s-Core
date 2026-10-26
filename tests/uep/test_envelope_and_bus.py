@@ -148,4 +148,4 @@ def test_bus_async_dispatch_on_consumer_thread():
 
 def test_bus_public_surface_is_narrow():
     public = {n for n in dir(EventBus) if not n.startswith("_")}
-    assert public == {"subscribe", "unsubscribe", "publish", "start", "stop"}
+    assert public == {"subscribe", "unsubscribe", "publish", "start", "stop", "get_stats"}

@@ -25,6 +25,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, sessionmaker
 
 from uep.contracts.presence import (
+    AcquireDenyReason,
     AcquireResult,
     AuthorizationTuple,
     ConfirmResult,
@@ -109,6 +110,7 @@ class AcquireOutcome:
     result: AcquireResult
     grant: LeaseGrant | None
     row_version: int
+    reason: AcquireDenyReason | None = None  # 只有 DENIED 才有
 
 
 @dataclass(frozen=True)
@@ -427,13 +429,21 @@ class PresenceManager:
         with self._tx() as (s, pending, controls):
             row = self._lock_row(s)
 
-            def out(result: AcquireResult, grant: LeaseGrant | None = None) -> AcquireOutcome:
-                return AcquireOutcome(result, grant, row.row_version)
+            def out(
+                result: AcquireResult, grant: LeaseGrant | None = None, reason: AcquireDenyReason | None = None
+            ) -> AcquireOutcome:
+                return AcquireOutcome(result, grant, row.row_version, reason)
 
             if self._superseded(row):
-                return out(AcquireResult.DENIED)
-            if self._acquire_guard is not None and self._acquire_guard(s) is not None:
-                return out(AcquireResult.DENIED)  # 全域停止後暫停：直到明確解除前端點不得重 acquire
+                return out(AcquireResult.DENIED, reason=AcquireDenyReason.SUPERSEDED_CORE)
+            blocked = self._acquire_guard(s) if self._acquire_guard is not None else None
+            if blocked is not None:
+                # 全域停止後暫停：直到明確解除前端點不得重 acquire
+                try:
+                    reason = AcquireDenyReason(blocked)
+                except ValueError:
+                    reason = AcquireDenyReason.GUARD_REJECTED
+                return out(AcquireResult.DENIED, reason=reason)
             if row.status == "NONE" and row.transfer_id is not None:
                 transfer = self._open_transfer(s)
                 lease = s.get(PresenceLeaseRow, row.lease_id) if row.lease_id else None

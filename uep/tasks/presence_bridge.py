@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable
 
 from uep.contracts.presence import PresenceStatus
@@ -73,3 +74,85 @@ class PresenceTaskBridge:
         if paused:
             logger.info("presence 離場，已暫停 %d 個 presence_bound Task", len(paused))
         return paused
+
+
+DEFAULT_MAINTENANCE_INTERVAL = 5.0  # 秒
+
+
+class PresenceMaintenance:
+    """Presence 維護迴圈（T-23）：定期 ``expire_due()`` 與 ``bridge.reconcile()``。
+
+    - 到期的 Lease 若沒人呼叫 Presence 就不會被發現；Bus 事件也可能遺失（E-13）。這個迴圈讓到期掃描與
+      Task 暫停補償不依賴任何外部觸發。
+    - 兩個步驟各自隔離例外：``expire_due`` 失敗仍會嘗試 ``reconcile``，失敗只計數並記 log，下個 tick 重試；
+      橋接處理失敗（``failures``）因此最晚在下一個 tick 被補上。
+    - 第三步 ``project``（可選）：把 Presence 權威狀態重新投影到 State 的 Presence 軸。State 的 Presence 投影
+      原本只走 Bus，Bus 佇列滿而丟棄 presence 事件時 State 會停在舊值；投影以 source_version 去重、冪等，
+      所以每個 tick 呼叫是安全的。
+    - ``tick()`` 可手動呼叫（測試不需要真時間）；背景線程的等待函式可注入（預設 ``Event.wait``）。
+    """
+
+    def __init__(
+        self,
+        expire_due: Callable[[], bool],
+        reconcile: Callable[[], list[str]],
+        *,
+        project: Callable[[], object] | None = None,
+        interval: float = DEFAULT_MAINTENANCE_INTERVAL,
+        wait: Callable[[float], bool] | None = None,
+    ) -> None:
+        if interval <= 0:
+            raise ValueError("interval 必須 > 0")
+        self._expire_due = expire_due
+        self._reconcile = reconcile
+        self._project = project
+        self._interval = interval
+        self._stop = threading.Event()
+        self._wait = wait if wait is not None else self._stop.wait  # 回 True 表示被要求停止
+        self._thread: threading.Thread | None = None
+        self.ticks = 0
+        self.expire_failures = 0
+        self.reconcile_failures = 0
+        self.project_failures = 0
+
+    def tick(self) -> None:
+        """執行一輪：先掃到期，再 reconcile，最後重新投影 Presence 軸；任一步驟例外都不外洩。"""
+        try:
+            self._expire_due()
+        except Exception:
+            self.expire_failures += 1
+            logger.exception("presence 到期掃描失敗，下個 tick 重試")
+        try:
+            self._reconcile()
+        except Exception:
+            self.reconcile_failures += 1
+            logger.exception("presence reconcile 失敗，下個 tick 重試")
+        if self._project is not None:
+            try:
+                self._project()
+            except Exception:
+                self.project_failures += 1
+                logger.exception("Presence 軸重新投影失敗，下個 tick 重試")
+        self.ticks += 1
+
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True, name="UepPresenceMaintenance")
+        self._thread.start()
+
+    def stop(self, timeout: float = 5.0) -> None:
+        self._stop.set()
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=timeout)
+            if thread.is_alive():
+                logger.error("presence 維護線程未能正常結束")
+        self._thread = None
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            if self._wait(self._interval) or self._stop.is_set():
+                return
+            self.tick()

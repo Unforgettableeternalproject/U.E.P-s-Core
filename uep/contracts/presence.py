@@ -55,6 +55,14 @@ class AcquireResult(StrEnum):
     DENIED = "DENIED"
 
 
+class AcquireDenyReason(StrEnum):
+    """``AcquireResult.DENIED`` 的原因碼（契約 4.4、T-23）；其他結果碼沒有原因。"""
+
+    GLOBAL_STOP_ENGAGED = "global_stop_engaged"  # 全域停止旗標成立：端點不得重試，直到明確解除
+    SUPERSEDED_CORE = "superseded_core"  # 此 Core 的 epoch 已被較新的 Core 取代：應改連新的 Core
+    GUARD_REJECTED = "guard_rejected"  # 其他 acquire_guard 拒絕（未歸類的原因）
+
+
 class RenewResult(StrEnum):
     RENEWED = "RENEWED"
     STALE = "STALE"

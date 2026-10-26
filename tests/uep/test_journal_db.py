@@ -9,11 +9,13 @@ from alembic import command
 from sqlalchemy import func, inspect, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
+from uep.config import get_settings
 from uep.events import inbox, journal
 from uep.events.bus import EventBus
 from uep.events.envelope import EventDraft, TrustedContext
 from uep.events.models import EventRow, InboxRow, OutboxRow, PayloadBlob
 from uep.events.outbox import DispatchStats, OutboxDispatcher
+from uep.events.payload_hash import PayloadHasher
 from uep.events.publisher import EventPublisher, UnsupportedDeliveryClass
 
 pytestmark = pytest.mark.usefixtures("session_factory")
@@ -274,8 +276,8 @@ def test_private_text_lives_in_deletable_blob_only(session_factory, publisher):
     secret = "私人對話內容-不應進入 journal"
     draft = EventDraft(event_type="input.text_final", idempotency_key="k", payload={"len": 12}, payload_blob=secret.encode())
     event = publisher.publish(draft, EXTERNAL).event
-    digest = journal.sha256_hex(secret.encode())
-    assert event.payload_ref and event.payload_hash == digest
+    digest = PayloadHasher(get_settings().payload_hash_key).hash(secret.encode())
+    assert event.payload_ref and event.payload_hash == digest and digest.startswith("hmac-sha256:")
 
     with session_factory() as s:
         dump = s.execute(text("SELECT to_jsonb(e)::text FROM events e")).scalar_one()

@@ -49,6 +49,7 @@ class EventRow(Base):
         UniqueConstraint("aggregate_id", "aggregate_version", name="uq_events_aggregate_version"),
         Index("ix_events_trace_id", "trace_id"),
         Index("ix_events_event_type", "event_type"),
+        Index("ix_events_txid", "txid"),
     )
 
     event_id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -85,6 +86,8 @@ class EventRow(Base):
     payload_hash: Mapped[str | None] = mapped_column(String)
     tombstone_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     tombstone_reason: Mapped[str | None] = mapped_column(Text)
+    # 寫入交易 id（D41）：journal tailing 以 ``txid < pg_snapshot_xmin`` 作為安全水位；不屬於 UEPEvent 信封
+    txid: Mapped[int] = mapped_column(BigInteger, server_default=text("txid_current()"), nullable=False)
 
 
 class OutboxRow(Base):

@@ -30,6 +30,7 @@ from typing import Any
 
 from uep.adapters.output import SendFailed, SendLookup, SendResult
 from uep.contracts.presence import (
+    AcquireDenyReason,
     AcquireResult,
     AuthorizationTuple,
     ConfirmResult,
@@ -148,6 +149,7 @@ class CliEndpoint:
         self._ended: OrderedDict[str, GateDecision] = OrderedDict()  # lease_id -> 停止原因對應結果碼
         self._reports: list[_Report] = []
         self._report_retry_at: float | None = None
+        self._deny_reason: AcquireDenyReason | None = None  # 最近一次 acquire 被 DENIED 的原因碼
         self._revoke_mark: dict[int, int] = {}  # core_epoch -> 收過的最大 revoke generation（含無 Lease 時）
         self._stopped_turn: int | None = None  # 已被 stop 的最大 turn_generation
         self._threaded = False
@@ -270,9 +272,24 @@ class CliEndpoint:
 
     # ---- Lease 生命週期 ----
 
+    @property
+    def last_deny_reason(self) -> AcquireDenyReason | None:
+        """最近一次 ``start_lease`` 被 Core 拒絕（DENIED）的原因碼；成功或非 DENIED 結果為 None。"""
+        return self._deny_reason
+
+    @property
+    def acquire_retryable(self) -> bool:
+        """是否值得再試 acquire：``global_stop_engaged`` 在明確解除前一律被拒，端點不重試。
+
+        ``superseded_core`` 表示連到的是已被取代的舊 Core，重試前須先重連（重連由 ReconnectSupervisor 處理，
+        新 Core 的 acquire 會重新判定），所以仍視為可重試。
+        """
+        return self._deny_reason is not AcquireDenyReason.GLOBAL_STOP_ENGAGED
+
     def start_lease(self) -> AcquireResult:
         """acquire -> 確認到場（confirm_activated）-> 武裝 watchdog；只有真的啟用才回 GRANTED。"""
         reply = self._core.acquire(self._location)
+        self._deny_reason = reply.reason if reply.result is AcquireResult.DENIED else None
         if reply.result is not AcquireResult.GRANTED or reply.auth is None:
             return reply.result
         started = self._clock()  # 取請求送出前的時間：期限偏保守

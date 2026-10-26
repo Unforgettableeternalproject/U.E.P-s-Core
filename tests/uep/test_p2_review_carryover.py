@@ -22,6 +22,7 @@ from tests.uep.endpoint_support import FakeCore, Mono, intent_for_auth, signal, 
 from tests.uep.presence_support import activate, intent_for, make_rig
 from tests.uep.state_support import activate_endpoint, make_stack
 from uep.contracts.presence import (
+    AcquireDenyReason,
     AcquireResult,
     GateDecision,
     PresenceStatus,
@@ -290,10 +291,10 @@ def _running(tasks, policy):
     return task
 
 
-def test_item6a_bridge_failure_is_not_retried_until_next_event_or_manual_reconcile(session_factory, tmp_path):
-    """【缺陷（回報）】橋接處理失敗只計 failures，沒有定期 reconcile：失敗後 presence_bound Task 會一直保持
-    RUNNING，直到下一個 presence 事件或有人手動 reconcile()。未修：需要決定由誰（assembly 計時器或 Core 主迴圈）
-    定期呼叫與間隔，屬組裝層設計。docstring 已註明 reconcile 可定期呼叫，但目前組裝層只在啟動時呼叫一次。"""
+def test_item6a_bridge_alone_does_not_retry_until_next_event_or_reconcile(session_factory, tmp_path):
+    """橋接本身不會自行重試：處理失敗只計 failures，presence_bound Task 保持 RUNNING，直到下一個 presence 事件
+    或有人呼叫 reconcile()。T-23 起由組裝層的 PresenceMaintenance 定期呼叫 reconcile 補上
+    （見 test_presence_maintenance.py）；這裡釘住「橋接單獨使用時」的行為。"""
     stack, tasks, bridge = _bridge_stack(session_factory, tmp_path)
     bridge.start()
     stack.bus.start()
@@ -321,22 +322,21 @@ def test_item6a_bridge_failure_is_not_retried_until_next_event_or_manual_reconci
         stack.bus.stop()
 
 
-def test_item6b_denied_cannot_distinguish_global_stop_flag_from_superseded_core(session_factory, tmp_path):
-    """【缺陷（回報）】AcquireResult.DENIED 同時代表「全域停止旗標成立」與「本 Manager 已被較新的 Core 取代」，
-    AcquireOutcome 沒有原因碼，端點無法分辨該等待（旗標解除）還是該放棄（換 Core）。未修：需新增結果碼或
-    reason 欄位，動到 CC-4 契約 enum 與 wire 格式。"""
+def test_item6b_denied_carries_reason_for_global_stop_and_superseded_core(session_factory, tmp_path):
+    """【T-23 已修】DENIED 帶原因碼：旗標成立為 global_stop_engaged（端點不重試），
+    被較新 Core 取代為 superseded_core；其餘結果碼沒有原因。"""
     stack = make_stack(session_factory, tmp_path)
-    assert "reason" not in {f.name for f in dataclasses.fields(AcquireOutcome)}
+    assert "reason" in {f.name for f in dataclasses.fields(AcquireOutcome)}
     # 情況 A：全域停止旗標
     stack.stop.engage()
     flagged = stack.manager.acquire("ep_desktop", "desktop")
-    assert flagged.result is AcquireResult.DENIED
+    assert flagged.result is AcquireResult.DENIED and flagged.reason is AcquireDenyReason.GLOBAL_STOP_ENGAGED
     stack.stop.disengage()
     # 情況 B：被取代的舊 Manager
     stack.new_manager()
     superseded = stack.manager.acquire("ep_desktop", "desktop")
-    assert superseded.result is AcquireResult.DENIED
-    assert (flagged.result, flagged.grant) == (superseded.result, superseded.grant)  # 對端點而言完全相同
+    assert superseded.result is AcquireResult.DENIED and superseded.reason is AcquireDenyReason.SUPERSEDED_CORE
+    assert flagged.grant is None and superseded.grant is None
     assert make_flag_blocker("uep")  # 旗標檢查器本身存在（語意由 GlobalStop 負責）
 
 

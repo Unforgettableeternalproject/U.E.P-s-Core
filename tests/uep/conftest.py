@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
+from pydantic import SecretStr
 from sqlalchemy import make_url, text
 
 import uep.db.models_registry  # noqa: F401  確保 Base.metadata 含所有資料表
@@ -28,6 +29,14 @@ def alembic_config(url: str) -> Config:
     cfg.set_main_option("script_location", str(REPO_ROOT / "uep" / "db" / "migrations"))
     cfg.attributes["url"] = url
     return cfg
+
+
+@pytest.fixture(autouse=True)
+def payload_hash_key(monkeypatch) -> str:
+    """預設提供測試用的 payload_hash 密鑰（D42：沒有密鑰就拒寫私人 payload）；需要「未設定」的測試自行覆寫為 None。"""
+    key = "test-only-payload-hash-key-0123456789"
+    monkeypatch.setattr(get_settings(), "payload_hash_key", SecretStr(key))
+    return key
 
 
 @pytest.fixture(scope="session")

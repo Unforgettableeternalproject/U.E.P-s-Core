@@ -2914,3 +2914,15 @@
 
 ---
 
+### feat: 新 Core P3 前置修整（Bus、journal 水位、HMAC）. 10/27
+
+> Date: Tue, 27 Oct 2026 00:57:16 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `5624167ceb2f70cf890001a54ade01bf50f4910e`
+
+---
+

@@ -54,7 +54,10 @@ def main(argv: list[str] | None = None) -> int:
         _out(f"錯誤：{exc}")
         return 1
     if result is not AcquireResult.GRANTED:
-        _out(f"無法取得 Lease：{result.value}")
+        reason = endpoint.last_deny_reason
+        _out(f"無法取得 Lease：{result.value}" + (f"（{reason.value}）" if reason is not None else ""))
+        if not endpoint.acquire_retryable:
+            _out("全域停止中，不再重試；解除後請重新啟動端點")
         client.close()
         return 1
     endpoint.start()

@@ -668,6 +668,7 @@ class IndexTTSLite:
         self._lora_scale: float = 0.0
         self._lora_path: str | None = None
         self._lora_original_inference_model = None  # 保存未掛 adapter 的原始 model
+        self._lora_merged: bool = False
 
         # Profiling: init timings (populated by _init_models / load_character / warmup)
         self._init_timings: dict[str, float] = {}
@@ -1048,6 +1049,41 @@ class IndexTTSLite:
         self.set_lora_scale(scale)
 
         info_log(f"   ✓ adapter 載入完成")
+
+    def merge_lora(self, adapter_path: str, scale: float = 1.0) -> dict:
+        """把 PEFT LoRA 以 ``scale`` 永久合併進 GPT 權重（accel 下也會生效）。
+
+        ``load_lora`` 的 PEFT 包裝只作用在 ``inference_model``；``use_accel`` 時
+        ``generate`` 走獨立的 GPT2AccelModel 複本，不經 ``inference_model``，LoRA 會
+        靜默失效。此方法合併後把權重原地同步進 accel 模型（參數位址不變，CUDA graph 不失效）。
+
+        ⚠️ 合併後不可再調 scale、也不可再 ``load_lora``；要換強度須重新載入引擎。
+        """
+        if self._lora_active or self._lora_merged:
+            raise RuntimeError("LoRA 已載入或已合併，不可重複合併（需重新載入引擎）")
+        adapter_path = str(adapter_path)
+        if not os.path.isdir(adapter_path):
+            raise FileNotFoundError(f"LoRA adapter 目錄不存在: {adapter_path}")
+        try:
+            from .lora_merge import merge_lora_into_gpt
+        except ImportError:
+            from lora_merge import merge_lora_into_gpt
+
+        info_log(f"🧬 [LoRA] 合併 adapter: {os.path.basename(adapter_path)}")
+        stats = merge_lora_into_gpt(self.gpt, adapter_path, scale, self.use_fp16)
+        self._lora_merged = True
+        self._lora_scale = stats["scale"]
+        self._lora_path = adapter_path
+        info_log(
+            f"   ✓ 已合併 scale={stats['scale']:.0%} 探針層={stats['probe']} "
+            f"主模型 Δnorm={stats['merged_delta_norm']}"
+        )
+        if self.use_accel:
+            info_log(
+                f"   ✓ accel 同步={stats['accel_synced']} Δnorm={stats['accel_delta_norm']} "
+                f"與主模型殘差={stats['accel_residual_norm']}"
+            )
+        return stats
 
     def _load_lora_pth(self, checkpoint_path: str, scale: float = 1.0) -> None:
         """載入舊格式 .pth merged checkpoint，用 delta blending 混合權重。"""

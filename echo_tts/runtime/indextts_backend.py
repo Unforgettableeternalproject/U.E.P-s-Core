@@ -150,6 +150,18 @@ class IndexTTS2Backend:
         s = scale if scale is not None else self.DEFAULT_LORA_SCALE
         self.engine.load_lora(path, scale=s)
 
+    def merge_lora(self, checkpoint_path: str | None = None, scale: float | None = None) -> dict:
+        """把 LoRA 永久合併進 GPT 權重；``use_accel`` 下也會同步進 accel 複本。
+
+        與 ``load_lora`` 的差別：``load_lora`` 在 accel 下不生效（accel 走獨立權重複本）。
+        合併後不可再調 scale（``set_lora_scale`` 無效），要換強度須重新載入引擎。
+        只支援 PEFT adapter 目錄。回傳同步統計（探針層權重差 norm）。
+        """
+        self.load()
+        path = checkpoint_path or self._lora_checkpoint or self._resolve_default_lora()
+        s = scale if scale is not None else self.DEFAULT_LORA_SCALE
+        return self.engine.merge_lora(path, scale=s)
+
     def _resolve_default_lora(self) -> str:
         """Resolve the default LoRA adapter/checkpoint path relative to project root."""
         import os

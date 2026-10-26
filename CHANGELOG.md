@@ -2770,3 +2770,15 @@
 
 ---
 
+### [fix]: Task 終局事件同交易寫入 outbox. 10/26
+
+> Date: Mon, 26 Oct 2026 15:11:19 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `6cb0ced832eda4e1c1d2ccdfe4480d8a95144160`
+
+---
+

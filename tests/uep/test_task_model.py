@@ -876,3 +876,25 @@ def test_resume_window_uses_injected_clock(session_factory, executor):
         mgr.resume_run(run.run_id)
     now[0] += timedelta(seconds=61)
     assert mgr.resume_run(run.run_id).run.worker_epoch == 2
+
+
+def test_outbox_rows_written_in_same_transaction(session_factory, executor):
+    from uep.events.models import OutboxRow
+
+    def outbox(mgr_):
+        with mgr_._sf() as s:
+            return sorted(
+                (s.get(EventRow, r.event_id).event_type, r.target) for r in s.scalars(select(OutboxRow))
+            )
+
+    mgr = make_manager(session_factory, executor)  # 預設：僅 completed／failed／cancelled／input_requested
+    task = new_task(mgr)
+    mgr.start_run(task.task_id, persona_version=1, policy_version=1)
+    assert outbox(mgr) == []
+    mgr.transition_task(task.task_id, RunStatus.CANCELLED)
+    assert outbox(mgr) == [("task.cancelled", "notification")]
+
+    custom = make_manager(session_factory, executor, outbox_targets={"run.*": ["audit", "audit"], "task.created": ["x"]})
+    t2 = new_task(custom)
+    custom.start_run(t2.task_id, persona_version=1, policy_version=1)
+    assert [row for row in outbox(custom) if row[1] != "notification"] == [("run.started", "audit"), ("task.created", "x")]

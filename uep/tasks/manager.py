@@ -13,7 +13,7 @@ import hashlib
 import json
 import logging
 import re
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -21,6 +21,7 @@ from typing import Any, Literal
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from uep.adapters.tool import (
@@ -59,6 +60,14 @@ from uep.tasks.states import (
 )
 
 logger = logging.getLogger("uep.tasks.manager")
+
+# 預設寫 outbox 的事件類型 -> target（其餘不寫，避免沒人消費的列堆積）
+DEFAULT_OUTBOX_TARGETS: dict[str, tuple[str, ...]] = {
+    "task.completed": ("notification",),
+    "task.failed": ("notification",),
+    "task.cancelled": ("notification",),
+    "task.input_requested": ("notification",),
+}
 
 SOURCE = "core.task_manager"
 SYSTEM_ACTOR = "uep:task_manager"
@@ -244,6 +253,7 @@ class TaskManager:
         crash_hook: Callable[[str], None] | None = None,
         approvers: Callable[[TaskRow], frozenset[str]] | None = None,
         heartbeat_stale_after: timedelta = timedelta(seconds=60),
+        outbox_targets: Mapping[str, Sequence[str]] | None = None,
     ) -> None:
         self._sf = session_factory
         self._publisher = publisher
@@ -256,6 +266,8 @@ class TaskManager:
         # P1：核准者只認 Task 的 owner；之後由 Policy 指定
         self._approvers = approvers or (lambda task: frozenset({task.owner_actor_id}))
         self._stale_after = heartbeat_stale_after
+        # 事件類型（或 "task.*" 這類前綴鍵）-> outbox target；與狀態變更同交易寫入（VC-1-2、T-8）
+        self._outbox_targets = dict(DEFAULT_OUTBOX_TARGETS if outbox_targets is None else outbox_targets)
         self.redaction_count = 0  # receipt 欄位被脫敏的累計次數（N4）
 
     # ---- 交易與事件 ----
@@ -304,7 +316,16 @@ class TaskManager:
             scope_ref=task.scope_ref,
             persona_id=activity.persona_id if activity else "uep",
         )
-        pending.append(self._publisher.record(session, draft, trusted))
+        pending.append(
+            self._publisher.record(session, draft, trusted, outbox_targets=self._targets_for(event_type))
+        )
+
+    def _targets_for(self, event_type: str) -> list[str]:
+        targets: list[str] = list(self._outbox_targets.get(event_type, ()))
+        for key, value in self._outbox_targets.items():
+            if key.endswith(".*") and event_type.startswith(key[:-1]):
+                targets.extend(value)
+        return list(dict.fromkeys(targets))
 
     def _bump(self, row: TaskRow | RunRow | ActionIntentRow | StepRow) -> None:
         row.version += 1
@@ -699,8 +720,17 @@ class TaskManager:
                 presence_bound=task.presence_bound if presence_bound is None else presence_bound,
                 status=ActionStatus.INTENDED.value, version=1,
             )
-            s.add(action)
-            s.flush()
+            try:
+                with s.begin_nested():  # 唯一約束衝突只回滾這個 savepoint
+                    s.add(action)
+                    s.flush()
+            except IntegrityError:
+                existing = s.get(ActionIntentRow, action.action_id, populate_existing=True)
+                if existing is None:
+                    raise
+                if existing.params_hash != digest:
+                    raise ParamsHashMismatch("同 action_id 的參數已變更，須建立新 action") from None
+                return existing
             self._emit(
                 s, pending, "action.intended", task, aggregate=("action", action.action_id, action.version),
                 run_id=run_id, payload={"action_id": action.action_id, "status": action.status},

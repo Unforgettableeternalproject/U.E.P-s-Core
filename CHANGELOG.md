@@ -2818,3 +2818,15 @@
 
 ---
 
+### feat: 新 Core 最小本機 CLI 端點與 watchdog. 10/26
+
+> Date: Mon, 26 Oct 2026 21:09:28 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `559f732906bb417de16e2014a487ab1a5ad0e829`
+
+---
+

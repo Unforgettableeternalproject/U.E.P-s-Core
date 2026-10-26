@@ -34,13 +34,14 @@ class GenerationPaths:
 def default_generation_paths(project_root: str | Path | None = None) -> GenerationPaths:
     root = Path(project_root or Path.cwd()).resolve()
     engine_root = root / "echo_tts"
-    model_dir = engine_root / "modules" / "tts_module" / "checkpoints"
+    # IndexTTS 2.5 遷移（2026-08-19）：模型目錄與角色特徵切換至 v25
+    model_dir = engine_root / "modules" / "tts_module" / "checkpoints_v25"
     return GenerationPaths(
         project_root=root,
         engine_root=engine_root,
         model_dir=model_dir,
         cfg_path=model_dir / "config.yaml",
-        character_path=engine_root / "models" / "tts" / "uep.pt",
+        character_path=engine_root / "models" / "tts" / "uep_v25.pt",
     )
 
 
@@ -54,6 +55,20 @@ def validate_generation_paths(paths: GenerationPaths) -> None:
         raise FileNotFoundError(f"Missing IndexTTS2 TTS assets:\n{formatted}")
 
 
+def detect_language(text: str) -> str:
+    """簡易語言偵測：含 CJK 統一表意文字 → zh，含假名 → ja，否則 en。
+
+    2.5 的 language 不只是正規化選項——lang embedding 會直接加進 text embedding，
+    語言標錯會改變 conditioning，故一次性路徑必須解析語言而非固定預設。
+    """
+    import re
+    if re.search(r'[぀-ヿ]', text):
+        return "ja"
+    if re.search(r'[一-鿿]', text):
+        return "zh"
+    return "en"
+
+
 def generate_with_indextts2(
     text: str,
     output_path: str | Path,
@@ -62,6 +77,7 @@ def generate_with_indextts2(
     use_fp16: bool = True,
     use_cuda_kernel: bool = True,
     emotion_vector: Sequence[float] | None = None,
+    language: str | None = None,
 ) -> Path:
     if not text.strip():
         raise ValueError("text must not be empty")
@@ -88,7 +104,12 @@ def generate_with_indextts2(
         use_cuda_kernel=use_cuda_kernel,
     )
     engine.load_character(paths.character_path)
-    ok = engine.synthesize(text=text, output_path=str(output), emotion_vector=list(emotion_vector) if emotion_vector else None)
+    ok = engine.synthesize(
+        text=text,
+        output_path=str(output),
+        emotion_vector=list(emotion_vector) if emotion_vector else None,
+        language=language or detect_language(text),
+    )
     if not ok or not output.exists():
         raise RuntimeError("IndexTTS2 generation did not produce an output file")
     return output

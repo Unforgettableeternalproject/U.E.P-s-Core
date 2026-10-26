@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Protocol
 
 from echo_tts.benchmarks.metrics import ProfileReport
+from echo_tts.config.emotion_presets import STRENGTH_DEFAULT, clamp_strength
 from echo_tts.runtime.audio import AudioPlayer, NullAudioPlayer, StreamingAudioPlayer
 
 
@@ -63,6 +64,20 @@ class TTSInteractiveSession:
     def get_emotion_overrides(self) -> dict | None:
         """Return current preset-level dynamics overrides."""
         return getattr(self, "_emotion_overrides", None)
+
+    def set_emotion_strength(self, strength: float) -> None:
+        """Set the emotion strength actually sent to the engine.
+
+        The vector held by the backend is already scaled to this value; this
+        keeps the number around so the shell can report it and so callers can
+        tell 0.57 from 0.73 without re-deriving it from the vector sum
+        (which the calm bias makes lossy).
+        """
+        self._emotion_strength = clamp_strength(strength)
+
+    def get_emotion_strength(self) -> float:
+        """Return the current emotion strength (defaults to the tuned 0.65)."""
+        return getattr(self, "_emotion_strength", STRENGTH_DEFAULT)
 
     def set_language(self, language: str) -> None:
         """Set synthesis language ('en' or 'zh')."""
@@ -251,6 +266,7 @@ class TTSInteractiveSession:
         if hasattr(self.backend, "profile_generate"):
             generated, report = self.backend.profile_generate(
                 text, output_path, emotion_overrides=self.get_emotion_overrides(),
+                language=self.get_language(),
             )
         else:
             # Fallback: generate without profiling data

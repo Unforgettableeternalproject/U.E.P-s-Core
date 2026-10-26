@@ -74,6 +74,35 @@ EN_FILLERS: Dict[PoiseLevel, List[str]] = {
     ],
 }
 
+# ── 日文 Filler 庫 ──
+JA_FILLERS: Dict[PoiseLevel, List[str]] = {
+    PoiseLevel.BREATH: [
+        "......",
+        "............",
+        "——......",
+    ],
+    PoiseLevel.FILLER_LIGHT: [
+        "えっと...",
+        "うーん...",
+        "あの...",
+        "そうね...",
+        "んん...",
+        "まあ...",
+        "それで...",
+    ],
+    PoiseLevel.FILLER_HEAVY: [
+        "ちょっと待って...",
+        "考えさせて...",
+        "あ、そうだ...",
+        "えっと、どう言えばいいかな...",
+    ],
+    PoiseLevel.ACTION: [
+        "ごめん、ちょっと一息つかせて...",
+        "少し待ってね...",
+        "んん、ちょっとだけ...",
+    ],
+}
+
 # Maximum number of recent fillers to track for dedup
 _DEFAULT_HISTORY_SIZE = 5
 
@@ -91,11 +120,13 @@ class FillerLibrary:
         seed: Optional[int] = None,
         zh_fillers: Optional[Dict[PoiseLevel, List[str]]] = None,
         en_fillers: Optional[Dict[PoiseLevel, List[str]]] = None,
+        ja_fillers: Optional[Dict[PoiseLevel, List[str]]] = None,
     ):
         self._rng = random.Random(seed)
         self._history: deque = deque(maxlen=history_size)
         self._zh = zh_fillers or ZH_FILLERS
         self._en = en_fillers or EN_FILLERS
+        self._ja = ja_fillers or JA_FILLERS
 
     def get_filler(
         self,
@@ -110,7 +141,7 @@ class FillerLibrary:
 
         Args:
             level: The poise level (BREATH, FILLER_LIGHT, FILLER_HEAVY, or ACTION).
-            language: Language code ("zh" or "en").
+            language: Language code ("zh", "en", or "ja").
 
         Returns:
             Filler text string, or None.
@@ -118,7 +149,7 @@ class FillerLibrary:
         if level == PoiseLevel.SILENCE:
             return None
 
-        pool = self._zh if language == "zh" else self._en
+        pool = {"zh": self._zh, "ja": self._ja}.get(language, self._en)
         candidates = pool.get(level, [])
 
         if not candidates:

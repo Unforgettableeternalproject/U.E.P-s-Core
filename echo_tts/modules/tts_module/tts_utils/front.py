@@ -496,6 +496,15 @@ class TextNormalizer:
 
         return result
 
+    def apply_char_rep_map(self, text: str) -> str:
+        """僅做 CJK/全形標點西化（上游 infer_v2_5 進語言分支前的 clean_pattern 步驟）。
+
+        供不走完整 normalize() 一條龍的語言（ja/es）使用：模型以西式標點訓練，
+        日文標點（。、）對 GPT 是罕見 token，會被模型唸成無意義音節。
+        """
+        pattern = re.compile("|".join(re.escape(p) for p in self.char_rep_map.keys()))
+        return pattern.sub(lambda x: self.char_rep_map[x.group()], text)
+
     def correct_pinyin(self, pinyin: str):
         """
         将 jqx 的韵母为 u/ü 的拼音转换为 v

@@ -64,7 +64,7 @@ from poise.emotion_corrector import (  # noqa: E402
     BREATH_SIGH_VECTOR,
     NUM_EMOTION_DIMS,
 )
-from poise.filler_library import FillerLibrary, ZH_FILLERS, EN_FILLERS  # noqa: E402
+from poise.filler_library import FillerLibrary, ZH_FILLERS, EN_FILLERS, JA_FILLERS  # noqa: E402
 from poise.planner import PoisePlanner, SegmentPlan  # noqa: E402
 
 
@@ -996,6 +996,24 @@ class TestFillerLibraryLanguage:
         en_pool = set(EN_FILLERS.get(PoiseLevel.FILLER_LIGHT, []))
         # 兩個詞庫不應完全相同
         assert zh_pool != en_pool
+
+    def test_ja_fillers_come_from_ja_pool(self):
+        """ja 語言的 filler 來自 JA_FILLERS 詞庫（2.5 日語支援）"""
+        lib = FillerLibrary(seed=42)
+        all_ja = []
+        for level_list in JA_FILLERS.values():
+            all_ja.extend(level_list)
+        result = lib.get_filler(PoiseLevel.FILLER_LIGHT, language="ja")
+        assert result in all_ja
+
+    def test_unknown_language_falls_back_to_en(self):
+        """未知語言 fallback 到 EN_FILLERS"""
+        lib = FillerLibrary(seed=42)
+        all_en = []
+        for level_list in EN_FILLERS.values():
+            all_en.extend(level_list)
+        result = lib.get_filler(PoiseLevel.FILLER_LIGHT, language="ko")
+        assert result in all_en
 
 
 class TestFillerLibraryLevels:

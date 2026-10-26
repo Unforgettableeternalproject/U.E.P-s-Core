@@ -46,6 +46,10 @@ class PoiseLevelSelector:
         max_level = int(self.config.potency * len(PoiseLevel))
         max_level = min(max_level, len(PoiseLevel) - 1)
 
+        # 設定檔的硬上限：預設 BREATH，把 FILLER_LIGHT / FILLER_HEAVY / ACTION
+        # 這三個「會插入銜接詞」的層級擋掉。jitter 也在這條線之下運作。
+        max_level = min(max_level, self.config.max_level)
+
         # Accumulation bonus: longer stretches → heavier rest
         acc_bonus = min(
             state.accumulated_segments // self.ACCUMULATION_STEP,

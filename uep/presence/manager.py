@@ -143,6 +143,7 @@ class PresenceManager:
         lease_ttl: timedelta = DEFAULT_LEASE_TTL,
         activation_timeout: timedelta = DEFAULT_ACTIVATION_TIMEOUT,
         outbox_targets: tuple[str, ...] = ("presence",),
+        acquire_guard: Callable[[Session], str | None] | None = None,
     ) -> None:
         self._sf = session_factory
         self._persona = persona_id
@@ -153,6 +154,8 @@ class PresenceManager:
         self._ttl = lease_ttl
         self._activation_timeout = activation_timeout
         self._outbox_targets = outbox_targets
+        # 全域停止的暫停旗標（T-17）：在 acquire 的鎖定交易內呼叫，回非 None 即拒絕核發（DENIED）
+        self._acquire_guard = acquire_guard
         self._core_epoch: int | None = None
         self._fencing_epoch: int | None = None
 
@@ -429,6 +432,8 @@ class PresenceManager:
 
             if self._superseded(row):
                 return out(AcquireResult.DENIED)
+            if self._acquire_guard is not None and self._acquire_guard(s) is not None:
+                return out(AcquireResult.DENIED)  # 全域停止後暫停：直到明確解除前端點不得重 acquire
             if row.status == "NONE" and row.transfer_id is not None:
                 transfer = self._open_transfer(s)
                 lease = s.get(PresenceLeaseRow, row.lease_id) if row.lease_id else None

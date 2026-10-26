@@ -6,4 +6,6 @@ from uep.context import models as _context  # noqa: F401
 from uep.events import models as _events  # noqa: F401
 from uep.output import models as _output  # noqa: F401
 from uep.presence import models as _presence  # noqa: F401
+from uep.state import models as _state  # noqa: F401
+from uep.stop import models as _stop  # noqa: F401
 from uep.tasks import models as _tasks  # noqa: F401

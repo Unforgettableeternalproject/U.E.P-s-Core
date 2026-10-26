@@ -259,6 +259,7 @@ class TaskManager:
         heartbeat_stale_after: timedelta = timedelta(seconds=60),
         outbox_targets: Mapping[str, Sequence[str]] | None = None,
         presence_check: Callable[[str], bool] | None = None,
+        action_guard: Callable[[Session], str | None] | None = None,
     ) -> None:
         self._sf = session_factory
         self._publisher = publisher
@@ -276,6 +277,11 @@ class TaskManager:
         # 選用的 Presence 檢查點（D12）：以 persona_id 查是否有有效 Presence；None 表示不檢查。
         # 只套用於 presence_bound 的前景 Task，背景 Task 例外。
         self._presence_check = presence_check
+        # CC-7／全域停止的 action 層檢查（T-10）：回非 None 的原因碼即拒絕「新」工具執行；
+        # 只在 execute_action 階段 1 生效，resolve_unknown 與階段 3 的 receipt 記錄不擋。
+        # 以階段 1 的交易 session 呼叫（鎖順序 task -> run -> action -> 旗標列），讓旗標共享鎖
+        # 持有到階段 1 提交：engage 的 FOR UPDATE 會等階段 1 提交，不會有「讀旗標後才 engage」的窗口
+        self._action_guard = action_guard
         self.redaction_count = 0  # receipt 欄位被脫敏的累計次數（N4）
 
     # ---- 交易與事件 ----
@@ -532,6 +538,8 @@ class TaskManager:
             current = RunStatus(task.status)
             if current in TERMINAL_STATUSES:
                 raise IllegalTransition(f"task 已是終態 {current.value}，不可再啟動 Run")
+            if self._guard is not None:  # 新 Run 直接以 RUNNING 建立，同樣要過 CC-7 裁決（全域停止期間不可啟動）
+                self._guard(TransitionRequest("run", f"new:{task_id}", RunStatus.PENDING, RunStatus.RUNNING))
             active = s.scalar(
                 select(RunRow.run_id).where(
                     RunRow.task_id == task_id, RunRow.status.notin_([x.value for x in TERMINAL_STATUSES])
@@ -570,6 +578,51 @@ class TaskManager:
                 raise StaleVersion(f"run {run_id} 版本 {run.version}，預期 {expected_version}")
             self._set_run_status(s, pending, task, run, to, pause_reason)
             return run
+
+    @property
+    def action_guard_configured(self) -> bool:
+        return self._action_guard is not None
+
+    @property
+    def transition_guard_configured(self) -> bool:
+        return self._guard is not None
+
+    @property
+    def presence_check_configured(self) -> bool:
+        """是否注入了 Presence 檢查（組裝層用來斷言 R1：presence_check 必填）。"""
+        return self._presence_check is not None
+
+    def pause_presence_bound(
+        self, persona_id: str, reason: PauseReason = PauseReason.PRESENCE_LEFT
+    ) -> list[str]:
+        """presence_bound 的未終態 Task 於離場時暫停（P-10、T-6）；回傳本次實際轉入 PAUSED 的 task_id。
+
+        背景（presence_bound=false）Task 不受影響。已 PAUSED 者冪等略過。暫停只改 Task／Run 狀態：
+        已提交且不可中斷的 EXECUTING action 仍由其 worker 完成並記 receipt，不假裝取消成功；
+        轉移表不允許暫停的狀態（如 UNKNOWN）只記 warning，留待查核。單一 Task 失敗不影響其餘。
+        """
+        with self._sf() as s:
+            candidates = list(s.scalars(
+                select(TaskRow.task_id)
+                .join(ActivityRow, ActivityRow.activity_id == TaskRow.activity_id)
+                .where(
+                    ActivityRow.persona_id == persona_id, TaskRow.presence_bound.is_(True),
+                    TaskRow.status.notin_([x.value for x in TERMINAL_STATUSES] + [RunStatus.PAUSED.value]),
+                )
+            ))
+        paused: list[str] = []
+        for task_id in candidates:
+            try:
+                task = self.pause_task(task_id, reason)
+            except IllegalTransition as exc:
+                logger.warning("presence 離場無法暫停 task=%s：%s", task_id, exc)
+                continue
+            except Exception:
+                logger.exception("presence 離場暫停 task=%s 失敗", task_id)
+                continue
+            if task.status == RunStatus.PAUSED.value:
+                paused.append(task_id)
+        return paused
 
     def pause_task(self, task_id: str, reason: PauseReason) -> TaskRow:
         """Task 與其進行中的 Run 一併轉 PAUSED（presence 離場、core 關機等；T-6、T-11）。已 PAUSED 者冪等。"""
@@ -885,6 +938,10 @@ class TaskManager:
                 persona_id = activity.persona_id
                 if not self._presence_check(persona_id):
                     raise PresenceRequired("前景 action 需要有效 Presence；請待 Presence 恢復後再執行")
+            if self._action_guard is not None:
+                blocked = self._action_guard(s)
+                if blocked:  # 拋出使交易回滾：核准不被消耗、不轉 EXECUTING
+                    raise ActionBlocked(blocked)
 
             if status is ActionStatus.INTENDED:
                 if action.side_effect_class in APPROVAL_REQUIRED:

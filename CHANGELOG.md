@@ -2830,3 +2830,15 @@
 
 ---
 
+### feat: 新 Core 實作 State Coordinator 與全域停止. 10/26
+
+> Date: Mon, 26 Oct 2026 21:09:36 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `5de05ffbe45977c739ede5b90d238e5c73e8bfae`
+
+---
+

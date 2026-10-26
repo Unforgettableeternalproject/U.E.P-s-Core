@@ -24,6 +24,8 @@ class UepSettings(BaseSettings):
     test_database_url: SecretStr | None = Field(default=None, validation_alias="UEP_TEST_DATABASE_URL")
     # Host 本機 epoch 檔（D26，DB 外）；未設定時用使用者資料目錄的預設位置
     host_epoch_file: Path | None = Field(default=None, validation_alias="UEP_HOST_EPOCH_FILE")
+    # 全域停止入口的 token（D36）；未設定時入口一律拒絕（fail-closed），不使用預設值
+    stop_token: SecretStr | None = Field(default=None, validation_alias="UEP_STOP_TOKEN")
 
 
 @lru_cache(maxsize=1)

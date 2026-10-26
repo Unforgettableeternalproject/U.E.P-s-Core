@@ -76,6 +76,13 @@ DEFAULT_EVENT_SPECS: dict[str, EventSpec] = {
     **_spec(_D, "core.started", "core.ready", "core.stopping", "core.component_health_changed"),
 }
 
+# CC-7 state.* 事件的 payload 鍵（契約 6A.2：{axis, from, to, version, cause_event_id}）；全域停止事件（D36）
+_STATE_KEYS = DEFAULT_PAYLOAD_KEYS | {"axis", "from_state", "to_state", "cause_event_id", "subject"}
+DEFAULT_EVENT_SPECS["state.transition_requested"] = EventSpec(_D, payload_keys=_STATE_KEYS)
+DEFAULT_EVENT_SPECS["state.changed"] = EventSpec(_D, payload_keys=_STATE_KEYS)
+DEFAULT_EVENT_SPECS["core.global_stop_engaged"] = EventSpec(_D, Priority.URGENT)
+DEFAULT_EVENT_SPECS["core.global_stop_released"] = EventSpec(_D)
+
 
 class EventRegistry:
     """event_type -> EventSpec；可在測試或後續契約擴充。"""

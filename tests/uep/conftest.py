@@ -12,11 +12,13 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import make_url, text
 
+import uep.db.models_registry  # noqa: F401  確保 Base.metadata 含所有資料表
 from uep.config import get_settings
 from uep.db.engine import make_engine, make_session_factory, normalize_url
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-CC1_TABLES = "inbox, outbox, events, payload_blobs"
+CC6_TABLES = "receipts, action_intents, approvals, steps, runs, tasks, activities"
+CC1_TABLES = "inbox, outbox, events, payload_blobs, context_snapshots, output_intents, deliveries"
 
 
 def alembic_config(url: str) -> Config:
@@ -57,5 +59,5 @@ def engine(test_db_url):
 @pytest.fixture
 def session_factory(engine):
     with engine.begin() as conn:
-        conn.execute(text(f"TRUNCATE {CC1_TABLES} RESTART IDENTITY CASCADE"))
+        conn.execute(text(f"TRUNCATE {CC1_TABLES}, {CC6_TABLES} RESTART IDENTITY CASCADE"))
     return make_session_factory(engine)

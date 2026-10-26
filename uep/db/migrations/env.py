@@ -2,7 +2,7 @@
 from alembic import context
 from sqlalchemy import create_engine, pool
 
-import uep.events.models  # noqa: F401  確保 metadata 含 CC-1 資料表
+import uep.db.models_registry  # noqa: F401  確保 metadata 含所有資料表
 from uep.config import get_settings
 from uep.db.base import Base
 from uep.db.engine import normalize_url

@@ -2746,3 +2746,15 @@
 
 ---
 
+### [feat]: 新增 Context／Output 模型、Delivery Manager 與 fake Adapters. 10/26
+
+> Date: Mon, 26 Oct 2026 14:54:28 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `3ee0d535b2170d0e03485e2f8ae4324db03d4ab5`
+
+---
+

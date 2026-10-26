@@ -5,12 +5,12 @@ import re
 
 from ulid import ULID
 
-# 契約 §0.3 列出的前綴，加上 CC-1 實作所需的 obx（outbox）、blob、trc（trace）
+# 契約 §0.3 列出的前綴，加上實作所需的 obx（outbox）、blob、trc（trace）、rcpt（receipt）、att（attempt）
 PREFIXES = frozenset(
     {
         "evt", "actv", "task", "run", "step", "act", "turn", "seg", "conv",
         "lease", "xfer", "out", "dsp", "dlv", "snap", "appr", "req",
-        "obx", "blob", "trc",
+        "obx", "blob", "trc", "rcpt", "att",
     }
 )
 

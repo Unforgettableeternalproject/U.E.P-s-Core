@@ -13,7 +13,7 @@ D1–D15 對應提案第 22 章 ADR-001～015，維持 PROPOSED，驗證條件�
 
 | ID | 決策摘要 | 狀態 | 最晚定案／負責卡 | 相關 V |
 |---|---|---|---|---|
-| D1 | 自有 Core 掌握狀態，SDK 僅執行 Agent Loop（ADR-001） | PROPOSED | 週期 4 P6（待立卡） | V36 |
+| D1 | 自有 Core 掌握狀態，SDK 僅執行 Agent Loop（ADR-001） | PROPOSED | 週期 2 Part S（待立卡，S1 開工前） | V36 |
 | D2 | 首版模組化單程序＋DB，模型服務分離（ADR-002） | PROPOSED | 週期 2 對應卡（待立卡） | V23 |
 | D3 | Echo Stream 保持語音管線責任，contracts／core 不 import 平台狀態（ADR-003） | PROPOSED | T-05、週期 2 P3 | V09 |
 | D4 | One Identity、One Active Presence，可 NONE（ADR-004） | 已定案（A10） | T-16 | V11、V17 |
@@ -21,7 +21,7 @@ D1–D15 對應提案第 22 章 ADR-001～015，維持 PROPOSED，驗證條件�
 | D6 | 嚴格移轉需舊端 quiescence，未知則停在恢復（ADR-006） | 已定案（A10） | T-16、T-17 | V13、V14、V15 |
 | D7 | State Coordinator 集中寫入，多來源可提議（ADR-007） | PROPOSED | 週期 2（待立卡） | V03 |
 | D8 | Task／Run 與 GS／CS 分離（ADR-008） | PROPOSED | 週期 2 P1 實作（待立卡） | V19、V22 |
-| D9 | Model Gateway＋專用 STT／TTS Provider（ADR-009） | PROPOSED | 週期 2（待立卡） | V36 |
+| D9 | Model Gateway＋專用 STT／TTS Provider（ADR-009） | PROPOSED | 週期 2 P3（待立卡） | V36 |
 | D10 | PostgreSQL 作耐久權威，MEM 向量索引先沿用（ADR-010） | PROPOSED | 週期 2 P1 實作（待立卡） | V24 |
 | D11 | Proactive 規則先行、模型按需、決策可解釋（ADR-011） | PROPOSED | 週期 4 P7（待立卡） | V25–V27 |
 | D12 | 前景桌面工作綁 Presence，明確背景工作可例外（ADR-012） | 已定案（A10） | T-18 | V22 |
@@ -133,9 +133,9 @@ T-10、T-11 目前只在 DECISIONS 被引用，TASKS.md 尚無卡片內容；細
 | V26 | 靜音／冷卻／過期不造成連續打擾 | 週期 4 P7（待立卡） | — | — | — | 未開始 | 未涵蓋 |
 | V27 | 高 salience 但不適合打擾仍可延後 | 週期 4 P7（待立卡） | — | — | — | 未開始 | 未涵蓋 |
 | V28 | 私聊→公開 Discord 不洩漏私人內容 | 週期 3 P5（待立卡） | — | — | — | 未開始 | 是：VC-2-1 |
-| V29 | 惡意內容要求擴權被 Policy 拒絕 | 週期 2 新 SYS（待立卡） | — | — | — | 未開始 | 未涵蓋 |
-| V30 | LLM 自述核准不能消耗 approval | 週期 2 新 SYS（待立卡） | — | — | — | 未開始 | 是：VC-6-4 |
-| V31 | 參數變更後舊 approval 失效；global stop 不依賴 LLM | 週期 2 新 SYS（待立卡） | — | — | — | 未開始 | 是：VC-6-3 |
+| V29 | 惡意內容要求擴權被 Policy 拒絕 | 週期 2 Part S（待立卡） | — | — | — | 未開始 | 未涵蓋 |
+| V30 | LLM 自述核准不能消耗 approval | 週期 2 Part S（待立卡） | — | — | — | 未開始 | 是：VC-6-4 |
+| V31 | 參數變更後舊 approval 失效；global stop 不依賴 LLM | 週期 2 Part S（待立卡） | — | — | — | 未開始 | 是：VC-6-3 |
 | V32 | 使用者電腦關機 Mac Core 仍運作 | 週期 4 P8（待立卡） | — | — | — | 未開始 | 契約外 |
 | V33 | 重開機後只有重新授權的 Presence 到場 | 週期 4 P8（待立卡） | — | — | — | 未開始 | 未涵蓋 |
 | V34 | 長時間運行資源有界 | 週期 4 P8（待立卡） | — | — | — | 未開始 | 契約外 |

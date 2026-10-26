@@ -2902,3 +2902,15 @@
 
 ---
 
+### chore: 推理組補 peft，Tracking 改指向 Part S. 10/27
+
+> Date: Tue, 27 Oct 2026 00:07:54 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `5b1a70c4b06b924140fde16f7463b566eaf9c1ec`
+
+---
+

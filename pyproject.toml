@@ -71,6 +71,8 @@ inference = [
     "munch>=4",
     "wetext>=0.1",
     "noisereduce>=3",
+    # TTS LoRA 合併（lora_merge）需要
+    "peft==0.19.1",
     # 原排除套件的 3.12 方案
     "PyAudio==0.2.14",
     "py-cord[voice]==2.8.1",

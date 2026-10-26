@@ -1,0 +1,12 @@
+schema: spec-driven
+
+# 任務層設定（lore_vault.tasks）
+# DECISIONS.md 位置（相對於本目錄的上一層）；blocked_by 的 Dn 依其 `### Dn` 小節判定
+decisions_file: hidden_docs/DECISIONS.md
+
+context: |
+  Language: zh-TW
+  All artifacts must be written in zh-TW.
+  Keep OpenSpec structural headings and SHALL/MUST keywords in English.
+# change 以 Lore Vault 服務端為準，本機 changes/ 是工作副本
+remote: true

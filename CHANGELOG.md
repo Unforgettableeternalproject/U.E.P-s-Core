@@ -2698,3 +2698,15 @@
 
 ---
 
+### [chore]: 啟用 openspec 任務層設定. 10/26
+
+> Date: Mon, 26 Oct 2026 13:35:46 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `1e088913a42c85de00e4bfe6314e41559837b17a`
+
+---
+

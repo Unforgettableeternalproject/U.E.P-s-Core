@@ -2722,3 +2722,15 @@
 
 ---
 
+### [docs]: 依持久層實作回寫 CC-1 契約與索引. 10/26
+
+> Date: Mon, 26 Oct 2026 13:59:46 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `7e1c8048de3902d91b97ddd5509f953aba31a527`
+
+---
+

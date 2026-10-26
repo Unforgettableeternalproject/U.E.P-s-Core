@@ -23,7 +23,7 @@
 
 ### 0.3 ID 與命名
 
-- 穩定 ID 一律字串，格式為 `前綴_ULID`（D32，已定案 A8）。前綴：`evt_`、`actv_`（activity）、`task_`、`run_`、`step_`、`act_`（action）、`turn_`、`seg_`（segment）、`conv_`、`lease_`、`xfer_`、`out_`、`dsp_`（dispatch）、`dlv_`、`snap_`、`appr_`、`req_`（state transition request）。
+- 穩定 ID 一律字串，格式為 `前綴_ULID`（D32，已定案 A8）。前綴：`evt_`、`actv_`（activity）、`task_`、`run_`、`step_`、`act_`（action）、`turn_`、`seg_`（segment）、`conv_`、`lease_`、`xfer_`、`out_`、`dsp_`（dispatch）、`dlv_`、`snap_`、`appr_`、`req_`（state transition request）、`obx_`（outbox）、`blob_`（payload blob）、`trc_`（trace）。
 - legacy ID（`gs_／cs_／ws_`）**只存 `legacy_ref`**，不作為新主鍵（D23，已定案 A8），但須可解析。§8.3 以此為準，segment 的原生前綴為 `seg_`。
 - legacy 的 `turn_{n}`（每個 CS 內自增）與 `step_{n}`（每個 WS 內自增）**非全域唯一**，不得單獨當主鍵；新 Core 的 `turn_id`／`step_id` 為全域唯一值，legacy 值只存 `legacy_ref`，或以複合鍵 `(segment_id, turn_n)`、`(task_id, step_n)` 表示。
 - 事件類型採 `領域.動詞過去式` 點分字串（例 `task.completed`），非封閉 enum（現況表 §4.1 指出 `SystemEvent` 封閉 enum 之限制）。
@@ -129,7 +129,7 @@ A4 前提：Event Bus 程式碼沿用，journal 以封裝層加在 Bus 之前，
 
 | 實體 | 欄位 | 約束 |
 |---|---|---|
-| `events`（journal） | `event_id` PK、`journal_seq` UNIQUE、`(source, idempotency_key)` UNIQUE（當 key 非空）、`aggregate_id`＋`aggregate_version` UNIQUE、`event_type`、`payload_ref`、`payload_hash`、`tombstone_at?`、`trace_id`、`scope_ref`、`recorded_at` | append-only；不更新、不刪除。journal **只存元資料＋`payload_ref`＋`payload_hash`**（D33）；刪除請求只刪 blob，journal 留雜湊與墓碑（`tombstone_at`、`tombstone_reason`），保留期限屬政策 |
+| `events`（journal） | `event_id` PK、`journal_seq` UNIQUE、`(source, idempotency_key)` UNIQUE（當 key 非空）、`aggregate_id`＋`aggregate_version` UNIQUE、`event_type`、JSONB `payload`（僅無私人原文的小型內容，由 EventSpec 白名單強制）、`payload_ref`、`payload_hash`、`tombstone_at?`、`trace_id`、`scope_ref`、`received_at` | append-only；不更新、不刪除。journal **只存元資料＋`payload_ref`＋`payload_hash`**（D33）；刪除請求只刪 blob，journal 留雜湊與墓碑（`tombstone_at`、`tombstone_reason`），保留期限屬政策 |
 | `inbox` | `(consumer_id, event_id)` UNIQUE、`completed_at`、`result` | 與 consumer 的 DB 效果同一交易提交 |
 | `outbox` | `outbox_id` PK、`event_id`、`target`、`attempts`、`retry_at`、`acked_at?`、`dead_letter_reason?` | 與觸發它的狀態變更同一交易寫入；重試上限、退避、jitter；毒性事件進 dead letter |
 
@@ -171,10 +171,15 @@ A4 前提：Event Bus 程式碼沿用，journal 以封裝層加在 Bus 之前，
 | E-4 | 生命週期事件各自獨立類型：`task.*`、`conversation.*`、`presence.*`、`core.*` 不得互相取代（`task.completed` 不蘊含 `conversation.episode_ended`，反之亦然） | INV-06 |
 | E-10 | `core.stopping`（核心關機）**不**蘊含 `task.cancelled`／`task.failed`，也不蘊含使用者語意的離場；關機時 Presence 授權以 `presence.revoked`（`reason=core_shutdown`）關閉輸出，重啟後依 P-4／T-7 恢復 | INV-06 |
 | E-11 | journal 不保存私人原文：含私人原文的內容只存於可刪 blob（`payload_ref`），刪除只動 blob，journal 保留 `payload_hash` 與墓碑（D33） | INV-07 |
+| E-16 | **隱私取捨（已知限制）**：(a) `payload_hash` 為 sha256，低熵短文可由字典還原，見 D42；(b) blob `content` 設 NULL 後，PostgreSQL 舊 tuple、WAL、備份仍可能存有原文，實際清除需 VACUUM 與備份保留政策，納入 P8 備份演練範圍 | INV-07、V24 |
 | E-5 | 帶 `fence` 的事件，consumer 比對當前權威 Lease／epoch／generation，舊值事件記錄後丟棄，不得改變當前狀態 | INV-03 |
 | E-6 | 事件衍生新事件時，`scope_ref` 依 §0.6 衍生規則只縮不放（rank 不得大於起因事件） | INV-07 |
 | E-7 | 重播（replay）預設只重建投影；任何外部輸出、工具副作用在重播中必須被 suppress 或以 action_id 去重 | 提案 §7.3、V20 |
 | E-8 | 排序依 `aggregate_version`（同聚合）與 `journal_seq`（全域接收序），不依 `occurred_at` | 提案 §7.2 |
+| E-12 | **P1 publisher 範圍**：只接受 `durable`／`interaction`；`control` 走獨立高優先通道、`telemetry` 不落 journal，兩者於 P2 補實作，P1 送入一律拒絕（`UnsupportedDeliveryClass`） | 提案 §6.4、§7.1 |
+| E-13 | **Bus 是 best-effort 程序內通知**（`publish(event, *, sync=False)`，訂閱鍵 `str`）：commit 後崩潰可能漏投，投遞順序不保證等於 `journal_seq`。需不遺漏的消費者**必須**走 outbox target（E-2），不得只靠 Bus 訂閱 | E-1、E-2 |
+| E-14 | `journal_seq` 只保證**唯一且單調分配**，不保證提交可見順序（可有空洞，後號可能先可見）。replay／tailing 需「安全水位」才能推進游標，見 D41 | E-8、V20 |
+| E-15 | **Outbox 執行模型**：目前 handler 在持鎖交易內執行；P2 改 lease 模型（鎖列 → 標記 lease → commit → 執行 → ACK），避免長交易持鎖與 handler 阻塞 | E-2、提案 §7.3 |
 | E-9 | 音訊／影格不是 UEPEvent，不逐 frame 落 journal；只有其 *控制與交付結果* 以事件記錄 | 提案 §7.1 |
 
 ### 1.6 驗證案例
@@ -974,6 +979,8 @@ A4 沿用前提（現況表 §4.2／§4.3）：新 Session 不得對 `working_co
 | D38 | scope 的 level 是否需獨立的「角色自我（self）」與「各使用者私人」（提案 §15.4 列四類範圍，草案 §0.6 只有 private／group／public） | §0.6、CC-2 |
 | D39 | INV-05「使用者已知」是否建模為交付狀態（如 `user_acknowledged`）及其推定證據；草案目前不建模 | CC-5 |
 | D40 | CC-7 `StateDecision.decision` 列舉與 `pause_reason`、Activity 等草案補充列舉是否定案 | CC-7、CC-6 |
+| D41 | journal 讀取的「安全水位」：`journal_seq` 非提交可見順序，replay／tailing 如何推進游標。建議：以 `xmin`（或提交時間）加延遲水位，僅處理低於水位的 `journal_seq` | CC-1 |
+| D42 | `payload_hash` 防字典還原：建議由 sha256 改為 per-install 密鑰 HMAC（密鑰存放與輪替另定） | CC-1 |
 
 ---
 

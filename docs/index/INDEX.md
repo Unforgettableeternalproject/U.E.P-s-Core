@@ -8,13 +8,17 @@
 
 ### 1.1 新 Core（`uep/`）
 
-> 骨架已落地（僅套件根）；子套件隨各週期補列。子套件名稱為暫定，以實際建立為準；契約與擁有者見 §3。
+> 套件根與 P1 持久層／CC-1 已落地；其餘子套件隨各週期補列。子套件名稱為暫定，以實際建立為準；契約與擁有者見 §3。
 
 | 模組 | 路徑 | 職責 | 擁有的契約 | 相關 V／D |
 |---|---|---|---|---|
 | 套件根 | `uep/__init__.py` | 新 Core 根；不得 import legacy 頂層名稱 | — | A7 |
 | 邊界測試 | `tests/uep/test_import_boundary.py` | 強制檢查 `uep` 不 import legacy | — | A7、D19 |
-| Event（暫名） | `uep/events/` planned | UEPEvent、Event Bus 封裝、journal／inbox／outbox | CC-1 | V09、V20／D16、D22 |
+| CC-1／持久層測試 | `tests/uep/` | `tests/uep/test_ids_and_config.py`、`tests/uep/test_envelope_and_bus.py`、`tests/uep/test_payload_policy.py` 不需 DB；`tests/uep/test_journal_db.py`、`tests/uep/test_journal_db_hardening.py` 需 `UEP_TEST_DATABASE_URL`，未設時 skip | CC-1 | V20 |
+| 設定 | `uep/config.py` | 自環境變數或 repo 根 `.env` 讀 `UEP_DATABASE_URL`、`UEP_TEST_DATABASE_URL` | — | A9、D10 |
+| ID | `uep/ids.py` | `前綴_ULID` 產生與驗證 | — | D32 |
+| 持久層 | `uep/db/` | SQLAlchemy engine／Base（PostgreSQL＋psycopg3）；alembic 環境與 migration 在 `uep/db/migrations/`，設定檔為根目錄 `alembic.ini` | — | A9、D10 |
+| Event | `uep/events/` | `uep/events/envelope.py`（UEPEvent、Gateway 重建）、`uep/events/registry.py`（事件類型註冊表）、`uep/events/bus.py`（自 legacy 複製、訂閱鍵 str）、`uep/events/journal.py`（journal＋可刪 blob）、`uep/events/outbox.py`、`uep/events/inbox.py`、`uep/events/publisher.py`（journal 先於投遞） | CC-1 | V09、V20／D16、D22、D33 |
 | Context（暫名） | `uep/context/` planned | ContextSnapshot 組裝 | CC-2 | V28／D24 |
 | Runtime（暫名） | `uep/runtime/` planned | Runtime Adapter | CC-3 | V36／D25 |
 | Presence（暫名） | `uep/presence/` planned | Lease、generation／epoch、Output Gate | CC-4 | V11–V18／D4–D6 |
@@ -56,10 +60,11 @@
 | `hidden_docs/DECISIONS.md`、`hidden_docs/TASKS.md` | 內部決策與任務規劃（gitignored，clone 後可能不存在） | 敏卡 |
 | `docs/改進計畫.md` | 舊 Echo Kernel 藍圖；已被提案取代（A5） | 僅查歷史 |
 | `pyproject.toml`、`uv.lock` | 新環境依賴（A6）；T-03 負責 | 環境 |
+| `alembic.ini`、`uep/db/migrations/versions/` | 資料庫 migration（P1 起 `0001_events_journal`）；URL 由 `UEP_DATABASE_URL` 提供 | 實作／部署 |
 
 ## 3. 契約索引
 
-契約內容以 [Core契約草案](../架構重構/Core契約草案.md) 為準（草案未定案，待裁決見其 §10，編號 D22–D40 對應 [TRACKING §1](TRACKING.md)）。依賴方向：CC-3→CC-2；CC-5→CC-4；CC-6→CC-4、CC-2；CC-2–CC-7→CC-1；CC-1 不依賴其他契約（草案 §0.4）。
+契約內容以 [Core契約草案](../架構重構/Core契約草案.md) 為準（草案未定案，待裁決見其 §10，編號 D22–D42 對應 [TRACKING §1](TRACKING.md)）。依賴方向：CC-3→CC-2；CC-5→CC-4；CC-6→CC-4、CC-2；CC-2–CC-7→CC-1；CC-1 不依賴其他契約（草案 §0.4）。
 
 | 契約 | 草案章節 | 權威擁有者（草案 §x.4／x.6） | 相關 INV | 驗收項（初步） | legacy 對應（草案 §8） |
 |---|---|---|---|---|---|
@@ -75,7 +80,7 @@
 
 ### 4.1 新 Core 事件（UEPEvent 類型）
 
-定義以草案 [§1.3](../架構重構/Core契約草案.md) 為準；legacy 對照見草案 §8.1。目前尚無程式實作，定義檔與發布／訂閱者待 `uep/events/`（planned）落地後補列。
+定義以草案 [§1.3](../架構重構/Core契約草案.md) 為準；legacy 對照見草案 §8.1。註冊表實作於 `uep/events/registry.py`（`DEFAULT_EVENT_SPECS`）；發布路徑為 `uep/events/publisher.py`，P1 只處理 durable／interaction（control、telemetry 待後續）。各事件的發布／訂閱者隨對應契約落地補列。
 
 | 類別 | event_type | delivery_class | 定義位置 | 契約 | 驗收項（初步） |
 |---|---|---|---|---|---|

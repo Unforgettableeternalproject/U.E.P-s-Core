@@ -415,13 +415,21 @@ Runtime = 可替換的推理／工具迴圈（直達 LLM、OpenAI Agents SDK、G
 
 | 操作 | 發起者 | 結果碼 | 說明 |
 |---|---|---|---|
-| `acquire(endpoint, expected_version)` | Adapter 經 Core 仲裁 | `GRANTED`、`BUSY`、`VERSION_CONFLICT`、`TRANSFER_PENDING`、`NOT_QUIESCED`、`DENIED` | 同交易鎖定 current row，成功才更新並寫 outbox（`presence.granted`） |
+| `acquire(endpoint, expected_version)` | Adapter 經 Core 仲裁 | `GRANTED`、`BUSY`、`VERSION_CONFLICT`、`TRANSFER_PENDING`、`NOT_QUIESCED`、`DENIED` | 同交易鎖定 current row，成功才更新並寫 outbox（`presence.granted`）；`DENIED` 另帶原因碼 `reason`（T-23，見下） |
 | `renew(lease_id, core_epoch, generation)` | 目前 owner | `RENEWED`、`STALE`、`EXPIRED` | 須精確匹配；過期不可續活，需重新 acquire |
 | `revoke(reason)` | Core／全域停止 | `REVOKED` | 全域停止入口不依賴 LLM |
 | `begin_transfer(...)` | 仲裁後 Core | `xfer_id`／`TRANSFER_PENDING` | 同人格序列化 |
 | `confirm_quiesced(endpoint, old_generation, evidence)` | 舊端 Adapter | `ACCEPTED`、`STALE` | 證據不等於授權；Core 決定是否接受。接受後清除 `unquiesced_endpoint_id`。P5 的 [B] 移轉流程另帶 `transfer_id` |
 | `resolve_recovery(operator, resolution)` | operator（人） | `RESOLVED`、`DENIED` | 需 operator 身分；成功發 `presence.recovered`，`RECOVERING → NONE` |
 | `confirm_activated(lease_id)` | 新端 Adapter | `ACCEPTED`、`STALE` | |
+
+**`acquire` 的 `DENIED` 原因碼（T-23）**：`AcquireOutcome.reason`（`AcquireDenyReason`）只在結果為 `DENIED` 時有值，其他結果碼一律為空；經端點 RPC 回覆的 `reason` 欄位傳到端點（欄位缺漏或未知值視為無原因，結果碼仍照處理）。
+
+| `reason` | 情境 | 端點行為 |
+|---|---|---|
+| `global_stop_engaged` | 全域停止旗標成立（T-17），直到明確解除前不核發 | **不重試**（`acquire_retryable=False`）；解除後須由人或上層重新啟動端點 |
+| `superseded_core` | DB 內的 `core_epoch`／`fencing_epoch` 已被較新的 Core 取代，本 Manager 是殘存的舊行程（P-4、P-5） | 沿用既有邏輯：視為可重試，重連到新 Core 後重新 acquire |
+| `guard_rejected` | `acquire_guard` 回了未歸類的拒絕原因 | 可重試 |
 
 Lease TTL 30 秒、心跳 5 秒僅為 **調校起點**（提案 §11.4），不是契約常數；Adapter 用單調時鐘與保守剩餘期限，晚到續約回覆不得延長已失效 Lease。
 

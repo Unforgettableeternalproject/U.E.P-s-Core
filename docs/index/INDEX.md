@@ -18,7 +18,7 @@
 | 設定 | `uep/config.py` | 自環境變數或 repo 根 `.env` 讀 `UEP_DATABASE_URL`、`UEP_TEST_DATABASE_URL` | — | A9、D10 |
 | ID | `uep/ids.py` | `前綴_ULID` 產生與驗證 | — | D32 |
 | 持久層 | `uep/db/` | `uep/db/models_registry.py` 集中 import 所有 ORM models；SQLAlchemy engine／Base（PostgreSQL＋psycopg3）；alembic 環境與 migration 在 `uep/db/migrations/`，設定檔為根目錄 `alembic.ini` | — | A9、D10 |
-| Event | `uep/events/` | `uep/events/envelope.py`（UEPEvent、Gateway 重建）、`uep/events/registry.py`（事件類型註冊表）、`uep/events/bus.py`（自 legacy 複製、訂閱鍵 str）、`uep/events/journal.py`（journal＋可刪 blob）、`uep/events/outbox.py`、`uep/events/inbox.py`、`uep/events/publisher.py`（journal 先於投遞） | CC-1 | V09、V20／D16、D22、D33 |
+| Event | `uep/events/` | `uep/events/envelope.py`（UEPEvent、Gateway 重建）、`uep/events/registry.py`（事件類型註冊表）、`uep/events/bus.py`（自 legacy 複製、訂閱鍵 str）、`uep/events/journal.py`（journal＋可刪 blob）、`uep/events/outbox.py`、`uep/events/inbox.py`、`uep/events/publisher.py`（journal 先於投遞）、`uep/events/tailer.py`（JournalTailer：xmin 安全水位、交易區間游標，D41）、`uep/events/payload_hash.py`（per-install HMAC，D42） | CC-1 | V09、V20／D16、D22、D33 |
 | Context | `uep/context/` | `uep/context/snapshot.py`（ContextSnapshot 單一型別＋purpose、不可變、放入規則 X-1）、`uep/context/models.py`（`context_snapshots` 表與 revision 遞增存取） | CC-2 | V28／D24 |
 | Runtime（暫名） | `uep/runtime/` planned | Runtime Adapter | CC-3 | V36／D25 |
 | Presence | `uep/presence/` | `uep/presence/models.py`（`presence_current`、`presence_transfers`、`presence_leases` 表）、`uep/presence/manager.py`（PresenceManager：原子 acquire／confirm_activated／renew／release／revoke／confirm_quiesced／resolve_recovery、Core 啟動 epoch +1）、`uep/presence/gate.py`（OutputGate）、`uep/presence/epoch.py`（Host 本機 epoch 檔，路徑 `UEP_HOST_EPOCH_FILE` 或使用者資料目錄） | CC-4 | V11–V18／D4–D6、D26–D28 |
@@ -73,7 +73,7 @@
 | `hidden_docs/DECISIONS.md`、`hidden_docs/TASKS.md` | 內部決策與任務規劃（gitignored，clone 後可能不存在） | 敏卡 |
 | `docs/改進計畫.md` | 舊 Echo Kernel 藍圖；已被提案取代（A5） | 僅查歷史 |
 | `pyproject.toml`、`uv.lock` | 新環境依賴（A6）；T-03 負責 | 環境 |
-| `alembic.ini`、`uep/db/migrations/versions/` | 資料庫 migration（`0001_events_journal`、`0002_task_model`、`0003_context_output`、`0004_presence`、`0005_state_stop`）；URL 由 `UEP_DATABASE_URL` 提供 | 實作／部署 |
+| `alembic.ini`、`uep/db/migrations/versions/` | 資料庫 migration（`0001_events_journal`、`0002_task_model`、`0003_context_output`、`0004_presence`、`0005_state_stop`、`0006_journal_txid`）；URL 由 `UEP_DATABASE_URL` 提供 | 實作／部署 |
 
 ## 3. 契約索引
 

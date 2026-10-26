@@ -53,8 +53,8 @@ D1–D15 對應提案第 22 章 ADR-001～015，維持 PROPOSED，驗證條件�
 | D38 | scope level 是否需獨立的角色自我（self）與各使用者私人（草案 §10；§0.6、CC-2） | 待決（草案） | 週期 2 對應卡開工前 | — |
 | D39 | INV-05「使用者已知」是否建模為交付狀態（如 `user_acknowledged`）及推定證據（草案 §10；CC-5） | 待決（草案） | 週期 2 對應卡開工前 | — |
 | D40 | CC-7 `StateDecision.decision` 列舉與 `pause_reason`、Activity 等補充列舉是否定案（草案 §10；CC-7、CC-6） | 待決（草案） | 週期 2 對應卡開工前 | — |
-| D41 | journal 安全水位：`journal_seq` 非提交可見順序，replay／tailing 的游標推進；建議以 `xmin` 或提交時間加延遲水位（草案 §10；CC-1） | 待決（草案） | 週期 2 對應卡開工前 | — |
-| D42 | `payload_hash` 防字典還原：建議改 per-install 密鑰 HMAC（草案 §10；CC-1） | 待決（草案） | 週期 2 對應卡開工前 | — |
+| D41 | journal 安全水位：`journal_seq` 非提交可見順序，replay／tailing 的游標推進；建議以 `xmin` 或提交時間加延遲水位（草案 §10；CC-1） | 已定案（A16） | T-23 | — |
+| D42 | `payload_hash` 防字典還原：建議改 per-install 密鑰 HMAC（草案 §10；CC-1） | 已定案（A16） | T-23 | — |
 | D43 | 多平台前的 revoke 放行條件：須舊端 stop ACK 或舊 `expires_at` 已過才放行他端 acquire；P2 revoke 不設 `unquiesced_endpoint_id`（草案 §10；CC-4） | 待決（草案） | P5 多平台前 | — |
 | D44 | 他端 acquire 推進 RECOVERING 後，原端點是否可在停止證據到達前重新 acquire（現況：不可，須證據或 `resolve_recovery`；草案 §4.5 P2 補充僅涵蓋 NONE＋unquiesced；CC-4） | 已定案（A13，暫定） | T-19；第一次完整系統測試時複議 | V15 |
 
@@ -96,6 +96,8 @@ D1–D15 對應提案第 22 章 ADR-001～015，維持 PROPOSED，驗證條件�
 | T-17 | CC-7 State Coordinator＋全域停止 | C／2 | `p2-state-coordinator-stop` | — | D6、D36、D40 | `uep/state/`、`uep/stop/`、`uep/assembly.py` |
 | T-18 | 最小本機 CLI 端點＋watchdog | C／2 | `p2-cli-endpoint-watchdog` | V15 | D12、A12 | `uep/endpoint/`、`uep/control/socket_transport.py` |
 | T-19 | V11、V12、V15 驗證 | C／2 | `p2-v11-v12-v15-verification` | V11、V12、V15 | D44 | `tests/uep/test_acceptance_v11.py` |
+| T-22 | 推理 Host 遷移 Python 3.12 | C／2 | `inference-host-py312-migration` | — | D18、A14 | `pyproject.toml` inference 組、`uv.lock` |
+| T-23 | P3 前置修整（Bus §8.4、D41、D42、維護迴圈、DENIED 原因碼） | C／2 | `p3-prereq-bus-journal-hardening` | — | D41、D42、A16 | `uep/events/tailer.py`、`uep/events/payload_hash.py`、`0006_journal_txid` |
 
 T-10、T-11 目前只在 DECISIONS 被引用，TASKS.md 尚無卡片內容；細節待敏卡展開後補。
 

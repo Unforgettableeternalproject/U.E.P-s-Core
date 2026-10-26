@@ -2926,3 +2926,15 @@
 
 ---
 
+### docs: 回寫 T-23 契約與 Index／Tracking. 10/27
+
+> Date: Tue, 27 Oct 2026 00:57:17 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `4a580e817851f65caca511e7d557317909b02a16`
+
+---
+

@@ -248,6 +248,7 @@ class SocketControlClient:
         self._clock = clock
         self._timeout = request_timeout
         self._wire: _Wire | None = None
+        self._connect_lock = threading.Lock()  # 背景重連與手動 reconnect 並行 connect 時序列化
         self._ids = itertools.count(1)
         self.api = RpcCoreApi(endpoint_id, secret, self._transport, clock=clock)
 
@@ -257,7 +258,15 @@ class SocketControlClient:
         return wire is not None and not wire.closed
 
     def connect(self) -> None:
-        """建立連線並通過身分驗證；可重複呼叫（重連）。失敗拋 ConnectionError／EndpointAuthError。"""
+        """建立連線並通過身分驗證；可重複呼叫（重連）。失敗拋 ConnectionError／EndpointAuthError。
+
+        並行呼叫會序列化：否則各執行緒互相關閉對方的連線、伺服器端 re-hello 又會關掉較早的連線，
+        造成偶發的 hello 失敗（T-19 審查轉入 (5)）。
+        """
+        with self._connect_lock:
+            self._connect()
+
+    def _connect(self) -> None:
         self.close()
         try:
             sock = socket.create_connection(self._addr, timeout=self._timeout)

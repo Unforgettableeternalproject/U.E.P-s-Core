@@ -105,6 +105,7 @@ class _Dropped:
 class _Report:
     auth: AuthorizationTuple
     evidence: dict[str, Any] = field(default_factory=dict)
+    play: _Play | None = None  # 停止當下仍在 chunk 內的播放；送出證據前必須確認它已離開 chunk
 
 
 def _default_chunk_count(intent: OutputIntent) -> int:
@@ -390,7 +391,7 @@ class CliEndpoint:
         report = _Report(dropped.auth, {
             "kind": "adapter_stop_report", "reason": dropped.reason, "endpoint_id": self.endpoint_id,
             "buffer_flushed": buffer_flushed, "playing": playing,
-        })
+        }, dropped.play)
         with self._lock:
             self._reports.append(report)
         self._say(f"已停止（{dropped.reason}）")
@@ -407,24 +408,33 @@ class CliEndpoint:
                 return
             reports, self._reports = self._reports, []
         remaining: list[_Report] = []
+        failed = False
         for index, report in enumerate(reports):
+            if report.play is not None and not report.play.idle.is_set():
+                remaining.append(report)  # sink 還在 chunk 內：不能證明已停止，不送；不算失敗、不退避（下個 tick 再看）
+                continue
             try:
                 done = self._deliver_report(report)
             except _CORE_ERRORS:
                 remaining.extend(reports[index:])  # Core 不可達：全部保留
+                failed = True
                 break
             if not done:
                 remaining.append(report)
+                failed = True
         with self._lock:
             if remaining:
                 self._reports = remaining + self._reports
-                self._report_retry_at = self._clock() + self._retry  # 退避後再試
+                self._report_retry_at = self._clock() + self._retry if failed else None  # 失敗才退避
             else:
                 self._report_retry_at = None
 
     def _deliver_report(self, report: _Report) -> bool:
         """回 True 表示已結案（Core 已接受或已不需要）；False 表示稍後重試。"""
         auth = report.auth
+        if report.play is not None:  # 呼叫端已確認播放執行緒離開 chunk：如實更新證據
+            report.evidence["playing"] = False
+            report.evidence["buffer_flushed"] = not report.play.buffer
         result = self._core.confirm_quiesced(auth.presence_generation, report.evidence)
         if result is ConfirmResult.ACCEPTED:
             return True
@@ -560,6 +570,7 @@ class CliEndpoint:
                         if done and not play.cancelled:
                             play.played += 1
                         play.idle.set()
+                    self._net_wake.set()  # 若有因播放中而保留的停止證據，讓網路執行緒立刻重看
         finally:
             with self._lock:
                 if self._current is play:

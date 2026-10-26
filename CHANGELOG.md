@@ -2854,3 +2854,15 @@
 
 ---
 
+### test: 新 Core P2 驗收 V11、V12、V15 與審查轉入項. 10/26
+
+> Date: Mon, 26 Oct 2026 22:03:15 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `fbe430d220f6a40ef59ff53a0fa0d3f8575b9eef`
+
+---
+

@@ -22,6 +22,8 @@ class UepSettings(BaseSettings):
 
     database_url: SecretStr | None = Field(default=None, validation_alias="UEP_DATABASE_URL")
     test_database_url: SecretStr | None = Field(default=None, validation_alias="UEP_TEST_DATABASE_URL")
+    # Host 本機 epoch 檔（D26，DB 外）；未設定時用使用者資料目錄的預設位置
+    host_epoch_file: Path | None = Field(default=None, validation_alias="UEP_HOST_EPOCH_FILE")
 
 
 @lru_cache(maxsize=1)

@@ -2794,3 +2794,15 @@
 
 ---
 
+### feat: 新 Core 實作 Presence、Lease、Output Gate 與控制通道. 10/26
+
+> Date: Mon, 26 Oct 2026 20:04:45 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `6fcb36f8b106f17b1bdf6f9fe1cf0112700d219a`
+
+---
+

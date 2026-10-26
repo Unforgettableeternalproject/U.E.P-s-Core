@@ -113,6 +113,10 @@ class ActionBlocked(TaskError):
     """action 目前不可執行（UNKNOWN 待查核、EXECUTING 進行中、Run 非執行中、找不到 executor）。"""
 
 
+class PresenceRequired(TaskError):
+    """presence_bound 的前景 action 在沒有有效 Presence 時不得執行（D12、P-10）；action 狀態不變。"""
+
+
 class ActiveWorker(TaskError):
     """Run 的 worker 心跳尚未過期，不可接手（L2）。"""
 
@@ -254,6 +258,7 @@ class TaskManager:
         approvers: Callable[[TaskRow], frozenset[str]] | None = None,
         heartbeat_stale_after: timedelta = timedelta(seconds=60),
         outbox_targets: Mapping[str, Sequence[str]] | None = None,
+        presence_check: Callable[[str], bool] | None = None,
     ) -> None:
         self._sf = session_factory
         self._publisher = publisher
@@ -268,6 +273,9 @@ class TaskManager:
         self._stale_after = heartbeat_stale_after
         # 事件類型（或 "task.*" 這類前綴鍵）-> outbox target；與狀態變更同交易寫入（VC-1-2、T-8）
         self._outbox_targets = dict(DEFAULT_OUTBOX_TARGETS if outbox_targets is None else outbox_targets)
+        # 選用的 Presence 檢查點（D12）：以 persona_id 查是否有有效 Presence；None 表示不檢查。
+        # 只套用於 presence_bound 的前景 Task，背景 Task 例外。
+        self._presence_check = presence_check
         self.redaction_count = 0  # receipt 欄位被脫敏的累計次數（N4）
 
     # ---- 交易與事件 ----
@@ -870,6 +878,13 @@ class TaskManager:
             executor = self._executors.get(action.executor)
             if executor is None:
                 raise ActionBlocked(f"找不到 executor：{action.executor}")
+            if self._presence_check is not None and task.presence_bound:
+                activity = s.get(ActivityRow, task.activity_id)
+                if activity is None:
+                    raise NotFound(f"找不到 activity：{task.activity_id}")
+                persona_id = activity.persona_id
+                if not self._presence_check(persona_id):
+                    raise PresenceRequired("前景 action 需要有效 Presence；請待 Presence 恢復後再執行")
 
             if status is ActionStatus.INTENDED:
                 if action.side_effect_class in APPROVAL_REQUIRED:

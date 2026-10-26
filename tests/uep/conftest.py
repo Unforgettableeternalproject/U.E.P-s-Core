@@ -19,6 +19,7 @@ from uep.db.engine import make_engine, make_session_factory, normalize_url
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CC6_TABLES = "receipts, action_intents, approvals, steps, runs, tasks, activities"
 CC1_TABLES = "inbox, outbox, events, payload_blobs, context_snapshots, output_intents, deliveries"
+CC4_TABLES = "presence_leases, presence_transfers, presence_current"
 
 
 def alembic_config(url: str) -> Config:
@@ -59,5 +60,5 @@ def engine(test_db_url):
 @pytest.fixture
 def session_factory(engine):
     with engine.begin() as conn:
-        conn.execute(text(f"TRUNCATE {CC1_TABLES}, {CC6_TABLES} RESTART IDENTITY CASCADE"))
+        conn.execute(text(f"TRUNCATE {CC1_TABLES}, {CC6_TABLES}, {CC4_TABLES} RESTART IDENTITY CASCADE"))
     return make_session_factory(engine)

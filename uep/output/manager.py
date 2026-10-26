@@ -9,6 +9,9 @@
   found -> sent（強證據續推）；confirmed_not_sent 且 Adapter 宣告權威 -> failed；其餘維持 unknown（O-6）。
 - 強證據只在 played_range 標示 complete（或 text 類且未提供 range）才推到 rendered_played，
   否則停在 accepted（INV-05：不把部分播放寫成完整已說出）。
+- Output Gate（選用，CC-4 P-8／O-5）：送出前檢查授權六元組。於 ``generated`` 被拒記 ``rejected``；
+  已越過 generated（audio 已合成、或 claim 後送出前再檢查）被拒則記 ``cancelled``，
+  兩者皆不送出、不重送、不遞補到其他 endpoint；failure.code 為 Gate 結果碼。未注入 Gate 時不檢查。
 - I/O 不在交易內進行；每個狀態推進各自一個短交易。
 - ``crash_hook(point)`` 與 TaskManager 同形，供測試在指定點拋 SimulatedCrash：
   ``delivery.after_prepare``、``delivery.after_claim``、``delivery.after_send``（send 後、commit 前）。
@@ -22,6 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from uep.adapters.output import OutputAdapter, SendFailed, SendResponseLost, SendResult
+from uep.contracts.presence import GateDecision
 from uep.ids import new_id
 from uep.output.delivery import (
     TERMINAL,
@@ -41,6 +45,7 @@ from uep.output.models import (
     record_from_row,
     save_intent,
 )
+from uep.presence.gate import OutputGate
 
 _STRONG = frozenset({DeliveryEvidence.LOCAL_PLAYBACK, DeliveryEvidence.REMOTE_RENDER})
 
@@ -53,9 +58,11 @@ class DeliveryManager:
         *,
         claim_ttl: timedelta = timedelta(seconds=30),
         crash_hook: Callable[[str], None] | None = None,
+        gate: OutputGate | None = None,
     ) -> None:
         self._sf = session_factory
         self._adapter = adapter
+        self._gate = gate
         self._ttl = claim_ttl
         self._crash = crash_hook or (lambda _point: None)
 
@@ -87,6 +94,9 @@ class DeliveryManager:
         record = self.prepare(intent)
         if record.status not in (S.GENERATED, S.SYNTHESIZED, S.ENQUEUED):
             return record  # 已送出、unknown 或終態：不重送
+        rejected = self._gate_check(intent, record)
+        if rejected is not None:
+            return rejected
         with self._sf.begin() as s:
             record = advance_delivery(s, record.delivery_id, S.ENQUEUED)
         self._crash("delivery.after_prepare")
@@ -102,6 +112,9 @@ class DeliveryManager:
                 return self._apply_result(record.delivery_id, looked.result)
             if looked.outcome == "undetermined" or not self._adapter.lookup_authoritative:
                 return self._set_unknown(record.delivery_id)
+        rejected = self._gate_check(intent, record)  # 端點送出前再接納一次（授權可能在 claim 期間被撤銷）
+        if rejected is not None:
+            return rejected
         try:
             result = self._adapter.send(intent, record.dispatch_id)
         except SendResponseLost:
@@ -130,6 +143,19 @@ class DeliveryManager:
                     s, delivery_id, S.FAILED, failure={"code": "NOT_SENT", "retryable": True}
                 )
         return record
+
+    def _gate_check(self, intent: OutputIntent, record: DeliveryRecord) -> DeliveryRecord | None:
+        """通過回 None；被拒則依目前狀態記 rejected（generated）或 cancelled（其後），不送出。"""
+        if self._gate is None:
+            return None
+        decision = self._gate.admit_intent(intent)
+        if decision is GateDecision.ADMIT:
+            return None
+        failure = {"code": decision.value, "retryable": False}
+        with self._sf.begin() as s:
+            current = load_delivery(s, record.delivery_id)
+            target = S.REJECTED if current is not None and current.status is S.GENERATED else S.CANCELLED
+            return advance_delivery(s, record.delivery_id, target, failure=failure)
 
     def _set_unknown(self, delivery_id: str) -> DeliveryRecord:
         with self._sf.begin() as s:

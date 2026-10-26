@@ -67,7 +67,7 @@ DEFAULT_EVENT_SPECS: dict[str, EventSpec] = {
         _D,
         "presence.arrival_requested", "presence.departure_requested",
         "presence.transfer_requested", "presence.granted", "presence.activated",
-        "presence.quiesced", "presence.revoked", "presence.recovering",
+        "presence.quiesced", "presence.revoked", "presence.recovering", "presence.recovered",
     ),
     **_spec(_D, "output.intent_created", "output.admitted", "output.rejected", "delivery.reported"),
     **_spec(_C, "control.stop", "control.abort", "control.revoke"),

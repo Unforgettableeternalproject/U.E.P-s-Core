@@ -2710,3 +2710,15 @@
 
 ---
 
+### [feat]: 新增 uep 持久層與事件 journal／outbox／inbox. 10/26
+
+> Date: Mon, 26 Oct 2026 13:59:45 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `17f3937569c120854605eee0d4e8df6cac6b97dc`
+
+---
+

@@ -2890,3 +2890,15 @@
 
 ---
 
+### chore: 推理組遷移 Python 3.12 依賴調整並重新 lock. 10/26
+
+> Date: Mon, 26 Oct 2026 23:24:44 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `d35f7a84022e0936c856fc7646c541684606c465`
+
+---
+

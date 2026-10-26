@@ -27,7 +27,8 @@ agent-candidates = [
     "openai-agents",
     "google-adk",
 ]
-# inference：STT／TTS 等重型推論依賴（以 env/ 實裝為準，僅保留直接依賴）
+# inference：STT／TTS 等重型推論依賴（3.12 推理 Host，T-20；GPU 行為待基準比對）
+# 不收 fairseq、pyworld：只服務 deprecated/ 的 RVC，RVC 工具留在 Python 3.10 的 env/（A14）
 inference = [
     "torch==2.7.0",
     "torchaudio==2.7.0",
@@ -35,7 +36,7 @@ inference = [
     "faster-whisper==1.2.1",
     "ctranslate2==4.8.0",
     "numpy==2.0.0",
-    "scipy>=1.15",
+    "scipy==1.15.1",
     "librosa==0.11.0",
     "soundfile==0.13.1",
     "onnxruntime==1.21.1",
@@ -45,7 +46,8 @@ inference = [
     "safetensors==0.5.2",
     "accelerate==1.1.0",
     "sentence-transformers==3.3.1",
-    "faiss-cpu==1.9.0.post1",
+    # 1.9.0.post1 的 cp312 wheel 載入時 DLL 失敗
+    "faiss-cpu>=1.12,<1.16",
     "pyannote.audio==3.3.2",
     "speechbrain==1.0.3",
     "openai-whisper==20250625",
@@ -55,6 +57,25 @@ inference = [
     "jieba==0.42.1",
     "scikit-learn==1.6.1",
     "pandas==2.2.3",
+    # 間接依賴對齊 env/，避免解到新大版
+    "pyannote.core==5.0.0",
+    "pyannote.pipeline==3.0.1",
+    "pyannote.database==5.1.3",
+    "lightning==2.5.2",
+    "pytorch-lightning==2.5.2",
+    "numba==0.61.2",
+    "llvmlite==0.44.0",
+    # TTS／STT 路徑實際 import、先前漏列
+    "einops>=0.8",
+    "json5>=0.12",
+    "munch>=4",
+    "wetext>=0.1",
+    "noisereduce>=3",
+    # 原排除套件的 3.12 方案
+    "PyAudio==0.2.14",
+    "py-cord[voice]==2.8.1",
+    "triton-windows>=3.3,<3.4; sys_platform == 'win32'",
+    "flash-attn; sys_platform == 'win32'",
 ]
 # desktop：PyQt5 桌面寵物與系統互動
 desktop = [
@@ -79,6 +100,8 @@ default-groups = ["dev"]
 torch = [{ index = "pytorch-cu128", extra = "inference" }]
 torchaudio = [{ index = "pytorch-cu128", extra = "inference" }]
 torchvision = [{ index = "pytorch-cu128", extra = "inference" }]
+# 第三方預編 wheel（mjun0812，含 sm_100／sm_120，適用 RTX 5070 Ti）；官方無 Windows wheel
+flash-attn = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.4.10/flash_attn-2.7.4+cu128torch2.7-cp312-cp312-win_amd64.whl", marker = "sys_platform == 'win32'" }
 
 [[tool.uv.index]]
 name = "pytorch-cu128"

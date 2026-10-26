@@ -86,6 +86,10 @@ D1–D15 對應提案第 22 章 ADR-001～015，維持 PROPOSED，驗證條件�
 | T-09 | legacy 隔離方案 | C／1 | `legacy-isolation` | — | D19、A7 | 隔離方案 planned |
 | T-10 | STT 預設模型決議 | A／1 | 尚未展開 | V10 | D20 | 決議 planned |
 | T-11 | 遊戲偵測（hotwords 切換） | A／1 | 尚未展開 | V10 | D21 | 實作 planned |
+| T-12 | 持久層＋CC-1 Event／journal | C／2 | `p1-persistence-event-journal` | V20 | D2、D10、D22、D32、D33 | `uep/db/`、`uep/events/` |
+| T-13 | CC-6 Task 持久模型 | C／2 | `p1-task-model` | V19、V21 | D8、D30、D31、D34 | `uep/tasks/` |
+| T-14 | CC-2／CC-5 schema＋fake Adapters | C／2 | `p1-context-output-fakes` | V20、V21 | D24、D29 | `uep/context/`、`uep/output/`、`uep/fakes/` |
+| T-15 | V19–V21 驗證 | C／2 | `p1-v19-v21-verification` | V19、V20、V21 | — | `tests/uep/test_acceptance_v19.py` |
 
 T-10、T-11 目前只在 DECISIONS 被引用，TASKS.md 尚無卡片內容；細節待敏卡展開後補。
 
@@ -113,9 +117,9 @@ T-10、T-11 目前只在 DECISIONS 被引用，TASKS.md 尚無卡片內容；細
 | V16 | 離場／加入失敗與 timeout 的 NONE／RECOVERING | 週期 3 P5（待立卡） | — | — | — | 未開始 | 部分：VC-4-4、VC-5-3 |
 | V17 | 多分頁／多 Desktop／多頻道的排他粒度 | 週期 3 P4（待立卡） | — | — | — | 未開始 | 未涵蓋 |
 | V18 | 缺席的 Discord 不錄音不參與 | 週期 3 P4（待立卡） | — | — | — | 未開始 | 未涵蓋 |
-| V19 | Task 跨 GS 結束可恢復 | 週期 2 P1 實作（待立卡） | — | — | — | 未開始 | 是：VC-6-1 |
-| V20 | 重送／Outbox 重播不重複 action | 週期 2 P1 實作（待立卡） | — | — | — | 未開始 | 是：VC-1-1、VC-1-2 |
-| V21 | 工具已做完但 response 遺失可查 receipt | 週期 2 P1 實作（待立卡） | — | — | — | 未開始 | 是：VC-6-2 |
+| V19 | Task 跨 GS 結束可恢復 | T-15（週期 2 P1） | `uep/tasks/` | `tests/uep/test_acceptance_v19.py` | fake 驗證：對話端丟棄＋新 manager 可恢復；6 個 crash 點×3 種 idempotency 已成功 action 恆執行 1 次；完成通知單次；task 終局事件與狀態同交易寫 outbox（target `notification`），Bus 投遞前崩潰可由 outbox 補送 | 已驗證（P1，fake） | 是：VC-6-1 |
+| V20 | 重送／Outbox 重播不重複 action | T-15（週期 2 P1） | `uep/events/`、`uep/output/manager.py` | `tests/uep/test_acceptance_v20.py` | fake 驗證：重送／併發重送／ACK 前崩潰重播／雙 dispatcher／delivery 各 crash 點重啟，action execution_count 與 output effect_count 皆 1。已知邊界：權威 lookup 誤報 confirmed_not_sent 且 adapter 非冪等時重送 1 次 | 已驗證（P1，fake） | 是：VC-1-1、VC-1-2 |
+| V21 | 工具已做完但 response 遺失可查 receipt | T-15（週期 2 P1） | `uep/tasks/`、`uep/adapters/tool.py` | `tests/uep/test_acceptance_v21.py` | fake 驗證：found／undetermined／confirmed_not_executed 各條件、unverified receipt、lookup 例外、輸出端 unknown 皆不盲目重送。已知邊界：查核誤報＋宣告權威＋宣稱可冪等卻不去重的 executor 會重複 1 次 | 已驗證（P1，fake） | 是：VC-6-2 |
 | V22 | 離場暫停 presence-bound 工作 | 週期 4 P8（待立卡） | — | — | — | 未開始 | 是：VC-6-5 |
 | V23 | DB／GPU／MEM／API 失敗的降級 | 週期 4 P8（待立卡） | — | — | — | 未開始 | 部分：VC-2-3 |
 | V24 | 備份還原與 epoch 重建 | 週期 4 P8（待立卡） | — | — | — | 未開始 | 未涵蓋 |

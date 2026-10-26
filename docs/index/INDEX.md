@@ -27,6 +27,7 @@
 | Fake | `uep/fakes/` | `uep/fakes/runtime.py`（FakeRuntime）、`uep/fakes/tool.py`（FakeToolExecutor）、`uep/fakes/output.py`（FakeOutputAdapter）、`uep/fakes/crash.py`（SimulatedCrash 注入點）；只供測試與恢復驗證 | CC-3、CC-5、CC-6 | V07、V21 |
 | CC-2／CC-5／fake 測試 | `tests/uep/test_context_output_models.py`、`tests/uep/test_fakes.py` 不需 DB；`tests/uep/test_context_output_db.py`、`tests/uep/test_context_output_review.py`、`tests/uep/test_delivery_manager.py` 需 `UEP_TEST_DATABASE_URL`；共用工廠 `tests/uep/factories.py` | CC-2、CC-5 | V06–V08 |
 | Task | `uep/tasks/` | `uep/tasks/states.py`（狀態列舉與轉移表）、`uep/tasks/models.py`（`activities`、`tasks`、`runs`、`steps`、`approvals`、`action_intents`、`receipts` 表）、`uep/tasks/manager.py`（Task Manager：唯一寫入者、action 去重／approval 單次消耗／UNKNOWN 查核、重啟恢復）；測試 `tests/uep/test_task_model.py`（需 `UEP_TEST_DATABASE_URL`） | CC-6 | V19–V21／D8、D30 |
+| V19–V21 驗收測試 | `tests/uep/test_acceptance_v19.py`、`tests/uep/test_acceptance_v20.py`、`tests/uep/test_acceptance_v21.py`（共用 `tests/uep/acceptance_support.py`；需 `UEP_TEST_DATABASE_URL`；fake Adapter、crash 注入） | CC-1、CC-5、CC-6 驗證案例 VC-1-1、VC-1-2、VC-5-3、VC-6-1、VC-6-2 | CC-1、CC-5、CC-6 | V19–V21 |
 
 ### 1.2 legacy（範例區段，以 T-01 內容填寫）
 

@@ -2782,3 +2782,15 @@
 
 ---
 
+### [test]: 新增 V19–V21 驗收測試. 10/26
+
+> Date: Mon, 26 Oct 2026 15:11:20 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `1f92886caba60543ccf0d19f9ec6bebaacb190df`
+
+---
+

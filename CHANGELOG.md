@@ -2662,3 +2662,15 @@
 
 ---
 
+### [feat]: 建立新 Core 頂層套件 uep 與 import 邊界測試. 10/26
+
+> Date: Mon, 26 Oct 2026 13:35:43 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `b6525249ce0b5025530d0ac74ef587976859be5f`
+
+---
+

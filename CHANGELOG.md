@@ -2842,3 +2842,15 @@
 
 ---
 
+### docs: 回寫 State Coordinator、全域停止與端點的 Index. 10/26
+
+> Date: Mon, 26 Oct 2026 21:09:37 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `a1470e5f5361bc654119af7ec76f9f56cafd0f14`
+
+---
+

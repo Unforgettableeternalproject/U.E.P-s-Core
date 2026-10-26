@@ -562,3 +562,75 @@ async def test_responses_路徑_工具往返的input_items():
          "arguments": '{"query": "貓"}'},
         {"type": "function_call_output", "call_id": "call_7", "output": "找到三筆"},
     ]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 串流用量（prompt cache 觀測）
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class _UsageChunk:
+    """Chat Completions 串流最後一塊：choices 為空、帶 usage。"""
+
+    def __init__(self, usage) -> None:
+        self.choices = []
+        self.usage = usage
+
+
+class _NS:
+    def __init__(self, **kw) -> None:
+        self.__dict__.update(kw)
+
+
+async def test_chat_串流用量取自末端_usage_chunk():
+    client = FakeAsyncClient(["好"])
+    usage = _NS(
+        prompt_tokens=1500, completion_tokens=30,
+        prompt_tokens_details=_NS(cached_tokens=1024),
+    )
+    orig = client.completions.create
+
+    async def create(**params):
+        stream = await orig(**params)
+        stream._chunks.append(_UsageChunk(usage))
+        return stream
+
+    client.completions.create = create
+    backend = OpenAIBackend(api_key="test", async_client=client)
+    assert backend.get_last_stream_usage() == {}
+    _ = [p async for p in backend.stream_query([Message(role="user", content="嗨")])]
+    assert client.completions.last_params["stream_options"] == {"include_usage": True}
+    assert backend.get_last_stream_usage() == {
+        "input_tokens": 1500, "cached_tokens": 1024, "output_tokens": 30,
+    }
+
+
+async def test_responses_串流用量取自_completed_事件():
+    usage = _NS(input_tokens=2000, output_tokens=40, input_tokens_details=_NS(cached_tokens=1536))
+    events = [
+        _NS(type="response.output_text.delta", delta="嗨"),
+        _NS(type="response.completed", response=_NS(id="resp_1", usage=usage)),
+    ]
+
+    class _Stream:
+        def __aiter__(self):
+            self._it = iter(events)
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._it)
+            except StopIteration:
+                raise StopAsyncIteration from None
+
+    class _Responses:
+        async def create(self, **params):
+            return _Stream()
+
+    client = _NS(responses=_Responses())
+    backend = OpenAIBackend(api_key="test", api="responses", async_client=client)
+    pieces = [p async for p in backend.stream_query([Message(role="user", content="嗨")])]
+    assert pieces == ["嗨"]
+    assert backend.get_last_stream_usage() == {
+        "input_tokens": 2000, "cached_tokens": 1536, "output_tokens": 40,
+    }

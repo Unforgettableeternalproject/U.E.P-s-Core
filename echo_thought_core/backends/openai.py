@@ -189,6 +189,9 @@ class OpenAIBackend(AbstractBackend):
         )
         self._encoder = None
         self._last_usage: dict[str, int] = {}
+        self._last_stream_usage: dict[str, int] = {}
+        """最近一次 :meth:`stream_query` 的用量（input_tokens / cached_tokens / output_tokens），
+        與非串流的 ``_last_usage`` 分開，避免壓縮管線的 query 蓋掉對話那一輪的數字。"""
         self._last_response_id: str | None = None
         """Responses API 的對話狀態。用 previous_response_id 串接可以省掉
         重送歷史——但那會讓對話狀態存在 OpenAI 端，與 ContextManager 的
@@ -376,11 +379,17 @@ class OpenAIBackend(AbstractBackend):
                 params["reasoning_effort"],
             )
             params["reasoning_effort"] = "none"
+        if not self._base_url:   # 官方 API 才要求最後一塊帶 usage；相容端點不一定吃這個參數
+            params.setdefault("stream_options", {"include_usage": True})
+        self._last_stream_usage = {}
         stream = await self.async_client.chat.completions.create(**params)
         # tool_calls 是分塊送來的：第一塊帶 id/name，後續塊只帶 arguments 片段，
         # 用 index 對回同一次呼叫。串流結束才整包 yield——半截 JSON 沒人能用。
         pending_calls: dict[int, dict[str, str]] = {}
         async for chunk in stream:
+            usage = getattr(chunk, "usage", None)
+            if usage is not None:
+                self._record_stream_usage(usage)
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
@@ -443,6 +452,7 @@ class OpenAIBackend(AbstractBackend):
             ]
         params.update(kwargs)
 
+        self._last_stream_usage = {}
         stream = await self.async_client.responses.create(**params)
         async for event in stream:
             event_type = getattr(event, "type", "")
@@ -461,6 +471,36 @@ class OpenAIBackend(AbstractBackend):
                 response = getattr(event, "response", None)
                 if response is not None:
                     self._last_response_id = getattr(response, "id", None)
+                    usage = getattr(response, "usage", None)
+                    if usage is not None:
+                        self._record_stream_usage(usage)
+
+    def _record_stream_usage(self, usage: Any) -> None:
+        """把串流末端的 usage 正規化成 input / cached / output tokens。
+
+        Responses API 是 ``input_tokens`` / ``output_tokens`` / ``input_tokens_details.cached_tokens``；
+        Chat Completions 是 ``prompt_tokens`` / ``completion_tokens`` / ``prompt_tokens_details.cached_tokens``。
+        """
+        def pick(obj: Any, *names: str) -> int:
+            for name in names:
+                value = obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+                if isinstance(value, (int, float)):
+                    return int(value)
+            return 0
+
+        def detail(obj: Any, *names: str) -> Any:
+            for name in names:
+                value = obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+                if value is not None:
+                    return value
+            return None
+
+        details = detail(usage, "input_tokens_details", "prompt_tokens_details")
+        self._last_stream_usage = {
+            "input_tokens": pick(usage, "input_tokens", "prompt_tokens"),
+            "cached_tokens": pick(details, "cached_tokens") if details is not None else 0,
+            "output_tokens": pick(usage, "output_tokens", "completion_tokens"),
+        }
 
     async def summarize(
         self,
@@ -595,3 +635,7 @@ class OpenAIBackend(AbstractBackend):
 
     def get_last_usage(self) -> dict[str, int]:
         return dict(self._last_usage)
+
+    def get_last_stream_usage(self) -> dict[str, int]:
+        """最近一次串流的 ``{input_tokens, cached_tokens, output_tokens}``；沒有（或還沒結束）回空 dict。"""
+        return dict(self._last_stream_usage)

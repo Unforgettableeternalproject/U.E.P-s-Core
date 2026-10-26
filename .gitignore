@@ -438,3 +438,8 @@ dist/*
 *.spec
 *.exe
 *.zip
+# 任務層：change 工作內容以 Lore Vault 服務端為準（TASK_LAYER_MCP §5.4）
+openspec/changes/
+
+# uv 虛擬環境
+.venv/

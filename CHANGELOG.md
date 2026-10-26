@@ -2650,3 +2650,15 @@
 
 ---
 
+### [chore]: 建立 Python 3.12 與 uv 環境基線. 10/26
+
+> Date: Mon, 26 Oct 2026 13:35:42 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `0646b76b5cb473c6ccffd118ab56119df6aec0c5`
+
+---
+

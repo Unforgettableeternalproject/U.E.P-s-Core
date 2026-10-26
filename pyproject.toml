@@ -1,0 +1,92 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "uep"
+version = "0.0.0"
+description = "U.E.P 新 Core（頂層 uep/ 套件；舊碼 core/、modules/ 原地保留）"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+# core：新 Core 本體，不含 torch
+dependencies = [
+    "pydantic>=2.12",
+    "pydantic-settings>=2.6",
+    "pyyaml>=6.0",
+    "google-genai>=2,<3",
+    "openai>=2",
+    "sqlalchemy>=2.0",
+    "alembic>=1.16",
+    "psycopg[binary]>=3.2",
+]
+
+[project.optional-dependencies]
+# 候選 Agent SDK：評估期間獨立，確定採用後再併入 core
+agent-candidates = [
+    "openai-agents",
+    "google-adk",
+]
+# inference：STT／TTS 等重型推論依賴（以 env/ 實裝為準，僅保留直接依賴）
+inference = [
+    "torch==2.7.0",
+    "torchaudio==2.7.0",
+    "torchvision==0.22.0",
+    "faster-whisper==1.2.1",
+    "ctranslate2==4.8.0",
+    "numpy==2.0.0",
+    "scipy>=1.15",
+    "librosa==0.11.0",
+    "soundfile==0.13.1",
+    "onnxruntime==1.21.1",
+    "transformers==4.48.1",
+    "tokenizers==0.21.0",
+    "huggingface-hub>=0.27",
+    "safetensors==0.5.2",
+    "accelerate==1.1.0",
+    "sentence-transformers==3.3.1",
+    "faiss-cpu==1.9.0.post1",
+    "pyannote.audio==3.3.2",
+    "speechbrain==1.0.3",
+    "openai-whisper==20250625",
+    "edge-tts>=7.2",
+    "pydub==0.25.1",
+    "opencc-python-reimplemented==0.1.7",
+    "jieba==0.42.1",
+    "scikit-learn==1.6.1",
+    "pandas==2.2.3",
+]
+# desktop：PyQt5 桌面寵物與系統互動
+desktop = [
+    "PyQt5==5.15.11",
+    "PyQt5-Qt5==5.15.2",
+    "PyAutoGUI==0.9.54",
+    "pyperclip==1.11.0",
+    "pywin32==310; sys_platform == 'win32'",
+    "pyinstaller==6.17.0",
+    "APScheduler==3.11.2",
+    "psutil==6.1.0",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.26", "ruff"]
+
+[tool.uv]
+package = true
+default-groups = ["dev"]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu128", extra = "inference" }]
+torchaudio = [{ index = "pytorch-cu128", extra = "inference" }]
+torchvision = [{ index = "pytorch-cu128", extra = "inference" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["uep"]
+
+[tool.pytest.ini_options]
+# 新 Core 測試；legacy 測試仍以 unit_tests/、integration_tests/ 明確指定路徑執行
+testpaths = ["tests/uep"]

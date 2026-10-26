@@ -23,7 +23,7 @@
 
 ### 0.3 ID 與命名
 
-- 穩定 ID 一律字串，格式為 `前綴_ULID`（D32，已定案 A8）。前綴：`evt_`、`actv_`（activity）、`task_`、`run_`、`step_`、`act_`（action）、`turn_`、`seg_`（segment）、`conv_`、`lease_`、`xfer_`、`out_`、`dsp_`（dispatch）、`dlv_`、`snap_`、`appr_`、`req_`（state transition request）、`obx_`（outbox）、`blob_`（payload blob）、`trc_`（trace）。
+- 穩定 ID 一律字串，格式為 `前綴_ULID`（D32，已定案 A8）。前綴：`evt_`、`actv_`（activity）、`task_`、`run_`、`step_`、`act_`（action）、`turn_`、`seg_`（segment）、`conv_`、`lease_`、`xfer_`、`out_`、`dsp_`（dispatch）、`dlv_`、`snap_`、`appr_`、`req_`（state transition request）、`obx_`（outbox）、`blob_`（payload blob）、`trc_`（trace）、`rcpt_`（receipt）、`att_`（attempt）。
 - legacy ID（`gs_／cs_／ws_`）**只存 `legacy_ref`**，不作為新主鍵（D23，已定案 A8），但須可解析。§8.3 以此為準，segment 的原生前綴為 `seg_`。
 - legacy 的 `turn_{n}`（每個 CS 內自增）與 `step_{n}`（每個 WS 內自增）**非全域唯一**，不得單獨當主鍵；新 Core 的 `turn_id`／`step_id` 為全域唯一值，legacy 值只存 `legacy_ref`，或以複合鍵 `(segment_id, turn_n)`、`(task_id, step_n)` 表示。
 - 事件類型採 `領域.動詞過去式` 點分字串（例 `task.completed`），非封閉 enum（現況表 §4.1 指出 `SystemEvent` 封閉 enum 之限制）。
@@ -72,7 +72,7 @@ CC-1 Event           -> （不依賴任何其他契約）
 
 偏序（寬度）：`private < group < public`（rank 0 < 1 < 2）。比較規則：
 
-- **放入規則**：內容（記憶、歷史、摘要、事件）可進入某 audience，當且僅當 `rank(audience) <= rank(內容.scope)`，且 `private` 需 `owner_id` 相同、`group` 需 `group_id` 相同。例：`private` 記憶不能進 `public` audience；`public` 內容可進 `private` audience。
+- **放入規則**：內容（記憶、歷史、摘要、事件）可進入某 audience，當且僅當 `rank(audience) <= rank(內容.scope)`，且 `private` 需 `owner_id` 相同、`group` 需 `group_id` 相同。`scope_admits` **只比同級歸屬**（audience 與內容同 level 時才比對 owner／group）；跨級情形（例如 private audience 讀取 group 內容）的成員資格**不由此函式判斷**，由 MEM ACL 在來源端保證。例：`private` 記憶不能進 `public` audience；`public` 內容可進 `private` audience。
 - **衍生規則**：衍生事件或摘要的 `scope_ref` 之 rank 不得大於其所有來源的最小 rank（只縮不放）。
 - 「角色自我資料」與「各使用者私人」是否為獨立 level，提案 §15.4 未定，見 D38。
 
@@ -152,6 +152,8 @@ A4 前提：Event Bus 程式碼沿用，journal 以封裝層加在 Bus 之前，
 | 主動 | `proactive.trigger_observed`、`proactive.candidate_decided` | durable |
 | 生命週期 | `core.started`、`core.ready`、`core.stopping`、`core.component_health_changed` | durable |
 
+P1 註記：Task 的 `paused`／`resumed`／`waiting_approval` 等轉移**不另發 `task.*`**；其可觀測性由 CC-7 `state.changed` 承擔（P2 實作）。P1 的核准 UI 依 `action.intended` 事件驅動。
+
 ### 1.4 權威擁有者
 
 | 資源 | 唯一寫入者 | 其他角色 |
@@ -212,7 +214,7 @@ A4 前提：Event Bus 程式碼沿用，journal 以封裝層加在 Bus 之前，
 | 名稱 | 型別 | 必填 | 寫入者 | 說明 |
 |---|---|---|---|---|
 | `snapshot_id` | str | Y | Context Adapter | |
-| `context_revision` | int | Y | Context Adapter | 同 conversation／segment 內單調遞增 |
+| `context_revision` | int | Y | Context Adapter | 單調範圍＝`(conversation_id, segment_id)`；兩者皆 NULL 的背景快照退到 `run_id`，再退到 `(persona_id, purpose)`。以 DB 產生欄位 `scope_key` 實作：有 conversation 或 segment → `c:<conv>:<seg>`；否則有 `run_id` → `r:<run_id>`；否則 `p:<persona_id>:<purpose>`。唯一約束 `(scope_key, context_revision)`；互動快照不因 `run_id` 拆序列 |
 | `purpose` | enum{conversation_turn, task_run, proactive_eval, summarize} | Y | Context Adapter | 草案補充：不同用途的預算與切片規則不同（D24） |
 | `persona_id` / `persona_version` | str / int | Y | Context Adapter | 當前 run 固定此版本；更新中不改（提案 §17.1） |
 | `policy_version` | int | Y | Context Adapter | |
@@ -284,8 +286,11 @@ Runtime = 可替換的推理／工具迴圈（直達 LLM、OpenAI Agents SDK、G
 |---|---|---|---|
 | `start(request)` | `RuntimeRequest` | 回傳 `attempt_id`，之後以串流送出 `RuntimeEvent` | 開始一次 attempt |
 | `resume(request)` | `RuntimeRequest` ＋ `checkpoint_ref` | 同上 | 自 Core 持有的 checkpoint 繼續；**不**接受 Runtime 自存的私有狀態當權威 |
-| `cancel(attempt_id, reason)` | | `ack`（`stopped`／`isolated`） | 冪等。無法立即停止（如 GPU kernel）時回 `isolated`，Core 丟棄晚到結果 |
+| `cancel(attempt_id, reason)` | | `ack`（`stopped`／`isolated`） | 冪等（含未知 attempt）。無法立即停止（如 GPU kernel）時回 `isolated`，Core 丟棄晚到結果 |
+| `stream(attempt_id)` | | `RuntimeEvent` 非同步串流 | 取得該 attempt 的事件流（`start`／`resume` 之後消費）；`start` 只回傳 `attempt_id`，不直接回傳串流 |
 | `status(attempt_id)` | | `RuntimeStatus` | 只讀 |
+
+協定型別（`RuntimeRequest`、`RuntimeEvent`、`RuntimeStatus`）以 dataclass 表示。`cancel` 對未知或已結束的 `attempt_id` 同樣冪等（回 `stopped`，不報錯）。
 
 ### 3.2 RuntimeRequest 欄位
 
@@ -528,12 +533,14 @@ CC-5 以 CC-4 的授權六元組為前提，定義 *輸出意圖* 與 *交付結
 |---|---|---|---|---|
 | `delivery_id` | str | Y | Delivery Manager | |
 | `output_id` | ref | Y | | |
+| `sequence` | int | Y | Delivery Manager | 對應 OutputIntent 的 `sequence`；`(output_id, sequence, kind)` 對應一筆 intent |
+| `kind` | enum | Y | Delivery Manager | 同 OutputIntent `kind` |
 | `dispatch_id` | str | Y | Delivery Manager | 外部送出的追蹤 ID；timeout 時不知是否被接受 |
 | `status` | enum{generated, synthesized, enqueued, sent, accepted, rendered_played, failed, unknown, cancelled, rejected, suppressed} | Y | Delivery Manager（依證據推進） | 前六為提案 §6.5；`cancelled`、`rejected`（Gate 拒絕）、`suppressed`（重播／shadow 抑制，未真正輸出）為草案補充（D29）。合法路徑見下 |
 | `delivery_evidence` | enum{local_playback, remote_render, transport_sent, unknown} | Y | Adapter 回報、Delivery Manager 驗證 | 證據強度（提案 §6.5） |
-| `played_range` | obj? | C | Adapter | `{from_sample/chunk, to_sample/chunk}`；Desktop／Website 可回報 |
+| `played_range` | obj? | C | Adapter | `{from_sample/chunk, to_sample/chunk}`；Desktop／Website 可回報。未涵蓋完整輸出時見 O-12 |
 | `cancel_position` | obj? | C | Core | 被取消時的位置 |
-| `spoken_text` | str? | C | Delivery Manager | 以 `played_range` 對映，供 `ThinkStage.commit(turn_id, spoken_text, generated_text)` |
+| `spoken_text_ref` / `spoken_text_hash` | str? / str? | C | Delivery Manager | 以 `played_range` 對映的已說出文字，存於可刪 blob（私人原文，同 D33 精神）；供 `ThinkStage.commit(turn_id, spoken_text, generated_text)` 時由 ref 取出 |
 | `failure` | obj? | C | | `{code, retryable}` |
 | `sent_at` / `reported_at` | ts / ts? | Y / N | | |
 
@@ -551,11 +558,13 @@ CC-5 以 CC-4 的授權六元組為前提，定義 *輸出意圖* 與 *交付結
 
 | kind | 合法路徑 | 終態 |
 |---|---|---|
-| `text`（及其他無合成的 kind） | generated -> enqueued -> sent -> accepted -> rendered_played | rendered_played、failed、unknown、cancelled、rejected、suppressed |
+| `text`（及其他無合成的 kind） | generated -> enqueued -> sent -> accepted -> rendered_played | rendered_played、failed、cancelled、rejected、suppressed |
 | `audio_stream` | generated -> **synthesized** -> enqueued -> sent -> accepted -> rendered_played | 同上 |
 
 - `text` 沒有 `synthesized`；可省略的僅此階段，跳過其他階段不可。
-- 任何非終態可轉 `failed`／`unknown`／`cancelled`；`rejected` 只在 Output Gate 拒絕時成立；`suppressed` 只用於重播或 shadow 模式，且不得觸發任何實際送出。
+- 任何非終態可轉 `failed`／`unknown`／`cancelled`。`unknown` **不是終態**：僅可被查核解析為 `sent` 或 `failed`。
+- `rejected` 只自 `generated` 成立（Output Gate 於接納時拒絕）；`suppressed` 只自**送出前**狀態（`generated`／`synthesized`／`enqueued`）成立，用於重播或 shadow，且不得觸發實際送出。Gate 於 `enqueued` 之後撤銷授權，記為 `cancelled`（不是 `rejected`）。
+- `delivery_evidence` 只升不降，順序（草案假設）`unknown < transport_sent < remote_render < local_playback`。同狀態、同證據的重複回報為 no-op，不重寫 `reported_at`。此證據強弱順序仍標為**草案假設**，待確認。
 - INV-05 的第五層「使用者已知」**本草案不建模**：交付記錄止於 `rendered_played` 與其證據強度；使用者是否注意到、聽懂無法由 Adapter 證明。是否需要 `user_acknowledged`（例如以使用者後續明確回應推定）見 D39。
 
 `AudioSink.stop()` 同步、立即且冪等；正常完成才 `drain()`，被中斷不可等待舊佇列播完（E02 契約，提案 §6.1）。
@@ -574,11 +583,13 @@ CC-5 以 CC-4 的授權六元組為前提，定義 *輸出意圖* 與 *交付結
 | 編號 | 條件 | 對應 |
 |---|---|---|
 | O-1 | 計畫輸出（`output_intents`）與實際交付（`deliveries`）分表；狀態只能依證據單向推進，不得跳級（依 5.2 的 text／audio 各自合法路徑） | INV-05 |
-| O-2 | `status ∈ {accepted, rendered_played}` 需 `delivery_evidence ∈ {local_playback, remote_render}`；`transport_sent` 至多到 `sent`；證據 `unknown` 一律 `unknown` | INV-05、V08 |
+| O-2 | `status ∈ {accepted, rendered_played}` 需 `delivery_evidence ∈ {local_playback, remote_render}`；`transport_sent` 至多到 `sent`；證據 `unknown` 時狀態維持 `unknown`，直到查核解析為 `sent` 或 `failed` | INV-05、V08 |
 | O-3 | 取消不 drain；被取消輸出的 `status=cancelled`，歷史只記 `played_range` 內已交付部分；最後播放回報未知時不寫成完整已說出 | INV-05、V08 |
 | O-4 | `turn.completed` 分別記錄「生成完成」與「交付結束」兩個時間點；二者不同時成立也合法 | INV-05、INV-06 |
 | O-5 | 所有 OutputIntent 必須通過 CC-4 Output Gate；`REJECT_*` 的輸出記為 `rejected`，不重送、不遞補到其他 endpoint | INV-02、INV-03 |
-| O-6 | `sent` 後 ACK 遺失或 timeout 標 `unknown`，以平台 ID／receipt 查核；不得無限重送同一提醒，也不得直接開新位置補講 | INV-08、提案 §17.1 |
+| O-6 | `sent` 後 ACK 遺失或 timeout 標 `unknown`，以 `OutputAdapter.lookup(dispatch_id)` 查核，三態：`found`／`confirmed_not_sent`／`undetermined`（Adapter 另宣告 `lookup_authoritative`）。**只有權威且 `confirmed_not_sent` 才可標 `failed`**（允許以新 dispatch 重試）；其餘維持 `unknown`，避免重複通知。不得無限重送同一提醒，也不得直接開新位置補講 | INV-08、提案 §17.1 |
+| O-11 | **單一送出者**：Delivery Manager 以 claim（CAS：`status` 與 `row_version` 條件更新）取得某筆 delivery 的送出權，同一 `(output_id, sequence, kind)` 同時只有一個送出者；claim 失敗者不得送出 | INV-02、INV-05 |
+| O-12 | `played_range` 未涵蓋完整輸出時，即使證據為強證據（`local_playback`／`remote_render`）也**不推到 `rendered_played`**，停在 `accepted`（部分播放以 `played_range` 記錄）。文字類輸出（無合成的 kind）無 `played_range` 時視為完整，可推到 `rendered_played`；`audio_stream` 必須有 `played_range.complete` 才可推到 `rendered_played` | INV-05、V08 |
 | O-7 | 工具實際完成以 CC-6 receipt 記帳，與是否已講出無關；不得為補說明而重跑工具 | INV-05、提案 §6.5 |
 | O-8 | `origin=system` 的輸出不得使用 Persona 語氣，且仍受 audience 與 Gate 管制 | INV-02、INV-07 |
 | O-9 | 歷史中 `generated_text` 與 `spoken_text` 分開保存 | INV-05 |
@@ -637,7 +648,7 @@ Activity 是「前景／背景活動的共同索引」（提案 §15.1 `activiti
 | `legacy_ref` | obj? | N | `{gs_id?}`（kind=interaction_episode 時） |
 | `version` | int | Y | |
 
-- **唯一寫入者**：Activity Registry（Core 內由 Orchestrator 持有的單一寫入元件；元件歸屬見 D37）。其他元件只能請求建立／結束，不得直接寫表。`kind=task` 的 Activity 隨 Task 建立同交易建立，由 Task Manager 經 Registry 請求。
+- **唯一寫入者**：Activity Registry（Core 內由 Orchestrator 持有的單一寫入元件；元件歸屬見 D37）。其他元件只能請求建立／結束，不得直接寫表。`kind=task` 的 Activity 隨 Task 建立同交易建立，由 Task Manager 經 Registry 請求。**P1 過渡**：Task Manager 在同一交易內直接建立／結束 `kind=task` Activity；P2 抽出 Activity Registry（D37）。
 - **結束語意**：Activity 結束（尤其 interaction_episode 的 GS 閒置結束）**不終止**其他 Activity、Task、Presence 或人格；kind=task 的 Activity 在 Task 到達終態後才可 `ENDED`；`ENDED` 的 Activity 不得被拿來推定 Task 狀態。
 
 ### 6.2 Task 欄位
@@ -669,9 +680,11 @@ Activity 是「前景／背景活動的共同索引」（提案 §15.1 `activiti
 | `worker_epoch` | int | Y | 隔離過期 worker |
 | `status` | enum{PENDING, RUNNING, WAITING_INPUT, WAITING_APPROVAL, PAUSED, SUCCEEDED, FAILED, CANCELLED, UNKNOWN} | Y | 同 Task；`PAUSED` 帶 `pause_reason` |
 | `run_deadline` / `step_timeout` / `approval_expiry` / `worker_heartbeat_at` | ts / duration / ts / ts | Y/N | 逾時語意拆開（提案 §14.3）；legacy WS 10 分鐘不得直接取消長任務 |
-| `checkpoint_ref` | ref? | N | |
+| `checkpoint_ref` | ref? | N | 大型 checkpoint 的外部引用 |
+| `checkpoint` | JSONB? | N | runs 內嵌 checkpoint（§6.4 內容）；**值層級白名單**，只允許 ID、狀態、計數、雜湊等，不含私人原文（私人內容走 ref） |
 | `persona_version` / `policy_version` | int / int | Y | 啟動時固定 |
 | `step_id` | str | Y（Step） | 穩定副作用 ID 的來源 |
+| `seq` / `label` / `status`（Step） | int / str / enum | Y | steps 的順序、標籤與狀態（status 列舉同 Run 的終態子集：PENDING／RUNNING／SUCCEEDED／FAILED／CANCELLED，草案補充） |
 
 ### 6.4 Checkpoint 內容
 
@@ -689,17 +702,19 @@ Activity 是「前景／背景活動的共同索引」（提案 §15.1 `activiti
 
 | 實體 | 欄位 | 型別 | 說明 |
 |---|---|---|---|
-| ActionIntent | `action_id` | str | 一個 logical action 的重試沿用同一 ID；改參數則新 action |
+| ActionIntent | `action_id` | str | **同一次執行嘗試的重送**沿用同一 ID；改參數則新 action；`FAILED` 後的重試也用**新** `action_id` |
+| | `retry_of` | ref<action>? | 重試時指向被重試的 `FAILED` action |
 | | `run_id`／`step_id` | ref | |
 | | `tool`、`executor` | str | 目標 executor |
 | | `params_hash` | str | canonical 參數雜湊 |
 | | `side_effect_class` | enum{internal_read, reversible_local, external_effect, high_impact} | 提案 §18.2 |
 | | `idempotency` | enum{native, via_action_id, none} | |
+| | `lookup_authoritative` | bool | executor 宣告其 lookup 結果可作為權威（見 T-3） |
 | | `approval_ref` | ref? | 外部副作用／高影響必填 |
 | | `presence_bound` | bool | |
 | | `status` | enum{INTENDED, APPROVED, EXECUTING, SUCCEEDED, FAILED, UNKNOWN} | `UNKNOWN`＝回覆遺失，待查核。**只由 Task Manager 推進**：依 Policy 決定（APPROVED）、依 executor 回傳的 receipt／查核結果推進（EXECUTING 之後）；executor 只寫 receipt，不直接寫此欄 |
-| Receipt | `receipt_id`、`action_id`、`result_ref`、`recorded_at`、`source_verified: bool` | | 由 executor 簽回，Core 記錄 |
-| Approval | `approval_id`、`actor_id`（人類，已認證）、`action_hash`、`target`、`scope`、`expiry`、`consumed_at?` | | 單次消耗；綁 canonical params hash |
+| Receipt | `receipt_id`（`rcpt_<ULID>`）、`action_id`、`worker_epoch`、`result_ref`、`recorded_at`、`source_verified: bool` | | 由 executor 簽回，Core 記錄。`source_verified=False` 的 receipt 只記錄，**不推進** action 狀態 |
+| Approval | `approval_id`、`actor_id`（人類，已認證）、`action_hash`、`target`、`scope`、`expiry`、`consumed_at?` | | 單次消耗；`target`＝`action.tool`、`scope`＝`task.scope_ref`；受眾與內容由 `action_hash`（全參數 canonical hash）涵蓋。record 只收已認證 principal |
 
 ### 6.6 權威擁有者
 
@@ -717,13 +732,17 @@ Activity 是「前景／背景活動的共同索引」（提案 §15.1 `activiti
 |---|---|---|
 | T-1 | Task 狀態不隨 GS／CS 結束、平台切換、Presence 離場、Core 重啟自動終止；結束只由 `task.completed`／`failed`／`cancelled` 事件 | INV-06、V19 |
 | T-2 | 事件重送、Outbox 重播、worker 重啟不重複同一 `action_id` 的副作用 | V20 |
-| T-3 | 工具完成但 receipt 遺失 → 以 `action_id` 向 executor 查核；查不到則 `UNKNOWN`，不盲目重試 | V21 |
-| T-4 | 外部副作用需有效 `approval_ref`：scope、目標、受眾、內容雜湊、期限相符，單次消耗；任一變更須新 action 與新批准 | V30、V31 |
+| T-3 | 工具完成但 receipt 遺失 → 以 `action_id` 向 executor 查核（lookup 三態：`found`／`confirmed_not_executed`／`undetermined`）。只有 executor 宣告 `lookup_authoritative` 且 `idempotency ∈ {native, via_action_id}` 時，`confirmed_not_executed` 才可使 action 退回 `INTENDED`；其餘維持 `UNKNOWN` 交規則／人工，不盲目重試。`source_verified=False` 的 receipt 不推進。Action `UNKNOWN` **不連動** Task／Run 狀態 | V21 |
+| T-4 | 外部副作用需有效 `approval_ref`：`target`＝`action.tool`、`scope`＝`task.scope_ref`，受眾與內容由 `action_hash` 涵蓋，期限相符，單次消耗；任一變更須新 action 與新批准。消耗時 `approval.actor_id` 須屬 Policy 指定的 approver（P1 為 `task.owner_actor_id`），record 只收已認證 principal | V30、V31 |
 | T-5 | 模型輸出、`approve_step`、Runtime 的 `approval_request` 都不能消耗不存在的 approval | INV-04、V30 |
 | T-6 | `presence_bound=true` 任務在離場時於安全 checkpoint 暫停（`PAUSED`）；`false` 且已授權者可續跑；不能一邊在別平台聊天、一邊代她操作電腦 | INV-02、V22 |
 | T-7 | 恢復前重新驗證權限、目標裝置、資料 scope、檔案是否變更、批准是否過期；已完成副作用不重播；純模型計算可新 attempt 重做 | 提案 §17.2 |
 | T-8 | 對使用者承諾但未交付的報告，恢復的是「通知 intent」，不重跑整個任務 | 提案 §17.2 |
-| T-9 | 舊 `worker_epoch` 的回報／receipt 被記錄但不改變 Run 狀態 | INV-03 |
+| T-9 | 舊 `worker_epoch`（含舊 epoch）的回報／receipt 只記錄、不推進 Run 或 action 狀態 | INV-03 |
+| T-12 | 接手（resume）一個 Run 的前提：Supervisor 保證舊 worker 已停止，或舊 `worker_heartbeat_at` 已過期；否則不得接手。**Worker 責任**：長時間 executor 呼叫期間 worker 須自行 heartbeat。**PAUSED 的 Run** 若仍有 `EXECUTING` action，同樣須等心跳過期才可接手 | INV-03、提案 §17.2 |
+| T-14 | **Receipt 內容限制**：executor 對 receipt 只簽 ID／短碼，`result_ref` 為引用（URI 安全字元、長度 ≤ 256）；不合格時 Core **不拒收**，改為脫敏儲存並保留原內容的 `sha256` 與脫敏原因；格式 `meta.redactions[欄位名] = {sha256, reason}` | INV-07、E-11 |
+| T-15 | executor 查核（lookup）拋出例外視為 `undetermined`，action 維持 `UNKNOWN`（T-3） | V21 |
+| T-13 | Task／Run 轉 `SUCCEEDED` 前不得有 `UNKNOWN`／`EXECUTING` 的 action；Task 轉終態時同交易終止其未終態 Run；Task／Run 的 `UNKNOWN` 狀態 P1 保留未用 | INV-06 |
 | T-10 | 全域停止可阻止新工具與主動行動，其控制路徑不依賴 LLM | 提案 §18.3、V31 |
 | T-11 | `core.stopping`（核心關機）不終止 Task：Run 於安全 checkpoint 暫停（`pause_reason=core_shutdown`），不寫 `task.cancelled`／`task.failed`；進行中且結果未知的 action 標 `UNKNOWN` 待重啟查核；重啟後依 T-7 恢復 | INV-06 |
 
@@ -737,7 +756,7 @@ Activity 是「前景／背景活動的共同索引」（提案 §15.1 `activiti
 **VC-6-2 回覆遺失（V21）**
 - 給定：`act_7`（external_effect）執行成功但 executor 回覆遺失。
 - 當：Run 逾時、Core 查核。
-- 則：向 executor 以 `act_7` 查詢；有 receipt 則標 `SUCCEEDED`；無則 `UNKNOWN` 交規則／人工；絕不以新 action 重送。
+- 則：向 executor 以 `act_7` 查詢（查核拋出例外視為 `undetermined`），依三態處理：`found`（有可信 receipt）→ `SUCCEEDED`；`confirmed_not_executed` 且 executor 宣告 `lookup_authoritative`、`idempotency ∈ {native, via_action_id}` → 退回 `INTENDED`；其餘（含 `undetermined`、`source_verified=False`）維持 `UNKNOWN` 交規則／人工。絕不以新 action 重送；`UNKNOWN` 不改變 Task／Run 狀態。
 
 **VC-6-3 批准不可重用（V31）**
 - 給定：`appr_1` 綁 `params_hash=H1`、`target=A`，已消耗一次。
@@ -831,7 +850,7 @@ D35 已定案（A8）：新增輕量第七契約。編號為 6A 以保持既有�
 
 ### 7.1 單一寫入規則
 
-- **實體表寫入歸各自 Manager**：`presence_*` 歸 Presence Manager；`tasks／runs／steps／action_intents／receipts` 歸 Task Manager；`activities` 歸 Activity Registry；`deliveries` 歸 Delivery Manager；`events／outbox` 歸 Journal／Dispatcher；`state_projection` 與 Interaction 軸歸 State Coordinator（CC-7）。同一欄位不得有兩個寫入者。
+- **實體表寫入歸各自 Manager**：`presence_*` 歸 Presence Manager；`tasks／runs／steps／action_intents／receipts` 歸 Task Manager；`activities` 歸 Activity Registry（P1 過渡期由 Task Manager 在同一交易代寫 `kind=task`，P2 抽出，D37）；`deliveries` 歸 Delivery Manager；`events／outbox` 歸 Journal／Dispatcher；`state_projection` 與 Interaction 軸歸 State Coordinator（CC-7）。同一欄位不得有兩個寫入者。
 - **State Coordinator（CC-7）** 只做各軸投影與轉換請求的合法性裁決，不代寫他人實體表；裁決後由對應 Manager 在自己的交易內寫入。
 - 例：`ActionIntent.status` 只由 Task Manager 依 executor receipt 推進；Task `status` 只由 Task Manager 寫；`presence_current.status` 只由 Presence Manager 寫。
 

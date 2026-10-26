@@ -2758,3 +2758,15 @@
 
 ---
 
+### [docs]: 依 Task／Output 實作與審查回寫契約與索引. 10/26
+
+> Date: Mon, 26 Oct 2026 14:54:29 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `b1ea2957fc34435590bc08624d56e3d48ed0a0e8`
+
+---
+

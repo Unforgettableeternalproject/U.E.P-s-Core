@@ -17,13 +17,16 @@
 | CC-1／持久層測試 | `tests/uep/` | `tests/uep/test_ids_and_config.py`、`tests/uep/test_envelope_and_bus.py`、`tests/uep/test_payload_policy.py` 不需 DB；`tests/uep/test_journal_db.py`、`tests/uep/test_journal_db_hardening.py` 需 `UEP_TEST_DATABASE_URL`，未設時 skip | CC-1 | V20 |
 | 設定 | `uep/config.py` | 自環境變數或 repo 根 `.env` 讀 `UEP_DATABASE_URL`、`UEP_TEST_DATABASE_URL` | — | A9、D10 |
 | ID | `uep/ids.py` | `前綴_ULID` 產生與驗證 | — | D32 |
-| 持久層 | `uep/db/` | SQLAlchemy engine／Base（PostgreSQL＋psycopg3）；alembic 環境與 migration 在 `uep/db/migrations/`，設定檔為根目錄 `alembic.ini` | — | A9、D10 |
+| 持久層 | `uep/db/` | `uep/db/models_registry.py` 集中 import 所有 ORM models；SQLAlchemy engine／Base（PostgreSQL＋psycopg3）；alembic 環境與 migration 在 `uep/db/migrations/`，設定檔為根目錄 `alembic.ini` | — | A9、D10 |
 | Event | `uep/events/` | `uep/events/envelope.py`（UEPEvent、Gateway 重建）、`uep/events/registry.py`（事件類型註冊表）、`uep/events/bus.py`（自 legacy 複製、訂閱鍵 str）、`uep/events/journal.py`（journal＋可刪 blob）、`uep/events/outbox.py`、`uep/events/inbox.py`、`uep/events/publisher.py`（journal 先於投遞） | CC-1 | V09、V20／D16、D22、D33 |
-| Context（暫名） | `uep/context/` planned | ContextSnapshot 組裝 | CC-2 | V28／D24 |
+| Context | `uep/context/` | `uep/context/snapshot.py`（ContextSnapshot 單一型別＋purpose、不可變、放入規則 X-1）、`uep/context/models.py`（`context_snapshots` 表與 revision 遞增存取） | CC-2 | V28／D24 |
 | Runtime（暫名） | `uep/runtime/` planned | Runtime Adapter | CC-3 | V36／D25 |
 | Presence（暫名） | `uep/presence/` planned | Lease、generation／epoch、Output Gate | CC-4 | V11–V18／D4–D6 |
-| Output（暫名） | `uep/output/` planned | OutputIntent、Delivery、ControlSignal | CC-5 | V06–V08／D29 |
-| Task（暫名） | `uep/task/` planned | Task／Run、ActionIntent、receipt、恢復 | CC-6 | V19–V21／D8、D30 |
+| Output | `uep/output/` | `uep/output/intent.py`（OutputIntent、ControlSignal）、`uep/output/delivery.py`（DeliveryRecord 與 text／audio 狀態機）、`uep/output/models.py`（`output_intents`、`deliveries` 表）、`uep/output/manager.py`（最小 Delivery Manager） | CC-5 | V06–V08／D29 |
+| Adapter 協定 | `uep/adapters/` | `uep/adapters/runtime.py`（Runtime、RuntimeRequest、RuntimeEvent）、`uep/adapters/output.py`（OutputAdapter）、`uep/adapters/tool.py`（ToolExecutor） | CC-3、CC-5、CC-6 | V36／D25 |
+| Fake | `uep/fakes/` | `uep/fakes/runtime.py`（FakeRuntime）、`uep/fakes/tool.py`（FakeToolExecutor）、`uep/fakes/output.py`（FakeOutputAdapter）、`uep/fakes/crash.py`（SimulatedCrash 注入點）；只供測試與恢復驗證 | CC-3、CC-5、CC-6 | V07、V21 |
+| CC-2／CC-5／fake 測試 | `tests/uep/test_context_output_models.py`、`tests/uep/test_fakes.py` 不需 DB；`tests/uep/test_context_output_db.py`、`tests/uep/test_context_output_review.py`、`tests/uep/test_delivery_manager.py` 需 `UEP_TEST_DATABASE_URL`；共用工廠 `tests/uep/factories.py` | CC-2、CC-5 | V06–V08 |
+| Task | `uep/tasks/` | `uep/tasks/states.py`（狀態列舉與轉移表）、`uep/tasks/models.py`（`activities`、`tasks`、`runs`、`steps`、`approvals`、`action_intents`、`receipts` 表）、`uep/tasks/manager.py`（Task Manager：唯一寫入者、action 去重／approval 單次消耗／UNKNOWN 查核、重啟恢復）；測試 `tests/uep/test_task_model.py`（需 `UEP_TEST_DATABASE_URL`） | CC-6 | V19–V21／D8、D30 |
 
 ### 1.2 legacy（範例區段，以 T-01 內容填寫）
 
@@ -60,7 +63,7 @@
 | `hidden_docs/DECISIONS.md`、`hidden_docs/TASKS.md` | 內部決策與任務規劃（gitignored，clone 後可能不存在） | 敏卡 |
 | `docs/改進計畫.md` | 舊 Echo Kernel 藍圖；已被提案取代（A5） | 僅查歷史 |
 | `pyproject.toml`、`uv.lock` | 新環境依賴（A6）；T-03 負責 | 環境 |
-| `alembic.ini`、`uep/db/migrations/versions/` | 資料庫 migration（P1 起 `0001_events_journal`）；URL 由 `UEP_DATABASE_URL` 提供 | 實作／部署 |
+| `alembic.ini`、`uep/db/migrations/versions/` | 資料庫 migration（`0001_events_journal`、`0002_task_model`、`0003_context_output`）；URL 由 `UEP_DATABASE_URL` 提供 | 實作／部署 |
 
 ## 3. 契約索引
 

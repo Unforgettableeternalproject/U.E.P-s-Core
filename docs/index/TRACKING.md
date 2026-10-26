@@ -36,12 +36,12 @@ D1–D15 對應提案第 22 章 ADR-001～015，維持 PROPOSED，驗證條件�
 | D21 | STT 的 LLM 情境校正放在哪一層：即時對話用原文，校正版背景寫入 | 待決 | T-07 之後、T-08 | V10 |
 | D22 | Event Bus 訂閱鍵由封閉 `SystemEvent` enum 改為 `str`，修改沿用的 bus 程式碼（草案 §10；CC-1、§8.4） | 已定案（A8） | — | — |
 | D23 | legacy ID 只存 `legacy_ref`；保留 `ON_CALL_ENDED`→`presence.departure_requested`；捨棄 `step.review_passed`、`conversation.episode_advanced`（草案 §10；CC-1、§8） | 已定案（A8） | — | — |
-| D24 | `ContextSnapshot.purpose` 拆為多種快照型別或單一型別加欄位（草案 §10；CC-2） | 待決（草案） | 週期 2 對應卡開工前 | — |
+| D24 | `ContextSnapshot.purpose` 拆為多種快照型別或單一型別加欄位（草案 §10；CC-2） | 已定案（A9） | T-14 | — |
 | D25 | Runtime `error.code` 列舉是否定案，與 Model Gateway 錯誤碼是否共用（草案 §10；CC-3） | 待決（草案） | 週期 2 對應卡開工前 | — |
 | D26 | `fencing_epoch` 的單調來源與保存位置（DB 外），使災難還原後不回退（草案 §10；CC-4） | 已定案（A11） | T-16 | — |
 | D27 | `CHECKPOINTED` 視為 transfer phase，並新增 `DONE`／`ABORTED`（草案 §10；CC-4） | 已定案（A11） | T-16 | — |
 | D28 | Output Gate 拒絕結果碼列舉是否定案，Core 與端點是否共用碼表（草案 §10；CC-4、CC-5） | 已定案（A11） | T-16 | — |
-| D29 | 輸出 `kind` 與交付 `status` 補充值（`cancelled`、`rejected`、`suppressed`）是否納入（草案 §10；CC-5） | 待決（草案） | 週期 2 對應卡開工前 | — |
+| D29 | 輸出 `kind` 與交付 `status` 補充值（`cancelled`、`rejected`、`suppressed`）是否納入（草案 §10；CC-5） | 已定案（A9） | T-14 | — |
 | D30 | Task／Run 只新增 `WAITING_INPUT`；`READY` 併入 `PENDING`，`BLOCKED` 併入 `PAUSED`＋`pause_reason`（草案 §10；CC-6） | 已定案（A8） | — | — |
 | D31 | `interrupt_policy` 三值 interruptible／checkpoint_only／non_interruptible；Policy 依工具決定，建立者只能收緊（草案 §10；CC-6、CC-4） | 已定案（A8） | — | — |
 | D32 | 穩定 ID 格式為 `前綴_ULID`（草案 §10；全部） | 已定案（A8） | — | — |

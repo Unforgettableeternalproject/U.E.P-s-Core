@@ -9,7 +9,7 @@
 
 ## 1. 決策（D）
 
-D1–D15 對應提案第 22 章 ADR-001～015，維持 PROPOSED，驗證條件以提案為準。D16 以後為重構期新增決策；D22–D42 來自 [Core契約草案 §10](../架構重構/Core契約草案.md)，草案中 D22、D23、D30–D35 已由 A8 定案，其餘待決。
+D1–D15 對應提案第 22 章 ADR-001～015，維持 PROPOSED，驗證條件以提案為準。D16 以後為重構期新增決策；D22–D43 來自 [Core契約草案 §10](../架構重構/Core契約草案.md)，草案中 D22、D23、D30–D35 已由 A8 定案，其餘待決。
 
 | ID | 決策摘要 | 狀態 | 最晚定案／負責卡 | 相關 V |
 |---|---|---|---|---|
@@ -55,6 +55,7 @@ D1–D15 對應提案第 22 章 ADR-001～015，維持 PROPOSED，驗證條件�
 | D40 | CC-7 `StateDecision.decision` 列舉與 `pause_reason`、Activity 等補充列舉是否定案（草案 §10；CC-7、CC-6） | 待決（草案） | 週期 2 對應卡開工前 | — |
 | D41 | journal 安全水位：`journal_seq` 非提交可見順序，replay／tailing 的游標推進；建議以 `xmin` 或提交時間加延遲水位（草案 §10；CC-1） | 待決（草案） | 週期 2 對應卡開工前 | — |
 | D42 | `payload_hash` 防字典還原：建議改 per-install 密鑰 HMAC（草案 §10；CC-1） | 待決（草案） | 週期 2 對應卡開工前 | — |
+| D43 | 多平台前的 revoke 放行條件：須舊端 stop ACK 或舊 `expires_at` 已過才放行他端 acquire；P2 revoke 不設 `unquiesced_endpoint_id`（草案 §10；CC-4） | 待決（草案） | P5 多平台前 | — |
 
 ## 2. 已定案事項（A）
 

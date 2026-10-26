@@ -2806,3 +2806,15 @@
 
 ---
 
+### docs: 回寫 Presence 契約與 Index／Tracking 決策紀錄. 10/26
+
+> Date: Mon, 26 Oct 2026 20:04:51 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `130475c2e19332104189ef389a1edc9215f10c9d`
+
+---
+

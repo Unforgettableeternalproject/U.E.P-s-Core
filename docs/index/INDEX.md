@@ -21,12 +21,15 @@
 | Event | `uep/events/` | `uep/events/envelope.py`（UEPEvent、Gateway 重建）、`uep/events/registry.py`（事件類型註冊表）、`uep/events/bus.py`（自 legacy 複製、訂閱鍵 str）、`uep/events/journal.py`（journal＋可刪 blob）、`uep/events/outbox.py`、`uep/events/inbox.py`、`uep/events/publisher.py`（journal 先於投遞） | CC-1 | V09、V20／D16、D22、D33 |
 | Context | `uep/context/` | `uep/context/snapshot.py`（ContextSnapshot 單一型別＋purpose、不可變、放入規則 X-1）、`uep/context/models.py`（`context_snapshots` 表與 revision 遞增存取） | CC-2 | V28／D24 |
 | Runtime（暫名） | `uep/runtime/` planned | Runtime Adapter | CC-3 | V36／D25 |
-| Presence（暫名） | `uep/presence/` planned | Lease、generation／epoch、Output Gate | CC-4 | V11–V18／D4–D6 |
+| Presence | `uep/presence/` | `uep/presence/models.py`（`presence_current`、`presence_transfers`、`presence_leases` 表）、`uep/presence/manager.py`（PresenceManager：原子 acquire／confirm_activated／renew／release／revoke／confirm_quiesced／resolve_recovery、Core 啟動 epoch +1）、`uep/presence/gate.py`（OutputGate）、`uep/presence/epoch.py`（Host 本機 epoch 檔，路徑 `UEP_HOST_EPOCH_FILE` 或使用者資料目錄） | CC-4 | V11–V18／D4–D6、D26–D28 |
+| 共用契約型別 | `uep/contracts/` | `uep/contracts/presence.py`（授權六元組、Gate 結果碼 `GateDecision`、acquire／renew／release 結果碼、`TransferPhase`；零依賴，Core 與端點同源） | CC-4 | D27、D28 |
+| 控制通道 | `uep/control/` | `uep/control/channel.py`（ControlChannel 協定、程序內實作：端點專屬信箱與執行緒，不經 outbox／Bus）、`uep/control/journal.py`（送出後背景補記 control 事件） | CC-5 | E-12、P-8／V06 |
 | Output | `uep/output/` | `uep/output/intent.py`（OutputIntent、ControlSignal）、`uep/output/delivery.py`（DeliveryRecord 與 text／audio 狀態機）、`uep/output/models.py`（`output_intents`、`deliveries` 表）、`uep/output/manager.py`（最小 Delivery Manager） | CC-5 | V06–V08／D29 |
 | Adapter 協定 | `uep/adapters/` | `uep/adapters/runtime.py`（Runtime、RuntimeRequest、RuntimeEvent）、`uep/adapters/output.py`（OutputAdapter）、`uep/adapters/tool.py`（ToolExecutor） | CC-3、CC-5、CC-6 | V36／D25 |
 | Fake | `uep/fakes/` | `uep/fakes/runtime.py`（FakeRuntime）、`uep/fakes/tool.py`（FakeToolExecutor）、`uep/fakes/output.py`（FakeOutputAdapter）、`uep/fakes/crash.py`（SimulatedCrash 注入點）；只供測試與恢復驗證 | CC-3、CC-5、CC-6 | V07、V21 |
 | CC-2／CC-5／fake 測試 | `tests/uep/test_context_output_models.py`、`tests/uep/test_fakes.py` 不需 DB；`tests/uep/test_context_output_db.py`、`tests/uep/test_context_output_review.py`、`tests/uep/test_delivery_manager.py` 需 `UEP_TEST_DATABASE_URL`；共用工廠 `tests/uep/factories.py` | CC-2、CC-5 | V06–V08 |
 | Task | `uep/tasks/` | `uep/tasks/states.py`（狀態列舉與轉移表）、`uep/tasks/models.py`（`activities`、`tasks`、`runs`、`steps`、`approvals`、`action_intents`、`receipts` 表）、`uep/tasks/manager.py`（Task Manager：唯一寫入者、action 去重／approval 單次消耗／UNKNOWN 查核、重啟恢復）；測試 `tests/uep/test_task_model.py`（需 `UEP_TEST_DATABASE_URL`） | CC-6 | V19–V21／D8、D30 |
+| CC-4／控制通道測試 | `tests/uep/test_presence_manager.py`、`tests/uep/test_presence_gate.py`、`tests/uep/test_presence_control.py`（共用 `tests/uep/presence_support.py`；需 `UEP_TEST_DATABASE_URL`，control 通道本身的測試不需 DB）；`tests/uep/test_presence_epoch.py`（不需 DB：epoch 檔、契約型別、migration 鏈） | CC-4、CC-5 驗證案例 VC-4-1、VC-4-2、VC-4-4（過期後他端不得啟用）、VC-4-5；P-1～P-6、P-8 | CC-4、CC-5 | V06、V11、V12、V15 |
 | V19–V21 驗收測試 | `tests/uep/test_acceptance_v19.py`、`tests/uep/test_acceptance_v20.py`、`tests/uep/test_acceptance_v21.py`（共用 `tests/uep/acceptance_support.py`；需 `UEP_TEST_DATABASE_URL`；fake Adapter、crash 注入） | CC-1、CC-5、CC-6 驗證案例 VC-1-1、VC-1-2、VC-5-3、VC-6-1、VC-6-2 | CC-1、CC-5、CC-6 | V19–V21 |
 
 ### 1.2 legacy（範例區段，以 T-01 內容填寫）
@@ -64,11 +67,11 @@
 | `hidden_docs/DECISIONS.md`、`hidden_docs/TASKS.md` | 內部決策與任務規劃（gitignored，clone 後可能不存在） | 敏卡 |
 | `docs/改進計畫.md` | 舊 Echo Kernel 藍圖；已被提案取代（A5） | 僅查歷史 |
 | `pyproject.toml`、`uv.lock` | 新環境依賴（A6）；T-03 負責 | 環境 |
-| `alembic.ini`、`uep/db/migrations/versions/` | 資料庫 migration（`0001_events_journal`、`0002_task_model`、`0003_context_output`）；URL 由 `UEP_DATABASE_URL` 提供 | 實作／部署 |
+| `alembic.ini`、`uep/db/migrations/versions/` | 資料庫 migration（`0001_events_journal`、`0002_task_model`、`0003_context_output`、`0004_presence`）；URL 由 `UEP_DATABASE_URL` 提供 | 實作／部署 |
 
 ## 3. 契約索引
 
-契約內容以 [Core契約草案](../架構重構/Core契約草案.md) 為準（草案未定案，待裁決見其 §10，編號 D22–D42 對應 [TRACKING §1](TRACKING.md)）。依賴方向：CC-3→CC-2；CC-5→CC-4；CC-6→CC-4、CC-2；CC-2–CC-7→CC-1；CC-1 不依賴其他契約（草案 §0.4）。
+契約內容以 [Core契約草案](../架構重構/Core契約草案.md) 為準（草案未定案，待裁決見其 §10，編號 D22–D43 對應 [TRACKING §1](TRACKING.md)）。依賴方向：CC-3→CC-2；CC-5→CC-4；CC-6→CC-4、CC-2；CC-2–CC-7→CC-1；CC-1 不依賴其他契約（草案 §0.4）。
 
 | 契約 | 草案章節 | 權威擁有者（草案 §x.4／x.6） | 相關 INV | 驗收項（初步） | legacy 對應（草案 §8） |
 |---|---|---|---|---|---|

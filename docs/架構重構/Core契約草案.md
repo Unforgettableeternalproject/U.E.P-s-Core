@@ -145,7 +145,7 @@ A4 前提：Event Bus 程式碼沿用，journal 以封裝層加在 Bus 之前，
 | 狀態 | `state.transition_requested`、`state.changed` | durable |
 | 任務 | `task.created`、`task.completed`、`task.failed`、`task.cancelled`、`task.input_requested`、`task.input_provided`、`run.started`、`run.ended`、`step.completed` | durable；`task.*` 只由 Task Manager 發 |
 | 動作 | `action.intended`、`action.approved`、`action.executed`、`action.unknown` | durable |
-| 在場 | `presence.arrival_requested`、`presence.departure_requested`、`presence.transfer_requested`、`presence.granted`、`presence.activated`、`presence.quiesced`、`presence.revoked`、`presence.recovering` | durable；其中 stop／revoke 的即時訊號走 control |
+| 在場 | `presence.arrival_requested`、`presence.departure_requested`、`presence.transfer_requested`、`presence.granted`、`presence.activated`、`presence.quiesced`、`presence.revoked`、`presence.recovering`、`presence.recovered` | durable；其中 stop／revoke 的即時訊號走 control |
 | 輸出 | `output.intent_created`、`output.admitted`、`output.rejected`、`delivery.reported` | durable |
 | 控制 | `control.stop`、`control.abort`、`control.revoke` | control |
 | 記憶 | `memory.record_created`、`memory.consolidated` | durable |
@@ -373,14 +373,18 @@ Runtime = 可替換的推理／工具迴圈（直達 LLM、OpenAI Agents SDK、G
 | `endpoint_id` | str | C | Presence Manager | 粒度：Desktop `device_id+client_instance_id`；Discord `guild_id+channel_id+interaction_scope`；Website `room_id+endpoint_instance_id`（提案 §10.2） |
 | `owner_activity_id` | str? | N | Presence Manager | 不直接綁短命 CS（提案 §11.1） |
 | `lease_id` | str | C | Presence Manager | `ACTIVE` 必填；`NONE` 時可為「已核發、待到場確認」的 Lease（ACTIVATING 期間），此時不得通過 Output Gate（見 §4.5） |
-| `core_epoch` | int | Y | Core 啟動程序 | 每次 Core 啟動交易內 +1 |
+| `core_epoch` | int | Y | Core 啟動程序 | 來源：Host 本機 epoch 檔 +1，且 ≥ DB 內值 +1（兩者取大）；fencing 檔落後 DB → **拒絕啟動**。`presence.start()` 完成前 Output Gate 一律拒絕。啟動順序：`presence.start()` → 才啟動 DeliveryManager／outbox relay |
 | `fencing_epoch` | int | Y | 見 D26 | 災難還原後必須大於任何曾核發值，**不可只靠 DB 內遞增整數**（提案 §17.3）。來源與保存位置未定案 |
 | `generation` | int | Y | Presence Manager | 只遞增不回退；每次核發 +1 |
-| `expires_at` | ts | C | Presence Manager（DB 時鐘） | 控制面到期時間權威 |
+| `expires_at` | ts | C | Presence Manager | 以 **Core 單 Host 時鐘**判定（Output Gate 與 Presence Manager 共用同一 clock 物件）。Host 牆鐘回撥列為**殘餘風險**（見 P-13） |
 | `row_version` | int | Y | Presence Manager | 樂觀併發版本 |
 | `transfer_id` | str? | N | Presence Manager | 進行中的移轉；每個 persona 最多一個未結束移轉 |
+| `unquiesced_endpoint_id` | str? | N | Presence Manager | 過期或失效後**未證明已停止**的端點；非空時，他端 acquire 回 `NOT_QUIESCED` 並進 `RECOVERING` |
+| `recovery_reason` | str? | C | Presence Manager | `status=RECOVERING` 時必填（例：`core_restart`、`lease_expired_unquiesced`、`activation_failed`） |
 
 秘密與憑證不放入此物件（提案 §11.1）。
+
+**`presence_leases`（兼歷史）**：每次核發一列 `{lease_id, persona_id, endpoint_id, generation, core_epoch, fencing_epoch, granted_at, expires_at, ended_at?, end_reason?}`，作為稽核與 Gate 查核；有效授權仍只由 `presence_current` 決定（P-1）。
 
 ### 4.2 PresenceTransfer 欄位
 
@@ -394,7 +398,6 @@ Runtime = 可替換的推理／工具迴圈（直達 LLM、OpenAI Agents SDK、G
 | `checkpoint_ref` | ref? | C | `CHECKPOINTED` 後必填 |
 | `stop_evidence` | obj | C | 舊端停止證據：`{endpoint_id, old_generation, kind, reported_at}`；綁定 `transfer_id + old_generation`，不是泛用「動畫播完」 |
 | `deadline` | ts | Y | |
-| `recovery_reason` | str? | C | `status=RECOVERING` 時必填 |
 | `row_version` | int | Y | |
 
 ### 4.3 OutputAdmission（Output Gate 檢查輸入／結果）
@@ -416,7 +419,8 @@ Runtime = 可替換的推理／工具迴圈（直達 LLM、OpenAI Agents SDK、G
 | `renew(lease_id, core_epoch, generation)` | 目前 owner | `RENEWED`、`STALE`、`EXPIRED` | 須精確匹配；過期不可續活，需重新 acquire |
 | `revoke(reason)` | Core／全域停止 | `REVOKED` | 全域停止入口不依賴 LLM |
 | `begin_transfer(...)` | 仲裁後 Core | `xfer_id`／`TRANSFER_PENDING` | 同人格序列化 |
-| `confirm_quiesced(transfer_id, old_generation, evidence)` | 舊端 Adapter | `ACCEPTED`、`STALE` | 證據不等於授權；Core 決定是否接受 |
+| `confirm_quiesced(endpoint, old_generation, evidence)` | 舊端 Adapter | `ACCEPTED`、`STALE` | 證據不等於授權；Core 決定是否接受。接受後清除 `unquiesced_endpoint_id`。P5 的 [B] 移轉流程另帶 `transfer_id` |
+| `resolve_recovery(operator, resolution)` | operator（人） | `RESOLVED`、`DENIED` | 需 operator 身分；成功發 `presence.recovered`，`RECOVERING → NONE` |
 | `confirm_activated(lease_id)` | 新端 Adapter | `ACCEPTED`、`STALE` | |
 
 Lease TTL 30 秒、心跳 5 秒僅為 **調校起點**（提案 §11.4），不是契約常數；Adapter 用單調時鐘與保守剩餘期限，晚到續約回覆不得延長已失效 Lease。
@@ -424,6 +428,14 @@ Lease TTL 30 秒、心跳 5 秒僅為 **調校起點**（提案 §11.4），不�
 ### 4.5 合法移轉（摘自提案 §12.1，改以 status／phase 兩層表示）
 
 `presence_current.status` 只有 `NONE／ACTIVE／RECOVERING`；階段在 `transfer.phase`。
+
+**實作範圍（P2）**：P2 **只實作 [A] 與 [C]**，不實作 [B] 位置移轉——`ACTIVE` 時他端 `acquire` 一律回 `BUSY`。[B] 延後到多平台（P5），屆時補 `begin_transfer`／`confirm_quiesced` 流程。
+
+**P2 補充規則**：
+- `revoke` **不使 `generation` +1**（只在核發時 +1）。P2 的 `revoke` 不設 `unquiesced_endpoint_id`（符合 VC-4-1 的重複回合）；多平台前須補「revoke 後需 stop ACK 或舊 `expires_at` 已過，才放行他端」，見 D43。
+- Lease 過期而未證明已停止 → 他端 `acquire` 回 `NOT_QUIESCED` 並進 `RECOVERING`；原端點可重新 `acquire`；`confirm_quiesced` 清除 `unquiesced_endpoint_id`。
+- Core 重啟時，原 `ACTIVE` → `RECOVERING`（`recovery_reason=core_restart`）。
+- `acquire` 對**同一端點**已處於 `ACTIVATING` 的請求冪等，回同一 grant（VC-4-3(b)）。
 
 ```
 [A] 自 NONE 首次 acquire（無舊端，from_endpoint_id 為空）
@@ -472,6 +484,9 @@ Lease TTL 30 秒、心跳 5 秒僅為 **調校起點**（提案 §11.4），不�
 | P-5 | 還原舊 DB 後，新增 `fencing_epoch` 並撤銷先前憑證／Lease、重新握手後才允許輸出；禁止兩份還原 Host 同時接正式端點 | INV-03、V24 |
 | P-6 | 無舊端停止證據時（stop ACK 不明、在途送出 timeout、副作用未知）進 `RECOVERING`，嚴格模式**不得**啟用新端；在途送出 timeout 標 `UNKNOWN`，不得直接開新位置繼續講 | INV-08、V15、V16 |
 | P-7 | 外部網路 I/O 不放進長 DB 鎖；移轉以可追蹤 `dispatch_id` 與有序序列推進 | 提案 §11.3 |
+| P-13 | **Output Gate 判定順序**：先檢查 `core_epoch`／`persona`（不符 `REJECT_STALE`），再檢查 `status`；`audience` 與 `turn_generation` 由**必填 provider** 提供，要關閉檢查須顯式 `ALLOW_ALL`（不得預設放行）。時間以 Core 單 Host 共用 clock 判定，Host 牆鐘回撥為殘餘風險 | INV-02、INV-03 |
+| P-14 | **端點二次接納**是 Gate→send 的 TOCTOU 閉合點：端點於送出／播放前自行檢查六元組與本地剩餘 TTL；控制通道行為見 §5.3 | INV-03、V07 |
+| P-15 | 測試與 CI 必須設定 `UEP_HOST_EPOCH_FILE`；禁止兩個 Core 同時對同一 DB 運作（延伸 P-5） | INV-01、INV-03 |
 | P-8 | 每個輸出於 Core 接納與端點接納皆檢查 P-3 授權六元組、`status=ACTIVE` 與 audience（§0.6）；生成內容自身沒有輸出權；stop／abort／revoke 走獨立控制通道，不排在音訊資料後面 | INV-02、INV-03、V06 |
 | P-9 | Adapter 保持連線不等於 Presence；缺席時預設不收集原始音訊，到場請求／留言接收權與錄音權分開 | 提案 §10.3、V18 |
 | P-10 | presence-bound 任務於離場時須到安全 checkpoint 暫停；已提交且不可中斷的外部動作先完成或查核，不假裝取消成功 | INV-02、V22 |
@@ -568,6 +583,13 @@ CC-5 以 CC-4 的授權六元組為前提，定義 *輸出意圖* 與 *交付結
 - INV-05 的第五層「使用者已知」**本草案不建模**：交付記錄止於 `rendered_played` 與其證據強度；使用者是否注意到、聽懂無法由 Adapter 證明。是否需要 `user_acknowledged`（例如以使用者後續明確回應推定）見 D39。
 
 `AudioSink.stop()` 同步、立即且冪等；正常完成才 `drain()`，被中斷不可等待舊佇列播完（E02 契約，提案 §6.1）。
+
+**控制通道行為**（落實 E-12 於 P2 補的 control）：
+- `control.*` 事件 `scope` 為 public，`idempotency_key=control_id`，**非同步**記入 journal，不阻塞送達；`revoke`／`abort`／`stop` 走優先路徑。
+- 端點 handler **不得阻塞**，只設旗標。
+- 端點以 generation 判斷晚到的 `revoke`：`signal.generation >= 本地 generation` 才停止。
+- 重連須先取權威快照或 `renew`，**不依賴控制通道補送**。
+- 端點二次接納（送出／播放前自檢六元組與本地剩餘 TTL）是 Gate→send TOCTOU 的閉合點（P-14）。
 
 ### 5.4 權威擁有者
 
@@ -1000,6 +1022,7 @@ A4 沿用前提（現況表 §4.2／§4.3）：新 Session 不得對 `working_co
 | D40 | CC-7 `StateDecision.decision` 列舉與 `pause_reason`、Activity 等草案補充列舉是否定案 | CC-7、CC-6 |
 | D41 | journal 讀取的「安全水位」：`journal_seq` 非提交可見順序，replay／tailing 如何推進游標。建議：以 `xmin`（或提交時間）加延遲水位，僅處理低於水位的 `journal_seq` | CC-1 |
 | D42 | `payload_hash` 防字典還原：建議由 sha256 改為 per-install 密鑰 HMAC（密鑰存放與輪替另定） | CC-1 |
+| D43 | 多平台前的 revoke 放行條件：revoke 後須有舊端 stop ACK，或舊 `expires_at` 已過，才放行他端 acquire；P2 的 revoke 不設 `unquiesced_endpoint_id`，需決定 P5 前補哪種機制 | CC-4 |
 
 ---
 

@@ -2674,3 +2674,15 @@
 
 ---
 
+### [docs]: 新增 Core 現況對照表與新 Core 契約草案. 10/26
+
+> Date: Mon, 26 Oct 2026 13:35:44 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `aba08ac3f87da576bd46eb881fa09e80f3ad0db5`
+
+---
+

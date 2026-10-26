@@ -2734,3 +2734,15 @@
 
 ---
 
+### [feat]: 新增 Task／Run／Action 持久模型與 Task Manager. 10/26
+
+> Date: Mon, 26 Oct 2026 14:54:27 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `0d835966ee4a1841b6db52ce6655649a09a35493`
+
+---
+

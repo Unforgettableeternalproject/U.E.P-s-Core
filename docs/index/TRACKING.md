@@ -16,15 +16,15 @@ D1–D15 對應提案第 22 章 ADR-001～015，維持 PROPOSED，驗證條件�
 | D1 | 自有 Core 掌握狀態，SDK 僅執行 Agent Loop（ADR-001） | PROPOSED | 週期 4 P6（待立卡） | V36 |
 | D2 | 首版模組化單程序＋DB，模型服務分離（ADR-002） | PROPOSED | 週期 2 對應卡（待立卡） | V23 |
 | D3 | Echo Stream 保持語音管線責任，contracts／core 不 import 平台狀態（ADR-003） | PROPOSED | T-05、週期 2 P3 | V09 |
-| D4 | One Identity、One Active Presence，可 NONE（ADR-004） | PROPOSED | 週期 2 P2（待立卡） | V11、V17 |
-| D5 | DB 原子 Lease＋generation／epoch＋Output Gate（ADR-005） | PROPOSED | 週期 2 P2（待立卡） | V11、V12 |
-| D6 | 嚴格移轉需舊端 quiescence，未知則停在恢復（ADR-006） | PROPOSED | 週期 3 P5（待立卡） | V13、V14、V15 |
+| D4 | One Identity、One Active Presence，可 NONE（ADR-004） | 已定案（A10） | T-16 | V11、V17 |
+| D5 | DB 原子 Lease＋generation／epoch＋Output Gate（ADR-005） | 已定案（A10） | T-16 | V11、V12 |
+| D6 | 嚴格移轉需舊端 quiescence，未知則停在恢復（ADR-006） | 已定案（A10） | T-16、T-17 | V13、V14、V15 |
 | D7 | State Coordinator 集中寫入，多來源可提議（ADR-007） | PROPOSED | 週期 2（待立卡） | V03 |
 | D8 | Task／Run 與 GS／CS 分離（ADR-008） | PROPOSED | 週期 2 P1 實作（待立卡） | V19、V22 |
 | D9 | Model Gateway＋專用 STT／TTS Provider（ADR-009） | PROPOSED | 週期 2（待立卡） | V36 |
 | D10 | PostgreSQL 作耐久權威，MEM 向量索引先沿用（ADR-010） | PROPOSED | 週期 2 P1 實作（待立卡） | V24 |
 | D11 | Proactive 規則先行、模型按需、決策可解釋（ADR-011） | PROPOSED | 週期 4 P7（待立卡） | V25–V27 |
-| D12 | 前景桌面工作綁 Presence，明確背景工作可例外（ADR-012） | PROPOSED | 週期 4（待立卡）；需產品語意確認 | V22 |
+| D12 | 前景桌面工作綁 Presence，明確背景工作可例外（ADR-012） | 已定案（A10） | T-18 | V22 |
 | D13 | audience 限制跨平台上下文，交付記憶標證據（ADR-013） | PROPOSED | 週期 3 P5（待立卡） | V28、V08 |
 | D14 | Mac mini 作控制 Host，GPU／API 分離（ADR-014） | PROPOSED | 週期 4 P8（待立卡） | V32、V33 |
 | D15 | 內部 SDK Handoff 不改 Persona／Presence（ADR-015） | PROPOSED | 週期 4 P6（待立卡） | V36 |
@@ -38,9 +38,9 @@ D1–D15 對應提案第 22 章 ADR-001～015，維持 PROPOSED，驗證條件�
 | D23 | legacy ID 只存 `legacy_ref`；保留 `ON_CALL_ENDED`→`presence.departure_requested`；捨棄 `step.review_passed`、`conversation.episode_advanced`（草案 §10；CC-1、§8） | 已定案（A8） | — | — |
 | D24 | `ContextSnapshot.purpose` 拆為多種快照型別或單一型別加欄位（草案 §10；CC-2） | 待決（草案） | 週期 2 對應卡開工前 | — |
 | D25 | Runtime `error.code` 列舉是否定案，與 Model Gateway 錯誤碼是否共用（草案 §10；CC-3） | 待決（草案） | 週期 2 對應卡開工前 | — |
-| D26 | `fencing_epoch` 的單調來源與保存位置（DB 外），使災難還原後不回退（草案 §10；CC-4） | 待決（草案） | 週期 2 對應卡開工前 | — |
-| D27 | `CHECKPOINTED` 視為 transfer phase，並新增 `DONE`／`ABORTED`（草案 §10；CC-4） | 待決（草案） | 週期 2 對應卡開工前 | — |
-| D28 | Output Gate 拒絕結果碼列舉是否定案，Core 與端點是否共用碼表（草案 §10；CC-4、CC-5） | 待決（草案） | 週期 2 對應卡開工前 | — |
+| D26 | `fencing_epoch` 的單調來源與保存位置（DB 外），使災難還原後不回退（草案 §10；CC-4） | 已定案（A11） | T-16 | — |
+| D27 | `CHECKPOINTED` 視為 transfer phase，並新增 `DONE`／`ABORTED`（草案 §10；CC-4） | 已定案（A11） | T-16 | — |
+| D28 | Output Gate 拒絕結果碼列舉是否定案，Core 與端點是否共用碼表（草案 §10；CC-4、CC-5） | 已定案（A11） | T-16 | — |
 | D29 | 輸出 `kind` 與交付 `status` 補充值（`cancelled`、`rejected`、`suppressed`）是否納入（草案 §10；CC-5） | 待決（草案） | 週期 2 對應卡開工前 | — |
 | D30 | Task／Run 只新增 `WAITING_INPUT`；`READY` 併入 `PENDING`，`BLOCKED` 併入 `PAUSED`＋`pause_reason`（草案 §10；CC-6） | 已定案（A8） | — | — |
 | D31 | `interrupt_policy` 三值 interruptible／checkpoint_only／non_interruptible；Policy 依工具決定，建立者只能收緊（草案 §10；CC-6、CC-4） | 已定案（A8） | — | — |
@@ -48,7 +48,7 @@ D1–D15 對應提案第 22 章 ADR-001～015，維持 PROPOSED，驗證條件�
 | D33 | journal 只存元資料＋`payload_ref`；私人原文放可刪 blob，journal 留雜湊與墓碑（草案 §10；CC-1） | 已定案（A8） | — | — |
 | D34 | 首版不做 Task Graph，Task 只留 `parent_task_id`（草案 §10；CC-6） | 已定案（A8） | — | — |
 | D35 | 新增輕量第七契約 CC-7 State Coordinator（軸、轉換請求、合法性裁決、寫入規則）（草案 §10；CC-7、CC-1、CC-6） | 已定案（A8） | — | — |
-| D36 | 全域停止／撤銷入口的認證與介面，與 `control.revoke` 的關係（草案 §10；CC-4、CC-5） | 待決（草案） | 週期 2 對應卡開工前 | — |
+| D36 | 全域停止／撤銷入口的認證與介面，與 `control.revoke` 的關係（草案 §10；CC-4、CC-5） | 已定案（A11） | T-17 | — |
 | D37 | Activity Registry 的元件歸屬；`Activity.kind` 列舉（interaction_episode／task／maintenance）是否定案（草案 §10；CC-6、CC-1） | 待決（草案） | 週期 2 對應卡開工前 | — |
 | D38 | scope level 是否需獨立的角色自我（self）與各使用者私人（草案 §10；§0.6、CC-2） | 待決（草案） | 週期 2 對應卡開工前 | — |
 | D39 | INV-05「使用者已知」是否建模為交付狀態（如 `user_acknowledged`）及推定證據（草案 §10；CC-5） | 待決（草案） | 週期 2 對應卡開工前 | — |
@@ -56,6 +56,7 @@ D1–D15 對應提案第 22 章 ADR-001～015，維持 PROPOSED，驗證條件�
 | D41 | journal 安全水位：`journal_seq` 非提交可見順序，replay／tailing 的游標推進；建議以 `xmin` 或提交時間加延遲水位（草案 §10；CC-1） | 待決（草案） | 週期 2 對應卡開工前 | — |
 | D42 | `payload_hash` 防字典還原：建議改 per-install 密鑰 HMAC（草案 §10；CC-1） | 待決（草案） | 週期 2 對應卡開工前 | — |
 | D43 | 多平台前的 revoke 放行條件：須舊端 stop ACK 或舊 `expires_at` 已過才放行他端 acquire；P2 revoke 不設 `unquiesced_endpoint_id`（草案 §10；CC-4） | 待決（草案） | P5 多平台前 | — |
+| D44 | 他端 acquire 推進 RECOVERING 後，原端點是否可在停止證據到達前重新 acquire（現況：不可，須證據或 `resolve_recovery`；草案 §4.5 P2 補充僅涵蓋 NONE＋unquiesced；CC-4） | 已定案（A13，暫定） | T-19；第一次完整系統測試時複議 | V15 |
 
 ## 2. 已定案事項（A）
 
@@ -91,6 +92,10 @@ D1–D15 對應提案第 22 章 ADR-001～015，維持 PROPOSED，驗證條件�
 | T-13 | CC-6 Task 持久模型 | C／2 | `p1-task-model` | V19、V21 | D8、D30、D31、D34 | `uep/tasks/` |
 | T-14 | CC-2／CC-5 schema＋fake Adapters | C／2 | `p1-context-output-fakes` | V20、V21 | D24、D29 | `uep/context/`、`uep/output/`、`uep/fakes/` |
 | T-15 | V19–V21 驗證 | C／2 | `p1-v19-v21-verification` | V19、V20、V21 | — | `tests/uep/test_acceptance_v19.py` |
+| T-16 | CC-4 Presence／Lease／Output Gate＋控制通道 | C／2 | `p2-presence-gate` | V11、V12 | D4、D5、D26–D28 | `uep/presence/`、`uep/contracts/`、`uep/control/` |
+| T-17 | CC-7 State Coordinator＋全域停止 | C／2 | `p2-state-coordinator-stop` | — | D6、D36、D40 | `uep/state/`、`uep/stop/`、`uep/assembly.py` |
+| T-18 | 最小本機 CLI 端點＋watchdog | C／2 | `p2-cli-endpoint-watchdog` | V15 | D12、A12 | `uep/endpoint/`、`uep/control/socket_transport.py` |
+| T-19 | V11、V12、V15 驗證 | C／2 | `p2-v11-v12-v15-verification` | V11、V12、V15 | D44 | `tests/uep/test_acceptance_v11.py` |
 
 T-10、T-11 目前只在 DECISIONS 被引用，TASKS.md 尚無卡片內容；細節待敏卡展開後補。
 
@@ -110,11 +115,11 @@ T-10、T-11 目前只在 DECISIONS 被引用，TASKS.md 尚無卡片內容；細
 | V08 | 播放結束等待與 generated／spoken／unknown 三態 | T-05；週期 2 P3 | — | — | — | 未開始 | 是：VC-5-1、VC-2-3 |
 | V09 | 同一輸入只產生一次 LLM／TTS | T-05；週期 2 P3 | — | — | — | 未開始 | 是：VC-7-1 |
 | V10 | 長句、多語、多人重疊、回授、連續多輪 | T-05、T-07 | — | — | — | 未開始 | 契約外 |
-| V11 | 三端同時 acquire 最多一個 owner | 週期 2 P2（待立卡） | — | — | — | 未開始 | 是：VC-4-1 |
-| V12 | 舊 generation／epoch 輸出與 ACK 被拒 | 週期 2 P2（待立卡） | — | — | — | 未開始 | 是：VC-4-2 |
+| V11 | 三端同時 acquire 最多一個 owner | T-19（週期 2 P2） | `uep/presence/`、`uep/endpoint/` | `tests/uep/test_acceptance_v11.py` | 100 回合三端 Barrier 併發 acquire 每回合恰 1 GRANTED；併發 revoke 下取樣 ACTIVE／存活 lease／open transfer 恆 ≤1；HMAC RPC 與真實 loopback socket 各一組 | 已驗證（P2，CLI＋模擬端點） | 是：VC-4-1 |
+| V12 | 舊 generation／epoch 輸出與 ACK 被拒 | T-19（週期 2 P2） | `uep/presence/gate.py`、`uep/output/manager.py`、`uep/endpoint/` | `tests/uep/test_acceptance_v12.py` | 舊 generation／舊 core_epoch（重啟 +1 後）輸出經 Gate、DeliveryManager、端點二次接納皆拒；舊 lease renew／release／confirm 皆 STALE；重連不恢復已撤銷權限；六元組逐欄單改皆拒。Core 重啟情境僅 in-process | 已驗證（P2，CLI＋模擬端點） | 是：VC-4-2 |
 | V13 | 跨平台移轉先停舊端再啟新端 | 週期 3 P5（待立卡） | — | — | — | 未開始 | 未涵蓋 |
 | V14 | 移轉各階段 crash 恢復無雙重在場 | 週期 3 P5（待立卡） | — | — | — | 未開始 | 是：VC-4-3 |
-| V15 | 舊端網路隔離的 watchdog 與嚴格模式 | 週期 2 P2（待立卡） | — | — | — | 未開始 | 是：VC-4-4 |
+| V15 | 舊端網路隔離的 watchdog 與嚴格模式 | T-19（週期 2 P2） | `uep/endpoint/watchdog.py`、`uep/presence/manager.py` | `tests/uep/test_acceptance_v15.py` | 隔離下端點依本地單調時鐘於 TTL 內停止並清 buffer，恢復後補送證據；嚴格模式證據到前新端 NOT_QUIESCED、偽造證據不放行、人為確認可放行；證據僅於播放真正停止後送出。缺口記 D44 | 已驗證（P2，CLI＋模擬端點） | 是：VC-4-4 |
 | V16 | 離場／加入失敗與 timeout 的 NONE／RECOVERING | 週期 3 P5（待立卡） | — | — | — | 未開始 | 部分：VC-4-4、VC-5-3 |
 | V17 | 多分頁／多 Desktop／多頻道的排他粒度 | 週期 3 P4（待立卡） | — | — | — | 未開始 | 未涵蓋 |
 | V18 | 缺席的 Discord 不錄音不參與 | 週期 3 P4（待立卡） | — | — | — | 未開始 | 未涵蓋 |

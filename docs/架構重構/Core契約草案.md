@@ -433,7 +433,7 @@ Lease TTL 30 秒、心跳 5 秒僅為 **調校起點**（提案 §11.4），不�
 
 **P2 補充規則**：
 - `revoke` **不使 `generation` +1**（只在核發時 +1）。P2 的 `revoke` 不設 `unquiesced_endpoint_id`（符合 VC-4-1 的重複回合）；多平台前須補「revoke 後需 stop ACK 或舊 `expires_at` 已過，才放行他端」，見 D43。
-- Lease 過期而未證明已停止 → 他端 `acquire` 回 `NOT_QUIESCED` 並進 `RECOVERING`；原端點可重新 `acquire`；`confirm_quiesced` 清除 `unquiesced_endpoint_id`。
+- Lease 過期而未證明已停止 → 他端 `acquire` 回 `NOT_QUIESCED` 並進 `RECOVERING`；原端點在狀態仍為 `NONE` 時可重新 `acquire`，狀態已進 `RECOVERING` 後原端點同樣須停止證據或 `resolve_recovery`（D44／A13，暫定）；`confirm_quiesced` 清除 `unquiesced_endpoint_id`。
 - Core 重啟時，原 `ACTIVE` → `RECOVERING`（`recovery_reason=core_restart`）。
 - `acquire` 對**同一端點**已處於 `ACTIVATING` 的請求冪等，回同一 grant（VC-4-3(b)）。
 

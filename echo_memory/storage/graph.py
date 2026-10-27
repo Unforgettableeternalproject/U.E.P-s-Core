@@ -261,6 +261,80 @@ class MemoryGraph:
             f"salience={salience:.3f})"
         )
 
+    def upsert_overlap_relates_to(
+        self,
+        concept_a: str,
+        concept_b: str,
+        weight: float,
+        jaccard: float,
+    ) -> bool:
+        """
+        依來源重疊建立 / 更新 RELATES_TO 邊（Dream 蒸餾用，雙向）。
+
+        與 add_relates_to_edge 不同：不走頻率公式重算，而是直接採用呼叫方算好的
+        重疊權重。既有邊的處理：
+          - CONTRADICTS：保留，不覆寫，回傳 False
+          - RELATES_TO：權重取較大者並記錄 jaccard，回傳 False（非新增）
+          - LATENT_BRIDGE：升級為 RELATES_TO（有來源證據的關聯優先於探索式橋接）
+          - 無邊：新增
+
+        Returns:
+            True 表示新增（或由 bridge 升級）了邊
+        """
+        if concept_a == concept_b:
+            return False
+        if not self.graph.has_node(concept_a) or not self.graph.has_node(concept_b):
+            return False
+
+        weight = min(1.0, max(0.0, weight))
+        # 任一方向已是 CONTRADICTS 就不碰
+        for src, dst in [(concept_a, concept_b), (concept_b, concept_a)]:
+            if (
+                self.graph.has_edge(src, dst)
+                and self.graph[src][dst].get("edge_type") == "CONTRADICTS"
+            ):
+                return False
+
+        created = False
+        now = time.time()
+        for src, dst in [(concept_a, concept_b), (concept_b, concept_a)]:
+            existing = self.graph[src][dst] if self.graph.has_edge(src, dst) else None
+            if existing is not None and existing.get("edge_type") == "RELATES_TO":
+                existing["weight"] = max(existing.get("weight", 0.0), weight)
+                existing["jaccard"] = jaccard
+                continue
+            self.graph.add_edge(
+                src, dst,
+                edge_type="RELATES_TO",
+                weight=weight,
+                frequency=1,
+                avg_salience=0.5,
+                jaccard=jaccard,
+                origin="dream_overlap",
+                created_at=now,
+            )
+            created = True
+        return created
+
+    @staticmethod
+    def bridge_decay_factor(
+        edge_data: dict[str, Any],
+        half_life_days: float,
+        now: float | None = None,
+    ) -> float:
+        """
+        LATENT_BRIDGE 的時間衰減係數 [0, 1]（指數半衰期）。
+
+        以 last_confirmed_at（Dream 重新確認相似度的時間）起算，
+        缺少時退回 created_at。半衰期 <= 0 表示不衰減。
+        """
+        if half_life_days <= 0:
+            return 1.0
+        now = time.time() if now is None else now
+        ref = edge_data.get("last_confirmed_at") or edge_data.get("created_at") or now
+        age_days = max(0.0, (now - ref) / 86400.0)
+        return 0.5 ** (age_days / half_life_days)
+
     def add_contradicts_edge(
         self,
         concept_a: str,

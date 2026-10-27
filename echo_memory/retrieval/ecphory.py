@@ -18,6 +18,7 @@ import math
 import time
 from typing import Any
 
+from echo_memory.config import get_config
 from echo_memory.neurochem.state import NeurochemState, RetrievalParams
 from echo_memory.schemas.concept import Concept
 from echo_memory.schemas.memory_context import MemoryContext
@@ -358,7 +359,9 @@ class EcphoryRetrieval:
 
         流程：
           1. 向量搜索 SemanticMemory → 初始概念集合
-          2. RELATES_TO 1-hop 展開 → 擴展相關概念
+          2. RELATES_TO + LATENT_BRIDGE 1-hop 展開 → 擴展相關概念
+             （bridge 為探索式關聯：權重乘折扣與時間衰減，不是事實支持；
+             展開對象 deprecated/archived 依生命週期降權，有 CONTRADICTS 者再降級）
           3. CONTRADICTS penalty → 降低矛盾概念的分數
           4. 按分數排序返回
 
@@ -388,23 +391,41 @@ class EcphoryRetrieval:
             concept_scores[concept.id] = sim
             concepts_by_id[concept.id] = concept
 
-        # Step 2: RELATES_TO 1-hop 展開
+        # Step 2: RELATES_TO + LATENT_BRIDGE 1-hop 展開
         graph = self.episodic.graph
         seed_concept_ids = list(concept_scores.keys())
+        cfg = get_config()
+        now_ts = time.time()
+
+        # 多巴胺影響展開閾值：DA 高 → 更願意展開弱關聯
+        expand_threshold = max(0.2, 0.5 - dopamine * 0.3)
 
         for concept_id in seed_concept_ids:
             if not graph.has_node(concept_id):
                 continue
 
-            # 查找 RELATES_TO 鄰居
-            relations = graph.get_concept_relations(
-                concept_id, edge_type="RELATES_TO"
-            )
+            # (neighbor_id, effective_weight, is_bridge)；RELATES_TO 先於 bridge，
+            # 同一鄰居有實證關聯時不會被探索式橋接取代
+            expansions: list[tuple[str, float, bool]] = [
+                (nid, w, False)
+                for nid, _et, w in graph.get_concept_relations(
+                    concept_id, edge_type="RELATES_TO"
+                )
+            ]
+            for nid, _et, raw_w in graph.get_concept_relations(
+                concept_id, edge_type="LATENT_BRIDGE"
+            ):
+                edge = graph.graph.get_edge_data(concept_id, nid) or {}
+                if edge.get("edge_type") != "LATENT_BRIDGE":
+                    edge = graph.graph.get_edge_data(nid, concept_id) or {}
+                decay = graph.bridge_decay_factor(
+                    edge, cfg.latent_bridge_half_life_days, now_ts,
+                )
+                expansions.append(
+                    (nid, raw_w * cfg.latent_bridge_discount * decay, True)
+                )
 
-            # 多巴胺影響展開閾值：DA 高 → 更願意展開弱關聯
-            expand_threshold = max(0.2, 0.5 - dopamine * 0.3)
-
-            for neighbor_id, edge_type, weight in relations:
+            for neighbor_id, weight, is_bridge in expansions:
                 if neighbor_id in concept_scores:
                     continue  # 已經在結果中
                 if weight < expand_threshold:
@@ -415,8 +436,17 @@ class EcphoryRetrieval:
                 if neighbor_concept is None:
                     continue
 
-                # 展開的概念分數 = 來源分數 × 邊權重 × 衰減因子
-                derived_score = concept_scores[concept_id] * weight * 0.7
+                # 展開的概念分數 = 來源分數 × 邊權重 × 衰減因子 × 生命週期權重
+                # （deprecated ×0.15 / archived ×0.03，與向量命中一致）
+                derived_score = (
+                    concept_scores[concept_id]
+                    * weight
+                    * 0.7
+                    * neighbor_concept.retrieval_weight
+                )
+                if is_bridge and self._has_contradicts(graph, neighbor_id):
+                    # 探索式橋接不該把有未解矛盾的概念帶進來
+                    derived_score *= self.CONTRADICTS_PENALTY
                 if derived_score >= min_similarity:
                     concept_scores[neighbor_id] = derived_score
                     concepts_by_id[neighbor_id] = neighbor_concept
@@ -441,6 +471,13 @@ class EcphoryRetrieval:
                 final_scores[cid] = score
 
         return final_concepts, final_scores
+
+    @staticmethod
+    def _has_contradicts(graph, concept_id: str) -> bool:
+        """概念是否帶有任何 CONTRADICTS 邊。"""
+        if not graph.has_node(concept_id):
+            return False
+        return bool(graph.get_concept_relations(concept_id, edge_type="CONTRADICTS"))
 
     @staticmethod
     def _apply_contradicts_penalty(

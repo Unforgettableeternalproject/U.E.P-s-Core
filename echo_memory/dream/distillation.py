@@ -27,6 +27,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from echo_memory.config import get_config
 from echo_memory.dream.staleness import (
     Guard,
     find_stale_episode_ids,
@@ -128,6 +129,7 @@ class DistillationReport:
     concepts_rejected: int = 0  # 被 ConceptInhibitor 擋下的
     concepts_stale: int = 0  # LLM 期間來源 Episode 已過期而丟棄的
     edges_created: int = 0
+    relates_to_edges_created: int = 0  # 依來源重疊建立的 Concept↔Concept RELATES_TO
     contradicts_edges_created: int = 0
     skipped_reason: str | None = None  # "no_llm" | "no_episodes" | "llm_error"
     llm_raw_output: str | None = None
@@ -162,6 +164,7 @@ class KnowledgeDistillation:
 
     MAX_EPISODES_PER_BATCH = 10
     MIN_SALIENCE_THRESHOLD = 0.5
+    _MAX_RELATES_PER_CONCEPT = 8  # 單一概念單次蒸餾最多新建的 RELATES_TO 數
 
     def __init__(
         self,
@@ -201,6 +204,7 @@ class KnowledgeDistillation:
         self._contradiction_detector = contradiction_detector
         self._patch_coordinator = patch_coordinator
         self._structured_llm_fn = structured_llm_fn
+        self._relates_to_created = 0  # 單次 run 累計，run() 開頭歸零
         if patch_coordinator is None:
             logger.warning(
                 "[KnowledgeDistillation] 未注入 patch_coordinator，使用舊路徑直接寫入"
@@ -222,6 +226,7 @@ class KnowledgeDistillation:
             DistillationReport
         """
         report = DistillationReport()
+        self._relates_to_created = 0
 
         # 無 LLM → 優雅降級
         if self.llm_fn is None and self._structured_llm_fn is None:
@@ -309,6 +314,8 @@ class KnowledgeDistillation:
             except Exception as e:
                 report.errors.append(f"概念寫入失敗: {concept_data.get('name', '?')}: {e}")
                 logger.error(f"[KnowledgeDistillation] 概念寫入失敗: {e}")
+
+        report.relates_to_edges_created = self._relates_to_created
 
         # 只在有實際產出時才記錄 Episode ID（供 DreamEngine 統一標記）
         # Major #3 修復：空結果或全部失敗時不標記，允許後續重試
@@ -567,7 +574,97 @@ class KnowledgeDistillation:
                     self.graph.add_derived_from_edge(concept_id, ep.id)
                     edges_created += 1
 
+        # 來源重疊 → Concept 間 RELATES_TO（M-7）；同一鎖內、audit-before-mutate
+        self._relates_to_created += self._link_overlapping_concepts(
+            concept_id, set(ep.id for ep in source_eps),
+        )
+
         return is_new, concept_id, edges_created
+
+    def _link_overlapping_concepts(
+        self,
+        concept_id: str,
+        batch_source_ids: set[str],
+    ) -> int:
+        """
+        依來源 Episode 的 Jaccard 重疊，在 Concept 間建立 RELATES_TO。須在鎖內呼叫。
+
+        比對對象是 SemanticMemory 內所有其他 active 概念（含本批較早寫入者與既存者），
+        所以「同批」與「既存」使用同一條規則。此為結構性證據（共享來源），
+        非關鍵字比對。
+
+        規則：
+          - jaccard = |A ∩ B| / |A ∪ B|，A 為本概念完整來源（既有 ∪ 本批），B 為對方來源
+          - jaccard >= relates_to_min_jaccard 才建邊
+          - weight = base + (1 - base) * jaccard（base = relates_to_weight_base）
+          - 單一概念每次最多建 _MAX_RELATES_PER_CONCEPT 條（取 jaccard 最高者）
+          - 已有 CONTRADICTS 的配對不建；既有 LATENT_BRIDGE 升級為 RELATES_TO
+
+        Returns:
+            新增（含由 bridge 升級）的邊數（無向配對計 1）
+        """
+        concept = self.semantic.get(concept_id)
+        if concept is None or concept.status != "active":
+            return 0
+        cfg = get_config()
+        min_jaccard = cfg.relates_to_min_jaccard
+        base = min(1.0, max(0.0, cfg.relates_to_weight_base))
+
+        mine = set(concept.source_episode_ids) | batch_source_ids
+        if not mine:
+            return 0
+
+        candidates: list[tuple[str, float, float]] = []  # (other_id, jaccard, weight)
+        for other in self.semantic.list_concepts(limit=None, status="active"):
+            if other.id == concept_id or not other.source_episode_ids:
+                continue
+            theirs = set(other.source_episode_ids)
+            inter = len(mine & theirs)
+            if inter == 0:
+                continue
+            jaccard = inter / len(mine | theirs)
+            if jaccard < min_jaccard:
+                continue
+            if not self.graph.has_node(other.id):
+                continue
+            candidates.append((other.id, jaccard, base + (1.0 - base) * jaccard))
+
+        if not candidates:
+            return 0
+        candidates.sort(key=lambda c: c[1], reverse=True)
+        candidates = candidates[:self._MAX_RELATES_PER_CONCEPT]
+
+        # 排除 CONTRADICTS 配對與已存在且權重不低於新值的 RELATES_TO（不需要寫入）
+        pending: list[tuple[str, float, float]] = []
+        for other_id, jaccard, weight in candidates:
+            if self.graph.has_contradicts_edge(concept_id, other_id):
+                continue
+            if self.graph.graph.has_edge(concept_id, other_id):
+                data = self.graph.graph[concept_id][other_id]
+                if data.get("edge_type") == "RELATES_TO" and data.get("weight", 0.0) >= weight:
+                    continue
+            pending.append((other_id, jaccard, weight))
+        if not pending:
+            return 0
+
+        # Audit-before-mutate
+        if self._patch_coordinator is not None:
+            ok = self._patch_coordinator.audit_graph_relates_to(
+                concept_id,
+                [{"target": o, "jaccard": j, "weight": w} for o, j, w in pending],
+            )
+            if not ok:
+                logger.warning(
+                    "[KnowledgeDistillation] audit 失敗，跳過 RELATES_TO 建立 (%s, %d 條)",
+                    concept_id[:12], len(pending),
+                )
+                return 0
+
+        created = 0
+        for other_id, jaccard, weight in pending:
+            if self.graph.upsert_overlap_relates_to(concept_id, other_id, weight, jaccard):
+                created += 1
+        return created
 
     def _mark_episodes_dreamed(self, episodes: list[Episode]) -> None:
         """將已蒸餾的 Episode 標記為 is_dreamed=True。"""

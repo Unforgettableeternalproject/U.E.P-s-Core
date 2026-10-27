@@ -146,6 +146,42 @@ class DreamPatchCoordinator:
             "sample_bridges": sample_bridges or [],
         })
 
+    def audit_graph_relates_to(
+        self,
+        concept_id: str,
+        edges: list[dict[str, Any]],
+    ) -> bool:
+        """
+        記錄蒸餾依來源重疊建立 RELATES_TO 邊的 audit。
+
+        回傳 False 時呼叫方應阻止 mutation。
+        edges 每項至少含 target（概念 ID）與 jaccard / weight。
+        """
+        return self._write_dream_audit({
+            "operation": "add_relates_to_edges",
+            "concept_id": concept_id[:12],
+            "count": len(edges),
+            "sample_edges": [
+                {
+                    "to": str(e.get("target", ""))[:12],
+                    "jaccard": round(float(e.get("jaccard", 0.0)), 4),
+                    "weight": round(float(e.get("weight", 0.0)), 4),
+                }
+                for e in edges[:5]
+            ],
+        })
+
+    def audit_latent_bridge_maintenance(
+        self,
+        operation: str,
+        count: int,
+    ) -> bool:
+        """記錄 LATENT_BRIDGE 維護（重新確認等）的 audit。回傳 False 時呼叫方應阻止 mutation。"""
+        return self._write_dream_audit({
+            "operation": operation,
+            "count": count,
+        })
+
     def audit_batch_weight_update(
         self,
         edges_updated: int,

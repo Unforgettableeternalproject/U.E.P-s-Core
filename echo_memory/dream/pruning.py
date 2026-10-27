@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from echo_memory.config import get_config
 from echo_memory.storage.graph import MemoryGraph
 
 logger = logging.getLogger("echo_memory.dream.pruning")
@@ -30,6 +31,8 @@ class PruningReport:
     isolated_nodes_removed: int = 0
     nodes_archived: int = 0
     latent_bridges_created: int = 0
+    latent_bridges_confirmed: int = 0
+    latent_bridges_expired: int = 0
     max_frequency_updated: int = 0
     avg_weight_before: float = 0.0
     avg_weight_after: float = 0.0
@@ -43,7 +46,8 @@ class PruningReport:
             f"  - 平均權重: {self.avg_weight_before:.3f} → {self.avg_weight_after:.3f}\n"
             f"  - 弱邊移除: {self.weak_edges_removed}\n"
             f"  - 節點歸檔: {self.nodes_archived}\n"
-            f"  - LATENT_BRIDGE 建立: {self.latent_bridges_created}\n"
+            f"  - LATENT_BRIDGE 建立: {self.latent_bridges_created} "
+            f"(重新確認 {self.latent_bridges_confirmed} / 過期清除 {self.latent_bridges_expired})\n"
             f"  - max_frequency: {self.max_frequency_updated}"
         )
 
@@ -79,6 +83,7 @@ class GraphPruning:
         self._patch_coordinator = patch_coordinator
         self.min_weight_threshold = 0.05  # 最低權重閾值（低於此值的邊將被刪除）
         self.isolated_node_grace_days = 7  # 孤立節點保留天數
+        self._last_bridges_confirmed = 0  # 最近一次 _create_latent_bridges 重新確認的 bridge 數
 
     def run(self) -> PruningReport:
         """
@@ -109,6 +114,9 @@ class GraphPruning:
         # 4. 建立 LATENT_BRIDGE（跨域橋接 / 頓悟機制）
         if self._semantic is not None:
             report.latent_bridges_created = self._create_latent_bridges()
+            report.latent_bridges_confirmed = self._last_bridges_confirmed
+            # 先確認再過期：仍然相似的 bridge 先刷新時間，才不會被誤清
+            report.latent_bridges_expired = self._expire_latent_bridges()
 
         # 記錄修剪後狀態
         stats_after = self.graph.get_stats()
@@ -282,6 +290,7 @@ class GraphPruning:
         """
         import numpy as np
 
+        self._last_bridges_confirmed = 0
         if self._semantic is None:
             return 0
 
@@ -304,6 +313,7 @@ class GraphPruning:
         import time
         candidates: list[tuple[str, str, str, str, float]] = []
         # (id_a, id_b, name_a, name_b, similarity)
+        to_confirm: list[tuple[str, str, float]] = []  # 已存在且仍相似的 bridge (src, dst, sim)
 
         for i in range(len(concepts_with_emb)):
             if len(candidates) >= self._MAX_BRIDGES_PER_RUN:
@@ -331,17 +341,21 @@ class GraphPruning:
 
                 # 檢查是否已有 RELATES_TO 或 LATENT_BRIDGE
                 has_existing = False
-                if self.graph.graph.has_edge(id_a, id_b):
-                    et = self.graph.graph[id_a][id_b].get("edge_type", "")
-                    if et in ("RELATES_TO", "LATENT_BRIDGE"):
-                        has_existing = True
-                if not has_existing and self.graph.graph.has_edge(id_b, id_a):
-                    et = self.graph.graph[id_b][id_a].get("edge_type", "")
-                    if et in ("RELATES_TO", "LATENT_BRIDGE"):
-                        has_existing = True
+                for src, dst in ((id_a, id_b), (id_b, id_a)):
+                    if self.graph.graph.has_edge(src, dst):
+                        et = self.graph.graph[src][dst].get("edge_type", "")
+                        if et == "LATENT_BRIDGE":
+                            # 仍然相似 → 重新確認（刷新衰減起算點），不重複建立
+                            to_confirm.append((src, dst, similarity))
+                            has_existing = True
+                            break
+                        elif et == "RELATES_TO":
+                            has_existing = True
 
                 if not has_existing:
                     candidates.append((id_a, id_b, name_a, name_b, similarity))
+
+        self._last_bridges_confirmed = self._confirm_latent_bridges(to_confirm)
 
         if not candidates:
             return 0
@@ -357,6 +371,7 @@ class GraphPruning:
 
         # ── 階段 3：批量建邊 ──
         bridges_created = 0
+        now_ts = time.time()
         for id_a, id_b, name_a, name_b, similarity in candidates:
             reason = f"夢境橋接：{name_a} ↔ {name_b}（相似度 {similarity:.3f}）"
             for src, dst in [(id_a, id_b), (id_b, id_a)]:
@@ -366,7 +381,8 @@ class GraphPruning:
                     weight=similarity,
                     similarity=similarity,
                     reason=reason,
-                    created_at=time.time(),
+                    created_at=now_ts,
+                    last_confirmed_at=now_ts,
                 )
             bridges_created += 1
             logger.debug(
@@ -380,6 +396,85 @@ class GraphPruning:
             )
 
         return bridges_created
+
+    def _confirm_latent_bridges(self, pairs: list[tuple[str, str, float]]) -> int:
+        """
+        重新確認仍然相似的 LATENT_BRIDGE：刷新 last_confirmed_at 與 similarity。
+
+        這只延後衰減 / 過期。bridge 是探索式關聯，重新確認不代表事實支持，
+        因此不影響任何 Concept 的 confidence 或證據。
+        audit-before-mutate；audit 失敗則不刷新。
+
+        Returns:
+            刷新的 bridge 配對數
+        """
+        if not pairs:
+            return 0
+        if self._patch_coordinator is not None:
+            if not self._patch_coordinator.audit_latent_bridge_maintenance(
+                operation="confirm_latent_bridges", count=len(pairs),
+            ):
+                logger.warning("[GraphPruning] audit 失敗，跳過 bridge 重新確認 (%d 條)", len(pairs))
+                return 0
+        import time
+        now_ts = time.time()
+        pair_keys: set[frozenset[str]] = set()
+        for src, dst, similarity in pairs:
+            for a, b in ((src, dst), (dst, src)):
+                if self.graph.graph.has_edge(a, b):
+                    data = self.graph.graph[a][b]
+                    if data.get("edge_type") == "LATENT_BRIDGE":
+                        data["last_confirmed_at"] = now_ts
+                        data["similarity"] = similarity
+                        data["weight"] = similarity
+            pair_keys.add(frozenset((src, dst)))
+        return len(pair_keys)
+
+    def _expire_latent_bridges(self) -> int:
+        """
+        清除過期或失效的 LATENT_BRIDGE。
+
+        清除條件（任一）：
+          - 距 last_confirmed_at（缺少時用 created_at）超過 latent_bridge_expire_days
+          - 任一端的 Concept 已不存在，或狀態為 deprecated / archived
+
+        audit-before-mutate；audit 失敗則不清除。
+
+        Returns:
+            移除的有向邊數
+        """
+        import time
+
+        cfg = get_config()
+        expire_secs = cfg.latent_bridge_expire_days * 86400.0
+        now_ts = time.time()
+
+        def _inactive(node_id: str) -> bool:
+            if self._semantic is None:
+                return False
+            concept = self._semantic.get(node_id)
+            return concept is None or concept.status != "active"
+
+        to_remove: list[tuple[str, str]] = []
+        for u, v, data in self.graph.graph.edges(data=True):
+            if data.get("edge_type") != "LATENT_BRIDGE":
+                continue
+            ref = data.get("last_confirmed_at") or data.get("created_at") or now_ts
+            expired = expire_secs > 0 and (now_ts - ref) > expire_secs
+            if expired or _inactive(u) or _inactive(v):
+                to_remove.append((u, v))
+
+        if not to_remove:
+            return 0
+        if self._patch_coordinator is not None:
+            if not self._patch_coordinator.audit_graph_edge_removal(
+                to_remove, reason="latent_bridge_expiry",
+            ):
+                logger.warning("[GraphPruning] audit 失敗，跳過 bridge 過期清除 (%d 條)", len(to_remove))
+                return 0
+        self.graph.graph.remove_edges_from(to_remove)
+        logger.info(f"[GraphPruning] 清除 {len(to_remove)} 條過期 / 失效 LATENT_BRIDGE")
+        return len(to_remove)
 
     def update_edge_weights(self) -> int:
         """

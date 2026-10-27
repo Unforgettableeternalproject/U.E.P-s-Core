@@ -89,6 +89,22 @@ class Config:
             os.getenv("DREAM_REPLAY_DA_THRESHOLD", "0.6")
         )
 
+        # === Concept 關聯邊（RELATES_TO 蒸餾建邊 / LATENT_BRIDGE 檢索） ===
+        # 蒸餾來源 Episode 的 Jaccard 重疊度低於此值不建 RELATES_TO
+        self.relates_to_min_jaccard = float(os.getenv("RELATES_TO_MIN_JACCARD", "0.2"))
+        # RELATES_TO 邊權重 = base + (1 - base) * jaccard；base 讓有意義的邊跨得過擴散門檻
+        self.relates_to_weight_base = float(os.getenv("RELATES_TO_WEIGHT_BASE", "0.4"))
+        # LATENT_BRIDGE 為探索式關聯，檢索擴散時權重再乘此折扣
+        self.latent_bridge_discount = float(os.getenv("LATENT_BRIDGE_DISCOUNT", "0.8"))
+        # bridge 半衰期（天）：自建立或最近一次 Dream 重新確認起算，權重指數衰減
+        self.latent_bridge_half_life_days = float(
+            os.getenv("LATENT_BRIDGE_HALF_LIFE_DAYS", "21")
+        )
+        # bridge 逾期（天）：超過未被重新確認即由 Dream 清除
+        self.latent_bridge_expire_days = float(
+            os.getenv("LATENT_BRIDGE_EXPIRE_DAYS", "60")
+        )
+
         # === 神經化學 ===
         self.neurochem_dopamine = float(os.getenv("NEUROCHEM_DOPAMINE", "0.5"))
         self.neurochem_serotonin = float(os.getenv("NEUROCHEM_SEROTONIN", "0.5"))

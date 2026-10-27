@@ -32,7 +32,9 @@ class ExpandMode(Enum):
 
     - ADD_FACT: 新增 fact 到 metadata["facts"]，不改 canonical description
     - REFINE_SUMMARY: 輕微改寫 description（需較高 evidence_strength）
-    - ADD_RELATION: 新增圖譜邊（RELATES_TO / DERIVED_FROM）
+    - ADD_RELATION: 保留值（目前沒有 patch 路徑產生它）。圖譜邊不經 ConceptPatch：
+      Dream 蒸餾的 RELATES_TO / DERIVED_FROM 與 LATENT_BRIDGE 走
+      DreamPatchCoordinator 的 audit-before-mutate。保留是為了讀得回舊序列化資料
     """
     ADD_FACT = "add_fact"
     REFINE_SUMMARY = "refine_summary"

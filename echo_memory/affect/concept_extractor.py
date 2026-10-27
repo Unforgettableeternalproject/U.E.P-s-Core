@@ -473,6 +473,7 @@ class ConceptExtractor:
                 name=noun,
                 description=desc,
                 source_episode_id=episode_id,
+                producer="extractor",
             )
 
         if best_match is None or best_sim < _POLYSEMY_THRESHOLD:
@@ -481,6 +482,7 @@ class ConceptExtractor:
                 name=noun,
                 description=desc,
                 source_episode_id=episode_id,
+                producer="extractor",
                 embedding=embedding,
             )
             if concept_id and self._graph.has_node(episode_id):
@@ -498,6 +500,8 @@ class ConceptExtractor:
             if episode_id not in best_match.source_episode_ids:
                 best_match.source_episode_ids.append(episode_id)
                 best_match.access_count += 1
+                best_match.version += 1  # 升版後再記 derivation
+                best_match.add_derivation("episode", episode_id, "extractor")
                 self._semantic._save()
             return best_match.id
 
@@ -511,6 +515,7 @@ class ConceptExtractor:
                 name=noun,
                 description=desc,
                 source_episode_id=episode_id,
+                producer="extractor",
                 embedding=embedding,
             )
             if concept_id and best_match.id:

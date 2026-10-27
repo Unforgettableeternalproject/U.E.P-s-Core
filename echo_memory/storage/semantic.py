@@ -95,6 +95,7 @@ class SemanticMemory:
         source_episode_id: str | None = None,
         embedding: list[float] | None = None,
         metadata: dict[str, Any] | None = None,
+        producer: str = "unknown",
     ) -> str:
         """
         插入或更新概念。
@@ -112,6 +113,8 @@ class SemanticMemory:
             source_episode_id: 蒸餾來源的 Episode ID
             embedding: 預先計算的向量（若為 None 且有 embed_fn 會自動生成）
             metadata: 額外元數據
+            producer: 來源產生者（dream/reflection/extractor/conversation/unknown），
+                寫入 source_episode_id 的 derivation 時使用
 
         Returns:
             concept_id
@@ -124,6 +127,7 @@ class SemanticMemory:
                 concept.description = description
                 concept.concept_type = concept_type
                 concept.updated_at = datetime.now(timezone.utc)
+                concept.version += 1  # 先升版，後續 derivation 才落在新版本
                 if metadata:
                     concept.metadata.update(metadata)
             else:
@@ -138,7 +142,7 @@ class SemanticMemory:
 
             # 追加來源 Episode
             if source_episode_id:
-                concept.add_source_episode(source_episode_id)
+                concept.add_source_episode(source_episode_id, producer=producer)
 
             # 生成/更新 embedding
             vec = embedding
@@ -158,6 +162,38 @@ class SemanticMemory:
                 f"(id={concept.id}, sources={len(concept.source_episode_ids)})"
             )
             return concept.id
+
+    def add_derivation(
+        self,
+        concept_id: str,
+        kind: str,
+        parent_id: str,
+        producer: str = "unknown",
+        parent_version: int | None = None,
+        ref: dict[str, Any] | None = None,
+    ) -> bool:
+        """為既有概念追加一筆衍生紀錄並持久化。
+
+        kind=concept 且未指定 parent_version 時，取 parent 目前的 version（衍生當下的版本）。
+        不遞增本概念 version；若本次同時是 mutation，呼叫端應先 record_mutation()。
+
+        Returns:
+            True 若新增；概念不存在或紀錄已存在回傳 False
+        """
+        with self._lock:
+            concept = self._concepts_by_id.get(concept_id)
+            if concept is None:
+                return False
+            if kind == "concept" and parent_version is None:
+                parent = self._concepts_by_id.get(parent_id)
+                if parent is not None:
+                    parent_version = parent.version
+            added = concept.add_derivation(
+                kind, parent_id, producer, parent_version=parent_version, ref=ref,
+            )
+            if added:
+                self._save()
+            return added
 
     def remove_concept(self, name: str) -> bool:
         """

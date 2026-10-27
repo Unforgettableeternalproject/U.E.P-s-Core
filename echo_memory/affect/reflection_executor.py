@@ -444,6 +444,14 @@ class ReflectionExecutor:
             concept_type=primary.concept_type,
             metadata=merged_meta,
         )
+        # primary 吸收 secondary 的來源（secondary 之後會被移除）
+        for raw in getattr(secondary, "derivations", None) or []:
+            self._engine.semantic.add_derivation(
+                primary.id, raw.get("kind", "episode"), raw["id"], "reflection",
+                parent_version=raw.get("parent_version"),
+            )
+        for ep_id in secondary.source_episode_ids:
+            self._engine.semantic.add_derivation(primary.id, "episode", ep_id, "reflection")
 
         removed = self._engine.semantic.remove_concept(merge_with)
         if not removed:
@@ -512,6 +520,9 @@ class ReflectionExecutor:
                 params={
                     "description": description,
                     "concept_type": params.get("concept_type", "reflection"),
+                    "parent_concepts": params.get("parent_concepts"),
+                    "parent_episode_ids": params.get("parent_episode_ids"),
+                    "parent_evidence_ids": params.get("parent_evidence_ids"),
                 },
                 reasoning="ReflectionExecutor create_concept",
             )
@@ -529,4 +540,24 @@ class ReflectionExecutor:
             metadata={"created_by": "reflection_executor"},
         )
 
+        # 來源：parent 指向既有概念／episode／evidence（衍生鏈可回溯）
+        self._record_parents(concept_id, params)
+
         return {"concept_id": concept_id, "name": target_id}
+
+    def _record_parents(self, concept_id: str, params: dict[str, Any]) -> None:
+        """fallback 路徑：把 params 宣告的 parent 寫成 derivation（producer=reflection）。"""
+        semantic = self._engine.semantic
+        refs = params.get("parent_concepts") or []
+        if isinstance(refs, str):
+            refs = [refs]
+        for ref in refs:
+            parent = semantic.get(str(ref)) or semantic.get_by_name(str(ref))
+            if parent is None:
+                logger.warning("[ReflectionExecutor] parent 概念不存在，略過: %s", ref)
+                continue
+            semantic.add_derivation(concept_id, "concept", parent.id, "reflection")
+        for ep_id in params.get("parent_episode_ids") or []:
+            semantic.add_derivation(concept_id, "episode", str(ep_id), "reflection")
+        for ev_id in params.get("parent_evidence_ids") or []:
+            semantic.add_derivation(concept_id, "evidence", str(ev_id), "reflection")

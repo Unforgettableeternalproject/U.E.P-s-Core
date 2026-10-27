@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal
 
+from echo_memory.schemas.provenance import Derivation
+
 
 @dataclass
 class Concept:
@@ -29,6 +31,10 @@ class Concept:
             「回覆先肯定再建議」是 pattern+agent。
         embedding: 向量嵌入（與 EpisodicMemory 共用相同模型維度）
         source_episode_ids: 蒸餾來源的 Episode ID 列表（溯源用）
+        version: 單調遞增的內容版本（每次 apply patch / 更新 +1，rollback 不回退），
+            供 derivations 綁定「衍生當時 parent 的版本」
+        derivations: 多階衍生來源紀錄（append-only，Derivation.to_dict 格式）。
+            舊概念沒有此欄位時，解析端以 source_episode_ids 視為 legacy 來源
         confidence: 概念可信度 (0-1)，越多來源越高
         status: 生命週期狀態 (active/deprecated/archived)
         access_count: 被檢索/引用的次數
@@ -56,6 +62,8 @@ class Concept:
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: dict[str, Any] = field(default_factory=dict)
+    version: int = 1
+    derivations: list[dict[str, Any]] = field(default_factory=list)
 
     # ── Concept Health 指標（GPT 建議 #10）──────────────────────────
     # 這些指標讓檢索時不只看 cosine，也能評估「這個概念健康嗎」。
@@ -72,15 +80,55 @@ class Concept:
             import uuid
             self.id = f"con_{uuid.uuid4().hex[:12]}"
 
-    def add_source_episode(self, episode_id: str) -> None:
-        """記錄蒸餾來源 Episode，並自動更新 confidence。"""
+    def add_source_episode(self, episode_id: str, producer: str = "unknown") -> None:
+        """記錄蒸餾來源 Episode，並自動更新 confidence；同時寫入 derivation。"""
         if episode_id not in self.source_episode_ids:
             self.source_episode_ids.append(episode_id)
+            self.add_derivation("episode", episode_id, producer)
             # 每多一個來源，confidence 漸進趨近 1.0
             # confidence = 1 - 1/(1+n)  → n=1: 0.5, n=3: 0.75, n=10: 0.91
             n = len(self.source_episode_ids)
             self.confidence = 1.0 - 1.0 / (1.0 + n)
             self.updated_at = datetime.now(timezone.utc)
+
+    def add_derivation(
+        self,
+        kind: str,
+        parent_id: str,
+        producer: str = "unknown",
+        parent_version: int | None = None,
+        ref: dict[str, Any] | None = None,
+    ) -> bool:
+        """追加一筆衍生紀錄（append-only；同 kind/id/parent_version 不重複）。
+
+        at_version 取呼叫當下的 self.version，因此若本次寫入同時是一次 mutation，
+        須先 record_mutation()／遞增 version 再呼叫，紀錄才會落在新版本。
+        """
+        for d in self.derivations:
+            if (
+                d.get("kind") == kind
+                and d.get("id") == parent_id
+                and d.get("parent_version") == parent_version
+            ):
+                return False
+        self.derivations.append(Derivation(
+            kind=kind,
+            id=parent_id,
+            producer=producer,
+            parent_version=parent_version,
+            at_version=self.version,
+            ref=ref,
+        ).to_dict())
+        return True
+
+    def remove_derivations_by_patch(self, patch_id: str) -> int:
+        """rollback 用：移除由指定 patch 寫入的 derivation，回傳移除數量。"""
+        before = len(self.derivations)
+        self.derivations = [
+            d for d in self.derivations
+            if (d.get("ref") or {}).get("patch_id") != patch_id
+        ]
+        return before - len(self.derivations)
 
     @property
     def evidence_count(self) -> int:
@@ -160,6 +208,7 @@ class Concept:
     def record_mutation(self) -> None:
         """記錄一次概念變更（expand/modify/deprecate），更新 health 相關指標。"""
         self.mutation_count += 1
+        self.version += 1
         self.updated_at = datetime.now(timezone.utc)
 
     def record_verification(self) -> None:
@@ -193,6 +242,8 @@ class Concept:
                 if self.last_verified_at else None
             ),
             "source_diversity": self.source_diversity,
+            "version": self.version,
+            "derivations": [dict(d) for d in self.derivations],
         }
 
     @classmethod

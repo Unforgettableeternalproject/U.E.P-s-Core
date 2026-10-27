@@ -36,6 +36,18 @@ from echo_memory.storage.semantic import SemanticMemory
 logger = logging.getLogger("echo_memory.affect.concept_inhibitor")
 
 
+def _producer_for_kind(evidence_kind: str | None) -> str:
+    """由 patch 的 evidence_kind（結構化列舉值）推導 derivation 的產生者。"""
+    kind = evidence_kind or ""
+    if kind == "distillation":
+        return "dream"
+    if kind.startswith("extractor"):
+        return "extractor"
+    if kind.startswith("reflection"):
+        return "reflection"
+    return "unknown"
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # LLM Corroboration Prompt
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -319,6 +331,7 @@ class ConceptInhibitor:
                     "episode_id": all_source_ids[0],
                     "concept_type": concept_type,
                     "extra_source_episode_ids": all_source_ids[1:],
+                    "producer": _producer_for_kind(evidence_kind),
                 },
                 patch_confidence=0.7,
                 evidence=evidence,
@@ -388,23 +401,43 @@ class ConceptInhibitor:
         """
         try:
             payload = patch.new_value or {}
+            producer = payload.get("producer") or _producer_for_kind(
+                patch.evidence.evidence_kind if patch.evidence else None
+            )
             concept_id = self._semantic.upsert_concept(
                 name=payload.get("name", patch.concept_name),
                 description=payload.get("description", ""),
                 concept_type=payload.get("concept_type", "entity"),
                 source_episode_id=payload.get("episode_id"),
                 embedding=embedding,
+                producer=producer,
             )
             if concept_id:
-                # 補入剩餘的 source_episode_ids（#1 provenance 修復）
+                # 補入剩餘的 source_episode_ids（#1 provenance 修復）與 derivations
                 extra_sources = payload.get("extra_source_episode_ids", [])
-                if extra_sources:
+                parent_concepts = payload.get("parent_concept_ids") or []
+                parent_episodes = payload.get("parent_episode_ids") or []
+                parent_evidence = payload.get("parent_evidence_ids") or []
+                if extra_sources or parent_concepts or parent_episodes or parent_evidence:
+                    ref = {"patch_id": patch.patch_id, "transaction_id": patch.transaction_id}
                     with self._semantic._lock:
                         concept = self._semantic.get(concept_id)
                         if concept is not None:
                             for ep_id in extra_sources:
                                 if ep_id not in concept.source_episode_ids:
                                     concept.source_episode_ids.append(ep_id)
+                                concept.add_derivation("episode", ep_id, producer, ref=ref)
+                            for ep_id in parent_episodes:
+                                concept.add_derivation("episode", ep_id, producer, ref=ref)
+                            for ev_id in parent_evidence:
+                                concept.add_derivation("evidence", ev_id, producer, ref=ref)
+                            for pid in parent_concepts:
+                                parent = self._semantic.get(pid)
+                                concept.add_derivation(
+                                    "concept", pid, producer,
+                                    parent_version=parent.version if parent else None,
+                                    ref=ref,
+                                )
                             self._semantic._save()
                 # 設定 rollback payload
                 patch.rollback_payload = patch.rollback_payload or {}
@@ -437,6 +470,14 @@ class ConceptInhibitor:
                         concept.source_episode_ids.append(new_episode_id)
                         concept.access_count += 1
                         concept.record_mutation()
+                        # 先升版再記 derivation，紀錄才落在新版本
+                        concept.add_derivation(
+                            "episode", new_episode_id,
+                            _producer_for_kind(
+                                patch.evidence.evidence_kind if patch.evidence else None
+                            ),
+                            ref={"patch_id": patch.patch_id, "transaction_id": patch.transaction_id},
+                        )
                         self._semantic._save()
                         self._add_history_entry(concept, patch)
             return True
@@ -542,6 +583,12 @@ class ConceptInhibitor:
                 "name": target_name,
                 "description": description,
                 "concept_type": concept_type,
+                # 來源：Reflection 從既有概念產生時，parent 指向那些概念（而非只抄 episode）
+                "parent_concept_ids": self._resolve_parent_concept_ids(
+                    params.get("parent_concepts"),
+                ),
+                "parent_episode_ids": [str(x) for x in params.get("parent_episode_ids") or []],
+                "parent_evidence_ids": [str(x) for x in params.get("parent_evidence_ids") or []],
             },
             patch_confidence=0.8,
             evidence=evidence,
@@ -560,6 +607,22 @@ class ConceptInhibitor:
             patch.status = "rejected"
             patch.rejection_reason = "SemanticMemory create 失敗"
             return False, {"error": f"create 失敗: {target_name}"}
+
+    def _resolve_parent_concept_ids(self, refs: Any) -> list[str]:
+        """把 parent 概念的名稱或 ID 解析為 ID；找不到的略過（記 warning）。"""
+        if not refs:
+            return []
+        if isinstance(refs, str):
+            refs = [refs]
+        ids: list[str] = []
+        for ref in refs:
+            found = self._semantic.get(str(ref)) or self._semantic.get_by_name(str(ref))
+            if found is None:
+                logger.warning("[ConceptInhibitor] reflection parent 概念不存在，略過: %s", ref)
+                continue
+            if found.id not in ids:
+                ids.append(found.id)
+        return ids
 
     def _reflection_tag(
         self,
@@ -748,6 +811,20 @@ class ConceptInhibitor:
                     self._semantic._update_embedding_index(primary, is_update=True)
                 self._add_history_entry(primary, modify_patch)
                 primary.record_mutation()
+                # primary 吸收 secondary 的來源：複製 secondary 的有效 derivation
+                # （secondary 之後會被移除，不能只指向它）
+                merge_ref = {
+                    "patch_id": merge_patch.patch_id,
+                    "transaction_id": tx.transaction_id,
+                    "merged_from": secondary.id,
+                }
+                for raw in secondary.derivations:
+                    primary.add_derivation(
+                        raw.get("kind", "episode"), raw["id"], "reflection",
+                        parent_version=raw.get("parent_version"), ref=merge_ref,
+                    )
+                for ep_id in secondary.source_episode_ids:
+                    primary.add_derivation("episode", ep_id, "reflection", ref=merge_ref)
                 self._semantic._save()
                 modify_patch.status = "applied"
             except Exception as e:
@@ -765,6 +842,7 @@ class ConceptInhibitor:
                 )
                 primary.description = original_desc
                 primary.metadata = original_meta
+                primary.remove_derivations_by_patch(merge_patch.patch_id)
                 old_emb = (modify_patch.rollback_payload or {}).get("old_embedding")
                 if old_emb is not None:
                     primary.embedding = old_emb
@@ -1253,6 +1331,7 @@ class ConceptInhibitor:
                     )
                     if old_sources is not None:
                         concept.source_episode_ids = old_sources
+                        concept.remove_derivations_by_patch(patch.patch_id)
                     # 還原 confidence
                     if patch.old_confidence is not None:
                         concept.confidence = patch.old_confidence

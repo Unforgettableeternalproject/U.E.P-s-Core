@@ -534,6 +534,7 @@ class KnowledgeDistillation:
                         description=description,
                         concept_type=concept_type,
                         source_episode_id=ep.id,
+                        producer="dream",
                     )
         else:
             # 舊路徑：直接 upsert
@@ -543,6 +544,7 @@ class KnowledgeDistillation:
                     description=description,
                     concept_type=concept_type,
                     source_episode_id=ep.id,
+                    producer="dream",
                 )
 
         if concept_id is None:

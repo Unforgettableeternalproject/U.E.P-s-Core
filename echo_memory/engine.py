@@ -258,52 +258,68 @@ class MemoryEngine:
             metadata=metadata,
         )
 
+        # 鎖語意：寫入與實體寫回各自是短臨界區，實體提取（LLM）在鎖外，
+        # 避免同 namespace 的其他寫入被 LLM 延遲拖到 TimeoutError。
         with storage_lock(self.storage_path):
             episode_id = self.episodic.write(episode)
             logger.info(f"[MemoryEngine] 存儲情節: {episode_id}")
 
-            # ── 實體提取（非關鍵路徑，失敗不影響主寫入）──────────────────
-            # 低 salience 時跳過以節省資源，除非 entity_triggers=True 強制執行
-            entity_triggers = metadata.get("entity_triggers", False)
-            should_extract = salience >= 0.4 or entity_triggers
-            if should_extract:
-                try:
-                    entities = self.entity_extractor.extract(episode)
-                    graph = self.episodic.graph
+        # ── 實體提取（非關鍵路徑，失敗不影響主寫入）──────────────────
+        # 低 salience 時跳過以節省資源，除非 entity_triggers=True 強制執行
+        entity_triggers = metadata.get("entity_triggers", False)
+        should_extract = salience >= 0.4 or entity_triggers
+        if should_extract:
+            try:
+                # 鎖外：LLM 呼叫（慢）
+                entities = self.entity_extractor.extract(episode)
 
-                    for ent in entities:
-                        ent_id = self.entity_store.upsert(ent)
-                        self.entity_store.increment_mention(ent_id, episode_id)
-
-                        actual_ent = self.entity_store.get(ent_id)
-                        if actual_ent is not None:
-                            if not graph.has_node(ent_id):
-                                graph.add_entity_node(
-                                    ent_id,
-                                    name=actual_ent.name,
-                                    entity_type=actual_ent.entity_type,
-                                )
-                            graph.add_mentions_edge(episode_id, ent_id)
-
-                    if entities:
-                        graph.save()
-                        logger.debug(
-                            f"[MemoryEngine] 實體提取完成: "
-                            f"{len(entities)} 個實體 (episode={episode_id[:8]}...)"
-                        )
-                except Exception as exc:
-                    logger.warning(f"[MemoryEngine] 實體提取失敗（不影響主寫入）: {exc}")
-            else:
-                logger.debug(
-                    "[MemoryEngine] 跳過實體提取（salience=%.2f, "
-                    "entity_triggers=%s）", salience, entity_triggers,
-                )
+                if entities:
+                    # 鎖內短臨界區：確認 episode 仍存在才寫回，過期則丟棄
+                    with storage_lock(self.storage_path):
+                        if self.episodic.get(episode_id) is None:
+                            logger.info(
+                                "[MemoryEngine] episode %s 在實體提取期間已被刪除，"
+                                "丟棄 %d 個實體",
+                                episode_id[:8], len(entities),
+                            )
+                        else:
+                            self._apply_entities(episode_id, entities)
+            except Exception as exc:
+                logger.warning(f"[MemoryEngine] 實體提取失敗（不影響主寫入）: {exc}")
+        else:
+            logger.debug(
+                "[MemoryEngine] 跳過實體提取（salience=%.2f, "
+                "entity_triggers=%s）", salience, entity_triggers,
+            )
 
         # ── 神經化學衰減 + 持久化 ───────────────────────────────────
         self._neurochem.tick()
         self._save_neurochem()
 
         return episode_id
+
+    def _apply_entities(self, episode_id: str, entities: list[Any]) -> None:
+        """寫入實體與 MENTIONS 邊（呼叫端須已持有 storage_lock）。"""
+        graph = self.episodic.graph
+        for ent in entities:
+            ent_id = self.entity_store.upsert(ent)
+            self.entity_store.increment_mention(ent_id, episode_id)
+
+            actual_ent = self.entity_store.get(ent_id)
+            if actual_ent is not None:
+                if not graph.has_node(ent_id):
+                    graph.add_entity_node(
+                        ent_id,
+                        name=actual_ent.name,
+                        entity_type=actual_ent.entity_type,
+                    )
+                graph.add_mentions_edge(episode_id, ent_id)
+
+        graph.save()
+        logger.debug(
+            f"[MemoryEngine] 實體提取完成: "
+            f"{len(entities)} 個實體 (episode={episode_id[:8]}...)"
+        )
 
     def retrieve(
         self,
@@ -383,6 +399,7 @@ class MemoryEngine:
                 cron_schedule=config.dream_cron,
                 enable_idle=config.dream_enable_idle,
                 enable_cron=config.dream_enable_cron,
+                lock_factory=lambda: storage_lock(self.storage_path),
             )
 
             # 啟動自動觸發排程器（閒置 + cron）
@@ -397,8 +414,9 @@ class MemoryEngine:
                 except Exception as e:
                     logger.warning(f"[MemoryEngine] Dream 排程器啟動失敗: {e}")
 
-        with storage_lock(self.storage_path):
-            report = self._dream_engine.dream_now(triggered_by=triggered_by)
+        # 不在此持鎖：DreamEngine 內部各階段自行以短臨界區取 storage_lock，
+        # LLM 階段在鎖外（手動與排程觸發共用同一套鎖語意）
+        report = self._dream_engine.dream_now(triggered_by=triggered_by)
         logger.info(f"[MemoryEngine] Dream 完成 - {report.duration_seconds:.1f}s")
 
         result = {

@@ -27,6 +27,12 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from echo_memory.dream.staleness import (
+    Guard,
+    find_stale_episode_ids,
+    resolve_guard,
+    snapshot_episodes,
+)
 from echo_memory.schemas.episode import Episode
 from echo_memory.storage.episodic import EpisodicMemory
 from echo_memory.storage.graph import MemoryGraph
@@ -108,6 +114,10 @@ _DISTILLATION_PROMPT = """\
 """
 
 
+class _StaleSources(Exception):
+    """概念的來源 Episode 在 LLM 期間全數過期（刪除或變動）。"""
+
+
 @dataclass
 class DistillationReport:
     """單次蒸餾的報告"""
@@ -116,6 +126,7 @@ class DistillationReport:
     concepts_created: int = 0
     concepts_updated: int = 0
     concepts_rejected: int = 0  # 被 ConceptInhibitor 擋下的
+    concepts_stale: int = 0  # LLM 期間來源 Episode 已過期而丟棄的
     edges_created: int = 0
     contradicts_edges_created: int = 0
     skipped_reason: str | None = None  # "no_llm" | "no_episodes" | "llm_error"
@@ -161,6 +172,7 @@ class KnowledgeDistillation:
         contradiction_detector: Any | None = None,
         patch_coordinator: Any | None = None,
         structured_llm_fn: Callable[[str], dict] | None = None,
+        guard: Guard | None = None,
     ):
         """
         Args:
@@ -177,7 +189,11 @@ class KnowledgeDistillation:
                     由 LLMRouter.get_structured_llm_fn(DISTILLATION_RESPONSE_SCHEMA) 產生，
                     保證回傳合法 JSON dict，回傳結構為 {"concepts": [...]}。
                     若提供，優先使用；若呼叫失敗，不會再 fallback 到 llm_fn。
+            guard: 鎖 context manager 工廠（通常為 storage_lock）。
+                    LLM 呼叫（蒸餾與矛盾偵測）都在鎖外，只有讀候選與寫入在短臨界區。
+                    None 時不加鎖。
         """
+        self._guard = resolve_guard(guard)
         self.episodic = episodic
         self.semantic = semantic
         self.graph = graph
@@ -217,7 +233,10 @@ class KnowledgeDistillation:
         threshold = min_salience if min_salience is not None else self.MIN_SALIENCE_THRESHOLD
         batch_size = max_episodes if max_episodes is not None else self.MAX_EPISODES_PER_BATCH
 
-        candidates = self._collect_candidates(threshold, batch_size)
+        # 臨界區：收集候選並記錄版本快照（LLM 在鎖外）
+        with self._guard():
+            candidates = self._collect_candidates(threshold, batch_size)
+            snapshot = snapshot_episodes(candidates)
         report.episodes_scanned = len(candidates)
 
         if not candidates:
@@ -268,7 +287,9 @@ class KnowledgeDistillation:
         # 寫入 SemanticMemory + 建圖 + 矛盾偵測
         for concept_data in extracted:
             try:
-                ingested = self._ingest_concept(concept_data, candidates)
+                ingested = self._ingest_concept(
+                    concept_data, candidates, snapshot=snapshot,
+                )
                 if ingested is None:
                     report.concepts_rejected += 1
                     continue
@@ -279,6 +300,12 @@ class KnowledgeDistillation:
                     report.concepts_updated += 1
                 report.edges_created += edges
                 report.contradicts_edges_created += contradicts
+            except _StaleSources:
+                report.concepts_stale += 1
+                logger.info(
+                    "[KnowledgeDistillation] 概念 %s 的來源 Episode 已過期，丟棄",
+                    concept_data.get("name", "?"),
+                )
             except Exception as e:
                 report.errors.append(f"概念寫入失敗: {concept_data.get('name', '?')}: {e}")
                 logger.error(f"[KnowledgeDistillation] 概念寫入失敗: {e}")
@@ -286,7 +313,13 @@ class KnowledgeDistillation:
         # 只在有實際產出時才記錄 Episode ID（供 DreamEngine 統一標記）
         # Major #3 修復：空結果或全部失敗時不標記，允許後續重試
         if report.concepts_created > 0 or report.concepts_updated > 0:
-            report._distilled_episode_ids = [ep.id for ep in candidates]
+            with self._guard():
+                stale_ids = find_stale_episode_ids(
+                    self.episodic, snapshot, "KnowledgeDistillation",
+                )
+            report._distilled_episode_ids = [
+                ep.id for ep in candidates if ep.id not in stale_ids
+            ]
 
         logger.info(f"[KnowledgeDistillation] {report.summary()}")
         return report
@@ -382,18 +415,70 @@ class KnowledgeDistillation:
         self,
         concept_data: dict[str, Any],
         source_episodes: list[Episode],
+        snapshot: dict[str, tuple[float, bool]] | None = None,
     ) -> tuple[bool, int, int] | None:
         """
         將蒸餾出的概念寫入 SemanticMemory 和 MemoryGraph。
         Inhibitor 拒絕時回傳 None（不算 created/updated、也不算錯誤）。
 
+        鎖語意：寫入在短臨界區內完成；矛盾偵測的 LLM 在鎖外，
+        其邊的登記由 detector 自行在鎖內套用。
+
         Args:
             concept_data: LLM 輸出的概念字典
             source_episodes: 來源 Episode 列表
+            snapshot: 候選 Episode 版本快照；提供時鎖內先剔除已過期來源，
+                全數過期則拋出 _StaleSources
 
         Returns:
             (is_new, edges_created, contradicts_created)
         """
+        with self._guard():
+            written = self._write_concept_locked(concept_data, source_episodes, snapshot)
+        if written is None:
+            return None
+        is_new, concept_id, edges_created = written
+
+        # 矛盾偵測（若有 detector）— audit-before-mutate；LLM 在鎖外
+        contradicts_created = 0
+        if self._contradiction_detector is not None and concept_id is not None:
+            # audit-before-mutate：先取得 audit 許可再偵測
+            can_detect = True
+            if self._patch_coordinator is not None:
+                can_detect = self._patch_coordinator.audit_contradiction_detection(
+                    concept_id, -1,  # -1 表示預 audit（數量未知）
+                )
+            if can_detect:
+                with self._guard():
+                    concept = self.semantic.get(concept_id)
+                if concept is not None:
+                    try:
+                        edges = self._contradiction_detector.detect_and_register(concept)
+                        contradicts_created = len(edges)
+                    except Exception as e:
+                        logger.warning(
+                            f"[KnowledgeDistillation] 矛盾偵測失敗（不影響蒸餾）: {e}"
+                        )
+            else:
+                logger.warning(
+                    "[KnowledgeDistillation] audit 失敗，跳過矛盾偵測 (%s)",
+                    concept_id[:12],
+                )
+
+        return is_new, edges_created, contradicts_created
+
+    def _write_concept_locked(
+        self,
+        concept_data: dict[str, Any],
+        source_episodes: list[Episode],
+        snapshot: dict[str, tuple[float, bool]] | None,
+    ) -> tuple[bool, str, int] | None:
+        """鎖內寫入 Concept 與圖譜邊。回傳 (is_new, concept_id, edges_created)。"""
+        stale_ids: set[str] = set()
+        if snapshot:
+            stale_ids = find_stale_episode_ids(
+                self.episodic, snapshot, "KnowledgeDistillation",
+            )
         name = concept_data["name"]
         description = concept_data["description"]
         concept_type = concept_data.get("concept_type", "abstract")
@@ -411,6 +496,12 @@ class KnowledgeDistillation:
         # 如果 LLM 沒指定 source_indices，就用全部候選 Episode
         if not source_eps:
             source_eps = source_episodes
+
+        # 剔除 LLM 期間已刪除 / 已變動的來源；全數過期則丟棄整個概念
+        if stale_ids:
+            source_eps = [ep for ep in source_eps if ep.id not in stale_ids]
+            if not source_eps:
+                raise _StaleSources(name)
 
         # 檢查是否已存在（判斷 is_new）
         existing = self.semantic.get_by_name(name)
@@ -476,32 +567,7 @@ class KnowledgeDistillation:
                     self.graph.add_derived_from_edge(concept_id, ep.id)
                     edges_created += 1
 
-        # 矛盾偵測（若有 detector）— audit-before-mutate
-        contradicts_created = 0
-        if self._contradiction_detector is not None and concept_id is not None:
-            # audit-before-mutate：先取得 audit 許可再偵測
-            can_detect = True
-            if self._patch_coordinator is not None:
-                can_detect = self._patch_coordinator.audit_contradiction_detection(
-                    concept_id, -1,  # -1 表示預 audit（數量未知）
-                )
-            if can_detect:
-                concept = self.semantic.get(concept_id)
-                if concept is not None:
-                    try:
-                        edges = self._contradiction_detector.detect_and_register(concept)
-                        contradicts_created = len(edges)
-                    except Exception as e:
-                        logger.warning(
-                            f"[KnowledgeDistillation] 矛盾偵測失敗（不影響蒸餾）: {e}"
-                        )
-            else:
-                logger.warning(
-                    "[KnowledgeDistillation] audit 失敗，跳過矛盾偵測 (%s)",
-                    concept_id[:12],
-                )
-
-        return is_new, edges_created, contradicts_created
+        return is_new, concept_id, edges_created
 
     def _mark_episodes_dreamed(self, episodes: list[Episode]) -> None:
         """將已蒸餾的 Episode 標記為 is_dreamed=True。"""

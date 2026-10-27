@@ -31,6 +31,12 @@ from typing import Any
 
 from echo_memory.schemas.episode import Episode
 from echo_memory.storage.episodic import EpisodicMemory
+from echo_memory.dream.staleness import (
+    Guard,
+    find_stale_episode_ids,
+    resolve_guard,
+    snapshot_episodes,
+)
 from echo_memory.storage.graph import MemoryGraph
 
 logger = logging.getLogger("echo_memory.dream.replay")
@@ -134,6 +140,7 @@ class LiDERReplay:
         llm_fn: Callable[[str], str] | None = None,
         patch_coordinator=None,
         structured_llm_fn: Callable[[str], dict] | None = None,
+        guard: Guard | None = None,
     ):
         """
         Args:
@@ -146,12 +153,16 @@ class LiDERReplay:
                     由 LLMRouter.get_structured_llm_fn(REPLAY_RESPONSE_SCHEMA) 產生，
                     保證回傳合法 JSON dict，不需要手動 parse。
                     若提供，優先使用；若呼叫失敗，不會再 fallback 到 llm_fn。
+            guard: 鎖 context manager 工廠（通常為 storage_lock）。
+                    只在「收集候選」與「套用結果」兩個短臨界區持有，LLM 呼叫在鎖外。
+                    None 時不加鎖。
         """
         self.episodic = episodic
         self.graph = graph
         self.llm_fn = llm_fn
         self._patch_coordinator = patch_coordinator
         self._structured_llm_fn = structured_llm_fn
+        self._guard = resolve_guard(guard)
 
     def run(
         self,
@@ -169,7 +180,10 @@ class LiDERReplay:
         threshold = min_salience if min_salience is not None else self.MIN_SALIENCE_THRESHOLD
         batch_size = max_episodes if max_episodes is not None else self.MAX_EPISODES_PER_BATCH
 
-        candidates = self._collect_candidates(threshold, batch_size)
+        # 臨界區 1（短）：收集候選並記錄版本快照
+        with self._guard():
+            candidates = self._collect_candidates(threshold, batch_size)
+            snapshot = snapshot_episodes(candidates)
         report.episodes_replayed = len(candidates)
 
         if not candidates:
@@ -210,19 +224,45 @@ class LiDERReplay:
             report.errors.append("LLM 回傳的 JSON 無法解析出任何 reflection")
             return report
 
+        # 臨界區 2（短）：LLM 已在鎖外完成，鎖內比對快照後套用
+        with self._guard():
+            return self._apply_reflections(candidates, snapshot, reflections, report)
+
+    def _apply_reflections(
+        self,
+        candidates: list[Episode],
+        snapshot: dict[str, tuple[float, bool]],
+        reflections: list[dict[str, Any]],
+        report: ReplayReport,
+    ) -> ReplayReport:
+        """鎖內套用反思結果；已過期（刪除 / 變動）的 Episode 一律略過。"""
+        stale_ids = find_stale_episode_ids(self.episodic, snapshot, "LiDERReplay")
+        if stale_ids:
+            report.errors.append(f"{len(stale_ids)} 個 Episode 在 LLM 期間已過期，已丟棄")
+        if len(stale_ids) >= len(candidates):
+            report.skipped_reason = "stale"
+            return report
+
+        def _valid(i: Any) -> bool:
+            return (
+                isinstance(i, int)
+                and 0 <= i < len(candidates)
+                and candidates[i].id not in stale_ids
+            )
+
         # ── 預掃描：計算預期 mutation 規模（供 audit-before-mutate）──
         expected_salience_updates = 0
         expected_edges = 0
         importances = []
         for ref in reflections:
             idx = ref.get("index", -1)
-            if not isinstance(idx, int) or idx < 0 or idx >= len(candidates):
+            if not _valid(idx):
                 continue
             importance = min(1.0, max(0.0, ref.get("importance", 0.5)))
             importances.append(importance)
             expected_salience_updates += 1
             for rel_idx in ref.get("related_indices", []):
-                if isinstance(rel_idx, int) and 0 <= rel_idx < len(candidates) and rel_idx != idx:
+                if _valid(rel_idx) and rel_idx != idx:
                     expected_edges += 1
 
         # ── audit-before-mutate ──
@@ -236,14 +276,14 @@ class LiDERReplay:
                     "[LiDERReplay] audit 失敗，跳過 replay mutation"
                 )
                 report.skipped_reason = "audit_failure"
-                report._replayed_episode_ids = [ep.id for ep in candidates]
+                report._replayed_episode_ids = [ep.id for ep in candidates if ep.id not in stale_ids]
                 return report
 
         # ── 應用反思：更新圖譜 ──
         importances.clear()
         for ref in reflections:
             idx = ref.get("index", -1)
-            if not isinstance(idx, int) or idx < 0 or idx >= len(candidates):
+            if not _valid(idx):
                 continue
 
             importance = min(1.0, max(0.0, ref.get("importance", 0.5)))
@@ -258,7 +298,7 @@ class LiDERReplay:
 
             # 建立/強化相關 Episode 之間的邊
             for rel_idx in related_indices:
-                if not isinstance(rel_idx, int) or rel_idx < 0 or rel_idx >= len(candidates):
+                if not _valid(rel_idx):
                     continue
                 if rel_idx == idx:
                     continue
@@ -306,7 +346,7 @@ class LiDERReplay:
         )
 
         # 注意：不在此處標記 is_dreamed。
-        report._replayed_episode_ids = [ep.id for ep in candidates]
+        report._replayed_episode_ids = [ep.id for ep in candidates if ep.id not in stale_ids]
 
         # 持久化圖
         self.graph.save()

@@ -20,6 +20,7 @@ from typing import Any
 
 import numpy as np
 
+from echo_memory.dream.staleness import Guard, resolve_guard
 from echo_memory.schemas.concept import Concept
 from echo_memory.storage.graph import MemoryGraph
 from echo_memory.storage.semantic import SemanticMemory
@@ -68,6 +69,7 @@ class ContradictionDetector:
         similarity_threshold: float = 0.82,
         llm_fn: Callable[[str], str] | None = None,
         conflict_ledger: Any | None = None,
+        guard: Guard | None = None,
     ):
         """
         初始化矛盾偵測器。
@@ -80,7 +82,10 @@ class ContradictionDetector:
                     為 None 時降級跳過矛盾偵測
             conflict_ledger: ConflictLedger 實例（可選）。
                     不為 None 時，每次建立 CONTRADICTS 邊會同步登記帳本。
+            guard: 鎖 context manager 工廠（通常為 storage_lock）。
+                    候選篩選與邊登記在短臨界區，LLM 確認在鎖外；None 時不加鎖。
         """
+        self._guard = resolve_guard(guard)
         self.semantic = semantic
         self.graph = graph
         self.similarity_threshold = similarity_threshold
@@ -130,11 +135,18 @@ class ContradictionDetector:
             )
             return []
 
-        # 取得候選概念池
-        pool = candidate_pool if candidate_pool is not None else self._get_all_concepts()
+        # 臨界區 1（短）：取候選池、篩選候選並記錄版本快照（不含 LLM）
+        with self._guard():
+            pool = candidate_pool if candidate_pool is not None else self._get_all_concepts()
 
-        # 篩選候選（高相似度、排除自身、排除已有矛盾邊）
-        candidates = self._filter_candidates(concept, pool)
+            # 篩選候選（高相似度、排除自身、排除已有矛盾邊）
+            candidates = self._filter_candidates(concept, pool)
+            # 只記錄此刻確實存在於 SemanticMemory 的概念（未入庫者無從判斷過期）
+            snapshot = {}
+            for c in [concept, *candidates]:
+                stored = self.semantic.get(c.id)
+                if stored is not None:
+                    snapshot[c.id] = stored.description
 
         if not candidates:
             logger.debug(
@@ -146,11 +158,19 @@ class ContradictionDetector:
             f"[ContradictionDetector] 概念 {concept.name} 找到 {len(candidates)} 個候選"
         )
 
-        # 對每個候選呼叫 LLM 確認
-        created_edges: list[tuple[str, str, float]] = []
+        # 鎖外：對每個候選呼叫 LLM 確認（慢）
+        confirmed: list[ContradictionResult] = []
         for candidate in candidates:
             result = self._check_contradiction_with_llm(concept, candidate)
             if result.is_contradiction:
+                confirmed.append(result)
+
+        # 臨界區 2（短）：比對快照後登記邊；概念已刪除 / 已改動的結果丟棄
+        created_edges: list[tuple[str, str, float]] = []
+        with self._guard():
+            for result in confirmed:
+                if not self._pair_still_valid(result, snapshot):
+                    continue
                 self._register_edge(result)
                 created_edges.append(
                     (result.concept_a_id, result.concept_b_id, result.strength)
@@ -166,6 +186,26 @@ class ContradictionDetector:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 內部方法
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    def _pair_still_valid(
+        self, result: ContradictionResult, snapshot: dict[str, str],
+    ) -> bool:
+        """鎖內檢查：兩端概念仍存在、描述未變、且尚未被登記矛盾邊。"""
+        for cid in (result.concept_a_id, result.concept_b_id):
+            if cid not in snapshot:
+                continue
+            current = self.semantic.get(cid)
+            if current is None or current.description != snapshot[cid]:
+                logger.info(
+                    "[ContradictionDetector] 概念 %s 在 LLM 期間已刪除或變動，丟棄矛盾結果",
+                    cid[:8],
+                )
+                return False
+        if self.graph.has_contradicts_edge(
+            concept_a=result.concept_a_id, concept_b=result.concept_b_id,
+        ):
+            return False
+        return True
 
     def _get_all_concepts(self) -> list[Concept]:
         """從 SemanticMemory 取得全部概念"""

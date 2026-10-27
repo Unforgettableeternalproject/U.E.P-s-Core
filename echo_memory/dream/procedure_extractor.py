@@ -19,6 +19,12 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from echo_memory.dream.staleness import (
+    Guard,
+    find_stale_episode_ids,
+    resolve_guard,
+    snapshot_episodes,
+)
 from echo_memory.schemas.episode import Episode
 from echo_memory.schemas.procedure import Procedure
 from echo_memory.storage.graph import MemoryGraph
@@ -122,6 +128,8 @@ class ProcedureExtractor:
         graph: MemoryGraph | None = None,
         llm_fn: Callable[[str], str] | None = None,
         structured_llm_fn: Callable[[str], dict] | None = None,
+        guard: Guard | None = None,
+        episodic: Any | None = None,
     ):
         """
         Args:
@@ -136,6 +144,10 @@ class ProcedureExtractor:
                     若提供，優先使用；若呼叫失敗，不會再 fallback 到 llm_fn。
         """
         self.procedural = procedural
+        # guard：鎖 context manager 工廠，LLM 在鎖外，寫入在短臨界區；None 時不加鎖
+        # episodic：提供時，寫回前比對來源 Episode 是否已過期
+        self._guard = resolve_guard(guard)
+        self._episodic = episodic
         self.semantic = semantic
         self.graph = graph
         self.llm_fn = llm_fn
@@ -162,6 +174,12 @@ class ProcedureExtractor:
             return report
 
         report.episodes_scanned = len(episodes)
+
+        # 臨界區（短）：記錄來源 Episode 版本快照，LLM 在鎖外
+        snapshot = None
+        if self._episodic is not None:
+            with self._guard():
+                snapshot = snapshot_episodes(episodes)
 
         # 建構 prompt
         prompt = self._build_prompt(episodes)
@@ -204,9 +222,19 @@ class ProcedureExtractor:
             # LLM 判斷無可複用程序
             return report
 
-        # 寫入 ProceduralMemory
+        # 寫入 ProceduralMemory（鎖內短臨界區；來源過期則丟棄）
         try:
-            self._ingest_procedure(result, episodes, report)
+            with self._guard():
+                stale_ids: set[str] = set()
+                if snapshot is not None:
+                    stale_ids = find_stale_episode_ids(
+                        self._episodic, snapshot, "ProcedureExtractor",
+                    )
+                if len(stale_ids) >= len(episodes):
+                    report.skipped_reason = "stale"
+                    logger.info("[ProcedureExtractor] 來源 Episode 全數過期，丟棄結果")
+                    return report
+                self._ingest_procedure(result, episodes, report, stale_ids)
         except Exception as e:
             report.errors.append(f"程序寫入失敗: {e}")
             logger.error(f"[ProcedureExtractor] 寫入失敗: {e}")
@@ -263,6 +291,7 @@ class ProcedureExtractor:
         data: dict[str, Any],
         source_episodes: list[Episode],
         report: ProcedureExtractionReport,
+        stale_ids: set[str] | None = None,
     ) -> None:
         """寫入 Procedure + 建立 APPLIES_TO 邊。"""
         name = data["name"]
@@ -279,6 +308,12 @@ class ProcedureExtractor:
                 source_ids.append(source_episodes[idx].id)
         if not source_ids:
             source_ids = [ep.id for ep in source_episodes]
+        if stale_ids:
+            source_ids = [i for i in source_ids if i not in stale_ids]
+            if not source_ids:
+                logger.info("[ProcedureExtractor] 指定來源皆已過期，丟棄結果")
+                report.skipped_reason = "stale"
+                return
 
         # 檢查是否已存在
         existing = self.procedural.get_by_name(name)

@@ -22,6 +22,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 
 # 延遲導入型別（避免循環依賴）
 from typing import Any
@@ -40,8 +41,10 @@ except ImportError:
 from echo_memory.dream.distillation import DistillationReport, KnowledgeDistillation
 from echo_memory.dream.pruning import GraphPruning, PruningReport
 from echo_memory.dream.replay import LiDERReplay, ReplayReport
+from echo_memory.dream.staleness import Guard, resolve_guard
 from echo_memory.storage.episodic import EpisodicMemory
 from echo_memory.storage.graph import MemoryGraph
+from echo_memory.storage.locking import storage_lock
 from echo_memory.storage.semantic import SemanticMemory
 
 logger = logging.getLogger("echo_memory.dream")
@@ -126,6 +129,7 @@ class DreamEngine:
         cron_schedule: str = "0 3 * * *",  # 每日凌晨 3 點
         enable_idle: bool = True,
         enable_cron: bool = True,
+        lock_factory: Guard | None = None,
     ):
         """
         初始化 Dream Engine。
@@ -139,7 +143,16 @@ class DreamEngine:
             cron_schedule: Cron 表達式（分 時 日 月 週）
             enable_idle: 是否啟用閒置觸發
             enable_cron: 是否啟用定時觸發
+            lock_factory: 取得 storage_lock 的工廠（呼叫後回傳 context manager）。
+                手動 dream_now 與排程（idle / cron）觸發走同一條路徑，鎖語意一致：
+                只在讀快照與套用結果的短臨界區持鎖，LLM 階段一律在鎖外。
+                None 時若 episodic 有 lock_path 則用其 storage_lock，否則不加鎖。
         """
+        if lock_factory is None and episodic is not None:
+            ep_lock_path = getattr(episodic, "lock_path", None)
+            if isinstance(ep_lock_path, (str, Path)):
+                lock_factory = lambda: storage_lock(ep_lock_path)  # noqa: E731
+        self._guard = resolve_guard(lock_factory)
         self.graph = graph
         self.idle_minutes = idle_minutes
         self.cron_schedule = cron_schedule
@@ -182,6 +195,7 @@ class DreamEngine:
                 graph=graph,
                 llm_fn=llm_fn,
                 patch_coordinator=self._patch_coordinator,
+                guard=self._guard,
             )
 
         # 矛盾偵測器（需要 semantic + llm_fn）+ ConflictLedger
@@ -201,6 +215,7 @@ class DreamEngine:
                     graph=graph,
                     llm_fn=llm_fn,
                     conflict_ledger=conflict_ledger,
+                    guard=self._guard,
                 )
             except ImportError:
                 pass
@@ -215,6 +230,8 @@ class DreamEngine:
                     semantic=semantic,
                     graph=graph,
                     llm_fn=llm_fn,
+                    guard=self._guard,
+                    episodic=episodic,
                 )
             except ImportError:
                 pass
@@ -229,6 +246,7 @@ class DreamEngine:
                 llm_fn=llm_fn,
                 contradiction_detector=contradiction_detector,
                 patch_coordinator=self._patch_coordinator,
+                guard=self._guard,
             )
 
         logger.info(
@@ -354,15 +372,18 @@ class DreamEngine:
         try:
             logger.info(f"[DreamEngine] 開始夢境週期 [{triggered_by}]")
 
+            # 鎖語意（手動 / idle / cron 共用）：整個週期不持鎖，
+            # 各階段只在讀快照與套用結果的短臨界區持 storage_lock，LLM 在鎖外。
+
             # 通知 DreamPatchCoordinator 開始新週期
             if self._patch_coordinator is not None:
-                self._patch_coordinator.begin_cycle(triggered_by)
+                with self._guard():
+                    self._patch_coordinator.begin_cycle(triggered_by)
 
-            # ── 階段 1：更新邊權重（簡化版 LiDER）──────────────────────
-            report.edges_updated = self._pruning.update_edge_weights()
-
-            # ── 階段 2：圖譜修剪 ──────────────────────────────────────
-            report.pruning = self._pruning.run()
+            # ── 階段 1、2：邊權重更新 + 圖譜修剪（無 LLM，單一短臨界區）──
+            with self._guard():
+                report.edges_updated = self._pruning.update_edge_weights()
+                report.pruning = self._pruning.run()
 
             # ── 階段 3：LiDER 反思重播（若有 LLM）──────────────────
             if self._replay is not None:
@@ -373,22 +394,27 @@ class DreamEngine:
                 report.distillation = self._distillation.run()
                 # 蒸餾會在 MemoryGraph 新增 Concept 節點和 DERIVED_FROM 邊，
                 # 需要持久化以免重啟後遺失（造成 SemanticMemory 和 Graph 不一致）
-                self.graph.save()
+                with self._guard():
+                    self.graph.save()
 
             # ── 階段 5：程序提取（若有 ProceduralMemory + LLM）────────
             if self._procedure_extractor is not None and self._episodic_ref is not None:
                 try:
                     # audit-before-mutate：先取得 audit 許可
                     can_extract = True
-                    if self._patch_coordinator is not None:
-                        can_extract = self._patch_coordinator.audit_procedure_extraction(
-                            0, 0,  # 預 audit（數量未知）
-                        )
+                    candidates = []
+                    with self._guard():
+                        if self._patch_coordinator is not None:
+                            can_extract = self._patch_coordinator.audit_procedure_extraction(
+                                0, 0,  # 預 audit（數量未知）
+                            )
+                        if can_extract:
+                            candidates = self._episodic_ref.list_episodes(
+                                limit=10, sort_by="salience", ascending=False,
+                            )
                     if can_extract:
-                        candidates = self._episodic_ref.list_episodes(
-                            limit=10, sort_by="salience", ascending=False,
-                        )
                         if candidates:
+                            # LLM 在鎖外；寫入由 extractor 在短臨界區內套用
                             report.procedure_extraction = self._procedure_extractor.run(candidates)
                     else:
                         logger.warning("[DreamEngine] audit 失敗，跳過程序提取")
@@ -397,7 +423,8 @@ class DreamEngine:
 
             # ── 圖譜持久化（階段 5 的 Procedure 節點 + APPLIES_TO 邊）────
             # Critical #2 修復：Stage 5 建立的圖譜關聯也需要 save
-            self.graph.save()
+            with self._guard():
+                self.graph.save()
 
             # ── 統一標記 is_dreamed（所有階段結束後）──────────────────
             #
@@ -428,7 +455,8 @@ class DreamEngine:
             # else: 蒸餾啟用但空結果 → 不標記，下一輪重試
 
             if dreamed_ids and self._episodic_ref is not None:
-                self._episodic_ref.mark_as_dreamed(list(dreamed_ids))
+                with self._guard():
+                    self._episodic_ref.mark_as_dreamed(list(dreamed_ids))
                 logger.info(
                     f"[DreamEngine] 統一標記 {len(dreamed_ids)} 個 Episode 為 is_dreamed"
                 )

@@ -70,6 +70,7 @@ class ContradictionDetector:
         llm_fn: Callable[[str], str] | None = None,
         conflict_ledger: Any | None = None,
         guard: Guard | None = None,
+        patch_coordinator: Any | None = None,
     ):
         """
         初始化矛盾偵測器。
@@ -84,6 +85,9 @@ class ContradictionDetector:
                     不為 None 時，每次建立 CONTRADICTS 邊會同步登記帳本。
             guard: 鎖 context manager 工廠（通常為 storage_lock）。
                     候選篩選與邊登記在短臨界區，LLM 確認在鎖外；None 時不加鎖。
+            patch_coordinator: DreamPatchCoordinator 實例（可選）。概念的 conflict_count／
+                has_contradiction 標記一律經它提交 mark_conflict patch（Gate audit、可 rollback）；
+                None 時以 semantic 建立無 LLM 的降級 Gate。
         """
         self._guard = resolve_guard(guard)
         self.semantic = semantic
@@ -91,6 +95,7 @@ class ContradictionDetector:
         self.similarity_threshold = similarity_threshold
         self.llm_fn = llm_fn
         self._conflict_ledger = conflict_ledger
+        self._patch_coordinator = patch_coordinator
 
         logger.info(
             f"[ContradictionDetector] 初始化完成 - "
@@ -175,7 +180,8 @@ class ContradictionDetector:
             for result in confirmed:
                 if not self._pair_still_valid(result, snapshot):
                     continue
-                self._register_edge(result)
+                if not self._register_edge(result):
+                    continue
                 created_edges.append(
                     (result.concept_a_id, result.concept_b_id, result.strength)
                 )
@@ -358,37 +364,76 @@ class ContradictionDetector:
         )
         return {}
 
-    def _register_edge(self, result: ContradictionResult) -> None:
+    def _get_patch_coordinator(self) -> Any:
+        """取得 DreamPatchCoordinator；未注入時以 semantic 建立降級 Gate（延遲 import）。"""
+        if self._patch_coordinator is None:
+            from echo_memory.dream.patch_coordinator import DreamPatchCoordinator
+            self._patch_coordinator = DreamPatchCoordinator(semantic=self.semantic)
+        elif hasattr(self._patch_coordinator, "ensure_gate"):
+            self._patch_coordinator.ensure_gate(self.semantic)
+        return self._patch_coordinator
+
+    def _register_edge(self, result: ContradictionResult) -> bool:
         """
-        在圖中建立 CONTRADICTS 邊 + 更新 Concept Health + 登記 Conflict Ledger。
+        經 Patch Gate 標記 Concept Health + 在圖中建立 CONTRADICTS 邊 + 登記 Conflict Ledger。
+
+        順序：mark_conflict patch（audit-before-mutate）→ 建邊；邊沒建成就回滾標記。
+        圖邊不是概念欄位，不走 ConceptPatch；寫圖只用 MemoryGraph 的加鎖公開方法。
 
         Args:
             result: ContradictionResult 結果物件
+
+        Returns:
+            True 表示標記與邊都已建立；False 表示被跳過或 Gate 拒絕（沒有任何殘留變更）
         """
         # 任一端已合併 / 非 active 則不建邊（避免 add_edge 自動生出裸節點）
         for cid in (result.concept_a_id, result.concept_b_id):
             stored = self.semantic.get(cid)
             if stored is not None and not self._is_active(stored):
                 logger.debug(f"[ContradictionDetector] 概念 {cid[:8]} 非 active，跳過建邊")
-                return
+                return False
 
         # 確保節點存在（若尚未加入圖中則先添加佔位節點）
         self._ensure_concept_node(result.concept_a_id)
         self._ensure_concept_node(result.concept_b_id)
 
-        self.graph.add_contradicts_edge(
-            concept_a=result.concept_a_id,
-            concept_b=result.concept_b_id,
-            weight=result.strength,
+        # 先過 Gate：更新兩邊概念的 conflict_count 和 has_contradiction 標記
+        coordinator = self._get_patch_coordinator()
+        ok, tx = coordinator.submit_conflict_mark(
+            result.concept_a_id, result.concept_b_id,
+            strength=result.strength, reason=result.reason,
         )
+        if not ok:
+            logger.warning(
+                "[ContradictionDetector] 矛盾標記被 Gate 拒絕或失敗，不建邊: %s ↔ %s",
+                result.concept_a_id[:8], result.concept_b_id[:8],
+            )
+            return False
 
-        # 更新兩邊概念的 conflict_count 和 has_contradiction 標記
-        for cid in (result.concept_a_id, result.concept_b_id):
-            concept = self.semantic.get(cid)
-            if concept:
-                concept.conflict_count += 1
-                concept.metadata["has_contradiction"] = True
-        self.semantic._save()
+        try:
+            self.graph.add_contradicts_edge(
+                concept_a=result.concept_a_id,
+                concept_b=result.concept_b_id,
+                weight=result.strength,
+            )
+        except Exception as e:
+            # 建邊拋例外：同樣撤回剛套用的標記，不留只有標記沒有邊的狀態
+            coordinator.rollback_conflict_mark(tx)
+            logger.warning(
+                "[ContradictionDetector] CONTRADICTS 建邊失敗，已回滾矛盾標記: %s ↔ %s (%s)",
+                result.concept_a_id[:8], result.concept_b_id[:8], e,
+            )
+            return False
+        if not self.graph.has_contradicts_edge(
+            concept_a=result.concept_a_id, concept_b=result.concept_b_id,
+        ):
+            # 邊沒建成（例如節點被略過）：撤回剛套用的標記，不留只有標記沒有邊的狀態
+            coordinator.rollback_conflict_mark(tx)
+            logger.warning(
+                "[ContradictionDetector] CONTRADICTS 邊未建立，已回滾矛盾標記: %s ↔ %s",
+                result.concept_a_id[:8], result.concept_b_id[:8],
+            )
+            return False
 
         # 若有 ConflictLedger，登記矛盾帳本
         if self._conflict_ledger is not None:
@@ -408,6 +453,7 @@ class ContradictionDetector:
             f"{result.concept_a_id[:8]} ↔ {result.concept_b_id[:8]} "
             f"(strength={result.strength:.2f}, reason={result.reason!r})"
         )
+        return True
 
     def _ensure_concept_node(self, concept_id: str) -> None:
         """
@@ -428,12 +474,8 @@ class ContradictionDetector:
                     concept_type=concept.concept_type,
                 )
             else:
-                # 資料不完整，添加最小節點以確保邊可以建立
-                with self.graph.lock:
-                    self.graph.graph.add_node(
-                        concept_id,
-                        node_type="Concept",
-                    )
+                # 資料不完整，添加最小節點以確保邊可以建立（加鎖公開方法）
+                self.graph.ensure_placeholder_concept_node(concept_id)
                 logger.warning(
                     f"[ContradictionDetector] 概念 {concept_id} "
                     f"不在 SemanticMemory 中，添加最小節點"

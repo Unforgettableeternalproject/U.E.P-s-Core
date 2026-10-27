@@ -38,6 +38,14 @@ from echo_memory.schemas.episode import Episode
 from echo_memory.storage.episodic import EpisodicMemory
 from echo_memory.storage.graph import MemoryGraph
 from echo_memory.storage.semantic import SemanticMemory
+from echo_memory.utils.source_view import (
+    SOURCE_LEGEND,
+    SUPPORT_AGENT_ONLY,
+    load_units,
+    render_episode_block,
+    support_source,
+    units_for,
+)
 
 logger = logging.getLogger("echo_memory.dream.distillation")
 
@@ -82,6 +90,8 @@ _DISTILLATION_PROMPT = """\
 （例如「不要每次糾正我的英文」）。這些構成使用者的 profile，優先提取。
 關於你自己回覆風格的歸納次要，沒有明確規律時不要硬湊。
 
+{source_legend}
+
 ## 對話記錄
 
 {episodes_text}
@@ -107,6 +117,7 @@ _DISTILLATION_PROMPT = """\
 - 不要重複原始對話內容，要「抽象」和「歸納」
 - concept_type 選擇：entity（人/地/物）、rule（規則/偏好）、abstract（抽象概念）、pattern（行為模式）
 - subject 選擇：user（關於使用者本人——事實、偏好、對你的要求）、agent（關於你自己的行為規則）、world（其他知識）
+- subject=user 的概念只能由「使用者說」（含「來源未確認」的使用者輸入）支撐；只出現在助手回覆的內容，不得標成 subject=user
 - 使用者說過一次的具體事實（「我妹妹要去筑波大學」）就值得提取為 subject=user 的 entity，不必等重複出現
 - description 用第三人稱陳述使用者（「使用者的妹妹即將就讀筑波大學」），不要寫「我」
 - source_indices 是上面對話記錄的索引（從 0 開始）
@@ -176,6 +187,7 @@ class KnowledgeDistillation:
         patch_coordinator: Any | None = None,
         structured_llm_fn: Callable[[str], dict] | None = None,
         guard: Guard | None = None,
+        evidence_store: Any | None = None,
     ):
         """
         Args:
@@ -195,8 +207,11 @@ class KnowledgeDistillation:
             guard: 鎖 context manager 工廠（通常為 storage_lock）。
                     LLM 呼叫（蒸餾與矛盾偵測）都在鎖外，只有讀候選與寫入在短臨界區。
                     None 時不加鎖。
+            evidence_store: EvidenceStore 實例（可選）。提供時蒸餾 prompt 依來源標示
+                    Episode 內容；None 時所有 Episode 視為 legacy_unknown（保守）。
         """
         self._guard = resolve_guard(guard)
+        self._evidence_store = evidence_store
         self.episodic = episodic
         self.semantic = semantic
         self.graph = graph
@@ -211,6 +226,12 @@ class KnowledgeDistillation:
             self._patch_coordinator = DreamPatchCoordinator(semantic=semantic)
             logger.warning(
                 "[KnowledgeDistillation] 未注入 patch_coordinator，使用降級 Gate（無 LLM）"
+            )
+        elif not getattr(patch_coordinator, "has_inhibitor", True):
+            # 注入的 coordinator 沒有 inhibitor：補降級 Gate，不退回直寫 SemanticMemory
+            patch_coordinator.ensure_gate(semantic)
+            logger.warning(
+                "[KnowledgeDistillation] patch_coordinator 沒有 inhibitor，補上降級 Gate（無 LLM）"
             )
 
     def run(
@@ -252,8 +273,11 @@ class KnowledgeDistillation:
             logger.info("[KnowledgeDistillation] 無符合條件的 Episode，跳過蒸餾")
             return report
 
+        # 批次取 evidence（鎖外、不呼叫 LLM、只讀一次 evidence.jsonl）
+        units_by_episode = load_units(self._evidence_store, candidates)
+
         # 建構 prompt
-        prompt = self._build_prompt(candidates)
+        prompt = self._build_prompt(candidates, units_by_episode)
 
         if self._structured_llm_fn is not None:
             # 結構化路徑：直接回傳 dict，不需要手動 parse
@@ -297,6 +321,7 @@ class KnowledgeDistillation:
             try:
                 ingested = self._ingest_concept(
                     concept_data, candidates, snapshot=snapshot,
+                    units_by_episode=units_by_episode,
                 )
                 if ingested is None:
                     report.concepts_rejected += 1
@@ -365,18 +390,20 @@ class KnowledgeDistillation:
 
         return candidates[:max_count]
 
-    def _build_prompt(self, episodes: list[Episode]) -> str:
-        """從 Episode 列表建構蒸餾 prompt。"""
-        lines = []
-        for i, ep in enumerate(episodes):
-            lines.append(
-                f"[{i}] 使用者: {ep.user_input}\n"
-                f"    助手: {ep.agent_response}\n"
-                f"    摘要: {ep.content_summary}"
-            )
-
+    def _build_prompt(
+        self,
+        episodes: list[Episode],
+        units_by_episode: dict[str, list] | None = None,
+    ) -> str:
+        """從 Episode 列表建構蒸餾 prompt；每段內容依 evidence 標示來源。"""
+        lines = [
+            render_episode_block(i, ep, units_for(ep, units_by_episode))
+            for i, ep in enumerate(episodes)
+        ]
         episodes_text = "\n\n".join(lines)
-        return _DISTILLATION_PROMPT.format(episodes_text=episodes_text)
+        return _DISTILLATION_PROMPT.format(
+            source_legend=SOURCE_LEGEND, episodes_text=episodes_text,
+        )
 
     def _parse_llm_output(self, raw: str) -> list[dict[str, Any]]:
         """
@@ -426,6 +453,7 @@ class KnowledgeDistillation:
         concept_data: dict[str, Any],
         source_episodes: list[Episode],
         snapshot: dict[str, tuple[float, bool]] | None = None,
+        units_by_episode: dict[str, list] | None = None,
     ) -> tuple[bool, int, int] | None:
         """
         將蒸餾出的概念寫入 SemanticMemory 和 MemoryGraph。
@@ -443,8 +471,18 @@ class KnowledgeDistillation:
         Returns:
             (is_new, edges_created, contradicts_created)
         """
+        # 語意相近預檢（embedding + 可選 LLM）：必須在持有 storage_lock 之前完成
+        similar_hint = None
+        precheck = getattr(self._patch_coordinator, "precheck_similar", None)
+        if precheck is not None and concept_data.get("name"):
+            similar_hint = precheck(
+                str(concept_data["name"]), str(concept_data.get("description", "")),
+            )
         with self._guard():
-            written = self._write_concept_locked(concept_data, source_episodes, snapshot)
+            written = self._write_concept_locked(
+                concept_data, source_episodes, snapshot, units_by_episode,
+                similar_hint=similar_hint,
+            )
         if written is None:
             return None
         is_new, concept_id, edges_created = written
@@ -482,6 +520,8 @@ class KnowledgeDistillation:
         concept_data: dict[str, Any],
         source_episodes: list[Episode],
         snapshot: dict[str, tuple[float, bool]] | None,
+        units_by_episode: dict[str, list] | None = None,
+        similar_hint: Any = None,
     ) -> tuple[bool, str, int] | None:
         """鎖內寫入 Concept 與圖譜邊。回傳 (is_new, concept_id, edges_created)。"""
         stale_ids: set[str] = set()
@@ -519,40 +559,44 @@ class KnowledgeDistillation:
 
         source_ep_ids = [ep.id for ep in source_eps]
 
-        # ── SemanticMemory 寫入：走 patch pipeline 或舊路徑 ──
-        concept_id = None
-        if self._patch_coordinator is not None:
-            # GPT #4: 走 DreamPatchCoordinator → ConceptInhibitor
-            concept_id, _tx = self._patch_coordinator.submit_distillation_concept(
-                name=name,
-                description=description,
-                concept_type=concept_type,
-                source_episode_ids=source_ep_ids,
-                subject=subject,
+        # 支撐來源：只由 agent／工具內容支撐的概念不得標成使用者的事實或偏好
+        support = support_source(source_eps, units_by_episode)
+        if subject == "user" and support == SUPPORT_AGENT_ONLY:
+            logger.info(
+                "[KnowledgeDistillation] 概念 %s 無使用者陳述支撐，subject user -> world",
+                name,
             )
-            # 若 coordinator 無 inhibitor，退回直接寫入
-            if concept_id is None and _tx is None:
-                for ep in source_eps:
-                    concept_id = self.semantic.upsert_concept(
-                        name=name,
-                        description=description,
-                        concept_type=concept_type,
-                        source_episode_id=ep.id,
-                        producer="dream",
-                    )
+            subject = "world"
+
+        # ── SemanticMemory 寫入：一律走 DreamPatchCoordinator → ConceptInhibitor ──
+        # （無 inhibitor 的 coordinator 已在 __init__ 補降級 Gate，不再有直寫退路）
+        # support_source 與 subject 一樣隨 create／expand patch 攜帶（有 audit、可 rollback）
+        submit_kwargs: dict[str, Any] = {
+            "name": name,
+            "description": description,
+            "concept_type": concept_type,
+            "source_episode_ids": source_ep_ids,
+            "subject": subject,
+            "support_source": support,
+        }
+        if similar_hint is not None:
+            submit_kwargs["similar_hint"] = similar_hint
+        concept_id, _tx = self._patch_coordinator.submit_distillation_concept(**submit_kwargs)
 
         if concept_id is None:
             # Inhibitor 拒絕——不是錯誤，也不算 created/updated
             return None
 
-        # subject 在 patch pipeline 內隨 create patch 寫入（有 patch trail）；
-        # 只有未經 Gate 的退路（無 coordinator / 無 inhibitor）才需要補標
-        if self._patch_coordinator is None or _tx is None:
-            self.semantic.set_subject(concept_id, subject)
+        # subject／support_source 都在 patch pipeline 內隨 create／expand patch 寫入（有 patch trail）
 
         # 在 MemoryGraph 中註冊概念節點（若不存在）
         # 已合併 / 非 active 的概念不補節點（合併時已摘除圖譜節點）
         stored = self.semantic.get(concept_id)
+        if stored is not None and stored.name != name:
+            # Gate 判定與既有概念為同一件事，已改以 expand 補入該概念：不算新建
+            is_new = False
+            name = stored.name
+            concept_type = stored.concept_type
         if stored is not None and (stored.status != "active" or stored.metadata.get("merged_into")):
             return is_new, concept_id, 0
         if not self.graph.has_node(concept_id):

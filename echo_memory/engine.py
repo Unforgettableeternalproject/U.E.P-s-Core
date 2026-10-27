@@ -317,6 +317,7 @@ class MemoryEngine:
                         working=self.working,
                         procedural=self.procedural,
                         entity_store=self.entity_store,
+                        evidence=self.evidence,
                     )
                     self._retrieval = obj
         return self._retrieval
@@ -341,7 +342,7 @@ class MemoryEngine:
             with self._init_locks["entity_extractor"]:
                 if self._entity_extractor is None:
                     from echo_memory.dream.entity_extractor import EntityExtractor
-                    obj = EntityExtractor(llm_fn=self._llm_fn)
+                    obj = EntityExtractor(llm_fn=self._llm_fn, evidence_store=self.evidence)
                     self._entity_extractor = obj
         return self._entity_extractor
 
@@ -924,6 +925,7 @@ class MemoryEngine:
                 enable_idle=config.dream_enable_idle,
                 enable_cron=config.dream_enable_cron,
                 lock_factory=lambda: storage_lock(self.storage_path),
+                evidence_store=self.evidence,
             )
 
             # 啟動自動觸發排程器（閒置 + cron）

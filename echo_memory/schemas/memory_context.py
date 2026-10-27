@@ -39,6 +39,9 @@ class MemoryContext:
     # 檢索分段耗時（毫秒）：setup／embed／seed_search／graph_expand／concepts／
     # procedures／rank／evidence／total；供宿主判斷逾時卡在哪一段
     timings_ms: dict[str, float] = field(default_factory=dict)
+    # 僅由 lexical 路命中（不在向量路結果內）的 episode id；其 similarities 為補算的
+    # 原始 cosine，向量不可用時為 0。供消費端辨識「沒有語意相似度背書」的命中。
+    lexical_only_ids: list[str] = field(default_factory=list)
 
     def _agent_text_for_prompt(self, ep: Episode) -> tuple[str, bool]:
         """回傳 (可注入的 agent 文字, 是否有未說出口的預定回覆)。
@@ -92,6 +95,9 @@ class MemoryContext:
                 # 相似度分數
                 similarity = self.similarities.get(ep.id, 0.0)
                 sim_tag = f"[匹配度:{similarity:.0%}]" if similarity > 0 else ""
+                if ep.id in self.lexical_only_ids:
+                    # 僅字面命中：cosine 只是補算值，標明來源避免被當成語意匹配
+                    sim_tag = "[字面命中]"
 
                 # 顯示對話原文，截斷過長內容以控制 token 預算
                 agent_resp, has_unsaid = self._agent_text_for_prompt(ep)

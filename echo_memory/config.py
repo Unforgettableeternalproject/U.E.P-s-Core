@@ -73,6 +73,35 @@ class Config:
             os.getenv("RETRIEVAL_WEIGHT_THRESHOLD", "0.225")
         )
 
+        # === Lexical 檢索路（BM25 + RRF 融合）===
+        # 向量路之外的第二條 Episode 檢索路；只影響種子排序，不影響存儲決策
+        self.retrieval_lexical_enabled = (
+            os.getenv("RETRIEVAL_LEXICAL_ENABLED", "false").lower() == "true"
+        )
+        self.retrieval_rrf_k = int(os.getenv("RETRIEVAL_RRF_K", "60"))
+        # 兩路各取 top N 後融合
+        self.retrieval_lexical_top_n = int(os.getenv("RETRIEVAL_LEXICAL_TOP_N", "20"))
+        # lexical 路自己的最低 BM25 分數（向量門檻 min_similarity 只套用在向量路）
+        self.retrieval_lexical_min_score = float(
+            os.getenv("RETRIEVAL_LEXICAL_MIN_SCORE", "1.0")
+        )
+        # 相對於 lexical 最高分的比例下限：濾掉只靠常見詞彙擦邊命中的長尾
+        self.retrieval_lexical_rel_min = float(
+            os.getenv("RETRIEVAL_LEXICAL_REL_MIN", "0.5")
+        )
+        # df 占文件數比例超過此值的詞視為無鑑別力而剔除（語料統計；文件數 < 30 不套用）
+        self.retrieval_lexical_max_df = float(
+            os.getenv("RETRIEVAL_LEXICAL_MAX_DF", "0.2")
+        )
+        # 文件須命中「有效強詞」的最低比例
+        self.retrieval_lexical_min_coverage = float(
+            os.getenv("RETRIEVAL_LEXICAL_MIN_COVERAGE", "0.5")
+        )
+        # lexical-only 命中（向量路門檻外）的最低 cosine；向量不可用時不適用
+        self.retrieval_lexical_min_cosine = float(
+            os.getenv("RETRIEVAL_LEXICAL_MIN_COSINE", "0.25")
+        )
+
         # === 邊緣權重參數 ===
         self.edge_weight_alpha = float(os.getenv("EDGE_WEIGHT_ALPHA", "0.3"))
         self.edge_weight_beta = float(os.getenv("EDGE_WEIGHT_BETA", "0.4"))
@@ -106,6 +135,13 @@ class Config:
 
         # 單次觸發（對話 patch / Dream 週期）最多重審幾筆，避免拖慢對話路徑
         self.concept_held_review_batch = int(os.getenv("CONCEPT_HELD_REVIEW_BATCH", "3"))
+
+        # === Concept 語意相近提示 ===
+        # 新概念要 create 前，以 embedding 找 active 概念中 cosine 高於此值者（top 3），
+        # 作為候選提示交給 Gate 的 LLM 判斷「同一件事（expand）」或「不同概念（create）」
+        self.concept_similar_hint_threshold = float(
+            os.getenv("CONCEPT_SIMILAR_HINT_THRESHOLD", "0.85")
+        )
 
         # === Concept 關聯邊（RELATES_TO 蒸餾建邊 / LATENT_BRIDGE 檢索） ===
         # 蒸餾來源 Episode 的 Jaccard 重疊度低於此值不建 RELATES_TO

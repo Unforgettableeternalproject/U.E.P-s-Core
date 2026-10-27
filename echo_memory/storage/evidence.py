@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import shutil
+import threading
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -46,6 +47,11 @@ class EvidenceStore:
         self.lock_path = Path(lock_path) if lock_path is not None else self.storage_path
         self.file = self.storage_path / EVIDENCE_FILENAME
         self.redactions_file = self.storage_path / REDACTIONS_FILENAME
+        # 讀取快取：依 evidence.jsonl／redactions.jsonl 的 (mtime_ns, size) 失效；
+        # 內容為 (簽章, 單元清單, id 索引, episode 索引)，只以單次賦值整組替換
+        self._cache_lock = threading.Lock()
+        self._cache: tuple[Any, list[EvidenceUnit], dict[str, EvidenceUnit],
+                           dict[str, list[EvidenceUnit]]] | None = None
 
     # ── 寫入（僅追加）──────────────────────────────────────────────
 
@@ -54,7 +60,7 @@ class EvidenceStore:
         if not units:
             return []
         with storage_lock(self.lock_path):
-            existing = {u.id for u in self._read_all()}
+            existing = self._snapshot()[2]
             seen: set[str] = set()
             for u in units:
                 if u.id in existing or u.id in seen:
@@ -68,6 +74,7 @@ class EvidenceStore:
                 f.write(payload)
                 f.flush()
                 os.fsync(f.fileno())
+        self._invalidate_cache()
         return [u.id for u in units]
 
     def redact(self, ids: Iterable[str]) -> int:
@@ -91,6 +98,7 @@ class EvidenceStore:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
                 f.flush()
                 os.fsync(f.fileno())
+        self._invalidate_cache()
         return len(fresh)
 
     def _read_redacted(self) -> dict[str, datetime]:
@@ -114,7 +122,42 @@ class EvidenceStore:
 
     # ── 讀取 ───────────────────────────────────────────────────────
 
-    def _read_all(self) -> list[EvidenceUnit]:
+    def _invalidate_cache(self) -> None:
+        with self._cache_lock:
+            self._cache = None
+
+    def _signature(self) -> tuple:
+        """兩個檔案的 (mtime_ns, size)；不存在記 None。"""
+        sig = []
+        for path in (self.file, self.redactions_file):
+            try:
+                st = path.stat()
+                sig.append((st.st_mtime_ns, st.st_size))
+            except OSError:
+                sig.append(None)
+        return tuple(sig)
+
+    def _snapshot(self) -> tuple[Any, list[EvidenceUnit], dict[str, EvidenceUnit],
+                                 dict[str, list[EvidenceUnit]]]:
+        """取得（必要時重建）快取。簽章在讀檔前取，並行 append 只會多觸發一次重讀，不會讀到舊資料。"""
+        sig = self._signature()
+        cached = self._cache
+        if cached is not None and cached[0] == sig:
+            return cached
+        with self._cache_lock:
+            cached = self._cache
+            if cached is not None and cached[0] == sig:
+                return cached
+            units = self._build_units()
+            by_id = {u.id: u for u in units}
+            by_episode: dict[str, list[EvidenceUnit]] = {}
+            for u in units:
+                if u.episode_id:
+                    by_episode.setdefault(u.episode_id, []).append(u)
+            self._cache = (sig, units, by_id, by_episode)
+            return self._cache
+
+    def _build_units(self) -> list[EvidenceUnit]:
         units = self._read_raw()
         redacted = self._read_redacted()
         if not redacted:
@@ -124,6 +167,9 @@ class EvidenceStore:
             if u.id in redacted else u
             for u in units
         ]
+
+    def _read_all(self) -> list[EvidenceUnit]:
+        return list(self._snapshot()[1])
 
     def _read_raw(self) -> list[EvidenceUnit]:
         if not self.file.exists():
@@ -143,11 +189,11 @@ class EvidenceStore:
 
     def get(self, ids: Iterable[str]) -> list[EvidenceUnit]:
         """依 id 取回（保持傳入順序，找不到的略過）。"""
-        by_id = {u.id: u for u in self._read_all()}
+        by_id = self._snapshot()[2]
         return [by_id[i] for i in ids if i in by_id]
 
     def get_by_episode(self, episode_id: str) -> list[EvidenceUnit]:
-        return [u for u in self._read_all() if u.episode_id == episode_id]
+        return list(self._snapshot()[3].get(episode_id, []))
 
     def list(
         self,
@@ -200,10 +246,10 @@ class EvidenceStore:
 
 
     def units_for_episodes(self, episodes: Iterable[Any]) -> dict[str, list[EvidenceUnit]]:
-        """批次版 units_for_episode：只讀一次 evidence.jsonl。"""
+        """批次版 units_for_episode：走讀取快取，檔案未變動時不重新解析 evidence.jsonl。"""
         episodes = list(episodes)
         needs_store = any(getattr(ep, "evidence_ids", None) for ep in episodes)
-        by_id = {u.id: u for u in self._read_all()} if needs_store else {}
+        by_id = self._snapshot()[2] if needs_store else {}
         out: dict[str, list[EvidenceUnit]] = {}
         for ep in episodes:
             if getattr(ep, "evidence_ids", None):

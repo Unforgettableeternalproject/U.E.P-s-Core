@@ -56,6 +56,16 @@ class DreamPatchCoordinator:
         self._audit_log_path = Path(audit_log_path) if audit_log_path else None
         self._cycle_id: str = ""
 
+    @property
+    def has_inhibitor(self) -> bool:
+        return self._inhibitor is not None
+
+    def ensure_gate(self, semantic) -> None:
+        """沒有 inhibitor 時補上無 LLM 的降級 Gate（仍經 Patch Gate、留 patch trail）。"""
+        if self._inhibitor is None and semantic is not None:
+            from echo_memory.affect.concept_inhibitor import ConceptInhibitor
+            self._inhibitor = ConceptInhibitor(semantic=semantic, llm_fn=None)
+
     def begin_cycle(self, triggered_by: str) -> None:
         """開始新的 Dream 週期，設定 cycle_id。"""
         self._cycle_id = (
@@ -74,6 +84,8 @@ class DreamPatchCoordinator:
         source_episode_ids: list[str],
         embedding: list[float] | None = None,
         subject: str | None = None,
+        support_source: str | None = None,
+        similar_hint: Any = None,
     ) -> tuple[str | None, PatchTransaction | None]:
         """
         提交蒸餾產生的 Concept 到 ConceptInhibitor。
@@ -87,6 +99,9 @@ class DreamPatchCoordinator:
             source_episode_ids: 來源 Episode ID 列表
             embedding: 概念嵌入向量
             subject: 概念主體（user / agent / world），隨 create patch 寫入 patch trail
+            support_source: 支撐來源（user / legacy_unknown / agent_only），隨 create／expand
+                patch 寫入 patch trail（只升不降、可 rollback）
+            similar_hint: precheck_similar() 在鎖外算好的語意相近提示（呼叫端持鎖時必傳）
 
         Returns:
             (concept_id, PatchTransaction) — inhibitor 為 None 時回傳 (None, None)
@@ -107,9 +122,54 @@ class DreamPatchCoordinator:
             concept_type=concept_type,
             source_episode_ids=source_episode_ids,
             subject=subject,
+            support_source=support_source,
+            similar_hint=similar_hint,
         )
 
         return concept_id, tx
+
+    def precheck_similar(self, name: str, description: str) -> Any:
+        """蒸餾寫入前的語意相近提示（embedding + 可選 LLM），須在持有 storage_lock 之前呼叫。
+
+        inhibitor 缺省或評估失敗回傳 None（寫入端會退回自行評估或不帶提示）。
+        """
+        evaluate = getattr(self._inhibitor, "evaluate_similar", None)
+        if evaluate is None:
+            return None
+        try:
+            return evaluate(name, description)
+        except Exception as e:
+            logger.warning("[DreamPatchCoordinator] 語意相近預檢失敗（不影響寫入）: %s", e)
+            return None
+
+    def submit_conflict_mark(
+        self,
+        concept_a_id: str,
+        concept_b_id: str,
+        strength: float = 0.0,
+        reason: str = "",
+    ) -> tuple[bool, PatchTransaction | None]:
+        """
+        提交機器偵測的矛盾標記（mark_conflict patch）到 ConceptInhibitor。
+
+        走 Gate 的 audit-before-mutate、可 rollback；不需 LLM 佐證。
+
+        Returns:
+            (success, PatchTransaction) — inhibitor 缺省回傳 (False, None)；
+            success=False 時呼叫方應阻止後續的圖邊建立。
+        """
+        if self._inhibitor is None or not hasattr(self._inhibitor, "process_conflict_mark"):
+            return False, None
+        return self._inhibitor.process_conflict_mark(
+            concept_a_id, concept_b_id,
+            strength=strength, reason=reason, triggered_by="dream",
+        )
+
+    def rollback_conflict_mark(self, tx: PatchTransaction | None) -> None:
+        """回滾先前 submit_conflict_mark 已套用的標記（圖邊建立失敗時使用）。"""
+        if tx is None or self._inhibitor is None:
+            return
+        self._inhibitor.rollback_conflict_mark(tx)
 
     def review_held(self, guard=None) -> int:
         """

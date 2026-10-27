@@ -31,8 +31,8 @@ logger = logging.getLogger("echo_memory.affect.concept_extractor")
 # 概念提取 prompt
 _CONCEPT_PROMPT = """分析以下對話，提取 3-5 個關鍵概念。
 
-使用者：{user_input}
-回覆：{agent_response}
+（每行開頭標示內容來源：「使用者說」是使用者確實說過的話；「來源未確認」「助手」「工具記錄」不是使用者陳述）
+{conversation}
 
 請以純 JSON 陣列格式回覆（不要包含 markdown 標記）：
 [
@@ -45,7 +45,8 @@ _CONCEPT_PROMPT = """分析以下對話，提取 3-5 個關鍵概念。
 - 每個概念的 noun 應簡潔（2-6 個字）
 - desc 應是一句話說明這個概念在對話中的角色
 - 最少 1 個，最多 5 個
-- 不要提取過於泛化的概念（如「問題」「回答」）"""
+- 不要提取過於泛化的概念（如「問題」「回答」）
+- desc 不得把助手的推測、建議或工具記錄寫成使用者的事實或偏好"""
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -102,6 +103,7 @@ class ConceptExtractor:
         inhibitor=None,  # ConceptInhibitor | None（避免循環 import）
         max_workers: int | None = None,
         structured_llm_fn: Callable[[str], dict] | None = None,
+        evidence_store=None,  # EvidenceStore | None
     ):
         """
         Args:
@@ -115,7 +117,10 @@ class ConceptExtractor:
                                存在時優先於 llm_fn 使用；不存在時 fallback 至 llm_fn + JSON parse。
                                注意：LLM 回傳陣列，structured_llm_fn 應回傳包含
                                "items" 鍵的 dict，items 值為概念 list。
+            evidence_store: EvidenceStore 實例（可選）。提供時 prompt 依 evidence 標示來源；
+                            None 時視為 legacy_unknown（保守）。
         """
+        self._evidence_store = evidence_store
         self._llm_fn = llm_fn
         self._structured_llm_fn = structured_llm_fn
         self._semantic = semantic
@@ -267,10 +272,13 @@ class ConceptExtractor:
         concept_seeds: list | None = None,
     ) -> list[dict[str, str]]:
         """透過 LLM 提取概念列表。優先使用 structured_llm_fn，fallback 至 llm_fn + JSON parse。"""
-        prompt = _CONCEPT_PROMPT.format(
-            user_input=episode.user_input[:300],
-            agent_response=episode.agent_response[:300],
-        )
+        from echo_memory.utils.source_view import load_units, render_episode_lines, units_for
+
+        units_by_episode = load_units(self._evidence_store, [episode])
+        conversation = "\n".join(render_episode_lines(
+            episode, units_for(episode, units_by_episode), max_chars=300,
+        ))
+        prompt = _CONCEPT_PROMPT.format(conversation=conversation or "（無可確認內容）")
 
         # 若有 StorageJudge 的 concept_seeds，注入優先提取提示
         if concept_seeds:
@@ -407,7 +415,11 @@ class ConceptExtractor:
             if concept_id and embedding is not None:
                 if self._graph.has_node(episode_id):
                     if not self._graph.has_node(concept_id):
-                        self._graph.add_concept_node(concept_id, noun)
+                        # Gate 可能把它改以 expand 補進相近的既有概念，節點名稱以實際概念為準
+                        stored = self._semantic.get(concept_id)
+                        self._graph.add_concept_node(
+                            concept_id, stored.name if stored is not None else noun,
+                        )
                     self._graph.add_derived_from_edge(concept_id, episode_id)
             return concept_id
 
@@ -441,7 +453,8 @@ class ConceptExtractor:
                 similarity_score=best_sim,
                 embedding=embedding,
             )
-            if concept_id and best_match.id:
+            # concept_id == best_match.id：Gate 判定為同一件事而 expand 既有概念，不建自環邊
+            if concept_id and best_match.id and concept_id != best_match.id:
                 # 確保新概念的 graph node 存在再建邊
                 if not self._graph.has_node(concept_id):
                     self._graph.add_concept_node(concept_id, noun)

@@ -22,6 +22,7 @@ import numpy as np
 
 from echo_memory.neurochem.state import NeurochemState
 from echo_memory.schemas.memory_context import MemoryContext
+from echo_memory.utils.source_view import attested_text, render_episode_lines, units_for
 
 logger = logging.getLogger("echo_memory.affect.verifier")
 
@@ -206,10 +207,12 @@ class ResponseVerifier:
             if resp_norm == 0:
                 return 0.7
 
-            # 與已召回 episode 的 agent_response 做語意比對
+            # 與已召回 episode 的（已說出口）agent 內容做語意比對
+            units_map = getattr(memory_ctx, "evidence_by_episode", None) or None
             best_sim = 0.0
             for ep in memory_ctx.episodes[:10]:  # 限制數量避免過慢
-                ref_text = ep.agent_response or ep.user_input or ""
+                # 只取來源可確認的文字：未說出口的 agent 內容不作為比對依據
+                ref_text = attested_text(ep, units_for(ep, units_map))
                 if not ref_text.strip():
                     continue
 
@@ -276,10 +279,16 @@ class ResponseVerifier:
             True = 偵測到矛盾，False = 無矛盾或無法判斷
         """
         # 收集記憶摘要（限制長度）
+        # 依來源標示：不使用 content_summary（混合 user＋agent 原文，會洗掉來源）
+        units_map = getattr(memory_ctx, "evidence_by_episode", None) or None
         memory_lines = []
         for ep in memory_ctx.episodes[:5]:
-            summary = ep.content_summary or ep.user_input[:100]
-            memory_lines.append(f"- {summary}")
+            memory_lines.extend(
+                f"- {line}"
+                for line in render_episode_lines(
+                    ep, units_for(ep, units_map), max_chars=100,
+                )
+            )
         memories_text = "\n".join(memory_lines)
 
         prompt = (
@@ -289,6 +298,8 @@ class ResponseVerifier:
             '請以純 JSON 格式回覆：\n'
             '{"has_contradiction": true/false, "reason": "簡短說明"}\n\n'
             "規則：\n"
+            "- 只有「使用者說（已確認）」與「助手說（已說出口）」可視為已知事實；"
+            "「來源未確認」「工具記錄」只是低可信線索，不可單獨據以判定矛盾\n"
             "- 只判斷邏輯矛盾，不判斷風格或語氣差異\n"
             "- 「記憶說 A 過敏，回覆卻推薦 A」= 矛盾\n"
             "- 「記憶沒提到 B，回覆提到 B」= 不算矛盾（新知識）\n"

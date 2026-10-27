@@ -25,6 +25,7 @@ import numpy as np
 
 from echo_memory.schemas.episode import Episode
 from echo_memory.storage.graph import MemoryGraph
+from echo_memory.storage.lexical import LexicalIndex, build_docs
 from echo_memory.storage.atomic import replace_with_retry
 from echo_memory.storage.locking import storage_lock, temporary_sibling
 
@@ -94,6 +95,9 @@ class EpisodicMemory:
         self._episodes: dict[str, Episode] = {}
         self._embeddings: np.ndarray | None = None
         self._id_to_index: dict[str, int] = {}
+
+        # Lexical（BM25）索引：僅存記憶體，由 episodes 內容簽章懶重建，不持久化
+        self._lexical = LexicalIndex()
 
         # 記憶圖（Phase 1.5）
         self.graph = MemoryGraph(storage_path)
@@ -183,8 +187,9 @@ class EpisodicMemory:
                 # 更新圖結構
                 self._update_graph(episode)
 
-            # 持久化
-            self._save_unlocked()
+            # 持久化：episode 檔案已落地後圖存檔失敗不得讓 write 看起來失敗
+            # （重試會重複 episode、store_episode 後續步驟會被跳過）
+            self._save_unlocked(tolerate_graph_failure=True)
 
         logger.debug(f"[EpisodicMemory] 寫入情節: {episode.id}")
         return episode.id
@@ -248,6 +253,29 @@ class EpisodicMemory:
             f"找到 {len(results)}/{top_k} 個相似度 >= {min_similarity} 的結果"
         )
         return results
+
+    def lexical_search(
+        self,
+        query: str,
+        top_n: int = 20,
+        min_score: float = 0.0,
+        rel_min: float = 0.0,
+        max_df: float = 1.0,
+        min_coverage: float = 0.0,
+    ) -> list[tuple[Episode, float]]:
+        """
+        Lexical（BM25）檢索，回傳 (Episode, bm25_score)，分數遞減。
+
+        並行模型：只在 _mem_lock 內取文件文字快照（純記憶體 CPU 操作）；
+        索引同步與搜尋在 LexicalIndex 自己的鎖內以該快照進行，不做網路呼叫或磁碟 I/O。
+        """
+        with self._mem_lock:
+            episodes = dict(self._episodes)
+        docs = build_docs(episodes.values())
+        hits = self._lexical.query(
+            docs, query, top_n, min_score, rel_min, max_df, min_coverage,
+        )
+        return [(episodes[eid], score) for eid, score in hits if eid in episodes]
 
     def similarity_to_query(
         self,
@@ -1067,6 +1095,45 @@ class EpisodicMemory:
             if new_graph is not None:
                 self.graph.install(new_graph)
 
+        if new_graph is not None:
+            self._repair_missing_graph_nodes(episodes)
+
+    _graph_dirty = False
+
+    def _repair_missing_graph_nodes(self, episodes: dict[str, Episode]) -> None:
+        """冪等修復：episode 已落地但圖快照缺節點（圖存檔曾失敗）時，補節點與 PRECEDES。
+
+        前驅取同 session 內時間較早的最近一筆。只補缺的，已存在的節點與邊不動。
+        修復後標 graph dirty，下一次成功存檔寫回磁碟。
+        """
+        missing = [ep for ep in episodes.values() if not self.graph.has_node(ep.id)]
+        if not missing:
+            return
+        by_session: dict[str, list[Episode]] = {}
+        for ep in episodes.values():
+            by_session.setdefault(ep.session_id, []).append(ep)
+        for items in by_session.values():
+            items.sort(key=lambda e: e.timestamp)
+        for ep in sorted(missing, key=lambda e: e.timestamp):
+            self.graph.add_episode_node(ep)
+        for ep in sorted(missing, key=lambda e: e.timestamp):
+            siblings = by_session[ep.session_id]
+            idx = next(i for i, e in enumerate(siblings) if e.id == ep.id)
+            if idx > 0:
+                prev = siblings[idx - 1]
+                if self.graph.has_node(prev.id) and not self.graph.has_edge(prev.id, ep.id):
+                    self.graph.add_precedes_edge(
+                        prev.id, ep.id, (ep.timestamp - prev.timestamp).total_seconds(),
+                    )
+            if idx + 1 < len(siblings):
+                nxt = siblings[idx + 1]
+                if self.graph.has_node(nxt.id) and not self.graph.has_edge(ep.id, nxt.id):
+                    self.graph.add_precedes_edge(
+                        ep.id, nxt.id, (nxt.timestamp - ep.timestamp).total_seconds(),
+                    )
+        self._graph_dirty = True
+        logger.info("[EpisodicMemory] 修復 %d 個缺圖節點的 episode", len(missing))
+
     def _rebuild_session_tracking(self) -> None:
         """
         從 _episodes 重建 _last_episode_by_session 和 _last_episode_id。
@@ -1101,8 +1168,13 @@ class EpisodicMemory:
         with storage_lock(self.lock_path):
             self._save_unlocked()
 
-    def _save_unlocked(self) -> None:
-        """在持有 namespace storage lock 時發布完整快照。"""
+    def _save_unlocked(self, tolerate_graph_failure: bool = False) -> None:
+        """在持有 namespace storage lock 時發布完整快照。
+
+        tolerate_graph_failure=True（write 專用）：episode 檔案與 manifest 已寫成功後，
+        圖存檔失敗只記 warning 並標 graph dirty，不拋出；圖是整份快照，下一次成功存檔
+        自然補上，_load 也會對缺節點的 episode 做冪等修復。
+        """
         self.storage_path.mkdir(parents=True, exist_ok=True)
         # 快照在 _mem_lock 內取（純記憶體），檔案寫入在鎖外
         with self._mem_lock:
@@ -1127,8 +1199,20 @@ class EpisodicMemory:
         elif self.embeddings_file.exists():
             self.embeddings_file.unlink()
 
-        self.graph.save()
+        # manifest 先寫：episode 檔案與 manifest 自洽後才存圖；圖存檔失敗會拋出給呼叫端
         self._write_manifest(embeddings, ordered_ids)
+        if not tolerate_graph_failure:
+            self.graph.save()
+            self._graph_dirty = False
+            return
+        try:
+            self.graph.save()
+            self._graph_dirty = False
+        except Exception as e:
+            self._graph_dirty = True
+            logger.warning(
+                "[EpisodicMemory] episode 已寫入但圖存檔失敗（graph dirty，下次存檔補上）: %s", e,
+            )
 
     def _manifest_matches_current_index(
         self,

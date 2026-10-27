@@ -22,6 +22,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,7 @@ from echo_memory.schemas.concept import Concept
 from echo_memory.storage.atomic import atomic_write_json, replace_with_retry
 from echo_memory.storage.locking import storage_lock
 from echo_memory.storage.semantic import SemanticMemory
+from echo_memory.utils.source_view import SUPPORT_RANK
 
 logger = logging.getLogger("echo_memory.affect.concept_inhibitor")
 
@@ -95,6 +97,60 @@ LLM 回覆：
 - 用戶輸入中是否有明確事實支持此變更？
 - 變更是否過度推論？
 - 動作類型（expand/modify/deprecate）是否恰當？"""
+
+
+_SIMILAR_HINT_PROMPT = """\
+你是記憶系統的概念閘門。系統準備新建一個概念，但 embedding 比對發現已有語意相近的 active 概念。
+相似度只是提示，不代表同一件事；請依語意判斷。
+
+準備新建的概念：
+名稱：{name}
+描述：{description}
+
+語意相近的既有概念：
+{candidates}
+
+判斷：
+- 新概念與某個既有概念指的是同一件事（只是說法或細節不同）→ decision 為 "expand"，
+  target_id 填該既有概念的 id（新內容會補進既有概念，不另建）。
+- 新概念是不同的概念（即使主題相關）→ decision 為 "create"，target_id 為 null。
+
+以純 JSON 回覆：
+{{"decision": "create" | "expand", "target_id": "既有概念 id 或 null", "reason": "判斷理由"}}"""
+
+
+@dataclass
+class SimilarHint:
+    """新概念 create 前的「語意相近提示」。
+
+    candidates 只由 embedding cosine 決定（不看名稱字串）。decision 在有 llm_fn 時由 LLM 給，
+    沒有 llm_fn 或 LLM 失敗時維持 create（只記候選，不自動合併、不擋 create）。
+    embedding 是評估時順便算好的向量，供 create 重用（避免鎖內再算一次），不進 audit。
+    """
+    candidates: list[dict[str, Any]] = field(default_factory=list)
+    decision: str = "create"
+    target_id: str | None = None
+    reason: str = ""
+    llm_used: bool = False
+    embedding: list[float] | None = None
+
+    def audit_candidates(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "concept_id": c["concept_id"],
+                "name": c["name"],
+                "similarity": c["similarity"],
+            }
+            for c in self.candidates
+        ]
+
+    def audit_decision(self) -> dict[str, Any]:
+        return {
+            "decision": self.decision,
+            "target_id": self.target_id,
+            "reason": self.reason,
+            "llm_used": self.llm_used,
+        }
 
 
 class ConceptInhibitor:
@@ -155,6 +211,7 @@ class ConceptInhibitor:
             held_review_batch if held_review_batch is not None
             else cfg.concept_held_review_batch
         )
+        self._similar_hint_threshold = float(cfg.concept_similar_hint_threshold)
         # held 登記簿：patch_id -> {patch, retries, held_at, context}；持久化於 held_patches.json
         self._held_lock = _held_file_lock(self._held_path())
         self._held: dict[str, dict[str, Any]] | None = None
@@ -293,6 +350,8 @@ class ConceptInhibitor:
         concept_type: str = "entity",
         source_episode_ids: list[str] | None = None,
         subject: str | None = None,
+        support_source: str | None = None,
+        similar_hint: SimilarHint | None = None,
     ) -> tuple[str | None, PatchTransaction]:
         """
         處理來自 ConceptExtractor 的概念寫入請求。
@@ -313,10 +372,18 @@ class ConceptInhibitor:
             embedding: 概念嵌入向量（用於 create 路徑）
             subject: 概念主體（user / agent / world）。提供時隨 create patch 寫入，
                 進入 patch trail（new_value["subject"]）。
+            support_source: 支撐來源（user / legacy_unknown / agent_only）。由 create／expand
+                patch 本身攜帶，apply 時只升不降地寫入 metadata，舊值記在 rollback_payload，
+                rollback 可還原。
+            similar_hint: 呼叫端已在鎖外算好的語意相近提示（create 路徑）。None 時由本方法
+                自行評估（會算 embedding；LLM 呼叫）——呼叫端持有 storage_lock 時必須預先傳入。
 
         Returns:
             (concept_id | None, PatchTransaction)
         """
+        if support_source is not None and support_source not in SUPPORT_RANK:
+            raise ValueError(f"support_source 無效: {support_source!r}")
+
         tx = PatchTransaction(
             patches=[],
             user_input=f"[extractor] {noun}: {desc}",
@@ -367,6 +434,7 @@ class ConceptInhibitor:
                 rollback_payload={
                     "old_source_episode_ids": list(concept.source_episode_ids),
                 },
+                support_source=support_source,
             )
             tx.patches.append(patch)
             concept_id = existing_concept_id
@@ -374,6 +442,11 @@ class ConceptInhibitor:
         else:
             # 全新概念 / 多義詞 / fallback → create
             all_source_ids = source_episode_ids if source_episode_ids else [episode_id]
+            hint = similar_hint if similar_hint is not None else self.evaluate_similar(
+                noun, desc, embedding,
+            )
+            if embedding is None and hint.embedding is not None:
+                embedding = hint.embedding
             patch = ConceptPatch(
                 transaction_id=tx.transaction_id,
                 concept_name=noun,
@@ -387,11 +460,13 @@ class ConceptInhibitor:
                     "extra_source_episode_ids": all_source_ids[1:],
                     "producer": _producer_for_kind(evidence_kind),
                     **({"subject": subject} if subject else {}),
+                    **self._similar_payload(hint),
                 },
                 patch_confidence=0.7,
                 evidence=evidence,
                 risk_level="low",
                 rollback_payload={"embedding": embedding},
+                support_source=support_source,
             )
             tx.patches.append(patch)
 
@@ -464,6 +539,23 @@ class ConceptInhibitor:
             if subject:
                 self._semantic.validate_subject(subject)
             create_name = payload.get("name", patch.concept_name)
+            expand_target_id = payload.get("similar_expand_target")
+            if expand_target_id:
+                # Gate 的 LLM 判定「與既有概念是同一件事」：改以 expand 補進該概念，不另建
+                with self._semantic._lock:
+                    target = self._semantic.get(str(expand_target_id))
+                    if (
+                        target is not None
+                        and target.status == "active"
+                        and not self._semantic.is_merged(target)
+                    ):
+                        return self._redirect_create_to_primary(
+                            patch, target, payload, producer, similar=True,
+                        )
+                logger.info(
+                    "[ConceptInhibitor] 相近概念 %s 已不可用，退回一般 create (%s)",
+                    expand_target_id, create_name,
+                )
             with self._semantic._lock:
                 existing = self._semantic.get_by_name(create_name)
                 if existing is not None and self._semantic.is_merged(existing):
@@ -481,6 +573,11 @@ class ConceptInhibitor:
                 # subject 隨 create patch 寫入（已記錄於 patch.new_value，可由 audit 追溯）
                 if subject:
                     self._semantic.set_subject(concept_id, subject)
+                if patch.support_source:
+                    with self._semantic._lock:
+                        created = self._semantic.get(concept_id)
+                        if created is not None and self._apply_support_source(created, patch):
+                            self._semantic._save()
                 # 補入剩餘的 source_episode_ids（#1 provenance 修復）與 derivations
                 extra_sources = payload.get("extra_source_episode_ids", [])
                 parent_concepts = payload.get("parent_concept_ids") or []
@@ -525,15 +622,21 @@ class ConceptInhibitor:
         merged: Concept,
         payload: dict[str, Any],
         producer: str,
+        similar: bool = False,
     ) -> tuple[bool, str | None]:
         """create 命中已合併的次概念：改以 expand 方式補進它併入的主概念。
+
+        similar=True 時 merged 即為目標主概念（Gate 判定新概念與它是同一件事）。
 
         補入 source_episode_ids / derivation 與一筆 fact（描述），audit 記錄導向原因。
         主概念不存在、非 active 或自己也已被合併時拒絕（patch.rejection_reason 說明）。
         """
-        name = merged.name
+        name = str(payload.get("name", patch.concept_name)) if similar else merged.name
         with self._semantic._lock:
-            primary = self._semantic.get(str(merged.metadata.get("merged_into") or ""))
+            if similar:
+                primary = merged
+            else:
+                primary = self._semantic.get(str(merged.metadata.get("merged_into") or ""))
             if (
                 primary is None
                 or primary.status != "active"
@@ -544,7 +647,10 @@ class ConceptInhibitor:
                 )
                 return False, None
 
-            reason = f"同名概念「{name}」已併入「{primary.name}」，改以 expand 補入主概念"
+            if similar:
+                reason = f"語意相近：新概念「{name}」經 Gate 判定與「{primary.name}」為同一件事，改以 expand 補入既有概念"
+            else:
+                reason = f"同名概念「{name}」已併入「{primary.name}」，改以 expand 補入主概念"
             description = str(payload.get("description") or "")
             episodes = [
                 e for e in [payload.get("episode_id"), *(payload.get("extra_source_episode_ids") or [])]
@@ -562,7 +668,7 @@ class ConceptInhibitor:
                 ):
                     added_fact = {
                         "text": description,
-                        "source": "merged_alias_redirect",
+                        "source": "similar_concept_expand" if similar else "merged_alias_redirect",
                         "alias": name,
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                     }
@@ -570,6 +676,7 @@ class ConceptInhibitor:
                 for ep_id in episodes:
                     if ep_id not in primary.source_episode_ids:
                         primary.source_episode_ids.append(ep_id)
+                self._apply_support_source(primary, patch)
                 primary.record_mutation()
                 for ep_id in episodes:
                     primary.add_derivation("episode", ep_id, producer, ref=ref)
@@ -577,6 +684,7 @@ class ConceptInhibitor:
                 self._semantic._save()
             except Exception as e:
                 # 補償：回到導向前的狀態
+                self._restore_support_source(primary, patch)
                 primary.source_episode_ids = old_sources
                 primary.remove_derivations_by_patch(patch.patch_id)
                 if added_fact is not None:
@@ -620,21 +728,32 @@ class ConceptInhibitor:
             return False
 
         try:
-            new_episode_id = patch.new_value
-            if isinstance(new_episode_id, str):
+            new_value = patch.new_value
+            if isinstance(new_value, str):
+                episode_ids = [new_value]
+            elif isinstance(new_value, list):
+                episode_ids = [e for e in new_value if isinstance(e, str)]
+            else:
+                episode_ids = []
+            if episode_ids or patch.support_source:
                 with self._semantic._lock:
-                    if new_episode_id not in concept.source_episode_ids:
-                        concept.source_episode_ids.append(new_episode_id)
-                        concept.access_count += 1
+                    fresh = [e for e in episode_ids if e not in concept.source_episode_ids]
+                    support_changed = self._apply_support_source(concept, patch)
+                    if fresh or support_changed:
+                        for ep_id in fresh:
+                            concept.source_episode_ids.append(ep_id)
+                        if fresh:
+                            concept.access_count += 1
                         concept.record_mutation()
                         # 先升版再記 derivation，紀錄才落在新版本
-                        concept.add_derivation(
-                            "episode", new_episode_id,
-                            _producer_for_kind(
-                                patch.evidence.evidence_kind if patch.evidence else None
-                            ),
-                            ref={"patch_id": patch.patch_id, "transaction_id": patch.transaction_id},
-                        )
+                        for ep_id in fresh:
+                            concept.add_derivation(
+                                "episode", ep_id,
+                                _producer_for_kind(
+                                    patch.evidence.evidence_kind if patch.evidence else None
+                                ),
+                                ref={"patch_id": patch.patch_id, "transaction_id": patch.transaction_id},
+                            )
                         # history 先寫再存檔，否則這筆紀錄不會落地
                         self._add_history_entry(concept, patch)
                         self._semantic._save()
@@ -645,6 +764,254 @@ class ConceptInhibitor:
                 patch.patch_id, e,
             )
             return False
+
+    # ──────────────────────────────────────────────
+    # 語意相近提示（create 前）
+    # ──────────────────────────────────────────────
+
+    def evaluate_similar(
+        self,
+        noun: str,
+        desc: str,
+        embedding: list[float] | None = None,
+        judge: bool = True,
+    ) -> SimilarHint:
+        """新概念要 create 前，以 embedding 找語意相近的 active 概念並（有 llm_fn 時）請 LLM 判斷。
+
+        embedding 計算與 LLM 呼叫都在這裡，且不持有 SemanticMemory／storage_lock 的鎖——
+        持有 storage_lock 的呼叫端（蒸餾、Reflection）必須在進鎖前先呼叫本方法，
+        再把結果以 similar_hint 帶進 process_*_patch。
+
+        只用 embedding cosine 選候選（門檻 CONCEPT_SIMILAR_HINT_THRESHOLD、top 3），
+        不用名稱字串相似度或 keyword。已合併／非 active 概念不列入；與新概念同名者（同一個
+        upsert 目標，不是相近概念）也不列入。沒有 llm_fn 或 LLM 失敗時只記候選，維持 create。
+        任何失敗都不影響 create。judge=False 時只找候選、不呼叫 LLM（Reflection 用：
+        它是明確提議新概念，候選只記 audit）。
+        """
+        hint = SimilarHint()
+        try:
+            vec = embedding
+            if vec is None:
+                embed_fn = getattr(self._semantic, "_embed_fn", None)
+                if embed_fn is None:
+                    return hint
+                vec = embed_fn(f"{noun}: {desc}")
+                hint.embedding = [float(x) for x in vec]
+            found = self._semantic.find_similar_concepts(
+                vec, self._similar_hint_threshold, top_k=3, exclude_names=[noun],
+            )
+        except Exception as e:
+            logger.warning("[ConceptInhibitor] 語意相近提示失敗（不影響 create）: %s", e)
+            return hint
+
+        hint.candidates = [
+            {
+                "concept_id": c.id,
+                "name": c.name,
+                "description": (c.description or "")[:120],
+                "similarity": round(sim, 4),
+            }
+            for c, sim in found
+        ]
+        if judge and hint.candidates and self._llm_fn is not None:
+            self._judge_similar(noun, desc, hint)
+        return hint
+
+    def _judge_similar(self, noun: str, desc: str, hint: SimilarHint) -> None:
+        """請 LLM 判斷新概念是同一件事（expand 既有）或不同概念（create）；失敗維持 create。"""
+        assert self._llm_fn is not None
+        lines = [
+            f"{i}. [id={c['concept_id']}] {c['name']}（cosine {c['similarity']:.3f}）：{c['description']}"
+            for i, c in enumerate(hint.candidates, 1)
+        ]
+        prompt = _SIMILAR_HINT_PROMPT.format(
+            name=noun, description=desc[:300], candidates="\n".join(lines),
+        )
+        try:
+            raw = self._llm_fn(prompt)
+        except Exception as e:
+            hint.reason = f"LLM 判斷失敗，維持 create: {e}"
+            logger.warning("[ConceptInhibitor] 相近概念 LLM 判斷失敗: %s", e)
+            return
+        hint.llm_used = True
+        text = (raw or "").strip()
+        start, end = text.find("{"), text.rfind("}")
+        if start >= 0 and end > start:
+            text = text[start:end + 1]
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = None
+        if not isinstance(parsed, dict):
+            hint.reason = "LLM 回應格式錯誤，維持 create"
+            return
+        hint.reason = str(parsed.get("reason") or "")
+        if parsed.get("decision") != "expand":
+            return
+        target_id = str(parsed.get("target_id") or "")
+        if target_id not in {c["concept_id"] for c in hint.candidates}:
+            hint.reason = f"LLM 指定的 expand 目標不在候選內，維持 create（{hint.reason}）"
+            return
+        hint.decision = "expand"
+        hint.target_id = target_id
+
+    @staticmethod
+    def _similar_payload(hint: SimilarHint) -> dict[str, Any]:
+        """把提示轉成 create patch new_value 的欄位（進入 patch trail／audit）。"""
+        if not hint.candidates:
+            return {}
+        payload: dict[str, Any] = {
+            "similar_candidates": hint.audit_candidates(),
+            "similar_decision": hint.audit_decision(),
+        }
+        if hint.decision == "expand" and hint.target_id:
+            payload["similar_expand_target"] = hint.target_id
+        return payload
+
+    def _apply_support_source(self, concept: Concept, patch: ConceptPatch) -> bool:
+        """套用 patch 攜帶的 support_source（只升不降）。須在 SemanticMemory._lock 內呼叫。
+
+        有變更時把舊值記入 patch.rollback_payload["support_source_undo"]，供 rollback 還原。
+        回傳 metadata 是否有變。
+        """
+        value = patch.support_source
+        if not value:
+            return False
+        rank = SUPPORT_RANK.get(value)
+        if rank is None:
+            raise ValueError(f"support_source 無效: {value!r}")
+        current = concept.metadata.get("support_source")
+        if rank <= SUPPORT_RANK.get(current, -1):
+            return False
+        if patch.rollback_payload is None:
+            patch.rollback_payload = {}
+        patch.rollback_payload["support_source_undo"] = {
+            "present": current is not None,
+            "value": current,
+        }
+        concept.metadata["support_source"] = value
+        return True
+
+    @staticmethod
+    def _restore_support_source(concept: Concept, patch: ConceptPatch) -> None:
+        """還原 _apply_support_source 前的 support_source。須在 SemanticMemory._lock 內呼叫。"""
+        undo = (patch.rollback_payload or {}).get("support_source_undo")
+        if not undo:
+            return
+        if undo.get("present"):
+            concept.metadata["support_source"] = undo.get("value")
+        else:
+            concept.metadata.pop("support_source", None)
+
+    # ──────────────────────────────────────────────
+    # 矛盾標記入口（ContradictionDetector / Dream）
+    # ──────────────────────────────────────────────
+
+    def process_conflict_mark(
+        self,
+        concept_a_id: str,
+        concept_b_id: str,
+        strength: float = 0.0,
+        reason: str = "",
+        triggered_by: str = "dream",
+    ) -> tuple[bool, PatchTransaction]:
+        """
+        對一組互相矛盾的概念各建立一筆 mark_conflict patch 並套用。
+
+        機器偵測的標記，不需 LLM 佐證（規則層直接 approve，evidence 比照 dream 來源）。
+        流程：建 patch → audit-before-mutate（audit 寫入失敗則整筆不套用）→
+        逐一 apply（record_mutation 使 version 遞增）→ 任一失敗則回滾已套用者 → 終態 audit。
+        不在 Semantic 中的概念略過（與舊行為相同）；兩端皆不存在視為無變更（成功）。
+
+        Returns:
+            (success, PatchTransaction) — success=False 時沒有任何概念被改動
+        """
+        tx = PatchTransaction(
+            patches=[],
+            user_input=f"[contradiction] {concept_a_id} <-> {concept_b_id}",
+            llm_response="",
+            session_id="contradiction-dream",
+            turn_id="",
+            triggered_by=triggered_by,  # type: ignore[arg-type]
+        )
+        evidence = PatchEvidence(
+            evidence_kind="dream_consolidation",
+            evidence_strength=0.7,
+            verifier_status="valid",
+            verifier_reason=reason or f"ContradictionDetector 偵測矛盾 (strength={strength:.2f})",
+            retrieved_concept_ids=[concept_a_id, concept_b_id],
+        )
+
+        with self._semantic._lock:
+            for cid, rival in ((concept_a_id, concept_b_id), (concept_b_id, concept_a_id)):
+                concept = self._semantic.get(cid)
+                if concept is None:
+                    continue
+                patch = ConceptPatch(
+                    transaction_id=tx.transaction_id,
+                    concept_id=cid,
+                    concept_name=concept.name,
+                    action="mark_conflict",
+                    target_path="conflict_count",
+                    old_value=concept.conflict_count,
+                    new_value={"conflict_count_delta": 1, "rival_concept_id": rival},
+                    old_confidence=concept.confidence,
+                    new_confidence=concept.confidence,
+                    patch_confidence=0.7,
+                    evidence=evidence,
+                    risk_level="low",
+                )
+                patch.status = "approved"
+                tx.patches.append(patch)
+
+        if not tx.patches:
+            tx.status = "committed"
+            return True, tx
+
+        # audit-before-mutate：先寫 audit，失敗則不改動任何概念
+        if not self._try_write_audit(tx):
+            for p in tx.patches:
+                p.status = "rejected"
+                p.rejection_reason = "audit log 寫入失敗，阻止 mutation"
+            tx.status = "failed"
+            return False, tx
+
+        applied: list[ConceptPatch] = []
+        failed = False
+        for patch in tx.patches:
+            if self._apply_patch(patch):
+                patch.status = "applied"
+                applied.append(patch)
+            else:
+                patch.status = "rejected"
+                patch.rejection_reason = "SemanticMemory mark_conflict 失敗"
+                failed = True
+                # 失敗的 patch 可能已改了記憶體（例如存檔失敗），一併回滾
+                self._rollback_patch(patch)
+                break
+
+        if failed:
+            for p in reversed(applied):
+                self._rollback_patch(p)
+                p.status = "rolled_back"
+            for p in tx.patches:
+                if p.status == "approved":
+                    p.status = "rejected"
+                    p.rejection_reason = "同一 transaction 其他 patch 失敗"
+            tx.status = "failed"
+        else:
+            tx.status = "committed"
+        self._write_audit(tx)
+        return (not failed), tx
+
+    def rollback_conflict_mark(self, tx: PatchTransaction) -> None:
+        """回滾 process_conflict_mark 已套用的 patch（呼叫端後續步驟失敗時使用）。"""
+        for p in reversed(tx.applied_patches):
+            if p.action == "mark_conflict":
+                self._rollback_patch(p)
+                p.status = "rolled_back"
+        tx.status = "rolled_back"
+        self._write_audit(tx)
 
     # ──────────────────────────────────────────────
     # Reflection Pipeline 入口
@@ -739,6 +1106,15 @@ class ConceptInhibitor:
             verifier_reason=reasoning or "ReflectionExecutor create_concept",
         )
 
+        # 語意相近提示：Reflection 是明確提議新概念，只把候選記進 audit，不導向 expand、不問 LLM。
+        # 呼叫端（持 storage_lock 的 executor）應已預先算好並放進 params；沒有才在這裡評估
+        hint = params.get("similar_hint")
+        if not isinstance(hint, SimilarHint):
+            hint = self.evaluate_similar(target_name, description, judge=False)
+        support_source = params.get("support_source")
+        if support_source is not None and support_source not in SUPPORT_RANK:
+            raise ValueError(f"support_source 無效: {support_source!r}")
+
         patch = ConceptPatch(
             transaction_id=tx.transaction_id,
             concept_name=target_name,
@@ -754,19 +1130,25 @@ class ConceptInhibitor:
                 ),
                 "parent_episode_ids": [str(x) for x in params.get("parent_episode_ids") or []],
                 "parent_evidence_ids": [str(x) for x in params.get("parent_evidence_ids") or []],
+                **{
+                    k: v for k, v in self._similar_payload(hint).items()
+                    if k != "similar_expand_target"
+                },
             },
             patch_confidence=0.8,
             evidence=evidence,
             risk_level="low",
             rollback_payload={},
+            support_source=support_source,
         )
         patch.status = "approved"
         tx.patches.append(patch)
 
         # 執行 create
-        success, concept_id = self._apply_create(patch, embedding=None)
+        success, concept_id = self._apply_create(patch, embedding=hint.embedding)
         if success:
             patch.status = "applied"
+            patch.concept_id = concept_id
             return True, {"concept_id": concept_id, "name": target_name}
         else:
             patch.status = "rejected"
@@ -1734,6 +2116,8 @@ class ConceptInhibitor:
                     success = self._apply_modify(concept, patch)
                 elif patch.action == "deprecate":
                     success = self._apply_deprecate(concept, patch)
+                elif patch.action == "mark_conflict":
+                    success = self._apply_mark_conflict(concept, patch)
                 else:
                     logger.warning(
                         "[ConceptInhibitor] 不支援的 action: %s", patch.action
@@ -1763,6 +2147,7 @@ class ConceptInhibitor:
             concept.metadata["facts"] = []
 
         concept.metadata["facts"].append(patch.new_value)
+        self._apply_support_source(concept, patch)
 
         # 更新 confidence
         if patch.new_confidence is not None:
@@ -1823,6 +2208,32 @@ class ConceptInhibitor:
 
         self._add_history_entry(concept, patch)
 
+        concept.updated_at = datetime.now(timezone.utc)
+        return True
+
+    def _apply_mark_conflict(self, concept: Concept, patch: ConceptPatch) -> bool:
+        """執行 mark_conflict — 遞增 conflict_count 並設 has_contradiction。
+
+        注意：不呼叫 _save()。由外層 _apply_patch 統一 record_mutation（version +1）後持久化。
+        rollback 所需狀態在變更當下寫入 rollback_payload（存檔失敗時同樣可還原）。
+        不新增 derivation：矛盾對手不是此概念的來源。
+        """
+        payload = patch.new_value if isinstance(patch.new_value, dict) else {}
+        try:
+            delta = int(payload.get("conflict_count_delta", 1))
+        except (TypeError, ValueError):
+            return False
+        if delta <= 0:
+            return False
+
+        patch.old_value = concept.conflict_count
+        patch.rollback_payload = {
+            "conflict_count_delta": delta,
+            "had_has_contradiction": "has_contradiction" in concept.metadata,
+        }
+        concept.conflict_count += delta
+        concept.metadata["has_contradiction"] = True
+        self._add_history_entry(concept, patch)
         concept.updated_at = datetime.now(timezone.utc)
         return True
 
@@ -1887,6 +2298,7 @@ class ConceptInhibitor:
                     if old_sources is not None:
                         concept.source_episode_ids = old_sources
                         concept.remove_derivations_by_patch(patch.patch_id)
+                    self._restore_support_source(concept, patch)
                     # 還原 confidence
                     if patch.old_confidence is not None:
                         concept.confidence = patch.old_confidence
@@ -1904,6 +2316,15 @@ class ConceptInhibitor:
                         self._semantic._update_embedding_index(
                             concept, is_update=True
                         )
+                    concept.record_mutation()
+                elif patch.action == "mark_conflict":
+                    rb = patch.rollback_payload or {}
+                    delta = int(rb.get("conflict_count_delta", 0) or 0)
+                    if delta > 0:
+                        # 以增量回退（而非還原絕對值），並行的其他標記不會被蓋掉
+                        concept.conflict_count = max(0, concept.conflict_count - delta)
+                        if not rb.get("had_has_contradiction") and concept.conflict_count <= 0:
+                            concept.metadata.pop("has_contradiction", None)
                     concept.record_mutation()
                 elif patch.action == "deprecate":
                     # 還原為 active
@@ -1948,6 +2369,7 @@ class ConceptInhibitor:
             if old_sources is not None:
                 primary.source_episode_ids = list(old_sources)
             primary.remove_derivations_by_patch(patch.patch_id)
+            self._restore_support_source(primary, patch)
             if rb.get("old_confidence") is not None:
                 primary.confidence = rb["old_confidence"]
             history = primary.metadata.get("patch_history", [])
@@ -1962,7 +2384,11 @@ class ConceptInhibitor:
     # ──────────────────────────────────────────────
 
     def _write_audit(self, tx: PatchTransaction) -> None:
-        """寫入獨立 audit log（JSONL）。"""
+        """寫入獨立 audit log（JSONL）。失敗只記 log。"""
+        self._try_write_audit(tx)
+
+    def _try_write_audit(self, tx: PatchTransaction) -> bool:
+        """寫入獨立 audit log（JSONL），回傳是否成功（audit-before-mutate 用）。"""
         from pathlib import Path
 
         if self._audit_log_path:
@@ -1976,8 +2402,10 @@ class ConceptInhibitor:
                 line = json.dumps(tx.to_dict(), ensure_ascii=False)
                 f.write(line + "\n")
             tx.audit_path = str(log_path)
+            return True
         except Exception as e:
             logger.warning("[ConceptInhibitor] audit log 寫入失敗: %s", e)
+            return False
 
     # ──────────────────────────────────────────────
     # 輔助方法

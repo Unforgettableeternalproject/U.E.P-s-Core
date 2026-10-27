@@ -130,6 +130,7 @@ class DreamEngine:
         enable_idle: bool = True,
         enable_cron: bool = True,
         lock_factory: Guard | None = None,
+        evidence_store: Any | None = None,
     ):
         """
         初始化 Dream Engine。
@@ -143,6 +144,8 @@ class DreamEngine:
             cron_schedule: Cron 表達式（分 時 日 月 週）
             enable_idle: 是否啟用閒置觸發
             enable_cron: 是否啟用定時觸發
+            evidence_store: EvidenceStore 實例（可選）。提供時蒸餾／replay／程序提取的 prompt
+                依 evidence 標示來源（使用者陳述／agent 已說出口／未交付／工具記錄／來源未確認）。
             lock_factory: 取得 storage_lock 的工廠（呼叫後回傳 context manager）。
                 手動 dream_now 與排程（idle / cron）觸發走同一條路徑，鎖語意一致：
                 只在讀快照與套用結果的短臨界區持鎖，LLM 階段一律在鎖外。
@@ -197,6 +200,7 @@ class DreamEngine:
                 llm_fn=llm_fn,
                 patch_coordinator=self._patch_coordinator,
                 guard=self._guard,
+                evidence_store=evidence_store,
             )
 
         # 矛盾偵測器（需要 semantic + llm_fn）+ ConflictLedger
@@ -217,6 +221,7 @@ class DreamEngine:
                     llm_fn=llm_fn,
                     conflict_ledger=conflict_ledger,
                     guard=self._guard,
+                    patch_coordinator=self._patch_coordinator,
                 )
             except ImportError:
                 pass
@@ -233,6 +238,7 @@ class DreamEngine:
                     llm_fn=llm_fn,
                     guard=self._guard,
                     episodic=episodic,
+                    evidence_store=evidence_store,
                 )
             except ImportError:
                 pass
@@ -248,6 +254,7 @@ class DreamEngine:
                 contradiction_detector=contradiction_detector,
                 patch_coordinator=self._patch_coordinator,
                 guard=self._guard,
+                evidence_store=evidence_store,
             )
 
         logger.info(

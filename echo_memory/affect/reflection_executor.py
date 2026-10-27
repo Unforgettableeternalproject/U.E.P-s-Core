@@ -194,10 +194,34 @@ class ReflectionExecutor:
                 raise ValueError(f"未知的 action_type: {action_type}")
             # 概念變更在 storage_lock 內執行（鎖序 storage_lock -> semantic._lock）；
             # 這些 handler 不呼叫 LLM，持鎖不會卡住其他寫入者
+            if action_type == "create_concept":
+                params = self._with_similar_hint(target_id, params)
             with self._concept_guard(action_type):
                 return handler(target_id, params)
 
         return executor_fn
+
+    def _with_similar_hint(self, target_id: str, params: dict[str, Any]) -> dict[str, Any]:
+        """create_concept 進 storage_lock 前先算好語意相近提示（embedding／LLM 都不得在鎖內）。
+
+        只在 Gate 真的回傳 SimilarHint 時才帶入；失敗或 Gate 不支援則維持原 params
+        （寫入端會自行評估，不影響 create）。
+        """
+        from echo_memory.affect.concept_inhibitor import SimilarHint
+
+        # 同名概念已存在：_exec_create_concept 會直接拒絕，不必算 embedding
+        if self._engine.semantic.get_by_name(target_id) is not None:
+            return params
+        try:
+            hint = self._gate().evaluate_similar(
+                target_id, str(params.get("description", "")), judge=False,
+            )
+        except Exception as e:
+            logger.warning("[ReflectionExecutor] 語意相近預檢失敗（不影響 create）: %s", e)
+            return params
+        if not isinstance(hint, SimilarHint):
+            return params
+        return {**params, "similar_hint": hint}
 
     # 會改動 SemanticMemory／圖譜的 action：必須與 engine 其他寫入者序列化
     _CONCEPT_ACTIONS = frozenset({"tag_concept", "merge_concepts", "create_concept"})
@@ -785,6 +809,7 @@ class ReflectionExecutor:
                 "parent_concepts": params.get("parent_concepts"),
                 "parent_episode_ids": params.get("parent_episode_ids"),
                 "parent_evidence_ids": params.get("parent_evidence_ids"),
+                **({"similar_hint": params["similar_hint"]} if "similar_hint" in params else {}),
             },
             reasoning="ReflectionExecutor create_concept",
         )

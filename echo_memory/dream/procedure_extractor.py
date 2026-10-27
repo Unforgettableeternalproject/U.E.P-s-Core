@@ -130,6 +130,7 @@ class ProcedureExtractor:
         structured_llm_fn: Callable[[str], dict] | None = None,
         guard: Guard | None = None,
         episodic: Any | None = None,
+        evidence_store: Any | None = None,
     ):
         """
         Args:
@@ -148,6 +149,7 @@ class ProcedureExtractor:
         # episodic：提供時，寫回前比對來源 Episode 是否已過期
         self._guard = resolve_guard(guard)
         self._episodic = episodic
+        self._evidence_store = evidence_store
         self.semantic = semantic
         self.graph = graph
         self.llm_fn = llm_fn
@@ -243,14 +245,21 @@ class ProcedureExtractor:
         return report
 
     def _build_prompt(self, episodes: list[Episode]) -> str:
-        lines = []
-        for i, ep in enumerate(episodes):
-            lines.append(
-                f"[{i}] 使用者: {ep.user_input}\n"
-                f"    助手: {ep.agent_response}\n"
-                f"    摘要: {ep.content_summary}"
-            )
-        return _EXTRACT_PROMPT.format(episodes_text="\n\n".join(lines))
+        from echo_memory.utils.source_view import (
+            SOURCE_LEGEND,
+            load_units,
+            render_episode_block,
+            units_for,
+        )
+
+        units_by_episode = load_units(self._evidence_store, episodes)
+        lines = [
+            render_episode_block(i, ep, units_for(ep, units_by_episode))
+            for i, ep in enumerate(episodes)
+        ]
+        return SOURCE_LEGEND + "\n\n" + _EXTRACT_PROMPT.format(
+            episodes_text="\n\n".join(lines),
+        )
 
     def _parse_llm_output(self, raw: str) -> dict[str, Any] | None:
         """解析 LLM 輸出，容錯 markdown fences。"""

@@ -20,7 +20,7 @@ import copy
 import json
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from contextlib import contextmanager
 from pathlib import Path
@@ -454,6 +454,47 @@ class SemanticMemory:
             f"找到 {len(results)}/{top_k} 個相似度 >= {min_similarity} 的概念"
         )
         return results
+
+    def find_similar_concepts(
+        self,
+        query_embedding: list[float],
+        threshold: float,
+        top_k: int = 3,
+        exclude_names: Iterable[str] = (),
+    ) -> list[tuple[Concept, float]]:
+        """純 embedding 的相近概念查詢（供 Patch Gate 的「語意相近提示」）。
+
+        與 search_by_vector 的差異：只列 active 且未合併的概念；不套 retrieval_weight、
+        不遞增 access_count（只是提示，不算一次召回）。呼叫端須先在鎖外算好向量；
+        這裡只短暫持有讀者鎖做記憶體內運算。
+
+        Returns:
+            [(Concept, cosine), ...] 依 cosine 降序，cosine >= threshold，最多 top_k 筆
+        """
+        query_vec = self._normalize_vector(query_embedding)
+        if not np.any(query_vec):
+            return []
+        excluded = set(exclude_names)
+        with self._mem:
+            if self._embeddings is None or not self._concepts_by_id:
+                return []
+            if self._embeddings.shape[1] != query_vec.shape[0]:
+                return []
+            sims = np.dot(self._embeddings, query_vec)
+            results: list[tuple[Concept, float]] = []
+            for idx in np.argsort(sims)[::-1]:
+                sim = float(sims[idx])
+                if sim < threshold:
+                    break
+                concept = self._concepts_by_id.get(self._index_to_id(int(idx)) or "")
+                if concept is None or concept.name in excluded:
+                    continue
+                if concept.status != "active" or concept.metadata.get("merged_into"):
+                    continue
+                results.append((concept, sim))
+                if len(results) >= top_k:
+                    break
+            return results
 
     @staticmethod
     def validate_subject(subject: str) -> None:

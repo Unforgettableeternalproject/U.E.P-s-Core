@@ -406,10 +406,10 @@ def test_procedural_write_embedding_does_not_block_search(tmp_path: Path):
 def _slow_save(episodic, entered: threading.Event, delay: float):
     original = episodic._save_unlocked
 
-    def _wrapped() -> None:
+    def _wrapped(*args, **kwargs) -> None:
         entered.set()
         time.sleep(delay)
-        original()
+        original(*args, **kwargs)
 
     episodic._save_unlocked = _wrapped
 

@@ -433,6 +433,14 @@ class MemoryGraph:
         )
 
     @_locked
+    def ensure_placeholder_concept_node(self, concept_id: str) -> bool:
+        """節點不存在時加入只有 node_type 的最小 Concept 節點（讓邊可建立）。回傳是否新增。"""
+        if self.graph.has_node(concept_id):
+            return False
+        self.graph.add_node(concept_id, node_type="Concept")
+        return True
+
+    @_locked
     def has_contradicts_edge(self, concept_a: str, concept_b: str) -> bool:
         """
         檢查兩個概念之間是否已有 CONTRADICTS 邊。
@@ -1003,7 +1011,7 @@ class MemoryGraph:
         self.install(self.load_snapshot())
 
     def save(self) -> None:
-        """保存圖到磁盤"""
+        """保存圖到磁盤。失敗時清掉暫存檔並拋出，呼叫端必須處理（不得吞掉存檔失敗）。"""
         tmp_file = temporary_sibling(self.graph_file)
         try:
             self.storage_path.mkdir(parents=True, exist_ok=True)
@@ -1025,7 +1033,11 @@ class MemoryGraph:
         except Exception as e:
             logger.error(f"[MemoryGraph] 保存圖失敗: {e}")
             if tmp_file.exists():
-                tmp_file.unlink()
+                try:
+                    tmp_file.unlink()
+                except OSError:
+                    pass
+            raise
 
     def reload(self) -> None:
         """重新載入目前磁碟上的圖快照。"""

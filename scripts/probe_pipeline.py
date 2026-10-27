@@ -346,7 +346,7 @@ def run_single_turn(
     if storage_dec.metadata_tags:
         ep_metadata["judge_tags"] = storage_dec.metadata_tags
     if storage_dec.force_remember:
-        ep_metadata["force_remember"] = True
+        ep_metadata["judge_force_remember"] = True
     if storage_dec.entity_triggers:
         ep_metadata["entity_triggers"] = True
     if storage_dec.source != "baseline":

@@ -31,6 +31,21 @@ from echo_memory.schemas.memory_context import MemoryContext
 
 logger = logging.getLogger("echo_memory.affect.judge")
 
+# episode.metadata 的 Judge force_remember 標記鍵。
+# 舊鍵 "force_remember" 與 LLM 工具 force_remember 撞名，易被誤認為工具寫入；
+# 新資料一律寫 JUDGE_FORCE_REMEMBER_KEY，讀取端用 is_judge_force_remember() 同時相容舊鍵。
+JUDGE_FORCE_REMEMBER_KEY = "judge_force_remember"
+_LEGACY_FORCE_REMEMBER_KEY = "force_remember"
+
+
+def is_judge_force_remember(metadata: dict[str, Any] | None) -> bool:
+    """episode.metadata 是否帶有 Judge 的 force_remember 標記（新鍵優先，相容舊鍵）。"""
+    if not metadata:
+        return False
+    if JUDGE_FORCE_REMEMBER_KEY in metadata:
+        return bool(metadata[JUDGE_FORCE_REMEMBER_KEY])
+    return bool(metadata.get(_LEGACY_FORCE_REMEMBER_KEY, False))
+
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 資料結構

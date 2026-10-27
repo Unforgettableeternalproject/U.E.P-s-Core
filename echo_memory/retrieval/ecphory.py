@@ -53,12 +53,14 @@ class EcphoryRetrieval:
         working: WorkingMemory | None = None,
         procedural: Any | None = None,  # ProceduralMemory（延遲導入）
         entity_store: Any | None = None,  # EntityStore（延遲導入）
+        evidence: Any | None = None,  # EvidenceStore；用於過濾 lexical 路的未交付 agent 內容
     ):
         self.episodic = episodic
         self.semantic = semantic
         self.working = working  # 若提供，啟用查詢向量快取
         self.procedural = procedural  # 若提供，檢索時一併搜索程序
         self.entity_store = entity_store  # 若提供，沿 MENTIONS 邊收集 Entity
+        self.evidence = evidence
 
     def retrieve(
         self,
@@ -135,10 +137,13 @@ class EcphoryRetrieval:
                 reason = self.episodic.last_embedding_error or "embedding unavailable"
                 _lap("embed")
                 logger.warning(
-                    f"[EcphoryRetrieval] 查詢 embedding 降級，回傳空脈絡: {reason} "
+                    f"[EcphoryRetrieval] 查詢 embedding 降級: {reason} "
                     f"(embed={timings['embed']}ms)"
                 )
-                return MemoryContext(degraded=True, degraded_reason=reason, timings_ms=timings)
+                return self._degraded_lexical_context(
+                    query, reason, timings, _lap, top_k,
+                    exclude_session_id, exclude_episode_ids,
+                )
             if self.working is not None:
                 self.working.set(cache_key, query_embedding)
         _lap("embed")
@@ -151,14 +156,30 @@ class EcphoryRetrieval:
         # 排除時多撈一些，過濾後再截斷
         has_exclusion = exclude_session_id or exclude_episode_ids
         search_k = seed_k * 3 if has_exclusion else seed_k
+        lexical_on = self._lexical_enabled()
+        cfg = get_config() if lexical_on else None
+        # lexical 啟用時向量路取 top N 再融合；關閉時維持舊行為
         seed_results = self.episodic.search(
             query_embedding,
-            top_k=search_k,
+            top_k=max(search_k, cfg.retrieval_lexical_top_n) if lexical_on else search_k,
             min_similarity=min_similarity,
         )
+        rank_sim: dict[str, float] = {}
+        lexical_only_ids: list[str] = []
 
         # 過濾排除的 episodes（避免與 LLM 的 in-context history 重複）
-        if has_exclusion:
+        if lexical_on:
+            _lap("seed_search")
+            seed_results = self._exclude(seed_results, exclude_session_id, exclude_episode_ids)
+            lex_hits = self._lexical_hits(
+                query, cfg, exclude_session_id, exclude_episode_ids,
+            )
+            seed_results, lexical_only_ids, rank_sim = self._rrf_seeds(
+                seed_results, lex_hits, seed_k, cfg.retrieval_rrf_k,
+                query_embedding, min_similarity, cfg.retrieval_lexical_min_cosine,
+            )
+            _lap("lexical")
+        elif has_exclusion:
             filtered = []
             for ep, score in seed_results:
                 # exclude_episode_ids 精準排除（三層混合策略）
@@ -169,7 +190,8 @@ class EcphoryRetrieval:
                     continue
                 filtered.append((ep, score))
             seed_results = filtered[:seed_k]
-        _lap("seed_search")
+        if not lexical_on:
+            _lap("seed_search")
 
         if not seed_results:
             # 沒有 Episode 種子，但仍可能有 Concept 命中
@@ -283,7 +305,9 @@ class EcphoryRetrieval:
         now_ts = time.time()
 
         def _fusion_score(ep) -> float:
-            sim = similarities.get(ep.id, 0.0)
+            # lexical-only 命中的排序用相似度不低於向量門檻（它已通過 lexical 自己的門檻）；
+            # similarities 欄位仍保持原始 cosine
+            sim = rank_sim.get(ep.id, similarities.get(ep.id, 0.0))
 
             # Recency = exp(-0.01 * hours_ago)（對齊 OpenSoul 公式）
             hours_ago = (now_ts - ep.timestamp.timestamp()) / 3600.0
@@ -325,6 +349,7 @@ class EcphoryRetrieval:
             similarities=similarities,
             concept_similarities=concept_similarities,
             timings_ms=timings,
+            lexical_only_ids=lexical_only_ids,
         )
 
         logger.debug(
@@ -334,6 +359,151 @@ class EcphoryRetrieval:
         )
 
         return context
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Lexical 路 + RRF 融合（只影響種子排序，不涉及存儲決策）
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    def _lexical_enabled(self) -> bool:
+        return bool(get_config().retrieval_lexical_enabled) and callable(
+            getattr(self.episodic, "lexical_search", None)
+        )
+
+    @staticmethod
+    def _exclude(results, exclude_session_id, exclude_episode_ids):
+        """依排除條件過濾 (Episode, score) 列表。"""
+        if not (exclude_session_id or exclude_episode_ids):
+            return list(results)
+        out = []
+        for ep, score in results:
+            if exclude_episode_ids and ep.id in exclude_episode_ids:
+                continue
+            if exclude_session_id and ep.session_id == exclude_session_id:
+                continue
+            out.append((ep, score))
+        return out
+
+    def _lexical_hits(
+        self, query, cfg, exclude_session_id, exclude_episode_ids,
+    ) -> list:
+        """取 lexical 候選（已排除、已濾掉未交付 agent 內容）；任何失敗回空，不影響向量路。"""
+        try:
+            hits = self.episodic.lexical_search(
+                query,
+                top_n=cfg.retrieval_lexical_top_n,
+                min_score=cfg.retrieval_lexical_min_score,
+                rel_min=cfg.retrieval_lexical_rel_min,
+                max_df=cfg.retrieval_lexical_max_df,
+                min_coverage=cfg.retrieval_lexical_min_coverage,
+            )
+            hits = self._exclude(list(hits), exclude_session_id, exclude_episode_ids)
+            return self._drop_undelivered(query, hits)
+        except Exception as e:
+            logger.warning(f"[EcphoryRetrieval] lexical 檢索失敗（不影響向量路）: {e}")
+            return []
+
+    def _drop_undelivered(self, query: str, hits: list) -> list:
+        """agent 未交付內容不得被 lexical 命中。
+
+        索引文字取自 content_summary／user_input／agent_response；但 agent_response
+        在「被打斷且無進度」時仍保留完整預定回覆，content_summary 也可由呼叫端自訂。
+        因此帶有未交付 agent unit 的 episode 以證據核對：只允許用其「非未交付 unit」
+        的內容（user 與已交付 agent）命中。
+        證據不可讀時保守丟棄這些帶證據的候選。
+        """
+        from echo_memory.schemas.evidence import is_undelivered_agent
+        from echo_memory.storage.lexical import has_term_overlap
+
+        if self.evidence is None or not hits:
+            return hits
+        eps = [ep for ep, _ in hits if getattr(ep, "evidence_ids", None)]
+        if not eps:
+            return hits
+        try:
+            units = self.evidence.units_for_episodes(eps)
+        except Exception as e:
+            logger.warning(f"[EcphoryRetrieval] 讀取證據失敗，略過帶證據的 lexical 候選: {e}")
+            return [(ep, s) for ep, s in hits if not getattr(ep, "evidence_ids", None)]
+        kept = []
+        for ep, score in hits:
+            if any(is_undelivered_agent(u) for u in units.get(ep.id, ())):
+                allowed = "\n".join(
+                    u.content for u in units.get(ep.id, ()) if not is_undelivered_agent(u)
+                )
+                if not has_term_overlap(query, allowed):
+                    continue
+            kept.append((ep, score))
+        return kept
+
+    def _rrf_seeds(
+        self, vector_results, lex_hits, seed_k, rrf_k, query_embedding, min_similarity,
+        min_cosine=-1.0,
+    ):
+        """RRF 融合兩路，回傳 (種子 [(Episode, 原始 cosine)], lexical_only ids, 排序用相似度)。"""
+        rrf: dict[str, float] = {}
+        eps: dict[str, Any] = {}
+        cosine: dict[str, float] = {}
+        for rank, (ep, score) in enumerate(vector_results, start=1):
+            rrf[ep.id] = rrf.get(ep.id, 0.0) + 1.0 / (rrf_k + rank)
+            eps[ep.id] = ep
+            cosine[ep.id] = score
+        for rank, (ep, _bm25) in enumerate(lex_hits, start=1):
+            rrf[ep.id] = rrf.get(ep.id, 0.0) + 1.0 / (rrf_k + rank)
+            eps.setdefault(ep.id, ep)
+        # lexical-only 候選須有最低語意相似度（向量可用時）：字面巧合不足以成為種子
+        lex_only_sim: dict[str, float] = {}
+        for eid in rrf:
+            if eid in cosine:
+                continue
+            sim = self.episodic.similarity_to_query(query_embedding, eid)
+            sim = 0.0 if sim is None else float(sim)
+            if sim < min_cosine:
+                continue
+            lex_only_sim[eid] = sim
+        candidates = [i for i in rrf if i in cosine or i in lex_only_sim]
+        # 同分以先到者（向量路優先）為準：sorted 為穩定排序
+        order = sorted(candidates, key=lambda i: rrf[i], reverse=True)[:seed_k]
+
+        seeds: list = []
+        lexical_only: list[str] = []
+        rank_sim: dict[str, float] = {}
+        for eid in order:
+            if eid in cosine:
+                seeds.append((eps[eid], cosine[eid]))
+                continue
+            # lexical-only：補算原始 cosine（向量路門檻外的候選）
+            sim = lex_only_sim[eid]
+            seeds.append((eps[eid], sim))
+            lexical_only.append(eid)
+            rank_sim[eid] = max(sim, min_similarity) if min_similarity > 0 else sim
+        return seeds, lexical_only, rank_sim
+
+    def _degraded_lexical_context(
+        self, query, reason, timings, lap, top_k, exclude_session_id, exclude_episode_ids,
+    ) -> MemoryContext:
+        """embedding 不可用時：lexical 仍可提供 Episode；無命中則維持舊的空脈絡。"""
+        hits: list = []
+        if self._lexical_enabled():
+            cfg = get_config()
+            hits = self._lexical_hits(
+                query, cfg, exclude_session_id, exclude_episode_ids,
+            )
+            lap("lexical")
+        if not hits:
+            return MemoryContext(degraded=True, degraded_reason=reason, timings_ms=timings)
+        final = [ep for ep, _ in hits[:top_k]]
+        entities = self._collect_entities(final) if self.entity_store is not None else []
+        lap("rank")
+        logger.warning(f"[EcphoryRetrieval] 降級為僅 lexical，命中 {len(final)} 筆")
+        return MemoryContext(
+            episodes=final,
+            entities=entities,
+            similarities={ep.id: 0.0 for ep in final},
+            degraded=True,
+            degraded_reason=f"{reason}；僅 lexical",
+            timings_ms=timings,
+            lexical_only_ids=[ep.id for ep in final],
+        )
 
     def _collect_entities(self, episodes: list) -> list:
         """

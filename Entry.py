@@ -35,7 +35,7 @@ from echo_memory.affect.concept_verifier import ConceptVerifier
 from echo_memory.affect.concept_inhibitor import ConceptInhibitor
 from echo_memory.affect.verifier import ResponseVerifier
 from echo_memory.affect.inhibitor import ResponseInhibitor, InhibitionAction
-from echo_memory.affect.judge import StorageJudge
+from echo_memory.affect.judge import JUDGE_FORCE_REMEMBER_KEY, StorageJudge
 from echo_memory.affect.concept_extractor import ConceptExtractor
 from echo_memory.affect.soul_note import SoulNote, SoulNoteManager
 from echo_memory.affect.reflection import ReflectionModule
@@ -255,6 +255,7 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
         embed_fn=lambda text: engine.episodic._generate_embedding(text),
         inhibitor=concept_inhibitor,
         structured_llm_fn=structured_concept_extract_fn,
+        evidence_store=engine.evidence,
     )
 
     def _show_session_banner():
@@ -626,7 +627,7 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
             if storage_dec.metadata_tags:
                 ep_metadata["judge_tags"] = storage_dec.metadata_tags
             if storage_dec.force_remember:
-                ep_metadata["force_remember"] = True
+                ep_metadata[JUDGE_FORCE_REMEMBER_KEY] = True
             if storage_dec.entity_triggers:
                 ep_metadata["entity_triggers"] = True
             if storage_dec.source != "baseline":

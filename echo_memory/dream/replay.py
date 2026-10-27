@@ -38,6 +38,12 @@ from echo_memory.dream.staleness import (
     snapshot_episodes,
 )
 from echo_memory.storage.graph import MemoryGraph
+from echo_memory.utils.source_view import (
+    SOURCE_LEGEND,
+    load_units,
+    render_episode_block,
+    units_for,
+)
 
 logger = logging.getLogger("echo_memory.dream.replay")
 
@@ -68,6 +74,8 @@ REPLAY_RESPONSE_SCHEMA = {
 _REPLAY_PROMPT = """\
 你是一個記憶反思專家。回顧以下對話記錄，進行反思性分析。
 
+{source_legend}
+
 ## 對話記錄
 
 {episodes_text}
@@ -95,6 +103,7 @@ _REPLAY_PROMPT = """\
 - related_indices 列出與此記錄語義相關的其他記錄索引
 - 反思要超越原始對話，提煉出潛在意義或模式
 - 如果記錄太瑣碎不值得反思，importance 設為 < 0.3
+- 反思必須區分「使用者說的」與「助手說的／推測的」，不得把助手的推測寫成使用者的事實或偏好
 """
 
 
@@ -141,6 +150,7 @@ class LiDERReplay:
         patch_coordinator=None,
         structured_llm_fn: Callable[[str], dict] | None = None,
         guard: Guard | None = None,
+        evidence_store: Any | None = None,
     ):
         """
         Args:
@@ -156,8 +166,11 @@ class LiDERReplay:
             guard: 鎖 context manager 工廠（通常為 storage_lock）。
                     只在「收集候選」與「套用結果」兩個短臨界區持有，LLM 呼叫在鎖外。
                     None 時不加鎖。
+            evidence_store: EvidenceStore 實例（可選）。提供時 prompt 依來源標示 Episode 內容；
+                    None 時視為 legacy_unknown（保守）。
         """
         self.episodic = episodic
+        self._evidence_store = evidence_store
         self.graph = graph
         self.llm_fn = llm_fn
         self._patch_coordinator = patch_coordinator
@@ -374,15 +387,20 @@ class LiDERReplay:
 
         return candidates[:max_count]
 
-    def _build_prompt(self, episodes: list[Episode]) -> str:
-        lines = []
-        for i, ep in enumerate(episodes):
-            lines.append(
-                f"[{i}] 使用者: {ep.user_input}\n"
-                f"    助手: {ep.agent_response}\n"
-                f"    摘要: {ep.content_summary}"
-            )
-        return _REPLAY_PROMPT.format(episodes_text="\n\n".join(lines))
+    def _build_prompt(
+        self,
+        episodes: list[Episode],
+        units_by_episode: dict[str, list] | None = None,
+    ) -> str:
+        if units_by_episode is None:
+            units_by_episode = load_units(self._evidence_store, episodes)
+        lines = [
+            render_episode_block(i, ep, units_for(ep, units_by_episode))
+            for i, ep in enumerate(episodes)
+        ]
+        return _REPLAY_PROMPT.format(
+            source_legend=SOURCE_LEGEND, episodes_text="\n\n".join(lines),
+        )
 
     def _parse_llm_output(self, raw: str) -> list[dict[str, Any]]:
         """

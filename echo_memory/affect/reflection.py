@@ -59,6 +59,8 @@ _REFLECT_PROMPT = """你是一個記憶系統的反思模組。審視以下最�
 已知概念（最多 5 個）：
 {known_concepts}
 
+注意：最近對話只是摘要，不保證每句都是使用者說過的話；助手的推測或建議不可當成使用者的事實或偏好。
+
 神經化學狀態：DA={dopamine:.2f}, 5-HT={serotonin:.2f}, 模式={mode}
 
 請以純 JSON 格式回覆（不要包含 markdown 標記）：
@@ -84,7 +86,8 @@ memory_ops 格式（最多 3 個，可為空陣列）：
 - add_note：寫一則潛意識筆記。target 留空, params={{"content": "筆記內容"}}
 - merge_concepts：合併重複概念。target=主概念名稱, params={{"merge_with": "次概念名稱"}}
 - archive_episode：歸檔不重要的 episode。target=episode_id, params={{}}
-- create_concept：提議新概念。target=概念名稱, params={{"description": "概念描述"}}
+- create_concept：提議新概念。target=概念名稱, params={{"description": "概念描述", "parent_concepts": ["既有概念名稱或 id"]}}
+  parent_concepts 列出此新概念是從哪些「已知概念」衍生而來（只能引用上方已知概念，不確定就省略該欄位）
 
 注意：不確定時寧可不操作（memory_ops 留空陣列），不要過度干預。"""
 

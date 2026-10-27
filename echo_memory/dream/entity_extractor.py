@@ -25,8 +25,7 @@ _VALID_TYPES = {"person", "place", "concept", "product", "event", "other"}
 _EXTRACT_PROMPT = """\
 從以下對話中提取所有具體實體（人名、地名、產品名、事件名等）。
 
-使用者: {user_input}
-助手: {agent_response}
+{conversation}
 
 輸出 JSON 陣列:
 [{{"name": "...", "entity_type": "person|place|product|event|other", "description": "一句話描述"}}]
@@ -42,15 +41,22 @@ class EntityExtractor:
     無 LLM 時降級到正則規則（低品質但不報錯）。
     """
 
-    def __init__(self, llm_fn: Callable[[str], str] | None = None):
+    def __init__(
+        self,
+        llm_fn: Callable[[str], str] | None = None,
+        evidence_store: object | None = None,
+    ):
         """
         初始化提取器。
 
         Args:
             llm_fn: LLM 呼叫函式 (prompt: str) -> str。
                     若為 None，降級到規則提取。
+            evidence_store: EvidenceStore（可選）。LLM 路徑依 evidence 標示內容來源；
+                    None 時視為 legacy_unknown（保守）。
         """
         self._llm_fn = llm_fn
+        self._evidence_store = evidence_store
         mode = "LLM" if llm_fn is not None else "規則（降級）"
         logger.info(f"[EntityExtractor] 初始化完成，提取模式: {mode}")
 
@@ -81,10 +87,13 @@ class EntityExtractor:
         Returns:
             Entity 列表
         """
-        prompt = _EXTRACT_PROMPT.format(
-            user_input=episode.user_input,
-            agent_response=episode.agent_response,
-        )
+        from echo_memory.utils.source_view import load_units, render_episode_lines, units_for
+
+        units_by_episode = load_units(self._evidence_store, [episode])
+        conversation = "\n".join(render_episode_lines(
+            episode, units_for(episode, units_by_episode),
+        ))
+        prompt = _EXTRACT_PROMPT.format(conversation=conversation)
 
         try:
             raw_output = self._llm_fn(prompt)

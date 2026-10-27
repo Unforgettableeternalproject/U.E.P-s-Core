@@ -163,13 +163,17 @@ class ConceptPatch:
       - link: 新增圖譜邊
       - unlink: 移除圖譜邊
       - merge: 合併兩個概念
+      - mark_conflict: 機器偵測的矛盾標記（ContradictionDetector）。
+        new_value = {"conflict_count_delta": int, "rival_concept_id": str}，
+        遞增 conflict_count 並設 metadata["has_contradiction"]；
+        不新增 derivation（矛盾對手不是來源）
 
     雙重 confidence:
       - old/new_confidence: 概念本身的可信度
       - patch_confidence: 此次變更操作的可信度
 
     風險等級:
-      - low: create、expand/ADD_FACT（強證據）
+      - low: create、expand/ADD_FACT（強證據）、mark_conflict
       - medium: expand/REFINE_SUMMARY、link/unlink
       - high: modify、deprecate、merge
     """
@@ -178,7 +182,7 @@ class ConceptPatch:
     concept_name: str
     action: Literal[
         "create", "expand", "modify", "deprecate",
-        "link", "unlink", "merge",
+        "link", "unlink", "merge", "mark_conflict",
     ]
     evidence: PatchEvidence
 
@@ -213,6 +217,11 @@ class ConceptPatch:
     rollback_payload: dict[str, Any] | None = None
     merge_target_id: str | None = None
 
+    # 支撐來源（user / legacy_unknown / agent_only），create／expand patch 攜帶，
+    # apply 時只升不降地寫入 Concept.metadata["support_source"]；舊值記在
+    # rollback_payload["support_source_undo"]，rollback 還原
+    support_source: str | None = None
+
     def __post_init__(self) -> None:
         if not self.patch_id:
             self.patch_id = f"patch_{uuid.uuid4().hex[:12]}"
@@ -240,6 +249,7 @@ class ConceptPatch:
             "rejection_reason": self.rejection_reason,
             "rollback_payload": self.rollback_payload,
             "merge_target_id": self.merge_target_id,
+            "support_source": self.support_source,
         }
 
     @classmethod

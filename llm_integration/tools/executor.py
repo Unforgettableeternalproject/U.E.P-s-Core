@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from echo_memory.schemas.evidence import CONTENT_ORIGINS, EvidenceInput, SourceRef
+
 if TYPE_CHECKING:
     from echo_memory.engine import MemoryEngine
 
@@ -107,7 +109,7 @@ class ToolExecutor:
         """
         強制儲存重要資訊到長期記憶。
 
-        將 content 和 reason 組合成 user/agent 對話格式存入情節記憶，
+        以獨立的 tool_note Episode 存入情節記憶，來源記為 tool 操作（reason 進 attrs），
         salience 預設 0.85（比一般對話更高，反映主動標記的重要性）。
         """
         content = args.get("content", "")
@@ -120,15 +122,35 @@ class ToolExecutor:
         if not content:
             return {"success": False, "result": "content is required"}
 
-        # 以「LLM 主動標記重要資訊」的格式存入情節記憶
-        # content_summary 使用乾淨的原文，不帶 [force_remember] 前綴，
-        # 確保向量搜索的語義準確度
+        # 工具操作與內容出處分離：
+        # - 操作本身是 source_type="tool"（由對話 LLM 呼叫，speaker 為 agent），
+        #   不再偽裝成使用者發言，也不偽造 agent 回覆。
+        # - 內容真正出自誰由 LLM 以工具參數 content_origin 明示；未說明即 "unknown"。
+        #   此處不做任何 keyword 推斷。
+        content_origin = args.get("content_origin")
+        if content_origin not in CONTENT_ORIGINS:
+            content_origin = None  # 無效或缺省 -> 引擎記為 unknown
+        origin_ids = args.get("origin_evidence_ids") or []
+        if not isinstance(origin_ids, (list, tuple)):
+            origin_ids = []
+        # content_summary 使用乾淨的原文，確保向量搜索的語義準確度
         episode_id = self.engine.store_episode(
-            user_input=f"[force_remember] {content}",
-            agent_response=f"Stored because: {reason}",
+            user_input="",
+            agent_response="",
             session_id=self.session_id,
             salience=salience,
             content_summary=content[:100],
+            episode_kind="tool_note",
+            evidence=[EvidenceInput(
+                source_type="tool",
+                content=content,
+                speaker_id="agent",
+                source_ref=SourceRef(kind="tool_call", name="force_remember"),
+                scope=f"session:{self.session_id}",
+                content_origin=content_origin,
+                origin_evidence_ids=tuple(str(i) for i in origin_ids),
+                attrs={"reason": reason, "requested_salience": salience},
+            )],
         )
 
         logger.info(f"[ToolExecutor] force_remember 儲存成功: {episode_id}")

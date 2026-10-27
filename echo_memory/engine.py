@@ -15,14 +15,19 @@ Architecture:
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+import os
+import uuid
+from collections.abc import Callable, Sequence
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from echo_memory.schemas.episode import Episode
+from echo_memory.schemas.evidence import EvidenceInput, EvidenceUnit
 from echo_memory.schemas.memory_context import MemoryContext
 from echo_memory.namespace import normalize_namespace_id, resolve_namespace_path
 from echo_memory.neurochem.state import NeurochemState
+from echo_memory.storage.evidence import EvidenceStore, build_legacy_units
 from echo_memory.storage.locking import storage_lock
 
 logger = logging.getLogger("echo_memory.engine")
@@ -92,6 +97,7 @@ class MemoryEngine:
         self._concept_inhibitor = None  # 由外部注入（Entry.py），供 DreamEngine 使用
         self._entity_store = None
         self._entity_extractor = None
+        self._evidence = None
 
         # ── 神經化學狀態（session 級別，跨對話持久化）──────────────────
         self._neurochem: NeurochemState = self._load_neurochem()
@@ -115,7 +121,29 @@ class MemoryEngine:
                 embedding_backend=self.embedding_backend,
                 ollama_base_url=self.ollama_base_url,
             )
+            # 背景暖機 embedding 後端；失敗只標記 degraded，不影響使用。
+            # 測試或離線環境可設 ECHO_DISABLE_EMBEDDING_WARMUP=1 關閉。
+            if os.getenv("ECHO_DISABLE_EMBEDDING_WARMUP", "").lower() not in ("1", "true", "yes"):
+                self._episodic.warmup(background=True)
         return self._episodic
+
+    @property
+    def evidence(self) -> EvidenceStore:
+        """延遲加載證據存儲（append-only evidence.jsonl）。"""
+        if self._evidence is None:
+            self._evidence = EvidenceStore(
+                self.storage_path / "evidence", lock_path=self.storage_path,
+            )
+        return self._evidence
+
+    def get_episode_evidence(self, episode: Episode | str) -> list[EvidenceUnit]:
+        """取得 Episode 的證據；舊 Episode 回傳即時合成的 legacy_unknown unit（不寫入）。"""
+        if isinstance(episode, str):
+            found = self.episodic.get(episode)
+            if found is None:
+                return []
+            episode = found
+        return self.evidence.units_for_episode(episode)
 
     @property
     def semantic(self):
@@ -211,26 +239,51 @@ class MemoryEngine:
         salience: float = 0.5,
         da_weight: float | None = None,
         ht_weight: float | None = None,
+        *,
+        evidence: Sequence[EvidenceInput] | None = None,
+        episode_kind: str = "turn",
         **metadata: Any,
     ) -> str:
         """
         存儲一個情節記憶。
 
+        來源契約：
+        - 帶 evidence：每個 EvidenceInput 轉成 provenance_status="known" 的 EvidenceUnit
+          （意義為「呼叫端以結構欄位宣告了來源」，不是引擎驗證）。
+        - 不帶 evidence（舊介面）：自動產生 provenance_status="legacy_unknown" 的 user／agent
+          unit，agent 的 delivery_state 為 unknown；不會取得使用者確認的證據地位。
+
         Args:
-            user_input: 用戶輸入
-            agent_response: Agent 回應
+            user_input: 用戶輸入（保留原文供對話回憶）
+            agent_response: Agent 回應（保留原文；只含已交付部分）
             session_id: 會話 ID
             content_summary: 對話摘要（若為 None 則自動生成）
             salience: 顯著性分數 (0-1)
             da_weight: 多巴胺烙印強度（None 則繼承當前 neurochem.dopamine）
             ht_weight: 血清素穩定性標記（None 則繼承當前 neurochem.serotonin）
+            evidence: 來源明確的證據宣告
+            episode_kind: "turn"（對話輪）或 "tool_note"（工具操作記憶，須帶 evidence）
             **metadata: 額外元數據
 
         Returns:
-            episode_id: 新建的情節 ID
+            episode_id: 新建的情節 ID（拒收時為空字串）
+
+        Raises:
+            ValueError: episode_kind 無效、tool_note 未帶 evidence，或 evidence 與
+                user_input／agent_response 不一致。
         """
-        # 空白輸入防護：純空白的 user_input 不應產生 episode
-        if not user_input or not user_input.strip():
+        if episode_kind not in ("turn", "tool_note"):
+            raise ValueError(f"episode_kind 必須是 'turn' 或 'tool_note'，收到 {episode_kind!r}")
+        if episode_kind == "tool_note" and not evidence:
+            raise ValueError("tool_note 必須帶 evidence 宣告來源")
+        if evidence:
+            self._check_evidence_consistency(user_input, agent_response, evidence)
+            has_content = any(e.content and e.content.strip() for e in evidence)
+            if not has_content:
+                logger.warning("[MemoryEngine] 拒絕存儲全空白的 evidence，跳過 store_episode")
+                return ""
+        elif not user_input or not user_input.strip():
+            # 空白輸入防護：純空白的 user_input 不應產生 episode
             logger.warning(
                 "[MemoryEngine] 拒絕存儲空白 user_input，跳過 store_episode"
             )
@@ -238,7 +291,9 @@ class MemoryEngine:
 
         if content_summary is None:
             # 結合 user + agent 的核心內容作為摘要，供向量搜索使用
-            combined = f"{user_input} {agent_response}"
+            combined = f"{user_input} {agent_response}".strip()
+            if not combined and evidence:
+                combined = next((e.content for e in evidence if e.content.strip()), "")
             content_summary = combined[:150]
 
         # 若未明確指定 da/ht，繼承當前神經化學狀態
@@ -256,11 +311,37 @@ class MemoryEngine:
             da_weight=da_weight,
             ht_weight=ht_weight,
             metadata=metadata,
+            episode_kind=episode_kind,
         )
+
+        recorded_at = datetime.now(timezone.utc)
+        if evidence:
+            units = [
+                inp.to_unit(
+                    unit_id=f"ev_{uuid.uuid4().hex[:12]}",
+                    episode_id=episode.id,
+                    recorded_at=recorded_at,
+                )
+                for inp in evidence
+            ]
+        else:
+            units = build_legacy_units(
+                episode_id=episode.id,
+                user_input=user_input,
+                agent_response=agent_response,
+                occurred_at=episode.timestamp,
+                metadata=metadata,
+                via="legacy_signature",
+                recorded_at=recorded_at,
+            )
+        episode.evidence_ids = [u.id for u in units]
 
         # 鎖語意：寫入與實體寫回各自是短臨界區，實體提取（LLM）在鎖外，
         # 避免同 namespace 的其他寫入被 LLM 延遲拖到 TimeoutError。
         with storage_lock(self.storage_path):
+            # 先追加證據再寫 Episode：中途失敗只會留下無害的孤兒 evidence，
+            # 不會有「沒有證據的 Episode」。
+            self.evidence.append(units)
             episode_id = self.episodic.write(episode)
             logger.info(f"[MemoryEngine] 存儲情節: {episode_id}")
 
@@ -268,6 +349,9 @@ class MemoryEngine:
         # 低 salience 時跳過以節省資源，除非 entity_triggers=True 強制執行
         entity_triggers = metadata.get("entity_triggers", False)
         should_extract = salience >= 0.4 or entity_triggers
+        # tool_note 的 user_input／agent_response 為空，實體提取讀不到內容（待下游改讀 evidence）
+        if not (user_input.strip() or agent_response.strip()):
+            should_extract = False
         if should_extract:
             try:
                 # 鎖外：LLM 呼叫（慢）
@@ -297,6 +381,21 @@ class MemoryEngine:
         self._save_neurochem()
 
         return episode_id
+
+    @staticmethod
+    def _check_evidence_consistency(
+        user_input: str, agent_response: str, evidence: Sequence[EvidenceInput],
+    ) -> None:
+        """user_input／agent_response 必須與 evidence 一致（早期暴露呼叫端 bug）。"""
+        user_text = "\n".join(e.content for e in evidence if e.source_type == "user")
+        agent_text = "\n".join(
+            e.content for e in evidence
+            if e.source_type == "agent" and e.delivery_state in ("delivered", "partial")
+        )
+        if user_text.strip() != (user_input or "").strip():
+            raise ValueError("user_input 與 evidence 中 user unit 的內容不一致")
+        if agent_text.strip() != (agent_response or "").strip():
+            raise ValueError("agent_response 與 evidence 中已交付 agent unit 的內容不一致")
 
     def _apply_entities(self, episode_id: str, entities: list[Any]) -> None:
         """寫入實體與 MENTIONS 邊（呼叫端須已持有 storage_lock）。"""

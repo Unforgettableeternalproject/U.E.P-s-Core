@@ -48,27 +48,19 @@ def force_remembered(empty_engine):
     })
     assert result["success"], result
     ep = empty_engine.episodic.get(result["episode_id"])
-    # 前提：內容確實進了 Episode.user_input 欄位（缺陷成立的條件）
-    assert ep.user_input == "[force_remember] 使用者的生日是三月三日"
+    # EM-004 修正後：內容不再借用 Episode.user_input，來源由 evidence 表示
+    assert ep.user_input == ""
     return empty_engine, ep
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "缺陷 a：llm_integration/tools/executor.py handle_force_remember 把 LLM 產生的內容放進 "
-    "store_episode(user_input=...)，且不帶任何 source/origin metadata；"
-    "Episode schema 也沒有 provenance 欄位，下游無法分辨這不是使用者說的。"
-))
 def test_a1_force_remember_episode_carries_non_user_provenance(force_remembered):
     _engine, ep = force_remembered
-    source = ep.metadata.get("source") or ep.metadata.get("origin")
-    assert source, "Episode 應有來源標記"
-    assert source != "user_input"
+    units = _engine.evidence.get_by_episode(ep.id)
+    assert units, "Episode 應有證據單位"
+    assert all(u.source_type != "user" for u in units), "force_remember 不得標成 user"
+    assert any(u.source_type == "tool" for u in units)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "缺陷 a（下游後果）：distillation._build_prompt 以「使用者: {ep.user_input}」餵 LLM，"
-    "force_remember 的內容因此被當成使用者親口說的事實去蒸餾。"
-))
 def test_a2_distillation_prompt_does_not_present_force_remember_as_user_speech(force_remembered):
     engine, _ep = force_remembered
     prompts: list[str] = []
@@ -82,7 +74,10 @@ def test_a2_distillation_prompt_does_not_present_force_remember_as_user_speech(f
 
     distill_prompts = [p for p in prompts if "知識蒸餾專家" in p]
     assert distill_prompts, "前提：蒸餾有被觸發"
-    assert "使用者: [force_remember]" not in distill_prompts[0]
+    prompt = distill_prompts[0]
+    assert "使用者: [force_remember]" not in prompt
+    # 內容不得出現在「使用者:」那一行（仍可經由摘要欄位被蒸餾）
+    assert "使用者: 使用者的生日" not in prompt
 
 
 # ═══════════════════════════════════════════════════════════════════════════

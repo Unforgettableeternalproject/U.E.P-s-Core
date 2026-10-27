@@ -39,6 +39,24 @@ TOOL_DECLARATIONS: list[dict] = [
                         "Higher means more important."
                     ),
                 },
+                "content_origin": {
+                    "type": "string",
+                    "enum": ["user", "agent", "tool", "unknown"],
+                    "description": (
+                        "Optional. Where the stored content actually came from: "
+                        "'user' (the user said it), 'agent' (your own statement or inference), "
+                        "'tool' (a tool result), or 'unknown'. Omit if you are not sure; "
+                        "omitted is recorded as 'unknown', never assumed to be the user."
+                    ),
+                },
+                "origin_evidence_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional. Evidence ids (ev_...) of the earlier statements this "
+                        "content comes from, if you know them."
+                    ),
+                },
             },
             "required": ["content", "reason"],
         },

@@ -35,6 +35,12 @@ def _deterministic_embedding(text: str) -> list[float]:
 # ─── CI Mock Fixtures ──────────────────────────────────────────────────────────
 
 @pytest.fixture(autouse=True)
+def _disable_embedding_warmup(monkeypatch):
+    """測試中關閉 MemoryEngine 的背景 embedding 暖機（避免背景執行緒干擾計數 / 連外部後端）。"""
+    monkeypatch.setenv("ECHO_DISABLE_EMBEDDING_WARMUP", "1")
+
+
+@pytest.fixture(autouse=True)
 def mock_embedding_model(monkeypatch):
     """
     自動 patch EpisodicMemory._generate_embedding 和 generate_query_embedding，

@@ -29,6 +29,9 @@ class Episode:
         ht_weight: 虛擬血清素強度
         is_dreamed: 是否已在夢境中重播
         metadata: 額外元數據
+        evidence_ids: 此 Episode 的 EvidenceUnit id（證據存放在獨立的 append-only store）。
+            空清單代表舊資料尚未遷移；讀取端應以 legacy_unknown 看待。
+        episode_kind: "turn"（對話輪）或 "tool_note"（工具操作產生的記憶，不是對話輪）
     """
 
     # 必填欄位
@@ -53,6 +56,10 @@ class Episode:
     # 擴展資訊
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    # 證據參照與種類（舊 episodes.json 沒有這兩欄，皆需預設值）
+    evidence_ids: list[str] = field(default_factory=list)
+    episode_kind: str = "turn"
+
     def __post_init__(self):
         """自動生成 ID"""
         if not self.id:
@@ -74,6 +81,8 @@ class Episode:
             "ht_weight": self.ht_weight,
             "is_dreamed": self.is_dreamed,
             "metadata": self.metadata,
+            "evidence_ids": list(self.evidence_ids),
+            "episode_kind": self.episode_kind,
         }
 
     @classmethod

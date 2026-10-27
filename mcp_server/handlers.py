@@ -25,6 +25,8 @@ from typing import Any
 from mcp.server import Server
 from mcp.types import TextContent, Tool
 
+from echo_memory.schemas.evidence import EvidenceInput, SourceRef
+
 logger = logging.getLogger("echo_memory.mcp.handlers")
 
 # Dream Engine 冷卻時間（秒）
@@ -578,7 +580,8 @@ async def _handle_store_observation(
     """
     存儲重要觀察，使用高顯著性分數。
 
-    將觀察存儲為一個特殊的情節，user_input 為觀察標記，agent_response 為觀察內容。
+    將觀察存儲為 tool_note 情節：來源是 MCP 工具操作（source_type=tool），
+    內容出處未說明（content_origin=unknown），不再以 "[觀察記錄]" 佔位 user_input。
     """
     content: str = args["content"]
     importance: float = float(args.get("importance", 0.85))
@@ -586,11 +589,18 @@ async def _handle_store_observation(
     def _sync_store() -> str:
         engine = _get_engine(get_engine, args)
         return engine.store_episode(
-            user_input="[觀察記錄]",
-            agent_response=content,
+            user_input="",
+            agent_response="",
             session_id="mcp-observations",
             content_summary=content[:200],
             salience=importance,
+            episode_kind="tool_note",
+            evidence=[EvidenceInput(
+                source_type="tool",
+                content=content,
+                source_ref=SourceRef(kind="mcp", name="store_observation"),
+                content_origin="unknown",
+            )],
             source="mcp_observation",
         )
 

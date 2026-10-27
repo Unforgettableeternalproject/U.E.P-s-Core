@@ -80,6 +80,16 @@ class MemoryContext:
                 if len(agent_resp) > 300:
                     agent_resp = agent_resp[:300] + "..."
 
+                if getattr(ep, "episode_kind", "turn") == "tool_note":
+                    # 工具操作產生的記憶不是對話輪：不套 user／agent 欄位，避免空白或誤標來源
+                    payload["相關對話記憶"].append({
+                        "time": time_tag.strip("（）"),
+                        "match": sim_tag.strip("[]"),
+                        "importance": sal_tag,
+                        "tool_note": ep.content_summary[:300],
+                    })
+                    continue
+
                 payload["相關對話記憶"].append({
                     "time": time_tag.strip("（）"),
                     "match": sim_tag.strip("[]"),

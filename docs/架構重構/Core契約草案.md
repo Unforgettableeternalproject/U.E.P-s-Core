@@ -97,23 +97,23 @@ A4 前提：Event Bus 程式碼沿用，journal 以封裝層加在 Bus 之前，
 | `source` | str | Y | GW 重建 | 已認證的服務／Adapter 身分，不取自 payload |
 | `persona_id` | str | Y | GW 重建 | 首版恆為 `uep` |
 | `actor_id` | str | Y | GW 重建 | 已認證 actor；未驗證平台身分不得填成 owner |
-| `conversation_id` | str? | N | 產生者，Core 綁定 | 非互動事件為空（提案 §7.2：不為背景維護硬建 GS） |
-| `segment_id` | str? | N | Core | ConversationSegment（對應 legacy CS） |
-| `activity_id` | str? | N | Core | 事件所屬 Activity（見 CC-6 §6.1a）；互動事件填 interaction_episode 的 Activity，任務事件填該 Task 的 Activity。非互動事件可空 |
-| `task_id` / `run_id` | str? | N | Core | 任務關聯 |
-| `turn_id` | str? | N | Core | 正式 `turn_id` 由 Core 綁定一次（提案 §6.2） |
+| `conversation_id` | str? | N | 產生者，Core 綁定 | 非互動事件為空（提案 §7.2：不為背景維護硬建 GS）。格式須為 `前綴_ULID`（E-20） |
+| `segment_id` | str? | N | Core | ConversationSegment（對應 legacy CS）。格式須為 `前綴_ULID`（E-20） |
+| `activity_id` | str? | N | Core | 事件所屬 Activity（見 CC-6 §6.1a）；格式須為 `前綴_ULID`（E-20）；互動事件填 interaction_episode 的 Activity，任務事件填該 Task 的 Activity。非互動事件可空 |
+| `task_id` / `run_id` | str? | N | Core | 任務關聯。`task_id`、`run_id` 格式須為 `前綴_ULID`（E-20） |
+| `turn_id` | str? | N | Core | 正式 `turn_id` 由 Core 綁定一次（提案 §6.2）。格式須為 `前綴_ULID`（E-20） |
 | `legacy_ref` | obj? | N | 相容層 | `{gs_id?, cs_id?, ws_id?, cycle_index?, turn_n?, step_n?, memory_token?}`；legacy ID **只存此處**（D23 已定案），僅遷移期使用（見 §8.3） |
-| `trace_id` | str | Y | Gateway（缺則建立） | 一條因果鏈共用 |
-| `causation_id` | str? | N | 產生者 | 直接起因事件的 `event_id` |
-| `idempotency_key` | str | C | 產生者 | 外部來源事件（Adapter／平台／worker）必填；Core 內部事件由 Core 產生 |
-| `aggregate_type` / `aggregate_id` / `aggregate_version` | str / str / int | C | Core | 屬於某聚合（task、presence、transfer…）的事件必填；版本在同一交易檢查 |
+| `trace_id` | str | Y | Gateway（缺則建立） | 一條因果鏈共用。外部帶入者限安全字元集（E-20） |
+| `causation_id` | str? | N | 產生者 | 直接起因事件的 `event_id`；限安全字元集（E-20） |
+| `idempotency_key` | str | C | 產生者 | 外部來源事件（Adapter／平台／worker）必填；Core 內部事件由 Core 產生。長度 ≤ 256、字元集 `[A-Za-z0-9_:.-]`（E-20）；重送命中時的一致性核對見 E-17 |
+| `aggregate_type` / `aggregate_id` / `aggregate_version` | str / str / int | C | Core | 屬於某聚合（task、presence、transfer…）的事件必填；版本在同一交易檢查。`aggregate_id` 限安全字元集（E-20）。journal 層只靠唯一約束擋重複版本，**不檢查版本連續**，連續性責任在呼叫端（E-22） |
 | `priority` | enum{low, normal, high, urgent} | Y | GW 重建 | 外部 payload 自稱「緊急」不生效（提案 §9.3） |
 | `expires_at` | ts? | N | 產生者／Gateway | 過期事件不再觸發主動打擾，仍可留存稽核 |
 | `scope_ref` | str | Y | GW 重建 | 資料可見範圍（私人／群組／公開），**只能縮不能放大**（見 E-6） |
 | `fence` | obj? | C | Core | 與 CC-4 授權六元組同構：`{persona_id, endpoint_id, lease_id, fencing_epoch, core_epoch, presence_generation}`，互動回合另加 `turn_generation`；承載輸出或位置相關動作的事件必填（CC-4／CC-5） |
 | `payload` | obj | Y | 產生者 | 僅限**不含私人原文**的小型結構化內容（ID、狀態、計數、結果碼）；其餘一律走 `payload_ref`（D33） |
 | `payload_ref` | str? | C | 產生者 | 指向可刪除 blob 的引用；含私人原文（對話、轉錄、記憶內容）、音檔、長文時必填 |
-| `payload_hash` | str? | C | Journal | `payload_ref` 內容的雜湊；blob 被刪除後仍保留，供完整性稽核 |
+| `payload_hash` | str? | C | Journal | `payload_ref` 內容的雜湊；blob 被刪除後仍保留，供完整性稽核。格式 `hmac-sha256:<kid>:<hex>`（E-18） |
 
 #### delivery_class × journal × 投遞通道
 
@@ -129,8 +129,8 @@ A4 前提：Event Bus 程式碼沿用，journal 以封裝層加在 Bus 之前，
 
 | 實體 | 欄位 | 約束 |
 |---|---|---|
-| `events`（journal） | `event_id` PK、`journal_seq` UNIQUE、`(source, idempotency_key)` UNIQUE（當 key 非空）、`aggregate_id`＋`aggregate_version` UNIQUE、`event_type`、JSONB `payload`（僅無私人原文的小型內容，由 EventSpec 白名單強制）、`payload_ref`、`payload_hash`、`tombstone_at?`、`trace_id`、`scope_ref`、`received_at` | append-only；不更新、不刪除。journal **只存元資料＋`payload_ref`＋`payload_hash`**（D33）；刪除請求只刪 blob，journal 留雜湊與墓碑（`tombstone_at`、`tombstone_reason`），保留期限屬政策 |
-| `inbox` | `(consumer_id, event_id)` UNIQUE、`completed_at`、`result` | 與 consumer 的 DB 效果同一交易提交 |
+| `events`（journal） | `event_id` PK、`journal_seq` UNIQUE、`(source, idempotency_key)` UNIQUE（當 key 非空）、`aggregate_id`＋`aggregate_version` UNIQUE、`event_type`、JSONB `payload`（僅無私人原文的小型內容，由 EventSpec 白名單強制）、`payload_ref`、`payload_hash`、`tombstone_at?`、`trace_id`、`scope_ref`、`received_at` | append-only；不更新、不刪除、不 TRUNCATE（列級 `events_append_only`＋語句級 `events_no_truncate` trigger，E-21）。journal **只存元資料＋`payload_ref`＋`payload_hash`**（D33）；刪除請求只刪 blob，journal 留雜湊與墓碑（`tombstone_at`、`tombstone_reason`），保留期限屬政策 |
+| `inbox` | `(consumer_id, event_id)` UNIQUE、`claimed_at`（認領時間；**沒有** `completed_at`）、`result` | 認領與 consumer 的 DB 效果同一交易提交（以 savepoint 包住，效果失敗則連認領一併回滾），故「列存在」即表示效果已提交，不需另記完成時間 |
 | `outbox` | `outbox_id` PK、`event_id`、`target`、`attempts`、`retry_at`、`acked_at?`、`dead_letter_reason?` | 與觸發它的狀態變更同一交易寫入；重試上限、退避、jitter；毒性事件進 dead letter |
 
 ### 1.3 起始事件類型（供其他契約引用）
@@ -173,16 +173,22 @@ P1 註記：Task 的 `paused`／`resumed`／`waiting_approval` 等轉移**不另
 | E-4 | 生命週期事件各自獨立類型：`task.*`、`conversation.*`、`presence.*`、`core.*` 不得互相取代（`task.completed` 不蘊含 `conversation.episode_ended`，反之亦然） | INV-06 |
 | E-10 | `core.stopping`（核心關機）**不**蘊含 `task.cancelled`／`task.failed`，也不蘊含使用者語意的離場；關機時 Presence 授權以 `presence.revoked`（`reason=core_shutdown`）關閉輸出，重啟後依 P-4／T-7 恢復 | INV-06 |
 | E-11 | journal 不保存私人原文：含私人原文的內容只存於可刪 blob（`payload_ref`），刪除只動 blob，journal 保留 `payload_hash` 與墓碑（D33） | INV-07 |
-| E-16 | **隱私取捨（已知限制）**：(a) `payload_hash` 為 sha256，低熵短文可由字典還原，見 D42；(b) blob `content` 設 NULL 後，PostgreSQL 舊 tuple、WAL、備份仍可能存有原文，實際清除需 VACUUM 與備份保留政策，納入 P8 備份演練範圍 | INV-07、V24 |
+| E-16 | **隱私取捨（已知限制）**：(a) `payload_hash` 已改為 per-install 密鑰 HMAC（D42／A16 已實作，格式與驗證見 E-18），低熵短文不再能由字典還原；代價是密鑰遺失即無法驗證 HMAC 雜湊，且沒有有效密鑰時拒絕寫入私人 payload（fail-closed，不降級成 sha256）；(b) blob `content` 設 NULL 後，PostgreSQL 舊 tuple、WAL、備份仍可能存有原文，實際清除需 VACUUM 與備份保留政策，納入 P8 備份演練範圍 | INV-07、V24 |
 | E-5 | 帶 `fence` 的事件，consumer 比對當前權威 Lease／epoch／generation，舊值事件記錄後丟棄，不得改變當前狀態 | INV-03 |
 | E-6 | 事件衍生新事件時，`scope_ref` 依 §0.6 衍生規則只縮不放（rank 不得大於起因事件） | INV-07 |
 | E-7 | 重播（replay）預設只重建投影；任何外部輸出、工具副作用在重播中必須被 suppress 或以 action_id 去重 | 提案 §7.3、V20 |
 | E-8 | 排序依 `aggregate_version`（同聚合）與 `journal_seq`（全域接收序），不依 `occurred_at` | 提案 §7.2 |
 | E-12 | **P1 publisher 範圍**：只接受 `durable`／`interaction`；`control` 走獨立高優先通道、`telemetry` 不落 journal，兩者於 P2 補實作，P1 送入一律拒絕（`UnsupportedDeliveryClass`） | 提案 §6.4、§7.1 |
-| E-13 | **Bus 是 best-effort 程序內通知**（`publish(event, *, sync=False)`，訂閱鍵 `str`）：commit 後崩潰可能漏投，投遞順序不保證等於 `journal_seq`。需不遺漏的消費者**必須**走 outbox target（E-2），不得只靠 Bus 訂閱 | E-1、E-2 |
-| E-14 | `journal_seq` 只保證**唯一且單調分配**，不保證提交可見順序（可有空洞，後號可能先可見）。replay／tailing 需「安全水位」才能推進游標，見 D41 | E-8、V20 |
+| E-13 | **Bus 是 best-effort 程序內通知**（`publish(event, *, sync=False)`，訂閱鍵 `str`）：commit 後崩潰可能漏投，投遞順序不保證等於 `journal_seq`。需不遺漏的消費者**必須**走 outbox target（E-2），不得只靠 Bus 訂閱。handler 例外被隔離且**只記例外型別名稱**（不記訊息與 traceback，與 Outbox 一致）；`stop()` 排空逾時而舊消費者線程仍存活時，`start()` 拋 `RuntimeError` 拒絕啟動（避免雙消費者），舊線程結束後才可重啟 | E-1、E-2 |
+| E-14 | `journal_seq` 只保證**唯一且單調分配**，不保證提交可見順序（可有空洞，後號可能先可見）。replay／tailing 需「安全水位」才能推進游標，見 D41；游標 `low_txid` 大於目前水位（xmin 單調不減，只可能是叢集已換）時 tailer 拋 `TailCursorMismatch`，不靜默回空，須重置游標；`watermark_lag(session, cursor)` 回報目前 xmin 與游標 `low_txid` 的差供監控（持續變大代表長交易釘住水位或消費者落後） | E-8、V20 |
 | E-15 | **Outbox 執行模型**：目前 handler 在持鎖交易內執行；P2 改 lease 模型（鎖列 → 標記 lease → commit → 執行 → ACK），避免長交易持鎖與 handler 阻塞 | E-2、提案 §7.3 |
 | E-9 | 音訊／影格不是 UEPEvent，不逐 frame 落 journal；只有其 *控制與交付結果* 以事件記錄 | 提案 §7.1 |
+| E-17 | **冪等重送一致性**：`(source, idempotency_key)` 命中既有事件時，須比對 `event_type`、`scope_ref`、`aggregate`（type／id／version）三者與原事件一致；若重送帶 blob，另比對 blob 雜湊（三態見 E-18）。任一確定不符即拋 `IdempotencyConflict`（訊息只含欄位名與 `event_id`，不含內容）；全部一致為真重送，回傳原事件（`duplicate`）、不新增列、不寫 blob。併發重送輸掉競爭者走同一核對 | E-2、V20 |
+| E-18 | **`payload_hash` 格式與三態驗證**：新寫入為 `hmac-sha256:<kid>:<hex>`，`kid` = HMAC(密鑰, `"uep-payload-kid"`) 的前 8 位十六進位（只辨識用哪把密鑰，不可回推密鑰）。可辨識三種格式：無前綴 64 位十六進位（T-23 前的 sha256，只驗證不再新寫）、`hmac-sha256:<hex>`（T-24 前無 kid 的 HMAC，只驗證不再新寫）、新格式。驗證結果三態：`MATCH`；`MISMATCH`（可確定內容不同：舊 sha256 不符，或 kid 相同卻驗不過）；`UNVERIFIABLE`（kid 不同，或舊無 kid HMAC 驗不過——可能只是密鑰已輪替）。冪等重送時只有 `MISMATCH` 算衝突，`UNVERIFIABLE`／缺密鑰記 warning 並視為重送。全空白或短於 16 位元組的密鑰視同缺失。`assemble_core(strict=True)` 在缺少、全空白或過短的 `UEP_PAYLOAD_HASH_KEY` 時拒絕組裝（預設只告警） | E-11、E-16、D42 |
+| E-19 | **tailer 與只讀交易**：tailer 取水位的交易為短交易、不持有鎖；但任何長時間未結束的交易（包含只讀、停在 idle in transaction 的連線）都會釘住 xmin 使水位不前進（事件不遺失只延遲），使用方須避免長交易並以 `watermark_lag` 監控 | E-14、D41 |
+| E-20 | **EventDraft 欄位格式（外部輸入，驗證一律 `fullmatch`）**：`task_id`、`activity_id`、`run_id`、`conversation_id`、`segment_id`、`turn_id` 須為合法 `前綴_ULID`（`is_valid_id`）；`trace_id`、`causation_id`、`aggregate_id` 限安全字元集 `[A-Za-z0-9_:.-]`、長度 1～128（防止夾帶私人文字）；`idempotency_key` 限 `[A-Za-z0-9_:.-]`、長度 ≤ 256；`scope_ref` 須符合 §0.6 格式。ID 與 scope 的驗證不接受結尾換行等 `match` 漏洞 | INV-07、E-3 |
+| E-21 | **journal 防清空**：除列級 `events_append_only`（擋 UPDATE／DELETE）外，migration `0007_journal_truncate_guard` 另加語句級 `events_no_truncate`（BEFORE TRUNCATE），擋一次清空整個 journal。測試清庫在交易內暫時停用此 trigger；正式環境不得停用 | E-11、append-only |
+| E-22 | **聚合版本連續性不在 journal 層檢查**：journal 以 `aggregate_id`＋`aggregate_version` 唯一約束擋重複，但**不檢查版本連續**（可跳號）。連續性與樂觀併發由寫入聚合的 Manager 在同一交易自行保證 | E-8 |
 
 ### 1.6 驗證案例
 
@@ -201,6 +207,11 @@ P1 註記：Task 的 `paused`／`resumed`／`waiting_approval` 等轉移**不另
 - 當：Gateway 接收。
 - 則：journal 內 `priority=normal`（取註冊表／Policy 結果），`actor_id` 為 Adapter 認證的 guest 身分；payload 內同名欄位僅作為不被信任的資料保留。
 
+**VC-1-4 同 key 不同內容（E-17、E-18）**
+- 給定：`(disc, disc:msg_991)` 已落 journal，原事件為 `input.text_final`、`scope_private_owner`。
+- 當：Adapter 以相同 key 重送，但 `event_type`、`scope_ref`、`aggregate` 任一不同，或帶的 blob 以同一把密鑰（kid 相同）驗不過。
+- 則：拋 `IdempotencyConflict`，journal 不新增列；若僅是密鑰已輪替（kid 不同）而無法驗證 blob，則記 warning 並回傳原事件（duplicate），不誤報衝突。
+
 ---
 
 ## 2. 契約 CC-2：ContextSnapshot
@@ -209,7 +220,7 @@ P1 註記：Task 的 `paused`／`resumed`／`waiting_approval` 等轉移**不另
 
 ### 2.1 ContextSnapshot 欄位
 
-快照在建立後 **不可變**；任何變更（新記憶、摘要完成、Persona／Policy 版本切換）產生新 `context_revision`，新 revision 通常下一輪才生效。一個 run／attempt 固定使用一份快照。
+快照在建立後 **不可變**（實作為深度不可變：dict 欄位轉唯讀映射、list 轉 tuple，建立後無法就地修改；序列化時還原為 dict／list，X-8）；任何變更（新記憶、摘要完成、Persona／Policy 版本切換）產生新 `context_revision`，新 revision 通常下一輪才生效。一個 run／attempt 固定使用一份快照。
 
 | 名稱 | 型別 | 必填 | 寫入者 | 說明 |
 |---|---|---|---|---|
@@ -222,13 +233,13 @@ P1 註記：Task 的 `paused`／`resumed`／`waiting_approval` 等轉移**不另
 | `turn_id` / `run_id` | str? | C | Core | 對應互動回合或任務執行 |
 | `audience_scope` | ScopeRef | Y | Core | 本次聽眾範圍（§0.6）；依放入規則決定可進入的記憶與歷史 |
 | `actor_ref` | ref<actor> | Y | Core | 本次互動的已認證 actor |
-| `history_window` | obj | Y | Context Adapter | `{from_turn, to_turn, summary_ref?, summary_source_revision?}` |
-| `history_entries` | list<obj> | Y | Context Adapter | 每筆含 `turn_id`、`role`、`generated_text_ref`、`delivered_range`、`delivery_state`（見 CC-5）；使用者可見歷史以交付範圍為準，不把未播出內容寫成已說出（INV-05） |
+| `history_window` | obj | Y | Context Adapter | `{from_turn, to_turn, summary_ref?, summary_scope?, summary_source_revision?}`；有 `summary_ref` 時 `summary_scope` 必填，且須過放入規則（X-7） |
+| `history_entries` | list<obj> | Y | Context Adapter | 每筆含 `turn_id`、`role`、`generated_text_ref`、`scope`、`delivered_range`、`delivery_state`（取值為 CC-5 `DeliveryStatus` 列舉，非自由字串）；使用者可見歷史以交付範圍為準，不把未播出內容寫成已說出（INV-05） |
 | `memory_slices` | list<obj> | Y | Context Adapter（資料來自 MEM Access Layer） | 每筆 `{memory_id, scope, source_refs, embedding_version?, retrieved_at, relevance}`；檢索結果須再以當前 ACL／刪除標記過濾 |
 | `memory_status` | enum{ok, degraded_no_memory, timeout, unavailable} | Y | Context Adapter | 逾時降級須坦白標示；短提示不計為實質回應（提案 §6.3） |
-| `excluded_summary` | obj | Y | Context Adapter | `{count_by_reason}`：因 scope／ACL 被排除的筆數，**不含內容**（供稽核與驗證） |
-| `task_refs` | list<ref<task>> | N | Context Adapter | 只帶 ID 與必要狀態，不帶 Python 物件 |
-| `commitments` | list<obj> | N | Context Adapter | 未完成承諾（跨平台 continuation 允許帶入） |
+| `excluded_summary` | obj | Y | Context Adapter | `{count_by_reason}`：因 scope／ACL 被排除的筆數，**不含內容**（供稽核與驗證）。鍵限原因碼（`[a-z][a-z0-9_]{0,31}`），值為非負整數；自由文字鍵一律拒絕（X-9） |
+| `task_refs` | list<obj> | N | Context Adapter | 每筆 `{task_id, scope}`，只帶 ID 與 scope，不帶 Python 物件；`scope` 須過放入規則（X-7） |
+| `commitments` | list<obj> | N | Context Adapter | 未完成承諾（跨平台 continuation 允許帶入）。鍵白名單 `{commitment_id, kind, task_ref, due_at, status, text_ref, scope}`，值為長度 ≤ 256 的字串（D33 不夾帶原文）；`scope` 必填且須過放入規則（X-7） |
 | `capabilities` | obj | Y | Core | 本次允許的工具集合與 Provider 能力（`text_stream`、`tool_calling`、`cancel_semantics` 等）；Capability 是技術可行，Policy 才是允許 |
 | `data_egress` | obj | Y | Core | 允許的 Provider／資料出口；無符合者則明確失敗，不擅自 fallback（提案 §8.3） |
 | `token_budget` | obj | Y | Context Adapter | `{max, per_section}`；組裝只做一次 |
@@ -252,9 +263,12 @@ P1 註記：Task 的 `paused`／`resumed`／`waiting_approval` 等轉移**不另
 | X-1 | `memory_slices`、`history_entries`、摘要皆須滿足 §0.6 放入規則（`rank(audience_scope) <= rank(來源.scope)` 且 owner／group 相符）；跨 audience 的 continuation 只帶允許的摘要、承諾與 task refs | INV-07、V28 |
 | X-2 | 快照對 Runtime 唯讀；Runtime 不能修改 revision、記憶或 history | INV-04 |
 | X-3 | 同一段訊息只能由一個擁有者寫入歷史（`history_owner`）；MEM 檢索、SessionControl 壓縮、SDK 歷史不得各自重複注入 | 提案 §6.3、§14.4 |
-| X-4 | 歷史條目帶 `delivery_state`；`unknown`／`cancelled` 不得寫成「已完整說出」 | INV-05、V08 |
+| X-4 | 歷史條目帶 `delivery_state`（`DeliveryStatus` 列舉）；`cancelled`／`unknown`／`rejected`／`suppressed` 四種未完整交付狀態不得寫成「已完整說出」（`delivered_range.complete` 不可為 true） | INV-05、V08 |
 | X-5 | 壓縮摘要在背景以 revision 為基準產生；來源 revision 已變則捨棄；禁止先清空歷史再等摘要 | 提案 §14.3 |
 | X-6 | `memory_status != ok` 時，涉及個人事實的回答不得斷言記得；敏感操作暫停 | 提案 §17.1（MEM 不可用） |
+| X-7 | **所有帶內容的清單項都帶 scope 並過 `scope_admits`**：`commitments[*].scope`、`task_refs[*].scope`、`history_window.summary_scope`（有 `summary_ref` 時）與 `history_entries[*].scope`、`memory_slices[*].scope` 同一規則，建構快照時即檢查，違反拋 `ScopeViolation`（public 快照不得帶 private 承諾、task ref、摘要） | INV-07、V28 |
+| X-8 | 快照深度不可變：容器欄位（`capabilities`、`data_egress`、`token_budget`、`excluded_summary`、`commitments`、`delivered_range` 等）建立後不可就地修改，修改一律產生新 `context_revision` | X-2、提案 §14.3 |
+| X-9 | `excluded_summary` 的鍵只能是原因碼、值只能是非負筆數；不得以鍵夾帶被排除內容的文字 | INV-07、D33 |
 
 ### 2.4 驗證案例
 
@@ -310,9 +324,9 @@ Runtime = 可替換的推理／工具迴圈（直達 LLM、OpenAI Agents SDK、G
 | 名稱 | 型別 | 必填 | 說明 |
 |---|---|---|---|
 | `attempt_id` / `seq` | str / int | Y | 序號單調；Core 用以偵測重複與缺漏 |
-| `kind` | enum{text_delta, tool_intent, approval_request, checkpoint, result, error} | Y | |
+| `kind` | enum{text_delta, tool_intent, approval_request, checkpoint, result, error} | Y | 嚴格列舉：不在列舉內的值建構時即拒絕（否則以 kind 取同名欄位會誤取到 `seq`、`attempt_id` 等不相干欄位） |
 | `text_delta` | str? | C | `kind=text_delta` |
-| `tool_intent` | obj? | C | `{tool, args_complete: bool, args, side_effect_hint}`；`args_complete=false` 的增量**不得**提交（提案 §8.3） |
+| `tool_intent` | obj? | C | `{tool, args_complete: bool, args, side_effect_hint}`；`args_complete=false` 的增量**不得**提交（提案 §8.3）。建構時須帶非空字串 `tool` 與布林 `args_complete`，缺任一即拒絕 |
 | `approval_request` | obj? | C | `{action_hash, reason}`；僅為請求，不是授權 |
 | `checkpoint` | obj? | C | 見 CC-6 checkpoint |
 | `result` | obj? | C | `{status, output_ref, usage}` |
@@ -337,6 +351,7 @@ Runtime = 可替換的推理／工具迴圈（直達 LLM、OpenAI Agents SDK、G
 | R-4 | fallback 在新 `attempt_id` 進行；已有工具副作用者先查 receipt，不重跑整輪 | 提案 §8.3、V21 |
 | R-5 | `resume` 只吃 Core 的 checkpoint；SDK 自身 session 僅為歷史投影，非權威 | 提案 §14.4、§17.2 |
 | R-6 | 無滿足 `data_egress` 與能力的 Provider 時回 `EGRESS_DENIED`／`CAPABILITY_MISSING`，不得自行改送其他供應商 | 提案 §8.3、V23 |
+| R-7 | `RuntimeEvent` 的 `kind` 為嚴格列舉，且恰好帶與 `kind` 同名的那一個 payload 欄位；`kind=tool_intent` 必含非空 `tool` 與布林 `args_complete`（缺漏視為格式錯誤，不猜測補值）；`kind=error` 的 `code` 須在 §3.3 列舉內 | 提案 §8.3、VC-3-2 |
 
 ### 3.6 驗證案例
 
@@ -379,7 +394,7 @@ Runtime = 可替換的推理／工具迴圈（直達 LLM、OpenAI Agents SDK、G
 | `expires_at` | ts | C | Presence Manager | 以 **Core 單 Host 時鐘**判定（Output Gate 與 Presence Manager 共用同一 clock 物件）。Host 牆鐘回撥列為**殘餘風險**（見 P-13） |
 | `row_version` | int | Y | Presence Manager | 樂觀併發版本 |
 | `transfer_id` | str? | N | Presence Manager | 進行中的移轉；每個 persona 最多一個未結束移轉 |
-| `unquiesced_endpoint_id` | str? | N | Presence Manager | 過期或失效後**未證明已停止**的端點；非空時，他端 acquire 回 `NOT_QUIESCED` 並進 `RECOVERING` |
+| `unquiesced_endpoint_id` | str? | N | Presence Manager | 過期、撤銷或失效後**未證明已停止**的端點；非空時，他端 acquire 回 `NOT_QUIESCED`。標記來自 `revoke` 者維持 `NONE`，直到舊端停止證據被接受或被撤銷 Lease 的 `expires_at` 已過；來自 Lease 過期、啟用逾時、Core 重啟者進 `RECOVERING`，一律須證據或 `resolve_recovery`（P-16） |
 | `recovery_reason` | str? | C | Presence Manager | `status=RECOVERING` 時必填（例：`core_restart`、`lease_expired_unquiesced`、`activation_failed`） |
 
 秘密與憑證不放入此物件（提案 §11.1）。
@@ -396,7 +411,7 @@ Runtime = 可替換的推理／工具迴圈（直達 LLM、OpenAI Agents SDK、G
 | `reason` | obj | Y | 理由、來源（使用者／Planner／Proactive）、預期 `expected_generation` |
 | `phase` | enum{PREPARING, QUIESCING, CHECKPOINTED, ACTIVATING, DONE, ABORTED} | Y | 移轉階段唯一存放處。進入恢復時 `presence_current.status=RECOVERING`，`phase` 停在失敗階段並記 `recovery_reason`；`CHECKPOINTED`、`DONE`、`ABORTED` 見 D27 |
 | `checkpoint_ref` | ref? | C | `CHECKPOINTED` 後必填 |
-| `stop_evidence` | obj | C | 舊端停止證據：`{endpoint_id, old_generation, kind, reported_at}`；綁定 `transfer_id + old_generation`，不是泛用「動畫播完」 |
+| `stop_evidence` | obj | C | 舊端停止證據：`{endpoint_id, old_generation, kind, reported_at}`；綁定 `transfer_id + old_generation`，不是泛用「動畫播完」。`kind` 限白名單 `adapter_stop_report`、`fresh_process`，且須自述已停止（P-17） |
 | `deadline` | ts | Y | |
 | `row_version` | int | Y | |
 
@@ -415,12 +430,12 @@ Runtime = 可替換的推理／工具迴圈（直達 LLM、OpenAI Agents SDK、G
 
 | 操作 | 發起者 | 結果碼 | 說明 |
 |---|---|---|---|
-| `acquire(endpoint, expected_version)` | Adapter 經 Core 仲裁 | `GRANTED`、`BUSY`、`VERSION_CONFLICT`、`TRANSFER_PENDING`、`NOT_QUIESCED`、`DENIED` | 同交易鎖定 current row，成功才更新並寫 outbox（`presence.granted`）；`DENIED` 另帶原因碼 `reason`（T-23，見下） |
+| `acquire(endpoint, expected_version)` | Adapter 經 Core 仲裁 | `GRANTED`、`BUSY`、`VERSION_CONFLICT`、`TRANSFER_PENDING`、`NOT_QUIESCED`、`DENIED` | 同交易鎖定 current row，成功才更新並寫 outbox（`presence.granted`）；`DENIED` 另帶原因碼 `reason`（T-23，見下）。`unquiesced_endpoint_id` 非空且為他端時的處置見 P-16 |
 | `renew(lease_id, core_epoch, generation)` | 目前 owner | `RENEWED`、`STALE`、`EXPIRED` | 須精確匹配；過期不可續活，需重新 acquire |
-| `revoke(reason)` | Core／全域停止 | `REVOKED` | 全域停止入口不依賴 LLM |
+| `revoke(reason)` | Core／全域停止 | `REVOKED` | 全域停止入口不依賴 LLM；`generation` 不 +1；將被撤銷 Lease 的端點記為 `unquiesced_endpoint_id`，狀態回 `NONE`（`RECOVERING` 期間無 Lease，為 no-op，見 P-24），他端放行條件見 P-16（A20／D43） |
 | `begin_transfer(...)` | 仲裁後 Core | `xfer_id`／`TRANSFER_PENDING` | 同人格序列化 |
-| `confirm_quiesced(endpoint, old_generation, evidence)` | 舊端 Adapter | `ACCEPTED`、`STALE` | 證據不等於授權；Core 決定是否接受。接受後清除 `unquiesced_endpoint_id`。P5 的 [B] 移轉流程另帶 `transfer_id` |
-| `resolve_recovery(operator, resolution)` | operator（人） | `RESOLVED`、`DENIED` | 需 operator 身分；成功發 `presence.recovered`，`RECOVERING → NONE` |
+| `confirm_quiesced(endpoint, old_generation, evidence)` | 舊端 Adapter | `ACCEPTED`、`STALE`、`EVIDENCE_REJECTED` | 證據不等於授權；Core 決定是否接受。先判 `STALE`（狀態、端點、generation 不符），再判證據資格：不合格回 `EVIDENCE_REJECTED`，標記維持，端點須補正後重送（P-17、P-18）。接受後清除 `unquiesced_endpoint_id`。P5 的 [B] 移轉流程另帶 `transfer_id` |
+| `resolve_recovery(operator, resolution)` | operator（人） | `RESOLVED`、`DENIED` | 需 operator 身分；成功發 `presence.recovered`，`RECOVERING → NONE`（亦清除 `NONE` 下的未證實停止標記）。入口見 P-19（`POST /v1/presence/resolve-recovery`／`python -m uep.stop resolve-recovery`） |
 | `confirm_activated(lease_id)` | 新端 Adapter | `ACCEPTED`、`STALE` | |
 
 **`acquire` 的 `DENIED` 原因碼（T-23）**：`AcquireOutcome.reason`（`AcquireDenyReason`）只在結果為 `DENIED` 時有值，其他結果碼一律為空；經端點 RPC 回覆的 `reason` 欄位傳到端點（欄位缺漏或未知值視為無原因，結果碼仍照處理）。
@@ -440,8 +455,8 @@ Lease TTL 30 秒、心跳 5 秒僅為 **調校起點**（提案 §11.4），不�
 **實作範圍（P2）**：P2 **只實作 [A] 與 [C]**，不實作 [B] 位置移轉——`ACTIVE` 時他端 `acquire` 一律回 `BUSY`。[B] 延後到多平台（P5），屆時補 `begin_transfer`／`confirm_quiesced` 流程。
 
 **P2 補充規則**：
-- `revoke` **不使 `generation` +1**（只在核發時 +1）。P2 的 `revoke` 不設 `unquiesced_endpoint_id`（符合 VC-4-1 的重複回合）；多平台前須補「revoke 後需 stop ACK 或舊 `expires_at` 已過，才放行他端」，見 D43。
-- Lease 過期而未證明已停止 → 他端 `acquire` 回 `NOT_QUIESCED` 並進 `RECOVERING`；原端點在狀態仍為 `NONE` 時可重新 `acquire`，狀態已進 `RECOVERING` 後原端點同樣須停止證據或 `resolve_recovery`（D44／A13，暫定）；`confirm_quiesced` 清除 `unquiesced_endpoint_id`。
+- `revoke` **不使 `generation` +1**（只在核發時 +1）。`revoke` 將被撤銷 Lease 的端點記為 `unquiesced_endpoint_id`；他端須等舊端停止證據或被撤銷 Lease 的 `expires_at` 已過才放行（P-16，D43 已定案 A20）。VC-4-1 的重複回合因此改為每回合 `revoke` 後由舊端補送停止證據。
+- Lease 過期而未證明已停止 → 他端 `acquire` 回 `NOT_QUIESCED` 並進 `RECOVERING`（即使舊 Lease 的 `expires_at` 早已過，過期路徑仍須證據，與 `revoke` 路徑不同，見 P-16）；原端點在狀態仍為 `NONE` 時可重新 `acquire`，狀態已進 `RECOVERING` 後原端點同樣須停止證據或 `resolve_recovery`（D44／A13，暫定）；`confirm_quiesced` 清除 `unquiesced_endpoint_id`。
 - Core 重啟時，原 `ACTIVE` → `RECOVERING`（`recovery_reason=core_restart`）。
 - `acquire` 對**同一端點**已處於 `ACTIVATING` 的請求冪等，回同一 grant（VC-4-3(b)）。
 
@@ -495,6 +510,16 @@ Lease TTL 30 秒、心跳 5 秒僅為 **調校起點**（提案 §11.4），不�
 | P-13 | **Output Gate 判定順序**：先檢查 `core_epoch`／`persona`（不符 `REJECT_STALE`），再檢查 `status`；`audience` 與 `turn_generation` 由**必填 provider** 提供，要關閉檢查須顯式 `ALLOW_ALL`（不得預設放行）。時間以 Core 單 Host 共用 clock 判定，Host 牆鐘回撥為殘餘風險 | INV-02、INV-03 |
 | P-14 | **端點二次接納**是 Gate→send 的 TOCTOU 閉合點：端點於送出／播放前自行檢查六元組與本地剩餘 TTL；控制通道行為見 §5.3 | INV-03、V07 |
 | P-15 | 測試與 CI 必須設定 `UEP_HOST_EPOCH_FILE`；禁止兩個 Core 同時對同一 DB 運作（延伸 P-5） | INV-01、INV-03 |
+| P-16 | **revoke 後他端放行條件（A20／D43）**：`revoke` 將被撤銷 Lease 的端點記為 `unquiesced_endpoint_id`（`generation` 不 +1）。他端 `acquire` 於下列任一條件成立前回 `NOT_QUIESCED`，且狀態**維持 `NONE`**（不進 `RECOVERING`）：(a) 該端 `confirm_quiesced` 被接受（標記清除）；(b) 被撤銷那張 Lease 的 `expires_at` 已過（`acquire` 時自動清除標記，不需證據）。(b) 只適用標記來自 `revoke` 者（該 Lease 狀態為 `REVOKED` 且 `end_reason ≠ core_restart`，且屬於該標記端點）；標記來自 `lease_expired`、`activation_timeout`、`core_restart` 者，一律進 `RECOVERING` 並須證據或 `resolve_recovery`，不因 `expires_at` 已過而放行。被撤銷的端點自己可立即重新 `acquire` | INV-08、V15、V17、D43 |
+| P-17 | **停止證據資格**：`confirm_quiesced` 的證據 `kind` 限白名單 `adapter_stop_report`（端點回報停止）、`fresh_process`（新行程自證，見 P-18），且證據須含 `playing=False` 與 `buffer_flushed=True`（缺欄位視同未證明）。不合格回 `EVIDENCE_REJECTED`，標記與狀態維持。證據不等於授權（見 §4.4） | INV-08、V15 |
+| P-18 | **`fresh_process` 自證**：端點行程剛啟動、本行程從未持有 Lease 也從未輸出，且 Core 回報其為未證實停止端點時，可送 `fresh_process` 證據。端點 id 固定（如 `ep_cli`），新行程無法單憑「我是新的」證明同名舊行程已停，故 Core 要求該端點最後一張 Lease 的 `expires_at` + `fresh_process_skew`（預設 30 秒，沿用端點請求驗證的 skew）已過才接受（該端點沒有任何 Lease 紀錄則直接接受）；理由是舊行程受本地 watchdog 約束，保證在本地 deadline（不晚於 Lease TTL）前自行停止。`adapter_stop_report` 不受此延遲限制。端點遇 `EVIDENCE_REJECTED` 時每 2 秒重試、總等待上限為 `max(端點設定的 lease_ttl_seconds, Core 回報的 TTL) + fresh_process skew + 5 秒`（預設約 65 秒，不再固定）；端點的 `lease_ttl_seconds` 設定須不小於 Core 的 Lease TTL，否則上限可能不涵蓋舊 Lease 到期，自證接受後最多重新 `acquire` 2 次；仍被拒則回 `NOT_QUIESCED`，交 operator（P-19） | INV-08、V15、D44 |
+| P-19 | **operator 解除入口**：`resolve_recovery` 的對外入口為 `POST /v1/presence/resolve-recovery`（僅綁 loopback、需 `Authorization: Bearer <UEP_STOP_TOKEN>`、記錄 operator）與 `python -m uep.stop resolve-recovery`（token 只讀環境變數）。它**不碰**全域停止旗標：旗標仍成立時端點照樣無法重新 `acquire` | D36、D44、INV-08 |
+| P-20 | **Host epoch 檔並行安全**：`read`／`bump`／`raise_to` 的讀改寫由同行程執行緒鎖加跨行程檔案鎖（`<epoch 檔>.lock`；Windows 用 `msvcrt`、其他用 `fcntl`）序列化，等鎖逾時 30 秒拋 `HostEpochError`；寫入先 `fsync` 暫存檔再 `os.replace`，可行時再 `fsync` 目錄（Windows 無法開目錄而略過）。兩個行程併發 `bump` 不會得到相同值 | P-4、P-5、P-15 |
+| P-21 | **控制通道 hello 雙向證明**：client 的 hello 帶 nonce 並簽章；Core 驗證後以端點 secret 對該 nonce 簽章（訊息域 `uep-hello-proof`，與請求簽章分離）放進 `hello_ok.proof`；client 驗證通過才信任該連線，否則關線並拋 `EndpointAuthError`。Core 在 `hello_ok` 寫出成功之後才把連線登記為推送目標（之前不會有推送搶先寫入）。**邊界**：只做到抗冒名（冒綁埠者沒有 secret，無法讓端點相信持有 Lease），**不抗 relay**（中間人可原樣轉發雙方的 hello 與證明）；之後的回應與推送不逐則簽章，信任邊界是 loopback 與已驗證連線。Part H（跨機器）前須加每則 MAC 或通道綁定（TLS 憑證綁定），否則不得離開 loopback | INV-03、INV-04、D45 |
+| P-22 | **端點請求驗證與重啟窗口**：`RequestVerifier` 拒絕 `ts` 早於「驗證器建立時間 − `startup_grace`」的請求（nonce 表只在記憶體，重啟後清空）。組裝層 `build_request_verifier` 取 `startup_grace = skew = 30 秒`。取捨：grace 讓時鐘落後 δ（< skew）的端點在 Core 重啟後立即送的請求仍被接受（grace 為 0 時會被拒）；代價是重啟前最後 skew 秒內被截取的請求，在該窗口內可重放一次（殘餘風險）。同樣在 Part H 前須每則 MAC／通道綁定 | INV-03、D45 |
+| P-23 | **全域停止 token 下限**：`UEP_STOP_TOKEN` 至少 16 位元組（UTF-8）；空值或過短視同未設定——本機停止入口拒絕所有請求（fail-closed）、CLI 結束碼 1，並於 `GlobalStop` 建立時與 API 啟動時各告警一次（不輸出 token 內容） | D36、T-10 |
+| P-24 | **RECOVERING 期間無有效 Lease**：進入 `RECOVERING` 時 current row 的 Lease 欄位已清除，故此期間 `revoke` 為 no-op（無 Lease 可撤銷），`unquiesced_endpoint_id` 與 `recovery_reason` 不被覆寫；解除只能經停止證據或 `resolve_recovery`（P-17、P-19）。這取代 §4.5 對 RECOVERING 下 revoke 的舊敘述 | P-6、INV-08 |
+| P-25 | **凍結／系統睡眠殘餘風險（已知限制）**：端點本地期限與 watchdog 用單調時鐘，不涵蓋行程凍結或系統睡眠；凍結後舊行程至多到下一次 `renew`（約 TTL/3）才自停，已排隊的 chunk 另受 `intent.valid_until` 牆鐘檢查限制。Part H／P8 跨機器前待補牆鐘輔助檢查 | INV-03、V15 |
 | P-8 | 每個輸出於 Core 接納與端點接納皆檢查 P-3 授權六元組、`status=ACTIVE` 與 audience（§0.6）；生成內容自身沒有輸出權；stop／abort／revoke 走獨立控制通道，不排在音訊資料後面 | INV-02、INV-03、V06 |
 | P-9 | Adapter 保持連線不等於 Presence；缺席時預設不收集原始音訊，到場請求／留言接收權與錄音權分開 | 提案 §10.3、V18 |
 | P-10 | presence-bound 任務於離場時須到安全 checkpoint 暫停；已提交且不可中斷的外部動作先完成或查核，不假裝取消成功 | INV-02、V22 |
@@ -504,7 +529,7 @@ Lease TTL 30 秒、心跳 5 秒僅為 **調校起點**（提案 §11.4），不�
 ### 4.8 驗證案例
 
 **VC-4-1 併發 acquire（V11）**
-- 給定：`status=NONE`；Desktop、Discord、Website 三個 endpoint 同時送 `acquire`；重複 100 回合（每回合先 `revoke` 回 NONE）。
+- 給定：`status=NONE`；Desktop、Discord、Website 三個 endpoint 同時送 `acquire`；重複 100 回合（每回合先 `revoke`，並由舊端補送停止證據 `confirm_quiesced` 清除標記回乾淨的 NONE，P-16）。
 - 當：三個請求以同步屏障（barrier，三個 worker 於屏障後同時送出）同時到達 Presence Manager。
 - 則：每回合恰有 1 個 `GRANTED`，其餘為 `BUSY` 或 `VERSION_CONFLICT`；`presence_current` 只有 1 筆；`generation` 每回合恰 +1；journal 每回合只有 1 筆 `presence.granted`。
 
@@ -528,6 +553,16 @@ Lease TTL 30 秒、心跳 5 秒僅為 **調校起點**（提案 §11.4），不�
 - 當：Core 發出 `control.revoke`。
 - 則：控制訊號不經音訊通道且不被擋住；Sink 立即停止、writer 解鎖；之後晚到的舊 generation 音訊被端點二次檢查拒絕。
 
+**VC-4-6 revoke 後他端放行條件（V15、V17，A20）**
+- 給定：Desktop 持有效 Lease，Core `revoke`（`generation` 不變，`unquiesced_endpoint_id=Desktop`）。
+- 當：Discord 立即 `acquire`；其後 (a) Desktop 送合格停止證據，或 (b) 不送證據但被撤銷 Lease 的 `expires_at` 已過；另一組對照為 Lease 過期（非 revoke）路徑。
+- 則：立即 `acquire` 回 `NOT_QUIESCED` 且 `status` 維持 `NONE`；(a)(b) 之後 Discord `GRANTED`；Desktop 在 revoke 後可立即重新 `acquire`；Lease 過期路徑即使 `expires_at` 已過仍須證據或 `resolve_recovery`。三端併發時，證據到達後恰一個 `GRANTED`。
+
+**VC-4-7 新行程自證（V15、D44）**
+- 給定：端點 `ep_cli` 的舊行程被殺，Core 標記 `unquiesced_endpoint_id=ep_cli`；同 id 的新行程啟動。
+- 當：新行程 `acquire` 得 `NOT_QUIESCED`，送 `fresh_process` 證據。
+- 則：舊 Lease 的 `expires_at` + 30 秒未過 → `EVIDENCE_REJECTED`，端點有上限地等待（見 P-18）；已過 → `ACCEPTED`，重新 `acquire` `GRANTED`。證據缺 `playing=False` 或 `buffer_flushed=True`、或 `kind` 不在白名單 → `EVIDENCE_REJECTED`。已持有過 Lease 或輸出過的行程不自證。他端不因 `ep_cli` 的自證而被放行。
+
 ---
 
 ## 5. 契約 CC-5：Output／delivery
@@ -547,7 +582,7 @@ CC-5 以 CC-4 的授權六元組為前提，定義 *輸出意圖* 與 *交付結
 | `sequence` | int | Y | Core | 同 `output_id` 序列內單調 |
 | `audience_scope` | ScopeRef | Y | Core | |
 | `content_ref` | str | Y | Core | 文字或 artifact 引用；音訊以串流通道傳，這裡存參照與格式 `{sample_rate, channels, codec}` |
-| `valid_until` | ts | Y | Core | 短期限播放許可 |
+| `valid_until` | ts | Y | Core | 短期限播放許可；須 tz-aware（O-15） |
 | `generated_text_ref` | str? | C | Core | 完整生成稿（內部紀錄） |
 
 ### 5.2 DeliveryRecord 欄位
@@ -575,7 +610,7 @@ CC-5 以 CC-4 的授權六元組為前提，定義 *輸出意圖* 與 *交付結
 | `kind` | enum{stop, abort, revoke} | Y | `stop`＝Sink 立即停止；`abort`＝取消上游；`revoke`＝撤銷授權 |
 | `scope` | enum{turn, segment, transfer, process} | Y | |
 | `target_fence` | obj | Y | `{turn_generation?, presence_generation?, core_epoch}` |
-| `issued_at` | ts | Y | |
+| `issued_at` | ts | Y | 須 tz-aware（O-15） |
 
 **合法狀態路徑**（只能單向推進，終態不得再改）：
 
@@ -598,6 +633,7 @@ CC-5 以 CC-4 的授權六元組為前提，定義 *輸出意圖* 與 *交付結
 - 端點以 generation 判斷晚到的 `revoke`：`signal.generation >= 本地 generation` 才停止。
 - 重連須先取權威快照或 `renew`，**不依賴控制通道補送**。
 - 端點二次接納（送出／播放前自檢六元組與本地剩餘 TTL）是 Gate→send TOCTOU 的閉合點（P-14）。
+- 跨行程 socket 傳輸的連線建立採 hello 雙向證明（抗冒名、不抗 relay），見 P-21；請求重放窗口見 P-22。
 
 ### 5.4 權威擁有者
 
@@ -619,6 +655,9 @@ CC-5 以 CC-4 的授權六元組為前提，定義 *輸出意圖* 與 *交付結
 | O-5 | 所有 OutputIntent 必須通過 CC-4 Output Gate；`REJECT_*` 的輸出記為 `rejected`，不重送、不遞補到其他 endpoint | INV-02、INV-03 |
 | O-6 | `sent` 後 ACK 遺失或 timeout 標 `unknown`，以 `OutputAdapter.lookup(dispatch_id)` 查核，三態：`found`／`confirmed_not_sent`／`undetermined`（Adapter 另宣告 `lookup_authoritative`）。**只有權威且 `confirmed_not_sent` 才可標 `failed`**（允許以新 dispatch 重試）；其餘維持 `unknown`，避免重複通知。不得無限重送同一提醒，也不得直接開新位置補講 | INV-08、提案 §17.1 |
 | O-11 | **單一送出者**：Delivery Manager 以 claim（CAS：`status` 與 `row_version` 條件更新）取得某筆 delivery 的送出權，同一 `(output_id, sequence, kind)` 同時只有一個送出者；claim 失敗者不得送出 | INV-02、INV-05 |
+| O-13 | **dispatch 比對已持久化 intent**：`dispatch(intent)` 於 `prepare` 之後載入已持久化的同 `(output_id, sequence)` intent，與呼叫端傳入者**全欄位**比對（`content_ref`、授權六元組、`valid_until` 等）；不一致拋 `IntentMismatchError`，不送出。送出的永遠是已持久化的那份，不信任呼叫端另帶的內容 | INV-03、O-11 |
+| O-14 | **Gate 例外 fail-closed**：Output Gate 接納時拋例外，視為拒絕——delivery 目前為 `generated` 記 `rejected`，其後（`synthesized`／`enqueued`）記 `cancelled`，`failure.code=GATE_ERROR`、`retryable=False`，不送出、不卡在 `generated`；例外只記 log，不外洩內容 | INV-02、O-5 |
+| O-15 | **時間欄須 tz-aware**：`OutputIntent.valid_until`、`ControlSignal.issued_at`（以及 CC-7 `StateTransitionRequest.expires_at`）建構時即拒絕 naive datetime，避免 naive 與 aware 時鐘比較在 Gate 內才拋 `TypeError` | P-13 |
 | O-12 | `played_range` 未涵蓋完整輸出時，即使證據為強證據（`local_playback`／`remote_render`）也**不推到 `rendered_played`**，停在 `accepted`（部分播放以 `played_range` 記錄）。文字類輸出（無合成的 kind）無 `played_range` 時視為完整，可推到 `rendered_played`；`audio_stream` 必須有 `played_range.complete` 才可推到 `rendered_played` | INV-05、V08 |
 | O-7 | 工具實際完成以 CC-6 receipt 記帳，與是否已講出無關；不得為補說明而重跑工具 | INV-05、提案 §6.5 |
 | O-8 | `origin=system` 的輸出不得使用 Persona 語氣，且仍受 audience 與 Gate 管制 | INV-02、INV-07 |
@@ -707,9 +746,9 @@ Activity 是「前景／背景活動的共同索引」（提案 §15.1 `activiti
 | `run_id` | str | Y | |
 | `task_id` | ref | Y | |
 | `attempt` | int | Y | 第幾次執行 |
-| `worker_epoch` | int | Y | 隔離過期 worker |
+| `worker_epoch` | int | Y | 隔離過期 worker；worker 的所有回報（轉移、心跳、step、checkpoint、receipt）都必須帶它（T-9、T-16） |
 | `status` | enum{PENDING, RUNNING, WAITING_INPUT, WAITING_APPROVAL, PAUSED, SUCCEEDED, FAILED, CANCELLED, UNKNOWN} | Y | 同 Task；`PAUSED` 帶 `pause_reason` |
-| `run_deadline` / `step_timeout` / `approval_expiry` / `worker_heartbeat_at` | ts / duration / ts / ts | Y/N | 逾時語意拆開（提案 §14.3）；legacy WS 10 分鐘不得直接取消長任務 |
+| `run_deadline` / `step_timeout` / `approval_expiry` / `worker_heartbeat_at` | ts / duration / ts / ts | Y/N | 逾時語意拆開（提案 §14.3）；legacy WS 10 分鐘不得直接取消長任務。**deadline 的強制執行（逾時轉態）尚未實作，待 Part S Supervisor**（T-20） |
 | `checkpoint_ref` | ref? | N | 大型 checkpoint 的外部引用 |
 | `checkpoint` | JSONB? | N | runs 內嵌 checkpoint（§6.4 內容）；**值層級白名單**，只允許 ID、狀態、計數、雜湊等，不含私人原文（私人內容走 ref） |
 | `persona_version` / `policy_version` | int / int | Y | 啟動時固定 |
@@ -743,7 +782,7 @@ Activity 是「前景／背景活動的共同索引」（提案 §15.1 `activiti
 | | `approval_ref` | ref? | 外部副作用／高影響必填 |
 | | `presence_bound` | bool | |
 | | `status` | enum{INTENDED, APPROVED, EXECUTING, SUCCEEDED, FAILED, UNKNOWN} | `UNKNOWN`＝回覆遺失，待查核。**只由 Task Manager 推進**：依 Policy 決定（APPROVED）、依 executor 回傳的 receipt／查核結果推進（EXECUTING 之後）；executor 只寫 receipt，不直接寫此欄 |
-| Receipt | `receipt_id`（`rcpt_<ULID>`）、`action_id`、`worker_epoch`、`result_ref`、`recorded_at`、`source_verified: bool` | | 由 executor 簽回，Core 記錄。`source_verified=False` 的 receipt 只記錄，**不推進** action 狀態 |
+| Receipt | `receipt_id`（`rcpt_<ULID>`）、`action_id`、`worker_epoch?`、`result_ref`、`recorded_at`、`source_verified: bool` | | 由 executor 簽回，Core 記錄。`source_verified=False` 的 receipt 只記錄，**不推進** action 狀態。`worker_epoch`（migration `0008_receipt_worker_epoch`）記取得此 receipt 時呼叫端的 epoch，供稽核判斷是否為舊 epoch 的證據；查核（`lookup`）取得者與既有列為 NULL。內容限制見 T-14 |
 | Approval | `approval_id`、`actor_id`（人類，已認證）、`action_hash`、`target`、`scope`、`expiry`、`consumed_at?` | | 單次消耗；`target`＝`action.tool`、`scope`＝`task.scope_ref`；受眾與內容由 `action_hash`（全參數 canonical hash）涵蓋。record 只收已認證 principal |
 
 ### 6.6 權威擁有者
@@ -762,19 +801,24 @@ Activity 是「前景／背景活動的共同索引」（提案 §15.1 `activiti
 |---|---|---|
 | T-1 | Task 狀態不隨 GS／CS 結束、平台切換、Presence 離場、Core 重啟自動終止；結束只由 `task.completed`／`failed`／`cancelled` 事件 | INV-06、V19 |
 | T-2 | 事件重送、Outbox 重播、worker 重啟不重複同一 `action_id` 的副作用 | V20 |
-| T-3 | 工具完成但 receipt 遺失 → 以 `action_id` 向 executor 查核（lookup 三態：`found`／`confirmed_not_executed`／`undetermined`）。只有 executor 宣告 `lookup_authoritative` 且 `idempotency ∈ {native, via_action_id}` 時，`confirmed_not_executed` 才可使 action 退回 `INTENDED`；其餘維持 `UNKNOWN` 交規則／人工，不盲目重試。`source_verified=False` 的 receipt 不推進。Action `UNKNOWN` **不連動** Task／Run 狀態 | V21 |
+| T-3 | 工具完成但 receipt 遺失 → 以 `action_id` 向 executor 查核（lookup 三態：`found`／`confirmed_not_executed`／`undetermined`）。只有 executor 宣告 `lookup_authoritative` 且 `idempotency ∈ {native, via_action_id}` 時，`confirmed_not_executed` 才可使 action 退回 `INTENDED`；其餘維持 `UNKNOWN` 交規則／人工，不盲目重試。`source_verified=False` 的 receipt 不推進。Action `UNKNOWN` **不連動** Task／Run 狀態。`resolve_unknown` 先查**已存的 `source_verified=True` receipt**：有則直接依其 `succeeded` 推進為 `SUCCEEDED`／`FAILED`，不再向 executor 查核，無論 executor 之後怎麼說都**不退回 `INTENDED`**（已驗證證據強於 executor 回報）；此時 executor 不存在也不報錯 | V21 |
 | T-4 | 外部副作用需有效 `approval_ref`：`target`＝`action.tool`、`scope`＝`task.scope_ref`，受眾與內容由 `action_hash` 涵蓋，期限相符，單次消耗；任一變更須新 action 與新批准。消耗時 `approval.actor_id` 須屬 Policy 指定的 approver（P1 為 `task.owner_actor_id`），record 只收已認證 principal | V30、V31 |
 | T-5 | 模型輸出、`approve_step`、Runtime 的 `approval_request` 都不能消耗不存在的 approval | INV-04、V30 |
 | T-6 | `presence_bound=true` 任務在離場時於安全 checkpoint 暫停（`PAUSED`）；`false` 且已授權者可續跑；不能一邊在別平台聊天、一邊代她操作電腦 | INV-02、V22 |
 | T-7 | 恢復前重新驗證權限、目標裝置、資料 scope、檔案是否變更、批准是否過期；已完成副作用不重播；純模型計算可新 attempt 重做 | 提案 §17.2 |
 | T-8 | 對使用者承諾但未交付的報告，恢復的是「通知 intent」，不重跑整個任務 | 提案 §17.2 |
-| T-9 | 舊 `worker_epoch`（含舊 epoch）的回報／receipt 只記錄、不推進 Run 或 action 狀態 | INV-03 |
-| T-12 | 接手（resume）一個 Run 的前提：Supervisor 保證舊 worker 已停止，或舊 `worker_heartbeat_at` 已過期；否則不得接手。**Worker 責任**：長時間 executor 呼叫期間 worker 須自行 heartbeat。**PAUSED 的 Run** 若仍有 `EXECUTING` action，同樣須等心跳過期才可接手 | INV-03、提案 §17.2 |
-| T-14 | **Receipt 內容限制**：executor 對 receipt 只簽 ID／短碼，`result_ref` 為引用（URI 安全字元、長度 ≤ 256）；不合格時 Core **不拒收**，改為脫敏儲存並保留原內容的 `sha256` 與脫敏原因；格式 `meta.redactions[欄位名] = {sha256, reason}` | INV-07、E-11 |
+| T-9 | 舊 `worker_epoch` 的回報不推進 Run 或 action 狀態：`transition_run` 與 receipt 入庫路徑**只記錄、不推進**（receipt 仍存證據，`worker_epoch` 欄記下舊值）；`heartbeat`、`checkpoint`、`complete_step`、`begin_step` 等不具證據價值的回報改為拋 `StaleWorkerEpoch`，讓被取代的 worker 得知該停手。另見 T-16 | INV-03 |
+| T-12 | 接手（resume）一個 Run 的前提：Supervisor 保證舊 worker 已停止，或舊 `worker_heartbeat_at` 已過期；否則不得接手。**Worker 責任**：長時間 executor 呼叫期間 worker 須自行 heartbeat。**PAUSED 的 Run** 若仍有 `EXECUTING` action，同樣須等心跳過期才可接手。`resume_run` 只自動解除 `pause_reason ∈ allowed_reasons` 的 `PAUSED`（預設 `core_shutdown`、`presence_left`；Run 或 Task 任一方的暫停原因不在內即拋 `ResumeNotAllowed`），使用者暫停、`cooldown`、`resource_missing` 須由呼叫端明確傳入 `allowed_reasons`；`list_resumable_runs` 回傳的 Run 帶 `pause_reason` 供呼叫端決定 | INV-03、提案 §17.2 |
+| T-14 | **Receipt 內容限制**：executor 對 receipt 只簽 ID／短碼。`receipt_id` 須為 `rcpt_<ULID>`；`result_ref`、`error_code` 為引用，字元集 `[A-Za-z0-9_.:/~-]`、長度 1～256、以 `fullmatch` 判定，**不含 `@ % = +`**（這些能夾帶 email、百分比編碼、base64 類私人內容；executor 的引用格式須避開，否則被脫敏為 `redacted`）；`meta` 須為 ID／數字／短碼，且不得含 Core 保留鍵 `redacted`、`redactions`。不合格時 Core **不拒收**（副作用已發生，證據不能丟），改為脫敏儲存（`receipt_id` 不合格者另發新的 `rcpt_<ULID>`），並保留原內容的摘要與脫敏原因；格式 `meta.redactions[欄位名] = {sha256, reason}`——鍵名沿用 `sha256`，但**值已改為 HMAC**（`hmac-sha256:<kid>:<hex>`，E-18，D42），沒有有效密鑰時 fail-closed 拒絕（與 payload blob 一致）。值層級白名單的非有限 float（NaN／Infinity）一律視為不合格 | INV-07、E-11 |
 | T-15 | executor 查核（lookup）拋出例外視為 `undetermined`，action 維持 `UNKNOWN`（T-3） | V21 |
-| T-13 | Task／Run 轉 `SUCCEEDED` 前不得有 `UNKNOWN`／`EXECUTING` 的 action；Task 轉終態時同交易終止其未終態 Run；Task／Run 的 `UNKNOWN` 狀態 P1 保留未用 | INV-06 |
-| T-10 | 全域停止可阻止新工具與主動行動，其控制路徑不依賴 LLM | 提案 §18.3、V31 |
-| T-11 | `core.stopping`（核心關機）不終止 Task：Run 於安全 checkpoint 暫停（`pause_reason=core_shutdown`），不寫 `task.cancelled`／`task.failed`；進行中且結果未知的 action 標 `UNKNOWN` 待重啟查核；重啟後依 T-7 恢復 | INV-06 |
+| T-16 | **worker 身分與強制轉移**：`transition_run` 的 `worker_epoch` 為**必填**（舊 epoch 只記錄，T-9）。Supervisor／Core 要不論 epoch 轉移 Run 時改用 `force_transition_run(run_id, to, reason=…)`：`reason` 必須是短碼（`[A-Za-z0-9_.:-]{1,64}`），仍走轉移表與 `transition_guard`，並記 warning log | INV-03、T-9 |
+| T-17 | **Task 與 Run 狀態不脫鉤**：`transition_task` 轉到非終態時，未終態 Run 連動轉到同一狀態與 `pause_reason`（終態由 Task 終態收尾負責）；`start_run` 對 `PAUSED` 的 Task 拒絕（須先 `resume`）；`execute_action` 要求 Task 與 Run 皆為 `RUNNING` 或 `WAITING_APPROVAL`（`WAITING_APPROVAL` 放行以便核准後執行），Task 為 `PAUSED`（含使用者暫停）時拒絕，即使 Run 狀態與之脫鉤 | INV-06、T-6 |
+| T-18 | **階段 3 入庫失敗保底**：`execute_action` 階段 3（依 receipt 或遺失結果推進）入庫失敗（脫敏金鑰缺失、DB 錯誤、`receipt_id` 衝突等）時，副作用已發生，Core 於**全新交易**把仍為 `EXECUTING` 的 action 轉 `UNKNOWN` 並落地，再上拋原例外；log 只記例外型別與 executor 結果型別，不記訊息全文。保底本身也失敗時只記 log 並照樣上拋 | V21、T-3 |
+| T-19 | **action 與 step 身分完整性**：`create_action` 對既有 `action_id` 重呼叫，僅在 `run_id`、`tool`、`side_effect_class` 與 `params_hash` 全相同時冪等回傳既有列；`run`／`tool`／`side_effect_class` 不同拋 `PolicyViolation`，參數不同拋 `ParamsHashMismatch`（併發輸掉競爭的路徑同樣比對）。`begin_step` 對終態 Run 拒絕（`IllegalTransition`） | T-2、V20 |
+| T-20 | **待辦（移出 T-24，歸 Part S，尚未實作）**：(a) `side_effect_class`、`idempotency` 目前由呼叫端宣告，未與 Tool 註冊表核對（S2）；`create_action` 只比對同 `action_id` 的前後一致，不驗證宣告值是否真實；(b) T-11 的 `core_shutdown` 暫停程序與 `run_deadline`／`step_timeout`／`approval_expiry` 的強制執行，待 Supervisor | INV-02、V29 |
+| T-13 | Task／Run 轉 `SUCCEEDED` 前不得有 `UNKNOWN`／`EXECUTING` 的 action；Task 轉 `SUCCEEDED` 時檢查**該 Task 的所有 Run**（含先前 `FAILED`／`CANCELLED` 者），不只當前 Run。Task 轉終態時同交易終止其未終態 Run；Run 以 `FAILED`／`CANCELLED` 結束而仍遺留 `EXECUTING`／`UNKNOWN` action 時，`run.ended` payload 帶 `reason_code=unresolved_actions`（另帶 `count`、首個 `action_id`）並記 warning，讓待查核項可被查到。Task／Run 的 `UNKNOWN` 狀態 P1 保留未用 | INV-06 |
+| T-10 | 全域停止可阻止新工具與主動行動，其控制路徑不依賴 LLM。**階段 1.5 重檢**：`execute_action` 在階段 1（標 `EXECUTING`）提交後、呼叫 executor 前，以新短交易再呼叫一次 `presence_check`（presence_bound 任務）與 `action_guard`；被擋時 executor **確定尚未被呼叫**，action 由 `EXECUTING` 轉 `FAILED`（不是 `UNKNOWN`），Core 自行簽發一筆 `source_verified=True` 的 receipt（`error_code` 為 `stopped_before_call` 或 `presence_lost_before_call`，`meta.origin=core_pre_call`），並上拋 `ActionBlocked`／`PresenceRequired`。重檢交易開頭先驗 epoch 與狀態（不論是否注入 guard 都執行）：`worker_epoch` 已變或 action 不在 `EXECUTING`（Run 已被接手、action 已轉 `UNKNOWN` 等）時拋 `StaleWorkerEpoch`——不呼叫 executor、不寫 receipt、不改狀態，之後交 `resolve_unknown` 查核。`PresenceRequired.retryable` 語意：階段 1 被擋為 `True`（action 維持 `INTENDED`、approval 未消耗，Presence 恢復後可重試）；階段 1.5 被擋為 `False`（action 已是終態 `FAILED`，須建新 action 與新核准）。此窗口縮到極短但**無法完全消除**：重檢通過到 executor 實際收到呼叫之間仍有殘餘極短窗口（已知限制） | 提案 §18.3、V31 |
+| T-11 | `core.stopping`（核心關機）不終止 Task：Run 於安全 checkpoint 暫停（`pause_reason=core_shutdown`），不寫 `task.cancelled`／`task.failed`；進行中且結果未知的 action 標 `UNKNOWN` 待重啟查核；重啟後依 T-7 恢復。**待辦（Part S Supervisor，T-20）**：關機時主動暫停 Run 的程序尚未實作；目前只有重啟後 `resume_run` 把 `EXECUTING` action 轉 `UNKNOWN` 的恢復側 | INV-06 |
 
 ### 6.8 驗證案例
 
@@ -802,6 +846,11 @@ Activity 是「前景／背景活動的共同索引」（提案 §15.1 `activiti
 - 給定：presence_bound 桌面 Task 進行中；另一個 `presence_bound=false` 分析 Task 進行中並已有授權。
 - 當：Presence 由 Desktop 移到 Discord。
 - 則：桌面 Task 於安全 checkpoint `PAUSED`；不可中斷的進行中外部動作先完成／查核；分析 Task 繼續。
+
+**VC-6-6 呼叫前被擋（V31、T-10）**
+- 給定：`act_8` 已過階段 1（標 `EXECUTING`）；在呼叫 executor 前全域停止成立（或 Presence 失效且任務 `presence_bound`）。
+- 當：階段 1.5 重檢。
+- 則：executor 零次被呼叫；`act_8` 轉 `FAILED`，Core 自簽 receipt（`stopped_before_call`／`presence_lost_before_call`）；非 `UNKNOWN`，無需查核。重檢通過後到 executor 收到呼叫之間的極短窗口仍屬已知限制。
 
 ---
 
@@ -832,7 +881,7 @@ D35 已定案（A8）：新增輕量第七契約。編號為 6A 以保持既有�
 | `from_state` / `to_state` | str / str | Y | |
 | `reason` | obj | Y | 理由與證據引用 |
 | `scope_ref` | str | Y | |
-| `expires_at` | ts? | N | 過期請求直接 `REJECTED_EXPIRED` |
+| `expires_at` | ts? | N | 過期請求直接 `REJECTED_EXPIRED`；須 tz-aware（O-15），naive 者建構時拒絕 |
 | `decision` | enum{ACCEPTED, REJECTED_ILLEGAL, REJECTED_VERSION, REJECTED_UNAUTHORIZED, REJECTED_EXPIRED, DEFERRED} | Y（回覆） | 列舉為草案補充（D40） |
 | `new_version` | int? | C | `ACCEPTED` 時 |
 
@@ -973,7 +1022,7 @@ A4 沿用前提（現況表 §4.2／§4.3）：新 Session 不得對 `working_co
 ### 8.4 Event Bus 程式碼沿用條件（A4，僅列契約層需求）
 
 保留：`subscribe／unsubscribe／publish(sync=)`、單消費者線程分發、handler 例外隔離、`get_stats`。
-包裝層需滿足（不在本草案實作）：journal-first（E-1）、訂閱鍵為 `str`（取代封閉 enum，D22 已定案 A8）、事件 ID 改用 CC-1 的 `event_id`、佇列有上限與 `stop()` 排空、stats 在鎖內更新、慢 handler 不阻塞控制通道（控制訊號走獨立通道，不經此 Bus）。
+包裝層需滿足（P1／T-23／T-24 已實作，行為見 E-13）：journal-first（E-1）、訂閱鍵為 `str`（取代封閉 enum，D22 已定案 A8）、事件 ID 改用 CC-1 的 `event_id`、佇列有上限與 `stop()` 排空（逾時後舊線程存活則拒絕重啟）、stats 在鎖內更新、handler 例外只記型別、慢 handler 不阻塞控制通道（控制訊號走獨立通道，不經此 Bus）。
 
 ---
 
@@ -1005,7 +1054,7 @@ A4 沿用前提（現況表 §4.2／§4.3）：新 Session 不得對 `working_co
 
 ## 10. 待裁決
 
-沿用 DECISIONS 的編號，自 D22 起。D22、D23、D30、D31、D32、D33、D34、D35 已由艾斯維爾裁決（A8，2026-10-26）並落實於本草案，標「已定案（A8）」；其餘（D24–D29、D36–D40）仍待決，草案未定案。
+沿用 DECISIONS 的編號，自 D22 起。D22、D23、D30、D31、D32、D33、D34、D35 已由艾斯維爾裁決（A8，2026-10-26）並落實於本草案，標「已定案（A8）」；D41、D42（A16）、D43（A20）亦已定案並實作；其餘（D24–D29、D36–D40）仍待決，草案未定案（TRACKING 另記 D24、D29 為 A9、D26–D28 與 D36 為 A11 已定案，以 TRACKING 為準）。
 
 | 編號 | 問題 | 影響契約 |
 |---|---|---|
@@ -1028,9 +1077,9 @@ A4 沿用前提（現況表 §4.2／§4.3）：新 Session 不得對 `working_co
 | D38 | scope 的 level 是否需獨立的「角色自我（self）」與「各使用者私人」（提案 §15.4 列四類範圍，草案 §0.6 只有 private／group／public） | §0.6、CC-2 |
 | D39 | INV-05「使用者已知」是否建模為交付狀態（如 `user_acknowledged`）及其推定證據；草案目前不建模 | CC-5 |
 | D40 | CC-7 `StateDecision.decision` 列舉與 `pause_reason`、Activity 等草案補充列舉是否定案 | CC-7、CC-6 |
-| D41 | journal 讀取的「安全水位」：`journal_seq` 非提交可見順序，replay／tailing 如何推進游標。建議：以 `xmin`（或提交時間）加延遲水位，僅處理低於水位的 `journal_seq` | CC-1 |
-| D42 | `payload_hash` 防字典還原：建議由 sha256 改為 per-install 密鑰 HMAC（密鑰存放與輪替另定） | CC-1 |
-| D43 | 多平台前的 revoke 放行條件：revoke 後須有舊端 stop ACK，或舊 `expires_at` 已過，才放行他端 acquire；P2 的 revoke 不設 `unquiesced_endpoint_id`，需決定 P5 前補哪種機制 | CC-4 |
+| D41 | **已定案（A16）**：journal 讀取的「安全水位」：`journal_seq` 非提交可見順序，replay／tailing 如何推進游標。建議：以 `xmin`（或提交時間）加延遲水位，僅處理低於水位的 `journal_seq` | CC-1 |
+| D42 | **已定案（A16）**：`payload_hash` 防字典還原，已由 sha256 改為 per-install 密鑰 HMAC（`hmac-sha256:<kid>:<hex>`，見 E-18；密鑰存放與輪替另定） | CC-1 |
+| D43 | **已定案（A20，T-24）**：`revoke` 將舊端記為 `unquiesced_endpoint_id`（`generation` 不 +1）；他端 acquire 須等舊端停止證據或被撤銷 Lease 的 `expires_at` 已過，才放行（維持 `NONE`，不進 `RECOVERING`）；過期、啟用逾時、Core 重啟路徑仍須證據。見 P-16 | CC-4 |
 
 ---
 

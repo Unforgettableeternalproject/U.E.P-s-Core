@@ -30,12 +30,13 @@
 | CC-2／CC-5／fake 測試 | `tests/uep/test_context_output_models.py`、`tests/uep/test_fakes.py` 不需 DB；`tests/uep/test_context_output_db.py`、`tests/uep/test_context_output_review.py`、`tests/uep/test_delivery_manager.py` 需 `UEP_TEST_DATABASE_URL`；共用工廠 `tests/uep/factories.py` | CC-2、CC-5 | V06–V08 |
 | Task | `uep/tasks/` | `uep/tasks/states.py`（狀態列舉與轉移表）、`uep/tasks/models.py`（`activities`、`tasks`、`runs`、`steps`、`approvals`、`action_intents`、`receipts` 表）、`uep/tasks/manager.py`（Task Manager：唯一寫入者、action 去重／approval 單次消耗／UNKNOWN 查核、重啟恢復、action_guard 全域停止檢查）、`uep/tasks/presence_bridge.py`（消費 presence 事件，使 presence_bound Task 在安全 checkpoint 暫停）；測試 `tests/uep/test_task_model.py`（需 `UEP_TEST_DATABASE_URL`） | CC-6 | V19–V21／D8、D30 |
 | State Coordinator | `uep/state/` | `uep/state/models.py`（`state_projection`、`state_requests` 表）、`uep/state/coordinator.py`（CC-7 裁決：Interaction／Behavior 軸請求、Presence／Health 投影、提議者白名單 fail-closed、晚到事件 no-op） | CC-7 | D6、D40 |
-| 全域停止 | `uep/stop/` | `uep/stop/models.py`（`global_stop_flags` 表）、`uep/stop/service.py`（GlobalStop：旗標→revoke→廣播、token 常數時間比對、acquire 與 action 的鎖定旗標檢查）、`uep/stop/api.py`（只綁 loopback 的本機 HTTP API，Bearer token）、`uep/stop/__main__.py`（`python -m uep.stop` CLI，token 只讀環境變數 `UEP_STOP_TOKEN`） | CC-4、CC-7 | T-10／D36 |
+| 全域停止 | `uep/stop/` | `uep/stop/models.py`（`global_stop_flags` 表）、`uep/stop/service.py`（GlobalStop：旗標→revoke→廣播、token 常數時間比對、acquire 與 action 的鎖定旗標檢查）、`uep/stop/api.py`（只綁 loopback 的本機 HTTP API，Bearer token）、`uep/stop/__main__.py`（`python -m uep.stop {stop,release,status,resolve-recovery}` CLI，token 只讀環境變數 `UEP_STOP_TOKEN`，至少 16 位元組；`resolve-recovery` 對應 `POST /v1/presence/resolve-recovery`） | CC-4、CC-7 | T-10／D36 |
 | 組裝層 | `uep/assembly.py` | `assemble_core`／`CoreAssembly`：Gate、presence_check、transition_guard、action_guard 必填斷言（R1）；啟動順序 presence → bus → stop API → relay／端點 socket | CC-4、CC-6、CC-7 | D36 |
 | CLI 端點 | `uep/endpoint/` | 最小本機端點（A12）：`uep/endpoint/endpoint.py`（CliEndpoint：Lease 持有、二次接納、模擬播放、停止證據與 confirm_quiesced）、`uep/endpoint/watchdog.py`（本地單調時鐘 watchdog）、`uep/endpoint/auth.py`（HMAC 身分驗證，密鑰 `UEP_ENDPOINT_SECRET`／`UEP_ENDPOINT_SECRETS`）、`uep/endpoint/protocol.py`／`uep/endpoint/service.py`（端點 RPC 與 Core 端服務）、`uep/endpoint/reconnect.py`（自動重連）、`uep/endpoint/__main__.py`（`python -m uep.endpoint`） | CC-4、CC-5 | V15／A12、D12 |
 | CC-4／控制通道測試 | `tests/uep/test_presence_manager.py`、`tests/uep/test_presence_gate.py`、`tests/uep/test_presence_control.py`（共用 `tests/uep/presence_support.py`；需 `UEP_TEST_DATABASE_URL`，control 通道本身的測試不需 DB）；`tests/uep/test_presence_epoch.py`（不需 DB：epoch 檔、契約型別、migration 鏈） | CC-4、CC-5 驗證案例 VC-4-1、VC-4-2、VC-4-4（過期後他端不得啟用）、VC-4-5；P-1～P-6、P-8 | CC-4、CC-5 | V06、V11、V12、V15 |
 | CC-7／全域停止／端點測試 | `tests/uep/test_state_coordinator.py`、`tests/uep/test_global_stop.py`、`tests/uep/test_state_presence_bridge.py`、`tests/uep/test_assembly.py`（共用 `tests/uep/state_support.py`）；`tests/uep/test_endpoint_unit.py`、`tests/uep/test_endpoint_auth.py`、`tests/uep/test_endpoint_socket.py`、`tests/uep/test_endpoint_reconnect.py` 多數不需 DB，`tests/uep/test_endpoint_integration.py` 需 `UEP_TEST_DATABASE_URL`（共用 `tests/uep/endpoint_support.py`） | CC-4 VC-4-4、CC-7、T-10 | CC-4、CC-7 | V15 |
 | V11／V12／V15 驗收測試 | `tests/uep/test_acceptance_v11.py`、`tests/uep/test_acceptance_v12.py`、`tests/uep/test_acceptance_v15.py`（共用 `tests/uep/acceptance_p2_support.py`；需 `UEP_TEST_DATABASE_URL`）；審查轉入項釘住現況於 `tests/uep/test_p2_review_carryover.py` | CC-4 驗證案例 VC-4-1、VC-4-2、VC-4-4 | CC-4、CC-5 | V11、V12、V15 |
+| T-24 稽核回歸測試 | `tests/uep/test_cycle2_audit_a.py`（CC-1：冪等衝突、tailer、欄位格式、Bus、TRUNCATE）、`tests/uep/test_cycle2_audit_b.py`（CC-4／CC-5：fresh_process、resolve-recovery、revoke 放行、hello 證明、dispatch intent 比對）、`tests/uep/test_cycle2_audit_c_tasks.py`（CC-6）、`tests/uep/test_cycle2_audit_c_context.py`（CC-2／CC-3、assembly strict）、`tests/uep/test_cycle2_audit_fix2.py`（第二輪修補：證據資格、payload_hash kid、階段 1.5 重檢、startup grace）；需 `UEP_TEST_DATABASE_URL` 者未設時 skip | CC-1、CC-2、CC-3、CC-4、CC-5、CC-6 | CC-1–CC-6 | V11、V12、V15、V19–V21／D43 |
 | V19–V21 驗收測試 | `tests/uep/test_acceptance_v19.py`、`tests/uep/test_acceptance_v20.py`、`tests/uep/test_acceptance_v21.py`（共用 `tests/uep/acceptance_support.py`；需 `UEP_TEST_DATABASE_URL`；fake Adapter、crash 注入） | CC-1、CC-5、CC-6 驗證案例 VC-1-1、VC-1-2、VC-5-3、VC-6-1、VC-6-2 | CC-1、CC-5、CC-6 | V19–V21 |
 
 ### 1.2 legacy（範例區段，以 T-01 內容填寫）
@@ -73,11 +74,11 @@
 | `hidden_docs/DECISIONS.md`、`hidden_docs/TASKS.md` | 內部決策與任務規劃（gitignored，clone 後可能不存在） | 敏卡 |
 | `docs/改進計畫.md` | 舊 Echo Kernel 藍圖；已被提案取代（A5） | 僅查歷史 |
 | `pyproject.toml`、`uv.lock` | 新環境依賴（A6）；T-03 負責 | 環境 |
-| `alembic.ini`、`uep/db/migrations/versions/` | 資料庫 migration（`0001_events_journal`、`0002_task_model`、`0003_context_output`、`0004_presence`、`0005_state_stop`、`0006_journal_txid`）；URL 由 `UEP_DATABASE_URL` 提供 | 實作／部署 |
+| `alembic.ini`、`uep/db/migrations/versions/` | 資料庫 migration（`0001_events_journal`、`0002_task_model`、`0003_context_output`、`0004_presence`、`0005_state_stop`、`0006_journal_txid`、`0007_journal_truncate_guard`、`0008_receipt_worker_epoch`）；URL 由 `UEP_DATABASE_URL` 提供 | 實作／部署 |
 
 ## 3. 契約索引
 
-契約內容以 [Core契約草案](../架構重構/Core契約草案.md) 為準（草案未定案，待裁決見其 §10，編號 D22–D43 對應 [TRACKING §1](TRACKING.md)）。依賴方向：CC-3→CC-2；CC-5→CC-4；CC-6→CC-4、CC-2；CC-2–CC-7→CC-1；CC-1 不依賴其他契約（草案 §0.4）。
+契約內容以 [Core契約草案](../架構重構/Core契約草案.md) 為準（草案未定案，待裁決見其 §10，編號 D22–D44 對應 [TRACKING §1](TRACKING.md)）。依賴方向：CC-3→CC-2；CC-5→CC-4；CC-6→CC-4、CC-2；CC-2–CC-7→CC-1；CC-1 不依賴其他契約（草案 §0.4）。
 
 | 契約 | 草案章節 | 權威擁有者（草案 §x.4／x.6） | 相關 INV | 驗收項（初步） | legacy 對應（草案 §8） |
 |---|---|---|---|---|---|

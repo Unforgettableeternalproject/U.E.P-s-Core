@@ -2950,3 +2950,15 @@
 
 ---
 
+### docs: 回寫 T-24 契約與 Index／Tracking. 10/27
+
+> Date: Tue, 27 Oct 2026 11:32:27 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `42ce730c9025e427a7e2885c7dd390062fb6c344`
+
+---
+

@@ -2974,3 +2974,15 @@
 
 ---
 
+### chore: 新增舊 RVC 管線語音產生工具. 10/27
+
+> Date: Tue, 27 Oct 2026 11:33:07 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `7f659e2c683ebb99bd128d651f5548e6937b7c08`
+
+---
+

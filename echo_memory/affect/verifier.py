@@ -374,6 +374,8 @@ class ResponseVerifier:
         矛盾懲罰。
 
         對齊 OpenSoul：每個矛盾 -0.10，上限 -0.50。
+        已被取代（deprecated）的概念不扣分；矛盾判定為審核有效的 contradicted，
+        或仍有 conflict_count／has_contradiction 標記的現行概念。
         """
         if not memory_ctx or not memory_ctx.concepts:
             return 0.0
@@ -381,7 +383,13 @@ class ResponseVerifier:
         # 檢查 MemoryContext 中是否有標記為矛盾的概念
         contradiction_count = 0
         for concept in memory_ctx.concepts:
-            if concept.metadata.get("has_contradiction"):
+            if concept.is_deprecated:
+                continue
+            if (
+                concept.effective_review_status() == "contradicted"
+                or concept.conflict_count > 0
+                or concept.metadata.get("has_contradiction")
+            ):
                 contradiction_count += 1
 
         return min(0.5, contradiction_count * 0.1)

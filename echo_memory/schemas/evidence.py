@@ -324,3 +324,57 @@ def is_undelivered_agent(u: EvidenceUnit) -> bool:
         u.delivery_state == "not_delivered"
         or (u.delivery_state == "partial" and u.delivered_units is None)
     )
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 學習程度（M4 §8.1）
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# EvidenceInput.attrs 約定鍵（宿主以結構欄位附上；引擎不從文字內容推測）
+ATTR_CHANNEL_KIND = "channel_kind"  # dm | voice | text | cli | mcp
+ATTR_AUDIENCE_SIZE = "audience_size"  # 當下在場的人類人數（含說話者）
+ATTR_ADDRESSED_TO_AGENT = "addressed_to_agent"  # bool，可缺
+CHANNEL_KINDS = ("dm", "voice", "text", "cli", "mcp")
+
+
+def _audience_bucket(unit: EvidenceUnit) -> int | None:
+    """在場人數（dm 視為 1）；缺資訊或無效回傳 None。"""
+    attrs = unit.attrs or {}
+    if attrs.get(ATTR_CHANNEL_KIND) == "dm":
+        return 1
+    raw = attrs.get(ATTR_AUDIENCE_SIZE)
+    if isinstance(raw, bool):
+        return None
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 1 else None
+
+
+def learning_weight(unit: EvidenceUnit, cfg: Any = None) -> float:
+    """單一 EvidenceUnit 對「使用者陳述」的學習權重 w，範圍 [0, 1]。
+
+    - 只有 source_type="user" 計入；其他來源回傳 0.0
+    - 在場人數 n（dm 視為 1）查 config 基礎權重表；addressed_to_agent 為 True 時
+      w' = w + (1 - w) * beta(n)
+    - 缺 audience 資訊（舊 unit 無 attrs）回傳 learning_weight_unknown，不套 addressed 加權
+    """
+    if unit.source_type != "user":
+        return 0.0
+    if cfg is None:
+        from echo_memory.config import get_config
+        cfg = get_config()
+    n = _audience_bucket(unit)
+    if n is None:
+        return float(cfg.learning_weight_unknown)
+    w, beta = {
+        1: (cfg.learning_weight_n1, cfg.learning_beta_n1),
+        2: (cfg.learning_weight_n2, cfg.learning_beta_n2),
+        3: (cfg.learning_weight_n3, cfg.learning_beta_n3),
+        4: (cfg.learning_weight_n4, cfg.learning_beta_n4),
+    }.get(n, (cfg.learning_weight_n5plus, cfg.learning_beta_n5plus))
+    w = float(w)
+    if (unit.attrs or {}).get(ATTR_ADDRESSED_TO_AGENT) is True:
+        w = w + (1.0 - w) * float(beta)
+    return max(0.0, min(1.0, w))

@@ -116,6 +116,8 @@ class PatchEvidence:
         "reflection_create",
         "reflection_tag",
         "reflection_merge",
+        # 證據審核（EvidenceReview）
+        "evidence_review",
     ]
     evidence_strength: float  # [0, 1]
 
@@ -167,13 +169,16 @@ class ConceptPatch:
         new_value = {"conflict_count_delta": int, "rival_concept_id": str}，
         遞增 conflict_count 並設 metadata["has_contradiction"]；
         不新增 derivation（矛盾對手不是來源）
+      - review: 證據審核結果。target_path="evidence_review"，old_value／new_value 為
+        EvidenceReview dict；apply 同時重算 confidence、（supported 時）蓋 last_verified_at、
+        寫 source_diversity，舊值記在 rollback_payload["review_undo"]；不新增 derivation
 
     雙重 confidence:
       - old/new_confidence: 概念本身的可信度
       - patch_confidence: 此次變更操作的可信度
 
     風險等級:
-      - low: create、expand/ADD_FACT（強證據）、mark_conflict
+      - low: create、expand/ADD_FACT（強證據）、mark_conflict、review
       - medium: expand/REFINE_SUMMARY、link/unlink
       - high: modify、deprecate、merge
     """
@@ -182,7 +187,7 @@ class ConceptPatch:
     concept_name: str
     action: Literal[
         "create", "expand", "modify", "deprecate",
-        "link", "unlink", "merge", "mark_conflict",
+        "link", "unlink", "merge", "mark_conflict", "review",
     ]
     evidence: PatchEvidence
 
@@ -264,6 +269,17 @@ class ConceptPatch:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # PatchTransaction
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+@dataclass
+class SupersedeProposal:
+    """prepare_supersede_patch 通過 Gate 佐證後的提案；process_supersede_patch 在鎖內套用。"""
+
+    older_id: str
+    newer_id: str
+    patch: ConceptPatch
+    reason: str = ""
+    basis: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

@@ -8,10 +8,12 @@ Phase 2: 擴展 schema，加入 source_episode_ids、confidence、向量索引�
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal
 
+from echo_memory.schemas.evidence_review import compute_basis_digest
 from echo_memory.schemas.provenance import Derivation
 
 
@@ -35,6 +37,8 @@ class Concept:
             供 derivations 綁定「衍生當時 parent 的版本」
         derivations: 多階衍生來源紀錄（append-only，Derivation.to_dict 格式）。
             舊概念沒有此欄位時，解析端以 source_episode_ids 視為 legacy 來源
+        evidence_review: 證據審核結果（EvidenceReview.to_dict 格式）。預設 {} ＝ not_checked；
+            舊資料沒有此欄位時零遷移載入即 not_checked。是否仍有效請用 effective_review_status()
         confidence: 概念可信度 (0-1)，越多來源越高
         status: 生命週期狀態 (active/deprecated/archived)
         access_count: 被檢索/引用的次數
@@ -64,6 +68,7 @@ class Concept:
     metadata: dict[str, Any] = field(default_factory=dict)
     version: int = 1
     derivations: list[dict[str, Any]] = field(default_factory=list)
+    evidence_review: dict[str, Any] = field(default_factory=dict)
 
     # ── Concept Health 指標（GPT 建議 #10）──────────────────────────
     # 這些指標讓檢索時不只看 cosine，也能評估「這個概念健康嗎」。
@@ -205,6 +210,20 @@ class Concept:
         else:  # archived
             return 0.03
 
+    def effective_review_status(self) -> str:
+        """目前有效的審核狀態（唯讀，不改磁碟、不需 LLM，檢索期可直接用）。
+
+        無審核紀錄、或審核綁定的 basis_digest 與現在的證據基礎不符（description／
+        facts／來源已變動）時回傳 not_checked；否則回傳審核當時的 status。
+        """
+        review = self.evidence_review
+        if not isinstance(review, dict) or not review:
+            return "not_checked"
+        status = review.get("status", "not_checked")
+        if status == "not_checked" or review.get("basis_digest") != compute_basis_digest(self):
+            return "not_checked"
+        return str(status)
+
     def record_mutation(self) -> None:
         """記錄一次概念變更（expand/modify/deprecate），更新 health 相關指標。"""
         self.mutation_count += 1
@@ -244,6 +263,7 @@ class Concept:
             "source_diversity": self.source_diversity,
             "version": self.version,
             "derivations": [dict(d) for d in self.derivations],
+            "evidence_review": copy.deepcopy(self.evidence_review),
         }
 
     @classmethod

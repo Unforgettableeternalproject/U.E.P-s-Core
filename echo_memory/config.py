@@ -136,6 +136,67 @@ class Config:
         # 單次觸發（對話 patch / Dream 週期）最多重審幾筆，避免拖慢對話路徑
         self.concept_held_review_batch = int(os.getenv("CONCEPT_HELD_REVIEW_BATCH", "3"))
 
+        # === M4 證據審核 ===
+        # Dream 週期單次最多審核幾個概念；單次送審的 evidence unit 上限
+        self.evidence_review_batch = int(os.getenv("EVIDENCE_REVIEW_BATCH", "8"))
+        self.evidence_review_max_units = int(os.getenv("EVIDENCE_REVIEW_MAX_UNITS", "12"))
+        # Dream 週期單次最多重判幾對既有 CONTRADICTS 邊
+        self.contradiction_reevaluate_batch = int(os.getenv("CONTRADICTION_REEVALUATE_BATCH", "3"))
+        # 審核後 Concept.confidence 的上限（依審核狀態）
+        self.review_confidence_cap_supported = float(
+            os.getenv("REVIEW_CONFIDENCE_CAP_SUPPORTED", "0.95")
+        )
+        self.review_confidence_cap_insufficient = float(
+            os.getenv("REVIEW_CONFIDENCE_CAP_INSUFFICIENT", "0.45")
+        )
+        self.review_confidence_cap_contradicted = float(
+            os.getenv("REVIEW_CONFIDENCE_CAP_CONTRADICTED", "0.30")
+        )
+        # confidence 重算時 support_source 的係數
+        self.review_source_factor_user = float(os.getenv("REVIEW_SOURCE_FACTOR_USER", "1.0"))
+        self.review_source_factor_legacy = float(os.getenv("REVIEW_SOURCE_FACTOR_LEGACY", "0.7"))
+        self.review_source_factor_agent = float(os.getenv("REVIEW_SOURCE_FACTOR_AGENT", "0.5"))
+        # 檢索：審核狀態因子（relevance 與 support 分開相乘）
+        self.review_status_factor_supported = float(
+            os.getenv("REVIEW_STATUS_FACTOR_SUPPORTED", "1.0")
+        )
+        self.review_status_factor_not_checked = float(
+            os.getenv("REVIEW_STATUS_FACTOR_NOT_CHECKED", "0.95")
+        )
+        self.review_status_factor_insufficient = float(
+            os.getenv("REVIEW_STATUS_FACTOR_INSUFFICIENT", "0.80")
+        )
+        self.review_status_factor_contradicted = float(
+            os.getenv("REVIEW_STATUS_FACTOR_CONTRADICTED", "0.45")
+        )
+        # standing = confidence * status_factor * source_rank
+        self.standing_source_rank_user = float(os.getenv("STANDING_SOURCE_RANK_USER", "1.0"))
+        self.standing_source_rank_legacy = float(os.getenv("STANDING_SOURCE_RANK_LEGACY", "0.8"))
+        self.standing_source_rank_agent = float(os.getenv("STANDING_SOURCE_RANK_AGENT", "0.6"))
+        # 側向抑制：m = max(FLOOR, 1 - GAMMA * w * (1 - share))
+        self.contradicts_gamma = float(os.getenv("CONTRADICTS_GAMMA", "0.6"))
+        self.contradicts_floor = float(os.getenv("CONTRADICTS_FLOOR", "0.4"))
+        # 橋接展開遇 CONTRADICTS 邊的乘數
+        self.bridge_conflict_factor = float(os.getenv("BRIDGE_CONFLICT_FACTOR", "0.6"))
+
+        # === M4 學習程度（§8）===
+        # 基礎權重：在場人類人數（含說話者）-> w；dm 一律視為 1 人
+        self.learning_weight_n1 = float(os.getenv("LEARNING_WEIGHT_N1", "1.0"))
+        self.learning_weight_n2 = float(os.getenv("LEARNING_WEIGHT_N2", "0.6"))
+        self.learning_weight_n3 = float(os.getenv("LEARNING_WEIGHT_N3", "0.4"))
+        self.learning_weight_n4 = float(os.getenv("LEARNING_WEIGHT_N4", "0.25"))
+        self.learning_weight_n5plus = float(os.getenv("LEARNING_WEIGHT_N5PLUS", "0.08"))
+        # 對 UEP 說的加權：w' = w + (1 - w) * beta(n)
+        self.learning_beta_n1 = float(os.getenv("LEARNING_BETA_N1", "0.0"))
+        self.learning_beta_n2 = float(os.getenv("LEARNING_BETA_N2", "0.5"))
+        self.learning_beta_n3 = float(os.getenv("LEARNING_BETA_N3", "0.35"))
+        self.learning_beta_n4 = float(os.getenv("LEARNING_BETA_N4", "0.2"))
+        self.learning_beta_n5plus = float(os.getenv("LEARNING_BETA_N5PLUS", "0.1"))
+        # 缺 audience 資訊（舊資料、未接線宿主）的預設權重
+        self.learning_weight_unknown = float(os.getenv("LEARNING_WEIGHT_UNKNOWN", "0.6"))
+        # noisy-OR 合成的 support_strength 達此門檻才可 supported
+        self.support_threshold = float(os.getenv("SUPPORT_THRESHOLD", "0.9"))
+
         # === Concept 語意相近提示 ===
         # 新概念要 create 前，以 embedding 找 active 概念中 cosine 高於此值者（top 3），
         # 作為候選提示交給 Gate 的 LLM 判斷「同一件事（expand）」或「不同概念（create）」

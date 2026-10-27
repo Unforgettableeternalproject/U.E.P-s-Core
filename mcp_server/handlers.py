@@ -394,7 +394,12 @@ async def _handle_search_concepts(
             top_k=top_k,
             min_similarity=0.35,
         )
-        return [(c.name, f"{sim:.1%}") for c, sim in results]
+        # 已被取代（deprecated + replaced_by）與已合併的概念不回給外部
+        return [
+            (c.name, f"{sim:.1%}") for c, sim in results
+            if not (c.status == "deprecated" and c.metadata.get("replaced_by"))
+            and not c.metadata.get("merged_into")
+        ]
 
     concept_list = await asyncio.to_thread(_sync_search)
     logger.info(f"[MCP Handler] search_concepts 完成，找到 {len(concept_list)} 個概念")

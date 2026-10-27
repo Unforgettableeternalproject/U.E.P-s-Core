@@ -400,7 +400,11 @@ class TestDreamPath:
         assert (family.id, "ep_base_005") in derived and (family.id, "ep_base_003") in derived
 
         # Audit：PatchTransaction（triggered_by=dream, evidence=distillation）
-        rows = _new_rows(e, before)
+        # Dream 的證據審核 phase 另有自己的 audit（evidence_review），這裡只看蒸餾寫入
+        rows = [
+            r for r in _new_rows(e, before)
+            if r["patches"][0]["evidence"]["evidence_kind"] != "evidence_review"
+        ]
         assert len(rows) == 2
         for row in rows:
             assert row["triggered_by"] == "dream"

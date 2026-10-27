@@ -22,6 +22,7 @@ from typing import Any
 from echo_memory.config import get_config
 from echo_memory.neurochem.state import NeurochemState, RetrievalParams
 from echo_memory.schemas.concept import Concept
+from echo_memory.retrieval import standing as standing_mod
 from echo_memory.schemas.memory_context import MemoryContext
 from echo_memory.storage.episodic import EpisodicMemory
 from echo_memory.storage.semantic import SemanticMemory
@@ -36,12 +37,12 @@ class EcphoryRetrieval:
 
     整合三層記憶的聯想檢索：
       - Episodic: 向量種子 + 圖譜多跳展開
-      - Semantic: 概念向量搜索 + RELATES_TO 展開 + CONTRADICTS penalty
+      - Semantic: 概念向量搜索 + RELATES_TO 展開 + CONTRADICTS 側向抑制
       - Working: (Phase 2 Branch 6) 查詢快取
     """
 
-    # CONTRADICTS penalty 係數：命中矛盾邊時，相似度乘以此值
-    CONTRADICTS_PENALTY = 0.3
+    # 歷史（已被取代）概念的分數門檻縮放：對應 Concept.retrieval_weight 的 deprecated 權重
+    _HISTORY_BAR_SCALE = 0.15
 
     # 查詢向量快取的 key prefix
     _CACHE_PREFIX = "qemb:"
@@ -76,6 +77,7 @@ class EcphoryRetrieval:
         neurochem: NeurochemState | None = None,
         exclude_session_id: str | None = None,
         exclude_episode_ids: set[str] | None = None,
+        include_history: bool = False,
     ) -> MemoryContext:
         """
         執行 EcphoryRAG 檢索。
@@ -97,6 +99,8 @@ class EcphoryRetrieval:
             exclude_episode_ids: 排除指定 ID 的 Episodes（精準排除，
                                  用於三層混合策略：只排除 chat history
                                  中仍活著的 episodes）
+            include_history: True 時才帶出已被取代（deprecated + replaced_by）的
+                             歷史概念，並由 prompt 標註；預設不召回
 
         Returns:
             MemoryContext 記憶脈絡（包含 episodes + concepts）
@@ -264,6 +268,7 @@ class EcphoryRetrieval:
                 top_k=concept_top_k,
                 min_similarity=concept_min_similarity,
                 dopamine=dopamine,
+                include_history=include_history,
             )
 
             logger.debug(
@@ -547,33 +552,57 @@ class EcphoryRetrieval:
         top_k: int = 5,
         min_similarity: float = 0.3,
         dopamine: float = 0.5,
+        include_history: bool = False,
     ) -> tuple[list[Concept], dict[str, float]]:
         """
-        從 SemanticMemory 檢索概念，並進行圖譜展開和矛盾 penalty。
+        從 SemanticMemory 檢索概念，並進行圖譜展開和側向抑制。
 
         流程：
           1. 向量搜索 SemanticMemory → 初始概念集合
           2. RELATES_TO + LATENT_BRIDGE 1-hop 展開 → 擴展相關概念
              （bridge 為探索式關聯：權重乘折扣與時間衰減，不是事實支持；
              展開對象 deprecated/archived 依生命週期降權，有 CONTRADICTS 者再降級）
-          3. CONTRADICTS penalty → 降低矛盾概念的分數
-          4. 按分數排序返回
+          3. 乘上審核狀態因子（relevance 與 support 分開相乘，confidence 不計入）
+          4. CONTRADICTS 側向抑制 → 只壓 standing 較低的一方
+          5. 按分數排序返回（同分以 confidence 為 tie-break）
+
+        已被取代（deprecated + replaced_by）的概念預設不召回；include_history=True
+        才以原本的歷史權重帶出。
 
         Args:
             query_embedding: 查詢向量（已加 query prefix）
             top_k: 最終返回數量
             min_similarity: 最低相似度閾值
             dopamine: 多巴胺（影響展開閾值）
+            include_history: 是否帶出已被取代的歷史概念
 
         Returns:
             (concepts, concept_similarities) — 概念列表和對應分數
         """
+        params = standing_mod.params_from_config(get_config())
+
+        def _bar(concept: Concept) -> float:
+            """該概念的分數門檻：歷史概念已被 retrieval_weight 降權，門檻同比例縮放。"""
+            if standing_mod.is_superseded(concept):
+                return min_similarity * self._HISTORY_BAR_SCALE
+            return min_similarity
+
         # Step 1: 向量搜索
+        # 歷史模式：search_by_vector 以加權後分數比門檻，需放寬才看得到歷史概念，
+        # 之後再依各概念自己的門檻過濾
         vector_results = self.semantic.search_by_vector(
             query_embedding,
             top_k=top_k,
-            min_similarity=min_similarity,
+            min_similarity=(
+                min_similarity * self._HISTORY_BAR_SCALE if include_history
+                else min_similarity
+            ),
         )
+        vector_results = [
+            (c, s) for c, s in vector_results
+            if s >= _bar(c)
+            and (include_history or not standing_mod.is_superseded(c))
+        ]
 
         if not vector_results:
             return [], {}
@@ -632,6 +661,9 @@ class EcphoryRetrieval:
                 # 已合併概念不得被召回（直接略過，不是降權）
                 if neighbor_concept.metadata.get("merged_into"):
                     continue
+                # 已被取代的歷史概念：預設不召回，include_history 才展開
+                if not include_history and standing_mod.is_superseded(neighbor_concept):
+                    continue
 
                 # 展開的概念分數 = 來源分數 × 邊權重 × 衰減因子 × 生命週期權重
                 # （deprecated ×0.15 / archived ×0.03，與向量命中一致）
@@ -642,30 +674,45 @@ class EcphoryRetrieval:
                     * neighbor_concept.retrieval_weight
                 )
                 if is_bridge and self._has_contradicts(graph, neighbor_id):
-                    # 探索式橋接不該把有未解矛盾的概念帶進來
-                    derived_score *= self.CONTRADICTS_PENALTY
-                if derived_score >= min_similarity:
+                    # 探索式橋接帶出有未解矛盾的概念時降權（×bridge_conflict_factor）
+                    derived_score *= params["bridge_conflict_factor"]
+                if derived_score >= _bar(neighbor_concept):
                     concept_scores[neighbor_id] = derived_score
                     concepts_by_id[neighbor_id] = neighbor_concept
 
-        # Step 3: CONTRADICTS penalty
-        self._apply_contradicts_penalty(concept_scores, graph)
+        # 門檻只看 relevance（含側向抑制）；審核狀態因子只影響排序，
+        # 不讓「未審核」變相成「更容易被門檻擋掉」
+        gate_scores = dict(concept_scores)
 
-        # Step 4: 排序 + 截斷
+        # Step 3: 審核狀態因子（support；與 relevance 分開相乘，confidence 不計入）
+        for cid, concept in concepts_by_id.items():
+            concept_scores[cid] *= standing_mod.status_factor(
+                concept, params["status_table"],
+            )
+
+        # Step 4: CONTRADICTS 側向抑制
+        multipliers = self._apply_lateral_inhibition(
+            concept_scores, concepts_by_id, graph,
+            gamma=params["gamma"], floor=params["floor"],
+            status_table=params["status_table"], rank_table=params["rank_table"],
+        )
+        for cid, m in multipliers.items():
+            gate_scores[cid] *= m
+
+        # Step 5: 排序 + 截斷（同分以 confidence 為 tie-break）
         sorted_ids = sorted(
             concept_scores.keys(),
-            key=lambda cid: concept_scores[cid],
+            key=lambda cid: (concept_scores[cid], concepts_by_id[cid].confidence),
             reverse=True,
         )[:top_k]
 
-        # 過濾掉被 penalty 壓到 min_similarity 以下的
+        # 過濾掉被抑制壓到門檻以下的
         final_concepts = []
         final_scores: dict[str, float] = {}
         for cid in sorted_ids:
-            score = concept_scores[cid]
-            if score >= min_similarity:
+            if gate_scores[cid] >= _bar(concepts_by_id[cid]):
                 final_concepts.append(concepts_by_id[cid])
-                final_scores[cid] = score
+                final_scores[cid] = concept_scores[cid]
 
         return final_concepts, final_scores
 
@@ -677,49 +724,52 @@ class EcphoryRetrieval:
         return bool(graph.get_concept_relations(concept_id, edge_type="CONTRADICTS"))
 
     @staticmethod
-    def _apply_contradicts_penalty(
+    def _apply_lateral_inhibition(
         concept_scores: dict[str, float],
+        concepts_by_id: dict[str, Concept],
         graph,
-    ) -> None:
+        gamma: float = standing_mod.DEFAULT_GAMMA,
+        floor: float = standing_mod.DEFAULT_FLOOR,
+        status_table: dict[str, float] | None = None,
+        rank_table: dict[str, float] | None = None,
+    ) -> dict[str, float]:
         """
-        對有 CONTRADICTS 邊的概念施加 penalty。
+        CONTRADICTS 側向抑制：只壓 standing 較低的一方。
 
-        如果概念 A 在結果中，且 A→B 有 CONTRADICTS 邊，
-        B 的分數會乘以 CONTRADICTS_PENALTY（0.3）。
-
-        這是側向抑制（lateral inhibition）——矛盾的概念會互相壓制。
+        對結果集合內每條 CONTRADICTS 邊 (A, B, w)：
+          share_A = standing(A) / (standing(A) + standing(B))
+          m_A = max(floor, 1 - gamma × w × (1 - share_A))
+        standing 較高者乘數接近 1，較低者被壓；多條邊取最小乘數。
+        w 是矛盾強度（越強越該壓），不是乘數。
 
         Args:
             concept_scores: concept_id → score（會被直接修改）
+            concepts_by_id: concept_id → Concept（用來算 standing）
             graph: MemoryGraph 實例
+
+        Returns:
+            實際套用的乘數 {concept_id: m}（只含被抑制者）
         """
-        penalty_targets: dict[str, float] = {}
+        def _edges_of(cid: str) -> list[tuple[str, float]]:
+            if not graph.has_node(cid):
+                return []
+            return [
+                (nid, w)
+                for nid, _et, w in graph.get_concept_relations(
+                    cid, edge_type="CONTRADICTS"
+                )
+            ]
 
-        for concept_id in list(concept_scores.keys()):
-            if not graph.has_node(concept_id):
-                continue
-
-            relations = graph.get_concept_relations(
-                concept_id, edge_type="CONTRADICTS"
-            )
-
-            for neighbor_id, _, weight in relations:
-                if neighbor_id in concept_scores:
-                    # 記錄最強的 penalty（如果被多個概念矛盾）
-                    penalty = weight * EcphoryRetrieval.CONTRADICTS_PENALTY
-                    if neighbor_id not in penalty_targets:
-                        penalty_targets[neighbor_id] = penalty
-                    else:
-                        # 取更強的 penalty（更低的乘數）
-                        penalty_targets[neighbor_id] = min(
-                            penalty_targets[neighbor_id], penalty
-                        )
-
-        # 施加 penalty
-        for target_id, penalty_factor in penalty_targets.items():
-            original = concept_scores[target_id]
-            concept_scores[target_id] = original * penalty_factor
+        in_set = {cid: concepts_by_id[cid] for cid in concept_scores if cid in concepts_by_id}
+        multipliers = standing_mod.inhibition_multipliers(
+            in_set, _edges_of, gamma=gamma, floor=floor,
+            table=status_table, rank_table=rank_table,
+        )
+        for cid, m in multipliers.items():
+            original = concept_scores[cid]
+            concept_scores[cid] = original * m
             logger.debug(
-                f"[EcphoryRetrieval] CONTRADICTS penalty: "
-                f"{target_id[:12]} {original:.3f} → {concept_scores[target_id]:.3f}"
+                f"[EcphoryRetrieval] CONTRADICTS 側向抑制: "
+                f"{cid[:12]} {original:.3f} → {concept_scores[cid]:.3f} (×{m:.2f})"
             )
+        return multipliers

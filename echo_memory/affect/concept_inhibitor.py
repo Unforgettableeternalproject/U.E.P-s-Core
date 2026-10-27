@@ -34,9 +34,18 @@ from echo_memory.affect.concept_patch import (
     PatchEvidence,
     PatchHistoryEntry,
     PatchTransaction,
+    SupersedeProposal,
 )
 from echo_memory.affect.concept_verifier import ConceptAssessment, ConceptVerification
 from echo_memory.schemas.concept import Concept
+from echo_memory.schemas.evidence_review import (
+    CLAIM_KINDS,
+    REVIEWED_STATUSES,
+    EvidenceReview,
+    compute_basis_digest,
+    compute_review_confidence,
+    review_confidence_cap,
+)
 from echo_memory.storage.atomic import atomic_write_json, replace_with_retry
 from echo_memory.storage.locking import storage_lock
 from echo_memory.storage.semantic import SemanticMemory
@@ -66,6 +75,8 @@ def _producer_for_kind(evidence_kind: str | None) -> str:
         return "extractor"
     if kind.startswith("reflection"):
         return "reflection"
+    if kind == "evidence_review":
+        return "reviewer"
     return "unknown"
 
 
@@ -1014,6 +1025,430 @@ class ConceptInhibitor:
         self._write_audit(tx)
 
     # ──────────────────────────────────────────────
+    # 證據審核入口（EvidenceReviewer / Dream / 手動）
+    # ──────────────────────────────────────────────
+
+    @staticmethod
+    def _validate_review_value(value: Any) -> str | None:
+        """review patch new_value 的結構驗證（只看欄位，不看文字內容）。通過回傳 None。"""
+        if not isinstance(value, dict):
+            return "review 內容不是 dict"
+        if value.get("status") not in REVIEWED_STATUSES:
+            return f"review status 無效: {value.get('status')!r}"
+        if not value.get("basis_digest"):
+            return "review 缺少 basis_digest"
+        try:
+            strength = float(value.get("support_strength", 0.0))
+        except (TypeError, ValueError):
+            return "support_strength 不是數值"
+        if not 0.0 <= strength <= 1.0:
+            return "support_strength 超出 [0,1]"
+        claim_kind = value.get("claim_kind", "fact")
+        if claim_kind not in CLAIM_KINDS:
+            return f"claim_kind 無效: {claim_kind!r}"
+        if (
+            claim_kind == "intention"
+            and value.get("status") == "supported"
+            and not value.get("corroborated_by")
+        ):
+            return "intention 無 corroborated_by 不得 supported"
+        # supported 必須達 support_threshold（intention 有佐證者例外：佐證本身即證據）
+        if value.get("status") == "supported" and not (
+            claim_kind == "intention" and value.get("corroborated_by")
+        ):
+            from echo_memory.config import get_config
+            if strength < float(get_config().support_threshold):
+                return f"supported 的 support_strength {strength:.2f} 低於門檻"
+        return None
+
+    def process_review_patch(
+        self,
+        concept_id: str,
+        review: EvidenceReview,
+        confidence: float | None = None,
+        user_input: str = "",
+        *,
+        triggered_by: str = "dream",
+    ) -> tuple[bool, PatchTransaction]:
+        """
+        將一筆證據審核結果以 review patch 寫入概念。
+
+        規則層 approve（審核者本身就是 LLM，不再二次佐證；此處不呼叫 LLM、不在 LLM 期間持鎖）。
+        流程：鎖內建 patch 並做結構驗證 -> audit-before-mutate（audit 失敗則概念不動）->
+        apply（同時重算 confidence；supported 時蓋 last_verified_at；寫 source_diversity）->
+        失敗則 rollback -> 終態 audit。review 的 rollback 還原 evidence_review／confidence／
+        last_verified_at／source_diversity（version 單調，不回退）。
+
+        結構驗證不通過（拒絕，概念不動，仍留 audit）：
+          - status 不是 supported / contradicted / insufficient
+          - 缺 basis_digest，或與目前 compute_basis_digest(concept) 不符（stale）
+          - support_strength 不在 [0,1]
+          - support_source=agent_only 卻要寫 supported（助手推測不能自證）
+
+        Args:
+            concept_id: 目標概念
+            review: 審核結果。basis_digest 必須是審核者讀取證據當下算的 digest；
+                reviewed_at／reviewed_at_version 缺省時由這裡補（現在時間／目前 version）；
+                patch_id 一律由這裡覆寫為本次 patch id
+            confidence: 要寫入的 Concept.confidence；None 時依 §3.4 以 independent_count
+                與 support_source 重算。有給時仍會被 status 的 cap 截斷
+            user_input: 僅供 audit 記錄
+            triggered_by: transaction 觸發來源（預設 dream）
+
+        Returns:
+            (success, PatchTransaction) — success=False 時沒有任何概念被改動。
+            概念不存在時 tx.patches 為空、status="failed"（不寫 audit）
+        """
+        tx = PatchTransaction(
+            patches=[],
+            user_input=user_input or f"[evidence_review] {concept_id}",
+            llm_response="",
+            session_id="evidence-review",
+            turn_id="",
+            triggered_by=triggered_by,  # type: ignore[arg-type]
+        )
+        reason_rejected: str | None = None
+        with self._semantic._lock:
+            concept = self._semantic.get(concept_id)
+            if concept is None:
+                tx.status = "failed"
+                return False, tx
+
+            value = review.to_dict()
+            if not value.get("reviewed_at"):
+                value["reviewed_at"] = datetime.now(timezone.utc).isoformat()
+            if not value.get("reviewed_at_version"):
+                value["reviewed_at_version"] = concept.version
+            patch = ConceptPatch(
+                transaction_id=tx.transaction_id,
+                concept_id=concept.id,
+                concept_name=concept.name,
+                action="review",
+                target_path="evidence_review",
+                old_value=copy.deepcopy(concept.evidence_review),
+                new_value=value,
+                old_confidence=concept.confidence,
+                patch_confidence=0.7,
+                evidence=PatchEvidence(
+                    evidence_kind="evidence_review",
+                    evidence_strength=0.7,
+                    verifier_status="valid",
+                    verifier_reason=review.reason or f"證據審核: {review.status}",
+                    retrieved_concept_ids=[concept.id],
+                ),
+                risk_level="low",
+            )
+            value["patch_id"] = patch.patch_id
+            tx.patches.append(patch)
+
+            reason_rejected = self._validate_review_value(value)
+            support_source = concept.metadata.get("support_source")
+            if reason_rejected is None and value["basis_digest"] != compute_basis_digest(concept):
+                reason_rejected = "stale: basis_digest 與目前證據基礎不符"
+            if (
+                reason_rejected is None
+                and value["status"] == "supported"
+                and support_source == "agent_only"
+            ):
+                reason_rejected = "agent_only 來源不能審為 supported"
+
+            if reason_rejected is None:
+                if confidence is None:
+                    new_conf = compute_review_confidence(
+                        value["status"], value["support_strength"],
+                        value["independent_count"], support_source,
+                    )
+                else:
+                    cap = review_confidence_cap(value["status"])
+                    new_conf = max(0.0, min(float(confidence), cap if cap is not None else 1.0))
+                patch.new_confidence = new_conf
+                patch.status = "approved"
+
+        if reason_rejected is not None:
+            patch.status = "rejected"
+            patch.rejection_reason = reason_rejected
+            tx.status = "failed"
+            self._write_audit(tx)
+            return False, tx
+
+        # audit-before-mutate：先寫 audit，失敗則不改動概念
+        if not self._try_write_audit(tx):
+            patch.status = "rejected"
+            patch.rejection_reason = "audit log 寫入失敗，阻止 mutation"
+            tx.status = "failed"
+            return False, tx
+
+        if self._apply_patch(patch):
+            patch.status = "applied"
+            tx.status = "committed"
+            self._write_audit(tx)
+            return True, tx
+
+        # apply 失敗：可能已改了記憶體（例如存檔失敗），補一次回滾
+        self._rollback_patch(patch)
+        patch.status = "rejected"
+        patch.rejection_reason = "SemanticMemory review 套用失敗（digest 已變動或存檔失敗）"
+        tx.status = "failed"
+        self._write_audit(tx)
+        return False, tx
+
+    # ──────────────────────────────────────────────
+    # 取代式矛盾入口（ContradictionDetector / Dream）
+    # ──────────────────────────────────────────────
+
+    @staticmethod
+    def _save_graph(graph: Any) -> None:
+        """存圖譜（概念檔已先存）。失敗只記 warning，不讓 patch 失敗；圖 I/O 不持讀者鎖。"""
+        if graph is None:
+            return
+        try:
+            graph.save()
+        except Exception as e:
+            logger.warning(
+                "[ConceptInhibitor] 圖譜存檔失敗（記憶體已更新，待下次 Dream／存檔補寫）: %s", e,
+            )
+
+    @staticmethod
+    def _edge_weight(graph: Any, a: str, b: str) -> float:
+        with graph.lock:
+            for src, dst in ((a, b), (b, a)):
+                if graph.graph.has_edge(src, dst):
+                    return float(graph.graph[src][dst].get("weight", 0.5))
+        return 0.5
+
+    @staticmethod
+    def _remove_contradicts_edge(graph: Any, a: str, b: str) -> bool:
+        """移除兩概念間的 CONTRADICTS 邊（雙向）；回傳是否移除了任何邊。"""
+        if graph is None:
+            return False
+        removed = False
+        with graph.lock:
+            for src, dst in ((a, b), (b, a)):
+                if (
+                    graph.graph.has_edge(src, dst)
+                    and graph.graph[src][dst].get("edge_type") == "CONTRADICTS"
+                ):
+                    graph.graph.remove_edge(src, dst)
+                    removed = True
+        return removed
+
+    @staticmethod
+    def _restore_contradicts_edge(graph: Any, info: Any) -> bool:
+        """依 rollback_payload 的紀錄重建被 supersede 移除的 CONTRADICTS 邊（原 weight）。"""
+        if graph is None or not isinstance(info, dict):
+            return False
+        a, b = info.get("a"), info.get("b")
+        if not a or not b or graph.has_contradicts_edge(a, b):
+            return False
+        graph.add_contradicts_edge(a, b, weight=float(info.get("weight", 0.5)))
+        return graph.has_contradicts_edge(a, b)
+
+    def prepare_supersede_patch(
+        self,
+        older_id: str,
+        newer_id: str,
+        reason: str = "",
+        basis: dict[str, Any] | None = None,
+        graph: Any = None,
+    ) -> tuple[str, SupersedeProposal | None]:
+        """建立「newer 取代 older」的 deprecate patch 並做 Gate 判斷（含 LLM 佐證）。
+
+        含 LLM 呼叫，**不得在 storage_lock 內呼叫**；套用請用 process_supersede_patch。
+        收尾資訊（要扣回的互相標記、既有 CONTRADICTS 邊與其 weight、雙方 basis digest）
+        在這裡就寫進 patch new_value，所以不論由 process_supersede_patch 或 held 重審
+        （review_held_patches）套用，都完成同樣的收尾。
+
+        Args:
+            graph: 偵測既有 CONTRADICTS 邊用的 MemoryGraph；缺省用 semantic 已 attach 的圖。
+
+        Returns:
+            (state, proposal)：approved（有 proposal）｜held（已登記 held 重審佇列）｜
+            rejected（Gate 不佐證或前提不成立）
+        """
+        g = graph if graph is not None else getattr(self._semantic, "_graph", None)
+        with self._semantic._lock:
+            older = self._semantic.get(older_id)
+            newer = self._semantic.get(newer_id)
+            if (
+                older is None or newer is None
+                or older.status != "active" or newer.status != "active"
+            ):
+                return "rejected", None
+            older_name, older_desc = older.name, older.description
+            newer_name, newer_desc = newer.name, newer.description
+            full_basis = dict(basis or {})
+            full_basis["older_digest"] = compute_basis_digest(older)
+            full_basis["newer_digest"] = compute_basis_digest(newer)
+            had_edge = g is not None and g.has_contradicts_edge(older_id, newer_id)
+            state = ConceptState(
+                status="deprecated",
+                deprecated_at=datetime.now(timezone.utc),
+                deprecated_reason="superseded",
+                replaced_by=newer_id,
+            ).to_dict()
+            state["supersession"] = {
+                "by": newer_id,
+                "at": datetime.now(timezone.utc).isoformat(),
+                "basis": full_basis,
+            }
+            state["clear_conflict_marks"] = [older_id, newer_id] if had_edge else None
+            state["contradicts_edge"] = {
+                "present": bool(had_edge),
+                "weight": self._edge_weight(g, older_id, newer_id) if had_edge else None,
+            }
+            patch = ConceptPatch(
+                transaction_id="",
+                concept_id=older.id,
+                concept_name=older.name,
+                action="deprecate",
+                target_path="status",
+                old_value=older.status,
+                new_value=state,
+                old_confidence=older.confidence,
+                patch_confidence=0.7,
+                evidence=PatchEvidence(
+                    evidence_kind="user_correction",
+                    evidence_strength=0.7,
+                    verifier_status="deprecate",
+                    verifier_reason=reason or "偏好隨時間更正：較新的使用者陳述取代舊概念",
+                    retrieved_concept_ids=[older_id, newer_id],
+                ),
+                risk_level="high",
+                rollback_payload={
+                    "old_status": older.status,
+                    "old_confidence": older.confidence,
+                },
+            )
+        user_input = (
+            f"較舊概念「{older_name}」: {older_desc}\n"
+            f"較新概念「{newer_name}」: {newer_desc}\n"
+            "提案: 較新概念是使用者後來的更正，取代較舊概念（保留歷史，不刪除）。"
+        )
+        # LLM 佐證（Gate 內）；此處不持鎖
+        self._evaluate_patch(patch, user_input, reason)
+        if patch.status == "approved":
+            return "approved", SupersedeProposal(older_id, newer_id, patch, reason, full_basis)
+        if patch.status == "held":
+            tx = PatchTransaction(
+                patches=[patch], user_input=user_input, llm_response=reason,
+                session_id="supersede-dream", turn_id="", triggered_by="dream",
+            )
+            patch.transaction_id = tx.transaction_id
+            self._register_held(patch, tx, user_input, reason)
+            return "held", None
+        return "rejected", None
+
+    def process_supersede_patch(
+        self,
+        proposal: SupersedeProposal,
+        clear_conflict_marks: bool = False,
+        graph: Any = None,
+        verify_fn: Callable[[], tuple[bool, str]] | None = None,
+    ) -> tuple[bool, PatchTransaction]:
+        """套用已通過 Gate 的 supersede 提案（呼叫端應持 storage_lock；此處不呼叫 LLM）。
+
+        單一 deprecate patch 同時完成：status／replaced_by／deprecated_reason、
+        metadata["supersession"]、（有互相標記時）雙方 conflict_count 反向扣回、
+        CONTRADICTS 邊移除。流程：鎖內前提檢查 -> audit-before-mutate -> apply -> 終態 audit；
+        _rollback_patch 可完整還原（含補回標記與邊，原 weight 存在 rollback_payload）。
+
+        鎖內前提：雙方仍 active、雙方 basis digest 與 prepare 時相同、verify_fn（呼叫端提供，
+        例如確認較新者仍有 user_claim 證據）通過。
+
+        Args:
+            clear_conflict_marks: True 時強制扣回雙方標記（prepare 已偵測到邊時不需要）。
+            graph: 圖譜（缺省用 semantic 已 attach 的圖）；邊在這裡移除。
+            verify_fn: () -> (ok, reason)，在鎖內呼叫，不得含 LLM。
+        """
+        patch = proposal.patch
+        g = graph if graph is not None else getattr(self._semantic, "_graph", None)
+        tx = PatchTransaction(
+            patches=[patch],
+            user_input=f"[supersede] {proposal.older_id} <- {proposal.newer_id}",
+            llm_response=proposal.reason,
+            session_id="supersede-dream",
+            turn_id="",
+            triggered_by="dream",
+        )
+        patch.transaction_id = tx.transaction_id
+        reject: str | None = None
+        with self._semantic._lock:
+            older = self._semantic.get(proposal.older_id)
+            newer = self._semantic.get(proposal.newer_id)
+            if (
+                older is None or newer is None
+                or older.status != "active" or newer.status != "active"
+            ):
+                reject = "supersede 前提失效（概念已不存在或非 active）"
+            else:
+                for concept, key in ((older, "older_digest"), (newer, "newer_digest")):
+                    expected = proposal.basis.get(key)
+                    if expected and expected != compute_basis_digest(concept):
+                        reject = "stale: supersede 雙方的證據基礎在佐證期間已變動"
+                if reject is None and verify_fn is not None:
+                    ok, why = verify_fn()
+                    if not ok:
+                        reject = f"supersede 前提失效: {why}"
+            if reject is None:
+                nv = patch.new_value if isinstance(patch.new_value, dict) else {}
+                if g is not None and g.has_contradicts_edge(proposal.older_id, proposal.newer_id):
+                    nv["contradicts_edge"] = {
+                        "present": True,
+                        "weight": self._edge_weight(g, proposal.older_id, proposal.newer_id),
+                    }
+                    nv["clear_conflict_marks"] = [proposal.older_id, proposal.newer_id]
+                elif clear_conflict_marks and not nv.get("clear_conflict_marks"):
+                    nv["clear_conflict_marks"] = [proposal.older_id, proposal.newer_id]
+                patch.status = "approved"
+        if reject is not None:
+            patch.status = "rejected"
+            patch.rejection_reason = reject
+            tx.status = "failed"
+            return False, tx
+
+        if not self._try_write_audit(tx):
+            patch.status = "rejected"
+            patch.rejection_reason = "audit log 寫入失敗，阻止 mutation"
+            tx.status = "failed"
+            return False, tx
+
+        if not self._apply_patch(patch):
+            self._rollback_patch(patch)
+            patch.status = "rejected"
+            patch.rejection_reason = "SemanticMemory deprecate 套用失敗"
+            tx.status = "failed"
+            self._write_audit(tx)
+            return False, tx
+        # 圖不是 semantic attach 的那一張時，由這裡補移邊（_apply_deprecate 已記下 weight）
+        if g is not None and self._remove_contradicts_edge(
+            g, proposal.older_id, proposal.newer_id,
+        ):
+            self._save_graph(g)
+        patch.status = "applied"
+        tx.status = "committed"
+        self._write_audit(tx)
+        return True, tx
+
+    def rollback_supersede_patch(self, tx: PatchTransaction, graph: Any = None) -> list[str]:
+        """回滾 process_supersede_patch：older 回 active、移除 replaced_by／supersession、
+        補回被扣的互相標記、重建被移除的 CONTRADICTS 邊（原 weight）。
+        回傳被補回標記的概念 id。graph 缺省用 semantic 已 attach 的圖。"""
+        g = graph if graph is not None else getattr(self._semantic, "_graph", None)
+        cleared: list[str] = []
+        for p in reversed(tx.applied_patches):
+            if p.action != "deprecate":
+                continue
+            payload = p.rollback_payload or {}
+            cleared = list(payload.get("cleared_conflict_marks") or [])
+            self._rollback_patch(p)
+            if self._restore_contradicts_edge(g, payload.get("removed_contradicts_edge")):
+                self._save_graph(g)
+            p.status = "rolled_back"
+        tx.status = "rolled_back"
+        self._write_audit(tx)
+        return cleared
+
+    # ──────────────────────────────────────────────
     # Reflection Pipeline 入口
     # ──────────────────────────────────────────────
 
@@ -1726,6 +2161,11 @@ class ConceptInhibitor:
             }
             self._save_held()
 
+    @property
+    def semantic(self) -> SemanticMemory:
+        """底層 SemanticMemory（供協調層讀取概念，不必碰私有屬性）。"""
+        return self._semantic
+
     def held_count(self) -> int:
         """目前仍待重審的 held patch 數量。"""
         try:
@@ -1834,8 +2274,26 @@ class ConceptInhibitor:
             return True
         if patch.action == "modify":
             return concept.description != patch.old_value
+        if patch.action == "review":
+            # 審核綁 basis_digest：證據基礎（description／facts／來源）變了即失效
+            value = patch.new_value if isinstance(patch.new_value, dict) else {}
+            return value.get("basis_digest") != compute_basis_digest(concept)
         if patch.action == "deprecate":
-            return concept.status != patch.old_value
+            if concept.status != patch.old_value:
+                return True
+            nv = patch.new_value if isinstance(patch.new_value, dict) else {}
+            sup = nv.get("supersession")
+            if isinstance(sup, dict):
+                # 取代式 deprecate：較新者必須仍存在且 active，且雙方證據基礎未變
+                newer = self._semantic.get(str(nv.get("replaced_by") or ""))
+                if newer is None or newer.status != "active":
+                    return True
+                basis = sup.get("basis") if isinstance(sup.get("basis"), dict) else {}
+                if basis.get("older_digest") and basis["older_digest"] != compute_basis_digest(concept):
+                    return True
+                if basis.get("newer_digest") and basis["newer_digest"] != compute_basis_digest(newer):
+                    return True
+            return False
         if patch.action == "expand":
             # 冪等：同一筆 fact／來源 episode 已經在概念上，視為已套用（stale），不重複追加
             if patch.target_path == "source_episode_ids":
@@ -1963,6 +2421,16 @@ class ConceptInhibitor:
 
         決策結果直接修改 patch.status。
         """
+        # review：審核者本身就是 LLM，只做結構驗證，不再叫 LLM 佐證
+        if patch.action == "review":
+            problem = self._validate_review_value(patch.new_value)
+            if problem is None:
+                patch.status = "approved"
+            else:
+                patch.status = "rejected"
+                patch.rejection_reason = problem
+            return
+
         # ── 規則層 ──
         if self._should_approve_by_rule(patch):
             patch.status = "approved"
@@ -2118,6 +2586,8 @@ class ConceptInhibitor:
                     success = self._apply_deprecate(concept, patch)
                 elif patch.action == "mark_conflict":
                     success = self._apply_mark_conflict(concept, patch)
+                elif patch.action == "review":
+                    success = self._apply_review(concept, patch)
                 else:
                     logger.warning(
                         "[ConceptInhibitor] 不支援的 action: %s", patch.action
@@ -2130,6 +2600,13 @@ class ConceptInhibitor:
                     concept.record_mutation()
                     self._semantic._save()
 
+            # 概念檔先存、再存圖（沿用 merge／remove 慣例）：取代式 deprecate 動過 CONTRADICTS 邊
+            if (
+                success
+                and patch.action == "deprecate"
+                and (patch.rollback_payload or {}).get("removed_contradicts_edge")
+            ):
+                self._save_graph(getattr(self._semantic, "_graph", None))
             return success
         except Exception as e:
             logger.error(
@@ -2205,6 +2682,36 @@ class ConceptInhibitor:
             )
             if state_dict.get("replaced_by"):
                 concept.metadata["replaced_by"] = state_dict["replaced_by"]
+            # 取代式 deprecate：留 supersession 溯源，並扣回雙方先前互相標記的 conflict_count
+            supersession = state_dict.get("supersession")
+            if isinstance(supersession, dict):
+                concept.metadata["supersession"] = dict(supersession)
+            cleared: list[str] = []
+            for cid in state_dict.get("clear_conflict_marks") or []:
+                other = self._semantic.get(cid)
+                if other is None or other.conflict_count <= 0:
+                    continue
+                other.conflict_count -= 1
+                if other.conflict_count <= 0:
+                    other.metadata.pop("has_contradiction", None)
+                if other is not concept:
+                    other.record_mutation()
+                cleared.append(cid)
+            if state_dict.get("clear_conflict_marks") is not None:
+                patch.rollback_payload = dict(patch.rollback_payload or {})
+                patch.rollback_payload["cleared_conflict_marks"] = cleared
+            edge = state_dict.get("contradicts_edge")
+            if isinstance(edge, dict) and edge.get("present") and state_dict.get("replaced_by"):
+                # 原 weight 存進 rollback_payload，rollback 時重建邊
+                patch.rollback_payload = dict(patch.rollback_payload or {})
+                patch.rollback_payload["removed_contradicts_edge"] = {
+                    "a": concept.id,
+                    "b": state_dict["replaced_by"],
+                    "weight": float(edge.get("weight", 0.5)),
+                }
+                self._remove_contradicts_edge(
+                    getattr(self._semantic, "_graph", None), concept.id, state_dict["replaced_by"],
+                )
 
         self._add_history_entry(concept, patch)
 
@@ -2233,6 +2740,45 @@ class ConceptInhibitor:
         }
         concept.conflict_count += delta
         concept.metadata["has_contradiction"] = True
+        self._add_history_entry(concept, patch)
+        concept.updated_at = datetime.now(timezone.utc)
+        return True
+
+    def _apply_review(self, concept: Concept, patch: ConceptPatch) -> bool:
+        """執行 review — 寫入 evidence_review，重算 confidence，更新驗證相關欄位。
+
+        注意：不呼叫 _save()。由外層 _apply_patch 統一 record_mutation（version +1）後持久化。
+        前提（digest 相符）在鎖內再驗一次；不符則不動概念。
+        rollback 所需舊值在變更前寫入 rollback_payload["review_undo"]。
+        不新增 derivation：審核結果不是來源。
+        """
+        value = patch.new_value if isinstance(patch.new_value, dict) else None
+        if value is None or self._validate_review_value(value) is not None:
+            return False
+        if value.get("basis_digest") != compute_basis_digest(concept):
+            return False
+
+        patch.rollback_payload = patch.rollback_payload or {}
+        patch.rollback_payload["review_undo"] = {
+            "evidence_review": copy.deepcopy(concept.evidence_review),
+            "confidence": concept.confidence,
+            "last_verified_at": (
+                concept.last_verified_at.isoformat() if concept.last_verified_at else None
+            ),
+            "source_diversity": concept.source_diversity,
+        }
+
+        concept.evidence_review = copy.deepcopy(value)
+        if patch.new_confidence is not None:
+            concept.confidence = patch.new_confidence
+        if value["status"] == "supported":
+            # 只有 supported 才算「已驗證」；insufficient／contradicted 不蓋章
+            try:
+                concept.last_verified_at = datetime.fromisoformat(str(value["reviewed_at"]))
+            except (KeyError, ValueError):
+                concept.last_verified_at = datetime.now(timezone.utc)
+        concept.source_diversity = int(value.get("independent_count", 0) or 0)
+
         self._add_history_entry(concept, patch)
         concept.updated_at = datetime.now(timezone.utc)
         return True
@@ -2326,12 +2872,38 @@ class ConceptInhibitor:
                         if not rb.get("had_has_contradiction") and concept.conflict_count <= 0:
                             concept.metadata.pop("has_contradiction", None)
                     concept.record_mutation()
+                elif patch.action == "review":
+                    undo = (patch.rollback_payload or {}).get("review_undo")
+                    if undo is not None:  # 沒有 undo ＝ apply 在改動前就失敗，無需還原
+                        concept.evidence_review = copy.deepcopy(undo.get("evidence_review") or {})
+                        if undo.get("confidence") is not None:
+                            concept.confidence = undo["confidence"]
+                        old_verified = undo.get("last_verified_at")
+                        concept.last_verified_at = (
+                            datetime.fromisoformat(old_verified) if old_verified else None
+                        )
+                        concept.source_diversity = int(undo.get("source_diversity", 0) or 0)
+                        concept.record_mutation()
                 elif patch.action == "deprecate":
                     # 還原為 active
                     concept.status = "active"
                     concept.metadata.pop("deprecated_at", None)
                     concept.metadata.pop("deprecated_reason", None)
                     concept.metadata.pop("replaced_by", None)
+                    concept.metadata.pop("supersession", None)
+                    # 補回 supersede 時扣掉的互相矛盾標記
+                    for cid in (patch.rollback_payload or {}).get("cleared_conflict_marks") or []:
+                        other = self._semantic.get(cid)
+                        if other is None:
+                            continue
+                        other.conflict_count += 1
+                        other.metadata["has_contradiction"] = True
+                        if other is not concept:
+                            other.record_mutation()
+                    self._restore_contradicts_edge(
+                        getattr(self._semantic, "_graph", None),
+                        (patch.rollback_payload or {}).get("removed_contradicts_edge"),
+                    )
                     concept.record_mutation()
 
                 # 只移除屬於這個 patch 的 patch_history 條目（apply 可能是 no-op，沒寫過 history）
@@ -2341,6 +2913,11 @@ class ConceptInhibitor:
 
                 # mutation_count 不回滾——rollback 本身也是一次 mutation
                 self._semantic._save()
+
+            if patch.action == "deprecate" and (patch.rollback_payload or {}).get(
+                "removed_contradicts_edge"
+            ):
+                self._save_graph(getattr(self._semantic, "_graph", None))
 
             logger.info(
                 "[ConceptInhibitor] rollback 完成: %s (%s)",

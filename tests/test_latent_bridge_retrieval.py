@@ -79,7 +79,8 @@ def test_bridge_one_hop_recall_with_discount(env):
     got, scores = _retrieve(episodic, semantic)
     assert ids["Y"] in got
     cfg = get_config()
-    expected = 1.0 * 0.9 * cfg.latent_bridge_discount * 0.7
+    # 未審核概念的排序因子 0.95（support 面向，與 relevance 分開相乘）
+    expected = 1.0 * 0.9 * cfg.latent_bridge_discount * 0.7 * 0.95
     assert scores[ids["Y"]] == pytest.approx(expected, rel=1e-3)
 
 
@@ -97,7 +98,7 @@ def test_discount_is_configurable(env, monkeypatch):
     monkeypatch.setattr(get_config(), "latent_bridge_discount", 0.5)
     got, scores = _retrieve(episodic, semantic)
     assert ids["Y"] in got
-    assert scores[ids["Y"]] == pytest.approx(0.9 * 0.5 * 0.7, rel=1e-3)
+    assert scores[ids["Y"]] == pytest.approx(0.9 * 0.5 * 0.7 * 0.95, rel=1e-3)
 
     # 折扣太重 → 掉到擴散門檻以下，不召回
     monkeypatch.setattr(get_config(), "latent_bridge_discount", 0.3)
@@ -142,9 +143,10 @@ def test_bridge_neighbor_with_contradicts_is_downgraded(env):
     w = semantic.upsert_concept("W", "W", "pattern", embedding=_one_hot(3))
     graph.add_concept_node(w, "W", "pattern")
     graph.add_contradicts_edge(ids["Y"], w, 0.8)
-    got, _ = _retrieve(episodic, semantic)
-    assert ids["Y"] not in got
+    got, scores = _retrieve(episodic, semantic)
     assert ids["Z"] in got
+    # 有矛盾邊的 bridge 鄰居乘 BRIDGE_CONFLICT_FACTOR（0.6）：降權但不再必然被擋掉
+    assert scores[ids["Y"]] == pytest.approx(scores[ids["Z"]] * 0.6, rel=1e-3)
 
 
 def test_retrieval_does_not_change_confidence_or_evidence(env):

@@ -222,6 +222,22 @@ async def _read_concepts(get_engine: Callable) -> str:
                 entry["access_count"] = c.access_count
             if hasattr(c, "source_episode_ids"):
                 entry["source_episodes"] = len(c.source_episode_ids)
+            # 證據審核欄位：review_status 是「目前仍有效」的狀態（綁定失效即 not_checked）
+            if hasattr(c, "effective_review_status"):
+                review = c.evidence_review if isinstance(c.evidence_review, dict) else {}
+                status = c.effective_review_status()
+                entry["review_status"] = status
+                entry["support_source"] = (c.metadata or {}).get("support_source", "legacy_unknown")
+                if status != "not_checked":
+                    entry["support_strength"] = round(float(review.get("support_strength", 0.0) or 0.0), 4)
+                    entry["independent_sources"] = int(review.get("independent_count", 0) or 0)
+                    if review.get("reviewed_at"):
+                        entry["reviewed_at"] = str(review["reviewed_at"])
+            if getattr(c, "status", "active") != "active":
+                entry["status"] = c.status
+                replaced_by = (c.metadata or {}).get("replaced_by")
+                if replaced_by:
+                    entry["replaced_by"] = replaced_by
             if hasattr(c, "updated_at") and c.updated_at is not None:
                 entry["updated_at"] = c.updated_at.isoformat()
             result.append(entry)

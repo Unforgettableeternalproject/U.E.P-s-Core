@@ -28,6 +28,19 @@ from echo_memory.storage.atomic import atomic_write_json
 logger = logging.getLogger("echo_memory.storage.conflict_ledger")
 
 
+def compute_pair_digest(concept_a: Any, concept_b: Any) -> str:
+    """兩個概念「證據基礎」的組合摘要（與順序無關）；ledger 的去重鍵。"""
+    import hashlib
+
+    from echo_memory.schemas.evidence_review import compute_basis_digest
+
+    parts = sorted([
+        f"{concept_a.id}:{compute_basis_digest(concept_a)}",
+        f"{concept_b.id}:{compute_basis_digest(concept_b)}",
+    ])
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # ConflictRecord
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -263,6 +276,125 @@ class ConflictLedger:
             if record.involves == pair:
                 return record
         return None
+
+    def record_resolved(
+        self,
+        concept_a_id: str,
+        concept_b_id: str,
+        status: ConflictStatus,
+        reason: str,
+        pair_digest: str,
+        relation: str = "",
+        concept_a_name: str = "",
+        concept_b_name: str = "",
+        patch_id: str | None = None,
+    ) -> ConflictRecord:
+        """登記一筆「已解決」的配對判決（different_scope／supersedes），供 Dream 去重。
+
+        pair_digest 是兩個概念當下證據基礎的組合摘要；配對內容不變時
+        is_pair_resolved 為 True，Dream 不再重複送審同一對。
+        若該配對已有未解矛盾（先前判為 contradicts）則直接就地解決，不另開紀錄。
+        """
+        if status == "unresolved":
+            raise ValueError("record_resolved() 不能設為 unresolved")
+        meta = {"relation": relation, "pair_digest": pair_digest}
+        for record in self._records.values():
+            if record.involves == {concept_a_id, concept_b_id}:
+                # 保留「最初」解決前的狀態，供 unresolve 還原（rollback 用）；
+                # 重複判決不覆蓋，否則 rollback 會還原到上一次判決而不是原本的未解矛盾
+                record.metadata.setdefault("pre_resolution", {
+                    "status": record.status,
+                    "resolved_at": record.resolved_at.isoformat() if record.resolved_at else None,
+                    "resolution_reason": record.resolution_reason,
+                    "resolution_patch_id": record.resolution_patch_id,
+                    "pair_digest": record.metadata.get("pair_digest"),
+                    "relation": record.metadata.get("relation"),
+                })
+                record.resolve(status, reason, patch_id)
+                record.metadata.update(meta)
+                self.save()
+                return record
+        record = ConflictRecord(
+            concept_a_id=concept_a_id,
+            concept_b_id=concept_b_id,
+            concept_a_name=concept_a_name,
+            concept_b_name=concept_b_name,
+            contradiction_strength=0.0,
+            metadata={**meta, "created_resolved": True},
+        )
+        record.resolve(status, reason, patch_id)
+        self._records[record.conflict_id] = record
+        self.save()
+        logger.info(
+            f"[ConflictLedger] 配對已判決: {record.conflict_id} → {status} "
+            f"(relation={relation})"
+        )
+        return record
+
+    def unresolve(self, concept_a_id: str, concept_b_id: str) -> bool:
+        """還原 record_resolved 的判決（supersede／different_scope 被 rollback 時用）。
+
+        解決前已有未解矛盾記錄 -> 還原成解決前的狀態並清掉 pair_digest；
+        該記錄是 record_resolved 新建的 -> 直接移除。沒有記錄回傳 False。
+        """
+        record = self.find_between(concept_a_id, concept_b_id)
+        if record is None:
+            return False
+        if record.metadata.get("created_resolved"):
+            self._records.pop(record.conflict_id, None)
+            self.save()
+            return True
+        pre = record.metadata.pop("pre_resolution", None)
+        if pre is None:
+            return False
+        record.status = pre.get("status", "unresolved")
+        record.resolved_at = (
+            datetime.fromisoformat(pre["resolved_at"]) if pre.get("resolved_at") else None
+        )
+        record.resolution_reason = pre.get("resolution_reason", "")
+        record.resolution_patch_id = pre.get("resolution_patch_id")
+        for key in ("pair_digest", "relation"):
+            if pre.get(key) is None:
+                record.metadata.pop(key, None)
+            else:
+                record.metadata[key] = pre[key]
+        self.save()
+        return True
+
+    def mark_reevaluated(
+        self, concept_a_id: str, concept_b_id: str, pair_digest: str,
+    ) -> bool:
+        """在既有（未解）矛盾記錄上記下「已重判過」的配對 digest；沒有記錄回傳 False。
+
+        內容不變時 Dream 不再重判同一對（is_pair_reevaluated）。
+        """
+        record = self.find_between(concept_a_id, concept_b_id)
+        if record is None:
+            return False
+        record.metadata["reevaluated_digest"] = pair_digest
+        self.save()
+        return True
+
+    def is_pair_reevaluated(
+        self, concept_a_id: str, concept_b_id: str, pair_digest: str,
+    ) -> bool:
+        record = self.find_between(concept_a_id, concept_b_id)
+        return record is not None and record.metadata.get("reevaluated_digest") == pair_digest
+
+    def is_pair_resolved(
+        self,
+        concept_a_id: str,
+        concept_b_id: str,
+        pair_digest: str,
+    ) -> bool:
+        """配對是否已有「同內容」的已解決判決（pair_digest 相符）。"""
+        pair = {concept_a_id, concept_b_id}
+        return any(
+            r.involves == pair
+            and r.is_resolved
+            and r.metadata.get("pair_digest") == pair_digest
+            for r in self._records.values()
+        )
 
     def get_unresolved(self) -> list[ConflictRecord]:
         """取得所有未解矛盾。"""

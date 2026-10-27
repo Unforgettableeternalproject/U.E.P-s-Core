@@ -382,13 +382,17 @@ class ConceptVerifier:
         # 組裝概念區塊
         concept_lines = []
         for concept, _rel in relevant_concepts:
-            sources = (
-                f"（{len(concept.source_episode_ids)} 個來源）"
-                if concept.source_episode_ids else ""
-            )
+            # 只標示審核狀態與來源類別；episode 數不等於獨立來源，不再當作「N 個來源」。
+            # 獨立來源數只在審核仍有效時引用審核當下的快取，未審核就不宣稱
+            tags = "".join(MemoryContext._concept_labels(concept).values())
+            review = concept.evidence_review if isinstance(concept.evidence_review, dict) else {}
+            if concept.effective_review_status() != "not_checked":
+                independent = int(review.get("independent_count", 0) or 0)
+                if independent > 0:
+                    tags += f"（獨立來源 {independent}）"
             concept_lines.append(
                 f"- {concept.name}: {concept.description} "
-                f"[信心度: {concept.confidence:.2f}]{sources}"
+                f"[信心度: {concept.confidence:.2f}]{tags}"
             )
         concepts_block = "\n".join(concept_lines)
 

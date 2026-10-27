@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from echo_memory.affect.concept_patch import PatchTransaction
+from echo_memory.affect.concept_patch import PatchTransaction, SupersedeProposal
 
 logger = logging.getLogger("echo_memory.dream.patch_coordinator")
 
@@ -55,10 +55,17 @@ class DreamPatchCoordinator:
         self._inhibitor = inhibitor
         self._audit_log_path = Path(audit_log_path) if audit_log_path else None
         self._cycle_id: str = ""
+        # ConflictLedger（可選）：held 的 supersede 經通用重審套用後，在這裡補標 resolved
+        self.conflict_ledger: Any = None
 
     @property
     def has_inhibitor(self) -> bool:
         return self._inhibitor is not None
+
+    @property
+    def inhibitor(self):
+        """底層 ConceptInhibitor（審核器等需要直接走 Gate 的模組使用）。"""
+        return self._inhibitor
 
     def ensure_gate(self, semantic) -> None:
         """沒有 inhibitor 時補上無 LLM 的降級 Gate（仍經 Patch Gate、留 patch trail）。"""
@@ -171,6 +178,66 @@ class DreamPatchCoordinator:
             return
         self._inhibitor.rollback_conflict_mark(tx)
 
+    # ──────────────────────────────────────────────
+    # 取代式矛盾（supersede = deprecate + replaced_by，經 Gate；薄包裝）
+    # ──────────────────────────────────────────────
+
+    def prepare_supersede(
+        self,
+        older_id: str,
+        newer_id: str,
+        reason: str = "",
+        basis: dict[str, Any] | None = None,
+        graph: Any = None,
+    ) -> tuple[str, SupersedeProposal | None]:
+        """Gate 判斷「newer 取代 older」（含 LLM 佐證，不得在 storage_lock 內呼叫）。
+
+        graph：偵測 CONTRADICTS 邊用的 MemoryGraph（缺省用 semantic 已 attach 的圖）。
+
+        Returns:
+            (state, proposal)：approved｜held｜rejected｜unavailable（無 Gate）
+        """
+        if self._inhibitor is None or not hasattr(self._inhibitor, "prepare_supersede_patch"):
+            return "unavailable", None
+        return self._inhibitor.prepare_supersede_patch(
+            older_id, newer_id, reason, basis, graph=graph,
+        )
+
+    def commit_supersede(
+        self,
+        proposal: SupersedeProposal,
+        clear_conflict_marks: bool = False,
+        graph: Any = None,
+        verify_fn: Any = None,
+    ) -> tuple[bool, PatchTransaction | None]:
+        """套用已通過 Gate 的 supersede 提案（呼叫端應持 storage_lock）。"""
+        if self._inhibitor is None:
+            return False, None
+        return self._inhibitor.process_supersede_patch(
+            proposal, clear_conflict_marks=clear_conflict_marks,
+            graph=graph, verify_fn=verify_fn,
+        )
+
+    def submit_supersede(
+        self,
+        older_id: str,
+        newer_id: str,
+        reason: str = "",
+        basis: dict[str, Any] | None = None,
+        clear_conflict_marks: bool = False,
+    ) -> tuple[bool, PatchTransaction | None]:
+        """prepare + commit 的便利入口（測試或無鎖情境用；Dream 內請分開呼叫以保持 LLM 在鎖外）。"""
+        state, proposal = self.prepare_supersede(older_id, newer_id, reason, basis)
+        if state != "approved" or proposal is None:
+            return False, None
+        return self.commit_supersede(proposal, clear_conflict_marks=clear_conflict_marks)
+
+    def rollback_supersede(self, tx: PatchTransaction | None, graph: Any = None) -> list[str]:
+        """回滾 commit_supersede（含補回互相標記與 CONTRADICTS 邊）；回傳被補回標記的概念 id。"""
+        if tx is None or self._inhibitor is None:
+            return []
+        return self._inhibitor.rollback_supersede_patch(tx, graph=graph)
+
     def review_held(self, guard=None) -> int:
         """
         Dream 週期開始時重審先前 held 的 concept patch（觸發點之一）。
@@ -183,10 +250,38 @@ class DreamPatchCoordinator:
         if self._inhibitor is None or not hasattr(self._inhibitor, "review_held_patches"):
             return 0
         try:
-            return len(self._inhibitor.review_held_patches(guard=guard))
+            txs = self._inhibitor.review_held_patches(guard=guard)
+            for tx in txs:
+                self._ledger_resolve_applied_supersede(tx)
+            return len(txs)
         except Exception as e:
             logger.warning("[DreamPatchCoordinator] held 重審失敗（不影響 Dream）: %s", e)
             return 0
+
+    def _ledger_resolve_applied_supersede(self, tx: PatchTransaction) -> None:
+        """held 的 supersede 由通用重審套用後，把配對在 ledger 標為 temporal_evolution。"""
+        ledger = self.conflict_ledger
+        if ledger is None or self._inhibitor is None:
+            return
+        from echo_memory.storage.conflict_ledger import compute_pair_digest
+
+        semantic = self._inhibitor.semantic
+        for p in tx.applied_patches:
+            nv = p.new_value if isinstance(p.new_value, dict) else {}
+            if p.action != "deprecate" or not isinstance(nv.get("supersession"), dict):
+                continue
+            older = semantic.get(p.concept_id or "")
+            newer = semantic.get(str(nv.get("replaced_by") or ""))
+            if older is None or newer is None:
+                continue
+            ledger.record_resolved(
+                older.id, newer.id, "temporal_evolution",
+                reason=p.evidence.verifier_reason,
+                pair_digest=compute_pair_digest(older, newer),
+                relation="supersedes",
+                concept_a_name=older.name, concept_b_name=newer.name,
+                patch_id=tx.transaction_id,
+            )
 
     # ──────────────────────────────────────────────
     # Graph mutation audit（不走 Inhibitor）
@@ -325,13 +420,27 @@ class DreamPatchCoordinator:
         self,
         concept_id: str,
         contradicts_count: int,
+        relation: str | None = None,
+        peer_id: str | None = None,
+        reason: str = "",
     ) -> bool:
-        """記錄矛盾偵測結果的 audit。"""
-        return self._write_dream_audit({
+        """記錄矛盾偵測結果的 audit。
+
+        relation（supersedes／different_scope 等）與 peer_id 給定時一併留痕，
+        便於追查「為什麼這一對沒有建矛盾邊」。
+        """
+        entry: dict[str, Any] = {
             "operation": "contradiction_detection",
             "concept_id": concept_id[:12],
             "contradicts_created": contradicts_count,
-        })
+        }
+        if relation is not None:
+            entry["relation"] = relation
+        if peer_id is not None:
+            entry["peer_id"] = peer_id[:12]
+        if reason:
+            entry["reason"] = reason[:200]
+        return self._write_dream_audit(entry)
 
     def audit_procedure_extraction(
         self,

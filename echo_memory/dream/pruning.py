@@ -346,7 +346,8 @@ class GraphPruning:
                 if similarity < self._BRIDGE_SIMILARITY_THRESHOLD:
                     continue
 
-                # 檢查是否已有 RELATES_TO 或 LATENT_BRIDGE
+                # 檢查是否已有邊：LATENT_BRIDGE 重新確認；其他任何邊（RELATES_TO、
+                # CONTRADICTS 等）一律跳過，避免以 LATENT_BRIDGE 覆寫既有語意（例如矛盾邊）
                 has_existing = False
                 for src, dst in ((id_a, id_b), (id_b, id_a)):
                     if self.graph.graph.has_edge(src, dst):
@@ -356,8 +357,7 @@ class GraphPruning:
                             to_confirm.append((src, dst, similarity))
                             has_existing = True
                             break
-                        elif et == "RELATES_TO":
-                            has_existing = True
+                        has_existing = True
 
                 if not has_existing:
                     candidates.append((id_a, id_b, name_a, name_b, similarity))

@@ -16,7 +16,7 @@ from typing import Any
 
 DERIVATION_KINDS = ("evidence", "episode", "concept")
 # 產生者；unknown 保留給無法辨識呼叫端的舊式寫入
-PRODUCERS = ("dream", "reflection", "extractor", "conversation", "unknown")
+PRODUCERS = ("dream", "reflection", "extractor", "conversation", "reviewer", "unknown")
 
 
 @dataclass(frozen=True)
@@ -26,7 +26,7 @@ class Derivation:
     Attributes:
         kind: parent 種類 (evidence/episode/concept)
         id: parent ID
-        producer: 產生者 (dream/reflection/extractor/conversation/unknown)
+        producer: 產生者 (dream/reflection/extractor/conversation/reviewer/unknown)
         parent_version: 衍生當時 parent concept 的 version（僅 kind=concept 有意義；
             None 代表未綁定，解析時取 parent 目前狀態並標示 unbound_versions）
         at_version: 此紀錄寫入時「子 Concept」的 version。

@@ -4,7 +4,7 @@ EcphoryRetrieval + SemanticMemory 整合測試 — Phase 2 Branch 2 驗收
 驗收標準：
   1. retrieve() 返回的 context.concepts 不再為空（有 Concept 時）
   2. RELATES_TO 1-hop 展開能找到間接相關的概念
-  3. CONTRADICTS penalty 降低矛盾概念的分數
+  3. CONTRADICTS 側向抑制降低較弱矛盾概念的分數
   4. 無 Concept 時不影響 Episode 檢索（向後相容）
   5. enable_semantic=False 時不進行概念檢索
 """
@@ -74,6 +74,11 @@ def _store_episodes(episodic: EpisodicMemory, count: int = 3) -> list[Episode]:
         episodic.write(ep)
         episodes.append(ep)
     return episodes
+
+
+def _concepts_of(semantic: SemanticMemory, concept_scores: dict) -> dict:
+    """依分數表的 id 取出 Concept 物件（側向抑制需要 standing）。"""
+    return {cid: semantic.get(cid) for cid in concept_scores}
 
 
 def _store_concepts(
@@ -219,14 +224,16 @@ class TestContradictsPenalty:
             concept_ids["地球是球形"]: 0.8,
         }
 
-        EcphoryRetrieval._apply_contradicts_penalty(concept_scores, graph)
+        EcphoryRetrieval._apply_lateral_inhibition(
+            concept_scores, _concepts_of(semantic, concept_scores), graph
+        )
 
         # 兩者互相矛盾，分數都應被降低
         assert concept_scores[concept_ids["地球是平的"]] < 0.8
         assert concept_scores[concept_ids["地球是球形"]] < 0.8
 
     def test_contradicts_penalty_coefficient(self, storage):
-        """penalty 遵循 CONTRADICTS_PENALTY 常數。"""
+        """側向抑制遵循 m = max(FLOOR, 1 - GAMMA × w × (1 - share))；standing 相同時 share=0.5。"""
         episodic, semantic, retrieval = storage
         concept_ids = _store_concepts(semantic, episodic.graph)
         graph = episodic.graph
@@ -237,11 +244,13 @@ class TestContradictsPenalty:
             concept_ids["地球是球形"]: original_score,
         }
 
-        EcphoryRetrieval._apply_contradicts_penalty(concept_scores, graph)
+        EcphoryRetrieval._apply_lateral_inhibition(
+            concept_scores, _concepts_of(semantic, concept_scores), graph
+        )
 
-        # penalty = weight * CONTRADICTS_PENALTY = 0.9 * 0.3 = 0.27
-        # penalized = original * penalty = 0.8 * 0.27 = 0.216
-        expected = original_score * 0.9 * EcphoryRetrieval.CONTRADICTS_PENALTY
+        # 兩者 confidence／來源相同 → share=0.5；w=0.9、GAMMA=0.6
+        # m = 1 - 0.6 * 0.9 * 0.5 = 0.73；0.8 * 0.73 = 0.584（舊式 0.216 是強度越弱壓越狠，已移除）
+        expected = original_score * (1 - 0.6 * 0.9 * 0.5)
         assert concept_scores[concept_ids["地球是平的"]] == pytest.approx(
             expected, abs=0.01
         )
@@ -257,7 +266,9 @@ class TestContradictsPenalty:
             concept_ids["日本料理"]: 0.7,
         }
 
-        EcphoryRetrieval._apply_contradicts_penalty(concept_scores, graph)
+        EcphoryRetrieval._apply_lateral_inhibition(
+            concept_scores, _concepts_of(semantic, concept_scores), graph
+        )
 
         # 壽司和日本料理之間是 RELATES_TO，沒有 CONTRADICTS
         assert concept_scores[concept_ids["壽司"]] == 0.8

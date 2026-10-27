@@ -595,6 +595,7 @@ class MemoryEngine:
         min_similarity: float | None = None,
         exclude_session_id: str | None = None,
         exclude_episode_ids: set[str] | None = None,
+        include_history: bool = False,
     ) -> MemoryContext:
         """
         檢索相關記憶（EcphoryRAG）。
@@ -607,6 +608,7 @@ class MemoryEngine:
             exclude_session_id: 排除指定 session 的全部 Episodes（向後相容）
             exclude_episode_ids: 排除指定 ID 的 Episodes（精準排除，
                                  三層混合策略用）
+            include_history: 是否帶出已被取代的歷史概念（預設不召回，帶出時 prompt 會標註）
 
         Returns:
             MemoryContext: 檢索到的記憶脈絡
@@ -634,6 +636,7 @@ class MemoryEngine:
             min_similarity=min_similarity,
             exclude_session_id=exclude_session_id,
             exclude_episode_ids=exclude_episode_ids,
+            include_history=include_history,
         )
 
         # 附上證據供 prompt 組裝判斷交付狀態（未說出口的 agent 內容不得當成「說過」）
@@ -998,17 +1001,74 @@ class MemoryEngine:
         """記錄程序執行失敗"""
         return self.procedural.record_failure(procedure_id)
 
+    def review_concept(self, concept_id: str) -> dict[str, Any]:
+        """手動對單一概念做證據審核（供 CLI／MCP）。
+
+        審核器 EvidenceReviewer 由 affect/evidence_reviewer.py 提供；尚不存在、缺 LLM
+        或缺 Gate 時回 outcome="skipped"，不寫任何資料（無 LLM 時狀態維持 not_checked）。
+        回傳 {"concept_id", "outcome": reviewed|held|stale|skipped, "reason"}。
+        """
+        self.ensure_initialized()
+        result: dict[str, Any] = {"concept_id": concept_id, "outcome": "skipped", "reason": ""}
+        try:
+            from echo_memory.affect.evidence_reviewer import EvidenceReviewer
+        except ImportError:
+            result["reason"] = "reviewer_unavailable"
+            return result
+        if self._llm_fn is None:
+            result["reason"] = "no_llm"
+            return result
+        if self._concept_inhibitor is None:
+            result["reason"] = "no_gate"
+            return result
+        try:
+            reviewer = EvidenceReviewer(
+                llm_fn=self._llm_fn,
+                guard=self._concept_inhibitor,
+                semantic=self.semantic,
+                provenance=self._provenance_resolver(),
+                evidence=self.evidence,
+                lock_factory=lambda: storage_lock(self.storage_path),
+            )
+            outcome = reviewer.review(concept_id)
+        except Exception as e:
+            logger.warning(f"[MemoryEngine] 概念審核失敗 {concept_id[:12]}: {e}")
+            result["reason"] = f"error: {e}"
+            return result
+        result["outcome"] = str(getattr(outcome, "outcome", outcome))
+        result["reason"] = str(getattr(outcome, "reason", "") or "")
+        return result
+
     def get_profile(self, max_chars: int = 800, limit: int = 30) -> str:
         """使用者 profile：所有 subject=user 的 active concept，不靠相似度。
 
         對應 U.E.P Core mem_module 的 profile_memories_provider
         （similarity_threshold=0、全撈）——profile 是常駐脈絡，不是檢索結果。
         「你還記得我什麼」這種開放式問題向量檢索答不了，靠這個。
-        按 confidence 排，截到 max_chars。沒有就回空字串。
+        按 standing（confidence × 審核狀態 × 來源）排，截到 max_chars。沒有就回空字串。
+
+        排除 support_source=agent_only（助手推測不是使用者事實）與審核為
+        contradicted 的概念；舊資料沒有這些欄位時視為 legacy_unknown／not_checked，照常列入。
         """
-        concepts = self.semantic.list_concepts(
-            subject="user", status="active", limit=limit, sort_by="confidence",
-        )
+        from echo_memory.config import get_config
+        from echo_memory.retrieval import standing as standing_mod
+
+        params = standing_mod.params_from_config(get_config())
+        candidates = [
+            c for c in self.semantic.list_concepts(
+                subject="user", status="active", limit=None, sort_by="confidence",
+            )
+            if standing_mod.support_source_of(c) != "agent_only"
+            and standing_mod.review_status(c) != "contradicted"
+        ]
+        # sorted 為穩定排序：standing 同分時維持 confidence 序
+        concepts = sorted(
+            candidates,
+            key=lambda c: standing_mod.standing(
+                c, params["status_table"], params["rank_table"],
+            ),
+            reverse=True,
+        )[:limit]
         if not concepts:
             return ""
         lines = []

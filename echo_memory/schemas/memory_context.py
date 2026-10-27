@@ -130,11 +130,13 @@ class MemoryContext:
             for c in self.concepts[:5]:
                 sim = self.concept_similarities.get(c.id, 0.0)
                 sim_tag = f"[匹配度:{sim:.0%}]" if sim > 0 else ""
-                payload["相關語義概念"].append({
+                entry = {
                     "match": sim_tag.strip("[]"),
                     "name": c.name,
                     "description": c.description,
-                })
+                }
+                entry.update(self._concept_labels(c))
+                payload["相關語義概念"].append(entry)
 
         # ─── 實體 ────────────────────────────────────────────────────────────
         if self.entities:
@@ -176,6 +178,45 @@ class MemoryContext:
             f"{serialized}\n"
             "</UNTRUSTED_MEMORY_DATA>"
         )
+
+    # 審核狀態 → prompt 標籤。只標需要提醒的狀態；supported 與 not_checked
+    # （現有概念絕大多數）不加標籤，避免雜訊與 token 浪費
+    _SUPPORT_LABELS = {
+        "insufficient": "（證據不足，勿當確定事實）",
+        "contradicted": "（證據相互矛盾）",
+    }
+    # support_source → prompt 標籤（只標 agent_only；user 與 legacy_unknown 不加標籤）
+    _SOURCE_LABELS = {
+        "agent_only": "（助手推測，非使用者陳述）",
+    }
+
+    @classmethod
+    def _concept_labels(cls, c: Concept) -> dict[str, str]:
+        """概念的 support／source／history 標籤；沒有需要標示的欄位就不輸出。
+
+        標籤只依結構欄位（審核狀態、support_source、status／replaced_by）決定，
+        讓模型不會把未查證、助手推測或已被取代的概念當成同等的確定事實。
+        """
+        from echo_memory.retrieval import standing  # 延遲匯入：避免與 retrieval 套件循環
+
+        labels: dict[str, str] = {}
+        support = cls._SUPPORT_LABELS.get(standing.review_status(c))
+        if support:
+            labels["support"] = support
+        source = cls._SOURCE_LABELS.get(standing.support_source_of(c))
+        if source:
+            labels["source"] = source
+        if standing.is_superseded(c):
+            at = ""
+            supersession = c.metadata.get("supersession")
+            if isinstance(supersession, dict) and supersession.get("at"):
+                at = str(supersession["at"])[:10]
+            elif getattr(c, "updated_at", None) is not None:
+                at = c.updated_at.date().isoformat()
+            labels["history"] = (
+                f"（歷史資料，已被取代於 {at}）" if at else "（歷史資料，已被取代）"
+            )
+        return labels
 
     @staticmethod
     def _relative_time(ts: datetime) -> str:

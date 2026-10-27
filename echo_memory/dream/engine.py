@@ -61,6 +61,9 @@ class DreamReport:
     replay: ReplayReport | None = None
     distillation: DistillationReport | None = None
     procedure_extraction: Any | None = None  # ProcedureExtractionReport
+    evidence_review: Any | None = None  # ReviewBatchReport（證據審核 phase）
+    edges_reevaluated: int = 0  # 既有 CONTRADICTS 邊本週期重判的配對數
+    edges_superseded: int = 0  # 其中被改判為取代（邊已移除）的數量
     edges_updated: int = 0
     error: str | None = None
 
@@ -89,6 +92,14 @@ class DreamReport:
 
         if self.distillation:
             lines.append(f"  {self.distillation.summary()}")
+
+        if self.evidence_review is not None:
+            lines.append(f"  {self.evidence_review.summary()}")
+
+        if self.edges_reevaluated > 0:
+            lines.append(
+                f"  矛盾重判: {self.edges_reevaluated} 對, 改判取代 {self.edges_superseded}"
+            )
 
         if self.edges_updated > 0:
             lines.append(f"  權重更新: {self.edges_updated} 條邊")
@@ -203,6 +214,33 @@ class DreamEngine:
                 evidence_store=evidence_store,
             )
 
+        # 證據審核（需要 semantic + evidence_store + Gate；無 LLM 時 phase 自動 skipped）
+        provenance = None
+        self._evidence_reviewer = None
+        if semantic is not None and evidence_store is not None:
+            try:
+                from echo_memory.storage.provenance import ProvenanceResolver
+
+                provenance = ProvenanceResolver(
+                    semantic=semantic,
+                    get_episode=(episodic.get if episodic is not None else (lambda _eid: None)),
+                    evidence=evidence_store,
+                )
+                gate = self._patch_coordinator.inhibitor if self._patch_coordinator else None
+                if gate is not None:
+                    from echo_memory.affect.evidence_reviewer import EvidenceReviewer
+
+                    self._evidence_reviewer = EvidenceReviewer(
+                        llm_fn=llm_fn,
+                        guard=gate,
+                        semantic=semantic,
+                        provenance=provenance,
+                        evidence=evidence_store,
+                        lock_factory=self._guard,
+                    )
+            except ImportError:
+                pass
+
         # 矛盾偵測器（需要 semantic + llm_fn）+ ConflictLedger
         contradiction_detector = None
         if semantic is not None:
@@ -215,6 +253,8 @@ class DreamEngine:
                 if graph and hasattr(graph, 'storage_path') and graph.storage_path:
                     conflict_ledger = ConflictLedger(graph.storage_path)
 
+                if self._patch_coordinator is not None:
+                    self._patch_coordinator.conflict_ledger = conflict_ledger
                 contradiction_detector = ContradictionDetector(
                     semantic=semantic,
                     graph=graph,
@@ -222,9 +262,12 @@ class DreamEngine:
                     conflict_ledger=conflict_ledger,
                     guard=self._guard,
                     patch_coordinator=self._patch_coordinator,
+                    provenance=provenance,
                 )
             except ImportError:
                 pass
+
+        self._contradiction_detector = contradiction_detector
 
         # 程序提取（需要 procedural + episodic）
         self._procedure_extractor = None
@@ -406,6 +449,26 @@ class DreamEngine:
                 # 需要持久化以免重啟後遺失（造成 SemanticMemory 和 Graph 不一致）
                 with self._guard():
                     self.graph.save()
+
+            # ── 階段 4.5：證據審核（若有 LLM；LLM 在鎖外，寫回走 Gate）────
+            # 優先序：新概念 > digest 失效 > held 待審；單次上限 evidence_review_batch
+            if self._evidence_reviewer is not None:
+                try:
+                    report.evidence_review = self._evidence_reviewer.review_batch()
+                except Exception as e:
+                    logger.warning(f"[DreamEngine] 證據審核失敗（不影響夢境週期）: {e}")
+
+            # ── 階段 4.6：既有 CONTRADICTS 邊重判（LLM 在鎖外；批次受 config 限制）────
+            if self._contradiction_detector is not None and self._contradiction_detector.llm_fn:
+                try:
+                    results = self._contradiction_detector.reevaluate_batch()
+                    report.edges_reevaluated = len(results)
+                    report.edges_superseded = sum(1 for r in results if r.action == "superseded")
+                    if results:
+                        with self._guard():
+                            self.graph.save()
+                except Exception as e:
+                    logger.warning(f"[DreamEngine] 矛盾重判失敗（不影響夢境週期）: {e}")
 
             # ── 階段 5：程序提取（若有 ProceduralMemory + LLM）────────
             if self._procedure_extractor is not None and self._episodic_ref is not None:

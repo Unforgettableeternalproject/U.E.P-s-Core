@@ -1933,15 +1933,11 @@ wheels = [
 
 [[package]]
 name = "py-cord"
-version = "2.8.1"
-source = { registry = "https://pypi.org/simple" }
+version = "2.8.1.dev57+g05cf65fa6"
+source = { git = "https://github.com/Pycord-Development/pycord?rev=05cf65fa6d81567a8a4347ac961a093981554137#05cf65fa6d81567a8a4347ac961a093981554137" }
 dependencies = [
     { name = "aiohttp" },
     { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/48/99/371cafe39067d46db88477a4badbbf4128938d5a11971f9f0b8f4581efa1/py_cord-2.8.1.tar.gz", hash = "sha256:b1ebd22416941bbeccb6d26df5cbd65ff6b1d47fcbbc9652efae039e46e8a562", size = 1173996, upload-time = "2026-07-25T16:40:10.435Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/e3/a6/7aeceb7dfa04c0d390b89ea0b4b980963b93cd972ab6306ad9684811dc6c/py_cord-2.8.1-py3-none-any.whl", hash = "sha256:8b97a61cceb4ca9000fc3ac1190fa4c45ef6a521d88707953f7eeadc1bd57071", size = 1264633, upload-time = "2026-07-25T16:40:08.96Z" },
 ]
 
 [package.optional-dependencies]
@@ -3479,7 +3475,7 @@ requires-dist = [
     { name = "peft", marker = "extra == 'inference'", specifier = "==0.19.1" },
     { name = "psutil", marker = "extra == 'desktop'", specifier = "==6.1.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
-    { name = "py-cord", extras = ["voice"], marker = "extra == 'inference'", specifier = "==2.8.1" },
+    { name = "py-cord", extras = ["voice"], marker = "extra == 'inference'", git = "https://github.com/Pycord-Development/pycord?rev=05cf65fa6d81567a8a4347ac961a093981554137" },
     { name = "pyannote-audio", marker = "extra == 'inference'", specifier = "==3.3.2" },
     { name = "pyannote-core", marker = "extra == 'inference'", specifier = "==5.0.0" },
     { name = "pyannote-database", marker = "extra == 'inference'", specifier = "==5.1.3" },

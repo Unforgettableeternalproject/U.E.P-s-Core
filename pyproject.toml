@@ -75,7 +75,7 @@ inference = [
     "peft==0.19.1",
     # 原排除套件的 3.12 方案
     "PyAudio==0.2.14",
-    "py-cord[voice]==2.8.1",
+    "py-cord[voice]",
     "triton-windows>=3.3,<3.4; sys_platform == 'win32'",
     "flash-attn; sys_platform == 'win32'",
 ]
@@ -104,6 +104,8 @@ torchaudio = [{ index = "pytorch-cu128", extra = "inference" }]
 torchvision = [{ index = "pytorch-cu128", extra = "inference" }]
 # 第三方預編 wheel（mjun0812，含 sm_100／sm_120，適用 RTX 5070 Ti）；官方無 Windows wheel
 flash-attn = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.4.10/flash_attn-2.7.4+cu128torch2.7-cp312-cp312-win_amd64.whl", marker = "sys_platform == 'win32'" }
+# DAVE 支援的 py-cord（PR #3159），與 env/ 對齊；正式版 2.8.1 缺 Sink.__sink_listeners__
+py-cord = { git = "https://github.com/Pycord-Development/pycord", rev = "05cf65fa6d81567a8a4347ac961a093981554137", extra = "inference" }
 
 [[tool.uv.index]]
 name = "pytorch-cu128"

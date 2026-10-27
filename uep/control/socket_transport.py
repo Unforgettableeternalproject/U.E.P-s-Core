@@ -6,13 +6,18 @@
 - 連線建立須先通過身分驗證（hello 請求以 per-endpoint secret 簽章，R2）；之後每個請求各自驗證，
   且請求的 endpoint_id 必須等於連線已驗證的身分。
 - 伺服器與客戶端都只允許 loopback；Windows 上伺服器 socket 設 ``SO_EXCLUSIVEADDRUSE``，避免別的行程
-  搶綁同一個埠。回應與推送不簽章（回應 MAC 列為後續項目）：信任邊界是本機 loopback 且只有通過驗證的連線才會被登記為
-  推送目標；若日後改為跨機器傳輸，須加 TLS／回應簽章。
+  搶綁同一個埠。伺服器身分：hello 帶 client 的 nonce，Core 以端點 secret 對該 nonce 簽章放進 ``hello_ok``，
+  client 驗證通過才信任這條連線（冒名綁埠的行程沒有 secret，無法讓端點相信持有 Lease）；之後的回應與推送
+  不逐則簽章，信任邊界是本機 loopback 與已驗證的連線。若日後改為跨機器傳輸，須加 TLS／回應簽章。
+  hello_ok 送出成功後才把連線登記為推送目標。
+- 安全邊界：hello 的雙向證明只做到「抗冒名」，不抗 relay（中間人可把雙方的 hello 與證明原樣轉發）。
+  跨機器（Part H）前須加每則 MAC 或通道綁定（TLS 憑證綁定／channel binding），否則不得離開 loopback。
 - 同一 endpoint_id 重新 hello（重連）會取代舊連線。
 - ``SocketControlServer.send`` 與 ``ControlChannel.send`` 同形，可直接交給 PresenceManager 的 ``control``。
 """
 from __future__ import annotations
 
+import hmac
 import itertools
 import json
 import logging
@@ -23,7 +28,12 @@ from collections.abc import Callable
 from typing import Any
 
 from uep.control.channel import ControlSendResult
-from uep.endpoint.auth import EndpointAuthError, SignedRequest, sign_request
+from uep.endpoint.auth import (
+    EndpointAuthError,
+    SignedRequest,
+    server_proof,
+    sign_request,
+)
 from uep.endpoint.protocol import RpcCoreApi
 from uep.endpoint.service import EndpointService
 from uep.output.intent import ControlSignal
@@ -207,16 +217,16 @@ class SocketControlServer:
             except OSError:
                 pass
             return None
-        with self._lock:
+        try:
+            wire.write({"type": "hello_ok", "proof": self._service.prove(endpoint_id, request.nonce)})
+        except (OSError, EndpointAuthError):
+            wire.close()
+            return None
+        with self._lock:  # hello_ok 送達後才登記，之前不會有推送搶在 hello_ok 前寫入
             old = self._conns.get(endpoint_id)
             self._conns[endpoint_id] = wire  # 重連取代舊連線
         if old is not None:
             old.close()
-        try:
-            wire.write({"type": "hello_ok"})
-        except OSError:
-            self._drop(endpoint_id, wire)
-            return None
         return endpoint_id
 
     def _respond(self, endpoint_id: str, message: dict[str, Any]) -> dict[str, Any]:
@@ -274,8 +284,8 @@ class SocketControlClient:
             raise ConnectionError("無法連線到 Core 控制端點") from exc
         wire = _Wire(sock)
         try:
-            wire.write({"type": "hello", "req": sign_request(
-                self._secret, self._endpoint_id, "hello", {}, clock=self._clock).to_wire()})
+            hello = sign_request(self._secret, self._endpoint_id, "hello", {}, clock=self._clock)
+            wire.write({"type": "hello", "req": hello.to_wire()})
             reply = wire.read(_HELLO_TIMEOUT)
         except OSError as exc:
             wire.close()
@@ -285,6 +295,11 @@ class SocketControlClient:
             if reply is not None and reply.get("error") == "AUTH_FAILED":
                 raise EndpointAuthError("Core 拒絕端點身分")
             raise ConnectionError("hello 未獲回應")
+        proof = reply.get("proof")
+        expected = server_proof(self._secret, self._endpoint_id, hello.nonce)
+        if not isinstance(proof, str) or not hmac.compare_digest(proof.encode("utf-8"), expected.encode("utf-8")):
+            wire.close()  # 伺服器無法證明持有 secret：不信任 hello_ok 與之後的任何回應
+            raise EndpointAuthError("Core 身分驗證失敗（伺服器證明不符）")
         self._wire = wire
         threading.Thread(
             target=self._read_loop, args=(wire,), daemon=True, name=f"UepControlClient[{self._endpoint_id}]"

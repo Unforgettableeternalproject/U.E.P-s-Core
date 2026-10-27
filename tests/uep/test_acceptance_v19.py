@@ -2,6 +2,12 @@
 
 P1 沒有 GS 實體：以「建立 Task 的對話端物件被丟棄、全新 TaskManager／Bus／Publisher」模擬。
 全部使用 fake Adapter；需 PostgreSQL（UEP_TEST_DATABASE_URL）。
+
+覆蓋範圍聲明（T-24／V19「完成通知單次」）：production 目前尚無「task 終局事件 -> OutputIntent」的 consumer，
+下方的 ``Notifier`` 是測試端自行接線的替身。因此本檔對該項只驗證兩件事：
+(1) Outbox 重播 task.completed 時，通知的外部效果仍只有 1 次；
+(2) ``DeliveryManager`` 以 ``(output_id, sequence)`` 去重、崩潰後補送不重複。
+真正的 consumer 落地後，需另補「由 production 接線觸發通知」的端到端測試。
 """
 from __future__ import annotations
 
@@ -204,10 +210,14 @@ def test_v19_concurrent_resume_only_one_supervisor_wins(session_factory):
 
 
 # ---- Task 完成通知 OutputIntent 只送一次 ----
+# 注意：以下只驗 Outbox 重播與 DeliveryManager 去重；task 終局 -> OutputIntent 的 consumer 在 production 尚未存在，
+# ``Notifier`` 為測試替身（見檔頭「覆蓋範圍聲明」）。
 
 def _intent_for(task_id: str):
     """測試端把 Task 完成接到 Output：output_id 由 task_id 決定，重複觸發得到同一個 intent 身分（契約 VC-6-1）。"""
-    return make_intent(output_id="out_" + task_id.split("_", 1)[1], sequence=0)
+    suffix = task_id.split("_", 1)[1]
+    # lease_id／turn_id 也要由 task_id 決定：dispatch 會比對已持久化的 intent，重送必須是同一份內容（稽核 B6）
+    return make_intent(output_id="out_" + suffix, sequence=0, lease_id="lease_" + suffix, turn_id="turn_" + suffix)
 
 
 class Notifier:
@@ -287,7 +297,11 @@ def test_v19_completed_event_is_journaled_even_when_crash_precedes_bus_dispatch(
 
 
 def test_v19_completion_notification_recovered_via_outbox_after_crash_before_bus(session_factory):
-    """V19／VC-1-2、VC-6-1、T-8（預期失敗）：完成後、Bus 投遞前崩潰，重啟由 Outbox 重送必須補送通知恰好一次。"""
+    """V19／VC-1-2、VC-6-1、T-8：完成後、Bus 投遞前崩潰，重啟由 Outbox 重送，測試端 Notifier 補送通知恰好一次。
+
+    本測試目前會通過（先前標示的「預期失敗」已過時）：task.completed 的 Outbox 目標已由 production 寫入，
+    但通知 consumer 仍是測試替身；驗證的是 Outbox 重播＋DeliveryManager 去重，不是 production 通知流程。
+    """
     crash, ex = CrashInjector(), FakeToolExecutor()
     tm = make_tm(session_factory, ex, crash=crash)
     task, run, _step, _items = setup_run(tm, 1)

@@ -28,7 +28,7 @@ from uep.contracts.presence import (
     PresenceStatus,
 )
 from uep.control.socket_transport import SocketControlClient
-from uep.endpoint.auth import RequestVerifier, SignedRequest
+from uep.endpoint.auth import EndpointAuthError, RequestVerifier, SignedRequest
 from uep.endpoint.endpoint import CliEndpoint, EndpointRejected, ReconnectOutcome
 from uep.endpoint.protocol import RpcCoreApi
 from uep.endpoint.service import EndpointService
@@ -380,10 +380,9 @@ def test_item7_mismatched_service_clock_corrupts_ttl_and_endpoint_flaps(session_
 
 # ---- (8) socket 回應無 MAC ----
 
-def test_item8_unauthenticated_responses_are_accepted_from_a_rogue_loopback_server():
-    """【設計取捨】socket 回應與推送不簽章（信任邊界＝本機 loopback）：任何搶到該埠的本機行程都能對客戶端
-    偽造 GRANTED／ttl 與控制訊號。socket_transport 模組 docstring 已明列；跨機器前必須加 TLS 或回應 MAC。
-    此測試釘住現況並示範偽造的可行性，作為日後加回應 MAC 時應翻轉的測試。"""
+def test_item8_rogue_loopback_server_cannot_make_endpoint_trust_forged_lease():
+    """【已修（T-24 B7）】hello 改為 challenge-response：伺服器須以端點 secret 對 client nonce 簽章，
+    搶綁該埠的本機行程沒有 secret，client 拒絕其 hello_ok，偽造的 GRANTED／ttl 不會被端點採信。"""
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     listener.listen()
@@ -416,10 +415,9 @@ def test_item8_unauthenticated_responses_are_accepted_from_a_rogue_loopback_serv
     client = SocketControlClient("127.0.0.1", port, "ep_cli", b"cli-secret-0123456789abcdef", on_control=lambda s: None)
     ep = CliEndpoint("ep_cli", client.api, clock=Mono(), wall_clock=wall_now)
     try:
-        client.connect()
-        assert ep.start_lease() is AcquireResult.GRANTED  # Core 從未核發，但端點接受了偽造回應
-        assert ep.lease is not None and ep.lease.auth.presence_generation == 99
-        assert ep.remaining_ttl() == pytest.approx(3600.0)
+        with pytest.raises(EndpointAuthError):
+            client.connect()  # 偽造的 hello_ok 沒有有效的伺服器證明
+        assert not client.connected and ep.lease is None
     finally:
         ep.close()
         client.close()

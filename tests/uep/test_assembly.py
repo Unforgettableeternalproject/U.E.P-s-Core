@@ -161,7 +161,7 @@ def test_global_stop_blocks_task_running_and_reacquire_until_release(build, sess
     core.tasks.pause_task(free.task_id, __import__("uep.tasks.states", fromlist=["PauseReason"]).PauseReason.USER)
     core.stop.trigger(TOKEN)
     with pytest.raises(IllegalTransition, match="global_stop_engaged"):
-        core.tasks.transition_run(run.run_id, RunStatus.RUNNING)
+        core.tasks.transition_run(run.run_id, RunStatus.RUNNING, worker_epoch=run.worker_epoch)
     other = core.tasks.create_task(
         persona_id="uep", goal="g2", owner_actor_id="o", scope_ref="scope_private_owner", policy=FREE
     )
@@ -169,7 +169,9 @@ def test_global_stop_blocks_task_running_and_reacquire_until_release(build, sess
         core.tasks.start_run(other.task_id, persona_version=1, policy_version=1)
     assert core.presence.acquire("ep_desktop", "desktop").result is AcquireResult.DENIED
     core.stop.release(TOKEN)
-    assert core.tasks.transition_run(run.run_id, RunStatus.RUNNING).status == RunStatus.RUNNING.value
+    assert core.tasks.transition_run(
+        run.run_id, RunStatus.RUNNING, worker_epoch=run.worker_epoch
+    ).status == RunStatus.RUNNING.value
     assert core.presence.acquire("ep_desktop", "desktop").result is AcquireResult.GRANTED
 
 
@@ -341,6 +343,8 @@ def test_engage_between_guard_read_and_stage1_commit_waits_and_no_new_tool_start
 ):
     import threading
 
+    from uep.tasks.manager import ActionBlocked
+
     executor = FakeToolExecutor()
     core = build(executors={"fake": executor})
     core.start()
@@ -353,8 +357,11 @@ def test_engage_between_guard_read_and_stage1_commit_waits_and_no_new_tool_start
     read_done, let_commit = threading.Event(), threading.Event()
     original = core.tasks._action_guard
 
+    guard_saw_engaged: list[bool] = []  # 每次 guard 讀旗標當下（共享鎖持有中）engage 是否已完成
+
     def paused_guard(session):
-        result = original(session)  # 讀旗標（取共享鎖）
+        result = original(session)  # 讀旗標（取共享鎖）；engage 在此鎖釋放前不可能提交
+        guard_saw_engaged.append(engage_done.is_set())
         read_done.set()
         assert let_commit.wait(5), "測試卡住"
         return result
@@ -364,7 +371,10 @@ def test_engage_between_guard_read_and_stage1_commit_waits_and_no_new_tool_start
     engage_done = threading.Event()
 
     def worker() -> None:
-        outcome["a"] = core.tasks.execute_action(action.action_id, params, worker_epoch=run.worker_epoch)
+        try:
+            outcome["a"] = core.tasks.execute_action(action.action_id, params, worker_epoch=run.worker_epoch)
+        except ActionBlocked as exc:  # 階段 1 後的重檢看到 engage：確定未呼叫 executor
+            outcome["blocked"] = exc
 
     def stopper() -> None:
         assert read_done.wait(5)
@@ -381,12 +391,17 @@ def test_engage_between_guard_read_and_stage1_commit_waits_and_no_new_tool_start
     t_a.join(10)
     t_b.join(10)
     assert engage_done.is_set() and outcome["stop"].flag_engaged
-    assert outcome["a"].executed and executor.calls  # 階段 1 已通過者可完成（它在 engage 之前提交）
+    # 階段 1 已通過者：若 executor 呼叫前 engage 尚未生效則完成；否則被階段 1.5 重檢擋下並轉 FAILED（未呼叫）
+    if "a" in outcome:
+        # 順序由旗標共享鎖決定：階段 1.5 重檢通過的那次 guard 讀取發生在 engage 提交之前
+        assert outcome["a"].executed and executor.calls
+        assert len(guard_saw_engaged) == 2 and guard_saw_engaged == [False, False]
+    else:
+        assert "blocked" in outcome and not executor.calls
+        assert core.tasks.get_action(action.action_id).status == "FAILED"
     started = len(executor.calls)
     # engage 回傳之後：任何新工具都不得開始
     core.tasks._action_guard = original
-    from uep.tasks.manager import ActionBlocked
-
     with pytest.raises(ActionBlocked, match="global_stop_engaged"):
         core.tasks.execute_action(second_action.action_id, second_params, worker_epoch=second_run.worker_epoch)
     assert len(executor.calls) == started

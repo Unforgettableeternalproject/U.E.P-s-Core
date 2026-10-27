@@ -55,6 +55,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if result is not AcquireResult.GRANTED:
         reason = endpoint.last_deny_reason
+        if result is AcquireResult.NOT_QUIESCED:
+            _out("Core 仍在等待停止證據（可能是其他端點，或需操作員 resolve-recovery）")
         _out(f"無法取得 Lease：{result.value}" + (f"（{reason.value}）" if reason is not None else ""))
         if not endpoint.acquire_retryable:
             _out("全域停止中，不再重試；解除後請重新啟動端點")

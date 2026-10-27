@@ -7,6 +7,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import select
 
 from tests.uep.acceptance_support import (
     HookedExecutor,
@@ -32,6 +33,7 @@ from uep.tasks.manager import (
     IllegalTransition,
     params_hash,
 )
+from uep.tasks.models import ReceiptRow
 from uep.tasks.states import RunStatus
 
 pytestmark = pytest.mark.usefixtures("session_factory")
@@ -288,6 +290,41 @@ def test_v21_zombie_worker_late_receipt_only_recorded_then_resolved(session_fact
     assert holder["plan"].run.worker_epoch == 2
     assert out.status.value == "UNKNOWN"  # 舊 epoch 的結果不推進
     assert new.resolve_unknown(item.action_id).status.value == "SUCCEEDED"
+    assert ex.execution_count(item.action_id) == 1 and receipt_count(session_factory, item.action_id) == 1
+
+
+def test_v21_zombie_late_receipt_is_stored_immediately_then_resolve_prefers_stored_verified_receipt(session_factory):
+    """V21／T-9：舊 epoch worker 的 execute_action 一回傳，receipt 就已入庫（已驗證）而 action 仍 UNKNOWN；
+
+    resolve_unknown 以已存的已驗證 receipt 推進，不再信 executor 查核——即使 executor 此刻謊稱「確定未執行」，
+    也不得退回 INTENDED 重做（效果仍只 1 次）。
+    """
+    holder: dict = {}
+
+    def takeover(_call):
+        holder["new"].resume_run(holder["run_id"], stale_after=timedelta(0))
+
+    ex = HookedExecutor(on_execute=takeover)
+    old = make_tm(session_factory, ex)
+    new = make_tm(session_factory, ex)
+    _task, run, _step, (item,) = setup_run(old, 1)
+    holder.update(new=new, run_id=run.run_id)
+
+    out = old.execute_action(item.action_id, item.params, worker_epoch=1)
+    # execute_action 回傳的當下：證據已入庫、狀態仍 UNKNOWN（舊 epoch 不推進）
+    assert out.status.value == "UNKNOWN"
+    assert receipt_count(session_factory, item.action_id) == 1
+    with session_factory() as s:
+        stored = s.scalar(select(ReceiptRow).where(ReceiptRow.action_id == item.action_id))
+        assert stored is not None and stored.source_verified is True and stored.succeeded is True
+    assert status_of(new, item) == "UNKNOWN"
+    # executor 查核被刻意設成謊言：若 resolve 還去問 executor，就會退回 INTENDED 並重做
+    ex.lookup_outcome(item.action_id, "confirmed_not_executed")
+
+    resolved = new.resolve_unknown(item.action_id)
+    assert resolved.status.value == "SUCCEEDED"
+    assert status_of(new, item) == "SUCCEEDED"
+    assert ex.lookups[item.action_id] == 0  # 已有已驗證 receipt：不再向 executor 查核
     assert ex.execution_count(item.action_id) == 1 and receipt_count(session_factory, item.action_id) == 1
 
 

@@ -58,12 +58,12 @@ def test_unconfigured_token_rejects_everything_fail_closed(session_factory, tmp_
 def test_token_falls_back_to_settings_not_hardcoded(session_factory, tmp_path, monkeypatch):
     stack = make_stack(session_factory, tmp_path)
     service = GlobalStop(session_factory, stack.manager, stack.control)  # 不傳 token -> 讀 settings
-    monkeypatch.setattr("uep.stop.service.get_settings", lambda: SimpleNamespace(stop_token=SecretStr("from-env")))
-    service.trigger("from-env")
+    monkeypatch.setattr("uep.stop.service.get_settings", lambda: SimpleNamespace(stop_token=SecretStr("from-env-0123456789")))
+    service.trigger("from-env-0123456789")
     assert flag(session_factory)
     monkeypatch.setattr("uep.stop.service.get_settings", lambda: SimpleNamespace(stop_token=None))
     with pytest.raises(StopAuthError):
-        service.trigger("from-env")
+        service.trigger("from-env-0123456789")
 
 
 # ---- 效果 ----

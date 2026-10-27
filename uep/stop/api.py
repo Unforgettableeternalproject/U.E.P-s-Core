@@ -3,7 +3,8 @@
 - 只綁 loopback（127.0.0.1／::1／localhost）；其他位址拒絕建立。
 - 每個請求都需 ``Authorization: Bearer <token>``，token 由 ``GlobalStop`` 以常數時間比對；
   伺服端沒有設定 token 時回 503（fail-closed），不使用預設值。
-- 路徑：``POST /v1/global-stop``（停止）、``POST /v1/global-stop/release``（解除）、``GET /v1/global-stop``（狀態）。
+- 路徑：``POST /v1/global-stop``（停止）、``POST /v1/global-stop/release``（解除）、``GET /v1/global-stop``（狀態）、
+  ``POST /v1/presence/resolve-recovery``（操作員確認各端已停止，RECOVERING -> NONE；記錄 operator）。
 - 不記錄 token、不回顯 token；請求本文上限 4KB。
 - 伺服器由呼叫端（組裝層）明確 ``start``，本模組 import 時不開任何 socket。
 """
@@ -23,6 +24,7 @@ logger = logging.getLogger("uep.stop.api")
 
 PATH_STOP = "/v1/global-stop"
 PATH_RELEASE = "/v1/global-stop/release"
+PATH_RECOVERY = "/v1/presence/resolve-recovery"
 _MAX_BODY = 4096
 _CONN_TIMEOUT = 5.0
 _LOOPBACK = frozenset({"127.0.0.1", "::1", "localhost"})
@@ -78,7 +80,7 @@ def _make_handler(service: GlobalStop) -> type[BaseHTTPRequestHandler]:
                 self._reply(HTTPStatus.OK, {"engaged": service.is_engaged()})
 
         def do_POST(self) -> None:
-            if self.path not in (PATH_STOP, PATH_RELEASE):
+            if self.path not in (PATH_STOP, PATH_RELEASE, PATH_RECOVERY):
                 self._reply(HTTPStatus.NOT_FOUND, {"error": "not_found"})
                 return
             if not self._auth():
@@ -104,6 +106,8 @@ def _make_handler(service: GlobalStop) -> type[BaseHTTPRequestHandler]:
                         "presence_revoked": result.presence_revoked, "delivered_to": list(result.delivered_to),
                         "errors": list(result.errors),
                     })
+                elif self.path == PATH_RECOVERY:
+                    self._reply(HTTPStatus.OK, {"resolved": service.resolve_recovery(operator=operator)})
                 else:
                     self._reply(HTTPStatus.OK, {"released": service.disengage(operator=operator)})
             except Exception:
@@ -132,6 +136,7 @@ class LocalStopServer:
     def __init__(self, service: GlobalStop, *, host: str = "127.0.0.1", port: int = 0) -> None:
         if host not in _LOOPBACK:
             raise ValueError(f"全域停止 API 只能綁 loopback，收到 {host!r}")
+        self._service = service
         self._httpd = _ExclusiveHTTPServer((host, port), _make_handler(service))
         self._thread: threading.Thread | None = None
 
@@ -147,6 +152,7 @@ class LocalStopServer:
     def start(self) -> None:
         if self._thread is not None:
             return
+        self._service.warn_if_token_unusable()
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True, name="UepStopApi")
         self._thread.start()
 

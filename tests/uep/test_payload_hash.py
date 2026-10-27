@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 from uep.config import UepSettings, get_settings
 from uep.events import journal
 from uep.events.bus import EventBus
-from uep.events.envelope import EventDraft, TrustedContext
+from uep.events.envelope import EventDraft, IdempotencyConflict, TrustedContext
 from uep.events.models import EventRow, PayloadBlob
 from uep.events.payload_hash import (
     HMAC_PREFIX,
@@ -121,14 +121,13 @@ def test_tombstone_keeps_only_hmac_and_still_verifies(session_factory, publisher
         assert sha256_hex(secret) not in row.payload_hash
 
 
-def test_resend_with_same_blob_is_not_flagged_as_mismatch(session_factory, publisher, caplog):
+def test_resend_with_same_blob_is_not_flagged_and_different_blob_conflicts(session_factory, publisher, caplog):
     publisher.publish(_draft("相同".encode()), EXTERNAL)
     with caplog.at_level("WARNING", logger="uep.events.journal"):
         again = publisher.publish(_draft("相同".encode()), EXTERNAL)
     assert again.duplicate and "無法以目前密鑰驗證" not in caplog.text
-    with caplog.at_level("WARNING", logger="uep.events.journal"):
+    with pytest.raises(IdempotencyConflict):  # M1：內容不同不再只記 warning
         publisher.publish(_draft("不同".encode()), EXTERNAL)
-    assert "無法以目前密鑰驗證（可能已輪替" in caplog.text
 
 
 def test_resend_without_key_returns_original_and_logs_unverifiable(session_factory, publisher, monkeypatch, caplog):

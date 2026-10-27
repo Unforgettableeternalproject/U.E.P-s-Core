@@ -14,7 +14,7 @@ PREFIXES = frozenset(
     }
 )
 
-_ID_PATTERN = re.compile(r"^([a-z]+)_([0-9A-HJKMNP-TV-Z]{26})$")
+_ID_PATTERN = re.compile(r"([a-z]+)_([0-9A-HJKMNP-TV-Z]{26})")
 
 
 def new_id(prefix: str) -> str:
@@ -26,7 +26,7 @@ def new_id(prefix: str) -> str:
 
 def is_valid_id(value: str, prefix: str | None = None) -> bool:
     """檢查字串是否為合法的 ``前綴_ULID``；可指定必須的前綴。"""
-    match = _ID_PATTERN.match(value or "")
+    match = _ID_PATTERN.fullmatch(value or "")
     if not match or match.group(1) not in PREFIXES:
         return False
     return prefix is None or match.group(1) == prefix

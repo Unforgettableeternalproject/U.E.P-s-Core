@@ -311,6 +311,46 @@ def test_v20_concurrent_create_action_same_id_creates_one_row(session_factory):
     assert results == ["act_01ARZ3NDEKTSV4RRFFQ69G5FAV"] * 4  # 輸家也回傳同一個 action
 
 
+def test_v20_create_action_second_layer_integrity_error_still_dedupes(session_factory, monkeypatch):
+    """V20／T-2：第一層「先查既有列」失效（模擬過期讀取）時，唯一約束的 IntegrityError 第二層仍保證去重。
+
+    以 monkeypatch 讓 create_action 的 ``with_for_update`` 查詢回 None（第二層用的是不帶鎖的 get，不受影響），
+    重放同 action_id：必須回傳既有列、不多一筆 action、不多一個事件；參數改變仍拒絕。
+    """
+    from sqlalchemy.orm import Session
+
+    from uep.tasks.manager import ParamsHashMismatch
+    from uep.tasks.models import ActionIntentRow
+
+    ex = FakeToolExecutor()
+    tm = make_tm(session_factory, ex)
+    _task, run, step, (item,) = setup_run(tm, 1)
+    first_layer_misses: list[str] = []
+    original_get = Session.get
+
+    def blind_first_layer(self, entity, ident, **kw):
+        if entity is ActionIntentRow and kw.get("with_for_update"):
+            first_layer_misses.append(str(ident))
+            return None  # 第一層看不到既有列
+        return original_get(self, entity, ident, **kw)
+
+    monkeypatch.setattr(Session, "get", blind_first_layer)
+    kwargs = {
+        "run_id": run.run_id, "step_id": step.step_id, "tool": "files.write", "executor": "fake",
+        "side_effect_class": "reversible_local", "idempotency": "via_action_id", "worker_epoch": 1,
+        "action_id": item.action_id,
+    }
+    for _ in range(3):
+        row = make_tm(session_factory, ex).create_action(params=item.params, **kwargs)
+        assert row.action_id == item.action_id
+    assert len(first_layer_misses) == 3  # 確實走了「第一層沒擋到、由第二層接手」的路徑
+    with pytest.raises(ParamsHashMismatch):  # 第二層也會比對參數：不是任何同 id 都放行
+        make_tm(session_factory, ex).create_action(params={"path": "other"}, **kwargs)
+    monkeypatch.undo()
+    assert action_row_count(session_factory) == 1
+    assert event_types(session_factory).count("action.intended") == 1
+
+
 def test_v20_repeated_worker_restarts_never_redo_effects(session_factory):
     """V20／T-2：連續重啟 5 次（每次新 manager、新 epoch、全部再 drive 一遍），每個 action 的執行數恆為 1。"""
     crash, ex = CrashInjector(), FakeToolExecutor()

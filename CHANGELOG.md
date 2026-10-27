@@ -2938,3 +2938,15 @@
 
 ---
 
+### fix: 新 Core 週期 2 追加驗證修補（三區稽核與 D43）. 10/27
+
+> Date: Tue, 27 Oct 2026 11:32:25 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `a81c1b11c64d8013079b3088868008e71fcf419f`
+
+---
+

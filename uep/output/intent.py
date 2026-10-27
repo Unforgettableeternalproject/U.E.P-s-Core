@@ -5,9 +5,16 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from uep.events.envelope import scope_rank
+
+
+def require_aware(value: datetime | None) -> datetime | None:
+    """時間欄必須帶時區（naive 與 aware 比較會在 Gate 內才拋 TypeError，改在建構時拒絕）。"""
+    if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+        raise ValueError("時間欄必須帶時區（tz-aware）")
+    return value
 
 
 class OutputKind(StrEnum):
@@ -51,6 +58,11 @@ class OutputIntent(BaseModel):
     valid_until: datetime
     generated_text_ref: str | None = None
 
+    @field_validator("valid_until")
+    @classmethod
+    def _aware_valid_until(cls, value: datetime) -> datetime:
+        return require_aware(value)  # type: ignore[return-value]
+
     @model_validator(mode="after")
     def _check(self) -> OutputIntent:
         scope_rank(self.audience_scope)
@@ -89,6 +101,11 @@ class ControlSignal(BaseModel):
     scope: ControlScope
     target_fence: dict[str, int]
     issued_at: datetime
+
+    @field_validator("issued_at")
+    @classmethod
+    def _aware_issued_at(cls, value: datetime) -> datetime:
+        return require_aware(value)  # type: ignore[return-value]
 
     @model_validator(mode="after")
     def _check(self) -> ControlSignal:

@@ -1,4 +1,4 @@
-"""全域停止 CLI：``python -m uep.stop {stop,release,status} [--url URL]``。
+"""全域停止 CLI：``python -m uep.stop {stop,release,status,resolve-recovery} [--url URL]``。
 
 token 只從環境變數／.env 的 ``UEP_STOP_TOKEN`` 讀（不接受命令列參數，避免留在 shell 歷史）；
 URL 預設取 ``UEP_STOP_URL``。結束碼：0 成功、1 被拒（token 錯誤或未設定）、2 無法連線或其他錯誤、3 停止未完全生效（旗標失敗或部分步驟失敗）。
@@ -13,7 +13,8 @@ import urllib.error
 import urllib.request
 
 from uep.config import get_settings
-from uep.stop.api import PATH_RELEASE, PATH_STOP
+from uep.stop.api import PATH_RECOVERY, PATH_RELEASE, PATH_STOP
+from uep.stop.service import MIN_TOKEN_BYTES
 
 
 def _call(method: str, url: str, token: str, body: dict | None = None) -> tuple[int, dict]:
@@ -31,7 +32,7 @@ def _call(method: str, url: str, token: str, body: dict | None = None) -> tuple[
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m uep.stop", description="全域停止（本機入口）")
-    parser.add_argument("action", choices=("stop", "release", "status"))
+    parser.add_argument("action", choices=("stop", "release", "status", "resolve-recovery"))
     parser.add_argument("--url", default=os.environ.get("UEP_STOP_URL"), help="本機 API 位址（預設取 UEP_STOP_URL）")
     parser.add_argument("--reason", default="global_stop")
     parser.add_argument("--operator", default="local_cli")
@@ -39,8 +40,8 @@ def main(argv: list[str] | None = None) -> int:
 
     secret = get_settings().stop_token
     token = secret.get_secret_value() if secret else ""
-    if not token:
-        print("未設定 UEP_STOP_TOKEN", file=sys.stderr)
+    if len(token.encode("utf-8")) < MIN_TOKEN_BYTES:  # 過短視同未設定（與伺服端一致）
+        print(f"未設定 UEP_STOP_TOKEN（至少 {MIN_TOKEN_BYTES} 位元組）", file=sys.stderr)
         return 1
     if not args.url:
         print("請以 --url 或 UEP_STOP_URL 指定本機 API 位址", file=sys.stderr)
@@ -49,6 +50,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.action == "stop":
             status, body = _call("POST", base + PATH_STOP, token, {"reason": args.reason, "operator": args.operator})
+        elif args.action == "resolve-recovery":
+            status, body = _call("POST", base + PATH_RECOVERY, token, {"operator": args.operator})
         elif args.action == "release":
             status, body = _call("POST", base + PATH_RELEASE, token, {"operator": args.operator})
         else:

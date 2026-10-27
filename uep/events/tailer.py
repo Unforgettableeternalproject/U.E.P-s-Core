@@ -21,6 +21,8 @@
   xmin 釘住，tailing 在它結束前不會前進（事件不遺失，只是延遲）。使用方須避免長交易，並監控水位落後量。
 - **txid 綁定叢集**：``events.txid`` 是該 PostgreSQL 叢集的交易號。還原備份、換叢集或 dump／restore 後
   txid 空間不同，舊游標不再有意義，**必須重置游標**（``TailCursor()`` 從頭，或 ``from_now``）。
+  游標的 ``low_txid`` 若大於目前水位（xmin 單調不減，不可能自然發生），``poll`` 拋 ``TailCursorMismatch``，
+  不再靜默回空。``watermark_lag`` 回報水位落後量供監控。
 - ``safety_lag`` 只延後水位的採用時間，不能取代正確性機制；0 即為立即採用目前水位。
 """
 from __future__ import annotations
@@ -41,6 +43,10 @@ from uep.events.models import EventRow
 _XMIN_SQL = text("SELECT pg_snapshot_xmin(pg_current_snapshot())::text::bigint")
 
 
+class TailCursorMismatch(RuntimeError):
+    """游標的 ``low_txid`` 大於目前水位：同一叢集 xmin 單調不減，代表叢集已變（還原／換庫），游標必須重置。"""
+
+
 @dataclass(frozen=True)
 class TailCursor:
     """可持久化的游標。``low_txid`` 之前的所有交易已處理完；``high_txid`` 非 None 表示區間處理中。"""
@@ -53,6 +59,14 @@ class TailCursor:
 def current_xmin(session: Session) -> int:
     """目前的安全水位（所有 txid 小於它的交易都已結束）。"""
     return int(session.execute(_XMIN_SQL).scalar_one())
+
+
+def watermark_lag(session: Session, cursor: TailCursor) -> int:
+    """水位落後量（L7 觀測）：目前 xmin 與游標 ``low_txid`` 的差；持續變大代表有長交易釘住水位或消費者落後。
+
+    負值代表游標來自其他叢集（``poll`` 會拋 ``TailCursorMismatch``），此處原值回傳以利監控判讀。
+    """
+    return current_xmin(session) - cursor.low_txid
 
 
 class JournalTailer:
@@ -101,7 +115,11 @@ class JournalTailer:
             with self._session_factory() as session:
                 xmin = current_xmin(session)
             watermark = self._eligible_xmin(xmin)
-            if watermark is None or watermark <= cursor.low_txid:
+            if watermark is not None and watermark < cursor.low_txid:
+                raise TailCursorMismatch(
+                    f"水位 {watermark} 小於游標 low_txid {cursor.low_txid}：叢集已變，請重置游標"
+                )
+            if watermark is None or watermark == cursor.low_txid:
                 return []
             cursor = replace(cursor, high_txid=watermark, last_seq=0)
         with self._session_factory() as session:

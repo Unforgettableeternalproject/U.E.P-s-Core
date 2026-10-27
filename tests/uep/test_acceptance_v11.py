@@ -23,7 +23,7 @@ from tests.uep.acceptance_p2_support import (
     open_transfer_count,
     presence_row_count,
 )
-from tests.uep.presence_support import count_events, make_rig
+from tests.uep.presence_support import count_events, make_rig, revoke_and_quiesce
 from uep.contracts.presence import AcquireResult as R
 from uep.contracts.presence import PresenceStatus
 
@@ -83,7 +83,7 @@ def test_v11_three_endpoints_race_100_rounds_exactly_one_grant_per_round(session
             again = _race([lambda e=e: mgr.acquire(e, LOCATIONS[e]) for e in ENDPOINTS])
             assert {o.result for o in again} == {R.BUSY}  # 已 ACTIVE：全部 BUSY（含 winner 自己）
             saw_busy = True
-        mgr.revoke("round_end")
+        revoke_and_quiesce(mgr)
         assert mgr.current().status is PresenceStatus.NONE and live_lease_count(session_factory) == 0
         assert open_transfer_count(session_factory) == 0
     assert saw_busy
@@ -98,7 +98,7 @@ def test_v11_expected_version_losers_get_version_conflict(session_factory, tmp_p
         version = mgr.current().row_version
         results = _race([lambda e=e, v=version: mgr.acquire(e, LOCATIONS[e], expected_version=v) for e in ENDPOINTS])
         assert sorted(o.result.value for o in results) == ["GRANTED", "VERSION_CONFLICT", "VERSION_CONFLICT"]
-        mgr.revoke("round_end")
+        revoke_and_quiesce(mgr)
     assert lease_total(session_factory) == 30
 
 
@@ -182,7 +182,7 @@ def test_v11_race_over_real_socket_with_hmac(session_factory, tmp_path):
             assert granted[0].auth is not None and granted[0].auth.presence_generation == round_no
             assert live_lease_count(session_factory) == 1 and presence_row_count(session_factory) == 1
             assert count_events(session_factory, "presence.granted") == round_no
-            world.rig.manager.revoke("round_end")
+            revoke_and_quiesce(world.rig.manager)
         assert lease_total(session_factory) == 15
     finally:
         world.close()

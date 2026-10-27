@@ -19,6 +19,7 @@ ErrorCode = Literal[
     "INVALID_TOOL_ARGS", "CAPABILITY_MISSING", "RATE_LIMITED",
 ]
 ERROR_CODES: frozenset[str] = frozenset(get_args(ErrorCode))
+EVENT_KINDS: tuple[str, ...] = get_args(EventKind)
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,9 @@ class RuntimeEvent:
     error: Mapping[str, Any] | None = None  # {code, retryable, detail}
 
     def __post_init__(self) -> None:
+        # kind 必須是列舉值：否則 getattr(self, kind) 會取到 seq、attempt_id 等不相干欄位
+        if self.kind not in EVENT_KINDS:
+            raise ValueError(f"未知的 kind：{self.kind!r}")
         payload = getattr(self, self.kind)
         if payload is None:
             raise ValueError(f"kind={self.kind} 必須帶同名欄位")
@@ -58,6 +62,12 @@ class RuntimeEvent:
                   if k != self.kind and getattr(self, k) is not None]
         if others:
             raise ValueError(f"kind={self.kind} 不得同時帶 {others}")
+        if self.kind == "tool_intent":
+            intent = self.tool_intent
+            if not isinstance(intent, Mapping) or not isinstance(intent.get("tool"), str) or not intent["tool"]:
+                raise ValueError("tool_intent 必須帶非空的 tool")
+            if not isinstance(intent.get("args_complete"), bool):
+                raise ValueError("tool_intent 必須帶布林 args_complete（false 者 Core 不得提交）")
         if self.kind == "error" and self.error.get("code") not in ERROR_CODES:  # type: ignore[union-attr]
             raise ValueError(f"error.code 不合法：{self.error.get('code')!r}")  # type: ignore[union-attr]
 

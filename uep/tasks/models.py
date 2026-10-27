@@ -220,4 +220,6 @@ class ReceiptRow(Base):
     error_code: Mapped[str | None] = mapped_column(String)
     source_verified: Mapped[bool] = mapped_column(Boolean, nullable=False)
     meta: Mapped[dict | None] = mapped_column(JSONB)
+    # 取得此 receipt 時呼叫端的 worker_epoch（migration 0008）；查核取得者為 NULL
+    worker_epoch: Mapped[int | None] = mapped_column(Integer)
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

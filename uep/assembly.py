@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -41,7 +42,11 @@ from uep.control.channel import (
     ControlSubscription,
 )
 from uep.control.socket_transport import SocketControlServer
-from uep.endpoint.auth import RequestVerifier, load_secrets_from_env
+from uep.endpoint.auth import (
+    DEFAULT_SKEW_SECONDS,
+    RequestVerifier,
+    load_secrets_from_env,
+)
 from uep.endpoint.service import EndpointService
 from uep.events.bus import EventBus
 from uep.events.payload_hash import MIN_KEY_BYTES
@@ -209,12 +214,28 @@ def _assert_wired(tasks: TaskManager, delivery: DeliveryManager) -> None:
         raise AssemblyError("TaskManager 未接上 action_guard（T-10）")
 
 
-def _probe_payload_hash_key() -> None:
-    """啟動探測 payload_hash 密鑰：缺失或過短只告警，不阻擋（寫入私人 payload 時另有 fail-closed）。"""
+def build_request_verifier(
+    secrets: Mapping[str, bytes], *, clock: Callable[[], float] = time.time
+) -> RequestVerifier:
+    """端點請求驗證器。啟動下限取 ``clock() - skew``：時鐘落後 δ（< skew）的端點在 Core 重啟後立即的請求
+    仍被接受；早於「啟動 - skew」的舊請求被拒。代價：重啟前最後 skew 秒內被截取的請求，nonce 表已清空，
+    在窗口內可被重放一次（跨機器 Part H 前須配每則 MAC／通道綁定）。"""
+    return RequestVerifier(
+        secrets, clock=clock, skew_seconds=DEFAULT_SKEW_SECONDS, startup_grace=DEFAULT_SKEW_SECONDS
+    )
+
+
+def _probe_payload_hash_key(strict: bool = False) -> None:
+    """啟動探測 payload_hash 密鑰：缺失或過短預設只告警（寫入私人 payload 時另有 fail-closed）；
+    ``strict`` 時直接拒絕組裝，避免正式環境帶著壞掉的私人 payload 寫入能力啟動。"""
     key = get_settings().payload_hash_key
-    if key is None or not key.get_secret_value():
+    if key is None or not key.get_secret_value().strip():  # 全空白視同缺失（與 PayloadHasher 一致）
+        if strict:
+            raise AssemblyError("strict 組裝需要 UEP_PAYLOAD_HASH_KEY，目前未設定（D42）")
         logger.warning("未設定 UEP_PAYLOAD_HASH_KEY：寫入私人 payload 會被拒絕（D42 fail-closed）")
     elif len(key.get_secret_value().encode()) < MIN_KEY_BYTES:
+        if strict:
+            raise AssemblyError(f"strict 組裝需要至少 {MIN_KEY_BYTES} 位元組的 UEP_PAYLOAD_HASH_KEY（D42）")
         logger.warning("UEP_PAYLOAD_HASH_KEY 少於 %d 位元組：寫入私人 payload 會被拒絕", MIN_KEY_BYTES)
 
 
@@ -239,15 +260,17 @@ def assemble_core(
     endpoint_secrets: Mapping[str, bytes] | None = None,
     authorized_proposers: Mapping[Axis, frozenset[str]] | None = None,
     maintenance_interval: float | None = DEFAULT_MAINTENANCE_INTERVAL,
+    strict: bool = False,
 ) -> CoreAssembly:
     """組裝 Core。缺必填前提即 ``AssemblyError``；不啟動任何東西（``start`` 才啟動）。
 
     ``stop_api_port`` 為 None 時不建立本機 HTTP API；給 0 由系統配置埠。
+    ``strict`` 為 True 時，缺少（或過短的）``UEP_PAYLOAD_HASH_KEY`` 直接拒絕組裝；預設只告警。
     ``maintenance_interval`` 為維護迴圈的間隔秒數，None 則不建立迴圈（測試或由外部排程時）。
     ``endpoint_socket_port`` 為 None 時不起端點 socket；給值時，``endpoint_secrets``（預設讀
     ``UEP_ENDPOINT_SECRETS``）為空仍不起 socket（沒有可驗證的端點身分就不開口）。
     """
-    _probe_payload_hash_key()
+    _probe_payload_hash_key(strict)
     missing = [
         name for name, value in (
             ("bus", bus), ("publisher", publisher), ("control", control), ("adapter", adapter),
@@ -325,7 +348,7 @@ def assemble_core(
         if endpoint_socket_port is not None:
             secrets = endpoint_secrets if endpoint_secrets is not None else load_secrets_from_env()
             if secrets:
-                service = EndpointService(presence, RequestVerifier(secrets), **clock_kw)
+                service = EndpointService(presence, build_request_verifier(secrets), **clock_kw)
                 endpoint_server = SocketControlServer(service, port=endpoint_socket_port)
                 fanout.remote = endpoint_server
     except BaseException:

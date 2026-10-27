@@ -255,10 +255,10 @@ def test_value_whitelists():
     with pytest.raises(ValidationError):
         base.model_validate({**base.model_dump(), "cancel_position": {"chunk": "二"}})
     with pytest.raises(ValidationError):
-        make_snapshot(commitments=[{"commitment_id": "c1", "note": "私人內容"}])
+        make_snapshot(commitments=[{"commitment_id": "c1", "note": "私人內容", "scope": "scope_private_owner"}])
     with pytest.raises(ValidationError):
-        make_snapshot(commitments=[{"commitment_id": "c" * 300}])
-    assert make_snapshot(commitments=[{"commitment_id": "c1", "kind": "reminder"}])
+        make_snapshot(commitments=[{"commitment_id": "c" * 300, "scope": "scope_private_owner"}])
+    assert make_snapshot(commitments=[{"commitment_id": "c1", "kind": "reminder", "scope": "scope_private_owner"}])
 
 
 def test_any_non_terminal_can_fail_unknown_cancel():

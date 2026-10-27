@@ -18,6 +18,7 @@ from uep.events.bus import EventBus
 from uep.events.envelope import EventDraft, TrustedContext
 from uep.events.models import EventRow
 from uep.events.publisher import EventPublisher
+from uep.ids import new_id
 from uep.tasks.manager import (
     ActionBlocked,
     ActiveWorker,
@@ -74,7 +75,7 @@ class StubExecutor:
 
     def _receipt(self, call: ToolCall) -> ToolReceipt:
         return ToolReceipt(
-            receipt_id=f"rcpt_{call.action_id}", action_id=call.action_id, succeeded=True,
+            receipt_id=new_id("rcpt"), action_id=call.action_id, succeeded=True,
             result_ref=f"ref_{call.action_id}", recorded_at=datetime.now(UTC), source_verified=True,
         )
 
@@ -192,7 +193,7 @@ def test_legal_transitions_emit_registered_events(mgr, session_factory):
     assert mgr.get_task(task.task_id).status == "RUNNING"
     mgr.transition_task(task.task_id, RunStatus.WAITING_INPUT)
     mgr.transition_task(task.task_id, RunStatus.RUNNING)
-    mgr.transition_run(run.run_id, RunStatus.SUCCEEDED)
+    mgr.transition_run(run.run_id, RunStatus.SUCCEEDED, worker_epoch=run.worker_epoch)
     mgr.transition_task(task.task_id, RunStatus.SUCCEEDED)
     assert event_types(session_factory) == [
         "task.created", "run.started", "task.input_requested", "task.input_provided",
@@ -272,8 +273,11 @@ def test_stale_epoch_reports_do_not_change_state(mgr):
     _task, run, step = running(mgr)
     mgr.resume_run(run.run_id, stale_after=timedelta(0))  # epoch 1 -> 2
     assert mgr.transition_run(run.run_id, RunStatus.SUCCEEDED, worker_epoch=1).status == "RUNNING"
-    assert mgr.complete_step(step.step_id, worker_epoch=1).status == "RUNNING"
-    assert mgr.save_checkpoint(run.run_id, {"completed_steps": ["x"]}, worker_epoch=1).checkpoint is None
+    with pytest.raises(StaleWorkerEpoch):  # 舊 epoch 的 Step／checkpoint／心跳改為明確拒絕（T-24）
+        mgr.complete_step(step.step_id, worker_epoch=1)
+    with pytest.raises(StaleWorkerEpoch):
+        mgr.save_checkpoint(run.run_id, {"completed_steps": ["x"]}, worker_epoch=1)
+    assert mgr.get_run(run.run_id).checkpoint is None
     with pytest.raises(StaleWorkerEpoch):
         mgr.create_action(
             run_id=run.run_id, step_id=step.step_id, tool="t", executor="stub", params={},
@@ -551,7 +555,7 @@ def test_core_shutdown_pause_then_resume_keeps_task_alive(mgr, session_factory):
 
 def test_resume_rejects_terminal_run(mgr):
     task, run, _step = running(mgr)
-    mgr.transition_run(run.run_id, RunStatus.FAILED)
+    mgr.transition_run(run.run_id, RunStatus.FAILED, worker_epoch=run.worker_epoch)
     mgr.transition_task(task.task_id, RunStatus.FAILED)
     with pytest.raises(IllegalTransition):
         mgr.resume_run(run.run_id)
@@ -639,7 +643,7 @@ def test_cannot_succeed_with_unknown_action(mgr, executor):
     executor.mode = "lose_after"
     mgr.execute_action(action.action_id, params, worker_epoch=1)
     with pytest.raises(IllegalTransition):
-        mgr.transition_run(run.run_id, RunStatus.SUCCEEDED)
+        mgr.transition_run(run.run_id, RunStatus.SUCCEEDED, worker_epoch=run.worker_epoch)
     with pytest.raises(IllegalTransition):
         mgr.transition_task(task.task_id, RunStatus.SUCCEEDED)
     assert mgr.get_task(task.task_id).status == "RUNNING"
@@ -750,7 +754,7 @@ def test_private_text_rejected_in_checkpoint_label_and_redacted_in_receipt_meta(
     meta = outcome.receipt.meta
     assert outcome.receipt.error_code == "redacted" and meta["redacted"] is True
     assert set(meta["redactions"]) == {"meta", "error_code"}
-    assert len(meta["redactions"]["error_code"]["sha256"]) == 64
+    assert meta["redactions"]["error_code"]["sha256"].startswith("hmac-sha256:")  # D42：脫敏摘要用 HMAC
     assert meta["redactions"]["meta"]["reason"] and mgr.redaction_count == 2
     assert "私人" not in str(meta)
 
@@ -761,7 +765,7 @@ def test_receipt_refs_accept_uri_like_values(mgr, executor):
     action = add_action(mgr, run, step, params)
     original = executor._receipt
     executor._receipt = lambda call: replace(
-        original(call), result_ref="blob://store/a-b_c.d/42?v=1#x".replace("?", "%3F").replace("#", "%23"),
+        original(call), result_ref="blob://store/a-b_c.d/42~v1",
         error_code="E_TIMEOUT:504",
     )
     outcome = mgr.execute_action(action.action_id, params, worker_epoch=1)
@@ -845,11 +849,12 @@ def test_unverified_receipt_replaced_by_verified_with_different_receipt_id(mgr, 
     action = add_action(mgr, run, step, params)
     executor.mode = "unverified"
     mgr.execute_action(action.action_id, params, worker_epoch=1)
+    second = new_id("rcpt")
     executor.done[action.action_id] = replace(
-        executor.done[action.action_id], receipt_id="rcpt_second", source_verified=True
+        executor.done[action.action_id], receipt_id=second, source_verified=True
     )
     outcome = mgr.resolve_unknown(action.action_id)
-    assert outcome.status is ActionStatus.SUCCEEDED and outcome.receipt.receipt_id == "rcpt_second"
+    assert outcome.status is ActionStatus.SUCCEEDED and outcome.receipt.receipt_id == second
 
 
 def test_paused_run_with_executing_action_waits_for_heartbeat_window(session_factory, executor):

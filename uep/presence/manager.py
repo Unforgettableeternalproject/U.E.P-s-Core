@@ -36,6 +36,7 @@ from uep.contracts.presence import (
     TransferPhase,
 )
 from uep.control.channel import ControlChannel
+from uep.endpoint.auth import DEFAULT_SKEW_SECONDS
 from uep.events.envelope import EventDraft, TrustedContext
 from uep.events.publisher import EventPublisher, RecordedEvent
 from uep.ids import new_id
@@ -53,6 +54,10 @@ SOURCE = "core.presence"
 ACTOR = "uep:presence_manager"
 DEFAULT_LEASE_TTL = timedelta(seconds=30)  # 調校起點，非契約常數（4.4）
 DEFAULT_ACTIVATION_TIMEOUT = timedelta(seconds=10)
+# confirm_quiesced 接受的證據 kind：端點停止回報，以及新行程啟動時自證（上一個行程已不存在）
+QUIESCE_EVIDENCE_KINDS = frozenset({"adapter_stop_report", "fresh_process"})
+# fresh_process 自證的時鐘偏差容忍：沿用端點請求驗證的時間窗口（auth.DEFAULT_SKEW_SECONDS）
+DEFAULT_FRESH_PROCESS_SKEW = timedelta(seconds=DEFAULT_SKEW_SECONDS)
 _OPEN_PHASES = (
     TransferPhase.PREPARING.value, TransferPhase.QUIESCING.value,
     TransferPhase.CHECKPOINTED.value, TransferPhase.ACTIVATING.value,
@@ -61,6 +66,15 @@ _OPEN_PHASES = (
 
 class PresenceNotStarted(RuntimeError):
     """尚未呼叫 ``start``（Core 啟動程序）；此時沒有 epoch，不得核發任何授權。"""
+
+
+def _evidence_acceptable(kind: str, evidence: Mapping[str, Any] | None) -> bool:
+    """停止證據的最低門檻：kind 在白名單，且明確自述已停止播放（playing 為 False）、buffer 已清空
+    （buffer_flushed 為 True）；缺欄位視同未證明，一律拒絕。"""
+    if kind not in QUIESCE_EVIDENCE_KINDS:
+        return False
+    data = evidence or {}
+    return data.get("playing") is False and data.get("buffer_flushed") is True
 
 
 def _utcnow() -> datetime:
@@ -146,6 +160,7 @@ class PresenceManager:
         activation_timeout: timedelta = DEFAULT_ACTIVATION_TIMEOUT,
         outbox_targets: tuple[str, ...] = ("presence",),
         acquire_guard: Callable[[Session], str | None] | None = None,
+        fresh_process_skew: timedelta = DEFAULT_FRESH_PROCESS_SKEW,
     ) -> None:
         self._sf = session_factory
         self._persona = persona_id
@@ -158,6 +173,7 @@ class PresenceManager:
         self._outbox_targets = outbox_targets
         # 全域停止的暫停旗標（T-17）：在 acquire 的鎖定交易內呼叫，回非 None 即拒絕核發（DENIED）
         self._acquire_guard = acquire_guard
+        self._fresh_skew = fresh_process_skew
         self._core_epoch: int | None = None
         self._fencing_epoch: int | None = None
 
@@ -409,6 +425,20 @@ class PresenceManager:
         self._emit(s, pending, row, "presence.recovering", reason, lease_id=lease_id, endpoint_id=endpoint_id)
         self._queue_revoke(controls, endpoint_id, row.core_epoch, row.generation)
 
+    def _revoked_lease(self, s: Session, row: PresenceCurrentRow) -> PresenceLeaseRow | None:
+        """未證實停止標記若來自 ``revoke``，回傳被撤銷的那張 Lease；來自過期／啟用失敗／重啟者回 None。"""
+        lease = s.execute(
+            select(PresenceLeaseRow).where(
+                PresenceLeaseRow.persona_id == self._persona, PresenceLeaseRow.generation == row.generation
+            )
+        ).scalar_one_or_none()
+        if (
+            lease is None or lease.state != "REVOKED" or lease.end_reason == "core_restart"
+            or lease.endpoint_id != row.unquiesced_endpoint_id
+        ):
+            return None
+        return lease
+
     # ---- acquire［A］----
 
     def acquire(
@@ -468,6 +498,13 @@ class PresenceManager:
                 return out(AcquireResult.BUSY)
             if row.transfer_id is not None:  # NONE 且已核發待確認的 Lease（他端）
                 return out(AcquireResult.TRANSFER_PENDING)
+            if row.unquiesced_endpoint_id is not None and row.unquiesced_endpoint_id != endpoint_id:
+                revoked = self._revoked_lease(s, row)
+                if revoked is not None:
+                    if revoked.expires_at > self._now():
+                        return out(AcquireResult.NOT_QUIESCED)  # 撤銷後等停止證據或舊 Lease 過期；維持 NONE
+                    row.unquiesced_endpoint_id = None  # 被撤銷的舊 Lease 已自然過期：不需證據（A20）
+                    self._bump(row)
             if row.unquiesced_endpoint_id is not None and row.unquiesced_endpoint_id != endpoint_id:
                 # Lease 已過期但舊端未證明已停止：進恢復，不讓新端啟用（INV-08）
                 row.status, row.recovery_reason = "RECOVERING", "unquiesced_endpoint"
@@ -575,6 +612,7 @@ class PresenceManager:
         """Core／全域停止入口（不依賴 LLM）：撤銷目前 Lease 並回 NONE；冪等。
 
         generation 不再 +1。撤銷後舊 Lease 不能恢復；若有控制通道，提交後對舊端送 ``control.revoke``。
+        舊端記為 ``unquiesced_endpoint_id``：他端須等停止證據或舊 Lease 自然過期才能 acquire。
         RECOVERING 維持 RECOVERING（仍需查核停止）。
         """
         with self._tx() as (s, pending, controls):
@@ -590,6 +628,8 @@ class PresenceManager:
                 transfer.recovery_reason = reason
             if row.status != "RECOVERING":
                 row.status = "NONE"
+            # 舊端尚未證明已停止：他端 acquire 須等停止證據，或舊 Lease 的 expires_at 已過（A20／D43）
+            row.unquiesced_endpoint_id = endpoint_id
             row.transfer_id = None
             self._clear_lease_fields(row)
             self._bump(row)
@@ -617,6 +657,16 @@ class PresenceManager:
             actor=actor, extra={"kind": kind},
         )
 
+    def _fresh_process_provable(self, s: Session, endpoint_id: str) -> bool:
+        """該端點最後一張 Lease 的 expires_at + 偏差容忍 <= 現在（含 core_restart／撤銷／過期者，expires_at 皆保留）。"""
+        last_expiry = s.scalar(
+            select(PresenceLeaseRow.expires_at)
+            .where(PresenceLeaseRow.persona_id == self._persona, PresenceLeaseRow.endpoint_id == endpoint_id)
+            .order_by(PresenceLeaseRow.generation.desc())
+            .limit(1)
+        )
+        return last_expiry is None or last_expiry + self._fresh_skew <= self._now()
+
     def confirm_quiesced(
         self, endpoint_id: str, old_generation: int, evidence: Mapping[str, Any] | None = None
     ) -> ConfirmResult:
@@ -635,6 +685,12 @@ class PresenceManager:
                 or row.unquiesced_endpoint_id != endpoint_id or old_generation != row.generation
             ):
                 return ConfirmResult.STALE
+            if not _evidence_acceptable(kind, evidence):
+                return ConfirmResult.EVIDENCE_REJECTED  # 證據不合格：標記維持，端點須補正後重送
+            if kind == "fresh_process" and not self._fresh_process_provable(s, endpoint_id):
+                # 端點 id 固定（如 ep_cli），新行程無法證明同名舊行程已停：須等舊 Lease 的 expires_at
+                # 加時鐘偏差容忍已過（端點 watchdog 保證舊行程在本地 deadline 前自停）
+                return ConfirmResult.EVIDENCE_REJECTED
             record = {
                 "endpoint_id": endpoint_id, "old_generation": old_generation, "kind": kind,
                 "reported_at": self._now().isoformat(),

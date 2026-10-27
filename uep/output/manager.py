@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
@@ -47,7 +48,13 @@ from uep.output.models import (
 )
 from uep.presence.gate import OutputGate
 
+logger = logging.getLogger("uep.output.manager")
+
 _STRONG = frozenset({DeliveryEvidence.LOCAL_PLAYBACK, DeliveryEvidence.REMOTE_RENDER})
+
+
+class IntentMismatchError(ValueError):
+    """dispatch 的 intent 與已持久化的同 ``(output_id, sequence)`` intent 不一致（拒絕送出）。"""
 
 
 class DeliveryManager:
@@ -92,6 +99,7 @@ class DeliveryManager:
     def dispatch(self, intent: OutputIntent) -> DeliveryRecord:
         """送出一筆輸出；回傳最新 delivery。audio 須先 ``mark_synthesized``。"""
         record = self.prepare(intent)
+        self._assert_same_intent(intent)  # 送出的必須是已持久化的那份，不信任呼叫端另帶的內容
         if record.status not in (S.GENERATED, S.SYNTHESIZED, S.ENQUEUED):
             return record  # 已送出、unknown 或終態：不重送
         rejected = self._gate_check(intent, record)
@@ -128,6 +136,13 @@ class DeliveryManager:
         self._crash("delivery.after_send")
         return self._apply_result(record.delivery_id, result)
 
+    def _assert_same_intent(self, intent: OutputIntent) -> None:
+        """既有 row 時載入已持久化 intent 比對（content_ref、target、sequence 等全部欄位）。"""
+        with self._sf() as s:
+            persisted = load_intent(s, intent.output_id, intent.sequence)
+        if persisted is None or persisted != intent:
+            raise IntentMismatchError(f"dispatch 的 intent 與已持久化內容不符：{intent.output_id}#{intent.sequence}")
+
     def resolve_unknown(self, delivery_id: str) -> DeliveryRecord:
         """解析 unknown：found -> sent；權威確認未送出 -> failed；其餘維持 unknown。"""
         with self._sf() as s:
@@ -148,10 +163,15 @@ class DeliveryManager:
         """通過回 None；被拒則依目前狀態記 rejected（generated）或 cancelled（其後），不送出。"""
         if self._gate is None:
             return None
-        decision = self._gate.admit_intent(intent)
+        try:
+            decision = self._gate.admit_intent(intent)
+        except Exception:
+            # Gate 內部錯誤（例如時間欄型別）：fail-closed 記為拒絕，不讓 delivery 卡在 generated
+            logger.exception("Output Gate 接納時發生例外，記為拒絕")
+            decision = None
         if decision is GateDecision.ADMIT:
             return None
-        failure = {"code": decision.value, "retryable": False}
+        failure = {"code": decision.value if decision is not None else "GATE_ERROR", "retryable": False}
         with self._sf.begin() as s:
             current = load_delivery(s, record.delivery_id)
             target = S.REJECTED if current is not None and current.status is S.GENERATED else S.CANCELLED

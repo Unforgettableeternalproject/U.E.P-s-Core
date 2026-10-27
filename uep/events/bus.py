@@ -19,6 +19,9 @@
   丟棄。新增會在 handler 內衍生事件的訂閱者時，要把這個丟棄風險算進去（衍生事件不可是唯一依據）。
 - ``stop()`` 先排空佇列（逾時 ``drain_timeout``），逾時後記錄並累計未處理數 ``undelivered_on_stop``；
   stop 之後（尚未再 ``start``）的非消費者 publish 直接計入 ``dropped``，不等待。
+- ``stop()`` 逾時後舊消費者線程若仍存活（handler 卡住），``start()`` 拋 ``RuntimeError`` 拒絕啟動，避免雙消費者；
+  舊線程結束後即可重新啟動。
+- handler 例外只記型別名稱，不記訊息與 traceback。
 - stats 在 ``_stats_lock`` 內更新。
 """
 from __future__ import annotations
@@ -57,6 +60,7 @@ class EventBus:
         self._put_timeout = put_timeout
         self._drain_timeout = drain_timeout
         self._thread: threading.Thread | None = None
+        self._orphan: threading.Thread | None = None  # stop() 逾時後仍存活的舊消費者線程
         self._stop_event = threading.Event()
         self._abort_event = threading.Event()  # 排空逾時後通知消費者線程立即結束
         self._stopped = False  # stop() 之後、下次 start() 之前為 True：publish 直接丟棄
@@ -70,6 +74,10 @@ class EventBus:
         """啟動事件處理線程（冪等）。"""
         if self._thread and self._thread.is_alive():
             return
+        if self._orphan is not None:
+            if self._orphan.is_alive():
+                raise RuntimeError("舊的事件處理線程仍存活（stop() 排空逾時），拒絕啟動以免雙消費者")
+            self._orphan = None
         self._stop_event.clear()
         self._abort_event.clear()
         self._stopped = False
@@ -91,7 +99,8 @@ class EventBus:
                 self._stats["undelivered_on_stop"] += remaining
             logger.error("事件處理線程排空逾時：尚有 %d 個事件未處理", remaining)
             if self._thread.is_alive():
-                logger.error("事件處理線程未能正常結束")
+                logger.error("事件處理線程未能正常結束；在它結束前 start() 會拒絕啟動")
+                self._orphan = self._thread
         self._thread = None
 
     def subscribe(self, event_type: str, handler: Handler) -> None:
@@ -167,9 +176,10 @@ class EventBus:
         for handler in handlers:
             try:
                 handler(event)
-            except Exception:
+            except Exception as exc:  # noqa: BLE001  隔離 handler 例外，只記型別
                 errors += 1
-                logger.exception("事件處理器錯誤（%s）", event.event_type)
+                # 只記例外型別，不記訊息與 traceback（可能夾帶私人內容；與 Outbox 一致）
+                logger.error("事件處理器錯誤（%s）：%s", event.event_type, type(exc).__name__)
         with self._stats_lock:
             self._stats["dispatched"] += 1
             self._stats["handler_errors"] += errors

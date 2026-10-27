@@ -86,3 +86,10 @@ def count_events(session_factory, event_type: str) -> int:
 def count_outbox(session_factory) -> int:
     with session_factory() as s:
         return s.scalar(select(func.count()).select_from(OutboxRow)) or 0
+
+
+def revoke_and_quiesce(manager: PresenceManager, reason: str = "round_end") -> None:
+    """revoke 後補送舊端的停止證據（revoke 會把舊端記為未證實停止，他端 acquire 須等證據或過期，A20）。"""
+    out = manager.revoke(reason)
+    if out.endpoint_id is not None:
+        manager.confirm_quiesced(out.endpoint_id, out.generation, {"kind": "adapter_stop_report", "playing": False, "buffer_flushed": True})

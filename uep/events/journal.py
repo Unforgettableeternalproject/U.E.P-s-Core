@@ -12,11 +12,12 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from uep.events.envelope import UEPEvent
+from uep.events.envelope import IdempotencyConflict, UEPEvent
 from uep.events.models import EventRow, PayloadBlob
 from uep.events.payload_hash import (  # noqa: F401  sha256_hex 供舊呼叫端相容
     PayloadHasher,
     PayloadHashKeyMissing,
+    VerifyOutcome,
     resolve_hasher,
     sha256_hex,
 )
@@ -83,19 +84,46 @@ def verify_payload(data: bytes, stored_hash: str | None, hasher: PayloadHasher |
     return resolve_hasher(hasher).verify(data, stored_hash)
 
 
-def _note_resend(existing: UEPEvent, blob: bytes | None, hasher: PayloadHasher | None) -> None:
-    """重送命中時，若帶了 blob 且雜湊與原事件不同，記 warning（只記 ID，不記內容）。"""
-    if blob is None:
-        return
-    try:
-        matches = verify_payload(blob, existing.payload_hash, hasher)
-    except PayloadHashKeyMissing:
-        logger.warning("無法驗證重送內容（未設定 payload_hash 密鑰）：event_id=%s", existing.event_id)
-        return
-    if not matches:
-        logger.warning(
-            "重送內容無法以目前密鑰驗證（可能已輪替，或內容與原事件不一致）：event_id=%s source=%s",
-            existing.event_id, existing.source,
+def check_payload(data: bytes, stored_hash: str | None, hasher: PayloadHasher | None = None) -> VerifyOutcome:
+    """三態驗證：金鑰輪替造成的「無法驗證」與「確定不符」分開（無雜湊視為無法驗證）。"""
+    if not stored_hash:
+        return VerifyOutcome.UNVERIFIABLE
+    return resolve_hasher(hasher).check(data, stored_hash)
+
+
+def _check_resend(
+    existing: UEPEvent, event: UEPEvent, blob: bytes | None, hasher: PayloadHasher | None
+) -> None:
+    """重送命中時核對一致性（M1）：event_type／scope／aggregate 或 blob 雜湊不符即拋 IdempotencyConflict。
+
+    blob 只在「確定不符」（同一把密鑰 kid 相同卻驗不過、或舊 sha256 不符）時算衝突；密鑰已輪替而無法驗證時
+    記 warning 並視為重送（不誤報）。例外訊息與 log 只含欄位名與 ID，不含內容。真重送（全部一致）無動作。
+    """
+    mismatched = [
+        name
+        for name, same in (
+            ("event_type", existing.event_type == event.event_type),
+            ("scope_ref", existing.scope_ref == event.scope_ref),
+            (
+                "aggregate",
+                (existing.aggregate_type, existing.aggregate_id, existing.aggregate_version)
+                == (event.aggregate_type, event.aggregate_id, event.aggregate_version),
+            ),
+        )
+        if not same
+    ]
+    if blob is not None:
+        try:
+            outcome = check_payload(blob, existing.payload_hash, hasher)
+            if outcome is VerifyOutcome.MISMATCH:
+                mismatched.append("payload_blob")
+            elif outcome is VerifyOutcome.UNVERIFIABLE:
+                logger.warning("無法驗證重送內容（密鑰已輪替或無雜湊）：event_id=%s", existing.event_id)
+        except PayloadHashKeyMissing:
+            logger.warning("無法驗證重送內容（未設定 payload_hash 密鑰）：event_id=%s", existing.event_id)
+    if mismatched:
+        raise IdempotencyConflict(
+            f"idempotency_key 重送內容與原事件不一致：{','.join(mismatched)}（event_id={existing.event_id}）"
         )
 
 
@@ -104,13 +132,14 @@ def append(
 ) -> AppendResult:
     """把事件 append 進 journal。
 
-    外部事件以 (source, idempotency_key) 去重：重送回傳原事件、不新增列、不寫 blob。
+    外部事件以 (source, idempotency_key) 去重：真重送回傳原事件、不新增列、不寫 blob；
+    event_type／scope／aggregate 或 blob 雜湊與原事件不一致則拋 IdempotencyConflict。
     其他唯一性衝突（如 aggregate_version）以 IntegrityError 上拋，由呼叫者決定。
     """
     if event.idempotency_key:
         existing = find_by_idempotency(session, event.source, event.idempotency_key)
         if existing is not None:
-            _note_resend(existing, blob, hasher)
+            _check_resend(existing, event, blob, hasher)
             return AppendResult(existing, duplicate=True)
 
     savepoint = session.begin_nested()  # 併發重送輸掉競爭時，連 blob 一起撤銷
@@ -136,7 +165,7 @@ def append(
         winner = find_by_idempotency(session, event.source, event.idempotency_key or "")
         if winner is None:  # 理論上不會發生：衝突只可能來自該唯一鍵
             raise RuntimeError("journal 插入無結果且找不到原事件")
-        _note_resend(winner, blob, hasher)
+        _check_resend(winner, event, blob, hasher)
         return AppendResult(winner, duplicate=True)
     savepoint.commit()
 

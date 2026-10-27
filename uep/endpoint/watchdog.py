@@ -2,6 +2,9 @@
 
 只依賴本地單調時鐘與「最後一次成功續約換算出的期限」，不依賴網路、revoke 送達或 Core 的任何回應：
 期限一到，不論 Core 是否可達，端點都必須自行停止輸出。時鐘可注入，測試不需等待真時間。
+
+已知殘餘風險（Part H／P8 跨機器前待補牆鐘輔助檢查）：monotonic 不涵蓋行程凍結／系統睡眠；
+凍結後舊行程至多到下一次 renew（約 ttl/3）才自停；已排隊 chunk 受 ``intent.valid_until`` 牆鐘限制。
 """
 from __future__ import annotations
 

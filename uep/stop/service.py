@@ -37,6 +37,7 @@ from uep.stop.models import GlobalStopFlagRow
 
 logger = logging.getLogger("uep.stop.service")
 
+MIN_TOKEN_BYTES = 16  # token 最短長度；不足視同未設定（fail-closed）
 SOURCE = "core.global_stop"
 SCOPE = "scope_private_owner"
 STOP_REASON = "global_stop"
@@ -111,6 +112,7 @@ class GlobalStop:
         self._token = token  # None -> 每次驗證時讀 settings（UEP_STOP_TOKEN）
         self._clock = clock
         self._persona = presence.persona_id
+        self.warn_if_token_unusable()
 
     @property
     def persona_id(self) -> str:
@@ -118,12 +120,23 @@ class GlobalStop:
 
     # ---- 認證 ----
 
-    def _expected_token(self) -> str:
+    def _configured_token(self) -> str:
         secret = self._token if self._token is not None else get_settings().stop_token
-        value = secret.get_secret_value() if secret is not None else ""
-        if not value:
-            raise StopAuthError("未設定全域停止 token（UEP_STOP_TOKEN）；入口拒絕所有請求")
+        return secret.get_secret_value() if secret is not None else ""
+
+    def _expected_token(self) -> str:
+        value = self._configured_token()
+        if len(value.encode("utf-8")) < MIN_TOKEN_BYTES:  # 含空值；過短的 token 等同沒有
+            raise StopAuthError(f"未設定全域停止 token（UEP_STOP_TOKEN，至少 {MIN_TOKEN_BYTES} 位元組）；入口拒絕所有請求")
         return value
+
+    def warn_if_token_unusable(self) -> bool:
+        """token 未設定或過短時告警（不輸出內容）；回傳 token 是否可用。啟動時與 API 啟動時各呼叫一次。"""
+        value = self._configured_token()
+        if len(value.encode("utf-8")) < MIN_TOKEN_BYTES:
+            logger.warning("全域停止 token 未設定或短於 %d 位元組：本機停止入口將拒絕所有請求", MIN_TOKEN_BYTES)
+            return False
+        return True
 
     def authenticate(self, token: str | None) -> None:
         expected = self._expected_token()
@@ -154,6 +167,13 @@ class GlobalStop:
         """明確解除暫停旗標（需 token）。"""
         self.authenticate(token)
         return self.disengage(operator=operator)
+
+    def resolve_recovery(self, *, operator: str = "local") -> bool:
+        """操作員確認各端已停止：RECOVERING／未證實停止標記 -> NONE（不驗 token；對外入口先 ``authenticate``）。
+
+        不碰全域停止旗標：旗標仍成立時端點照樣無法重 acquire。回傳是否有狀態變更。
+        """
+        return self._presence.resolve_recovery(f"operator:{operator[:100]}")
 
     def disengage(self, *, operator: str = "local") -> bool:
         """解除旗標（不驗 token）；回傳旗標是否由成立變為解除。解除不會自動恢復任何 Presence 或 Task。"""

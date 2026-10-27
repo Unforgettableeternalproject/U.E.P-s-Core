@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
@@ -149,6 +149,14 @@ class StateTransitionRequest(BaseModel):
     reason: dict[str, Any] = Field(default_factory=dict)  # 理由與證據引用，不含私人原文
     scope_ref: str = SCOPE
     expires_at: datetime | None = None
+
+    @field_validator("expires_at")
+    @classmethod
+    def _aware_expires_at(cls, value: datetime | None) -> datetime | None:
+        # naive 時間與 aware 時鐘比較會拋 TypeError：建構時就拒絕
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("expires_at 必須帶時區（tz-aware）")
+        return value
 
 
 @dataclass(frozen=True)

@@ -15,7 +15,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from uep.events.registry import DEFAULT_REGISTRY, DeliveryClass, EventRegistry, Priority
 from uep.ids import is_valid_id, new_id
 
-_SCOPE_PATTERN = re.compile(r"^scope_(private|group|public)(_[A-Za-z0-9]+)*$")
+_SCOPE_PATTERN = re.compile(r"scope_(private|group|public)(_[A-Za-z0-9]+)*")
+_SAFE_REF_PATTERN = re.compile(r"[A-Za-z0-9_:.\-]{1,128}")  # 外部 trace／聚合鍵等：安全字元集，防止夾帶私人文字
+MAX_IDEMPOTENCY_KEY = 256
 _SCOPE_RANK = {"private": 0, "group": 1, "public": 2}
 
 MAX_PAYLOAD_STR = 256  # payload 內任何字串的長度上限；超長視為可能夾帶原文
@@ -76,12 +78,16 @@ def _validate_id_map(value: dict[str, Any] | None, allowed: frozenset[str], name
     return value
 
 
+class IdempotencyConflict(ValueError):
+    """(source, idempotency_key) 命中既有事件，但 event_type／scope／aggregate／payload 內容不一致（M1）。"""
+
+
 class ScopeWideningError(ValueError):
     """衍生事件的 scope 比起因事件寬（E-6）。"""
 
 
 def scope_rank(scope_ref: str) -> int:
-    match = _SCOPE_PATTERN.match(scope_ref)
+    match = _SCOPE_PATTERN.fullmatch(scope_ref)
     if not match:
         raise ValueError(f"scope_ref 格式不合法：{scope_ref!r}")
     return _SCOPE_RANK[match.group(1)]
@@ -115,6 +121,29 @@ class EventDraft(BaseModel):
     expires_at: datetime | None = None
     fence: dict[str, Any] | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("task_id", "activity_id", "run_id", "conversation_id", "segment_id", "turn_id")
+    @classmethod
+    def _stable_id(cls, v):
+        if v is not None and not is_valid_id(v):
+            raise ValueError("ID 欄位必須是 前綴_ULID 格式")
+        return v
+
+    @field_validator("trace_id", "causation_id", "aggregate_id")
+    @classmethod
+    def _safe_ref(cls, v):
+        if v is not None and not _SAFE_REF_PATTERN.fullmatch(v):
+            raise ValueError("欄位只允許 [A-Za-z0-9_:.-]、長度 1～128")
+        return v
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def _idempotency_key(cls, v):
+        if v is not None and not (
+            len(v) <= MAX_IDEMPOTENCY_KEY and re.fullmatch(r"[A-Za-z0-9_:.\-]+", v)
+        ):
+            raise ValueError(f"idempotency_key 只允許 [A-Za-z0-9_:.-]、長度 1～{MAX_IDEMPOTENCY_KEY}")
+        return v
 
     @field_validator("legacy_ref")
     @classmethod

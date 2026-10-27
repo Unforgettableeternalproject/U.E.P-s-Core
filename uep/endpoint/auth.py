@@ -1,10 +1,13 @@
 """端點身分驗證（R2）：端點對 Core 的每個請求以 per-endpoint secret 做 HMAC-SHA256 簽章。
 
 - 簽章涵蓋 endpoint_id／op／args／ts／nonce；Core 以同一份 secret 重算並以 ``compare_digest`` 比對。
-- ``ts`` 超出容許時間差、或 ``(endpoint_id, nonce)`` 重複皆拒絕（防重放）。
+- ``ts`` 超出容許時間差、早於驗證器建立時間（Core 重啟後無法重放重啟前的請求）、或 ``(endpoint_id, nonce)``
+  重複皆拒絕（防重放）。
 - 密鑰不硬編碼：由環境變數載入（``UEP_ENDPOINT_SECRET`` 端點端、``UEP_ENDPOINT_SECRETS`` Core 端，
   格式 ``endpoint_id:secret,endpoint_id:secret``）。
 - 本層只證明「請求來自持有 secret 的端點」；回應不簽章（localhost 信任邊界，見 socket_transport）。
+- hello 的雙向證明（``server_proof``）抗冒名、不抗 relay：中間人可原樣轉發雙方的 hello 與證明。
+  跨機器（Part H）前需每則 MAC 或通道綁定。
 """
 from __future__ import annotations
 
@@ -88,8 +91,10 @@ class RequestVerifier:
 
     def __init__(
         self, secrets: Mapping[str, bytes], *, clock: Callable[[], float] = time.time,
-        skew_seconds: float = DEFAULT_SKEW_SECONDS,
+        skew_seconds: float = DEFAULT_SKEW_SECONDS, startup_grace: float = 0.0,
     ) -> None:
+        # nonce 表只存在記憶體：重啟後以建立時間作下限，ts 早於它的請求（可能是重啟前被截取的）一律拒絕
+        self._not_before = clock() - startup_grace
         self._secrets = {k: _check_secret(v) for k, v in secrets.items()}
         self._clock = clock
         self._skew = skew_seconds
@@ -108,7 +113,7 @@ class RequestVerifier:
         if secret is None or not hmac.compare_digest(expected.encode("ascii"), req.mac.encode("utf-8")):
             raise EndpointAuthError("身分驗證失敗")
         now = self._clock()
-        if not math.isfinite(req.ts) or abs(now - req.ts) > self._skew:
+        if not math.isfinite(req.ts) or abs(now - req.ts) > self._skew or req.ts < self._not_before:
             raise EndpointAuthError("請求時間超出容許範圍")
         key = (req.endpoint_id, req.nonce)
         with self._lock:
@@ -121,6 +126,19 @@ class RequestVerifier:
             self._seen[key] = req.ts
             heapq.heappush(self._expiry, (req.ts, key))
         return req.endpoint_id
+
+    def prove(self, endpoint_id: str, client_nonce: str) -> str:
+        """以端點 secret 對 client 挑戰簽章（hello 的伺服器身分證明）；未知端點拋 EndpointAuthError。"""
+        secret = self._secrets.get(endpoint_id)
+        if secret is None:
+            raise EndpointAuthError("身分驗證失敗")
+        return server_proof(secret, endpoint_id, client_nonce)
+
+
+def server_proof(secret: bytes, endpoint_id: str, client_nonce: str) -> str:
+    """Core 對 client nonce 的簽章（與請求簽章用不同的訊息域，避免互相冒用）。"""
+    message = json.dumps(["uep-hello-proof", endpoint_id, client_nonce], separators=(",", ":")).encode("utf-8")
+    return hmac.new(secret, message, hashlib.sha256).hexdigest()
 
 
 def load_secret_from_env(var: str = SECRET_ENV) -> bytes:

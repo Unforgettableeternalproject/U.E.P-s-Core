@@ -51,6 +51,13 @@ _SEEN_LIMIT = 4096
 _ENDED_LIMIT = 256
 _RESULT_LIMIT = 1024
 _MARK_LIMIT = 16
+_FRESH_PROCESS_ATTEMPTS = 2  # 新行程自證停止後重 acquire 的上限
+# Core 因舊 Lease 尚未過期（加時鐘偏差容忍）而拒絕自證時的等待：
+# 總上限 = Lease TTL（設定值，或 Core snapshot 回報者取大）+ fresh_process 偏差容忍 + 餘裕；預設 30 + 30 + 5 = 65 秒
+_FRESH_WAIT_STEP_SECONDS = 2.0
+_DEFAULT_LEASE_TTL_SECONDS = 30.0
+_DEFAULT_FRESH_SKEW_SECONDS = 30.0
+_FRESH_WAIT_MARGIN_SECONDS = 5.0
 _IDLE_WAIT = 1.0  # 等播放執行緒離開 chunk 的上限（秒）
 # Core 暫時不可達或拒絕時的錯誤；端點不因此放寬任何限制，只保留待重試
 _CORE_ERRORS = (OSError, CoreApiError, EndpointAuthError)
@@ -127,8 +134,14 @@ class CliEndpoint:
         on_chunk: Callable[[OutputIntent, int], None] | None = None,
         sink: Callable[[str], None] | None = None,
         renew_fraction: float = 1 / 3, retry_seconds: float = 1.0, tick_interval: float = 0.2,
+        sleep: Callable[[float], None] = time.sleep,
+        lease_ttl_seconds: float = _DEFAULT_LEASE_TTL_SECONDS,
+        fresh_process_skew_seconds: float = _DEFAULT_FRESH_SKEW_SECONDS,
     ) -> None:
         self.endpoint_id = endpoint_id
+        self._lease_ttl_hint = lease_ttl_seconds  # 須不小於 Core 的 Lease TTL，等待上限才涵蓋舊 Lease 到期
+        self._fresh_skew = fresh_process_skew_seconds
+        self._reported_ttl: float | None = None  # Core snapshot 最近回報的 TTL
         self._core = core
         self._location = location
         self._clock = clock
@@ -139,6 +152,7 @@ class CliEndpoint:
         self._renew_fraction = renew_fraction
         self._retry = retry_seconds
         self._tick_interval = tick_interval
+        self._sleep = sleep
         self._lock = threading.RLock()
         self._play_lock = threading.Lock()  # 一次只播一個輸出
         self._lease: LocalLease | None = None
@@ -150,6 +164,7 @@ class CliEndpoint:
         self._reports: list[_Report] = []
         self._report_retry_at: float | None = None
         self._deny_reason: AcquireDenyReason | None = None  # 最近一次 acquire 被 DENIED 的原因碼
+        self._ever_active = False  # 本行程是否持有過 Lease 或輸出過（fresh_process 自證的前提是兩者皆無）
         self._revoke_mark: dict[int, int] = {}  # core_epoch -> 收過的最大 revoke generation（含無 Lease 時）
         self._stopped_turn: int | None = None  # 已被 stop 的最大 turn_generation
         self._threaded = False
@@ -289,6 +304,19 @@ class CliEndpoint:
     def start_lease(self) -> AcquireResult:
         """acquire -> 確認到場（confirm_activated）-> 武裝 watchdog；只有真的啟用才回 GRANTED。"""
         reply = self._core.acquire(self._location)
+        accepted, waited = 0, 0.0
+        while reply.result is AcquireResult.NOT_QUIESCED and accepted < _FRESH_PROCESS_ATTEMPTS:
+            claim = self._claim_fresh_process()
+            if claim is ConfirmResult.ACCEPTED:
+                accepted += 1
+                reply = self._core.acquire(self._location)
+            elif claim is ConfirmResult.EVIDENCE_REJECTED and waited < self._fresh_wait_cap():
+                if waited == 0.0:
+                    self._say("舊 Lease 尚未到期，無法自證舊行程已停止，等待其到期（有上限）")
+                self._sleep(_FRESH_WAIT_STEP_SECONDS)  # 有上限、非忙迴圈；超過仍被拒則回 NOT_QUIESCED 交操作員
+                waited += _FRESH_WAIT_STEP_SECONDS
+            else:
+                break
         self._deny_reason = reply.reason if reply.result is AcquireResult.DENIED else None
         if reply.result is not AcquireResult.GRANTED or reply.auth is None:
             return reply.result
@@ -309,10 +337,32 @@ class CliEndpoint:
         self._say(f"已持有 Lease（generation={reply.auth.presence_generation}）")
         return AcquireResult.GRANTED
 
+    def _fresh_wait_cap(self) -> float:
+        """等待舊 Lease 到期的總上限（秒）：max(設定 TTL, Core 回報 TTL) + fresh_process 偏差 + 餘裕。"""
+        ttl = max(self._lease_ttl_hint, self._reported_ttl or 0.0)
+        return ttl + self._fresh_skew + _FRESH_WAIT_MARGIN_SECONDS
+
+    def _claim_fresh_process(self) -> ConfirmResult | None:
+        """NOT_QUIESCED 且 Core 記的未證實停止端點就是自己：本行程剛啟動、從未持有 Lease 也從未輸出，
+        以 snapshot 的 generation 送 ``fresh_process`` 自證。端點 id 固定，無法單憑「我是新行程」證明同名舊行程
+        已停，Core 會要求舊 Lease 已過期（EVIDENCE_REJECTED）。不符前提（沒有可自證的標記）回 None。"""
+        with self._lock:
+            if self._lease is not None or self._ever_active:
+                return None
+        snap = self._core.snapshot()
+        if snap.ttl_seconds is not None:
+            self._reported_ttl = snap.ttl_seconds
+        if not snap.unquiesced:
+            return None
+        return self._core.confirm_quiesced(snap.generation, {
+            "kind": "fresh_process", "endpoint_id": self.endpoint_id, "playing": False, "buffer_flushed": True,
+        })
+
     def _install(self, auth: AuthorizationTuple, started: float, ttl: float) -> None:
         deadline = started + ttl
         with self._lock:
             self._lease = LocalLease(auth, deadline)
+            self._ever_active = True
             self._renew_at = started + ttl * self._renew_fraction
             self._watchdog.arm(deadline)
 
@@ -524,7 +574,11 @@ class CliEndpoint:
     # ---- 二次接納與播放（OutputAdapter）----
 
     def _admit(self, intent: OutputIntent) -> GateDecision:
-        """端點自檢：六元組與本地剩餘 TTL；結果碼與 Output Gate 同源（呼叫端須持有 ``_lock``）。"""
+        """端點自檢：六元組與本地剩餘 TTL；結果碼與 Output Gate 同源（呼叫端須持有 ``_lock``）。
+
+        已知殘餘風險（Part H／P8 跨機器前待補牆鐘輔助檢查）：本地期限用 monotonic，不涵蓋行程凍結／系統睡眠；
+        凍結後舊行程至多到下一次 renew（約 ttl/3）才自停；已排隊 chunk 受 ``intent.valid_until`` 牆鐘限制。
+        """
         lease = self._lease
         if lease is None:
             return self._ended.get(intent.lease_id, GateDecision.REJECT_NO_PRESENCE)
@@ -562,6 +616,7 @@ class CliEndpoint:
             decision = self._admit(intent)
             if decision is not GateDecision.ADMIT:
                 raise EndpointRejected(decision)
+            self._ever_active = True
             play = _Play(intent, deque(range(total)), total)
             self._current = play
         try:

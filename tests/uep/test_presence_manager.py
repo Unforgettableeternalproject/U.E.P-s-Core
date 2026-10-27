@@ -80,7 +80,12 @@ def test_concurrent_acquire_exactly_one_granted_per_round(session_factory, tmp_p
             ), results
             view = _current(rig)
             assert view.generation == n and view.status is PresenceStatus.NONE and view.transfer_id
-            assert rig.manager.revoke().lease_id is not None  # 回到 NONE，進下一回合
+            revoked = rig.manager.revoke()
+            assert revoked.lease_id is not None  # 回到 NONE
+            # revoke 後舊端被記為未證實停止（A20）：先送停止證據，下一回合的併發 acquire 才不會被擋
+            assert rig.manager.confirm_quiesced(
+                revoked.endpoint_id, revoked.generation, {"kind": "adapter_stop_report", "playing": False, "buffer_flushed": True}
+            ) is ConfirmResult.ACCEPTED
     with session_factory() as s:
         assert s.scalar(select(func.count()).select_from(PresenceCurrentRow)) == 1
     assert count_events(session_factory, "presence.granted") == rounds
@@ -175,6 +180,8 @@ def test_stale_lease_rejected_for_output_renew_and_ack(session_factory, tmp_path
     rig = make_rig(session_factory, tmp_path)
     old = activate(rig, "ep_desktop")
     rig.manager.revoke()
+    assert rig.manager.acquire("ep_discord", "discord").result is AcquireResult.NOT_QUIESCED  # 舊端未證實停止（A20）
+    rig.manager.confirm_quiesced("ep_desktop", old.presence_generation, {"kind": "adapter_stop_report", "playing": False, "buffer_flushed": True})
     new_grant = rig.manager.acquire("ep_discord", "discord").grant
     assert new_grant is not None
     rig.manager.confirm_activated(new_grant.lease_id)
@@ -404,7 +411,7 @@ def test_confirm_quiesced_requires_matching_endpoint_and_generation(session_fact
     assert rig.manager.confirm_quiesced("ep_desktop", old.presence_generation - 1) is ConfirmResult.STALE
     assert _current(rig).unquiesced_endpoint_id == "ep_desktop"
     assert rig.manager.confirm_quiesced(
-        "ep_desktop", old.presence_generation, {"kind": "watchdog_stop"}
+        "ep_desktop", old.presence_generation, {"kind": "adapter_stop_report", "playing": False, "buffer_flushed": True}  # 證據 kind 須在白名單（B2）
     ) is ConfirmResult.ACCEPTED
     assert _current(rig).unquiesced_endpoint_id is None
     assert rig.manager.confirm_quiesced("ep_desktop", old.presence_generation) is ConfirmResult.STALE
@@ -418,7 +425,9 @@ def test_confirm_quiesced_resolves_core_restart_recovering(session_factory, tmp_
     restarted = PresenceManager(session_factory, epoch_store=rig.store, publisher=rig.publisher, clock=rig.clock)
     assert restarted.start().unquiesced_endpoint_id == "ep_desktop"
     assert restarted.confirm_quiesced("ep_other", old.presence_generation) is ConfirmResult.STALE
-    assert restarted.confirm_quiesced("ep_desktop", old.presence_generation) is ConfirmResult.ACCEPTED
+    assert restarted.confirm_quiesced(
+        "ep_desktop", old.presence_generation, {"kind": "adapter_stop_report", "playing": False, "buffer_flushed": True}
+    ) is ConfirmResult.ACCEPTED
     assert restarted.current().status is PresenceStatus.NONE
     assert restarted.acquire("ep_discord", "discord").result is AcquireResult.GRANTED
 

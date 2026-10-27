@@ -52,6 +52,10 @@ class EndpointService:
     def authenticate(self, request: SignedRequest) -> str:
         return self._verifier.verify(request)
 
+    def prove(self, endpoint_id: str, client_nonce: str) -> str:
+        """hello 的伺服器身分證明（以端點 secret 簽 client nonce）。"""
+        return self._verifier.prove(endpoint_id, client_nonce)
+
     def handle(self, request: SignedRequest) -> dict[str, Any]:
         """驗證並分派；回 ``{"ok": True, "result": ...}`` 或 ``{"ok": False, "error": 碼}``。"""
         try:

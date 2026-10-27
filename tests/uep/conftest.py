@@ -70,5 +70,8 @@ def engine(test_db_url):
 @pytest.fixture
 def session_factory(engine):
     with engine.begin() as conn:
+        # 0007 的 events TRUNCATE guard：清庫時於同一交易內暫停用，結束即恢復
+        conn.execute(text("ALTER TABLE events DISABLE TRIGGER events_no_truncate"))
         conn.execute(text(f"TRUNCATE {CC1_TABLES}, {CC6_TABLES}, {CC4_TABLES}, {CC7_TABLES} RESTART IDENTITY CASCADE"))
+        conn.execute(text("ALTER TABLE events ENABLE TRIGGER events_no_truncate"))
     return make_session_factory(engine)

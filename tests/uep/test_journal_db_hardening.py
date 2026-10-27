@@ -12,7 +12,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from uep.db.base import Base
 from uep.events import inbox, journal
 from uep.events.bus import EventBus
-from uep.events.envelope import EventDraft, TrustedContext
+from uep.events.envelope import EventDraft, IdempotencyConflict, TrustedContext
 from uep.events.models import EventRow, InboxRow, OutboxRow, PayloadBlob
 from uep.events.outbox import OutboxDispatcher
 from uep.events.publisher import EventPublisher
@@ -142,18 +142,16 @@ def test_inbox_result_restricted(session_factory):
         assert inbox.process_once(s, "c", "evt_r", lambda: {"status": "ok", "n": 1})
 
 
-def test_resend_with_different_blob_logs_warning(session_factory, publisher, caplog):
+def test_resend_with_different_blob_raises_conflict(session_factory, publisher):
+    """M1：重送內容雜湊不符不再只記 warning，而是拋 IdempotencyConflict；真重送不受影響。"""
     def draft(blob):
         return EventDraft(event_type="input.text_final", idempotency_key="k", payload_blob=blob)
 
     publisher.publish(draft(b"one"), EXTERNAL)
-    with caplog.at_level(logging.WARNING, logger="uep.events.journal"):
+    with pytest.raises(IdempotencyConflict) as exc:
         publisher.publish(draft(b"two"), EXTERNAL)
-    assert "不一致" in caplog.text and "two" not in caplog.text
-    caplog.clear()
-    with caplog.at_level(logging.WARNING, logger="uep.events.journal"):
-        publisher.publish(draft(b"one"), EXTERNAL)
-    assert caplog.text == ""
+    assert "two" not in str(exc.value)
+    assert publisher.publish(draft(b"one"), EXTERNAL).duplicate
 
 
 # ---- 併發 ----

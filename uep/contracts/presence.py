@@ -77,6 +77,7 @@ class ReleaseResult(StrEnum):
 class ConfirmResult(StrEnum):
     ACCEPTED = "ACCEPTED"
     STALE = "STALE"
+    EVIDENCE_REJECTED = "EVIDENCE_REJECTED"  # confirm_quiesced 的停止證據不合格（仍在播放／未清空／kind 不在白名單）
 
 
 @dataclass(frozen=True)

@@ -21,7 +21,7 @@ from uep.contracts.presence import (
     GateDecision,
     PresenceStatus,
 )
-from uep.endpoint.endpoint import ReconnectOutcome
+from uep.endpoint.endpoint import EndpointRejected, ReconnectOutcome
 from uep.output.intent import OutputKind
 
 pytestmark = pytest.mark.usefixtures("session_factory")
@@ -190,16 +190,16 @@ def test_v15_wrong_or_forged_evidence_does_not_unblock_new_endpoint(session_fact
         assert world.api("ep_discord").acquire("discord").result is AcquireResult.NOT_QUIESCED
         discord_api = world.api("ep_discord")
         # Discord 自己宣稱 Desktop 已停止：Service 以已驗證的 endpoint_id=ep_discord 呼叫，與未證實端點不符
-        assert discord_api.confirm_quiesced(gen, {"kind": "adapter_stop_report"}) is ConfirmResult.STALE
+        assert discord_api.confirm_quiesced(gen, {"kind": "adapter_stop_report", "playing": False, "buffer_flushed": True}) is ConfirmResult.STALE
         assert mgr.current().status is PresenceStatus.RECOVERING
         # Desktop 回報錯誤的 generation（舊的／未來的）
         world.down["ep_desktop"] = False
         for wrong in (gen - 1, gen + 1):
-            assert world.api("ep_desktop").confirm_quiesced(wrong, {"kind": "adapter_stop_report"}) is ConfirmResult.STALE
+            assert world.api("ep_desktop").confirm_quiesced(wrong, {"kind": "adapter_stop_report", "playing": False, "buffer_flushed": True}) is ConfirmResult.STALE
         assert mgr.current().status is PresenceStatus.RECOVERING
         assert discord_api.acquire("discord").result is AcquireResult.NOT_QUIESCED
         # 正確證據才放行
-        assert world.api("ep_desktop").confirm_quiesced(gen, {"kind": "adapter_stop_report"}) is ConfirmResult.ACCEPTED
+        assert world.api("ep_desktop").confirm_quiesced(gen, {"kind": "adapter_stop_report", "playing": False, "buffer_flushed": True}) is ConfirmResult.ACCEPTED
         assert discord_api.acquire("discord").result is AcquireResult.GRANTED
     finally:
         world.close()
@@ -317,5 +317,45 @@ def test_v15_real_socket_isolation_then_recovery_with_hmac(session_factory, tmp_
         assert discord.start_lease() is AcquireResult.GRANTED
         assert wait_until(lambda: mgr.authorization() is not None)
         assert mgr.current().generation == gen + 1
+    finally:
+        world.close()
+
+
+def test_v15_endpoint_admit_checks_local_deadline_and_valid_until_directly(session_factory, tmp_path):
+    """T-24／V15：端點二次接納 ``_admit`` 自己守本地期限與 ``valid_until``（不依賴 watchdog 先停 Lease）。
+
+    直接呼叫 ``_admit``（持 ``_lock``，不 tick）：單調時鐘到達 deadline 即 REJECT_EXPIRED（>=）、前一瞬仍 ADMIT；
+    ``valid_until <= 牆鐘`` 亦 REJECT_EXPIRED（<=），晚一微秒才 ADMIT。兩個條件各自獨立成立。
+    """
+    from datetime import timedelta
+
+    world = _world(session_factory, tmp_path)
+    try:
+        ep = world.endpoint("ep_desktop")
+        assert ep.start_lease() is AcquireResult.GRANTED
+        auth = ep.lease.auth  # type: ignore[union-attr]
+        wall = world.rig.clock()
+
+        def admit(intent):
+            with ep._lock:  # _admit 約定由呼叫端持鎖
+                return ep._admit(intent)
+
+        # valid_until：牆鐘邊界（<= 為過期）；單調時鐘未動，Lease 本地期限仍有效
+        assert admit(intent_for_auth(auth, valid_until=wall + timedelta(microseconds=1))) is GateDecision.ADMIT
+        assert admit(intent_for_auth(auth, valid_until=wall)) is GateDecision.REJECT_EXPIRED
+        assert admit(intent_for_auth(auth, valid_until=wall - timedelta(seconds=1))) is GateDecision.REJECT_EXPIRED
+        # 經公開的 send 也一樣被拒，且不影響 Lease 本身
+        with pytest.raises(EndpointRejected) as caught:
+            ep.send(intent_for_auth(auth, valid_until=wall), "dsp_expired_valid_until")
+        assert caught.value.decision is GateDecision.REJECT_EXPIRED
+        assert ep.lease is not None
+
+        # deadline：只推進單調時鐘、不 tick（watchdog 尚未停 Lease），valid_until 仍遠在未來
+        fresh = intent_for_auth(auth, valid_until=wall + timedelta(hours=1))
+        world.mono.advance(TTL - 0.01)
+        assert admit(fresh) is GateDecision.ADMIT
+        world.mono.advance(0.01)
+        assert ep.lease is not None  # 確認沒有 tick：Lease 物件還在，拒絕必來自 _admit 的期限判定
+        assert admit(fresh) is GateDecision.REJECT_EXPIRED
     finally:
         world.close()

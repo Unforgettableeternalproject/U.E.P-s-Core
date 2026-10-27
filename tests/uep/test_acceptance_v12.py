@@ -55,7 +55,16 @@ def _handover(world):
 
 
 def _discord_takes_over(world, discord):
-    """撤銷後 Discord acquire（直接走 RPC 以便控制是否 confirm）。"""
+    """撤銷後 Discord acquire（直接走 RPC 以便控制是否 confirm）。
+
+    revoke 會把舊端記為未證實停止（A20）：先由舊端送停止證據（Core 端狀態，不改動端點本地 Lease），Discord 才能 acquire。
+    """
+    view = world.rig.manager.current()
+    if view.unquiesced_endpoint_id is not None:
+        stopped = world.api(view.unquiesced_endpoint_id).confirm_quiesced(
+            view.generation, {"kind": "adapter_stop_report", "playing": False, "buffer_flushed": True}
+        )
+        assert stopped is ConfirmResult.ACCEPTED
     reply = world.api("ep_discord").acquire("discord")
     assert reply.result is AcquireResult.GRANTED and reply.auth is not None
     return reply.auth
@@ -110,7 +119,7 @@ def test_v12_old_lease_renew_release_confirm_are_all_stale(world):
     assert api.renew(a.lease_id, a.core_epoch, a.presence_generation, a.fencing_epoch).result is RenewResult.STALE
     assert api.release(a.lease_id, a.core_epoch, a.presence_generation, a.fencing_epoch) is ReleaseResult.STALE
     assert api.confirm_activated(a.lease_id, a.presence_generation).result is ConfirmResult.STALE
-    assert api.confirm_quiesced(a.presence_generation, {"kind": "adapter_stop_report"}) is ConfirmResult.STALE
+    assert api.confirm_quiesced(a.presence_generation, {"kind": "adapter_stop_report", "playing": False, "buffer_flushed": True}) is ConfirmResult.STALE
     # 用「Discord 的」lease_id 冒領：Service 只認核發對象，Desktop 無法續約別人的 Lease
     n = new_auth
     assert api.renew(n.lease_id, n.core_epoch, n.presence_generation, n.fencing_epoch).result is RenewResult.STALE
@@ -280,3 +289,127 @@ def test_v12_stale_gate_input_each_field_alone_is_rejected(session_factory, tmp_
             assert decision is GateDecision.REJECT_STALE, (field, value, decision)
     finally:
         world.close()
+
+
+# ---- T-24 補強：端點持新 Lease 的單欄二次接納、Manager 單欄 fence、claim 後撤銷 ----
+
+def test_v12_endpoint_holding_new_lease_rejects_old_output_each_field_alone(inproc_world):
+    """端點已持有「新」Lease：舊授權輸出只要有任何一欄（lease_id／core_epoch／fencing_epoch／generation）落後就被拒。"""
+    world = inproc_world
+    desktop, discord = world.endpoint("ep_desktop"), world.endpoint("ep_discord")
+    assert desktop.start_lease() is AcquireResult.GRANTED
+    old_auth = desktop.lease.auth  # type: ignore[union-attr]
+    world.rig.manager.revoke("takeover")
+    assert settle(desktop)  # 舊端送出停止證據，Discord 才能 acquire
+    assert discord.start_lease() is AcquireResult.GRANTED
+    new_auth = discord.lease.auth  # type: ignore[union-attr]
+    assert new_auth.presence_generation > old_auth.presence_generation and new_auth.lease_id != old_auth.lease_id
+
+    # 每次只讓一欄落後（其餘維持新授權），端點本地 Lease 是新的 -> 必為 REJECT_STALE
+    stale_fields = (
+        ("lease_id", old_auth.lease_id),
+        ("core_epoch", new_auth.core_epoch - 1),
+        ("fencing_epoch", new_auth.fencing_epoch - 1),
+        ("presence_generation", old_auth.presence_generation),
+    )
+    for index, (field, value) in enumerate(stale_fields):
+        intent = intent_for_auth(new_auth, **{field: value})
+        with pytest.raises(EndpointRejected) as caught:
+            discord.send(intent, f"dsp_stale_{index}")
+        assert caught.value.decision is GateDecision.REJECT_STALE, (field, caught.value.decision)
+    assert discord.playing is False and discord.lease is not None  # 拒絕不影響新 Lease
+    # 對照組：完全相符的新授權輸出可以播放
+    result = discord.send(intent_for_auth(new_auth), "dsp_fresh")
+    assert result.played_range is not None and result.played_range["complete"] is True
+
+
+def test_v12_manager_renew_release_each_field_alone_is_stale(inproc_world):
+    """Manager 的 renew／release：generation／core_epoch／fencing_epoch／lease_id 各單改一欄皆 STALE，且不動目前 Lease。"""
+    world = inproc_world
+    mgr = world.rig.manager
+    assert world.endpoint("ep_desktop").start_lease() is AcquireResult.GRANTED
+    a = mgr.current()
+    auth = world.endpoint("ep_desktop").lease.auth  # type: ignore[union-attr]
+    assert (a.lease_id, a.generation) == (auth.lease_id, auth.presence_generation)
+    variants = [
+        ("lease_id", "lease_not_mine"),
+        ("core_epoch", auth.core_epoch - 1),
+        ("core_epoch", auth.core_epoch + 1),
+        ("fencing_epoch", auth.fencing_epoch - 1),
+        ("fencing_epoch", auth.fencing_epoch + 1),
+        ("generation", auth.presence_generation - 1),
+        ("generation", auth.presence_generation + 1),
+    ]
+    base = {"lease_id": auth.lease_id, "core_epoch": auth.core_epoch, "generation": auth.presence_generation,
+            "fencing_epoch": auth.fencing_epoch}
+    for field, value in variants:
+        args = {**base, field: value}
+        assert mgr.renew(args["lease_id"], args["core_epoch"], args["generation"], args["fencing_epoch"]) \
+            is RenewResult.STALE, (field, value)
+        assert mgr.release(args["lease_id"], args["core_epoch"], args["generation"], args["fencing_epoch"]) \
+            is ReleaseResult.STALE, (field, value)
+        view = mgr.current()
+        assert view.status is PresenceStatus.ACTIVE and view.lease_id == auth.lease_id, (field, value)
+    # 對照組：四欄全對才續約／釋放成功
+    assert mgr.renew(**{k: base[k] for k in ("lease_id", "core_epoch", "generation", "fencing_epoch")}) \
+        is RenewResult.RENEWED
+    assert mgr.release(base["lease_id"], base["core_epoch"], base["generation"], base["fencing_epoch"]) \
+        is ReleaseResult.RELEASED
+
+
+def test_v12_manager_confirm_activated_and_quiesced_each_field_alone_is_stale(inproc_world):
+    """Manager 的 confirm_activated（lease_id／generation）與 confirm_quiesced（endpoint／generation）各單改一欄皆 STALE。"""
+    world = inproc_world
+    mgr = world.rig.manager
+    # confirm_activated：acquire 後尚未到場
+    outcome = mgr.acquire("ep_desktop", "desktop")
+    assert outcome.result is AcquireResult.GRANTED and outcome.grant is not None
+    g = outcome.grant.authorization
+    for lease_id, generation in (
+        ("lease_not_mine", g.presence_generation),
+        (g.lease_id, g.presence_generation - 1),
+        (g.lease_id, g.presence_generation + 1),
+    ):
+        assert mgr.confirm_activated(lease_id, generation=generation) is ConfirmResult.STALE, (lease_id, generation)
+    assert mgr.current().status is PresenceStatus.NONE  # 錯誤的 confirm 不得讓 Lease 生效
+    assert mgr.confirm_activated(g.lease_id, generation=g.presence_generation) is ConfirmResult.ACCEPTED
+
+    # confirm_quiesced：撤銷後舊端未證實停止
+    mgr.revoke("takeover")
+    view = mgr.current()
+    assert view.unquiesced_endpoint_id == "ep_desktop"
+    evidence = {"kind": "adapter_stop_report", "playing": False, "buffer_flushed": True}
+    for endpoint_id, generation in (
+        ("ep_discord", view.generation),
+        ("ep_desktop", view.generation - 1),
+        ("ep_desktop", view.generation + 1),
+    ):
+        assert mgr.confirm_quiesced(endpoint_id, generation, evidence) is ConfirmResult.STALE, (endpoint_id, generation)
+    assert mgr.current().unquiesced_endpoint_id == "ep_desktop"  # 標記沒被錯誤清掉
+    assert mgr.confirm_quiesced("ep_desktop", view.generation, evidence) is ConfirmResult.ACCEPTED
+    assert mgr.current().unquiesced_endpoint_id is None
+
+
+def test_v12_presence_revoked_between_claim_and_send_never_reaches_endpoint(inproc_world, session_factory):
+    """DeliveryManager claim 之後、send 之前 Presence 被撤銷：送出前再接納必擋，端點的 send 一次都不會被呼叫。"""
+    world = inproc_world
+    desktop = world.endpoint("ep_desktop")
+    assert desktop.start_lease() is AcquireResult.GRANTED
+    intent = intent_for(desktop.lease.auth)  # type: ignore[union-attr]
+    sent: list[str] = []
+    original = desktop.send
+    desktop.send = lambda i, d: sent.append(d) or original(i, d)  # type: ignore[method-assign]
+    points: list[str] = []
+
+    def hook(point: str) -> None:
+        points.append(point)
+        if point == "delivery.after_claim":
+            world.rig.manager.revoke("revoked_after_claim")  # claim 與 send 之間撤銷（不拋例外，流程照常往下走）
+
+    manager = DeliveryManager(session_factory, desktop, gate=world.rig.gate, crash_hook=hook)
+    record = manager.dispatch(intent)
+    assert "delivery.after_claim" in points
+    assert sent == []  # 沒有任何一次 send 到達端點
+    assert record.status is S.CANCELLED  # 越過 generated 之後被拒記 cancelled
+    assert record.failure["code"] in {d.value for d in STALE_OR_REVOKED}
+    assert manager.dispatch(intent).status is S.CANCELLED and sent == []  # 重送不會復活

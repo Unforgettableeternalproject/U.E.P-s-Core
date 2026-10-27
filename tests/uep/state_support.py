@@ -22,7 +22,7 @@ from uep.presence.manager import PresenceManager
 from uep.state.coordinator import Axis, StateCoordinator
 from uep.stop.service import GlobalStop, make_flag_blocker
 
-TOKEN = "test-stop-token"
+TOKEN = "test-stop-token-0123"
 # 測試用提議者名單（S-1 fail-closed：沒列在這裡的提議者一律被拒）
 PROPOSERS = {
     Axis.INTERACTION: frozenset({"nlp", "proactive", "workflow", *(f"p{i}" for i in range(16))}),

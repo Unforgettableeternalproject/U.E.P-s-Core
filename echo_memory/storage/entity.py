@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from echo_memory.schemas.entity import Entity
+from echo_memory.storage.atomic import atomic_write_json
 
 logger = logging.getLogger("echo_memory.entity_store")
 
@@ -39,6 +41,7 @@ class EntityStore:
         self.storage_path.mkdir(parents=True, exist_ok=True)
 
         self.entities_file = self.storage_path / "entities.json"
+        self._save_lock = threading.RLock()
 
         # 記憶體快取：id -> Entity, name（小寫）-> Entity
         self._by_id: dict[str, Entity] = {}
@@ -190,14 +193,12 @@ class EntityStore:
 
         使用 temp file + rename 原子替換模式，避免寫入中斷導致資料損毀。
         """
-        tmp_file = self.entities_file.with_suffix(".json.tmp")
         try:
-            data = [e.to_dict() for e in self._by_id.values()]
-            with open(tmp_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            tmp_file.replace(self.entities_file)
+            # 無跨程序鎖；至少序列化同程序內的並行存檔，並確保檔案原子替換
+            with self._save_lock:
+                data = [e.to_dict() for e in list(self._by_id.values())]
+                atomic_write_json(self.entities_file, data)
             logger.debug(f"[EntityStore] 保存 {len(data)} 個實體到磁盤")
         except Exception as e:
             logger.error(f"[EntityStore] 保存 entities.json 失敗: {e}")
-            if tmp_file.exists():
-                tmp_file.unlink()
+            raise

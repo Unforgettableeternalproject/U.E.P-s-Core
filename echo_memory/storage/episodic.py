@@ -16,6 +16,8 @@ import io
 import json
 import logging
 import os
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -23,9 +25,14 @@ import numpy as np
 
 from echo_memory.schemas.episode import Episode
 from echo_memory.storage.graph import MemoryGraph
+from echo_memory.storage.atomic import replace_with_retry
 from echo_memory.storage.locking import storage_lock, temporary_sibling
 
 logger = logging.getLogger("echo_memory.episodic")
+
+
+class EmbeddingUnavailable(RuntimeError):
+    """Embedding 後端暫時不可用（逾時 / 連線失敗 / 回應異常）。"""
 
 
 class EpisodicMemory:
@@ -47,7 +54,21 @@ class EpisodicMemory:
         lock_path: str | Path | None = None,
         embedding_backend: str = "sentence-transformers",
         ollama_base_url: str = "http://localhost:11434",
+        query_timeout: float | None = None,
+        write_timeout: float | None = None,
+        warmup_timeout: float | None = None,
     ):
+        from echo_memory.config import get_config
+
+        cfg = get_config()
+        self.query_timeout = cfg.embedding_query_timeout if query_timeout is None else query_timeout
+        self.write_timeout = cfg.embedding_write_timeout if write_timeout is None else write_timeout
+        self.warmup_timeout = cfg.embedding_warmup_timeout if warmup_timeout is None else warmup_timeout
+        # 降級狀態：最近一次查詢 embedding 是否失敗（成功即自動恢復）
+        self.embedding_degraded = False
+        self.last_embedding_error = ""
+        self._warmup_thread: threading.Thread | None = None
+        self._timeout_local = threading.local()
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
 
@@ -115,7 +136,22 @@ class EpisodicMemory:
 
             # 生成嵌入向量（如果未提供）
             if not episode.embedding:
-                episode.embedding = self._generate_embedding(episode.content_summary)
+                try:
+                    with self._embedding_timeout(self.write_timeout):
+                        episode.embedding = self._generate_embedding(
+                            episode.content_summary
+                        )
+                except EmbeddingUnavailable as e:
+                    # 每輪對話都必須存成 episode：以零向量佔位（相似度恆為 0，
+                    # 不會被召回），並標記待補，之後由 backfill_pending_embeddings 補齊
+                    placeholder = self._placeholder_embedding()
+                    if placeholder is None:
+                        raise
+                    logger.warning(
+                        f"[EpisodicMemory] embedding 不可用，先存 episode 待補: {e}"
+                    )
+                    episode.embedding = placeholder
+                    episode.metadata["embedding_pending"] = True
 
             # 存儲到內存
             self._episodes[episode.id] = episode
@@ -658,6 +694,16 @@ class EpisodicMemory:
 
         return max(candidates, key=_aware_ts)
 
+    @contextmanager
+    def _embedding_timeout(self, timeout: float | None):
+        """以 thread-local 方式暫時指定 embedding 逾時，不改 _generate_embedding 簽章。"""
+        previous = getattr(self._timeout_local, "value", None)
+        self._timeout_local.value = timeout
+        try:
+            yield
+        finally:
+            self._timeout_local.value = previous
+
     def _generate_embedding(self, text: str) -> list[float]:
         """生成文本嵌入向量（存儲用，不加 query prefix）"""
         if self.embedding_backend == "ollama":
@@ -665,31 +711,46 @@ class EpisodicMemory:
         return self._generate_embedding_st(text)
 
     def _generate_embedding_ollama(self, text: str) -> list[float]:
-        """透過 Ollama /api/embed 端點生成嵌入向量"""
+        """透過 Ollama /api/embed 端點生成嵌入向量；失敗拋 EmbeddingUnavailable"""
         import requests
 
+        override = getattr(self._timeout_local, "value", None)
+        effective_timeout = self.write_timeout if override is None else override
         try:
             resp = requests.post(
                 f"{self.ollama_base_url}/api/embed",
                 json={"model": self.embedding_model, "input": text},
-                timeout=30,
+                timeout=effective_timeout,
             )
             resp.raise_for_status()
             embedding = resp.json()["embeddings"][0]
             return self._normalize_vector(embedding).tolist()
-        except requests.exceptions.ConnectionError:
-            raise RuntimeError(
+        except requests.exceptions.ConnectionError as e:
+            raise EmbeddingUnavailable(
                 f"無法連線 Ollama ({self.ollama_base_url})。"
                 f"請確認 Ollama 已啟動，或將 EMBEDDING_BACKEND 改為 sentence-transformers。"
-            )
-        except requests.exceptions.Timeout:
-            raise RuntimeError(
-                f"Ollama 嵌入請求超時 (model={self.embedding_model})。"
-            )
-        except (requests.exceptions.HTTPError, KeyError) as e:
-            raise RuntimeError(
+            ) from e
+        except requests.exceptions.Timeout as e:
+            raise EmbeddingUnavailable(
+                f"Ollama 嵌入請求超時 (model={self.embedding_model}, timeout={effective_timeout}s)。"
+            ) from e
+        except (requests.exceptions.RequestException, KeyError, IndexError, ValueError) as e:
+            raise EmbeddingUnavailable(
                 f"Ollama 嵌入失敗 (model={self.embedding_model}): {e}"
-            )
+            ) from e
+
+    def _placeholder_embedding(self) -> list[float] | None:
+        """取得與現有索引同維度的零向量；維度未知時回 None。"""
+        if self._embeddings is not None and self._embeddings.ndim == 2:
+            return [0.0] * int(self._embeddings.shape[1])
+        dims = {
+            "all-MiniLM-L6-v2": 384,
+            "BAAI/bge-small-zh-v1.5": 512,
+            "BAAI/bge-m3": 1024,
+            "bge-m3": 1024,
+        }
+        dim = dims.get(self.embedding_model)
+        return [0.0] * dim if dim else None
 
     def _generate_embedding_st(self, text: str) -> list[float]:
         """透過 sentence-transformers 生成嵌入向量（fallback）"""
@@ -715,7 +776,77 @@ class EpisodicMemory:
     def generate_query_embedding(self, text: str) -> list[float]:
         """生成查詢嵌入向量（加 query prefix，用於 retrieval 場景）"""
         prefixed_text = self.query_prefix + text if self.query_prefix else text
-        return self._generate_embedding(prefixed_text)
+        with self._embedding_timeout(self.query_timeout):
+            return self._generate_embedding(prefixed_text)
+
+    def try_generate_query_embedding(self, text: str) -> list[float]:
+        """
+        降級版查詢嵌入：用短逾時，失敗回空 list 並標記 embedding_degraded，
+        不拋例外。成功時自動清除降級標記。
+        """
+        try:
+            vec = self.generate_query_embedding(text)
+        except Exception as e:  # 檢索路徑不可崩潰
+            self.embedding_degraded = True
+            self.last_embedding_error = str(e)
+            return []
+        self.embedding_degraded = False
+        self.last_embedding_error = ""
+        return vec
+
+    def warmup(self, background: bool = True) -> threading.Thread | bool:
+        """
+        暖機 embedding 後端（Ollama 載入模型 / sentence-transformers 載入權重）。
+
+        background=True 時於 daemon thread 執行並回傳該 thread；
+        否則同步執行並回傳是否成功。失敗只記 log 並標記 degraded，不拋出。
+        """
+        def _run() -> bool:
+            try:
+                with self._embedding_timeout(self.warmup_timeout):
+                    self._generate_embedding("warmup")
+            except Exception as e:
+                self.embedding_degraded = True
+                self.last_embedding_error = str(e)
+                logger.warning(f"[EpisodicMemory] embedding 暖機失敗: {e}")
+                return False
+            self.embedding_degraded = False
+            self.last_embedding_error = ""
+            logger.info("[EpisodicMemory] embedding 暖機完成")
+            return True
+
+        if not background:
+            return _run()
+        thread = threading.Thread(target=_run, name="embedding-warmup", daemon=True)
+        thread.start()
+        self._warmup_thread = thread
+        return thread
+
+    def backfill_pending_embeddings(self, limit: int | None = None) -> int:
+        """補齊 embedding_pending 的 episode；後端仍不可用就停止。回傳補齊數量。"""
+        done = 0
+        with storage_lock(self.lock_path):
+            self._load(reset=True)
+            self._reindex_if_required()
+            pending = [
+                ep for ep in self._episodes.values()
+                if ep.metadata.get("embedding_pending")
+            ]
+            if limit is not None:
+                pending = pending[:limit]
+            for ep in pending:
+                try:
+                    with self._embedding_timeout(self.write_timeout):
+                        ep.embedding = self._generate_embedding(ep.content_summary)
+                except EmbeddingUnavailable as e:
+                    logger.warning(f"[EpisodicMemory] 補 embedding 中止: {e}")
+                    break
+                ep.metadata.pop("embedding_pending", None)
+                done += 1
+            if done:
+                self._rebuild_embeddings()
+                self._save_unlocked()
+        return done
 
     def _update_embeddings(self, episode: Episode):
         """更新向量索引"""
@@ -862,7 +993,7 @@ class EpisodicMemory:
             json.dump(data, f, ensure_ascii=False, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(metadata_tmp, self.metadata_file)
+        replace_with_retry(metadata_tmp, self.metadata_file)
 
         if self._embeddings is not None:
             embeddings_tmp = temporary_sibling(self.embeddings_file)
@@ -870,7 +1001,7 @@ class EpisodicMemory:
                 np.save(f, self._embeddings)
                 f.flush()
                 os.fsync(f.fileno())
-            os.replace(embeddings_tmp, self.embeddings_file)
+            replace_with_retry(embeddings_tmp, self.embeddings_file)
         elif self.embeddings_file.exists():
             self.embeddings_file.unlink()
 
@@ -918,7 +1049,7 @@ class EpisodicMemory:
             json.dump(manifest, f, ensure_ascii=False, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(manifest_tmp, self.index_manifest_file)
+        replace_with_retry(manifest_tmp, self.index_manifest_file)
         self._index_rebuild_required = False
 
     def _reindex_if_required(self) -> None:

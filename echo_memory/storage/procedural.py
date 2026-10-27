@@ -25,6 +25,7 @@ from typing import Any
 import numpy as np
 
 from echo_memory.schemas.procedure import Procedure
+from echo_memory.storage.atomic import atomic_write, atomic_write_json
 
 logger = logging.getLogger("echo_memory.procedural")
 
@@ -408,30 +409,28 @@ class ProceduralMemory:
                 self._rebuild_embeddings()
 
     def _save(self) -> None:
-        # JSON（原子寫入）
-        tmp_json = self.metadata_file.with_suffix(".json.tmp")
+        # JSON（唯一暫存檔 + 原子替換；失敗拋出）
         try:
             data = [p.to_dict() for p in self._procedures_by_id.values()]
-            with open(tmp_json, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            tmp_json.replace(self.metadata_file)
+            atomic_write_json(self.metadata_file, data)
         except Exception as e:
             logger.error(f"[ProceduralMemory] 保存 procedures.json 失敗: {e}")
-            if tmp_json.exists():
-                tmp_json.unlink()
+            raise
 
         # NPY（原子寫入）
-        tmp_npy = self.storage_path / "procedure_embeddings_tmp.npy"
         try:
             if self._embeddings is not None:
-                np.save(tmp_npy, self._embeddings)
-                tmp_npy.replace(self.embeddings_file)
+                embeddings = self._embeddings
+                atomic_write(
+                    self.embeddings_file,
+                    lambda f: np.save(f, embeddings),
+                    binary=True,
+                )
             elif self.embeddings_file.exists():
                 self.embeddings_file.unlink()
         except Exception as e:
             logger.error(f"[ProceduralMemory] 保存 embeddings 失敗: {e}")
-            if tmp_npy.exists():
-                tmp_npy.unlink()
+            raise
 
     def get_stats(self) -> dict[str, Any]:
         active = [p for p in self._procedures_by_id.values() if not p.is_archived]

@@ -118,7 +118,12 @@ class EcphoryRetrieval:
                 logger.debug("[EcphoryRetrieval] 查詢向量快取命中")
 
         if query_embedding is None:
-            query_embedding = self.episodic.generate_query_embedding(query)
+            query_embedding = self.episodic.try_generate_query_embedding(query)
+            if not query_embedding:
+                # embedding 不可用（逾時/連線失敗）：回空脈絡並標記降級，不崩潰
+                reason = self.episodic.last_embedding_error or "embedding unavailable"
+                logger.warning(f"[EcphoryRetrieval] 查詢 embedding 降級，回傳空脈絡: {reason}")
+                return MemoryContext(degraded=True, degraded_reason=reason)
             if self.working is not None:
                 self.working.set(cache_key, query_embedding)
 

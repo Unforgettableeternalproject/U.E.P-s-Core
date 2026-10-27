@@ -30,6 +30,9 @@ class MemoryContext:
     procedures: list[Procedure] = field(default_factory=list)
     similarities: dict[str, float] = field(default_factory=dict)  # episode_id -> 相似度分數
     concept_similarities: dict[str, float] = field(default_factory=dict)  # concept_id -> 相似度分數
+    # 降級標記：查詢 embedding 不可用（逾時/連線失敗）時為 True，結果為空而非崩潰
+    degraded: bool = False
+    degraded_reason: str = ""
 
     def is_empty(self) -> bool:
         """檢查是否為空"""

@@ -27,6 +27,7 @@ from typing import Any
 import numpy as np
 
 from echo_memory.schemas.concept import Concept
+from echo_memory.storage.atomic import atomic_write, atomic_write_json
 
 logger = logging.getLogger("echo_memory.semantic")
 
@@ -463,33 +464,30 @@ class SemanticMemory:
             _rebuild_embeddings 從 JSON 重建
         """
         with self._lock:
-            # 保存元數據（原子寫入：先寫 temp 檔再 rename）
-            tmp_json = self.metadata_file.with_suffix(".json.tmp")
+            # 保存元數據（唯一暫存檔 + 原子替換；失敗直接拋出，不再只 log）
+            data = [c.to_dict() for c in self._concepts.values()]
             try:
-                data = [c.to_dict() for c in self._concepts.values()]
-                with open(tmp_json, "w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
-                tmp_json.replace(self.metadata_file)
+                atomic_write_json(self.metadata_file, data)
             except Exception as e:
                 logger.error(f"[SemanticMemory] 保存 concepts.json 失敗: {e}")
-                if tmp_json.exists():
-                    tmp_json.unlink()
+                raise
 
-            # 保存向量（原子寫入）
-            # np.save 會自動加 .npy 副檔名，所以 temp 檔名必須以 .npy 結尾
-            tmp_npy = self.storage_path / "concept_embeddings_tmp.npy"
+            # 保存向量（原子寫入；使用檔案物件，np.save 不會自動加副檔名）
             try:
                 if self._embeddings is not None:
-                    np.save(tmp_npy, self._embeddings)
-                    tmp_npy.replace(self.embeddings_file)
+                    embeddings = self._embeddings
+                    atomic_write(
+                        self.embeddings_file,
+                        lambda f: np.save(f, embeddings),
+                        binary=True,
+                    )
                 elif self.embeddings_file.exists():
                     self.embeddings_file.unlink()
             except Exception as e:
                 logger.error(
                     f"[SemanticMemory] 保存 concept_embeddings.npy 失敗: {e}"
                 )
-                if tmp_npy.exists():
-                    tmp_npy.unlink()
+                raise
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 統計

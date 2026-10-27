@@ -23,6 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+from echo_memory.storage.atomic import atomic_write_json
+
 logger = logging.getLogger("echo_memory.storage.conflict_ledger")
 
 
@@ -174,13 +176,7 @@ class ConflictLedger:
         """持久化到磁碟。"""
         self._path.parent.mkdir(parents=True, exist_ok=True)
         data = [r.to_dict() for r in self._records.values()]
-        # 原子寫入
-        tmp = self._path.with_suffix(".tmp")
-        tmp.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        tmp.replace(self._path)
+        atomic_write_json(self._path, data)
 
     def register(
         self,

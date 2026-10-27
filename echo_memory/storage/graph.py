@@ -24,6 +24,7 @@ import networkx as nx
 
 from echo_memory.config import get_config
 from echo_memory.schemas.episode import Episode
+from echo_memory.storage.atomic import replace_with_retry
 from echo_memory.storage.locking import temporary_sibling
 
 logger = logging.getLogger("echo_memory.graph")
@@ -835,7 +836,7 @@ class MemoryGraph:
                 pickle.dump(self.graph, f)
                 f.flush()
                 os.fsync(f.fileno())
-            os.replace(tmp_file, self.graph_file)
+            replace_with_retry(tmp_file, self.graph_file)
             logger.debug(
                 f"[MemoryGraph] 保存圖完成 - "
                 f"{self.graph.number_of_nodes()} 節點, "

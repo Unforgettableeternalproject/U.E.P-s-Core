@@ -45,6 +45,11 @@ class Config:
         # Ollama embedding backend (set EMBEDDING_BACKEND=ollama to use)
         self.embedding_backend = os.getenv("EMBEDDING_BACKEND", "sentence-transformers")
         self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        # Embedding 逾時（秒）：查詢路徑用短逾時以便快速降級；
+        # 寫入路徑容忍較久；warmup 允許冷啟動載入模型。
+        self.embedding_query_timeout = float(os.getenv("EMBEDDING_QUERY_TIMEOUT", "5"))
+        self.embedding_write_timeout = float(os.getenv("EMBEDDING_WRITE_TIMEOUT", "30"))
+        self.embedding_warmup_timeout = float(os.getenv("EMBEDDING_WARMUP_TIMEOUT", "120"))
 
         # === 記憶系統配置 ===
         self.memory_storage_path = os.getenv("MEMORY_STORAGE_PATH", "./data")

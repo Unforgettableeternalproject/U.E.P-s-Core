@@ -55,6 +55,7 @@ from mcp.server.stdio import stdio_server
 from echo_memory import MemoryEngine
 from echo_memory.config import get_config
 from echo_memory.namespace import NamespaceEngineRegistry
+from mcp_server.access_policy import check_namespace_access, policy_from_config
 
 # ─── 導入 handlers 和 resources ───────────────────────────────────────────────
 from mcp_server.handlers import register_tools
@@ -101,9 +102,10 @@ def get_engine(namespace_id: str | None = None) -> MemoryEngine:
 
     首次呼叫時初始化，後續呼叫直接返回已有實例。
     讀取 config 中的 memory_storage_path 和 embedding_model。
+    namespace 一律先過存取策略（與 handlers 同一套；handlers 另依工具是否寫入把關），
+    資源（resources）等不經 handlers 的入口也不能繞過。
     """
-    if namespace_id is None:
-        namespace_id = get_config().memory_namespace_id
+    namespace_id = check_namespace_access(namespace_id, policy_from_config())
     return _engines.get(namespace_id)
 
 

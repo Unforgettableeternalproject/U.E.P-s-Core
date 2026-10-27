@@ -238,6 +238,52 @@ class DreamPatchCoordinator:
             return []
         return self._inhibitor.rollback_supersede_patch(tx, graph=graph)
 
+    # ──────────────────────────────────────────────
+    # 跨使用者分享（M10）：share action 薄包裝
+    # ──────────────────────────────────────────────
+
+    def submit_share(
+        self,
+        concept_id: str,
+        op: str,
+        scope_id: str | None,
+        payload: dict[str, Any] | None = None,
+    ) -> tuple[bool, PatchTransaction | None]:
+        """提交 share patch（project／retract／restrict）到 ConceptInhibitor。
+
+        走 Gate 的 audit-before-mutate、可 rollback；規則層 approve，不呼叫 LLM。
+        fail-closed：沒有 Gate、Gate 不支援 share、或任何例外 -> (False, None)，視為不分享。
+        呼叫端應持擁有者鎖；LLM 與共享層寫入都不得在這把鎖內。
+        """
+        if self._inhibitor is None or not hasattr(self._inhibitor, "process_share_patch"):
+            return False, None
+        try:
+            return self._inhibitor.process_share_patch(
+                concept_id, op, scope_id, payload or {}, triggered_by="dream",
+            )
+        except Exception as e:
+            logger.warning("[DreamPatchCoordinator] share patch(%s) 失敗（視為不分享）: %s", op, e)
+            return False, None
+
+    def submit_restrict_units(
+        self,
+        unit_ids: list[str],
+        reason_code: str = "",
+    ) -> list[tuple[bool, PatchTransaction | None]]:
+        """使用者／LLM 判定的隱私收緊：寫 ledger，並把受影響場域改為 private＋pinned。
+
+        各步驟為獨立 share patch（各自 audit）。共享層撤回由呼叫端依 projection_id 觸發。
+        """
+        if self._inhibitor is None or not hasattr(self._inhibitor, "restrict_units"):
+            return []
+        try:
+            return self._inhibitor.restrict_units(
+                list(unit_ids), reason_code=reason_code, triggered_by="dream",
+            )
+        except Exception as e:
+            logger.warning("[DreamPatchCoordinator] restrict_units 失敗: %s", e)
+            return []
+
     def review_held(self, guard=None) -> int:
         """
         Dream 週期開始時重審先前 held 的 concept patch（觸發點之一）。

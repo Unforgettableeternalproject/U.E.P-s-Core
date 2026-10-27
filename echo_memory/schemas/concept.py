@@ -13,8 +13,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from echo_memory.schemas.evidence_review import compute_basis_digest
+from echo_memory.schemas.evidence_review import compute_basis_digest, split_corroboration
 from echo_memory.schemas.provenance import Derivation
+from echo_memory.schemas.sharing import (
+    LEVEL_PRIVATE,
+    LEVEL_SCOPE_SHARED,
+    SharingState,
+    copy_sharing,
+)
 
 
 @dataclass
@@ -39,6 +45,9 @@ class Concept:
             舊概念沒有此欄位時，解析端以 source_episode_ids 視為 legacy 來源
         evidence_review: 證據審核結果（EvidenceReview.to_dict 格式）。預設 {} ＝ not_checked；
             舊資料沒有此欄位時零遷移載入即 not_checked。是否仍有效請用 effective_review_status()
+        sharing: 跨使用者分享狀態（SharingState.to_dict 格式，by_scope 以 ``guild:<id>`` 為鍵）。
+            預設 {} ＝所有場域 private；舊資料沒有此欄位時零遷移載入即 private。
+            是否仍有效請用 effective_sharing_level()
         confidence: 概念可信度 (0-1)，越多來源越高
         status: 生命週期狀態 (active/deprecated/archived)
         access_count: 被檢索/引用的次數
@@ -69,6 +78,7 @@ class Concept:
     version: int = 1
     derivations: list[dict[str, Any]] = field(default_factory=list)
     evidence_review: dict[str, Any] = field(default_factory=dict)
+    sharing: dict[str, Any] = field(default_factory=dict)
 
     # ── Concept Health 指標（GPT 建議 #10）──────────────────────────
     # 這些指標讓檢索時不只看 cosine，也能評估「這個概念健康嗎」。
@@ -210,11 +220,16 @@ class Concept:
         else:  # archived
             return 0.03
 
-    def effective_review_status(self) -> str:
+    def effective_review_status(self, sp_validator: Any = None) -> str:
         """目前有效的審核狀態（唯讀，不改磁碟、不需 LLM，檢索期可直接用）。
 
         無審核紀錄、或審核綁定的 basis_digest 與現在的證據基礎不符（description／
         facts／來源已變動）時回傳 not_checked；否則回傳審核當時的 status。
+
+        sp_validator（可選）：``(SpRef) -> bool``，由共享層提供，確認 sp: 佐證參考
+        仍存在、未撤回、digest 相符。有提供時，supported 的 intention 若剩下的有效
+        佐證（unit id ＋ 通過驗證的 sp 參考）為空，回落 insufficient。
+        未提供時 sp: 參考以存檔內容為準（呼叫端無共享層可驗）。
         """
         review = self.evidence_review
         if not isinstance(review, dict) or not review:
@@ -222,7 +237,41 @@ class Concept:
         status = review.get("status", "not_checked")
         if status == "not_checked" or review.get("basis_digest") != compute_basis_digest(self):
             return "not_checked"
+        if (
+            status == "supported"
+            and sp_validator is not None
+            and review.get("claim_kind") == "intention"
+        ):
+            unit_ids, sp_refs = split_corroboration(review.get("corroborated_by"))
+            valid_sp = []
+            for ref in sp_refs:
+                try:
+                    if sp_validator(ref):
+                        valid_sp.append(ref)
+                except Exception:
+                    continue  # 驗證失敗視為失效
+            if not unit_ids and not valid_sp:
+                return "insufficient"
         return str(status)
+
+    def sharing_state(self) -> SharingState:
+        """Concept.sharing 的結構化視圖（壞值退回 private）。"""
+        return SharingState.from_dict(self.sharing)
+
+    def effective_sharing_level(self, scope_id: str) -> str:
+        """概念在 scope_id 場域目前有效的可見度（唯讀）。
+
+        只有「active、該場域狀態為 scope_shared、且判定綁定的 basis_digest 與現在的證據
+        基礎相符」才回傳 scope_shared；其餘（含 digest 變動、deprecated、缺項）一律 private。
+        """
+        if self.status != "active":
+            return LEVEL_PRIVATE
+        entry = self.sharing_state().get(scope_id)
+        if entry is None or entry.level != LEVEL_SCOPE_SHARED:
+            return LEVEL_PRIVATE
+        if not entry.basis_digest or entry.basis_digest != compute_basis_digest(self):
+            return LEVEL_PRIVATE
+        return LEVEL_SCOPE_SHARED
 
     def record_mutation(self) -> None:
         """記錄一次概念變更（expand/modify/deprecate），更新 health 相關指標。"""
@@ -264,6 +313,7 @@ class Concept:
             "version": self.version,
             "derivations": [dict(d) for d in self.derivations],
             "evidence_review": copy.deepcopy(self.evidence_review),
+            "sharing": copy_sharing(self.sharing),
         }
 
     @classmethod
@@ -275,4 +325,6 @@ class Concept:
         # 向後相容：舊資料可能沒有 health 欄位
         valid_fields = {f.name for f in cls.__dataclass_fields__.values()}
         data = {k: v for k, v in data.items() if k in valid_fields}
+        if not isinstance(data.get("sharing"), dict):
+            data.pop("sharing", None)  # 壞值／缺值 -> 預設 {}（private）
         return cls(**data)

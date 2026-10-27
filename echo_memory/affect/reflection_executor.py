@@ -314,6 +314,10 @@ class ReflectionExecutor:
             )
             patch.status = "approved"
             tx.patches.append(patch)
+            # 概念消失後就找不到投影：先撤回共享層的投影（M10）
+            revoke = getattr(self._engine, "revoke_concept_projections", None)
+            if concept is not None and callable(revoke):
+                revoke(concept.id, "concept_removed")
             if not semantic.remove_concept(target_name):
                 patch.status = "rejected"
                 patch.rejection_reason = "remove_concept 失敗"
@@ -525,6 +529,14 @@ class ReflectionExecutor:
                 unmerge_patch.rejection_reason = str(restore_err)
                 return False, {"error": f"次概念還原失敗: {merge_with}（{restore_err}）"}
             unmerge_patch.status = "applied"
+            # 回滾不經 Gate，不會自動通知：主、次概念各通知一次（共享層據此撤回失效的投影）
+            notify = getattr(self._inhibitor, "_notify_change", None)
+            if callable(notify):
+                for cid in (primary.id, secondary.id):
+                    try:
+                        notify(cid, "rollback:merge")
+                    except Exception:
+                        logger.warning("概念變更通知失敗 %s", cid)
             return True, {"primary": target_name, "secondary_restored": merge_with}
 
     def build_rollback_fn(self):

@@ -622,3 +622,16 @@ class TestHeldIoAndLock:
         assert len(taken) >= 3  # 認領 + 放回 + finalize
         # 與 engine 同一把：namespace 根目錄，而非 semantic 子目錄
         assert all(t == str(e.storage_path) for t in taken)
+
+
+class TestUndoMergeNotifiesChangeListeners:
+    """M10：undo_merge 不經 Gate，成功後必須通知主、次概念（共享層據此撤回失效投影）。"""
+
+    def test_primary_and_secondary_notified_once(self, restored_engine):
+        e = restored_engine
+        inh = _merge(e)
+        seen: list[tuple[str, str]] = []
+        inh.register_change_listener(lambda cid, reason: seen.append((cid, reason)))
+        _executor(e, inh)._gated_undo("undo_merge", PRIMARY, {"merge_with": SECONDARY})
+        p, s = e.semantic.get_by_name(PRIMARY), e.semantic.get_by_name(SECONDARY)
+        assert sorted(seen) == sorted([(p.id, "rollback:merge"), (s.id, "rollback:merge")])

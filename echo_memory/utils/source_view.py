@@ -29,6 +29,7 @@ from echo_memory.schemas.evidence import (
     EvidenceUnit,
     can_attest_agent_said,
     can_attest_user_claim,
+    has_shared_context,
     is_undelivered_agent,
 )
 
@@ -58,11 +59,14 @@ def classify_unit(u: EvidenceUnit) -> str:
     """回傳 unit 的來源類別。
 
     user_claim | user_legacy | agent_said | agent_legacy | agent_unsaid
-    | tool | system | observation | redacted
+    | tool | system | observation | redacted | shared_derived
     """
     if u.tombstoned_at is not None:
         return "redacted"
     st = u.source_type
+    if st == "agent" and has_shared_context(u):
+        # 帶入他人共享摘要的回覆：不得成為任何概念的來源（否則 A 的內容經 B 的對話複製進 B 的 namespace）
+        return "shared_derived"
     if st == "observation":
         return "observation"
     if st == "user":
@@ -85,7 +89,7 @@ def _clip(text: str, max_chars: int | None) -> str:
 def render_unit(u: EvidenceUnit, *, max_chars: int | None = None) -> str | None:
     """單一 unit 的標示行；observation／已塗銷／空內容回傳 None。"""
     kind = classify_unit(u)
-    if kind in ("observation", "redacted"):
+    if kind in ("observation", "redacted", "shared_derived"):
         return None
     if kind == "agent_unsaid":
         return "助手回覆（未說出口，內容已略去）"
@@ -123,10 +127,12 @@ def units_for(
             return found
     from echo_memory.storage.evidence import build_legacy_units
 
+    # 帶入過共享摘要的輪次：證據不可讀時不合成 agent unit（無從確認哪段含他人內容，寧可不用）
+    shared_turn = bool((getattr(episode, "metadata", None) or {}).get("shared_context_ids"))
     return build_legacy_units(
         episode_id=episode.id,
         user_input=episode.user_input,
-        agent_response=episode.agent_response,
+        agent_response="" if shared_turn else episode.agent_response,
         occurred_at=episode.timestamp,
         metadata=episode.metadata,
         via="read_time",

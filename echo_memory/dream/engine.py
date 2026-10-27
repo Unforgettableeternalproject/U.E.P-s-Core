@@ -62,6 +62,8 @@ class DreamReport:
     distillation: DistillationReport | None = None
     procedure_extraction: Any | None = None  # ProcedureExtractionReport
     evidence_review: Any | None = None  # ReviewBatchReport（證據審核 phase）
+    sharing_reconcile: Any | None = None  # SharingReport（共享層對帳，Dream 開頭）
+    sharing: Any | None = None  # SharingReport（分享 phase）
     edges_reevaluated: int = 0  # 既有 CONTRADICTS 邊本週期重判的配對數
     edges_superseded: int = 0  # 其中被改判為取代（邊已移除）的數量
     edges_updated: int = 0
@@ -95,6 +97,14 @@ class DreamReport:
 
         if self.evidence_review is not None:
             lines.append(f"  {self.evidence_review.summary()}")
+
+        if self.sharing_reconcile is not None and (
+            self.sharing_reconcile.revoked or self.sharing_reconcile.corroborations_invalidated
+        ):
+            lines.append(f"  對帳 {self.sharing_reconcile.summary()}")
+
+        if self.sharing is not None:
+            lines.append(f"  {self.sharing.summary()}")
 
         if self.edges_reevaluated > 0:
             lines.append(
@@ -142,6 +152,9 @@ class DreamEngine:
         enable_cron: bool = True,
         lock_factory: Guard | None = None,
         evidence_store: Any | None = None,
+        share_layer: Any | None = None,
+        privacy_ledger: Any | None = None,
+        owner_uid: str | None = None,
     ):
         """
         初始化 Dream Engine。
@@ -157,6 +170,11 @@ class DreamEngine:
             enable_cron: 是否啟用定時觸發
             evidence_store: EvidenceStore 實例（可選）。提供時蒸餾／replay／程序提取的 prompt
                 依 evidence 標示來源（使用者陳述／agent 已說出口／未交付／工具記錄／來源未確認）。
+            share_layer: ScopeShareLayer（M10）。提供且有 owner_uid 時啟用分享 phase 與共享層對帳；
+                缺省則完全不分享。
+            privacy_ledger: 擁有者的 PrivacyLedger；缺省取 Gate 的 privacy_ledger。分享判定必要，
+                缺少一律不分享（fail-closed）。
+            owner_uid: 本 namespace 擁有者 uid（投影的 owner_uid；通常等於 namespace_id）。
             lock_factory: 取得 storage_lock 的工廠（呼叫後回傳 context manager）。
                 手動 dream_now 與排程（idle / cron）觸發走同一條路徑，鎖語意一致：
                 只在讀快照與套用結果的短臨界區持鎖，LLM 階段一律在鎖外。
@@ -237,9 +255,30 @@ class DreamEngine:
                         provenance=provenance,
                         evidence=evidence_store,
                         lock_factory=self._guard,
+                        privacy_ledger=(
+                            (privacy_ledger or getattr(gate, "privacy_ledger", None))
+                            if share_layer is not None else None
+                        ),
                     )
             except ImportError:
                 pass
+
+        # 分享 phase（M10）：需要審核器 + 共享層 + owner uid；條件不齊備時 phase 自行 skipped
+        self._sharing_phase = None
+        if (
+            share_layer is not None and self._evidence_reviewer is not None
+            and semantic is not None and self._patch_coordinator is not None
+        ):
+            from echo_memory.dream.sharing_phase import SharingPhase
+
+            self._sharing_phase = SharingPhase(
+                owner_uid=owner_uid,
+                semantic=semantic,
+                reviewer=self._evidence_reviewer,
+                share_layer=share_layer,
+                patch_coordinator=self._patch_coordinator,
+                lock_factory=self._guard,
+            )
 
         # 矛盾偵測器（需要 semantic + llm_fn）+ ConflictLedger
         contradiction_detector = None
@@ -433,6 +472,13 @@ class DreamEngine:
                 # 重審先前 held 的 concept patch（LLM 在鎖外，apply 在鎖內）
                 self._patch_coordinator.review_held(guard=self._guard)
 
+            # ── 共享層對帳（不需 LLM）：孤兒投影、已撤回未刪、失效佐證 ──────
+            if self._sharing_phase is not None:
+                try:
+                    report.sharing_reconcile = self._sharing_phase.reconcile()
+                except Exception as e:
+                    logger.warning(f"[DreamEngine] 共享層對帳失敗（不影響夢境週期）: {e}")
+
             # ── 階段 1、2：邊權重更新 + 圖譜修剪（無 LLM，單一短臨界區）──
             with self._guard():
                 report.edges_updated = self._pruning.update_edge_weights()
@@ -457,6 +503,13 @@ class DreamEngine:
                     report.evidence_review = self._evidence_reviewer.review_batch()
                 except Exception as e:
                     logger.warning(f"[DreamEngine] 證據審核失敗（不影響夢境週期）: {e}")
+
+            # ── 階段 4.55：分享（LLM 在鎖外；投影走 Gate share/project；無 LLM 不投影）────
+            if self._sharing_phase is not None:
+                try:
+                    report.sharing = self._sharing_phase.run()
+                except Exception as e:
+                    logger.warning(f"[DreamEngine] 分享 phase 失敗（不影響夢境週期）: {e}")
 
             # ── 階段 4.6：既有 CONTRADICTS 邊重判（LLM 在鎖外；批次受 config 限制）────
             if self._contradiction_detector is not None and self._contradiction_detector.llm_fn:

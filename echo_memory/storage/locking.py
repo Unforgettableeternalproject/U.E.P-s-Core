@@ -74,9 +74,9 @@ def storage_lock(storage_path: str | Path, timeout: float = 30.0) -> Iterator[No
             return
 
         with open(lock_path, "a+b") as handle:
-            if handle.tell() == 0:
-                handle.write(b"0")
-                handle.flush()
+            # 不寫入鎖檔：多行程同時建立時，對他人已鎖住的位元組寫入在 Windows 會丟
+            # PermissionError（msvcrt 為強制鎖）。鎖 EOF 之外的位元組在 Windows 合法，
+            # POSIX flock 與內容無關，故鎖檔保持原狀即可。
             deadline = time.monotonic() + timeout
             while not _try_lock(handle):
                 if time.monotonic() >= deadline:

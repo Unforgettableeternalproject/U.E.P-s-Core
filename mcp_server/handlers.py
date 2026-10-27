@@ -26,6 +26,7 @@ from mcp.server import Server
 from mcp.types import TextContent, Tool
 
 from echo_memory.schemas.evidence import EvidenceInput, SourceRef
+from mcp_server.access_policy import check_namespace_access, policy_from_config
 
 logger = logging.getLogger("echo_memory.mcp.handlers")
 
@@ -45,8 +46,12 @@ def _namespace_schema() -> dict[str, Any]:
     }
 
 
-def _get_engine(get_engine: Callable, args: dict[str, Any]):
-    return get_engine(args.get("namespace_id"))
+def _get_engine(get_engine: Callable, args: dict[str, Any], *, write: bool = False):
+    """取得 engine；先過 namespace 存取策略（拒絕他人的使用者 namespace、場域共享 namespace 寫入）。"""
+    namespace_id = check_namespace_access(
+        args.get("namespace_id"), policy_from_config(), write=write,
+    )
+    return get_engine(namespace_id)
 
 
 def register_tools(server: Server, get_engine: Callable) -> None:
@@ -328,7 +333,7 @@ async def _handle_store_episode(
     salience: float = float(args.get("salience", 0.5))
 
     def _sync_store() -> str:
-        engine = _get_engine(get_engine, args)
+        engine = _get_engine(get_engine, args, write=True)
         return engine.store_episode(
             user_input=user_input,
             agent_response=agent_response,
@@ -477,7 +482,7 @@ async def _handle_trigger_dream(
         return f"Dream Engine 冷卻中，請等待 {remaining} 秒後再試。"
 
     def _sync_dream() -> dict[str, Any]:
-        engine = _get_engine(get_engine, args)
+        engine = _get_engine(get_engine, args, write=True)
         return engine.dream(triggered_by=triggered_by)
 
     try:
@@ -592,7 +597,7 @@ async def _handle_store_observation(
     importance: float = float(args.get("importance", 0.85))
 
     def _sync_store() -> str:
-        engine = _get_engine(get_engine, args)
+        engine = _get_engine(get_engine, args, write=True)
         return engine.store_episode(
             user_input="",
             agent_response="",

@@ -38,6 +38,7 @@ from echo_memory.affect.concept_patch import (
 )
 from echo_memory.affect.concept_verifier import ConceptAssessment, ConceptVerification
 from echo_memory.schemas.concept import Concept
+from echo_memory.config import get_config
 from echo_memory.schemas.evidence_review import (
     CLAIM_KINDS,
     REVIEWED_STATUSES,
@@ -45,9 +46,21 @@ from echo_memory.schemas.evidence_review import (
     compute_basis_digest,
     compute_review_confidence,
     review_confidence_cap,
+    validate_corroborated_by,
+)
+from echo_memory.schemas.sharing import (
+    DECIDED_BY,
+    LEVEL_PRIVATE,
+    LEVEL_SCOPE_SHARED,
+    SHAREABLE_SENSITIVITIES,
+    ScopeSharing,
+    normalize_scope,
+    origin_scope,
+    parse_guild_scope,
 )
 from echo_memory.storage.atomic import atomic_write_json, replace_with_retry
 from echo_memory.storage.locking import storage_lock
+from echo_memory.storage.privacy_ledger import PrivacyLedger
 from echo_memory.storage.semantic import SemanticMemory
 from echo_memory.utils.source_view import SUPPORT_RANK
 
@@ -56,6 +69,12 @@ logger = logging.getLogger("echo_memory.affect.concept_inhibitor")
 # held_patches.json 的行程內鎖：同一路徑的多個 ConceptInhibitor 實例共用同一把
 _HELD_LOCKS_GUARD = threading.Lock()
 _HELD_LOCKS: dict[str, threading.RLock] = {}
+# 會改變概念「證據基礎／內容」的 action：成功後通知變更監聽者（共享投影需即時撤回）
+_CHANGE_ACTIONS = ("create", "expand", "modify", "deprecate")
+
+# share patch 的子操作
+SHARE_OPS = ("project", "retract", "restrict")
+
 # held patch 被某個 reviewer 認領（in-flight）後，超過此秒數視為認領者已中斷，可被重新認領
 _HELD_CLAIM_TTL_SECONDS = 600.0
 
@@ -194,6 +213,8 @@ class ConceptInhibitor:
         held_max_retries: int | None = None,
         held_max_age_days: float | None = None,
         held_review_batch: int | None = None,
+        evidence_lookup: Callable[[list[str]], Any] | None = None,
+        privacy_ledger: PrivacyLedger | None = None,
     ):
         """
         Args:
@@ -203,12 +224,19 @@ class ConceptInhibitor:
             held_max_retries: held patch 重審失敗上限。None 時取 config。
             held_max_age_days: held patch 最長懸置天數。None 時取 config。
             held_review_batch: 單次觸發最多重審幾筆。None 時取 config。
+            evidence_lookup: share/project 驗證來源可見度用，``(ids) -> Iterable[EvidenceUnit]``
+                （通常是 EvidenceStore.get）。None 時以 semantic 目錄的上一層（namespace 根）
+                建 EvidenceStore；取不到 unit 一律視為不可分享。
+            privacy_ledger: 擁有者的隱私覆寫帳本。None 時以 namespace 根建立。
         """
         self._semantic = semantic
         self._llm_fn = llm_fn
         self._audit_log_path = audit_log_path
+        self._evidence_lookup = evidence_lookup
+        self._privacy_ledger = privacy_ledger
+        self._change_listeners: list[Callable[[str, str], None]] = []
+        self._change_listeners_lock = threading.Lock()
 
-        from echo_memory.config import get_config
         cfg = get_config()
         self._held_max_retries = (
             held_max_retries if held_max_retries is not None
@@ -618,6 +646,9 @@ class ConceptInhibitor:
                 # 設定 rollback payload
                 patch.rollback_payload = patch.rollback_payload or {}
                 patch.rollback_payload["created_concept_name"] = patch.concept_name
+                patch.rollback_payload["created_concept_id"] = concept_id
+                # 新建或同名覆寫既有概念（upsert）都會改變內容：通知變更監聽者
+                self._notify_change(concept_id, "create")
                 return True, concept_id
             return False, None
         except Exception as e:
@@ -628,6 +659,21 @@ class ConceptInhibitor:
             return False, None
 
     def _redirect_create_to_primary(
+        self,
+        patch: ConceptPatch,
+        merged: Concept,
+        payload: dict[str, Any],
+        producer: str,
+        similar: bool = False,
+    ) -> tuple[bool, str | None]:
+        ok, primary_id = self._redirect_create_to_primary_impl(
+            patch, merged, payload, producer, similar,
+        )
+        if ok and primary_id:
+            self._notify_change(primary_id, "expand")
+        return ok, primary_id
+
+    def _redirect_create_to_primary_impl(
         self,
         patch: ConceptPatch,
         merged: Concept,
@@ -746,6 +792,7 @@ class ConceptInhibitor:
                 episode_ids = [e for e in new_value if isinstance(e, str)]
             else:
                 episode_ids = []
+            changed = False
             if episode_ids or patch.support_source:
                 with self._semantic._lock:
                     fresh = [e for e in episode_ids if e not in concept.source_episode_ids]
@@ -768,6 +815,9 @@ class ConceptInhibitor:
                         # history 先寫再存檔，否則這筆紀錄不會落地
                         self._add_history_entry(concept, patch)
                         self._semantic._save()
+                        changed = True
+            if changed:
+                self._notify_change(concept.id, "expand")
             return True
         except Exception as e:
             logger.error(
@@ -1046,6 +1096,9 @@ class ConceptInhibitor:
         claim_kind = value.get("claim_kind", "fact")
         if claim_kind not in CLAIM_KINDS:
             return f"claim_kind 無效: {claim_kind!r}"
+        problem = validate_corroborated_by(value.get("corroborated_by"))
+        if problem is not None:
+            return problem
         if (
             claim_kind == "intention"
             and value.get("status") == "supported"
@@ -1191,6 +1244,465 @@ class ConceptInhibitor:
         tx.status = "failed"
         self._write_audit(tx)
         return False, tx
+
+    # ──────────────────────────────────────────────
+    # 跨使用者分享入口（M10：project／retract／restrict）
+    # ──────────────────────────────────────────────
+
+    @property
+    def privacy_ledger(self) -> PrivacyLedger:
+        """擁有者 namespace 的隱私覆寫帳本（未注入時以 semantic 目錄的上一層為 namespace 根）。"""
+        if self._privacy_ledger is None:
+            self._privacy_ledger = PrivacyLedger(Path(self._semantic.storage_path).parent)
+        return self._privacy_ledger
+
+    def _lookup_units(self, ids: list[str]) -> dict[str, Any]:
+        """依 id 取證據 unit（找不到的略過；任何失敗回傳空 -> 驗證不通過，fail-closed）。"""
+        lookup = self._evidence_lookup
+        try:
+            if lookup is None:
+                from echo_memory.storage.evidence import EvidenceStore
+
+                root = Path(self._semantic.storage_path).parent
+                lookup = EvidenceStore(root / "evidence", lock_path=root).get
+                self._evidence_lookup = lookup
+            return {u.id: u for u in lookup(list(ids))}
+        except Exception as e:
+            logger.warning("[ConceptInhibitor] 取證據 unit 失敗（視為不可分享）: %s", e)
+            return {}
+
+    @staticmethod
+    def _share_reason_code(payload: dict[str, Any]) -> str:
+        return str(payload.get("reason_code", "") or "")[:64]
+
+    @staticmethod
+    def _by_scope(concept: Concept) -> dict[str, Any]:
+        """取得（必要時建立）concept.sharing["by_scope"]。"""
+        if not isinstance(concept.sharing, dict):
+            concept.sharing = {}
+        by_scope = concept.sharing.get("by_scope")
+        if not isinstance(by_scope, dict):
+            by_scope = {}
+            concept.sharing["by_scope"] = by_scope
+        return by_scope
+
+    @staticmethod
+    def _by_scope_readonly(concept: Concept) -> dict[str, Any]:
+        sharing = concept.sharing if isinstance(concept.sharing, dict) else {}
+        by_scope = sharing.get("by_scope")
+        return by_scope if isinstance(by_scope, dict) else {}
+
+    def _validate_share(
+        self,
+        patch: ConceptPatch,
+        concept: Concept | None,
+        units: dict[str, Any],
+    ) -> str | None:
+        """share patch 的規則層驗證（只看結構欄位，不看文字內容，不呼叫 LLM）。通過回傳 None。"""
+        nv = patch.new_value if isinstance(patch.new_value, dict) else {}
+        op = nv.get("op")
+        if op not in SHARE_OPS:
+            return f"share op 無效: {op!r}"
+
+        if op == "restrict":
+            ids = nv.get("unit_ids")
+            if not isinstance(ids, list) or any(not isinstance(x, str) or not x for x in ids):
+                return "restrict 的 unit_ids 必須是非空字串 list"
+            if concept is None and not ids:
+                return "restrict 需要 concept_id 或 unit_ids"
+            for sid in nv.get("scope_ids") or []:
+                if parse_guild_scope(sid) is None:
+                    return f"scope_id 無效: {sid!r}"
+            return None  # 只收緊，永遠安全
+
+        scope_id = nv.get("scope_id")
+        if parse_guild_scope(scope_id) is None:
+            return f"scope_id 無效: {scope_id!r}"
+        if concept is None:
+            return "概念不存在"
+
+        entry_raw = self._by_scope_readonly(concept).get(scope_id)
+        if op == "retract":
+            if not isinstance(entry_raw, dict):
+                return "noop: 該場域沒有分享狀態可撤回"
+            return None
+
+        # ── project ──
+        if not get_config().sharing_enabled:
+            return "sharing 已停用"
+        if concept.status != "active":
+            return "概念不是 active，不得投影"
+        entry = nv.get("entry") if isinstance(nv.get("entry"), dict) else {}
+        if entry.get("basis_digest") != compute_basis_digest(concept):
+            return "stale: basis_digest 與目前證據基礎不符"
+        if isinstance(entry_raw, dict) and entry_raw.get("pinned") is True:
+            return "該場域已被使用者收緊（pinned），不得放寬"
+        if entry.get("sensitivity") not in SHAREABLE_SENSITIVITIES:
+            return f"sensitivity 不可投影: {entry.get('sensitivity')!r}"
+        if nv.get("supports_summary_from_cited_only") is not True:
+            return "審核未確認摘要僅憑引用來源即可成立"
+        if nv.get("decided_by") != "llm":
+            return "project 只能由 LLM 判定（使用者覆寫只能收緊）"
+        if not entry.get("summary_digest"):
+            return "缺少 summary_digest"
+        pid = str(entry.get("projection_id") or "")
+        if not pid or any(ch.isspace() for ch in pid):
+            return "projection_id 無效"
+        cited = entry.get("cited_unit_ids")
+        if not isinstance(cited, list) or not cited or any(
+            not isinstance(x, str) or not x for x in cited
+        ):
+            return "cited_unit_ids 必須是非空字串 list"
+        ledger = self.privacy_ledger
+        for uid in cited:
+            unit = units.get(uid)
+            if unit is None:
+                return "cited unit 不存在或無法讀取"
+            if origin_scope(unit, ledger) != scope_id:
+                return "cited unit 不屬於該場域的 scope_shared 來源（私密／已收緊／缺 attrs）"
+        return None
+
+    def process_share_patch(
+        self,
+        concept_id: str | None,
+        op: str,
+        scope_id: str | None,
+        payload: dict[str, Any] | None = None,
+        *,
+        triggered_by: str = "dream",
+    ) -> tuple[bool, PatchTransaction]:
+        """
+        以 share patch 改變概念在某場域的分享狀態（M10）。規則層 approve，不呼叫 LLM。
+
+        流程：（鎖外取證據 unit）-> 鎖內建 patch 並結構驗證 -> audit-before-mutate ->
+        apply -> 失敗則 rollback -> 終態 audit。
+
+        op / payload:
+          - "project"（medium，放寬）：scope_id 必填（``guild:<id>``）。payload 必填：
+            cited_unit_ids（非空，皆須為該場域 origin_visibility=scope_shared 的 user unit，
+            且不在 privacy ledger）、basis_digest（須等於目前 compute_basis_digest）、
+            sensitivity（none/personal）、summary_digest、projection_id（非空）、
+            supports_summary_from_cited_only=True。decided_by 只能是 "llm"（預設）。
+            該場域已 pinned、概念非 active、sharing 停用、digest stale 一律拒絕。
+          - "retract"（low，收緊）：level->private、projection_id 清空，pinned 保持不變。
+            payload 可帶 reason_code、decided_by（default/llm/user）。該場域沒有狀態時
+            回 (False, tx)，patch.rejection_reason 以 "noop:" 開頭。
+          - "restrict"（low，只收緊）：payload.unit_ids（寫入 privacy ledger，由本 patch
+            標記，供 rollback 精確移除）、reason_code。scope_id 指定單一場域，None 或 "*"
+            代表該概念現有所有場域；concept_id 為 None/"" 時只寫 ledger（不綁概念）。
+            目標場域 -> level=private、decided_by=user、pinned=True（projection_id 保留，
+            供呼叫端撤回共享層投影；之後以 retract 清除）。
+
+        Returns:
+            (success, PatchTransaction)。success=False 時沒有任何概念被改動
+            （restrict 例外：apply 中途失敗時已寫入的 ledger／pinned 保留，只收緊永遠安全）。
+            concept_id 指定但概念不存在時 tx.patches 為空、status="failed"（不寫 audit）。
+        """
+        payload = dict(payload) if isinstance(payload, dict) else {}
+        tx = PatchTransaction(
+            patches=[],
+            user_input=f"[share:{op}] {concept_id or '-'}",
+            llm_response="",
+            session_id="sharing",
+            turn_id="",
+            triggered_by=triggered_by,  # type: ignore[arg-type]
+        )
+        concept_id = concept_id or None
+        if scope_id not in (None, "*"):
+            scope_id = normalize_scope(scope_id) or scope_id  # 小寫正規化；無效值交給驗證拒絕
+
+        # 鎖外：project 需要證據 unit 驗證來源可見度（unit 不可變，鎖內只重驗 digest／pinned）
+        units: dict[str, Any] = {}
+        if op == "project" and isinstance(payload.get("cited_unit_ids"), list):
+            cited_ids = [x for x in payload["cited_unit_ids"] if isinstance(x, str) and x]
+            if cited_ids:
+                units = self._lookup_units(cited_ids)
+
+        reason_rejected: str | None = None
+        with self._semantic._lock:
+            concept = self._semantic.get(concept_id) if concept_id else None
+            if concept_id and concept is None:
+                tx.status = "failed"
+                return False, tx
+
+            reason_code = self._share_reason_code(payload)
+            now_iso = datetime.now(timezone.utc).isoformat()
+            by_scope = self._by_scope_readonly(concept) if concept is not None else {}
+            new_value: dict[str, Any]
+            old_value: Any
+            if op == "project":
+                cited = payload.get("cited_unit_ids")
+                new_value = {
+                    "op": op,
+                    "scope_id": scope_id,
+                    "decided_by": str(payload.get("decided_by") or "llm"),
+                    "supports_summary_from_cited_only":
+                        payload.get("supports_summary_from_cited_only"),
+                    "reason_code": reason_code,
+                    "entry": {
+                        "level": LEVEL_SCOPE_SHARED,
+                        "decided_by": "llm",
+                        "pinned": False,
+                        "cited_unit_ids": list(cited) if isinstance(cited, list) else [],
+                        "basis_digest": str(payload.get("basis_digest") or ""),
+                        "summary_digest": str(payload.get("summary_digest") or ""),
+                        "projection_id": str(payload.get("projection_id") or ""),
+                        "sensitivity": str(payload.get("sensitivity") or ""),
+                        "judged_at": now_iso,
+                        "patch_id": "",
+                    },
+                }
+                cur = by_scope.get(scope_id)
+                old_value = copy.deepcopy(cur) if isinstance(cur, dict) else None
+                risk = "medium"
+            elif op == "retract":
+                decided_by = payload.get("decided_by")
+                new_value = {
+                    "op": op,
+                    "scope_id": scope_id,
+                    "decided_by": decided_by if decided_by in DECIDED_BY else "default",
+                    "reason_code": reason_code,
+                    "judged_at": now_iso,
+                }
+                cur = by_scope.get(scope_id)
+                old_value = copy.deepcopy(cur) if isinstance(cur, dict) else None
+                risk = "low"
+            else:  # restrict（含非法 op：交給 _validate_share 拒絕）
+                raw_ids = payload.get("unit_ids")
+                if concept is None:
+                    scopes: list[str] = []
+                elif scope_id in (None, "*"):
+                    scopes = list(by_scope)
+                else:
+                    scopes = [scope_id]
+                new_value = {
+                    "op": op,
+                    "scope_ids": scopes,
+                    "unit_ids": list(raw_ids) if isinstance(raw_ids, list) else [],
+                    "reason_code": reason_code,
+                    "judged_at": now_iso,
+                }
+                old_value = {
+                    s: (copy.deepcopy(by_scope[s]) if isinstance(by_scope.get(s), dict) else None)
+                    for s in scopes
+                }
+                risk = "low"
+
+            patch = ConceptPatch(
+                transaction_id=tx.transaction_id,
+                concept_id=concept.id if concept is not None else None,
+                concept_name=concept.name if concept is not None else "",
+                action="share",
+                target_path="sharing.by_scope" if concept is not None else "privacy_ledger",
+                old_value=old_value,
+                new_value=new_value,
+                old_confidence=concept.confidence if concept is not None else None,
+                patch_confidence=0.7,
+                evidence=PatchEvidence(
+                    evidence_kind="sharing",
+                    evidence_strength=0.7,
+                    verifier_status="valid",
+                    verifier_reason=f"share:{op}:{reason_code}" if reason_code else f"share:{op}",
+                    retrieved_concept_ids=[concept.id] if concept is not None else [],
+                ),
+                risk_level=risk,  # type: ignore[arg-type]
+            )
+            if op == "project":
+                new_value["entry"]["patch_id"] = patch.patch_id
+            tx.patches.append(patch)
+
+            reason_rejected = self._validate_share(patch, concept, units)
+            if reason_rejected is None:
+                patch.status = "approved"
+
+        if reason_rejected is not None:
+            patch.status = "rejected"
+            patch.rejection_reason = reason_rejected
+            tx.status = "failed"
+            self._write_audit(tx)
+            return False, tx
+
+        # audit-before-mutate：先寫 audit，失敗則不動概念、不寫 ledger
+        if not self._try_write_audit(tx):
+            patch.status = "rejected"
+            patch.rejection_reason = "audit log 寫入失敗，阻止 mutation"
+            tx.status = "failed"
+            return False, tx
+
+        if self._apply_patch(patch):
+            patch.status = "applied"
+            tx.status = "committed"
+            self._write_audit(tx)
+            return True, tx
+
+        # apply 失敗：project／retract 補一次回滾；restrict 只收緊，已生效的部分保留
+        if op != "restrict":
+            self._rollback_patch(patch)
+        patch.status = "rejected"
+        patch.rejection_reason = "share 套用失敗（前提已變動或存檔失敗）"
+        tx.status = "failed"
+        self._write_audit(tx)
+        return False, tx
+
+    def restrict_units(
+        self,
+        unit_ids: list[str],
+        *,
+        reason_code: str = "",
+        triggered_by: str = "conversation",
+    ) -> list[tuple[bool, PatchTransaction]]:
+        """使用者收緊若干 unit：先寫 ledger（概念無關），再把所有以這些 unit 為依據的
+        場域狀態改為 private＋pinned（凡 cited_unit_ids 含其一者）。
+
+        每一步都是獨立的 share patch（各自 audit、可 rollback）。回傳各步結果；
+        受影響場域的共享層撤回由呼叫端依 projection_id 觸發。
+        """
+        ids = [x for x in dict.fromkeys(unit_ids) if isinstance(x, str) and x]
+        if not ids:
+            return []
+        results = [self.process_share_patch(
+            None, "restrict", None,
+            {"unit_ids": ids, "reason_code": reason_code}, triggered_by=triggered_by,
+        )]
+        hit = set(ids)
+        targets: list[tuple[str, str]] = []
+        for concept in self._semantic.list_concepts(limit=None):
+            for scope, entry in self._by_scope_readonly(concept).items():
+                if isinstance(entry, dict) and hit & set(entry.get("cited_unit_ids") or []):
+                    targets.append((concept.id, scope))
+        for cid, scope in targets:
+            results.append(self.process_share_patch(
+                cid, "restrict", scope, {"reason_code": reason_code}, triggered_by=triggered_by,
+            ))
+        return results
+
+    def rollback_share_patch(self, tx: PatchTransaction) -> None:
+        """人工回滾已套用的 share patch（經 audit）。
+
+        規則：回滾永遠不會讓資料變得更可見——restrict 回滾移除本 patch 寫入的 ledger 項與
+        pinned，但場域 level 維持 private（不自動重新投影，等下次 Dream 重判）；
+        retract 回滾同樣維持 private；project 回滾還原舊狀態，但若已被 pinned 或引用的
+        unit 已被收緊則不還原。
+        """
+        for p in reversed(tx.applied_patches):
+            if p.action == "share":
+                self._rollback_patch(p)
+                p.status = "rolled_back"
+        tx.status = "rolled_back"
+        self._write_audit(tx)
+
+    def _apply_share(self, concept: Concept | None, patch: ConceptPatch) -> bool:
+        """執行 share patch。呼叫端（_apply_patch）持 SemanticMemory._lock；不呼叫 _save()。
+
+        前提（digest／pinned）在鎖內再驗一次。restrict 先寫 ledger（安全關鍵），再改概念。
+        不新增 derivation：分享狀態不是來源。
+        """
+        nv = patch.new_value if isinstance(patch.new_value, dict) else {}
+        op = nv.get("op")
+        rb = patch.rollback_payload = patch.rollback_payload or {}
+
+        if op == "restrict":
+            unit_ids = [x for x in nv.get("unit_ids") or [] if isinstance(x, str) and x]
+            if unit_ids:
+                try:
+                    rb["ledger_added"] = self.privacy_ledger.restrict_many(
+                        unit_ids, by="user", patch_id=patch.patch_id,
+                        reason_code=str(nv.get("reason_code") or ""),
+                    )
+                except Exception as e:
+                    logger.error("[ConceptInhibitor] 寫入 privacy ledger 失敗: %s", e)
+                    return False
+            if concept is None:
+                return True
+            by_scope = self._by_scope(concept)
+            undo: dict[str, Any] = {}
+            for scope in nv.get("scope_ids") or []:
+                cur = by_scope.get(scope)
+                undo[scope] = copy.deepcopy(cur) if isinstance(cur, dict) else None
+                entry = ScopeSharing.from_dict(cur)
+                entry.level = LEVEL_PRIVATE
+                entry.decided_by = "user"
+                entry.pinned = True
+                entry.judged_at = str(nv.get("judged_at") or "")
+                entry.patch_id = patch.patch_id
+                by_scope[scope] = entry.to_dict()
+            rb["sharing_undo"] = undo
+            self._add_history_entry(concept, patch)
+            concept.updated_at = datetime.now(timezone.utc)
+            return True
+
+        if concept is None:
+            return False
+        scope = nv.get("scope_id")
+        by_scope = self._by_scope(concept)
+        cur = by_scope.get(scope)
+
+        if op == "project":
+            entry = nv.get("entry") if isinstance(nv.get("entry"), dict) else {}
+            if entry.get("basis_digest") != compute_basis_digest(concept):
+                return False
+            if isinstance(cur, dict) and cur.get("pinned") is True:
+                return False
+            rb["sharing_undo"] = {scope: copy.deepcopy(cur) if isinstance(cur, dict) else None}
+            by_scope[scope] = ScopeSharing.from_dict(entry).to_dict()
+        elif op == "retract":
+            if not isinstance(cur, dict):
+                return False
+            rb["sharing_undo"] = {scope: copy.deepcopy(cur)}
+            entry_obj = ScopeSharing.from_dict(cur)
+            entry_obj.level = LEVEL_PRIVATE
+            entry_obj.projection_id = ""
+            entry_obj.decided_by = nv.get("decided_by") or "default"
+            entry_obj.judged_at = str(nv.get("judged_at") or "")
+            entry_obj.patch_id = patch.patch_id
+            by_scope[scope] = entry_obj.to_dict()
+        else:
+            return False
+
+        self._add_history_entry(concept, patch)
+        concept.updated_at = datetime.now(timezone.utc)
+        return True
+
+    def _rollback_share(self, concept: Concept | None, patch: ConceptPatch) -> None:
+        """回滾 share patch（呼叫端持鎖並負責 record_mutation／_save）。永遠不讓資料更可見。"""
+        nv = patch.new_value if isinstance(patch.new_value, dict) else {}
+        op = nv.get("op")
+        rb = patch.rollback_payload or {}
+
+        if op == "restrict":
+            added = rb.get("ledger_added") or []
+            if added:
+                try:
+                    self.privacy_ledger.unrestrict(added, patch_id=patch.patch_id)
+                except Exception as e:
+                    logger.error("[ConceptInhibitor] 回滾 privacy ledger 失敗: %s", e)
+        if concept is None:
+            return
+
+        by_scope = self._by_scope(concept)
+        ledger = self.privacy_ledger
+        for scope, prior in (rb.get("sharing_undo") or {}).items():
+            cur = by_scope.get(scope)
+            if not isinstance(cur, dict):
+                continue
+            if cur.get("patch_id") != patch.patch_id:
+                continue  # 之後已被別的 patch 改過，不覆蓋
+            if prior is None:
+                del by_scope[scope]
+                continue
+            restored = ScopeSharing.from_dict(prior)
+            if op == "project":
+                if cur.get("pinned") is True or any(
+                    ledger.is_restricted(u) for u in restored.cited_unit_ids
+                ):
+                    continue  # 已被收緊，不還原到較開放的舊狀態
+            else:
+                # restrict／retract 的回滾：level 維持 private、projection_id 維持現況
+                restored.level = LEVEL_PRIVATE
+                restored.projection_id = str(cur.get("projection_id") or "")
+            by_scope[scope] = restored.to_dict()
+        if not by_scope and isinstance(concept.sharing, dict):
+            concept.sharing.pop("by_scope", None)
 
     # ──────────────────────────────────────────────
     # 取代式矛盾入口（ContradictionDetector / Dream）
@@ -1505,6 +2017,15 @@ class ConceptInhibitor:
             success = False
             result = {"error": str(e)}
             logger.error("[ConceptInhibitor] reflection patch 失敗: %s", e)
+
+        if success and operation == "merge":
+            # 主概念內容已變、次概念已標記併入：兩者的舊投影都要撤回（鎖外通知）
+            for name in (target_name, result.get("secondary_removed") if isinstance(result, dict) else None):
+                c = self._semantic.get_by_name(str(name)) if name else None
+                if c is None and name:
+                    c = self._semantic.get(str(name))
+                if c is not None:
+                    self._notify_change(c.id, "merge")
 
         self._write_audit(tx)
 
@@ -2269,6 +2790,8 @@ class ConceptInhibitor:
 
     def _is_stale_patch(self, patch: ConceptPatch) -> bool:
         """patch 的前提（建立時的概念狀態）是否已失效。"""
+        if patch.action == "share" and not patch.concept_id:
+            return False  # 只寫 ledger 的 restrict 不綁概念
         concept = self._semantic.get(patch.concept_id or "")
         if concept is None:
             return True
@@ -2278,6 +2801,20 @@ class ConceptInhibitor:
             # 審核綁 basis_digest：證據基礎（description／facts／來源）變了即失效
             value = patch.new_value if isinstance(patch.new_value, dict) else {}
             return value.get("basis_digest") != compute_basis_digest(concept)
+        if patch.action == "share":
+            nv = patch.new_value if isinstance(patch.new_value, dict) else {}
+            op = nv.get("op")
+            scope = nv.get("scope_id")
+            entry = self._by_scope_readonly(concept).get(scope)
+            if op == "project":
+                if not isinstance(nv.get("entry"), dict) or nv["entry"].get(
+                    "basis_digest"
+                ) != compute_basis_digest(concept):
+                    return True
+                return isinstance(entry, dict) and entry.get("pinned") is True
+            if op == "retract":
+                return not isinstance(entry, dict)
+            return False
         if patch.action == "deprecate":
             if concept.status != patch.old_value:
                 return True
@@ -2431,6 +2968,12 @@ class ConceptInhibitor:
                 patch.rejection_reason = problem
             return
 
+        # share 只能經 process_share_patch（需要證據 unit 與 ledger 做結構驗證）
+        if patch.action == "share":
+            patch.status = "rejected"
+            patch.rejection_reason = "share patch 只能經 process_share_patch 提交"
+            return
+
         # ── 規則層 ──
         if self._should_approve_by_rule(patch):
             patch.status = "approved"
@@ -2567,11 +3110,54 @@ class ConceptInhibitor:
     # Patch 執行
     # ──────────────────────────────────────────────
 
+    # ──────────────────────────────────────────────
+    # 概念變更監聽（共享投影即時撤回用）
+    # ──────────────────────────────────────────────
+
+    def register_change_listener(self, fn: Callable[[str, str], None]) -> None:
+        """註冊變更監聽 ``fn(concept_id, reason)``（同一個 fn 不重複註冊）。
+
+        概念經 Gate 的 expand／modify／deprecate（含取代式 supersede）、反思 merge
+        （主概念與被併入的次概念）、create 導向主概念的 expand 成功並存檔後，以及上述
+        patch 被 rollback 後各通知一次；reason 為 action 名稱（rollback 時為 "rollback:<action>"，
+        merge 為 "merge"）。在 apply 自身的 semantic 鎖釋放後呼叫，不呼叫 LLM；
+        監聽者例外只記 log，不影響 patch 結果。若外層呼叫者（例如 held 重審的 guard）
+        自己持有鎖，則仍在其鎖內。
+        """
+        with self._change_listeners_lock:
+            if fn not in self._change_listeners:
+                self._change_listeners.append(fn)
+
+    def unregister_change_listener(self, fn: Callable[[str, str], None]) -> None:
+        with self._change_listeners_lock:
+            if fn in self._change_listeners:
+                self._change_listeners.remove(fn)
+
+    def _notify_change(self, concept_id: str | None, reason: str) -> None:
+        if not concept_id:
+            return
+        with self._change_listeners_lock:
+            listeners = list(self._change_listeners)
+        for fn in listeners:
+            try:
+                fn(concept_id, reason)
+            except Exception as e:
+                logger.warning(
+                    "[ConceptInhibitor] 變更監聽者失敗（%s, %s）: %s", concept_id, reason, e,
+                )
+
     def _apply_patch(self, patch: ConceptPatch) -> bool:
         """執行單一 patch 到 SemanticMemory。成功時更新 Concept Health 指標。
 
         mutation+save 在 SemanticMemory._lock 內完成，確保原子性。
         """
+        if patch.action == "share" and not patch.concept_id:
+            try:  # 只寫 ledger 的 restrict：不綁概念
+                return self._apply_share(None, patch)
+            except Exception as e:
+                logger.error("[ConceptInhibitor] apply share 失敗 (%s): %s", patch.patch_id, e)
+                return False
+
         concept = self._semantic.get(patch.concept_id or "")
         if concept is None:
             return False
@@ -2588,6 +3174,8 @@ class ConceptInhibitor:
                     success = self._apply_mark_conflict(concept, patch)
                 elif patch.action == "review":
                     success = self._apply_review(concept, patch)
+                elif patch.action == "share":
+                    success = self._apply_share(concept, patch)
                 else:
                     logger.warning(
                         "[ConceptInhibitor] 不支援的 action: %s", patch.action
@@ -2607,6 +3195,8 @@ class ConceptInhibitor:
                 and (patch.rollback_payload or {}).get("removed_contradicts_edge")
             ):
                 self._save_graph(getattr(self._semantic, "_graph", None))
+            if success and patch.action in _CHANGE_ACTIONS:
+                self._notify_change(patch.concept_id, patch.action)
             return success
         except Exception as e:
             logger.error(
@@ -2799,6 +3389,21 @@ class ConceptInhibitor:
         concept.metadata["patch_history"].append(entry.to_dict())
 
     def _rollback_patch(self, patch: ConceptPatch) -> None:
+        """回滾一個已 apply 的 patch，並在改變內容的 action 回滾後通知變更監聽者。"""
+        self._rollback_patch_impl(patch)
+        rb = patch.rollback_payload or {}
+        if patch.action == "create":
+            redirected = rb.get("redirected_to")
+            if redirected:
+                self._notify_change(str(redirected), "rollback:expand")
+            else:
+                self._notify_change(
+                    rb.get("created_concept_id") or patch.concept_id, "rollback:create",
+                )
+        elif patch.action in _CHANGE_ACTIONS:
+            self._notify_change(patch.concept_id, f"rollback:{patch.action}")
+
+    def _rollback_patch_impl(self, patch: ConceptPatch) -> None:
         """
         回滾一個已 apply 的 patch。
 
@@ -2806,6 +3411,10 @@ class ConceptInhibitor:
         如果 old_value 不可用，記錄警告但不崩潰。
         mutation+save 在 SemanticMemory._lock 內完成。
         """
+        if patch.action == "share" and not patch.concept_id:
+            self._rollback_share(None, patch)  # 只寫 ledger 的 restrict
+            return
+
         concept = self._semantic.get(patch.concept_id or "")
         if concept is None:
             logger.warning(
@@ -2884,6 +3493,9 @@ class ConceptInhibitor:
                         )
                         concept.source_diversity = int(undo.get("source_diversity", 0) or 0)
                         concept.record_mutation()
+                elif patch.action == "share":
+                    self._rollback_share(concept, patch)
+                    concept.record_mutation()
                 elif patch.action == "deprecate":
                     # 還原為 active
                     concept.status = "active"

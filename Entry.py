@@ -222,7 +222,7 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
         llm_fn=eval_fn,
     )
     # 注入 ConceptInhibitor 到 MemoryEngine，供 DreamEngine 使用
-    engine._concept_inhibitor = concept_inhibitor
+    engine.set_concept_inhibitor(concept_inhibitor)
     subconscious_assessor = SubconsciousAssessor(
         llm_fn=eval_fn,
         structured_llm_fn=structured_assessment_fn,
@@ -1309,7 +1309,7 @@ def _cmd_delete(engine: MemoryEngine):
         eid, ep = matched[0]
         console.print(f"  [dim]{eid} | {ep.user_input[:50]}…[/]")
         if Confirm.ask("[red]Delete?[/]", default=False):
-            engine.episodic.delete_episode(eid)
+            engine.delete_episode(eid)
             console.print("[green]✓ Deleted.[/]")
 
     elif mode == "session":
@@ -1324,7 +1324,7 @@ def _cmd_delete(engine: MemoryEngine):
 
         console.print(f"[yellow]Will delete {len(eps)} episodes from session '{sid}'[/]")
         if Confirm.ask("[red]Confirm?[/]", default=False):
-            count = engine.episodic.delete_session(sid)
+            count = engine.delete_session(sid)
             console.print(f"[green]✓ Deleted {count} episodes.[/]")
 
 

@@ -389,6 +389,31 @@ class EpisodicMemory:
             self._save_unlocked()
             return True
 
+    def mask_agent_content(self, episode_id: str, new_summary: str) -> bool:
+        """遮蔽 Episode 的 agent 回覆原文（M10 級聯遮蔽用）。
+
+        agent_response 清空、content_summary 換成不含 agent 內容的摘要並重算 embedding，
+        metadata 記 agent_masked；user_input 與其餘欄位保留（保留使用者自己的話）。
+        回傳 False 代表 Episode 不存在。
+        """
+        new_embedding = self._generate_embedding(new_summary) if new_summary else None
+        reindex_cache = self._precompute_reindex_cache()
+        with storage_lock(self.lock_path):
+            self._load(reset=True)
+            self._reindex_if_required(reindex_cache)
+            with self._mem_lock:
+                ep = self._episodes.get(episode_id)
+                if ep is None:
+                    return False
+                ep.agent_response = ""
+                ep.content_summary = new_summary
+                if new_embedding is not None:
+                    ep.embedding = new_embedding
+                    self._rebuild_embeddings()
+                ep.metadata["agent_masked"] = True
+            self._save_unlocked()
+            return True
+
     def update_episode_metadata(
         self, episode_id: str, updates: dict[str, Any]
     ) -> bool:

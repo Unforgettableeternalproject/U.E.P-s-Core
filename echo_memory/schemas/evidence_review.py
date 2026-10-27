@@ -25,6 +25,95 @@ REVIEWERS = ("llm", "none")
 CLAIM_KINDS = ("fact", "preference", "state", "intention")
 
 
+# ─── 共享投影佐證參考（M10 §5）────────────────────────────────────────────────
+# corroborated_by 的項目有兩種：
+#   - evidence unit id（本 namespace 內的 unit）
+#   - sp:<scope>:<projection_id>:<source_digest>（共享 namespace 內其他成員的投影）
+# scope 本身含 ":"（guild:<id>），所以由右側 rsplit 兩次切出 projection_id／digest。
+SP_PREFIX = "sp:"
+_SP_DIGEST_MIN, _SP_DIGEST_MAX = 16, 128
+
+
+@dataclass(frozen=True)
+class SpRef:
+    """解析後的共享投影參考。"""
+
+    scope: str
+    projection_id: str
+    source_digest: str
+
+    def __str__(self) -> str:
+        return make_sp_ref(self.scope, self.projection_id, self.source_digest)
+
+
+def is_sp_ref(ref: Any) -> bool:
+    """是否為 sp: 前綴（保留給共享投影參考；格式是否合法另見 parse_sp_ref）。"""
+    return isinstance(ref, str) and ref.startswith(SP_PREFIX)
+
+
+def parse_sp_ref(ref: Any) -> SpRef | None:
+    """解析 sp: 參考；格式不符回傳 None。只做結構檢查，不看內容語意。"""
+    if not is_sp_ref(ref):
+        return None
+    parts = ref[len(SP_PREFIX):].rsplit(":", 2)
+    if len(parts) != 3:
+        return None
+    scope, projection_id, digest = parts
+    from echo_memory.schemas.sharing import normalize_scope
+
+    scope = normalize_scope(scope)  # 小寫正規化
+    if scope is None:
+        return None
+    if not projection_id or any(ch.isspace() for ch in projection_id):
+        return None
+    hex_chars = "0123456789abcdef"
+    if not (_SP_DIGEST_MIN <= len(digest) <= _SP_DIGEST_MAX) or any(
+        ch not in hex_chars for ch in digest
+    ):
+        return None
+    return SpRef(scope=scope, projection_id=projection_id, source_digest=digest)
+
+
+def make_sp_ref(scope: str, projection_id: str, source_digest: str) -> str:
+    """組出 sp: 參考；欄位不合法拋 ValueError。"""
+    ref = f"{SP_PREFIX}{scope}:{projection_id}:{source_digest}"
+    if parse_sp_ref(ref) is None:
+        raise ValueError(f"無效的共享投影參考欄位: {scope!r}, {projection_id!r}, {source_digest!r}")
+    return ref
+
+
+def split_corroboration(refs: Any) -> tuple[list[str], list[SpRef]]:
+    """把 corroborated_by 拆成 (unit id 清單, 合法 sp 參考清單)；非法 sp: 項目略過。"""
+    unit_ids: list[str] = []
+    sp_refs: list[SpRef] = []
+    for ref in refs or []:
+        if is_sp_ref(ref):
+            parsed = parse_sp_ref(ref)
+            if parsed is not None:
+                sp_refs.append(parsed)
+        elif isinstance(ref, str) and ref:
+            unit_ids.append(ref)
+    return unit_ids, sp_refs
+
+
+def validate_corroborated_by(refs: Any) -> str | None:
+    """corroborated_by 的結構驗證；通過回傳 None。
+
+    必須是 list；每項是非空字串；sp: 前綴者必須是合法 sp 參考（sp: 前綴保留，
+    不得當一般 unit id）。引用是否真實存在、未撤回由讀取端（共享層）重新驗證。
+    """
+    if refs is None:
+        return None
+    if not isinstance(refs, list):
+        return "corroborated_by 不是 list"
+    for ref in refs:
+        if not isinstance(ref, str) or not ref:
+            return f"corroborated_by 含無效項目: {ref!r}"
+        if is_sp_ref(ref) and parse_sp_ref(ref) is None:
+            return f"corroborated_by 的 sp: 參考格式無效: {ref!r}"
+    return None
+
+
 def _clamp01(value: Any) -> float:
     try:
         v = float(value)

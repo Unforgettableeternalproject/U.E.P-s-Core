@@ -279,6 +279,11 @@ class EvidenceInput:
 # ─── 衍生判斷（純函式，不入庫，避免旗標過期）──────────────────────────────
 
 
+def has_shared_context(u: EvidenceUnit) -> bool:
+    """該 unit（agent 回覆）是否帶入了他人的共享摘要（attrs.contains_shared_from 非空）。"""
+    return bool((u.attrs or {}).get("contains_shared_from"))
+
+
 def can_attest_user_claim(u: EvidenceUnit) -> bool:
     """該 unit 是否可作為「使用者確實說過這句話」的證據（observation 一律不算）。"""
     return (
@@ -302,6 +307,7 @@ def can_attest_agent_said(u: EvidenceUnit) -> bool:
             or (u.delivery_state == "partial" and u.delivered_units is not None)
         )
         and u.tombstoned_at is None
+        and not has_shared_context(u)  # 含他人共享內容的回覆不是 agent 自己的知識（M10）
     )
 
 

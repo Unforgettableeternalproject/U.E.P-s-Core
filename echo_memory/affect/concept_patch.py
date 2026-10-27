@@ -118,6 +118,8 @@ class PatchEvidence:
         "reflection_merge",
         # 證據審核（EvidenceReview）
         "evidence_review",
+        # 跨使用者分享（share：project／retract／restrict）
+        "sharing",
     ]
     evidence_strength: float  # [0, 1]
 
@@ -172,14 +174,19 @@ class ConceptPatch:
       - review: 證據審核結果。target_path="evidence_review"，old_value／new_value 為
         EvidenceReview dict；apply 同時重算 confidence、（supported 時）蓋 last_verified_at、
         寫 source_diversity，舊值記在 rollback_payload["review_undo"]；不新增 derivation
+      - share: 跨使用者分享（M10）。new_value = {"op": "project"|"retract"|"restrict",
+        "scope_id": str|None, ...}；target_path 為 "sharing.by_scope"（概念的場域狀態）或
+        "privacy_ledger"（只寫帳本、不綁概念的 restrict）。規則層 approve，不呼叫 LLM。
+        project 只放寬（medium）；retract／restrict 只收緊（low）；不新增 derivation
 
     雙重 confidence:
       - old/new_confidence: 概念本身的可信度
       - patch_confidence: 此次變更操作的可信度
 
     風險等級:
-      - low: create、expand/ADD_FACT（強證據）、mark_conflict、review
-      - medium: expand/REFINE_SUMMARY、link/unlink
+      - low: create、expand/ADD_FACT（強證據）、mark_conflict、review、
+        share/retract、share/restrict
+      - medium: expand/REFINE_SUMMARY、link/unlink、share/project
       - high: modify、deprecate、merge
     """
     # 身份識別
@@ -187,7 +194,7 @@ class ConceptPatch:
     concept_name: str
     action: Literal[
         "create", "expand", "modify", "deprecate",
-        "link", "unlink", "merge", "mark_conflict", "review",
+        "link", "unlink", "merge", "mark_conflict", "review", "share",
     ]
     evidence: PatchEvidence
 

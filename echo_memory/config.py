@@ -197,6 +197,35 @@ class Config:
         # noisy-OR 合成的 support_strength 達此門檻才可 supported
         self.support_threshold = float(os.getenv("SUPPORT_THRESHOLD", "0.9"))
 
+        # === 跨使用者分享（M10）===
+        # 總開關：關閉時 Gate 拒絕 project（retract／restrict 仍可執行，只收緊永遠安全）
+        self.sharing_enabled = os.getenv("SHARING_ENABLED", "true").lower() == "true"
+        # 可分享的最小在場人數（含說話者）；裁決：>=2 且非 dm 即整個場域可分享。下限鎖 2
+        self.sharing_min_audience_size = max(2, int(os.getenv("SHARING_MIN_AUDIENCE_SIZE", "2")))
+        # 隱私意圖掃描時機：post_turn（群組輪次回覆後非同步）| dream（只在 Dream 內）
+        _scan = os.getenv("SHARING_INTENT_SCAN", "post_turn").strip().lower()
+        self.sharing_intent_scan = _scan if _scan in ("post_turn", "dream") else "post_turn"
+        # shareable_summary 長度上限（字元）
+        self.sharing_summary_max_chars = int(os.getenv("SHARING_SUMMARY_MAX_CHARS", "120"))
+        # retrieve_shared：上限筆數與最低相似度（高於一般檢索，避免亂帶）
+        self.sharing_retrieve_top_k = int(os.getenv("SHARING_RETRIEVE_TOP_K", "3"))
+        self.sharing_retrieve_min_similarity = float(
+            os.getenv("SHARING_RETRIEVE_MIN_SIMILARITY", "0.45")
+        )
+        # 交叉佐證候選：前 N 筆、最低相似度
+        self.sharing_corroboration_top_k = int(os.getenv("SHARING_CORROBORATION_TOP_K", "5"))
+        self.sharing_corroboration_min_similarity = float(
+            os.getenv("SHARING_CORROBORATION_MIN_SIMILARITY", "0.5")
+        )
+        # 開發者 uid 白名單（逗號分隔），MCP 入口二次核對用；空＝無人具開發者權限
+        self.sharing_developer_uids = tuple(
+            x.strip() for x in os.getenv("SHARING_DEVELOPER_UIDS", "").split(",") if x.strip()
+        )
+        # MCP 是否允許讀取數字使用者 namespace（預設拒絕，僅供開發者讀自己的測試 namespace）
+        self.mcp_allow_user_namespaces = (
+            os.getenv("MCP_ALLOW_USER_NAMESPACES", "false").lower() == "true"
+        )
+
         # === Concept 語意相近提示 ===
         # 新概念要 create 前，以 embedding 找 active 概念中 cosine 高於此值者（top 3），
         # 作為候選提示交給 Gate 的 LLM 判斷「同一件事（expand）」或「不同概念（create）」

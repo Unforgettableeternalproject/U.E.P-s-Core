@@ -46,3 +46,10 @@ class NamespaceEngineRegistry(Generic[T]):
     def clear(self) -> None:
         with self._lock:
             self._instances.clear()
+
+
+def scope_namespace_id(guild_id: str | int) -> str:
+    """guild id -> 共享層 namespace id（``scope-g<guild_id>``）；id 無效拋 ValueError。"""
+    from echo_memory.schemas.sharing import guild_scope, scope_to_namespace_id
+
+    return normalize_namespace_id(scope_to_namespace_id(guild_scope(guild_id)))

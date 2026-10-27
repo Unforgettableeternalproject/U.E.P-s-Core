@@ -76,9 +76,19 @@ def mock_soul_notes():
 
 
 @pytest.fixture
-def executor(mock_engine, mock_soul_notes):
+def mock_inhibitor():
+    """Patch Gate mock：概念變更一律委派給它（不再有直寫 fallback）。"""
+    gate = MagicMock()
+    gate.process_reflection_patch.return_value = (True, {})
+    return gate
+
+
+@pytest.fixture
+def executor(mock_engine, mock_soul_notes, mock_inhibitor):
     """建立 ReflectionExecutor 實例。"""
-    return ReflectionExecutor(engine=mock_engine, soul_notes=mock_soul_notes)
+    return ReflectionExecutor(
+        engine=mock_engine, soul_notes=mock_soul_notes, concept_inhibitor=mock_inhibitor,
+    )
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -209,18 +219,22 @@ class TestExecutorActions:
         with pytest.raises(ValueError, match="Episode 不存在"):
             fn("adjust_salience", "ep_ghost", {"new_salience": 0.5})
 
-    def test_tag_concept(self, executor, mock_engine):
-        """tag_concept 正確追加標籤。"""
+    def test_tag_concept(self, executor, mock_engine, mock_inhibitor):
+        """tag_concept 委派 Patch Gate 追加標籤，不直寫 SemanticMemory。"""
         mock_engine.semantic.get_by_name.return_value = FakeConcept(
             metadata={"tags": ["existing"]}
+        )
+        mock_inhibitor.process_reflection_patch.return_value = (
+            True, {"old_tags": ["existing"], "new_tags": ["existing", "new_tag"]},
         )
         fn = executor.build_executor_fn()
         result = fn("tag_concept", "測試概念", {"tags": ["new_tag"]})
 
         assert "existing" in result["old_tags"]
         assert "new_tag" in result["new_tags"]
-        assert "existing" in result["new_tags"]
-        mock_engine.semantic.upsert_concept.assert_called_once()
+        mock_inhibitor.process_reflection_patch.assert_called_once()
+        assert mock_inhibitor.process_reflection_patch.call_args.kwargs["operation"] == "tag"
+        mock_engine.semantic.upsert_concept.assert_not_called()
 
     def test_tag_concept_not_found(self, executor, mock_engine):
         """tag_concept 概念不存在時拋出 ValueError。"""
@@ -251,8 +265,8 @@ class TestExecutorActions:
         with pytest.raises(ValueError, match="缺少 content"):
             fn("add_note", "", {"content": ""})
 
-    def test_merge_concepts(self, executor, mock_engine):
-        """merge_concepts 合併兩個概念。"""
+    def test_merge_concepts(self, executor, mock_engine, mock_inhibitor):
+        """merge_concepts 委派 Patch Gate 合併，不直寫也不硬刪。"""
         primary = FakeConcept(
             name="主概念",
             description="主描述",
@@ -267,13 +281,19 @@ class TestExecutorActions:
             primary if n == "主概念" else secondary if n == "次概念" else None
         )
 
+        mock_inhibitor.process_reflection_patch.return_value = (
+            True, {"primary": "主概念", "secondary_removed": "次概念"},
+        )
         fn = executor.build_executor_fn()
         result = fn("merge_concepts", "主概念", {"merge_with": "次概念"})
 
         assert result["primary"] == "主概念"
         assert result["secondary_removed"] == "次概念"
-        mock_engine.semantic.upsert_concept.assert_called_once()
-        mock_engine.semantic.remove_concept.assert_called_once_with("次概念")
+        call = mock_inhibitor.process_reflection_patch.call_args.kwargs
+        assert call["operation"] == "merge"
+        assert call["params"] == {"merge_with": "次概念"}
+        mock_engine.semantic.upsert_concept.assert_not_called()
+        mock_engine.semantic.remove_concept.assert_not_called()
 
     def test_merge_concepts_self_merge_rejected(self, executor):
         """自我合併（target == merge_with）被拒絕。"""
@@ -298,16 +318,20 @@ class TestExecutorActions:
         assert result["archived"] is True
         mock_engine.episodic.archive_episode.assert_called_once_with("ep_test123")
 
-    def test_create_concept(self, executor, mock_engine):
-        """create_concept 建立新概念（目標不存在時）。"""
+    def test_create_concept(self, executor, mock_engine, mock_inhibitor):
+        """create_concept 委派 Patch Gate 建立新概念（目標不存在時）。"""
         # get_by_name 回傳 None 表示概念不存在
         mock_engine.semantic.get_by_name.return_value = None
+        mock_inhibitor.process_reflection_patch.return_value = (
+            True, {"concept_id": "concept_test", "name": "新概念"},
+        )
         fn = executor.build_executor_fn()
         result = fn("create_concept", "新概念", {"description": "新描述"})
 
         assert result["concept_id"] == "concept_test"
         assert result["name"] == "新概念"
-        mock_engine.semantic.upsert_concept.assert_called_once()
+        assert mock_inhibitor.process_reflection_patch.call_args.kwargs["operation"] == "create"
+        mock_engine.semantic.upsert_concept.assert_not_called()
 
     def test_create_concept_already_exists(self, executor, mock_engine):
         """create_concept 同名概念已存在時拒絕。"""
@@ -430,7 +454,7 @@ class TestActionQueueIntegration:
         assert len(executed) == 1
         assert executed[0].status == ActionStatus.EXECUTED
 
-    def test_confirm_action_requires_confirmation(self, executor, mock_engine):
+    def test_confirm_action_requires_confirmation(self, executor, mock_engine, mock_inhibitor):
         """CONFIRM 行動需要先確認才能執行。"""
         # 設定正確的 mock 數據：不同名稱回傳不同 concept
         primary = FakeConcept(name="主概念", description="主描述")
@@ -457,7 +481,8 @@ class TestActionQueueIntegration:
         # 確認後才能執行
         queue.confirm(action.id)
         assert queue.execute(action, executor_fn=fn) is True
-        mock_engine.semantic.remove_concept.assert_called_once_with("次概念")
+        mock_inhibitor.process_reflection_patch.assert_called_once()
+        mock_engine.semantic.remove_concept.assert_not_called()
 
     def test_deny_action_rejected(self, executor):
         """DENY 行動在 enqueue 時即被拒絕。"""

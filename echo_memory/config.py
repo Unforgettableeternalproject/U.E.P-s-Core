@@ -89,6 +89,14 @@ class Config:
             os.getenv("DREAM_REPLAY_DA_THRESHOLD", "0.6")
         )
 
+        # === Patch Gate held 重審 ===
+        # held patch 每次重審失敗（LLM 仍不可用 / 仍無法判定）計一次，達上限即標記為最終拒絕
+        self.concept_held_max_retries = int(os.getenv("CONCEPT_HELD_MAX_RETRIES", "3"))
+        # held 超過此天數仍未解決視為逾期，標記為最終拒絕
+        self.concept_held_max_age_days = float(os.getenv("CONCEPT_HELD_MAX_AGE_DAYS", "7"))
+        # 單次觸發（對話 patch / Dream 週期）最多重審幾筆，避免拖慢對話路徑
+        self.concept_held_review_batch = int(os.getenv("CONCEPT_HELD_REVIEW_BATCH", "3"))
+
         # === Concept 關聯邊（RELATES_TO 蒸餾建邊 / LATENT_BRIDGE 檢索） ===
         # 蒸餾來源 Episode 的 Jaccard 重疊度低於此值不建 RELATES_TO
         self.relates_to_min_jaccard = float(os.getenv("RELATES_TO_MIN_JACCARD", "0.2"))

@@ -40,12 +40,18 @@ class DreamPatchCoordinator:
         self,
         inhibitor=None,  # ConceptInhibitor（避免循環 import）
         audit_log_path: str | Path | None = None,
+        semantic=None,  # SemanticMemory；inhibitor 缺省時用來建立降級 Gate
     ):
         """
         Args:
-            inhibitor: ConceptInhibitor 實例。None 時蒸餾退回直接寫入。
+            inhibitor: ConceptInhibitor 實例。None 且提供 semantic 時，建立無 LLM 的
+                降級 Inhibitor（仍經 Patch Gate、留 patch trail）。
             audit_log_path: Dream audit log 路徑。None 時使用預設位置。
+            semantic: SemanticMemory 實例，僅在 inhibitor 缺省時使用。
         """
+        if inhibitor is None and semantic is not None:
+            from echo_memory.affect.concept_inhibitor import ConceptInhibitor
+            inhibitor = ConceptInhibitor(semantic=semantic, llm_fn=None)
         self._inhibitor = inhibitor
         self._audit_log_path = Path(audit_log_path) if audit_log_path else None
         self._cycle_id: str = ""
@@ -67,6 +73,7 @@ class DreamPatchCoordinator:
         concept_type: str,
         source_episode_ids: list[str],
         embedding: list[float] | None = None,
+        subject: str | None = None,
     ) -> tuple[str | None, PatchTransaction | None]:
         """
         提交蒸餾產生的 Concept 到 ConceptInhibitor。
@@ -79,6 +86,7 @@ class DreamPatchCoordinator:
             concept_type: 概念類型
             source_episode_ids: 來源 Episode ID 列表
             embedding: 概念嵌入向量
+            subject: 概念主體（user / agent / world），隨 create patch 寫入 patch trail
 
         Returns:
             (concept_id, PatchTransaction) — inhibitor 為 None 時回傳 (None, None)
@@ -98,9 +106,27 @@ class DreamPatchCoordinator:
             triggered_by="dream",
             concept_type=concept_type,
             source_episode_ids=source_episode_ids,
+            subject=subject,
         )
 
         return concept_id, tx
+
+    def review_held(self, guard=None) -> int:
+        """
+        Dream 週期開始時重審先前 held 的 concept patch（觸發點之一）。
+
+        LLM corroboration 在 guard 外，apply 在 guard 內（由 inhibitor 處理）。
+
+        Returns:
+            本次重審產生的 audit transaction 數
+        """
+        if self._inhibitor is None or not hasattr(self._inhibitor, "review_held_patches"):
+            return 0
+        try:
+            return len(self._inhibitor.review_held_patches(guard=guard))
+        except Exception as e:
+            logger.warning("[DreamPatchCoordinator] held 重審失敗（不影響 Dream）: %s", e)
+            return 0
 
     # ──────────────────────────────────────────────
     # Graph mutation audit（不走 Inhibitor）

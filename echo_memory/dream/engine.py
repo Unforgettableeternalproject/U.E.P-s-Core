@@ -179,6 +179,7 @@ class DreamEngine:
             self._patch_coordinator = DreamPatchCoordinator(
                 inhibitor=concept_inhibitor,
                 audit_log_path=audit_path,
+                semantic=semantic,
             )
 
         # 子模組（傳入 semantic 供 LATENT_BRIDGE 使用）
@@ -379,6 +380,8 @@ class DreamEngine:
             if self._patch_coordinator is not None:
                 with self._guard():
                     self._patch_coordinator.begin_cycle(triggered_by)
+                # 重審先前 held 的 concept patch（LLM 在鎖外，apply 在鎖內）
+                self._patch_coordinator.review_held(guard=self._guard)
 
             # ── 階段 1、2：邊權重更新 + 圖譜修剪（無 LLM，單一短臨界區）──
             with self._guard():

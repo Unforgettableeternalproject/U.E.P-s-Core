@@ -128,6 +128,10 @@ class ContradictionDetector:
             )
             return []
 
+        # 已合併 / 非 active 的概念不參與偵測
+        if not self._is_active(concept):
+            return []
+
         # 概念本身沒有向量時無法比較
         if not concept.embedding:
             logger.debug(
@@ -209,7 +213,12 @@ class ContradictionDetector:
 
     def _get_all_concepts(self) -> list[Concept]:
         """從 SemanticMemory 取得全部概念"""
-        return list(self.semantic._concepts.values())
+        return [c for c in self.semantic._concepts.values() if self._is_active(c)]
+
+    @staticmethod
+    def _is_active(concept: Concept) -> bool:
+        """active 且未被合併（merged_into）的概念才參與矛盾偵測"""
+        return concept.status == "active" and not concept.metadata.get("merged_into")
 
     def _cosine_similarity(self, vec_a: list[float], vec_b: list[float]) -> float:
         """
@@ -248,6 +257,10 @@ class ContradictionDetector:
         for other in pool:
             # 排除自身
             if other.id == concept.id:
+                continue
+
+            # 排除已合併 / 非 active 的候選（candidate_pool 可由外部傳入）
+            if not self._is_active(other):
                 continue
 
             # 排除無向量的候選
@@ -352,6 +365,13 @@ class ContradictionDetector:
         Args:
             result: ContradictionResult 結果物件
         """
+        # 任一端已合併 / 非 active 則不建邊（避免 add_edge 自動生出裸節點）
+        for cid in (result.concept_a_id, result.concept_b_id):
+            stored = self.semantic.get(cid)
+            if stored is not None and not self._is_active(stored):
+                logger.debug(f"[ContradictionDetector] 概念 {cid[:8]} 非 active，跳過建邊")
+                return
+
         # 確保節點存在（若尚未加入圖中則先添加佔位節點）
         self._ensure_concept_node(result.concept_a_id)
         self._ensure_concept_node(result.concept_b_id)
@@ -398,6 +418,9 @@ class ContradictionDetector:
         """
         if not self.graph.has_node(concept_id):
             concept = self.semantic.get(concept_id)
+            if concept and not self._is_active(concept):
+                # 已合併 / 非 active 的概念不得被補回圖譜
+                return
             if concept:
                 self.graph.add_concept_node(
                     concept_id=concept.id,

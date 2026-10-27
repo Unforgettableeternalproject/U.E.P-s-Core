@@ -295,7 +295,11 @@ class GraphPruning:
             return 0
 
         # 取得所有有 embedding 的概念
-        concepts = self._semantic.list_concepts()
+        # 僅 active 且未被合併的概念可建橋（merged 概念的圖譜節點已摘除）
+        concepts = [
+            c for c in self._semantic.list_concepts(status="active")
+            if not c.metadata.get("merged_into")
+        ]
         if len(concepts) < 2:
             return 0
 
@@ -304,6 +308,7 @@ class GraphPruning:
             (c.id, c.name, c.embedding)
             for c in concepts
             if c.embedding and len(c.embedding) > 0
+            and self.graph.graph.has_node(c.id)
         ][:50]
 
         if len(concepts_with_emb) < 2:
@@ -374,6 +379,9 @@ class GraphPruning:
         now_ts = time.time()
         for id_a, id_b, name_a, name_b, similarity in candidates:
             reason = f"夢境橋接：{name_a} ↔ {name_b}（相似度 {similarity:.3f}）"
+            # add_edge 會自動生出缺屬性的裸節點；建邊前確認兩端節點都存在
+            if not (self.graph.graph.has_node(id_a) and self.graph.graph.has_node(id_b)):
+                continue
             for src, dst in [(id_a, id_b), (id_b, id_a)]:
                 self.graph.graph.add_edge(
                     src, dst,
@@ -453,7 +461,11 @@ class GraphPruning:
             if self._semantic is None:
                 return False
             concept = self._semantic.get(node_id)
-            return concept is None or concept.status != "active"
+            return (
+                concept is None
+                or concept.status != "active"
+                or bool(concept.metadata.get("merged_into"))
+            )
 
         to_remove: list[tuple[str, str]] = []
         for u, v, data in self.graph.graph.edges(data=True):
@@ -473,6 +485,17 @@ class GraphPruning:
                 logger.warning("[GraphPruning] audit 失敗，跳過 bridge 過期清除 (%d 條)", len(to_remove))
                 return 0
         self.graph.graph.remove_edges_from(to_remove)
+        # 清掉 bridge 殘留的裸節點：無任何屬性（add_edge 自動生成）且已無邊
+        # 正常節點必有 node_type 等屬性，不會被誤刪
+        bare = {
+            n for e in to_remove for n in e
+            if self.graph.graph.has_node(n)
+            and not self.graph.graph.nodes[n]
+            and self.graph.graph.degree(n) == 0
+        }
+        if bare:
+            self.graph.graph.remove_nodes_from(bare)
+            logger.info(f"[GraphPruning] 清除 {len(bare)} 個 bridge 殘留裸節點")
         logger.info(f"[GraphPruning] 清除 {len(to_remove)} 條過期 / 失效 LATENT_BRIDGE")
         return len(to_remove)
 

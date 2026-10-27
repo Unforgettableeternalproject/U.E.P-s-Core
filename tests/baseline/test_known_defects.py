@@ -113,22 +113,12 @@ class SimpleNS:
         self.__dict__.update(kw)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "缺陷 b：concept_inhibitor.py _reflection_merge 以 semantic.remove_concept(merge_with) 硬刪次概念"
-    "（semantic.py remove_concept 直接 del）；違反「deprecate ≠ delete」，"
-    "次概念不留 deprecated/replaced_by 軌跡。"
-))
 def test_b1_merge_keeps_secondary_as_non_active(merged):
     c = merged.engine.semantic.get_by_name("夜貓作息")
     assert c is not None, "次概念被硬刪"
     assert c.status != "active"
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "缺陷 b：ReflectionExecutor.build_rollback_fn 的 merge_concepts 分支只記 warning "
-    "（「rollback 尚不完整」），且 ConceptInhibitor._rollback_patch 沒有 merge 分支；"
-    "但 ActionQueue.rollback 仍回報成功並標 ROLLED_BACK -> 靜默的假回滾。"
-))
 def test_b2_merge_can_be_rolled_back(merged):
     e = merged.engine
     assert merged.queue.rollback(merged.action.id, merged.executor.build_rollback_fn())
@@ -138,10 +128,6 @@ def test_b2_merge_can_be_rolled_back(merged):
     assert e.semantic.get_by_name("手沖咖啡").description == merged.primary_desc_before
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "額外發現 e2：remove_concept 不處理 MemoryGraph；merge 後次概念的圖譜節點"
-    "（含 DERIVED_FROM / RELATES_TO 邊）仍殘留，指向已不存在的 Concept。"
-))
 def test_e2_merge_leaves_no_orphan_graph_node(merged):
     g = merged.engine.episodic.graph
     assert not g.has_node(merged.secondary_id)
@@ -200,11 +186,6 @@ def held_then_llm_recovers(restored_engine):
     return e, inh, held_id
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "缺陷 c：concept_inhibitor.py _evaluate_patch 將 patch 設為 held 後，held 只被寫進 "
-    "audit_log.jsonl；全 repo 沒有任何程式讀回 held 重審（grep held 僅見賦值與 Entry.py 的計數顯示）。"
-    "LLM 恢復後 patch 仍永遠 held。"
-))
 def test_c_held_patch_is_eventually_reviewed(held_then_llm_recovers):
     e, _inh, held_id = held_then_llm_recovers
     assert held_id not in _unresolved_held_patch_ids(tx_audit(e)), "held patch 永久懸置"
@@ -229,12 +210,6 @@ def dreamed_default_engine(restored_engine):
     return e, before
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "缺陷 d1：engine.py 預設 _concept_inhibitor=None（只有 Entry.py 注入）-> "
-    "DreamEngine -> DreamPatchCoordinator(inhibitor=None).submit_distillation_concept 回 (None, None) "
-    "-> distillation._ingest_concept 退回 semantic.upsert_concept 直寫；"
-    "audit_log.jsonl 沒有任何 PatchTransaction。"
-))
 def test_d1_default_engine_dream_writes_through_patch_gate(dreamed_default_engine):
     e, before = dreamed_default_engine
     rows = [r for r in tx_audit(e)[before:] if r["triggered_by"] == "dream"]
@@ -260,10 +235,6 @@ def legacy_extracted(restored_engine):
     return e, before
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "缺陷 d2：concept_extractor.py inhibitor=None 時走 _upsert_legacy，直接 semantic.upsert_concept，"
-    "同義詞分支甚至直接改 best_match.source_episode_ids 並呼叫 semantic._save()；無 audit。"
-))
 def test_d2_extractor_without_inhibitor_still_audited(legacy_extracted):
     e, before = legacy_extracted
     assert [r for r in tx_audit(e)[before:] if r["triggered_by"] == "extractor"]
@@ -280,10 +251,6 @@ def legacy_reflection_created(restored_engine):
     return e, before
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "缺陷 d3：reflection_executor.py _exec_create_concept/_exec_tag_concept/_exec_merge_concepts "
-    "在 inhibitor=None 時退回 semantic.upsert_concept / remove_concept 直寫，無 audit。"
-))
 def test_d3_reflection_without_inhibitor_still_audited(legacy_reflection_created):
     e, before = legacy_reflection_created
     assert [r for r in tx_audit(e)[before:] if r["triggered_by"] == "reflection"]
@@ -301,11 +268,6 @@ def dreamed_with_inhibitor(restored_engine):
     return e, c
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "缺陷 d4：即使 Inhibitor 在場，distillation._ingest_concept 仍在 patch pipeline 之後呼叫 "
-    "semantic.set_subject()（semantic.py 註解自承「subject 不穿那四層」）-> "
-    "subject 變更沒有 patch / audit / rollback 軌跡。"
-))
 def test_d4_subject_assignment_is_recorded_in_patch_trail(dreamed_with_inhibitor):
     e, c = dreamed_with_inhibitor
     recorded = any(
@@ -332,11 +294,6 @@ def created_then_rolled_back(restored_engine, tmp_path):
     return e, after_create
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "缺陷 d5：reflection_executor.py build_rollback_fn 的 create_concept / tag_concept 分支"
-    "直接呼叫 semantic.remove_concept / upsert_concept，繞過 Inhibitor；"
-    "回滾造成的 Concept 變更沒有對應 PatchTransaction。"
-))
 def test_d5_reflection_rollback_goes_through_patch_gate(created_then_rolled_back):
     e, after_create = created_then_rolled_back
     assert len(tx_audit(e)) > after_create, "回滾刪除概念卻沒有 audit"
@@ -375,11 +332,6 @@ def failed_modify_after_expand(restored_engine):
     return e
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "額外發現 e1：concept_inhibitor._apply_modify 先改 concept.description 才重算 embedding；"
-    "embedding 失敗時 patch 被標 rejected、_apply_patch 回 False，但沒有還原已改的 description；"
-    "隨後 rollback 其他 patch 的 _save() 會把半套變更一起寫入磁碟。tx 說失敗了，資料卻已變。"
-))
 def test_e1_failed_modify_leaves_no_partial_mutation(failed_modify_after_expand):
     e = failed_modify_after_expand
     assert e.semantic.get_by_name("小橘").description == "使用者養的貓"

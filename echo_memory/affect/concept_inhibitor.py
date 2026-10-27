@@ -15,10 +15,15 @@ Semantic Memory 的變更安全閘門。根據 ConceptVerifier 的判定結果 +
 
 from __future__ import annotations
 
+import contextlib
+import copy
 import json
 import logging
+import threading
+import time
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 from echo_memory.affect.concept_patch import (
@@ -31,9 +36,23 @@ from echo_memory.affect.concept_patch import (
 )
 from echo_memory.affect.concept_verifier import ConceptAssessment, ConceptVerification
 from echo_memory.schemas.concept import Concept
+from echo_memory.storage.atomic import atomic_write_json, replace_with_retry
+from echo_memory.storage.locking import storage_lock
 from echo_memory.storage.semantic import SemanticMemory
 
 logger = logging.getLogger("echo_memory.affect.concept_inhibitor")
+
+# held_patches.json 的行程內鎖：同一路徑的多個 ConceptInhibitor 實例共用同一把
+_HELD_LOCKS_GUARD = threading.Lock()
+_HELD_LOCKS: dict[str, threading.RLock] = {}
+# held patch 被某個 reviewer 認領（in-flight）後，超過此秒數視為認領者已中斷，可被重新認領
+_HELD_CLAIM_TTL_SECONDS = 600.0
+
+
+def _held_file_lock(path: Path) -> threading.RLock:
+    key = str(Path(path).resolve()).casefold()
+    with _HELD_LOCKS_GUARD:
+        return _HELD_LOCKS.setdefault(key, threading.RLock())
 
 
 def _producer_for_kind(evidence_kind: str | None) -> str:
@@ -105,16 +124,40 @@ class ConceptInhibitor:
         semantic: SemanticMemory,
         llm_fn: Callable[[str], str] | None = None,
         audit_log_path: str | None = None,
+        held_max_retries: int | None = None,
+        held_max_age_days: float | None = None,
+        held_review_batch: int | None = None,
     ):
         """
         Args:
             semantic: SemanticMemory 實例（patch 目標）
             llm_fn: LLM 呼叫函式（EVAL 角色）。None 時跳過 LLM corroboration。
             audit_log_path: 獨立 audit log 路徑。None 時使用 semantic 目錄下的預設路徑。
+            held_max_retries: held patch 重審失敗上限。None 時取 config。
+            held_max_age_days: held patch 最長懸置天數。None 時取 config。
+            held_review_batch: 單次觸發最多重審幾筆。None 時取 config。
         """
         self._semantic = semantic
         self._llm_fn = llm_fn
         self._audit_log_path = audit_log_path
+
+        from echo_memory.config import get_config
+        cfg = get_config()
+        self._held_max_retries = (
+            held_max_retries if held_max_retries is not None
+            else cfg.concept_held_max_retries
+        )
+        self._held_max_age_days = (
+            held_max_age_days if held_max_age_days is not None
+            else cfg.concept_held_max_age_days
+        )
+        self._held_review_batch = (
+            held_review_batch if held_review_batch is not None
+            else cfg.concept_held_review_batch
+        )
+        # held 登記簿：patch_id -> {patch, retries, held_at, context}；持久化於 held_patches.json
+        self._held_lock = _held_file_lock(self._held_path())
+        self._held: dict[str, dict[str, Any]] | None = None
 
     # ──────────────────────────────────────────────
     # 核心流程
@@ -147,6 +190,12 @@ class ConceptInhibitor:
         Returns:
             PatchTransaction（包含所有 patch 的最終狀態）
         """
+        # 觸發點：每次進入 Gate 先重審先前 held 的 patch（有批次上限，無 LLM 時略過）
+        try:
+            self.review_held_patches()
+        except Exception as e:
+            logger.warning("[ConceptInhibitor] held 重審失敗（不影響本輪）: %s", e)
+
         # 無變更 → 空 transaction
         if not verification.has_changes:
             return PatchTransaction(
@@ -178,6 +227,8 @@ class ConceptInhibitor:
         # 2. Hybrid 決策
         for patch in tx.patches:
             self._evaluate_patch(patch, user_input, llm_response)
+            if patch.status == "held":
+                self._register_held(patch, tx, user_input, llm_response)
 
         # 3. 提交 approved patches（原子性：任一失敗 → rollback 全部已 applied）
         approved_count = sum(1 for p in tx.patches if p.status == "approved")
@@ -241,6 +292,7 @@ class ConceptInhibitor:
         triggered_by: str = "extractor",
         concept_type: str = "entity",
         source_episode_ids: list[str] | None = None,
+        subject: str | None = None,
     ) -> tuple[str | None, PatchTransaction]:
         """
         處理來自 ConceptExtractor 的概念寫入請求。
@@ -259,6 +311,8 @@ class ConceptInhibitor:
             similarity_score: 與最近鄰的相似度（用於 merge/polysemy 路徑）
             existing_concept_id: 現有概念 ID（用於 merge 路徑）
             embedding: 概念嵌入向量（用於 create 路徑）
+            subject: 概念主體（user / agent / world）。提供時隨 create patch 寫入，
+                進入 patch trail（new_value["subject"]）。
 
         Returns:
             (concept_id | None, PatchTransaction)
@@ -332,6 +386,7 @@ class ConceptInhibitor:
                     "concept_type": concept_type,
                     "extra_source_episode_ids": all_source_ids[1:],
                     "producer": _producer_for_kind(evidence_kind),
+                    **({"subject": subject} if subject else {}),
                 },
                 patch_confidence=0.7,
                 evidence=evidence,
@@ -357,7 +412,7 @@ class ConceptInhibitor:
                     applied_patches.append(patch)
                 else:
                     patch.status = "rejected"
-                    patch.rejection_reason = "SemanticMemory create 失敗"
+                    patch.rejection_reason = patch.rejection_reason or "SemanticMemory create 失敗"
                     failed = True
             elif patch.action == "expand":
                 success = self._apply_expand_source(patch)
@@ -404,6 +459,16 @@ class ConceptInhibitor:
             producer = payload.get("producer") or _producer_for_kind(
                 patch.evidence.evidence_kind if patch.evidence else None
             )
+            # subject 先驗證：非法值不能在 upsert 之後才失敗，留下一個半成品概念
+            subject = payload.get("subject")
+            if subject:
+                self._semantic.validate_subject(subject)
+            create_name = payload.get("name", patch.concept_name)
+            with self._semantic._lock:
+                existing = self._semantic.get_by_name(create_name)
+                if existing is not None and self._semantic.is_merged(existing):
+                    # 已合併的名稱視為主概念的別名：導向主概念，不覆寫已合併的次概念
+                    return self._redirect_create_to_primary(patch, existing, payload, producer)
             concept_id = self._semantic.upsert_concept(
                 name=payload.get("name", patch.concept_name),
                 description=payload.get("description", ""),
@@ -413,6 +478,9 @@ class ConceptInhibitor:
                 producer=producer,
             )
             if concept_id:
+                # subject 隨 create patch 寫入（已記錄於 patch.new_value，可由 audit 追溯）
+                if subject:
+                    self._semantic.set_subject(concept_id, subject)
                 # 補入剩餘的 source_episode_ids（#1 provenance 修復）與 derivations
                 extra_sources = payload.get("extra_source_episode_ids", [])
                 parent_concepts = payload.get("parent_concept_ids") or []
@@ -451,6 +519,95 @@ class ConceptInhibitor:
             )
             return False, None
 
+    def _redirect_create_to_primary(
+        self,
+        patch: ConceptPatch,
+        merged: Concept,
+        payload: dict[str, Any],
+        producer: str,
+    ) -> tuple[bool, str | None]:
+        """create 命中已合併的次概念：改以 expand 方式補進它併入的主概念。
+
+        補入 source_episode_ids / derivation 與一筆 fact（描述），audit 記錄導向原因。
+        主概念不存在、非 active 或自己也已被合併時拒絕（patch.rejection_reason 說明）。
+        """
+        name = merged.name
+        with self._semantic._lock:
+            primary = self._semantic.get(str(merged.metadata.get("merged_into") or ""))
+            if (
+                primary is None
+                or primary.status != "active"
+                or self._semantic.is_merged(primary)
+            ):
+                patch.rejection_reason = (
+                    f"同名概念「{name}」已併入其他概念，但主概念不存在或非 active，拒絕建立"
+                )
+                return False, None
+
+            reason = f"同名概念「{name}」已併入「{primary.name}」，改以 expand 補入主概念"
+            description = str(payload.get("description") or "")
+            episodes = [
+                e for e in [payload.get("episode_id"), *(payload.get("extra_source_episode_ids") or [])]
+                if e
+            ]
+            old_sources = list(primary.source_episode_ids)
+            old_confidence = primary.confidence
+            had_facts_key = "facts" in primary.metadata
+            added_fact = None
+            ref = {"patch_id": patch.patch_id, "transaction_id": patch.transaction_id}
+            try:
+                if description and not any(
+                    isinstance(f, dict) and f.get("text") == description
+                    for f in primary.metadata.get("facts", [])
+                ):
+                    added_fact = {
+                        "text": description,
+                        "source": "merged_alias_redirect",
+                        "alias": name,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
+                    primary.metadata.setdefault("facts", []).append(added_fact)
+                for ep_id in episodes:
+                    if ep_id not in primary.source_episode_ids:
+                        primary.source_episode_ids.append(ep_id)
+                primary.record_mutation()
+                for ep_id in episodes:
+                    primary.add_derivation("episode", ep_id, producer, ref=ref)
+                self._add_history_entry(primary, patch)
+                self._semantic._save()
+            except Exception as e:
+                # 補償：回到導向前的狀態
+                primary.source_episode_ids = old_sources
+                primary.remove_derivations_by_patch(patch.patch_id)
+                if added_fact is not None:
+                    cur = primary.metadata.get("facts", [])
+                    if added_fact in cur:
+                        cur.remove(added_fact)
+                    if not had_facts_key and not cur:
+                        primary.metadata.pop("facts", None)
+                history = primary.metadata.get("patch_history", [])
+                if history and history[-1].get("patch_id") == patch.patch_id:
+                    history.pop()
+                logger.error("[ConceptInhibitor] 同名導向主概念失敗 (%s): %s", name, e)
+                patch.rejection_reason = f"導向主概念失敗: {e}"
+                return False, None
+
+            patch.rollback_payload = {
+                **(patch.rollback_payload or {}),
+                "redirected_to": primary.id,
+                "redirect_reason": reason,
+                "old_source_episode_ids": old_sources,
+                "old_confidence": old_confidence,
+                "added_fact": added_fact,
+            }
+            if patch.evidence is not None:
+                patch.evidence.verifier_reason = (
+                    f"{patch.evidence.verifier_reason}；{reason}"
+                    if patch.evidence.verifier_reason else reason
+                )
+            logger.info("[ConceptInhibitor] %s", reason)
+            return True, primary.id
+
     def _apply_expand_source(self, patch: ConceptPatch) -> bool:
         """
         執行 expand/source_episode_ids — 同義詞合併，
@@ -478,8 +635,9 @@ class ConceptInhibitor:
                             ),
                             ref={"patch_id": patch.patch_id, "transaction_id": patch.transaction_id},
                         )
-                        self._semantic._save()
+                        # history 先寫再存檔，否則這筆紀錄不會落地
                         self._add_history_entry(concept, patch)
+                        self._semantic._save()
             return True
         except Exception as e:
             logger.error(
@@ -567,6 +725,13 @@ class ConceptInhibitor:
         description = str(params.get("description", ""))
         concept_type = str(params.get("concept_type", "reflection"))
 
+        existing = self._semantic.get_by_name(target_name)
+        if existing is not None and self._semantic.is_merged(existing):
+            # 已合併的名稱是主概念的占位（別名），不重建同名概念
+            return False, {
+                "error": f"create 拒絕：「{target_name}」已併入其他概念，不重建同名概念",
+            }
+
         evidence = PatchEvidence(
             evidence_kind="reflection_create",
             evidence_strength=0.8,
@@ -605,7 +770,7 @@ class ConceptInhibitor:
             return True, {"concept_id": concept_id, "name": target_name}
         else:
             patch.status = "rejected"
-            patch.rejection_reason = "SemanticMemory create 失敗"
+            patch.rejection_reason = patch.rejection_reason or "SemanticMemory create 失敗"
             return False, {"error": f"create 失敗: {target_name}"}
 
     def _resolve_parent_concept_ids(self, refs: Any) -> list[str]:
@@ -720,6 +885,13 @@ class ConceptInhibitor:
             if secondary is None:
                 return False, {"error": f"次概念不存在: {merge_with}"}
 
+            # 兩邊都必須是 active 且未被合併，否則會把已併入他處／已棄用的概念再合併一次
+            for label, c in (("主概念", primary), ("次概念", secondary)):
+                if c.status != "active" or self._semantic.is_merged(c):
+                    return False, {
+                        "error": f"{label}「{c.name}」不是 active 或已被合併，拒絕 merge",
+                    }
+
             evidence = PatchEvidence(
                 evidence_kind="reflection_merge",
                 evidence_strength=0.8,
@@ -760,7 +932,7 @@ class ConceptInhibitor:
                 rollback_payload={
                     "old_description": primary.description,
                     "old_confidence": primary.confidence,
-                    "old_metadata": dict(primary.metadata),
+                    "old_metadata": copy.deepcopy(primary.metadata),
                 },
             )
             modify_patch.status = "approved"
@@ -794,20 +966,23 @@ class ConceptInhibitor:
 
             # 保存 primary 原始狀態供失敗時還原
             original_desc = primary.description
-            original_meta = dict(primary.metadata)
+            original_meta = copy.deepcopy(primary.metadata)
 
             # 執行 Step 1: 更新 primary
+            old_embedding = list(primary.embedding)
             try:
+                # 先算新 embedding：失敗時 primary 尚未被改動
+                new_embedding = None
+                if self._semantic._embed_fn is not None:
+                    modify_patch.rollback_payload = modify_patch.rollback_payload or {}
+                    modify_patch.rollback_payload["old_embedding"] = old_embedding
+                    new_vec = self._semantic._embed_fn(f"{primary.name}: {merged_desc}")
+                    new_embedding = self._semantic._normalize_vector(new_vec).tolist()
                 primary.description = merged_desc
                 primary.metadata = merged_meta
                 primary.updated_at = datetime.now(timezone.utc)
-                if self._semantic._embed_fn is not None:
-                    modify_patch.rollback_payload = modify_patch.rollback_payload or {}
-                    modify_patch.rollback_payload["old_embedding"] = list(primary.embedding)
-                    new_vec = self._semantic._embed_fn(
-                        f"{primary.name}: {primary.description}"
-                    )
-                    primary.embedding = self._semantic._normalize_vector(new_vec).tolist()
+                if new_embedding is not None:
+                    primary.embedding = new_embedding
                     self._semantic._update_embedding_index(primary, is_update=True)
                 self._add_history_entry(primary, modify_patch)
                 primary.record_mutation()
@@ -830,24 +1005,46 @@ class ConceptInhibitor:
             except Exception as e:
                 modify_patch.status = "rejected"
                 modify_patch.rejection_reason = str(e)
+                # 半套變更還原（description／metadata／embedding／derivation 可能已被改）
+                self._compensate_merged_primary(
+                    primary, original_desc, original_meta, merge_patch.patch_id,
+                    (modify_patch.rollback_payload or {}).get("old_embedding"),
+                )
                 return False, {"error": f"merge modify 失敗: {e}"}
 
-            # 執行 Step 2: 移除 secondary（RLock 允許重入）
-            removed = self._semantic.remove_concept(merge_with)
+            # 執行 Step 2: 次概念轉非 active（deprecate != delete）；主概念合併前快照存進
+            # 次概念 metadata，供 ReflectionExecutor 回滾（RLock 允許重入）
+            secondary.metadata["merge_primary_snapshot"] = {
+                "merge_patch_id": merge_patch.patch_id,
+                "old_description": original_desc,
+                "old_confidence": modify_patch.old_confidence,
+                "old_embedding": old_embedding,
+                "old_metadata_keys": copy.deepcopy({
+                    k: original_meta[k]
+                    for k in ("facts", "merged_from", "merged_source_episodes")
+                    if k in original_meta
+                }),
+                "merged_description": merged_desc,
+                # 合併完成後的主概念版本：回滾時版本不符代表合併後又被改過，拒絕回滾
+                "merged_primary_version": primary.version,
+            }
+            try:
+                removed = self._semantic.mark_merged(merge_with, primary.id, merge_patch.patch_id)
+                mark_error = "" if removed else "mark_merged 回傳 False"
+            except Exception as e:
+                removed = False
+                mark_error = str(e)
             if not removed:
+                secondary.metadata.pop("merge_primary_snapshot", None)
                 # 還原 primary 到合併前狀態
                 logger.warning(
-                    "[ConceptInhibitor] reflection merge remove 失敗，還原 primary: %s",
-                    primary.name,
+                    "[ConceptInhibitor] reflection merge 標記次概念失敗（%s），還原 primary: %s",
+                    mark_error, primary.name,
                 )
-                primary.description = original_desc
-                primary.metadata = original_meta
-                primary.remove_derivations_by_patch(merge_patch.patch_id)
-                old_emb = (modify_patch.rollback_payload or {}).get("old_embedding")
-                if old_emb is not None:
-                    primary.embedding = old_emb
-                    self._semantic._update_embedding_index(primary, is_update=True)
-                self._semantic._save()
+                self._compensate_merged_primary(
+                    primary, original_desc, original_meta, merge_patch.patch_id,
+                    (modify_patch.rollback_payload or {}).get("old_embedding"),
+                )
                 modify_patch.status = "rolled_back"
                 merge_patch.status = "rejected"
                 merge_patch.rejection_reason = "次概念移除失敗"
@@ -859,6 +1056,29 @@ class ConceptInhibitor:
                 "secondary_removed": merge_with,
                 "merged_description_length": len(merged_desc),
             }
+
+    def _compensate_merged_primary(
+        self,
+        primary: Concept,
+        original_desc: str,
+        original_meta: dict[str, Any],
+        merge_patch_id: str,
+        old_embedding: list[float] | None,
+    ) -> None:
+        """merge 失敗時把主概念還原到合併前（記憶體 + 磁碟）；補償本身失敗只記錄，不再拋出。"""
+        primary.description = original_desc
+        primary.metadata = copy.deepcopy(original_meta)
+        primary.remove_derivations_by_patch(merge_patch_id)
+        if old_embedding is not None:
+            primary.embedding = list(old_embedding)
+            try:
+                self._semantic._update_embedding_index(primary, is_update=True)
+            except Exception as e:
+                logger.error("[ConceptInhibitor] 補償 embedding index 失敗: %s", e)
+        try:
+            self._semantic._save()
+        except Exception as e:
+            logger.error("[ConceptInhibitor] 補償存檔失敗: %s", e)
 
     # ──────────────────────────────────────────────
     # Patch 建立
@@ -1018,6 +1238,333 @@ class ConceptInhibitor:
                 "old_metadata": dict(concept.metadata),
             },
         )
+
+    # ──────────────────────────────────────────────
+    # Held 重審
+    # ──────────────────────────────────────────────
+
+    def _held_path(self) -> Path:
+        return Path(self._semantic.storage_path) / "held_patches.json"
+
+    @staticmethod
+    def _read_text_retry(path: Path, retries: int = 5, delay: float = 0.05) -> str:
+        """讀檔；OSError（如跨程序 os.replace 瞬間的 PermissionError）短暫重試，仍失敗才拋出。"""
+        for attempt in range(retries):
+            try:
+                return path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                raise  # 內容損壞，不是暫時性錯誤（UnicodeDecodeError 屬 ValueError）
+            except OSError:
+                if attempt == retries - 1:
+                    raise
+                time.sleep(delay * (2 ** attempt))
+        raise OSError(f"無法讀取 {path}")  # 不可達，滿足型別檢查
+
+    @contextlib.contextmanager
+    def _held_guard(self):
+        """held 讀改寫臨界區：storage_lock（與 engine 同一把，同執行緒可重入）再 _held_lock。
+
+        鎖序 storage_lock -> _held_lock；臨界區內不得呼叫 LLM。
+        """
+        storage = Path(self._semantic.storage_path)
+        ns_path = storage.parent if storage.name == "semantic" else storage
+        with storage_lock(ns_path):
+            with self._held_lock:
+                yield
+
+    def _read_held_file(self) -> dict[str, dict[str, Any]]:
+        """從磁碟讀 held 登記簿；檔案損壞時先備份壞檔再視為空。呼叫方須持有 _held_lock。"""
+        path = self._held_path()
+        try:
+            if not path.exists():
+                return {}
+            text = self._read_text_retry(path)
+            data = json.loads(text)
+            if isinstance(data, dict):
+                return data
+            raise ValueError("held 登記簿根節點不是 dict")
+        except OSError:
+            raise  # 暫時性 I/O 錯誤：不改名、不當空檔，交給呼叫端略過本次處理
+        except Exception as e:
+            logger.warning("[ConceptInhibitor] 讀取 held 登記簿失敗，備份壞檔並視為空: %s", e)
+            try:
+                stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+                replace_with_retry(path, path.with_name(f"held_patches.corrupt-{stamp}.json"))
+            except Exception as backup_err:
+                logger.warning("[ConceptInhibitor] 備份損壞的 held 登記簿失敗: %s", backup_err)
+            return {}
+
+    def _held_registry(self) -> dict[str, dict[str, Any]]:
+        """取得 held 登記簿。每次都從磁碟 reload（多個實例共用同一份檔），呼叫方須持有 _held_lock。
+
+        回傳的 dict 即 self._held；修改後須呼叫 _save_held() 才會落地。
+        """
+        self._held = self._read_held_file()
+        return self._held
+
+    def _save_held(self) -> None:
+        """持久化 held 登記簿（唯一暫存檔 + 原子替換）。呼叫方須持有 _held_lock。"""
+        try:
+            atomic_write_json(self._held_path(), self._held or {}, indent=None)
+        except Exception as e:
+            logger.warning("[ConceptInhibitor] 寫入 held 登記簿失敗: %s", e)
+
+    def _register_held(
+        self,
+        patch: ConceptPatch,
+        tx: PatchTransaction,
+        user_input: str,
+        llm_response: str,
+    ) -> None:
+        """將 held patch 登記進重審佇列（登記簿暫時讀不到時略過並記 warning，不覆寫健康檔）。"""
+        try:
+            self._register_held_locked(patch, tx, user_input, llm_response)
+        except OSError as e:
+            logger.warning("[ConceptInhibitor] held 登記簿暫時無法讀取，略過登記 %s: %s", patch.patch_id, e)
+
+    def _register_held_locked(
+        self,
+        patch: ConceptPatch,
+        tx: PatchTransaction,
+        user_input: str,
+        llm_response: str,
+    ) -> None:
+        with self._held_guard():
+            self._held_registry()[patch.patch_id] = {
+                "patch": patch.to_dict(),
+                "retries": 0,
+                "held_at": datetime.now(timezone.utc).isoformat(),
+                "context": {
+                    "user_input": user_input,
+                    "llm_response": llm_response,
+                    "session_id": tx.session_id,
+                    "turn_id": tx.turn_id,
+                    "triggered_by": tx.triggered_by,
+                },
+            }
+            self._save_held()
+
+    def held_count(self) -> int:
+        """目前仍待重審的 held patch 數量。"""
+        try:
+            with self._held_guard():
+                return len(self._held_registry())
+        except OSError as e:
+            logger.warning("[ConceptInhibitor] held 登記簿暫時無法讀取: %s", e)
+            return 0
+
+    def review_held_patches(
+        self,
+        guard: Callable[[], Any] | None = None,
+        limit: int | None = None,
+    ) -> list[PatchTransaction]:
+        """
+        重審先前 held 的 patch（公共入口）。
+
+        觸發點：process() 開頭、Dream 週期開始（DreamPatchCoordinator.review_held）。
+        每筆 patch 的流程：
+          1. 逾期（held 超過 max_age_days）-> 最終 rejected
+          2. 概念已不存在或內容已被他處改動（stale）-> 最終 rejected
+          3. 無 llm_fn 無法重審 -> 略過（不計次數，等 LLM 恢復或逾期）
+          4. 重走 _evaluate_patch（LLM 在 guard 外）；approved 則在 guard 內再檢查
+             staleness 後 apply；仍 held 則計一次，達 max_retries 轉最終 rejected
+        每次狀態變化都寫一筆 audit transaction，讓 held 不再是軌跡終點。
+
+        Args:
+            guard: 回傳 context manager 的工廠（如 storage_lock）。apply 時使用；None 則不加鎖。
+            limit: 本次最多重審筆數。None 取 config（concept_held_review_batch）。
+
+        Returns:
+            本次產生的 audit PatchTransaction 列表
+        """
+        batch = limit if limit is not None else self._held_review_batch
+        # 認領：在鎖內重讀磁碟、挑出未被他人認領的項目並標記 in-flight，之後才處理；
+        # 其他實例／執行緒看到認領標記就略過，同一筆 patch 不會被重複套用
+        try:
+            claimed_ctx = self._claim_held(batch)
+        except OSError as e:
+            logger.warning("[ConceptInhibitor] held 登記簿暫時無法讀取，略過本次重審: %s", e)
+            return []
+        if not claimed_ctx:
+            return []
+        entries = claimed_ctx
+        results: list[PatchTransaction] = []
+        for entry in entries:
+            patch_id = (entry.get("patch") or {}).get("patch_id", "")
+            try:
+                tx = self._review_one_held(entry, guard or contextlib.nullcontext)
+            except Exception as e:
+                logger.warning("[ConceptInhibitor] 單筆 held 重審失敗: %s", e)
+                tx = None
+            finally:
+                self._release_claim(patch_id)
+            if tx is not None:
+                results.append(tx)
+        return results
+
+    def _claim_held(self, batch: int) -> list[dict[str, Any]]:
+        """在臨界區內重讀磁碟、認領未被他人認領的 entry，回傳其深拷貝。"""
+        with self._held_guard():
+            registry = self._held_registry()
+            if not registry:
+                return []
+            now = datetime.now(timezone.utc)
+            claimable = [
+                e for e in registry.values() if not self._is_claimed(e, now)
+            ]
+            claimable.sort(key=lambda e: e.get("held_at", ""))
+            claimed = claimable[: max(batch, 0)]
+            for entry in claimed:
+                entry["claimed_at"] = now.isoformat()
+            if claimed:
+                self._save_held()
+            return copy.deepcopy(claimed)
+
+    @staticmethod
+    def _is_claimed(entry: dict[str, Any], now: datetime) -> bool:
+        """entry 是否仍被某個 reviewer 認領（認領逾時視為認領者已中斷）。"""
+        claimed_at = entry.get("claimed_at")
+        if not claimed_at:
+            return False
+        try:
+            at = datetime.fromisoformat(claimed_at)
+        except Exception:
+            return False
+        return (now - at).total_seconds() < _HELD_CLAIM_TTL_SECONDS
+
+    def _release_claim(self, patch_id: str) -> None:
+        """放回仍在登記簿的 held entry：清除 in-flight 標記（已 finalize 的 entry 不存在，略過）。"""
+        if not patch_id:
+            return
+        try:
+            with self._held_guard():
+                live = self._held_registry().get(patch_id)
+                if live is not None and "claimed_at" in live:
+                    live.pop("claimed_at", None)
+                    self._save_held()
+        except OSError as e:
+            logger.warning("[ConceptInhibitor] 放回 held 認領失敗（待認領逾時自動釋放）: %s", e)
+
+    def _is_stale_patch(self, patch: ConceptPatch) -> bool:
+        """patch 的前提（建立時的概念狀態）是否已失效。"""
+        concept = self._semantic.get(patch.concept_id or "")
+        if concept is None:
+            return True
+        if patch.action == "modify":
+            return concept.description != patch.old_value
+        if patch.action == "deprecate":
+            return concept.status != patch.old_value
+        if patch.action == "expand":
+            # 冪等：同一筆 fact／來源 episode 已經在概念上，視為已套用（stale），不重複追加
+            if patch.target_path == "source_episode_ids":
+                return (
+                    isinstance(patch.new_value, str)
+                    and patch.new_value in concept.source_episode_ids
+                )
+            if patch.target_path == "metadata.facts":
+                return patch.new_value in concept.facts
+        return False
+
+    def _review_one_held(
+        self,
+        entry: dict[str, Any],
+        guard: Callable[[], Any],
+    ) -> PatchTransaction | None:
+        patch = ConceptPatch.from_dict(entry["patch"])
+        ctx = entry.get("context", {})
+        retries = int(entry.get("retries", 0))
+        user_input = ctx.get("user_input", "")
+        llm_response = ctx.get("llm_response", "")
+
+        try:
+            held_at = datetime.fromisoformat(entry["held_at"])
+        except Exception:
+            held_at = datetime.now(timezone.utc)
+        if datetime.now(timezone.utc) - held_at > timedelta(days=self._held_max_age_days):
+            patch.status = "rejected"
+            patch.rejection_reason = f"held 逾期未能重審（>{self._held_max_age_days:g} 天）"
+            return self._finalize_held(patch, ctx)
+
+        if self._is_stale_patch(patch):
+            patch.status = "rejected"
+            patch.rejection_reason = "held 重審：概念已不存在或已被改動，patch 前提失效"
+            return self._finalize_held(patch, ctx)
+
+        if self._llm_fn is None:
+            return None  # 沒有 LLM 無法重審，不計次
+
+        retries += 1
+        patch.status = "pending"
+        self._evaluate_patch(patch, user_input, llm_response)  # LLM 在 guard 外
+
+        failed_apply = False
+        if patch.status == "approved":
+            with guard():
+                if self._is_stale_patch(patch):
+                    patch.status = "rejected"
+                    patch.rejection_reason = "held 重審：核准後概念已被改動，patch 前提失效"
+                elif self._apply_patch(patch):
+                    patch.status = "applied"
+                else:
+                    patch.status = "rejected"
+                    patch.rejection_reason = "SemanticMemory apply 失敗（held 重審）"
+                    failed_apply = True
+            return self._finalize_held(patch, ctx, failed=failed_apply)
+
+        if patch.status == "held":
+            if retries >= self._held_max_retries:
+                patch.status = "rejected"
+                patch.rejection_reason = f"held 重審超過上限（{retries} 次）仍無法判定"
+                return self._finalize_held(patch, ctx)
+            try:
+                with self._held_guard():
+                    live = self._held_registry().get(patch.patch_id)
+                    if live is not None:
+                        live["retries"] = retries
+                        live.pop("claimed_at", None)
+                        self._save_held()
+            except OSError as e:
+                logger.warning("[ConceptInhibitor] 更新 held 重試次數失敗: %s", e)
+            return self._write_held_audit(patch, ctx, status="committed")
+
+        # rejected（LLM 不佐證 / 規則拒絕）-> 最終
+        return self._finalize_held(patch, ctx)
+
+    def _finalize_held(
+        self,
+        patch: ConceptPatch,
+        ctx: dict[str, Any],
+        failed: bool = False,
+    ) -> PatchTransaction:
+        """held patch 進入最終狀態：移出登記簿並寫 audit。"""
+        try:
+            with self._held_guard():
+                if self._held_registry().pop(patch.patch_id, None) is not None:
+                    self._save_held()
+        except OSError as e:
+            logger.warning("[ConceptInhibitor] 移出 held 登記簿失敗（仍寫 audit）: %s", e)
+        return self._write_held_audit(
+            patch, ctx, status="failed" if failed else "committed",
+        )
+
+    def _write_held_audit(
+        self,
+        patch: ConceptPatch,
+        ctx: dict[str, Any],
+        status: str,
+    ) -> PatchTransaction:
+        tx = PatchTransaction(
+            patches=[patch],
+            user_input=ctx.get("user_input", ""),
+            llm_response=ctx.get("llm_response", ""),
+            session_id=ctx.get("session_id", ""),
+            turn_id=ctx.get("turn_id", ""),
+            triggered_by=ctx.get("triggered_by", "conversation"),
+            status=status,
+        )
+        self._write_audit(tx)
+        logger.info("[ConceptInhibitor] held 重審: %s — %s", tx.summary(), patch.concept_name)
+        return tx
 
     # ──────────────────────────────────────────────
     # Hybrid 決策
@@ -1232,21 +1779,24 @@ class ConceptInhibitor:
 
         注意：不呼叫 _save()。由外層 _apply_patch 統一持久化一次。
         """
-        if isinstance(patch.new_value, str):
-            concept.description = patch.new_value
+        new_description = (
+            patch.new_value if isinstance(patch.new_value, str) else concept.description
+        )
 
-        if patch.new_confidence is not None:
-            concept.confidence = patch.new_confidence
-
-        # 需要重新生成 embedding（description 變了）
-        # 先保存舊 embedding 供 rollback 用
+        # 先算新 embedding（description 變了）：失敗時整筆不套用，不留半套變更
+        new_embedding = None
         if self._semantic._embed_fn is not None:
+            new_vec = self._semantic._embed_fn(f"{concept.name}: {new_description}")
+            new_embedding = self._semantic._normalize_vector(new_vec).tolist()
+            # 先保存舊 embedding 供 rollback 用
             patch.rollback_payload = patch.rollback_payload or {}
             patch.rollback_payload["old_embedding"] = list(concept.embedding)
-            new_vec = self._semantic._embed_fn(
-                f"{concept.name}: {concept.description}"
-            )
-            concept.embedding = self._semantic._normalize_vector(new_vec).tolist()
+
+        concept.description = new_description
+        if patch.new_confidence is not None:
+            concept.confidence = patch.new_confidence
+        if new_embedding is not None:
+            concept.embedding = new_embedding
             self._semantic._update_embedding_index(concept, is_update=True)
 
         self._add_history_entry(concept, patch)
@@ -1309,6 +1859,11 @@ class ConceptInhibitor:
 
         try:
             if patch.action == "create":
+                redirected = (patch.rollback_payload or {}).get("redirected_to")
+                if redirected:
+                    # 同名 create 被導向主概念：還原主概念，不能移除（同名的）已合併次概念
+                    self._rollback_redirect(patch, str(redirected))
+                    return
                 # create rollback → 移除概念（remove_concept 自帶 lock）
                 name = (patch.rollback_payload or {}).get(
                     "created_concept_name", patch.concept_name
@@ -1335,6 +1890,7 @@ class ConceptInhibitor:
                     # 還原 confidence
                     if patch.old_confidence is not None:
                         concept.confidence = patch.old_confidence
+                    concept.record_mutation()  # rollback 本身也是一次變更，version 單調
                 elif patch.action == "modify":
                     # 還原 description
                     if patch.old_value is not None:
@@ -1348,16 +1904,18 @@ class ConceptInhibitor:
                         self._semantic._update_embedding_index(
                             concept, is_update=True
                         )
+                    concept.record_mutation()
                 elif patch.action == "deprecate":
                     # 還原為 active
                     concept.status = "active"
                     concept.metadata.pop("deprecated_at", None)
                     concept.metadata.pop("deprecated_reason", None)
                     concept.metadata.pop("replaced_by", None)
+                    concept.record_mutation()
 
-                # 移除最後的 patch_history 條目
+                # 只移除屬於這個 patch 的 patch_history 條目（apply 可能是 no-op，沒寫過 history）
                 history = concept.metadata.get("patch_history", [])
-                if history:
+                if history and history[-1].get("patch_id") == patch.patch_id:
                     history.pop()
 
                 # mutation_count 不回滾——rollback 本身也是一次 mutation
@@ -1372,6 +1930,32 @@ class ConceptInhibitor:
                 "[ConceptInhibitor] rollback 失敗 (%s): %s",
                 patch.patch_id, e,
             )
+
+    def _rollback_redirect(self, patch: ConceptPatch, primary_id: str) -> None:
+        """回滾「同名 create 導向主概念」：移除補進主概念的 fact／來源 episode／derivation。"""
+        rb = patch.rollback_payload or {}
+        with self._semantic._lock:
+            primary = self._semantic.get(primary_id)
+            if primary is None:
+                logger.warning("[ConceptInhibitor] rollback 導向：找不到主概念 %s", primary_id)
+                return
+            fact = rb.get("added_fact")
+            if fact:
+                facts = primary.metadata.get("facts", [])
+                if fact in facts:
+                    facts.remove(fact)
+            old_sources = rb.get("old_source_episode_ids")
+            if old_sources is not None:
+                primary.source_episode_ids = list(old_sources)
+            primary.remove_derivations_by_patch(patch.patch_id)
+            if rb.get("old_confidence") is not None:
+                primary.confidence = rb["old_confidence"]
+            history = primary.metadata.get("patch_history", [])
+            if history and history[-1].get("patch_id") == patch.patch_id:
+                history.pop()
+            primary.record_mutation()
+            self._semantic._save()
+        logger.info("[ConceptInhibitor] rollback 導向 create: 還原主概念 %s", primary_id)
 
     # ──────────────────────────────────────────────
     # Audit Log

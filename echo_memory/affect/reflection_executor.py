@@ -15,10 +15,22 @@ ReflectionExecutor — 反思行動閉環的執行器
 
 from __future__ import annotations
 
+import contextlib
+import copy
 import logging
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
+from echo_memory.affect.concept_patch import (
+    ConceptPatch,
+    ExpandMode,
+    PatchEvidence,
+    PatchHistoryEntry,
+    PatchTransaction,
+)
 from echo_memory.affect.reflection import ReflectionOutput
+from echo_memory.storage.locking import storage_lock
 
 logger = logging.getLogger("echo_memory.affect.reflection_executor")
 
@@ -153,6 +165,21 @@ class ReflectionExecutor:
             "create_concept": self._exec_create_concept,
         }
 
+    def _gate(self) -> Any:
+        """取得 Patch Gate（ConceptInhibitor）。未注入時沿用 engine 上的，仍沒有就建一個無 LLM 的。
+
+        Reflection 來源的 patch 不需 LLM 佐證（process_reflection_patch 自動 approve），
+        所以 llm_fn=None 的閘門足以保證每筆概念變更都留 PatchTransaction audit，
+        不再有直寫 SemanticMemory 的旁路。
+        """
+        if self._inhibitor is None:
+            self._inhibitor = getattr(self._engine, "_concept_inhibitor", None)
+        if self._inhibitor is None:
+            from echo_memory.affect.concept_inhibitor import ConceptInhibitor
+
+            self._inhibitor = ConceptInhibitor(semantic=self._engine.semantic, llm_fn=None)
+        return self._inhibitor
+
     def build_executor_fn(self):
         """
         回傳可傳入 ActionQueue.execute() 的回調函式。
@@ -165,9 +192,312 @@ class ReflectionExecutor:
             handler = self._dispatch.get(action_type)
             if handler is None:
                 raise ValueError(f"未知的 action_type: {action_type}")
-            return handler(target_id, params)
+            # 概念變更在 storage_lock 內執行（鎖序 storage_lock -> semantic._lock）；
+            # 這些 handler 不呼叫 LLM，持鎖不會卡住其他寫入者
+            with self._concept_guard(action_type):
+                return handler(target_id, params)
 
         return executor_fn
+
+    # 會改動 SemanticMemory／圖譜的 action：必須與 engine 其他寫入者序列化
+    _CONCEPT_ACTIONS = frozenset({"tag_concept", "merge_concepts", "create_concept"})
+
+    def _concept_guard(self, action_type: str):
+        """概念類 action 回傳 storage_lock(engine.storage_path)；其餘（或無 storage_path）不加鎖。"""
+        if action_type not in self._CONCEPT_ACTIONS:
+            return contextlib.nullcontext()
+        storage_path = getattr(self._engine, "storage_path", None)
+        if not isinstance(storage_path, (str, Path)):
+            return contextlib.nullcontext()
+        return storage_lock(storage_path)
+
+    def _gated_undo(self, operation: str, target_name: str, params: dict[str, Any]) -> None:
+        """回滾概念變更也走 Patch Gate：建 PatchTransaction 並寫入 Gate 的 audit log。
+
+        失敗拋出，讓 ActionQueue 不誤報 ROLLED_BACK。
+        """
+        handlers = {
+            "undo_create": self._undo_create,
+            "undo_tag": self._undo_tag,
+            "undo_merge": self._undo_merge,
+        }
+        tx = PatchTransaction(
+            patches=[],
+            user_input=f"[reflection] {operation}: {target_name}",
+            llm_response="",
+            session_id="reflection",
+            turn_id="",
+            triggered_by="reflection",
+        )
+        reasoning = f"ReflectionExecutor rollback ({operation})"
+        try:
+            success, result = handlers[operation](tx, target_name, params, reasoning)
+            tx.status = "committed" if success else "failed"
+        except Exception as e:
+            tx.status = "failed"
+            success, result = False, {"error": str(e)}
+        self._gate()._write_audit(tx)
+        if not success:
+            raise RuntimeError(f"回滾 {operation} 失敗: {result.get('error', '未知')}")
+
+    @staticmethod
+    def _add_history(concept: Any, patch: ConceptPatch) -> None:
+        """寫入輕量 patch_history 索引（與 ConceptInhibitor 同格式）。"""
+        history = concept.metadata.setdefault("patch_history", [])
+        history.append(PatchHistoryEntry(
+            patch_id=patch.patch_id,
+            transaction_id=patch.transaction_id,
+            timestamp=datetime.now(timezone.utc),
+            action=patch.action,
+            old_confidence=patch.old_confidence,
+            new_confidence=patch.new_confidence,
+        ).to_dict())
+
+    @staticmethod
+    def _rollback_evidence(kind: str, reasoning: str, concept_ids: list[str]) -> PatchEvidence:
+        return PatchEvidence(
+            evidence_kind=kind,
+            evidence_strength=0.8,
+            verifier_status="valid",
+            verifier_reason=reasoning,
+            retrieved_concept_ids=concept_ids,
+        )
+
+    def _undo_create(
+        self, tx: PatchTransaction, target_name: str, _params: dict[str, Any], reasoning: str,
+    ) -> tuple[bool, dict[str, Any]]:
+        """回滾 create：移除概念（remove_concept 會一併清理圖譜節點）。"""
+        semantic = self._engine.semantic
+        with semantic._lock:
+            concept = semantic.get_by_name(target_name)
+            if concept is None:
+                return True, {"removed": False, "name": target_name}
+            patch = ConceptPatch(
+                transaction_id=tx.transaction_id,
+                concept_id=concept.id,
+                concept_name=target_name,
+                action="deprecate",
+                target_path="*",
+                old_value={"name": concept.name, "description": concept.description},
+                new_value={"rollback_of": "create", "removed": True},
+                patch_confidence=0.8,
+                evidence=self._rollback_evidence("reflection_create", reasoning, [concept.id]),
+                risk_level="medium",
+            )
+            patch.status = "approved"
+            tx.patches.append(patch)
+            if not semantic.remove_concept(target_name):
+                patch.status = "rejected"
+                patch.rejection_reason = "remove_concept 失敗"
+                return False, {"error": f"移除失敗: {target_name}"}
+            patch.status = "applied"
+            return True, {"removed": True, "name": target_name}
+
+    def _undo_tag(
+        self, tx: PatchTransaction, target_name: str, params: dict[str, Any], reasoning: str,
+    ) -> tuple[bool, dict[str, Any]]:
+        """回滾 tag：metadata.tags 還原成執行前的值。"""
+        old_tags = params.get("tags")
+        if not isinstance(old_tags, list):
+            return False, {"error": "缺少 tags 參數"}
+        semantic = self._engine.semantic
+        with semantic._lock:
+            concept = semantic.get_by_name(target_name)
+            if concept is None:
+                return False, {"error": f"概念不存在: {target_name}"}
+            current_tags = list(concept.metadata.get("tags", []))
+            patch = ConceptPatch(
+                transaction_id=tx.transaction_id,
+                concept_id=concept.id,
+                concept_name=target_name,
+                action="expand",
+                expand_mode=ExpandMode.ADD_FACT,
+                target_path="metadata.tags",
+                old_value=current_tags,
+                new_value=list(old_tags),
+                old_confidence=concept.confidence,
+                new_confidence=concept.confidence,
+                patch_confidence=0.8,
+                evidence=self._rollback_evidence("reflection_tag", reasoning, [concept.id]),
+                risk_level="low",
+                rollback_payload={"old_tags": current_tags},
+            )
+            patch.status = "approved"
+            tx.patches.append(patch)
+            try:
+                concept.metadata["tags"] = list(old_tags)
+                concept.updated_at = datetime.now(timezone.utc)
+                self._add_history(concept, patch)
+                concept.record_mutation()
+                semantic._save()
+            except Exception as e:
+                patch.status = "rejected"
+                patch.rejection_reason = str(e)
+                concept.metadata["tags"] = current_tags
+                return False, {"error": str(e)}
+            patch.status = "applied"
+            return True, {"old_tags": current_tags, "new_tags": list(old_tags)}
+
+    @staticmethod
+    def _capture_primary_state(primary: Any) -> dict[str, Any]:
+        """擷取主概念會被 undo_merge 改動的欄位（深拷貝），供失敗時完整補償。"""
+        return {
+            "description": primary.description,
+            "confidence": primary.confidence,
+            "metadata": copy.deepcopy(primary.metadata),
+            "embedding": list(primary.embedding) if primary.embedding is not None else None,
+            "derivations": copy.deepcopy(primary.derivations),
+            "updated_at": primary.updated_at,
+            "version": primary.version,
+            "mutation_count": primary.mutation_count,
+        }
+
+    @staticmethod
+    def _restore_primary_state(semantic: Any, primary: Any, state: dict[str, Any]) -> None:
+        """把主概念還原到 _capture_primary_state 的狀態並存檔；補償失敗只記錄，不再拋出。"""
+        primary.description = state["description"]
+        primary.confidence = state["confidence"]
+        primary.metadata = copy.deepcopy(state["metadata"])
+        primary.embedding = state["embedding"]
+        primary.derivations = copy.deepcopy(state["derivations"])
+        primary.updated_at = state["updated_at"]
+        primary.version = state["version"]
+        primary.mutation_count = state["mutation_count"]
+        try:
+            semantic._update_embedding_index(primary, is_update=True)
+        except Exception as e:
+            logger.error("[ReflectionExecutor] 補償 embedding index 失敗，改為重建: %s", e)
+            try:
+                semantic._rebuild_embeddings()
+            except Exception as e2:
+                logger.error("[ReflectionExecutor] 重建 embedding index 失敗: %s", e2)
+        try:
+            semantic._save()
+        except Exception as e:
+            logger.error("[ReflectionExecutor] 補償存檔失敗: %s", e)
+
+    def _undo_merge(
+        self, tx: PatchTransaction, target_name: str, params: dict[str, Any], reasoning: str,
+    ) -> tuple[bool, dict[str, Any]]:
+        """回滾 merge：次概念恢復 active（含圖譜節點），主概念還原為合併前版本。
+
+        合併時 Gate 把主概念合併前快照（含合併完成後的 primary.version）存在次概念
+        metadata["merge_primary_snapshot"]。主概念版本與快照不符（合併後又被改過）即拒絕回滾，
+        以免蓋掉後續變更。
+
+        順序：先備妥所有可能失敗的運算 -> 改 primary 並存檔 -> 最後才 restore_merged(secondary)；
+        任一步失敗則補償 primary 與 secondary，記憶體與磁碟都回到回滾前。
+        """
+        merge_with = str(params.get("merge_with", ""))
+        if not merge_with:
+            return False, {"error": "缺少 merge_with 參數"}
+        semantic = self._engine.semantic
+        with semantic._lock:
+            primary = semantic.get_by_name(target_name)
+            secondary = semantic.get_by_name(merge_with)
+            if primary is None or secondary is None:
+                return False, {"error": f"概念不存在: {target_name} / {merge_with}"}
+            snap = secondary.metadata.get("merge_primary_snapshot")
+            if not snap or secondary.metadata.get("merged_into") != primary.id:
+                return False, {"error": f"「{merge_with}」不是併入「{target_name}」的已合併概念"}
+            expected_version = snap.get("merged_primary_version")
+            if expected_version is not None:
+                if primary.version != expected_version:
+                    return False, {"error": f"「{target_name}」在合併後已被修改，拒絕回滾"}
+            elif primary.description != snap.get("merged_description"):
+                # 舊快照沒有版本欄位：退回只比對 description
+                return False, {"error": f"「{target_name}」在合併後已被修改，拒絕回滾"}
+
+            evidence = self._rollback_evidence(
+                "reflection_merge", reasoning, [primary.id, secondary.id],
+            )
+            modify_patch = ConceptPatch(
+                transaction_id=tx.transaction_id,
+                concept_id=primary.id,
+                concept_name=target_name,
+                action="modify",
+                target_path="description",
+                old_value=primary.description,
+                new_value=snap.get("old_description"),
+                old_confidence=primary.confidence,
+                new_confidence=snap.get("old_confidence"),
+                patch_confidence=0.8,
+                evidence=evidence,
+                risk_level="high",
+            )
+            unmerge_patch = ConceptPatch(
+                transaction_id=tx.transaction_id,
+                concept_id=secondary.id,
+                concept_name=merge_with,
+                action="merge",
+                target_path="*",
+                old_value={"merged_into": primary.id},
+                new_value={"rollback_of": "merge", "restored": True},
+                merge_target_id=primary.id,
+                patch_confidence=0.8,
+                evidence=evidence,
+                risk_level="high",
+            )
+            for p in (modify_patch, unmerge_patch):
+                p.status = "approved"
+                tx.patches.append(p)
+
+            def _fail(msg: str, err: Exception) -> tuple[bool, dict[str, Any]]:
+                modify_patch.status = "rejected"
+                modify_patch.rejection_reason = str(err)
+                unmerge_patch.status = "rejected"
+                unmerge_patch.rejection_reason = str(err)
+                return False, {"error": f"{msg}: {err}"}
+
+            # 階段 1：備妥所有可能失敗的運算（深拷貝快照）；此階段不改動任何狀態
+            try:
+                prior = self._capture_primary_state(primary)
+                new_meta = copy.deepcopy(primary.metadata)
+                for key in ("facts", "merged_from", "merged_source_episodes"):
+                    new_meta.pop(key, None)
+                new_meta.update(copy.deepcopy(snap.get("old_metadata_keys", {})))
+                old_embedding = snap.get("old_embedding")
+            except Exception as e:
+                return _fail("備妥回滾資料失敗", e)
+
+            # 階段 2：改 primary 並存檔；失敗則完整還原 primary
+            try:
+                primary.description = snap.get("old_description", primary.description)
+                if snap.get("old_confidence") is not None:
+                    primary.confidence = snap["old_confidence"]
+                primary.metadata = new_meta
+                if old_embedding:
+                    primary.embedding = list(old_embedding)
+                    semantic._update_embedding_index(primary, is_update=True)
+                primary.remove_derivations_by_patch(snap.get("merge_patch_id", ""))
+                self._add_history(primary, modify_patch)
+                primary.record_mutation()
+                semantic._save()
+            except Exception as e:
+                self._restore_primary_state(semantic, primary, prior)
+                return _fail("還原主概念失敗", e)
+            modify_patch.status = "applied"
+
+            # 階段 3：最後才還原次概念（restore_merged 內部先存概念檔、再還原圖譜）；
+            # 失敗（回傳 False 或拋例外）則補償 primary，並把次概念快照放回去
+            secondary.metadata.pop("merge_primary_snapshot", None)
+            try:
+                restored = semantic.restore_merged(merge_with)
+                restore_err: Exception | None = (
+                    None if restored else RuntimeError("restore_merged 回傳 False")
+                )
+            except Exception as e:
+                restored, restore_err = False, e
+            if not restored:
+                secondary.metadata["merge_primary_snapshot"] = snap
+                self._restore_primary_state(semantic, primary, prior)
+                modify_patch.status = "rejected"
+                modify_patch.rejection_reason = f"次概念還原失敗，已補償主概念: {restore_err}"
+                unmerge_patch.status = "rejected"
+                unmerge_patch.rejection_reason = str(restore_err)
+                return False, {"error": f"次概念還原失敗: {merge_with}（{restore_err}）"}
+            unmerge_patch.status = "applied"
+            return True, {"primary": target_name, "secondary_restored": merge_with}
 
     def build_rollback_fn(self):
         """
@@ -179,57 +509,55 @@ class ReflectionExecutor:
         def rollback_fn(
             action_type: str, target_id: str, pre_state: dict[str, Any]
         ) -> None:
-            if action_type == "adjust_salience":
-                old = pre_state.get("salience_score")
-                if old is not None:
-                    self._engine.episodic.update_salience(target_id, old)
-
-            elif action_type == "tag_concept":
-                old_tags = pre_state.get("tags")
-                if old_tags is not None:
-                    concept = self._engine.semantic.get_by_name(target_id)
-                    if concept:
-                        concept.metadata["tags"] = old_tags
-                        self._engine.semantic.upsert_concept(
-                            name=concept.name,
-                            description=concept.description,
-                            concept_type=concept.concept_type,
-                            metadata=concept.metadata,
-                        )
-
-            elif action_type == "archive_episode":
-                old_salience = pre_state.get("salience_score")
-                if old_salience is not None:
-                    self._engine.episodic.update_salience(target_id, old_salience)
-                self._engine.episodic.update_episode_metadata(
-                    target_id, {"archived": False, "archived_by": None}
-                )
-
-            elif action_type == "create_concept":
-                if not pre_state.get("already_exists"):
-                    self._engine.semantic.remove_concept(target_id)
-
-            elif action_type == "add_note":
-                # SoulNote 不支援刪除，rollback 無法還原
-                logger.warning(
-                    "[ReflectionExecutor] add_note 不支援 rollback"
-                )
-
-            elif action_type == "merge_concepts":
-                # merge 的 rollback 需要完整的 secondary 資料，
-                # 目前 pre_state 只保留 name/description，無法完整還原。
-                logger.warning(
-                    "[ReflectionExecutor] merge_concepts rollback 尚不完整，"
-                    "僅記錄狀態"
-                )
-
-            else:
-                logger.warning(
-                    "[ReflectionExecutor] 未知 action_type 的 rollback: %s",
-                    action_type,
-                )
+            with self._concept_guard(action_type):
+                self._rollback_action(action_type, target_id, pre_state)
 
         return rollback_fn
+
+    def _rollback_action(
+        self, action_type: str, target_id: str, pre_state: dict[str, Any]
+    ) -> None:
+        """依 action_type 執行實際回滾（由 build_rollback_fn 包上 storage_lock 後呼叫）。"""
+        if action_type == "adjust_salience":
+            old = pre_state.get("salience_score")
+            if old is not None:
+                self._engine.episodic.update_salience(target_id, old)
+
+        elif action_type == "tag_concept":
+            old_tags = pre_state.get("tags")
+            if old_tags is not None:
+                self._gated_undo("undo_tag", target_id, {"tags": old_tags})
+
+        elif action_type == "archive_episode":
+            old_salience = pre_state.get("salience_score")
+            if old_salience is not None:
+                self._engine.episodic.update_salience(target_id, old_salience)
+            self._engine.episodic.update_episode_metadata(
+                target_id, {"archived": False, "archived_by": None}
+            )
+
+        elif action_type == "create_concept":
+            if not pre_state.get("already_exists"):
+                self._gated_undo("undo_create", target_id, {})
+
+        elif action_type == "add_note":
+            # SoulNote 不支援刪除，rollback 無法還原
+            logger.warning(
+                "[ReflectionExecutor] add_note 不支援 rollback"
+            )
+
+        elif action_type == "merge_concepts":
+            # 次概念只是被標成 merged（資料與合併前主概念快照都還在），可完整還原
+            secondary = (pre_state.get("secondary") or {}).get("name")
+            if not secondary:
+                raise ValueError("merge_concepts 回滾缺少次概念名稱（pre_state.secondary）")
+            self._gated_undo("undo_merge", target_id, {"merge_with": secondary})
+
+        else:
+            logger.warning(
+                "[ReflectionExecutor] 未知 action_type 的 rollback: %s",
+                action_type,
+            )
 
     def capture_pre_state(
         self, action_type: str, target_id: str, params: dict[str, Any]
@@ -336,32 +664,18 @@ class ReflectionExecutor:
         if not isinstance(new_tags, list):
             new_tags = [str(new_tags)]
 
-        # 走 ConceptInhibitor patch pipeline（有 audit trail）
-        if self._inhibitor is not None:
-            success, result = self._inhibitor.process_reflection_patch(
-                operation="tag",
-                target_name=target_id,
-                params={"tags": new_tags},
-                reasoning="ReflectionExecutor tag_concept",
-            )
-            if not success:
-                raise RuntimeError(
-                    f"ConceptInhibitor tag 失敗: {result.get('error', '未知')}"
-                )
-            return result
-
-        # fallback: 直接寫入（inhibitor=None 時向下相容）
-        existing_tags = list(concept.metadata.get("tags", []))
-        merged_tags = list(set(existing_tags + new_tags))
-        concept.metadata["tags"] = merged_tags
-        self._engine.semantic.upsert_concept(
-            name=concept.name,
-            description=concept.description,
-            concept_type=concept.concept_type,
-            metadata=concept.metadata,
+        # 一律走 ConceptInhibitor patch pipeline（有 audit trail）
+        success, result = self._gate().process_reflection_patch(
+            operation="tag",
+            target_name=target_id,
+            params={"tags": new_tags},
+            reasoning="ReflectionExecutor tag_concept",
         )
-
-        return {"old_tags": existing_tags, "new_tags": merged_tags}
+        if not success:
+            raise RuntimeError(
+                f"ConceptInhibitor tag 失敗: {result.get('error', '未知')}"
+            )
+        return result
 
     def _exec_add_note(
         self, _target_id: str, params: dict[str, Any]
@@ -406,75 +720,18 @@ class ReflectionExecutor:
         if secondary is None:
             raise ValueError(f"次概念不存在: {merge_with}")
 
-        # 走 ConceptInhibitor patch pipeline（有 audit trail）
-        if self._inhibitor is not None:
-            success, result = self._inhibitor.process_reflection_patch(
-                operation="merge",
-                target_name=target_id,
-                params={"merge_with": merge_with},
-                reasoning="ReflectionExecutor merge_concepts",
-            )
-            if not success:
-                raise RuntimeError(
-                    f"ConceptInhibitor merge 失敗: {result.get('error', '未知')}"
-                )
-            return result
-
-        # fallback: 直接寫入（inhibitor=None 時向下相容）
-        merged_desc = (
-            f"{primary.description}\n\n"
-            f"（合併自「{secondary.name}」）{secondary.description}"
+        # 一律走 ConceptInhibitor patch pipeline（有 audit trail）
+        success, result = self._gate().process_reflection_patch(
+            operation="merge",
+            target_name=target_id,
+            params={"merge_with": merge_with},
+            reasoning="ReflectionExecutor merge_concepts",
         )
-        merged_meta = dict(primary.metadata)
-        secondary_facts = secondary.metadata.get("facts", [])
-        if secondary_facts:
-            existing_facts = merged_meta.get("facts", [])
-            merged_meta["facts"] = existing_facts + secondary_facts
-        merged_meta["merged_from"] = merge_with
-        merged_meta["merged_source_episodes"] = list(set(
-            primary.source_episode_ids + secondary.source_episode_ids
-        ))
-
-        original_desc = primary.description
-        original_meta = dict(primary.metadata)
-
-        self._engine.semantic.upsert_concept(
-            name=primary.name,
-            description=merged_desc,
-            concept_type=primary.concept_type,
-            metadata=merged_meta,
-        )
-        # primary 吸收 secondary 的來源（secondary 之後會被移除）
-        for raw in getattr(secondary, "derivations", None) or []:
-            self._engine.semantic.add_derivation(
-                primary.id, raw.get("kind", "episode"), raw["id"], "reflection",
-                parent_version=raw.get("parent_version"),
-            )
-        for ep_id in secondary.source_episode_ids:
-            self._engine.semantic.add_derivation(primary.id, "episode", ep_id, "reflection")
-
-        removed = self._engine.semantic.remove_concept(merge_with)
-        if not removed:
-            logger.warning(
-                "[ReflectionExecutor] merge remove 失敗，還原 primary: %s",
-                primary.name,
-            )
-            self._engine.semantic.upsert_concept(
-                name=primary.name,
-                description=original_desc,
-                concept_type=primary.concept_type,
-                metadata=original_meta,
-            )
+        if not success:
             raise RuntimeError(
-                f"merge_concepts 失敗：次概念移除失敗 ({merge_with})，"
-                f"主概念已還原"
+                f"ConceptInhibitor merge 失敗: {result.get('error', '未知')}"
             )
-
-        return {
-            "primary": target_id,
-            "secondary_removed": merge_with,
-            "merged_description_length": len(merged_desc),
-        }
+        return result
 
     def _exec_archive_episode(
         self, target_id: str, _params: dict[str, Any]
@@ -505,59 +762,30 @@ class ReflectionExecutor:
         if not description:
             raise ValueError("create_concept 缺少 description 參數")
 
+        # 同名判斷含已合併（deprecated + merged_into）的概念：它們仍占著名稱（別名），不重建
         existing = self._engine.semantic.get_by_name(target_id)
         if existing is not None:
+            merged_note = "（已併入其他概念）" if self._engine.semantic.is_merged(existing) else ""
             raise ValueError(
-                f"create_concept 拒絕：同名概念「{target_id}」已存在，"
+                f"create_concept 拒絕：同名概念「{target_id}」已存在{merged_note}，"
                 f"不允許覆寫（使用 tag_concept 或 merge_concepts 修改既有概念）"
             )
 
-        # 走 ConceptInhibitor patch pipeline（有 audit trail）
-        if self._inhibitor is not None:
-            success, result = self._inhibitor.process_reflection_patch(
-                operation="create",
-                target_name=target_id,
-                params={
-                    "description": description,
-                    "concept_type": params.get("concept_type", "reflection"),
-                    "parent_concepts": params.get("parent_concepts"),
-                    "parent_episode_ids": params.get("parent_episode_ids"),
-                    "parent_evidence_ids": params.get("parent_evidence_ids"),
-                },
-                reasoning="ReflectionExecutor create_concept",
-            )
-            if not success:
-                raise RuntimeError(
-                    f"ConceptInhibitor create 失敗: {result.get('error', '未知')}"
-                )
-            return result
-
-        # fallback: 直接寫入（inhibitor=None 時向下相容）
-        concept_id = self._engine.semantic.upsert_concept(
-            name=target_id,
-            description=description,
-            concept_type=params.get("concept_type", "reflection"),
-            metadata={"created_by": "reflection_executor"},
+        # 一律走 ConceptInhibitor patch pipeline（有 audit trail）
+        success, result = self._gate().process_reflection_patch(
+            operation="create",
+            target_name=target_id,
+            params={
+                "description": description,
+                "concept_type": params.get("concept_type", "reflection"),
+                "parent_concepts": params.get("parent_concepts"),
+                "parent_episode_ids": params.get("parent_episode_ids"),
+                "parent_evidence_ids": params.get("parent_evidence_ids"),
+            },
+            reasoning="ReflectionExecutor create_concept",
         )
-
-        # 來源：parent 指向既有概念／episode／evidence（衍生鏈可回溯）
-        self._record_parents(concept_id, params)
-
-        return {"concept_id": concept_id, "name": target_id}
-
-    def _record_parents(self, concept_id: str, params: dict[str, Any]) -> None:
-        """fallback 路徑：把 params 宣告的 parent 寫成 derivation（producer=reflection）。"""
-        semantic = self._engine.semantic
-        refs = params.get("parent_concepts") or []
-        if isinstance(refs, str):
-            refs = [refs]
-        for ref in refs:
-            parent = semantic.get(str(ref)) or semantic.get_by_name(str(ref))
-            if parent is None:
-                logger.warning("[ReflectionExecutor] parent 概念不存在，略過: %s", ref)
-                continue
-            semantic.add_derivation(concept_id, "concept", parent.id, "reflection")
-        for ep_id in params.get("parent_episode_ids") or []:
-            semantic.add_derivation(concept_id, "episode", str(ep_id), "reflection")
-        for ev_id in params.get("parent_evidence_ids") or []:
-            semantic.add_derivation(concept_id, "evidence", str(ev_id), "reflection")
+        if not success:
+            raise RuntimeError(
+                f"ConceptInhibitor create 失敗: {result.get('error', '未知')}"
+            )
+        return result

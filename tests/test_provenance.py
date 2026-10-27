@@ -169,9 +169,10 @@ class TestMultiHop:
         assert set(engine.resolve_provenance(p).evidence_ids) == set(
             _evidence_ids(engine, ep1) + _evidence_ids(engine, ep2)
         )
-        # secondary 已被移除：子概念回報 missing，不崩潰
+        # secondary 以 merged（非 active）保留：子概念的衍生鏈仍可解析，沒有 missing
+        assert engine.semantic.get(s).status != "active"
         res = engine.resolve_provenance(child)
-        assert [(m.kind, m.id) for m in res.missing] == [("concept", s)]
+        assert res.missing == []
 
     def test_extractor_rollback_removes_derivation(self, engine, inhibitor):
         ep1 = _known_episode(engine, "a")

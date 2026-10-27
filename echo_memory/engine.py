@@ -186,6 +186,8 @@ class MemoryEngine:
                 storage_path=self.storage_path / "semantic",
                 embed_fn=_shared_embed_fn,
             )
+            # 注入圖譜，remove / merge 才能同步清理概念節點
+            self._semantic.attach_graph(self.episodic.graph)
         return self._semantic
 
     @property

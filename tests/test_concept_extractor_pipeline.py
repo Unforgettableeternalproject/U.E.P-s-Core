@@ -197,10 +197,10 @@ class TestExtractorPipeline:
             f"{[c.name for c in concepts]}"
         )
 
-    def test_no_inhibitor_uses_legacy_path(
+    def test_no_inhibitor_uses_fallback_gate(
         self, semantic: SemanticMemory, graph: MemoryGraph,
     ):
-        """無 inhibitor 時走舊路徑（向下相容）。"""
+        """無 inhibitor 時走降級 Patch Gate（無 LLM，但仍留 audit）。"""
         extractor = ConceptExtractor(
             llm_fn=_mock_llm_fn,
             semantic=semantic,
@@ -211,13 +211,13 @@ class TestExtractorPipeline:
         ep = _make_episode()
         extractor._extract_concepts_bg(ep, salience=0.5)
 
-        # 舊路徑也應該建立概念
+        # 降級 Gate 也應該建立概念
         concepts = semantic.list_concepts()
         assert len(concepts) >= 1
 
-        # 但不應產生 audit log（舊路徑不走 inhibitor）
+        # 且必須留下 audit log（寫入不得繞過 Patch Gate）
         audit_path = semantic.storage_path / "audit_log.jsonl"
-        assert not audit_path.exists()
+        assert audit_path.exists()
 
     def test_no_direct_semantic_write_with_inhibitor(
         self, semantic: SemanticMemory, graph: MemoryGraph, inhibitor: ConceptInhibitor,
@@ -231,24 +231,12 @@ class TestExtractorPipeline:
             inhibitor=inhibitor,
         )
 
-        # 追蹤：_upsert_legacy 不應被呼叫
-        legacy_calls = []
-        original_legacy = extractor._upsert_legacy
-
-        def tracked_legacy(*args, **kwargs):
-            legacy_calls.append(True)
-            return original_legacy(*args, **kwargs)
-
-        extractor._upsert_legacy = tracked_legacy
+        # 直寫的舊路徑已移除，extractor 不再有繞過 Gate 的寫入方法
+        assert not hasattr(extractor, "_upsert_legacy")
 
         ep = _make_episode()
         extractor._extract_concepts_bg(ep, salience=0.5)
-
-        # 有 inhibitor 時，不應走 legacy 路徑
-        assert len(legacy_calls) == 0, (
-            f"有 inhibitor 時不應走 _upsert_legacy，"
-            f"但被呼叫了 {len(legacy_calls)} 次"
-        )
+        assert (semantic.storage_path / "audit_log.jsonl").exists()
 
 
 class TestExtractorPipelineConcurrency:

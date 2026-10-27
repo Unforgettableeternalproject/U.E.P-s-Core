@@ -33,6 +33,32 @@ logger = logging.getLogger("echo_memory.graph")
 _SECONDS_PER_HOUR = 3600.0
 
 
+
+def _json_safe(value: Any) -> Any:
+    """把屬性轉成可 JSON 序列化的形式（快照會寫進 concepts.json）。
+
+    numpy 純量轉原生型別、datetime 轉 ISO 字串、集合轉 list，其餘不可序列化的物件轉字串。
+    """
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_json_safe(v) for v in value]
+    if hasattr(value, "isoformat"):
+        try:
+            return value.isoformat()
+        except Exception:
+            pass
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            return _json_safe(item())
+        except Exception:
+            pass
+    return str(value)
+
+
 class MemoryGraph:
     """
     記憶圖管理器 - 基於 NetworkX。
@@ -666,6 +692,32 @@ class MemoryGraph:
         if self.graph.has_node(concept_id):
             self.graph.remove_node(concept_id)
             logger.debug(f"[MemoryGraph] 移除概念節點: {concept_id}")
+
+    def snapshot_concept_node(self, concept_id: str) -> dict[str, Any] | None:
+        """擷取概念節點屬性與其所有邊（JSON 可序列化），供 merge 回滾還原。"""
+        if not self.graph.has_node(concept_id):
+            return None
+        edges: list[dict[str, Any]] = []
+        for src, dst, data in self.graph.out_edges(concept_id, data=True):
+            edges.append({"src": src, "dst": dst, "attrs": _json_safe(dict(data))})
+        for src, dst, data in self.graph.in_edges(concept_id, data=True):
+            edges.append({"src": src, "dst": dst, "attrs": _json_safe(dict(data))})
+        return {
+            "node_id": concept_id,
+            "attrs": _json_safe(dict(self.graph.nodes[concept_id])),
+            "edges": edges,
+        }
+
+    def restore_concept_node(self, snapshot: dict[str, Any]) -> None:
+        """依 snapshot_concept_node 的快照還原節點與邊（對端節點已不存在的邊略過）。"""
+        node_id = snapshot["node_id"]
+        self.graph.add_node(node_id, **snapshot.get("attrs", {}))
+        for edge in snapshot.get("edges", []):
+            other = edge["dst"] if edge["src"] == node_id else edge["src"]
+            if other != node_id and not self.graph.has_node(other):
+                continue
+            self.graph.add_edge(edge["src"], edge["dst"], **edge.get("attrs", {}))
+        logger.debug(f"[MemoryGraph] 還原概念節點: {node_id}")
 
     def update_precedes_edge(self, from_id: str, to_id: str) -> None:
         """

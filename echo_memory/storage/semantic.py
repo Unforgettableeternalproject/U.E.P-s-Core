@@ -16,6 +16,7 @@ Phase 2: 完整持久化 + 向量索引
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import threading
@@ -74,6 +75,9 @@ class SemanticMemory:
 
         # 執行緒鎖（RLock：upsert_concept 內部呼叫 _save()，需要可重入）
         self._lock = threading.RLock()
+
+        # 圖譜（可選；由 MemoryEngine 注入，供 remove / merge 同步清理概念節點）
+        self._graph: Any | None = None
 
         # 載入已存在的資料
         self._load()
@@ -214,13 +218,155 @@ class SemanticMemory:
             del self._concepts[name]
             del self._concepts_by_id[concept.id]
 
+            # 圖譜同步清理：不留指向已不存在 Concept 的孤兒節點與邊（先改記憶體，概念存檔成功後再存圖）
+            self._drop_graph_node(concept.id, persist=False)
+
             # 重建向量索引
             self._rebuild_embeddings()
 
-            # 持久化
+            # 持久化：概念檔先落地，再存圖譜
             self._save()
+            self._persist_graph()
 
             logger.debug(f"[SemanticMemory] 移除概念: {name} (id={concept.id})")
+            return True
+
+    def attach_graph(self, graph: Any | None) -> None:
+        """注入 MemoryGraph，讓 remove / merge 能同步清理概念節點。"""
+        self._graph = graph
+
+    def _drop_graph_node(
+        self, concept_id: str, persist: bool = True,
+    ) -> dict[str, Any] | None:
+        """移除圖譜中的概念節點並回傳快照（供 merge 回滾還原）；無圖譜或無節點回傳 None。
+
+        persist=False 時只改記憶體，由呼叫端在概念檔存檔成功後呼叫 _persist_graph()。
+        """
+        graph = self._graph
+        if graph is None or not graph.has_node(concept_id):
+            return None
+        snapshot = graph.snapshot_concept_node(concept_id)
+        graph.remove_concept_node(concept_id)
+        if persist:
+            graph.save()
+        return snapshot
+
+    def _persist_graph(self) -> None:
+        """存圖譜（若有）。必須在概念檔 _save() 成功之後呼叫。"""
+        if self._graph is not None:
+            self._graph.save()
+
+    @staticmethod
+    def is_merged(concept: Concept) -> bool:
+        """概念是否已被合併進其他概念（metadata 有 merged_into）。"""
+        return bool((concept.metadata or {}).get("merged_into"))
+
+    def mark_merged(self, name: str, merged_into_id: str, patch_id: str = "") -> bool:
+        """將次概念標記為「已合併」：轉非 active、保留資料，並摘掉圖譜節點。
+
+        不硬刪（deprecate != delete）：status 轉 deprecated，metadata 記
+        merged_into / merged_by_patch；圖譜節點與邊的快照存入
+        metadata["merge_graph_snapshot"]，供 restore_merged 還原。
+        已合併的概念不參與召回（search_by_vector 略過）。
+
+        順序：概念檔先存檔成功，才摘圖譜節點並存圖；任一步失敗還原記憶體並拋出，
+        讓記憶體與磁碟不分歧。
+
+        Returns:
+            True 若成功；概念不存在回傳 False
+        """
+        with self._lock:
+            concept = self._concepts.get(name)
+            if concept is None:
+                return False
+            prev = (
+                concept.status, copy.deepcopy(concept.metadata),
+                concept.updated_at, concept.version,
+            )
+
+            def _revert() -> None:
+                concept.status, concept.metadata, concept.updated_at, concept.version = (
+                    prev[0], copy.deepcopy(prev[1]), prev[2], prev[3],
+                )
+
+            graph = self._graph
+            snapshot = None
+            if graph is not None and graph.has_node(concept.id):
+                snapshot = graph.snapshot_concept_node(concept.id)
+            concept.status = "deprecated"
+            concept.metadata["merged_into"] = merged_into_id
+            concept.metadata["merged_by_patch"] = patch_id
+            concept.metadata["merged_at"] = datetime.now(timezone.utc).isoformat()
+            if snapshot is not None:
+                concept.metadata["merge_graph_snapshot"] = snapshot
+            concept.updated_at = datetime.now(timezone.utc)
+            concept.version += 1
+            try:
+                self._save()
+            except Exception:
+                _revert()
+                raise
+            if snapshot is not None:
+                try:
+                    graph.remove_concept_node(concept.id)
+                    graph.save()
+                except Exception:
+                    _revert()
+                    try:
+                        if not graph.has_node(concept.id):
+                            graph.restore_concept_node(snapshot)
+                        self._save()
+                    except Exception as comp_err:
+                        logger.error("[SemanticMemory] mark_merged 補償失敗: %s", comp_err)
+                    raise
+            return True
+
+    def restore_merged(self, name: str) -> bool:
+        """merge 回滾：把已合併的次概念恢復為 active，並還原圖譜節點與邊。
+
+        順序：概念檔先存檔成功，才還原圖譜節點並存圖；失敗則還原記憶體並拋出。
+
+        Returns:
+            True 若成功；概念不存在或不是「已合併」狀態回傳 False
+        """
+        with self._lock:
+            concept = self._concepts.get(name)
+            if concept is None or not concept.metadata.get("merged_into"):
+                return False
+            prev = (
+                concept.status, copy.deepcopy(concept.metadata),
+                concept.updated_at, concept.version,
+            )
+
+            def _revert() -> None:
+                concept.status, concept.metadata, concept.updated_at, concept.version = (
+                    prev[0], copy.deepcopy(prev[1]), prev[2], prev[3],
+                )
+
+            snapshot = concept.metadata.pop("merge_graph_snapshot", None)
+            for key in ("merged_into", "merged_by_patch", "merged_at"):
+                concept.metadata.pop(key, None)
+            concept.status = "active"
+            concept.updated_at = datetime.now(timezone.utc)
+            concept.version += 1
+            try:
+                self._save()
+            except Exception:
+                _revert()
+                raise
+            if snapshot and self._graph is not None:
+                try:
+                    self._graph.restore_concept_node(snapshot)
+                    self._graph.save()
+                except Exception:
+                    _revert()
+                    try:
+                        if self._graph.has_node(concept.id):
+                            self._graph.remove_concept_node(concept.id)
+                        self._save()
+                    except Exception as comp_err:
+                        logger.error("[SemanticMemory] restore_merged 補償失敗: %s", comp_err)
+                    raise
             return True
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -273,6 +419,10 @@ class SemanticMemory:
             if concept_id and concept_id in self._concepts_by_id:
                 concept = self._concepts_by_id[concept_id]
 
+                # 已合併的次概念不參與召回
+                if concept.metadata.get("merged_into"):
+                    continue
+
                 # 按生命週期狀態加權（deprecated ×0.15, archived ×0.03）
                 weighted_sim = sim * concept.retrieval_weight
 
@@ -292,20 +442,27 @@ class SemanticMemory:
         )
         return results
 
+    @staticmethod
+    def validate_subject(subject: str) -> None:
+        """subject 必須是 user / agent / world，否則拋 ValueError。"""
+        if subject not in ("user", "agent", "world"):
+            raise ValueError(f"subject 必須是 user/agent/world，不是 {subject!r}")
+
     def set_subject(self, concept_id: str, subject: str) -> bool:
         """標記概念的主體（user / agent / world）並持久化。
 
         蒸餾寫入走 patch pipeline（coordinator → inhibitor → payload），
         subject 不穿那四層，寫入後在這裡補一次。
         """
-        if subject not in ("user", "agent", "world"):
-            raise ValueError(f"subject 必須是 user/agent/world，不是 {subject!r}")
+        self.validate_subject(subject)
         with self._lock:
             concept = self._concepts_by_id.get(concept_id)
             if concept is None:
                 return False
             if concept.subject != subject:
                 concept.subject = subject
+                concept.version += 1  # 內容變更：版本單調遞增
+                concept.updated_at = datetime.now(timezone.utc)
                 self._save()
             return True
 

@@ -435,6 +435,9 @@ class EcphoryRetrieval:
                 neighbor_concept = self.semantic.get(neighbor_id)
                 if neighbor_concept is None:
                     continue
+                # 已合併概念不得被召回（直接略過，不是降權）
+                if neighbor_concept.metadata.get("merged_into"):
+                    continue
 
                 # 展開的概念分數 = 來源分數 × 邊權重 × 衰減因子 × 生命週期權重
                 # （deprecated ×0.15 / archived ×0.03，與向量命中一致）

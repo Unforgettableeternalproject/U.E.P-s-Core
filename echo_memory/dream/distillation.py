@@ -206,8 +206,11 @@ class KnowledgeDistillation:
         self._structured_llm_fn = structured_llm_fn
         self._relates_to_created = 0  # 單次 run 累計，run() 開頭歸零
         if patch_coordinator is None:
+            # 未注入時建立降級 Gate（無 LLM 的 ConceptInhibitor），仍走 Patch Gate 留 audit
+            from echo_memory.dream.patch_coordinator import DreamPatchCoordinator
+            self._patch_coordinator = DreamPatchCoordinator(semantic=semantic)
             logger.warning(
-                "[KnowledgeDistillation] 未注入 patch_coordinator，使用舊路徑直接寫入"
+                "[KnowledgeDistillation] 未注入 patch_coordinator，使用降級 Gate（無 LLM）"
             )
 
     def run(
@@ -525,6 +528,7 @@ class KnowledgeDistillation:
                 description=description,
                 concept_type=concept_type,
                 source_episode_ids=source_ep_ids,
+                subject=subject,
             )
             # 若 coordinator 無 inhibitor，退回直接寫入
             if concept_id is None and _tx is None:
@@ -536,25 +540,21 @@ class KnowledgeDistillation:
                         source_episode_id=ep.id,
                         producer="dream",
                     )
-        else:
-            # 舊路徑：直接 upsert
-            for ep in source_eps:
-                concept_id = self.semantic.upsert_concept(
-                    name=name,
-                    description=description,
-                    concept_type=concept_type,
-                    source_episode_id=ep.id,
-                    producer="dream",
-                )
 
         if concept_id is None:
             # Inhibitor 拒絕——不是錯誤，也不算 created/updated
             return None
 
-        # subject 不穿 patch pipeline，寫入後補標
-        self.semantic.set_subject(concept_id, subject)
+        # subject 在 patch pipeline 內隨 create patch 寫入（有 patch trail）；
+        # 只有未經 Gate 的退路（無 coordinator / 無 inhibitor）才需要補標
+        if self._patch_coordinator is None or _tx is None:
+            self.semantic.set_subject(concept_id, subject)
 
         # 在 MemoryGraph 中註冊概念節點（若不存在）
+        # 已合併 / 非 active 的概念不補節點（合併時已摘除圖譜節點）
+        stored = self.semantic.get(concept_id)
+        if stored is not None and (stored.status != "active" or stored.metadata.get("merged_into")):
+            return is_new, concept_id, 0
         if not self.graph.has_node(concept_id):
             self.graph.add_concept_node(concept_id, name, concept_type)
 

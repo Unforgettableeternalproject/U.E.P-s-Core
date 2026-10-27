@@ -2986,3 +2986,15 @@
 
 ---
 
+### docs: 新增 Part S SYS 契約草案並回寫決策索引. 10/27
+
+> Date: Tue, 27 Oct 2026 17:16:39 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `7c8e47db011f9f9d2968c4d8b34e5efb2d4e21fb`
+
+---
+

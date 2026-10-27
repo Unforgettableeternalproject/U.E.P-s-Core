@@ -815,7 +815,7 @@ Activity 是「前景／背景活動的共同索引」（提案 §15.1 `activiti
 | T-17 | **Task 與 Run 狀態不脫鉤**：`transition_task` 轉到非終態時，未終態 Run 連動轉到同一狀態與 `pause_reason`（終態由 Task 終態收尾負責）；`start_run` 對 `PAUSED` 的 Task 拒絕（須先 `resume`）；`execute_action` 要求 Task 與 Run 皆為 `RUNNING` 或 `WAITING_APPROVAL`（`WAITING_APPROVAL` 放行以便核准後執行），Task 為 `PAUSED`（含使用者暫停）時拒絕，即使 Run 狀態與之脫鉤 | INV-06、T-6 |
 | T-18 | **階段 3 入庫失敗保底**：`execute_action` 階段 3（依 receipt 或遺失結果推進）入庫失敗（脫敏金鑰缺失、DB 錯誤、`receipt_id` 衝突等）時，副作用已發生，Core 於**全新交易**把仍為 `EXECUTING` 的 action 轉 `UNKNOWN` 並落地，再上拋原例外；log 只記例外型別與 executor 結果型別，不記訊息全文。保底本身也失敗時只記 log 並照樣上拋 | V21、T-3 |
 | T-19 | **action 與 step 身分完整性**：`create_action` 對既有 `action_id` 重呼叫，僅在 `run_id`、`tool`、`side_effect_class` 與 `params_hash` 全相同時冪等回傳既有列；`run`／`tool`／`side_effect_class` 不同拋 `PolicyViolation`，參數不同拋 `ParamsHashMismatch`（併發輸掉競爭的路徑同樣比對）。`begin_step` 對終態 Run 拒絕（`IllegalTransition`） | T-2、V20 |
-| T-20 | **待辦（移出 T-24，歸 Part S，尚未實作）**：(a) `side_effect_class`、`idempotency` 目前由呼叫端宣告，未與 Tool 註冊表核對（S2）；`create_action` 只比對同 `action_id` 的前後一致，不驗證宣告值是否真實；(b) T-11 的 `core_shutdown` 暫停程序與 `run_deadline`／`step_timeout`／`approval_expiry` 的強制執行，待 Supervisor | INV-02、V29 |
+| T-20 | **待辦（移出 T-24，已轉入 Part S 另行定義，本契約尚未實作）**：(a) `side_effect_class`、`idempotency` 目前由呼叫端宣告，未與 Tool 註冊表核對（S2）；`create_action` 只比對同 `action_id` 的前後一致，不驗證宣告值是否真實；(b) T-11 的 `core_shutdown` 暫停程序與 `run_deadline`／`step_timeout`／`approval_expiry` 的強制執行，待 Supervisor | INV-02、V29 |
 | T-13 | Task／Run 轉 `SUCCEEDED` 前不得有 `UNKNOWN`／`EXECUTING` 的 action；Task 轉 `SUCCEEDED` 時檢查**該 Task 的所有 Run**（含先前 `FAILED`／`CANCELLED` 者），不只當前 Run。Task 轉終態時同交易終止其未終態 Run；Run 以 `FAILED`／`CANCELLED` 結束而仍遺留 `EXECUTING`／`UNKNOWN` action 時，`run.ended` payload 帶 `reason_code=unresolved_actions`（另帶 `count`、首個 `action_id`）並記 warning，讓待查核項可被查到。Task／Run 的 `UNKNOWN` 狀態 P1 保留未用 | INV-06 |
 | T-10 | 全域停止可阻止新工具與主動行動，其控制路徑不依賴 LLM。**階段 1.5 重檢**：`execute_action` 在階段 1（標 `EXECUTING`）提交後、呼叫 executor 前，以新短交易再呼叫一次 `presence_check`（presence_bound 任務）與 `action_guard`；被擋時 executor **確定尚未被呼叫**，action 由 `EXECUTING` 轉 `FAILED`（不是 `UNKNOWN`），Core 自行簽發一筆 `source_verified=True` 的 receipt（`error_code` 為 `stopped_before_call` 或 `presence_lost_before_call`，`meta.origin=core_pre_call`），並上拋 `ActionBlocked`／`PresenceRequired`。重檢交易開頭先驗 epoch 與狀態（不論是否注入 guard 都執行）：`worker_epoch` 已變或 action 不在 `EXECUTING`（Run 已被接手、action 已轉 `UNKNOWN` 等）時拋 `StaleWorkerEpoch`——不呼叫 executor、不寫 receipt、不改狀態，之後交 `resolve_unknown` 查核。`PresenceRequired.retryable` 語意：階段 1 被擋為 `True`（action 維持 `INTENDED`、approval 未消耗，Presence 恢復後可重試）；階段 1.5 被擋為 `False`（action 已是終態 `FAILED`，須建新 action 與新核准）。此窗口縮到極短但**無法完全消除**：重檢通過到 executor 實際收到呼叫之間仍有殘餘極短窗口（已知限制） | 提案 §18.3、V31 |
 | T-11 | `core.stopping`（核心關機）不終止 Task：Run 於安全 checkpoint 暫停（`pause_reason=core_shutdown`），不寫 `task.cancelled`／`task.failed`；進行中且結果未知的 action 標 `UNKNOWN` 待重啟查核；重啟後依 T-7 恢復。**待辦（Part S Supervisor，T-20）**：關機時主動暫停 Run 的程序尚未實作；目前只有重啟後 `resume_run` 把 `EXECUTING` action 轉 `UNKNOWN` 的恢復側 | INV-06 |
@@ -1112,7 +1112,7 @@ A4 沿用前提（現況表 §4.2／§4.3）：新 Session 不得對 `working_co
 | V24 | **未涵蓋** | 備份還原；僅有 P-5 條件與 D26 |
 | V25、V26、V27 | **未涵蓋** | Proactive 候選、抑制與延後，不在 CC-1～CC-7 範圍 |
 | V28 | 是 | VC-2-1 |
-| V29 | **未涵蓋** | 惡意內容要求擴權；僅有 R-1／T-5 條件 |
+| V29 | **未涵蓋（由 Part S 覆蓋）** | 惡意內容要求擴權；本契約僅有 R-1／T-5 條件，案例由 Part S 契約補 |
 | V30 | 是 | VC-6-4 |
 | V31 | 是 | VC-6-3 |
 | V32 | 契約外 | Host 層級實測 |

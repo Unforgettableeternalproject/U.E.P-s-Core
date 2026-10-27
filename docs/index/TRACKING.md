@@ -59,8 +59,29 @@ D1–D15 對應提案第 22 章 ADR-001～015，維持 PROPOSED，驗證條件�
 | D44 | 他端 acquire 推進 RECOVERING 後，原端點是否可在停止證據到達前重新 acquire（現況：不可，須證據或 `resolve_recovery`；草案 §4.5 P2 補充僅涵蓋 NONE＋unquiesced；CC-4） | 已定案（A13，暫定） | T-19；第一次完整系統測試時複議 | V15 |
 | D45 | 主機節點的連線與身分：連線方向、傳輸、跨網段前提、每裝置金鑰（Part H） | 待決 | 週期 3 Part H（待立卡，H1 開工前） | V17 |
 | D46 | 電腦操作的目標裝置解析：前景取 Presence 當前裝置，背景以 `target_device_id` 指定且不隨 Presence 移動（延伸 D12；Part H） | 待決 | 週期 3 Part H（待立卡，H2 開工前） | V17 |
-| D47 | Avatar 控制窗口走 CC-5 Output Gate 還是 CC-6 Tool Gateway；建議 Output（週期 5 P9） | 待決 | 週期 5 P9（待立卡） | — |
-| D48 | Lore Vault（預設 lore space）／Chatroom 接入方式（Part S S0）：Lore Vault 的存在與意義為原生資訊、查詢由 UEP 以工具自決；Chatroom 專屬工具；lore 可寫入但須審核；Chatroom 身分待討論 | 已定案（A18，Chatroom 身分待議） | 週期 2 Part S（待立卡，S0） | — |
+| D47 | Avatar 控制窗口走 CC-5 Output Gate 還是 CC-6 Tool Gateway；採 Output＋Gate，以提案工具補審計（週期 5 P9） | 已定案（A22） | 週期 5 P9（待立卡） | — |
+| D48 | Lore Vault（預設 lore space）／Chatroom 接入方式（Part S S0）：Lore Vault 的存在與意義為原生資訊、查詢由 UEP 以工具自決；Chatroom 專屬工具；lore 可寫入但須審核；Chatroom 身分待討論 | 已定案（A18、A22；Chatroom 身分由 D66 定案） | 週期 2 Part S（待立卡，S0） | — |
+| D49 | 暫停前狀態保存（Part S；SYS契約草案 §8） | 已定案（A22） | 週期 2 Part S（待立卡），S1 開工前 | V22 |
+| D50 | ActionIntent 加 `params_ref`（Part S；SYS契約草案 §8） | 已定案（A22） | 週期 2 Part S（待立卡），S1 開工前 | V21 |
+| D51 | `resolve_unknown` 收緊與衝突事件（Part S；SYS契約草案 §8） | 已定案（A22） | 週期 2 Part S（待立卡），S1 開工前 | V21 |
+| D52 | UNKNOWN 人工解決 API 與 `retry_of` 擴充（Part S；SYS契約草案 §8） | 已定案（A22） | 週期 2 Part S（待立卡），S1 開工前 | V21 |
+| D53 | `params_hash` 細節：`1.0` vs `1`、NFC、大整數（Part S；SYS契約草案 §8） | 已定案（A22） | 週期 2 Part S（待立卡），S2 開工前 | V31 |
+| D54 | 註冊表注入 TaskManager（Part S；SYS契約草案 §8） | 已定案（A22） | 週期 2 Part S（待立卡），S2 開工前 | V29、V31 |
+| D55 | approval 綁工具 version與 ActionIntent `tool_version`（Part S；SYS契約草案 §8） | 已定案（A22） | 週期 2 Part S（待立卡），S2 開工前 | V31 |
+| D56 | 工具結果 audience 過濾與預設 scope（Part S；SYS契約草案 §8） | 已定案（A21） | 週期 2 Part S（待立卡），— | V28 |
+| D57 | 常駐說明承載位置（Part S；SYS契約草案 §8） | 已定案（A22） | 週期 2 Part S（待立卡），S0 開工前 | — |
+| D58 | Lore 寫入待審機制（Part S；SYS契約草案 §8） | 已定案（A21） | 週期 2 Part S（待立卡），— | — |
+| D59 | 工具形式（D48 殘餘）與 MCP 治理（Part S；SYS契約草案 §8） | 已定案（A22） | 週期 2 Part S（待立卡），S0 開工前 | V29 |
+| D60 | SDK hosted／built-in 工具禁用與 `capability_set` 對應（Part S；SYS契約草案 §8） | 已定案（A22） | 週期 2 Part S（待立卡），S3 開工前 | V36 |
+| D61 | 工具結果回饋 Runtime（Part S；SYS契約草案 §8） | 已定案（A22） | 週期 2 Part S（待立卡），S3 開工前 | V36 |
+| D62 | 回合內工具呼叫的 Task 歸屬、生命週期與 action 層強制（Part S；SYS契約草案 §8） | 已定案（A22） | 週期 2 Part S（待立卡），S3 開工前 | V22 |
+| D63 | Agent Core 的 CC-7 proposer（Part S；SYS契約草案 §8） | 已定案（A22） | 週期 2 Part S（待立卡），S1 開工前 | — |
+| D64 | 非 owner 來源 Task 的 owner／approvers（Part S；SYS契約草案 §8） | 已定案（A22） | 週期 2 Part S（待立卡），S0 開工前 | V30 |
+| D65 | 常設授權與 `chatroom.post` 頻率上限（Part S；SYS契約草案 §8） | 已定案（A22） | 週期 2 Part S（待立卡），S0 之後、Part H 前 | V30 |
+| D66 | Chatroom 身分與可查核性（Part S；SYS契約草案 §8） | 已定案（A21） | 週期 2 Part S（待立卡），— | V29 |
+| D67 | Supervisor 形式、`shutdown` 掛接、單例與逾時（Part S；SYS契約草案 §8） | 已定案（A22） | 週期 2 Part S（待立卡），S1 開工前 | V22 |
+| D68 | Avatar 表現指令簡化記帳與 D47 預留位置（Part S；SYS契約草案 §8） | 已定案（A22） | 週期 2 Part S（待立卡），P9 開工前 | — |
+| D69 | `ToolExecutor.cancel` 協定（Part S；SYS契約草案 §8） | 已定案（A22） | 週期 2 Part S（待立卡），S3 開工前 | — |
 
 ## 2. 已定案事項（A）
 
@@ -74,6 +95,8 @@ D1–D15 對應提案第 22 章 ADR-001～015，維持 PROPOSED，驗證條件�
 | A6 | Python 3.12＋uv／pyproject；依賴拆三組 | T-03 | D18 |
 | A7 | legacy 原地保留，新 Core 在頂層 `uep/` | T-09 | D19 |
 | A8 | 契約草案 8 項採審查建議預設：D22 訂閱鍵改 `str`；D23 legacy ID 只存 `legacy_ref`；D30 只加 `WAITING_INPUT`；D31 `interrupt_policy` 三值；D32 ID 為 `前綴_ULID`；D33 journal 只存元資料＋`payload_ref`；D34 首版不做 Task Graph；D35 新增第七契約 CC-7 | T-08 | D22、D23、D30–D35 |
+| A21 | D56 工具結果首版不過濾（技術債，保留過濾掛點）；D58 lore 直寫 vault 加待審標記；D66 Chatroom 以艾斯維爾身分＋主持人模式，僅限自架 Hub 允許清單 | Part S（待立卡） | D56、D58、D66 |
+| A22 | Part S 契約草案其餘決策照建議定案；D47 採 Output＋Gate | Part S（待立卡） | D49–D55、D57、D59–D65、D67–D69、D47、D48 |
 
 ## 3. 任務卡
 
@@ -103,6 +126,7 @@ D1–D15 對應提案第 22 章 ADR-001～015，維持 PROPOSED，驗證條件�
 | T-22 | 推理 Host 遷移 Python 3.12 | C／2 | `inference-host-py312-migration` | — | D18、A14 | `pyproject.toml` inference 組、`uv.lock` |
 | T-23 | P3 前置修整（Bus §8.4、D41、D42、維護迴圈、DENIED 原因碼） | C／2 | `p3-prereq-bus-journal-hardening` | — | D41、D42、A16 | `uep/events/tailer.py`、`uep/events/payload_hash.py`、`0006_journal_txid` |
 | T-24 | 週期 2 Core 追加驗證（P1、P2、T-23 對抗式稽核） | C／2 | `core-cycle2-audit` | — | D43、A20 | `tests/uep/test_cycle2_audit_a.py`、`tests/uep/test_cycle2_audit_b.py`、`tests/uep/test_cycle2_audit_c_tasks.py`、`tests/uep/test_cycle2_audit_c_context.py`、`tests/uep/test_cycle2_audit_fix2.py`；契約同步於 [Core契約草案](../架構重構/Core契約草案.md) E-17～E-22、X-7～X-9、R-7、P-16～P-25、O-13～O-15、§6.7 的 T 系列條號 16～20；`0007_journal_truncate_guard`、`0008_receipt_worker_epoch` |
+| Part S | SYS Agent 基底（S0～S3 契約草案；S4、S5 僅邊界） | C／2 | 尚未轉任務層 | V29–V31、V36（延伸 V21、V22、V28） | D49–D69、A21、A22 | [SYS契約草案](../架構重構/SYS契約草案.md) |
 
 T-10、T-11 目前只在 DECISIONS 被引用，TASKS.md 尚無卡片內容；細節待敏卡展開後補。
 
@@ -140,9 +164,9 @@ T-10、T-11 目前只在 DECISIONS 被引用，TASKS.md 尚無卡片內容；細
 | V26 | 靜音／冷卻／過期不造成連續打擾 | 週期 4 P7（待立卡） | — | — | — | 未開始 | 未涵蓋 |
 | V27 | 高 salience 但不適合打擾仍可延後 | 週期 4 P7（待立卡） | — | — | — | 未開始 | 未涵蓋 |
 | V28 | 私聊→公開 Discord 不洩漏私人內容 | 週期 3 P5（待立卡） | — | — | — | 未開始 | 是：VC-2-1 |
-| V29 | 惡意內容要求擴權被 Policy 拒絕 | 週期 2 Part S（待立卡） | — | — | — | 未開始 | 未涵蓋 |
-| V30 | LLM 自述核准不能消耗 approval | 週期 2 Part S（待立卡） | — | — | — | 未開始 | 是：VC-6-4 |
-| V31 | 參數變更後舊 approval 失效；global stop 不依賴 LLM | 週期 2 Part S（待立卡） | — | — | — | 未開始 | 是：VC-6-3 |
+| V29 | 惡意內容要求擴權被 Policy 拒絕 | 週期 2 Part S（待立卡） | — | — | [SYS契約草案](../架構重構/SYS契約草案.md) | 未開始 | 是：SYS契約草案 VC-S2-3 |
+| V30 | LLM 自述核准不能消耗 approval | 週期 2 Part S（待立卡） | — | — | — | 未開始 | 是：VC-6-4；SYS契約草案 TG-7 反例、VC-S2-4 |
+| V31 | 參數變更後舊 approval 失效；global stop 不依賴 LLM | 週期 2 Part S（待立卡） | — | — | — | 未開始 | 是：VC-6-3；SYS契約草案 VC-S2-4、TG-11 |
 | V32 | 使用者電腦關機 Mac Core 仍運作 | 週期 4 P8（待立卡） | — | — | — | 未開始 | 契約外 |
 | V33 | 重開機後只有重新授權的 Presence 到場 | 週期 4 P8（待立卡） | — | — | — | 未開始 | 未涵蓋 |
 | V34 | 長時間運行資源有界 | 週期 4 P8（待立卡） | — | — | — | 未開始 | 契約外 |

@@ -2962,3 +2962,15 @@
 
 ---
 
+### docs: 新架構研究資料改存 hidden_docs 並更新引用. 10/27
+
+> Date: Tue, 27 Oct 2026 11:33:06 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `7043e7889aab5f5f3490b766847cec7bbae94b24`
+
+---
+

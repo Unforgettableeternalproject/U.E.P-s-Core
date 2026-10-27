@@ -1,7 +1,7 @@
 # U.E.P 新 Core 契約草案
 
 對應任務：T-08（change `core-contract-draft`）。對應提案 §24.1 第 3 項「契約草案」。
-上游：`UEP_新架構研究/UEP_新架構技術設計提案_2026-10-25.md`（下稱「提案」）、`Core現況對照表.md`（下稱「現況表」）、`hidden_docs/DECISIONS.md`（下稱「DECISIONS」）。
+上游：`hidden_docs/架構重構/UEP_新架構研究/UEP_新架構技術設計提案_2026-10-25.md`（下稱「提案」）、`Core現況對照表.md`（下稱「現況表」）、`hidden_docs/DECISIONS.md`（下稱「DECISIONS」）。
 
 ## 0. 定位與約定
 

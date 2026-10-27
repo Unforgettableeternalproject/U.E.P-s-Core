@@ -28,10 +28,12 @@ dev = [
 ]
 gemini = ["google-genai>=1.0.0"]
 ollama = ["requests>=2.31.0"]
+openai = ["openai>=2.43.0"]
 llmlingua = ["llmlingua>=0.2.0"]
 full = [
     "google-genai>=1.0.0",
     "requests>=2.31.0",
+    "openai>=2.43.0",
     "llmlingua>=0.2.0",
 ]
 

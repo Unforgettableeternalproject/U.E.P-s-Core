@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import math
 import time
+from time import perf_counter as _perf_counter  # 分段計時用；與 time.time 分開以便測試凍結時鐘
 from typing import Any
 
 from echo_memory.config import get_config
@@ -107,6 +108,15 @@ class EcphoryRetrieval:
             concept_top_k = _ncparams.concept_top_k
             concept_min_similarity = _ncparams.concept_min_similarity
 
+        # 分段計時：每段結束時記一次，供宿主判斷逾時卡在哪
+        timings: dict[str, float] = {}
+        _mark = [_perf_counter()]
+
+        def _lap(name: str) -> None:
+            now = _perf_counter()
+            timings[name] = round((now - _mark[0]) * 1000, 1)
+            _mark[0] = now
+
         # Step 1: Episode 向量檢索（種子節點）
         # 查詢向量快取：相同查詢不重複生成 embedding（省 ~50ms）
         cache_key = f"{self._CACHE_PREFIX}{query.strip()}"
@@ -123,10 +133,15 @@ class EcphoryRetrieval:
             if not query_embedding:
                 # embedding 不可用（逾時/連線失敗）：回空脈絡並標記降級，不崩潰
                 reason = self.episodic.last_embedding_error or "embedding unavailable"
-                logger.warning(f"[EcphoryRetrieval] 查詢 embedding 降級，回傳空脈絡: {reason}")
-                return MemoryContext(degraded=True, degraded_reason=reason)
+                _lap("embed")
+                logger.warning(
+                    f"[EcphoryRetrieval] 查詢 embedding 降級，回傳空脈絡: {reason} "
+                    f"(embed={timings['embed']}ms)"
+                )
+                return MemoryContext(degraded=True, degraded_reason=reason, timings_ms=timings)
             if self.working is not None:
                 self.working.set(cache_key, query_embedding)
+        _lap("embed")
 
         # NeurochemState 影響種子數
         seed_k = max(3, top_k // 2)
@@ -154,6 +169,7 @@ class EcphoryRetrieval:
                     continue
                 filtered.append((ep, score))
             seed_results = filtered[:seed_k]
+        _lap("seed_search")
 
         if not seed_results:
             # 沒有 Episode 種子，但仍可能有 Concept 命中
@@ -214,6 +230,8 @@ class EcphoryRetrieval:
                         sim_val = ep_sim if ep_sim is not None else 0.0
                         similarities[node_id] = max(sim_val, weight * 0.8)
 
+        _lap("graph_expand")
+
         # Step 3: 語義概念檢索
         concepts: list[Concept] = []
         concept_similarities: dict[str, float] = {}
@@ -230,6 +248,8 @@ class EcphoryRetrieval:
                 f"[EcphoryRetrieval] 語義概念檢索完成 - "
                 f"找到 {len(concepts)} 個概念"
             )
+
+        _lap("concepts")
 
         # Step 4: 程序記憶搜索（若有 ProceduralMemory）
         procedures = []
@@ -248,6 +268,8 @@ class EcphoryRetrieval:
                     )
             except Exception as e:
                 logger.warning(f"[EcphoryRetrieval] 程序搜索失敗（不影響檢索）: {e}")
+
+        _lap("procedures")
 
         # Step 5: 融合排序 + 截斷
         # 融合四分量：語意相似度 + 時間衰減 + 顯著性 + 頻率
@@ -292,6 +314,7 @@ class EcphoryRetrieval:
         entities = []
         if self.entity_store is not None:
             entities = self._collect_entities(final_episodes)
+        _lap("rank")
 
         # 構建 MemoryContext
         context = MemoryContext(
@@ -301,6 +324,7 @@ class EcphoryRetrieval:
             procedures=procedures,
             similarities=similarities,
             concept_similarities=concept_similarities,
+            timings_ms=timings,
         )
 
         logger.debug(

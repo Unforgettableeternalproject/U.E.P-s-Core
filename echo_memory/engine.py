@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import time
 import uuid
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
@@ -541,7 +542,12 @@ class MemoryEngine:
             from echo_memory.config import get_config
             min_similarity = get_config().retrieval_min_similarity
 
-        context = self.retrieval.retrieve(
+        # setup：首次存取時延遲建立 retrieval／episodic／semantic 並載入資料
+        t_start = time.perf_counter()
+        retrieval = self.retrieval
+        t_setup = time.perf_counter()
+
+        context = retrieval.retrieve(
             query=query,
             dopamine=dopamine,
             serotonin=serotonin,
@@ -552,13 +558,22 @@ class MemoryEngine:
         )
 
         # 附上證據供 prompt 組裝判斷交付狀態（未說出口的 agent 內容不得當成「說過」）
+        t_evidence = time.perf_counter()
         if context.episodes:
             context.evidence_by_episode = self.evidence.units_for_episodes(context.episodes)
+        t_end = time.perf_counter()
+
+        timings = {"setup": round((t_setup - t_start) * 1000, 1)}
+        timings.update(context.timings_ms)
+        timings["evidence"] = round((t_end - t_evidence) * 1000, 1)
+        timings["total"] = round((t_end - t_start) * 1000, 1)
+        context.timings_ms = timings
 
         logger.info(
             f"[MemoryEngine] 檢索完成 - "
             f"Episodes: {len(context.episodes)}, "
-            f"Concepts: {len(context.concepts)}"
+            f"Concepts: {len(context.concepts)}, "
+            f"degraded={context.degraded}, timings_ms={timings}"
         )
 
         return context

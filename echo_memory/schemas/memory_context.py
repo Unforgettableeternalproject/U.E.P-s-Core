@@ -36,6 +36,9 @@ class MemoryContext:
     degraded_reason: str = ""
     # episode_id -> EvidenceUnit；由 engine.retrieve 附上，供 prompt 組裝判斷交付狀態
     evidence_by_episode: dict[str, list[EvidenceUnit]] = field(default_factory=dict)
+    # 檢索分段耗時（毫秒）：setup／embed／seed_search／graph_expand／concepts／
+    # procedures／rank／evidence／total；供宿主判斷逾時卡在哪一段
+    timings_ms: dict[str, float] = field(default_factory=dict)
 
     def _agent_text_for_prompt(self, ep: Episode) -> tuple[str, bool]:
         """回傳 (可注入的 agent 文字, 是否有未說出口的預定回覆)。

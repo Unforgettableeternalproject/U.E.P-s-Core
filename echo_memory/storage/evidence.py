@@ -3,6 +3,8 @@ EvidenceStore - append-only 證據存儲
 
 每個 namespace 一份 evidence.jsonl（一行一個 EvidenceUnit）。
 只提供追加與讀取；沒有更新或刪除 API。同 id 重複追加視為錯誤。
+遮蔽（redact）：隱私退出用。不改寫 evidence.jsonl，而是在同目錄 redactions.jsonl
+追加遮蔽紀錄；讀取時把被遮蔽 unit 的 content／attrs 清空並標 tombstoned_at。
 
 另提供：
 - build_legacy_units: 舊介面呼叫／舊資料的 legacy_unknown 證據（只降不升）
@@ -17,7 +19,7 @@ import logging
 import os
 import shutil
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -33,6 +35,7 @@ from echo_memory.storage.locking import storage_lock, temporary_sibling
 logger = logging.getLogger("echo_memory.storage.evidence")
 
 EVIDENCE_FILENAME = "evidence.jsonl"
+REDACTIONS_FILENAME = "redactions.jsonl"
 
 
 class EvidenceStore:
@@ -42,6 +45,7 @@ class EvidenceStore:
         self.storage_path = Path(storage_path)
         self.lock_path = Path(lock_path) if lock_path is not None else self.storage_path
         self.file = self.storage_path / EVIDENCE_FILENAME
+        self.redactions_file = self.storage_path / REDACTIONS_FILENAME
 
     # ── 寫入（僅追加）──────────────────────────────────────────────
 
@@ -66,9 +70,62 @@ class EvidenceStore:
                 os.fsync(f.fileno())
         return [u.id for u in units]
 
+    def redact(self, ids: Iterable[str]) -> int:
+        """遮蔽指定 unit（追加遮蔽紀錄，不改寫證據檔）。回傳本次新遮蔽的筆數。
+
+        已遮蔽或不存在的 id 不計入。遮蔽後 get／list 回傳的 unit 內容與 attrs 為空、
+        tombstoned_at 有值；retrieve_evidence 會略過，can_attest_* 為 False。
+        """
+        wanted = list(dict.fromkeys(ids))
+        if not wanted:
+            return 0
+        with storage_lock(self.lock_path):
+            known = {u.id for u in self._read_all()}
+            already = self._read_redacted()
+            fresh = [i for i in wanted if i in known and i not in already]
+            if not fresh:
+                return 0
+            self.storage_path.mkdir(parents=True, exist_ok=True)
+            record = {"ids": fresh, "at": datetime.now(timezone.utc).isoformat()}
+            with open(self.redactions_file, "a", encoding="utf-8", newline="\n") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+        return len(fresh)
+
+    def _read_redacted(self) -> dict[str, datetime]:
+        """id -> 遮蔽時間。壞行略過。"""
+        out: dict[str, datetime] = {}
+        if not self.redactions_file.exists():
+            return out
+        with open(self.redactions_file, encoding="utf-8") as f:
+            for lineno, line in enumerate(f, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                    at = datetime.fromisoformat(rec["at"])
+                    for i in rec["ids"]:
+                        out.setdefault(str(i), at)
+                except (ValueError, KeyError, TypeError) as exc:
+                    logger.warning("[EvidenceStore] 略過無法解析的遮蔽紀錄第 %d 行: %s", lineno, exc)
+        return out
+
     # ── 讀取 ───────────────────────────────────────────────────────
 
     def _read_all(self) -> list[EvidenceUnit]:
+        units = self._read_raw()
+        redacted = self._read_redacted()
+        if not redacted:
+            return units
+        return [
+            replace(u, content="", attrs={}, source_ref=None, tombstoned_at=redacted[u.id])
+            if u.id in redacted else u
+            for u in units
+        ]
+
+    def _read_raw(self) -> list[EvidenceUnit]:
         if not self.file.exists():
             return []
         units: list[EvidenceUnit] = []

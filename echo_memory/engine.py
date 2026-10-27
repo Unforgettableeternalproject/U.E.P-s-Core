@@ -14,6 +14,7 @@ Architecture:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import uuid
@@ -27,6 +28,7 @@ from echo_memory.schemas.evidence import (
     SOURCE_TYPES,
     EvidenceInput,
     EvidenceUnit,
+    SourceRef,
     is_delivered,
 )
 from echo_memory.schemas.memory_context import MemoryContext
@@ -36,6 +38,9 @@ from echo_memory.storage.evidence import EvidenceStore, build_legacy_units
 from echo_memory.storage.locking import storage_lock
 
 logger = logging.getLogger("echo_memory.engine")
+
+# record_observation 支援的 kind；新增 kind 時一併決定它的彙整規則
+OBSERVATION_KINDS = ("game_activity",)
 
 
 class MemoryEngine:
@@ -104,6 +109,7 @@ class MemoryEngine:
         self._entity_extractor = None
         self._evidence = None
         self._idempotency = None
+        self._activity = None
 
         # ── 神經化學狀態（session 級別，跨對話持久化）──────────────────
         self._neurochem: NeurochemState = self._load_neurochem()
@@ -155,6 +161,14 @@ class MemoryEngine:
                 retention_days=config.episode_idempotency_retention_days,
             )
         return self._idempotency
+
+    @property
+    def activity(self):
+        """延遲加載活動彙整（namespace 目錄下的 activity.json）。"""
+        if self._activity is None:
+            from echo_memory.storage.activity import ActivityStore
+            self._activity = ActivityStore(self.storage_path)
+        return self._activity
 
     def get_episode_evidence(self, episode: Episode | str) -> list[EvidenceUnit]:
         """取得 Episode 的證據；舊 Episode 回傳即時合成的 legacy_unknown unit（不寫入）。"""
@@ -562,7 +576,8 @@ class MemoryEngine:
             query: 語意查詢；與 episode_ids 至少給一個。
             episode_ids: 指定 Episode。只給它時依傳入順序展開；與 query 並用時，
                 僅保留檢索結果中屬於這些 id 者。
-            source_types: 只保留這些 source_type（None＝不限）。
+            source_types: 只保留這些 source_type（None＝不限）。僅給 ["observation"] 時
+                改走觀察紀錄專用路徑，可不帶 query／episode_ids。
             require_delivered: True 則只留已交付者（agent partial 須有進度；
                 not_delivered／unknown／tombstoned 排除）。
             include_legacy: False 則排除 provenance_status="legacy_unknown"。
@@ -571,13 +586,25 @@ class MemoryEngine:
         Raises:
             ValueError: query 與 episode_ids 皆未提供，或 source_types 含無效值。
         """
-        if not query and not episode_ids:
-            raise ValueError("retrieve_evidence 需要 query 或 episode_ids")
         if source_types is not None:
             bad = [s for s in source_types if s not in SOURCE_TYPES]
             if bad:
                 raise ValueError(f"source_types 含無效值 {bad}，須為 {SOURCE_TYPES} 之一")
         wanted = set(source_types) if source_types is not None else None
+
+        # observation 沒有所屬 Episode，只能以 source_types=["observation"] 專門取回
+        # （最新在前、最多 top_k 筆；無向量索引，query／episode_ids 不參與篩選）。
+        # 一般的 query／episode_ids 路徑只展開 Episode 的證據，不會混入 observation。
+        if wanted == {"observation"}:
+            units = [
+                u for u in self.evidence.list(source_type="observation")
+                if u.tombstoned_at is None and (include_legacy or u.provenance_status == "known")
+            ]
+            units.sort(key=lambda u: u.occurred_at, reverse=True)
+            return units[:top_k]
+
+        if not query and not episode_ids:
+            raise ValueError("retrieve_evidence 需要 query 或 episode_ids")
 
         if query:
             episodes = self.retrieve(query, top_k=top_k, min_similarity=min_similarity).episodes
@@ -605,6 +632,163 @@ class MemoryEngine:
                     continue
                 out.append(u)
         return out
+
+    # ─── 平台觀察（observation）與活動彙整 ─────────────────────────
+
+    def record_observation(
+        self,
+        *,
+        kind: str,
+        subject: str,
+        started_at: datetime,
+        ended_at: datetime,
+        attrs: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
+        source_ref: SourceRef | None = None,
+    ) -> str | None:
+        """
+        記錄平台被動觀察（如 Discord presence 的遊戲時段）。
+
+        只追加一筆 source_type="observation" 的 EvidenceUnit（episode_id=None），
+        不建 turn episode、不抽實體、不推進 neurochem。observation 不是任何人說的話，
+        can_attest_* 一律為 False，也不會進入蒸餾或 prompt 的對話記憶。
+        同時把時長累加進活動彙整（activity_profile 的資料來源）。
+
+        Args:
+            kind: 觀察類型，目前僅支援 "game_activity"（subject＝遊戲名）。
+            subject: 觀察對象；前後空白會被去除。
+            started_at / ended_at: 起訖時間（無時區視為 UTC）；ended_at 不得早於 started_at。
+            attrs: 額外屬性（須可 JSON 序列化）；與核心欄位同名時以核心欄位為準。
+            idempotency_key: 冪等鍵（建議 user+game+start）。同 key 重送回第一次的
+                evidence id，不再寫入也不重複累加。證據 id 由 key 決定，所以即使冪等索引
+                過期，重送仍不會重複。
+            source_ref: 來源指標；預設 SourceRef(kind="discord_presence")。
+
+        Returns:
+            evidence id。
+
+        Raises:
+            ValueError: kind 不支援、subject 為空、時間順序錯誤或 idempotency_key 非空字串。
+        """
+        if kind not in OBSERVATION_KINDS:
+            raise ValueError(f"kind 必須是 {OBSERVATION_KINDS} 之一，收到 {kind!r}")
+        if not isinstance(subject, str) or not subject.strip():
+            raise ValueError("subject 必須是非空字串")
+        subject = subject.strip()
+        if idempotency_key is not None and (
+            not isinstance(idempotency_key, str) or not idempotency_key.strip()
+        ):
+            raise ValueError("idempotency_key 必須是非空字串或 None")
+        started = self._as_utc(started_at)
+        ended = self._as_utc(ended_at)
+        if ended < started:
+            raise ValueError("ended_at 不得早於 started_at")
+        minutes = (ended - started).total_seconds() / 60.0
+
+        if idempotency_key is not None:
+            digest = hashlib.sha1(f"obs:{idempotency_key}".encode("utf-8")).hexdigest()[:12]
+            evidence_id = f"ev_obs_{digest}"
+            index_key = f"obs:{idempotency_key}"
+        else:
+            evidence_id = f"ev_obs_{uuid.uuid4().hex[:12]}"
+            index_key = None
+
+        inp = EvidenceInput(
+            source_type="observation",
+            content=f"{kind}: {subject}",
+            occurred_at=started,
+            source_ref=source_ref or SourceRef(kind="discord_presence"),
+            attrs={
+                **(attrs or {}),
+                "kind": kind,
+                "subject": subject,
+                "started_at": started.isoformat(),
+                "ended_at": ended.isoformat(),
+                "duration_minutes": round(minutes, 4),
+            },
+        )
+        # 順序：證據 -> 彙整 -> 冪等索引。彙整以 evidence id 去重，
+        # 任一步中斷後以同 key 重試都會補齊缺的部分，不會重複累加。
+        with storage_lock(self.storage_path):
+            if index_key is not None:
+                hit = self.idempotency.get(index_key)
+                if hit is not None:
+                    logger.info("[MemoryEngine] 觀察冪等命中，略過: key=%s -> %s", idempotency_key, hit)
+                    return hit
+            existing = self.evidence.get([evidence_id]) if index_key is not None else []
+            if existing:
+                # 前次寫入中斷：證據已在。已被遮蔽（使用者退出）者不得復活。
+                if existing[0].tombstoned_at is None:
+                    self.activity.apply(
+                        kind, subject, minutes=minutes, started_at=started,
+                        ended_at=ended, evidence_id=evidence_id,
+                    )
+            else:
+                self.evidence.append([
+                    inp.to_unit(
+                        unit_id=evidence_id, episode_id=None,
+                        recorded_at=datetime.now(timezone.utc),
+                    )
+                ])
+                self.activity.apply(
+                    kind, subject, minutes=minutes, started_at=started,
+                    ended_at=ended, evidence_id=evidence_id,
+                )
+            if index_key is not None:
+                self.idempotency.record(index_key, evidence_id)
+        logger.info("[MemoryEngine] 記錄觀察: %s %s (%.1f 分鐘)", kind, subject, minutes)
+        return evidence_id
+
+    @staticmethod
+    def _as_utc(value: datetime) -> datetime:
+        if not isinstance(value, datetime):
+            raise ValueError(f"需要 datetime，收到 {type(value).__name__}")
+        return value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+    def activity_profile(
+        self, top_n: int = 3, *, kind: str = "game_activity",
+    ) -> list[dict[str, Any]]:
+        """
+        活動摘要：依 total_minutes 由大到小（同分依 last_played 新到舊）取前 top_n。
+
+        回傳 [{name, play_count, total_minutes, last_played}]；沒有資料或已退出時為空。
+        """
+        if kind not in OBSERVATION_KINDS:
+            raise ValueError(f"kind 必須是 {OBSERVATION_KINDS} 之一，收到 {kind!r}")
+        if top_n <= 0:
+            return []
+        entries = self.activity.list(kind)
+        entries.sort(key=lambda e: e["last_played"], reverse=True)
+        entries.sort(key=lambda e: e["total_minutes"], reverse=True)
+        return [
+            {
+                "name": e["name"],
+                "play_count": e["play_count"],
+                "total_minutes": round(e["total_minutes"], 2),
+                "last_played": e["last_played"],
+            }
+            for e in entries[:top_n]
+        ]
+
+    def forget_activity(self, kind: str = "game_activity") -> int:
+        """
+        退出用：清除該 kind 的活動彙整，並遮蔽對應的 observation 證據。
+
+        evidence.jsonl 為 append-only，改以 redactions.jsonl 追加遮蔽紀錄；遮蔽後
+        retrieve_evidence 不再回傳、內容與 attrs 讀取時為空。冪等索引保留，
+        所以同 key 重送不會讓資料復活。回傳本次遮蔽的證據筆數。
+        """
+        if kind not in OBSERVATION_KINDS:
+            raise ValueError(f"kind 必須是 {OBSERVATION_KINDS} 之一，收到 {kind!r}")
+        with storage_lock(self.storage_path):
+            ids = [
+                u.id for u in self.evidence.list(source_type="observation")
+                if u.tombstoned_at is None and u.attrs.get("kind") == kind
+            ]
+            redacted = self.evidence.redact(ids)
+            self.activity.clear(kind)
+        logger.info("[MemoryEngine] 已清除活動 %s：遮蔽 %d 筆證據", kind, redacted)
+        return redacted
 
     def dream(self, triggered_by: str = "manual") -> dict[str, Any]:
         """

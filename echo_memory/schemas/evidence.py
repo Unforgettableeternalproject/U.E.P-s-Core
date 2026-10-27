@@ -14,7 +14,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-SOURCE_TYPES = ("user", "agent", "tool", "reflection", "dream")
+# observation＝平台被動觀察（如 Discord presence 的遊戲時段）：不是任何人說的話，
+# 不可作為使用者陳述或 Agent 發言的證據，也不進入概念蒸餾（見 can_attest_*）。
+SOURCE_TYPES = ("user", "agent", "tool", "reflection", "dream", "observation")
 DELIVERY_STATES = ("delivered", "partial", "not_delivered", "unknown")
 PROVENANCE_STATUSES = ("known", "legacy_unknown")
 # 內容真正的出處（僅 source_type="tool" 的 unit 使用）
@@ -63,7 +65,7 @@ class TextSpan:
 class SourceRef:
     """來源指標。呼叫端自填，引擎只存不解讀。"""
 
-    kind: str  # discord_message | discord_voice | tool_call | mcp | cli | episode | legacy
+    kind: str  # discord_message | discord_voice | discord_presence | tool_call | mcp | cli | episode | legacy
     channel: str | None = None  # origin：voice | dm | ...
     ref_ids: tuple[str, ...] = ()  # 訊息 id／音訊片段 id／tool call id
     name: str | None = None  # tool_call 時為工具名
@@ -278,7 +280,7 @@ class EvidenceInput:
 
 
 def can_attest_user_claim(u: EvidenceUnit) -> bool:
-    """該 unit 是否可作為「使用者確實說過這句話」的證據。"""
+    """該 unit 是否可作為「使用者確實說過這句話」的證據（observation 一律不算）。"""
     return (
         u.source_type == "user"
         and u.provenance_status == "known"
@@ -290,7 +292,7 @@ def can_attest_user_claim(u: EvidenceUnit) -> bool:
 def can_attest_agent_said(u: EvidenceUnit) -> bool:
     """該 unit 是否可作為「Agent 確實說出口」的證據。
 
-    partial 且進度未知、not_delivered、unknown 皆不算已交付。
+    partial 且進度未知、not_delivered、unknown 皆不算已交付。observation 一律不算。
     """
     return (
         u.source_type == "agent"

@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import threading
 import time
 import uuid
 from collections.abc import Callable, Sequence
@@ -98,6 +99,19 @@ class MemoryEngine:
         self.embedding_backend = embedding_backend
         self.ollama_base_url = ollama_base_url
 
+        # 延遲屬性的建構鎖：每個屬性一把（可重入），double-checked，保證並行冷啟動每個元件只建一份。
+        # 鎖序：建構鎖只會依「依賴方向」巢狀取得（retrieval -> semantic -> episodic），
+        # 且絕不在持有 storage_lock 時冷建構：所有會取 storage_lock 的入口先呼叫
+        # ensure_initialized()（EpisodicMemory 建構會取 storage_lock，持鎖冷建構會與
+        # 另一條「持 storage_lock 再冷建構」的路徑形成 ABBA 死鎖）。
+        self._init_locks = {
+            name: threading.RLock()
+            for name in (
+                "episodic", "evidence", "idempotency", "activity", "semantic",
+                "working", "procedural", "retrieval", "entity_store", "entity_extractor",
+            )
+        }
+
         # 延遲導入以加快啟動速度
         self._episodic = None
         self._semantic = None
@@ -123,21 +137,24 @@ class MemoryEngine:
     def episodic(self):
         """延遲加載情節記憶模組"""
         if self._episodic is None:
-            from echo_memory.storage.episodic import EpisodicMemory
-            self._episodic = EpisodicMemory(
-                storage_path=self.storage_path / "episodic",
-                embedding_model=self.embedding_model,
-                device=self.device,
-                query_prefix=self.query_prefix,
-                max_episodes=self.max_episodes,
-                lock_path=self.storage_path,
-                embedding_backend=self.embedding_backend,
-                ollama_base_url=self.ollama_base_url,
-            )
-            # 背景暖機 embedding 後端；失敗只標記 degraded，不影響使用。
-            # 測試或離線環境可設 ECHO_DISABLE_EMBEDDING_WARMUP=1 關閉。
-            if os.getenv("ECHO_DISABLE_EMBEDDING_WARMUP", "").lower() not in ("1", "true", "yes"):
-                self._episodic.warmup(background=True)
+            with self._init_locks["episodic"]:
+                if self._episodic is None:
+                    from echo_memory.storage.episodic import EpisodicMemory
+                    obj = EpisodicMemory(
+                        storage_path=self.storage_path / "episodic",
+                        embedding_model=self.embedding_model,
+                        device=self.device,
+                        query_prefix=self.query_prefix,
+                        max_episodes=self.max_episodes,
+                        lock_path=self.storage_path,
+                        embedding_backend=self.embedding_backend,
+                        ollama_base_url=self.ollama_base_url,
+                    )
+                    # 背景暖機 embedding 後端；失敗只標記 degraded，不影響使用。
+                    # 測試或離線環境可設 ECHO_DISABLE_EMBEDDING_WARMUP=1 關閉。
+                    if os.getenv("ECHO_DISABLE_EMBEDDING_WARMUP", "").lower() not in ("1", "true", "yes"):
+                        obj.warmup(background=True)
+                    self._episodic = obj
         return self._episodic
 
     def warmup(self, background: bool = True) -> Any:
@@ -145,39 +162,65 @@ class MemoryEngine:
         主動暖機 embedding 後端，供宿主在啟動時呼叫，避免第一次檢索撞上冷啟動。
 
         存取 episodic 時已在背景起過一次暖機的話，這裡會再確認一次（已載入時很快）。
+        會先 ensure_initialized() 建立全部延遲屬性。
         background=True 回傳 daemon thread；False 時同步執行並回傳是否成功。失敗不拋出。
         """
+        self.ensure_initialized()
         return self.episodic.warmup(background=background)
+
+    def ensure_initialized(self) -> None:
+        """
+        一次建立所有延遲屬性，供宿主在啟動時（單執行緒）呼叫。
+
+        之後並行的 retrieve／store_episode 不會在第一次呼叫時撞上冷啟動初始化
+        （載入索引、建構各層記憶）。已建立者為 O(1) 快速返回。引擎內所有會取
+        storage_lock 的公開入口都會先呼叫它，確保不在持 storage_lock 時冷建構元件；
+        宿主若自行 `with storage_lock(...)` 再存取引擎，須先呼叫本方法。
+        """
+        _ = (
+            self.episodic, self.semantic, self.working, self.procedural,
+            self.entity_store, self.entity_extractor, self.evidence,
+            self.idempotency, self.activity, self.retrieval,
+        )
 
     @property
     def evidence(self) -> EvidenceStore:
         """延遲加載證據存儲（append-only evidence.jsonl）。"""
         if self._evidence is None:
-            self._evidence = EvidenceStore(
-                self.storage_path / "evidence", lock_path=self.storage_path,
-            )
+            with self._init_locks["evidence"]:
+                if self._evidence is None:
+                    obj = EvidenceStore(
+                        self.storage_path / "evidence", lock_path=self.storage_path,
+                    )
+                    self._evidence = obj
         return self._evidence
 
     @property
     def idempotency(self):
         """延遲加載寫入冪等索引（namespace 目錄下的 idempotency.json）。"""
         if self._idempotency is None:
-            from echo_memory.config import get_config
-            from echo_memory.storage.idempotency import IdempotencyIndex
-            config = get_config()
-            self._idempotency = IdempotencyIndex(
-                self.storage_path,
-                max_keys=config.episode_idempotency_max_keys,
-                retention_days=config.episode_idempotency_retention_days,
-            )
+            with self._init_locks["idempotency"]:
+                if self._idempotency is None:
+                    from echo_memory.config import get_config
+                    from echo_memory.storage.idempotency import IdempotencyIndex
+                    config = get_config()
+                    obj = IdempotencyIndex(
+                        self.storage_path,
+                        max_keys=config.episode_idempotency_max_keys,
+                        retention_days=config.episode_idempotency_retention_days,
+                    )
+                    self._idempotency = obj
         return self._idempotency
 
     @property
     def activity(self):
         """延遲加載活動彙整（namespace 目錄下的 activity.json）。"""
         if self._activity is None:
-            from echo_memory.storage.activity import ActivityStore
-            self._activity = ActivityStore(self.storage_path)
+            with self._init_locks["activity"]:
+                if self._activity is None:
+                    from echo_memory.storage.activity import ActivityStore
+                    obj = ActivityStore(self.storage_path)
+                    self._activity = obj
         return self._activity
 
     def get_episode_evidence(self, episode: Episode | str) -> list[EvidenceUnit]:
@@ -214,74 +257,92 @@ class MemoryEngine:
     def semantic(self):
         """延遲加載語義記憶模組（共享 EpisodicMemory 的 embedding 模型）"""
         if self._semantic is None:
-            from echo_memory.storage.semantic import SemanticMemory
+            with self._init_locks["semantic"]:
+                if self._semantic is None:
+                    from echo_memory.storage.semantic import SemanticMemory
 
-            # 用 episodic 的 _generate_embedding 作為 embed_fn，
-            # 這樣兩層記憶共用同一個 SentenceTransformer 實例
-            def _shared_embed_fn(text: str) -> list[float]:
-                return self.episodic._generate_embedding(text)
+                    # 用 episodic 的 _generate_embedding 作為 embed_fn，
+                    # 這樣兩層記憶共用同一個 SentenceTransformer 實例
+                    def _shared_embed_fn(text: str) -> list[float]:
+                        return self.episodic._generate_embedding(text)
 
-            self._semantic = SemanticMemory(
-                storage_path=self.storage_path / "semantic",
-                embed_fn=_shared_embed_fn,
-            )
-            # 注入圖譜，remove / merge 才能同步清理概念節點
-            self._semantic.attach_graph(self.episodic.graph)
+                    obj = SemanticMemory(
+                        storage_path=self.storage_path / "semantic",
+                        embed_fn=_shared_embed_fn,
+                    )
+                    # 注入圖譜，remove / merge 才能同步清理概念節點
+                    obj.attach_graph(self.episodic.graph)
+                    self._semantic = obj
         return self._semantic
 
     @property
     def working(self):
         """延遲加載工作記憶模組"""
         if self._working is None:
-            from echo_memory.storage.working import WorkingMemory
-            self._working = WorkingMemory(ttl_seconds=300)
+            with self._init_locks["working"]:
+                if self._working is None:
+                    from echo_memory.storage.working import WorkingMemory
+                    obj = WorkingMemory(ttl_seconds=300)
+                    self._working = obj
         return self._working
 
     @property
     def procedural(self):
         """延遲加載程序記憶模組（共享 EpisodicMemory 的 embedding 模型）"""
         if self._procedural is None:
-            from echo_memory.storage.procedural import ProceduralMemory
+            with self._init_locks["procedural"]:
+                if self._procedural is None:
+                    from echo_memory.storage.procedural import ProceduralMemory
 
-            def _shared_embed_fn(text: str) -> list[float]:
-                return self.episodic._generate_embedding(text)
+                    def _shared_embed_fn(text: str) -> list[float]:
+                        return self.episodic._generate_embedding(text)
 
-            self._procedural = ProceduralMemory(
-                storage_path=self.storage_path / "procedural",
-                embed_fn=_shared_embed_fn,
-            )
+                    obj = ProceduralMemory(
+                        storage_path=self.storage_path / "procedural",
+                        embed_fn=_shared_embed_fn,
+                    )
+                    self._procedural = obj
         return self._procedural
 
     @property
     def retrieval(self):
         """延遲加載檢索引擎（含查詢向量快取 + 程序搜索 + Entity 收集）"""
         if self._retrieval is None:
-            from echo_memory.retrieval.ecphory import EcphoryRetrieval
-            self._retrieval = EcphoryRetrieval(
-                episodic=self.episodic,
-                semantic=self.semantic,
-                working=self.working,
-                procedural=self.procedural,
-                entity_store=self.entity_store,
-            )
+            with self._init_locks["retrieval"]:
+                if self._retrieval is None:
+                    from echo_memory.retrieval.ecphory import EcphoryRetrieval
+                    obj = EcphoryRetrieval(
+                        episodic=self.episodic,
+                        semantic=self.semantic,
+                        working=self.working,
+                        procedural=self.procedural,
+                        entity_store=self.entity_store,
+                    )
+                    self._retrieval = obj
         return self._retrieval
 
     @property
     def entity_store(self):
         """延遲加載實體存儲模組"""
         if self._entity_store is None:
-            from echo_memory.storage.entity import EntityStore
-            self._entity_store = EntityStore(
-                storage_path=self.storage_path / "entities",
-            )
+            with self._init_locks["entity_store"]:
+                if self._entity_store is None:
+                    from echo_memory.storage.entity import EntityStore
+                    obj = EntityStore(
+                        storage_path=self.storage_path / "entities",
+                    )
+                    self._entity_store = obj
         return self._entity_store
 
     @property
     def entity_extractor(self):
         """延遲加載實體提取器"""
         if self._entity_extractor is None:
-            from echo_memory.dream.entity_extractor import EntityExtractor
-            self._entity_extractor = EntityExtractor(llm_fn=self._llm_fn)
+            with self._init_locks["entity_extractor"]:
+                if self._entity_extractor is None:
+                    from echo_memory.dream.entity_extractor import EntityExtractor
+                    obj = EntityExtractor(llm_fn=self._llm_fn)
+                    self._entity_extractor = obj
         return self._entity_extractor
 
     @property
@@ -344,6 +405,7 @@ class MemoryEngine:
             ValueError: episode_kind 無效、tool_note 未帶 evidence，evidence 與
                 user_input／agent_response 不一致，或 idempotency_key 不是非空字串。
         """
+        self.ensure_initialized()
         if idempotency_key is not None and (
             not isinstance(idempotency_key, str) or not idempotency_key.strip()
         ):
@@ -411,6 +473,21 @@ class MemoryEngine:
                 recorded_at=recorded_at,
             )
         episode.evidence_ids = [u.id for u in units]
+
+        # embedding 是網路呼叫（Ollama，寫入逾時可達數十秒）：在任何鎖之外先算好，
+        # 失敗時 episode 標記 embedding_pending，由 episodic.write 在鎖內補佔位向量。
+        # 冪等重送先以短暫 storage_lock 預判（idempotency 索引讀取須在鎖內），命中就不白算 embedding；
+        # 真正的去重與登記仍在下方寫入臨界區內再判定一次。
+        if idempotency_key is not None:
+            with storage_lock(self.storage_path):
+                existing_id = self.idempotency.get(idempotency_key)
+                if existing_id is not None and self.episodic.get(existing_id) is not None:
+                    logger.info(
+                        "[MemoryEngine] 冪等命中，略過寫入: key=%s -> %s",
+                        idempotency_key, existing_id,
+                    )
+                    return existing_id
+        self.episodic.prepare_embedding(episode)
 
         # 鎖語意：寫入與實體寫回各自是短臨界區，實體提取（LLM）在鎖外，
         # 避免同 namespace 的其他寫入被 LLM 延遲拖到 TimeoutError。
@@ -533,6 +610,7 @@ class MemoryEngine:
         Returns:
             MemoryContext: 檢索到的記憶脈絡
         """
+        self.ensure_initialized()
         # 使用 neurochem 狀態作為預設值（取代硬編碼 0.5）
         if dopamine is None:
             dopamine = self._neurochem.dopamine
@@ -610,6 +688,7 @@ class MemoryEngine:
         Raises:
             ValueError: query 與 episode_ids 皆未提供，或 source_types 含無效值。
         """
+        self.ensure_initialized()
         if source_types is not None:
             bad = [s for s in source_types if s not in SOURCE_TYPES]
             if bad:
@@ -694,6 +773,7 @@ class MemoryEngine:
         Raises:
             ValueError: kind 不支援、subject 為空、時間順序錯誤或 idempotency_key 非空字串。
         """
+        self.ensure_initialized()
         if kind not in OBSERVATION_KINDS:
             raise ValueError(f"kind 必須是 {OBSERVATION_KINDS} 之一，收到 {kind!r}")
         if not isinstance(subject, str) or not subject.strip():
@@ -777,6 +857,7 @@ class MemoryEngine:
 
         回傳 [{name, play_count, total_minutes, last_played}]；沒有資料或已退出時為空。
         """
+        self.ensure_initialized()
         if kind not in OBSERVATION_KINDS:
             raise ValueError(f"kind 必須是 {OBSERVATION_KINDS} 之一，收到 {kind!r}")
         if top_n <= 0:
@@ -802,6 +883,7 @@ class MemoryEngine:
         retrieve_evidence 不再回傳、內容與 attrs 讀取時為空。冪等索引保留，
         所以同 key 重送不會讓資料復活。回傳本次遮蔽的證據筆數。
         """
+        self.ensure_initialized()
         if kind not in OBSERVATION_KINDS:
             raise ValueError(f"kind 必須是 {OBSERVATION_KINDS} 之一，收到 {kind!r}")
         with storage_lock(self.storage_path):
@@ -824,6 +906,7 @@ class MemoryEngine:
         Returns:
             DreamReport: 鞏固報告
         """
+        self.ensure_initialized()
         if self._dream_engine is None:
             from echo_memory.config import get_config
             from echo_memory.dream.engine import DreamEngine

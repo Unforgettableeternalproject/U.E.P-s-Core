@@ -86,6 +86,10 @@ class EpisodicMemory:
         self.embeddings_file = self.storage_path / "embeddings.npy"
         self.index_manifest_file = self.storage_path / "embedding_index.json"
 
+        # 同程序讀寫保護：只保護記憶體內狀態（CPU 操作），絕不跨網路呼叫或磁碟讀取持有。
+        # 鎖序固定為 storage_lock -> _mem_lock；讀者只拿 _mem_lock。
+        self._mem_lock = threading.RLock()
+
         # 內存緩存
         self._episodes: dict[str, Episode] = {}
         self._embeddings: np.ndarray | None = None
@@ -115,6 +119,23 @@ class EpisodicMemory:
 
         logger.info(f"[EpisodicMemory] 初始化完成 - 已載入 {len(self._episodes)} 個情節")
 
+    def prepare_embedding(self, episode: Episode) -> None:
+        """
+        在鎖外為 episode 生成 embedding（網路呼叫）。
+
+        成功則填入 episode.embedding；後端不可用時保持空向量並標記
+        metadata["embedding_pending"]，由 write() 在鎖內以現有索引維度補零向量佔位，
+        之後由 backfill_pending_embeddings 補齊。已有 embedding 或已標記待補則不動作。
+        """
+        if episode.embedding or episode.metadata.get("embedding_pending"):
+            return
+        try:
+            with self._embedding_timeout(self.write_timeout):
+                episode.embedding = self._generate_embedding(episode.content_summary)
+        except EmbeddingUnavailable as e:
+            logger.warning(f"[EpisodicMemory] embedding 不可用，先存 episode 待補: {e}")
+            episode.metadata["embedding_pending"] = True
+
     def write(self, episode: Episode) -> str:
         """
         寫入新的情節記憶。
@@ -127,41 +148,40 @@ class EpisodicMemory:
         Returns:
             episode_id: 新建的情節 ID
         """
+        # embedding 內容不依賴索引狀態：網路呼叫放在任何鎖之外
+        # （engine.store_episode 會先呼叫過，這裡對已備妥的 episode 為 no-op）
+        self.prepare_embedding(episode)
+        reindex_cache = self._precompute_reindex_cache()
+
         with storage_lock(self.lock_path):
             self._load(reset=True)
-            self._reindex_if_required()
+            self._reindex_if_required(reindex_cache)
 
-            # 容量檢查：超過上限時刪除最舊的情節
-            if self.max_episodes is not None and len(self._episodes) >= self.max_episodes:
-                self._evict_oldest()
+            with self._mem_lock:
+                # 容量檢查：超過上限時刪除最舊的情節
+                if self.max_episodes is not None and len(self._episodes) >= self.max_episodes:
+                    self._evict_oldest()
 
-            # 生成嵌入向量（如果未提供）
-            if not episode.embedding:
-                try:
-                    with self._embedding_timeout(self.write_timeout):
-                        episode.embedding = self._generate_embedding(
-                            episode.content_summary
-                        )
-                except EmbeddingUnavailable as e:
-                    # 每輪對話都必須存成 episode：以零向量佔位（相似度恆為 0，
-                    # 不會被召回），並標記待補，之後由 backfill_pending_embeddings 補齊
+                # 鎖外沒算出 embedding（後端不可用）：每輪對話都必須存成 episode，
+                # 以零向量佔位（相似度恆為 0，不會被召回），之後由
+                # backfill_pending_embeddings 補齊
+                if not episode.embedding:
                     placeholder = self._placeholder_embedding()
                     if placeholder is None:
-                        raise
-                    logger.warning(
-                        f"[EpisodicMemory] embedding 不可用，先存 episode 待補: {e}"
-                    )
+                        raise EmbeddingUnavailable(
+                            "embedding 不可用且無法決定佔位向量維度"
+                        )
                     episode.embedding = placeholder
                     episode.metadata["embedding_pending"] = True
 
-            # 存儲到內存
-            self._episodes[episode.id] = episode
+                # 存儲到內存
+                self._episodes[episode.id] = episode
 
-            # 更新向量索引
-            self._update_embeddings(episode)
+                # 更新向量索引
+                self._update_embeddings(episode)
 
-            # 更新圖結構
-            self._update_graph(episode)
+                # 更新圖結構
+                self._update_graph(episode)
 
             # 持久化
             self._save_unlocked()
@@ -171,7 +191,8 @@ class EpisodicMemory:
 
     def get(self, episode_id: str) -> Episode | None:
         """根據 ID 獲取情節"""
-        return self._episodes.get(episode_id)
+        with self._mem_lock:
+            return self._episodes.get(episode_id)
 
     def search(
         self,
@@ -190,31 +211,37 @@ class EpisodicMemory:
         Returns:
             (Episode, similarity_score) 元組列表
         """
+        # 先確保索引就緒（可能取 storage_lock），再拿 _mem_lock，維持鎖序
         self._ensure_index_ready()
-        if self._embeddings is None or len(self._episodes) == 0:
-            return []
-
         # Stored vectors are normalized on write/load, so the dot product is
         # cosine similarity. A zero query has no defined direction.
         query_vec = self._normalize_vector(query_embedding)
         if not np.any(query_vec):
             return []
 
-        similarities = np.dot(self._embeddings, query_vec)
-        top_indices = np.argsort(similarities)[::-1][:top_k]
+        with self._mem_lock:
+            if self._embeddings is None or len(self._episodes) == 0:
+                return []
+            # 索引仍待重建（檢查與取鎖之間被其他來源重載）或查詢維度不合：回空而非拋例外
+            if self._index_rebuild_required or query_vec.shape[0] != self._embeddings.shape[1]:
+                return []
 
-        # 轉換為 (Episode, similarity) 元組，並過濾低相似度結果
-        results = []
-        for idx in top_indices:
-            similarity = float(similarities[idx])
+            similarities = np.dot(self._embeddings, query_vec)
+            top_indices = np.argsort(similarities)[::-1][:top_k]
+            idx_to_id = {idx: ep_id for ep_id, idx in self._id_to_index.items()}
 
-            # 過濾低相似度結果
-            if similarity < min_similarity:
-                continue
+            # 轉換為 (Episode, similarity) 元組，並過濾低相似度結果
+            results = []
+            for idx in top_indices:
+                similarity = float(similarities[idx])
 
-            ep_id = self._index_to_id(idx)
-            if ep_id and ep_id in self._episodes:
-                results.append((self._episodes[ep_id], similarity))
+                # 過濾低相似度結果
+                if similarity < min_similarity:
+                    continue
+
+                ep_id = idx_to_id.get(int(idx))
+                if ep_id and ep_id in self._episodes:
+                    results.append((self._episodes[ep_id], similarity))
 
         logger.debug(
             f"[EpisodicMemory] 檢索完成 - "
@@ -240,22 +267,26 @@ class EpisodicMemory:
             cosine similarity (0-1)，找不到 episode 時回傳 None
         """
         self._ensure_index_ready()
-        if self._embeddings is None or episode_id not in self._episodes:
-            return None
-
-        idx = self._id_to_index.get(episode_id)
-        if idx is None:
-            return None
-
         query_vec = self._normalize_vector(query_embedding)
         if not np.any(query_vec):
             return None
 
-        return float(np.dot(self._embeddings[idx], query_vec))
+        with self._mem_lock:
+            if self._embeddings is None or episode_id not in self._episodes:
+                return None
+            if self._index_rebuild_required or query_vec.shape[0] != self._embeddings.shape[1]:
+                return None
+
+            idx = self._id_to_index.get(episode_id)
+            if idx is None:
+                return None
+
+            return float(np.dot(self._embeddings[idx], query_vec))
 
     def count(self) -> int:
         """返回情節總數"""
-        return len(self._episodes)
+        with self._mem_lock:
+            return len(self._episodes)
 
     def mark_as_dreamed(self, episode_ids: list[str]) -> int:
         """
@@ -273,11 +304,12 @@ class EpisodicMemory:
         with storage_lock(self.lock_path):
             self._load(reset=True)
             marked = 0
-            for ep_id in episode_ids:
-                ep = self._episodes.get(ep_id)
-                if ep is not None and not ep.is_dreamed:
-                    ep.is_dreamed = True
-                    marked += 1
+            with self._mem_lock:
+                for ep_id in episode_ids:
+                    ep = self._episodes.get(ep_id)
+                    if ep is not None and not ep.is_dreamed:
+                        ep.is_dreamed = True
+                        marked += 1
 
             if marked > 0:
                 self._save_unlocked()
@@ -302,26 +334,30 @@ class EpisodicMemory:
         """
         with storage_lock(self.lock_path):
             self._load(reset=True)
-            ep = self._episodes.get(episode_id)
-            if ep is None:
-                return False
-
-            ep.salience_score = min(1.0, max(0.0, new_salience))
+            with self._mem_lock:
+                ep = self._episodes.get(episode_id)
+                if ep is None:
+                    return False
+                ep.salience_score = min(1.0, max(0.0, new_salience))
             self._save_unlocked()
             return True
 
     def update_summary(self, episode_id: str, new_summary: str) -> bool:
         """Update an episode summary and its embedding against the latest snapshot."""
+        # embedding 只取決於新摘要：網路呼叫在鎖外；episode 不存在時白算一次可接受
+        new_embedding = self._generate_embedding(new_summary)
+        reindex_cache = self._precompute_reindex_cache()
         with storage_lock(self.lock_path):
             self._load(reset=True)
-            self._reindex_if_required()
-            ep = self._episodes.get(episode_id)
-            if ep is None:
-                return False
+            self._reindex_if_required(reindex_cache)
+            with self._mem_lock:
+                ep = self._episodes.get(episode_id)
+                if ep is None:
+                    return False
 
-            ep.content_summary = new_summary
-            ep.embedding = self._generate_embedding(new_summary)
-            self._rebuild_embeddings()
+                ep.content_summary = new_summary
+                ep.embedding = new_embedding
+                self._rebuild_embeddings()
             self._save_unlocked()
             return True
 
@@ -342,11 +378,11 @@ class EpisodicMemory:
         """
         with storage_lock(self.lock_path):
             self._load(reset=True)
-            ep = self._episodes.get(episode_id)
-            if ep is None:
-                return False
-
-            ep.metadata.update(updates)
+            with self._mem_lock:
+                ep = self._episodes.get(episode_id)
+                if ep is None:
+                    return False
+                ep.metadata.update(updates)
             self._save_unlocked()
             return True
 
@@ -367,27 +403,30 @@ class EpisodicMemory:
         """
         with storage_lock(self.lock_path):
             self._load(reset=True)
-            ep = self._episodes.get(episode_id)
-            if ep is None:
-                return False
+            with self._mem_lock:
+                ep = self._episodes.get(episode_id)
+                if ep is None:
+                    return False
 
-            ep.salience_score = min(1.0, max(0.0, archive_salience))
-            ep.metadata["archived"] = True
-            ep.metadata["archived_by"] = "reflection"
+                ep.salience_score = min(1.0, max(0.0, archive_salience))
+                ep.metadata["archived"] = True
+                ep.metadata["archived_by"] = "reflection"
             self._save_unlocked()
             return True
 
     def clear(self):
         """清空所有情節記憶（測試用）"""
         with storage_lock(self.lock_path):
-            self._episodes.clear()
-            self._embeddings = None
-            self._id_to_index.clear()
-            self._last_episode_id = None
-            self._last_episode_by_session.clear()
+            with self._mem_lock:
+                # 以新物件替換而非原地清空，持有舊參照的讀者仍看到完整舊狀態
+                self._episodes = {}
+                self._embeddings = None
+                self._id_to_index = {}
+                self._last_episode_id = None
+                self._last_episode_by_session = {}
 
-            # 清空圖結構
-            self.graph.clear()
+                # 清空圖結構（只清記憶體；檔案由下方 _save_unlocked 以空圖覆寫）
+                self.graph.clear_in_memory()
 
             self._save_unlocked()
 
@@ -418,7 +457,8 @@ class EpisodicMemory:
         """
         limit = min(limit, 200)
 
-        episodes = list(self._episodes.values())
+        with self._mem_lock:
+            episodes = list(self._episodes.values())
 
         # session 篩選
         if session_id is not None:
@@ -453,7 +493,12 @@ class EpisodicMemory:
         """
         with storage_lock(self.lock_path):
             self._load(reset=True)
-            return self._delete_episode_unlocked(episode_id)
+            with self._mem_lock:
+                deleted = self._delete_episode_unlocked(episode_id)
+            # 存檔（磁碟 I/O）在 _mem_lock 之外，仍在 storage_lock 內
+            if deleted:
+                self._save_unlocked()
+            return deleted
 
     def _delete_episode_unlocked(self, episode_id: str) -> bool:
         if episode_id not in self._episodes:
@@ -469,8 +514,7 @@ class EpisodicMemory:
         self._rebuild_embeddings()
 
         # 3. 從圖移除節點（NetworkX 自動移除相連的邊）
-        if self.graph.has_node(episode_id):
-            self.graph.graph.remove_node(episode_id)
+        self.graph.remove_episode_node(episode_id)
 
         # 4. 回溯 _last_episode_id
         if self._last_episode_id == episode_id:
@@ -485,9 +529,7 @@ class EpisodicMemory:
             else:
                 del self._last_episode_by_session[session_id]
 
-        # 持久化
-        self._save_unlocked()
-
+        # 持久化由呼叫端在 _mem_lock 之外執行
         logger.info(f"[EpisodicMemory] 已刪除情節: {episode_id}")
         return True
 
@@ -503,7 +545,11 @@ class EpisodicMemory:
         """
         with storage_lock(self.lock_path):
             self._load(reset=True)
-            return self._delete_session_unlocked(session_id)
+            with self._mem_lock:
+                count = self._delete_session_unlocked(session_id)
+            if count:
+                self._save_unlocked()
+            return count
 
     def _delete_session_unlocked(self, session_id: str) -> int:
         target_ids = [
@@ -525,8 +571,7 @@ class EpisodicMemory:
 
         # 從圖移除所有節點
         for ep_id in target_ids:
-            if self.graph.has_node(ep_id):
-                self.graph.graph.remove_node(ep_id)
+            self.graph.remove_episode_node(ep_id)
 
         # 清除 session tracking
         if self._last_episode_by_session.get(session_id) in target_ids:
@@ -536,9 +581,7 @@ class EpisodicMemory:
         if self._last_episode_id in target_ids:
             self._last_episode_id = self._find_latest_episode_id()
 
-        # 持久化
-        self._save_unlocked()
-
+        # 持久化由呼叫端在 _mem_lock 之外執行
         logger.info(
             f"[EpisodicMemory] 已刪除 session {session_id} 的 {len(target_ids)} 個情節"
         )
@@ -566,7 +609,8 @@ class EpisodicMemory:
             raise ValueError(f"不支援的匯出格式: {format!r}，請使用 'json' 或 'csv'")
 
         # 直接從 _episodes 取得全部資料，不走分頁的 list_episodes 避免截斷
-        episodes = list(self._episodes.values())
+        with self._mem_lock:
+            episodes = list(self._episodes.values())
         if session_id:
             episodes = [ep for ep in episodes if ep.session_id == session_id]
         episodes.sort(key=lambda e: e.timestamp)
@@ -649,8 +693,7 @@ class EpisodicMemory:
         del self._episodes[oldest_id]
         self._rebuild_embeddings()
 
-        if self.graph.has_node(oldest_id):
-            self.graph.graph.remove_node(oldest_id)
+        self.graph.remove_episode_node(oldest_id)
 
         # 回溯追蹤欄位
         if self._last_episode_id == oldest_id:
@@ -666,20 +709,26 @@ class EpisodicMemory:
 
         logger.info(f"[EpisodicMemory] 容量已滿，移除最舊情節: {oldest_id}")
 
-    def _find_latest_episode_id(self, session_id: str | None = None) -> str | None:
+    def _find_latest_episode_id(
+        self,
+        session_id: str | None = None,
+        episodes: dict[str, Episode] | None = None,
+    ) -> str | None:
         """
-        在目前 _episodes 中尋找 timestamp 最新的那筆 ID。
+        在目前 _episodes（或指定的 episodes）中尋找 timestamp 最新的那筆 ID。
 
         Args:
             session_id: 若提供，只在該 session 內尋找
+            episodes: 指定來源（載入中尚未發布的快照）；None 用 self._episodes
 
         Returns:
             最新 episode ID，若無則 None
         """
+        source = self._episodes if episodes is None else episodes
         candidates = (
-            {eid: ep for eid, ep in self._episodes.items() if ep.session_id == session_id}
+            {eid: ep for eid, ep in source.items() if ep.session_id == session_id}
             if session_id is not None
-            else self._episodes
+            else source
         )
 
         if not candidates:
@@ -837,27 +886,50 @@ class EpisodicMemory:
 
     def backfill_pending_embeddings(self, limit: int | None = None) -> int:
         """補齊 embedding_pending 的 episode；後端仍不可用就停止。回傳補齊數量。"""
-        done = 0
-        with storage_lock(self.lock_path):
-            self._load(reset=True)
-            self._reindex_if_required()
+        # 階段 1：鎖內只讀出待補清單（含摘要快照）
+        with self._mem_lock:
             pending = [
-                ep for ep in self._episodes.values()
+                (ep.id, ep.content_summary) for ep in self._episodes.values()
                 if ep.metadata.get("embedding_pending")
             ]
-            if limit is not None:
-                pending = pending[:limit]
-            for ep in pending:
-                try:
-                    with self._embedding_timeout(self.write_timeout):
-                        ep.embedding = self._generate_embedding(ep.content_summary)
-                except EmbeddingUnavailable as e:
-                    logger.warning(f"[EpisodicMemory] 補 embedding 中止: {e}")
-                    break
-                ep.metadata.pop("embedding_pending", None)
-                done += 1
+        if limit is not None:
+            pending = pending[:limit]
+        if not pending:
+            return 0
+
+        # 階段 2：鎖外逐筆算 embedding，後端不可用就停止
+        computed: dict[str, tuple[str, list[float]]] = {}
+        for ep_id, summary in pending:
+            try:
+                with self._embedding_timeout(self.write_timeout):
+                    computed[ep_id] = (summary, self._generate_embedding(summary))
+            except EmbeddingUnavailable as e:
+                logger.warning(f"[EpisodicMemory] 補 embedding 中止: {e}")
+                break
+        if not computed:
+            return 0
+
+        # 階段 3：鎖內載入最新快照，只套用「仍存在、仍待補、摘要未變」的 episode
+        done = 0
+        reindex_cache = self._precompute_reindex_cache()
+        with storage_lock(self.lock_path):
+            self._load(reset=True)
+            self._reindex_if_required(reindex_cache)
+            with self._mem_lock:
+                for ep_id, (summary, vector) in computed.items():
+                    ep = self._episodes.get(ep_id)
+                    if (
+                        ep is None
+                        or not ep.metadata.get("embedding_pending")
+                        or ep.content_summary != summary
+                    ):
+                        continue
+                    ep.embedding = vector
+                    ep.metadata.pop("embedding_pending", None)
+                    done += 1
+                if done:
+                    self._rebuild_embeddings()
             if done:
-                self._rebuild_embeddings()
                 self._save_unlocked()
         return done
 
@@ -909,26 +981,39 @@ class EpisodicMemory:
         return None
 
     def _load(self, reset: bool = False):
-        """從磁盤載入數據"""
+        """
+        從磁盤載入數據。
+
+        磁碟讀取與解析全部在區域變數完成（不持 _mem_lock），最後以單次替換發布，
+        並行讀者只會看到完整的舊狀態或完整的新狀態。
+        """
         if reset:
-            self._episodes.clear()
-            self._embeddings = None
-            self._id_to_index.clear()
-            self._index_rebuild_required = False
-            self._snapshot_upgrade_required = False
-            self.graph.reload()
+            episodes: dict[str, Episode] = {}
+            embeddings: np.ndarray | None = None
+            id_to_index: dict[str, int] = {}
+            index_rebuild_required = False
+            snapshot_upgrade_required = False
+            new_graph = self.graph.load_snapshot()
+        else:
+            with self._mem_lock:
+                episodes = dict(self._episodes)
+                embeddings = self._embeddings
+                id_to_index = dict(self._id_to_index)
+                index_rebuild_required = self._index_rebuild_required
+                snapshot_upgrade_required = self._snapshot_upgrade_required
+            new_graph = None
 
         if self.metadata_file.exists():
             with open(self.metadata_file, encoding="utf-8") as f:
                 data = json.load(f)
                 for ep_dict in data:
                     ep = Episode.from_dict(ep_dict)
-                    self._episodes[ep.id] = ep
+                    episodes[ep.id] = ep
 
         if self.embeddings_file.exists():
             loaded_embeddings = np.load(self.embeddings_file)
 
-            self._embeddings, migrated = self._normalize_matrix(loaded_embeddings)
+            embeddings, migrated = self._normalize_matrix(loaded_embeddings)
             manifest_exists = self.index_manifest_file.exists()
             expected_dimensions = {
                 "all-MiniLM-L6-v2": 384,
@@ -938,58 +1023,78 @@ class EpisodicMemory:
             }
             expected_dim = expected_dimensions.get(self.embedding_model)
             legacy_compatible = (
-                len(self._embeddings) == len(self._episodes)
-                and (expected_dim is None or self._embeddings.shape[1] == expected_dim)
+                len(embeddings) == len(episodes)
+                and (expected_dim is None or embeddings.shape[1] == expected_dim)
             )
 
             if not manifest_exists and legacy_compatible:
                 metadata_changed = migrated
-                for i, ep in enumerate(self._episodes.values()):
-                    self._id_to_index[ep.id] = i
-                    normalized = self._embeddings[i].tolist()
+                for i, ep in enumerate(episodes.values()):
+                    id_to_index[ep.id] = i
+                    normalized = embeddings[i].tolist()
                     current = np.asarray(ep.embedding, dtype=np.float32)
-                    if current.shape != self._embeddings[i].shape or not np.allclose(
-                        current, self._embeddings[i]
+                    if current.shape != embeddings[i].shape or not np.allclose(
+                        current, embeddings[i]
                     ):
                         ep.embedding = normalized
                         metadata_changed = True
-                self._snapshot_upgrade_required = True
+                snapshot_upgrade_required = True
                 if metadata_changed:
                     logger.info("[EpisodicMemory] 修復 legacy embedding metadata")
             else:
-                for i, ep in enumerate(self._episodes.values()):
-                    if i >= len(self._embeddings):
+                for i, ep in enumerate(episodes.values()):
+                    if i >= len(embeddings):
                         break
-                    self._id_to_index[ep.id] = i
-                self._index_rebuild_required = not self._manifest_matches_current_index()
-        elif self._episodes:
-            self._index_rebuild_required = True
+                    id_to_index[ep.id] = i
+                index_rebuild_required = not self._manifest_matches_current_index(
+                    episodes, embeddings
+                )
+        elif episodes:
+            index_rebuild_required = True
 
         # 重建 _last_episode_by_session（從已載入的情節中推算）
-        self._rebuild_session_tracking()
+        last_by_session, last_id = self._compute_session_tracking(episodes)
+
+        # 單次發布：讀者持 _mem_lock 取參照，不會看到半成品
+        with self._mem_lock:
+            self._episodes = episodes
+            self._embeddings = embeddings
+            self._id_to_index = id_to_index
+            self._index_rebuild_required = index_rebuild_required
+            self._snapshot_upgrade_required = snapshot_upgrade_required
+            self._last_episode_by_session = last_by_session
+            self._last_episode_id = last_id
+            if new_graph is not None:
+                self.graph.install(new_graph)
 
     def _rebuild_session_tracking(self) -> None:
         """
         從 _episodes 重建 _last_episode_by_session 和 _last_episode_id。
         在 _load() 後呼叫，確保追蹤狀態與磁盤資料一致。
         """
-        self._last_episode_by_session.clear()
-        self._last_episode_id = None
+        with self._mem_lock:
+            self._last_episode_by_session, self._last_episode_id = (
+                self._compute_session_tracking(self._episodes)
+            )
 
-        if not self._episodes:
-            return
+    def _compute_session_tracking(
+        self, episodes: dict[str, Episode]
+    ) -> tuple[dict[str, str], str | None]:
+        """由給定的 episodes 推算（每 session 最新 ID, 全域最新 ID），不改動實例狀態。"""
+        if not episodes:
+            return {}, None
 
         # 找出每個 session 的最新情節
         session_latest: dict[str, tuple[str, object]] = {}  # session_id -> (ep_id, timestamp)
-        for ep_id, ep in self._episodes.items():
+        for ep_id, ep in episodes.items():
             sid = ep.session_id
             if sid not in session_latest or ep.timestamp > session_latest[sid][1]:
                 session_latest[sid] = (ep_id, ep.timestamp)
 
-        self._last_episode_by_session = {sid: data[0] for sid, data in session_latest.items()}
+        by_session = {sid: data[0] for sid, data in session_latest.items()}
 
         # 全域最新
-        self._last_episode_id = self._find_latest_episode_id()
+        return by_session, self._find_latest_episode_id(episodes=episodes)
 
     def _save(self):
         """保存元數據、向量和圖到磁盤"""
@@ -999,7 +1104,11 @@ class EpisodicMemory:
     def _save_unlocked(self) -> None:
         """在持有 namespace storage lock 時發布完整快照。"""
         self.storage_path.mkdir(parents=True, exist_ok=True)
-        data = [ep.to_dict() for ep in self._episodes.values()]
+        # 快照在 _mem_lock 內取（純記憶體），檔案寫入在鎖外
+        with self._mem_lock:
+            data = [ep.to_dict() for ep in self._episodes.values()]
+            embeddings = self._embeddings
+            ordered_ids = list(self._episodes)
 
         metadata_tmp = temporary_sibling(self.metadata_file)
         with open(metadata_tmp, "w", encoding="utf-8") as f:
@@ -1008,10 +1117,10 @@ class EpisodicMemory:
             os.fsync(f.fileno())
         replace_with_retry(metadata_tmp, self.metadata_file)
 
-        if self._embeddings is not None:
+        if embeddings is not None:
             embeddings_tmp = temporary_sibling(self.embeddings_file)
             with open(embeddings_tmp, "wb") as f:
-                np.save(f, self._embeddings)
+                np.save(f, embeddings)
                 f.flush()
                 os.fsync(f.fileno())
             replace_with_retry(embeddings_tmp, self.embeddings_file)
@@ -1019,15 +1128,21 @@ class EpisodicMemory:
             self.embeddings_file.unlink()
 
         self.graph.save()
-        self._write_manifest()
+        self._write_manifest(embeddings, ordered_ids)
 
-    def _manifest_matches_current_index(self) -> bool:
-        if not self._episodes:
+    def _manifest_matches_current_index(
+        self,
+        episodes: dict[str, Episode] | None = None,
+        embeddings: np.ndarray | None = None,
+    ) -> bool:
+        if episodes is None:
+            episodes, embeddings = self._episodes, self._embeddings
+        if not episodes:
             return True
-        if self._embeddings is None or self._embeddings.ndim != 2:
+        if embeddings is None or embeddings.ndim != 2:
             return False
-        ordered_ids = list(self._episodes)
-        if len(self._embeddings) != len(ordered_ids):
+        ordered_ids = list(episodes)
+        if len(embeddings) != len(ordered_ids):
             return False
         try:
             manifest = json.loads(self.index_manifest_file.read_text(encoding="utf-8"))
@@ -1035,27 +1150,31 @@ class EpisodicMemory:
             # Legacy snapshots can be trusted only when every metadata vector
             # still agrees with the persisted matrix row.
             return all(
-                len(ep.embedding) == self._embeddings.shape[1]
-                and np.allclose(ep.embedding, self._embeddings[index])
-                for index, ep in enumerate(self._episodes.values())
+                len(ep.embedding) == embeddings.shape[1]
+                and np.allclose(ep.embedding, embeddings[index])
+                for index, ep in enumerate(episodes.values())
             )
         return (
             manifest.get("version") == 1
             and manifest.get("model") == self.embedding_model
-            and manifest.get("dimension") == self._embeddings.shape[1]
+            and manifest.get("dimension") == embeddings.shape[1]
             and manifest.get("ordered_ids") == ordered_ids
         )
 
-    def _write_manifest(self) -> None:
-        if self._embeddings is None:
+    def _write_manifest(
+        self,
+        embeddings: np.ndarray | None,
+        ordered_ids: list[str],
+    ) -> None:
+        if embeddings is None:
             if self.index_manifest_file.exists():
                 self.index_manifest_file.unlink()
             return
         manifest = {
             "version": 1,
             "model": self.embedding_model,
-            "dimension": int(self._embeddings.shape[1]),
-            "ordered_ids": list(self._episodes),
+            "dimension": int(embeddings.shape[1]),
+            "ordered_ids": ordered_ids,
         }
         manifest_tmp = temporary_sibling(self.index_manifest_file)
         with open(manifest_tmp, "w", encoding="utf-8") as f:
@@ -1065,24 +1184,54 @@ class EpisodicMemory:
         replace_with_retry(manifest_tmp, self.index_manifest_file)
         self._index_rebuild_required = False
 
-    def _reindex_if_required(self) -> None:
+    def _precompute_reindex_cache(self) -> dict[tuple[str, str], list[float]] | None:
+        """
+        索引需重建（換模型遷移）時，先在鎖外算好各 episode 的新 embedding。
+
+        以 (id, 摘要) 為鍵，鎖內 _reindex_if_required 直接取用；鎖內才發現需要重建
+        （其他程序造成）時快取缺漏，退回鎖內逐筆生成（罕見路徑）。
+        """
+        if not self._index_rebuild_required:
+            return None
+        with self._mem_lock:
+            targets = [(eid, ep.content_summary) for eid, ep in self._episodes.items()]
+        return {
+            (eid, summary): self._generate_embedding(summary)
+            for eid, summary in targets
+        }
+
+    def _reindex_if_required(
+        self, cache: dict[tuple[str, str], list[float]] | None = None
+    ) -> None:
+        """重建向量索引（須在 storage_lock 內、_load 之後呼叫）。"""
         if not self._index_rebuild_required:
             return
         vectors = []
-        self._id_to_index.clear()
+        raw_embeddings = []
+        id_to_index: dict[str, int] = {}
         for index, (episode_id, episode) in enumerate(self._episodes.items()):
-            episode.embedding = self._generate_embedding(episode.content_summary)
-            vectors.append(self._normalize_vector(episode.embedding))
-            self._id_to_index[episode_id] = index
-        self._embeddings = np.vstack(vectors) if vectors else None
-        self._index_rebuild_required = False
+            key = (episode_id, episode.content_summary)
+            if cache is not None and key in cache:
+                embedding = cache[key]
+            else:
+                embedding = self._generate_embedding(episode.content_summary)
+            raw_embeddings.append(embedding)
+            vectors.append(self._normalize_vector(embedding))
+            id_to_index[episode_id] = index
+        with self._mem_lock:
+            for index, episode in enumerate(self._episodes.values()):
+                episode.embedding = raw_embeddings[index]
+            self._id_to_index = id_to_index
+            self._embeddings = np.vstack(vectors) if vectors else None
+            self._index_rebuild_required = False
 
     def _ensure_index_ready(self) -> None:
         if not self._index_rebuild_required:
             return
+        reindex_cache = self._precompute_reindex_cache()
         with storage_lock(self.lock_path):
             self._load(reset=True)
-            self._reindex_if_required()
+            self._reindex_if_required(reindex_cache)
             self._save_unlocked()
 
     def _update_graph(self, episode: Episode):
@@ -1102,7 +1251,7 @@ class EpisodicMemory:
         if prev_id is not None and prev_id != episode.id:
             last_ep = self._episodes.get(prev_id)
             if last_ep:
-                if self.graph.graph.has_edge(prev_id, episode.id):
+                if self.graph.has_edge(prev_id, episode.id):
                     # 邊已存在（如跨 session 重啟恢復）→ 強化頻率
                     self.graph.update_precedes_edge(prev_id, episode.id)
                 else:

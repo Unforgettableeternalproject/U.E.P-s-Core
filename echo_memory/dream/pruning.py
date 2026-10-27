@@ -175,7 +175,8 @@ class GraphPruning:
                 logger.warning("[GraphPruning] audit 失敗，跳過邊移除 (%d 條)", len(edges))
                 return 0
 
-        self.graph.graph.remove_edges_from(edges)
+        with self.graph.lock:
+            self.graph.graph.remove_edges_from(edges)
 
         logger.debug(f"[GraphPruning] 已移除 {len(edges)} 條邊")
         return len(edges)
@@ -205,7 +206,8 @@ class GraphPruning:
         if not nodes:
             return
 
-        self.graph.graph.remove_nodes_from(nodes)
+        with self.graph.lock:
+            self.graph.graph.remove_nodes_from(nodes)
 
         logger.debug(f"[GraphPruning] 已移除 {len(nodes)} 個節點")
 
@@ -383,15 +385,16 @@ class GraphPruning:
             if not (self.graph.graph.has_node(id_a) and self.graph.graph.has_node(id_b)):
                 continue
             for src, dst in [(id_a, id_b), (id_b, id_a)]:
-                self.graph.graph.add_edge(
-                    src, dst,
-                    edge_type="LATENT_BRIDGE",
-                    weight=similarity,
-                    similarity=similarity,
-                    reason=reason,
-                    created_at=now_ts,
-                    last_confirmed_at=now_ts,
-                )
+                with self.graph.lock:
+                    self.graph.graph.add_edge(
+                        src, dst,
+                        edge_type="LATENT_BRIDGE",
+                        weight=similarity,
+                        similarity=similarity,
+                        reason=reason,
+                        created_at=now_ts,
+                        last_confirmed_at=now_ts,
+                    )
             bridges_created += 1
             logger.debug(
                 f"[GraphPruning] LATENT_BRIDGE: {name_a} ↔ {name_b} "
@@ -484,7 +487,8 @@ class GraphPruning:
             ):
                 logger.warning("[GraphPruning] audit 失敗，跳過 bridge 過期清除 (%d 條)", len(to_remove))
                 return 0
-        self.graph.graph.remove_edges_from(to_remove)
+        with self.graph.lock:
+            self.graph.graph.remove_edges_from(to_remove)
         # 清掉 bridge 殘留的裸節點：無任何屬性（add_edge 自動生成）且已無邊
         # 正常節點必有 node_type 等屬性，不會被誤刪
         bare = {
@@ -494,7 +498,8 @@ class GraphPruning:
             and self.graph.graph.degree(n) == 0
         }
         if bare:
-            self.graph.graph.remove_nodes_from(bare)
+            with self.graph.lock:
+                self.graph.graph.remove_nodes_from(bare)
             logger.info(f"[GraphPruning] 清除 {len(bare)} 個 bridge 殘留裸節點")
         logger.info(f"[GraphPruning] 清除 {len(to_remove)} 條過期 / 失效 LATENT_BRIDGE")
         return len(to_remove)

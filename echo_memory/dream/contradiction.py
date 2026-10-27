@@ -429,10 +429,11 @@ class ContradictionDetector:
                 )
             else:
                 # 資料不完整，添加最小節點以確保邊可以建立
-                self.graph.graph.add_node(
-                    concept_id,
-                    node_type="Concept",
-                )
+                with self.graph.lock:
+                    self.graph.graph.add_node(
+                        concept_id,
+                        node_type="Concept",
+                    )
                 logger.warning(
                     f"[ContradictionDetector] 概念 {concept_id} "
                     f"不在 SemanticMemory 中，添加最小節點"

@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from collections.abc import Callable
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -25,6 +27,7 @@ from typing import Any
 import numpy as np
 
 from echo_memory.schemas.procedure import Procedure
+from echo_memory.storage.locking import ReleasableRLock
 from echo_memory.storage.atomic import atomic_write, atomic_write_json
 
 logger = logging.getLogger("echo_memory.procedural")
@@ -60,6 +63,11 @@ class ProceduralMemory:
 
         self._embed_fn = embed_fn
 
+        # 同程序並行保護：只保護記憶體內狀態與存檔；embedding（網路）一律在鎖外算
+        self._lock = threading.RLock()
+        # 讀者鎖：寫入端只在記憶體變更與快照時持有，存檔 I/O 前讓出；寫入端彼此由 _lock 序列化
+        self._mem = ReleasableRLock()
+
         # 記憶體快取
         self._procedures: dict[str, Procedure] = {}       # name → Procedure
         self._procedures_by_id: dict[str, Procedure] = {}  # id → Procedure
@@ -88,6 +96,20 @@ class ProceduralMemory:
         Returns:
             procedure_id
         """
+        # embedding 在鎖外先算（文字只取決於傳入的 procedure）
+        precomputed = None
+        if self._embed_fn is not None and (
+            procedure.name in self._procedures or not procedure.embedding
+        ):
+            precomputed = self._embed_fn(self._embed_text(procedure))
+        with self._write():
+            return self._write_locked(procedure, precomputed)
+
+    @staticmethod
+    def _embed_text(proc: Procedure) -> str:
+        return f"{proc.name}: {proc.description}. 步驟: {'; '.join(proc.steps)}"
+
+    def _write_locked(self, procedure: Procedure, precomputed: list[float] | None) -> str:
         is_update = procedure.name in self._procedures
 
         if is_update:
@@ -112,8 +134,8 @@ class ProceduralMemory:
         # 生成/更新 embedding
         # Major #4 修復：更新時也要重算 embedding（內容變了向量要跟上）
         if self._embed_fn is not None and (is_update or not proc.embedding):
-            text = f"{proc.name}: {proc.description}. 步驟: {'; '.join(proc.steps)}"
-            vec = self._embed_fn(text)
+            # 鎖外預算未涵蓋（競態下才會發生）時才在鎖內補算
+            vec = precomputed if precomputed is not None else self._embed_fn(self._embed_text(proc))
             proc.embedding = self._normalize_vector(vec).tolist()
 
         if proc.embedding:
@@ -142,6 +164,31 @@ class ProceduralMemory:
         Returns:
             新 Procedure ID，若原始不存在回傳 None
         """
+        # 先在鎖內取原版欄位決定 embedding 文字，網路呼叫在鎖外，再回鎖內套用
+        precomputed = None
+        if self._embed_fn is not None:
+            with self._mem:
+                peek = self._procedures_by_id.get(original_id)
+                if peek is None:
+                    return None
+                text = self._embed_text(Procedure(
+                    name=peek.name,
+                    description=new_description or peek.description,
+                    steps=new_steps,
+                ))
+            precomputed = self._embed_fn(text)
+        with self._write():
+            return self._refine_locked(
+                original_id, new_steps, new_description, precomputed
+            )
+
+    def _refine_locked(
+        self,
+        original_id: str,
+        new_steps: list[str],
+        new_description: str | None,
+        precomputed: list[float] | None,
+    ) -> str | None:
         original = self._procedures_by_id.get(original_id)
         if original is None:
             return None
@@ -167,8 +214,8 @@ class ProceduralMemory:
 
         # 生成 embedding
         if self._embed_fn is not None:
-            text = f"{refined.name}: {refined.description}. 步驟: {'; '.join(refined.steps)}"
-            refined.embedding = self._normalize_vector(self._embed_fn(text)).tolist()
+            vec = precomputed if precomputed is not None else self._embed_fn(self._embed_text(refined))
+            refined.embedding = self._normalize_vector(vec).tolist()
 
         self._rebuild_embeddings()
         self._save()
@@ -210,36 +257,37 @@ class ProceduralMemory:
         Returns:
             [(Procedure, similarity_score), ...] 按相似度降序
         """
-        if self._embeddings is None or len(self._procedures_by_id) == 0:
-            return []
-
         query_vec = self._normalize_vector(query_embedding)
         if not np.any(query_vec):
             return []
 
-        similarities = np.dot(self._embeddings, query_vec)
-        top_indices = np.argsort(similarities)[::-1][:top_k * 2]  # 多取一些再篩選
+        with self._mem:
+            if self._embeddings is None or len(self._procedures_by_id) == 0:
+                return []
 
-        results = []
-        for idx in top_indices:
-            sim = float(similarities[idx])
-            if sim < min_similarity:
-                continue
+            similarities = np.dot(self._embeddings, query_vec)
+            top_indices = np.argsort(similarities)[::-1][:top_k * 2]  # 多取一些再篩選
 
-            proc_id = self._idx_to_id.get(idx)
-            if proc_id is None:
-                continue
+            results = []
+            for idx in top_indices:
+                sim = float(similarities[idx])
+                if sim < min_similarity:
+                    continue
 
-            proc = self._procedures_by_id.get(proc_id)
-            if proc is None or proc.is_archived:
-                continue
+                proc_id = self._idx_to_id.get(idx)
+                if proc_id is None:
+                    continue
 
-            if domain is not None and proc.domain != domain:
-                continue
+                proc = self._procedures_by_id.get(proc_id)
+                if proc is None or proc.is_archived:
+                    continue
 
-            results.append((proc, sim))
-            if len(results) >= top_k:
-                break
+                if domain is not None and proc.domain != domain:
+                    continue
+
+                results.append((proc, sim))
+                if len(results) >= top_k:
+                    break
 
         return results
 
@@ -259,7 +307,8 @@ class ProceduralMemory:
             sort_by: 排序欄位（last_used/success_count/version/created_at）
             limit: 返回數量上限
         """
-        procs = list(self._procedures_by_id.values())
+        with self._mem:
+            procs = list(self._procedures_by_id.values())
 
         if not include_archived:
             procs = [p for p in procs if not p.is_archived]
@@ -280,37 +329,41 @@ class ProceduralMemory:
 
     def record_success(self, procedure_id: str) -> bool:
         """記錄執行成功"""
-        proc = self._procedures_by_id.get(procedure_id)
-        if proc is None:
-            return False
-        proc.success_count += 1
-        proc.last_used = datetime.now(timezone.utc)
-        self._save()
-        return True
+        with self._write():
+            proc = self._procedures_by_id.get(procedure_id)
+            if proc is None:
+                return False
+            proc.success_count += 1
+            proc.last_used = datetime.now(timezone.utc)
+            self._save()
+            return True
 
     def record_failure(self, procedure_id: str) -> bool:
         """記錄執行失敗"""
-        proc = self._procedures_by_id.get(procedure_id)
-        if proc is None:
-            return False
-        proc.failure_count += 1
-        proc.last_used = datetime.now(timezone.utc)
-        self._save()
-        return True
+        with self._write():
+            proc = self._procedures_by_id.get(procedure_id)
+            if proc is None:
+                return False
+            proc.failure_count += 1
+            proc.last_used = datetime.now(timezone.utc)
+            self._save()
+            return True
 
     def count(self, include_archived: bool = False) -> int:
-        if include_archived:
-            return len(self._procedures_by_id)
-        return sum(1 for p in self._procedures_by_id.values() if not p.is_archived)
+        with self._mem:
+            if include_archived:
+                return len(self._procedures_by_id)
+            return sum(1 for p in self._procedures_by_id.values() if not p.is_archived)
 
     def clear(self):
         """清空所有程序記憶"""
-        self._procedures.clear()
-        self._procedures_by_id.clear()
-        self._embeddings = None
-        self._id_to_index.clear()
-        self._idx_to_id.clear()
-        self._save()
+        with self._write():
+            self._procedures.clear()
+            self._procedures_by_id.clear()
+            self._embeddings = None
+            self._id_to_index.clear()
+            self._idx_to_id.clear()
+            self._save()
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 內部：向量索引
@@ -408,10 +461,24 @@ class ProceduralMemory:
             if len(self._procedures_by_id) != len(self._embeddings):
                 self._rebuild_embeddings()
 
+    @contextmanager
+    def _write(self):
+        """寫入區段：先取寫入鎖，再取讀者鎖（記憶體變更期間擋讀者）。"""
+        with self._lock:
+            with self._mem:
+                yield
+
     def _save(self) -> None:
+        with self._lock:
+            with self._mem:
+                data = [p.to_dict() for p in self._procedures_by_id.values()]
+                embeddings = self._embeddings
+            with self._mem.released():
+                self._write_files(data, embeddings)
+
+    def _write_files(self, data: list[dict[str, Any]], embeddings: np.ndarray | None) -> None:
         # JSON（唯一暫存檔 + 原子替換；失敗拋出）
         try:
-            data = [p.to_dict() for p in self._procedures_by_id.values()]
             atomic_write_json(self.metadata_file, data)
         except Exception as e:
             logger.error(f"[ProceduralMemory] 保存 procedures.json 失敗: {e}")
@@ -419,8 +486,7 @@ class ProceduralMemory:
 
         # NPY（原子寫入）
         try:
-            if self._embeddings is not None:
-                embeddings = self._embeddings
+            if embeddings is not None:
                 atomic_write(
                     self.embeddings_file,
                     lambda f: np.save(f, embeddings),

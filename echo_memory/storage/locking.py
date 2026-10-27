@@ -90,5 +90,62 @@ def storage_lock(storage_path: str | Path, timeout: float = 30.0) -> Iterator[No
                 _unlock(handle)
 
 
+class ReleasableRLock:
+    """
+    可重入鎖，且持有者可在做磁碟 I/O 時整段讓出、之後原樣取回（含重入深度）。
+
+    用於「讀者鎖」：寫入端在記憶體變更與快照期間持有，存檔 I/O 前 release_all()，
+    讀者不必等磁碟；寫入端彼此的互斥由另一把寫入鎖負責，所以讓出期間不會有第二個寫入者。
+    """
+
+    def __init__(self) -> None:
+        self._mutex = threading.Lock()
+        self._owner: int | None = None
+        self._depth = 0
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        me = threading.get_ident()
+        if self._owner == me:
+            self._depth += 1
+            return True
+        if not self._mutex.acquire(blocking, timeout):
+            return False
+        self._owner = me
+        self._depth = 1
+        return True
+
+    def release(self) -> None:
+        if self._owner != threading.get_ident():
+            raise RuntimeError("cannot release un-acquired lock")
+        self._depth -= 1
+        if self._depth == 0:
+            self._owner = None
+            self._mutex.release()
+
+    def __enter__(self) -> "ReleasableRLock":
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.release()
+
+    @contextmanager
+    def released(self) -> Iterator[None]:
+        """目前執行緒若持有本鎖就整段讓出，離開時取回原深度；未持有則不動作。"""
+        if self._owner != threading.get_ident():
+            yield
+            return
+        depth = self._depth
+        self._owner = None
+        self._depth = 0
+        self._mutex.release()
+        try:
+            yield
+        finally:
+            self._mutex.acquire()
+            self._owner = threading.get_ident()
+            self._depth = depth
+
+
 def temporary_sibling(path: Path) -> Path:
     return path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")

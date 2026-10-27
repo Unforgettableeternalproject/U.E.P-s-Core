@@ -22,12 +22,14 @@ import logging
 import threading
 from collections.abc import Callable
 from datetime import datetime, timezone
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from echo_memory.schemas.concept import Concept
+from echo_memory.storage.locking import ReleasableRLock
 from echo_memory.storage.atomic import atomic_write, atomic_write_json
 
 logger = logging.getLogger("echo_memory.semantic")
@@ -75,6 +77,9 @@ class SemanticMemory:
 
         # 執行緒鎖（RLock：upsert_concept 內部呼叫 _save()，需要可重入）
         self._lock = threading.RLock()
+        # 讀者鎖：寫入端只在記憶體變更與快照時持有，存檔 I/O 前讓出（見 _write／_io_unlocked）；
+        # 寫入端彼此仍由 _lock 序列化，因此存檔順序與 mark_merged 的失敗回滾語意不變
+        self._mem = ReleasableRLock()
 
         # 圖譜（可選；由 MemoryEngine 注入，供 remove / merge 同步清理概念節點）
         self._graph: Any | None = None
@@ -123,7 +128,13 @@ class SemanticMemory:
         Returns:
             concept_id
         """
-        with self._lock:
+        # embedding 是網路呼叫（輸入只取決於 name/description）：在 _lock 之外先算好，
+        # 避免 search_by_vector 等讀者被慢呼叫擋住
+        vec = embedding
+        if vec is None and self._embed_fn is not None:
+            vec = self._embed_fn(f"{name}: {description}")
+
+        with self._write():
             is_update = name in self._concepts
 
             if is_update:
@@ -148,11 +159,7 @@ class SemanticMemory:
             if source_episode_id:
                 concept.add_source_episode(source_episode_id, producer=producer)
 
-            # 生成/更新 embedding
-            vec = embedding
-            if vec is None and self._embed_fn is not None:
-                vec = self._embed_fn(f"{name}: {description}")
-
+            # 更新 embedding 索引（向量已於鎖外算好）
             if vec is not None:
                 concept.embedding = self._normalize_vector(vec).tolist()
                 self._update_embedding_index(concept, is_update=is_update)
@@ -184,7 +191,7 @@ class SemanticMemory:
         Returns:
             True 若新增；概念不存在或紀錄已存在回傳 False
         """
-        with self._lock:
+        with self._write():
             concept = self._concepts_by_id.get(concept_id)
             if concept is None:
                 return False
@@ -210,7 +217,7 @@ class SemanticMemory:
         Returns:
             True 若成功移除，False 若不存在
         """
-        with self._lock:
+        with self._write():
             if name not in self._concepts:
                 return False
 
@@ -248,13 +255,15 @@ class SemanticMemory:
         snapshot = graph.snapshot_concept_node(concept_id)
         graph.remove_concept_node(concept_id)
         if persist:
-            graph.save()
+            with self._io_unlocked():
+                graph.save()
         return snapshot
 
     def _persist_graph(self) -> None:
         """存圖譜（若有）。必須在概念檔 _save() 成功之後呼叫。"""
         if self._graph is not None:
-            self._graph.save()
+            with self._io_unlocked():
+                self._graph.save()
 
     @staticmethod
     def is_merged(concept: Concept) -> bool:
@@ -275,7 +284,7 @@ class SemanticMemory:
         Returns:
             True 若成功；概念不存在回傳 False
         """
-        with self._lock:
+        with self._write():
             concept = self._concepts.get(name)
             if concept is None:
                 return False
@@ -309,7 +318,8 @@ class SemanticMemory:
             if snapshot is not None:
                 try:
                     graph.remove_concept_node(concept.id)
-                    graph.save()
+                    with self._io_unlocked():
+                        graph.save()
                 except Exception:
                     _revert()
                     try:
@@ -329,7 +339,7 @@ class SemanticMemory:
         Returns:
             True 若成功；概念不存在或不是「已合併」狀態回傳 False
         """
-        with self._lock:
+        with self._write():
             concept = self._concepts.get(name)
             if concept is None or not concept.metadata.get("merged_into"):
                 return False
@@ -357,7 +367,8 @@ class SemanticMemory:
             if snapshot and self._graph is not None:
                 try:
                     self._graph.restore_concept_node(snapshot)
-                    self._graph.save()
+                    with self._io_unlocked():
+                        self._graph.save()
                 except Exception:
                     _revert()
                     try:
@@ -398,40 +409,42 @@ class SemanticMemory:
         Returns:
             [(Concept, similarity_score), ...] 按相似度降序
         """
-        if self._embeddings is None or len(self._concepts) == 0:
-            return []
-
         query_vec = self._normalize_vector(query_embedding)
         if not np.any(query_vec):
             return []
 
-        # dot product = cosine similarity（因為已 L2-normalize）
-        similarities = np.dot(self._embeddings, query_vec)
-        top_indices = np.argsort(similarities)[::-1][:top_k]
+        # 只拿讀者鎖做記憶體內運算；寫入端的 embedding 與存檔 I/O 都不持有它
+        with self._mem:
+            if self._embeddings is None or len(self._concepts) == 0:
+                return []
 
-        results = []
-        for idx in top_indices:
-            sim = float(similarities[idx])
-            if sim < min_similarity:
-                continue
+            # dot product = cosine similarity（因為已 L2-normalize）
+            similarities = np.dot(self._embeddings, query_vec)
+            top_indices = np.argsort(similarities)[::-1][:top_k]
 
-            concept_id = self._index_to_id(idx)
-            if concept_id and concept_id in self._concepts_by_id:
-                concept = self._concepts_by_id[concept_id]
-
-                # 已合併的次概念不參與召回
-                if concept.metadata.get("merged_into"):
+            results = []
+            for idx in top_indices:
+                sim = float(similarities[idx])
+                if sim < min_similarity:
                     continue
 
-                # 按生命週期狀態加權（deprecated ×0.15, archived ×0.03）
-                weighted_sim = sim * concept.retrieval_weight
+                concept_id = self._index_to_id(idx)
+                if concept_id and concept_id in self._concepts_by_id:
+                    concept = self._concepts_by_id[concept_id]
 
-                # 加權後低於閾值則跳過
-                if weighted_sim < min_similarity:
-                    continue
+                    # 已合併的次概念不參與召回
+                    if concept.metadata.get("merged_into"):
+                        continue
 
-                concept.access_count += 1
-                results.append((concept, weighted_sim))
+                    # 按生命週期狀態加權（deprecated ×0.15, archived ×0.03）
+                    weighted_sim = sim * concept.retrieval_weight
+
+                    # 加權後低於閾值則跳過
+                    if weighted_sim < min_similarity:
+                        continue
+
+                    concept.access_count += 1
+                    results.append((concept, weighted_sim))
 
         # 重新按加權分數排序
         results.sort(key=lambda x: x[1], reverse=True)
@@ -455,7 +468,7 @@ class SemanticMemory:
         subject 不穿那四層，寫入後在這裡補一次。
         """
         self.validate_subject(subject)
-        with self._lock:
+        with self._write():
             concept = self._concepts_by_id.get(concept_id)
             if concept is None:
                 return False
@@ -489,7 +502,8 @@ class SemanticMemory:
         Returns:
             Concept 列表
         """
-        concepts = list(self._concepts.values())
+        with self._mem:
+            concepts = list(self._concepts.values())
 
         if concept_type is not None:
             concepts = [c for c in concepts if c.concept_type == concept_type]
@@ -514,7 +528,7 @@ class SemanticMemory:
 
     def clear(self):
         """清空所有語義記憶。thread-safe: 由 self._lock（RLock）保護。"""
-        with self._lock:
+        with self._write():
             self._concepts.clear()
             self._concepts_by_id.clear()
             self._embeddings = None
@@ -644,6 +658,19 @@ class SemanticMemory:
                 )
                 self._rebuild_embeddings()
 
+    @contextmanager
+    def _write(self):
+        """寫入區段：先取寫入鎖（序列化寫入者），再取讀者鎖（記憶體變更期間擋讀者）。"""
+        with self._lock:
+            with self._mem:
+                yield
+
+    @contextmanager
+    def _io_unlocked(self):
+        """做圖譜存檔等磁碟 I/O 時讓出讀者鎖（寫入鎖仍持有）。"""
+        with self._mem.released():
+            yield
+
     def _save(self) -> None:
         """
         保存概念元數據和向量到磁盤。
@@ -657,30 +684,37 @@ class SemanticMemory:
             _rebuild_embeddings 從 JSON 重建
         """
         with self._lock:
-            # 保存元數據（唯一暫存檔 + 原子替換；失敗直接拋出，不再只 log）
-            data = [c.to_dict() for c in self._concepts.values()]
-            try:
-                atomic_write_json(self.metadata_file, data)
-            except Exception as e:
-                logger.error(f"[SemanticMemory] 保存 concepts.json 失敗: {e}")
-                raise
+            # 快照在讀者鎖內取（純記憶體），檔案寫入讓出讀者鎖後進行；
+            # _lock 仍持有，其他寫入者進不來，所以存檔順序即寫入順序
+            with self._mem:
+                data = [c.to_dict() for c in self._concepts.values()]
+                embeddings = self._embeddings
+            with self._mem.released():
+                self._write_files(data, embeddings)
 
-            # 保存向量（原子寫入；使用檔案物件，np.save 不會自動加副檔名）
-            try:
-                if self._embeddings is not None:
-                    embeddings = self._embeddings
-                    atomic_write(
-                        self.embeddings_file,
-                        lambda f: np.save(f, embeddings),
-                        binary=True,
-                    )
-                elif self.embeddings_file.exists():
-                    self.embeddings_file.unlink()
-            except Exception as e:
-                logger.error(
-                    f"[SemanticMemory] 保存 concept_embeddings.npy 失敗: {e}"
+    def _write_files(self, data: list[dict[str, Any]], embeddings: np.ndarray | None) -> None:
+        # 保存元數據（唯一暫存檔 + 原子替換；失敗直接拋出，不再只 log）
+        try:
+            atomic_write_json(self.metadata_file, data)
+        except Exception as e:
+            logger.error(f"[SemanticMemory] 保存 concepts.json 失敗: {e}")
+            raise
+
+        # 保存向量（原子寫入；使用檔案物件，np.save 不會自動加副檔名）
+        try:
+            if embeddings is not None:
+                atomic_write(
+                    self.embeddings_file,
+                    lambda f: np.save(f, embeddings),
+                    binary=True,
                 )
-                raise
+            elif self.embeddings_file.exists():
+                self.embeddings_file.unlink()
+        except Exception as e:
+            logger.error(
+                f"[SemanticMemory] 保存 concept_embeddings.npy 失敗: {e}"
+            )
+            raise
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 統計

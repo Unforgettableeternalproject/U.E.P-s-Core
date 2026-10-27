@@ -330,15 +330,16 @@ class LiDERReplay:
                     report.edges_strengthened += 1
                 else:
                     # 新建反思邊（語義關聯，非時序關係）
-                    self.graph.graph.add_edge(
-                        ep.id,
-                        rel_ep.id,
-                        edge_type="REPLAY_RELATED",
-                        weight=importance * 0.6,
-                        frequency=1,
-                        created_at=time.time(),
-                        replay_created=True,
-                    )
+                    with self.graph.lock:
+                        self.graph.graph.add_edge(
+                            ep.id,
+                            rel_ep.id,
+                            edge_type="REPLAY_RELATED",
+                            weight=importance * 0.6,
+                            frequency=1,
+                            created_at=time.time(),
+                            replay_created=True,
+                        )
                     report.edges_created += 1
 
         report.avg_importance = (

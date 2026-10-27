@@ -16,7 +16,9 @@ import logging
 import math
 import pickle
 import os
+import threading
 import time
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +61,17 @@ def _json_safe(value: Any) -> Any:
     return str(value)
 
 
+def _locked(method):
+    """以 MemoryGraph.lock 保護方法，避免並行讀寫時迭代遇到 dictionary changed size。"""
+
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self.lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class MemoryGraph:
     """
     記憶圖管理器 - 基於 NetworkX。
@@ -91,6 +104,9 @@ class MemoryGraph:
         self.storage_path = Path(storage_path)
         self.graph_file = self.storage_path / "memory_graph.gpickle"
 
+        # 同程序並行讀寫保護（只保護記憶體內操作，不含網路呼叫；磁碟讀取在鎖外）
+        self.lock = threading.RLock()
+
         # 創建有向圖
         self.graph = nx.DiGraph()
 
@@ -119,6 +135,7 @@ class MemoryGraph:
     # 節點管理
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+    @_locked
     def add_episode_node(self, episode: Episode) -> None:
         """
         添加情節節點。
@@ -135,10 +152,12 @@ class MemoryGraph:
         )
         logger.debug(f"[MemoryGraph] 添加節點: {episode.id}")
 
+    @_locked
     def has_node(self, node_id: str) -> bool:
         """檢查節點是否存在"""
         return self.graph.has_node(node_id)
 
+    @_locked
     def get_node_count(self) -> int:
         """獲取節點總數"""
         return self.graph.number_of_nodes()
@@ -147,6 +166,7 @@ class MemoryGraph:
     # 邊管理 - PRECEDES（時序關係）
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+    @_locked
     def add_precedes_edge(
         self,
         from_id: str,
@@ -204,6 +224,7 @@ class MemoryGraph:
     # 邊管理 - Concept 相關邊（Phase 2）
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+    @_locked
     def add_concept_node(self, concept_id: str, name: str, concept_type: str = "entity") -> None:
         """
         添加概念節點。
@@ -221,6 +242,7 @@ class MemoryGraph:
         )
         logger.debug(f"[MemoryGraph] 添加概念節點: {concept_id} ({name})")
 
+    @_locked
     def add_relates_to_edge(
         self,
         concept_a: str,
@@ -287,6 +309,7 @@ class MemoryGraph:
             f"salience={salience:.3f})"
         )
 
+    @_locked
     def upsert_overlap_relates_to(
         self,
         concept_a: str,
@@ -361,6 +384,7 @@ class MemoryGraph:
         age_days = max(0.0, (now - ref) / 86400.0)
         return 0.5 ** (age_days / half_life_days)
 
+    @_locked
     def add_contradicts_edge(
         self,
         concept_a: str,
@@ -408,6 +432,7 @@ class MemoryGraph:
             f"{concept_a[:12]} <-> {concept_b[:12]} (weight={weight:.3f})"
         )
 
+    @_locked
     def has_contradicts_edge(self, concept_a: str, concept_b: str) -> bool:
         """
         檢查兩個概念之間是否已有 CONTRADICTS 邊。
@@ -425,6 +450,7 @@ class MemoryGraph:
                     return True
         return False
 
+    @_locked
     def add_derived_from_edge(
         self,
         concept_id: str,
@@ -461,6 +487,7 @@ class MemoryGraph:
                 f"{concept_id[:12]} -> {episode_id[:12]}"
             )
 
+    @_locked
     def get_concept_relations(
         self,
         concept_id: str,
@@ -505,6 +532,7 @@ class MemoryGraph:
     # 邊管理 - Entity 相關邊（Branch 8）
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+    @_locked
     def add_entity_node(
         self,
         entity_id: str,
@@ -527,6 +555,7 @@ class MemoryGraph:
         )
         logger.debug(f"[MemoryGraph] 添加實體節點: {entity_id} ({name})")
 
+    @_locked
     def add_mentions_edge(
         self,
         episode_id: str,
@@ -572,6 +601,7 @@ class MemoryGraph:
             f"{episode_id[:12]} -> {entity_id[:12]} (weight={weight:.3f})"
         )
 
+    @_locked
     def get_episode_entities(
         self,
         episode_id: str,
@@ -597,6 +627,7 @@ class MemoryGraph:
         results.sort(key=lambda x: x[1], reverse=True)
         return results
 
+    @_locked
     def get_entity_episodes(
         self,
         entity_id: str,
@@ -626,6 +657,7 @@ class MemoryGraph:
     # 邊管理 - Procedure 相關（Phase 2 Branch 7）
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+    @_locked
     def add_procedure_node(
         self,
         procedure_id: str,
@@ -648,6 +680,7 @@ class MemoryGraph:
         )
         logger.debug(f"[MemoryGraph] 添加程序節點: {procedure_id} ({name})")
 
+    @_locked
     def add_applies_to_edge(
         self,
         procedure_id: str,
@@ -682,6 +715,7 @@ class MemoryGraph:
                 f"{procedure_id[:12]} -> {concept_id[:12]}"
             )
 
+    @_locked
     def remove_concept_node(self, concept_id: str) -> None:
         """
         移除概念節點及其所有邊。
@@ -693,6 +727,7 @@ class MemoryGraph:
             self.graph.remove_node(concept_id)
             logger.debug(f"[MemoryGraph] 移除概念節點: {concept_id}")
 
+    @_locked
     def snapshot_concept_node(self, concept_id: str) -> dict[str, Any] | None:
         """擷取概念節點屬性與其所有邊（JSON 可序列化），供 merge 回滾還原。"""
         if not self.graph.has_node(concept_id):
@@ -708,6 +743,7 @@ class MemoryGraph:
             "edges": edges,
         }
 
+    @_locked
     def restore_concept_node(self, snapshot: dict[str, Any]) -> None:
         """依 snapshot_concept_node 的快照還原節點與邊（對端節點已不存在的邊略過）。"""
         node_id = snapshot["node_id"]
@@ -719,6 +755,7 @@ class MemoryGraph:
             self.graph.add_edge(edge["src"], edge["dst"], **edge.get("attrs", {}))
         logger.debug(f"[MemoryGraph] 還原概念節點: {node_id}")
 
+    @_locked
     def update_precedes_edge(self, from_id: str, to_id: str) -> None:
         """
         更新 PRECEDES 邊（增加頻率）。
@@ -806,6 +843,7 @@ class MemoryGraph:
 
         return min(1.0, max(0.0, weight))
 
+    @_locked
     def recalc_max_frequency(self) -> int:
         """
         重新計算所有 RELATES_TO 邊的最大頻率（對齊 OpenSoul _update_max_frequency）。
@@ -829,6 +867,7 @@ class MemoryGraph:
     # 多跳檢索
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+    @_locked
     def expand_neighbors(
         self,
         seed_ids: list[str],
@@ -935,38 +974,53 @@ class MemoryGraph:
     # 持久化
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    def _load(self) -> None:
-        """從磁盤載入圖"""
+    def load_snapshot(self) -> nx.DiGraph:
+        """從磁盤讀出圖快照並回傳新圖，不改動目前狀態（供鎖外讀檔後再 install）。"""
         if not self.graph_file.exists():
             logger.info("[MemoryGraph] 未找到已存在的圖文件，創建新圖")
-            return
+            return nx.DiGraph()
 
         try:
             with open(self.graph_file, 'rb') as f:
-                self.graph = pickle.load(f)
+                graph = pickle.load(f)
             logger.info(
                 f"[MemoryGraph] 載入圖完成 - "
-                f"{self.graph.number_of_nodes()} 節點, "
-                f"{self.graph.number_of_edges()} 邊"
+                f"{graph.number_of_nodes()} 節點, "
+                f"{graph.number_of_edges()} 邊"
             )
+            return graph
         except Exception as e:
             logger.error(f"[MemoryGraph] 載入圖失敗: {e}")
-            self.graph = nx.DiGraph()
+            return nx.DiGraph()
+
+    def install(self, graph: nx.DiGraph) -> None:
+        """以單一參照替換目前的圖；進行中的讀者持鎖，不會看到半成品。"""
+        with self.lock:
+            self.graph = graph
+
+    def _load(self) -> None:
+        """從磁盤載入圖"""
+        self.install(self.load_snapshot())
 
     def save(self) -> None:
         """保存圖到磁盤"""
         tmp_file = temporary_sibling(self.graph_file)
         try:
             self.storage_path.mkdir(parents=True, exist_ok=True)
+            # 持鎖只做序列化（純記憶體），寫檔在鎖外
+            with self.lock:
+                payload = pickle.dumps(self.graph)
+                node_count = self.graph.number_of_nodes()
+                edge_count = self.graph.number_of_edges()
             with open(tmp_file, 'wb') as f:
-                pickle.dump(self.graph, f)
+                f.write(payload)
                 f.flush()
                 os.fsync(f.fileno())
             replace_with_retry(tmp_file, self.graph_file)
             logger.debug(
                 f"[MemoryGraph] 保存圖完成 - "
-                f"{self.graph.number_of_nodes()} 節點, "
-                f"{self.graph.number_of_edges()} 邊"
+                f"{node_count} 節點, "
+                f"{edge_count} 邊"
             )
         except Exception as e:
             logger.error(f"[MemoryGraph] 保存圖失敗: {e}")
@@ -975,12 +1029,27 @@ class MemoryGraph:
 
     def reload(self) -> None:
         """重新載入目前磁碟上的圖快照。"""
-        self.graph = nx.DiGraph()
-        self._load()
+        self.install(self.load_snapshot())
+
+    @_locked
+    def clear_in_memory(self) -> None:
+        """只清空記憶體中的圖（不碰磁碟），供持有其他鎖的呼叫端使用。"""
+        self.graph.clear()
+
+    @_locked
+    def remove_episode_node(self, node_id: str) -> None:
+        """移除節點及其相連的邊（節點不存在則忽略）。"""
+        if self.graph.has_node(node_id):
+            self.graph.remove_node(node_id)
+
+    @_locked
+    def has_edge(self, from_id: str, to_id: str) -> bool:
+        """是否存在 from_id -> to_id 的有向邊。"""
+        return self.graph.has_edge(from_id, to_id)
 
     def clear(self) -> None:
         """清空圖（測試用）"""
-        self.graph.clear()
+        self.clear_in_memory()
         if self.graph_file.exists():
             self.graph_file.unlink()
         logger.info("[MemoryGraph] 已清空圖")
@@ -989,6 +1058,7 @@ class MemoryGraph:
     # 統計與診斷
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+    @_locked
     def get_stats(self) -> dict[str, Any]:
         """獲取圖統計資訊"""
         edge_weights = [

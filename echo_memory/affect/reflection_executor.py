@@ -209,6 +209,10 @@ class ReflectionExecutor:
         storage_path = getattr(self._engine, "storage_path", None)
         if not isinstance(storage_path, (str, Path)):
             return contextlib.nullcontext()
+        # 進 storage_lock 前先建好引擎元件，避免持鎖時冷建構與他執行緒互相等待
+        ensure = getattr(self._engine, "ensure_initialized", None)
+        if callable(ensure):
+            ensure()
         return storage_lock(storage_path)
 
     def _gated_undo(self, operation: str, target_name: str, params: dict[str, Any]) -> None:

@@ -64,6 +64,7 @@ class EpisodicMemory:
         self.query_timeout = cfg.embedding_query_timeout if query_timeout is None else query_timeout
         self.write_timeout = cfg.embedding_write_timeout if write_timeout is None else write_timeout
         self.warmup_timeout = cfg.embedding_warmup_timeout if warmup_timeout is None else warmup_timeout
+        self.keep_alive = cfg.embedding_keep_alive
         # 降級狀態：最近一次查詢 embedding 是否失敗（成功即自動恢復）
         self.embedding_degraded = False
         self.last_embedding_error = ""
@@ -710,6 +711,18 @@ class EpisodicMemory:
             return self._generate_embedding_ollama(text)
         return self._generate_embedding_st(text)
 
+    def _ollama_embed_payload(self, text: str) -> dict:
+        """組 /api/embed 請求內容；keep_alive 為空字串時不帶，交由 Ollama 預設。"""
+        payload: dict = {"model": self.embedding_model, "input": text}
+        keep_alive = str(self.keep_alive).strip()
+        if keep_alive:
+            # 純數字（如 -1、0）以整數傳遞，其餘（如 30m）以字串傳遞
+            try:
+                payload["keep_alive"] = int(keep_alive)
+            except ValueError:
+                payload["keep_alive"] = keep_alive
+        return payload
+
     def _generate_embedding_ollama(self, text: str) -> list[float]:
         """透過 Ollama /api/embed 端點生成嵌入向量；失敗拋 EmbeddingUnavailable"""
         import requests
@@ -719,7 +732,7 @@ class EpisodicMemory:
         try:
             resp = requests.post(
                 f"{self.ollama_base_url}/api/embed",
-                json={"model": self.embedding_model, "input": text},
+                json=self._ollama_embed_payload(text),
                 timeout=effective_timeout,
             )
             resp.raise_for_status()

@@ -139,6 +139,15 @@ class MemoryEngine:
                 self._episodic.warmup(background=True)
         return self._episodic
 
+    def warmup(self, background: bool = True) -> Any:
+        """
+        主動暖機 embedding 後端，供宿主在啟動時呼叫，避免第一次檢索撞上冷啟動。
+
+        存取 episodic 時已在背景起過一次暖機的話，這裡會再確認一次（已載入時很快）。
+        background=True 回傳 daemon thread；False 時同步執行並回傳是否成功。失敗不拋出。
+        """
+        return self.episodic.warmup(background=background)
+
     @property
     def evidence(self) -> EvidenceStore:
         """延遲加載證據存儲（append-only evidence.jsonl）。"""

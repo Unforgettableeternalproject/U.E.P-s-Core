@@ -50,6 +50,10 @@ class Config:
         self.embedding_query_timeout = float(os.getenv("EMBEDDING_QUERY_TIMEOUT", "5"))
         self.embedding_write_timeout = float(os.getenv("EMBEDDING_WRITE_TIMEOUT", "30"))
         self.embedding_warmup_timeout = float(os.getenv("EMBEDDING_WARMUP_TIMEOUT", "120"))
+        # Ollama 模型常駐時間（傳給 /api/embed 的 keep_alive）；預設 30m，
+        # 避免對話間隔超過 Ollama 預設 5 分鐘時模型被卸載而冷啟動逾時。
+        # 設 -1 表示永久常駐，設 0 表示用完即卸載。
+        self.embedding_keep_alive = os.getenv("EMBEDDING_KEEP_ALIVE", "30m")
 
         # === 記憶系統配置 ===
         self.memory_storage_path = os.getenv("MEMORY_STORAGE_PATH", "./data")

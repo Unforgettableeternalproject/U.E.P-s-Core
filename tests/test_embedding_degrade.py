@@ -117,3 +117,38 @@ def test_warmup_failure_marks_degraded_without_raising(tmp_path, monkeypatch):
     t = epi.warmup(background=True)
     t.join(timeout=5)
     assert not t.is_alive()
+
+
+def test_embed_request_carries_keep_alive(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_post(url, json=None, timeout=None):
+        seen.update(json)
+        raise requests.exceptions.Timeout()
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    epi = _make(tmp_path)
+    epi.try_generate_query_embedding("q")
+    assert seen["keep_alive"] == "30m"
+
+    epi.keep_alive = "-1"
+    epi.try_generate_query_embedding("q")
+    assert seen["keep_alive"] == -1
+
+    seen.clear()
+    epi.keep_alive = ""
+    epi.try_generate_query_embedding("q")
+    assert "keep_alive" not in seen
+
+
+def test_engine_warmup_is_public_and_non_raising(tmp_path, monkeypatch):
+    from echo_memory.engine import MemoryEngine
+
+    _down(monkeypatch, requests.exceptions.ConnectionError("c"))
+    engine = MemoryEngine(
+        storage_path=str(tmp_path / "mem"),
+        embedding_model="bge-m3",
+        embedding_backend="ollama",
+    )
+    assert engine.warmup(background=False) is False
+    assert engine.episodic.embedding_degraded is True

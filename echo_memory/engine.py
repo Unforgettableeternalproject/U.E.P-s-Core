@@ -103,6 +103,7 @@ class MemoryEngine:
         self._entity_store = None
         self._entity_extractor = None
         self._evidence = None
+        self._idempotency = None
 
         # ── 神經化學狀態（session 級別，跨對話持久化）──────────────────
         self._neurochem: NeurochemState = self._load_neurochem()
@@ -140,6 +141,20 @@ class MemoryEngine:
                 self.storage_path / "evidence", lock_path=self.storage_path,
             )
         return self._evidence
+
+    @property
+    def idempotency(self):
+        """延遲加載寫入冪等索引（namespace 目錄下的 idempotency.json）。"""
+        if self._idempotency is None:
+            from echo_memory.config import get_config
+            from echo_memory.storage.idempotency import IdempotencyIndex
+            config = get_config()
+            self._idempotency = IdempotencyIndex(
+                self.storage_path,
+                max_keys=config.episode_idempotency_max_keys,
+                retention_days=config.episode_idempotency_retention_days,
+            )
+        return self._idempotency
 
     def get_episode_evidence(self, episode: Episode | str) -> list[EvidenceUnit]:
         """取得 Episode 的證據；舊 Episode 回傳即時合成的 legacy_unknown unit（不寫入）。"""
@@ -270,6 +285,7 @@ class MemoryEngine:
         *,
         evidence: Sequence[EvidenceInput] | None = None,
         episode_kind: str = "turn",
+        idempotency_key: str | None = None,
         **metadata: Any,
     ) -> str:
         """
@@ -291,15 +307,23 @@ class MemoryEngine:
             ht_weight: 血清素穩定性標記（None 則繼承當前 neurochem.serotonin）
             evidence: 來源明確的證據宣告
             episode_kind: "turn"（對話輪）或 "tool_note"（工具操作記憶，須帶 evidence）
+            idempotency_key: 寫入冪等鍵（同 namespace 內有效）。同 key 再次呼叫時回傳第一次
+                的 episode_id，不再寫 episode／evidence、不提取實體、不推進神經化學；
+                僅去重「同一次請求的重送」，不過濾內容。key 對應的 episode 已被刪除時
+                視為新寫入。None（預設）時行為完全不變。
             **metadata: 額外元數據
 
         Returns:
             episode_id: 新建的情節 ID（拒收時為空字串）
 
         Raises:
-            ValueError: episode_kind 無效、tool_note 未帶 evidence，或 evidence 與
-                user_input／agent_response 不一致。
+            ValueError: episode_kind 無效、tool_note 未帶 evidence，evidence 與
+                user_input／agent_response 不一致，或 idempotency_key 不是非空字串。
         """
+        if idempotency_key is not None and (
+            not isinstance(idempotency_key, str) or not idempotency_key.strip()
+        ):
+            raise ValueError("idempotency_key 必須是非空字串或 None")
         if episode_kind not in ("turn", "tool_note"):
             raise ValueError(f"episode_kind 必須是 'turn' 或 'tool_note'，收到 {episode_kind!r}")
         if episode_kind == "tool_note" and not evidence:
@@ -367,6 +391,18 @@ class MemoryEngine:
         # 鎖語意：寫入與實體寫回各自是短臨界區，實體提取（LLM）在鎖外，
         # 避免同 namespace 的其他寫入被 LLM 延遲拖到 TimeoutError。
         with storage_lock(self.storage_path):
+            # 冪等判定與登記和實際寫入在同一臨界區，並行同 key 請求只會有一條通過。
+            # 先登記再寫入：寫入失敗或中途崩潰時 key 指向不存在的 episode，
+            # 重試會被視為新寫入；不會出現「已寫入卻未登記」的重複窗口。
+            if idempotency_key is not None:
+                existing_id = self.idempotency.get(idempotency_key)
+                if existing_id is not None and self.episodic.get(existing_id) is not None:
+                    logger.info(
+                        "[MemoryEngine] 冪等命中，略過寫入: key=%s -> %s",
+                        idempotency_key, existing_id,
+                    )
+                    return existing_id
+                self.idempotency.record(idempotency_key, episode.id)
             # 先追加證據再寫 Episode：中途失敗只會留下無害的孤兒 evidence，
             # 不會有「沒有證據的 Episode」。
             self.evidence.append(units)

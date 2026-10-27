@@ -94,6 +94,12 @@ class Config:
         self.concept_held_max_retries = int(os.getenv("CONCEPT_HELD_MAX_RETRIES", "3"))
         # held 超過此天數仍未解決視為逾期，標記為最終拒絕
         self.concept_held_max_age_days = float(os.getenv("CONCEPT_HELD_MAX_AGE_DAYS", "7"))
+        # === 寫入冪等索引（store_episode idempotency_key）===
+        self.episode_idempotency_max_keys = int(os.getenv("EPISODE_IDEMPOTENCY_MAX_KEYS", "10000"))
+        self.episode_idempotency_retention_days = float(
+            os.getenv("EPISODE_IDEMPOTENCY_RETENTION_DAYS", "30")
+        )
+
         # 單次觸發（對話 patch / Dream 週期）最多重審幾筆，避免拖慢對話路徑
         self.concept_held_review_batch = int(os.getenv("CONCEPT_HELD_REVIEW_BATCH", "3"))
 

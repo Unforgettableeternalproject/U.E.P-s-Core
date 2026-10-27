@@ -301,3 +301,24 @@ def can_attest_agent_said(u: EvidenceUnit) -> bool:
         )
         and u.tombstoned_at is None
     )
+
+
+def is_delivered(u: EvidenceUnit) -> bool:
+    """該 unit 的內容是否確實已交付（agent partial 須有進度；其餘以 delivery_state 為準）。"""
+    if u.tombstoned_at is not None:
+        return False
+    if u.delivery_state == "delivered":
+        return True
+    return u.delivery_state == "partial" and u.delivered_units is not None
+
+
+def is_undelivered_agent(u: EvidenceUnit) -> bool:
+    """agent unit 明確為「未說出口」：not_delivered，或被打斷但進度未知。
+
+    後者的 content 可能是完整預定回覆，不可當成 Agent 說過。
+    delivery_state="unknown"（舊資料）不在此列：無從得知，維持既有顯示行為。
+    """
+    return u.source_type == "agent" and (
+        u.delivery_state == "not_delivered"
+        or (u.delivery_state == "partial" and u.delivered_units is None)
+    )

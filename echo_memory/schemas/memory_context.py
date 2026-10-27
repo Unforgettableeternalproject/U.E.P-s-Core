@@ -13,6 +13,7 @@ import json
 from echo_memory.schemas.concept import Concept
 from echo_memory.schemas.entity import Entity
 from echo_memory.schemas.episode import Episode
+from echo_memory.schemas.evidence import EvidenceUnit, is_undelivered_agent
 from echo_memory.schemas.procedure import Procedure
 
 
@@ -33,6 +34,20 @@ class MemoryContext:
     # 降級標記：查詢 embedding 不可用（逾時/連線失敗）時為 True，結果為空而非崩潰
     degraded: bool = False
     degraded_reason: str = ""
+    # episode_id -> EvidenceUnit；由 engine.retrieve 附上，供 prompt 組裝判斷交付狀態
+    evidence_by_episode: dict[str, list[EvidenceUnit]] = field(default_factory=dict)
+
+    def _agent_text_for_prompt(self, ep: Episode) -> tuple[str, bool]:
+        """回傳 (可注入的 agent 文字, 是否有未說出口的預定回覆)。
+
+        not_delivered 或進度未知的 partial 不得當成「Agent 說過」；已交付前綴照常。
+        沒有證據資訊（未附上或無 agent unit）時沿用 Episode.agent_response。
+        """
+        agents = [u for u in self.evidence_by_episode.get(ep.id, ()) if u.source_type == "agent"]
+        if not any(is_undelivered_agent(u) for u in agents):
+            return ep.agent_response, False
+        shown = "\n".join(u.content for u in agents if not is_undelivered_agent(u))
+        return shown, True
 
     def is_empty(self) -> bool:
         """檢查是否為空"""
@@ -76,7 +91,7 @@ class MemoryContext:
                 sim_tag = f"[匹配度:{similarity:.0%}]" if similarity > 0 else ""
 
                 # 顯示對話原文，截斷過長內容以控制 token 預算
-                agent_resp = ep.agent_response
+                agent_resp, has_unsaid = self._agent_text_for_prompt(ep)
                 if len(agent_resp) > 300:
                     agent_resp = agent_resp[:300] + "..."
 
@@ -90,13 +105,16 @@ class MemoryContext:
                     })
                     continue
 
-                payload["相關對話記憶"].append({
+                entry = {
                     "time": time_tag.strip("（）"),
                     "match": sim_tag.strip("[]"),
                     "importance": sal_tag,
                     "user_input": ep.user_input[:200],
                     "agent_response": agent_resp,
-                })
+                }
+                if has_unsaid:
+                    entry["agent_delivery"] = "預定回覆未說出口（內容已略去），不可當作 Agent 說過的話"
+                payload["相關對話記憶"].append(entry)
 
         # ─── 語義概念 ────────────────────────────────────────────────────────
         if self.concepts:

@@ -23,7 +23,12 @@ from pathlib import Path
 from typing import Any
 
 from echo_memory.schemas.episode import Episode
-from echo_memory.schemas.evidence import EvidenceInput, EvidenceUnit
+from echo_memory.schemas.evidence import (
+    SOURCE_TYPES,
+    EvidenceInput,
+    EvidenceUnit,
+    is_delivered,
+)
 from echo_memory.schemas.memory_context import MemoryContext
 from echo_memory.namespace import normalize_namespace_id, resolve_namespace_path
 from echo_memory.neurochem.state import NeurochemState
@@ -144,6 +149,27 @@ class MemoryEngine:
                 return []
             episode = found
         return self.evidence.units_for_episode(episode)
+
+    def resolve_provenance(self, concept_id: str, at_version: int | None = None):
+        """沿 C→B→A 回溯 Concept 的原始 Evidence（含路徑、缺失、循環、版本綁定）。
+
+        at_version 省略時用目前版本；指定則重現該版本當時的來源。
+        回傳 ProvenanceResult；不存在的 Concept 回傳 found=False，不拋例外。
+        """
+        return self._provenance_resolver().resolve(concept_id, at_version=at_version)
+
+    def independent_support(self, concept_ids):
+        """以原始 Evidence 去重，計算一組 Concept 的獨立來源（legacy_unknown 單獨計數）。"""
+        return self._provenance_resolver().independent_support(concept_ids)
+
+    def _provenance_resolver(self):
+        from echo_memory.storage.provenance import ProvenanceResolver
+
+        return ProvenanceResolver(
+            semantic=self.semantic,
+            get_episode=lambda eid: self.episodic.get(eid),
+            evidence=self.evidence,
+        )
 
     @property
     def semantic(self):
@@ -464,6 +490,10 @@ class MemoryEngine:
             exclude_episode_ids=exclude_episode_ids,
         )
 
+        # 附上證據供 prompt 組裝判斷交付狀態（未說出口的 agent 內容不得當成「說過」）
+        if context.episodes:
+            context.evidence_by_episode = self.evidence.units_for_episodes(context.episodes)
+
         logger.info(
             f"[MemoryEngine] 檢索完成 - "
             f"Episodes: {len(context.episodes)}, "
@@ -471,6 +501,72 @@ class MemoryEngine:
         )
 
         return context
+
+    def retrieve_evidence(
+        self,
+        query: str | None = None,
+        *,
+        episode_ids: Sequence[str] | None = None,
+        source_types: Sequence[str] | None = None,
+        require_delivered: bool = False,
+        include_legacy: bool = True,
+        top_k: int = 10,
+        min_similarity: float | None = None,
+    ) -> list[EvidenceUnit]:
+        """
+        證據檢索：回傳 EvidenceUnit（逐字原文、speaker_id、delivery_state、provenance_status）。
+
+        與 retrieve() 分開：retrieve 以 Episode 為單位回憶對話並供 prompt 使用；
+        本方法供 Verifier／Patch Gate 取證。不新建向量索引：query 走 Episode 向量檢索，
+        依排名展開成 unit（同 Episode 內維持寫入順序）。
+
+        Args:
+            query: 語意查詢；與 episode_ids 至少給一個。
+            episode_ids: 指定 Episode。只給它時依傳入順序展開；與 query 並用時，
+                僅保留檢索結果中屬於這些 id 者。
+            source_types: 只保留這些 source_type（None＝不限）。
+            require_delivered: True 則只留已交付者（agent partial 須有進度；
+                not_delivered／unknown／tombstoned 排除）。
+            include_legacy: False 則排除 provenance_status="legacy_unknown"。
+            top_k / min_similarity: 僅 query 路徑使用，語意同 retrieve()。
+
+        Raises:
+            ValueError: query 與 episode_ids 皆未提供，或 source_types 含無效值。
+        """
+        if not query and not episode_ids:
+            raise ValueError("retrieve_evidence 需要 query 或 episode_ids")
+        if source_types is not None:
+            bad = [s for s in source_types if s not in SOURCE_TYPES]
+            if bad:
+                raise ValueError(f"source_types 含無效值 {bad}，須為 {SOURCE_TYPES} 之一")
+        wanted = set(source_types) if source_types is not None else None
+
+        if query:
+            episodes = self.retrieve(query, top_k=top_k, min_similarity=min_similarity).episodes
+            if episode_ids:
+                allow = set(episode_ids)
+                episodes = [ep for ep in episodes if ep.id in allow]
+        else:
+            episodes = []
+            for eid in dict.fromkeys(episode_ids or ()):
+                ep = self.episodic.get(eid)
+                if ep is not None:
+                    episodes.append(ep)
+
+        per_episode = self.evidence.units_for_episodes(episodes)
+        out: list[EvidenceUnit] = []
+        for ep in episodes:
+            for u in per_episode.get(ep.id, ()):
+                if u.tombstoned_at is not None:
+                    continue
+                if wanted is not None and u.source_type not in wanted:
+                    continue
+                if not include_legacy and u.provenance_status != "known":
+                    continue
+                if require_delivered and not is_delivered(u):
+                    continue
+                out.append(u)
+        return out
 
     def dream(self, triggered_by: str = "manual") -> dict[str, Any]:
         """

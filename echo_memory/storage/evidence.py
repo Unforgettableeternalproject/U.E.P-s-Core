@@ -142,6 +142,27 @@ class EvidenceStore:
         )
 
 
+    def units_for_episodes(self, episodes: Iterable[Any]) -> dict[str, list[EvidenceUnit]]:
+        """批次版 units_for_episode：只讀一次 evidence.jsonl。"""
+        episodes = list(episodes)
+        needs_store = any(getattr(ep, "evidence_ids", None) for ep in episodes)
+        by_id = {u.id: u for u in self._read_all()} if needs_store else {}
+        out: dict[str, list[EvidenceUnit]] = {}
+        for ep in episodes:
+            if getattr(ep, "evidence_ids", None):
+                out[ep.id] = [by_id[i] for i in ep.evidence_ids if i in by_id]
+            else:
+                out[ep.id] = build_legacy_units(
+                    episode_id=ep.id,
+                    user_input=ep.user_input,
+                    agent_response=ep.agent_response,
+                    occurred_at=ep.timestamp,
+                    metadata=ep.metadata,
+                    via="read_time",
+                )
+        return out
+
+
 # ─── 舊資料／舊介面：legacy_unknown ─────────────────────────────────────
 
 
@@ -222,7 +243,7 @@ class MigrationReport:
     backup_path: Path | None = None
 
 
-def migrate_evidence(namespace_dir: str | Path) -> MigrationReport:
+def migrate_evidence(namespace_dir: str | Path, *, dry_run: bool = False) -> MigrationReport:
     """
     為 namespace 目錄下 episodic/episodes.json 內尚無 evidence_ids 的 Episode 補上
     legacy_unknown 證據。
@@ -230,6 +251,7 @@ def migrate_evidence(namespace_dir: str | Path) -> MigrationReport:
     - 變更前自動備份 episodes.json（episodes.json.pre-evidence-<UTC時間>.bak）
     - idempotent：已有 evidence_ids 的 Episode 不動，重跑零新增
     - 只降不升：所有產生的 unit 皆 legacy_unknown
+    - dry_run=True：只計算報告（episodes_migrated／units_added），不備份、不寫任何檔案
     """
     namespace_dir = Path(namespace_dir)
     episodes_file = namespace_dir / "episodic" / "episodes.json"
@@ -268,6 +290,9 @@ def migrate_evidence(namespace_dir: str | Path) -> MigrationReport:
             changed = True
 
         if not changed:
+            return report
+        if dry_run:
+            report.units_added = len(new_units)
             return report
 
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")

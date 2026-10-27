@@ -139,3 +139,17 @@ def get_retry_params(
     new_temp = base_temperature + temperature_delta * retry_attempt
     new_top_p = max(0.5, base_top_p + top_p_delta * retry_attempt)
     return new_temp, new_top_p
+
+
+def log_synthesis_failure(exc: BaseException, debug_fn, error_fn) -> bool:
+    """依例外性質記錄合成中止原因。
+
+    呼叫端（如 Echo-Stream）在 segment callback 內拋出的取消例外會帶
+    ``is_cancellation = True``，屬於正常中止（barge-in／取消），只走 debug 級；
+    其餘例外維持 ERROR。回傳是否為取消，僅供呼叫端判斷用，不影響回傳語意。
+    """
+    if getattr(exc, "is_cancellation", False):
+        debug_fn(2, "⏹️ 合成已取消")
+        return True
+    error_fn(f"❌ 合成失敗: {exc}")
+    return False

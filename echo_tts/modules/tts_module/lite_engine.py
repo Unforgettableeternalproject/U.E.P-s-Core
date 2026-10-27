@@ -76,7 +76,7 @@ try:
     from .tts_utils.chinese_segmenter import pre_segment_chinese
     from .tts_utils.english_segmenter import pre_segment_english
     from .tts_utils.custom_vocab import apply_custom_vocab
-    from .tts_utils.segment_guard import check_segment_anomaly, get_retry_params, SegmentGuardStats
+    from .tts_utils.segment_guard import check_segment_anomaly, get_retry_params, SegmentGuardStats, log_synthesis_failure
     from .emotion_dynamics import EmotionDynamics, create_emotion_dynamics
     from .poise import PoisePlanner, PoiseConfig, PoiseLevel, create_poise_config
     from .s2mel.modules.commons import load_checkpoint2, MyModel
@@ -96,7 +96,7 @@ except ImportError:
     from tts_utils.chinese_segmenter import pre_segment_chinese
     from tts_utils.english_segmenter import pre_segment_english
     from tts_utils.custom_vocab import apply_custom_vocab
-    from tts_utils.segment_guard import check_segment_anomaly, get_retry_params, SegmentGuardStats
+    from tts_utils.segment_guard import check_segment_anomaly, get_retry_params, SegmentGuardStats, log_synthesis_failure
     from emotion_dynamics import EmotionDynamics, create_emotion_dynamics
     from poise import PoisePlanner, PoiseConfig, PoiseLevel, create_poise_config
     from s2mel.modules.commons import load_checkpoint2, MyModel
@@ -2054,9 +2054,10 @@ class IndexTTSLite:
             return True, timings
 
         except Exception as e:
-            error_log(f"❌ 合成失敗: {e}")
-            import traceback
-            traceback.print_exc()
+            # 呼叫端主動取消（is_cancellation）不算錯誤，也不印 traceback
+            if not log_synthesis_failure(e, debug_log, error_log):
+                import traceback
+                traceback.print_exc()
             if collect_timings:
                 timings["total_wall_ms"] = (time.perf_counter() - wall_t0) * 1000
             return False, timings

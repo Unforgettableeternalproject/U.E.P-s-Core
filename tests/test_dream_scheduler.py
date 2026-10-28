@@ -49,6 +49,11 @@ def engine(tmp_path, monkeypatch):
         self._scheduler = fake
 
     monkeypatch.setattr(DreamEngine, "__init__", patched_init)
+    # 固定排程開關，不受本機 .env（例如 DREAM_ENABLED=false）影響
+    cfg = get_config()
+    monkeypatch.setattr(cfg, "dream_enabled", True)
+    monkeypatch.setattr(cfg, "dream_enable_idle", True)
+    monkeypatch.setattr(cfg, "dream_enable_cron", True)
     eng = MemoryEngine(storage_path=tmp_path)
     eng._fake_scheduler = fake
     return eng

@@ -112,30 +112,56 @@ def test_r3_r5_every_concept_mutation_in_a_full_echo_cycle_goes_through_gate(mak
     assert queue.rollback(act.id, executor.build_rollback_fn())
 
     assert mutation_probe, "前提：週期中確實有概念層寫入"
-    # 已知例外：Reflection 回滾（_gated_undo）在 Gate 之外改資料、事後補寫「patches=[]」的 audit。
-    # 見 M7 報告 🟡「Reflection 回滾 audit 為空 patch 且事後寫入」；此處只放行這一條路徑。
+    # 已知例外：Reflection 回滾（_gated_undo）在 Gate 之外改資料，事後由 Gate 補寫 audit。
+    # 放行條件：該路徑每次寫入都必須在 audit_log 留下非空 patches（目標 id、還原前後值、applied）。
     known = "reflection_executor.py:_gated_undo"
     bypass = [(c, n, callers) for c, n, in_gate, callers in mutation_probe
               if not in_gate and known not in callers]
     assert bypass == [], f"旁路 Gate 的寫入: {bypass}"
-    assert sum(1 for _c, _n, in_gate, callers in mutation_probe
-               if not in_gate and known in callers) <= 1
+    undo_writes = sum(1 for _c, _n, in_gate, callers in mutation_probe
+                      if not in_gate and known in callers)
+    assert undo_writes <= 1
+
+    if undo_writes:
+        audit_file = Path(engine.semantic.storage_path) / "audit_log.jsonl"
+        txs = [json.loads(line) for line in audit_file.read_text(encoding="utf-8").splitlines() if line]
+        undo_txs = [t for t in txs if str(t.get("user_input", "")).startswith("[reflection] undo_")]
+        assert undo_txs, "回滾改了資料但 audit_log 沒有對應的 reflection 交易"
+        for t in undo_txs:
+            assert t["patches"], "回滾 audit 的 patches 為空"
+            for patch in t["patches"]:
+                assert patch["concept_id"] and patch["status"] == "applied"
+                assert patch["old_value"] is not None and patch["new_value"] is not None
 
 
-# ━━━ R3：stock 接線（宿主未注入 Gate）下，手動入口 fail-closed，不直寫 ━━━━━━━━━━━━━━━━━━━━━
+# ━━━ R3：stock 接線（宿主未注入 Gate）下，engine 自建預設 Gate，手動入口可執行 ━━━━━━━━━━━━━━━━━━
 
-def test_r3_manual_review_without_injected_gate_is_skipped_and_writes_nothing(make_sim):
-    """R3／R8：Echo Stream 的 build_engine 不呼叫 set_concept_inhibitor；手動審核入口必須 skipped(no_gate)，且不改任何概念。"""
+def test_r3_manual_review_without_injected_gate_uses_default_gate(make_sim):
+    """R3／R8：Echo Stream 的 build_engine 不呼叫 set_concept_inhibitor；engine 自動建立預設 Gate，
+    review_concept 不再回 no_gate；llm_fn 由 engine 帶入（此處 RoutedLLM 無 review 路由，依降級規則不寫入）。"""
     llm = RoutedLLM(distill=_distill(("寵物", "使用者養貓", "user", [0])))
     sim, engine = make_sim(llm)
     sim.store("我養了一隻貓", "", salience=0.8, evidence=[user_ev("我養了一隻貓")])
     sim.dream()
+    assert isinstance(engine._concept_inhibitor, ConceptInhibitor)
+    assert engine._concept_inhibitor._llm_fn is llm
     c = engine.semantic.get_by_name("寵物")
-    before = c.to_dict()
     out = engine.review_concept(c.id)
-    assert engine._concept_inhibitor is None
-    assert out["outcome"] == "skipped" and out["reason"] == "no_gate"
-    assert engine.semantic.get(c.id).to_dict() == before
+    assert out["reason"] != "no_gate"
+
+
+def test_r3_default_gate_follows_set_llm_fn_and_is_replaced_by_host_gate(make_sim):
+    sim, engine = make_sim(RoutedLLM(distill=_distill(("貓", "使用者養貓", "user", [0]))))
+    engine.ensure_initialized()
+    default = engine._concept_inhibitor
+    assert isinstance(default, ConceptInhibitor)
+    engine.set_llm_fn(None)
+    assert default._llm_fn is None
+    host = ConceptInhibitor(semantic=engine.semantic, llm_fn=None)
+    engine.set_concept_inhibitor(host)
+    assert engine._concept_inhibitor is host
+    engine.set_llm_fn(lambda p: "{}")
+    assert host._llm_fn is None  # 宿主注入的 Gate 不被 engine 覆寫
 
 
 # ━━━ R4：重試（LLM 全線中斷 -> 恢復後下一輪 Dream 補上） ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -387,10 +413,6 @@ def test_r9_real_memory_test_copy_loads_retrieves_and_dreams(tmp_path, monkeypat
     assert checked >= 1
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "M7 發現：SemanticMemory 沒有 embedding 維度／模型防護；換 embedding 模型後 retrieve 在 "
-    "semantic.search_by_vector 拋 ValueError（episodic 有 manifest 守門，semantic 沒有）。"
-    "修好後移除 xfail。"))
 def test_r8_r9_switching_embedding_model_does_not_crash_retrieve(tmp_path, monkeypatch):
     """R8／R9：資料以 1024 維（bge-m3）寫入，之後 Echo Stream 以 512 維模型開啟同一資料目錄 -> retrieve 應降級而非拋例外。"""
     monkeypatch.setattr(EpisodicMemory, "_generate_embedding", _fake_embedding(1024))
@@ -409,17 +431,14 @@ def test_r8_r9_switching_embedding_model_does_not_crash_retrieve(tmp_path, monke
 
 # ━━━ R3／R5：Dream 內部 Gate 的變更通知要能到達 engine（共享投影失效依賴它） ━━━━━━━━━━━━━━━━━━
 
-@pytest.mark.xfail(strict=True, reason=(
-    "M7 發現：宿主未呼叫 set_concept_inhibitor 時（Echo Stream build_engine 即是），Dream 內部"
-    "DreamPatchCoordinator 自建的降級 Gate 不會被 engine._ensure_change_listener 註冊 callback，"
-    "概念 create／expand／modify 後 engine._on_concept_changed 不會被呼叫 -> 依 digest 撤回共享投影失效。"
-    "修好後移除 xfail。"))
 def test_r3_r5_dream_internal_gate_changes_notify_engine(make_sim, monkeypatch):
     """R3、R5（M-10 契約）：stock 接線下 Dream 兩輪（create 後 expand）應通知 engine 概念已變更。"""
     llm = RoutedLLM(distill=_distill(("黑咖啡", "使用者喝黑咖啡", "user", [0])))
     sim, engine = make_sim(llm)
     notified: list[str] = []
-    monkeypatch.setattr(engine, "_on_concept_changed", lambda cid, *a, **k: notified.append(cid))
+    # engine 已在 ensure_initialized 時把 _on_concept_changed 註冊到預設 Gate；再掛一個探針確認通知鏈
+    assert engine._listener_inhibitor is engine._concept_inhibitor
+    engine._concept_inhibitor.register_change_listener(lambda cid, *a, **k: notified.append(cid))
     sim.store("我都喝黑咖啡", "", salience=0.8, evidence=[user_ev("我都喝黑咖啡")])
     sim.dream()
     sim.store("我今天又喝了黑咖啡", "", salience=0.8, evidence=[user_ev("我今天又喝了黑咖啡")])

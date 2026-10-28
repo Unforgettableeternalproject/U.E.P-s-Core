@@ -141,6 +141,33 @@ def test_cli_rejects_missing_dir_and_both_flags(tmp_path):
     from echo_memory.tools.migrate_evidence import main
 
     assert main([str(tmp_path / "nope")]) == 2
-    assert main([str(tmp_path)]) == 2  # 沒有 episodes.json
+    assert main([str(tmp_path), "--namespace", "ghost"]) == 2  # namespace 目錄不存在
     with pytest.raises(SystemExit):
         main([str(tmp_path), "--dry-run", "--apply"])
+
+
+def test_cli_empty_namespace_is_skipped_with_zero(tmp_path, capsys):
+    from echo_memory.tools.migrate_evidence import main
+
+    assert main([str(tmp_path)]) == 0  # 資料根存在但沒有 episodes.json：略過而非錯誤
+    assert "略過" in capsys.readouterr().out
+
+
+def test_cli_all_namespaces_scans_root_and_namespaces(restored_dir, tmp_path, capsys):
+    import shutil
+    from echo_memory.tools.migrate_evidence import main
+
+    root = tmp_path / "root"
+    shutil.copytree(restored_dir, root)                        # 預設 namespace（資料根本身）
+    shutil.copytree(restored_dir, root / "namespaces" / "ns-a")
+    (root / "namespaces" / "ns-empty").mkdir()                 # 空 namespace
+    digest = _digest(root)
+
+    assert main([str(root), "--all-namespaces"]) == 0          # dry-run 預設：不寫入
+    out = capsys.readouterr().out
+    assert out.count("dry-run") >= 2 and "ns-empty" in out and "略過" in out
+    assert _digest(root) == digest
+
+    assert main([str(root), "--all-namespaces", "--apply"]) == 0
+    for ns in (root, root / "namespaces" / "ns-a"):
+        assert all(ep["evidence_ids"] for ep in _episodes_json(ns))

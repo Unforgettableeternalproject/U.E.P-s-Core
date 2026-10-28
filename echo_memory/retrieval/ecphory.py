@@ -356,6 +356,9 @@ class EcphoryRetrieval:
             timings_ms=timings,
             lexical_only_ids=lexical_only_ids,
         )
+        if getattr(self.semantic, "embedding_dim_mismatch", False) is True:
+            context.degraded = True
+            context.degraded_reason = "概念向量維度與目前 embedding 模型不符，語意向量路已略過"
 
         logger.debug(
             f"[EcphoryRetrieval] 檢索完成 - "

@@ -72,6 +72,7 @@ class SemanticMemory:
         self._concepts: dict[str, Concept] = {}       # name → Concept
         self._concepts_by_id: dict[str, Concept] = {}  # id → Concept
         self._embeddings: np.ndarray | None = None
+        self.embedding_dim_mismatch = False  # 查詢向量維度與資料不符（換模型）時為 True
         self._id_to_index: dict[str, int] = {}   # concept_id → row index
         self._idx_to_id: dict[int, str] = {}     # row index → concept_id（反向查詢，O(1)）
 
@@ -422,6 +423,18 @@ class SemanticMemory:
         with self._mem:
             if self._embeddings is None or len(self._concepts) == 0:
                 return []
+
+            # 維度防護：換 embedding 模型後資料維度與查詢不同，語意向量路降級（不改寫既有資料）
+            if self._embeddings.shape[1] != query_vec.shape[0]:
+                if not self.embedding_dim_mismatch:
+                    logger.warning(
+                        "[SemanticMemory] 向量維度不符（資料 %d、查詢 %d），語意向量檢索降級；"
+                        "需以目前模型重建概念向量",
+                        self._embeddings.shape[1], query_vec.shape[0],
+                    )
+                self.embedding_dim_mismatch = True
+                return []
+            self.embedding_dim_mismatch = False
 
             # dot product = cosine similarity（因為已 L2-normalize）
             similarities = np.dot(self._embeddings, query_vec)

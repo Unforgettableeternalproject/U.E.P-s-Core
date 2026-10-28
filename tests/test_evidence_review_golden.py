@@ -451,6 +451,10 @@ _DECISION_MODULES = [
     "echo_memory/affect/evidence_reviewer.py",
     "echo_memory/dream/contradiction.py",
     "echo_memory/retrieval/standing.py",
+    # M6 Self Model／事件契約
+    "echo_memory/schemas/events.py",
+    "echo_memory/affect/event_emitter.py",
+    "echo_memory/affect/self_model_gate.py",
 ]
 # 這些函式只做 LLM 回應的 JSON 抽取，不做記憶決策
 _REGEX_ALLOWED_FUNCS = {"_parse_llm_response"}

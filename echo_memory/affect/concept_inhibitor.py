@@ -38,6 +38,7 @@ from echo_memory.affect.concept_patch import (
 )
 from echo_memory.affect.concept_verifier import ConceptAssessment, ConceptVerification
 from echo_memory.affect.hypothesis_gate import HypothesisGateMixin
+from echo_memory.affect.self_model_gate import SelfModelGateMixin
 from echo_memory.schemas.concept import Concept
 from echo_memory.config import get_config
 from echo_memory.schemas.evidence_review import (
@@ -194,7 +195,7 @@ class SimilarHint:
         }
 
 
-class ConceptInhibitor(HypothesisGateMixin):
+class ConceptInhibitor(HypothesisGateMixin, SelfModelGateMixin):
     """
     概念 Patch 閘門。
 
@@ -242,6 +243,7 @@ class ConceptInhibitor(HypothesisGateMixin):
         """
         self._semantic = semantic
         self.namespace_id: str | None = None  # 由宿主（MemoryEngine／DreamEngine）注入
+        self.event_emitter: Any | None = None  # M6：事件發射器，由 MemoryEngine 注入（None＝不發）
         self._llm_fn = llm_fn
         self._audit_log_path = audit_log_path
         self._evidence_lookup = evidence_lookup
@@ -3191,6 +3193,8 @@ class ConceptInhibitor(HypothesisGateMixin):
                     success = self._apply_review(concept, patch)
                 elif patch.action == "share":
                     success = self._apply_share(concept, patch)
+                elif patch.action == "self_model":
+                    success = self._apply_self_model(concept, patch)
                 else:
                     logger.warning(
                         "[ConceptInhibitor] 不支援的 action: %s", patch.action
@@ -3515,6 +3519,8 @@ class ConceptInhibitor(HypothesisGateMixin):
                 elif patch.action == "share":
                     self._rollback_share(concept, patch)
                     concept.record_mutation()
+                elif patch.action == "self_model":
+                    self._rollback_self_model(concept, patch)
                 elif patch.action == "deprecate":
                     # 還原為 active
                     concept.status = "active"

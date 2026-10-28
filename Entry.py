@@ -245,6 +245,7 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
     action_queue = ReflectionActionQueue(
         audit_path=engine.storage_path / "reflection_audit.jsonl",
     )
+    action_queue.event_emitter = engine.event_emitter  # M6：預設關閉，無 sink 時不發
     reflection_executor = ReflectionExecutor(
         engine=engine,
         soul_notes=soul_notes,

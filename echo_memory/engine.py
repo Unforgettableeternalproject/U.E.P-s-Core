@@ -164,6 +164,9 @@ class MemoryEngine:
         self._dream_lock = threading.Lock()  # 保護 DreamEngine 的冪等建構
         self._last_interaction: datetime | None = None  # 最近一次 store/retrieve（Dream 未建時先自記）
         self._concept_inhibitor_obj = None  # 由外部注入（Entry.py），供 DreamEngine 使用
+        # M6：對 Core 的事件發射器（預設無 sink、開關關閉＝不發任何事件）
+        from echo_memory.affect.event_emitter import MemoryEventEmitter
+        self._event_emitter = MemoryEventEmitter(self.namespace_id)
         self._entity_store = None
         self._entity_extractor = None
         self._evidence = None
@@ -187,6 +190,12 @@ class MemoryEngine:
     def _concept_inhibitor(self, inhibitor) -> None:
         # 任何賦值方式（含 Entry.py 直接賦值）都在此註冊概念變更 callback
         self._concept_inhibitor_obj = inhibitor
+        # M6：Gate 狀態轉移（Hypothesis supported／refuted、Self Model 條目）後的事件發射器
+        if inhibitor is not None:
+            try:
+                inhibitor.event_emitter = self._event_emitter
+            except AttributeError:
+                pass
         # 明確注入 namespace id（Hypothesis 的共享 namespace 判斷不靠儲存路徑推得）
         if inhibitor is not None and getattr(inhibitor, "namespace_id", None) is None:
             try:
@@ -200,6 +209,15 @@ class MemoryEngine:
             except AttributeError:
                 pass
         self._ensure_change_listener()
+
+    @property
+    def event_emitter(self):
+        """M6：事件發射器（供宿主把 ReflectionActionQueue.event_emitter 指向同一個）。"""
+        return self._event_emitter
+
+    def set_candidate_sink(self, sink) -> None:
+        """M6：注入 Core 的接收端（預設 None＝不發）。是否真的發出仍受 self_model_events_enabled 控制。"""
+        self._event_emitter.set_sink(sink)
 
     def set_concept_inhibitor(self, inhibitor) -> None:
         """注入 Gate（ConceptInhibitor），並註冊概念變更 callback（共享投影失效時撤回）。"""
@@ -778,6 +796,14 @@ class MemoryEngine:
                 context.hypotheses = self._retrieve_hypotheses(context)
             except Exception as e:  # noqa: BLE001 - 候選關聯是附加資訊，失敗不影響召回
                 logger.warning(f"[MemoryEngine] 帶出候選關聯失敗（略過）: {e}")
+        # M6：Self Model 觀察（預設關閉；共享輪次與共享 namespace 一律不帶）
+        if not shared_turn and self._self_model_allowed():
+            try:
+                context.self_observations, context.self_observation_unverified = (
+                    self._retrieve_self_observations()
+                )
+            except Exception as e:  # noqa: BLE001 - 自我觀察是附加資訊，失敗不影響召回
+                logger.warning(f"[MemoryEngine] 帶出 Self Model 觀察失敗（略過）: {e}")
         t_end = time.perf_counter()
 
         timings = {"setup": round((t_setup - t_start) * 1000, 1)}
@@ -795,6 +821,48 @@ class MemoryEngine:
         )
 
         return context
+
+    def _self_model_allowed(self) -> bool:
+        """Self Model 注入開關（config，預設 False）；共享 namespace 不啟用。"""
+        from echo_memory.config import get_config
+        from echo_memory.schemas.sharing import is_scope_namespace_id
+
+        return bool(get_config().self_model_enabled) and not is_scope_namespace_id(self.namespace_id)
+
+    def _retrieve_self_observations(self, limit: int = 3) -> tuple[list, set[str]]:
+        """active 的 Self Model 條目（subject=agent＋self_model 標記），依 standing 排序。
+
+        注入前重查 evidence_refs 是否仍存在且未塗銷：全部失效不注入，部分失效降為未驗證。
+        回傳 (條目, 被迫降為未驗證的概念 id 集合)。
+        """
+        from echo_memory.schemas.self_model import is_self_model_concept
+        from echo_memory.config import get_config
+        from echo_memory.retrieval import standing as standing_mod
+
+        params = standing_mod.params_from_config(get_config())
+        candidates = [
+            c for c in self.semantic.list_concepts(
+                subject="agent", status="active", limit=None, sort_by="confidence",
+            )
+            if is_self_model_concept(c) and not standing_mod.is_superseded(c)
+        ]
+        candidates.sort(
+            key=lambda c: standing_mod.standing(c, params["status_table"], params["rank_table"]),
+            reverse=True,
+        )
+        kept: list = []
+        degraded: set[str] = set()
+        for c in candidates:
+            refs = [str(r) for r in c.metadata["self_model"]["evidence_refs"]]
+            alive = {u.id for u in self.evidence.get(refs) if getattr(u, "tombstoned_at", None) is None}
+            if not alive:
+                continue
+            if len(alive) < len(set(refs)):
+                degraded.add(c.id)
+            kept.append(c)
+            if len(kept) >= limit:
+                break
+        return kept, degraded
 
     def retrieve_evidence(
         self,
@@ -1713,6 +1781,7 @@ class MemoryEngine:
                     cron_window_seconds=config.dream_cron_window_seconds,
                     hypothesis_enabled=self._hypothesis_allowed(),
                     namespace_id=self.namespace_id,
+                    event_emitter=self._event_emitter,
                     **self._dream_sharing_kwargs(config),
                 )
                 if self._last_interaction is not None:

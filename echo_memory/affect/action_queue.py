@@ -97,7 +97,11 @@ _ACTION_PERMISSIONS: dict[str, ActionPermission] = {
     "delete_episode": ActionPermission.DENY,
     "delete_concept": ActionPermission.DENY,
     "modify_identity": ActionPermission.DENY,
+    "modify_persona": ActionPermission.DENY,
 }
+
+# 白名單制（M6）：未註冊的行動類型一律 DENY，不再預設 CONFIRM
+_DEFAULT_PERMISSION = ActionPermission.DENY
 
 
 class ReflectionActionQueue:
@@ -122,6 +126,8 @@ class ReflectionActionQueue:
         self._history: list[ReflectionAction] = []
         self._audit_path = audit_path
         self._action_counter = 0
+        # M6：事件發射器（宿主以 engine.event_emitter 注入；None＝不發）
+        self.event_emitter: Any | None = None
 
         # 從 audit log 重建未處理的 PENDING/CONFIRMED 行動
         self._restore_pending_from_audit()
@@ -150,9 +156,7 @@ class ReflectionActionQueue:
             建立的 ReflectionAction
         """
         self._action_counter += 1
-        permission = _ACTION_PERMISSIONS.get(
-            action_type, ActionPermission.CONFIRM
-        )
+        permission = _ACTION_PERMISSIONS.get(action_type, _DEFAULT_PERMISSION)
 
         action = ReflectionAction(
             id=f"act_{self._action_counter:04d}_{int(time.time())}",
@@ -288,6 +292,9 @@ class ReflectionActionQueue:
                 action.id,
                 action.target_id,
             )
+            # M6：行動已通過 Gate 並執行 → 通知 Core（fire-and-forget；例外由發射器吞掉）
+            if self.event_emitter is not None:
+                self.event_emitter.emit_reflection_completed([action.id])
 
         except Exception as e:
             action.status = ActionStatus.FAILED

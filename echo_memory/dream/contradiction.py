@@ -156,6 +156,8 @@ class ContradictionDetector:
         self._provenance = provenance
         # 最近一次 detect_and_register／reevaluate_pair 每個候選的處置結果（含 relation／action）
         self.last_results: list[ContradictionResult] = []
+        # M6：事件發射器（由 DreamEngine 注入；None＝不發）
+        self.event_emitter: Any | None = None
 
         logger.info(
             f"[ContradictionDetector] 初始化完成 - "
@@ -877,6 +879,11 @@ class ContradictionDetector:
                 concept_a_name=concept_a.name if concept_a else "",
                 concept_b_name=concept_b.name if concept_b else "",
                 reason=result.reason,
+            )
+
+        if self.event_emitter is not None:
+            self.event_emitter.emit_contradiction_found(
+                result.concept_a_id, result.concept_b_id, result.strength,
             )
 
         logger.info(

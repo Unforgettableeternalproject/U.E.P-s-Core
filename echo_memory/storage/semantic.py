@@ -134,6 +134,11 @@ class SemanticMemory:
         if vec is None and self._embed_fn is not None:
             vec = self._embed_fn(f"{name}: {description}")
 
+        # Self Model 標記只有 Gate 能寫：這條通用寫入路徑一律剔除（不信任呼叫端 metadata）
+        if metadata and "self_model" in metadata:
+            logger.warning("[SemanticMemory] upsert_concept 拒絕寫入 metadata['self_model']（僅 Gate 可寫）: %s", name)
+            metadata = {k: v for k, v in metadata.items() if k != "self_model"}
+
         with self._write():
             is_update = name in self._concepts
 

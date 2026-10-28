@@ -708,6 +708,8 @@ class MemoryEngine:
         exclude_session_id: str | None = None,
         exclude_episode_ids: set[str] | None = None,
         include_history: bool = False,
+        include_hypotheses: bool = False,
+        shared_turn: bool = False,
     ) -> MemoryContext:
         """
         檢索相關記憶（EcphoryRAG）。
@@ -721,6 +723,10 @@ class MemoryEngine:
             exclude_episode_ids: 排除指定 ID 的 Episodes（精準排除，
                                  三層混合策略用）
             include_history: 是否帶出已被取代的歷史概念（預設不召回，帶出時 prompt 會標註）
+            include_hypotheses: 是否另外帶出候選關聯（Hypothesis；預設不進召回）。填入
+                context.hypotheses（獨立欄位，最多 2 筆、標示「候選關聯（未驗證，不可當事實）」）：
+                端點之一在本次召回的概念內才會帶出；proposed 只列端點，refuted／expired 不回。
+            shared_turn: 本輪是否為共享（群組）輪次；True 時一律不帶候選關聯。
 
         Returns:
             MemoryContext: 檢索到的記憶脈絡
@@ -755,6 +761,11 @@ class MemoryEngine:
         t_evidence = time.perf_counter()
         if context.episodes:
             context.evidence_by_episode = self.evidence.units_for_episodes(context.episodes)
+        if include_hypotheses and not shared_turn:
+            try:
+                context.hypotheses = self._retrieve_hypotheses(context)
+            except Exception as e:  # noqa: BLE001 - 候選關聯是附加資訊，失敗不影響召回
+                logger.warning(f"[MemoryEngine] 帶出候選關聯失敗（略過）: {e}")
         t_end = time.perf_counter()
 
         timings = {"setup": round((t_setup - t_start) * 1000, 1)}
@@ -1688,6 +1699,7 @@ class MemoryEngine:
                         ttl_seconds=config.dream_lease_ttl_seconds,
                     ),
                     cron_window_seconds=config.dream_cron_window_seconds,
+                    hypothesis_enabled=self._hypothesis_allowed(),
                     **self._dream_sharing_kwargs(config),
                 )
                 if self._last_interaction is not None:
@@ -1850,6 +1862,152 @@ class MemoryEngine:
         result["outcome"] = str(getattr(outcome, "outcome", outcome))
         result["reason"] = str(getattr(outcome, "reason", "") or "")
         return result
+
+    # ─── Hypothesis（M5-D）：只讀查詢 + 請求審核；沒有外部行動入口 ───────────────────
+
+    def _hypothesis_allowed(self) -> bool:
+        """本 namespace 是否運作假說：總開關開啟且不是共享（scope-g*）namespace。"""
+        from echo_memory.config import get_config
+        from echo_memory.schemas.sharing import is_scope_namespace_id
+
+        return bool(get_config().hypothesis_enabled) and not is_scope_namespace_id(self.namespace_id)
+
+    def _hypothesis_store(self):
+        from echo_memory.storage.hypothesis import HypothesisStore
+
+        return HypothesisStore(self.storage_path)
+
+    def _verify_hypothesis(self, hypothesis) -> str | None:
+        """supported 假說是否仍成立（讀取時重解析，fail-closed）；None＝成立。"""
+        from echo_memory.affect.hypothesis_reviewer import verify_support
+
+        try:
+            return verify_support(hypothesis, self.semantic, self._provenance_resolver())
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[MemoryEngine] 假說重解析失敗（視為證據消失）: {e}")
+            return "evidence_gone"
+
+    def list_hypotheses(self, status: str | None = None) -> list[dict[str, Any]]:
+        """列出假說（唯讀）。共享 namespace 一律空。
+
+        statement 只在 status=supported 且證據仍成立時帶出；否則為 None（fail-closed），
+        並以 stale 欄位標示失效原因。這些都是候選關聯，不是事實。
+        """
+        if not self._hypothesis_allowed():
+            return []
+        self.ensure_initialized()
+        out: list[dict[str, Any]] = []
+        for h in self._hypothesis_store().list():
+            if status is not None and h.status != status:
+                continue
+            ends = h.endpoints or ("", "")
+            names = []
+            for cid in ends:
+                c = self.semantic.get(cid)
+                names.append(c.name if c is not None else "")
+            statement, stale = None, None
+            if h.status == "supported":
+                stale = self._verify_hypothesis(h)
+                statement = h.statement if stale is None else None
+            out.append({
+                "id": h.id,
+                "pair_key": h.pair_key,
+                "concept_ids": list(ends),
+                "concept_names": names,
+                "status": h.status,
+                "claim_kind": h.claim_kind,
+                "statement": statement,
+                "stale": stale,
+                "attempts": h.attempts,
+                "origin": h.origin.to_dict(),
+                "created_at": h.created_at.isoformat(),
+                "next_review_at": h.next_review_at.isoformat() if h.next_review_at else None,
+                "expires_at": h.expires_at.isoformat() if h.expires_at else None,
+                "expire_reason": h.outcome.expire_reason or None,
+                "promoted": bool(h.outcome.promoted_edge),
+            })
+        return out
+
+    def review_hypothesis(self, hypothesis_id: str) -> dict[str, Any]:
+        """手動請求審核單一假說（供 CLI／MCP）。
+
+        審核結果只經 Gate 寫回；缺 LLM、缺 Gate、共享 namespace、假說停用時 outcome="skipped"，
+        不寫任何資料。回傳 {"hypothesis_id", "outcome": reviewed|held|stale|skipped, "reason", "status"}。
+        """
+        from echo_memory.affect.hypothesis_reviewer import HypothesisReviewer
+
+        self.ensure_initialized()
+        result: dict[str, Any] = {
+            "hypothesis_id": hypothesis_id, "outcome": "skipped", "reason": "", "status": "",
+        }
+        if not self._hypothesis_allowed():
+            result["reason"] = "disabled_or_shared_namespace"
+            return result
+        if self._llm_fn is None:
+            result["reason"] = "no_llm"
+            return result
+        gate = self._concept_inhibitor
+        if gate is None or not hasattr(gate, "process_hypothesis_patch"):
+            result["reason"] = "no_gate"
+            return result
+        try:
+            reviewer = HypothesisReviewer(
+                llm_fn=self._llm_fn,
+                guard=gate,
+                semantic=self.semantic,
+                provenance=self._provenance_resolver(),
+                store=gate.hypothesis_store,
+                lock_factory=lambda: storage_lock(self.storage_path),
+            )
+            outcome = reviewer.review(hypothesis_id, manual=True)
+        except Exception as e:
+            logger.warning(f"[MemoryEngine] 假說審核失敗 {hypothesis_id[:12]}: {e}")
+            result["reason"] = f"error: {e}"
+            return result
+        result["outcome"] = outcome.outcome
+        result["reason"] = outcome.reason
+        result["status"] = outcome.status
+        return result
+
+    def _retrieve_hypotheses(self, context: MemoryContext) -> list:
+        """召回概念作為種子，帶出端點之一在其中的候選關聯（最多 hypothesis_retrieve_max 筆）。
+
+        proposed／under_review 只列端點；supported 僅在證據仍成立時帶 statement；
+        refuted／expired 不回。兩端必須仍是 active 概念。
+        """
+        from echo_memory.config import get_config
+        from echo_memory.schemas.memory_context import HypothesisItem
+
+        if not self._hypothesis_allowed() or not context.concepts:
+            return []
+        seeds = {c.id for c in context.concepts}
+        found = self._hypothesis_store().list_for_concepts(
+            seeds, statuses=("proposed", "under_review", "supported"),
+        )
+        # supported 優先，其次確認次數高者
+        found.sort(key=lambda h: (h.status != "supported", -h.origin.confirm_count, h.created_at))
+        items: list[HypothesisItem] = []
+        limit = int(get_config().hypothesis_retrieve_max)
+        for h in found:
+            if len(items) >= limit:
+                break
+            ends = h.endpoints
+            if ends is None:
+                continue
+            concepts = [self.semantic.get(cid) for cid in ends]
+            if any(c is None or c.status != "active" or c.metadata.get("merged_into") for c in concepts):
+                continue
+            statement = None
+            if h.status == "supported":
+                if self._verify_hypothesis(h) is not None:
+                    continue  # 證據已失效：fail-closed，不帶出
+                statement = h.statement
+            items.append(HypothesisItem(
+                hypothesis_id=h.id, status=h.status,
+                concept_a_id=ends[0], concept_b_id=ends[1],
+                name_a=concepts[0].name, name_b=concepts[1].name, statement=statement,
+            ))
+        return items
 
     def get_profile(self, max_chars: int = 800, limit: int = 30) -> str:
         """使用者 profile：所有 subject=user 的 active concept，不靠相似度。

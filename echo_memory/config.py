@@ -251,6 +251,31 @@ class Config:
             os.getenv("LATENT_BRIDGE_EXPIRE_DAYS", "60")
         )
 
+        # === M5-D Hypothesis（LATENT_BRIDGE -> 待驗證假說）===
+        # 總開關：關閉時 Dream 不產生也不審核假說（既有紀錄仍可查詢）
+        self.hypothesis_enabled = os.getenv("HYPOTHESIS_ENABLED", "true").lower() == "true"
+        # bridge 跨 Dream 週期被確認幾次以上才可提案
+        self.hypothesis_min_confirm_count = int(os.getenv("HYPOTHESIS_MIN_CONFIRM_COUNT", "2"))
+        # 每個 Dream 週期最多新提案數、開放（proposed／under_review）總量上限
+        self.hypothesis_max_new_per_cycle = int(os.getenv("HYPOTHESIS_MAX_NEW_PER_CYCLE", "3"))
+        self.hypothesis_max_open = int(os.getenv("HYPOTHESIS_MAX_OPEN", "20"))
+        # proposed 存活天數（逾期 expired）；refuted／expired 保留天數（逾期清除）
+        self.hypothesis_proposed_ttl_days = float(os.getenv("HYPOTHESIS_PROPOSED_TTL_DAYS", "30"))
+        self.hypothesis_refuted_retention_days = float(
+            os.getenv("HYPOTHESIS_REFUTED_RETENTION_DAYS", "180")
+        )
+        # 審核 insufficient 幾次後 expired（insufficient_exhausted）
+        self.hypothesis_max_attempts = int(os.getenv("HYPOTHESIS_MAX_ATTEMPTS", "3"))
+        # Dream 週期單次最多審核幾筆假說；審核租約秒數；失敗／不足後的退避基準（小時，指數）
+        self.hypothesis_review_batch = int(os.getenv("HYPOTHESIS_REVIEW_BATCH", "3"))
+        self.hypothesis_lease_seconds = float(os.getenv("HYPOTHESIS_LEASE_SECONDS", "900"))
+        self.hypothesis_backoff_base_hours = float(os.getenv("HYPOTHESIS_BACKOFF_BASE_HOURS", "6"))
+        # 審核者填的 statement 長度上限；昇格 RELATES_TO 邊的初始權重
+        self.hypothesis_statement_max_chars = int(os.getenv("HYPOTHESIS_STATEMENT_MAX_CHARS", "200"))
+        self.hypothesis_promoted_weight = float(os.getenv("HYPOTHESIS_PROMOTED_WEIGHT", "0.5"))
+        # retrieve(include_hypotheses=True) 最多帶出幾筆
+        self.hypothesis_retrieve_max = int(os.getenv("HYPOTHESIS_RETRIEVE_MAX", "2"))
+
         # === 神經化學 ===
         self.neurochem_dopamine = float(os.getenv("NEUROCHEM_DOPAMINE", "0.5"))
         self.neurochem_serotonin = float(os.getenv("NEUROCHEM_SEROTONIN", "0.5"))

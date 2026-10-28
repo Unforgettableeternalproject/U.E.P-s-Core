@@ -123,6 +123,8 @@ class PatchEvidence:
         "evidence_review",
         # 跨使用者分享（share：project／retract／restrict）
         "sharing",
+        # Hypothesis 狀態轉移與昇格（hypothesis：propose／claim／review／expire／purge／reopen）
+        "hypothesis_review",
     ]
     evidence_strength: float  # [0, 1]
 
@@ -181,6 +183,10 @@ class ConceptPatch:
         "scope_id": str|None, ...}；target_path 為 "sharing.by_scope"（概念的場域狀態）或
         "privacy_ledger"（只寫帳本、不綁概念的 restrict）。規則層 approve，不呼叫 LLM。
         project 只放寬（medium）；retract／restrict 只收緊（low）；不新增 derivation
+      - hypothesis: Hypothesis 狀態轉移（M5-D）。target_path="hypotheses"，new_value =
+        {"op": propose|claim|review|expire|purge|reopen, ...計畫（假說紀錄、圖譜邊指令）}；
+        supported 時同一 patch 內昇格 RELATES_TO 並移除該對 LATENT_BRIDGE（原屬性存
+        rollback_payload）；規則層 approve，不綁單一概念（concept_id 為 None）；不新增 derivation
 
     雙重 confidence:
       - old/new_confidence: 概念本身的可信度
@@ -197,7 +203,7 @@ class ConceptPatch:
     concept_name: str
     action: Literal[
         "create", "expand", "modify", "deprecate",
-        "link", "unlink", "merge", "mark_conflict", "review", "share",
+        "link", "unlink", "merge", "mark_conflict", "review", "share", "hypothesis",
     ]
     evidence: PatchEvidence
 

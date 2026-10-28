@@ -37,6 +37,7 @@ from echo_memory.affect.concept_patch import (
     SupersedeProposal,
 )
 from echo_memory.affect.concept_verifier import ConceptAssessment, ConceptVerification
+from echo_memory.affect.hypothesis_gate import HypothesisGateMixin
 from echo_memory.schemas.concept import Concept
 from echo_memory.config import get_config
 from echo_memory.schemas.evidence_review import (
@@ -193,7 +194,7 @@ class SimilarHint:
         }
 
 
-class ConceptInhibitor:
+class ConceptInhibitor(HypothesisGateMixin):
     """
     概念 Patch 閘門。
 
@@ -3161,6 +3162,9 @@ class ConceptInhibitor:
 
         mutation+save 在 SemanticMemory._lock 內完成，確保原子性。
         """
+        if patch.action == "hypothesis":
+            return self._apply_hypothesis(patch)  # 不綁單一概念：圖譜邊 + 假說檔
+
         if patch.action == "share" and not patch.concept_id:
             try:  # 只寫 ledger 的 restrict：不綁概念
                 return self._apply_share(None, patch)
@@ -3421,6 +3425,10 @@ class ConceptInhibitor:
         如果 old_value 不可用，記錄警告但不崩潰。
         mutation+save 在 SemanticMemory._lock 內完成。
         """
+        if patch.action == "hypothesis":
+            self._rollback_hypothesis(patch)
+            return
+
         if patch.action == "share" and not patch.concept_id:
             self._rollback_share(None, patch)  # 只寫 ledger 的 restrict
             return

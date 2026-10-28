@@ -427,6 +427,32 @@ class MemoryGraph:
                 ))
         return result
 
+    def edge_types_between(self, node_a: str, node_b: str) -> set[str]:
+        """兩節點間（任一方向）現有邊的 edge_type 集合；上層不必直接讀 networkx 邊屬性。"""
+        types: set[str] = set()
+        with self.lock:
+            for src, dst in ((node_a, node_b), (node_b, node_a)):
+                data = self.graph.get_edge_data(src, dst)
+                if data:
+                    types.add(str(data.get("edge_type", "")))
+        return types
+
+    def concept_neighbor_ids(self, concept_id: str) -> set[str]:
+        """與概念相鄰的其他 Concept 節點 id（不含 LATENT_BRIDGE／CONTRADICTS，那不是已確立的關聯）。"""
+        out: set[str] = set()
+        with self.lock:
+            if not self.graph.has_node(concept_id):
+                return out
+            for u, v, data in list(self.graph.in_edges(concept_id, data=True)) + list(
+                self.graph.out_edges(concept_id, data=True)
+            ):
+                if data.get("edge_type") in ("LATENT_BRIDGE", "CONTRADICTS"):
+                    continue
+                other = v if u == concept_id else u
+                if other != concept_id and self.graph.nodes[other].get("node_type") == "Concept":
+                    out.add(other)
+        return out
+
     @staticmethod
     def bridge_decay_factor(
         edge_data: dict[str, Any],

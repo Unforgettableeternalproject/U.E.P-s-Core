@@ -1,11 +1,12 @@
 """
 工具定義模組 — Gemini Function Calling Schema
 
-定義 Echo Memory 系統的四個記憶工具：
+定義 Echo Memory 系統的記憶工具（前四個為記憶操作，後兩個為候選關聯的唯讀查詢與審核請求）：
 - force_remember:    強制儲存重要資訊到長期記憶
 - deep_recall:       執行更深度的記憶搜索
 - adjust_importance: 調整當前脈絡中某記憶的顯著性
 - trigger_dream:     觸發記憶鞏固（Dream Engine）
+- list_hypotheses / request_hypothesis_review: 候選關聯（未驗證）查詢與請求審核
 """
 
 from __future__ import annotations
@@ -124,6 +125,42 @@ TOOL_DECLARATIONS: list[dict] = [
                 },
             },
             "required": ["reason"],
+        },
+    },
+    {
+        "name": "list_hypotheses",
+        "description": (
+            "List candidate relations (hypotheses) that the memory system proposed between two "
+            "concepts. They are UNVERIFIED guesses, never facts; do not state them as facts."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "description": (
+                        "Optional status filter: proposed, under_review, supported, refuted, expired."
+                    ),
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "request_hypothesis_review",
+        "description": (
+            "Ask the memory system to review one candidate relation against its evidence. "
+            "This only requests a review; it cannot change the hypothesis status by itself."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "hypothesis_id": {
+                    "type": "string",
+                    "description": "The hypothesis id (hyp_...) from list_hypotheses.",
+                },
+            },
+            "required": ["hypothesis_id"],
         },
     },
 ]

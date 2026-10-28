@@ -272,6 +272,40 @@ def register_tools(server: Server, get_engine: Callable) -> None:
                     "required": ["content"],
                 },
             ),
+            Tool(
+                name="list_hypotheses",
+                description=(
+                    "列出候選關聯（Hypothesis，唯讀）。這些是由 Dream 結構性提出、待驗證的猜測，"
+                    "不是事實；只有審核為 supported 且證據仍成立時才帶關聯描述。"
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "namespace_id": _namespace_schema(),
+                        "status": {
+                            "type": "string",
+                            "description": "只列出特定狀態（可選）",
+                            "enum": ["proposed", "under_review", "supported", "refuted", "expired"],
+                        },
+                    },
+                    "required": [],
+                },
+            ),
+            Tool(
+                name="request_hypothesis_review",
+                description=(
+                    "請求審核一筆候選關聯。審核由伺服器端 LLM 依證據原文判斷，結果只經 Gate 寫回；"
+                    "缺 LLM 或共享 namespace 時不執行。此工具不能直接改變假說狀態。"
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "namespace_id": _namespace_schema(),
+                        "hypothesis_id": {"type": "string", "description": "假說 id（hyp_...）"},
+                    },
+                    "required": ["hypothesis_id"],
+                },
+            ),
         ]
 
     @server.call_tool()
@@ -304,6 +338,10 @@ def register_tools(server: Server, get_engine: Callable) -> None:
                 result = await _handle_list_episodes(get_engine, args)
             elif name == "store_observation":
                 result = await _handle_store_observation(get_engine, args)
+            elif name == "list_hypotheses":
+                result = await _handle_list_hypotheses(get_engine, args)
+            elif name == "request_hypothesis_review":
+                result = await _handle_request_hypothesis_review(get_engine, args)
             else:
                 result = f"未知的工具名稱: {name}"
 
@@ -623,3 +661,40 @@ async def _handle_store_observation(
         f"已存儲觀察記錄，episode_id: {episode_id}，"
         f"重要程度: {importance:.0%}"
     )
+
+
+async def _handle_list_hypotheses(get_engine: Callable, args: dict[str, Any]) -> str:
+    """列出候選關聯（唯讀；受 namespace 存取策略，數字 namespace 預設拒絕）。"""
+    status = args.get("status")
+
+    def _sync() -> list[dict[str, Any]]:
+        return _get_engine(get_engine, args).list_hypotheses(status=status)
+
+    items = await asyncio.to_thread(_sync)
+    logger.info(f"[MCP Handler] list_hypotheses 完成，返回 {len(items)} 筆")
+    if not items:
+        return "沒有候選關聯。"
+    lines = ["候選關聯（未驗證，不可當事實）："]
+    for it in items:
+        names = " ↔ ".join(n or "?" for n in it["concept_names"])
+        line = f"  [{it['status']}] {it['id']} {names}"
+        if it.get("statement"):
+            line += f" — {it['statement']}"
+        elif it.get("stale"):
+            line += f"（證據已失效: {it['stale']}）"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+async def _handle_request_hypothesis_review(get_engine: Callable, args: dict[str, Any]) -> str:
+    """請求審核一筆候選關聯（寫入類：共享 namespace 一律拒絕；結果只經 Gate 寫回）。"""
+    hypothesis_id: str = args["hypothesis_id"]
+
+    def _sync() -> dict[str, Any]:
+        return _get_engine(get_engine, args, write=True).review_hypothesis(hypothesis_id)
+
+    result = await asyncio.to_thread(_sync)
+    logger.info(f"[MCP Handler] request_hypothesis_review 完成: {result.get('outcome')}")
+    detail = f"（{result['reason']}）" if result.get("reason") else ""
+    status = f"，結果: {result['status']}" if result.get("status") else ""
+    return f"審核請求 {hypothesis_id}: {result.get('outcome')}{status}{detail}"

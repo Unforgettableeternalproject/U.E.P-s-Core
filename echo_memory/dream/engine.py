@@ -62,6 +62,8 @@ class DreamReport:
     distillation: DistillationReport | None = None
     procedure_extraction: Any | None = None  # ProcedureExtractionReport
     evidence_review: Any | None = None  # ReviewBatchReport（證據審核 phase）
+    hypothesis: Any | None = None  # HypothesisReport（假說產生與維護 phase）
+    hypothesis_review: Any | None = None  # HypothesisReviewReport（假說審核 phase）
     sharing_reconcile: Any | None = None  # SharingReport（共享層對帳，Dream 開頭）
     sharing: Any | None = None  # SharingReport（分享 phase）
     edges_reevaluated: int = 0  # 既有 CONTRADICTS 邊本週期重判的配對數
@@ -98,6 +100,12 @@ class DreamReport:
 
         if self.evidence_review is not None:
             lines.append(f"  {self.evidence_review.summary()}")
+
+        if self.hypothesis is not None:
+            lines.append(f"  {self.hypothesis.summary()}")
+
+        if self.hypothesis_review is not None:
+            lines.append(f"  {self.hypothesis_review.summary()}")
 
         if self.sharing_reconcile is not None and (
             self.sharing_reconcile.revoked or self.sharing_reconcile.corroborations_invalidated
@@ -158,6 +166,7 @@ class DreamEngine:
         owner_uid: str | None = None,
         lease: Any | None = None,
         cron_window_seconds: float = 900.0,
+        hypothesis_enabled: bool = True,
     ):
         """
         初始化 Dream Engine。
@@ -181,6 +190,8 @@ class DreamEngine:
             lease: 跨行程租約（FileLease）。提供時所有觸發來源執行前都要先取得，取不到即跳過；
                 None 則不做跨行程互斥。
             cron_window_seconds: cron 去重窗口；窗口內已有行程完成 cron 週期則跳過。
+            hypothesis_enabled: False 時不產生也不審核假說（共享 namespace 由 engine 傳 False）。
+                refuted 假說的 pair 仍會抑制 LATENT_BRIDGE 的建立。
             lock_factory: 取得 storage_lock 的工廠（呼叫後回傳 context manager）。
                 手動 dream_now 與排程（idle / cron）觸發走同一條路徑，鎖語意一致：
                 只在讀快照與套用結果的短臨界區持鎖，LLM 階段一律在鎖外。
@@ -222,10 +233,23 @@ class DreamEngine:
                 semantic=semantic,
             )
 
+        # Hypothesis：唯讀 store 取自 Gate（寫入只有 Gate 能做）；refuted 的 pair 抑制 LATENT_BRIDGE
+        hypothesis_gate = self._patch_coordinator.inhibitor if self._patch_coordinator else None
+        if hypothesis_gate is not None and not hasattr(hypothesis_gate, "process_hypothesis_patch"):
+            hypothesis_gate = None
+        self._hypothesis_store = (
+            hypothesis_gate.hypothesis_store if hypothesis_gate is not None else None
+        )
+        self._hypothesis_phase = None
+        self._hypothesis_reviewer = None
+
         # 子模組（傳入 semantic 供 LATENT_BRIDGE 使用）
         self._pruning = GraphPruning(
             graph, semantic=semantic,
             patch_coordinator=self._patch_coordinator,
+            bridge_suppressed=(
+                self._hypothesis_store.is_pair_refuted if self._hypothesis_store is not None else None
+            ),
         )
 
         # LiDER 反思重播（需要 episodic，llm_fn=None 時自動跳過）
@@ -270,6 +294,32 @@ class DreamEngine:
                     )
             except ImportError:
                 pass
+
+        # 假說 phase / 審核器（M5-D）：需要 Gate；審核另需 provenance（evidence_store）
+        if hypothesis_gate is not None and semantic is not None:
+            from echo_memory.dream.hypothesis_phase import HypothesisPhase
+
+            self._hypothesis_phase = HypothesisPhase(
+                semantic=semantic,
+                graph=graph,
+                store=self._hypothesis_store,
+                gate=hypothesis_gate,
+                provenance=provenance,
+                lock_factory=self._guard,
+                patch_coordinator=self._patch_coordinator,
+                enabled=hypothesis_enabled,
+            )
+            if provenance is not None and hypothesis_enabled:
+                from echo_memory.affect.hypothesis_reviewer import HypothesisReviewer
+
+                self._hypothesis_reviewer = HypothesisReviewer(
+                    llm_fn=llm_fn,
+                    guard=hypothesis_gate,
+                    semantic=semantic,
+                    provenance=provenance,
+                    store=self._hypothesis_store,
+                    lock_factory=self._guard,
+                )
 
         # 分享 phase（M10）：需要審核器 + 共享層 + owner uid；條件不齊備時 phase 自行 skipped
         self._sharing_phase = None
@@ -540,6 +590,21 @@ class DreamEngine:
                     report.evidence_review = self._evidence_reviewer.review_batch()
                 except Exception as e:
                     logger.warning(f"[DreamEngine] 證據審核失敗（不影響夢境週期）: {e}")
+
+            # ── 階段 4.52：假說（先維護與產生，不需 LLM；再審核，LLM 在鎖外，寫回走 Gate）────
+            if self._hypothesis_phase is not None:
+                try:
+                    report.hypothesis = self._hypothesis_phase.run()
+                except Exception as e:
+                    logger.warning(f"[DreamEngine] 假說 phase 失敗（不影響夢境週期）: {e}")
+            if self._hypothesis_reviewer is not None and (
+                report.hypothesis is None or report.hypothesis.skipped_reason is None
+                or report.hypothesis.skipped_reason == "no_provenance"
+            ):
+                try:
+                    report.hypothesis_review = self._hypothesis_reviewer.review_batch()
+                except Exception as e:
+                    logger.warning(f"[DreamEngine] 假說審核失敗（不影響夢境週期）: {e}")
 
             # ── 階段 4.55：分享（LLM 在鎖外；投影走 Gate share/project；無 LLM 不投影）────
             if self._sharing_phase is not None:

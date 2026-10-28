@@ -325,7 +325,7 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                 executor = None
                 console.print("[yellow]Tools disabled.[/]")
             continue
-        elif cmd.startswith("/review-concept"):
+        elif cmd.split(maxsplit=1)[0] == "/review-concept":
             _cmd_review_concept(engine, user_input, console)
             continue
         elif cmd == "/review-actions":

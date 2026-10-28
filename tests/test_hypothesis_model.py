@@ -217,10 +217,11 @@ def test_support_observation_alone_is_not_enough_and_agent_ignored():
 
 
 def test_support_threshold_and_intention_reuse_m4_rules():
-    weak = _unit("a", attrs={"channel_kind": "voice", "audience_size": 6})  # w=0.08
-    sup = evaluate_hypothesis_support(
-        [weak, _unit("o", "observation", None, None)], claim_kind="fact",
-    )
+    # 主張者自述不計入佐證強度；他人佐證權重不足（w=0.08）-> insufficient
+    claim = _unit("a", speaker="u1", episode="e1")
+    weak = _unit("b", speaker="u2", episode="e2",
+                 attrs={"channel_kind": "voice", "audience_size": 6})
+    sup = evaluate_hypothesis_support([claim, weak], claim_kind="fact")
     assert sup.strength < 0.9 and sup.status == "insufficient"
 
 

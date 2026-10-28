@@ -96,6 +96,8 @@ class TestEntityProvenance:
         assert set(ent.metadata["provenance"]["evidence_ids"]) == {
             unit_ids(engine, ep1)[0], unit_ids(engine, ep2)[0],
         }
+        # source_episode_ids 合併既有值，不覆蓋
+        assert ent.metadata["provenance"]["source_episode_ids"] == [ep1, ep2]
 
     def test_audit_failure_blocks_entity_write(self, engine, monkeypatch):
         ep_id = user_ep(engine, "小明來了")
@@ -103,6 +105,10 @@ class TestEntityProvenance:
         monkeypatch.setattr(coord, "record_mutations", lambda stage, entries: False)
         engine._apply_entities(ep_id, [Entity(name="小明", entity_type="person")])
         assert engine.entity_store.get_by_name("小明") is None
+        # 丟棄可觀測：累計計數出現在 stats，log 帶完整 episode id
+        assert engine.get_stats()["entity_audit_dropped"] == 1
+        engine._apply_entities(ep_id, [Entity(name="小華"), Entity(name="小美")])
+        assert engine.get_stats()["entity_audit_dropped"] == 3
 
 
 class TestSupportSourceFromEpisodes:
@@ -236,16 +242,16 @@ class TestReviewConceptEntry:
         assert calls == ["c1"] and "reviewed" in text
 
     def test_mcp_handler_rejects_shared_namespace_write(self, mcp_handlers):
-        from mcp_server.access_policy import NamespaceAccessDenied
-
         class FakeEngine:
             def review_concept(self, concept_id):  # pragma: no cover - 不應被呼叫
                 raise AssertionError("共享 namespace 不得執行寫入")
 
-        with pytest.raises(NamespaceAccessDenied):
+        # fixture 載入後會清掉 mcp_server.*，重新 import 會得到不同的例外類別，故比對類別名稱
+        with pytest.raises(Exception) as exc_info:
             asyncio.run(mcp_handlers._handle_review_concept(
                 lambda ns: FakeEngine(), {"concept_id": "c1", "namespace_id": "scope-g42"},
             ))
+        assert type(exc_info.value).__name__ == "NamespaceAccessDenied"
 
     def test_cli_command_reports_unknown_and_reviews(self, engine, gate):
         pytest.importorskip("rich")
@@ -258,6 +264,9 @@ class TestReviewConceptEntry:
                 messages.append(str(msg))
 
         Entry._cmd_review_concept(engine, "/review-concept", Con())
+        # 指令名稱精確比對：/review-conceptx 不是此指令
+        src = Path(Entry.__file__).read_text(encoding="utf-8")
+        assert 'cmd.split(maxsplit=1)[0] == "/review-concept"' in src
         assert "用法" in messages[-1]
         Entry._cmd_review_concept(engine, "/review-concept 不存在", Con())
         assert "找不到" in messages[-1]
@@ -265,6 +274,26 @@ class TestReviewConceptEntry:
         make_concept(engine, gate, "咖啡", [ep])
         Entry._cmd_review_concept(engine, "/review-concept 咖啡", Con())
         assert "概念審核" in messages[-1] and "skipped" in messages[-1]  # 無 LLM -> 不寫資料
+
+
+class TestMcpFixtureIsolation:
+    """mcp_handlers／srv 的假模組只存在於單一測試期間（順序相依：先用、再檢查）。"""
+
+    def test_a_uses_handlers(self, mcp_handlers):
+        assert hasattr(mcp_handlers, "_handle_review_concept")
+
+    def test_b_nothing_leaks_into_next_test(self):
+        import sys
+
+        assert "mcp_server.handlers" not in sys.modules
+        leaked = [
+            n for n, m in sys.modules.items()
+            if (n == "mcp" or n.startswith("mcp.")) and type(m).__name__ == "_AnyAttrModule"
+        ]
+        assert leaked == []
+        for name in ("mcp", "mcp.server", "mcp.server.stdio", "mcp.types"):
+            mod = sys.modules.get(name)
+            assert mod is None or getattr(mod, "__file__", None), name  # 假模組沒有 __file__
 
 
 # ─── 5. graph dirty ──────────────────────────────────────────────────────────
@@ -403,20 +432,86 @@ class TestIntentionCorroborationWeight:
         ok, _tx = gate.process_review_patch(cid, legacy)
         assert ok
 
-    def test_hypothesis_support_uses_same_rule(self):
-        def unit(uid, speaker, attrs, ep):
-            return EvidenceUnit(
-                id=uid, episode_id=ep, source_type="user", speaker_id=speaker,
-                content=uid, content_hash=compute_content_hash(uid), occurred_at=T0,
-                provenance_status="known", attrs=dict(attrs),
-            )
 
-        weak = [unit("a", "u1", GROUP, "e1"), unit("b", "u2", GROUP, "e2")]
-        out = evaluate_hypothesis_support(weak, "intention")
-        assert out.independent and out.status == "insufficient"
-        assert "intention_needs_corroboration" in out.notes
+# ─── Hypothesis：主張者自述不計入佐證強度 ────────────────────────────────────
 
-        strong = [unit("a", "u1", DM, "e1"), unit("b", "u2", DM, "e2")]
-        out = evaluate_hypothesis_support(strong, "intention")
-        assert out.status == "supported"
-        assert out.corroboration_strength == pytest.approx(1.0)
+
+def _hunit(uid, speaker, attrs, ep, source_type="user"):
+    return EvidenceUnit(
+        id=uid, episode_id=ep, source_type=source_type, speaker_id=speaker,
+        content=uid, content_hash=compute_content_hash(uid), occurred_at=T0,
+        provenance_status="known", attrs=dict(attrs),
+    )
+
+
+class TestHypothesisSelfReportExcluded:
+    def test_claimant_dm_plus_low_weight_other_is_insufficient(self):
+        # 重現：u1 自述 DM（w=1.0）＋u2 群聊低權重，過去因計入自述而 supported、強度 1.0
+        out = evaluate_hypothesis_support(
+            [_hunit("a", "u1", DM, "e1"), _hunit("b", "u2", GROUP, "e2")],
+        )
+        assert out.status == "insufficient"
+        assert out.strength == pytest.approx(0.08)
+        assert out.independent_ids == ["b"]
+
+    def test_claimant_dm_plus_enough_weight_other_is_supported(self):
+        dm = evaluate_hypothesis_support(
+            [_hunit("a", "u1", DM, "e1"), _hunit("b", "u2", DM, "e2")],
+        )
+        assert dm.status == "supported" and dm.independent_ids == ["b"]
+        addressed = {"channel_kind": "group", "audience_size": 2, "addressed_to_agent": True}
+        out = evaluate_hypothesis_support(
+            [_hunit("a", "u1", DM, "e1"), _hunit("b", "u2", addressed, "e2"),
+             _hunit("c", "u2", addressed, "e3")],
+        )
+        assert out.status == "supported"  # 1 - 0.2 * 0.2 = 0.96
+        assert out.independent_ids == ["b", "c"] and "a" not in out.independent_ids
+
+    def test_many_claimant_units_do_not_lift_low_weight_other(self):
+        units = [_hunit(f"a{i}", "u1", DM, f"e{i}") for i in range(4)]
+        units.append(_hunit("b", "u2", GROUP, "eb"))
+        out = evaluate_hypothesis_support(units)
+        assert out.status == "insufficient" and out.independent_ids == ["b"]
+
+    def test_observation_corroboration_is_supported_and_claim_excluded(self):
+        out = evaluate_hypothesis_support(
+            [_hunit("a", "u1", GROUP, "e1"), _hunit("o", None, {}, None, "observation")],
+        )
+        assert out.status == "supported" and out.independent_ids == ["o"]
+
+    def test_observation_alone_has_no_claim(self):
+        out = evaluate_hypothesis_support([_hunit("o", None, {}, None, "observation")])
+        assert out.status == "insufficient" and "no_user_claim" in out.notes
+
+    def test_primary_speaker_is_stable_and_overridable(self):
+        units = [_hunit("a", "u1", DM, "e1"), _hunit("b", "u2", DM, "e2")]
+        # 同分同數：取 speaker id 排序最小者（u1）為主要說話者，佐證是 u2
+        assert evaluate_hypothesis_support(units).independent_ids == ["b"]
+        assert evaluate_hypothesis_support(list(reversed(units))).independent_ids == ["b"]
+        # 明確主張者優先
+        assert evaluate_hypothesis_support(units, claimant_speaker="u2").independent_ids == ["a"]
+
+    def test_intention_uses_independent_strength_only(self):
+        out = evaluate_hypothesis_support(
+            [_hunit("a", "u1", DM, "e1"), _hunit("b", "u2", GROUP, "e2")], "intention",
+        )
+        assert out.status == "insufficient"
+        assert out.corroboration_strength == pytest.approx(0.08)
+
+    def test_gate_recomputes_same_rule(self, tmp_path):
+        from tests.hypothesis_support import (
+            ScriptedLLM, build_env, llm_reply, make_bridge, make_concept, propose, user_ep,
+        )
+
+        env = build_env(tmp_path)
+        ep_a = user_ep(env.engine, "我最近很迷咖啡拉花", speaker="u1")
+        ep_b = user_ep(env.engine, "他每天早上都去那間咖啡店", speaker="u2", attrs=GROUP)
+        a = make_concept(env, "咖啡拉花", [ep_a])
+        b = make_concept(env, "早晨咖啡店", [ep_b])
+        make_bridge(env, a, b)
+        hid = propose(env, a, b)
+        cited = [unit_ids(env.engine, ep_a)[0], unit_ids(env.engine, ep_b)[0]]
+        env.reviewer._llm_fn = ScriptedLLM(llm_reply("supported", cited))
+        env.reviewer.review(hid)
+        # LLM 說 supported，Gate 依同一規則重算：低權重他人佐證不足 -> 不得 supported
+        assert env.store.get(hid).status != "supported"

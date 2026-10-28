@@ -788,22 +788,23 @@ class MemoryEngine:
                 "extra": {"evidence_ids": list(evidence_ids)},
             })
         if not self._entity_audit().record_mutations("entity", entries):
+            self._entity_audit_dropped = getattr(self, "_entity_audit_dropped", 0) + len(entities)
             logger.warning(
-                "[MemoryEngine] 實體 audit 寫入失敗，略過 %d 個實體 (episode=%s)",
-                len(entities), episode_id[:8],
+                "[MemoryEngine] 實體 audit 寫入失敗，丟棄 %d 個實體 (episode=%s，累計丟棄 %d)",
+                len(entities), episode_id, self._entity_audit_dropped,
             )
             return
 
         for ent, entry in zip(entities, entries):
             existing = self.entity_store.get_by_name(ent.name)
-            known_evidence = list(
-                ((existing.metadata.get("provenance") or {}).get("evidence_ids") or [])
-                if existing is not None else []
-            )
+            known = (existing.metadata.get("provenance") or {}) if existing is not None else {}
+            known_evidence = list(known.get("evidence_ids") or [])
             merged_evidence = known_evidence + [e for e in evidence_ids if e not in known_evidence]
+            known_episodes = list(known.get("source_episode_ids") or [])
+            merged_episodes = known_episodes + [e for e in [episode_id] if e not in known_episodes]
             provenance = {
                 "producer": "extractor",
-                "source_episode_ids": [episode_id],
+                "source_episode_ids": merged_episodes,
                 "evidence_ids": merged_evidence,
                 "mutation_id": entry["mutation_id"],
             }
@@ -2247,6 +2248,7 @@ class MemoryEngine:
             "total_concepts": self.semantic.count(),
             "total_procedures": self.procedural.count(),
             "total_entities": self.entity_store.count(),
+            "entity_audit_dropped": int(getattr(self, "_entity_audit_dropped", 0)),
             "working_cache_size": len(self.working._cache),
         }
 

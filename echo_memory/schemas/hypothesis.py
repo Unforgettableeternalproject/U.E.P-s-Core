@@ -303,14 +303,18 @@ class HypothesisSupport:
 
 def evaluate_hypothesis_support(
     units: list[Any], claim_kind: str = "fact", cfg: Any = None,
+    claimant_speaker: str | None = None,
 ) -> HypothesisSupport:
     """被引用 unit 的支持度與獨立佐證判斷（沿用 M4 規則，不另造一套）。
 
-    - support_strength：僅 user unit，以 learning_weight 做 noisy-OR（同 episode 取最大 w）。
-    - 獨立佐證（客觀事實的升格條件）：使用者本人的陳述只是主觀事實。需要
-      (a) 至少一筆 known 的 observation（可觀測操作紀錄），或
-      (b) 至少兩位不同且皆可辨識（speaker_id 非 None）的使用者說話者。
-      只有同一使用者自述（含無法辨識是否同一人）-> 最高 insufficient。
+    - Hypothesis 沒有單一主張者：以說話者分組，各組先做 noisy-OR 得該說話者強度；
+      「主要說話者」＝強度最高者（同分取 unit 數多者，再取 speaker id 排序），
+      呼叫端能提供明確主張者時以 claimant_speaker 為準。
+    - 主要說話者自身的陳述只決定「有主張」，不計入佐證強度（自述只算主觀事實）。
+    - 獨立佐證＝非主要說話者的 user unit（乘學習權重）＋ known 的 observation（權重 1.0），
+      以 noisy-OR 合成 strength／corroboration_strength；independent_ids 只含這些 unit。
+      需要至少一筆 known observation，或另有至少一位可辨識（speaker_id 非 None）的
+      非主要說話者且所有說話者皆可辨識；否則 -> 最高 insufficient。
     - 最終狀態：decide_review_status（門檻 SUPPORT_THRESHOLD、intention 需佐證）且 independent。
     """
     from echo_memory.schemas.evidence import learning_weight
@@ -324,32 +328,63 @@ def evaluate_hypothesis_support(
         from echo_memory.config import get_config
         cfg = get_config()
     out = HypothesisSupport()
-    by_group: dict[str, float] = {}
-    obs_ids: list[str] = []
+    obs_units: list[Any] = []
     user_units: list[Any] = []
     for u in units:
         kind = hypothesis_evidence_kind(u)
         if kind == KIND_USER:
             user_units.append(u)
-            group = u.episode_id or u.id
-            by_group[group] = max(by_group.get(group, 0.0), learning_weight(u, cfg))
         elif kind == KIND_OBSERVATION:
-            obs_ids.append(u.id)
-    out.strength = noisy_or(by_group.values())
-
-    speakers = {u.speaker_id for u in user_units}
-    multi_speaker = bool(user_units) and None not in speakers and len(speakers) >= 2
-    out.independent = bool(obs_ids) or multi_speaker
-    out.independent_ids = list(obs_ids) + ([u.id for u in user_units] if multi_speaker else [])
-    if not user_units and not obs_ids:
+            obs_units.append(u)
+    if not user_units and not obs_units:
         out.notes.append("no_eligible_citation")
         return out
-    # intention：獨立佐證也乘學習權重再進 noisy-OR（與 EvidenceReviewer 同一規則）
-    if claim_kind == "intention" and out.independent_ids:
-        by_id = {u.id: u for u in units}
-        out.corroboration_strength = compute_corroboration_strength(
-            [by_id[i] for i in out.independent_ids if i in by_id], cfg,
+
+    # 說話者分組（None 視為各自無法辨識的一組）
+    by_speaker: dict[str | None, list[Any]] = {}
+    for u in user_units:
+        by_speaker.setdefault(u.speaker_id, []).append(u)
+
+    def _speaker_strength(group: list[Any]) -> float:
+        per_episode: dict[str, float] = {}
+        for u in group:
+            key = u.episode_id or u.id
+            per_episode[key] = max(per_episode.get(key, 0.0), learning_weight(u, cfg))
+        return noisy_or(per_episode.values())
+
+    primary: str | None = None
+    if by_speaker:
+        if claimant_speaker is not None and claimant_speaker in by_speaker:
+            primary = claimant_speaker
+        else:
+            primary = max(
+                by_speaker,
+                key=lambda sp: (
+                    _speaker_strength(by_speaker[sp]), len(by_speaker[sp]),
+                    # 同分取 speaker id 字典序最小者（None 排最後）
+                    tuple(-ord(ch) for ch in sp) if sp is not None else (-10**9,),
+                ),
+            )
+    others = [u for sp, g in by_speaker.items() if sp != primary for u in g]
+    all_identified = bool(user_units) and None not in by_speaker
+    corroborating_users = others if (all_identified and others) else []
+
+    if not user_units:
+        # 只有平台觀察、沒有任何使用者陳述：沒有「主張」可佐證
+        out.notes.append("no_user_claim")
+        return out
+    out.independent = bool(obs_units) or bool(corroborating_users)
+    out.independent_ids = [u.id for u in obs_units] + [u.id for u in corroborating_users]
+    if out.independent_ids:
+        by_id = {u.id: u for u in obs_units + corroborating_users}
+        out.strength = compute_corroboration_strength(
+            [by_id[i] for i in out.independent_ids], cfg,
         )
+    else:
+        # 無獨立佐證：只回報主要說話者自述強度供參考（不會 supported）
+        out.strength = _speaker_strength(by_speaker[primary]) if primary in by_speaker else 0.0
+    if claim_kind == "intention" and out.independent_ids:
+        out.corroboration_strength = out.strength
     status = decide_review_status(
         "supported", out.strength, claim_kind, out.independent_ids, cfg,
         corroboration_strength=out.corroboration_strength,

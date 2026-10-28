@@ -740,22 +740,93 @@ class MemoryEngine:
         if agent_text.strip() != (agent_response or "").strip():
             raise ValueError("agent_response 與 evidence 中已交付 agent unit 的內容不一致")
 
+    def _entity_audit(self) -> Any:
+        """對話路徑實體寫入的逐條 audit 寫入器（與 Dream 共用同一份 audit log）。"""
+        coordinator = getattr(self, "_entity_audit_coordinator", None)
+        if coordinator is None:
+            from echo_memory.dream.patch_coordinator import DreamPatchCoordinator
+
+            coordinator = DreamPatchCoordinator(
+                audit_log_path=self.semantic.storage_path / "dream_audit_log.jsonl",
+            )
+            self._entity_audit_coordinator = coordinator
+        return coordinator
+
     def _apply_entities(self, episode_id: str, entities: list[Any]) -> None:
-        """寫入實體與 MENTIONS 邊（呼叫端須已持有 storage_lock）。"""
+        """寫入實體與 MENTIONS 邊（呼叫端須已持有 storage_lock）。
+
+        每個實體先寫逐條 audit（mutation=entity_upsert，producer=extractor，含來源 episode、
+        evidence id 與前值），audit 失敗則整批不寫入（audit-before-mutate）；
+        來源參照同時記在 Entity.metadata["provenance"] 與圖譜節點／邊。
+        """
         graph = self.episodic.graph
+        episode = self.episodic.get(episode_id)
+        evidence_ids = [str(x) for x in (getattr(episode, "evidence_ids", None) or [])]
+
+        entries: list[dict[str, Any]] = []
         for ent in entities:
+            existing = self.entity_store.get_by_name(ent.name)
+            prior = None
+            if existing is not None:
+                prior = existing.to_dict()
+            entries.append({
+                "mutation": "entity_upsert",
+                "producer": "extractor",
+                "target": {
+                    "entity_id": existing.id if existing is not None else ent.id,
+                    "name": ent.name,
+                },
+                "source_episode_ids": [episode_id],
+                "prior": prior,
+                "new": {
+                    "entity_type": ent.entity_type,
+                    "description": ent.description,
+                    "is_new": existing is None,
+                    "mentions_edge": {"from": episode_id},
+                },
+                "reason": "conversation_entity_extraction",
+                "extra": {"evidence_ids": list(evidence_ids)},
+            })
+        if not self._entity_audit().record_mutations("entity", entries):
+            self._entity_audit_dropped = getattr(self, "_entity_audit_dropped", 0) + len(entities)
+            logger.warning(
+                "[MemoryEngine] 實體 audit 寫入失敗，丟棄 %d 個實體 (episode=%s，累計丟棄 %d)",
+                len(entities), episode_id, self._entity_audit_dropped,
+            )
+            return
+
+        for ent, entry in zip(entities, entries):
+            existing = self.entity_store.get_by_name(ent.name)
+            known = (existing.metadata.get("provenance") or {}) if existing is not None else {}
+            known_evidence = list(known.get("evidence_ids") or [])
+            merged_evidence = known_evidence + [e for e in evidence_ids if e not in known_evidence]
+            known_episodes = list(known.get("source_episode_ids") or [])
+            merged_episodes = known_episodes + [e for e in [episode_id] if e not in known_episodes]
+            provenance = {
+                "producer": "extractor",
+                "source_episode_ids": merged_episodes,
+                "evidence_ids": merged_evidence,
+                "mutation_id": entry["mutation_id"],
+            }
+            ent.metadata["provenance"] = provenance
             ent_id = self.entity_store.upsert(ent)
             self.entity_store.increment_mention(ent_id, episode_id)
 
             actual_ent = self.entity_store.get(ent_id)
             if actual_ent is not None:
+                edge_provenance = {
+                    "producer": "extractor",
+                    "evidence_ids": list(evidence_ids),
+                    "mutation_id": entry["mutation_id"],
+                }
                 if not graph.has_node(ent_id):
                     graph.add_entity_node(
                         ent_id,
                         name=actual_ent.name,
                         entity_type=actual_ent.entity_type,
+                        provenance=provenance,
                     )
-                graph.add_mentions_edge(episode_id, ent_id)
+                graph.add_mentions_edge(episode_id, ent_id, provenance=edge_provenance)
 
         graph.save()
         logger.debug(
@@ -2177,6 +2248,7 @@ class MemoryEngine:
             "total_concepts": self.semantic.count(),
             "total_procedures": self.procedural.count(),
             "total_entities": self.entity_store.count(),
+            "entity_audit_dropped": int(getattr(self, "_entity_audit_dropped", 0)),
             "working_cache_size": len(self.working._cache),
         }
 

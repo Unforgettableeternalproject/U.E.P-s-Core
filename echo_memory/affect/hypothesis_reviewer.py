@@ -469,6 +469,7 @@ class HypothesisReviewer:
             reason=reason,
             claim_kind=claim_kind,
             corroborated_by=list(support.independent_ids) if support is not None else [],
+            corroboration_strength=support.corroboration_strength if support is not None else None,
         )
 
     @staticmethod

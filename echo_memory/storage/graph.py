@@ -142,6 +142,10 @@ class MemoryGraph:
         # 用 log1p(freq) / log1p(max_freq) 而非固定 log(11)
         self._max_frequency: int = 10  # 預設值，Dream 週期或邊更新時動態更新
 
+        # 存圖失敗標記：save() 失敗時為 True，記憶體圖比磁碟新；下次成功 save()（任何寫入路徑）
+        # 或 Dream 週期開始時的 retry_save_if_dirty() 會補存並清除
+        self._dirty: bool = False
+
         # 載入已存在的圖
         self._load()
 
@@ -685,6 +689,7 @@ class MemoryGraph:
         entity_id: str,
         name: str,
         entity_type: str = "other",
+        provenance: dict[str, Any] | None = None,
     ) -> None:
         """
         添加實體節點。
@@ -693,12 +698,18 @@ class MemoryGraph:
             entity_id: Entity ID (ent_xxx)
             name: 實體名稱
             entity_type: 實體類型（person/place/concept/product/event/other）
+            provenance: 來源紀錄（producer／source_episode_ids／evidence_ids／mutation_id），
+                只記錄不解讀
         """
+        attrs: dict[str, Any] = {}
+        if provenance:
+            attrs["provenance"] = dict(provenance)
         self.graph.add_node(
             entity_id,
             node_type="Entity",
             name=name,
             entity_type=entity_type,
+            **attrs,
         )
         logger.debug(f"[MemoryGraph] 添加實體節點: {entity_id} ({name})")
 
@@ -708,6 +719,7 @@ class MemoryGraph:
         episode_id: str,
         entity_id: str,
         weight: float = 1.0,
+        provenance: dict[str, Any] | None = None,
     ) -> None:
         """
         添加 MENTIONS 邊（Episode → Entity）。
@@ -718,6 +730,7 @@ class MemoryGraph:
             episode_id: Episode ID
             entity_id: Entity ID
             weight: 初始邊權重，預設 1.0
+            provenance: 來源紀錄（producer／evidence_ids／mutation_id），新建邊時寫入
         """
         if not self.graph.has_node(episode_id) or not self.graph.has_node(entity_id):
             logger.warning(
@@ -734,6 +747,9 @@ class MemoryGraph:
             edge_data["frequency"] = edge_data.get("frequency", 1) + 1
             edge_data["weight"] = min(1.0, edge_data["weight"] + 0.1)
         else:
+            attrs: dict[str, Any] = {}
+            if provenance:
+                attrs["provenance"] = dict(provenance)
             self.graph.add_edge(
                 episode_id,
                 entity_id,
@@ -741,6 +757,7 @@ class MemoryGraph:
                 weight=weight,
                 frequency=1,
                 created_at=time.time(),
+                **attrs,
             )
 
         logger.debug(
@@ -1164,19 +1181,38 @@ class MemoryGraph:
                 f.flush()
                 os.fsync(f.fileno())
             replace_with_retry(tmp_file, self.graph_file)
+            self._dirty = False
             logger.debug(
                 f"[MemoryGraph] 保存圖完成 - "
                 f"{node_count} 節點, "
                 f"{edge_count} 邊"
             )
         except Exception as e:
-            logger.error(f"[MemoryGraph] 保存圖失敗: {e}")
+            self._dirty = True
+            logger.error(f"[MemoryGraph] 保存圖失敗（標記 dirty，待下次寫入或 Dream 重試）: {e}")
             if tmp_file.exists():
                 try:
                     tmp_file.unlink()
                 except OSError:
                     pass
             raise
+
+    @property
+    def is_dirty(self) -> bool:
+        """上一次存圖是否失敗（記憶體圖比磁碟新）。"""
+        return self._dirty
+
+    def retry_save_if_dirty(self) -> bool:
+        """dirty 時重試存圖。不 dirty 回傳 False（沒做事）；重試成功回傳 True；失敗只記警告回傳 False。"""
+        if not self._dirty:
+            return False
+        try:
+            self.save()
+        except Exception as e:  # noqa: BLE001 - 補存失敗不阻斷呼叫端，維持 dirty 下次再試
+            logger.warning("[MemoryGraph] dirty 圖補存仍失敗，維持 dirty: %s", e)
+            return False
+        logger.info("[MemoryGraph] dirty 圖補存成功")
+        return True
 
     def reload(self) -> None:
         """重新載入目前磁碟上的圖快照。"""

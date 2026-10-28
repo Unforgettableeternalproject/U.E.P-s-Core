@@ -272,7 +272,7 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
             f"Chat: [dim]{llm.model_name}[/]  "
             f"Eval: [dim]{eval_cfg.model}[/]\n"
             f"Tools: {tools_status}\n\n"
-            "Commands: [dim]/quit /stats /dream /clear /history /tools /session /review-actions /rollback[/]",
+            "Commands: [dim]/quit /stats /dream /clear /history /tools /session /review-actions /review-concept /rollback[/]",
             border_style="cyan",
             width=70,
         ))
@@ -324,6 +324,9 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                 gemini_tools = None
                 executor = None
                 console.print("[yellow]Tools disabled.[/]")
+            continue
+        elif cmd.split(maxsplit=1)[0] == "/review-concept":
+            _cmd_review_concept(engine, user_input, console)
             continue
         elif cmd == "/review-actions":
             _cmd_review_actions(action_queue, executor_fn, console)
@@ -745,7 +748,9 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                     recent = engine.episodic.list_episodes(
                         limit=5, offset=0, sort_by="timestamp", ascending=False
                     )
-                    summaries = [ep.content_summary for ep in recent if ep.content_summary]
+                    # 來源感知摘要：只用 user 文字，不用混合 user／agent 原文的 content_summary
+                    from echo_memory.utils.source_view import recent_user_summaries
+                    summaries = recent_user_summaries(engine.evidence, recent)
                     nc = engine.neurochem
 
                     # 收集已知概念名稱供反思參考
@@ -952,6 +957,22 @@ def _cmd_list(engine: MemoryEngine):
         )
 
     console.print(table)
+
+
+def _cmd_review_concept(engine: MemoryEngine, user_input: str, con: Console) -> None:
+    """/review-concept <概念 id 或名稱>：手動對單一概念做證據審核（結果只經 Gate 寫回）。"""
+    parts = user_input.strip().split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        con.print("[yellow]用法：/review-concept <概念 id 或名稱>[/]")
+        return
+    ref = parts[1].strip()
+    concept = engine.semantic.get(ref) or engine.semantic.get_by_name(ref)
+    if concept is None:
+        con.print(f"[red]找不到概念：{ref}[/]")
+        return
+    result = engine.review_concept(concept.id)
+    detail = f"（{result['reason']}）" if result.get("reason") else ""
+    con.print(f"概念審核 [cyan]{concept.name}[/] ({concept.id}): {result.get('outcome')}{detail}")
 
 
 def _cmd_review_actions(

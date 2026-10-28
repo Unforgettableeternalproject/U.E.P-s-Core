@@ -601,6 +601,7 @@ class HypothesisGateMixin:
         review.status = "supported"
         review.support_strength = support.strength
         review.corroborated_by = list(support.independent_ids)
+        review.corroboration_strength = support.corroboration_strength
         review.claim_kind = claim_kind
         new.review, new.statement = review, statement
         new.status = "supported"

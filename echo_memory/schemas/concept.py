@@ -171,7 +171,8 @@ class Concept:
         各分量：
           - confidence: 已有的可信度（隨來源數漸增）
           - stability_factor: 穩定度（最近沒被修改 → 高）
-          - evidence_factor: 證據充分度（多來源 → 高）
+          - evidence_factor: 證據充分度（多「獨立」來源 → 高）。有審核紀錄時讀
+            independent_count（獨立來源數）；尚未審核的舊資料才退回原始計數 evidence_count
           - conflict_penalty: 未解矛盾的懲罰
         """
         import math
@@ -181,7 +182,11 @@ class Concept:
         stability = min(1.0, 0.5 + 0.5 * (1.0 - math.exp(-hours / 24.0)))
 
         # evidence: 至少有 3 個來源 → 1.0
-        ev = self.evidence_count
+        review = self.evidence_review
+        if isinstance(review, dict) and "independent_count" in review:
+            ev = int(review.get("independent_count") or 0)
+        else:
+            ev = self.evidence_count
         evidence = min(1.0, ev / 3.0) if ev > 0 else 0.3
 
         # conflict penalty: 每個未解矛盾 -0.15，上限 -0.6

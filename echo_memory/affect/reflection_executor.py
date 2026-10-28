@@ -849,6 +849,26 @@ class ReflectionExecutor:
             self._engine.episodic, target_id, self._gate_context(params),
         )
 
+    def _derive_support_source(self, params: dict[str, Any]) -> str | None:
+        """由來源 Episode 的證據角色推得 support_source（沿用 M-9 規則）；無來源 Episode 回傳 None。"""
+        from echo_memory.utils.source_view import load_units, support_source
+
+        episode_ids: list[str] = []
+        for raw in (
+            params.get("parent_episode_ids") or [],
+            (params.get("_provenance") or {}).get("source_episode_ids") or [],
+        ):
+            for eid in raw:
+                if str(eid) not in episode_ids:
+                    episode_ids.append(str(eid))
+        episodes = [
+            ep for ep in (self._engine.episodic.get(eid) for eid in episode_ids) if ep is not None
+        ]
+        if not episodes:
+            return None
+        units = load_units(getattr(self._engine, "evidence", None), episodes)
+        return support_source(episodes, units)
+
     def _exec_create_concept(
         self, target_id: str, params: dict[str, Any]
     ) -> dict[str, Any]:
@@ -871,6 +891,7 @@ class ReflectionExecutor:
             operation="create",
             target_name=target_id,
             params={
+                "support_source": self._derive_support_source(params),
                 "description": description,
                 "concept_type": params.get("concept_type", "reflection"),
                 "parent_concepts": params.get("parent_concepts"),

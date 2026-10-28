@@ -116,3 +116,80 @@ def episodes_by_id(benchmark_dataset: dict[str, Any]) -> dict[str, dict]:
     Scope: session（與 benchmark_dataset 相同生命週期）。
     """
     return {ep["id"]: ep for ep in benchmark_dataset.get("episodes", [])}
+
+
+# ─── MCP 模組載入（CI 沒有 mcp SDK／starlette）────────────────────────────────
+
+def _is_mcp_module(name: str) -> bool:
+    return name in ("mcp", "mcp_server") or name.startswith(("mcp.", "mcp_server."))
+
+
+@pytest.fixture
+def _mcp_module_loader():
+    """回傳載入函式；teardown 把 sys.modules 中 mcp／mcp_server 相關項目還原成測試前快照。
+
+    載入時缺 mcp SDK 或 starlette 會以最小假模組取代 mcp.*；假模組與在假環境下
+    匯入的 mcp_server.* 都只存在於單一測試期間，不外洩到後續測試。
+    """
+    import importlib
+
+    snapshot = {k: v for k, v in sys.modules.items() if _is_mcp_module(k)}
+
+    def _purge_mcp_server() -> None:
+        for name in [m for m in sys.modules if m == "mcp_server" or m.startswith("mcp_server.")]:
+            sys.modules.pop(name, None)
+
+    def load(module_name: str):
+        try:
+            return importlib.import_module(module_name)
+        except ImportError:
+            pass
+        _purge_mcp_server()
+        try:
+            import mcp  # noqa: F401
+        except ImportError:
+            fake_pkg = types.ModuleType("mcp")
+            fake_pkg.__path__ = []
+            sys.modules["mcp"] = fake_pkg
+
+        class _AnyAttrModule(types.ModuleType):
+            """任何屬性都回傳一個可建構的空類別（供 mcp.types 的各種型別 import）。"""
+
+            def __getattr__(self, name):
+                if name.startswith("__"):
+                    raise AttributeError(name)
+                cls = type(name, (), {"__init__": lambda self, *a, **k: None})
+                setattr(self, name, cls)
+                return cls
+
+        fake = types.ModuleType("mcp.server")
+        fake.__path__ = []
+        fake.Server = type("Server", (), {"__init__": lambda self, *a, **k: None})
+        fake_stdio = types.ModuleType("mcp.server.stdio")
+        fake_stdio.stdio_server = lambda *a, **k: None
+        sys.modules["mcp.types"] = _AnyAttrModule("mcp.types")
+        sys.modules["mcp.server"] = fake
+        sys.modules["mcp.server.stdio"] = fake_stdio
+        module = importlib.import_module(module_name)
+        _purge_mcp_server()
+        return module
+
+    try:
+        yield load
+    finally:
+        for name in [m for m in sys.modules if _is_mcp_module(m)]:
+            if name not in snapshot:
+                sys.modules.pop(name, None)
+        sys.modules.update(snapshot)
+
+
+@pytest.fixture
+def srv(_mcp_module_loader):
+    """mcp_server.server（缺 SDK／starlette 時以假模組載入）。"""
+    return _mcp_module_loader("mcp_server.server")
+
+
+@pytest.fixture
+def mcp_handlers(_mcp_module_loader):
+    """mcp_server.handlers（缺 SDK／starlette 時以假模組載入，handler 邏輯照常實跑）。"""
+    return _mcp_module_loader("mcp_server.handlers")

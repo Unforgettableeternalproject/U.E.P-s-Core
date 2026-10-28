@@ -576,6 +576,10 @@ class DreamEngine:
                 # 重審先前 held 的 concept patch（LLM 在鎖外，apply 在鎖內）
                 self._patch_coordinator.review_held(guard=self._guard)
 
+            # 先前存圖失敗（graph dirty）的補存；失敗只記警告，不影響夢境週期
+            with self._guard():
+                self.graph.retry_save_if_dirty()
+
             # ── 共享層對帳（不需 LLM）：孤兒投影、已撤回未刪、失效佐證 ──────
             if self._sharing_phase is not None:
                 try:

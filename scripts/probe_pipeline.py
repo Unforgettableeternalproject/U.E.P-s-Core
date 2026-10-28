@@ -453,7 +453,9 @@ def run_single_turn(
             recent = engine.episodic.list_episodes(
                 limit=5, offset=0, sort_by="timestamp", ascending=False
             )
-            summaries = [ep.content_summary for ep in recent if ep.content_summary]
+            # 來源感知摘要：只用 user 文字，不用混合 user／agent 原文的 content_summary
+            from echo_memory.utils.source_view import recent_user_summaries
+            summaries = recent_user_summaries(engine.evidence, recent)
             nc = engine.neurochem
             known_concepts = [c.name for c in engine.semantic.list_concepts(limit=10)]
 

@@ -164,7 +164,8 @@ class MemoryEngine:
         self._dream_lock = threading.Lock()  # 保護 DreamEngine 的冪等建構
         self._last_interaction: datetime | None = None  # 最近一次 store/retrieve（Dream 未建時先自記）
         self._concept_inhibitor_obj = None  # 由外部注入（Entry.py），供 DreamEngine 使用
-        self._default_gate_checked = False  # 預設 Gate 只在「首次需要」時建立一次（事後明確設 None 視為刻意無 Gate）
+        self._default_gate_checked = False  # 預設 Gate 已處理完成（建成並注入、或宿主刻意無 Gate）後才設為 True
+        self._gate_opt_out = False  # 宿主明確把 Gate 設為 None＝刻意無 Gate，不自動建立預設 Gate
         self._default_gate = None  # 宿主未注入時自動建立的預設 Gate（供 set_llm_fn 同步 llm_fn）
         self._gate_lock = threading.Lock()
         # M6：對 Core 的事件發射器（預設無 sink、開關關閉＝不發任何事件）
@@ -193,6 +194,8 @@ class MemoryEngine:
     def _concept_inhibitor(self, inhibitor) -> None:
         # 任何賦值方式（含 Entry.py 直接賦值）都在此註冊概念變更 callback
         self._concept_inhibitor_obj = inhibitor
+        if inhibitor is None:
+            self._gate_opt_out = True  # 區分「未設」與「明確設 None」
         if inhibitor is not self._default_gate:
             self._default_gate = None  # 宿主注入的 Gate 取代預設 Gate
         # M6：Gate 狀態轉移（Hypothesis supported／refuted、Self Model 條目）後的事件發射器
@@ -239,14 +242,15 @@ class MemoryEngine:
         with self._gate_lock:
             if self._default_gate_checked:
                 return
-            self._default_gate_checked = True
-            if self._concept_inhibitor_obj is not None:
+            if self._concept_inhibitor_obj is not None or self._gate_opt_out:
+                self._default_gate_checked = True
                 return
             from echo_memory.affect.concept_inhibitor import ConceptInhibitor
 
             gate = ConceptInhibitor(semantic=self.semantic, llm_fn=self._llm_fn)
             self._default_gate = gate
             self._concept_inhibitor = gate
+            self._default_gate_checked = True  # 建成並注入後才讓快速路徑放行
             logger.info("[MemoryEngine] 宿主未注入 Gate，已建立預設 ConceptInhibitor")
 
     @property

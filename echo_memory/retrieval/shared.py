@@ -97,6 +97,12 @@ def retrieve_shared_context(
             top_k=_CANDIDATE_POOL,
             min_similarity=float(min_similarity),
         )
+        if not views:
+            mismatch_fn = getattr(layer, "query_dimension_mismatch", None)
+            mismatch = mismatch_fn(scope_id, vec) if callable(mismatch_fn) else None
+            if mismatch is not None:
+                logger.warning("[retrieve_shared] 向量維度不符（資料 %d、查詢 %d），回空並標 degraded", *mismatch)
+                return _degraded(scope_id, "embedding_dimension_mismatch")
     except Exception as e:  # noqa: BLE001 - 檢索路徑不可崩潰；一律 fail-closed
         logger.warning("[retrieve_shared] 檢索失敗（回空）: %s", e)
         return _degraded(scope_id, "error")
